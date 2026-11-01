@@ -37,9 +37,11 @@ describe("the text and the graph, linked", () => {
   it("picks the nodes one expression lowers to together, and a choice by what is written of it alone", () => {
     const text = readFileSync(join(process.cwd(), "..", "crates", "holon-author", "samples", "calc.holon"), "utf8");
     const { doc, spans } = compileHolon(text, new Evaluator());
-    expect(named(doc, pickAt(spans, text.indexOf('"add"') + 1))).toEqual(["const", "equals"]);
-    expect(named(doc, pickAt(spans, text.indexOf("->")))).toEqual(["guard"]);
-    expect(named(doc, pickAt(spans, text.indexOf("a + b") + 2))).toEqual(["add"]);
+    // Where each is written in the code, not in the comments above it.
+    const at = (s: string) => text.indexOf(s, text.indexOf("\nflow "));
+    expect(named(doc, pickAt(spans, at('"add"') + 1))).toEqual(["const", "equals"]);
+    expect(named(doc, pickAt(spans, at("->")))).toEqual(["guard"]);
+    expect(named(doc, pickAt(spans, at("a + b") + 2))).toEqual(["add"]);
   });
 
   it("dims what a run of calc didn't run: the values of the arms not chosen, not their patterns", () => {

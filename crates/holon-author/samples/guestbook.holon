@@ -1,7 +1,18 @@
+# Guestbook: a page from a flow.
+#
+# A web page served by the flow itself. A js node renders the guestbook as HTML from the entries
+# in a collection, with the clock passed in to say how long ago each was signed; another parses
+# the posted form. The flow stores a signature and redirects back to the page. Each answer is an
+# envelope: a status, headers (the HTML content type, or where to redirect) and a body.
+#
+# Try it: deploy it, then open http://127.0.0.1:8122/ in a browser and sign it. Or with curl:
+#   curl -s -d 'name=Ada&note=Hello' -o /dev/null -w '%{http_code}' http://127.0.0.1:8122/sign
+# answers 303, and curl http://127.0.0.1:8122/ shows the page with Ada's entry.
 flow guestbook
 port 8122
 collection entries
 
+# Renders the page: the form to sign, then each entry with how long ago it was signed.
 holon page(book, clock) -> html js {
   const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
   const ago = (t) => { const s = clock - t; return s < 60 ? "just now" : s < 3600 ? `${Math.floor(s / 60)} min ago` : s < 86400 ? `${Math.floor(s / 3600)} h ago` : `${Math.floor(s / 86400)} days ago`; };
@@ -19,6 +30,7 @@ holon page(book, clock) -> html js {
 <ul>${items.length ? items.join("\n") : "<li><i>Nobody has signed yet.</i></li>"}</ul>`;
 }
 
+# Parses a posted form into its fields, and fails when the name or the note is empty.
 holon form(body) -> fields js {
   const decode = (s) => decodeURIComponent(s.replace(/\+/g, " "));
   const fields = {};
@@ -31,12 +43,15 @@ holon form(body) -> fields js {
   return fields;
 }
 
+# The guestbook page, as HTML.
 route GET / (req) {
   respond page(entries.list(), now), headers: { "content-type": "text/html; charset=utf-8" }
 }
 
+# Stores a signature and redirects back to the page; a form without a name or a note gets a 400.
 route POST /sign (req) {
   signed = form(req.body)
+  # The key is the time plus a random suffix, so two signatures in the same second both stay.
   entries["{now}-{slice(sha256(as_text(random)), 0, 6)}"] = { name: signed.name, note: signed.note, at: now }
   respond "" when signed.name != "", headers: { location: "/" }, status: 303, missing: 400
 }

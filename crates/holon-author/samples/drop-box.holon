@@ -1,6 +1,24 @@
+# Drop box: a run per new file, sent on by handle.
+#
+# Runs once for each new file dropped into the folder drop, when it stops changing: the run's
+# ingress is the file's handle (name, size, hash). It sends the file to httpbin.org as the body of
+# a PUT, by handle: the server streams the bytes from the folder, never through the flow, and the
+# run log keeps only their hash. It writes a receipt for each file to the folder receipts. Files
+# already there when it is deployed aren't new; one it writes into a folder it watches doesn't
+# start it again.
+#
+# Before it works, bind the two folders (an admin):
+#   holon folder add drop ~/holon-drop --read-only
+#   holon folder add receipts ~/holon-receipts
+#
+# Try it: deploy it, then copy any file into ~/holon-drop. Within two seconds ~/holon-receipts
+# holds <file>.json with its size, its hash and how many bytes httpbin.org received, and the
+# deployment's log shows the run.
 flow drop-box
 on file drop
 folder receipts
 
+# Sends the new file to httpbin.org as a PUT's body, streamed from the folder by its handle.
 sent = http.put("httpbin.org", "/put", headers: { "content-type": "application/octet-stream" }, file: ingress)
+# Writes the file's receipt: its name, size and hash, the status, and the bytes httpbin.org got.
 receipts["{ingress.name}.json"] = json({ file: ingress.name, size: ingress.size, hash: ingress.hash, status: sent.status, received: parse_json(sent.body).headers["Content-Length"] ?? "nothing" })

@@ -1,18 +1,36 @@
+# A flow inside a flow: holons.
+#
+# Two holons, each a whole flow placed as one node. slugify (lowercase, split on spaces, join with
+# -) only computes, and is placed twice. publish reads and writes outside (the clock, a
+# collection, state, an optional secret), and its manifest, permissions, replay and flow state
+# count all of it. A saved flow without routes is placed the same way, from the palette's flows.
+#
+# One optional secret, under the deployment's settings (the gear):
+#   receipt_key   signs each publish receipt; without it receipts read "unsigned"
+#
+# Try it: deploy it, then
+#   curl -X POST -H "Content-Type: application/json" \
+#     -d '{"title": "Hello Holon World", "author": "Ada Lovelace"}' http://127.0.0.1:8110/slugs
+# answers the two slugs and a receipt; curl http://127.0.0.1:8110/slugs lists what was published.
+# View a run to see the holons replayed and the post written, and expand a holon to see inside.
 flow slugs
 port 8110
 optional secret.receipt_key
 collection posts
 
+# Turns a text into a slug: lowercase, its words joined with -.
 holon slugify(text) -> slug {
   slug = join(split(lowercase(text), " "), "-")
 }
 
+# Notes the slug as the last post, puts the post, and signs a receipt if it can.
 holon publish(slug, author) -> (put, saved, receipt) {
   saved = state.set(last_post, slug)
   put = posts.put(slug, { author: author, at: now })
   receipt = hmac_sha256(secret.receipt_key, slug) ?? "unsigned"
 }
 
+# Slugs the title and the author, publishes, and answers both slugs with the receipt.
 route POST /slugs (req) {
   title = slugify(req.json.title)
   author = slugify(req.json.author)
@@ -20,6 +38,7 @@ route POST /slugs (req) {
   respond { title: title, author: author, receipt: published.receipt }, missing: 400
 }
 
+# Lists what was published.
 route GET /slugs (req) {
   respond posts.list()
 }

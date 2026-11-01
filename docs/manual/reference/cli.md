@@ -12,12 +12,26 @@ Everything is one program, `holon`. `holon help` lists the commands; `serve`, `e
 | [`holon fmt`](#holon-fmt) | rewrite a flow in the canonical form |
 | [`holon deploy`](#holon-deploy) | compile a flow and deploy it to a running server |
 | [`holon editor`](#holon-editor) | the editor in a terminal: flows, runs, approvals, and text in tabs |
+| [`holon deployments`](#holon-deployments) | what is deployed, and each one's waiting runs |
+| [`holon run`, `pause`, `stop`, `remove`](#holon-run-pause-stop-remove) | start, hold, end and delete a deployment |
+| [`holon call`](#holon-call) | send a deployed flow a request |
+| [`holon action`](#holon-action) | run one of a deployment's actions |
+| [`holon trigger`, `holon tick`](#holon-trigger-holon-tick) | run a flow by hand, or fire one of its clocks now |
+| [`holon state`](#holon-state) | a deployment's state, collections and sessions |
+| [`holon grant`](#holon-grant) | what a deployment is granted; revoke, grant back, lower |
+| [`holon grants`](#holon-grants) | who holds what |
+| [`holon policy`](#holon-policy) | the host's policy, and reading it again |
+| [`holon secret`](#holon-secret) | a deployment's secrets: set, roll back, remove, their history |
+| [`holon flows`](#holon-flows) | the flows saved on the server |
+| [`holon activity`](#holon-activity) | what was done on the server, by whom |
+| [`holon user`, `token`, `oidc`](#people-and-sign-in) | people, API tokens, signing in through a provider |
 | [`holon export`](#holon-export) | write a deployment's runs to a file |
 | [`holon verify`](#holon-verify) | check exported runs offline |
 | [`holon history`](#holon-history) | a deployment's timeline: its runs, and what was done to it |
 | [`holon restore`](#holon-restore) | a deployment's versions, and an earlier version's or run's code or state back |
 | [`holon folder`](#holon-folder) | bind the folders flows use |
-| [`holon database`](#holon-database) | bind the databases flows use |
+| [`holon store`](#holon-store) | sweep what nothing kept names from the content store |
+| [`holon database`](#holon-database) | bind the databases flows use, and list their tables |
 | [`holon mcp`](#holon-mcp) | the tools for agents, and adding them to an agent's host |
 | [`holon lsp`](#holon-lsp) | a language server for editors |
 | [`holon version`, `update`, `uninstall`, `migrate`](#looking-after-the-install) | the install itself |
@@ -52,7 +66,8 @@ These work on any machine, with no server.
 holon new <file> [--sample <name>]
 ```
 
-Writes a starter flow to `<file>`, or the sample named. It never overwrites a file.
+Writes a starter flow to `<file>`, or the sample named, whose comments say what it does and how
+to try it. It never overwrites a file.
 `holon new --help` lists the samples.
 
 ### `holon check`
@@ -166,6 +181,208 @@ or `stop <slug>`, `server <port|url>`, `q`), and `?` lists the keys.
 A file opens in a tab, and a missing one starts as a new flow; a deployment's name opens its page.
 With no server it still opens, checks and formats files.
 
+## Running deployments
+
+What the editor's deployed page does, from the command line. Each command below reaches the
+server you run on this machine, signed in as you; with several running, `--server PORT` picks
+one. A server elsewhere: `--server URL` (or `HOLON_SERVER`), with an API token in `HOLON_TOKEN`.
+Those that list take `--json`, for the server's answer as it is.
+
+### `holon deployments`
+
+```
+holon deployments [<slug>] [--json]
+```
+
+Every deployment, a line each: its status, how it starts (its port, its schedule), its runs and
+failures, the runs waiting for an approval or an event, and who deployed it when. `!` marks one
+that needs attention. With a slug, that one's details, why it needs attention, and each waiting
+run: what it waits for, until when. A waiting run is approved by its own link, on the flow's port.
+
+### `holon run`, `pause`, `stop`, `remove`
+
+```
+holon run <slug> [--fresh | --session N]
+holon pause <slug>
+holon stop <slug>
+holon remove <slug> --yes
+```
+
+`run` starts a paused or stopped deployment again, from its latest state, from none (`--fresh`),
+or from the state session N left (`holon state <slug> --sessions` lists them). `pause` holds its
+runs, its state kept; `stop` ends its session. `remove` deletes a stopped deployment and forgets
+its secrets; its runs' log stays on disk. Editors and admins.
+
+### `holon call`
+
+```
+holon call <slug> METHOD PATH [-H 'Name: value']… [--body TEXT | --body - | --body-file FILE] [--json]
+```
+
+Sends a deployed server flow a request, as the editor's request panel does, logged as a run, and
+prints its answer's body (its status on stderr; `--json`: status, headers and body). `--body -`
+reads the body piped in. Exits 1 when it answers 400 or more. In Git Bash on Windows, set
+`MSYS_NO_PATHCONV=1`, or the shell rewrites `/orders` into a Windows path.
+
+### `holon action`
+
+```
+holon action <slug> <name> [--input JSON | --input - | --input-file FILE]
+```
+
+Runs one of a deployment's actions (`action reset (input) { … }`), as the editor's ▶ does, with
+that input (`{}` without one), and prints what it answered and the run's number. A run that waits
+for an approval or an event says so. Exits 1 when the action answers 400 or more.
+
+### `holon trigger`, `holon tick`
+
+```
+holon trigger <slug> [--body TEXT | --body - | --body-file FILE]
+holon tick <slug> <clock>
+```
+
+`trigger` runs a flow with no route of its own once (a scheduled flow, say), with that body: what
+it produced, and what it did. `tick` fires one of a server flow's clocks now, by its label as
+`holon deployments` shows it (`"every 2s"`).
+
+### `holon state`
+
+```
+holon state <slug> [--json]
+holon state <slug> --collection NAME [--key KEY | --prefix TEXT] [--limit N] [--all]
+holon state <slug> --sessions
+```
+
+A deployment's live state, a line per value, written as the language writes values; its
+collections by name. `--collection`: a collection's items, 50 at a time (`--limit` up to 1000,
+`--all` for every one, all read at the same root); `--key`, one item. `--sessions`: each session
+it ran, from where, how many runs, and the state it left.
+
+## Grants and policy
+
+### `holon grant`
+
+```
+holon grant <slug> [--json]
+holon grant <slug> [--revoke ITEM]… [--grant ITEM]… [--lower LIMIT=N]… [--keep-running | --pause-when-uncovered]
+```
+
+What a deployment is granted, as its card's grant panel shows it: each item, those revoked
+since, the limits lowered, what its version asks for that the grant doesn't cover, and the last
+changes. Changed without a redeploy, the whole change or none of it: `--revoke` takes an item
+back (written as this prints it: `StateWrite("orders")`), `--grant` gives back one its version
+asks for, `--lower` holds a limit below what it was (raising one takes a deploy, which asks for
+approval). A grant that no longer covers the deployment pauses it until it does again, unless
+`--keep-running`: then the calls it lacks fail. Editors and admins. See [Changing a
+grant](../guides/deploying.md#changing-a-grant).
+
+### `holon grants`
+
+```
+holon grants [--json]
+```
+
+Who holds what: each deployment's granted items and those revoked since, its status, and why it
+can't run, if it can't. Admins.
+
+### `holon policy`
+
+```
+holon policy [--reload] [--json]
+```
+
+The host's policy: what it grants without asking, whether flows may call plain `http` or private
+addresses, and each limit's default and ceiling. `--reload` reads the policy file again and holds
+every deployment to it at once, saying which it no longer covers (those pause). Editors and
+admins reload. See [The host's policy](../guides/deploying.md#the-hosts-policy).
+
+## `holon secret`
+
+```
+holon secret list <slug>
+holon secret history <slug> <name>
+holon secret set <slug> <name> [--from env:HOLON_SECRET_X | --from vault:PATH#FIELD]
+holon secret rollback <slug> <name> --to VERSION [--dry-run]
+holon secret remove <slug> <name>
+holon secret env
+```
+
+A deployment's secrets, as its deploy settings show them: `list`, the ones it reads and the
+version, source and age of each one set; `history`, one secret's kept versions and what was done
+to it, by whom. Never a value. `set` makes a new version: its value piped in (`… | holon secret
+set shop api_key`; typed at a terminal, it is refused, since it would show as typed, and it is
+never an argument, which the shell's history would keep), or read by the server from its
+environment or a vault. `rollback` makes a kept version current again, as a new one; `--dry-run`
+names the two values by their fingerprints. `remove` forgets every version. `env`: the
+`HOLON_SECRET_*` names the server can read. Admins set, roll back and remove.
+
+## Saved flows and activity
+
+### `holon flows`
+
+```
+holon flows [list] [--json]
+holon flows show <name> [--out FILE]
+holon flows save <file> [--name NAME] [--replace]
+holon flows remove <name>
+```
+
+The flows saved on the server, as the editor's flows page lists them: who saved each, when, and
+whether it is deployed (and whether what is deployed is its latest). `show` prints one's text.
+`save` compiles a file and saves it, not deployed, with its text as written, for someone to open
+in the editor; a flow someone else saved under that name is kept, unless `--replace`. `remove`
+deletes a saved flow; a deployment of it stays.
+
+### `holon activity`
+
+```
+holon activity [--last N] [--json]
+```
+
+What was done on the server, newest first, and by whom: saves, deploys, runs, pauses, stops,
+grants, deletes, bindings, sweeps, people and tokens. The newest 50; `--last` up to 500.
+
+## People and sign-in
+
+Admins only, as the admin page's people and sign-in.
+
+### `holon user`
+
+```
+holon user list
+holon user invite <name> --role viewer|editor|admin [--email ADDRESS]
+holon user set <name> [--role ROLE] [--disable | --enable] [--email ADDRESS]
+holon user reset <name>
+holon user remove <name> --yes
+```
+
+`invite` makes an account and prints the link its person opens to choose a password, once: send
+it to them. `set` changes a role, stops someone signing in (`--disable`) or lets them again, or
+sets the email they sign in with through a provider (`""` clears it). `reset` clears a password
+and ends their sessions, with a new link. The server refuses a change that would leave no admin.
+
+### `holon token`
+
+```
+holon token list
+holon token add <label> --role viewer|editor|admin|agent
+holon token revoke <id>
+```
+
+API tokens, for scripts and CI (`HOLON_TOKEN`). `add` prints the new token once, on stdout (what
+it is, on stderr), so `holon token add ci --role editor > ci.token` keeps it without showing it.
+
+### `holon oidc`
+
+```
+holon oidc [show]
+holon oidc set <issuer> <client-id>
+holon oidc off
+```
+
+Signing in through an identity provider: its issuer, and the client id this server is registered
+with there. The server reads the issuer's discovery document before it takes them.
+
 ## Runs
 
 ### `holon export`
@@ -224,7 +441,7 @@ Without a point, lists a deployment's versions, newest first: every deploy is on
 | `--code` | deploy that point's code again, as a new version, checked against the grant the deployment has now |
 | `--state` | put back the state that point left, in a new session; the deployment must be running or paused |
 | `--approve` | approve what the code needs that today's grant doesn't cover |
-| `--dry-run` | say what it would do, and what the runs since did outside the state; change nothing |
+| `--dry-run` | say what it would do: that point's text beside the text deployed now, the state it would put back, and what the runs since did outside the state; change nothing |
 
 At least one of `--code` and `--state`. Exits 0 when it is done (or a dry run answered), 1 when the
 server refused it or it needs approving, 2 for a mistake on the command line. See [Going back to an
@@ -277,12 +494,14 @@ Prints what it swept, what it keeps, and what it spared as new. An in-memory sto
 holon database add NAME PATH|SOURCE [--read-only] [--schema SQL | --schema-file FILE] [--lock run] [--for SLUG]
 holon database list
 holon database remove NAME [--for SLUG]
+holon database tables NAME [--for SLUG]
 ```
 
 Binds a name flows use (`database shop`) to a SQLite file on the server's machine (`PATH`), or
 to a Postgres, MySQL or MongoDB database whose URL the server fetches from `SOURCE`
-(`env:HOLON_SECRET_…`, `vault:<mount>/<path>#<field>`), never storing or showing it. Needs an
-admin; each takes `--server PORT|URL`. See [Databases on the host](../guides/databases.md).
+(`env:HOLON_SECRET_…`, `vault:<mount>/<path>#<field>`), never storing or showing it. `tables`
+lists its tables, read now. Needs an admin; each takes `--server PORT|URL`. See [Databases on the
+host](../guides/databases.md).
 
 | Option | |
 |---|---|

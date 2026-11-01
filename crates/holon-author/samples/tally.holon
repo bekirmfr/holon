@@ -1,6 +1,19 @@
+# Tally a CSV: a js node parsing text.
+#
+# Post a CSV and get a glance at each column: the min, max and mean of a number column, the
+# number of distinct values and the top three of a text column. Parsing text into structure is
+# a js node's work; the flow keeps the last summary in its state and answers it.
+#
+# Try it: deploy it, then
+#   printf 'city,temp\nOslo,4\nRome,19\nOslo,6\n' |
+#     curl -s -X POST --data-binary @- http://127.0.0.1:8119/tally
+# answers rows 3 and two columns (city: text, 2 distinct; temp: number, 4 to 19, mean 9.666...).
+#   curl http://127.0.0.1:8119/tally/last
+# then answers the same again, with when it was made.
 flow tally
 port 8119
 
+# Sums up each column of a CSV: its kind, then min, max and mean, or distinct values and top three.
 holon summarize(csv) -> (rows, columns) js {
   const lines = csv.split(/\r?\n/).filter((line) => line.trim() !== "");
   if (lines.length === 0) throw new Error("the CSV has no header line");
@@ -22,12 +35,14 @@ holon summarize(csv) -> (rows, columns) js {
   return { rows: records.length, columns };
 }
 
+# Summarizes the posted CSV, keeps the summary with when, and answers it; an empty CSV gets a 400.
 route POST /tally (req) {
   summary = summarize(req.body)
   state.last = { rows: summary.rows, columns: summary.columns, at: now }
   respond { rows: summary.rows, columns: summary.columns }, missing: 400
 }
 
+# The last summary, with when it was made.
 route GET /tally/last (req) {
   respond state.last
 }

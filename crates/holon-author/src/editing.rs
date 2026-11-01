@@ -753,10 +753,11 @@ mod tests {
         assert!(runnable_by_hand("flow f\n\nholon h(x) -> y {\n  y = x\n}\n").unwrap_err().contains("nothing to run"));
     }
 
-    /// The position of the `nth` (from 0) occurrence of `needle` in `source`, plus `into` chars.
+    /// The position of the `nth` (from 0) occurrence of `needle` in `source`'s code (a comment
+    /// line isn't searched), plus `into` chars.
     fn at(source: &str, needle: &str, nth: usize, into: u32) -> Pos {
         let mut seen = 0;
-        for (l, line) in source.lines().enumerate() {
+        for (l, line) in source.lines().enumerate().filter(|(_, line)| !line.trim_start().starts_with('#')) {
             let mut from = 0;
             while let Some(c) = line[from..].find(needle) {
                 let col = from + c;
@@ -803,7 +804,8 @@ mod tests {
         assert!(says(SLUGS, "route", 0).contains("Every statement in it uses `req`"), "a keyword");
         assert!(says(SLUGS, "req)", 0).contains(".params"), "the request");
         assert!(hover(SLUGS, at(SLUGS, "req.json", 0, 4)).unwrap().text.contains(".json"), "a part of it");
-        assert_eq!(says(SLUGS, "slugify(req", 0), "```holon\nholon slugify(text) -> slug\n```\nA holon of this flow, defined on line 6.");
+        let defined = at(SLUGS, "holon slugify", 0, 0).line;
+        assert_eq!(says(SLUGS, "slugify(req", 0), format!("```holon\nholon slugify(text) -> slug\n```\nA holon of this flow, defined on line {defined}."));
         assert!(says(SLUGS, "published =", 0).contains("`published`: a `publish` node"), "a binding");
         let flow = says(SLUGS, "slugs", 0);
         assert!(flow.contains("POST /slugs") && flow.contains("it may:") && flow.contains("receive requests"), "the flow: {flow}");

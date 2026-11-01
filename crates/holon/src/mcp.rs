@@ -203,6 +203,23 @@ fn tool_list() -> Value {
             "annotations": { "readOnlyHint": true, "openWorldHint": false }
         },
         {
+            "name": "state",
+            "title": "A deployment's state",
+            "description": "What a deployed flow keeps now: each state value, as the language writes it, and its collections by name. With a collection, its items (key and value), 50 at a time from a key on; with a key too, that one item.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "slug": slug,
+                    "collection": { "type": "string", "description": "a collection's name: its items instead" },
+                    "key": { "type": "string", "description": "with a collection, one item's key" },
+                    "prefix": { "type": "string", "description": "with a collection, only the keys starting with this" },
+                    "after": { "type": "string", "description": "with a collection, the keys after this one (the next page)" }
+                },
+                "required": ["slug"]
+            },
+            "annotations": { "readOnlyHint": true, "openWorldHint": false }
+        },
+        {
             "name": "explain",
             "title": "Explain a run",
             "description": "One recorded run as the program: the flow's text with the value each statement had, where a missing value came from, what it answered, the effects it performed and the calls it made. The latest run unless one is named.",
@@ -271,6 +288,7 @@ pub(crate) fn call_tool(name: &str, args: &Value, connect: &Connect) -> Result<S
         "flows" => flows(&*connect()?, args.get("name").and_then(Value::as_str).filter(|s| !s.trim().is_empty())),
         "runs" => runs(&*connect()?, arg(args, "slug")?, args.get("limit").and_then(Value::as_u64).unwrap_or(10).clamp(1, 200)),
         "explain" => explain(&*connect()?, arg(args, "slug")?, args.get("run").and_then(Value::as_u64)),
+        "state" => state(&*connect()?, arg(args, "slug")?, args),
         "history" => {
             let last = args.get("last").and_then(Value::as_u64).unwrap_or(20).clamp(1, 1000);
             match args.get("cell").and_then(Value::as_str).filter(|c| !c.trim().is_empty()) {
@@ -615,6 +633,32 @@ fn runs(api: &dyn Api, slug: &str, limit: u64) -> Result<String, String> {
     Ok(out.join("\n"))
 }
 
+/// `slug`'s state, as `holon state` prints it; or one of its collections' items.
+fn state(api: &dyn Api, slug: &str, args: &Value) -> Result<String, String> {
+    let text = |name: &str| args.get(name).and_then(Value::as_str).filter(|s| !s.is_empty());
+    let path = format!("/deployments/{}", seg(slug));
+    let Some(name) = text("collection") else {
+        let v = json_of(api, "GET", &format!("{path}/state"), None)?;
+        return Ok(crate::opscmd::state_lines(slug, &v["state"]).join("\n").replace(&format!("holon state {slug} --collection "), "`state` with collection "));
+    };
+    let mut query = format!("{path}/collections/{}?limit=50", seg(name));
+    for (param, given) in [("key", text("key")), ("prefix", text("prefix")), ("after", text("after"))] {
+        if let Some(g) = given {
+            query.push_str(&format!("&{param}={}", seg(g)));
+        }
+    }
+    let v = json_of(api, "GET", &query, None)?;
+    let items = v["items"].as_array().cloned().unwrap_or_default();
+    if items.is_empty() {
+        return Ok(format!("{name} has no such item."));
+    }
+    let mut lines: Vec<String> = items.iter().map(|i| format!("{:?} → {}", i[0].as_str().unwrap_or_default(), agent::show(&i[1]))).collect();
+    if let Some(next) = v["next"].as_str() {
+        lines.push(format!("More: `state` with after {next:?}."));
+    }
+    Ok(lines.join("\n"))
+}
+
 fn explain(api: &dyn Api, slug: &str, run: Option<u64>) -> Result<String, String> {
     let log = format!("/deployments/{}/log", seg(slug));
     let entry = match run {
@@ -763,7 +807,7 @@ fn state_values(change: &Value) -> Vec<String> {
 /// Version `number`'s text beside the text deployed now, as a line diff. Both with the text's
 /// names, or both printed plainly when only one has them (a canvas deploy keeps none), so a name
 /// alone never reads as a change.
-fn code_diff(api: &dyn Api, slug: &str, number: u64) -> Result<String, String> {
+pub(crate) fn code_diff(api: &dyn Api, slug: &str, number: u64) -> Result<String, String> {
     let path = format!("/deployments/{}", seg(slug));
     let versions = json_of(api, "GET", &format!("{path}/versions"), None)?;
     let unit = versions["versions"]
@@ -1043,6 +1087,12 @@ mod tests {
         let ok = tool(&state, "explain", json!({ "slug": "slugs", "run": first_run })).unwrap();
         assert!(ok.contains("⇒ \"ada\"") && ok.contains("answered 200"), "{ok}");
         assert!(ok.contains("performed"), "its writes: {ok}");
+        // What it keeps: its state, and its collection's items.
+        let kept = tool(&state, "state", json!({ "slug": "slugs" })).unwrap();
+        assert!(kept.contains("last_post  \"only-a-title\""), "the latest run's: {kept}");
+        assert!(kept.contains("posts") && kept.contains("`state` with collection posts"), "{kept}");
+        let posts = tool(&state, "state", json!({ "slug": "slugs", "collection": "posts" })).unwrap();
+        assert!(posts.starts_with("\"hello-world\" → { at: ") && posts.contains("author: \"ada\""), "{posts}");
     }
 
     /// A flow's `browsers` line reaches the server as the list its deploy request takes, so a
@@ -1438,7 +1488,7 @@ mod tests {
         assert_eq!(answers[0]["result"]["protocolVersion"], "2025-06-18");
         assert_eq!(answers[0]["result"]["serverInfo"]["name"], "holon");
         let names: Vec<&str> = answers[1]["result"]["tools"].as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap()).collect();
-        assert_eq!(names, ["reference", "check", "save", "deploy", "call", "run", "deployments", "flows", "runs", "explain", "history", "restore"]);
+        assert_eq!(names, ["reference", "check", "save", "deploy", "call", "run", "deployments", "flows", "runs", "state", "explain", "history", "restore"]);
         assert_eq!(answers[2]["result"]["isError"], false);
         assert!(answers[2]["result"]["content"][0]["text"].as_str().unwrap().starts_with("concat("));
         assert_eq!(answers[3]["result"]["isError"], true, "a mistake is a tool's failure, said: {}", answers[3]);

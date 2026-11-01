@@ -133,7 +133,7 @@ static SAMPLES: &[Sample] = &[
         // Without the receipt key it still answers, the receipt "unsigned": revoking it doesn't pause it.
         optional: &[RECEIPT_KEY],
         browsers: None,
-        try_it: r#"curl -H "Authorization: Bearer <api_token>" http://127.0.0.1:8117/me answers a receipt; without it, or after the token is rotated, 401; revoke receipt_key and it answers "unsigned""#,
+        try_it: r#"curl -H "Authorization: Bearer <api_token>" http://127.0.0.1:8109/me answers a receipt; without it, or after the token is rotated, 401; revoke receipt_key and it answers "unsigned""#,
         text: include_str!("../samples/guarded-api.holon"),
     },
     Sample {
@@ -738,13 +738,15 @@ mod tests {
         assert_eq!(limits, Some(serde_json::json!({ "keep_runs": 5, "keep_run_days": 1 })));
     }
 
-    /// Each file is in the canonical form: `holon fmt` would leave it as it is.
+    /// Each file is in the canonical form: `holon fmt` would leave it as it is, its comments and
+    /// all. Each says, in them, what it does and how to try it.
     #[test]
     fn every_sample_is_as_fmt_writes_it() {
         for s in samples() {
-            let lowered = lang::compile(s.text).unwrap_or_else(|e| panic!("{}: {e}", s.name));
-            let printed = lang::print(lowered.name.as_deref(), &lowered.doc, &mut MapResolver::new(), &Names::new(), &lowered.names).unwrap();
-            assert_eq!(printed, s.text, "{}: samples/{}.holon isn't as fmt writes it", s.name, s.name);
+            let file = format!("{}.holon", s.name);
+            let printed = crate::commands::fmt(&file, s.text).unwrap_or_else(|r| panic!("{}: {r:?}", s.name));
+            assert_eq!(printed, s.text, "{}: samples/{file} isn't as fmt writes it", s.name);
+            assert!(s.text.starts_with("# "), "{}: samples/{file} opens with a comment saying what it is", s.name);
         }
     }
 

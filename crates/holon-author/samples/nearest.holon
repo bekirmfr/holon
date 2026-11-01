@@ -1,7 +1,18 @@
+# Nearest word: a js node.
+#
+# Keeps a dictionary of words and answers the closest one to a query, by edit distance. The one
+# dense computation is a js node: JavaScript run as a module with no imports, under a fuel
+# budget. The flow around it stores, routes and answers.
+#
+# Try it: deploy it, then add kitten (and the same way sitting and mitten):
+#   curl -X POST --data-binary kitten http://127.0.0.1:8117/words
+#   curl http://127.0.0.1:8117/nearest/kittne    best "kitten", distance 2
+# Before any word is added, a query answers 404.
 flow nearest
 port 8117
 collection words
 
+# Finds the candidate closest to a word, and how many edits away it is.
 holon closest(word, candidates) -> (best, distance) js {
   const dist = (a, b) => {
     const d = Array.from({ length: a.length + 1 }, (_, i) => [i]);
@@ -16,11 +27,13 @@ holon closest(word, candidates) -> (best, distance) js {
   return found;
 }
 
+# Adds the posted text to the dictionary.
 route POST /words (req) {
   words[req.body] = { added_at: now }
   respond { added: req.body }, status: 201
 }
 
+# Answers the dictionary word closest to the one in the path, and its distance.
 route GET /nearest/:word (req) {
   found = closest(req.params.word, keys(words.list()))
   respond { query: req.params.word, best: found.best, distance: found.distance }

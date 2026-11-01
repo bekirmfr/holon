@@ -179,35 +179,55 @@ pub(crate) fn target(given: Option<&str>) -> Result<Target, String> {
 /// Ask the server this user runs here (or `server`) as its admin, for a command named `who`:
 /// the server, and what it answered; or, said on stderr, the exit code to end with.
 pub(crate) fn admin_call(who: &str, server: Option<&str>, method: &str, path: &str, body: Option<&serde_json::Value>) -> Result<(String, String), i32> {
+    let body = body.map(|b| ("application/json", b.to_string().into_bytes()));
+    let answer = send(who, server, method, path, body)?;
+    if (200..300).contains(&answer.status) {
+        return Ok((answer.server, answer.body));
+    }
+    eprintln!("{who}: {} answered {}: {}", answer.server, answer.status, answer.why());
+    Err(1)
+}
+
+/// What a server answered: its status, whatever it is, and its body.
+pub(crate) struct Answer {
+    pub(crate) server: String,
+    pub(crate) status: u16,
+    pub(crate) body: String,
+}
+
+impl Answer {
+    /// The `{"error": …}` sentence it answered, or its body.
+    pub(crate) fn why(&self) -> String {
+        serde_json::from_str::<serde_json::Value>(&self.body).ok().and_then(|v| v["error"].as_str().map(str::to_string)).unwrap_or_else(|| self.body.trim().to_string())
+    }
+}
+
+/// Send `body` (its content type, its bytes) to the server a command named `who` talks to
+/// ([`target`]), signed in as [`admin_call`] is: the answer, whatever its status; or, said on
+/// stderr, the exit code to end with when there was none.
+pub(crate) fn send(who: &str, server: Option<&str>, method: &str, path: &str, body: Option<(&str, Vec<u8>)>) -> Result<Answer, i32> {
     let target = target(server).map_err(|e| {
         eprintln!("{who}: {e}");
         1
     })?;
-    let server = target.server.as_str();
-    let mut request = ureq::request(method, &format!("{server}{path}")).timeout(Duration::from_secs(30));
+    let server = target.server;
+    let mut request = ureq::request(method, &format!("{server}{path}")).timeout(Duration::from_secs(60));
     if let Some(token) = &target.token {
         request = request.set("Authorization", &format!("Bearer {token}"));
     }
     let answered = match body {
-        Some(body) => request.set("Content-Type", "application/json").send_string(&body.to_string()),
+        Some((content_type, bytes)) => request.set("Content-Type", content_type).send_bytes(&bytes),
         None => request.call(),
     };
-    match answered {
-        Ok(r) => Ok((server.to_string(), r.into_string().unwrap_or_default())),
-        Err(ureq::Error::Status(code, r)) => {
-            let body = r.into_string().unwrap_or_default();
-            let why = serde_json::from_str::<serde_json::Value>(&body)
-                .ok()
-                .and_then(|v| v["error"].as_str().map(str::to_string))
-                .unwrap_or_else(|| body.trim().to_string());
-            eprintln!("{who}: {server} answered {code}: {why}");
-            Err(1)
-        }
+    let (status, response) = match answered {
+        Ok(r) => (r.status(), r),
+        Err(ureq::Error::Status(code, r)) => (code, r),
         Err(e) => {
             eprintln!("{who}: can't reach {server}: {e}");
-            Err(1)
+            return Err(1);
         }
-    }
+    };
+    Ok(Answer { server, status, body: response.into_string().unwrap_or_default() })
 }
 
 /// [`target`], given what it reads: testable without a server.

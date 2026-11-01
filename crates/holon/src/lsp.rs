@@ -267,12 +267,17 @@ mod tests {
         let uri = "file:///slugs.holon";
         let bad = "flow f\nport 8200\n\nroute GET /a (req) {\n  respond { a: \"😀\", b: nope }\n}\n";
         let messy = "flow f\nport 8200\nroute GET /a (req) {\n    respond   204\n}";
+        // Where `needle` is written in the sample's code (0-based line and character), not in its
+        // comments.
+        let at = |needle: &str| SLUGS.lines().enumerate().find(|(_, l)| !l.trim_start().starts_with('#') && l.contains(needle)).map(|(n, l)| (n, l.find(needle).unwrap())).unwrap();
+        let (word, from) = at("lowercase(");
+        let (list, posts) = at("posts.list()");
         let (sent, code) = session(&[
             request(1, "initialize", json!({ "capabilities": {} })),
             notify("initialized", json!({})),
             notify("textDocument/didOpen", json!({ "textDocument": { "uri": uri, "languageId": "holon", "version": 1, "text": SLUGS } })),
-            request(2, "textDocument/hover", json!({ "textDocument": { "uri": uri }, "position": { "line": 6, "character": 22 } })),
-            request(20, "textDocument/completion", json!({ "textDocument": { "uri": uri }, "position": { "line": 23, "character": 16 } })),
+            request(2, "textDocument/hover", json!({ "textDocument": { "uri": uri }, "position": { "line": word, "character": from + 2 } })),
+            request(20, "textDocument/completion", json!({ "textDocument": { "uri": uri }, "position": { "line": list, "character": posts + 6 } })),
             notify("textDocument/didChange", json!({ "textDocument": { "uri": uri, "version": 2 }, "contentChanges": [{ "text": bad }] })),
             request(3, "textDocument/formatting", json!({ "textDocument": { "uri": uri }, "options": { "tabSize": 2, "insertSpaces": true } })),
             notify("textDocument/didChange", json!({ "textDocument": { "uri": uri, "version": 3 }, "contentChanges": [{ "text": messy }] })),
@@ -285,11 +290,11 @@ mod tests {
         assert_eq!(code, 0);
         assert_eq!(sent[0]["result"]["capabilities"]["hoverProvider"], true);
         assert_eq!(sent[1]["params"]["diagnostics"], json!([]), "the sample has no mistakes");
-        // `lowercase` on line 7 (0-based 6), from column 22.
+        // `lowercase`, from inside it: the word's whole range.
         let hover = &sent[2]["result"];
         assert!(hover["contents"]["value"].as_str().unwrap().contains("lowercase("), "{hover}");
-        assert_eq!(hover["range"], json!({ "start": { "line": 6, "character": 20 }, "end": { "line": 6, "character": 29 } }));
-        // After `posts.` on line 24 (0-based 23): the collection's methods, as members.
+        assert_eq!(hover["range"], json!({ "start": { "line": word, "character": from }, "end": { "line": word, "character": from + 9 } }));
+        // After `posts.`: the collection's methods, as members.
         let offered = sent[3]["result"].as_array().unwrap();
         assert_eq!(offered.iter().map(|c| c["label"].as_str().unwrap()).collect::<Vec<_>>(), ["get", "put", "delete", "list"]);
         assert_eq!(offered[0]["kind"], 2);
