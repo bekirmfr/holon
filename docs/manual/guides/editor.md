@@ -187,13 +187,16 @@ Admins manage, from here:
   working at once), disable, or remove;
 - **API tokens**, for scripts, CI and agents on other machines: each with a role, shown once;
 - **folders**: the named folders flows may use ([Files on the host](files.md));
+- **secrets**: the server's own, read by every deployment that reads one and has none of its
+  own, each with where it may go
+  ([The server's own secrets](deploying.md#the-servers-own-secrets));
 - **storage**: sweeping what nothing kept names any more, the content store's states and values
   (it counts first, then asks) and the texts of files runs read and wrote, as `holon store sweep`
   and `holon folder sweep` do;
 - **signing in through an identity provider** (OpenID Connect): its issuer and client id.
 
 Every one of these has a command too: `holon user`, `holon token`, `holon oidc`, `holon folder`,
-`holon database`, `holon store sweep`, `holon grants` and `holon policy`
+`holon database`, `holon secret bind`, `holon store sweep`, `holon grants` and `holon policy`
 ([Command line](../reference/cli.md)).
 
 ## The marketplace

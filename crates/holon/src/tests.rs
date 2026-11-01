@@ -4469,6 +4469,76 @@ route POST /go (req) {{
     assert!(verify::describe(&report, None).contains(&format!("run 0 SENT the secret \"token\" to {other}, where its approval doesn't show it going")));
 }
 
+/// The server's own secret, bound once for every deployment that reads it, with where it may go:
+/// a flow that sends it there deploys and runs with it; one that sends it elsewhere is refused at
+/// deploy, unless it has its own of that name; and a cap narrowed after deploy holds from the next
+/// request. The deployment's list says it reads the server's, and never a value.
+#[test]
+fn the_servers_secret_goes_only_where_an_admin_said_it_may() {
+    let (shown, shown_hits) = counting_server();
+    let (other, other_hits) = counting_server();
+    let state = claims_state("");
+    let bind = serde_json::json!({ "value": "srv_live_shared_77", "to": [shown] });
+    let r = route(&state, &req("POST", "/admin/secrets/api_key", serde_json::to_vec(&bind).unwrap()));
+    let status = r.status_code;
+    assert_eq!(status, 200, "{}", String::from_utf8_lossy(&body_bytes(r)));
+    let flow = |name: &str, port: u16, host: &str| {
+        format!(
+            "flow {name}\nport {port}\nsecret api_key\n\nroute GET /go (req) {{\n  called = http.get(\"{host}\", \"/api\", headers: {{ authorization: \"Bearer {{secret.api_key}}\" }})\n  respond {{ status: called.error ?? called.status, message: called.message ?? \"\" }}\n}}\n"
+        )
+    };
+
+    // Sent where the admin said: it deploys, and the run sends the server's value.
+    let slug = deploy_text_to(&state, &flow("uses-shared", 18191, &shown), &[&shown]);
+    let (status, body, _) = data_call(&state, &slug, "GET", "/go", "");
+    assert_eq!((status, body.as_str()), (200, r#"{"message":"","status":200}"#));
+    assert_eq!(hits_of(&shown_hits, "/api"), 1);
+    let listed = body_json(route(&state, &req("GET", &format!("/deployments/{slug}/secrets"), vec![])));
+    assert_eq!(listed["secrets"][0]["name"], "api_key");
+    assert_eq!(listed["secrets"][0]["server"], true, "{listed}");
+    assert_eq!(listed["secrets"][0]["to"], serde_json::json!([shown]), "{listed}");
+    assert!(!listed.to_string().contains("srv_live"), "never a value: {listed}");
+
+    // Sent elsewhere: refused, in the preview and at deploy.
+    let elsewhere = holon_author::agent::plan(&flow("sends-elsewhere", 18192, &other)).unwrap();
+    for u in &elsewhere.units {
+        route(&state, &req("POST", "/unit", u.clone()));
+    }
+    let requirements = serde_json::json!({ "plain_http": [other], "private_addresses": true });
+    let preview = body_json(route(&state, &req("POST", "/deploy/preview", serde_json::to_vec(&serde_json::json!({ "slug": "sends-elsewhere", "unit": elsewhere.unit, "requirements": requirements })).unwrap())));
+    let refused = preview["refused"].as_str().unwrap_or_else(|| panic!("{preview}"));
+    assert!(refused.contains(&format!("the server's secret \"api_key\" may go only to https://{shown}, and this flow sends it to https://{other}")), "{refused}");
+    let asked: Vec<String> = serde_json::from_value(preview["needs_approval"].clone()).unwrap();
+    let r = deploy_json(&state, "sends-elsewhere", parse_hash(&elsewhere.unit).unwrap(), serde_json::json!({ "acknowledge": asked, "requirements": requirements }));
+    assert_eq!(r.status_code, 400);
+    // With its own api_key, it isn't held to the server's.
+    let own = serde_json::json!({ "value": "own_live_key_88" });
+    assert_eq!(route(&state, &req("POST", "/deployments/sends-elsewhere/secrets/api_key", serde_json::to_vec(&own).unwrap())).status_code, 200);
+    let r = deploy_json(&state, "sends-elsewhere", parse_hash(&elsewhere.unit).unwrap(), serde_json::json!({ "acknowledge": asked, "requirements": requirements }));
+    let status = r.status_code;
+    assert_eq!(status, 200, "{}", String::from_utf8_lossy(&body_bytes(r)));
+    let (_, body, _) = data_call(&state, "sends-elsewhere", "GET", "/go", "");
+    assert_eq!(body, r#"{"message":"","status":200}"#, "its own goes where its approval shows");
+    assert_eq!(hits_of(&other_hits, "/api"), 1);
+
+    // Narrowed after deploy: the next request with the server's isn't sent.
+    let cap = serde_json::json!({ "to": [] });
+    assert_eq!(route(&state, &req("POST", "/admin/secrets/api_key/cap", serde_json::to_vec(&cap).unwrap())).status_code, 200);
+    let (_, body, _) = data_call(&state, &slug, "GET", "/go", "");
+    let answer: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(answer["status"], "blocked_secret", "{body}");
+    assert!(answer["message"].as_str().unwrap().contains(&format!("the server's secret \"api_key\" isn't sent to {shown}: an admin said it may go only to nowhere")), "{body}");
+    assert_eq!(hits_of(&shown_hits, "/api"), 1, "not sent");
+
+    // The admin's list says where it may go.
+    let bound = body_json(route(&state, &req("GET", "/admin/secrets", vec![])));
+    assert_eq!(bound["secrets"][0]["to"], serde_json::json!([]), "{bound}");
+    // Unbound, the deployment reads nothing for it.
+    assert_eq!(route(&state, &req("DELETE", "/admin/secrets/api_key", vec![])).status_code, 204);
+    let listed = body_json(route(&state, &req("GET", &format!("/deployments/{slug}/secrets"), vec![])));
+    assert_eq!(listed["secrets"], serde_json::json!([]), "{listed}");
+}
+
 /// A token a call answers to a request that held a secret (an OAuth exchange) is as good as the
 /// secret until it expires: kept out of the log by its value, with a fingerprint like a secret's,
 /// and out of state, as a secret is. What the caller needs it for still works: the run sends it

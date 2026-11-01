@@ -222,7 +222,7 @@ fn deploy(
     // the previous grant didn't already cover.
     let manifest = Manifest::new(caps.iter(), body.requirements.clone().with_module_limits(root_unit, &resolver));
     let seen = Arc::new(folders::Scoped::new(Arc::clone(folders), &body.slug));
-    if let Some(why) = policy.refuses(&manifest).or_else(|| seen.refuses(&manifest)) {
+    if let Some(why) = policy.refuses(&manifest).or_else(|| seen.refuses(&manifest)).or_else(|| secrets.refuses(&body.slug, &holon_core::sent_secrets(root_unit, &resolver))) {
         return err(400, format!("this host can't grant that: {why}"));
     }
     let (previous, previous_unit, previous_browsers) = previous_of(deployments, &body.slug);
@@ -532,7 +532,8 @@ fn preview_value(
         "refused": policy.refuses(&manifest).or_else(|| {
             let permit = Permit::new(unit_hash, &Grant::for_manifest(&manifest, 0, "preview"), policy);
             durable::refuses_waits(root_unit, &resolver, &permit)
-        }).or_else(|| folders::Scoped::new(Arc::clone(folders), &body.slug).refuses(&manifest)),
+        }).or_else(|| folders::Scoped::new(Arc::clone(folders), &body.slug).refuses(&manifest))
+        .or_else(|| secrets.refuses(&body.slug, &holon_core::sent_secrets(root_unit, &resolver))),
         // Secrets it reads that aren't set yet: it deploys, but those nodes stay empty until set.
         "missing_secrets": manifest
             .capabilities
@@ -560,13 +561,35 @@ pub(crate) fn handle_secrets(
     request: &Request,
     by: Option<&str>,
 ) -> Response {
+    if !is_valid_slug(slug) {
+        return err(400, "slug must be non-empty ASCII alphanumeric, '-', or '_' only");
+    }
+    secrets_of(secrets, deployments, slug, name, method, request, by)
+}
+
+/// The server's own secrets, for an admin (`/admin/secrets…`, auth.rs), as a deployment's are
+/// ([`handle_secrets`]), kept as [`crate::secrets::SERVER`]'s: `GET /admin/secrets` lists them,
+/// with where each may go; `POST /admin/secrets/<name>` sets one (`"to": ["api.stripe.com"]`
+/// beside its value or source says where it may go too); `POST …/<name>/cap` (`{"to": [...]}`,
+/// or `null` for wherever its flows' approvals show) changes only that; `DELETE` removes it.
+pub(crate) fn handle_server_secrets(secrets: &SecretStore, deployments: &Mutex<BTreeMap<String, Deployment>>, name: Option<&str>, method: &str, request: &Request, by: Option<&str>) -> Response {
+    secrets_of(secrets, deployments, crate::secrets::SERVER, name, method, request, by)
+}
+
+fn secrets_of(
+    secrets: &SecretStore,
+    deployments: &Mutex<BTreeMap<String, Deployment>>,
+    slug: &str,
+    name: Option<&str>,
+    method: &str,
+    request: &Request,
+    by: Option<&str>,
+) -> Response {
     // Each change goes on the deployment's timeline: its name, version and source, never a value.
     let note = |name: &str, what: String| {
         crate::events::note(deployments, slug, "secret", what, by, crate::events::Detail { name: Some(name.to_string()), ..Default::default() })
     };
-    if !is_valid_slug(slug) {
-        return err(400, "slug must be non-empty ASCII alphanumeric, '-', or '_' only");
-    }
+    let server = slug == crate::secrets::SERVER;
     // `<name>/rollback`: a secret name never holds a '/'.
     let (name, action) = match name.map(|n| n.split_once('/')) {
         Some(Some((name, action))) => (Some(name), Some(action)),
@@ -613,23 +636,49 @@ pub(crate) fn handle_secrets(
             struct SetSecret {
                 value: Option<String>,
                 from: Option<String>,
+                /// The server's: where it may go.
+                to: Option<BTreeSet<String>>,
             }
             let mut source = "a value";
-            let set = match serde_json::from_slice(&bytes) {
-                Ok(SetSecret { value: Some(value), from: None }) => secrets.set(slug, name, &value, by),
-                Ok(SetSecret { value: None, from: Some(from) }) if from == "local" => Err("a local secret is set with a value".to_string()),
-                Ok(SetSecret { value: None, from: Some(from) }) => {
+            let parsed: Result<SetSecret, _> = serde_json::from_slice(&bytes);
+            let to = match parsed.as_ref().map(|p| p.to.clone()) {
+                Ok(Some(_)) if !server => return err(400, "where a secret may go is said of the server's (POST /admin/secrets/<name>)"),
+                Ok(to) => to,
+                Err(_) => None,
+            };
+            let set = match parsed {
+                Ok(SetSecret { value: Some(value), from: None, .. }) => secrets.set(slug, name, &value, by),
+                Ok(SetSecret { value: None, from: Some(from), .. }) if from == "local" => Err("a local secret is set with a value".to_string()),
+                Ok(SetSecret { value: None, from: Some(from), .. }) => {
                     source = if from.starts_with("vault:") { "vault" } else { "the environment" };
                     secrets.set_from(slug, name, &from, by)
                 }
                 Ok(_) => Err("expected {\"value\": \"...\"} or {\"from\": \"env:… | vault:…\"}".to_string()),
                 Err(e) => Err(format!("expected {{\"value\": \"...\"}} or {{\"from\": \"...\"}}: {e}")),
             };
+            let set = set.and_then(|version| match to {
+                Some(to) => secrets.set_cap(name, Some(to), by).map(|()| version),
+                None => Ok(version),
+            });
             match set {
                 Ok(version) => {
                     note(name, format!("set the secret {name}, version {version}, from {source}"));
                     Response::json(&serde_json::json!({ "version": version }))
                 }
+                Err(e) => err(400, e),
+            }
+        }
+        ("POST", Some(name), Some("cap")) if server => {
+            let bytes = match read_body(request) {
+                Ok(b) => b,
+                Err(r) => return r,
+            };
+            #[derive(Deserialize)]
+            struct Cap {
+                to: Option<BTreeSet<String>>,
+            }
+            match serde_json::from_slice::<Cap>(&bytes).map_err(|e| format!("expected {{\"to\": [\"api.stripe.com\", …]}} or {{\"to\": null}}: {e}")).and_then(|c| secrets.set_cap(name, c.to, by)) {
+                Ok(()) => Response::json(&serde_json::json!({ "name": name, "to": secrets.list(slug).into_iter().find(|s| s.name == name).and_then(|s| s.to) })),
                 Err(e) => err(400, e),
             }
         }

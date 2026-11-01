@@ -119,6 +119,22 @@ an export (see [Checking runs](checking-runs.md)).
 Until a secret is set, the nodes that read it have no value, and what depends on them doesn't
 run.
 
+### The server's own secrets
+
+One key for several flows is bound once, for the server, as a folder or a database is: under
+**admin → resources → secrets**, or `holon secret bind stripe_key`. Every deployment that reads a
+secret of that name and has none of its own reads the server's; its ⚙ says "the server's", and
+setting one there overrides it for that deployment.
+
+An admin can say where the server's may go: hosts and databases (`holon secret bind stripe_key
+--to api.stripe.com`, or **where…** on its row). A deploy whose flow sends it anywhere else is
+refused before anything is approved: "the server's secret "stripe_key" may go only to
+https://api.stripe.com, and this flow sends it to https://hooks.slack.com". A deployment with its
+own isn't held to it, since the key isn't the server's. Narrowed later (`holon secret cap`), it
+holds from the next request: a run's request with the server's value to a host outside it isn't
+sent, and answers `blocked_secret`. Setting, capping and removing one is audited, never its value.
+The **shared-key** sample reads one.
+
 ### Secrets from a `.env` file
 
 A `.env` file keeps your keys in a file on the server's machine, outside Holon. You can add or

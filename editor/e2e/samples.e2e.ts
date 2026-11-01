@@ -217,6 +217,26 @@ test("client-credentials' approval says where the secret goes and where the toke
   await dialog.getByRole("button", { name: "Cancel" }).click();
 });
 
+test("shared-key reads the server's secret, which may go only where an admin said: sent elsewhere, the deploy is refused", async ({ page }) => {
+  await openSample(page, "One key for every flow, capped");
+  await openDeployPanel(page);
+  const settings = page.getByRole("complementary", { name: "Deployment settings" });
+  await expect(settings).toContainText("the server's · may go only to https://httpbin.dev");
+  // The text changed to send it elsewhere: the deploy is refused, saying why.
+  await page.locator(".hl-canvas").getByRole("button", { name: "text off" }).dispatchEvent("click");
+  const text = readFileSync(new URL("../../crates/holon-author/samples/shared-key.holon", import.meta.url), "utf8");
+  await page.getByRole("region", { name: "Text" }).locator(".cm-content").click();
+  await page.keyboard.press("Control+A");
+  await page.keyboard.insertText(text.replace('"httpbin.dev", "/bearer"', '"postman-echo.com", "/get"'));
+  await expect(page.locator(".hl-node__secret").filter({ hasText: "postman-echo.com" })).toHaveCount(1);
+  await page.locator(".hl-canvas").getByRole("button", { name: /^(deploy|update)/ }).dispatchEvent("click");
+  await expect(page.getByText(`the server's secret "ops_api_key" may go only to https://httpbin.dev, and this flow sends it to https://postman-echo.com`)).toBeVisible();
+  // The admin's list says where it may go.
+  await page.getByRole("button", { name: "admin", exact: true }).click();
+  await page.getByRole("tablist", { name: "admin sections" }).getByRole("tab", { name: "resources" }).click();
+  await expect(page.getByLabel("server secret ops_api_key")).toContainText("may go only to https://httpbin.dev");
+});
+
 test("a sample deployed as it is keeps its text and the names it binds", async ({ page, request, adminToken }) => {
   // The port moved in the text (the text's wins while it is open), so the text still stands for
   // the canvas: a deploy then carries `source` and `bindings` (useDeployFlow.ts), and a run explains

@@ -21,7 +21,7 @@ Everything is one program, `holon`. `holon help` lists the commands; `serve`, `e
 | [`holon grant`](#holon-grant) | what a deployment is granted; revoke, grant back, lower |
 | [`holon grants`](#holon-grants) | who holds what |
 | [`holon policy`](#holon-policy) | the host's policy, and reading it again |
-| [`holon secret`](#holon-secret) | a deployment's secrets: set, roll back, remove, their history |
+| [`holon secret`](#holon-secret) | a deployment's secrets: set, roll back, remove, their history; the server's own, and where each may go |
 | [`holon flows`](#holon-flows) | the flows saved on the server |
 | [`holon activity`](#holon-activity) | what was done on the server, by whom |
 | [`holon user`, `token`, `oidc`](#people-and-sign-in) | people, API tokens, signing in through a provider |
@@ -304,6 +304,10 @@ holon secret history <slug> <name>
 holon secret set <slug> <name> [--from env:HOLON_SECRET_X | --from vault:PATH#FIELD]
 holon secret rollback <slug> <name> --to VERSION [--dry-run]
 holon secret remove <slug> <name>
+holon secret bind <name> [--from SOURCE] [--to HOST,…]
+holon secret cap <name> --to HOST,… | --anywhere
+holon secret bound
+holon secret unbind <name>
 holon secret env
 ```
 
@@ -315,6 +319,15 @@ never an argument, which the shell's history would keep), or read by the server 
 environment or a vault. `rollback` makes a kept version current again, as a new one; `--dry-run`
 names the two values by their fingerprints. `remove` forgets every version. `env`: the
 `HOLON_SECRET_*` names the server can read. Admins set, roll back and remove.
+
+`bind` sets the server's own secret, read by every deployment that reads a secret of that name
+and has none of its own (one set for a deployment overrides it), its value piped in or `--from`,
+as `set`. `--to` says where it may go: hosts (`api.stripe.com`, with `:port` if not 443) and
+databases (`db:shop`). A deploy whose flow sends it elsewhere is refused, and a request a run
+makes with it to another host isn't sent (`blocked_secret`); a deployment with its own isn't
+held to it. `cap` changes only where it may go (`--anywhere`: wherever its flows' approvals
+show), from the next request. `bound` lists the server's secrets and where each may go;
+`unbind` removes one. See [Deploying](../guides/deploying.md#the-servers-own-secrets).
 
 ## Saved flows and activity
 

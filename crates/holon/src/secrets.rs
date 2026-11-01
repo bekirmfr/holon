@@ -24,7 +24,7 @@
 //!   first (hashed, encoded, sliced) can't be recognised. Values shorter than
 //!   [`MIN_SECRET_LEN`] are refused, since they would match ordinary text.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -54,6 +54,9 @@ pub(crate) struct Resolved {
     pub(crate) shown: BTreeMap<String, String>,
     /// name → why its current version has no value, or why the value it has may be stale.
     pub(crate) problems: BTreeMap<String, String>,
+    /// The names whose current value is the server's ([`SERVER`]: the deployment has none of its
+    /// own), each with where the server's may go, when an admin said (`holon secret bind --to`).
+    pub(crate) server: BTreeMap<String, Option<BTreeSet<String>>>,
     /// name → the version its current value is of, and when it was last read from its source.
     fetched: BTreeMap<String, (u32, std::time::Instant)>,
     /// What seals what the deployment keeps on disk that may hold these values (a waiting run's
@@ -95,7 +98,16 @@ struct SecretsFile {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     key_id: Option<String>,
     deployments: BTreeMap<String, BTreeMap<String, Vec<Stored>>>,
+    /// Where each of the server's secrets may go, as an admin bound it: hosts (`api.stripe.com`)
+    /// and databases (`db:shop`). One not listed may go wherever its flows' approvals show.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    caps: BTreeMap<String, BTreeSet<String>>,
 }
+
+/// Where the server's own secrets are kept in the store, beside each deployment's: one bound for
+/// every deployment that reads it (`holon secret bind stripe_key`), as a folder or a database is,
+/// a deployment's own of that name overriding it. Not a slug, so no deployment is called it.
+pub(crate) const SERVER: &str = "*";
 
 const FORMAT: u32 = 3;
 
@@ -116,6 +128,12 @@ pub(crate) struct SecretInfo {
     /// Why its current version has no value, if it hasn't.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) problem: Option<String>,
+    /// Whether it is the server's ([`SERVER`]), read by a deployment that has none of its own.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub(crate) server: bool,
+    /// Where the server's may go, when an admin said: hosts and databases (`db:shop`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) to: Option<BTreeSet<String>>,
 }
 
 /// One version of a secret, as its history lists it.
@@ -224,6 +242,17 @@ pub(crate) struct SecretStore {
     sources: Sources,
     audit: Audit,
     slugs: Mutex<BTreeMap<String, Slug>>,
+    /// Where each of the server's secrets may go ([`SecretsFile::caps`]). Locked after `slugs`.
+    caps: Mutex<BTreeMap<String, BTreeSet<String>>>,
+}
+
+/// Whether `d` is where a secret may be said to go: a host, with a port if it isn't 443
+/// (`api.stripe.com`, `localhost:8443`), or a database, `db:` and its name (`db:shop`).
+pub(crate) fn is_destination(d: &str) -> bool {
+    match d.strip_prefix("db:") {
+        Some(database) => is_valid_name(database),
+        None => !d.is_empty() && d.len() <= 253 && d.bytes().all(|b| b.is_ascii_alphanumeric() || b"-.:[]".contains(&b)),
+    }
 }
 
 /// Whether `name` is a secret name: letters, digits, `-` and `_`, 1 to 64 (as core's `secret`).
@@ -241,6 +270,7 @@ impl SecretStore {
             sources: Sources::none(),
             audit: Audit { path: None, kept: Mutex::new(Vec::new()) },
             slugs: Mutex::new(BTreeMap::new()),
+            caps: Mutex::new(BTreeMap::new()),
         }
     }
 
@@ -284,7 +314,7 @@ impl SecretStore {
                 Some(k) => k,
                 None => key.create()?,
             };
-            return Ok(SecretStore { path: path.into(), key_id: crate::sealing::key_id(path), sealer: Arc::new(Sealer::new(&master)), sources, audit: audit(), slugs: Mutex::new(BTreeMap::new()) });
+            return Ok(SecretStore { path: path.into(), key_id: crate::sealing::key_id(path), sealer: Arc::new(Sealer::new(&master)), sources, audit: audit(), slugs: Mutex::new(BTreeMap::new()), caps: Mutex::new(BTreeMap::new()) });
         };
         if parsed.get("format").is_none() {
             // Plain values, from before sealing: seal them under a key (kept from now on).
@@ -294,7 +324,7 @@ impl SecretStore {
                 Some(k) => k,
                 None => key.create()?,
             };
-            let store = SecretStore { path: path.into(), key_id: crate::sealing::key_id(path), sealer: Arc::new(Sealer::new(&master)), sources, audit: audit(), slugs: Mutex::new(BTreeMap::new()) };
+            let store = SecretStore { path: path.into(), key_id: crate::sealing::key_id(path), sealer: Arc::new(Sealer::new(&master)), sources, audit: audit(), slugs: Mutex::new(BTreeMap::new()), caps: Mutex::new(BTreeMap::new()) };
             let count: usize = plain.values().map(|names| names.len()).sum();
             for (slug, names) in plain {
                 for (name, value) in names {
@@ -303,9 +333,7 @@ impl SecretStore {
                     store.event(&slug, &name, "sealed", Some(version), Some("local"), None, None);
                 }
             }
-            for (slug, entry) in store.slugs.lock().unwrap().iter() {
-                store.resolve(slug, entry);
-            }
+            store.resolve_all(&store.slugs.lock().unwrap());
             store.persist()?;
             eprintln!("holon: sealed {count} secret(s) in {path:?} under {key}");
             return Ok(store);
@@ -331,14 +359,13 @@ impl SecretStore {
         if has_secrets && sealer.check() != file.key_check {
             return Err(format!("{key} holds a different key from the one that sealed {path:?}"));
         }
-        let store = SecretStore { path: path.into(), key_id, sealer: Arc::new(sealer), sources, audit: audit(), slugs: Mutex::new(BTreeMap::new()) };
+        let store = SecretStore { path: path.into(), key_id, sealer: Arc::new(sealer), sources, audit: audit(), slugs: Mutex::new(BTreeMap::new()), caps: Mutex::new(file.caps) };
         {
             let mut slugs = store.slugs.lock().unwrap();
             for (slug, secrets) in file.deployments {
-                let entry = slugs.entry(slug.clone()).or_default();
-                entry.secrets = secrets;
-                store.resolve(&slug, entry);
+                slugs.entry(slug).or_default().secrets = secrets;
             }
+            store.resolve_all(&slugs);
         }
         if upgrade {
             store.persist()?;
@@ -348,7 +375,15 @@ impl SecretStore {
 
     /// `slug`'s vault, created empty if it has none: a deployment holds this, and its runs read it.
     pub(crate) fn vault(&self, slug: &str) -> Vault {
-        let vault = Arc::clone(&self.slugs.lock().unwrap().entry(slug.to_string()).or_default().vault);
+        let vault = {
+            let mut slugs = self.slugs.lock().unwrap();
+            // A deployment new here reads the server's secrets until it has its own.
+            if !slugs.contains_key(slug) {
+                slugs.insert(slug.to_string(), Slug::default());
+                self.resolve_after(&slugs, slug);
+            }
+            Arc::clone(&slugs[slug].vault)
+        };
         vault.lock().unwrap().prints.get_or_insert_with(|| Arc::clone(&self.sealer));
         if self.path != ":memory:" {
             vault.lock().unwrap().sealer.get_or_insert_with(|| Arc::clone(&self.sealer));
@@ -356,29 +391,93 @@ impl SecretStore {
         vault
     }
 
-    /// The names set for `slug`, never their values.
+    /// The names set for `slug`, its own and the server's it reads, never their values.
     pub(crate) fn names(&self, slug: &str) -> Vec<String> {
-        self.slugs.lock().unwrap().get(slug).map(|s| s.secrets.keys().cloned().collect()).unwrap_or_default()
+        self.list(slug).into_iter().map(|s| s.name).collect()
     }
 
-    /// What there is to know about `slug`'s secrets, short of their values.
+    /// What there is to know about `slug`'s secrets, short of their values: its own, and the
+    /// server's it reads for want of its own (for [`SERVER`], the server's, with where each may go).
     pub(crate) fn list(&self, slug: &str) -> Vec<SecretInfo> {
         let slugs = self.slugs.lock().unwrap();
-        let Some(s) = slugs.get(slug) else { return Vec::new() };
-        let problems = s.vault.lock().unwrap().problems.clone();
-        s.secrets
+        let caps = self.caps.lock().unwrap();
+        let empty = Slug::default();
+        let own = slugs.get(slug).unwrap_or(&empty);
+        let server = slugs.get(SERVER).filter(|_| slug != SERVER).unwrap_or(&empty);
+        let problems = own.vault.lock().unwrap().problems.clone();
+        let server_problems = server.vault.lock().unwrap().problems.clone();
+        let mut listed: Vec<SecretInfo> = own
+            .secrets
             .iter()
-            .filter_map(|(name, versions)| {
+            .map(|(name, versions)| (name, versions, false))
+            .chain(server.secrets.iter().filter(|(name, _)| !own.secrets.contains_key(*name)).map(|(name, versions)| (name, versions, true)))
+            .filter_map(|(name, versions, theirs)| {
                 let v = versions.last()?;
+                let shared = theirs || slug == SERVER;
                 Some(SecretInfo {
                     name: name.clone(),
                     version: v.version,
                     source: v.source.clone(),
                     set_at: v.set_at,
-                    problem: problems.get(name).cloned(),
+                    problem: if theirs { &server_problems } else { &problems }.get(name).cloned(),
+                    server: theirs,
+                    to: caps.get(name).filter(|_| shared).cloned(),
                 })
             })
-            .collect()
+            .collect();
+        listed.sort_by(|a, b| a.name.cmp(&b.name));
+        listed
+    }
+
+    /// Say where the server's secret `name` may go (hosts, `db:` databases), or, with `None`,
+    /// that it may go wherever its flows' approvals show. A deploy that sends it elsewhere is
+    /// refused ([`SecretStore::refuses`]), and so is a request a run makes with its value.
+    pub(crate) fn set_cap(&self, name: &str, to: Option<BTreeSet<String>>, by: Option<&str>) -> Result<(), String> {
+        let slugs = self.slugs.lock().unwrap();
+        if !slugs.get(SERVER).is_some_and(|s| s.secrets.contains_key(name)) {
+            return Err(format!("the server has no secret {name:?}: bind it first"));
+        }
+        if let Some(bad) = to.iter().flatten().find(|d| !is_destination(d)) {
+            return Err(format!("{bad:?} isn't where a secret goes: a host (api.stripe.com, with :port if not 443) or a database (db:shop)"));
+        }
+        let detail = match &to {
+            Some(to) if to.is_empty() => "it may go nowhere".to_string(),
+            Some(to) => format!("it may go only to {}", to.iter().map(|d| holon_author::describe::describe_destination(d)).collect::<Vec<_>>().join(", ")),
+            None => "it may go wherever its flows' approvals show".to_string(),
+        };
+        match to {
+            Some(to) => self.caps.lock().unwrap().insert(name.to_string(), to),
+            None => self.caps.lock().unwrap().remove(name),
+        };
+        self.resolve_after(&slugs, SERVER);
+        drop(slugs);
+        self.persist()?;
+        self.event(SERVER, name, "capped", None, None, Some(detail), by);
+        Ok(())
+    }
+
+    /// Why deploying a flow to `slug` that sends its secrets where `sent` says (core's
+    /// `sent_secrets`) can't be granted, if it can't: it would send a secret it reads from the
+    /// server (having none of its own) somewhere the admin didn't say the server's may go.
+    pub(crate) fn refuses(&self, slug: &str, sent: &BTreeMap<String, BTreeSet<String>>) -> Option<String> {
+        let slugs = self.slugs.lock().unwrap();
+        let caps = self.caps.lock().unwrap();
+        for (name, to) in sent {
+            if slugs.get(slug).is_some_and(|s| s.secrets.contains_key(name)) || !slugs.get(SERVER).is_some_and(|s| s.secrets.contains_key(name)) {
+                continue;
+            }
+            let Some(cap) = caps.get(name) else { continue };
+            let outside: BTreeSet<String> = to.iter().filter(|d| !d.starts_with(holon_core::ANSWER) && !cap.contains(*d)).cloned().collect();
+            if !outside.is_empty() {
+                let (may, sends) = (holon_author::describe::describe_sent_to(cap).0, holon_author::describe::describe_sent_to(&outside).0);
+                return Some(format!(
+                    "the server's secret {name:?} may go only to {}, and this flow sends it to {} (set {slug:?}'s own {name}, or ask an admin to let the server's go there)",
+                    may.unwrap_or_else(|| "nowhere".into()),
+                    sends.unwrap_or_default()
+                ));
+            }
+        }
+        None
     }
 
     /// Set `slug`'s secret `name` to `value`, as a new version; that version's number.
@@ -479,11 +578,28 @@ impl SecretStore {
             eprintln!("holon: {e}");
         }
         let slugs = self.slugs.lock().unwrap();
+        let remote = |entry: &Slug| entry.secrets.values().flatten().any(|v| v.source != "local");
+        let server = slugs.get(SERVER);
+        let server_remote = server.is_some_and(remote);
         for (slug, entry) in slugs.iter() {
-            if entry.secrets.values().flatten().any(|v| v.source != "local") {
-                self.resolve(slug, entry);
+            if remote(entry) || server_remote {
+                self.resolve(slug, entry, server.filter(|_| slug != SERVER));
             }
         }
+    }
+
+    /// Recompute the vaults a change to `slug`'s secrets reaches: its own, and for the server's
+    /// ([`SERVER`]), every deployment's too.
+    fn resolve_after(&self, slugs: &BTreeMap<String, Slug>, slug: &str) {
+        let server = slugs.get(SERVER);
+        for (s, entry) in slugs.iter().filter(|(s, _)| slug == SERVER || s.as_str() == slug) {
+            self.resolve(s, entry, server.filter(|_| s != SERVER));
+        }
+    }
+
+    /// Recompute every vault.
+    fn resolve_all(&self, slugs: &BTreeMap<String, Slug>) {
+        self.resolve_after(slugs, SERVER);
     }
 
     /// Add a version of `name` from `source` (`value`: a local one's, to seal), keeping the last
@@ -508,7 +624,7 @@ impl SecretStore {
             versions.drain(..versions.len() - MAX_VERSIONS);
         }
         if resolve {
-            self.resolve(slug, entry);
+            self.resolve_after(&slugs, slug);
         }
         Ok(version)
     }
@@ -517,9 +633,11 @@ impl SecretStore {
     pub(crate) fn remove(&self, slug: &str, name: &str, by: Option<&str>) -> Result<bool, String> {
         let removed = {
             let mut slugs = self.slugs.lock().unwrap();
-            let entry = slugs.entry(slug.to_string()).or_default();
-            let removed = entry.secrets.remove(name).is_some();
-            self.resolve(slug, entry);
+            let removed = slugs.entry(slug.to_string()).or_default().secrets.remove(name).is_some();
+            if slug == SERVER {
+                self.caps.lock().unwrap().remove(name);
+            }
+            self.resolve_after(&slugs, slug);
             removed
         };
         if removed {
@@ -553,13 +671,19 @@ impl SecretStore {
 
     /// Recompute `slug`'s vault from its versions, in place: the deployments holding it see it.
     /// A value from a remote source that can't be read now is kept, for [`STALE_AFTER`] at most.
-    fn resolve(&self, slug: &str, entry: &Slug) {
+    /// `server`: the server's secrets ([`SERVER`]), read where the deployment has none of its own.
+    fn resolve(&self, slug: &str, entry: &Slug, server: Option<&Slug>) {
         let mut resolved = Resolved { prints: Some(Arc::clone(&self.sealer)), ..Resolved::default() };
         let mut before = std::mem::take(&mut *entry.vault.lock().unwrap());
         let now = std::time::Instant::now();
-        for (name, versions) in &entry.secrets {
+        let caps = self.caps.lock().unwrap();
+        let theirs = server.into_iter().flat_map(|s| &s.secrets).filter(|(name, _)| !entry.secrets.contains_key(*name)).map(|(name, versions)| (SERVER, name, versions));
+        for (owner, name, versions) in entry.secrets.iter().map(|(name, versions)| (slug, name, versions)).chain(theirs) {
             let Some((current, older)) = versions.split_last() else { continue };
-            match self.value_of(slug, name, current) {
+            if owner == SERVER && slug != SERVER {
+                resolved.server.insert(name.clone(), caps.get(name).cloned());
+            }
+            match self.value_of(owner, name, current) {
                 Ok(value) if value.chars().count() >= MIN_SECRET_LEN => {
                     resolved.shown.insert(name.clone(), self.shown(current.version, &value));
                     resolved.current.insert(name.clone(), value);
@@ -583,16 +707,18 @@ impl SecretStore {
             }
             // Older versions are read again only from here or the environment, never fetched.
             for v in older.iter().filter(|v| !Reference::parse(&v.source).is_ok_and(|r| r.is_remote())) {
-                if let Ok(value) = self.value_of(slug, name, v)
+                if let Ok(value) = self.value_of(owner, name, v)
                     && value.chars().count() >= MIN_SECRET_LEN
                 {
                     resolved.retired.push((name.clone(), self.shown(v.version, &value), value));
                 }
             }
         }
-        // A source that stops or starts reading is audited once, not at every refresh.
+        drop(caps);
+        // A source that stops or starts reading is audited once, not at every refresh (the
+        // server's, once, where it is kept).
         for (name, problem) in &resolved.problems {
-            if !before.problems.contains_key(name) {
+            if !before.problems.contains_key(name) && entry.secrets.contains_key(name) {
                 let source = entry.secrets.get(name).and_then(|v| v.last()).map(|v| v.source.as_str());
                 self.event(slug, name, "unreadable", None, source, Some(problem.clone()), None);
             }
@@ -625,6 +751,7 @@ impl SecretStore {
                 .filter(|(_, s)| !s.secrets.is_empty())
                 .map(|(slug, s)| (slug.clone(), s.secrets.clone()))
                 .collect(),
+            caps: self.caps.lock().unwrap().clone(),
         };
         let bytes = serde_json::to_vec_pretty(&file).map_err(|e| e.to_string())?;
         write_private(Path::new(&self.path), &bytes).map_err(|e| format!("could not write {:?}: {e}", self.path))
@@ -1023,6 +1150,41 @@ mod tests {
         assert!(SecretStore::open(&path, &key, Sources::none()).unwrap().names("api").is_empty());
         std::fs::write(&path, "{not json").unwrap();
         assert!(SecretStore::open(&path, &key, Sources::none()).is_err());
+    }
+
+    /// The server's secret is read by a deployment with none of its own, overridden by one it
+    /// has, kept sealed with where it may go, and seen by a running deployment as it changes.
+    #[test]
+    fn the_servers_secret_is_read_where_a_deployment_has_none_and_keeps_its_cap() {
+        let (path, key) = temp("server");
+        let store = SecretStore::open(&path, &key, Sources::none()).unwrap();
+        let shop = store.vault("shop");
+        store.set(SERVER, "stripe_key", "sk_live_server_1", None).unwrap();
+        store.set_cap("stripe_key", Some(BTreeSet::from(["api.stripe.com".to_string()])), Some("ada")).unwrap();
+        assert!(store.set_cap("nope", None, None).unwrap_err().contains("bind it first"));
+        assert!(store.set_cap("stripe_key", Some(BTreeSet::from(["https://x".to_string()])), None).is_err(), "a host, not a URL");
+        assert_eq!(*shop.lock().unwrap().current["stripe_key"], "sk_live_server_1", "a running deployment sees it");
+        assert_eq!(shop.lock().unwrap().server["stripe_key"], Some(BTreeSet::from(["api.stripe.com".to_string()])));
+        assert!(store.list("shop")[0].server);
+        // Its own overrides it, and isn't held to the cap.
+        store.set("billing", "stripe_key", "sk_live_billing_2", None).unwrap();
+        let billing = store.vault("billing");
+        assert_eq!(*billing.lock().unwrap().current["stripe_key"], "sk_live_billing_2");
+        assert!(billing.lock().unwrap().server.is_empty());
+        let sent = BTreeMap::from([("stripe_key".to_string(), BTreeSet::from(["hooks.slack.com".to_string()]))]);
+        assert!(store.refuses("shop", &sent).unwrap().contains("may go only to https://api.stripe.com, and this flow sends it to https://hooks.slack.com"));
+        assert_eq!(store.refuses("billing", &sent), None, "its own");
+        let on_disk = std::fs::read_to_string(&path).unwrap();
+        assert!(!on_disk.contains("sk_live"), "sealed on disk: {on_disk}");
+        // After a restart: the same, a deployment new to it reads it.
+        let again = SecretStore::open(&path, &key, Sources::none()).unwrap();
+        assert_eq!(*again.vault("new").lock().unwrap().current["stripe_key"], "sk_live_server_1");
+        assert_eq!(again.list(SERVER)[0].to, Some(BTreeSet::from(["api.stripe.com".to_string()])));
+        assert_eq!(again.history(SERVER, "stripe_key").unwrap().1.iter().map(|e| e.action.as_str()).collect::<Vec<_>>(), ["set", "capped"]);
+        // Removed, so is its cap, and the deployments read nothing for it.
+        assert!(again.remove(SERVER, "stripe_key", None).unwrap());
+        assert!(again.vault("new").lock().unwrap().current.is_empty());
+        assert!(SecretStore::open(&path, &key, Sources::none()).unwrap().list(SERVER).is_empty());
     }
 
     #[test]

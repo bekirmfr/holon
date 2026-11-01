@@ -401,7 +401,11 @@ only the editor.
   the hosts are, and the graph fixes the pairs before a run. A request holding a secret's value
   bound for a host its secret isn't shown going to (a value the graph can't follow: echoed back by
   a call, or come in from outside) isn't sent (`blocked_secret`, `folders::SecretSends`), and
-  `holon verify` checks every request that carried one against the unit. A credential a call answers with to a request that held a secret (an
+  `holon verify` checks every request that carried one against the unit. The server's own
+  secrets (`secrets::SERVER`, `holon secret bind`) are read by a deployment with none of its own,
+  and may carry an admin's cap on where they go: a deploy that sends one elsewhere is refused
+  (`SecretStore::refuses`), and so is a run's request with its value (`SecretSends`). A
+  credential a call answers with to a request that held a secret (an
   OAuth exchange's `access_token`, `refresh_token`, `id_token`, …: `ANSWER_FIELDS` in
   `secrets.rs`) is redacted by its value as `‹token:answer access_token #a1b2c3d4›` and refused
   the writes a secret is, rather than treating every answer to such a call as computed from the
