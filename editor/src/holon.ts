@@ -195,6 +195,7 @@ export type WCapability =
   | { DbWrite: string }
   | { ChannelSend: string }
   | { ChannelRead: string }
+  | { SecretAnswer: string }
   | "Spawn";
 
 /** The coarse effect bucket a unit belongs to. Mirrors `core::Kind` via the bridge's `WKind` —

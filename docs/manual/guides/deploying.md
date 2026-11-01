@@ -90,9 +90,12 @@ fingerprint of it (keyed by the server's master key, so a guess can't be checked
 That tells which value a run had (the key you set an hour ago or the one before, the same token in
 two runs) without the log holding it. A token an API answers a request that held a secret with
 (an OAuth exchange's `access_token`) is kept out of the log the same way, and a write of it is
-refused too. A state write that contains a secret is refused. What the
-flow answers its own caller is not redacted: if a flow puts a secret in its response, the caller
-gets it, so don't.
+refused too. A state write that contains a secret is refused. A route whose answer carries a
+secret, as it is or computed from it (`respond secret.token`, `respond base64(secret.token)`),
+asks for a permission of its own, `SecretAnswer("token")`: "answer its callers with the secret
+"token"", which a person approves at deploy, apart from reading it. A hash or HMAC of a secret
+isn't one. A deployment without that grant answers such a request 500, and its log says why; so
+does one whose answer holds a secret's value it didn't compute (a service echoing a header back).
 
 Until a secret is set, the nodes that read it have no value, and what depends on them doesn't
 run.

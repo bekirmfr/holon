@@ -129,6 +129,28 @@ for (let first = 0; first < SAMPLE_TITLES.length; first += SAMPLES_PER_TEST) {
   });
 }
 
+test("browser-key's approval asks to answer with its secret, and once approved its route answers the key", async ({ page, request, adminToken }) => {
+  await openSample(page, "Hand a browser key to a page");
+  await openDeployPanel(page);
+  const settings = page.getByRole("complementary", { name: "Deployment settings" });
+  const portField = settings.getByRole("textbox").first();
+  const port = Number(await portField.inputValue()) + SAMPLE_SHIFT;
+  await portField.fill(String(port));
+  await page.locator(".hl-canvas").getByRole("button", { name: /^(deploy|update)/ }).dispatchEvent("click");
+  const dialog = page.getByRole("dialog");
+  await expect(dialog).toContainText('answer its callers with the secret "maps_browser_key", or with what is computed from it');
+  await expect(dialog).toContainText('read the secret "maps_browser_key"');
+  const deployed = page.waitForResponse((r) => r.request().method() === "POST" && new URL(r.url()).pathname === "/deploy");
+  await dialog.getByRole("button", { name: /^(Approve and deploy|Deploy|Update)$/ }).click();
+  expect((await deployed).status()).toBe(200);
+  await expect(page.locator(".hl-tab--active")).toContainText("deployed", { timeout: 30_000 });
+  const key = "pk_e2e_browser_0123456789";
+  expect((await request.post(`${SERVER}/deployments/browser-key/secrets/maps_browser_key`, { data: { value: key }, headers: { Authorization: `Bearer ${adminToken}` } })).ok()).toBe(true);
+  const config = await request.get(`http://127.0.0.1:${port}/config`);
+  expect(config.status()).toBe(200);
+  expect(await config.json()).toEqual({ maps_key: key, version: 1 });
+});
+
 test("a sample deployed as it is keeps its text and the names it binds", async ({ page, request, adminToken }) => {
   // The port moved in the text (the text's wins while it is open), so the text still stands for
   // the canvas: a deploy then carries `source` and `bindings` (useDeployFlow.ts), and a run explains

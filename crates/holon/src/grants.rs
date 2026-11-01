@@ -18,7 +18,7 @@ use crate::*;
 pub(crate) fn derived_capabilities(store: &SharedStore, unit: Hash, scheduled: bool) -> Result<Capabilities, String> {
     let resolver = materialize_closure(store, unit).map_err(|e| format!("store error while materializing closure: {e:?}"))?;
     let root = resolver.resolve(&unit).ok_or("the deployed unit no longer resolves in the store")?;
-    Ok(capabilities(root, &resolver).deployed(scheduled))
+    Ok(holon_core::deployed_capabilities(root, &resolver, scheduled))
 }
 
 /// Re-check `dep` against its grant and `policy`: its attention, its status where the grant

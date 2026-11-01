@@ -635,13 +635,20 @@ impl SecretStore {
 /// state write carrying one is refused, so a secret never reaches the state store, its
 /// snapshots or the disk.
 pub(crate) fn secret_in(v: &holon_core::Value, vault: &Vault) -> Option<String> {
+    secrets_in(v, vault).into_iter().next()
+}
+
+/// The names of every secret in `vault` whose value, current or retired, occurs in `v`, in the
+/// order [`secret_in`] finds the first.
+pub(crate) fn secrets_in(v: &holon_core::Value, vault: &Vault) -> Vec<String> {
     let vault = vault.lock().unwrap();
-    vault
-        .current
-        .iter()
-        .chain(vault.retired.iter().map(|(name, _, value)| (name, value)))
-        .find(|(_, value)| value_holds(v, &|s: &str| s.contains(value.as_str())))
-        .map(|(name, _)| name.clone())
+    let mut found: Vec<String> = vec![];
+    for (name, value) in vault.current.iter().chain(vault.retired.iter().map(|(name, _, value)| (name, value))) {
+        if !found.contains(name) && value_holds(v, &|s: &str| s.contains(value.as_str())) {
+            found.push(name.clone());
+        }
+    }
+    found
 }
 
 /// Whether any text in `v`, a record's keys included, satisfies `found`.

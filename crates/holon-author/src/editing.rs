@@ -154,7 +154,7 @@ const KEYWORDS: &[(&str, &str)] = &[
 
 /// The nouns for the outside world: each read or write is one permission the flow asks for.
 const NOUNS: &[(&str, &str)] = &[
-    ("secret", "`secret.name`: a secret the header declares (`secret name`, or `optional secret name`), set by an admin under the deployment's ⚙ and never in the run log. One permission: reading it."),
+    ("secret", "`secret.name`: a secret the header declares (`secret name`, or `optional secret name`), set by an admin under the deployment's ⚙ and never in the run log. One permission: reading it; a route that answers with it, or with what is computed from it, asks for another."),
     ("state", "`state.name`: the flow's own value, a key the header declares (`state name`), read at the start of the run; `state.name = v` writes it when the run finishes. Each is one permission."),
     ("now", "`now`: the run's time, in epoch seconds, recorded with the run so a replay sees the same. A permission: reading the clock."),
     ("random", "`random`: one random number for the run, recorded so a replay sees the same. A permission: randomness."),

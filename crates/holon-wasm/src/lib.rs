@@ -151,6 +151,7 @@ pub enum WCapability {
     Spawn,
     DbRead(String),
     DbWrite(String),
+    SecretAnswer(String),
 }
 
 impl WCapability {
@@ -178,6 +179,7 @@ impl WCapability {
             Capability::Spawn => WCapability::Spawn,
             Capability::DbRead(table) => WCapability::DbRead(table),
             Capability::DbWrite(table) => WCapability::DbWrite(table),
+            Capability::SecretAnswer(name) => WCapability::SecretAnswer(name),
         }
     }
 }
@@ -652,7 +654,7 @@ impl Evaluator {
     /// server deploys and grants by).
     pub fn deployed_capability_names(&self, hash: &str, scheduled: bool) -> Result<Vec<String>, JsError> {
         let unit = self.resolve_hash(hash)?;
-        Ok(holon_core::capabilities(unit, &self.resolver).deployed(scheduled).iter().map(|c| holon_core::consent_name(&c)).collect())
+        Ok(holon_core::deployed_capabilities(unit, &self.resolver, scheduled).iter().map(|c| holon_core::consent_name(&c)).collect())
     }
 
     /// The coarse kind-set of a unit's whole closure, by hash — core's `effects_of`, the fixed

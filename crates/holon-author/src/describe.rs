@@ -24,7 +24,7 @@ pub fn describe_item(item: &str) -> String {
         return format!("keep its runs in its log for up to {n} days");
     }
     type Say = fn(&str) -> String;
-    let named: [(&str, Say); 20] = [
+    let named: [(&str, Say); 21] = [
         ("HttpRequest", |a| format!("call https://{a}")),
         ("StateRead", |a| format!("read its state \"{a}\"")),
         ("StateWrite", |a| format!("write its state \"{a}\"")),
@@ -45,6 +45,7 @@ pub fn describe_item(item: &str) -> String {
         ("ChannelRead", |a| format!("let callers subscribe to its channel \"{a}\"")),
         ("PlainHttp", |a| format!("call {a} over plain HTTP (not encrypted)")),
         ("SecretRead", |a| format!("read the secret \"{a}\"")),
+        ("SecretAnswer", |a| format!("answer its callers with the secret \"{a}\", or with what is computed from it")),
         ("Await", |a| format!("wait for an event \"{a}\" and continue later")),
         ("Limit", |a| format!("raise {}", a.replacen('=', " to ", 1))),
         ("Browser", |a| if a == "*" { "answer web pages from any site".into() } else { format!("answer web pages from {a}") }),
@@ -94,6 +95,7 @@ mod tests {
     fn says_each_item_in_words() {
         assert_eq!(describe_item(r#"HttpRequest("hooks.slack.com")"#), "call https://hooks.slack.com");
         assert_eq!(describe_item(r#"SecretRead("api_token")"#), r#"read the secret "api_token""#);
+        assert_eq!(describe_item(r#"SecretAnswer("api_token")"#), r#"answer its callers with the secret "api_token", or with what is computed from it"#);
         assert_eq!(describe_item("Limit(max_requests=80)"), "raise max_requests to 80");
         assert_eq!(describe_item("Limit(keep_runs=2000)"), "keep its newest 2000 runs in its log");
         assert_eq!(describe_item("Limit(keep_run_days=30)"), "keep its runs in its log for up to 30 days");

@@ -390,7 +390,10 @@ only the editor.
   `‹withheld: computed from a secret›`. An effect carries no node, so this goes by capability: a
   key written anywhere in the run from such a value has all its writes in that run refused. A flow
   may still send a secret where it is meant to go: an outbound request's header, or its own
-  response to a caller. A credential a call answers with to a request that held a secret (an
+  response to a caller where a person approved that: a route whose response a secret reaches
+  (core's `taint::answered_secrets`, the same walk one secret at a time) asks for
+  `SecretAnswer("name")` at deploy, and a run whose answer carries a secret not granted so (by
+  the graph, or its value found in the answer) is answered 500. A credential a call answers with to a request that held a secret (an
   OAuth exchange's `access_token`, `refresh_token`, `id_token`, …: `ANSWER_FIELDS` in
   `secrets.rs`) is redacted by its value as `‹token:answer access_token #a1b2c3d4›` and refused
   the writes a secret is, rather than treating every answer to such a call as computed from the

@@ -4492,11 +4492,59 @@ route POST /open (req) {{
     assert!(report.ok(), "{}", verify::describe(&report, None));
 }
 
+/// A route that answers with a secret, or with what is computed from it, asks for it at deploy
+/// (`SecretAnswer("token")`), where an hmac of one asks nothing; a deployment not approved for it
+/// answers 500 and its log says why, and once approved the caller gets the answer.
+#[test]
+fn a_route_answers_with_a_secret_only_where_a_person_approved_it() {
+    let state = claims_state("");
+    let text = "flow answers\nport 18178\nsecret key\nsecret token\n\nroute GET /plain (req) {\n  respond secret.token\n}\n\nroute GET /encoded (req) {\n  respond base64(secret.token)\n}\n\nroute POST /sign (req) {\n  respond hmac_sha256(secret.key, req.body), missing: 400\n}\n";
+    let plan = holon_author::agent::plan(text).unwrap();
+    for u in &plan.units {
+        route(&state, &req("POST", "/unit", u.clone()));
+    }
+    let unit = parse_hash(&plan.unit).unwrap();
+    for (name, value) in [("token", "tok_live_987654321"), ("key", "whsec_test_123456")] {
+        let set = req("POST", &format!("/deployments/answers/secrets/{name}"), serde_json::to_vec(&serde_json::json!({ "value": value })).unwrap());
+        assert_eq!(route(&state, &set).status_code, 200);
+    }
+    let answer = "SecretAnswer(\"token\")".to_string();
+    let preview = body_json(route(&state, &req("POST", "/deploy/preview", serde_json::to_vec(&serde_json::json!({ "slug": "answers", "unit": plan.unit })).unwrap())));
+    let asked: Vec<String> = serde_json::from_value(preview["needs_approval"].clone()).unwrap();
+    assert!(asked.contains(&answer), "{asked:?}");
+    assert!(!asked.iter().any(|a| a.starts_with("SecretAnswer(\"key\"")), "an hmac of a secret is no answer with it: {asked:?}");
+    let all_but: Vec<&String> = asked.iter().filter(|a| **a != answer).collect();
+
+    // Not acknowledged, it isn't deployed.
+    assert_ne!(deploy_json(&state, "answers", unit, serde_json::json!({ "acknowledge": all_but })).status_code, 200);
+
+    // Approved, the caller gets it.
+    let r = deploy_json(&state, "answers", unit, serde_json::json!({ "acknowledge": asked }));
+    let status = r.status_code;
+    assert_eq!(status, 200, "{}", String::from_utf8_lossy(&body_bytes(r)));
+    let (status, body, _) = data_call(&state, "answers", "GET", "/plain", "");
+    assert_eq!((status, body.as_str()), (200, "tok_live_987654321"));
+
+    // Taken back, the deployment kept running: the answers that would carry it are refused.
+    let view = body_json(change_grant(&state, "answers", serde_json::json!({ "revoke": [answer], "keep_running": true })));
+    assert_eq!(view["status"], "running");
+    for path in ["/plain", "/encoded"] {
+        let (status, body, _) = data_call(&state, "answers", "GET", path, "");
+        assert_eq!(status, 500, "{path}: {body}");
+        assert!(body.contains("may not answer its callers with the secret \\\"token\\\"") && !body.contains("tok_live"), "{path}: {body}");
+    }
+    assert_eq!(data_call(&state, "answers", "POST", "/sign", "hello").0, 200, "the hmac answers");
+    let entries = log_entries(&state, "answers");
+    let refused = entries.iter().rev().find(|e| e["route"] == "GET /plain").unwrap();
+    assert!(refused["error"].as_str().unwrap().contains("refused to answer with the secret \"token\""), "{refused}");
+    assert!(!serde_json::to_string(&entries).unwrap().contains("tok_live"), "the log never holds it");
+}
+
 /// What is computed from a secret isn't kept: a state, collection or channel write of it is
 /// refused, as a write of its value is (it would sit on disk, in every later snapshot, and in the
 /// channel's packs), while the run's other writes go through; and the run's answer, though the
-/// caller gets it, is withheld from the log, its output and its response body alike. Verify
-/// skips such a run rather than calling it changed.
+/// caller gets it (the deploy approved `SecretAnswer`), is withheld from the log, its output and
+/// its response body alike. Verify skips such a run rather than calling it changed.
 #[test]
 fn what_is_computed_from_a_secret_is_neither_kept_nor_logged() {
     let state = claims_state("");

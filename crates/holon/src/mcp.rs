@@ -1381,9 +1381,10 @@ mod tests {
         assert!(deploy(&agent, &v2, Some("peek")).unwrap().starts_with("Not deployed yet"));
         let leaky = agent::plan(&v2).unwrap();
         let preview = json_of(&agent, "POST", "/deploy/preview", Some(Body::Json(json!({ "slug": "peek", "unit": leaky.unit })))).unwrap();
-        assert_eq!(preview["needs_approval"], json!(["SecretRead(\"api_key\")"]), "{preview}");
+        // Answering with what is computed from the key is a permission of its own.
+        assert_eq!(preview["needs_approval"], json!(["SecretAnswer(\"api_key\")", "SecretRead(\"api_key\")"]), "{preview}");
         let refused = json_of(&agent, "POST", "/deploy", ask(&leaky.unit, json!([]))).unwrap_err();
-        assert!(refused.contains("needs a person's approval") && refused.contains("SecretRead(\"api_key\")"), "{refused}");
+        assert!(refused.contains("needs a person's approval") && refused.contains("SecretAnswer(\"api_key\")"), "{refused}");
         let answered = json_of(&agent, "POST", "/deployments/peek/request", Some(Body::Json(json!({ "method": "GET", "url": "/k" })))).unwrap();
         assert!(!answered.to_string().contains("c2tfbGl2ZV"), "the key isn't read out as base64: {answered}");
         // The same code it may deploy again while it runs; once a person stops it, it stays stopped.

@@ -177,7 +177,7 @@ fn deploy(
         _ => None,
     };
     // A flow deployed on a schedule runs on the clock, whether or not it reads the time.
-    let caps = capabilities(root_unit, &resolver).deployed(body.interval_seconds.is_some() && server.is_none());
+    let caps = holon_core::deployed_capabilities(root_unit, &resolver, body.interval_seconds.is_some() && server.is_none());
     let is_ingress = caps.contains(Capability::NetworkIngress);
     let is_clock = caps.contains(Capability::Clock) && server.is_none();
     let has_clocks = server.as_ref().is_some_and(|s| !s.clocks.is_empty());
@@ -510,7 +510,7 @@ fn preview_value(
     };
     // As the deploy will derive it: on a schedule, it runs on the clock.
     let scheduled = body.interval_seconds.is_some() && declaration_of(root_unit) != Some("server");
-    let manifest = Manifest::new(capabilities(root_unit, &resolver).deployed(scheduled).iter(), body.requirements.clone().with_module_limits(root_unit, &resolver));
+    let manifest = Manifest::new(holon_core::deployed_capabilities(root_unit, &resolver, scheduled).iter(), body.requirements.clone().with_module_limits(root_unit, &resolver));
     let (previous, previous_unit, previous_browsers) = previous_of(deployments, &body.slug);
     let (mut needs, withheld) = approval_needed(policy, &manifest, previous.as_ref(), previous_unit, unit_hash, agent);
     if agent {
@@ -679,7 +679,7 @@ pub(crate) fn handle_get_permission_view(
         Err(e) => return e.response(),
     };
     let Some(root) = resolver.resolve(&unit) else { return err(500, "deployed unit no longer resolves in the store") };
-    let manifest = Manifest::new(capabilities(root, &resolver).deployed(scheduled).iter(), grant.requirements.clone().with_module_limits(root, &resolver));
+    let manifest = Manifest::new(holon_core::deployed_capabilities(root, &resolver, scheduled).iter(), grant.requirements.clone().with_module_limits(root, &resolver));
     Response::json(&serde_json::json!({
         "hash": to_hex(&manifest.hash()),
         "capabilities": manifest.capabilities,

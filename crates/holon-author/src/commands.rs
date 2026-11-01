@@ -10,7 +10,7 @@
 //!
 //! A mistake is printed as `<file>:<line>:<col>: <message>`, and the exit code is 1.
 
-use holon_core::{capabilities, consent_name, MapResolver, Resolver};
+use holon_core::{consent_name, MapResolver, Resolver};
 
 use crate::composites::Names;
 use crate::describe::describe_item_of;
@@ -109,7 +109,7 @@ fn derive(c: &Lowered, store: &mut MapResolver) -> (DerivedServer, Result<(Strin
     let server = derive_server(&c.doc.nodes, &c.doc.edges, store, port_of(c));
     let scheduled = scheduled(c, &server);
     let unit = flow_unit(&c.doc.nodes, &c.doc.edges, store, port_of(c)).map(|hash| {
-        let mut caps: Vec<String> = store.resolve(&hash).map(|u| capabilities(u, store).deployed(scheduled).iter().map(|c| consent_name(&c)).collect()).unwrap_or_default();
+        let mut caps: Vec<String> = store.resolve(&hash).map(|u| holon_core::deployed_capabilities(u, store, scheduled).iter().map(|c| consent_name(&c)).collect()).unwrap_or_default();
         caps.sort();
         (to_hex(&hash), caps)
     });
@@ -567,6 +567,20 @@ mod tests {
         assert_eq!(r.out[1..3], ["a server on :8101", "  GET /hello/:name"]);
         assert!(r.out[3].starts_with("unit "));
         assert_eq!(r.out[4..], ["it may:", "  receive requests"]);
+    }
+
+    /// A route that answers with a secret may do that, said apart from reading it; one that only
+    /// signs with a secret doesn't answer with it.
+    #[test]
+    fn check_says_a_route_answers_with_a_secret() {
+        let text = "flow leaky\nport 8102\nsecret key\nsecret token\n\nroute GET /plain (req) {\n  respond base64(secret.token)\n}\n\nroute POST /sign (req) {\n  respond hmac_sha256(secret.key, req.body), missing: 400\n}\n";
+        let r = check("leaky.holon", text);
+        assert_eq!(r.code, 0, "{r:?}");
+        let may = r.out.iter().position(|l| l == "it may:").unwrap_or_else(|| panic!("{:?}", r.out));
+        assert_eq!(
+            r.out[may + 1..],
+            ["  receive requests", "  answer its callers with the secret \"token\", or with what is computed from it", "  read the secret \"key\"", "  read the secret \"token\""]
+        );
     }
 
     /// A flow that calls out and both reads and writes a collection is told, apart from what it
