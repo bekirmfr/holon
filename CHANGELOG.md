@@ -31,6 +31,11 @@
   only.
 - **The admin page sweeps storage.** Under resources, **storage** sweeps the content store (it
   counts what it would remove first, then asks) and the file texts runs read and wrote.
+- **Every sample says, in its comments, what it does and how to try it.** Each `.holon` file in
+  the samples opens with what the flow is, what it shows, the secrets it needs and the requests
+  to send it, and each route, action and handler has a line on what it does. `holon new --sample`
+  and the editor's copy of a sample keep them (`holon fmt` does), so the heading `holon new` used
+  to add is now the file's own.
 
 ## 0.1.0-rc.30
 

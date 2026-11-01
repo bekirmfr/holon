@@ -1,7 +1,24 @@
+# Refund once: two requests, one payment.
+#
+# Refunds an order through a payment API (httpbin.org stands in) and records it, in the database
+# orders-api writes. Two refunds of one order at the same moment call the payment API once: the
+# first to call out holds the order's row until it commits; the second waits, finds the order
+# refunded, and answers 409 having sent nothing. The hold covers every deployment bound to the
+# database, so orders-api's own refund waits too.
+#
+# Before it works, bind the database shop as the orders-api sample says (its schema makes both
+# tables), and deploy orders-api beside this one.
+#
+# Try it: place an order, then refund it twice at once:
+#   curl -X POST -d '{"customer":"ada","total":5}' http://127.0.0.1:8150/orders
+#   curl -X POST http://127.0.0.1:8151/refund/1 & curl -X POST http://127.0.0.1:8151/refund/1
+# One answers 200 and the other 409, and curl http://127.0.0.1:8151/refunds/1 lists one refund.
 flow refund-once
 port 8151
 database shop
 
+# Reads the unrefunded order, pays the refund, then marks it refunded and records the payment.
+# An order that is missing or already refunded answers 409.
 route POST /refund/:id (req) {
   order = shop.one("select id, total from orders where id = $1 and refunded = 0", req.params.id)
   paid = http.post("httpbin.org", "/anything/refunds", headers: { "content-type": "application/json" }, body: json({ order: order.id, amount: order.total }))
@@ -10,6 +27,7 @@ route POST /refund/:id (req) {
   respond { refunded: order.total, payment: paid.status }, missing: 409
 }
 
+# The refunds recorded for one order, with the payment API's status for each.
 route GET /refunds/:id (req) {
   respond shop.query("select amount, status from refunds where order_id = $1", req.params.id)
 }
