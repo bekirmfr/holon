@@ -179,12 +179,15 @@ and `a` shows every node instead. On a deployment it marks what the newest run r
 shows its code, its code with the graph beside it (following the cursor), or the graph alone:
 `ctrl+b` goes round them, and enter on a statement edits it there.
 
-In the editor, keys type; `esc` leaves the text for the page keys and `i` comes back. `ctrl+n`
-starts a draft from anywhere (`n` on the editor's page keys): its first save asks for a file.
-`ctrl+s` saves (to its file, else on the server, not deployed), `ctrl+d` deploys, showing what
-it may do and what you approve by deploying it, `ctrl+r` shows a run over its text (what it
-played lit, the rest dimmed, each statement's value under it) with its timeline below: `←`/`→`
-go through the steps, each marked in the code and the graph, `↑`/`↓` pick another run. `alt+f`
+In the editor, keys type; `esc` leaves the text for the page keys and `i` comes back. `ctrl+t`
+(or `ctrl+n`, or the tab bar's `+`) opens a draft in a new tab from anywhere (`n` on the
+editor's page keys): its first save asks for a file. `ctrl+s` saves (to its file, else on the
+server, not deployed), `ctrl+d` deploys, showing what it may do and what you approve by
+deploying it, `ctrl+r` shows a run over its text (what it played lit, the rest dimmed, each
+statement's value under it). Under it, as in the web editor, a panel: the runs on its left
+(`↑`/`↓` pick one), and on its right the run picked, in tabs (`tab` goes round them): Details
+(what it answered, did and called), Errors (when it failed: why, and on which line) and its
+Timeline, whose steps `←`/`→` go through, each marked in the code and the graph. `alt+f`
 formats it, and `ctrl+pgup`/`pgdn` and `ctrl+w` move
 between and close tabs. `:` takes a command (`open <file|slug>`, `new [sample]`, `w [file]`,
 `deploy`, `flow <slug>`, `call`, `restore`, `sessions`, `run`, `pause` or `stop <slug>`,

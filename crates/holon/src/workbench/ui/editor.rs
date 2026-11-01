@@ -12,7 +12,7 @@ use ratatui::widgets::{Clear, Paragraph, Wrap};
 use ratatui::Frame;
 
 use super::{bold, coloured, dim, fit, list, pad, panel, ACCENT, BAD, DARK, DIM, GOOD, PICKED, WARN};
-use crate::workbench::app::{self, App, Click, List, Show, Tab};
+use crate::workbench::app::{self, App, Click, List, RunPane, Show, Tab};
 
 fn colour(class: Class) -> Style {
     let c = match class {
@@ -96,7 +96,7 @@ pub(super) fn draw(f: &mut Frame, app: &mut App, area: Rect) {
             Line::default(),
             Line::from(bold("No flow open.")),
             Line::default(),
-            Line::from("Start a draft (n, or ctrl+n anywhere), or open one: a sample from the library (6), a flow on the server from the flows page (3), or a file with :open <file>."),
+            Line::from("Start a draft (n, or ctrl+t anywhere), or open one: a sample from the library (6), a flow on the server from the flows page (3), or a file with :open <file>."),
             Line::from(dim("ctrl+p finds any of them by name.")),
         ];
         f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }).block(panel("Editor", true)), area);
@@ -183,8 +183,9 @@ fn draw_tabs(f: &mut Frame, app: &App, area: Rect) {
         let style = if here { Style::new().fg(Color::Black).bg(ACCENT).add_modifier(Modifier::BOLD) } else { Style::new().fg(Color::Gray).bg(Color::Indexed(236)) };
         let name = format!(" {}{} ", fit(&t.name, 24), if t.dirty() { " ●" } else { "" });
         let w = name.chars().count() as u16;
-        if x + w + 3 > area.x + area.width.saturating_sub(right) {
+        if x + w + 3 > area.x + area.width.saturating_sub(right + 4) {
             f.render_widget(Paragraph::new(dim(format!(" +{}", app.tabs.len() - i))), Rect { x, width: 4, ..area });
+            x += 5;
             break;
         }
         let rect = Rect { x, width: w, ..area };
@@ -195,6 +196,10 @@ fn draw_tabs(f: &mut Frame, app: &App, area: Rect) {
         app.hit(close, Click::CloseTab(i));
         x += w + 3;
     }
+    // A new tab, with a draft in it (ctrl+t), as a browser's +.
+    let plus = Rect { x, width: 3, ..area };
+    f.render_widget(Paragraph::new(Span::styled(" + ", Style::new().fg(ACCENT).bg(Color::Indexed(236)).add_modifier(Modifier::BOLD))), plus);
+    app.hit(plus, Click::Key(KeyCode::Char('t'), KeyModifiers::CONTROL));
     // What it shows, each a button (ctrl+b goes round them), then the runs (ctrl+r) over it.
     let runs = app.tabs[app.tab].runs.is_some();
     let modes = [
@@ -370,57 +375,147 @@ fn draw_side(f: &mut Frame, app: &App, area: Rect) {
 }
 
 /// A run over the text it ran on: the code (what it played lit, the rest dimmed, the step picked
-/// marked, each statement's value under it), its graph, or both; its timeline below, one step a
-/// row, the picked one marked in the code and the graph too; the runs and what it did beside.
+/// marked, each statement's value under it), its graph, or both. Under it, as in the web editor,
+/// a panel: the runs on its left; on its right, the run picked: its details, why it failed, and
+/// its timeline, one step a row, the picked one marked in the code and the graph too.
 fn draw_runs_view(f: &mut Frame, app: &mut App, body: Rect) {
-    let side_width = if body.width >= 110 { 40 } else if body.width >= 80 { 30 } else { 0 };
-    let [main, side] = Layout::horizontal([Constraint::Min(20), Constraint::Length(side_width)]).areas(body);
     let Some(runs) = app.tabs[app.tab].runs.as_ref() else { return };
-    let steps = runs.steps().len();
-    let timeline_height = (steps.clamp(1, 6) + 2) as u16;
+    let height = if body.height >= 24 { (body.height * 2 / 5).min(18) } else { body.height / 2 };
+    let [top, bottom] = Layout::vertical([Constraint::Min(3), Constraint::Length(height)]).areas(body);
     match &runs.view {
-        Some(Ok(_)) => {
-            let [top, timeline] = Layout::vertical([Constraint::Min(3), Constraint::Length(timeline_height)]).areas(main);
-            match app.show {
-                Show::Code => draw_run_code(f, app, top),
-                Show::Both => {
-                    let [code, graph] = halves(top, 55);
-                    draw_run_code(f, app, code);
-                    draw_graph_beside(f, app, graph, "what the run played");
-                }
-                Show::Graph => draw_graph_view(f, app, top),
+        Some(Ok(_)) => match app.show {
+            Show::Code => draw_run_code(f, app, top),
+            Show::Both => {
+                let [code, graph] = halves(top, 55);
+                draw_run_code(f, app, code);
+                draw_graph_beside(f, app, graph, "what the run played");
             }
-            draw_timeline(f, app, timeline);
-        }
-        Some(Err(e)) => f.render_widget(Paragraph::new(coloured(e.clone(), BAD)).block(panel("Run", true)), main),
-        None => f.render_widget(Paragraph::new(dim("No runs yet: call it, and they show here.")).block(panel("Runs", true)), main),
+            Show::Graph => draw_graph_view(f, app, top),
+        },
+        Some(Err(e)) => f.render_widget(Paragraph::new(coloured(e.clone(), BAD)).wrap(Wrap { trim: false }).block(panel("Run", true)), top),
+        None => f.render_widget(Paragraph::new(dim("No runs yet: call it, and they show here.")).block(panel("Runs", true)), top),
     }
-    if side_width == 0 {
-        return;
-    }
+    let left_width = (bottom.width * 2 / 5).clamp(24.min(bottom.width), 64);
+    let [left, right] = Layout::horizontal([Constraint::Length(left_width), Constraint::Min(10)]).areas(bottom);
+    draw_run_list(f, app, left);
+    draw_run_pane(f, app, right);
+}
+
+/// The deployment's runs, newest first: number, time, what started it, its answer, how long.
+fn draw_run_list(f: &mut Frame, app: &App, area: Rect) {
     let Some(runs) = app.tabs[app.tab].runs.as_ref() else { return };
-    let after: Vec<Line> = match &runs.view {
-        Some(Ok(v)) => {
-            let mut after: Vec<Line> = v.after.iter().map(|l| Line::from(if l.starts_with("failed") { coloured(l.clone(), BAD) } else { Span::raw(l.clone()) })).collect();
-            if v.no_steps {
-                after.insert(0, Line::from(dim("This run recorded no steps: the values are left out.")));
-            }
-            after
-        }
-        _ => vec![],
-    };
-    let [list_area, after_area] = Layout::vertical([Constraint::Percentage(if after.is_empty() { 100 } else { 50 }), Constraint::Min(0)]).areas(side);
-    let block = panel(&format!("Runs of {}", runs.slug), false);
-    let inner = block.inner(list_area);
-    f.render_widget(block, list_area);
+    let block = panel(&format!("Runs of {} ({})  ·  ↑ ↓", runs.slug, runs.entries.len()), true);
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+    if runs.entries.is_empty() {
+        return f.render_widget(Paragraph::new(dim(" no runs yet: call it")), inner);
+    }
     list(f, app, inner, List::Runs, runs.entries.len(), Some(runs.sel), true, |i, w| {
         let e = &runs.entries[i];
-        let line = agent::run_line(e);
-        let short = fit(line.split(", at ").next().unwrap_or(&line), w);
-        Line::from(if e.get("error").is_some_and(|x| !x.is_null()) { coloured(short, BAD) } else { Span::raw(short) })
+        let s = |k: &str| e.get(k).and_then(|v| v.as_str()).filter(|v| !v.is_empty());
+        let seq = format!("#{:<4}", e.get("seq").and_then(|v| v.as_u64()).unwrap_or(0));
+        let at = e.get("at_ms").and_then(|v| v.as_u64()).map(|ms| agent::utc(ms / 1000).chars().skip(11).take(8).collect::<String>()).unwrap_or_default();
+        let what = match s("kind") {
+            Some("request") => format!("{} {}", s("method").unwrap_or("?"), s("url").unwrap_or("?")),
+            kind => s("route").or(kind).unwrap_or("?").to_string(),
+        };
+        let failed = e.get("error").is_some_and(|x| !x.is_null());
+        let status = e.get("status").and_then(|v| v.as_u64());
+        let answer = if failed { "err".to_string() } else { status.map(|s| s.to_string()).unwrap_or_default() };
+        let ms = e.get("duration_ms").and_then(|v| v.as_f64()).map(|ms| format!("{ms:.1}")).unwrap_or_default();
+        let tail = format!(" {answer:>3} {ms:>7}");
+        let room = w.saturating_sub(seq.len() + at.len() + 2 + tail.chars().count());
+        let bad = failed || status.is_some_and(|s| s >= 400);
+        Line::from(vec![
+            dim(seq),
+            dim(format!("{at} ")),
+            Span::raw(pad(&fit(&what, room), room)),
+            coloured(format!(" {answer:>3}"), if bad { BAD } else { GOOD }),
+            dim(format!(" {ms:>7}")),
+        ])
     });
-    if !after.is_empty() {
-        f.render_widget(Paragraph::new(after).wrap(Wrap { trim: false }).block(panel("What it did", false)), after_area);
+}
+
+/// The run picked, on the panel's right: its tabs (Details, Errors when it failed, Timeline),
+/// as the web editor's, and the one picked.
+fn draw_run_pane(f: &mut Frame, app: &App, area: Rect) {
+    let Some(runs) = app.tabs[app.tab].runs.as_ref() else { return };
+    let block = panel("", true).title("");
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+    // The tabs, on the panel's top edge, each a button; tab goes round them.
+    let mut x = area.x + 1;
+    for p in runs.panes() {
+        let label = match p {
+            RunPane::Details => " Details ".to_string(),
+            RunPane::Errors => format!(" Errors ({}) ", runs.errors().len()),
+            RunPane::Timeline => " Timeline ".to_string(),
+        };
+        let w = label.chars().count() as u16;
+        if x + w > area.x + area.width {
+            break;
+        }
+        let on = p == runs.pane;
+        let colour = if p == RunPane::Errors { BAD } else { ACCENT };
+        let style = if on { Style::new().fg(Color::Black).bg(colour).add_modifier(Modifier::BOLD) } else { Style::new().fg(if p == RunPane::Errors { BAD } else { Color::Gray }) };
+        let r = Rect { x, y: area.y, width: w, height: 1 };
+        f.render_widget(Paragraph::new(Span::styled(label, style)), r);
+        app.hit(r, Click::RunPane(p));
+        x += w + 1;
+    }
+    let steps = runs.steps();
+    let note = match runs.pane {
+        RunPane::Timeline if !steps.is_empty() => format!(" step {} of {} · ← → ", runs.step + 1, steps.len()),
+        _ => " tab: next ".to_string(),
+    };
+    let w = note.chars().count() as u16;
+    if x + w + 1 < area.x + area.width {
+        f.render_widget(Paragraph::new(dim(note)), Rect { x: area.x + area.width - w - 1, y: area.y, width: w, height: 1 });
+    }
+    let width = inner.width.saturating_sub(1) as usize;
+    match runs.pane {
+        RunPane::Timeline => draw_timeline(f, app, inner),
+        RunPane::Errors => {
+            let text = |line: u32| match &runs.view {
+                Some(Ok(v)) => v.text.get(line as usize - 1).map(|l| l.trim().to_string()).unwrap_or_default(),
+                _ => String::new(),
+            };
+            let mut lines = vec![];
+            for (line, why) in runs.errors() {
+                match line {
+                    Some(n) => {
+                        lines.push(Line::from(vec![coloured(format!("line {n}  "), WARN), Span::raw(fit(&text(n), width.saturating_sub(10)))]));
+                        lines.push(Line::from(vec![Span::raw("  "), coloured(why, BAD)]));
+                    }
+                    None => lines.push(Line::from(vec![coloured("failed: ", BAD), Span::raw(why)])),
+                }
+            }
+            f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
+        }
+        RunPane::Details => {
+            let mut lines: Vec<Line> = vec![];
+            if let Some(e) = runs.entries.get(runs.sel) {
+                lines.push(Line::from(Span::styled(agent::run_line(e), Style::new().fg(Color::White))));
+            }
+            match &runs.view {
+                Some(Ok(v)) => {
+                    if v.no_steps {
+                        lines.push(Line::from(dim("This run recorded no steps: the values are left out.")));
+                    }
+                    for l in &v.after {
+                        let (name, rest) = l.split_once(": ").unwrap_or((l.as_str(), ""));
+                        let colour = if name.starts_with("failed") { BAD } else { ACCENT };
+                        lines.push(Line::from(vec![coloured(format!("{}  ", name.trim_end()), colour), Span::raw(rest.to_string())]));
+                    }
+                    if v.after.is_empty() {
+                        lines.push(Line::from(dim("It answered nothing and did nothing outside: its values are in the code above.")));
+                    }
+                }
+                Some(Err(e)) => lines.push(Line::from(coloured(e.clone(), BAD))),
+                None => lines.push(Line::from(dim("No runs yet: call it, and they show here."))),
+            }
+            f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
+        }
     }
 }
 
@@ -464,20 +559,19 @@ fn draw_run_code(f: &mut Frame, app: &App, area: Rect) {
 }
 
 /// A run's timeline: each statement as it ran, a bar for when, the step picked marked.
-fn draw_timeline(f: &mut Frame, app: &App, area: Rect) {
+fn draw_timeline(f: &mut Frame, app: &App, inner: Rect) {
     let Some(runs) = app.tabs[app.tab].runs.as_ref() else { return };
-    let Some(Ok(v)) = &runs.view else { return };
+    let Some(Ok(v)) = &runs.view else { return f.render_widget(Paragraph::new(dim(" No timeline: this run can't be shown over the text.")), inner) };
     let total = v.steps.iter().map(|s| s.end_us).fold(0.0, f64::max).max(1.0);
-    let title = if v.steps.is_empty() { "Steps: this run recorded no timing".to_string() } else { format!("Timeline: {} steps over {}  ·  ← → step", v.steps.len(), crate::workbench::flow::took(total / 1000.0)) };
-    let block = panel(&title, true);
-    let inner = block.inner(area);
-    f.render_widget(block, area);
     let steps = runs.steps();
     if steps.is_empty() {
         return f.render_widget(Paragraph::new(dim(" It ran nothing this text says.")), inner);
     }
+    let head = if v.steps.is_empty() { " This run recorded no timing: its steps, in order.".to_string() } else { format!(" {} steps over {}", v.steps.len(), crate::workbench::flow::took(total / 1000.0)) };
+    let [head_area, rows] = Layout::vertical([Constraint::Length(1), Constraint::Min(1)]).areas(inner);
+    f.render_widget(Paragraph::new(dim(head)), head_area);
     let name = |line: u32| format!("{line:>3} {}", v.text.get(line as usize - 1).map(|l| l.trim()).unwrap_or_default());
-    list(f, app, inner, List::Timeline, steps.len(), Some(runs.step), true, |i, w| match v.steps.get(i) {
+    list(f, app, rows, List::Timeline, steps.len(), Some(runs.step), true, |i, w| match v.steps.get(i) {
         Some(s) => super::flow::bar(&name(s.line), s.start_us, s.end_us, total, &crate::workbench::flow::took((s.end_us - s.start_us) / 1000.0), w),
         None => Line::from(Span::raw(fit(&name(steps[i]), w))),
     });

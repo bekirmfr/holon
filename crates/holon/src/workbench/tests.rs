@@ -5,7 +5,7 @@ use ratatui::backend::TestBackend;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::Terminal;
 
-use super::app::{App, Click, List, Modal, Page, Show, Tone};
+use super::app::{App, Click, List, Modal, Page, RunPane, Runs, Show, Tone};
 use super::client::{Client, Moment};
 use super::flow::{Row, Section};
 use super::ui;
@@ -260,10 +260,26 @@ fn a_run_lights_what_it_played_and_its_timeline_picks_the_step_in_the_code_and_t
     };
     let line = |s: &str| text.iter().position(|l| l.contains(s)).unwrap() as u32 + 1;
 
+    // Under the code, as in the web editor: the runs on the left, the one picked on the right,
+    // its details first (it didn't fail: no Errors), tab going round to its timeline.
+    let shown = screen(&mut app, 140, 40);
+    assert!(shown.contains("Runs of two (1)") && shown.contains(" Details ") && shown.contains(" Timeline ") && !shown.contains(" Errors "), "{shown}");
+    assert!(shown.contains("answered  1") && shown.contains("#0") && shown.contains("action bump"), "the run, and what it answered in its details: {shown}");
+    assert_eq!(app.tabs[0].runs.as_ref().unwrap().pane, RunPane::Details);
+    press(&mut app, KeyCode::Tab);
+    assert_eq!(app.tabs[0].runs.as_ref().unwrap().pane, RunPane::Timeline);
+    press(&mut app, KeyCode::Tab);
+    assert_eq!(app.tabs[0].runs.as_ref().unwrap().pane, RunPane::Details, "round the end");
+    click(&mut app, Click::RunPane(RunPane::Timeline));
+    assert_eq!(app.tabs[0].runs.as_ref().unwrap().pane, RunPane::Timeline);
+    for (w, h) in [(80, 24), (60, 16)] {
+        screen(&mut app, w, h);
+    }
+
     // Code and graph side by side: what it played lit, the rest of the text dimmed.
     ctrl(&mut app, 'b');
     let shown = screen(&mut app, 140, 40);
-    assert!(shown.contains("what the run played") && shown.contains("Timeline") && shown.contains("step 1 of"), "{shown}");
+    assert!(shown.contains("what the run played") && shown.contains("4 steps over") && shown.contains("step 1 of"), "{shown}");
     let g = app.tabs[0].graph.as_ref().expect("the graph of the text it ran on");
     assert!(g.view.dim);
     let lit = g.view.lit();
@@ -600,7 +616,7 @@ fn answer(app: &mut App, text: &str) {
 }
 
 #[test]
-fn a_draft_starts_with_ctrl_n_and_its_first_save_asks_for_a_file() {
+fn a_draft_opens_in_a_new_tab_and_its_first_save_asks_for_a_file() {
     let dir = std::env::temp_dir().join(format!("holon-draft-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let mut app = App::new(None);
@@ -641,7 +657,45 @@ fn a_draft_starts_with_ctrl_n_and_its_first_save_asks_for_a_file() {
     // The next draft takes the first number free.
     ctrl(&mut app, 'n');
     assert_eq!(app.tabs[2].name, "draft 2");
+    // ctrl+t opens one in a new tab too, as a browser does, and so does the tab bar's +.
+    ctrl(&mut app, 't');
+    assert_eq!((app.tabs.len(), app.tab, app.tabs[3].name.as_str()), (4, 3, "draft 3"));
+    screen(&mut app, 120, 30);
+    click(&mut app, Click::Key(KeyCode::Char('t'), KeyModifiers::CONTROL));
+    assert_eq!((app.tabs.len(), app.tab, app.tabs[4].name.as_str()), (5, 4, "draft 4"));
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A run that failed opens on its Errors: why, and the line that gave nothing for it, once.
+#[test]
+fn a_run_that_failed_opens_on_why_and_on_which_line() {
+    let mut app = App::new(None);
+    ctrl(&mut app, 't');
+    let view = holon_author::agent::RunView {
+        head: "run 3: GET /nearest/kittne → 500".into(),
+        no_steps: false,
+        text: vec!["flow nearest".into(), "".into(), "route GET /nearest/:word (req) {".into(), "  best = closest(req.params.word)".into(), "  respond best".into(), "}".into()],
+        notes: [(4, vec!["⇒ nothing: closest gave nothing: out of fuel".to_string()]), (5, vec!["⇒ nothing: closest gave nothing: out of fuel".to_string()])].into_iter().collect(),
+        after: vec!["answered 500: ".into(), "failed: closest gave nothing".into()],
+        steps: vec![],
+    };
+    let entry = serde_json::json!({ "seq": 3, "kind": "request", "method": "GET", "url": "/nearest/kittne", "status": 500, "duration_ms": 2.5, "error": "closest gave nothing" });
+    let mut runs = Runs { slug: "nearest".into(), entries: vec![entry], sel: 0, view: Some(Ok(view)), step: 0, pane: RunPane::Details };
+    assert_eq!(runs.errors(), [(None, "closest gave nothing".to_string()), (Some(4), "closest gave nothing: out of fuel".to_string())]);
+    assert_eq!(runs.panes(), [RunPane::Details, RunPane::Errors, RunPane::Timeline]);
+    runs.pane = RunPane::Errors;
+    app.tabs[0].runs = Some(runs);
+    app.typing = false;
+    let shown = screen(&mut app, 140, 40);
+    assert!(shown.contains(" Errors (2) ") && shown.contains("line 4") && shown.contains("best = closest(req.params.word)") && shown.contains("out of fuel"), "{shown}");
+    assert!(shown.contains("GET /nearest/kittne") && shown.contains("err"), "the run's row says it failed: {shown}");
+    press(&mut app, KeyCode::Tab);
+    assert_eq!(app.tabs[0].runs.as_ref().unwrap().pane, RunPane::Timeline);
+    let shown = screen(&mut app, 140, 40);
+    assert!(shown.contains("It ran nothing this text says.") || shown.contains("recorded no timing"), "{shown}");
+    for (w, h) in [(80, 24), (60, 16), (40, 12)] {
+        screen(&mut app, w, h);
+    }
 }
 
 #[test]

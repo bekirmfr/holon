@@ -66,6 +66,18 @@ pub(crate) struct Runs {
     pub(crate) view: Option<Result<agent::RunView, String>>,
     /// Which noted line the view is at, among those with notes.
     pub(crate) step: usize,
+    /// What the bottom panel's right side shows of the run.
+    pub(crate) pane: RunPane,
+}
+
+/// The right side of a run's panel, as the web editor's: what it read and did, why it failed,
+/// and when each statement ran.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum RunPane {
+    #[default]
+    Details,
+    Errors,
+    Timeline,
 }
 
 impl Runs {
@@ -90,6 +102,45 @@ impl Runs {
         if n > 0 {
             self.step = (self.step as isize + by).rem_euclid(n) as usize;
         }
+    }
+
+    /// Why the run picked failed: its error, and each line that gave nothing for a reason (once
+    /// a reason: what it held up says the same). Empty when it didn't.
+    pub(crate) fn errors(&self) -> Vec<(Option<u32>, String)> {
+        let mut out = vec![];
+        if let Some(e) = self.entries.get(self.sel).and_then(|e| e.get("error")).and_then(Value::as_str) {
+            out.push((None, e.to_string()));
+        }
+        if let Some(Ok(v)) = &self.view {
+            let mut said = std::collections::HashSet::new();
+            for (line, notes) in &v.notes {
+                for n in notes {
+                    let Some(at) = n.find(" gave nothing: ") else { continue };
+                    let why = n[n[..at].rfind(": ").map(|i| i + 2).unwrap_or(0)..].to_string();
+                    if said.insert(why.clone()) {
+                        out.push((Some(*line), why));
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// The panes there are: Errors only for a run that failed.
+    pub(crate) fn panes(&self) -> Vec<RunPane> {
+        let mut panes = vec![RunPane::Details];
+        if !self.errors().is_empty() {
+            panes.push(RunPane::Errors);
+        }
+        panes.push(RunPane::Timeline);
+        panes
+    }
+
+    /// The next pane (or the one before), round the ends.
+    pub(crate) fn next_pane(&mut self, by: isize) {
+        let panes = self.panes();
+        let at = panes.iter().position(|p| *p == self.pane).unwrap_or(0) as isize;
+        self.pane = panes[(at + by).rem_euclid(panes.len() as isize) as usize];
     }
 }
 
@@ -263,6 +314,8 @@ pub(crate) enum Click {
     Scroll(List),
     /// Code, graph, or both.
     Show(Show),
+    /// A tab of a run's panel.
+    RunPane(RunPane),
     /// Behind a dialog: a click there closes it, as esc does.
     Outside,
 }
@@ -774,7 +827,7 @@ impl App {
             Ok(log) => {
                 let mut entries = log["entries"].as_array().cloned().unwrap_or_default();
                 entries.reverse();
-                let mut runs = Runs { slug, entries, sel: 0, view: None, step: 0 };
+                let mut runs = Runs { slug, entries, sel: 0, view: None, step: 0, pane: RunPane::Details };
                 load_run(c, &mut runs);
                 self.tabs[i].runs = Some(runs);
                 self.typing = false;
@@ -930,7 +983,8 @@ impl App {
         if ctrl && k.code == KeyCode::Char('`') {
             return self.open_shell();
         }
-        if ctrl && k.code == KeyCode::Char('n') {
+        // A draft in a new tab: ctrl+t, as a browser opens one (ctrl+n too, where the terminal lets it by).
+        if ctrl && matches!(k.code, KeyCode::Char('t') | KeyCode::Char('n')) {
             return self.new_draft();
         }
         if ctrl && matches!(k.code, KeyCode::Char('p') | KeyCode::Char('k')) {
@@ -1296,6 +1350,8 @@ impl App {
                 KeyCode::Char('N') | KeyCode::Left | KeyCode::Char('h') => runs.go(-1),
                 KeyCode::Home => runs.step = 0,
                 KeyCode::End => runs.step = runs.steps().len().saturating_sub(1),
+                KeyCode::Tab => runs.next_pane(1),
+                KeyCode::BackTab => runs.next_pane(-1),
                 KeyCode::Char('b') => self.next_show(),
                 _ => {}
             }
@@ -1511,6 +1567,11 @@ impl App {
                 self.typing = self.tabs[i].runs.is_none() && self.show != Show::Graph;
             }
             Click::Show(s) => self.set_show(s),
+            Click::RunPane(p) => {
+                if let Some(runs) = self.tabs.get_mut(self.tab).and_then(|t| t.runs.as_mut()) {
+                    runs.pane = p;
+                }
+            }
             Click::CloseTab(i) => self.ask_close(i),
             Click::Text { top, left, .. } => {
                 let Some(tab) = self.tabs.get_mut(self.tab) else { return };
@@ -1636,6 +1697,12 @@ impl App {
 fn load_run(c: &Client, runs: &mut Runs) {
     runs.step = 0;
     runs.view = runs.entries.get(runs.sel).map(|e| c.run_view(&runs.slug, e));
+    // A run that failed opens on why, as the web editor's does; one that didn't leaves Errors.
+    if !runs.errors().is_empty() {
+        runs.pane = RunPane::Errors;
+    } else if runs.pane == RunPane::Errors {
+        runs.pane = RunPane::Details;
+    }
 }
 
 /// The position the language counts for a tab's cursor.

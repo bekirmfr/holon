@@ -278,7 +278,7 @@ fn draw_keys(f: &mut Frame, app: &App, area: Rect) {
     } else {
         match app.page {
             Page::Editor if app.tabs.is_empty() => vec![("n", "new draft", Char('n'), NONE), ("6", "library", Char('6'), NONE), ("3", "flows", Char('3'), NONE), ("ctrl+p", "find", Char('p'), CTRL), ("q", "quit", Char('q'), NONE)],
-            Page::Editor if app.tabs[app.tab].runs.is_some() => vec![("↑↓", "run", Down, NONE), ("→", "next step", Right, NONE), ("←", "step back", Left, NONE), ("b", show_next(app.show), Char('b'), NONE), ("esc", "back to editing", Esc, NONE)],
+            Page::Editor if app.tabs[app.tab].runs.is_some() => vec![("↑↓", "run", Down, NONE), ("→", "next step", Right, NONE), ("←", "step back", Left, NONE), ("tab", "details · errors · timeline", Tab, NONE), ("b", show_next(app.show), Char('b'), NONE), ("esc", "back to editing", Esc, NONE)],
             Page::Editor if app.show == Show::Graph => vec![
                 ("↑↓", "pick", Down, NONE),
                 ("→", "its detail", Right, NONE),
@@ -292,6 +292,7 @@ fn draw_keys(f: &mut Frame, app: &App, area: Rect) {
             Page::Editor if app.typing => vec![
                 ("ctrl+s", "save", Char('s'), CTRL),
                 ("ctrl+d", "deploy", Char('d'), CTRL),
+                ("ctrl+t", "new tab", Char('t'), CTRL),
                 ("ctrl+r", "runs", Char('r'), CTRL),
                 ("ctrl+b", show_next(app.show), Char('b'), CTRL),
                 ("ctrl+f", "find", Char('f'), CTRL),
@@ -301,7 +302,7 @@ fn draw_keys(f: &mut Frame, app: &App, area: Rect) {
                 ("ctrl+w", "close", Char('w'), CTRL),
                 ("esc", "page keys", Esc, NONE),
             ],
-            Page::Editor => vec![("i", "type", Char('i'), NONE), ("n", "new draft", Char('n'), NONE), ("[ ]", "tabs", Char(']'), NONE), ("s", "save", Char('s'), NONE), ("d", "deploy", Char('d'), NONE), ("v", "runs", Char('v'), NONE), ("b", show_next(app.show), Char('b'), NONE), ("w", "close", Char('w'), NONE), ("q", "quit", Char('q'), NONE)],
+            Page::Editor => vec![("i", "type", Char('i'), NONE), ("n", "new tab", Char('n'), NONE), ("[ ]", "tabs", Char(']'), NONE), ("s", "save", Char('s'), NONE), ("d", "deploy", Char('d'), NONE), ("v", "runs", Char('v'), NONE), ("b", show_next(app.show), Char('b'), NONE), ("w", "close", Char('w'), NONE), ("q", "quit", Char('q'), NONE)],
             Page::Flow => match app.flow.section {
                 Section::Status => vec![("← →", "sections", Right, NONE), ("enter", "go back to a version", Enter, NONE), ("c", "call", Char('c'), NONE), ("e", "edit", Char('e'), NONE), ("g p x", "run pause stop", Char('g'), NONE), ("esc", "flows", Esc, NONE)],
                 _ if in_flow_pane => vec![("← →", "tabs", Right, NONE), ("↑↓", "scroll", Down, NONE), ("tab", "next section", Tab, NONE), ("esc", "back to the list", Esc, NONE)],
