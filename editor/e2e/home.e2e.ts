@@ -49,13 +49,15 @@ test("the welcome opens on start until told not to; home keeps its panes", async
 });
 
 test("a welcome that loads late doesn't take you from a page you opened", async ({ page }) => {
-  // The prefs answer is held until the flows page is open, as on a slow server.
+  // The prefs answer is held until the flows page is open, as on a slow server. It is answered
+  // here, as nothing kept yet (so the welcome opens on start): a held request let through to the
+  // server once never reached it, and the server holds what the test before left.
   let release!: () => void;
   const held = new Promise<void>((r) => (release = r));
   await page.route("**/auth/prefs", async (route) => {
     if (route.request().method() !== "GET") return route.continue();
     await held;
-    await route.continue();
+    await route.fulfill({ json: {} });
   });
   await page.goto("/");
   const tabs = page.getByRole("tablist", { name: "open tabs" });
