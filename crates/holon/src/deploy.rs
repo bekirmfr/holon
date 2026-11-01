@@ -518,7 +518,26 @@ fn preview_value(
     }
     let items = manifest.items();
     let granted: Vec<&String> = items.iter().filter(|i| !needs.contains(*i) && !withheld.contains(*i)).collect();
+    // What it touches, beside what it touches now, and the settings that change.
+    let (deployed, asked_now) = {
+        let table = deployments.lock().unwrap();
+        (table.keys().cloned().collect(), table.get(&body.slug).and_then(|d| d.versions.last()).and_then(|v| v.request.clone()))
+    };
+    let now: Option<Vec<String>> = previous.as_ref().map(|g| g.items.iter().cloned().collect());
+    let optional: Vec<String> = manifest.requirements.optional.iter().cloned().collect();
+    let server = touches::Server { slug: &body.slug, secrets, folders, policy, deployed };
+    let list = |set: &BTreeSet<String>| set.iter().cloned().collect::<Vec<_>>();
+    let (then, needing, withholding) = (list(&items), list(&needs), list(&withheld));
+    let touches = touches::touches(&server, &touches::Ask { now: now.as_deref(), then: &then, needs: &needing, withheld: &withholding, optional: &optional });
+    let settings = match &asked_now {
+        Some(a) => touches::settings((a.interval_seconds, &a.browsers), (body.interval_seconds, &body.browsers)),
+        None => serde_json::json!([]),
+    };
     Ok(serde_json::json!({
+        // Each thing it touches (a folder, a secret, a host…): new, gone or as now, and whether
+        // this server is ready for it (touches.rs).
+        "touches": touches,
+        "settings": settings,
         "manifest": to_hex(&manifest.hash()),
         "items": items,
         "needs_approval": needs,
@@ -1239,11 +1258,26 @@ pub(crate) fn handle_post_restore(state: &AppState, slug: &str, request: &Reques
             None => serde_json::json!({}),
         };
         answer["code"] = serde_json::json!(code.as_ref().map(|(n, _)| n));
+        if code.is_none() {
+            // Its code stays: what it touches is what it touches now.
+            let (items, optional, deployed) = {
+                let table = state.deployments.lock().unwrap();
+                let grant = table.get(slug).map(|d| (d.grant.items.iter().cloned().collect(), d.grant.requirements.optional.iter().cloned().collect()));
+                let (items, optional): (Vec<String>, Vec<String>) = grant.unwrap_or_default();
+                (items, optional, table.keys().cloned().collect())
+            };
+            let policy = state.policy();
+            let server = touches::Server { slug, secrets: &state.secrets, folders: &state.folders, policy: &policy, deployed };
+            answer["touches"] = touches::touches(&server, &touches::Ask { now: Some(&items), then: &items, needs: &[], withheld: &[], optional: &optional });
+            answer["settings"] = serde_json::json!([]);
+        }
         if let Some((snapshot, label, since)) = &put_back {
             answer["state"] = match state_change(state, slug, snapshot, label, since) {
                 Ok(v) => v,
                 Err(r) => return r,
             };
+            let change = answer["state"].clone();
+            crate::touches::with_restore(&mut answer["touches"], since, &change);
         }
         return Response::json(&answer);
     }

@@ -93,6 +93,10 @@ pub(crate) fn run(args: &[String]) -> i32 {
 
     if !needs.is_empty() && !approve {
         eprintln!("holon deploy: \"{slug}\" needs approval before it can deploy.");
+        eprintln!("What it touches (+ new, - no longer, ~ changed, ! not ready on this server):");
+        for line in crate::touches::text(&crate::touches::lines(&staged.touches, &staged.settings)) {
+            eprintln!("{line}");
+        }
         eprintln!("It asks to:");
         for cap in &needs {
             eprintln!("  - {}", agent::describe(cap));
@@ -129,8 +133,10 @@ pub(crate) struct Staged {
     body: Value,
     /// What it asks for that isn't granted yet: a person approves these by deploying it.
     pub(crate) needs: Vec<String>,
-    /// The secrets it reads that aren't set on the server yet.
-    pub(crate) missing_secrets: Vec<String>,
+    /// What it touches (its secrets not set yet among them) and the settings that change, as the
+    /// preview answered them (touches.rs).
+    pub(crate) touches: Value,
+    pub(crate) settings: Value,
 }
 
 /// Send `plan`'s units to `server`, and ask what deploying it as `slug` needs a person to approve;
@@ -158,7 +164,7 @@ pub(crate) fn stage(api: &dyn Api, plan: &agent::Plan, slug: &str) -> Result<Sta
     let list = |k: &str| -> Vec<String> {
         preview.get(k).and_then(Value::as_array).map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect()).unwrap_or_default()
     };
-    Ok(Staged { body, needs: list("needs_approval"), missing_secrets: list("missing_secrets") })
+    Ok(Staged { body, needs: list("needs_approval"), touches:preview["touches"].clone(), settings: preview["settings"].clone() })
 }
 
 /// Deploy what [`stage`] staged, with `document` (the plan's, with its text kept or not):

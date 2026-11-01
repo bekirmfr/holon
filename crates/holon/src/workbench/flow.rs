@@ -582,29 +582,27 @@ impl App {
             lines.push((Tone::Dim, format!("{} ran on the code deployed now: only its state is put back.", point.name)));
         }
         let needs: Vec<String> = preview["needs_approval"].as_array().into_iter().flatten().filter_map(|v| v.as_str().map(String::from)).collect();
-        let missing: Vec<&str> = preview["missing_secrets"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
         if let Some(n) = deploys {
             lines.push((Tone::Head, "Its code".into()));
             if needs.is_empty() {
                 lines.push((Tone::Good, format!("Version {n}'s code deploys again, with the grant {slug} has now.")));
             } else {
-                lines.push((Tone::Warn, format!("Version {n}'s code needs what today's grant doesn't cover; confirming approves it, as you:")));
-                lines.extend(needs.iter().map(|i| (Tone::Warn, format!("  + {}", agent::describe(i)))));
+                let k = needs.len();
+                lines.push((Tone::Warn, format!("Version {n}'s code needs {k} permission{} today's grant doesn't cover, marked +: confirming approves {}, as you.", if k == 1 { "" } else { "s" }, if k == 1 { "it" } else { "them" })));
             }
             match c.code_diff(slug, n) {
                 Ok(diff) => lines.extend(diff_lines(&diff)),
                 Err(e) => lines.push((Tone::Bad, format!("Its text can't be shown: {e}"))),
             }
         }
-        if !missing.is_empty() {
-            lines.push((Tone::Warn, format!("Its secrets not set now (those steps stay empty until they are): {}", missing.join(", "))));
-        }
+        lines.extend(touch_lines(&preview));
         if !preview["state"].is_null() {
             lines.push((Tone::Head, "Its state".into()));
             for l in crate::restore::state_lines(&preview["state"]).lines() {
                 let tone = if l.contains("doesn't undo") || l.contains("doesn't put back") { Tone::Warn } else { Tone::Plain };
                 lines.push((tone, l.to_string()));
             }
+            lines.extend(crate::mcp::state_values(&preview["state"]).into_iter().map(|l| (Tone::Plain, l)));
         }
         self.modal = Some(Modal::DryRun { slug: slug.to_string(), point, code, state, lines, needs, refused: refused.is_some(), scroll: 0 });
     }
@@ -889,6 +887,32 @@ pub(crate) fn diff_lines(diff: &str) -> Vec<Said> {
             (tone, l.to_string())
         })
         .collect()
+}
+
+/// What a dry run (`preview`, a deploy's or a restore's) says the flow touches, coloured by what
+/// the change does to each thing, its note under it: red when the server isn't ready for it.
+pub(crate) fn touch_lines(preview: &Value) -> Vec<Said> {
+    use crate::touches::Mark;
+    let mut out = vec![];
+    for l in crate::touches::lines(&preview["touches"], &preview["settings"]) {
+        let tone = match l.mark {
+            Mark::Head => Tone::Head,
+            Mark::Approve | Mark::Changed => Tone::Warn,
+            Mark::New => Tone::Added,
+            Mark::Gone => Tone::Removed,
+            Mark::Same => Tone::Plain,
+            Mark::Unready => Tone::Bad,
+        };
+        if l.mark == Mark::Head {
+            out.push((tone, l.text));
+            continue;
+        }
+        out.push((tone, format!("  {}{}", l.mark.sign(), l.text)));
+        if !l.note.is_empty() {
+            out.push((if l.mark == Mark::Unready { Tone::Bad } else { Tone::Dim }, format!("      {}", l.note)));
+        }
+    }
+    out
 }
 
 /// An HTTP answer: its status, then its body, laid out when it is JSON.

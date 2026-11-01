@@ -171,10 +171,14 @@ pub(crate) fn cli(args: &[String]) -> i32 {
     }
     let needs: Vec<String> = preview["needs_approval"].as_array().into_iter().flatten().filter_map(|v| v.as_str().map(String::from)).collect();
     let missing: Vec<&str> = preview["missing_secrets"].as_array().into_iter().flatten().filter_map(|v| v.as_str()).collect();
-    if !missing.is_empty() {
+    if !missing.is_empty() && !dry_run {
         println!("its secrets not set now (those nodes stay empty until they are): {}", missing.join(", "));
     }
     if dry_run {
+        println!("what it touches (+ new, - no longer, ~ changed, ! not ready on this server):");
+        for line in crate::touches::text(&crate::touches::lines(&preview["touches"], &preview["settings"])) {
+            println!("{line}");
+        }
         if let Some(n) = deploys {
             if needs.is_empty() {
                 println!("version {n}'s code would deploy again with the grant {slug} has now");
@@ -188,6 +192,7 @@ pub(crate) fn cli(args: &[String]) -> i32 {
         }
         if !preview["state"].is_null() {
             println!("{}", state_lines(&preview["state"]));
+            crate::mcp::state_values(&preview["state"]).iter().for_each(|l| println!("{l}"));
         }
         println!("nothing changed (--dry-run)");
         return 0;

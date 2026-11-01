@@ -331,9 +331,12 @@ fn a_run_lights_what_it_played_and_its_timeline_picks_the_step_in_the_code_and_t
 #[test]
 fn going_back_offers_what_can_be_put_back_then_a_dry_run_then_restores() {
     let (mut app, _) = bumped(1);
-    // A second version, run once: the state is 3 now.
-    tab_with(&mut app, &BUMP.replace("+ 1", "+ 2"));
+    // A second version, which keeps one more key, run once: the state is 3 now.
+    tab_with(&mut app, &BUMP.replace("+ 1", "+ 2").replace("  respond n", "  state.last = n\n  respond n"));
     ctrl(&mut app, 'd');
+    // Its approval shows what it touches beside what it touches now.
+    let shown = screen(&mut app, 120, 40);
+    assert!(shown.contains("What it keeps") && shown.contains("+ key last: write") && shown.contains("· key n: read, write"), "{shown}");
     press(&mut app, KeyCode::Enter);
     assert!(app.note.as_ref().is_some_and(|n| !n.error), "{:?}", app.note.as_ref().map(|n| &n.text));
     let c = app.client.as_ref().unwrap();
@@ -360,6 +363,14 @@ fn going_back_offers_what_can_be_put_back_then_a_dry_run_then_restores() {
     assert!(!refused);
     assert!(lines.iter().any(|(_, l)| l.contains("Version 1's code deploys again")), "{lines:#?}");
     assert!(lines.iter().any(|(t, _)| *t == Tone::Removed), "the text it puts back, as a diff: {lines:#?}");
+    // What it touches: the key version 1 doesn't keep, gone, and what putting the state back does
+    // to each key, with its values now and then.
+    let at = |text: &str| lines.iter().position(|(_, l)| l == text).unwrap_or_else(|| panic!("{text:?} in {lines:#?}"));
+    let (n_row, last_row) = (at("  · key n: read, write"), at("  - key last: write"));
+    assert_eq!(lines[n_row + 1].1.trim(), "putting the state back changes it");
+    assert_eq!(lines[last_row + 1].1.trim(), "no longer; putting the state back drops it");
+    assert_eq!(lines[last_row].0, Tone::Removed);
+    at("  n: 3 → 1");
     let shown = screen(&mut app, 120, 40);
     assert!(shown.contains("Dry run") && shown.contains("Nothing has changed yet"), "{shown}");
     assert_eq!(n(&app), Some(3.0), "a dry run changes nothing");

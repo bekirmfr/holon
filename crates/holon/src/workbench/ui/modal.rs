@@ -128,16 +128,16 @@ pub(super) fn draw(f: &mut Frame, app: &mut App, area: Rect) {
                     lines.push(Line::from(Span::styled(format!("{mark}{}", if k == '…' { "…" } else { &l }), style)));
                 }
             } else {
-                lines.push(Line::default());
-                lines.push(Line::from(bold("It may")));
-                if plan.may.is_empty() {
-                    lines.push(Line::from(dim("  only compute")));
+                let touches = crate::workbench::flow::touch_lines(&serde_json::json!({ "touches": staged.touches, "settings": staged.settings }));
+                if touches.is_empty() {
+                    lines.push(Line::default());
+                    lines.push(Line::from(dim("It only computes: it touches nothing outside a run.")));
                 }
-                for i in &plan.may {
-                    let new = staged.needs.contains(i);
-                    lines.push(Line::from(vec![if new { coloured("  + ", WARN) } else { dim("  · ") }, Span::raw(agent::describe(i))]));
-                }
-                for n in staged.needs.iter().filter(|n| !plan.may.contains(n)) {
+                // As wide as the dialog's body: a note too long for it is cut, its row isn't.
+                lines.extend(said(&touches, 86));
+                // Asked beside its code (an agent's new site to answer pages from).
+                let listed: Vec<&str> = staged.touches.as_array().into_iter().flatten().flat_map(|r| r["uses"].as_array().into_iter().flatten()).filter_map(|u| u["item"].as_str()).collect();
+                for n in staged.needs.iter().filter(|n| !listed.contains(&n.as_str())) {
                     lines.push(Line::from(vec![coloured("  + ", WARN), Span::raw(agent::describe(n))]));
                 }
                 lines.push(Line::default());
@@ -145,9 +145,6 @@ pub(super) fn draw(f: &mut Frame, app: &mut App, area: Rect) {
                     lines.push(Line::from(coloured("Nothing new to approve: its grant covers all of this.", GOOD)));
                 } else {
                     lines.push(Line::from(coloured(format!("You approve the {} marked +, as you, by deploying it.", staged.needs.len()), WARN)));
-                }
-                if !staged.missing_secrets.is_empty() {
-                    lines.push(Line::from(coloured(format!("Not set yet: {} (a run that reads one gets nothing until it is set).", staged.missing_secrets.join(", ")), WARN)));
                 }
                 if !plan.routes.is_empty() {
                     lines.push(Line::default());

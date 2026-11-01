@@ -14,6 +14,7 @@ import { describeItem, type Evaluator } from "./holon";
 import { stageClosure } from "./canvasUnits";
 import { changeDeployment, deployUnit, previewDeploy, type DeploymentEntry, type FlowDocument } from "./server";
 import { browsersOf, type FlowSettings } from "./DeployBar";
+import { touchLines, touchText } from "./touches";
 import type { PrimitiveNodeType } from "./PrimitiveNode";
 
 type Dialogs = { confirm: (message: string, action?: string) => Promise<boolean>; prompt: (message: string, initial?: string) => Promise<string | null> };
@@ -139,10 +140,12 @@ export function useDeployFlow({
       const said = (i: string) => `• ${describeItem(i, byHand)}${optional.includes(i) ? " (optional: it runs without it)" : ""}`;
       const lines = [`${existing ? "Update" : "Deploy"} "${name}"?`];
       if (ask.length > 0) lines.push("", "It needs your approval to:", ...ask.map(said));
-      if (preview.already_granted.length > 0) {
-        lines.push("", "Already granted:", ...preview.already_granted.map(said));
-      }
-      if (preview.missing_secrets.length > 0) {
+      // Everything it touches, beside what it touches now, and whether this server is ready for
+      // each (a secret not set yet, a folder not bound).
+      const touches = touchText(touchLines(preview.touches, preview.settings));
+      if (touches.length > 0) lines.push("", "What it touches (+ new, - no longer, ~ changed, ! not ready on this server):", ...touches);
+      else if (preview.already_granted.length > 0) lines.push("", "Already granted:", ...preview.already_granted.map(said));
+      if (touches.length === 0 && preview.missing_secrets.length > 0) {
         lines.push("", `Not set yet: ${preview.missing_secrets.join(", ")} (set under ⚙ → secrets; until then those nodes stay empty)`);
       }
       const pages = browsersOf(settings);

@@ -62,7 +62,7 @@ The tools `holon mcp` offers:
 | `state` | what a deployment keeps now: each state value, and its collections; with a collection, its items (with a key, one) |
 | `explain` | one run as the program: each statement's value, where a missing value came from, the effects and calls |
 | `history` | a deployment's timeline: its runs, each with the version it ran on, and what was done to it between them, by whom (deploys, restores, grant changes, secrets, pausing); with a `cell`, the runs that changed that value, before and after |
-| `restore` | a dry run of going back to a version or a run: the code's text beside today's, the permissions, the state's keys and items now → then, the runs since and the files they wrote; it changes nothing. With `ask`, it saves the restore for you to approve |
+| `restore` | a dry run of going back to a version or a run: the code's text beside today's, the permissions, what it touches (each folder, database, secret, host, key… new, gone or as now, and whether the server is ready for it), the state's keys and items now → then, the runs since and the files they wrote; it changes nothing. With `ask`, it saves the restore for you to approve |
 
 `check` and `reference` need no server; the rest reach the one `holon mcp` connects to.
 
@@ -88,6 +88,12 @@ Not deployed yet: a person has to approve what "counter" may do. It asks to:
   - receive requests
   - read items of its collection "counts"
   - put and delete items of its collection "counts"
+
+What it touches (+ new, - no longer, ~ changed, ! not ready on http://127.0.0.1:7420):
+What starts it
+  + requests: receive — approved by confirming
+What it keeps
+  + collection counts: read, put and delete — approved by confirming
 
 It is saved as the flow "counter" on http://127.0.0.1:7420: they open the editor there, open
 "counter" from the flows page, and deploy it, which asks them to approve exactly these. …
