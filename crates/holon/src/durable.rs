@@ -634,7 +634,7 @@ pub(crate) fn resume_parked(
     waits.folders = Some(folders);
     waits.channels = Some(channels);
     waits.slug = Some(slug.to_string());
-    let resolver = materialize_closure(store, unit).map_err(|e| format!("store error: {e:?}"))?;
+    let resolver = closure(store, unit).map_err(|e| format!("store error: {e:?}"))?;
     let root = resolver.resolve(&unit).ok_or("the run's unit no longer resolves")?;
     let started = started_now();
     let resolver = holon_module::WithEngine::new(&resolver, holon_module::shared());

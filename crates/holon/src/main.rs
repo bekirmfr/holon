@@ -116,9 +116,9 @@
 //! `Resolver` (it re-executes the cached computation to check the claimed output), but `Store`
 //! only hands back owned units, not a `Resolver`. `Registry::fork` faces the identical problem
 //! internally (its own doc: "materialize the root's bounded closure into one [resolver]") — so
-//! this inch reuses that shape rather than inventing a second one: `materialize_closure` walks
+//! this inch reuses that shape rather than inventing a second one: `closure` (units.rs) walks
 //! a unit's closure via `child_refs` (the same primitive `Registry::publish`'s own dangling-
-//! reference check already uses) and populates a fresh `MapResolver`, once per request. `SharedCache`
+//! reference check already uses), once per root hash: the flow cache keeps it after that. `SharedCache`
 //! itself is also in-memory only, same as `Registry`'s published set — restarting the server
 //! forgets ingested/cached entries too, worth restating rather than assuming obvious.
 //!
@@ -276,20 +276,21 @@ type DynStore = Box<dyn Store + Send>;
 /// second clone stays with the server for direct `/unit` reads/writes — both clones lock the
 /// same underlying `Mutex`, so they see the same data. See the module doc for why this exists
 /// instead of a `holon-host` change.
-/// The third part notes the values put lately, for a sweep to spare (sweep.rs).
+/// The third part notes the values put lately, for a sweep to spare (sweep.rs); the fourth keeps
+/// the closures runs have loaded (units.rs's `FlowCache`).
 #[derive(Clone)]
-struct SharedStore(Arc<Mutex<DynStore>>, Arc<calls::Hub>, Arc<sweep::Puts>);
+struct SharedStore(Arc<Mutex<DynStore>>, Arc<calls::Hub>, Arc<sweep::Puts>, Arc<units::FlowCache>);
 
 impl SharedStore {
     /// A handle onto `backend`, which no run can yet reach the other deployments through: the
     /// server connects that once its table of deployments exists (`calls::Hub::connect`).
     fn new(backend: DynStore) -> SharedStore {
-        SharedStore(Arc::new(Mutex::new(backend)), Arc::default(), Arc::default())
+        SharedStore(Arc::new(Mutex::new(backend)), Arc::default(), Arc::default(), Arc::default())
     }
 
     /// The same onto a `FileStore` keeping its values in `values`, which a sweep may clear.
     fn on_disk(backend: DynStore, values: PathBuf) -> SharedStore {
-        SharedStore(Arc::new(Mutex::new(backend)), Arc::default(), Arc::new(sweep::Puts::at(values)))
+        SharedStore(Arc::new(Mutex::new(backend)), Arc::default(), Arc::new(sweep::Puts::at(values)), Arc::default())
     }
 }
 
@@ -549,6 +550,8 @@ const SERVE_USAGE: &str = "usage: holon serve [options]
   --allow-host HOST          a host name it answers to besides localhost (repeatable)
   --allow-origin ORIGIN      an editor origin it answers besides localhost's (repeatable)
   --keep-runs N              runs each deployment's log keeps (default 500; or HOLON_KEEP_RUNS)
+  --flow-cache SIZE          memory kept for loaded flows, such as 64M or 1G; 0 keeps none
+                             (default 256M; or HOLON_FLOW_CACHE)
   --export-heads URL         send each run's head to a witness (or HOLON_EXPORT_HEADS; its
                              token in HOLON_EXPORT_HEADS_TOKEN)
   --secrets PATH             the secrets file
@@ -701,6 +704,8 @@ fn serve(args: Vec<String>) {
     let mut data_limits = dataplane::DataLimits::default();
     // How many runs each deployment's log keeps (`--keep-runs N`, or HOLON_KEEP_RUNS; recorder.rs).
     let mut keep_runs: Option<String> = std::env::var("HOLON_KEEP_RUNS").ok().filter(|v| !v.trim().is_empty());
+    // How much memory loaded flows may keep (`--flow-cache SIZE`, or HOLON_FLOW_CACHE; units.rs).
+    let mut flow_cache: Option<String> = std::env::var("HOLON_FLOW_CACHE").ok().filter(|v| !v.trim().is_empty());
     // A witness every run's head goes to (`--export-heads URL`, or HOLON_EXPORT_HEADS; heads.rs).
     let mut export_heads: Option<String> = std::env::var("HOLON_EXPORT_HEADS").ok().filter(|v| !v.trim().is_empty());
     while let Some(a) = args.next() {
@@ -723,6 +728,12 @@ fn serve(args: Vec<String>) {
             keep_runs = args.next();
             if keep_runs.is_none() {
                 eprintln!("--keep-runs needs a number of runs (at least 1)");
+                std::process::exit(2);
+            }
+        } else if a == "--flow-cache" {
+            flow_cache = args.next();
+            if flow_cache.is_none() {
+                eprintln!("--flow-cache needs a size: 64M, 1G, or 0 to keep none");
                 std::process::exit(2);
             }
         } else if a == "--data-host" {
@@ -1019,6 +1030,15 @@ fn serve(args: Vec<String>) {
         let values = store.values_dir();
         SharedStore::on_disk(Box::new(store), values)
     };
+    if let Some(v) = flow_cache {
+        match verify::budget_of(&v) {
+            Some(bytes) => store.3.set_budget(bytes),
+            None => {
+                eprintln!("holon: --flow-cache (or HOLON_FLOW_CACHE) needs a size: 1048576, 64K, 64M or 1G, or 0 to keep none, not {v:?}");
+                std::process::exit(2);
+            }
+        }
+    }
     let registry = Mutex::new(Registry::new(store.clone()));
     let cache = Mutex::new(SharedCache::new());
     let refuse_to_start = |e: String| -> ! {

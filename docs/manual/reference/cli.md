@@ -125,6 +125,7 @@ its first admin. [Server configuration](server.md) covers what it keeps and wher
 | `--allow-host HOST` | a host name it answers to besides localhost; repeatable |
 | `--allow-origin ORIGIN` | an origin the editor may be served from, besides localhost's; repeatable |
 | `--keep-runs N` | runs each deployment's log keeps unless its deploy settings say (the `keep_runs` limit's default: 500 without it; or `HOLON_KEEP_RUNS`) |
+| `--flow-cache SIZE` | memory kept for the flows runs have loaded, so a run doesn't read its flow from the store again: `64M`, `1G`, or `0` to keep none (default `256M`; or `HOLON_FLOW_CACHE`). Each unit counts once, however many flows place it; past the size, the flows used least recently are let go and load again when next run |
 | `--export-heads URL` | send each run's head to a witness (or `HOLON_EXPORT_HEADS`); its token in `HOLON_EXPORT_HEADS_TOKEN` |
 | `--secrets-key os\|env:VAR\|file:PATH` | where the secrets file's key is kept (default: the OS key store) |
 | `--new-secrets-key` | print a fresh key for `--secrets-key env:VAR`, and exit |
@@ -594,6 +595,7 @@ the body uses undeclared. It needs no server. The VS Code extension starts it.
 | `HOLON_DATA` | the server's data folder (default `HOLON_HOME/data`) |
 | `HOLON_SERVER_ADDR` | `holon serve --at` |
 | `HOLON_KEEP_RUNS` | `holon serve --keep-runs` |
+| `HOLON_FLOW_CACHE` | `holon serve --flow-cache` |
 | `HOLON_SETUP_CODE` | the first admin's setup code |
 | `HOLON_EXPORT_HEADS`, `HOLON_EXPORT_HEADS_TOKEN` | the witness heads are sent to, and its token |
 | `HOLON_SECRET_<NAME>` | values for secrets whose source is env |

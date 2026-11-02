@@ -370,7 +370,7 @@ fn fire_one_arrival(
     let Value::Record(mut handle) = handle else { return };
     handle.insert("event".to_string(), Value::Text(event.name().to_string()));
     let handle = Value::Record(handle);
-    let resolver = match materialize_closure(store, unit_hash) {
+    let resolver = match closure(store, unit_hash) {
         Ok(r) => r,
         Err(e) => {
             eprintln!("new file [{slug}]: store error while materializing closure: {e:?}");

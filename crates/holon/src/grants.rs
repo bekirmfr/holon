@@ -16,7 +16,7 @@ use crate::*;
 /// What `unit` needs as its graph derives it, read from the store with no table lock held;
 /// `scheduled` (deployed with an interval: a clock flow), with the clock it runs on.
 pub(crate) fn derived_capabilities(store: &SharedStore, unit: Hash, scheduled: bool) -> Result<Capabilities, String> {
-    let resolver = materialize_closure(store, unit).map_err(|e| format!("store error while materializing closure: {e:?}"))?;
+    let resolver = closure(store, unit).map_err(|e| format!("store error while materializing closure: {e:?}"))?;
     let root = resolver.resolve(&unit).ok_or("the deployed unit no longer resolves in the store")?;
     Ok(holon_core::deployed_capabilities(root, &resolver, scheduled))
 }

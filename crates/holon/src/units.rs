@@ -1,6 +1,7 @@
 //! Units, the registry, forks and the shared cache: the content-addressed side of the control plane.
 
 use crate::*;
+use std::collections::HashMap;
 
 pub(crate) fn handle_get_unit(store: &SharedStore, hash_hex: &str) -> Response {
     let Some(key) = parse_hash(hash_hex) else {
@@ -142,22 +143,63 @@ pub(crate) fn handle_post_fork(registry: &Mutex<Registry<SharedStore>>, request:
     }
 }
 
-/// Build a `Resolver` over `root`'s full closure by walking `child_refs` (the same closure
-/// definition `Registry::publish`'s own dangling-reference check already uses — one definition
-/// of "what a unit references," not a second) and fetching each referenced unit from the store.
-/// This is the same shape `Registry::fork` already needs internally for the identical reason
-/// (`Store` yields owned units; `Resolver` wants borrowed ones) — reused, not reinvented.
+/// A flow's closure, as runs resolve it: `root` and every unit it reaches through `child_refs`
+/// (the closure definition `Registry::publish`'s dangling-reference check uses, so there is one
+/// definition of "what a unit references", not two). Cheap to clone: each unit is an `Arc`, shared
+/// with every other closure that places it, so a js node's engine module is held once however
+/// many flows place it.
 ///
-/// A hash that doesn't resolve in the store is left out of the resolver rather than erroring —
-/// `eval`/`verify_entry` already treat an unresolved reference as "nothing evaluable" and fail
-/// closed on it, so this doesn't need its own dangling-reference error path; it just doesn't
-/// promise more than the store actually has.
+/// A hash that doesn't resolve in the store is left out rather than an error: `eval` and
+/// `verify_entry` already treat an unresolved reference as "nothing evaluable" and fail closed on
+/// it, so a closure promises no more than the store has. Such a closure isn't kept (`closure`).
+#[derive(Clone, Default)]
+pub(crate) struct Loaded(Arc<BTreeMap<Hash, Arc<Unit>>>);
+
+impl Resolver for Loaded {
+    fn resolve(&self, hash: &Hash) -> Option<&Unit> {
+        self.0.get(hash).map(|u| u.as_ref())
+    }
+}
+
+#[cfg(test)]
+impl Loaded {
+    /// Whether it is the very closure `other` is (the same kept one), not just an equal one.
+    pub(crate) fn is(&self, other: &Loaded) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+    /// The unit it holds under `hash`, as shared.
+    pub(crate) fn unit(&self, hash: &Hash) -> Option<Arc<Unit>> {
+        self.0.get(hash).cloned()
+    }
+}
+
+/// The closure of `root`, from memory when it was loaded whole before (docs/L4s/request-path-L4.md,
+/// C1). A hash names one closure forever, so nothing kept ever goes stale: a redeploy is another
+/// hash, a rollback or a resumed run of an older version is a hash already kept, and units are
+/// never swept (sweep.rs). Only a whole closure is kept (a unit put later could complete a partial
+/// one), and never an error.
 ///
 /// A closure past [`MAX_CLOSURE_UNITS`] units, or nested deeper than [`MAX_CLOSURE_DEPTH`], is
 /// refused ([`Closure::TooBig`]): evaluating one recurses a level per nested unit, and its units
 /// are anyone's who can stage them.
-pub(crate) fn materialize_closure(store: &SharedStore, root: Hash) -> Result<MapResolver, Closure> {
-    let mut resolver = MapResolver::new();
+pub(crate) fn closure(store: &SharedStore, root: Hash) -> Result<Loaded, Closure> {
+    let cache = &store.3;
+    if let Some(kept) = cache.get(&root) {
+        return Ok(kept);
+    }
+    let (loaded, whole) = load_closure(store, root)?;
+    if whole {
+        cache.keep(root, &loaded);
+    }
+    Ok(loaded)
+}
+
+/// Walk and fetch `root`'s closure, taking each unit the cache already holds from memory and the
+/// rest from the store (which checks each against its hash). Says whether every reference
+/// resolved. No cache lock is held while the store is read.
+fn load_closure(store: &SharedStore, root: Hash) -> Result<(Loaded, bool), Closure> {
+    let mut units: BTreeMap<Hash, Arc<Unit>> = BTreeMap::new();
+    let mut whole = true;
     // Each unit's references, as it was fetched: the depth below is measured over these.
     let mut refs: BTreeMap<Hash, Vec<Hash>> = BTreeMap::new();
     let mut queue = vec![root];
@@ -165,8 +207,15 @@ pub(crate) fn materialize_closure(store: &SharedStore, root: Hash) -> Result<Map
         if refs.contains_key(&h) {
             continue;
         }
-        let Some(unit) = store.get(&h).map_err(Closure::Store)? else {
-            continue;
+        let unit = match store.3.unit(&h) {
+            Some(unit) => unit,
+            None => match store.get(&h).map_err(Closure::Store)? {
+                Some(unit) => Arc::new(unit),
+                None => {
+                    whole = false;
+                    continue;
+                }
+            },
         };
         if refs.len() >= MAX_CLOSURE_UNITS {
             return Err(Closure::TooBig(format!("its closure has more than {MAX_CLOSURE_UNITS} units")));
@@ -174,13 +223,131 @@ pub(crate) fn materialize_closure(store: &SharedStore, root: Hash) -> Result<Map
         let children = child_refs(&unit);
         queue.extend(children.iter().copied());
         refs.insert(h, children);
-        resolver.insert(unit).map_err(|e| Closure::Store(StoreError::Encode(e)))?;
+        units.insert(h, unit);
     }
     let depth = closure_depth(root, &refs);
     if depth > MAX_CLOSURE_DEPTH {
         return Err(Closure::TooBig(format!("it nests more than {MAX_CLOSURE_DEPTH} units deep")));
     }
-    Ok(resolver)
+    Ok((Loaded(Arc::new(units)), whole))
+}
+
+/// How much memory the flow cache holds by default: every sample flow about 40 times over, with
+/// units shared (docs/L4s/request-path-L4.md, C1). `holon serve --flow-cache SIZE` sets it.
+pub(crate) const FLOW_CACHE_BYTES: u64 = 256 << 20;
+
+/// The closures runs have loaded, kept by their root hash up to a budget in bytes (a unit's
+/// encoded size, each unit counted once however many closures hold it), the least recently used
+/// let go first. Its lock is a leaf: nothing else is locked under it, and the store is never read
+/// while it is held.
+pub(crate) struct FlowCache(Mutex<Kept>);
+
+struct Kept {
+    budget: u64,
+    bytes: u64,
+    tick: u64,
+    closures: HashMap<Hash, KeptClosure>,
+    units: HashMap<Hash, KeptUnit>,
+}
+
+struct KeptClosure {
+    loaded: Loaded,
+    used: u64,
+}
+
+struct KeptUnit {
+    unit: Arc<Unit>,
+    bytes: u64,
+    /// How many kept closures hold it.
+    holders: usize,
+}
+
+impl Default for FlowCache {
+    fn default() -> FlowCache {
+        FlowCache::with_budget(FLOW_CACHE_BYTES)
+    }
+}
+
+impl FlowCache {
+    pub(crate) fn with_budget(budget: u64) -> FlowCache {
+        FlowCache(Mutex::new(Kept { budget, bytes: 0, tick: 0, closures: HashMap::new(), units: HashMap::new() }))
+    }
+
+    /// Keep at most `budget` bytes from now on, letting go of what no longer fits.
+    pub(crate) fn set_budget(&self, budget: u64) {
+        let mut kept = self.0.lock().unwrap();
+        kept.budget = budget;
+        kept.shrink(None);
+    }
+
+    /// The closure kept for `root`, now the most recently used.
+    fn get(&self, root: &Hash) -> Option<Loaded> {
+        let mut kept = self.0.lock().unwrap();
+        kept.tick += 1;
+        let tick = kept.tick;
+        kept.closures.get_mut(root).map(|c| {
+            c.used = tick;
+            c.loaded.clone()
+        })
+    }
+
+    /// A unit some kept closure holds.
+    fn unit(&self, hash: &Hash) -> Option<Arc<Unit>> {
+        self.0.lock().unwrap().units.get(hash).map(|u| Arc::clone(&u.unit))
+    }
+
+    /// Keep `loaded` as `root`'s closure, when it fits the budget at all.
+    fn keep(&self, root: Hash, loaded: &Loaded) {
+        // Sized before the lock is taken: encoding a big module takes a while.
+        let sizes: Vec<(Hash, u64)> = loaded.0.iter().map(|(h, u)| (*h, encode_preimage(u).map_or(0, |b| b.len() as u64))).collect();
+        if sizes.iter().map(|(_, n)| n).sum::<u64>() > self.0.lock().unwrap().budget {
+            return;
+        }
+        let mut kept = self.0.lock().unwrap();
+        if kept.closures.contains_key(&root) {
+            return; // Another run loaded it meanwhile.
+        }
+        for (hash, bytes) in sizes {
+            match kept.units.get_mut(&hash) {
+                Some(unit) => unit.holders += 1,
+                None => {
+                    kept.bytes += bytes;
+                    kept.units.insert(hash, KeptUnit { unit: Arc::clone(&loaded.0[&hash]), bytes, holders: 1 });
+                }
+            }
+        }
+        kept.tick += 1;
+        let used = kept.tick;
+        kept.closures.insert(root, KeptClosure { loaded: loaded.clone(), used });
+        kept.shrink(Some(root));
+    }
+
+    /// How many closures and units it holds, and their bytes.
+    #[cfg(test)]
+    pub(crate) fn held(&self) -> (usize, usize, u64) {
+        let kept = self.0.lock().unwrap();
+        (kept.closures.len(), kept.units.len(), kept.bytes)
+    }
+}
+
+impl Kept {
+    /// Let go of the least recently used closures, never `spare`, until it fits the budget.
+    fn shrink(&mut self, spare: Option<Hash>) {
+        while self.bytes > self.budget {
+            let Some(oldest) = self.closures.iter().filter(|(h, _)| Some(**h) != spare).min_by_key(|(_, c)| c.used).map(|(h, _)| *h) else {
+                break;
+            };
+            let gone = self.closures.remove(&oldest).expect("it was just found");
+            for hash in gone.loaded.0.keys() {
+                let unit = self.units.get_mut(hash).expect("a kept closure's units are kept");
+                unit.holders -= 1;
+                if unit.holders == 0 {
+                    self.bytes -= unit.bytes;
+                    self.units.remove(hash);
+                }
+            }
+        }
+    }
 }
 
 /// The most units a closure holds.
@@ -253,7 +420,7 @@ pub(crate) fn handle_get_cache(cache: &Mutex<SharedCache>, store: &SharedStore, 
             None => return Response::empty_404(),
         }
     };
-    let resolver = match materialize_closure(store, unit_hash) {
+    let resolver = match closure(store, unit_hash) {
         Ok(r) => r,
         Err(e) => return e.response(),
     };

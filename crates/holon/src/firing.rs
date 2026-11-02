@@ -740,7 +740,7 @@ pub(crate) fn run_id_of(
 /// real and different work, deliberately not this endpoint — see the L4.
 ///
 /// `root` must already be resolvable from the store (staged via `/unit`, or published) — this
-/// reuses `materialize_closure` exactly as the cache endpoints do, rather than accepting the
+/// resolves it through `closure` exactly as the cache endpoints do, rather than accepting the
 /// unit fresh in the body, since firing something implies it's a real, referenceable unit, not
 /// a throwaway one.
 pub(crate) fn handle_post_fire(store: &SharedStore, request: &Request) -> Response {
@@ -758,7 +758,7 @@ pub(crate) fn handle_post_fire(store: &SharedStore, request: &Request) -> Respon
         Ok(b) => b,
         Err(e) => return err(400, format!("not a valid fire request JSON: {e}")),
     };
-    let resolver = match materialize_closure(store, root_hash) {
+    let resolver = match closure(store, root_hash) {
         Ok(r) => r,
         Err(e) => return e.response(),
     };

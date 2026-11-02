@@ -326,93 +326,106 @@ with what happens there), **results**, **side effects**, **tests** and **docs**.
 
 ### C1. Closures by hash, in memory
 
+**Status: built** (build step 2), as described here. The earlier draft kept one `MapResolver` per
+flow and bounded the cache by units. Measuring the samples showed that bounded the wrong thing:
+units are few and sizes vary by 1,000× (below).
+
 **What.** Each closure stays in memory after it is first loaded, keyed by its root hash, so a run
-looks its flow up instead of reading it from disk.
+looks its flow up instead of reading it from disk. Units are shared across flows, and the memory is
+bounded in bytes by a server setting.
 
-**Today.** `materialize_closure` returns an owned `MapResolver` built from scratch
-(`units.rs:159`). Every caller builds one per run, per request, or per HTTP call. A hash that isn't
-in the store is **left out without an error** (`units.rs:168–170`: "A hash that doesn't resolve in
-the store is left out of the resolver rather than erroring", `units.rs:151–154`).
+**Before.** `materialize_closure` built an owned `MapResolver` from scratch on every call
+(`units.rs:159` at `aa2704a`), once per run, per request or per HTTP call. A hash missing from the
+store was left out without an error ("A hash that doesn't resolve in the store is left out of the
+resolver rather than erroring").
 
-**After.**
+**What flows weigh.** Measured through `holon_author::agent::plan` over all 52 samples:
 
-```rust
-// units.rs
-pub(crate) struct Closures { /* Mutex<HashMap<Hash, (Arc<MapResolver>, u64 /* last use */, usize /* units */)>>, total units */ }
+| | Units | Bytes |
+|---|---|---|
+| The median sample (`client-credentials`) | 34 | 5 KB |
+| The largest (`chess`) | 88 | 6.5 MB |
+| Samples with a js node (10 of 52) | | each places the pinned JavaScript engine module, 3.2 MB (`chess` two) |
+| All 52, each flow holding its own units | 1,855 | 36.0 MB |
+| All 52, each unit held once by its hash | 830 | 6.7 MB |
 
-/// The closure of `root`, from memory when it was loaded whole before.
-pub(crate) fn closure(store: &SharedStore, root: Hash) -> Result<Arc<MapResolver>, Closure> {
-    if let Some(hit) = store.closures().get(&root) { return Ok(hit); }  // lock: lookup only
-    let (resolver, whole) = load_closure(store, root)?;                 // no cache lock held
-    let resolver = Arc::new(resolver);
-    if whole { store.closures().insert(root, Arc::clone(&resolver)); }  // lock: insert + evict
-    Ok(resolver)
-}
-```
+A unit count says nothing about memory here. The engine module is pinned, so every js flow places
+the same unit, and holding it per flow would multiply it.
 
-- `materialize_closure` becomes a wrapper over `load_closure`, which also reports **whether every
-  reference resolved** (`whole`). Only a whole closure is cached. A partial one might be completed
-  by a later `POST /unit`, and caching it would keep it partial for good.
-- **Errors aren't cached.** `TooBig` would fail the same way again, and `Store` errors are
-  transient.
-- **No invalidation is needed.** A redeploy is a new hash. A rollback (`handle_post_restore` with
-  `code`) is a hash already seen. A resumed run evaluates **the unit it started on**, which can be
-  older than the deployment's (`durable.rs:633–637`: `record.resume(...)` yields `unit`), and that
-  is found by its own hash. Units are never deleted (§2.1).
-- **Where it lives.** The cache is a fourth field of `SharedStore` (`main.rs:281`), beside `calls::Hub`
-  and `sweep::Puts`, so every caller already holds it ("kept on the store handle every run already
-  has", `calls.rs:23–24`). A closure is valid for the store it came from, so a per-store cache is
-  the correct scope.
-- **Bound.** It evicts the least recently used closures past a total unit count (§8 Q2). One
-  closure may hold up to 20,000 units (`MAX_CLOSURE_UNITS`, `units.rs:187`). A closure bigger than
-  the whole bound is used once and not kept.
+**As built** (`crates/holon/src/units.rs`):
+- **`Loaded`** (`units.rs:156`) is a closure as runs resolve it: `Arc<BTreeMap<Hash, Arc<Unit>>>`. It's
+  cheap to clone, and each unit is shared with every other closure that places it. It implements
+  `Resolver` (`units.rs:158`), so every caller passes `&resolver` as before.
+- **`closure(store, root)`** (`units.rs:185`) answers from the cache, or loads and keeps.
+  `load_closure` (`units.rs:200`) walks as `materialize_closure` did, with the same bounds
+  (`MAX_CLOSURE_UNITS`, `MAX_CLOSURE_DEPTH`). It takes each unit the cache already holds from memory
+  and reads the rest from the store, which checks each against its hash. No cache lock is held while
+  the store is read. It also says whether every reference resolved.
+- **`FlowCache`** (`units.rs:243`) keeps closures by root hash, and their units by hash with a count
+  of the closures holding each. Its budget is in bytes, each unit's encoded size counted once.
+  - `keep` (`units.rs:300`) sizes a closure's units before taking its lock (encoding a 3.2 MB module
+    takes a while). It doesn't keep a closure bigger than the whole budget.
+  - `shrink` (`units.rs:335`) lets go of the least recently used closures until the cache fits, and
+    a unit goes when its last closure does.
+  - The lock is a leaf: nothing else is locked under it.
+- **Only a whole closure is kept, and never an error.** A unit put later could complete a partial
+  closure, and `TooBig` would fail the same way again.
+- **No invalidation is needed.** A redeploy is a new hash. A rollback is a hash already seen. A
+  resumed run evaluates the unit it started on (`durable.rs:633–637`), found by its own hash. Units
+  are never swept (§2.1).
+- **The cache lives on the store handle** as its fourth part (`main.rs:282`), beside `calls::Hub`
+  and `sweep::Puts`, so every caller already holds it. A closure is valid for the store it came
+  from, so a cache per store is the right scope.
+- **The budget is a server setting, not a deploy setting.** The cache is shared: one closure serves
+  every deployment, version and resumed run that uses it, and no deployment owns an entry. Letting
+  go of an entry costs only speed (the next run reads the flow from the store, as every run did
+  before), never correctness. So nothing a flow asks for or a person approves is involved.
+  - The flag is `holon serve --flow-cache SIZE`, or `HOLON_FLOW_CACHE` (`main.rs:708, 734, 1033`).
+    It takes `64M`, `1G` or `0` to keep none, parsed by `verify::budget_of` as `holon folder --cap`
+    is.
+  - The default is 256 MiB (`FLOW_CACHE_BYTES`, `units.rs:237`), about 40 times all the samples.
+  - It's documented in `docs/manual/reference/cli.md`.
+- **Callers.** All of them call `closure` in place of `materialize_closure`, which is gone:
+  - per run: `listeners.rs:95`, `scheduler.rs:125`, `arrivals.rs:373`, `deploy.rs:924`,
+    `deploy.rs:1079` and `durable.rs:637`;
+  - per deploy or load: `deploy.rs:162` and `persist.rs:132`, which warm the cache for the first
+    request;
+  - the rest: `deploy.rs:507`, `deploy.rs:749`, `grants.rs:19`, `firing.rs:761` and `units.rs:256`;
+  - the tests' four uses.
 
-**Touches.**
+  None needed another change, because each passes the closure where `&impl Resolver` is taken.
 
-| Site | Function | Today | After |
-|---|---|---|---|
-| `main.rs:281–310` | `SharedStore` | `(Arc<Mutex<DynStore>>, Arc<calls::Hub>, Arc<sweep::Puts>)` | adds `Arc<units::Closures>`; `new`/`on_disk` (`main.rs:286–295`) build it |
-| `units.rs:159–184` | `materialize_closure` | walks and builds | split into `load_closure` (also returns `whole`) and `closure` (the cache); `materialize_closure` keeps its signature for tests (`tests.rs:2945, 7197, 7216, 7223`) |
-| `listeners.rs:95` | `serve_flow` | per request | `closure(...)`; `&resolver` becomes `&*resolver` at `WithEngine::new` (`listeners.rs:147`) |
-| `scheduler.rs:125` | `fire_one_clock_tick` | per tick | `closure(...)` |
-| `arrivals.rs:373` | `fire_one_arrival` | per file event | `closure(...)` |
-| `deploy.rs:924` | `handle_post_trigger` | per `/trigger` | `closure(...)` |
-| `deploy.rs:1079` | `run_action` (also flow calls, `calls.rs:86`) | per action or call | `closure(...)` |
-| `durable.rs:637` | `resume_parked` | per resume, the run's own unit | `closure(...)` |
-| `deploy.rs:162` | `deploy` | per deploy | `closure(...)`, which warms the cache for the first request |
-| `persist.rs:132` | `load_deployments` | per deployment at start | `closure(...)`, which warms the cache |
-| `deploy.rs:507` | `preview_value` | per deploy preview | `closure(...)` |
-| `deploy.rs:749` | `handle_get_permission_view` | per view | `closure(...)` |
-| `grants.rs:19` | `derived_capabilities` | per grant change or reload | `closure(...)` |
-| `firing.rs:761` | `handle_post_fire` (`/fire`) | per call | `closure(...)` |
-| `units.rs:256` | `handle_get_cache` | per call | `closure(...)` |
+**Results.** Measured with the throughput check (build step 1) on the same machine, 33 deployments:
 
-`MapResolver` (`holon-core/src/resolve.rs:34–58`) needs no change. `Resolver::resolve` takes `&self`,
-and `WithEngine` borrows `&R` (`holon-module`, `WithEngine::new(real: &'a R, ...)`). Nothing on the
-run path inserts into a resolver after it is built, so an `Arc<MapResolver>` shared between
-concurrent runs is sound: `MapResolver` is `Send + Sync`, a `BTreeMap<Hash, Unit>`.
-
-**Results.** *Measured* (the `cache` switch, which differs from C1 only in having no bound):
-`hello-api` 1,575 → 3,820 req/s alone, and 21,044 together with the log off the table lock.
-Store-lock waits leave the request path, since no unit is read per run.
+| | Before | After C1 |
+|---|---|---|
+| `GET /hello/Ada`, 1 thread | 3,697 req/s, p50 192 µs | 7,383 req/s, p50 69 µs |
+| `GET /hello/Ada`, 64 threads | 2,287 req/s | 6,734 req/s (2.9×) |
+| `POST /calc`, 64 threads | 1,470 | 5,096 (3.5×) |
+| `GET /hit` and `GET /last`, 64 threads | 74 and 80 | 86 and 94 (still bound by the deployments file, C3) |
+| `hello`, live over HTTP with `wrk -c64` | 1,575–1,670 | 4,987 |
 
 **Side effects.**
-- **Memory.** It holds the closures of everything deployed and recently run, which is small for
-  flows of today's size (`hello-api` is 19 units) and bounded by the cap.
-- **Integrity.** Each unit is checked against its hash when it is loaded, as now, and the cached
-  closure is exactly what the hash names (I-d). A store file that changes on disk afterwards is
-  never read again. Today such a file fails its hash check and the run fails with a 500.
-- **A unit added to complete a partial closure** is picked up, because partial closures aren't
-  cached.
-- **Behaviour.** No answer, log entry or run id changes, since evaluation reads the same units.
+- **Memory**, up to the budget: all 52 samples at once would take 6.7 MB.
+- **Integrity** (I-d). Each unit is checked against its hash when it's read from the store, and a
+  kept closure is exactly what its hash names. A store file changed on disk afterwards is never
+  read again; before, such a file failed its hash check and the run failed with a 500.
+- **No behaviour changes.** No answer, log entry or run id changes, since evaluation reads the same
+  units.
 
-**Tests.** New, in `units.rs` or `tests.rs`: the same `Arc` for one hash twice; a partial closure
-isn't cached (put a missing unit, then the next call sees it); an error isn't cached; the bound
-evicts least recently used; a redeploy answers with the new version on its next request; a resumed
-run of a superseded version resolves its own unit. Unchanged and must pass: every existing test,
-in particular the closure-bound tests (`tests.rs:7190–7225`).
+**Tests** (`tests.rs:7240–7300`):
+- `a_closure_is_kept_by_its_hash_and_its_units_are_shared`: the same `Loaded` twice, one leaf held
+  once by two closures, and the bytes counting it once;
+- `a_partial_closure_is_loaded_again_once_it_is_whole`;
+- `the_flow_cache_lets_go_of_the_least_used_past_its_budget`: the least recently used goes, the units
+  only it held go with it, it loads again, and a budget of 0 keeps nothing while runs still get
+  their closures.
 
-**Docs.** None user-facing.
+Unchanged and passing: the closure-bound test
+`a_closure_too_big_to_run_is_refused_and_every_sample_is_well_inside`, and the other 377 tests of
+the crate.
+
+**Docs.** The `holon serve` options and environment variables in `docs/manual/reference/cli.md`.
 
 ### C2. The run log off the table lock
 
@@ -1322,8 +1335,8 @@ The end-to-end tests (`editor/e2e`) and `editor/src/samples.test.ts` must stay g
    persist on every run? This note says no (C3 side effects): they are statistics and already
    behave that way for stateless flows. If they must survive a crash exactly, they belong beside the
    head, not in a rewrite of the whole table.
-2. **The closure cache's bound.** A total of 100,000 units would hold every deployed flow on a
-   server of today's size. Does an operator need a setting?
+2. **Decided: the flow cache's bound** is a server setting in bytes, `holon serve --flow-cache SIZE`
+   (default 256 MiB), with units shared across flows (C1).
 3. **Decided: no migration.** Holon is in development. C3 drops `state_refs` and the inline-state
    reader instead of keeping them for old data folders or a downgrade, and no step keeps existing
    flows' hashes for their own sake.

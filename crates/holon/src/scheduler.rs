@@ -122,7 +122,7 @@ pub(crate) fn fire_one_clock_tick(
     clock: Option<&Clock>,
     now: SystemTime,
 ) {
-    let resolver = match materialize_closure(store, unit_hash) {
+    let resolver = match closure(store, unit_hash) {
         Ok(r) => r,
         Err(e) => {
             eprintln!("clock tick [{slug}]: store error while materializing closure: {e:?}");

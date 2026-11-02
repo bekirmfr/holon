@@ -30,8 +30,8 @@ code. Where the design leaves a decision open (§8), the step that needs it says
 
 | Step | Change | Crates | Changes on disk | Needs a decision |
 |---|---|---|---|---|
-| 1 | The throughput check | `holon` (tests) | none | |
-| 2 | C1, closures by hash | `holon` | none | Q2, the bound (default 100,000 units) |
+| 1 | The throughput check (**done**) | `holon` (tests) | none | |
+| 2 | C1, closures by hash (**done**) | `holon` | none | decided: `--flow-cache`, in bytes, 256 MiB |
 | 3 | C2 (a)(b), the log's own lock and the open file | `holon` | none | |
 | 4 | C2 (c), cut-back without parsing | `holon` | none | |
 | 5 | C2 (d), lazy sync and the witness hook | `holon` | none | Q7, the interval (default 1 s) |
@@ -83,64 +83,35 @@ blocking pool (`dataplane.rs:295`). Steps 9 and 12, which change those, also rep
 numbers. Expect the design's §3 "none" row in shape: no gain from 8 to 64 threads, and `/last` and
 `/hit` far below the others.
 
-## Step 2. C1: closures by hash
+## Step 2. C1: closures by hash (done)
 
-**Code.**
-- **The cache**, in `units.rs` beside `materialize_closure` (`units.rs:159–184`):
-  ```rust
-  pub(crate) const CLOSURE_CACHE_UNITS: usize = 100_000;            // §8 Q2
-  #[derive(Default)]
-  pub(crate) struct Closures(Mutex<Cache>);
-  #[derive(Default)]
-  struct Cache { map: HashMap<Hash, Kept>, units: usize, tick: u64 }
-  struct Kept { closure: Arc<MapResolver>, units: usize, used: u64 }
+**Built** as the design's C1 now describes, which supersedes this step's first sketch. The sketch
+kept one `Arc<MapResolver>` per flow and bounded the cache at 100,000 units. Measuring the samples
+showed units are few (at most 88 a flow) but sizes vary by 1,000×: a js node places the pinned 3.2 MB
+engine module. So the cache:
+- shares units by hash across flows (`Loaded`, `units.rs:156`);
+- is bounded in bytes, each unit counted once (`FlowCache`, `units.rs:243`);
+- takes its budget from a server flag, `holon serve --flow-cache SIZE` or `HOLON_FLOW_CACHE`
+  (default 256 MiB), not from deploy settings, because the cache is shared and an eviction only
+  costs speed.
 
-  /// Walk and fetch as today; also say whether every reference resolved and how many units.
-  fn load_closure(store: &SharedStore, root: Hash) -> Result<(MapResolver, bool, usize), Closure>;
-  /// Today's API, kept for its tests (tests.rs:2945, 7197, 7216, 7223).
-  pub(crate) fn materialize_closure(store: &SharedStore, root: Hash) -> Result<MapResolver, Closure> {
-      load_closure(store, root).map(|(r, _, _)| r)
-  }
-  /// The closure of `root`, from memory when it was loaded whole before.
-  pub(crate) fn closure(store: &SharedStore, root: Hash) -> Result<Arc<MapResolver>, Closure>;
-  ```
-- **What `closure` does.**
-  - It locks the cache only to look up (`used = tick`) and to insert.
-  - It calls `load_closure` with no cache lock held.
-  - It inserts only when `whole`. A `store.get` that answers `Ok(None)` (`units.rs:168–170`) sets
-    `whole = false`.
-  - It evicts the least recently used entries while `units` exceeds the bound, and never caches a
-    closure bigger than the whole bound.
-  - Errors aren't cached.
-- **Where the cache lives.** `SharedStore` (`main.rs:281`) becomes
-  `SharedStore(Arc<Mutex<DynStore>>, Arc<calls::Hub>, Arc<sweep::Puts>, Arc<units::Closures>)`.
-  `new` and `on_disk` (`main.rs:286–295`) add `Arc::default()`. The existing `.0`, `.1` and `.2`
-  uses (`tests.rs:23`, `sweep.rs:165, 199`, `folders.rs:1683`) are unchanged.
-- **Callers.** Each `materialize_closure(store, h)` becomes `closure(store, h)`. `resolver.resolve(&h)`
-  works through `Deref`, and `WithEngine::new(&resolver, …)` becomes `WithEngine::new(&*resolver, …)`:
-  - per run: `listeners.rs:95` (with `WithEngine` at `listeners.rs:134`), `scheduler.rs:125`,
-    `arrivals.rs:373`, `deploy.rs:924`, `deploy.rs:1079`, `durable.rs:637` (`WithEngine` at
-    `durable.rs:640`);
-  - the rest: `deploy.rs:162`, `deploy.rs:507`, `deploy.rs:749`, `persist.rs:132` (which warms the
-    cache at start), `grants.rs:19`, `firing.rs:761` and `units.rs:256`.
-- **Thread safety.** `MapResolver` (`holon-core/src/resolve.rs:34–37`) is a `BTreeMap<Hash, Unit>`, so it
-  is `Send + Sync`. Nothing inserts into a resolver after it is built.
+`materialize_closure` is gone. Its callers, and the tests' four uses, call `closure` unchanged
+through `&impl Resolver`.
 
-**Tests.** New, in `tests.rs`:
-- `a_closure_is_kept_by_its_hash`: two calls give `Arc::ptr_eq`;
-- `a_partial_closure_is_loaded_again`: put a flow whose child is missing, call `closure`, put the
-  child, call again; the second resolves the child;
-- `a_failed_closure_is_not_kept`;
-- `the_closure_cache_forgets_the_least_used_past_its_bound`: with the bound lowered through a
-  `#[cfg(test)]` constant.
+**Tests added** (`tests.rs:7240–7300`):
+- `a_closure_is_kept_by_its_hash_and_its_units_are_shared`;
+- `a_partial_closure_is_loaded_again_once_it_is_whole`;
+- `the_flow_cache_lets_go_of_the_least_used_past_its_budget`.
 
-Unchanged and must pass: the closure-bound tests (`tests.rs:7190–7225`) and every redeploy and
-rollback test, now through the cache.
+**Checks.** `cargo test --release -p holon` passed (381 passed, 1 ignored), and
+`cargo clippy -p holon --all-targets -- -D warnings` was clean.
 
-**Measure.** The throughput check. Expect `hello` and `calc` to rise at 64 threads and fall back at
-1. In the design's §3, `cache` alone took `hello` from 1,575 to 3,820 req/s.
-
-**Commit:** `units: closures kept in memory by their hash (C1)`.
+**Measured** with the throughput check, at 64 threads:
+- `hello` went from 2,287 to 6,734 req/s, and `calc` from 1,470 to 5,096. At 1 thread, `hello`'s
+  p50 went from 192 µs to 69 µs.
+- `/hit` and `/last` barely moved (74 to 86, and 80 to 94), still bound by the deployments file
+  until step 6.
+- Live over HTTP with `--flow-cache 64M`, `hello` served 4,987 req/s at 64 connections.
 
 ## Step 3. C2 (a)(b): each deployment's log behind its own lock, written through an open file
 

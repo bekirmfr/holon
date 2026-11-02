@@ -92,7 +92,7 @@ fn serve_flow(
     if status != Status::Running {
         return DataResponse::json_error(503, &format!("{slug:?} is {}", status_word(status)));
     }
-    let resolver = match materialize_closure(store, unit_hash) {
+    let resolver = match closure(store, unit_hash) {
         Ok(r) => r,
         Err(e) => return DataResponse::json_error(500, &format!("store error while materializing closure: {e:?}")),
     };

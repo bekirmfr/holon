@@ -129,7 +129,7 @@ pub(crate) fn load_deployments(
         let Some(unit_hash) = parse_hash(&record.unit) else {
             return Err(format!("deployment {slug:?} in {path:?}: {:?} is not a valid hash", record.unit));
         };
-        let resolver = materialize_closure(store, unit_hash)
+        let resolver = closure(store, unit_hash)
             .map_err(|e| format!("deployment {slug:?} in {path:?}: store error: {e:?}"))?;
         let Some(root_unit) = resolver.resolve(&unit_hash) else {
             return Err(format!(

@@ -2942,7 +2942,7 @@ fn the_flow_log_records_each_run_well_enough_to_replay_it() {
     assert_eq!(newer["entries"].as_array().unwrap().len(), 1);
 
     // Replay: the entry alone (request, state read, sourced values) reproduces the run.
-    let resolver = materialize_closure(&state.store, api).unwrap();
+    let resolver = closure(&state.store, api).unwrap();
     let server = read_server(resolver.resolve(&api).unwrap(), &resolver).unwrap();
     let endpoint = resolver.resolve(&server.routes.iter().find(|r| r.method == "POST").unwrap().endpoint).unwrap();
     let sv = |v: &serde_json::Value| serde_json::from_value::<SValue>(v.clone()).unwrap().into_core();
@@ -7194,7 +7194,7 @@ fn a_closure_too_big_to_run_is_refused_and_every_sample_is_well_inside() {
             store.put(&decode_preimage(bytes).unwrap()).unwrap();
         }
         let root = parse_hash(&plan.unit).unwrap();
-        materialize_closure(&state.store, root).unwrap();
+        closure(&state.store, root).unwrap();
         let mut refs = BTreeMap::new();
         let mut queue = vec![root];
         while let Some(h) = queue.pop() {
@@ -7213,14 +7213,85 @@ fn a_closure_too_big_to_run_is_refused_and_every_sample_is_well_inside() {
     for _ in 0..crate::units::MAX_CLOSURE_DEPTH {
         below = store.put(&wrap(below)).unwrap();
     }
-    let Err(e) = materialize_closure(&state.store, below) else { panic!("a closure past the bound is refused") };
+    let Err(e) = closure(&state.store, below) else { panic!("a closure past the bound is refused") };
     assert!(matches!(&e, crate::units::Closure::TooBig(why) if why.contains("more than 64 units deep")), "{e:?}");
     let deployed = route(&state, &req("POST", "/deploy", serde_json::to_vec(&serde_json::json!({ "slug": "deep", "unit": to_hex(&below) })).unwrap()));
     assert_eq!(deployed.status_code, 400);
     assert!(String::from_utf8_lossy(&body_bytes(deployed)).contains("too big to run"));
     // One level less is materialized.
     let inside = match store.get(&below).unwrap().unwrap().body { UnitBody::Composite { children, .. } => children[0], _ => unreachable!() };
-    materialize_closure(&state.store, inside).unwrap();
+    closure(&state.store, inside).unwrap();
+}
+
+/// Units for the flow cache's tests: a leaf, and composites placing children.
+fn cache_leaf(name: &str) -> Unit {
+    Unit { params: vec![], ..holon_core::interface_of(name).unwrap() }
+}
+fn cache_composite(children: Vec<Hash>) -> Unit {
+    Unit { body: UnitBody::Composite { children, edges: vec![] }, params: vec![], inputs: vec![], outputs: vec![] }
+}
+fn encoded(unit: &Unit) -> u64 {
+    encode_preimage(unit).unwrap().len() as u64
+}
+
+/// A closure is loaded once and then kept by its root hash; two closures that place the same unit
+/// hold it once, and count it once.
+#[test]
+fn a_closure_is_kept_by_its_hash_and_its_units_are_shared() {
+    let state = test_state();
+    let mut store = state.store.clone();
+    let (leaf, beside) = (cache_leaf("clock"), cache_leaf("random"));
+    let (l, r) = (store.put(&leaf).unwrap(), store.put(&beside).unwrap());
+    let (a_unit, c_unit) = (cache_composite(vec![l]), cache_composite(vec![l, r]));
+    let (a, c) = (store.put(&a_unit).unwrap(), store.put(&c_unit).unwrap());
+    let first = closure(&state.store, a).unwrap();
+    assert!(closure(&state.store, a).unwrap().is(&first), "the second run gets the kept closure");
+    let other = closure(&state.store, c).unwrap();
+    assert!(Arc::ptr_eq(&first.unit(&l).unwrap(), &other.unit(&l).unwrap()), "one leaf, held once");
+    assert_eq!(state.store.3.held(), (2, 4, encoded(&a_unit) + encoded(&c_unit) + encoded(&leaf) + encoded(&beside)));
+}
+
+/// A closure missing a unit is run as it is but not kept: once the unit is put, the next run
+/// resolves it.
+#[test]
+fn a_partial_closure_is_loaded_again_once_it_is_whole() {
+    let state = test_state();
+    let mut store = state.store.clone();
+    let leaf = cache_leaf("clock");
+    let l = hash_unit(&leaf).unwrap();
+    let a = store.put(&cache_composite(vec![l])).unwrap();
+    assert!(closure(&state.store, a).unwrap().resolve(&l).is_none());
+    assert_eq!(state.store.3.held().0, 0, "a partial closure isn't kept");
+    store.put(&leaf).unwrap();
+    assert!(closure(&state.store, a).unwrap().resolve(&l).is_some());
+    assert_eq!(state.store.3.held().0, 1);
+}
+
+/// Past its budget the cache lets go of the least recently used closure, and the units only it
+/// held; what it let go of loads again. A budget of 0 keeps nothing.
+#[test]
+fn the_flow_cache_lets_go_of_the_least_used_past_its_budget() {
+    let state = test_state();
+    let mut store = state.store.clone();
+    let (one, two) = (cache_leaf("clock"), cache_leaf("random"));
+    let (l1, l2) = (store.put(&one).unwrap(), store.put(&two).unwrap());
+    let (a_unit, b_unit) = (cache_composite(vec![l1]), cache_composite(vec![l2]));
+    let (a, b) = (store.put(&a_unit).unwrap(), store.put(&b_unit).unwrap());
+    let (a_bytes, b_bytes) = (encoded(&a_unit) + encoded(&one), encoded(&b_unit) + encoded(&two));
+    state.store.3.set_budget(a_bytes.max(b_bytes));
+    closure(&state.store, a).unwrap();
+    assert_eq!(state.store.3.held(), (1, 2, a_bytes));
+    closure(&state.store, b).unwrap();
+    assert_eq!(state.store.3.held(), (1, 2, b_bytes), "a, the least recently used, went");
+    let again = closure(&state.store, a).unwrap();
+    assert!(again.resolve(&l1).is_some(), "what was let go of loads again");
+    assert_eq!(state.store.3.held(), (1, 2, a_bytes));
+
+    state.store.3.set_budget(0);
+    assert_eq!(state.store.3.held(), (0, 0, 0), "a smaller budget lets go at once");
+    let unkept = closure(&state.store, b).unwrap();
+    assert!(unkept.resolve(&l2).is_some(), "a run still gets its closure");
+    assert_eq!(state.store.3.held(), (0, 0, 0), "and nothing is kept");
 }
 
 /// A flow's `on file` blocks are file handlers of its server (the drop-board sample): a file

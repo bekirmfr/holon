@@ -159,7 +159,7 @@ fn deploy(
         return err(400, "unit is not a 64-char hex hash");
     };
 
-    let resolver = match materialize_closure(store, unit_hash) {
+    let resolver = match closure(store, unit_hash) {
         Ok(r) => r,
         Err(e) => return e.response(),
     };
@@ -504,7 +504,7 @@ fn preview_value(
     let Some(unit_hash) = parse_hash(&body.unit) else {
         return Err(err(400, "unit is not a 64-char hex hash"));
     };
-    let resolver = materialize_closure(store, unit_hash).map_err(|e| e.response())?;
+    let resolver = closure(store, unit_hash).map_err(|e| e.response())?;
     let Some(root_unit) = resolver.resolve(&unit_hash) else {
         return Err(err(404, "no unit stored at that hash — stage or publish it first"));
     };
@@ -746,7 +746,7 @@ pub(crate) fn handle_get_permission_view(
     if which == "grant" {
         return Response::json(&serde_json::json!({ "grant": grant, "hash": to_hex(&grant.hash()), "attention": attention }));
     }
-    let resolver = match materialize_closure(store, unit) {
+    let resolver = match closure(store, unit) {
         Ok(r) => r,
         Err(e) => return e.response(),
     };
@@ -921,7 +921,7 @@ pub(crate) fn handle_post_trigger(
         Ok(s) => s,
         Err(_) => return err(400, "request body is not valid UTF-8 text"),
     };
-    let resolver = match materialize_closure(store, unit_hash) {
+    let resolver = match closure(store, unit_hash) {
         Ok(r) => r,
         Err(e) => {
             record_trigger(deployments, slug, true);
@@ -1076,7 +1076,7 @@ pub(crate) fn run_action(
         record_trigger(deployments, slug, true);
         ActionRan::refused(500, "failed", message)
     };
-    let resolver = match materialize_closure(store, action.handler) {
+    let resolver = match closure(store, action.handler) {
         Ok(r) => r,
         Err(e) => return failed_to_start(format!("store error while materializing closure: {e:?}")),
     };
