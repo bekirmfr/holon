@@ -528,7 +528,9 @@ fn preview_value(
     let server = touches::Server { slug: &body.slug, secrets, folders, policy, deployed };
     let list = |set: &BTreeSet<String>| set.iter().cloned().collect::<Vec<_>>();
     let (then, needing, withholding) = (list(&items), list(&needs), list(&withheld));
-    let touches = touches::touches(&server, &touches::Ask { now: now.as_deref(), then: &then, needs: &needing, withheld: &withholding, optional: &optional });
+    // Where each secret it reads is sent (secret → destinations).
+    let sent = holon_core::sent_secrets(root_unit, &resolver);
+    let touches = touches::touches(&server, &touches::Ask { now: now.as_deref(), then: &then, needs: &needing, withheld: &withholding, optional: &optional, sent: &sent });
     let settings = match &asked_now {
         Some(a) => touches::settings((a.interval_seconds, &a.browsers), (body.interval_seconds, &body.browsers)),
         None => serde_json::json!([]),
@@ -543,7 +545,7 @@ fn preview_value(
         "needs_approval": needs,
         "already_granted": granted,
         // Where each secret it reads is sent (secret → hosts): said beside the secret's item.
-        "sent": holon_core::sent_secrets(root_unit, &resolver),
+        "sent": &sent,
         // What the slug's grant covers now (none for a first deploy): beside `items`, what changes.
         "granted_now": previous.as_ref().map(|g| &g.items),
         // Secrets it can run without that an agent's deploy leaves out, for a person to grant back.
@@ -552,7 +554,7 @@ fn preview_value(
             let permit = Permit::new(unit_hash, &Grant::for_manifest(&manifest, 0, "preview"), policy);
             durable::refuses_waits(root_unit, &resolver, &permit)
         }).or_else(|| folders::Scoped::new(Arc::clone(folders), &body.slug).refuses(&manifest))
-        .or_else(|| secrets.refuses(&body.slug, &holon_core::sent_secrets(root_unit, &resolver))),
+        .or_else(|| secrets.refuses(&body.slug, &sent)),
         // Secrets it reads that aren't set yet: it deploys, but those nodes stay empty until set.
         "missing_secrets": manifest
             .capabilities
@@ -1319,7 +1321,8 @@ pub(crate) fn handle_post_restore(state: &AppState, slug: &str, request: &Reques
             };
             let policy = state.policy();
             let server = touches::Server { slug, secrets: &state.secrets, folders: &state.folders, policy: &policy, deployed };
-            answer["touches"] = touches::touches(&server, &touches::Ask { now: Some(&items), then: &items, needs: &[], withheld: &[], optional: &optional });
+            // Its code isn't worked out again here: where its secrets go isn't said.
+            answer["touches"] = touches::touches(&server, &touches::Ask { now: Some(&items), then: &items, needs: &[], withheld: &[], optional: &optional, sent: &Default::default() });
             answer["settings"] = serde_json::json!([]);
         }
         if let Some((snapshot, label, since)) = &put_back {

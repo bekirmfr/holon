@@ -5,7 +5,7 @@
 //! which a restore doesn't undo. The server works it out (`touches`), every client says it the
 //! same way (`lines`).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use serde_json::{json, Value};
@@ -49,6 +49,7 @@ pub(crate) fn part(item: &str) -> (&'static str, &'static str, String, String) {
         }
         "SecretRead" => ("resources", "secret", arg, s("read")),
         "SecretAccess" => ("resources", "secret", arg, s("read any")),
+        "SecretAnswer" => ("resources", "secret", arg, s("answer its callers with it")),
         "HttpRequest" => ("outside", "host", arg, s("call")),
         "PlainHttp" => ("outside", "host", arg, s("call over plain HTTP")),
         "NetworkEgress" => ("outside", "network", arg, s("send")),
@@ -80,13 +81,26 @@ pub(crate) fn part(item: &str) -> (&'static str, &'static str, String, String) {
 
 /// What a dry run asks of `touches`: the items granted now (none: a first deploy), the items the
 /// code it would run asks, what of those needs a person's approval, what an agent's deploy
-/// withholds, and what it can run without.
+/// withholds, what it can run without, and where the code sends each secret it reads (core's
+/// `sent_secrets`; empty when not worked out).
 pub(crate) struct Ask<'a> {
     pub(crate) now: Option<&'a [String]>,
     pub(crate) then: &'a [String],
     pub(crate) needs: &'a [String],
     pub(crate) withheld: &'a [String],
     pub(crate) optional: &'a [String],
+    pub(crate) sent: &'a BTreeMap<String, BTreeSet<String>>,
+}
+
+/// What a secret's read does, with where the code sends it, as the approval says it: "read, and
+/// send it to https://hooks.slack.com; what is answered to it goes to https://api.example.com".
+fn read_sending(name: &str, sent: &BTreeMap<String, BTreeSet<String>>) -> String {
+    match sent.get(name).map(holon_author::describe::describe_sent_to) {
+        Some((Some(own), Some(answers))) => format!("read, and send it to {own}; what is answered to it goes to {answers}"),
+        Some((Some(own), None)) => format!("read, and send it to {own}"),
+        Some((None, Some(answers))) => format!("read; what is answered to it goes to {answers}"),
+        _ => "read".to_string(),
+    }
 }
 
 /// What this server has for a flow: its secrets, folders and databases, its policy, and the flows
@@ -157,8 +171,13 @@ pub(crate) fn touches(server: &Server, ask: &Ask) -> Value {
     let mut rows: BTreeMap<Thing, Vec<(String, String)>> = BTreeMap::new();
     for item in items {
         let (group, kind, name, what) = part(item);
+        // A secret's read says where the code sends it, and comes first: what else is done with
+        // the secret follows.
+        let read = item.starts_with("SecretRead(");
+        let what = if read { read_sending(&name, ask.sent) } else { what };
         let at = GROUPS.iter().position(|(g, _)| *g == group).unwrap_or(GROUPS.len());
-        rows.entry((at, kind, name)).or_default().push((item.clone(), what));
+        let uses = rows.entry((at, kind, name)).or_default();
+        uses.insert(if read { 0 } else { uses.len() }, (item.clone(), what));
     }
     let rows: Vec<Value> = rows
         .into_iter()
@@ -405,6 +424,27 @@ mod tests {
         assert_eq!(part("CollectionWrite(\"notes\")"), ("state", "collection", "notes".into(), "put and delete".into()));
         assert_eq!(part("Limit(fuel=5000)"), ("limits", "limit", "fuel".into(), "5000".into()));
         assert_eq!(part("NetworkIngress"), ("triggers", "requests", String::new(), "receive".into()));
+        assert_eq!(part("SecretAnswer(\"maps_key\")"), ("resources", "secret", "maps_key".into(), "answer its callers with it".into()));
+    }
+
+    /// A secret's row says where the code sends it, and what is answered to it, read first.
+    #[test]
+    fn a_secret_s_row_says_where_it_goes() {
+        let store = SecretStore::memory();
+        let folders = Arc::new(folders::Folders::memory());
+        let policy = Policy::default();
+        let server = Server { slug: "f", secrets: &store, folders: &folders, policy: &policy, deployed: vec![] };
+        let s = |v: &[&str]| v.iter().map(|i| i.to_string()).collect::<Vec<_>>();
+        let then = s(&["SecretAnswer(\"maps_key\")", "SecretRead(\"maps_key\")", "SecretRead(\"client_secret\")", "SecretRead(\"license_key\")"]);
+        let to = |d: &[&str]| d.iter().map(|d| d.to_string()).collect::<BTreeSet<_>>();
+        let sent = BTreeMap::from([("client_secret".to_string(), to(&["auth.example", "answer:api.example"])), ("license_key".to_string(), to(&["db:vendor"]))]);
+        let rows = touches(&server, &Ask { now: Some(&then), then: &then, needs: &[], withheld: &[], optional: &[], sent: &sent });
+        let said = text(&lines(&rows, &json!([])));
+        let row = |name: &str| said.iter().find(|l| l.contains(&format!("secret {name}:"))).cloned().unwrap_or_else(|| panic!("{name} in {said:#?}"));
+        assert!(row("client_secret").contains("secret client_secret: read, and send it to https://auth.example; what is answered to it goes to https://api.example"), "{said:#?}");
+        assert!(row("license_key").contains("secret license_key: read, and send it to the database \"vendor\""), "{said:#?}");
+        assert!(row("maps_key").contains("secret maps_key: read, answer its callers with it"), "{said:#?}");
+        assert!(!said.iter().any(|l| l.contains("SecretAnswer")), "said in words, not as the item: {said:#?}");
     }
 
     #[test]
@@ -418,7 +458,7 @@ mod tests {
         let now = s(&["NetworkIngress", "StateWrite(\"count\")", "HttpRequest(\"a.example\")", "SecretRead(\"api_key\")", "FileRead(\"inbox\")"]);
         let then = s(&["NetworkIngress", "StateWrite(\"count\")", "HttpRequest(\"b.example\")", "SecretRead(\"api_key\")", "SecretRead(\"other\")", "FileRead(\"inbox\")", "FileWrite(\"inbox\")"]);
         let needs = s(&["HttpRequest(\"b.example\")", "FileWrite(\"inbox\")"]);
-        let mut rows = touches(&server, &Ask { now: Some(&now), then: &then, needs: &needs, withheld: &[], optional: &[] });
+        let mut rows = touches(&server, &Ask { now: Some(&now), then: &then, needs: &needs, withheld: &[], optional: &[], sent: &BTreeMap::new() });
         // Two runs since the point: one called b.example and wrote the key, which isn't counted
         // (putting the state back is what a restore does to it); the other called it again.
         let ran = |caps: &[&str]| LogEntry {
