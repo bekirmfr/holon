@@ -53,7 +53,7 @@ pub struct Exporter {
     /// Where the queue and the receipts are kept (none: in memory only).
     dir: Option<PathBuf>,
     /// The heads not yet taken by the witness, oldest first, kept in step with `pending.jsonl`.
-    pending: Mutex<VecDeque<Head>>,
+    pending: Mutex<Queue>,
     agent: ureq::Agent,
     /// What makes the lines a batch's heads name durable, run before the batch is sent: the server
     /// syncs its logs (recorder.rs's `sync_logs`), so a witness never holds a head the disk lacks.
@@ -62,6 +62,15 @@ pub struct Exporter {
 
 /// A step run before each batch is sent; an error sends nothing.
 pub type Hook = Box<dyn Fn() -> Result<(), String> + Send + Sync>;
+
+/// The heads waiting for the witness, and `pending.jsonl` open for appending them: one write a
+/// head, under the lock that already orders them (docs/L4s/request-path-plan.md, step 6b).
+#[derive(Default)]
+struct Queue {
+    heads: VecDeque<Head>,
+    /// Closed when the file is rewritten after a batch is taken, so the next head opens the new one.
+    file: Option<std::fs::File>,
+}
 
 static EXPORTER: OnceLock<Arc<Exporter>> = OnceLock::new();
 
@@ -111,7 +120,7 @@ impl Exporter {
             url: url.to_string(),
             token: token.filter(|t| !t.is_empty()),
             dir,
-            pending: Mutex::new(pending),
+            pending: Mutex::new(Queue { heads: pending, file: None }),
             agent: ureq::AgentBuilder::new().timeout(Duration::from_secs(30)).build(),
             before_send: OnceLock::new(),
         })
@@ -124,24 +133,32 @@ impl Exporter {
 
     /// Queue `head`, on disk too.
     pub fn note(&self, head: Head) {
-        let mut pending = self.pending.lock().unwrap();
-        if let Err(e) = self.append(&head) {
+        let mut queue = self.pending.lock().unwrap();
+        if let Err(e) = self.append(&mut queue, &head) {
             eprintln!("holon: could not queue a run's head for the witness: {e}");
         }
-        pending.push_back(head);
+        queue.heads.push_back(head);
     }
 
-    fn append(&self, head: &Head) -> std::io::Result<()> {
+    fn append(&self, queue: &mut Queue, head: &Head) -> std::io::Result<()> {
         let Some(dir) = &self.dir else { return Ok(()) };
-        std::fs::create_dir_all(dir)?;
         let line = serde_json::to_string(head).map_err(std::io::Error::other)? + "\n";
+        if queue.file.is_none() {
+            std::fs::create_dir_all(dir)?;
+            queue.file = Some(std::fs::OpenOptions::new().append(true).create(true).open(dir.join("pending.jsonl"))?);
+        }
         use std::io::Write;
-        std::fs::OpenOptions::new().append(true).create(true).open(dir.join("pending.jsonl"))?.write_all(line.as_bytes())
+        let written = queue.file.as_mut().expect("opened above").write_all(line.as_bytes());
+        if written.is_err() {
+            // Opened again for the next head, in case the file went away under it.
+            queue.file = None;
+        }
+        written
     }
 
     /// How many heads wait for the witness.
     pub fn waiting(&self) -> usize {
-        self.pending.lock().unwrap().len()
+        self.pending.lock().unwrap().heads.len()
     }
 
     /// Send what waits now, a batch at a time: the number sent, or why the witness didn't take a
@@ -151,7 +168,7 @@ impl Exporter {
         let mut left = self.waiting();
         let mut sent = 0;
         loop {
-            let batch: Vec<Head> = self.pending.lock().unwrap().iter().take(MAX_BATCH.min(left)).cloned().collect();
+            let batch: Vec<Head> = self.pending.lock().unwrap().heads.iter().take(MAX_BATCH.min(left)).cloned().collect();
             if batch.is_empty() {
                 return Ok(sent);
             }
@@ -174,9 +191,12 @@ impl Exporter {
                 }
                 Err(e) => return Err(e.to_string()),
             };
-            let mut pending = self.pending.lock().unwrap();
-            pending.drain(..batch.len());
-            if let Err(e) = self.keep(&pending, &id, &receipt) {
+            let mut queue = self.pending.lock().unwrap();
+            queue.heads.drain(..batch.len());
+            // Closed before `keep` replaces the file: a handle would go on appending to the old one
+            // (and Windows won't replace an open file).
+            queue.file = None;
+            if let Err(e) = self.keep(&queue.heads, &id, &receipt) {
                 eprintln!("holon: the witness took a batch of heads, but keeping its receipt failed: {e}");
             }
             sent += batch.len();
@@ -336,6 +356,28 @@ mod tests {
         assert_eq!(exporter.flush(), Ok(1));
         assert_eq!(got.lock().unwrap().len(), 1);
         assert_eq!(*seen.lock().unwrap(), [0, 0], "the hook ran before each send");
+    }
+
+    /// The queue file is kept open, and opened again after the rewrite that follows a taken batch:
+    /// heads queued afterwards land in the new file, so a restart reads back exactly the heads the
+    /// witness hasn't taken.
+    #[test]
+    fn heads_queued_after_a_batch_was_taken_land_in_the_new_queue_file() {
+        let dir = std::env::temp_dir().join(format!("holon-heads-reopen-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let (url, got) = witness(Arc::new(Mutex::new(200)));
+        let exporter = Exporter::new(&url, None, Some(dir.clone())).unwrap();
+        exporter.note(head(0));
+        exporter.note(head(1));
+        assert_eq!(exporter.flush(), Ok(2), "taken, and the queue file rewritten empty");
+        exporter.note(head(2));
+        exporter.note(head(3));
+        let again = Exporter::new(&url, None, Some(dir.clone())).unwrap();
+        assert_eq!(again.waiting(), 2, "the heads queued after the rewrite are in the file");
+        assert_eq!(again.flush(), Ok(2));
+        let sent: Vec<Head> = got.lock().unwrap().iter().flat_map(|(_, b)| serde_json::from_value::<Vec<Head>>(b["heads"].clone()).unwrap()).collect();
+        assert_eq!(sent, [head(0), head(1), head(2), head(3)]);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -36,7 +36,7 @@ code. Where the design leaves a decision open (§8), the step that needs it says
 | 4 | C2 (c), cut-back without parsing (**done**) | `holon` | none | |
 | 5 | C2 (d), lazy sync and the witness hook (**done**) | `holon` | none | Q7: 1 s for now |
 | 6 | C3 (a), persist on change (**done**) | `holon` | none | decided: counts persist with the next write |
-| 6b | B.2, the witness's queue file kept open (scheduled next, after 6) | `holon` | none | |
+| 6b | B.2, the witness's queue file kept open (**done**) | `holon` | none | |
 | 7 | C3 (b)–(e), the state head | `holon` | adds `deployments.state/`, drops `state_refs` (no migration) | |
 | 8 | C5 in the language and core | `holon-core`, `holon-author`, `holon-wasm`, `editor` (types) | a new param in handler units, only for flows that use a word | |
 | 9 | C2 (e) and C5 in the server | `holon`, `holon-core`, `holon-author`, `holon-wasm`, `editor`, docs, a sample | none new | Q9, Q10, Q11, Q12 |
@@ -411,7 +411,23 @@ and writing back the value that was there writes nothing. `cargo test --release 
 
 **Commit:** `persist: a run persists only what it changed (C3 a)`.
 
-## Step 6b. B.2: the witness's queue file kept open
+## Step 6b. B.2: the witness's queue file kept open (done)
+
+**Built** as sketched below, keeping the file's permissions as they were: `append` creates
+`pending.jsonl` with default permissions, and `keep`'s rewrite makes it owner-only, as before. Heads
+are hashes, not secrets.
+
+**Tests added:** `heads_queued_after_a_batch_was_taken_land_in_the_new_queue_file`. It fails with
+the handle not closed before `keep` (checked by removing that line), because heads queued after a
+batch then went to the replaced file and were lost on restart. The other four exporter tests pass
+unchanged. `cargo test --release -p holon` passed (390 passed, 1 ignored), and clippy was clean.
+
+**Measured, live** (`hello` over HTTP at 64 connections, two rounds):
+- with a witness, 10,195 and 9,294 req/s; without, 10,580 and 10,727;
+- the gap was 16% before (7,890 against 9,362) and is now 4–13%;
+- what's left is serializing and writing each head under the exporter's one lock, and the sends;
+- the witness took all 158,174 heads in 161 batches, and none were left waiting.
+
 
 **Why.** Measured in step 5: with `--export-heads`, `hello` over HTTP served 7,890 req/s, against
 9,362 without. Every run's head is queued by `Exporter::note` (`heads.rs:126–132`). Under

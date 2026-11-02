@@ -1474,8 +1474,8 @@ The end-to-end tests (`editor/e2e`) and `editor/src/samples.test.ts` must stay g
 
 ## Appendix B. Found along the way
 
-These are recorded here so they aren't lost. B.1 and B.5 are fixed by this note (C2); the others
-are not.
+These are recorded here so they aren't lost. B.1 and B.5 are fixed by this note (C2), and B.2 by the
+plan's step 6b; B.3 is fixed by C2 (a), and B.4 is not.
 
 1. **An action can report another run's entry.** `run_action` reads `next_seq` under one table
    lock (`deploy.rs:1118`) and logs in another (`deploy.rs:1119`, `log_run`). A run of the same
@@ -1485,8 +1485,9 @@ are not.
 2. **The witness queue opens a file per run under a server-wide lock.** With `--export-heads`,
    `Exporter::note` (`heads.rs:106–112`) holds `pending` while `append` (`heads.rs:114–120`) calls
    `create_dir_all`, `open` and `write`, for every run of every deployment. Measured in build step 5:
-   `hello` served 7,890 req/s with a witness against 9,362 without. The same remedy as C2 (b)
-   applies, and it's scheduled as the plan's step 6b.
+   `hello` served 7,890 req/s with a witness against 9,362 without. Fixed in the plan's step 6b, the
+   same remedy as C2 (b): the queue file is kept open, and reopened after the rewrite that follows a
+   taken batch. The gap is now 4–13% (9,294–10,195 against 10,580–10,727).
 3. **Log readers clone whole logs under the table lock.** `handle_get_changes` (`changes.rs:64`),
    `restore_plan` (`deploy.rs:1419`) and `state_change` (`deploy.rs:1526`) call
    `log.after(None, usize::MAX)`, which clones every kept entry (500 by default, each with its
