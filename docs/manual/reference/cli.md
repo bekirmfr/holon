@@ -167,16 +167,36 @@ bottom. It reaches the server as `holon deploy` does, signed in as you.
 | 1 Overview | what is deployed, what waits for a person, the saved flows |
 | 2 Approvals | each thing waiting for you; enter reviews it: a saved or changed flow opens with what it may do, and you approve it by deploying it |
 | 3 Flows | every deployment and saved flow; enter opens its page, `e` its text |
-| 4 the open flow | its status (routes, what it may do and whether its grant covers it, the secrets it reads), its runs (enter shows one over its text, with each statement's value) and its history; `g`, `p`, `x` run, pause or stop it |
+| 4 the open flow | its status (routes, what it may do and whether its grant covers it, the secrets it reads), its runs (enter shows one over its text, with each statement's value), its history, state and access (enter on a secret sets it: a value typed as dots, a `HOLON_SECRET_…` name the server reads, or a Vault field), and its graph; `g`, `p`, `x` run, pause or stop it |
 | 5 Editor | flows' text in tabs, coloured and checked as you type, with its problems below and, beside it, what it may do (`+` marks what deploying would add) and what the name at the cursor is |
 | 6 Library | the samples; enter opens a copy |
+| 7 Admin | people (invite, role, email, disable, a reset link, remove), API keys, the folders and databases flows use (bound with the same flags as [`holon folder`](#holon-folder) and [`holon database`](#holon-database)), the secrets each flow reads, and the server: its policy, the grants held, the sign-in provider, sweeping the store and the folder texts. An admin's page |
 
-In the editor, keys type; `esc` leaves the text for the page keys and `i` comes back. `ctrl+s`
-saves (to its file, else on the server, not deployed), `ctrl+d` deploys, showing what it may do
-and what you approve by deploying it, `ctrl+r` shows its runs over its text a step at a time (`n`,
-`N`), `ctrl+f` formats it, and `ctrl+←`/`→` and `ctrl+w` move between and close tabs. `:` takes a
-command (`open <file|slug>`, `new <sample>`, `w [file]`, `deploy`, `flow <slug>`, `run`, `pause`
-or `stop <slug>`, `server <port|url>`, `q`), and `?` lists the keys.
+A flow's graph is its statements, one a row, under what starts them (a route, a clock, an
+action), with the lines between them showing what feeds what, as `git log --graph` draws
+branches. A statement's own plumbing is folded into it: its detail lists the nodes it is made of,
+and `a` shows every node instead. On a deployment it marks what the newest run reached. A tab
+shows its code, its code with the graph beside it (following the cursor), or the graph alone:
+`ctrl+b` goes round them, and enter on a statement edits it there.
+
+In the editor, keys type; `esc` leaves the text for the page keys and `i` comes back. `ctrl+t`
+(or `ctrl+n`, or the tab bar's `+`) opens a draft in a new tab from anywhere (`n` on the
+editor's page keys): its first save asks for a file. `ctrl+s` saves (to its file, else on the
+server, not deployed), `ctrl+d` deploys, showing what it may do and what you approve by
+deploying it, `ctrl+r` shows a run over its text (what it played lit, the rest dimmed, each
+statement's value under it; `=` or the tab bar's Values hides the values for the code alone,
+and shows them again). Under it, as in the web editor, a panel: the runs on its left
+(`↑`/`↓` pick one), and on its right the run picked, in tabs (`tab` goes round them): Details
+(what it answered, did and called), Errors (when it failed: why, and on which line) and its
+Timeline, whose steps `←`/`→` go through, each marked in the code and the graph. `alt+f`
+formats it, and `ctrl+pgup`/`pgdn` and `ctrl+w` move
+between and close tabs. `:` takes a command (`open <file|slug>`, `new [sample]`, `w [file]`,
+`deploy`, `flow <slug>`, `call`, `restore`, `sessions`, `run`, `pause` or `stop <slug>`,
+`server <port|url>`, `q`), `ctrl+p` finds anything by name, and `?` lists the keys.
+
+The shell line at the bottom right (`!`, or `` ctrl+` `` from anywhere) runs a command in this
+terminal, in the folder its prompt shows. The prompt then stays, as the folder is now, for the
+next command until `esc` brings the editor back; `cd` stays, and `↑` brings back the ones before.
 
 A file opens in a tab, and a missing one starts as a new flow; a deployment's name opens its page.
 With no server it still opens, checks and formats files.
@@ -454,7 +474,7 @@ Without a point, lists a deployment's versions, newest first: every deploy is on
 | `--code` | deploy that point's code again, as a new version, checked against the grant the deployment has now |
 | `--state` | put back the state that point left, in a new session; the deployment must be running or paused |
 | `--approve` | approve what the code needs that today's grant doesn't cover |
-| `--dry-run` | say what it would do: that point's text beside the text deployed now, the state it would put back, and what the runs since did outside the state; change nothing |
+| `--dry-run` | say what it would do: that point's text beside the text deployed now; what it touches, a row per folder, database, secret, host, flow, channel, state key and collection, marked new, gone or as now, with whether this server is ready for it, what putting the state back does to it, and what the runs since did through it (not undone); the state's values now → as it would be; change nothing |
 
 At least one of `--code` and `--state`. Exits 0 when it is done (or a dry run answered), 1 when the
 server refused it or it needs approving, 2 for a mistake on the command line. See [Going back to an

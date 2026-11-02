@@ -335,9 +335,12 @@ fn deploy(api: &dyn Api, text: &str, slug: Option<&str>) -> Result<String, Strin
     };
     if !needs.is_empty() {
         save_for_approval(api, &slug, &saved_document(&plan, text))?;
+        let touches = crate::touches::text(&crate::touches::lines(&preview["touches"], &preview["settings"]));
         return Ok(format!(
-            "Not deployed yet: a person has to approve what \"{slug}\" may do. It asks to:\n{}\n\nIt is saved as the flow \"{slug}\" on {}: they open the editor there, open \"{slug}\" from the flows page, and deploy it, which asks them to approve exactly these. Tell them, and deploy again from here once they have: a version that needs nothing more deploys at once.{secrets_note}",
+            "Not deployed yet: a person has to approve what \"{slug}\" may do. It asks to:\n{}\n\nWhat it touches (+ new, - no longer, ~ changed, ! not ready on {}):\n{}\n\nIt is saved as the flow \"{slug}\" on {}: they open the editor there, open \"{slug}\" from the flows page, and deploy it, which asks them to approve exactly these. Tell them, and deploy again from here once they have: a version that needs nothing more deploys at once.{secrets_note}",
             described(&needs),
+            api.server(),
+            touches.join("\n"),
             api.server()
         ));
     }
@@ -750,17 +753,13 @@ fn restore(api: &dyn Api, args: &Value) -> Result<String, String> {
             } else {
                 format!("Its code, version {n}'s, would deploy again once a person approves what today's grant doesn't cover:\n{}", listed(&needs))
             });
-            let asks = strings(&preview["items"]);
-            let unasked: Vec<String> = strings(&preview["granted_now"]).into_iter().filter(|i| !asks.contains(i)).collect();
-            if !unasked.is_empty() {
-                out.push(format!("Granted now, and not asked for by its code:\n{}", listed(&unasked)));
-            }
             out.push(code_diff(api, slug, n).unwrap_or_else(|e| format!("Its text can't be compared: {e}")));
         }
     }
-    let missing = strings(&preview["missing_secrets"]);
-    if !missing.is_empty() {
-        out.push(format!("Its secrets not set now (their nodes stay empty until an admin sets them): {}", missing.join(", ")));
+    // Everything it touches, beside what it touches now: its secrets not set among them.
+    let touches = crate::touches::text(&crate::touches::lines(&preview["touches"], &preview["settings"]));
+    if !touches.is_empty() {
+        out.push(format!("What it touches (+ new, - no longer, ~ changed, ! not ready on {}):\n{}", api.server(), touches.join("\n")));
     }
     if preview["state"].is_object() {
         out.push(crate::restore::state_lines(&preview["state"]));
@@ -789,7 +788,7 @@ fn restore(api: &dyn Api, args: &Value) -> Result<String, String> {
 }
 
 /// The state's keys and collection items a restore would put back, now → then.
-fn state_values(change: &Value) -> Vec<String> {
+pub(crate) fn state_values(change: &Value) -> Vec<String> {
     let line = |name: String, v: &Value| format!("  {name}: {} → {}", agent::show(&v["now"]), agent::show(&v["then"]));
     let mut out: Vec<String> = change["values"].as_object().into_iter().flatten().map(|(k, v)| line(k.clone(), v)).collect();
     for (name, c) in change["collections"].as_object().into_iter().flatten() {
@@ -808,6 +807,17 @@ fn state_values(change: &Value) -> Vec<String> {
 /// names, or both printed plainly when only one has them (a canvas deploy keeps none), so a name
 /// alone never reads as a change.
 pub(crate) fn code_diff(api: &dyn Api, slug: &str, number: u64) -> Result<String, String> {
+    let (now_text, then_text, note) = code_texts(api, slug, number)?;
+    let lines = line_diff(&now_text, &then_text);
+    if lines.is_empty() {
+        return Ok(format!("Version {number}'s text is the text deployed now."));
+    }
+    Ok(format!("Its text (- deployed now, + version {number}'s):\n{}{note}", lines.join("\n")))
+}
+
+/// The text deployed now and version `number`'s, printed alike, to compare; and a note when
+/// they had to be printed without their names.
+pub(crate) fn code_texts(api: &dyn Api, slug: &str, number: u64) -> Result<(String, String, &'static str), String> {
     let path = format!("/deployments/{}", seg(slug));
     let versions = json_of(api, "GET", &format!("{path}/versions"), None)?;
     let unit = versions["versions"]
@@ -829,16 +839,11 @@ pub(crate) fn code_diff(api: &dyn Api, slug: &str, number: u64) -> Result<String
         }
         d
     };
-    let (now_text, then_text, note) = if named(&now) == named(&then) {
+    Ok(if named(&now) == named(&then) {
         (agent::text_of(slug, &now)?, agent::text_of(slug, &then)?, "")
     } else {
         (agent::text_of(slug, &plain(&now))?, agent::text_of(slug, &plain(&then))?, "\n(Both printed without the text's names: one of them was deployed from the canvas, which keeps none.)")
-    };
-    let lines = line_diff(&now_text, &then_text);
-    if lines.is_empty() {
-        return Ok(format!("Version {number}'s text is the text deployed now."));
-    }
-    Ok(format!("Its text (- deployed now, + version {number}'s):\n{}{note}", lines.join("\n")))
+    })
 }
 
 /// A line diff of `a` to `b`: `- ` for a's lines, `+ ` for b's, `  ` for both, with the unchanged

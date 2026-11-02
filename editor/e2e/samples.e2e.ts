@@ -138,8 +138,8 @@ test("browser-key's approval asks to answer with its secret, and once approved i
   await portField.fill(String(port));
   await page.locator(".hl-canvas").getByRole("button", { name: /^(deploy|update)/ }).dispatchEvent("click");
   const dialog = page.getByRole("dialog");
-  await expect(dialog).toContainText('answer its callers with the secret "maps_browser_key", or with what is computed from it');
-  await expect(dialog).toContainText('read the secret "maps_browser_key"');
+  // What it touches says it, on a first deploy and on an update alike.
+  await expect(dialog).toContainText("secret maps_browser_key: read, answer its callers with it");
   const deployed = page.waitForResponse((r) => r.request().method() === "POST" && new URL(r.url()).pathname === "/deploy");
   await dialog.getByRole("button", { name: /^(Approve and deploy|Deploy|Update)$/ }).click();
   expect((await deployed).status()).toBe(200);
@@ -165,9 +165,9 @@ test("stripe-to-slack's approval says where each secret goes, and unsigned reque
   await page.locator(".hl-canvas").getByRole("button", { name: /^(deploy|update)/ }).dispatchEvent("click");
   const dialog = page.getByRole("dialog");
   // The Slack path is posted to Slack; the Stripe secret only checks a signature.
-  await expect(dialog).toContainText('read the secret "slack_webhook_path", and send it to https://hooks.slack.com');
-  await expect(dialog).toContainText('read the secret "stripe_webhook_secret"');
-  await expect(dialog).not.toContainText('"stripe_webhook_secret", and send it');
+  await expect(dialog).toContainText("secret slack_webhook_path: read, and send it to https://hooks.slack.com");
+  await expect(dialog).toContainText("secret stripe_webhook_secret: read");
+  await expect(dialog).not.toContainText("secret stripe_webhook_secret: read, and send it");
   const deployed = page.waitForResponse((r) => r.request().method() === "POST" && new URL(r.url()).pathname === "/deploy");
   await dialog.getByRole("button", { name: /^(Approve and deploy|Deploy|Update)$/ }).click();
   expect((await deployed).status()).toBe(200);
@@ -188,9 +188,9 @@ test("license-check's approval says its key goes to the database, and the route 
   await portField.fill(String(port));
   await page.locator(".hl-canvas").getByRole("button", { name: /^(deploy|update)/ }).dispatchEvent("click");
   const dialog = page.getByRole("dialog");
-  await expect(dialog).toContainText('read the secret "license_key", and send it to the database "vendor"');
+  await expect(dialog).toContainText('secret license_key: read, and send it to the database "vendor"');
   // The row it answers is what the database said: answering with it isn't answering with the key.
-  await expect(dialog).not.toContainText("answer its callers with the secret");
+  await expect(dialog).not.toContainText("answer its callers with it");
   const deployed = page.waitForResponse((r) => r.request().method() === "POST" && new URL(r.url()).pathname === "/deploy");
   await dialog.getByRole("button", { name: /^(Approve and deploy|Deploy|Update)$/ }).click();
   expect((await deployed).status()).toBe(200);
@@ -213,7 +213,7 @@ test("client-credentials' approval says where the secret goes and where the toke
   await portField.fill(String(Number(await portField.inputValue()) + SAMPLE_SHIFT));
   await page.locator(".hl-canvas").getByRole("button", { name: /^(deploy|update)/ }).dispatchEvent("click");
   const dialog = page.getByRole("dialog");
-  await expect(dialog).toContainText('read the secret "client_secret", and send it to https://demo.duendesoftware.com; what is answered to it goes to https://httpbin.dev');
+  await expect(dialog).toContainText("secret client_secret: read, and send it to https://demo.duendesoftware.com; what is answered to it goes to https://httpbin.dev");
   await dialog.getByRole("button", { name: "Cancel" }).click();
 });
 
@@ -268,8 +268,10 @@ test("a flow nothing would start can't deploy; made runnable by hand, it deploys
   await page.keyboard.insertText("flow by-hand\n\ntotal = 1 + 2\n");
   await expect(canvas.getByText("nothing would start a run", { exact: true })).toBeVisible({ timeout: 15_000 });
   await expect(canvas.getByRole("button", { name: /^deploy/ })).toBeDisabled();
-  // The quick fix puts its statements in an action, answering the value it computes.
-  await canvas.getByRole("button", { name: "make it runnable by hand" }).click();
+  // The quick fix puts its statements in an action, answering the value it computes. With the
+  // text open the canvas's toolbar runs under the text pane at 1280px: pressed as a button, not at
+  // a point another element covers (a pointer click there retried for 70 s, then missed).
+  await canvas.getByRole("button", { name: "make it runnable by hand" }).dispatchEvent("click");
   await expect(page.getByRole("region", { name: "Text" })).toContainText("action run (input) {");
   await expect(page.getByRole("region", { name: "Text" })).toContainText("respond total");
   await expect(canvas.getByText("nothing would start a run", { exact: true })).toHaveCount(0);

@@ -5,6 +5,7 @@
 import { describeItem, type WValue } from "./holon";
 import type { Diff, DryRunReport } from "./DryRun";
 import { diffCounts, keyLines, lineDiff, setDiff } from "./diff";
+import { touchLines, touchText } from "./touches";
 import type { DeploymentEvent, FileSince, LogEntry, RestoreDone, RestorePoint, RestorePreview, StateChange, VersionEntry } from "./server";
 
 export type TimelineItem =
@@ -265,11 +266,14 @@ export function restoreReport(
       if (preview.code === null) sections.push({ heading: "code", lines: [`${pointLabel(point)} ran on the code deployed now: only its state is restored.`] });
       else {
         const lines = [`Version ${preview.code}'s code is deployed again, as a new version, checked against the grant "${slug}" has now.`];
-        if ((preview.missing_secrets ?? []).length > 0) lines.push(`Not set now: ${preview.missing_secrets!.join(", ")} (those nodes stay empty until they are).`);
         sections.push({ heading: "code", lines });
         approvals.push(...(preview.needs_approval ?? []).map(describe));
       }
     }
+    // Everything it touches, beside what it touches now: what is not ready (a secret not set),
+    // what putting the state back does to each key, what the runs since did that isn't undone.
+    const touches = touchText(touchLines(preview.touches, preview.settings));
+    if (touches.length > 0) sections.push({ heading: "what it touches (+ new, - no longer, ~ changed, ! not ready)", lines: touches });
     if (preview.state) sections.push({ heading: "state", lines: stateLines(preview.state) });
     const files = preview.state?.files ?? [];
     if (files.length > 0)

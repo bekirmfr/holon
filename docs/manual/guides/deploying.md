@@ -33,13 +33,36 @@ it would start nothing.
 > - read the secret "slack_webhook_path"
 > - read the secret "stripe_webhook_secret"
 >
-> Not set yet: slack_webhook_path, stripe_webhook_secret (set under ⚙ → secrets; until then those
-> nodes stay empty)
+> What it touches (+ new, - no longer, ~ changed, ! not ready on this server):
+> What starts it
+> &nbsp;&nbsp;+ requests: receive — approved by confirming
+> Folders, databases and secrets
+> &nbsp;&nbsp;! secret slack_webhook_path: read — not set: the steps that read it get nothing until it is
+> &nbsp;&nbsp;! secret stripe_webhook_secret: read — not set: the steps that read it get nothing until it is
+> What it reaches outside
+> &nbsp;&nbsp;+ host hooks.slack.com: call — approved by confirming
+> Also
+> &nbsp;&nbsp;+ the clock: read — approved by confirming
 
 Read the list before you approve: it is everything the deployment will be allowed to do, and the
 server refuses anything else when a run tries it. An item marked **(optional: it runs without
 it)** can be left out (see [Optional permissions](#optional-permissions)). **Approve and deploy**
 grants the list; **Cancel** changes nothing.
+
+**What it touches** is the same list by thing rather than by permission, beside what the
+deployment touches now: what starts it (requests, actions, waits), the folders, databases and
+secrets it is given, what it reaches outside (each host it calls, the flows whose actions it runs,
+its channels, processes, the sites whose pages it answers), what it keeps (each state key and
+collection), and its limits. Each thing is one row, marked **+** new, **-** no longer (the new
+version doesn't touch it), **~** changed (some of its uses are new or gone, each marked), or **·**
+as now. A row marked **!** is one this server isn't ready for, and says why: a secret not set, a
+folder or database not bound here (or bound read-only, and the flow writes it), a flow it calls
+that isn't deployed here, a host or limit this server's policy refuses. A row that is ready says
+what the server has for it: a secret's version and where it comes from (`set, v3
+(env:HOLON_SECRET_SIGNING_KEY)`), a folder or a database bound. Below the rows, **Its settings**
+lists the deploy settings that change: how often it runs, the sites whose pages it answers.
+`holon editor`, `holon deploy` (when it needs approval), `holon restore --dry-run` and the agent
+tools show the same rows, worked out by the server.
 
 Only a person can approve. An agent's deploy that needs approval is saved instead, for you to
 open and deploy ([Working with agents](agents.md)).
@@ -179,6 +202,12 @@ never their values. The one the secret's name suggests is chosen for you
 **another name…** to type one the list doesn't have. The list is shown to admins only, as only an
 admin sets secrets.
 
+In `holon editor`, the terminal one, the same choice is on the flow's page: its **Access**
+section lists the secrets it reads, and **enter** on one asks where its value comes from (a
+**value** typed as dots, one of the server's **env** names, the one its name suggests picked
+first, **another name…**, or a **vault** field). Holon never writes the `.env` file: add the line
+there yourself, and it is in the list within a minute.
+
 **How it is served.**
 
 - The server reads the file when it starts, then again every minute. An edit reaches the runs
@@ -262,6 +291,12 @@ Nothing is rewritten: what a restore replaces stays restorable in turn.
 - **`--dry-run`** says what it would do: what the code would ask, which keys the state would change,
   and how many runs were logged since that point and what they did outside the state: calls out,
   file and database writes, messages. A restore doesn't undo those: a refund sent stays sent.
+  Its **what it touches** rows (as the [approval dialog](#the-approval-dialog) shows them) are the
+  restored version's beside the deployment's now, and say what the restore does to each: a key
+  or collection `putting the state back changes it` (or `brings it back`, `drops it`, or `its value
+  stays as it is`), each value now → as it would be below them; a host, folder, database, channel
+  or flow `done 3 times by the runs since, not undone`. A secret keeps its current version: a
+  restore never rolls one back (`holon secret rollback` does).
 - **Files** in a bound folder are never put back, but a state restore's dry run names each one the
   runs since wrote, once however many times: how many writes, by which runs, and whether it is on
   disk as the last one left it. One changed by anything but a run (an edit by hand, another
@@ -344,8 +379,9 @@ its event). Picked:
 - **canvas** (a version) shows the canvas it was deployed with;
 - **code**, **state** or **both** restore it, as `holon restore` does: a dry run first, its
   result in a dry-run window (nothing has changed yet) that says what it would change, part by
-  part (the code; the keys, and what the runs since did outside, which a restore doesn't undo),
-  and asks to approve what the code needs that today's grant doesn't cover. It opens with what
+  part (the code; what it touches, row by row, as `holon restore --dry-run` says it; the keys,
+  and what the runs since did outside, which a restore doesn't undo), and asks to approve what
+  the code needs that today's grant doesn't cover. It opens with what
   it changes, a line each (`code: version 5's is deployed again, as version 12, in place of
   version 11`, the permissions added and dropped, the keys and items of the state). Its **diff**
   button compares each part with what is there now: the flow's text, line by line, deployed now

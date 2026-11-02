@@ -31,6 +31,7 @@ pub mod composites;
 pub mod describe;
 pub mod editing;
 pub mod flow;
+pub mod graph;
 pub mod group;
 pub mod lang;
 pub mod modules;
@@ -38,6 +39,7 @@ pub mod routes;
 pub mod samples;
 pub mod templates;
 pub mod text;
+pub mod usage;
 pub mod wire;
 
 /// The limits a deployment may ask for, by name, and the unit each is counted in. Durations are

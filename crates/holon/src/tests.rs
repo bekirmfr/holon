@@ -4346,9 +4346,31 @@ fn counting_server() -> (String, Arc<Mutex<BTreeMap<String, usize>>>) {
             let Ok(mut stream) = stream else { continue };
             let counted = Arc::clone(&counted);
             std::thread::spawn(move || {
+                // The whole request, body too, before answering: a client may send its head and
+                // body in two writes, and a socket closed with the body unread is reset (on
+                // Windows), which can drop the answer before the client reads it.
+                let mut got = Vec::new();
                 let mut buf = [0u8; 8192];
-                let n = stream.read(&mut buf).unwrap_or(0);
-                let head = String::from_utf8_lossy(&buf[..n]).to_string();
+                let head_end = loop {
+                    if let Some(i) = got.windows(4).position(|w| w == b"\r\n\r\n") {
+                        break i + 4;
+                    }
+                    match stream.read(&mut buf) {
+                        Ok(0) | Err(_) => return,
+                        Ok(n) => got.extend_from_slice(&buf[..n]),
+                    }
+                };
+                let head = String::from_utf8_lossy(&got[..head_end]).to_string();
+                let length: usize = head
+                    .lines()
+                    .find_map(|l| l.to_ascii_lowercase().strip_prefix("content-length:").map(|v| v.trim().parse().unwrap_or(0)))
+                    .unwrap_or(0);
+                while got.len() < head_end + length {
+                    match stream.read(&mut buf) {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => got.extend_from_slice(&buf[..n]),
+                    }
+                }
                 let path = head.split_whitespace().nth(1).unwrap_or("").split('?').next().unwrap_or("").to_string();
                 *counted.lock().unwrap().entry(path.clone()).or_insert(0) += 1;
                 let body = match path.as_str() {
