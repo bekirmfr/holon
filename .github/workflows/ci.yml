@@ -197,6 +197,14 @@ jobs:
         with:
           name: playwright-traces-${{ matrix.shard }}
           path: editor/test-results
+      # And after, however the run ended (failed, cancelled): its MongoDB with its volumes, and what
+      # an e2e server killed before its own cleanup left in the temp folder. The kept build stays.
+      - name: Clean up after the run
+        if: always()
+        run: |
+          docker rm -f -v mongo || true
+          rm -rf /tmp/holon-e2e-* editor/test-results
+          df -h "$GITHUB_WORKSPACE"
 
   # 5. The VS Code extension (editors/vscode): its grammar on every sample, through VS Code's own
   #    TextMate engine; then, in a real VS Code (downloaded, on a virtual display), a flow's
