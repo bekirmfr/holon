@@ -44,7 +44,7 @@ it (C5).
 1. Where Holon stands
 2. What a request does today
 3. Measured: what each cost is worth
-4. The changes (C1–C5), each with what it touches, results and side effects
+4. The changes (C1–C5), each with what it touches, results and side effects; §4.5, the per-run constant that remains
 5. Lock order, before and after
 6. Build order
 7. Samples
@@ -96,6 +96,10 @@ node by node. Holon's extra 100–140 µs per request goes to:
 - the hop onto a blocking thread (`dataplane.rs:295`).
 
 `/last` costs most because a stateful run copies its state (`firing.rs:177`) even to read it.
+
+§4.5 measures this constant section by section, and prices what caching, a compiled plan and code
+generation would take off it. The flow's evaluation is about a fifth of the request. The largest
+single part is moving the run onto a blocking thread and back.
 
 ### 1.3 Strict Holon against a C# service with the same record
 
@@ -1080,6 +1084,113 @@ scanners' probes. The policy may make it `unrecorded` (§8 Q12).
 
 **Docs.** The rows of the touches table under `docs/`, and `README.md`.
 
+### 4.5 Later: the per-run constant
+
+C1–C5 remove the work that grows with the server and put the record where it belongs. What's
+left is a constant per run, and it explains §1.2's gap to .NET. This section measures it, and
+prices three ways of shrinking it: caching and trimming the host's work, compiling each flow into an
+execution plan, and generating native code. None of the three is part of this note's build. They
+come after it, in that order.
+
+**Where an unrecorded request's time goes.** A throwaway build timed each section of one request,
+for `hello-api` (17 nodes) at 1 connection with `wrk -t1 -c1`. The build had the flow cache (C1)
+on, and no log and no persist, which stands in for `unrecorded`. It also evaluated every request a
+second time with no observer, which is safe because evaluation is pure, to separate the graph's
+cost from the per-node recording. That duplicate (30 µs) is taken out of the total below, about
+158 µs.
+
+| Part | Code | µs | Share |
+|---|---|---|---|
+| Moving the run onto a blocking thread (20) and back (21) | `spawn_blocking`, `dataplane.rs:295`; the shared runtime, `dataplane.rs:68–76` | 41 | 26% |
+| Evaluating the graph | `holon_core::eval` with `NoObserver`, `eval.rs:107` | 30 | 19% |
+| Run setup and bookkeeping: run locks, the nonce, permit, sourced values, rounds (17), and the run id (7) | `fire_with_state`, `firing.rs:120`; `run_attempt`, `firing.rs:496`; `run_id_of`, `firing.rs:711` | 24 | 15% |
+| The data-plane wrapper, outside `serve_flow` | `serve_data`, `listeners.rs:15–64`: `allowed_origin` runs here (`listeners.rs:42`) and again in `answer` (`dataplane.rs:291`), each locking the table and cloning the list of allowed sites | 17 | 11% |
+| The per-node timeline | `recorder::Timer`, `firing.rs:560`; `Timer::produced` converts each node's outputs and serializes them to JSON to measure their size (`recorder.rs:326–332`) | 13 | 8% |
+| After the run: the entry, the park check, the secret checks | `listeners.rs:141–160` | 12 | 8% |
+| HTTP: parsing, reading the body, building `DataRequest` | hyper; `answer`, `dataplane.rs:263–289` | ~9 | 6% |
+| Routing and the request record | `data::handle` | 8 | 5% |
+| Lookup, closure, counts, other | | ~4 | 2% |
+
+`calc` (29 nodes) gave the same picture with a larger graph: about 40 µs of evaluation and 14 µs of
+timeline. Separate runs of the build varied by up to about 30%, but the proportions held. .NET answers
+the same request in 49 µs in all (§1.2).
+
+**What each would save.** The figures below are estimates built on the table, with nothing built
+yet:
+
+| `hello-api`, unrecorded | p50 at 1 connection | CPU per request, 64 connections | Throughput, 64 connections |
+|---|---|---|---|
+| C1–C3 with C5's `unrecorded` (the stand-in build, measured) | ~158 µs | 120 µs | 27,474 req/s |
+| (a) + caching and trimming the host's work | ~90–105 µs | ~70 µs | ~40,000–45,000 |
+| (b) + an execution plan compiled per flow | ~75 µs | ~55 µs | ~50,000–55,000 |
+| (c) + native code generation | ~65 µs | ~48 µs | ~60,000–65,000 |
+| .NET 8, plain (§1.2, measured) | 49 µs | 20 µs | 116,612 |
+
+- **(a) Caching and trimming the host's work: about −55 to −70 µs, the largest of the three.**
+  - **Run read-only handlers without the thread hop: −30 to −40 µs, the largest single saving.**
+    Every run moves to the blocking pool because a run may block: on state locks, on outbound calls
+    (`ureq` is blocking), or on fsyncs. C5's rule (every capability sourced, none `Await`) already
+    identifies the handlers that can't do any of that. Such a handler can run on the async worker
+    itself, or under `tokio::task::block_in_place`, which keeps the worker but moves its other
+    tasks off it. `strict` runs still wait for an fsync, so they keep the hop, or wait for the
+    group-commit sync on the async side.
+  - **Skip the timeline and the entry for unrecorded runs: about −20 µs.** C5 decides that before
+    the run starts, so the evaluator can run with `NoObserver`.
+  - **Cache per flow, by hash (C1's cache), what the wrapper and run setup rebuild per request:
+    −5 to −15 µs.** That covers the deployment's allowed origins (checked once, not twice), the
+    route table, and the parts of the setup that depend only on the flow and its grant.
+  - **For recorded runs**, the timeline's per-node outputs could be dropped. Evaluation is pure, so
+    replay and `holon verify` can recompute every node's value from what the run read. That would
+    save the per-node JSON sizing too. It changes what the log holds and what the editor's replay
+    reads, so it's a decision of its own (§8 Q16), not a trim.
+- **(b) An execution plan compiled per flow: −15 to −24 µs.**
+  - **What it is.** Each closure is lowered, once per hash and cached beside it (C1), into a flat
+    plan: children resolved to indices, parameters parsed, each primitive bound to a function
+    pointer, slots numbered, and the lazy choices kept as jumps (`choice_next`, `eval.rs`). Plans
+    like this typically run 2–5× faster than a graph interpreter, taking evaluation from 30 µs to
+    about 6–15 µs.
+  - **Why it's safe.** It lives in `holon-core`, so it keeps core's four dependencies
+    ("purity-by-dependency", `holon-core/Cargo.toml:21`), runs in the editor's wasm build (P5, one
+    implementation), and needs no toolchain on the server. Its results are checked against the
+    eager oracle (`eager.rs`, kept "as the oracle the lazy evaluator is checked against") and against
+    today's `eval`, on every sample and the core tests.
+- **(c) Native code generation: another −5 to −12 µs on a flow this small.** This means compiling
+  each flow to machine code: Rust through `rustc` into a library, a JIT such as Cranelift, or wasm.
+  Evaluation would drop to about 1–3 µs. Even then Holon stays about 1.3× .NET in latency and 2× in
+  CPU, for the machinery it keeps on every run (the run id, the permit, the locks): the price of
+  its guarantees, not of interpretation. And the costs are high:
+  - **A second implementation of every primitive.** It must match the interpreter exactly,
+    floating point included, or replay and `verify` stop being exact.
+  - **Slower deploys,** and a toolchain or JIT on the server.
+  - **Native code made from graphs that agents wrote**, running inside the server process.
+  - **It reverses two choices the project made deliberately:** core's dependency limit, and an
+    engine picked for "no JIT, no platform code paths" (`wasmi`, `holon-module/Cargo.toml:12–14`).
+
+**Where compiling matters: flows that compute.** For a small handler, the evaluation is 19% of the
+request and code generation buys little. For a flow that loops over data, it's nearly all of the
+run. The repo's bench (`cargo bench -p holon-core --bench native_vs_composite`, Appendix A) gives
+about 68 ns per element for `fold`, against 1.3 ns for the built-in `sum`:
+
+| `fold` over 10,000 items | Time |
+|---|---|
+| Interpreter (measured per element, scaled) | ~680 µs |
+| (b) Compiled plan (estimated) | ~150–350 µs |
+| (c) Native code generation (estimated from `sum`) | ~15 µs |
+
+There, code generation is 20–50× faster than the interpreter and the only option that matters. If
+such flows become a real use case, (c) is worth its costs for them. Until then, the built-in
+primitives (`sum` and its siblings) and js holons (`wasm-module-L4.md`) are where heavy computing
+goes.
+
+**Where none of it matters much:**
+- **Strict runs** wait about 600 µs for the fsync (C2 e). Cutting 50–90 µs of CPU might add 10–25%
+  throughput at 64 connections, where CPU counts too, but latency barely moves. They're already level
+  with a C# service doing the same work (§1.3).
+- **Runs that call out** wait 50–300 ms on the network.
+
+**Order.** Do (a) first, starting with the thread hop, because it reuses C5's rule. Do (b) when a
+profile shows evaluation dominating a real flow, and (c) only when compute-heavy flows are a use case.
+
 ## 5. Lock order, before and after
 
 Today, at `aa2704a`:
@@ -1140,6 +1251,9 @@ throughput check (step 1) and says the step was run live.
    the second fsync.
 11. **C4**, after re-measuring with several stateful deployments written at once, and reading
    `sweep.rs` in full.
+12. **§4.5 (a)**, one commit per item: read-only handlers without the thread hop, unrecorded runs
+   without the timeline, and the per-flow caches. (b) and (c) are not scheduled; §4.5 says when each
+   would be.
 
 Steps 2–6 change no file format. Step 7 adds `deployments.state/`. Step 8 adds a param to handler
 units, which changes the hash only of flows that use a word. Steps 8 and 9 are one feature split in
@@ -1237,6 +1351,11 @@ The end-to-end tests (`editor/e2e`) and `editor/src/samples.test.ts` must stay g
     real flow asks, but choose the syntax so it can be added.
 15. **Sampling.** Something like `unrecorded, 1 in 1000` would record an occasional run of a noisy
     handler, which is harmless because it only reads. Leave it until asked.
+16. **Per-node outputs in recorded runs.** Each entry's timeline holds every node's outputs
+    (`Timer::produced`, `recorder.rs:326–332`), costing about 13 µs a run here plus log space.
+    Evaluation is pure, so replay and `verify` could recompute them from what the run read. Keep them
+    (the editor shows a run without re-evaluating it, and a run that read a secret keeps a node's
+    logged output in place of the value), or drop them for runs that read no secret (§4.5 a)?
 
 ## 9. Invariant check
 
@@ -1291,6 +1410,12 @@ The end-to-end tests (`editor/e2e`) and `editor/src/samples.test.ts` must stay g
   - The program isn't in the repository. This description is enough to rebuild it.
 - **CPU per request:** the server process's `utime + stime` (`/proc/<pid>/stat`) across one `wrk`
   run, divided by the requests `wrk` completed.
+- **The per-run constant (§4.5)** was measured with a throwaway build, reverted afterwards. It had
+  `Instant` timers around each section of `answer` (`dataplane.rs`), `serve_flow`, `fire_with_state`,
+  `run_attempt` and `run_id_of`, summed into atomics and printed as averages every 3,000 requests.
+  It also ran a second `holon_core::eval` with `NoObserver` on each request's endpoint and input, to
+  separate the graph's cost from the timeline's. The run used `wrk -t1 -c1 -d8s`, with the flow
+  cache on and no log and no persist.
 - **The comparison of §1.2–§1.4** was measured after §3, on the same machine. Holon's figures
   differ from §3's by run-to-run noise (`hello` unrecorded 27,474 here against 21,044 there).
 - **Load:** `wrk -t2 -c64 -d6s --latency`, or `-t1 -c1` for one connection. `calc`'s body is
