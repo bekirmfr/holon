@@ -69,9 +69,10 @@ limit run_budget_ms 1m
 secret gemini_api_key
 collection games
 
-# The page: the board to play on (click a piece then its square, or drag it), how the game ends
-# and how it ended, the moves, what the Sphinx did, felt and thought of yours, the chat, and the
-# model to play the next game against.
+# The page: the board to play on (click a piece then its square, or drag it), with its files and
+# ranks, how the game ends and how it ended, the moves (each one opens the position after it),
+# what the Sphinx did, felt and thought of yours, the chat in bubbles, the Sphinx's new lines typed
+# in, and the model to play the next game against.
 holon page(board, talk) -> html js {
   const data = JSON.stringify({ board, talk }).replace(/</g, "\\u003c");
   return `<!doctype html>
@@ -83,7 +84,10 @@ holon page(board, talk) -> html js {
 html{background:#fff}
 body{font:15px/1.5 system-ui;max-width:76em;margin:2em auto;padding:0 1em;color:#222}
 main{display:flex;gap:2em;flex-wrap:wrap}
-#board{display:grid;grid-template-columns:repeat(8,min(78px,11vw));grid-template-rows:repeat(8,min(78px,11vw));border:2px solid #555;width:max-content;user-select:none;touch-action:none}
+#frame{display:grid;grid-template-columns:1.3em max-content;width:max-content;color:#666;font-size:.85em}
+#ranks{display:grid;grid-template-rows:repeat(8,min(78px,11vw));align-items:center;text-align:center;padding-top:2px}
+#files{display:grid;grid-template-columns:repeat(8,min(78px,11vw));text-align:center;padding-left:2px}
+#board{font-size:15px;display:grid;grid-template-columns:repeat(8,min(78px,11vw));grid-template-rows:repeat(8,min(78px,11vw));border:2px solid #555;width:max-content;user-select:none;touch-action:none}
 #board button{border:0;padding:0;font-size:min(60px,8.5vw);line-height:1;cursor:pointer;color:#111}
 #board button.own{cursor:grab}
 .l{background:#eed9b5}.d{background:#b48862}
@@ -98,12 +102,26 @@ main{display:flex;gap:2em;flex-wrap:wrap}
 .win{color:#1a7f37}.loss{color:#b42318}.draw{color:#555}
 aside{flex:1;min-width:18em}
 h2{font-size:1.1em;margin:1em 0 .3em}
-#moves{font-family:ui-monospace,monospace}
+#moves{font-family:ui-monospace,monospace;line-height:1.9}
+#moves button{font:inherit;border:0;background:none;padding:0 .2em;border-radius:4px;cursor:pointer;color:#1d5fa8}
+#moves button:hover{background:#e8eef8}
+#moves button.on{background:#1d5fa8;color:#fff}
+#nav button{font-size:1em;min-width:2.2em}
+#viewing{color:#1d5fa8}
 #said{border-left:3px solid #ccd;padding-left:.8em;min-height:1.5em}
 .warn{color:#a33}
-#talk{list-style:none;padding:0}
-#talk li{margin:.5em 0}
-#talk li.aside{font-style:italic}
+#talk{list-style:none;padding:.6em;margin:.8em 0 0;max-height:28em;overflow-y:auto;border:1px solid #e3e3e8;border-radius:10px;background:#fafafc;display:flex;flex-direction:column;gap:.6em}
+#talk:empty{display:none}
+#talk li{max-width:85%;display:flex;flex-direction:column}
+#talk li.sphinx{align-self:flex-start;align-items:flex-start}
+#talk li.me{align-self:flex-end;align-items:flex-end}
+.who{font-size:.8em;color:#777;margin:0 .5em .15em}
+.bubble{padding:.45em .85em;border-radius:16px;white-space:pre-wrap;overflow-wrap:anywhere;min-height:1.5em}
+.sphinx .bubble{background:#ede6d6;border-bottom-left-radius:4px}
+.me .bubble{background:#1d5fa8;color:#fff;border-bottom-right-radius:4px}
+.aside .bubble{font-style:italic}
+.held{font-size:.8em;color:#a33;margin:.15em .5em 0}
+.typing .bubble::after{content:"▍";animation:pulse .5s infinite alternate}
 small{color:#777}
 input[name=line]{width:70%}
 </style>
@@ -112,7 +130,7 @@ input[name=line]{width:70%}
 <p><small><b>How it ends.</b> You win by checkmating the Sphinx. You lose if it checkmates you, or if you resign. Stalemate, the same position three times, fifty moves with no capture or pawn move, and too little material left to mate are draws.</small></p>
 <main>
 <div>
-  <div id="board"></div>
+  <div id="frame"><div id="ranks"></div><div id="board"></div><div></div><div id="files"></div></div>
   <p id="result"></p>
   <p id="status"></p>
   <p id="note" class="warn"></p>
@@ -122,6 +140,7 @@ input[name=line]{width:70%}
 <aside>
   <h2>Moves</h2>
   <p id="moves"></p>
+  <p id="nav"><button id="first" title="the start">⏮</button> <button id="prev" title="a move back">◀</button> <button id="next" title="a move on">▶</button> <button id="live" title="back to the game">⏭</button> <small id="viewing"></small></p>
   <p><small id="material"></small></p>
   <h2>The Sphinx <small id="mood"></small></h2>
   <p id="said"></p>
@@ -136,7 +155,7 @@ input[name=line]{width:70%}
 const PIECES = { K: "♔", Q: "♕", R: "♖", B: "♗", N: "♘", P: "♙", k: "♚", q: "♛", r: "♜", b: "♝", n: "♞", p: "♟" };
 const WHY = { checkmate: "checkmate", stalemate: "stalemate", "fifty-move rule": "fifty moves without a capture or a pawn move", "insufficient material": "too little material left to mate", "threefold repetition": "the same position three times", resigned: "you resigned" };
 const start = ${data};
-let game = start.board, sel = null, busy = false, pending = null, drag = null, sent = null;
+let game = start.board, sel = null, busy = false, pending = null, drag = null, sent = null, view = null;
 const $ = (id) => document.getElementById(id);
 function squares(fen) {
   const at = {};
@@ -149,7 +168,7 @@ function squares(fen) {
   });
   return at;
 }
-const playing = () => !busy && game.status === "playing" && game.turn === "w";
+const playing = () => !busy && view === null && game.status === "playing" && game.turn === "w";
 const own = (sq) => { const p = squares(game.fen)[sq]; return !!p && p < "a"; };
 const target = (from, to) => game.legal.find((l) => l.uci.slice(0, 4) === from + to);
 function describe(t) {
@@ -158,15 +177,23 @@ function describe(t) {
   if (t.kept === "broken") return "It broke the contract: " + t.note + ". The rules played " + n + " for it.";
   return "It didn't answer (" + t.note + "). The rules played " + n + " for it.";
 }
+// The position after ply n (0, the start) as the rules kept it, and the squares its move changed.
+const seen = (n) => (game.seen || [])[n] || game.fen;
+function changed(n) {
+  if (n === 0) return "";
+  const a = squares(seen(n - 1)), b = squares(seen(n));
+  return [...new Set([...Object.keys(a), ...Object.keys(b)])].filter((sq) => a[sq] !== b[sq]).join(" ");
+}
 function draw() {
-  const at = squares(game.fen);
+  if (view !== null && view >= game.moves.length) view = null;
+  const at = squares(view === null ? game.fen : seen(view));
   if (pending) {
     at[pending.slice(2, 4)] = at[pending.slice(0, 2)];
     delete at[pending.slice(0, 2)];
   }
   if (drag && drag.moved) delete at[drag.from];
   const to = sel ? game.legal.filter((l) => l.uci.startsWith(sel)).map((l) => l.uci.slice(2, 4)) : [];
-  const last = pending || game.last || "";
+  const last = view !== null ? changed(view) : pending || game.last || "";
   const board = $("board");
   board.textContent = "";
   for (let r = 8; r >= 1; r--) {
@@ -185,7 +212,7 @@ function draw() {
   $("result").textContent = !over ? "" : game.winner === "white" ? "You win: " + why + "!" : game.winner === "black" ? "The Sphinx wins: " + why + "." : "Draw: " + why + ".";
   $("result").className = game.winner === "white" ? "win" : game.winner === "black" ? "loss" : "draw";
   status();
-  $("moves").textContent = game.pgn;
+  moves();
   $("material").textContent = game.material ? "Material: you " + game.material.white + ", the Sphinx " + game.material.black + ". Playing against " + game.model + "." : "";
   $("mood").textContent = game.mood ? "(" + game.mood + ")" : "";
   const turns = game.turns || [], t = turns[turns.length - 1];
@@ -196,6 +223,40 @@ function draw() {
   $("contract").className = t && t.kept !== "kept" ? "warn" : "";
   $("resign").disabled = !playing();
 }
+// The moves, each a button that opens the position after it, and where the board is in them.
+function moves() {
+  const list = $("moves"), on = view === null ? game.moves.length : view;
+  list.textContent = "";
+  game.moves.forEach((san, i) => {
+    list.append(i % 2 ? " " : (i ? " " : "") + (i / 2 + 1) + ". ");
+    const b = document.createElement("button");
+    b.textContent = san;
+    b.className = i + 1 === on ? "on" : "";
+    b.onclick = () => see(i + 1);
+    list.append(b);
+  });
+  list.append((game.moves.length ? " " : "") + game.result);
+  $("viewing").textContent = view === null ? "" : (view === 0 ? "The start" : "After " + Math.ceil(view / 2) + (view % 2 ? ". " : "... ") + game.moves[view - 1]) + ": ⏭ goes back to the game.";
+  $("first").disabled = $("prev").disabled = on === 0;
+  $("next").disabled = $("live").disabled = view === null;
+}
+function see(n) {
+  view = n >= game.moves.length ? null : Math.max(0, n);
+  sel = null;
+  draw();
+}
+$("first").onclick = () => see(0);
+$("prev").onclick = () => see((view === null ? game.moves.length : view) - 1);
+$("next").onclick = () => see((view === null ? game.moves.length : view) + 1);
+$("live").onclick = () => see(game.moves.length);
+document.addEventListener("keydown", (e) => {
+  if (e.target.closest("input, select, textarea")) return;
+  const on = view === null ? game.moves.length : view;
+  if (e.key === "ArrowLeft") see(on - 1);
+  else if (e.key === "ArrowRight") see(on + 1);
+  else return;
+  e.preventDefault();
+});
 // Where the game stands; while a move is out, what was sent, to whom, and for how long.
 function status() {
   const over = game.status !== "playing", checked = (game.moves[game.moves.length - 1] || "").endsWith("+");
@@ -207,6 +268,7 @@ function status() {
 async function play(move) {
   busy = true;
   sel = null;
+  view = null;
   pending = /^[a-h][1-8][a-h][1-8]/.test(move) ? move : null;
   const m = pending && target(move.slice(0, 2), move.slice(2, 4));
   sent = { what: move === "resign" ? "Your resignation" : "Your move " + (m ? m.san : move), resign: move === "resign", at: Date.now() };
@@ -217,7 +279,7 @@ async function play(move) {
     const r = await fetch("/move", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ move }) });
     if (r.ok) {
       game = await r.json();
-      if (game.aside && game.aside.agent) exchange(game.aside);
+      if (game.aside && game.aside.agent) exchange(game.aside, true);
     } else $("note").textContent = r.status === 400 ? move + " isn't a legal move here: nothing changed." : "The move failed (" + r.status + "), and nothing changed: the Sphinx may have taken longer than the run's minute. Try again, or a faster model.";
   } finally {
     clearInterval(ticking);
@@ -283,21 +345,50 @@ document.addEventListener("pointercancel", () => {
   $("ghost").style.display = "none";
   draw();
 });
-function exchange(t) {
+// The chat, the newest on top: the player's lines in bubbles on the right, the Sphinx's on the
+// left, its new ones typed in, a character at a time.
+function bubble(mine, who) {
   const li = document.createElement("li");
-  if (t.player === undefined) {
-    li.className = "aside";
-    li.innerHTML = "<b>Sphinx</b> <small></small>: <span></span>";
-    li.querySelector("small").textContent = t.mood ? "(" + t.mood + ")" : "";
-    li.querySelector("span").textContent = t.agent;
-  } else {
-    li.innerHTML = "<b>You:</b> <span></span><br><b>Sphinx:</b> <span></span> <small></small>";
-    const [mine, theirs] = li.querySelectorAll("span");
-    mine.textContent = t.player;
-    theirs.textContent = t.agent;
-    if (t.withheld) li.querySelector("small").textContent = "(its reply named a move or a square, and was held back)";
-  }
+  li.className = mine ? "me" : "sphinx";
+  li.innerHTML = '<span class="who"></span><div class="bubble"></div>';
+  li.querySelector(".who").textContent = who;
   $("talk").prepend(li);
+  $("talk").scrollTop = 0;
+  return li;
+}
+function typeIn(li, text, after) {
+  const out = li.querySelector(".bubble"), each = Math.max(8, Math.min(30, 2000 / text.length));
+  li.classList.add("typing");
+  let i = 0;
+  const step = () => {
+    out.textContent = text.slice(0, ++i);
+    if (i < text.length) setTimeout(step, each);
+    else {
+      li.classList.remove("typing");
+      if (after) after();
+    }
+  };
+  step();
+}
+function heard(li, t, typed) {
+  const held = () => {
+    if (!t.withheld || t.player === undefined) return;
+    const note = document.createElement("span");
+    note.className = "held";
+    note.textContent = "its reply named a move or a square, and was held back";
+    li.append(note);
+  };
+  if (t.player === undefined) li.classList.add("aside");
+  li.querySelector(".who").textContent = "Sphinx" + (t.mood ? " (" + t.mood + ")" : "");
+  if (typed) typeIn(li, t.agent, held);
+  else {
+    li.querySelector(".bubble").textContent = t.agent;
+    held();
+  }
+}
+function exchange(t, typed) {
+  if (t.player !== undefined) bubble(true, "You").querySelector(".bubble").textContent = t.player;
+  heard(bubble(false, "Sphinx"), t, typed);
 }
 $("chat").onsubmit = async (e) => {
   e.preventDefault();
@@ -305,10 +396,13 @@ $("chat").onsubmit = async (e) => {
   if (!line) return;
   input.value = "";
   input.disabled = true;
+  bubble(true, "You").querySelector(".bubble").textContent = line;
+  const reply = bubble(false, "Sphinx");
+  reply.classList.add("typing");
   try {
     const r = await fetch("/chat", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ line }) });
     const a = r.ok ? await r.json() : { reply: "(the chat failed: " + r.status + ")" };
-    exchange({ player: line, agent: a.reply, withheld: a.withheld });
+    heard(reply, { player: line, agent: a.reply, withheld: a.withheld }, true);
   } finally {
     input.disabled = false;
     input.focus();
@@ -335,12 +429,15 @@ $("new").onclick = async () => {
   if (r.ok) {
     game = await r.json();
     sel = null;
+    view = null;
     $("note").textContent = "";
     $("talk").textContent = "";
     draw();
   }
 };
-start.talk.forEach(exchange);
+for (let r = 8; r >= 1; r--) $("ranks").append(Object.assign(document.createElement("span"), { textContent: r }));
+for (const f of "abcdefgh") $("files").append(Object.assign(document.createElement("span"), { textContent: f }));
+start.talk.forEach((t) => exchange(t, false));
 draw();
 </script>`;
 }
@@ -348,7 +445,8 @@ draw();
 # The rules: the board after a move (a coordinate move as the page sends it, e2e4 or e7e8q, or
 # SAN, or "resign"), or as it is for "". The board is {fen, moves (SAN), pgn, status, winner
 # (white, black, draw or ""), result, material, turn, legal (each legal move, SAN and
-# coordinates), last}, and when Black is to move its fallback, the move the rules choose for it.
+# coordinates), last, seen (each position's key, the start's first: the repetitions, and the
+# page's history)}, and when Black is to move its fallback, the move the rules choose for it.
 # A move that isn't legal, or any move once the game is over, throws, so the board is absent.
 holon rules(board, move) -> next js fuel 1000000000 {
   const START = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
