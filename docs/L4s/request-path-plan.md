@@ -23,8 +23,10 @@ code. Where the design leaves a decision open (§8), the step that needs it says
   - never take the deployments table while holding a deployment's log lock or a state cell;
   - clone `Arc`s under the table and release it before taking a log lock;
   - the closure cache's lock is a leaf.
-- **Hashes.** No step may change the hash of a flow that doesn't use a new word. A new frozen param
-  is pushed only when it isn't the default (step 8).
+- **No migration.** Holon is in development, so no step carries existing flows or data folders
+  forward. A flow whose hash changes is redeployed, and a data folder from before step 7 loads its
+  stateful deployments empty. No step adds a reader for an old format, and step 7 removes the ones
+  its change replaces.
 
 | Step | Change | Crates | Changes on disk | Needs a decision |
 |---|---|---|---|---|
@@ -34,7 +36,7 @@ code. Where the design leaves a decision open (§8), the step that needs it says
 | 4 | C2 (c), cut-back without parsing | `holon` | none | |
 | 5 | C2 (d), lazy sync and the witness hook | `holon` | none | Q7, the interval (default 1 s) |
 | 6 | C3 (a), persist on change | `holon` | none | Q1, counters |
-| 7 | C3 (b)–(e), the state head | `holon` | adds `deployments.state/` | Q3, `state_refs` |
+| 7 | C3 (b)–(e), the state head | `holon` | adds `deployments.state/`, drops `state_refs` (no migration) | |
 | 8 | C5 in the language and core | `holon-core`, `holon-author`, `holon-wasm`, `editor` (types) | a new param in handler units, only for flows that use a word | |
 | 9 | C2 (e) and C5 in the server | `holon`, `holon-core`, `holon-author`, `holon-wasm`, `editor`, docs, a sample | none new | Q9, Q10, Q11, Q12 |
 | 10 | C3 (f), the log line as the state commit | `holon` | the head file goes | only if step 9's numbers ask |
@@ -333,19 +335,24 @@ durability fix.
   from a session (`deploy.rs:1707–1710`) call `save_snapshot(&live, None, store)` and then `write_head`,
   under the same lock.
 - **A new stateful deployment** writes the empty state's head.
-- **Load** (`persist.rs:172–188`): when `state_head_for(path, slug)` exists, read the hex, then
-  `restore::snapshot_refs(hex, store)` (`restore.rs:46–57`), then `State::load`. Otherwise use
-  `state_refs` as today, and write the head. A head naming a missing snapshot is an `Err`, as a bad
-  `state_refs` is (`persist.rs:180`).
+- **Load** (`persist.rs:172–196`): read the hex from `state_head_for(path, slug)`, then
+  `restore::snapshot_refs(hex, store)` (`restore.rs:46–57`), then `State::load`. A stateful
+  deployment with no head starts empty. A head naming a missing snapshot is an `Err`, as a bad
+  `state_refs` is today (`persist.rs:180`). The old readers go: `state_refs` and the inline values before it, for the live
+  state and for sessions (`persist.rs:172–196`, `migrate_inline`).
 - **Delete** (`deploy.rs:841–845`) removes the head beside the log.
-- **`persist_deployments`** (`persist.rs:22–92`) is unchanged and still writes `state_refs` (§8 Q3).
+- **`persist_deployments`** (`persist.rs:22–92`) writes definitions only. The state loop
+  (`persist.rs:65–81`) and `DeploymentRecord.state_refs` (`wire.rs:224–226`) go, and so does the
+  record's inline `state` field (`wire.rs:227–230`).
 
 **Tests.**
 - `state_is_kept_by_reference_and_its_root_survives_a_restart` (`tests.rs:2059`) changes at
-  `tests.rs:2081–2084`: it reads the head's snapshot, not `file[0]["state_refs"]`.
+  `tests.rs:2081–2084` and `2103`: it reads the head's snapshot, not `state_refs` in the file.
+- `inline_state_from_older_files_moves_into_the_store` (`tests.rs:2111`) is removed, with the reader
+  it covers.
 - New:
   - `a_writes_state_survives_a_restart_through_its_head`;
-  - `an_old_deployments_file_without_heads_loads_and_writes_them`;
+  - `a_stateful_deployment_without_a_head_starts_empty`;
   - `a_restore_and_a_run_from_a_session_write_the_head`;
   - `deleting_a_deployment_removes_its_head`;
   - `concurrent_writes_leave_the_head_naming_the_last_commit`: 16 threads `POST /visits/:id` on
@@ -413,7 +420,8 @@ and print, and makes core read them.
     trigger node.
   - `endpoint_unit` (`routes.rs:433`), `clock_unit` (`routes.rs:386`), `file_unit` (`routes.rs:402`)
     and `action_unit` (`routes.rs:458`) take `log: &str`, and push `frozen("log", log)` only when
-    it isn't empty. **That keeps every existing flow's hash unchanged.**
+    it isn't empty. The default then stays out of the unit, so a flow without a word lowers as it
+    does today. That's tidy, not required, since nothing is migrated.
 - `flow.rs`:
   - **The check.** `derive_server` (`flow.rs:139–260`) checks each handler whose level isn't strict
     with `may_record_lightly(&unit, store)`. On `Err(cap)` it finds the node: the first node of the
@@ -443,7 +451,7 @@ and print, and makes core read them.
 - `holon-author`:
   - each word parses, lowers to the param (like `lower.rs:2810`'s `resume` test) and prints back;
   - `fmt` round trip;
-  - a flow without words keeps its unit hash: `samples.test.ts` and the samples' hashes catch it;
+  - a flow without words has no `log` param on any handler unit;
   - `route POST /notes (req) unrecorded { notes[x] = y … }` fails `check` at the `notes[x] = y`
     line and column;
   - the word on each kind of handler.
@@ -595,7 +603,8 @@ rather than the log's.
 - **Load** takes the state from the newest line on disk with a `state_after` (`Log::open_retaining`
   already reads them), and the head file goes.
 - **A design note first**, covering the ordering argument (design C3 f), what happens to a run that
-  fails between its ticket and its line, and the migration from heads.
+  fails between its ticket and its line, and dropping the head files (no migration: a data folder
+  with heads loads empty).
 
 ## Step 11. C4: the store lock (only after re-measuring)
 

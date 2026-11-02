@@ -722,12 +722,20 @@ record's hash as `state_after` (`firing.rs:103`, `firing.rs:230/298`).
   method `write_head(&self, live: &State, snapshot: &str)`.
 - **(c) The deployments file holds definitions.** `persist_deployments` is still called on every
   definition change: deploy (`deploy.rs:420`), delete (`845`), restore (`1361`), lifecycle (`1735`),
-  grant (`grants.rs:126`), policy reload (`grants.rs:167`), and parked-set changes (a)/(b). It still
-  writes `state_refs` (§8 Q3), but load prefers the head.
-- **(d) Load.** In `load_deployments`, when `deployments.state/<slug>` exists, the state comes from
-  `restore::snapshot_refs(head)` (`restore.rs:46–57`) → `State::load`. Otherwise it comes from
-  `state_refs` (an older file) and the head is written. A head naming a snapshot the store lacks is
-  an error, as a bad `state_refs` is now (`persist.rs:180`).
+  grant (`grants.rs:126`), policy reload (`grants.rs:167`), and parked-set changes (a)/(b). It no
+  longer carries the state at all: the record's `state_refs` (`wire.rs:224–226`) goes, and so does
+  the loop that saves every deployment's state on each persist (`persist.rs:65–81`). That makes a
+  definition change cheaper too.
+- **(d) Load.** In `load_deployments`, the state comes from `deployments.state/<slug>`, through
+  `restore::snapshot_refs(head)` (`restore.rs:46–57`) → `State::load`. No head means an empty state.
+  A head naming a snapshot the store lacks is an error, as a bad `state_refs` is today
+  (`persist.rs:180`).
+  - **No migration.** Holon is in development, so a data folder from before this change isn't read
+    forward. Its stateful deployments start empty, which a developer can reset by redeploying. The
+    two old forms load reads today are removed rather than extended: `state_refs`, and inline values
+    before them, for the live state and for sessions (`persist.rs:172–196`, with `migrate_inline`).
+    Other historical readers that this change doesn't touch (records from before grants,
+    `persist.rs:162–165`; versions from before rc.30) are left for a cleanup of their own.
 - **(e) Delete.** `handle_delete_deployment` (`deploy.rs:841–845`) removes the head file, as it
   removes the log (`dep.log.delete_file()`).
 - **(f) Later: the log line as the state commit.** With `strict` the default (C5), a run that writes
@@ -765,8 +773,8 @@ record's hash as `state_after` (`firing.rs:103`, `firing.rs:230/298`).
 | `deploy.rs:1613–1625` | `put_state_back` | replaces live state | also writes the head |
 | `deploy.rs:1707–1710` | `handle_lifecycle` (run from a session) | replaces live state | also writes the head |
 | `deploy.rs:841–845` | `handle_delete_deployment` | deletes the log | also deletes the head |
-| `persist.rs:172–188` | `load_deployments` | state from `state_refs` | from the head when present |
-| `persist.rs:22–92` | `persist_deployments` | | unchanged; called less often |
+| `persist.rs:172–188` | `load_deployments` | state from `state_refs`, or inline values | from the head; the two old readers removed |
+| `persist.rs:22–92` | `persist_deployments` | saves every state, writes `state_refs` | writes definitions only; called less often |
 | `docs/manual/reference/server.md:22–33` | data-folder table | | adds `deployments.state/`, "each stateful deployment's current state, as a snapshot hash" |
 
 `sweep.rs` needs nothing. The sweep keeps whatever the **in-memory** live state names
@@ -784,8 +792,8 @@ somewhat below 1,453. Neither depends on how many deployments the server has any
   (`record_trigger`, `deploy.rs:867–875`) are no longer written on a read-only stateful run. They
   persist with the next write or definition change, as they already do for stateless deployments.
   A crash loses the counts since then and nothing else (§8 Q1).
-- **`deployments.json`'s `state_refs` can be behind** the head between definition changes. Load
-  prefers the head, so this matters only to a person reading the file, or a downgrade (§8 Q3).
+- **State from before this change isn't kept.** A data folder written by an earlier build loads its
+  deployments with empty state (load, (d)). There is no migration, since Holon is in development.
 - **One more fsync under the cell lock** per writing run. Today the whole-table fsync happens
   outside the cell lock but under the global `PERSIST` lock. Runs of one deployment were already
   serialized by both, and runs of different deployments no longer wait for each other.
@@ -800,7 +808,8 @@ somewhat below 1,453. Neither depends on how many deployments the server has any
 
 | Test | Effect |
 |---|---|
-| `state_is_kept_by_reference_and_its_root_survives_a_restart` (`tests.rs:2059`) | asserts `file[0]["state_refs"]["k"]` right after a write (`tests.rs:2081–2084`). It changes to assert the head file names a snapshot with that reference. The restart half is unchanged |
+| `state_is_kept_by_reference_and_its_root_survives_a_restart` (`tests.rs:2059`) | asserts `state_refs` in the file right after a write and across sessions (`tests.rs:2081–2084`, `2103`). It changes to assert the head names a snapshot with those references. The restart half is unchanged |
+| `inline_state_from_older_files_moves_into_the_store` (`tests.rs:2111`) | removed with the inline-values reader it covers (no migration) |
 | `trigger_with_state_persists_across_calls` (2242) | unchanged |
 | `clock_tick_with_state_persists_across_ticks` (3169) | unchanged |
 | `state_persists_across_a_simulated_restart` (3285) | unchanged; it now exercises the head |
@@ -812,7 +821,6 @@ somewhat below 1,453. Neither depends on how many deployments the server has any
 New:
 - a stateful run that only reads leaves `deployments.json` byte for byte unchanged;
 - a write survives a restart through its head;
-- an old file with `state_refs` and no heads loads with its state and writes the heads;
 - a restore and a run-from-session survive a restart;
 - deleting a deployment removes its head;
 - concurrent writing runs leave the head naming the last commit.
@@ -1242,7 +1250,8 @@ throughput check (step 1) and says the step was run live.
    It's a durability fix rather than a speed one, and the commit says so. Its throughput numbers
    should match step 4's.
 6. **C3 (a)**, persist on change.
-7. **C3 (b)–(e)**, the state head, load, migration, delete, and the manual's line.
+7. **C3 (b)–(e)**, the state head, load, delete, and the manual's line. There's no migration: an
+   earlier data folder's stateful deployments start empty.
 8. **C5 in the language and core:** the words, the `log` param, `read_server`, the rule and its
    compile error, `fmt`, and `LANGUAGE.md`. Every handler still behaves as today (lazy, step 5)
    until step 9, so this step changes no number.
@@ -1258,9 +1267,10 @@ throughput check (step 1) and says the step was run live.
    without the timeline, and the per-flow caches. (b) and (c) are not scheduled; §4.5 says when each
    would be.
 
-Steps 2–6 change no file format. Step 7 adds `deployments.state/`. Step 8 adds a param to handler
-units, which changes the hash only of flows that use a word. Steps 8 and 9 are one feature split in
-two: core and language first, then the host.
+Steps 2–6 change no file format. Step 7 adds `deployments.state/` and drops `state_refs`. Step 8
+adds a param to handler units. Nothing is migrated: Holon is in development, so existing flows and
+data folders aren't carried forward, and a flow whose hash changes is simply redeployed. Steps 8
+and 9 are one feature split in two: core and language first, then the host.
 
 ## 7. Samples
 
@@ -1301,8 +1311,8 @@ wires … it may: read items of its collection "notes", put and delete items of 
 one row with a count, add a note and see its run, then list the notes and see that run too. The sample's text is written as `fmt` writes it
 (the test says so), built by `editor/src/samples.test.ts`, deployed by `editor/e2e/samples.e2e.ts`
 (its approval asks for `Unrecorded("GET /health")`), and run live before its commit. `notes-api`
-and `orders-api` are worth a `lazy` on their list routes once C5 lands, and that changes those
-samples' hashes, so it is a step of its own, not part of step 9.
+and `orders-api` get a `lazy` on their list routes in the same step, since their hashes needn't
+stay the same.
 
 The end-to-end tests (`editor/e2e`) and `editor/src/samples.test.ts` must stay green throughout.
 
@@ -1314,9 +1324,9 @@ The end-to-end tests (`editor/e2e`) and `editor/src/samples.test.ts` must stay g
    head, not in a rewrite of the whole table.
 2. **The closure cache's bound.** A total of 100,000 units would hold every deployed flow on a
    server of today's size. Does an operator need a setting?
-3. **`state_refs` after C3.** Keep writing it, which is stale between definition changes but lets a
-   downgrade load, or drop it? Holon is on release candidates, so dropping it is simpler, and a
-   downgrade would then start stateful deployments empty.
+3. **Decided: no migration.** Holon is in development. C3 drops `state_refs` and the inline-state
+   reader instead of keeping them for old data folders or a downgrade, and no step keeps existing
+   flows' hashes for their own sake.
 4. **Fsync on real disks.** Measure C3's per-write fsyncs on the hardware of the first outside job
    before deciding on group commit.
 5. **Directory fsync after rename.** `write_atomically` (`holon-host/src/lib.rs:642`) and
