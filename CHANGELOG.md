@@ -42,13 +42,18 @@
   asks for approval at deploy, as from the settings. `fmt` writes the limits a flow's settings
   have as these lines. The `chess` sample uses them to give its thinking models a minute.
 - **A new sample, `chess`**: an agent held to the interface the app gives it. You play White in
-  the browser against a Gemini agent (the free tier). The rules are a js node (legal moves,
-  check, mate, the draws), and your move goes through them: an illegal one is answered 400 and
-  changes nothing. The agent is sent the whole game, the position and the legal moves, and
-  answers `{move, comment}` under a schema; the flow checks the answer itself, and a move not in
-  the list, an answer that isn't the JSON asked for, or a call Gemini refuses plays the rules'
-  own choice, which the page says. Chat with it never reaches its moves, and a reply that names a
-  move or a square is held back. Every proposal and refusal is in the run log.
+  the browser (drag a piece, or click it and its square) against a Gemini agent, the model picked
+  for each game from the newest few the app lists. The rules are a js node (legal moves, check,
+  mate, the draws), and your move goes through them: an illegal one is answered 400 and changes
+  nothing. The agent is sent the whole game, the position, the material and the legal moves, and
+  answers `{move, comment, verdict, mood, say}` under a schema; the flow checks the answer itself,
+  and a move not in the list, an answer that isn't the JSON asked for, or a call Gemini refuses
+  plays the rules' own choice, which the page says. It judges your moves (brilliant to insane),
+  shows its mood, and speaks up when it struggles or wonders; whatever it says to you, in the chat
+  or on its own, is held back if it names a move or a square. Chat with it never reaches its
+  moves. The page says how a game is won, lost or drawn, and how it ended, and you can resign;
+  while the Sphinx thinks, it says your move is sent and counts the seconds.
+  Every proposal and refusal is in the run log.
 
 ## 0.1.0-rc.30
 
