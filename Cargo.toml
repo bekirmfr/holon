@@ -6,3 +6,16 @@ members = ["crates/holon-core", "crates/holon-module", "crates/holon-author", "c
 [profile.dist]
 inherits = "release"
 lto = "thin"
+
+# The wasm interpreter runs js nodes (an engine compiled to wasm, run by wasmi): unoptimised, the
+# chess sample's rules take half a minute a call (a tenth of a second in release), past a run's
+# budget, so the debug server the e2e tests run optimises it a little (2 s). Level 3 here, beside
+# unoptimised callers, overflows a test thread's stack.
+[profile.dev.package.wasmi]
+opt-level = 1
+[profile.dev.package.wasmi_core]
+opt-level = 1
+[profile.dev.package.wasmi_ir]
+opt-level = 1
+[profile.dev.package.wasmi_collections]
+opt-level = 1
