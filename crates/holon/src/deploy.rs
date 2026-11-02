@@ -945,6 +945,7 @@ pub(crate) fn handle_post_trigger(
     let mut waits = RunWaits { folders: Some(folders), channels: Some(channels), slug: Some(slug.to_string()), ..Default::default() };
     let resolver = holon_module::WithEngine::new(&resolver, holon_module::shared());
     let run = fire_with_state(root_unit, &[], &resolver, store, state.as_ref(), &extra_sourced, &permit, false, &vault, &mut waits, None);
+    let changed = run.changed_state();
 
     record_trigger(deployments, slug, false);
     let mut entry = run_entry("trigger", started, &extra_sourced, &run);
@@ -955,7 +956,7 @@ pub(crate) fn handle_post_trigger(
     let parked_any = !entry.parked.is_empty();
     log_run(deployments, slug, entry, Redactor::tokens(&waits.tokens));
     let FiredRun { outputs, performed, answered, .. } = run;
-    if state.is_some() || parked_any {
+    if changed || parked_any {
         persist_deployments(deployments_path, deployments, store);
     }
 
@@ -1092,6 +1093,7 @@ pub(crate) fn run_action(
     let mut waits = RunWaits { folders: Some(folders), channels: Some(channels), slug: Some(slug.to_string()), chain: chain.to_vec(), ..Default::default() };
     let resolver = holon_module::WithEngine::new(&resolver, holon_module::shared());
     let run = fire_with_state(handler, &inputs, &resolver, store, state.as_ref(), &sourced, &permit, false, &vault, &mut waits, None);
+    let changed = run.changed_state();
 
     // Output 0 is the respond's envelope, or (an action that only writes) an effect.
     let (status, answer) = match run.outputs.first().cloned().flatten() {
@@ -1118,7 +1120,7 @@ pub(crate) fn run_action(
     let (parked_any, error) = (!entry.parked.is_empty(), entry.error.is_some());
     // The seq its entry got, not the next one read beforehand: another run may log between.
     let seq = log_run(deployments, slug, entry, Redactor::tokens(&waits.tokens)).unwrap_or(0);
-    if state.is_some() || parked_any {
+    if changed || parked_any {
         persist_deployments(deployments_path, deployments, store);
     }
     let ran = |status: u16, reply: serde_json::Value, answer: Option<Value>, waiting: bool, error: Option<String>, why: Option<&'static str>| ActionRan { status, reply, answer, seq: Some(seq), waiting, error, why };

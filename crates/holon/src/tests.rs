@@ -7310,6 +7310,45 @@ fn sync_logs_syncs_what_was_written_and_keeps_a_log_that_fails_dirty() {
     let _ = std::fs::remove_dir_all(Path::new(&state.deployments_path).with_extension("logs"));
 }
 
+/// A stateful run persists the deployments file only when it changed the state (docs/L4s/request-
+/// path-L4.md, C3 a): one that only read it, or wrote back the value that was there, leaves the
+/// file byte for byte as it was. Its counts go on in memory, and reach the file with the next
+/// write.
+#[test]
+fn a_run_persists_the_deployments_file_only_when_it_changed_the_state() {
+    let mut state = test_state();
+    state.deployments_path = unique_temp_path("persist-on-change");
+    let counter = deploy_plain_text(&state, include_str!("../../holon-author/samples/counter.holon"));
+    let same = deploy_plain_text(&state, "flow same\nport 8199\nstate k\n\nroute POST /k (req) {\n  state.k = \"x\"\n  respond \"ok\"\n}\n");
+    let call = |slug: &str, method: &str, url: &str| {
+        assert_eq!(serve_data(&state.store, &state.deployments, &state.deployments_path, slug, &fake_data(method, url, vec![])).status, 200, "{method} {url}");
+    };
+    let file = || std::fs::read(&state.deployments_path).unwrap();
+    let counted = |slug: &str| -> (u64, u64) {
+        let on_disk: serde_json::Value = serde_json::from_slice(&file()).unwrap();
+        let kept = on_disk.as_array().unwrap().iter().find(|r| r["slug"] == slug).unwrap()["trigger_count"].as_u64().unwrap();
+        (state.deployments.lock().unwrap()[slug].trigger_count, kept)
+    };
+
+    call(&counter, "GET", "/hit");
+    let after_write = file();
+    for _ in 0..3 {
+        call(&counter, "GET", "/last");
+    }
+    assert_eq!(file(), after_write, "reading the state wrote nothing");
+    assert_eq!(counted(&counter), (4, 1), "the reads are counted, and kept with the next write");
+    call(&counter, "GET", "/hit");
+    assert_ne!(file(), after_write, "a write persists");
+    assert_eq!(counted(&counter), (5, 5));
+
+    call(&same, "POST", "/k");
+    let first = file();
+    call(&same, "POST", "/k");
+    assert_eq!(file(), first, "writing back the value that was there changed nothing");
+    let _ = std::fs::remove_file(&state.deployments_path);
+    let _ = std::fs::remove_dir_all(Path::new(&state.deployments_path).with_extension("logs"));
+}
+
 /// Units for the flow cache's tests: a leaf, and composites placing children.
 fn cache_leaf(name: &str) -> Unit {
     Unit { params: vec![], ..holon_core::interface_of(name).unwrap() }

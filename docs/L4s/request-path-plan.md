@@ -35,7 +35,7 @@ code. Where the design leaves a decision open (§8), the step that needs it says
 | 3 | C2 (a)(b), the log's own lock and the open file (**done**) | `holon` | none | |
 | 4 | C2 (c), cut-back without parsing (**done**) | `holon` | none | |
 | 5 | C2 (d), lazy sync and the witness hook (**done**) | `holon` | none | Q7: 1 s for now |
-| 6 | C3 (a), persist on change | `holon` | none | Q1, counters |
+| 6 | C3 (a), persist on change (**done**) | `holon` | none | decided: counts persist with the next write |
 | 6b | B.2, the witness's queue file kept open (scheduled next, after 6) | `holon` | none | |
 | 7 | C3 (b)–(e), the state head | `holon` | adds `deployments.state/`, drops `state_refs` (no migration) | |
 | 8 | C5 in the language and core | `holon-core`, `holon-author`, `holon-wasm`, `editor` (types) | a new param in handler units, only for flows that use a word | |
@@ -353,7 +353,32 @@ durability fix.
 
 **Commit:** `recorder: logs synced lazily, and before every witness send (C2 d)`.
 
-## Step 6. C3 (a): persist only when the run changed something
+## Step 6. C3 (a): persist only when the run changed something (done)
+
+**Built** as sketched below. `FiredRun::changed_state` (`firing.rs`) compares the snapshot hash of
+`start_state` with `state_after`, in memory. Each per-run site computes it right after
+`fire_with_state` (the request path captures it from its `data::handle` closure, beside
+`answer_derived`) and persists on `changed || parked_any`: `listeners.rs`, `scheduler.rs`,
+`arrivals.rs`, `deploy.rs` (`/trigger` and `run_action`). The resumed-run path still always
+persists.
+
+**Q1, decided:** a read-only run's counts go on in memory and reach the file with the next write or
+definition change, as a stateless deployment's always did.
+
+**Tests added:** `a_run_persists_the_deployments_file_only_when_it_changed_the_state`. Reads leave
+the file byte for byte unchanged while the in-memory count goes on, the next write persists both,
+and writing back the value that was there writes nothing. `cargo test --release -p holon` passed
+(389 passed, 1 ignored), and clippy was clean.
+
+**Measured.**
+- The throughput check at 64 threads: `/last` went from 79 to 14,150 req/s, with p50 from 788 ms to
+  3.9 ms. `/hit` stayed at 87, because a write still rewrites the whole 1.1 MB deployments file
+  (step 7).
+- Live over HTTP at 64 connections, `/last` served 10,382 req/s (53–66 before this work) and `/hit`
+  74.
+- A write survived a restart (`hit 10658` became `hit 10659`), and `holon verify` on the counter's
+  export re-ran 763 runs with its state checks passing: 762 began from the state the run before left.
+
 
 **Code.**
 - **Deciding "changed".** `FiredRun` (`firing.rs:67–104`) gains

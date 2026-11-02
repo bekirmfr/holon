@@ -397,6 +397,7 @@ fn fire_one_arrival(
     let mut waits = RunWaits { folders: Some(Arc::clone(files)), channels, slug: Some(slug.to_string()), ..Default::default() };
     let resolver = holon_module::WithEngine::new(&resolver, holon_module::shared());
     let run = fire_with_state(root_unit, &[], &resolver, store, state, &extra_sourced, permit, true, secrets, &mut waits, None);
+    let changed = run.changed_state();
     let mut entry = run_entry("file", started, &extra_sourced, &run);
     entry.route = label.clone();
     match durable::park_if_waiting(deployments, store, slug, &unit_hash, "file", label.clone(), &[], &extra_sourced, &run, &waits) {
@@ -408,7 +409,7 @@ fn fire_one_arrival(
     let which = label.as_ref().map(|l| format!(" {l}")).unwrap_or_default();
     println!("{} file [{slug}]{which} {folder}/{name}: {} effect(s) performed", event.name(), run.performed.len());
     record_trigger(deployments, slug, false);
-    if state.is_some() || parked_any {
+    if changed || parked_any {
         persist_deployments(deployments_path, deployments, store);
     }
 }

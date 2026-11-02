@@ -706,6 +706,9 @@ only once its entry is on disk."
 
 ### C3. Persist what changed, and only that deployment
 
+**Status:** (a) built (build step 6): a stateful run that only reads went from 79 to 14,150 req/s
+at 64 threads, and from 53–66 to 10,382 live over HTTP. (b)–(f) are still to come.
+
 **What.** A run persists only when it changed something durable. A state change persists as a small
 per-deployment pointer, not as the whole table.
 
@@ -1337,10 +1340,8 @@ The end-to-end tests (`editor/e2e`) and `editor/src/samples.test.ts` must stay g
 
 ## 8. Open questions
 
-1. **Counters on read-only runs.** Should `trigger_count`, `error_count` and the session tallies
-   persist on every run? This note says no (C3 side effects): they are statistics and already
-   behave that way for stateless flows. If they must survive a crash exactly, they belong beside the
-   head, not in a rewrite of the whole table.
+1. **Decided: counters on read-only runs** go on in memory and persist with the next write or
+   definition change, as a stateless deployment's always did (built in build step 6).
 2. **Decided: the flow cache's bound** is a server setting in bytes, `holon serve --flow-cache SIZE`
    (default 256 MiB), with units shared across flows (C1).
 3. **Decided: no migration.** Holon is in development. C3 drops `state_refs` and the inline-state

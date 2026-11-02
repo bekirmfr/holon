@@ -115,6 +115,19 @@ struct Attempt {
     overtaken: bool,
 }
 
+impl FiredRun {
+    /// Whether it committed a state other than the one it started from: then, and only then, the
+    /// deployments file has something new to keep (docs/L4s/request-path-L4.md, C3 a). A run that
+    /// only read, or wrote back what was there, changed nothing. Hashed in memory: a state keeps
+    /// each cell's hash.
+    pub(crate) fn changed_state(&self) -> bool {
+        match (&self.start_state, &self.state_after) {
+            (Some(start), Some(after)) => crate::restore::snapshot_hash(start).ok().as_deref() != Some(after.as_str()),
+            _ => false,
+        }
+    }
+}
+
 // Everything a run is held to arrives here, so it takes them all.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn fire_with_state(

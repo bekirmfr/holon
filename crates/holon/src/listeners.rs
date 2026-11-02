@@ -126,6 +126,8 @@ fn serve_flow(
     let mut ran: Option<LogEntry> = None;
     // Whether its answer may be computed from a secret: the log keeps it withheld then.
     let mut answer_derived = false;
+    // Whether it changed the deployment's state: only then is there anything new to persist.
+    let mut changed = false;
     // A secret its answer carries that it wasn't approved to answer with: the caller gets a 500.
     let mut unapproved: Option<String> = None;
     let mut waits = RunWaits { folders: Some(folders), forward, channels: Some(channels), slug: Some(slug.to_string()), ..Default::default() };
@@ -138,6 +140,7 @@ fn serve_flow(
         &http,
         |endpoint, route, req, sourced| {
             let run = fire_with_state(endpoint, &[Some(req.clone())], &resolver, store, state.as_ref(), sourced, &permit, false, &secrets, &mut waits, None);
+            changed = run.changed_state();
             let unit = hash_unit(endpoint).unwrap_or([0; 32]);
             parked = durable::park_if_waiting(deployments, store, slug, &unit, "request", Some(route.to_string()), &[Some(req.clone())], sourced, &run, &waits);
             let mut entry = run_entry("request", started, sourced, &run);
@@ -224,7 +227,7 @@ fn serve_flow(
     }
     let parked_any = !entry.parked.is_empty();
     log_run(deployments, slug, entry, tokens);
-    if state.is_some() || parked_any {
+    if changed || parked_any {
         persist_deployments(deployments_path, deployments, store);
     }
     // The route's own handler has answered; now the waiting run continues.
