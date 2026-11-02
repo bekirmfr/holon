@@ -7538,3 +7538,97 @@ fn a_secret_is_never_sent_to_another_flow() {
     }
     assert!(!log_entries(&state, "billing").iter().any(|e| e["route"] == "action charge"), "billing never ran");
 }
+
+// ── The throughput check (docs/L4s/request-path-plan.md, step 1) ─────────────────────────────
+
+/// Deploy a flow's text that calls nothing outside, with its document as `holon deploy` sends it
+/// (deploycmd.rs), approving what its preview asks: its slug.
+fn deploy_plain_text(state: &AppState, text: &str) -> String {
+    let plan = holon_author::agent::plan(text).unwrap_or_else(|e| panic!("{e}"));
+    for u in &plan.units {
+        assert_eq!(route(state, &req("POST", "/unit", u.clone())).status_code, 200);
+    }
+    let preview = body_json(route(state, &req("POST", "/deploy/preview", serde_json::to_vec(&serde_json::json!({ "slug": plan.name, "unit": plan.unit })).unwrap())));
+    let asked: Vec<String> = serde_json::from_value(preview["needs_approval"].clone()).unwrap_or_default();
+    let r = deploy_json(state, &plan.name, parse_hash(&plan.unit).unwrap(), serde_json::json!({ "acknowledge": asked, "document": plan.document }));
+    let status = r.status_code;
+    assert_eq!(status, 200, "{}", String::from_utf8_lossy(&body_bytes(r)));
+    plan.name
+}
+
+/// How fast the data plane answers, measured, not asserted: four routes of three samples on an
+/// on-disk store, beside 30 more deployments, each driven from 1, 8 and 64 threads for
+/// `HOLON_PERF_SECS` seconds (5 by default). It calls `serve_data` directly, so it leaves out
+/// hyper and the hop onto the blocking pool (`dataplane.rs`), and it fails only if an answer isn't
+/// a 200. Each step of the request-path plan reports its numbers before and after.
+#[test]
+#[ignore = "a measurement, run by hand: cargo test --release -p holon -- --ignored request_throughput --nocapture"]
+fn request_throughput() {
+    let secs = std::env::var("HOLON_PERF_SECS").ok().and_then(|s| s.parse::<f64>().ok()).unwrap_or(5.0);
+    // On disk, as a server keeps it: the store, the deployments file and the logs.
+    let store_dir = unique_temp_path("throughput-store");
+    let disk = FileStore::new(&store_dir).unwrap();
+    let values = disk.values_dir();
+    let mut state = test_state_with(SharedStore::on_disk(Box::new(disk), values));
+    state.deployments_path = unique_temp_path("throughput");
+    let calc = include_str!("../../holon-author/samples/calc.holon");
+    for text in [include_str!("../../holon-author/samples/hello-api.holon"), calc, include_str!("../../holon-author/samples/counter.holon")] {
+        deploy_plain_text(&state, text);
+    }
+    // Deployments the measured ones share the server with, as a server with others would.
+    for i in 1..=30 {
+        let text = calc.replacen("flow calc", &format!("flow calc{i}"), 1).replacen("port 8116", &format!("port {}", 8200 + i), 1);
+        deploy_plain_text(&state, &text);
+    }
+    let deployments = state.deployments.lock().unwrap().len();
+    let file_kb = std::fs::metadata(&state.deployments_path).map_or(0, |m| m.len() / 1024);
+
+    let routes = [
+        ("hello-api", "GET", "/hello/Ada", ""),
+        ("calc", "POST", "/calc", r#"{"op":"mul","a":6,"b":7}"#),
+        ("counter", "GET", "/hit", ""),
+        ("counter", "GET", "/last", ""),
+    ];
+    let request = |method: &str, url: &str, body: &str| {
+        let headers = if body.is_empty() { vec![] } else { vec![("content-type".to_string(), "application/json".to_string())] };
+        data::DataRequest { method: method.into(), url: url.into(), headers, body: body.as_bytes().to_vec(), by: None }
+    };
+    println!("request_throughput: an on-disk store, {deployments} deployments ({file_kb} KB deployments file), {secs}s per row (serve_data: no hyper, no blocking-pool hop)");
+    println!("{:<22} {:>7} {:>10} {:>10} {:>10}", "route", "threads", "req/s", "p50", "p99");
+    for (slug, method, url, body) in routes {
+        let (status, answer) = {
+            let r = serve_data(&state.store, &state.deployments, &state.deployments_path, slug, &request(method, url, body));
+            (r.status, String::from_utf8_lossy(&r.body).into_owned())
+        };
+        assert_eq!(status, 200, "{method} {url} on {slug}: {answer}");
+        for threads in [1, 8, 64] {
+            let started = std::time::Instant::now();
+            let stop = started + Duration::from_secs_f64(secs);
+            let mut times: Vec<Duration> = thread::scope(|s| {
+                let workers: Vec<_> = (0..threads)
+                    .map(|_| {
+                        s.spawn(|| {
+                            let mut times = Vec::new();
+                            while std::time::Instant::now() < stop {
+                                let t = std::time::Instant::now();
+                                let r = serve_data(&state.store, &state.deployments, &state.deployments_path, slug, &request(method, url, body));
+                                times.push(t.elapsed());
+                                assert_eq!(r.status, 200, "{method} {url} on {slug}: {}", String::from_utf8_lossy(&r.body));
+                            }
+                            times
+                        })
+                    })
+                    .collect();
+                workers.into_iter().flat_map(|w| w.join().unwrap()).collect()
+            });
+            let elapsed = started.elapsed().as_secs_f64();
+            times.sort();
+            let at = |q: f64| times[((times.len() as f64 * q) as usize).min(times.len() - 1)];
+            let label = format!("{method} {url}");
+            println!("{label:<22} {threads:>7} {:>10.0} {:>10.2?} {:>10.2?}", times.len() as f64 / elapsed, at(0.50), at(0.99));
+        }
+    }
+    let _ = std::fs::remove_dir_all(&store_dir);
+    let _ = std::fs::remove_file(&state.deployments_path);
+    let _ = std::fs::remove_dir_all(Path::new(&state.deployments_path).with_extension("logs"));
+}

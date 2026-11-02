@@ -57,11 +57,14 @@ the data-plane helpers.
   (`tests.rs:918`): `test_state_with(SharedStore::on_disk(Box::new(FileStore::new(&dir)?), values))`,
   then set `state.deployments_path = unique_temp_path("throughput")`, so the logs and
   `deployments.json` are written, as `tests.rs:1281` does.
-- **Deploy from the samples' text**, through the helper that approves what the preview asks for
-  (`deploy_text_to`, `tests.rs:4832–4846`, which uses `holon_author::agent::plan`):
-  `include_str!("../../holon-author/samples/hello-api.holon")`, `calc.holon` and `counter.holon`,
-  plus 30 copies of `calc` renamed, `text.replace("flow calc", &format!("flow calc{i}"))` with the
-  port changed likewise.
+- **Deploy from the samples' text** with a small helper, `deploy_plain_text`. It works like
+  `deploy_text_to` (`tests.rs:4832–4846`, through `holon_author::agent::plan`) but asks for no
+  exceptions, since `deploy_text_to` always asks for `PrivateAddresses`, which the default policy
+  refuses. It also sends the flow's document, as `holon deploy` does (`deploycmd.rs:177`); without
+  it the deployments file is 32 KB instead of the 1.1 MB a real server writes, and the stateful
+  routes read 6× too fast. The texts are `include_str!("../../holon-author/samples/hello-api.holon")`,
+  `calc.holon` and `counter.holon`, plus 30 copies of `calc` renamed,
+  `text.replacen("flow calc", &format!("flow calc{i}"), 1)`, with the port changed likewise.
 - **Drive** `serve_data(&state.store, &state.deployments, &state.deployments_path, slug, &fake_data(…))`
   (`fake_data`, `tests.rs:64`; as `data_call` does, `tests.rs:4851–4855`) from N threads in
   `std::thread::scope`, for `HOLON_PERF_SECS` (default 5) per route and per N of 1, 8 and 64.
