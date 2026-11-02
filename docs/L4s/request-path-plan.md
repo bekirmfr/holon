@@ -33,7 +33,7 @@ code. Where the design leaves a decision open (§8), the step that needs it says
 | 1 | The throughput check (**done**) | `holon` (tests) | none | |
 | 2 | C1, closures by hash (**done**) | `holon` | none | decided: `--flow-cache`, in bytes, 256 MiB |
 | 3 | C2 (a)(b), the log's own lock and the open file (**done**) | `holon` | none | |
-| 4 | C2 (c), cut-back without parsing | `holon` | none | |
+| 4 | C2 (c), cut-back without parsing (**done**) | `holon` | none | |
 | 5 | C2 (d), lazy sync and the witness hook | `holon` | none | Q7, the interval (default 1 s) |
 | 6 | C3 (a), persist on change | `holon` | none | Q1, counters |
 | 7 | C3 (b)–(e), the state head | `holon` | adds `deployments.state/`, drops `state_refs` (no migration) | |
@@ -212,7 +212,41 @@ log at all.
 
 **Commit:** `recorder: each deployment's log behind its own lock, through an open file (C2 a, b)`.
 
-## Step 4. C2 (c): cut-back without parsing
+## Step 4. C2 (c): cut-back without parsing (done)
+
+**Built** as sketched below. `Log` keeps `lines: VecDeque<LineAt>` (the offset, length, time, `seq`
+and `prev` of each line that parsed) and `file_len`. `open_retaining` fills them through a shared
+`lines_of` (the same line splitting as `str::lines`), and `keep_line` pushes one per append, a line
+after a cut starting one byte later. `cut_back` reads the file's bytes and copies the kept ranges by
+today's rule, with no JSON parsing. If the file isn't the length the log left (changed outside
+holon), it re-reads the index from the file first, as a log opening it would.
+
+**Tests added**, each checked against a copy of the old algorithm kept in the test module
+(`cut_back_as_before`):
+- `a_cut_back_keeps_its_lines_byte_for_byte_without_parsing_them`: a file holding a line a crash
+  cut short and a line with an unknown field, then cut-back after cut-back across a restart, with
+  the chain unbroken;
+- `a_file_changed_outside_holon_is_read_afresh_by_its_cut_back`.
+
+`cargo test --release -p holon` passed (385 passed, 1 ignored), and clippy was clean.
+
+**Measured.**
+- **One cut-back**, on a real 2.7 MB, 672-line `hello-api` log: 14–25 ms before, 4.4–6.0 ms after.
+  What's left is the read, the write and the fsync. A synthetic log of plain 5 KB strings showed
+  little difference (7.5–10 ms before, 6–9 after), since its lines are cheap to parse; real entries'
+  timelines aren't.
+- **The throughput check at 64 threads:**
+
+  | | Step 3 | Step 4 |
+  |---|---|---|
+  | `hello` | 7,482–7,902 req/s, p99 55 ms | 11,197, p99 27 ms |
+  | `calc` | 5,479–6,388 | 7,893 |
+  | `hello` and `calc` together | 11,224 | 16,580 |
+
+- **Live**, twice with a restart between (so the index was rebuilt from the file): `hello` over HTTP
+  at 64 connections served 9,990 and 8,752 req/s, each round about 160 cut-backs, and `holon verify`
+  on the export re-ran 660 and then 750 runs with the chain unbroken.
+
 
 **Code.**
 - **An index of lines.** `Log` gains `lines: VecDeque<LineAt>`, with

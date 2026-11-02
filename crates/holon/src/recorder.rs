@@ -377,6 +377,38 @@ pub struct Log {
     /// The file, open for appending once a line is written, so a line is one write; closed before
     /// a cut-back replaces the file, and before the file is deleted.
     handle: Option<std::fs::File>,
+    /// Where each line of the file that parsed is, and what a cut-back needs of it, so a cut-back
+    /// copies the lines it keeps instead of parsing them all again (docs/L4s/request-path-L4.md,
+    /// C2 c). Oldest first.
+    lines: VecDeque<LineAt>,
+    /// How long the file is, as this log wrote it: a file of another length was changed outside
+    /// holon, and a cut-back reads it afresh.
+    file_len: u64,
+}
+
+/// A line of the log's file: its bytes (without the line end), and the parts of its entry a
+/// cut-back decides by.
+#[derive(Debug, Clone)]
+struct LineAt {
+    offset: u64,
+    len: usize,
+    at_ms: u64,
+    seq: u64,
+    prev: String,
+}
+
+/// The lines of a log file's `text`, as `open_retaining` reads them: each line (as `str::lines`
+/// splits them) with its entry when it parses, and where it is.
+fn lines_of(text: &str) -> Vec<(&str, Option<LogEntry>, u64)> {
+    let mut offset = 0u64;
+    text.split_inclusive('\n')
+        .map(|raw| {
+            let at = offset;
+            offset += raw.len() as u64;
+            let line = raw.strip_suffix('\n').map_or(raw, |l| l.strip_suffix('\r').unwrap_or(l));
+            (line, serde_json::from_str::<LogEntry>(line).ok(), at)
+        })
+        .collect()
 }
 
 /// One deployment's log behind a lock of its own (docs/L4s/request-path-L4.md, C2): runs of one
@@ -455,16 +487,20 @@ impl Log {
             breaks: Vec::new(),
             slug: None,
             handle: None,
+            lines: VecDeque::new(),
+            file_len: 0,
         };
         let Some(path) = &log.file else { return log };
         let Ok(text) = std::fs::read_to_string(path) else { return log };
         log.cut = !text.is_empty() && !text.ends_with('\n');
+        log.file_len = text.len() as u64;
         let mut chained = false;
-        for line in text.lines() {
+        for (line, entry, offset) in lines_of(&text) {
             log.written += 1;
             // A line a crash cut short is skipped, not fatal: the others still replay, and the
             // chain goes on from the line before it.
-            if let Ok(entry) = serde_json::from_str::<LogEntry>(line) {
+            if let Some(entry) = entry {
+                log.lines.push_back(LineAt { offset, len: line.len(), at_ms: entry.at_ms, seq: entry.seq, prev: entry.prev.clone() });
                 if (chained || !entry.prev.is_empty()) && !log.head.is_empty() && entry.prev != log.head {
                     log.breaks.push(entry.seq);
                 }
@@ -544,10 +580,10 @@ impl Log {
         };
         self.head = line_hash(&line);
         self.export("run", entry.seq, &self.head, entry.at_ms);
-        let at_ms = entry.at_ms;
+        let at = LineAt { offset: 0, len: line.len(), at_ms: entry.at_ms, seq: entry.seq, prev: entry.prev.clone() };
         self.entries.push_back(entry);
         self.prune(now_ms());
-        if let Err(e) = self.keep_line(&line, at_ms) {
+        if let Err(e) = self.keep_line(&line, at) {
             eprintln!("holon: could not keep the flow log in {:?}: {e}", self.file);
         }
         seq
@@ -556,7 +592,7 @@ impl Log {
     /// Write the newest entry's `line` (a run at `at_ms`) to the file: appended, or, once the
     /// file would hold twice what the log keeps or its oldest line is past the age it keeps, the
     /// file cut back to what it keeps.
-    fn keep_line(&mut self, line: &str, at_ms: u64) -> std::io::Result<()> {
+    fn keep_line(&mut self, line: &str, mut at: LineAt) -> std::io::Result<()> {
         let Some(path) = self.file.clone() else { return Ok(()) };
         if self.handle.is_none()
             && let Some(dir) = path.parent()
@@ -564,13 +600,14 @@ impl Log {
             std::fs::create_dir_all(dir)?;
         }
         if self.written + 1 > 2 * self.keep || self.file_aged(now_ms()) {
-            return self.cut_back(Some(line));
+            return self.cut_back(Some((line, at)));
         }
         if self.written == 0 {
-            self.file_oldest_ms = at_ms;
+            self.file_oldest_ms = at.at_ms;
         }
         use std::io::Write;
-        let text = if std::mem::take(&mut self.cut) { format!("\n{line}\n") } else { format!("{line}\n") };
+        let after_cut = std::mem::take(&mut self.cut);
+        let text = if after_cut { format!("\n{line}\n") } else { format!("{line}\n") };
         if self.handle.is_none() {
             let new = !path.exists();
             let mut options = std::fs::OpenOptions::new();
@@ -587,10 +624,14 @@ impl Log {
             self.handle = Some(file);
         }
         if let Err(e) = self.handle.as_mut().expect("opened above").write_all(text.as_bytes()) {
-            // Opened again for the next line, in case the file went away under it.
+            // Opened again for the next line, in case the file went away under it; a file of
+            // another length is read afresh by the next cut-back.
             self.handle = None;
             return Err(e);
         }
+        at.offset = self.file_len + u64::from(after_cut);
+        self.file_len += text.len() as u64;
+        self.lines.push_back(at);
         self.written += 1;
         Ok(())
     }
@@ -598,35 +639,45 @@ impl Log {
     /// Rewrite the file as the lines it keeps, byte for byte, then `line` (the newest entry's,
     /// when there is one): the newest `keep`, none older than its age, but always the newest
     /// line, which carries the numbering and the chain on.
-    fn cut_back(&mut self, line: Option<&str>) -> std::io::Result<()> {
+    fn cut_back(&mut self, line: Option<(&str, LineAt)>) -> std::io::Result<()> {
         let Some(path) = self.file.clone() else { return Ok(()) };
         // Closed before the file is replaced: a handle would go on writing to the old one (and
         // Windows won't replace an open file). The next line opens the new one.
         self.handle = None;
         let cutoff = self.max_age_ms.map(|age| now_ms().saturating_sub(age));
-        let text = std::fs::read_to_string(&path).unwrap_or_default();
-        let mut lines: Vec<(&str, LogEntry)> =
-            text.lines().filter_map(|l| serde_json::from_str::<LogEntry>(l).ok().map(|e| (l, e))).collect();
-        if let Some(line) = line
-            && let Ok(e) = serde_json::from_str::<LogEntry>(line)
-        {
-            lines.push((line, e));
+        let bytes = std::fs::read(&path).unwrap_or_default();
+        // A file this log didn't leave as it is (changed, cut or grown outside holon) is read
+        // afresh, as a log opening it would; otherwise the index says where each line is.
+        if bytes.len() as u64 != self.file_len {
+            let text = String::from_utf8_lossy(&bytes);
+            self.lines = lines_of(&text)
+                .into_iter()
+                .filter_map(|(l, e, offset)| e.map(|e| LineAt { offset, len: l.len(), at_ms: e.at_ms, seq: e.seq, prev: e.prev }))
+                .collect();
+        }
+        // Each line it could keep, oldest first: the file's that parsed, then the newest entry's.
+        let in_file = |at: &LineAt| bytes.get(at.offset as usize..at.offset as usize + at.len);
+        let mut lines: Vec<(&[u8], &LineAt)> = self.lines.iter().filter_map(|at| in_file(at).map(|b| (b, at))).collect();
+        if let Some((line, at)) = &line {
+            lines.push((line.as_bytes(), at));
         }
         let newest = lines.len().saturating_sub(1);
         let start = lines.len().saturating_sub(self.keep);
-        let kept: Vec<&(&str, LogEntry)> = lines
+        let kept: Vec<&(&[u8], &LineAt)> = lines
             .iter()
             .enumerate()
-            .filter(|(i, (_, e))| *i == newest || (*i >= start && cutoff.is_none_or(|c| e.at_ms >= c)))
+            .filter(|(i, (_, at))| *i == newest || (*i >= start && cutoff.is_none_or(|c| at.at_ms >= c)))
             .map(|(_, l)| l)
             .collect();
         if kept.len() == lines.len() && line.is_none() {
             return Ok(());
         }
-        let mut all = String::new();
-        for (l, _) in &kept {
-            all.push_str(l);
-            all.push('\n');
+        let mut all = Vec::with_capacity(kept.iter().map(|(b, _)| b.len() + 1).sum());
+        let mut index = VecDeque::with_capacity(kept.len());
+        for (b, at) in &kept {
+            index.push_back(LineAt { offset: all.len() as u64, ..(*at).clone() });
+            all.extend_from_slice(b);
+            all.push(b'\n');
         }
         // The witness hears that the runs before the oldest kept are gone by the host's choice.
         if let Some((_, oldest)) = kept.first()
@@ -635,9 +686,11 @@ impl Log {
         {
             self.export("trim", oldest.seq, &oldest.prev, now_ms());
         }
-        self.file_oldest_ms = kept.first().map_or(0, |(_, e)| e.at_ms);
-        crate::sealing::write_private(&path, all.as_bytes())?;
+        self.file_oldest_ms = kept.first().map_or(0, |(_, at)| at.at_ms);
+        crate::sealing::write_private(&path, &all)?;
         self.written = kept.len();
+        self.file_len = all.len() as u64;
+        self.lines = index;
         self.cut = false;
         Ok(())
     }
@@ -674,6 +727,8 @@ impl Log {
     /// Delete the file: its deployment was deleted.
     pub fn delete_file(&mut self) {
         self.handle = None;
+        self.lines.clear();
+        self.file_len = 0;
         if let Some(path) = &self.file {
             let _ = std::fs::remove_file(path);
         }
@@ -974,5 +1029,73 @@ mod tests {
         assert_eq!(body_text(b"ok"), "ok");
         assert_eq!(body_text(&[0xff]), "\u{fffd}");
         assert!(body_text(&vec![b'a'; 70_000]).ends_with('…'));
+    }
+
+    /// What a cut-back wrote before it kept an index (step 4 of docs/L4s/request-path-plan.md):
+    /// every line of `text` parsed, those that parse kept by the rule, then `line`. The index must
+    /// write exactly this.
+    fn cut_back_as_before(text: &str, keep: usize, line: &str) -> String {
+        let mut lines: Vec<&str> = text.lines().filter(|l| serde_json::from_str::<LogEntry>(l).is_ok()).collect();
+        lines.push(line);
+        let (newest, start) = (lines.len() - 1, lines.len().saturating_sub(keep));
+        lines.iter().enumerate().filter(|(i, _)| *i == newest || *i >= start).map(|(_, l)| format!("{l}\n")).collect()
+    }
+
+    #[test]
+    fn a_cut_back_keeps_its_lines_byte_for_byte_without_parsing_them() {
+        use std::io::Write;
+        let dir = temp_dir("cut-bytes");
+        let path = dir.join("slug.jsonl");
+        {
+            let mut log = Log::open_keeping(Some(path.clone()), 100);
+            for _ in 0..3 {
+                log.push(entry());
+            }
+        }
+        // A line with a field this build doesn't know, then one a crash cut short.
+        let unknown = serde_json::to_string(&LogEntry { seq: 3, ..entry() }).unwrap().replacen('{', "{\"later\":1,", 1);
+        std::fs::OpenOptions::new().append(true).open(&path).unwrap().write_all(format!("{unknown}\n{{\"seq\":4,\"pre").as_bytes()).unwrap();
+        let mut log = Log::open_keeping(Some(path.clone()), 2);
+        let before = std::fs::read_to_string(&path).unwrap();
+        log.push(entry()); // past twice what it keeps: cut back
+        let after = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(after, cut_back_as_before(&before, 2, after.lines().last().unwrap()));
+
+        // Lines appended after a cut-back land in the new file at the offsets the index says, so
+        // cut-back after cut-back the chain checks, and a reopened log goes on from its head.
+        for _ in 0..9 {
+            log.push(entry());
+        }
+        let back = Log::open_keeping(Some(path.clone()), 2);
+        assert!(back.breaks().is_empty(), "{:?}", back.breaks());
+        assert_eq!(back.head(), log.head());
+        let mut back = back;
+        for _ in 0..5 {
+            back.push(entry());
+        }
+        let again = Log::open_keeping(Some(path.clone()), 2);
+        assert!(again.breaks().is_empty(), "{:?}", again.breaks());
+        assert_eq!(again.after(None, 10).iter().map(|e| e.seq).collect::<Vec<_>>(), [17, 18]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_file_changed_outside_holon_is_read_afresh_by_its_cut_back() {
+        use std::io::Write;
+        let dir = temp_dir("cut-changed");
+        let path = dir.join("slug.jsonl");
+        let mut log = Log::open_keeping(Some(path.clone()), 2);
+        for _ in 0..3 {
+            log.push(entry());
+        }
+        // A line added by hand: the file is no longer the length this log left it.
+        let added = serde_json::to_string(&LogEntry { seq: 40, ..entry() }).unwrap();
+        std::fs::OpenOptions::new().append(true).open(&path).unwrap().write_all(format!("{added}\n").as_bytes()).unwrap();
+        log.push(entry());
+        let before = std::fs::read_to_string(&path).unwrap();
+        log.push(entry()); // the fifth line this log wrote: cut back
+        let after = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(after, cut_back_as_before(&before, 2, after.lines().last().unwrap()));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

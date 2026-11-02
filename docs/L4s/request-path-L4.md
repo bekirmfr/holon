@@ -430,7 +430,9 @@ the crate.
 ### C2. The run log off the table lock
 
 **Status:** (a) and (b) built (build step 3): two deployments driven together went from 5,113 to
-11,224 req/s combined (the plan's step 3 has the numbers). (c), (d) and (e) are still to come.
+11,224 req/s combined. (c) built (build step 4): a cut-back of a real 2.7 MB log went from 14–25 ms
+to 4.4–6.0 ms, and `hello` alone from 7,482–7,902 to 11,197 req/s at 64 threads (the plan has the
+numbers). (d) and (e) are still to come.
 
 **What.** Each deployment's log gets its own lock, the line is appended through a file kept open,
 and a cut-back copies bytes instead of parsing. A line still reaches the OS before its run
