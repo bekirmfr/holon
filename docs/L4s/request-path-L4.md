@@ -24,8 +24,10 @@ This note makes a request's cost depend only on its own flow and its own deploym
 > grows with the number of deployments or with the runs before it.** A run costs its evaluation,
 > one appended log line, and, when it changed state, the writes that make that change durable.
 
-It doesn't change what a run records, the order of a record and its answer, what survives a
-crash, the file formats a person reads, or the evaluator.
+It doesn't change what a run records, the order of a record and its answer, the file formats a
+person reads, or the evaluator, and it weakens nothing that survives a crash. One part, C2 (d),
+closes a gap found on the way. Today the run log is never fsynced, so a power loss can lose run
+records whose state changes did survive, and can leave a witness holding heads the disk lost.
 
 ## Contents
 
@@ -303,12 +305,32 @@ in particular the closure-bound tests (`tests.rs:7190–7225`).
 ### C2. The run log off the table lock
 
 **What.** Each deployment's log gets its own lock, the line is appended through a file kept open,
-and a cut-back copies bytes instead of parsing.
+and a cut-back copies bytes instead of parsing. A line still reaches the OS before its run
+answers. It reaches the disk within a second, and always before a witness hears its head.
 
 **Today.** `Deployment.log: Log` (`main.rs:483`) is reached only through the table lock. `Log`
 (`recorder.rs:354–375`) holds `next_seq`, `entries`, `keep`, `max_age_ms`, `file_oldest_ms`,
 `file`, `written` (lines in the file), `cut`, `head`, `breaks` and `slug`. §2.2 describes what a
 push does.
+
+**No line is ever fsynced.** `keep_line` (`recorder.rs:521–549`) appends with a plain `write_all`,
+and only a cut-back's `write_private` syncs (`sealing.rs:291`). The events log is the same: its
+`keep_line` (`events.rs:150–170`) appends one event at a time and never syncs. Each head is queued
+for the witness **before** its line is written: `Log::push` calls `self.export("run", …)`
+(`recorder.rs:509`) and then `keep_line`, and `Events::push` calls `heads::note` (`events.rs:142`)
+and then `keep_line` (`events.rs:145`). The exporter sends what's queued every 5 s (`main.rs:990`,
+`Exporter::run`, `heads.rs:181–186`).
+
+A process crash loses no line, because the OS still holds it. **A power loss or OS crash can
+lose the newest lines**, and that has two consequences:
+
+- **State can be ahead of the log.** Every state change is fsynced before its run answers (§2.4),
+  but its line isn't. After a power loss, the state can reflect runs the log no longer has, and
+  `holon verify`'s state check (`check_states`, `verify.rs:469`) reports "it began from a state the
+  run before it didn't leave".
+- **A witness can hold heads the disk lost.** A head sent in the 5 s before the power loss may name
+  a line that never reached the disk. To the witness, the log then looks cut short, which is the
+  tampering a witness exists to catch.
 
 **After.**
 
@@ -332,6 +354,55 @@ push does.
   short) are dropped at cut-back, as today, because only parsed lines are indexed. The handle is
   **closed before the rename and reopened after**. That's required on Unix, where the old handle
   would keep the replaced file, and it avoids renaming over an open file on Windows.
+- **(d) Synced lazily, within a bound.** The log stays off the request's critical path for
+  durability, as it is today. It is fsynced in the background instead of never:
+  - **Dirty flags.** `Log` and `Events` each gain `dirty: bool`, set by `keep_line` when it appends
+    and cleared when a sync takes it.
+  - **`recorder::sync_logs(deployments) -> Result<(), String>`.** Under the table lock, it clones
+    each deployment's `Arc<LogCell>`, and, for each deployment whose events log is dirty, takes that
+    flag and file path (events are pushed under the table, `events.rs:203–206`). Then it releases
+    the table. For each log it locks the log, takes the flag and path, and releases it. With no lock
+    held, it opens each taken file and calls `sync_data`. On Linux an fsync through any descriptor
+    flushes the file's data, so the append handle isn't shared. A failed sync puts its flag back
+    and returns the error.
+  - **Why taking the lock is enough.** A head is queued inside `push` while the push holds the log
+    lock (or the table lock, for an event). So by the time `sync_logs` has taken a log's lock, every
+    head already queued for that log has its line written, and the sync after covers it.
+  - **Against a cut-back.** A sync that opens the path after a cut-back's rename flushes the new
+    file, which `write_private` already synced, plus any lines appended since. One that opened the
+    old file just before the rename flushes the old inode. The lines that file held were copied
+    into the new file and synced there, and lines appended afterwards set the flag again.
+  - **A syncer thread** calls `sync_logs` every `SYNC_EVERY` (1 s, §8 Q7), started beside the
+    clock scheduler and the file-text sweeper (`main.rs:1075–1080`).
+  - **Before every witness send.** `Exporter::flush` (`heads.rs:130–160`) calls a hook just before
+    each batch's POST (`heads.rs:141`), after the batch is taken from `pending`. If the hook fails,
+    flush returns `Err` and sends nothing, and the exporter's existing back-off retries
+    (`heads.rs:181–200`). `heads::start` runs before the deployments table exists (`main.rs:990`
+    against `main.rs:1074`), so the hook is installed afterwards with a new
+    `heads::before_send(Box<dyn Fn() -> Result<(), String> + Send + Sync>)` that calls `sync_logs`.
+
+  *Considered and rejected: writing the log in the background,* answering first and appending later
+  from a queue:
+  - **It gains little.** After (a)–(c), the log's 35–45 µs per run is mostly CPU (serializing and
+    hashing), which a background thread still spends. On a CPU-bound host, throughput wouldn't
+    move, and latency would drop by under 10% (the 35–45 µs out of about 0.42 ms at one
+    connection, §3).
+  - **It breaks I-a.** A process crash after the answer and before the write would leave runs that
+    answered, called out and changed state with no record. Today a process crash loses nothing.
+  - **Readers lose read-your-writes.** An agent reading its run right after the request finds no
+    entry. `run_action` names an entry not yet written ("its run log says why (entry {seq})",
+    `deploy.rs:1125`). Every reader would have to flush the queue first.
+  - **Channel packs lose their timing.** They go out "as it is logged… what a subscriber gets is
+    what the log holds" (`firing.rs:791–792`), so a queue would put them ahead of their record or
+    delay them.
+  - **The queue is no help under load.** An unbounded queue grows without limit when the writer
+    falls behind, and a bounded one blocks, which makes logging synchronous exactly under load.
+  - **A failed write surfaces too late,** after the caller has its answer.
+
+  The latency it would buy is available without those costs. Redact and serialize the entry body
+  before taking the log lock, and splice `prev` in under it, so only the hash and the `write` are
+  serialized. Batched appends, where each run waits for its batch's `write`, are the fallback if
+  the `write` still shows in a profile.
 
 **Touches.** Every use of a deployment's `log`:
 
@@ -362,6 +433,12 @@ push does.
 | `sweep.rs:137` | `named` | `log.lines()` for every deployment under the table lock | clone each `Arc` under the table, release it, read each log under its own lock |
 | `folders.rs:1702` | `folders::sweep` | the same | the same |
 | `tests.rs` | 3 direct uses of `.log.` | | updated to lock |
+| `recorder.rs:354–375`, `521–549` | `Log`, `keep_line` (d) | no sync | `dirty` set on append |
+| new, `recorder.rs` | `sync_logs` (d) | | takes the dirty flags and paths, then syncs with no lock held |
+| `events.rs:150–170` | `Events::keep_line` (d) | no sync | `dirty` set on append |
+| `heads.rs:50–58`, `130–160` | `Exporter`, `flush` (d) | sends what's queued | calls the `before_send` hook before each POST, and sends nothing if it fails |
+| new, `heads.rs` | `before_send` (d) | | installs the hook once |
+| `main.rs:1074–1090` | server start (d) | starts the scheduler, the arrival watcher and the text sweeper | also starts the syncer thread, and installs the hook when `--export-heads` is set |
 
 **Results.** *Measured*: removing the log's work from the table lock is worth 3,820 → 21,044 req/s
 together with C1 (the `cache` + `nolog` row is the upper bound). *Estimated*: C2 keeps the log, so
@@ -370,6 +447,14 @@ export a few, write about 5, and the cut-back's share once it copies instead of 
 copy every 500 runs, under 10 µs a run). That bounds one deployment near 20,000 runs a second,
 with no bound across deployments. A cut-back stalls only its own deployment, for a few ms instead
 of 33.
+
+*(d), measured and estimated.* An fsync inside the server took 113 µs on average here, plus
+31 µs for the rename (`strace -c` during `/hit`; 1,766 fsyncs for 882 requests). Syncing costs
+one fsync per **dirty** log per second, whatever the request rate: about 0.015% of one core per
+active deployment, on the syncer thread and off every request. Before a witness send, it adds at
+most one fsync per log dirty since the last tick, about one per active deployment every 5 s. The
+only thing a request does differently is set a flag. A sync holds a log's lock only to take the
+flag and the path, not during the fsync. *Estimated*: no measurable change to §3's figures.
 
 **Side effects.**
 - **Lock order** gains one lock (§5). The log lock is never held while taking the table. A reader
@@ -387,6 +472,25 @@ of 33.
 - **Witness export** still goes through `heads::note` (`heads.rs:106–120`), which opens and appends
   `pending.jsonl` under a server-wide lock on every run when `--export-heads` is set. That is
   unmeasured (Appendix B.2) and outside C2.
+- **(d) bounds what a power loss loses.** Run and event records written at most about one
+  `SYNC_EVERY` (plus an fsync) before the loss can still be lost. Nothing older than that can be.
+  A head a witness holds always names a line on disk (I-f), because a head is only sent after
+  its line is synced.
+- **(d) doesn't close the state-ahead-of-log gap, only bounds it.** After a power loss, the state
+  can still reflect up to about a second of runs the log lost, and `holon verify` reports that as a
+  break at the end of the log. Closing it means syncing the record with the state head before the
+  answer (§8 Q6).
+- **(d) adds steady fsync traffic:** one fsync per active log per second. On a slow disk with 33
+  busy deployments, that is up to about 66 ms of device time a second at 2 ms each, on the syncer
+  thread. It competes for the device with the runs' own state fsyncs (C3), which could slow them
+  slightly. Requests never wait for it.
+- **(d) makes a witness send wait** for the sync, up to a few ms. A sync that fails (disk full, an
+  I/O error) holds the witness back until a sync succeeds, which shows in the exporter's waiting
+  count, and the server prints why.
+- **(d) doesn't sync the witness's own queue file.** `pending.jsonl` (`heads.rs:114–120`) is still
+  not synced, so a power loss can drop heads not yet sent. The witness then holds fewer heads, which
+  is not a false alarm (§8 Q7).
+- **(d) doesn't sync the directory** after a cut-back's rename, so that gap from §8 Q5 remains.
 
 **Tests.** Unchanged and must pass, in `recorder.rs`:
 `numbers_entries_reads_past_a_seq_and_keeps_the_newest` (710),
@@ -406,9 +510,21 @@ New:
   it and a line with an unknown field;
 - appends after a cut-back land in the new file;
 - an action's reported `seq` is its own entry under concurrent runs (B.1);
-- while a test holds deployment A's log lock, deployment B answers.
+- while a test holds deployment A's log lock, deployment B answers;
+- (d) an append sets the dirty flag, `sync_logs` clears it, and a failing sync (a path that can't be
+  opened) puts the flag back and returns the error;
+- (d) a witness sees the hook run before every POST. Use the local witness server the `heads.rs`
+  tests already start (`heads.rs:234`, `heads.rs:286`) and a hook that counts calls. A failing hook
+  sends nothing, and the heads stay queued;
+- (d) a line appended while a cut-back runs is synced by the next tick.
 
-**Docs.** None user-facing.
+Losing power can't be simulated in a test. The tests pin the order the guarantee rests on
+(written, then synced, then sent) and leave the disk's part to the OS.
+
+**Docs.** For (d), `docs/manual/reference/server.md`'s run-log section (`server.md:163–176`) gains
+"A run's entry is written before its answer and on disk within a second; a power loss can lose
+the last second of entries." The witness paragraph (`server.md:180–182`) gains "A head is sent
+only once its entry is on disk."
 
 ### C3. Persist what changed, and only that deployment
 
@@ -600,10 +716,13 @@ After C1–C3:
 | log readers | table (clone `Arc`, release) → **log** |
 | a run's commit | cell → store → head file I/O (no lock) |
 | `closure` | closures cache (lookup or insert only); loading takes the store, never while holding the cache |
+| `sync_logs` (C2 d) | table (clone `Arc`s, take the events' flags, release) → each **log** in turn (take the flag, release); the fsync with no lock held |
+| a witness send (C2 d) | `pending` (take the batch, release) → `sync_logs` → POST with no lock held |
 
 The rules: **the log lock is never held while taking the table or a cell**, and **the closure
-cache's lock is a leaf**. C2 and C3 add no edge that could close a cycle. B.4 is untouched by
-them.
+cache's lock is a leaf**. A witness send holds `pending` only to take its batch, never while it
+syncs, so the existing order (log → `pending`, inside `push`) can't invert. C2 and C3 add no edge
+that could close a cycle. B.4 is untouched by them.
 
 ## 6. Build order
 
@@ -619,12 +738,15 @@ throughput check (step 1) and says the step was run live.
 3. **C2 (a)(b)**, the log's own lock and the open handle, with B.1 fixed by the returned `seq`.
    Steps 2 and 3 together are where the server starts to scale (§2.5).
 4. **C2 (c)**, the cut-back without parsing.
-5. **C3 (a)**, persist on change.
-6. **C3 (b)–(e)**, the state head, load, migration, delete, and the manual's line.
-7. **C4**, after re-measuring with several stateful deployments written at once, and reading
+5. **C2 (d)**, the logs synced lazily and before every witness send, with the manual's two lines.
+   It's a durability fix rather than a speed one, and the commit says so. Its throughput numbers
+   should match step 4's.
+6. **C3 (a)**, persist on change.
+7. **C3 (b)–(e)**, the state head, load, migration, delete, and the manual's line.
+8. **C4**, after re-measuring with several stateful deployments written at once, and reading
    `sweep.rs` in full.
 
-Steps 2–5 change no file on disk. Step 6 adds `deployments.state/`.
+Steps 2–6 change no file format. Step 7 adds `deployments.state/`.
 
 ## 7. Samples
 
@@ -649,6 +771,15 @@ and `editor/src/samples.test.ts` must stay green.
 5. **Directory fsync after rename.** `write_atomically` (`holon-host/src/lib.rs:642`) and
    `write_private` (`sealing.rs:274`) fsync the file but not its directory, so on some filesystems a
    crash can lose an acknowledged rename. This note neither introduces that nor closes it.
+6. **A strict log, per deployment.** Should a deployment be able to ask that an answered run's
+   record survive a power loss too? That would close the state-ahead-of-log gap C2 (d) only bounds.
+   The cost is one fsync of the log before every answer, about 150 µs per run here and more on a
+   slow disk. A writing run could share the C3 head's moment under the cell lock, but a reading run
+   would pay it alone. If yes, it belongs in the deploy settings' `keep` limits beside `keep_runs`,
+   off by default.
+7. **The sync interval, and the witness's queue.** Should `SYNC_EVERY` be 1 s and fixed, or a
+   setting? And should `pending.jsonl` be synced on the same tick? That would cost one more fsync a
+   second while heads are queued, and a power loss would then drop no queued heads.
 
 ## 9. Invariant check
 
@@ -666,8 +797,13 @@ and `editor/src/samples.test.ts` must stay green.
 - **I-e, redaction before anything is written.** The entry is redacted before it is serialized. The
   only change is that C2 redacts with no lock held, using the secrets cloned out under the brief
   table lock.
+- **I-f, a witness's head is on disk (new).** A head is sent only after the line it names has been
+  synced (C2 d). Today this doesn't hold (Appendix B.5).
+- **A power loss loses at most about a second of records (new).** That is the bound C2 (d) sets.
+  Today there is no bound.
 - **M0 / §7a.** No disk I/O under the table lock on any run path: the log leaves it (C2), and the
-  whole-table persist leaves the per-run path except for definition changes (C3).
+  whole-table persist leaves the per-run path except for definition changes (C3). C2 (d)'s sync
+  takes no lock while it fsyncs.
 
 ## Appendix A. How it was measured
 
@@ -694,7 +830,8 @@ and `editor/src/samples.test.ts` must stay green.
 
 ## Appendix B. Found along the way
 
-These are recorded here so they aren't lost. Only B.1 is fixed by this note (C2).
+These are recorded here so they aren't lost. B.1 and B.5 are fixed by this note (C2); the others
+are not.
 
 1. **An action can report another run's entry.** `run_action` reads `next_seq` under one table
    lock (`deploy.rs:1118`) and logs in another (`deploy.rs:1119`, `log_run`). A run of the same
@@ -716,3 +853,9 @@ These are recorded here so they aren't lost. Only B.1 is fixed by this note (C2)
    last attempt is calling another flow would deadlock. It hasn't been reproduced. The fix belongs in
    `put_state_back` and `handle_lifecycle`: clone the cell's `Arc` and release the table before
    locking the cell.
+5. **The run and events logs are never fsynced, and heads reach the witness regardless.**
+   `keep_line` in `recorder.rs:521–549` and `events.rs:150–170` never syncs, and heads are queued
+   before their lines are written (`recorder.rs:509`, `events.rs:142`) and sent every 5 s. A power
+   loss can lose recent lines while their state changes (fsynced, §2.4) survive, and while a witness
+   holds their heads, which looks like a log cut short. C2 (d) bounds the first and closes the
+   second.
