@@ -154,6 +154,9 @@ jobs:
             rm -rf "$CARGO_TARGET_DIR" ~/.npm/_cacache
           fi
           df -h "$GITHUB_WORKSPACE"
+          # rustup, installed by an earlier run, on the PATH: the toolchain action looks for it and
+          # otherwise downloads its installer again (a minute or more from one runner).
+          if [ -x "$HOME/.cargo/bin/rustup" ]; then echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"; fi
       - uses: actions/checkout@v4
       - run: bash .github/start-mongodb.sh
       - uses: dtolnay/rust-toolchain@stable
@@ -164,11 +167,11 @@ jobs:
           version: v0.15.0
       - run: wasm-pack build crates/holon-wasm --target web --out-dir ../../editor/wasm --no-opt
         timeout-minutes: 10
+      # Without GitHub's npm cache: npm ci reads the runner's own ~/.npm, kept between runs. Restoring
+      # GitHub's (27 MB) from one runner went at 0.1 MB/s and once took ten minutes (2026-11-02).
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: npm
-          cache-dependency-path: editor/package-lock.json
       - run: npm ci
         working-directory: editor
       # Chromium alone (seconds). Each try gets five minutes and a second try follows: an install
