@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- **`chess`: a Sphinx that doesn't answer in time keeps its turn.** When its move call times out,
+  the rules no longer play for it at once: the page says so and offers Try again (ask it once
+  more) or Let the rules play. While its turn waits, `POST /move` takes only `again` or `rules`,
+  never a move, so the player can't play Black's for it.
+
 ## 0.1.0-rc.31
 
 A flow's header names everything that outlives a run, its secrets and state keys too, and the

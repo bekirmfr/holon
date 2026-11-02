@@ -47,7 +47,9 @@
 #
 # The newer models think for a while, longer than a run's default 25 seconds, so the header's
 # limit lines give a run a minute and a Gemini call 50 seconds of it: a model slower than that is
-# cut off, and the rules play for it. Asking more than the host's defaults asks for approval at
+# cut off. Then the Sphinx's turn waits for the player, who chooses: ask it again
+# ({"move":"again"}), or let the rules play for it ({"move":"rules"}). While it waits, those two
+# are all POST /move takes: never a move, so the player can't play Black's for it. Asking more than the host's defaults asks for approval at
 # deploy (Limit(run_budget_ms=60000), Limit(request_timeout_ms=50000)), up to its ceilings.
 #
 # Try it: deploy it, open http://127.0.0.1:8168/ and play: drag a piece to its square, or click it
@@ -133,6 +135,7 @@ input[name=line]{width:70%}
   <div id="frame"><div id="ranks"></div><div id="board"></div><div></div><div id="files"></div></div>
   <p id="result"></p>
   <p id="status"></p>
+  <p id="held" hidden><button id="again">Try again</button> <button id="byrules">Let the rules play</button></p>
   <p id="note" class="warn"></p>
   <p><label>Promote to <select id="promo"><option value="q">queen</option><option value="r">rook</option><option value="b">bishop</option><option value="n">knight</option></select></label> <button id="resign">Resign</button></p>
   <p><label>Next game against <select id="model"></select></label> <button id="new">New game</button></p>
@@ -258,12 +261,17 @@ document.addEventListener("keydown", (e) => {
   e.preventDefault();
 });
 // Where the game stands; while a move is out, what was sent, to whom, and for how long.
+// While its turn waits (its call timed out), the player chooses: ask it again, or let the rules play.
+const held = () => !!game.waiting && game.status === "playing" && game.turn === "b";
 function status() {
   const over = game.status !== "playing", checked = (game.moves[game.moves.length - 1] || "").endsWith("+");
   $("status").className = sent ? "wait" : "";
   $("status").textContent = sent
-    ? sent.what + " is sent: the Sphinx (" + game.model + ") " + (sent.resign ? "is finding its last words" : "is thinking") + "… " + Math.floor((Date.now() - sent.at) / 1000) + " s"
-    : over ? "Game over (" + game.result + "). Start a new one below." : (game.turn === "w" ? "Your move." : "The Sphinx's move.") + (checked ? " Check!" : "");
+    ? sent.what + ": the Sphinx (" + game.model + ") " + (sent.resign ? "is finding its last words" : "is thinking") + "… " + Math.floor((Date.now() - sent.at) / 1000) + " s"
+    : over ? "Game over (" + game.result + "). Start a new one below."
+    : held() ? "The Sphinx didn't answer in time (" + game.waiting.note + "). Ask it again, or let the rules play for it."
+    : (game.turn === "w" ? "Your move." : "The Sphinx's move.") + (checked ? " Check!" : "");
+  $("held").hidden = !held() || !!sent;
 }
 async function play(move) {
   busy = true;
@@ -271,7 +279,8 @@ async function play(move) {
   view = null;
   pending = /^[a-h][1-8][a-h][1-8]/.test(move) ? move : null;
   const m = pending && target(move.slice(0, 2), move.slice(2, 4));
-  sent = { what: move === "resign" ? "Your resignation" : "Your move " + (m ? m.san : move), resign: move === "resign", at: Date.now() };
+  const what = { resign: "Your resignation is sent", again: "Asked again", rules: "The rules play for it" }[move] || "Your move " + (m ? m.san : move) + " is sent";
+  sent = { what, resign: move === "resign", at: Date.now() };
   const ticking = setInterval(status, 1000);
   $("note").textContent = "";
   draw();
@@ -289,6 +298,8 @@ async function play(move) {
     draw();
   }
 }
+$("again").onclick = () => !busy && held() && play("again");
+$("byrules").onclick = () => !busy && held() && play("rules");
 function go(from, to) {
   const m = target(from, to);
   if (!m) { sel = null; draw(); return; }
@@ -724,15 +735,29 @@ holon opponent(model) -> board js {
   return { model: name, thinking: MODELS.find((m) => m.id === name).thinking, models: MODELS };
 }
 
+# What the player's request plays, for the rules: on their turn a move (or "resign"); while the
+# Sphinx's turn waits, "again" (ask it again) or "rules" (let the rules play for it), which play
+# nothing for the player. Anything else throws, so the run answers 400 and nothing changes.
+holon player(board, move) -> wanted js {
+  if (typeof move !== "string") throw new Error("a move is a text: e2e4, or Nf3");
+  const waits = !!board.waiting && board.status === "playing" && board.turn === "b";
+  if (waits) {
+    if (move === "again" || move === "rules") return "";
+    throw new Error("the Sphinx's turn waits: ask it again, or let the rules play");
+  }
+  if (move === "again" || move === "rules") throw new Error("the Sphinx isn't waiting");
+  return move;
+}
+
 # What the Sphinx is asked on its turn: the whole game, the position, the material and the legal
 # moves, nothing else, and JSON back: a move that is one of them, a comment on it, what it makes of
 # the player's last move, its mood, and, when it has something to say to the player, a line. Once
 # the game is over (the player's move ended it, or they resigned), a parting line and its mood.
-# Nothing when it isn't Black's move.
-holon move_prompt(board) -> body js {
+# Nothing when it isn't Black's move, or the player let the rules play.
+holon move_prompt(board, move) -> body js {
   const legal = (board.legal || []).map((l) => l.san);
   const over = board.status !== "playing";
-  if (!over && (board.turn !== "b" || legal.length === 0)) return undefined;
+  if (!over && (board.turn !== "b" || legal.length === 0 || move === "rules")) return undefined;
   const MOODS = ["confident", "delighted", "amused", "curious", "puzzled", "uneasy", "struggling", "desperate"];
   const VERDICTS = ["brilliant", "good", "solid", "unclear", "risky", "dubious", "bad", "blunder", "insane"];
   const voice = "You are the Sphinx, a playful, proud chess player with Black against a human, who speaks in riddles and teasing.";
@@ -788,10 +813,11 @@ holon move_prompt(board) -> body js {
 
 # The contract, checked: the Sphinx's move if it is one of the legal moves, else the rules'
 # fallback, with the turn kept on the board as kept, broken or refused, and its verdict and mood
-# only when they are among the words it was given. Its pick is the board, the move to play, as
+# only when they are among the words it was given. A call that timed out plays nothing: the turn
+# waits on the board (waiting) for the player to ask again or let the rules play (move "rules"). Its pick is the board, the move to play, as
 # coordinates ("" when there is none to play), and what it said to the player, if anything (left
 # out when it broke the contract), for the chat.
-holon choose(board, asked) -> pick js {
+holon choose(board, asked, move) -> pick js {
   const legal = board.legal || [];
   const over = board.status !== "playing";
   if (!over && (board.turn !== "b" || legal.length === 0)) return { game: board, move: "" };
@@ -810,8 +836,11 @@ holon choose(board, asked) -> pick js {
   const mood = answer && MOODS.includes(answer.mood) ? answer.mood : undefined;
   const say = answer && typeof answer.say === "string" ? answer.say.trim().slice(0, 400) : "";
   if (over) return { game: { ...board, mood: mood ?? board.mood }, move: "", aside: say ? { agent: say, mood } : undefined };
+  if (move !== "rules" && !asked.status && asked.error === "timeout") return { game: { ...board, waiting: { note: "its call timed out" } }, move: "" };
   const turn = { ply: (board.moves || []).length + 1 };
-  if (!asked.status) {
+  if (move === "rules") {
+    Object.assign(turn, { kept: "refused", note: "its call timed out, and you let the rules play" });
+  } else if (!asked.status) {
     Object.assign(turn, { kept: "refused", note: asked.error ? `the call failed: ${asked.error}` : "no call was made: is the key set?" });
   } else if (asked.status !== 200) {
     let why = "";
@@ -827,8 +856,9 @@ holon choose(board, asked) -> pick js {
   const kept = turn.kept === "kept";
   const played = kept ? legal.find((l) => l.san === turn.played) : board.fallback;
   turn.played = played.san;
+  const { waiting, ...rest } = board;
   return {
-    game: { ...board, mood: kept ? mood ?? board.mood : board.mood, turns: [...(board.turns || []), turn] },
+    game: { ...rest, mood: kept ? mood ?? board.mood : board.mood, turns: [...(board.turns || []), turn] },
     move: played.uci,
     aside: kept && say ? { agent: say, mood } : undefined,
   };
@@ -915,12 +945,14 @@ route GET /game (req) {
 
 # The player's move (or "resign"), checked by the rules (400 if it isn't legal, and nothing
 # changes), then the Sphinx's: asked with the board alone, checked against the legal moves, or the
-# rules' fallback; or its parting line once the game is over. What it says to the player goes
-# into the chat, and comes back as aside.
+# rules' fallback; or its parting line once the game is over. A call that timed out leaves its
+# turn waiting, for "again" (asked once more) or "rules" (the rules' fallback). What it says to
+# the player goes into the chat, and comes back as aside.
 route POST /move (req) {
-  mine = rules(games["current"] ?? opponent(""), req.json.move)
-  asked = http.post("generativelanguage.googleapis.com", "/v1beta/interactions", headers: { "content-type": "application/json", "x-goog-api-key": secret.gemini_api_key }, body: move_prompt(mine))
-  pick = choose(mine, asked ?? { status: 0 })
+  board = games["current"] ?? rules(opponent(""), "")
+  mine = rules(board, player(board, req.json.move))
+  asked = http.post("generativelanguage.googleapis.com", "/v1beta/interactions", headers: { "content-type": "application/json", "x-goog-api-key": secret.gemini_api_key }, body: move_prompt(mine, req.json.move))
+  pick = choose(mine, asked ?? { status: 0 }, req.json.move)
   theirs = rules(pick.game, pick.move)
   games["current"] = theirs
   kept = remember(games["chat"] ?? [], pick.aside, now)
