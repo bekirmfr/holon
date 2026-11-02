@@ -102,6 +102,10 @@ test("the flow's text drives its canvas, and the canvas its text", async ({ page
   await page.keyboard.press("Delete");
   await expect(pane.getByRole("status")).toContainText("a comment was dropped");
   await expect(editor).not.toContainText("# says hello");
-  await page.locator(".hl-canvas").getByRole("button", { name: "⟲" }).dispatchEvent("click");
+  // Undo is enabled once the canvas commits the edit (400 ms after it settles, history.ts); a
+  // dispatched click doesn't wait for that as a pointer click does, and a disabled one is dropped.
+  const undo = page.locator(".hl-canvas").getByRole("button", { name: "⟲" });
+  await expect(undo).toBeEnabled();
+  await undo.dispatchEvent("click");
   await expect(editor).toContainText("# says hello, loudly");
 });
