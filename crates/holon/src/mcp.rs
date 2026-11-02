@@ -327,7 +327,7 @@ fn deploy(api: &dyn Api, text: &str, slug: Option<&str>) -> Result<String, Strin
     }
     let list = |k: &str| -> Vec<String> { preview.get(k).and_then(Value::as_array).map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect()).unwrap_or_default() };
     let (needs, missing) = (list("needs_approval"), list("missing_secrets"));
-    let described = |items: &[String]| items.iter().map(|i| format!("  - {}", agent::describe(i))).collect::<Vec<_>>().join("\n");
+    let described = |items: &[String]| items.iter().map(|i| format!("  - {}", agent::describe_sending(i, &plan.sent))).collect::<Vec<_>>().join("\n");
     let secrets_note = if missing.is_empty() {
         String::new()
     } else {
@@ -409,7 +409,7 @@ fn save(api: &dyn Api, text: &str, name: Option<&str>) -> Result<String, String>
     if let Some(by) = save_flow(api, &name, &saved_document(&plan, text))? {
         return Err(format!("not saved: a flow named \"{name}\" saved by {by} is already on {}; save it under another name so theirs isn't replaced", api.server()));
     }
-    let may = if plan.may.is_empty() { "It only computes.".to_string() } else { format!("When deployed, it may:\n{}", plan.may.iter().map(|i| format!("  - {}", agent::describe(i))).collect::<Vec<_>>().join("\n")) };
+    let may = if plan.may.is_empty() { "It only computes.".to_string() } else { format!("When deployed, it may:\n{}", plan.may.iter().map(|i| format!("  - {}", agent::describe_sending(i, &plan.sent))).collect::<Vec<_>>().join("\n")) };
     Ok(format!(
         "Saved \"{name}\" on {}, not deployed: it is on the editor's flows page, where a person can open it, and `deploy` deploys it (a first deploy, or one that needs a new permission, waits for them).\n{may}",
         api.server()
@@ -1371,7 +1371,7 @@ mod tests {
         let (ada, _) = accounts.setup(&accounts.setup_code().unwrap(), "ada", "correct horse battery").unwrap();
         state.access = crate::access::Access::new(std::sync::Arc::clone(&accounts), vec![], vec![]);
         let (agent, person) = (Signed { state: &state, token: &ada, agent: true }, Signed { state: &state, token: &ada, agent: false });
-        let v1 = "flow peek\nport 8231\n\nroute GET /k (req) {\n  respond { k: sha256(secret.api_key) }, missing: 400\n}\n";
+        let v1 = "flow peek\nport 8231\nsecret api_key\n\nroute GET /k (req) {\n  respond { k: sha256(secret.api_key) }, missing: 400\n}\n";
         let v2 = v1.replace("sha256", "base64");
         // A person deploys the version that hashes the key, and sets the key.
         let plan = agent::plan(v1).unwrap();
@@ -1386,9 +1386,10 @@ mod tests {
         assert!(deploy(&agent, &v2, Some("peek")).unwrap().starts_with("Not deployed yet"));
         let leaky = agent::plan(&v2).unwrap();
         let preview = json_of(&agent, "POST", "/deploy/preview", Some(Body::Json(json!({ "slug": "peek", "unit": leaky.unit })))).unwrap();
-        assert_eq!(preview["needs_approval"], json!(["SecretRead(\"api_key\")"]), "{preview}");
+        // Answering with what is computed from the key is a permission of its own.
+        assert_eq!(preview["needs_approval"], json!(["SecretAnswer(\"api_key\")", "SecretRead(\"api_key\")"]), "{preview}");
         let refused = json_of(&agent, "POST", "/deploy", ask(&leaky.unit, json!([]))).unwrap_err();
-        assert!(refused.contains("needs a person's approval") && refused.contains("SecretRead(\"api_key\")"), "{refused}");
+        assert!(refused.contains("needs a person's approval") && refused.contains("SecretAnswer(\"api_key\")"), "{refused}");
         let answered = json_of(&agent, "POST", "/deployments/peek/request", Some(Body::Json(json!({ "method": "GET", "url": "/k" })))).unwrap();
         assert!(!answered.to_string().contains("c2tfbGl2ZV"), "the key isn't read out as base64: {answered}");
         // The same code it may deploy again while it runs; once a person stops it, it stays stopped.

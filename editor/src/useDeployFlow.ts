@@ -10,7 +10,7 @@ import { flowUnitHash, traceOfUnit, type DerivedServer } from "./canvasOps";
 import { documentUnits } from "./docUnits";
 import { bindingsOf } from "./holonText";
 import { isWEncapError } from "./diagnostics";
-import { describeItem, type Evaluator } from "./holon";
+import { describeItemSending, type Evaluator } from "./holon";
 import { stageClosure } from "./canvasUnits";
 import { changeDeployment, deployUnit, previewDeploy, type DeploymentEntry, type FlowDocument } from "./server";
 import { browsersOf, type FlowSettings } from "./DeployBar";
@@ -137,7 +137,7 @@ export function useDeployFlow({
       const optional = requirements?.optional ?? [];
       // A flow with no routes that reads `ingress` is run by hand, and its approval says so.
       const byHand = derived.endpoints.length === 0;
-      const said = (i: string) => `• ${describeItem(i, byHand)}${optional.includes(i) ? " (optional: it runs without it)" : ""}`;
+      const said = (i: string) => `• ${describeItemSending(i, byHand, preview.sent)}${optional.includes(i) ? " (optional: it runs without it)" : ""}`;
       const lines = [`${existing ? "Update" : "Deploy"} "${name}"?`];
       if (ask.length > 0) lines.push("", "It needs your approval to:", ...ask.map(said));
       // Everything it touches, beside what it touches now, and whether this server is ready for

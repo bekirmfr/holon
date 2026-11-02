@@ -2,6 +2,8 @@
 //! requirement such as `Limit(max_requests=80)`) lets a flow do, in words: what the editor's
 //! deploy dialog and manifests show, and what `holon check` prints.
 
+use std::collections::{BTreeMap, BTreeSet};
+
 /// `item` in words; an item it doesn't know is said as it is.
 pub fn describe_item(item: &str) -> String {
     let arg = |prefix: &str| -> Option<String> {
@@ -24,7 +26,7 @@ pub fn describe_item(item: &str) -> String {
         return format!("keep its runs in its log for up to {n} days");
     }
     type Say = fn(&str) -> String;
-    let named: [(&str, Say); 20] = [
+    let named: [(&str, Say); 21] = [
         ("HttpRequest", |a| format!("call https://{a}")),
         ("StateRead", |a| format!("read its state \"{a}\"")),
         ("StateWrite", |a| format!("write its state \"{a}\"")),
@@ -45,6 +47,7 @@ pub fn describe_item(item: &str) -> String {
         ("ChannelRead", |a| format!("let callers subscribe to its channel \"{a}\"")),
         ("PlainHttp", |a| format!("call {a} over plain HTTP (not encrypted)")),
         ("SecretRead", |a| format!("read the secret \"{a}\"")),
+        ("SecretAnswer", |a| format!("answer its callers with the secret \"{a}\", or with what is computed from it")),
         ("Await", |a| format!("wait for an event \"{a}\" and continue later")),
         ("Limit", |a| format!("raise {}", a.replacen('=', " to ", 1))),
         ("Browser", |a| if a == "*" { "answer web pages from any site".into() } else { format!("answer web pages from {a}") }),
@@ -77,6 +80,95 @@ pub fn describe_item_of(item: &str, by_hand: bool) -> String {
     describe_item(item)
 }
 
+/// Where a secret is sent, as core's `sent_secrets` names it, in words: a host as its address
+/// (`https://api.example.com`), a database read's database as `the database "shop"`.
+pub fn describe_destination(destination: &str) -> String {
+    match destination.strip_prefix("db:") {
+        Some(database) => format!("the database \"{database}\""),
+        None => format!("https://{destination}"),
+    }
+}
+
+/// Where a secret goes, as core's `sent_secrets` lists it, in words ([`describe_destination`]):
+/// where it is sent itself ("https://api.example.com and the database "shop""), and where what
+/// is answered to it goes (its `answer:` destinations), each when there is one.
+pub fn describe_sent_to(to: &BTreeSet<String>) -> (Option<String>, Option<String>) {
+    let listed = |to: Vec<&str>| -> Option<String> {
+        // The hosts, then the databases.
+        let mut to = to;
+        to.sort_by_key(|d| d.starts_with("db:"));
+        let to: Vec<String> = to.into_iter().map(describe_destination).collect();
+        match to.split_last() {
+            None => None,
+            Some((last, rest)) if !rest.is_empty() => Some(format!("{} and {last}", rest.join(", "))),
+            Some((last, _)) => Some(last.clone()),
+        }
+    };
+    let (answers, own): (Vec<&String>, Vec<&String>) = to.iter().partition(|d| d.starts_with(holon_core::ANSWER));
+    (listed(own.iter().map(|d| d.as_str()).collect()), listed(answers.iter().filter_map(|d| d.strip_prefix(holon_core::ANSWER)).collect()))
+}
+
+/// `item` in words (as [`describe_item_of`]), and beside a secret it reads, where the flow sends
+/// it, and where what is answered to it goes (core's `sent_secrets`, [`describe_sent_to`]): "read
+/// the secret "k", and send it to https://auth.example.com; what is answered to it goes to
+/// https://api.example.com". It isn't an item of its own; the approval says it here so a person
+/// sees where each secret goes.
+pub fn describe_item_sending(item: &str, by_hand: bool, sent: &BTreeMap<String, BTreeSet<String>>) -> String {
+    let said = describe_item_of(item, by_hand);
+    let name = item.strip_prefix("SecretRead(\"").and_then(|i| i.strip_suffix("\")"));
+    let Some(to) = name.and_then(|n| sent.get(n)) else {
+        return said;
+    };
+    match describe_sent_to(to) {
+        (Some(own), Some(answers)) => format!("{said}, and send it to {own}; what is answered to it goes to {answers}"),
+        (Some(own), None) => format!("{said}, and send it to {own}"),
+        (None, Some(answers)) => format!("{said}; what is answered to it goes to {answers}"),
+        (None, None) => said,
+    }
+}
+
+/// What a sink does with the secret `secret` it is fed, as the canvas marks it: "sends the secret
+/// "k" to https://api.example.com"; a write or a call the host refuses says so.
+pub fn describe_secret_sink(secret: &str, sink: &holon_core::Capability) -> String {
+    use holon_core::Capability::*;
+    let what = describe_item(&holon_core::consent_name(sink));
+    match sink {
+        HttpRequest(host) => format!("sends the secret \"{secret}\" to https://{host}"),
+        DbRead(table) => match table.split_once('/') {
+            Some((database, table)) => format!("sends the secret \"{secret}\" to the database \"{database}\", reading its table \"{table}\""),
+            None => format!("{what}, with the secret \"{secret}\""),
+        },
+        StateWrite(_) | CollectionWrite(_) | FileWrite(_) | DbWrite(_) | ChannelSend(_) => {
+            format!("would keep the secret \"{secret}\" ({what}): the host refuses it")
+        }
+        RunsAction(_) => format!("would hand the secret \"{secret}\" to another flow ({what}): the host refuses it"),
+        _ => format!("{what}, with the secret \"{secret}\""),
+    }
+}
+
+/// What a sink does with what is answered to the secret `secret` (core's
+/// `SecretFed::answers_of`: the token a token exchange answers, an API's echo), as the canvas
+/// marks it: "sends what is answered to the secret "k" to https://api.example.com".
+pub fn describe_answer_sink(secret: &str, sink: &holon_core::Capability) -> String {
+    use holon_core::Capability::*;
+    let what = describe_item(&holon_core::consent_name(sink));
+    let answered = format!("what is answered to the secret \"{secret}\"");
+    match sink {
+        HttpRequest(host) => format!("sends {answered} to https://{host}"),
+        DbRead(table) => match table.split_once('/') {
+            Some((database, table)) => format!("sends {answered} to the database \"{database}\", reading its table \"{table}\""),
+            None => format!("{what}, with {answered}"),
+        },
+        StateWrite(_) | CollectionWrite(_) | FileWrite(_) | DbWrite(_) | ChannelSend(_) => format!("keeps {answered} ({what}); a token in it is refused"),
+        _ => format!("{what}, with {answered}"),
+    }
+}
+
+/// A route's answer that carries the secret `secret`, as the canvas marks the node that makes it.
+pub fn describe_secret_answer(secret: &str) -> String {
+    format!("answers its caller with the secret \"{secret}\" (approved apart, at deploy)")
+}
+
 /// A database capability's argument (`shop/orders`) said as what it lets a flow do: `read table
 /// "orders" of database "shop"`.
 fn table_of(arg: &str, verb: &str) -> String {
@@ -88,12 +180,34 @@ fn table_of(arg: &str, verb: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::describe_item;
+    use super::{describe_item, describe_item_sending};
+    use std::collections::{BTreeMap, BTreeSet};
+
+    #[test]
+    fn says_where_a_secret_is_sent_beside_it() {
+        let sent = BTreeMap::from([("k".to_string(), BTreeSet::from(["a.example.com".to_string(), "b.example.com".to_string()]))]);
+        assert_eq!(describe_item_sending(r#"SecretRead("k")"#, false, &sent), r#"read the secret "k", and send it to https://a.example.com and https://b.example.com"#);
+        assert_eq!(describe_item_sending(r#"SecretRead("j")"#, false, &sent), r#"read the secret "j""#, "a secret sent nowhere");
+        let exchanged = BTreeMap::from([("k".to_string(), BTreeSet::from(["auth.example.com".to_string(), "answer:api.example.com".to_string(), "answer:db:shop".to_string()]))]);
+        assert_eq!(
+            describe_item_sending(r#"SecretRead("k")"#, false, &exchanged),
+            r#"read the secret "k", and send it to https://auth.example.com; what is answered to it goes to https://api.example.com and the database "shop""#,
+            "a token exchange"
+        );
+        let api = holon_core::Capability::HttpRequest("api.example.com".into());
+        assert_eq!(super::describe_answer_sink("k", &api), r#"sends what is answered to the secret "k" to https://api.example.com"#);
+        let queried = BTreeMap::from([("k".to_string(), BTreeSet::from(["db:audit".to_string(), "hooks.example.com".to_string()]))]);
+        assert_eq!(describe_item_sending(r#"SecretRead("k")"#, false, &queried), r#"read the secret "k", and send it to https://hooks.example.com and the database "audit""#, "a database read's parameters");
+        let read = holon_core::Capability::DbRead("audit/log".into());
+        assert_eq!(super::describe_secret_sink("k", &read), r#"sends the secret "k" to the database "audit", reading its table "log""#);
+        assert_eq!(describe_item_sending("NetworkIngress", true, &sent), "can be run by hand");
+    }
 
     #[test]
     fn says_each_item_in_words() {
         assert_eq!(describe_item(r#"HttpRequest("hooks.slack.com")"#), "call https://hooks.slack.com");
         assert_eq!(describe_item(r#"SecretRead("api_token")"#), r#"read the secret "api_token""#);
+        assert_eq!(describe_item(r#"SecretAnswer("api_token")"#), r#"answer its callers with the secret "api_token", or with what is computed from it"#);
         assert_eq!(describe_item("Limit(max_requests=80)"), "raise max_requests to 80");
         assert_eq!(describe_item("Limit(keep_runs=2000)"), "keep its newest 2000 runs in its log");
         assert_eq!(describe_item("Limit(keep_run_days=30)"), "keep its runs in its log for up to 30 days");

@@ -13,6 +13,10 @@ const USAGE: &str = "usage: holon secret list <slug>
        holon secret set <slug> <name> [--from env:HOLON_SECRET_X | --from vault:PATH#FIELD]
        holon secret rollback <slug> <name> --to VERSION [--dry-run]
        holon secret remove <slug> <name>
+       holon secret bind <name> [--from SOURCE] [--to HOST,…]
+       holon secret cap <name> --to HOST,… | --anywhere
+       holon secret bound
+       holon secret unbind <name>
        holon secret env
        (each with [--json] [--server PORT|URL])
 
@@ -22,12 +26,20 @@ const USAGE: &str = "usage: holon secret list <slug>
   server from its environment or a vault. rollback: make a kept version current again, as a new
   version; --dry-run says which values (by fingerprint) it would swap. remove: forget it, every
   version. env: the HOLON_SECRET_* names the server can read. Admins set, roll back and remove.
+
+  bind: the server's own secret, read by every deployment that reads one of that name and has
+  none of its own (one set for a deployment overrides it), its value piped in or --from, as set.
+  --to says where it may go: hosts (api.stripe.com, with :port if not 443) and databases
+  (db:shop). A deploy whose flow sends it elsewhere is refused, and so is a request a run makes
+  with it; a deployment with its own isn't held to it. cap: change only where it may go
+  (--anywhere: wherever its flows' approvals show). bound: the server's secrets, and where each
+  may go. unbind: remove one, every version.
 ";
 
 pub(crate) fn cli(args: &[String]) -> i32 {
     const WHO: &str = "holon secret";
     let usage = format!("{USAGE}\n{SIGN_IN}");
-    let args = match cmdline::parse(WHO, &usage, args, &["--from", "--to"], &["--dry-run", "--json"]) {
+    let args = match cmdline::parse(WHO, &usage, args, &["--from", "--to"], &["--dry-run", "--json", "--anywhere"]) {
         Ok(a) => a,
         Err(code) => return code,
     };
@@ -60,7 +72,48 @@ pub(crate) fn cli(args: &[String]) -> i32 {
         }
         (Some("history"), Some(slug), Some(name)) => cmdline::json(WHO, &args, "GET", &path(slug, Some(name)), None).map_or_else(|c| c, |v| shown(v, history_lines)),
         (Some("env"), None, None) => cmdline::json(WHO, &args, "GET", "/admin/secrets/env", None).map_or_else(|c| c, |v| shown(v, env_lines)),
-        (Some("set"), Some(slug), Some(name)) => set(WHO, &args, &path(slug, Some(name)), slug, name),
+        (Some("bound"), None, None) => cmdline::json(WHO, &args, "GET", "/admin/secrets", None).map_or_else(|c| c, |v| shown(v, bound_lines)),
+        (Some("bind"), Some(name), None) => {
+            let to = match args.value("--to").map(destinations) {
+                Some(Ok(to)) => Some(to),
+                Some(Err(e)) => {
+                    eprintln!("{WHO}: {e}");
+                    return 2;
+                }
+                None => None,
+            };
+            set(WHO, &args, &format!("/admin/secrets/{}", seg(name)), "the server", name, to)
+        }
+        (Some("cap"), Some(name), None) => {
+            let to = match (args.value("--to").map(destinations), args.flag("--anywhere")) {
+                (Some(Ok(to)), false) => json!(to),
+                (None, true) => Value::Null,
+                (Some(Err(e)), _) => {
+                    eprintln!("{WHO}: {e}");
+                    return 2;
+                }
+                _ => {
+                    eprintln!("{WHO}: cap {name} --to HOST,… (or db:NAME), or --anywhere");
+                    return 2;
+                }
+            };
+            match cmdline::json(WHO, &args, "POST", &format!("/admin/secrets/{}/cap", seg(name)), Some(&json!({ "to": to }))) {
+                Ok(v) if args.flag("--json") => shown(v, |_| vec![]),
+                Ok(v) => {
+                    println!("{name}: {}", may_go(&v["to"]));
+                    0
+                }
+                Err(code) => code,
+            }
+        }
+        (Some("unbind"), Some(name), None) => match cmdline::json(WHO, &args, "DELETE", &format!("/admin/secrets/{}", seg(name)), None) {
+            Ok(_) => {
+                println!("{name}: the server's removed, every version");
+                0
+            }
+            Err(code) => code,
+        },
+        (Some("set"), Some(slug), Some(name)) => set(WHO, &args, &path(slug, Some(name)), slug, name, None),
         (Some("rollback"), Some(slug), Some(name)) => {
             let Some(to) = args.value("--to").and_then(|v| v.trim_start_matches('v').parse::<u32>().ok()) else {
                 eprintln!("{WHO}: rollback --to VERSION (holon secret history {slug} {name} lists them)");
@@ -94,7 +147,28 @@ pub(crate) fn cli(args: &[String]) -> i32 {
     }
 }
 
-fn set(who: &str, args: &cmdline::Args, path: &str, slug: &str, name: &str) -> i32 {
+/// `HOST,HOST,db:NAME` as where a secret may go; none of them empty.
+fn destinations(list: &str) -> Result<Vec<String>, String> {
+    let to: Vec<String> = list.split(',').map(|d| d.trim().to_string()).collect();
+    match to.iter().find(|d| !crate::secrets::is_destination(d)) {
+        Some(bad) => Err(format!("{bad:?} isn't where a secret goes: a host (api.stripe.com, with :port if not 443) or a database (db:shop)")),
+        None => Ok(to),
+    }
+}
+
+/// Where the server's secret may go, as `to` (a list, or null) says it.
+fn may_go(to: &Value) -> String {
+    match to.as_array() {
+        Some(to) if to.is_empty() => "may go nowhere".into(),
+        Some(to) => {
+            let to: std::collections::BTreeSet<String> = to.iter().filter_map(Value::as_str).map(String::from).collect();
+            format!("may go only to {}", holon_author::describe::describe_sent_to(&to).0.unwrap_or_default())
+        }
+        None => "may go wherever its flows' approvals show".into(),
+    }
+}
+
+fn set(who: &str, args: &cmdline::Args, path: &str, slug: &str, name: &str, to: Option<Vec<String>>) -> i32 {
     let body = match args.value("--from") {
         Some(from) if from.starts_with("env:") || from.starts_with("vault:") => json!({ "from": from }),
         Some(from) => {
@@ -115,9 +189,16 @@ fn set(who: &str, args: &cmdline::Args, path: &str, slug: &str, name: &str) -> i
             json!({ "value": value.as_str() })
         }
     };
+    let mut body = body;
+    if let Some(to) = &to {
+        body["to"] = json!(to);
+    }
     match cmdline::json(who, args, "POST", path, Some(&body)) {
         Ok(v) => {
             println!("{name}: version {} set for {slug}", v["version"]);
+            if let Some(to) = to {
+                println!("{name}: {}", may_go(&json!(to)));
+            }
             0
         }
         Err(code) => code,
@@ -130,17 +211,22 @@ pub(crate) fn reads(manifest: &Value) -> Vec<String> {
 }
 
 pub(crate) fn list_lines(v: &Value) -> Vec<String> {
-    let set: Vec<&Value> = v["secrets"].as_array().into_iter().flatten().collect();
+    // The server's are listed where its version reads them (or where nothing says what it reads).
+    let reads: Option<Vec<&str>> = v["reads"].as_array().map(|r| r.iter().filter_map(Value::as_str).collect());
+    let set: Vec<&Value> = v["secrets"].as_array().into_iter().flatten().filter(|s| s["server"] != true || reads.as_ref().is_none_or(|r| r.contains(&s["name"].as_str().unwrap_or_default()))).collect();
     let mut rows = vec![["name", "version", "source", "set"].map(String::from).to_vec()];
     let mut problems = Vec::new();
     for s in &set {
         let name = s["name"].as_str().unwrap_or_default();
-        rows.push(vec![name.into(), format!("v{}", s["version"]), s["source"].as_str().unwrap_or_default().into(), when(s["set_at"].as_u64())]);
+        let source = s["source"].as_str().unwrap_or_default();
+        let source = if s["server"] == true { format!("the server's ({source})") } else { source.into() };
+        rows.push(vec![name.into(), format!("v{}", s["version"]), source, when(s["set_at"].as_u64())]);
         if let Some(p) = s["problem"].as_str() {
             problems.push(format!("{name}: {p}"));
         }
     }
-    let mut unset: Vec<&str> = v["names"].as_array().into_iter().chain(v["reads"].as_array()).flatten().filter_map(Value::as_str).filter(|n| !set.iter().any(|s| s["name"] == *n)).collect();
+    let all: Vec<&Value> = v["secrets"].as_array().into_iter().flatten().collect();
+    let mut unset: Vec<&str> = v["names"].as_array().into_iter().chain(v["reads"].as_array()).flatten().filter_map(Value::as_str).filter(|n| !all.iter().any(|s| s["name"] == *n)).collect();
     unset.sort();
     unset.dedup();
     for n in unset {
@@ -148,6 +234,27 @@ pub(crate) fn list_lines(v: &Value) -> Vec<String> {
     }
     if rows.len() == 1 {
         return vec!["it reads no secret, and none is set for it".into()];
+    }
+    let mut lines = table(&rows);
+    lines.extend(problems);
+    lines
+}
+
+/// The server's secrets, as `holon secret bound` lists them: each with where it may go.
+pub(crate) fn bound_lines(v: &Value) -> Vec<String> {
+    let set: Vec<&Value> = v["secrets"].as_array().into_iter().flatten().collect();
+    if set.is_empty() {
+        return vec!["the server has no secret of its own (holon secret bind)".into()];
+    }
+    let mut rows = vec![["name", "version", "source", "set", "where it may go"].map(String::from).to_vec()];
+    let mut problems = Vec::new();
+    for s in set {
+        let name = s["name"].as_str().unwrap_or_default();
+        let to = if s["to"].is_null() { "wherever its flows' approvals show".to_string() } else { may_go(&s["to"]).trim_start_matches("may go ").to_string() };
+        rows.push(vec![name.into(), format!("v{}", s["version"]), s["source"].as_str().unwrap_or_default().into(), when(s["set_at"].as_u64()), to]);
+        if let Some(p) = s["problem"].as_str() {
+            problems.push(format!("{name}: {p}"));
+        }
     }
     let mut lines = table(&rows);
     lines.extend(problems);
@@ -211,6 +318,8 @@ mod tests {
         let broken = json!({ "names": [], "secrets": [{ "name": "k", "version": 1, "source": "env:HOLON_SECRET_K", "set_at": 0, "problem": "HOLON_SECRET_K isn't set" }] });
         assert_eq!(list_lines(&broken).last().unwrap(), "k: HOLON_SECRET_K isn't set");
         assert_eq!(list_lines(&json!({ "names": [], "secrets": [] })), ["it reads no secret, and none is set for it"]);
+        let shared = json!({ "names": ["ops_key", "other"], "reads": ["ops_key"], "secrets": [{ "name": "ops_key", "version": 1, "source": "local", "set_at": 0, "server": true }, { "name": "other", "version": 1, "source": "local", "set_at": 0, "server": true }] });
+        assert_eq!(list_lines(&shared), ["name     version  source                set", "ops_key  v1       the server's (local)  1970-01-01T00:00:00"], "the server's it doesn't read aren't listed");
     }
 
     #[test]

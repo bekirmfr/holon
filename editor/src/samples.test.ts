@@ -23,7 +23,7 @@ import {
 } from "./composites";
 import { foldLevels } from "./CompositeOverlay";
 import { documentUnits, knownNames, nameOf, restoreDocument } from "./docUnits";
-import { describeItem, manifestItems, manifestTrigger, permissionKind } from "./holon";
+import { describeItem, describeItemSending, manifestItems, manifestTrigger, permissionKind } from "./holon";
 import type { PrimitiveNodeType } from "./PrimitiveNode";
 import type { Edge } from "@xyflow/react";
 import { buildSample, samples } from "./samples";
@@ -141,6 +141,11 @@ describe("sample flows", () => {
     // An old flow run by hand (no routes, `ingress`) says so where a server receives requests.
     expect(describeItem("NetworkIngress", true)).toBe("can be run by hand");
     expect(describeItem("NetworkIngress")).toBe("receive requests");
+    // The approval says where each secret goes, beside it (the deploy preview's `sent`).
+    const sent = { slack_webhook_path: ["hooks.slack.com"] };
+    expect(describeItemSending('SecretRead("slack_webhook_path")', false, sent)).toBe('read the secret "slack_webhook_path", and send it to https://hooks.slack.com');
+    expect(describeItemSending('SecretRead("stripe_webhook_secret")', false, sent)).toBe('read the secret "stripe_webhook_secret"');
+    expect(describeItemSending("NetworkIngress", false, undefined)).toBe("receive requests");
   });
 
   it("make a flow nothing would start runnable by hand: an action, run through the real core", () => {

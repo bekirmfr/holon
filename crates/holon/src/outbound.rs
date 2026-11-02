@@ -3,7 +3,9 @@
 //! says:
 //!
 //! - only hosts the deployment was granted (its `HttpRequest(host)` capabilities), checked again
-//!   on every redirect;
+//!   on every redirect; a redirect to another host carries none of the flow's credentials (its
+//!   headers but those that say what the body is), and isn't followed when it would resend the
+//!   body (a 307 or 308 of a request that has one), which may hold a secret too;
 //! - no private, loopback, link-local or metadata addresses, checked on the addresses DNS
 //!   actually returned and the connection actually uses (so DNS rebinding can't get around it);
 //! - HTTPS only, with certificate checks;
@@ -150,6 +152,12 @@ fn parse_url(url: &str) -> Option<Target> {
     Some(Target { plain, authority, rest })
 }
 
+/// The host a request's URL names (`api.example.com`, `127.0.0.1:8080`), lowercased, as a grant
+/// names it; none for a URL the host wouldn't call.
+pub(crate) fn authority_of(url: &str) -> Option<String> {
+    parse_url(url).map(|t| t.authority)
+}
+
 impl Outbound {
     /// Whether `target` may be called: a granted host, over HTTPS unless granted plain HTTP.
     fn check(&self, target: &Target) -> Result<(), Value> {
@@ -280,6 +288,17 @@ impl Outbound {
                 if status == 303 || ((status == 301 || status == 302) && method == "POST") {
                     method = "GET".into();
                     body = None;
+                }
+                // The body is what the flow sent the host it named, and may hold a secret (a
+                // token exchange's `client_secret`): it goes to no other host, as the credentials
+                // in its headers don't. The flow can call that host itself, if it is granted.
+                let has_body = match &body {
+                    Some(Body::Text(t)) => !t.is_empty(),
+                    Some(Body::File(_)) => true,
+                    None => false,
+                };
+                if has_body && target.authority != first {
+                    return failure("blocked_redirect", format!("a {status} to {} would resend the body to another host", target.authority));
                 }
                 continue;
             }
@@ -600,7 +619,7 @@ mod tests {
         });
         let both: BTreeSet<String> = [hop.clone(), target.clone()].into();
         let o = Outbound { allowed: both.clone(), revoked: BTreeSet::new(), plain_http: both, allow_private: true };
-        let mut asked = request("POST", &format!("https://{hop}/away"), "{}");
+        let mut asked = request("GET", &format!("https://{hop}/away"), "");
         if let Value::Record(r) = &mut asked {
             let text = |s: &str| Value::Text(s.into());
             r.insert(
@@ -614,11 +633,28 @@ mod tests {
         }
         let out = o.perform(&asked, &Limits::request_run());
         let Value::Text(seen) = field(&out, "body") else { panic!("{out:?}") };
-        assert!(seen.starts_with("post /landed"), "a 307 keeps its method: {seen}");
+        assert!(seen.starts_with("get /landed"), "a 307 keeps its method: {seen}");
         assert!(!seen.contains("sk_first_host") && !seen.contains("k_first_host"), "{seen}");
         assert!(seen.contains("content-type: application/json"), "{seen}");
 
-        // To the same host: all of them.
+        // A body isn't resent to another host: it may hold a secret as a header may.
+        let landed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let seen_there = std::sync::Arc::clone(&landed);
+        let there = serve_head(move |head| {
+            seen_there.store(true, std::sync::atomic::Ordering::SeqCst);
+            ok(&head.to_ascii_lowercase())
+        });
+        let to_there = there.clone();
+        let away = serve(move |_| format!("HTTP/1.1 307 Temporary Redirect\r\nLocation: https://{to_there}/token\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"));
+        let both: BTreeSet<String> = [away.clone(), there.clone()].into();
+        let o = Outbound { allowed: both.clone(), revoked: BTreeSet::new(), plain_http: both, allow_private: true };
+        let out = o.perform(&request("POST", &format!("https://{away}/token"), "client_secret=cs_first_host"), &Limits::request_run());
+        assert_eq!(field(&out, "error"), &Value::Text("blocked_redirect".into()), "{out:?}");
+        let Value::Text(message) = field(&out, "message") else { panic!("{out:?}") };
+        assert!(!message.contains("cs_first_host"), "{message}");
+        assert!(!landed.load(std::sync::atomic::Ordering::SeqCst), "the other host never got it");
+
+        // To the same host: all of them, and the body.
         let same = serve_head(move |head| {
             if head.starts_with("POST /here") {
                 "HTTP/1.1 307 Temporary Redirect\r\nLocation: /landed\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_string()
@@ -628,6 +664,8 @@ mod tests {
         });
         if let Value::Record(r) = &mut asked {
             r.insert("url".into(), Value::Text(format!("https://{same}/here")));
+            r.insert("method".into(), Value::Text("POST".into()));
+            r.insert("body".into(), Value::Text("{}".into()));
         }
         let out = local(&same).perform(&asked, &Limits::request_run());
         let Value::Text(seen) = field(&out, "body") else { panic!("{out:?}") };

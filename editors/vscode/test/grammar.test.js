@@ -60,8 +60,11 @@ test("each kind of word gets its scope", async () => {
   assert.equal(scopeOf(t, "port"), "keyword.other.header.holon");
   assert.equal(scopeOf(t, "8110"), "constant.numeric.holon");
   assert.equal(scopeOf(t, "optional"), "keyword.other.header.holon");
-  assert.equal(scopeOf(t, "secret"), "variable.language.noun.holon");
-  assert.equal(scopeOf(t, "receipt_key"), "variable.other.member.holon");
+  assert.equal(scopeOf(t, "secret"), "keyword.other.collection.holon", "the header that declares a secret");
+  assert.equal(scopeOf(t, "receipt_key"), "variable.other.constant.holon", "the secret it declares");
+  assert.equal(scopeOf(t, "last_post"), "variable.other.constant.holon", "a state key's header");
+  assert.equal(scopeOf(t, "secret", 1), "variable.language.noun.holon", "secret.x, where it is read");
+  assert.equal(scopeOf(t, "receipt_key", 1), "variable.other.member.holon");
   assert.equal(scopeOf(t, "posts"), "variable.other.constant.holon", "a collection's header");
   assert.equal(scopeOf(t, "holon"), "keyword.other.holon.holon");
   assert.equal(scopeOf(t, "slugify"), "entity.name.function.holon", "a holon's name where it is defined");

@@ -126,6 +126,8 @@ fn serve_flow(
     let mut ran: Option<LogEntry> = None;
     // Whether its answer may be computed from a secret: the log keeps it withheld then.
     let mut answer_derived = false;
+    // A secret its answer carries that it wasn't approved to answer with: the caller gets a 500.
+    let mut unapproved: Option<String> = None;
     let mut waits = RunWaits { folders: Some(folders), forward, channels: Some(channels), slug: Some(slug.to_string()), ..Default::default() };
     let mut parked: Result<Vec<String>, String> = Ok(Vec::new());
     // A module in the flow runs through the engine; everything else resolves as before.
@@ -140,6 +142,19 @@ fn serve_flow(
             parked = durable::park_if_waiting(deployments, store, slug, &unit, "request", Some(route.to_string()), &[Some(req.clone())], sourced, &run, &waits);
             let mut entry = run_entry("request", started, sourced, &run);
             answer_derived = run.secret_fed.derives_output(0);
+            // An answer carrying a secret goes to the caller only where a person approved it
+            // (`SecretAnswer("name")`): one the graph says may carry it, or one that holds its
+            // value as it is (a far side echoing a header back, which the graph can't see), in a
+            // run that computed with a secret at all.
+            let answered = run.outputs.first().and_then(Option::as_ref).filter(|_| !run.secret_fed.is_empty());
+            let mut carried = answered.map(|a| secrets::secrets_in(a, &secrets)).unwrap_or_default();
+            if run.secret_fed.reaches_output(0) {
+                carried.extend(holon_core::answered_secrets(endpoint, &resolver));
+            }
+            unapproved = carried.into_iter().find(|name| !permit.allows(&Capability::SecretAnswer(name.clone())));
+            if let Some(name) = &unapproved {
+                entry.error = Some(format!("refused to answer with the secret {name:?}: this deployment wasn't approved to answer its callers with it"));
+            }
             entry.route = Some(route.to_string());
             entry.request = Some(SValue::from_core(&req));
             ran = Some(entry);
@@ -149,6 +164,9 @@ fn serve_flow(
     );
     if let Err(e) = &parked {
         answer = data::DataResponse::json_error(503, e);
+    }
+    if let Some(name) = &unapproved {
+        answer = data::DataResponse::json_error(500, &format!("this deployment may not answer its callers with the secret {name:?}"));
     }
     // A subscription to a channel the deployment wasn't granted to let callers subscribe to.
     if let Some(s) = &answer.subscribe

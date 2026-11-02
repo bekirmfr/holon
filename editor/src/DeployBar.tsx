@@ -302,12 +302,18 @@ function SecretRow({ slug, name, info, envNames, onChanged, readOnly = false }: 
   };
   const k = KINDS.find((x) => x.kind === kind)!;
   const status = info ? (info.problem ? "#e0916f" : "#9ad29f") : "#e0916f";
+  // The server's, read for want of its own: setting one here overrides it.
+  const theirs = info?.server ? info : undefined;
+  const mayGo = (to?: string[]) => (to ? (to.length ? `may go only to ${to.map((d) => (d.startsWith("db:") ? `the database "${d.slice(3)}"` : `https://${d}`)).join(", ")}` : "may go nowhere") : "");
   return (
     <>
       <span style={{ display: "flex", flexDirection: "column", gap: 1 }}>
         <span>{name}</span>
-        <span style={{ color: status, fontSize: 10 }} title={info?.problem ?? (info ? `set ${when(info.set_at)}` : undefined)}>
-          {info ? `v${info.version} · ${sourceLabel(info.source)}${info.problem ? " · can't be read" : ""}` : "not set"}
+        <span
+          style={{ color: status, fontSize: 10 }}
+          title={info?.problem ?? (theirs ? `the server's, set ${when(theirs.set_at)}${theirs.to ? `; it ${mayGo(theirs.to)}` : ""}; set one here to use this deployment's own` : info ? `set ${when(info.set_at)}` : undefined)}
+        >
+          {theirs ? `the server's${theirs.to ? ` · ${mayGo(theirs.to)}` : ""}${theirs.problem ? " · can't be read" : ""}` : info ? `v${info.version} · ${sourceLabel(info.source)}${info.problem ? " · can't be read" : ""}` : "not set"}
         </span>
       </span>
       {!readOnly && <span style={{ display: "inline-flex", gap: 4 }}>
@@ -368,12 +374,12 @@ function SecretRow({ slug, name, info, envNames, onChanged, readOnly = false }: 
         <button style={base} disabled={!slug || !text.trim()} onClick={save}>
           set
         </button>
-        {info && (
+        {info && !theirs && (
           <button style={base} onClick={() => (history ? setHistory(null) : loadHistory())} title="versions and changes; roll back to an older version">
             {history ? "▾" : "▸"}
           </button>
         )}
-        {info && (
+        {info && !theirs && (
           <button style={base} onClick={remove} title="remove this secret, every version">
             ×
           </button>

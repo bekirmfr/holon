@@ -18,6 +18,7 @@
 # In the editor: view mode, pick a run, Flow state, then ⧗ beside balances or one of its items.
 flow balance-trail
 port 8162
+state moves
 collection balances
 
 # Adds the amount to the account's balance, counts the move, and answers the new balance.

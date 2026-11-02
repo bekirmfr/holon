@@ -173,6 +173,24 @@ if (!fresh) {
     }),
   });
   if (!bank.ok) console.error(`e2e server: binding the database bank failed: ${await bank.text()}`);
+  // The license-check sample's: the vendor's table of licences, one in it.
+  const vendor = await fetch(`${base}/admin/databases`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+    body: JSON.stringify({
+      name: "vendor",
+      path: join(folders, "vendor.db"),
+      schema: "create table if not exists licenses (license_key text primary key, plan text not null, seats integer not null); insert or ignore into licenses values ('lic-demo-1234', 'team', 5)",
+    }),
+  });
+  if (!vendor.ok) console.error(`e2e server: binding the database vendor failed: ${await vendor.text()}`);
+  // The shared-key sample's: the server's own secret, which may go only to httpbin.dev.
+  const shared = await fetch(`${base}/admin/secrets/ops_api_key`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ value: "ops-e2e-key-0123", to: ["httpbin.dev"] }),
+  });
+  if (!shared.ok) console.error(`e2e server: binding the secret ops_api_key failed: ${await shared.text()}`);
   // The atlas-notes sample's, a MongoDB bound by its connection.
   if (mongo) {
     const notes = await fetch(`${base}/admin/databases`, {

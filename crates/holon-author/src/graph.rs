@@ -373,7 +373,7 @@ mod tests {
 
     #[test]
     fn a_row_marks_where_the_text_says_it() {
-        let text = "flow bump\n\naction bump (input) {\n  n = (state.n ?? 0) + 1\n  state.n = n\n  respond n\n}\n";
+        let text = "flow bump\nstate n\n\naction bump (input) {\n  n = (state.n ?? 0) + 1\n  state.n = n\n  respond n\n}\n";
         let lines: Vec<&str> = text.lines().collect();
         let said = |s: crate::lang::ast::Span| -> String {
             assert_eq!(s.start.line, s.end.line, "{s:?}");
@@ -405,7 +405,7 @@ mod tests {
 
     #[test]
     fn a_clock_flows_own_statements_are_one_band() {
-        let g = graph("flow beats\nevery 5s\n\nstate.beats = (state.beats ?? 0) + 1\n", false).unwrap();
+        let g = graph("flow beats\nevery 5s\nstate beats\n\nstate.beats = (state.beats ?? 0) + 1\n", false).unwrap();
         assert_eq!(g.bands.len(), 1);
         assert_eq!(g.bands[0].title, "every 5s");
         assert_eq!(g.bands[0].rows[1].name, "state.beats");

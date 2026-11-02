@@ -461,6 +461,18 @@ function Canvas({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [canvasKey, ev, byName, settings.port, settings.interval, derived]);
   const flowCapabilities = useMemo(() => flowCaps ?? [], [flowCaps]);
+  // What each node does with a secret (a request it is sent in, a write the host refuses, the
+  // route's answer), by node id: the canvas marks them.
+  const secretMarks = useMemo(() => {
+    try {
+      const { nodes: ns, edges: es } = live.current;
+      return ns.length === 0 ? {} : ((ev.secret_marks(ns, es, settings.port) ?? {}) as Record<string, string[]>);
+    } catch {
+      return {} as Record<string, string[]>;
+    }
+    // live.current is read on purpose, as `derived` above.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [canvasKey, ev, byName, settings.port]);
   // Nothing would start a run: no route, clock, file handler or action, nor the old forms'
   // `ingress`, interval or `on file` (docs/L4s/triggers-L4.md fork 14). Deploy is greyed, with
   // the quick fix. Not said of a canvas that doesn't derive: that has its own error.
@@ -731,12 +743,18 @@ function Canvas({
     // A sink nothing triggers, on a canvas with a trigger: flagged, a fix for each trigger.
     const untied = untiedSinks(nodes, edges);
     const triggers = untied.size > 0 ? triggersOf(nodes) : [];
-    if (errorNodeIds.size === 0 && !nodes.some(outdated) && untied.size === 0) return nodes;
+    const marked = Object.keys(secretMarks).length > 0;
+    if (errorNodeIds.size === 0 && !nodes.some(outdated) && untied.size === 0 && !marked) return nodes;
     return nodes.map((n) => {
-      const flags = { ...(errorNodeIds.has(n.id) ? { error: true } : {}), ...(outdated(n) ? { updateAvailable: true } : {}), ...(untied.has(n.id) ? { untied: triggers } : {}) };
+      const flags = {
+        ...(errorNodeIds.has(n.id) ? { error: true } : {}),
+        ...(outdated(n) ? { updateAvailable: true } : {}),
+        ...(untied.has(n.id) ? { untied: triggers } : {}),
+        ...(secretMarks[n.id] ? { secretSinks: secretMarks[n.id] } : {}),
+      };
       return Object.keys(flags).length > 0 ? { ...n, data: { ...n.data, ...flags } } : n;
     });
-  }, [nodes, edges, errorNodeIds, viewing, view.viewNodes, savedFlowTimes]);
+  }, [nodes, edges, errorNodeIds, viewing, view.viewNodes, savedFlowTimes, secretMarks]);
 
   // Trigger wires are drawn lighter than data wires (canvasOps.lighterTriggers).
   const decoratedEdges = useMemo(() => lighterTriggers(viewing ? view.viewEdges : edges), [viewing, view.viewEdges, edges]);

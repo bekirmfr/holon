@@ -64,6 +64,9 @@ export type PrimitiveData = {
   /** A sink whose trigger nothing feeds, on a canvas with these triggers: each is offered as its
    *  fix. Rendering only, set by App. */
   untied?: { id: string; output: string; label: string }[];
+  /** What it does with a secret that reaches it, a line each ("sends the secret "k" to
+   *  https://…", a write the host refuses, the route's answer). Rendering only, set by App. */
+  secretSinks?: string[];
   /** View mode: what this node computed in the replayed run, and where the step-through is.
    *  Rendering only, like `error`: set on a copy of the node, never on the canvas state. */
   trace?: {
@@ -385,6 +388,17 @@ function PrimitiveNodeImpl({ id, data, selected }: NodeProps<PrimitiveNodeType>)
             <button key={t.id} onClick={() => actions.tie(id, t)} style={{ ...portButtonStyle, color: "#e0c36f", padding: "0 6px" }} title={`run it with ${t.label}`}>
               tie to {t.label}
             </button>
+          ))}
+        </div>
+      )}
+      {data.secretSinks && (
+        <div
+          className="hl-node__secret"
+          title={data.secretSinks.join("\n")}
+          style={{ display: "flex", flexDirection: "column", gap: 1, fontSize: 10, color: "#e0c36f", padding: "2px 8px", maxWidth: 260 }}
+        >
+          {data.secretSinks.map((line) => (
+            <span key={line}>🔑 {line}</span>
           ))}
         </div>
       )}

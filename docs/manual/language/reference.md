@@ -55,6 +55,8 @@ else.
 | `flow NAME` | The flow's name: what it deploys as. Required. |
 | `port N` | A flow with routes: the port its server answers on. |
 | `every DURATION` | A flow without handlers: how often it runs (`every 10s`, `every 1h`). Beside handlers, a clock is a block: `every 10s { … }`. |
+| `secret NAME` | Declares a secret the flow reads, used as `secret.NAME`: someone sets it before the flow works. One per line. |
+| `state KEY` | Declares a key of the flow's state, used as `state.KEY` and written as `state.KEY = …`. One per line. |
 | `collection NAME` | Declares a collection, used as `NAME[key]`. One per line; as many as needed. |
 | `folder NAME` | Declares a named folder on the host, used as `NAME[file]`. |
 | `database NAME` | Declares a named database on the host, used as `NAME.query(sql, …)`. |
@@ -64,10 +66,13 @@ else.
 | `keep N runs [for Dd]` | How many runs the deployment's log keeps, and for how many days: `keep 500 runs`, `keep runs for 30d`, or both, `keep 5 runs for 1d`. The deploy settings' **runs the log keeps** and **days the log keeps runs** (see [Checking runs](../guides/checking-runs.md)). |
 | `browsers ORIGIN, …` | The web origins allowed to call the flow from a browser (CORS), or `*`. |
 
-`optional` takes `secret.NAME` for a secret, or a permission as the server writes it, such as
-`optional HttpRequest("api.example.com")`. A deploy may leave an optional permission out; the
+`optional` takes `secret NAME` for a secret, which it declares too (`secret.NAME` reads as well),
+or a permission as the server writes it, such as `optional HttpRequest("api.example.com")`. A deploy may leave an optional permission out; the
 parts of the flow that need it then have no value.
 
+The header names everything that outlives a run or comes from outside it, and the body uses only
+names the header gave: a use of an undeclared secret, state key or collection is a mistake that
+names the line to add (`holon fmt` adds a missing secret's or state key's). A declaration nothing uses is dropped by `fmt`.
 A declaration names something; it grants nothing. What the flow may do is always worked out from
 what it uses.
 
@@ -79,7 +84,8 @@ can't be bound; the mistake names the clash.
 **Keywords:** `flow` `port` `every` `browsers` `optional` `collection` `folder` `database` `holon` `js` `route`
 `resumes` `respond` `delete` `await` `if` `then` `else` `when` `match` `fn` `true` `false`. A keyword
 is fine after a dot (`req.json.in`) and as a record key (`{ in: 1 }`). `action`, `on`, `file`,
-`calls` and `after` are keywords only where they start a handler, declare a flow or tie a statement: `list(after: …)` and
+`calls`, `secret`, `state` and `after` are keywords only where they start a handler, declare a
+flow, a secret or a state key, or tie a statement: `list(after: …)` and
 `req.query.after` are names.
 
 **Nouns** are the outside world: `req` (or whatever a route names its request), `secret`, `state`,
@@ -196,7 +202,7 @@ Each of these is one building block, and each is one thing the flow may do.
 |---|---|
 | `req`, `req.params`, `req.query`, `req.headers`, `req.body`, `req.json` | the request and its parts (`body` as text, `json` parsed) |
 | `req.path`, `req.method` | fields of the request record |
-| `secret.name` | a secret set for the deployment |
+| `secret.name` | a secret set for the deployment, declared `secret name` |
 | `state.key` | the state under `key`, as the run began |
 | `state.key = e`, `state.set(key, e)` | write it when the run finishes |
 | `now` | the time the run started, in seconds since the epoch |
@@ -295,6 +301,7 @@ Beside its routes, a flow may have other handlers, each a block that starts runs
 ```holon
 flow handlers
 port 8203
+state last_tick
 collection seen
 
 every 1h {
@@ -341,6 +348,7 @@ write and call placed in it, whether or not it reads the trigger:
 ```holon
 flow hits
 port 8204
+state hits
 
 route GET /hit (req) {
   hits = (state.hits ?? 0) + 1
@@ -358,6 +366,7 @@ the run, and not at all when `x` has none:
 ```holon
 flow first-seen
 port 8205
+state seen
 collection notes
 
 route POST /notes/:id (req) {
@@ -386,6 +395,8 @@ nothing, and run with the run. With `every`, the server runs it on that interval
 ```holon
 flow tick
 every 1m
+state last
+state ticks
 
 state.ticks = (state.ticks ?? 0) + 1
 state.last = now
@@ -451,6 +462,7 @@ holon NAME(inputs) -> (out1, out2, …) {
 ```holon
 flow publish-example
 port 8202
+state last_post
 collection posts
 
 holon publish(slug, body) -> (put, saved) {

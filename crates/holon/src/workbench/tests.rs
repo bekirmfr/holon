@@ -78,9 +78,9 @@ fn screen(app: &mut App, width: u16, height: u16) -> String {
     (0..height).map(|y| (0..width).map(|x| buffer[(x, y)].symbol().to_string()).collect::<String>().trim_end().to_string()).collect::<Vec<_>>().join("\n")
 }
 
-const BEATS: &str = "flow beats\nevery 5s\n\nstate.beats = (state.beats ?? 0) + 1\n";
+const BEATS: &str = "flow beats\nevery 5s\nstate beats\n\nstate.beats = (state.beats ?? 0) + 1\n";
 /// A flow run by hand.
-const BUMP: &str = "flow bump\n\naction bump (input) {\n  n = (state.n ?? 0) + 1\n  state.n = n\n  respond n\n}\n";
+const BUMP: &str = "flow bump\nstate n\n\naction bump (input) {\n  n = (state.n ?? 0) + 1\n  state.n = n\n  respond n\n}\n";
 
 /// Open a copy of `text` in a tab, as a sample opens.
 fn tab_with(app: &mut App, text: &str) {
@@ -257,7 +257,7 @@ fn a_flows_page_is_a_dashboard_then_each_record_beside_its_tabs() {
 }
 
 /// Two actions: a run of one plays none of the other.
-const TWO: &str = "flow two\n\naction bump (input) {\n  n = (state.n ?? 0) + 1\n  state.n = n\n  respond n\n}\n\naction reset (input) {\n  state.n = 0\n  respond 0\n}\n";
+const TWO: &str = "flow two\nstate n\n\naction bump (input) {\n  n = (state.n ?? 0) + 1\n  state.n = n\n  respond n\n}\n\naction reset (input) {\n  state.n = 0\n  respond 0\n}\n";
 
 #[test]
 fn a_run_lights_what_it_played_and_its_timeline_picks_the_step_in_the_code_and_the_graph() {
@@ -274,7 +274,7 @@ fn a_run_lights_what_it_played_and_its_timeline_picks_the_step_in_the_code_and_t
     let steps = runs.steps();
     let mut lines = steps.clone();
     lines.sort();
-    assert_eq!(lines, [3, 4, 5, 6], "a step for each statement it ran (the write after the answer, as it ran): {steps:?}");
+    assert_eq!(lines, [4, 5, 6, 7], "a step for each statement it ran (the write after the answer, as it ran): {steps:?}");
     let text = match &runs.view {
         Some(Ok(v)) => v.text.clone(),
         other => panic!("no run: {other:?}"),
@@ -353,7 +353,7 @@ fn a_run_lights_what_it_played_and_its_timeline_picks_the_step_in_the_code_and_t
 fn going_back_offers_what_can_be_put_back_then_a_dry_run_then_restores() {
     let (mut app, _) = bumped(1);
     // A second version, which keeps one more key, run once: the state is 3 now.
-    tab_with(&mut app, &BUMP.replace("+ 1", "+ 2").replace("  respond n", "  state.last = n\n  respond n"));
+    tab_with(&mut app, &BUMP.replace("state n\n", "state n\nstate last\n").replace("+ 1", "+ 2").replace("  respond n", "  state.last = n\n  respond n"));
     ctrl(&mut app, 'd');
     // Its approval shows what it touches beside what it touches now.
     let shown = screen(&mut app, 120, 40);
@@ -395,7 +395,7 @@ fn going_back_offers_what_can_be_put_back_then_a_dry_run_then_restores() {
     let shown = screen(&mut app, 120, 40);
     assert!(shown.contains("Dry run") && shown.contains("Nothing has changed yet"), "{shown}");
     // Its code numbered, in a hunk that closes; what it keeps in another.
-    assert!(shown.contains("▾ Its code: deployed now → version 1's   +1 · −2") && shown.contains("−   state.last = n") && shown.contains("▾ What it keeps"), "{shown}");
+    assert!(shown.contains("▾ Its code: deployed now → version 1's   +1 · −3") && shown.contains("−   state.last = n") && shown.contains("▾ What it keeps"), "{shown}");
     assert_eq!(n(&app), Some(3.0), "a dry run changes nothing");
     press(&mut app, KeyCode::Char(' '));
     let shown = screen(&mut app, 120, 40);
@@ -464,14 +464,14 @@ fn a_flows_graph_is_its_statements_wired_and_what_its_newest_run_reached() {
     let g = app.flow.graph.as_ref().unwrap();
     let names: Vec<String> = (0..g.rows.len()).filter_map(|i| g.row(i)).map(|r| r.name.clone()).collect();
     assert_eq!(names, ["action bump (input)", "n", "state.n", "respond"]);
-    assert!(g.reached.contains(&3), "the newest run's values, by line: {:?}", g.reached);
+    assert!(g.reached.contains(&4), "the newest run's values, by line: {:?}", g.reached);
     let shown = screen(&mut app, 130, 40);
     assert!(shown.contains("Graph: 3 statements") && shown.contains("state.n = n") && shown.contains('●'), "{shown}");
 
     // What the newest run gave, by the trigger (where this run records it).
     press(&mut app, KeyCode::Right);
     press(&mut app, KeyCode::Right);
-    assert!(pane(&app).iter().any(|r| matches!(r, Row::Code { n: 3, notes, .. } if notes.iter().any(|n| n.contains('⇒')))), "{:?}", pane(&app));
+    assert!(pane(&app).iter().any(|r| matches!(r, Row::Code { n: 4, notes, .. } if notes.iter().any(|n| n.contains('⇒')))), "{:?}", pane(&app));
     press(&mut app, KeyCode::Left);
     press(&mut app, KeyCode::Esc);
     // A statement: its text, what it takes from and feeds, its nodes.
@@ -483,11 +483,11 @@ fn a_flows_graph_is_its_statements_wired_and_what_its_newest_run_reached() {
     press(&mut app, KeyCode::Char('a'));
     let g = app.flow.graph.as_ref().unwrap();
     assert!(g.every && g.rows.len() > 4);
-    assert_eq!(g.row(app.flow.sel()).map(|r| r.line), Some(4));
+    assert_eq!(g.row(app.flow.sel()).map(|r| r.line), Some(5));
     screen(&mut app, 130, 40);
     press(&mut app, KeyCode::Enter);
     assert_eq!(app.page, Page::Editor);
-    assert_eq!(app.tabs[app.tab].buf.row, 3, "on line 4");
+    assert_eq!(app.tabs[app.tab].buf.row, 4, "on line 5");
 }
 
 #[test]
@@ -504,10 +504,10 @@ fn the_inspector_reads_a_name_as_it_is_typed_with_its_grammar_and_an_example() {
     assert!(lines.iter().any(|l| l.starts_with("collection ")), "{lines:?}");
     assert!(shown.contains("Example") && shown.contains(&format!("from the sample {sample}")), "{shown}");
     // The cursor elsewhere, on no name: the inspector keeps it.
-    app.tabs[0].buf.go(3, 1);
+    app.tabs[0].buf.go(4, 1);
     assert!(screen(&mut app, 130, 40).contains("Inspector: collection"));
     // On another name, that one.
-    app.tabs[0].buf.go(7, 4);
+    app.tabs[0].buf.go(8, 4);
     let shown = screen(&mut app, 130, 40);
     assert!(shown.contains("Inspector: respond") && shown.contains("respond_args ="), "{shown}");
 }
@@ -528,26 +528,26 @@ fn a_tab_shows_its_code_its_graph_beside_it_or_its_graph_alone() {
     click(&mut app, Click::Every);
     assert!(app.tabs[0].graph.as_ref().is_some_and(|g| !g.view.every), "its button: the statements");
     assert!(app.typing, "the text still has the keys");
-    app.tabs[0].buf.go(5, 1);
+    app.tabs[0].buf.go(6, 1);
     let shown = screen(&mut app, 130, 40);
     assert_eq!(picked(&app), "state.n", "the statement at the cursor");
     assert!(shown.contains("at the cursor") && shown.contains("flow bump"), "{shown}");
     // A row clicked: the graph has the keys, ↑↓ pick, the text marks it and the cursor stays.
     click(&mut app, Click::Row(List::Graph, 1));
     assert!(app.beside_has_keys() && !app.typing, "a row clicked: the graph has the keys");
-    assert_eq!((picked(&app), app.tabs[0].buf.row), ("n".to_string(), 4), "picked, the cursor where it was");
+    assert_eq!((picked(&app), app.tabs[0].buf.row), ("n".to_string(), 5), "picked, the cursor where it was");
     press(&mut app, KeyCode::Down);
     let shown = screen(&mut app, 130, 40);
     assert_eq!(picked(&app), "state.n");
     assert!(shown.contains("· picking") && shown.contains("back to the text") && shown.contains("its detail"), "its keys on its edge:\n{shown}");
     let g = app.tabs[0].graph.as_ref().unwrap();
     let m = g.view.row(g.sel).unwrap().mark;
-    assert_eq!((m.start.line, m.start.col, m.end.col), (5, 3, 10), "state.n, on line 5");
+    assert_eq!((m.start.line, m.start.col, m.end.col), (6, 3, 10), "state.n, on line 6");
     press(&mut app, KeyCode::Char('a'));
     assert!(app.tabs[0].graph.as_ref().is_some_and(|g| g.view.every) && app.beside_has_keys(), "a: every node, the graph keeping the keys");
     press(&mut app, KeyCode::Char('a'));
     press(&mut app, KeyCode::Esc);
-    assert!(app.typing && !app.beside_has_keys() && app.tabs[0].buf.row == 4, "esc: the text has the keys, the cursor where it was");
+    assert!(app.typing && !app.beside_has_keys() && app.tabs[0].buf.row == 5, "esc: the text has the keys, the cursor where it was");
     let shown = screen(&mut app, 130, 40);
     assert!(shown.contains("alt+g") && shown.contains("its keys"), "{shown}");
     // alt+g, even while typing: the graph's keys; enter edits the row picked there.
@@ -558,22 +558,22 @@ fn a_tab_shows_its_code_its_graph_beside_it_or_its_graph_alone() {
     assert_eq!(picked(&app), "n");
     press(&mut app, KeyCode::Enter);
     assert!(app.typing && !app.beside_has_keys());
-    assert_eq!((app.tabs[0].buf.row, app.tabs[0].buf.col), (3, 2), "at n, line 4");
+    assert_eq!((app.tabs[0].buf.row, app.tabs[0].buf.col), (4, 2), "at n, line 5");
     screen(&mut app, 130, 40);
     // A second click on a row edits it there.
     app.graph_beside();
     screen(&mut app, 130, 40);
     click(&mut app, Click::Row(List::Graph, 2));
     click(&mut app, Click::Row(List::Graph, 2));
-    assert!(app.typing && app.tabs[0].buf.row == 4, "state.n, line 5");
-    app.tabs[0].buf.go(4, 1);
+    assert!(app.typing && app.tabs[0].buf.row == 5, "state.n, line 6");
+    app.tabs[0].buf.go(5, 1);
     // Typed, the graph is built again.
-    app.tabs[0].buf.go(6, 99);
-    typed(&mut app, "\nstate.m = n");
+    app.tabs[0].buf.go(7, 99);
+    typed(&mut app, "\nm = n + 1");
     screen(&mut app, 130, 40);
     assert!(app.tabs[0].graph.as_ref().unwrap().view.rows.len() == 5, "a statement more");
-    assert_eq!(picked(&app), "state.m");
-    for _ in 0..13 {
+    assert_eq!(picked(&app), "m");
+    for _ in 0..11 {
         press(&mut app, KeyCode::Backspace);
     }
     assert_eq!(app.tabs[0].buf.text(), BUMP);
@@ -597,7 +597,7 @@ fn a_tab_shows_its_code_its_graph_beside_it_or_its_graph_alone() {
     // Enter: the text at the statement picked, the graph beside it.
     press(&mut app, KeyCode::Enter);
     assert!(app.show == Show::Both && app.typing);
-    assert_eq!(app.tabs[0].buf.row, 4, "state.n = n, line 5");
+    assert_eq!(app.tabs[0].buf.row, 5, "state.n = n, line 6");
 
     // The buttons on the tab bar pick one; esc leaves the graph for the code; a text that
     // doesn't compile says so.

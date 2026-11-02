@@ -5,7 +5,7 @@
 # afterwards no longer matches what was witnessed. A request without the key gets nothing kept,
 # and a 401.
 #
-# Before it works, set one secret under the deployment's settings (the gear):
+# Before it works, set the header's secret under the deployment's settings (the gear):
 #   witness_key   the token servers send (their HOLON_EXPORT_HEADS_TOKEN)
 #
 # Try it: deploy it, then start a server that sends it heads, with the witness key as its token:
@@ -15,6 +15,7 @@
 # lists the batches it kept.
 flow witness
 port 8130
+secret witness_key
 collection batches
 
 # Keeps a batch of heads with when it arrived, and answers a receipt, only with the witness key.

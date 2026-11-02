@@ -11,6 +11,8 @@
 #   curl http://127.0.0.1:8155/last                    "ada"
 flow counter
 port 8155
+state hits
+state last
 collection visits
 
 # Each hit adds one to the count kept across runs, and says it.

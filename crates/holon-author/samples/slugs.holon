@@ -5,7 +5,7 @@
 # collection, state, an optional secret), and its manifest, permissions, replay and flow state
 # count all of it. A saved flow without routes is placed the same way, from the palette's flows.
 #
-# One optional secret, under the deployment's settings (the gear):
+# The header's optional secret, set under the deployment's settings (the gear):
 #   receipt_key   signs each publish receipt; without it receipts read "unsigned"
 #
 # Try it: deploy it, then
@@ -15,7 +15,8 @@
 # View a run to see the holons replayed and the post written, and expand a holon to see inside.
 flow slugs
 port 8110
-optional secret.receipt_key
+optional secret receipt_key
+state last_post
 collection posts
 
 # Turns a text into a slug: lowercase, its words joined with -.

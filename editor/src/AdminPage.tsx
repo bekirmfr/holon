@@ -12,12 +12,15 @@ import {
   changeAccount,
   bindDatabase,
   bindFolder,
+  bindServerSecret,
+  capServerSecret,
   createToken,
   getOidcSettings,
   getPermissions,
   listDatabases,
   listFolders,
   listGrants,
+  listServerSecrets,
   listTables,
   inviteAccount,
   listAccounts,
@@ -31,6 +34,7 @@ import {
   sweepStore,
   unbindDatabase,
   unbindFolder,
+  unbindServerSecret,
   type AccountEntry,
   type DatabaseBinding,
   type DatabaseEntry,
@@ -40,6 +44,7 @@ import {
   type HostPolicy,
   type OidcSettings,
   type Role,
+  type SecretInfo,
   type TokenEntry,
 } from "./server";
 import { useDialog } from "./Dialog";
@@ -59,7 +64,7 @@ const ROLE_TITLE: Record<Role, string> = {
 type Tab = "people" | "resources" | "permissions";
 const TABS: { tab: Tab; label: string; about: string }[] = [
   { tab: "people", label: "people and sign-in", about: "who uses this server, and how they get in" },
-  { tab: "resources", label: "resources", about: "what exists on this host for flows to use: its folders and databases" },
+  { tab: "resources", label: "resources", about: "what exists on this host for flows to use: its folders, databases and secrets" },
   { tab: "permissions", label: "permissions", about: "what this host allows, and who holds what" },
 ];
 
@@ -130,6 +135,8 @@ export function AdminPage({ me, onOpenDeployment }: { me: string; onOpenDeployme
   const [databaseDraft, setDatabaseDraft] = useState<DatabaseBinding & { where: string }>({ name: "", where: "", access: "read-write", schema: null, deployment: null });
   // Each database's tables as last read, by binding: the tables, or why they couldn't be read.
   const [tables, setTables] = useState<Record<string, string[] | { error: string }>>({});
+  const [serverSecrets, setServerSecrets] = useState<SecretInfo[]>([]);
+  const [secretDraft, setSecretDraft] = useState({ name: "", value: "", to: "" });
   const [grants, setGrants] = useState<HeldGrant[]>([]);
   const [policy, setPolicy] = useState<HostPolicy | null>(null);
   // What reading the policy again said: when, and the deployments it holds off.
@@ -144,6 +151,7 @@ export function AdminPage({ me, onOpenDeployment }: { me: string; onOpenDeployme
     listTokens().then(setTokens).catch((e: unknown) => setMsg(messageOf(e)));
     listFolders().then(setFolders).catch((e: unknown) => setMsg(messageOf(e)));
     listDatabases().then(setDatabases).catch((e: unknown) => setMsg(messageOf(e)));
+    listServerSecrets().then(setServerSecrets).catch((e: unknown) => setMsg(messageOf(e)));
     listGrants().then(setGrants).catch((e: unknown) => setMsg(messageOf(e)));
     getPermissions().then(setPolicy).catch((e: unknown) => setMsg(messageOf(e)));
     getOidcSettings()
@@ -652,6 +660,81 @@ export function AdminPage({ me, onOpenDeployment }: { me: string; onOpenDeployme
             />
             <button type="submit" style={primary} disabled={!databaseDraft.name.trim() || !databaseDraft.where.trim() || isUrl(databaseDraft.where)}>
               bind database
+            </button>
+          </form>
+
+          <div style={head}>secrets</div>
+          <div style={about}>
+            The server&apos;s own secrets: one bound here is read by every deployment that reads a secret of that name and has none of its own (one set for a deployment,
+            under its ⚙, overrides it). Where it may go: the hosts (api.stripe.com) and databases (db:shop) it may be sent to. A deploy whose flow sends it elsewhere is
+            refused, and so is a request a run makes with it; a deployment with its own isn&apos;t held to it. Empty: wherever its flows&apos; approvals show.
+          </div>
+          {serverSecrets.length === 0 && <div style={{ color: "#7e8ea8", fontSize: 11, marginBottom: 6 }}>no secrets bound</div>}
+          {serverSecrets.map((s) => (
+            <div key={s.name} style={row} aria-label={`server secret ${s.name}`}>
+              <span style={{ color: "#6fd3e0", minWidth: 90 }}>secret {s.name}</span>
+              <span style={{ color: "#7e8ea8", fontSize: 11, flex: 1 }}>
+                v{s.version} · {s.source === "local" ? "a value" : s.source}
+                {s.problem ? ` · can't be read: ${s.problem}` : ""}
+                {" · "}
+                {s.to ? (s.to.length ? `may go only to ${s.to.map((d) => (d.startsWith("db:") ? `the database "${d.slice(3)}"` : `https://${d}`)).join(", ")}` : "may go nowhere") : "may go wherever its flows' approvals show"}
+              </span>
+              <button
+                style={small}
+                title="change where it may go"
+                onClick={async () => {
+                  const typed = await dialog.prompt(`Where may the server's secret "${s.name}" go? Hosts and db:NAME databases, separated by commas; empty: wherever its flows' approvals show.`, (s.to ?? []).join(", "));
+                  if (typed === null) return;
+                  const to = typed.split(",").map((d) => d.trim()).filter(Boolean);
+                  act(() => capServerSecret(s.name, to.length ? to : null));
+                }}
+              >
+                where…
+              </button>
+              <button
+                style={small}
+                title="remove the server's secret, every version"
+                onClick={async () => {
+                  if (await dialog.confirm(`Remove the server's secret "${s.name}"? Deployments that read it and have none of their own read nothing for it from their next run.`, "Remove"))
+                    act(() => unbindServerSecret(s.name));
+                }}
+              >
+                ×
+              </button>
+            </div>
+          ))}
+          <form
+            style={{ ...row, background: "transparent", flexWrap: "wrap" }}
+            onSubmit={(e) => {
+              e.preventDefault();
+              const to = secretDraft.to.split(",").map((d) => d.trim()).filter(Boolean);
+              act(async () => {
+                await bindServerSecret(secretDraft.name.trim(), { value: secretDraft.value, ...(to.length ? { to } : {}) });
+                setSecretDraft({ name: "", value: "", to: "" });
+              });
+            }}
+          >
+            <input aria-label="secret name" placeholder="name (stripe_key)" value={secretDraft.name} onChange={(e) => setSecretDraft({ ...secretDraft, name: e.target.value })} style={input} />
+            <input
+              aria-label="secret value"
+              type="password"
+              autoComplete="new-password"
+              data-1p-ignore
+              data-lpignore="true"
+              placeholder="its value (sealed here, never shown)"
+              value={secretDraft.value}
+              onChange={(e) => setSecretDraft({ ...secretDraft, value: e.target.value })}
+              style={input}
+            />
+            <input
+              aria-label="where the secret may go"
+              placeholder="where it may go (api.stripe.com, db:shop)"
+              value={secretDraft.to}
+              onChange={(e) => setSecretDraft({ ...secretDraft, to: e.target.value })}
+              style={{ ...input, flex: 1, minWidth: 200 }}
+            />
+            <button type="submit" style={primary} disabled={!secretDraft.name.trim() || !secretDraft.value}>
+              bind secret
             </button>
           </form>
 

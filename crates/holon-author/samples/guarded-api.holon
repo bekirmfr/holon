@@ -5,7 +5,7 @@
 # roll back to an earlier one under the gear (a dry run says what it would do first). The receipt
 # key is an optional permission: without it the route still answers, its receipt "unsigned".
 #
-# Before it works, set two secrets under the deployment's settings (the gear):
+# Before it works, set the header's two secrets under the deployment's settings (the gear):
 #   api_token     the bearer token callers send
 #   receipt_key   the key receipts are signed with: choose env, then HOLON_SECRET_RECEIPT_KEY,
 #                 a variable in the server's environment or its dotenv file
@@ -16,7 +16,8 @@
 # "unsigned".
 flow guarded-api
 port 8109
-optional secret.receipt_key
+secret api_token
+optional secret receipt_key
 
 # Checks the bearer token, then answers a receipt signed over the path (401 without the token).
 route GET /me (req) {

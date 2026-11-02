@@ -99,6 +99,30 @@ pub fn runnable_by_hand(source: &str) -> Result<String, String> {
     format(&plain)
 }
 
+/// The quick fix for a name the body uses undeclared (docs/L4s/declared-names-L4.md): the header
+/// lines `holon fmt` would add, and where they go.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Declare {
+    /// `declare secret signing_key, state beats in the header`.
+    pub title: String,
+    /// Where `text` is inserted: the start of the line after the last header.
+    pub at: Pos,
+    pub text: String,
+}
+
+/// [`Declare`] for `source`, if its body uses a secret or state key its header doesn't declare.
+pub fn declare_missing(source: &str) -> Option<Declare> {
+    let lines = commands::missing_declarations(source);
+    if lines.is_empty() {
+        return None;
+    }
+    let title = format!("declare {} in the header", lines.join(", "));
+    let nl = if source.contains("\r\n") { "\r\n" } else { "\n" };
+    // A name used undeclared is in the body, so a line follows the headers.
+    let at = Pos { line: commands::header_end(source) as u32 + 1, col: 1 };
+    Some(Declare { title, at, text: lines.iter().map(|l| format!("{l}{nl}")).collect() })
+}
+
 /// The language's words, said in a line each.
 const KEYWORDS: &[(&str, &str)] = &[
     ("port", "`port <n>`: the port the flow's server answers its routes on."),
@@ -130,8 +154,8 @@ const KEYWORDS: &[(&str, &str)] = &[
 
 /// The nouns for the outside world: each read or write is one permission the flow asks for.
 const NOUNS: &[(&str, &str)] = &[
-    ("secret", "`secret.name`: a secret, set by an admin under the deployment's ⚙ and never in the run log. One permission: reading it."),
-    ("state", "`state.name`: the flow's own value, read at the start of the run; `state.name = v` writes it when the run finishes. Each is one permission."),
+    ("secret", "`secret.name`: a secret the header declares (`secret name`, or `optional secret name`), set by an admin under the deployment's ⚙ and never in the run log. One permission: reading it; a route that answers with it, or with what is computed from it, asks for another."),
+    ("state", "`state.name`: the flow's own value, a key the header declares (`state name`), read at the start of the run; `state.name = v` writes it when the run finishes. Each is one permission."),
     ("now", "`now`: the run's time, in epoch seconds, recorded with the run so a replay sees the same. A permission: reading the clock."),
     ("random", "`random`: one random number for the run, recorded so a replay sees the same. A permission: randomness."),
     ("http", "`http.get(host, path, headers: h, body: b)`, also `post`, `put`, `patch`, `delete`, `head`: a call out. The host, a text literal, is the permission; the answer is recorded with the run. `file: inbox.file(name)` in place of `body:` sends a file's bytes, streamed by the server."),
@@ -185,10 +209,24 @@ pub fn hover(source: &str, at: Pos) -> Option<Hover> {
     let channels: Vec<&str> = file.iter().flat_map(|f| &f.headers).filter_map(|h| if let HeaderKind::Channel(c) = &h.kind { Some(c.as_str()) } else { None }).collect();
     let requests: Vec<&str> = file.iter().flat_map(|f| &f.items).filter_map(|item| if let Item::Route(r) = item { Some(r.request.text.as_str()) } else { None }).collect();
     let said = |text: String| Some(Hover { span: token.span, text });
+    // Where this flow sends the secret `name`, as its approval says it; nothing when it sends it
+    // nowhere (or the text doesn't compile).
+    let sent_to = |name: &str| -> String {
+        let sent = commands::sent_of(source);
+        match sent.get(name).map(crate::describe::describe_sent_to) {
+            Some((Some(own), Some(answers))) => format!(" This flow sends it to {own}; what is answered to it goes to {answers}."),
+            Some((Some(own), None)) => format!(" This flow sends it to {own}."),
+            Some((None, Some(answers))) => format!(" What is answered to it goes to {answers}."),
+            _ => String::new(),
+        }
+    };
 
     // A member: `secret.key`, `http.post`, `posts.put`, `req.json`; another field says nothing.
     if is(before(1), Tok::Dot) {
         let head = before(2).filter(|t| t.tok == Tok::Ident)?.text.as_str();
+        if head == "secret" {
+            return said(format!("`secret.{word}`: a secret of this flow.{} {}", sent_to(word), line_of(NOUNS, "secret").unwrap_or("")));
+        }
         if let Some(line) = line_of(NOUNS, head) {
             return said(line.into());
         }
@@ -205,6 +243,14 @@ pub fn hover(source: &str, at: Pos) -> Option<Hover> {
             return said(format!("`{head}.{word}`: part of {REQUEST}"));
         }
         return None;
+    }
+    // The name a `secret` or `state` header declares.
+    let declares = |noun: &str| before(1).is_some_and(|t| t.tok == Tok::Ident && t.text == noun) && !is(before(2), Tok::Dot);
+    if declares("secret") {
+        return said(format!("`{word}`: a secret of this flow, used as `secret.{word}`.{} {}", sent_to(word), line_of(NOUNS, "secret").unwrap_or("")));
+    }
+    if declares("state") {
+        return said(format!("`{word}`: a key of this flow's state, used as `state.{word}`. {}", line_of(NOUNS, "state").unwrap_or("")));
     }
     if is(before(1), Tok::Ident) && before(1).is_some_and(|t| t.text == "flow") || word == "flow" {
         let report = commands::check("this flow", source);
@@ -348,12 +394,24 @@ pub fn complete(source: &str, at: Pos) -> Vec<Completion> {
     let folders = header("folder");
     let channels = header("channel");
     let holons = header("holon");
-    // A noun's keys as used: `secret.k`, `state.k`.
-    let keys = |noun: &str| -> Vec<String> {
-        let mut found: Vec<String> = all.iter().enumerate().filter(|(i, t)| t.tok == Tok::Ident && t.text == noun && after(*i, Tok::Dot)).filter_map(|(i, _)| ident_after(i + 1)).filter(|k| k != "set").collect();
-        found.sort();
-        found.dedup();
-        found
+    // A noun's keys: those the header declares (`secret k`, `state k`), then those used as
+    // `secret.k` or `state.k` without it.
+    let keys = |noun: &str| -> Vec<Completion> {
+        let mut declared = header(noun);
+        declared.sort();
+        declared.dedup();
+        // (Not the word being typed.)
+        let mut used: Vec<String> = all
+            .iter()
+            .enumerate()
+            .filter(|(i, t)| t.tok == Tok::Ident && t.text == noun && after(*i, Tok::Dot))
+            .filter_map(|(i, _)| all.get(i + 2).filter(|k| k.tok == Tok::Ident && k.span.end != at && k.text != "set").map(|k| k.text.clone()))
+            .collect();
+        used.sort();
+        used.dedup();
+        let mut v: Vec<Completion> = declared.iter().map(|k| word(k, Kind::Variable, format!("{noun}.{k}: declared in the header"), None)).collect();
+        v.extend(used.iter().filter(|k| !declared.contains(k)).map(|k| word(k, Kind::Variable, format!("{noun}.{k}: used, not declared (add `{noun} {k}` to the header)"), None)));
+        v
     };
     // Each route's request name: the word in `route METHOD /path (req)`'s parentheses.
     let requests: Vec<String> = all
@@ -367,10 +425,10 @@ pub fn complete(source: &str, at: Pos) -> Vec<Completion> {
         let head_at = typed.len().checked_sub(if partial.is_empty() { 2 } else { 3 });
         let Some(head) = head_at.and_then(|i| typed.get(i)).filter(|t| t.tok == Tok::Ident).map(|t| t.text.as_str()) else { return vec![] };
         match head {
-            "secret" => keys("secret").iter().map(|k| word(k, Kind::Variable, format!("secret.{k}: used in this flow"), None)).collect(),
+            "secret" => keys("secret"),
             "state" => {
-                let mut v = vec![word("set", Kind::Member, "state.set(key, value): written when the run finishes", None)];
-                v.extend(keys("state").iter().map(|k| word(k, Kind::Variable, format!("state.{k}: used in this flow"), None)));
+                let mut v = keys("state");
+                v.push(word("set", Kind::Member, "state.set(key, value): written when the run finishes", None));
                 v
             }
             "http" => ["get", "post", "put", "patch", "delete", "head"]
@@ -514,6 +572,12 @@ impl Colourer {
         self.chars[from..to].iter().collect()
     }
 
+    /// Whether a name follows the word ending at `end`, after spaces: `secret key`, not `secret.key`.
+    fn names_after(&self, end: usize) -> bool {
+        let next = self.skip_space(end);
+        next > end && self.chars.get(next).is_some_and(|c| c.is_ascii_alphabetic() || *c == '_')
+    }
+
     /// The next word after spaces, coloured `class`; where it ends.
     fn next_word(&mut self, i: usize, class: Class, also: &[char]) -> usize {
         let from = self.skip_space(i);
@@ -575,7 +639,21 @@ impl Colourer {
                     }
                 }
             }
-            h if HEADERS.contains(&h) => self.mark(start, end, Class::Keyword),
+            // `secret key` and `state key` are headers; `secret.key` and `state.key = …` code.
+            "secret" | "state" if self.names_after(end) => {
+                self.mark(start, end, Class::Keyword);
+                i = self.next_word(i, Class::Definition, &[]);
+            }
+            h if HEADERS.contains(&h) => {
+                self.mark(start, end, Class::Keyword);
+                // `optional secret key`: the secret it declares.
+                let from = self.skip_space(end);
+                let to = self.word_end(from, &[]);
+                if h == "optional" && self.word(from, to) == "secret" && self.names_after(to) {
+                    self.mark(from, to, Class::Keyword);
+                    i = self.next_word(to, Class::Definition, &[]);
+                }
+            }
             // `keep 500 runs` is a header; `keep = …` a name.
             "keep" if { let next = self.skip_space(end); self.chars.get(next).is_some_and(char::is_ascii_digit) || self.word(next, self.word_end(next, &[])) == "runs" } => {
                 self.mark(start, end, Class::Keyword)
@@ -733,7 +811,7 @@ mod tests {
     /// block, its value answered, its holons left where they were.
     #[test]
     fn a_flow_nothing_starts_is_made_runnable_by_hand() {
-        let flow = "flow sums\n\nholon double(x) -> y {\n  y = x * 2\n}\n\nstate.last = 3\ndouble(21)\n";
+        let flow = "flow sums\nstate last\n\nholon double(x) -> y {\n  y = x * 2\n}\n\nstate.last = 3\ndouble(21)\n";
         let fixed = runnable_by_hand(flow).unwrap();
         assert!(fixed.contains("action run (input) {") && fixed.contains("respond double(21)"), "{fixed}");
         assert!(fixed.contains("holon double(x) -> y"), "its holon stays: {fixed}");
@@ -746,11 +824,41 @@ mod tests {
         // Its last binding is answered.
         assert!(runnable_by_hand("flow f\n\ntotal = 1 + 2\n").unwrap().contains("respond total"));
         // `input` taken, what was sent is named otherwise.
-        assert!(runnable_by_hand("flow f\n\ninput = 2\nstate.n = input\n").unwrap().contains("action run (sent) {"));
+        assert!(runnable_by_hand("flow f\nstate n\n\ninput = 2\nstate.n = input\n").unwrap().contains("action run (sent) {"));
         // A flow something starts is left alone.
         assert!(runnable_by_hand("flow f\nport 8080\n\nroute GET / (req) {\n  respond \"hi\"\n}\n").unwrap_err().contains("trigger already"));
-        assert!(runnable_by_hand("flow f\n\nstate.last = ingress\n").unwrap_err().contains("run by hand already"));
+        assert!(runnable_by_hand("flow f\nstate last\n\nstate.last = ingress\n").unwrap_err().contains("run by hand already"));
         assert!(runnable_by_hand("flow f\n\nholon h(x) -> y {\n  y = x\n}\n").unwrap_err().contains("nothing to run"));
+    }
+
+    /// A name the body uses undeclared: the quick fix adds the header lines fmt would, after the
+    /// last header, and the text then compiles.
+    #[test]
+    fn the_quick_fix_declares_what_the_body_uses() {
+        let apply = |source: &str, d: &Declare| {
+            let mut lines: Vec<String> = source.split('\n').map(str::to_string).collect();
+            let l = &mut lines[d.at.line as usize - 1];
+            let at = l.char_indices().nth(d.at.col as usize - 1).map(|(i, _)| i).unwrap_or(l.len());
+            l.insert_str(at, &d.text);
+            lines.join("\n")
+        };
+        let flow = "# a note\nflow f\nport 8200\ncollection notes\n\nroute GET /a (req) {\n  state.hits = 1\n  respond secret.token\n}\n";
+        let d = declare_missing(flow).unwrap();
+        assert_eq!(d.title, "declare state hits, secret token in the header");
+        assert_eq!((d.at, d.text.as_str()), (Pos { line: 5, col: 1 }, "state hits\nsecret token\n"));
+        let fixed = apply(flow, &d);
+        assert!(mistakes(&fixed).is_empty(), "{fixed}: {:?}", mistakes(&fixed));
+        assert_eq!(declare_missing(&fixed), None, "nothing left to declare");
+        // No blank line after the headers, and no newline at the end.
+        let d = declare_missing("flow f\nevery 1m\nstate.n = 1").unwrap();
+        assert_eq!((d.at, d.text.as_str()), (Pos { line: 3, col: 1 }, "state n\n"));
+        let d = declare_missing("flow f\nevery 1m\n\nstate.n = 1\nstate.m = 2\n").unwrap();
+        assert_eq!(d.title, "declare state n, state m in the header");
+        // Another mistake doesn't stop it: the names are declared, the mistake stays.
+        let d = declare_missing("flow f\nevery 1m\n\nstate.n = nope\n").unwrap();
+        assert_eq!(d.text, "state n\n");
+        // A text that uses nothing undeclared has no fix.
+        assert_eq!(declare_missing(SLUGS), None);
     }
 
     /// The position of the `nth` (from 0) occurrence of `needle` in `source`'s code (a comment
@@ -798,7 +906,7 @@ mod tests {
     fn the_word_under_the_cursor_is_said() {
         assert!(says(SLUGS, "lowercase", 0).contains("lowercase("), "a leaf, by its signature");
         assert!(says(SLUGS, "secret", 1).contains("set by an admin"), "a noun");
-        assert!(hover(SLUGS, at(SLUGS, "secret.receipt_key", 1, 8)).unwrap().text.contains("set by an admin"), "a noun's member");
+        assert!(hover(SLUGS, at(SLUGS, "secret.receipt_key", 0, 8)).unwrap().text.contains("set by an admin"), "a noun's member");
         assert!(hover(SLUGS, at(SLUGS, "posts.put", 0, 6)).unwrap().text.contains("collection `posts`"), "a collection's method");
         assert!(says(SLUGS, "posts.put", 0).contains("a collection of this flow"), "a collection");
         assert!(says(SLUGS, "route", 0).contains("Every statement in it uses `req`"), "a keyword");
@@ -809,6 +917,16 @@ mod tests {
         assert!(says(SLUGS, "published =", 0).contains("`published`: a `publish` node"), "a binding");
         let flow = says(SLUGS, "slugs", 0);
         assert!(flow.contains("POST /slugs") && flow.contains("it may:") && flow.contains("receive requests"), "the flow: {flow}");
+        assert!(says(SLUGS, "receipt_key", 0).contains("a secret of this flow, used as `secret.receipt_key`"), "a declared secret");
+        assert!(says(SLUGS, "last_post", 0).contains("a key of this flow's state"), "a declared state key");
+        // Where a secret goes, on its header and where it is used; one only verified with goes nowhere.
+        let stripe = include_str!("../samples/stripe-to-slack.holon");
+        assert!(hover(stripe, at(stripe, "secret slack_webhook_path", 0, 7)).unwrap().text.contains("This flow sends it to https://hooks.slack.com."), "a declared secret, sent");
+        assert!(hover(stripe, at(stripe, "secret.slack_webhook_path", 0, 7)).unwrap().text.contains("This flow sends it to https://hooks.slack.com."), "a secret used, sent");
+        let verified = hover(stripe, at(stripe, "secret.stripe_webhook_secret", 0, 7)).unwrap().text;
+        assert!(verified.contains("a secret of this flow") && !verified.contains("sends it"), "{verified}");
+        let license = include_str!("../samples/license-check.holon");
+        assert!(hover(license, at(license, "secret.license_key", 0, 7)).unwrap().text.contains("This flow sends it to the database \"vendor\"."), "a query's parameter");
         assert_eq!(hover(SLUGS, at(SLUGS, "\"-\"", 0, 1)), None, "inside a string");
         assert_eq!(hover(SLUGS, at(SLUGS, "published.receipt", 0, 10)), None, "a field of a value");
     }
@@ -857,6 +975,14 @@ mod tests {
         has("flow f\nkeep 5 runs for 1d\n", "keep", Keyword);
         has("flow f\nkeep runs for 30d\n", "keep", Keyword);
         has("flow f\n\naction a (input) {\n  keep = input.n\n}\n", "keep", Definition);
+        // `secret key` and `state key` are headers, the name what they declare; `.key` a member.
+        let declared = "flow f\nsecret token\noptional secret spare\nstate count\n\nstate.count = secret.token\n";
+        has(declared, "token", Definition);
+        has(declared, "spare", Definition);
+        has(declared, "count", Definition);
+        assert_eq!(coloured(declared).iter().filter(|(w, c)| w == "secret" && *c == Keyword).count(), 2, "{:?}", coloured(declared));
+        has(declared, "state", Noun);
+        has(declared, "token", Member);
         // Half typed: a string not closed is a string to the line's end, and what follows is read.
         let c = coloured("x = \"not closed\ny = lowercase(x)\n");
         assert!(c.contains(&("\"not closed".to_string(), String)), "{c:?}");
@@ -898,7 +1024,13 @@ mod tests {
         assert_eq!(offered(&body("  respond posts.l|")), ["list"]);
         assert_eq!(offered(&body("  respond req.|")), ["params", "query", "headers", "body", "json"]);
         assert_eq!(offered(&body("  respond secret.|")), ["receipt_key"]);
-        assert_eq!(offered(&body("  respond state.|")), ["set"]);
+        assert_eq!(offered(&body("  respond state.|")), ["last_post", "set"]);
+        // The header's names first; one used without its header line after, said so.
+        let undeclared = "flow f\nport 8200\nsecret b\n\nroute GET /a (req) {\n  x = secret.c\n  respond secret.|\n}\n";
+        assert_eq!(offered(undeclared), ["b", "c"]);
+        let c = complete(&undeclared.replacen('|', "", 1), Pos { line: 7, col: 18 });
+        assert!(c[1].detail.contains("add `secret c` to the header"), "{:?}", c[1]);
+        assert_eq!(offered("flow f\nstate count\nstate total\n\nstate.c| = 1\n"), ["count"]);
         assert_eq!(offered(&body("  respond http.p|")), ["post", "put", "patch"]);
         assert_eq!(offered(&body("  respond published.|")), Vec::<String>::new(), "a value's fields aren't known");
         // Nothing inside a string or a comment.

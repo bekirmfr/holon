@@ -10,10 +10,10 @@
 //!
 //! A mistake is printed as `<file>:<line>:<col>: <message>`, and the exit code is 1.
 
-use holon_core::{capabilities, consent_name, MapResolver, Resolver};
+use holon_core::{consent_name, MapResolver, Resolver};
 
 use crate::composites::Names;
-use crate::describe::describe_item_of;
+use crate::describe::describe_item_sending;
 use crate::flow::{derive_server, flow_unit, DerivedServer};
 use crate::lang::ast::Pos;
 use crate::lang::{self, Lowered};
@@ -109,11 +109,22 @@ fn derive(c: &Lowered, store: &mut MapResolver) -> (DerivedServer, Result<(Strin
     let server = derive_server(&c.doc.nodes, &c.doc.edges, store, port_of(c));
     let scheduled = scheduled(c, &server);
     let unit = flow_unit(&c.doc.nodes, &c.doc.edges, store, port_of(c)).map(|hash| {
-        let mut caps: Vec<String> = store.resolve(&hash).map(|u| capabilities(u, store).deployed(scheduled).iter().map(|c| consent_name(&c)).collect()).unwrap_or_default();
+        let mut caps: Vec<String> = store.resolve(&hash).map(|u| holon_core::deployed_capabilities(u, store, scheduled).iter().map(|c| consent_name(&c)).collect()).unwrap_or_default();
         caps.sort();
         (to_hex(&hash), caps)
     });
     (server, unit)
+}
+
+/// Where each secret the text reads is sent (core's `sent_secrets`, secret → hosts); nothing when
+/// it doesn't compile. What the editor's hover on a secret says.
+pub(crate) fn sent_of(source: &str) -> std::collections::BTreeMap<String, std::collections::BTreeSet<String>> {
+    let mut store = MapResolver::new();
+    let Ok(c) = compile("text", source, &mut store) else {
+        return Default::default();
+    };
+    let (_, unit) = derive(&c, &mut store);
+    unit.ok().and_then(|(hash, _)| holon_core::parse_hash(&hash)).and_then(|h| store.resolve(&h)).map(|root| holon_core::sent_secrets(root, &store)).unwrap_or_default()
 }
 
 /// What the host does around a run that the manifest doesn't say (`docs/L4s/key-claims-L4.md`
@@ -187,20 +198,23 @@ pub fn check(file: &str, source: &str) -> Report {
         out.push(if alone { "a server of actions, run by hand, listening on no port" } else { "and its actions, run by hand" }.into());
         out.extend(server.actions.iter().map(|a| format!("  {}", a.label)));
     }
-    let (caps, modules, mut problems) = match unit {
+    let (caps, modules, sent, mut problems) = match unit {
         Ok((hash, caps)) => {
             out.push(format!("unit {hash}"));
+            let root = holon_core::parse_hash(&hash).and_then(|h| store.resolve(&h));
             // A module (a js node) computes only, so it adds no capability; what it may consume
             // per call is a limit the deploy asks for, said here as the approval will say it.
-            let modules = holon_core::parse_hash(&hash).and_then(|h| store.resolve(&h)).map(|root| holon_core::module_limits_of(root, &store)).unwrap_or_default();
-            (caps, modules, vec![])
+            let modules = root.map(|root| holon_core::module_limits_of(root, &store)).unwrap_or_default();
+            // Where each secret goes, said beside it as the approval says it.
+            let sent = root.map(|root| holon_core::sent_secrets(root, &store)).unwrap_or_default();
+            (caps, modules, sent, vec![])
         }
-        Err(e) => (vec![], Default::default(), vec![e]),
+        Err(e) => (vec![], Default::default(), Default::default(), vec![e]),
     };
     out.push(if caps.is_empty() && modules.is_empty() { "it only computes: it reads and changes nothing outside" } else { "it may:" }.into());
     // A flow with no routes that reads `ingress` is run by hand: its NetworkIngress says so.
     let by_hand = server.endpoints.is_empty();
-    out.extend(caps.iter().map(|c| format!("  {}", describe_item_of(c, by_hand))));
+    out.extend(caps.iter().map(|c| format!("  {}", describe_item_sending(c, by_hand, &sent))));
     if let (Some(fuel), Some(memory)) = (modules.get(holon_core::FUEL_LIMIT), modules.get(holon_core::MEMORY_LIMIT)) {
         out.push(format!("  run code it carries (a js node): up to {fuel} instructions and {} MiB per call, reaching nothing outside", memory / (1024 * 1024)));
     }
@@ -306,10 +320,78 @@ pub fn show(file: &str, source: &str) -> Report {
 
 /// `holon fmt`: the file's text in the canonical form, its comments kept, or its mistake.
 pub fn fmt(file: &str, source: &str) -> Result<String, Report> {
+    fmt_declaring(file, source).map(|(text, _)| text)
+}
+
+/// [`fmt`], and the header lines it added: a name the body uses that the header doesn't declare
+/// (`secret.signing_key` without `secret signing_key`) is declared for it, the one mistake fmt
+/// mends, since it prints from what the text compiles to (docs/L4s/declared-names-L4.md §5).
+pub fn fmt_declaring(file: &str, source: &str) -> Result<(String, Vec<String>), Report> {
+    let (fixed, c, declared) = with_declarations(source).map_err(|e| mistake(file, source, &e))?;
     let mut store = MapResolver::new();
-    let c = compile(file, source, &mut store)?;
+    text::restore(&c.doc, &mut store, &Names::new());
     let printed = lang::print(c.name.as_deref(), &c.doc, &mut store, &Names::new(), &c.names).map_err(|e| Report::failed(format!("{file}: {e}")))?;
-    Ok(with_comments(source, &printed))
+    Ok((with_comments(&fixed, &printed), declared))
+}
+
+/// `source` with a header line for each name its body uses undeclared, compiled, and the lines
+/// added; or its first other mistake, said at its place in `source`.
+pub fn with_declarations(source: &str) -> Result<(String, Lowered, Vec<String>), lang::LowerError> {
+    let mut fixed = source.to_string();
+    let mut declared = Vec::new();
+    // The added lines are together, from the first one's line on.
+    let at = header_end(source) as u32;
+    loop {
+        match lang::compile(&fixed) {
+            Ok(c) => return Ok((fixed, c, declared)),
+            Err(lang::LowerError { declare: Some(line), .. }) if !declared.contains(&line) => {
+                fixed = declare(&fixed, &line);
+                declared.push(line);
+            }
+            Err(mut e) => {
+                let added = declared.len() as u32;
+                for p in [&mut e.span.start, &mut e.span.end] {
+                    if p.line > at + added {
+                        p.line -= added;
+                    }
+                }
+                return Err(e);
+            }
+        }
+    }
+}
+
+/// The header lines `source` lacks for the names its body uses undeclared, in the order `fmt`
+/// would add them, whatever else is wrong with it: what an editor's quick fix adds.
+pub fn missing_declarations(source: &str) -> Vec<String> {
+    let mut fixed = source.to_string();
+    let mut lines: Vec<String> = Vec::new();
+    while let Err(lang::LowerError { declare: Some(line), .. }) = lang::compile(&fixed) {
+        if lines.contains(&line) {
+            break;
+        }
+        fixed = declare(&fixed, &line);
+        lines.push(line);
+    }
+    lines
+}
+
+/// `source` with the header line `line` added: after its last header, or, with none, above its
+/// first line of code. The rest of the text is as it was.
+pub fn declare(source: &str, line: &str) -> String {
+    let lines: Vec<&str> = source.lines().collect();
+    let at = header_end(source);
+    let mut out: Vec<&str> = lines[..at].to_vec();
+    out.push(line);
+    out.extend(&lines[at..]);
+    out.join("\n") + "\n"
+}
+
+/// How many of `source`'s lines come before a header line added to it: those up to its last
+/// header, or, with none, those before its first line of code.
+pub(crate) fn header_end(source: &str) -> usize {
+    let after = lang::parse(source).ok().and_then(|f| f.headers.iter().map(|h| h.span.end.line as usize).max());
+    after.unwrap_or_else(|| source.lines().position(|l| !l.trim().is_empty() && !l.trim_start().starts_with('#')).unwrap_or(source.lines().count()))
 }
 
 /// A line split at its `#` comment (one outside a string): the code, and the comment if any.
@@ -453,7 +535,7 @@ mod tests {
         assert_eq!(out, src, "{out}");
         assert_eq!(fmt("f.holon", &out).unwrap(), out, "and again");
         // A body on one line, with a comment after its brace.
-        let one = "flow f\n\nholon tag(x) -> t js { return `#${x}` } # a tag\n\nstate.k = tag(1)\n";
+        let one = "flow f\nstate k\n\nholon tag(x) -> t js { return `#${x}` } # a tag\n\nstate.k = tag(1)\n";
         assert_eq!(fmt("f.holon", one).unwrap(), one);
     }
 
@@ -472,8 +554,8 @@ mod tests {
         let fine = check("f.holon", &src.replace("const x = ;", "const x = a.b.c;"));
         assert_eq!((fine.code, fine.err), (0, vec![]));
         // On the header line, the column is the file's.
-        let one_line = check("f.holon", "flow f\n\nholon bad(a) -> b js { return a + }\nstate.k = bad(1)\n");
-        assert!(one_line.err[0].starts_with("f.holon:3:"), "{:?}", one_line.err);
+        let one_line = check("f.holon", "flow f\nstate k\n\nholon bad(a) -> b js { return a + }\nstate.k = bad(1)\n");
+        assert!(one_line.err[0].starts_with("f.holon:4:"), "{:?}", one_line.err);
         assert_eq!(js_position("SyntaxError: x at line 2, col 13 (native)"), Some((2, 13)));
         assert_eq!(js_position("TypeError: y (unknown at :3:9)\n    at <main> (unknown at :3:9)"), Some((3, 9)));
         assert_eq!(js_position("the source isn't a function"), None);
@@ -483,12 +565,12 @@ mod tests {
     /// says it listens on no port; `show` lists them too.
     #[test]
     fn check_and_show_list_its_clocks() {
-        let r = check("t.holon", "flow t\nport 8080\n\nevery 2s {\n  state.n = 1\n}\n\nroute GET / (req) {\n  respond 1\n}\n");
+        let r = check("t.holon", "flow t\nport 8080\nstate n\n\nevery 2s {\n  state.n = 1\n}\n\nroute GET / (req) {\n  respond 1\n}\n");
         assert_eq!(r.code, 0, "{r:?}");
         assert_eq!(r.out[1..5], ["a server on :8080", "  GET /", "and its clocks", "  every 2s"]);
-        let r = check("b.holon", "flow b\n\nevery 1h {\n  state.n = now\n}\n");
+        let r = check("b.holon", "flow b\nstate n\n\nevery 1h {\n  state.n = now\n}\n");
         assert_eq!(r.out[1..3], ["a server of clocks, listening on no port", "  every 1h"]);
-        assert!(show("b.holon", "flow b\n\nevery 1h {\n  state.n = now\n}\n").out[1..3] == ["  clocks", "    every 1h"]);
+        assert!(show("b.holon", "flow b\nstate n\n\nevery 1h {\n  state.n = now\n}\n").out[1..3] == ["  clocks", "    every 1h"]);
     }
 
     #[test]
@@ -501,13 +583,73 @@ mod tests {
         assert_eq!(r.out[4..], ["it may:", "  receive requests"]);
     }
 
+    /// A route that answers with a secret may do that, said apart from reading it; one that only
+    /// signs with a secret doesn't answer with it.
+    #[test]
+    fn check_says_a_route_answers_with_a_secret() {
+        let text = "flow leaky\nport 8102\nsecret key\nsecret token\n\nroute GET /plain (req) {\n  respond base64(secret.token)\n}\n\nroute POST /sign (req) {\n  respond hmac_sha256(secret.key, req.body), missing: 400\n}\n";
+        let r = check("leaky.holon", text);
+        assert_eq!(r.code, 0, "{r:?}");
+        let may = r.out.iter().position(|l| l == "it may:").unwrap_or_else(|| panic!("{:?}", r.out));
+        assert_eq!(
+            r.out[may + 1..],
+            ["  receive requests", "  answer its callers with the secret \"token\", or with what is computed from it", "  read the secret \"key\"", "  read the secret \"token\""]
+        );
+    }
+
+    /// The canvas marks every sink a secret reaches, by node: the request it is sent in, the state
+    /// write the host refuses, the route's answer; a node that only computes with it (stripe's
+    /// verify, an hmac inside) isn't marked.
+    #[test]
+    fn the_canvas_marks_each_sink_a_secret_reaches() {
+        let text = "flow marks\nport 8199\nsecret k\nstate kept\n\nroute GET /x (req) {\n  sent = http.get(\"api.example.com\", \"/v1\", headers: { authorization: \"Bearer {secret.k}\" })\n  state.kept = secret.k\n  respond { key: secret.k, status: sent.status }\n}\n";
+        let marks_of = |text: &str| {
+            let mut store = MapResolver::new();
+            let c = compile("t.holon", text, &mut store).unwrap_or_else(|r| panic!("{r:?}"));
+            let marks = crate::flow::secret_marks(&c.doc.nodes, &c.doc.edges, &mut store, port_of(&c));
+            let kind = |id: &str| c.doc.nodes.iter().find(|n| n.id == id).map(|n| n.data.name.clone()).unwrap_or_default();
+            marks.into_iter().map(|(id, lines)| (c.names.get(&id).cloned().unwrap_or_else(|| kind(&id)), lines)).collect::<std::collections::BTreeMap<String, Vec<String>>>()
+        };
+        let marks = marks_of(text);
+        assert_eq!(marks.get("sent"), Some(&vec!["sends the secret \"k\" to https://api.example.com".to_string()]), "{marks:?}");
+        assert_eq!(marks.get("store_write"), Some(&vec!["would keep the secret \"k\" (write its state \"kept\"): the host refuses it".to_string()]), "{marks:?}");
+        assert_eq!(marks.get("respond"), Some(&vec!["answers its caller with the secret \"k\" (approved apart, at deploy)".to_string()]), "{marks:?}");
+        assert_eq!(marks.len(), 3, "nothing else: {marks:?}");
+
+        let stripe = marks_of(include_str!("../samples/stripe-to-slack.holon"));
+        assert_eq!(stripe.get("sent"), Some(&vec!["sends the secret \"slack_webhook_path\" to https://hooks.slack.com".to_string()]), "{stripe:?}");
+        assert_eq!(stripe.len(), 1, "verifying with the Stripe secret marks nothing: {stripe:?}");
+
+        // A token exchange: the secret to the OAuth server, what is answered to it to the API.
+        let exchange = marks_of(include_str!("../samples/client-credentials.holon"));
+        assert_eq!(exchange.get("got"), Some(&vec!["sends the secret \"client_secret\" to https://demo.duendesoftware.com".to_string()]), "{exchange:?}");
+        assert_eq!(exchange.get("called"), Some(&vec!["sends what is answered to the secret \"client_secret\" to https://httpbin.dev".to_string()]), "{exchange:?}");
+        assert_eq!(exchange.len(), 2, "{exchange:?}");
+        let echoed = marks_of(include_str!("../samples/echoed-key.holon"));
+        assert_eq!(echoed.get("passed"), Some(&vec!["sends what is answered to the secret \"demo_key\" to https://postman-echo.com".to_string()]), "{echoed:?}");
+
+        // A database read the key is a parameter of: the key goes to the database.
+        let license = marks_of(include_str!("../samples/license-check.holon"));
+        assert_eq!(license.into_values().collect::<Vec<_>>(), vec![vec!["sends the secret \"license_key\" to the database \"vendor\", reading its table \"licenses\"".to_string()]]);
+    }
+
+    /// Beside each secret, where the flow sends it: stripe-to-slack posts its Slack path to Slack,
+    /// and only verifies a signature with the Stripe secret, which sends it nowhere.
+    #[test]
+    fn check_says_where_each_secret_is_sent() {
+        let r = check("stripe-to-slack.holon", include_str!("../samples/stripe-to-slack.holon"));
+        assert_eq!(r.code, 0, "{r:?}");
+        assert!(r.out.iter().any(|l| l == "  read the secret \"slack_webhook_path\", and send it to https://hooks.slack.com"), "{:?}", r.out);
+        assert!(r.out.iter().any(|l| l == "  read the secret \"stripe_webhook_secret\""), "{:?}", r.out);
+    }
+
     /// A flow that calls out and both reads and writes a collection is told, apart from what it
     /// may do, that the host holds the keys it read from its first call until it commits
     /// (docs/L4s/key-claims-L4.md §3, test 8); one that doesn't call out, or only reads, isn't.
     #[test]
     fn check_says_a_flow_on_a_schedule_runs_on_the_clock() {
         // `every` starts its runs, so it reads the clock as deployed, though nothing reads `now`.
-        let r = check("beats.holon", "flow beats\nevery 5s\n\nstate.beats = (state.beats ?? 0) + 1\n");
+        let r = check("beats.holon", "flow beats\nevery 5s\nstate beats\n\nstate.beats = (state.beats ?? 0) + 1\n");
         assert_eq!(r.code, 0, "{r:?}");
         let may = r.out.iter().position(|l| l == "it may:").unwrap_or_else(|| panic!("{:?}", r.out));
         assert_eq!(r.out[may + 1..], ["  read the clock", "  read its state \"beats\"", "  write its state \"beats\""]);
@@ -642,7 +784,7 @@ route POST /t (req) {
         assert!(fails("  sent = http.post(\"a.com\", \"/x\", stream: true)\n  respond sent.body, stream: true, status: 201").contains("takes no status"));
         assert!(fails("  sent = http.post(\"a.com\", \"/x\", stream: true, body: 1)\n  respond sent.body, stream: true").contains("stream: comes last"));
         assert!(fails("  a = http.post(\"a.com\", \"/x\", stream: true)\n  b = http.post(\"a.com\", \"/y\", stream: true)\n  respond { a: a.body, b: b.body }").contains("one streamed call"));
-        assert!(check("chat.holon", "flow chat\nevery 10s\n\nstate.x = http.get(\"a.com\", \"/x\", stream: true).body\n").err.join("\n").contains("a streamed call is a route's"));
+        assert!(check("chat.holon", "flow chat\nevery 10s\nstate x\n\nstate.x = http.get(\"a.com\", \"/x\", stream: true).body\n").err.join("\n").contains("a streamed call is a route's"));
         // stream: false is a plain call.
         assert_eq!(check("chat.holon", &flow("  sent = http.post(\"a.com\", \"/x\", stream: false)\n  respond sent.body")).code, 0);
     }
@@ -654,7 +796,7 @@ route POST /t (req) {
         assert_eq!(checked.code, 0, "{:?}", checked.err);
         assert_eq!(fmt("room.holon", text).unwrap(), text);
         // Not a route's: a clock flow may pipe too.
-        assert_eq!(check("room.holon", "flow room\nevery 10s\nchannel room\n\nstate.x = room.pipe(http.get(\"a.com\", \"/x\")).body\n").code, 0);
+        assert_eq!(check("room.holon", "flow room\nevery 10s\nchannel room\nstate x\n\nstate.x = room.pipe(http.get(\"a.com\", \"/x\")).body\n").code, 0);
         let fails = |line: &str| check("room.holon", &format!("flow room\nport 8200\nchannel room\n\nroute POST /ask (req) {{\n{line}\n  respond {{ ok: true }}, status: 202\n}}\n")).err.join("\n");
         assert!(fails("  s = room.pipe(http.post(\"a.com\", \"/x\", stream: true))").contains("without stream:"));
         assert!(fails("  s = room.pipe(1)").contains("only a call's answer can be piped"));
@@ -675,6 +817,27 @@ route POST /t (req) {
         assert!(fails("  respond updates.watch()").contains("a channel has no \"watch\""));
         assert!(fails("  updates = 1\n  respond 1").contains("a binding may not shadow it"));
         assert!(check("board.holon", "flow board\nport 8200\n\nroute GET /live (req) {\n  respond updates.subscribe()\n}\n").code != 0);
+    }
+
+    /// fmt declares a secret the body reads and the header doesn't name, and says so; the header
+    /// says what the flow needs first, by name (docs/L4s/declared-names-L4.md §4-5).
+    #[test]
+    fn fmt_declares_what_the_body_reads_and_says_so() {
+        let src = "# signs\nflow f\nport 8200\ncollection c\noptional HttpRequest(\"h\")\noptional secret.b\n\n# the route\nroute GET /a (req) {\n  respond { a: secret.a, b: secret.b, c: c[\"k\"] }\n}\n";
+        let (text, declared) = fmt_declaring("f.holon", src).unwrap();
+        assert_eq!(declared, ["secret a"]);
+        assert_eq!(text, "# signs\nflow f\nport 8200\nsecret a\noptional secret b\noptional HttpRequest(\"h\")\ncollection c\n\n# the route\nroute GET /a (req) {\n  respond { a: secret.a, b: secret.b, c: c[\"k\"] }\n}\n");
+        assert_eq!(fmt_declaring("f.holon", &text).unwrap(), (text.clone(), vec![]), "stable, and nothing more to declare");
+        // A declaration nothing reads is dropped, as a collection's is.
+        assert_eq!(fmt("f.holon", "flow f\nport 8200\nsecret unused\n\nroute GET /a (req) {\n  respond 204\n}\n").unwrap(), "flow f\nport 8200\n\nroute GET /a (req) {\n  respond 204\n}\n");
+        // A mistake past the added lines is said where it is in the file.
+        let r = fmt("f.holon", "flow f\nport 8200\n\nroute GET /a (req) {\n  respond secret.a\n  x = nope\n}\n").unwrap_err();
+        assert!(r.err[0].starts_with("f.holon:6:7: unknown name"), "{:?}", r.err);
+        assert_eq!(r.err[1], "    x = nope");
+        // State keys too: after what the flow needs provided, before the stores.
+        let (text, declared) = fmt_declaring("f.holon", "flow f\nport 8200\ncollection c\nsecret a\n\nroute GET /a (req) {\n  state.hits = (state.hits ?? 0) + 1\n  c[\"k\"] = state.set(last, secret.a)\n  respond 204\n}\n").unwrap();
+        assert_eq!(declared, ["state hits", "state last"]);
+        assert!(text.starts_with("flow f\nport 8200\nsecret a\nstate hits\nstate last\ncollection c\n\n"), "{text}");
     }
 
     #[test]

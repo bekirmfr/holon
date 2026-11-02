@@ -137,6 +137,23 @@ jobs:
       matrix:
         shard: [1, 2]
     steps:
+      # This runner keeps what a run leaves, and both filled their disks mid-run (ENOSPC,
+      # 2026-11-02). Every run: the MongoDB volumes earlier runs left behind (start-mongodb.sh now
+      # removes its own) and dangling images. Under 5 GB free, the kept build and npm's cache too:
+      # the build is redone, in minutes. Not more: the disks are 25 GB, one has 6 GB free with its
+      # build kept (3.5 GB), and a higher mark would rebuild there every run.
+      - name: Room on the runner's disk
+        run: |
+          free_gb() { df --output=avail -BG "$GITHUB_WORKSPACE" | tail -1 | tr -dc 0-9; }
+          echo "$(free_gb) GB free"
+          docker volume prune -f || true
+          docker image prune -f || true
+          if [ "$(free_gb)" -lt 5 ]; then
+            du -sh "$CARGO_TARGET_DIR" ~/.npm ~/.cache/ms-playwright ~/.rustup 2>/dev/null || true
+            echo "under 5 GB free: removing the kept build and npm's cache"
+            rm -rf "$CARGO_TARGET_DIR" ~/.npm/_cacache
+          fi
+          df -h "$GITHUB_WORKSPACE"
       - uses: actions/checkout@v4
       - run: bash .github/start-mongodb.sh
       - uses: dtolnay/rust-toolchain@stable
@@ -180,6 +197,14 @@ jobs:
         with:
           name: playwright-traces-${{ matrix.shard }}
           path: editor/test-results
+      # And after, however the run ended (failed, cancelled): its MongoDB with its volumes, and what
+      # an e2e server killed before its own cleanup left in the temp folder. The kept build stays.
+      - name: Clean up after the run
+        if: always()
+        run: |
+          docker rm -f -v mongo || true
+          rm -rf /tmp/holon-e2e-* editor/test-results
+          df -h "$GITHUB_WORKSPACE"
 
   # 5. The VS Code extension (editors/vscode): its grammar on every sample, through VS Code's own
   #    TextMate engine; then, in a real VS Code (downloaded, on a virtual display), a flow's

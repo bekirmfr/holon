@@ -1,7 +1,7 @@
 # Declared names: the header names everything that outlives a run (L4)
 
-**Status:** designed, not built (2026-11-01). Claims about the code are checked at `646b385` and
-cited by file and line there.
+**Status:** built (2026-11-01), in the three slices of §7; §10 says where the build differs from
+this design. Claims about the code are checked at `646b385` and cited by file and line there.
 
 A flow's text names the outside world in two ways today. A collection, folder, database, channel
 or called flow is declared in the header (`collection notes`) and used by its bare name
@@ -145,7 +145,7 @@ carries its name and a state node its key; the text is derived from them.
 
 - **A saved text without the new headers stops compiling.** Where a flow's text is shown, a saved
   text that doesn't compile already gives way to the text printed from its canvas
-  (`agent.rs:837-849`, `text_of`), and that print now carries the headers: the editor, `holon
+  (`agent.rs:87`, `text_of`), and that print now carries the headers: the editor, `holon
   flows show` and the agent tools show a correct text without anyone migrating it. Deployed flows
   keep running: the server runs their documents, not their text.
 - **`holon fmt` adds them.** fmt prints from the compiled document, which needs the text to
@@ -203,3 +203,21 @@ Each slice is one commit, run live (deploy a rewritten sample, send it a request
   (§5.1); keep it so unless the samples show a long list is common.
 - **State keys written by a holon used in several flows:** the holon's flow declares them, as with
   collections today; no holon-level declaration.
+
+## 10. As built
+
+- **HTTP hosts** stay inline (§3, §9): a host is a value the call is made with, and the approval
+  already names it.
+- **`text_of`** (§5) first adds the missing declarations to a saved text, as fmt would, and shows
+  that, so the author's comments and layout survive; only a text that still doesn't compile gives
+  way to the canvas print.
+- **`state.set(k, v)`** checks its key like `state.k`, and a key that isn't a name (a computed
+  one) is now refused: a key the header can't declare can't be checked.
+- **Leaves called by name** (`store_read(key: …)`, the wiring form's `node … = secret {…}`) aren't
+  checked against the header, as a collection's aren't.
+- **fmt** reports `formatted f.holon: declared secret signing_key, state beats`.
+- **The quick fix** (`holon lsp`, `textDocument/codeAction`) is offered on an undeclared-name
+  mistake and adds every missing line at once, after the last header (`editing::declare_missing`).
+  The web editor has no such button yet; its Format adds the lines as fmt does.
+- **Highlighting**: `secret k`, `optional secret k` and `state k` colour as headers, in the
+  editor's highlighter and the VS Code grammar; `secret.k` and `state.k` stay nouns.
