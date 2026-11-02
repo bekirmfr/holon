@@ -230,7 +230,7 @@ use holon_host::{
     run_rounds, PublishError, Waiting, Registry, Round, SharedCache, State, Store, StoreError,
 };
 use lifecycle::{Lifecycle, RunFrom, Session, Status};
-use recorder::{Log, LogEntry};
+use recorder::{Log, LogCell, LogEntry};
 use rouille::{Request, Response};
 use serde::{Deserialize, Serialize};
 
@@ -480,8 +480,9 @@ struct Deployment {
     /// each pinned to the unit it started on.
     parked: BTreeMap<String, ParkedRun>,
     /// Every run, with what it read and produced (recorder.rs): the newest in memory, kept beside
-    /// the deployments file so a restart reads them back.
-    log: Log,
+    /// the deployments file so a restart reads them back. Behind a lock of its own, so a run's
+    /// entry is written without holding the table (docs/L4s/request-path-L4.md, C2).
+    log: Arc<LogCell>,
     /// Its channels, with their kept packs and subscribers (channels.rs): kept across redeploys,
     /// rebuilt from the log at load.
     channels: Arc<channels::Channels>,

@@ -783,19 +783,30 @@ pub(crate) fn handle_post_fire(store: &SharedStore, request: &Request) -> Respon
 
 /// Add a run to `slug`'s flow log, in its current session: redacted of its secrets and of
 /// `tokens` (the run's), in one pass, so that the log's marks are only ever its own.
-pub(crate) fn log_run(deployments: &Mutex<BTreeMap<String, Deployment>>, slug: &str, mut entry: LogEntry, tokens: Redactor) {
-    if let Some(dep) = deployments.lock().unwrap().get_mut(slug) {
-        let answered = std::mem::take(&mut entry.answered);
-        tokens.and(Redactor::of(&dep.secrets)).and(Redactor::answers(&answered.0, &dep.secrets)).entry(&mut entry);
-        entry.session = dep.life.sessions.last().map_or(0, |s| s.number);
-        // Its packs go out as it is logged: the run is over and its writes have landed, and what
-        // a subscriber gets is what the log holds (channels.rs).
-        let packs = dep.channels.packs_of(&entry, dep.log.next_seq());
-        dep.log.push(entry);
+///
+/// The table is held only to take what the entry needs; the entry is redacted with no lock held,
+/// then numbered, chained and written under the deployment's own log lock, so a run of one
+/// deployment never waits on another's log (docs/L4s/request-path-L4.md, C2). Answers the seq the
+/// entry got.
+pub(crate) fn log_run(deployments: &Mutex<BTreeMap<String, Deployment>>, slug: &str, mut entry: LogEntry, tokens: Redactor) -> Option<u64> {
+    let (log, secrets, channels, permit, session) = {
+        let table = deployments.lock().unwrap();
+        let dep = table.get(slug)?;
+        (Arc::clone(&dep.log), Arc::clone(&dep.secrets), Arc::clone(&dep.channels), Arc::clone(&dep.permit), dep.life.sessions.last().map_or(0, |s| s.number))
+    };
+    let answered = std::mem::take(&mut entry.answered);
+    tokens.and(Redactor::of(&secrets)).and(Redactor::answers(&answered.0, &secrets)).entry(&mut entry);
+    entry.session = session;
+    Some(log.with(|log| {
+        // Its packs go out as it is logged, in the log's order: the run is over and its writes
+        // have landed, and what a subscriber gets is what the log holds (channels.rs).
+        let packs = channels.packs_of(&entry, log.next_seq());
+        let seq = log.push(entry);
         for (name, pack) in packs {
-            dep.channels.send(&name, pack, &dep.permit.channels);
+            channels.send(&name, pack, &permit.channels);
         }
-    }
+        seq
+    }))
 }
 
 /// The timeline, with the outputs of each node that carries the text of a file the log keeps by

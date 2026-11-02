@@ -131,10 +131,11 @@ fn named_in_value(value: &Value, out: &mut BTreeSet<Hash>) {
 fn named(deployments: &Mutex<BTreeMap<String, Deployment>>) -> Result<BTreeSet<Hash>, String> {
     let json = |what: &str, r: serde_json::Result<String>| r.map_err(|e| format!("its {what} can't be read for what they name: {e}"));
     let mut texts = Vec::new();
+    let mut logs = Vec::new();
     let states: Vec<_> = {
         let table = deployments.lock().unwrap();
         for dep in table.values() {
-            texts.extend(dep.log.lines());
+            logs.push(std::sync::Arc::clone(&dep.log));
             texts.extend(dep.events.lines());
             texts.push(json("sessions", serde_json::to_string(&dep.life.sessions))?);
             texts.push(json("versions", serde_json::to_string(&dep.versions))?);
@@ -144,6 +145,10 @@ fn named(deployments: &Mutex<BTreeMap<String, Deployment>>) -> Result<BTreeSet<H
         }
         table.values().filter_map(|d| d.state.clone()).collect()
     };
+    // The logs' files read with the table let go: reading them holds up no run.
+    for log in logs {
+        texts.extend(log.with(|log| log.lines()));
+    }
     let mut hashes = BTreeSet::new();
     for cell in states {
         let state = cell.state.lock().unwrap();

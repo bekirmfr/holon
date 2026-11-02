@@ -3796,7 +3796,7 @@ fn a_flow_log_survives_a_restart_and_goes_with_its_deployment() {
     assert!(file.exists());
 
     let reloaded = load_deployments(&path, &state.store, &state.policy()).unwrap();
-    let entries = reloaded["kept"].log.after(None, 10);
+    let entries = reloaded["kept"].log.with(|log| log.after(None, 10));
     assert_eq!(entries.iter().map(|e| e.seq).collect::<Vec<_>>(), [0, 1], "read back after a restart");
     assert_eq!(entries[1].unit, to_hex(&writer));
 
@@ -3829,14 +3829,14 @@ fn a_flow_log_is_a_chain_and_a_changed_run_shows_as_a_break() {
     assert_eq!(entries[1]["prev"], recorder::line_hash(lines[0]));
     assert_eq!(log["head"], recorder::line_hash(lines[2]));
     assert_eq!(log["breaks"], serde_json::json!([]));
-    assert!(load_deployments(&path, &state.store, &state.policy()).unwrap()["chained"].log.breaks().is_empty());
+    assert!(load_deployments(&path, &state.store, &state.policy()).unwrap()["chained"].log.with(|log| log.breaks().is_empty()));
 
     // The first run's body changed in the file: the second no longer follows it.
     let changed = text.replacen("hello", "jello", 1);
     assert_ne!(changed, text, "the run's request is in the file");
     std::fs::write(&file, changed).unwrap();
     let reloaded = load_deployments(&path, &state.store, &state.policy()).unwrap();
-    assert_eq!(reloaded["chained"].log.breaks(), [1]);
+    assert_eq!(reloaded["chained"].log.with(|log| log.breaks().to_vec()), [1]);
 
     route(&state, &req("POST", "/deployments/chained/stop", vec![]));
     route(&state, &req("DELETE", "/deployments/chained", vec![]));
@@ -7001,7 +7001,7 @@ allow_private_addresses = true").unwrap());
 
     let table = state.deployments.lock().unwrap();
     let dep = &table[&slug];
-    let rebuilt = channels::Channels::from_log(&dep.log, &dep.permit.channels);
+    let rebuilt = dep.log.with(|log| channels::Channels::from_log(log, &dep.permit.channels));
     let again: Vec<String> = rebuilt.kept("orders", true).iter().map(|p| format!("{} {}", p.id.unwrap(), p.json)).collect();
     assert_eq!(again, both);
 }
@@ -7221,6 +7221,64 @@ fn a_closure_too_big_to_run_is_refused_and_every_sample_is_well_inside() {
     // One level less is materialized.
     let inside = match store.get(&below).unwrap().unwrap().body { UnitBody::Composite { children, .. } => children[0], _ => unreachable!() };
     closure(&state.store, inside).unwrap();
+}
+
+/// An action's answer names its own run's entry, however many runs of its deployment log at once
+/// (the seq comes from the log as the entry is written, not from a read before it).
+#[test]
+fn an_actions_reported_entry_is_its_own_under_concurrent_runs() {
+    let state = test_state();
+    let slug = deploy_plain_text(&state, "flow echoer\n\naction echo (input) {\n  respond { id: input.id }\n}\n");
+    let answered: Vec<(String, u64)> = thread::scope(|s| {
+        let workers: Vec<_> = (0..8)
+            .map(|t| {
+                let (state, slug) = (&state, &slug);
+                s.spawn(move || {
+                    (0..25)
+                        .map(|i| {
+                            let id = format!("t{t}-{i}");
+                            let body = serde_json::to_vec(&serde_json::json!({ "id": id })).unwrap();
+                            let r = body_json(route(state, &req("POST", &format!("/trigger/{slug}/echo"), body)));
+                            assert_eq!(r["answer"]["id"], id.as_str(), "{r}");
+                            (id, r["seq"].as_u64().unwrap())
+                        })
+                        .collect::<Vec<_>>()
+                })
+            })
+            .collect();
+        workers.into_iter().flat_map(|w| w.join().unwrap()).collect()
+    });
+    let log = body_json(route(&state, &req("GET", &format!("/deployments/{slug}/log?limit=1000"), vec![])));
+    let by_seq: BTreeMap<u64, String> =
+        log["entries"].as_array().unwrap().iter().map(|e| (e["seq"].as_u64().unwrap(), e["response_body"].as_str().unwrap_or_default().to_string())).collect();
+    assert_eq!(by_seq.len(), 200, "every run logged once");
+    for (id, seq) in answered {
+        assert!(by_seq[&seq].contains(&id), "run {seq} answered {id:?}, and its entry says {:?}", by_seq[&seq]);
+    }
+}
+
+/// One deployment's log being written (or cut back) holds up no other deployment's runs: each
+/// log has its own lock, and the table is never held while a log is written.
+#[test]
+fn one_deployments_log_doesnt_hold_up_another() {
+    let state = test_state();
+    let busy = deploy_plain_text(&state, include_str!("../../holon-author/samples/calc.holon"));
+    let other = deploy_plain_text(&state, include_str!("../../holon-author/samples/hello-api.holon"));
+    let held = Arc::clone(&state.deployments.lock().unwrap()[&busy].log);
+    let (holding, held_now) = std::sync::mpsc::channel();
+    thread::scope(|s| {
+        s.spawn(|| {
+            held.with(|_| {
+                holding.send(()).unwrap();
+                thread::sleep(Duration::from_millis(800));
+            })
+        });
+        held_now.recv().unwrap();
+        let t = std::time::Instant::now();
+        let r = serve_data(&state.store, &state.deployments, &state.deployments_path, &other, &fake_data("GET", "/hello/Ada", vec![]));
+        assert_eq!(r.status, 200);
+        assert!(t.elapsed() < Duration::from_millis(400), "{other} waited {:?} for {busy}'s log", t.elapsed());
+    });
 }
 
 /// Units for the flow cache's tests: a leaf, and composites placing children.
@@ -7699,6 +7757,38 @@ fn request_throughput() {
             println!("{label:<22} {threads:>7} {:>10.0} {:>10.2?} {:>10.2?}", times.len() as f64 / elapsed, at(0.50), at(0.99));
         }
     }
+    // Two deployments at once, 32 threads each: what one deployment's runs cost the other's.
+    let together = [routes[0], routes[1]];
+    let started = std::time::Instant::now();
+    let stop = started + Duration::from_secs_f64(secs);
+    let counts: Vec<usize> = thread::scope(|s| {
+        let workers: Vec<_> = together
+            .iter()
+            .flat_map(|&(slug, method, url, body)| (0..32).map(move |_| (slug, method, url, body)))
+            .map(|(slug, method, url, body)| {
+                let (state, request) = (&state, &request);
+                s.spawn(move || {
+                    let mut n = 0;
+                    while std::time::Instant::now() < stop {
+                        assert_eq!(serve_data(&state.store, &state.deployments, &state.deployments_path, slug, &request(method, url, body)).status, 200);
+                        n += 1;
+                    }
+                    n
+                })
+            })
+            .collect();
+        workers.into_iter().map(|w| w.join().unwrap()).collect()
+    });
+    let elapsed = started.elapsed().as_secs_f64();
+    let (hello, calc): (usize, usize) = (counts[..32].iter().sum(), counts[32..].iter().sum());
+    println!(
+        "{:<22} {:>7} {:>10.0}   (GET /hello/Ada {:.0}, POST /calc {:.0})",
+        "hello + calc at once",
+        64,
+        (hello + calc) as f64 / elapsed,
+        hello as f64 / elapsed,
+        calc as f64 / elapsed
+    );
     let _ = std::fs::remove_dir_all(&store_dir);
     let _ = std::fs::remove_file(&state.deployments_path);
     let _ = std::fs::remove_dir_all(Path::new(&state.deployments_path).with_extension("logs"));

@@ -96,10 +96,12 @@ pub(crate) fn handle_get_export(
             Some(Err(_)) => return err(400, "max_files_bytes is a number of bytes"),
         }
     };
-    let (lines, head, redactor, events, events_head) = match deployments.lock().unwrap().get(slug) {
-        Some(dep) => (dep.log.lines(), dep.log.head().to_string(), crate::secrets::Redactor::of(&dep.secrets), dep.events.lines(), dep.events.head().to_string()),
+    let (log, redactor, events, events_head) = match deployments.lock().unwrap().get(slug) {
+        Some(dep) => (std::sync::Arc::clone(&dep.log), crate::secrets::Redactor::of(&dep.secrets), dep.events.lines(), dep.events.head().to_string()),
         None => return err(404, format!("no deployment {slug:?}")),
     };
+    // The lines and their head under one lock, so the export's chain ends at its head.
+    let (lines, head) = log.with(|log| (log.lines(), log.head().to_string()));
     let mut units = BTreeMap::new();
     let entries: Vec<LogEntry> = lines.iter().filter_map(|l| serde_json::from_str::<LogEntry>(l).ok()).collect();
     let mut blobs = BTreeMap::new();

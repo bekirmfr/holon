@@ -334,11 +334,12 @@ fn deploy(
             }
             None => Lifecycle::deployed(now_secs),
         };
-        let (mut log, old_document, mut versions, mut events) = match deployments.get_mut(&body.slug) {
-            Some(old) => (std::mem::take(&mut old.log), old.document.take(), std::mem::take(&mut old.versions), std::mem::take(&mut old.events)),
-            None => (Log::for_deployment(deployments_path, &body.slug), None, Vec::new(), crate::events::Events::for_deployment(deployments_path, &body.slug)),
+        let (log, old_document, mut versions, mut events) = match deployments.get_mut(&body.slug) {
+            // The log goes on across versions: a run of the old version still in flight logs to it.
+            Some(old) => (Arc::clone(&old.log), old.document.take(), std::mem::take(&mut old.versions), std::mem::take(&mut old.events)),
+            None => (Arc::new(LogCell::new(Log::for_deployment(deployments_path, &body.slug))), None, Vec::new(), crate::events::Events::for_deployment(deployments_path, &body.slug)),
         };
-        log.retain(permit.log.keep_runs as usize, permit.log.max_age_ms());
+        log.with(|log| log.retain(permit.log.keep_runs as usize, permit.log.max_age_ms()));
         // Every deploy is a version, kept for good with what it asked, so it can be deployed
         // again; one deployed without a canvas keeps the canvas it had.
         version = versions.last().map_or(1, |v| v.number + 1);
@@ -838,7 +839,7 @@ pub(crate) fn handle_delete_deployment(
     };
     match removed {
         Some(dep) => {
-            dep.log.delete_file();
+            dep.log.with(|log| log.delete_file());
             dep.events.delete_file();
             dep.arrivals.forget();
             dep.channels.close();
@@ -1115,8 +1116,8 @@ pub(crate) fn run_action(
         Err(e) => entry.error = Some(e),
     }
     let (parked_any, error) = (!entry.parked.is_empty(), entry.error.is_some());
-    let seq = deployments.lock().unwrap().get(slug).map_or(0, |d| d.log.next_seq());
-    log_run(deployments, slug, entry, Redactor::tokens(&waits.tokens));
+    // The seq its entry got, not the next one read beforehand: another run may log between.
+    let seq = log_run(deployments, slug, entry, Redactor::tokens(&waits.tokens)).unwrap_or(0);
     if state.is_some() || parked_any {
         persist_deployments(deployments_path, deployments, store);
     }
@@ -1155,15 +1156,19 @@ pub(crate) fn run_action(
 pub(crate) fn handle_get_log(deployments: &Mutex<BTreeMap<String, Deployment>>, slug: &str, request: &Request) -> Response {
     let after = request.get_param("after").and_then(|a| a.parse::<u64>().ok());
     let limit = request.get_param("limit").and_then(|l| l.parse::<usize>().ok()).unwrap_or(200);
-    match deployments.lock().unwrap().get(slug) {
-        Some(dep) => Response::json(&serde_json::json!({
-            "entries": dep.log.after(after, limit),
-            "next": dep.log.next_seq(),
-            "head": dep.log.head(),
-            "breaks": dep.log.breaks(),
-        })),
-        None => err(404, format!("no deployment {slug:?}")),
-    }
+    // The table only to find the log, so a page reading it never holds up another deployment.
+    let Some(log) = deployments.lock().unwrap().get(slug).map(|dep| Arc::clone(&dep.log)) else {
+        return err(404, format!("no deployment {slug:?}"));
+    };
+    // Under one lock, so the entries, the head and the breaks agree.
+    log.with(|log| {
+        Response::json(&serde_json::json!({
+            "entries": log.after(after, limit),
+            "next": log.next_seq(),
+            "head": log.head(),
+            "breaks": log.breaks(),
+        }))
+    })
 }
 
 /// Keep a flow document in the content store, as a text value holding its JSON: its hash (hex).
@@ -1416,7 +1421,7 @@ fn restore_plan(state: &AppState, slug: &str, point: Point, code: bool, with_sta
             return Err(err(409, format!("can't restore {slug:?}'s state: {}", crate::lifecycle::LifecycleError::Stopped.message())));
         }
     }
-    let kept = dep.log.after(None, usize::MAX);
+    let kept = dep.log.with(|log| log.after(None, usize::MAX));
     let (version, put_back) = match point {
         Point::Version(n) => {
             let Some(i) = dep.versions.iter().position(|v| v.number == n) else {
@@ -1523,7 +1528,7 @@ fn state_change(state: &AppState, slug: &str, snapshot: &str, label: &str, since
         Some(d) => {
             // The runs before the point: what a file was there, the last write before it.
             let first = since.first().map_or(u64::MAX, |e| e.seq);
-            let before = if since.is_empty() { Vec::new() } else { d.log.after(None, usize::MAX).into_iter().filter(|e| e.seq < first).collect() };
+            let before = if since.is_empty() { Vec::new() } else { d.log.with(|log| log.after(None, usize::MAX)).into_iter().filter(|e| e.seq < first).collect() };
             (d.state.clone(), Some(Redactor::of(&d.secrets)), before)
         }
         None => (None, None, Vec::new()),

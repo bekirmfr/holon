@@ -61,7 +61,7 @@ pub(crate) fn handle_get_changes(state: &AppState, slug: &str, request: &Request
     let (entries, older, events, redactor, now) = {
         let table = state.deployments.lock().unwrap();
         let Some(dep) = table.get(slug) else { return err(404, format!("no deployment {slug:?}")) };
-        let mut entries: Vec<LogEntry> = dep.log.after(None, usize::MAX).into_iter().filter(|e| e.seq < before).collect();
+        let mut entries: Vec<LogEntry> = dep.log.with(|log| log.after(None, usize::MAX)).into_iter().filter(|e| e.seq < before).collect();
         let more = entries.len() > SCAN;
         entries.drain(..entries.len().saturating_sub(SCAN));
         let live = dep.state.as_ref().map(|arc| arc.state.lock().unwrap().values()).unwrap_or_default();

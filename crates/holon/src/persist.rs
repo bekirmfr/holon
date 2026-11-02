@@ -274,7 +274,7 @@ pub(crate) fn load_deployments(
                 folders: Arc::new(folders::Scoped::memory()),
                 arrivals,
                 parked: record.parked.into_iter().map(|p| (p.run_id.clone(), p)).collect(),
-                log,
+                log: Arc::new(LogCell::new(log)),
                 document: record.document,
                 versions,
                 trigger_count: record.trigger_count,

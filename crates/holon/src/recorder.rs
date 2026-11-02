@@ -24,6 +24,8 @@
 //! check only once one with a `prev` has been seen.
 
 use std::collections::{BTreeMap, VecDeque};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Mutex;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -372,6 +374,39 @@ pub struct Log {
     breaks: Vec<u64>,
     /// The deployment it is the log of, whose heads go to the witness, if one is set (heads.rs).
     slug: Option<String>,
+    /// The file, open for appending once a line is written, so a line is one write; closed before
+    /// a cut-back replaces the file, and before the file is deleted.
+    handle: Option<std::fs::File>,
+}
+
+/// One deployment's log behind a lock of its own (docs/L4s/request-path-L4.md, C2): runs of one
+/// deployment append one at a time, in one order, and runs of different deployments never wait
+/// for each other. The deployments table is never taken while this lock is held. `next_seq` is
+/// mirrored outside the lock, for a reader that holds the table and needs only that.
+#[derive(Debug)]
+pub struct LogCell {
+    log: Mutex<Log>,
+    next_seq: AtomicU64,
+}
+
+impl LogCell {
+    pub fn new(log: Log) -> LogCell {
+        let next_seq = AtomicU64::new(log.next_seq);
+        LogCell { log: Mutex::new(log), next_seq }
+    }
+
+    /// The seq the next entry will get, without taking the lock.
+    pub fn next_seq(&self) -> u64 {
+        self.next_seq.load(Ordering::Acquire)
+    }
+
+    /// Run `f` on the log, under its lock.
+    pub fn with<T>(&self, f: impl FnOnce(&mut Log) -> T) -> T {
+        let mut log = self.log.lock().unwrap();
+        let out = f(&mut log);
+        self.next_seq.store(log.next_seq, Ordering::Release);
+        out
+    }
 }
 
 impl Default for Log {
@@ -419,6 +454,7 @@ impl Log {
             head: String::new(),
             breaks: Vec::new(),
             slug: None,
+            handle: None,
         };
         let Some(path) = &log.file else { return log };
         let Ok(text) = std::fs::read_to_string(path) else { return log };
@@ -494,15 +530,16 @@ impl Log {
 
     /// Append `entry`, numbering it and chaining it to the one before, and drop the oldest past
     /// what it keeps; keep it in the file.
-    pub fn push(&mut self, mut entry: LogEntry) {
-        entry.seq = self.next_seq;
+    pub fn push(&mut self, mut entry: LogEntry) -> u64 {
+        let seq = self.next_seq;
+        entry.seq = seq;
         self.next_seq += 1;
         entry.prev = self.head.clone();
         let line = match serde_json::to_string(&entry) {
             Ok(line) => line,
             Err(e) => {
                 eprintln!("holon: could not write a flow log entry: {e}");
-                return;
+                return seq;
             }
         };
         self.head = line_hash(&line);
@@ -513,6 +550,7 @@ impl Log {
         if let Err(e) = self.keep_line(&line, at_ms) {
             eprintln!("holon: could not keep the flow log in {:?}: {e}", self.file);
         }
+        seq
     }
 
     /// Write the newest entry's `line` (a run at `at_ms`) to the file: appended, or, once the
@@ -520,7 +558,9 @@ impl Log {
     /// file cut back to what it keeps.
     fn keep_line(&mut self, line: &str, at_ms: u64) -> std::io::Result<()> {
         let Some(path) = self.file.clone() else { return Ok(()) };
-        if let Some(dir) = path.parent() {
+        if self.handle.is_none()
+            && let Some(dir) = path.parent()
+        {
             std::fs::create_dir_all(dir)?;
         }
         if self.written + 1 > 2 * self.keep || self.file_aged(now_ms()) {
@@ -531,19 +571,26 @@ impl Log {
         }
         use std::io::Write;
         let text = if std::mem::take(&mut self.cut) { format!("\n{line}\n") } else { format!("{line}\n") };
-        let new = !path.exists();
-        let mut options = std::fs::OpenOptions::new();
-        options.append(true).create(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
+        if self.handle.is_none() {
+            let new = !path.exists();
+            let mut options = std::fs::OpenOptions::new();
+            options.append(true).create(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.mode(0o600);
+            }
+            let file = options.open(&path)?;
+            if new {
+                crate::sealing::restrict_to_owner(&path)?;
+            }
+            self.handle = Some(file);
         }
-        let mut file = options.open(&path)?;
-        if new {
-            crate::sealing::restrict_to_owner(&path)?;
+        if let Err(e) = self.handle.as_mut().expect("opened above").write_all(text.as_bytes()) {
+            // Opened again for the next line, in case the file went away under it.
+            self.handle = None;
+            return Err(e);
         }
-        file.write_all(text.as_bytes())?;
         self.written += 1;
         Ok(())
     }
@@ -553,6 +600,9 @@ impl Log {
     /// line, which carries the numbering and the chain on.
     fn cut_back(&mut self, line: Option<&str>) -> std::io::Result<()> {
         let Some(path) = self.file.clone() else { return Ok(()) };
+        // Closed before the file is replaced: a handle would go on writing to the old one (and
+        // Windows won't replace an open file). The next line opens the new one.
+        self.handle = None;
         let cutoff = self.max_age_ms.map(|age| now_ms().saturating_sub(age));
         let text = std::fs::read_to_string(&path).unwrap_or_default();
         let mut lines: Vec<(&str, LogEntry)> =
@@ -622,7 +672,8 @@ impl Log {
     }
 
     /// Delete the file: its deployment was deleted.
-    pub fn delete_file(&self) {
+    pub fn delete_file(&mut self) {
+        self.handle = None;
         if let Some(path) = &self.file {
             let _ = std::fs::remove_file(path);
         }

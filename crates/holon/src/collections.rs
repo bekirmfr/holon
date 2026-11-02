@@ -145,7 +145,7 @@ pub(crate) fn handle_get_collection(state: &AppState, slug: &str, name: &str, re
             },
             Some(hex) => {
                 let Some(r) = parse_hash(hex) else { return err(400, "root is not a 64-char hex hash") };
-                if live != Some(r) && !dep.log.shows(&cell, hex) {
+                if live != Some(r) && !dep.log.with(|log| log.shows(&cell, hex)) {
                     return err(404, format!("{name:?} was never at that root in {slug:?}'s log"));
                 }
                 r

@@ -1699,7 +1699,9 @@ pub(crate) const SWEEP_SPARES_MS: u64 = 5 * 60 * 1000;
 /// `spare_ms`. A run whose text is swept stays provable by its hash; `holon verify` then runs it
 /// again only with the file given.
 pub(crate) fn sweep(folders: &Folders, deployments: &Mutex<BTreeMap<String, Deployment>>, now_ms: u64, spare_ms: u64) -> Result<blobs::Swept, String> {
-    let logs: Vec<(String, Vec<String>)> = deployments.lock().unwrap().iter().map(|(slug, d)| (slug.clone(), d.log.lines())).collect();
+    // Each log read with the table let go: reading its file holds up no run.
+    let cells: Vec<(String, Arc<crate::recorder::LogCell>)> = deployments.lock().unwrap().iter().map(|(slug, d)| (slug.clone(), Arc::clone(&d.log))).collect();
+    let logs: Vec<(String, Vec<String>)> = cells.into_iter().map(|(slug, log)| (slug, log.with(|log| log.lines()))).collect();
     let mut live = BTreeSet::new();
     for (slug, lines) in &logs {
         for entry in lines.iter().filter_map(|l| serde_json::from_str::<LogEntry>(l).ok()) {

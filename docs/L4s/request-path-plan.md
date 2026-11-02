@@ -32,7 +32,7 @@ code. Where the design leaves a decision open (§8), the step that needs it says
 |---|---|---|---|---|
 | 1 | The throughput check (**done**) | `holon` (tests) | none | |
 | 2 | C1, closures by hash (**done**) | `holon` | none | decided: `--flow-cache`, in bytes, 256 MiB |
-| 3 | C2 (a)(b), the log's own lock and the open file | `holon` | none | |
+| 3 | C2 (a)(b), the log's own lock and the open file (**done**) | `holon` | none | |
 | 4 | C2 (c), cut-back without parsing | `holon` | none | |
 | 5 | C2 (d), lazy sync and the witness hook | `holon` | none | Q7, the interval (default 1 s) |
 | 6 | C3 (a), persist on change | `holon` | none | Q1, counters |
@@ -72,6 +72,9 @@ the data-plane helpers.
   with `{"op":"mul","a":6,"b":7}`, `GET /hit` and `GET /last`.
 - **Print** one line per route and N: req/s, p50 and p99. Assert only that every answer is 200, so
   the test never fails on timing.
+- **Two deployments at once** (added in step 3): `hello` and `calc` driven together, 32 threads
+  each, printing their combined req/s and each one's. This is what shows one deployment's runs
+  holding up another's.
 
 **Limits.** It calls `serve_data` directly, so it doesn't measure hyper or the hop onto the
 blocking pool (`dataplane.rs:295`). Steps 9 and 12, which change those, also report a live
@@ -113,7 +116,33 @@ through `&impl Resolver`.
   until step 6.
 - Live over HTTP with `--flow-cache 64M`, `hello` served 4,987 req/s at 64 connections.
 
-## Step 3. C2 (a)(b): each deployment's log behind its own lock, written through an open file
+## Step 3. C2 (a)(b): each deployment's log behind its own lock, written through an open file (done)
+
+**Built** as sketched below. `Deployment.log` is `Arc<LogCell>` (`recorder.rs`), and `log_run` takes
+the table only to clone what the entry needs, redacts with no lock held, and numbers, chains and
+writes under the deployment's own lock, returning the seq. The log keeps its file open, and closes
+it before a cut-back or a delete. B.1 is fixed (`run_action` uses the seq `log_run` returns). The log
+page, the export and both sweeps release the table before reading a log. The rare readers (deploy,
+delete, the grant re-check, restore planning, the changes and collection pages) read it under the
+table, which the lock order allows, since the log lock never takes the table.
+
+**Tests added:** `an_actions_reported_entry_is_its_own_under_concurrent_runs` (8 threads, 200 runs of
+one action, each answer's seq naming its own entry) and `one_deployments_log_doesnt_hold_up_another`.
+`cargo test --release -p holon` passed (383 passed, 1 ignored), and clippy was clean.
+
+**Measured.**
+
+| 64 threads | Before (step 2) | After |
+|---|---|---|
+| `hello` and `calc` driven together, combined | 5,113 req/s (2,536 + 2,577) | 11,224 req/s (6,358 + 4,866), 2.2× |
+| `hello` alone | 6,093–6,734 | 7,482–7,902 |
+| `calc` alone | 5,096–5,464 | 5,479–6,388 |
+
+One deployment alone gains little, because its runs still append one at a time under its own log
+lock, held about 110 µs a run, most of it the cut-back's share (step 4). Run live: `hello` and `calc`
+over HTTP at once served 4,147 and 3,282 req/s, and `holon verify` on the export re-ran all 672
+exported runs with the chain unbroken.
+
 
 **Code.**
 - **The cell**, in `recorder.rs`:
