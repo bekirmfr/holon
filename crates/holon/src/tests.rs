@@ -7281,6 +7281,35 @@ fn one_deployments_log_doesnt_hold_up_another() {
     });
 }
 
+/// The run logs and event logs written since the last sync are synced (recorder.rs's
+/// `sync_logs`); a log whose file can't be synced keeps its flag and says why, and is synced once
+/// it can be.
+#[test]
+fn sync_logs_syncs_what_was_written_and_keeps_a_log_that_fails_dirty() {
+    let mut state = test_state();
+    state.deployments_path = unique_temp_path("sync-logs");
+    let slug = deploy_plain_text(&state, include_str!("../../holon-author/samples/hello-api.holon"));
+    assert_eq!(serve_data(&state.store, &state.deployments, &state.deployments_path, &slug, &fake_data("GET", "/hello/Ada", vec![])).status, 200);
+    let log = Arc::clone(&state.deployments.lock().unwrap()[&slug].log);
+    assert_eq!(recorder::sync_logs(&state.deployments), Ok(()));
+    assert_eq!(log.with(Log::take_dirty), None, "the run log is synced");
+    assert_eq!(state.deployments.lock().unwrap().get_mut(&slug).unwrap().events.take_dirty(), None, "and its events");
+
+    // A file that can't be opened to sync: a folder where the log was.
+    assert_eq!(serve_data(&state.store, &state.deployments, &state.deployments_path, &slug, &fake_data("GET", "/hello/Bo", vec![])).status, 200);
+    let file = recorder::file_for(&state.deployments_path, &slug).unwrap();
+    std::fs::remove_file(&file).unwrap();
+    std::fs::create_dir(&file).unwrap();
+    let failed = recorder::sync_logs(&state.deployments).unwrap_err();
+    assert!(failed.contains("could not sync the run log"), "{failed}");
+    assert!(recorder::sync_logs(&state.deployments).is_err(), "its flag was put back: tried again");
+    std::fs::remove_dir(&file).unwrap();
+    assert_eq!(recorder::sync_logs(&state.deployments), Ok(()));
+    assert_eq!(log.with(Log::take_dirty), None);
+    let _ = std::fs::remove_file(&state.deployments_path);
+    let _ = std::fs::remove_dir_all(Path::new(&state.deployments_path).with_extension("logs"));
+}
+
 /// Units for the flow cache's tests: a leaf, and composites placing children.
 fn cache_leaf(name: &str) -> Unit {
     Unit { params: vec![], ..holon_core::interface_of(name).unwrap() }

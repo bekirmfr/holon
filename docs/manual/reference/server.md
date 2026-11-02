@@ -177,9 +177,13 @@ and the grant it ran under, and who started it. Secrets and resume tokens are re
 looks like one is written escaped (each `‹` before it doubled, and `"escaped": true` on the
 entry), so a placeholder in the log is always the server's own.
 
+A run's entry is written before its answer is sent, and synced to disk within a second, as the
+deployment's events are: a power loss can lose the last second of entries, never more.
+
 `--export-heads URL` sends each new head to a witness every five seconds, with
 `HOLON_EXPORT_HEADS_TOKEN` as a bearer token; heads that can't be sent wait in
-`deployments.heads/`. See [Checking runs](../guides/checking-runs.md#witnesses).
+`deployments.heads/`. A head is sent only once the entry it names is on disk, so a witness never
+holds a head the server's disk lost. See [Checking runs](../guides/checking-runs.md#witnesses).
 
 ## Limits a run has
 

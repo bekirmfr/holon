@@ -55,7 +55,13 @@ pub struct Exporter {
     /// The heads not yet taken by the witness, oldest first, kept in step with `pending.jsonl`.
     pending: Mutex<VecDeque<Head>>,
     agent: ureq::Agent,
+    /// What makes the lines a batch's heads name durable, run before the batch is sent: the server
+    /// syncs its logs (recorder.rs's `sync_logs`), so a witness never holds a head the disk lacks.
+    before_send: OnceLock<Hook>,
 }
+
+/// A step run before each batch is sent; an error sends nothing.
+pub type Hook = Box<dyn Fn() -> Result<(), String> + Send + Sync>;
 
 static EXPORTER: OnceLock<Arc<Exporter>> = OnceLock::new();
 
@@ -70,6 +76,14 @@ pub fn start(url: &str, token: Option<String>, dir: Option<PathBuf>, every: Dura
     EXPORTER.set(Arc::clone(&exporter)).map_err(|_| "heads are already being exported".to_string())?;
     std::thread::spawn(move || exporter.run(every));
     Ok(())
+}
+
+/// Run `hook` before each batch is sent to the witness, if heads are being exported: the server
+/// syncs its logs there (docs/L4s/request-path-L4.md, C2 d).
+pub fn before_send(hook: Hook) {
+    if let Some(exporter) = EXPORTER.get() {
+        exporter.before_send(hook);
+    }
 }
 
 /// Queue `head` for the witness, if heads are being exported.
@@ -99,7 +113,13 @@ impl Exporter {
             dir,
             pending: Mutex::new(pending),
             agent: ureq::AgentBuilder::new().timeout(Duration::from_secs(30)).build(),
+            before_send: OnceLock::new(),
         })
+    }
+
+    /// Run `hook` before each batch is sent from now on (once: a second is ignored).
+    pub fn before_send(&self, hook: Hook) {
+        let _ = self.before_send.set(hook);
     }
 
     /// Queue `head`, on disk too.
@@ -134,6 +154,10 @@ impl Exporter {
             let batch: Vec<Head> = self.pending.lock().unwrap().iter().take(MAX_BATCH.min(left)).cloned().collect();
             if batch.is_empty() {
                 return Ok(sent);
+            }
+            // The lines these heads name made durable first: once taken, a head stays taken.
+            if let Some(hook) = self.before_send.get() {
+                hook()?;
             }
             let heads = serde_json::to_string(&batch).map_err(|e| e.to_string())?;
             let id = blake3::hash(heads.as_bytes()).to_hex().to_string();
@@ -289,6 +313,29 @@ mod tests {
         assert_eq!(ex.flush(), Ok(1), "only what waited when it began");
         assert_eq!(ex.waiting(), 1, "the witness's own head, for next time");
         assert_eq!(ex.flush(), Ok(1));
+    }
+
+    /// The lines a batch's heads name are made durable before the batch goes: the hook runs before
+    /// each POST, and a hook that fails sends nothing and leaves the heads waiting.
+    #[test]
+    fn a_batch_goes_only_after_its_hook_has_run() {
+        let (url, got) = witness(Arc::new(Mutex::new(200)));
+        let exporter = Exporter::new(&url, None, None).unwrap();
+        let failing = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let (fails, sees, taken) = (Arc::clone(&failing), Arc::clone(&seen), Arc::clone(&got));
+        exporter.before_send(Box::new(move || {
+            // What the witness had taken when the hook ran: nothing of this batch yet.
+            sees.lock().unwrap().push(taken.lock().unwrap().len());
+            if fails.load(std::sync::atomic::Ordering::SeqCst) { Err("the disk is full".into()) } else { Ok(()) }
+        }));
+        exporter.note(head(0));
+        assert_eq!(exporter.flush(), Err("the disk is full".into()));
+        assert_eq!((got.lock().unwrap().len(), exporter.waiting()), (0, 1), "nothing sent, the head still waits");
+        failing.store(false, std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(exporter.flush(), Ok(1));
+        assert_eq!(got.lock().unwrap().len(), 1);
+        assert_eq!(*seen.lock().unwrap(), [0, 0], "the hook ran before each send");
     }
 
     #[test]

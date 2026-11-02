@@ -1096,6 +1096,32 @@ fn serve(args: Vec<String>) {
     spawn_clock_scheduler(store.clone(), Arc::clone(&deployments), deployments_arg.clone());
     arrivals::spawn_watcher(store.clone(), Arc::clone(&deployments), deployments_arg.clone());
     {
+        // The run logs and event logs are synced to disk every second, so a power loss loses at most
+        // the last second of them (recorder.rs's `sync_logs`); and before each batch of heads goes
+        // to a witness, so a witness never holds a head whose line the disk lacks.
+        let syncing = Arc::clone(&deployments);
+        std::thread::spawn(move || {
+            let mut failing = false;
+            loop {
+                std::thread::sleep(recorder::SYNC_EVERY);
+                match recorder::sync_logs(&syncing) {
+                    Ok(()) if failing => {
+                        println!("holon: the run logs are synced to disk again");
+                        failing = false;
+                    }
+                    Ok(()) => {}
+                    Err(e) if !failing => {
+                        eprintln!("holon: {e} (tried again every second)");
+                        failing = true;
+                    }
+                    Err(_) => {}
+                }
+            }
+        });
+        let before = Arc::clone(&deployments);
+        heads::before_send(Box::new(move || recorder::sync_logs(&before)));
+    }
+    {
         // The texts of files no kept run refers to any more are swept (folders.rs).
         let (folders, deployments) = (Arc::clone(&folders), Arc::clone(&deployments));
         std::thread::spawn(move || {

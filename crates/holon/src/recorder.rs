@@ -384,6 +384,54 @@ pub struct Log {
     /// How long the file is, as this log wrote it: a file of another length was changed outside
     /// holon, and a cut-back reads it afresh.
     file_len: u64,
+    /// Whether lines were written since the file was last synced to disk (`sync_logs`).
+    dirty: bool,
+}
+
+/// How often the logs' files are synced to disk (`sync_logs`): what a power loss can lose of them,
+/// at most (docs/L4s/request-path-L4.md, C2 d).
+pub const SYNC_EVERY: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// Sync `path`'s written data to disk. A file that isn't there any more (its deployment was
+/// deleted) has nothing to sync.
+pub fn sync_file(path: &Path) -> std::io::Result<()> {
+    match std::fs::OpenOptions::new().write(true).open(path) {
+        // Any descriptor of a file flushes the file's data; opened for writing, as Windows asks.
+        Ok(file) => file.sync_data(),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e),
+    }
+}
+
+/// Sync every run log and event log of `deployments` written since it was last synced (C2 d):
+/// every `SYNC_EVERY`, and before a witness is sent a head (heads.rs's `before_send`). A head is
+/// queued while its line is written, under its log's lock (or the table's, for an event), so once
+/// this has taken each lock, the line of every head queued before it is written, and the sync
+/// after covers it. No lock is held while a file syncs. A failure puts that log's flag back.
+pub(crate) fn sync_logs(deployments: &std::sync::Mutex<BTreeMap<String, crate::Deployment>>) -> Result<(), String> {
+    let (logs, events): (Vec<std::sync::Arc<LogCell>>, Vec<(String, PathBuf)>) = {
+        let mut table = deployments.lock().unwrap();
+        let logs = table.values().map(|d| std::sync::Arc::clone(&d.log)).collect();
+        let events = table.iter_mut().filter_map(|(slug, d)| d.events.take_dirty().map(|p| (slug.clone(), p))).collect();
+        (logs, events)
+    };
+    let mut failed: Option<String> = None;
+    for log in logs {
+        let Some(path) = log.with(Log::take_dirty) else { continue };
+        if let Err(e) = sync_file(&path) {
+            log.with(Log::still_dirty);
+            failed.get_or_insert(format!("could not sync the run log {}: {e}", path.display()));
+        }
+    }
+    for (slug, path) in events {
+        if let Err(e) = sync_file(&path) {
+            if let Some(d) = deployments.lock().unwrap().get_mut(&slug) {
+                d.events.still_dirty();
+            }
+            failed.get_or_insert(format!("could not sync the events {}: {e}", path.display()));
+        }
+    }
+    failed.map_or(Ok(()), Err)
 }
 
 /// A line of the log's file: its bytes (without the line end), and the parts of its entry a
@@ -489,6 +537,7 @@ impl Log {
             handle: None,
             lines: VecDeque::new(),
             file_len: 0,
+            dirty: false,
         };
         let Some(path) = &log.file else { return log };
         let Ok(text) = std::fs::read_to_string(path) else { return log };
@@ -633,6 +682,7 @@ impl Log {
         self.file_len += text.len() as u64;
         self.lines.push_back(at);
         self.written += 1;
+        self.dirty = true;
         Ok(())
     }
 
@@ -687,12 +737,25 @@ impl Log {
             self.export("trim", oldest.seq, &oldest.prev, now_ms());
         }
         self.file_oldest_ms = kept.first().map_or(0, |(_, at)| at.at_ms);
+        // Written whole and synced (write_private), the newest line with it.
         crate::sealing::write_private(&path, &all)?;
         self.written = kept.len();
         self.file_len = all.len() as u64;
         self.lines = index;
         self.cut = false;
+        self.dirty = false;
         Ok(())
+    }
+
+    /// The file to sync, if lines were written since it last was: the flag is cleared, and put
+    /// back with `still_dirty` if the sync fails.
+    pub fn take_dirty(&mut self) -> Option<PathBuf> {
+        std::mem::take(&mut self.dirty).then(|| self.file.clone()).flatten()
+    }
+
+    /// Its file still needs syncing: the last sync of it failed.
+    pub fn still_dirty(&mut self) {
+        self.dirty = true;
     }
 
     /// Queue a head for the witness (heads.rs), when this is a deployment's log.
@@ -1096,6 +1159,28 @@ mod tests {
         log.push(entry()); // the fifth line this log wrote: cut back
         let after = std::fs::read_to_string(&path).unwrap();
         assert_eq!(after, cut_back_as_before(&before, 2, after.lines().last().unwrap()));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_log_is_dirty_from_a_write_until_it_is_synced_and_a_cut_back_syncs_it() {
+        let dir = temp_dir("dirty");
+        let path = dir.join("slug.jsonl");
+        let mut log = Log::open_keeping(Some(path.clone()), 2);
+        assert_eq!(log.take_dirty(), None, "nothing written yet");
+        log.push(entry());
+        assert_eq!(log.take_dirty(), Some(path.clone()));
+        assert_eq!(log.take_dirty(), None, "taken: clean until the next line");
+        log.push(entry());
+        log.still_dirty();
+        assert_eq!(log.take_dirty(), Some(path.clone()), "a failed sync puts it back");
+        for _ in 0..2 {
+            log.push(entry());
+        }
+        assert!(log.take_dirty().is_some());
+        log.push(entry()); // the fifth line: cut back, written whole and synced
+        assert_eq!(log.take_dirty(), None);
+        assert!(sync_file(&dir.join("gone.jsonl")).is_ok(), "a file deleted with its deployment has nothing to sync");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -34,7 +34,7 @@ code. Where the design leaves a decision open (§8), the step that needs it says
 | 2 | C1, closures by hash (**done**) | `holon` | none | decided: `--flow-cache`, in bytes, 256 MiB |
 | 3 | C2 (a)(b), the log's own lock and the open file (**done**) | `holon` | none | |
 | 4 | C2 (c), cut-back without parsing (**done**) | `holon` | none | |
-| 5 | C2 (d), lazy sync and the witness hook | `holon` | none | Q7, the interval (default 1 s) |
+| 5 | C2 (d), lazy sync and the witness hook (**done**) | `holon` | none | Q7: 1 s for now |
 | 6 | C3 (a), persist on change | `holon` | none | Q1, counters |
 | 7 | C3 (b)–(e), the state head | `holon` | adds `deployments.state/`, drops `state_refs` (no migration) | |
 | 8 | C5 in the language and core | `holon-core`, `holon-author`, `holon-wasm`, `editor` (types) | a new param in handler units, only for flows that use a word | |
@@ -274,7 +274,42 @@ on the measuring machine; expect a few ms. The throughput check's p99 at 64 thre
 
 **Commit:** `recorder: a cut-back copies the lines it keeps instead of parsing them (C2 c)`.
 
-## Step 5. C2 (d): logs synced lazily, and before every witness send
+## Step 5. C2 (d): logs synced lazily, and before every witness send (done)
+
+**Built** as sketched below, with one change: the hook lives on the `Exporter` (`before_send`, set
+once), and the module-level `heads::before_send` sets it on the running exporter. A process-wide
+static would have been shared by every test that builds an exporter.
+- `Log` and `Events` keep `dirty`, set by each append. A cut-back clears it, because
+  `write_private` syncs the whole file.
+- `recorder::sync_logs` takes the flags under the table (for events) and under each log's lock, then
+  syncs with no lock held, through `sync_file`: open for writing, then `sync_data`, with a file
+  deleted with its deployment counting as synced. A failure puts the flag back.
+- The syncer thread runs every `SYNC_EVERY` (1 s) beside the server's other threads, and prints a
+  failure once until it clears.
+- `Exporter::flush` runs the hook after taking a batch and before sending it, and an error sends
+  nothing.
+
+**Tests added:**
+- `a_log_is_dirty_from_a_write_until_it_is_synced_and_a_cut_back_syncs_it` (`recorder.rs`);
+- `a_batch_goes_only_after_its_hook_has_run` (`heads.rs`: the witness had taken nothing when the hook
+  ran, and a failing hook sends nothing and leaves the head waiting);
+- `sync_logs_syncs_what_was_written_and_keeps_a_log_that_fails_dirty` (`tests.rs`: a folder where the
+  log file was makes the sync fail, and it's tried again until it can be).
+
+`cargo test --release -p holon` passed (388 passed, 1 ignored), and clippy was clean.
+
+**Measured, live.** The throughput check runs without the server's threads, so it can't show this
+step.
+- Without a witness, `hello` over HTTP at 64 connections served 9,362 req/s (step 4: 8,752–9,990).
+- With a local witness (`--export-heads`), it served 7,890 req/s. The difference is Appendix B.2 of
+  the design, which predates this step: each run's head is appended to `pending.jsonl`, opening the
+  file every time, under a lock the whole server shares.
+- The witness took 72,979 heads in 75 batches.
+- About 5 `fdatasync` calls a second under load: one per active log per second, and one per batch
+  sent.
+- `strace -f` without its seccomp filter slows every syscall of every thread (it measured 1,363 req/s
+  with strace attached), so syncs were counted in a separate run from the throughput.
+
 
 **Code.**
 - **Dirty flags.** `Log` and `Events` each gain `dirty: bool`. `Log::keep_line`
