@@ -1123,8 +1123,11 @@ test("chess holds its agent to the legal moves, streams its chat replies and kee
     const game = await browser.newPage();
     await game.goto(`${base}/`);
     const square = (sq: string) => game.locator(`#board button[title="${sq}"]`);
-    // A move takes the debug server's rules twice (seconds each) and the stand-in's answer.
-    const MOVED = { timeout: 30_000 };
+    // A move takes the debug server's rules twice and the stand-in's answer: seconds each here,
+    // up to 35 s a move on a busy CI runner. A move may take as long as the flow gives a run (a
+    // minute), and the game's dozen moves three times the usual test's time.
+    const MOVED = { timeout: 60_000 };
+    test.slow();
     // The chat's bubbles, the newest on top: the Sphinx's on the left, the player's on the right.
     const sphinx = () => game.locator("#talk li.sphinx").first();
     const mine = () => game.locator("#talk li.me").first();
