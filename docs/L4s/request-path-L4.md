@@ -22,19 +22,29 @@ This note makes a request's cost depend only on its own flow and its own deploym
 
 > **Requests to different deployments never wait for each other, and no request does work that
 > grows with the number of deployments or with the runs before it.** A run costs its evaluation,
-> one appended log line, and, when it changed state, the writes that make that change durable.
+> one appended log line, and the writes that make its record (and any state it changed) durable.
 
-It doesn't change what a run records, the order of a record and its answer, the file formats a
-person reads, or the evaluator, and it weakens nothing that survives a crash. One part, C2 (d),
-closes a gap found on the way. Today the run log is never fsynced, so a power loss can lose run
-records whose state changes did survive, and can leave a witness holding heads the disk lost.
+It doesn't change what a run records, the file formats a person reads, or the evaluator. It makes
+the record stronger in two ways:
+
+- **A run's record is on disk before its answer, by default (C5).** Today it never reaches the disk
+  on purpose: the log is never fsynced, so a power loss can lose run records whose state changes
+  survived, and can leave a witness holding heads the disk lost (Appendix B.5).
+- **Each handler (route, clock, file handler, action) gets a log level.** The default is `strict`.
+  A handler that only reads may be declared `lazy` (its record reaches the disk within about a
+  second, C2 d), for speed. With a person's approval, it may be declared `unrecorded`, to keep
+  noise out of the log: one summary row instead of a run per request, with failures still
+  recorded.
+
+The level is part of the flow's text and hash, it's shown at approval, and the host's policy caps
+it (C5).
 
 ## Contents
 
 1. Where Holon stands
 2. What a request does today
 3. Measured: what each cost is worth
-4. The changes (C1–C4), each with what it touches, results and side effects
+4. The changes (C1–C5), each with what it touches, results and side effects
 5. Lock order, before and after
 6. Build order
 7. Samples
@@ -306,7 +316,9 @@ in particular the closure-bound tests (`tests.rs:7190–7225`).
 
 **What.** Each deployment's log gets its own lock, the line is appended through a file kept open,
 and a cut-back copies bytes instead of parsing. A line still reaches the OS before its run
-answers. It reaches the disk within a second, and always before a witness hears its head.
+answers. A `strict` run (the default, C5) waits for it to reach the disk too (e), and a `lazy` one
+lets the background syncer get it there within a second (d). Either way, no head reaches a witness
+before its line is on disk.
 
 **Today.** `Deployment.log: Log` (`main.rs:483`) is reached only through the table lock. `Log`
 (`recorder.rs:354–375`) holds `next_seq`, `entries`, `keep`, `max_age_ms`, `file_oldest_ms`,
@@ -354,8 +366,10 @@ lose the newest lines**, and that has two consequences:
   short) are dropped at cut-back, as today, because only parsed lines are indexed. The handle is
   **closed before the rename and reopened after**. That's required on Unix, where the old handle
   would keep the replaced file, and it avoids renaming over an open file on Windows.
-- **(d) Synced lazily, within a bound.** The log stays off the request's critical path for
-  durability, as it is today. It is fsynced in the background instead of never:
+- **(d) Synced lazily, within a bound, for `lazy` handlers and for requests no route took.** For
+  those runs the log stays off the request's critical path for durability, as it is today. It is
+  fsynced in the background instead of never. (A `strict` handler, the default, syncs its own
+  record before it answers: (e).)
   - **Dirty flags.** `Log` and `Events` each gain `dirty: bool`, set by `keep_line` when it appends
     and cleared when a sync takes it.
   - **`recorder::sync_logs(deployments) -> Result<(), String>`.** Under the table lock, it clones
@@ -403,6 +417,43 @@ lose the newest lines**, and that has two consequences:
   before taking the log lock, and splice `prev` in under it, so only the hash and the `write` are
   serialized. Batched appends, where each run waits for its batch's `write`, are the fallback if
   the `write` still shows in a profile.
+- **(e) Strict: the record on disk before the answer, with group commit.** This is the default level
+  (C5).
+  - **Waiting for the disk.** `log_run` returns the `seq` it assigned and the byte offset where its
+    line ends. A strict run then calls `LogCell::sync_through(end)` before answering.
+  - **Sharing one fsync.** `LogCell` gains `synced: Mutex<u64>`, the offset known to be on disk.
+    `sync_through` locks it. If `synced >= end`, a sync that finished while this run waited already
+    covered its line, so it returns at once. Otherwise it reads the current end of the file under
+    the log lock, calls `sync_data` with no log lock held, and sets `synced` to that end. One fsync
+    covers every line appended before it began, so concurrent runs of one deployment share it.
+  - **Where it's called:** after `log_run` in each run path: `listeners.rs:226`, `scheduler.rs:160`,
+    `arrivals.rs:407`, `deploy.rs:955`, `deploy.rs:1119` and `durable.rs:651`. Only a request has a
+    caller waiting. For a clock tick, a file arrival or an action without a caller, "before the
+    answer" means before the run counts as finished, which is before its persist and before it
+    returns.
+  - **Against a cut-back.** A cut-back rewrites the file through `write_private`, which syncs it,
+    and then sets `synced` to the new file's length under the same lock, so offsets keep meaning
+    the same file.
+  - **Measured** with a throwaway build: the flow cache, the log off the table lock, and each
+    request appending a 5 KB line to its deployment's file, then calling `sync_data` under exactly
+    this group commit (Appendix A):
+
+    | `hello-api` | Without | With strict |
+    |---|---|---|
+    | 1 connection | 3,448 req/s, p50 0.27 ms | 1,109 req/s, p50 0.86 ms (**+0.6 ms**) |
+    | 64 connections | 21,507 req/s, p50 2.8 ms | 6,078 req/s, p50 10.4 ms (**−72%**) |
+
+    `calc` at 64 connections went from 16,032 to 5,761, and `counter /last` from 12,771 to 5,749. An
+    fsync of an **appended** file costs about 0.6 ms on this disk, against 113 µs for the small new
+    files the state path writes (§2.4). An append changes the file's size, so the fsync must commit
+    that metadata through the filesystem's journal too. Faster disks narrow the gap, and slow cloud
+    disks widen it.
+  - **What strict guarantees:** an answered run has its record on disk ("answered means recorded").
+    It doesn't guarantee that a run which acted has a record. If power is lost after a run's
+    outbound call and before its sync, the call happened and the record didn't survive. The caller
+    got no answer, though, so a webhook sender (Stripe, say) retries, and the retry is recorded.
+    "Acted means recorded" would need each outbound request recorded on disk before it is sent, as
+    write-ahead for the round loop. That is not part of this note (§8 Q8).
 
 **Touches.** Every use of a deployment's `log`:
 
@@ -439,6 +490,8 @@ lose the newest lines**, and that has two consequences:
 | `heads.rs:50–58`, `130–160` | `Exporter`, `flush` (d) | sends what's queued | calls the `before_send` hook before each POST, and sends nothing if it fails |
 | new, `heads.rs` | `before_send` (d) | | installs the hook once |
 | `main.rs:1074–1090` | server start (d) | starts the scheduler, the arrival watcher and the text sweeper | also starts the syncer thread, and installs the hook when `--export-heads` is set |
+| new, `recorder.rs` | `LogCell::sync_through` (e) | | group commit: one `sync_data` covers every line appended before it |
+| `listeners.rs:226`, `scheduler.rs:160`, `arrivals.rs:407`, `deploy.rs:955`, `deploy.rs:1119`, `durable.rs:651` | each run path (e) | `log_run`, then answer or return | `log_run`, then `sync_through` when the handler is strict, then answer or return |
 
 **Results.** *Measured*: removing the log's work from the table lock is worth 3,820 → 21,044 req/s
 together with C1 (the `cache` + `nolog` row is the upper bound). *Estimated*: C2 keeps the log, so
@@ -516,7 +569,11 @@ New:
 - (d) a witness sees the hook run before every POST. Use the local witness server the `heads.rs`
   tests already start (`heads.rs:234`, `heads.rs:286`) and a hook that counts calls. A failing hook
   sends nothing, and the heads stay queued;
-- (d) a line appended while a cut-back runs is synced by the next tick.
+- (d) a line appended while a cut-back runs is synced by the next tick;
+- (e) a strict run's answer comes after its sync. Count syncs with a test hook on `LogCell`, then
+  send a request and check a sync covering its offset happened before the answer was returned;
+- (e) concurrent strict runs share syncs: N runs in flight cause fewer than N syncs;
+- (e) `synced` follows a cut-back (an append after it is synced by offset in the new file).
 
 Losing power can't be simulated in a test. The tests pin the order the guarantee rests on
 (written, then synced, then sent) and leave the disk's part to the OS.
@@ -571,6 +628,22 @@ record's hash as `state_after` (`firing.rs:103`, `firing.rs:230/298`).
   an error, as a bad `state_refs` is now (`persist.rs:180`).
 - **(e) Delete.** `handle_delete_deployment` (`deploy.rs:841–845`) removes the head file, as it
   removes the log (`dep.log.delete_file()`).
+- **(f) Later: the log line as the state commit.** With `strict` the default (C5), a run that writes
+  state waits for two durable writes: its head under the cell lock (b), and its log line before the
+  answer (C2 e). The log line already carries the snapshot's hash (`state_after`, `firing.rs:103`),
+  so it could be the commit record. The head file would go, and a writing run would make **one**
+  fsync, shared with the other runs committing at that moment.
+  - **The obstacle is order.** Today a run's line is appended after its commit, under a different
+    lock, so two runs can commit as A then B and log as B then A. `verify` allows for that already
+    (`verify.rs:464–468`, runs "beside" each other). But if the log is the commit, B's line could
+    reach the disk before A's. After a power loss, the state loaded from B's line would include A's
+    change while A's record is lost.
+  - **The fix is a commit ticket.** A run takes a ticket per deployment under the cell lock as it
+    commits, and appends its line in ticket order: a run whose ticket is next appends; others wait
+    for their turn. A sync then covers a prefix of commits, never a commit without the ones before
+    it. Load takes the state from the newest line on disk that carries one.
+  - **Not in the first build.** The ticket changes the run path, and (b) is simpler and correct. Do
+    this step once the throughput check shows writing runs bound by the second fsync (§6 step 10).
 
 **Touches.**
 
@@ -694,6 +767,221 @@ must not become durable before A's values are, and B's `save_snapshot` writes on
 since **B's** start (`restore.rs:25–28`). A per-server journal with one fsync per batch is the known
 answer. It gets its own note if measurements on real disks ask for it (§8 Q4).
 
+### C5. A log level per handler: strict by default, `lazy`, `unrecorded`
+
+**What.** Every handler (route, clock, file handler, action) records its runs `strict`ly by default:
+the record is on disk before the answer (C2 e). A handler that only reads can say otherwise, on its
+own line:
+
+```
+route GET /health (req) unrecorded { … }   # no record; a summary row, and its failures
+route GET /notes (req) lazy { … }          # recorded; on disk within about a second
+route POST /notes (req) { … }              # strict: on disk before the answer
+every 1m lazy { … }
+action report (x) unrecorded { … }
+```
+
+| | `strict` (default) | `lazy` | `unrecorded` |
+|---|---|---|---|
+| For | anything that matters | speed on handlers that only read | log management: noise, volume, privacy |
+| The record | on disk before the answer (C2 e) | to the OS before the answer, on disk within about 1 s (C2 d) | none. Failures are still recorded, lazily |
+| In the runs table | each run | each run | one summary row per handler: runs, failures, mean duration, last run |
+| Replay, `verify`, history, restore | yes | yes | no, except a failure's record |
+| Allowed on | every handler | a handler that only reads (below) | a handler that only reads, approved, where the host's policy allows |
+| Who agrees | nobody | nobody | a person, at approval (an exception item) |
+
+**Why three levels.** These are the measurements, for `hello-api` at 64 connections (C2 e, §3):
+
+| Level | Throughput | Added per request, 1 connection | Status |
+|---|---|---|---|
+| strict | 6,078 req/s | about 0.6 ms waiting for the disk | measured |
+| lazy | about 15,000–16,000 req/s | about 40 µs of CPU | estimated |
+| unrecorded | 21,044 req/s | none | measured, as the `cache` + `nolog` row |
+
+`lazy` is close to `unrecorded` and far from `strict`, so `lazy` is the speed opt-out. `unrecorded`
+is for what `lazy` can't do, which is keeping runs out of the log:
+
+- **Retention displacement.** A deployment keeps its newest `keep_runs`, 500 by default
+  (`permissions.md:94`). A health check once a second pushes every other run out within about 8
+  minutes, and even the 20,000 ceiling lasts about 5.5 hours.
+- **Large answers.** A run's record keeps up to 64 KiB of its answer (`server.md:173`), so a page
+  route logs its page on every request.
+- **Privacy.** Some reads shouldn't leave a trace of who asked.
+
+*Considered and rejected: per-handler retention* (keep 20 of `GET /health` and 500 of the rest). The
+log is cut back only from the front, which "keeps its newest line, so the chain goes on"
+(`server.md:170`; `cut_back`, `recorder.rs:565–572`). Keeping fewer of one handler means cutting
+lines out of the middle, and every later line would then name a predecessor that's gone, a break
+to `verify` at each cut. Separate logs per handler would avoid that, but they need a shared order
+across files for the state checks. `unrecorded` keeps such runs out of the chain from the start, so
+the chain, cut-back and `verify` are untouched.
+
+**Which handlers may be `lazy` or `unrecorded`.** Only a handler that only reads, which the graph
+decides, not the author. Core already derives a unit's capabilities, failing closed: an unknown
+leaf or an unresolvable child saturates to every capability (`capabilities`, `kind.rs:595`). It also
+splits them into those read from outside and those performed (`Capability::is_sourced`,
+`kind.rs:206–212`). The rule:
+
+> A handler may be `lazy` or `unrecorded` when **every capability of its unit is sourced, and none
+> is `Await`**.
+
+That excludes state, collection, file and database writes (`StateWrite`, `CollectionWrite`,
+`FileWrite`, `DbWrite`), outbound requests (`HttpRequest`, `NetworkEgress`), channel sends
+(`ChannelSend`), flow calls (`RunsAction`), `Spawn`, answering with a secret (`SecretAnswer`), and
+waiting (`Await`). Each of these breaks something when its run isn't recorded:
+
+| A handler that… | Breaks, without a record |
+|---|---|
+| writes state, collections, files or databases | `verify`'s state check ("it began from a state the run before it didn't leave", `verify.rs:469`, which accepts only deploy, restore and lifecycle events as unexplained moves, `verify.rs:449–451`), the state history page (`changes.rs:54`), restore points, and the sweep, which keeps only what recorded runs name (`sweep.rs:131–158`) |
+| waits (`await`) | resuming and checking: a resumed part's first part is "not here" (`verify.rs:502`) |
+| sends on a channel | the channel's packs, "rebuilt from the log at load" (`main.rs:485`) |
+| calls another flow's action | the callee's record, which the caller's names ("logged there as run `by` the calling flow", `calls.rs:7–8`) |
+| calls out | nothing inside Holon, but the record of something done to the world, and its replay (a replay answers outbound requests from the record) |
+
+A handler that breaks the rule fails to compile, at the node that breaks it: "GET /health can't be
+`unrecorded`: it writes state.hits (line 12)". It works the way the secret checks point at a node.
+The check runs where the server is read (`read_server`) and in `holon check`, so the editor, the
+CLI and deploy agree. Under `lazy`, the same rule keeps strict's guarantee for every handler whose
+runs change anything.
+
+The levels decide per handler, but one thing decides per run. A `strict` handler whose run
+performed nothing (a `POST` that failed validation, say) still syncs. Strict is the handler's
+promise, and a handler that wants the cheaper level for such runs can't have it: only handlers
+that **can't** act may be `lazy`.
+
+**A request no route took** (404, 405) ran nothing and performed nothing, so it is `lazy`. Making
+it `strict` would let anyone on the network cause an fsync per request, and fill the log with
+scanners' probes. The policy may make it `unrecorded` (§8 Q12).
+
+**Today.**
+- **Handlers carry their markers as ordinary frozen params** on the handler unit, read in one place:
+  an endpoint has `declare = "endpoint"`, `method`, `path` and `resume`, and the clock, file and
+  action handlers have `declare` and their own (`declare.rs:1–24`, `Route` at `declare.rs:41`,
+  `Clock` 55, `FileHandler` 65, `Action` 76, `Server` 86, `read_server` 191).
+- **The resume marker shows the path from text to unit.** It's parsed after `(req)` (`resumes`,
+  `parse.rs:582–587`), put on the route's `request` node (`lower.rs:1059`), carried to the endpoint
+  unit (`routes.rs:268`, `routes.rs:450`), and read by core (`declare.rs:253`). `fmt` prints it
+  (`print.rs:732`; contextual words at `print.rs:31`).
+- **Approval items** are derived capabilities plus exceptions (`manifest_items`, `manifest.rs:28–51`:
+  `Limit(…)`, `PlainHttp(…)`, `PrivateAddresses`, `AgentRuns(…)`). An exception needs the policy
+  to allow it at all (`allow_plain_http`, `allow_private_addresses`, `permissions.rs:394–414`;
+  `permissions.md:44–52`).
+- **Counts are per deployment:** `trigger_count` and `error_count` (`record_trigger`,
+  `deploy.rs:867–875`), shown by the editor's deployment card (`editor/src/DeploymentCard.tsx`).
+  The live log comes from `GET /deployments/<slug>/log` (`deploy.rs:1155`; `getLog`,
+  `editor/src/server.ts:709`).
+
+**After.**
+- **Text.** The handler lines take an optional word before the block:
+  - `route METHOD /path (req) [resumes name] [lazy | unrecorded] { … }`;
+  - `every DURATION [lazy | unrecorded] { … }`;
+  - `on file … (f) [lazy | unrecorded] { … }`;
+  - `action name (x) [lazy | unrecorded] { … }`.
+
+  The words are contextual, like `resumes`, and names everywhere else. `fmt` prints them, `strict`
+  is never written because it's the default, and the grammar in `LANGUAGE.md` §5.1 gains them.
+- **Unit.** The handler unit gains a frozen `log` param, `lazy` or `unrecorded`, absent for
+  `strict`. For a route it's carried like `resume`: from the `request` node, through `routes.rs`.
+  For clocks, file handlers and actions it's set where their `declare` is (`routes.rs:385–393`, and
+  its siblings for `on_file` and `action`). It's part of the hash, so changing a level is a new
+  version, and the redeploy approval shows the difference.
+- **Core.** `Route`, `Clock`, `FileHandler` and `Action` gain `log: LogLevel`. `read_server` reads it
+  and fails on any other value (`DeclError`). A new `holon_core::log_level_allowed(handler, resolver)`
+  applies the rule above, using `capabilities`. A new `first_performing_node` (in `holon-author`,
+  where nodes keep their spans) finds the node to point at.
+- **Approval.** `manifest_items` adds `Unrecorded("GET /health")` (the handler's label, as the log
+  names it) for each unrecorded handler. It's shown as "don't record runs of GET /health (failures
+  are recorded)". `lazy` asks nobody, because it's allowed only where nothing is done.
+- **Policy.** `allow_unrecorded`, beside `allow_plain_http`. Without it, a deploy asking for
+  `Unrecorded(…)` is refused, as one asking for plain HTTP is. Its default is §8 Q9.
+- **Enforcement.** The permit decides per run (`Permit::allows`). If `Unrecorded(label)` isn't
+  granted (revoked while running, or never approved), the handler's runs are recorded `strict`ly,
+  the same rule as any narrowed grant. An agent can deploy the word but can't approve it, the
+  existing rule.
+- **The run paths.**
+  - `strict` calls `sync_through` (C2 e).
+  - `lazy` relies on the syncer (C2 d).
+  - `unrecorded` skips `log_run` unless the run failed: an error, a 5xx answer, or a budget
+    failure. A failed run is logged and synced lazily (§8 Q10).
+  - Every level still counts (`record_trigger`).
+- **Counts per handler.** `Deployment` gains `tallies: BTreeMap<String, Tally>`, with
+  `Tally { runs, failed, total_ms, last_at }`, kept for unrecorded handlers, updated where
+  `record_trigger` is, and persisted with the definition (C3 c), so a crash loses recent counts
+  only. `GET /deployments/<slug>/log` adds `"tallies"`. The editor's live log and the terminal
+  editor (`crates/holon/src/workbench`) show one row per unrecorded handler.
+- **Agents.** The MCP tools that read a run say "runs of GET /health aren't recorded" for an
+  unrecorded handler, instead of "no such run" (`crates/holon/src/mcp.rs`).
+
+**Touches.**
+
+| Site | What changes |
+|---|---|
+| `holon-author/src/lang/parse.rs:566–590` (`route`), `616–650` (`on_file`, `action`, `every`) | parse the optional word |
+| `holon-author/src/lang/ast.rs:210` (`RouteDef`) and the `Every`, `OnFile`, `Action` defs | `log: Option<Name>` |
+| `holon-author/src/lang/lower.rs:1059` | put `log` on the `request` node, like `resume` |
+| `holon-author/src/routes.rs:268, 385–393, 450` | carry `log` to the handler units |
+| `holon-author/src/lang/print.rs:31, 732` | print the word; add it to the contextual words |
+| `holon-author/src/templates.rs:174` | the `request` template gains `log` |
+| `holon-core/src/declare.rs:41–191` | `LogLevel`; the four structs; `read_server` |
+| `holon-core/src/kind.rs` or `manifest.rs` | `log_level_allowed` |
+| `holon-core/src/manifest.rs:28–51` | `Unrecorded(…)` items |
+| `holon/src/permissions.rs:394–414` | `allow_unrecorded` in the policy |
+| `holon/src/listeners.rs:207–226`, `scheduler.rs:160`, `arrivals.rs:407`, `deploy.rs:955, 1119`, `durable.rs:651` | choose by level: strict sync, lazy, or skip unless failed |
+| `holon/src/deploy.rs:867–875` (`record_trigger`) | tallies per handler |
+| `holon/src/main.rs:433–500` (`Deployment`) | `tallies` |
+| `holon/src/persist.rs`, `wire.rs:220` (`DeploymentRecord`) | persist the tallies |
+| `holon/src/deploy.rs:1155–1165` (`handle_get_log`) | `"tallies"` |
+| `holon/src/mcp.rs` | the "not recorded" answer |
+| `editor/src/server.ts:709`, the live log (`useViewMode.tsx`, `ViewPanes.tsx`), `DeploymentCard.tsx`, `Manifest.tsx` | summary rows; the approval item |
+| `holon/src/workbench` | summary rows in the terminal editor |
+| `docs/LANGUAGE.md` §5.1 and §5.11, `docs/manual/language/reference.md` | the words |
+| `docs/manual/reference/permissions.md:44–52` | the `Unrecorded` exception and `allow_unrecorded` |
+| `docs/manual/reference/server.md:161, 163–176` | "Every request is a run in the log" becomes "Every run is recorded, on disk before its answer, unless its handler is `lazy` or an approved `unrecorded`" |
+| `README.md:3, 19` | the headline (§8 Q11) |
+| a new sample, `crates/holon-author/samples/`, and its entry in `samples.rs` | §7 |
+
+**Results.**
+- **Measured:** `strict`, 6,078 req/s; `unrecorded`, 21,044 req/s (`hello-api`, 64 connections).
+- **Estimated:** `lazy`, 15,000–16,000 req/s.
+- **Unchanged, by construction:** a handler that writes is `strict` whatever its author says, so
+  every run that changes anything is on disk before it answers.
+- **What it saves for volume:** an unrecorded health check at one per second removes about 86,400
+  records a day from its deployment's log, and the summary row shows the same traffic.
+
+**Side effects.**
+- **The default gets slower for read-only routes.** Without `lazy`, a read-heavy API runs at strict's
+  pace (about a third of lazy's here). That is the cost of "recorded on disk before the answer" by
+  default, and the reason `lazy` exists. The samples' read routes (§7) show the word where speed
+  matters.
+- **The headline changes** (§8 Q11).
+- **One more exception** in the policy and the approval list.
+- **Gaps in time, not in the chain.** Unrecorded runs never get a sequence number. A gap in a log's
+  times is traffic that wasn't recorded, and the summary row accounts for it.
+- **A failure's record without its neighbours.** A failing unrecorded run is recorded alone, so
+  replaying it works (it only reads), but the runs around it aren't there to compare.
+- **Static versus per run.** The level is the handler's. A `strict` handler pays for runs that did
+  nothing, and nothing makes an effect-capable handler cheaper by declaration.
+
+**Tests.**
+- **`holon-author`:** each word parses, lowers to the `log` param, and prints back (`fmt` round
+  trip). A word on a handler that writes, waits, calls out or sends fails to compile at the
+  offending node, with its line and column. `strict` isn't printed.
+- **`holon-core`:** `read_server` reads each level and refuses an unknown one. `log_level_allowed`
+  is false for each excluded capability, and false for a saturated (unknown) unit, which is the
+  fail-closed case.
+- **`holon`:**
+  - an unrecorded handler's run has no entry, and its tally counts it;
+  - its failure has an entry;
+  - revoking `Unrecorded(…)` makes the next run recorded;
+  - a policy without `allow_unrecorded` refuses the deploy;
+  - an agent's deploy that asks for it stops for approval;
+  - a 404 is lazy;
+  - a lazy run's entry is on disk after the syncer's tick.
+- **Editor:** the summary row (`editor/src/*.test.ts`), and the new sample in `samples.test.ts` and
+  the e2e deploy (`editor/e2e/samples.e2e.ts`).
+
+**Docs.** The rows of the touches table under `docs/`, and `README.md`.
+
 ## 5. Lock order, before and after
 
 Today, at `aa2704a`:
@@ -743,17 +1031,65 @@ throughput check (step 1) and says the step was run live.
    should match step 4's.
 6. **C3 (a)**, persist on change.
 7. **C3 (b)–(e)**, the state head, load, migration, delete, and the manual's line.
-8. **C4**, after re-measuring with several stateful deployments written at once, and reading
+8. **C5 in the language and core:** the words, the `log` param, `read_server`, the rule and its
+   compile error, `fmt`, and `LANGUAGE.md`. Every handler still behaves as today (lazy, step 5)
+   until step 9, so this step changes no number.
+9. **C2 (e) and C5 in the server:** strict by default with group commit, `lazy`, `unrecorded` with
+   its approval item, policy, tallies, editor rows and MCP answer, the new sample (§7), and the
+   manual and README lines. This is where read-only routes without a word slow to strict's pace,
+   and the commit gives both numbers.
+10. **C3 (f)**, the log line as the state commit, when step 9's numbers show writing runs bound by
+   the second fsync.
+11. **C4**, after re-measuring with several stateful deployments written at once, and reading
    `sweep.rs` in full.
 
-Steps 2–6 change no file format. Step 7 adds `deployments.state/`.
+Steps 2–6 change no file format. Step 7 adds `deployments.state/`. Step 8 adds a param to handler
+units, which changes the hash only of flows that use a word. Steps 8 and 9 are one feature split in
+two: core and language first, then the host.
 
 ## 7. Samples
 
-This changes no feature, so per `CLAUDE.md` it adds no sample and changes none. `hello-api`,
-`calc` and `counter` are what the throughput check deploys and loads. Each step is run live before
-its commit (deployed, then sent load), and the commit says so. The end-to-end tests (`editor/e2e`)
-and `editor/src/samples.test.ts` must stay green.
+C1–C4 change no feature, so per `CLAUDE.md` they add no sample. `hello-api`, `calc` and `counter` are
+what the throughput check deploys and loads. Each step is run live before its commit (deployed,
+then sent load), and the commit says so.
+
+**C5 is a feature, so it ships with one.** `crates/holon-author/samples/status-board.holon`, with its
+entry in `samples.rs` ("a log level per handler"). It shows all three levels in one flow:
+
+```
+flow status-board
+port 8170
+collection notes
+
+# Answers the load balancer. Not recorded: one summary row, and its failures.
+route GET /health (req) unrecorded {
+  respond "ok"
+}
+
+# Lists the notes. Recorded, on disk within a second.
+route GET /notes (req) lazy {
+  respond notes.list(limit: 50)
+}
+
+# Adds a note. Strict, the default: on disk before the answer.
+route POST /notes (req) {
+  notes[req.json.id] = req.json.text
+  respond "saved"
+}
+```
+
+Without the three words it compiles today, already in `fmt`'s form, as "status-board: 12 nodes, 11
+wires … it may: read items of its collection "notes", put and delete items of its collection
+"notes", receive requests". Port 8170 is used by no other sample. Under C5's rule, `GET /health`
+(only `NetworkIngress`) and `GET /notes` (adds only `CollectionRead`) may take a word, and
+`POST /notes` (`CollectionWrite`) may not. Its "try it" line: send `/health` a few times and see
+one row with a count, add a note and see its run, then list the notes and see that run too. The sample's text is written as `fmt` writes it
+(the test says so), built by `editor/src/samples.test.ts`, deployed by `editor/e2e/samples.e2e.ts`
+(its approval asks for `Unrecorded("GET /health")`), and run live before its commit. `notes-api`
+and `orders-api` are worth a `lazy` on their list routes once C5 lands, and that changes those
+samples' hashes, so it is a step of its own, not part of step 9.
+
+The end-to-end tests (`editor/e2e`) and `editor/src/samples.test.ts` must stay green throughout.
 
 ## 8. Open questions
 
@@ -771,21 +1107,52 @@ and `editor/src/samples.test.ts` must stay green.
 5. **Directory fsync after rename.** `write_atomically` (`holon-host/src/lib.rs:642`) and
    `write_private` (`sealing.rs:274`) fsync the file but not its directory, so on some filesystems a
    crash can lose an acknowledged rename. This note neither introduces that nor closes it.
-6. **A strict log, per deployment.** Should a deployment be able to ask that an answered run's
-   record survive a power loss too? That would close the state-ahead-of-log gap C2 (d) only bounds.
-   The cost is one fsync of the log before every answer, about 150 µs per run here and more on a
-   slow disk. A writing run could share the C3 head's moment under the cell lock, but a reading run
-   would pay it alone. If yes, it belongs in the deploy settings' `keep` limits beside `keep_runs`,
-   off by default.
+6. **Decided: strict by default, per handler (C5).** This was the question "a strict log, per
+   deployment?". It's answered per handler instead, with `strict` the default, and its cost
+   measured at about 0.6 ms per appended-file fsync on this disk, not the 150 µs first guessed
+   (C2 e).
 7. **The sync interval, and the witness's queue.** Should `SYNC_EVERY` be 1 s and fixed, or a
    setting? And should `pending.jsonl` be synced on the same tick? That would cost one more fsync a
    second while heads are queued, and a power loss would then drop no queued heads.
+8. **"Acted means recorded."** Strict guarantees that an answered run is recorded. Recording each
+   outbound request on disk before it is sent (write-ahead in the round loop) would also cover a run
+   that called out and then lost power. Is that wanted, and for which calls? It costs one fsync per
+   outbound request, small next to the request itself. It needs its own note.
+9. **`allow_unrecorded`'s default.** The other exceptions default to off (`permissions.rs:413–414`).
+   `Unrecorded` is allowed only on handlers that only read, and each one is approved, so `true` may
+   be the better default. Off is the conservative one.
+10. **Failures of unrecorded handlers.** They're recorded by default here. Should there be a form
+    that drops them too (`unrecorded always`), for privacy, or should "no record" mean no record
+    at all?
+11. **The headline.** "Keeps a record of every run" (`README.md:3`) becomes something like "keeps a
+    record of every run, on disk before it answers, except handlers a person approved as
+    unrecorded, and only ones that change nothing". That is a product decision.
+12. **Requests no route took.** Here they're `lazy`. Should the policy, or the flow (a header,
+    `unrouted unrecorded`), be able to make them unrecorded, so scanners' probes stay out of the log
+    too?
+13. **Outbound reads under `lazy`.** A handler that only fetches (`http.get`) is excluded by the rule,
+    because `HttpRequest` is performed. Core already tells reads from outside apart
+    (`reads_from_outside`, `manifest.rs:90`). Should a handler whose only performed capability is a
+    GET be allowed `lazy`? Its replay still needs its record, which `lazy` keeps.
+14. **A second axis, how much to keep.** A page route's record keeps up to 64 KiB of its answer.
+    Something like `lazy without body` would keep the record but not the page. Leave it until a
+    real flow asks, but choose the syntax so it can be added.
+15. **Sampling.** Something like `unrecorded, 1 in 1000` would record an occasional run of a noisy
+    handler, which is harmless because it only reads. Leave it until asked.
 
 ## 9. Invariant check
 
-- **I-a, the record before the answer.** Every run's entry reaches the OS before its answer.
-  `serve_flow` logs at `listeners.rs:226` and answers after it, and C2 keeps that write synchronous,
-  changing only the lock it holds.
+- **I-a, the record before the answer (strengthened).** By default (`strict`), a run's entry is on
+  disk before its answer (C2 e). A `lazy` run's entry reaches the OS before its answer, as every
+  run's does today, and the disk within about a second. `serve_flow` logs at `listeners.rs:226`
+  and answers after it, and C2 keeps that order, changing only the lock it holds and adding the
+  sync.
+- **I-g, nothing that changes anything goes unrecorded or lazy (new).** Only a handler whose every
+  capability is sourced, and none `Await`, may be `lazy` or `unrecorded`. The graph decides this,
+  failing closed, and it's checked at compile and when the server is read (C5).
+- **I-h, every exception to recording is someone's decision (new).** `unrecorded` is an approval
+  item, capped by the host's policy, revocable while the flow runs, and never approved by an agent.
+  It's part of the flow's hash, so a change is a new version (C5).
 - **I-b, the chain.** One deployment's entries are numbered and chained in one order, under one
   lock, as byte-exact lines. A C2 cut-back copies bytes, so a copy still checks. The file's place,
   name and format are unchanged (`server.md:165`).
@@ -799,8 +1166,8 @@ and `editor/src/samples.test.ts` must stay green.
   table lock.
 - **I-f, a witness's head is on disk (new).** A head is sent only after the line it names has been
   synced (C2 d). Today this doesn't hold (Appendix B.5).
-- **A power loss loses at most about a second of records (new).** That is the bound C2 (d) sets.
-  Today there is no bound.
+- **A power loss loses no strict record, and at most about a second of lazy ones (new).** Those
+  are the guarantees of C2 (e) and (d). Today there is no bound.
 - **M0 / §7a.** No disk I/O under the table lock on any run path: the log leaves it (C2), and the
   whole-table persist leaves the per-run path except for definition changes (C3). C2 (d)'s sync
   takes no lock while it fsyncs.
@@ -824,6 +1191,13 @@ and `editor/src/samples.test.ts` must stay green.
     request;
   - the `HOLON_X=cache,nolog,nopersist` switches of §3. A first pass taken right after each restart
     read low, because the server was still loading; the table uses a 3 s settle.
+  - for strict (C2 e), a fourth switch, `strict`. Each request appended a 5,000-byte line to its
+    deployment's own file and called `sync_data` before answering, with group commit (a run skips
+    its sync when one that began after its write has finished). `strace -c` during `/hit` counted
+    the state path's fsyncs (1,766 for 882 requests, 113 µs each on average). `counter /hit` is
+    left out of the strict comparison: every write creates two new fsync'd files, the value store
+    had grown to 102,639 files (412 MB), and `/hit` varied from 500 to 4,400 req/s between identical
+    runs with either setting.
 - **Evaluator:** `cargo bench -p holon-core --bench native_vs_composite` gave
   `traversal/native_sum/4096` 5.2 µs, `traversal/fold_sum/4096` 280 µs and
   `wrapping_tax/composite_add` 0.64 µs.
