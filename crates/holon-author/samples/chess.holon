@@ -42,7 +42,7 @@
 #   curl -s -H 'content-type: application/json' -d '{"line":"what are you planning?"}' \
 #     http://127.0.0.1:8168/chat
 # its answer. A move that isn't legal, {"move":"e2e5"}, answers 400. GET /game answers the board
-# (its pgn too), and POST /new starts again.
+# (its pgn too), and POST /new starts again, with a fresh chat.
 flow chess
 port 8168
 secret gemini_api_key
@@ -56,10 +56,10 @@ holon page(board, talk) -> html js {
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Chess against the Sphinx</title>
 <style>
-body{font:15px/1.5 system-ui;max-width:62em;margin:2em auto;padding:0 1em;color:#222}
+body{font:15px/1.5 system-ui;max-width:76em;margin:2em auto;padding:0 1em;color:#222}
 main{display:flex;gap:2em;flex-wrap:wrap}
-#board{display:grid;grid-template-columns:repeat(8,2.6em);grid-template-rows:repeat(8,2.6em);border:2px solid #555;width:max-content;user-select:none}
-#board button{border:0;padding:0;font-size:2em;line-height:1;cursor:pointer;color:#111}
+#board{display:grid;grid-template-columns:repeat(8,min(78px,11vw));grid-template-rows:repeat(8,min(78px,11vw));border:2px solid #555;width:max-content;user-select:none}
+#board button{border:0;padding:0;font-size:min(60px,8.5vw);line-height:1;cursor:pointer;color:#111}
 .l{background:#eed9b5}.d{background:#b48862}
 #board .last{background-image:linear-gradient(#fe04,#fe04)}
 #board .sel{outline:3px solid #2a6;outline-offset:-3px}
@@ -204,6 +204,7 @@ $("new").onclick = async () => {
     game = await r.json();
     sel = null;
     $("note").textContent = "";
+    $("talk").textContent = "";
     draw();
   }
 };
@@ -602,8 +603,9 @@ route POST /chat (req) {
   respond { reply: heard.reply, withheld: heard.withheld }, missing: 400
 }
 
-# A new game; the chat stays.
+# A new game, and a fresh chat.
 route POST /new (req) {
   delete games["current"]
+  delete games["chat"]
   respond rules({}, "")
 }

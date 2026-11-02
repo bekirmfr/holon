@@ -1125,6 +1125,12 @@ test("chess holds its agent to the legal moves, keeps chat away from them, and s
     await game.locator("input[name=line]").fill("still there?");
     await game.locator("input[name=line]").press("Enter");
     await expect(game.locator("#talk li").first()).toContainText("The Sphinx is resting its eyes");
+    // A new game starts a fresh chat too, on the page and in what the flow keeps.
+    await game.getByRole("button", { name: "New game" }).click();
+    await expect(game.locator("#moves")).toHaveText("*");
+    await expect(game.locator("#talk li")).toHaveCount(0);
+    await game.reload();
+    await expect(game.locator("#talk li")).toHaveCount(0);
     await game.close();
   } finally {
     upstream.close();
