@@ -74,7 +74,7 @@ being written in its text; it can't read a secret without naming it; it can't wr
 didn't name. Whatever a flow places inside it (a holon, a marketplace listing) adds its own needs
 to the list.
 
-A flow can mark some needs **optional** (`optional secret.x`): it runs without them, and the parts
+A flow can mark some needs **optional** (`optional secret x`): it runs without them, and the parts
 that need them stay absent.
 
 ## Policy, grants and enforcement

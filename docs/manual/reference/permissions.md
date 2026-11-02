@@ -17,7 +17,8 @@ the editor show).
 | `Action("name")` | can be run by hand: name | `action name (input) { … }` |
 | `Random` | use randomness | `random` |
 | `HttpRequest("host")` | call https://host | `http.get("host", …)`, `http.post(…)`, …; the host is written in the text |
-| `SecretRead("name")` | read the secret "name" | `secret.name` |
+| `SecretRead("name")` | read the secret "name"; when the flow sends it in a request, "…, and send it to https://host"; in a database read's values, "…, and send it to the database "shop""; where what a call answers to it goes (a token), "…; what is answered to it goes to https://api" | `secret.name`; it is sent to a host when it, or something computed from it, reaches a request's path, headers or body (an `hmac_sha256`, `sha256` or `secure_equals` of it isn't), and to a database when it is one of a read's `$1`, `$2`, … |
+| `SecretAnswer("name")` | answer its callers with the secret "name", or with what is computed from it | a route whose `respond` the secret reaches: `respond secret.name`, `respond { k: base64(secret.name) }`; an `hmac_sha256`, `sha256` or `secure_equals` of it, or a call's answer, isn't one |
 | `StateRead("key")` | read its state "key" | `state.key` read |
 | `StateWrite("key")` | write its state "key" | `state.key = …` |
 | `CollectionRead("c")` | read items of its collection "c" | `c[k]`, `c.list(…)` |
@@ -93,7 +94,9 @@ can change both columns ([Server configuration](server.md#the-policy)).
 
 A run past its time budget fails and performs nothing. An outbound call past a limit doesn't
 fail the run: it answers `{status: 0, error, message}`, with `error` one of `timeout`, `connect`,
-`dns`, `too_large`, `too_many_redirects`, `blocked_host`, `blocked_address`, `blocked_scheme`,
+`dns`, `too_large`, `too_many_redirects`, `blocked_host`, `blocked_secret` (it holds a secret's value bound for a
+host the flow's approval doesn't show it going to), `blocked_redirect` (a redirect to
+another host that would resend the body), `blocked_address`, `blocked_scheme`,
 `revoked`, and a few more. A js holon's budget is part of its manifest:
 
 ```
@@ -105,7 +108,7 @@ run code it carries (a js node): up to 200000000 instructions and 16 MiB per cal
 `optional` in a flow's headers marks an item it can run without:
 
 ```
-optional secret.slack_webhook_path
+optional secret slack_webhook_path
 ```
 
 The deploy dialog marks it optional, and a deployment may be granted it or not. Without it, the

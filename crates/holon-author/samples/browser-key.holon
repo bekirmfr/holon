@@ -1,0 +1,23 @@
+# Hand a browser key to a page: answering with a secret is a permission of its own.
+#
+# A web page needs a key that is meant to reach the browser (a maps or payments publishable key)
+# but shouldn't be written into the page, so an admin can rotate it without a redeploy. The flow
+# keeps it as a secret and answers it at GET /config. Because that answer carries a secret,
+# deploying asks a person to approve it ("answer its callers with the secret maps_browser_key"),
+# apart from reading it; a deployment whose grant lacks it answers 500 and its log says why. A
+# hash or HMAC of a secret asks nothing more (see sign-payload).
+#
+# Before it works, set the header's secret under the deployment's settings (the gear):
+#   maps_browser_key   the publishable key the page uses (6 characters or more)
+#
+# Try it: deploy it (its approval lists answering with the secret), set the key, then
+#   curl http://127.0.0.1:8163/config
+# answers {"maps_key": "…", "version": 1}; the run log shows the key as its placeholder.
+flow browser-key
+port 8163
+secret maps_browser_key
+
+# Answers the page's configuration, the browser key in it.
+route GET /config (req) {
+  respond { maps_key: secret.maps_browser_key, version: 1 }
+}

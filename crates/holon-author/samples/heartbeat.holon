@@ -7,6 +7,9 @@
 # server's GET /deployments/heartbeat/state, with your token).
 flow heartbeat
 every 10s
+state beats
+state first_beat
+state last_beat
 
 # Each beat: the time of this one, one more in the count, and the first beat's time, kept once set.
 t = now

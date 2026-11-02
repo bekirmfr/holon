@@ -151,6 +151,7 @@ pub enum WCapability {
     Spawn,
     DbRead(String),
     DbWrite(String),
+    SecretAnswer(String),
 }
 
 impl WCapability {
@@ -178,6 +179,7 @@ impl WCapability {
             Capability::Spawn => WCapability::Spawn,
             Capability::DbRead(table) => WCapability::DbRead(table),
             Capability::DbWrite(table) => WCapability::DbWrite(table),
+            Capability::SecretAnswer(name) => WCapability::SecretAnswer(name),
         }
     }
 }
@@ -652,7 +654,7 @@ impl Evaluator {
     /// server deploys and grants by).
     pub fn deployed_capability_names(&self, hash: &str, scheduled: bool) -> Result<Vec<String>, JsError> {
         let unit = self.resolve_hash(hash)?;
-        Ok(holon_core::capabilities(unit, &self.resolver).deployed(scheduled).iter().map(|c| holon_core::consent_name(&c)).collect())
+        Ok(holon_core::deployed_capabilities(unit, &self.resolver, scheduled).iter().map(|c| holon_core::consent_name(&c)).collect())
     }
 
     /// The coarse kind-set of a unit's whole closure, by hash — core's `effects_of`, the fixed
@@ -702,6 +704,14 @@ impl Evaluator {
     pub fn derive_server(&mut self, nodes: JsValue, edges: JsValue, port: &str) -> Result<JsValue, JsError> {
         let (nodes, wires) = canvas(nodes, edges)?;
         to_js(&flow::derive_server(&nodes, &wires, &mut self.resolver, port))
+    }
+
+    /// What each canvas node does with a secret, by node id: a line for each sink a secret reaches
+    /// there (holon-author's `secret_marks`), for the canvas to mark it. `{}` for a canvas that
+    /// doesn't derive.
+    pub fn secret_marks(&mut self, nodes: JsValue, edges: JsValue, port: &str) -> Result<JsValue, JsError> {
+        let (nodes, wires) = canvas(nodes, edges)?;
+        to_js(&flow::secret_marks(&nodes, &wires, &mut self.resolver, port))
     }
 
     /// The unit a flow deploys as, stored here: its server when it has routes, else the whole flow
@@ -1053,6 +1063,14 @@ pub fn describe_item(item: &str) -> String {
 #[wasm_bindgen]
 pub fn describe_item_of(item: &str, by_hand: bool) -> String {
     holon_author::describe::describe_item_of(item, by_hand)
+}
+
+/// `item` in words, as [`describe_item_of`], and beside a secret it reads, where the flow sends
+/// it: `sent` is the deploy preview's `sent` (secret → hosts), none when JS passed nothing.
+#[wasm_bindgen]
+pub fn describe_item_sending(item: &str, by_hand: bool, sent: JsValue) -> Result<String, JsError> {
+    let sent: std::collections::BTreeMap<String, std::collections::BTreeSet<String>> = if sent.is_undefined() || sent.is_null() { Default::default() } else { from_js(sent, "sent")? };
+    Ok(holon_author::describe::describe_item_sending(item, by_hand, &sent))
 }
 
 /// `.holon` text, in either form, as a flow document: `{name, doc, names, lines, spans}` (each

@@ -1396,6 +1396,45 @@ pub(crate) struct Sender<'a> {
     pub(crate) sends: BTreeSet<String>,
     /// The run's side of its calls to other flows' actions (calls.rs).
     pub(crate) calls: Option<&'a calls::Caller<'a>>,
+    /// For a run given a secret: where each may be sent, by its value.
+    pub(crate) secret_sends: Option<SecretSends<'a>>,
+}
+
+/// Where a run's secrets may be sent: each to the hosts its flow's approval shows it going to
+/// (core's `sent_secrets`). A request holding a secret's value, as it is, bound for another host
+/// isn't sent: the graph shows where a secret goes, but not a value it can't follow, such as one
+/// a call answered back (an API echoing a header) and the flow passed on. Nor is one holding the
+/// server's (the deployment has none of its own) bound for a host the admin didn't say it may go
+/// to: a cap set, or narrowed, after the flow was deployed holds from its next request.
+pub(crate) struct SecretSends<'a> {
+    pub(crate) vault: &'a secrets::Vault,
+    pub(crate) sent: BTreeMap<String, BTreeSet<String>>,
+}
+
+impl SecretSends<'_> {
+    /// Why `request` isn't sent, when it holds a secret's value bound for a host the secret isn't
+    /// shown going to: `{status: 0, error: "blocked_secret", message}`, naming the secret, never
+    /// its value.
+    pub(crate) fn refuses(&self, request: &Value) -> Option<Value> {
+        let Value::Record(r) = request else { return None };
+        let host = match r.get("url") {
+            Some(Value::Text(url)) => outbound::authority_of(url)?,
+            _ => return None,
+        };
+        let held = secrets::secrets_in(request, self.vault);
+        let server = self.vault.lock().unwrap().server.clone();
+        for name in &held {
+            if let Some(Some(cap)) = server.get(name)
+                && !cap.contains(&host)
+            {
+                let may = holon_author::describe::describe_sent_to(cap).0.unwrap_or_else(|| "nowhere".to_string());
+                return Some(outbound::failure("blocked_secret", format!("the server's secret {name:?} isn't sent to {host}: an admin said it may go only to {may}")));
+            }
+        }
+        let name = held.into_iter().find(|name| !self.sent.get(name).is_some_and(|hosts| hosts.contains(&host)))?;
+        let shown = self.sent.get(&name).and_then(|to| holon_author::describe::describe_sent_to(to).0).unwrap_or_else(|| "nowhere".to_string());
+        Some(outbound::failure("blocked_secret", format!("the secret {name:?} isn't sent to {host}: this flow's approval shows it going to {shown}")))
+    }
 }
 
 /// A file a request sends, as the run's handle names it.
@@ -1453,6 +1492,9 @@ impl Performer for Sender<'_> {
         // A call to another flow's action isn't an HTTP request: the server runs it in-process.
         if calls::is_call(request) {
             return calls::failure("failed", "a call is made by a node that says where it is");
+        }
+        if let Some(refused) = self.secret_sends.as_ref().and_then(|s| s.refuses(request)) {
+            return refused;
         }
         let Value::Record(r) = request else { return self.outbound.perform(request, limits) };
         if r.get("stream") == Some(&Value::Boolean(true)) {

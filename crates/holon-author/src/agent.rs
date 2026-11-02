@@ -3,7 +3,7 @@
 //! statement's value, a run in one line, and the language's reference. All of it reads what core
 //! and the language already compute; the server side only moves it.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use holon_core::{capabilities, consent_name, encode_preimage, genesis_units, MapResolver, Resolver, UnitBody};
 use serde_json::{json, Value};
@@ -11,7 +11,7 @@ use serde_json::{json, Value};
 use crate::builder::{closure_of, FlowDocument};
 use crate::commands;
 use crate::composites::Names;
-use crate::describe::describe_item;
+use crate::describe::{describe_item, describe_item_sending};
 use crate::flow::{derive_server, flow_unit, trace_of};
 use crate::lang::print::print_lines;
 use crate::wire::{WParam, WPort, WType};
@@ -36,6 +36,9 @@ pub struct Plan {
     pub browsers: Option<String>,
     /// What it may do, as consent names (`NetworkIngress`, `StateWrite("beats")`), sorted.
     pub may: Vec<String>,
+    /// Where each secret it reads is sent (core's `sent_secrets`): secret → hosts. Said beside the
+    /// secret's item ([`describe_sending`]).
+    pub sent: BTreeMap<String, BTreeSet<String>>,
 }
 
 /// The text compiled into a [`Plan`]; or its mistakes, as `holon check` prints them.
@@ -56,11 +59,12 @@ pub fn plan(source: &str) -> Result<Plan, String> {
     } else {
         server.trace.clone()
     };
-    let mut may: Vec<String> = capabilities(&root, &store).deployed(commands::scheduled(&c, &server)).iter().map(|c| consent_name(&c)).collect();
+    let mut may: Vec<String> = holon_core::deployed_capabilities(&root, &store, commands::scheduled(&c, &server)).iter().map(|c| consent_name(&c)).collect();
     // A module (a js node) adds no capability; its budgets are limits the deploy asks for, and
     // the person approving sees them (the server merges them into the manifest the same way).
     may.extend(holon_core::module_limits_of(&root, &store).iter().map(|(name, n)| format!("Limit({name}={n})")));
     may.sort();
+    let sent = holon_core::sent_secrets(&root, &store);
     let units = closure_of(&[hash], &store).iter().filter_map(|h| store.resolve(h).and_then(|u| encode_preimage(u).ok())).collect();
     let mut document = serde_json::to_value(&c.doc).map_err(|e| e.to_string())?;
     document["trace"] = json!(trace);
@@ -78,6 +82,7 @@ pub fn plan(source: &str) -> Result<Plan, String> {
         requirements: settings.requirements.as_ref().and_then(|r| serde_json::to_value(r).ok()),
         browsers: settings.browsers.clone(),
         may,
+        sent,
     })
 }
 
@@ -85,10 +90,18 @@ pub fn plan(source: &str) -> Result<Plan, String> {
 /// and the agent tools keep it, comments and all) when that still compiles, else printed from the
 /// canvas, with the binding names an agent gave it.
 pub fn text_of(name: &str, document: &Value) -> Result<String, String> {
-    if let Some(source) = document.get("source").and_then(Value::as_str).filter(|s| !s.trim().is_empty())
-        && plan(source).is_ok()
-    {
-        return Ok(source.to_string());
+    if let Some(source) = document.get("source").and_then(Value::as_str).filter(|s| !s.trim().is_empty()) {
+        if plan(source).is_ok() {
+            return Ok(source.to_string());
+        }
+        // A text saved before its header had to declare what it reads (`secret signing_key`):
+        // the same text, the lines added (docs/L4s/declared-names-L4.md §5).
+        if let Ok((fixed, _, declared)) = commands::with_declarations(source)
+            && !declared.is_empty()
+            && plan(&fixed).is_ok()
+        {
+            return Ok(fixed);
+        }
     }
     let doc: FlowDocument = serde_json::from_value(document.clone()).map_err(|e| format!("the flow's document doesn't read: {e}"))?;
     let bindings: BTreeMap<String, String> = document.get("bindings").and_then(|b| serde_json::from_value(b.clone()).ok()).unwrap_or_default();
@@ -98,6 +111,12 @@ pub fn text_of(name: &str, document: &Value) -> Result<String, String> {
 /// A consent name as a person reads it (`StateWrite("beats")` → write its state "beats").
 pub fn describe(item: &str) -> String {
     describe_item(item)
+}
+
+/// A consent name as a person reads it, and beside a secret it reads, where the flow sends it
+/// (`sent`, as [`Plan::sent`]): "read the secret "k", and send it to https://api.example.com".
+pub fn describe_sending(item: &str, sent: &BTreeMap<String, BTreeSet<String>>) -> String {
+    describe_item_sending(item, false, sent)
 }
 
 // ── values ──────────────────────────────────────────────────────────────────────────────────
@@ -527,8 +546,12 @@ keeps a record of every run that replays exactly.
 A FILE
   flow notes-api            its name (what it deploys as)
   port 8102                 the port its routes answer on
+  secret api_token          a secret it reads, as secret.api_token; set before it works
+  optional secret key       a secret it can run without
+  state count               a key of its state, used as state.count
   collection notes          a named store of items, used as notes[key]
-  optional secret.key       a permission it can run without
+  The header names everything that outlives a run or comes from outside it; the body uses only
+  names the header gave.
 
 HANDLERS (each starts runs; a flow has one or more, each a block)
   route GET /notes/:id (req) {
@@ -571,8 +594,8 @@ OPERATORS
   "no" (respond … missing: 404 answers it).
 
 THE OUTSIDE WORLD (each is one permission the flow asks for)
-  secret.api_token                         a secret, set by an admin
-  state.count                              read at the start of the run
+  secret.api_token                         a secret, set by an admin (declared: secret api_token)
+  state.count                              read at the start of the run (declared: state count)
   state.count = (state.count ?? 0) + 1     written when the run finishes
   notes[key]  notes[key] = v  delete notes[key]  notes.list(prefix: p, after: a, limit: 50)
   now, random                              the run's time (epoch seconds) and one random number
@@ -787,6 +810,11 @@ mod tests {
         assert_eq!(text_of("slugs", &document).unwrap(), text, "the text as saved");
         document["source"] = json!("flow slugs\nroute GET /a (req) {\n  respond nope\n}\n");
         assert_eq!(text_of("slugs", &document).unwrap(), printed, "a saved text that doesn't compile gives way to the canvas");
+        // A text saved before secrets were declared: the same text, its header line added.
+        let before = text.replace("optional secret receipt_key\n", "");
+        document["source"] = json!(before);
+        let shown = text_of("slugs", &document).unwrap();
+        assert!(shown.contains("collection posts\nsecret receipt_key\n") && shown.contains("# A flow inside a flow"), "{shown}");
     }
 
     /// A js node that gave nothing says why, in the engine's words, under the statement that

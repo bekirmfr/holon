@@ -1,7 +1,8 @@
 //! `holon lsp`: a `.holon` file read by an editor as it is typed (docs/L4s/language-server-L4.md),
 //! as a Language Server Protocol server on stdin and stdout. What it says is holon-author's
 //! (`editing.rs`): each mistake `holon check` finds, what the word under the cursor is, what may
-//! be written there, and the text as `holon fmt` writes it. This file frames the messages and converts positions: the
+//! be written there, the text as `holon fmt` writes it, and the quick fix that declares a name the
+//! body uses undeclared. This file frames the messages and converts positions: the
 //! language counts columns in characters, the protocol in UTF-16 code units.
 
 use std::collections::HashMap;
@@ -15,7 +16,8 @@ const USAGE: &str = "usage: holon lsp
 
 A language server on stdin and stdout, for an editor to start (the VS Code extension in
 editors/vscode does): each mistake holon check finds, as you type; what a word is, on hover;
-what may be written, as completions; and formatting, as holon fmt writes it. It needs no server.";
+what may be written, as completions; formatting, as holon fmt writes it; and a quick fix that
+declares a secret or state key the body uses undeclared. It needs no server.";
 
 // ── framing ─────────────────────────────────────────────────────────────────────────────────
 
@@ -131,6 +133,7 @@ impl Server {
                     "hoverProvider": true,
                     "completionProvider": { "triggerCharacters": ["."] },
                     "documentFormattingProvider": true,
+                    "codeActionProvider": { "codeActionKinds": ["quickfix"] },
                 },
                 "serverInfo": { "name": "holon", "version": env!("CARGO_PKG_VERSION") },
             }))],
@@ -178,6 +181,26 @@ impl Server {
                     _ => json!([]),
                 };
                 vec![answer(edits)]
+            }
+            "textDocument/codeAction" => {
+                let text = self.texts.get(&uri).map(String::as_str).unwrap_or("");
+                // A name used undeclared: its mistake says the line to add, and the fix adds it, with
+                // any other the body lacks, as `holon fmt` would.
+                let undeclared: Vec<&Value> = params["context"]["diagnostics"].as_array().into_iter().flatten().filter(|d| d["message"].as_str().is_some_and(|m| m.contains("to the header)"))).collect();
+                let actions = match editing::declare_missing(text) {
+                    Some(fix) if !undeclared.is_empty() => {
+                        let at = to_lsp(text, fix.at);
+                        json!([{
+                            "title": fix.title,
+                            "kind": "quickfix",
+                            "isPreferred": true,
+                            "diagnostics": undeclared,
+                            "edit": { "changes": { uri: [{ "range": { "start": at, "end": at }, "newText": fix.text }] } },
+                        }])
+                    }
+                    _ => json!([]),
+                };
+                vec![answer(actions)]
             }
             "shutdown" => {
                 self.shut_down = true;
@@ -310,6 +333,30 @@ mod tests {
         assert_eq!(sent[8]["params"]["diagnostics"], json!([]), "closed: its diagnostics cleared");
         assert_eq!(sent[9]["result"], Value::Null);
         assert_eq!(sent.len(), 10);
+    }
+
+    /// A secret used undeclared: its mistake says the line, and the quick fix adds it, with the
+    /// state key the body also lacks, after the last header.
+    #[test]
+    fn the_quick_fix_declares_a_name_used_undeclared() {
+        let uri = "file:///f.holon";
+        let text = "flow f\nport 8200\n\nroute GET /a (req) {\n  state.hits = 1\n  respond secret.token\n}\n";
+        let (sent, _) = session(&[
+            request(1, "initialize", json!({ "capabilities": {} })),
+            notify("textDocument/didOpen", json!({ "textDocument": { "uri": uri, "languageId": "holon", "version": 1, "text": text } })),
+        ]);
+        assert_eq!(sent[0]["result"]["capabilities"]["codeActionProvider"]["codeActionKinds"], json!(["quickfix"]));
+        let d = sent[1]["params"]["diagnostics"][0].clone();
+        assert_eq!(d["message"], "\"hits\" is not declared state (add `state hits` to the header)");
+        let ask = |id: u64, diagnostics: Value| request(id, "textDocument/codeAction", json!({ "textDocument": { "uri": uri }, "range": d["range"], "context": { "diagnostics": diagnostics } }));
+        let (sent, _) = session(&[notify("textDocument/didOpen", json!({ "textDocument": { "uri": uri, "languageId": "holon", "version": 1, "text": text } })), ask(2, json!([d])), ask(3, json!([]))]);
+        let fix = &sent[1]["result"][0];
+        assert_eq!(fix["title"], "declare state hits, secret token in the header");
+        assert_eq!(fix["kind"], "quickfix");
+        assert_eq!(fix["diagnostics"], json!([d]));
+        let at = json!({ "line": 2, "character": 0 });
+        assert_eq!(fix["edit"]["changes"][uri], json!([{ "range": { "start": at, "end": at }, "newText": "state hits\nsecret token\n" }]));
+        assert_eq!(sent[2]["result"], json!([]), "no fix where no such mistake is");
     }
 
     #[test]

@@ -33,8 +33,9 @@ pub(crate) fn run(cmd: &str, args: &[String]) -> i32 {
     match cmd {
         "check" => print(commands::check(file, &source)),
         "show" => print(commands::show(file, &source)),
-        _ => match commands::fmt(file, &source) {
-            Ok(text) => write(file, &text, &format!("formatted {file}")),
+        _ => match commands::fmt_declaring(file, &source) {
+            Ok((text, declared)) if declared.is_empty() => write(file, &text, &format!("formatted {file}")),
+            Ok((text, declared)) => write(file, &text, &format!("formatted {file}: declared {}", declared.join(", "))),
             Err(report) => print(report),
         },
     }

@@ -45,6 +45,7 @@ mod manifest;
 mod module;
 mod resolve;
 mod simulate;
+pub mod taint;
 mod triggers;
 mod validate;
 mod value;
@@ -84,6 +85,7 @@ pub use module::{
 };
 pub use resolve::{MapResolver, Resolver};
 pub use simulate::{design_eval, mock_of, Simulated};
+pub use taint::{answered_secrets, deployed_capabilities, destination_of, sent_secrets, ANSWER};
 pub use triggers::{file_triggers, glob_matches, is_glob, FileTrigger};
 pub use validate::{compatible, validate, ValidationError};
 pub use value::Value;

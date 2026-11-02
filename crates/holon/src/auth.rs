@@ -65,6 +65,14 @@ pub(crate) fn route(state: &AppState, request: &Request, caller: &Caller) -> Opt
         let (names, dotenv) = state.secrets.env_names();
         return Some(Response::json(&serde_json::json!({ "names": names, "dotenv": dotenv })));
     }
+    // The server's own secrets, bound for every deployment that reads one (secrets.rs's SERVER).
+    let by = caller.name.as_deref();
+    if url == "/admin/secrets" {
+        return Some(crate::deploy::handle_server_secrets(&state.secrets, &state.deployments, None, request.method(), request, by));
+    }
+    if let Some(name) = url.strip_prefix("/admin/secrets/") {
+        return Some(crate::deploy::handle_server_secrets(&state.secrets, &state.deployments, Some(name), request.method(), request, by));
+    }
     let Some(accounts) = state.access.accounts() else { return Some(err(404, "this server has no accounts")) };
     let by = caller.name.as_deref().unwrap_or("");
     let method = request.method();

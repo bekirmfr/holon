@@ -129,6 +129,114 @@ for (let first = 0; first < SAMPLE_TITLES.length; first += SAMPLES_PER_TEST) {
   });
 }
 
+test("browser-key's approval asks to answer with its secret, and once approved its route answers the key", async ({ page, request, adminToken }) => {
+  await openSample(page, "Hand a browser key to a page");
+  await openDeployPanel(page);
+  const settings = page.getByRole("complementary", { name: "Deployment settings" });
+  const portField = settings.getByRole("textbox").first();
+  const port = Number(await portField.inputValue()) + SAMPLE_SHIFT;
+  await portField.fill(String(port));
+  await page.locator(".hl-canvas").getByRole("button", { name: /^(deploy|update)/ }).dispatchEvent("click");
+  const dialog = page.getByRole("dialog");
+  await expect(dialog).toContainText('answer its callers with the secret "maps_browser_key", or with what is computed from it');
+  await expect(dialog).toContainText('read the secret "maps_browser_key"');
+  const deployed = page.waitForResponse((r) => r.request().method() === "POST" && new URL(r.url()).pathname === "/deploy");
+  await dialog.getByRole("button", { name: /^(Approve and deploy|Deploy|Update)$/ }).click();
+  expect((await deployed).status()).toBe(200);
+  await expect(page.locator(".hl-tab--active")).toContainText("deployed", { timeout: 30_000 });
+  const key = "pk_e2e_browser_0123456789";
+  expect((await request.post(`${SERVER}/deployments/browser-key/secrets/maps_browser_key`, { data: { value: key }, headers: { Authorization: `Bearer ${adminToken}` } })).ok()).toBe(true);
+  const config = await request.get(`http://127.0.0.1:${port}/config`);
+  expect(config.status()).toBe(200);
+  expect(await config.json()).toEqual({ maps_key: key, version: 1 });
+});
+
+test("stripe-to-slack's approval says where each secret goes, and unsigned requests get 400", async ({ page, request }) => {
+  await openSample(page, "Stripe → Slack");
+  // The canvas marks the sink the Slack path reaches, and nothing for the verified Stripe secret.
+  const marks = page.locator(".hl-node__secret");
+  await expect(marks).toHaveCount(1);
+  await expect(marks).toHaveText('🔑 sends the secret "slack_webhook_path" to https://hooks.slack.com');
+  await openDeployPanel(page);
+  const settings = page.getByRole("complementary", { name: "Deployment settings" });
+  const portField = settings.getByRole("textbox").first();
+  const port = Number(await portField.inputValue()) + SAMPLE_SHIFT;
+  await portField.fill(String(port));
+  await page.locator(".hl-canvas").getByRole("button", { name: /^(deploy|update)/ }).dispatchEvent("click");
+  const dialog = page.getByRole("dialog");
+  // The Slack path is posted to Slack; the Stripe secret only checks a signature.
+  await expect(dialog).toContainText('read the secret "slack_webhook_path", and send it to https://hooks.slack.com');
+  await expect(dialog).toContainText('read the secret "stripe_webhook_secret"');
+  await expect(dialog).not.toContainText('"stripe_webhook_secret", and send it');
+  const deployed = page.waitForResponse((r) => r.request().method() === "POST" && new URL(r.url()).pathname === "/deploy");
+  await dialog.getByRole("button", { name: /^(Approve and deploy|Deploy|Update)$/ }).click();
+  expect((await deployed).status()).toBe(200);
+  await expect(page.locator(".hl-tab--active")).toContainText("deployed", { timeout: 30_000 });
+  expect((await request.post(`http://127.0.0.1:${port}/stripe`, { data: { type: "x" } })).status()).toBe(400);
+});
+
+test("license-check's approval says its key goes to the database, and the route answers the plan the key unlocks", async ({ page, request, adminToken }) => {
+  await openSample(page, "A key in a query goes to the database");
+  // The canvas marks the read the key is a parameter of.
+  const marks = page.locator(".hl-node__secret");
+  await expect(marks).toHaveCount(1);
+  await expect(marks).toHaveText('🔑 sends the secret "license_key" to the database "vendor", reading its table "licenses"');
+  await openDeployPanel(page);
+  const settings = page.getByRole("complementary", { name: "Deployment settings" });
+  const portField = settings.getByRole("textbox").first();
+  const port = Number(await portField.inputValue()) + SAMPLE_SHIFT;
+  await portField.fill(String(port));
+  await page.locator(".hl-canvas").getByRole("button", { name: /^(deploy|update)/ }).dispatchEvent("click");
+  const dialog = page.getByRole("dialog");
+  await expect(dialog).toContainText('read the secret "license_key", and send it to the database "vendor"');
+  // The row it answers is what the database said: answering with it isn't answering with the key.
+  await expect(dialog).not.toContainText("answer its callers with the secret");
+  const deployed = page.waitForResponse((r) => r.request().method() === "POST" && new URL(r.url()).pathname === "/deploy");
+  await dialog.getByRole("button", { name: /^(Approve and deploy|Deploy|Update)$/ }).click();
+  expect((await deployed).status()).toBe(200);
+  await expect(page.locator(".hl-tab--active")).toContainText("deployed", { timeout: 30_000 });
+  expect((await request.post(`${SERVER}/deployments/license-check/secrets/license_key`, { data: { value: "lic-demo-1234" }, headers: { Authorization: `Bearer ${adminToken}` } })).ok()).toBe(true);
+  const license = await request.get(`http://127.0.0.1:${port}/license`);
+  expect(license.status()).toBe(200);
+  expect(await license.json()).toEqual({ plan: "team", seats: 5 });
+});
+
+test("client-credentials' approval says where the secret goes and where the token it gets goes, and the canvas marks both requests", async ({ page }) => {
+  await openSample(page, "A token exchange, and where the token goes");
+  const marks = page.locator(".hl-node__secret");
+  await expect(marks).toHaveCount(2);
+  await expect(marks.filter({ hasText: "demo.duendesoftware.com" })).toHaveText('🔑 sends the secret "client_secret" to https://demo.duendesoftware.com');
+  await expect(marks.filter({ hasText: "httpbin.dev" })).toHaveText('🔑 sends what is answered to the secret "client_secret" to https://httpbin.dev');
+  await openDeployPanel(page);
+  const settings = page.getByRole("complementary", { name: "Deployment settings" });
+  const portField = settings.getByRole("textbox").first();
+  await portField.fill(String(Number(await portField.inputValue()) + SAMPLE_SHIFT));
+  await page.locator(".hl-canvas").getByRole("button", { name: /^(deploy|update)/ }).dispatchEvent("click");
+  const dialog = page.getByRole("dialog");
+  await expect(dialog).toContainText('read the secret "client_secret", and send it to https://demo.duendesoftware.com; what is answered to it goes to https://httpbin.dev');
+  await dialog.getByRole("button", { name: "Cancel" }).click();
+});
+
+test("shared-key reads the server's secret, which may go only where an admin said: sent elsewhere, the deploy is refused", async ({ page }) => {
+  await openSample(page, "One key for every flow, capped");
+  await openDeployPanel(page);
+  const settings = page.getByRole("complementary", { name: "Deployment settings" });
+  await expect(settings).toContainText("the server's · may go only to https://httpbin.dev");
+  // The text changed to send it elsewhere: the deploy is refused, saying why.
+  await page.locator(".hl-canvas").getByRole("button", { name: "text off" }).dispatchEvent("click");
+  const text = readFileSync(new URL("../../crates/holon-author/samples/shared-key.holon", import.meta.url), "utf8");
+  await page.getByRole("region", { name: "Text" }).locator(".cm-content").click();
+  await page.keyboard.press("Control+A");
+  await page.keyboard.insertText(text.replace('"httpbin.dev", "/bearer"', '"postman-echo.com", "/get"'));
+  await expect(page.locator(".hl-node__secret").filter({ hasText: "postman-echo.com" })).toHaveCount(1);
+  await page.locator(".hl-canvas").getByRole("button", { name: /^(deploy|update)/ }).dispatchEvent("click");
+  await expect(page.getByText(`the server's secret "ops_api_key" may go only to https://httpbin.dev, and this flow sends it to https://postman-echo.com`)).toBeVisible();
+  // The admin's list says where it may go.
+  await page.getByRole("button", { name: "admin", exact: true }).click();
+  await page.getByRole("tablist", { name: "admin sections" }).getByRole("tab", { name: "resources" }).click();
+  await expect(page.getByLabel("server secret ops_api_key")).toContainText("may go only to https://httpbin.dev");
+});
+
 test("a sample deployed as it is keeps its text and the names it binds", async ({ page, request, adminToken }) => {
   // The port moved in the text (the text's wins while it is open), so the text still stands for
   // the canvas: a deploy then carries `source` and `bindings` (useDeployFlow.ts), and a run explains

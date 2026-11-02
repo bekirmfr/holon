@@ -553,6 +553,8 @@ fn run_attempt(
     } else {
         taint::SecretFed::default()
     };
+    // And where each may be sent: a request holding one's value goes only there.
+    let secret_sends = (!secret_fed.is_empty()).then(|| folders::SecretSends { vault: secrets, sent: holon_core::sent_secrets(root_unit, resolver) });
 
     let mut host = RecordingHost { performed: Vec::new() };
     let mut timer = recorder::Timer::new();
@@ -593,6 +595,7 @@ fn run_attempt(
         channels: waits.channels.clone(),
         sends: permit.channels_sent(),
         calls: Some(&caller),
+        secret_sends,
     };
     let outcome = run_rounds(root_unit, inputs, &sourced, resolver, &mut host, &sender, limits, &mut timer, waits, &prior);
     let overtaken = outcome.error == Some(holon_host::RunError::Overtaken);

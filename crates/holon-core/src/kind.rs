@@ -163,6 +163,10 @@ pub enum Capability {
     /// Inserts, updates or deletes rows of a table of a database the host binds (`db_exec`),
     /// in one transaction with the run's other writes there, when it finishes.
     DbWrite(String),
+    /// Answers a route's callers with the named secret, or with what is computed from it: no leaf
+    /// asks for it, the graph does (`taint::answered_secrets`, a route whose response the secret
+    /// reaches), so a person approves where a secret goes as well as that it is read.
+    SecretAnswer(String),
 }
 
 /// The sentinel key `saturate_caps` uses for the fail-closed "this closure touches
@@ -188,7 +192,7 @@ impl Capability {
         match self {
             Clock | NetworkIngress | FileRead(_) | FileArrival(_) | Action(_) | SecretAccess | SecretRead(_) | Await(_) | Random => Kind::Driver,
             StateRead(_) | StateWrite(_) | CollectionRead(_) | CollectionWrite(_) | DbRead(_) | DbWrite(_) => Kind::State,
-            NetworkEgress | HttpRequest(_) | RunsAction(_) | FileWrite(_) | ChannelSend(_) | ChannelRead(_) | Spawn => Kind::Sink,
+            NetworkEgress | HttpRequest(_) | RunsAction(_) | FileWrite(_) | ChannelSend(_) | ChannelRead(_) | SecretAnswer(_) | Spawn => Kind::Sink,
         }
     }
 
@@ -247,6 +251,9 @@ impl Capabilities {
             self.0.insert(Capability::Clock);
         }
         self
+    }
+    pub(crate) fn insert(&mut self, cap: Capability) {
+        self.0.insert(cap);
     }
     /// Replayable / cacheable ⇔ **no `State` capability anywhere in the closure** — the
     /// one place the design forfeits caching and replay (`§7`). This is *orthogonal* to
@@ -630,6 +637,7 @@ fn saturate_caps(acc: &mut BTreeSet<Capability>) {
         Spawn,
         DbRead(SATURATED_STATE_KEY.to_string()),
         DbWrite(SATURATED_STATE_KEY.to_string()),
+        SecretAnswer(SATURATED_STATE_KEY.to_string()),
     ] {
         acc.insert(c);
     }
@@ -1204,7 +1212,8 @@ mod tests {
         let mut store = MapResolver::new();
         let unknown = store.insert(prim("frobnicate")).unwrap();
         let caps = capabilities(&composite(vec![unknown]), &store);
-        assert_eq!(caps.len(), 20); // every capability — fail closed
+        assert_eq!(caps.len(), 21); // every capability — fail closed
+        assert!(caps.contains(Capability::SecretAnswer("<unknown>".to_string())), "answering with any secret");
         assert!(caps.contains(Capability::HttpRequest("<unknown>".to_string())), "any host");
         assert!(caps.contains(Capability::CollectionWrite("<unknown>".to_string())), "any collection");
         assert!(caps.contains(Capability::FileWrite("<unknown>".to_string())), "any folder");

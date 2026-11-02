@@ -4,7 +4,7 @@
 # the body in base64. The key is never in the run log, yet holon verify checks each run from the
 # signature its log entry kept.
 #
-# Before it works, set one secret under the deployment's settings (the gear):
+# Before it works, set the header's secret under the deployment's settings (the gear):
 #   signing_key   any secret of 6 characters or more to sign with
 #
 # Try it: deploy it, then
@@ -12,6 +12,7 @@
 # then export its runs (holon export sign-payload) and run holon verify on the export.
 flow sign-payload
 port 8107
+secret signing_key
 
 # Signs the raw body with the key, and answers the signature and the body in base64.
 route POST /sign (req) {

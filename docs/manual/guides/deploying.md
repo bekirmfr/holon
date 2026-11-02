@@ -65,8 +65,8 @@ A limit above the host's default needs approval; one above the host's ceiling ca
 
 ## Secrets
 
-A flow names the secrets it reads (`secret.stripe_webhook_secret`); their values are set per
-deployment, by an admin, under **⚙ → secrets**. The flow must have a name first. Each secret
+A flow declares the secrets it reads in its header (`secret stripe_webhook_secret`, read as
+`secret.stripe_webhook_secret`); their values are set per deployment, by an admin, under **⚙ → secrets**. The flow must have a name first. Each secret
 has a source:
 
 - **value**: typed in, sealed on the server (AES-256-GCM, its key in the OS key store by default).
@@ -90,12 +90,50 @@ fingerprint of it (keyed by the server's master key, so a guess can't be checked
 That tells which value a run had (the key you set an hour ago or the one before, the same token in
 two runs) without the log holding it. A token an API answers a request that held a secret with
 (an OAuth exchange's `access_token`) is kept out of the log the same way, and a write of it is
-refused too. A state write that contains a secret is refused. What the
-flow answers its own caller is not redacted: if a flow puts a secret in its response, the caller
-gets it, so don't.
+refused too. A state write that contains a secret is refused. A route whose answer carries a
+secret, as it is or computed from it (`respond secret.token`, `respond base64(secret.token)`),
+asks for a permission of its own, `SecretAnswer("token")`: "answer its callers with the secret
+"token"", which a person approves at deploy, apart from reading it. A hash or HMAC of a secret
+isn't one. A deployment without that grant answers such a request 500, and its log says why; so
+does one whose answer holds a secret's value it didn't compute (a service echoing a header back).
+
+The approval also says where each secret goes. A secret that reaches a request's path, headers or
+body, as it is or computed from it, is listed with the hosts it is sent to: "read the secret
+"slack_webhook_path", and send it to https://hooks.slack.com". A secret passed as a database
+read's value (`vendor.one("… where license_key = $1", secret.license_key)`) goes to the
+database's server with the query: "…, and send it to the database "vendor"". The rows a read
+answers are what the database said, as a request's response is what the far side said, so
+answering with them isn't answering with the secret. What a call answers to a request that
+carried a secret (the access token of a token exchange, a service's echo) is followed too, and
+where it goes is said after: "read the secret "client_secret", and send it to
+https://demo.duendesoftware.com; what is answered to it goes to https://httpbin.dev" (the
+**client-credentials** sample). That isn't a permission of its own
+(the hosts are, and the graph fixes which secret goes to which before the flow runs); it is said
+there so you see it when you approve, and when you update a flow whose version moves a key to
+another host. `holon check`, `holon deploy` and the editor's hover on `secret.name` say the same.
+The host holds a run to it: a request that holds a secret's value bound for a host the secret
+isn't shown going to (a key a service echoed back, passed on elsewhere) isn't sent, and answers
+`{status: 0, error: "blocked_secret", message}` naming the secret. `holon verify` checks it from
+an export (see [Checking runs](checking-runs.md)).
 
 Until a secret is set, the nodes that read it have no value, and what depends on them doesn't
 run.
+
+### The server's own secrets
+
+One key for several flows is bound once, for the server, as a folder or a database is: under
+**admin → resources → secrets**, or `holon secret bind stripe_key`. Every deployment that reads a
+secret of that name and has none of its own reads the server's; its ⚙ says "the server's", and
+setting one there overrides it for that deployment.
+
+An admin can say where the server's may go: hosts and databases (`holon secret bind stripe_key
+--to api.stripe.com`, or **where…** on its row). A deploy whose flow sends it anywhere else is
+refused before anything is approved: "the server's secret "stripe_key" may go only to
+https://api.stripe.com, and this flow sends it to https://hooks.slack.com". A deployment with its
+own isn't held to it, since the key isn't the server's. Narrowed later (`holon secret cap`), it
+holds from the next request: a run's request with the server's value to a host outside it isn't
+sent, and answers `blocked_secret`. Setting, capping and removing one is audited, never its value.
+The **shared-key** sample reads one.
 
 ### Secrets from a `.env` file
 
@@ -174,7 +212,7 @@ A flow can mark a need as optional in its headers, so it runs without it:
 ```holon
 flow digest
 port 8130
-optional secret.slack_webhook_path
+optional secret slack_webhook_path
 
 route POST /digest (req) {
   sent = http.post("hooks.slack.com", secret.slack_webhook_path, body: json({ text: req.body }))

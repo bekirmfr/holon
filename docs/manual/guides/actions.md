@@ -10,6 +10,7 @@ editor, a script or an agent, as someone signed in, and its run is logged like a
 ```holon
 flow counter
 port 8170
+state hits
 
 route POST /hit (req) {
   n = (state.hits ?? 0) + 1

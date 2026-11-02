@@ -14,6 +14,7 @@ import init, {
   build_preimage,
   describe_item,
   describe_item_of,
+  describe_item_sending,
   manifest_items,
   manifest_trigger,
   permission_kind,
@@ -195,6 +196,7 @@ export type WCapability =
   | { DbWrite: string }
   | { ChannelSend: string }
   | { ChannelRead: string }
+  | { SecretAnswer: string }
   | "Spawn";
 
 /** The coarse effect bucket a unit belongs to. Mirrors `core::Kind` via the bridge's `WKind` —
@@ -276,6 +278,13 @@ export function compatible(src: WType, dst: WType): boolean {
  *  `byHand`: the flow has no routes, so its `NetworkIngress` is "can be run by hand". */
 export function describeItem(item: string, byHand = false): string {
   return byHand ? describe_item_of(item, true) : describe_item(item);
+}
+
+/** `item` in words, as `describeItem`, and beside a secret it reads, where the flow sends it:
+ *  `sent` is the deploy preview's (secret → hosts), "read the secret "k", and send it to
+ *  https://api.example.com". */
+export function describeItemSending(item: string, byHand: boolean, sent: Record<string, string[]> | undefined): string {
+  return describe_item_sending(item, byHand, sent ?? null);
 }
 
 /** A manifest's items: the capabilities (consent names), then what the deploy settings ask

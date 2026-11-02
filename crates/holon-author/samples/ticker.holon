@@ -12,6 +12,7 @@
 # run it (holon mcp's run tool), tick reset under the gear's "agents may run", deploy and approve.
 flow ticker
 port 8156
+state ticks
 channel ticks
 
 # The page: the count so far, and each new tick as it arrives.

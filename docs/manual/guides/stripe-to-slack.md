@@ -17,6 +17,8 @@ You need:
 ```holon
 flow stripe-to-slack
 port 8103
+secret slack_webhook_path
+secret stripe_webhook_secret
 
 route POST /stripe (req) {
   verified = stripe.verify(req, secret.stripe_webhook_secret, now)

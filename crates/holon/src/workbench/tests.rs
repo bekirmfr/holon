@@ -59,9 +59,9 @@ fn screen(app: &mut App, width: u16, height: u16) -> String {
     (0..height).map(|y| (0..width).map(|x| buffer[(x, y)].symbol().to_string()).collect::<String>().trim_end().to_string()).collect::<Vec<_>>().join("\n")
 }
 
-const BEATS: &str = "flow beats\nevery 5s\n\nstate.beats = (state.beats ?? 0) + 1\n";
+const BEATS: &str = "flow beats\nevery 5s\nstate beats\n\nstate.beats = (state.beats ?? 0) + 1\n";
 /// A flow run by hand.
-const BUMP: &str = "flow bump\n\naction bump (input) {\n  n = (state.n ?? 0) + 1\n  state.n = n\n  respond n\n}\n";
+const BUMP: &str = "flow bump\nstate n\n\naction bump (input) {\n  n = (state.n ?? 0) + 1\n  state.n = n\n  respond n\n}\n";
 
 /// Open a copy of `text` in a tab, as a sample opens.
 fn tab_with(app: &mut App, text: &str) {

@@ -228,6 +228,10 @@ pub struct Printer<'s> {
     channels: BTreeSet<String>,
     /// The flows any `flow_call` runs an action of (`calls billing`).
     calls: BTreeSet<String>,
+    /// The secrets any leaf reads, by a name the text can write (`secret signing_key`).
+    secrets: BTreeSet<String>,
+    /// The state keys any leaf reads or writes, by a name the text can write (`state beats`).
+    state: BTreeSet<String>,
     /// The `on file` lines, in order, when the flow runs on files: folder, `deleted`, `matching`.
     on_files: Vec<OnFile>,
     /// With several lines, each `coalesce` of their `file_arrival`s that is `ingress`, and the
@@ -267,6 +271,8 @@ pub fn print_lines(name: Option<&str>, doc: &FlowDocument, store: &mut MapResolv
         databases: BTreeSet::new(),
         channels: BTreeSet::new(),
         calls: BTreeSet::new(),
+        secrets: BTreeSet::new(),
+        state: BTreeSet::new(),
         on_files: Vec::new(),
         ingress_chains: HashMap::new(),
         holon_defs: HashSet::new(),
@@ -302,9 +308,20 @@ pub fn print_lines(name: Option<&str>, doc: &FlowDocument, store: &mut MapResolv
             let origins: Vec<&str> = b.split(|c: char| c.is_whitespace() || c == ',').filter(|o| !o.is_empty()).collect();
             out.push(header(format!("browsers {}", origins.join(", "))));
         }
-        for o in s.requirements.as_ref().and_then(|r| r.optional.as_ref()).into_iter().flatten() {
-            out.push(header(format!("optional {}", consent(o))));
-        }
+    }
+    // What the flow needs provided, by name: each secret a leaf reads (`optional` when it can do
+    // without), then the other consents it can do without.
+    let optional: Vec<&String> = doc.server.as_ref().and_then(|s| s.requirements.as_ref()).and_then(|r| r.optional.as_ref()).into_iter().flatten().collect();
+    let optional_secrets: BTreeSet<&str> = optional.iter().filter_map(|o| optional_secret(o)).collect();
+    for name in p.secrets.iter().map(String::as_str).chain(optional_secrets.iter().copied()).collect::<BTreeSet<&str>>() {
+        out.push(header(if optional_secrets.contains(name) { format!("optional secret {name}") } else { format!("secret {name}") }));
+    }
+    for o in optional.iter().filter(|o| optional_secret(o).is_none()) {
+        out.push(header(format!("optional {o}")));
+    }
+    // Then what it keeps: its state keys, and the stores.
+    for k in &p.state {
+        out.push(header(format!("state {k}")));
     }
     for (folder, deleted, matching) in &p.on_files {
         let mut line = format!("on file {folder}");
@@ -478,24 +495,24 @@ fn expressible(nodes: &[&Node], incoming: &HashMap<(String, String), Src>, reque
     })
 }
 
-/// A consent name as `optional` writes it: a secret by its name, else the server's form.
-fn consent(o: &str) -> String {
-    if let Some(rest) = o.strip_prefix("SecretRead(\"")
-        && let Some(name) = rest.strip_suffix("\")")
-        && plain(name)
-    {
-        return format!("secret.{name}");
-    }
-    o.to_string()
+/// The secret an optional consent names (`SecretRead("receipt_key")`), when the text can declare
+/// it (`optional secret receipt_key`); any other consent `optional` writes in the server's form.
+fn optional_secret(o: &str) -> Option<&str> {
+    o.strip_prefix("SecretRead(\"").and_then(|rest| rest.strip_suffix("\")")).filter(|name| plain(name))
 }
 
 impl<'s> Printer<'s> {
-    /// Every collection, folder, database and channel any leaf names, the holons' leaves included.
+    /// Every collection, folder, database, channel, called flow, secret and state key any leaf
+    /// names, the holons' leaves included.
     fn collect_collections(&mut self, nodes: &[Node]) -> Result<(), String> {
         /// The param naming what a leaf reads or writes: a collection's, a folder's, a
-        /// database's or a channel's (a piped call's `pipe`).
+        /// database's or a channel's (a piped call's `pipe`), a flow's, a secret's, or a state key.
         fn named_by(leaf: &str) -> Option<&'static str> {
-            if leaf.starts_with("collection_") {
+            if leaf == "secret" {
+                Some("name")
+            } else if leaf == "store_read" || leaf == "store_write" {
+                Some("key")
+            } else if leaf.starts_with("collection_") {
                 Some("collection")
             } else if leaf.starts_with("file_") {
                 Some("folder")
@@ -512,14 +529,21 @@ impl<'s> Printer<'s> {
                 None
             }
         }
-        type Found = (BTreeSet<String>, BTreeSet<String>, BTreeSet<String>, BTreeSet<String>, BTreeSet<String>);
+        type Found = (BTreeSet<String>, BTreeSet<String>, BTreeSet<String>, BTreeSet<String>, BTreeSet<String>, BTreeSet<String>, BTreeSet<String>);
         fn found(out: &mut Found, param: &str, name: String) {
+            // A secret or key the text can't name (`secret.…` and `state.…` take a word) is spelt
+            // out where it's used.
+            if matches!(param, "name" | "key") && !plain(&name) {
+                return;
+            }
             if !name.is_empty() {
                 match param {
                     "collection" => &mut out.0,
                     "folder" => &mut out.1,
                     "database" => &mut out.2,
                     "flow" => &mut out.4,
+                    "name" => &mut out.5,
+                    "key" => &mut out.6,
                     _ => &mut out.3,
                 }
                 .insert(name);
@@ -549,7 +573,15 @@ impl<'s> Printer<'s> {
             }
         }
         let mut seen = HashSet::new();
-        let mut out: Found = (std::mem::take(&mut self.collections), std::mem::take(&mut self.folders), std::mem::take(&mut self.databases), std::mem::take(&mut self.channels), std::mem::take(&mut self.calls));
+        let mut out: Found = (
+            std::mem::take(&mut self.collections),
+            std::mem::take(&mut self.folders),
+            std::mem::take(&mut self.databases),
+            std::mem::take(&mut self.channels),
+            std::mem::take(&mut self.calls),
+            std::mem::take(&mut self.secrets),
+            std::mem::take(&mut self.state),
+        );
         for n in nodes {
             match &n.data.body {
                 PlacedBody::Primitive if named_by(&n.data.name).is_some() => {
@@ -563,7 +595,7 @@ impl<'s> Printer<'s> {
                 _ => {}
             }
         }
-        (self.collections, self.folders, self.databases, self.channels, self.calls) = out;
+        (self.collections, self.folders, self.databases, self.channels, self.calls, self.secrets, self.state) = out;
         Ok(())
     }
 
@@ -2134,14 +2166,14 @@ mod tests {
     /// it out (the lowering refuses an `every` line there), and a flow without handlers keeps it.
     #[test]
     fn an_interval_beside_handlers_is_not_printed() {
-        for src in ["flow f\nport 8080\n\nroute GET / (req) {\n  respond \"hi\"\n}\n", "flow f\n\naction reset (input) {\n  state.n = 0\n}\n"] {
+        for src in ["flow f\nport 8080\n\nroute GET / (req) {\n  respond \"hi\"\n}\n", "flow f\nstate n\n\naction reset (input) {\n  state.n = 0\n}\n"] {
             let mut doc = compile(src).unwrap_or_else(|e| panic!("{e}")).doc;
             doc.server.as_mut().expect("its settings").interval = "10".into();
             let text = printed(Some("f"), &doc, &BTreeMap::new());
             assert!(!text.contains("every 10s"), "{text}");
             compile(&text).unwrap_or_else(|e| panic!("it compiles: {e}\n{text}"));
         }
-        let clock = compile("flow f\nevery 10s\n\nstate.n = now\n").unwrap_or_else(|e| panic!("{e}")).doc;
+        let clock = compile("flow f\nevery 10s\nstate n\n\nstate.n = now\n").unwrap_or_else(|e| panic!("{e}")).doc;
         assert!(printed(Some("f"), &clock, &BTreeMap::new()).contains("every 10s"));
     }
 
@@ -2150,11 +2182,11 @@ mod tests {
     #[test]
     fn keep_is_the_logs_two_limits_and_prints_back() {
         let limits = |src: &str| compile(src).unwrap_or_else(|e| panic!("{e}")).doc.server.and_then(|s| s.requirements).and_then(|r| r.extra.get("limits").cloned());
-        let clock = |keep: &str| format!("flow f\nevery 1s\n{keep}\n\nstate.n = now\n");
+        let clock = |keep: &str| format!("flow f\nevery 1s\n{keep}\nstate n\n\nstate.n = now\n");
         assert_eq!(limits(&clock("keep 5 runs for 1d")), Some(serde_json::json!({ "keep_runs": 5, "keep_run_days": 1 })));
         assert_eq!(limits(&clock("keep 500 runs")), Some(serde_json::json!({ "keep_runs": 500 })));
         assert_eq!(limits(&clock("keep runs for 30d")), Some(serde_json::json!({ "keep_run_days": 30 })));
-        assert_eq!(limits("flow f\nevery 1s\n\nstate.n = now\n"), None);
+        assert_eq!(limits("flow f\nevery 1s\nstate n\n\nstate.n = now\n"), None);
         for keep in ["keep 5 runs for 1d", "keep 500 runs", "keep runs for 30d"] {
             let lowered = compile(&clock(keep)).unwrap();
             assert_eq!(printed(Some("f"), &lowered.doc, &lowered.names), clock(keep));
@@ -2171,7 +2203,7 @@ mod tests {
         assert!(error(&clock("keep 0 runs")).contains("1 or more"));
         assert!(error(&clock("keep 5 runs for 36h")).contains("in whole days"));
         assert!(error(&clock("keep 5 days")).contains("expected \"runs\""));
-        assert!(error("flow f\nevery 1s\nkeep 5 runs\nkeep runs for 1d\n\nstate.n = now\n").contains("one keep line"));
+        assert!(error("flow f\nevery 1s\nkeep 5 runs\nkeep runs for 1d\nstate n\n\nstate.n = now\n").contains("one keep line"));
     }
 
     /// A `js` node (docs/L4s/js-node-L4.md): its body prints back verbatim, a `}` in a string or a
@@ -2218,14 +2250,14 @@ mod tests {
     fn a_js_node_s_mistakes_are_named_at_their_place() {
         let error = |src: &str| compile(src).err().map(|e| e.to_string()).unwrap_or_else(|| panic!("compiled: {src}"));
         assert!(error("flow f\n\nholon a(x) -> y js {\n  return x\n").contains("isn't closed"));
-        assert!(error("flow f\n\nholon a(x) -> y js {}\nstate.k = a(1)\n").contains("empty"));
-        assert!(error("flow f\n\nholon a(x, x) -> y js { return x }\nstate.k = a(1)\n").contains("declared twice"));
-        assert!(error("flow f\n\nholon a(x) -> y js fuel 0 { return x }\nstate.k = a(1)\n").contains("positive whole number"));
-        assert!(error("flow f\n\nholon a(x) -> y js fuel 1M fuel 2M { return x }\nstate.k = a(1)\n").contains("given twice"));
-        assert!(error("flow f\n\nholon a(x) -> y {\n  y = x\n}\nholon a(x) -> y js { return x }\nstate.k = a(1)\n").contains("already"));
+        assert!(error("flow f\nstate k\n\nholon a(x) -> y js {}\nstate.k = a(1)\n").contains("empty"));
+        assert!(error("flow f\nstate k\n\nholon a(x, x) -> y js { return x }\nstate.k = a(1)\n").contains("declared twice"));
+        assert!(error("flow f\nstate k\n\nholon a(x) -> y js fuel 0 { return x }\nstate.k = a(1)\n").contains("positive whole number"));
+        assert!(error("flow f\nstate k\n\nholon a(x) -> y js fuel 1M fuel 2M { return x }\nstate.k = a(1)\n").contains("given twice"));
+        assert!(error("flow f\nstate k\n\nholon a(x) -> y {\n  y = x\n}\nholon a(x) -> y js { return x }\nstate.k = a(1)\n").contains("already"));
         assert!(error("flow f\n\nholon a(x) -> y js { return x }\nroute GET /p (req) {\n  a = 1\n  respond a\n}\n").contains("may not shadow"));
         // The header's scaled numbers: 50M is 50 000 000, 16MB is 16 MiB.
-        let l = compile("flow f\n\nholon a(x) -> y js fuel 50M memory 16MB { return x }\nstate.k = a(1)\n").unwrap();
+        let l = compile("flow f\nstate k\n\nholon a(x) -> y js fuel 50M memory 16MB { return x }\nstate.k = a(1)\n").unwrap();
         let text = printed(Some("f"), &l.doc, &l.names);
         assert!(text.contains("holon a(x) -> y js fuel 50000000 {"), "{text}");
         assert!(!text.contains("memory"), "the default memory isn't written: {text}");
@@ -2272,7 +2304,7 @@ mod tests {
         let heartbeat = samples::build(samples::sample("heartbeat").unwrap()).unwrap();
         assert_eq!(
             printed(Some("heartbeat"), &heartbeat, &BTreeMap::new()),
-            "flow heartbeat\nevery 10s\n\nt = now\nstate.last_beat = t\nstate.beats = (state.beats ?? 0) + 1\nstate.first_beat = state.first_beat ?? t\n"
+            "flow heartbeat\nevery 10s\nstate beats\nstate first_beat\nstate last_beat\n\nt = now\nstate.last_beat = t\nstate.beats = (state.beats ?? 0) + 1\nstate.first_beat = state.first_beat ?? t\n"
         );
         let likes = compile(samples::sample("likes").unwrap().text).unwrap();
         let text = printed(Some("likes"), &likes.doc, &likes.names);
@@ -2305,7 +2337,7 @@ mod tests {
     /// from its signature) and the placement's tie; what `after` names is (docs/L4s/triggers-L4.md).
     #[test]
     fn ties_print_as_the_text_wrote_them_and_round_trip() {
-        let src = "flow f\nport 8100\ncollection c\n\nholon keep(v) -> (saved, put) {\n  saved = state.set(last, v)\n  put = c.put(\"k\", v)\n}\n\nroute POST /k (req) {\n  id = req.params.id\n  r = keep(id)\n  state.seen = id after r.put\n  state.hits = (state.hits ?? 0) + 1\n  respond id\n}\n";
+        let src = "flow f\nport 8100\ncollection c\nstate hits\nstate last\nstate seen\n\nholon keep(v) -> (saved, put) {\n  saved = state.set(last, v)\n  put = c.put(\"k\", v)\n}\n\nroute POST /k (req) {\n  id = req.params.id\n  r = keep(id)\n  state.seen = id after r.put\n  state.hits = (state.hits ?? 0) + 1\n  respond id\n}\n";
         let l = compile(src).unwrap();
         let text = round_trips("f", &l.doc, &l.names);
         assert!(text.contains("holon keep(v) -> (saved, put) {"), "its trigger isn't declared: {text}");
@@ -2329,7 +2361,7 @@ mod tests {
     /// written to a folder is a copy.
     #[test]
     fn on_file_blocks_print_back_as_written() {
-        let src = "flow sort\nport 8080\nfolder done\n\non file drop matching \"*.csv\" (sheet) {\n  done[sheet.name] = sheet\n  drop[\"seen/{sheet.name}\"] = \"seen\"\n}\n\non file drop deleted (f) {\n  state.last = f.name\n}\n\nroute GET /last (req) {\n  respond state.last\n}\n";
+        let src = "flow sort\nport 8080\nstate last\nfolder done\n\non file drop matching \"*.csv\" (sheet) {\n  done[sheet.name] = sheet\n  drop[\"seen/{sheet.name}\"] = \"seen\"\n}\n\non file drop deleted (f) {\n  state.last = f.name\n}\n\nroute GET /last (req) {\n  respond state.last\n}\n";
         let l = compile(src).unwrap();
         let text = round_trips("sort", &l.doc, &l.names);
         assert_eq!(text, src);
@@ -2338,7 +2370,7 @@ mod tests {
     /// Action blocks print back as written, each with the name of what was sent.
     #[test]
     fn action_blocks_print_back_as_written() {
-        let src = "flow ticker\n\nevery 2s {\n  state.ticks = (state.ticks ?? 0) + 1\n}\n\naction reset (input) {\n  state.ticks = input.to ?? 0\n  respond { was: state.ticks ?? 0 }\n}\n\naction ping (sent) {\n  respond sent\n}\n";
+        let src = "flow ticker\nstate ticks\n\nevery 2s {\n  state.ticks = (state.ticks ?? 0) + 1\n}\n\naction reset (input) {\n  state.ticks = input.to ?? 0\n  respond { was: state.ticks ?? 0 }\n}\n\naction ping (sent) {\n  respond sent\n}\n";
         let l = compile(src).unwrap();
         let text = round_trips("ticker", &l.doc, &l.names);
         assert_eq!(text, src);
@@ -2393,7 +2425,7 @@ mod tests {
 
     #[test]
     fn the_natural_spellings_print_as_written() {
-        let src = "flow f\nport 8200\ncollection notes\n\nholon twice(n) -> o {\n  o = n + n\n}\n\nroute POST /x (req) {\n  item = notes[req.params.id] ?? { k: [1, \"a\"] }\n  ok = req.headers.authorization == \"Bearer {secret.tok}\" && !(item.done)\n  sent = http.post(\"h.example\", \"/p\", body: json({ ..item, n: twice(item.n) }))\n  paid = await paid, expires: 2h\n  notes[req.params.id] = if ok then item else { }\n  state.last = { ..req.json, paid_via: paid.method }\n  respond { status: sent.status } when ok, status: 201, missing: 401\n}\n";
+        let src = "flow f\nport 8200\nsecret tok\ncollection notes\nstate last\n\nholon twice(n) -> o {\n  o = n + n\n}\n\nroute POST /x (req) {\n  item = notes[req.params.id] ?? { k: [1, \"a\"] }\n  ok = req.headers.authorization == \"Bearer {secret.tok}\" && !(item.done)\n  sent = http.post(\"h.example\", \"/p\", body: json({ ..item, n: twice(item.n) }))\n  paid = await paid, expires: 2h\n  notes[req.params.id] = if ok then item else { }\n  state.last = { ..req.json, paid_via: paid.method }\n  respond { status: sent.status } when ok, status: 201, missing: 401\n}\n";
         let first = compile(src).unwrap_or_else(|e| panic!("{e}"));
         let text = round_trips("f", &first.doc, &first.names);
         for line in [
@@ -2501,18 +2533,19 @@ mod tests {
         assert_eq!(json_literal("{\"done\":false,\"k\":[1,\"x\"]}"), Some("{ done: false, k: [1, \"x\"] }".into()));
         assert_eq!(json_literal("{\"k\": 1}"), None, "a text that doesn't write back the same stays a const");
         assert_eq!(json_literal("{\"k\":[1,\"x\"],\"done\":false}"), None, "unsorted keys don't either");
-        assert_eq!(consent("SecretRead(\"receipt_key\")"), "secret.receipt_key");
-        assert_eq!(consent("HttpRequest(\"h\")"), "HttpRequest(\"h\")");
+        assert_eq!(optional_secret("SecretRead(\"receipt_key\")"), Some("receipt_key"));
+        assert_eq!(optional_secret("SecretRead(\"a key\")"), None);
+        assert_eq!(optional_secret("HttpRequest(\"h\")"), None);
     }
 
     /// A `match` prints back as written, its arms one to a line; the guards it lowers to,
     /// written by hand without names, are the same unit and print as the `match` they are.
     #[test]
     fn a_match_prints_back_as_a_match() {
-        let src = "flow f\n\nholon pick(op, v) -> r {\n  r = match op {\n    \"inv\" -> 1 / v\n    \"neg\", \"minus\" -> 0 - v\n    else -> match v {\n      0 -> \"zero\"\n      else -> \"some\"\n    }\n  }\n}\n\nstate.x = pick(\"inv\", 1)\n";
+        let src = "flow f\nstate x\n\nholon pick(op, v) -> r {\n  r = match op {\n    \"inv\" -> 1 / v\n    \"neg\", \"minus\" -> 0 - v\n    else -> match v {\n      0 -> \"zero\"\n      else -> \"some\"\n    }\n  }\n}\n\nstate.x = pick(\"inv\", 1)\n";
         let got = compile(src).unwrap_or_else(|e| panic!("{e}"));
         assert_eq!(round_trips("f", &got.doc, &got.names), src);
-        let by_hand = "flow f\n\nholon pick(op, v) -> r {\n  r = (1 / v when op == \"inv\") ?? (0 - v when op == \"neg\")\n}\n\nstate.x = pick(\"inv\", 1)\n";
+        let by_hand = "flow f\nstate x\n\nholon pick(op, v) -> r {\n  r = (1 / v when op == \"inv\") ?? (0 - v when op == \"neg\")\n}\n\nstate.x = pick(\"inv\", 1)\n";
         let got = compile(by_hand).unwrap();
         assert!(round_trips("f", &got.doc, &got.names).contains("  r = match op {\n    \"inv\" -> 1 / v\n    \"neg\" -> 0 - v\n  }\n"));
         // A subject the comparisons alone use folds in; one used elsewhere keeps its binding.
@@ -2541,7 +2574,7 @@ mod tests {
             // An else on something else than none of the arms matching.
             ("  r = (v when op == \"a\") ?? (2 when !(op == \"b\"))", "  r = if op == \"a\" then v else 2 when op != \"b\""),
         ] {
-            let src = format!("flow f\n\nholon pick(op, v) -> r {{\n{body}\n}}\n\nstate.x = pick(\"a\", \"b\")\n");
+            let src = format!("flow f\nstate x\n\nholon pick(op, v) -> r {{\n{body}\n}}\n\nstate.x = pick(\"a\", \"b\")\n");
             let got = compile(&src).unwrap_or_else(|e| panic!("{e}\n{src}"));
             let text = round_trips("f", &got.doc, &got.names);
             assert!(text.contains(&format!("{want}\n}}")), "{body}:\n{text}");

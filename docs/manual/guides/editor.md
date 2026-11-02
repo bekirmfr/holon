@@ -58,6 +58,12 @@ A flow tab is a canvas of nodes and wires.
 - **Selecting.** Click a node or wire; shift-click or drag a box for several. **Delete** or
   **Backspace** removes the selection.
 - **Undo** is **Ctrl+Z** (**⟲**), redo **Ctrl+Y** or **Ctrl+Shift+Z** (**⟳**), per tab.
+- **Secrets.** Every node a secret's value reaches where it leaves the computation is marked 🔑,
+  with what it does with it: a request it is sent in ("sends the secret "slack_webhook_path" to
+  https://hooks.slack.com"), a database read it is a value of, a write or a call the host
+  refuses, the route's answer; and where what a call answers to it goes ("sends what is answered
+  to the secret "client_secret" to https://httpbin.dev"). A placed holon is marked for what its
+  insides do. A node that only computes with it (an HMAC, Stripe's verify) isn't.
 
 ### Holons on the canvas
 
@@ -181,13 +187,16 @@ Admins manage, from here:
   working at once), disable, or remove;
 - **API tokens**, for scripts, CI and agents on other machines: each with a role, shown once;
 - **folders**: the named folders flows may use ([Files on the host](files.md));
+- **secrets**: the server's own, read by every deployment that reads one and has none of its
+  own, each with where it may go
+  ([The server's own secrets](deploying.md#the-servers-own-secrets));
 - **storage**: sweeping what nothing kept names any more, the content store's states and values
   (it counts first, then asks) and the texts of files runs read and wrote, as `holon store sweep`
   and `holon folder sweep` do;
 - **signing in through an identity provider** (OpenID Connect): its issuer and client id.
 
 Every one of these has a command too: `holon user`, `holon token`, `holon oidc`, `holon folder`,
-`holon database`, `holon store sweep`, `holon grants` and `holon policy`
+`holon database`, `holon secret bind`, `holon store sweep`, `holon grants` and `holon policy`
 ([Command line](../reference/cli.md)).
 
 ## The marketplace
@@ -200,7 +209,8 @@ entries appear in the palette to place. Placing one shows what it may do first. 
 ## Other editors
 
 The text is a plain `.holon` file, and `holon lsp` is a language server for any editor that can
-start one: mistakes as you type, hover, completion and formatting. The VS Code extension
+start one: mistakes as you type, hover, completion, formatting, and a quick fix that declares a
+secret or state key the body uses undeclared. The VS Code extension
 (`holon-vscode.vsix`, on each release) highlights the language and starts `holon lsp`.
 
 ## Shortcuts

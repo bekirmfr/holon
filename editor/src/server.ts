@@ -328,6 +328,8 @@ export type DeployPreview = {
   needs_approval: string[];
   /** Granted already: by host policy, or by the deployment's current grant. */
   already_granted: string[];
+  /** Where each secret it reads is sent (secret → hosts), said beside the secret's item. */
+  sent?: Record<string, string[]>;
   /** Why the host would refuse it, if it would. */
   refused: string | null;
   /** Secrets it reads that aren't set yet: those nodes stay empty until they are. */
@@ -340,7 +342,32 @@ export type DeployPreview = {
 
 /** A secret as the server lists it: never its value. `source`: `local` (sealed by the server),
  *  `env:HOLON_SECRET_…` or `vault:<mount>/<path>#<field>`. `problem`: why it has no value now. */
-export type SecretInfo = { name: string; version: number; source: string; set_at: number; problem?: string };
+/** One secret set, never its value. `server`: the server's, read by a deployment that has none of
+ *  its own; `to`: where the server's may go, when an admin said (hosts, `db:` databases). */
+export type SecretInfo = { name: string; version: number; source: string; set_at: number; problem?: string; server?: boolean; to?: string[] };
+
+/** `GET /admin/secrets` (admins only) — the server's own secrets, each with where it may go. */
+export async function listServerSecrets(): Promise<SecretInfo[]> {
+  return (await asJson<{ secrets: SecretInfo[] }>(await api(`${BASE}/admin/secrets`))).secrets;
+}
+
+/** Bind the server's secret `name`, as a new version (a value, or where it is kept), and where it
+ *  may go (`to`: hosts and `db:` databases; absent: wherever its flows' approvals show). */
+export async function bindServerSecret(name: string, set: ({ value: string } | { from: string }) & { to?: string[] }): Promise<number> {
+  const res = await api(`${BASE}/admin/secrets/${encodeURIComponent(name)}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(set) });
+  return (await asJson<{ version: number }>(res)).version;
+}
+
+/** Change only where the server's secret `name` may go (null: wherever its flows' approvals show). */
+export async function capServerSecret(name: string, to: string[] | null): Promise<void> {
+  await asJson(await api(`${BASE}/admin/secrets/${encodeURIComponent(name)}/cap`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ to }) }));
+}
+
+/** Remove the server's secret `name`, every version. */
+export async function unbindServerSecret(name: string): Promise<void> {
+  const res = await api(`${BASE}/admin/secrets/${encodeURIComponent(name)}`, { method: "DELETE" });
+  if (!res.ok) throw new Error(await res.text());
+}
 
 /** `GET /deployments/<slug>/secrets` — the secrets set, never their values. */
 export async function listSecrets(slug: string): Promise<SecretInfo[]> {

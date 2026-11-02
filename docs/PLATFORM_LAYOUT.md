@@ -390,7 +390,22 @@ only the editor.
   `‹withheld: computed from a secret›`. An effect carries no node, so this goes by capability: a
   key written anywhere in the run from such a value has all its writes in that run refused. A flow
   may still send a secret where it is meant to go: an outbound request's header, or its own
-  response to a caller. A credential a call answers with to a request that held a secret (an
+  response to a caller where a person approved that: a route whose response a secret reaches
+  (core's `taint::answered_secrets`, the same walk one secret at a time) asks for
+  `SecretAnswer("name")` at deploy, and a run whose answer carries a secret not granted so (by
+  the graph, or its value found in the answer) is answered 500. Where each secret is sent is
+  derived too (`taint::sent_secrets`: the hosts of the requests it reaches, and the databases of
+  the reads it is a value of, `db:shop`; where what is answered to it goes, `answer:api.example.com`,
+  from a second walk, `SecretFed::answers_of`) and said beside its
+  `SecretRead` in the approval, `holon check` and the editor; it isn't an item of its own, since
+  the hosts are, and the graph fixes the pairs before a run. A request holding a secret's value
+  bound for a host its secret isn't shown going to (a value the graph can't follow: echoed back by
+  a call, or come in from outside) isn't sent (`blocked_secret`, `folders::SecretSends`), and
+  `holon verify` checks every request that carried one against the unit. The server's own
+  secrets (`secrets::SERVER`, `holon secret bind`) are read by a deployment with none of its own,
+  and may carry an admin's cap on where they go: a deploy that sends one elsewhere is refused
+  (`SecretStore::refuses`), and so is a run's request with its value (`SecretSends`). A
+  credential a call answers with to a request that held a secret (an
   OAuth exchange's `access_token`, `refresh_token`, `id_token`, …: `ANSWER_FIELDS` in
   `secrets.rs`) is redacted by its value as `‹token:answer access_token #a1b2c3d4›` and refused
   the writes a secret is, rather than treating every answer to such a call as computed from the

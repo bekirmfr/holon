@@ -107,7 +107,7 @@ static SAMPLES: &[Sample] = &[
         name: "stripe-to-slack",
         title: "Stripe → Slack",
         description: "Verify a Stripe webhook's signature and post the event to a Slack channel; anything unsigned gets 400 and posts nothing.",
-        shows: &["stripe_verify", "secrets", "http_request", "clock", "hmac_sha256", "split"],
+        shows: &["stripe_verify", "secrets", "where secrets go", "http_request", "clock", "hmac_sha256", "split"],
         port: Some("8103"),
         interval: None,
         secrets: &[
@@ -291,6 +291,71 @@ static SAMPLES: &[Sample] = &[
         browsers: None,
         try_it: r#"curl -X POST -H "Content-Type: application/json" -d 'hello' http://127.0.0.1:8107/sign; then export its runs and holon verify checks each run given the signature its log entry kept (the key is never in the log)"#,
         text: include_str!("../samples/sign-payload.holon"),
+    },
+    Sample {
+        name: "browser-key",
+        title: "Hand a browser key to a page",
+        description: "Answer a page's configuration with a publishable key kept as a secret, so it can be rotated without a redeploy. Answering a caller with a secret is a permission of its own, which a person approves at deploy.",
+        shows: &["secrets", "answering with a secret (SecretAnswer)", "approval", "record building"],
+        port: Some("8163"),
+        interval: None,
+        secrets: &[SampleSecret { name: "maps_browser_key", what: "the publishable key the page uses (6 characters or more)", from: None }],
+        optional: &[],
+        browsers: None,
+        try_it: "deploy it (its approval lists answering with the secret), set the key under the gear, then curl http://127.0.0.1:8163/config; the run log shows the key as its placeholder",
+        text: include_str!("../samples/browser-key.holon"),
+    },
+    Sample {
+        name: "echoed-key",
+        title: "A key echoed back isn't passed on",
+        description: "Send a key to one host, which echoes it back, and try to pass the echo to another: the host finds the key by its value and doesn't send it, since its approval shows it going only to the first.",
+        shows: &["secrets", "where secrets go", "blocked_secret", "http_request", "verify"],
+        port: Some("8164"),
+        interval: None,
+        secrets: &[SampleSecret { name: "demo_key", what: "any made-up value (6 characters or more); it is sent to httpbin.dev", from: None }],
+        optional: &[],
+        browsers: None,
+        try_it: "deploy it, set the key under the gear, then curl http://127.0.0.1:8164/echo: the second call answers blocked_secret",
+        text: include_str!("../samples/echoed-key.holon"),
+    },
+    Sample {
+        name: "client-credentials",
+        title: "A token exchange, and where the token goes",
+        description: "Post a client secret to an OAuth server (Duende's public demo) for an access token, then call an API with the token (httpbin.dev stands in): the approval says the secret goes to the OAuth server and what is answered to it to the API, the canvas marks both requests, and the token is kept out of the log by its value.",
+        shows: &["secrets", "where secrets go", "tokens", "OAuth", "http_request", "verify"],
+        port: Some("8166"),
+        interval: None,
+        secrets: &[SampleSecret { name: "client_secret", what: "secret, the demo server's published secret for its client m2m; it is sent to demo.duendesoftware.com", from: None }],
+        optional: &[],
+        browsers: None,
+        try_it: "deploy it, set the secret under the gear, then curl http://127.0.0.1:8166/token answers {\"issued\":200,\"api\":200,\"authenticated\":true}; holon export client-credentials, then holon verify on it says where the token went",
+        text: include_str!("../samples/client-credentials.holon"),
+    },
+    Sample {
+        name: "shared-key",
+        title: "One key for every flow, capped",
+        description: "Read a secret the server binds once for every flow that reads it, with where an admin says it may go: this flow sends it to httpbin.dev, so it deploys and reads the server's; one that sent it elsewhere would be refused at deploy, unless it had its own.",
+        shows: &["secrets", "server-wide secrets", "where secrets go", "an admin's cap", "http_request"],
+        port: Some("8167"),
+        interval: None,
+        secrets: &[SampleSecret { name: "ops_api_key", what: "the server's: an admin binds it, holon secret bind ops_api_key --to httpbin.dev, any made-up value (6 characters or more)", from: None }],
+        optional: &[],
+        browsers: None,
+        try_it: "first bind the key (an admin): printf 'ops-demo-key-123' | holon secret bind ops_api_key --to httpbin.dev; deploy it, then curl http://127.0.0.1:8167/whoami answers {\"status\":200,\"authenticated\":true}",
+        text: include_str!("../samples/shared-key.holon"),
+    },
+    Sample {
+        name: "license-check",
+        title: "A key in a query goes to the database",
+        description: "Ask a database which plan a licence key unlocks, the key passed as the query's $1: the approval says the key is sent to the database \"vendor\", and the canvas marks the read. The row it answers is what the database said, not the key.",
+        shows: &["secrets", "where secrets go", "databases", "SQL"],
+        port: Some("8165"),
+        interval: None,
+        secrets: &[SampleSecret { name: "license_key", what: "lic-demo-1234, the licence the vendor table holds; it is sent to the database \"vendor\"", from: None }],
+        optional: &[],
+        browsers: None,
+        try_it: "first bind the database (an admin): holon database add vendor ~/holon-vendor.db --schema \"create table if not exists licenses (license_key text primary key, plan text not null, seats integer not null); insert or ignore into licenses values ('lic-demo-1234', 'team', 5)\"; deploy it, set the key under the gear, then curl http://127.0.0.1:8165/license answers {\"plan\":\"team\",\"seats\":5}",
+        text: include_str!("../samples/license-check.holon"),
     },
     Sample {
         name: "likes",
@@ -731,6 +796,14 @@ mod tests {
             assert_eq!(optional, s.optional, "{}: optional", s.name);
             for secret in s.secrets {
                 assert!(s.text.contains(&format!("secret.{}", secret.name)), "{}: reads secret.{}", s.name, secret.name);
+                let declared = [format!("\nsecret {}\n", secret.name), format!("\noptional secret {}\n", secret.name)];
+                assert!(declared.iter().any(|d| s.text.contains(d.as_str())), "{}: its header declares secret {}", s.name, secret.name);
+            }
+            // And every secret the header declares is one the entry says how to set.
+            for line in s.text.lines() {
+                if let Some(name) = line.strip_prefix("secret ").or_else(|| line.strip_prefix("optional secret ")) {
+                    assert!(s.secrets.iter().any(|x| x.name == name), "{}: the entry says what secret {name} is", s.name);
+                }
             }
         }
         // rolling-log's `keep` line is the limits the copy opened asks for.
