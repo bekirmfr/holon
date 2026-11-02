@@ -1041,8 +1041,8 @@ test("chess holds its agent to the legal moves, streams its chat replies and kee
   // A stand-in for the Interactions API on loopback. A move call (its schema has a move) is
   // answered first with a move that isn't legal, then by the game so far, with a verdict, a mood
   // and now and then a line for the player; a parting call (a say and no move) with a goodbye; a
-  // chat call with a reply streamed a word at a time, as the API's events. A key it doesn't know
-  // is refused, as the API does.
+  // chat call with a reply streamed a word at a time, as the API's events. After 3. Nc3 it never
+  // answers in time. A key it doesn't know is refused, as the API does.
   const moves: { model: string; input: string }[] = [];
   const chats: string[] = [];
   const partings: string[] = [];
@@ -1086,7 +1086,9 @@ test("chess holds its agent to the legal moves, streams its chat replies and kee
         moves.push({ model: sent.model, input: sent.input });
         const pgn = /\(PGN\): (.*)/.exec(sent.input)?.[1] ?? "";
         const play = moves.length === 1 ? { move: "Qxf2", say: "", verdict: "insane", mood: "amused" } : (PLAYS[pgn] ?? { move: legal[0], say: "", verdict: "solid", mood: "curious" });
-        // The answer to 2. Nf3 takes a while, as a thinking model's does.
+        // The answer to 2. Nf3 takes a while, as a thinking model's does; to 3. Nc3, longer than
+        // the call is given (the test's text gives it 5 seconds).
+        if (pgn === "1. e4 e5 2. Nf3 Nc6 3. Nc3 *") return void setTimeout(() => res.destroy(), 8000);
         setTimeout(() => res.end(answer(JSON.stringify({ ...play, comment: "The horse knows the way." }))), pgn === "1. e4 e5 2. Nf3 *" ? 3000 : 0);
       } else if (schema.say) {
         partings.push(sent.input);
@@ -1108,7 +1110,7 @@ test("chess holds its agent to the legal moves, streams its chat replies and kee
     const editor = page.getByRole("region", { name: "Text" }).locator(".cm-content");
     await editor.click();
     await page.keyboard.press("Control+A");
-    await page.keyboard.insertText(text.replaceAll('"generativelanguage.googleapis.com"', `"${host}"`).replace("port 8168", `port ${8168 + SAMPLE_SHIFT}`));
+    await page.keyboard.insertText(text.replaceAll('"generativelanguage.googleapis.com"', `"${host}"`).replace("port 8168", `port ${8168 + SAMPLE_SHIFT}`).replace("limit request_timeout_ms 50s", "limit request_timeout_ms 5s"));
     await settingsSayPort(page, String(8168 + SAMPLE_SHIFT));
     const port = await deploy(page, 0, async (settings) => {
       await settings.getByTitle("comma-separated host[:port]").fill(host);
@@ -1202,6 +1204,24 @@ test("chess holds its agent to the legal moves, streams its chat replies and kee
     // The move calls never carried a word of the chat.
     expect(moves).toHaveLength(2);
     for (const asked of moves) expect(asked.input).not.toContain("Qxf7");
+    // A call that times out plays nothing: the Sphinx's turn waits, and the player chooses. Asked
+    // again, it times out again; then the rules play for it.
+    await square("b1").click();
+    await square("c3").click();
+    await expect(game.locator("#status")).toContainText("The Sphinx didn't answer in time (its call timed out).", MOVED);
+    await expect(game.locator("#moves")).toHaveText("1. e4 e5 2. Nf3 Nc6 3. Nc3 *");
+    await expect(game.locator("#held")).toBeVisible();
+    // While it waits, the player can't move for it.
+    expect((await request.post(`${base}/move`, { data: { move: "d7d6" } })).status()).toBe(400);
+    await game.getByRole("button", { name: "Try again" }).click();
+    await expect(game.locator("#status")).toContainText("Asked again: the Sphinx (gemini-3.5-flash-lite) is thinking…");
+    await expect(game.locator("#status")).toContainText("The Sphinx didn't answer in time", MOVED);
+    expect(moves).toHaveLength(4);
+    await game.getByRole("button", { name: "Let the rules play" }).click();
+    await expect(game.locator("#moves")).toHaveText("1. e4 e5 2. Nf3 Nc6 3. Nc3 d6 *", MOVED);
+    await expect(game.locator("#contract")).toContainText("It didn't answer (its call timed out, and you let the rules play). The rules played 3... d6 for it.");
+    await expect(game.locator("#held")).toBeHidden();
+    expect(moves).toHaveLength(4);
     // The free tier's limit: the rules play, and the chat rests.
     expect((await secret("e2e-revoked")).ok()).toBe(true);
     await square("f1").click();
