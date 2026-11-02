@@ -195,6 +195,7 @@ impl App {
         let from = self.show;
         self.show = to;
         self.complete = None;
+        self.graph_keys = false;
         self.sync_graph();
         let runs = self.tabs.get(self.tab).is_some_and(|t| t.runs.is_some());
         if let Some(tab) = self.tabs.get_mut(self.tab)
@@ -224,6 +225,7 @@ impl App {
     /// statement the cursor is in.
     pub(crate) fn sync_graph(&mut self) {
         let show = self.show;
+        let beside = self.beside_has_keys();
         let Some(tab) = self.tabs.get_mut(self.tab) else { return };
         let run = tab.runs.as_ref().map(|r| (r.view.as_ref().and_then(|v| v.as_ref().ok()).map(|v| v.text.join("\n")), r.at(), r.steps()));
         if show == Show::Code && run.is_none() {
@@ -237,7 +239,8 @@ impl App {
             }
             None => tab.buf.text(),
         };
-        let every = tab.graph.as_ref().is_some_and(|g| g.view.every);
+        // Every node a row, until a says the statements.
+        let every = tab.graph.as_ref().is_none_or(|g| g.view.every);
         let key = format!("{every}\n{text}");
         if tab.graph.as_ref().is_none_or(|g| g.view.key != key) {
             let line = tab.graph.as_ref().and_then(|g| g.view.row(g.sel)).map_or(tab.buf.row as u32 + 1, |r| r.line);
@@ -258,7 +261,8 @@ impl App {
             None => {
                 g.view.reached.clear();
                 g.view.dim = false;
-                if show == Show::Both {
+                // Beside the text, the graph follows the cursor, unless it has the keys.
+                if show == Show::Both && !beside {
                     g.sel = g.view.row_at(tab.buf.row as u32 + 1);
                 }
             }
@@ -269,11 +273,84 @@ impl App {
     /// back to the code alone, where the cursor was.
     fn graph_to_text(&mut self, at_pick: bool) {
         let Some(tab) = self.tabs.get_mut(self.tab) else { return };
-        if at_pick && let Some(line) = tab.graph.as_ref().and_then(|g| g.view.row(g.sel)).map(|r| r.line) {
-            tab.buf.go(line, 1);
+        if at_pick && let Some(m) = tab.graph.as_ref().and_then(|g| g.view.row(g.sel)).map(|r| r.mark) {
+            tab.buf.go(m.start.line, m.start.col);
             return self.set_show(Show::Both);
         }
         self.set_show(Show::Code);
+    }
+
+    /// Code and graph side by side: the graph beside the text has the keys (no run shown).
+    pub(crate) fn beside_has_keys(&self) -> bool {
+        self.page == super::app::Page::Editor
+            && self.show == Show::Both
+            && self.graph_keys
+            && !self.typing
+            && self.modal.is_none()
+            && self.tabs.get(self.tab).is_some_and(|t| t.runs.is_none() && t.graph.is_some())
+    }
+
+    /// Beside the text, the graph takes the keys: ↑↓ pick its rows, the text marking the one
+    /// picked, the cursor staying where it was; esc gives them back.
+    pub(crate) fn graph_beside(&mut self) {
+        self.sync_graph();
+        if self.tabs.get(self.tab).is_none_or(|t| t.graph.is_none() || t.runs.is_some()) {
+            return;
+        }
+        (self.graph_keys, self.typing, self.complete, self.find) = (true, false, None, None);
+        self.say("the graph has the keys: ↑↓ pick, marked in the text; enter edits it there, esc goes back to the text");
+    }
+
+    /// The row picked in the graph beside the text, edited: the cursor at its mark, the text
+    /// taking the keys again.
+    fn beside_edit(&mut self) {
+        let Some(tab) = self.tabs.get_mut(self.tab) else { return };
+        if let Some(m) = tab.graph.as_ref().and_then(|g| g.view.row(g.sel)).map(|r| r.mark) {
+            tab.buf.go(m.start.line, m.start.col);
+        }
+        (self.graph_keys, self.typing) = (false, true);
+    }
+
+    /// The graph beside the text, with the keys: the graph's own, as it has them alone.
+    pub(crate) fn beside_key(&mut self, k: KeyEvent) {
+        let Some(g) = self.tabs.get_mut(self.tab).and_then(|t| t.graph.as_mut()) else { return };
+        let n = g.view.rows.len();
+        let to = |at: usize, by: isize| (at as isize + by).clamp(0, n.saturating_sub(1) as isize) as usize;
+        match k.code {
+            KeyCode::Esc | KeyCode::Tab | KeyCode::BackTab => (self.graph_keys, self.typing) = (false, true),
+            KeyCode::Enter => self.beside_edit(),
+            KeyCode::Char('a') => self.tab_every(),
+            KeyCode::Char('b') => self.next_show(),
+            // Its detail: the graph alone, at the same row, its right pane open.
+            KeyCode::Right | KeyCode::Char('l') => {
+                let sel = g.sel;
+                self.set_show(Show::Graph);
+                if let Some(g) = self.tabs.get_mut(self.tab).and_then(|t| t.graph.as_mut()) {
+                    (g.sel, g.right, g.scroll) = (sel, true, 0);
+                }
+            }
+            KeyCode::Up | KeyCode::Char('k') => g.sel = to(g.sel, -1),
+            KeyCode::Down | KeyCode::Char('j') => g.sel = to(g.sel, 1),
+            KeyCode::PageUp => g.sel = to(g.sel, -10),
+            KeyCode::PageDown => g.sel = to(g.sel, 10),
+            KeyCode::Home => g.sel = 0,
+            KeyCode::End => g.sel = n.saturating_sub(1),
+            _ => {}
+        }
+    }
+
+    /// A tab's graph: every node a row, or the statements with their nodes under each; the
+    /// same statement stays picked.
+    pub(crate) fn tab_every(&mut self) {
+        self.sync_graph();
+        let Some(g) = self.tabs.get_mut(self.tab).and_then(|t| t.graph.as_mut()) else { return };
+        let line = g.view.row(g.sel).map(|r| r.line).unwrap_or(1);
+        let text = g.view.text.join("\n");
+        let (reached, dim) = (std::mem::take(&mut g.view.reached), g.view.dim);
+        g.view = GraphView::build(format!("{}\n{text}", !g.view.every), &text, !g.view.every);
+        (g.view.reached, g.view.dim) = (reached, dim);
+        g.sel = g.view.row_at(line);
+        g.scroll = 0;
     }
 
     pub(crate) fn tab_graph_key(&mut self, k: KeyEvent) {
@@ -293,13 +370,7 @@ impl App {
             KeyCode::Enter => self.graph_to_text(true),
             KeyCode::Right | KeyCode::Char('l') => g.right = true,
             KeyCode::Left | KeyCode::Char('h') => g.right = false,
-            KeyCode::Char('a') => {
-                let line = g.view.row(g.sel).map(|r| r.line).unwrap_or(1);
-                let text = g.view.text.join("\n");
-                g.view = GraphView::build(format!("{}\n{text}", !g.view.every), &text, !g.view.every);
-                g.sel = g.view.row_at(line);
-                g.scroll = 0;
-            }
+            KeyCode::Char('a') => self.tab_every(),
             KeyCode::Up | KeyCode::Char('k') if g.right => g.scroll = g.scroll.saturating_sub(1),
             KeyCode::Down | KeyCode::Char('j') if g.right => g.scroll += 1,
             KeyCode::Up | KeyCode::Char('k') => (g.sel, g.scroll) = (to(g.sel, -1, n), 0),
@@ -313,7 +384,8 @@ impl App {
     }
 
     /// A row clicked: over a run, the step there (a row it didn't play is only picked); beside
-    /// the text, the cursor goes to it; alone, it is picked, and a second click edits it there.
+    /// the text, it is picked, the graph taking the keys; alone, it is picked. A second click
+    /// edits it there.
     pub(crate) fn tab_graph_pick(&mut self, list: List, i: usize, again: bool) {
         let show = self.show;
         let Some(tab) = self.tabs.get_mut(self.tab) else { return };
@@ -332,11 +404,11 @@ impl App {
             return;
         }
         if show == Show::Both {
-            if let Some((line, _)) = span {
-                tab.buf.mark(false);
-                tab.buf.go(line, 1);
+            (g.sel, g.scroll) = (i, 0);
+            (self.graph_keys, self.typing) = (true, false);
+            if again {
+                self.beside_edit();
             }
-            self.typing = true;
             return;
         }
         (g.sel, g.right, g.scroll) = (i, false, 0);
@@ -346,9 +418,10 @@ impl App {
     }
 
     /// The wheel over the graph: over a run, the steps; beside the text, the cursor by
-    /// statements; alone, the pick.
+    /// statements (the pick, when the graph has the keys); alone, the pick.
     pub(crate) fn tab_graph_scroll(&mut self, list: List, by: isize) {
         let show = self.show;
+        let beside = self.beside_has_keys();
         let Some(tab) = self.tabs.get_mut(self.tab) else { return };
         if let Some(runs) = tab.runs.as_mut().filter(|_| list == List::Graph) {
             return runs.go(by.signum());
@@ -361,6 +434,7 @@ impl App {
         g.sel = (g.sel as isize + by).clamp(0, g.view.rows.len().saturating_sub(1) as isize) as usize;
         g.scroll = 0;
         if show == Show::Both
+            && !beside
             && let Some(line) = g.view.row(g.sel).map(|r| r.line)
         {
             tab.buf.go(line, 1);

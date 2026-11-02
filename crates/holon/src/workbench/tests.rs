@@ -116,6 +116,27 @@ fn deploying_shows_what_it_may_do_and_deploys_on_enter() {
 }
 
 #[test]
+fn a_flow_renamed_in_its_text_deploys_under_its_new_name() {
+    let (mut app, _) = app();
+    tab_with(&mut app, BEATS);
+    ctrl(&mut app, 'd');
+    press(&mut app, KeyCode::Enter);
+    assert_eq!(app.tabs[0].slug.as_deref(), Some("beats"));
+    let renamed = BEATS.replace("flow beats", "flow pulse");
+    app.tabs[0].buf.replace(&renamed);
+    app.tabs[0].check = super::app::Check::of(&renamed);
+    assert_eq!(app.tabs[0].target().as_deref(), Some("pulse"), "its runs, its grant: the new name's");
+    ctrl(&mut app, 'd');
+    let Some(Modal::Approve { slug, .. }) = &app.modal else { panic!("{:?}", app.note.as_ref().map(|n| &n.text)) };
+    assert_eq!(slug, "pulse");
+    let shown = screen(&mut app, 140, 40);
+    assert!(shown.contains("deploys as a new flow") && shown.contains("\"beats\", which this tab deployed before, stays"), "{shown}");
+    press(&mut app, KeyCode::Enter);
+    let c = app.client.as_ref().unwrap();
+    assert!(c.deployment("pulse").is_some() && c.deployment("beats").is_some());
+}
+
+#[test]
 fn escape_cancels_a_deploy() {
     let (mut app, _) = app();
     tab_with(&mut app, BEATS);
@@ -435,7 +456,12 @@ fn a_flows_graph_is_its_statements_wired_and_what_its_newest_run_reached() {
     press(&mut app, KeyCode::Char('3'));
     press(&mut app, KeyCode::Enter);
     app.flow_section(Section::Graph);
-    let g = app.flow.graph.as_ref().expect("built as its section opens");
+    // Every node a row at first; a (or its button on the panel's edge) the statements.
+    assert!(app.flow.graph.as_ref().expect("built as its section opens").every);
+    let shown = screen(&mut app, 130, 40);
+    assert!(shown.contains("Every node (") && shown.contains(" a  statements "), "{shown}");
+    click(&mut app, Click::Every);
+    let g = app.flow.graph.as_ref().unwrap();
     let names: Vec<String> = (0..g.rows.len()).filter_map(|i| g.row(i)).map(|r| r.name.clone()).collect();
     assert_eq!(names, ["action bump (input)", "n", "state.n", "respond"]);
     assert!(g.reached.contains(&3), "the newest run's values, by line: {:?}", g.reached);
@@ -453,7 +479,7 @@ fn a_flows_graph_is_its_statements_wired_and_what_its_newest_run_reached() {
     assert!(pane(&app).iter().any(|r| matches!(r, Row::Field(k, v, _) if k == "Feeds" && v.contains("state.n"))), "{:?}", pane(&app));
     assert!(pane(&app).iter().any(|r| matches!(r, Row::Text(Tone::Head, t) if t.starts_with("Made of"))), "{:?}", pane(&app));
 
-    // Every node a row, the same statement still picked; enter edits the text there.
+    // Every node a row again, the same statement still picked; enter edits the text there.
     press(&mut app, KeyCode::Char('a'));
     let g = app.flow.graph.as_ref().unwrap();
     assert!(g.every && g.rows.len() > 4);
@@ -462,6 +488,28 @@ fn a_flows_graph_is_its_statements_wired_and_what_its_newest_run_reached() {
     press(&mut app, KeyCode::Enter);
     assert_eq!(app.page, Page::Editor);
     assert_eq!(app.tabs[app.tab].buf.row, 3, "on line 4");
+}
+
+#[test]
+fn the_inspector_reads_a_name_as_it_is_typed_with_its_grammar_and_an_example() {
+    let (mut app, _) = app();
+    tab_with(&mut app, BUMP);
+    assert!(screen(&mut app, 130, 40).contains("Inspector: flow"), "the cursor on flow, at the start");
+    // Typed, the name is read as it ends where the cursor is.
+    app.tabs[0].buf.go(1, 99);
+    typed(&mut app, "\ncollection");
+    let shown = screen(&mut app, 130, 40);
+    assert!(shown.contains("Inspector: collection") && shown.contains("Grammar") && shown.contains("header = \"collection\" ident"), "{shown}");
+    let (sample, lines) = app.tabs[0].inspected.as_ref().and_then(|i| i.usage.as_ref()).and_then(|u| u.example.clone()).expect("a sample's lines");
+    assert!(lines.iter().any(|l| l.starts_with("collection ")), "{lines:?}");
+    assert!(shown.contains("Example") && shown.contains(&format!("from the sample {sample}")), "{shown}");
+    // The cursor elsewhere, on no name: the inspector keeps it.
+    app.tabs[0].buf.go(3, 1);
+    assert!(screen(&mut app, 130, 40).contains("Inspector: collection"));
+    // On another name, that one.
+    app.tabs[0].buf.go(7, 4);
+    let shown = screen(&mut app, 130, 40);
+    assert!(shown.contains("Inspector: respond") && shown.contains("respond_args ="), "{shown}");
 }
 
 #[test]
@@ -474,12 +522,51 @@ fn a_tab_shows_its_code_its_graph_beside_it_or_its_graph_alone() {
     ctrl(&mut app, 'b');
     assert_eq!(app.show, Show::Both);
     assert!(app.typing, "the text keeps the keys");
+    let shown = screen(&mut app, 130, 40);
+    assert!(app.tabs[0].graph.as_ref().is_some_and(|g| g.view.every), "every node at first");
+    assert!(shown.contains(" a  statements ") && !shown.lines().last().unwrap_or_default().contains("statements"), "a on the graph's edge, not the bar:\n{shown}");
+    click(&mut app, Click::Every);
+    assert!(app.tabs[0].graph.as_ref().is_some_and(|g| !g.view.every), "its button: the statements");
+    assert!(app.typing, "the text still has the keys");
     app.tabs[0].buf.go(5, 1);
     let shown = screen(&mut app, 130, 40);
     assert_eq!(picked(&app), "state.n", "the statement at the cursor");
     assert!(shown.contains("at the cursor") && shown.contains("flow bump"), "{shown}");
+    // A row clicked: the graph has the keys, ↑↓ pick, the text marks it and the cursor stays.
     click(&mut app, Click::Row(List::Graph, 1));
-    assert_eq!(app.tabs[0].buf.row, 3, "a row clicked: the cursor goes to it, line 4");
+    assert!(app.beside_has_keys() && !app.typing, "a row clicked: the graph has the keys");
+    assert_eq!((picked(&app), app.tabs[0].buf.row), ("n".to_string(), 4), "picked, the cursor where it was");
+    press(&mut app, KeyCode::Down);
+    let shown = screen(&mut app, 130, 40);
+    assert_eq!(picked(&app), "state.n");
+    assert!(shown.contains("· picking") && shown.contains("back to the text") && shown.contains("its detail"), "its keys on its edge:\n{shown}");
+    let g = app.tabs[0].graph.as_ref().unwrap();
+    let m = g.view.row(g.sel).unwrap().mark;
+    assert_eq!((m.start.line, m.start.col, m.end.col), (5, 3, 10), "state.n, on line 5");
+    press(&mut app, KeyCode::Char('a'));
+    assert!(app.tabs[0].graph.as_ref().is_some_and(|g| g.view.every) && app.beside_has_keys(), "a: every node, the graph keeping the keys");
+    press(&mut app, KeyCode::Char('a'));
+    press(&mut app, KeyCode::Esc);
+    assert!(app.typing && !app.beside_has_keys() && app.tabs[0].buf.row == 4, "esc: the text has the keys, the cursor where it was");
+    let shown = screen(&mut app, 130, 40);
+    assert!(shown.contains("alt+g") && shown.contains("its keys"), "{shown}");
+    // alt+g, even while typing: the graph's keys; enter edits the row picked there.
+    app.key(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::ALT));
+    assert!(app.beside_has_keys());
+    assert_eq!(picked(&app), "state.n", "from the statement at the cursor");
+    press(&mut app, KeyCode::Up);
+    assert_eq!(picked(&app), "n");
+    press(&mut app, KeyCode::Enter);
+    assert!(app.typing && !app.beside_has_keys());
+    assert_eq!((app.tabs[0].buf.row, app.tabs[0].buf.col), (3, 2), "at n, line 4");
+    screen(&mut app, 130, 40);
+    // A second click on a row edits it there.
+    app.graph_beside();
+    screen(&mut app, 130, 40);
+    click(&mut app, Click::Row(List::Graph, 2));
+    click(&mut app, Click::Row(List::Graph, 2));
+    assert!(app.typing && app.tabs[0].buf.row == 4, "state.n, line 5");
+    app.tabs[0].buf.go(4, 1);
     // Typed, the graph is built again.
     app.tabs[0].buf.go(6, 99);
     typed(&mut app, "\nstate.m = n");

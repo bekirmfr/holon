@@ -36,6 +36,10 @@ pub struct Row {
     pub does: String,
     /// Its first line, trimmed.
     pub text: String,
+    /// Where the text says it, to mark when the row is picked: a statement's name (its
+    /// binding, the state or collection it writes, what it calls), a node's own code, the
+    /// trigger as its line writes it.
+    pub mark: Span,
     /// The band's trigger: it heads the band.
     pub head: bool,
     /// It acts on the world (writes, answers, calls out, waits), not only computes.
@@ -80,6 +84,14 @@ pub fn graph(source: &str, every: bool) -> Result<Graph, String> {
     let lines: Vec<&str> = source.lines().collect();
     let line_text = |n: u32| lines.get(n as usize - 1).map(|l| l.trim()).unwrap_or_default().to_string();
     let head_of = |s: Span| line_text(s.start.line).trim_end_matches('{').trim_end().to_string();
+    // `len` characters from `from` on its line.
+    let run = |from: Pos, len: usize| Span { start: from, end: Pos { line: from.line, col: from.col + len as u32 } };
+    // A line's text, its indent left out.
+    let whole = |n: u32| {
+        let l = lines.get(n as usize - 1).copied().unwrap_or_default();
+        let indent = l.chars().count() - l.trim_start().chars().count();
+        run(Pos { line: n, col: indent as u32 + 1 }, l.trim().chars().count())
+    };
     let clock = file.headers.iter().find_map(|h| match &h.kind {
         HeaderKind::Every { text, .. } => Some(format!("every {text}")),
         _ => None,
@@ -154,6 +166,7 @@ pub fn graph(source: &str, every: bool) -> Result<Graph, String> {
             name: block.title.clone(),
             does: trigger.iter().filter_map(|id| doc.nodes.iter().find(|n| n.id == *id)).map(|n| n.data.name.clone()).collect::<Vec<_>>().join(", "),
             text: block.title.clone(),
+            mark: block.span.map_or_else(|| whole(head_line), |s| run(s.start, block.title.chars().count())),
             head: true,
             effect: false,
             from: vec![],
@@ -178,6 +191,14 @@ pub fn graph(source: &str, every: bool) -> Result<Graph, String> {
                 StmtKind::Respond(_) => "respond".into(),
                 StmtKind::Expr(_) | StmtKind::Wire { .. } => text.split(['(', ' ']).next().unwrap_or_default().to_string(),
             };
+            let start = stmt.span.start;
+            let mark = match &stmt.kind {
+                StmtKind::Bind { name, .. } | StmtKind::Node { name, .. } => name.span,
+                StmtKind::StateWrite { key, .. } => Span { start, end: key.span.end },
+                StmtKind::CollectionWrite { collection, .. } => collection.span,
+                StmtKind::Delete { collection, .. } => Span { start, end: collection.span.end },
+                StmtKind::Respond(_) | StmtKind::Expr(_) | StmtKind::Wire { .. } => run(start, name.chars().count()),
+            };
             let bind = matches!(stmt.kind, StmtKind::Bind { .. } | StmtKind::Node { .. });
             let leaves = |of: &[&str]| -> Vec<String> { of.iter().filter_map(|id| doc.nodes.iter().find(|n| n.id == *id)).map(|n| n.data.name.clone()).collect() };
             let effect = !bind || leaves(&ids).iter().any(|l| effectful(l));
@@ -192,6 +213,7 @@ pub fn graph(source: &str, every: bool) -> Result<Graph, String> {
                         name: part.name.clone(),
                         does: part.leaf.clone(),
                         text: if said.is_empty() { text.clone() } else { said.join(" ") },
+                        mark: lowered.spans.get(*id).copied().unwrap_or(mark),
                         head: false,
                         effect: effectful(&part.leaf),
                         from: vec![],
@@ -212,6 +234,7 @@ pub fn graph(source: &str, every: bool) -> Result<Graph, String> {
                 name,
                 does: leaves(&roots).join(", "),
                 text,
+                mark,
                 head: false,
                 effect,
                 from: vec![],
@@ -346,6 +369,25 @@ mod tests {
 
         let every = graph(PAYOUT, true).unwrap();
         assert_eq!(every.bands[0].rows.len(), every.bands[0].rows.iter().skip(1).map(|r| r.parts.len()).sum::<usize>() + 1);
+    }
+
+    #[test]
+    fn a_row_marks_where_the_text_says_it() {
+        let text = "flow bump\n\naction bump (input) {\n  n = (state.n ?? 0) + 1\n  state.n = n\n  respond n\n}\n";
+        let lines: Vec<&str> = text.lines().collect();
+        let said = |s: crate::lang::ast::Span| -> String {
+            assert_eq!(s.start.line, s.end.line, "{s:?}");
+            lines[s.start.line as usize - 1].chars().skip(s.start.col as usize - 1).take((s.end.col - s.start.col) as usize).collect()
+        };
+        let g = graph(text, false).unwrap();
+        let marks: Vec<String> = g.bands[0].rows.iter().map(|r| said(r.mark)).collect();
+        assert_eq!(marks, ["action bump (input)", "n", "state.n", "respond"]);
+        // Every node: each its own code, on its statement's line.
+        let every = graph(text, true).unwrap();
+        for r in every.bands[0].rows.iter().skip(1) {
+            assert!((r.line..=r.last).contains(&r.mark.start.line) && !said(r.mark).is_empty(), "{r:?}");
+        }
+        assert!(every.bands[0].rows.iter().any(|r| said(r.mark) == "state.n"), "{:?}", every.bands[0].rows.iter().map(|r| said(r.mark)).collect::<Vec<_>>());
     }
 
     #[test]

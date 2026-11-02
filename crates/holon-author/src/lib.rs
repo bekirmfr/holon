@@ -39,6 +39,7 @@ pub mod routes;
 pub mod samples;
 pub mod templates;
 pub mod text;
+pub mod usage;
 pub mod wire;
 
 /// A 32-byte hash as 64 lowercase hex chars: how hashes cross to the editor and sit in documents.

@@ -12,7 +12,7 @@ use ratatui::widgets::{Clear, Paragraph, Wrap};
 use ratatui::Frame;
 
 use super::{bold, coloured, dim, fit, list, pad, panel, ACCENT, BAD, DARK, DIM, GOOD, PICKED, WARN};
-use crate::workbench::app::{self, App, Click, List, RunPane, Show, Tab};
+use crate::workbench::app::{App, Click, List, RunPane, Show, Tab};
 
 pub(super) fn colour(class: Class) -> Style {
     let c = match class {
@@ -37,10 +37,12 @@ pub(super) fn colour(class: Class) -> Style {
 
 const SELECTED: Color = Color::Indexed(24);
 const CURRENT_LINE: Color = Color::Indexed(234);
+/// What the graph beside the text picked, marked in it.
+const MARKED: Color = Color::Rgb(96, 76, 20);
 
 /// One line of a tab's text, coloured, its mistakes underlined and the selection marked, from
 /// character `left`.
-fn text_line(tab: &Tab, row: usize, left: usize, width: usize) -> Vec<Span<'static>> {
+fn text_line(tab: &Tab, row: usize, left: usize, width: usize, mark: Option<(u32, u32, u32, u32)>) -> Vec<Span<'static>> {
     let line = &tab.buf.lines[row];
     let mut styles: Vec<Style> = vec![Style::new(); line.chars().count()];
     // The colours are as last checked: while typing, a line's may lag a key behind.
@@ -61,6 +63,15 @@ fn text_line(tab: &Tab, row: usize, left: usize, width: usize) -> Vec<Span<'stat
         let to = if end.line == start.line && end.col > start.col { end.col.saturating_sub(1) as usize } else if end.line > start.line { styles.len() } else { from + 1 };
         for s in styles.iter_mut().take(to).skip(from) {
             *s = s.fg(BAD).add_modifier(Modifier::UNDERLINED);
+        }
+    }
+    // What the graph beside it picked: its name, or the node's own code.
+    let n = row as u32 + 1;
+    if let Some((l0, c0, l1, c1)) = mark.filter(|(l0, _, l1, _)| (*l0..=*l1).contains(&n)) {
+        let from = if n == l0 { c0.saturating_sub(1) as usize } else { 0 };
+        let to = if n == l1 { c1.saturating_sub(1) as usize } else { styles.len() };
+        for s in styles.iter_mut().take(to).skip(from) {
+            *s = s.bg(MARKED).add_modifier(Modifier::BOLD);
         }
     }
     let mut selected = 0..0;
@@ -121,6 +132,7 @@ pub(super) fn draw(f: &mut Frame, app: &mut App, area: Rect) {
             let [main, side] = Layout::horizontal([Constraint::Min(20), Constraint::Length(side_width)]).areas(body);
             draw_text(f, app, main);
             if side_width > 0 {
+                app.tabs[app.tab].inspect();
                 draw_side(f, app, side);
             }
         }
@@ -136,13 +148,22 @@ fn halves(area: Rect, left: u16) -> [Rect; 2] {
     }
 }
 
-/// The graph beside the text, or over a run: its rows, the picked one marked.
+/// The graph beside the text, or over a run: its rows, the picked one marked. Beside the
+/// text it takes the keys (alt+g, a click), and has them on its bottom edge.
 fn draw_graph_beside(f: &mut Frame, app: &App, area: Rect, what: &str) {
     let Some(g) = app.tabs[app.tab].graph.as_ref() else { return };
-    let statements = g.view.rows.len().saturating_sub(g.view.graph.bands.len());
-    let block = panel(&format!("Graph: {statements} statements · {what}"), false);
+    let keys = app.beside_has_keys();
+    let block = panel(&format!("{} · {}", super::flow::graph_title(&g.view), if keys { "picking" } else { what }), keys);
+    if keys {
+        super::keys_here(app, area);
+    }
     let inner = block.inner(area);
     f.render_widget(block, area);
+    super::flow::every_chip(f, app, area, &g.view);
+    if !keys && app.tabs[app.tab].runs.is_none() && area.height >= 3 {
+        let edge = Rect { x: area.x + 1, y: area.y + area.height - 1, width: area.width.saturating_sub(20), height: 1 };
+        super::chips(f, app, edge, &[("alt+g", "its keys", KeyCode::Char('g'), KeyModifiers::ALT)]);
+    }
     super::flow::graph_list(f, app, inner, &g.view, g.sel, true, List::Graph);
 }
 
@@ -158,6 +179,7 @@ fn draw_graph_view(f: &mut Frame, app: &mut App, area: Rect) {
     super::keys_here(app, if g.right && run.is_none() { right } else { left });
     let inner = block.inner(left);
     f.render_widget(block, left);
+    super::flow::every_chip(f, app, left, &g.view);
     super::flow::graph_list(f, app, inner, &g.view, g.sel, focused, List::Graph);
     let block = panel(if run.is_some() { "In this run" } else { "Statement" }, g.right);
     let inner = block.inner(right);
@@ -235,8 +257,19 @@ fn draw_text(f: &mut Frame, app: &mut App, area: Rect) {
     let height = text.height.saturating_sub(2 + find as u16) as usize;
     app.text_height = height;
     super::keys_here(app, text);
+    let marked = app.beside_has_keys().then(|| app.tabs[app.tab].graph.as_ref().and_then(|g| g.view.row(g.sel)).map(|r| (r.mark, r.line, r.last))).flatten();
     let tab = &mut app.tabs[app.tab];
-    tab.buf.scroll(height);
+    match marked {
+        // The graph has the keys: the text shows what it picked, the cursor staying where it was.
+        Some((m, ..)) => {
+            let at = m.start.line.max(1) as usize - 1;
+            if at < tab.buf.top || at >= tab.buf.top + height {
+                tab.buf.top = at.saturating_sub(height / 3);
+            }
+        }
+        None => tab.buf.scroll(height),
+    }
+    let picked = marked.map(|(m, ..)| (m.start.line, m.start.col, m.end.line, m.end.col));
     let gutter = tab.buf.lines.len().to_string().len().max(2);
     let width = text.width.saturating_sub(gutter as u16 + 3) as usize;
     let (row, col) = (tab.buf.row, tab.buf.col.min(tab.buf.lines[tab.buf.row].chars().count()));
@@ -248,8 +281,11 @@ fn draw_text(f: &mut Frame, app: &mut App, area: Rect) {
         let gutter_style = if bad_lines.contains(&n) { Style::new().fg(BAD) } else if r == row { Style::new().fg(Color::Gray) } else { Style::new().fg(DIM) };
         let mark = if bad_lines.contains(&n) { "●" } else { " " };
         let mut spans = vec![Span::styled(format!("{n:>gutter$}{mark}"), gutter_style)];
-        spans.extend(text_line(tab, r, left, width));
+        spans.extend(text_line(tab, r, left, width, picked));
         let mut line = Line::from(spans);
+        if marked.is_some_and(|(_, a, b)| (a as usize..=b as usize).contains(&n)) {
+            line = line.style(Style::new().bg(CURRENT_LINE));
+        }
         if r == row && typing && tab.buf.selection().is_none() {
             line = line.style(Style::new().bg(CURRENT_LINE));
         }
@@ -371,12 +407,47 @@ fn draw_side(f: &mut Frame, app: &App, area: Rect) {
         None => "It may".into(),
     };
     f.render_widget(Paragraph::new(may).wrap(Wrap { trim: false }).block(panel(&title, false)), top);
-    let hover = editing::hover(&tab.buf.text(), app::cursor(tab));
-    let lines = match hover {
-        Some(h) => plain(&h.text),
-        None => vec![Line::from(dim("Put the cursor on a name to read about it."))],
+    let Some(it) = &tab.inspected else {
+        let lines = vec![Line::from(dim("Put the cursor on a name, or type one, to read about it."))];
+        return f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }).block(panel("Inspector", false)), bottom);
     };
-    f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }).block(panel("Inspector", false)), bottom);
+    let mut lines = plain(&it.hover);
+    if let Some(u) = &it.usage {
+        // The grammar, as docs/LANGUAGE.md writes it; then a sample's lines that use it.
+        if !u.grammar.is_empty() {
+            lines.extend([Line::default(), Line::from(vec![bold("Grammar"), dim("  docs/LANGUAGE.md §5")])]);
+            lines.extend(u.grammar.iter().map(|g| Line::from(coloured(g.clone(), ACCENT))));
+        }
+        if let Some((sample, example)) = &u.example {
+            lines.extend([Line::default(), Line::from(vec![bold("Example"), dim(format!("  from the sample {sample}"))])]);
+            lines.extend(code_lines(example));
+        }
+    }
+    f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }).block(panel(&format!("Inspector: {}", fit(&it.word, 24)), false)), bottom);
+}
+
+/// Lines of code, coloured as the text is.
+fn code_lines(code: &[String]) -> Vec<Line<'static>> {
+    let colours = crate::workbench::review::colours(&code.join("\n"));
+    code.iter()
+        .enumerate()
+        .map(|(n, line)| {
+            let mut styles = vec![Style::new(); line.chars().count()];
+            for &(from, to, class) in colours.get(n).map(Vec::as_slice).unwrap_or_default() {
+                for s in styles.iter_mut().take(to).skip(from) {
+                    *s = colour(class);
+                }
+            }
+            let mut spans: Vec<Span<'static>> = vec![];
+            for (c, style) in line.chars().zip(styles) {
+                match spans.last_mut() {
+                    Some(last) if last.style == style => last.content.to_mut().push(c),
+                    _ => spans.push(Span::styled(c.to_string(), style)),
+                }
+            }
+            Line::from(spans)
+        })
+        .collect()
 }
 
 /// A run over the text it ran on: the code (what it played lit, the rest dimmed, the step picked

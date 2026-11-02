@@ -353,7 +353,24 @@ pub(super) fn graph_list(f: &mut Frame, app: &App, area: Rect, g: &GraphView, se
 /// A graph's list title: how many rows of how many nodes, and what `a` does.
 pub(super) fn graph_title(g: &GraphView) -> String {
     let rows = g.rows.len().saturating_sub(g.graph.bands.len());
-    if g.every { format!("Every node ({}) · a: the statements", g.graph.nodes) } else { format!("Graph: {rows} statements of {} nodes · a: every node", g.graph.nodes) }
+    if g.every { format!("Every node ({})", g.graph.nodes) } else { format!("Graph: {rows} statements of {} nodes", g.graph.nodes) }
+}
+
+/// The graph's switch, a button at the right of its panel's bottom edge, whether the panel
+/// has the keys or not: a shows every node, or the statements again. The panel's other keys,
+/// when it has them, keep to the left of it.
+pub(super) fn every_chip(f: &mut Frame, app: &App, panel: Rect, g: &GraphView) {
+    let what = if g.every { " statements " } else { " every node " };
+    let width = (3 + what.chars().count()) as u16;
+    if panel.width < width + 12 || panel.height < 3 {
+        return;
+    }
+    if let Some(keys) = app.keys_at.borrow_mut().as_mut().filter(|k| **k == panel) {
+        keys.width -= width + 1;
+    }
+    let rect = Rect { x: panel.x + panel.width - width - 2, y: panel.y + panel.height - 1, width, height: 1 };
+    f.render_widget(Paragraph::new(Line::from(vec![Span::styled(" a ", Style::new().fg(Color::Black).bg(Color::Gray)), dim(what.to_string())])), rect);
+    app.hit(rect, Click::Every);
 }
 
 fn split(f: &mut Frame, app: &mut App, area: Rect) {
@@ -377,6 +394,7 @@ fn split(f: &mut Frame, app: &mut App, area: Rect) {
     let inner = block.inner(left);
     f.render_widget(block, left);
     if let (Section::Graph, Some(g)) = (s, app.flow.graph.as_ref()) {
+        every_chip(f, app, left, g);
         graph_list(f, app, inner, g, sel, focused, List::Section);
     } else if n == 0 {
         let empty = match s {

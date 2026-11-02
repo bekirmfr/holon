@@ -179,22 +179,60 @@ pub(crate) struct Tab {
     pub(crate) draft: bool,
     /// "Graph", when on: the text as statements and wires.
     pub(crate) graph: Option<super::graph::TabGraph>,
+    /// What the inspector shows: the name last at the cursor, or just before it as it is typed.
+    pub(crate) inspected: Option<Inspected>,
+}
+
+/// A name the inspector shows: what it is, the grammar it is written by, a sample's lines.
+pub(crate) struct Inspected {
+    pub(crate) word: String,
+    /// Markdown, as a hover says it.
+    pub(crate) hover: String,
+    pub(crate) usage: Option<holon_author::usage::Usage>,
 }
 
 impl Tab {
     pub(crate) fn new(name: &str, text: &str, path: Option<PathBuf>, slug: Option<String>) -> Tab {
         let buf = Buffer::new(text);
         let kept = buf.text();
-        Tab { name: name.to_string(), path, slug, check: Check::of(&kept), kept, buf, edited: None, deployed: None, runs: None, graph: None, draft: false }
+        Tab { name: name.to_string(), path, slug, check: Check::of(&kept), kept, buf, edited: None, deployed: None, runs: None, graph: None, draft: false, inspected: None }
     }
 
     pub(crate) fn dirty(&self) -> bool {
         self.buf.text() != self.kept
     }
 
-    /// The deployment it deploys as: its own, else the flow's name.
+    /// Read the name at the cursor, or the one just before it (a name being typed ends where
+    /// the cursor is), for the inspector; it keeps the last one while the cursor is elsewhere.
+    pub(crate) fn inspect(&mut self) {
+        let text = self.buf.text();
+        let at = cursor(self);
+        let just_before = Pos { line: at.line, col: at.col.saturating_sub(1) };
+        let Some((h, pos)) = [at, just_before].into_iter().filter(|p| p.col >= 1).find_map(|p| editing::hover(&text, p).map(|h| (h, p))) else { return };
+        let (from, to) = (h.span.start, h.span.end);
+        let word: String = text.lines().nth(from.line as usize - 1).unwrap_or_default().chars().skip(from.col as usize - 1).take(if to.line == from.line { (to.col - from.col) as usize } else { 40 }).collect();
+        if self.inspected.as_ref().is_some_and(|i| i.word == word && i.hover == h.text) {
+            return;
+        }
+        self.inspected = Some(Inspected { word, hover: h.text, usage: holon_author::usage::usage(&text, pos) });
+    }
+
+    /// The deployment it deploys as: a file's is the flow its text names (renamed, it deploys as
+    /// the new name); one opened from the server is that one, until its text names another flow.
     pub(crate) fn target(&self) -> Option<String> {
-        self.slug.clone().or_else(|| self.check.plan.as_ref().ok().map(|p| p.name.clone()))
+        match self.check.plan.as_ref() {
+            Ok(p) => Some(self.deploys_as(&p.name)),
+            Err(_) => self.slug.clone(),
+        }
+    }
+
+    /// The deployment it deploys as, its text naming the flow `named`.
+    pub(crate) fn deploys_as(&self, named: &str) -> String {
+        let renamed = self.path.is_some() || flow_name(&self.kept).is_some_and(|then| then != named);
+        match &self.slug {
+            Some(slug) if !renamed => slug.clone(),
+            _ => named.to_string(),
+        }
     }
 }
 
@@ -317,6 +355,8 @@ pub(crate) enum Click {
     Scroll(List),
     /// Code, graph, or both.
     Show(Show),
+    /// The graph's switch: every node a row, or the statements with their nodes under each.
+    Every,
     /// A tab of a run's panel.
     RunPane(RunPane),
     /// Behind a dialog: a click there closes it, as esc does.
@@ -343,6 +383,9 @@ pub(crate) struct App {
     pub(crate) values: bool,
     /// The editor has the keyboard: keys type.
     pub(crate) typing: bool,
+    /// Code and graph side by side: the graph has the keys (alt+g, a click on it), ↑↓ picking
+    /// its rows, the text marking the one picked; esc gives them back to the text.
+    pub(crate) graph_keys: bool,
     pub(crate) complete: Option<Complete>,
     /// Find, while open: what is looked for.
     pub(crate) find: Option<String>,
@@ -394,13 +437,14 @@ impl App {
             page: Page::Overview,
             sel: [0; 7],
             detail: None,
-            flow: FlowView::default(),
+            flow: FlowView { every: true, ..FlowView::default() },
             admin: Default::default(),
             tabs: vec![],
             tab: 0,
             show: Show::Code,
             values: true,
             typing: false,
+            graph_keys: false,
             complete: None,
             find: None,
             find_seeded: false,
@@ -549,6 +593,7 @@ impl App {
 
     pub(crate) fn show_tab(&mut self, i: usize) {
         self.tab = i;
+        self.graph_keys = false;
         self.page = Page::Editor;
         self.complete = None;
         self.find = None;
@@ -628,7 +673,7 @@ impl App {
         match c.detail(slug) {
             Ok(d) => {
                 if self.detail.as_ref().map(|o| &o.slug) != Some(&d.slug) {
-                    self.flow = FlowView::default();
+                    self.flow = FlowView { every: self.flow.every, ..FlowView::default() };
                 }
                 self.detail = Some(d);
                 self.page = Page::Flow;
@@ -701,7 +746,7 @@ impl App {
             Ok(p) => p,
             Err(e) => return self.fail(format!("not saved: {e} (:w <file> writes it to a file as it is)")),
         };
-        let name = tab.slug.clone().unwrap_or_else(|| plan.name.clone());
+        let name = tab.deploys_as(&plan.name);
         let Some(c) = self.client.as_ref() else {
             return self.fail("no server to save it on: :w <file> writes it to a file");
         };
@@ -726,14 +771,23 @@ impl App {
             Ok(p) => p,
             Err(e) => return self.fail(format!("can't deploy: {e}")),
         };
-        let slug = tab.slug.clone().unwrap_or_else(|| plan.name.clone());
+        let slug = tab.deploys_as(&plan.name);
+        let before = tab.slug.clone().filter(|s| *s != slug);
         let Some(c) = self.client.as_ref() else {
             return self.fail(format!("no server to deploy to: {}", self.offline.clone().unwrap_or_else(|| "start holon serve".into())));
         };
         let now = c.deployment(&slug).and_then(|_| c.text(&slug, None).ok());
         match c.stage(&plan, &slug) {
             Ok(staged) => {
-                let review = deploy_review(&slug, &plan, &staged, now.as_deref(), &text, &c.server());
+                let mut review = deploy_review(&slug, &plan, &staged, now.as_deref(), &text, &c.server());
+                // Renamed: it deploys under its new name, and what it was deployed as stays.
+                if let Some(before) = before.filter(|_| now.is_none()) {
+                    review.top.push((Tone::Warn, format!("Its text names it \"{slug}\" now: it deploys as a new flow. \"{before}\", which this tab deployed before, stays as it is.")));
+                }
+                // Another flow listening on its port: one of the two can't.
+                if let Some(other) = plan.port.and_then(|port| c.deployments.iter().find(|d| d["slug"] != slug.as_str() && d["port"].as_u64() == Some(port.into()))) {
+                    review.top.push((Tone::Bad, format!("Port {} is \"{}\"'s: this one can't listen there while it runs (change the port line, or stop it).", plan.port.unwrap_or_default(), other["slug"].as_str().unwrap_or_default())));
+                }
                 self.modal = Some(Modal::Approve { slug, plan: Box::new(plan), staged, text, tab: i, review });
             }
             Err(e) => self.fail(e),
@@ -828,8 +882,10 @@ impl App {
             self.typing = true;
             return;
         }
-        let Some(slug) = tab.slug.clone().filter(|s| self.client.as_ref().is_some_and(|c| c.deployment(s).is_some())) else {
-            return self.fail("it isn't deployed: deploy it (ctrl+d) to see its runs");
+        let target = tab.target();
+        let Some(slug) = target.clone().filter(|s| self.client.as_ref().is_some_and(|c| c.deployment(s).is_some())) else {
+            let name = target.map(|t| format!("\"{t}\" ")).unwrap_or_default();
+            return self.fail(format!("{name}isn't deployed: deploy it (ctrl+d) to see its runs"));
         };
         let c = self.client.as_ref().unwrap();
         match c.get(&format!("/deployments/{}/log?limit={}", crate::mcp::seg(&slug), client::RUNS)) {
@@ -1013,6 +1069,7 @@ impl App {
             if k.modifiers.contains(KeyModifiers::ALT) && !k.modifiers.contains(KeyModifiers::CONTROL) {
                 match k.code {
                     KeyCode::Char('f' | 'F') => return self.format(self.tab),
+                    KeyCode::Char('g' | 'G') if self.show == Show::Both => return self.graph_beside(),
                     KeyCode::Left => return self.show_tab((self.tab + self.tabs.len() - 1) % self.tabs.len()),
                     KeyCode::Right => return self.show_tab((self.tab + 1) % self.tabs.len()),
                     _ => {}
@@ -1074,6 +1131,7 @@ impl App {
     }
 
     fn type_key(&mut self, k: KeyEvent, ctrl: bool) {
+        self.graph_keys = false;
         if self.find.is_some() {
             return self.find_key(k);
         }
@@ -1376,8 +1434,12 @@ impl App {
         if self.show == Show::Graph {
             return self.tab_graph_key(k);
         }
+        if self.beside_has_keys() {
+            return self.beside_key(k);
+        }
         match k.code {
             KeyCode::Enter | KeyCode::Char('i') => self.typing = true,
+            KeyCode::Tab if self.show == Show::Both => self.graph_beside(),
             KeyCode::Char('[') => self.show_tab((i + self.tabs.len() - 1) % self.tabs.len()),
             KeyCode::Char(']') => self.show_tab((i + 1) % self.tabs.len()),
             KeyCode::Char('w') => self.ask_close(i),
@@ -1385,6 +1447,7 @@ impl App {
             KeyCode::Char('d') => self.deploy(i),
             KeyCode::Char('v') => self.toggle_runs(i),
             KeyCode::Char('b') => self.next_show(),
+            KeyCode::Char('a') if self.show == Show::Both => self.tab_every(),
             KeyCode::Char('f') => self.format(i),
             _ => {}
         }
@@ -1577,6 +1640,8 @@ impl App {
                 self.typing = self.tabs[i].runs.is_none() && self.show != Show::Graph;
             }
             Click::Show(s) => self.set_show(s),
+            Click::Every if self.page == Page::Flow => self.flow_every(),
+            Click::Every => self.tab_every(),
             Click::RunPane(p) => {
                 if let Some(runs) = self.tabs.get_mut(self.tab).and_then(|t| t.runs.as_mut()) {
                     runs.pane = p;
@@ -1741,6 +1806,11 @@ fn deploy_review(slug: &str, plan: &agent::Plan, staged: &Staged, now: Option<&s
         n => (Tone::Warn, format!("You approve the {n} marked +, as you, by deploying it.")),
     });
     review
+}
+
+/// The flow a text names, on its `flow` line, without compiling it.
+fn flow_name(text: &str) -> Option<&str> {
+    text.lines().find_map(|l| l.strip_prefix("flow ")).map(str::trim)
 }
 
 fn load_run(c: &Client, runs: &mut Runs) {

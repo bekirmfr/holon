@@ -154,8 +154,23 @@ pub(crate) struct FlowView {
     pub(crate) cells: Vec<Cell>,
     /// The graph of the text deployed, once its section has been opened.
     pub(crate) graph: Option<GraphView>,
-    /// The graph shows every node, not only the statements.
+    /// The graph shows every node, not only the statements (as it does unless a says otherwise).
     pub(crate) every: bool,
+}
+
+impl App {
+    /// The flow page's graph: every node a row, or the statements with their nodes under
+    /// each. The same statement stays picked, as its first node or as the statement.
+    pub(crate) fn flow_every(&mut self) {
+        let line = self.flow.graph.as_ref().and_then(|g| g.row(self.flow.sel[Section::Graph as usize])).map(|r| r.line);
+        self.flow.every = !self.flow.every;
+        self.flow_load();
+        if let (Some(line), Some(g)) = (line, self.flow.graph.as_ref()) {
+            self.flow.sel[Section::Graph as usize] = g.row_at(line);
+            self.flow_load();
+        }
+        self.say(if self.flow.every { "every node, each a row: a again for the statements" } else { "the statements, their nodes under each: a again for every node" });
+    }
 }
 
 impl FlowView {
@@ -481,17 +496,7 @@ impl App {
                     self.edit_at(slug, line);
                 }
             }
-            (Section::Graph, KeyCode::Char('a')) => {
-                // The same statement stays picked, as its first node or as the statement.
-                let line = self.flow.graph.as_ref().and_then(|g| g.row(sel)).map(|r| r.line);
-                self.flow.every = !self.flow.every;
-                self.flow_load();
-                if let (Some(line), Some(g)) = (line, self.flow.graph.as_ref()) {
-                    self.flow.sel[Section::Graph as usize] = g.row_at(line);
-                    self.flow_load();
-                }
-                self.say(if self.flow.every { "every node, each a row: a again for the statements" } else { "the statements, their nodes under each: a again for every node" });
-            }
+            (Section::Graph, KeyCode::Char('a')) => self.flow_every(),
             (Section::Access, KeyCode::Enter) => match access_rows(d).get(sel).cloned() {
                 Some(Access::Item { item, how: Held::Granted }) => {
                     self.modal = Some(Modal::Confirm {
