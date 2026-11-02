@@ -80,6 +80,10 @@ keyring = { version = "3", features = ["apple-native"] }
 # The admin page's "browse…": the OS's own folder dialog, shown by `holon pick-folder` (pick.rs).
 rfd = { version = "0.17", default-features = false }
 
+# `holon editor`'s shell line: ctrl+c stops the command it runs, not the editor (workbench/shell.rs).
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [target."cfg(windows)".dependencies]
 keyring = { version = "3", features = ["windows-native"] }
 rfd = { version = "0.17", default-features = false }

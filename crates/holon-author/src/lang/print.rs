@@ -1288,6 +1288,8 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
             let effect = single && node.data.outputs[0].ty == WType::Effect;
             if total == 0 && effect {
                 let text = self.effect_statement(node)?;
+                // The write is this line's own node: a run's step and value there are its.
+                self.touch(node);
                 let after = self.after(node)?;
                 let l = self.line(format!("{}{text}{after}", self.indent));
                 lines.push(l);

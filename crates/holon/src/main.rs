@@ -204,6 +204,7 @@ mod secretcmd;
 mod secrets;
 mod selfmanage;
 mod taint;
+mod touches;
 #[cfg(test)]
 mod tests;
 mod units;

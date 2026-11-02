@@ -78,6 +78,10 @@ Press **deploy**. Holon works out what the flow may do and asks you to approve i
 > **Deploy "hello-api"?**
 > It needs your approval to:
 > - receive requests
+>
+> What it touches (+ new, - no longer, ~ changed, ! not ready on this server):
+> What starts it
+> &nbsp;&nbsp;+ requests: receive — approved by confirming
 
 That list comes from the flow itself, not from anything its author wrote about it. This flow can
 only answer requests. Press **Approve and deploy**. The deploy bar now says **● running :8101**.
@@ -133,8 +137,11 @@ and only that:
 > It needs your approval to:
 > - read the clock
 >
-> Already granted:
-> - receive requests
+> What it touches (+ new, - no longer, ~ changed, ! not ready on this server):
+> What starts it
+> &nbsp;&nbsp;· requests: receive
+> Also
+> &nbsp;&nbsp;+ the clock: read — approved by confirming
 
 Approve it, and send the request again:
 

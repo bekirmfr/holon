@@ -15,6 +15,7 @@ import { usesIn, type Placed } from "./holonUsage";
 import type { WValue, ModuleEntry } from "./holon";
 import type { EndpointDraft } from "./endpoint";
 import type { NodeTiming } from "./replay";
+import type { SettingChange, Touch } from "./touches";
 
 /** The server: VITE_HOLON_SERVER when set; else, built (`npm run build`), the server it is served
  *  from (holon-server serves the editor itself, editor.rs), and in development the local one. */
@@ -338,6 +339,11 @@ export type DeployPreview = {
   granted_now?: string[] | null;
   /** Secrets an agent's deploy leaves out, for a person to grant back. */
   withheld?: string[];
+  /** Each thing it touches (a folder, a secret, a host…): new, gone or as now, and whether this
+   *  server is ready for it (touches.ts). */
+  touches?: Touch[];
+  /** The deploy settings that change. */
+  settings?: SettingChange[];
 };
 
 /** A secret as the server lists it: never its value. `source`: `local` (sealed by the server),
