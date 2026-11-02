@@ -36,6 +36,14 @@
   to send it, and each route, action and handler has a line on what it does. `holon new --sample`
   and the editor's copy of a sample keep them (`holon fmt` does), so the heading `holon new` used
   to add is now the file's own.
+- **A new sample, `chess`**: an agent held to the interface the app gives it. You play White in
+  the browser against a Gemini agent (the free tier). The rules are a js node (legal moves,
+  check, mate, the draws), and your move goes through them: an illegal one is answered 400 and
+  changes nothing. The agent is sent the whole game, the position and the legal moves, and
+  answers `{move, comment}` under a schema; the flow checks the answer itself, and a move not in
+  the list, an answer that isn't the JSON asked for, or a call Gemini refuses plays the rules'
+  own choice, which the page says. Chat with it never reaches its moves, and a reply that names a
+  move or a square is held back. Every proposal and refusal is in the run log.
 
 ## 0.1.0-rc.30
 

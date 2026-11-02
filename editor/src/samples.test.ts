@@ -122,6 +122,16 @@ describe("sample flows", () => {
     const gemini = derive("gemini-chat").caps;
     expect(gemini).toContain('HttpRequest("generativelanguage.googleapis.com")');
     expect(gemini).toContain('SecretRead("gemini_api_key")');
+    // An agent held to its interface asks for no more than a chat does: its one host, its key,
+    // its games; the rules are code that reaches nothing outside.
+    expect(derive("chess").caps).toEqual([
+      "Clock",
+      'CollectionRead("games")',
+      'CollectionWrite("games")',
+      'HttpRequest("generativelanguage.googleapis.com")',
+      "NetworkIngress",
+      'SecretRead("gemini_api_key")',
+    ]);
     // An action agents may run is a grant of its own, which a person can take back without
     // pausing the flow.
     const ticker = derive("ticker").caps;
