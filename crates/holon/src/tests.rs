@@ -2077,11 +2077,13 @@ fn state_is_kept_by_reference_and_its_root_survives_a_restart() {
     let root = first["root"].as_str().unwrap().to_string();
     assert_eq!(root.len(), 64);
 
-    // The file holds references only, and a restart gets the same root back.
+    // The state is kept by its head: a file naming a snapshot of references, the deployments
+    // file holding no state at all; and a restart gets the same root back.
     let file: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-    assert!(file[0].get("state").is_none(), "no inline values: {}", file[0]);
+    assert!(file[0].get("state").is_none() && file[0].get("state_refs").is_none(), "no state in the deployments file: {}", file[0]);
+    let head = std::fs::read_to_string(state_head_for(&path, "writer").unwrap()).unwrap();
     let hash = hash_value(&Value::Text("kept".into())).unwrap();
-    assert_eq!(file[0]["state_refs"]["k"], to_hex(&hash));
+    assert_eq!(crate::restore::snapshot_refs(head.trim(), &state.store).unwrap()["k"], hash);
     let reloaded = load_deployments(&path, &state.store, &state.policy()).unwrap();
     assert_eq!(to_hex(&reloaded["writer"].state.as_ref().unwrap().state.lock().unwrap().root()), root);
 
@@ -2094,6 +2096,8 @@ fn state_is_kept_by_reference_and_its_root_survives_a_restart() {
     act("stop", "");
     act("run", r#"{"from":1}"#);
     assert_eq!(current()["root"], root.as_str(), "session 1 restored exactly");
+    let reloaded = load_deployments(&path, &state.store, &state.policy()).unwrap();
+    assert_eq!(to_hex(&reloaded["writer"].state.as_ref().unwrap().state.lock().unwrap().root()), root, "and kept by the head");
     act("stop", "");
     let sessions = body_json(route(&state, &req("GET", "/deployments/writer/sessions", vec![])));
     let s = |i: usize| &sessions["sessions"][i];
@@ -2102,49 +2106,8 @@ fn state_is_kept_by_reference_and_its_root_survives_a_restart() {
     assert_eq!(s(1)["state"]["k"]["value"], "other");
     assert_eq!(s(0)["state_refs"]["k"], s(2)["state_refs"]["k"], "one value, one hash, stored once");
     let _ = std::fs::remove_file(&path);
-}
-
-/// A deployments file from before references (values inline, in the state and in session
-/// snapshots) still loads: its values move into the store, and the next save writes references.
-/// A reference whose value isn't in the store refuses to load rather than losing the state.
-#[test]
-fn inline_state_from_older_files_moves_into_the_store() {
-    let mut state = test_state();
-    let path = unique_temp_path("migrate");
-    state.deployments_path = path.clone();
-    let writer = stage_stateful_writer(&state, test_ingress(), "k");
-    let text = |s: &str| serde_json::json!({ "type": "Text", "value": s });
-    let old = serde_json::json!([{
-        "slug": "writer", "unit": to_hex(&writer), "trigger_count": 2, "error_count": 0,
-        "state": { "k": text("live") },
-        "status": "running",
-        "sessions": [
-            { "number": 1, "started_at": 0, "ended_at": 5, "from": "deploy", "state": { "k": text("first") } },
-            { "number": 2, "started_at": 6, "ended_at": null, "from": "latest" },
-        ],
-    }]);
-    std::fs::write(&path, serde_json::to_vec(&old).unwrap()).unwrap();
-
-    let loaded = load_deployments(&path, &state.store, &state.policy()).unwrap();
-    assert_eq!(loaded["writer"].state.as_ref().unwrap().state.lock().unwrap().get("k"), Some(&Value::Text("live".into())));
-    let first = loaded["writer"].life.snapshot(1).expect("the inline snapshot became references");
-    assert_eq!(state.store.get_value(&first["k"]).unwrap(), Some(Value::Text("first".into())));
-
-    // Saved again, the file holds references only, and loads the same.
-    *state.deployments.lock().unwrap() = loaded;
-    persist_deployments(&path, &state.deployments, &state.store);
-    let file = std::fs::read_to_string(&path).unwrap();
-    assert!(!file.contains("\"live\"") && !file.contains("\"first\""), "no inline values left: {file}");
-    let again = load_deployments(&path, &state.store, &state.policy()).unwrap();
-    assert_eq!(again["writer"].life.snapshot(1), Some(first));
-
-    // A reference to a value the store doesn't have: refuse, and leave the file alone.
-    let dangling = file.replace(&to_hex(&hash_value(&Value::Text("live".into())).unwrap()), &"cd".repeat(32));
-    std::fs::write(&path, &dangling).unwrap();
-    let e = load_deployments(&path, &state.store, &state.policy()).err().expect("must refuse");
-    assert!(e.contains("can't be loaded"), "{e}");
-    assert_eq!(std::fs::read_to_string(&path).unwrap(), dangling);
-    let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_dir_all(Path::new(&path).with_extension("state"));
+    let _ = std::fs::remove_dir_all(Path::new(&path).with_extension("logs"));
 }
 
 /// Regression: a persistence file that failed to parse used to load as an empty table, so
@@ -7310,12 +7273,12 @@ fn sync_logs_syncs_what_was_written_and_keeps_a_log_that_fails_dirty() {
     let _ = std::fs::remove_dir_all(Path::new(&state.deployments_path).with_extension("logs"));
 }
 
-/// A stateful run persists the deployments file only when it changed the state (docs/L4s/request-
-/// path-L4.md, C3 a): one that only read it, or wrote back the value that was there, leaves the
-/// file byte for byte as it was. Its counts go on in memory, and reach the file with the next
-/// write.
+/// A stateful run writes its deployment's state head only when it changed the state, and never
+/// the deployments file (docs/L4s/request-path-L4.md, C3 a and b): one that only read, or wrote
+/// back the value that was there, writes nothing at all. Its counts go on in memory, and reach the
+/// deployments file with the next change to the deployment's definition.
 #[test]
-fn a_run_persists_the_deployments_file_only_when_it_changed_the_state() {
+fn a_run_writes_only_its_state_head_and_only_when_it_changed_the_state() {
     let mut state = test_state();
     state.deployments_path = unique_temp_path("persist-on-change");
     let counter = deploy_plain_text(&state, include_str!("../../holon-author/samples/counter.holon"));
@@ -7324,29 +7287,82 @@ fn a_run_persists_the_deployments_file_only_when_it_changed_the_state() {
         assert_eq!(serve_data(&state.store, &state.deployments, &state.deployments_path, slug, &fake_data(method, url, vec![])).status, 200, "{method} {url}");
     };
     let file = || std::fs::read(&state.deployments_path).unwrap();
+    let head = |slug: &str| std::fs::read_to_string(state_head_for(&state.deployments_path, slug).unwrap()).ok();
     let counted = |slug: &str| -> (u64, u64) {
         let on_disk: serde_json::Value = serde_json::from_slice(&file()).unwrap();
         let kept = on_disk.as_array().unwrap().iter().find(|r| r["slug"] == slug).unwrap()["trigger_count"].as_u64().unwrap();
         (state.deployments.lock().unwrap()[slug].trigger_count, kept)
     };
+    let deployed = file();
+    assert_eq!(head(&counter), None, "no state kept yet");
 
     call(&counter, "GET", "/hit");
-    let after_write = file();
+    let first = head(&counter).expect("a write keeps its head");
     for _ in 0..3 {
         call(&counter, "GET", "/last");
     }
-    assert_eq!(file(), after_write, "reading the state wrote nothing");
-    assert_eq!(counted(&counter), (4, 1), "the reads are counted, and kept with the next write");
+    assert_eq!(head(&counter).as_deref(), Some(first.as_str()), "reading the state wrote no head");
     call(&counter, "GET", "/hit");
-    assert_ne!(file(), after_write, "a write persists");
-    assert_eq!(counted(&counter), (5, 5));
+    assert_ne!(head(&counter).as_deref(), Some(first.as_str()), "a write keeps its new head");
+    assert_eq!(file(), deployed, "and no run rewrote the deployments file");
+    assert_eq!(counted(&counter), (5, 0), "the runs are counted in memory");
+    persist_deployments(&state.deployments_path, &state.deployments);
+    assert_eq!(counted(&counter), (5, 5), "and kept with the next change to the definition");
 
     call(&same, "POST", "/k");
-    let first = file();
+    let kept = head(&same);
+    assert!(kept.is_some());
     call(&same, "POST", "/k");
-    assert_eq!(file(), first, "writing back the value that was there changed nothing");
+    assert_eq!(head(&same), kept, "writing back the value that was there changed nothing");
     let _ = std::fs::remove_file(&state.deployments_path);
-    let _ = std::fs::remove_dir_all(Path::new(&state.deployments_path).with_extension("logs"));
+    for folder in ["logs", "state"] {
+        let _ = std::fs::remove_dir_all(Path::new(&state.deployments_path).with_extension(folder));
+    }
+}
+
+/// A write survives a restart through its state head alone; a stateful deployment with no head
+/// starts empty; deleting a deployment removes its head; and however many runs write at once, the
+/// head names the state they left.
+#[test]
+fn a_state_is_kept_by_its_head_across_restarts_concurrent_writes_and_a_delete() {
+    let mut state = test_state();
+    state.deployments_path = unique_temp_path("state-head");
+    let counter = deploy_plain_text(&state, include_str!("../../holon-author/samples/counter.holon"));
+    let call = |method: &str, url: &str| {
+        let r = serve_data(&state.store, &state.deployments, &state.deployments_path, &counter, &fake_data(method, url, vec![]));
+        assert_eq!(r.status, 200, "{method} {url}");
+        String::from_utf8(r.body).unwrap()
+    };
+    let reload = || load_deployments(&state.deployments_path, &state.store, &state.policy()).unwrap();
+    let hits = |table: &BTreeMap<String, Deployment>| table[&counter].state.as_ref().unwrap().state.lock().unwrap().get("hits").cloned();
+    assert_eq!(hits(&reload()), None, "no head: an empty state");
+
+    // Many runs writing at once (each writes `hits` and the `visits` collection).
+    thread::scope(|s| {
+        for t in 0..16 {
+            let call = &call;
+            s.spawn(move || {
+                for i in 0..5 {
+                    call("POST", &format!("/visits/v{t}-{i}"));
+                    call("GET", "/hit");
+                }
+            });
+        }
+    });
+    let live = Arc::clone(state.deployments.lock().unwrap()[&counter].state.as_ref().unwrap());
+    let head = std::fs::read_to_string(state_head_for(&state.deployments_path, &counter).unwrap()).unwrap();
+    assert_eq!(head.trim(), crate::restore::snapshot_hash(&live.state.lock().unwrap()).unwrap(), "the head names the live state");
+    assert_eq!(hits(&reload()), Some(Value::Number(80.0)), "every write, back after a restart");
+    assert_eq!(call("GET", "/last"), call("GET", "/last"));
+
+    assert_eq!(route(&state, &req("POST", &format!("/deployments/{counter}/stop"), vec![])).status_code, 200);
+    let deleted = route(&state, &req("DELETE", &format!("/deployments/{counter}"), vec![]));
+    assert_eq!(deleted.status_code, 200);
+    assert!(!state_head_for(&state.deployments_path, &counter).unwrap().exists(), "the head goes with its deployment");
+    let _ = std::fs::remove_file(&state.deployments_path);
+    for folder in ["logs", "state"] {
+        let _ = std::fs::remove_dir_all(Path::new(&state.deployments_path).with_extension(folder));
+    }
 }
 
 /// Units for the flow cache's tests: a leaf, and composites placing children.

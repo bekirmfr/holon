@@ -241,6 +241,7 @@ pub(crate) fn fire_with_state(
                     };
                     if done {
                         a.run.state_after = snapshot_after(&live, a.start.as_ref(), store, &a.run.run_id);
+                        keep_if_changed(cell, &a.run);
                         a.run.retries = retries;
                         if let Some(c) = waits.claiming.take() {
                             a.run.claims = c.finish();
@@ -309,6 +310,7 @@ pub(crate) fn fire_with_state(
                     failed.extend(db);
                     not_all_written(&mut a.run, failed);
                     a.run.state_after = snapshot_after(&live, a.start.as_ref(), store, &a.run.run_id);
+                    keep_if_changed(cell, &a.run);
                 }
                 databases::Commit::Refused(why) => refused(&mut a.run, &why),
                 databases::Commit::Again(why) => nothing_written(&mut a.run, &why),
@@ -468,6 +470,17 @@ fn still_as_read(
 /// The state a run left, kept as a snapshot (its hash), taken under the state's lock as it commits:
 /// the cells it changed since `start` go into the content store, then the snapshot. A store that
 /// can't take it leaves the run without one (it can't be restored to), and says so.
+/// Write the deployment's state head when `run` changed its state (C3 b): its snapshot is in the
+/// store already, and the cell's lock is held, so heads land in commit order. A run that changed
+/// nothing writes nothing, so a read costs no fsync.
+fn keep_if_changed(cell: &claims::StateCell, run: &FiredRun) {
+    if run.changed_state()
+        && let Some(snapshot) = &run.state_after
+    {
+        cell.write_head(snapshot);
+    }
+}
+
 fn snapshot_after(live: &State, start: Option<&State>, store: &SharedStore, run_id: &str) -> Option<String> {
     crate::restore::save_snapshot(live, start, store)
         .map_err(|e| eprintln!("holon: run {run_id}: the state it left wasn't kept: {e}"))

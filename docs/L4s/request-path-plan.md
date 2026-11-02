@@ -37,7 +37,7 @@ code. Where the design leaves a decision open (§8), the step that needs it says
 | 5 | C2 (d), lazy sync and the witness hook (**done**) | `holon` | none | Q7: 1 s for now |
 | 6 | C3 (a), persist on change (**done**) | `holon` | none | decided: counts persist with the next write |
 | 6b | B.2, the witness's queue file kept open (**done**) | `holon` | none | |
-| 7 | C3 (b)–(e), the state head | `holon` | adds `deployments.state/`, drops `state_refs` (no migration) | |
+| 7 | C3 (b)–(e), the state head (**done**) | `holon` | adds `deployments.state/`, drops `state_refs` (no migration) | |
 | 8 | C5 in the language and core | `holon-core`, `holon-author`, `holon-wasm`, `editor` (types) | a new param in handler units, only for flows that use a word | |
 | 9 | C2 (e) and C5 in the server | `holon`, `holon-core`, `holon-author`, `holon-wasm`, `editor`, docs, a sample | none new | Q9, Q10, Q11, Q12 |
 | 10 | C3 (f), the log line as the state commit | `holon` | the head file goes | only if step 9's numbers ask |
@@ -460,7 +460,43 @@ not yet taken.
 
 **Commit:** `heads: the witness's queue file kept open (B.2)`.
 
-## Step 7. C3 (b)–(e): a state head per deployment
+## Step 7. C3 (b)–(e): a state head per deployment (done)
+
+**Built** as sketched below, with three changes found while building it:
+- **A head only when the state changed.** A read-only run still commits and gets a `state_after`,
+  with the same hash, so writing the head on every commit would put an fsync back on every read.
+  `keep_if_changed` (`firing.rs`) writes it only when `changed_state()`, under the cell's lock.
+- **No per-run persist of the deployments file at all.** With the head holding the state, a run
+  calls `persist_deployments` only when it parks (the waiting runs are part of the definition), and
+  step 6's `changed ||` goes. Q1 now reads: counts reach the deployments file with the next change
+  to the definition.
+- **Unused parameters removed.** `persist_deployments` and `handle_delete_deployment` no longer take
+  the store, and `StateCell::new` is gone, since every cell is made with `kept_at`.
+
+Removed with no migration: `DeploymentRecord.state_refs` and its inline `state`, `Session.state`,
+`migrate_inline`, the state loop in `persist_deployments`, and the test
+`inline_state_from_older_files_moves_into_the_store`. A new stateful deployment writes no empty head:
+no head means an empty state.
+
+**Tests.**
+- Changed: `state_is_kept_by_reference_and_its_root_survives_a_restart`. It now checks the head names
+  a snapshot of the right references and the deployments file holds no state, and that a session
+  restored from another's state is kept by the head across a restart.
+- Rewritten from step 6: `a_run_writes_only_its_state_head_and_only_when_it_changed_the_state`.
+- New: `a_state_is_kept_by_its_head_across_restarts_concurrent_writes_and_a_delete`. With no head the
+  state is empty; 16 threads writing at once leave the head naming the live state, with all 80 hits
+  back after a restart; a delete removes the head.
+- `cargo test --release -p holon` passed (390 passed, 1 ignored), and clippy was clean.
+
+**Measured.**
+- The throughput check, `/hit` at 64 threads: 87 to 702 req/s (786 at 1 thread, p50 11.4 ms to
+  1.2 ms). The rest is three small synced files per write (value, snapshot, head) under the cell's
+  lock, which steps 10 and 11 address.
+- Live: `/hit` over HTTP served 986 req/s (74 before this step), and `/last` 10,372. The deployments
+  file was untouched by the runs, and a write survived a restart (5990 to 5991).
+- `holon verify`'s state checks passed (565 runs).
+- The old data folder, having no head, started its counter empty, as decided.
+
 
 **Code.**
 - **Where the head lives.** `recorder.rs` (or `persist.rs`) gains

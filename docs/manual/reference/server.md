@@ -25,6 +25,7 @@ In the data folder (`--data`, `HOLON_DATA`):
 | `store/` | every unit, by hash | `--store` |
 | `deployments.json` | the deployments, their grants, sessions and parked runs | `--deployments` |
 | `deployments.logs/` | each deployment's run log, `<slug>.jsonl` | |
+| `deployments.state/` | each stateful deployment's state, `<slug>`: the hash of its current snapshot, whose values are in `store/`, written as each change lands | |
 | `flows.json` | saved flows | `--flows` |
 | `accounts.json` | accounts, sessions, invites and API tokens (as hashes) | `--accounts` |
 | `secrets.json` | sealed secrets; `secrets.audit.jsonl` beside it, who changed what (never values) | `--secrets` |

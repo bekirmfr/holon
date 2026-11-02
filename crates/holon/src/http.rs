@@ -306,7 +306,7 @@ pub(crate) fn route(state: &AppState, request: &Request) -> Response {
                 return scheduler::handle_post_tick(state, slug, request);
             }
         } else if method == "DELETE" {
-            let response = handle_delete_deployment(&state.store, &state.deployments, &state.deployments_path, rest);
+            let response = handle_delete_deployment(&state.deployments, &state.deployments_path, rest);
             if response.status_code == 200
                 && let Err(e) = state.secrets.forget(rest, by)
             {

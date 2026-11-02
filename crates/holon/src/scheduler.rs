@@ -149,7 +149,6 @@ pub(crate) fn fire_one_clock_tick(
     let mut waits = RunWaits { folders, channels, slug: Some(slug.clone()), ..Default::default() };
     let resolver = holon_module::WithEngine::new(&resolver, holon_module::shared());
     let run = fire_with_state(root_unit, &[], &resolver, store, state.as_ref(), &extra_sourced, permit, true, secrets, &mut waits, None);
-    let changed = run.changed_state();
     let mut entry = run_entry("tick", started, &extra_sourced, &run);
     entry.route = label.clone();
     match durable::park_if_waiting(deployments, store, &slug, &unit_hash, "tick", label.clone(), &[], &extra_sourced, &run, &waits) {
@@ -193,8 +192,10 @@ pub(crate) fn fire_one_clock_tick(
             }
         }
     }
-    if changed || parked_any {
-        persist_deployments(deployments_path, deployments, store);
+    // The state is kept by its head, written as the change landed (claims.rs); the deployments
+    // file changes only with the deployment's definition, here its waiting runs.
+    if parked_any {
+        persist_deployments(deployments_path, deployments);
     }
 }
 

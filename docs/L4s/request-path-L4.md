@@ -707,7 +707,10 @@ only once its entry is on disk."
 ### C3. Persist what changed, and only that deployment
 
 **Status:** (a) built (build step 6): a stateful run that only reads went from 79 to 14,150 req/s
-at 64 threads, and from 53–66 to 10,382 live over HTTP. (b)–(f) are still to come.
+at 64 threads, and from 53–66 to 10,382 live over HTTP. (b)–(e) built (build step 7): a stateful
+run that writes went from 87 to 702 req/s at 64 threads, and from 74 to 986 live. A write now
+writes only its head, and a run persists the deployments file only when it parks. (f) is still to
+come, if measurements ask for it.
 
 **What.** A run persists only when it changed something durable. A state change persists as a small
 per-deployment pointer, not as the whole table.
@@ -1340,8 +1343,9 @@ The end-to-end tests (`editor/e2e`) and `editor/src/samples.test.ts` must stay g
 
 ## 8. Open questions
 
-1. **Decided: counters on read-only runs** go on in memory and persist with the next write or
-   definition change, as a stateless deployment's always did (built in build step 6).
+1. **Decided: counters** go on in memory and persist with the next change to the deployment's
+   definition, as a stateless deployment's always did (build steps 6 and 7). A write keeps only its
+   state head.
 2. **Decided: the flow cache's bound** is a server setting in bytes, `holon serve --flow-cache SIZE`
    (default 256 MiB), with units shared across flows (C1).
 3. **Decided: no migration.** Holon is in development. C3 drops `state_refs` and the inline-state

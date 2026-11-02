@@ -19,7 +19,7 @@ use std::collections::BTreeMap;
 use holon_core::{parse_hash, Hash};
 use serde::{Deserialize, Serialize};
 
-use crate::{to_hex, SValue};
+use crate::to_hex;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -47,10 +47,6 @@ pub struct Session {
     /// for a deployment without state.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub state_refs: Option<BTreeMap<String, String>>,
-    /// A snapshot as files before `state_refs` held it, values inline. Read once at load, when
-    /// its values move into the store (`persist.rs`); never written.
-    #[serde(default, skip_serializing)]
-    pub state: Option<BTreeMap<String, SValue>>,
 }
 
 /// Where a new session's state comes from.
@@ -208,7 +204,6 @@ fn session(number: u32, now: u64, from: &str) -> Session {
         errors: 0,
         from: from.into(),
         state_refs: None,
-        state: None,
     }
 }
 

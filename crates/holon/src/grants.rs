@@ -124,7 +124,7 @@ pub(crate) fn handle_post_grant(state: &AppState, slug: &str, request: &Request,
         recheck(dep, &caps, &policy, now);
         grant_view(dep)
     };
-    persist_deployments(&state.deployments_path, &state.deployments, &state.store);
+    persist_deployments(&state.deployments_path, &state.deployments);
     sync_listeners(state);
     Response::json(&reply)
 }
@@ -165,7 +165,7 @@ pub(crate) fn handle_post_permissions_reload(state: &AppState) -> Response {
             .collect()
     };
     eprintln!("holon: policy reloaded from {:?}", state.policy_path);
-    persist_deployments(&state.deployments_path, &state.deployments, &state.store);
+    persist_deployments(&state.deployments_path, &state.deployments);
     sync_listeners(state);
     let mut reply = permissions_view(&policy);
     reply["attention"] = serde_json::to_value(attention).unwrap_or_default();

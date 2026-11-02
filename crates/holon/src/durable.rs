@@ -681,7 +681,7 @@ pub(crate) fn resume_parked(
             }
         }
     }
-    persist_deployments(deployments_path, deployments, store);
+    persist_deployments(deployments_path, deployments);
     match run.error {
         Some(e) => Err(e),
         None => Ok(()),
