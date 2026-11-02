@@ -268,8 +268,10 @@ test("a flow nothing would start can't deploy; made runnable by hand, it deploys
   await page.keyboard.insertText("flow by-hand\n\ntotal = 1 + 2\n");
   await expect(canvas.getByText("nothing would start a run", { exact: true })).toBeVisible({ timeout: 15_000 });
   await expect(canvas.getByRole("button", { name: /^deploy/ })).toBeDisabled();
-  // The quick fix puts its statements in an action, answering the value it computes.
-  await canvas.getByRole("button", { name: "make it runnable by hand" }).click();
+  // The quick fix puts its statements in an action, answering the value it computes. With the
+  // text open the canvas's toolbar runs under the text pane at 1280px: pressed as a button, not at
+  // a point another element covers (a pointer click there retried for 70 s, then missed).
+  await canvas.getByRole("button", { name: "make it runnable by hand" }).dispatchEvent("click");
   await expect(page.getByRole("region", { name: "Text" })).toContainText("action run (input) {");
   await expect(page.getByRole("region", { name: "Text" })).toContainText("respond total");
   await expect(canvas.getByText("nothing would start a run", { exact: true })).toHaveCount(0);
