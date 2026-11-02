@@ -885,8 +885,14 @@ as it does the flow's collections.
 `keep 500 runs for 30d` is how long the deployment's log keeps runs, the limits
 `keep_runs` and `keep_run_days`: either part may be left out (`keep 500 runs`, `keep runs for
 30d`), the days whole, one line. It is the deploy settings' two fields, which follow it and which
-it follows; the other limits have no line. `keep` is a header only before a number or `runs`, a
-name everywhere else. `collection notes` declares a name for the body (§5.4); several may be declared, one
+it follows. `limit run_budget_ms 1m` sets any other limit of the deploy settings by its name
+there (docs/manual/reference/permissions.md), one line each: a `_ms` or `_seconds` limit takes a
+duration (`50s`, `1m`) or a whole number in its unit, the others a whole number, and `fmt` writes a
+whole number of seconds as a duration. A js holon's fuel and memory are its own line's, not
+`limit`'s, and `keep_runs` and `keep_run_days` are `keep`'s. Below the host's default asks
+nobody; above it asks for approval, `Limit(run_budget_ms=60000)`, up to the host's ceiling. `keep`
+is a header only before a number or `runs`, and `limit` only before a name and a value: both are
+names everywhere else. `collection notes` declares a name for the body (§5.4); several may be declared, one
 per line. `folder inbox` declares a folder the same way, `database shop` a database on the host,
 and `channel updates` a channel, sent on with `updates.send(v)` (or a call's answer piped to it,
 `updates.pipe(http.post(…))`) and subscribed to as a route's answer, `respond updates.subscribe()`.

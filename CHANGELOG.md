@@ -36,6 +36,26 @@
   to send it, and each route, action and handler has a line on what it does. `holon new --sample`
   and the editor's copy of a sample keep them (`holon fmt` does), so the heading `holon new` used
   to add is now the file's own.
+- **`limit` lines**: a flow's text sets any limit of the deploy settings by its name there,
+  `limit run_budget_ms 1m`, `limit request_timeout_ms 50s`, `limit max_requests 100`, as `keep`
+  sets the log's two. A `_ms` or `_seconds` limit takes a duration; more than the host's default
+  asks for approval at deploy, as from the settings. `fmt` writes the limits a flow's settings
+  have as these lines. The `chess` sample uses them to give its thinking models a minute.
+- **A new sample, `chess`**: an agent held to the interface the app gives it. You play White in
+  the browser (drag a piece, or click it and its square) against a Gemini agent, the model picked
+  for each game from the newest few the app lists. The rules are a js node (legal moves, check,
+  mate, the draws), and your move goes through them: an illegal one is answered 400 and changes
+  nothing. The agent is sent the whole game, the position, the material and the legal moves, and
+  answers `{move, comment, verdict, mood, say}` under a schema; the flow checks the answer itself,
+  and a move not in the list, an answer that isn't the JSON asked for, or a call Gemini refuses
+  plays the rules' own choice, which the page says. It judges your moves (brilliant to insane),
+  shows its mood, and speaks up when it struggles or wonders. Its chat replies stream: the call is
+  piped to a channel, and the page writes the words as Gemini sends them. Chat with it never
+  reaches its moves. The page says how a game is won, lost or drawn, and how it ended, and you can resign;
+  while the Sphinx thinks, it says your move is sent and counts the seconds. The board shows its
+  files and ranks, each move in the list opens the position after it, and the chat is in bubbles,
+  the Sphinx's asides typed in.
+  Every proposal and refusal is in the run log.
 
 ## 0.1.0-rc.30
 

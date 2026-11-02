@@ -42,6 +42,47 @@ pub mod text;
 pub mod usage;
 pub mod wire;
 
+/// The limits a deployment may ask for, by name, and the unit each is counted in. Durations are
+/// milliseconds (the durable-run wait is in seconds, like the `await` node's `expires`); sizes are
+/// bytes. The two module limits are what a flow's module bodies may compute and hold per call
+/// (`docs/L4s/wasm-module-L4.md` §4): derived from the units' own budgets, never a default a run
+/// gets, so the policy has ceilings for them and no `[limits]` entry. A flow's text sets the others
+/// with `limit` lines, and `keep_runs` and `keep_run_days` with its `keep` line (docs/LANGUAGE.md).
+pub const LIMIT_NAMES: [&str; 32] = [
+    "connect_timeout_ms",
+    "request_timeout_ms",
+    "claim_wait_ms",
+    "commit_wait_ms",
+    "run_budget_ms",
+    "clock_run_budget_ms",
+    "max_requests",
+    "per_host_concurrency",
+    "max_request_bytes",
+    "max_response_bytes",
+    "max_header_bytes",
+    "max_redirects",
+    "max_await_seconds",
+    "max_waiting_runs",
+    "max_call_depth",
+    "inline_file_bytes",
+    "max_file_read_bytes",
+    "max_file_write_bytes",
+    "max_files_per_run",
+    "max_db_rows",
+    "max_db_read_bytes",
+    "db_statement_ms",
+    "max_db_statements",
+    "max_pack_bytes",
+    "max_packs_per_run",
+    "channel_keep",
+    "channel_buffer",
+    "max_subscribers",
+    "keep_runs",
+    "keep_run_days",
+    holon_core::FUEL_LIMIT,
+    holon_core::MEMORY_LIMIT,
+];
+
 /// A 32-byte hash as 64 lowercase hex chars: how hashes cross to the editor and sit in documents.
 pub fn to_hex(h: &holon_core::Hash) -> String {
     h.iter().map(|b| format!("{b:02x}")).collect()

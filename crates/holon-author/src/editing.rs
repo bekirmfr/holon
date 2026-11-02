@@ -128,6 +128,7 @@ const KEYWORDS: &[(&str, &str)] = &[
     ("port", "`port <n>`: the port the flow's server answers its routes on."),
     ("every", "`every <duration>`: how often a flow without routes runs (`10s`, `5m`, `1h`, `1d`)."),
     ("keep", "`keep <n> runs for <days>d`: how many runs the deployment's log keeps, and for how long (either alone: `keep 500 runs`, `keep runs for 30d`). Fewer than the host's default asks nobody; more asks for approval, up to the host's ceiling."),
+    ("limit", "`limit <name> <value>`: a limit of the deploy settings, by its name there: `limit run_budget_ms 60s` (how long a request's run may take), `limit request_timeout_ms 50s` (an outbound call), `limit max_requests 20`. A `_ms` or `_seconds` limit takes a duration (`60s`, `2m`), the others a whole number. Below the host's default asks nobody; above asks for approval, up to the host's ceiling."),
     ("collection", "`collection <name>`: a named store of items, used as `name[key]`, `name[key] = v`, `delete name[key]` and `name.list(prefix: p, after: a, limit: 50)`. One permission for each use."),
     ("folder", "`folder <name>`: files on the host, in a folder an admin binds to the name: `name[file]` reads a file's text, `name[file] = text` writes it when the run finishes (`name.create(file, text)` only if no file has that name), `delete name[file]` deletes it, `name.list(prefix: p, after: a, limit: 50)` lists files. One permission to read, one to write."),
     ("database", "`database <name>`: a database an admin binds on the host. `name.query(\"select … where id = $1\", id)` reads rows (a list of records by column name), `name.one(…)` the first row or nothing, `name.exec(\"update … where id = $1\", id, expect: 1)` changes rows when the run finishes, in one transaction with its other writes there (`expect:`: exactly that many, or nothing lands). The SQL is written in quotes; its tables are the permission, one to read each, one to write each. Values go after it as $1, $2, …, never into it. A document database (MongoDB) is called with record literals instead: `name.find(\"notes\", { owner: who }, sort: { at: -1 }, limit: 20)` reads documents, `name.find_one(…)` the first, and `name.insert(\"notes\", { … })`, `name.update(\"notes\", { _id: id }, { \"$set\": { text: t } }, expect: 1)` and `name.delete(\"notes\", { … })` write when the run finishes. The collection is the permission; the records' fields and operators are the flow's, and each computed value goes in as a value, never as an operator."),
@@ -654,6 +655,10 @@ impl Colourer {
                     i = self.next_word(to, Class::Definition, &[]);
                 }
             }
+            // `limit run_budget_ms 60s` is a header; `limit = …` and `limit: 50` names.
+            "limit" if { let next = self.skip_space(end); let after = self.skip_space(self.word_end(next, &[])); next < after && self.chars.get(next).is_some_and(|c| c.is_ascii_alphabetic()) && self.chars.get(after).is_some_and(char::is_ascii_digit) } => {
+                self.mark(start, end, Class::Keyword)
+            }
             // `keep 500 runs` is a header; `keep = …` a name.
             "keep" if { let next = self.skip_space(end); self.chars.get(next).is_some_and(char::is_ascii_digit) || self.word(next, self.word_end(next, &[])) == "runs" } => {
                 self.mark(start, end, Class::Keyword)
@@ -975,6 +980,8 @@ mod tests {
         has("flow f\nkeep 5 runs for 1d\n", "keep", Keyword);
         has("flow f\nkeep runs for 30d\n", "keep", Keyword);
         has("flow f\n\naction a (input) {\n  keep = input.n\n}\n", "keep", Definition);
+        has("flow f\nlimit run_budget_ms 1m\n", "limit", Keyword);
+        has("flow f\n\naction a (input) {\n  limit = input.n\n}\n", "limit", Definition);
         // `secret key` and `state key` are headers, the name what they declare; `.key` a member.
         let declared = "flow f\nsecret token\noptional secret spare\nstate count\n\nstate.count = secret.token\n";
         has(declared, "token", Definition);

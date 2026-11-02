@@ -63,8 +63,10 @@ headers (`authorization`, an API key) stay with the host they were meant for.
 
 A deployment runs within limits. Each has a default, which is granted without asking, and a
 ceiling, which can't be passed. A deployment that needs more than the default asks for
-`Limit(name=n)`, shown as "raise *name* to *n*", from the deploy settings' **needs**. The policy
-can change both columns ([Server configuration](server.md#the-policy)).
+`Limit(name=n)`, shown as "raise *name* to *n*", from the deploy settings' **needs**, or from the
+flow's own text: a `limit` line (`limit run_budget_ms 1m`), or for the log's two, the `keep` line
+([the language](../language/reference.md)). The policy can change both columns
+([Server configuration](server.md#the-policy)).
 
 | Name | Is | Default | Ceiling |
 |---|---|---|---|

@@ -64,6 +64,7 @@ else.
 | `on file NAME [deleted] [matching "GLOB"]` | A flow without handlers: runs once for each new file in the folder `NAME` (which it declares too). Several lines may each start it. Beside handlers, it is a block: `on file NAME (f) { … }`. |
 | `optional PERMISSION` | A permission the flow can run without (see below). |
 | `keep N runs [for Dd]` | How many runs the deployment's log keeps, and for how many days: `keep 500 runs`, `keep runs for 30d`, or both, `keep 5 runs for 1d`. The deploy settings' **runs the log keeps** and **days the log keeps runs** (see [Checking runs](../guides/checking-runs.md)). |
+| `limit NAME VALUE` | Any other limit of the deploy settings, by its name there (see [Permissions](../reference/permissions.md#limits)): `limit run_budget_ms 1m` gives a request's run a minute, `limit request_timeout_ms 50s` an outbound call 50 seconds, `limit max_requests 100`. A `_ms` or `_seconds` limit takes a duration or a whole number in its unit, the others a whole number. More than the host's default asks for approval. |
 | `browsers ORIGIN, …` | The web origins allowed to call the flow from a browser (CORS), or `*`. |
 
 `optional` takes `secret NAME` for a secret, which it declares too (`secret.NAME` reads as well),

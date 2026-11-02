@@ -503,6 +503,11 @@ impl<'a> Lowerer<'a> {
                     limits.extend(runs.map(|n| ("keep_runs".to_string(), n.into())));
                     limits.extend(days.map(|d| ("keep_run_days".to_string(), d.into())));
                 }
+                HeaderKind::Limit { name, value } => {
+                    if limits.insert(name.clone(), (*value).into()).is_some() {
+                        return err(h.span, format!("one limit line says {name}: this is a second"));
+                    }
+                }
                 HeaderKind::Port(p) => s.port = p.clone(),
                 HeaderKind::Every { seconds, .. } => s.interval = number_text(*seconds),
                 HeaderKind::Interval(i) => s.interval = i.clone(),

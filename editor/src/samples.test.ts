@@ -88,9 +88,13 @@ describe("sample flows", () => {
         expect(caps).toContain(item);
         expect(item).not.toBe(manifestTrigger(caps));
       }
-      // Its `keep` line opens as the limits the deploy asks for.
+      // Its `keep` and `limit` lines open as the limits the deploy asks for.
       const keep = /^keep (?:(\d+) )?runs(?: for (\d+)d)?$/m.exec(s.text);
-      const limits = keep ? { ...(keep[1] ? { keep_runs: Number(keep[1]) } : {}), ...(keep[2] ? { keep_run_days: Number(keep[2]) } : {}) } : {};
+      const limits: Record<string, number> = keep ? { ...(keep[1] ? { keep_runs: Number(keep[1]) } : {}), ...(keep[2] ? { keep_run_days: Number(keep[2]) } : {}) } : {};
+      const SECONDS: Record<string, number> = { s: 1, m: 60, h: 3600, d: 86400 };
+      for (const [, name, n, unit] of s.text.matchAll(/^limit (\w+) (\d+)([smhd])?$/gm)) {
+        limits[name] = unit ? Number(n) * SECONDS[unit] * (name.endsWith("_ms") ? 1000 : 1) : Number(n);
+      }
       expect(settingsOf(doc.server).requirements?.limits ?? {}).toEqual(limits);
     });
   }
@@ -122,6 +126,19 @@ describe("sample flows", () => {
     const gemini = derive("gemini-chat").caps;
     expect(gemini).toContain('HttpRequest("generativelanguage.googleapis.com")');
     expect(gemini).toContain('SecretRead("gemini_api_key")');
+    // An agent held to its interface asks for no more than a chat does: its one host, its key,
+    // its games, the channel its replies stream on; the rules are code that reaches nothing
+    // outside.
+    expect(derive("chess").caps).toEqual([
+      'ChannelRead("replies")',
+      'ChannelSend("replies")',
+      "Clock",
+      'CollectionRead("games")',
+      'CollectionWrite("games")',
+      'HttpRequest("generativelanguage.googleapis.com")',
+      "NetworkIngress",
+      'SecretRead("gemini_api_key")',
+    ]);
     // An action agents may run is a grant of its own, which a person can take back without
     // pausing the flow.
     const ticker = derive("ticker").caps;
