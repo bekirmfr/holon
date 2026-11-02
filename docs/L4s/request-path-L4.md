@@ -1223,6 +1223,9 @@ that could close a cycle. B.4 is untouched by them.
 
 ## 6. Build order
 
+The implementation plan, step by step with the code each step changes, its tests, its checks and
+the numbers its commit reports, is `request-path-plan.md`.
+
 One commit per step, per `CLAUDE.md`. Each commit gives its before and after numbers from the
 throughput check (step 1) and says the step was run live.
 
