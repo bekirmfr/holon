@@ -91,6 +91,9 @@ test("an agent asks through holon mcp to put a run's state back, and a person re
     await page.goto("/");
     await page.getByRole("button", { name: "flows", exact: true }).click();
     await page.getByText(name, { exact: true }).locator("xpath=..").getByRole("button", { name: "open", exact: true }).click();
+    // Opened once its tab says so: deploy pressed before that deploys the untitled draft, and asks
+    // for a name instead of what the flow may do.
+    await expect(page.locator(".hl-tab--active")).toContainText(name);
     await page.locator(".hl-canvas").getByRole("button", { name: /^deploy/ }).dispatchEvent("click");
     await page.getByRole("dialog").getByRole("button", { name: /^(Approve and deploy|Deploy)$/ }).click();
     await expect(page.locator(".hl-tab--active")).toContainText("deployed");
