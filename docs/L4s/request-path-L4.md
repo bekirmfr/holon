@@ -1483,8 +1483,9 @@ are not.
    `seq` it assigned.
 2. **The witness queue opens a file per run under a server-wide lock.** With `--export-heads`,
    `Exporter::note` (`heads.rs:106–112`) holds `pending` while `append` (`heads.rs:114–120`) calls
-   `create_dir_all`, `open` and `write`, for every run of every deployment. Unmeasured. The same
-   remedy as C2 (b) applies.
+   `create_dir_all`, `open` and `write`, for every run of every deployment. Measured in build step 5:
+   `hello` served 7,890 req/s with a witness against 9,362 without. The same remedy as C2 (b)
+   applies, and it's scheduled as the plan's step 6b.
 3. **Log readers clone whole logs under the table lock.** `handle_get_changes` (`changes.rs:64`),
    `restore_plan` (`deploy.rs:1419`) and `state_change` (`deploy.rs:1526`) call
    `log.after(None, usize::MAX)`, which clones every kept entry (500 by default, each with its

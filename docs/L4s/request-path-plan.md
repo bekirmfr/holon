@@ -36,6 +36,7 @@ code. Where the design leaves a decision open (§8), the step that needs it says
 | 4 | C2 (c), cut-back without parsing (**done**) | `holon` | none | |
 | 5 | C2 (d), lazy sync and the witness hook (**done**) | `holon` | none | Q7: 1 s for now |
 | 6 | C3 (a), persist on change | `holon` | none | Q1, counters |
+| 6b | B.2, the witness's queue file kept open (scheduled next, after 6) | `holon` | none | |
 | 7 | C3 (b)–(e), the state head | `holon` | adds `deployments.state/`, drops `state_refs` (no migration) | |
 | 8 | C5 in the language and core | `holon-core`, `holon-author`, `holon-wasm`, `editor` (types) | a new param in handler units, only for flows that use a word | |
 | 9 | C2 (e) and C5 in the server | `holon`, `holon-core`, `holon-author`, `holon-wasm`, `editor`, docs, a sample | none new | Q9, Q10, Q11, Q12 |
@@ -384,6 +385,39 @@ durability fix.
 879 req/s, at 33 deployments.
 
 **Commit:** `persist: a run persists only what it changed (C3 a)`.
+
+## Step 6b. B.2: the witness's queue file kept open
+
+**Why.** Measured in step 5: with `--export-heads`, `hello` over HTTP served 7,890 req/s, against
+9,362 without. Every run's head is queued by `Exporter::note` (`heads.rs:126–132`). Under
+`pending`, a lock the whole server shares, `append` (`heads.rs:134–140`) calls `create_dir_all`,
+serializes the head, opens `pending.jsonl` and writes it, so every run of every deployment opens a
+file under one lock.
+
+**Code** (`crates/holon/src/heads.rs`):
+- **The handle beside the queue.** `pending: Mutex<VecDeque<Head>>` becomes
+  `pending: Mutex<Queue>`, with `struct Queue { heads: VecDeque<Head>, file: Option<File> }`, so the
+  handle is guarded by the lock that already orders appends.
+- **`append` takes `&mut Queue`.** It creates the folder and opens the file once, in append mode,
+  with the owner-only mode that `write_private`'s files have. Then each head is one `write_all`.
+  On an error it drops the handle, so the next head reopens.
+- **Reopen after a rewrite.** `keep` (`heads.rs:188–202`) rewrites `pending.jsonl` with
+  `write_private` after a batch is taken, which replaces the file. It sets `file = None` first (a
+  handle would write to the replaced file, and Windows won't replace an open one), and the next
+  head reopens it. `receipts.jsonl` is written once per batch, so it keeps opening per write.
+- **Readers.** `waiting()`, `flush` and `Exporter::new` (the queue read back from disk) read
+  `queue.heads`.
+
+**Tests.** The three exporter tests in `heads.rs` pass unchanged: the queue survives a restart, a
+head queued while sending waits for the next time, and the witness's own URL rules. New:
+`heads_queued_after_a_batch_was_taken_land_in_the_new_queue_file`. Queue heads, flush (which rewrites
+the file), queue more, then reopen an `Exporter` on the same folder: it reads back exactly the heads
+not yet taken.
+
+**Measure.** A live `wrk -t2 -c64` against `holon serve --export-heads` and a local witness: expect
+`hello` near the 9,362 req/s it serves without one.
+
+**Commit:** `heads: the witness's queue file kept open (B.2)`.
 
 ## Step 7. C3 (b)–(e): a state head per deployment
 
