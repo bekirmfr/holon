@@ -55,6 +55,9 @@ pub enum HeaderKind {
     /// `keep 500 runs for 30d`: how many runs the deployment's log keeps, and for how many days
     /// (the limits `keep_runs` and `keep_run_days`); either may be left out, not both.
     Keep { runs: Option<u64>, days: Option<u64> },
+    /// `limit run_budget_ms 60s`: a limit of the deploy settings (one of [`crate::LIMIT_NAMES`]),
+    /// in its unit (a `_ms` limit's duration in milliseconds, a `_seconds` one's in seconds).
+    Limit { name: String, value: u64 },
     Browsers(Vec<String>),
     Optional(Consent),
     /// `secret signing_key`: a secret the flow reads, as `secret.signing_key`; someone sets it

@@ -300,6 +300,13 @@ impl Parser {
                         let h = self.header()?;
                         file.headers.push(h);
                     }
+                    // `limit run_budget_ms 60s`: a limit of the deploy settings. No statement
+                    // starts with `limit`, a name and a number, and `limit` stays a name everywhere
+                    // else.
+                    "limit" if self.peek_at(1).tok == Tok::Ident && matches!(self.peek_at(2).tok, Tok::Number | Tok::Duration(_)) => {
+                        let h = self.header()?;
+                        file.headers.push(h);
+                    }
                     // `on file inbox (f) {` opens a file handler; `on file inbox` alone is the old header.
                     "on" if self.peek_at(1).tok == Tok::Ident && self.peek_at(1).text == "file" && self.on_file_block_ahead() => {
                         file.items.push(Item::OnFile(self.on_file()?))
@@ -350,6 +357,7 @@ impl Parser {
             "on" => HeaderKind::OnFile(self.file_on()?),
             "optional" => HeaderKind::Optional(self.consent()?),
             "keep" => self.keep()?,
+            "limit" => self.limit()?,
             _ => {
                 let mut origins = Vec::new();
                 loop {
@@ -403,6 +411,31 @@ impl Parser {
             return err(word.span.start, "say how many runs the log keeps (keep 500 runs), or for how long (keep runs for 30d)");
         }
         Ok(HeaderKind::Keep { runs, days })
+    }
+
+    /// What `limit` says: a limit's name and its value, a whole number in the limit's unit, or a
+    /// duration for one counted in milliseconds (`_ms`) or seconds (`_seconds`).
+    fn limit(&mut self) -> R<HeaderKind> {
+        let name = self.ident("the limit's name")?;
+        let known = || crate::LIMIT_NAMES.iter().filter(|n| !n.starts_with("keep_") && !n.starts_with("module_")).copied().collect::<Vec<_>>().join(", ");
+        if name.text.starts_with("keep_") {
+            return err(name.span.start, format!("{} is said by the keep line: keep 500 runs for 30d", name.text));
+        }
+        if !crate::LIMIT_NAMES.contains(&name.text.as_str()) || name.text.starts_with("module_") {
+            return err(name.span.start, format!("{} isn't a limit a flow can set (a js holon says its fuel in its own line); the limits: {}", name.text, known()));
+        }
+        let t = self.next();
+        let value = match t.tok {
+            Tok::Number => t.text.parse::<u64>().ok(),
+            Tok::Duration(seconds) if name.text.ends_with("_ms") => Some(seconds * 1000.0).filter(|ms| ms.fract() == 0.0).map(|ms| ms as u64),
+            Tok::Duration(seconds) if name.text.ends_with("_seconds") => Some(seconds).filter(|s| s.fract() == 0.0).map(|s| s as u64),
+            Tok::Duration(_) => return err(t.span.start, format!("{} isn't a duration: give it a whole number", name.text)),
+            _ => return err(t.span.start, format!("expected the limit's value, a whole number or a duration like 60s, found {}", describe(&t))),
+        };
+        let Some(value) = value else {
+            return err(t.span.start, format!("{} takes a whole number in its unit: {} isn't one", name.text, t.text));
+        };
+        Ok(HeaderKind::Limit { name: name.text, value })
     }
 
     /// What `optional` names: `secret name` (or, as before, `secret.name`), `Name`, `Name("text")`,

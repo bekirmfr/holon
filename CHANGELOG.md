@@ -36,6 +36,11 @@
   to send it, and each route, action and handler has a line on what it does. `holon new --sample`
   and the editor's copy of a sample keep them (`holon fmt` does), so the heading `holon new` used
   to add is now the file's own.
+- **`limit` lines**: a flow's text sets any limit of the deploy settings by its name there,
+  `limit run_budget_ms 1m`, `limit request_timeout_ms 50s`, `limit max_requests 100`, as `keep`
+  sets the log's two. A `_ms` or `_seconds` limit takes a duration; more than the host's default
+  asks for approval at deploy, as from the settings. `fmt` writes the limits a flow's settings
+  have as these lines. The `chess` sample uses them to give its thinking models a minute.
 - **A new sample, `chess`**: an agent held to the interface the app gives it. You play White in
   the browser against a Gemini agent (the free tier). The rules are a js node (legal moves,
   check, mate, the draws), and your move goes through them: an illegal one is answered 400 and

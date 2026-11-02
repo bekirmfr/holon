@@ -304,6 +304,18 @@ pub fn print_lines(name: Option<&str>, doc: &FlowDocument, store: &mut MapResolv
             (None, Some(d)) => out.push(header(format!("keep runs for {d}d"))),
             (None, None) => {}
         }
+        // And each other limit it asks for, a duration where its unit is one.
+        for name in crate::LIMIT_NAMES.iter().filter(|n| !n.starts_with("keep_") && !n.starts_with("module_")) {
+            let Some(n) = limits.and_then(|l| l.get(*name)).and_then(serde_json::Value::as_u64) else { continue };
+            let value = if name.ends_with("_ms") && n > 0 && n % 1000 == 0 {
+                duration(&(n / 1000).to_string())
+            } else if name.ends_with("_seconds") && n > 0 {
+                duration(&n.to_string())
+            } else {
+                n.to_string()
+            };
+            out.push(header(format!("limit {name} {value}")));
+        }
         if let Some(b) = s.browsers.as_ref().filter(|b| !b.is_empty()) {
             let origins: Vec<&str> = b.split(|c: char| c.is_whitespace() || c == ',').filter(|o| !o.is_empty()).collect();
             out.push(header(format!("browsers {}", origins.join(", "))));
@@ -2178,7 +2190,7 @@ mod tests {
     }
 
     /// `keep` says how long the log keeps runs: the limits `keep_runs` and `keep_run_days`, either
-    /// alone; printed back as written, with other limits (which the text doesn't say) left out.
+    /// alone; printed back as written, and another limit after it as a `limit` line.
     #[test]
     fn keep_is_the_logs_two_limits_and_prints_back() {
         let limits = |src: &str| compile(src).unwrap_or_else(|e| panic!("{e}")).doc.server.and_then(|s| s.requirements).and_then(|r| r.extra.get("limits").cloned());
@@ -2191,11 +2203,12 @@ mod tests {
             let lowered = compile(&clock(keep)).unwrap();
             assert_eq!(printed(Some("f"), &lowered.doc, &lowered.names), clock(keep));
         }
-        // Whole days, written as such; a limit the text doesn't say isn't printed.
+        // Whole days, written as such; another limit the settings have is a limit line.
         let mut doc = compile(&clock("keep runs for 48h")).unwrap().doc;
         let requirements = doc.server.as_mut().unwrap().requirements.as_mut().unwrap();
         requirements.extra["limits"]["max_requests"] = 80.into();
-        assert_eq!(printed(Some("f"), &doc, &BTreeMap::new()), clock("keep runs for 2d"));
+        assert_eq!(printed(Some("f"), &doc, &BTreeMap::new()), clock("keep runs for 2d
+limit max_requests 80"));
         // `keep` stays a name.
         assert!(compile("flow f\n\naction a (input) {\n  keep = input.n\n  respond keep\n}\n").is_ok());
         let error = |src: &str| compile(src).err().map(|e| e.to_string()).unwrap_or_else(|| panic!("compiled: {src}"));
@@ -2204,6 +2217,62 @@ mod tests {
         assert!(error(&clock("keep 5 runs for 36h")).contains("in whole days"));
         assert!(error(&clock("keep 5 days")).contains("expected \"runs\""));
         assert!(error("flow f\nevery 1s\nkeep 5 runs\nkeep runs for 1d\nstate n\n\nstate.n = now\n").contains("one keep line"));
+    }
+
+    /// `limit` sets any other limit of the deploy settings by its name there: a duration for one
+    /// counted in milliseconds or seconds, else a whole number; printed back in the order the
+    /// limits are listed, whole seconds as a duration. The js holon's two, the log's two, and a
+    /// name that isn't a limit are refused, as is a second line for one.
+    #[test]
+    fn limit_sets_a_deploy_settings_limit_and_prints_back() {
+        let limits = |src: &str| compile(src).unwrap_or_else(|e| panic!("{e}")).doc.server.and_then(|s| s.requirements).and_then(|r| r.extra.get("limits").cloned());
+        let server = |lines: &str| format!("flow f
+port 8299
+{lines}
+
+route GET / (req) {{
+  respond \"hi\"
+}}
+");
+        assert_eq!(
+            limits(&server("limit run_budget_ms 1m
+limit request_timeout_ms 50s
+limit max_requests 80
+limit max_await_seconds 2h
+limit claim_wait_ms 1500")),
+            Some(serde_json::json!({ "run_budget_ms": 60000, "request_timeout_ms": 50000, "max_requests": 80, "max_await_seconds": 7200, "claim_wait_ms": 1500 }))
+        );
+        assert_eq!(limits(&server("limit run_budget_ms 60000")), Some(serde_json::json!({ "run_budget_ms": 60000 })));
+        // Printed in LIMIT_NAMES's order, durations where they are whole seconds.
+        let written = server("limit request_timeout_ms 50s
+limit claim_wait_ms 1500
+limit run_budget_ms 1m
+limit max_requests 80
+limit max_await_seconds 2h");
+        let lowered = compile(&server("limit max_requests 80
+limit run_budget_ms 60000
+limit max_await_seconds 7200
+limit claim_wait_ms 1500
+limit request_timeout_ms 50s")).unwrap();
+        assert_eq!(printed(Some("f"), &lowered.doc, &lowered.names), written);
+        let lowered = compile(&written).unwrap();
+        assert_eq!(printed(Some("f"), &lowered.doc, &lowered.names), written, "fmt keeps what it writes");
+        // `limit` stays a name: a binding, and a list's limit.
+        assert!(compile("flow f
+
+action a (input) {
+  limit = input.n
+  respond limit
+}
+").is_ok());
+        let error = |src: &str| compile(src).err().map(|e| e.to_string()).unwrap_or_else(|| panic!("compiled: {src}"));
+        assert!(error(&server("limit run_budget 60s")).contains("isn't a limit a flow can set"));
+        assert!(error(&server("limit module_fuel 5")).contains("its own line"));
+        assert!(error(&server("limit keep_runs 5")).contains("said by the keep line"));
+        assert!(error(&server("limit max_requests 1m")).contains("isn't a duration"));
+        assert!(error(&server("limit run_budget_ms 1.5")).contains("whole number"));
+        assert!(error(&server("limit max_requests 5
+limit max_requests 6")).contains("one limit line says max_requests"));
     }
 
     /// A `js` node (docs/L4s/js-node-L4.md): its body prints back verbatim, a `}` in a string or a
