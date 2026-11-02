@@ -1,7 +1,43 @@
 # Changelog
 
-## Unreleased
+## 0.1.0-rc.31
 
+A flow's header names everything that outlives a run, its secrets and state keys too, and the
+approval says where each secret goes, held at run time and checked offline. Before a deploy or a
+restore, everything a flow touches is one list of rows, the same in the editor, the terminal and
+the agent tools; the editor itself now runs in a terminal too (`holon editor`), and every page of
+the web editor has a command. Deployed flows keep running as they are; a saved `.holon` text
+without the new header lines stops compiling until `holon fmt` adds them.
+
+- **A flow's header declares its secrets and state keys.** `secret signing_key` and `state beats`
+  are header lines, as `collection notes` is, and the body uses only names the header gave
+  (`secret.signing_key`, `state.beats`); a use the header didn't declare is a mistake, marked
+  where it is used. `holon fmt` declares what a file uses and says so ("declared secret
+  signing_key, state beats"), `holon lsp` offers it as a quick fix, and the web editor's Format
+  does it. A saved flow shown by the editor, `holon flows show` or the agent tools gets its lines
+  added as fmt would; deployed flows keep running, since the server runs their documents. Every
+  sample declares its names.
+- **The approval says where each secret goes**: "read the secret "stripe_key", and send it to
+  https://api.stripe.com", worked out from the graph before the flow runs, a database it is
+  written to and what a call answers to it included; answering a route's caller with one is a
+  permission of its own. The canvas marks every place a secret reaches. At run time a request
+  carrying a secret's value to a host it isn't shown going to isn't sent (`blocked_secret`), a
+  redirect to another host that would resend a body isn't followed (`blocked_redirect`), and
+  `holon verify` checks from an export that every request carrying a secret went where its
+  approval said.
+- **The server's own secrets.** `holon secret bind <name> [--to HOST,…]` (or admin → resources →
+  secrets) keeps a secret for every deployment that reads one of that name and has none of its
+  own; `--to` says where it may go, and a deploy whose flow would send it elsewhere is refused
+  before anything is approved. Sample: `shared-key`.
+- **Everything a flow touches, before a deploy or a restore.** The deploy dialog lists each thing
+  a flow touches as a row (a host, a secret and where it goes, a folder, a database, a state key,
+  a limit), marked new, gone, changed or as now, and **!** where this server isn't ready for it
+  and why. `holon editor`, `holon deploy`, `holon restore --dry-run` and the agent tools show the
+  same rows, worked out by the server.
+- **`holon editor`, the editor in a terminal**: the flows on the server and what waits for you,
+  approvals reviewed as diffs in hunks, a flow's status, runs (over its text, with each
+  statement's value), history, state, access and graph, flows' text in tabs checked as you type,
+  the samples, and the admin pages. With no server it still edits, checks and formats files.
 - **The `holon` command does what the editor does.** Everything the editor's deployed page,
   flows page and admin page do now has a command, against the server running here or one
   elsewhere (`--server URL`, `HOLON_TOKEN`), and those that list take `--json`:
