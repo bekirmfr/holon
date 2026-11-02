@@ -24,7 +24,7 @@
 
 use std::collections::BTreeMap;
 
-use crate::{FileTrigger, Hash, Resolver, Type, Unit, UnitBody};
+use crate::{Capability, FileTrigger, Hash, Resolver, Type, Unit, UnitBody};
 
 /// The methods an endpoint may declare.
 pub const METHODS: &[&str] = &["GET", "POST", "PUT", "PATCH", "DELETE"];
@@ -34,6 +34,60 @@ pub const METHODS: &[&str] = &["GET", "POST", "PUT", "PATCH", "DELETE"];
 pub enum Segment {
     Literal(String),
     Param(String),
+}
+
+/// How a handler's runs are recorded (docs/L4s/request-path-L4.md, C5): `strict` by default, the
+/// record on disk before the run answers; `lazy`, on disk within a second; `unrecorded`, none but
+/// a failure's. A handler carries it as its frozen `log` param, absent for strict, so a handler
+/// written without one hashes as it always did. Only a handler that does nothing outside its run
+/// may be lazy or unrecorded ([`may_record_lightly`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum LogLevel {
+    #[default]
+    Strict,
+    Lazy,
+    Unrecorded,
+}
+
+impl LogLevel {
+    /// The level as written on a handler's line; strict is never written.
+    pub fn word(self) -> &'static str {
+        match self {
+            LogLevel::Strict => "strict",
+            LogLevel::Lazy => "lazy",
+            LogLevel::Unrecorded => "unrecorded",
+        }
+    }
+
+    /// A level from its word: `lazy` or `unrecorded`, or `strict` (or nothing) for the default.
+    pub fn parse(word: &str) -> Option<LogLevel> {
+        match word {
+            "" | "strict" => Some(LogLevel::Strict),
+            "lazy" => Some(LogLevel::Lazy),
+            "unrecorded" => Some(LogLevel::Unrecorded),
+            _ => None,
+        }
+    }
+}
+
+/// A handler unit's level, from its frozen `log` param: strict without one, none for a value that
+/// isn't a level.
+pub fn log_level(unit: &Unit) -> Option<LogLevel> {
+    LogLevel::parse(frozen(unit, "log").unwrap_or(""))
+}
+
+/// Whether `handler` may be lazy or unrecorded: only when it does nothing outside its run, every
+/// capability of it sourced (read from outside, `Capability::is_sourced`) and none a wait. That
+/// leaves out writes (state, collections, files, databases), outbound requests, channel sends,
+/// flow calls and waiting, whose runs' records other things rely on: `holon verify`'s state
+/// check, restore, a channel's packs, the other flow's log. Fails closed with `capabilities`: an
+/// unknown leaf or an unresolved child counts as doing everything. `Err` names the first
+/// capability that keeps it strict.
+pub fn may_record_lightly(handler: &Unit, resolver: &impl Resolver) -> Result<(), Capability> {
+    match crate::capabilities(handler, resolver).iter().find(|c| !c.is_sourced() || matches!(c, Capability::Await(_))) {
+        Some(c) => Err(c),
+        None => Ok(()),
+    }
 }
 
 /// One endpoint of a server, as declared.
@@ -48,6 +102,8 @@ pub struct Route {
     /// The waiting point this route resumes (its endpoint's `resume` param), if it is a resume
     /// route: a request carrying a run's token delivers itself to that run's `await` of this name.
     pub resume: Option<String>,
+    /// How its runs are recorded.
+    pub log: LogLevel,
 }
 
 /// One clock handler of a server, as declared: a run every `seconds`.
@@ -58,6 +114,8 @@ pub struct Clock {
     pub label: String,
     /// The handler unit's hash (the server's child), which a tick evaluates with no inputs.
     pub handler: Hash,
+    /// How its runs are recorded.
+    pub log: LogLevel,
 }
 
 /// One file handler of a server, as declared: a run for each file its trigger starts.
@@ -69,6 +127,8 @@ pub struct FileHandler {
     /// The handler unit's hash (the server's child), which a file evaluates with no inputs, the
     /// file's handle sourced.
     pub handler: Hash,
+    /// How its runs are recorded.
+    pub log: LogLevel,
 }
 
 /// One action handler of a server, as declared: run by name.
@@ -79,6 +139,8 @@ pub struct Action {
     pub label: String,
     /// The handler unit's hash (the server's child), which a run evaluates with what was sent.
     pub handler: Hash,
+    /// How its runs are recorded.
+    pub log: LogLevel,
 }
 
 /// A server unit, read and checked. `port` is there when it has a route.
@@ -175,6 +237,10 @@ pub enum DeclError {
     DuplicateAction { name: String },
     /// No route, clock, file handler or action: nothing would start a run.
     NoHandlers,
+    /// A handler's `log` param isn't a level.
+    BadLogLevel { child: u32, value: String },
+    /// A handler is lazy or unrecorded, yet does something outside its run ([`may_record_lightly`]).
+    LogLevelNotAllowed { child: u32, level: LogLevel, capability: Capability },
 }
 
 /// The declaration a unit carries (`"server"`, `"endpoint"`), if any.
@@ -206,12 +272,16 @@ pub fn read_server(unit: &Unit, resolver: &impl Resolver) -> Result<Server, Decl
     for (i, hash) in children.iter().enumerate() {
         let child = i as u32;
         let endpoint = resolver.resolve(hash).ok_or(DeclError::UnresolvedEndpoint { child })?;
+        let log = log_level(endpoint).ok_or_else(|| DeclError::BadLogLevel { child, value: frozen(endpoint, "log").unwrap_or("").to_string() })?;
+        if log != LogLevel::Strict {
+            may_record_lightly(endpoint, resolver).map_err(|capability| DeclError::LogLevelNotAllowed { child, level: log, capability })?;
+        }
         if declaration_of(endpoint) == Some("every") {
             let seconds = read_clock(endpoint).ok_or(DeclError::BadEndpointShape { child })?;
             if clocks.iter().any(|c| c.seconds == seconds) {
                 return Err(DeclError::DuplicateClock { seconds });
             }
-            clocks.push(Clock { seconds, label: clock_label(seconds), handler: *hash });
+            clocks.push(Clock { seconds, label: clock_label(seconds), handler: *hash, log });
             continue;
         }
         if declaration_of(endpoint) == Some("on_file") {
@@ -219,7 +289,7 @@ pub fn read_server(unit: &Unit, resolver: &impl Resolver) -> Result<Server, Decl
             if files.iter().any(|f| f.trigger == trigger) {
                 return Err(DeclError::DuplicateFileHandler { label: trigger.label() });
             }
-            files.push(FileHandler { label: trigger.label(), trigger, handler: *hash });
+            files.push(FileHandler { label: trigger.label(), trigger, handler: *hash, log });
             continue;
         }
         if declaration_of(endpoint) == Some("action") {
@@ -227,7 +297,7 @@ pub fn read_server(unit: &Unit, resolver: &impl Resolver) -> Result<Server, Decl
             if actions.iter().any(|a| a.name == name) {
                 return Err(DeclError::DuplicateAction { name });
             }
-            actions.push(Action { label: format!("action {name}"), name, handler: *hash });
+            actions.push(Action { label: format!("action {name}"), name, handler: *hash, log });
             continue;
         }
         let (method, path) = read_endpoint(endpoint).map_err(|e| match e {
@@ -254,7 +324,7 @@ pub fn read_server(unit: &Unit, resolver: &impl Resolver) -> Result<Server, Decl
             None | Some("") => None,
             Some(_) => Some(crate::kind::ident(&endpoint.params, "resume").ok_or(DeclError::BadEndpointShape { child })?),
         };
-        routes.push(Route { method, path, segments, endpoint: *hash, resume });
+        routes.push(Route { method, path, segments, endpoint: *hash, resume, log });
     }
     if routes.is_empty() && clocks.is_empty() && files.is_empty() && actions.is_empty() {
         return Err(DeclError::NoHandlers);
@@ -401,6 +471,51 @@ mod tests {
             inputs: vec![],
             outputs: vec![],
         }
+    }
+
+    /// An endpoint over `handler`, with `log` as its log level param.
+    fn endpoint_logged(r: &mut MapResolver, path: &str, handler: Unit, log: &str) -> Hash {
+        let h = r.insert(handler).unwrap();
+        r.insert(Unit {
+            body: UnitBody::Composite {
+                children: vec![h],
+                edges: vec![
+                    Edge { from_child: BOUNDARY, from_port: 0, to_child: 0, to_port: 0 },
+                    Edge { from_child: 0, from_port: 0, to_child: BOUNDARY, to_port: 0 },
+                ],
+            },
+            params: vec![Param::frozen("declare", "endpoint"), Param::frozen("method", "GET"), Param::frozen("path", path), Param::frozen("log", log)],
+            inputs: vec![Port { name: "request".into(), ty: Type::Record }],
+            outputs: vec![Port { name: "response".into(), ty: Type::Any }],
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn a_handlers_log_level_is_read_and_held_to_what_it_does() {
+        let mut r = MapResolver::new();
+        let plain = endpoint(&mut r, "GET", "/a");
+        assert_eq!(read_server(&server("8080", vec![plain]), &r).unwrap().routes[0].log, LogLevel::Strict, "strict without a param");
+        for (word, level) in [("lazy", LogLevel::Lazy), ("unrecorded", LogLevel::Unrecorded), ("strict", LogLevel::Strict)] {
+            let e = endpoint_logged(&mut r, "/a", handler(), word);
+            assert_eq!(read_server(&server("8080", vec![e]), &r).unwrap().routes[0].log, level, "{word}");
+        }
+        let bad = endpoint_logged(&mut r, "/a", handler(), "verbose");
+        assert_eq!(read_server(&server("8080", vec![bad]), &r), Err(DeclError::BadLogLevel { child: 0, value: "verbose".into() }));
+
+        // A handler that writes state can't be lazy: its runs' records are what restore and
+        // `holon verify` follow its state by.
+        let writes = Unit { body: UnitBody::Primitive { name: "store_write".into() }, params: vec![Param::frozen("key", "k")], ..handler() };
+        let e = endpoint_logged(&mut r, "/a", writes, "lazy");
+        assert_eq!(
+            read_server(&server("8080", vec![e]), &r),
+            Err(DeclError::LogLevelNotAllowed { child: 0, level: LogLevel::Lazy, capability: Capability::StateWrite("k".into()) })
+        );
+
+        // Fail closed: a child that doesn't resolve might do anything.
+        let unknown = Unit { body: UnitBody::Composite { children: vec![[9u8; 32]], edges: vec![] }, params: vec![], inputs: vec![], outputs: vec![] };
+        assert!(may_record_lightly(&unknown, &r).is_err());
+        assert_eq!(may_record_lightly(&handler(), &r), Ok(()));
     }
 
     #[test]

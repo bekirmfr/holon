@@ -38,7 +38,7 @@ code. Where the design leaves a decision open (§8), the step that needs it says
 | 6 | C3 (a), persist on change (**done**) | `holon` | none | decided: counts persist with the next write |
 | 6b | B.2, the witness's queue file kept open (**done**) | `holon` | none | |
 | 7 | C3 (b)–(e), the state head (**done**) | `holon` | adds `deployments.state/`, drops `state_refs` (no migration) | |
-| 8 | C5 in the language and core | `holon-core`, `holon-author`, `holon-wasm`, `editor` (types) | a new param in handler units, only for flows that use a word | |
+| 8 | C5 in the language and core (**done**) | `holon-core`, `holon-author`, `holon-wasm`, `editor` (types) | a new param in handler units, only for flows that use a word | |
 | 9 | C2 (e) and C5 in the server | `holon`, `holon-core`, `holon-author`, `holon-wasm`, `editor`, docs, a sample | none new | Q9, Q10, Q11, Q12 |
 | 10 | C3 (f), the log line as the state commit | `holon` | the head file goes | only if step 9's numbers ask |
 | 11 | C4, the store lock | `holon`, `holon-host` | none | only after re-measuring |
@@ -646,6 +646,31 @@ is described in step 9.
 
 **Commit:** `language: lazy and unrecorded on a handler's line, checked against what it does (C5,
 core and language)`.
+
+**Done.** Built as above, with these differences:
+- **The template defaults.** `f("log", "")` on the four trigger templates was needed, not only
+  tidy: lowering refuses a param its template doesn't have. All 52 samples hash as before.
+- **The words aren't reserved.** `print.rs:31` is the list of reserved words, not contextual ones;
+  the words are contextual in the parser (`log_word` takes one only right before `{`), so nothing
+  is added there, and `action a (unrecorded) { … }` and `state lazy` still work.
+- **One helper for the units.** `routes::with_log(unit, log)` adds the frozen param to a built
+  handler unit, in place of a `log` argument on each of the four constructors.
+- **`strict` isn't a word.** It's what an unsaid handler is; the parser takes `lazy` and
+  `unrecorded` only.
+- **Clocks.** A lazy or unrecorded clock is rarely valid, since a clock that only reads does
+  nothing; the check says so like any other.
+- **Placing the error.** `commands::problems` returns each problem with its span, when a placed one
+  has a node, and `check` prints it as `mistake` does; `editing::mistakes` the same for the editor.
+- **Tests.** Core: `a_handlers_log_level_is_read_and_held_to_what_it_does`. Author:
+  `a_handlers_log_word_is_kept_and_held_to_what_it_does` (`commands.rs`, every kind of handler,
+  fmt, the errors at line and column, the words as names) and
+  `a_handlers_log_level_is_in_its_unit_only_when_it_isnt_strict` (`routes.rs`). Editor:
+  `holonText.test.ts`, the drafts' `log` and `placed`. The manual's new block is compiled by
+  `tests/manual.rs`.
+- **Checked by hand** with `holon check` and `holon fmt` on the status-board flow of step 9 (one
+  `unrecorded` and one `lazy` route, an `unrecorded` action): it passes and fmt leaves it as it is;
+  `POST /notes` made `unrecorded` fails at its write, 17:3, and a `lazy` clock writing state at its
+  write.
 
 ## Step 9. C2 (e) and C5 in the server
 

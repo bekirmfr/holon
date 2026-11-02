@@ -858,9 +858,10 @@ header    = "flow" ident | "port" number | "every" duration
 fileline  = "file" ident ["deleted"] ["matching" string]
 item      = holon | handler | statement | wiring      # wiring: the netlist form, §10
 handler   = route                                     # a route, §5.2 and §5.11
-          | "every" duration block                    # a clock
-          | "on" fileline "(" ident ")" block         # a file handler
-          | "action" ident "(" ident ")" block        # an action, run by hand
+          | "every" duration [log] block              # a clock
+          | "on" fileline "(" ident ")" [log] block   # a file handler
+          | "action" ident "(" ident ")" [log] block  # an action, run by hand
+log       = "lazy" | "unrecorded"                     # how its runs are recorded; strict unsaid
 ```
 
 Headers are the flow's deploy settings, exactly as today (`Settings`), and its names for the
@@ -920,6 +921,39 @@ block that does nothing.
   one block per name. The network never reaches one: a person runs it from the editor, the deployed
   page or a script (`POST /trigger/<slug>/<name>` on the holon server, as an editor or an admin),
   and an agent only one a person lets agents run, in the flow's deploy settings.
+
+**How a handler's runs are recorded.** Each run of a handler is a line of the deployment's log
+(its record, what `holon runs`, revert and the witness read), and by default the line is on disk
+before the run's answer: the handler is *strict*. A word before its block says otherwise:
+
+- `lazy`: the run is recorded, and on disk within a second of its answer. A crash in that second
+  loses the line, and only the line: the run did nothing outside itself.
+- `unrecorded`: the run is not a line of the log. It is counted, and a failed one is still kept,
+  but it isn't in the runs table, so it can't be replayed, reverted or explained. For what is
+  called often and says nothing worth keeping: a health check, a page of what is already recorded.
+
+```
+route GET /health (req) unrecorded {
+  respond "ok"
+}
+
+route GET /notes (req) lazy {
+  respond notes.list(limit: 50)
+}
+```
+
+Only a handler that does nothing outside its run may have either word: one that reads (state, a
+collection, a folder, a database, a secret, the clock, `random`) and answers. A handler that
+writes, calls out (`http.*`, another flow's action), sends on or streams a channel, parks a
+durable run or answers with a secret is strict, whatever it says,
+since its record is what the change is undone and explained by; the word on one is an error at
+the node that does it, `POST /notes can't be unrecorded: it may put and delete items of its
+collection "notes"`. So a clock is rarely either (a clock that only reads does nothing). Core
+holds the same rule (`may_record_lightly`), so a unit built some other way can't get around it.
+`strict` isn't a word: it is what an unsaid handler is. `lazy` and `unrecorded` are words only
+right before a block; everywhere else they are names (`action a (unrecorded) { … }`). The word
+is part of the handler's unit (its trigger's `log` param, docs/L4s/request-path-L4.md C5): a
+strict handler's unit is the one it always was, and a lazy one's is another.
 
 `respond` is a route's and an action's: a clock's or a file's run answers nobody. In a block,
 `ingress` is refused: an `on file` block and an action name what they receive (`f.name`, not
@@ -1331,13 +1365,16 @@ idiom the samples use, and the one the printer prefers, guards the value instead
 ### 5.11 Routes, and what a block holds
 
 ```
+route     = "route" method path "(" ident ")" ["resumes" ident] [log] block
 route POST /orders (req) { … }
 route GET /paid/:token (req) resumes paid { … }
+route GET /health (req) unrecorded { … }
 tied      = statement "after" expr                  # its writes and calls tied to expr
 ```
 
-Lowers to a `request{method, path, resume}` template node named by the parenthesised identifier,
-and the block's nodes. Every `respond` and every use of `req` wires into the same connected group,
+Lowers to a `request{method, path, resume, log}` template node named by the parenthesised identifier,
+and the block's nodes; `log` is the word before the block (§5.1), empty for strict, and is the
+same param on a clock's `every`, a file handler's `on_file` and an action's `action`. Every `respond` and every use of `req` wires into the same connected group,
 which is what makes the block one route (`find_routes` works by connectivity, unchanged).
 
 ```

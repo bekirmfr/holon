@@ -10,7 +10,7 @@ use holon_core::{
 use serde::Serialize;
 
 use crate::canvas::{Node, PlacedBody, Wire};
-use crate::routes::{
+use crate::routes::{with_log, 
     action_spec, action_unit, clock_spec, clock_unit, endpoint_unit, file_spec, file_unit, find_actions, find_clocks, find_files, find_routes, is_optional_input, route_spec,
     server_unit,
 };
@@ -86,6 +86,8 @@ pub struct EndpointDraft {
     pub method: String,
     pub path: String,
     pub hash: String,
+    /// How its runs are recorded: `lazy`, `unrecorded`, or "" (strict).
+    pub log: String,
 }
 
 /// One clock handler of the derived server: its period, its label (`every 2s`), and the clock
@@ -95,6 +97,8 @@ pub struct ClockDraft {
     pub seconds: u64,
     pub label: String,
     pub hash: String,
+    /// How its runs are recorded: `lazy`, `unrecorded`, or "" (strict).
+    pub log: String,
 }
 
 /// One file handler: its line, the folder it watches, and its unit's hash.
@@ -103,6 +107,8 @@ pub struct FileDraft {
     pub folder: String,
     pub label: String,
     pub hash: String,
+    /// How its runs are recorded: `lazy`, `unrecorded`, or "" (strict).
+    pub log: String,
 }
 
 /// One action: its name, its label (`action reset`), and its unit's hash.
@@ -111,6 +117,8 @@ pub struct ActionDraft {
     pub name: String,
     pub label: String,
     pub hash: String,
+    /// How its runs are recorded: `lazy`, `unrecorded`, or "" (strict).
+    pub log: String,
 }
 
 /// The server a flow declares: its endpoints, clocks, file handlers and actions, why any handler can't be one, the server
@@ -123,9 +131,41 @@ pub struct DerivedServer {
     pub files: Vec<FileDraft>,
     pub actions: Vec<ActionDraft>,
     pub errors: Vec<String>,
+    /// The errors that belong to one node (a handler declared `lazy` or `unrecorded` that does
+    /// something outside its run), by node id, for the editor and `holon check` to point at. Each
+    /// is in `errors` too.
+    pub placed: Vec<Placed>,
     #[serde(rename = "serverHash")]
     pub server_hash: Option<String>,
     pub trace: BTreeMap<String, Vec<String>>,
+}
+
+/// An error and the node it is about.
+#[derive(Serialize, Clone, Debug, PartialEq)]
+pub struct Placed {
+    pub node: String,
+    pub message: String,
+}
+
+/// Why handler `unit`, declared `log` (`lazy` or `unrecorded`), can't be (core's
+/// `may_record_lightly`): what it does outside its run, worded as the approval words it, and the
+/// first node of its `group` that does it. None for one that may be, or is strict.
+fn light_problem(unit: &Unit, log: &str, group: &[&Node], label: &str, store: &mut MapResolver) -> Option<(Option<String>, String)> {
+    if matches!(holon_core::LogLevel::parse(log), None | Some(holon_core::LogLevel::Strict)) {
+        return None;
+    }
+    let cap = holon_core::may_record_lightly(unit, store).err()?;
+    let keeps_strict = |c: &holon_core::Capability| !c.is_sourced() || matches!(c, holon_core::Capability::Await(_));
+    let mut node = None;
+    for n in group {
+        let Some(placed) = unit_for(n, store).ok().and_then(|h| holon_core::Resolver::resolve(store, &h).cloned()) else { continue };
+        if holon_core::capabilities(&placed, store).iter().any(|c| keeps_strict(&c)) {
+            node = Some(n.id.clone());
+            break;
+        }
+    }
+    let does = crate::describe::describe_item(&holon_core::consent_name(&cap));
+    Some((node, format!("{label} can't be {log}: it may {does}; only a handler that does nothing outside its run may be lazy or unrecorded")))
 }
 
 /// A port as a flow's settings hold it: an integer 1–65535.
@@ -141,6 +181,7 @@ pub fn derive_server(nodes: &[Node], wires: &[Wire], store: &mut MapResolver, po
     let by_id: HashMap<&str, &Node> = nodes.iter().map(|n| (n.id.as_str(), n)).collect();
     let mut endpoints = Vec::new();
     let mut trace = BTreeMap::new();
+    let mut placed = Vec::new();
     for r in routes {
         let label = format!("{} {}", r.method, r.path);
         let group: Vec<&Node> = r.node_ids.iter().map(|id| by_id[id.as_str()]).collect();
@@ -156,11 +197,15 @@ pub fn derive_server(nodes: &[Node], wires: &[Wire], store: &mut MapResolver, po
             trace.insert(label.clone(), trace_of(&handler, &group));
             let (inputs, outputs) = (handler.inputs.clone(), handler.outputs.clone());
             let handler = put(store, handler)?;
-            let unit = endpoint_unit(handler, &inputs, &outputs, &r.method, &r.path, &r.resume)?;
+            let unit = with_log(endpoint_unit(handler, &inputs, &outputs, &r.method, &r.path, &r.resume)?, &r.log)?;
+            if let Some((node, message)) = light_problem(&unit, &r.log, &group, &label, store) {
+                placed.extend(node.map(|node| Placed { node, message: message.clone() }));
+                return Ok(Err(message));
+            }
             Ok(Ok(put(store, unit)?))
         })();
         match endpoint {
-            Ok(Ok(hash)) => endpoints.push(EndpointDraft { method: r.method, path: r.path, hash: to_hex(&hash) }),
+            Ok(Ok(hash)) => endpoints.push(EndpointDraft { method: r.method, path: r.path, hash: to_hex(&hash), log: r.log }),
             Ok(Err(e)) => errors.push(e),
             Err(e) => errors.push(format!("{label}: {e}")),
         }
@@ -181,10 +226,15 @@ pub fn derive_server(nodes: &[Node], wires: &[Wire], store: &mut MapResolver, po
             trace.insert(c.label.clone(), trace_of(&handler, &group));
             let outputs = handler.outputs.clone();
             let handler = put(store, handler)?;
-            Ok(Ok(put(store, clock_unit(handler, &outputs, c.seconds))?))
+            let unit = with_log(clock_unit(handler, &outputs, c.seconds), &c.log)?;
+            if let Some((node, message)) = light_problem(&unit, &c.log, &group, &c.label, store) {
+                placed.extend(node.map(|node| Placed { node, message: message.clone() }));
+                return Ok(Err(message));
+            }
+            Ok(Ok(put(store, unit)?))
         })();
         match clock {
-            Ok(Ok(hash)) => clocks.push(ClockDraft { seconds: c.seconds, label: c.label, hash: to_hex(&hash) }),
+            Ok(Ok(hash)) => clocks.push(ClockDraft { seconds: c.seconds, label: c.label, hash: to_hex(&hash), log: c.log }),
             Ok(Err(e)) => errors.push(e),
             Err(e) => errors.push(format!("{}: {e}", c.label)),
         }
@@ -205,10 +255,15 @@ pub fn derive_server(nodes: &[Node], wires: &[Wire], store: &mut MapResolver, po
             trace.insert(f.label.clone(), trace_of(&handler, &group));
             let outputs = handler.outputs.clone();
             let handler = put(store, handler)?;
-            Ok(Ok(put(store, file_unit(handler, &outputs, &f.trigger()))?))
+            let unit = with_log(file_unit(handler, &outputs, &f.trigger()), &f.log)?;
+            if let Some((node, message)) = light_problem(&unit, &f.log, &group, &f.label, store) {
+                placed.extend(node.map(|node| Placed { node, message: message.clone() }));
+                return Ok(Err(message));
+            }
+            Ok(Ok(put(store, unit)?))
         })();
         match file {
-            Ok(Ok(hash)) => files.push(FileDraft { folder: f.folder, label: f.label, hash: to_hex(&hash) }),
+            Ok(Ok(hash)) => files.push(FileDraft { folder: f.folder, label: f.label, hash: to_hex(&hash), log: f.log }),
             Ok(Err(e)) => errors.push(e),
             Err(e) => errors.push(format!("{}: {e}", f.label)),
         }
@@ -229,10 +284,15 @@ pub fn derive_server(nodes: &[Node], wires: &[Wire], store: &mut MapResolver, po
             trace.insert(a.label.clone(), trace_of(&handler, &group));
             let (inputs, outputs) = (handler.inputs.clone(), handler.outputs.clone());
             let handler = put(store, handler)?;
-            Ok(Ok(put(store, action_unit(handler, &inputs, &outputs, &a.name)?)?))
+            let unit = with_log(action_unit(handler, &inputs, &outputs, &a.name)?, &a.log)?;
+            if let Some((node, message)) = light_problem(&unit, &a.log, &group, &a.label, store) {
+                placed.extend(node.map(|node| Placed { node, message: message.clone() }));
+                return Ok(Err(message));
+            }
+            Ok(Ok(put(store, unit)?))
         })();
         match action {
-            Ok(Ok(hash)) => actions.push(ActionDraft { name: a.name, label: a.label, hash: to_hex(&hash) }),
+            Ok(Ok(hash)) => actions.push(ActionDraft { name: a.name, label: a.label, hash: to_hex(&hash), log: a.log }),
             Ok(Err(e)) => errors.push(e),
             Err(e) => errors.push(format!("{}: {e}", a.label)),
         }
@@ -253,7 +313,7 @@ pub fn derive_server(nodes: &[Node], wires: &[Wire], store: &mut MapResolver, po
         }
         _ => None,
     };
-    DerivedServer { endpoints, clocks, files, actions, errors, server_hash, trace }
+    DerivedServer { endpoints, clocks, files, actions, errors, placed, server_hash, trace }
 }
 
 /// What each canvas node does with a secret, for the canvas to mark it: by node id, a line for each

@@ -171,12 +171,12 @@ pub fn interface(name: &str, params: &[WParam]) -> Option<Interface> {
 pub fn defaults(name: &str) -> Option<Vec<WParam>> {
     let f = WParam::frozen;
     Some(match name {
-        "request" => vec![f("method", "GET"), f("path", "/"), f("resume", "")],
+        "request" => vec![f("method", "GET"), f("path", "/"), f("resume", ""), f("log", "")],
         "respond" => vec![f("status", "200"), f("missing", "404"), f("headers", "false"), f("status_input", "false")],
         "stripe_verify" => vec![f("tolerance", "300")],
-        "every" => vec![f("seconds", "10")],
-        "on_file" => vec![f("folder", "inbox"), f("on", "new"), f("matching", "")],
-        "action" => vec![f("name", "run")],
+        "every" => vec![f("seconds", "10"), f("log", "")],
+        "on_file" => vec![f("folder", "inbox"), f("on", "new"), f("matching", ""), f("log", "")],
+        "action" => vec![f("name", "run"), f("log", "")],
         _ => return None,
     })
 }
