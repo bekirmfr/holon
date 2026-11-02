@@ -49,12 +49,12 @@
   answers `{move, comment, verdict, mood, say}` under a schema; the flow checks the answer itself,
   and a move not in the list, an answer that isn't the JSON asked for, or a call Gemini refuses
   plays the rules' own choice, which the page says. It judges your moves (brilliant to insane),
-  shows its mood, and speaks up when it struggles or wonders; whatever it says to you, in the chat
-  or on its own, is held back if it names a move or a square. Chat with it never reaches its
-  moves. The page says how a game is won, lost or drawn, and how it ended, and you can resign;
+  shows its mood, and speaks up when it struggles or wonders. Its chat replies stream: the call is
+  piped to a channel, and the page writes the words as Gemini sends them. Chat with it never
+  reaches its moves. The page says how a game is won, lost or drawn, and how it ended, and you can resign;
   while the Sphinx thinks, it says your move is sent and counts the seconds. The board shows its
   files and ranks, each move in the list opens the position after it, and the chat is in bubbles,
-  the Sphinx's new lines typed in.
+  the Sphinx's asides typed in.
   Every proposal and refusal is in the run log.
 
 ## 0.1.0-rc.30

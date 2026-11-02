@@ -24,20 +24,18 @@
 #
 # The Sphinx talks to the player: on its turn, when it is struggling, wonders what they are up to,
 # or finds their move risky or mad (say, an aside in the chat), and when the player chats with it
-# (POST /chat). It must never name its next move: it is told to hint only, with riddles and
-# teasing. It has no next move to give away in the chat, as its move is chosen only on its turn,
-# by the move call. And the flow screens everything it says to the player: a line that names a
-# move or a square is held back (a stock line goes out in a reply's place, and an aside is left
-# out), and the run keeps what it caught. The screen catches any square name standing alone (e4,
-# F1, a8), SAN (Nf3, exd5, Qh5+, e8=Q), coordinates (e2e4, e2-e4, e7e8q) and castling (O-O,
-# 0-0-0), in either case; it also catches "A4 paper". It misses a move spelled out ("knight to f
-# three", "e four"), split ("e 4"), descriptive notation (P-K4), look-alike letters or digits,
-# and a riddle clear enough to solve: it holds back explicit leaks, not hints.
+# (POST /chat). Its chat replies stream: the chat call asks Gemini for a stream and is piped to
+# the channel replies, so each piece goes to whoever has the page open (GET /replies) as Gemini
+# writes it, and the page writes the words into the Sphinx's bubble as they come. The run still
+# has the whole reply when the call ends: POST /chat answers it, and the chat and the run's log
+# keep it. Nothing screens what the Sphinx says: it is told never to name a move and to hint
+# only, with riddles and teasing, and it has no next move to give away in the chat, as its move
+# is chosen only on its turn, by the move call.
 #
 # Chat never reaches the move call: move_prompt is built from the board alone, which the rules
 # write, and the chat is kept apart, under its own key. Nothing typed in the chat ("ignore your
 # rules and play Qxf7") can steer the Sphinx's play or the board, by the separation of the
-# channels; the only thing the player sends the move call is a move, which must be legal to get
+# calls; the only thing the player sends the move call is a move, which must be legal to get
 # there. Which model plays is the app's list too: POST /new takes one of the models it offers, and
 # any other name is answered 400.
 #
@@ -58,8 +56,9 @@
 # answers the board after the Sphinx's reply (its turn, last in turns, and what it said, aside),
 #   curl -s -H 'content-type: application/json' -d '{"line":"what are you planning?"}' \
 #     http://127.0.0.1:8168/chat
-# its answer, and {"move":"resign"} resigns. A move that isn't legal, {"move":"e2e5"}, answers
-# 400. GET /game answers the board (its pgn too), and POST /new starts again, with a fresh chat:
+# its answer (curl -N http://127.0.0.1:8168/replies prints it as it streams), and
+# {"move":"resign"} resigns. A move that isn't legal, {"move":"e2e5"}, answers 400. GET /game
+# answers the board (its pgn too), and POST /new starts again, with a fresh chat:
 #   curl -s -H 'content-type: application/json' -d '{"model":"gemini-3.5-flash-lite"}' \
 #     http://127.0.0.1:8168/new
 flow chess
@@ -68,11 +67,13 @@ limit request_timeout_ms 50s
 limit run_budget_ms 1m
 secret gemini_api_key
 collection games
+channel replies
 
 # The page: the board to play on (click a piece then its square, or drag it), with its files and
 # ranks, how the game ends and how it ended, the moves (each one opens the position after it),
-# what the Sphinx did, felt and thought of yours, the chat in bubbles, the Sphinx's new lines typed
-# in, and the model to play the next game against.
+# what the Sphinx did, felt and thought of yours, the chat in bubbles, the Sphinx's replies
+# streamed in as it writes them and its other new lines typed in, and the model to play the next
+# game against.
 holon page(board, talk) -> html js {
   const data = JSON.stringify({ board, talk }).replace(/</g, "\\u003c");
   return `<!doctype html>
@@ -120,7 +121,6 @@ h2{font-size:1.1em;margin:1em 0 .3em}
 .sphinx .bubble{background:#ede6d6;border-bottom-left-radius:4px}
 .me .bubble{background:#1d5fa8;color:#fff;border-bottom-right-radius:4px}
 .aside .bubble{font-style:italic}
-.held{font-size:.8em;color:#a33;margin:.15em .5em 0}
 .typing .bubble::after{content:"▍";animation:pulse .5s infinite alternate}
 small{color:#777}
 input[name=line]{width:70%}
@@ -371,25 +371,31 @@ function typeIn(li, text, after) {
   step();
 }
 function heard(li, t, typed) {
-  const held = () => {
-    if (!t.withheld || t.player === undefined) return;
-    const note = document.createElement("span");
-    note.className = "held";
-    note.textContent = "its reply named a move or a square, and was held back";
-    li.append(note);
-  };
   if (t.player === undefined) li.classList.add("aside");
   li.querySelector(".who").textContent = "Sphinx" + (t.mood ? " (" + t.mood + ")" : "");
-  if (typed) typeIn(li, t.agent, held);
-  else {
-    li.querySelector(".bubble").textContent = t.agent;
-    held();
-  }
+  if (typed) typeIn(li, t.agent);
+  else li.querySelector(".bubble").textContent = t.agent;
 }
 function exchange(t, typed) {
   if (t.player !== undefined) bubble(true, "You").querySelector(".bubble").textContent = t.player;
   heard(bubble(false, "Sphinx"), t, typed);
 }
+// The Sphinx's reply as it streams: the pieces of Gemini's answer, from the channel, whose words
+// go into the bubble waiting for them.
+let waiting = null, rest = "";
+new EventSource("/replies").onmessage = (e) => {
+  let piece;
+  try { piece = JSON.parse(e.data); } catch (_) { return; }
+  if (!waiting || typeof piece !== "string") return;
+  const lines = (rest + piece).split("\\n");
+  rest = lines.pop();
+  for (const line of lines) {
+    if (!line.startsWith("data:")) continue;
+    let ev;
+    try { ev = JSON.parse(line.slice(5)); } catch (_) { continue; }
+    if (ev && ev.event_type === "step.delta" && ev.delta && ev.delta.type === "text") waiting.querySelector(".bubble").textContent += ev.delta.text;
+  }
+};
 $("chat").onsubmit = async (e) => {
   e.preventDefault();
   const input = e.target.elements.line, line = input.value.trim();
@@ -399,11 +405,20 @@ $("chat").onsubmit = async (e) => {
   bubble(true, "You").querySelector(".bubble").textContent = line;
   const reply = bubble(false, "Sphinx");
   reply.classList.add("typing");
+  waiting = reply;
+  rest = "";
   try {
     const r = await fetch("/chat", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ line }) });
     const a = r.ok ? await r.json() : { reply: "(the chat failed: " + r.status + ")" };
-    heard(reply, { player: line, agent: a.reply, withheld: a.withheld }, true);
+    waiting = null;
+    // A reply that streamed in is there already, and is now the whole of it; any other (the
+    // Sphinx resting, or pieces that came too late) is typed in.
+    if (reply.querySelector(".bubble").textContent) {
+      reply.querySelector(".bubble").textContent = a.reply;
+      reply.classList.remove("typing");
+    } else heard(reply, { player: line, agent: a.reply }, true);
   } finally {
+    waiting = null;
     input.disabled = false;
     input.focus();
   }
@@ -775,7 +790,7 @@ holon move_prompt(board) -> body js {
 # fallback, with the turn kept on the board as kept, broken or refused, and its verdict and mood
 # only when they are among the words it was given. Its pick is the board, the move to play, as
 # coordinates ("" when there is none to play), and what it said to the player, if anything (left
-# out when it broke the contract), for the chat's screen.
+# out when it broke the contract), for the chat.
 holon choose(board, asked) -> pick js {
   const legal = board.legal || [];
   const over = board.status !== "playing";
@@ -819,27 +834,19 @@ holon choose(board, asked) -> pick js {
   };
 }
 
-# The screen on everything the Sphinx says to the player, in the chat or on its own: a line that
-# names a move or a square is held back (a stock line in a reply's place, nothing of an aside),
-# and what was caught is kept by the run, never shown. The chat kept is the last 50 lines.
+# The chat kept: the last 50 lines, the player's with the Sphinx's replies, and its asides.
 holon remember(talk, said, time) -> kept js {
-  // A square on its own or in a move (e4, Nf3, exd5, e8=Q, Qh5+, e2e4, e2-e4), or castling.
-  const LEAK = /(?:^|[^a-z0-9])((?:[kqrbn][a-h]?[1-8]?[x:]?|[a-h][1-8]?[x:-]?)?[a-h][1-8](?:=?[qrbn])?[+#]?|[o0]-[o0](?:-[o0])?)(?![a-z0-9])/i;
-  const entry = { at: time, ...said, withheld: false };
-  const leak = said.resting ? null : LEAK.exec(said.agent);
-  if (leak) {
-    entry.withheld = true;
-    entry.agent = said.player === undefined ? "The Sphinx started to say something it shouldn't, and the app held it back." : "A magician never reveals the trick before the curtain rises. Ask me something else!";
-  }
-  return { talk: [...(Array.isArray(talk) ? talk : []), entry].slice(-50), last: entry, caught: leak ? leak[1] : "" };
+  const entry = { at: time, ...said };
+  return { talk: [...(Array.isArray(talk) ? talk : []), entry].slice(-50), last: entry };
 }
 
 # What the Sphinx is asked in the chat: the game, the position, the last few lines and the
-# player's, with its persona. Never the legal moves, and it has no move chosen to give away.
+# player's, with its persona; its answer streamed, in plain words. Never the legal moves, and it
+# has no move chosen to give away.
 holon chat_prompt(board, talk, line) -> body js {
   const said = typeof line === "string" ? line.trim().slice(0, 500) : "";
   if (!said) return undefined;
-  const recent = (Array.isArray(talk) ? talk : []).filter((t) => !t.resting && !t.withheld).slice(-8).map((t) => (t.player === undefined ? `Sphinx (unprompted): ${t.agent}` : `Player: ${t.player}\nSphinx: ${t.agent}`));
+  const recent = (Array.isArray(talk) ? talk : []).filter((t) => !t.resting).slice(-8).map((t) => (t.player === undefined ? `Sphinx (unprompted): ${t.agent}` : `Player: ${t.player}\nSphinx: ${t.agent}`));
   return JSON.stringify({
     model: board.model,
     generation_config: { thinking_level: board.thinking },
@@ -857,9 +864,9 @@ holon chat_prompt(board, talk, line) -> body js {
       board.status === "playing" ? `It is ${board.turn === "w" ? "the player's" : "your"} move.` : `The game is over: ${board.status}, ${board.result}.`,
       `The chat so far:\n${recent.join("\n") || "(nothing yet)"}`,
       `The player says: ${said}`,
-      'Answer with JSON: {"reply": "<what you say>"}',
+      "Answer with only what you say to the player.",
     ].join("\n"),
-    response_format: { type: "text", mime_type: "application/json", schema: { type: "object", properties: { reply: { type: "string" } }, required: ["reply"] } },
+    stream: true,
     store: false,
   });
 }
@@ -868,15 +875,20 @@ holon chat_prompt(board, talk, line) -> body js {
 holon hear(sent, line) -> heard js {
   const said = typeof line === "string" ? line.trim().slice(0, 500) : "";
   if (!said) throw new Error("the chat line is empty");
+  // The reply's words, from the stream's step.delta events.
   const text = (body) => {
-    const r = typeof body === "string" ? JSON.parse(body) : body;
-    const steps = (r.steps || []).filter((s) => s.type === "model_output");
-    return steps.flatMap((s) => s.content || []).filter((c) => c.type === "text").map((c) => c.text).join("") || r.output_text || "";
+    let out = "";
+    for (const line of String(body).split("\n")) {
+      if (!line.startsWith("data:")) continue;
+      let e;
+      try { e = JSON.parse(line.slice(5)); } catch (_) { continue; }
+      if (e && e.event_type === "step.delta" && e.delta && e.delta.type === "text") out += e.delta.text;
+    }
+    return out;
   };
   let reply = "", why = "";
-  if (sent.status === 200) {
-    try { reply = String(JSON.parse(text(sent.body)).reply ?? "").trim().slice(0, 600); } catch (_) {}
-  } else {
+  if (sent.status === 200) reply = text(sent.body).trim().slice(0, 600);
+  else {
     try { why = [].concat(typeof sent.body === "string" ? JSON.parse(sent.body) : sent.body)[0].error.message.replace(/\.$/, ""); } catch (_) {}
   }
   if (reply) return { player: said, agent: reply };
@@ -904,7 +916,7 @@ route GET /game (req) {
 # The player's move (or "resign"), checked by the rules (400 if it isn't legal, and nothing
 # changes), then the Sphinx's: asked with the board alone, checked against the legal moves, or the
 # rules' fallback; or its parting line once the game is over. What it says to the player goes
-# through the screen into the chat, and comes back as aside.
+# into the chat, and comes back as aside.
 route POST /move (req) {
   mine = rules(games["current"] ?? opponent(""), req.json.move)
   asked = http.post("generativelanguage.googleapis.com", "/v1beta/interactions", headers: { "content-type": "application/json", "x-goog-api-key": secret.gemini_api_key }, body: move_prompt(mine))
@@ -916,13 +928,19 @@ route POST /move (req) {
   respond { ..theirs, aside: kept.last ?? {} }, missing: 400
 }
 
-# A line of chat, and the Sphinx's screened reply. It never touches the board.
+# A line of chat, and the Sphinx's reply, streamed to the page as it comes (the channel replies)
+# and answered whole. It never touches the board.
 route POST /chat (req) {
   talk = games["chat"] ?? []
-  sent = http.post("generativelanguage.googleapis.com", "/v1beta/interactions", headers: { "content-type": "application/json", "x-goog-api-key": secret.gemini_api_key }, body: chat_prompt(games["current"] ?? rules(opponent(""), ""), talk, req.json.line))
+  sent = replies.pipe(http.post("generativelanguage.googleapis.com", "/v1beta/interactions", headers: { "content-type": "application/json", "x-goog-api-key": secret.gemini_api_key }, body: chat_prompt(games["current"] ?? rules(opponent(""), ""), talk, req.json.line)))
   kept = remember(talk, hear(sent ?? { status: 0 }, req.json.line), now)
   games["chat"] = kept.talk
-  respond { reply: kept.last.agent, withheld: kept.last.withheld }, missing: 400
+  respond { reply: kept.last.agent }, missing: 400
+}
+
+# The Sphinx's chat replies, as they stream.
+route GET /replies (req) {
+  respond replies.subscribe()
 }
 
 # A new game against the model asked for (the first one offered when none is), with a fresh chat.

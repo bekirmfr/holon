@@ -127,8 +127,11 @@ describe("sample flows", () => {
     expect(gemini).toContain('HttpRequest("generativelanguage.googleapis.com")');
     expect(gemini).toContain('SecretRead("gemini_api_key")');
     // An agent held to its interface asks for no more than a chat does: its one host, its key,
-    // its games; the rules are code that reaches nothing outside.
+    // its games, the channel its replies stream on; the rules are code that reaches nothing
+    // outside.
     expect(derive("chess").caps).toEqual([
+      'ChannelRead("replies")',
+      'ChannelSend("replies")',
       "Clock",
       'CollectionRead("games")',
       'CollectionWrite("games")',
