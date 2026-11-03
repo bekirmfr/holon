@@ -1032,6 +1032,12 @@ log's lock.
   `serve_data_forwarding` (`listeners.rs:34–42`), which computes it again today (`listeners.rs:42`).
   The control-plane path (`handle_post_request`, `listeners.rs:311`) keeps computing its own.
 
+**Done (12.3).** `serve_data_forwarding` takes the origin (`allowed`); the data plane passes the
+one it worked out, and `serve_data` (the control plane's `/request`, the tests) works out its own.
+One table lock and a copy of `browsers` less per request: within the noise live (`/health`
+9,152–9,393 → 9,202–9,340 req/s at one connection, 26,550–26,724 → 26,422–27,821 at 64), as
+expected for about a microsecond.
+
 ### 12.4 Per-flow caches of run setup (rest of −5 to −15 µs)
 
 Profile first: the design's §4.5 measured run setup at about 24 µs. Candidates, each cached in

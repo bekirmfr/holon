@@ -19,7 +19,8 @@ pub(crate) fn serve_data(
     slug: &str,
     request: &DataRequest,
 ) -> DataResponse {
-    serve_data_forwarding(store, deployments, deployments_path, slug, request, None)
+    let allowed = allowed_origin(deployments, slug, &request.headers);
+    serve_data_forwarding(store, deployments, deployments_path, slug, request, None, allowed)
 }
 
 /// The origin a page sent the request from, when `slug` answers pages from there (`browsers`).
@@ -30,7 +31,9 @@ pub(crate) fn allowed_origin(deployments: &Mutex<BTreeMap<String, Deployment>>, 
 }
 
 /// [`serve_data`], a streamed call's answer forwarded to the caller as it arrives (`forward`)
-/// when the route's run makes one.
+/// when the route's run makes one. `allowed` is the request's origin when the deployment answers
+/// pages from there (`allowed_origin`), worked out once by the caller, which needs it too.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn serve_data_forwarding(
     store: &SharedStore,
     deployments: &Mutex<BTreeMap<String, Deployment>>,
@@ -38,8 +41,8 @@ pub(crate) fn serve_data_forwarding(
     slug: &str,
     request: &DataRequest,
     forward: Option<outbound::Forwarder>,
+    allowed: Option<String>,
 ) -> DataResponse {
-    let allowed = allowed_origin(deployments, slug, &request.headers);
     if request.method == "OPTIONS"
         && let Some(origin) = &allowed
     {

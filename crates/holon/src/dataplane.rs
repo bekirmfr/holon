@@ -296,14 +296,15 @@ async fn answer(listener: Arc<Listener>, request: hyper::Request<Incoming>) -> h
     // A short route runs here, on the worker that read its request: no hop onto the blocking
     // pool, and no channel to forward on, since it calls out to nothing (§4.5 a, `runs_here_for`).
     if runs_here_for(&listener.store, &listener.deployments, &listener.slug, &request, &listener.here) {
-        let answered = serve_data_forwarding(&listener.store, &listener.deployments, &listener.deployments_path, &listener.slug, &request, None);
+        let answered = serve_data_forwarding(&listener.store, &listener.deployments, &listener.deployments_path, &listener.slug, &request, None, origin);
         return to_hyper(answered);
     }
     // A streamed call's answer comes back as it is read, before the run is over.
     let (pieces, mut forwarded) = tokio::sync::mpsc::channel(64);
     let forward = outbound::Forwarder::new(Arc::new(Replying(pieces)));
+    let allowed = origin.clone();
     let mut run = tokio::task::spawn_blocking(move || {
-        serve_data_forwarding(&listener.store, &listener.deployments, &listener.deployments_path, &listener.slug, &request, Some(forward))
+        serve_data_forwarding(&listener.store, &listener.deployments, &listener.deployments_path, &listener.slug, &request, Some(forward), allowed)
     });
     let (head, done) = tokio::select! {
         head = forwarded.recv() => (head, None),
