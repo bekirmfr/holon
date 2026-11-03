@@ -1262,9 +1262,28 @@ The rest is what the interpreter does around each call of the function, once per
 - allocating and freeing its slots, records and lists, about 40%;
 - cloning and dropping values (`Value::clone`, `BTreeMap` copies), about 20%.
 
-So (b) is no longer an estimate for these flows: what it removes is most of their time. Its first
-two parts change no behaviour and need no plan: an order is a function of its unit alone, so it
-can be kept by hash, and a `map` can resolve its function once.
+So (b) is no longer an estimate for these flows: what it removes is most of their time.
+
+**Its first part, built: a composite prepared once for a `map` or `fold`.** `topo_order` there
+turned out to be only the composite's cycle check, and a `map` already resolved its function once;
+what each application repeated was the rest of `eval_composite`'s preparation of the function's
+graph: resolving its children, the index of which output feeds which input, the roots its walk
+starts from, the cycle check. All of it depends on the unit alone, so `Prepared` (eval.rs) holds
+it, made once before the loop and run for every item; `eval_composite` prepares and runs as
+before. Same answers to the last digit; the workspace's tests, the editor's (which replay through
+the same evaluator in wasm) and a short `hello` run's time (20.8–24.0 µs a run, alternating
+builds) unchanged. `profile_one_route crunch`: 888 → 495 µs a run at 100 items, 8,427 → 4,584 at
+1,000, 45,944 → 23,765 at 5,000. Live, two rounds:
+
+| p50 at 1 connection; CPU per request | before | prepared | C# |
+|---|---|---|---|
+| 100 items, all in the graph | 0.98–1.02 ms; 937–962 µs | 0.62–0.64 ms; 589–607 µs | 0.085 ms; 34–36 µs |
+| 1,000 items | 8.4–8.7 ms; 8.7–8.8 ms | 5.0–5.1 ms; 5.0–5.1 ms | 0.15–0.16 ms; 101–105 µs |
+| 5,000 items | 42–43 ms; 43–45 ms | 24.6 ms; 25.3 ms | 0.58–0.59 ms; 465–477 µs |
+| 5,000 items, `length` and `sum` native | 30.5–30.8 ms | 18.3–18.5 ms | |
+
+Throughput 1.6–1.75× at every size; against C#, 7.4× at 100 items (from 12×) and 42× at 5,000
+(from 73×). What remains is allocating and copying values, and the walk itself: the rest of (b).
 
 **Where none of it matters much:**
 - **Strict runs** wait about 600 µs for the fsync (C2 e). Cutting 50–90 µs of CPU might add 10–25%

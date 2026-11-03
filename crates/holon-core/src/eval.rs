@@ -335,148 +335,182 @@ fn eval_composite(
     observer: &mut impl Observer,
     path: &mut Vec<u32>,
 ) -> Slots {
-    let n = children.len();
-
-    // Resolve children (by hash). Any unresolved ⇒ nothing evaluable — every declared output
-    // slot is absent (the vec's *length* is still the declared contract; only the values are
-    // absent, mirroring how `inputs` already has a fixed length with individually-absent slots).
-    let mut resolved: Vec<&Unit> = Vec::with_capacity(n);
-    for h in children {
-        match resolver.resolve(h) {
-            Some(u) => resolved.push(u),
-            None => return smallvec![Slot::Absent; n_outputs],
+    match Prepared::of(children, edges, resolver) {
+        // Run once: its first stack is handed over, not copied.
+        Some(mut prepared) => {
+            let stack = std::mem::take(&mut prepared.roots);
+            prepared.run_from(stack, n_outputs, inputs, resolver, observer, path)
         }
+        None => smallvec![Slot::Absent; n_outputs],
     }
+}
 
-    // Index incoming edges: destination (to_child, to_port) → source (from_child, from_port).
-    // Validation guarantees ≤1 source per destination, so this never loses an edge.
-    let mut incoming: BTreeMap<(u32, u32), (u32, u32)> = BTreeMap::new();
-    for e in edges {
-        incoming.insert((e.to_child, e.to_port), (e.from_child, e.from_port));
-    }
+/// What evaluating a composite needs of its unit alone, whatever its inputs: its children
+/// resolved, the edge feeding each child's input, and where the walk starts. Made once for a
+/// `map`'s or `fold`'s function and run for every item, instead of made again for each
+/// (docs/L4s/request-path-L4.md §4.5): it depends on nothing an application changes.
+struct Prepared<'r> {
+    resolved: Vec<&'r Unit>,
+    /// Destination (to_child, to_port) → source (from_child, from_port).
+    incoming: BTreeMap<(u32, u32), (u32, u32)>,
+    /// The walk's first stack: what the outputs read, and what nothing consumes.
+    roots: Vec<usize>,
+}
 
-    // A cycle is impossible after P1.3.1; handled, not panicked, and the walk below can then
-    // rely on reaching the end of everything it pulls.
-    if topo_order(n, edges).is_none() {
-        return smallvec![Slot::Absent; n_outputs];
-    }
+impl<'r> Prepared<'r> {
+    /// None when a child doesn't resolve or the edges hold a cycle: then nothing is evaluable,
+    /// and every declared output slot is absent.
+    fn of(children: &[Hash], edges: &[Edge], resolver: &'r impl Resolver) -> Option<Prepared<'r>> {
+        let n = children.len();
 
-    // The roots: what the outputs read, and what nothing consumes (a node placed on its own is
-    // run, as it always was). In ascending child index, so the walk is deterministic.
-    let mut consumed = vec![false; n];
-    let mut root = vec![false; n];
-    for e in edges {
-        if (e.from_child as usize) < n {
-            consumed[e.from_child as usize] = true;
-            if e.to_child == BOUNDARY {
-                root[e.from_child as usize] = true;
+        // Resolve children (by hash). Any unresolved ⇒ nothing evaluable — every declared output
+        // slot is absent (the vec's *length* is still the declared contract; only the values are
+        // absent, mirroring how `inputs` already has a fixed length with individually-absent slots).
+        let mut resolved: Vec<&Unit> = Vec::with_capacity(n);
+        for h in children {
+            resolved.push(resolver.resolve(h)?);
+        }
+
+        // Index incoming edges: destination (to_child, to_port) → source (from_child, from_port).
+        // Validation guarantees ≤1 source per destination, so this never loses an edge.
+        let mut incoming: BTreeMap<(u32, u32), (u32, u32)> = BTreeMap::new();
+        for e in edges {
+            incoming.insert((e.to_child, e.to_port), (e.from_child, e.from_port));
+        }
+
+        // A cycle is impossible after P1.3.1; handled, not panicked, and the walk below can then
+        // rely on reaching the end of everything it pulls.
+        topo_order(n, edges)?;
+
+        // The roots: what the outputs read, and what nothing consumes (a node placed on its own is
+        // run, as it always was). In ascending child index, so the walk is deterministic.
+        let mut consumed = vec![false; n];
+        let mut root = vec![false; n];
+        for e in edges {
+            if (e.from_child as usize) < n {
+                consumed[e.from_child as usize] = true;
+                if e.to_child == BOUNDARY {
+                    root[e.from_child as usize] = true;
+                }
             }
         }
+        let roots = (0..n).rev().filter(|&c| root[c] || !consumed[c]).collect();
+        Some(Prepared { resolved, incoming, roots })
     }
 
-    // Per-evaluation scratch, indexed by child: `None` not evaluated (yet, or at all), else
-    // EACH child's own output slots (a child may itself be a multi-output composite).
-    let mut scratch: Vec<Option<Slots>> = vec![None; n];
+    /// Evaluate it on `inputs`.
+    fn run(&self, n_outputs: usize, inputs: &[Option<Value>], resolver: &impl Resolver, observer: &mut impl Observer, path: &mut Vec<u32>) -> Slots {
+        self.run_from(self.roots.clone(), n_outputs, inputs, resolver, observer, path)
+    }
 
-    // The slot feeding a child's input port: `None` while its source child is unevaluated.
-    let slot_in = |scratch: &[Option<Slots>], ci: usize, p: usize| -> Option<Slot> {
-        match incoming.get(&(ci as u32, p as u32)) {
-            Some(&(BOUNDARY, fp)) => Some(Slot::of(inputs.get(fp as usize).cloned().flatten())),
-            // `get`, not indexing: an edge naming a child that does not exist (bytes that never
-            // went through `validate`) reads as absent.
-            Some(&(fc, fp)) => match scratch.get(fc as usize) {
-                Some(Some(outs)) => Some(outs.get(fp as usize).cloned().unwrap_or(Slot::Absent)),
-                Some(None) => None,
+    /// [`run`](Prepared::run), the walk starting from `stack` (its roots).
+    fn run_from(&self, mut stack: Vec<usize>, n_outputs: usize, inputs: &[Option<Value>], resolver: &impl Resolver, observer: &mut impl Observer, path: &mut Vec<u32>) -> Slots {
+        let (resolved, incoming) = (&self.resolved, &self.incoming);
+        let n = resolved.len();
+
+        // Per-evaluation scratch, indexed by child: `None` not evaluated (yet, or at all), else
+        // EACH child's own output slots (a child may itself be a multi-output composite).
+        let mut scratch: Vec<Option<Slots>> = vec![None; n];
+
+        // The slot feeding a child's input port: `None` while its source child is unevaluated.
+        let slot_in = |scratch: &[Option<Slots>], ci: usize, p: usize| -> Option<Slot> {
+            match incoming.get(&(ci as u32, p as u32)) {
+                Some(&(BOUNDARY, fp)) => Some(Slot::of(inputs.get(fp as usize).cloned().flatten())),
+                // `get`, not indexing: an edge naming a child that does not exist (bytes that never
+                // went through `validate`) reads as absent.
+                Some(&(fc, fp)) => match scratch.get(fc as usize) {
+                    Some(Some(outs)) => Some(outs.get(fp as usize).cloned().unwrap_or(Slot::Absent)),
+                    Some(None) => None,
+                    None => Some(Slot::Absent),
+                },
                 None => Some(Slot::Absent),
-            },
-            None => Some(Slot::Absent),
-        }
-    };
-
-    // Depth-first from the roots, with an explicit stack: a node is run once everything it
-    // needs is evaluated; until then, what it needs next is pushed.
-    let mut stack: Vec<usize> = (0..n).rev().filter(|&c| root[c] || !consumed[c]).collect();
-    while let Some(&ci) = stack.last() {
-        if scratch[ci].is_some() {
-            stack.pop();
-            continue;
-        }
-        let child = resolved[ci];
-        let k = child.inputs.len();
-        let seen: Vec<Option<Slot>> = (0..k).map(|p| slot_in(&scratch, ci, p)).collect();
-        let choice = match &child.body {
-            UnitBody::Primitive { name } => choice_next(name, &seen),
-            UnitBody::Composite { .. } | UnitBody::Module { .. } => None,
-        };
-        // A choice pulls what it needs; anything else, every input not yet evaluated.
-        let need = match &choice {
-            Some(Choice::Need(p)) => Some(*p),
-            Some(Choice::Done(_)) => None,
-            None => seen.iter().position(Option::is_none),
-        };
-        if let Some(p) = need {
-            let &(fc, _) = incoming.get(&(ci as u32, p as u32)).expect("only a wired port is unevaluated");
-            stack.push(fc as usize);
-            continue;
-        }
-        stack.pop();
-        let outs: Slots = match choice {
-            Some(Choice::Done(slot)) => {
-                path.push(ci as u32);
-                observer.enter(path);
-                let outs: Slots = smallvec![slot];
-                observer.produced(path, &outs);
-                observer.leave(path);
-                path.pop();
-                outs
             }
-            _ => {
-                let seen: Vec<Slot> = seen.into_iter().flatten().collect();
-                if seen.contains(&Slot::Pending) {
-                    // Waiting on an answer: not run in this round.
-                    smallvec![Slot::Pending; child.outputs.len()]
-                } else {
-                    // A leaf with optional ports (an `http_request`'s headers and body) reads an
-                    // *unwired* one as "none"; a *wired* one whose value is absent means what
-                    // absence means everywhere else: the node doesn't fire. Otherwise a request
-                    // downstream of a check that failed (a webhook whose signature didn't
-                    // verify) still went out, bodiless.
-                    let mut gathered: Vec<Option<Value>> = seen.into_iter().map(Slot::into_value).collect();
-                    open_triggers(child, &mut gathered, |p| incoming.contains_key(&(ci as u32, p as u32)));
-                    let wired_but_absent = (0..k).any(|p| gathered[p].is_none() && incoming.contains_key(&(ci as u32, p as u32)));
-                    // A sink is held the same way: its trigger, wired, hasn't arrived.
-                    let held = wired_but_absent && matches!(&child.body, UnitBody::Primitive { name } if primitives::has_optional_ports(name) || crate::TRIGGERED.contains(&name.as_str()));
+        };
+
+        // Depth-first from the roots, with an explicit stack: a node is run once everything it
+        // needs is evaluated; until then, what it needs next is pushed.
+        while let Some(&ci) = stack.last() {
+            if scratch[ci].is_some() {
+                stack.pop();
+                continue;
+            }
+            let child = resolved[ci];
+            let k = child.inputs.len();
+            let seen: Vec<Option<Slot>> = (0..k).map(|p| slot_in(&scratch, ci, p)).collect();
+            let choice = match &child.body {
+                UnitBody::Primitive { name } => choice_next(name, &seen),
+                UnitBody::Composite { .. } | UnitBody::Module { .. } => None,
+            };
+            // A choice pulls what it needs; anything else, every input not yet evaluated.
+            let need = match &choice {
+                Some(Choice::Need(p)) => Some(*p),
+                Some(Choice::Done(_)) => None,
+                None => seen.iter().position(Option::is_none),
+            };
+            if let Some(p) = need {
+                let &(fc, _) = incoming.get(&(ci as u32, p as u32)).expect("only a wired port is unevaluated");
+                stack.push(fc as usize);
+                continue;
+            }
+            stack.pop();
+            let outs: Slots = match choice {
+                Some(Choice::Done(slot)) => {
                     path.push(ci as u32);
                     observer.enter(path);
-                    let outs = if held {
-                        smallvec![Slot::Absent; child.outputs.len()]
-                    } else {
-                        match observer.asserted(path, child, &gathered) {
-                            Some(asserted) if asserted.len() == child.outputs.len() => asserted.into_iter().map(Slot::of).collect(),
-                            _ => eval_at(child, &gathered, resolver, observer, path),
-                        }
-                    };
+                    let outs: Slots = smallvec![slot];
                     observer.produced(path, &outs);
                     observer.leave(path);
                     path.pop();
                     outs
                 }
-            }
-        };
-        scratch[ci] = Some(outs);
-    }
+                _ => {
+                    let seen: Vec<Slot> = seen.into_iter().flatten().collect();
+                    if seen.contains(&Slot::Pending) {
+                        // Waiting on an answer: not run in this round.
+                        smallvec![Slot::Pending; child.outputs.len()]
+                    } else {
+                        // A leaf with optional ports (an `http_request`'s headers and body) reads an
+                        // *unwired* one as "none"; a *wired* one whose value is absent means what
+                        // absence means everywhere else: the node doesn't fire. Otherwise a request
+                        // downstream of a check that failed (a webhook whose signature didn't
+                        // verify) still went out, bodiless.
+                        let mut gathered: Vec<Option<Value>> = seen.into_iter().map(Slot::into_value).collect();
+                        open_triggers(child, &mut gathered, |p| incoming.contains_key(&(ci as u32, p as u32)));
+                        let wired_but_absent = (0..k).any(|p| gathered[p].is_none() && incoming.contains_key(&(ci as u32, p as u32)));
+                        // A sink is held the same way: its trigger, wired, hasn't arrived.
+                        let held = wired_but_absent && matches!(&child.body, UnitBody::Primitive { name } if primitives::has_optional_ports(name) || crate::TRIGGERED.contains(&name.as_str()));
+                        path.push(ci as u32);
+                        observer.enter(path);
+                        let outs = if held {
+                            smallvec![Slot::Absent; child.outputs.len()]
+                        } else {
+                            match observer.asserted(path, child, &gathered) {
+                                Some(asserted) if asserted.len() == child.outputs.len() => asserted.into_iter().map(Slot::of).collect(),
+                                _ => eval_at(child, &gathered, resolver, observer, path),
+                            }
+                        };
+                        observer.produced(path, &outs);
+                        observer.leave(path);
+                        path.pop();
+                        outs
+                    }
+                }
+            };
+            scratch[ci] = Some(outs);
+        }
 
-    // Each exposed output is whatever feeds that boundary-output port: a child's output at the
-    // right port, or — symmetric with the child-input case above — a promoted input routed
-    // straight through. (A composite whose output *is* one of its inputs is a valid,
-    // validate-accepted shape; the BOUNDARY→BOUNDARY arm below is why that doesn't panic.)
-    (0..n_outputs as u32)
-        .map(|op| match incoming.get(&(BOUNDARY, op)) {
-            Some(&(BOUNDARY, fp)) => Slot::of(inputs.get(fp as usize).cloned().flatten()),
-            Some(&(fc, fp)) => scratch.get(fc as usize).and_then(|o| o.as_ref()).and_then(|o| o.get(fp as usize)).cloned().unwrap_or(Slot::Absent),
-            None => Slot::Absent,
-        })
-        .collect()
+        // Each exposed output is whatever feeds that boundary-output port: a child's output at the
+        // right port, or — symmetric with the child-input case above — a promoted input routed
+        // straight through. (A composite whose output *is* one of its inputs is a valid,
+        // validate-accepted shape; the BOUNDARY→BOUNDARY arm below is why that doesn't panic.)
+        (0..n_outputs as u32)
+            .map(|op| match incoming.get(&(BOUNDARY, op)) {
+                Some(&(BOUNDARY, fp)) => Slot::of(inputs.get(fp as usize).cloned().flatten()),
+                Some(&(fc, fp)) => scratch.get(fc as usize).and_then(|o| o.as_ref()).and_then(|o| o.get(fp as usize)).cloned().unwrap_or(Slot::Absent),
+                None => Slot::Absent,
+            })
+            .collect()
+    }
 }
 
 /// A placed holon's trigger left unwired reads as present ([`crate::open_trigger`]): its sinks run
@@ -544,6 +578,7 @@ fn eval_map(inputs: &[Option<Value>], params: &[Param], resolver: &impl Resolver
     };
     let Some(extra) = present(&inputs[1..]) else { return Slot::Absent };
     let Some(unit) = function(params, resolver) else { return Slot::Absent };
+    let unit = Ready::of(unit, resolver);
 
     let mut out = Vec::with_capacity(list.len());
     let (mut pending, mut absent) = (false, false);
@@ -555,7 +590,7 @@ fn eval_map(inputs: &[Option<Value>], params: &[Param], resolver: &impl Resolver
         args.extend(extra.iter().cloned());
         // Every item is applied, even after one comes out absent, so each item's requests are
         // asked in the same round rather than one round per item.
-        match apply(unit, &args, resolver, &mut asks, path, k) {
+        match apply(&unit, &args, resolver, &mut asks, path, k) {
             Slot::Value(v) => out.push(v),
             Slot::Absent => absent = true,
             Slot::Pending => pending = true,
@@ -576,12 +611,41 @@ fn function<'r>(params: &[Param], resolver: &'r impl Resolver) -> Option<&'r Uni
     resolver.resolve(&parse_hash(fn_hex)?)
 }
 
+/// A `map`'s or `fold`'s function, ready to apply to each item: a composite prepared once
+/// ([`Prepared`]), so each application only runs it.
+enum Ready<'r> {
+    /// A composite: its unit, and it prepared; or None, when it can't be (each application then
+    /// gives nothing, as `eval_composite` would).
+    Composite(&'r Unit, Option<Prepared<'r>>),
+    /// Anything else, evaluated as it always is.
+    Other(&'r Unit),
+}
+
+impl<'r> Ready<'r> {
+    fn of(unit: &'r Unit, resolver: &'r impl Resolver) -> Ready<'r> {
+        match &unit.body {
+            UnitBody::Composite { children, edges } => Ready::Composite(unit, Prepared::of(children, edges, resolver)),
+            _ => Ready::Other(unit),
+        }
+    }
+}
+
 /// One application of a `map`/`fold` function, to item `k`: evaluated at the node's path then
-/// `k`, its one output (or absent, as [`eval_one`]).
-fn apply(unit: &Unit, args: &[Option<Value>], resolver: &impl Resolver, asks: &mut Asks, path: &mut Vec<u32>, k: usize) -> Slot {
+/// `k`, its one output (or absent, as [`eval_one`]). A composite runs as `eval_at` would run it.
+fn apply(unit: &Ready, args: &[Option<Value>], resolver: &impl Resolver, asks: &mut Asks, path: &mut Vec<u32>, k: usize) -> Slot {
     let Ok(k) = u32::try_from(k) else { return Slot::Absent };
     path.push(k);
-    let mut outs = eval_at(unit, args, resolver, asks, path);
+    let mut outs = match unit {
+        Ready::Other(unit) => eval_at(unit, args, resolver, asks, path),
+        Ready::Composite(unit, prepared) => {
+            // As `eval_at`: a sink's trigger only has to be there.
+            let args = if crate::takes_trigger(unit) && args.len() == unit.inputs.len() { &args[..args.len() - 1] } else { args };
+            match prepared {
+                Some(prepared) => prepared.run(unit.outputs.len(), args, resolver, asks, path),
+                None => smallvec![Slot::Absent; unit.outputs.len()],
+            }
+        }
+    };
     path.pop();
     if outs.len() == 1 { outs.pop().unwrap() } else { Slot::Absent }
 }
@@ -624,6 +688,7 @@ fn eval_fold(inputs: &[Option<Value>], params: &[Param], resolver: &impl Resolve
     };
     let Some(extra) = present(inputs.get(2..).unwrap_or_default()) else { return Slot::Absent };
     let Some(unit) = function(params, resolver) else { return Slot::Absent };
+    let unit = Ready::of(unit, resolver);
 
     let mut acc = init;
     let mut args: Vec<Option<Value>> = Vec::with_capacity(2 + extra.len());
@@ -634,7 +699,7 @@ fn eval_fold(inputs: &[Option<Value>], params: &[Param], resolver: &impl Resolve
         args.push(Some(acc));
         args.push(Some(elem.clone()));
         args.extend(extra.iter().cloned());
-        acc = match apply(unit, &args, resolver, &mut asks, path, k) {
+        acc = match apply(&unit, &args, resolver, &mut asks, path, k) {
             Slot::Value(v) => v,
             other => return other,
         };
