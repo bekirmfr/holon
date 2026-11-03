@@ -233,8 +233,44 @@ after keeps each honest. The gains below are estimated from the shares above.
    canonical encoding and every hash stay as they are; this is the largest change to core here,
    and the one the copies of §3.3 point to.
    *Estimated: `crunch` 30–50% of what remains.*
+   **Deferred, measured first.** After step 3 the copies it would make cheap are gone: what
+   copying remains is 5–7% of `crunch` (records copied by `with_field`, about 2,000 a run), 8–9%
+   of `hello` (the request's `params` record, copied as a field is read) and about 10% of `notes`.
+   Less than that would come off: `with_field` is lent its record, so a shared one would still be
+   copied to add a field, unless the last reader of a value could take it, which lending works
+   against. For a change to every crate's ~850 uses of `Value::Text`, `List` and `Record`, under
+   10%; it comes back with taking a value at its last reader.
 5. **A compiled plan** (request-path-L4.md §4.5 b, c): the order fixed, values in slots, leaves as
    direct calls, and in the end generated code, for what steps 1–4 leave.
+   Three levels, each harder: (1) a plan per composite, its nodes' kinds and their inputs' sources
+   decided once; (2) the walk replaced by instructions over numbered slots, with jumps for the
+   lazy choices and every observer event in the walk's order; (3) generated native code.
+   **Level 1, done and measured:**
+   - Each node's kind (`NodeKind`: a `map`, a `fold`, which request, `coalesce`, a leaf and whether
+     variadic, a composite, a module; whether it takes a trigger, is a choice, is held while a
+     wired input is absent) is decided once where a composite prepares its children, instead of
+     by comparing its name against some twenty at every evaluation. Per run, not kept: a resolver
+     may hand a run its own unit for a hash. `eval_at` decides it for a unit evaluated alone.
+   - A node's inputs are looked at in one pass: the first not yet evaluated, whether one is
+     pending, and the gathered values, together.
+   - The edge index is one flat list with each port's source worked out when it is made (an
+     input, a child's output, unwired, or a child that doesn't exist), not a list per child; a
+     test holds it to a map of the edges on 4,000 random graphs.
+   - The walk's scratch is kept for a `map`'s or `fold`'s next application, and a `map` builds
+     its function's arguments once, putting each item in place.
+
+   Workspace tests, both golden records, the editor's tests (on a fresh wasm build) and clippy
+   pass. Instructions a run: `crunch` 29.42M → 26.18M (−11.0%; 1,999–2,221 → 1,768–1,783 µs a
+   run), `hello` and `notes` unchanged (+0.6%, +0.5%): their nodes are each evaluated once a run,
+   so deciding a node's kind once a run is what deciding it at its evaluation was; only a
+   function applied per item gains. Below the estimate (20–30% and 10%). Live against step 3
+   (`wrk`, two rounds alternating), more than the count, from fewer allocations under 64
+   connections: `crunch` 11,979–12,021 → 14,133–15,468 req/s at 100 items, 1,580–1,632 →
+   1,999–2,074 at 1,000, 320–326 → 416–417 at 5,000; p50 at one connection 0.29 ms, 2.0 ms and
+   9.5 ms, against C#'s 0.08 ms, 0.16 ms and 0.60 ms in step 3's rounds (3.5×, 13× and 16×, from
+   4.0–4.2×, 16× and 20×); unrecorded `hello` unchanged. What remains in `crunch`'s walk: input
+   lookups 9.8%, `compute`'s match by name 5.2%, gathering a leaf's present inputs about 7%,
+   allocation about 11%, `with_field`'s copies 6.7%.
 
 ## 5. What this doesn't cover
 

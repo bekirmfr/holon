@@ -189,49 +189,172 @@ fn eval_at(
     observer: &mut impl Observer,
     path: &mut Vec<u32>,
 ) -> Slots {
+    eval_as(unit, &NodeKind::of(unit), inputs, resolver, observer, path)
+}
+
+/// What a node is, as evaluating it needs to know: decided from its unit once, where a composite
+/// prepares its children (docs/L4s/interpreter-path-L4.md, step 5's first level), instead of by
+/// its name at every evaluation. Per run, not kept: a resolver may hand a run its own unit for a
+/// hash (a sourced value's constant).
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct NodeKind {
+    body: Body,
+    /// A sink whose last input is its trigger ([`crate::takes_trigger`]).
+    takes_trigger: bool,
+    /// `guard` or `coalesce`, decided lazily inside a composite ([`choose`]).
+    choice: Option<Which>,
+    /// Held back while a wired input is absent: a leaf with optional ports, or a sink.
+    held_when_absent: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Body {
+    Map,
+    Fold,
+    /// A request the host answers.
+    Ask(Request),
+    Coalesce,
+    /// Any other leaf, computed by `compute`; a variadic one fires only with every input present.
+    Leaf { variadic: bool },
+    Composite,
+    Module,
+}
+
+/// The requests a node asks the host, by the leaf that builds them.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Request {
+    Http,
+    Upload,
+    FlowCall,
+    Stream,
+    Await,
+    CollectionGet,
+    CollectionList,
+    FileRead,
+    FileList,
+    FileHandle,
+    FileLines,
+    FileSlice,
+    DbQuery,
+    DbOne,
+    DbFind,
+    DbFindOne,
+    ResumeToken,
+}
+
+impl Request {
+    fn of(name: &str) -> Option<Request> {
+        Some(match name {
+            "http_request" => Request::Http,
+            "http_upload" => Request::Upload,
+            "flow_call" => Request::FlowCall,
+            "http_stream" => Request::Stream,
+            "await" => Request::Await,
+            "collection_get" => Request::CollectionGet,
+            "collection_list" => Request::CollectionList,
+            "file_read" => Request::FileRead,
+            "file_list" => Request::FileList,
+            "file_handle" => Request::FileHandle,
+            "file_lines" => Request::FileLines,
+            "file_slice" => Request::FileSlice,
+            "db_query" => Request::DbQuery,
+            "db_one" => Request::DbOne,
+            "db_find" => Request::DbFind,
+            "db_find_one" => Request::DbFindOne,
+            "resume_token" => Request::ResumeToken,
+            _ => return None,
+        })
+    }
+
+    /// The request, built from the node's inputs and params: absent when it can't be.
+    fn build(self, inputs: &[Option<&Value>], params: &[Param]) -> Option<Value> {
+        match self {
+            // An outbound request: answered (or not yet) by the host through the observer.
+            Request::Http => primitives::http_request(&owned(inputs), params),
+            // One whose body is a file: the host streams it.
+            Request::Upload => primitives::http_upload(&owned(inputs), params),
+            // A call to another flow's action: the host runs it in-process and answers.
+            Request::FlowCall => primitives::flow_call_request(&owned(inputs), params),
+            // One whose answer the host forwards to the route's caller as it arrives.
+            Request::Stream => primitives::http_stream(&owned(inputs), params),
+            // A durable run's waiting point and its token: also the host's to answer.
+            Request::Await => primitives::await_request(params),
+            Request::ResumeToken => primitives::resume_token_request(params),
+            // A collection read: the host answers it from the collection as the run found it.
+            Request::CollectionGet => primitives::collection_get_request(&owned(inputs), params),
+            Request::CollectionList => primitives::collection_list_request(&owned(inputs), params),
+            // A file read: the host answers it from the folder bound to the name, as the run found it.
+            Request::FileRead => primitives::file_read_request(&owned(inputs), params),
+            Request::FileList => primitives::file_list_request(&owned(inputs), params),
+            Request::FileHandle => primitives::file_handle_request(&owned(inputs), params),
+            Request::FileLines => primitives::file_lines_request(&owned(inputs), params),
+            Request::FileSlice => primitives::file_slice_request(&owned(inputs), params),
+            // A database read: the host answers it from the database as the run found it.
+            Request::DbQuery => primitives::db_query_request(&owned(inputs), params, false),
+            Request::DbOne => primitives::db_query_request(&owned(inputs), params, true),
+            Request::DbFind => primitives::db_find_request(&owned(inputs), params, false),
+            Request::DbFindOne => primitives::db_find_request(&owned(inputs), params, true),
+        }
+    }
+}
+
+impl NodeKind {
+    fn of(unit: &Unit) -> NodeKind {
+        let takes_trigger = crate::takes_trigger(unit);
+        match &unit.body {
+            UnitBody::Primitive { name } => {
+                let name = name.as_str();
+                let body = match name {
+                    // `map` and `fold` are higher-order — they invoke the evaluator — so they live
+                    // here, where recursion lives, rather than in first-order `compute`.
+                    "map" => Body::Map,
+                    "fold" => Body::Fold,
+                    "coalesce" => Body::Coalesce,
+                    _ => match Request::of(name) {
+                        Some(request) => Body::Ask(request),
+                        None => Body::Leaf { variadic: VARIADIC.contains(&name) },
+                    },
+                };
+                let choice = match name {
+                    "guard" => Some(Which::Guard),
+                    "coalesce" => Some(Which::Coalesce),
+                    _ => None,
+                };
+                let held_when_absent = primitives::has_optional_ports(name) || crate::TRIGGERED.contains(&name);
+                NodeKind { body, takes_trigger, choice, held_when_absent }
+            }
+            UnitBody::Composite { .. } => NodeKind { body: Body::Composite, takes_trigger, choice: None, held_when_absent: false },
+            UnitBody::Module { .. } => NodeKind { body: Body::Module, takes_trigger, choice: None, held_when_absent: false },
+        }
+    }
+}
+
+/// [`eval_at`], what `unit` is already known (`kind`, [`NodeKind::of`] it).
+fn eval_as(
+    unit: &Unit,
+    kind: &NodeKind,
+    inputs: &[Option<&Value>],
+    resolver: &impl Resolver,
+    observer: &mut impl Observer,
+    path: &mut Vec<u32>,
+) -> Slots {
     // A sink's trigger only has to be there (the composite holds it back while a wired one is
     // absent): it is dropped here, so the leaf computes on its own inputs as it always did.
-    let inputs = if crate::takes_trigger(unit) && inputs.len() == unit.inputs.len() { &inputs[..inputs.len() - 1] } else { inputs };
-    match &unit.body {
-        // `map` is higher-order — it invokes the evaluator — so it lives here, where
-        // recursion lives, rather than in first-order `compute`.
-        UnitBody::Primitive { name } if name == "map" => smallvec![eval_map(inputs, &unit.params, resolver, observer, path)],
-        // `fold` is the one iteration primitive (the universal list donor): also higher-order,
-        // so it lives here too. It threads an accumulator, which `map` does not.
-        UnitBody::Primitive { name } if name == "fold" => smallvec![eval_fold(inputs, &unit.params, resolver, observer, path)],
-        // An outbound request: built here, answered (or not yet) by the host through the observer.
-        UnitBody::Primitive { name } if name == "http_request" => ask(primitives::http_request(&owned(inputs), &unit.params), observer, path),
-        // One whose body is a file: the host streams it.
-        UnitBody::Primitive { name } if name == "http_upload" => ask(primitives::http_upload(&owned(inputs), &unit.params), observer, path),
-        // A call to another flow's action: the host runs it in-process and answers.
-        UnitBody::Primitive { name } if name == "flow_call" => ask(primitives::flow_call_request(&owned(inputs), &unit.params), observer, path),
-        // One whose answer the host forwards to the route's caller as it arrives.
-        UnitBody::Primitive { name } if name == "http_stream" => ask(primitives::http_stream(&owned(inputs), &unit.params), observer, path),
-        // A durable run's waiting point and its token: also the host's to answer.
-        UnitBody::Primitive { name } if name == "await" => ask(primitives::await_request(&unit.params), observer, path),
-        // A collection read: the host answers it from the collection as the run found it.
-        UnitBody::Primitive { name } if name == "collection_get" => ask(primitives::collection_get_request(&owned(inputs), &unit.params), observer, path),
-        UnitBody::Primitive { name } if name == "collection_list" => ask(primitives::collection_list_request(&owned(inputs), &unit.params), observer, path),
-        // A file read: the host answers it from the folder bound to the name, as the run found it.
-        UnitBody::Primitive { name } if name == "file_read" => ask(primitives::file_read_request(&owned(inputs), &unit.params), observer, path),
-        UnitBody::Primitive { name } if name == "file_list" => ask(primitives::file_list_request(&owned(inputs), &unit.params), observer, path),
-        UnitBody::Primitive { name } if name == "file_handle" => ask(primitives::file_handle_request(&owned(inputs), &unit.params), observer, path),
-        UnitBody::Primitive { name } if name == "file_lines" => ask(primitives::file_lines_request(&owned(inputs), &unit.params), observer, path),
-        UnitBody::Primitive { name } if name == "file_slice" => ask(primitives::file_slice_request(&owned(inputs), &unit.params), observer, path),
-        // A database read: the host answers it from the database as the run found it.
-        UnitBody::Primitive { name } if name == "db_query" => ask(primitives::db_query_request(&owned(inputs), &unit.params, false), observer, path),
-        UnitBody::Primitive { name } if name == "db_one" => ask(primitives::db_query_request(&owned(inputs), &unit.params, true), observer, path),
-        UnitBody::Primitive { name } if name == "db_find" => ask(primitives::db_find_request(&owned(inputs), &unit.params, false), observer, path),
-        UnitBody::Primitive { name } if name == "db_find_one" => ask(primitives::db_find_request(&owned(inputs), &unit.params, true), observer, path),
-        UnitBody::Primitive { name } if name == "resume_token" => ask(primitives::resume_token_request(&unit.params), observer, path),
+    let inputs = if kind.takes_trigger && inputs.len() == unit.inputs.len() { &inputs[..inputs.len() - 1] } else { inputs };
+    match (kind.body, &unit.body) {
+        (Body::Map, _) => smallvec![eval_map(inputs, &unit.params, resolver, observer, path)],
+        // `fold` is the one iteration primitive (the universal list donor). It threads an
+        // accumulator, which `map` does not.
+        (Body::Fold, _) => smallvec![eval_fold(inputs, &unit.params, resolver, observer, path)],
+        (Body::Ask(request), _) => ask(request.build(inputs, &unit.params), observer, path),
         // `coalesce` is the one leaf whose meaning is about absence: the first input that
         // arrived. The generic arm below would give the same answer today (it gathers present
         // inputs in port order), but that is a property of its implementation, not its
         // contract, and the firing rule it serves says the opposite ("a wired input absent,
         // nothing fires"). This arm is the contract, stated once, where absence is visible.
         // (Inside a composite it is a choice, decided by `choice_next` without getting here.)
-        UnitBody::Primitive { name } if name == "coalesce" => smallvec![Slot::of(inputs.iter().flatten().next().map(|v| (*v).clone()))],
-        UnitBody::Primitive { name } => {
+        (Body::Coalesce, _) => smallvec![Slot::of(inputs.iter().flatten().next().map(|v| (*v).clone()))],
+        (Body::Leaf { variadic }, UnitBody::Primitive { name }) => {
             // Present values in port order **by reference** — `compute` borrows them, so an O(1)
             // reader (head/length/is_empty) copies only what it returns, not the whole input
             // list. compute's arity check is still the firing rule.
@@ -241,22 +364,23 @@ fn eval_at(
             // `authenticated` and `list(a, <absent>, c)` would yield `[a, c]`. A variadic leaf
             // therefore fires only when every declared input is present, exactly as a
             // fixed-arity leaf already does.
-            if VARIADIC.contains(&name.as_str()) && inputs.iter().any(Option::is_none) {
+            if variadic && inputs.iter().any(Option::is_none) {
                 return smallvec![Slot::Absent];
             }
             let present: SmallVec<[&Value; 4]> = inputs.iter().flatten().copied().collect();
             smallvec![Slot::of(primitives::compute(name, &present, &unit.params))]
         }
-        UnitBody::Composite { children, edges } => eval_composite(unit, children, edges, inputs, resolver, observer, path),
+        (_, UnitBody::Composite { children, edges }) => eval_composite(unit, children, edges, inputs, resolver, observer, path),
         // A module body: the engine behind the resolver runs it (docs/L4s/wasm-module-L4.md §5);
         // when it can't, the observer hears why, at this node.
-        UnitBody::Module { bytes } => {
+        (_, UnitBody::Module { bytes }) => {
             let (outs, reason) = run_module_outputs(bytes, unit, &owned(inputs), resolver);
             if let Some(reason) = reason {
                 observer.failed(path, &reason);
             }
             outs.into_iter().map(Slot::of).collect()
         }
+        (_, UnitBody::Primitive { .. }) => unreachable!("a primitive's kind is one of the above"),
     }
 }
 
@@ -313,11 +437,23 @@ pub enum Choice {
 /// strict by meaning, an absent side making it absent, so it needs both sides and isn't one.)
 /// The editor's replay applies the same rule through wasm.
 pub fn choice_next(name: &str, seen: &[Option<Slot>]) -> Option<Choice> {
+    let which = match name {
+        "guard" => Which::Guard,
+        "coalesce" => Which::Coalesce,
+        _ => return None,
+    };
     let at = |p: usize| seen.get(p).map_or(Some(In::Absent), |s| s.as_ref().map(In::of_slot));
-    choose(name, at).map(|c| match c {
+    Some(match choose(which, at) {
         Chosen::Need(p) => Choice::Need(p),
         Chosen::Done(slot) => Choice::Done(slot.owned()),
     })
+}
+
+/// The two choice leaves.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Which {
+    Guard,
+    Coalesce,
 }
 
 /// A slot as the walk reads it: borrowed from where it is kept.
@@ -361,9 +497,9 @@ enum Chosen<'a> {
 }
 
 /// [`choice_next`]'s rule, over the inputs as `at` gives them (`None`: not yet evaluated).
-fn choose<'a>(name: &str, at: impl Fn(usize) -> Option<In<'a>>) -> Option<Chosen<'a>> {
-    Some(match name {
-        "guard" => match at(0) {
+fn choose<'a>(which: Which, at: impl Fn(usize) -> Option<In<'a>>) -> Chosen<'a> {
+    match which {
+        Which::Guard => match at(0) {
             None => Chosen::Need(0),
             Some(In::Pending) => Chosen::Done(In::Pending),
             Some(In::Value(Value::Boolean(true))) => match at(1) {
@@ -373,7 +509,7 @@ fn choose<'a>(name: &str, at: impl Fn(usize) -> Option<In<'a>>) -> Option<Chosen
             // false, absent, or not a boolean: absent, as `guard` is.
             Some(_) => Chosen::Done(In::Absent),
         },
-        "coalesce" => match at(0) {
+        Which::Coalesce => match at(0) {
             None => Chosen::Need(0),
             Some(In::Absent) => match at(1) {
                 None => Chosen::Need(1),
@@ -381,8 +517,7 @@ fn choose<'a>(name: &str, at: impl Fn(usize) -> Option<In<'a>>) -> Option<Chosen
             },
             Some(first) => Chosen::Done(first),
         },
-        _ => return None,
-    })
+    }
 }
 
 fn eval_composite(
@@ -517,7 +652,12 @@ impl Hasher for AddressHasher {
 /// resolver may hand a run its own unit under a hash (a sourced value's constant).
 struct Prepared<'r> {
     resolved: Vec<&'r Unit>,
+    /// What each child is ([`NodeKind`]), decided once here.
+    kinds: Vec<NodeKind>,
     shape: Cow<'r, Shape>,
+    /// The walk's scratch, kept for the next run of the same preparation (a `map`'s next item):
+    /// emptied after each run, its room kept.
+    scratch: std::cell::RefCell<Vec<Option<Slots>>>,
 }
 
 impl<'r> Prepared<'r> {
@@ -538,32 +678,42 @@ impl<'r> Prepared<'r> {
         if shape.cyclic {
             return None;
         }
-        Some(Prepared { resolved, shape })
+        let kinds = resolved.iter().map(|u| NodeKind::of(u)).collect();
+        Some(Prepared { resolved, kinds, shape, scratch: std::cell::RefCell::new(Vec::new()) })
     }
 
     /// Evaluate it on `inputs`.
     fn run(&self, n_outputs: usize, inputs: &[Option<&Value>], resolver: &impl Resolver, observer: &mut impl Observer, path: &mut Vec<u32>) -> Slots {
+        // The scratch kept from the last run, or a fresh one if a run of this very preparation is
+        // somehow under way.
+        let mut kept = self.scratch.try_borrow_mut().ok();
+        let mut fresh = Vec::new();
+        let scratch: &mut Vec<Option<Slots>> = match kept.as_deref_mut() {
+            Some(kept) => kept,
+            None => &mut fresh,
+        };
+        let outs = self.run_in(scratch, n_outputs, inputs, resolver, observer, path);
+        scratch.clear();
+        outs
+    }
+
+    /// [`run`](Prepared::run), in `scratch` (empty).
+    fn run_in(&self, scratch: &mut Vec<Option<Slots>>, n_outputs: usize, inputs: &[Option<&Value>], resolver: &impl Resolver, observer: &mut impl Observer, path: &mut Vec<u32>) -> Slots {
         let (resolved, incoming) = (&self.resolved, &self.shape.incoming);
         let n = resolved.len();
         let mut stack: SmallVec<[usize; 8]> = self.shape.roots.iter().copied().collect();
 
         // Per-evaluation scratch, indexed by child: `None` not evaluated (yet, or at all), else
         // EACH child's own output slots (a child may itself be a multi-output composite).
-        let mut scratch: Vec<Option<Slots>> = vec![None; n];
+        scratch.resize(n, None);
 
         // The slot feeding a child's input port, borrowed where it is kept: `None` while its
         // source child is unevaluated.
         fn slot_in<'s>(incoming: &Incoming, inputs: &[Option<&'s Value>], scratch: &'s [Option<Slots>], ci: usize, p: usize) -> Option<In<'s>> {
-            match incoming.get(ci as u32, p as u32) {
-                Some((BOUNDARY, fp)) => Some(In::of_value(inputs.get(fp as usize).copied().flatten())),
-                // `get`, not indexing: an edge naming a child that does not exist (bytes that never
-                // went through `validate`) reads as absent.
-                Some((fc, fp)) => match scratch.get(fc as usize) {
-                    Some(Some(outs)) => Some(outs.get(fp as usize).map_or(In::Absent, In::of_slot)),
-                    Some(None) => None,
-                    None => Some(In::Absent),
-                },
-                None => Some(In::Absent),
+            match incoming.source(ci, p) {
+                Source::Input(fp) => Some(In::of_value(inputs.get(fp as usize).copied().flatten())),
+                Source::Child(fc, fp) => scratch[fc as usize].as_ref().map(|outs| outs.get(fp as usize).map_or(In::Absent, In::of_slot)),
+                Source::Unwired | Source::Missing(..) => Some(In::Absent),
             }
         }
 
@@ -578,19 +728,36 @@ impl<'r> Prepared<'r> {
                 stack.pop();
                 continue;
             }
-            let child = resolved[ci];
+            let (child, kind) = (resolved[ci], &self.kinds[ci]);
             let k = child.inputs.len();
             let outs: Slots = {
-                let at = |p: usize| slot_in(incoming, inputs, &scratch, ci, p);
-                let choice = match &child.body {
-                    UnitBody::Primitive { name } => choose(name, at),
-                    UnitBody::Composite { .. } | UnitBody::Module { .. } => None,
-                };
-                // A choice pulls what it needs; anything else, every input not yet evaluated.
-                let need = match &choice {
-                    Some(Chosen::Need(p)) => Some(*p),
-                    Some(Chosen::Done(_)) => None,
-                    None => (0..k).position(|p| at(p).is_none()),
+                let at = |p: usize| slot_in(incoming, inputs, scratch, ci, p);
+                // A choice pulls what it needs; anything else, every input not yet evaluated. Its
+                // inputs are gathered in the same pass that looks for one not yet evaluated.
+                let mut gathered: Refs = SmallVec::new();
+                let mut pending = false;
+                let need = match kind.choice.map(|which| choose(which, at)) {
+                    Some(Chosen::Need(p)) => Some(p),
+                    Some(Chosen::Done(slot)) => {
+                        stack.pop();
+                        path.push(ci as u32);
+                        observer.enter(path);
+                        let outs: Slots = smallvec![slot.owned()];
+                        observer.produced(path, &outs);
+                        observer.leave(path);
+                        path.pop();
+                        drop(gathered);
+                        scratch[ci] = Some(outs);
+                        continue;
+                    }
+                    None => (0..k).find(|&p| match at(p) {
+                        None => true,
+                        Some(slot) => {
+                            pending |= slot == In::Pending;
+                            gathered.push(slot.value());
+                            false
+                        }
+                    }),
                 };
                 if let Some(p) = need {
                     let (fc, _) = incoming.get(ci as u32, p as u32).expect("only a wired port is unevaluated");
@@ -598,48 +765,32 @@ impl<'r> Prepared<'r> {
                     continue;
                 }
                 stack.pop();
-                match choice {
-                    Some(Chosen::Done(slot)) => {
-                        path.push(ci as u32);
-                        observer.enter(path);
-                        let outs: Slots = smallvec![slot.owned()];
-                        observer.produced(path, &outs);
-                        observer.leave(path);
-                        path.pop();
-                        outs
-                    }
-                    _ => {
-                        let seen: SmallVec<[In; 4]> = (0..k).map(|p| at(p).expect("every input evaluated")).collect();
-                        if seen.contains(&In::Pending) {
-                            // Waiting on an answer: not run in this round.
-                            smallvec![Slot::Pending; child.outputs.len()]
-                        } else {
-                            // A leaf with optional ports (an `http_request`'s headers and body) reads an
-                            // *unwired* one as "none"; a *wired* one whose value is absent means what
-                            // absence means everywhere else: the node doesn't fire. Otherwise a request
-                            // downstream of a check that failed (a webhook whose signature didn't
-                            // verify) still went out, bodiless.
-                            let mut gathered: Refs = seen.iter().map(|s| s.value()).collect();
-                            open_triggers(child, &mut gathered, || &open, |p| incoming.wired(ci as u32, p as u32));
-                            let wired_but_absent = (0..k).any(|p| gathered[p].is_none() && incoming.wired(ci as u32, p as u32));
-                            // A sink is held the same way: its trigger, wired, hasn't arrived.
-                            let held = wired_but_absent && matches!(&child.body, UnitBody::Primitive { name } if primitives::has_optional_ports(name) || crate::TRIGGERED.contains(&name.as_str()));
-                            path.push(ci as u32);
-                            observer.enter(path);
-                            let outs = if held {
-                                smallvec![Slot::Absent; child.outputs.len()]
-                            } else {
-                                match observer.asserted(path, child, &gathered) {
-                                    Some(asserted) if asserted.len() == child.outputs.len() => asserted.into_iter().map(Slot::of).collect(),
-                                    _ => eval_at(child, &gathered, resolver, observer, path),
-                                }
-                            };
-                            observer.produced(path, &outs);
-                            observer.leave(path);
-                            path.pop();
-                            outs
+                if pending {
+                    // Waiting on an answer: not run in this round.
+                    smallvec![Slot::Pending; child.outputs.len()]
+                } else {
+                    // A leaf with optional ports (an `http_request`'s headers and body) reads an
+                    // *unwired* one as "none"; a *wired* one whose value is absent means what
+                    // absence means everywhere else: the node doesn't fire. Otherwise a request
+                    // downstream of a check that failed (a webhook whose signature didn't
+                    // verify) still went out, bodiless.
+                    open_triggers(child, &mut gathered, || &open, |p| incoming.wired(ci as u32, p as u32));
+                    // A sink is held the same way: its trigger, wired, hasn't arrived.
+                    let held = kind.held_when_absent && (0..k).any(|p| gathered[p].is_none() && incoming.wired(ci as u32, p as u32));
+                    path.push(ci as u32);
+                    observer.enter(path);
+                    let outs = if held {
+                        smallvec![Slot::Absent; child.outputs.len()]
+                    } else {
+                        match observer.asserted(path, child, &gathered) {
+                            Some(asserted) if asserted.len() == child.outputs.len() => asserted.into_iter().map(Slot::of).collect(),
+                            _ => eval_as(child, kind, &gathered, resolver, observer, path),
                         }
-                    }
+                    };
+                    observer.produced(path, &outs);
+                    observer.leave(path);
+                    path.pop();
+                    outs
                 }
             };
             scratch[ci] = Some(outs);
@@ -675,37 +826,82 @@ impl<'r> Prepared<'r> {
 /// up for every port of every node a run evaluates.
 #[derive(Clone, Debug)]
 struct Incoming {
-    children: Vec<Vec<Option<(u32, u32)>>>,
+    /// Each child's ports, from `starts[child]` to `starts[child + 1]`, in one list.
+    starts: Vec<u32>,
+    ports: Vec<Source>,
     outputs: Vec<Option<(u32, u32)>>,
+}
+
+/// What feeds one child's input port, worked out when the index is made.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Source {
+    /// Nothing is wired to it.
+    Unwired,
+    /// The composite's own input at this port.
+    Input(u32),
+    /// This child's output at this port.
+    Child(u32, u32),
+    /// An edge from a child that doesn't exist (bytes that never went through `validate`): read
+    /// as absent.
+    Missing(u32, u32),
 }
 
 impl Incoming {
     fn of(n: usize, edges: &[Edge]) -> Incoming {
-        let mut children: Vec<Vec<Option<(u32, u32)>>> = vec![Vec::new(); n];
+        // How many ports each child's list holds: up to the highest one an edge feeds.
+        let mut widths = vec![0u32; n];
         let mut outputs: Vec<Option<(u32, u32)>> = Vec::new();
         for e in edges {
-            let ports = if e.to_child == BOUNDARY {
-                &mut outputs
-            } else if let Some(ports) = children.get_mut(e.to_child as usize) {
-                ports
-            } else {
-                // A destination that doesn't exist: nothing ever looks it up.
-                continue;
-            };
-            let p = e.to_port as usize;
-            if ports.len() <= p {
-                ports.resize(p + 1, None);
+            if e.to_child == BOUNDARY {
+                let p = e.to_port as usize;
+                if outputs.len() <= p {
+                    outputs.resize(p + 1, None);
+                }
+            } else if let Some(w) = widths.get_mut(e.to_child as usize) {
+                *w = (*w).max(e.to_port + 1);
             }
-            // The last edge to a destination wins, as the map this replaces kept it.
-            ports[p] = Some((e.from_child, e.from_port));
+            // A destination that doesn't exist: nothing ever looks it up.
         }
-        Incoming { children, outputs }
+        let mut starts = Vec::with_capacity(n + 1);
+        starts.push(0u32);
+        for w in &widths {
+            starts.push(starts.last().unwrap() + w);
+        }
+        let mut ports = vec![Source::Unwired; *starts.last().unwrap() as usize];
+        // The last edge to a destination wins, as the map this replaced kept it.
+        for e in edges {
+            if e.to_child == BOUNDARY {
+                outputs[e.to_port as usize] = Some((e.from_child, e.from_port));
+            } else if (e.to_child as usize) < n {
+                ports[(starts[e.to_child as usize] + e.to_port) as usize] = match e.from_child {
+                    BOUNDARY => Source::Input(e.from_port),
+                    fc if (fc as usize) < n => Source::Child(fc, e.from_port),
+                    fc => Source::Missing(fc, e.from_port),
+                };
+            }
+        }
+        Incoming { starts, ports, outputs }
+    }
+
+    /// What feeds port `port` of child `child`.
+    fn source(&self, child: usize, port: usize) -> Source {
+        let (start, end) = (self.starts[child] as usize, self.starts[child + 1] as usize);
+        if port < end - start { self.ports[start + port] } else { Source::Unwired }
     }
 
     /// What feeds port `port` of `child` (`BOUNDARY` for an output of the composite).
     fn get(&self, child: u32, port: u32) -> Option<(u32, u32)> {
-        let ports = if child == BOUNDARY { &self.outputs } else { self.children.get(child as usize)? };
-        ports.get(port as usize).copied().flatten()
+        if child == BOUNDARY {
+            return self.outputs.get(port as usize).copied().flatten();
+        }
+        if child as usize >= self.starts.len().saturating_sub(1) {
+            return None;
+        }
+        match self.source(child as usize, port as usize) {
+            Source::Unwired => None,
+            Source::Input(fp) => Some((BOUNDARY, fp)),
+            Source::Child(fc, fp) | Source::Missing(fc, fp) => Some((fc, fp)),
+        }
     }
 
     fn wired(&self, child: u32, port: u32) -> bool {
@@ -820,9 +1016,13 @@ fn eval_map(inputs: &[Option<&Value>], params: &[Param], resolver: &impl Resolve
     let mut out = Vec::with_capacity(list.len());
     let (mut pending, mut absent) = (false, false);
     let mut asks = Asks(observer);
+    // The item and the extras, lent: an application copies only what it keeps. Made once, the
+    // item put in place for each.
+    let mut args: Refs = SmallVec::with_capacity(1 + extra.len());
+    args.push(None);
+    args.extend_from_slice(extra);
     for (k, elem) in list.iter().enumerate() {
-        // The item and the extras, lent: an application copies only what it keeps.
-        let args: Refs = std::iter::once(Some(elem)).chain(extra.iter().copied()).collect();
+        args[0] = Some(elem);
         // Every item is applied, even after one comes out absent, so each item's requests are
         // asked in the same round rather than one round per item.
         match apply(&unit, &args, resolver, &mut asks, path, k) {
@@ -930,7 +1130,10 @@ fn eval_fold(inputs: &[Option<&Value>], params: &[Param], resolver: &impl Resolv
     for (k, elem) in list.iter().enumerate() {
         // fn(acc, elem, extra…) → new acc; absent or pending ⇒ the whole fold is. All lent.
         let next = {
-            let args: Refs = [Some(&acc), Some(elem)].into_iter().chain(extra.iter().copied()).collect();
+            let mut args: Refs = SmallVec::with_capacity(2 + extra.len());
+            args.push(Some(&acc));
+            args.push(Some(elem));
+            args.extend_from_slice(extra);
             apply(&unit, &args, resolver, &mut asks, path, k)
         };
         acc = match next {
@@ -1020,6 +1223,38 @@ mod tests {
             if found { cyclic += 1 } else { acyclic += 1 }
         }
         assert!(cyclic > 100 && acyclic > 100, "both kinds tried: {cyclic} cyclic, {acyclic} not");
+    }
+
+    /// The flat index gives, for every child's port and every output, what a map of the edges by
+    /// destination gives (the last edge to one winning), edges naming children that don't exist
+    /// included.
+    #[test]
+    fn the_flat_index_finds_what_a_map_of_the_edges_finds() {
+        let mut seed = 0x9e37_79b9_7f4a_7c15u64;
+        let mut next = move |m: u64| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed % m
+        };
+        for _ in 0..4000 {
+            let n = next(8) as usize;
+            let end = |r: u64| if r == 0 { BOUNDARY } else { (r - 1) as u32 };
+            let edges: Vec<Edge> = (0..next(16)).map(|_| edge(end(next(n as u64 + 3)), next(4) as u32, end(next(n as u64 + 3)), next(4) as u32)).collect();
+            let mut by_destination = BTreeMap::new();
+            for e in &edges {
+                by_destination.insert((e.to_child, e.to_port), (e.from_child, e.from_port));
+            }
+            let index = Incoming::of(n, &edges);
+            for child in (0..n as u32 + 2).chain([BOUNDARY]) {
+                for port in 0..6 {
+                    // A destination past the children is never looked up by the walk; the map
+                    // would hold it, the index needn't.
+                    let wanted = if child != BOUNDARY && child as usize >= n { None } else { by_destination.get(&(child, port)).copied() };
+                    assert_eq!(index.get(child, port), wanted, "child {child} port {port}, n {n}, edges {edges:?}");
+                }
+            }
+        }
     }
 
     #[test]
