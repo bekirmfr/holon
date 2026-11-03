@@ -812,9 +812,43 @@ pub(crate) fn handle_post_fire(store: &SharedStore, request: &Request) -> Respon
 ///
 /// The table is held only to take what the entry needs; the entry is redacted with no lock held,
 /// then numbered, chained and written under the deployment's own log lock, so a run of one
-/// deployment never waits on another's log (docs/L4s/request-path-L4.md, C2). Answers the seq the
-/// entry got.
-pub(crate) fn log_run(deployments: &Mutex<BTreeMap<String, Deployment>>, slug: &str, mut entry: LogEntry, tokens: Redactor) -> Option<u64> {
+/// deployment never waits on another's log (docs/L4s/request-path-L4.md, C2).
+///
+/// A strict run (`level`, its handler's, C5) returns once its entry is on disk, sharing the sync
+/// with the runs around it (C2 e); a lazy one is synced within `SYNC_EVERY`. Answers the seq the
+/// entry got, and whether it is known kept.
+pub(crate) fn log_run(deployments: &Mutex<BTreeMap<String, Deployment>>, slug: &str, entry: LogEntry, tokens: Redactor, level: holon_core::LogLevel) -> Option<Logged> {
+    let (log, seq) = push_run(deployments, slug, entry, tokens)?;
+    let kept = match level {
+        holon_core::LogLevel::Strict => log.sync_through(seq),
+        // Unrecorded runs are still logged, lazily, until the server acts on the word (build
+        // step 9b, docs/L4s/request-path-plan.md).
+        holon_core::LogLevel::Lazy | holon_core::LogLevel::Unrecorded => Ok(()),
+    };
+    Some(Logged { seq, kept })
+}
+
+/// A run as `log_run` logged it: its entry's seq, and, for a strict run, whether the entry is on
+/// disk (an error says why not).
+#[derive(Debug)]
+pub(crate) struct Logged {
+    pub(crate) seq: u64,
+    pub(crate) kept: Result<(), String>,
+}
+
+impl Logged {
+    /// The seq, saying on the console when a strict run's record isn't known kept: for a run that
+    /// answers nobody (a clock's, a file's, a resumed run's).
+    pub(crate) fn said(self, slug: &str) -> u64 {
+        if let Err(e) = &self.kept {
+            eprintln!("holon: {slug:?}: a run's record may not be on disk: {e}");
+        }
+        self.seq
+    }
+}
+
+/// `log_run`'s write: the entry pushed under the deployment's log lock, and the log it went to.
+fn push_run(deployments: &Mutex<BTreeMap<String, Deployment>>, slug: &str, mut entry: LogEntry, tokens: Redactor) -> Option<(Arc<recorder::LogCell>, u64)> {
     let (log, secrets, channels, permit, session) = {
         let table = deployments.lock().unwrap();
         let dep = table.get(slug)?;
@@ -823,7 +857,7 @@ pub(crate) fn log_run(deployments: &Mutex<BTreeMap<String, Deployment>>, slug: &
     let answered = std::mem::take(&mut entry.answered);
     tokens.and(Redactor::of(&secrets)).and(Redactor::answers(&answered.0, &secrets)).entry(&mut entry);
     entry.session = session;
-    Some(log.with(|log| {
+    let seq = log.with(|log| {
         // Its packs go out as it is logged, in the log's order: the run is over and its writes
         // have landed, and what a subscriber gets is what the log holds (channels.rs).
         let packs = channels.packs_of(&entry, log.next_seq());
@@ -832,7 +866,8 @@ pub(crate) fn log_run(deployments: &Mutex<BTreeMap<String, Deployment>>, slug: &
             channels.send(&name, pack, &permit.channels);
         }
         seq
-    }))
+    });
+    Some((log, seq))
 }
 
 /// The timeline, with the outputs of each node that carries the text of a file the log keeps by

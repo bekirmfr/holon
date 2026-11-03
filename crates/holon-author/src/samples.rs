@@ -760,6 +760,19 @@ static SAMPLES: &[Sample] = &[
         try_it: r#"curl -X POST -d '{"amount":100}' http://127.0.0.1:8162/accounts/a/move, then the same with b and 5, and a with -30: curl http://127.0.0.1:8162/accounts/a answers 70. holon history balance-trail --cell balances --item a lists the two runs that moved a (nothing → 100, 100 → 70), not b's; --cell moves lists all three. Put the state the first run left back (holon restore balance-trail --to-run SEQ --state) and move a by 1: its history shows the restore between the runs (70 → 100) and the new run (100 → 101). In the editor: view, pick a run, Flow state, ⧗ beside balances or one of its items"#,
         text: include_str!("../samples/balance-trail.holon"),
     },
+    Sample {
+        name: "status-board",
+        title: "Status board (how each handler's runs are recorded)",
+        description: "A log level per handler: every run is recorded, and by default on disk before it answers (strict). A handler that only reads and answers may say lazy, recorded all the same and on disk within a second, so it answers without waiting on the disk. One that writes is strict whatever it says.",
+        shows: &["log levels", "strict", "lazy", "collections"],
+        port: Some("8170"),
+        interval: None,
+        secrets: &[],
+        optional: &[],
+        browsers: None,
+        try_it: r#"curl http://127.0.0.1:8170/health ("ok", strict), curl -X POST -d '{"id":"a","text":"hi"}' http://127.0.0.1:8170/notes ("saved", strict), then curl http://127.0.0.1:8170/notes (the notes, lazy): holon history status-board lists all three runs. Put lazy on POST /notes and holon check says why it can't be"#,
+        text: include_str!("../samples/status-board.holon"),
+    },
 ];
 
 #[cfg(test)]

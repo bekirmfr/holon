@@ -1,0 +1,33 @@
+# Status board: how each handler's runs are recorded.
+#
+# Every run is recorded, and by default its record is on disk before the run answers: the handler
+# is strict. A handler that does nothing outside its run (it reads and answers) may say `lazy`
+# instead: its run is recorded all the same, and on disk within a second of the answer, so it
+# answers without waiting on the disk. A handler that writes, calls out or waits is strict
+# whatever it says: `lazy` on one is an error at the line that does it.
+#
+# Try it: deploy it (holon deploy status-board.holon), then
+#   curl http://127.0.0.1:8170/health                                       "ok", strict
+#   curl -X POST -d '{"id":"a","text":"hi"}' http://127.0.0.1:8170/notes    "saved", strict
+#   curl http://127.0.0.1:8170/notes                                        the notes, lazy
+# holon history status-board lists all three runs. Put `lazy` on POST /notes and holon check says
+# why it can't be.
+flow status-board
+port 8170
+collection notes
+
+# Answers the load balancer. Strict, the default: on disk before the answer.
+route GET /health (req) {
+  respond "ok"
+}
+
+# Lists the notes. Recorded, on disk within a second.
+route GET /notes (req) lazy {
+  respond notes.list(limit: 50)
+}
+
+# Adds a note. Strict: its record is what the change is undone and explained by.
+route POST /notes (req) {
+  notes[req.json.id] = req.json.text
+  respond "saved"
+}

@@ -433,7 +433,12 @@ the crate.
 11,224 req/s combined. (c) built (build step 4): a cut-back of a real 2.7 MB log went from 14–25 ms
 to 4.4–6.0 ms, and `hello` alone from 7,482–7,902 to 11,197 req/s at 64 threads (the plan has the
 numbers). (d) built (build step 5): logs synced every second and before each witness send, at no
-measurable cost to throughput. (e) is still to come.
+measurable cost to throughput. (e) built (build step 9a): a strict run answers once its entry is
+on disk, and runs at once share the sync, about 4–5 runs a sync at 8 and 64 threads. `hello`
+strict runs at 9,531 req/s at 64 threads on the throughput check (better than the 6,078 the
+throwaway build measured) and `lazy` at 14,464; one at a time, 3,189 against 16,322 (p50 291 µs
+against 50 µs). The watermark is a seq, not a byte offset (below), since a cut-back renumbers no
+entry but rewrites every offset.
 
 **What.** Each deployment's log gets its own lock, the line is appended through a file kept open,
 and a cut-back copies bytes instead of parsing. A line still reaches the OS before its run
@@ -1373,18 +1378,18 @@ The end-to-end tests (`editor/e2e`) and `editor/src/samples.test.ts` must stay g
    outbound request on disk before it is sent (write-ahead in the round loop) would also cover a run
    that called out and then lost power. Is that wanted, and for which calls? It costs one fsync per
    outbound request, small next to the request itself. It needs its own note.
-9. **`allow_unrecorded`'s default.** The other exceptions default to off (`permissions.rs:413–414`).
-   `Unrecorded` is allowed only on handlers that only read, and each one is approved, so `true` may
-   be the better default. Off is the conservative one.
-10. **Failures of unrecorded handlers.** They're recorded by default here. Should there be a form
-    that drops them too (`unrecorded always`), for privacy, or should "no record" mean no record
-    at all?
-11. **The headline.** "Keeps a record of every run" (`README.md:3`) becomes something like "keeps a
-    record of every run, on disk before it answers, except handlers a person approved as
-    unrecorded, and only ones that change nothing". That is a product decision.
-12. **Requests no route took.** Here they're `lazy`. Should the policy, or the flow (a header,
-    `unrouted unrecorded`), be able to make them unrecorded, so scanners' probes stay out of the log
-    too?
+9. **Decided: `allow_unrecorded` is on by default.** The other exceptions default to off
+   (`permissions.rs:413–414`), but `Unrecorded` is allowed only on handlers that only read, and a
+   person approves each one at deploy, so a second switch in the host's policy would add friction
+   and no safety. A host can still turn it off.
+10. **Decided: an unrecorded handler's failures are recorded,** lazily: a failure is what someone
+    looks into. No form that drops them too (`unrecorded always`) until a flow asks for one.
+11. **Decided: the headline** "keeps a record of every run" (`README.md:3`) becomes "keeps a record
+    of every run, on disk before it answers, except handlers a person approved as unrecorded, which
+    change nothing", in build step 9b, when unrecorded handlers exist.
+12. **Decided: requests no route took are `lazy`.** A way to make them unrecorded (a policy
+    setting, or a header such as `unrouted unrecorded`), so scanners' probes stay out of the log
+    too, can come later.
 13. **Outbound reads under `lazy`.** A handler that only fetches (`http.get`) is excluded by the rule,
     because `HttpRequest` is performed. Core already tells reads from outside apart
     (`reads_from_outside`, `manifest.rs:90`). Should a handler whose only performed capability is a

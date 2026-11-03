@@ -39,7 +39,8 @@ code. Where the design leaves a decision open (§8), the step that needs it says
 | 6b | B.2, the witness's queue file kept open (**done**) | `holon` | none | |
 | 7 | C3 (b)–(e), the state head (**done**) | `holon` | adds `deployments.state/`, drops `state_refs` (no migration) | |
 | 8 | C5 in the language and core (**done**) | `holon-core`, `holon-author`, `holon-wasm`, `editor` (types) | a new param in handler units, only for flows that use a word | |
-| 9 | C2 (e) and C5 in the server | `holon`, `holon-core`, `holon-author`, `holon-wasm`, `editor`, docs, a sample | none new | Q9, Q10, Q11, Q12 |
+| 9a | C2 (e), strict sync, and `lazy` at run time | `holon`, `holon-author` (the sample), docs | none new | decided: Q12, unrouted requests lazy |
+| 9b | C5's `unrecorded` in the server | `holon`, `holon-core`, `holon-author`, `holon-wasm`, `editor`, docs, the sample | none new | decided: Q9 on, Q10 failures recorded, Q11 the headline |
 | 10 | C3 (f), the log line as the state commit | `holon` | the head file goes | only if step 9's numbers ask |
 | 11 | C4, the store lock | `holon`, `holon-host` | none | only after re-measuring |
 | 12 | §4.5 (a), the per-run constant | `holon` | none | Q16, for its last item |
@@ -674,10 +675,16 @@ core and language)`.
 
 ## Step 9. C2 (e) and C5 in the server
 
-**Decisions first:** §8 Q9 (`allow_unrecorded`'s default), Q10 (failures of unrecorded handlers),
-Q11 (the README headline) and Q12 (requests no route took). The plan assumes these defaults:
-`allow_unrecorded = false`, failures recorded, the headline as Q11 drafts it, and unrouted requests
-`lazy`.
+**Split in two:** 9a is strict sync and `lazy` at run time (everything under "Strict sync" below,
+the sample with its `lazy` route, the measurements); 9b is `unrecorded` (everything under
+"Unrecorded runs", "Permissions" and "The editor…", the sample's `unrecorded` handlers, the
+headline). Each is measured and reviewed on its own.
+
+**Decisions** (§8): Q9, `allow_unrecorded` is **on** by default (each unrecorded handler is still
+approved at deploy, and only one that reads may be); Q10, an unrecorded handler's failures are
+recorded; Q11, the headline as Q11 drafts it; Q12, requests no route took are `lazy`. Where the
+text below says `allow_unrecorded = false` or turns it on for the e2e server, it is now the
+default and needs no turning on.
 
 **Strict sync, C2 (e)** (`recorder.rs`):
 - **Group commit:**
@@ -797,6 +804,64 @@ Q11 (the README headline) and Q12 (requests no route took). The plan assumes the
 
 **Commit:** `server: runs recorded strictly by default; lazy and approved unrecorded handlers (C2 e,
 C5)`, which says it was run live.
+
+### Step 9a done
+
+Built as "Strict sync" says, with these differences:
+- **A seq, not an offset.** `LogCell.synced` is the seq up to which every entry is on disk, and
+  `sync_through(seq)` takes the entry's seq, which `log_run` already had: a cut-back renumbers no
+  entry, so nothing has to be reset when it rewrites the file (it syncs the new file itself, and
+  clears the dirty flag). No second file handle: `sync_file` opens the path, a few µs beside the
+  sync.
+- **The syncer goes through the cell.** `sync_logs` calls `LogCell::sync`, under the same lock as a
+  strict run's sync. Otherwise a strict run could find the dirty flag cleared by the syncer and
+  return while the syncer's sync was still under way.
+- **A line that wasn't written** (its file couldn't be opened or written) is noted by its seq
+  (`Log.unkept`, the newest 1,024), so `sync_through` says so rather than a later successful sync
+  covering it.
+- **Levels at run time.** `log_run` takes the level: a route's from its endpoint unit
+  (`log_level`), a clock's, a file handler's and an action's from the declared `Clock`,
+  `FileHandler` and `Action`; `/trigger` and a resumed run are strict (a run that waits can't be
+  anything else); a request no route took is lazy. `unrecorded` is logged lazily until 9b.
+- **A failed write or sync** answers a request, a `/trigger` and an action with a 500 ("it ran,
+  but its record…"), and prints for the others (`Logged::said`).
+- **The sample** is `status-board` with `GET /health` strict, `GET /notes` lazy and `POST /notes`
+  strict; 9b makes `/health` unrecorded. `notes-api`'s `GET /notes` and `orders-api`'s
+  `GET /orders/:customer` are lazy.
+- **Tests:** `one_sync_covers_every_entry_written_before_it` (`recorder.rs`: the group commit
+  itself, deterministic, and an unwritten line) and
+  `a_strict_run_is_on_disk_before_its_answer_and_a_lazy_one_waits_for_the_syncer` (`tests.rs`:
+  strict reads, writes and actions, a lazy route and action, 404 and 405, 32 runs at once: 5
+  syncs). `sync_logs_syncs_…` uses a lazy route, since a strict run leaves nothing to sync.
+
+**Measured** (throughput check, 3 s a row, now with lazy twins of `hello` and `/last` and a
+syncs-per-run column):
+
+| route | threads | before (step 7) | strict | lazy | syncs a run, strict |
+|---|---|---|---|---|---|
+| `GET /hello/Ada` | 1 | | 3,189 (p50 291 µs) | 16,322 (p50 50 µs) | 1.00 |
+| `GET /hello/Ada` | 64 | 13,583 | 9,531 | 14,464 | 0.23 |
+| `POST /calc` | 64 | | 8,294 | | 0.22 |
+| `GET /last` (reads state) | 64 | about 14,000 | 9,785 | 14,493 | 0.21 |
+| `GET /hit` (writes state) | 64 | 702 | 754 | (strict whatever it says) | 1.00 |
+
+A writing run's state head is synced under its claim, so writes to one key take turns and don't
+share log syncs; they were already paying a sync each, and stay where they were.
+
+**Run live** (`holon serve`, `status-board` deployed with `holon deploy --approve`, `wrk` for 5 s):
+all three routes answer and `holon history status-board` lists each run.
+
+| | 1 connection | 64 connections |
+|---|---|---|
+| `GET /health` (strict) | 2,210 (p50 423 µs) | 8,306 |
+| `GET /notes` (lazy, lists the collection) | 4,298 (p50 203 µs) | 7,494 |
+| `POST /notes` (strict, a write) | 1,626 | 6,574 |
+| `hello-api` `GET /hello/Ada` (strict) | 2,146 | 8,656 (about 10,000 lazy, step 7) |
+| `counter` `GET /last` (strict) | 2,078 | 8,652 (10,382, step 7) |
+| `counter` `GET /hit` | 889 | 1,399 (986, step 7) |
+
+Live at 64 connections, hyper and the client take most of the difference, so strict costs about
+13–17 % there; one connection at a time, it is the sync, about 0.25 ms a request on this disk.
 
 ## Step 10. C3 (f): the log line as the state commit (only if step 9's numbers ask)
 

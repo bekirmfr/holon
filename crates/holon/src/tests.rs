@@ -7251,7 +7251,8 @@ fn one_deployments_log_doesnt_hold_up_another() {
 fn sync_logs_syncs_what_was_written_and_keeps_a_log_that_fails_dirty() {
     let mut state = test_state();
     state.deployments_path = unique_temp_path("sync-logs");
-    let slug = deploy_plain_text(&state, include_str!("../../holon-author/samples/hello-api.holon"));
+    // Lazy: its runs are left to the syncer (a strict one syncs before it answers).
+    let slug = deploy_plain_text(&state, "flow hello-api\nport 8101\n\nroute GET /hello/:name (req) lazy {\n  respond \"Hello, {req.params.name}\"\n}\n");
     assert_eq!(serve_data(&state.store, &state.deployments, &state.deployments_path, &slug, &fake_data("GET", "/hello/Ada", vec![])).status, 200);
     let log = Arc::clone(&state.deployments.lock().unwrap()[&slug].log);
     assert_eq!(recorder::sync_logs(&state.deployments), Ok(()));
@@ -7269,6 +7270,57 @@ fn sync_logs_syncs_what_was_written_and_keeps_a_log_that_fails_dirty() {
     std::fs::remove_dir(&file).unwrap();
     assert_eq!(recorder::sync_logs(&state.deployments), Ok(()));
     assert_eq!(log.with(Log::take_dirty), None);
+    let _ = std::fs::remove_file(&state.deployments_path);
+    let _ = std::fs::remove_dir_all(Path::new(&state.deployments_path).with_extension("logs"));
+}
+
+/// A run is recorded strictly unless its handler says otherwise (docs/L4s/request-path-L4.md,
+/// C2 e and C5): a strict request is answered once its entry is on disk, and a lazy one, a lazy
+/// action and a request no route took are left to the syncer, which syncs them within a second.
+/// Strict runs at once share syncs: none takes more than one.
+#[test]
+fn a_strict_run_is_on_disk_before_its_answer_and_a_lazy_one_waits_for_the_syncer() {
+    let mut state = test_state();
+    state.deployments_path = unique_temp_path("strict-sync");
+    let slug = deploy_plain_text(
+        &state,
+        "flow board\nport 8170\ncollection notes\n\nroute GET /health (req) {\n  respond \"ok\"\n}\n\nroute GET /notes (req) lazy {\n  respond notes.list(limit: 50)\n}\n\nroute POST /notes (req) {\n  notes[req.json.id] = req.json.text\n  respond \"saved\"\n}\n\naction report (input) lazy {\n  respond notes.list(limit: 50)\n}\n\naction count (input) {\n  respond notes.list(limit: 50)\n}\n",
+    );
+    let log = Arc::clone(&state.deployments.lock().unwrap()[&slug].log);
+    let call = |method: &str, url: &str, body: &str| serve_data(&state.store, &state.deployments, &state.deployments_path, &slug, &fake_data(method, url, body.as_bytes().to_vec())).status;
+    let synced = || log.with(|l| l.take_dirty().inspect(|_| l.still_dirty())).is_none();
+    let action = |name: &str| run_action(&state.store, &state.deployments, &state.deployments_path, &slug, name, Ok(Value::Record(BTreeMap::new())), None, false, &[]).status;
+
+    // Strict: a read, and a write.
+    assert_eq!(call("GET", "/health", ""), 200);
+    assert_eq!((log.syncs(), synced()), (1, true), "a strict read is on disk when it answers");
+    assert_eq!(call("POST", "/notes", r#"{"id":"a","text":"hi"}"#), 200);
+    assert_eq!((log.syncs(), synced()), (2, true), "and a write");
+    assert_eq!(action("count"), 200);
+    assert_eq!((log.syncs(), synced()), (3, true), "and an action");
+
+    // Lazy: answered before its entry is on disk; the syncer's next tick syncs it.
+    assert_eq!(call("GET", "/notes", ""), 200);
+    assert_eq!((log.syncs(), synced()), (3, false), "a lazy run is answered without a sync");
+    assert_eq!(action("report"), 200);
+    assert_eq!(call("GET", "/nowhere", ""), 404);
+    assert_eq!(call("DELETE", "/health", ""), 405);
+    assert_eq!((log.syncs(), synced()), (3, false), "a lazy action, and requests no route took, likewise");
+    assert_eq!(recorder::sync_logs(&state.deployments), Ok(()));
+    assert_eq!((log.syncs(), synced()), (4, true), "one sync for all four");
+    assert_eq!(log.next_seq(), 7, "every run is in the log");
+
+    // Many strict runs at once: each on disk when it answers, never more than one sync each.
+    let before = log.syncs();
+    std::thread::scope(|s| {
+        for _ in 0..32 {
+            s.spawn(|| assert_eq!(call("GET", "/health", ""), 200));
+        }
+    });
+    let syncs = log.syncs() - before;
+    assert!((1..=32).contains(&syncs), "{syncs} syncs for 32 runs");
+    assert!(synced());
+    eprintln!("32 strict runs at once: {syncs} syncs");
     let _ = std::fs::remove_file(&state.deployments_path);
     let _ = std::fs::remove_dir_all(Path::new(&state.deployments_path).with_extension("logs"));
 }
@@ -7785,9 +7837,19 @@ fn request_throughput() {
     let mut state = test_state_with(SharedStore::on_disk(Box::new(disk), values));
     state.deployments_path = unique_temp_path("throughput");
     let calc = include_str!("../../holon-author/samples/calc.holon");
-    for text in [include_str!("../../holon-author/samples/hello-api.holon"), calc, include_str!("../../holon-author/samples/counter.holon")] {
+    let (hello, counter) = (include_str!("../../holon-author/samples/hello-api.holon"), include_str!("../../holon-author/samples/counter.holon"));
+    for text in [hello, calc, counter] {
         deploy_plain_text(&state, text);
     }
+    // Their reads again, lazy (C5): the same runs, recorded without a sync before the answer.
+    let lazy = |text: &str, name: &str, port: &str, route: &str| {
+        let text = text.replace(&format!("route GET {route} (req) {{"), &format!("route GET {route} (req) lazy {{"));
+        text.replacen(&format!("flow {name}\n"), &format!("flow {name}-lazy\n"), 1).replacen(&format!("port {port}"), &format!("port {}", port.parse::<u16>().unwrap() + 1000), 1)
+    };
+    deploy_plain_text(&state, &lazy(hello, "hello-api", "8101", "/hello/:name"));
+    // Its write route goes: a lazy /last beside a strict /hit would be the same deployment's log.
+    let last_only = counter.split("route GET /hit").next().unwrap().to_string() + "route GET /last" + counter.split("route GET /last").nth(1).unwrap();
+    deploy_plain_text(&state, &lazy(&last_only, "counter", "8155", "/last"));
     // Deployments the measured ones share the server with, as a server with others would.
     for i in 1..=30 {
         let text = calc.replacen("flow calc", &format!("flow calc{i}"), 1).replacen("port 8116", &format!("port {}", 8200 + i), 1);
@@ -7801,20 +7863,24 @@ fn request_throughput() {
         ("calc", "POST", "/calc", r#"{"op":"mul","a":6,"b":7}"#),
         ("counter", "GET", "/hit", ""),
         ("counter", "GET", "/last", ""),
+        ("hello-api-lazy", "GET", "/hello/Ada", ""),
+        ("counter-lazy", "GET", "/last", ""),
     ];
     let request = |method: &str, url: &str, body: &str| {
         let headers = if body.is_empty() { vec![] } else { vec![("content-type".to_string(), "application/json".to_string())] };
         data::DataRequest { method: method.into(), url: url.into(), headers, body: body.as_bytes().to_vec(), by: None }
     };
     println!("request_throughput: an on-disk store, {deployments} deployments ({file_kb} KB deployments file), {secs}s per row (serve_data: no hyper, no blocking-pool hop)");
-    println!("{:<22} {:>7} {:>10} {:>10} {:>10}", "route", "threads", "req/s", "p50", "p99");
+    println!("{:<27} {:>7} {:>10} {:>10} {:>10} {:>10}", "route", "threads", "req/s", "p50", "p99", "syncs/run");
     for (slug, method, url, body) in routes {
         let (status, answer) = {
             let r = serve_data(&state.store, &state.deployments, &state.deployments_path, slug, &request(method, url, body));
             (r.status, String::from_utf8_lossy(&r.body).into_owned())
         };
         assert_eq!(status, 200, "{method} {url} on {slug}: {answer}");
+        let log = Arc::clone(&state.deployments.lock().unwrap()[slug].log);
         for threads in [1, 8, 64] {
+            let syncs = log.syncs();
             let started = std::time::Instant::now();
             let stop = started + Duration::from_secs_f64(secs);
             let mut times: Vec<Duration> = thread::scope(|s| {
@@ -7837,8 +7903,9 @@ fn request_throughput() {
             let elapsed = started.elapsed().as_secs_f64();
             times.sort();
             let at = |q: f64| times[((times.len() as f64 * q) as usize).min(times.len() - 1)];
-            let label = format!("{method} {url}");
-            println!("{label:<22} {threads:>7} {:>10.0} {:>10.2?} {:>10.2?}", times.len() as f64 / elapsed, at(0.50), at(0.99));
+            let label = format!("{slug} {method} {url}");
+            let per_run = (log.syncs() - syncs) as f64 / times.len() as f64;
+            println!("{label:<27} {threads:>7} {:>10.0} {:>10.2?} {:>10.2?} {per_run:>10.2}", times.len() as f64 / elapsed, at(0.50), at(0.99));
         }
     }
     // Two deployments at once, 32 threads each: what one deployment's runs cost the other's.

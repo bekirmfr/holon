@@ -124,6 +124,8 @@ fn serve_flow(
     }
 
     let mut ran: Option<LogEntry> = None;
+    // How its run is recorded: its route's level, or, a request no route took, lazy (C5).
+    let mut level = holon_core::LogLevel::Lazy;
     // Whether its answer may be computed from a secret: the log keeps it withheld then.
     let mut answer_derived = false;
     // A secret its answer carries that it wasn't approved to answer with: the caller gets a 500.
@@ -137,6 +139,7 @@ fn serve_flow(
         &resolver,
         &http,
         |endpoint, route, req, sourced| {
+            level = holon_core::log_level(endpoint).unwrap_or_default();
             let run = fire_with_state(endpoint, &[Some(req.clone())], &resolver, store, state.as_ref(), sourced, &permit, false, &secrets, &mut waits, None);
             let unit = hash_unit(endpoint).unwrap_or([0; 32]);
             parked = durable::park_if_waiting(deployments, store, slug, &unit, "request", Some(route.to_string()), &[Some(req.clone())], sourced, &run, &waits);
@@ -223,7 +226,11 @@ fn serve_flow(
         tokens = tokens.and(Redactor::tokens(&BTreeMap::from([(name.clone(), token.clone())])));
     }
     let parked_any = !entry.parked.is_empty();
-    log_run(deployments, slug, entry, tokens);
+    // A strict run answers once its record is on disk; one whose record may not be isn't
+    // answered as done (C2 e).
+    if let Some(Logged { kept: Err(e), .. }) = log_run(deployments, slug, entry, tokens, level) {
+        answer = data::DataResponse::json_error(500, &format!("the request ran, but {e}"));
+    }
     // The state is kept by its head, written as the change landed (claims.rs); the deployments
     // file changes only with the deployment's definition, here its waiting runs.
     if parked_any {

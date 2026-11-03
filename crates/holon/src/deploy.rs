@@ -955,12 +955,16 @@ pub(crate) fn handle_post_trigger(
         Err(e) => entry.error = Some(e),
     }
     let parked_any = !entry.parked.is_empty();
-    log_run(deployments, slug, entry, Redactor::tokens(&waits.tokens));
+    // A whole flow run by hand is not a handler, so it is strict (C5).
+    let logged = log_run(deployments, slug, entry, Redactor::tokens(&waits.tokens), holon_core::LogLevel::Strict);
     let FiredRun { outputs, performed, answered, .. } = run;
     // The state is kept by its head, written as the change landed (claims.rs); the deployments
     // file changes only with the deployment's definition, here its waiting runs.
     if parked_any {
         persist_deployments(deployments_path, deployments);
+    }
+    if let Some(Logged { kept: Err(e), .. }) = logged {
+        return err(500, format!("the run happened, but {e}"));
     }
 
     let redactor = Redactor::of(&vault);
@@ -1121,13 +1125,18 @@ pub(crate) fn run_action(
     }
     let (parked_any, error) = (!entry.parked.is_empty(), entry.error.is_some());
     // The seq its entry got, not the next one read beforehand: another run may log between.
-    let seq = log_run(deployments, slug, entry, Redactor::tokens(&waits.tokens)).unwrap_or(0);
+    let (seq, kept) = log_run(deployments, slug, entry, Redactor::tokens(&waits.tokens), action.log).map_or((0, Ok(())), |l| (l.seq, l.kept));
     // The state is kept by its head, written as the change landed (claims.rs); the deployments
     // file changes only with the deployment's definition, here its waiting runs.
     if parked_any {
         persist_deployments(deployments_path, deployments);
     }
     let ran = |status: u16, reply: serde_json::Value, answer: Option<Value>, waiting: bool, error: Option<String>, why: Option<&'static str>| ActionRan { status, reply, answer, seq: Some(seq), waiting, error, why };
+    // A strict run whose record isn't on disk isn't answered as done: it may not be on record.
+    if let Err(e) = kept {
+        let message = format!("the action ran, but {e}");
+        return ran(500, serde_json::json!({ "error": message }), None, false, Some(message), Some("failed"));
+    }
     if error {
         let message = format!("the action failed: its run log says why (entry {seq})");
         return ran(500, serde_json::json!({ "error": message }), None, false, Some(message), Some("failed"));

@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **Every run's record is on disk before its answer.** A run of a route, clock, file handler or
+  action is answered (or counts as done) once its log entry is synced, not only written: an
+  answered run is recorded, a power loss or not. Runs at once share the sync. A handler that only
+  reads and answers may say `lazy` on its line (`route GET /notes (req) lazy { … }`) to be synced
+  within a second instead, as every run was before, and faster for it; one that writes, calls out
+  or waits can't, and `holon check` says why at the line. Requests no route took are lazy. A run
+  whose record couldn't be written or synced is answered with a 500. New sample:
+  `status-board`; `notes-api` and `orders-api` list lazily.
 - **`chess`: a Sphinx that doesn't answer in time keeps its turn.** When its move call times out,
   the rules no longer play for it at once: the page says so and offers Try again (ask it once
   more) or Let the rules play. While its turn waits, `POST /move` takes only `again` or `rules`,

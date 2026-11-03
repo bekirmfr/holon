@@ -156,7 +156,8 @@ pub(crate) fn fire_one_clock_tick(
         Err(e) => entry.error = Some(e),
     }
     let parked_any = !entry.parked.is_empty();
-    log_run(deployments, &slug, entry, Redactor::tokens(&waits.tokens));
+    // A whole flow on its interval is strict; a server's clock is as its line says.
+    log_run(deployments, &slug, entry, Redactor::tokens(&waits.tokens), clock.map_or_else(Default::default, |c| c.log)).map(|l| l.said(&slug));
 
     // What it produced isn't printed: a secret or a resume token in it would land in the server's
     // console, which nothing redacts.

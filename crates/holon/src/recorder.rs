@@ -386,6 +386,9 @@ pub struct Log {
     file_len: u64,
     /// Whether lines were written since the file was last synced to disk (`sync_logs`).
     dirty: bool,
+    /// The seqs of the recent entries whose line couldn't be written to the file, so a strict run
+    /// isn't told its record is on disk (`LogCell::sync_through`). The newest few.
+    unkept: VecDeque<u64>,
 }
 
 /// How often the logs' files are synced to disk (`sync_logs`): what a power loss can lose of them,
@@ -417,10 +420,9 @@ pub(crate) fn sync_logs(deployments: &std::sync::Mutex<BTreeMap<String, crate::D
     };
     let mut failed: Option<String> = None;
     for log in logs {
-        let Some(path) = log.with(Log::take_dirty) else { continue };
-        if let Err(e) = sync_file(&path) {
-            log.with(Log::still_dirty);
-            failed.get_or_insert(format!("could not sync the run log {}: {e}", path.display()));
+        // Through the cell, so a strict run waiting on its sync knows when it is done.
+        if let Err(e) = log.sync() {
+            failed.get_or_insert(e);
         }
     }
     for (slug, path) in events {
@@ -463,16 +465,67 @@ fn lines_of(text: &str) -> Vec<(&str, Option<LogEntry>, u64)> {
 /// deployment append one at a time, in one order, and runs of different deployments never wait
 /// for each other. The deployments table is never taken while this lock is held. `next_seq` is
 /// mirrored outside the lock, for a reader that holds the table and needs only that.
+///
+/// It syncs its file too (C2 d and e): `synced` is the seq up to which every line is on disk, and
+/// a sync holds its lock, so one run's sync covers every line written before it started, and a
+/// run that waited for it finds its own line covered and returns without one of its own (group
+/// commit). The log's lock is taken only to read what to sync, never across the sync itself, so
+/// runs go on writing while one syncs.
 #[derive(Debug)]
 pub struct LogCell {
     log: Mutex<Log>,
     next_seq: AtomicU64,
+    /// Every entry before this seq is on disk.
+    synced: Mutex<u64>,
+    /// How many times its file was synced, for the tests and the throughput check.
+    syncs: AtomicU64,
 }
 
 impl LogCell {
     pub fn new(log: Log) -> LogCell {
         let next_seq = AtomicU64::new(log.next_seq);
-        LogCell { log: Mutex::new(log), next_seq }
+        let synced = Mutex::new(log.next_seq);
+        LogCell { log: Mutex::new(log), next_seq, synced, syncs: AtomicU64::new(0) }
+    }
+
+    /// Return once entry `seq` is on disk, with every entry before it: at once if a sync since it
+    /// was written covered it, or after one sync, which covers every entry written so far, its
+    /// own and others' (a strict run, before its answer). An error if its line was never written,
+    /// or the sync failed.
+    pub fn sync_through(&self, seq: u64) -> Result<(), String> {
+        let mut synced = self.synced.lock().unwrap();
+        if *synced > seq {
+            return Ok(());
+        }
+        self.sync_locked(&mut synced)?;
+        if self.with(|log| log.unkept.contains(&seq)) {
+            return Err(format!("its record (entry {seq}) couldn't be written to the log's file"));
+        }
+        Ok(())
+    }
+
+    /// Sync whatever was written since the last sync (the syncer, each `SYNC_EVERY`).
+    pub fn sync(&self) -> Result<(), String> {
+        self.sync_locked(&mut self.synced.lock().unwrap())
+    }
+
+    fn sync_locked(&self, synced: &mut u64) -> Result<(), String> {
+        let (path, upto) = self.with(|log| (log.take_dirty(), log.next_seq));
+        if let Some(path) = path {
+            self.syncs.fetch_add(1, Ordering::Relaxed);
+            if let Err(e) = sync_file(&path) {
+                self.with(Log::still_dirty);
+                return Err(format!("could not sync the run log {}: {e}", path.display()));
+            }
+        }
+        *synced = upto;
+        Ok(())
+    }
+
+    /// How many times its file was synced.
+    #[cfg(test)]
+    pub fn syncs(&self) -> u64 {
+        self.syncs.load(Ordering::Relaxed)
     }
 
     /// The seq the next entry will get, without taking the lock.
@@ -538,6 +591,7 @@ impl Log {
             lines: VecDeque::new(),
             file_len: 0,
             dirty: false,
+            unkept: VecDeque::new(),
         };
         let Some(path) = &log.file else { return log };
         let Ok(text) = std::fs::read_to_string(path) else { return log };
@@ -624,6 +678,7 @@ impl Log {
             Ok(line) => line,
             Err(e) => {
                 eprintln!("holon: could not write a flow log entry: {e}");
+                self.unkept(seq);
                 return seq;
             }
         };
@@ -634,8 +689,18 @@ impl Log {
         self.prune(now_ms());
         if let Err(e) = self.keep_line(&line, at) {
             eprintln!("holon: could not keep the flow log in {:?}: {e}", self.file);
+            self.unkept(seq);
         }
         seq
+    }
+
+    /// Entry `seq`'s line isn't in the file.
+    fn unkept(&mut self, seq: u64) {
+        const KEPT: usize = 1024;
+        if self.unkept.len() == KEPT {
+            self.unkept.pop_front();
+        }
+        self.unkept.push_back(seq);
     }
 
     /// Write the newest entry's `line` (a run at `at_ms`) to the file: appended, or, once the
@@ -1181,6 +1246,54 @@ mod tests {
         log.push(entry()); // the fifth line: cut back, written whole and synced
         assert_eq!(log.take_dirty(), None);
         assert!(sync_file(&dir.join("gone.jsonl")).is_ok(), "a file deleted with its deployment has nothing to sync");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// One sync covers every entry written before it (C2 e, group commit): a run whose entry an
+    /// earlier sync covered returns without one of its own, and a sync with nothing new written
+    /// syncs nothing. An entry whose line couldn't be written isn't said to be kept, even once a
+    /// sync after it succeeds.
+    #[test]
+    fn one_sync_covers_every_entry_written_before_it() {
+        let dir = temp_dir("group-commit");
+        let cell = LogCell::new(Log::open_keeping(Some(dir.join("slug.jsonl")), 100));
+        let seqs: Vec<u64> = (0..5).map(|_| cell.with(|log| log.push(entry()))).collect();
+        assert_eq!(cell.syncs(), 0, "writing syncs nothing");
+        assert_eq!(cell.sync_through(seqs[4]), Ok(()));
+        assert_eq!(cell.syncs(), 1);
+        for &seq in &seqs {
+            assert_eq!(cell.sync_through(seq), Ok(()));
+        }
+        assert_eq!(cell.syncs(), 1, "the four before it were covered by the one sync");
+        assert_eq!(cell.sync(), Ok(()));
+        assert_eq!(cell.syncs(), 1, "nothing new written: nothing to sync");
+        let next = cell.with(|log| log.push(entry()));
+        assert_eq!(cell.sync_through(next), Ok(()));
+        assert_eq!(cell.syncs(), 2, "a new entry, a new sync");
+
+        // Many runs at once: each returns with its entry on disk, and none syncs more than once.
+        std::thread::scope(|s| {
+            for _ in 0..32 {
+                s.spawn(|| {
+                    let seq = cell.with(|log| log.push(entry()));
+                    assert_eq!(cell.sync_through(seq), Ok(()));
+                });
+            }
+        });
+        assert!(cell.syncs() <= 2 + 32, "{}", cell.syncs());
+        assert_eq!(cell.with(Log::take_dirty), None, "every entry is on disk");
+
+        // A line that couldn't be written: a folder where the file was.
+        let file = dir.join("slug.jsonl");
+        cell.with(|log| log.handle = None);
+        std::fs::remove_file(&file).unwrap();
+        std::fs::create_dir(&file).unwrap();
+        let lost = cell.with(|log| log.push(entry()));
+        std::fs::remove_dir(&file).unwrap();
+        let kept = cell.with(|log| log.push(entry()));
+        let said = cell.sync_through(lost).unwrap_err();
+        assert!(said.contains(&format!("entry {lost}")), "{said}");
+        assert_eq!(cell.sync_through(kept), Ok(()), "the next one, written, is kept");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -178,8 +178,14 @@ and the grant it ran under, and who started it. Secrets and resume tokens are re
 looks like one is written escaped (each `‹` before it doubled, and `"escaped": true` on the
 entry), so a placeholder in the log is always the server's own.
 
-A run's entry is written before its answer is sent, and synced to disk within a second, as the
-deployment's events are: a power loss can lose the last second of entries, never more.
+A run's entry is on disk before its answer is sent: an answered run is recorded, a power loss
+or not. Runs at once share the sync, so a busy deployment syncs its log far less often than once
+a run. A handler that only reads and answers may say `lazy` on its line ([Language
+reference](../language/reference.md#clocks-files-and-actions)): its runs' entries are written
+before the answer and synced within a second, as the deployment's events are, so a power loss can
+lose the last second of them, never more. So are requests no route took (a 404, a 405). A run
+whose entry couldn't be written or synced is answered with a 500: it ran, but isn't known to be
+on record.
 
 `--export-heads URL` sends each new head to a witness every five seconds, with
 `HOLON_EXPORT_HEADS_TOKEN` as a bearer token; heads that can't be sent wait in
