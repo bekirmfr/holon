@@ -201,6 +201,33 @@ after keeps each honest. The gains below are estimated from the shares above.
    revisit, take a node's inputs by reference where the leaf only reads them (`field`, `length`,
    comparisons), move a value to its last consumer.
    *Estimated: `crunch` 20–30%.*
+   **Done and measured (step 3):** a node's inputs are lent, never copied to be read. The walk
+   reads each input as a reference to where it is kept (the composite's own inputs, or the slot
+   of the child that made it), so looking at a node, and looking again at one still waiting,
+   copies nothing; `eval_at` takes its inputs so, and hands an ordinary leaf's straight to
+   `compute`, which borrowed them already. A `map` lends each item and its extras to its
+   function, a `fold` its accumulator too, where each application cloned them. A composite's
+   results are moved out of its scratch, which goes as it returns, unless two of its outputs
+   read the same one. The choice rule (`choice_next`) reads borrowed slots underneath (it cloned
+   each it looked at), with the same answers; `Observer::asserted` is lent the inputs too. The
+   few nodes whose builders take inputs owned (a request, a module) are given copies, as before.
+   Moving a value to its last consumer, the map's third item, turned out to be needless: lent,
+   no consumer copies its input at all.
+
+   Workspace tests, both golden records (every node's outputs, every sample), the eager oracle
+   and the deep-nesting test unchanged. Instructions a run: `crunch` 66.35M → 29.42M
+   (**−55.7%**; 4,489–4,838 → 2,046–2,079 µs a run), `hello` 205.0k → 135.0k (**−34.2%**; every
+   node reading the request copied the whole request to read one field of it; 16.8–19.0 →
+   11.6–12.8 µs), `notes` 537.9k → 461.3k (−14.2%; 72–78 → 60–64 µs). Live against step 2
+   (`wrk`, two rounds alternating, C# in the same rounds):
+   - unrecorded `hello` 55,477–56,808 → 65,536–68,300 req/s (54–55 → 43–46 µs of CPU a
+     request), against C#'s 132,607–134,479: **2.0×** from 2.4×;
+   - unrecorded `calc` 51,808–53,283 → 62,595–62,872 (59–61 → 48–49 µs);
+   - `crunch` (unrecorded), throughput doubled at every size: 100 items 6,295–6,888 →
+     12,188–12,272 req/s, 1,000 695–787 → 1,516–1,573, 5,000 139–160 → 312–319; against C#,
+     7.2–7.4×, 20× and 24.5× its throughput, and 4.0–4.2×, 16× and 20× its p50 at one
+     connection (from 7.4× and 42× after `Prepared`, request-path-L4.md §4.5);
+   - lazy `hello` and the `notes` listing within noise: their cost is mostly the record.
 4. **Shared values**: `Arc` (or `Rc`) inside `Value` for text, lists and records, so a clone is a
    count, not a copy, and records built by `with_field` share what they don't change. The
    canonical encoding and every hash stay as they are; this is the largest change to core here,

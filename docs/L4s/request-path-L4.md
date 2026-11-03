@@ -106,6 +106,10 @@ the flow cache (C1), the state no longer copied to be read (C3), a short route r
 that read its request instead of a blocking thread (12.1), no timeline for an unrecorded run (12.2),
 hashes written without a `format!` a byte, and a permit's names worked out once (12.4).
 
+**Since then**, after the interpreter's steps 1–3 (interpreter-path-L4.md §4): unrecorded `hello`
+answers 65,536–68,300 req/s at 43–46 µs of CPU a request, against .NET's 132,607–134,479 at 17 µs
+in the same rounds, **2.0×** its throughput (from 2.7×), and `calc` 62,595–62,872 at 48–49 µs.
+
 ### 1.3 Strict Holon against a C# service with the same record
 
 What Holon does on every recorded run is give the run a replayable, hash-chained record that is on
@@ -1340,6 +1344,12 @@ builds) unchanged. `profile_one_route crunch`: 888 → 495 µs a run at 100 item
 
 Throughput 1.6–1.75× at every size; against C#, 7.4× at 100 items (from 12×) and 42× at 5,000
 (from 73×). What remains is allocating and copying values, and the walk itself: the rest of (b).
+
+**Then the interpreter's own path** (interpreter-path-L4.md, steps 1–3: composites' shapes kept,
+the record's double work gone, inputs lent instead of copied). Live, against C# in the same
+rounds: 12,188–12,272 req/s at 100 items, 1,516–1,573 at 1,000, 312–319 at 5,000, twice what
+`Prepared` gave; p50 at one connection 0.35 ms, 2.5 ms and 12.1–12.3 ms, **4.0–4.2×, 16× and 20×
+C#** (from 7.4×, 32× and 42×), CPU per request 301–309 µs, 2.5–2.6 ms and 12.4–12.7 ms.
 
 **Where none of it matters much:**
 - **Strict runs** wait about 600 µs for the fsync (C2 e). Cutting 50–90 µs of CPU might add 10–25%

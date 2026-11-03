@@ -994,7 +994,7 @@ impl Observer for Asserting {
     fn failed(&mut self, path: &[u32], reason: &str) {
         self.timer.failed(path, reason)
     }
-    fn asserted(&mut self, path: &[u32], unit: &holon_core::Unit, inputs: &[Option<Value>]) -> Option<Vec<Option<Value>>> {
+    fn asserted(&mut self, path: &[u32], unit: &holon_core::Unit, inputs: &[Option<&Value>]) -> Option<Vec<Option<Value>>> {
         if matches!(unit.body, holon_core::UnitBody::Composite { .. }) || !inputs.iter().flatten().any(|v| self.marks.carried(v)) {
             return None;
         }
