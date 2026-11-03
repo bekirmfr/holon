@@ -7576,6 +7576,23 @@ fn a_closure_is_kept_by_its_hash_and_its_units_are_shared() {
     assert_eq!(state.store.3.held(), (2, 4, encoded(&a_unit) + encoded(&c_unit) + encoded(&leaf) + encoded(&beside)));
 }
 
+/// A closure keeps each composite's shape beside its units (interpreter path, step 1b): its own
+/// units find theirs, a leaf has none, and an equal unit that isn't the closure's own finds none.
+#[test]
+fn a_closure_keeps_its_composites_shapes_for_its_own_units() {
+    let state = test_state();
+    let mut store = state.store.clone();
+    let (l, r) = (store.put(&cache_leaf("clock")).unwrap(), store.put(&cache_leaf("random")).unwrap());
+    let a_unit = cache_composite(vec![l, r]);
+    let a = store.put(&a_unit).unwrap();
+    let loaded = closure(&state.store, a).unwrap();
+    let held = loaded.resolve(&a).unwrap();
+    assert!(loaded.shape(held).is_some(), "its composite finds its shape");
+    assert!(loaded.shape(loaded.resolve(&l).unwrap()).is_none(), "a leaf has none");
+    assert!(loaded.shape(&a_unit).is_none(), "an equal unit elsewhere is not its own");
+    assert!(closure(&state.store, a).unwrap().shape(held).is_some(), "the kept closure keeps them");
+}
+
 /// A closure missing a unit is run as it is but not kept: once the unit is put, the next run
 /// resolves it.
 #[test]

@@ -32,6 +32,9 @@
 use crate::{primitives, Edge, Hash, Param, Resolver, Unit, UnitBody, Value, BOUNDARY, VARIADIC};
 use crate::hash::parse_hash;
 use smallvec::{smallvec, SmallVec};
+use std::borrow::Cow;
+use std::collections::HashMap;
+use std::hash::{BuildHasherDefault, Hasher};
 
 /// The evaluator's own output shape (P4.7 + the SmallVec perf inch, 2026-07-02).
 /// Inline storage for 0 or 1 outputs — every genesis primitive declares exactly one, forever,
@@ -234,7 +237,7 @@ fn eval_at(
             smallvec![Slot::of(primitives::compute(name, &present, &unit.params))]
         }
         UnitBody::Composite { children, edges } => {
-            eval_composite(children, edges, unit.outputs.len(), inputs, resolver, observer, path)
+            eval_composite(unit, children, edges, inputs, resolver, observer, path)
         }
         // A module body: the engine behind the resolver runs it (docs/L4s/wasm-module-L4.md §5);
         // when it can't, the observer hears why, at this node.
@@ -326,59 +329,53 @@ pub fn choice_next(name: &str, seen: &[Option<Slot>]) -> Option<Choice> {
 }
 
 fn eval_composite(
+    unit: &Unit,
     children: &[Hash],
     edges: &[Edge],
-    n_outputs: usize,
     inputs: &[Option<Value>],
     resolver: &impl Resolver,
     observer: &mut impl Observer,
     path: &mut Vec<u32>,
 ) -> Slots {
-    match Prepared::of(children, edges, resolver) {
-        // Run once: its first stack is handed over, not copied.
+    let n_outputs = unit.outputs.len();
+    match Prepared::of(unit, children, edges, resolver) {
+        // Run once: a first stack made for this run is handed over, not copied.
         Some(mut prepared) => {
-            let stack = std::mem::take(&mut prepared.roots);
+            let stack = match &mut prepared.shape {
+                Cow::Owned(shape) => std::mem::take(&mut shape.roots),
+                Cow::Borrowed(shape) => shape.roots.clone(),
+            };
             prepared.run_from(stack, n_outputs, inputs, resolver, observer, path)
         }
         None => smallvec![Slot::Absent; n_outputs],
     }
 }
 
-/// What evaluating a composite needs of its unit alone, whatever its inputs: its children
-/// resolved, the edge feeding each child's input, and where the walk starts. Made once for a
-/// `map`'s or `fold`'s function and run for every item, instead of made again for each
-/// (docs/L4s/request-path-L4.md §4.5): it depends on nothing an application changes.
-struct Prepared<'r> {
-    resolved: Vec<&'r Unit>,
+/// What a composite's walk needs of its edges alone, whatever its inputs and whatever its
+/// children resolve to: the edge feeding each child's input, where the walk starts, and whether
+/// the edges hold a cycle. It depends on nothing but the unit, so a host that keeps its units
+/// keeps it with them ([`Shapes`], [`Resolver::shape`]) instead of making it again for each run
+/// (docs/L4s/interpreter-path-L4.md, step 1b).
+#[derive(Clone, Debug)]
+pub struct Shape {
     /// Destination (to_child, to_port) → source (from_child, from_port).
     incoming: Incoming,
     /// The walk's first stack: what the outputs read, and what nothing consumes.
     roots: Vec<usize>,
+    /// The edges hold a cycle: nothing is evaluable.
+    cyclic: bool,
 }
 
-impl<'r> Prepared<'r> {
-    /// None when a child doesn't resolve or the edges hold a cycle: then nothing is evaluable,
-    /// and every declared output slot is absent.
-    fn of(children: &[Hash], edges: &[Edge], resolver: &'r impl Resolver) -> Option<Prepared<'r>> {
-        let n = children.len();
-
-        // Resolve children (by hash). Any unresolved ⇒ nothing evaluable — every declared output
-        // slot is absent (the vec's *length* is still the declared contract; only the values are
-        // absent, mirroring how `inputs` already has a fixed length with individually-absent slots).
-        let mut resolved: Vec<&Unit> = Vec::with_capacity(n);
-        for h in children {
-            resolved.push(resolver.resolve(h)?);
-        }
-
+impl Shape {
+    /// The shape of a composite of `n` children joined by `edges`.
+    pub fn of(n: usize, edges: &[Edge]) -> Shape {
         // Index incoming edges: destination (to_child, to_port) → source (from_child, from_port).
         // Validation guarantees ≤1 source per destination, so this never loses an edge.
         let incoming = Incoming::of(n, edges);
 
-        // A cycle is impossible after P1.3.1; handled, not panicked, and the walk below can then
-        // rely on reaching the end of everything it pulls.
-        if has_cycle(n, edges) {
-            return None;
-        }
+        // A cycle is impossible after P1.3.1; handled, not panicked, and the walk can then rely
+        // on reaching the end of everything it pulls.
+        let cyclic = has_cycle(n, edges);
 
         // The roots: what the outputs read, and what nothing consumes (a node placed on its own is
         // run, as it always was). In ascending child index, so the walk is deterministic.
@@ -393,17 +390,115 @@ impl<'r> Prepared<'r> {
             }
         }
         let roots = (0..n).rev().filter(|&c| root[c] || !consumed[c]).collect();
-        Some(Prepared { resolved, incoming, roots })
+        Shape { incoming, roots, cyclic }
+    }
+
+    /// The shape of `unit`, when it is a composite.
+    pub fn of_unit(unit: &Unit) -> Option<Shape> {
+        match &unit.body {
+            UnitBody::Composite { children, edges } => Some(Shape::of(children.len(), edges)),
+            _ => None,
+        }
+    }
+}
+
+/// The shapes of a set of units a host keeps, each found by the unit itself: by where it lives,
+/// not by its hash, so finding one costs no hashing and a unit a resolver makes up for one run (a
+/// sourced constant) never meets a shape that isn't its own.
+///
+/// Sound as long as the units outlive the table and don't move: an address the table holds is
+/// then the address of that very unit, and no other unit can live there. A host builds it over
+/// units it holds behind a pointer (an `Arc`, a `Box`) and keeps the two together.
+#[derive(Clone, Debug, Default)]
+pub struct Shapes(HashMap<usize, Shape, BuildHasherDefault<AddressHasher>>);
+
+impl Shapes {
+    /// The shape of each composite among `units`.
+    pub fn of<'u>(units: impl IntoIterator<Item = &'u Unit>) -> Shapes {
+        let mut shapes = HashMap::default();
+        for unit in units {
+            if let Some(shape) = Shape::of_unit(unit) {
+                shapes.insert(unit as *const Unit as usize, shape);
+            }
+        }
+        Shapes(shapes)
+    }
+
+    /// `unit`'s shape, when it is one of the units the table was built over.
+    pub fn get(&self, unit: &Unit) -> Option<&Shape> {
+        if self.0.is_empty() {
+            return None;
+        }
+        self.0.get(&(unit as *const Unit as usize))
+    }
+
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+/// Hashes an address: units are aligned, so the low bits say nothing and are shifted out.
+#[derive(Default)]
+struct AddressHasher(u64);
+
+impl Hasher for AddressHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+    fn write(&mut self, bytes: &[u8]) {
+        for &b in bytes {
+            self.0 = self.0.rotate_left(8) ^ b as u64;
+        }
+    }
+    fn write_usize(&mut self, n: usize) {
+        let n = n as u64;
+        self.0 = (n >> 3).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    }
+}
+
+/// What evaluating a composite needs of its unit alone, whatever its inputs: its children
+/// resolved, and its [`Shape`]. Made once for a `map`'s or `fold`'s function and run for every
+/// item, instead of made again for each (docs/L4s/request-path-L4.md §4.5): it depends on
+/// nothing an application changes. Its children are resolved for each run, never kept: a
+/// resolver may hand a run its own unit under a hash (a sourced value's constant).
+struct Prepared<'r> {
+    resolved: Vec<&'r Unit>,
+    shape: Cow<'r, Shape>,
+}
+
+impl<'r> Prepared<'r> {
+    /// None when a child doesn't resolve or the edges hold a cycle: then nothing is evaluable,
+    /// and every declared output slot is absent.
+    fn of(unit: &'r Unit, children: &[Hash], edges: &[Edge], resolver: &'r impl Resolver) -> Option<Prepared<'r>> {
+        // Resolve children (by hash). Any unresolved ⇒ nothing evaluable — every declared output
+        // slot is absent (the vec's *length* is still the declared contract; only the values are
+        // absent, mirroring how `inputs` already has a fixed length with individually-absent slots).
+        let mut resolved: Vec<&Unit> = Vec::with_capacity(children.len());
+        for h in children {
+            resolved.push(resolver.resolve(h)?);
+        }
+        let shape = match resolver.shape(unit) {
+            Some(kept) => Cow::Borrowed(kept),
+            None => Cow::Owned(Shape::of(children.len(), edges)),
+        };
+        if shape.cyclic {
+            return None;
+        }
+        Some(Prepared { resolved, shape })
     }
 
     /// Evaluate it on `inputs`.
     fn run(&self, n_outputs: usize, inputs: &[Option<Value>], resolver: &impl Resolver, observer: &mut impl Observer, path: &mut Vec<u32>) -> Slots {
-        self.run_from(self.roots.clone(), n_outputs, inputs, resolver, observer, path)
+        self.run_from(self.shape.roots.clone(), n_outputs, inputs, resolver, observer, path)
     }
 
     /// [`run`](Prepared::run), the walk starting from `stack` (its roots).
     fn run_from(&self, mut stack: Vec<usize>, n_outputs: usize, inputs: &[Option<Value>], resolver: &impl Resolver, observer: &mut impl Observer, path: &mut Vec<u32>) -> Slots {
-        let (resolved, incoming) = (&self.resolved, &self.incoming);
+        let (resolved, incoming) = (&self.resolved, &self.shape.incoming);
         let n = resolved.len();
 
         // Per-evaluation scratch, indexed by child: `None` not evaluated (yet, or at all), else
@@ -514,6 +609,7 @@ impl<'r> Prepared<'r> {
 /// A composite's edges by destination: for each child's input port, and each boundary output, the
 /// (child, port) that feeds it, if one does. Lists indexed by child and port, not a map: looked
 /// up for every port of every node a run evaluates.
+#[derive(Clone, Debug)]
 struct Incoming {
     children: Vec<Vec<Option<(u32, u32)>>>,
     outputs: Vec<Option<(u32, u32)>>,
@@ -701,7 +797,7 @@ enum Ready<'r> {
 impl<'r> Ready<'r> {
     fn of(unit: &'r Unit, resolver: &'r impl Resolver) -> Ready<'r> {
         match &unit.body {
-            UnitBody::Composite { children, edges } => Ready::Composite(unit, Prepared::of(children, edges, resolver)),
+            UnitBody::Composite { children, edges } => Ready::Composite(unit, Prepared::of(unit, children, edges, resolver)),
             _ => Ready::Other(unit),
         }
     }

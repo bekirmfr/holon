@@ -2,6 +2,7 @@
 
 use crate::*;
 use std::collections::HashMap;
+use holon_core::{Shape, Shapes};
 
 pub(crate) fn handle_get_unit(store: &SharedStore, hash_hex: &str) -> Response {
     let Some(key) = parse_hash(hash_hex) else {
@@ -152,12 +153,34 @@ pub(crate) fn handle_post_fork(registry: &Mutex<Registry<SharedStore>>, request:
 /// A hash that doesn't resolve in the store is left out rather than an error: `eval` and
 /// `verify_entry` already treat an unresolved reference as "nothing evaluable" and fail closed on
 /// it, so a closure promises no more than the store has. Such a closure isn't kept (`closure`).
+///
+/// It keeps each composite's shape beside its units (docs/L4s/interpreter-path-L4.md, step 1b),
+/// found by the unit itself: the units are `Arc`s the closure holds, so each stays where the
+/// shapes found it for as long as the closure lives.
 #[derive(Clone, Default)]
-pub(crate) struct Loaded(Arc<BTreeMap<Hash, Arc<Unit>>>);
+pub(crate) struct Loaded(Arc<Held>);
+
+#[derive(Default)]
+pub(crate) struct Held {
+    units: BTreeMap<Hash, Arc<Unit>>,
+    /// Built over `units`, never changed after.
+    shapes: Shapes,
+}
+
+impl Loaded {
+    fn of(units: BTreeMap<Hash, Arc<Unit>>) -> Loaded {
+        let shapes = Shapes::of(units.values().map(|u| u.as_ref()));
+        Loaded(Arc::new(Held { units, shapes }))
+    }
+}
 
 impl Resolver for Loaded {
     fn resolve(&self, hash: &Hash) -> Option<&Unit> {
-        self.0.get(hash).map(|u| u.as_ref())
+        self.0.units.get(hash).map(|u| u.as_ref())
+    }
+
+    fn shape(&self, unit: &Unit) -> Option<&Shape> {
+        self.0.shapes.get(unit)
     }
 }
 
@@ -169,7 +192,7 @@ impl Loaded {
     }
     /// The unit it holds under `hash`, as shared.
     pub(crate) fn unit(&self, hash: &Hash) -> Option<Arc<Unit>> {
-        self.0.get(hash).cloned()
+        self.0.units.get(hash).cloned()
     }
 }
 
@@ -229,7 +252,7 @@ fn load_closure(store: &SharedStore, root: Hash) -> Result<(Loaded, bool), Closu
     if depth > MAX_CLOSURE_DEPTH {
         return Err(Closure::TooBig(format!("it nests more than {MAX_CLOSURE_DEPTH} units deep")));
     }
-    Ok((Loaded(Arc::new(units)), whole))
+    Ok((Loaded::of(units), whole))
 }
 
 /// How much memory the flow cache holds by default: every sample flow about 40 times over, with
@@ -299,7 +322,7 @@ impl FlowCache {
     /// Keep `loaded` as `root`'s closure, when it fits the budget at all.
     fn keep(&self, root: Hash, loaded: &Loaded) {
         // Sized before the lock is taken: encoding a big module takes a while.
-        let sizes: Vec<(Hash, u64)> = loaded.0.iter().map(|(h, u)| (*h, encode_preimage(u).map_or(0, |b| b.len() as u64))).collect();
+        let sizes: Vec<(Hash, u64)> = loaded.0.units.iter().map(|(h, u)| (*h, encode_preimage(u).map_or(0, |b| b.len() as u64))).collect();
         if sizes.iter().map(|(_, n)| n).sum::<u64>() > self.0.lock().unwrap().budget {
             return;
         }
@@ -312,7 +335,7 @@ impl FlowCache {
                 Some(unit) => unit.holders += 1,
                 None => {
                     kept.bytes += bytes;
-                    kept.units.insert(hash, KeptUnit { unit: Arc::clone(&loaded.0[&hash]), bytes, holders: 1 });
+                    kept.units.insert(hash, KeptUnit { unit: Arc::clone(&loaded.0.units[&hash]), bytes, holders: 1 });
                 }
             }
         }
@@ -338,7 +361,7 @@ impl Kept {
                 break;
             };
             let gone = self.closures.remove(&oldest).expect("it was just found");
-            for hash in gone.loaded.0.keys() {
+            for hash in gone.loaded.0.units.keys() {
                 let unit = self.units.get_mut(hash).expect("a kept closure's units are kept");
                 unit.holders -= 1;
                 if unit.holders == 0 {

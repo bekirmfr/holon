@@ -8,7 +8,9 @@
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
-use holon_core::{eval_observed, parse_hash, Observer, Resolver, Slot, Value};
+use std::cell::Cell;
+
+use holon_core::{eval_observed, parse_hash, Observer, Resolver, Shape, Shapes, Slot, Unit, Value};
 
 use crate::composites::Names;
 use crate::lang;
@@ -76,8 +78,28 @@ fn bodies() -> Vec<String> {
 /// A handler to evaluate: its label, its unit's hash, and each input it is given.
 type Case = (String, String, Vec<Vec<Option<Value>>>);
 
-/// The whole record, for every flow, handler and input.
-fn record() -> String {
+/// A store with each composite's shape kept, as the server keeps them (holon/src/units.rs), counting
+/// the runs that found one.
+struct Kept<'a> {
+    real: &'a MapResolver,
+    shapes: Shapes,
+    found: &'a Cell<usize>,
+}
+
+impl Resolver for Kept<'_> {
+    fn resolve(&self, hash: &holon_core::Hash) -> Option<&Unit> {
+        self.real.resolve(hash)
+    }
+    fn shape(&self, unit: &Unit) -> Option<&Shape> {
+        let shape = self.shapes.get(unit);
+        self.found.set(self.found.get() + shape.is_some() as usize);
+        shape
+    }
+}
+
+/// The whole record, for every flow, handler and input; with each composite's shape kept and
+/// found, when `found` counts how often, or worked out for each run.
+fn record(found: Option<&Cell<usize>>) -> String {
     let mut flows: Vec<(String, String)> = samples().iter().map(|s| (s.name.to_string(), s.text.to_string())).collect();
     flows.push(("crunch".into(), CRUNCH.into()));
     let mut out = String::new();
@@ -103,7 +125,10 @@ fn record() -> String {
             let unit = store.resolve(&parse_hash(&hash).unwrap()).unwrap_or_else(|| panic!("{name} {label}: unit"));
             for (i, input) in inputs.iter().enumerate() {
                 let mut steps = Steps(String::new());
-                let outputs = eval_observed(unit, input, &store, &mut steps);
+                let outputs = match found {
+                    Some(found) => eval_observed(unit, input, &Kept { real: &store, shapes: Shapes::of(store.units()), found }, &mut steps),
+                    None => eval_observed(unit, input, &store, &mut steps),
+                };
                 let shown_out: Vec<String> = outputs.iter().map(|o| o.as_ref().map_or("·".into(), shown)).collect();
                 let _ = writeln!(out, "== {name} · {label} · input {i}");
                 out.push_str(&steps.0);
@@ -117,7 +142,7 @@ fn record() -> String {
 #[test]
 fn the_evaluator_gives_what_its_golden_record_holds() {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/golden/eval.txt");
-    let now = record();
+    let now = record(None);
     if std::env::var("HOLON_GOLDEN").as_deref() == Ok("update") {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, &now).unwrap();
@@ -139,4 +164,14 @@ fn the_evaluator_gives_what_its_golden_record_holds() {
         }
     }
     panic!("the record has {} lines, the evaluator now {} (last case: {case}, line {line})", kept.lines().count(), now.lines().count());
+}
+
+/// Keeping each composite's shape across runs (docs/L4s/interpreter-path-L4.md, step 1b) gives the
+/// very record working it out for each run gives.
+#[test]
+fn keeping_each_composites_shape_changes_nothing_the_evaluator_gives() {
+    let found = Cell::new(0);
+    let kept = record(Some(&found));
+    assert!(found.get() > 1000, "the kept shapes were found {} times", found.get());
+    assert!(kept == record(None), "a run with the shapes kept gives something else");
 }

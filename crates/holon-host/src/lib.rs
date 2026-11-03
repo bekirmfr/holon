@@ -357,6 +357,10 @@ impl<R: Resolver> Resolver for SourcedResolver<'_, R> {
     fn run_module(&self, bytes: &[u8], limits: &holon_core::ModuleLimits, inputs: &[Option<Value>]) -> Result<Vec<Option<Value>>, String> {
         self.real.run_module(bytes, limits, inputs)
     }
+
+    fn shape(&self, unit: &holon_core::Unit) -> Option<&holon_core::Shape> {
+        self.real.shape(unit)
+    }
 }
 
 /// A niladic unit that evaluates to `value` — used to inject a sourced value (a held state

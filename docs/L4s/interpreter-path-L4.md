@@ -137,9 +137,28 @@ after keeps each honest. The gains below are estimated from the shares above.
    instructions a run (−6.8%; 20.7–24.3 → 18.5–19.1 µs a run), `notes` −1.9%, `crunch` within
    noise: below the estimate, because preparing a composite is still done on every run, its cycle
    check and index rebuilt (3.8% and 2.1% of `hello`) and its children resolved (3.7%, which has to
-   stay: resolution swaps in the run's sourced values). **Step 1b**: keep each composite's shape
-   (the index, the roots, the cycle check) across runs, keyed by the unit as the flow cache holds
-   it; the opcode and the `const` literal with it.
+   stay: resolution swaps in the run's sourced values).
+   **Done (step 1b):** each composite's shape (core's `Shape`: the index, the roots, whether it
+   has a cycle) is kept across runs. A resolver may hand one out (`Resolver::shape`, which
+   wrappers forward and the default answers with none, so a run works it out as before); the
+   server's closure (`Loaded`) builds a table of them (`Shapes`) when it loads a flow and keeps
+   it with its units. The table finds a shape by the unit itself, by where the closure holds it,
+   so a lookup hashes nothing and a unit a resolver makes up for one run (a sourced value's
+   constant) never meets a shape that isn't its own. Children are still resolved on every run.
+   The evaluator's golden record is checked a second time with every shape kept (found over a
+   thousand times), and gives the same record. `hello` 223.4k → 204.8k instructions a run
+   (−8.3%, measured by the difference between two run counts, so setup is left out; 20.6–21.7 →
+   17.7–18.3 µs a run), `notes` −2.4%, `crunch` −0.15%. Step 1 as a whole: `hello` 242.5k →
+   204.8k. The opcode and the `const` literal aren't kept: the profile puts all of `compute`,
+   its dispatch by name included, at 3.0% of `hello` and parsing literals at 0.13%, too little
+   to be worth another kept table.
+   Live, step 1 as a whole against the build before it (`wrk` at 64 connections, two rounds
+   alternating, as request-path-L4.md §1): unrecorded `hello` 49,573–51,141 → 56,537–57,270
+   req/s (60–62 → 53–54 µs of CPU a request, p50 at one connection 76–79 → 70–71 µs),
+   unrecorded `calc` 45,288–46,095 → 52,556–52,818 (69–70 → 59 µs); lazy `hello` 172–201 →
+   163–187 µs of CPU a request, its throughput within the rounds' noise (12,911–15,472 →
+   13,945–16,269); strict as before (the disk's pace: `hello` 7,892–8,399 → 8,909–9,067,
+   `calc` 7,301–7,394 → 7,540–7,569).
 2. **Stop the double work around the record** (§3.2): measure the timer's outputs without
    serializing; redaction that copies only what it changes; no snapshot put or re-hash for an
    unchanged state, no readables for nothing read.
