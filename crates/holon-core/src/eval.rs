@@ -1626,6 +1626,29 @@ mod tests {
         assert!(prepared.plan.is_none());
     }
 
+    /// Every genesis primitive is computed somewhere (D1): `compute` has an opcode for it, or it is
+    /// a request the host answers, `map` or `fold`, or a source the host stands a constant in for
+    /// (every capability it has is sourced). And every opcode is a genesis primitive's, its name
+    /// finding it. A primitive added without its computation would otherwise read as one that is
+    /// always absent.
+    #[test]
+    fn every_genesis_primitive_is_computed_somewhere_and_every_opcode_is_one() {
+        let mut names = std::collections::BTreeSet::new();
+        for (name, op) in Op::ALL {
+            assert!(names.insert(*name), "{name} listed twice");
+            assert_eq!(Op::of(name), Some(*op), "{name}");
+            assert!(crate::GENESIS.contains(name), "{name} has an opcode but isn't a genesis primitive");
+        }
+        for name in crate::GENESIS {
+            let unit = crate::interface_of(name).unwrap_or_else(|| panic!("{name}: no interface"));
+            let sourced = crate::capabilities_of(name, &unit.params).is_some_and(|caps| caps.iter().all(|c| c.is_sourced()) && caps.iter().next().is_some());
+            assert!(
+                Op::of(name).is_some() || Request::of(name).is_some() || matches!(*name, "map" | "fold") || sourced,
+                "{name} is computed nowhere: no opcode, no request, and not a source the host stands in for"
+            );
+        }
+    }
+
     #[test]
     fn eval_primitive_add() {
         let r = MapResolver::new();

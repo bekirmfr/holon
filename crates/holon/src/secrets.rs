@@ -1132,6 +1132,29 @@ pub(crate) fn unescaped(v: &mut SValue) {
 
 #[cfg(test)]
 mod tests {
+    /// A redactor with nothing to mark leaves every text without a `‹` as it is (D3): what the log's
+    /// shortcut (`firing::redacted_line`) counts on. Thousands of texts of the awkward kinds: quotes,
+    /// backslashes, `›`, the words a mark is made of, text of several bytes a character.
+    #[test]
+    fn with_nothing_to_mark_a_text_without_a_mark_sign_stays_as_it_is() {
+        let none = Redactor::tokens(&BTreeMap::new());
+        assert!(none.is_empty());
+        let pieces = ["a", " ", "\"", "\\", "\n", "›", "secret:", "token:", "é", "😀", "{", "}", "#", "x1"];
+        let mut seed = 0x1234_5678_9abc_def0u64;
+        let mut next = move |m: u64| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed % m
+        };
+        for _ in 0..5000 {
+            let text: String = (0..next(12)).map(|_| pieces[next(pieces.len() as u64) as usize]).collect();
+            assert_eq!(none.logged(&text), None, "{text:?}");
+        }
+        // And one with a `‹` is looked at (escaped where it reads as a mark).
+        assert_eq!(none.logged("sent ‹token:paid›"), Some(("sent ‹‹token:paid›".to_string(), true)));
+    }
+
     use super::*;
 
     fn temp(name: &str) -> (String, KeySource) {

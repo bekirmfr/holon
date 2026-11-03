@@ -172,10 +172,31 @@ cost. Under load they do as well or better; and no deployment's waiting reaches 
 A one-connection p99 of about 30 ms remains on a lazy route with a busy log, likely the
 once-a-second sync of its file holding up the next append to it; left as it is.
 
+## 2.7 Fixed: D1–D3
+
+- **D1:** one list (`ops!`, primitives.rs) makes both the `Op` enum and `Op::of`, each primitive's
+  name beside its variant, so a name can't be in one and not the other; `compute_op`'s match on
+  `Op` is exhaustive, so a variant can't be listed without an arm. A test holds every genesis
+  primitive to being computed somewhere (an opcode, a request the host answers, `map` or `fold`,
+  or a source the host stands a constant in for) and every opcode to being a genesis primitive's.
+- **D2:** one function, `count_if_unrecorded`, decides the level a run is logged at and counts an
+  unrecorded one; `push_run` and `log_or_count` both call it.
+- **D3:** in a debug build, which every test runs, each line the redaction shortcut makes is
+  checked against redacting first, the line and the entry the same: every run the server's tests
+  log checks the shortcut's assumptions on a real entry (with the look-alike check taken out, two
+  tests fail on it). And a test holds a redactor with nothing to mark to leaving 5,000 texts of
+  the awkward kinds (quotes, backslashes, `›`, `secret:`, `token:`, multi-byte characters) as they
+  are.
+
+Their cost, counted (callgrind, the difference between two run counts, the build before them
+against the build with them): `hello` +0.04%, `notes` −0.02%, `crunch` +0.6% (the opcode table is
+used once a composite and the check is debug-only: the compiler's inlining moved). R3's checks of a
+pass-through's condition and value on every item cost `crunch` 1.4% before them (22.24M → 22.56M).
+
 ## 3. Order
 
 1. **R1–R4**: done (§2.6).
-2. **D1–D3**, the knowledge kept twice and the redaction shortcut's assumptions.
+2. **D1–D3**: done (§2.7).
 3. **D4, D5, S1–S5**.
 4. Then the rest of the check: the end-to-end suite (`editor/e2e`), a soak under load watching
    memory, and a review of `aa2704a..HEAD` by a reader given the code, not this note.

@@ -921,12 +921,24 @@ pub(crate) fn log_or_count(
     if !counted.failed {
         let mut table = deployments.lock().unwrap();
         let dep = table.get_mut(slug)?;
-        if dep.permit.log_level(counted.route, declared) == holon_core::LogLevel::Unrecorded {
-            dep.tallies.entry(counted.route.unwrap_or_default().to_string()).or_default().add(counted.at_ms, counted.duration_ms, false);
+        if count_if_unrecorded(dep, &counted, declared).1 {
             return Some(Logged { seq: None, kept: Ok(()) });
         }
     }
     log_run(deployments, slug, entry(), tokens(), declared)
+}
+
+/// The level `dep`'s grant logs a run at now, and, for an unrecorded run, the run counted in its
+/// route's tally (a failed one too); with whether that is all there is to do: an unrecorded run
+/// that didn't fail is counted and not logged. The one rule `push_run` and `log_or_count` both
+/// keep (docs/L4s/resilience-audit-L4.md, D2). Called with the table's lock held.
+fn count_if_unrecorded(dep: &mut Deployment, counted: &Counted, declared: holon_core::LogLevel) -> (holon_core::LogLevel, bool) {
+    let level = dep.permit.log_level(counted.route, declared);
+    if level != holon_core::LogLevel::Unrecorded {
+        return (level, false);
+    }
+    dep.tallies.entry(counted.route.unwrap_or_default().to_string()).or_default().add(counted.at_ms, counted.duration_ms, counted.failed);
+    (level, !counted.failed)
 }
 
 /// Whether a run failed as it ran: an error, or an answer with a 5xx status. An unrecorded run that
@@ -982,14 +994,10 @@ fn push_run(
     let (log, secrets, channels, permit, session, level) = {
         let mut table = deployments.lock().unwrap();
         let dep = table.get_mut(slug)?;
-        let level = dep.permit.log_level(entry.route.as_deref(), declared);
-        if level == holon_core::LogLevel::Unrecorded {
-            let failed = failed(&entry);
-            let label = entry.route.clone().unwrap_or_default();
-            dep.tallies.entry(label).or_default().add(entry.at_ms, entry.duration_ms, failed);
-            if !failed {
-                return Some(None);
-            }
+        let counted = Counted { route: entry.route.as_deref(), at_ms: entry.at_ms, duration_ms: entry.duration_ms, failed: failed(&entry) };
+        let (level, only_counted) = count_if_unrecorded(dep, &counted, declared);
+        if only_counted {
+            return Some(None);
         }
         (Arc::clone(&dep.log), Arc::clone(&dep.secrets), Arc::clone(&dep.channels), Arc::clone(&dep.permit), dep.life.sessions.last().map_or(0, |s| s.number), level)
     };
@@ -1020,6 +1028,15 @@ fn redacted_line(redactor: &Redactor, entry: &mut LogEntry) -> recorder::Made {
     if redactor.is_empty() {
         let made = recorder::Made::of(entry);
         if !made.may_hold_a_mark() {
+            // In a debug build (every test), checked against redacting first: the line and the
+            // entry the same, or what the shortcut assumes stopped holding (D3).
+            #[cfg(debug_assertions)]
+            {
+                let mut walked = entry.clone();
+                redactor.entry(&mut walked);
+                assert_eq!(made.line(1, ""), recorder::Made::of(&walked).line(1, ""), "the shortcut's line isn't the redacted one");
+                assert_eq!(serde_json::to_value(&walked).ok(), serde_json::to_value(&*entry).ok(), "the shortcut's entry isn't the redacted one");
+            }
             return made;
         }
     }
