@@ -7325,6 +7325,90 @@ fn a_strict_run_is_on_disk_before_its_answer_and_a_lazy_one_waits_for_the_syncer
     let _ = std::fs::remove_dir_all(Path::new(&state.deployments_path).with_extension("logs"));
 }
 
+/// A board with an unrecorded health check, an unrecorded action, one that fails unrecorded, and a
+/// strict write (docs/L4s/request-path-L4.md, C5).
+const UNRECORDED_BOARD: &str = "flow board\nport 8171\ncollection notes\n\nroute GET /health (req) unrecorded {\n  respond \"ok\"\n}\n\nroute GET /broken (req) unrecorded {\n  respond \"down\", status: 503\n}\n\nroute POST /notes (req) {\n  notes[req.json.id] = req.json.text\n  respond \"saved\"\n}\n\naction report (input) unrecorded {\n  respond notes.list(limit: 50)\n}\n";
+
+/// An unrecorded handler's runs leave no entry in the log, and are counted in its tally instead
+/// (runs, failures, time, the last one), which the log API gives and the deployments file keeps; a
+/// failed one is in the log too. Each unrecorded handler is an item a person approves,
+/// `Unrecorded("GET /health")`, worded in the approval; taking it back records its next run, and
+/// the deployment runs on (it isn't one it needs).
+#[test]
+fn an_unrecorded_run_leaves_no_entry_and_is_counted_and_its_failure_is_recorded() {
+    let mut state = test_state();
+    state.deployments_path = unique_temp_path("unrecorded");
+    let plan = holon_author::agent::plan(UNRECORDED_BOARD).unwrap();
+    for u in &plan.units {
+        assert_eq!(route(&state, &req("POST", "/unit", u.clone())).status_code, 200);
+    }
+    let preview = body_json(route(&state, &req("POST", "/deploy/preview", serde_json::to_vec(&serde_json::json!({ "slug": plan.name, "unit": plan.unit })).unwrap())));
+    let asked: Vec<String> = serde_json::from_value(preview["needs_approval"].clone()).unwrap();
+    for label in ["GET /health", "GET /broken", "action report"] {
+        assert!(asked.contains(&format!("Unrecorded({label:?})")), "{label} is asked for: {asked:?}");
+    }
+    assert!(!asked.iter().any(|a| a.contains("POST /notes")), "a write can't be: {asked:?}");
+    let slug = deploy_plain_text(&state, UNRECORDED_BOARD);
+    let call = |method: &str, url: &str, body: &str| serve_data(&state.store, &state.deployments, &state.deployments_path, &slug, &fake_data(method, url, body.as_bytes().to_vec())).status;
+    let log = Arc::clone(&state.deployments.lock().unwrap()[&slug].log);
+    let tally = |label: &str| state.deployments.lock().unwrap()[&slug].tallies.get(label).cloned().unwrap_or_default();
+
+    for _ in 0..3 {
+        assert_eq!(call("GET", "/health", ""), 200);
+    }
+    assert_eq!(log.next_seq(), 0, "no entry for an unrecorded run");
+    assert_eq!((tally("GET /health").runs, tally("GET /health").failed), (3, 0));
+    assert!(tally("GET /health").last_at_ms > 0);
+    let ran = run_action(&state.store, &state.deployments, &state.deployments_path, &slug, "report", Ok(Value::Record(BTreeMap::new())), None, false, &[]);
+    assert_eq!((ran.status, ran.seq), (200, None), "an unrecorded action answers, with no entry");
+    assert_eq!(tally("action report").runs, 1);
+
+    // A failure is recorded, and counted.
+    assert_eq!(call("GET", "/broken", ""), 503);
+    assert_eq!(log.next_seq(), 1, "its failure is in the log");
+    let failed = log.with(|l| l.after(None, 10)).pop().unwrap();
+    assert_eq!((failed.route.as_deref(), failed.status), (Some("GET /broken"), Some(503)));
+    assert_eq!((tally("GET /broken").runs, tally("GET /broken").failed), (1, 1));
+    // A strict handler beside them is recorded as always.
+    assert_eq!(call("POST", "/notes", r#"{"id":"a","text":"hi"}"#), 200);
+    assert_eq!(log.next_seq(), 2);
+
+    // The log API gives the tallies, and the deployments file keeps them.
+    let page = body_json(route(&state, &req("GET", &format!("/deployments/{slug}/log"), vec![])));
+    assert_eq!(page["tallies"]["GET /health"]["runs"], 3, "{page}");
+    persist_deployments(&state.deployments_path, &state.deployments);
+    let kept: serde_json::Value = serde_json::from_slice(&std::fs::read(&state.deployments_path).unwrap()).unwrap();
+    let record = kept.as_array().unwrap().iter().find(|r| r["slug"] == slug.as_str()).unwrap();
+    assert_eq!(record["tallies"]["GET /health"]["runs"], 3, "{record}");
+
+    // Taken back, the next run is recorded (strict), and the deployment runs on.
+    let revoked = body_json(change_grant(&state, &slug, serde_json::json!({ "revoke": ["Unrecorded(\"GET /health\")"] })));
+    assert_eq!(revoked["status"], "running", "{revoked}");
+    let syncs = log.syncs();
+    assert_eq!(call("GET", "/health", ""), 200);
+    assert_eq!((log.next_seq(), log.syncs()), (3, syncs + 1), "recorded, and strictly");
+    assert_eq!(tally("GET /health").runs, 3, "and not counted as unrecorded");
+    let _ = std::fs::remove_file(&state.deployments_path);
+    let _ = std::fs::remove_dir_all(Path::new(&state.deployments_path).with_extension("logs"));
+}
+
+/// A host whose policy never lets a handler go unrecorded (holon.toml: grants.allow_unrecorded =
+/// false) refuses a deploy that asks, saying why; the default policy allows it (§8 Q9).
+#[test]
+fn a_policy_without_allow_unrecorded_refuses_the_deploy() {
+    assert!(Policy::default().allow_unrecorded, "on by default");
+    assert!(Policy::parse("[grants]\nauto = []").unwrap().allow_unrecorded);
+    let state = test_state();
+    *state.policy.write().unwrap() = Arc::new(Policy::parse("[grants]\nallow_unrecorded = false").unwrap());
+    let plan = holon_author::agent::plan(UNRECORDED_BOARD).unwrap();
+    for u in &plan.units {
+        assert_eq!(route(&state, &req("POST", "/unit", u.clone())).status_code, 200);
+    }
+    let r = deploy_json(&state, &plan.name, parse_hash(&plan.unit).unwrap(), serde_json::json!({ "acknowledge": ["NetworkIngress"] }));
+    let body = String::from_utf8_lossy(&body_bytes(r)).into_owned();
+    assert!(body.contains("this host never lets a handler go unrecorded") && body.contains("grants.allow_unrecorded"), "{body}");
+}
+
 /// A stateful run writes its deployment's state head only when it changed the state, and never
 /// the deployments file (docs/L4s/request-path-L4.md, C3 a and b): one that only read, or wrote
 /// back the value that was there, writes nothing at all. Its counts go on in memory, and reach the

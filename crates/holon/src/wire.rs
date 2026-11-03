@@ -216,6 +216,27 @@ pub(crate) struct DeployRequestBody {
 /// now, though — surviving a restart is the whole reason a deployment gets its own durable
 /// state instead of an in-memory-only scratch value. Every new field is `#[serde(default)]`
 /// so a deployments file written before this inch still loads without error.
+/// What a deployment's log doesn't hold of an unrecorded handler's runs (docs/L4s/request-path-L4.md,
+/// C5): how many ran, how many failed (each failure is in the log), how long they took in all, and
+/// when the last one started. Kept per handler, by its label.
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+pub(crate) struct Tally {
+    pub(crate) runs: u64,
+    pub(crate) failed: u64,
+    pub(crate) total_ms: f64,
+    pub(crate) last_at_ms: u64,
+}
+
+impl Tally {
+    /// One more run, started at `at_ms`, taking `ms`.
+    pub(crate) fn add(&mut self, at_ms: u64, ms: f64, failed: bool) {
+        self.runs += 1;
+        self.failed += u64::from(failed);
+        self.total_ms += ms;
+        self.last_at_ms = self.last_at_ms.max(at_ms);
+    }
+}
+
 #[derive(Serialize, Deserialize)]
 pub(crate) struct DeploymentRecord {
     pub(crate) slug: String,
@@ -230,6 +251,9 @@ pub(crate) struct DeploymentRecord {
     pub(crate) trigger_count: u64,
     #[serde(default)]
     pub(crate) error_count: u64,
+    /// Its unrecorded handlers' runs, counted, by label.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub(crate) tallies: BTreeMap<String, Tally>,
     /// Absent in files written before the lifecycle existed: such a deployment was running.
     #[serde(default)]
     pub(crate) status: Option<Status>,
@@ -293,6 +317,9 @@ pub(crate) struct DeploymentEntry {
     pub(crate) sessions: usize,
     pub(crate) trigger_count: u64,
     pub(crate) error_count: u64,
+    /// Its unrecorded handlers' runs, counted, by label: none while it has none.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub(crate) tallies: BTreeMap<String, Tally>,
     pub(crate) deployed_at_epoch_seconds: u64,
     /// Who did it (access.rs's caller: a named user, `admin`), when the server knows.
     #[serde(default, skip_serializing_if = "Option::is_none")]

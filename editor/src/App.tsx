@@ -431,7 +431,11 @@ function Canvas({
       const server = deriveServer(doc.nodes as PrimitiveNodeType[], doc.edges as Edge[], ev, port);
       const scheduled = (doc.server?.interval ?? "").trim() !== "" && server.endpoints.length === 0 && server.clocks.length === 0 && server.files.length === 0 && server.actions.length === 0;
       const caps = ev.deployed_capability_names(hash, scheduled) as string[];
-      return { items: manifestItems(caps, doc.server?.requirements), optional: doc.server?.requirements?.optional ?? [], trigger: manifestTrigger(caps), byHand: server.endpoints.length === 0 };
+      // Its unrecorded handlers, each an item to approve (the server reads them from the unit).
+      const unrecorded = [...server.endpoints.map((e) => ({ label: `${e.method} ${e.path}`, log: e.log })), ...server.clocks, ...server.files, ...server.actions]
+        .filter((h) => h.log === "unrecorded")
+        .map((h) => h.label);
+      return { items: manifestItems(caps, { ...doc.server?.requirements, unrecorded }), optional: doc.server?.requirements?.optional ?? [], trigger: manifestTrigger(caps), byHand: server.endpoints.length === 0 };
     },
     [ev, byName],
   );

@@ -291,6 +291,11 @@ pub(crate) struct Requirements {
     /// `AgentRuns("reset")`: off unless asked for, and taken back like any grant.
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     pub(crate) agents: BTreeSet<String>,
+    /// The handlers declared `unrecorded`, by label (`GET /health`): each an item a person grants,
+    /// `Unrecorded("GET /health")`, without which its runs are recorded (docs/L4s/request-path-L4.md,
+    /// C5). Read from the unit (`with_unrecorded`), never taken from what a client sends.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub(crate) unrecorded: BTreeSet<String>,
 }
 
 impl Requirements {
@@ -304,6 +309,19 @@ impl Requirements {
             *asked = (*asked).max(n);
         }
         self
+    }
+
+    /// These requirements with the handlers of `root` declared `unrecorded`, by label, in place of
+    /// any a client sent: what the unit says is what is asked.
+    pub(crate) fn with_unrecorded(mut self, root: &holon_core::Unit, resolver: &impl holon_core::Resolver) -> Requirements {
+        self.unrecorded = holon_core::read_server(root, resolver).map(|s| s.unrecorded()).unwrap_or_default();
+        self
+    }
+
+    /// [`with_module_limits`](Requirements::with_module_limits) and
+    /// [`with_unrecorded`](Requirements::with_unrecorded): what the unit itself asks for.
+    pub(crate) fn of_unit(self, root: &holon_core::Unit, resolver: &impl holon_core::Resolver) -> Requirements {
+        self.with_module_limits(root, resolver).with_unrecorded(root, resolver)
     }
 }
 
@@ -328,7 +346,7 @@ impl Manifest {
     /// `PrivateAddresses`).
     pub(crate) fn items(&self) -> BTreeSet<String> {
         let r = &self.requirements;
-        holon_core::manifest_items(&self.capabilities, &r.limits, &r.plain_http, r.private_addresses, &r.agents)
+        holon_core::manifest_items(&self.capabilities, &r.limits, &r.plain_http, r.private_addresses, &r.agents, &r.unrecorded)
     }
 
     /// The manifest's content hash: equal manifests, equal hashes. Which items are optional is
@@ -393,6 +411,10 @@ pub(crate) struct Policy {
     /// Whether a deployment may ever be granted plain HTTP, or private addresses.
     pub(crate) allow_plain_http: bool,
     pub(crate) allow_private_addresses: bool,
+    /// Whether a handler's runs may ever be kept out of its log (`Unrecorded("GET /health")`): on
+    /// by default, since only a handler that does nothing outside its run may ask, and a person
+    /// approves each (docs/L4s/request-path-L4.md, §8 Q9).
+    pub(crate) allow_unrecorded: bool,
 }
 
 impl Default for Policy {
@@ -412,6 +434,7 @@ impl Default for Policy {
             auto: Vec::new(),
             allow_plain_http: false,
             allow_private_addresses: false,
+            allow_unrecorded: true,
         }
     }
 }
@@ -437,6 +460,9 @@ struct GrantsFile {
     allow_plain_http: bool,
     #[serde(default)]
     allow_private_addresses: bool,
+    /// Absent: on (§8 Q9).
+    #[serde(default)]
+    allow_unrecorded: Option<bool>,
 }
 
 impl Policy {
@@ -483,6 +509,7 @@ impl Policy {
         policy.auto = file.grants.auto;
         policy.allow_plain_http = file.grants.allow_plain_http;
         policy.allow_private_addresses = file.grants.allow_private_addresses;
+        policy.allow_unrecorded = file.grants.allow_unrecorded.unwrap_or(true);
         Ok(policy)
     }
 
@@ -524,6 +551,11 @@ impl Policy {
         }
         if item == "PrivateAddresses" && !self.allow_private_addresses {
             return Some("this host never grants private addresses (holon.toml: grants.allow_private_addresses)".into());
+        }
+        if let Some(label) = item.strip_prefix("Unrecorded(\"").and_then(|l| l.strip_suffix("\")"))
+            && !self.allow_unrecorded
+        {
+            return Some(format!("this host never lets a handler go unrecorded, asked for {label} (holon.toml: grants.allow_unrecorded)"));
         }
         None
     }
@@ -775,6 +807,9 @@ pub(crate) struct Permit {
     pub(crate) outbound: Outbound,
     /// The grant's hash (hex), for the flow log.
     pub(crate) grant: String,
+    /// The handlers whose runs it keeps out of the log, by label: declared `unrecorded`, granted,
+    /// and allowed by the policy.
+    pub(crate) unrecorded: BTreeSet<String>,
 }
 
 impl Permit {
@@ -821,7 +856,24 @@ impl Permit {
                 && grant.items.contains("PrivateAddresses")
                 && policy.allow_private_addresses,
         };
-        Permit { deployment, items: grant.items.clone(), request_limits, clock_limits, durable, files, databases, channels, log, outbound, grant: to_hex(&grant.hash()) }
+        let unrecorded = grant
+            .requirements
+            .unrecorded
+            .iter()
+            .filter(|l| policy.allow_unrecorded && grant.items.contains(&format!("Unrecorded({l:?})")))
+            .cloned()
+            .collect();
+        Permit { deployment, items: grant.items.clone(), request_limits, clock_limits, durable, files, databases, channels, log, outbound, grant: to_hex(&grant.hash()), unrecorded }
+    }
+
+    /// How a run of the handler labelled `label`, declared `declared`, is recorded: as declared,
+    /// except that `unrecorded` holds only where it is granted (and the policy allows it), and is
+    /// strict otherwise.
+    pub(crate) fn log_level(&self, label: Option<&str>, declared: holon_core::LogLevel) -> holon_core::LogLevel {
+        match declared {
+            holon_core::LogLevel::Unrecorded if !label.is_some_and(|l| self.unrecorded.contains(l)) => holon_core::LogLevel::Strict,
+            level => level,
+        }
     }
 
     /// Whether the grant covers this capability.

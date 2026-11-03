@@ -9,6 +9,7 @@ import type { Edge } from "@xyflow/react";
 import type { PrimitiveNodeType } from "./PrimitiveNode";
 import { deriveServer, flowUnitHash } from "./canvasOps";
 import { compileHolon, printHolon, printHolonLines, sourceLineOf } from "./holonText";
+import { manifestItems } from "./holon";
 import { buildSample, samples } from "./samples";
 
 
@@ -57,6 +58,8 @@ describe("flows as text", () => {
     expect([fine.errors, fine.placed]).toEqual([[], []]);
     expect(fine.endpoints.map((e) => `${e.method} ${e.path} ${e.log}`)).toEqual(["GET /health unrecorded", "GET /notes lazy", "POST /notes "]);
     expect(printHolon("board", doc, ev)).toBe(board);
+    // An unrecorded handler is an item to approve, by its label, as the server asks for it.
+    expect(manifestItems(["NetworkIngress"], { unrecorded: ["GET /health"] })).toEqual(["NetworkIngress", 'Unrecorded("GET /health")']);
     // A write can't be unrecorded: the error names the route and sits at the node that writes.
     const bad = compileHolon(board.replace("route POST /notes (req) {", "route POST /notes (req) unrecorded {"), ev);
     const server = derive(bad.doc);

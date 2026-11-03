@@ -75,6 +75,8 @@ export function DeploymentCard({
   role?: Role;
 }) {
   const [open, setOpen] = useState(false);
+  // Runs of its unrecorded handlers: counted by the server, not in its log.
+  const unrecorded = Object.values(entry.tallies ?? {}).reduce((n, t) => n + t.runs, 0);
   const card = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (focus !== undefined) card.current?.scrollIntoView({ block: "start" });
@@ -178,7 +180,8 @@ export function DeploymentCard({
         {entry.port !== null && <span>:{entry.port} · </span>}
         {entry.has_state && <span>state · </span>}
         session {entry.session} · {entry.trigger_count} fired
-        {entry.error_count > 0 ? `, ${entry.error_count} errored` : ""} ·{" "}
+        {entry.error_count > 0 ? `, ${entry.error_count} errored` : ""}
+        {unrecorded > 0 && <span title="runs of its unrecorded handlers: counted, not logged">, {unrecorded} not recorded</span>} ·{" "}
         <span style={{ cursor: "pointer", color: "#9fb4d4" }} onClick={() => setOpen(!open)}>
           {entry.sessions} session{entry.sessions === 1 ? "" : "s"} {open ? "▾" : "▸"}
         </span>

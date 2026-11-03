@@ -814,45 +814,70 @@ pub(crate) fn handle_post_fire(store: &SharedStore, request: &Request) -> Respon
 /// then numbered, chained and written under the deployment's own log lock, so a run of one
 /// deployment never waits on another's log (docs/L4s/request-path-L4.md, C2).
 ///
-/// A strict run (`level`, its handler's, C5) returns once its entry is on disk, sharing the sync
-/// with the runs around it (C2 e); a lazy one is synced within `SYNC_EVERY`. Answers the seq the
-/// entry got, and whether it is known kept.
-pub(crate) fn log_run(deployments: &Mutex<BTreeMap<String, Deployment>>, slug: &str, entry: LogEntry, tokens: Redactor, level: holon_core::LogLevel) -> Option<Logged> {
-    let (log, seq) = push_run(deployments, slug, entry, tokens)?;
+/// How the run is recorded is its handler's level (`declared`, C5), as its grant holds it
+/// (`Permit::log_level`): a strict run returns once its entry is on disk, sharing the sync with
+/// the runs around it (C2 e); a lazy one is synced within `SYNC_EVERY`; an unrecorded one is
+/// counted in its handler's tally and leaves no entry, unless it failed, when it is logged
+/// lazily (§8 Q10). Answers the seq the entry got (none for an unrecorded run that left none),
+/// and whether it is known kept.
+pub(crate) fn log_run(deployments: &Mutex<BTreeMap<String, Deployment>>, slug: &str, entry: LogEntry, tokens: Redactor, declared: holon_core::LogLevel) -> Option<Logged> {
+    let Some((log, seq, level)) = push_run(deployments, slug, entry, tokens, declared)? else {
+        return Some(Logged { seq: None, kept: Ok(()) });
+    };
     let kept = match level {
         holon_core::LogLevel::Strict => log.sync_through(seq),
-        // Unrecorded runs are still logged, lazily, until the server acts on the word (build
-        // step 9b, docs/L4s/request-path-plan.md).
         holon_core::LogLevel::Lazy | holon_core::LogLevel::Unrecorded => Ok(()),
     };
-    Some(Logged { seq, kept })
+    Some(Logged { seq: Some(seq), kept })
 }
 
-/// A run as `log_run` logged it: its entry's seq, and, for a strict run, whether the entry is on
-/// disk (an error says why not).
+/// Whether a run failed, as its entry says: an error, or a 5xx answer.
+fn failed(entry: &LogEntry) -> bool {
+    entry.error.is_some() || entry.status.is_some_and(|s| s >= 500)
+}
+
+/// A run as `log_run` logged it: its entry's seq (none: unrecorded, and it didn't fail), and, for
+/// a strict run, whether the entry is on disk (an error says why not).
 #[derive(Debug)]
 pub(crate) struct Logged {
-    pub(crate) seq: u64,
+    pub(crate) seq: Option<u64>,
     pub(crate) kept: Result<(), String>,
 }
 
 impl Logged {
-    /// The seq, saying on the console when a strict run's record isn't known kept: for a run that
-    /// answers nobody (a clock's, a file's, a resumed run's).
-    pub(crate) fn said(self, slug: &str) -> u64 {
+    /// Said on the console when a strict run's record isn't known kept: for a run that answers
+    /// nobody (a clock's, a file's, a resumed run's).
+    pub(crate) fn said(self, slug: &str) {
         if let Err(e) = &self.kept {
             eprintln!("holon: {slug:?}: a run's record may not be on disk: {e}");
         }
-        self.seq
     }
 }
 
-/// `log_run`'s write: the entry pushed under the deployment's log lock, and the log it went to.
-fn push_run(deployments: &Mutex<BTreeMap<String, Deployment>>, slug: &str, mut entry: LogEntry, tokens: Redactor) -> Option<(Arc<recorder::LogCell>, u64)> {
-    let (log, secrets, channels, permit, session) = {
-        let table = deployments.lock().unwrap();
-        let dep = table.get(slug)?;
-        (Arc::clone(&dep.log), Arc::clone(&dep.secrets), Arc::clone(&dep.channels), Arc::clone(&dep.permit), dep.life.sessions.last().map_or(0, |s| s.number))
+/// `log_run`'s write: the run's level as its grant holds it, and, unless it is an unrecorded run
+/// that didn't fail (counted, and nothing written: `Some(None)`), the entry pushed under the
+/// deployment's log lock, with the log it went to. None: no such deployment.
+#[allow(clippy::type_complexity)]
+fn push_run(
+    deployments: &Mutex<BTreeMap<String, Deployment>>,
+    slug: &str,
+    mut entry: LogEntry,
+    tokens: Redactor,
+    declared: holon_core::LogLevel,
+) -> Option<Option<(Arc<recorder::LogCell>, u64, holon_core::LogLevel)>> {
+    let (log, secrets, channels, permit, session, level) = {
+        let mut table = deployments.lock().unwrap();
+        let dep = table.get_mut(slug)?;
+        let level = dep.permit.log_level(entry.route.as_deref(), declared);
+        if level == holon_core::LogLevel::Unrecorded {
+            let failed = failed(&entry);
+            let label = entry.route.clone().unwrap_or_default();
+            dep.tallies.entry(label).or_default().add(entry.at_ms, entry.duration_ms, failed);
+            if !failed {
+                return Some(None);
+            }
+        }
+        (Arc::clone(&dep.log), Arc::clone(&dep.secrets), Arc::clone(&dep.channels), Arc::clone(&dep.permit), dep.life.sessions.last().map_or(0, |s| s.number), level)
     };
     let answered = std::mem::take(&mut entry.answered);
     tokens.and(Redactor::of(&secrets)).and(Redactor::answers(&answered.0, &secrets)).entry(&mut entry);
@@ -867,7 +892,7 @@ fn push_run(deployments: &Mutex<BTreeMap<String, Deployment>>, slug: &str, mut e
         }
         seq
     });
-    Some((log, seq))
+    Some(Some((log, seq, level)))
 }
 
 /// The timeline, with the outputs of each node that carries the text of a file the log keeps by

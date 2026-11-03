@@ -68,6 +68,9 @@ allow_plain_http = true
     `false`).
   - `allow_private_addresses`: whether it may ever reach this machine and its network (default
     `false`).
+  - `allow_unrecorded`: whether a handler's runs may ever be kept out of its log, each approved as
+    `Unrecorded("GET /health")` (default `true`: only a handler that does nothing outside its run
+    may ask, and a person approves each).
 
 An unknown section or key is a mistake, and so is a limit name the server doesn't know. The limits,
 their defaults and their ceilings are in [Permissions](permissions.md#limits).
@@ -186,6 +189,13 @@ before the answer and synced within a second, as the deployment's events are, so
 lose the last second of them, never more. So are requests no route took (a 404, a 405). A run
 whose entry couldn't be written or synced is answered with a 500: it ran, but isn't known to be
 on record.
+
+A handler whose line says `unrecorded`, approved as `Unrecorded("GET /health")`, leaves no entry:
+its runs are counted instead, by handler (how many, how many failed, how long they took in all,
+when the last one started), kept with the deployment and given by the log's API (`tallies`), and
+shown where its runs would be, in view mode, the terminal editor and `holon history`. A failed run
+(an error, or a 5xx answer) is logged, lazily. So an unrecorded run can't be replayed, reverted or
+explained. Not approved, or taken back, the handler is strict.
 
 `--export-heads URL` sends each new head to a witness every five seconds, with
 `HOLON_EXPORT_HEADS_TOKEN` as a bearer token; heads that can't be sent wait in

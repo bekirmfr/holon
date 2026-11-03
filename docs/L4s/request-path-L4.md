@@ -909,11 +909,13 @@ answer. It gets its own note if measurements on real disks ask for it (§8 Q4).
 
 ### C5. A log level per handler: strict by default, `lazy`, `unrecorded`
 
-**Status:** the language and core side built (build step 8): the words parse, lower to the trigger
-node's `log` param (frozen in the handler's unit only when it isn't strict, so a flow without
-them hashes as before), print back, and are checked in core (`may_record_lightly`, also in
-`read_server`) and by `holon check` and the editor at the node that breaks the rule. No run acts on
-them yet: the server's side (C2 e and the levels at run time) is build step 9.
+**Status: built.** The language and core side in build step 8: the words parse, lower to the
+trigger node's `log` param (frozen in the handler's unit only when it isn't strict, so a flow
+without them hashes as before), print back, and are checked in core (`may_record_lightly`, also in
+`read_server`) and by `holon check` and the editor at the node that breaks the rule. The server's
+side in build step 9: strict and `lazy` at run time in 9a, and `unrecorded` in 9b (approved per
+handler, counted in a tally, failures logged). `GET /health` unrecorded answers 20,830 req/s live
+at 64 connections, against 8,306 strict, and the measured 21,044 in the table below.
 
 **What.** Every handler (route, clock, file handler, action) records its runs `strict`ly by default:
 the record is on disk before the answer (C2 e). A handler that only reads can say otherwise, on its

@@ -10,6 +10,14 @@
   or waits can't, and `holon check` says why at the line. Requests no route took are lazy. A run
   whose record couldn't be written or synced is answered with a 500. New sample:
   `status-board`; `notes-api` and `orders-api` list lazily.
+- **A handler can keep its runs out of the log.** `unrecorded` on a handler's line (`route GET
+  /health (req) unrecorded { … }`), for one that only reads and answers, asks for
+  `Unrecorded("GET /health")` at deploy: "keep runs of GET /health out of its log (its failures are
+  recorded)". Approved, its runs leave no entry and are counted instead (runs, failures, time, the
+  last one), shown where its runs would be in view mode, the deployment card, the terminal editor
+  and `holon history`; a failed one is logged. Taken back, its next run is recorded and the flow
+  runs on. A host can refuse it whole with `[grants] allow_unrecorded = false`. `holon check` says
+  it, and an agent's `call` says a run was counted, not logged. `status-board` shows it.
 - **`chess`: a Sphinx that doesn't answer in time keeps its turn.** When its move call times out,
   the rules no longer play for it at once: the page says so and offers Try again (ask it once
   more) or Let the rules play. While its turn waits, `POST /move` takes only `again` or `rules`,

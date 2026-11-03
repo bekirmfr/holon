@@ -580,7 +580,8 @@ fn call(api: &dyn Api, args: &Value) -> Result<String, String> {
         }
     };
     let log = format!("/deployments/{}/log", seg(slug));
-    let next = json_of(api, "GET", &format!("{log}?limit=0"), None)?.get("next").and_then(Value::as_u64).unwrap_or(0);
+    let before = json_of(api, "GET", &format!("{log}?limit=0"), None)?;
+    let next = before.get("next").and_then(Value::as_u64).unwrap_or(0);
     let answer = json_of(api, "POST", &format!("/deployments/{}/request", seg(slug)), Some(Body::Json(json!({ "method": method, "url": path, "headers": headers, "body": body }))))?;
     let status = answer.get("status").and_then(Value::as_u64).unwrap_or(0);
     let mut out = vec![format!("{method} {path} → {status}")];
@@ -597,7 +598,8 @@ fn call(api: &dyn Api, args: &Value) -> Result<String, String> {
         out.push(if body.chars().count() > 8000 { format!("{}…", body.chars().take(8000).collect::<String>()) } else { body.to_string() });
     }
     let after = if next == 0 { String::new() } else { format!("after={}&", next - 1) };
-    let run = json_of(api, "GET", &format!("{log}?{after}limit=1000"), None)?
+    let page = json_of(api, "GET", &format!("{log}?{after}limit=1000"), None)?;
+    let run = page
         .get("entries")
         .and_then(Value::as_array)
         .and_then(|e| e.iter().find(|e| e.get("method").and_then(Value::as_str) == Some(method.as_str()) && e.get("url").and_then(Value::as_str) == Some(path.as_str())).cloned());
@@ -607,15 +609,28 @@ fn call(api: &dyn Api, args: &Value) -> Result<String, String> {
             out.push(format!("This was run {seq}: `explain` with run {seq} shows what each statement did."));
         }
         Some(_) => out.push("No route matched it, so no run was made.".into()),
-        None => out.push("Its run isn't in the log.".into()),
+        None => out.push(match counted(&before, &page) {
+            Some(label) => format!("Runs of {label} aren't recorded (its line says unrecorded): this one was counted, not logged, so there is no run to explain."),
+            None => "Its run isn't in the log.".into(),
+        }),
     }
     Ok(out.join("\n"))
+}
+
+/// The unrecorded handler whose count went up between two pages of a log: the handler of a run
+/// that was counted, not logged.
+fn counted(before: &Value, after: &Value) -> Option<String> {
+    let runs = |page: &Value, label: &str| page.get("tallies").and_then(|t| t.get(label)).and_then(|t| t.get("runs")).and_then(Value::as_u64).unwrap_or(0);
+    after.get("tallies")?.as_object()?.keys().find(|label| runs(after, label) > runs(before, label)).cloned()
 }
 
 /// Run `slug`'s action `name` with `input`: what it answered, and its run.
 fn run_action(api: &dyn Api, slug: &str, name: &str, input: Value) -> Result<String, String> {
     let ran = json_of(api, "POST", &format!("/trigger/{}/{}", seg(slug), seg(name)), Some(Body::Json(input)))?;
-    let seq = ran.get("seq").and_then(Value::as_u64).unwrap_or(0);
+    let Some(seq) = ran.get("seq").and_then(Value::as_u64) else {
+        let answer = ran.get("answer").cloned().unwrap_or(Value::Null);
+        return Ok(format!("action {name} → {answer}\n\nRuns of action {name} aren't recorded (its line says unrecorded): this one was counted, not logged, so there is no run to explain."));
+    };
     if ran.get("waiting").and_then(Value::as_bool) == Some(true) {
         return Ok(format!("action {name} is waiting for an event: run {seq}, which `explain` shows."));
     }
@@ -691,9 +706,12 @@ fn explain(api: &dyn Api, slug: &str, run: Option<u64>) -> Result<String, String
 fn history(api: &dyn Api, slug: &str, last: u64, events_only: bool) -> Result<String, String> {
     let path = format!("/deployments/{}", seg(slug));
     let events = list_of(json_of(api, "GET", &format!("{path}/events"), None)?, Some("events"));
-    let runs = if events_only { Vec::new() } else { list_of(json_of(api, "GET", &format!("{path}/log?limit={last}"), None)?, Some("entries")) };
+    let page = if events_only { Value::Null } else { json_of(api, "GET", &format!("{path}/log?limit={last}"), None)? };
+    let counted = crate::history::unrecorded(&page);
+    let runs = if events_only { Vec::new() } else { list_of(page, Some("entries")) };
     let versions = crate::history::Versions::of(&json_of(api, "GET", &format!("{path}/versions"), None)?);
-    let lines = crate::history::timeline(&runs, &events, &versions, events_only);
+    let mut lines = crate::history::timeline(&runs, &events, &versions, events_only);
+    lines.extend(counted);
     if lines.is_empty() {
         return Ok(format!("\"{slug}\" has nothing in its history yet."));
     }
@@ -1313,6 +1331,33 @@ mod tests {
         assert!(state.deployments.lock().unwrap()["ticker"].life.status == crate::lifecycle::Status::Running, "taken back, it runs on");
         assert!(deploy_with(json!(["nope"])).unwrap_err().contains("it has no action \"nope\""));
         assert_eq!(person.send("POST", "/deployments/ticker/stop", None).unwrap().0, 200);
+    }
+
+    /// An agent's deploy that asks to keep a handler's runs out of the log stops for a person, who
+    /// approves `Unrecorded("GET /hello/:name")` by its words; once deployed, a call to it says its
+    /// run was counted, not logged (docs/L4s/request-path-L4.md, C5).
+    #[test]
+    fn an_agents_deploy_asking_for_unrecorded_stops_for_approval() {
+        let state = test_state();
+        let text = include_str!("../../holon-author/samples/hello-api.holon").replace("port 8101", "port 18260");
+        let approve = |text: &str| {
+            let plan = agent::plan(text).unwrap();
+            let preview: Value = serde_json::from_slice(&body_bytes(route(&state, &req("POST", "/deploy/preview", serde_json::to_vec(&json!({ "slug": "hello-api", "unit": plan.unit })).unwrap())))).unwrap();
+            let approve = json!({ "slug": "hello-api", "unit": plan.unit, "acknowledge": preview["needs_approval"], "document": plan.document });
+            assert_eq!(route(&state, &req("POST", "/deploy", serde_json::to_vec(&approve).unwrap())).status_code, 200);
+        };
+        assert!(tool(&state, "deploy", json!({ "text": text })).unwrap().starts_with("Not deployed yet"));
+        approve(&text);
+        let unrecorded = text.replace("route GET /hello/:name (req) {", "route GET /hello/:name (req) unrecorded {");
+        let asked = tool(&state, "deploy", json!({ "text": unrecorded })).unwrap();
+        assert!(asked.starts_with("Not deployed yet") && asked.contains("keep runs of GET /hello/:name out of its log"), "{asked}");
+        approve(&unrecorded);
+        let called = tool(&state, "call", json!({ "slug": "hello-api", "method": "GET", "path": "/hello/Ada" })).unwrap();
+        assert!(called.starts_with("GET /hello/Ada → 200"), "{called}");
+        assert!(called.contains("Runs of GET /hello/:name aren't recorded"), "{called}");
+        let history = tool(&state, "history", json!({ "slug": "hello-api" })).unwrap();
+        assert!(history.contains("unrecorded GET /hello/:name  1 run counted, not logged"), "{history}");
+        assert_eq!(route(&state, &req("POST", "/deployments/hello-api/stop", vec![])).status_code, 200);
     }
 
     fn tool_as(api: &dyn Api, name: &str, args: Value) -> Result<String, String> {

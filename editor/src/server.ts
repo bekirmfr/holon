@@ -506,6 +506,8 @@ export type DeploymentEntry = {
   has_state: boolean;
   trigger_count: number;
   error_count: number;
+  /** Its unrecorded handlers' runs, counted, by label: absent while it has none. */
+  tallies?: Record<string, Tally>;
   deployed_at_epoch_seconds: number;
   /** Who deployed it (a named user, or `admin`), when the server knows. */
   deployed_by?: string;
@@ -703,10 +705,15 @@ export type LoggedRound = {
   exchanges: { path: number[]; request: WValue; response: WValue; start_us: number; end_us: number }[];
 };
 
+/** What the log doesn't hold of an unrecorded handler's runs: how many ran, how many failed
+ *  (each failure is in the log), how long they took in all, and when the last one started. */
+export type Tally = { runs: number; failed: number; total_ms: number; last_at_ms: number };
+
 /** `GET /deployments/<slug>/log` — entries past `after` (all without), oldest first. `next` is
  *  the seq the next entry will get; `head` the hash the log chains up to (what a witness holds),
- *  `breaks` the runs that don't follow the one before them (changed outside holon). */
-export async function getLog(slug: string, after?: number): Promise<{ entries: LogEntry[]; next: number; head: string; breaks: number[] }> {
+ *  `breaks` the runs that don't follow the one before them (changed outside holon); `tallies` the
+ *  counts of its unrecorded handlers' runs, by label (absent from a server before them). */
+export async function getLog(slug: string, after?: number): Promise<{ entries: LogEntry[]; next: number; head: string; breaks: number[]; tallies?: Record<string, Tally> }> {
   const q = after === undefined ? "" : `?after=${after}`;
   const res = await api(`${BASE}/deployments/${encodeURIComponent(slug)}/log${q}`);
   return asJson(res);

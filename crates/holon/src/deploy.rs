@@ -220,7 +220,7 @@ fn deploy(
     // what its author declares; policy refuses what it never grants, grants what it grants
     // without asking, and everything else must be acknowledged. A redeploy asks only for what
     // the previous grant didn't already cover.
-    let manifest = Manifest::new(caps.iter(), body.requirements.clone().with_module_limits(root_unit, &resolver));
+    let manifest = Manifest::new(caps.iter(), body.requirements.clone().of_unit(root_unit, &resolver));
     let seen = Arc::new(folders::Scoped::new(Arc::clone(folders), &body.slug));
     if let Some(why) = policy.refuses(&manifest).or_else(|| seen.refuses(&manifest)).or_else(|| secrets.refuses(&body.slug, &holon_core::sent_secrets(root_unit, &resolver))) {
         return err(400, format!("this host can't grant that: {why}"));
@@ -405,6 +405,7 @@ fn deploy(
                 server,
                 trigger_count: 0,
                 error_count: 0,
+                tallies: BTreeMap::new(),
                 deployed_at: SystemTime::now(),
                 deployed_by: by.map(String::from),
                 uses: body.uses.clone(),
@@ -440,6 +441,7 @@ pub(crate) fn deployment_entry(slug: &str, dep: &Deployment) -> DeploymentEntry 
         sessions: dep.life.sessions.len(),
         trigger_count: dep.trigger_count,
         error_count: dep.error_count,
+        tallies: dep.tallies.clone(),
         deployed_at_epoch_seconds: dep.deployed_at.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs(),
         deployed_by: dep.deployed_by.clone(),
         uses: dep.uses.clone(),
@@ -511,7 +513,7 @@ fn preview_value(
     };
     // As the deploy will derive it: on a schedule, it runs on the clock.
     let scheduled = body.interval_seconds.is_some() && declaration_of(root_unit) != Some("server");
-    let manifest = Manifest::new(holon_core::deployed_capabilities(root_unit, &resolver, scheduled).iter(), body.requirements.clone().with_module_limits(root_unit, &resolver));
+    let manifest = Manifest::new(holon_core::deployed_capabilities(root_unit, &resolver, scheduled).iter(), body.requirements.clone().of_unit(root_unit, &resolver));
     let (previous, previous_unit, previous_browsers) = previous_of(deployments, &body.slug);
     let (mut needs, withheld) = approval_needed(policy, &manifest, previous.as_ref(), previous_unit, unit_hash, agent);
     if agent {
@@ -752,7 +754,7 @@ pub(crate) fn handle_get_permission_view(
         Err(e) => return e.response(),
     };
     let Some(root) = resolver.resolve(&unit) else { return err(500, "deployed unit no longer resolves in the store") };
-    let manifest = Manifest::new(holon_core::deployed_capabilities(root, &resolver, scheduled).iter(), grant.requirements.clone().with_module_limits(root, &resolver));
+    let manifest = Manifest::new(holon_core::deployed_capabilities(root, &resolver, scheduled).iter(), grant.requirements.clone().of_unit(root, &resolver));
     Response::json(&serde_json::json!({
         "hash": to_hex(&manifest.hash()),
         "capabilities": manifest.capabilities,
@@ -1123,22 +1125,27 @@ pub(crate) fn run_action(
         Ok(names) => entry.parked = names,
         Err(e) => entry.error = Some(e),
     }
+    // A failed one says so in its entry, so it is logged even from an unrecorded action.
+    if failed {
+        entry.status = Some(status.max(500));
+    }
     let (parked_any, error) = (!entry.parked.is_empty(), entry.error.is_some());
     // The seq its entry got, not the next one read beforehand: another run may log between.
-    let (seq, kept) = log_run(deployments, slug, entry, Redactor::tokens(&waits.tokens), action.log).map_or((0, Ok(())), |l| (l.seq, l.kept));
+    let (seq, kept) = log_run(deployments, slug, entry, Redactor::tokens(&waits.tokens), action.log).map_or((None, Ok(())), |l| (l.seq, l.kept));
     // The state is kept by its head, written as the change landed (claims.rs); the deployments
     // file changes only with the deployment's definition, here its waiting runs.
     if parked_any {
         persist_deployments(deployments_path, deployments);
     }
-    let ran = |status: u16, reply: serde_json::Value, answer: Option<Value>, waiting: bool, error: Option<String>, why: Option<&'static str>| ActionRan { status, reply, answer, seq: Some(seq), waiting, error, why };
+    let ran = |status: u16, reply: serde_json::Value, answer: Option<Value>, waiting: bool, error: Option<String>, why: Option<&'static str>| ActionRan { status, reply, answer, seq, waiting, error, why };
     // A strict run whose record isn't on disk isn't answered as done: it may not be on record.
     if let Err(e) = kept {
         let message = format!("the action ran, but {e}");
         return ran(500, serde_json::json!({ "error": message }), None, false, Some(message), Some("failed"));
     }
     if error {
-        let message = format!("the action failed: its run log says why (entry {seq})");
+        // A failed run is logged, unrecorded or not.
+        let message = format!("the action failed: its run log says why (entry {})", seq.unwrap_or_default());
         return ran(500, serde_json::json!({ "error": message }), None, false, Some(message), Some("failed"));
     }
     if parked_any {
@@ -1167,12 +1174,14 @@ pub(crate) fn run_action(
 /// without), oldest first, at most `limit` (default 200) newest. `next` is the seq the next
 /// entry will get, so a poller can ask for `after=next-1`. `head` is the hash of the newest
 /// entry's line, and `breaks` the seqs of entries that don't follow the one before them: the log
-/// file was changed outside holon there (recorder.rs).
+/// file was changed outside holon there (recorder.rs). `tallies` counts the runs of its unrecorded
+/// handlers, by label (`{runs, failed, total_ms, last_at_ms}`): the log holds only their failures.
 pub(crate) fn handle_get_log(deployments: &Mutex<BTreeMap<String, Deployment>>, slug: &str, request: &Request) -> Response {
     let after = request.get_param("after").and_then(|a| a.parse::<u64>().ok());
     let limit = request.get_param("limit").and_then(|l| l.parse::<usize>().ok()).unwrap_or(200);
-    // The table only to find the log, so a page reading it never holds up another deployment.
-    let Some(log) = deployments.lock().unwrap().get(slug).map(|dep| Arc::clone(&dep.log)) else {
+    // The table only to find the log (and the counts of its unrecorded handlers' runs, which
+    // the log doesn't hold), so a page reading it never holds up another deployment.
+    let Some((log, tallies)) = deployments.lock().unwrap().get(slug).map(|dep| (Arc::clone(&dep.log), dep.tallies.clone())) else {
         return err(404, format!("no deployment {slug:?}"));
     };
     // Under one lock, so the entries, the head and the breaks agree.
@@ -1182,6 +1191,7 @@ pub(crate) fn handle_get_log(deployments: &Mutex<BTreeMap<String, Deployment>>, 
             "next": log.next_seq(),
             "head": log.head(),
             "breaks": log.breaks(),
+            "tallies": tallies,
         }))
     })
 }

@@ -404,7 +404,9 @@ fn fire_one_arrival(
         Err(e) => entry.error = Some(e),
     }
     let parked_any = !entry.parked.is_empty();
-    log_run(deployments, slug, entry, Redactor::tokens(&waits.tokens), handler.map_or_else(Default::default, |h| h.log)).map(|l| l.said(slug));
+    if let Some(l) = log_run(deployments, slug, entry, Redactor::tokens(&waits.tokens), handler.map_or_else(Default::default, |h| h.log)) {
+        l.said(slug);
+    }
     let which = label.as_ref().map(|l| format!(" {l}")).unwrap_or_default();
     println!("{} file [{slug}]{which} {folder}/{name}: {} effect(s) performed", event.name(), run.performed.len());
     record_trigger(deployments, slug, false);

@@ -39,8 +39,8 @@ code. Where the design leaves a decision open (§8), the step that needs it says
 | 6b | B.2, the witness's queue file kept open (**done**) | `holon` | none | |
 | 7 | C3 (b)–(e), the state head (**done**) | `holon` | adds `deployments.state/`, drops `state_refs` (no migration) | |
 | 8 | C5 in the language and core (**done**) | `holon-core`, `holon-author`, `holon-wasm`, `editor` (types) | a new param in handler units, only for flows that use a word | |
-| 9a | C2 (e), strict sync, and `lazy` at run time | `holon`, `holon-author` (the sample), docs | none new | decided: Q12, unrouted requests lazy |
-| 9b | C5's `unrecorded` in the server | `holon`, `holon-core`, `holon-author`, `holon-wasm`, `editor`, docs, the sample | none new | decided: Q9 on, Q10 failures recorded, Q11 the headline |
+| 9a | C2 (e), strict sync, and `lazy` at run time (**done**) | `holon`, `holon-author` (the sample), docs | none new | decided: Q12, unrouted requests lazy |
+| 9b | C5's `unrecorded` in the server (**done**) | `holon`, `holon-core`, `holon-author`, `holon-wasm`, `editor`, docs, the sample | none new | decided: Q9 on, Q10 failures recorded, Q11 the headline |
 | 10 | C3 (f), the log line as the state commit | `holon` | the head file goes | only if step 9's numbers ask |
 | 11 | C4, the store lock | `holon`, `holon-host` | none | only after re-measuring |
 | 12 | §4.5 (a), the per-run constant | `holon` | none | Q16, for its last item |
@@ -862,6 +862,55 @@ all three routes answer and `holon history status-board` lists each run.
 
 Live at 64 connections, hyper and the client take most of the difference, so strict costs about
 13–17 % there; one connection at a time, it is the sync, about 0.25 ms a request on this disk.
+
+### Step 9b done
+
+Built as "Unrecorded runs", "Permissions" and "The editor…" say, with these differences:
+- **The level is the permit's.** `log_run` takes the declared level and asks
+  `Permit::log_level(label, declared)` under the table lock it already took: `unrecorded` holds
+  only for a label the grant holds (`Permit.unrecorded`, as granted and allowed by the policy),
+  and is strict otherwise. No caller decides it.
+- **A tally of its own, not `record_trigger`.** `log_run` counts the run in `Deployment.tallies`
+  (`wire::Tally { runs, failed, total_ms, last_at_ms }`) in the same table section, so
+  `record_trigger` and its callers are unchanged. A failure is an entry with an error or a 5xx
+  status; a failed action's entry now carries its status so it counts.
+- **The requirement is read from the unit.** `Requirements::of_unit` is `with_module_limits` and
+  `with_unrecorded`; `with_unrecorded` replaces whatever a client sent with the unit's
+  (`Server::unrecorded`, in core). `Unrecorded(…)` is optional (`permission_kind`), like
+  `AgentRuns`: taken back, the handler is strict from its next run and nothing pauses.
+- **`allow_unrecorded`** is on unless `holon.toml` says `false` (an `Option` in the file, so a file
+  without `[grants]` keeps it on).
+- **Words.** "keep runs of GET /health out of its log (its failures are recorded)"; its touches row
+  is `log GET /health: not recorded`, which the web editor's and the terminal editor's approvals
+  show. `holon check` lists it under "it may".
+- **Where the counts show:** a row per handler above the runs in view mode (`tallies.ts`), "N not
+  recorded" on the deployment card (`DeploymentEntry.tallies`), a line each in the terminal
+  editor's latest runs and a count in its Runs title, a line each at the end of `holon history` and
+  the agents' `history`, and the agents' `call` and action run say the run was counted, not logged
+  (comparing the tallies before and after).
+- **The sample:** `status-board`'s `/health` and a new `action report` are unrecorded.
+- **Tests:** `an_unrecorded_run_leaves_no_entry_and_is_counted_and_its_failure_is_recorded`
+  (preview asks for each, no entry, counted, a 503 logged, the log API's and the deployments
+  file's tallies, revoked: recorded strictly and running), `a_policy_without_allow_unrecorded_refuses_the_deploy`,
+  `an_agents_deploy_asking_for_unrecorded_stops_for_approval` (`mcp.rs`, with `call` and
+  `history`), `a_flows_unrecorded_handlers_show_counted_beside_its_runs` (workbench), core's
+  `manifest_items` and `permission_kind`, `describe_item`, `check`, and the editor's
+  `tallies.test.ts` and `holonText.test.ts`.
+
+**Run live** (`holon serve`, `status-board` deployed with `holon deploy --approve`, which asked for
+both items): `/health` three times, a note added and listed, `holon action status-board report`;
+`holon history status-board` lists the two note runs and "unrecorded GET /health  4 runs
+counted, not logged". Then `wrk` for 5 s:
+
+| | 1 connection | 64 connections |
+|---|---|---|
+| `GET /health` (unrecorded) | 6,649 (p50 141 µs) | 20,830 |
+| `GET /health`, strict (9a) | 2,210 (p50 423 µs) | 8,306 |
+| `GET /notes` (lazy) | 3,762 | 6,013 |
+| `POST /notes` (strict) | 1,635 | 6,396 |
+| `hello-api` (strict) | 2,178 | 8,933 |
+
+Unrecorded lands on the design's measured 21,044 (§1, the `cache` + `nolog` row).
 
 ## Step 10. C3 (f): the log line as the state commit (only if step 9's numbers ask)
 

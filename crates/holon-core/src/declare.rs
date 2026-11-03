@@ -154,6 +154,16 @@ pub struct Server {
 }
 
 impl Server {
+    /// The labels of its handlers declared `unrecorded` (`GET /health`, `action report`), as their
+    /// runs are labelled: what each asks to be approved, `Unrecorded("GET /health")`.
+    pub fn unrecorded(&self) -> std::collections::BTreeSet<String> {
+        let routes = self.routes.iter().filter(|r| r.log == LogLevel::Unrecorded).map(|r| format!("{} {}", r.method, r.path));
+        let clocks = self.clocks.iter().filter(|c| c.log == LogLevel::Unrecorded).map(|c| c.label.clone());
+        let files = self.files.iter().filter(|f| f.log == LogLevel::Unrecorded).map(|f| f.label.clone());
+        let actions = self.actions.iter().filter(|a| a.log == LogLevel::Unrecorded).map(|a| a.label.clone());
+        routes.chain(clocks).chain(files).chain(actions).collect()
+    }
+
     /// Its action named `name`, if it has one.
     pub fn action(&self, name: &str) -> Option<&Action> {
         self.actions.iter().find(|a| a.name == name)

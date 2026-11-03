@@ -440,6 +440,9 @@ struct Deployment {
     /// unsupplied capability) is *not* an error — it's the same honest, expected outcome
     /// this whole project treats as normal everywhere else, not a fault to count.
     error_count: u64,
+    /// The runs of its unrecorded handlers, counted, by label: what the log doesn't hold of them.
+    /// Persisted with the deployments file, as the counts above are.
+    tallies: BTreeMap<String, wire::Tally>,
     /// The routes and port, when the unit is a server declaration (`holon_core::read_server`):
     /// such a deployment is answered on its own port by the data plane (`data.rs`), not by
     /// `/trigger` or the clock. Derived from the unit at deploy and load time, never persisted.

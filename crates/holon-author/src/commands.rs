@@ -13,7 +13,7 @@
 use holon_core::{consent_name, MapResolver, Resolver};
 
 use crate::composites::Names;
-use crate::describe::describe_item_sending;
+use crate::describe::{describe_item, describe_item_sending};
 use crate::flow::{derive_server, flow_unit, DerivedServer};
 use crate::lang::ast::Pos;
 use crate::lang::{self, Lowered};
@@ -237,6 +237,11 @@ pub fn check(file: &str, source: &str) -> Report {
     if let (Some(fuel), Some(memory)) = (modules.get(holon_core::FUEL_LIMIT), modules.get(holon_core::MEMORY_LIMIT)) {
         out.push(format!("  run code it carries (a js node): up to {fuel} instructions and {} MiB per call, reaching nothing outside", memory / (1024 * 1024)));
     }
+    // Its unrecorded handlers, each asked for at deploy, said as the approval says it (C5).
+    let unrecorded = server.endpoints.iter().map(|e| (format!("{} {}", e.method, e.path), &e.log)).chain(server.clocks.iter().map(|c| (c.label.clone(), &c.log))).chain(server.files.iter().map(|f| (f.label.clone(), &f.log))).chain(server.actions.iter().map(|a| (a.label.clone(), &a.log)));
+    let mut unrecorded: Vec<String> = unrecorded.filter(|(_, log)| log.as_str() == "unrecorded").map(|(label, _)| format!("  {}", describe_item(&format!("Unrecorded({label:?})")))).collect();
+    unrecorded.sort();
+    out.extend(unrecorded);
     out.extend(while_it_runs(&caps));
     if problems.is_empty() && starts_nothing(&c, &mut store) {
         out.push(STARTS_NOTHING.into());
@@ -716,6 +721,10 @@ mod tests {
         assert_eq!(fmt("b.holon", BOARD).unwrap(), BOARD);
         let r = check("b.holon", BOARD);
         assert_eq!((r.code, r.err.clone()), (0, vec![]), "{r:?}");
+        // What the approval will ask, said as it says it.
+        for label in ["GET /health", "action report"] {
+            assert!(r.out.contains(&format!("  keep runs of {label} out of its log (its failures are recorded)")), "{:?}", r.out);
+        }
         // A word that isn't before a block is a name.
         let names = "flow n\nstate lazy\n\naction a (unrecorded) {\n  state.lazy = unrecorded\n  respond state.lazy\n}\n";
         assert_eq!(fmt("n.holon", names).unwrap(), names);

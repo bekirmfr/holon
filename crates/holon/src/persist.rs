@@ -44,6 +44,7 @@ pub(crate) fn persist_deployments(path: &str, deployments: &Mutex<BTreeMap<Strin
                 browsers: dep.browsers.clone(),
                 trigger_count: dep.trigger_count,
                 error_count: dep.error_count,
+                tallies: dep.tallies.clone(),
                 status: Some(dep.life.status),
                 sessions: dep.life.sessions.clone(),
                 document: dep.document.clone(),
@@ -255,6 +256,7 @@ pub(crate) fn load_deployments(
                 versions,
                 trigger_count: record.trigger_count,
                 error_count: record.error_count,
+                tallies: record.tallies,
                 deployed_at,
             },
         );

@@ -763,14 +763,14 @@ static SAMPLES: &[Sample] = &[
     Sample {
         name: "status-board",
         title: "Status board (how each handler's runs are recorded)",
-        description: "A log level per handler: every run is recorded, and by default on disk before it answers (strict). A handler that only reads and answers may say lazy, recorded all the same and on disk within a second, so it answers without waiting on the disk. One that writes is strict whatever it says.",
-        shows: &["log levels", "strict", "lazy", "collections"],
+        description: "A log level per handler: every run is recorded, and by default on disk before it answers (strict). A handler that only reads and answers may say lazy (recorded all the same, on disk within a second, so it answers without waiting on the disk) or unrecorded (counted, not logged, only its failures kept; a person approves it). One that writes is strict whatever it says.",
+        shows: &["log levels", "strict", "lazy", "unrecorded", "collections"],
         port: Some("8170"),
         interval: None,
         secrets: &[],
         optional: &[],
         browsers: None,
-        try_it: r#"curl http://127.0.0.1:8170/health ("ok", strict), curl -X POST -d '{"id":"a","text":"hi"}' http://127.0.0.1:8170/notes ("saved", strict), then curl http://127.0.0.1:8170/notes (the notes, lazy): holon history status-board lists all three runs. Put lazy on POST /notes and holon check says why it can't be"#,
+        try_it: r#"deploy it (its approval asks to keep runs of GET /health and action report out of its log), then curl http://127.0.0.1:8170/health a few times ("ok", counted), curl -X POST -d '{"id":"a","text":"hi"}' http://127.0.0.1:8170/notes ("saved", strict) and curl http://127.0.0.1:8170/notes (the notes, lazy): holon history status-board lists the two notes runs and the health checks as one counted line, and view mode shows that line above the runs. Put lazy on POST /notes and holon check says why it can't be"#,
         text: include_str!("../samples/status-board.holon"),
     },
 ];

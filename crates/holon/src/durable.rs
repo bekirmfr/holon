@@ -650,7 +650,9 @@ pub(crate) fn resume_parked(
     entry.parked = run.waiting.iter().map(|w| w.name.clone()).collect();
     // A run that waits is strict (only a handler that does nothing outside its run may be
     // otherwise, and waiting is something), so its every part is.
-    log_run(deployments, slug, entry, Redactor::tokens(&waits.tokens), holon_core::LogLevel::Strict).map(|l| l.said(slug));
+    if let Some(l) = log_run(deployments, slug, entry, Redactor::tokens(&waits.tokens), holon_core::LogLevel::Strict) {
+        l.said(slug);
+    }
 
     {
         let mut table = deployments.lock().unwrap();
