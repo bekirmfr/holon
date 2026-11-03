@@ -165,6 +165,35 @@ after keeps each honest. The gains below are estimated from the shares above.
    serializing; redaction that copies only what it changes; no snapshot put or re-hash for an
    unchanged state, no readables for nothing read.
    *Estimated: `notes` 15–20%, lazy and strict routes alike.*
+   **Done and measured (step 2):**
+   - **The timer** keeps a node's outputs when their JSON fits, as before, without writing the
+     JSON: an upper bound on its size, worked out from the value (each value's frame under 64
+     bytes, a byte of text at most 6 escaped), settles almost every node, and only one whose
+     bound is past the limit is counted exactly, as JSON written nowhere. A number that isn't
+     finite has no bound, so its JSON (`null`) is counted. Tests hold the bound above the JSON
+     for every kind of value, the worst escapes and the longest numbers included, and the timer
+     to keeping exactly what writing the JSON kept, across the limit.
+   - **Redaction** leaves a text with nothing to mark (and nothing that reads as a mark) as it
+     is, instead of copying it, and sorts a record's keys only when they aren't in order
+     already, which a stable sort would have left as they are.
+   - **The commit check** (`still_as_read`) asks a collection read again only when the
+     collection's root moved since the run read it: the run read it at its start's root, and a
+     root names its contents, so the same root gives the same answer. A run that read nothing
+     but its cells stops after them. A test holds both to what asking again gives.
+     One difference, in a failure mode only: a store read that fails at the check no longer
+     sends a run whose collection didn't move round again.
+   - **Whether a run changed its state** (and writes its head) is decided by comparing the two
+     states' cells, key by key and hash by hash, instead of hashing the start's snapshot again:
+     a snapshot is those hashes and nothing else, and a test holds the two answers equal. The
+     snapshot is still put to the store for every run, as the sweep counts on.
+   - A withheld output or effect is no longer made loggable before it is withheld.
+
+   Workspace tests and both golden records unchanged. `notes` 629.6k → 537.9k instructions a
+   run (**−14.6%**; 73.8–87.0 → 70.4–77.2 µs a run), `hello` and `crunch` unchanged (+0.0%,
+   −0.3%). Live, against step 1b (`wrk`, two rounds alternating): the `notes` listing (lazy)
+   9,114–9,418 → 9,753–10,232 req/s, 292–297 → 262–270 µs of CPU a request, p50 at one
+   connection 189–190 → 168–169 µs; its strict read 7,224–7,451 → 7,554–7,610 req/s;
+   `hello` and `calc` within noise.
 3. **The walk itself** (§3.2, §3.3 within `run_from`): fetch each input once instead of on every
    revisit, take a node's inputs by reference where the leaf only reads them (`field`, `length`,
    comparisons), move a value to its last consumer.

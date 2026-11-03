@@ -115,17 +115,13 @@ struct Attempt {
     overtaken: bool,
 }
 
-impl FiredRun {
-    /// Whether it committed a state other than the one it started from: then, and only then, the
-    /// deployments file has something new to keep (docs/L4s/request-path-L4.md, C3 a). A run that
-    /// only read, or wrote back what was there, changed nothing. Hashed in memory: a state keeps
-    /// each cell's hash.
-    pub(crate) fn changed_state(&self) -> bool {
-        match (&self.start_state, &self.state_after) {
-            (Some(start), Some(after)) => crate::restore::snapshot_hash(start).ok().as_deref() != Some(after.as_str()),
-            _ => false,
-        }
-    }
+/// Whether `live` is another state than `start`: a key added, gone, or holding another value. The
+/// same answer as comparing their snapshots' hashes (`restore::snapshot_hash`), since a snapshot is
+/// each key's value hash and nothing else, without hashing either (docs/L4s/request-path-L4.md,
+/// C3 a; interpreter-path-L4.md, step 2). A run that only read, or wrote back what was there,
+/// changed nothing.
+fn changed_from(start: &State, live: &State) -> bool {
+    start.len() != live.len() || start.iter().zip(live.iter()).any(|((a, _), (b, _))| a != b || start.hash_of(a) != live.hash_of(b))
 }
 
 // Everything a run is held to arrives here, so it takes them all.
@@ -241,7 +237,7 @@ pub(crate) fn fire_with_state(
                     };
                     if done {
                         a.run.state_after = snapshot_after(&live, a.start.as_ref(), store, &a.run.run_id);
-                        keep_if_changed(cell, &a.run);
+                        keep_if_changed(cell, &a.run, &live);
                         a.run.retries = retries;
                         if let Some(c) = waits.claiming.take() {
                             a.run.claims = c.finish();
@@ -310,7 +306,7 @@ pub(crate) fn fire_with_state(
                     failed.extend(db);
                     not_all_written(&mut a.run, failed);
                     a.run.state_after = snapshot_after(&live, a.start.as_ref(), store, &a.run.run_id);
-                    keep_if_changed(cell, &a.run);
+                    keep_if_changed(cell, &a.run, &live);
                 }
                 databases::Commit::Refused(why) => refused(&mut a.run, &why),
                 databases::Commit::Again(why) => nothing_written(&mut a.run, &why),
@@ -453,7 +449,24 @@ fn still_as_read(
     if !cells_unchanged {
         return false;
     }
-    let now = collections::Readable { store: store.clone(), roots: collections::roots(live), granted: permit.collections_read() };
+    // Nothing read but its cells: nothing more to ask (interpreter-path-L4.md, step 2).
+    if reads.is_empty() {
+        return true;
+    }
+    let granted = permit.collections_read();
+    // A collection read of one whose root is the one the run read it at is answered the same:
+    // the root names its contents. Asked again only when the root moved.
+    let same_root = |request: &Value| match request {
+        Value::Record(q) => match q.get("collection") {
+            Some(Value::Text(name)) if granted.contains(name) => {
+                let key = collections::cell_key(name);
+                start.hash_of(&key) == live.hash_of(&key)
+            }
+            _ => false,
+        },
+        _ => false,
+    };
+    let mut now: Option<collections::Readable> = None;
     let mut files = folders.map(|f| folders::Readable::new(Arc::clone(f), permit));
     reads.iter().all(|r| {
         // A database's reads are checked in its own commit transaction (databases.rs).
@@ -461,7 +474,11 @@ fn still_as_read(
             return true;
         }
         if !matches!(&r.request, Value::Record(q) if q.contains_key("folder")) {
-            return pinned || now.answer(&r.request) == r.answer;
+            if pinned || same_root(&r.request) {
+                return true;
+            }
+            let now = now.get_or_insert_with(|| collections::Readable { store: store.clone(), roots: collections::roots(live), granted: granted.clone() });
+            return now.answer(&r.request) == r.answer;
         }
         files.as_mut().is_none_or(|files| files.answer(&r.request, false).is_ok_and(|(answer, _)| answer == r.answer))
     })
@@ -473,9 +490,9 @@ fn still_as_read(
 /// Write the deployment's state head when `run` changed its state (C3 b): its snapshot is in the
 /// store already, and the cell's lock is held, so heads land in commit order. A run that changed
 /// nothing writes nothing, so a read costs no fsync.
-fn keep_if_changed(cell: &claims::StateCell, run: &FiredRun) {
-    if run.changed_state()
-        && let Some(snapshot) = &run.state_after
+fn keep_if_changed(cell: &claims::StateCell, run: &FiredRun, live: &State) {
+    if let (Some(start), Some(snapshot)) = (&run.start_state, &run.state_after)
+        && changed_from(start, live)
     {
         cell.write_head(snapshot);
     }
@@ -1009,10 +1026,15 @@ fn withheld_or(derived: bool, value: &Value) -> SValue {
     if derived { SValue::from_core(&Value::Text(taint::WITHHELD.into())) } else { SValue::from_core(value) }
 }
 
+/// [`withheld_or`], the value made only when it is shown.
+fn withheld_or_shown(derived: bool, shown: impl FnOnce() -> Value) -> SValue {
+    if derived { withheld_or(true, &Value::Boolean(false)) } else { SValue::from_core(&shown()) }
+}
+
 /// A run's outputs as its log entry and history keep them (`shown`: how each looks there), each
 /// that may be computed from a secret withheld.
 pub(crate) fn logged_outputs(run: &FiredRun, shown: impl Fn(&Value) -> Value) -> Vec<Option<SValue>> {
-    run.outputs.iter().enumerate().map(|(port, o)| o.as_ref().map(|v| withheld_or(run.secret_fed.derives_output(port), &shown(v)))).collect()
+    run.outputs.iter().enumerate().map(|(port, o)| o.as_ref().map(|v| withheld_or_shown(run.secret_fed.derives_output(port), || shown(v)))).collect()
 }
 
 /// What a run performed as its log entry and history keep it (`shown`: how each payload looks
@@ -1020,7 +1042,7 @@ pub(crate) fn logged_outputs(run: &FiredRun, shown: impl Fn(&Value) -> Value) ->
 pub(crate) fn logged_performed(run: &FiredRun, shown: impl Fn(&Capability, &Value) -> Value) -> Vec<PerformedEntry> {
     run.performed
         .iter()
-        .map(|(c, p)| PerformedEntry { capability: format!("{c:?}"), payload: withheld_or(run.secret_fed.derives_effect(c), &shown(c, p)) })
+        .map(|(c, p)| PerformedEntry { capability: format!("{c:?}"), payload: withheld_or_shown(run.secret_fed.derives_effect(c), || shown(c, p)) })
         .collect()
 }
 
@@ -1148,4 +1170,76 @@ impl FiredRun {
 pub(crate) fn started_now() -> (u64, std::time::Instant) {
     let ms = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as u64;
     (ms, std::time::Instant::now())
+}
+
+/// The commit's checks made cheaper in step 2 (docs/L4s/interpreter-path-L4.md): each gives what
+/// the work it replaces gave.
+#[cfg(test)]
+mod commit_checks {
+    use super::*;
+
+    fn state_of(pairs: &[(&str, f64)]) -> State {
+        State::from_values(pairs.iter().map(|(k, v)| (k.to_string(), Value::Number(*v))).collect()).unwrap()
+    }
+
+    /// `changed_from` says what comparing the two states' snapshot hashes says.
+    #[test]
+    fn a_state_changed_exactly_when_its_snapshot_hash_moved() {
+        let states = [
+            state_of(&[]),
+            state_of(&[("a", 1.0)]),
+            state_of(&[("a", 2.0)]),
+            state_of(&[("b", 1.0)]),
+            state_of(&[("a", 1.0), ("b", 1.0)]),
+            state_of(&[("a", 1.0), ("b", 2.0)]),
+            state_of(&[("a", 2.0), ("b", 1.0)]),
+        ];
+        for x in &states {
+            for y in &states {
+                let by_hash = crate::restore::snapshot_hash(x).unwrap() != crate::restore::snapshot_hash(y).unwrap();
+                assert_eq!(changed_from(x, y), by_hash, "{:?} → {:?}", x.values(), y.values());
+            }
+        }
+    }
+
+    /// A collection read whose collection's root is still the one it was read at isn't asked again,
+    /// and comes out as asking again would have; one whose root moved is asked again, and holds
+    /// only when its answer is still the same.
+    #[test]
+    fn a_collection_read_is_asked_again_only_when_its_root_moved() {
+        let store = SharedStore::new(Box::new(MemStore::new()));
+        let mut writer = store.clone();
+        let put = |key: &str, value: &str| Value::Record(BTreeMap::from([("key".to_string(), Value::Text(key.into())), ("value".to_string(), Value::Text(value.into()))]));
+        let mut start = State::new();
+        collections::apply(&mut start, &mut writer, "notes", &put("a", "one")).unwrap();
+        let grant: permissions::Grant = serde_json::from_value(serde_json::json!({
+            "manifest": "", "items": ["CollectionRead(\"notes\")"], "requirements": {}, "granted_at": 0, "by": "deploy",
+        }))
+        .unwrap();
+        let permit = Permit::new([0; 32], &grant, &Policy::parse("").unwrap());
+        let request = Value::Record(BTreeMap::from([("collection".to_string(), Value::Text("notes".into())), ("get".to_string(), Value::Text("a".into()))]));
+        let read = |answer: &str| collections::Read { path: vec![0], request: request.clone(), answer: Some(Value::Text(answer.into())), file: None };
+        let asked = |live: &State, r: &collections::Read| {
+            let now = collections::Readable { store: store.clone(), roots: collections::roots(live), granted: permit.collections_read() };
+            now.answer(&r.request) == r.answer
+        };
+        let check = |live: &State, r: collections::Read| {
+            let held = still_as_read(&start, live, std::slice::from_ref(&r), &permit, &store, None, false);
+            assert_eq!(held, asked(live, &r), "the same as asking again");
+            held
+        };
+
+        // The same root: held, as asking again holds it.
+        assert!(check(&start.clone(), read("one")));
+        // Another item changed: the root moved, it is asked again, and its answer still holds.
+        let mut other = start.clone();
+        collections::apply(&mut other, &mut writer, "notes", &put("b", "two")).unwrap();
+        assert!(check(&other, read("one")));
+        // Its item changed: asked again, and found changed.
+        let mut changed = start.clone();
+        collections::apply(&mut changed, &mut writer, "notes", &put("a", "uno")).unwrap();
+        assert!(!check(&changed, read("one")));
+        // Nothing read: held.
+        assert!(still_as_read(&start, &changed, &[], &permit, &store, None, false));
+    }
 }

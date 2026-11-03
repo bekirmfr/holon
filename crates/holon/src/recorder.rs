@@ -29,6 +29,7 @@ use std::sync::Mutex;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
+use holon_core::Value;
 
 use crate::{PerformedEntry, SValue};
 
@@ -326,6 +327,70 @@ impl Timer {
     }
 }
 
+/// At least as many bytes as `outputs`' JSON (`Vec<Option<SValue>>`) takes, or none past
+/// [`Timer::MAX_RECORDED_BYTES`] or with a number that isn't finite (written as `null`): then only
+/// counting the JSON says.
+fn outputs_bound(outputs: &[holon_core::Slot]) -> Option<usize> {
+    let mut n = 2;
+    for o in outputs {
+        n += 1 + match o.value() {
+            Some(v) => value_bound(v, Timer::MAX_RECORDED_BYTES.checked_sub(n)?)?,
+            None => 4,
+        };
+    }
+    (n <= Timer::MAX_RECORDED_BYTES).then_some(n)
+}
+
+/// At least as many bytes as `v`'s JSON as an `SValue` takes, or none past `most`. Each value's
+/// frame (`{"type":"Record","value":…}`, a `Sum`'s arm and payload) is under 64 bytes (a `Sum`'s,
+/// with its arm's 20 digits, is given 84), a finite number writes at most 24, and an escaped
+/// byte at most 6 (`\u00XX`); a record's field (`["k",v]` and a comma) is under 16 beside its key.
+fn value_bound(v: &Value, most: usize) -> Option<usize> {
+    let n = match v {
+        Value::Number(x) if x.is_finite() => 64,
+        Value::Number(_) => return None,
+        Value::Boolean(_) => 64,
+        Value::Text(t) => 64 + 6 * t.len(),
+        Value::List(xs) => {
+            let mut n = 64;
+            for x in xs {
+                n += 1 + value_bound(x, most.checked_sub(n)?)?;
+            }
+            n
+        }
+        Value::Record(fields) => {
+            let mut n = 64;
+            for (k, x) in fields {
+                n += 16 + 6 * k.len();
+                n += value_bound(x, most.checked_sub(n)?)?;
+            }
+            n
+        }
+        Value::Effect { sink, payload } => 64 + 6 * sink.len() + value_bound(payload, most)?,
+        Value::Sum { payload, .. } => 84 + value_bound(payload, most)?,
+    };
+    (n <= most).then_some(n)
+}
+
+/// Counts what is written to it, and refuses past `most` bytes.
+struct Counted {
+    n: usize,
+    most: usize,
+}
+
+impl std::io::Write for Counted {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.n += bytes.len();
+        if self.n > self.most {
+            return Err(std::io::Error::other("past the limit"));
+        }
+        Ok(bytes.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
 impl holon_core::Observer for Timer {
     fn enter(&mut self, path: &[u32]) {
         if self.on && path.len() <= Self::DEPTH {
@@ -336,9 +401,13 @@ impl holon_core::Observer for Timer {
     fn produced(&mut self, path: &[u32], outputs: &[holon_core::Slot]) {
         if self.on && path.len() <= Self::DEPTH {
             // A pending output (a round still waiting on an answer) is logged as nothing yet.
+            // Kept when their JSON fits, as the line will write it: an upper bound settles almost
+            // every node without writing anything, and only one past it is counted exactly, as
+            // JSON written nowhere (interpreter-path-L4.md, step 2).
+            let surely = outputs_bound(outputs).is_some_and(|n| n <= Self::MAX_RECORDED_BYTES);
             let outputs: Vec<Option<SValue>> = outputs.iter().map(|o| o.value().map(SValue::from_core)).collect();
-            let size = serde_json::to_vec(&outputs).map_or(usize::MAX, |b| b.len());
-            self.produced = (size <= Self::MAX_RECORDED_BYTES).then_some(outputs);
+            let fits = surely || serde_json::to_writer(Counted { n: 0, most: Self::MAX_RECORDED_BYTES }, &outputs).is_ok();
+            self.produced = fits.then_some(outputs);
         }
     }
     fn leave(&mut self, path: &[u32]) {
@@ -1398,5 +1467,85 @@ mod tests {
         assert!(said.contains(&format!("entry {lost}")), "{said}");
         assert_eq!(cell.sync_through(kept), Ok(()), "the next one, written, is kept");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+/// The timer keeps a node's outputs exactly when their JSON is at most `MAX_RECORDED_BYTES`,
+/// measured without writing it (interpreter-path-L4.md, step 2), as writing it out measured it.
+#[cfg(test)]
+mod measured {
+    use super::*;
+
+    /// The bound is never below what the JSON takes, for values of every kind, the worst
+    /// escapes and the longest numbers included.
+    #[test]
+    fn the_bound_is_never_below_the_json() {
+        use holon_core::Slot;
+        let text = |s: &str| Value::Text(s.into());
+        let worst = "\u{1}\u{1f}\"\\\n\t é ‹secret:x› 😀".repeat(3);
+        let leaves = vec![
+            Value::Number(-2.2250738585072014e-308),
+            Value::Number(1.7976931348623157e308),
+            Value::Number(0.1),
+            Value::Number(-0.0),
+            Value::Boolean(true),
+            text(""),
+            text(&worst),
+        ];
+        let mut values = leaves.clone();
+        values.push(Value::List(leaves.clone()));
+        values.push(Value::List(vec![]));
+        values.push(Value::Record(leaves.iter().enumerate().map(|(i, v)| (format!("{worst}{i}"), v.clone())).collect()));
+        values.push(Value::Record(BTreeMap::new()));
+        values.push(Value::Effect { sink: worst.clone(), payload: Box::new(Value::List(leaves.clone())) });
+        values.push(Value::Sum { arm: usize::MAX, payload: Box::new(text(&worst)) });
+        let nested = Value::List(values.clone());
+        values.push(Value::Record(BTreeMap::from([(worst.clone(), nested.clone())])));
+        values.push(Value::Sum { arm: 0, payload: Box::new(nested) });
+        for v in &values {
+            let slots = [Slot::Value(v.clone()), Slot::Absent, Slot::Pending];
+            let json = serde_json::to_vec(&slots.iter().map(|o| o.value().map(SValue::from_core)).collect::<Vec<_>>()).unwrap().len();
+            match outputs_bound(&slots) {
+                Some(bound) => assert!(bound >= json, "{bound} < {json} for {v:?}"),
+                None => assert!(json > Timer::MAX_RECORDED_BYTES / 7, "given up on {json} bytes"),
+            }
+        }
+        // A number that isn't finite: no bound, so counting its JSON decides.
+        assert_eq!(outputs_bound(&[Slot::Value(Value::Number(f64::INFINITY))]), None);
+    }
+
+    /// Kept exactly when the JSON fits, through the timer itself, across the limit.
+    #[test]
+    fn the_timer_keeps_outputs_exactly_when_their_json_fits() {
+        use holon_core::{Observer, Slot};
+        let most = Timer::MAX_RECORDED_BYTES;
+        for n in (most - 60..most + 10).chain([0, 1, 100, most / 6, most / 5, 3 * most]) {
+            for s in ["x".repeat(n), "\n".repeat(n / 2)] {
+                let slots = [Slot::Value(Value::Text(s.clone()))];
+                let mut timer = Timer::new();
+                timer.enter(&[0]);
+                timer.produced(&[0], &slots);
+                timer.leave(&[0]);
+                let json = serde_json::to_vec(&vec![Some(SValue::Text(s))]).unwrap().len();
+                assert_eq!(timer.timeline[0].outputs.is_some(), json <= most, "{json} bytes");
+            }
+        }
+        // A number that isn't finite is written as `null`, and kept, as writing it out found.
+        let mut timer = Timer::new();
+        timer.enter(&[0]);
+        timer.produced(&[0], &[Slot::Value(Value::Number(f64::NAN))]);
+        timer.leave(&[0]);
+        let json = serde_json::to_vec(&vec![Some(SValue::Number(f64::NAN))]).unwrap().len();
+        assert_eq!(timer.timeline[0].outputs.is_some(), json <= most);
+    }
+
+    #[test]
+    fn outputs_are_kept_exactly_when_their_json_fits() {
+        let most = Timer::MAX_RECORDED_BYTES;
+        for n in (most - 40..most + 40).chain([0, 1, 100, 3 * most]) {
+            let outputs = vec![Some(SValue::Text("x".repeat(n))), None];
+            let fits = serde_json::to_writer(Counted { n: 0, most }, &outputs).is_ok();
+            assert_eq!(fits, serde_json::to_vec(&outputs).unwrap().len() <= most, "{n} bytes of text");
+        }
     }
 }

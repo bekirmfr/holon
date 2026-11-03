@@ -951,11 +951,13 @@ impl Redactor {
     /// `s` as the log writes it: each value replaced by its mark (the leftmost first, the longest
     /// where two start together), and a look-alike of a mark in the run's own text escaped
     /// ([`write_marked`]). Whether one was.
-    fn logged(&self, s: &str) -> (String, bool) {
-        let mut next: Vec<Option<usize>> = self.pairs.iter().map(|(value, _)| (!value.is_empty()).then(|| s.find(value.as_str())).flatten()).collect();
-        if !s.contains('‹') && next.iter().all(Option::is_none) {
-            return (s.to_string(), false);
+    fn logged(&self, s: &str) -> Option<(String, bool)> {
+        // Nothing to mark and nothing that reads as a mark: the text stays as it is, uncopied
+        // (interpreter-path-L4.md, step 2).
+        if !s.contains('‹') && self.pairs.iter().all(|(value, _)| value.is_empty() || !s.contains(value.as_str())) {
+            return None;
         }
+        let mut next: Vec<Option<usize>> = self.pairs.iter().map(|(value, _)| (!value.is_empty()).then(|| s.find(value.as_str())).flatten()).collect();
         let mut pieces = Vec::new();
         let mut at = 0;
         loop {
@@ -971,15 +973,16 @@ impl Redactor {
             at = p + self.pairs[k].0.len();
         }
         pieces.push((&s[at..], false));
-        write_marked(&pieces)
+        Some(write_marked(&pieces))
     }
 
     fn logged_svalue(&self, v: &mut SValue) -> bool {
         let mut escaped = false;
         texts_mut(v, &mut |s| {
-            let (out, e) = self.logged(s);
-            *s = out;
-            escaped |= e;
+            if let Some((out, e)) = self.logged(s) {
+                *s = out;
+                escaped |= e;
+            }
         });
         escaped
     }
@@ -1018,9 +1021,10 @@ impl Redactor {
             }
         }
         for s in [&mut e.response_body, &mut e.error, &mut e.url].into_iter().flatten() {
-            let (out, e) = self.logged(s);
-            *s = out;
-            escaped |= e;
+            if let Some((out, e)) = self.logged(s) {
+                *s = out;
+                escaped |= e;
+            }
         }
         e.escaped |= escaped;
     }
@@ -1037,7 +1041,10 @@ pub(crate) fn texts_mut(v: &mut SValue, f: &mut impl FnMut(&mut String)) {
                 f(k);
                 texts_mut(x, f);
             }
-            fields.sort_by(|a, b| a.0.cmp(&b.0));
+            // A stable sort leaves keys already in order as they are: only sorted when not.
+            if !fields.is_sorted_by(|a, b| a.0 <= b.0) {
+                fields.sort_by(|a, b| a.0.cmp(&b.0));
+            }
         }
         SValue::Effect { payload, .. } | SValue::Sum { payload, .. } => texts_mut(payload, f),
         SValue::Number(_) | SValue::Boolean(_) => {}
@@ -1428,7 +1435,8 @@ mod tests {
             ("‹‹secret:key› and ‹sk_123456", "‹‹‹‹secret:key› and ‹‹‹secret:key›", "‹‹secret:key› and ‹[‹secret:key›]"),
             ("open ‹token:paid", "open ‹‹token:paid", "open ‹token:paid"),
         ] {
-            let (out, escaped) = r.logged(run);
+            // Unchanged comes back as none: the text as it is, nothing escaped.
+            let (out, escaped) = r.logged(run).unwrap_or_else(|| (run.to_string(), false));
             assert_eq!(out, logged, "{run:?}");
             assert_eq!(escaped, logged != run.replace("sk_123456", "‹secret:key›").replace("tok-abcdef", "‹token:paid›"), "{run:?}");
             assert_eq!(read(&out, escaped), marks, "{run:?}");
