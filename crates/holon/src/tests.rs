@@ -2701,6 +2701,52 @@ fn a_server_deployment_answers_on_its_own_port_within_limits() {
     assert!(released, "the port is free again");
 }
 
+/// A short route (lazy or unrecorded and granted, reading only what is in memory or the content
+/// store) is answered on the data plane's own worker, without the hop onto the blocking pool
+/// (docs/L4s/request-path-L4.md §4.5 a): through a real socket it answers as any route does, CORS
+/// and all. A strict route, one that calls out, and a lazy one that reads a folder keep the hop.
+#[test]
+fn a_light_route_answers_on_the_data_planes_worker_as_any_route_does() {
+    let mut state = test_state();
+    state.listeners = Some(Mutex::new(BTreeMap::new()));
+    let port = free_port();
+    let text = format!(
+        "flow light\nport {port}\nbrowsers \"https://a.example\"\ncollection notes\nfolder docs\n\nroute GET /health (req) unrecorded {{\n  respond \"ok\"\n}}\n\nroute GET /notes (req) lazy {{\n  respond notes.list(limit: 50)\n}}\n\nroute POST /notes (req) {{\n  notes[req.json.id] = req.json.text\n  respond \"saved\"\n}}\n\nroute GET /uuid (req) {{\n  respond http.get(\"httpbin.org\", \"/uuid\").body\n}}\n\nroute GET /file (req) lazy {{\n  respond docs.get(\"a.txt\")\n}}\n"
+    );
+    let dir = std::env::temp_dir().join(format!("holon-light-docs-{}-{}", std::process::id(), rand::random::<u32>()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let docs = serde_json::json!({ "name": "docs", "path": dir.display().to_string(), "access": "read" });
+    assert_eq!(route(&state, &req("POST", "/admin/folders", serde_json::to_vec(&docs).unwrap())).status_code, 200);
+    let slug = deploy_plain_text(&state, &text);
+    // The pages it answers are a deploy setting, which this deploy leaves out.
+    state.deployments.lock().unwrap().get_mut(&slug).unwrap().browsers = vec!["https://a.example".to_string()];
+    sync_listeners(&state);
+    let here = Mutex::new(std::collections::HashMap::new());
+    let light = |method: &str, url: &str| dataplane::runs_here_for(&state.store, &state.deployments, &slug, &fake_data(method, url, vec![]), &here);
+    assert!(light("GET", "/health") && light("GET", "/notes?x=1"), "lazy and unrecorded, reading a collection: here");
+    assert!(light("GET", "/health"), "and again, from what it worked out");
+    assert!(!light("GET", "/file"), "a folder may take as long as it likes: the pool");
+    assert!(!light("POST", "/notes") && !light("GET", "/uuid") && !light("GET", "/nowhere"), "strict, calling out, or no route: the pool");
+
+    let body = r#"{"id":"a","text":"hi"}"#;
+    let posted = raw_http(port, format!("POST /notes HTTP/1.1\r\nHost: x\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes());
+    assert!(posted.starts_with("HTTP/1.1 200"), "{posted}");
+    let health = raw_http(port, b"GET /health HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n");
+    assert!(health.starts_with("HTTP/1.1 200") && health.ends_with("ok"), "{health}");
+    let listed = raw_http(port, b"GET /notes HTTP/1.1\r\nHost: x\r\nOrigin: https://a.example\r\nConnection: close\r\n\r\n");
+    assert!(listed.starts_with("HTTP/1.1 200") && listed.contains(r#"{"a":"hi"}"#), "{listed}");
+    assert!(listed.to_ascii_lowercase().contains("access-control-allow-origin: https://a.example"), "CORS as for any route: {listed}");
+    // Many at once, each answered.
+    std::thread::scope(|s| {
+        for _ in 0..16 {
+            s.spawn(|| assert!(raw_http(port, b"GET /health HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n").starts_with("HTTP/1.1 200")));
+        }
+    });
+    assert_eq!(state.deployments.lock().unwrap()[&slug].tallies["GET /health"].runs, 17);
+    assert_eq!(route(&state, &req("POST", &format!("/deployments/{slug}/stop"), vec![])).status_code, 200);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// A server deployment whose port another program holds says so on its entry, rather than looking
 /// like it answers; once the port is free, deploying again listens there and clears it.
 #[test]
@@ -7284,7 +7330,7 @@ fn a_strict_run_is_on_disk_before_its_answer_and_a_lazy_one_waits_for_the_syncer
     state.deployments_path = unique_temp_path("strict-sync");
     let slug = deploy_plain_text(
         &state,
-        "flow board\nport 8170\ncollection notes\n\nroute GET /health (req) {\n  respond \"ok\"\n}\n\nroute GET /notes (req) lazy {\n  respond notes.list(limit: 50)\n}\n\nroute POST /notes (req) {\n  notes[req.json.id] = req.json.text\n  respond \"saved\"\n}\n\naction report (input) lazy {\n  respond notes.list(limit: 50)\n}\n\naction count (input) {\n  respond notes.list(limit: 50)\n}\n",
+        "flow board\nport 8170\ncollection notes\nfolder docs\n\nroute GET /health (req) {\n  respond \"ok\"\n}\n\nroute GET /notes (req) lazy {\n  respond notes.list(limit: 50)\n}\n\nroute POST /notes (req) {\n  notes[req.json.id] = req.json.text\n  respond \"saved\"\n}\n\naction report (input) lazy {\n  respond notes.list(limit: 50)\n}\n\naction count (input) {\n  respond notes.list(limit: 50)\n}\n",
     );
     let log = Arc::clone(&state.deployments.lock().unwrap()[&slug].log);
     let call = |method: &str, url: &str, body: &str| serve_data(&state.store, &state.deployments, &state.deployments_path, &slug, &fake_data(method, url, body.as_bytes().to_vec())).status;
@@ -7327,7 +7373,7 @@ fn a_strict_run_is_on_disk_before_its_answer_and_a_lazy_one_waits_for_the_syncer
 
 /// A board with an unrecorded health check, an unrecorded action, one that fails unrecorded, and a
 /// strict write (docs/L4s/request-path-L4.md, C5).
-const UNRECORDED_BOARD: &str = "flow board\nport 8171\ncollection notes\n\nroute GET /health (req) unrecorded {\n  respond \"ok\"\n}\n\nroute GET /broken (req) unrecorded {\n  respond \"down\", status: 503\n}\n\nroute POST /notes (req) {\n  notes[req.json.id] = req.json.text\n  respond \"saved\"\n}\n\naction report (input) unrecorded {\n  respond notes.list(limit: 50)\n}\n";
+const UNRECORDED_BOARD: &str = "flow board\nport 8171\ncollection notes\nfolder docs\n\nroute GET /health (req) unrecorded {\n  respond \"ok\"\n}\n\nroute GET /broken (req) unrecorded {\n  respond \"down\", status: 503\n}\n\nroute POST /notes (req) {\n  notes[req.json.id] = req.json.text\n  respond \"saved\"\n}\n\naction report (input) unrecorded {\n  respond notes.list(limit: 50)\n}\n";
 
 /// An unrecorded handler's runs leave no entry in the log, and are counted in its tally instead
 /// (runs, failures, time, the last one), which the log API gives and the deployments file keeps; a

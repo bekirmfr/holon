@@ -83,6 +83,9 @@ struct Listener {
     deployments_path: String,
     slug: String,
     limits: DataLimits,
+    /// Whether each route's endpoint, by its hash, runs on the worker that read its request (see
+    /// [`runs_here_for`]): worked out once per version of the route.
+    here: Mutex<std::collections::HashMap<holon_core::Hash, bool>>,
 }
 
 /// Start the data-plane listener for `slug` on `port`, returning its stop signal. The port is
@@ -103,6 +106,7 @@ pub(crate) fn start_listener(state: &AppState, slug: &str, port: u16) -> Result<
         deployments_path: state.deployments_path.clone(),
         slug: slug.to_string(),
         limits,
+        here: Mutex::new(std::collections::HashMap::new()),
     });
     runtime.spawn(async move {
         let permits = Arc::new(Semaphore::new(listener.limits.max_connections));
@@ -289,6 +293,12 @@ async fn answer(listener: Arc<Listener>, request: hyper::Request<Incoming>) -> h
     let deployments = Arc::clone(&listener.deployments);
     let slug = listener.slug.clone();
     let origin = allowed_origin(&deployments, &slug, &request.headers);
+    // A short route runs here, on the worker that read its request: no hop onto the blocking
+    // pool, and no channel to forward on, since it calls out to nothing (§4.5 a, `runs_here_for`).
+    if runs_here_for(&listener.store, &listener.deployments, &listener.slug, &request, &listener.here) {
+        let answered = serve_data_forwarding(&listener.store, &listener.deployments, &listener.deployments_path, &listener.slug, &request, None);
+        return to_hyper(answered);
+    }
     // A streamed call's answer comes back as it is read, before the run is over.
     let (pieces, mut forwarded) = tokio::sync::mpsc::channel(64);
     let forward = outbound::Forwarder::new(Arc::new(Replying(pieces)));
@@ -325,6 +335,46 @@ async fn answer(listener: Arc<Listener>, request: hyper::Request<Incoming>) -> h
             with_headers(answered.status, &answered.headers, Answer::Events(Events { subscription, heartbeat, ended: false }))
         }
     }
+}
+
+/// What a run on the worker that read its request may read: what is in memory or the content
+/// store. A database or a folder may take as long as it likes, so a route reading one goes to the
+/// blocking pool.
+const READS_HERE: &[&str] = &["NetworkIngress", "Clock", "Random", "SecretAccess", "SecretRead", "StateRead", "CollectionRead"];
+
+/// Whether `request` runs on the data plane's worker rather than the blocking pool (§4.5 a): its
+/// route's runs never wait on the disk (it is lazy, or unrecorded and granted, never strict), and
+/// it reads only [`READS_HERE`], so it calls out to nothing, waits for nothing and streams nothing.
+/// The hop costs 30–40 µs, about what such a run takes. Worked out once per endpoint hash (`here`);
+/// anything unknown goes to the pool.
+pub(crate) fn runs_here_for(
+    store: &SharedStore,
+    deployments: &Mutex<BTreeMap<String, Deployment>>,
+    slug: &str,
+    request: &DataRequest,
+    here: &Mutex<std::collections::HashMap<holon_core::Hash, bool>>,
+) -> bool {
+    let path = request.url.split_once('?').map_or(request.url.as_str(), |(p, _)| p);
+    let (unit, endpoint) = {
+        let table = deployments.lock().unwrap();
+        let Some(dep) = table.get(slug) else { return false };
+        let Some((route, _)) = dep.server.as_ref().and_then(|s| holon_core::match_route(s, &request.method, path)) else { return false };
+        let label = format!("{} {}", route.method, route.path);
+        if dep.permit.log_level(Some(&label), route.log) == holon_core::LogLevel::Strict {
+            return false;
+        }
+        (dep.unit, route.endpoint)
+    };
+    if let Some(known) = here.lock().unwrap().get(&endpoint) {
+        return *known;
+    }
+    let short = crate::units::closure(store, unit).is_ok_and(|resolver| {
+        holon_core::Resolver::resolve(&resolver, &endpoint).is_some_and(|unit| {
+            holon_core::capabilities(unit, &resolver).iter().all(|c| READS_HERE.contains(&holon_core::consent_name(&c).split('(').next().unwrap_or("")))
+        })
+    });
+    here.lock().unwrap().insert(endpoint, short);
+    short
 }
 
 /// An answer as an HTTP response.

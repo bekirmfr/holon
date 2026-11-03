@@ -965,6 +965,31 @@ runs.
 - **Tests:** a light route answers the same as before; a route that calls out still goes through
   `spawn_blocking` (one `tests.rs` case per kind).
 
+**Done (12.1)**, differently in two ways, both measured live (`wrk`, `status-board`, 2 rounds
+each, A/B against the same build without it):
+- **On the worker, not `block_in_place`.** `block_in_place` hands the worker's core (and the I/O
+  driver) to another thread and takes it back, which is a hop of its own: it gained nothing on
+  `/health`, and cost `/notes` about 12% at one connection. `spawn_blocking` without the channel
+  and `select!` gained nothing either. Running the route directly on the worker is the gain.
+- **So only a short run goes there** (`dataplane::runs_here_for`): its route is lazy, or
+  unrecorded and granted (`Permit::log_level`, so it never waits on a disk sync), and its endpoint
+  reads only the request, the clock, randomness, secrets, state and collections (`READS_HERE`). A
+  database or a folder may take as long as it likes, and keeps the pool. The verdict is cached per
+  endpoint hash in the listener (`Listener.here`); the level is checked per request, so a revoke
+  holds at once. No `FlowFacts` in the flow cache was needed.
+
+| | 1 connection | 64 connections |
+|---|---|---|
+| `/health` (unrecorded), before | 6,555–6,850 (p50 138 µs) | 21,276–21,842 |
+| `/health`, on the worker | 8,520–8,945 (p50 107 µs) | 24,146–24,990 |
+| `/notes` (lazy, a collection), before | 3,154–3,448 (p50 257–285 µs) | 5,720–5,932 |
+| `/notes`, on the worker | 4,232–4,239 (p50 205 µs) | 6,220–6,224 |
+
+Test: `a_light_route_answers_on_the_data_planes_worker_as_any_route_does` (a real socket: the
+answers, CORS, 16 at once; which routes run there, and that a strict one, one that calls out and a
+lazy one reading a folder don't). Found along the way: each `/notes` run opens about 10 files of
+the content store (the collection's trie and items), about 100 µs: see 12.4.
+
 ### 12.2 No timeline for unrecorded runs (about −20 µs)
 
 - `recorder::Timer` (`recorder.rs:293–350`) gains `enabled: bool`, with `Timer::off()`. `enter`,
