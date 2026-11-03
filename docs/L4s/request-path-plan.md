@@ -990,6 +990,14 @@ answers, CORS, 16 at once; which routes run there, and that a strict one, one th
 lazy one reading a folder don't). Found along the way: each `/notes` run opens about 10 files of
 the content store (the collection's trie and items), about 100 µs: see 12.4.
 
+**Narrowed since** (resilience-audit-L4.md, R2): the rule above let a run wait on the worker, and a
+worker that waits holds up every connection on it, other deployments' too. A lazy run appends to
+its log under the log's lock; state, collections and secrets sit behind locks a writer holds while
+it syncs to disk. Measured, a `notes-api` listing load took an unrelated route from about 25,000
+req/s to 60–400. Now only an unrecorded route that reads its request, the clock and random numbers,
+its flow in memory, runs there; `/notes` and lazy routes take the hop again, which costs them
+65–145 µs at one connection and gains them throughput at 64.
+
 ### 12.2 No timeline for unrecorded runs (about −20 µs)
 
 - `recorder::Timer` (`recorder.rs:293–350`) gains `enabled: bool`, with `Timer::off()`. `enter`,

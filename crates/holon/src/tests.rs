@@ -2701,10 +2701,13 @@ fn a_server_deployment_answers_on_its_own_port_within_limits() {
     assert!(released, "the port is free again");
 }
 
-/// A short route (lazy or unrecorded and granted, reading only what is in memory or the content
-/// store) is answered on the data plane's own worker, without the hop onto the blocking pool
-/// (docs/L4s/request-path-L4.md §4.5 a): through a real socket it answers as any route does, CORS
-/// and all. A strict route, one that calls out, and a lazy one that reads a folder keep the hop.
+/// A route whose runs can never wait (unrecorded and granted, reading only its request, the clock
+/// and random numbers, its flow in memory) is answered on the data plane's own worker, without the
+/// hop onto the blocking pool (docs/L4s/request-path-L4.md §4.5 a): through a real socket it
+/// answers as any route does, CORS and all. Any other keeps the hop, since a worker that waits holds
+/// up every connection on it (docs/L4s/resilience-audit-L4.md, R2): a lazy one (its log's lock), one
+/// reading a collection (the store's lock while a write syncs) or a folder, a strict one, one that
+/// calls out; and a light one too until its flow is loaded.
 #[test]
 fn a_light_route_answers_on_the_data_planes_worker_as_any_route_does() {
     let mut state = test_state();
@@ -2721,10 +2724,17 @@ fn a_light_route_answers_on_the_data_planes_worker_as_any_route_does() {
     // The pages it answers are a deploy setting, which this deploy leaves out.
     state.deployments.lock().unwrap().get_mut(&slug).unwrap().browsers = vec!["https://a.example".to_string()];
     sync_listeners(&state);
-    let here = Mutex::new(std::collections::HashMap::new());
+    let here = Mutex::new(dataplane::Here::default());
     let light = |method: &str, url: &str| dataplane::runs_here_for(&state.store, &state.deployments, &slug, &fake_data(method, url, vec![]), &here);
-    assert!(light("GET", "/health") && light("GET", "/notes?x=1"), "lazy and unrecorded, reading a collection: here");
+    // Its flow let go of by the flow cache: the pool, which loads it.
+    state.store.3.set_budget(0);
+    assert!(!light("GET", "/health"), "its flow not in memory: the pool");
+    state.store.3.set_budget(crate::units::FLOW_CACHE_BYTES);
+    let unit = state.deployments.lock().unwrap()[&slug].unit;
+    assert!(crate::units::closure(&state.store, unit).is_ok(), "loaded, as a run on the pool loads it");
+    assert!(light("GET", "/health"), "unrecorded, reading only its request, loaded: here");
     assert!(light("GET", "/health"), "and again, from what it worked out");
+    assert!(!light("GET", "/notes?x=1"), "lazy, reading a collection: the pool");
     assert!(!light("GET", "/file"), "a folder may take as long as it likes: the pool");
     assert!(!light("POST", "/notes") && !light("GET", "/uuid") && !light("GET", "/nowhere"), "strict, calling out, or no route: the pool");
 
@@ -2745,6 +2755,33 @@ fn a_light_route_answers_on_the_data_planes_worker_as_any_route_does() {
     assert_eq!(state.deployments.lock().unwrap()[&slug].tallies["GET /health"].runs, 17);
     assert_eq!(route(&state, &req("POST", &format!("/deployments/{slug}/stop"), vec![])).status_code, 200);
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A run that panics is answered 500, on the data plane's own worker as on the blocking pool, and
+/// the deployment answers the next request (docs/L4s/resilience-audit-L4.md, R1). Before, the
+/// worker's connection was dropped with no answer.
+#[test]
+fn a_run_that_panics_is_answered_500_inline_as_on_the_pool() {
+    let mut state = test_state();
+    state.listeners = Some(Mutex::new(BTreeMap::new()));
+    let port = free_port();
+    let text = format!("flow boom\nport {port}\n\nroute GET /light/:name (req) unrecorded {{\n  respond \"hi {{req.params.name}}\"\n}}\n\nroute GET /pooled/:name (req) {{\n  respond \"hi {{req.params.name}}\"\n}}\n");
+    let slug = deploy_plain_text(&state, &text);
+    sync_listeners(&state);
+    let get = |path: &str| raw_http(port, format!("GET {path} HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n").as_bytes());
+    // Loaded by a first run, so the light route runs inline from here on.
+    assert!(get("/light/a").ends_with("hi a"));
+    let here = Mutex::new(dataplane::Here::default());
+    assert!(dataplane::runs_here_for(&state.store, &state.deployments, &slug, &fake_data("GET", "/light/boom", vec![]), &here), "inline");
+    crate::listeners::panic_for_tests::on("/light/boom");
+    crate::listeners::panic_for_tests::on("/pooled/boom");
+    for path in ["/light/boom", "/pooled/boom"] {
+        let answered = get(path);
+        assert!(answered.starts_with("HTTP/1.1 500") && answered.contains("the request's handler failed"), "{path}: {answered:?}");
+    }
+    assert!(get("/light/b").ends_with("hi b") && get("/pooled/c").ends_with("hi c"), "the next requests are answered");
+    crate::listeners::panic_for_tests::off();
+    assert_eq!(route(&state, &req("POST", &format!("/deployments/{slug}/stop"), vec![])).status_code, 200);
 }
 
 /// A server deployment whose port another program holds says so on its entry, rather than looking

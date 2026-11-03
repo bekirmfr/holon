@@ -18,6 +18,17 @@
   and `holon history`; a failed one is logged. Taken back, its next run is recorded and the flow
   runs on. A host can refuse it whole with `[grants] allow_unrecorded = false`. `holon check` says
   it, and an agent's `call` says a run was counted, not logged. `status-board` shows it.
+- **A slow deployment no longer slows the others.** A request runs on the data plane's own
+  worker only when its run can never wait: an unrecorded handler that reads only its request, the
+  clock and random numbers, its flow in memory. Any other runs on the blocking pool, where waiting
+  holds up nothing else: a lazy handler (it appends to its log), one reading state, a collection or
+  a secret (behind a lock a writer holds while it syncs to disk). Before, a deployment whose reads
+  waited on its log or on a write's sync could slow every other deployment's routes a hundredfold.
+  A run that panics there is answered 500, as on the pool, not dropped.
+- **No run waits while its log is cut back.** A log's file is cut back to what it keeps by the
+  periodic sync, with its lock released for all but the last few lines, instead of by the run that
+  found it full, holding the lock: no run waits the 100–150 ms a large log's cut-back takes. The
+  directory is synced after the file is replaced, so a crash can't bring back the file it replaced.
 - **`chess`: a Sphinx that doesn't answer in time keeps its turn.** When its move call times out,
   the rules no longer play for it at once: the page says so and offers Try again (ask it once
   more) or Let the rules play. While its turn waits, `POST /move` takes only `again` or `rules`,

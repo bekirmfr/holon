@@ -79,7 +79,7 @@ pub(crate) fn is_origin_or_any(o: &str) -> bool {
 /// A request's handler run, as `serve_flow` keeps it until it is logged or counted.
 struct Ran {
     run: FiredRun,
-    request: Value,
+    request: Option<Value>,
     route: String,
     /// What its entry's error is (before a park's): the run's, or a secret it wasn't approved to
     /// answer with. What the answer's checks read.
@@ -91,11 +91,11 @@ struct Ran {
 /// A request's entry, from its run: as the run made it, with its route, its request, and its
 /// error.
 /// Its timeline is moved out of the run: nothing reads the run's after.
-fn ran_entry(started: (u64, std::time::Instant), sourced: &[(Capability, Value)], run: &mut FiredRun, route: &str, request: &Value, error: Option<String>) -> LogEntry {
+fn ran_entry(started: (u64, std::time::Instant), sourced: &[(Capability, Value)], run: &mut FiredRun, route: &str, request: &Option<Value>, error: Option<String>) -> LogEntry {
     let mut entry = run_entry_taking("request", started, sourced, run);
     entry.error = error;
     entry.route = Some(route.to_string());
-    entry.request = Some(SValue::from_core(request));
+    entry.request = request.as_ref().map(SValue::from_core);
     entry
 }
 
@@ -107,6 +107,8 @@ fn serve_flow(
     request: &DataRequest,
     forward: Option<outbound::Forwarder>,
 ) -> DataResponse {
+    #[cfg(test)]
+    panic_for_tests::check(&request.url);
     let found = deployments
         .lock()
         .unwrap()
@@ -201,7 +203,7 @@ fn serve_flow(
                 Some(name) => Some(format!("refused to answer with the secret {name:?}: this deployment wasn't approved to answer its callers with it")),
                 None => run.error.clone(),
             };
-            let [Some(request)] = inputs else { unreachable!("made with one") };
+            let [request] = inputs;
             // The answer, and the run kept to make its entry from if it is logged: a recorded one's
             // entry is made now, and it gives its outputs up to the answer; an unrecorded one keeps
             // them, its answer a copy, in case it is logged after all.
@@ -411,4 +413,27 @@ pub(crate) fn handle_post_request(state: &AppState, slug: &str, request: &Reques
     let headers = answer.headers.iter().map(|(k, v)| (k.to_string(), redactor.text(v))).collect();
     let body = redactor.text(&String::from_utf8_lossy(&answer.body));
     Response::json(&SentResponseBody { status: answer.status, headers, body })
+}
+
+/// A panic a test asks for, on requests whose path starts with one it names (R1's test).
+#[cfg(test)]
+pub(crate) mod panic_for_tests {
+    use std::sync::Mutex;
+
+    static PATHS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+    pub(crate) fn on(path: &str) {
+        PATHS.lock().unwrap().push(path.to_string());
+    }
+
+    pub(crate) fn off() {
+        PATHS.lock().unwrap().clear();
+    }
+
+    pub(super) fn check(url: &str) {
+        let hit = PATHS.lock().unwrap().iter().any(|p| url.starts_with(p.as_str()));
+        if hit {
+            panic!("a panic a test asked for");
+        }
+    }
 }

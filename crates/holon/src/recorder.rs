@@ -470,11 +470,127 @@ pub struct Log {
     /// (`LogCell::with`): freeing one, its timeline and all, took a quarter of the time a run held
     /// the lock.
     gone: Vec<LogEntry>,
+    /// Whether a cut-back is done outside the log's lock (`LogCell`, docs/L4s/resilience-audit-L4.md
+    /// R4): a run that finds the file past what it keeps appends its line and leaves the cut to
+    /// be made with the lock released. Off for a log used on its own.
+    defer_cuts: bool,
+    /// A run found the file past what it keeps: a cut-back is to be made (`LogCell::cut_if_planned`).
+    cut_wanted: bool,
+    /// A cut-back is being made outside the lock: no other is begun meanwhile.
+    cutting: bool,
+    /// Counts the times the file was rewritten here (cut back holding the lock): a cut planned
+    /// before one is stale.
+    generation: u64,
+}
+
+/// A cut-back to be made with the log's lock released: the file as it was when it was planned
+/// (its length, and where each line is), and what the log keeps.
+#[derive(Debug)]
+struct CutPlan {
+    path: PathBuf,
+    generation: u64,
+    file_len: u64,
+    lines: VecDeque<LineAt>,
+    keep: usize,
+    cutoff: Option<u64>,
+}
+
+/// A cut-back made but not yet swapped in: the lines kept, written and synced to `tmp`, with their
+/// index, as of the file's first `file_len` bytes.
+struct CutMade {
+    path: PathBuf,
+    generation: u64,
+    tmp: PathBuf,
+    /// The file's length when the cut was planned: its lines from here on follow the kept ones.
+    file_len: u64,
+    /// How much of the file is in `tmp` already: the kept lines, and what was caught up since.
+    copied: u64,
+    len: u64,
+    index: VecDeque<LineAt>,
+    /// The oldest line kept, when lines before it were let go (the witness hears of it).
+    trimmed: Option<(u64, String)>,
+    oldest_ms: u64,
+}
+
+impl CutMade {
+    /// Copy the file's bytes from what is in `tmp` already up to `upto` (lines the log wrote since,
+    /// which nothing changes once written) after the kept ones, and sync them: with the lock
+    /// released, so what is left for the swap is small.
+    fn catch_up(&mut self, upto: u64) -> std::io::Result<()> {
+        use std::io::{Read, Seek, Write};
+        if upto <= self.copied {
+            return Ok(());
+        }
+        let mut file = std::fs::File::open(&self.path)?;
+        file.seek(std::io::SeekFrom::Start(self.copied))?;
+        let mut tail = Vec::with_capacity((upto - self.copied) as usize);
+        file.take(upto - self.copied).read_to_end(&mut tail)?;
+        if tail.len() as u64 != upto - self.copied {
+            return Err(std::io::Error::other("the file is shorter than its log wrote it"));
+        }
+        let mut tmp = std::fs::OpenOptions::new().append(true).open(&self.tmp)?;
+        tmp.write_all(&tail)?;
+        tmp.sync_data()?;
+        self.copied = upto;
+        Ok(())
+    }
+}
+
+impl CutPlan {
+    /// The kept lines written beside the file and synced, the lock released: what `cut_back`
+    /// keeps (the newest `keep`, none older than the cutoff, always the newest line), byte for
+    /// byte. None when there is nothing to cut; an error when the file isn't as planned or can't
+    /// be written.
+    fn make(self) -> std::io::Result<Option<CutMade>> {
+        use std::io::Read;
+        let mut bytes = Vec::with_capacity(self.file_len as usize);
+        std::fs::File::open(&self.path)?.take(self.file_len).read_to_end(&mut bytes)?;
+        if bytes.len() as u64 != self.file_len {
+            return Err(std::io::Error::other("the file is shorter than when its cut was planned"));
+        }
+        let in_file = |at: &LineAt| bytes.get(at.offset as usize..at.offset as usize + at.len);
+        let lines: Vec<(&[u8], &LineAt)> = self.lines.iter().filter_map(|at| in_file(at).map(|b| (b, at))).collect();
+        let newest = lines.len().saturating_sub(1);
+        let start = lines.len().saturating_sub(self.keep);
+        let kept: Vec<&(&[u8], &LineAt)> = lines
+            .iter()
+            .enumerate()
+            .filter(|(i, (_, at))| *i == newest || (*i >= start && self.cutoff.is_none_or(|c| at.at_ms >= c)))
+            .map(|(_, l)| l)
+            .collect();
+        if kept.len() == lines.len() {
+            return Ok(None);
+        }
+        let mut all = Vec::with_capacity(kept.iter().map(|(b, _)| b.len() + 1).sum());
+        let mut index = VecDeque::with_capacity(kept.len());
+        for (b, at) in &kept {
+            index.push_back(LineAt { offset: all.len() as u64, ..(*at).clone() });
+            all.extend_from_slice(b);
+            all.push(b'\n');
+        }
+        let trimmed = kept.first().filter(|(_, oldest)| !oldest.prev.is_empty()).map(|(_, oldest)| (oldest.seq, oldest.prev.clone()));
+        let oldest_ms = kept.first().map_or(0, |(_, at)| at.at_ms);
+        let tmp = crate::sealing::write_aside(&self.path, &all)?;
+        Ok(Some(CutMade { path: self.path, generation: self.generation, tmp, file_len: self.file_len, copied: self.file_len, len: all.len() as u64, index, trimmed, oldest_ms }))
+    }
 }
 
 /// How often the logs' files are synced to disk (`sync_logs`): what a power loss can lose of them,
 /// at most (docs/L4s/request-path-L4.md, C2 d).
 pub const SYNC_EVERY: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// Sync the directory holding `path`, so a file just renamed into it stays renamed after a crash
+/// (where the system has directories to sync; a failure is only said: the file itself is synced).
+fn sync_dir_of(path: &Path) {
+    #[cfg(unix)]
+    if let Some(dir) = path.parent()
+        && let Err(e) = std::fs::File::open(dir).and_then(|d| d.sync_all())
+    {
+        eprintln!("holon: could not sync {}: {e}", dir.display());
+    }
+    #[cfg(not(unix))]
+    let _ = path;
+}
 
 /// Sync `path`'s written data to disk. A file that isn't there any more (its deployment was
 /// deleted) has nothing to sync.
@@ -505,6 +621,8 @@ pub(crate) fn sync_logs(deployments: &std::sync::Mutex<BTreeMap<String, crate::D
         if let Err(e) = log.sync() {
             failed.get_or_insert(e);
         }
+        // And its file cut back, if a run found it past what it keeps.
+        log.cut_if_planned();
     }
     for (slug, path) in events {
         if let Err(e) = sync_file(&path) {
@@ -616,7 +734,8 @@ pub struct LogCell {
 }
 
 impl LogCell {
-    pub fn new(log: Log) -> LogCell {
+    pub fn new(mut log: Log) -> LogCell {
+        log.defer_cuts = true;
         let next_seq = AtomicU64::new(log.next_seq);
         let synced = Mutex::new(log.next_seq);
         LogCell { log: Mutex::new(log), next_seq, synced, syncs: AtomicU64::new(0) }
@@ -678,6 +797,31 @@ impl LogCell {
         drop(gone);
         out
     }
+
+    /// Make the cut-back a run left, if one did: with the lock released, then swapped in under it
+    /// (docs/L4s/resilience-audit-L4.md, R4). Called by the logs' periodic sync (`sync_logs`), so
+    /// no run waits for it, its own included: until then the file holds past twice what it keeps,
+    /// by what a second brings.
+    pub fn cut_if_planned(&self) {
+        let Some(plan) = self.log.lock().unwrap().plan_cut() else { return };
+        let generation = plan.generation;
+        let mut made = plan.make();
+        // Caught up with what runs write meanwhile, with the lock released, until what is left for
+        // the swap is small (or the file changed under the cut, which the swap then finds).
+        if let Ok(Some(cut)) = &mut made {
+            for _ in 0..8 {
+                let Some(upto) = self.log.lock().unwrap().cut_still_good(generation) else { break };
+                if upto.saturating_sub(cut.copied) <= 64 << 10 {
+                    break;
+                }
+                if let Err(e) = cut.catch_up(upto) {
+                    made = Err(e);
+                    break;
+                }
+            }
+        }
+        self.log.lock().unwrap().finish_cut(made);
+    }
 }
 
 impl Default for Log {
@@ -731,6 +875,10 @@ impl Log {
             dirty: false,
             unkept: VecDeque::new(),
             gone: Vec::new(),
+            defer_cuts: false,
+            cut_wanted: false,
+            cutting: false,
+            generation: 0,
         };
         let Some(path) = &log.file else { return log };
         let Ok(text) = std::fs::read_to_string(path) else { return log };
@@ -770,8 +918,10 @@ impl Log {
         }
         if keep > self.keep && self.file.is_some() {
             let slug = self.slug.take();
+            // Read afresh: a cut planned before is stale, and the log cuts as it did.
+            let (defer_cuts, generation) = (self.defer_cuts, self.generation + 1);
             *self = Log::open_retaining(self.file.take(), keep, max_age_ms);
-            self.slug = slug;
+            (self.slug, self.defer_cuts, self.generation) = (slug, defer_cuts, generation);
             return;
         }
         (self.keep, self.max_age_ms) = (keep, max_age_ms);
@@ -865,7 +1015,8 @@ impl Log {
         {
             std::fs::create_dir_all(dir)?;
         }
-        if self.written + 1 > 2 * self.keep || self.file_aged(now_ms()) {
+        let past = self.written + 1 > 2 * self.keep || self.file_aged(now_ms());
+        if past && !self.defer_cuts {
             return self.cut_back(Some((line, at)));
         }
         if self.written == 0 {
@@ -900,7 +1051,96 @@ impl Log {
         self.lines.push_back(at);
         self.written += 1;
         self.dirty = true;
+        // Past what it keeps: a cut is wanted, to be made with the lock released, the line already
+        // in the file (R4).
+        if past {
+            self.cut_wanted = true;
+        }
         Ok(())
+    }
+
+    /// The cut-back wanted, as the file is now, to be made with the lock released: none if none is
+    /// wanted, one is being made, or the log keeps no file.
+    fn plan_cut(&mut self) -> Option<CutPlan> {
+        if !self.cut_wanted || self.cutting {
+            return None;
+        }
+        let path = self.file.clone()?;
+        self.cut_wanted = false;
+        self.cutting = true;
+        let cutoff = self.max_age_ms.map(|age| now_ms().saturating_sub(age));
+        Some(CutPlan { path, generation: self.generation, file_len: self.file_len, lines: self.lines.clone(), keep: self.keep, cutoff })
+    }
+
+    /// How long the file is, as this log has written it, while the cut planned at `generation` is
+    /// still good for it: what a cut-back catching up copies to.
+    fn cut_still_good(&self, generation: u64) -> Option<u64> {
+        (self.generation == generation && self.cutting).then_some(self.file_len)
+    }
+
+    /// Swap in a cut-back made with the lock released (`CutPlan::make`): the lines written since
+    /// it was planned copied after the kept ones and synced, then the file replaced. One the file
+    /// moved under (changed outside holon), or one that failed, is made here instead, as it always
+    /// was.
+    fn finish_cut(&mut self, made: std::io::Result<Option<CutMade>>) {
+        self.cutting = false;
+        let mut made = match made {
+            Ok(Some(made)) => made,
+            Ok(None) => return,
+            Err(e) => {
+                eprintln!("holon: the flow log {:?} is cut back holding its lock: {e}", self.file);
+                if let Err(e) = self.cut_back(None) {
+                    eprintln!("holon: could not cut back the flow log in {:?}: {e}", self.file);
+                }
+                return;
+            }
+        };
+        // A log no longer kept in that file (deleted, or moved) has nothing to cut.
+        if self.file.as_deref() != Some(made.path.as_path()) || !made.path.exists() {
+            let _ = std::fs::remove_file(&made.tmp);
+            return;
+        }
+        let swapped = (|| -> std::io::Result<bool> {
+            // The file as this log left it, or it is read afresh by the cut made here instead.
+            if made.generation != self.generation || std::fs::metadata(&made.path)?.len() != self.file_len || self.file_len < made.file_len {
+                return Ok(false);
+            }
+            // What the log wrote since the cut last caught up: small, the rest copied already.
+            made.catch_up(self.file_len)?;
+            // Closed before the file is replaced: the next line opens the new one.
+            self.handle = None;
+            std::fs::rename(&made.tmp, &made.path)?;
+            // The rename on disk too, so a crash can't bring back the file it replaced, whose
+            // newest lines may not have been synced.
+            sync_dir_of(&made.path);
+            let shift = made.len as i64 - made.file_len as i64;
+            let moved: Vec<LineAt> = self.lines.iter().filter(|at| at.offset >= made.file_len).map(|at| LineAt { offset: (at.offset as i64 + shift) as u64, ..at.clone() }).collect();
+            let mut index = std::mem::take(&mut made.index);
+            index.extend(moved);
+            self.written = index.len();
+            self.file_len = made.len + (made.copied - made.file_len);
+            self.lines = index;
+            self.file_oldest_ms = made.oldest_ms;
+            // Everything in it is on disk: the kept lines synced as they were written, the rest now.
+            self.dirty = false;
+            Ok(true)
+        })();
+        match swapped {
+            Ok(true) => {
+                if let Some((seq, prev)) = &made.trimmed {
+                    self.export("trim", *seq, prev, now_ms());
+                }
+            }
+            other => {
+                let _ = std::fs::remove_file(&made.tmp);
+                if let Err(e) = other {
+                    eprintln!("holon: the flow log {:?} is cut back holding its lock: {e}", self.file);
+                }
+                if let Err(e) = self.cut_back(None) {
+                    eprintln!("holon: could not cut back the flow log in {:?}: {e}", self.file);
+                }
+            }
+        }
     }
 
     /// Rewrite the file as the lines it keeps, byte for byte, then `line` (the newest entry's,
@@ -956,6 +1196,8 @@ impl Log {
         self.file_oldest_ms = kept.first().map_or(0, |(_, at)| at.at_ms);
         // Written whole and synced (write_private), the newest line with it.
         crate::sealing::write_private(&path, &all)?;
+        sync_dir_of(&path);
+        self.generation += 1;
         self.written = kept.len();
         self.file_len = all.len() as u64;
         self.lines = index;
@@ -1009,6 +1251,7 @@ impl Log {
         self.handle = None;
         self.lines.clear();
         self.file_len = 0;
+        self.generation += 1;
         if let Some(path) = &self.file {
             let _ = std::fs::remove_file(path);
         }
@@ -1393,6 +1636,101 @@ mod tests {
         let again = Log::open_keeping(Some(path.clone()), 2);
         assert!(again.breaks().is_empty(), "{:?}", again.breaks());
         assert_eq!(again.after(None, 10).iter().map(|e| e.seq).collect::<Vec<_>>(), [17, 18]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A cut-back made with the lock released (R4) leaves the file a cut made holding it leaves,
+    /// byte for byte, cut after cut, and a log opened on it reads the chain unbroken.
+    #[test]
+    fn a_cut_made_outside_the_lock_leaves_the_file_one_made_holding_it_leaves() {
+        let dir = temp_dir("cut-outside");
+        let (held, cell) = (dir.join("held.jsonl"), dir.join("cell.jsonl"));
+        let mut alone = Log::open_keeping(Some(held.clone()), 3);
+        let celled = LogCell::new(Log::open_keeping(Some(cell.clone()), 3));
+        for i in 0..20 {
+            let e = LogEntry { at_ms: 1_000 + i, ..entry() };
+            alone.push(e.clone());
+            celled.with(|log| log.push(e));
+            celled.cut_if_planned();
+            assert_eq!(std::fs::read(&cell).unwrap(), std::fs::read(&held).unwrap(), "after entry {i}");
+        }
+        let back = Log::open_keeping(Some(cell.clone()), 3);
+        assert!(back.breaks().is_empty(), "the chain unbroken");
+        assert_eq!(back.next_seq(), 20);
+        assert!(std::fs::read_dir(&dir).unwrap().all(|e| !e.unwrap().file_name().to_string_lossy().contains(".cut-")), "no cut left beside it");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Runs logging from several threads while their log's file is cut back outside the lock: every
+    /// entry is numbered once, the file holds the newest ones in order, chained, and stays within
+    /// twice what the log keeps and the few that came during a cut.
+    #[test]
+    fn lines_written_while_a_cut_is_made_outside_the_lock_are_all_kept_in_order() {
+        let dir = temp_dir("cut-threads");
+        let path = dir.join("slug.jsonl");
+        let cell = std::sync::Arc::new(LogCell::new(Log::open_keeping(Some(path.clone()), 50)));
+        let threads: Vec<_> = (0..8)
+            .map(|_| {
+                let cell = std::sync::Arc::clone(&cell);
+                std::thread::spawn(move || {
+                    for i in 0..250 {
+                        let e = entry();
+                        let made = Made::of(&e);
+                        cell.with(|log| log.push_made(e, made));
+                        // The periodic sync's part, from one of the threads now and then.
+                        if i % 25 == 0 {
+                            cell.cut_if_planned();
+                        }
+                    }
+                })
+            })
+            .collect();
+        for t in threads {
+            t.join().unwrap();
+        }
+        cell.cut_if_planned();
+        let text = std::fs::read_to_string(&path).unwrap();
+        let seqs: Vec<u64> = text.lines().filter_map(|l| serde_json::from_str::<LogEntry>(l).ok()).map(|e| e.seq).collect();
+        assert_eq!(seqs.last(), Some(&1999), "the newest entry is the last line");
+        assert!(seqs.windows(2).all(|w| w[1] == w[0] + 1), "in order, none missing between the oldest kept and the newest");
+        assert!(seqs.len() >= 50 && seqs.len() <= 2 * 50 + 8 * 25, "{} lines kept", seqs.len());
+        let back = Log::open_keeping(Some(path.clone()), 50);
+        assert!(back.breaks().is_empty(), "the chain unbroken");
+        assert_eq!(back.next_seq(), 2000);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A cut planned, then the file rewritten under the lock before it is swapped in (the log
+    /// told to keep fewer): the stale cut is dropped and made afresh; and one whose log was deleted
+    /// meanwhile brings no file back.
+    #[test]
+    fn a_cut_overtaken_by_the_file_changing_is_made_afresh_and_a_deleted_log_stays_deleted() {
+        let dir = temp_dir("cut-stale");
+        let path = dir.join("slug.jsonl");
+        let mut log = Log::open_keeping(Some(path.clone()), 3);
+        log.defer_cuts = true;
+        for _ in 0..7 {
+            log.push(entry());
+        }
+        let plan = log.plan_cut().expect("past twice what it keeps: a cut planned");
+        log.retain(2, None);
+        log.push(entry());
+        let made = plan.make();
+        log.finish_cut(made);
+        let back = Log::open_keeping(Some(path.clone()), 2);
+        assert!(back.breaks().is_empty(), "the chain unbroken");
+        assert_eq!(back.next_seq(), 8);
+        // A cut planned, then the log deleted: the file stays gone.
+        let mut log = Log::open_keeping(Some(path.clone()), 3);
+        log.defer_cuts = true;
+        for _ in 0..7 {
+            log.push(entry());
+        }
+        let plan = log.plan_cut().expect("a cut planned");
+        log.delete_file();
+        log.finish_cut(plan.make());
+        assert!(!path.exists(), "a deleted log isn't brought back");
+        assert!(std::fs::read_dir(&dir).unwrap().all(|e| !e.unwrap().file_name().to_string_lossy().contains(".cut-")), "no cut left beside it");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

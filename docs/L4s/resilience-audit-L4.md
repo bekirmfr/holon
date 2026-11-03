@@ -122,11 +122,59 @@ listed so they are seen as policy, not as optimizations:
 - A failed unrecorded run is run again to be logged: the run logged is the second, which may read
   a newer state than the first did.
 
+## 2.6 Fixed: R1–R4, and what it cost
+
+- **R1:** a run on the inline path that panics is answered 500, as on the pool
+  (`catch_unwind`); a test asks a run to panic, inline and pooled, and checks both are answered
+  500 and the next requests answered.
+- **R2:** a run goes inline only if it can never wait: its route is unrecorded (no log line, no
+  log lock), it reads only its request, the clock and random numbers (`READS_HERE`: no state, no
+  collection, no secret, each behind a lock a writer holds through a sync), and its flow is in the
+  flow cache already (`FlowCache::holds`: nothing loaded from the store on the worker). The memo of
+  which routes run inline holds only the live version's endpoints (S2).
+- **R3:** where the evaluator's new paths stopped the run, they fail closed: a node whose kind
+  isn't its body's computes nothing; a plan that finds an input not yet evaluated, or a
+  pass-through whose condition or value isn't in, hands the run to the walk. A test turns 1,000
+  plans' order around and checks the outputs are the walk's; writing it found the pass-through's
+  own step answering absent where it should have handed over, fixed with it.
+- **R4:** a run that finds its log's file past what it keeps only says so; the periodic sync
+  (`sync_logs`, every second) makes the cut: the kept lines written beside the file and synced
+  with the lock released, what runs wrote meanwhile caught up the same way while it is more than
+  64 KiB, and only the last of it copied, synced and swapped in under the lock, then the directory
+  synced. A cut the file moved under (cut holding the lock, the log told to keep more or fewer,
+  the log deleted) is dropped and made as it always was, or not at all for a deleted log. Tests:
+  the file a cut made so is byte for byte the file a cut made holding the lock leaves; 8 threads
+  writing 2,000 entries while cuts are made leave every one in order, chained; a cut overtaken by
+  the file changing is made afresh; a deleted log stays deleted. Two designs measured before this
+  one did worse: the run that found the file full making the cut itself (no run waited on its
+  lock, but that run did: p99 at one connection 151–163 ms), and the plan taken when the file was
+  found full but made up to a second later (everything written meanwhile copied under the lock:
+  371–408 ms).
+- **S3:** the request is kept as the `Option` it is, not unpacked with `unreachable!`.
+
+Measured, the build before against the build with them (`wrk`, two rounds alternating, the
+`notes-api`, `hello` and `counter` deployments of request-path-L4.md §1 and `crunch`):
+
+| | before | after |
+|---|---|---|
+| an unrelated unrecorded `hello`, probed at 2 connections, under `notes` listing reads | 63–64 req/s, p50 25 ms | 3,429–4,189 req/s, p50 252–344 µs |
+| the same, under listing reads and strict writes | 27–29 req/s, p50 63–68 ms | 18,801–19,183 req/s, p50 80–81 µs |
+| the `notes` listing at one connection | 1,052–1,073 req/s, p50 723–734 µs, **p99 130–157 ms** | 1,181–1,200 req/s, p50 753–758 µs, **p99 29–30 ms** |
+| the `notes` listing at 64 connections (pooled now) | 1,720–1,821 req/s | 2,518–2,526 (+39–46%) |
+| strict `hello` | 9,510–9,786 | 10,509–11,526 (+10–18%: no run waits behind a cut-back) |
+| unrecorded `hello`, `calc`; `crunch` at 100 items (inline still) | 74,465–78,269; 69,157–75,126; 13,450–13,790 | 76,169–81,403; 71,066–77,051; 14,415–15,240 (unchanged) |
+| lazy `hello` (pooled now) | 18,598–18,818 req/s, p50 at one connection 93–96 µs | 19,473–19,601, 228–241 µs |
+| unrecorded `counter /last`, reading state (pooled now) | 48,859–50,448, 62 µs | 40,048–40,523 (−18–20%), 128–135 µs |
+
+So the price is the pool's hop on the routes that may wait: 65–145 µs more at one connection, and
+a fifth of the throughput of an unrecorded route that reads state, where it is the run's largest
+cost. Under load they do as well or better; and no deployment's waiting reaches another's routes.
+A one-connection p99 of about 30 ms remains on a lazy route with a busy log, likely the
+once-a-second sync of its file holding up the next append to it; left as it is.
+
 ## 3. Order
 
-1. **R1–R4**, which change how the server behaves when something goes wrong. R1 and R3 cost nothing on
-   the fast path; R2's cost is the pool's on the routes that read a collection (above); R4's should
-   be none, to be measured.
+1. **R1–R4**: done (§2.6).
 2. **D1–D3**, the knowledge kept twice and the redaction shortcut's assumptions.
 3. **D4, D5, S1–S5**.
 4. Then the rest of the check: the end-to-end suite (`editor/e2e`), a soak under load watching

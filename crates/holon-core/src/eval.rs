@@ -382,7 +382,10 @@ fn eval_as(
             }
             outs.into_iter().map(Slot::of).collect()
         }
-        (_, UnitBody::Primitive { .. }) => unreachable!("a primitive's kind is one of the above"),
+        // A primitive whose kind isn't a primitive's: never made so (`NodeKind::of`), but if it
+        // were, nothing is computed, as for a leaf that isn't one, instead of stopping the run
+        // (docs/L4s/resilience-audit-L4.md, R3).
+        (_, UnitBody::Primitive { .. }) => smallvec![Slot::Absent; unit.outputs.len()],
     }
 }
 
@@ -820,12 +823,21 @@ impl<'r> Prepared<'r> {
             };
             if self.kinds[ci].choice.is_some() {
                 // A pass-through guard, its condition `true`: its value, as the walk's choice
-                // gives it.
-                let outs: Slots = smallvec![match self.shape.incoming.source(ci, 1) {
-                    Source::Input(fp) => Slot::of(inputs.get(fp as usize).copied().flatten().cloned()),
-                    Source::Child(fc, fp) => scratch[fc as usize].as_ref().and_then(|o| o.get(fp as usize)).cloned().unwrap_or(Slot::Absent),
-                    Source::Unwired | Source::Missing(..) => Slot::Absent,
-                }];
+                // gives it. Its condition and its value are in by the plan's order; if either
+                // weren't, the walk carries on from here (R3).
+                let cond = match self.shape.incoming.source(ci, 0) {
+                    Source::Child(c, 0) => scratch[c as usize].as_ref().and_then(|outs| outs.first()),
+                    _ => None,
+                };
+                let value = match self.shape.incoming.source(ci, 1) {
+                    Source::Input(fp) => Some(Slot::of(inputs.get(fp as usize).copied().flatten().cloned())),
+                    Source::Child(fc, fp) => scratch[fc as usize].as_ref().map(|o| o.get(fp as usize).cloned().unwrap_or(Slot::Absent)),
+                    Source::Unwired | Source::Missing(..) => Some(Slot::Absent),
+                };
+                let (Some(Slot::Value(Value::Boolean(true))), Some(value)) = (cond, value) else {
+                    return self.run_in(scratch, n_outputs, inputs, resolver, observer, path);
+                };
+                let outs: Slots = smallvec![value];
                 path.push(ci as u32);
                 observer.enter(path);
                 observer.produced(path, &outs);
@@ -837,19 +849,28 @@ impl<'r> Prepared<'r> {
             let outs = {
                 let mut gathered: Refs = SmallVec::new();
                 let mut pending = false;
+                let mut ahead = false;
                 for source in &plan.sources[plan.starts[ci] as usize..plan.starts[ci + 1] as usize] {
                     let slot = match *source {
                         Source::Input(fp) => In::of_value(inputs.get(fp as usize).copied().flatten()),
                         Source::Child(fc, fp) => match &scratch[fc as usize] {
                             Some(outs) => outs.get(fp as usize).map_or(In::Absent, In::of_slot),
-                            None => unreachable!("the plan evaluates a child's sources before it"),
+                            // Never so (the plan is the walk's order), but if it were, the walk
+                            // carries on from here, as it does after a failed check (R3).
+                            None => {
+                                ahead = true;
+                                break;
+                            }
                         },
                         Source::Unwired | Source::Missing(..) => In::Absent,
                     };
                     pending |= slot == In::Pending;
                     gathered.push(slot.value());
                 }
-                self.fire(ci, &mut gathered, pending, &open, resolver, observer, path)
+                (!ahead).then(|| self.fire(ci, &mut gathered, pending, &open, resolver, observer, path))
+            };
+            let Some(outs) = outs else {
+                return self.run_in(scratch, n_outputs, inputs, resolver, observer, path);
             };
             scratch[ci] = Some(outs);
         }
@@ -1565,6 +1586,33 @@ mod tests {
         for (unit, children, edges, n_out, condition) in &cases {
             walk_and_plan_agree(unit, children, edges, *n_out, &r, || Events(Vec::new(), vec![vec![*condition]]));
         }
+    }
+
+    /// A plan whose order is wrong (here turned around, so a child comes before what feeds it) never
+    /// stops the run: where it finds an input not yet evaluated it hands the run to the walk, and
+    /// the outputs are the walk's (R3). A node whose kind isn't its body's computes nothing.
+    #[test]
+    fn a_plan_out_of_order_hands_over_and_a_kind_that_isnt_its_bodys_computes_nothing() {
+        let mut r = MapResolver::new();
+        let mut cases = Vec::new();
+        random_composites(&mut r, 1000, |u, c, e, n, _| cases.push((u.clone(), c.to_vec(), e.to_vec(), n)));
+        let inputs = [Some(num(3.0)), Some(num(0.0))];
+        let refs: Refs = inputs.iter().map(Option::as_ref).collect();
+        let mut handed = 0;
+        for (unit, children, edges, n_out) in &cases {
+            let walked = Prepared::of(unit, children, edges, &r).unwrap().run(*n_out, &refs, &r, &mut NoObserver, &mut Vec::new());
+            let mut plan = Prepared::of(unit, children, edges, &r).unwrap().planned();
+            let order = &mut plan.plan.as_mut().unwrap().order;
+            let before = order.clone();
+            order.reverse();
+            handed += usize::from(*order != before);
+            assert_eq!(plan.run(*n_out, &refs, &r, &mut NoObserver, &mut Vec::new()), walked, "edges {edges:?}");
+        }
+        assert!(handed > 500, "{handed} plans turned around");
+        let add = prim("add", 2, Type::Number);
+        let wrong = NodeKind { body: Body::Composite, takes_trigger: false, choice: None, held_when_absent: false };
+        let (a, b) = (num(1.0), num(2.0));
+        assert_eq!(eval_as(&add, &wrong, &[Some(&a), Some(&b)], &r, &mut NoObserver, &mut Vec::new()).into_vec(), vec![Slot::Absent]);
     }
 
     /// A composite with a choice has no plan: what it evaluates depends on a value, so it is walked.

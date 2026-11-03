@@ -271,6 +271,36 @@ mod os_store {
 
 /// Write `bytes` to `path` atomically, readable only by its owner from the first byte: the
 /// temporary file is restricted before anything is written to it, and the rename keeps that.
+/// `bytes` written beside `path`, owner-only and synced, under a name of its own, and not moved into
+/// place: the caller renames it over `path` when it is ready (a log's cut-back, recorder.rs).
+pub(crate) fn write_aside(path: &Path, bytes: &[u8]) -> std::io::Result<PathBuf> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let mut tmp = path.as_os_str().to_owned();
+    tmp.push(format!(".cut-{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
+    let tmp = PathBuf::from(tmp);
+    let result = (|| {
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = options.open(&tmp)?;
+        restrict_to_owner(&tmp)?;
+        file.write_all(bytes)?;
+        file.sync_all()
+    })();
+    match result {
+        Ok(()) => Ok(tmp),
+        Err(e) => {
+            let _ = std::fs::remove_file(&tmp);
+            Err(e)
+        }
+    }
+}
+
 pub(crate) fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     use std::sync::atomic::{AtomicU64, Ordering};
     static NEXT: AtomicU64 = AtomicU64::new(0);
