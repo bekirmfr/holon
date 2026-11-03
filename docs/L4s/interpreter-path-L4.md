@@ -129,6 +129,17 @@ after keeps each honest. The gains below are estimated from the shares above.
    capabilities and sourced substitution, a `const`'s parsed literal; `route.endpoint` instead of
    `hash_unit`; `Arc<Server>` and one `match_route` with the level from `Route.log`.
    *Estimated: `hello` 20–25% (about 4–5 µs of 20), `crunch` 3–5%.*
+   **Done, in part, and measured (step 1a):** the endpoint's hash and its level taken from the
+   route (`data::handle` hands the run its `Route`), the resume route looked for only in a flow
+   that has one, and, in `Prepared`, an index of edges by child and port in place of a map, and a
+   cycle check of lists (`has_cycle`, a test holds it to `topo_order` on 4,000 random graphs) in
+   place of building an order to discard. Both golden records unchanged. `hello` 242.5k → 226.0k
+   instructions a run (−6.8%; 20.7–24.3 → 18.5–19.1 µs a run), `notes` −1.9%, `crunch` within
+   noise: below the estimate, because preparing a composite is still done on every run, its cycle
+   check and index rebuilt (3.8% and 2.1% of `hello`) and its children resolved (3.7%, which has to
+   stay: resolution swaps in the run's sourced values). **Step 1b**: keep each composite's shape
+   (the index, the roots, the cycle check) across runs, keyed by the unit as the flow cache holds
+   it; the opcode and the `const` literal with it.
 2. **Stop the double work around the record** (§3.2): measure the timer's outputs without
    serializing; redaction that copies only what it changes; no snapshot put or re-hash for an
    unchanged state, no readables for nothing read.

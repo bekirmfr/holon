@@ -32,7 +32,6 @@
 use crate::{primitives, Edge, Hash, Param, Resolver, Unit, UnitBody, Value, BOUNDARY, VARIADIC};
 use crate::hash::parse_hash;
 use smallvec::{smallvec, SmallVec};
-use std::collections::{BTreeMap, BTreeSet};
 
 /// The evaluator's own output shape (P4.7 + the SmallVec perf inch, 2026-07-02).
 /// Inline storage for 0 or 1 outputs — every genesis primitive declares exactly one, forever,
@@ -352,7 +351,7 @@ fn eval_composite(
 struct Prepared<'r> {
     resolved: Vec<&'r Unit>,
     /// Destination (to_child, to_port) → source (from_child, from_port).
-    incoming: BTreeMap<(u32, u32), (u32, u32)>,
+    incoming: Incoming,
     /// The walk's first stack: what the outputs read, and what nothing consumes.
     roots: Vec<usize>,
 }
@@ -373,14 +372,13 @@ impl<'r> Prepared<'r> {
 
         // Index incoming edges: destination (to_child, to_port) → source (from_child, from_port).
         // Validation guarantees ≤1 source per destination, so this never loses an edge.
-        let mut incoming: BTreeMap<(u32, u32), (u32, u32)> = BTreeMap::new();
-        for e in edges {
-            incoming.insert((e.to_child, e.to_port), (e.from_child, e.from_port));
-        }
+        let incoming = Incoming::of(n, edges);
 
         // A cycle is impossible after P1.3.1; handled, not panicked, and the walk below can then
         // rely on reaching the end of everything it pulls.
-        topo_order(n, edges)?;
+        if has_cycle(n, edges) {
+            return None;
+        }
 
         // The roots: what the outputs read, and what nothing consumes (a node placed on its own is
         // run, as it always was). In ascending child index, so the walk is deterministic.
@@ -414,11 +412,11 @@ impl<'r> Prepared<'r> {
 
         // The slot feeding a child's input port: `None` while its source child is unevaluated.
         let slot_in = |scratch: &[Option<Slots>], ci: usize, p: usize| -> Option<Slot> {
-            match incoming.get(&(ci as u32, p as u32)) {
-                Some(&(BOUNDARY, fp)) => Some(Slot::of(inputs.get(fp as usize).cloned().flatten())),
+            match incoming.get(ci as u32, p as u32) {
+                Some((BOUNDARY, fp)) => Some(Slot::of(inputs.get(fp as usize).cloned().flatten())),
                 // `get`, not indexing: an edge naming a child that does not exist (bytes that never
                 // went through `validate`) reads as absent.
-                Some(&(fc, fp)) => match scratch.get(fc as usize) {
+                Some((fc, fp)) => match scratch.get(fc as usize) {
                     Some(Some(outs)) => Some(outs.get(fp as usize).cloned().unwrap_or(Slot::Absent)),
                     Some(None) => None,
                     None => Some(Slot::Absent),
@@ -448,7 +446,7 @@ impl<'r> Prepared<'r> {
                 None => seen.iter().position(Option::is_none),
             };
             if let Some(p) = need {
-                let &(fc, _) = incoming.get(&(ci as u32, p as u32)).expect("only a wired port is unevaluated");
+                let (fc, _) = incoming.get(ci as u32, p as u32).expect("only a wired port is unevaluated");
                 stack.push(fc as usize);
                 continue;
             }
@@ -475,8 +473,8 @@ impl<'r> Prepared<'r> {
                         // downstream of a check that failed (a webhook whose signature didn't
                         // verify) still went out, bodiless.
                         let mut gathered: Vec<Option<Value>> = seen.into_iter().map(Slot::into_value).collect();
-                        open_triggers(child, &mut gathered, |p| incoming.contains_key(&(ci as u32, p as u32)));
-                        let wired_but_absent = (0..k).any(|p| gathered[p].is_none() && incoming.contains_key(&(ci as u32, p as u32)));
+                        open_triggers(child, &mut gathered, |p| incoming.wired(ci as u32, p as u32));
+                        let wired_but_absent = (0..k).any(|p| gathered[p].is_none() && incoming.wired(ci as u32, p as u32));
                         // A sink is held the same way: its trigger, wired, hasn't arrived.
                         let held = wired_but_absent && matches!(&child.body, UnitBody::Primitive { name } if primitives::has_optional_ports(name) || crate::TRIGGERED.contains(&name.as_str()));
                         path.push(ci as u32);
@@ -504,13 +502,90 @@ impl<'r> Prepared<'r> {
         // straight through. (A composite whose output *is* one of its inputs is a valid,
         // validate-accepted shape; the BOUNDARY→BOUNDARY arm below is why that doesn't panic.)
         (0..n_outputs as u32)
-            .map(|op| match incoming.get(&(BOUNDARY, op)) {
-                Some(&(BOUNDARY, fp)) => Slot::of(inputs.get(fp as usize).cloned().flatten()),
-                Some(&(fc, fp)) => scratch.get(fc as usize).and_then(|o| o.as_ref()).and_then(|o| o.get(fp as usize)).cloned().unwrap_or(Slot::Absent),
+            .map(|op| match incoming.get(BOUNDARY, op) {
+                Some((BOUNDARY, fp)) => Slot::of(inputs.get(fp as usize).cloned().flatten()),
+                Some((fc, fp)) => scratch.get(fc as usize).and_then(|o| o.as_ref()).and_then(|o| o.get(fp as usize)).cloned().unwrap_or(Slot::Absent),
                 None => Slot::Absent,
             })
             .collect()
     }
+}
+
+/// A composite's edges by destination: for each child's input port, and each boundary output, the
+/// (child, port) that feeds it, if one does. Lists indexed by child and port, not a map: looked
+/// up for every port of every node a run evaluates.
+struct Incoming {
+    children: Vec<Vec<Option<(u32, u32)>>>,
+    outputs: Vec<Option<(u32, u32)>>,
+}
+
+impl Incoming {
+    fn of(n: usize, edges: &[Edge]) -> Incoming {
+        let mut children: Vec<Vec<Option<(u32, u32)>>> = vec![Vec::new(); n];
+        let mut outputs: Vec<Option<(u32, u32)>> = Vec::new();
+        for e in edges {
+            let ports = if e.to_child == BOUNDARY {
+                &mut outputs
+            } else if let Some(ports) = children.get_mut(e.to_child as usize) {
+                ports
+            } else {
+                // A destination that doesn't exist: nothing ever looks it up.
+                continue;
+            };
+            let p = e.to_port as usize;
+            if ports.len() <= p {
+                ports.resize(p + 1, None);
+            }
+            // The last edge to a destination wins, as the map this replaces kept it.
+            ports[p] = Some((e.from_child, e.from_port));
+        }
+        Incoming { children, outputs }
+    }
+
+    /// What feeds port `port` of `child` (`BOUNDARY` for an output of the composite).
+    fn get(&self, child: u32, port: u32) -> Option<(u32, u32)> {
+        let ports = if child == BOUNDARY { &self.outputs } else { self.children.get(child as usize)? };
+        ports.get(port as usize).copied().flatten()
+    }
+
+    fn wired(&self, child: u32, port: u32) -> bool {
+        self.get(child, port).is_some()
+    }
+}
+
+/// Whether the in-range child→child edges hold a cycle: exactly when [`topo_order`] has no order,
+/// worked out with lists alone, without the order it would make (Kahn's count of what can be
+/// reached from the nodes nothing feeds).
+fn has_cycle(n: usize, edges: &[Edge]) -> bool {
+    let inner = || edges.iter().filter(|e| (e.from_child as usize) < n && (e.to_child as usize) < n);
+    let mut indeg = vec![0u32; n];
+    let mut start = vec![0usize; n + 1];
+    for e in inner() {
+        indeg[e.to_child as usize] += 1;
+        start[e.from_child as usize + 1] += 1;
+    }
+    for i in 0..n {
+        start[i + 1] += start[i];
+    }
+    let mut next = start.clone();
+    let mut adj = vec![0usize; start[n]];
+    for e in inner() {
+        let f = e.from_child as usize;
+        adj[next[f]] = e.to_child as usize;
+        next[f] += 1;
+    }
+    let mut ready: Vec<usize> = (0..n).filter(|&i| indeg[i] == 0).collect();
+    let mut seen = 0;
+    while let Some(node) = ready.pop() {
+        seen += 1;
+        for &m in &adj[start[node]..start[node + 1]] {
+            indeg[m] -= 1;
+            if indeg[m] == 0 {
+                ready.push(m);
+            }
+        }
+    }
+    seen < n
 }
 
 /// A placed holon's trigger left unwired reads as present ([`crate::open_trigger`]): its sinks run
@@ -530,7 +605,9 @@ pub(crate) fn open_triggers(child: &Unit, gathered: &mut [Option<Value>], wired:
 /// (ascending child index among ready nodes). Boundary edges are excluded (an endpoint
 /// `== BOUNDARY` is not `< n`). Returns `None` on a cycle — impossible after P1.3.1, but
 /// handled rather than panicking.
+#[cfg(any(test, feature = "eager-oracle"))]
 pub(crate) fn topo_order(n: usize, edges: &[Edge]) -> Option<Vec<usize>> {
+    use std::collections::BTreeSet;
     let mut indeg = vec![0usize; n];
     let mut adj: Vec<Vec<usize>> = vec![Vec::new(); n];
     for e in edges {
@@ -758,6 +835,34 @@ mod tests {
             vec![hadd],
             vec![edge(BOUNDARY, 0, 0, 0), edge(BOUNDARY, 1, 0, 1), edge(0, 0, BOUNDARY, 0)],
         )
+    }
+
+    /// The cycle check the evaluator uses agrees with `topo_order` (the eager oracle's) on every
+    /// graph: random ones, with and without cycles, and edges to the boundary or past the
+    /// composite's children.
+    #[test]
+    fn has_cycle_is_exactly_where_topo_order_finds_no_order() {
+        let mut seed = 0x2545_f491_4f6c_dd1du64;
+        let mut next = move |m: u64| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed % m
+        };
+        let (mut cyclic, mut acyclic) = (0, 0);
+        for _ in 0..4000 {
+            let n = next(8) as usize;
+            let edges: Vec<Edge> = (0..next(14))
+                .map(|_| {
+                    let end = |r: u64| if r == 0 { BOUNDARY } else { (r - 1) as u32 };
+                    edge(end(next(n as u64 + 3)), next(3) as u32, end(next(n as u64 + 3)), next(3) as u32)
+                })
+                .collect();
+            let found = has_cycle(n, &edges);
+            assert_eq!(found, topo_order(n, &edges).is_none(), "n {n}, edges {edges:?}");
+            if found { cyclic += 1 } else { acyclic += 1 }
+        }
+        assert!(cyclic > 100 && acyclic > 100, "both kinds tried: {cyclic} cyclic, {acyclic} not");
     }
 
     #[test]
