@@ -131,8 +131,11 @@ rather than 2–5%. **Built, it lands 4–23% behind**, `hello` closest: the rec
 entry, its timeline of each node's outputs, redaction, the chain) is the difference, 35–85 µs of
 CPU per request more than C#'s, and the disk sets the pace for both. Holon gives that record with
 no code; the C# middleware is about 130 lines. At one connection Holon waits 150–260 µs longer than
-C#. Not measured apart; one likely part is that it opens the log's file for each sync
-(`recorder::sync_file`), where C# syncs a handle it keeps.
+C#, and it isn't the disk: under `strace` its `fdatasync` took no longer than C#'s (314 µs against
+402 µs, both inflated by tracing), and syncing through a handle kept open instead of opening the
+file for each sync (`recorder::sync_file`) changed nothing measurable (tried, not kept). Without a
+sync the two answer one connection alike (lazy, 115–117 µs against 103–124 µs), so the rest is
+around the sync itself, between the run's end and its answer: not yet found.
 
 ### 1.4 What a C# record costs, step by step
 
