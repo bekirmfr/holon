@@ -148,8 +148,10 @@ after keeps each honest. The gains below are estimated from the shares above.
    The evaluator's golden record is checked a second time with every shape kept (found over a
    thousand times), and gives the same record. `hello` 223.4k → 204.8k instructions a run
    (−8.3%, measured by the difference between two run counts, so setup is left out; 20.6–21.7 →
-   17.7–18.3 µs a run), `notes` −2.4%, `crunch` −0.15%. Step 1 as a whole: `hello` 242.5k →
-   204.8k. The opcode and the `const` literal aren't kept: the profile puts all of `compute`,
+   17.7–18.3 µs a run), `notes` −2.4%, `crunch` −0.15%. Step 1 as a whole, counted the same way
+   against the build before it: `hello` 239.9k → 204.8k (−14.6%; 20.7–24.3 → 17.7–18.3 µs a
+   run), `notes` 657.8k → 629.6k (−4.3%), `crunch` 71.50M → 66.47M (−7.0%, step 1a's index and
+   cycle check, within the noise of its time). The opcode and the `const` literal aren't kept: the profile puts all of `compute`,
    its dispatch by name included, at 3.0% of `hello` and parsing literals at 0.13%, too little
    to be worth another kept table.
    Live, step 1 as a whole against the build before it (`wrk` at 64 connections, two rounds
