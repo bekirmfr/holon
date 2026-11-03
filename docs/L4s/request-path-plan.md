@@ -1000,6 +1000,32 @@ the content store (the collection's trie and items), about 100 µs: see 12.4.
   with the timer on to log it; that is cheap, because evaluation is pure and the run failed anyway.
   Decide in review.
 
+**Done (12.2).** `Timer::off()` keeps nothing (`enter`, `produced`, `failed` and `leave` return at
+once), and `RunWaits.unrecorded` (false by default) makes `run_attempt` use it. A route
+(`listeners.rs`) and an action (`deploy.rs`) set it from the effective level
+(`Permit::log_level`). **Decided: a failed unrecorded run runs again**, with the timer on, and
+that run is answered and logged (`run_failed`: an error, or a status outside 200–499 or not
+whole, as `data::respond` answers it). An unrecorded handler does nothing outside its run, so the
+second run changes nothing, and the failure keeps the timeline that `explain`, the editor and
+`verify` use. Clock and file runs keep the timer: an unrecorded clock or file handler is rare.
+
+Measured (the throughput check, which now has unrecorded twins of `hello` and `/last`):
+
+| route | threads | before | after |
+|---|---|---|---|
+| `hello` unrecorded | 1 | 26,521 (p50 34.6 µs) | 37,531 (p50 23.8 µs) |
+| `hello` unrecorded | 64 | 96,307 | 132,876 |
+| `/last` unrecorded | 1 | 25,223 | 31,748 |
+
+Live, `status-board`'s `/health` (3 nodes): 8,365–8,394 → 9,379–9,692 req/s at one connection (p50
+108 → 96 µs), and the same at 64 connections, where HTTP and the client bound it.
+
+**For Q16 (12.5):** the timer is a larger share of a recorded run. With it off throughout (a
+throwaway switch, measured, not kept), `hello` lazy went from 15,687 to 24,026 req/s on one thread
+(p50 51.5 → 33.1 µs) and from 13,181 to 27,133 at 64 threads, and strict from 8,886 to 12,031 at
+64: each node's outputs are serialized once to be measured and again in the log line, under the
+log's lock.
+
 ### 12.3 The origin checked once (part of −5 to −15 µs)
 
 - `answer` computes `allowed_origin` (`dataplane.rs:291`) and passes it into

@@ -1101,7 +1101,14 @@ pub(crate) fn run_action(
     let inputs = [Some(input.clone())];
     let mut waits = RunWaits { folders: Some(folders), channels: Some(channels), slug: Some(slug.to_string()), chain: chain.to_vec(), ..Default::default() };
     let resolver = holon_module::WithEngine::new(&resolver, holon_module::shared());
-    let run = fire_with_state(handler, &inputs, &resolver, store, state.as_ref(), &sourced, &permit, false, &vault, &mut waits, None);
+    // As a route's (listeners.rs): an unrecorded run keeps no timeline, and one that fails runs
+    // again keeping it, to be logged.
+    waits.unrecorded = permit.log_level(Some(&action.label), action.log) == holon_core::LogLevel::Unrecorded;
+    let mut run = fire_with_state(handler, &inputs, &resolver, store, state.as_ref(), &sourced, &permit, false, &vault, &mut waits, None);
+    if waits.unrecorded && run_failed(&run) {
+        waits = waits.again();
+        run = fire_with_state(handler, &inputs, &resolver, store, state.as_ref(), &sourced, &permit, false, &vault, &mut waits, None);
+    }
 
     // Output 0 is the respond's envelope, or (an action that only writes) an effect.
     let (status, answer) = match run.outputs.first().cloned().flatten() {

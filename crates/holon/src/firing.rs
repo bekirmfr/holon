@@ -583,7 +583,7 @@ fn run_attempt(
     let secret_sends = (!secret_fed.is_empty()).then(|| folders::SecretSends { vault: secrets, sent: holon_core::sent_secrets(root_unit, resolver) });
 
     let mut host = RecordingHost { performed: Vec::new() };
-    let mut timer = recorder::Timer::new();
+    let mut timer = if waits.unrecorded { recorder::Timer::off() } else { recorder::Timer::new() };
     // Outbound requests go only where the grant allows, within its limits.
     let limits = if clock { &permit.clock_limits } else { &permit.request_limits };
     // What this attempt will hold before it sends anything: the keys it reads that it may write,
@@ -829,6 +829,22 @@ pub(crate) fn log_run(deployments: &Mutex<BTreeMap<String, Deployment>>, slug: &
         holon_core::LogLevel::Lazy | holon_core::LogLevel::Unrecorded => Ok(()),
     };
     Some(Logged { seq: Some(seq), kept })
+}
+
+/// Whether a run failed as it ran: an error, or an answer with a 5xx status. An unrecorded run that
+/// did is run again with its timeline kept, to be logged (`log_run`).
+pub(crate) fn run_failed(run: &FiredRun) -> bool {
+    let status = match run.outputs.first() {
+        Some(Some(Value::Record(f))) => match f.get("status") {
+            Some(Value::Number(n)) => *n,
+            _ => 200.0,
+        },
+        // No answer at all is a 500.
+        Some(None) | None => 500.0,
+        Some(Some(_)) => 200.0,
+    };
+    // A status outside 200–599, or not whole, is answered 500 (data.rs's `respond`).
+    run.error.is_some() || !(200.0..500.0).contains(&status) || status.fract() != 0.0
 }
 
 /// Whether a run failed, as its entry says: an error, or a 5xx answer.

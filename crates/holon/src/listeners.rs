@@ -140,7 +140,15 @@ fn serve_flow(
         &http,
         |endpoint, route, req, sourced| {
             level = holon_core::log_level(endpoint).unwrap_or_default();
-            let run = fire_with_state(endpoint, &[Some(req.clone())], &resolver, store, state.as_ref(), sourced, &permit, false, &secrets, &mut waits, None);
+            // A run that won't be logged keeps no timeline; one that fails is run again, keeping
+            // it, to be logged: an unrecorded handler does nothing outside its run, so running it
+            // twice changes nothing, and its answer is the second run's (§4.5 a).
+            waits.unrecorded = permit.log_level(Some(route), level) == holon_core::LogLevel::Unrecorded;
+            let mut run = fire_with_state(endpoint, &[Some(req.clone())], &resolver, store, state.as_ref(), sourced, &permit, false, &secrets, &mut waits, None);
+            if waits.unrecorded && run_failed(&run) {
+                waits = waits.again();
+                run = fire_with_state(endpoint, &[Some(req.clone())], &resolver, store, state.as_ref(), sourced, &permit, false, &secrets, &mut waits, None);
+            }
             let unit = hash_unit(endpoint).unwrap_or([0; 32]);
             parked = durable::park_if_waiting(deployments, store, slug, &unit, "request", Some(route.to_string()), &[Some(req.clone())], sourced, &run, &waits);
             let mut entry = run_entry("request", started, sourced, &run);

@@ -7414,6 +7414,7 @@ fn an_unrecorded_run_leaves_no_entry_and_is_counted_and_its_failure_is_recorded(
     assert_eq!(log.next_seq(), 1, "its failure is in the log");
     let failed = log.with(|l| l.after(None, 10)).pop().unwrap();
     assert_eq!((failed.route.as_deref(), failed.status), (Some("GET /broken"), Some(503)));
+    assert!(!failed.timeline.is_empty(), "run again with its timeline kept, to be explained");
     assert_eq!((tally("GET /broken").runs, tally("GET /broken").failed), (1, 1));
     // A strict handler beside them is recorded as always.
     assert_eq!(call("POST", "/notes", r#"{"id":"a","text":"hi"}"#), 200);
@@ -7980,6 +7981,10 @@ fn request_throughput() {
     // Its write route goes: a lazy /last beside a strict /hit would be the same deployment's log.
     let last_only = counter.split("route GET /hit").next().unwrap().to_string() + "route GET /last" + counter.split("route GET /last").nth(1).unwrap();
     deploy_plain_text(&state, &lazy(&last_only, "counter", "8155", "/last"));
+    // And unrecorded (granted, as a person approves it): counted, no entry.
+    let unrecorded = |text: &str, name: &str, port: &str, route: &str| lazy(text, name, port, route).replace(" lazy {", " unrecorded {").replacen(&format!("flow {name}-lazy\n"), &format!("flow {name}-unrecorded\n"), 1).replacen(&format!("port {}", port.parse::<u16>().unwrap() + 1000), &format!("port {}", port.parse::<u16>().unwrap() + 2000), 1);
+    deploy_plain_text(&state, &unrecorded(hello, "hello-api", "8101", "/hello/:name"));
+    deploy_plain_text(&state, &unrecorded(&last_only, "counter", "8155", "/last"));
     // Deployments the measured ones share the server with, as a server with others would.
     for i in 1..=30 {
         let text = calc.replacen("flow calc", &format!("flow calc{i}"), 1).replacen("port 8116", &format!("port {}", 8200 + i), 1);
@@ -7995,13 +8000,15 @@ fn request_throughput() {
         ("counter", "GET", "/last", ""),
         ("hello-api-lazy", "GET", "/hello/Ada", ""),
         ("counter-lazy", "GET", "/last", ""),
+        ("hello-api-unrecorded", "GET", "/hello/Ada", ""),
+        ("counter-unrecorded", "GET", "/last", ""),
     ];
     let request = |method: &str, url: &str, body: &str| {
         let headers = if body.is_empty() { vec![] } else { vec![("content-type".to_string(), "application/json".to_string())] };
         data::DataRequest { method: method.into(), url: url.into(), headers, body: body.as_bytes().to_vec(), by: None }
     };
     println!("request_throughput: an on-disk store, {deployments} deployments ({file_kb} KB deployments file), {secs}s per row (serve_data: no hyper, no blocking-pool hop)");
-    println!("{:<27} {:>7} {:>10} {:>10} {:>10} {:>10}", "route", "threads", "req/s", "p50", "p99", "syncs/run");
+    println!("{:<33} {:>7} {:>10} {:>10} {:>10} {:>10}", "route", "threads", "req/s", "p50", "p99", "syncs/run");
     for (slug, method, url, body) in routes {
         let (status, answer) = {
             let r = serve_data(&state.store, &state.deployments, &state.deployments_path, slug, &request(method, url, body));
@@ -8035,7 +8042,7 @@ fn request_throughput() {
             let at = |q: f64| times[((times.len() as f64 * q) as usize).min(times.len() - 1)];
             let label = format!("{slug} {method} {url}");
             let per_run = (log.syncs() - syncs) as f64 / times.len() as f64;
-            println!("{label:<27} {threads:>7} {:>10.0} {:>10.2?} {:>10.2?} {per_run:>10.2}", times.len() as f64 / elapsed, at(0.50), at(0.99));
+            println!("{label:<33} {threads:>7} {:>10.0} {:>10.2?} {:>10.2?} {per_run:>10.2}", times.len() as f64 / elapsed, at(0.50), at(0.99));
         }
     }
     // Two deployments at once, 32 threads each: what one deployment's runs cost the other's.

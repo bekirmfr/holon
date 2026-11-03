@@ -301,6 +301,9 @@ pub struct Timer {
     pub timeline: Vec<NodeTiming>,
     /// Why the node being left gave nothing, when a module said so.
     reason: Option<String>,
+    /// Whether it keeps anything: off for a run that won't be logged (an unrecorded handler's,
+    /// docs/L4s/request-path-L4.md §4.5 a), which then times and copies nothing.
+    on: bool,
 }
 
 impl Timer {
@@ -310,7 +313,12 @@ impl Timer {
     pub const MAX_RECORDED_BYTES: usize = 16 * 1024;
 
     pub fn new() -> Timer {
-        Timer { start: std::time::Instant::now(), open: Vec::new(), round: 0, produced: None, timeline: Vec::new(), reason: None }
+        Timer { start: std::time::Instant::now(), open: Vec::new(), round: 0, produced: None, timeline: Vec::new(), reason: None, on: true }
+    }
+
+    /// One that keeps nothing: its timeline stays empty.
+    pub fn off() -> Timer {
+        Timer { on: false, ..Timer::new() }
     }
 
     fn now_us(&self) -> f64 {
@@ -320,13 +328,13 @@ impl Timer {
 
 impl holon_core::Observer for Timer {
     fn enter(&mut self, path: &[u32]) {
-        if path.len() <= Self::DEPTH {
+        if self.on && path.len() <= Self::DEPTH {
             let t = self.now_us();
             self.open.push(t);
         }
     }
     fn produced(&mut self, path: &[u32], outputs: &[holon_core::Slot]) {
-        if path.len() <= Self::DEPTH {
+        if self.on && path.len() <= Self::DEPTH {
             // A pending output (a round still waiting on an answer) is logged as nothing yet.
             let outputs: Vec<Option<SValue>> = outputs.iter().map(|o| o.value().map(SValue::from_core)).collect();
             let size = serde_json::to_vec(&outputs).map_or(usize::MAX, |b| b.len());
@@ -334,7 +342,7 @@ impl holon_core::Observer for Timer {
         }
     }
     fn leave(&mut self, path: &[u32]) {
-        if path.len() <= Self::DEPTH {
+        if self.on && path.len() <= Self::DEPTH {
             let start_us = self.open.pop().unwrap_or(0.0);
             let end_us = self.now_us();
             let outputs = self.produced.take();
@@ -346,7 +354,7 @@ impl holon_core::Observer for Timer {
         self.round = n as u32;
     }
     fn failed(&mut self, path: &[u32], reason: &str) {
-        if path.len() <= Self::DEPTH {
+        if self.on && path.len() <= Self::DEPTH {
             self.reason = Some(reason.to_string());
         }
     }
@@ -1044,6 +1052,18 @@ mod tests {
         assert!(back.breaks().is_empty());
         assert_eq!(back.after(None, 10).last().unwrap().prev, line_hash(&old[2]));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A timer that is off keeps nothing, at any depth: a run that won't be logged (§4.5 a).
+    #[test]
+    fn a_timer_that_is_off_keeps_nothing() {
+        use holon_core::Observer;
+        let mut t = Timer::off();
+        t.enter(&[0]);
+        t.produced(&[0], &[]);
+        t.failed(&[0], "why");
+        t.leave(&[0]);
+        assert!(t.timeline.is_empty());
     }
 
     #[test]

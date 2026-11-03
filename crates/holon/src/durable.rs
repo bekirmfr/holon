@@ -172,6 +172,23 @@ pub(crate) struct RunWaits {
     /// The flows whose calls led to this run, the first being the one that started the chain: empty
     /// unless a flow's call started it (calls.rs).
     pub(crate) chain: Vec<String>,
+    /// Its run won't be logged (an unrecorded handler's, unless it fails): no timeline is kept
+    /// (docs/L4s/request-path-L4.md §4.5 a).
+    pub(crate) unrecorded: bool,
+}
+
+impl RunWaits {
+    /// What a run is given again, to run once more from the start: where it runs, without
+    /// anything the first run read, held or was handed.
+    pub(crate) fn again(&self) -> RunWaits {
+        RunWaits {
+            folders: self.folders.clone(),
+            channels: self.channels.clone(),
+            slug: self.slug.clone(),
+            chain: self.chain.clone(),
+            ..Default::default()
+        }
+    }
 }
 
 impl Waits for RunWaits {
