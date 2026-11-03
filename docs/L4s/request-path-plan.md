@@ -1142,6 +1142,21 @@ never committed):
   computation with the server's instead of with the record. A run would show what its steps
   compute under the server's release now, not what they gave then. And its values would depend on
   its units and kept file texts outliving it in the store.
+- **Checked afterwards, the decision kept.** Leaves are frozen at genesis (COMPOSABLE_VM_DESIGN.md
+  §13a), and a `js` node's engine is a module unit whose bytes are in its hash, run by `wasmi` with
+  NaN made canonical by core, so a run's steps can't come to compute otherwise; units are never
+  swept, and the values a log line names are kept while it is. But a folder's texts can be swept
+  while the runs that read them are still logged (`keep: bytes for 30d`, or a folder switched to
+  hashes), so a run that read a file can't count on them. A secret can't be had again either: the
+  vault keeps its last 5 versions, and one kept elsewhere (`env:…`, `vault:…`) can change under
+  the same version; its fingerprint tells which value a run had, but can't compute with it.
+  Running a secret's runs again without it (its stand-in, a call answered from the record by the
+  node that made it, the log's own rule for what is computed from a secret applied again) matched
+  551 of 558 outputs across 28 runs, but not in general: a value computed from a secret can decide
+  whether later steps give anything (`json_parse` of a JSON secret, then a call built from a field
+  of it), the log never holds it, and the graph can't say beforehand. What could drop its outputs
+  is a run that read no secret and no file and wasn't cut off; and even then the log file and
+  exports would no longer hold what each step gave. Kept as decided.
 
 ## Appendix. What each step leaves for the next
 
