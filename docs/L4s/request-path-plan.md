@@ -1046,6 +1046,32 @@ Profile first: the design's §4.5 measured run setup at about 24 µs. Candidates
 - `deployed_capabilities` facts that `fire_with_state` recomputes;
 - the parts of `run_id_of` (`firing.rs:711`) that depend only on the deployment.
 
+**12.4 (a) done: hex from a table, and the permit's names once.** Profiled first, with callgrind
+on `profile_one_route` (`tests.rs`, kept for measuring by hand). The run setup the plan guessed at
+wasn't where the time was:
+- **Hex.** Every hash's text (a store's file name, a run id, a unit in an entry) was built with
+  a `format!` a byte, in about twenty copies: 24–28% of a short run's instructions, and 25% of a
+  collection read's (each node of the trie a file named by its hash). One `holon_core::hex`, from
+  a table, is used everywhere now; tests keep their own copies. A test checks it gives what
+  `format!` gave, for every byte.
+- **`Permit::named`** rebuilt a set from the grant's items on every run (6.7% of `hello`). The
+  permit doesn't change once made, so the names of each kind are worked out in `Permit::new`.
+- **Not touched:** `run_id_of` (9.9%) hashes the request and what the run read, which change every
+  run; the deployment's part is already one hash.
+
+| `profile_one_route`, a run | before | after |
+|---|---|---|
+| `hello` (unrecorded) | 25.7 µs | 19.3 µs |
+| `notes` (lazy, a collection of 3) | 151.3 µs | 107.4 µs |
+
+Live, A/B against 12.3, 2 rounds: `/health` 9,054–9,504 → 10,620–10,842 req/s at one connection
+(p50 98 → 84 µs) and 26,628–26,887 → 35,060–35,935 at 64; `/notes` 4,251–4,477 → 5,044–5,052 at
+one, 5,977–5,995 → 7,064–8,040 at 64.
+
+What the profile shows next, for a collection read: the store's lock held across each value's file
+read, decode and check (`SharedStore::get_value`, 15%), and serializing the entry under the log's
+lock (25%, mostly the timeline: Q16).
+
 ### 12.5 Per-node outputs in recorded runs (§8 Q16)
 
 Only after Q16 is decided. Dropping them changes what the editor's replay reads

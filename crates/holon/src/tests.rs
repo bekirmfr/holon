@@ -8081,3 +8081,34 @@ fn request_throughput() {
     let _ = std::fs::remove_file(&state.deployments_path);
     let _ = std::fs::remove_dir_all(Path::new(&state.deployments_path).with_extension("logs"));
 }
+
+/// One route run many times through serve_data on an on-disk store, for a profiler: what the
+/// request-path plan's 12.4 was found with. `HOLON_PROFILE` picks it (`hello`, an unrecorded
+/// greeting; `notes`, a lazy list of a collection of three), `HOLON_PROFILE_N` how many runs, and
+/// it says how long a run took:
+/// `valgrind --tool=callgrind target/release/deps/holon-… --ignored profile_one_route`.
+#[test]
+#[ignore = "a profile, run by hand: HOLON_PROFILE=notes cargo test --release -p holon -- --ignored profile_one_route --nocapture"]
+fn profile_one_route() {
+    let store_dir = unique_temp_path("profile-store");
+    let disk = FileStore::new(&store_dir).unwrap();
+    let values = disk.values_dir();
+    let mut state = test_state_with(SharedStore::on_disk(Box::new(disk), values));
+    state.deployments_path = unique_temp_path("profile");
+    let which = std::env::var("HOLON_PROFILE").unwrap_or_else(|_| "hello".into());
+    let (text, method, url, body) = match which.as_str() {
+        "notes" => ("flow p\nport 8301\ncollection notes\n\nroute POST /notes (req) {\n  notes[req.json.id] = req.json.text\n  respond \"saved\"\n}\n\nroute GET /notes (req) lazy {\n  respond notes.list(limit: 50)\n}\n", "GET", "/notes", ""),
+        _ => ("flow p\nport 8301\n\nroute GET /hello/:name (req) unrecorded {\n  respond \"Hello, {req.params.name}\"\n}\n", "GET", "/hello/Ada", ""),
+    };
+    let slug = deploy_plain_text(&state, text);
+    for id in ["a", "b", "c"] {
+        serve_data(&state.store, &state.deployments, &state.deployments_path, &slug, &fake_data("POST", "/notes", format!(r#"{{"id":"{id}","text":"hi"}}"#).into_bytes()));
+    }
+    let n: usize = std::env::var("HOLON_PROFILE_N").ok().and_then(|n| n.parse().ok()).unwrap_or(2000);
+    let started = std::time::Instant::now();
+    for _ in 0..n {
+        let r = serve_data(&state.store, &state.deployments, &state.deployments_path, &slug, &fake_data(method, url, body.as_bytes().to_vec()));
+        assert_eq!(r.status, 200);
+    }
+    eprintln!("{which}: {:.1} us a run", started.elapsed().as_secs_f64() * 1e6 / n as f64);
+}

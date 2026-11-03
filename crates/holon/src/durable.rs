@@ -104,7 +104,7 @@ pub(crate) fn load_host_key(path: &str) -> Result<(), String> {
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 let key = random_key();
-                let hex: String = key.iter().map(|b| format!("{b:02x}")).collect();
+                let hex: String = holon_core::hex(key);
                 crate::sealing::write_private(std::path::Path::new(path), format!("{hex}\n").as_bytes())
                     .map_err(|e| format!("could not write {path:?}: {e}"))?;
                 key
@@ -125,7 +125,7 @@ pub(crate) fn token_for(run_id: &str, name: &str) -> String {
     data.push(0);
     data.extend_from_slice(name.as_bytes());
     let mac = blake3::keyed_hash(HOST_KEY.get_or_init(random_key), &data);
-    format!("rt_{}", mac.as_bytes()[..16].iter().map(|b| format!("{b:02x}")).collect::<String>())
+    format!("rt_{}", holon_core::hex(&mac.as_bytes()[..16]))
 }
 
 /// Whether `a` and `b` are equal, comparing every byte: how a presented token is checked, so the

@@ -49,7 +49,7 @@ struct Node {
 }
 
 fn hex(h: &Hash) -> String {
-    h.iter().map(|b| format!("{b:02x}")).collect()
+    holon_core::hex(h)
 }
 
 impl Node {

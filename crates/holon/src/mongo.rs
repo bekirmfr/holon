@@ -319,7 +319,7 @@ impl Mongo {
 
 /// A lock's name hashed, as its document's id.
 fn lock_hex(name: &str) -> String {
-    lock_id(name).iter().map(|b| format!("{b:02x}")).collect()
+    holon_core::hex(lock_id(name))
 }
 
 // ── what a run asks ──
@@ -721,7 +721,7 @@ fn value_of(field: &str, v: Bson) -> Result<Option<Value>, String> {
         Bson::Decimal128(d) => Value::Text(d.to_string()),
         Bson::ObjectId(id) => Value::Text(id.to_hex()),
         Bson::DateTime(t) => Value::Text(t.try_to_rfc3339_string().map_err(|_| format!("the field {field:?} is a date past what RFC 3339 writes"))?),
-        Bson::Binary(Binary { bytes, .. }) => Value::Text(bytes.iter().map(|b| format!("{b:02x}")).collect()),
+        Bson::Binary(Binary { bytes, .. }) => Value::Text(holon_core::hex(bytes)),
         Bson::Array(items) => Value::List(items.into_iter().map(|i| value_of(field, i).map(|v| v.unwrap_or_else(none))).collect::<Result<_, _>>()?),
         Bson::Document(d) => Value::Record(record_of(d)?),
         other => return Err(format!("the field {field:?} is a {:?}, which Holon doesn't read: leave it out of what the find selects", other.element_type())),

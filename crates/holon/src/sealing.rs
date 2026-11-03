@@ -339,7 +339,7 @@ pub(crate) fn restrict_to_owner(_path: &Path) -> std::io::Result<()> {
 }
 
 pub(crate) fn to_hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
+    holon_core::hex(bytes)
 }
 
 fn from_hex(s: &str) -> Option<Vec<u8>> {

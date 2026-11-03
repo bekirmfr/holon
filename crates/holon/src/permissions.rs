@@ -810,6 +810,9 @@ pub(crate) struct Permit {
     /// The handlers whose runs it keeps out of the log, by label: declared `unrecorded`, granted,
     /// and allowed by the policy.
     pub(crate) unrecorded: BTreeSet<String>,
+    /// The names inside its items, by kind (`CollectionRead("notes")` → `notes` under
+    /// `CollectionRead`), worked out once: every run asks (docs/L4s/request-path-plan.md, 12.4).
+    names: BTreeMap<String, BTreeSet<String>>,
 }
 
 impl Permit {
@@ -863,7 +866,15 @@ impl Permit {
             .filter(|l| policy.allow_unrecorded && grant.items.contains(&format!("Unrecorded({l:?})")))
             .cloned()
             .collect();
-        Permit { deployment, items: grant.items.clone(), request_limits, clock_limits, durable, files, databases, channels, log, outbound, grant: to_hex(&grant.hash()), unrecorded }
+        let mut names: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+        for item in &grant.items {
+            if let Some((kind, rest)) = item.split_once("(\"")
+                && let Some(name) = rest.strip_suffix("\")")
+            {
+                names.entry(kind.to_string()).or_default().insert(name.to_string());
+            }
+        }
+        Permit { deployment, items: grant.items.clone(), request_limits, clock_limits, durable, files, databases, channels, log, outbound, grant: to_hex(&grant.hash()), unrecorded, names }
     }
 
     /// How a run of the handler labelled `label`, declared `declared`, is recorded: as declared,
@@ -883,8 +894,7 @@ impl Permit {
 
     /// The names inside the granted items of one kind (`CollectionRead("notes")` → `notes`).
     fn named(&self, kind: &str) -> BTreeSet<String> {
-        let prefix = format!("{kind}(\"");
-        self.items.iter().filter_map(|i| i.strip_prefix(prefix.as_str())?.strip_suffix("\")").map(str::to_string)).collect()
+        self.names.get(kind).cloned().unwrap_or_default()
     }
 
     /// The collections it may read, by name.

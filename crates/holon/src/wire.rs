@@ -379,7 +379,7 @@ pub(crate) struct DeploymentsBody {
 }
 
 pub(crate) fn to_hex(h: &Hash) -> String {
-    h.iter().map(|b| format!("{b:02x}")).collect()
+    holon_core::hex(h)
 }
 
 /// One deploy of a deployment, kept for good (docs/L4s/history-L4.md): what it deployed, when,

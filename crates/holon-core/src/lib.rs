@@ -72,7 +72,7 @@ pub use memo::{entry_key, memo_key, verify_entry, CacheEntry};
 pub use value_hash::{decode_value, encode_value, hash_value, run_id, state_root};
 pub use hash::{
     canonical_child_order,
-    decode_preimage, encode_preimage, hash_unit, parse_hash, DecodeError, Edge, EncodeError, Hash,
+    decode_preimage, encode_preimage, hash_unit, hex, parse_hash, DecodeError, Edge, EncodeError, Hash,
     Param, Port, Type, Unit, UnitBody, ENCODING_VERSION, MAX_TYPE_DEPTH,
 };
 pub use kind::{

@@ -85,5 +85,5 @@ pub const LIMIT_NAMES: [&str; 32] = [
 
 /// A 32-byte hash as 64 lowercase hex chars: how hashes cross to the editor and sit in documents.
 pub fn to_hex(h: &holon_core::Hash) -> String {
-    h.iter().map(|b| format!("{b:02x}")).collect()
+    holon_core::hex(h)
 }

@@ -558,11 +558,7 @@ fn decode_verified(key: &Hash, bytes: &[u8]) -> Result<Unit, StoreError> {
 }
 
 fn hex(key: &Hash) -> String {
-    let mut s = String::with_capacity(64);
-    for b in key {
-        s.push_str(&format!("{b:02x}"));
-    }
-    s
+    holon_core::hex(key)
 }
 
 /// In-memory content-addressed store. For tests and any in-process need; shares

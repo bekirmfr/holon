@@ -162,7 +162,7 @@ pub(crate) fn handle_get_export(
 }
 
 fn hex_of(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
+    holon_core::hex(bytes)
 }
 
 fn bytes_of(hex: &str) -> Option<Vec<u8>> {

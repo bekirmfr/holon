@@ -271,7 +271,7 @@ pub(crate) fn fire_with_state(
     // them all, whole, for its whole run, once those are let go, so none calls out over them
     // meanwhile.
     let shared = waits.folders.clone();
-    let holder = format!("last:{}", nonce.iter().map(|b| format!("{b:02x}")).collect::<String>());
+    let holder = format!("last:{}", holon_core::hex(nonce));
     let _claimed = shared.as_deref().and_then(|f| {
         let keys = claims::whole_of(f, permit);
         if keys.is_empty() {
@@ -729,7 +729,7 @@ fn new_nonce() -> [u8; 16] {
 }
 
 fn hex_bytes(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
+    holon_core::hex(bytes)
 }
 
 /// A run's id (§4.4): its deployment, and the Merkle root of what it started from: the host
