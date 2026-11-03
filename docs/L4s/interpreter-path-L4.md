@@ -271,6 +271,38 @@ after keeps each honest. The gains below are estimated from the shares above.
    4.0–4.2×, 16× and 20×); unrecorded `hello` unchanged. What remains in `crunch`'s walk: input
    lookups 9.8%, `compute`'s match by name 5.2%, gathering a leaf's present inputs about 7%,
    allocation about 11%, `with_field`'s copies 6.7%.
+   **Level 2, done and measured:**
+   - **A plan** (`Plan`) for a composite a `map` or `fold` applies, the walk worked out ahead: the
+     order it evaluates the children in, found by its own rule without evaluating anything (from
+     the roots, depth first, a child's inputs pulled in port order), and each child's input
+     sources as slots. A run goes down it with no stack, no revisit and nothing to look for.
+     Firing a child once its inputs are in is one function the walk and the plan share, so only
+     the order could differ, and a test holds the two to the same events, in the same order, and
+     outputs on 3,000 random graphs, each run twice (the second in the first one's scratch).
+   - **Choices.** What a `guard` or `coalesce` evaluates depends on a value, so a composite with
+     one is walked, with one exception the profile found: the language shares an input among
+     several nodes through a pass-through (a `guard` on a `const` `true`), and nearly every
+     function using an input twice has one. Its order is the walk's while its condition reads
+     `true`: the plan checks it where the walk's choice reads it, and when it doesn't (only an
+     observer standing in for the constant could make it so), the walk carries on from there on
+     the same scratch, its next step being a function of what is evaluated. A test makes an
+     observer stand `false` in for 1,000-odd such conditions and holds the runs to the walk's.
+   - **Leaves called by opcode.** `compute`'s 70 arms match an `Op`, found once for a node (in
+     `NodeKind`) instead of a name at every evaluation; `compute(name, …)` stays, for every other
+     caller.
+
+   Workspace tests, both golden records, the editor's tests (fresh wasm) and clippy pass.
+   Instructions a run: `crunch` 26.18M → 22.24M (−15.1%; 1,756–1,870 → 1,569–1,741 µs a run),
+   `hello` and `notes` unchanged (their handlers aren't applied per item, so they are walked).
+   Without the pass-through the plan reached almost nothing (−3.6%). Live against level 1 (`wrk`,
+   two rounds alternating): `crunch` 14,340–15,455 → 16,937–17,027 req/s at 100 items,
+   1,992–2,033 → 2,276–2,357 at 1,000, 399–409 → 469–472 at 5,000; p50 at one connection 0.27 ms,
+   1.74 ms and 8.4 ms, against C#'s 0.08, 0.16 and 0.60 ms in step 3's rounds: **3.2×, 11× and
+   14×** (from 3.5×, 13× and 16×). What a run now spends is the values themselves: allocating and
+   freeing them (~12%) and dropping them (~14%), records copied to add a field (6.7%), and each
+   node's own firing (~20%), with `compute`'s match now 5%. The next large step is values that
+   don't allocate per node: typed slots for numbers and booleans, and records built in place,
+   level 3's ground.
 
 ## 5. What this doesn't cover
 

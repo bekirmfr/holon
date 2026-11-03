@@ -29,6 +29,7 @@
 //! lives, rather than via a callback into a first-order `compute`. Its `fn` argument is a
 //! param holding the hex hash of the unit to apply.
 
+use crate::primitives::Op;
 use crate::{primitives, Edge, Hash, Param, Resolver, Unit, UnitBody, Value, BOUNDARY, VARIADIC};
 use crate::hash::parse_hash;
 use smallvec::{smallvec, SmallVec};
@@ -214,8 +215,9 @@ enum Body {
     /// A request the host answers.
     Ask(Request),
     Coalesce,
-    /// Any other leaf, computed by `compute`; a variadic one fires only with every input present.
-    Leaf { variadic: bool },
+    /// Any other leaf, computed by `compute` (its [`Op`], none for a name that isn't one); a
+    /// variadic one fires only with every input present.
+    Leaf { variadic: bool, op: Option<Op> },
     Composite,
     Module,
 }
@@ -312,7 +314,7 @@ impl NodeKind {
                     "coalesce" => Body::Coalesce,
                     _ => match Request::of(name) {
                         Some(request) => Body::Ask(request),
-                        None => Body::Leaf { variadic: VARIADIC.contains(&name) },
+                        None => Body::Leaf { variadic: VARIADIC.contains(&name), op: Op::of(name) },
                     },
                 };
                 let choice = match name {
@@ -354,7 +356,7 @@ fn eval_as(
         // nothing fires"). This arm is the contract, stated once, where absence is visible.
         // (Inside a composite it is a choice, decided by `choice_next` without getting here.)
         (Body::Coalesce, _) => smallvec![Slot::of(inputs.iter().flatten().next().map(|v| (*v).clone()))],
-        (Body::Leaf { variadic }, UnitBody::Primitive { name }) => {
+        (Body::Leaf { variadic, op }, UnitBody::Primitive { name }) => {
             // Present values in port order **by reference** — `compute` borrows them, so an O(1)
             // reader (head/length/is_empty) copies only what it returns, not the whole input
             // list. compute's arity check is still the firing rule.
@@ -368,7 +370,7 @@ fn eval_as(
                 return smallvec![Slot::Absent];
             }
             let present: SmallVec<[&Value; 4]> = inputs.iter().flatten().copied().collect();
-            smallvec![Slot::of(primitives::compute(name, &present, &unit.params))]
+            smallvec![Slot::of(op.and_then(|op| primitives::compute_op(op, name, &present, &unit.params)))]
         }
         (_, UnitBody::Composite { children, edges }) => eval_composite(unit, children, edges, inputs, resolver, observer, path),
         // A module body: the engine behind the resolver runs it (docs/L4s/wasm-module-L4.md §5);
@@ -658,6 +660,30 @@ struct Prepared<'r> {
     /// The walk's scratch, kept for the next run of the same preparation (a `map`'s next item):
     /// emptied after each run, its room kept.
     scratch: std::cell::RefCell<Vec<Option<Slots>>>,
+    /// The walk worked out ahead ([`Plan`]), for one run many times over: none, walked.
+    plan: Option<Plan>,
+}
+
+/// One step of a [`Plan`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Step {
+    /// Evaluate this child, every child feeding it evaluated already.
+    Eval(u32),
+    /// This pass-through guard's condition is evaluated: go on only if it is `true`, as it is
+    /// made to be; if not (an observer stood in for it), the walk carries on from here.
+    Check(u32),
+}
+
+/// A composite's walk worked out ahead, for one without choices, whose order no value changes: the
+/// order the walk evaluates its children in, and where each child's inputs come from
+/// (docs/L4s/interpreter-path-L4.md, step 5, level 2). A run goes down the order, each child's
+/// inputs already evaluated, with no stack, no revisit, and nothing to look for.
+#[derive(Debug)]
+struct Plan {
+    order: Vec<Step>,
+    /// Each child's inputs, `starts[child]..starts[child + 1]`, one per port it declares.
+    starts: Vec<u32>,
+    sources: Vec<Source>,
 }
 
 impl<'r> Prepared<'r> {
@@ -679,7 +705,7 @@ impl<'r> Prepared<'r> {
             return None;
         }
         let kinds = resolved.iter().map(|u| NodeKind::of(u)).collect();
-        Some(Prepared { resolved, kinds, shape, scratch: std::cell::RefCell::new(Vec::new()) })
+        Some(Prepared { resolved, kinds, shape, scratch: std::cell::RefCell::new(Vec::new()), plan: None })
     }
 
     /// Evaluate it on `inputs`.
@@ -692,8 +718,175 @@ impl<'r> Prepared<'r> {
             Some(kept) => kept,
             None => &mut fresh,
         };
-        let outs = self.run_in(scratch, n_outputs, inputs, resolver, observer, path);
+        let outs = match &self.plan {
+            Some(plan) => self.run_planned(plan, scratch, n_outputs, inputs, resolver, observer, path),
+            None => self.run_in(scratch, n_outputs, inputs, resolver, observer, path),
+        };
         scratch.clear();
+        outs
+    }
+
+    /// It, with its walk worked out ahead ([`Plan`]) when it has no choice: for a preparation
+    /// run many times (a `map`'s or `fold`'s function).
+    fn planned(mut self) -> Prepared<'r> {
+        if (0..self.kinds.len()).all(|ci| self.kinds[ci].choice.is_none() || self.passes(ci)) {
+            self.plan = Some(self.plan_of());
+        }
+        self
+    }
+
+    /// Whether child `ci` is a pass-through: a `guard` whose condition is a `const` `true` (how
+    /// the language shares one input among several nodes). Its order is then the walk's whatever
+    /// its value, as long as the condition reads `true`, which the plan checks.
+    fn passes(&self, ci: usize) -> bool {
+        self.kinds[ci].choice == Some(Which::Guard)
+            && match self.shape.incoming.source(ci, 0) {
+                Source::Child(c, 0) => {
+                    let cond = self.resolved[c as usize];
+                    matches!(&cond.body, UnitBody::Primitive { name } if name == "const")
+                        && cond.inputs.is_empty()
+                        && cond.params.iter().any(|p| p.name() == "type" && p.value() == Some("Boolean"))
+                        && cond.params.iter().any(|p| p.name() == "value" && p.value() == Some("true"))
+                }
+                _ => false,
+            }
+    }
+
+    /// The order the walk ([`run_in`](Prepared::run_in)) evaluates its children in, worked out by
+    /// its own rule without evaluating anything: from the roots, depth first, a child once every
+    /// child feeding it is, its inputs pulled in port order. Without a choice nothing a value
+    /// says changes it.
+    fn plan_of(&self) -> Plan {
+        let incoming = &self.shape.incoming;
+        let n = self.resolved.len();
+        let mut done = vec![false; n];
+        let mut checked = vec![false; n];
+        let mut order = Vec::with_capacity(n);
+        let mut stack: Vec<usize> = self.shape.roots.clone();
+        while let Some(&ci) = stack.last() {
+            if done[ci] {
+                stack.pop();
+                continue;
+            }
+            let k = self.resolved[ci].inputs.len();
+            let unevaluated = |p: usize| match incoming.source(ci, p) {
+                Source::Child(fc, _) if !done[fc as usize] => Some(fc as usize),
+                _ => None,
+            };
+            // A pass-through guard's condition is checked once it is in, before its value is
+            // pulled: where the walk's choice reads it.
+            if self.kinds[ci].choice.is_some() && !checked[ci] && unevaluated(0).is_none() {
+                checked[ci] = true;
+                order.push(Step::Check(ci as u32));
+            }
+            if let Some(fc) = (0..k).find_map(unevaluated) {
+                stack.push(fc);
+                continue;
+            }
+            stack.pop();
+            done[ci] = true;
+            order.push(Step::Eval(ci as u32));
+        }
+        let mut starts = Vec::with_capacity(n + 1);
+        let mut sources = Vec::new();
+        starts.push(0);
+        for ci in 0..n {
+            sources.extend((0..self.resolved[ci].inputs.len()).map(|p| incoming.source(ci, p)));
+            starts.push(sources.len() as u32);
+        }
+        Plan { order, starts, sources }
+    }
+
+    /// [`run_in`](Prepared::run_in), down its [`Plan`].
+    #[allow(clippy::too_many_arguments)]
+    fn run_planned(&self, plan: &Plan, scratch: &mut Vec<Option<Slots>>, n_outputs: usize, inputs: &[Option<&Value>], resolver: &impl Resolver, observer: &mut impl Observer, path: &mut Vec<u32>) -> Slots {
+        scratch.resize(self.resolved.len(), None);
+        let open = crate::open_trigger();
+        for &step in &plan.order {
+            let ci = match step {
+                Step::Eval(ci) => ci as usize,
+                Step::Check(g) => {
+                    let cond = match self.shape.incoming.source(g as usize, 0) {
+                        Source::Child(c, 0) => scratch[c as usize].as_ref().and_then(|outs| outs.first()),
+                        _ => None,
+                    };
+                    if cond != Some(&Slot::Value(Value::Boolean(true))) {
+                        // Not as made: the walk goes on from what is evaluated, which is where it
+                        // would be.
+                        return self.run_in(scratch, n_outputs, inputs, resolver, observer, path);
+                    }
+                    continue;
+                }
+            };
+            if self.kinds[ci].choice.is_some() {
+                // A pass-through guard, its condition `true`: its value, as the walk's choice
+                // gives it.
+                let outs: Slots = smallvec![match self.shape.incoming.source(ci, 1) {
+                    Source::Input(fp) => Slot::of(inputs.get(fp as usize).copied().flatten().cloned()),
+                    Source::Child(fc, fp) => scratch[fc as usize].as_ref().and_then(|o| o.get(fp as usize)).cloned().unwrap_or(Slot::Absent),
+                    Source::Unwired | Source::Missing(..) => Slot::Absent,
+                }];
+                path.push(ci as u32);
+                observer.enter(path);
+                observer.produced(path, &outs);
+                observer.leave(path);
+                path.pop();
+                scratch[ci] = Some(outs);
+                continue;
+            }
+            let outs = {
+                let mut gathered: Refs = SmallVec::new();
+                let mut pending = false;
+                for source in &plan.sources[plan.starts[ci] as usize..plan.starts[ci + 1] as usize] {
+                    let slot = match *source {
+                        Source::Input(fp) => In::of_value(inputs.get(fp as usize).copied().flatten()),
+                        Source::Child(fc, fp) => match &scratch[fc as usize] {
+                            Some(outs) => outs.get(fp as usize).map_or(In::Absent, In::of_slot),
+                            None => unreachable!("the plan evaluates a child's sources before it"),
+                        },
+                        Source::Unwired | Source::Missing(..) => In::Absent,
+                    };
+                    pending |= slot == In::Pending;
+                    gathered.push(slot.value());
+                }
+                self.fire(ci, &mut gathered, pending, &open, resolver, observer, path)
+            };
+            scratch[ci] = Some(outs);
+        }
+        self.outputs(scratch, n_outputs, inputs)
+    }
+
+    /// Evaluate child `ci` on its inputs (`gathered`, every one evaluated; `pending` when one is
+    /// still waiting on an answer), telling the observer: what the walk and the plan do with a
+    /// child once its inputs are in.
+    #[allow(clippy::too_many_arguments)]
+    fn fire<'v>(&self, ci: usize, gathered: &mut Refs<'v>, pending: bool, open: &'v Value, resolver: &impl Resolver, observer: &mut impl Observer, path: &mut Vec<u32>) -> Slots {
+        let (child, kind, incoming) = (self.resolved[ci], &self.kinds[ci], &self.shape.incoming);
+        let k = child.inputs.len();
+        if pending {
+            // Waiting on an answer: not run in this round.
+            return smallvec![Slot::Pending; child.outputs.len()];
+        }
+        // A leaf with optional ports (an `http_request`'s headers and body) reads an *unwired*
+        // one as "none"; a *wired* one whose value is absent means what absence means everywhere
+        // else: the node doesn't fire. Otherwise a request downstream of a check that failed (a
+        // webhook whose signature didn't verify) still went out, bodiless.
+        open_triggers(child, gathered, || open, |p| incoming.wired(ci as u32, p as u32));
+        // A sink is held the same way: its trigger, wired, hasn't arrived.
+        let held = kind.held_when_absent && (0..k).any(|p| gathered[p].is_none() && incoming.wired(ci as u32, p as u32));
+        path.push(ci as u32);
+        observer.enter(path);
+        let outs = if held {
+            smallvec![Slot::Absent; child.outputs.len()]
+        } else {
+            match observer.asserted(path, child, gathered) {
+                Some(asserted) if asserted.len() == child.outputs.len() => asserted.into_iter().map(Slot::of).collect(),
+                _ => eval_as(child, kind, gathered, resolver, observer, path),
+            }
+        };
+        observer.produced(path, &outs);
+        observer.leave(path);
+        path.pop();
         outs
     }
 
@@ -765,37 +958,18 @@ impl<'r> Prepared<'r> {
                     continue;
                 }
                 stack.pop();
-                if pending {
-                    // Waiting on an answer: not run in this round.
-                    smallvec![Slot::Pending; child.outputs.len()]
-                } else {
-                    // A leaf with optional ports (an `http_request`'s headers and body) reads an
-                    // *unwired* one as "none"; a *wired* one whose value is absent means what
-                    // absence means everywhere else: the node doesn't fire. Otherwise a request
-                    // downstream of a check that failed (a webhook whose signature didn't
-                    // verify) still went out, bodiless.
-                    open_triggers(child, &mut gathered, || &open, |p| incoming.wired(ci as u32, p as u32));
-                    // A sink is held the same way: its trigger, wired, hasn't arrived.
-                    let held = kind.held_when_absent && (0..k).any(|p| gathered[p].is_none() && incoming.wired(ci as u32, p as u32));
-                    path.push(ci as u32);
-                    observer.enter(path);
-                    let outs = if held {
-                        smallvec![Slot::Absent; child.outputs.len()]
-                    } else {
-                        match observer.asserted(path, child, &gathered) {
-                            Some(asserted) if asserted.len() == child.outputs.len() => asserted.into_iter().map(Slot::of).collect(),
-                            _ => eval_as(child, kind, &gathered, resolver, observer, path),
-                        }
-                    };
-                    observer.produced(path, &outs);
-                    observer.leave(path);
-                    path.pop();
-                    outs
-                }
+                self.fire(ci, &mut gathered, pending, &open, resolver, observer, path)
             };
             scratch[ci] = Some(outs);
         }
 
+        self.outputs(scratch, n_outputs, inputs)
+    }
+
+    /// The composite's outputs, from the children's slots in `scratch` (moved out where only one
+    /// output reads one) or its own inputs.
+    fn outputs(&self, scratch: &mut [Option<Slots>], n_outputs: usize, inputs: &[Option<&Value>]) -> Slots {
+        let incoming = &self.shape.incoming;
         // Each exposed output is whatever feeds that boundary-output port: a child's output at the
         // right port, or — symmetric with the child-input case above — a promoted input routed
         // straight through. (A composite whose output *is* one of its inputs is a valid,
@@ -1051,7 +1225,7 @@ fn function<'r>(params: &[Param], resolver: &'r impl Resolver) -> Option<&'r Uni
 enum Ready<'r> {
     /// A composite: its unit, and it prepared; or None, when it can't be (each application then
     /// gives nothing, as `eval_composite` would).
-    Composite(&'r Unit, Option<Prepared<'r>>),
+    Composite(&'r Unit, Option<Box<Prepared<'r>>>),
     /// Anything else, evaluated as it always is.
     Other(&'r Unit),
 }
@@ -1059,7 +1233,7 @@ enum Ready<'r> {
 impl<'r> Ready<'r> {
     fn of(unit: &'r Unit, resolver: &'r impl Resolver) -> Ready<'r> {
         match &unit.body {
-            UnitBody::Composite { children, edges } => Ready::Composite(unit, Prepared::of(unit, children, edges, resolver)),
+            UnitBody::Composite { children, edges } => Ready::Composite(unit, Prepared::of(unit, children, edges, resolver).map(|p| Box::new(p.planned()))),
             _ => Ready::Other(unit),
         }
     }
@@ -1255,6 +1429,153 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// Events as an observer hears them, standing in `false` for the outputs of the children at
+    /// `asserted` (as `holon verify` stands in recorded outputs).
+    #[derive(Default)]
+    struct Events(Vec<String>, Vec<Vec<u32>>);
+    impl Observer for Events {
+        fn enter(&mut self, path: &[u32]) {
+            self.0.push(format!("enter {path:?}"));
+        }
+        fn produced(&mut self, path: &[u32], outputs: &[Slot]) {
+            self.0.push(format!("produced {path:?} {outputs:?}"));
+        }
+        fn leave(&mut self, path: &[u32]) {
+            self.0.push(format!("leave {path:?}"));
+        }
+        fn asserted(&mut self, path: &[u32], _unit: &Unit, _inputs: &[Option<&Value>]) -> Option<Vec<Option<Value>>> {
+            self.1.iter().any(|p| p == path).then(|| vec![Some(Value::Boolean(false))])
+        }
+    }
+
+    /// Random composites of leaves for the plan's tests: some inputs fed nothing, some fed by a
+    /// child that doesn't exist, some dividing by zero (absent, which then spreads), and some
+    /// shared through a pass-through guard (a `guard` on a `const` `true`, as the language
+    /// shares an input). Each: the unit, its children, its edges, its outputs' count, and the
+    /// children that are a guard's condition.
+    fn random_composites(r: &mut MapResolver, count: usize, mut each: impl FnMut(&Unit, &[Hash], &[Edge], usize, &[u32])) {
+        let leaves = [
+            r.insert(prim("subtract", 2, Type::Number)).unwrap(),
+            r.insert(prim("add", 2, Type::Number)).unwrap(),
+            r.insert(prim("divide", 2, Type::Number)).unwrap(),
+            r.insert(prim("guard", 2, Type::Number)).unwrap(),
+        ];
+        let truth = r
+            .insert(Unit {
+                body: UnitBody::Primitive { name: "const".into() },
+                params: vec![Param::frozen("type", "Boolean"), Param::frozen("value", "true")],
+                inputs: vec![],
+                outputs: vec![Port { name: "out".into(), ty: Type::Boolean }],
+            })
+            .unwrap();
+        let mut seed = 0x51_7cc1_b727_220au64;
+        let mut next = move |m: u64| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed % m.max(1)
+        };
+        for _ in 0..count {
+            let n = 1 + next(8) as usize;
+            let mut children: Vec<Hash> = (0..n).map(|_| leaves[next(4) as usize]).collect();
+            // A random order: a child takes inputs only from children before it in it.
+            let mut rank: Vec<usize> = (0..n).collect();
+            for i in (1..n).rev() {
+                rank.swap(i, next(i as u64 + 1) as usize);
+            }
+            let mut edges = Vec::new();
+            let mut conditions = Vec::new();
+            for c in 0..n {
+                for port in 0..2 {
+                    if children[c] == leaves[3] && port == 0 {
+                        // A guard's condition: its own `true`.
+                        children.push(truth);
+                        conditions.push(children.len() as u32 - 1);
+                        edges.push(edge(children.len() as u32 - 1, 0, c as u32, 0));
+                        continue;
+                    }
+                    let earlier: Vec<usize> = (0..n).filter(|&o| rank[o] < rank[c]).collect();
+                    match next(6) {
+                        0 => {}
+                        1 => edges.push(edge(BOUNDARY, next(2) as u32, c as u32, port)),
+                        2 => edges.push(edge(40, 0, c as u32, port)),
+                        _ if !earlier.is_empty() => edges.push(edge(earlier[next(earlier.len() as u64) as usize] as u32, 0, c as u32, port)),
+                        _ => edges.push(edge(BOUNDARY, 0, c as u32, port)),
+                    }
+                }
+            }
+            let n_out = 1 + next(2) as usize;
+            for op in 0..n_out {
+                let from = if next(5) == 0 { BOUNDARY } else { next(n as u64) as u32 };
+                edges.push(edge(from, 0, BOUNDARY, op as u32));
+            }
+            let unit = multi_composite(vec![nport("a"), nport("b")], vec![Type::Number; n_out], children.clone(), edges.clone());
+            each(&unit, &children, &edges, n_out, &conditions);
+        }
+    }
+
+    /// Run `unit` walked and down its plan (twice, the second in the scratch the first left),
+    /// with each observer `observer` makes: the same events, in the same order, and outputs.
+    fn walk_and_plan_agree(unit: &Unit, children: &[Hash], edges: &[Edge], n_out: usize, r: &MapResolver, observer: impl Fn() -> Events) {
+        let inputs = [Some(num(3.0)), Some(num(0.0))];
+        let refs: Refs = inputs.iter().map(Option::as_ref).collect();
+        let walk = Prepared::of(unit, children, edges, r).unwrap();
+        let (mut walked, mut walked_path) = (observer(), Vec::new());
+        let walked_out = walk.run(n_out, &refs, r, &mut walked, &mut walked_path);
+        let plan = Prepared::of(unit, children, edges, r).unwrap().planned();
+        assert!(plan.plan.is_some(), "no choice but pass-throughs: it has a plan");
+        for _ in 0..2 {
+            let (mut ran, mut ran_path) = (observer(), Vec::new());
+            let ran_out = plan.run(n_out, &refs, r, &mut ran, &mut ran_path);
+            assert_eq!(ran.0, walked.0, "events, edges {edges:?}");
+            assert_eq!(ran_out, walked_out, "outputs, edges {edges:?}");
+        }
+    }
+
+    /// A composite without choices but pass-throughs, run down its plan, does what the walk does:
+    /// the same events in the same order (each child entered, its outputs, left) and the same
+    /// outputs, on 3,000 random graphs.
+    #[test]
+    fn a_composite_run_down_its_plan_does_what_the_walk_does() {
+        let mut r = MapResolver::new();
+        let mut cases = Vec::new();
+        random_composites(&mut r, 3000, |u, c, e, n, _| cases.push((u.clone(), c.to_vec(), e.to_vec(), n)));
+        let mut guarded = 0;
+        for (unit, children, edges, n_out) in &cases {
+            guarded += children.iter().filter(|h| r.resolve(h).is_some_and(|u| matches!(&u.body, UnitBody::Primitive { name } if name == "guard"))).count().min(1);
+            walk_and_plan_agree(unit, children, edges, *n_out, &r, Events::default);
+        }
+        assert!(guarded > 1000, "pass-throughs tried: {guarded}");
+    }
+
+    /// A pass-through whose condition an observer stands in `false` for: the plan's check finds
+    /// it isn't `true`, the walk carries on from there, and the run is the walk's, event for event.
+    #[test]
+    fn a_pass_through_found_not_true_hands_the_run_to_the_walk() {
+        let mut r = MapResolver::new();
+        let mut cases = Vec::new();
+        random_composites(&mut r, 3000, |u, c, e, n, conditions| {
+            if let Some(&first) = conditions.first() {
+                cases.push((u.clone(), c.to_vec(), e.to_vec(), n, first));
+            }
+        });
+        assert!(cases.len() > 1000, "{} cases", cases.len());
+        for (unit, children, edges, n_out, condition) in &cases {
+            walk_and_plan_agree(unit, children, edges, *n_out, &r, || Events(Vec::new(), vec![vec![*condition]]));
+        }
+    }
+
+    /// A composite with a choice has no plan: what it evaluates depends on a value, so it is walked.
+    #[test]
+    fn a_composite_with_a_choice_is_walked() {
+        let mut r = MapResolver::new();
+        let guard = r.insert(prim("guard", 2, Type::Number)).unwrap();
+        let edges = vec![edge(BOUNDARY, 0, 0, 0), edge(BOUNDARY, 1, 0, 1), edge(0, 0, BOUNDARY, 0)];
+        let unit = composite(vec![nport("c"), nport("v")], Type::Number, vec![guard], edges.clone());
+        let prepared = Prepared::of(&unit, &[guard], &edges, &r).unwrap().planned();
+        assert!(prepared.plan.is_none());
     }
 
     #[test]

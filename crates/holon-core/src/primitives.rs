@@ -14,15 +14,175 @@ use std::collections::BTreeMap;
 
 use crate::{Param, Value};
 
-/// Dispatch a primitive by name to its native computation.
+/// Dispatch a primitive by name to its native computation. Evaluate primitive `name` on its present inputs: none for a name that isn't one, or a driver
+/// or state boundary unit the host handles. [`compute_op`] with the name's [`Op`].
 pub fn compute(name: &str, inputs: &[&Value], params: &[Param]) -> Option<Value> {
-    match name {
+    compute_op(Op::of(name)?, name, inputs, params)
+}
+
+/// A primitive `compute` evaluates, by its name: found once for a node (eval.rs's `NodeKind`)
+/// instead of matched by name at each evaluation (docs/L4s/interpreter-path-L4.md, step 5).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Op {
+    Const,
+    Default,
+    Equals,
+    Add,
+    Multiply,
+    Subtract,
+    Divide,
+    Compare,
+    And,
+    Or,
+    Not,
+    Select,
+    Concat,
+    Uppercase,
+    Lowercase,
+    TextLength,
+    ToText,
+    AsText,
+    Coalesce,
+    IsTruthy,
+    Guard,
+    Slice,
+    Split,
+    IndexOf,
+    List,
+    Get,
+    Append,
+    Extend,
+    Length,
+    Range,
+    Sum,
+    Join,
+    Cons,
+    Head,
+    Tail,
+    IsEmpty,
+    Record,
+    Field,
+    WithField,
+    WithoutField,
+    Keys,
+    Lookup,
+    Insert,
+    Remove,
+    Find,
+    JsonParse,
+    JsonStringify,
+    Sha256,
+    HmacSha256,
+    Hex,
+    Base64,
+    SecureEquals,
+    Pair,
+    Some,
+    None,
+    Egress,
+    StoreWrite,
+    CollectionPut,
+    CollectionDelete,
+    FileWrite,
+    FileDelete,
+    FileCopy,
+    FileCreate,
+    FileCreateCopy,
+    DbExec,
+    DbInsert,
+    DbUpdate,
+    DbDelete,
+    ChannelSend,
+    ChannelSubscribe,
+}
+
+impl Op {
+    pub(crate) fn of(name: &str) -> Option<Op> {
+        Some(match name {
+            "const" => Op::Const,
+            "default" => Op::Default,
+            "equals" => Op::Equals,
+            "add" => Op::Add,
+            "multiply" => Op::Multiply,
+            "subtract" => Op::Subtract,
+            "divide" => Op::Divide,
+            "compare" => Op::Compare,
+            "and" => Op::And,
+            "or" => Op::Or,
+            "not" => Op::Not,
+            "select" => Op::Select,
+            "concat" => Op::Concat,
+            "uppercase" => Op::Uppercase,
+            "lowercase" => Op::Lowercase,
+            "text_length" => Op::TextLength,
+            "to_text" => Op::ToText,
+            "as_text" => Op::AsText,
+            "coalesce" => Op::Coalesce,
+            "is_truthy" => Op::IsTruthy,
+            "guard" => Op::Guard,
+            "slice" => Op::Slice,
+            "split" => Op::Split,
+            "index_of" => Op::IndexOf,
+            "list" => Op::List,
+            "get" => Op::Get,
+            "append" => Op::Append,
+            "extend" => Op::Extend,
+            "length" => Op::Length,
+            "range" => Op::Range,
+            "sum" => Op::Sum,
+            "join" => Op::Join,
+            "cons" => Op::Cons,
+            "head" => Op::Head,
+            "tail" => Op::Tail,
+            "is_empty" => Op::IsEmpty,
+            "record" => Op::Record,
+            "field" => Op::Field,
+            "with_field" => Op::WithField,
+            "without_field" => Op::WithoutField,
+            "keys" => Op::Keys,
+            "lookup" => Op::Lookup,
+            "insert" => Op::Insert,
+            "remove" => Op::Remove,
+            "find" => Op::Find,
+            "json_parse" => Op::JsonParse,
+            "json_stringify" => Op::JsonStringify,
+            "sha256" => Op::Sha256,
+            "hmac_sha256" => Op::HmacSha256,
+            "hex" => Op::Hex,
+            "base64" => Op::Base64,
+            "secure_equals" => Op::SecureEquals,
+            "pair" => Op::Pair,
+            "some" => Op::Some,
+            "none" => Op::None,
+            "egress" => Op::Egress,
+            "store_write" => Op::StoreWrite,
+            "collection_put" => Op::CollectionPut,
+            "collection_delete" => Op::CollectionDelete,
+            "file_write" => Op::FileWrite,
+            "file_delete" => Op::FileDelete,
+            "file_copy" => Op::FileCopy,
+            "file_create" => Op::FileCreate,
+            "file_create_copy" => Op::FileCreateCopy,
+            "db_exec" => Op::DbExec,
+            "db_insert" => Op::DbInsert,
+            "db_update" => Op::DbUpdate,
+            "db_delete" => Op::DbDelete,
+            "channel_send" => Op::ChannelSend,
+            "channel_subscribe" => Op::ChannelSubscribe,
+            _ => return None,
+        })
+    }
+}
+
+/// [`compute`], the primitive's [`Op`] already found (`name` is its name, which a few read).
+pub(crate) fn compute_op(op: Op, name: &str, inputs: &[&Value], params: &[Param]) -> Option<Value> {
+    match op {
         // ── const (§13): the one literal constructor. `value` is the literal as text; `type`
         // (Number/Boolean/Text) declares how to read it — no inference, so the unit is
         // self-describing and two authors who meant different types never collide (I5). A value
         // that doesn't parse for its type ⇒ None; List/Effect/Any have no literal form (an empty
         // list is the niladic `list`), ⇒ None. ──
-        "const" => parse_literal(param(params, "type")?, param(params, "value")?),
+        Op::Const => parse_literal(param(params, "type")?, param(params, "value")?),
 
         // A value that passes through when present, or falls back to a frozen literal when
         // absent — the piece that was missing for "read this, or use a default if it was
@@ -35,7 +195,7 @@ pub fn compute(name: &str, inputs: &[&Value], params: &[Param]) -> Option<Value>
         // own literal parsing via `parse_literal`, not a second copy of it: `default` with no
         // input present and `type`/`value` set IS a `const`, and this keeps
         // that fact true by construction rather than by two implementations happening to agree.
-        "default" => match inputs {
+        Op::Default => match inputs {
             [v] => Some((*v).clone()),
             [] => parse_literal(param(params, "type")?, param(params, "value")?),
             _ => None,
@@ -56,47 +216,47 @@ pub fn compute(name: &str, inputs: &[&Value], params: &[Param]) -> Option<Value>
         // equality (IEEE-754's own rules, including `NaN != NaN`) — the same considered,
         // undisguised choice `is_truthy` already made for the identical reason: it's the
         // correct, standard behavior, not something to invent an exception for.
-        "equals" => {
+        Op::Equals => {
             let [a, b] = inputs else { return None };
             Some(Value::Boolean(a == b))
         }
 
         // ── arithmetic ──
-        "add" => fold_numbers(inputs, 0.0, |a, b| a + b),
-        "multiply" => fold_numbers(inputs, 1.0, |a, b| a * b),
-        "subtract" => bin_numbers(inputs).map(|(a, b)| Value::Number(a - b)),
-        "divide" => bin_numbers(inputs)
+        Op::Add => fold_numbers(inputs, 0.0, |a, b| a + b),
+        Op::Multiply => fold_numbers(inputs, 1.0, |a, b| a * b),
+        Op::Subtract => bin_numbers(inputs).map(|(a, b)| Value::Number(a - b)),
+        Op::Divide => bin_numbers(inputs)
             .and_then(|(a, b)| if b == 0.0 { None } else { Some(Value::Number(a / b)) }),
 
         // ── comparison (op param) ──
-        "compare" => {
+        Op::Compare => {
             let (a, b) = bin_numbers(inputs)?;
             compare(a, b, param(params, "op")?).map(Value::Boolean)
         }
 
         // ── logic ──
-        "and" => fold_bools(inputs, true, |a, b| a && b),
-        "or" => fold_bools(inputs, false, |a, b| a || b),
-        "not" => {
+        Op::And => fold_bools(inputs, true, |a, b| a && b),
+        Op::Or => fold_bools(inputs, false, |a, b| a || b),
+        Op::Not => {
             let [v] = inputs else { return None };
             as_bool(v).map(|x| Value::Boolean(!x))
         }
 
         // ── control-as-data ──
-        "select" => {
+        Op::Select => {
             let [c, a, b] = inputs else { return None };
             Some(if as_bool(c)? { (*a).clone() } else { (*b).clone() })
         }
 
         // ── text ──
-        "concat" => {
+        Op::Concat => {
             let mut s = String::new();
             for v in inputs {
                 s.push_str(as_text(v)?);
             }
             Some(Value::Text(s))
         }
-        "uppercase" => {
+        Op::Uppercase => {
             let [v] = inputs else { return None };
             Some(Value::Text(as_text(v)?.to_uppercase()))
         }
@@ -104,11 +264,11 @@ pub fn compute(name: &str, inputs: &[&Value], params: &[Param]) -> Option<Value>
         // are native. Char-based throughout (Unicode scalar values), so length/slice/index
         // agree. Casing uses Unicode **default** (locale-independent) mapping — Rust's
         // to_uppercase/to_lowercase — so it can never vary by locale and poison a hash (I2). ──
-        "lowercase" => {
+        Op::Lowercase => {
             let [v] = inputs else { return None };
             Some(Value::Text(as_text(v)?.to_lowercase()))
         }
-        "text_length" => {
+        Op::TextLength => {
             let [v] = inputs else { return None };
             Some(Value::Number(as_text(v)?.chars().count() as f64))
         }
@@ -128,7 +288,7 @@ pub fn compute(name: &str, inputs: &[&Value], params: &[Param]) -> Option<Value>
         // sometimes just fails is a worse primitive than one that always produces something,
         // even for an edge case — Rust's own `f64::Display` already prints "NaN"/"inf"/"-inf"
         // as fixed, deterministic literals, not a platform-dependent guess (I2).
-        "to_text" => {
+        Op::ToText => {
             let [v] = inputs else { return None };
             Some(Value::Text(to_text_str(v)))
         }
@@ -140,7 +300,7 @@ pub fn compute(name: &str, inputs: &[&Value], params: &[Param]) -> Option<Value>
         // refuses a number, `to_text` would quote a text, and no composite can tell the two
         // apart (there is no type test). Total, like `to_text`: JSON has no form for a non-finite
         // number or an effect, so those fall back to `to_text`'s rendering.
-        "as_text" => {
+        Op::AsText => {
             let [v] = inputs else { return None };
             Some(Value::Text(match v {
                 Value::Text(s) => s.clone(),
@@ -158,7 +318,7 @@ pub fn compute(name: &str, inputs: &[&Value], params: &[Param]) -> Option<Value>
         // first that arrived; with nothing present it produces nothing, like everything else.
         // Two inputs, not variadic: a variadic leaf fails closed on an absent input, the
         // opposite of this one, and `a ?? b ?? c` is two nodes.
-        "coalesce" => inputs.first().map(|v| (*v).clone()),
+        Op::Coalesce => inputs.first().map(|v| (*v).clone()),
 
         // The other universal any-typed primitive alongside `to_text`, same reasoning: one
         // uniform check that works before you know a value's runtime type — reading
@@ -182,7 +342,7 @@ pub fn compute(name: &str, inputs: &[&Value], params: &[Param]) -> Option<Value>
         //              "is a real value present" is exactly what a truthiness check on an
         //              Option should answer, and it's the same "empty container is falsy"
         //              theme List/Text already carry, not a new idea.
-        "is_truthy" => {
+        Op::IsTruthy => {
             let [v] = inputs else { return None };
             let truthy = match v {
                 Value::Number(n) => *n != 0.0,
@@ -207,7 +367,7 @@ pub fn compute(name: &str, inputs: &[&Value], params: &[Param]) -> Option<Value>
         // system; `guard` is just the first primitive whose whole job is to CREATE that
         // absence on purpose, from a condition, rather than only ever inheriting it from an
         // unsupplied capability.
-        "guard" => {
+        Op::Guard => {
             let [c, v] = inputs else { return None };
             match c {
                 Value::Boolean(true) => Some((*v).clone()),
@@ -216,7 +376,7 @@ pub fn compute(name: &str, inputs: &[&Value], params: &[Param]) -> Option<Value>
             }
         }
 
-        "slice" => {
+        Op::Slice => {
             let [s, start, len] = inputs else { return None };
             let (s, start, len) = (as_text(s)?, as_index(start)?, as_index(len)?);
             // start past the end ⇒ empty; len past the end ⇒ truncated. Total for valid types.
@@ -225,14 +385,14 @@ pub fn compute(name: &str, inputs: &[&Value], params: &[Param]) -> Option<Value>
         // The pieces of `text` between each occurrence of `sep`, in order: `join`'s inverse, so
         // `join(split(t, s), s) == t`. Text without `sep` is one piece (the empty text too);
         // an empty `sep` has no pieces to cut, and is absent.
-        "split" => {
+        Op::Split => {
             let [Value::Text(text), Value::Text(sep)] = inputs else { return None };
             if sep.is_empty() {
                 return None;
             }
             Some(Value::List(text.split(sep.as_str()).map(|s| Value::Text(s.to_string())).collect()))
         }
-        "index_of" => {
+        Op::IndexOf => {
             let [h, n] = inputs else { return None };
             let (h, n) = (as_text(h)?, as_text(n)?);
             // Char index of the first match, or -1 (not-found is a normal answer, not a
@@ -245,12 +405,12 @@ pub fn compute(name: &str, inputs: &[&Value], params: &[Param]) -> Option<Value>
         }
 
         // ── list ──
-        "list" => Some(Value::List(inputs.iter().map(|v| (*v).clone()).collect())),
-        "get" => {
+        Op::List => Some(Value::List(inputs.iter().map(|v| (*v).clone()).collect())),
+        Op::Get => {
             let [l, i] = inputs else { return None };
             as_list(l)?.get(as_index(i)?).cloned()
         }
-        "append" => {
+        Op::Append => {
             let [l, item] = inputs else { return None };
             let mut xs = as_list(l)?.to_vec();
             xs.push((*item).clone());
@@ -258,19 +418,19 @@ pub fn compute(name: &str, inputs: &[&Value], params: &[Param]) -> Option<Value>
         }
         // Both lists' items, in order: the first list's, then the second's. Each input must be a
         // list; a single item is `append`'s job, never wrapped here.
-        "extend" => {
+        Op::Extend => {
             let [l, items] = inputs else { return None };
             let mut xs = as_list(l)?.to_vec();
             xs.extend_from_slice(as_list(items)?);
             Some(Value::List(xs))
         }
-        "length" => {
+        Op::Length => {
             let [l] = inputs else { return None };
             Some(Value::Number(as_list(l)?.len() as f64))
         }
         // The one leaf that makes a list from a number, so it is where counting is bounded: a
         // `map` over it ends because it has at most MAX_RANGE items.
-        "range" => {
+        Op::Range => {
             let [n] = inputs else { return None };
             let n = as_number(n)?;
             if n.fract() != 0.0 || !(0.0..=MAX_RANGE as f64).contains(&n) {
@@ -278,7 +438,7 @@ pub fn compute(name: &str, inputs: &[&Value], params: &[Param]) -> Option<Value>
             }
             Some(Value::List((0..n as u64).map(|k| Value::Number(k as f64)).collect()))
         }
-        "sum" => {
+        Op::Sum => {
             let [l] = inputs else { return None };
             let mut acc = 0.0;
             for v in as_list(l)? {
@@ -286,7 +446,7 @@ pub fn compute(name: &str, inputs: &[&Value], params: &[Param]) -> Option<Value>
             }
             Some(Value::Number(acc))
         }
-        "join" => {
+        Op::Join => {
             let [l, sep] = inputs else { return None };
             let sep = as_text(sep)?;
             let mut parts = Vec::new();
@@ -300,7 +460,7 @@ pub fn compute(name: &str, inputs: &[&Value], params: &[Param]) -> Option<Value>
         // (sum, map, filter, …) are built from these. `head`/`tail` of `[]` ⇒ None — the
         // existing `get`-out-of-bounds convention (partial-via-None; it halts, just yields
         // no value, so totality is intact). `is_empty` is total. ──
-        "cons" => {
+        Op::Cons => {
             let [x, l] = inputs else { return None };
             let tail = as_list(l)?;
             let mut xs = Vec::with_capacity(tail.len() + 1);
@@ -308,15 +468,15 @@ pub fn compute(name: &str, inputs: &[&Value], params: &[Param]) -> Option<Value>
             xs.extend_from_slice(tail);
             Some(Value::List(xs))
         }
-        "head" => {
+        Op::Head => {
             let [l] = inputs else { return None };
             as_list(l)?.first().cloned()
         }
-        "tail" => {
+        Op::Tail => {
             let [l] = inputs else { return None };
             as_list(l)?.split_first().map(|(_, rest)| Value::List(rest.to_vec()))
         }
-        "is_empty" => {
+        Op::IsEmpty => {
             let [l] = inputs else { return None };
             Some(Value::Boolean(as_list(l)?.is_empty()))
         }
@@ -328,44 +488,44 @@ pub fn compute(name: &str, inputs: &[&Value], params: &[Param]) -> Option<Value>
         // ── record kit (M1): build a record field by field, read one field, list the keys. A
         // field name is a frozen `name` param, so it is part of the unit's identity, like a
         // state key. A missing field reads as absent, not as a null value. ──
-        "record" => {
+        Op::Record => {
             let [] = inputs else { return None };
             Some(Value::Record(BTreeMap::new()))
         }
-        "field" => {
+        Op::Field => {
             let [Value::Record(fields)] = inputs else { return None };
             fields.get(param(params, "name")?).cloned()
         }
-        "with_field" => {
+        Op::WithField => {
             let [Value::Record(fields), v] = inputs else { return None };
             let mut fields = fields.clone();
             fields.insert(param(params, "name")?.to_string(), (*v).clone());
             Some(Value::Record(fields))
         }
-        "without_field" => {
+        Op::WithoutField => {
             let [Value::Record(fields)] = inputs else { return None };
             let mut fields = fields.clone();
             fields.remove(param(params, "name")?);
             Some(Value::Record(fields))
         }
-        "keys" => {
+        Op::Keys => {
             let [Value::Record(fields)] = inputs else { return None };
             Some(Value::List(fields.keys().map(|k| Value::Text(k.clone())).collect()))
         }
         // The keyed kit: the same reads and writes, with the key a Text input, so a record can be
         // a collection keyed by something a request brings (`/todos/:title`). Any other key is
         // refused, never coerced to text first.
-        "lookup" => {
+        Op::Lookup => {
             let [Value::Record(fields), Value::Text(key)] = inputs else { return None };
             fields.get(key).cloned()
         }
-        "insert" => {
+        Op::Insert => {
             let [Value::Record(fields), Value::Text(key), v] = inputs else { return None };
             let mut fields = fields.clone();
             fields.insert(key.clone(), (*v).clone());
             Some(Value::Record(fields))
         }
-        "remove" => {
+        Op::Remove => {
             let [Value::Record(fields), Value::Text(key)] = inputs else { return None };
             let mut fields = fields.clone();
             fields.remove(key);
@@ -374,7 +534,7 @@ pub fn compute(name: &str, inputs: &[&Value], params: &[Param]) -> Option<Value>
         // Search a list of records: the first whose `name` field equals `value` (structural
         // equality, as `equals`: Text "1" is not Number 1). Items that aren't records, or lack
         // the field, never match; no match is absent.
-        "find" => {
+        Op::Find => {
             let [Value::List(items), v] = inputs else { return None };
             let name = param(params, "name")?;
             items.iter().find(|item| matches!(item, Value::Record(fields) if fields.get(name) == Some(*v))).cloned()
@@ -382,11 +542,11 @@ pub fn compute(name: &str, inputs: &[&Value], params: &[Param]) -> Option<Value>
 
         // ── JSON (M1): request and response bodies. See json.rs for the mapping; malformed input,
         // or a value with no JSON form, is absent. ──
-        "json_parse" => {
+        Op::JsonParse => {
             let [Value::Text(s)] = inputs else { return None };
             crate::json::parse(s)
         }
-        "json_stringify" => {
+        Op::JsonStringify => {
             let [v] = inputs else { return None };
             crate::json::stringify(v).map(Value::Text)
         }
@@ -394,15 +554,15 @@ pub fn compute(name: &str, inputs: &[&Value], params: &[Param]) -> Option<Value>
         // ── signatures and encodings (crypto.rs): over a text's UTF-8 bytes. An unknown
         // encoding, mode or alphabet is absent, and so is a decode that isn't valid input or
         // doesn't come back to UTF-8. ──
-        "sha256" => {
+        Op::Sha256 => {
             let [Value::Text(s)] = inputs else { return None };
             crate::crypto::sha256(s, param(params, "encoding")?).map(Value::Text)
         }
-        "hmac_sha256" => {
+        Op::HmacSha256 => {
             let [Value::Text(key), Value::Text(message)] = inputs else { return None };
             crate::crypto::hmac_sha256(key, message, param(params, "encoding")?).map(Value::Text)
         }
-        "hex" => {
+        Op::Hex => {
             let [Value::Text(s)] = inputs else { return None };
             match param(params, "mode")? {
                 "encode" => Some(Value::Text(crate::crypto::hex_encode(s.as_bytes()))),
@@ -411,7 +571,7 @@ pub fn compute(name: &str, inputs: &[&Value], params: &[Param]) -> Option<Value>
             }
         }
         // `standard` encodes padded, `url` unpadded; either decodes with or without padding.
-        "base64" => {
+        Op::Base64 => {
             let [Value::Text(s)] = inputs else { return None };
             let name = param(params, "alphabet")?;
             let alphabet = crate::crypto::alphabet(name)?;
@@ -423,12 +583,12 @@ pub fn compute(name: &str, inputs: &[&Value], params: &[Param]) -> Option<Value>
         }
         // Text equality in constant time: what a signature is checked with, so how long the
         // comparison takes says nothing about how much of a guess was right.
-        "secure_equals" => {
+        Op::SecureEquals => {
             let [Value::Text(a), Value::Text(b)] = inputs else { return None };
             Some(Value::Boolean(crate::crypto::secure_equals(a, b)))
         }
 
-        "pair" => {
+        Op::Pair => {
             let [a, b] = inputs else { return None };
             Some(Value::List(vec![(*a).clone(), (*b).clone()]))
         }
@@ -437,11 +597,11 @@ pub fn compute(name: &str, inputs: &[&Value], params: &[Param]) -> Option<Value>
         // pair, this DOES need a new Value shape (Value::Sum) — a sum value carries only its taken
         // arm, so it can't ride List the way a product can (a product's value always carries every
         // field). none's payload is Unit's value, which already rides the empty list. ──
-        "some" => {
+        Op::Some => {
             let [v] = inputs else { return None };
             Some(Value::Sum { arm: 0, payload: Box::new((*v).clone()) })
         }
-        "none" => {
+        Op::None => {
             let [] = inputs else { return None };
             Some(Value::Sum { arm: 1, payload: Box::new(Value::List(vec![])) })
         }
@@ -456,7 +616,7 @@ pub fn compute(name: &str, inputs: &[&Value], params: &[Param]) -> Option<Value>
         // constructor — the destination (mailbox, connection token) rides in the payload, not in a
         // distinct primitive. A reply (P2.5.1) is just an egress whose payload is a [token, reply]
         // pair, the token plain data alongside the body.
-        "egress" => sink_effect("egress", inputs),
+        Op::Egress => sink_effect("egress", inputs),
         // A state write is a Fork-B sink too: it constructs a `store_write` request; the host
         // performs it by *storing* (capability `StateWrite`). `store_read` has no pure compute
         // — it is sourced (host-supplied), like a driver. `ingress` is sourced too (no compute).
@@ -469,7 +629,7 @@ pub fn compute(name: &str, inputs: &[&Value], params: &[Param]) -> Option<Value>
         // Fails closed exactly like `const` two arms up (`?` on a missing param): a `store_write`
         // with no key never even constructs an effect, rather than silently constructing an
         // ownerless one that would vanish at the perform step with no visible error.
-        "store_write" => {
+        Op::StoreWrite => {
             let key = param(params, "key")?;
             sink_effect(&format!("store_write:{key}"), inputs)
         }
@@ -477,7 +637,7 @@ pub fn compute(name: &str, inputs: &[&Value], params: &[Param]) -> Option<Value>
         // A collection's writes: `{key, value}` to put, the key to delete, each an effect the
         // host commits when the run finishes. The collection rides in the sink name, as a state
         // write's key does. A value holding an effect is not data, and constructs nothing.
-        "collection_put" => {
+        Op::CollectionPut => {
             let name = crate::kind::ident(params, "collection")?;
             let [Value::Text(key), v] = inputs else { return None };
             if contains_effect(v) {
@@ -486,7 +646,7 @@ pub fn compute(name: &str, inputs: &[&Value], params: &[Param]) -> Option<Value>
             let item = Value::Record(BTreeMap::from([("key".to_string(), Value::Text(key.clone())), ("value".to_string(), (*v).clone())]));
             Some(Value::Effect { sink: format!("collection_put:{name}"), payload: Box::new(item) })
         }
-        "collection_delete" => {
+        Op::CollectionDelete => {
             let name = crate::kind::ident(params, "collection")?;
             let [Value::Text(key)] = inputs else { return None };
             Some(Value::Effect { sink: format!("collection_delete:{name}"), payload: Box::new(Value::Text(key.clone())) })
@@ -495,13 +655,13 @@ pub fn compute(name: &str, inputs: &[&Value], params: &[Param]) -> Option<Value>
         // A named folder's writes: `{name, text}` to write the file, the name to delete it, each an
         // effect the host commits when the run finishes. The folder rides in the sink name, as a
         // collection's does. Which names are allowed is the host's to check (it knows the folder).
-        "file_write" => {
+        Op::FileWrite => {
             let folder = crate::kind::ident(params, "folder")?;
             let [Value::Text(name), Value::Text(text)] = inputs else { return None };
             let file = Value::Record(BTreeMap::from([("name".to_string(), Value::Text(name.clone())), ("text".to_string(), Value::Text(text.clone()))]));
             Some(Value::Effect { sink: format!("file_write:{folder}"), payload: Box::new(file) })
         }
-        "file_delete" => {
+        Op::FileDelete => {
             let folder = crate::kind::ident(params, "folder")?;
             let [Value::Text(name)] = inputs else { return None };
             Some(Value::Effect { sink: format!("file_delete:{folder}"), payload: Box::new(Value::Text(name.clone())) })
@@ -509,7 +669,7 @@ pub fn compute(name: &str, inputs: &[&Value], params: &[Param]) -> Option<Value>
         // A copy by handle: `{name, from: <handle>}`, the bytes copied host to host when the run
         // finishes. A handle is what `file_handle` answered; the host checks the file it names is
         // in a folder this deployment reads, and still has the handle's hash.
-        "file_copy" => {
+        Op::FileCopy => {
             let folder = crate::kind::ident(params, "folder")?;
             let [Value::Text(name), from @ Value::Record(handle)] = inputs else { return None };
             if contains_effect(from) || !["folder", "name", "hash"].iter().all(|k| matches!(handle.get(*k), Some(Value::Text(_)))) {
@@ -520,7 +680,7 @@ pub fn compute(name: &str, inputs: &[&Value], params: &[Param]) -> Option<Value>
         }
         // Create-only: a write's or a copy's payload with `create: true`. The host lands it only
         // where no file has the name when the run commits, never replacing one.
-        "file_create" | "file_create_copy" => {
+        Op::FileCreate | Op::FileCreateCopy => {
             let folder = crate::kind::ident(params, "folder")?;
             let like = if name == "file_create" { "file_write" } else { "file_copy" };
             let Some(Value::Effect { payload, .. }) = compute(like, inputs, params) else { return None };
@@ -531,7 +691,7 @@ pub fn compute(name: &str, inputs: &[&Value], params: &[Param]) -> Option<Value>
 
         // A statement to run when the run finishes: `{sql, params, expect}`, `expect` the rows it
         // must change (absent: any number). The host sends it in the run's commit transaction.
-        "db_exec" => {
+        Op::DbExec => {
             let database = crate::kind::ident(params, "database")?;
             let [params_in @ Value::List(_)] = inputs else { return None };
             if contains_effect(params_in) {
@@ -548,7 +708,7 @@ pub fn compute(name: &str, inputs: &[&Value], params: &[Param]) -> Option<Value>
         // params}`, `{update: …, filter, change, params, expect}`, `{delete: …, filter, params,
         // expect}`, the templates as their text. The host fills their holes and sends them in the
         // run's commit transaction there.
-        "db_insert" | "db_update" | "db_delete" => {
+        Op::DbInsert | Op::DbUpdate | Op::DbDelete => {
             let database = crate::kind::ident(params, "database")?;
             let [params_in @ Value::List(_)] = inputs else { return None };
             if contains_effect(params_in) {
@@ -575,13 +735,13 @@ pub fn compute(name: &str, inputs: &[&Value], params: &[Param]) -> Option<Value>
         }
         // A channel's pack: any value but an effect, sent to its subscribers once the run is over.
         // The channel rides in the sink name, as a collection's does.
-        "channel_send" => {
+        Op::ChannelSend => {
             let channel = crate::kind::ident(params, "channel")?;
             sink_effect(&format!("channel_send:{channel}"), inputs)
         }
         // A subscription: what a route answers with, read by the host from the response (never
         // performed as a sink). `from` is "new" (packs from now on) or "kept" (the kept ones first).
-        "channel_subscribe" => {
+        Op::ChannelSubscribe => {
             let channel = crate::kind::ident(params, "channel")?;
             let from = param(params, "from").unwrap_or("new");
             if !["new", "kept"].contains(&from) {
@@ -591,7 +751,8 @@ pub fn compute(name: &str, inputs: &[&Value], params: &[Param]) -> Option<Value>
             Some(Value::Effect { sink: format!("channel_subscribe:{channel}"), payload: Box::new(ask) })
         }
 
-        _ => None, // unknown name, or a driver/state boundary unit handled by the host
+        // An unknown name has no Op: `compute` gives none for it, a driver or state boundary unit
+        // being the host's.
     }
 }
 

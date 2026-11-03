@@ -1352,6 +1352,9 @@ rounds: 12,188–12,272 req/s at 100 items, 1,516–1,573 at 1,000, 312–319 at
 C#** (from 7.4×, 32× and 42×), CPU per request 301–309 µs, 2.5–2.6 ms and 12.4–12.7 ms.
 Then the first level of a compiled plan (interpreter-path-L4.md §4, step 5): 14,133–15,468, 1,999–2,074
 and 416–417 req/s, p50 at one connection 0.29 ms, 2.0 ms and 9.5 ms: **3.5×, 13× and 16× C#**.
+Its second level (the walk worked out ahead for a function a `map` or `fold` applies, leaves called by
+opcode): 16,937–17,027, 2,276–2,357 and 469–472 req/s, p50 0.27 ms, 1.74 ms and 8.4 ms: **3.2×, 11×
+and 14× C#**.
 
 **Where none of it matters much:**
 - **Strict runs** wait about 600 µs for the fsync (C2 e). Cutting 50–90 µs of CPU might add 10–25%
