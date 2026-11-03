@@ -1242,6 +1242,30 @@ such flows become a real use case, (c) is worth its costs for them. Until then, 
 primitives (`sum` and its siblings) and js holons (`wasm-module-L4.md`) are where heavy computing
 goes.
 
+**Measured end to end, after build step 12.** A route that computes statistics over a list of
+numbers and a record per item, six `map` and `fold` passes in the graph (`CRUNCH` in `tests.rs`,
+run by hand with `HOLON_PROFILE=crunch`), against the same computation in the C# service of §1,
+both answering the same numbers to the last digit. Live, `wrk`, two rounds:
+
+| | Holon, unrecorded | Holon, `length` and `sum` native | Holon, lazy | C# |
+|---|---|---|---|---|
+| 100 items: p50 at 1 connection; CPU per request | 1.00 ms; 943–977 µs | 0.77 ms; 707–743 µs | 1.33–1.38 ms | 0.08 ms; 46–50 µs |
+| 1,000 items | 8.6–8.8 ms; 8.7–9.1 ms | 6.6 ms; 6.6–7.0 ms | 9.5–9.8 ms | 0.15–0.17 ms; 102–106 µs |
+| 5,000 items | 43.7–44.0 ms; 44–49 ms | 30.8–31.3 ms; 33–34 ms | 48.1 ms | 0.58–0.60 ms; 466–477 µs |
+
+About 8.7 µs an item, 1.5 µs for each pass's call of its function: 12–20× C# at 100 items, 75–100×
+at 5,000. The native leaves take a quarter off, as the `map`s calling a function per item remain.
+Under callgrind (1,000 items), the arithmetic itself (`primitives::compute`) is 4.5% of the run.
+The rest is what the interpreter does around each call of the function, once per item:
+- ordering its graph again (`topo_order`), 15.6%;
+- resolving it by its hash (`SourcedResolver::resolve`), 10.8%;
+- allocating and freeing its slots, records and lists, about 40%;
+- cloning and dropping values (`Value::clone`, `BTreeMap` copies), about 20%.
+
+So (b) is no longer an estimate for these flows: what it removes is most of their time. Its first
+two parts change no behaviour and need no plan: an order is a function of its unit alone, so it
+can be kept by hash, and a `map` can resolve its function once.
+
 **Where none of it matters much:**
 - **Strict runs** wait about 600 µs for the fsync (C2 e). Cutting 50–90 µs of CPU might add 10–25%
   throughput at 64 connections, where CPU counts too, but latency barely moves. They're already level

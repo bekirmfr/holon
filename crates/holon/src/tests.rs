@@ -8136,9 +8136,14 @@ fn request_throughput() {
     let _ = std::fs::remove_dir_all(Path::new(&state.deployments_path).with_extension("logs"));
 }
 
+/// A compute-heavy route: statistics over a list of numbers and a record per item, all with `map`
+/// and `fold` in the graph (docs/L4s/request-path-L4.md §4.5, measured).
+const CRUNCH: &str = "flow crunch\nport 8311\n\nroute POST /stats (req) unrecorded {\n  xs = req.json.xs\n  count = fold(0, xs, fn: fn(acc, x) -> acc + 1 + x * 0)\n  total = fold(0, xs, fn: fn(acc, x) -> acc + x)\n  squares = map(xs, fn: fn(x) -> x * x)\n  sumsq = fold(0, squares, fn: fn(acc, x) -> acc + x)\n  mean = total / count\n  rows = map(xs, mean, fn: fn(x, mean) -> { v: x, dev: x - mean, sq: (x - mean) * (x - mean) })\n  spread = fold(0, rows, fn: fn(acc, r) -> acc + r.sq)\n  respond { n: count, sum: total, mean: mean, variance: sumsq / count - mean * mean, spread: spread / count }\n}\n";
+
 /// One route run many times through serve_data on an on-disk store, for a profiler: what the
 /// request-path plan's 12.4 was found with. `HOLON_PROFILE` picks it (`hello`, an unrecorded
-/// greeting; `notes`, a lazy list of a collection of three), `HOLON_PROFILE_N` how many runs, and
+/// greeting; `notes`, a lazy list of a collection of three; `crunch`, [`CRUNCH`] over
+/// `HOLON_PROFILE_ITEMS` numbers), `HOLON_PROFILE_N` how many runs, and
 /// it says how long a run took:
 /// `valgrind --tool=callgrind target/release/deps/holon-… --ignored profile_one_route`.
 #[test]
@@ -8151,18 +8156,24 @@ fn profile_one_route() {
     state.deployments_path = unique_temp_path("profile");
     let which = std::env::var("HOLON_PROFILE").unwrap_or_else(|_| "hello".into());
     let (text, method, url, body) = match which.as_str() {
+        "crunch" => (CRUNCH, "POST", "/stats", ""),
         "notes" => ("flow p\nport 8301\ncollection notes\n\nroute POST /notes (req) {\n  notes[req.json.id] = req.json.text\n  respond \"saved\"\n}\n\nroute GET /notes (req) lazy {\n  respond notes.list(limit: 50)\n}\n", "GET", "/notes", ""),
         _ => ("flow p\nport 8301\n\nroute GET /hello/:name (req) unrecorded {\n  respond \"Hello, {req.params.name}\"\n}\n", "GET", "/hello/Ada", ""),
     };
     let slug = deploy_plain_text(&state, text);
+    // A list of numbers to crunch, `HOLON_PROFILE_ITEMS` long (1,000 by default).
+    let items: usize = std::env::var("HOLON_PROFILE_ITEMS").ok().and_then(|n| n.parse().ok()).unwrap_or(1000);
+    let crunched = format!("{{\"xs\":[{}]}}", (0..items).map(|i| format!("{}.5", (i * 37) % 1000)).collect::<Vec<_>>().join(","));
+    let body = if which == "crunch" { crunched.as_str() } else { body };
     for id in ["a", "b", "c"] {
         serve_data(&state.store, &state.deployments, &state.deployments_path, &slug, &fake_data("POST", "/notes", format!(r#"{{"id":"{id}","text":"hi"}}"#).into_bytes()));
     }
     let n: usize = std::env::var("HOLON_PROFILE_N").ok().and_then(|n| n.parse().ok()).unwrap_or(2000);
     let started = std::time::Instant::now();
     for _ in 0..n {
-        let r = serve_data(&state.store, &state.deployments, &state.deployments_path, &slug, &fake_data(method, url, body.as_bytes().to_vec()));
-        assert_eq!(r.status, 200);
+        let json = vec![("content-type".to_string(), "application/json".to_string())];
+        let r = serve_data(&state.store, &state.deployments, &state.deployments_path, &slug, &data::DataRequest { headers: json, ..fake_data(method, url, body.as_bytes().to_vec()) });
+        assert_eq!(r.status, 200, "{}", String::from_utf8_lossy(&r.body));
     }
     eprintln!("{which}: {:.1} us a run", started.elapsed().as_secs_f64() * 1e6 / n as f64);
 }
