@@ -1242,4 +1242,70 @@ mod commit_checks {
         // Nothing read: held.
         assert!(still_as_read(&start, &changed, &[], &permit, &store, None, false));
     }
+
+    /// A store that fails every read while `failing` is set.
+    struct Flaky {
+        inner: MemStore,
+        failing: Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    impl Store for Flaky {
+        fn put(&mut self, unit: &Unit) -> Result<Hash, StoreError> {
+            self.inner.put(unit)
+        }
+        fn get(&self, key: &Hash) -> Result<Option<Unit>, StoreError> {
+            self.inner.get(key)
+        }
+        fn put_value(&mut self, value: &Value) -> Result<Hash, StoreError> {
+            self.inner.put_value(value)
+        }
+        fn get_value(&self, key: &Hash) -> Result<Option<Value>, StoreError> {
+            if self.failing.load(std::sync::atomic::Ordering::SeqCst) {
+                return Err(StoreError::Io(std::io::Error::other("the disk is away")));
+            }
+            self.inner.get_value(key)
+        }
+    }
+
+    /// The store failing as a run commits: a run whose collection didn't move commits on what it
+    /// read, where asking again would have failed and sent it round again for nothing; a run whose
+    /// collection moved is asked again as before, and a read that fails then counts as changed,
+    /// so it runs again, whether or not its item changed. Once the store is back, a moved root
+    /// whose item is unchanged holds.
+    #[test]
+    fn a_store_failing_at_the_commit_check_fails_only_a_run_whose_collection_moved() {
+        let failing = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        // In memory: the store keeps no values beside it, so a failing read fails.
+        let store = SharedStore::new(Box::new(Flaky { inner: MemStore::new(), failing: Arc::clone(&failing) }));
+        let mut writer = store.clone();
+        let put = |key: &str, value: &str| Value::Record(BTreeMap::from([("key".to_string(), Value::Text(key.into())), ("value".to_string(), Value::Text(value.into()))]));
+        let mut start = State::new();
+        collections::apply(&mut start, &mut writer, "notes", &put("a", "one")).unwrap();
+        let mut moved = start.clone();
+        collections::apply(&mut moved, &mut writer, "notes", &put("b", "two")).unwrap();
+        let mut changed = start.clone();
+        collections::apply(&mut changed, &mut writer, "notes", &put("a", "uno")).unwrap();
+        let grant: permissions::Grant = serde_json::from_value(serde_json::json!({
+            "manifest": "", "items": ["CollectionRead(\"notes\")"], "requirements": {}, "granted_at": 0, "by": "deploy",
+        }))
+        .unwrap();
+        let permit = Permit::new([0; 32], &grant, &Policy::parse("").unwrap());
+        let request = Value::Record(BTreeMap::from([("collection".to_string(), Value::Text("notes".into())), ("get".to_string(), Value::Text("a".into()))]));
+        // What the run read, at its start, while the store answered.
+        let answer = collections::Readable { store: store.clone(), roots: collections::roots(&start), granted: permit.collections_read() }.answer(&request);
+        assert_eq!(answer, Some(Value::Text("one".into())));
+        let reads = [collections::Read { path: vec![0], request: request.clone(), answer, file: None }];
+        let held = |live: &State| still_as_read(&start, live, &reads, &permit, &store, None, false);
+
+        failing.store(true, std::sync::atomic::Ordering::SeqCst);
+        let asked_again = collections::Readable { store: store.clone(), roots: collections::roots(&start), granted: permit.collections_read() }.answer(&request);
+        assert_eq!(asked_again, None, "the store fails: asking again finds nothing");
+        assert!(held(&start.clone()), "its collection didn't move: it commits on what it read");
+        assert!(!held(&moved), "its collection moved: asked again, the failed read counts as changed");
+        assert!(!held(&changed), "its item changed: it runs again");
+
+        failing.store(false, std::sync::atomic::Ordering::SeqCst);
+        assert!(held(&moved), "the store back: the moved root still holds its item");
+        assert!(!held(&changed));
+    }
 }

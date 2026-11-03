@@ -181,7 +181,10 @@ after keeps each honest. The gains below are estimated from the shares above.
      root names its contents, so the same root gives the same answer. A run that read nothing
      but its cells stops after them. A test holds both to what asking again gives.
      One difference, in a failure mode only: a store read that fails at the check no longer
-     sends a run whose collection didn't move round again.
+     sends a run whose collection didn't move round again. A test with a store that fails on demand holds
+     it: a run whose collection didn't move commits on what it read; one whose collection moved
+     is asked again, and the failed read sends it round again, as before (with the shortcut
+     taken out, the test fails on the first).
    - **Whether a run changed its state** (and writes its head) is decided by comparing the two
      states' cells, key by key and hash by hash, instead of hashing the start's snapshot again:
      a snapshot is those hashes and nothing else, and a test holds the two answers equal. The
