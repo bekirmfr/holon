@@ -174,7 +174,63 @@ the record's own work again: the timeline of every node's outputs is most of the
 it), and the line is hashed and appended under the deployment's log lock, one run at a time (C2;
 build step 12.4 c took the rest out of it).
 
-### 1.5 What the comparisons don't cover
+### 1.5 Holon against workflow platforms: n8n and Node-RED
+
+The same two routes built in the two best-known flow platforms: n8n 2.46.4, a workflow automation
+tool, and Node-RED 5.0.9, a flow-based programming tool. Both ran on Node.js 24 on the same machine,
+one server at a time (Appendix A). Holon is the build after interpreter step 1 (`440eca0`).
+
+- **n8n:** a Webhook node answered by a Respond to Webhook node. Its text is an expression: the
+  greeting, or calc's arithmetic as a chain of ternaries, the nearest n8n has to a `match`. A
+  third route does calc in a Code node instead, the way n8n users write logic.
+- **n8n's settings that matter here:** run saving on (`EXECUTIONS_DATA_SAVE_ON_SUCCESS=all`, the
+  default, into its SQLite database) and off (`none`). The expression engine is `vm`, the 2.x
+  default (each execution borrows a V8 isolate from a pool of one), and was also run as `legacy`,
+  1.x's in-process evaluation and n8n's fastest.
+- **Node-RED:** `http in`, a function node, `http response`. It keeps no record of runs.
+
+| 64 connections, two rounds | `hello` req/s | `calc` req/s | CPU a request, `hello` | p50 at 1 connection, `hello` |
+|---|---|---|---|---|
+| Holon strict | 8,786–9,515 | 7,827–8,567 | 225–246 µs | 588–606 µs |
+| Holon lazy | 14,694–16,192 | 11,378–12,453 | 165–177 µs | 107–115 µs |
+| Holon unrecorded | 55,808–58,965 | 54,794–55,107 | 52–54 µs | 71 µs |
+| Node-RED (no record) | 7,052–7,239 | 8,353–9,137 | 144–150 µs | 251–264 µs |
+| n8n, saving on, `vm` (as shipped) | 32 | 34 | 67–69 ms | 52.5–54.3 ms |
+| n8n, saving off, `vm` | 35–38 | 36–40 | 61–65 ms | 49.0–52.8 ms |
+| n8n, saving on, `legacy` | 56–59 | 69–71 | 16.9–17.4 ms | 13.4–13.7 ms |
+| n8n, saving off, `legacy` | 60–66 | 72–80 | 15.1–16.0 ms | 11.9–13.3 ms |
+| n8n, calc in a Code node | | 32–35 (`vm`), 62–72 (`legacy`) | 15.6–18.0 ms (`legacy`) | |
+
+- **Against n8n, Holon is two to three orders of magnitude ahead.**
+  - The closest pair is n8n saving its runs against Holon lazy, each keeping a record without
+    waiting for the disk. n8n's fastest setting of that pair (`legacy`) answers `hello` at 56–59
+    req/s; Holon lazy is 260–275× its throughput, at a hundredth of its CPU a request.
+  - Holon strict, which waits for the disk before every answer, is still 150–170× that, and
+    275–300× n8n as shipped.
+  - At 64 connections n8n's p50 is about a second: it is one thread at about 16–70 ms of CPU a
+    request, so requests queue.
+- **Where n8n's time goes.** A CPU profile under load (`node --cpu-prof`, `legacy`, saving off)
+  puts 43% of its busy time in the database layer, typeorm and SQLite, even with saving off: each
+  webhook execution reads its workflow and writes and removes an execution row. The isolate
+  engine (`vm`) adds 45–50 ms a request on top. Building the workflow object and its
+  parameters is another 6–10%.
+- **n8n's own figure.** Its documentation cites up to about 220 executions a second for one
+  instance, on its own hardware, and scales out in queue mode: Redis and worker processes, each a
+  process like this one. That is 3–4× what this machine gave n8n's fastest setting, and Holon lazy
+  here is still 65–75× that.
+- **Against Node-RED,** the fair pair is Holon unrecorded, since neither keeps a record. Holon
+  answers 6–8× the requests at a third to a half of the CPU a request (52–57 against 111–150 µs),
+  and Node-RED's single thread caps it near one core. Node-RED's latency at one connection is
+  3.5× Holon's.
+- **What this doesn't say.**
+  - n8n and Node-RED are integration tools with hundreds of service nodes, an editor of their own
+    and, in n8n, retries, credentials and a run history to browse. Neither aims at the request
+    path, so this measures them where Holon is strongest.
+  - n8n's saved run is a row of the execution's data, not a hash-chained record that replays the
+    run. Whether it is on disk before the answer is SQLite's setting, not a level n8n offers.
+  - The machine is the 4-vCPU VM of §1, shared with `wrk`.
+
+### 1.6 What the comparisons don't cover
 
 - The machine is a 4-core VM shared with `wrk`, so absolute numbers are low, and the same build
   varies between runs (plain .NET 97–133k on `hello`). CPU per request at 1 connection is inflated
@@ -1539,6 +1595,18 @@ The end-to-end tests (`editor/e2e`) and `editor/src/samples.test.ts` must stay g
   start, a 5 s settle and 3 s between routes, 8 s each, two rounds: taken right after a
   64-connection run, Holon strict read 150–260 µs high, the disk still busy with what that run
   wrote.
+- **n8n and Node-RED (§1.5):** Node.js 24.22.2 (n8n 2.x needs 24), `npm install n8n@2.46.4` and
+  `node-red@5.0.9`.
+  - n8n's install needs `--force`: `n8n-nodes-base` lists an arm64 musl canvas binary as a plain
+    dependency. Only the sqlite3 and isolated-vm install scripts were run.
+  - The workflows were imported with `n8n import:workflow` and published with
+    `n8n publish:workflow`, then run by `n8n start` with `NODE_ENV=production`, `N8N_LOG_LEVEL=warn`
+    and diagnostics off. Each server was restarted for every setting.
+  - A webhook path with a parameter is served under the webhook's id
+    (`/webhook/<id>/hello/:name`).
+  - CPU is summed over every process of the server, n8n's task runner included. Each row: a 3 s
+    warm-up, 8 s at 64 connections (`--timeout 10s`), then 6 s at one, two rounds.
+  - The workflows and flows aren't in the repository: each is the two or three nodes §1.5 names.
 - **Load:** `wrk -t2 -c64 -d6s --latency`, or `-t1 -c1` for one connection. `calc`'s body is
   `{"op":"mul","a":6,"b":7}`.
 - **Attribution.** In a throwaway build, reverted afterwards:
