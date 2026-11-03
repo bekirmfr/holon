@@ -255,6 +255,50 @@ fn load_closure(store: &SharedStore, root: Hash) -> Result<(Loaded, bool), Closu
     Ok((Loaded::of(units), whole))
 }
 
+/// What the cache's own entry for a unit takes beside it: its hash, its count and its `Arc`, in a
+/// map that doubles as it grows.
+const KEPT_UNIT_BYTES: u64 = 96;
+
+/// About what `unit` takes in memory, behind its `Arc`: the unit itself and what it owns on the
+/// heap (a primitive's name, a composite's children and edges, a module's bytes, its params' and
+/// ports' texts and types), each allocation a little more for the allocator's own.
+fn unit_footprint(unit: &Unit) -> u64 {
+    // A unit is mostly short texts (names like `out`, `i0`), each its own allocation, which the
+    // allocator rounds up to its smallest chunk.
+    const ALLOC: u64 = 32;
+    fn type_heap(ty: &holon_core::Type) -> u64 {
+        use holon_core::Type;
+        let own = std::mem::size_of::<Type>() as u64;
+        match ty {
+            Type::List(t) => ALLOC + own + type_heap(t),
+            Type::Product(ts) | Type::Sum(ts) => ALLOC + ts.iter().map(|t| own + type_heap(t)).sum::<u64>(),
+            _ => 0,
+        }
+    }
+    let ports = |ps: &[holon_core::Port]| ALLOC + ps.iter().map(|p| std::mem::size_of::<holon_core::Port>() as u64 + p.name.len() as u64 + ALLOC + type_heap(&p.ty)).sum::<u64>();
+    let body = match &unit.body {
+        UnitBody::Primitive { name } => name.len() as u64 + ALLOC,
+        UnitBody::Composite { children, edges } => (children.len() * 32 + edges.len() * std::mem::size_of::<holon_core::Edge>()) as u64 + 2 * ALLOC,
+        UnitBody::Module { bytes } => bytes.len() as u64 + ALLOC,
+    };
+    let params = ALLOC + unit.params.iter().map(|p| std::mem::size_of::<Param>() as u64 + 2 * ALLOC + p.name().len() as u64 + p.value().map_or(0, str::len) as u64).sum::<u64>();
+    std::mem::size_of::<Unit>() as u64 + 16 + ALLOC + body + params + ports(&unit.inputs) + ports(&unit.outputs)
+}
+
+/// What the flow cache counts for `unit`, held once however many closures place it.
+#[cfg(test)]
+pub(crate) fn counted_for_tests(unit: &Unit) -> u64 {
+    (unit_footprint(unit) + KEPT_UNIT_BYTES) * 5 / 4
+}
+
+/// About what a closure takes beside its units: its tree of them (nodes of 11 hashes and `Arc`s,
+/// about two thirds full) and its shapes (`Shapes::footprint`).
+fn closure_footprint(loaded: &Loaded) -> u64 {
+    let n = loaded.0.units.len() as u64;
+    let node = 11 * (32 + 8) + 24 + 16;
+    n.div_ceil(8) * node + loaded.0.shapes.footprint() + 64
+}
+
 /// How much memory the flow cache holds by default: every sample flow about 40 times over, with
 /// units shared (docs/L4s/request-path-L4.md, C1). `holon serve --flow-cache SIZE` sets it.
 pub(crate) const FLOW_CACHE_BYTES: u64 = 256 << 20;
@@ -276,6 +320,8 @@ struct Kept {
 struct KeptClosure {
     loaded: Loaded,
     used: u64,
+    /// What the closure itself takes beside its units: its own map of them and its shapes.
+    bytes: u64,
 }
 
 struct KeptUnit {
@@ -326,9 +372,14 @@ impl FlowCache {
 
     /// Keep `loaded` as `root`'s closure, when it fits the budget at all.
     fn keep(&self, root: Hash, loaded: &Loaded) {
-        // Sized before the lock is taken: encoding a big module takes a while.
-        let sizes: Vec<(Hash, u64)> = loaded.0.units.iter().map(|(h, u)| (*h, encode_preimage(u).map_or(0, |b| b.len() as u64))).collect();
-        if sizes.iter().map(|(_, n)| n).sum::<u64>() > self.0.lock().unwrap().budget {
+        // Sized before the lock is taken: what each takes in memory, not its encoding, so the
+        // budget is the memory kept (resilience-audit-L4.md, S1: counted by encoding, a cache of
+        // flows without a js node held 7.8 times its budget).
+        // Rounded up a quarter for what the estimate can't see (each small allocation's rounding,
+        // the maps' spare room): a cache that keeps a little less than its budget, never more.
+        let sizes: Vec<(Hash, u64)> = loaded.0.units.iter().map(|(h, u)| (*h, (unit_footprint(u) + KEPT_UNIT_BYTES) * 5 / 4)).collect();
+        let own = closure_footprint(loaded);
+        if sizes.iter().map(|(_, n)| n).sum::<u64>() + own > self.0.lock().unwrap().budget {
             return;
         }
         let mut kept = self.0.lock().unwrap();
@@ -346,7 +397,8 @@ impl FlowCache {
         }
         kept.tick += 1;
         let used = kept.tick;
-        kept.closures.insert(root, KeptClosure { loaded: loaded.clone(), used });
+        kept.bytes += own;
+        kept.closures.insert(root, KeptClosure { loaded: loaded.clone(), used, bytes: own });
         kept.shrink(Some(root));
     }
 
@@ -366,6 +418,7 @@ impl Kept {
                 break;
             };
             let gone = self.closures.remove(&oldest).expect("it was just found");
+            self.bytes -= gone.bytes;
             for hash in gone.loaded.0.units.keys() {
                 let unit = self.units.get_mut(hash).expect("a kept closure's units are kept");
                 unit.holders -= 1;
@@ -509,6 +562,34 @@ pub(crate) fn handle_post_cache_ingest(cache: &Mutex<SharedCache>, request: &Req
 /// How many bytes of values the store keeps in memory beside the disk (`ValueCache`).
 pub(crate) const VALUE_CACHE_BYTES: u64 = 64 << 20;
 
+/// What the cache's own entry for a value takes beside the value: its hash and its counts, in a
+/// map that doubles as it grows (a bucket and a half on average, each with its control byte).
+const ENTRY_BYTES: u64 = 104;
+
+/// About what `value` takes in memory: its own `Value`, and what it owns on the heap (a text's
+/// bytes, a list's items, a record's entries and keys, a payload's box), each allocation a little
+/// more for the allocator's own (resilience-audit-L4.md, S1: counted by encoding, the cache held
+/// 2.8 times its budget).
+pub(crate) fn footprint(value: &Value) -> u64 {
+    const ALLOC: u64 = 16;
+    let own = std::mem::size_of::<Value>() as u64;
+    own + match value {
+        Value::Number(_) | Value::Boolean(_) => 0,
+        Value::Text(t) => t.len() as u64 + ALLOC,
+        Value::List(xs) => ALLOC + xs.iter().map(footprint).sum::<u64>(),
+        // A tree's nodes, each with room for 11 keys and values whatever it holds, about two thirds
+        // full; each key's text; each value's own heap (the value itself is in its node).
+        Value::Record(fields) if fields.is_empty() => 0,
+        Value::Record(fields) => {
+            let slot = std::mem::size_of::<String>() as u64 + own;
+            let nodes = (fields.len() as u64).div_ceil(8);
+            nodes * (11 * slot + 24 + ALLOC) + fields.iter().map(|(k, v)| k.len() as u64 + ALLOC + footprint(v) - own).sum::<u64>()
+        }
+        Value::Effect { sink, payload } => sink.len() as u64 + 2 * ALLOC + footprint(payload),
+        Value::Sum { payload, .. } => ALLOC + footprint(payload),
+    }
+}
+
 /// The largest value it keeps: a file's text kept by hash can be big, and is read once.
 const VALUE_CACHE_LARGEST: u64 = 1 << 20;
 
@@ -538,6 +619,24 @@ impl ValueCache {
         ValueCache(Mutex::new(KeptValues { budget, bytes: 0, tick: 0, values: HashMap::new() }))
     }
 
+    /// Keep at most `budget` bytes from now on (`holon serve --value-cache`), letting go of the
+    /// least recently used past it.
+    pub(crate) fn set_budget(&self, budget: u64) {
+        let mut kept = self.0.lock().unwrap();
+        kept.budget = budget;
+        if kept.bytes > budget {
+            let mut by_use: Vec<(u64, Hash, u64)> = kept.values.iter().map(|(h, (_, n, used))| (*used, *h, *n)).collect();
+            by_use.sort_unstable();
+            for (_, h, n) in by_use {
+                if kept.bytes <= budget {
+                    break;
+                }
+                kept.values.remove(&h);
+                kept.bytes -= n;
+            }
+        }
+    }
+
     /// The value kept for `key`, now the most recently used.
     pub(crate) fn get(&self, key: &Hash) -> Option<Value> {
         let mut kept = self.0.lock().unwrap();
@@ -558,8 +657,9 @@ impl ValueCache {
         if self.0.lock().unwrap().budget == 0 {
             return;
         }
-        // Sized before the lock is taken.
-        let Ok(bytes) = holon_core::encode_value(value).map(|b| b.len() as u64) else { return };
+        // Sized before the lock is taken: what it takes in memory, not its encoding, so the budget is
+        // the memory kept (resilience-audit-L4.md, S1).
+        let bytes = footprint(value) + ENTRY_BYTES;
         let mut kept = self.0.lock().unwrap();
         if bytes > VALUE_CACHE_LARGEST.min(kept.budget) || kept.values.contains_key(&key) {
             return;

@@ -1869,6 +1869,55 @@ mod measured {
         assert_eq!(outputs_bound(&[Slot::Value(Value::Number(f64::INFINITY))]), None);
     }
 
+    /// The bound holds over random values too (D4): 20,000 of every kind, nested, from tiny to well
+    /// past the limit (long texts of awkward characters, numbers of every size and none, records
+    /// with awkward keys): never below the JSON, and the timer keeps exactly what writing the JSON
+    /// would have kept.
+    #[test]
+    fn the_bound_holds_over_random_values_of_every_kind() {
+        use holon_core::{Observer, Slot};
+        let mut seed = 0x0dd_ba11_cafe_f00du64;
+        let mut next = move |m: u64| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed % m.max(1)
+        };
+        fn text(next: &mut impl FnMut(u64) -> u64, most: u64) -> String {
+            const PIECES: [&str; 12] = ["a", "\"", "\\", "\n", "\u{1}", "\u{7f}", "é", "😀", "‹", "/", " ", "0"];
+            let n = next(most);
+            (0..n).map(|_| PIECES[next(PIECES.len() as u64) as usize]).collect()
+        }
+        fn value(next: &mut impl FnMut(u64) -> u64, depth: u32) -> Value {
+            let numbers = [0.0, -0.0, 1.0, 0.1, -2.2250738585072014e-308, 1.7976931348623157e308, 5e-324, 123456789.125, f64::NAN, f64::INFINITY];
+            match next(if depth > 3 { 3 } else { 7 }) {
+                0 => Value::Number(numbers[next(numbers.len() as u64) as usize]),
+                1 => Value::Boolean(next(2) == 0),
+                2 => Value::Text(text(next, 400)),
+                3 => Value::List((0..next(12)).map(|_| value(next, depth + 1)).collect()),
+                4 => Value::Record((0..next(8)).map(|_| (text(next, 20), value(next, depth + 1))).collect()),
+                5 => Value::Effect { sink: text(next, 12), payload: Box::new(value(next, depth + 1)) },
+                _ => Value::Sum { arm: next(1 << 40) as usize, payload: Box::new(value(next, depth + 1)) },
+            }
+        }
+        let most = Timer::MAX_RECORDED_BYTES;
+        let (mut kept, mut not) = (0, 0);
+        for _ in 0..20_000 {
+            let slots: Vec<Slot> = (0..1 + next(3)).map(|_| if next(5) == 0 { Slot::Absent } else { Slot::Value(value(&mut next, 0)) }).collect();
+            let json = serde_json::to_vec(&slots.iter().map(|o| o.value().map(SValue::from_core)).collect::<Vec<_>>()).unwrap().len();
+            if let Some(bound) = outputs_bound(&slots) {
+                assert!(bound >= json, "{bound} < {json}");
+            }
+            let mut timer = Timer::new();
+            timer.enter(&[0]);
+            timer.produced(&[0], &slots);
+            timer.leave(&[0]);
+            assert_eq!(timer.timeline[0].outputs.is_some(), json <= most, "{json} bytes");
+            if json <= most { kept += 1 } else { not += 1 }
+        }
+        assert!(kept > 1000 && not > 100, "both sides of the limit tried: {kept} kept, {not} not");
+    }
+
     /// Kept exactly when the JSON fits, through the timer itself, across the limit.
     #[test]
     fn the_timer_keeps_outputs_exactly_when_their_json_fits() {

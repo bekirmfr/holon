@@ -570,6 +570,8 @@ const SERVE_USAGE: &str = "usage: holon serve [options]
   --keep-runs N              runs each deployment's log keeps (default 500; or HOLON_KEEP_RUNS)
   --flow-cache SIZE          memory kept for loaded flows, such as 64M or 1G; 0 keeps none
                              (default 256M; or HOLON_FLOW_CACHE)
+  --value-cache SIZE         memory kept for values runs read from disk, such as 64M; 0 keeps
+                             none (default 64M; or HOLON_VALUE_CACHE)
   --export-heads URL         send each run's head to a witness (or HOLON_EXPORT_HEADS; its
                              token in HOLON_EXPORT_HEADS_TOKEN)
   --secrets PATH             the secrets file
@@ -724,6 +726,9 @@ fn serve(args: Vec<String>) {
     let mut keep_runs: Option<String> = std::env::var("HOLON_KEEP_RUNS").ok().filter(|v| !v.trim().is_empty());
     // How much memory loaded flows may keep (`--flow-cache SIZE`, or HOLON_FLOW_CACHE; units.rs).
     let mut flow_cache: Option<String> = std::env::var("HOLON_FLOW_CACHE").ok().filter(|v| !v.trim().is_empty());
+    // How much memory values read from disk may keep (`--value-cache SIZE`, or HOLON_VALUE_CACHE;
+    // units.rs's `ValueCache`).
+    let mut value_cache: Option<String> = std::env::var("HOLON_VALUE_CACHE").ok().filter(|v| !v.trim().is_empty());
     // A witness every run's head goes to (`--export-heads URL`, or HOLON_EXPORT_HEADS; heads.rs).
     let mut export_heads: Option<String> = std::env::var("HOLON_EXPORT_HEADS").ok().filter(|v| !v.trim().is_empty());
     while let Some(a) = args.next() {
@@ -752,6 +757,12 @@ fn serve(args: Vec<String>) {
             flow_cache = args.next();
             if flow_cache.is_none() {
                 eprintln!("--flow-cache needs a size: 64M, 1G, or 0 to keep none");
+                std::process::exit(2);
+            }
+        } else if a == "--value-cache" {
+            value_cache = args.next();
+            if value_cache.is_none() {
+                eprintln!("--value-cache needs a size: 64M, 1G, or 0 to keep none");
                 std::process::exit(2);
             }
         } else if a == "--data-host" {
@@ -1053,6 +1064,15 @@ fn serve(args: Vec<String>) {
             Some(bytes) => store.3.set_budget(bytes),
             None => {
                 eprintln!("holon: --flow-cache (or HOLON_FLOW_CACHE) needs a size: 1048576, 64K, 64M or 1G, or 0 to keep none, not {v:?}");
+                std::process::exit(2);
+            }
+        }
+    }
+    if let Some(v) = value_cache {
+        match verify::budget_of(&v) {
+            Some(bytes) => store.4.set_budget(bytes),
+            None => {
+                eprintln!("holon: --value-cache (or HOLON_VALUE_CACHE) needs a size: 1048576, 64K, 64M or 1G, or 0 to keep none, not {v:?}");
                 std::process::exit(2);
             }
         }

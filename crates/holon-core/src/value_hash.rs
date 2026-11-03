@@ -304,6 +304,20 @@ fn put_bytes(buf: &mut Vec<u8>, b: &[u8]) -> Result<(), EncodeError> {
 
 #[cfg(test)]
 mod tests {
+    /// A hash taken while the thread's buffer is in use (a hash inside a hash, which nothing does)
+    /// is taken in a buffer of its own: the same hash (S4).
+    #[test]
+    fn a_hash_taken_while_the_buffer_is_in_use_is_the_same() {
+        let v = Value::Record(BTreeMap::from([("k".to_string(), Value::List(vec![num(1.0), txt("two")]))]));
+        let alone = hash_value(&v).unwrap();
+        let root = |v: &Hash| state_root([("a", v)].into_iter()).unwrap();
+        let inside = with_buffer(|buf| {
+            buf.extend_from_slice(b"in use");
+            (hash_value(&v).unwrap(), root(&alone))
+        });
+        assert_eq!(inside, (alone, root(&alone)));
+    }
+
     use super::*;
     use std::collections::BTreeMap;
 

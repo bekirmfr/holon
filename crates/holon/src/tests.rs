@@ -7630,9 +7630,6 @@ fn cache_leaf(name: &str) -> Unit {
 fn cache_composite(children: Vec<Hash>) -> Unit {
     Unit { body: UnitBody::Composite { children, edges: vec![] }, params: vec![], inputs: vec![], outputs: vec![] }
 }
-fn encoded(unit: &Unit) -> u64 {
-    encode_preimage(unit).unwrap().len() as u64
-}
 
 /// A closure is loaded once and then kept by its root hash; two closures that place the same unit
 /// hold it once, and count it once.
@@ -7644,11 +7641,22 @@ fn a_closure_is_kept_by_its_hash_and_its_units_are_shared() {
     let (l, r) = (store.put(&leaf).unwrap(), store.put(&beside).unwrap());
     let (a_unit, c_unit) = (cache_composite(vec![l]), cache_composite(vec![l, r]));
     let (a, c) = (store.put(&a_unit).unwrap(), store.put(&c_unit).unwrap());
+    // What each closure costs alone, the cache emptied between.
+    let alone = |root: Hash| {
+        state.store.3.set_budget(0);
+        state.store.3.set_budget(crate::units::FLOW_CACHE_BYTES);
+        closure(&state.store, root).unwrap();
+        state.store.3.held().2
+    };
+    let (a_alone, c_alone) = (alone(a), alone(c));
+    state.store.3.set_budget(0);
+    state.store.3.set_budget(crate::units::FLOW_CACHE_BYTES);
     let first = closure(&state.store, a).unwrap();
     assert!(closure(&state.store, a).unwrap().is(&first), "the second run gets the kept closure");
     let other = closure(&state.store, c).unwrap();
     assert!(Arc::ptr_eq(&first.unit(&l).unwrap(), &other.unit(&l).unwrap()), "one leaf, held once");
-    assert_eq!(state.store.3.held(), (2, 4, encoded(&a_unit) + encoded(&c_unit) + encoded(&leaf) + encoded(&beside)));
+    // Counted once: the two together cost what each does alone, less one leaf.
+    assert_eq!(state.store.3.held(), (2, 4, a_alone + c_alone - crate::units::counted_for_tests(&leaf)));
 }
 
 /// A closure keeps each composite's shape beside its units (interpreter path, step 1b): its own
@@ -7682,6 +7690,107 @@ fn a_partial_closure_is_loaded_again_once_it_is_whole() {
     store.put(&leaf).unwrap();
     assert!(closure(&state.store, a).unwrap().resolve(&l).is_some());
     assert_eq!(state.store.3.held().0, 1);
+}
+
+/// How much memory the flow and value caches hold against what their budgets count (S1): the
+/// allocator's bytes in use before and after filling each, beside the bytes each says it holds.
+/// Every sample's flow loaded through the flow cache; notes-like records, lists of numbers and long
+/// text kept by the value cache.
+#[test]
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+#[ignore = "a measurement, run by hand: cargo test --release -p holon -- --ignored measure_cache_memory --nocapture"]
+fn measure_cache_memory() {
+    fn in_use() -> u64 {
+        // SAFETY: mallinfo2 only reads the allocator's counters.
+        unsafe { libc::mallinfo2().uordblks as u64 }
+    }
+    let state = test_state();
+    let mut roots = Vec::new();
+    for sample in holon_author::samples::samples() {
+        let Ok(plan) = holon_author::agent::plan(sample.text) else { continue };
+        for u in &plan.units {
+            assert_eq!(route(&state, &req("POST", "/unit", u.clone())).status_code, 200);
+        }
+        roots.push(parse_hash(&plan.unit).unwrap());
+    }
+    state.store.3.set_budget(1 << 30);
+    let before = in_use();
+    let kept: Vec<_> = roots.iter().map(|r| crate::units::closure(&state.store, *r).ok()).collect();
+    let after = in_use();
+    let (closures, units, bytes) = state.store.3.held();
+    println!(
+        "flow cache: {closures} closures, {units} units, {bytes} bytes counted, {} bytes in memory: {:.1}x",
+        after - before,
+        (after - before) as f64 / bytes as f64
+    );
+    drop(kept);
+    // And the samples without a js node alone: the engine's module, its encoding near its size in
+    // memory, out of the count.
+    let state = test_state();
+    let mut roots = Vec::new();
+    for sample in holon_author::samples::samples() {
+        let Ok(plan) = holon_author::agent::plan(sample.text) else { continue };
+        if sample.text.contains("js ") || sample.text.contains("js(") || sample.text.contains("```") {
+            continue;
+        }
+        for u in &plan.units {
+            assert_eq!(route(&state, &req("POST", "/unit", u.clone())).status_code, 200);
+        }
+        roots.push(parse_hash(&plan.unit).unwrap());
+    }
+    state.store.3.set_budget(1 << 30);
+    let before = in_use();
+    let kept: Vec<_> = roots.iter().map(|r| crate::units::closure(&state.store, *r).ok()).collect();
+    let after = in_use();
+    let (closures, units, bytes) = state.store.3.held();
+    let modules = kept.iter().flatten().count();
+    println!(
+        "flow cache, no js ({modules} loaded): {closures} closures, {units} units, {bytes} bytes counted, {} bytes in memory: {:.1}x",
+        after - before,
+        (after - before) as f64 / bytes as f64
+    );
+    drop(kept);
+
+    let cache = units::ValueCache::with_budget(1 << 30);
+    let text = |s: &str| Value::Text(s.into());
+    let values: Vec<(Hash, Value)> = (0..20_000)
+        .map(|i| {
+            let v = match i % 3 {
+                0 => Value::Record(BTreeMap::from([("title".to_string(), text(&format!("note {i}"))), ("body".to_string(), text("some text for a note, a sentence or two long"))])),
+                1 => Value::List((0..20).map(|k| Value::Number(f64::from(k) * 1.5 + f64::from(i))).collect()),
+                _ => text(&format!("{i} {}", "a line of text ".repeat(40))),
+            };
+            (holon_core::hash_value(&v).unwrap(), v)
+        })
+        .collect();
+    let before = in_use();
+    for (h, v) in &values {
+        cache.keep(*h, v);
+    }
+    let after = in_use();
+    let (n, bytes) = cache.size();
+    println!("value cache: {n} values, {bytes} bytes counted, {} bytes in memory: {:.1}x", after - before, (after - before) as f64 / bytes as f64);
+}
+
+/// The value cache's size, set (`holon serve --value-cache`): lowered, it lets go of the least
+/// recently used down to it; at 0 it keeps nothing and finds nothing (S5).
+#[test]
+fn the_value_caches_size_is_a_setting_it_keeps_to() {
+    let cache = units::ValueCache::with_budget(1 << 20);
+    let values: Vec<(Hash, Value)> = (0..50).map(|i| (holon_core::hash_value(&Value::Text(format!("v{i}"))).unwrap(), Value::Text(format!("v{i} {}", "x".repeat(1000))))).collect();
+    for (h, v) in &values {
+        cache.keep(*h, v);
+    }
+    let (n, bytes) = cache.size();
+    assert_eq!(n, 50);
+    // The newest used again, so it is kept past the cut.
+    assert!(cache.get(&values[0].0).is_some());
+    cache.set_budget(bytes / 5);
+    let (left, kept) = cache.size();
+    assert!(kept <= bytes / 5 && left < 50 && left > 0, "{left} values, {kept} bytes");
+    assert!(cache.get(&values[0].0).is_some(), "the most recently used kept");
+    cache.set_budget(0);
+    assert!(cache.get(&values[0].0).is_none(), "none kept");
 }
 
 /// The store keeps the values runs read from disk (units.rs's `ValueCache`, 12.4): a second
@@ -7748,7 +7857,15 @@ fn the_flow_cache_lets_go_of_the_least_used_past_its_budget() {
     let (l1, l2) = (store.put(&one).unwrap(), store.put(&two).unwrap());
     let (a_unit, b_unit) = (cache_composite(vec![l1]), cache_composite(vec![l2]));
     let (a, b) = (store.put(&a_unit).unwrap(), store.put(&b_unit).unwrap());
-    let (a_bytes, b_bytes) = (encoded(&a_unit) + encoded(&one), encoded(&b_unit) + encoded(&two));
+    // What each costs, as the cache counts it (its units' memory and its own), learned alone.
+    let alone = |root: Hash| {
+        state.store.3.set_budget(0);
+        state.store.3.set_budget(crate::units::FLOW_CACHE_BYTES);
+        closure(&state.store, root).unwrap();
+        state.store.3.held().2
+    };
+    let (a_bytes, b_bytes) = (alone(a), alone(b));
+    state.store.3.set_budget(0);
     state.store.3.set_budget(a_bytes.max(b_bytes));
     closure(&state.store, a).unwrap();
     assert_eq!(state.store.3.held(), (1, 2, a_bytes));

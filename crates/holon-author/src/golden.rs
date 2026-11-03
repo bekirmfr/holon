@@ -175,3 +175,30 @@ fn keeping_each_composites_shape_changes_nothing_the_evaluator_gives() {
     assert!(found.get() > 1000, "the kept shapes were found {} times", found.get());
     assert!(kept == record(None), "a run with the shapes kept gives something else");
 }
+
+/// Every function the compute-heavy flow's `map`s and `fold`s apply runs down a plan (D5): the
+/// language shares an input through a pass-through the plan takes, and a change to how it lowers
+/// one would leave them walked, correct but slower, without this failing.
+#[test]
+fn the_compute_heavy_flows_functions_all_run_down_a_plan() {
+    let lowered = lang::compile(CRUNCH).unwrap();
+    let mut store = MapResolver::new();
+    crate::text::restore(&lowered.doc, &mut store, &Names::new());
+    let port = lowered.doc.server.as_ref().map(|x| x.port.clone()).unwrap_or_default();
+    crate::flow::derive_server(&lowered.doc.nodes, &lowered.doc.edges, &mut store, &port);
+    let mut functions = Vec::new();
+    for unit in store.units() {
+        if let holon_core::UnitBody::Primitive { name } = &unit.body
+            && (name == "map" || name == "fold")
+            && let Some(f) = unit.params.iter().find(|p| p.name() == "fn").and_then(|p| p.value()).and_then(parse_hash)
+        {
+            functions.push(f);
+        }
+    }
+    // Six in the flow; two fold with the same function, one unit.
+    assert!(functions.len() >= 5, "the flow's maps and folds: {}", functions.len());
+    for f in functions {
+        let unit = store.resolve(&f).expect("the function resolves");
+        assert!(holon_core::would_plan(unit, &store), "the function {} is walked, not planned", holon_core::hex(f));
+    }
+}

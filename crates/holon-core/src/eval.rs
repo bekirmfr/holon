@@ -626,6 +626,25 @@ impl Shapes {
         self.0.len()
     }
 
+    /// About what the table takes in memory: its map (a bucket and a half a shape) and each
+    /// shape's lists. For a cache that counts what it keeps (holon's flow cache).
+    pub fn footprint(&self) -> u64 {
+        const ALLOC: u64 = 16;
+        let bucket = (std::mem::size_of::<usize>() + std::mem::size_of::<Shape>()) as u64 + 1;
+        self.0
+            .values()
+            .map(|shape| {
+                let i = &shape.incoming;
+                bucket * 3 / 2
+                    + (i.starts.capacity() * 4) as u64
+                    + (i.ports.capacity() * std::mem::size_of::<Source>()) as u64
+                    + (i.outputs.capacity() * std::mem::size_of::<Option<(u32, u32)>>()) as u64
+                    + (shape.roots.capacity() * 8) as u64
+                    + 4 * ALLOC
+            })
+            .sum()
+    }
+
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
@@ -1241,6 +1260,17 @@ fn function<'r>(params: &[Param], resolver: &'r impl Resolver) -> Option<&'r Uni
     resolver.resolve(&parse_hash(fn_hex)?)
 }
 
+/// Whether `unit`, applied by a `map` or `fold`, runs down a plan worked out ahead (step 5, level 2)
+/// rather than walked: a composite whose only choices are pass-throughs. For a test that a flow's
+/// functions keep their plans when the language changes (docs/L4s/resilience-audit-L4.md, D5).
+#[doc(hidden)]
+pub fn would_plan(unit: &Unit, resolver: &impl Resolver) -> bool {
+    match &unit.body {
+        UnitBody::Composite { children, edges } => Prepared::of(unit, children, edges, resolver).is_some_and(|p| p.planned().plan.is_some()),
+        _ => false,
+    }
+}
+
 /// A `map`'s or `fold`'s function, ready to apply to each item: a composite prepared once
 /// ([`Prepared`]), so each application only runs it.
 enum Ready<'r> {
@@ -1613,6 +1643,24 @@ mod tests {
         let wrong = NodeKind { body: Body::Composite, takes_trigger: false, choice: None, held_when_absent: false };
         let (a, b) = (num(1.0), num(2.0));
         assert_eq!(eval_as(&add, &wrong, &[Some(&a), Some(&b)], &r, &mut NoObserver, &mut Vec::new()).into_vec(), vec![Slot::Absent]);
+    }
+
+    /// A run while the scratch is taken (a run of the same preparation under way, which nothing
+    /// makes) goes on in a scratch of its own, with the same outputs (S4).
+    #[test]
+    fn a_run_whose_scratch_is_taken_uses_one_of_its_own() {
+        let mut r = MapResolver::new();
+        let mut cases = Vec::new();
+        random_composites(&mut r, 200, |u, c, e, n, _| cases.push((u.clone(), c.to_vec(), e.to_vec(), n)));
+        let inputs = [Some(num(3.0)), Some(num(0.0))];
+        let refs: Refs = inputs.iter().map(Option::as_ref).collect();
+        for (unit, children, edges, n_out) in &cases {
+            for prepared in [Prepared::of(unit, children, edges, &r).unwrap(), Prepared::of(unit, children, edges, &r).unwrap().planned()] {
+                let free = prepared.run(*n_out, &refs, &r, &mut NoObserver, &mut Vec::new());
+                let _taken = prepared.scratch.borrow_mut();
+                assert_eq!(prepared.run(*n_out, &refs, &r, &mut NoObserver, &mut Vec::new()), free, "edges {edges:?}");
+            }
+        }
     }
 
     /// A composite with a choice has no plan: what it evaluates depends on a value, so it is walked.

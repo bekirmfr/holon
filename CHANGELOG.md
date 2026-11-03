@@ -27,6 +27,11 @@
   a secret (behind a lock a writer holds while it syncs to disk). Before, a deployment whose reads
   waited on its log or on a write's sync could slow every other deployment's routes a hundredfold.
   A run that panics there is answered 500, as on the pool, not dropped.
+- **The caches keep to their sizes in memory.** `--flow-cache` and the new `--value-cache` (or
+  `HOLON_VALUE_CACHE`, default 64M) count what a loaded flow or a read value takes in memory, not its
+  encoding: measured, a server of flows without a js node held about 8 times its `--flow-cache`,
+  and the value cache about 3 times its 64 MiB. Each now keeps a little less than its size, never
+  more.
 - **No run waits while its log is cut back.** A log's file is cut back to what it keeps by the
   periodic sync, with its lock released for all but the last few lines, instead of by the run that
   found it full, holding the lock: no run waits the 100–150 ms a large log's cut-back takes. The

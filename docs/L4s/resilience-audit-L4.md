@@ -224,10 +224,34 @@ status kept; a failure's error is kept redacted of a secret and cut short, an er
 answering 503 deployed, requested, the server restarted, and `holon history` says "unrecorded GET
 /down 3 runs counted, not logged, 3 failed, the last 503".
 
+## 2.9 Fixed: D4, D5, S1, S4, S5
+
+- **D4:** the timer's size bound is held over 20,000 random values of every kind, nested, from tiny
+  to past the limit (awkward texts and keys, numbers of every size and none): never below the
+  JSON, and the timer keeps exactly what writing the JSON would have kept, on both sides.
+- **D5:** a test compiles the compute-heavy flow and holds every function its `map`s and `fold`s
+  apply to running down a plan (`holon_core::would_plan`, for tests); with the pass-through taken
+  out of the plan, it fails.
+- **S4:** a run whose scratch is taken runs in one of its own, the outputs the same, walked and
+  planned; a hash taken while the thread's buffer is in use is the same hash.
+- **S5:** the value cache's size is a server setting, `--value-cache SIZE` (or `HOLON_VALUE_CACHE`),
+  as the flow cache's is; set, it lets go of the least used down to it.
+- **S1, measured.** A test run by hand (`measure_cache_memory`) loads every sample's flow through
+  the flow cache and keeps 20,000 values of the shapes runs read (notes, lists of numbers, long
+  text), and compares the allocator's bytes in use (`mallinfo2`) with what each cache counts.
+  Counted by encoding, the value cache held **2.8×** its budget and the flow cache 1.2× with the js
+  engine's module among its units but **7.8×** for flows without one: a server of ordinary flows
+  with the default 256 MiB would have held about 2 GB. Both now count what they hold in memory: a
+  value's footprint (its own size, its texts, a record's tree nodes, which hold 11 entries whatever
+  they keep, the cache's own map); a unit's (its fields' heap, each short text the allocator's
+  smallest chunk, its `Arc`, the map's entry), a closure's own tree of units and its shapes table,
+  rounded up a quarter for what the estimate can't see, so a cache keeps a little less than its
+  budget, never more. Measured again: the value cache **1.0×**, the flow cache **0.8–1.0×**.
+
 ## 3. Order
 
 1. **R1–R4**: done (§2.6).
 2. **D1–D3**: done (§2.7).
-3. **D4, D5, S1–S5**.
+3. **D4, D5, S1–S5**: done (§2.6, §2.9).
 4. Then the rest of the check: the end-to-end suite (`editor/e2e`), a soak under load watching
    memory, and a review of `aa2704a..HEAD` by a reader given the code, not this note.
