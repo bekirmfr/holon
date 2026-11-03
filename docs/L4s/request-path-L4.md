@@ -57,49 +57,49 @@ it (C5).
 
 This is a reference point, not a target. The same endpoints run as Holon samples and as a .NET 8
 minimal API (Kestrel, `CreateSlimBuilder`, logging off), on the same 4-vCPU machine, one server at
-a time, loaded with `wrk` over loopback (Appendix A). There are three comparisons, and only the
-last two are like for like.
+a time, loaded with `wrk` over loopback (Appendix A). It was measured twice:
+- **before** this note's changes, at `aa2704a`, when every Holon run was recorded and synced
+  lazily, and the strict and unrecorded columns were throwaway builds standing in for the design;
+- **after** them, at `75a59c7` (build step 12 done), with the levels built (C5): **strict**, the
+  default, on disk before the answer; **lazy**, synced within a second; **unrecorded**, counted and
+  not logged. Two rounds of everything; ranges are the two rounds.
 
-### 1.1 Today: plain .NET against today's Holon
+Ratios are taken within one run. Plain .NET itself measured 96,980–116,612 req/s on `hello` before
+and 132,797–133,151 after, on the same machine: the machine's own noise.
 
-| | .NET 8 | Holon at `aa2704a` | |
-|---|---|---|---|
-| `GET /hello/:name` (`hello-api`), 64 connections | 96,980 req/s, p50 0.53 ms | 1,670 req/s, p50 37 ms | 58× |
-| `POST /calc` (`calc`, JSON), 64 connections | 80,580 req/s, p50 0.67 ms | 1,020 req/s, p50 61 ms | 79× |
-| `GET /hello/:name`, 1 connection | p50 0.105 ms | p50 0.556 ms | 5× |
+### 1.1 Plain .NET against Holon
 
-This is the least fair pairing. The C# service keeps no record, while every Holon run checks its
-permit, redacts secrets, and writes a hash-chained record that can be replayed node by node, under a
-lock the whole server shares (§2). The telling number is Holon's own: **1,480 req/s at 1 connection
-and 1,670 at 64**. More concurrency buys almost nothing, so something on the request path runs one
-request at a time. The rest of this note is about that.
+| | .NET 8 | Holon before (`aa2704a`) | Holon now, strict (default) | Holon now, lazy |
+|---|---|---|---|---|
+| `GET /hello/:name`, 64 connections | 132,797–133,151 req/s, p50 0.35 ms | 1,670 (58× slower) | 8,787–9,470 (14–15×) | 14,912–15,717 (8.5–8.9×) |
+| `POST /calc`, 64 connections | 119,700–125,496, p50 0.40 ms | 1,020 (79×) | 7,414–8,098 (15–17×) | 11,312–12,486 (10–11×) |
+| `GET /hello/:name`, p50 at 1 connection | 65 µs | 556 µs (5×) | 579–586 µs (9×) | 115–117 µs (1.8×) |
+
+Still the least fair pairing: the C# service keeps no record. Before, Holon ran **1,480 req/s at
+1 connection and 1,670 at 64**: more concurrency bought nothing, because something on the request
+path ran one request at a time (§2). Now strict `hello` goes from about 1,700 at one connection to
+9,000 at 64, and lazy to 15,000. The one-connection latency of strict is the disk: it waits for its
+record's sync, which plain .NET never does (§1.3 pays the same wait in C#).
 
 ### 1.2 Unrecorded Holon against plain .NET
 
-An `unrecorded` run (C5) keeps no record, like the plain C# service, so the comparison is the bare
-cost of answering. Holon is measured with the throwaway build's `cache,nolog,nopersist` switches
-(§3), which stand in for C1–C3 with the run unrecorded:
+An `unrecorded` run (C5) keeps no record, like the plain C# service, so this is the bare cost of
+answering. Before, Holon stood in for it with a throwaway build (`cache,nolog,nopersist`, §3); now
+it is the built level, approved per handler:
 
-| 64 connections | .NET 8 | Holon unrecorded | Gap |
-|---|---|---|---|
-| `GET /hello/:name` | 116,612 req/s, 20 µs CPU/req | 27,474 req/s, 120 µs CPU/req | 4.2× throughput, 6.0× CPU |
-| `POST /calc` | 100,474, 24 µs | 21,867, 152 µs | 4.6×, 6.3× |
-| `GET /last` (`counter`; reads state) | 126,121, 19 µs | 20,519, 162 µs | 6.1×, 8.5× |
-| p50 at 1 connection: hello, calc, last | 49, 62, 44 µs | 163, 349, 342 µs | 3.3–7.8× |
+| 64 connections | .NET 8 | Holon unrecorded now | Gap now | Gap before (stand-in) |
+|---|---|---|---|---|
+| `GET /hello/:name` | 132,797–133,151 req/s, 16–17 µs CPU/req | 48,355–49,020, 63–65 µs | 2.7× throughput, 3.9× CPU | 4.2×, 6.0× |
+| `POST /calc` | 119,700–125,496, 19–20 µs | 47,744–50,153, 63–67 µs | 2.4–2.6×, 3.3× | 4.6×, 6.3× |
+| `GET /last` (`counter`; reads state) | 133,082–144,807, 15–17 µs | 41,361–41,791, 70 µs | 3.2–3.5×, 4.1–4.7× | 6.1×, 8.5× |
+| p50 at 1 connection: hello, calc, last | 65, 68–71, 64 µs | 77–78, 91–94, 78–79 µs | 1.2–1.4× | 3.3–7.8× |
 
-For bare request handling, .NET is 4–6× more efficient: compiled code against a graph evaluated
-node by node. Holon's extra 100–140 µs per request goes to:
-- evaluating the graph;
-- the run's entry and per-node timeline, which the stand-in still builds although it doesn't log
-  them. C5's `unrecorded` can skip them; that saving isn't measured;
-- the permit checks;
-- the hop onto a blocking thread (`dataplane.rs:295`).
-
-`/last` costs most because a stateful run copies its state (`firing.rs:177`) even to read it.
-
-§4.5 measures this constant section by section, and prices what caching, a compiled plan and code
-generation would take off it. The flow's evaluation is about a fifth of the request. The largest
-single part is moving the run onto a blocking thread and back.
+For bare request handling .NET is now 2.4–3.5× more efficient, from 4–6×: compiled code against a
+graph evaluated node by node. Holon's extra 45–55 µs of CPU per request, from 100–140, is the
+graph's evaluation, the permit checks and the run's setup. What came off it (§4.5, build step 12):
+the flow cache (C1), the state no longer copied to be read (C3), a short route run on the worker
+that read its request instead of a blocking thread (12.1), no timeline for an unrecorded run (12.2),
+hashes written without a `format!` a byte, and a permit's names worked out once (12.4).
 
 ### 1.3 Strict Holon against a C# service with the same record
 
@@ -117,32 +117,27 @@ gets a middleware that does the same on every request:
 
 A check confirmed that the C# records are valid JSON and correctly chained.
 
-| 64 connections | .NET strict | Holon strict, design proxy | Holon strict, today's log lock |
-|---|---|---|---|
-| `GET /hello/:name` | 8,745 req/s | 8,463 (97%) | 4,354 (50%) |
-| `POST /calc` | 7,279 | 6,916 (95%) | 2,757 (38%) |
-| `GET /last` | 7,104 | 6,980 (98%) | 4,234 (60%) |
-| CPU per request | 227–289 µs | 250–334 µs | 428–629 µs |
-| p50 at 1 connection: hello, calc, last | 647, 573, 651 µs | 618, 970, 930 µs | 668, 1,050, 1,020 µs |
+| 64 connections | .NET strict | Holon strict now | Before: design proxy | Before: the log lock |
+|---|---|---|---|---|
+| `GET /hello/:name` | 9,843–10,268 req/s | 8,787–9,470 (86–96%) | 97% | 50% |
+| `POST /calc` | 9,504–9,655 | 7,414–8,098 (77–85%) | 95% | 38% |
+| `GET /last` | 10,719–10,886 | 8,662–9,095 (80–85%) | 98% | 60% |
+| CPU per request: hello, calc, last | 192–203, 213–217, 176 µs | 229–247, 274–298, 249–261 µs | | |
+| p50 at 1 connection: hello, calc, last | 421–431, 451–478, 417–425 µs | 579–586, 641–677, 587–684 µs | | |
 
-The two Holon columns bracket the design:
-- **The design proxy** (`cache,nolog,nopersist,strict`) appends a 5 KB line and syncs it with C2 (e)'s
-  group commit, but it doesn't build the real record. C2 estimates that work at 35–45 µs of CPU, so
-  the design should land somewhat below this column, perhaps 10–25% behind .NET rather than 2–5%.
-- **Today's log lock** (`cache,nopersist,strict`) writes the real record under the table lock, as
-  `aa2704a` does, and syncs the extra line. It's the pessimistic bound, and the gap to the proxy is
-  what C2 (a)–(c) removes.
-
-Once both services keep the record Holon keeps, **the disk sets the pace for both, and they land
-within a few percent of each other on this machine**. The 4–6× gap of §1.2 belongs to answering a
-request with nothing recorded; the record costs C# more in absolute terms than the whole of
-Holon's evaluation does (§1.4). Holon gives that record with no code. The C# middleware is about
-130 lines.
+Before, the two Holon columns bracketed the design: the proxy appended a 5 KB line and synced it
+without building the real record, and this note expected the design to land 10–25% behind .NET
+rather than 2–5%. **Built, it lands 4–23% behind**, `hello` closest: the record's own work (the
+entry, its timeline of each node's outputs, redaction, the chain) is the difference, 35–85 µs of
+CPU per request more than C#'s, and the disk sets the pace for both. Holon gives that record with
+no code; the C# middleware is about 130 lines. At one connection Holon waits 150–260 µs longer than
+C#. Not measured apart; one likely part is that it opens the log's file for each sync
+(`recorder::sync_file`), where C# syncs a handle it keeps.
 
 ### 1.4 What a C# record costs, step by step
 
 `hello`, 64 connections, with the C# middleware stopped after each step (`RECORD=plumb`, `build`,
-`lazy`, `strict`):
+`lazy`, `strict`), measured before:
 
 | Step | Throughput | CPU per request |
 |---|---|---|
@@ -156,21 +151,31 @@ A first, quick C# recorder (reflection-based serialization of anonymous objects,
 concatenation) cost nearly twice as much (12,130 req/s with no fsync, 5,938 strict). The tables use
 the rewrite, so the comparison isn't against a strawman.
 
-The "C# lazy" step, a record appended without fsync, measured 13,593–19,352 req/s across the
-three routes in the full run, and 22,501 in the run above. Holon `unrecorded` (20,519–27,474) is
-faster than that. Holon `lazy` (estimated 15,000–16,000, C5) falls inside that range.
+The C# record appended without fsync (`lazy`) is Holon `lazy`'s counterpart. Now, at 64 connections:
+
+| | C# lazy | Holon lazy |
+|---|---|---|
+| `GET /hello/:name` | 28,190–41,949 req/s, 77–108 µs CPU/req | 14,912–15,717, 172–174 µs |
+| `POST /calc` | 16,779–33,740, 82–157 µs | 11,312–12,486, 210–237 µs |
+| `GET /last` | 16,355–17,052, 147–151 µs | 16,774–16,965, 161 µs |
+
+The C# figures vary most between rounds. Holon lazy, estimated at 15,000–16,000 before it was
+built, measures 14,900–15,700 on `hello`, and matches C# on `/last`. What it spends beyond C# is
+the record's own work again: the timeline of every node's outputs is most of the line (§8 Q16 keeps
+it), and the line is hashed and appended under the deployment's log lock, one run at a time (C2;
+build step 12.4 c took the rest out of it).
 
 ### 1.5 What the comparisons don't cover
 
-- The machine is a 4-core VM shared with `wrk`, so absolute numbers are low. CPU per request at 1
-  connection is inflated by .NET's thread-pool spinning, so the tables compare CPU at 64.
-- The Holon columns of §1.2 and §1.3 are throwaway builds standing in for C1–C3 and C5, not the
-  design built.
+- The machine is a 4-core VM shared with `wrk`, so absolute numbers are low, and the same build
+  varies between runs (plain .NET 97–133k on `hello`). CPU per request at 1 connection is inflated
+  by .NET's thread-pool spinning, so the tables compare CPU at 64.
+- The before columns of §1.2 and §1.3 are throwaway builds standing in for C1–C3 and C5; the now
+  columns are the design built, at `75a59c7`.
 - The C# timeline's values are filled in to match the size and shape. C# runs no graph, so it has
   no nodes to time, and its record can't replay a run.
-- State writes (`counter /hit`) aren't compared. A C# counterpart would need durable state too, and
-  this disk's noise on `/hit` (500–4,400 req/s between identical runs, Appendix A) would swamp the
-  difference.
+- State writes (`counter /hit`) aren't compared. A C# counterpart would need durable state too;
+  Holon's `/hit` is about 700–1,400 req/s, bound by each write's own sync of its state head (C3).
 
 ## 2. What a request does today
 
@@ -1474,6 +1479,11 @@ The end-to-end tests (`editor/e2e`) and `editor/src/samples.test.ts` must stay g
   cache on and no log and no persist.
 - **The comparison of §1.2–§1.4** was measured after §3, on the same machine. Holon's figures
   differ from §3's by run-to-run noise (`hello` unrecorded 27,474 here against 21,044 there).
+- **The re-run after build step 12** (§1): `75a59c7`, `holon serve` with a fresh data folder and
+  nine deployments, `hello-api`, `calc` and `counter` as their samples are (strict) and a copy of
+  each route `lazy` and one `unrecorded` (approved, `holon deploy --approve`); the C# program as
+  before, `RECORD=none`, `lazy` and `strict`. Each row: a 2 s warm-up, then 6 s at 64 connections
+  (throughput, p50, CPU per request) and 6 s at one (p50). Two rounds, Holon then C# in each.
 - **Load:** `wrk -t2 -c64 -d6s --latency`, or `-t1 -c1` for one connection. `calc`'s body is
   `{"op":"mul","a":6,"b":7}`.
 - **Attribution.** In a throwaway build, reverted afterwards:
