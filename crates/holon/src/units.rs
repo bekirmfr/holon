@@ -477,3 +477,87 @@ pub(crate) fn handle_post_cache_ingest(cache: &Mutex<SharedCache>, request: &Req
         Err(CacheIngestError::Encode(e)) => err(500, format!("encode error: {e:?}")),
     }
 }
+
+/// How many bytes of values the store keeps in memory beside the disk (`ValueCache`).
+pub(crate) const VALUE_CACHE_BYTES: u64 = 64 << 20;
+
+/// The largest value it keeps: a file's text kept by hash can be big, and is read once.
+const VALUE_CACHE_LARGEST: u64 = 1 << 20;
+
+/// The values runs have read from the on-disk store, kept in memory up to a budget (by encoded
+/// size), the least recently used let go first (docs/L4s/request-path-plan.md, 12.4): a collection
+/// read walks its trie, a value a node, each a file named by its hash, opened, decoded and checked
+/// under the store's lock. A value is its hash's forever, so a kept one is never stale, and one a
+/// sweep has since removed from disk is one no live root reaches, so no run asks for it. Its lock
+/// is a leaf: the store is never read while it is held.
+pub(crate) struct ValueCache(Mutex<KeptValues>);
+
+struct KeptValues {
+    budget: u64,
+    bytes: u64,
+    tick: u64,
+    values: HashMap<Hash, (Value, u64, u64)>,
+}
+
+impl Default for ValueCache {
+    fn default() -> ValueCache {
+        ValueCache::with_budget(VALUE_CACHE_BYTES)
+    }
+}
+
+impl ValueCache {
+    pub(crate) fn with_budget(budget: u64) -> ValueCache {
+        ValueCache(Mutex::new(KeptValues { budget, bytes: 0, tick: 0, values: HashMap::new() }))
+    }
+
+    /// The value kept for `key`, now the most recently used.
+    pub(crate) fn get(&self, key: &Hash) -> Option<Value> {
+        let mut kept = self.0.lock().unwrap();
+        if kept.budget == 0 {
+            return None;
+        }
+        kept.tick += 1;
+        let tick = kept.tick;
+        kept.values.get_mut(key).map(|(v, _, used)| {
+            *used = tick;
+            v.clone()
+        })
+    }
+
+    /// Keep `value` as `key`'s, when it is small enough; let go of the least recently used past the
+    /// budget, down to three quarters of it, so the next few fit without another pass.
+    pub(crate) fn keep(&self, key: Hash, value: &Value) {
+        if self.0.lock().unwrap().budget == 0 {
+            return;
+        }
+        // Sized before the lock is taken.
+        let Ok(bytes) = holon_core::encode_value(value).map(|b| b.len() as u64) else { return };
+        let mut kept = self.0.lock().unwrap();
+        if bytes > VALUE_CACHE_LARGEST.min(kept.budget) || kept.values.contains_key(&key) {
+            return;
+        }
+        kept.tick += 1;
+        let tick = kept.tick;
+        kept.values.insert(key, (value.clone(), bytes, tick));
+        kept.bytes += bytes;
+        if kept.bytes > kept.budget {
+            let mut by_use: Vec<(u64, Hash, u64)> = kept.values.iter().map(|(h, (_, n, used))| (*used, *h, *n)).collect();
+            by_use.sort_unstable();
+            let target = kept.budget / 4 * 3;
+            for (_, h, n) in by_use {
+                if kept.bytes <= target {
+                    break;
+                }
+                kept.values.remove(&h);
+                kept.bytes -= n;
+            }
+        }
+    }
+
+    /// How many values it keeps, and their bytes.
+    #[cfg(test)]
+    pub(crate) fn size(&self) -> (usize, u64) {
+        let kept = self.0.lock().unwrap();
+        (kept.values.len(), kept.bytes)
+    }
+}

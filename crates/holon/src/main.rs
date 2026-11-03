@@ -277,20 +277,22 @@ type DynStore = Box<dyn Store + Send>;
 /// same underlying `Mutex`, so they see the same data. See the module doc for why this exists
 /// instead of a `holon-host` change.
 /// The third part notes the values put lately, for a sweep to spare (sweep.rs); the fourth keeps
-/// the closures runs have loaded (units.rs's `FlowCache`).
+/// the closures runs have loaded (units.rs's `FlowCache`); the fifth the values runs have read
+/// from disk (units.rs's `ValueCache`).
 #[derive(Clone)]
-struct SharedStore(Arc<Mutex<DynStore>>, Arc<calls::Hub>, Arc<sweep::Puts>, Arc<units::FlowCache>);
+struct SharedStore(Arc<Mutex<DynStore>>, Arc<calls::Hub>, Arc<sweep::Puts>, Arc<units::FlowCache>, Arc<units::ValueCache>);
 
 impl SharedStore {
     /// A handle onto `backend`, which no run can yet reach the other deployments through: the
     /// server connects that once its table of deployments exists (`calls::Hub::connect`).
     fn new(backend: DynStore) -> SharedStore {
-        SharedStore(Arc::new(Mutex::new(backend)), Arc::default(), Arc::default(), Arc::default())
+        // In memory already: nothing to keep beside it.
+        SharedStore(Arc::new(Mutex::new(backend)), Arc::default(), Arc::default(), Arc::default(), Arc::new(units::ValueCache::with_budget(0)))
     }
 
     /// The same onto a `FileStore` keeping its values in `values`, which a sweep may clear.
     fn on_disk(backend: DynStore, values: PathBuf) -> SharedStore {
-        SharedStore(Arc::new(Mutex::new(backend)), Arc::default(), Arc::new(sweep::Puts::at(values)), Arc::default())
+        SharedStore(Arc::new(Mutex::new(backend)), Arc::default(), Arc::new(sweep::Puts::at(values)), Arc::default(), Arc::default())
     }
 }
 
@@ -308,7 +310,15 @@ impl Store for SharedStore {
         Ok(hash)
     }
     fn get_value(&self, key: &Hash) -> Result<Option<Value>, StoreError> {
-        self.0.lock().unwrap().get_value(key)
+        // A value is its hash's forever, so one read from disk once is the same one kept.
+        if let Some(value) = self.4.get(key) {
+            return Ok(Some(value));
+        }
+        let value = self.0.lock().unwrap().get_value(key)?;
+        if let Some(v) = &value {
+            self.4.keep(*key, v);
+        }
+        Ok(value)
     }
 }
 

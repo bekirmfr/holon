@@ -1072,6 +1072,23 @@ What the profile shows next, for a collection read: the store's lock held across
 read, decode and check (`SharedStore::get_value`, 15%), and serializing the entry under the log's
 lock (25%, mostly the timeline: Q16).
 
+**12.4 (b) done: the values runs read, kept in memory.** `units::ValueCache`, the store's fifth part,
+in front of the on-disk store only: a value read from disk is kept (up to 64 MiB, by encoded size,
+none over 1 MiB, the least recently used let go first, down to three quarters of the budget), and
+the next read of it takes neither the store's lock nor the disk. A value is its hash's forever,
+so a kept one is never stale; one a sweep removed from disk is one no live root reaches. The
+budget is a constant, not a setting (`--flow-cache` is the flows'). Test:
+`the_store_keeps_the_values_it_read_within_a_budget`.
+
+| | before | after |
+|---|---|---|
+| `profile_one_route` `notes`, a run | 107.4 µs | 83.5 µs |
+| `/notes` live, 1 connection | 4,626–4,816 (p50 177–182 µs) | 5,224–5,301 (p50 153–159 µs) |
+| `/notes` live, 64 connections | 6,976–7,250 | 10,489–10,936 |
+
+`/health`, which reads nothing from the store, is unchanged. The store's lock itself (C4) is still
+taken on a miss and on every put.
+
 ### 12.5 Per-node outputs in recorded runs (§8 Q16)
 
 Only after Q16 is decided. Dropping them changes what the editor's replay reads

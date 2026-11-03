@@ -7592,6 +7592,60 @@ fn a_partial_closure_is_loaded_again_once_it_is_whole() {
     assert_eq!(state.store.3.held().0, 1);
 }
 
+/// The store keeps the values runs read from disk (units.rs's `ValueCache`, 12.4): a second
+/// read is the first's, from memory, even with its file gone; it keeps nothing too big, lets go of
+/// the least used past its budget, and an in-memory store keeps nothing beside itself. A
+/// collection read through a run is served from it the second time.
+#[test]
+fn the_store_keeps_the_values_it_read_within_a_budget() {
+    let text = |n: usize| Value::Text("x".repeat(n));
+    let cache = units::ValueCache::with_budget(10_000);
+    for i in 0..10u8 {
+        cache.keep([i; 32], &text(2_000));
+    }
+    let (n, bytes) = cache.size();
+    assert!(bytes <= 10_000 && n < 10, "past the budget, the least used go: {n} values, {bytes} bytes");
+    assert!(cache.get(&[9; 32]).is_some(), "the newest stays");
+    assert!(cache.get(&[0; 32]).is_none(), "the oldest went");
+    cache.keep([20; 32], &text(20_000));
+    assert!(cache.get(&[20; 32]).is_none(), "too big to keep");
+    let none = units::ValueCache::with_budget(0);
+    none.keep([1; 32], &text(1));
+    assert!(none.get(&[1; 32]).is_none(), "a budget of nothing keeps nothing");
+
+    // On disk: read once from the file, then from memory.
+    let dir = unique_temp_path("value-cache");
+    let disk = FileStore::new(&dir).unwrap();
+    let values = disk.values_dir();
+    let mut store = SharedStore::on_disk(Box::new(disk), values.clone());
+    let v = Value::Text("kept".into());
+    let h = store.put_value(&v).unwrap();
+    assert_eq!(store.get_value(&h).unwrap(), Some(v.clone()));
+    for entry in std::fs::read_dir(&values).unwrap().flatten() {
+        let _ = std::fs::remove_file(entry.path()).or_else(|_| std::fs::remove_dir_all(entry.path()));
+    }
+    assert_eq!(store.get_value(&h).unwrap(), Some(v), "the second read is the first's, from memory");
+    assert!(SharedStore::new(Box::new(holon_host::MemStore::default())).4.size().0 == 0);
+    let _ = std::fs::remove_dir_all(&dir);
+
+    // A run's collection read: the trie's values come from memory the second time.
+    let store_dir = unique_temp_path("value-cache-run");
+    let disk = FileStore::new(&store_dir).unwrap();
+    let values = disk.values_dir();
+    let mut state = test_state_with(SharedStore::on_disk(Box::new(disk), values));
+    state.deployments_path = ":memory:".into();
+    let slug = deploy_plain_text(&state, "flow c\nport 8302\ncollection notes\n\nroute POST /notes (req) {\n  notes[req.json.id] = req.json.text\n  respond \"saved\"\n}\n\nroute GET /notes (req) lazy {\n  respond notes.list(limit: 50)\n}\n");
+    let call = |method: &str, body: &str| serve_data(&state.store, &state.deployments, &state.deployments_path, &slug, &fake_data(method, "/notes", body.as_bytes().to_vec()));
+    assert_eq!(call("POST", r#"{"id":"a","text":"hi"}"#).status, 200);
+    let first = call("GET", "");
+    let kept = state.store.4.size().0;
+    assert!(kept > 0, "the trie's values are kept once read");
+    let second = call("GET", "");
+    assert_eq!((first.body.clone(), state.store.4.size().0), (second.body, kept), "and read from there: nothing new kept");
+    assert_eq!(String::from_utf8_lossy(&first.body), r#"{"a":"hi"}"#);
+    let _ = std::fs::remove_dir_all(&store_dir);
+}
+
 /// Past its budget the cache lets go of the least recently used closure, and the units only it
 /// held; what it let go of loads again. A budget of 0 keeps nothing.
 #[test]
