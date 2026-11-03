@@ -724,8 +724,55 @@ fn run_attempt(
 /// 128 bits from the operating system's secure generator.
 fn new_nonce() -> [u8; 16] {
     let mut nonce = [0u8; 16];
+    #[cfg(test)]
+    if let Some(n) = fixed::next() {
+        nonce[..8].copy_from_slice(&n.to_le_bytes());
+        return nonce;
+    }
     getrandom::fill(&mut nonce).expect("the OS has a secure random generator");
     nonce
+}
+
+/// The clock a run is sourced with, in seconds since the epoch.
+pub(crate) fn clock_seconds() -> u64 {
+    #[cfg(test)]
+    if let Some(n) = fixed::next() {
+        return 1_800_000_000 + n;
+    }
+    SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs()
+}
+
+/// The random number a run is sourced with, in [0, 1).
+pub(crate) fn random_number() -> f64 {
+    #[cfg(test)]
+    if let Some(n) = fixed::next() {
+        return ((n * 7919) % 1000) as f64 / 1000.0;
+    }
+    rand::random::<f64>()
+}
+
+/// In a test, the sources made fixed: a counter, from which each run's clock, random number and
+/// nonce follow (the server's golden runs, tests.rs). Unset, they are the system's.
+#[cfg(test)]
+pub(crate) mod fixed {
+    use std::cell::Cell;
+
+    thread_local! {
+        static NEXT: Cell<Option<u64>> = const { Cell::new(None) };
+    }
+
+    /// Fix this thread's sources from `n` on; none, back to the system's.
+    pub(crate) fn from(n: Option<u64>) {
+        NEXT.with(|c| c.set(n));
+    }
+
+    pub(super) fn next() -> Option<u64> {
+        NEXT.with(|c| {
+            let n = c.get()?;
+            c.set(Some(n + 1));
+            Some(n)
+        })
+    }
 }
 
 fn hex_bytes(bytes: &[u8]) -> String {

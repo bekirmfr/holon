@@ -8177,3 +8177,154 @@ fn profile_one_route() {
     }
     eprintln!("{which}: {:.1} us a run", started.elapsed().as_secs_f64() * 1e6 / n as f64);
 }
+
+/// The server's golden runs: each sample that needs nothing outside the server (no outbound call,
+/// database, folder or other flow), deployed, its routes sent three requests twice over and its
+/// actions run, with each run's clock, random number and nonce fixed (`firing::fixed`); what each
+/// answered and the log entries it wrote, with their timings and the grant's approval time left
+/// out, compared with `tests/golden/server.txt`, the record of what the server gave when it was
+/// written. A change that changes an answer or a log entry fails here, naming the run and the line
+/// (docs/L4s/interpreter-path-L4.md §4). `HOLON_GOLDEN=update` writes the file afresh.
+#[test]
+fn the_server_records_what_its_golden_record_holds() {
+    fn normalized(mut v: serde_json::Value) -> serde_json::Value {
+        if let Some(o) = v.as_object_mut() {
+            for k in ["at_ms", "duration_ms", "prev", "grant"] {
+                o.remove(k);
+            }
+            for t in o.get_mut("timeline").and_then(|t| t.as_array_mut()).into_iter().flatten() {
+                if let Some(t) = t.as_object_mut() {
+                    t.remove("start_us");
+                    t.remove("end_us");
+                }
+            }
+            for r in o.get_mut("rounds").and_then(|r| r.as_array_mut()).into_iter().flatten() {
+                for x in r.get_mut("exchanges").and_then(|x| x.as_array_mut()).into_iter().flatten() {
+                    if let Some(x) = x.as_object_mut() {
+                        x.remove("start_us");
+                        x.remove("end_us");
+                    }
+                }
+            }
+        }
+        v
+    }
+    const OUTSIDE: &[&str] = &["HttpRequest(", "PlainHttp(", "PrivateAddresses", "DbRead(", "DbWrite(", "FileRead(", "FileWrite(", "FileArrival(", "RunsAction("];
+    let xs: Vec<String> = (0..60).map(|i| format!("{}.25", (i * 37) % 100)).collect();
+    let bodies = [
+        String::new(),
+        r#"{"id":"x","name":"tea","price":4,"amount":5,"qty":2,"items":[{"name":"tea","qty":2},{"name":"cake","qty":1}],"event":"gig","count":2,"text":"Hello World","title":"Hello World","author":"Ada","op":"mul","a":6,"b":7,"by":"ops","to":5}"#.to_string(),
+        format!(r#"{{"xs":[{}],"items":[]}}"#, xs.join(",")),
+    ];
+    firing::fixed::from(Some(0));
+    let state = test_state();
+    let mut out = String::new();
+    let mut skipped = Vec::new();
+    for sample in holon_author::samples::samples() {
+        let Ok(plan) = holon_author::agent::plan(sample.text) else { continue };
+        for u in &plan.units {
+            route(&state, &req("POST", "/unit", u.clone()));
+        }
+        let preview = body_json(route(&state, &req("POST", "/deploy/preview", serde_json::to_vec(&serde_json::json!({ "slug": plan.name, "unit": plan.unit })).unwrap())));
+        let asked: Vec<String> = serde_json::from_value(preview["needs_approval"].clone()).unwrap_or_default();
+        if !preview["refused"].is_null() || asked.iter().any(|a| OUTSIDE.iter().any(|o| a.starts_with(o))) {
+            skipped.push(sample.name);
+            continue;
+        }
+        let r = deploy_json(&state, &plan.name, parse_hash(&plan.unit).unwrap(), serde_json::json!({ "acknowledge": asked, "document": plan.document }));
+        if r.status_code != 200 {
+            skipped.push(sample.name);
+            continue;
+        }
+        let slug = plan.name.clone();
+        let (routes, actions) = {
+            let table = state.deployments.lock().unwrap();
+            let server = table[&slug].server.clone().unwrap_or_else(|| holon_core::Server { port: None, routes: vec![], clocks: vec![], files: vec![], actions: vec![] });
+            (server.routes.iter().map(|r| (r.method.clone(), r.path.clone())).collect::<Vec<_>>(), server.actions.iter().map(|a| a.name.clone()).collect::<Vec<_>>())
+        };
+        let log = Arc::clone(&state.deployments.lock().unwrap()[&slug].log);
+        let mut seen = log.next_seq();
+        let mut wrote = |out: &mut String, what: String| {
+            out.push_str(&what);
+            out.push('\n');
+            let entries = log.with(|l| l.after(seen.checked_sub(1), usize::MAX));
+            for e in entries.into_iter().filter(|e| e.seq >= seen) {
+                // Each field as it is when short; a long one by its JSON's hash, so a change still
+                // shows, by field.
+                let entry = normalized(serde_json::to_value(&e).unwrap());
+                let fields: Vec<String> = entry
+                    .as_object()
+                    .into_iter()
+                    .flatten()
+                    .map(|(k, v)| {
+                        let json = v.to_string();
+                        if json.len() <= 120 { format!("{k}={json}") } else { format!("{k}=#{}", &blake3::hash(json.as_bytes()).to_hex()[..16]) }
+                    })
+                    .collect();
+                out.push_str("  ");
+                out.push_str(&fields.join(" "));
+                out.push('\n');
+            }
+            seen = log.next_seq();
+        };
+        for _round in 0..2 {
+            for (method, path) in &routes {
+                let url: String = path.split('/').map(|seg| if seg.starts_with(':') { "tea" } else { seg }).collect::<Vec<_>>().join("/");
+                let url = if url.is_empty() { "/".to_string() } else { url };
+                for body in &bodies {
+                    let request = data::DataRequest { headers: vec![("content-type".into(), "application/json".into())], ..fake_data(method, &url, body.as_bytes().to_vec()) };
+                    let answer = serve_data(&state.store, &state.deployments, &state.deployments_path, &slug, &request);
+                    wrote(&mut out, format!("== {slug} · {method} {url} · body {} → {} {}", body.len(), answer.status, String::from_utf8_lossy(&answer.body)));
+                }
+            }
+            for name in &actions {
+                for body in &bodies {
+                    let input = holon_core::parse_json(if body.is_empty() { "{}" } else { body }).unwrap_or(Value::Record(BTreeMap::new()));
+                    let ran = run_action(&state.store, &state.deployments, &state.deployments_path, &slug, name, Ok(input), None, false, &[]);
+                    wrote(&mut out, format!("== {slug} · action {name} · body {} → {} {}", body.len(), ran.status, ran.reply));
+                }
+            }
+        }
+    }
+    firing::fixed::from(None);
+    out.push_str(&format!("skipped (outside the server): {}\n", skipped.join(", ")));
+    // A resume token is keyed by the host's key, drawn once per process: shown as a token, not
+    // its value.
+    let mut masked = String::with_capacity(out.len());
+    let mut rest = out.as_str();
+    while let Some(i) = rest.find("rt_") {
+        let after = &rest[i + 3..];
+        let is_token = after.len() >= 32 && after.as_bytes()[..32].iter().all(|b| b.is_ascii_hexdigit());
+        masked.push_str(&rest[..i + 3]);
+        if is_token {
+            masked.push_str("‹token›");
+            rest = &after[32..];
+        } else {
+            rest = after;
+        }
+    }
+    masked.push_str(rest);
+    let out = masked;
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/golden/server.txt");
+    if std::env::var("HOLON_GOLDEN").as_deref() == Ok("update") {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, &out).unwrap();
+        return;
+    }
+    let kept = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e} (HOLON_GOLDEN=update writes it)", path.display()));
+    if kept == out {
+        return;
+    }
+    let mut case = String::from("?");
+    for (i, (k, n)) in kept.lines().zip(out.lines()).enumerate() {
+        if k.starts_with("== ") {
+            case = k.to_string();
+        }
+        if k != n {
+            let k: String = k.chars().take(600).collect();
+            let n: String = n.chars().take(600).collect();
+            panic!("the server gives something else at line {} of {}, in {case}:\n  kept: {k}\n  now:  {n}", i + 1, path.display());
+        }
+    }
+    panic!("the record has {} lines, the server now {} (last case: {case})", kept.lines().count(), out.lines().count());
+}

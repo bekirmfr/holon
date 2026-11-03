@@ -100,10 +100,10 @@ fn serve_flow(
         Err(e) => return DataResponse::json_error(500, &format!("store error while materializing closure: {e:?}")),
     };
     let (method, raw_url, headers, body) = (request.method.as_str(), request.url.as_str(), &request.headers, &request.body);
-    let epoch_seconds = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
+    let epoch_seconds = clock_seconds();
     let sourced = [
         (Capability::Clock, Value::Number(epoch_seconds as f64)),
-        (Capability::Random, Value::Number(rand::random::<f64>())),
+        (Capability::Random, Value::Number(random_number())),
     ];
     let started = started_now();
     let http = data::HttpRequest { method, url: raw_url, headers, body };

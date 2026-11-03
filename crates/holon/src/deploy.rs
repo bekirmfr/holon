@@ -1095,8 +1095,8 @@ pub(crate) fn run_action(
         return failed_to_start("the action's handler no longer resolves in the store".into());
     };
 
-    let epoch_seconds = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
-    let sourced = [(Capability::Clock, Value::Number(epoch_seconds as f64)), (Capability::Random, Value::Number(rand::random::<f64>()))];
+    let epoch_seconds = clock_seconds();
+    let sourced = [(Capability::Clock, Value::Number(epoch_seconds as f64)), (Capability::Random, Value::Number(random_number()))];
     let started = started_now();
     let inputs = [Some(input.clone())];
     let mut waits = RunWaits { folders: Some(folders), channels: Some(channels), slug: Some(slug.to_string()), chain: chain.to_vec(), ..Default::default() };
