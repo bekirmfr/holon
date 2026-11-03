@@ -253,5 +253,9 @@ answering 503 deployed, requested, the server restarted, and `holon history` say
 1. **R1–R4**: done (§2.6).
 2. **D1–D3**: done (§2.7).
 3. **D4, D5, S1–S5**: done (§2.6, §2.9).
-4. Then the rest of the check: the end-to-end suite (`editor/e2e`), a soak under load watching
-   memory, and a review of `aa2704a..HEAD` by a reader given the code, not this note.
+4. Then the rest of the check:
+   - **the end-to-end suite** (`editor/e2e`, the real editor and server, every sample deployed):
+     run at `9969f8b`, **72 passed**, 1 skipped (`atlas-notes`, which runs only against a MongoDB
+     replica set named by `HOLON_TEST_MONGODB`), in 7.1 minutes;
+   - a soak under load watching memory;
+   - a review of `aa2704a..HEAD` by a reader given the code, not this note.
