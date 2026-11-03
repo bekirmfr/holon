@@ -1113,10 +1113,35 @@ What still holds the lock, by the same probe, for a lazy run under load: appendi
 file, about 17 µs, and building and hashing it, about 12 µs. The append can't simply move out: a
 strict run's sync must never count a line not yet written.
 
-### 12.5 Per-node outputs in recorded runs (§8 Q16)
+### 12.5 Per-node outputs in recorded runs (§8 Q16): tried, and not done
 
-Only after Q16 is decided. Dropping them changes what the editor's replay reads
-(`editor/src/replay.ts`, `timeline.ts`), so it would be a step of its own with its own design note.
+**Decided: the outputs stay** (§8 Q16). What the trial found, for whoever asks again (a throwaway,
+never committed):
+
+- **The trial.** A run that read no secret kept its timings and no node outputs; the log API ran
+  it again offline (`verify`'s re-run, failed runs too, with the earlier parts of a resumed run and
+  the kept file texts) and filled the outputs back in, in each node's last round.
+- **The gain** (throughput check): lazy `hello` 14,934 → 22,545 req/s on one thread (p50 46 → 33
+  µs) and 20,652 → 28,814 at 64; lazy `/last` 21,674 → 27,356 at 64; strict `hello` 9,285 → 10,417
+  at 64. Opening a page of 200 runs went from about 20 to 47 ms.
+- **Without the fill**, 2 server tests and 5 end-to-end tests failed (`explain`'s values, the
+  terminal editor's values, a holon's inner steps, "replays exactly" for a clock's and a file's
+  run, `basket`'s replay); with it, all passed.
+- **Equivalence.** With outputs kept as today, every run was run again as it was logged and
+  compared node by node, round by round. For every run that could drop its outputs (no secret, not
+  cut off by timing, every file text it read kept) the final round's outputs were identical: 12,416
+  in the server's tests (839 runs, 27 resumed) and 5,991 in the end-to-end suite (330 runs, 4
+  resumed, all 73 tests), none different, missing or newly shown, once the log's own rule for kept
+  file texts was applied to what was computed. Earlier rounds differ (offline, a call's answer is
+  there at once), and nothing reads them. Runs that can't be computed again: those that read a
+  secret, those cut off by timing (turned away, out of time), and those that read a file whose text
+  isn't kept.
+- **Why not.** Current behaviour can't be kept without workarounds. The log file and an export
+  are the exact lines the chain covers, so they would no longer hold what each step gave. Replay's
+  "reproduces the run" check (clocks, files, actions that only write) would compare the browser's
+  computation with the server's instead of with the record. A run would show what its steps
+  compute under the server's release now, not what they gave then. And its values would depend on
+  its units and kept file texts outliving it in the store.
 
 ## Appendix. What each step leaves for the next
 
@@ -1132,4 +1157,4 @@ Only after Q16 is decided. Dropping them changes what the editor's replay reads
 | 8 | understands `lazy` and `unrecorded` in text, canvas and `check`, without acting on them |
 | 9 | records every run strictly by default, with the two opt-outs; read-only routes without a word slow to strict's pace |
 | 10, 11 | only if measured: one fsync per writing run; no store-wide lock |
-| 12 | runs read-only handlers without the thread hop, and skips what unrecorded runs don't need |
+| 12 | runs short read-only handlers on the data plane's worker, skips what unrecorded runs don't need, writes hashes without `format!`, keeps the values runs read in memory, and makes a run's line before its log's lock; keeps every node's outputs (Q16) |

@@ -1401,11 +1401,17 @@ The end-to-end tests (`editor/e2e`) and `editor/src/samples.test.ts` must stay g
     real flow asks, but choose the syntax so it can be added.
 15. **Sampling.** Something like `unrecorded, 1 in 1000` would record an occasional run of a noisy
     handler, which is harmless because it only reads. Leave it until asked.
-16. **Per-node outputs in recorded runs.** Each entry's timeline holds every node's outputs
-    (`Timer::produced`, `recorder.rs:326–332`), costing about 13 µs a run here plus log space.
-    Evaluation is pure, so replay and `verify` could recompute them from what the run read. Keep them
-    (the editor shows a run without re-evaluating it, and a run that read a secret keeps a node's
-    logged output in place of the value), or drop them for runs that read no secret (§4.5 a)?
+16. **Decided: per-node outputs stay in recorded runs.** Each entry's timeline holds every node's
+    outputs (`Timer::produced`). Dropping them for runs that read no secret, and computing them
+    again when a run is opened, was tried (build step 12.5, the plan has the numbers): about 50%
+    more lazy runs a second, and the values computed again matched the kept ones exactly for every
+    run that could drop them, across the server's tests and the editor's end-to-end suite. It was
+    still dropped, because current behaviour can't be kept without workarounds: the log file and an
+    export would no longer hold what each step gave; replay's "reproduces the run" check would
+    compare one computation with another instead of with the record; a run would show what its
+    steps compute now, under a later release, not what they gave then; and a run's values would
+    depend on its units and kept file texts outliving it. The record of what happened stays a
+    record.
 
 ## 9. Invariant check
 
