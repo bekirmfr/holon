@@ -898,11 +898,14 @@ fn push_run(
     let answered = std::mem::take(&mut entry.answered);
     tokens.and(Redactor::of(&secrets)).and(Redactor::answers(&answered.0, &secrets)).entry(&mut entry);
     entry.session = session;
+    // Its line made before the lock is taken, so runs of one deployment don't wait while another
+    // run's is: under the lock only its seq and the line before's hash go in.
+    let made = recorder::Made::of(&entry);
     let seq = log.with(|log| {
         // Its packs go out as it is logged, in the log's order: the run is over and its writes
         // have landed, and what a subscriber gets is what the log holds (channels.rs).
         let packs = channels.packs_of(&entry, log.next_seq());
-        let seq = log.push(entry);
+        let seq = log.push_made(entry, made);
         for (name, pack) in packs {
             channels.send(&name, pack, &permit.channels);
         }

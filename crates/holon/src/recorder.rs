@@ -397,6 +397,10 @@ pub struct Log {
     /// The seqs of the recent entries whose line couldn't be written to the file, so a strict run
     /// isn't told its record is on disk (`LogCell::sync_through`). The newest few.
     unkept: VecDeque<u64>,
+    /// Entries let go of from memory, to be freed once the log's lock is released
+    /// (`LogCell::with`): freeing one, its timeline and all, took a quarter of the time a run held
+    /// the lock.
+    gone: Vec<LogEntry>,
 }
 
 /// How often the logs' files are synced to disk (`sync_logs`): what a power loss can lose of them,
@@ -442,6 +446,42 @@ pub(crate) fn sync_logs(deployments: &std::sync::Mutex<BTreeMap<String, crate::D
         }
     }
     failed.map_or(Ok(()), Err)
+}
+
+/// An entry's line made before its log's lock is taken (docs/L4s/request-path-plan.md, after 12.4):
+/// all of it but the two fields only the lock knows, its seq and the hash of the line before
+/// (`prev`). The entry's JSON with seq 0 and no prev starts `{"seq":0,`, `seq` being its first
+/// field and `prev` (left out when empty) its second; so the line is `{"seq":N`, `,"prev":"H"`
+/// when there is one, and the rest as made: exactly what serializing the numbered entry writes,
+/// so the chain hashes the same bytes. Whatever doesn't start so is made again under the lock.
+pub struct Made(Option<String>);
+
+impl Made {
+    const START: &'static str = "{\"seq\":0,";
+
+    /// `entry`'s line, but for its seq and prev: for an entry not yet numbered or chained.
+    pub fn of(entry: &LogEntry) -> Made {
+        if entry.seq != 0 || !entry.prev.is_empty() {
+            return Made(None);
+        }
+        Made(serde_json::to_string(entry).ok().filter(|t| t.starts_with(Made::START)))
+    }
+
+    /// The line numbered `seq`, after the line hashed `prev` (hex, or empty for none).
+    fn line(&self, seq: u64, prev: &str) -> Option<String> {
+        let made = self.0.as_deref()?;
+        let rest = &made[Made::START.len() - 1..];
+        let mut line = String::with_capacity(made.len() + prev.len() + 32);
+        line.push_str("{\"seq\":");
+        line.push_str(&seq.to_string());
+        if !prev.is_empty() {
+            line.push_str(",\"prev\":\"");
+            line.push_str(prev);
+            line.push('"');
+        }
+        line.push_str(rest);
+        Some(line)
+    }
 }
 
 /// A line of the log's file: its bytes (without the line end), and the parts of its entry a
@@ -546,6 +586,10 @@ impl LogCell {
         let mut log = self.log.lock().unwrap();
         let out = f(&mut log);
         self.next_seq.store(log.next_seq, Ordering::Release);
+        let gone = std::mem::take(&mut log.gone);
+        drop(log);
+        // The entries it let go of, freed with the lock released.
+        drop(gone);
         out
     }
 }
@@ -600,6 +644,7 @@ impl Log {
             file_len: 0,
             dirty: false,
             unkept: VecDeque::new(),
+            gone: Vec::new(),
         };
         let Some(path) = &log.file else { return log };
         let Ok(text) = std::fs::read_to_string(path) else { return log };
@@ -653,7 +698,12 @@ impl Log {
     fn prune(&mut self, now_ms: u64) {
         let cutoff = self.max_age_ms.map(|age| now_ms.saturating_sub(age));
         while self.entries.len() > self.keep || self.entries.front().is_some_and(|e| cutoff.is_some_and(|c| e.at_ms < c)) {
-            self.entries.pop_front();
+            if let Some(old) = self.entries.pop_front() {
+                // Freed after the lock, unless nobody frees them (a log used without its cell).
+                if self.gone.len() < 64 {
+                    self.gone.push(old);
+                }
+            }
         }
         self.breaks.retain(|seq| self.entries.front().is_some_and(|oldest| *seq >= oldest.seq));
     }
@@ -677,12 +727,20 @@ impl Log {
 
     /// Append `entry`, numbering it and chaining it to the one before, and drop the oldest past
     /// what it keeps; keep it in the file.
-    pub fn push(&mut self, mut entry: LogEntry) -> u64 {
+    #[cfg(test)]
+    pub fn push(&mut self, entry: LogEntry) -> u64 {
+        let made = Made::of(&entry);
+        self.push_made(entry, made)
+    }
+
+    /// [`push`](Log::push), with `entry`'s line made beforehand ([`Made::of`]), before this log's
+    /// lock was taken: under it, only its seq and the hash of the line before go in front.
+    pub fn push_made(&mut self, mut entry: LogEntry, made: Made) -> u64 {
         let seq = self.next_seq;
         entry.seq = seq;
         self.next_seq += 1;
         entry.prev = self.head.clone();
-        let line = match serde_json::to_string(&entry) {
+        let line = match made.line(seq, &entry.prev).map_or_else(|| serde_json::to_string(&entry), Ok) {
             Ok(line) => line,
             Err(e) => {
                 eprintln!("holon: could not write a flow log entry: {e}");
@@ -1051,6 +1109,31 @@ mod tests {
         let back = Log::open_keeping(Some(path.clone()), 10);
         assert!(back.breaks().is_empty());
         assert_eq!(back.after(None, 10).last().unwrap().prev, line_hash(&old[2]));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A line made before the lock is, byte for byte, what serializing the numbered and chained
+    /// entry writes, with a prev and without; one already numbered is made under the lock instead;
+    /// and a log written so reads back with its chain whole.
+    #[test]
+    fn a_line_made_before_the_lock_is_the_one_serializing_writes() {
+        let full = LogEntry { route: Some("GET /a \"quoted\"".into()), error: Some("ü\n".into()), duration_ms: 1.5, ..entry() };
+        let made = Made::of(&full);
+        assert!(made.0.is_some());
+        for (seq, prev) in [(0u64, ""), (7, "ab12"), (123_456, &"f".repeat(64)[..])] {
+            let numbered = LogEntry { seq, prev: prev.to_string(), ..full.clone() };
+            assert_eq!(made.line(seq, prev).unwrap(), serde_json::to_string(&numbered).unwrap(), "seq {seq}, prev {prev:?}");
+        }
+        assert!(Made::of(&LogEntry { seq: 3, ..entry() }).0.is_none(), "already numbered: made under the lock");
+        let dir = temp_dir("made");
+        let path = dir.join("slug.jsonl");
+        let mut log = Log::open_keeping(Some(path.clone()), 10);
+        for _ in 0..3 {
+            log.push_made(full.clone(), Made::of(&full));
+        }
+        let back = Log::open_keeping(Some(path), 10);
+        assert!(back.breaks().is_empty(), "the chain reads back whole");
+        assert_eq!(back.after(None, 10).iter().map(|e| e.seq).collect::<Vec<_>>(), [0, 1, 2]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

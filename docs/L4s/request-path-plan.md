@@ -1089,6 +1089,30 @@ budget is a constant, not a setting (`--flow-cache` is the flows'). Test:
 `/health`, which reads nothing from the store, is unchanged. The store's lock itself (C4) is still
 taken on a miss and on every put.
 
+**12.4 (c) done: less under the log's lock.** Decided (option B of the review after 12.4): the line
+stays JSON, but is made before the lock. `recorder::Made` is the entry's JSON with seq 0 and no
+prev; `seq` is the first field and `prev` (left out when empty) the second, so under the lock only
+`{"seq":N` and `,"prev":"H"` go in front of what was made, and the line is byte for byte what
+serializing the numbered entry writes (a test says so, with a prev and without), so the chain
+hashes the same bytes. Anything that doesn't start as expected is made under the lock as before.
+And the entry the in-memory log lets go of, past what it keeps, is freed after the lock is
+released (`Log.gone`): a probe (a throwaway, not kept) showed freeing it, timeline and all, took
+10–14 µs of the ~40 µs a lazy run held the lock under load.
+
+| throughput check | threads | before | made outside | and freed outside |
+|---|---|---|---|---|
+| `hello` lazy | 8 | ~14,700 | 17,903 | 22,170 |
+| `hello` lazy | 64 | 14,015 | 18,985 | 20,652 |
+| `/last` lazy | 64 | 14,178 | 19,060 | 21,674 |
+
+One thread at a time is unchanged (the line is made all the same), and strict stays bound by its
+sync. Live, A/B against 12.4 (b), 2 rounds: lazy `/notes` 10,941–11,037 → 12,869–12,969 req/s at 64
+connections, 6,007–6,118 → 5,777–5,800 at one (p50 141 → 145 µs, the line copied once more).
+
+What still holds the lock, by the same probe, for a lazy run under load: appending the line to the
+file, about 17 µs, and building and hashing it, about 12 µs. The append can't simply move out: a
+strict run's sync must never count a line not yet written.
+
 ### 12.5 Per-node outputs in recorded runs (§8 Q16)
 
 Only after Q16 is decided. Dropping them changes what the editor's replay reads
