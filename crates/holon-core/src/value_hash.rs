@@ -56,9 +56,35 @@ pub fn encode_value(v: &Value) -> Result<Vec<u8>, EncodeError> {
 /// A value's content hash: BLAKE3 of [`encode_value`]. Equal values (with every `NaN` and both
 /// zeros folded together) hash equal, on every machine.
 pub fn hash_value(v: &Value) -> Result<Hash, EncodeError> {
-    let mut h = Hasher::new();
-    h.update(&encode_value(v)?);
-    Ok(*h.finalize().as_bytes())
+    // The encoding written into a buffer this thread keeps, instead of one grown afresh for each
+    // value: the same bytes hashed (docs/L4s/interpreter-path-L4.md, the per-request bookkeeping).
+    with_buffer(|buf| {
+        buf.extend_from_slice(&[ENCODING_VERSION, DOMAIN_VALUE]);
+        encode_value_into(buf, v)?;
+        let mut h = Hasher::new();
+        h.update(buf);
+        Ok(*h.finalize().as_bytes())
+    })
+}
+
+/// `f` on an empty buffer this thread keeps (emptied after, its room kept up to 64 KiB), or a
+/// fresh one if it is in use (a hash taken while one is being taken).
+fn with_buffer<T>(f: impl FnOnce(&mut Vec<u8>) -> T) -> T {
+    thread_local! {
+        static BUFFER: std::cell::RefCell<Vec<u8>> = const { std::cell::RefCell::new(Vec::new()) };
+    }
+    BUFFER.with(|cell| match cell.try_borrow_mut() {
+        Ok(mut buf) => {
+            buf.clear();
+            let out = f(&mut buf);
+            buf.clear();
+            if buf.capacity() > 64 << 10 {
+                buf.shrink_to(64 << 10);
+            }
+            out
+        }
+        Err(_) => f(&mut Vec::new()),
+    })
 }
 
 /// Domain tag of a state root's preimage (see [`state_root`]).
@@ -94,13 +120,15 @@ pub fn decode_value(bytes: &[u8]) -> Result<Value, DecodeError> {
 /// `cells` must come in key order, as a `BTreeMap` iterates; two states are equal iff their
 /// roots are.
 pub fn state_root<'a>(cells: impl ExactSizeIterator<Item = (&'a str, &'a Hash)>) -> Result<Hash, EncodeError> {
-    let mut buf = vec![ENCODING_VERSION, DOMAIN_STATE];
-    put_len(&mut buf, cells.len())?;
-    for (key, hash) in cells {
-        put_bytes(&mut buf, key.as_bytes())?;
-        buf.extend_from_slice(hash);
-    }
-    Ok(*blake3::hash(&buf).as_bytes())
+    with_buffer(|buf| {
+        buf.extend_from_slice(&[ENCODING_VERSION, DOMAIN_STATE]);
+        put_len(buf, cells.len())?;
+        for (key, hash) in cells {
+            put_bytes(buf, key.as_bytes())?;
+            buf.extend_from_slice(hash);
+        }
+        Ok(*blake3::hash(buf).as_bytes())
+    })
 }
 
 /// Domain tag of a run id's preimage (see [`run_id`]).

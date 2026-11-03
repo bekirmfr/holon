@@ -304,6 +304,53 @@ after keeps each honest. The gains below are estimated from the shares above.
    don't allocate per node: typed slots for numbers and booleans, and records built in place,
    level 3's ground.
 
+6. **The per-request bookkeeping**, once the graph was no longer the largest part of a request.
+   Measured on unrecorded `hello` (136.4k instructions: the graph 41.9k, the run id 24.7k, a log
+   entry made and dropped only to be counted ~14k, copies of the request ~6.6k, the sourced
+   constants 4.7k) and the lazy `notes` listing (463.8k, of which its record about half: the
+   line's JSON 101.5k, the work under the log's lock 40.4k, the entry 49.4k, redaction 19.2k).
+   **Done and measured:**
+   - **An unrecorded run that didn't fail is counted without an entry.** Its entry is made only
+     where it is logged (`log_or_count`): counted under the table's lock with the level the grant
+     gives then, exactly as `log_run` counts it; a run that failed, or one whose level isn't
+     unrecorded by then, is logged from the run kept for it, as before. The answer's checks read
+     the run's error, not its entry.
+   - **One copy of the request** is lent to the run, the check for a wait and the entry, where
+     each had its own.
+   - **Hashing into a kept buffer.** `hash_value` and `state_root` write their encoding into a
+     buffer the thread keeps, instead of one grown afresh: the same bytes hashed. A run's id is
+     hex-encoded once, not three times.
+   - **Sourced constants made when a leaf asks.** A run's sourced values (the clock, a random
+     number, the state it reads) become constant units the first time a leaf reads one, not all
+     at the start; each value's pieces under keys of their own. A test reads two list- and
+     record-valued ones in one run and checks each comes back whole, one no leaf reads is never
+     made, and one a constant can't rebuild still reads as nothing.
+   - **A request's timeline moved into its entry**, not copied, and **its line written into room
+     the thread's last line needed**, not a buffer doubled from nothing: the same bytes.
+   - **Redaction looked at, not walked, with nothing to mark.** With no secret, token or answered
+     credential to replace, redaction can only escape a look-alike of a mark, text holding a `‹`
+     (an entry's records are in key order already, from `BTreeMap`s): the line is made and looked
+     at for one, and redacted and made again only if it has one. A test holds the line and the
+     entry to redacting first, with and without look-alikes (with the check taken out, it fails).
+
+   Workspace tests, both golden records and clippy pass. Instructions a request: unrecorded
+   `hello` 136.4k → 97.0k (**−28.9%**), the lazy `notes` listing 463.8k → 367.7k (**−20.7%**).
+   Live against the build before (`wrk`, two rounds alternating, C# in the same rounds):
+   - unrecorded `hello` 65,837–66,203 → 73,041–77,022 req/s (45 → 37–39 µs of CPU a request, p50
+     at one connection 62–64 → 56–57 µs), against C#'s 127,458–134,524: **1.75×** from 2.0×;
+     unrecorded `calc` 57,765–63,092 → 63,736–69,730, against C#'s 114,978–119,162: 1.65–1.87×;
+   - lazy `hello` 18,440–20,241 → 20,941–21,591 (127–133 → 110–112 µs), lazy `calc`
+     14,255–15,056 → 16,944–17,390 (170–173 → 134–136 µs), the `notes` listing 10,498–11,131 →
+     11,498–11,732 (240–251 → 216–219 µs);
+   - strict `hello` 9,484–9,532 → 10,513–10,727 (p50 at one connection 584–600 → 521–535 µs),
+     above the 9,843–10,268 the C# service keeping the same record gave in request-path-L4.md
+     §1.3 (not measured again here).
+
+   What a recorded request still spends on its record is mostly the record itself: its line's
+   JSON (escaping its strings, 13.8% of `notes`), the line's hash for the chain under the lock
+   (it holds the seq and the line before's hash, which only the lock knows), and the timeline,
+   63% of the line, which stays as it is (request-path-L4.md §8, Q16).
+
 ## 5. What this doesn't cover
 
 - **Strict runs' disk sync**, which is 60% of a strict request and the same for any service that

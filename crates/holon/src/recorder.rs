@@ -533,11 +533,28 @@ impl Made {
         if entry.seq != 0 || !entry.prev.is_empty() {
             return Made(None);
         }
-        Made(serde_json::to_string(entry).ok().filter(|t| t.starts_with(Made::START)))
+        // Written into room for this thread's last line (and some), instead of a buffer doubled
+        // from nothing: the same bytes (docs/L4s/interpreter-path-L4.md, the per-request
+        // bookkeeping).
+        thread_local! {
+            static LAST: std::cell::Cell<usize> = const { std::cell::Cell::new(4096) };
+        }
+        let mut buf = Vec::with_capacity(LAST.get().min(1 << 20) + 512);
+        if serde_json::to_writer(&mut buf, entry).is_err() {
+            return Made(None);
+        }
+        LAST.set(buf.len());
+        Made(String::from_utf8(buf).ok().filter(|t| t.starts_with(Made::START)))
+    }
+
+    /// Whether its line may hold a `‹`, which redaction would escape where it reads as a mark:
+    /// true for a line that couldn't be made.
+    pub fn may_hold_a_mark(&self) -> bool {
+        self.0.as_deref().is_none_or(|line| line.contains('‹'))
     }
 
     /// The line numbered `seq`, after the line hashed `prev` (hex, or empty for none).
-    fn line(&self, seq: u64, prev: &str) -> Option<String> {
+    pub(crate) fn line(&self, seq: u64, prev: &str) -> Option<String> {
         let made = self.0.as_deref()?;
         let rest = &made[Made::START.len() - 1..];
         let mut line = String::with_capacity(made.len() + prev.len() + 32);

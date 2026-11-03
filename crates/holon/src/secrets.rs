@@ -901,6 +901,11 @@ impl Redactor {
         self
     }
 
+    /// Whether it has nothing to replace.
+    pub(crate) fn is_empty(&self) -> bool {
+        self.pairs.is_empty()
+    }
+
     /// Whether `s` holds any of its values.
     pub(crate) fn holds(&self, s: &str) -> bool {
         self.pairs.iter().any(|(value, _)| !value.is_empty() && s.contains(value.as_str()))

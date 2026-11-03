@@ -109,6 +109,9 @@ hashes written without a `format!` a byte, and a permit's names worked out once 
 **Since then**, after the interpreter's steps 1–3 (interpreter-path-L4.md §4): unrecorded `hello`
 answers 65,536–68,300 req/s at 43–46 µs of CPU a request, against .NET's 132,607–134,479 at 17 µs
 in the same rounds, **2.0×** its throughput (from 2.7×), and `calc` 62,595–62,872 at 48–49 µs.
+After the per-request bookkeeping (interpreter-path-L4.md §4, item 6): 73,041–77,022 req/s at
+37–39 µs against .NET's 127,458–134,524 at 16–18 µs, **1.75×**; strict `hello` 10,513–10,727, above
+the C# service keeping the same record in §1.3 (9,843–10,268, not measured again then).
 
 ### 1.3 Strict Holon against a C# service with the same record
 

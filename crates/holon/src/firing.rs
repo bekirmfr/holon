@@ -554,7 +554,9 @@ fn run_attempt(
     let state_before = start.as_ref().map(State::values).unwrap_or_default();
     let run_id = run_id_of(permit.deployment, inputs, start.as_ref(), extra_sourced, nonce);
     // Its resume tokens are derived from its id (durable.rs).
-    waits.run_id = Some(to_hex(&run_id));
+    // Hex once: its resume tokens, its claims and its entry all name it so.
+    let run_hex = to_hex(&run_id);
+    waits.run_id = Some(run_hex.clone());
     // Its collections, as it found them, for the reads it was granted.
     waits.reads.clear();
     waits.collections = Some(collections::Readable {
@@ -621,7 +623,7 @@ fn run_attempt(
             if own { permit.collections_written() } else { BTreeSet::new() },
             permit.collections_read(),
             shared,
-            to_hex(&run_id),
+            run_hex.clone(),
             limits.claim_wait,
             records,
         )
@@ -720,7 +722,7 @@ fn run_attempt(
             .or(past_limit.map(|e| format!("{}{e}", folders::WRITE_FAILED)))
             .or(past_packs.map(|e| format!("{}{e}", channels::SEND_FAILED)))
             .or(outcome.error.map(|e| e.message())),
-        run_id: to_hex(&run_id),
+        run_id: run_hex,
         unit: to_hex(&permit.deployment),
         nonce: hex_bytes(nonce),
         grant: permit.grant.clone(),
@@ -895,6 +897,38 @@ pub(crate) fn log_run(deployments: &Mutex<BTreeMap<String, Deployment>>, slug: &
     Some(Logged { seq: Some(seq), kept })
 }
 
+/// What counting an unrecorded run takes: its route (none: no route took it), when it ran, how
+/// long it took, and whether it failed (an error, or a 5xx answer).
+pub(crate) struct Counted<'a> {
+    pub(crate) route: Option<&'a str>,
+    pub(crate) at_ms: u64,
+    pub(crate) duration_ms: f64,
+    pub(crate) failed: bool,
+}
+
+/// [`log_run`], the entry (and the tokens it is redacted of) made only if it is logged: a run its
+/// grant has unrecorded that didn't fail is counted under the table's lock, as `log_run` counts
+/// it, and nothing more is made of it (docs/L4s/interpreter-path-L4.md, the per-request
+/// bookkeeping). Otherwise `log_run`, which reads the level again.
+pub(crate) fn log_or_count(
+    deployments: &Mutex<BTreeMap<String, Deployment>>,
+    slug: &str,
+    counted: Counted,
+    entry: impl FnOnce() -> LogEntry,
+    tokens: impl FnOnce() -> Redactor,
+    declared: holon_core::LogLevel,
+) -> Option<Logged> {
+    if !counted.failed {
+        let mut table = deployments.lock().unwrap();
+        let dep = table.get_mut(slug)?;
+        if dep.permit.log_level(counted.route, declared) == holon_core::LogLevel::Unrecorded {
+            dep.tallies.entry(counted.route.unwrap_or_default().to_string()).or_default().add(counted.at_ms, counted.duration_ms, false);
+            return Some(Logged { seq: None, kept: Ok(()) });
+        }
+    }
+    log_run(deployments, slug, entry(), tokens(), declared)
+}
+
 /// Whether a run failed as it ran: an error, or an answer with a 5xx status. An unrecorded run that
 /// did is run again with its timeline kept, to be logged (`log_run`).
 pub(crate) fn run_failed(run: &FiredRun) -> bool {
@@ -960,11 +994,11 @@ fn push_run(
         (Arc::clone(&dep.log), Arc::clone(&dep.secrets), Arc::clone(&dep.channels), Arc::clone(&dep.permit), dep.life.sessions.last().map_or(0, |s| s.number), level)
     };
     let answered = std::mem::take(&mut entry.answered);
-    tokens.and(Redactor::of(&secrets)).and(Redactor::answers(&answered.0, &secrets)).entry(&mut entry);
+    let redactor = tokens.and(Redactor::of(&secrets)).and(Redactor::answers(&answered.0, &secrets));
     entry.session = session;
     // Its line made before the lock is taken, so runs of one deployment don't wait while another
     // run's is: under the lock only its seq and the line before's hash go in.
-    let made = recorder::Made::of(&entry);
+    let made = redacted_line(&redactor, &mut entry);
     let seq = log.with(|log| {
         // Its packs go out as it is logged, in the log's order: the run is over and its writes
         // have landed, and what a subscriber gets is what the log holds (channels.rs).
@@ -978,10 +1012,25 @@ fn push_run(
     Some(Some((log, seq, level)))
 }
 
+/// `entry` redacted by `redactor`, and its line. With nothing to mark, redacting can only escape a
+/// look-alike of a mark (text with a `‹`), an entry's records being in key order already
+/// (`SValue::from_core`): a line without one is the line redaction would make, so it is made once
+/// and looked at, not walked (docs/L4s/interpreter-path-L4.md, the per-request bookkeeping).
+fn redacted_line(redactor: &Redactor, entry: &mut LogEntry) -> recorder::Made {
+    if redactor.is_empty() {
+        let made = recorder::Made::of(entry);
+        if !made.may_hold_a_mark() {
+            return made;
+        }
+    }
+    redactor.entry(entry);
+    recorder::Made::of(entry)
+}
+
 /// The timeline, with the outputs of each node that carries the text of a file the log keeps by
 /// hash (read, or written past the inline size) left out: that text isn't in the log by another
 /// way.
-fn without_kept_files(timeline: &[recorder::NodeTiming], reads: &[collections::Read], performed: &[(Capability, Value)]) -> Vec<recorder::NodeTiming> {
+fn without_kept_files(mut timeline: Vec<recorder::NodeTiming>, reads: &[collections::Read], performed: &[(Capability, Value)]) -> Vec<recorder::NodeTiming> {
     let read = reads.iter().filter(|r| r.file.as_ref().is_some_and(|f| !f.inline)).filter_map(|r| match &r.answer {
         Some(Value::Text(t)) => Some(t.as_str()),
         _ => None,
@@ -997,7 +1046,6 @@ fn without_kept_files(timeline: &[recorder::NodeTiming], reads: &[collections::R
         .filter_map(|t| serde_json::to_string(t).ok().map(|q| q[1..q.len() - 1].to_string()))
         .chain(lines)
         .collect();
-    let mut timeline = timeline.to_vec();
     if kept.is_empty() {
         return timeline;
     }
@@ -1065,6 +1113,29 @@ pub(crate) fn run_entry(
     sourced: &[(Capability, Value)],
     run: &FiredRun,
 ) -> LogEntry {
+    entry_with(kind, started, sourced, run, run.timeline.clone())
+}
+
+/// [`run_entry`], its timeline moved out of `run` instead of copied: for a run nothing reads after
+/// its entry is made (docs/L4s/interpreter-path-L4.md, the per-request bookkeeping).
+pub(crate) fn run_entry_taking(
+    kind: &'static str,
+    started: (u64, std::time::Instant),
+    sourced: &[(Capability, Value)],
+    run: &mut FiredRun,
+) -> LogEntry {
+    let timeline = std::mem::take(&mut run.timeline);
+    entry_with(kind, started, sourced, run, timeline)
+}
+
+/// A run's entry, with `timeline` as the run's timeline.
+fn entry_with(
+    kind: &'static str,
+    started: (u64, std::time::Instant),
+    sourced: &[(Capability, Value)],
+    run: &FiredRun,
+    timeline: Vec<recorder::NodeTiming>,
+) -> LogEntry {
     LogEntry {
         seq: 0,
         prev: String::new(),
@@ -1084,7 +1155,7 @@ pub(crate) fn run_entry(
         performed: logged_performed(run, folders::loggable),
         response_body: None,
         error: run.error.clone(),
-        timeline: without_secret_derived(without_kept_files(&run.timeline, &run.reads, &run.performed), &run.secret_fed),
+        timeline: without_secret_derived(without_kept_files(timeline, &run.reads, &run.performed), &run.secret_fed),
         rounds: run.rounds.iter().map(|r| logged_round(r, &run.secret_fed)).collect(),
         run_id: run.run_id.clone(),
         unit: run.unit.clone(),
@@ -1241,6 +1312,40 @@ mod commit_checks {
         assert!(!check(&changed, read("one")));
         // Nothing read: held.
         assert!(still_as_read(&start, &changed, &[], &permit, &store, None, false));
+    }
+
+    /// A line made without walking the entry (`redacted_line`, nothing to mark and no `‹` in it) is
+    /// the line redacting it first makes, and the entry is the one redaction leaves; with a `‹`
+    /// anywhere, or something to mark, it is redacted.
+    #[test]
+    fn a_line_with_nothing_to_redact_is_the_redacted_line() {
+        let text = |s: &str| Value::Text(s.into());
+        let request = |body: &str| {
+            Value::Record(BTreeMap::from([
+                ("method".to_string(), text("GET")),
+                ("headers".to_string(), Value::Record(BTreeMap::from([("x-b".to_string(), text("2")), ("x-a".to_string(), text("1"))]))),
+                ("body".to_string(), text(body)),
+            ]))
+        };
+        let entry = |body: &str| {
+            let mut e = run_entry("request", (0, std::time::Instant::now()), &[(Capability::Clock, Value::Number(1.0))], &FiredRun::nothing());
+            e.request = Some(SValue::from_core(&request(body)));
+            e.response_body = Some(body.to_string());
+            e.duration_ms = 0.0;
+            e
+        };
+        let tokens = |pairs: &[(&str, &str)]| Redactor::tokens(&pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect());
+        for body in ["plain", "with ‹ in it", "‹token:paid›", "‹‹secret:x›", "a {\"‹k\": 1}", ""] {
+            for redactor in [tokens(&[]), tokens(&[("paid", "tok-1")])] {
+                let (mut fast, mut walked) = (entry(body), entry(body));
+                let line = redacted_line(&redactor, &mut fast);
+                redactor.entry(&mut walked);
+                let line_walked = recorder::Made::of(&walked);
+                assert_eq!(line.line(1, ""), line_walked.line(1, ""), "body {body:?}");
+                // The entry the log keeps in memory too: as redaction leaves it.
+                assert_eq!(serde_json::to_value(&fast).unwrap(), serde_json::to_value(&walked).unwrap(), "body {body:?}");
+            }
+        }
     }
 
     /// A store that fails every read while `failing` is set.
