@@ -193,6 +193,37 @@ against the build with them): `hello` +0.04%, `notes` −0.02%, `crunch` +0.6% (
 used once a composite and the check is debug-only: the compiler's inlining moved). R3's checks of a
 pass-through's condition and value on every item cost `crunch` 1.4% before them (22.24M → 22.56M).
 
+## 2.8 Changed: an unrecorded run is never logged, failed or not
+
+The audit's list kept the request-path note's decision Q10 (an unrecorded handler's failures are
+recorded, each failed run run again with its timeline kept and logged). Weighed again for
+resilience, it went the other way:
+- **A declaration is a reason.** A handler may be declared unrecorded to keep its requests out of
+  the log (redaction takes out secrets, not personal data); a failed run's entry kept them.
+- **An amplifier.** A failure can be forced from outside (a malformed body, a bad parameter), and
+  each one cost a second run and a log line of several kilobytes, with its share of cut-backs: a
+  flood of bad requests to a route declared cheap made it dear.
+- **Surprise,** and an answer that was the second run's, which may have read a newer state.
+
+Now an unrecorded run is counted and never logged, failed or not, and never run again. Its tally
+keeps the last failure: when, its status (at least 500 for an error), and its error, redacted of
+the deployment's secrets and cut to 300 characters, never its request. The views say it ("2
+failed, the last 503: why"); the approval says "keep runs of GET /health out of its log, failed or
+not (they are counted)"; to see why one fails, its handler is made `lazy` for a while. A failed
+unrecorded action answers that its runs aren't logged.
+
+Found while running it: tallies were written to disk only when the deployments file was written
+for something else (a deploy, a parked run), so a restart lost the counts since. With failures in
+the tally alone, that lost them too: now a count marks the deployment (`tallies_changed`) and the
+logs' periodic sync writes the deployments file when one is marked, so a restart keeps them, the
+last second's at most lost, as a lazy record's are.
+
+Tests: an unrecorded run leaves no entry, failed or not, and is counted, the last failure's time and
+status kept; a failure's error is kept redacted of a secret and cut short, an error counting as a
+500; an unrecorded action is counted and never logged. Run live: `status-board` and a route
+answering 503 deployed, requested, the server restarted, and `holon history` says "unrecorded GET
+/down 3 runs counted, not logged, 3 failed, the last 503".
+
 ## 3. Order
 
 1. **R1–R4**: done (§2.6).

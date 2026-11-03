@@ -217,23 +217,42 @@ pub(crate) struct DeployRequestBody {
 /// state instead of an in-memory-only scratch value. Every new field is `#[serde(default)]`
 /// so a deployments file written before this inch still loads without error.
 /// What a deployment's log doesn't hold of an unrecorded handler's runs (docs/L4s/request-path-L4.md,
-/// C5): how many ran, how many failed (each failure is in the log), how long they took in all, and
-/// when the last one started. Kept per handler, by its label.
+/// C5): how many ran, how many failed, how long they took in all, when the last one started, and
+/// what the last failure was. An unrecorded run is never logged, failed or not: its handler was
+/// declared so (resilience-audit-L4.md, §2.8). Kept per handler, by its label.
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
 pub(crate) struct Tally {
     pub(crate) runs: u64,
     pub(crate) failed: u64,
     pub(crate) total_ms: f64,
     pub(crate) last_at_ms: u64,
+    /// The newest failure: when, its answer's status, and its error, redacted and cut short. Never
+    /// its request.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) last_failure: Option<Failure>,
+}
+
+/// A run that failed, as a tally keeps it.
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+pub(crate) struct Failure {
+    pub(crate) at_ms: u64,
+    pub(crate) status: u16,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) error: Option<String>,
 }
 
 impl Tally {
-    /// One more run, started at `at_ms`, taking `ms`.
-    pub(crate) fn add(&mut self, at_ms: u64, ms: f64, failed: bool) {
+    /// One more run, started at `at_ms`, taking `ms`; `failure` when it failed.
+    pub(crate) fn add(&mut self, at_ms: u64, ms: f64, failure: Option<Failure>) {
         self.runs += 1;
-        self.failed += u64::from(failed);
         self.total_ms += ms;
         self.last_at_ms = self.last_at_ms.max(at_ms);
+        if let Some(failure) = failure {
+            self.failed += 1;
+            if self.last_failure.as_ref().is_none_or(|f| f.at_ms <= failure.at_ms) {
+                self.last_failure = Some(failure);
+            }
+        }
     }
 }
 

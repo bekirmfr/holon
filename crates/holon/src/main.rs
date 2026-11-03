@@ -453,6 +453,10 @@ struct Deployment {
     /// The runs of its unrecorded handlers, counted, by label: what the log doesn't hold of them.
     /// Persisted with the deployments file, as the counts above are.
     tallies: BTreeMap<String, wire::Tally>,
+    /// Its tallies changed since the deployments file was last written: the logs' periodic sync
+    /// writes it, so a restart keeps them, the last second's at most lost (an unrecorded handler's
+    /// failures are in its tally alone, resilience-audit-L4.md §2.8). Never persisted.
+    tallies_changed: bool,
     /// The routes and port, when the unit is a server declaration (`holon_core::read_server`):
     /// such a deployment is answered on its own port by the data plane (`data.rs`), not by
     /// `/trigger` or the clock. Derived from the unit at deploy and load time, never persisted.
@@ -1114,10 +1118,20 @@ fn serve(args: Vec<String>) {
         // to a witness, so a witness never holds a head whose line the disk lacks. A log a run found
         // past what it keeps is cut back here too, so no run waits for it.
         let syncing = Arc::clone(&deployments);
+        let kept_at = deployments_arg.clone();
         std::thread::spawn(move || {
             let mut failing = false;
             loop {
                 std::thread::sleep(recorder::SYNC_EVERY);
+                // Tallies counted since the deployments file was last written: written now.
+                // Every flag cleared, not only up to the first one set.
+                let mut counted = false;
+                for d in syncing.lock().unwrap().values_mut() {
+                    counted |= std::mem::take(&mut d.tallies_changed);
+                }
+                if counted {
+                    persist_deployments(&kept_at, &syncing);
+                }
                 match recorder::sync_logs(&syncing) {
                     Ok(()) if failing => {
                         println!("holon: the run logs are synced to disk again");

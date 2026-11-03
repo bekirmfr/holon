@@ -406,6 +406,7 @@ fn deploy(
                 trigger_count: 0,
                 error_count: 0,
                 tallies: BTreeMap::new(),
+                tallies_changed: false,
                 deployed_at: SystemTime::now(),
                 deployed_by: by.map(String::from),
                 uses: body.uses.clone(),
@@ -1101,14 +1102,10 @@ pub(crate) fn run_action(
     let inputs = [Some(input.clone())];
     let mut waits = RunWaits { folders: Some(folders), channels: Some(channels), slug: Some(slug.to_string()), chain: chain.to_vec(), ..Default::default() };
     let resolver = holon_module::WithEngine::new(&resolver, holon_module::shared());
-    // As a route's (listeners.rs): an unrecorded run keeps no timeline, and one that fails runs
-    // again keeping it, to be logged.
+    // As a route's (listeners.rs): an unrecorded run keeps no timeline, and is never logged, failed
+    // or not (resilience-audit-L4.md, §2.8).
     waits.unrecorded = permit.log_level(Some(&action.label), action.log) == holon_core::LogLevel::Unrecorded;
-    let mut run = fire_with_state(handler, &inputs, &resolver, store, state.as_ref(), &sourced, &permit, false, &vault, &mut waits, None);
-    if waits.unrecorded && run_failed(&run) {
-        waits = waits.again();
-        run = fire_with_state(handler, &inputs, &resolver, store, state.as_ref(), &sourced, &permit, false, &vault, &mut waits, None);
-    }
+    let run = fire_with_state(handler, &inputs, &resolver, store, state.as_ref(), &sourced, &permit, false, &vault, &mut waits, None);
 
     // Output 0 is the respond's envelope, or (an action that only writes) an effect.
     let (status, answer) = match run.outputs.first().cloned().flatten() {
@@ -1132,7 +1129,7 @@ pub(crate) fn run_action(
         Ok(names) => entry.parked = names,
         Err(e) => entry.error = Some(e),
     }
-    // A failed one says so in its entry, so it is logged even from an unrecorded action.
+    // A failed one says so in its entry (an unrecorded action's tally takes it from there).
     if failed {
         entry.status = Some(status.max(500));
     }
@@ -1151,8 +1148,12 @@ pub(crate) fn run_action(
         return ran(500, serde_json::json!({ "error": message }), None, false, Some(message), Some("failed"));
     }
     if error {
-        // A failed run is logged, unrecorded or not.
-        let message = format!("the action failed: its run log says why (entry {})", seq.unwrap_or_default());
+        // A recorded run is in its log; an unrecorded one isn't, failed or not: its tally keeps the
+        // last failure.
+        let message = match seq {
+            Some(seq) => format!("the action failed: its run log says why (entry {seq})"),
+            None => "the action failed; its runs aren't logged (it is unrecorded): its tally keeps the last failure".to_string(),
+        };
         return ran(500, serde_json::json!({ "error": message }), None, false, Some(message), Some("failed"));
     }
     if parked_any {
@@ -1182,7 +1183,8 @@ pub(crate) fn run_action(
 /// entry will get, so a poller can ask for `after=next-1`. `head` is the hash of the newest
 /// entry's line, and `breaks` the seqs of entries that don't follow the one before them: the log
 /// file was changed outside holon there (recorder.rs). `tallies` counts the runs of its unrecorded
-/// handlers, by label (`{runs, failed, total_ms, last_at_ms}`): the log holds only their failures.
+/// handlers, by label (`{runs, failed, total_ms, last_at_ms, last_failure}`): the log holds none of
+/// their runs, failed or not.
 pub(crate) fn handle_get_log(deployments: &Mutex<BTreeMap<String, Deployment>>, slug: &str, request: &Request) -> Response {
     let after = request.get_param("after").and_then(|a| a.parse::<u64>().ok());
     let limit = request.get_param("limit").and_then(|l| l.parse::<usize>().ok()).unwrap_or(200);

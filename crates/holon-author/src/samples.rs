@@ -763,7 +763,7 @@ static SAMPLES: &[Sample] = &[
     Sample {
         name: "status-board",
         title: "Status board (how each handler's runs are recorded)",
-        description: "A log level per handler: every run is recorded, and by default on disk before it answers (strict). A handler that only reads and answers may say lazy (recorded all the same, on disk within a second, so it answers without waiting on the disk) or unrecorded (counted, not logged, only its failures kept; a person approves it). One that writes is strict whatever it says.",
+        description: "A log level per handler: every run is recorded, and by default on disk before it answers (strict). A handler that only reads and answers may say lazy (recorded all the same, on disk within a second, so it answers without waiting on the disk) or unrecorded (counted, not logged, failed or not; a person approves it). One that writes is strict whatever it says.",
         shows: &["log levels", "strict", "lazy", "unrecorded", "collections"],
         port: Some("8170"),
         interval: None,

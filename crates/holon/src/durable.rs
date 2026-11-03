@@ -177,20 +177,6 @@ pub(crate) struct RunWaits {
     pub(crate) unrecorded: bool,
 }
 
-impl RunWaits {
-    /// What a run is given again, to run once more from the start: where it runs, without
-    /// anything the first run read, held or was handed.
-    pub(crate) fn again(&self) -> RunWaits {
-        RunWaits {
-            folders: self.folders.clone(),
-            channels: self.channels.clone(),
-            slug: self.slug.clone(),
-            chain: self.chain.clone(),
-            ..Default::default()
-        }
-    }
-}
-
 impl Waits for RunWaits {
     fn claim(&mut self) -> holon_host::Claim {
         match self.claiming.as_mut() {

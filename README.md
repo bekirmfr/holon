@@ -17,7 +17,7 @@ agents or by people. Before a flow runs, and every time it runs:
   what a deployment may do. An effect outside the grant is refused when a run tries it, whatever
   the flow says. A grant can be narrowed while the flow runs.
 - **It keeps a record of every run,** on disk before it answers, except handlers a person
-  approved as unrecorded, which change nothing (their runs are counted, and a failed one is kept).
+  approved as unrecorded, which change nothing (their runs are counted, failed or not).
   The request, the state it read, the clock, randomness and every response it got, with the
   version and grant it ran under. Evaluation is pure, so a run
   replays exactly, node by node, and anyone can check a deployment's runs offline. The record

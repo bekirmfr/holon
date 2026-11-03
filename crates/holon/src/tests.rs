@@ -7412,13 +7412,14 @@ fn a_strict_run_is_on_disk_before_its_answer_and_a_lazy_one_waits_for_the_syncer
 /// strict write (docs/L4s/request-path-L4.md, C5).
 const UNRECORDED_BOARD: &str = "flow board\nport 8171\ncollection notes\nfolder docs\n\nroute GET /health (req) unrecorded {\n  respond \"ok\"\n}\n\nroute GET /broken (req) unrecorded {\n  respond \"down\", status: 503\n}\n\nroute POST /notes (req) {\n  notes[req.json.id] = req.json.text\n  respond \"saved\"\n}\n\naction report (input) unrecorded {\n  respond notes.list(limit: 50)\n}\n";
 
-/// An unrecorded handler's runs leave no entry in the log, and are counted in its tally instead
-/// (runs, failures, time, the last one), which the log API gives and the deployments file keeps; a
-/// failed one is in the log too. Each unrecorded handler is an item a person approves,
-/// `Unrecorded("GET /health")`, worded in the approval; taking it back records its next run, and
-/// the deployment runs on (it isn't one it needs).
+/// An unrecorded handler's runs leave no entry in the log, failed or not, and are counted in its
+/// tally instead (runs, failures, time, the last one, the last failure's time, status and error),
+/// which the log API gives and the deployments file keeps (resilience-audit-L4.md, §2.8). Each
+/// unrecorded handler is an item a person approves, `Unrecorded("GET /health")`, worded in the
+/// approval; taking it back records its next run, and the deployment runs on (it isn't one it
+/// needs).
 #[test]
-fn an_unrecorded_run_leaves_no_entry_and_is_counted_and_its_failure_is_recorded() {
+fn an_unrecorded_run_leaves_no_entry_failed_or_not_and_is_counted() {
     let mut state = test_state();
     state.deployments_path = unique_temp_path("unrecorded");
     let plan = holon_author::agent::plan(UNRECORDED_BOARD).unwrap();
@@ -7441,21 +7442,23 @@ fn an_unrecorded_run_leaves_no_entry_and_is_counted_and_its_failure_is_recorded(
     }
     assert_eq!(log.next_seq(), 0, "no entry for an unrecorded run");
     assert_eq!((tally("GET /health").runs, tally("GET /health").failed), (3, 0));
+    assert!(state.deployments.lock().unwrap()[&slug].tallies_changed, "for the periodic sync to write");
     assert!(tally("GET /health").last_at_ms > 0);
     let ran = run_action(&state.store, &state.deployments, &state.deployments_path, &slug, "report", Ok(Value::Record(BTreeMap::new())), None, false, &[]);
     assert_eq!((ran.status, ran.seq), (200, None), "an unrecorded action answers, with no entry");
     assert_eq!(tally("action report").runs, 1);
 
-    // A failure is recorded, and counted.
+    // A failure is counted, not logged: when, and its status.
     assert_eq!(call("GET", "/broken", ""), 503);
-    assert_eq!(log.next_seq(), 1, "its failure is in the log");
-    let failed = log.with(|l| l.after(None, 10)).pop().unwrap();
-    assert_eq!((failed.route.as_deref(), failed.status), (Some("GET /broken"), Some(503)));
-    assert!(!failed.timeline.is_empty(), "run again with its timeline kept, to be explained");
-    assert_eq!((tally("GET /broken").runs, tally("GET /broken").failed), (1, 1));
+    assert_eq!(log.next_seq(), 0, "a failed unrecorded run isn't logged either");
+    let broken = tally("GET /broken");
+    assert_eq!((broken.runs, broken.failed), (1, 1));
+    let last = broken.last_failure.expect("the last failure kept");
+    assert_eq!((last.status, last.error.as_deref()), (503, None));
+    assert!(last.at_ms > 0);
     // A strict handler beside them is recorded as always.
     assert_eq!(call("POST", "/notes", r#"{"id":"a","text":"hi"}"#), 200);
-    assert_eq!(log.next_seq(), 2);
+    assert_eq!(log.next_seq(), 1);
 
     // The log API gives the tallies, and the deployments file keeps them.
     let page = body_json(route(&state, &req("GET", &format!("/deployments/{slug}/log"), vec![])));
@@ -7470,8 +7473,43 @@ fn an_unrecorded_run_leaves_no_entry_and_is_counted_and_its_failure_is_recorded(
     assert_eq!(revoked["status"], "running", "{revoked}");
     let syncs = log.syncs();
     assert_eq!(call("GET", "/health", ""), 200);
-    assert_eq!((log.next_seq(), log.syncs()), (3, syncs + 1), "recorded, and strictly");
+    assert_eq!((log.next_seq(), log.syncs()), (2, syncs + 1), "recorded, and strictly");
     assert_eq!(tally("GET /health").runs, 3, "and not counted as unrecorded");
+    let _ = std::fs::remove_file(&state.deployments_path);
+    let _ = std::fs::remove_dir_all(Path::new(&state.deployments_path).with_extension("logs"));
+}
+
+/// What an unrecorded run's tally keeps of a failure: its error redacted of the deployment's secrets
+/// and cut short, its status at least 500 when it failed with an error; and a failed unrecorded
+/// action answers that its runs aren't logged (resilience-audit-L4.md, §2.8).
+#[test]
+fn an_unrecorded_failure_is_kept_redacted_and_cut_short() {
+    let mut state = test_state();
+    state.deployments_path = unique_temp_path("unrecorded-failure");
+    let slug = deploy_plain_text(&state, UNRECORDED_BOARD);
+    let set = serde_json::to_vec(&serde_json::json!({ "value": "sk_live_42" })).unwrap();
+    assert_eq!(route(&state, &req("POST", &format!("/deployments/{slug}/secrets/api_key"), set)).status_code, 200);
+    let long = format!("the key sk_live_42 was refused: {}", "x".repeat(1000));
+    let counted = crate::firing::Counted { route: Some("GET /health"), at_ms: 7, duration_ms: 1.0, status: 200, error: Some(&long) };
+    let kept = {
+        let mut table = state.deployments.lock().unwrap();
+        let dep = table.get_mut(&slug).unwrap();
+        assert!(crate::firing::count_for_tests(dep, &counted), "counted only");
+        dep.tallies["GET /health"].last_failure.clone().unwrap()
+    };
+    let error = kept.error.unwrap();
+    assert_eq!(kept.status, 500, "an error is a failure, answered 500");
+    assert!(!error.contains("sk_live_42") && error.contains("‹secret:api_key"), "{error}");
+    assert!(error.chars().count() <= 301 && error.ends_with('…'), "cut short: {} chars", error.chars().count());
+    // An unrecorded action is counted and never logged; one with no answer is answered 404
+    // (missing), which isn't a failure.
+    let failing = deploy_plain_text(&state, "flow failing\nport 8173\n\naction check (input) unrecorded {\n  respond input.nowhere\n}\n");
+    let log = Arc::clone(&state.deployments.lock().unwrap()[&failing].log);
+    let ran = run_action(&state.store, &state.deployments, &state.deployments_path, &failing, "check", Ok(Value::Record(BTreeMap::new())), None, false, &[]);
+    assert_eq!((ran.status, ran.seq), (404, None), "no answer: missing, with no entry: {:?}", ran.error);
+    assert_eq!(log.next_seq(), 0, "nothing logged");
+    let tally = state.deployments.lock().unwrap()[&failing].tallies["action check"].clone();
+    assert_eq!((tally.runs, tally.failed, tally.last_failure), (1, 0, None));
     let _ = std::fs::remove_file(&state.deployments_path);
     let _ = std::fs::remove_dir_all(Path::new(&state.deployments_path).with_extension("logs"));
 }

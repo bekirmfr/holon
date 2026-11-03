@@ -344,7 +344,7 @@ A word right before the block changes that:
 |---|---|
 | (none) | strict: recorded |
 | `lazy` | recorded, and may reach the disk up to a second after the answer |
-| `unrecorded` | not in the log: counted (how many, how many failed), a failed one logged; they can't be replayed, reverted or explained. A person approves it at deploy, `Unrecorded("GET /health")` |
+| `unrecorded` | not in the log, failed or not: counted (how many, how many failed, the last failure's status and error); they can't be replayed, reverted or explained. To see why one fails, make it `lazy` for a while. A person approves it at deploy, `Unrecorded("GET /health")` |
 
 ```holon
 flow board

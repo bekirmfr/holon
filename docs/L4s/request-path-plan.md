@@ -1011,7 +1011,8 @@ its flow in memory, runs there; `/notes` and lazy routes take the hop again, whi
 **Done (12.2).** `Timer::off()` keeps nothing (`enter`, `produced`, `failed` and `leave` return at
 once), and `RunWaits.unrecorded` (false by default) makes `run_attempt` use it. A route
 (`listeners.rs`) and an action (`deploy.rs`) set it from the effective level
-(`Permit::log_level`). **Decided: a failed unrecorded run runs again**, with the timer on, and
+(`Permit::log_level`). **Decided, later reversed** (resilience-audit-L4.md, §2.8: an unrecorded run
+is never logged nor run again, its tally keeps the last failure): **a failed unrecorded run runs again**, with the timer on, and
 that run is answered and logged (`run_failed`: an error, or a status outside 200–499 or not
 whole, as `data::respond` answers it). An unrecorded handler does nothing outside its run, so the
 second run changes nothing, and the failure keeps the timeline that `explain`, the editor and

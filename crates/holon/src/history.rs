@@ -116,7 +116,14 @@ pub(crate) fn unrecorded(page: &serde_json::Value) -> Vec<String> {
         .iter()
         .map(|(label, t)| {
             let (runs, failed) = (t["runs"].as_u64().unwrap_or(0), t["failed"].as_u64().unwrap_or(0));
-            let failures = if failed > 0 { format!(", {failed} failed (each a run above)") } else { String::new() };
+            // A failure isn't logged either: the tally keeps the last one's status and error.
+            let last = &t["last_failure"];
+            let why = match (last["status"].as_u64(), last["error"].as_str()) {
+                (Some(status), Some(e)) => format!(", the last {status}: {e}"),
+                (Some(status), None) => format!(", the last {status}"),
+                _ => String::new(),
+            };
+            let failures = if failed > 0 { format!(", {failed} failed{why}") } else { String::new() };
             format!("       unrecorded {label}  {runs} run{} counted, not logged{failures}", if runs == 1 { "" } else { "s" })
         })
         .collect()

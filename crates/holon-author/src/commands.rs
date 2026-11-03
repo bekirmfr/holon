@@ -723,7 +723,7 @@ mod tests {
         assert_eq!((r.code, r.err.clone()), (0, vec![]), "{r:?}");
         // What the approval will ask, said as it says it.
         for label in ["GET /health", "action report"] {
-            assert!(r.out.contains(&format!("  keep runs of {label} out of its log (its failures are recorded)")), "{:?}", r.out);
+            assert!(r.out.contains(&format!("  keep runs of {label} out of its log, failed or not (they are counted)")), "{:?}", r.out);
         }
         // A word that isn't before a block is a name.
         let names = "flow n\nstate lazy\n\naction a (unrecorded) {\n  state.lazy = unrecorded\n  respond state.lazy\n}\n";

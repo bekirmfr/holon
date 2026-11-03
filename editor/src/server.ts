@@ -705,9 +705,10 @@ export type LoggedRound = {
   exchanges: { path: number[]; request: WValue; response: WValue; start_us: number; end_us: number }[];
 };
 
-/** What the log doesn't hold of an unrecorded handler's runs: how many ran, how many failed
- *  (each failure is in the log), how long they took in all, and when the last one started. */
-export type Tally = { runs: number; failed: number; total_ms: number; last_at_ms: number };
+/** What the log doesn't hold of an unrecorded handler's runs: how many ran, how many failed, how
+ *  long they took in all, when the last one started, and the last failure's time, status and error
+ *  (never its request): none of its runs is logged, failed or not. */
+export type Tally = { runs: number; failed: number; total_ms: number; last_at_ms: number; last_failure?: { at_ms: number; status: number; error?: string } };
 
 /** `GET /deployments/<slug>/log` — entries past `after` (all without), oldest first. `next` is
  *  the seq the next entry will get; `head` the hash the log chains up to (what a witness holds),

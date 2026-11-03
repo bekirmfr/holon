@@ -192,10 +192,12 @@ on record.
 
 A handler whose line says `unrecorded`, approved as `Unrecorded("GET /health")`, leaves no entry:
 its runs are counted instead, by handler (how many, how many failed, how long they took in all,
-when the last one started), kept with the deployment and given by the log's API (`tallies`), and
-shown where its runs would be, in view mode, the terminal editor and `holon history`. A failed run
-(an error, or a 5xx answer) is logged, lazily. So an unrecorded run can't be replayed, reverted or
-explained. Not approved, or taken back, the handler is strict.
+when the last one started, and the last failure's time, status and error, redacted and cut short,
+never its request), kept with the deployment and given by the log's API (`tallies`), and shown
+where its runs would be, in view mode, the terminal editor and `holon history`. A failed run (an
+error, or a 5xx answer) isn't logged either, and isn't run again: the handler was declared so. So
+an unrecorded run can't be replayed, reverted or explained; to see why one fails, make it `lazy`
+for a while. Not approved, or taken back, the handler is strict.
 
 `--export-heads URL` sends each new head to a witness every five seconds, with
 `HOLON_EXPORT_HEADS_TOKEN` as a bearer token; heads that can't be sent wait in

@@ -5,8 +5,9 @@
 # on its line:
 #   lazy        recorded all the same, on disk within a second of the answer, so it answers
 #               without waiting on the disk;
-#   unrecorded  not in the log at all: its runs are counted, and only a failed one is kept. A
-#               person approves it at deploy, "keep runs of GET /health out of its log".
+#   unrecorded  not in the log at all, failed or not: its runs are counted, with the last
+#               failure's status and error. A person approves it at deploy, "keep runs of
+#               GET /health out of its log, failed or not".
 # A handler that writes, calls out or waits is strict whatever it says: either word on one is an
 # error at the line that does it.
 #

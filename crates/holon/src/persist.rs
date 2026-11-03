@@ -257,6 +257,7 @@ pub(crate) fn load_deployments(
                 trigger_count: record.trigger_count,
                 error_count: record.error_count,
                 tallies: record.tallies,
+                tallies_changed: false,
                 deployed_at,
             },
         );

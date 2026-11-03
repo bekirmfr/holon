@@ -12,12 +12,14 @@
   `status-board`; `notes-api` and `orders-api` list lazily.
 - **A handler can keep its runs out of the log.** `unrecorded` on a handler's line (`route GET
   /health (req) unrecorded { … }`), for one that only reads and answers, asks for
-  `Unrecorded("GET /health")` at deploy: "keep runs of GET /health out of its log (its failures are
-  recorded)". Approved, its runs leave no entry and are counted instead (runs, failures, time, the
-  last one), shown where its runs would be in view mode, the deployment card, the terminal editor
-  and `holon history`; a failed one is logged. Taken back, its next run is recorded and the flow
-  runs on. A host can refuse it whole with `[grants] allow_unrecorded = false`. `holon check` says
-  it, and an agent's `call` says a run was counted, not logged. `status-board` shows it.
+  `Unrecorded("GET /health")` at deploy: "keep runs of GET /health out of its log, failed or not
+  (they are counted)". Approved, its runs leave no entry, failed or not, and are counted instead
+  (runs, failures, time, the last one, and the last failure's status and error, never its request),
+  shown where its runs would be in view mode, the deployment card, the terminal editor and `holon
+  history`. A failed one isn't run again; to see why it fails, make it `lazy` for a while. Taken
+  back, its next run is recorded and the flow runs on. A host can refuse it whole with `[grants]
+  allow_unrecorded = false`. `holon check` says it, and an agent's `call` says a run was counted,
+  not logged. `status-board` shows it.
 - **A slow deployment no longer slows the others.** A request runs on the data plane's own
   worker only when its run can never wait: an unrecorded handler that reads only its request, the
   clock and random numbers, its flow in memory. Any other runs on the blocking pool, where waiting

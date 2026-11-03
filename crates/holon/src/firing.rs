@@ -898,18 +898,25 @@ pub(crate) fn log_run(deployments: &Mutex<BTreeMap<String, Deployment>>, slug: &
 }
 
 /// What counting an unrecorded run takes: its route (none: no route took it), when it ran, how
-/// long it took, and whether it failed (an error, or a 5xx answer).
+/// long it took, its answer's status and its error, if any: it failed with an error, or a 5xx.
 pub(crate) struct Counted<'a> {
     pub(crate) route: Option<&'a str>,
     pub(crate) at_ms: u64,
     pub(crate) duration_ms: f64,
-    pub(crate) failed: bool,
+    pub(crate) status: u16,
+    pub(crate) error: Option<&'a str>,
+}
+
+impl Counted<'_> {
+    fn failed(&self) -> bool {
+        self.error.is_some() || self.status >= 500
+    }
 }
 
 /// [`log_run`], the entry (and the tokens it is redacted of) made only if it is logged: a run its
-/// grant has unrecorded that didn't fail is counted under the table's lock, as `log_run` counts
-/// it, and nothing more is made of it (docs/L4s/interpreter-path-L4.md, the per-request
-/// bookkeeping). Otherwise `log_run`, which reads the level again.
+/// grant has unrecorded is counted under the table's lock, as `log_run` counts it, and nothing more
+/// is made of it (docs/L4s/interpreter-path-L4.md, the per-request bookkeeping). Otherwise
+/// `log_run`, which reads the level again.
 pub(crate) fn log_or_count(
     deployments: &Mutex<BTreeMap<String, Deployment>>,
     slug: &str,
@@ -918,7 +925,7 @@ pub(crate) fn log_or_count(
     tokens: impl FnOnce() -> Redactor,
     declared: holon_core::LogLevel,
 ) -> Option<Logged> {
-    if !counted.failed {
+    {
         let mut table = deployments.lock().unwrap();
         let dep = table.get_mut(slug)?;
         if count_if_unrecorded(dep, &counted, declared).1 {
@@ -929,40 +936,40 @@ pub(crate) fn log_or_count(
 }
 
 /// The level `dep`'s grant logs a run at now, and, for an unrecorded run, the run counted in its
-/// route's tally (a failed one too); with whether that is all there is to do: an unrecorded run
-/// that didn't fail is counted and not logged. The one rule `push_run` and `log_or_count` both
-/// keep (docs/L4s/resilience-audit-L4.md, D2). Called with the table's lock held.
+/// route's tally, a failure with its status and its error (redacted of the deployment's secrets, cut
+/// short); with whether that is all there is to do, which for an unrecorded run it always is: its
+/// handler was declared so, and its runs are never logged, failed or not (resilience-audit-L4.md,
+/// §2.8). The one rule `push_run` and `log_or_count` both keep (D2). Called with the table's lock
+/// held.
+/// [`count_if_unrecorded`] for a test, the handler declared unrecorded: whether it was counted only.
+#[cfg(test)]
+pub(crate) fn count_for_tests(dep: &mut Deployment, counted: &Counted) -> bool {
+    count_if_unrecorded(dep, counted, holon_core::LogLevel::Unrecorded).1
+}
+
 fn count_if_unrecorded(dep: &mut Deployment, counted: &Counted, declared: holon_core::LogLevel) -> (holon_core::LogLevel, bool) {
     let level = dep.permit.log_level(counted.route, declared);
     if level != holon_core::LogLevel::Unrecorded {
         return (level, false);
     }
-    dep.tallies.entry(counted.route.unwrap_or_default().to_string()).or_default().add(counted.at_ms, counted.duration_ms, counted.failed);
-    (level, !counted.failed)
+    let failure = counted.failed().then(|| wire::Failure {
+        at_ms: counted.at_ms,
+        status: counted.status.max(if counted.error.is_some() { 500 } else { 0 }),
+        error: counted.error.map(|e| {
+            const MOST: usize = 300;
+            let e = Redactor::of(&dep.secrets).text(e);
+            match e.char_indices().nth(MOST) {
+                Some((cut, _)) => format!("{}…", &e[..cut]),
+                None => e,
+            }
+        }),
+    });
+    dep.tallies.entry(counted.route.unwrap_or_default().to_string()).or_default().add(counted.at_ms, counted.duration_ms, failure);
+    dep.tallies_changed = true;
+    (level, true)
 }
 
-/// Whether a run failed as it ran: an error, or an answer with a 5xx status. An unrecorded run that
-/// did is run again with its timeline kept, to be logged (`log_run`).
-pub(crate) fn run_failed(run: &FiredRun) -> bool {
-    let status = match run.outputs.first() {
-        Some(Some(Value::Record(f))) => match f.get("status") {
-            Some(Value::Number(n)) => *n,
-            _ => 200.0,
-        },
-        // No answer at all is a 500.
-        Some(None) | None => 500.0,
-        Some(Some(_)) => 200.0,
-    };
-    // A status outside 200–599, or not whole, is answered 500 (data.rs's `respond`).
-    run.error.is_some() || !(200.0..500.0).contains(&status) || status.fract() != 0.0
-}
-
-/// Whether a run failed, as its entry says: an error, or a 5xx answer.
-fn failed(entry: &LogEntry) -> bool {
-    entry.error.is_some() || entry.status.is_some_and(|s| s >= 500)
-}
-
-/// A run as `log_run` logged it: its entry's seq (none: unrecorded, and it didn't fail), and, for
+/// A run as `log_run` logged it: its entry's seq (none: unrecorded, so only counted), and, for
 /// a strict run, whether the entry is on disk (an error says why not).
 #[derive(Debug)]
 pub(crate) struct Logged {
@@ -994,7 +1001,7 @@ fn push_run(
     let (log, secrets, channels, permit, session, level) = {
         let mut table = deployments.lock().unwrap();
         let dep = table.get_mut(slug)?;
-        let counted = Counted { route: entry.route.as_deref(), at_ms: entry.at_ms, duration_ms: entry.duration_ms, failed: failed(&entry) };
+        let counted = Counted { route: entry.route.as_deref(), at_ms: entry.at_ms, duration_ms: entry.duration_ms, status: entry.status.unwrap_or(200), error: entry.error.as_deref() };
         let (level, only_counted) = count_if_unrecorded(dep, &counted, declared);
         if only_counted {
             return Some(None);

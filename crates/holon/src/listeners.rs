@@ -176,17 +176,12 @@ fn serve_flow(
             let label = format!("{} {}", matched.method, matched.path);
             let route = label.as_str();
             level = matched.log;
-            // A run that won't be logged keeps no timeline; one that fails is run again, keeping
-            // it, to be logged: an unrecorded handler does nothing outside its run, so running it
-            // twice changes nothing, and its answer is the second run's (§4.5 a).
+            // A run that won't be logged keeps no timeline (§4.5 a), and is never logged, failed or
+            // not: its tally keeps the last failure (resilience-audit-L4.md, §2.8).
             waits.unrecorded = permit.log_level(Some(route), level) == holon_core::LogLevel::Unrecorded;
             // One copy of the request, lent to the run, the check for a wait and the entry.
             let inputs = [Some(req)];
             let mut run = fire_with_state(endpoint, &inputs, &resolver, store, state.as_ref(), sourced, &permit, false, &secrets, &mut waits, None);
-            if waits.unrecorded && run_failed(&run) {
-                waits = waits.again();
-                run = fire_with_state(endpoint, &inputs, &resolver, store, state.as_ref(), sourced, &permit, false, &secrets, &mut waits, None);
-            }
             parked = durable::park_if_waiting(deployments, store, slug, &matched.endpoint, "request", Some(route.to_string()), &inputs, sourced, &run, &waits);
             answer_derived = run.secret_fed.derives_output(0);
             // An answer carrying a secret goes to the caller only where a person approved it
@@ -264,7 +259,6 @@ fn serve_flow(
         Err(e) => Some(e.clone()),
         Ok(_) => ran.as_ref().and_then(|r| r.error.clone()),
     };
-    let failed = error.is_some() || answer.status >= 500;
     let parked_any = matches!(&parked, Ok(names) if !names.is_empty());
     let entry = || {
         let mut entry = match ran {
@@ -294,7 +288,7 @@ fn serve_flow(
     };
     // A strict run answers once its record is on disk; one whose record may not be isn't
     // answered as done (C2 e).
-    let counted = Counted { route: route.as_deref(), at_ms: started.0, duration_ms: started.1.elapsed().as_secs_f64() * 1000.0, failed };
+    let counted = Counted { route: route.as_deref(), at_ms: started.0, duration_ms: started.1.elapsed().as_secs_f64() * 1000.0, status: answer.status, error: error.as_deref() };
     if let Some(Logged { kept: Err(e), .. }) = log_or_count(deployments, slug, counted, entry, tokens, level) {
         answer = data::DataResponse::json_error(500, &format!("the request ran, but {e}"));
     }

@@ -999,7 +999,7 @@ the record is on disk before the answer (C2 e). A handler that only reads can sa
 own line:
 
 ```
-route GET /health (req) unrecorded { … }   # no record; a summary row, and its failures
+route GET /health (req) unrecorded { … }   # no record; a summary row, failures counted
 route GET /notes (req) lazy { … }          # recorded; on disk within about a second
 route POST /notes (req) { … }              # strict: on disk before the answer
 every 1m lazy { … }
@@ -1455,7 +1455,7 @@ flow status-board
 port 8170
 collection notes
 
-# Answers the load balancer. Not recorded: one summary row, and its failures.
+# Answers the load balancer. Not recorded: one summary row, its failures counted.
 route GET /health (req) unrecorded {
   respond "ok"
 }
@@ -1517,6 +1517,10 @@ The end-to-end tests (`editor/e2e`) and `editor/src/samples.test.ts` must stay g
    and no safety. A host can still turn it off.
 10. **Decided: an unrecorded handler's failures are recorded,** lazily: a failure is what someone
     looks into. No form that drops them too (`unrecorded always`) until a flow asks for one.
+    **Reversed** (resilience-audit-L4.md, §2.8): a handler declared unrecorded is never logged,
+    failed or not, nor run again. Its author may have declared it so to keep its requests out of
+    the log; and a failure can be forced from outside, so logging and re-running each one made a
+    route declared cheap an amplifier. Its tally keeps the last failure's time, status and error.
 11. **Decided: the headline** "keeps a record of every run" (`README.md:3`) becomes "keeps a record
     of every run, on disk before it answers, except handlers a person approved as unrecorded, which
     change nothing", in build step 9b, when unrecorded handlers exist.

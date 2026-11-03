@@ -928,8 +928,10 @@ before the run's answer: the handler is *strict*. A word before its block says o
 
 - `lazy`: the run is recorded, and on disk within a second of its answer. A crash in that second
   loses the line, and only the line: the run did nothing outside itself.
-- `unrecorded`: the run is not a line of the log. It is counted, and a failed one is still kept,
-  but it isn't in the runs table, so it can't be replayed, reverted or explained. Each such
+- `unrecorded`: the run is not a line of the log, failed or not. It is counted (how many, how
+  many failed, the last failure's status and error, never its request), but it isn't in the runs
+  table, so it can't be replayed, reverted or explained. To see why one fails, make it `lazy` for
+  a while. Each such
   handler is an item a person approves at deploy, `Unrecorded("GET /health")`; not approved, or
   taken back, the handler is strict. For what is
   called often and says nothing worth keeping: a health check, a page of what is already recorded.

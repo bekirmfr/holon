@@ -244,7 +244,7 @@ fn dashboard(f: &mut Frame, app: &App, d: &Detail, area: Rect) {
 // ── the split panes ──────────────────────────────────────────────────────────────────────────
 
 /// Its unrecorded handlers, by label, each with what its tally says (docs/L4s/request-path-L4.md,
-/// C5): "not recorded: 1204 runs, 2 failed (in the log), 0.4 ms each".
+/// C5): "not recorded: 1204 runs, 0.4 ms each, 2 failed, the last 503: why".
 pub(crate) fn unrecorded_lines(d: &Detail) -> Vec<(String, String)> {
     let Some(tallies) = d.entry["tallies"].as_object() else { return vec![] };
     tallies
@@ -252,15 +252,24 @@ pub(crate) fn unrecorded_lines(d: &Detail) -> Vec<(String, String)> {
         .map(|(label, t)| {
             let (runs, failed, total) = (t["runs"].as_u64().unwrap_or(0), t["failed"].as_u64().unwrap_or(0), t["total_ms"].as_f64().unwrap_or(0.0));
             let mut said = format!("not recorded: {runs} run{}", if runs == 1 { "" } else { "s" });
-            if failed > 0 {
-                said.push_str(&format!(", {failed} failed (in the log)"));
-            }
             if runs > 0 {
                 said.push_str(&format!(", {:.1} ms each", total / runs as f64));
+            }
+            if failed > 0 {
+                said.push_str(&format!(", {failed} failed{}", last_failure(&t["last_failure"])));
             }
             (label.clone(), said)
         })
         .collect()
+}
+
+/// A tally's last failure, as a line says it: ", the last 503: why" (nothing when there is none).
+fn last_failure(f: &serde_json::Value) -> String {
+    let Some(status) = f["status"].as_u64() else { return String::new() };
+    match f["error"].as_str() {
+        Some(e) => format!(", the last {status}: {e}"),
+        None => format!(", the last {status}"),
+    }
 }
 
 /// How many runs of its unrecorded handlers were counted.

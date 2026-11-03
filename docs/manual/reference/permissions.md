@@ -50,7 +50,7 @@ server's policy allows them at all.
 |---|---|---|
 | `PlainHttp("host")` | call host over plain HTTP (not encrypted) | the deploy settings' **plain HTTP to**; needs `allow_plain_http = true` |
 | `PrivateAddresses` | reach private addresses (this machine and its network) | the deploy settings' **private addresses**; needs `allow_private_addresses = true` |
-| `Unrecorded("GET /health")` | keep runs of GET /health out of its log (its failures are recorded) | a handler whose line says `unrecorded`; allowed unless `allow_unrecorded = false` |
+| `Unrecorded("GET /health")` | keep runs of GET /health out of its log, failed or not (they are counted) | a handler whose line says `unrecorded`; allowed unless `allow_unrecorded = false` |
 
 `Unrecorded` is asked for by the flow itself, one item per handler whose line says `unrecorded`
 ([Language reference](../language/reference.md#clocks-files-and-actions)), and only a handler
