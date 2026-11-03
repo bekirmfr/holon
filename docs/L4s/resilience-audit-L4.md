@@ -32,6 +32,42 @@ The fixes proposed are of three kinds: **one source of truth** (the knowledge in
 | R2 | dataplane.rs, `READS_HERE` | A route reading a collection runs inline, but a collection read goes through the content store: the value cache, then on a miss the on-disk store behind its global lock. A cold read, a slow disk or a contended store lock then blocks a tokio worker that every other connection on it shares. (State, the clock, random and secrets are read from memory: those are fine.) | Fail safe: take `CollectionRead` out of `READS_HERE`, so such routes take the hop (30–40 µs), as they did before 12.1. |
 | R3 | eval.rs, `eval_as` and `run_planned` | Two new panics in core where the walk answered absent: `eval_as`'s arm for a primitive whose kind isn't a primitive's, and the plan's "a child's sources are evaluated before it". Both are unreachable by construction, but a bug there now aborts the run (R1 makes that worse inline) instead of failing closed. | Fail safe: the kind mismatch answers absent; the plan hands the run to the walk, as a failed check does. |
 
+#### Measured (throwaway builds with an injected panic and the fixes, not committed)
+
+- **R1.** A panic injected into a run: inline, the caller gets an empty reply (the connection
+  dropped); on the pool, `500 the request's handler failed`. With the guard, both answer 500. The
+  server survives either way (tokio keeps a panic to its task: after 8 in a row, more than its 4
+  workers, the next 50 requests were all answered), and neither path logs an entry for a run that
+  panicked. The guard costs nothing measurable: unrecorded `hello` 65,691–78,004 req/s without it,
+  75,749–79,300 with it.
+- **R2, and why.** An unrelated unrecorded `hello` deployment, probed at 2 connections, while
+  `notes-api` takes a load at 64:
+
+  | `hello`'s probe | alone | + `notes` listing reads | + reads and strict writes |
+  |---|---|---|---|
+  | as built | 24,759–24,886 req/s, p50 76–77 µs | **66–403 req/s, p50 4.4–23.5 ms** | **30 req/s, p50 60–61 ms** |
+  | collection reads on the pool | 25,087–25,211, p50 75 µs | 10,347–10,847, p50 85–87 µs | 18,684–18,787, p50 81–82 µs |
+  | inline, `block_in_place` on a store miss | 24,641–26,263, p50 72–77 µs | 68–69, p50 23 ms | 32–33, p50 55 ms |
+
+  A listing run blocks inline, holding a worker with the CPU idle: on the store's lock while a write
+  syncs (`put_value` syncs each new value under it), and on the log's lock while it is cut back
+  (R4). `block_in_place` on store misses alone doesn't help: most of the waiting is on the log's
+  lock. On the pool the waits block a pool thread, and every other route's runs go on.
+- **Not R2: a CPU-bound load.** Under 64 connections of `crunch` (1,000 items), `hello`'s probe falls
+  to 70–83 req/s at a p50 of 26–28 ms whether every route runs inline or every route on the pool:
+  the 4 cores are saturated and the probe gets its share. That is overload, not the inline path.
+- **What the pool costs each kind of route** (the same build, inline and every route pooled, two
+  rounds): unrecorded `hello` 76,667–76,804 → 54,541–55,032 req/s (−29%; p50 at one connection 57
+  → 117–118 µs), unrecorded `calc` −29%, lazy `hello` −8% (88–90 → 184–216 µs), `crunch` at 100
+  items within noise, at 1,000 −20%. The `notes` listing, which waits as it runs, does better on the
+  pool at 64 connections: 1,905–1,918 → 2,135–2,153 req/s (+11%), its p50 at one connection 665–714
+  → 746–803 µs. So pooling every route would give back most of 12.1; pooling the routes that can
+  wait costs them 60–90 µs at one connection and gains them throughput under load.
+
+| # | Where | What | Fix |
+|---|---|---|---|
+| R4 | recorder.rs, `keep_line` → `cut_back` | **Found by measuring, not by reading.** Once a log's file holds twice what it keeps, the next run reads the whole file, writes the lines it keeps and syncs it, under the log's lock: about 25 MB in one write (84–92 ms) and several 20 ms syncs for `notes-api` here. Every run of the deployment, strict or lazy, waits 100–150 ms for it (a p99 of 134–151 ms at one connection, once a second at 1,100 req/s), and since 12.1 an inline lazy run waits holding a shared worker. The cut-back predates the throughput work; the inline path made it reach other deployments. | Cut back outside the log's lock: the kept lines written to a new file beside it, then, under the lock, the lines that came meanwhile appended and the file swapped in. |
+
 ### 2.2 Drift risks: knowledge in two places
 
 | # | Where | What | Fix |
@@ -88,7 +124,9 @@ listed so they are seen as policy, not as optimizations:
 
 ## 3. Order
 
-1. **R1–R3**, which change how the server behaves when something goes wrong.
+1. **R1–R4**, which change how the server behaves when something goes wrong. R1 and R3 cost nothing on
+   the fast path; R2's cost is the pool's on the routes that read a collection (above); R4's should
+   be none, to be measured.
 2. **D1–D3**, the knowledge kept twice and the redaction shortcut's assumptions.
 3. **D4, D5, S1–S5**.
 4. Then the rest of the check: the end-to-end suite (`editor/e2e`), a soak under load watching
