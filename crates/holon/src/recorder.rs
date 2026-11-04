@@ -1639,8 +1639,13 @@ impl Log {
             }
             other => {
                 let _ = std::fs::remove_file(&made.tmp);
-                if let Some((_, aside, _)) = &made.seal {
+                // The segment it sealed, aside or renamed in already: its runs are in the file
+                // still, and the cut made here seals them as it does.
+                if let Some((path, aside, _)) = &made.seal {
                     let _ = std::fs::remove_file(aside);
+                    if !self.sealed.iter().any(|s| s.path == *path) {
+                        let _ = std::fs::remove_file(path);
+                    }
                 }
                 if let Err(e) = other {
                     eprintln!("holon: the flow log {:?} is cut back holding its lock: {e}", self.file);
@@ -1715,8 +1720,16 @@ impl Log {
             self.export("trim", seq, &prev, now_ms());
         }
         self.file_oldest_ms = oldest_ms;
-        // Written whole and synced (write_private), the newest line with it.
-        crate::sealing::write_private(&path, &all)?;
+        // Written whole and synced (write_private), the newest line with it. If it can't be, the
+        // segment sealed goes again: its runs are in the file still.
+        if let Err(e) = crate::sealing::write_private(&path, &all) {
+            if let Some((final_path, _, _)) = &seal
+                && !self.sealed.iter().any(|s| s.path == *final_path)
+            {
+                let _ = std::fs::remove_file(final_path);
+            }
+            return Err(e);
+        }
         sync_dir_of(&path);
         self.generation += 1;
         self.written = kept.len();
@@ -2123,6 +2136,37 @@ mod tests {
         assert_eq!(seqs(&log), [7, 8]);
         log.retain(10, None);
         assert_eq!(seqs(&log), [3, 4, 5, 6, 7, 8], "read back from the file");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A cut made with the lock released whose swap fails leaves no segment the log doesn't
+    /// know of: the one it sealed goes, and the cut made holding the lock instead seals the runs.
+    #[test]
+    fn a_cut_whose_swap_fails_leaves_no_segment_behind() {
+        let dir = temp_dir("swap-fails");
+        let path = dir.join("slug.jsonl");
+        let mut log = Log::open_keeping(Some(path.clone()), 10);
+        log.set_hot(2);
+        log.defer_cuts = true;
+        for _ in 0..6 {
+            log.push(entry());
+        }
+        let made = log.plan_cut().expect("a cut wanted").make().unwrap().expect("something to cut");
+        assert!(made.seal.is_some());
+        // Its file gone from under it, the swap fails once its segment is renamed in; and the log
+        // keeping fewer meanwhile, the cut made instead seals other runs.
+        std::fs::remove_file(&made.tmp).unwrap();
+        log.retain(3, None);
+        log.finish_cut(Ok(Some(made)));
+        let on_disk: Vec<PathBuf> = {
+            let mut p: Vec<PathBuf> = std::fs::read_dir(sealed_dir(&path)).unwrap().flatten().map(|e| e.path()).collect();
+            p.sort();
+            p
+        };
+        let known: Vec<PathBuf> = log.sealed.iter().map(|s| s.path.clone()).collect();
+        assert_eq!(on_disk, known, "every segment on disk is one the log knows");
+        let back = Log::open_keeping(Some(path.clone()), 10);
+        assert_eq!(back.after(None, 100).iter().map(|e| e.seq).collect::<Vec<_>>(), [3, 4, 5]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
