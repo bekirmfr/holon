@@ -1,0 +1,154 @@
+{
+  "fen": "rnbqkbnr/pppp1ppp/8/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R b KQkq - 1 2",
+  "moves": [
+    "e4",
+    "e5",
+    "Nf3"
+  ],
+  "seen": [
+    "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq -",
+    "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3",
+    "rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq e6",
+    "rnbqkbnr/pppp1ppp/8/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R b KQkq -"
+  ],
+  "last": "g1f3",
+  "status": "playing",
+  "winner": "",
+  "result": "*",
+  "material": {
+    "white": 39,
+    "black": 39
+  },
+  "pgn": "1. e4 e5 2. Nf3 *",
+  "turn": "b",
+  "legal": [
+    {
+      "san": "a6",
+      "uci": "a7a6"
+    },
+    {
+      "san": "a5",
+      "uci": "a7a5"
+    },
+    {
+      "san": "b6",
+      "uci": "b7b6"
+    },
+    {
+      "san": "b5",
+      "uci": "b7b5"
+    },
+    {
+      "san": "c6",
+      "uci": "c7c6"
+    },
+    {
+      "san": "c5",
+      "uci": "c7c5"
+    },
+    {
+      "san": "d6",
+      "uci": "d7d6"
+    },
+    {
+      "san": "d5",
+      "uci": "d7d5"
+    },
+    {
+      "san": "f6",
+      "uci": "f7f6"
+    },
+    {
+      "san": "f5",
+      "uci": "f7f5"
+    },
+    {
+      "san": "g6",
+      "uci": "g7g6"
+    },
+    {
+      "san": "g5",
+      "uci": "g7g5"
+    },
+    {
+      "san": "h6",
+      "uci": "h7h6"
+    },
+    {
+      "san": "h5",
+      "uci": "h7h5"
+    },
+    {
+      "san": "Na6",
+      "uci": "b8a6"
+    },
+    {
+      "san": "Nc6",
+      "uci": "b8c6"
+    },
+    {
+      "san": "Qe7",
+      "uci": "d8e7"
+    },
+    {
+      "san": "Qf6",
+      "uci": "d8f6"
+    },
+    {
+      "san": "Qg5",
+      "uci": "d8g5"
+    },
+    {
+      "san": "Qh4",
+      "uci": "d8h4"
+    },
+    {
+      "san": "Ke7",
+      "uci": "e8e7"
+    },
+    {
+      "san": "Be7",
+      "uci": "f8e7"
+    },
+    {
+      "san": "Bd6",
+      "uci": "f8d6"
+    },
+    {
+      "san": "Bc5",
+      "uci": "f8c5"
+    },
+    {
+      "san": "Bb4",
+      "uci": "f8b4"
+    },
+    {
+      "san": "Ba3",
+      "uci": "f8a3"
+    },
+    {
+      "san": "Nf6",
+      "uci": "g8f6"
+    },
+    {
+      "san": "Nh6",
+      "uci": "g8h6"
+    },
+    {
+      "san": "Ne7",
+      "uci": "g8e7"
+    }
+  ],
+  "turns": [
+    {
+      "ply": 2,
+      "proposed": "e5",
+      "kept": "kept",
+      "played": "e5"
+    }
+  ],
+  "fallback": {
+    "san": "c6",
+    "uci": "c7c6"
+  }
+}
