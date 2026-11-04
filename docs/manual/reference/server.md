@@ -143,7 +143,9 @@ allow_plain_http = true
     go of, as it cuts back to what it keeps (or as `roll` cuts it), are written there first, and
     within ten seconds made into exports `holon verify` checks, gzipped:
     `<backup>/<slug>/<slug>-runs-<first>-<last>.json.gz`, with the units the runs ran and the
-    file texts they read that the server keeps. Gzipped, a small route's run takes about 360
+    file texts they read that the server keeps. The folder may hold other things: the server
+    only ever exports and removes the batches it wrote (`<slug>/<first>-<last>.jsonl`, each
+    seq 20 digits), and counts only its exports. Gzipped, a small route's run takes about 360
     bytes (13 times smaller than its line), a listing's about 2 KB (30 times). If it can't be
     written to, a log doesn't cut back: it keeps the runs until it can, and the host warns; only
     `roll` past `full_at` lets them go without. Object storage (`s3://`) is to come, and Holon

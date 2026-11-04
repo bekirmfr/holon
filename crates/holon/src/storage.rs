@@ -60,6 +60,21 @@ pub(crate) fn is_aside(name: &str) -> bool {
     digits(parts.next()) && digits(parts.next()) && parts.next().is_none()
 }
 
+/// Whether `name` is a batch of runs a log wrote to the backup (recorder.rs `keep_aside`):
+/// `<first seq>-<last seq>.jsonl`, each 20 digits. Nothing else in the backup is the server's to
+/// export or remove: it may be a drive or a synced folder that holds other things too.
+pub(crate) fn is_batch(name: &str) -> bool {
+    let Some((first, last)) = name.strip_suffix(".jsonl").and_then(|n| n.split_once('-')) else { return false };
+    let seq = |p: &str| p.len() == 20 && p.bytes().all(|b| b.is_ascii_digit());
+    seq(first) && seq(last)
+}
+
+/// Whether `name` is an export the housekeeping made of a batch (`archive_one`):
+/// `<slug>-runs-<first>-<last>.json.gz`.
+fn is_export(name: &str) -> bool {
+    name.strip_suffix(".json.gz").and_then(|n| n.rsplit_once("-runs-")).is_some_and(|(slug, batch)| !slug.is_empty() && is_batch(&format!("{batch}.jsonl")))
+}
+
 /// Count `dir`'s files that `keep` names (none for a folder that isn't there), removing each one a
 /// write made aside left more than `LEFTOVER_AFTER` before `now` (added to `left`).
 fn count_dir(dir: &Path, keep: impl Fn(&str) -> bool, now: SystemTime, left: &mut Count) -> Option<Count> {
@@ -976,7 +991,8 @@ pub(crate) fn archive(state: &AppState) {
     for slug_dir in slugs.flatten().filter(|e| e.path().is_dir()) {
         let slug = slug_dir.file_name().to_string_lossy().into_owned();
         let Ok(batches) = std::fs::read_dir(slug_dir.path()) else { continue };
-        let mut batches: Vec<PathBuf> = batches.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "jsonl")).collect();
+        // Only the batches a log wrote: whatever else the folder holds is left as it is.
+        let mut batches: Vec<PathBuf> = batches.flatten().map(|e| e.path()).filter(|p| p.is_file() && p.file_name().and_then(|n| n.to_str()).is_some_and(is_batch)).collect();
         batches.sort();
         for batch in batches {
             if let Err(e) = archive_one(state, &slug, &batch) {
@@ -1014,10 +1030,10 @@ fn backup_view(state: &AppState) -> serde_json::Value {
     for slug_dir in std::fs::read_dir(&dir).into_iter().flatten().flatten().filter(|e| e.path().is_dir()) {
         for f in std::fs::read_dir(slug_dir.path()).into_iter().flatten().flatten() {
             let name = f.file_name().to_string_lossy().into_owned();
-            if name.ends_with(".json.gz") {
+            if is_export(&name) {
                 exports += 1;
                 bytes += f.metadata().map_or(0, |m| m.len());
-            } else if name.ends_with(".jsonl") {
+            } else if is_batch(&name) {
                 waiting += 1;
             }
         }
@@ -1141,6 +1157,22 @@ mod tests {
         }
         for not in ["notes-api.jsonl", "a.tmp", "x.tmp-12", "x.tmp-12-", "x.tmp-a-1", "x.tmp-1-2-3", "tmp-1-2", "05dcd5a7"] {
             assert!(!is_aside(not), "{not}");
+        }
+    }
+
+    /// The backup's own files are known by their names, and nothing else in its folder is: it may
+    /// be a drive that holds other things.
+    #[test]
+    fn a_backup_batch_and_its_export_are_known_by_their_names_and_nothing_else_is() {
+        let batch = format!("{:020}-{:020}.jsonl", 3, 17);
+        assert!(is_batch(&batch), "{batch}");
+        assert!(is_export(&format!("notes-runs-{:020}-{:020}.json.gz", 3, 17)));
+        assert!(is_export(&format!("my-runs-app-runs-{:020}-{:020}.json.gz", 3, 17)), "a slug with -runs- in it");
+        for not in ["data.jsonl", "3-17.jsonl", &format!("{:020}-{:020}.json", 3, 17), &format!("{:020}-{:019}.jsonl", 3, 17), &format!("{:020}-{:020}.jsonl.tmp-1-2", 3, 17)] {
+            assert!(!is_batch(not), "{not}");
+        }
+        for not in ["photos.json.gz", "notes-runs-3-17.json.gz", &format!("-runs-{:020}-{:020}.json.gz", 3, 17)] {
+            assert!(!is_export(not), "{not}");
         }
     }
 

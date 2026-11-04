@@ -55,7 +55,8 @@
   written there first and made into gzipped exports `holon verify` checks (it reads `.json.gz`
   as it reads `.json`): about 360 bytes a run for a small route, 13 to 30 times smaller than the
   log's lines. A backup that can't be written to keeps the runs in the log, and the host warns.
-  Set on the admin page or with `holon policy --backup`.
+  Whatever else the folder holds is left alone: only the server's own batches are exported and
+  removed. Set on the admin page or with `holon policy --backup`.
 - **An admin chooses what happens when the disk fills.** Past `[storage] full_at` (`95%` unless
   said), `when_full` is `warn` (the default: nothing changes), `pause` (every flow that records
   runs is paused by the host, and resumed once there is room; unrecorded ones go on) or `roll`

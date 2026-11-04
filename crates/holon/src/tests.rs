@@ -1330,8 +1330,18 @@ fn the_runs_a_log_lets_go_of_are_backed_up_as_exports_verify_checks() {
         }
     }
     crate::recorder::sync_logs(&state.deployments).unwrap();
+    // The folder holds other things too (a drive's, or a synced folder's): they are left alone.
+    let theirs = [backup.join("projects/data.jsonl"), backup.join("projects/empty.jsonl"), backup.join("kept/notes.jsonl"), backup.join("kept/photo.json.gz")];
+    for (i, p) in theirs.iter().enumerate() {
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(p, if i == 1 { "" } else { "{\"mine\":1}\n" }).unwrap();
+    }
     storage::archive(&state);
-    let exports: Vec<std::path::PathBuf> = std::fs::read_dir(backup.join("kept")).unwrap().flatten().map(|e| e.path()).collect();
+    for p in &theirs {
+        assert!(p.exists(), "{} left alone", p.display());
+    }
+    assert!(!backup.join("projects").read_dir().unwrap().flatten().any(|e| e.file_name().to_string_lossy().ends_with(".json.gz")), "nothing exported of what isn't a batch");
+    let exports: Vec<std::path::PathBuf> = std::fs::read_dir(backup.join("kept")).unwrap().flatten().map(|e| e.path()).filter(|p| !theirs.contains(p)).collect();
     assert!(!exports.is_empty() && exports.iter().all(|p| p.to_string_lossy().ends_with(".json.gz")), "{exports:?}");
     let mut seqs = Vec::new();
     for p in &exports {
