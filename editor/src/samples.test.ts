@@ -138,6 +138,7 @@ describe("sample flows", () => {
       'HttpRequest("generativelanguage.googleapis.com")',
       "NetworkIngress",
       'SecretRead("gemini_api_key")',
+      'SecretRead("mcp_token")',
     ]);
     // An action agents may run is a grant of its own, which a person can take back without
     // pausing the flow.

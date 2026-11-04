@@ -39,8 +39,16 @@
 # there. Which model plays is the app's list too: POST /new takes one of the models it offers, and
 # any other name is answered 400.
 #
+# Over MCP: a game against the model "mcp" (POST /new takes it, as it takes a Gemini model) waits
+# on Black's turn for an MCP client instead of calling Gemini. The client reads the game with
+# get_game and plays with sphinx_move, at POST /mcp with Authorization: Bearer <mcp_token>; the
+# rules check the move as they check a player's, and the turn is kept as a Gemini answer is. The
+# player waits meanwhile, and "rules" still lets the rules play for Black. The chat still answers
+# with Gemini, when its key is set.
+#
 # Before it works, set the header's secret under the deployment's settings (the gear):
 #   gemini_api_key   a Gemini API key, free from aistudio.google.com (Get API key)
+#   mcp_token        a token of your choosing, for an MCP client to play Black (see below)
 # Without it, or past the free tier's limit (a few calls a minute, chat and moves together), the
 # rules play for the Sphinx and the chat says it is resting. gemini-4-argon needs a paid plan. On
 # the free tier Google may use what is sent to improve its products.
@@ -68,6 +76,7 @@ port 8168
 limit request_timeout_ms 50s
 limit run_budget_ms 1m
 secret gemini_api_key
+secret mcp_token
 collection games
 channel replies
 
@@ -389,6 +398,7 @@ function heard(li, t, typed) {
 }
 function exchange(t, typed) {
   if (t.player !== undefined) bubble(true, "You").querySelector(".bubble").textContent = t.player;
+  if (t.piece !== undefined) { const li = bubble(false, t.piece); li.classList.add("aside", "piece"); li.querySelector(".bubble").textContent = t.agent; return; }
   heard(bubble(false, "Sphinx"), t, typed);
 }
 // The Sphinx's reply as it streams: the pieces of Gemini's answer, from the channel, whose words
@@ -729,6 +739,7 @@ holon opponent(model) -> board js {
     { id: "gemini-3.6-flash", note: "free tier", thinking: "low" },
     { id: "gemini-3.8-flash", note: "the newest Flash, free tier; slower", thinking: "low" },
     { id: "gemini-4-argon", note: "the strongest, paid plans only", thinking: "low" },
+    { id: "mcp", note: "played over MCP: an MCP client plays Black's moves, and Gemini is not called", thinking: "" },
   ];
   const name = typeof model === "string" && model.trim() !== "" ? model.trim() : MODELS[0].id;
   if (!MODELS.some((m) => m.id === name)) throw new Error(`${name} isn't one of the models this game offers`);
@@ -757,7 +768,7 @@ holon player(board, move) -> wanted js {
 holon move_prompt(board, move) -> body js {
   const legal = (board.legal || []).map((l) => l.san);
   const over = board.status !== "playing";
-  if (!over && (board.turn !== "b" || legal.length === 0 || move === "rules")) return undefined;
+  if (board.model === "mcp" || (!over && (board.turn !== "b" || legal.length === 0 || move === "rules"))) return undefined;
   const MOODS = ["confident", "delighted", "amused", "curious", "puzzled", "uneasy", "struggling", "desperate"];
   const VERDICTS = ["brilliant", "good", "solid", "unclear", "risky", "dubious", "bad", "blunder", "insane"];
   const voice = "You are the Sphinx, a playful, proud chess player with Black against a human, who speaks in riddles and teasing.";
@@ -821,6 +832,8 @@ holon choose(board, asked, move) -> pick js {
   const legal = board.legal || [];
   const over = board.status !== "playing";
   if (!over && (board.turn !== "b" || legal.length === 0)) return { game: board, move: "" };
+  // Over MCP, Black's turn waits for the MCP client's move (sphinx_move), or for "rules".
+  if (!over && board.model === "mcp" && move !== "rules") return { game: { ...board, waiting: { note: "waiting for the Sphinx over MCP" } }, move: "" };
   const MOODS = ["confident", "delighted", "amused", "curious", "puzzled", "uneasy", "struggling", "desperate"];
   const VERDICTS = ["brilliant", "good", "solid", "unclear", "risky", "dubious", "bad", "blunder", "insane"];
   // The text of the interaction's model output, in the steps the API answers.
@@ -933,6 +946,64 @@ holon hear(sent, line) -> heard js {
   };
 }
 
+# An MCP client (an agent with the MCP tools) plays Black in a game that offers "mcp": JSON-RPC 2.0
+# over POST /mcp, answered whole, with the tools get_game (the game as the rules hold it) and
+# sphinx_move (Black's move, checked against the legal moves and recorded as the Sphinx's turn,
+# as choose records a Gemini answer). Every call needs the secret as "Bearer" authorization, and
+# a call that isn't legal, or that comes when Black isn't waiting, is an error that changes nothing.
+holon mcp_step(board, body, ok) -> step js {
+  const MOODS = ["confident", "delighted", "amused", "curious", "puzzled", "uneasy", "struggling", "desperate"];
+  const VERDICTS = ["brilliant", "good", "solid", "unclear", "risky", "dubious", "bad", "blunder", "insane"];
+  const TOOLS = [
+    { name: "get_game", description: "The game as it stands: the position (fen, pgn), the material, the legal moves, and whether Black's turn waits for its move.", inputSchema: { type: "object", properties: {} } },
+    { name: "piece_say", description: "A remark from one of Black's pieces, for the chat, as its own bubble: only when it is substantial, important, interesting or amusing. piece is the piece and its square (knight c6), say is its line.", inputSchema: { type: "object", properties: { piece: { type: "string" }, say: { type: "string" } }, required: ["piece", "say"] } },
+    { name: "sphinx_move", description: "Black's move while the game waits for it: one of the legal moves, as san (Nf6) or uci (g8f6), with a comment on it, what it makes of White's last move, its mood, and an optional line to the player.", inputSchema: { type: "object", properties: { move: { type: "string" }, comment: { type: "string" }, verdict: { type: "string", enum: VERDICTS }, mood: { type: "string", enum: MOODS }, say: { type: "string" } }, required: ["move"] } },
+  ];
+  const none = { game: board, move: "", write: false };
+  const done = (id, result) => ({ ...none, status: 200, reply: { jsonrpc: "2.0", id, result } });
+  const fail = (id, code, message) => ({ ...none, status: 200, reply: { jsonrpc: "2.0", id, error: { code, message } } });
+  const text = (value, isError) => ({ content: [{ type: "text", text: typeof value === "string" ? value : JSON.stringify(value) }], isError: !!isError });
+  if (!ok) return { ...none, status: 401, reply: { error: "unauthorized" } };
+  if (!body || body.jsonrpc !== "2.0" || typeof body.method !== "string") return { ...none, status: 400, reply: { jsonrpc: "2.0", id: null, error: { code: -32600, message: "not a JSON-RPC 2.0 request" } } };
+  if (body.id === undefined) return { ...none, status: 202 };
+  const id = body.id;
+  if (body.method === "initialize") return done(id, { protocolVersion: "2025-06-18", capabilities: { tools: {} }, serverInfo: { name: "chess-sphinx", version: "1" } });
+  if (body.method === "ping") return done(id, {});
+  if (body.method === "tools/list") return done(id, { tools: TOOLS });
+  if (body.method !== "tools/call") return fail(id, -32601, `no such method: ${body.method}`);
+  const name = body.params && body.params.name;
+  const args = (body.params && body.params.arguments) || {};
+  if (name === "get_game") return done(id, text(board));
+  if (name === "piece_say") {
+    const piece = String(args.piece ?? "").trim().slice(0, 40);
+    const say = String(args.say ?? "").trim().slice(0, 400);
+    if (board.model !== "mcp") return done(id, text("the game isn't played over MCP", true));
+    if (!piece || !say) return done(id, text("a piece and its say are both needed", true));
+    return { ...none, status: 200, reply: { jsonrpc: "2.0", id, result: text(`Posted ${piece}'s remark.`) }, write: true, aside: { agent: say, piece } };
+  }
+  if (name !== "sphinx_move") return fail(id, -32602, `no such tool: ${name}`);
+  if (board.model !== "mcp" || board.status !== "playing" || board.turn !== "b" || !board.waiting) {
+    return done(id, text("the game doesn't wait for Black's move over MCP right now (call get_game)", true));
+  }
+  const legal = board.legal || [];
+  const want = String(args.move ?? "");
+  const hit = legal.find((l) => l.uci === want || l.san === want.replace(/[+#!?]+$/, ""));
+  if (!hit) return done(id, text(`${want} isn't one of the legal moves: ${legal.map((l) => l.san).join(", ")}`, true));
+  const mood = MOODS.includes(args.mood) ? args.mood : undefined;
+  const verdict = VERDICTS.includes(args.verdict) ? args.verdict : undefined;
+  const say = typeof args.say === "string" ? args.say.trim().slice(0, 400) : "";
+  const turn = { ply: (board.moves || []).length + 1, kept: "kept", proposed: want.slice(0, 40), played: hit.san, comment: String(args.comment ?? "").slice(0, 280), verdict, mood };
+  const { waiting, ...rest } = board;
+  return {
+    game: { ...rest, mood: mood ?? board.mood, turns: [...(board.turns || []), turn] },
+    move: hit.uci,
+    write: true,
+    aside: say ? { agent: say, mood } : undefined,
+    status: 200,
+    reply: { jsonrpc: "2.0", id, result: text(`Played ${hit.san}. Call get_game for the position.`) },
+  };
+}
+
 # The page, with the game as it stands and the chat.
 route GET / (req) {
   respond page(games["current"] ?? rules(opponent(""), ""), games["chat"] ?? []), headers: { "content-type": "text/html; charset=utf-8" }
@@ -982,4 +1053,16 @@ route POST /new (req) {
   games["current"] = fresh
   games["chat"] = [] when fresh.status == "playing"
   respond fresh, missing: 400
+}
+
+# The MCP endpoint: an MCP client's JSON-RPC (see mcp_step). The client sees the game and plays
+# Black's move; the rules check and play it, and it is kept with the game, as a Gemini answer is.
+route POST /mcp (req) {
+  board = games["current"] ?? rules(opponent(""), "")
+  step = mcp_step(board, req.json ?? {}, secure_equals(req.headers.authorization ?? "", "Bearer {secret.mcp_token}"))
+  theirs = rules(step.game, step.move)
+  games["current"] = theirs when step.write
+  kept = remember(games["chat"] ?? [], step.aside, now)
+  games["chat"] = kept.talk when step.write
+  respond step.reply, status: step.status
 }
