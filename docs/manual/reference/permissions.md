@@ -57,7 +57,8 @@ server's policy allows them at all.
 does. It is optional: without it, or once it is taken
 back, the handler's runs are recorded again, from the next one, and the deployment runs on. Its
 runs are counted (how many, how many failed, how long they took, the last one), and a failed one is
-logged.
+logged. A person approves it for the handler's code: when an agent's version changes that code, it
+deploys with the item withheld, the handler's runs recorded, until a person grants it back.
 
 Without `PrivateAddresses`, a call is refused when the host resolves to a private address
 (loopback, the private ranges, link-local and cloud metadata addresses, and their IPv6 forms),

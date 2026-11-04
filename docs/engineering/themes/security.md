@@ -112,7 +112,9 @@ exceptions are ever granted. At deploy (deploy.rs):
    what the previous grant held. Each must be in the request's `acknowledge`, or the deploy is
    refused (400). An agent's `acknowledge` is refused (403), and so is its deploy while anything
    needs approval; when an agent changes the code, every `SecretRead` needs a person again, or is
-   withheld if optional (`approval_needed`), and a new `Browser(origin)` needs one too.
+   withheld if optional (`approval_needed`), an `Unrecorded` whose handler's code changed is
+   withheld (its runs logged) until a person grants it back, and a new `Browser(origin)` needs a
+   person too.
 3. The `Grant` is kept with the deployment; the **`Permit`** applies it to the policy in force
    (a ceiling lowered since wins; an exception holds only while the policy still allows it).
 
