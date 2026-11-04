@@ -1,7 +1,9 @@
 # Static files: a route for the rest of a path, and an answer that is a file's bytes (L4)
 
-**Status:** design, before any code. Written 2026-11-04, its claims checked against the code at
-`450e3de` and cited by file and line there. Builds on [named folders](named-folders-L4.md) (handles,
+**Status:** design, before any code. Written 2026-11-04 against `450e3de`; re-checked the same day
+against `main` as merged into this branch (`ff03a80`), after the request path's work landed, and
+cited by file and line there. Builds on [the request path](request-path-L4.md) (C5, a log level
+per handler: §5 here), [named folders](named-folders-L4.md) (handles,
 reads by hash) and [channels](channels-L4.md) (an answer the host streams after the run).
 `FileServe` is a new item, so §8 answers [host capabilities](host-capabilities-L4.md) §4's
 checklist. The rest segment is routing, not a capability.
@@ -23,16 +25,16 @@ route GET /api/hello (req) {
   respond { hello: "world" }
 }
 
-route GET / (req) {
+route GET / (req) lazy {
   respond site.serve("index.html"), missing: 404
 }
 
-route GET /*path (req) {
+route GET /*path (req) lazy {
   respond site.serve(req.params.path) ?? site.serve("index.html"), missing: 404
 }
 ```
 
-`check` says:
+(`lazy`: each request is recorded, on disk within about a second, §5.) `check` says:
 
 ```
 a server on :8131
@@ -52,36 +54,46 @@ nothing.
 
 ## 1. What is already there
 
-- **Routes** are parsed by `parse_path` (`holon-core/src/declare.rs` 305): literals and `:name`
-  params, nothing else. `match_route` (332) matches only routes with the same number of segments
+- **Routes** are parsed by `parse_path` (`holon-core/src/declare.rs` 385): literals and `:name`
+  params, nothing else. `match_route` (412) matches only routes with the same number of segments
   as the request, and the most literal segments wins, ties to the earlier route. Two routes
-  clash when their segments are the same with every param treated alike (240).
+  clash when their segments are the same with every param treated alike (320).
 - **Three other copies of the path's shape** have to agree with core: the language reads a
-  route's path as a run of tokens (`holon-author/src/lang/parse.rs` 577); the wasm bridge hands the
-  editor the segments (`holon-wasm/src/lib.rs` 897, `route_path`); and the editor matches requests
-  itself for its request tester (`editor/src/endpoint.ts` 16, 39–46, 115). The author's routes
-  module has its own shape for clashes (`holon-author/src/routes.rs` 226).
+  route's path as a run of tokens (`holon-author/src/lang/parse.rs` 584); the wasm bridge hands the
+  editor the segments (`holon-wasm/src/lib.rs` 900, `route_path`); and the editor matches requests
+  itself for its request tester (`editor/src/endpoint.ts` 20, 43–52, 119). The author's routes
+  module has its own shape for clashes (`holon-author/src/routes.rs` 236).
 - **A response** is read from the endpoint's output 0 (`holon/src/data.rs` 163): a value, an
   envelope `{status, headers, body}`, an effect (204), or a **subscription**: a
   `channel_subscribe` effect, recognized by `subscription` (51) and streamed by the transport. The
   flow can't set framing headers (`FRAMING`, 48). A subscription is the precedent for an answer
   the host delivers after the run, from a value the run computed.
-- **Letting callers subscribe is its own permission,** `ChannelRead("updates")` (`kind.rs` 149,
-  337), described as "let callers subscribe to its channel" (`holon-author/src/describe.rs` 47),
+- **Letting callers subscribe is its own permission,** `ChannelRead("updates")` (`kind.rs` 151,
+  337), described as "let callers subscribe to its channel" (`holon-author/src/describe.rs` 48),
   apart from the flow sending on it. Answering with a secret is likewise its own,
   `SecretAnswer(name)` (`kind.rs` 169). Publishing something to callers is shown and approved on
   its own.
-- **A handle** (`inbox.file(name)`, `Folders::handle`, `holon/src/folders.rs` 490) is
+- **A handle** (`inbox.file(name)`, `Folders::handle`, `holon/src/folders.rs` 503) is
   `{folder, name, size, hash, modified}`: the file hashed whole, its bytes kept nowhere. The run
   log keeps the handle as a read.
-- **A file sent by handle** is `http_upload` (`primitives.rs` 877): the host opens the file,
+- **A file sent by handle** is `http_upload` (`primitives.rs` 986): the host opens the file,
   checks it against the handle's hash before a byte is sent, and again as it sends
-  (`folders.rs` 1441–1460, `Sent`; `outbound.rs` 46, `FileBody`). A file that changed fails the
+  (`folders.rs` 1559–1578, `Sent`; `outbound.rs` 46, `FileBody`). A file that changed fails the
   call with `changed`. The log keeps the handle, never the bytes.
-- **The data plane** is hyper (http1) on tokio (`holon/src/dataplane.rs`), whose `Answer` (146) is
+- **The data plane** is hyper (http1) on tokio (`holon/src/dataplane.rs`), whose `Answer` (174) is
   a whole body, a forwarded stream or an event stream. A file is a fourth kind.
-- **The log** keeps a response's body as text cut at 64 KiB (`recorder.rs` 93), and every
-  request, routed or not (`listeners.rs` 208).
+- **The log** keeps a response's body as text cut at 64 KiB (`recorder.rs` 97), and every
+  request, routed or not (`listeners.rs` 255).
+- **Each handler has a log level** (request-path C5, built): `strict` by default (the record on
+  disk before the answer, about 0.6 ms of fsync, C2 e), `lazy` (on disk within about a second),
+  or `unrecorded` (counted, never logged, failed or not, resilience-audit §2.8; approved by a
+  person as `Unrecorded("GET /health")`). Only a handler that may record lightly takes a word:
+  every capability sourced, none `Await` (`may_record_lightly`, `declare.rs` 86). A request no
+  route took is `lazy` (request-path Q12).
+- **Some routes run inline,** on the async worker instead of the blocking pool: only those that
+  read nothing but `NetworkIngress`, the clock and randomness (`READS_HERE`, `dataplane.rs` 381).
+  A file read isn't among them (resilience-audit R2 took collection reads out for the same
+  reason: a disk can be slow).
 
 ## 2. The rest segment
 
@@ -89,7 +101,7 @@ nothing.
 only last; anything else is a bad path, as a repeated param name is today.
 
 **What it matches.** One or more segments, the rest of the path. Never zero: `/app/*path` doesn't
-match `/app` or `/app/`, as `:id` never matches an empty segment (`declare.rs` 352). A flow that
+match `/app` or `/app/`, as `:id` never matches an empty segment (`declare.rs` 432). A flow that
 wants `/` too declares `GET /` beside `GET /*path`, as the example does.
 
 **Its value.** `req.params.path` is the rest, its segments percent-decoded one by one and joined
@@ -107,7 +119,7 @@ earlier route, as now. So `GET /api/hello` and `GET /api/:name` both beat `GET /
 treated alike. A rest route never clashes with a route without one.
 
 **Status for other methods.** A 405's `allow` header lists the methods with a matching route,
-rest routes included (`data.rs` 104–113, unchanged).
+rest routes included (`data.rs` 104–114, unchanged).
 
 **What it changes about what a flow may do.** Nothing: the route is listed like any other
 (`GET /*path`), the request is logged as now, and its param is text from the request. One thing
@@ -139,11 +151,12 @@ to core's by a test over the same table of paths and requests; `routes.rs`'s sha
   leaf. A deploy asks for both; a host policy can refuse either.
 
 `respond site.serve(n)` answers with the file. So does an envelope whose body is one, and the
-envelope's headers are added: `respond site.serve(n), headers: { "cache-control": "max-age=31536000, immutable" }`.
+envelope's headers are added:
+`respond site.serve(n), headers: { "cache-control": "max-age=31536000, immutable" }`.
 
 The wiring form can feed `file_serve` any handle, for example a handle a flow computed from a
 listing. The host checks that the handle's folder is the node's folder and one the deployment
-reads, as `Sender` checks an upload's (`folders.rs` 1385).
+reads, as `Sender` checks an upload's (`folders.rs` 1505).
 
 ### What the host does
 
@@ -200,8 +213,8 @@ faster, but the host would never see the bytes, so it couldn't stand behind the 
 
 ## 4. The log, replay and verify
 
-- **The run** is logged as any request's: the request, the handle read (`{name, size, hash,
-  modified}`, tens of bytes), and output 0, the `file_serve` effect.
+- **The run** is logged at its route's level (§5), as any request's: the request, the handle
+  read (`{name, size, hash, modified}`, tens of bytes), and output 0, the `file_serve` effect.
 - **`response_body`** is `file site/assets/app.3f9a1c.js (148.2 KB, blake3 7c1e…)` instead of the
   bytes; `status` is what was sent (200, 304, 503).
 - **Replay and verify** re-run from the logged handle and compare output 0. The bytes the caller
@@ -217,9 +230,45 @@ faster, but the host would never see the bytes, so it couldn't stand behind the 
   past which `file_serve` answers 500 and the log says why. Nothing about the size enters a run.
 - **Connections:** a streaming answer holds a connection, so it counts toward `max_connections`
   (`dataplane.rs` 48) as a subscription does.
-- **A run per request.** Every file request runs the flow and writes a log line. This is the
-  price of "every request is recorded". A deployment serving many assets should sit behind a
-  CDN, and then Holon records what reaches it, not every visitor.
+- **A run per request.** Every file request runs the flow. How much it costs is the route's log
+  level (below). A deployment serving many assets should still sit behind a CDN, and then Holon
+  records what reaches it, not every visitor.
+- **The pool's hop.** A file route reads the disk (the handle hashes the file), so it runs on the
+  blocking pool, never inline (`READS_HERE`, §1), whatever its level.
+
+### Log levels: `FileServe` may record lightly
+
+As C5 is built, a file route could only be `strict`: `FileServe`, like `ChannelRead`, is
+performed, not sourced, and `may_record_lightly` takes nothing performed. Every asset of a page
+would then wait for an fsync, about 0.6 ms each, and a 304 as much as a 200.
+
+C5's rule stands for a reason (request-path I-g): **nothing that changes anything goes unrecorded
+or lazy**. Its table lists what breaks without a record: state and its checks, waits, channel
+packs rebuilt from the log, a callee's record, something done to the world. Answering a caller
+with a file breaks none of them. It changes nothing in Holon or outside it; it is an answer, as a
+text body is, and a text body is allowed `lazy`.
+
+So `may_record_lightly` also takes `FileServe`: a new `Capability::is_answer()`, true for
+`FileServe` only, checked beside `is_sourced`. `SecretAnswer` stays out: C5 excludes it on
+purpose. The sample's file routes say `lazy`:
+
+```
+route GET /*path (req) lazy {
+  respond site.serve(req.params.path) ?? site.serve("index.html"), missing: 404
+}
+```
+
+- **`lazy`:** each request is recorded (the handle, the hash, the status) and on disk within about
+  a second. Even a recorded file route keeps a short line, never the 64 KiB of a page body that
+  C5's "large answers" worried about (§4).
+- **`unrecorded`:** a person approves "keep runs of GET /*path out of its log, failed or not (they
+  are counted)". What was sent is then not recorded, by that person's decision (request-path
+  I-h). A file that changed while sent counts as a failure in the tally, its last error kept.
+- **A rest route takes what would have been 404s.** Those were `lazy` before (Q12), and stay as
+  cheap under a `lazy` rest route. An `unrecorded` one keeps scanners' probes out of the log too.
+
+`ChannelRead` is the same kind of thing (a subscription changes nothing), and a page's
+subscription route could be `lazy` by the same argument. That is a fork (§10), not taken here.
 
 ## 6. Host capabilities' checklist (§4)
 
@@ -264,7 +313,8 @@ faster, but the host would never see the bytes, so it couldn't stand behind the 
    without `serve` (an index page from a `js` holon, a catch-all answering it).
 2. **`file_serve`:** the primitive, the capability and its description, `respond`, the
    transport's file answer, small files from memory, big ones streamed and checked, ETag and 304,
-   the log line; the `site` sample in full, `log-archive`'s download.
+   the log line, `FileServe` allowed `lazy` and `unrecorded` (`is_answer`, §5); the `site` sample
+   in full, `log-archive`'s download.
 3. **Later:** `HEAD`; `Range` (206, for video and resumable downloads, checked against the whole
    file's hash with the BLAKE3 tree proofs ranges.rs already makes); precompressed siblings
    (`app.js.br` served for `app.js` when the caller accepts it, each file checked by its own
@@ -277,7 +327,7 @@ faster, but the host would never see the bytes, so it couldn't stand behind the 
 | A static mount by host path (`static "/var/www"`) | The flow would see a path, the version wouldn't cover what it serves, and files could change under a fixed hash with nothing recorded. Folders are bound by an admin and read by hash. |
 | Recognizing a plain handle record in `respond` as a file | A flow answering `respond inbox.file(n)` today sends the handle as JSON. Changing that would change existing flows, and a record isn't a permission. `serve` is explicit and asks `FileServe`. |
 | A redirect to a backend's presigned URL | The host would never see the bytes, so nothing stands behind the hash in the log. |
-| Serving without a run | It would make a request the log can't account for. A run per request is the recorded path; a CDN in front is the fast one. |
+| Serving without a run | It would make a request the log can't account for, even as a count. `lazy` is the cheap recorded path, `unrecorded` the approved unlogged one (both still runs, both counted); a CDN in front is the fast one. |
 
 ## 10. Forks, surfaced
 
@@ -293,6 +343,8 @@ faster, but the host would never see the bytes, so it couldn't stand behind the 
 - **Assets bundled with the version** (a flow's own files, content-addressed into its unit, so
   they are covered by its hash and need no folder) are the natural next step. They are not
   designed here.
+- **`ChannelRead` as an answer too** (§5): a subscription route `lazy`. *Lean:* yes, in its own
+  change with its own test, since it changes what an existing capability allows.
 - **Where it sits in host capabilities' plan (§7):** decided 2026-11-04, Tier 1, step 1.8, track
   F. It needs nothing else from Tier 1, `Bytes` included.
 
@@ -306,5 +358,9 @@ faster, but the host would never see the bytes, so it couldn't stand behind the 
   reads. ✓
 - **I8 derived labels:** `FileServe(folder)` is read from the node's param, not declared; the
   route list shows the rest segment. ✓
-- **The record:** every request is still a run and a log line; what was sent is recorded by
-  hash; a caller never gets bytes other than the recorded hash's. ✓
+- **The record:** every request is still a run, recorded at its route's level (request-path C5);
+  where it is recorded, what was sent is recorded by hash; a caller never gets bytes other than
+  the handle's hash. ✓
+- **Request-path I-g:** `FileServe` changes nothing, so allowing it `lazy` and `unrecorded` keeps
+  "nothing that changes anything goes unrecorded or lazy". **I-h:** `unrecorded` is still a
+  person's approval. ✓

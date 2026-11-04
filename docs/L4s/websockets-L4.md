@@ -1,7 +1,8 @@
 # Inbound WebSockets: a connection whose every message is a run (L4)
 
-**Status:** design, before any code. Written 2026-11-04, its claims checked against the code at
-`450e3de` and cited by file and line there.
+**Status:** design, before any code. Written 2026-11-04 against `450e3de`; re-checked the same day
+against `main` as merged into this branch (`ff03a80`), after the request path's work landed, and
+cited by file and line there. Each block takes the request path's log levels (C5, §5 here).
 
 This revises [host capabilities](host-capabilities-L4.md), which filed inbound WebSockets as
 "later" (§5's table, the end of §5.9, Tier 3 in §7): "channels (SSE) and a POST cover what a
@@ -80,12 +81,17 @@ it may:
   and caps subscribers per deployment (`channels.rs` 39–50, 164). Today the only subscriber is a
   server-sent-events response.
 - **Routes** run once per request (`listeners.rs`, `serve_data`) under the deployment's grant,
-  with claims ordering runs that touch the same keys. Every request is logged (208). A reply that
-  carries a secret needs `SecretAnswer` (`listeners.rs` 143–158).
+  with claims ordering runs that touch the same keys. Every request is logged (255). A reply that
+  carries a secret needs `SecretAnswer` (`listeners.rs` 188–196).
+- **Each handler has a log level** (request-path C5, built): `strict` by default, its record on
+  disk before its answer (about 0.6 ms of fsync, with group commit, C2 e); `lazy`, on disk within
+  about a second; `unrecorded`, counted and never logged, failed or not (resilience-audit §2.8),
+  approved by a person. Only a handler that may record lightly takes a word: every capability
+  sourced, none `Await` (`may_record_lightly`, `declare.rs` 86).
 - **What starts a run** is one item per kind (host capabilities §1): a route `NetworkIngress`, a
   clock `Clock`, a file `FileArrival`, an action `Action`.
 - **The data plane** is hyper http1 on tokio (`dataplane.rs`), each connection served by
-  `serve_connection` (134) without upgrades. hyper 1 supports them (`.with_upgrades()`,
+  `serve_connection` (162) without upgrades. hyper 1 supports them (`.with_upgrades()`,
   `hyper::upgrade::on`). No WebSocket codec is in the tree (`Cargo.lock` has no `tungstenite`);
   host capabilities §5.9 names tokio-tungstenite for outbound feeds (step 1.6), so both directions
   share one engine.
@@ -124,7 +130,8 @@ it may:
 Host capabilities §5.9 and fork 20: what isn't a run has its own record. Per connection, a log
 hash-chained like a deployment's and kept as long as its runs: opened (when, from where, the open
 run's seq), pings and missed pongs, frames refused (too big, binary before `Bytes`, over the
-rate), the queue full, and closed (code, reason, by whom). Pings are the host's (every 15 s; a
+rate), the queue full, and closed (code, reason, by whom). It is synced as a `lazy` run's record
+is (request-path C2 d): on disk within about a second. Pings are the host's (every 15 s; a
 connection that doesn't pong within 30 s is closed with 1001), from nothing a run computed.
 `holon log --conn <id>` shows a connection's runs and its record together, in order.
 
@@ -132,13 +139,14 @@ connection that doesn't pong within 30 s is closed with 1001), from nothing a ru
 
 `websocket PATH { open (r) {…} message (m) {…} close (c) {…} }`. `open` and `message` are
 required, `close` is optional. Each block is a route's block: statements, `respond` (not in
-`close`), its own names.
+`close`), its own names, and the same optional word before its braces, `lazy` or `unrecorded`
+(`message (m) lazy { … }`), under the same rule (§5).
 
 Each lowers to an endpoint-shaped composite with frozen params `declare = "websocket"`, `path`,
-and `on` (`open`, `message` or `close`), as a route's carries `declare = "endpoint"`, `method` and
-`path` (`declare.rs` 1–20). `read_server` collects them into `Server.websockets`, by path, each
-with its handlers' hashes. A websocket's path clashes with a GET route of the same shape: a path
-is either a page or a connection.
+`on` (`open`, `message` or `close`), and `log` when it isn't strict, as a route's carries
+`declare = "endpoint"`, `method`, `path` (`declare.rs` 1–24) and `log` (C5). `read_server`
+collects them into `Server.websockets`, by path, each with its handlers' hashes. A websocket's
+path clashes with a GET route of the same shape: a path is either a page or a connection.
 
 ## 5. Consent
 
@@ -148,24 +156,34 @@ is either a page or a connection.
   connected, and their messages start runs for as long as they do.
 - Subscribing is `ChannelRead`, sending `ChannelSend`, as now. A reply carrying a secret needs
   `SecretAnswer`, as a route's does.
+- **Log levels per block,** C5's words and rule unchanged. A block that only reads and replies
+  may be `lazy` or, approved, `unrecorded` (labelled `WebSocket /room/:name message`, as the log
+  and the tallies name it). One that sends packs or writes state is `strict`: its record is on
+  disk before its reply and its packs go out. So is an `open` that subscribes, as long as
+  `ChannelRead` isn't allowed to record lightly (static-files-L4 §10 has that fork).
 - **Limits** a deploy asks for above their defaults, up to the host's ceilings, as
   `run_budget_ms` is: `max_websockets` per deployment (100), `max_message_bytes` (64 KiB),
   `messages_per_second` per connection (10, bursts of 20; past it, 1008).
 
 ## 6. The log, replay and verify
 
-- **Every run is a log entry,** `kind` `open`, `message` or `close`, `route`
-  `WebSocket /room/:name`, with `conn` in its request record. A reply is the entry's
+- **Every run is a log entry at its block's level,** `kind` `open`, `message` or `close`,
+  `route` `WebSocket /room/:name`, with `conn` in its request record. An `unrecorded` block's runs
+  are counted in its tally instead. A reply is the entry's
   `response_body`; a pack is in its sending run's `performed`, as now.
 - **Replay and verify** are a request's: the record, the state as the run began, the clock, the
   answers. A connection's order is the order of its entries.
-- **Volume is the price:** a chat at ten messages a second writes ten entries a second.
+- **Volume is the price:** a chat at ten messages a second writes ten entries a second, unless a
+  person approved its block `unrecorded`.
 
 ## 7. Limits that stay
 
-- **Latency per message is a run's:** a commit and a log line, milliseconds. Fine for chat,
-  presence, notifications and collaborative edits at typing speed. Not for 60 Hz game state or
-  cursor streams; those want the browser to batch.
+- **Latency per message is a run's.** A `strict` block (any that sends packs or writes) waits
+  for its record's fsync, about 0.6 ms, shared with other runs by group commit (request-path
+  C2 e); a `lazy` one costs tens of microseconds over its run. One connection's messages run one
+  at a time, so a strict block takes at most about 1,600 messages a second from one connection.
+  Fine for chat, presence, notifications and collaborative edits at typing speed. Not for 60 Hz
+  game state or cursor streams; those want the browser to batch.
 - **No memory per connection except state.** What a connection is (who signed in, which room) is
   kept in a collection or state keyed by `conn`, so it is recorded. There is no hidden
   per-connection variable, by design.
@@ -187,8 +205,8 @@ as a binary frame. Nothing here needs a second representation of binary data.
 2. **The resource:** none bound; the flow's own port, as routes. No credentials.
 3. **Reads are the run's input:** each message is its run's request record, logged (§6).
 4. **Effects land when the run finishes, at most once:** a reply and packs go out after the
-   commit. A run that runs again (claims) sends its reply once, from its last attempt, and its
-   packs once, as channels already do.
+   commit, and after the record is on disk for a `strict` block. A run that runs again (claims)
+   sends its reply once, from its last attempt, and its packs once, as channels already do.
 5. **Sharing:** claims and locks, as for requests. A connection lives on one server.
 6. **Triggers:** a message is whole when its last frame arrives (the settle rule). It isn't run
    twice: one connection's queue hands each message to one run (the key is `conn` and the
@@ -238,7 +256,7 @@ as a binary frame. Nothing here needs a second representation of binary data.
 | A connection the flow writes to directly (`conn.send(x)` from anywhere) | Anything sent must be a recorded effect. A reply (this connection) and a pack (subscribers, or one connection in slice 2) are those effects. A connection handle in a value would also outlive its run. |
 | Per-connection memory in the engine | Hidden state a replay can't see. State keyed by `conn` is recorded. |
 | Running one connection's messages out of order | A conversation must replay in the order it happened. |
-| Messages answered by the host without a run (an echo) | Every message in is a run, so the log holds the whole conversation. |
+| Messages answered by the host without a run (an echo) | Every message in is a run, so the log holds the whole conversation, except where a person approved a block `unrecorded`, and then the tally counts it. |
 | `socket` as the statement's name | Taken by host capabilities §5.9's bound sockets. |
 
 ## 13. Invariant check
@@ -247,5 +265,8 @@ as a binary frame. Nothing here needs a second representation of binary data.
 - **I7 the effect boundary:** replies and packs are effects the host performs after the run;
   nothing in a run touches the connection. ✓
 - **I8 derived labels:** `WebSocket(path)` is read from the server's children, not declared. ✓
-- **The record:** every message in is a run; everything out is a recorded run's reply or pack,
-  or the connection's own record; one connection's runs are in order. ✓
+- **The record:** every message in is a run, recorded at its block's level (request-path C5);
+  everything out is a reply or pack of such a run, or the connection's own record; one
+  connection's runs are in order. ✓
+- **Request-path I-g and I-h:** a block that sends or writes is `strict`; `unrecorded` is a
+  person's approval. ✓
