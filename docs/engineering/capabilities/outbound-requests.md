@@ -35,7 +35,8 @@ arrives, `stream: true`, or piped to a channel, `updates.pipe(http.post(…))`) 
   granted `PlainHttp` `blocked_scheme`. A URL with credentials (`user@`) or another scheme is
   `bad_url`. The host sets `Host` and the framing headers (`HOST_HEADERS`, and any `proxy-`): a
   flow that sets one gets `bad_header`. Private, loopback, link-local, carrier-grade NAT and
-  metadata addresses (`is_private`, IPv4-mapped and NAT64 forms too) are filtered from what DNS
+  metadata addresses (`is_private`: an IPv4 address inside IPv4-mapped, IPv4-compatible, 6to4 and NAT64 forms
+  judged as itself, Teredo refused whole) are filtered from what DNS
   returned, in the client's resolver, so the connection uses only what passed (`blocked_address`).
 - **Redirects** are followed by hand, up to `max_redirects`, each hop checked again. To another
   host only `CARRIED_ELSEWHERE` (`content-type`, `accept`, `accept-language`, `user-agent`) goes

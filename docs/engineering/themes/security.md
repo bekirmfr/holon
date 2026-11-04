@@ -113,7 +113,9 @@ deployment (`attention`) until it is granted back; load rechecks every grant.
 `Outbound::send` holds every `http_request`, on every redirect too: only granted hosts (`check`:
 `blocked_host`, `revoked`), HTTPS with certificate checks unless the host was granted plain HTTP
 (`blocked_scheme`), never a private address unless granted (`blocked_address`; `is_private`:
-loopback, RFC 1918, link-local and metadata, CGNAT, NAT64, unique-local and the rest it lists),
+loopback, RFC 1918, link-local and metadata, CGNAT, NAT64 (and its local-use prefix), unique-local,
+an IPv4 address inside IPv4-mapped, IPv4-compatible or 6to4 forms judged as itself, Teredo whole,
+and the rest it lists),
 checked on the addresses DNS returned, in the connection's own resolver, so rebinding can't swap one in.
 The host sets `Host`, length and framing headers itself (`refused_header`). A redirect to another
 host carries only `CARRIED_ELSEWHERE` headers and is refused if it would resend a body
