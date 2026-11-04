@@ -1157,7 +1157,7 @@ fn the_host_warns_of_a_full_disk_and_a_full_cache_once_each() {
     assert_eq!(set(r#"{"warn_at":"1K"}"#).status_code, 200);
     assert_eq!(warnings(), Vec::<serde_json::Value>::new());
     // A floor no disk has: its disk warns, with what to do.
-    assert_eq!(set(r#"{"warn_at":"1000T"}"#).status_code, 200);
+    assert_eq!(set(r#"{"warn_at":"1000T","full_at":"1K"}"#).status_code, 200);
     let w = warnings();
     assert_eq!(w.len(), 1, "{w:?}");
     assert!(w[0]["key"].as_str().unwrap().starts_with("disk:"), "{w:?}");
@@ -1172,7 +1172,8 @@ fn the_host_warns_of_a_full_disk_and_a_full_cache_once_each() {
     let warned = body_json(route(&state, &req("GET", "/activity?limit=50", vec![])))["entries"].as_array().unwrap().iter().filter(|e| e["action"] == "warned").count();
     assert_eq!(warned, 1);
     assert_eq!(set(r#"{"warn_at":"100%"}"#).status_code, 400, "not a threshold");
-    assert_eq!(set(r#"{"warn_at":"1K"}"#).status_code, 200);
+    assert_eq!(set(r#"{"warn_at":"1K"}"#).status_code, 400, "not past where it acts: full_at is 1K");
+    assert_eq!(set(r#"{"warn_at":"2K"}"#).status_code, 200);
     // A value cache at its size at most looks of the last hour (or the five minutes it waits
     // for at the least) warns; a look or two doesn't.
     state.store.4.set_budget(4 << 10);
@@ -1199,6 +1200,97 @@ fn the_host_warns_of_a_full_disk_and_a_full_cache_once_each() {
     assert!(w.iter().any(|w| w["key"] == "cache:values" && w["todo"].as_str().unwrap().contains("--value-cache")), "{w:?}");
     let _ = std::fs::remove_dir_all(&dir);
     let _ = std::fs::remove_file(&path);
+}
+
+/// Past `full_at`, `when_full = "pause"` pauses every deployment that records runs (one whose
+/// runs are all unrecorded goes on), and resumes them once back under `warn_at`; each on its
+/// timeline. One a person paused stays paused.
+#[test]
+fn a_full_disk_pauses_what_records_runs_until_there_is_room() {
+    // A server whose data folder is on a disk (a temp folder's), so it has one to be full.
+    let mut state = claims_state("");
+    let path = std::path::PathBuf::from(unique_temp_path("full-policy")).with_extension("toml");
+    // The policy the claims server has, in the file the settings are written into.
+    std::fs::write(&path, "[grants]\nallow_plain_http = true\nallow_private_addresses = true\n").unwrap();
+    state.policy_path = path.display().to_string();
+    let disk = unique_temp_path("full-disk");
+    std::fs::create_dir_all(&disk).unwrap();
+    state.deployments_path = std::path::Path::new(&disk).join("deployments.json").display().to_string();
+    let set = |body: &str| route(&state, &req("POST", "/admin/storage", body.as_bytes().to_vec()));
+    let recorded = deploy_text_to(&state, "flow kept\nport 8301\nstate n\n\naction bump (input) {\n  state.n = (state.n ?? 0) + 1\n}\n", &[]);
+    let quiet = deploy_text_to(&state, "flow health\nport 8302\n\nroute GET /health (req) unrecorded {\n  respond \"ok\"\n}\n", &[]);
+    let status = |slug: &str| state.deployments.lock().unwrap()[slug].life.status;
+    // Floors of free space no disk has: its disk is full.
+    assert_eq!(set(r#"{"warn_at":"1000T","full_at":"999T","when_full":"pause"}"#).status_code, 200);
+    state.sweeps.act(&state, 1);
+    assert_eq!(status(&recorded), crate::lifecycle::Status::Paused, "it records runs");
+    assert_eq!(status(&quiet), crate::lifecycle::Status::Running, "its runs are all unrecorded");
+    let host = body_json(route(&state, &req("GET", "/admin/host", vec![])));
+    assert_eq!(host["acting"]["paused"], serde_json::json!([recorded.clone()]), "{host}");
+    assert!(host["warnings"][0]["todo"].as_str().unwrap().contains("paused until it is back under"), "{host}");
+    let events = |slug: &str| body_json(route(&state, &req("GET", &format!("/deployments/{slug}/events"), vec![])))["events"].to_string();
+    assert!(events(&recorded).contains("paused by the host: the disk was full"), "{}", events(&recorded));
+    // A person resumes it while it is still full: the next look pauses it again.
+    assert_eq!(route(&state, &req("POST", &format!("/deployments/{recorded}/run"), b"{}".to_vec())).status_code, 200);
+    state.sweeps.act(&state, 2);
+    assert_eq!(status(&recorded), crate::lifecycle::Status::Paused);
+    // Room again (floors no disk is under): it resumes, and says so.
+    assert_eq!(set(r#"{"full_at":"512"}"#).status_code, 400, "a size says its unit");
+    assert_eq!(set(r#"{"warn_at":"2K","full_at":"1K"}"#).status_code, 200);
+    state.sweeps.act(&state, 3);
+    assert_eq!(status(&recorded), crate::lifecycle::Status::Running);
+    assert!(events(&recorded).contains("resumed by the host: there is room on its disk again"));
+    assert_eq!(body_json(route(&state, &req("GET", "/admin/host", vec![])))["acting"]["paused"], serde_json::json!([]));
+    // Paused by a person, it isn't the host's to resume.
+    assert_eq!(route(&state, &req("POST", &format!("/deployments/{recorded}/pause"), b"{}".to_vec())).status_code, 200);
+    state.sweeps.act(&state, 4);
+    assert_eq!(status(&recorded), crate::lifecycle::Status::Paused);
+    let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_dir_all(&disk);
+}
+
+/// Past `full_at`, `when_full = "roll"` cuts the log keeping the most to half (never below 20),
+/// look after look, and keeps it as granted again once back under `warn_at`.
+#[test]
+fn a_full_disk_rolls_the_log_keeping_the_most() {
+    let mut state = claims_state("");
+    let path = std::path::PathBuf::from(unique_temp_path("roll-policy")).with_extension("toml");
+    // The policy the claims server has, in the file the settings are written into.
+    std::fs::write(&path, "[grants]\nallow_plain_http = true\nallow_private_addresses = true\n").unwrap();
+    state.policy_path = path.display().to_string();
+    let disk = unique_temp_path("roll-disk");
+    std::fs::create_dir_all(&disk).unwrap();
+    state.deployments_path = std::path::Path::new(&disk).join("deployments.json").display().to_string();
+    let set = |body: &str| route(&state, &req("POST", "/admin/storage", body.as_bytes().to_vec()));
+    let slug = deploy_text_to(&state, "flow kept\nport 8303\nstate n\n\naction bump (input) {\n  state.n = (state.n ?? 0) + 1\n}\n", &[]);
+    for _ in 0..120 {
+        assert_eq!(route(&state, &req("POST", &format!("/trigger/{slug}/bump"), b"{}".to_vec())).status_code, 200);
+    }
+    let kept = || state.deployments.lock().unwrap()[&slug].log.with(|l| l.holds().0);
+    assert_eq!(kept(), 120);
+    assert_eq!(set(r#"{"warn_at":"1000T","full_at":"999T","when_full":"roll"}"#).status_code, 200);
+    state.sweeps.act(&state, 1);
+    assert_eq!(kept(), 60, "halved");
+    for i in 0..4 {
+        state.sweeps.act(&state, 2 + i);
+    }
+    assert_eq!(kept(), storage::ROLL_FLOOR, "never below the floor");
+    // The file is cut back by the periodic sync, as a full log's is.
+    crate::recorder::sync_logs(&state.deployments).unwrap();
+    let file = std::path::Path::new(&disk).join("deployments.logs").join(format!("{slug}.jsonl"));
+    assert_eq!(std::fs::read_to_string(&file).unwrap().lines().count(), storage::ROLL_FLOOR, "its file cut back too");
+    let events = body_json(route(&state, &req("GET", &format!("/deployments/{slug}/events"), vec![])))["events"].to_string();
+    assert!(events.contains("the host cut its log from 120 runs to its newest 60"), "{events}");
+    assert_eq!(body_json(route(&state, &req("GET", "/admin/host", vec![])))["acting"]["rolled"], serde_json::json!([slug.clone()]));
+    // Room again: kept as granted, so it grows back as runs come.
+    assert_eq!(set(r#"{"warn_at":"2K","full_at":"1K"}"#).status_code, 200);
+    state.sweeps.act(&state, 10);
+    for _ in 0..30 {
+        route(&state, &req("POST", &format!("/trigger/{slug}/bump"), b"{}".to_vec()));
+    }
+    assert_eq!(kept(), 50, "the 20 it kept and 30 since");
+    let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_dir_all(&disk);
 }
 
 /// An admin sets how often the server sweeps (`POST /admin/storage`): written into `holon.toml`'s

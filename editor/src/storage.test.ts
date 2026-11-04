@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { cacheLine, diskLine, holdsLines, isEvery, isThreshold, keptLines, reportLine, scheduleLine, sizeText, span } from "./storage";
+import { cacheLine, diskLine, holdsLines, isEvery, isThreshold, whenFullLine, keptLines, reportLine, scheduleLine, sizeText, span } from "./storage";
 
 const at = 1_000_000_000_000;
 const report = { at_ms: at, took_ms: 50_500, removed: 137962, bytes: 60_293_120, skipped: false, error: null };
@@ -79,5 +79,13 @@ describe("when the host warns", () => {
   it("takes what the server takes", () => {
     for (const t of ["85%", "1%", "99%", "5G", "500M", "1.5T", " 90 % "]) expect(isThreshold(t)).toBe(true);
     for (const t of ["0%", "100%", "5", "lots", "-1G", "0G", ""]) expect(isThreshold(t)).toBe(false);
+  });
+});
+
+describe("what the server does when full", () => {
+  it("says it", () => {
+    expect(whenFullLine("95%", "warn")).toBe("past 95% full, it only warns: once the disk fills, a strict run fails its sync and answers 500");
+    expect(whenFullLine("1G", "pause")).toContain("down to 1G free, it pauses every flow that records runs");
+    expect(whenFullLine("95%", "roll")).toContain("never below 20 each");
   });
 });

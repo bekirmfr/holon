@@ -172,6 +172,10 @@ by the syncer when they changed.
   The housekeeping count removes one once it is older than any write takes (15 minutes).
 - **Seen.** `holon host` and the admin page say how full each disk is and what is kept on it
   (storage-L4.md, step 2), and warn past `[storage] warn_at` with what to do (step 4).
+- **When full.** Past `full_at`, an admin's choice (`when_full`, step 5): only warn (the
+  default: a strict run then fails its sync and answers 500 rather than answer unrecorded),
+  pause what records runs until there is room (records kept, runs refused), or cut the oldest
+  runs of the biggest logs (runs answered, history shortened). Each is said on the timeline.
 - **Tests.** `the_server_sweeps_its_store_on_its_own_and_not_again_for_nothing`,
   `a_store_sweep_clears_the_states_no_kept_run_names_and_nothing_else`.
 

@@ -426,11 +426,43 @@ pub(crate) struct Storage {
     pub(crate) sweep_every: Option<Duration>,
     /// When a disk the server keeps things on is full enough to warn of.
     pub(crate) warn_at: Threshold,
+    /// When it is full enough for `when_full` to act, and what that does.
+    pub(crate) full_at: Threshold,
+    pub(crate) when_full: WhenFull,
 }
 
 impl Default for Storage {
     fn default() -> Storage {
-        Storage { sweep_every: Some(Duration::from_secs(10 * 60)), warn_at: Threshold::Full(85) }
+        Storage { sweep_every: Some(Duration::from_secs(10 * 60)), warn_at: Threshold::Full(85), full_at: Threshold::Full(95), when_full: WhenFull::Warn }
+    }
+}
+
+/// What the server does when a disk it keeps things on is past `full_at` (docs/L4s/storage-L4.md
+/// §2): nothing but warn; pause every deployment that records runs until there is room again;
+/// or cut the oldest runs from the logs keeping the most.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum WhenFull {
+    Warn,
+    Pause,
+    Roll,
+}
+
+impl WhenFull {
+    pub(crate) fn parse(text: &str) -> Result<WhenFull, String> {
+        match text.trim() {
+            "warn" => Ok(WhenFull::Warn),
+            "pause" => Ok(WhenFull::Pause),
+            "roll" => Ok(WhenFull::Roll),
+            other => Err(format!("{other:?} isn't what to do when full: warn, pause or roll")),
+        }
+    }
+
+    pub(crate) fn text(&self) -> &'static str {
+        match self {
+            WhenFull::Warn => "warn",
+            WhenFull::Pause => "pause",
+            WhenFull::Roll => "roll",
+        }
     }
 }
 
@@ -575,6 +607,10 @@ struct StorageFile {
     sweep_every: Option<String>,
     #[serde(default)]
     warn_at: Option<String>,
+    #[serde(default)]
+    full_at: Option<String>,
+    #[serde(default)]
+    when_full: Option<String>,
 }
 
 #[derive(Deserialize, Default)]
@@ -641,6 +677,22 @@ impl Policy {
         }
         if let Some(at) = &file.storage.warn_at {
             policy.storage.warn_at = parse_threshold(at).map_err(|e| format!("storage.warn_at: {e}"))?;
+        }
+        if let Some(at) = &file.storage.full_at {
+            policy.storage.full_at = parse_threshold(at).map_err(|e| format!("storage.full_at: {e}"))?;
+        }
+        if let Some(what) = &file.storage.when_full {
+            policy.storage.when_full = WhenFull::parse(what).map_err(|e| format!("storage.when_full: {e}"))?;
+        }
+        // Acting at a point fuller than warning, so it warns first; measured the same way, that is.
+        let (warn, full) = (policy.storage.warn_at, policy.storage.full_at);
+        let before = match (warn, full) {
+            (Threshold::Full(w), Threshold::Full(f)) => f > w,
+            (Threshold::Free(w), Threshold::Free(f)) => f < w,
+            _ => true,
+        };
+        if !before {
+            return Err(format!("storage.full_at ({}) is to be past storage.warn_at ({}): fuller, or less free", threshold_text(full), threshold_text(warn)));
         }
         Ok(policy)
     }
@@ -749,6 +801,10 @@ pub(crate) struct Grant {
     /// Whether the deployment is paused because of this grant (so covering it again resumes it).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub(crate) paused: bool,
+    /// Whether the host paused it because a disk was full (`[storage] when_full = "pause"`), so
+    /// room made resumes it (storage.rs).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub(crate) paused_full: bool,
     /// Every change the host made since the deploy, oldest first.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(crate) changes: Vec<GrantChange>,
@@ -791,6 +847,7 @@ impl Grant {
             lowered: BTreeMap::new(),
             keep_running: false,
             paused: false,
+            paused_full: false,
             changes: Vec::new(),
         }
     }
@@ -1131,6 +1188,13 @@ mod tests {
             assert!(parse_threshold(wrong).is_err(), "{wrong}");
         }
         assert!(Threshold::Full(85).past(100, 10) && !Threshold::Full(85).past(100, 20), "90% full, then 80%");
+        // When full: 95% unless said, warn only unless said; past where it warns.
+        assert_eq!((Policy::default().storage.full_at, Policy::default().storage.when_full), (Threshold::Full(95), WhenFull::Warn));
+        let p = Policy::parse("[storage]\nwarn_at = \"20G\"\nfull_at = \"5G\"\nwhen_full = \"pause\"").unwrap();
+        assert_eq!((p.storage.full_at, p.storage.when_full), (Threshold::Free(5 << 30), WhenFull::Pause));
+        assert!(Policy::parse("[storage]\nfull_at = \"80%\"").unwrap_err().contains("past storage.warn_at"));
+        assert!(Policy::parse("[storage]\nwarn_at = \"5G\"\nfull_at = \"10G\"").unwrap_err().contains("past storage.warn_at"));
+        assert!(Policy::parse("[storage]\nwhen_full = \"panic\"").unwrap_err().contains("warn, pause or roll"));
         assert!(Threshold::Free(5 << 30).past(100 << 30, 4 << 30) && !Threshold::Free(5 << 30).past(100 << 30, 6 << 30));
 
         // The durable-run limits are limits like the others.

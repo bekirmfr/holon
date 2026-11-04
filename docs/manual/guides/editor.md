@@ -194,7 +194,8 @@ Admins manage, from here:
   own, each with where it may go
   ([The server's own secrets](deploying.md#the-servers-own-secrets));
 - **the host**: what the host warns of, first ([Warnings](../reference/server.md#warnings)), and
-  when it warns of a full disk (set here: `85%`, or `5G` free); what the server holds: its memory
+  when it warns of a full disk (set here: `85%`, or `5G` free), and when and how it acts on one
+  (`95%`; only warn, pause what records runs, or cut the oldest runs); what the server holds: its memory
   and caches against their sizes, each disk it
   keeps things on and how full it is, what it keeps there, and what each flow holds, a row each,
   the most first, as `holon host` says;

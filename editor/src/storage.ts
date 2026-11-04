@@ -100,3 +100,16 @@ export function isThreshold(text: string): boolean {
   const free = /^(\d+(\.\d+)?)\s*[kKmMgGtT]$/.exec(t);
   return !!free && Number(free[1]) > 0;
 }
+
+/** What the server does past `full_at`, said: "past 95%, it only warns". */
+export function whenFullLine(fullAt: string, whenFull: string): string {
+  const past = fullAt.endsWith("%") ? `past ${fullAt} full` : `down to ${fullAt} free`;
+  switch (whenFull) {
+    case "pause":
+      return `${past}, it pauses every flow that records runs, until the disk is back under where it warns`;
+    case "roll":
+      return `${past}, it cuts the oldest runs of the logs keeping the most (never below 20 each), and sweeps`;
+    default:
+      return `${past}, it only warns: once the disk fills, a strict run fails its sync and answers 500`;
+  }
+}

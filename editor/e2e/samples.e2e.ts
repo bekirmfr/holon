@@ -1471,6 +1471,9 @@ test("rolling-log keeps only its newest 5 runs, as its deploy settings ask, whil
   await warnAt.fill("1K");
   await warnForm.getByRole("button", { name: "set" }).click();
   await expect(alert).toBeHidden();
+  // What it does when a disk is full: shown, and chosen here (left as it was: only warn).
+  await expect(page.getByLabel("what the host does when its disk is full")).toHaveValue("warn");
+  await expect(page.getByText(/^when a disk is full/)).toContainText("it only warns");
   // How often the server sweeps on its own: shown here, and set here, into its holon.toml.
   const schedule = page.getByText("the server sweeps on its own").locator("..");
   await expect(schedule).toContainText("every 10m");

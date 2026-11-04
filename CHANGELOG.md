@@ -37,6 +37,12 @@
   things on, how full it is for the server (a quota counts) and what it keeps there; the content
   store's values and the disk they take, the logs and the folders' kept texts (counted at start
   and after each round of sweeps); and the sweeps (`GET /admin/host`).
+- **An admin chooses what happens when the disk fills.** Past `[storage] full_at` (`95%` unless
+  said), `when_full` is `warn` (the default: nothing changes), `pause` (every flow that records
+  runs is paused by the host, and resumed once there is room; unrecorded ones go on) or `roll`
+  (the biggest log on disk is cut to half its runs every ten seconds, never below 20, and the
+  store swept; each keeps its runs as granted again once there is room). Each on the flow's
+  timeline. Set on the admin page or with `holon policy --full-at --when-full`.
 - **The host warns before its disk fills.** Past `[storage] warn_at` (`85%` full for the server
   unless said, or space left: `5G`), a disk is warned of with what to do and the flow growing
   fastest; so is a cache at its size most of the last hour, and sweeping off while the store

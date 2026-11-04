@@ -127,6 +127,7 @@ A slower path that is still right would pass every test above; these fail instea
   `the_host_says_what_it_holds_in_memory_and_on_its_disks`,
   `each_flow_says_what_it_holds_in_memory_and_on_disk`,
   `the_host_warns_of_a_full_disk_and_a_full_cache_once_each`,
+  `a_full_disk_pauses_what_records_runs_until_there_is_room`, `a_full_disk_rolls_the_log_keeping_the_most`,
   `what_a_crash_left_is_removed_once_it_is_old_and_nothing_else_is`,
   `a_write_made_aside_is_known_by_its_name_and_nothing_else_is`,
   `a_store_sweep_clears_the_states_no_kept_run_names_and_nothing_else`,

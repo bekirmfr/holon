@@ -221,6 +221,11 @@ export type HostView = {
   sweeps: HostSweeps;
   /** `[storage] warn_at`: `"85%"` full, or `"5G"` free. */
   warn_at: string;
+  /** `[storage] full_at` and `when_full`: past it, what the server does. */
+  full_at: string;
+  when_full: "warn" | "pause" | "roll";
+  /** What `when_full` has done and not yet undone. */
+  acting: { paused: string[]; rolled: string[] };
   warnings: HostWarning[];
 };
 /** Something about the host an admin should know (storage.rs `Warning`), and what to do about it. */
@@ -247,7 +252,7 @@ export type Holds = {
 export const getHolds = async (slug: string) => asJson<Holds>(await api(`${BASE}/deployments/${encodeURIComponent(slug)}/holds`));
 /** `POST /admin/storage`: the server's `[storage]` settings, written into its `holon.toml`: how
  *  often it sweeps (`"10m"`, `"2h"`, `"off"`), when it warns its disk is full (`"85%"`, `"5G"`). */
-export async function setStorage(set: { sweep_every?: string; warn_at?: string }): Promise<{ sweeps: HostSweeps; warnings: HostWarning[] }> {
+export async function setStorage(set: { sweep_every?: string; warn_at?: string; full_at?: string; when_full?: string }): Promise<{ sweeps: HostSweeps; warnings: HostWarning[] }> {
   return asJson(await post(`${BASE}/admin/storage`, set));
 }
 export const setSweepEvery = (every: string) => setStorage({ sweep_every: every });

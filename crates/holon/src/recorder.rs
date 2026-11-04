@@ -1035,6 +1035,19 @@ impl Log {
     /// Keep `keep` entries from now on, none older than `max_age_ms` (none: any age): the
     /// deployment's retention, set at deploy and load and when its grant changes. Keeping more
     /// than it did reads back what the file still holds.
+    /// How old a run it keeps, at most, in milliseconds (none: any age).
+    pub fn max_age_ms(&self) -> Option<u64> {
+        self.max_age_ms
+    }
+
+    /// Ask for its file to be cut back to what it keeps, as a run finding it full does: by the
+    /// periodic sync, with the lock released (R4). The host, freeing disk (storage.rs).
+    pub fn want_cut(&mut self) {
+        if self.file.is_some() {
+            self.cut_wanted = true;
+        }
+    }
+
     pub fn retain(&mut self, keep: usize, max_age_ms: Option<u64>) {
         let keep = keep.max(1);
         if (keep, max_age_ms) == (self.keep, self.max_age_ms) {

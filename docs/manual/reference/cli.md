@@ -311,7 +311,7 @@ can't run, if it can't. Admins.
 ### `holon policy`
 
 ```
-holon policy [--reload] [--sweep-every 10m|off] [--warn-at 85%|5G] [--json]
+holon policy [--reload] [--sweep-every 10m|off] [--warn-at 85%|5G] [--full-at 95%|1G] [--when-full warn|pause|roll] [--json]
 ```
 
 The host's policy: what it grants without asking, whether flows may call plain `http` or private
@@ -321,7 +321,10 @@ policy file again and holds every deployment to it at once, saying which it no l
 nothing kept names (`90s`, `10m`, `2h`, `1d`, a minute at the least, or `off`), written into the
 policy file's [`[storage]`](server.md#the-policy); an admin's. `--warn-at` sets when a disk is
 full enough to warn of: how full for the server (`85%`), or how much is left (`5G`); an admin's,
-written there too ([Warnings](server.md#warnings)). See [The host's policy](../guides/deploying.md#the-hosts-policy).
+written there too ([Warnings](server.md#warnings)). `--full-at` and `--when-full`: past where it
+warns, when it acts and what it does then: `warn`, `pause` (every flow that records runs, until
+there is room) or `roll` (cut the oldest runs of the biggest logs); an admin's
+([The policy](server.md#the-policy)). See [The host's policy](../guides/deploying.md#the-hosts-policy).
 
 ### `holon host`
 

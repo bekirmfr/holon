@@ -51,7 +51,7 @@ import {
   type SecretInfo,
   type TokenEntry,
 } from "./server";
-import { cacheLine, diskFull, diskLine, holdsLines, isEvery, isThreshold, keptLines, reportLine, scheduleLine, sizeText } from "./storage";
+import { cacheLine, diskFull, diskLine, holdsLines, isEvery, isThreshold, keptLines, reportLine, scheduleLine, sizeText, whenFullLine } from "./storage";
 import { useDialog } from "./Dialog";
 import { FolderPicker } from "./FolderPicker";
 import { ActivityList } from "./Pages";
@@ -139,6 +139,7 @@ export function AdminPage({ me, onOpenDeployment }: { me: string; onOpenDeployme
   const sweeps = host?.sweeps ?? null;
   const [everyDraft, setEveryDraft] = useState("");
   const [warnDraft, setWarnDraft] = useState("");
+  const [fullDraft, setFullDraft] = useState("");
   const [kind, setKind] = useState("everything");
   const [version, setVersion] = useState(0);
 
@@ -156,6 +157,7 @@ export function AdminPage({ me, onOpenDeployment }: { me: string; onOpenDeployme
         // What the admin is typing stays: a refresh only fills the field when it is empty.
         setEveryDraft((d) => d || h.sweeps.every);
         setWarnDraft((d) => d || h.warn_at);
+        setFullDraft((d) => d || h.full_at);
       })
       .catch((e: unknown) => setMsg(messageOf(e)));
     getOidcSettings()
@@ -816,6 +818,48 @@ export function AdminPage({ me, onOpenDeployment }: { me: string; onOpenDeployme
                 <button type="submit" style={small} disabled={!isThreshold(warnDraft) || warnDraft.trim() === host.warn_at}>
                   set
                 </button>
+              </form>
+              <form
+                style={{ ...row, flexWrap: "wrap" }}
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  act(async () => {
+                    const set = await setStorage({ full_at: fullDraft.trim() });
+                    setHost((h) => (h ? { ...h, full_at: fullDraft.trim(), sweeps: set.sweeps, warnings: set.warnings } : h));
+                  });
+                }}
+              >
+                <span style={{ flex: 1, minWidth: 260 }}>
+                  when a disk is full <span style={quiet}>· {whenFullLine(host.full_at, host.when_full)}</span>
+                  {host.acting.paused.length > 0 && <div style={{ color: "#ffb3b5" }}>paused for the full disk: {host.acting.paused.join(", ")}</div>}
+                  {host.acting.rolled.length > 0 && <div style={{ color: "#ffb3b5" }}>logs cut for the full disk: {host.acting.rolled.join(", ")}</div>}
+                </span>
+                <input
+                  aria-label="when the host acts on a full disk"
+                  title="past where it warns: how full for the server (95%), or how much is left (1G); written into the server's holon.toml [storage]"
+                  value={fullDraft}
+                  onChange={(e) => setFullDraft(e.target.value)}
+                  style={{ ...input, width: 80 }}
+                />
+                <button type="submit" style={small} disabled={!isThreshold(fullDraft) || fullDraft.trim() === host.full_at}>
+                  set
+                </button>
+                <select
+                  aria-label="what the host does when its disk is full"
+                  value={host.when_full}
+                  onChange={(e) => {
+                    const when_full = e.target.value;
+                    act(async () => {
+                      const set = await setStorage({ when_full });
+                      setHost((h) => (h ? { ...h, when_full: when_full as HostView["when_full"], sweeps: set.sweeps, warnings: set.warnings } : h));
+                    });
+                  }}
+                  style={input}
+                >
+                  <option value="warn">only warn</option>
+                  <option value="pause">pause what records runs</option>
+                  <option value="roll">cut the oldest runs</option>
+                </select>
               </form>
               <div style={{ ...row, flexDirection: "column", alignItems: "stretch", gap: 4 }}>
                 {keptLines(host.kept, Date.now()).map((l, i) => (

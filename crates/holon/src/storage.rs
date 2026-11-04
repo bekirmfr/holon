@@ -186,6 +186,23 @@ struct Watch {
     grew: std::collections::BTreeMap<String, u64>,
     /// The warnings said last look, by key: a new one is said once in the server's log.
     said: std::collections::BTreeSet<String>,
+    /// The deployments whose logs `roll` cut, to keep as granted again once there is room.
+    rolled: std::collections::BTreeSet<String>,
+}
+
+/// The fewest runs `roll` leaves a log keeping.
+pub(crate) const ROLL_FLOOR: usize = 20;
+
+/// Whether `dep` records any of its runs: a clock's, a file handler's, or a route's or an action's
+/// its grant doesn't keep out of its log. One that records none goes on when a disk is full.
+fn records_runs(dep: &crate::Deployment) -> bool {
+    let Some(server) = &dep.server else { return true };
+    let recorded = |label: String, level| dep.permit.log_level(Some(&label), level) != holon_core::LogLevel::Unrecorded;
+    dep.interval_seconds.is_some()
+        || !server.clocks.is_empty()
+        || !server.files.is_empty()
+        || server.routes.iter().any(|r| recorded(format!("{} {}", r.method, r.path), r.log))
+        || server.actions.iter().any(|a| recorded(a.label.clone(), a.log))
 }
 
 /// How many looks an hour is (`LOOK_EVERY`).
@@ -232,7 +249,12 @@ pub(crate) fn warnings(state: &AppState) -> Vec<Warning> {
                 size(total),
                 crate::permissions::threshold_text(at)
             ),
-            todo: "make room: lower the keep of the flows holding most (holon host shows them), sweep now (holon store sweep), or give the server more disk".into(),
+            todo: match (policy.storage.full_at.past(total, free), policy.storage.when_full) {
+                (true, crate::permissions::WhenFull::Pause) => format!("past {}: the flows that record runs are paused until it is back under {}; make room: lower the keep of the flows holding most (holon host shows them), sweep now (holon store sweep), or give the server more disk", crate::permissions::threshold_text(policy.storage.full_at), crate::permissions::threshold_text(at)),
+                (true, crate::permissions::WhenFull::Roll) => format!("past {}: the oldest runs of the logs keeping the most are being cut, and swept; make room for good: lower the keep of the flows holding most, or give the server more disk", crate::permissions::threshold_text(policy.storage.full_at)),
+                (true, crate::permissions::WhenFull::Warn) => format!("past {}, and the server only warns (when_full = \"warn\"): once it fills, a strict run fails its sync and answers 500; make room now, or have it pause or roll (holon policy --when-full)", crate::permissions::threshold_text(policy.storage.full_at)),
+                _ => "make room: lower the keep of the flows holding most (holon host shows them), sweep now (holon store sweep), or give the server more disk".into(),
+            },
         });
     }
     let (flows, values) = (state.store.3.usage(), state.store.4.usage());
@@ -271,6 +293,7 @@ impl Sweeps {
     /// after the first look.
     pub(crate) fn tick(&self, state: &AppState, now_ms: u64) -> bool {
         self.watch(state);
+        self.act(state, now_ms);
         let every = state.policy().storage.sweep_every;
         // The first look counts what is kept, so the host's view has it before the first round.
         let (due, first) = {
@@ -327,6 +350,94 @@ impl Sweeps {
             println!("holon: no longer warning of {key}");
         }
         watch.said = keys;
+    }
+
+    /// When a disk is past `[storage] full_at`, do what `when_full` says: pause every deployment
+    /// that records runs, or cut the oldest runs of the biggest log on disk to half (to
+    /// `ROLL_FLOOR` at the least), one a look, sweeping at the first; once every disk is back under `warn_at`, resume what it paused
+    /// and keep what it cut as granted again. Each on its deployment's timeline.
+    pub(crate) fn act(&self, state: &AppState, now_ms: u64) {
+        let policy = state.policy();
+        let disks = disks(state);
+        let past = |t: crate::permissions::Threshold| {
+            disks.iter().find(|d| t.past(d["size"].as_u64().unwrap_or(0), d["free"].as_u64().unwrap_or(0))).map(full)
+        };
+        let (full_pct, warned) = (past(policy.storage.full_at), past(policy.storage.warn_at).is_some());
+        let why = |pct: u64| format!("the disk was full ({pct}% for the server, past {})", crate::permissions::threshold_text(policy.storage.full_at));
+        let mut changed = false;
+        match (policy.storage.when_full, full_pct) {
+            (crate::permissions::WhenFull::Pause, Some(pct)) => {
+                let mut table = state.deployments.lock().unwrap();
+                for (slug, dep) in table.iter_mut() {
+                    if dep.life.status == crate::lifecycle::Status::Running && records_runs(dep) {
+                        let _ = dep.life.pause();
+                        dep.channels.close();
+                        dep.grant.paused_full = true;
+                        eprintln!("holon: paused {slug:?}: {}", why(pct));
+                        dep.note("lifecycle", format!("paused by the host: {}", why(pct)), None, Default::default());
+                        changed = true;
+                    }
+                }
+            }
+            (crate::permissions::WhenFull::Roll, Some(pct)) => {
+                let logs: Vec<(String, std::sync::Arc<crate::recorder::LogCell>)> = state.deployments.lock().unwrap().iter().map(|(s, d)| (s.clone(), std::sync::Arc::clone(&d.log))).collect();
+                // The biggest on disk, of those keeping more than the floor: what frees the most.
+                let size = |slug: &str| crate::recorder::file_for(&state.deployments_path, slug).and_then(|p| std::fs::metadata(p).ok()).map_or(0, |m| m.len());
+                let most = logs.iter().map(|(slug, log)| (slug, log, log.with(|l| l.holds().0))).filter(|(_, _, kept)| *kept > ROLL_FLOOR).max_by_key(|(slug, _, kept)| (size(slug), *kept));
+                if let Some((slug, log, kept)) = most {
+                    let keep = (kept / 2).max(ROLL_FLOOR);
+                    log.with(|l| {
+                        let age = l.max_age_ms();
+                        l.retain(keep, age);
+                        l.want_cut();
+                    });
+                    eprintln!("holon: cut {slug:?}'s log to its newest {keep} runs: {}", why(pct));
+                    if let Some(dep) = state.deployments.lock().unwrap().get_mut(slug) {
+                        dep.note("lifecycle", format!("the host cut its log from {kept} runs to its newest {keep}: {}", why(pct)), None, Default::default());
+                    }
+                    // A cut each look, the file cut back within a second; the first of a full
+                    // disk's cuts sweeps too, at once: what the cut runs alone named goes, an hour
+                    // after it was put (sweeping after each cut would hold the next up for as long
+                    // as a sweep takes).
+                    let first = {
+                        let mut watch = self.watch.lock().unwrap();
+                        let first = watch.rolled.is_empty();
+                        watch.rolled.insert(slug.clone());
+                        first
+                    };
+                    changed = true;
+                    if first {
+                        self.sweep_store(state, now_ms);
+                    }
+                }
+            }
+            _ => {}
+        }
+        if !warned {
+            // Room again: what it did, undone.
+            let rolled = std::mem::take(&mut self.watch.lock().unwrap().rolled);
+            let mut table = state.deployments.lock().unwrap();
+            for (slug, dep) in table.iter_mut() {
+                if dep.grant.paused_full && dep.life.status == crate::lifecycle::Status::Paused {
+                    let _ = dep.life.run(crate::lifecycle::RunFrom::Latest, crate::deploy::epoch_now());
+                    dep.arm_clocks(SystemTime::now());
+                    println!("holon: resumed {slug:?}: there is room on its disk again");
+                    dep.note("lifecycle", "resumed by the host: there is room on its disk again".into(), None, Default::default());
+                    changed = true;
+                }
+                dep.grant.paused_full = false;
+                if rolled.contains(slug) {
+                    let (keep, age) = (dep.permit.log.keep_runs as usize, dep.permit.log.max_age_ms());
+                    dep.log.with(|l| l.retain(keep, age));
+                    dep.note("lifecycle", format!("the host keeps its runs as granted again ({keep}): there is room on its disk"), None, Default::default());
+                    changed = true;
+                }
+            }
+        }
+        if changed {
+            crate::persist_deployments(&state.deployments_path, &state.deployments);
+            crate::sync_listeners(state);
+        }
     }
 
     /// Count what the store and the folders' texts hold, removing what crashes left in every place
@@ -401,6 +512,13 @@ impl Sweeps {
         }
         report.took_ms = began.elapsed().as_millis() as u64;
         Some(report)
+    }
+
+    /// What `when_full` has done and not yet undone: the deployments it paused, the logs it cut.
+    fn acting(&self, state: &AppState) -> serde_json::Value {
+        let paused: Vec<String> = state.deployments.lock().unwrap().iter().filter(|(_, d)| d.grant.paused_full).map(|(s, _)| s.clone()).collect();
+        let rolled: Vec<String> = self.watch.lock().unwrap().rolled.iter().cloned().collect();
+        serde_json::json!({ "paused": paused, "rolled": rolled })
     }
 
     /// Note what a store sweep found each deployment holds (a dry run's too: it walks the same).
@@ -567,6 +685,9 @@ pub(crate) fn host_view(state: &AppState) -> serde_json::Value {
         "deployments": state.sweeps.all_holds(state),
         "sweeps": state.sweeps.view(&state.policy()),
         "warn_at": crate::permissions::threshold_text(state.policy().storage.warn_at),
+        "full_at": crate::permissions::threshold_text(state.policy().storage.full_at),
+        "when_full": state.policy().storage.when_full.text(),
+        "acting": state.sweeps.acting(state),
         "warnings": warnings(state),
     })
 }
@@ -650,6 +771,17 @@ pub(crate) fn host_lines(v: &serde_json::Value) -> Vec<String> {
         let holds: Vec<&str> = d["holds"].as_array().into_iter().flatten().filter_map(|h| h.as_str()).collect();
         let warns = v["warn_at"].as_str().map(|w| format!(", warns at {w}")).unwrap_or_default();
         lines.push(format!("disk         {}% full: {} free of {} ({} in use{warns}): {} ({})", full(d), size(&d["free"]), size(&d["size"]), size(&d["used"]), holds.join(", "), s(&d["path"])));
+    }
+    let acting = &v["acting"];
+    let names = |x: &serde_json::Value| x.as_array().into_iter().flatten().filter_map(|n| n.as_str()).collect::<Vec<_>>().join(", ");
+    if acting["paused"].as_array().is_some_and(|a| !a.is_empty()) {
+        lines.push(format!("paused       for the full disk: {}", names(&acting["paused"])));
+    }
+    if acting["rolled"].as_array().is_some_and(|a| !a.is_empty()) {
+        lines.push(format!("cut          for the full disk: {}", names(&acting["rolled"])));
+    }
+    if let (Some(at), Some(what)) = (v["full_at"].as_str(), v["when_full"].as_str()) {
+        lines.push(format!("when full    past {at}: {what}"));
     }
     let k = &v["kept"];
     let counted = k["at_ms"].as_u64().map_or("not counted yet".to_string(), |at| format!("counted {} ago", span(now_ms().saturating_sub(at))));
@@ -803,20 +935,12 @@ pub(crate) fn handle_get_holds(state: &AppState, slug: &str) -> Response {
 }
 
 /// The `[storage]` keys an admin sets here, with what each says it is.
-const SETTINGS: [(&str, &str); 2] = [("sweep_every", "how often the server sweeps: \"10m\", or \"off\""), ("warn_at", "when a disk is full enough to warn of: \"85%\", or \"5G\" free")];
-
-/// Write `key = value` into the policy file's `[storage]`, its other sections, keys and comments
-/// kept: the file's new text, checked to be a policy that parses, or why not.
-pub(crate) fn with_storage(text: &str, key: &str, value: &str) -> Result<String, String> {
-    let mut doc: toml_edit::DocumentMut = text.parse().map_err(|e| format!("the policy file doesn't parse: {e}"))?;
-    if !doc.contains_table("storage") {
-        doc["storage"] = toml_edit::table();
-    }
-    doc["storage"][key] = toml_edit::value(value.trim());
-    let written = doc.to_string();
-    Policy::parse(&written)?;
-    Ok(written)
-}
+const SETTINGS: [(&str, &str); 4] = [
+    ("sweep_every", "how often the server sweeps: \"10m\", or \"off\""),
+    ("warn_at", "when a disk is full enough to warn of: \"85%\", or \"5G\" free"),
+    ("full_at", "when it is full enough to act: \"95%\", or \"1G\" free"),
+    ("when_full", "what it does then: \"warn\", \"pause\" or \"roll\""),
+];
 
 /// `GET /admin/host` and `POST /admin/storage` (an admin's: access.rs holds every `/admin/` path to
 /// one), or None for any other path.
@@ -849,11 +973,20 @@ fn set_storage(state: &AppState, set: &[(&str, &str)], by: &str) -> Response {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
         Err(e) => return err(500, format!("could not read {:?}: {e}", state.policy_path)),
     };
+    // Each key written, then the whole checked: two set at once may only make sense together.
+    let mut doc: toml_edit::DocumentMut = match text.parse() {
+        Ok(d) => d,
+        Err(e) => return err(400, format!("the policy file doesn't parse: {e}")),
+    };
+    if !doc.contains_table("storage") {
+        doc["storage"] = toml_edit::table();
+    }
     for (key, value) in set {
-        text = match with_storage(&text, key, value) {
-            Ok(w) => w,
-            Err(e) => return err(400, e),
-        };
+        doc["storage"][*key] = toml_edit::value(value.trim());
+    }
+    text = doc.to_string();
+    if let Err(e) = Policy::parse(&text) {
+        return err(400, e);
     }
     if let Err(e) = holon_host::write_atomically(std::path::Path::new(&state.policy_path), text.as_bytes()) {
         return err(500, format!("could not write {:?}: {e}", state.policy_path));
@@ -863,7 +996,12 @@ fn set_storage(state: &AppState, set: &[(&str, &str)], by: &str) -> Response {
         return reloaded;
     }
     for (key, value) in set {
-        let what = if *key == "warn_at" { "set when the server warns its disk is full" } else { "set how often the server sweeps" };
+        let what = match *key {
+            "warn_at" => "set when the server warns its disk is full",
+            "full_at" => "set when the server acts on a full disk",
+            "when_full" => "set what the server does when its disk is full",
+            _ => "set how often the server sweeps",
+        };
         state.activity.record(what, value.trim(), Some(by));
     }
     Response::json(&serde_json::json!({ "sweeps": state.sweeps.view(&state.policy()), "warnings": warnings(state) }))

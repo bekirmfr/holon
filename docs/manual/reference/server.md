@@ -126,6 +126,16 @@ allow_plain_http = true
     for the server, `85%` (the default; a quota, or the space a disk keeps for root, counts as
     full), or how much is left, `5G` (`500M`, `1T`). Set as `sweep_every` is (`holon policy
     --warn-at`). See [Warnings](#warnings).
+  - `full_at` and `when_full`: past `full_at` (`95%` unless said; fuller than `warn_at`, or less
+    free), what the server does. `warn` (the default): nothing but the warning; once the disk
+    fills, a strict run fails its sync and answers 500. `pause`: every deployment that records
+    runs is paused by the host (its routes answer 503, its clocks stop; one whose runs are all
+    unrecorded goes on), and resumed once every disk is back under `warn_at`; one a person resumes
+    while the disk is still full is paused again, one a person paused stays paused. `roll`: every
+    ten seconds, the biggest log on disk is cut to half the runs it keeps (never below 20), its
+    file cut back within a second, and the first cut sweeps the store at once; once back under
+    `warn_at`, each log keeps its runs as granted again (what was cut stays cut). Each is said on
+    the deployment's timeline. Set with `holon policy --full-at --when-full`, or on the admin page.
 
 An unknown section or key is a mistake, and so is a limit name the server doesn't know. The limits,
 their defaults and their ceilings are in [Permissions](permissions.md#limits).
