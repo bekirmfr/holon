@@ -355,7 +355,9 @@ test("the Inspector shows the selected node in edit mode: its ports, and its uni
   await openSample(page, "Hello API");
   const inspector = page.getByRole("complementary", { name: "Inspector" });
   await expect(inspector).toContainText("select a node on the canvas");
-  await page.locator(".react-flow__node", { hasText: "concat" }).click();
+  // Selected by its click event, as every other node in the suite is: a pointer click waits for
+  // the node to hold still where the mouse goes, and on a slow worker it hung, or landed beside it.
+  await page.locator(".react-flow__node", { hasText: "concat" }).dispatchEvent("click");
   await expect(inspector).toContainText("concat");
   await expect(inspector).toContainText("inputs");
   // The node's line in the flow as text (docs/LANGUAGE.md): the whole respond, since concat is

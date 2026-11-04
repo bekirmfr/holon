@@ -44,7 +44,8 @@
 - **A flood of requests or sign-ins can't take the server down.** Five wrong passwords lock a
   name for the address they came from only, so someone who knows a name can't keep its owner
   out; tries under ever new names are forgotten after a minute. A few passwords are checked at
-  once, on threads kept for it (each check takes 19 MiB): 600 sign-ins sent 200 at a time left
+  once, on threads kept for it (each check takes 19 MiB), the rest waiting their turn for up to
+  thirty seconds before they are told the server is busy: 600 sign-ins sent 200 at a time left
   the server at 178 MB, where running each on its request's thread left it near 1 GB. Past 512
   requests being answered at once, one more is answered 503 at once.
 - **Every run's record is on disk before its answer.** A run of a route, clock, file handler or

@@ -187,7 +187,7 @@ row refuse setting up for a minute, so the code can't be guessed.
 - **Passwords** are at least ten characters, kept as Argon2id hashes. Five wrong in a row lock the
   name for a minute, from the address they came from (its owner still signs in from elsewhere;
   behind a proxy, every address is the proxy's). A few passwords are checked at once: past that,
-  a sign-in waits its turn, and past two seconds is told the server is busy (503).
+  a sign-in waits its turn, and past thirty seconds is told the server is busy (503).
 - The server answers up to 512 requests at once; one more is told to try again (503).
 - **Sessions** last seven days. **Invite** and **reset** links work once, within seven days.
 - The server never lets the last enabled admin be removed, disabled or demoted.

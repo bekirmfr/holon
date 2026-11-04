@@ -34,7 +34,9 @@ its hash as it is read (`Store::get`, [holon-host](../components/holon-host.md))
   than `TRIES_KEPT` (4,096) are kept (`forget_old_tries`). A name with no account is checked
   against `stand_in_hash`, so a refusal takes as long either way. No more than `CHECKS_AT_ONCE`
   (4) passwords are hashed or checked at once, on as many threads kept for it (`checking`,
-  `on_a_checker`); one more waits up to `CHECK_WAIT` (2 s), then is answered busy (503).
+  `on_a_checker`); one more waits its turn up to `CHECK_WAIT` (30 s), then is answered busy
+  (503). The cap bounds the memory; the wait is long so a busy machine slows sign-ins rather
+  than refusing them (2 s turned some away on a loaded two-core CI runner).
 - **Requests at once**: the control plane admits `MAX_IN_FLIGHT` (512) being answered at once
   (`Admitted`); one more is answered 503 with `Retry-After: 1`, before any work.
 - **Tokens** are a prefix and 32 random bytes: sessions `hs_` (`SESSION_SECONDS`, 7 days), invite
