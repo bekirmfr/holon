@@ -326,7 +326,7 @@ Since then:
 | `4c984bb` | An identity provider's email is taken only when it says it verified it |
 | `46c44dd` | Wrong setup codes lock setting up for a minute |
 | `5d0bdf2` | Every file the server writes is its owner's only; the data folder and the store's folders `0o700`; a data folder open to others said at start |
-| `e9624df` | No folder may be the server's state heads, arrivals, heads, activity log or secrets' audit, wherever its data is |
+| `09f9ea6` | No folder may be the server's state heads, arrivals, heads, activity log or secrets' audit, wherever its data is |
 | `08f6ccc` | A private address inside 6to4, IPv4-compatible or Teredo (and NAT64's local-use prefix) is private |
 | `29c6088` | A waiting run is sealed on disk however its vault was rebuilt, and with secrets in memory |
 | `dfd7c8b` | A folder's file reached through its folder as opened, no link followed (Linux); folders made only once checked |
