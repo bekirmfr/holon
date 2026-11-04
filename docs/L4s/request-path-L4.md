@@ -1127,7 +1127,8 @@ scanners' probes. The policy may make it `unrecorded` (§8 Q12).
   - `strict` calls `sync_through` (C2 e).
   - `lazy` relies on the syncer (C2 d).
   - `unrecorded` skips `log_run` unless the run failed: an error, a 5xx answer, or a budget
-    failure. A failed run is logged and synced lazily (§8 Q10).
+    failure. A failed run is logged and synced lazily (§8 Q10). *Reversed since: an unrecorded
+    run is never logged, failed or not; it is counted (resilience-audit-L4.md §2.8).*
   - Every level still counts (`record_trigger`).
 - **Counts per handler.** `Deployment` gains `tallies: BTreeMap<String, Tally>`, with
   `Tally { runs, failed, total_ms, last_at }`, kept for unrecorded handlers, updated where

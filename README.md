@@ -354,6 +354,8 @@ Design documents:
 - [`docs/LANGUAGE.md`](docs/LANGUAGE.md): the language, by example and in full.
 - [`docs/PLATFORM_LAYOUT.md`](docs/PLATFORM_LAYOUT.md): the runtime (permissions, effects,
   durable runs, the run record) and the plan.
+- [`docs/engineering/`](docs/engineering/README.md): why it is the way it is: performance,
+  resilience, testing, measuring and the lessons learned, with their numbers and limits.
 - [`docs/L4s/`](docs/L4s): a design note per feature, with what was built.
 - [`docs/README.md`](docs/README.md): which documents are current.
 

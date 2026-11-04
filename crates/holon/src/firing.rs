@@ -883,8 +883,8 @@ pub(crate) fn handle_post_fire(store: &SharedStore, request: &Request) -> Respon
 /// How the run is recorded is its handler's level (`declared`, C5), as its grant holds it
 /// (`Permit::log_level`): a strict run returns once its entry is on disk, sharing the sync with
 /// the runs around it (C2 e); a lazy one is synced within `SYNC_EVERY`; an unrecorded one is
-/// counted in its handler's tally and leaves no entry, unless it failed, when it is logged
-/// lazily (§8 Q10). Answers the seq the entry got (none for an unrecorded run that left none),
+/// counted in its handler's tally and leaves no entry, failed or not (resilience-audit-L4.md,
+/// §2.8, which reversed §8 Q10). Answers the seq the entry got (none for an unrecorded run that left none),
 /// and whether it is known kept.
 pub(crate) fn log_run(deployments: &Mutex<BTreeMap<String, Deployment>>, slug: &str, entry: LogEntry, tokens: Redactor, declared: holon_core::LogLevel) -> Option<Logged> {
     let Some((log, seq, level)) = push_run(deployments, slug, entry, tokens, declared)? else {
@@ -935,18 +935,18 @@ pub(crate) fn log_or_count(
     log_run(deployments, slug, entry(), tokens(), declared)
 }
 
-/// The level `dep`'s grant logs a run at now, and, for an unrecorded run, the run counted in its
-/// route's tally, a failure with its status and its error (redacted of the deployment's secrets, cut
-/// short); with whether that is all there is to do, which for an unrecorded run it always is: its
-/// handler was declared so, and its runs are never logged, failed or not (resilience-audit-L4.md,
-/// §2.8). The one rule `push_run` and `log_or_count` both keep (D2). Called with the table's lock
-/// held.
 /// [`count_if_unrecorded`] for a test, the handler declared unrecorded: whether it was counted only.
 #[cfg(test)]
 pub(crate) fn count_for_tests(dep: &mut Deployment, counted: &Counted) -> bool {
     count_if_unrecorded(dep, counted, holon_core::LogLevel::Unrecorded).1
 }
 
+/// The level `dep`'s grant logs a run at now, and, for an unrecorded run, the run counted in its
+/// route's tally, a failure with its status and its error (redacted of the deployment's secrets, cut
+/// short); with whether that is all there is to do, which for an unrecorded run it always is: its
+/// handler was declared so, and its runs are never logged, failed or not (resilience-audit-L4.md,
+/// §2.8). The one rule `push_run` and `log_or_count` both keep (D2). Called with the table's lock
+/// held.
 fn count_if_unrecorded(dep: &mut Deployment, counted: &Counted, declared: holon_core::LogLevel) -> (holon_core::LogLevel, bool) {
     let level = dep.permit.log_level(counted.route, declared);
     if level != holon_core::LogLevel::Unrecorded {
@@ -988,7 +988,7 @@ impl Logged {
 }
 
 /// `log_run`'s write: the run's level as its grant holds it, and, unless it is an unrecorded run
-/// that didn't fail (counted, and nothing written: `Some(None)`), the entry pushed under the
+/// (counted, and nothing written: `Some(None)`), the entry pushed under the
 /// deployment's log lock, with the log it went to. None: no such deployment.
 #[allow(clippy::type_complexity)]
 fn push_run(
