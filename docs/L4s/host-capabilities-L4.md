@@ -6,10 +6,11 @@ terminals (§5.7), a shell in a sandbox whose walls are the grant (§5.8), outbo
 long-lived connections (§5.9), a bytes value with decimals decided beside it (§5.10), R5 reworded
 around boundaries, and the implementation plan in three tiers (§7, replacing the order for payment
 operations), with history as step 2.5 ([history](history-L4.md)). Revised 2026-11-04 against
-450e3de: answering a route with a file (step 1.8, [static files](static-files-L4.md)) and inbound
-WebSockets (step 1.9, [inbound WebSockets](websockets-L4.md)) join Tier 1; inbound WebSockets were
-"later" until then. It sets rules and sorts candidates; each capability it says to build gets its own L4,
-as folders, databases and channels did. Builds on
+450e3de, and again against ff03a80 (`main` after the request path's work): static files (§5.11,
+step 1.8) and inbound WebSockets (§5.12, step 1.9) designed here and put in Tier 1, inbound
+WebSockets having been "later" until then; and what else a web app asks for, sorted (§5.13). It
+sets rules and sorts candidates. Most capabilities it says to build get their own L4, as folders,
+databases and channels did; the web's are designed here, so the theme is in one place. Builds on
 [host resources](host-resources-L4.md) (resources the host defines, their addresses),
 [named folders](named-folders-L4.md), [databases](databases-L4.md),
 [channels](channels-L4.md) and [triggers](triggers-L4.md) (a flow with several handlers).
@@ -202,9 +203,15 @@ Each one's L4 has a section for each of these. A capability that can't answer on
 | a streamed HTTP answer in one run; polling | covered | R2 | `http_stream` (rc.23), `every` and `http.get` |
 | an SSE, WebSocket or gRPC feed; Postgres `LISTEN`; MQTT | host capability: a **feed** (a trigger) | R3a, R3d | §5.9 |
 | a WebSocket session (send, wait for the reply) | host capability: a terminal backend | R3a | §5.9 |
-| a file as a route's answer, any size, binary too | host capability: `FileServe` on a folder | R3b | step 1.8; answering callers with a folder's files is a finer item than reading them |
+| a file as a route's answer, any size, binary too | host capability: `FileServe` on a folder | R3b | §5.11, step 1.8; answering callers with a folder's files is a finer item than reading them |
+| a route for the rest of a path (`/*path`) | not a capability: routing | — | §5.11, step 1.8 |
+| binary bodies a browser sends; big uploads; `multipart/form-data` | the value kind (`req.bytes`); big ones staged, as a handle (`req.file`); a leaf for multipart | R1 | §5.13 |
+| several cookies in one answer; sessions | covered, once a header's value may be a list | R1, R2 | §5.13; signed with `hmac_sha256`, or an id in a collection |
+| a Content-Security-Policy | covered (a header); an operator's default later | — | §5.13; a server feature, never derived |
+| a flow's own files, bundled with its version | later: a unit feature, no item | — | §5.13 |
+| React rendered on the server | later: a library module for `js` holons | R1 | §5.13; no streaming render, no fetching in a render |
 | ISO 8583, FIX, SMPP, a bank's own socket | host capability: a **socket** | R3a, R3c, R3d | §5.9; when a job brings one |
-| inbound WebSockets | host capability: a trigger on the flow's port, `WebSocket(path)` | R3a, R3d | §5.9, step 1.9 |
+| inbound WebSockets | host capability: a trigger on the flow's port, `WebSocket(path)` | R3a, R3d | §5.12, step 1.9 |
 | a shell or `Spawn` with the server's reach | never | R5 | for flows and for agents |
 | a shell in a sandbox whose walls are the grant | host capability: a **sandbox** | R3c, R5 | §5.8; Linux first, refused where the OS can't hold the walls |
 | a program an admin binds (a vendor CLI, a script) | host capability: a **command** | R3c, R5 | §5.7 |
@@ -538,14 +545,15 @@ holon socket add processor tls://10.0.4.12:5000 --identity processor --frame len
   10.0.4.12:5000)", and the `on message` trigger. Such links sit on private networks, so a socket
   an admin binds may reach a private address; a flow's own text never can (§8, fork 19).
 
-**Inbound WebSockets** (step 1.9, [inbound WebSockets](websockets-L4.md)): a browser connects to
-the flow's own port, and each message it sends starts a run, by the same four rules. Until
+**Inbound WebSockets** (§5.12, step 1.9): a browser connects to the flow's own port, and each
+message it sends starts a run, by the same four rules. Until
 2026-11-04 they waited for a job ("channels (SSE) and a POST cover what a browser sends and
 hears"). Decided then that they are fundamental: the libraries web apps are built on expect one
 two-way connection. The statement is `websocket`, since *socket* is the bound connection above.
 
 **Engines.** The data plane already runs on tokio, so a WebSocket client is tokio-tungstenite on
-that runtime, and inbound WebSockets' server side is the same crate. SSE is a streaming read the outbound client can do. A Postgres `LISTEN` is the
+that runtime, and inbound WebSockets' server side is the same crate. SSE is a streaming read the
+outbound client can do. A Postgres `LISTEN` is the
 `postgres` crate's notifications, beside `engines.rs`. MQTT is rumqttc. gRPC (tonic, HTTP/2 and
 protobuf) waits for a job that brings one. A socket's framing and session are Holon's own code,
 small; the protocols' meaning stays in leaves.
@@ -586,6 +594,662 @@ every leaf agree on one text form forever. So a **`Bytes` value**.
 **Decimals are decided in the same L4** (§8, fork 1): a `Decimal` value raises the same questions
 (its JSON form, the log, the bridge, the editor, which leaves take it), so the answers are worked
 out once, for both.
+
+### 5.11 Static files: a route for the rest of a path, and an answer that is a file's bytes
+
+Designed 2026-11-04 against `450e3de` and re-checked the same day against `ff03a80` (`main` after
+the request path's work), cited by file and line there. Step 1.8. Builds on
+[named folders](named-folders-L4.md) (handles, reads by hash), [channels](channels-L4.md) (an
+answer the host streams after the run) and [the request path](request-path-L4.md) (C5, a log level
+per handler, §5.11.5).
+
+Two features that together let one flow serve a built web app (a Vite or React `dist/`) and its
+API:
+
+- **A rest segment** (`*path`): a route that matches the rest of a path, however many segments.
+  Routing, not a capability.
+- **Answering with a file** (`site.serve(name)`): a route answers with a file's bytes from a
+  named folder, any size, any type (text or binary), streamed by the host and never through the
+  flow. A new item, `FileServe(folder)`, so §5.11.6 answers §4's checklist.
+
+```
+flow site
+port 8131
+folder site
+
+route GET /api/hello (req) {
+  respond { hello: "world" }
+}
+
+route GET / (req) lazy {
+  respond site.serve("index.html"), missing: 404
+}
+
+route GET /*path (req) lazy {
+  respond site.serve(req.params.path) ?? site.serve("index.html"), missing: 404
+}
+```
+
+(`lazy`: each request is recorded, on disk within about a second, §5.11.5.) `check` says:
+
+```
+a server on :8131
+  GET /api/hello
+  GET /
+  GET /*path
+it may:
+  receive requests
+  read files in the folder "site"
+  answer its callers with files from the folder "site"
+```
+
+The bytes a caller gets are the bytes of the file whose hash the run recorded, or the caller gets
+nothing.
+
+#### 5.11.1 What is already there
+
+- **Routes** are parsed by `parse_path` (`holon-core/src/declare.rs` 385): literals and `:name`
+  params, nothing else. `match_route` (412) matches only routes with the same number of segments
+  as the request, and the most literal segments wins, ties to the earlier route. Two routes
+  clash when their segments are the same with every param treated alike (320).
+- **Three other copies of the path's shape** have to agree with core: the language reads a
+  route's path as a run of tokens (`holon-author/src/lang/parse.rs` 584); the wasm bridge hands the
+  editor the segments (`holon-wasm/src/lib.rs` 900, `route_path`); and the editor matches requests
+  itself for its request tester (`editor/src/endpoint.ts` 20, 43–52, 119). The author's routes
+  module has its own shape for clashes (`holon-author/src/routes.rs` 236).
+- **A response** is read from the endpoint's output 0 (`holon/src/data.rs` 163): a value, an
+  envelope `{status, headers, body}`, an effect (204), or a **subscription**: a
+  `channel_subscribe` effect, recognized by `subscription` (51) and streamed by the transport. The
+  flow can't set framing headers (`FRAMING`, 48). A subscription is the precedent for an answer
+  the host delivers after the run, from a value the run computed.
+- **Letting callers subscribe is its own permission,** `ChannelRead("updates")` (`kind.rs` 151,
+  337), described as "let callers subscribe to its channel" (`holon-author/src/describe.rs` 48),
+  apart from the flow sending on it. Answering with a secret is likewise its own,
+  `SecretAnswer(name)` (`kind.rs` 169). Publishing something to callers is shown and approved on
+  its own.
+- **A handle** (`inbox.file(name)`, `Folders::handle`, `holon/src/folders.rs` 503) is
+  `{folder, name, size, hash, modified}`: the file hashed whole, its bytes kept nowhere. The run
+  log keeps the handle as a read.
+- **A file sent by handle** is `http_upload` (`primitives.rs` 986): the host opens the file,
+  checks it against the handle's hash before a byte is sent, and again as it sends
+  (`folders.rs` 1559–1578, `Sent`; `outbound.rs` 46, `FileBody`). A file that changed fails the
+  call with `changed`. The log keeps the handle, never the bytes.
+- **The data plane** is hyper (http1) on tokio (`holon/src/dataplane.rs`), whose `Answer` (174) is
+  a whole body, a forwarded stream or an event stream. A file is a fourth kind.
+- **The log** keeps a response's body as text cut at 64 KiB (`recorder.rs` 97), and every
+  request, routed or not (`listeners.rs` 255).
+- **Each handler has a log level** (request-path C5, built): `strict` by default (the record on
+  disk before the answer, about 0.6 ms of fsync, C2 e), `lazy` (on disk within about a second),
+  or `unrecorded` (counted, never logged, failed or not, resilience-audit §2.8; approved by a
+  person as `Unrecorded("GET /health")`). Only a handler that may record lightly takes a word:
+  every capability sourced, none `Await` (`may_record_lightly`, `declare.rs` 86). A request no
+  route took is `lazy` (request-path Q12).
+- **Some routes run inline,** on the async worker instead of the blocking pool: only those that
+  read nothing but `NetworkIngress`, the clock and randomness (`READS_HERE`, `dataplane.rs` 381).
+  A file read isn't among them (resilience-audit R2 took collection reads out for the same
+  reason: a disk can be slow).
+
+#### 5.11.2 The rest segment
+
+**Syntax.** `*name` as the last segment of a route's path: `/app/*path`, `/*path`. One per path,
+only last; anything else is a bad path, as a repeated param name is today.
+
+**What it matches.** One or more segments, the rest of the path. Never zero: `/app/*path` doesn't
+match `/app` or `/app/`, as `:id` never matches an empty segment (`declare.rs` 432). A flow that
+wants `/` too declares `GET /` beside `GET /*path`, as the example does.
+
+**Its value.** `req.params.path` is the rest, its segments percent-decoded one by one and joined
+with `/`: `/app/css/site%20a.css` gives `css/site a.css`. A segment that decodes to contain `/`,
+or that is `.` or `..`, makes the route not match (404). Folders refuse such names anyway
+(`folders.rs`, `bad_file_name`), but the parameter should never carry a path that means something
+other than what the request said.
+
+**Which route wins.** A route without a rest segment beats any route with one, whatever their
+literals. Among rest routes, the most literal segments wins (the longest prefix). Ties go to the
+earlier route, as now. So `GET /api/hello` and `GET /api/:name` both beat `GET /*path`, and
+`GET /docs/*page` beats `GET /*path` for `/docs/a/b`.
+
+**Clashes.** Two rest routes clash when their segments before the rest are the same with params
+treated alike. A rest route never clashes with a route without one.
+
+**Status for other methods.** A 405's `allow` header lists the methods with a matching route,
+rest routes included (`data.rs` 104–114, unchanged).
+
+**What it changes about what a flow may do.** Nothing: the route is listed like any other
+(`GET /*path`), the request is logged as now, and its param is text from the request. One thing
+does change in practice: a flow with `GET /*path` runs a handler for every GET, so requests that
+would have been 404s without a run now run. That is the flow's choice, shown in its route list,
+and a `lazy` rest route keeps them as cheap as 404s were (§5.11.5).
+
+**Where it is built.** `Segment::Rest(name)` in core (`parse_path`, `match_route`, the clash
+check); the token in the language's route path (`Tok::Star`, `parse.rs` 584) and the printer; the
+wasm bridge's `route_path` (`rest: Some(name)`); the editor's `parsePath` and matcher, kept equal
+to core's by a test over the same table of paths and requests; `routes.rs`'s shape. Docs:
+`LANGUAGE.md` (routes), the manual's reference.
+
+#### 5.11.3 Answering with a file
+
+**The language and the node.** `site.serve(name)` lowers to
+`file_serve{folder: site}(file_handle{folder: site}(name))`:
+
+- **`file_handle`** is today's leaf. It hashes the file and is logged as a read; a missing file is
+  absent, so `missing: 404` and `??` work as for any read.
+- **`file_serve`** is a new primitive. Pure, like `channel_subscribe` (`catalog.rs` 353), it
+  turns a handle into an effect value, `Effect { sink: "file_serve:site", payload: {folder,
+  name, size, hash, type} }`. `type` is the content type core reads from the name's extension
+  (a fixed table in core, so it is part of the run and replays). It's absent when the handle is
+  absent or names another folder.
+- **Its capability** is `FileServe("site")`, a sink like `ChannelRead`, described as "answer its
+  callers with files from the folder \"site\"". `FileRead("site")` still comes from the handle
+  leaf. A deploy asks for both; a host policy can refuse either.
+
+`respond site.serve(n)` answers with the file. So does an envelope whose body is one, and the
+envelope's headers are added:
+`respond site.serve(n), headers: { "cache-control": "max-age=31536000, immutable" }`.
+
+The wiring form can feed `file_serve` any handle, for example a handle a flow computed from a
+listing. The host checks that the handle's folder is the node's folder and one the deployment
+reads, as `Sender` checks an upload's (`folders.rs` 1505).
+
+**What the host does.** `respond` (`data.rs` 163) recognizes the effect as it recognizes a
+subscription, and returns a `DataResponse` with a new field, `file: Some(Served {folder, name,
+size, hash})`. After the run has committed, the transport (`dataplane.rs`) answers:
+
+1. **Headers.** `content-type` from `type` unless the flow set one; `content-length` the
+   handle's size; `etag: "<hash>"`; `cache-control: no-cache` unless the flow set one
+   (revalidate each time, which with the ETag costs a 304).
+2. **Conditional requests.** `If-None-Match` that names the hash: 304, no body. The run still
+   ran: which file a path serves is the flow's to say, every time.
+3. **The bytes.** Opened through the deployment's `Scoped` folders (confined as every read is),
+   checked against the handle:
+   - **Small files** (up to `inline_file_bytes`, 1 MiB by default) are read once, hashed, and
+     sent from memory if the hash matches. The bytes hashed are the bytes sent.
+   - **Bigger files** stream, hashed as they go, after a check of size and modified time against
+     the handle. If the hash doesn't match at the end, or the size isn't the handle's, the
+     connection is cut before the last chunk. The caller's client sees a short body against the
+     `content-length` and drops it.
+   - A file that changed before a byte went out answers **503** with `retry-after: 1`. The log
+     says `changed`, as an upload's does.
+4. **HEAD and ranges** are a later slice (§5.11.8).
+
+**The handle's cost.** A handle hashes the whole file on every request: about a millisecond per
+few MB with BLAKE3. For a bundle of a few hundred KB that doesn't matter; for video it does. The
+host may keep a handle cache by `(folder, name, size, modified, inode)`. It is safe because the
+send always checks the bytes against the hash: a cache that lies (a file rewritten within the same
+second, at the same size) gets a 503 or a cut connection, never wrong bytes under the right hash.
+It is an optimization, and it isn't in the first slice.
+
+**Files, and bytes a run computed.** This is not a binary value in core; `Bytes` is (§5.10, step
+1.1, fork 21), and the two fit together:
+
+- **`serve` is for files.** A file of any size never enters a run whole (named-folders §4). The
+  run holds a handle, and the host sends the bytes. That stays true after `Bytes` lands: a 40 MB
+  video is never a value.
+- **`Bytes` is for what a run computes**: a generated PNG, a zip, a signed PDF, within the run's
+  limits. Once value kinds land, `respond b` with a `Bytes` value sends the bytes as they are
+  (§5.10: "an HTTP body that is bytes is sent as they are"), with `application/octet-stream`
+  unless the flow sets a type. Neither needs the other.
+
+**Folder backends.** A folder bound to SFTP or S3 (§6) serves the same way: the host streams from
+the backend and checks the hash as it sends. Redirecting the caller to a presigned S3 URL would be
+faster, but the host would never see the bytes, so it couldn't stand behind the hash. Refused
+(§5.11.9).
+
+#### 5.11.4 The log, replay and verify
+
+- **The run** is logged at its route's level (§5.11.5), as any request's: the request, the handle
+  read (`{name, size, hash, modified}`, tens of bytes), and output 0, the `file_serve` effect.
+- **`response_body`** is `file site/assets/app.3f9a1c.js (148.2 KB, blake3 7c1e…)` instead of the
+  bytes; `status` is what was sent (200, 304, 503).
+- **Replay and verify** re-run from the logged handle and compare output 0. The bytes the caller
+  got are proven by the hash in the chain. Whether they can be produced again depends on the
+  folder: a folder keeps reads `bytes` or `hash`, and a handle is always kept by hash
+  (named-folders §6). A file served a thousand times costs a thousand small lines, never a
+  thousand copies.
+- **A cut connection** (§5.11.3, step 3) is logged with `error: "changed while sent"`.
+
+#### 5.11.5 Limits, and log levels
+
+- **Size:** a deployment's `max_served_bytes` per file (default 1 GiB, capped by the host policy),
+  past which `file_serve` answers 500 and the log says why. Nothing about the size enters a run.
+- **Connections:** a streaming answer holds a connection, so it counts toward `max_connections`
+  (`dataplane.rs` 48) as a subscription does.
+- **A run per request.** Every file request runs the flow. How much it costs is the route's log
+  level (below). A deployment serving many assets should still sit behind a CDN, and then Holon
+  records what reaches it, not every visitor.
+- **The pool's hop.** A file route reads the disk (the handle hashes the file), so it runs on the
+  blocking pool, never inline (`READS_HERE`, §5.11.1), whatever its level.
+
+**`FileServe` may record lightly.** As C5 is built, a file route could only be `strict`:
+`FileServe`, like `ChannelRead`, is performed, not sourced, and `may_record_lightly` takes nothing
+performed. Every asset of a page would then wait for an fsync, about 0.6 ms each, and a 304 as
+much as a 200.
+
+C5's rule stands for a reason (request-path I-g): **nothing that changes anything goes unrecorded
+or lazy**. Its table lists what breaks without a record: state and its checks, waits, channel
+packs rebuilt from the log, a callee's record, something done to the world. Answering a caller
+with a file breaks none of them. It changes nothing in Holon or outside it; it is an answer, as a
+text body is, and a text body is allowed `lazy`.
+
+So `may_record_lightly` also takes `FileServe`: a new `Capability::is_answer()`, true for
+`FileServe` only, checked beside `is_sourced`. `SecretAnswer` stays out: C5 excludes it on
+purpose. This amends a rule the request path built (fork 22).
+
+- **`lazy`:** each request is recorded (the handle, the hash, the status) and on disk within about
+  a second. Even a recorded file route keeps a short line, never the 64 KiB of a page body that
+  C5's "large answers" worried about (§5.11.4).
+- **`unrecorded`:** a person approves "keep runs of GET /*path out of its log, failed or not (they
+  are counted)". What was sent is then not recorded, by that person's decision (request-path
+  I-h). A file that changed while sent counts as a failure in the tally, its last error kept.
+- **A rest route takes what would have been 404s.** Those were `lazy` (Q12), and stay as cheap
+  under a `lazy` rest route. An `unrecorded` one keeps scanners' probes out of the log too.
+
+`ChannelRead` is the same kind of thing (a subscription changes nothing), and a page's
+subscription route could be `lazy` by the same argument. That is fork 23, not taken here.
+
+#### 5.11.6 The checklist (§4)
+
+1. **The item and its words:** `FileServe("site")`, from `site.serve(…)` (or a `file_serve`
+   node): "answer its callers with files from the folder \"site\"". Per folder, the grain
+   `FileRead` already has.
+2. **The resource:** the folder an admin binds, as for `FileRead`. A deploy is refused until it
+   is bound (named-folders §2). No credentials.
+3. **Reads are the run's input:** the handle is a logged read (§5.11.4). The bytes sent are not
+   an input; they are checked against it.
+4. **Effects land when the run finishes, at most once:** the answer goes out after the run
+   commits. A run that runs again (claims) answers once, from its last attempt. A file that
+   changed is a 503, never different bytes.
+5. **Sharing:** nothing new. A run that writes the file it serves serves the handle it read, so
+   the write isn't visible to this caller, and the send then fails the hash check (503) if the
+   write landed first.
+6. **Triggers:** none; it answers a route.
+7. **Secrets:** a file isn't a secret, and `taint.rs` sees no secret in a handle. A flow that
+   writes a secret-derived text to a folder is already refused (named folders), so serving can't
+   carry one out.
+8. **Limits:** `max_served_bytes` (§5.11.5), with a default and a ceiling in the policy, shown in
+   the deploy bar.
+9. **Verify:** recomputes the handle and the answer; the bytes are checked by hash (§5.11.4).
+10. **Seeing it:** `holon check`'s words, the deploy bar, the manual's permissions page and its
+    files guide, and the run log's line (§5.11.4).
+11. **The sample:** `site`, deployed by the e2e tests against a fixture folder (§5.11.7). No
+    outside service is involved.
+12. **The engine:** none new. hyper's streaming body, as subscriptions use.
+
+#### 5.11.7 Samples
+
+- **`site`** (the example above): a folder bound to a built app, its API beside it, and a
+  history-mode fallback to `index.html`. The e2e test binds the folder to a fixture `dist/` (an
+  `index.html`, a script, a PNG) and checks a deep link gets the page, the script its type, the PNG
+  its exact bytes, a second request a 304, and a missing asset 404 under `/assets/`.
+- `log-archive` gains `GET /logs/:name/download` answering with the whole log: the binary-safe,
+  any-size counterpart of its `tail`.
+
+#### 5.11.8 Slices
+
+1. **The rest segment:** core, language, printer, bridge, editor matcher, docs; the `site` sample
+   without `serve` (an index page from a `js` holon, a catch-all answering it).
+2. **`file_serve`:** the primitive, the capability and its description, `respond`, the
+   transport's file answer, small files from memory, big ones streamed and checked, ETag and 304,
+   the log line, `FileServe` allowed `lazy` and `unrecorded` (`is_answer`, §5.11.5); the `site`
+   sample in full, `log-archive`'s download.
+3. **Later:** `HEAD`; `Range` (206, for video and resumable downloads, checked against the whole
+   file's hash with the BLAKE3 tree proofs ranges.rs already makes); precompressed siblings
+   (`app.js.br` served for `app.js` when the caller accepts it, each file checked by its own
+   hash); the handle cache.
+
+#### 5.11.9 Refused, with the reason
+
+| Refused | Why |
+|---|---|
+| A static mount by host path (`static "/var/www"`) | The flow would see a path, the version wouldn't cover what it serves, and files could change under a fixed hash with nothing recorded. Folders are bound by an admin and read by hash. |
+| Recognizing a plain handle record in `respond` as a file | A flow answering `respond inbox.file(n)` today sends the handle as JSON. Changing that would change existing flows, and a record isn't a permission. `serve` is explicit and asks `FileServe`. |
+| A redirect to a backend's presigned URL | The host would never see the bytes, so nothing stands behind the hash in the log. |
+| Serving without a run | It would make a request the log can't account for, even as a count. `lazy` is the cheap recorded path, `unrecorded` the approved unlogged one (both still runs, both counted); a CDN in front is the fast one. |
+
+#### 5.11.10 Forks
+
+- **Rest matching zero segments** (`/*path` also matching `/`) would save the second route in
+  the sample. Refused for now for consistency with `:param`, which is never empty. Revisit if
+  every sample needs both.
+- **A folder bound as `--no-serve`**, so an admin can keep a folder from ever being answered with
+  whatever the flow asks. The deploy's approval already shows `FileServe`; add this if a team
+  asks.
+- **Content types:** core's table covers the web's types (html, css, js, mjs, json, map, svg,
+  png, jpg, gif, webp, avif, ico, woff, woff2, ttf, wasm, txt, pdf, mp4, webm, mp3). Anything
+  else is `application/octet-stream` unless the flow sets one.
+- **`FileServe` recording lightly, and `ChannelRead`:** §8, forks 22 and 23.
+- **A flow's own files, bundled with its version,** instead of a folder: §5.13.
+
+#### 5.11.11 What stays true
+
+- **Purity:** `file_serve` is pure: a handle in, an effect value out, the type from a table in
+  core. The host reads the bytes after the run, as it streams a subscription.
+- **Content addressing:** the rest segment is part of the endpoint's `path` param, so of its hash;
+  no unit that exists today changes.
+- **The effect boundary:** the answer is an `Effect` the host performs, never a value a node
+  reads.
+- **Derived labels:** `FileServe(folder)` is read from the node's param, not declared; the route
+  list shows the rest segment.
+- **The record:** every request is still a run, recorded at its route's level (request-path C5);
+  where it is recorded, what was sent is recorded by hash; a caller never gets bytes other than
+  the handle's hash.
+- **Request-path I-g and I-h:** `FileServe` changes nothing, so allowing it `lazy` and
+  `unrecorded` keeps "nothing that changes anything goes unrecorded or lazy"; `unrecorded` is
+  still a person's approval.
+
+### 5.12 Inbound WebSockets: a connection whose every message is a run
+
+Designed 2026-11-04 against `450e3de` and re-checked the same day against `ff03a80`, cited by file
+and line there. Step 1.9. Until that day inbound WebSockets were "later" here (§5's table, the end
+of §5.9, Tier 3): "channels (SSE) and a POST cover what a browser sends and hears". Decided then
+that they are fundamental: the libraries web apps are built on (collaborative editing, GraphQL
+subscriptions, presence) expect one two-way connection, not two half-connections.
+
+It follows §5.9's rules for every connection that outlives a run: **the host owns the connection;
+a run sees whole messages, never bytes off the wire; what a run received and sent is its input,
+logged; the connection's own life is outside every run, in its own record**. §5.12.9 answers §4's
+checklist. It builds on [channels](channels-L4.md) (packs to subscribers),
+[triggers](triggers-L4.md) (a flow with several handlers) and the request path's log levels (C5).
+
+**Names.** §5.9 already uses *socket* for a bound connection to a payment network
+(`holon socket add`, `SocketUse("processor")`, `on message processor (m)`). So this is
+`websocket`, its item `WebSocket(path)`, and its handlers are blocks inside the statement, never a
+top-level `on message`.
+
+A flow declares a **websocket**: a path a browser opens a WebSocket on. What the flow does
+happens in runs, as for requests:
+
+- **open** is a run when a browser connects. It decides whether to accept, and what the
+  connection hears (channel subscriptions).
+- **message** is a run per message the browser sends. Its `respond` goes back to that connection
+  only.
+- **close** is a run when the connection ends, whichever side ends it.
+
+Nothing goes out on a connection except a run's reply or a pack on a channel it subscribed to:
+both are recorded effects of recorded runs. So a connection's whole conversation is in the log,
+and every run in it replays as a request's does.
+
+```
+flow room
+port 8132
+channel room
+collection people
+
+websocket /room/:name {
+  open (req) {
+    people[req.conn] = { name: req.params.name, since: now }
+    room.send({ joined: req.params.name })
+    respond room.subscribe()
+  }
+  message (msg) {
+    who = people[msg.conn]
+    room.send({ from: who.name, text: msg.text })
+  }
+  close (c) {
+    delete people[c.conn]
+    room.send({ left: c.params.name })
+  }
+}
+```
+
+`check` says:
+
+```
+a server on :8132
+  WebSocket /room/:name
+it may:
+  read the clock
+  hold WebSocket connections on /room/:name, and run on each message
+  read items of its collection "people"
+  put and delete items of its collection "people"
+  send packs on its channel "room" to whoever subscribes
+  let callers subscribe to its channel "room"
+```
+
+#### 5.12.1 What is already there
+
+- **Channels** (built) are the push half: a flow sends packs from any run, the host delivers them
+  to subscribers after the run commits, keeps the last `channel_keep`, drops a slow subscriber,
+  and caps subscribers per deployment (`channels.rs` 39–50, 164). Today the only subscriber is a
+  server-sent-events response.
+- **Routes** run once per request (`listeners.rs`, `serve_data`) under the deployment's grant,
+  with claims ordering runs that touch the same keys. Every request is logged (255). A reply that
+  carries a secret needs `SecretAnswer` (`listeners.rs` 188–196).
+- **Each handler has a log level** (request-path C5, built): `strict` by default, its record on
+  disk before its answer (about 0.6 ms of fsync, with group commit, C2 e); `lazy`, on disk within
+  about a second; `unrecorded`, counted and never logged, failed or not (resilience-audit §2.8),
+  approved by a person. Only a handler that may record lightly takes a word: every capability
+  sourced, none `Await` (`may_record_lightly`, `declare.rs` 86).
+- **What starts a run** is one item per kind (§1): a route `NetworkIngress`, a clock `Clock`, a
+  file `FileArrival`, an action `Action`.
+- **The data plane** is hyper http1 on tokio (`dataplane.rs`), each connection served by
+  `serve_connection` (162) without upgrades. hyper 1 supports them (`.with_upgrades()`,
+  `hyper::upgrade::on`). No WebSocket codec is in the tree (`Cargo.lock` has no `tungstenite`);
+  §5.9 names tokio-tungstenite for outbound feeds (step 1.6), so both directions share one engine.
+- **There is no bytes value** (§1). One is planned, `Bytes` (§5.10, step 1.1).
+- **Browsers' `WebSocket`** can't set headers: a page authenticates with a cookie or a token in
+  the query string, both of which the opening request carries.
+
+#### 5.12.2 The connection and its runs
+
+- **The opening request** is a GET with `Upgrade: websocket`. It matches the websocket's path like
+  a route (`:params`, and `*rest` from §5.11.2), and runs **open** with the request record plus
+  `conn`, the connection's id (random, chosen by the host, so it is in the record and the log).
+- **Open's answer decides the handshake.** A subscription, or a list of them, accepts and
+  subscribes. A record with `status` 4xx or 5xx refuses the upgrade with that status. Absent
+  (`missing:`) is 403. Any other value accepts and is sent as the first message. The 101 goes out
+  once open's run has committed, so its writes land before the first message is read.
+- **Each text frame** runs **message** with `{conn, params, query, text}`, where `json` is
+  `parse_json(text)`, lazily, as `req.json` is. A message's `respond` goes to that connection
+  only; no `respond` sends nothing.
+- **Messages on one connection run one at a time, in order.** The host queues them per
+  connection, up to `socket_queue` (32). A full queue closes the connection with 1013 ("try again
+  later"). Messages on different connections run concurrently, as requests do, and claims order
+  them where they touch the same keys.
+- **Packs** on a subscribed channel go out as text frames, each a pack's JSON, after their run
+  commits, as for server-sent events. They interleave with replies in the order the host sends
+  them.
+- **close** runs once, after the last message's run, with `{conn, params, query, code, reason}`.
+  It answers nobody.
+- **Pausing or stopping** a deployment closes its connections with 1001, and each runs close.
+  Redeploying doesn't close them: the next message runs the new version, as the next request
+  would.
+
+#### 5.12.3 The connection's own record
+
+§5.9 and fork 20: what isn't a run has its own record. Per connection, a log hash-chained like a
+deployment's and kept as long as its runs: opened (when, from where, the open run's seq), pings
+and missed pongs, frames refused (too big, binary before `Bytes`, over the rate), the queue full,
+and closed (code, reason, by whom). It is synced as a `lazy` run's record is (request-path C2 d):
+on disk within about a second. Pings are the host's (every 15 s; a connection that doesn't pong
+within 30 s is closed with 1001), from nothing a run computed. `holon log --conn <id>` shows a
+connection's runs and its record together, in order.
+
+#### 5.12.4 The language and what it lowers to
+
+`websocket PATH { open (r) {…} message (m) {…} close (c) {…} }`. `open` and `message` are
+required, `close` is optional. Each block is a route's block: statements, `respond` (not in
+`close`), its own names, and the same optional word before its braces, `lazy` or `unrecorded`
+(`message (m) lazy { … }`), under the same rule (§5.12.5).
+
+Each lowers to an endpoint-shaped composite with frozen params `declare = "websocket"`, `path`,
+`on` (`open`, `message` or `close`), and `log` when it isn't strict, as a route's carries
+`declare = "endpoint"`, `method`, `path` (`declare.rs` 1–24) and `log` (C5). `read_server`
+collects them into `Server.websockets`, by path, each with its handlers' hashes. A websocket's
+path clashes with a GET route of the same shape: a path is either a page or a connection.
+
+#### 5.12.5 Consent
+
+- **The item is the trigger:** `WebSocket("/room/:name")`, "hold WebSocket connections on
+  /room/:name, and run on each message". Every kind of thing that starts runs has its own item
+  (§1), and this one differs from a route in a way an approver should read: callers stay
+  connected, and their messages start runs for as long as they do.
+- Subscribing is `ChannelRead`, sending `ChannelSend`, as now. A reply carrying a secret needs
+  `SecretAnswer`, as a route's does.
+- **Log levels per block,** C5's words and rule unchanged. A block that only reads and replies
+  may be `lazy` or, approved, `unrecorded` (labelled `WebSocket /room/:name message`, as the log
+  and the tallies name it). One that sends packs or writes state is `strict`: its record is on
+  disk before its reply and its packs go out. So is an `open` that subscribes, as long as
+  `ChannelRead` isn't allowed to record lightly (fork 23).
+- **Limits** a deploy asks for above their defaults, up to the host's ceilings, as
+  `run_budget_ms` is: `max_websockets` per deployment (100), `max_message_bytes` (64 KiB),
+  `messages_per_second` per connection (10, bursts of 20; past it, 1008).
+
+#### 5.12.6 The log, replay and verify
+
+- **Every run is a log entry at its block's level,** `kind` `open`, `message` or `close`,
+  `route` `WebSocket /room/:name`, with `conn` in its request record. An `unrecorded` block's runs
+  are counted in its tally instead. A reply is the entry's `response_body`; a pack is in its
+  sending run's `performed`, as now.
+- **Replay and verify** are a request's: the record, the state as the run began, the clock, the
+  answers. A connection's order is the order of its entries.
+- **Volume is the price:** a chat at ten messages a second writes ten entries a second, unless a
+  person approved its block `unrecorded`.
+
+#### 5.12.7 Limits that stay
+
+- **Latency per message is a run's.** A `strict` block (any that sends packs or writes) waits
+  for its record's fsync, about 0.6 ms, shared with other runs by group commit (request-path
+  C2 e); a `lazy` one costs tens of microseconds over its run. One connection's messages run one
+  at a time, so a strict block takes at most about 1,600 messages a second from one connection.
+  Fine for chat, presence, notifications and collaborative edits at typing speed. Not for 60 Hz
+  game state or cursor streams; those want the browser to batch.
+- **No memory per connection except state.** What a connection is (who signed in, which room) is
+  kept in a collection or state keyed by `conn`, so it is recorded. There is no hidden
+  per-connection variable, by design.
+- **Inbound messages are at most once.** A message whose run hadn't committed when the server
+  stopped is gone with the connection. The client sees the close and resends, as it must over any
+  WebSocket.
+- **One machine:** a connection lives on the machine it opened on, like everything in Holon today.
+
+#### 5.12.8 Binary frames
+
+Refused (1003) until `Bytes` lands (§5.10, step 1.1). Then a binary frame is `msg.bytes`, a
+`Bytes` value within `max_message_bytes`, logged as §5.10's boundary rules say (base64 in the log
+line, large ones in `blobs.rs`), and a reply or pack that is `Bytes` goes out as a binary frame.
+Nothing here needs a second representation of binary data.
+
+#### 5.12.9 The checklist (§4)
+
+1. **The item and its words:** `WebSocket(path)` (§5.12.5).
+2. **The resource:** none bound; the flow's own port, as routes. No credentials.
+3. **Reads are the run's input:** each message is its run's request record, logged (§5.12.6).
+4. **Effects land when the run finishes, at most once:** a reply and packs go out after the
+   commit, and after the record is on disk for a `strict` block. A run that runs again (claims)
+   sends its reply once, from its last attempt, and its packs once, as channels already do.
+5. **Sharing:** claims and locks, as for requests. A connection lives on one server.
+6. **Triggers:** a message is whole when its last frame arrives (the settle rule). It isn't run
+   twice: one connection's queue hands each message to one run (the key is `conn` and the
+   message's place in it). After the run, nothing: it isn't acknowledged to the client unless the
+   flow replies.
+7. **Secrets:** a reply as a route's answer (`SecretAnswer`); a pack as channels rule (refused
+   when computed from a secret).
+8. **Limits:** §5.12.5, each with a default and a ceiling, shown in the deploy bar.
+9. **Verify:** re-runs every open, message and close run; the connection's record is checked by
+   its chain, not re-run.
+10. **Seeing it:** `holon check`'s words; the deploy bar; the deployment's page showing open
+    connections, their age and their queue; the manual's permissions page and a guide.
+11. **The sample:** `room` (§5.12.11), deployed by the e2e tests with the browser as the client.
+    No outside service is involved, so no stand-in is needed.
+12. **The engine:** tokio-tungstenite on the data plane's runtime, shared with step 1.6's
+    outbound feeds. Pure Rust, rustls where TLS is involved (it isn't here: TLS ends at the
+    ingress).
+
+#### 5.12.10 Forks
+
+1. **Subprotocols** (`Sec-WebSocket-Protocol`, which GraphQL over WebSocket and some sync
+   libraries use): open's answer names one from the request's list. *Lean:* in the first slice
+   if a target library needs it, otherwise the second.
+2. **Close with a reason from the flow:** `respond close(4001, "kicked")` from a message run.
+   *Lean:* with targeted packs (§5.12.11, slice 2).
+3. **Rate limits per caller instead of per connection,** since a client can open many.
+   *Lean:* `max_websockets` bounds that for now.
+
+#### 5.12.11 Samples and slices
+
+1. **Text frames:** the statement, lowering, `read_server`, the item, the data plane,
+   open/message/close, replies, subscriptions, limits, the log and the connection's record; the
+   **`room`** sample (above, with a page at `GET /`, a `js` holon whose script opens the
+   connection). The e2e test opens two connections from the browser, sends from one, sees it on
+   the other, and closes one to see `left`.
+2. **Targeted packs:** `room.send(v, to: conn)`, a pack only the subscriber on that connection
+   gets. Direct messages, and answering one connection from another's run or from a clock.
+3. **Binary frames**, once `Bytes` lands (§5.12.8).
+
+#### 5.12.12 Refused, with the reason
+
+| Refused | Why |
+|---|---|
+| A connection the flow writes to directly (`conn.send(x)` from anywhere) | Anything sent must be a recorded effect. A reply (this connection) and a pack (subscribers, or one connection in slice 2) are those effects. A connection handle in a value would also outlive its run. |
+| Per-connection memory in the engine | Hidden state a replay can't see. State keyed by `conn` is recorded. |
+| Running one connection's messages out of order | A conversation must replay in the order it happened. |
+| Messages answered by the host without a run (an echo) | Every message in is a run, so the log holds the whole conversation, except where a person approved a block `unrecorded`, and then the tally counts it. |
+| `socket` as the statement's name | Taken by §5.9's bound sockets. |
+
+#### 5.12.13 What stays true
+
+- **Purity:** runs are pure as any route's; the connection is the host's.
+- **The effect boundary:** replies and packs are effects the host performs after the run; nothing
+  in a run touches the connection.
+- **Derived labels:** `WebSocket(path)` is read from the server's children, not declared.
+- **The record:** every message in is a run, recorded at its block's level (request-path C5);
+  everything out is a reply or pack of such a run, or the connection's own record; one
+  connection's runs are in order.
+- **Request-path I-g and I-h:** a block that sends or writes is `strict`; `unrecorded` is a
+  person's approval.
+
+### 5.13 What else a web app asks for
+
+Asked for while weighing what it takes for a flow to host a React app (2026-11-04). None is
+scheduled; each is sorted by §2's ways, and gets a design here when a step takes it.
+
+**Bodies a browser sends that aren't text.** A route refuses a body that isn't UTF-8, 400
+(`data.rs` 118); a resume route reads it lossily (`listeners.rs` 152). §5.10 settles bytes Holon
+sends; this is the other direction:
+
+- **Small bodies** (within `max_body_bytes`) become `req.bytes`, a `Bytes` value, when the body
+  isn't UTF-8 or its type isn't text or JSON, logged by §5.10's boundary rules. `req.body` stays
+  text where it is. A resume route takes the same rule instead of reading lossily. Way: the value
+  kind, step 1.1.
+- **Big uploads** never enter a run (named-folders §4): the host stages the body in the blob
+  store as it arrives (by hash, swept when no run names it), and the run gets a handle,
+  `req.file`. Keeping it is the flow's own write, `inbox[name] = req.file`, a copy by handle when
+  the run commits, under `FileWrite` as now. Way: no new item (the route's own port; the write is
+  `FileWrite`).
+- **`multipart/form-data`** (a browser's file form): a leaf over `Bytes` that splits it into parts
+  (R1), each part a handle when the upload is staged.
+
+**Cookies and sessions.** Reading is covered: `req.headers.cookie` is text, and a new `cookies`
+leaf (R1) would parse it. Setting several cookies isn't: a response's headers are a record of
+text values (`data.rs` 186), so `set-cookie` can't repeat. A header whose value is a list of
+texts becomes one header line each. A session is then covered by what exists: a cookie signed with `hmac_sha256` over
+a secret and checked with `secure_equals` (a one-way leaf, so `taint.rs` lets it out), or a random
+id keyed into a collection. Way: covered, once headers take lists (data plane, no item); a sample,
+`sign-in`.
+
+**A Content-Security-Policy.** A flow sets one today, as any header. Holon can't derive one: the
+manifest is the server's reach, and a page's reach is the browser's, which Holon neither sees nor
+enforces. Its promises stop at the server, and its docs should say so where pages are served.
+Way: covered (a header); later, a server feature: an operator's default for `text/html` answers
+(`default-src 'self'`), the flow's own header winning.
+
+**A flow's own files, bundled with its version.** Instead of a folder an admin binds, a flow
+carries its built app: `assets site from "dist"`. When the flow is saved, each file is hashed and
+stored by hash as modules are (staged as preimages, past the control plane's 8 MiB limit,
+js-node-L4 §3), and the unit gets a frozen table `{path → hash, size, type}`, so the files are
+covered by the flow's hash: changing one is a new version, and every run names the files it
+served. `site.serve(path)` reads that table: pure, no `FileRead`, no `FileServe` (the files are
+the flow, as its code is), shown in `check` as "serves 37 files of its own (2.1 MB)". Replay
+needs nothing from the host's disk, and export ships the files by hash. Open: how the text names
+them (a directory beside the `.holon` file, and what `fmt` and the editor do with it), and how
+long old versions' files are kept. Way: not a capability; a unit feature, after step 1.8.
+
+**React rendered on the server.** A `js` holon can run React's synchronous `renderToString`, with
+the flow loading the data first (the loader pattern), if it can place a library by hash instead
+of pasting it into its body: a library module beside the engine (js-node-L4). Streaming render
+and Suspense need a run that answers before it ends, and server components that fetch while they
+render hide effects from the graph: both are refused by the effect boundary, not missing. Way: a
+module (R1), later.
 
 ## 6. One pattern for remote files: folder backends
 
@@ -646,8 +1310,8 @@ engine.
 | 1.5 | **Secure connectivity:** keys the host holds (PGP decrypt and sign) and client identities (mutual TLS, a private CA) (§5.3, §5.4) | bank-connectivity-L4 | 1.1, 1.2 | M |
 | 1.6 | **Messaging:** one subscription runtime (position, once per message, backpressure, reconnect), feeds (SSE, WebSocket, Postgres `LISTEN`) and one queue engine, publish and consume (§5.5, §5.9) | streams-L4 | 1.4's request signing, for SQS (fork 8) | L |
 | 1.7 | **Commands:** programs an admin binds, typed arguments, logged output, killed on timeout (§5.7) | commands-L4 | — | M |
-| 1.8 | **Static files:** a route's rest segment (`/*path`, routing, no item), and answering with a file from a folder (`site.serve(name)`, `FileServe`), streamed by the host and checked against the handle's hash | static-files-L4 | — | M |
-| 1.9 | **Inbound WebSockets:** `websocket PATH { open … message … close … }`, a run per message, replies and channel packs out, a record per connection (§5.9) | websockets-L4 | 1.1 for binary frames | M |
+| 1.8 | **Static files:** a route's rest segment (`/*path`, routing, no item), and answering with a file from a folder (`site.serve(name)`, `FileServe`), streamed by the host and checked against the handle's hash | §5.11 (here) | — | M |
+| 1.9 | **Inbound WebSockets:** `websocket PATH { open … message … close … }`, a run per message, replies and channel packs out, a record per connection (§5.9) | §5.12 (here) | 1.1 for binary frames | M |
 
 - **Samples, one at least per step:**
   - 1.1 `file-checksums` (a binary file's hash, into a manifest);
@@ -789,6 +1453,16 @@ Taken when a job or a user asks, each with its L4 and its sample all the same:
     binds every leaf to one text form; a value kind changes no existing hash (tag 8) but needs
     its boundaries settled (§5.10). *Lean:* a `Bytes` value, in value-kinds-L4, before the
     capabilities that need it.
+22. **`FileServe` recording lightly** (§5.11.5). The request path's rule (C5, built) lets a
+    handler be `lazy` or `unrecorded` only when every capability is sourced, so a file route
+    would be `strict`, an fsync per asset. `FileServe` changes nothing, as an answer doesn't, so
+    `may_record_lightly` takes it too, through a new `Capability::is_answer()`. This amends a rule
+    [the request path](request-path-L4.md) owns. *Lean:* in step 1.8's second slice, with the
+    request path's I-g restated as "nothing that changes anything", which it already means.
+23. **`ChannelRead` as an answer too.** A subscription changes nothing either, so a subscription
+    route, and a WebSocket's `open` that subscribes (§5.12.5), could be `lazy` by the same
+    argument. *Lean:* yes, in its own change with its own test, since it widens what an existing
+    capability allows.
 
 ## 9. What stays true
 
@@ -806,6 +1480,7 @@ Taken when a job or a user asks, each with its L4 and its sample all the same:
 ## 10. The L4s that follow
 
 One per step of §7, written when its step starts: value-kinds, payment-formats, mail,
-folder-backends, bank-connectivity, streams and commands for Tier 1, and static-files and
-websockets (already written); approvals, telemetry, a
-revision of host-resources, sandbox, and history (already written) for Tier 2; Tier 3's as they are asked for.
+folder-backends, bank-connectivity, streams and commands for Tier 1; approvals, telemetry, a
+revision of host-resources, sandbox, and history (already written) for Tier 2; Tier 3's as they
+are asked for. Steps 1.8 and 1.9 have none: static files and inbound WebSockets are designed in
+this note (§5.11, §5.12), and what else the web asks for is sorted beside them (§5.13).
