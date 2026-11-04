@@ -105,8 +105,9 @@ and if it takes on c6, my structure holds up."
 **White:** 4. **Ba4**.
 
 Tokens: knight c6 5,391; pawns a7 4,564, b7 4,717, d7 5,161, f7 4,923, g7 5,005, h7 4,885; rook a8
-4,620; queen 5,558; king 5,065; bishop f8 4,635; knight g8 5,116; council 59,640; Sphinx 9,644.
-**Round total: 69,284.**
+4,620; queen 5,558; king 5,065; bishop f8 4,635; knight g8 5,116; council 59,640. Sphinx: the
+resumed agent reports a running total (9,644 here, against 6,808 after round 2), so this round's
+Sphinx cost is 2,836. **Round total: 62,476.** (Corrected: the first log had 9,644 and 69,284.)
 
 ## Round 4: 4. Ba4
 
@@ -140,9 +141,42 @@ castling easy. The council backed several sound moves, such as b5 and Be7, but N
 **White:** 5. **Nc3**.
 
 Tokens: council 62,959 across twelve pieces (the king's first run cost 6,193 and delivered nothing;
-its answer was read from its transcript); Sphinx 12,888.
-**Round total: 75,847.**
+its answer was read from its transcript); Sphinx 3,244 (running total 12,888 less 9,644).
+**Round total: 66,203.** (Corrected: the first log had 12,888 and 75,847.)
 
 ## Round 5: 5. Nc3
 
 Position: `r1bqkb1r/1ppp1ppp/p1n2n2/4p3/B3P3/2N2N2/PPPP1PPP/R1BQK2R b KQkq - 3 5`.
+
+Council as PROPOSAL and CASE only (THOUGHT lines left out, as agreed from round 4):
+
+| Piece | Proposal | Case |
+|---|---|---|
+| pawn a6 | a5 | a5 is my only legal move and gains a little queenside space without losing material. |
+| knight c6 | Nd4 | Nd4 forces the trade Nxd4 exd4 or lets me chase the Nc3 with tempo, more active than Ne7. |
+| knight f6 | Ng4 | Ng4 is the one safe, active knight move: it pressures f2 and prepares Bc5. |
+| pawn b7 | b5 | b5 kicks the bishop off a4 with a tempo, and a6 holds the pawn. |
+| pawn d7 | d6 | d6 keeps e5 defended and opens the bishop and queen diagonals without allowing exd5 Nxd5. |
+| pawn g7 | g6 | g5 loses the pawn to Nxg5, so g6 is safe and prepares Bg7. |
+| pawn h7 | h6 | h6 stops Bg5 pinning Nf6 and keeps the kingside solid. |
+| rook a8 | Ra7 | Ra7 guards a6 and keeps the rook active; Rb8 does little while b7 stands. |
+| queen d8 | Qe7 | Qe7 is my only legal move and keeps e5 and the kingside coordinated. |
+| king e8 | Ke7 | Ke7 is my only legal move and takes the king off the e-file. |
+| bishop f8 | Bc5 | Bc5 pressures f2; Be7 is a safe but passive retreat. |
+| rook h8 | Rg8 | Rg8 is my only legal move and unblocks the rook's path to the g-file. |
+
+**The Sphinx:** 5... **Be7**. No piece proposed it (the bishop on f8 proposed Bc5). Kept as the
+Sphinx's own choice. Verdict on 5. Nc3: good. Mood: confident.
+Comment: "My bishop steps aside so the king may soon slip into hiding." Say: (none).
+
+Deliberation: "Nc3 is a natural developing move that leaves e4 defended and invites a normal Ruy Lopez
+setup. Be7 protects the knight on f6, prepares castling and keeps e5 solid."
+
+**White:** 6. **O-O**.
+
+Tokens: council 62,511 across twelve pieces (the king's first run is included; its answer came from its
+transcript). Sphinx 1,539 (running total 14,427 less 12,888). **Round total: 64,050.**
+
+## Round 6: 6. O-O
+
+Position: `r1bqk2r/1pppbppp/p1n2n2/4p3/B3P3/2N2N2/PPPP1PPP/R1BQ1RK1 b kq - 5 6`.

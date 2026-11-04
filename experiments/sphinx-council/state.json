@@ -1,5 +1,5 @@
 {
-  "fen": "r1bqkb1r/1ppp1ppp/p1n2n2/4p3/B3P3/2N2N2/PPPP1PPP/R1BQK2R b KQkq - 3 5",
+  "fen": "r1bqk2r/1pppbppp/p1n2n2/4p3/B3P3/2N2N2/PPPP1PPP/R1BQ1RK1 b kq - 5 6",
   "moves": [
     "e4",
     "e5",
@@ -9,7 +9,9 @@
     "a6",
     "Ba4",
     "Nf6",
-    "Nc3"
+    "Nc3",
+    "Be7",
+    "O-O"
   ],
   "seen": [
     "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq -",
@@ -21,9 +23,11 @@
     "r1bqkbnr/1ppp1ppp/p1n5/1B2p3/4P3/5N2/PPPP1PPP/RNBQK2R w KQkq -",
     "r1bqkbnr/1ppp1ppp/p1n5/4p3/B3P3/5N2/PPPP1PPP/RNBQK2R b KQkq -",
     "r1bqkb1r/1ppp1ppp/p1n2n2/4p3/B3P3/5N2/PPPP1PPP/RNBQK2R w KQkq -",
-    "r1bqkb1r/1ppp1ppp/p1n2n2/4p3/B3P3/2N2N2/PPPP1PPP/R1BQK2R b KQkq -"
+    "r1bqkb1r/1ppp1ppp/p1n2n2/4p3/B3P3/2N2N2/PPPP1PPP/R1BQK2R b KQkq -",
+    "r1bqk2r/1pppbppp/p1n2n2/4p3/B3P3/2N2N2/PPPP1PPP/R1BQK2R w KQkq -",
+    "r1bqk2r/1pppbppp/p1n2n2/4p3/B3P3/2N2N2/PPPP1PPP/R1BQ1RK1 b kq -"
   ],
-  "last": "b1c3",
+  "last": "e1g1",
   "status": "playing",
   "winner": "",
   "result": "*",
@@ -31,7 +35,7 @@
     "white": 39,
     "black": 39
   },
-  "pgn": "1. e4 e5 2. Nf3 Nc6 3. Bb5 a6 4. Ba4 Nf6 5. Nc3 *",
+  "pgn": "1. e4 e5 2. Nf3 Nc6 3. Bb5 a6 4. Ba4 Nf6 5. Nc3 Be7 6. O-O *",
   "turn": "b",
   "legal": [
     {
@@ -53,10 +57,6 @@
     {
       "san": "Na7",
       "uci": "c6a7"
-    },
-    {
-      "san": "Ne7",
-      "uci": "c6e7"
     },
     {
       "san": "Nb8",
@@ -99,6 +99,26 @@
       "uci": "d7d5"
     },
     {
+      "san": "Bd6",
+      "uci": "e7d6"
+    },
+    {
+      "san": "Bc5",
+      "uci": "e7c5"
+    },
+    {
+      "san": "Bb4",
+      "uci": "e7b4"
+    },
+    {
+      "san": "Ba3",
+      "uci": "e7a3"
+    },
+    {
+      "san": "Bf8",
+      "uci": "e7f8"
+    },
+    {
       "san": "g6",
       "uci": "g7g6"
     },
@@ -123,36 +143,20 @@
       "uci": "a8b8"
     },
     {
-      "san": "Qe7",
-      "uci": "d8e7"
-    },
-    {
-      "san": "Ke7",
-      "uci": "e8e7"
-    },
-    {
-      "san": "Be7",
-      "uci": "f8e7"
-    },
-    {
-      "san": "Bd6",
-      "uci": "f8d6"
-    },
-    {
-      "san": "Bc5",
-      "uci": "f8c5"
-    },
-    {
-      "san": "Bb4",
-      "uci": "f8b4"
-    },
-    {
-      "san": "Ba3",
-      "uci": "f8a3"
+      "san": "Kf8",
+      "uci": "e8f8"
     },
     {
       "san": "Rg8",
       "uci": "h8g8"
+    },
+    {
+      "san": "Rf8",
+      "uci": "h8f8"
+    },
+    {
+      "san": "O-O",
+      "uci": "e8g8"
     }
   ],
   "turns": [
@@ -179,6 +183,12 @@
       "proposed": "Nf6",
       "kept": "kept",
       "played": "Nf6"
+    },
+    {
+      "ply": 10,
+      "proposed": "Be7",
+      "kept": "kept",
+      "played": "Be7"
     }
   ],
   "fallback": {
