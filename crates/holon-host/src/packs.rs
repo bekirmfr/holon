@@ -74,6 +74,14 @@ type Inflated = ((u64, u64), Arc<Vec<u8>>);
 /// A pack's bytes, and where each value is in it.
 type Written = (Vec<u8>, Vec<(Hash, At)>);
 
+/// A pack written and synced, not yet in the index.
+struct NewPack {
+    n: u64,
+    path: PathBuf,
+    size: u64,
+    entries: Vec<(Hash, At)>,
+}
+
 /// A store's packs: its index, and the blocks read lately, the least recently read first.
 pub struct Packs {
     dir: PathBuf,
@@ -193,28 +201,39 @@ impl Packs {
     }
 
     /// Pack `values` (each hash and its bytes as put) into a new pack, in once it is on disk
-    /// whole: its loose files may then go. None packed: nothing written.
+    /// whole: its loose files may then go. None packed: nothing written. The pack is written and
+    /// synced with no lock held: reads of packed values go on meanwhile.
     pub fn pack(&self, values: &[(Hash, Vec<u8>)]) -> io::Result<usize> {
         let fresh: Vec<&(Hash, Vec<u8>)> = values.iter().filter(|(h, _)| !self.contains(h)).collect();
-        if fresh.is_empty() {
-            return Ok(0);
-        }
-        let (bytes, mut entries) = write_pack(&fresh)?;
-        fs::create_dir_all(&self.dir)?;
+        let Some(written) = self.write(&fresh)? else { return Ok(0) };
+        let count = written.entries.len();
         let mut kept = self.kept.write().unwrap();
-        let n = kept.next;
-        kept.next += 1;
+        for (hash, at) in &written.entries {
+            kept.index.insert(*hash, *at);
+        }
+        kept.packs.insert(written.n, Pack { path: written.path, size: written.size });
+        Ok(count)
+    }
+
+    /// `values` written into a pack file of its own, synced, not yet in the index: its number,
+    /// where it is, its size and where each value is in it. None for no values.
+    fn write(&self, values: &[&(Hash, Vec<u8>)]) -> io::Result<Option<NewPack>> {
+        if values.is_empty() {
+            return Ok(None);
+        }
+        let (bytes, mut entries) = write_pack(values)?;
+        fs::create_dir_all(&self.dir)?;
+        let n = {
+            let mut kept = self.kept.write().unwrap();
+            kept.next += 1;
+            kept.next - 1
+        };
         let path = self.dir.join(format!("{:016x}-{:08x}.pack", now_ns(), n));
         crate::write_atomically(&path, &bytes)?;
         for (_, at) in entries.iter_mut() {
             at.pack = n;
         }
-        let count = entries.len();
-        for (hash, at) in entries {
-            kept.index.insert(hash, at);
-        }
-        kept.packs.insert(n, Pack { path, size: bytes.len() as u64 });
-        Ok(count)
+        Ok(Some(NewPack { n, path, size: bytes.len() as u64, entries }))
     }
 
     /// Every packed value's hash and length (as put).
@@ -225,7 +244,13 @@ impl Packs {
     /// Remove `gone` from the packs: each pack holding any of them rewritten with the rest (a
     /// pack left with none, removed), the new one in before the old goes. How many values went,
     /// and their bytes.
-    pub fn rewrite(&self, gone: &std::collections::HashSet<Hash>) -> io::Result<(usize, u64)> {
+    ///
+    /// Each new pack is written with no lock held; then `settle` is called, for what must hold
+    /// while the index changes (the store's lock, so no put comes between) and which of `gone`
+    /// are to stay after all (put again since they were found gone: a put of a packed value
+    /// writes nothing). Those are written into a pack of their own, and the index moves to the
+    /// new packs at once, so a read finds every value kept throughout.
+    pub fn rewrite<G>(&self, gone: &std::collections::HashSet<Hash>, mut settle: impl FnMut() -> (G, std::collections::HashSet<Hash>)) -> io::Result<(usize, u64)> {
         let touched: Vec<(u64, PathBuf)> = {
             let kept = self.kept.read().unwrap();
             let mut packs: Vec<u64> = gone.iter().filter_map(|h| kept.index.get(h).map(|at| at.pack)).collect();
@@ -236,35 +261,50 @@ impl Packs {
         let (mut removed, mut bytes) = (0, 0u64);
         for (n, path) in touched {
             let ats: Vec<(Hash, At)> = self.kept.read().unwrap().index.iter().filter(|(_, at)| at.pack == n).map(|(h, at)| (*h, *at)).collect();
-            let mut live = Vec::new();
-            for (hash, at) in &ats {
-                if gone.contains(hash) {
-                    removed += 1;
-                    bytes += at.len as u64;
-                    continue;
-                }
+            let value = |at: &At| -> io::Result<Vec<u8>> {
                 let block = self.block(&path, *at)?;
-                let v = block.get(at.offset as usize..(at.offset + at.len) as usize).ok_or_else(|| io::Error::other("a packed value past its block's end"))?;
-                live.push((*hash, v.to_vec()));
+                block.get(at.offset as usize..(at.offset + at.len) as usize).map(<[u8]>::to_vec).ok_or_else(|| io::Error::other("a packed value past its block's end"))
+            };
+            let mut live = Vec::new();
+            for (hash, at) in ats.iter().filter(|(h, _)| !gone.contains(h)) {
+                live.push((*hash, value(at)?));
             }
-            // The live ones into a pack of their own first; then the old one out.
-            {
-                let mut kept = self.kept.write().unwrap();
-                for (hash, _) in &ats {
-                    if kept.index.get(hash).is_some_and(|at| at.pack == n) {
-                        kept.index.remove(hash);
+            // The live ones into a pack of their own, with no lock held.
+            let refs: Vec<&(Hash, Vec<u8>)> = live.iter().collect();
+            let fresh = self.write(&refs)?;
+            let (_held, again) = settle();
+            // Put again meanwhile: kept, in a pack of their own (few, if any).
+            let mut back = Vec::new();
+            for (hash, at) in ats.iter().filter(|(h, _)| gone.contains(h) && again.contains(h)) {
+                back.push((*hash, value(at)?));
+            }
+            let back_refs: Vec<&(Hash, Vec<u8>)> = back.iter().collect();
+            let kept_back = self.write(&back_refs)?;
+            let mut kept = self.kept.write().unwrap();
+            for new in [fresh, kept_back].into_iter().flatten() {
+                // Only the values still in the old pack move (another rewrite may have moved some).
+                let mut moved = 0;
+                for (hash, at) in &new.entries {
+                    if kept.index.get(hash).is_some_and(|old| old.pack == n) {
+                        kept.index.insert(*hash, *at);
+                        moved += 1;
                     }
                 }
-            }
-            if let Err(e) = self.pack(&live) {
-                // Put back as it was: nothing removed.
-                let mut kept = self.kept.write().unwrap();
-                for (hash, at) in ats {
-                    kept.index.entry(hash).or_insert(at);
+                if moved > 0 {
+                    kept.packs.insert(new.n, Pack { path: new.path, size: new.size });
+                } else {
+                    let _ = fs::remove_file(&new.path);
                 }
-                return Err(e);
             }
-            self.kept.write().unwrap().packs.remove(&n);
+            for (hash, at) in &ats {
+                if kept.index.get(hash).is_some_and(|old| old.pack == n) {
+                    kept.index.remove(hash);
+                    removed += 1;
+                    bytes += at.len as u64;
+                }
+            }
+            kept.packs.remove(&n);
+            drop(kept);
             self.blocks.lock().unwrap().retain(|((p, _), _)| *p != n);
             let _ = fs::remove_file(&path);
         }
@@ -393,7 +433,7 @@ mod tests {
             assert_eq!(again.get(h).unwrap().as_deref(), Some(&v[..]), "read from its file's index");
         }
         let gone: std::collections::HashSet<Hash> = vs.iter().step_by(2).map(|(h, _)| *h).collect();
-        assert_eq!(packs.rewrite(&gone).unwrap().0, 2_500);
+        assert_eq!(packs.rewrite(&gone, none_again).unwrap().0, 2_500);
         for (i, (h, v)) in vs.iter().enumerate() {
             assert_eq!(packs.get(h).unwrap().is_some(), i % 2 == 1, "{i}");
             if i % 2 == 1 && i % 37 == 1 {
@@ -403,8 +443,49 @@ mod tests {
         assert_eq!(packs.held().packs, 1, "the old pack gone, the new one in");
         assert_eq!(fs::read_dir(dir.join("packs")).unwrap().count(), 1);
         let all: std::collections::HashSet<Hash> = vs.iter().map(|(h, _)| *h).collect();
-        packs.rewrite(&all).unwrap();
+        packs.rewrite(&all, none_again).unwrap();
         assert_eq!(packs.held(), Held::default(), "none left: no pack");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    fn none_again() -> ((), std::collections::HashSet<Hash>) {
+        ((), std::collections::HashSet::new())
+    }
+
+    /// A rewrite writes its packs with no lock held and moves the index at once: a read of a value
+    /// kept finds it throughout, and one put again before the index moves stays.
+    #[test]
+    fn a_rewrite_hides_no_value_it_keeps_and_keeps_one_put_again() {
+        let dir = temp("rewrite-reads");
+        let packs = Arc::new(Packs::open(&dir).unwrap());
+        let vs = values(4_000);
+        packs.pack(&vs).unwrap();
+        let gone: std::collections::HashSet<Hash> = vs.iter().step_by(2).map(|(h, _)| *h).collect();
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let reader = {
+            let (packs, stop, kept) = (Arc::clone(&packs), Arc::clone(&stop), vs.iter().skip(1).step_by(2).map(|(h, _)| *h).collect::<Vec<_>>());
+            std::thread::spawn(move || {
+                let mut reads = 0u64;
+                while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                    for h in kept.iter().step_by(97) {
+                        assert!(packs.get(h).unwrap().is_some(), "a value it keeps is read throughout");
+                        reads += 1;
+                    }
+                }
+                reads
+            })
+        };
+        // The one put again between the look and the rewrite: the first of those gone.
+        let again = vs[0].0;
+        let (removed, _) = packs.rewrite(&gone, || ((), [again].into_iter().collect())).unwrap();
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        assert!(reader.join().unwrap() > 0);
+        assert_eq!(removed, gone.len() - 1);
+        assert_eq!(packs.get(&again).unwrap().as_deref(), Some(&vs[0].1[..]), "put again: kept");
+        assert_eq!(packs.get(&vs[2].0).unwrap(), None, "gone");
+        assert_eq!(packs.held().values, 2_001);
+        let again_open = Packs::open(&dir).unwrap();
+        assert_eq!(again_open.held().values, 2_001, "as on disk");
         let _ = fs::remove_dir_all(&dir);
     }
 

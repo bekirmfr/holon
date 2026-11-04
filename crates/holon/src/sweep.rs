@@ -344,13 +344,21 @@ pub(crate) fn sweep(store: &SharedStore, deployments: &Mutex<BTreeMap<String, De
         && !gone_packed.is_empty()
         && let Some(packs) = store.2.packs()
     {
-        // Under the store's lock, and checked again: no put of one comes between the look and the
-        // rewrite (a value packed already isn't written again by a put).
-        let _held = store.0.lock().unwrap();
-        let recent = store.2.recent.lock().unwrap();
-        gone_packed.retain(|h| recent.get(h).is_none_or(|put| *put <= since));
-        drop(recent);
-        packs.rewrite(&gone_packed).map_err(|e| format!("can't sweep the packed values: {e}"))?;
+        // Each pack written again with the store let go; then, under the store's lock, checked
+        // again as its index changes: one put since (a value packed already isn't written again
+        // by a put) stays.
+        let recent_since = |gone: &std::collections::HashSet<Hash>| {
+            let recent = store.2.recent.lock().unwrap();
+            gone.iter().filter(|h| recent.get(*h).is_some_and(|put| *put > since)).copied().collect::<std::collections::HashSet<Hash>>()
+        };
+        let again = recent_since(&gone_packed);
+        gone_packed.retain(|h| !again.contains(h));
+        packs
+            .rewrite(&gone_packed, || {
+                let held = store.0.lock().unwrap();
+                (held, recent_since(&gone_packed))
+            })
+            .map_err(|e| format!("can't sweep the packed values: {e}"))?;
     }
     if paced && !dry_run {
         pack(store, &to_pack, &mut swept)?;
