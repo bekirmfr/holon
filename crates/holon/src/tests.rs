@@ -1264,6 +1264,46 @@ fn a_full_disk_pauses_what_records_runs_until_there_is_room() {
     let _ = std::fs::remove_dir_all(&disk);
 }
 
+/// The first cut of a full disk rolling sweeps the store with the log already cut back: what
+/// only the runs it cut named goes (once an hour old), at once.
+#[test]
+fn a_full_disk_rolling_sweeps_what_only_the_cut_runs_named() {
+    let dir = unique_temp_path("roll-sweep-store");
+    let disk = FileStore::new(&dir).unwrap();
+    let values = disk.values_dir();
+    let mut state = test_state_with(SharedStore::on_disk(Box::new(disk), values.clone()));
+    let data = unique_temp_path("roll-sweep-data");
+    std::fs::create_dir_all(&data).unwrap();
+    state.deployments_path = std::path::Path::new(&data).join("deployments.json").display().to_string();
+    let path = std::path::PathBuf::from(unique_temp_path("roll-sweep-policy")).with_extension("toml");
+    state.policy_path = path.display().to_string();
+    let plan = holon_author::agent::plan("flow kept\nkeep 200 runs\nstate n\n\naction bump (input) {\n  state.n = (state.n ?? 0) + 1\n}\n").unwrap_or_else(|e| panic!("{e}"));
+    let requirements = plan.requirements.clone().unwrap();
+    for u in &plan.units {
+        assert_eq!(route(&state, &req("POST", "/unit", u.clone())).status_code, 200);
+    }
+    let preview = body_json(route(&state, &req("POST", "/deploy/preview", serde_json::to_vec(&serde_json::json!({ "slug": "kept", "unit": plan.unit, "requirements": requirements })).unwrap())));
+    let ask = serde_json::json!({ "acknowledge": preview["needs_approval"], "requirements": requirements });
+    assert_eq!(deploy_json(&state, "kept", parse_hash(&plan.unit).unwrap(), ask).status_code, 200);
+    for _ in 0..120 {
+        assert_eq!(route(&state, &req("POST", "/trigger/kept/bump", b"{}".to_vec())).status_code, 200);
+    }
+    // Each run put the state it left: a value of its own, which its record names.
+    let held = || std::fs::read_dir(&values).unwrap().flatten().filter(|e| e.file_name().len() == 64).count() + state.store.2.packs().map_or(0, |p| p.held().values);
+    let before = held();
+    assert!(before >= 120, "{before}");
+    let set = |body: &str| route(&state, &req("POST", "/admin/storage", body.as_bytes().to_vec()));
+    assert_eq!(set(r#"{"warn_at":"1000T","full_at":"999T","when_full":"roll"}"#).status_code, 200);
+    // Two hours on: what was put is past what a sweep spares.
+    state.sweeps.act(&state, crate::deploy::epoch_now() * 1000 + 2 * 3600 * 1000);
+    assert_eq!(state.deployments.lock().unwrap()["kept"].log.with(|l| l.holds().3), 60, "cut back at once");
+    let after = held();
+    assert!(before - after >= 55, "the states only the 60 runs cut named went: {before} then {after}");
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(&data);
+    let _ = std::fs::remove_file(&path);
+}
+
 /// Past `full_at`, `when_full = "roll"` cuts the log keeping the most to half (never below 20),
 /// look after look, and keeps it as granted again once back under `warn_at`.
 #[test]

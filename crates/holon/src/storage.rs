@@ -436,14 +436,17 @@ impl Sweeps {
                         l.retain(keep, age);
                         l.want_cut();
                     });
+                    // Cut back now, as the periodic sync would within a second (the lock released
+                    // but for the swap): the sweep below reads the log as it is, and a run it no
+                    // longer keeps but its file still holds would name what it put.
+                    log.cut_if_planned();
                     eprintln!("holon: cut {slug:?}'s log to its newest {keep} runs: {}", why(pct));
                     if let Some(dep) = state.deployments.lock().unwrap().get_mut(slug) {
                         dep.note("lifecycle", format!("the host cut its log from {kept} runs to its newest {keep}: {}", why(pct)), None, Default::default());
                     }
-                    // A cut each look, the file cut back within a second; the first of a full
-                    // disk's cuts sweeps too, at once: what the cut runs alone named goes, an hour
-                    // after it was put (sweeping after each cut would hold the next up for as long
-                    // as a sweep takes).
+                    // A cut each look; the first of a full disk's cuts sweeps too, at once: what
+                    // the cut runs alone named goes, an hour after it was put (sweeping after each
+                    // cut would hold the next up for as long as a sweep takes).
                     let first = {
                         let mut watch = self.watch.lock().unwrap();
                         let first = watch.rolled.is_empty();
