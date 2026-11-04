@@ -80,7 +80,10 @@ The server looks at what it holds every ten seconds, and warns of:
 - **sweeping off** while the store takes more than a tenth of its disk;
 - **a backup that can't be written to**: a log keeps the runs it would let go of until it can;
 - **a batch of runs in the backup that can't be made an export**: its runs stay in it as the log
-  wrote them, it is tried again at each look, and the other batches are made exports meanwhile.
+  wrote them, it is tried again at each look, and the other batches are made exports meanwhile;
+- **a pack of the store's values that can't be read** (cut short, or changed on disk): it is left
+  as it is and its values are missing until it is restored; the server starts, and the store's
+  other values read as they were.
 
 Each says what to do. They are shown first in `holon host` and on the admin page's **the host**,
 on the home page for admins, and in the terminal editor's top bar and overview

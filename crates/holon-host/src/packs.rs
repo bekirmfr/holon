@@ -79,6 +79,9 @@ pub struct Packs {
     dir: PathBuf,
     kept: RwLock<Kept>,
     blocks: Mutex<VecDeque<Inflated>>,
+    /// The packs found that couldn't be read as they opened, and why: left as they are, their
+    /// values missing from the store until one is restored.
+    unreadable: Vec<(PathBuf, String)>,
 }
 
 /// The packs of each values folder this process opened, so the store reading values and the
@@ -102,13 +105,24 @@ impl Packs {
     fn open(values: &Path) -> io::Result<Packs> {
         let dir = values.join("packs");
         let mut kept = Kept::default();
+        let mut unreadable = Vec::new();
         if let Ok(entries) = fs::read_dir(&dir) {
             let mut paths: Vec<PathBuf> = entries.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "pack")).collect();
             paths.sort();
             for path in paths {
+                // One that can't be read (cut short, or changed on disk) is said and left as it
+                // is: the others, and every value of its own file, are read all the same, and a
+                // server whose disk lost a pack still starts.
+                let (entries, size) = match read_index(&path) {
+                    Ok(read) => read,
+                    Err(e) => {
+                        eprintln!("holon: the pack {} can't be read, its values are missing from the store until it is restored: {e}", path.display());
+                        unreadable.push((path, e.to_string()));
+                        continue;
+                    }
+                };
                 let n = kept.next;
                 kept.next += 1;
-                let (entries, size) = read_index(&path).map_err(|e| io::Error::other(format!("the pack {} can't be read: {e}", path.display())))?;
                 for (hash, mut at) in entries {
                     at.pack = n;
                     kept.index.insert(hash, at);
@@ -116,7 +130,12 @@ impl Packs {
                 kept.packs.insert(n, Pack { path, size });
             }
         }
-        Ok(Packs { dir, kept: RwLock::new(kept), blocks: Mutex::new(VecDeque::new()) })
+        Ok(Packs { dir, kept: RwLock::new(kept), blocks: Mutex::new(VecDeque::new()), unreadable })
+    }
+
+    /// The packs that couldn't be read as they opened, and why.
+    pub fn unreadable(&self) -> &[(PathBuf, String)] {
+        &self.unreadable
     }
 
     /// Whether `key` is packed.
@@ -317,7 +336,9 @@ fn read_index(path: &Path) -> io::Result<(Vec<(Hash, At)>, u64)> {
     let u32_at = |i: usize| bytes.get(i..i + 4).map(|b| u32::from_le_bytes(b.try_into().unwrap()));
     let index_at = u64_at(bytes.len() - 16).ok_or_else(bad)? as usize;
     let count = u64_at(index_at).ok_or_else(bad)? as usize;
-    if index_at + 8 + count * ENTRY + 16 != bytes.len() {
+    // Checked: the numbers are the file's, which may be anything.
+    let end = count.checked_mul(ENTRY).and_then(|n| n.checked_add(index_at)).and_then(|n| n.checked_add(8 + 16));
+    if end != Some(bytes.len()) {
         return Err(bad());
     }
     let mut entries = Vec::with_capacity(count);
@@ -387,15 +408,30 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
+    /// A pack that can't be read (cut short, or its index's numbers changed) is said, and left as
+    /// it is; the others read as they were, and the store opens.
     #[test]
-    fn a_pack_cut_short_is_an_error_not_missing_values() {
+    fn a_pack_cut_short_is_said_and_the_others_read() {
         let dir = temp("short");
         let packs = Packs::open(&dir).unwrap();
-        packs.pack(&values(100)).unwrap();
-        let path = fs::read_dir(dir.join("packs")).unwrap().flatten().next().unwrap().path();
-        let bytes = fs::read(&path).unwrap();
-        fs::write(&path, &bytes[..bytes.len() - 10]).unwrap();
-        assert!(Packs::open(&dir).is_err());
+        let (first, second) = (values(100), values(200).split_off(100));
+        packs.pack(&first).unwrap();
+        packs.pack(&second).unwrap();
+        let mut paths: Vec<PathBuf> = fs::read_dir(dir.join("packs")).unwrap().flatten().map(|e| e.path()).collect();
+        paths.sort();
+        let bytes = fs::read(&paths[0]).unwrap();
+        fs::write(&paths[0], &bytes[..bytes.len() - 10]).unwrap();
+        let again = Packs::open(&dir).unwrap();
+        assert_eq!(again.unreadable().iter().map(|(p, _)| p.clone()).collect::<Vec<_>>(), [paths[0].clone()]);
+        assert_eq!(again.get(&first[0].0).unwrap(), None, "its values are missing");
+        assert_eq!(again.get(&second[0].0).unwrap().as_deref(), Some(&second[0].1[..]), "the other's read");
+        assert!(paths[0].exists(), "left as it is, to be restored");
+        // An index whose count is past anything: not a whole pack, and no overflow.
+        let mut bytes = fs::read(&paths[1]).unwrap();
+        let index_at = u64::from_le_bytes(bytes[bytes.len() - 16..bytes.len() - 8].try_into().unwrap()) as usize;
+        bytes[index_at..index_at + 8].copy_from_slice(&u64::MAX.to_le_bytes());
+        fs::write(&paths[1], &bytes).unwrap();
+        assert_eq!(Packs::open(&dir).unwrap().unreadable().len(), 2);
         let _ = fs::remove_dir_all(&dir);
     }
 }

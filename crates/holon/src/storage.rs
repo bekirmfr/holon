@@ -313,6 +313,13 @@ pub(crate) fn warnings(state: &AppState) -> Vec<Warning> {
             todo: "its runs are in the batch still, as the log wrote them, and the other batches are made exports all the same; check the drive or folder is writable and the batch is whole, it is tried again every ten seconds".into(),
         });
     }
+    for (pack, e) in state.store.2.packs().map(|p| p.unreadable().to_vec()).unwrap_or_default() {
+        out.push(Warning {
+            key: format!("pack:{}", pack.display()),
+            says: format!("a pack of the store's values can't be read, and its values are missing: {} ({e})", pack.display()),
+            todo: "restore the file from a copy of the data folder and restart the server; the store's other values read as they were".into(),
+        });
+    }
     if policy.storage.sweep_every.is_none() {
         let store = state.sweeps.census.lock().unwrap().store.map(|(c, _)| c.on_disk).unwrap_or(0);
         let disk = disks.iter().find(|d| d["holds"].as_array().is_some_and(|h| h.iter().any(|x| x == "store"))).and_then(|d| d["size"].as_u64()).unwrap_or(0);

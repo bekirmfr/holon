@@ -1264,6 +1264,26 @@ fn a_full_disk_pauses_what_records_runs_until_there_is_room() {
     let _ = std::fs::remove_dir_all(&disk);
 }
 
+/// A pack of the store's values that can't be read is warned of, and the server opens its store
+/// all the same.
+#[test]
+fn a_pack_that_cant_be_read_is_warned_of_and_the_store_opens() {
+    let dir = unique_temp_path("pack-unreadable");
+    {
+        let disk = FileStore::new(&dir).unwrap();
+        disk.packs().pack(&[([7u8; 32], b"a value".to_vec())]).unwrap();
+    }
+    let packs = std::path::Path::new(&dir).join("values/packs");
+    let pack = std::fs::read_dir(&packs).unwrap().flatten().next().unwrap().path();
+    std::fs::write(&pack, b"not a pack").unwrap();
+    let disk = FileStore::new(&dir).unwrap();
+    let values = disk.values_dir();
+    let state = test_state_with(SharedStore::on_disk(Box::new(disk), values));
+    let w = body_json(route(&state, &req("GET", "/admin/warnings", vec![])))["warnings"].clone();
+    assert!(w.as_array().unwrap().iter().any(|w| w["key"] == format!("pack:{}", pack.display()) && w["todo"].as_str().unwrap().contains("restore")), "{w}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// The first cut of a full disk rolling sweeps the store with the log already cut back: what
 /// only the runs it cut named goes (once an hour old), at once.
 #[test]
