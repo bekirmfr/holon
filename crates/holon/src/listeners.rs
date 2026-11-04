@@ -260,8 +260,8 @@ fn serve_flow(
         Ok(_) => ran.as_ref().and_then(|r| r.error.clone()),
     };
     let parked_any = matches!(&parked, Ok(names) if !names.is_empty());
-    // Whether it sent packs, which go out even if it isn't logged.
-    let sends = ran.as_ref().is_some_and(|r| r.run.performed.iter().chain(&r.run.progress).any(|(c, _)| matches!(c, Capability::ChannelSend(_))));
+    // Whether an unrecorded run sent packs, which go out even though it isn't logged.
+    let sends = level == holon_core::LogLevel::Unrecorded && ran.as_ref().is_some_and(|r| r.run.performed.iter().chain(&r.run.progress).any(|(c, _)| matches!(c, Capability::ChannelSend(_))));
     let entry = || {
         let mut entry = match ran {
             Some(Ran { entry: Some(entry), .. }) => entry,

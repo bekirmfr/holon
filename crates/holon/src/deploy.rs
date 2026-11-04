@@ -1565,7 +1565,9 @@ fn state_change(state: &AppState, slug: &str, snapshot: &str, label: &str, since
             // The runs before the point: what a file was there, the last write before it.
             let first = since.first().map_or(u64::MAX, |e| e.seq);
             let log = (!since.is_empty()).then(|| (Arc::clone(&d.log), first));
-            let unrecorded = d.server.as_ref().map(|s| (s.clone(), d.unit, Arc::clone(&d.permit)));
+            // Only when it keeps a handler unrecorded: finding which do something outside its
+            // state loads its unit's closure.
+            let unrecorded = d.server.as_ref().filter(|_| !d.permit.unrecorded.is_empty()).map(|s| (s.clone(), d.unit, Arc::clone(&d.permit)));
             (d.state.clone(), Some(Redactor::of(&d.secrets)), log, unrecorded)
         }
         None => (None, None, None, None),
