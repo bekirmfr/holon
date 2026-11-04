@@ -8,7 +8,8 @@ around boundaries, and the implementation plan in three tiers (§7, replacing th
 operations), with history as step 2.5 ([history](history-L4.md)). Revised 2026-11-04 against
 450e3de, and again against ff03a80 (`main` after the request path's work): static files (§5.11,
 step 1.8) and inbound WebSockets (§5.12, step 1.9) designed here and put in Tier 1, inbound
-WebSockets having been "later" until then; and what else a web app asks for, sorted (§5.13). It
+WebSockets having been "later" until then; what else a web app asks for, sorted (§5.13); and a
+flow as a command-line app (§5.14). It
 sets rules and sorts candidates. Most capabilities it says to build get their own L4, as folders,
 databases and channels did; the web's are designed here, so the theme is in one place. Builds on
 [host resources](host-resources-L4.md) (resources the host defines, their addresses),
@@ -210,6 +211,7 @@ Each one's L4 has a section for each of these. A capability that can't answer on
 | a Content-Security-Policy | covered (a header); an operator's default later | — | §5.13; a server feature, never derived |
 | a flow's own files, bundled with its version | later: a unit feature, no item | — | §5.13 |
 | React rendered on the server | later: a library module for `js` holons | R1 | §5.13; no streaming render, no fetching in a render |
+| a flow as a command-line app (`todo add "buy milk"`) | server feature: `holon do` and `holon command` over actions; actions that resume; a REPL over §5.12 | — | §5.14; no new item, and no raw terminal piped into a run |
 | ISO 8583, FIX, SMPP, a bank's own socket | host capability: a **socket** | R3a, R3c, R3d | §5.9; when a job brings one |
 | inbound WebSockets | host capability: a trigger on the flow's port, `WebSocket(path)` | R3a, R3d | §5.12, step 1.9 |
 | a shell or `Spawn` with the server's reach | never | R5 | for flows and for agents |
@@ -1222,9 +1224,9 @@ sends; this is the other direction:
 **Cookies and sessions.** Reading is covered: `req.headers.cookie` is text, and a new `cookies`
 leaf (R1) would parse it. Setting several cookies isn't: a response's headers are a record of
 text values (`data.rs` 186), so `set-cookie` can't repeat. A header whose value is a list of
-texts becomes one header line each. A session is then covered by what exists: a cookie signed with `hmac_sha256` over
-a secret and checked with `secure_equals` (a one-way leaf, so `taint.rs` lets it out), or a random
-id keyed into a collection. Way: covered, once headers take lists (data plane, no item); a sample,
+texts becomes one header line each. A session is then covered by what exists: a cookie signed
+with `hmac_sha256` over a secret and checked with `secure_equals` (a one-way leaf, so `taint.rs`
+lets it out), or a random id keyed into a collection. Way: covered, once headers take lists (data plane, no item); a sample,
 `sign-in`.
 
 **A Content-Security-Policy.** A flow sets one today, as any header. Holon can't derive one: the
@@ -1250,6 +1252,97 @@ of pasting it into its body: a library module beside the engine (js-node-L4). St
 and Suspense need a run that answers before it ends, and server components that fetch while they
 render hide effects from the graph: both are refused by the effect boundary, not missing. Way: a
 module (R1), later.
+
+### 5.14 A flow as a command-line app
+
+Asked 2026-11-04: can a flow be a command a person types (`todo add "buy milk" --due fri`), and
+if not, what's missing: a new `holon` command, or a host capability that pipes what is typed into
+the flow? **Mostly a new command,** a client over actions, which exist; one small host change for
+questions asked mid-run; and **no new capability**. Checked against `ff03a80`.
+
+**What works today.** `holon action <slug> <name> --input JSON` runs one of a deployed flow's
+actions through the server (`POST /trigger/<slug>/<name>`), prints its answer, and exits 1 when
+it answers 400 or more (`opscmd.rs` 275, `action_lines` 310). The run is approved, recorded and
+named by its caller, as any action's. That is a one-shot command already:
+
+```
+holon action todo add --input '{"title": "buy milk", "due": "fri"}'
+```
+
+**What a command-line app needs that isn't there:**
+
+1. **Arguments.** The input is JSON; nothing maps `add "buy milk" --due fri` to a record, and
+   there is no `--help`.
+2. **A name of its own.** It is typed `holon action todo add`, not `todo add`.
+3. **Output.** The answer is always printed as indented JSON, so a text answer comes out in
+   quotes; the exit code is 0 or 1.
+4. **Questions mid-run.** A run that waits only prints that it is "waiting for an approval or an
+   event" (`action_lines`).
+5. **Progress.** Nothing is printed until the run ends.
+6. **Files where the person is.** A flow can't read the caller's working directory, by design (a
+   flow names things; the host decides where they are), and stdin goes in only as the JSON input.
+7. **A server.** `holon serve` must be running, the flow deployed and approved.
+
+**What to add.** §2's fourth way, a client feature, plus one change to the language and the host:
+
+- **`holon do <slug> <action> [args…]`** maps a command line onto the input record generically:
+  `--due fri` is `{due: "fri"}`, a bare `--force` is `{force: true}`, the words without a flag
+  are `args`, and `-` reads stdin into `stdin`, as text. No declaration is needed; the flow reads
+  the fields it wants. A text answer prints as it is, anything else as JSON (`--json` for the
+  whole envelope); the exit code is 0 below 400 and 1 at or above it, unless the answer is an
+  envelope with a whole-number `exit`. `--help` lists the deployment's actions and the input
+  fields each reads, which the graph shows (`field` nodes on the input).
+- **`holon command add todo <slug>`** writes a shim to `~/.holon/bin` (a shell script, and a
+  `.cmd` on Windows) that runs `holon do <slug> "$@"`, so the tool is `todo add "buy milk"`.
+  `holon command list` and `remove` look after them. The shim names a deployment, never a host
+  path, and runs as whoever runs it, under their token (`holon token`).
+- **Files go through the client.** `@notes.txt` as an argument sends the file's text as that
+  field; `-o out.csv` writes the answer to a file. The client is the person's own program on
+  their own machine, so their disk is its to read. The flow still never sees a path, and the run
+  records what it was given (by hash, past `log_inline_bytes`). Binary files wait for `Bytes`
+  (§5.10), and big ones for an upload handle (§5.13).
+- **Questions mid-run, through `await`.** The pieces exist: a run can answer before it parks,
+  hand out `resume_token(name)`, and wait at `await name` until a route that `resumes name` is
+  called (`LANGUAGE.md`, "approval: a durable run"; `durable.rs`, `claim_by_token` 597,
+  `resume_parked` 618). What's missing is a way to resume that isn't a route on the network, and
+  a client that does it. So an **action may resume a waiting point**, `action confirm (input)
+  resumes confirm { … }`, reached only through Holon, as every action is; and when a run started
+  by `holon do` answers and waits, the client shows the answer as the question, reads a line,
+  and runs that action with it and the token. The flow:
+
+  ```
+  action wipe (input) {
+    respond { ask: "Delete {length(notes.list())} notes? [y/N]", token: resume_token(confirm) }
+    yes = await confirm, expires: 5m
+    …
+  }
+
+  action confirm (input) resumes confirm {
+    respond "ok"
+  }
+  ```
+
+- **Progress** reuses what a streamed reply already does (channels' reply, §5.9): `holon do`
+  prints the pieces as they come.
+
+**Piping what is typed into a run is not a capability.** Keystrokes or bytes fed into a running
+run would break §5.9's rule that a run sees whole messages, and a run would no longer have one
+input to replay from. The grain is **one line, one message, one run**, which is §5.12: a
+`websocket` block whose `message` runs per line. `holon attach <slug> <path>` opens that
+connection from the terminal, sends each line typed, and prints replies and packs as they come.
+A REPL-shaped app then needs nothing beyond step 1.9 and that client. This is the opposite
+direction to §5.7's terminals, where a flow drives an interactive program.
+
+**What stays true.** Every command is an action's run or a websocket's message run: approved,
+recorded at its handler's level, replayable. The client's reading and writing of the person's
+files happens outside every run, by their own hand, and what a run was given is in its record.
+Running a flow with no server at all is fork 24.
+
+**Slices.** (1) `holon do`, its argument mapping, output, exit codes and `--help`; `holon command`;
+`@file` and `-o`; a sample, `todo-cli`, deployed by the e2e tests and driven by `holon do` in a
+test. (2) Actions that resume, and `holon do` answering a question. (3) Progress, once actions'
+replies stream. (4) `holon attach`, after step 1.9. Not scheduled in §7: a step when it is asked
+for.
 
 ## 6. One pattern for remote files: folder backends
 
@@ -1463,6 +1556,12 @@ Taken when a job or a user asks, each with its L4 and its sample all the same:
     route, and a WebSocket's `open` that subscribes (§5.12.5), could be `lazy` by the same
     argument. *Lean:* yes, in its own change with its own test, since it widens what an existing
     capability allows.
+24. **A flow run with no server** (`holon exec todo.holon add "buy milk"`), for a command-line
+    app a person installs alone (§5.14). Either it skips approval and recording, which breaks the
+    promise, or the binary carries a single-user host: a grant asked for on first run and kept in
+    `~/.holon`, and a log beside it, as `holon serve` keeps one. *Lean:* not until a job asks;
+    `holon do` against a local `holon serve` covers it, and the single-user host is the shape to
+    take if one does.
 
 ## 9. What stays true
 
