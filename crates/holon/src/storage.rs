@@ -291,11 +291,18 @@ pub(crate) fn warnings(state: &AppState) -> Vec<Warning> {
             todo: "raise it: holon serve --value-cache (or HOLON_VALUE_CACHE)".into(),
         });
     }
-    if let Some(e) = backup_error(state) {
+    if let Some(e) = log_backup_error(state) {
         out.push(Warning {
             key: "backup".into(),
             says: format!("the backup can't be written to: {e}"),
             todo: "the runs it would hold are kept in the logs until it can: check the drive or folder is there and writable, or change [storage] backup (holon policy --backup)".into(),
+        });
+    }
+    if let Some(e) = state.sweeps.backup_error.lock().unwrap().clone() {
+        out.push(Warning {
+            key: "backup-export".into(),
+            says: format!("a batch of runs in the backup can't be made an export: {e}"),
+            todo: "its runs are in the batch still, as the log wrote them, and the other batches are made exports all the same; check the drive or folder is writable and the batch is whole, it is tried again every ten seconds".into(),
         });
     }
     if policy.storage.sweep_every.is_none() {
@@ -984,10 +991,12 @@ fn sweep_folders(state: &AppState, now_ms: u64) -> Report {
 /// recorder.rs `keep_aside`) into an export `holon verify` checks, gzipped:
 /// `<backup>/<slug>/<slug>-runs-<first>-<last>.json.gz`, with the units the runs ran and the file
 /// texts they read that the server keeps (none if the deployment is gone). The batch is removed
-/// once its export is written; one that can't be stays, and is tried again at the next look.
+/// once its export is written; one that can't be stays (its runs are in it still, as lines), is
+/// warned of, and is tried again at the next look, the others made meanwhile.
 pub(crate) fn archive(state: &AppState) {
     let Some(dir) = state.policy().storage.backup.clone() else { return };
     let Ok(slugs) = std::fs::read_dir(&dir) else { return };
+    let mut failed: Option<String> = None;
     for slug_dir in slugs.flatten().filter(|e| e.path().is_dir()) {
         let slug = slug_dir.file_name().to_string_lossy().into_owned();
         let Ok(batches) = std::fs::read_dir(slug_dir.path()) else { continue };
@@ -996,13 +1005,16 @@ pub(crate) fn archive(state: &AppState) {
         batches.sort();
         for batch in batches {
             if let Err(e) = archive_one(state, &slug, &batch) {
-                *state.sweeps.backup_error.lock().unwrap() = Some(format!("{}: {e}", batch.display()));
-                eprintln!("holon: backing up {}: {e}", batch.display());
-                return;
+                let said = format!("{}: {e}", batch.display());
+                // Said once, as it starts, not every look it is tried again.
+                if state.sweeps.backup_error.lock().unwrap().as_deref() != Some(said.as_str()) && failed.is_none() {
+                    eprintln!("holon: backing up {said}");
+                }
+                failed.get_or_insert(said);
             }
         }
     }
-    *state.sweeps.backup_error.lock().unwrap() = None;
+    *state.sweeps.backup_error.lock().unwrap() = failed;
 }
 
 fn archive_one(state: &AppState, slug: &str, batch: &Path) -> Result<(), String> {
@@ -1044,10 +1056,14 @@ fn backup_view(state: &AppState) -> serde_json::Value {
 /// Why the backup can't be written to now, if it can't: a log's cut-back (which then kept its
 /// runs), or the housekeeping making an export.
 fn backup_error(state: &AppState) -> Option<String> {
+    log_backup_error(state).or_else(|| state.sweeps.backup_error.lock().unwrap().clone())
+}
+
+/// Why a log's last cut-back couldn't write what it let go of to the backup, if one couldn't.
+fn log_backup_error(state: &AppState) -> Option<String> {
     let logs: Vec<(String, std::sync::Arc<crate::recorder::LogCell>)> = state.deployments.lock().unwrap().iter().map(|(s, d)| (s.clone(), std::sync::Arc::clone(&d.log))).collect();
     logs.iter()
         .find_map(|(slug, log)| log.with(|l| l.backup_error().map(|e| format!("{slug}: {e}"))))
-        .or_else(|| state.sweeps.backup_error.lock().unwrap().clone())
 }
 
 /// The server's housekeeping: a thread that looks every `LOOK_EVERY` whether a round of sweeps

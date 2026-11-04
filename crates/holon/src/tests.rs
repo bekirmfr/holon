@@ -1336,7 +1336,20 @@ fn the_runs_a_log_lets_go_of_are_backed_up_as_exports_verify_checks() {
         std::fs::create_dir_all(p.parent().unwrap()).unwrap();
         std::fs::write(p, if i == 1 { "" } else { "{\"mine\":1}\n" }).unwrap();
     }
+    // A batch that can't be made an export (not text): the others are made all the same, and it
+    // stays, warned of.
+    let bad = backup.join(format!("kept/{:020}-{:020}.jsonl", 0, 0));
+    std::fs::write(&bad, [0xff, 0xfe, b'\n']).unwrap();
     storage::archive(&state);
+    assert!(bad.exists(), "the batch that can't be made an export stays");
+    let batches_left = std::fs::read_dir(backup.join("kept")).unwrap().flatten().filter(|e| e.path() != bad && storage::is_batch(&e.file_name().to_string_lossy())).count();
+    assert_eq!(batches_left, 0, "the other batches made exports all the same");
+    let w = body_json(route(&state, &req("GET", "/admin/warnings", vec![])))["warnings"].clone();
+    assert!(w.as_array().unwrap().iter().any(|w| w["key"] == "backup-export" && w["says"].as_str().unwrap().contains(&bad.display().to_string())), "{w}");
+    std::fs::remove_file(&bad).unwrap();
+    storage::archive(&state);
+    let w = body_json(route(&state, &req("GET", "/admin/warnings", vec![])))["warnings"].clone();
+    assert!(!w.as_array().unwrap().iter().any(|w| w["key"] == "backup-export"), "no longer warned of once it is gone: {w}");
     for p in &theirs {
         assert!(p.exists(), "{} left alone", p.display());
     }

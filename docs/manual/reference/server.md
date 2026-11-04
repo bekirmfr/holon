@@ -77,7 +77,10 @@ The server looks at what it holds every ten seconds, and warns of:
   counted;
 - **a cache at its size** most of the last hour: it let go of flows (or values) to make room at
   most looks, so runs load them from disk again;
-- **sweeping off** while the store takes more than a tenth of its disk.
+- **sweeping off** while the store takes more than a tenth of its disk;
+- **a backup that can't be written to**: a log keeps the runs it would let go of until it can;
+- **a batch of runs in the backup that can't be made an export**: its runs stay in it as the log
+  wrote them, it is tried again at each look, and the other batches are made exports meanwhile.
 
 Each says what to do. They are shown first in `holon host` and on the admin page's **the host**,
 on the home page for admins, and in the terminal editor's top bar and overview
