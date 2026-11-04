@@ -140,6 +140,7 @@ export function AdminPage({ me, onOpenDeployment }: { me: string; onOpenDeployme
   const [everyDraft, setEveryDraft] = useState("");
   const [warnDraft, setWarnDraft] = useState("");
   const [fullDraft, setFullDraft] = useState("");
+  const [backupDraft, setBackupDraft] = useState<string | null>(null);
   const [kind, setKind] = useState("everything");
   const [version, setVersion] = useState(0);
 
@@ -860,6 +861,39 @@ export function AdminPage({ me, onOpenDeployment }: { me: string; onOpenDeployme
                   <option value="pause">pause what records runs</option>
                   <option value="roll">cut the oldest runs</option>
                 </select>
+              </form>
+              <form
+                style={{ ...row, flexWrap: "wrap" }}
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  const backup = (backupDraft ?? "").trim() || "none";
+                  act(async () => {
+                    await setStorage({ backup });
+                    setBackupDraft(null);
+                    refresh();
+                  });
+                }}
+              >
+                <span style={{ flex: 1, minWidth: 260 }}>
+                  backup{" "}
+                  <span style={quiet}>
+                    ·{" "}
+                    {host.backup
+                      ? `the runs logs let go of are kept in ${host.backup.dir}: ${host.backup.exports} exports, ${sizeText(host.backup.bytes)}${host.backup.waiting ? `, ${host.backup.waiting} to make` : ""}`
+                      : "none: the runs logs let go of go"}
+                  </span>
+                </span>
+                <input
+                  aria-label="where the host backs up the runs logs let go of"
+                  title="a folder's whole path on the server's machine (an external drive, a folder a cloud client keeps in sync); empty: none. Object storage comes next, Holon Cloud is coming"
+                  placeholder="/mnt/archive"
+                  value={backupDraft ?? host.backup?.dir ?? ""}
+                  onChange={(e) => setBackupDraft(e.target.value)}
+                  style={{ ...input, width: 220 }}
+                />
+                <button type="submit" style={small} disabled={backupDraft === null}>
+                  set
+                </button>
               </form>
               <div style={{ ...row, flexDirection: "column", alignItems: "stretch", gap: 4 }}>
                 {keptLines(host.kept, Date.now()).map((l, i) => (

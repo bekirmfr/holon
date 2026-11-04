@@ -128,6 +128,8 @@ A slower path that is still right would pass every test above; these fail instea
   `each_flow_says_what_it_holds_in_memory_and_on_disk`,
   `the_host_warns_of_a_full_disk_and_a_full_cache_once_each`,
   `a_full_disk_pauses_what_records_runs_until_there_is_room`, `a_full_disk_rolls_the_log_keeping_the_most`,
+  `the_runs_a_log_lets_go_of_are_backed_up_as_exports_verify_checks` (with the log, every run once;
+  a backup that can't be written keeps them in the log),
   `what_a_crash_left_is_removed_once_it_is_old_and_nothing_else_is`,
   `a_write_made_aside_is_known_by_its_name_and_nothing_else_is`,
   `a_store_sweep_clears_the_states_no_kept_run_names_and_nothing_else`,

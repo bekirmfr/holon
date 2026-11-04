@@ -1293,6 +1293,81 @@ fn a_full_disk_rolls_the_log_keeping_the_most() {
     let _ = std::fs::remove_dir_all(&disk);
 }
 
+/// With `[storage] backup`, the runs a log lets go of are written there first, and made into
+/// gzipped exports `holon verify` checks: with the runs still kept, every run there was, none
+/// twice. A backup that can't be written to keeps them in the log, and the host warns.
+#[test]
+fn the_runs_a_log_lets_go_of_are_backed_up_as_exports_verify_checks() {
+    let dir = unique_temp_path("backup-store");
+    let disk = FileStore::new(&dir).unwrap();
+    let values = disk.values_dir();
+    let mut state = test_state_with(SharedStore::on_disk(Box::new(disk), values));
+    let data = unique_temp_path("backup-data");
+    std::fs::create_dir_all(&data).unwrap();
+    state.deployments_path = std::path::Path::new(&data).join("deployments.json").display().to_string();
+    let path = std::path::PathBuf::from(unique_temp_path("backup-policy")).with_extension("toml");
+    state.policy_path = path.display().to_string();
+    let backup = std::path::PathBuf::from(unique_temp_path("backup"));
+    let set = |body: serde_json::Value| route(&state, &req("POST", "/admin/storage", serde_json::to_vec(&body).unwrap()));
+    assert_eq!(set(serde_json::json!({ "backup": backup.display().to_string() })).status_code, 200);
+    assert_eq!(set(serde_json::json!({ "backup": "s3://bucket" })).status_code, 400);
+    let plan = holon_author::agent::plan("flow kept\nkeep 5 runs\nstate n\n\naction bump (input) {\n  state.n = (state.n ?? 0) + 1\n}\n").unwrap_or_else(|e| panic!("{e}"));
+    let requirements = plan.requirements.clone().unwrap();
+    for u in &plan.units {
+        assert_eq!(route(&state, &req("POST", "/unit", u.clone())).status_code, 200);
+    }
+    let preview = body_json(route(&state, &req("POST", "/deploy/preview", serde_json::to_vec(&serde_json::json!({ "slug": "kept", "unit": plan.unit, "requirements": requirements })).unwrap())));
+    let ask = serde_json::json!({ "acknowledge": preview["needs_approval"], "requirements": requirements });
+    assert_eq!(deploy_json(&state, "kept", parse_hash(&plan.unit).unwrap(), ask).status_code, 200);
+    // The look gives the log the backup; then runs, and the periodic sync's cut-backs.
+    state.sweeps.act(&state, 1);
+    for i in 0..40 {
+        assert_eq!(route(&state, &req("POST", "/trigger/kept/bump", b"{}".to_vec())).status_code, 200);
+        if i % 7 == 0 {
+            crate::recorder::sync_logs(&state.deployments).unwrap();
+        }
+    }
+    crate::recorder::sync_logs(&state.deployments).unwrap();
+    storage::archive(&state);
+    let exports: Vec<std::path::PathBuf> = std::fs::read_dir(backup.join("kept")).unwrap().flatten().map(|e| e.path()).collect();
+    assert!(!exports.is_empty() && exports.iter().all(|p| p.to_string_lossy().ends_with(".json.gz")), "{exports:?}");
+    let mut seqs = Vec::new();
+    for p in &exports {
+        let export = verify::read_export(p).unwrap();
+        assert_eq!(export.deployment, "kept");
+        let report = verify::check(&export, None, &BTreeMap::new());
+        assert!(report.ok(), "{}", verify::describe(&report, None));
+        assert!(report.reruns.iter().all(|(_, r)| *r == verify::Rerun::Matched), "{}", verify::describe(&report, None));
+        seqs.extend(export.lines.iter().map(|l| serde_json::from_str::<recorder::LogEntry>(l).unwrap().seq));
+    }
+    let kept: Vec<u64> = state.deployments.lock().unwrap()["kept"].log.after(None, usize::MAX).iter().map(|e| e.seq).collect();
+    let file: Vec<u64> = std::fs::read_to_string(std::path::Path::new(&data).join("deployments.logs/kept.jsonl")).unwrap().lines().map(|l| serde_json::from_str::<recorder::LogEntry>(l).unwrap().seq).collect();
+    seqs.extend(file.iter().copied());
+    seqs.sort_unstable();
+    assert_eq!(seqs, (0..40).collect::<Vec<u64>>(), "backed up and still in the file: every run, once");
+    assert_eq!(kept.len(), 5);
+    let host = body_json(route(&state, &req("GET", "/admin/host", vec![])));
+    assert_eq!(host["backup"]["exports"].as_u64(), Some(exports.len() as u64), "{host}");
+    // A backup that can't be written to (a file stands where its folder would be): no cut.
+    let blocked = std::path::PathBuf::from(unique_temp_path("backup-blocked"));
+    std::fs::write(&blocked, "not a folder").unwrap();
+    assert_eq!(set(serde_json::json!({ "backup": blocked.display().to_string() })).status_code, 200);
+    state.sweeps.act(&state, 2);
+    let lines = || std::fs::read_to_string(std::path::Path::new(&data).join("deployments.logs/kept.jsonl")).unwrap().lines().count();
+    for _ in 0..20 {
+        route(&state, &req("POST", "/trigger/kept/bump", b"{}".to_vec()));
+        crate::recorder::sync_logs(&state.deployments).unwrap();
+    }
+    assert!(lines() > 20, "kept in the file: {} lines", lines());
+    let w = body_json(route(&state, &req("GET", "/admin/warnings", vec![])))["warnings"].clone();
+    assert!(w.as_array().unwrap().iter().any(|w| w["key"] == "backup" && w["todo"].as_str().unwrap().contains("kept in the logs")), "{w}");
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(&data);
+    let _ = std::fs::remove_dir_all(&backup);
+    let _ = std::fs::remove_file(&blocked);
+    let _ = std::fs::remove_file(&path);
+}
+
 /// An admin sets how often the server sweeps (`POST /admin/storage`): written into `holon.toml`'s
 /// `[storage]`, the rest of the file as it was, comments too, and in force at once; a setting that
 /// isn't one changes nothing.

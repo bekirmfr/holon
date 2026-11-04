@@ -311,7 +311,7 @@ can't run, if it can't. Admins.
 ### `holon policy`
 
 ```
-holon policy [--reload] [--sweep-every 10m|off] [--warn-at 85%|5G] [--full-at 95%|1G] [--when-full warn|pause|roll] [--json]
+holon policy [--reload] [--sweep-every 10m|off] [--warn-at 85%|5G] [--full-at 95%|1G] [--when-full warn|pause|roll] [--backup DIR|none] [--json]
 ```
 
 The host's policy: what it grants without asking, whether flows may call plain `http` or private
@@ -324,7 +324,8 @@ full enough to warn of: how full for the server (`85%`), or how much is left (`5
 written there too ([Warnings](server.md#warnings)). `--full-at` and `--when-full`: past where it
 warns, when it acts and what it does then: `warn`, `pause` (every flow that records runs, until
 there is room) or `roll` (cut the oldest runs of the biggest logs); an admin's
-([The policy](server.md#the-policy)). See [The host's policy](../guides/deploying.md#the-hosts-policy).
+([The policy](server.md#the-policy)). `--backup DIR` keeps the runs logs let go of there, as
+gzipped exports (`none`: they go); an admin's. See [The host's policy](../guides/deploying.md#the-hosts-policy).
 
 ### `holon host`
 
@@ -473,10 +474,11 @@ read; `--without-files` ships none. See [Checking runs](../guides/checking-runs.
 ### `holon verify`
 
 ```
-holon verify <export.json> [--head HEX] [--files DIR]
+holon verify <export.json | export.json.gz> [--head HEX] [--files DIR]
 ```
 
-Checks exported runs, offline: the chain, each unit's hash, every run, run again, and that each
+Checks exported runs, offline (an export, or a backup's gzipped one, [`[storage]
+backup`](server.md#the-policy)): the chain, each unit's hash, every run, run again, and that each
 run's state follows from the one before. `--head`
 checks that a head a witness holds is in the export. `--files` gives the files runs read whose
 texts the export doesn't hold. Exits 0 when it all checks, 1 when something doesn't, 2 for a file

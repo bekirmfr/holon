@@ -1500,6 +1500,7 @@ dependencies = [
  "axoupdater",
  "blake3",
  "bytes",
+ "flate2",
  "getrandom 0.3.4",
  "holon-author",
  "holon-core",

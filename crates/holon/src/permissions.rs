@@ -429,11 +429,33 @@ pub(crate) struct Storage {
     /// When it is full enough for `when_full` to act, and what that does.
     pub(crate) full_at: Threshold,
     pub(crate) when_full: WhenFull,
+    /// Where the runs a log lets go of are written first, gzipped exports `holon verify` checks:
+    /// a folder (an external drive, a folder a cloud client keeps in sync). None: they go.
+    pub(crate) backup: Option<std::path::PathBuf>,
+}
+
+/// `[storage] backup` as written: a folder's whole path, or `none`.
+pub(crate) fn parse_backup(text: &str) -> Result<Option<std::path::PathBuf>, String> {
+    let t = text.trim();
+    if t.is_empty() || t == "none" {
+        return Ok(None);
+    }
+    if t.starts_with("s3://") || t.contains("://") {
+        return Err(format!("{t:?}: object storage is to come; for now a folder: an external drive, or a folder a cloud client keeps in sync (Dropbox, Google Drive, OneDrive)"));
+    }
+    if t == "holon-cloud" {
+        return Err("Holon Cloud is coming; for now a folder: an external drive, or a folder a cloud client keeps in sync".into());
+    }
+    let path = std::path::PathBuf::from(t);
+    if !path.is_absolute() {
+        return Err(format!("{t:?}: the backup is a folder's whole path (/mnt/archive)"));
+    }
+    Ok(Some(path))
 }
 
 impl Default for Storage {
     fn default() -> Storage {
-        Storage { sweep_every: Some(Duration::from_secs(10 * 60)), warn_at: Threshold::Full(85), full_at: Threshold::Full(95), when_full: WhenFull::Warn }
+        Storage { sweep_every: Some(Duration::from_secs(10 * 60)), warn_at: Threshold::Full(85), full_at: Threshold::Full(95), when_full: WhenFull::Warn, backup: None }
     }
 }
 
@@ -611,6 +633,8 @@ struct StorageFile {
     full_at: Option<String>,
     #[serde(default)]
     when_full: Option<String>,
+    #[serde(default)]
+    backup: Option<String>,
 }
 
 #[derive(Deserialize, Default)]
@@ -680,6 +704,9 @@ impl Policy {
         }
         if let Some(at) = &file.storage.full_at {
             policy.storage.full_at = parse_threshold(at).map_err(|e| format!("storage.full_at: {e}"))?;
+        }
+        if let Some(backup) = &file.storage.backup {
+            policy.storage.backup = parse_backup(backup).map_err(|e| format!("storage.backup: {e}"))?;
         }
         if let Some(what) = &file.storage.when_full {
             policy.storage.when_full = WhenFull::parse(what).map_err(|e| format!("storage.when_full: {e}"))?;
@@ -1195,6 +1222,13 @@ mod tests {
         assert!(Policy::parse("[storage]\nfull_at = \"80%\"").unwrap_err().contains("past storage.warn_at"));
         assert!(Policy::parse("[storage]\nwarn_at = \"5G\"\nfull_at = \"10G\"").unwrap_err().contains("past storage.warn_at"));
         assert!(Policy::parse("[storage]\nwhen_full = \"panic\"").unwrap_err().contains("warn, pause or roll"));
+        // Backups: a folder, by its whole path; object storage and Holon Cloud not yet.
+        assert_eq!(Policy::default().storage.backup, None);
+        assert_eq!(Policy::parse("[storage]\nbackup = \"/mnt/archive\"").unwrap().storage.backup, Some("/mnt/archive".into()));
+        assert_eq!(Policy::parse("[storage]\nbackup = \"none\"").unwrap().storage.backup, None);
+        assert!(Policy::parse("[storage]\nbackup = \"archive\"").unwrap_err().contains("whole path"));
+        assert!(Policy::parse("[storage]\nbackup = \"s3://bucket/runs\"").unwrap_err().contains("object storage is to come"));
+        assert!(Policy::parse("[storage]\nbackup = \"holon-cloud\"").unwrap_err().contains("Holon Cloud is coming"));
         assert!(Threshold::Free(5 << 30).past(100 << 30, 4 << 30) && !Threshold::Free(5 << 30).past(100 << 30, 6 << 30));
 
         // The durable-run limits are limits like the others.

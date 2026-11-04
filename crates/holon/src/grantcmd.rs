@@ -25,7 +25,7 @@ const GRANTS_USAGE: &str = "usage: holon grants [--json] [--server PORT|URL]
   it can't run, if it can't. Admins.
 ";
 
-const POLICY_USAGE: &str = "usage: holon policy [--reload] [--sweep-every 10m|off] [--warn-at 85%|5G] [--full-at 95%|1G] [--when-full warn|pause|roll] [--json] [--server PORT|URL]
+const POLICY_USAGE: &str = "usage: holon policy [--reload] [--sweep-every 10m|off] [--warn-at 85%|5G] [--full-at 95%|1G] [--when-full warn|pause|roll] [--backup DIR|none] [--json] [--server PORT|URL]
 
   The host's policy: each limit's default and ceiling, what is granted without asking, whether
   flows may call plain http or private addresses, and how often the server sweeps. --reload: read
@@ -37,7 +37,9 @@ const POLICY_USAGE: &str = "usage: holon policy [--reload] [--sweep-every 10m|of
   much is left (5G, 500M, 1T); an admin's, written there too. --full-at, past warn-at: when to
   act, and --when-full what to do then: warn (only), pause (every flow that records runs, until
   the disk is back under warn-at) or roll (cut the oldest runs of the logs keeping the most, and
-  sweep); an admin's.
+  sweep); an admin's. --backup: a folder (an external drive, a folder a cloud client keeps in
+  sync) where the runs a log lets go of are written first, as gzipped exports holon verify
+  checks; none: they go. An admin's.
 ";
 
 fn usage(text: &str) -> String {
@@ -208,12 +210,12 @@ pub(crate) fn held_lines(held: &Value) -> Vec<String> {
 pub(crate) fn policy(args: &[String]) -> i32 {
     const WHO: &str = "holon policy";
     let usage = usage(POLICY_USAGE);
-    let args = match cmdline::parse(WHO, &usage, args, &["--sweep-every", "--warn-at", "--full-at", "--when-full"], &["--reload", "--json"]) {
+    let args = match cmdline::parse(WHO, &usage, args, &["--sweep-every", "--warn-at", "--full-at", "--when-full", "--backup"], &["--reload", "--json"]) {
         Ok(a) => a,
         Err(code) => return code,
     };
     let mut set = serde_json::Map::new();
-    for (flag, key) in [("--sweep-every", "sweep_every"), ("--warn-at", "warn_at"), ("--full-at", "full_at"), ("--when-full", "when_full")] {
+    for (flag, key) in [("--sweep-every", "sweep_every"), ("--warn-at", "warn_at"), ("--full-at", "full_at"), ("--when-full", "when_full"), ("--backup", "backup")] {
         if let Some(v) = args.value(flag) {
             set.insert(key.into(), v.into());
         }
@@ -255,6 +257,7 @@ pub(crate) fn policy_lines(v: &Value) -> Vec<String> {
             (Some(at), Some(what)) => format!("past {at}: {what}"),
             _ => "past 95%: warn".to_string(),
         }),
+        format!("backup             {}", v["storage"]["backup"].as_str().unwrap_or("none: what logs let go of goes")),
         String::new(),
     ];
     // Each limit: what a flow gets unless it asks, and the most it may ask for.
@@ -331,6 +334,7 @@ mod tests {
                 "sweeps             every 2h",
                 "warns at           5G free",
                 "when full          past 1G: pause",
+                "backup             none: what logs let go of goes",
                 "",
                 "limit           default  ceiling",
                 "keep_runs       500      20000",

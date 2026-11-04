@@ -171,6 +171,8 @@ pub(crate) struct Sweeps {
     scheduled: Mutex<sweep::Scheduled>,
     census: Mutex<Census>,
     watch: Mutex<Watch>,
+    /// Why the last export of a backup batch couldn't be made, if it couldn't (`archive`).
+    backup_error: Mutex<Option<String>>,
 }
 
 /// What the housekeeping watches between its looks, for the warnings (`warnings`).
@@ -272,6 +274,13 @@ pub(crate) fn warnings(state: &AppState) -> Vec<Warning> {
             todo: "raise it: holon serve --value-cache (or HOLON_VALUE_CACHE)".into(),
         });
     }
+    if let Some(e) = backup_error(state) {
+        out.push(Warning {
+            key: "backup".into(),
+            says: format!("the backup can't be written to: {e}"),
+            todo: "the runs it would hold are kept in the logs until it can: check the drive or folder is there and writable, or change [storage] backup (holon policy --backup)".into(),
+        });
+    }
     if policy.storage.sweep_every.is_none() {
         let store = state.sweeps.census.lock().unwrap().store.map(|(c, _)| c.on_disk).unwrap_or(0);
         let disk = disks.iter().find(|d| d["holds"].as_array().is_some_and(|h| h.iter().any(|x| x == "store"))).and_then(|d| d["size"].as_u64()).unwrap_or(0);
@@ -294,6 +303,7 @@ impl Sweeps {
     pub(crate) fn tick(&self, state: &AppState, now_ms: u64) -> bool {
         self.watch(state);
         self.act(state, now_ms);
+        archive(state);
         let every = state.policy().storage.sweep_every;
         // The first look counts what is kept, so the host's view has it before the first round.
         let (due, first) = {
@@ -363,6 +373,14 @@ impl Sweeps {
             disks.iter().find(|d| t.past(d["size"].as_u64().unwrap_or(0), d["free"].as_u64().unwrap_or(0))).map(full)
         };
         let (full_pct, warned) = (past(policy.storage.full_at), past(policy.storage.warn_at).is_some());
+        // Each log writes what it lets go of to the backup, as the policy says now; a full disk
+        // rolling may let them go without, if it can't (the admin chose room over history).
+        let may_drop = policy.storage.when_full == crate::permissions::WhenFull::Roll && full_pct.is_some();
+        let backup = policy.storage.backup.clone().map(|dir| (dir, may_drop));
+        let logs: Vec<std::sync::Arc<crate::recorder::LogCell>> = state.deployments.lock().unwrap().values().map(|d| std::sync::Arc::clone(&d.log)).collect();
+        for log in logs {
+            log.with(|l| l.set_backup(backup.clone()));
+        }
         let why = |pct: u64| format!("the disk was full ({pct}% for the server, past {})", crate::permissions::threshold_text(policy.storage.full_at));
         let mut changed = false;
         match (policy.storage.when_full, full_pct) {
@@ -688,6 +706,7 @@ pub(crate) fn host_view(state: &AppState) -> serde_json::Value {
         "full_at": crate::permissions::threshold_text(state.policy().storage.full_at),
         "when_full": state.policy().storage.when_full.text(),
         "acting": state.sweeps.acting(state),
+        "backup": backup_view(state),
         "warnings": warnings(state),
     })
 }
@@ -782,6 +801,16 @@ pub(crate) fn host_lines(v: &serde_json::Value) -> Vec<String> {
     }
     if let (Some(at), Some(what)) = (v["full_at"].as_str(), v["when_full"].as_str()) {
         lines.push(format!("when full    past {at}: {what}"));
+    }
+    match v["backup"].as_object() {
+        Some(b) => lines.push(format!(
+            "backup       {}: {} exports, {}{}",
+            b["dir"].as_str().unwrap_or(""),
+            n(&b["exports"]),
+            size(&b["bytes"]),
+            if n(&b["waiting"]) > 0 { format!(", {} batches to make into exports", n(&b["waiting"])) } else { String::new() }
+        )),
+        None => lines.push("backup       none: the runs a log lets go of go (holon policy --backup /mnt/archive)".into()),
     }
     let k = &v["kept"];
     let counted = k["at_ms"].as_u64().map_or("not counted yet".to_string(), |at| format!("counted {} ago", span(now_ms().saturating_sub(at))));
@@ -914,14 +943,84 @@ fn sweep_folders(state: &AppState, now_ms: u64) -> Report {
     report
 }
 
+/// Turn each batch of runs a log wrote aside to the backup (`<backup>/<slug>/<first>-<last>.jsonl`,
+/// recorder.rs `keep_aside`) into an export `holon verify` checks, gzipped:
+/// `<backup>/<slug>/<slug>-runs-<first>-<last>.json.gz`, with the units the runs ran and the file
+/// texts they read that the server keeps (none if the deployment is gone). The batch is removed
+/// once its export is written; one that can't be stays, and is tried again at the next look.
+pub(crate) fn archive(state: &AppState) {
+    let Some(dir) = state.policy().storage.backup.clone() else { return };
+    let Ok(slugs) = std::fs::read_dir(&dir) else { return };
+    for slug_dir in slugs.flatten().filter(|e| e.path().is_dir()) {
+        let slug = slug_dir.file_name().to_string_lossy().into_owned();
+        let Ok(batches) = std::fs::read_dir(slug_dir.path()) else { continue };
+        let mut batches: Vec<PathBuf> = batches.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "jsonl")).collect();
+        batches.sort();
+        for batch in batches {
+            if let Err(e) = archive_one(state, &slug, &batch) {
+                *state.sweeps.backup_error.lock().unwrap() = Some(format!("{}: {e}", batch.display()));
+                eprintln!("holon: backing up {}: {e}", batch.display());
+                return;
+            }
+        }
+    }
+    *state.sweeps.backup_error.lock().unwrap() = None;
+}
+
+fn archive_one(state: &AppState, slug: &str, batch: &Path) -> Result<(), String> {
+    let text = std::fs::read_to_string(batch).map_err(|e| e.to_string())?;
+    let lines: Vec<String> = text.lines().map(str::to_string).collect();
+    let Some(last) = lines.last() else { return std::fs::remove_file(batch).map_err(|e| e.to_string()) };
+    let head = crate::recorder::line_hash(last);
+    let redactor = state.deployments.lock().unwrap().get(slug).map(|d| crate::secrets::Redactor::of(&d.secrets));
+    let export = crate::verify::export_of(&state.store, &state.folders, redactor.as_ref(), slug, lines, head, Vec::new(), String::new(), u64::MAX)?;
+    let json = serde_json::to_vec(&export).map_err(|e| e.to_string())?;
+    let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    std::io::Write::write_all(&mut gz, &json).map_err(|e| e.to_string())?;
+    let bytes = gz.finish().map_err(|e| e.to_string())?;
+    let stem = batch.file_stem().and_then(|s| s.to_str()).unwrap_or("runs");
+    let to = batch.with_file_name(format!("{slug}-runs-{stem}.json.gz"));
+    holon_host::write_atomically(&to, &bytes).map_err(|e| e.to_string())?;
+    std::fs::remove_file(batch).map_err(|e| e.to_string())
+}
+
+/// What the backup holds: its exports and their bytes, the batches still to be made into one,
+/// and why it couldn't be written to last, if it couldn't.
+fn backup_view(state: &AppState) -> serde_json::Value {
+    let Some(dir) = state.policy().storage.backup.clone() else { return serde_json::Value::Null };
+    let (mut exports, mut bytes, mut waiting) = (0u64, 0u64, 0u64);
+    for slug_dir in std::fs::read_dir(&dir).into_iter().flatten().flatten().filter(|e| e.path().is_dir()) {
+        for f in std::fs::read_dir(slug_dir.path()).into_iter().flatten().flatten() {
+            let name = f.file_name().to_string_lossy().into_owned();
+            if name.ends_with(".json.gz") {
+                exports += 1;
+                bytes += f.metadata().map_or(0, |m| m.len());
+            } else if name.ends_with(".jsonl") {
+                waiting += 1;
+            }
+        }
+    }
+    serde_json::json!({ "dir": dir.display().to_string(), "exports": exports, "bytes": bytes, "waiting": waiting, "error": backup_error(state) })
+}
+
+/// Why the backup can't be written to now, if it can't: a log's cut-back (which then kept its
+/// runs), or the housekeeping making an export.
+fn backup_error(state: &AppState) -> Option<String> {
+    let logs: Vec<(String, std::sync::Arc<crate::recorder::LogCell>)> = state.deployments.lock().unwrap().iter().map(|(s, d)| (s.clone(), std::sync::Arc::clone(&d.log))).collect();
+    logs.iter()
+        .find_map(|(slug, log)| log.with(|l| l.backup_error().map(|e| format!("{slug}: {e}"))))
+        .or_else(|| state.sweeps.backup_error.lock().unwrap().clone())
+}
+
 /// The server's housekeeping: a thread that looks every `LOOK_EVERY` whether a round of sweeps
 /// is due, and makes it. `state` is set once the server is built.
 pub(crate) fn start(state: std::sync::Arc<std::sync::OnceLock<AppState>>) {
     std::thread::spawn(move || loop {
-        std::thread::sleep(LOOK_EVERY);
+        // A look at once, so the logs have the policy's backup before they first cut back.
         if let Some(state) = state.get() {
             state.sweeps.tick(state, now_ms());
         }
+        std::thread::sleep(LOOK_EVERY);
     });
 }
 
@@ -935,11 +1034,12 @@ pub(crate) fn handle_get_holds(state: &AppState, slug: &str) -> Response {
 }
 
 /// The `[storage]` keys an admin sets here, with what each says it is.
-const SETTINGS: [(&str, &str); 4] = [
+const SETTINGS: [(&str, &str); 5] = [
     ("sweep_every", "how often the server sweeps: \"10m\", or \"off\""),
     ("warn_at", "when a disk is full enough to warn of: \"85%\", or \"5G\" free"),
     ("full_at", "when it is full enough to act: \"95%\", or \"1G\" free"),
     ("when_full", "what it does then: \"warn\", \"pause\" or \"roll\""),
+    ("backup", "where the runs a log lets go of are written first: a folder's whole path, or \"none\""),
 ];
 
 /// `GET /admin/host` and `POST /admin/storage` (an admin's: access.rs holds every `/admin/` path to
@@ -1000,6 +1100,7 @@ fn set_storage(state: &AppState, set: &[(&str, &str)], by: &str) -> Response {
             "warn_at" => "set when the server warns its disk is full",
             "full_at" => "set when the server acts on a full disk",
             "when_full" => "set what the server does when its disk is full",
+            "backup" => "set where the server backs up the runs it lets go of",
             _ => "set how often the server sweeps",
         };
         state.activity.record(what, value.trim(), Some(by));
@@ -1085,6 +1186,7 @@ mod tests {
                 "  flow cache   12 flows, 32 MiB of 256 MiB (12%)",
                 "  value cache  1234 values, 48 MiB of 64 MiB (75%)",
                 "disk         60% full: 40 GiB free of 100 GiB (60 GiB in use): data, logs, store (/data)",
+                "backup       none: the runs a log lets go of go (holon policy --backup /mnt/archive)",
                 "kept         counted 3 min ago",
                 "  store        432808 values, 2 GiB on disk (1 GiB of bytes); 3200 put since",
                 "  logs         34 logs, 192 MiB on disk",

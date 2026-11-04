@@ -490,6 +490,12 @@ pub struct Log {
     /// Counts the times the file was rewritten here (cut back holding the lock): a cut planned
     /// before one is stale.
     generation: u64,
+    /// Where the runs a cut-back lets go of are written first (`[storage] backup`, storage.rs),
+    /// and whether a cut may go on without (a full disk rolling: the admin chose room over
+    /// history). None: they are let go of.
+    backup: Option<(PathBuf, bool)>,
+    /// Why the last cut-back couldn't write them there (and so didn't cut), if it couldn't.
+    backup_error: Option<String>,
 }
 
 /// A cut-back to be made with the log's lock released: the file as it was when it was planned
@@ -497,6 +503,7 @@ pub struct Log {
 #[derive(Debug)]
 struct CutPlan {
     path: PathBuf,
+    backup: Option<(PathBuf, bool)>,
     generation: u64,
     file_len: u64,
     lines: VecDeque<LineAt>,
@@ -570,6 +577,10 @@ impl CutPlan {
         if kept.len() == lines.len() {
             return Ok(None);
         }
+        // What it lets go of, written to the backup first: if it can't be, the cut fails, and the
+        // cut made holding the lock instead finds the same and doesn't cut (`cut_back`).
+        let gone: Vec<&(&[u8], &LineAt)> = lines.iter().enumerate().filter(|(i, (_, at))| !(*i == newest || (*i >= start && self.cutoff.is_none_or(|c| at.at_ms >= c)))).map(|(_, l)| l).collect();
+        keep_aside(self.backup.as_ref(), &self.path, &gone)?;
         let mut all = Vec::with_capacity(kept.iter().map(|(b, _)| b.len() + 1).sum());
         let mut index = VecDeque::with_capacity(kept.len());
         for (b, at) in &kept {
@@ -581,6 +592,30 @@ impl CutPlan {
         let oldest_ms = kept.first().map_or(0, |(_, at)| at.at_ms);
         let tmp = crate::sealing::write_aside(&self.path, &all)?;
         Ok(Some(CutMade { path: self.path, generation: self.generation, tmp, file_len: self.file_len, copied: self.file_len, len: all.len() as u64, index, trimmed, oldest_ms }))
+    }
+}
+
+/// Write the lines a cut-back lets go of (`gone`, the file at `path`'s) to `backup`, when there is
+/// one: `<backup>/<slug>/<first seq>-<last seq>.jsonl`, written whole then renamed in, so the same
+/// cut made again writes the same file; the housekeeping turns it into an export `holon verify`
+/// checks, gzipped (storage.rs). An error if it can't be written, unless the cut may go on
+/// without (`backup`'s flag).
+fn keep_aside(backup: Option<&(PathBuf, bool)>, path: &Path, gone: &[&(&[u8], &LineAt)]) -> std::io::Result<()> {
+    let (Some((dir, may_drop)), Some((_, first)), Some((_, last))) = (backup, gone.first(), gone.last()) else { return Ok(()) };
+    let written = (|| {
+        let slug = path.file_stem().and_then(|s| s.to_str()).ok_or_else(|| std::io::Error::other("a log file without a name"))?;
+        let dir = dir.join(slug);
+        std::fs::create_dir_all(&dir)?;
+        let mut bytes = Vec::with_capacity(gone.iter().map(|(b, _)| b.len() + 1).sum());
+        for (b, _) in gone {
+            bytes.extend_from_slice(b);
+            bytes.push(b'\n');
+        }
+        holon_host::write_atomically(&dir.join(format!("{:020}-{:020}.jsonl", first.seq, last.seq)), &bytes)
+    })();
+    match written {
+        Err(e) if !*may_drop => Err(std::io::Error::other(format!("the runs it lets go of couldn't be written to the backup {}: {e}", dir.display()))),
+        _ => Ok(()),
     }
 }
 
@@ -995,6 +1030,8 @@ impl Log {
             cut_wanted: false,
             cutting: false,
             generation: 0,
+            backup: None,
+            backup_error: None,
         };
         let Some(path) = &log.file else { return log };
         let Ok(text) = std::fs::read_to_string(path) else { return log };
@@ -1035,6 +1072,17 @@ impl Log {
     /// Keep `keep` entries from now on, none older than `max_age_ms` (none: any age): the
     /// deployment's retention, set at deploy and load and when its grant changes. Keeping more
     /// than it did reads back what the file still holds.
+    /// Where the runs it lets go of are written first, and whether a cut may go on without
+    /// (storage.rs keeps it as `[storage] backup` says).
+    pub fn set_backup(&mut self, backup: Option<(PathBuf, bool)>) {
+        self.backup = backup;
+    }
+
+    /// Why the last cut-back couldn't write what it let go of to the backup, if it couldn't.
+    pub fn backup_error(&self) -> Option<&str> {
+        self.backup_error.as_deref()
+    }
+
     /// How old a run it keeps, at most, in milliseconds (none: any age).
     pub fn max_age_ms(&self) -> Option<u64> {
         self.max_age_ms
@@ -1165,8 +1213,10 @@ impl Log {
             std::fs::create_dir_all(dir)?;
         }
         let past = self.written + 1 > 2 * self.keep || self.file_aged(now_ms());
-        if past && !self.defer_cuts {
-            return self.cut_back(Some((line, at)));
+        // Cut holding the lock (a log used on its own); one that couldn't keep what it lets go of
+        // aside didn't cut, and the line is appended as any is.
+        if past && !self.defer_cuts && self.cut_back(Some((line, at.clone())))? {
+            return Ok(());
         }
         if self.written == 0 {
             self.file_oldest_ms = at.at_ms;
@@ -1218,7 +1268,7 @@ impl Log {
         self.cut_wanted = false;
         self.cutting = true;
         let cutoff = self.max_age_ms.map(|age| now_ms().saturating_sub(age));
-        Some(CutPlan { path, generation: self.generation, file_len: self.file_len, lines: self.lines.clone(), keep: self.keep, cutoff })
+        Some(CutPlan { path, backup: self.backup.clone(), generation: self.generation, file_len: self.file_len, lines: self.lines.clone(), keep: self.keep, cutoff })
     }
 
     /// How long the file is, as this log has written it, while the cut planned at `generation` is
@@ -1295,8 +1345,8 @@ impl Log {
     /// Rewrite the file as the lines it keeps, byte for byte, then `line` (the newest entry's,
     /// when there is one): the newest `keep`, none older than its age, but always the newest
     /// line, which carries the numbering and the chain on.
-    fn cut_back(&mut self, line: Option<(&str, LineAt)>) -> std::io::Result<()> {
-        let Some(path) = self.file.clone() else { return Ok(()) };
+    fn cut_back(&mut self, line: Option<(&str, LineAt)>) -> std::io::Result<bool> {
+        let Some(path) = self.file.clone() else { return Ok(true) };
         // Closed before the file is replaced: a handle would go on writing to the old one (and
         // Windows won't replace an open file). The next line opens the new one.
         self.handle = None;
@@ -1325,7 +1375,18 @@ impl Log {
             .map(|(_, l)| l)
             .collect();
         if kept.len() == lines.len() && line.is_none() {
-            return Ok(());
+            return Ok(true);
+        }
+        // What it lets go of, written to the backup first; if it can't be, no cut: the file
+        // holds them until it can, and the host warns (storage.rs).
+        let gone: Vec<&(&[u8], &LineAt)> = lines.iter().enumerate().filter(|(i, (_, at))| !(*i == newest || (*i >= start && cutoff.is_none_or(|c| at.at_ms >= c)))).map(|(_, l)| l).collect();
+        match keep_aside(self.backup.as_ref(), &path, &gone) {
+            Ok(()) => self.backup_error = None,
+            Err(e) => {
+                // Not cut: the newest line, if one waits, is appended as any line is.
+                self.backup_error = Some(e.to_string());
+                return Ok(false);
+            }
         }
         let mut all = Vec::with_capacity(kept.iter().map(|(b, _)| b.len() + 1).sum());
         let mut index = VecDeque::with_capacity(kept.len());
@@ -1351,7 +1412,7 @@ impl Log {
         self.lines = index;
         self.cut = false;
         self.dirty = false;
-        Ok(())
+        Ok(true)
     }
 
     /// The file to sync, if lines were written since it last was: the flag is cleared, and put

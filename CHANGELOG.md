@@ -37,6 +37,12 @@
   things on, how full it is for the server (a quota counts) and what it keeps there; the content
   store's values and the disk they take, the logs and the folders' kept texts (counted at start
   and after each round of sweeps); and the sweeps (`GET /admin/host`).
+- **The runs a log lets go of can be backed up, compressed.** With `[storage] backup` set to a
+  folder (an external drive, a cloud client's synced folder), the runs a log cuts back are
+  written there first and made into gzipped exports `holon verify` checks (it reads `.json.gz`
+  as it reads `.json`): about 360 bytes a run for a small route, 13 to 30 times smaller than the
+  log's lines. A backup that can't be written to keeps the runs in the log, and the host warns.
+  Set on the admin page or with `holon policy --backup`.
 - **An admin chooses what happens when the disk fills.** Past `[storage] full_at` (`95%` unless
   said), `when_full` is `warn` (the default: nothing changes), `pause` (every flow that records
   runs is paused by the host, and resumed once there is room; unrecorded ones go on) or `roll`
