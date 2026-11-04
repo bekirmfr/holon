@@ -360,16 +360,14 @@ route GET /notes (req) lazy {
 }
 ```
 
-Only a handler that does nothing outside its run may say either: one that reads (state, a
-collection, a folder, a database, a secret, the time, `random`) and answers. One that writes,
-calls out, sends on or streams a channel, waits with `await` or answers with a secret is strict,
-and the word on it is a mistake at the line that does it:
-
-```
-board.holon:15:3: POST /notes can't be unrecorded: it may put and delete items of its collection "notes"; only a handler that does nothing outside its run may be lazy or unrecorded
-    notes[req.json.id] = req.json.text
-    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-```
+Which to say is the flow author's choice, on any handler. `unrecorded` is for runs whose record
+isn't worth keeping: a health check, a handler that only reads, one called so often its records
+would only fill the log. `lazy` is for a handler that must answer fast, where losing its last
+second of records to a crash is fine. A handler that writes, calls out or waits may say either,
+and is what it says: an unrecorded one's writes, calls and messages are in no run, and a crash
+may lose a lazy one's last second. `holon verify` leaves the state they may have moved unchecked
+rather than calling it a break, a restore's dry run says unrecorded runs aren't counted, and a
+channel message an unrecorded run sends reaches whoever is listening then and isn't kept. A run that waits keeps what it waits with, whatever its level.
 
 The words go the same place on the other handlers (`every 1m lazy { … }`, `on file inbox (f)
 unrecorded { … }`, `action report (input) unrecorded { … }`), and are names anywhere else.

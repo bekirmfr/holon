@@ -50,8 +50,9 @@ holding `max_waiting_runs` refuses another: the route answers 503 and the entry 
 entry names the points it waits at (`LogEntry::parked`); the deployments file is written again
 (`persist_deployments`).
 
-A handler that may wait is always strict: `may_record_lightly` refuses `lazy` or `unrecorded` for
-a handler with an `Await` capability, and every resumed part is logged strict.
+A parked run keeps what it waits with in its own record (`ParkedRun`), not in the log, so a lazy
+or unrecorded handler waits as a strict one does: the record keeps its handler's level
+(`ParkedRun::log`), and each resumed part is logged at it, unrecorded where granted.
 
 ### Tokens
 

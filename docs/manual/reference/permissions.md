@@ -53,8 +53,8 @@ server's policy allows them at all.
 | `Unrecorded("GET /health")` | keep runs of GET /health out of its log, failed or not (they are counted) | a handler whose line says `unrecorded`; allowed unless `allow_unrecorded = false` |
 
 `Unrecorded` is asked for by the flow itself, one item per handler whose line says `unrecorded`
-([Language reference](../language/reference.md#clocks-files-and-actions)), and only a handler
-that does nothing outside its run can say it. It is optional: without it, or once it is taken
+([Language reference](../language/reference.md#clocks-files-and-actions)), whatever the handler
+does. It is optional: without it, or once it is taken
 back, the handler's runs are recorded again, from the next one, and the deployment runs on. Its
 runs are counted (how many, how many failed, how long they took, the last one), and a failed one is
 logged.

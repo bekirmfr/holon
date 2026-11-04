@@ -412,8 +412,8 @@ pub(crate) struct Policy {
     pub(crate) allow_plain_http: bool,
     pub(crate) allow_private_addresses: bool,
     /// Whether a handler's runs may ever be kept out of its log (`Unrecorded("GET /health")`): on
-    /// by default, since only a handler that does nothing outside its run may ask, and a person
-    /// approves each (docs/L4s/request-path-L4.md, §8 Q9).
+    /// by default, since its author chose it and a person approves each (docs/L4s/request-path-L4.md,
+    /// §8 Q9).
     pub(crate) allow_unrecorded: bool,
     /// How the host keeps what it stores (`[storage]`, docs/L4s/storage-L4.md).
     pub(crate) storage: Storage,
