@@ -1631,6 +1631,8 @@ impl Log {
         })();
         match swapped {
             Ok(true) => {
+                // What it let go of was written to the backup (`CutPlan::make`): it can be again.
+                self.backup_error = None;
                 if let Some((seq, prev)) = &made.trimmed {
                     self.export("trim", *seq, prev, now_ms());
                 }
@@ -2121,6 +2123,35 @@ mod tests {
         assert_eq!(seqs(&log), [7, 8]);
         log.retain(10, None);
         assert_eq!(seqs(&log), [3, 4, 5, 6, 7, 8], "read back from the file");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A backup that couldn't be written to is said until one can be: by a cut made with the
+    /// lock released as by one made holding it.
+    #[test]
+    fn a_backup_written_to_again_is_no_longer_an_error() {
+        let dir = temp_dir("backup-again");
+        let path = dir.join("slug.jsonl");
+        let blocked = dir.join("blocked");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(&blocked, "a file where the folder would be").unwrap();
+        let cell = LogCell::new(Log::open_keeping(Some(path.clone()), 3));
+        cell.with(|l| l.set_backup(Some((blocked.clone(), false))));
+        let push = |n: usize| {
+            for _ in 0..n {
+                cell.with(|l| l.push(entry()));
+            }
+            cell.cut_if_planned();
+        };
+        push(8);
+        assert!(cell.with(|l| l.backup_error().map(str::to_string)).is_some_and(|e| e.contains("backup")), "can't be written to");
+        assert!(cell.with(|l| l.holds().3) > 6, "and nothing cut");
+        let backup = dir.join("backup");
+        cell.with(|l| l.set_backup(Some((backup.clone(), false))));
+        push(1);
+        assert_eq!(cell.with(|l| l.backup_error().map(str::to_string)), None, "written to again");
+        assert_eq!(cell.with(|l| l.holds().3), 3, "cut back");
+        assert!(std::fs::read_dir(backup.join("slug")).unwrap().count() > 0, "what it let go of is there");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
