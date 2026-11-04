@@ -153,7 +153,10 @@ databases an admin bound, only the tables granted, no DDL (databases.rs); the gr
 `a_secret_is_never_sent_to_another_flow`); the clock, random numbers and its request. A module
 runs as WebAssembly with no imports under a fuel and memory budget (holon-module), its budgets
 limits with ceilings (`MODULE_FUEL_CEILING`, `MODULE_MEMORY_CEILING`). No folder or database
-may be bound to, or over, the server's own files (`server_files`, `Folders::open`; §4 has the gap).
+may be bound to, or over, the server's own files (`server_files`, `Folders::open`): those it was
+given, what it keeps beside the deployments file (`BESIDE_DEPLOYMENTS`: the logs, the state heads,
+the arrivals, the heads, the activity log), the secrets' audit, the `.env`, the key's file, and
+`~/.holon`.
 
 ### 2.8 Files on disk (sealing.rs)
 
@@ -226,9 +229,6 @@ What is not defended, or only partly:
   and sign-in throttled per name only (so a known name can be locked out a minute at a time;
   likewise anyone can hold setting up off a minute at a time with wrong codes).
 - **Approval is one editor's**: any editor or admin may acknowledge anything the policy allows.
-- **The server's own files, as folders refuse them**: `server_files` names the files it was given,
-  the `logs`, `arrivals` and `heads` beside the deployments file, and `~/.holon`; with `--data`
-  outside `~/.holon`, the `.state` folder of state heads beside it isn't among them.
 - **`X-Holon-Role` is a promise its sender keeps**: an agent with a shell can read the run file
   and leave it off; an `agent`-role API token is the guarantee (agent-surface L4, decision 6).
 - **A folder's confinement is checked, then opened**: another process writing in the folder
@@ -272,9 +272,8 @@ What is not defended, or only partly:
   `exported_runs_verify_and_a_rewritten_log_doesnt`, `a_batch_goes_only_after_its_hook_has_run`,
   `a_witness_is_reached_over_https_or_on_this_machine`.
 
-Gaps: no data-plane request under a foreign `Host` is sent; no link is swapped between a folder's check and its open; the `.state`
-folder isn't among the folders `no_folder_is_or_holds_what_the_server_keeps_beside_its_files`
-tries.
+Gaps: no data-plane request under a foreign `Host` is sent; no link is swapped between a folder's
+check and its open.
 
 ## 6. History
 

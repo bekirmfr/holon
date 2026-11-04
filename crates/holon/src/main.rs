@@ -251,13 +251,20 @@ use scheduler::*;
 use units::*;
 use wire::*;
 
+/// What the server keeps beside its deployments file: the flow logs (and their sealed segments
+/// inside), the state heads, the arrivals it noted, the heads it published, its activity log.
+const BESIDE_DEPLOYMENTS: [&str; 5] = ["logs", "state", "arrivals", "heads", "activity.jsonl"];
+
 /// The server's own files, which no folder may be or hold: those it was given (`files`), what it
-/// keeps beside its deployments file (the flow logs, the arrivals it noted, the heads it
-/// published), the `.env` it reads secrets from, and the secrets key's file.
-fn server_files(files: &[&String], deployments: &str, dotenv: Option<&str>, key: &sealing::KeySource) -> Vec<PathBuf> {
+/// keeps beside its deployments file (`BESIDE_DEPLOYMENTS`) and beside its secrets file (their
+/// audit), the `.env` it reads secrets from, and the secrets key's file.
+fn server_files(files: &[&String], deployments: &str, secrets: &str, dotenv: Option<&str>, key: &sealing::KeySource) -> Vec<PathBuf> {
     let mut own: Vec<PathBuf> = files.iter().filter(|p| p.as_str() != ":memory:").map(PathBuf::from).collect();
     if deployments != ":memory:" {
-        own.extend(["logs", "arrivals", "heads"].map(|beside| Path::new(deployments).with_extension(beside)));
+        own.extend(BESIDE_DEPLOYMENTS.map(|beside| Path::new(deployments).with_extension(beside)));
+    }
+    if secrets != ":memory:" {
+        own.push(Path::new(secrets).with_extension("audit.jsonl"));
     }
     own.extend(dotenv.map(PathBuf::from));
     if let sealing::KeySource::File(path) = key {
@@ -1113,6 +1120,7 @@ fn serve(args: Vec<String>) {
     let mut own = server_files(
         &[&store_arg, &deployments_arg, &flows_arg, &policy_arg, &secrets_arg, &folders_arg, &databases_arg, &accounts_arg, &host_key_arg],
         &deployments_arg,
+        &secrets_arg,
         dotenv_arg.as_deref(),
         &secrets_key,
     );

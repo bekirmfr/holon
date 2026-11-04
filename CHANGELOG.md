@@ -17,6 +17,10 @@
   deployments). The data folder and the store's folders it makes are `0700`. A data folder there
   already that other users may read is said at start, with the `chmod 700` that makes it yours
   alone; the server doesn't change it.
+- **No folder may be the server's state.** With the data folder outside `~/.holon`, an admin could
+  bind the folder of state heads beside the deployments file (`deployments.state/`), and a flow
+  given it read-write could rewrite another deployment's state; it is refused now, as the logs'
+  folder was, and so are the arrivals, the heads, the activity log and the secrets' audit.
 - **Every run's record is on disk before its answer.** A run of a route, clock, file handler or
   action is answered (or counts as done) once its log entry is synced, not only written: an
   answered run is recorded, a power loss or not. Runs at once share the sync. A handler that only

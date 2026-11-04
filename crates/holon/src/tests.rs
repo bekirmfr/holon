@@ -7875,19 +7875,27 @@ fn no_folder_is_or_holds_what_the_server_keeps_beside_its_files() {
     let dir = unique_temp_path("server-files");
     let deployments = format!("{dir}/data/deployments.json");
     let (logs, keys, env) = (format!("{dir}/data/deployments.logs"), format!("{dir}/keys"), format!("{dir}/conf"));
-    for d in [&logs, &keys, &env] {
+    // Kept outside ~/.holon (--data elsewhere): what is beside the deployments file is named, not
+    // a folder holding it all.
+    let (state, arrivals, heads) = (format!("{dir}/data/deployments.state"), format!("{dir}/data/deployments.arrivals"), format!("{dir}/data/deployments.heads"));
+    let sealed = format!("{logs}/kept.sealed");
+    for d in [&logs, &keys, &env, &state, &arrivals, &heads, &sealed] {
         std::fs::create_dir_all(d).unwrap();
     }
     std::fs::write(format!("{keys}/secrets.key"), "").unwrap();
     std::fs::write(format!("{env}/.env"), "").unwrap();
     let key = crate::sealing::KeySource::File(std::path::PathBuf::from(format!("{keys}/secrets.key")));
     let memory = ":memory:".to_string();
-    let own = server_files(&[&deployments, &memory], &deployments, Some(&format!("{env}/.env")), &key);
+    let secrets = format!("{dir}/conf/secrets.json");
+    let own = server_files(&[&deployments, &memory, &secrets], &deployments, &secrets, Some(&format!("{env}/.env")), &key);
     let folders = crate::folders::Folders::open(":memory:", &own).unwrap();
     let bind = |path: &str| folders.bind("x", path, crate::folders::FolderAccess::Read, crate::folders::Keep::Bytes, None, None);
-    // The flow logs beside the deployments file, the folder of the secrets key, the `.env`'s.
-    for path in [&logs, &keys, &env] {
+    let bind_rw = |path: &str| folders.bind("y", path, crate::folders::FolderAccess::ReadWrite, crate::folders::Keep::Bytes, None, None);
+    // The flow logs beside the deployments file (a log's sealed segments in them), its state heads,
+    // arrivals and heads, the folder of the secrets key, the `.env`'s (and the secrets' audit).
+    for path in [&logs, &sealed, &state, &arrivals, &heads, &keys, &env] {
         assert!(bind(path).unwrap_err().contains("own data"), "{path}");
+        assert!(bind_rw(path).unwrap_err().contains("own data"), "read-write: {path}");
     }
     let elsewhere = format!("{dir}/inbox");
     std::fs::create_dir_all(&elsewhere).unwrap();
