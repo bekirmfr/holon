@@ -955,7 +955,7 @@ pub(crate) fn handle_post_trigger(
 
     record_trigger(deployments, slug, false);
     let mut entry = run_entry("trigger", started, &extra_sourced, &run);
-    match durable::park_if_waiting(deployments, store, slug, &unit_hash, "trigger", None, &[], &extra_sourced, &run, &waits) {
+    match durable::park_if_waiting(deployments, store, slug, &unit_hash, "trigger", None, holon_core::LogLevel::Strict, &[], &extra_sourced, &run, &waits) {
         Ok(names) => entry.parked = names,
         Err(e) => entry.error = Some(e),
     }
@@ -1127,7 +1127,7 @@ pub(crate) fn run_action(
     entry.by = by.map(String::from);
     let answer_json = answer.as_ref().map_or(Some("null".to_string()), holon_core::stringify_json);
     entry.response_body = Some(if run.secret_fed.derives_output(0) { crate::taint::WITHHELD.to_string() } else { answer_json.clone().unwrap_or_default() });
-    match durable::park_if_waiting(deployments, store, slug, &action.handler, "trigger", Some(action.label.clone()), &inputs, &sourced, &run, &waits) {
+    match durable::park_if_waiting(deployments, store, slug, &action.handler, "trigger", Some(action.label.clone()), action.log, &inputs, &sourced, &run, &waits) {
         Ok(names) => entry.parked = names,
         Err(e) => entry.error = Some(e),
     }

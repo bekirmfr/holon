@@ -394,17 +394,20 @@ fn fire_one_arrival(
     ];
     let started = started_now();
     let channels = deployments.lock().unwrap().get(slug).map(|d| Arc::clone(&d.channels));
-    let mut waits = RunWaits { folders: Some(Arc::clone(files)), channels, slug: Some(slug.to_string()), ..Default::default() };
+    let declared = handler.map_or_else(Default::default, |h| h.log);
+    // As a route's (listeners.rs): a run that won't be logged keeps no timeline.
+    let unrecorded = permit.log_level(label.as_deref(), declared) == holon_core::LogLevel::Unrecorded;
+    let mut waits = RunWaits { folders: Some(Arc::clone(files)), channels, slug: Some(slug.to_string()), unrecorded, ..Default::default() };
     let resolver = holon_module::WithEngine::new(&resolver, holon_module::shared());
     let run = fire_with_state(root_unit, &[], &resolver, store, state, &extra_sourced, permit, true, secrets, &mut waits, None);
     let mut entry = run_entry("file", started, &extra_sourced, &run);
     entry.route = label.clone();
-    match durable::park_if_waiting(deployments, store, slug, &unit_hash, "file", label.clone(), &[], &extra_sourced, &run, &waits) {
+    match durable::park_if_waiting(deployments, store, slug, &unit_hash, "file", label.clone(), declared, &[], &extra_sourced, &run, &waits) {
         Ok(names) => entry.parked = names,
         Err(e) => entry.error = Some(e),
     }
     let parked_any = !entry.parked.is_empty();
-    if let Some(l) = log_run(deployments, slug, entry, Redactor::tokens(&waits.tokens), handler.map_or_else(Default::default, |h| h.log)) {
+    if let Some(l) = log_run(deployments, slug, entry, Redactor::tokens(&waits.tokens), declared) {
         l.said(slug);
     }
     let which = label.as_ref().map(|l| format!(" {l}")).unwrap_or_default();

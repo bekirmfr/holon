@@ -146,18 +146,21 @@ pub(crate) fn fire_one_clock_tick(
     ];
     let started = started_now();
     let (folders, channels) = deployments.lock().unwrap().get(&slug).map(|d| (Arc::clone(&d.folders), Arc::clone(&d.channels))).unzip();
-    let mut waits = RunWaits { folders, channels, slug: Some(slug.clone()), ..Default::default() };
+    let declared = clock.map_or_else(Default::default, |c| c.log);
+    // As a route's (listeners.rs): a run that won't be logged keeps no timeline.
+    let unrecorded = permit.log_level(label.as_deref(), declared) == holon_core::LogLevel::Unrecorded;
+    let mut waits = RunWaits { folders, channels, slug: Some(slug.clone()), unrecorded, ..Default::default() };
     let resolver = holon_module::WithEngine::new(&resolver, holon_module::shared());
     let run = fire_with_state(root_unit, &[], &resolver, store, state.as_ref(), &extra_sourced, permit, true, secrets, &mut waits, None);
     let mut entry = run_entry("tick", started, &extra_sourced, &run);
     entry.route = label.clone();
-    match durable::park_if_waiting(deployments, store, &slug, &unit_hash, "tick", label.clone(), &[], &extra_sourced, &run, &waits) {
+    match durable::park_if_waiting(deployments, store, &slug, &unit_hash, "tick", label.clone(), declared, &[], &extra_sourced, &run, &waits) {
         Ok(names) => entry.parked = names,
         Err(e) => entry.error = Some(e),
     }
     let parked_any = !entry.parked.is_empty();
     // A whole flow on its interval is strict; a server's clock is as its line says.
-    if let Some(l) = log_run(deployments, &slug, entry, Redactor::tokens(&waits.tokens), clock.map_or_else(Default::default, |c| c.log)) {
+    if let Some(l) = log_run(deployments, &slug, entry, Redactor::tokens(&waits.tokens), declared) {
         l.said(&slug);
     }
 

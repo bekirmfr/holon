@@ -58,9 +58,6 @@ export type DerivedServer = {
   files: FileDraft[];
   actions: ActionDraft[];
   errors: string[];
-  /** The errors that are about one node (a lazy or unrecorded handler that does something
-   *  outside its run, at the node that does it), with that node's id; each is in `errors` too. */
-  placed: { node: string; message: string }[];
   serverHash: string | null;
   trace: Record<string, string[]>;
 };

@@ -24,7 +24,7 @@
 
 use std::collections::BTreeMap;
 
-use crate::{Capability, FileTrigger, Hash, Resolver, Type, Unit, UnitBody};
+use crate::{FileTrigger, Hash, Resolver, Type, Unit, UnitBody};
 
 /// The methods an endpoint may declare.
 pub const METHODS: &[&str] = &["GET", "POST", "PUT", "PATCH", "DELETE"];
@@ -39,8 +39,9 @@ pub enum Segment {
 /// How a handler's runs are recorded (docs/L4s/request-path-L4.md, C5): `strict` by default, the
 /// record on disk before the run answers; `lazy`, on disk within a second; `unrecorded`, none but
 /// a failure's. A handler carries it as its frozen `log` param, absent for strict, so a handler
-/// written without one hashes as it always did. Only a handler that does nothing outside its run
-/// may be lazy or unrecorded ([`may_record_lightly`]).
+/// written without one hashes as it always did. A handler is what its author declares, whatever
+/// it does: an unrecorded one that writes, calls out, sends or waits leaves that out of the log
+/// too, which the person approving it is told.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum LogLevel {
     #[default]
@@ -74,20 +75,6 @@ impl LogLevel {
 /// isn't a level.
 pub fn log_level(unit: &Unit) -> Option<LogLevel> {
     LogLevel::parse(frozen(unit, "log").unwrap_or(""))
-}
-
-/// Whether `handler` may be lazy or unrecorded: only when it does nothing outside its run, every
-/// capability of it sourced (read from outside, `Capability::is_sourced`) and none a wait. That
-/// leaves out writes (state, collections, files, databases), outbound requests, channel sends,
-/// flow calls and waiting, whose runs' records other things rely on: `holon verify`'s state
-/// check, restore, a channel's packs, the other flow's log. Fails closed with `capabilities`: an
-/// unknown leaf or an unresolved child counts as doing everything. `Err` names the first
-/// capability that keeps it strict.
-pub fn may_record_lightly(handler: &Unit, resolver: &impl Resolver) -> Result<(), Capability> {
-    match crate::capabilities(handler, resolver).iter().find(|c| !c.is_sourced() || matches!(c, Capability::Await(_))) {
-        Some(c) => Err(c),
-        None => Ok(()),
-    }
 }
 
 /// One endpoint of a server, as declared.
@@ -249,8 +236,6 @@ pub enum DeclError {
     NoHandlers,
     /// A handler's `log` param isn't a level.
     BadLogLevel { child: u32, value: String },
-    /// A handler is lazy or unrecorded, yet does something outside its run ([`may_record_lightly`]).
-    LogLevelNotAllowed { child: u32, level: LogLevel, capability: Capability },
 }
 
 /// The declaration a unit carries (`"server"`, `"endpoint"`), if any.
@@ -283,9 +268,6 @@ pub fn read_server(unit: &Unit, resolver: &impl Resolver) -> Result<Server, Decl
         let child = i as u32;
         let endpoint = resolver.resolve(hash).ok_or(DeclError::UnresolvedEndpoint { child })?;
         let log = log_level(endpoint).ok_or_else(|| DeclError::BadLogLevel { child, value: frozen(endpoint, "log").unwrap_or("").to_string() })?;
-        if log != LogLevel::Strict {
-            may_record_lightly(endpoint, resolver).map_err(|capability| DeclError::LogLevelNotAllowed { child, level: log, capability })?;
-        }
         if declaration_of(endpoint) == Some("every") {
             let seconds = read_clock(endpoint).ok_or(DeclError::BadEndpointShape { child })?;
             if clocks.iter().any(|c| c.seconds == seconds) {
@@ -502,7 +484,7 @@ mod tests {
     }
 
     #[test]
-    fn a_handlers_log_level_is_read_and_held_to_what_it_does() {
+    fn a_handlers_log_level_is_read_as_written() {
         let mut r = MapResolver::new();
         let plain = endpoint(&mut r, "GET", "/a");
         assert_eq!(read_server(&server("8080", vec![plain]), &r).unwrap().routes[0].log, LogLevel::Strict, "strict without a param");
@@ -513,19 +495,13 @@ mod tests {
         let bad = endpoint_logged(&mut r, "/a", handler(), "verbose");
         assert_eq!(read_server(&server("8080", vec![bad]), &r), Err(DeclError::BadLogLevel { child: 0, value: "verbose".into() }));
 
-        // A handler that writes state can't be lazy: its runs' records are what restore and
-        // `holon verify` follow its state by.
+        // A handler that writes state is as lazy as its author says: the level is authored, and
+        // what an unrecorded one leaves out is the approval's to say.
         let writes = Unit { body: UnitBody::Primitive { name: "store_write".into() }, params: vec![Param::frozen("key", "k")], ..handler() };
-        let e = endpoint_logged(&mut r, "/a", writes, "lazy");
-        assert_eq!(
-            read_server(&server("8080", vec![e]), &r),
-            Err(DeclError::LogLevelNotAllowed { child: 0, level: LogLevel::Lazy, capability: Capability::StateWrite("k".into()) })
-        );
-
-        // Fail closed: a child that doesn't resolve might do anything.
-        let unknown = Unit { body: UnitBody::Composite { children: vec![[9u8; 32]], edges: vec![] }, params: vec![], inputs: vec![], outputs: vec![] };
-        assert!(may_record_lightly(&unknown, &r).is_err());
-        assert_eq!(may_record_lightly(&handler(), &r), Ok(()));
+        for (word, level) in [("lazy", LogLevel::Lazy), ("unrecorded", LogLevel::Unrecorded)] {
+            let e = endpoint_logged(&mut r, "/a", writes.clone(), word);
+            assert_eq!(read_server(&server("8080", vec![e]), &r).unwrap().routes[0].log, level, "{word}");
+        }
     }
 
     #[test]

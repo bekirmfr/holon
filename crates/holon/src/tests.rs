@@ -8166,7 +8166,7 @@ fn an_unrecorded_run_leaves_no_entry_failed_or_not_and_is_counted() {
     for label in ["GET /health", "GET /broken", "action report"] {
         assert!(asked.contains(&format!("Unrecorded({label:?})")), "{label} is asked for: {asked:?}");
     }
-    assert!(!asked.iter().any(|a| a.contains("POST /notes")), "a write can't be: {asked:?}");
+    assert!(!asked.iter().any(|a| a.contains("POST /notes")), "a strict handler isn't asked for: {asked:?}");
     let slug = deploy_plain_text(&state, UNRECORDED_BOARD);
     let call = |method: &str, url: &str, body: &str| serve_data(&state.store, &state.deployments, &state.deployments_path, &slug, &fake_data(method, url, body.as_bytes().to_vec())).status;
     let log = Arc::clone(&state.deployments.lock().unwrap()[&slug].log);
@@ -8245,6 +8245,48 @@ fn an_unrecorded_failure_is_kept_redacted_and_cut_short() {
     assert_eq!(log.next_seq(), 0, "nothing logged");
     let tally = state.deployments.lock().unwrap()[&failing].tallies["action check"].clone();
     assert_eq!((tally.runs, tally.failed, tally.last_failure), (1, 0, None));
+    let _ = std::fs::remove_file(&state.deployments_path);
+    let _ = std::fs::remove_dir_all(Path::new(&state.deployments_path).with_extension("logs"));
+}
+
+/// A handler that waits is as its author declares it (C5): a parked run keeps what it waits with
+/// (its rounds, its events) in its own record, whatever its level. An unrecorded one, granted,
+/// parks and resumes with no entry for either part, each counted; a lazy one's parts are logged
+/// as lazy, without a sync before they are done. Its write lands either way.
+#[test]
+fn a_run_that_waits_parks_and_resumes_at_its_handlers_level() {
+    let mut state = test_state();
+    state.deployments_path = unique_temp_path("waits-light");
+    let text = |level: &str, port: u16| {
+        format!(
+            "flow hold-{level}\nport {port}\ncollection seen\n\nroute POST /hold (req) {level} {{\n  respond {{ token: \"{{resume_token(paid)}}\" }}\n  paid = await paid, expires: 1h\n  seen[\"last\"] = paid.method\n}}\n\nroute GET /paid/:token (req) resumes paid {{\n  respond \"thanks\"\n}}\n\nroute GET /seen (req) {{\n  respond {{ last: seen[\"last\"] }}\n}}\n"
+        )
+    };
+    for (level, port) in [("unrecorded", 18201), ("lazy", 18202)] {
+        let slug = deploy_plain_text(&state, &text(level, port));
+        let log = Arc::clone(&state.deployments.lock().unwrap()[&slug].log);
+        let (status, held, _) = data_call(&state, &slug, "POST", "/hold", "");
+        assert_eq!(status, 200, "{level}: {held}");
+        let token = serde_json::from_str::<serde_json::Value>(&held).unwrap()["token"].as_str().unwrap().to_string();
+        let parked = state.deployments.lock().unwrap()[&slug].parked.values().next().cloned().unwrap_or_else(|| panic!("{level}: parked"));
+        assert_eq!(parked.log, level, "the parked run keeps its handler's level");
+        let syncs = log.syncs();
+        assert_eq!(data_call(&state, &slug, "GET", &format!("/paid/{token}"), "").0, 200, "{level}");
+        assert!(state.deployments.lock().unwrap()[&slug].parked.is_empty(), "{level}: resumed, and done");
+        let seen = data_call(&state, &slug, "GET", "/seen", "").1;
+        assert_eq!(serde_json::from_str::<serde_json::Value>(&seen).unwrap()["last"], "GET", "{level}: its write landed");
+        let routes: Vec<String> = log_entries(&state, &slug).iter().map(|e| format!("{} {}", e["kind"].as_str().unwrap(), e["route"].as_str().unwrap_or(""))).collect();
+        let hold = state.deployments.lock().unwrap()[&slug].tallies.get("POST /hold").map_or(0, |t| t.runs);
+        if level == "unrecorded" {
+            assert_eq!(routes, ["request GET /paid/:token", "request GET /seen"], "neither part logged");
+            assert_eq!(hold, 2, "each part counted");
+        } else {
+            assert_eq!(routes, ["request POST /hold", "request GET /paid/:token", "resume POST /hold", "request GET /seen"]);
+            assert_eq!(hold, 0, "logged, not counted");
+            // The resume route's request is strict, the resumed part lazy: one sync between them.
+            assert_eq!(log.syncs(), syncs + 2, "the resume request's sync, and the strict /seen's; not the lazy part's");
+        }
+    }
     let _ = std::fs::remove_file(&state.deployments_path);
     let _ = std::fs::remove_dir_all(Path::new(&state.deployments_path).with_extension("logs"));
 }

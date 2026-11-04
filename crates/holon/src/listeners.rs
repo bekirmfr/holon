@@ -182,7 +182,7 @@ fn serve_flow(
             // One copy of the request, lent to the run, the check for a wait and the entry.
             let inputs = [Some(req)];
             let mut run = fire_with_state(endpoint, &inputs, &resolver, store, state.as_ref(), sourced, &permit, false, &secrets, &mut waits, None);
-            parked = durable::park_if_waiting(deployments, store, slug, &matched.endpoint, "request", Some(route.to_string()), &inputs, sourced, &run, &waits);
+            parked = durable::park_if_waiting(deployments, store, slug, &matched.endpoint, "request", Some(route.to_string()), level, &inputs, sourced, &run, &waits);
             answer_derived = run.secret_fed.derives_output(0);
             // An answer carrying a secret goes to the caller only where a person approved it
             // (`SecretAnswer("name")`): one the graph says may carry it, or one that holds its
