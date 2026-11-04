@@ -25,12 +25,14 @@ const GRANTS_USAGE: &str = "usage: holon grants [--json] [--server PORT|URL]
   it can't run, if it can't. Admins.
 ";
 
-const POLICY_USAGE: &str = "usage: holon policy [--reload] [--json] [--server PORT|URL]
+const POLICY_USAGE: &str = "usage: holon policy [--reload] [--sweep-every 10m|off] [--json] [--server PORT|URL]
 
-  The host's policy: each limit's default and ceiling, what is granted without asking, and
-  whether flows may call plain http or private addresses. --reload: read the policy file again
-  and hold every deployment to it at once (a lowered ceiling pauses a deployment it no longer
-  covers). Editors and admins reload.
+  The host's policy: each limit's default and ceiling, what is granted without asking, whether
+  flows may call plain http or private addresses, and how often the server sweeps. --reload: read
+  the policy file again and hold every deployment to it at once (a lowered ceiling pauses a
+  deployment it no longer covers). Editors and admins reload. --sweep-every: how often the server
+  sweeps its store and the folders' kept texts (a minute at the least: 90s, 10m, 2h, 1d; off:
+  only an admin's), written into the policy file's [storage]; an admin's.
 ";
 
 fn usage(text: &str) -> String {
@@ -201,10 +203,15 @@ pub(crate) fn held_lines(held: &Value) -> Vec<String> {
 pub(crate) fn policy(args: &[String]) -> i32 {
     const WHO: &str = "holon policy";
     let usage = usage(POLICY_USAGE);
-    let args = match cmdline::parse(WHO, &usage, args, &[], &["--reload", "--json"]) {
+    let args = match cmdline::parse(WHO, &usage, args, &["--sweep-every"], &["--reload", "--json"]) {
         Ok(a) => a,
         Err(code) => return code,
     };
+    if let Some(every) = args.value("--sweep-every")
+        && let Err(code) = cmdline::json(WHO, &args, "POST", "/admin/storage", Some(&serde_json::json!({ "sweep_every": every })))
+    {
+        return code;
+    }
     let answer = if args.flag("--reload") {
         cmdline::json(WHO, &args, "POST", "/permissions/reload", None)
     } else {
@@ -231,6 +238,7 @@ pub(crate) fn policy_lines(v: &Value) -> Vec<String> {
         format!("granted unasked    {}", if v["auto"].as_array().is_some_and(|a| !a.is_empty()) { words(&v["auto"]) } else { "nothing".into() }),
         format!("plain http         {}", allowed(&v["allow_plain_http"])),
         format!("private addresses  {}", allowed(&v["allow_private_addresses"])),
+        format!("sweeps             {}", v["storage"]["sweep_every"].as_str().map_or("every 10m".into(), |e| if e == "off" { "off: only an admin's".to_string() } else { format!("every {e}") })),
         String::new(),
     ];
     // Each limit: what a flow gets unless it asks, and the most it may ask for.
@@ -297,13 +305,14 @@ mod tests {
 
     #[test]
     fn the_policy_and_who_holds_what_read_as_lines() {
-        let v = json!({ "defaults": { "max_body_bytes": 65536, "keep_runs": 500 }, "ceilings": { "keep_runs": 20000, "module_fuel": 1000 }, "auto": ["Clock"], "allow_plain_http": false, "allow_private_addresses": true, "attention": { "shop": null, "beats": "a ceiling" } });
+        let v = json!({ "defaults": { "max_body_bytes": 65536, "keep_runs": 500 }, "ceilings": { "keep_runs": 20000, "module_fuel": 1000 }, "auto": ["Clock"], "allow_plain_http": false, "allow_private_addresses": true, "storage": { "sweep_every": "2h" }, "attention": { "shop": null, "beats": "a ceiling" } });
         assert_eq!(
             policy_lines(&v),
             [
                 "granted unasked    Clock",
                 "plain http         refused",
                 "private addresses  allowed",
+                "sweeps             every 2h",
                 "",
                 "limit           default  ceiling",
                 "keep_runs       500      20000",

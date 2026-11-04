@@ -146,7 +146,7 @@ by the syncer when they changed.
   fewer), its file at most about twice that.
 - **The content store**: each state write leaves its changed values and a snapshot as files; once
   retention cuts the run, nothing names them. The server sweeps them every ten minutes
-  (`sweep::EVERY`), sparing what was put in the last hour (`SPARES_MS`), paced (G6); the sweep is
+  (`[storage] sweep_every`, storage.rs), sparing what was put in the last hour (`SPARES_MS`), paced (G6); the sweep is
   skipped when nothing was put since one that spared nothing (R6). An admin's `holon store sweep`
   takes turns with it.
 - **Why.** Only an admin's sweep removed them: at the soak's 51 writes a second (7.7 files and

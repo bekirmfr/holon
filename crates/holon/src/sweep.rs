@@ -1,5 +1,7 @@
 //! Sweeping the content store's values that nothing kept names (docs/L4s/history-L4.md §7):
-//! the server's own, every `EVERY` (docs/L4s/resilience-audit-L4.md, R6), and an admin's, `holon
+//! the server's own, every `[storage] sweep_every` (storage.rs; docs/L4s/resilience-audit-L4.md,
+//! R6: a write leaves values no kept run names once retention cuts it, and a store left to an
+//! admin's sweep fills its disk), and an admin's, `holon
 //! store sweep` or `POST /admin/store/sweep`, at any time.
 //!
 //! A run keeps the state it left as a snapshot (restore.rs): a record naming each cell's value by
@@ -36,11 +38,6 @@ use crate::{err, to_hex, AppState, Deployment, Response, SharedStore};
 
 /// How new a value a sweep spares, whoever names it: four times the longest a run may take.
 pub(crate) const SPARES_MS: u64 = 60 * 60 * 1000;
-/// How often the server sweeps its store on its own: a write leaves values no kept run will name
-/// once retention cuts it, and a store left to an admin's sweep fills its disk (R6). What it
-/// removes is bounded by `SPARES_MS` either way: a value is swept an hour to an hour and ten
-/// minutes after it was put.
-pub(crate) const EVERY: Duration = Duration::from_secs(10 * 60);
 /// How the server's own sweep paces its removals: a pause of `PAUSE` after every `PACE` values
 /// removed, about 2,500 a second at most. Removed as fast as they can be, 134,000 values took
 /// 27 seconds and a deployment's listing fell from about 400 requests a second to 123 meanwhile
@@ -80,6 +77,11 @@ pub(crate) struct Puts {
 impl Puts {
     pub(crate) fn at(dir: PathBuf) -> Puts {
         Puts { dir: Some(dir), ..Puts::default() }
+    }
+
+    /// Whether the store is on disk (one in memory is never swept).
+    pub(crate) fn on_disk(&self) -> bool {
+        self.dir.is_some()
     }
 
     /// Note `hash` as just put. Called with the store held, so a sweep, which holds it too while

@@ -415,6 +415,59 @@ pub(crate) struct Policy {
     /// by default, since only a handler that does nothing outside its run may ask, and a person
     /// approves each (docs/L4s/request-path-L4.md, §8 Q9).
     pub(crate) allow_unrecorded: bool,
+    /// How the host keeps what it stores (`[storage]`, docs/L4s/storage-L4.md).
+    pub(crate) storage: Storage,
+}
+
+/// `[storage]`: how the host keeps what it stores (docs/L4s/storage-L4.md).
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Storage {
+    /// How often the server sweeps its store and the folders' kept texts; none: only an admin's.
+    pub(crate) sweep_every: Option<Duration>,
+}
+
+impl Default for Storage {
+    fn default() -> Storage {
+        Storage { sweep_every: Some(Duration::from_secs(10 * 60)) }
+    }
+}
+
+/// The least `sweep_every` may be: a sweep reads every log and lists the store, so one every few
+/// seconds would cost more than it frees.
+pub(crate) const SWEEP_EVERY_LEAST: Duration = Duration::from_secs(60);
+
+/// A duration as `[storage]` writes it, `30s`, `10m`, `2h` or `1d`, or `off`: none.
+pub(crate) fn parse_every(text: &str) -> Result<Option<Duration>, String> {
+    let text = text.trim();
+    if text == "off" {
+        return Ok(None);
+    }
+    let unit = text.chars().last().unwrap_or(' ');
+    let seconds = match unit {
+        's' => 1,
+        'm' => 60,
+        'h' => 60 * 60,
+        'd' => 24 * 60 * 60,
+        _ => return Err(format!("{text:?} isn't a duration: write it as 30s, 10m, 2h or 1d, or off")),
+    };
+    let n: u64 = text[..text.len() - 1].trim().parse().map_err(|_| format!("{text:?} isn't a duration: write it as 30s, 10m, 2h or 1d, or off"))?;
+    let every = Duration::from_secs(n.saturating_mul(seconds));
+    if every < SWEEP_EVERY_LEAST {
+        return Err(format!("{text:?} is too often: at most one sweep a minute (or off)"));
+    }
+    Ok(Some(every))
+}
+
+/// A duration as `[storage]` writes it (`parse_every`'s other way): the largest unit it is whole in.
+pub(crate) fn every_text(every: Option<Duration>) -> String {
+    let Some(every) = every else { return "off".into() };
+    let s = every.as_secs();
+    match s {
+        _ if s % 86_400 == 0 => format!("{}d", s / 86_400),
+        _ if s % 3_600 == 0 => format!("{}h", s / 3_600),
+        _ if s % 60 == 0 => format!("{}m", s / 60),
+        _ => format!("{s}s"),
+    }
 }
 
 impl Default for Policy {
@@ -435,6 +488,7 @@ impl Default for Policy {
             allow_plain_http: false,
             allow_private_addresses: false,
             allow_unrecorded: true,
+            storage: Storage::default(),
         }
     }
 }
@@ -449,6 +503,15 @@ struct PolicyFile {
     ceilings: BTreeMap<String, u64>,
     #[serde(default)]
     grants: GrantsFile,
+    #[serde(default)]
+    storage: StorageFile,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+struct StorageFile {
+    #[serde(default)]
+    sweep_every: Option<String>,
 }
 
 #[derive(Deserialize, Default)]
@@ -510,6 +573,9 @@ impl Policy {
         policy.allow_plain_http = file.grants.allow_plain_http;
         policy.allow_private_addresses = file.grants.allow_private_addresses;
         policy.allow_unrecorded = file.grants.allow_unrecorded.unwrap_or(true);
+        if let Some(every) = &file.storage.sweep_every {
+            policy.storage.sweep_every = parse_every(every).map_err(|e| format!("storage.sweep_every: {e}"))?;
+        }
         Ok(policy)
     }
 
@@ -977,6 +1043,17 @@ mod tests {
         assert!(Policy::parse("[limits]\nmax_request = 3").unwrap_err().contains("unknown limit"));
         assert!(Policy::parse("[limits]\nmax_requests = 5000").unwrap_err().contains("above its ceiling"));
         assert!(Policy::parse("[grant]\nauto = []").is_err(), "a misspelt section is an error, not ignored");
+
+        // How often the server sweeps: ten minutes unless said, off, or as often as once a minute.
+        assert_eq!(Policy::default().storage.sweep_every, Some(Duration::from_secs(600)));
+        assert_eq!(Policy::parse("[storage]\nsweep_every = \"2h\"").unwrap().storage.sweep_every, Some(Duration::from_secs(7200)));
+        assert_eq!(Policy::parse("[storage]\nsweep_every = \"off\"").unwrap().storage.sweep_every, None);
+        assert!(Policy::parse("[storage]\nsweep_every = \"5s\"").unwrap_err().contains("too often"));
+        assert!(Policy::parse("[storage]\nsweep_every = \"often\"").unwrap_err().contains("isn't a duration"));
+        assert!(Policy::parse("[storage]\nsweep = \"1h\"").is_err(), "a misspelt key is an error");
+        for text in ["90s", "10m", "2h", "1d", "off"] {
+            assert_eq!(every_text(parse_every(text).unwrap()), text, "written back as given");
+        }
 
         // The durable-run limits are limits like the others.
         let p = Policy::parse("[limits]\nmax_waiting_runs = 500\n[ceilings]\nmax_waiting_runs = 1000").unwrap();

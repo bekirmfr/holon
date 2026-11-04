@@ -39,6 +39,7 @@ fn test_state_with(store: SharedStore) -> AppState {
         access: access::Access::default(),
         activity: activity::Activity::memory(),
         editor: None,
+        sweeps: Default::default(),
     }
 }
 
@@ -1024,6 +1025,71 @@ fn the_server_sweeps_its_store_on_its_own_and_not_again_for_nothing() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// The server sweeps on `[storage] sweep_every`'s schedule (storage.rs): the first round a
+/// `sweep_every` after it begins, the next one after that round, none when it is off; and the
+/// admin's view says when the next is due and what the last did.
+#[test]
+fn the_server_sweeps_as_often_as_its_storage_setting_says() {
+    let dir = unique_temp_path("sweep-every");
+    let disk = FileStore::new(&dir).unwrap();
+    let values = disk.values_dir();
+    let state = test_state_with(SharedStore::on_disk(Box::new(disk), values));
+    *state.policy.write().unwrap() = Arc::new(Policy::parse("[storage]\nsweep_every = \"1m\"").unwrap());
+    let t0 = 1_000_000_000;
+    let host = || body_json(route(&state, &req("GET", "/admin/host", vec![])))["sweeps"].clone();
+    assert!(!state.sweeps.tick(&state, t0), "the first look starts the clock");
+    assert_eq!((host()["every"].as_str(), host()["next_at_ms"].as_u64()), (Some("1m"), Some(t0 + 60_000)));
+    assert!(!state.sweeps.tick(&state, t0 + 59_000));
+    assert!(state.sweeps.tick(&state, t0 + 60_000), "due a minute after");
+    let swept = host();
+    assert_eq!(swept["store"]["at_ms"], t0 + 60_000, "{swept}");
+    assert_eq!(swept["store"]["error"], serde_json::Value::Null, "{swept}");
+    assert_eq!(swept["folders"]["at_ms"], t0 + 60_000, "{swept}");
+    assert!(!state.sweeps.tick(&state, t0 + 61_000), "not again until a minute after it");
+    // Nothing put since a sweep that spared nothing: the next round has nothing to look at.
+    let next = host()["next_at_ms"].as_u64().unwrap();
+    assert!(state.sweeps.tick(&state, next));
+    assert_eq!(host()["store"]["skipped"], true, "{}", host());
+    // Off: never, however long it waits.
+    *state.policy.write().unwrap() = Arc::new(Policy::parse("[storage]\nsweep_every = \"off\"").unwrap());
+    assert!(!state.sweeps.tick(&state, next + 365 * 86_400_000));
+    assert_eq!((host()["every"].as_str(), host()["next_at_ms"].as_u64()), (Some("off"), None));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// An admin sets how often the server sweeps (`POST /admin/storage`): written into `holon.toml`'s
+/// `[storage]`, the rest of the file as it was, comments too, and in force at once; a setting that
+/// isn't one changes nothing.
+#[test]
+fn an_admin_sets_how_often_the_server_sweeps_in_its_policy_file() {
+    let mut state = test_state();
+    let path = std::path::PathBuf::from(unique_temp_path("policy")).with_extension("toml");
+    let before = "# the host's policy\n[limits]\nrequest_timeout_ms = 20000 # long calls\n";
+    std::fs::write(&path, before).unwrap();
+    state.policy_path = path.display().to_string();
+    let set = |body: &str| route(&state, &req("POST", "/admin/storage", body.as_bytes().to_vec()));
+    let answer = set(r#"{"sweep_every":"30m"}"#);
+    assert_eq!(answer.status_code, 200);
+    assert_eq!(body_json(answer)["sweeps"]["every"], "30m");
+    let written = std::fs::read_to_string(&path).unwrap();
+    assert!(written.starts_with(before), "the rest kept as it was: {written}");
+    assert!(written.contains("[storage]\nsweep_every = \"30m\""), "{written}");
+    assert_eq!(state.policy().storage.sweep_every, Some(Duration::from_secs(1800)));
+    assert_eq!(state.policy().request.request_timeout, Duration::from_millis(20000), "the rest still in force");
+    assert_eq!(body_json(route(&state, &req("GET", "/permissions", vec![])))["storage"]["sweep_every"], "30m");
+    // Set again: the key changed in place.
+    assert_eq!(set(r#"{"sweep_every":"off"}"#).status_code, 200);
+    assert_eq!(std::fs::read_to_string(&path).unwrap().matches("sweep_every").count(), 1);
+    assert_eq!(state.policy().storage.sweep_every, None);
+    for wrong in [r#"{"sweep_every":"5s"}"#, r#"{"sweep_every":"soon"}"#, "{}"] {
+        let answer = set(wrong);
+        assert_eq!(answer.status_code, 400, "{wrong}");
+        assert_eq!(state.policy().storage.sweep_every, None, "{wrong} changed nothing");
+    }
+    assert!(std::fs::read_to_string(&path).unwrap().contains("sweep_every = \"off\""));
+    let _ = std::fs::remove_file(&path);
+}
+
 #[test]
 fn an_in_memory_store_has_nothing_to_sweep() {
     let state = test_state();
@@ -1881,6 +1947,7 @@ fn deployments_persist_across_a_simulated_restart() {
         access: access::Access::default(),
         activity: activity::Activity::memory(),
         editor: None,
+        sweeps: Default::default(),
         };
         let body = serde_json::to_vec(&serde_json::json!({
             "slug": "echo",
@@ -1917,6 +1984,7 @@ fn deployments_persist_across_a_simulated_restart() {
         access: access::Access::default(),
         activity: activity::Activity::memory(),
         editor: None,
+        sweeps: Default::default(),
     };
     let triggered = route(&state2, &req("POST", "/trigger/echo", b"restarted".to_vec()));
     assert_eq!(triggered.status_code, 200);
@@ -3408,6 +3476,7 @@ fn state_persists_across_a_simulated_restart() {
         access: access::Access::default(),
         activity: activity::Activity::memory(),
         editor: None,
+        sweeps: Default::default(),
         };
         let deploy_body = serde_json::to_vec(&serde_json::json!({
             "slug": "writer",
@@ -3446,6 +3515,7 @@ fn state_persists_across_a_simulated_restart() {
         access: access::Access::default(),
         activity: activity::Activity::memory(),
         editor: None,
+        sweeps: Default::default(),
     };
     let triggered2 = route(&state2, &req("POST", "/trigger/writer", b"after-restart".to_vec()));
     assert_eq!(triggered2.status_code, 200);

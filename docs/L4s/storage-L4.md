@@ -32,7 +32,7 @@ server does when the disk is full, and places to send old runs before they are l
 
 ## 2. Settings: `[storage]`
 
-In `holon.toml`, beside the rest of the host's policy, and editable from the admin page (which
+In `holon.toml`, beside the rest of the host's policy, and editable from the admin page (`POST /admin/storage`, which
 writes the file and reloads it; a file that doesn't parse changes nothing, as now):
 
 ```toml
@@ -124,6 +124,32 @@ A backup that can't be written (a drive gone, a bucket refusing) is a warning, a
 kept until it can be: retention waits rather than delete what it was asked to move, up to the
 `full_at` point, where `when_full` decides.
 
+## 4.1 Keeping old records smaller: lossless compression
+
+Measured on the soaks' data folder (2026-11-04): a 56.5 MB log (`notes-api`'s) is 1.96 MB gzipped
+(29 times smaller); 2,000 of the store's values, 717 KB of bytes (358 B each) but about 8 MB on
+disk (each file takes a 4 KB block), are 128 KB packed together and gzipped (about 60 times
+smaller than on disk). `flate2` is already in the build.
+
+Lossless, so nothing a record proves changes: a log's chain hashes each line's bytes, and a line
+read back from a compressed segment is the same bytes; a value is named by its hash, and read back
+the same.
+
+- **Archives** (`backup`, §4): written compressed. The export's format with gzip around it;
+  `holon verify` reads either.
+- **Logs, in segments**: a log's file becomes its live segment (appended to as now) and sealed
+  segments behind it, each compressed when sealed (past a size, say 4 MB of lines). Reading old
+  runs (history, exports, verify, the sweeps) decompresses a segment at a time. A cut-back then
+  deletes whole sealed segments instead of rewriting the kept lines, so it gets cheaper too (R4's
+  machinery shrinks to the live segment). The chain runs across segments unchanged.
+- **The store, in packs**: values older than what a sweep spares are moved into pack files (many
+  values, compressed together, with an index by hash), the files they were removed; a read looks
+  in the loose files, then the packs' indexes. This is R6's second half (7.7 files a write), and
+  the sweep then rewrites a pack without what nothing names instead of unlinking files one by one.
+
+Each is a format change to what is on disk: a server reads the old form and the new, and a
+downgrade is refused with a reason, not misread.
+
 ## 5. Reach and limits
 
 - **The disk measures are the filesystem's**: another program filling the disk counts too. That is
@@ -139,7 +165,7 @@ kept until it can be: retention waits rather than delete what it was asked to mo
 
 ## 6. Build order
 
-1. **`[storage] sweep_every`**, both sweeps, shown on the admin page; `off`.
+1. **`[storage] sweep_every`**, both sweeps, shown on the admin page; `off`. **Done**: one housekeeping loop (`storage.rs`, looking every 10 s), `GET /admin/host`'s `sweeps`, `POST /admin/storage` (it writes `holon.toml` with its comments kept, then reloads), `holon policy --sweep-every`, the admin page and the terminal editor's admin view.
 2. **`GET /admin/host`**, `holon host`, the admin page's panel: memory, disks, what is kept, sweeps.
 3. **Per-flow shares**: counted in the sweeps' walks and as entries, states and closures change;
    `GET /deployments/<slug>/holds`; the panel's rows, each flow's page in both editors.
@@ -147,6 +173,9 @@ kept until it can be: retention waits rather than delete what it was asked to mo
 5. **`full_at` and `when_full`**: `warn`, `pause` (and resuming), `roll`.
 6. **`backup` to a folder**: retention and `roll` export what they cut there first.
 7. **`backup` to object storage**; Holon Cloud named as coming.
+8. **Compressed archives** (with 6, if small enough to go with it).
+9. **Logs in compressed segments.**
+10. **The store's old values in compressed packs.**
 
 Each step lands measured (what the counting costs a request: nothing on the request path but
 counters), with its tests, its docs, and a sample where a flow shows it (a flow that fills its

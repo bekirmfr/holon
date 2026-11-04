@@ -1451,6 +1451,19 @@ test("rolling-log keeps only its newest 5 runs, as its deploy settings ask, whil
     await asks.getByRole("button", { name: "Cancel" }).click();
   }
   expect((await dryRun()).kept.values).toBeGreaterThan(0);
+  // How often the server sweeps on its own: shown here, and set here, into its holon.toml.
+  const schedule = page.getByText("the server sweeps on its own").locator("..");
+  await expect(schedule).toContainText("every 10m");
+  const every = schedule.getByLabel("how often the server sweeps");
+  await every.fill("5s");
+  await expect(schedule.getByRole("button", { name: "set" }), "too often: not a setting it takes").toBeDisabled();
+  await every.fill("2h");
+  await schedule.getByRole("button", { name: "set" }).click();
+  await expect(schedule).toContainText("every 2h");
+  expect(((await (await request.get(`${SERVER}/permissions`, { headers: auth })).json()) as { storage: { sweep_every: string } }).storage.sweep_every).toBe("2h");
+  await every.fill("10m");
+  await schedule.getByRole("button", { name: "set" }).click();
+  await expect(schedule).toContainText("every 10m");
   // Its clock would beat for the rest of the run.
   await request.post(`${SERVER}/deployments/rolling-log/stop`, { data: {}, headers: auth });
 });

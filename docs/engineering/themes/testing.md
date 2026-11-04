@@ -119,6 +119,9 @@ A slower path that is still right would pass every test above; these fail instea
 - `a_log_read_a_line_at_a_time_holds_no_lock_and_sees_one_file_whole` (R5): taking the lock inside
   the reader's callback would never return if it were held.
 - `the_server_sweeps_its_store_on_its_own_and_not_again_for_nothing` (R6),
+  `the_server_sweeps_as_often_as_its_storage_setting_says`,
+  `an_admin_sets_how_often_the_server_sweeps_in_its_policy_file` (its other sections and comments
+  kept; the e2e `rolling-log` test sets it from the admin page),
   `a_store_sweep_clears_the_states_no_kept_run_names_and_nothing_else`,
   `a_journal_keeps_what_its_runs_read_in_chunks_for_a_while_and_stays_under_its_cap`,
   `a_hash_is_exactly_64_hex_digits_anywhere_in_a_text`.

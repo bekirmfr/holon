@@ -195,6 +195,16 @@ export async function sweepStore(dryRun: boolean): Promise<{ dry_run: boolean; s
 export async function sweepFolders(): Promise<{ texts: number; chunks: number; bytes: number; kept: { texts: number; chunks: number; bytes: number } }> {
   return asJson(await post(`${BASE}/admin/folders/sweep`, {}));
 }
+/** What one of the server's own sweeps did (storage.rs `Report`). */
+export type SweepReport = { at_ms: number; took_ms: number; removed: number; bytes: number; skipped: boolean; error: string | null };
+/** `GET /admin/host`'s sweeps: how often (`"10m"`, `"off"`), when the next is due, what the last of each did. */
+export type HostSweeps = { every: string; next_at_ms: number | null; sweeping: boolean; store: SweepReport | null; folders: SweepReport | null };
+/** `GET /admin/host` (storage.rs): what the host keeps, and how it sweeps. */
+export const getHost = async () => asJson<{ sweeps: HostSweeps }>(await api(`${BASE}/admin/host`));
+/** `POST /admin/storage`: how often the server sweeps (`"10m"`, `"2h"`, `"off"`), written into its `holon.toml`. */
+export async function setSweepEvery(every: string): Promise<{ sweeps: HostSweeps }> {
+  return asJson(await post(`${BASE}/admin/storage`, { sweep_every: every }));
+}
 /** One deployment's grant as `GET /admin/grants` lists it (grants.rs): what it holds, what was taken back since. */
 export type HeldGrant = { slug: string; status: DeploymentEntry["status"]; attention: string | null; items: string[]; revoked: string[] };
 export const listGrants = async () => asJson<HeldGrant[]>(await api(`${BASE}/admin/grants`));
@@ -483,6 +493,8 @@ export type HostPolicy = {
   auto: string[];
   allow_plain_http: boolean;
   allow_private_addresses: boolean;
+  /** `[storage]`: how often the server sweeps (`"10m"`, `"off"`). */
+  storage?: { sweep_every: string };
 };
 
 export async function getPermissions(): Promise<HostPolicy> {

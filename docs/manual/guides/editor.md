@@ -190,9 +190,10 @@ Admins manage, from here:
 - **secrets**: the server's own, read by every deployment that reads one and has none of its
   own, each with where it may go
   ([The server's own secrets](deploying.md#the-servers-own-secrets));
-- **storage**: sweeping what nothing kept names any more, the content store's states and values
-  (it counts first, then asks) and the texts of files runs read and wrote, as `holon store sweep`
-  and `holon folder sweep` do;
+- **storage**: how often the server sweeps on its own, what its last sweeps removed and when the
+  next is due, set here into its `holon.toml` (`[storage] sweep_every`); and sweeping now what
+  nothing kept names any more, the content store's states and values (it counts first, then asks)
+  and the texts of files runs read and wrote, as `holon store sweep` and `holon folder sweep` do;
 - **signing in through an identity provider** (OpenID Connect): its issuer and client id.
 
 Every one of these has a command too: `holon user`, `holon token`, `holon oidc`, `holon folder`,

@@ -72,6 +72,16 @@ allow_plain_http = true
     `Unrecorded("GET /health")` (default `true`: only a handler that does nothing outside its run
     may ask, and a person approves each).
 
+- **`[storage]`**: how the server keeps what it stores.
+  - `sweep_every`: how often the server sweeps, on its own, what nothing kept names any more: the
+    content store's states and values (an hour after they were put) and the texts of files runs
+    read and wrote ([Files on the host](../guides/files.md)). `90s`, `10m` (the default), `2h`,
+    `1d`, a minute at the least; or `off`, when only an admin's sweep removes anything (`holon
+    store sweep`, `holon folder sweep`, the admin page). The store's sweep paces itself (about
+    2,500 values a second at most) so the server's runs hardly notice it. An admin sets it from the
+    admin page or with `holon policy --sweep-every`, which write it here; a change applies within
+    ten seconds.
+
 An unknown section or key is a mistake, and so is a limit name the server doesn't know. The limits,
 their defaults and their ceilings are in [Permissions](permissions.md#limits).
 

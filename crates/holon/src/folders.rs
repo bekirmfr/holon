@@ -1687,8 +1687,6 @@ pub(crate) fn kept_text(folders: &Folders, store: &SharedStore, blob: &str) -> R
     }
 }
 
-/// How often the server sweeps the texts no kept run refers to.
-pub(crate) const SWEEP_EVERY: Duration = Duration::from_secs(10 * 60);
 /// How new a text a sweep spares, whoever refers to it: a run that has just kept one logs it when
 /// it finishes.
 pub(crate) const SWEEP_SPARES_MS: u64 = 5 * 60 * 1000;

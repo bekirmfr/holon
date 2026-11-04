@@ -247,8 +247,18 @@ impl App {
                     rows.push(text(Tone::Dim, "enter: set it, or clear it"));
                     rows
                 }
-                3 => vec![text(Tone::Head, "The store"), text(Tone::Plain, "Values nothing kept names any more: no run, version or state."), text(Tone::Dim, "enter: count what a sweep would remove, then ask")],
-                _ => vec![text(Tone::Head, "Folder texts"), text(Tone::Plain, "The file texts no live run, kept run or folder names."), text(Tone::Dim, "enter: remove them")],
+                3 => {
+                    let mut rows = vec![text(Tone::Head, "The store"), text(Tone::Plain, "Values nothing kept names any more: no run, version or state.")];
+                    rows.extend(lines(c.get("/admin/host"), |v| crate::storage::sweep_lines(&v["sweeps"], "store", "values")));
+                    rows.push(text(Tone::Dim, "enter: count what a sweep would remove, then ask; holon policy --sweep-every sets how often"));
+                    rows
+                }
+                _ => {
+                    let mut rows = vec![text(Tone::Head, "Folder texts"), text(Tone::Plain, "The file texts no live run, kept run or folder names.")];
+                    rows.extend(lines(c.get("/admin/host"), |v| crate::storage::sweep_lines(&v["sweeps"], "folders", "texts")));
+                    rows.push(text(Tone::Dim, "enter: remove them"));
+                    rows
+                }
             },
         };
         self.admin.pane = Some((key, rows));

@@ -310,13 +310,15 @@ can't run, if it can't. Admins.
 ### `holon policy`
 
 ```
-holon policy [--reload] [--json]
+holon policy [--reload] [--sweep-every 10m|off] [--json]
 ```
 
 The host's policy: what it grants without asking, whether flows may call plain `http` or private
-addresses, and each limit's default and ceiling. `--reload` reads the policy file again and holds
-every deployment to it at once, saying which it no longer covers (those pause). Editors and
-admins reload. See [The host's policy](../guides/deploying.md#the-hosts-policy).
+addresses, how often the server sweeps, and each limit's default and ceiling. `--reload` reads the
+policy file again and holds every deployment to it at once, saying which it no longer covers
+(those pause). Editors and admins reload. `--sweep-every` sets how often the server sweeps what
+nothing kept names (`90s`, `10m`, `2h`, `1d`, a minute at the least, or `off`), written into the
+policy file's [`[storage]`](server.md#the-policy); an admin's. See [The host's policy](../guides/deploying.md#the-hosts-policy).
 
 ## `holon secret`
 

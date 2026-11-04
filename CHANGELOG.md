@@ -32,6 +32,11 @@
   encoding: measured, a server of flows without a js node held about 8 times its `--flow-cache`,
   and the value cache about 3 times its 64 MiB. Each now keeps a little less than its size, never
   more.
+- **How often the server sweeps is a setting.** `[storage] sweep_every` in `holon.toml` (`10m` by
+  default, a minute at the least, or `off`), set from the admin page or with `holon policy
+  --sweep-every`, covers both sweeps: the content store's and the folders' kept file texts. The
+  admin page, the terminal editor and `holon policy` say how often, when the next is due and what
+  the last of each removed.
 - **The server sweeps its content store on its own.** Every ten minutes it removes the values
   nothing kept names, as `holon store sweep` does (an hour after they were put, as before), and
   logs what it freed in its activity. Before, only an admin's sweep did: a server writing state

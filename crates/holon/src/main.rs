@@ -197,6 +197,7 @@ mod ranges;
 mod recorder;
 mod restore;
 mod scheduler;
+mod storage;
 mod sweep;
 mod sealing;
 mod secret_sources;
@@ -381,6 +382,8 @@ struct AppState {
     activity: activity::Activity,
     /// The editor, served at `/` (editor.rs): built in, or a folder; none without either.
     editor: Option<editor::Source>,
+    /// The server's own sweeps, on `[storage] sweep_every`'s schedule (storage.rs).
+    sweeps: storage::Sweeps,
 }
 
 impl AppState {
@@ -1169,51 +1172,6 @@ fn serve(args: Vec<String>) {
         let before = Arc::clone(&deployments);
         heads::before_send(Box::new(move || recorder::sync_logs(&before)));
     }
-    {
-        // The texts of files no kept run refers to any more are swept (folders.rs).
-        let (folders, deployments) = (Arc::clone(&folders), Arc::clone(&deployments));
-        std::thread::spawn(move || {
-            loop {
-                let now = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64);
-                match folders::sweep(&folders, &deployments, now, folders::SWEEP_SPARES_MS) {
-                    Ok(s) if s.texts > 0 || s.chunks > 0 => {
-                        println!("holon: swept {} file texts no kept run refers to ({} freed)", s.texts, folders::size_text(s.bytes));
-                    }
-                    Ok(_) => {}
-                    Err(e) => eprintln!("holon: sweeping file texts: {e}"),
-                }
-                std::thread::sleep(folders::SWEEP_EVERY);
-            }
-        });
-    }
-    {
-        // The store's values no kept run names any more are swept (sweep.rs, R6).
-        let (store, deployments, activity) = (store.clone(), Arc::clone(&deployments), activity::Activity::beside(&deployments_arg));
-        std::thread::spawn(move || {
-            let mut scheduled = sweep::Scheduled::default();
-            let mut failing = false;
-            loop {
-                std::thread::sleep(sweep::EVERY);
-                let now = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64);
-                let began = std::time::Instant::now();
-                match scheduled.sweep(&store, &deployments, now) {
-                    Ok(swept) => {
-                        failing = false;
-                        if let Some(s) = swept.filter(|s| s.values > 0) {
-                            let freed = format!("{} values, {} freed", s.values, folders::size_text(s.bytes));
-                            println!("holon: swept the store: {freed}, in {:.1} s", began.elapsed().as_secs_f64());
-                            activity.record("swept the store", &freed, None);
-                        }
-                    }
-                    Err(e) if !failing => {
-                        eprintln!("holon: sweeping the store: {e} (tried again every {} minutes)", sweep::EVERY.as_secs() / 60);
-                        failing = true;
-                    }
-                    Err(_) => {}
-                }
-            }
-        });
-    }
     let port = bound.port();
     // Everyone signs in (access.rs); a new server first needs its admin, set up with the code
     // it prints here.
@@ -1242,6 +1200,7 @@ fn serve(args: Vec<String>) {
         activity,
         access,
         editor: editor::Source::pick(editor_dir.map(std::path::PathBuf::from)),
+        sweeps: storage::Sweeps::default(),
     };
     sync_listeners(&state);
 
@@ -1261,5 +1220,7 @@ fn serve(args: Vec<String>) {
     if state_cell.set(state).is_err() {
         unreachable!("the state is set once");
     }
+    // The store's values and the folders' texts no kept run names any more are swept (storage.rs).
+    storage::start(Arc::clone(&state_cell));
     server.run();
 }

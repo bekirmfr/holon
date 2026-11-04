@@ -32,6 +32,9 @@ import {
   setOidcSettings,
   sweepFolders,
   sweepStore,
+  getHost,
+  setSweepEvery,
+  type HostSweeps,
   unbindDatabase,
   unbindFolder,
   unbindServerSecret,
@@ -47,6 +50,7 @@ import {
   type SecretInfo,
   type TokenEntry,
 } from "./server";
+import { isEvery, reportLine, scheduleLine, sizeText } from "./storage";
 import { useDialog } from "./Dialog";
 import { FolderPicker } from "./FolderPicker";
 import { ActivityList } from "./Pages";
@@ -89,20 +93,6 @@ const RUN_LOCK_COST = "every run that writes it goes one at a time, for its whol
 const messageOf = (e: unknown) => (e instanceof Error ? e.message : String(e));
 /** The link someone opens to set their password. */
 const linkFor = (token: string) => `${location.origin}${location.pathname}?invite=${encodeURIComponent(token)}`;
-/** A size in bytes as people read it (folders.rs's `size_text`): `512 bytes`, `64 KiB`, `1.5 MiB`. */
-function sizeText(bytes: number): string {
-  for (const [size, unit] of [
-    [2 ** 30, "GiB"],
-    [2 ** 20, "MiB"],
-    [2 ** 10, "KiB"],
-  ] as const) {
-    if (bytes >= size) {
-      const n = bytes / size;
-      return Number.isInteger(n) || n >= 100 ? `${n.toFixed(0)} ${unit}` : `${n.toFixed(1)} ${unit}`;
-    }
-  }
-  return `${bytes} bytes`;
-}
 /** A connection typed in as a URL (`postgres://user:…@host/shop`), not where one is kept: the page never sends it. */
 const isUrl = (s: string) => /^[a-z][a-z0-9+.-]*:\/\//i.test(s.trim());
 const keyOf = (b: { name: string; deployment: string | null }) => `${b.deployment ?? ""}/${b.name}`;
@@ -143,6 +133,9 @@ export function AdminPage({ me, onOpenDeployment }: { me: string; onOpenDeployme
   const [reloaded, setReloaded] = useState<{ at: number; attention: [string, string][] } | null>(null);
   // What the last sweep of the store and of the file texts said.
   const [swept, setSwept] = useState<{ store?: string; folders?: string }>({});
+  // The server's own sweeps (`GET /admin/host`), and the setting being edited.
+  const [sweeps, setSweeps] = useState<HostSweeps | null>(null);
+  const [everyDraft, setEveryDraft] = useState("");
   const [kind, setKind] = useState("everything");
   const [version, setVersion] = useState(0);
 
@@ -154,6 +147,12 @@ export function AdminPage({ me, onOpenDeployment }: { me: string; onOpenDeployme
     listServerSecrets().then(setServerSecrets).catch((e: unknown) => setMsg(messageOf(e)));
     listGrants().then(setGrants).catch((e: unknown) => setMsg(messageOf(e)));
     getPermissions().then(setPolicy).catch((e: unknown) => setMsg(messageOf(e)));
+    getHost()
+      .then((h) => {
+        setSweeps(h.sweeps);
+        setEveryDraft(h.sweeps.every);
+      })
+      .catch((e: unknown) => setMsg(messageOf(e)));
     getOidcSettings()
       .then((s) => {
         setOidc(s);
@@ -743,6 +742,38 @@ export function AdminPage({ me, onOpenDeployment }: { me: string; onOpenDeployme
             What runs leave on this host that nothing kept names any more: states of runs the logs no longer keep, and the texts of files no kept run read or wrote. Anything put in
             the last hour, and code, is never swept. The same as <code>holon store sweep</code> and <code>holon folder sweep</code>.
           </div>
+          {sweeps && (
+            <>
+              <form
+                style={row}
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  act(async () => {
+                    const set = await setSweepEvery(everyDraft.trim());
+                    setSweeps(set.sweeps);
+                    setEveryDraft(set.sweeps.every);
+                  });
+                }}
+              >
+                <span style={{ flex: 1 }}>
+                  the server sweeps on its own <span style={quiet}>· {scheduleLine(sweeps, Date.now())}</span>
+                </span>
+                <input
+                  aria-label="how often the server sweeps"
+                  title="how often: 90s, 10m, 2h, 1d (a minute at the least), or off; written into the server's holon.toml [storage]"
+                  value={everyDraft}
+                  onChange={(e) => setEveryDraft(e.target.value)}
+                  style={{ ...input, width: 80 }}
+                />
+                <button type="submit" style={small} disabled={!isEvery(everyDraft) || everyDraft.trim() === sweeps.every}>
+                  set
+                </button>
+              </form>
+              <div style={{ ...row, ...quiet }}>
+                last: the store {reportLine(sweeps.store, "values", Date.now())}; file texts {reportLine(sweeps.folders, "texts", Date.now())}
+              </div>
+            </>
+          )}
           <div style={row}>
             <span style={{ flex: 1 }}>the store: states and values{swept.store && <span style={quiet}> · {swept.store}</span>}</span>
             <button
