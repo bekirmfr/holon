@@ -144,11 +144,16 @@ impl Server {
     /// The labels of its handlers declared `unrecorded` (`GET /health`, `action report`), as their
     /// runs are labelled: what each asks to be approved, `Unrecorded("GET /health")`.
     pub fn unrecorded(&self) -> std::collections::BTreeSet<String> {
-        let routes = self.routes.iter().filter(|r| r.log == LogLevel::Unrecorded).map(|r| format!("{} {}", r.method, r.path));
-        let clocks = self.clocks.iter().filter(|c| c.log == LogLevel::Unrecorded).map(|c| c.label.clone());
-        let files = self.files.iter().filter(|f| f.log == LogLevel::Unrecorded).map(|f| f.label.clone());
-        let actions = self.actions.iter().filter(|a| a.log == LogLevel::Unrecorded).map(|a| a.label.clone());
-        routes.chain(clocks).chain(files).chain(actions).collect()
+        self.handlers().filter(|(_, log, _)| *log == LogLevel::Unrecorded).map(|(label, _, _)| label).collect()
+    }
+
+    /// Each of its handlers: its label, as its runs are labelled, its level, and its unit.
+    pub fn handlers(&self) -> impl Iterator<Item = (String, LogLevel, Hash)> + '_ {
+        let routes = self.routes.iter().map(|r| (format!("{} {}", r.method, r.path), r.log, r.endpoint));
+        let clocks = self.clocks.iter().map(|c| (c.label.clone(), c.log, c.handler));
+        let files = self.files.iter().map(|f| (f.label.clone(), f.log, f.handler));
+        let actions = self.actions.iter().map(|a| (a.label.clone(), a.log, a.handler));
+        routes.chain(clocks).chain(files).chain(actions)
     }
 
     /// Its action named `name`, if it has one.

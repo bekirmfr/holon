@@ -400,7 +400,7 @@ pub(crate) fn check(export: &Export, witnessed: Option<&str>, files: &BTreeMap<S
         report.reruns.push((entry.seq, came_to));
     }
     let events: Vec<crate::events::Event> = export.events.iter().filter_map(|l| serde_json::from_str(l).ok()).collect();
-    report.states = check_states(&entries, &lefts, &events, &marks);
+    report.states = check_states(&entries, &lefts, &events, &marks, &resolver);
     check_sends(&entries, &resolver, &marks, &mut report);
     report
 }
@@ -504,11 +504,20 @@ fn beside(a: &LogEntry, b: &LogEntry) -> bool {
 /// ran beside another may have begun from a state an earlier one left or began with, and may have
 /// left cells it couldn't read as the other wrote them: of those, only the cells it wrote are
 /// checked, in a state a later run began from.
-fn check_states(entries: &[(LogEntry, &str)], lefts: &[Option<Left>], events: &[crate::events::Event], marks: &Marks) -> Option<States> {
+///
+/// A run of an unrecorded handler isn't in the log, nor a lazy one's whose record a restart lost:
+/// where a version has one that writes the state, a state that doesn't follow is said unchecked,
+/// as its author chose, not a break.
+fn check_states(entries: &[(LogEntry, &str)], lefts: &[Option<Left>], events: &[crate::events::Event], marks: &Marks, resolver: &impl holon_core::Resolver) -> Option<States> {
     if !entries.iter().any(|(e, _)| e.state_after.is_some()) {
         return None;
     }
     let mut states = States::default();
+    let mut light: BTreeMap<&str, Light> = BTreeMap::new();
+    for (e, _) in entries {
+        light.entry(e.unit.as_str()).or_insert_with(|| Light::of(&e.unit, resolver));
+    }
+    let light = |e: &LogEntry| light[e.unit.as_str()];
     // Each run's state as it began: its snapshot's hash, and the state.
     let began: Vec<Option<(String, State)>> = entries
         .iter()
@@ -572,6 +581,10 @@ fn check_states(entries: &[(LogEntry, &str)], lefts: &[Option<Left>], events: &[
                             if from_before || from_beside {
                                 states.began.push(b.seq);
                                 states.beside.push(b.seq);
+                            } else if light(p).unrecorded || light(b).unrecorded {
+                                states.unchecked("where it began: an unrecorded handler that writes the state may have run before it, which the log doesn't hold", b.seq);
+                            } else if light(p).lazy && p.session != b.session {
+                                states.unchecked("where it began: a lazy handler that writes the state may have run before a restart, its record lost", b.seq);
                             } else {
                                 states.breaks.push((b.seq, format!("it began from a state the run before it (run {}) didn't leave, nor a run beside it", p.seq)));
                             }
@@ -581,8 +594,10 @@ fn check_states(entries: &[(LogEntry, &str)], lefts: &[Option<Left>], events: &[
             }
         }
 
-        // What it left.
+        // What it left. An unrecorded handler's runs may have written beside it, as another
+        // run may.
         let (Some(after), Some(left)) = (&b.state_after, &lefts[i]) else { continue };
+        let (ran_beside, side_by_side) = (side_by_side, side_by_side || light(b).unrecorded);
         if resumed {
             states.unchecked("what it left: it is a resumed part, whose writes land on the state as it is by then", b.seq);
             continue;
@@ -597,8 +612,10 @@ fn check_states(entries: &[(LogEntry, &str)], lefts: &[Option<Left>], events: &[
         // The state it left, as a run that began from it found it.
         let Some((_, then)) = began.iter().flatten().find(|(h, _)| h == after) else {
             states.unchecked(
-                if side_by_side {
+                if ran_beside {
                     "what it left: it ran beside another run, and no run here began from the state it left"
+                } else if side_by_side {
+                    "what it left: an unrecorded handler that writes the state may have run beside it, and no run here began from the state it left"
                 } else {
                     "what it left: it wrote a collection, and no run here began from the state it left"
                 },
@@ -617,6 +634,30 @@ fn check_states(entries: &[(LogEntry, &str)], lefts: &[Option<Left>], events: &[
         }
     }
     Some(states)
+}
+
+/// Whether a version (its unit, hex) has a handler that may write the state and whose runs the log
+/// may not hold: an unrecorded one, or a lazy one. One that doesn't resolve may write anything.
+#[derive(Clone, Copy, Default)]
+struct Light {
+    unrecorded: bool,
+    lazy: bool,
+}
+
+impl Light {
+    fn of(unit: &str, resolver: &impl holon_core::Resolver) -> Light {
+        let Some(server) = parse_hash(unit).and_then(|h| resolver.resolve(&h)).and_then(|u| read_server(u, resolver).ok()) else { return Light::default() };
+        let writes = |h: &Hash| resolver.resolve(h).is_none_or(|u| capabilities(u, resolver).iter().any(|c| matches!(c, Capability::StateWrite(_) | Capability::CollectionWrite(_))));
+        let mut light = Light::default();
+        for (_, level, handler) in server.handlers() {
+            match level {
+                holon_core::LogLevel::Unrecorded if !light.unrecorded => light.unrecorded = writes(&handler),
+                holon_core::LogLevel::Lazy if !light.lazy => light.lazy = writes(&handler),
+                _ => {}
+            }
+        }
+        light
+    }
 }
 
 /// The events' chain: unbroken from the first (nothing before it, as they are kept for good) to

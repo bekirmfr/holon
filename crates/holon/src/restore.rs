@@ -276,6 +276,10 @@ pub(crate) fn state_lines(change: &serde_json::Value) -> String {
         (_, true) => format!("{runs} run(s) logged since {from}, which did nothing outside its state"),
         (_, false) => format!("{runs} run(s) logged since {from} also did, outside its state, what a restore doesn't undo: {}", effects.join(", ")),
     });
+    let unrecorded: Vec<&str> = change["unrecorded"].as_array().into_iter().flatten().filter_map(|v| v.as_str()).collect();
+    if !unrecorded.is_empty() {
+        lines.push(format!("runs of {} (unrecorded) aren't logged: what they did outside its state isn't counted here", unrecorded.join(", ")));
+    }
     let files = change["files"].as_array().map(Vec::as_slice).unwrap_or_default();
     if !files.is_empty() {
         lines.push("files the runs since wrote, which a restore doesn't put back:".to_string());

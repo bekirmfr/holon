@@ -1560,15 +1560,25 @@ fn restore_plan(state: &AppState, slug: &str, point: Point, code: bool, with_sta
 /// and collections aren't counted: those are what it puts back.
 fn state_change(state: &AppState, slug: &str, snapshot: &str, label: &str, since: &[LogEntry]) -> Result<serde_json::Value, Response> {
     let back = crate::restore::snapshot_refs(snapshot, &state.store).map_err(|e| err(500, format!("the state {label} left can't be read: {e}")))?;
-    let (live, redactor, before) = match state.deployments.lock().unwrap().get(slug) {
+    let (live, redactor, before, unrecorded) = match state.deployments.lock().unwrap().get(slug) {
         Some(d) => {
             // The runs before the point: what a file was there, the last write before it.
             let first = since.first().map_or(u64::MAX, |e| e.seq);
             let log = (!since.is_empty()).then(|| (Arc::clone(&d.log), first));
-            (d.state.clone(), Some(Redactor::of(&d.secrets)), log)
+            let unrecorded = d.server.as_ref().map(|s| (s.clone(), d.unit, Arc::clone(&d.permit)));
+            (d.state.clone(), Some(Redactor::of(&d.secrets)), log, unrecorded)
         }
-        None => (None, None, None),
+        None => (None, None, None, None),
     };
+    // The handlers it keeps unrecorded that do something outside its state: what their runs did
+    // isn't in the runs since.
+    let unrecorded: Vec<String> = unrecorded
+        .and_then(|(server, unit, permit)| {
+            let resolver = closure(&state.store, unit).ok()?;
+            let outside = |h: &Hash| resolver.resolve(h).is_none_or(|u| capabilities(u, &resolver).iter().any(|c| !c.is_sourced() && !matches!(c, Capability::StateWrite(_) | Capability::CollectionWrite(_))));
+            Some(server.handlers().filter(|(label, _, h)| permit.unrecorded.contains(label) && outside(h)).map(|(label, _, _)| label).collect())
+        })
+        .unwrap_or_default();
     // Read with the table let go.
     let before: Vec<LogEntry> = before.map(|(log, first)| log.after(None, usize::MAX).into_iter().filter(|e| e.seq < first).collect()).unwrap_or_default();
     let now = live.as_ref().map(|arc| arc.state.lock().unwrap().refs()).unwrap_or_default();
@@ -1614,6 +1624,7 @@ fn state_change(state: &AppState, slug: &str, snapshot: &str, label: &str, since
         "files_more": values["files"]["more"],
         "runs_since": since.len(),
         "effects_since": effects,
+        "unrecorded": unrecorded,
     }))
 }
 

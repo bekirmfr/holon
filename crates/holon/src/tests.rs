@@ -8327,6 +8327,35 @@ fn an_unrecorded_handler_that_writes_and_sends_runs_as_written() {
     let _ = std::fs::remove_dir_all(Path::new(&state.deployments_path).with_extension("logs"));
 }
 
+/// What an unrecorded handler that writes leaves out is said as such: `holon verify` takes a state
+/// it may have moved for unchecked, not a break, and a restore's dry run says its runs, which
+/// send, aren't counted in the runs since.
+#[test]
+fn what_an_unrecorded_writer_leaves_out_is_unchecked_not_a_break() {
+    let mut state = test_state();
+    state.deployments_path = unique_temp_path("unrecorded-verify");
+    let text = "flow light-verify\nport 8176\ncollection notes\nchannel updates\n\nroute POST /notes (req) {\n  notes[req.json.id] = req.json.text\n  respond \"saved\"\n}\n\nroute POST /quiet (req) unrecorded {\n  notes[req.json.id] = req.json.text\n  updates.send({ id: req.json.id })\n  respond \"saved\"\n}\n\nroute GET /notes/:id (req) {\n  respond { text: notes[req.params.id] }\n}\n";
+    let slug = deploy_plain_text(&state, text);
+    assert_eq!(data_call(&state, &slug, "POST", "/notes", r#"{"id":"a","text":"hi"}"#).0, 200);
+    assert_eq!(data_call(&state, &slug, "POST", "/quiet", r#"{"id":"b","text":"shh"}"#).0, 200);
+    assert_eq!(data_call(&state, &slug, "GET", "/notes/a", "").0, 200);
+    let export: verify::Export = serde_json::from_value(body_json(route(&state, &req("GET", &format!("/deployments/{slug}/export"), vec![])))).unwrap();
+    assert_eq!(export.lines.len(), 2, "the unrecorded run isn't in it");
+    let report = verify::check(&export, None, &BTreeMap::new());
+    let said = verify::describe(&report, None);
+    assert!(report.ok(), "{said}");
+    let states = report.states.as_ref().unwrap();
+    let why = "where it began: an unrecorded handler that writes the state may have run before it, which the log doesn't hold";
+    assert_eq!(states.unchecked.get(why), Some(&vec![1]), "{said}");
+    assert!(said.contains(why), "{said}");
+
+    let dry = body_json(route(&state, &req("POST", &format!("/deployments/{slug}/restore"), serde_json::json!({ "run": 0, "state": true, "dry_run": true }).to_string().into_bytes())));
+    assert_eq!(dry["state"]["unrecorded"], serde_json::json!(["POST /quiet"]), "{dry}");
+    assert!(restore::state_lines(&dry["state"]).contains("runs of POST /quiet (unrecorded) aren't logged"), "{}", restore::state_lines(&dry["state"]));
+    let _ = std::fs::remove_file(&state.deployments_path);
+    let _ = std::fs::remove_dir_all(Path::new(&state.deployments_path).with_extension("logs"));
+}
+
 /// A host whose policy never lets a handler go unrecorded (holon.toml: grants.allow_unrecorded =
 /// false) refuses a deploy that asks, saying why; the default policy allows it (§8 Q9).
 #[test]
