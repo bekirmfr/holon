@@ -248,6 +248,30 @@ answering 503 deployed, requested, the server restarted, and `holon history` say
   rounded up a quarter for what the estimate can't see, so a cache keeps a little less than its
   budget, never more. Measured again: the value cache **1.0×**, the flow cache **0.8–1.0×**.
 
+## 2.10 The soak, and what it found
+
+A mixed load on one server for 25 minutes (`9969f8b`, on a copy of the measurements' data folder:
+thousands of notes, logs of up to 60 MB): unrecorded, lazy and strict `hello` and the `notes`
+listing at 8 connections each, `crunch` and unrecorded `calc` at 4, strict `notes` writes of random
+ids at 1, an unrecorded route that always fails at 2. Sampled every 10 seconds, a one-connection
+probe of unrecorded `hello` every minute.
+
+- **Served:** 23.8 million requests, none failed but the failing route's (all 503, as it says), no
+  socket error, nothing in the server's log. Throughput per route steady to the end.
+- **Steady:** threads (76 at most: the blocking pool's), open files (72–75), the logs' folder
+  (160–217 MB, cut back as it fills), the deployments file (422 KB, written every second by the
+  changing tallies). The probe held its p50 at 1.41–1.76 ms and p99 at 5.3–8.2 ms throughout.
+- **Memory** rose from 311 MB to 660 MB: 530 MB in the first 4 minutes, then flat, but for two steps
+  of about 45 MB, at 10 and 21 minutes. A second run with the allocator's adaptive behaviour pinned
+  (`MALLOC_MMAP_THRESHOLD_=131072`, `MALLOC_ARENA_MAX=2`, 15 minutes) stayed flat at 453 MB for its
+  first 10 minutes: the early rise is the allocator's, not a leak. It stepped up 44 MB at 10
+  minutes as the first had: R5.
+
+| # | Where | What | Fix |
+|---|---|---|---|
+| R5 | folders.rs, `sweep` (every `SWEEP_EVERY`, 10 minutes) | **Found by the soak.** The sweep of folders' kept file texts reads every deployment's whole log (`Log::lines`, which reads the file, under the log's lock: up to 60 MB here, every run of the deployment waiting) and parses every entry in full, every 10 minutes, whether or not any deployment has a folder (none here did). About 200 MB of lines parsed each time; what it frees the allocator keeps: the 45 MB steps. | Skip it when no folder keeps a file's text; read each log outside its lock (as a cut-back does); parse only the lines that name a kept text. |
+| R6 | the content store (holon-host's `FileStore`), `sweep.rs` | **Found by the soak; predates the throughput work.** Each state or collection write puts its changed values and a snapshot as files of their own, synced: 77,220 note writes added 594,619 files and 2.35 GB (7.7 files, about 30 KB of disk each: files of 1.8 KB on average, each a 4 KB block). Values nothing names any more are removed only by `holon store sweep` (or `POST /admin/store/sweep`), an admin's: at this soak's 51 writes a second the disk fills by about 5.4 GB an hour until someone sweeps. | To decide: the store swept on its own on a schedule (what a sweep spares, a value put in the last hour, is already safe for it), and fewer, larger files per write (packed small values). |
+
 ## 3. Order
 
 1. **R1–R4**: done (§2.6).
