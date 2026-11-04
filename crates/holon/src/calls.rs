@@ -5,7 +5,9 @@
 //! performs it between rounds, and the answer is recorded in the run's log with the request, so
 //! a retry, a replay and `holon verify` answer it from the record and never call again. What is
 //! performed is an ordinary action run of the other flow (`deploy::run_action`), logged there as
-//! run `by` the calling flow and its run, under the other flow's own grant and limits.
+//! run `by` the calling flow and its run, under the other flow's own grant and limits; a run of an
+//! unrecorded handler, which its own log doesn't hold, is named as one (`unrecorded: not in its
+//! log`).
 //!
 //! The answer is `{answer, run}` when it ran (`answer` absent for an action that only writes),
 //! and `{error, message}` when it didn't: `refused`, `not_found`, `not_running`, `no_action`,
@@ -52,6 +54,9 @@ pub(crate) struct Caller<'a> {
     /// The flows whose calls led to this run (empty for a run a request, a clock, a file or a
     /// person started).
     pub(crate) chain: &'a [String],
+    /// Whether the run won't be logged (its handler is unrecorded, and granted so): the other
+    /// flow's log says so, its run there pointing to none here.
+    pub(crate) unrecorded: bool,
 }
 
 /// An answer that says why nothing ran.
@@ -81,7 +86,10 @@ impl Caller<'_> {
             return failure("refused", "a secret, or what is computed from one, can't be sent to another flow");
         }
         let Some(host) = self.store.1.host.get() else { return failure("failed", "this server has no deployments to call") };
-        let by = format!("flow {}, run {}", self.slug, self.run);
+        let by = match self.unrecorded {
+            true => format!("flow {}, run {} (unrecorded: not in its log)", self.slug, self.run),
+            false => format!("flow {}, run {}", self.slug, self.run),
+        };
         let chain: Vec<String> = self.chain.iter().cloned().chain(std::iter::once(self.slug.to_string())).collect();
         let ran = deploy::run_action(self.store, &host.deployments, &host.deployments_path, flow, action, Ok(input.clone()), Some(&by), false, &chain);
         let run = ran.seq.map(|s| Value::Number(s as f64));

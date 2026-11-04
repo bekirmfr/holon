@@ -631,7 +631,7 @@ fn run_attempt(
     // A file as a request's body is sent from a folder the deployment reads.
     let forward = waits.forward.clone();
     let (slug, run, chain) = (waits.slug.clone().unwrap_or_default(), waits.run_id.clone().unwrap_or_default(), waits.chain.clone());
-    let caller = calls::Caller { store, fed: &secret_fed, permit, vault: secrets, slug: &slug, run: &run, chain: &chain };
+    let caller = calls::Caller { store, fed: &secret_fed, permit, vault: secrets, slug: &slug, run: &run, chain: &chain, unrecorded: waits.unrecorded };
     let sender = folders::Sender {
         outbound: &permit.outbound,
         folders: waits.folders.clone(),
@@ -915,8 +915,9 @@ impl Counted<'_> {
 
 /// [`log_run`], the entry (and the tokens it is redacted of) made only if it is logged: a run its
 /// grant has unrecorded is counted under the table's lock, as `log_run` counts it, and nothing more
-/// is made of it (docs/L4s/interpreter-path-L4.md, the per-request bookkeeping). Otherwise
-/// `log_run`, which reads the level again.
+/// is made of it (docs/L4s/interpreter-path-L4.md, the per-request bookkeeping), unless it `sends`
+/// packs, which go out live ([`send_unlogged`]). Otherwise `log_run`, which reads the level again.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn log_or_count(
     deployments: &Mutex<BTreeMap<String, Deployment>>,
     slug: &str,
@@ -924,15 +925,41 @@ pub(crate) fn log_or_count(
     entry: impl FnOnce() -> LogEntry,
     tokens: impl FnOnce() -> Redactor,
     declared: holon_core::LogLevel,
+    sends: bool,
 ) -> Option<Logged> {
-    {
+    let sending = {
         let mut table = deployments.lock().unwrap();
         let dep = table.get_mut(slug)?;
-        if count_if_unrecorded(dep, &counted, declared).1 {
+        if !count_if_unrecorded(dep, &counted, declared).1 {
+            None
+        } else if sends {
+            Some((Arc::clone(&dep.channels), Arc::clone(&dep.secrets)))
+        } else {
             return Some(Logged { seq: None, kept: Ok(()) });
         }
+    };
+    if let Some((channels, secrets)) = sending {
+        send_unlogged(&channels, &secrets, entry(), tokens());
+        return Some(Logged { seq: None, kept: Ok(()) });
     }
     log_run(deployments, slug, entry(), tokens(), declared)
+}
+
+/// An unrecorded run's packs (channels.rs): what it sent, or for a part that settled waiting what
+/// it settled, redacted as a logged run's are, but sent live, with no id, and never kept. A pack's
+/// id is its run's log seq and the kept packs are rebuilt from the log, which doesn't hold the
+/// run: a subscriber there now gets them, and one that reconnects, or comes after a restart,
+/// doesn't.
+fn send_unlogged(channels: &channels::Channels, secrets: &Arc<Mutex<secrets::Resolved>>, mut entry: LogEntry, tokens: Redactor) {
+    if entry.performed.iter().chain(&entry.progress).any(|p| p.capability.starts_with("ChannelSend(")) {
+        let answered = std::mem::take(&mut entry.answered);
+        tokens.and(Redactor::of(secrets)).and(Redactor::answers(&answered.0, secrets)).entry(&mut entry);
+    }
+    // Through `packs_of` all the same: a parked run's earlier parts' sends aren't sent again, and
+    // a finished run lets go of them.
+    for (name, pack) in channels.packs_of(&entry, 0) {
+        channels.send_live(&name, pack.json);
+    }
 }
 
 /// [`count_if_unrecorded`] for a test, the handler declared unrecorded: whether it was counted only.
@@ -988,7 +1015,7 @@ impl Logged {
 }
 
 /// `log_run`'s write: the run's level as its grant holds it, and, unless it is an unrecorded run
-/// (counted, and nothing written: `Some(None)`), the entry pushed under the
+/// (counted, its packs sent live, and nothing written: `Some(None)`), the entry pushed under the
 /// deployment's log lock, with the log it went to. None: no such deployment.
 #[allow(clippy::type_complexity)]
 fn push_run(
@@ -998,16 +1025,18 @@ fn push_run(
     tokens: Redactor,
     declared: holon_core::LogLevel,
 ) -> Option<Option<(Arc<recorder::LogCell>, u64, holon_core::LogLevel)>> {
-    let (log, secrets, channels, permit, session, level) = {
+    let (log, secrets, channels, permit, session, level, only_counted) = {
         let mut table = deployments.lock().unwrap();
         let dep = table.get_mut(slug)?;
         let counted = Counted { route: entry.route.as_deref(), at_ms: entry.at_ms, duration_ms: entry.duration_ms, status: entry.status.unwrap_or(200), error: entry.error.as_deref() };
         let (level, only_counted) = count_if_unrecorded(dep, &counted, declared);
-        if only_counted {
-            return Some(None);
-        }
-        (Arc::clone(&dep.log), Arc::clone(&dep.secrets), Arc::clone(&dep.channels), Arc::clone(&dep.permit), dep.life.sessions.last().map_or(0, |s| s.number), level)
+        let session = dep.life.sessions.last().map_or(0, |s| s.number);
+        (Arc::clone(&dep.log), Arc::clone(&dep.secrets), Arc::clone(&dep.channels), Arc::clone(&dep.permit), session, level, only_counted)
     };
+    if only_counted {
+        send_unlogged(&channels, &secrets, entry, tokens);
+        return Some(None);
+    }
     let answered = std::mem::take(&mut entry.answered);
     let redactor = tokens.and(Redactor::of(&secrets)).and(Redactor::answers(&answered.0, &secrets));
     entry.session = session;

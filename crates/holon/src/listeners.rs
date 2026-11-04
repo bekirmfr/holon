@@ -260,6 +260,8 @@ fn serve_flow(
         Ok(_) => ran.as_ref().and_then(|r| r.error.clone()),
     };
     let parked_any = matches!(&parked, Ok(names) if !names.is_empty());
+    // Whether it sent packs, which go out even if it isn't logged.
+    let sends = ran.as_ref().is_some_and(|r| r.run.performed.iter().chain(&r.run.progress).any(|(c, _)| matches!(c, Capability::ChannelSend(_))));
     let entry = || {
         let mut entry = match ran {
             Some(Ran { entry: Some(entry), .. }) => entry,
@@ -289,7 +291,7 @@ fn serve_flow(
     // A strict run answers once its record is on disk; one whose record may not be isn't
     // answered as done (C2 e).
     let counted = Counted { route: route.as_deref(), at_ms: started.0, duration_ms: started.1.elapsed().as_secs_f64() * 1000.0, status: answer.status, error: error.as_deref() };
-    if let Some(Logged { kept: Err(e), .. }) = log_or_count(deployments, slug, counted, entry, tokens, level) {
+    if let Some(Logged { kept: Err(e), .. }) = log_or_count(deployments, slug, counted, entry, tokens, level, sends) {
         answer = data::DataResponse::json_error(500, &format!("the request ran, but {e}"));
     }
     // The state is kept by its head, written as the change landed (claims.rs); the deployments

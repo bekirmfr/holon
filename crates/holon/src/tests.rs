@@ -8291,6 +8291,42 @@ fn a_run_that_waits_parks_and_resumes_at_its_handlers_level() {
     let _ = std::fs::remove_dir_all(Path::new(&state.deployments_path).with_extension("logs"));
 }
 
+/// An unrecorded handler that writes and sends is what its author wrote: approved as any
+/// unrecorded one is (`Unrecorded("POST /notes")`), its runs leave no entry, what they write lands
+/// all the same, and its packs go to the subscribers there then, live, with no id, and aren't kept
+/// (the log, which ids and kept packs come from, doesn't hold them).
+#[test]
+fn an_unrecorded_handler_that_writes_and_sends_runs_as_written() {
+    let mut state = test_state();
+    state.deployments_path = unique_temp_path("unrecorded-writes");
+    let text = "flow quiet-notes\nport 8174\ncollection notes\nchannel updates\n\nroute POST /notes (req) unrecorded {\n  notes[req.json.id] = req.json.text\n  updates.send({ id: req.json.id })\n  respond \"saved\"\n}\n\nroute GET /notes/:id (req) {\n  respond { text: notes[req.params.id] }\n}\n";
+    let plan = holon_author::agent::plan(text).unwrap();
+    for u in &plan.units {
+        assert_eq!(route(&state, &req("POST", "/unit", u.clone())).status_code, 200);
+    }
+    let preview = body_json(route(&state, &req("POST", "/deploy/preview", serde_json::to_vec(&serde_json::json!({ "slug": plan.name, "unit": plan.unit })).unwrap())));
+    let asked: Vec<String> = serde_json::from_value(preview["needs_approval"].clone()).unwrap();
+    assert!(asked.contains(&"Unrecorded(\"POST /notes\")".to_string()), "{asked:?}");
+    let slug = deploy_plain_text(&state, text);
+    let (log, channels, limits) = {
+        let table = state.deployments.lock().unwrap();
+        (Arc::clone(&table[&slug].log), Arc::clone(&table[&slug].channels), table[&slug].permit.channels.clone())
+    };
+    let mut sub = channels.subscribe("updates", false, None, &limits).unwrap();
+    for id in ["a", "b"] {
+        assert_eq!(data_call(&state, &slug, "POST", "/notes", &format!(r#"{{"id":"{id}","text":"hi"}}"#)).0, 200);
+    }
+    assert_eq!(log.next_seq(), 0, "its runs left no entry");
+    assert_eq!(state.deployments.lock().unwrap()[&slug].tallies["POST /notes"].runs, 2, "they are counted");
+    let live: Vec<(Option<channels::PackId>, String)> = std::iter::from_fn(|| sub.packs.try_recv().ok()).map(|p| (p.id, p.json.clone())).collect();
+    assert_eq!(live, [(None, r#"{"id":"a"}"#.to_string()), (None, r#"{"id":"b"}"#.to_string())], "sent live, with no id");
+    assert!(channels.kept("updates", true).is_empty(), "and not kept");
+    let (_, read, _) = data_call(&state, &slug, "GET", "/notes/a", "");
+    assert_eq!(serde_json::from_str::<serde_json::Value>(&read).unwrap()["text"], "hi", "its write landed");
+    let _ = std::fs::remove_file(&state.deployments_path);
+    let _ = std::fs::remove_dir_all(Path::new(&state.deployments_path).with_extension("logs"));
+}
+
 /// A host whose policy never lets a handler go unrecorded (holon.toml: grants.allow_unrecorded =
 /// false) refuses a deploy that asks, saying why; the default policy allows it (§8 Q9).
 #[test]
@@ -8868,6 +8904,20 @@ fn order(state: &AppState, id: &str, total: f64) -> serde_json::Value {
     let (status, body, _) = data_call(state, "shop", "POST", "/orders", &format!("{{\"id\":\"{id}\",\"total\":{total}}}"));
     assert_eq!(status, 200, "{body}");
     serde_json::from_str(&body).unwrap()
+}
+
+/// A call from an unrecorded handler's run: the other flow logs its run as by a run its caller's
+/// log doesn't hold, and says so.
+#[test]
+fn a_call_from_an_unrecorded_run_says_its_run_isnt_logged() {
+    let state = claims_state("");
+    deploy_text(&state, BILLING, "127.0.0.1:9");
+    deploy_text(&state, &SHOP.replace("route POST /orders (req) {", "route POST /orders (req) unrecorded {"), "127.0.0.1:9");
+    assert_eq!(order(&state, "o1", 5.0)["answer"]["total"], 10.0);
+    assert!(log_entries(&state, "shop").is_empty(), "the caller's run isn't logged");
+    let theirs = log_entries(&state, "billing");
+    let by = theirs.last().unwrap()["by"].as_str().unwrap().to_string();
+    assert!(by.starts_with("flow shop, run ") && by.ends_with(" (unrecorded: not in its log)"), "{by}");
 }
 
 /// A flow runs another's action in-process: the answer comes back, the other flow logs an ordinary

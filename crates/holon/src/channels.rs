@@ -8,6 +8,9 @@
 //!   it only grows, across restarts too, so a reconnecting `EventSource` (`Last-Event-ID`) gets
 //!   the kept packs after the last one it saw.
 //! - **Kept packs** (`channel_keep` of them) live in memory, rebuilt from the log at load.
+//! - **An unrecorded run's packs** go out live, as it is counted, to the subscribers there then:
+//!   with no id and never kept, as the log, which ids and kept packs come from, doesn't hold the
+//!   run. A reconnecting `EventSource` doesn't get them again, nor does one after a restart.
 //! - **A slow subscriber** whose queue (`channel_buffer`) is full is dropped with `event: missed`
 //!   rather than holding the run or the other subscribers; it reconnects and catches up from
 //!   the kept packs. Pausing or stopping the deployment ends every subscription with
