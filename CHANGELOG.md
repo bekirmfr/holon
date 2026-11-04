@@ -1,6 +1,15 @@
 # Changelog
 
-## Unreleased
+## 0.1.0-rc.32
+
+Every run's record is on disk before its answer, and a handler says when it needn't be (`lazy`,
+`unrecorded`); a slow deployment no longer slows the others. The server now looks after what it
+keeps: it sweeps and packs its store, seals its logs' older runs gzipped, says what each flow
+holds and warns before its disk fills, does what an admin chose when it is full, and can back up
+the runs it lets go of. A security pass closes what a review of all this found. Deployed flows
+keep running as they are; a proxy in front of a flow needs the name it forwards (`--allow-host`),
+links inside a bound folder aren't followed on Linux, and an identity provider must say an email
+is verified.
 
 - **Signing in through an identity provider needs a verified email.** An account is matched by
   its email, so an ID token's email is taken only when the provider says it verified it
