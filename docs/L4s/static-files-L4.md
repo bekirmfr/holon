@@ -1,7 +1,10 @@
 # Static files: a route for the rest of a path, and an answer that is a file's bytes (L4)
 
 **Status:** design, before any code. Written 2026-11-04, its claims checked against the code at
-`450e3de` and cited by file and line there.
+`450e3de` and cited by file and line there. Builds on [named folders](named-folders-L4.md) (handles,
+reads by hash) and [channels](channels-L4.md) (an answer the host streams after the run).
+`FileServe` is a new item, so §8 answers [host capabilities](host-capabilities-L4.md) §4's
+checklist. The rest segment is routing, not a capability.
 
 Two features that together let one flow serve a built web app (a Vite or React `dist/`) and its
 API:
@@ -163,7 +166,7 @@ has committed, the transport (`dataplane.rs`) answers:
      `content-length` and drops it.
    - A file that changed before a byte went out answers **503** with `retry-after: 1`. The log
      says `changed`, as an upload's does.
-4. **HEAD and ranges** are a later slice (§7).
+4. **HEAD and ranges** are a later slice (§8).
 
 ### The handle's cost
 
@@ -173,6 +176,27 @@ cache by `(folder, name, size, modified, inode)`. It is safe because the send al
 bytes against the hash: a cache that lies (a file rewritten within the same second, at the same
 size) gets a 503 or a cut connection, never wrong bytes under the right hash. It is an
 optimization, and it isn't in the first slice.
+
+### Files, and bytes a run computed
+
+This is not a binary value in core. Host capabilities plans one, `Bytes` (§5.10, step 1.1, fork
+21), and the two fit together:
+
+- **`serve` is for files.** A file of any size never enters a run whole (named-folders §4). The
+  run holds a handle, and the host sends the bytes. That stays true after `Bytes` lands: a 40 MB
+  video is never a value.
+- **`Bytes` is for what a run computes**: a generated PNG, a zip, a signed PDF, within the run's
+  limits. Once value-kinds lands, `respond b` with a `Bytes` value sends the bytes as they are
+  (§5.10: "an HTTP body that is bytes is sent as they are"), with `application/octet-stream`
+  unless the flow sets a type. It needs nothing from this note, and this note needs nothing from
+  it.
+
+### Folder backends
+
+A folder bound to SFTP or S3 (host capabilities §6) serves the same way: the host streams from
+the backend and checks the hash as it sends. Redirecting the caller to a presigned S3 URL would be
+faster, but the host would never see the bytes, so it couldn't stand behind the hash. Refused
+(§9).
 
 ## 4. The log, replay and verify
 
@@ -197,7 +221,35 @@ optimization, and it isn't in the first slice.
   price of "every request is recorded". A deployment serving many assets should sit behind a
   CDN, and then Holon records what reaches it, not every visitor.
 
-## 6. Samples
+## 6. Host capabilities' checklist (§4)
+
+1. **The item and its words:** `FileServe("site")`, from `site.serve(…)` (or a `file_serve`
+   node): "answer its callers with files from the folder \"site\"". Per folder, the grain
+   `FileRead` already has.
+2. **The resource:** the folder an admin binds, as for `FileRead`. A deploy is refused until it
+   is bound (named-folders §2). No credentials.
+3. **Reads are the run's input:** the handle is a logged read (§4). The bytes sent are not an
+   input; they are checked against it.
+4. **Effects land when the run finishes, at most once:** the answer goes out after the run
+   commits. A run that runs again (claims) answers once, from its last attempt. A file that
+   changed is a 503, never different bytes.
+5. **Sharing:** nothing new. A run that writes the file it serves serves the handle it read, so
+   the write isn't visible to this caller, and the send then fails the hash check (503) if the
+   write landed first.
+6. **Triggers:** none; it answers a route.
+7. **Secrets:** a file isn't a secret, and `taint.rs` sees no secret in a handle. A flow that
+   writes a secret-derived text to a folder is already refused (named-folders), so serving can't
+   carry one out.
+8. **Limits:** `max_served_bytes` (§5), with a default and a ceiling in the policy, shown in the
+   deploy bar.
+9. **Verify:** recomputes the handle and the answer; the bytes are checked by hash (§4).
+10. **Seeing it:** `holon check`'s words, the deploy bar, the manual's permissions page and its
+    files guide, and the run log's line (§4).
+11. **The sample:** `site`, deployed by the e2e tests against a fixture folder (§7). No outside
+    service is involved.
+12. **The engine:** none new. hyper's streaming body, as subscriptions use.
+
+## 7. Samples
 
 - **`site`** (the example above): a folder bound to a built app, its API beside it, and a
   history-mode fallback to `index.html`. The e2e test binds the folder to a fixture `dist/` (an
@@ -206,7 +258,7 @@ optimization, and it isn't in the first slice.
 - `log-archive` gains `GET /logs/:name/download` answering with the whole log: the binary-safe,
   any-size counterpart of its `tail`.
 
-## 7. Slices
+## 8. Slices
 
 1. **The rest segment:** core, language, printer, bridge, editor matcher, docs; the `site` sample
    without `serve` (an index page from a `js` holon, a catch-all answering it).
@@ -218,16 +270,16 @@ optimization, and it isn't in the first slice.
    (`app.js.br` served for `app.js` when the caller accepts it, each file checked by its own
    hash); the handle cache.
 
-## 8. Refused, with the reason
+## 9. Refused, with the reason
 
 | Refused | Why |
 |---|---|
 | A static mount by host path (`static "/var/www"`) | The flow would see a path, the version wouldn't cover what it serves, and files could change under a fixed hash with nothing recorded. Folders are bound by an admin and read by hash. |
 | Recognizing a plain handle record in `respond` as a file | A flow answering `respond inbox.file(n)` today sends the handle as JSON. Changing that would change existing flows, and a record isn't a permission. `serve` is explicit and asks `FileServe`. |
+| A redirect to a backend's presigned URL | The host would never see the bytes, so nothing stands behind the hash in the log. |
 | Serving without a run | It would make a request the log can't account for. A run per request is the recorded path; a CDN in front is the fast one. |
-| A binary value in core | Values are text, numbers, lists and records. Bytes stay with the host, named by hash, as uploads and copies already do. |
 
-## 9. Forks, surfaced
+## 10. Forks, surfaced
 
 - **Rest matching zero segments** (`/*path` also matching `/`) would save the second route in
   the sample. Refused for now for consistency with `:param`, which is never empty. Revisit if
@@ -241,8 +293,13 @@ optimization, and it isn't in the first slice.
 - **Assets bundled with the version** (a flow's own files, content-addressed into its unit, so
   they are covered by its hash and need no folder) are the natural next step. They are not
   designed here.
+- **Where it sits in host capabilities' plan (§7).** The plan schedules capabilities, not this
+  note (R4), and the plan doesn't list this one yet. It needs nothing from Tier 1, `Bytes`
+  included, and the rest segment needs nothing at all, so it can go anywhere. *Lean:* a step of
+  its own in Tier 1, beside 1.7, since a flow has no way today to answer with a file it doesn't
+  read whole.
 
-## 10. Invariant check
+## 11. Invariant check
 
 - **I2 purity:** `file_serve` is pure: a handle in, an effect value out, the type from a table
   in core. The host reads the bytes after the run, as it streams a subscription. ✓
