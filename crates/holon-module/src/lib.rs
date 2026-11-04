@@ -2,10 +2,11 @@
 //! no imports under a fuel and memory budget, values crossing in core's own encoding.
 //!
 //! Core knows a module as `UnitBody::Module { bytes }` and asks `Resolver::run_module` to run
-//! one; this crate is the answer, kept out of core so core's purity-by-dependency argument holds
-//! and the editor's bundle carries an engine only where it places a module. One implementation,
-//! compiled twice: native for the host (`holon-host`, `holon`) and wasm32 for the editor's
-//! bridge (`holon-wasm`), so design mode runs the real module under the real budget.
+//! one; this crate is the answer, kept out of core so core's purity-by-dependency argument holds.
+//! One implementation, compiled twice: native for the server (`holon`) and the language
+//! (`holon-author`), and wasm32 for the editor's bridge (`holon-wasm`), so design mode runs the
+//! real module under the real budget. The editor's bundle carries the engine, and the js node's
+//! engine module with it (`JS_ENGINE`, about 3 MB), whether or not a flow places a module.
 //!
 //! ## The ABI (§3)
 //!

@@ -137,9 +137,9 @@ closure that places it (`units.rs`, `Loaded`).
 - **The bridge bundle carries the engine**: 6 MB, from 1.9 (JL4 §7).
 - **Owed** (JL4 §10): the editor's ⓘ for a module node, and the language server marking a body's
   syntax error as `check` does.
-- **The engine build is not checked in CI.** `build.sh` says "CI rebuilds and compares", but no
-  workflow in `.github/workflows/` builds `fixtures/modules/js-engine/`: the committed binary is
-  trusted as built.
+- **The engine build is not checked in CI.** No workflow in `.github/workflows/` builds
+  `fixtures/modules/js-engine/`: the committed binary is trusted as built, and `build.sh` says a
+  change to the engine is built by hand and committed with it.
 - **One engine, one language.** Lua, Python and others would each be another engine module under
   the same contract; none is built (JL4 §8).
 

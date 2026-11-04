@@ -1,9 +1,10 @@
 //! holon-wasm — the WASM bridge (P4.2).
 //!
 //! Exposes `holon-core`'s pure operations to JavaScript so the editor runs the **same** core,
-//! compiled to wasm32 — one evaluator, one encoder, never a second (I5/I2). Depends on `holon-core`
-//! **only** (never `holon-host`): the host's native I/O has no place in a browser, and the
-//! dependency edge keeps it out, Cargo-enforced.
+//! compiled to wasm32 — one evaluator, one encoder, never a second (I5/I2). Depends on the pure
+//! crates only, `holon-core`, `holon-author` (the language, the canvas's operations, the samples)
+//! and `holon-module` (the engine a module body runs on), never `holon-host`: the host's native
+//! I/O has no place in a browser, and the dependency edge keeps it out, Cargo-enforced.
 //!
 //! - **P4.2a** bridged bytes→bytes hashing and proved content-addressing is bit-identical native vs
 //!   wasm.
