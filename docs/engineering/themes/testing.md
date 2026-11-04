@@ -134,9 +134,20 @@ A slower path that is still right would pass every test above; these fail instea
   `a_full_disk_pauses_what_records_runs_until_there_is_room`, `a_full_disk_rolls_the_log_keeping_the_most`,
   `the_values_a_sweep_keeps_are_packed_and_read_back` (and swept from the pack once named no
   more), holon-host's `packed_values_read_back_as_put_and_a_rewrite_leaves_the_rest`,
-  `a_pack_cut_short_is_an_error_not_missing_values`,
+  `a_pack_cut_short_is_said_and_the_others_read` (and a count past anything overflows nothing),
+  `a_pack_that_cant_be_read_is_warned_of_and_the_store_opens`,
+  `a_rewrite_hides_no_value_it_keeps_and_keeps_one_put_again` (a thread reading throughout),
   `the_runs_a_log_lets_go_of_are_backed_up_as_exports_verify_checks` (with the log, every run once;
-  a backup that can't be written keeps them in the log),
+  files of the folder's own left alone and uncounted; a batch that can't be exported holds up no
+  other; a backup that can't be written keeps them in the log),
+  `a_backup_batch_and_its_export_are_known_by_their_names_and_nothing_else_is`.
+- From the review ([Lessons](lessons.md#what-the-review-found)), each failing without its fix:
+  `keeping_more_again_forgets_nothing_the_log_was_doing`,
+  `a_backup_written_to_again_is_no_longer_an_error`, `a_cut_whose_swap_fails_leaves_no_segment_behind`,
+  `a_full_disk_rolling_sweeps_what_only_the_cut_runs_named`,
+  `a_full_disk_rolls_the_log_biggest_with_its_sealed_runs`; and in
+  `a_full_disk_pauses_what_records_runs_until_there_is_room`, a `full_at` reached before `warn_at`
+  pauses once and holds.
   `what_a_crash_left_is_removed_once_it_is_old_and_nothing_else_is`,
   `a_write_made_aside_is_known_by_its_name_and_nothing_else_is`,
   `a_store_sweep_clears_the_states_no_kept_run_names_and_nothing_else`,

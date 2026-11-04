@@ -217,8 +217,14 @@ host can refuse them all).
   rest from its file with its lock released: a server on the soaks' data folder starts at 39 MB
   instead of 320.
 
-- R6's second half: fewer, larger files per write.
-- A review of `aa2704a..HEAD` by a reader given the code, not the audit.
+- R6's second half, fewer and larger files, done by packing: the values a sweep keeps past an
+  hour are moved into packs ([storage L4 step 10](../../L4s/storage-L4.md)); the logs' older runs
+  are sealed into gzipped segments (step 9). What a full disk does, the backup and the warnings
+  are in [Storage](../capabilities/storage.md).
+- The review of `aa2704a..09f0bdc` by a reader given only the code, done: ten defects, each fixed
+  with a test that fails without it; what they teach is in
+  [Lessons](lessons.md#what-the-review-found).
+- Object storage for the backup (storage step 7).
 - Gaps in the tests ([Testing](testing.md#4-gaps)): nothing in CI checks the caches against real
   memory, nor that an unrecorded route reading state goes to the pool, nor the soak's flat lines.
 
@@ -233,3 +239,7 @@ host can refuse them all).
 | `9969f8b` | D4, D5, S1, S4, S5: tripwires; the caches count memory; the value cache's size a setting |
 | `655e35b`, `58b87e6` | The end-to-end suite; the first soak, finding R5 and R6 |
 | `42a75f9`, `6d764f5` | R5 (the folders' sweep holds up no run), R6 (the server sweeps its store) |
+| `de42b69` | The server's own sweep paces its removals |
+| `824db82` | R8: a log keeps only its newest runs in memory |
+| `5b921ed`…`09f0bdc` | Storage steps 1–6, 8–10: the sweep a setting, the host's view and each flow's, warnings, `when_full`, the backup, packs, sealed segments ([Storage](../capabilities/storage.md)) |
+| `7c0b545`…`9b4bd37` | The review's ten fixes, and the backup's files named `holon-archive-` |
