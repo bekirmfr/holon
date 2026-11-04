@@ -25,6 +25,25 @@ async function openSample(page: Page, title: string, reload = true) {
   await expect(page.locator(".hl-tab--active")).toBeVisible();
 }
 
+/** Wait until `locator` stops moving: its box the same over two reads 100 ms apart. An overlay
+ *  fits its view again a moment after it opens (CompositeOverlay.tsx, 240 ms then 200 ms of
+ *  animation), and a drag begun meanwhile aims at where a handle a few pixels wide was, and
+ *  misses it. */
+async function still(locator: Locator) {
+  let last = "";
+  await expect
+    .poll(
+      async () => {
+        const now = JSON.stringify(await locator.boundingBox());
+        const same = now === last;
+        last = now;
+        return same;
+      },
+      { intervals: [100], timeout: 5_000 },
+    )
+    .toBe(true);
+}
+
 /** Open the deployment settings panel if it is closed. */
 async function openDeployPanel(page: Page) {
   const panel = page.getByRole("complementary", { name: "Deployment settings" });
@@ -437,7 +456,11 @@ test("a port added inside a holon takes its first wire's type, and the flow's no
   await expect(stamp).toHaveAttribute("title", /^any/);
   // Wired from the clock: it's a number now.
   const clockOut = overlay.locator(".react-flow__node", { hasText: "clock" }).locator(".react-flow__handle.source");
-  await clockOut.dragTo(outputs.locator('.react-flow__handle[data-handleid="stamp"]'));
+  const stampIn = outputs.locator('.react-flow__handle[data-handleid="stamp"]');
+  // Once the overlay has stopped fitting its view: both handles where they will stay.
+  await still(clockOut);
+  await still(stampIn);
+  await clockOut.dragTo(stampIn);
   await expect(stamp).toHaveAttribute("title", /^number/);
   await overlay.getByRole("button", { name: "apply" }).click();
   await expect(overlay).toContainText("applied");
