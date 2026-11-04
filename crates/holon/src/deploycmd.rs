@@ -13,16 +13,23 @@ use crate::mcp::{Api, Body};
 
 const USAGE: &str = "usage: holon deploy <file> [options]
 
-  --server PORT|URL  reach this server (default: the one running on this machine)
-  --slug NAME        deploy under this name instead of the flow's own name
-  --approve          approve what it asks for that isn't granted yet, as you, and say what
+  Compiles a flow and deploys it to a running server, as the editor's Deploy does. When the flow
+  needs what it isn't granted yet, deploy prints what that is and exits 1: approve it in the
+  editor by deploying from there, or here with --approve.
+
+  --slug NAME              deploy under NAME instead of the flow's own name
+  --approve                approve, as you, what it asks for that isn't granted yet, and say
+                           what that was
+  --server PORT|URL        which holon server to ask (see below)
+
+examples:
+  holon deploy shop.holon
+  holon deploy shop.holon --approve
+  holon deploy shop.holon --slug shop-staging --server https://holon.example.com
 
   From the holon serve you run on this machine, signed in as you; with several running,
   --server <port> picks one. A server elsewhere: --server <URL> (or HOLON_SERVER), signed in
-  with an API token in HOLON_TOKEN.
-
-  If the flow needs permissions not yet granted, deploy prints what it needs and exits 1:
-  approve them in the editor by deploying from there, or here with --approve, as you.";
+  with an API token in HOLON_TOKEN.";
 
 pub(crate) fn run(args: &[String]) -> i32 {
     let mut file: Option<String> = None;

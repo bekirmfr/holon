@@ -999,12 +999,21 @@ fn s(v: &serde_json::Value) -> &str {
 
 const HOST_USAGE: &str = "usage: holon host [--for SLUG] [--json] [--server PORT|URL]
 
-  What the host holds: the server's memory and its caches against their sizes; each disk it keeps
-  things on, how full; what it keeps there (the content store's values, counted at its last
-  sweep, the logs, the folders' kept texts, and what a crash left, removed once it is old); and
-  how often it sweeps, when next, and what the last sweeps removed; and what each flow holds, the
-  most first. An admin's. --for SLUG: what one flow holds, in memory and on disk (anyone who may
-  read the deployment).
+  Prints what the host holds: the server's memory and its caches against their sizes; each disk
+  it keeps things on, and how full; what it keeps there (the content store's values, counted at
+  its last sweep, the logs, the folders' kept texts, and what a crash left, removed once old);
+  how often it sweeps, when next, and what the last sweeps removed; and what each flow holds,
+  the most first. Admins.
+
+  --for SLUG               what one flow holds, in memory and on disk (anyone who may read the
+                           deployment)
+  --json                   print what the server answers, as JSON
+  --server PORT|URL        which holon server to ask (see below)
+
+examples:
+  holon host
+  holon host --for shop
+  holon host --json
 ";
 
 /// `holon host`.
