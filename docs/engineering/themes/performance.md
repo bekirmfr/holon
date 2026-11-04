@@ -87,7 +87,7 @@ Counted in instructions per run under callgrind ([Measuring](measuring.md#instru
 
 | Step | What | Why | Gain |
 |---|---|---|---|
-| 4.5 `4313f0a` | A function given to `map`/`fold` prepared once, not per item | Its graph was prepared again for every item | `crunch` 888 → 495 µs at 100 items, 45,944 → 23,765 at 5,000 |
+| 4.5 `4313f0a` | A function given to `map`/`fold` prepared once, not per item | Its graph was prepared again for every item | `crunch` 888 → 495 µs at 100 items, 45,944 → 23,765 at 5,000 (in µs, by `profile_one_route`, not instructions) |
 | 1a `e916977` | Endpoint hash and level from the route; an edge index; `has_cycle` | Work the unit fixes done every run | `hello` −6.8% |
 | 1b `440eca0` | Composites' shapes kept with the closure | Rebuilt every run | `hello` −8.3%; step 1 overall `hello` −14.6%, `crunch` −7.0% |
 | 2 `6220b50` | The timer's size bound without JSON; redaction without a copy; the commit check skipped when the root hasn't moved | Work done twice around the record | `notes` −14.6% |

@@ -21,21 +21,48 @@ the note.
 
 **Themes**, across the codebase:
 
+- [Concepts](themes/concepts.md): what a person changing Holon must hold, each pointing where it
+  lives and the doc that goes deeper. Start here.
 - [Performance](themes/performance.md): what a request goes through, what it costs, and why each
   part is the way it is.
 - [Resilience](themes/resilience.md): what the server guarantees under load and failure, how each
   guarantee is kept, and its limits.
+- [Security](themes/security.md): who may do what, what a flow can reach, what is kept secret
+  and how, and what isn't defended.
 - [Testing](themes/testing.md): which tests hold which property, and why each exists.
 - [Measuring](themes/measuring.md): how a cost is measured here, and the traps.
 - [Lessons](themes/lessons.md): what the work taught, the designs that were worse included.
-- Still to write: concepts, security.
 
-**Components**, one per crate or part (to write): holon-core, holon-host, holon (the server),
-holon-author (the language, compiler, `fmt` and samples), holon-wasm, holon-module, the editor.
+**Components**, one per crate or part:
 
-**Capabilities**, one per host capability (to write): state and collections, outbound requests,
-secrets, folders, databases, durable runs, triggers and clocks, run records and `holon verify`, the
-js node.
+- [holon-core](components/holon-core.md): units, values, types, the evaluator and its plan, the
+  primitives, hashing.
+- [holon-host](components/holon-host.md): the store and its files, writing aside, packs, the
+  registry.
+- [holon](components/holon.md): the server and the CLI: control and data planes, deployments,
+  the run path, its threads and locks.
+- [holon-author](components/holon-author.md): the language, its compiler and printer, `holon fmt`,
+  the samples, the golden records, the language server.
+- [holon-wasm](components/holon-wasm.md): the editor's bridge to the core, and how it is built.
+- [holon-module](components/holon-module.md): wasm modules, and the js engine they carry.
+- [The editor](components/editor.md): the web editor, its tests, and the terminal editor beside it.
+
+**Capabilities**, one per host capability:
+
+- [State and collections](capabilities/state-and-collections.md)
+- [Outbound requests](capabilities/outbound-requests.md)
+- [Secrets](capabilities/secrets.md)
+- [Folders](capabilities/folders.md)
+- [Databases](capabilities/databases.md)
+- [Durable runs](capabilities/durable-runs.md)
+- [Triggers and clocks](capabilities/triggers-and-clocks.md)
+- [Run records and `holon verify`](capabilities/run-records-and-verify.md)
+- [The js node](capabilities/js-node.md)
+- [Storage](capabilities/storage.md): sweeping, packs, sealed logs, a full disk, the backup, the
+  host's view.
+
+The git history here starts at the 0.1.0-rc.29 release commit (`6bc5c68`); what came before is
+given by its CHANGELOG release, or by date from the [journal](../JOURNAL.md) and the L4 notes.
 
 ## How a doc here is written
 

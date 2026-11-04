@@ -10,7 +10,7 @@ named as it is in the code; search for the name.
 | Rust workspace | `cargo test --workspace`, then `cargo clippy --workspace --all-targets -- -D warnings` | job `native`, with Postgres 17, MySQL 8.4 and a MongoDB replica set beside it (`HOLON_TEST_POSTGRES`, `HOLON_TEST_MYSQL`, `HOLON_TEST_MONGODB`) | about 1,030 tests, 4 ignored (measurements) |
 | A sample from the CLI | `cargo run -p holon -- new … --sample slugs`, then `check` | job `native` | 1 |
 | wasm parity | `wasm-pack test --node crates/holon-wasm` | job `wasm-parity` | 23 under wasm, 15 native |
-| Editor | `npx tsc --noEmit -p .`, `npx vitest run` (`npm test` in `editor/`) | job `editor`, against a freshly built wasm | about 190, one per sample in `samples.test.ts` |
+| Editor | `npx tsc --noEmit -p .`, `npx vitest run` (`npm test` in `editor/`) | job `editor`, against a freshly built wasm | 357 at `905e9fc`, every sample built in `samples.test.ts` |
 | Embedded editor | `cargo test -p holon --features embed-editor editor` | job `editor` | |
 | End to end | `npm run e2e` in `editor/` (Playwright, the real editor and server) | job `e2e`, two shards | 72 passing, `atlas-notes` skipped without `HOLON_TEST_MONGODB` (7.1 minutes at `9969f8b`) |
 | VS Code extension | `npm test`, `xvfb-run -a npm run test:vscode` | job `vscode` | |
@@ -37,9 +37,13 @@ The golden records are the floor every optimisation stands on.
   fixed (`firing::fixed`).
 - `the_encoding_is_pinned` (`value_hash.rs`): the exact bytes and hash of a value. A change to the
   encoding changes every state root and run id; it must come with an `ENCODING_VERSION` bump.
-- wasm parity (`check_hash_parity`, `check_eval_parity`, `check_fraction_parity`,
-  `check_signature_parity`, in `holon-wasm`): the core compiled to wasm hashes and evaluates
-  bit for bit as native, floats included.
+- wasm parity (in `holon-wasm`, each run natively and under wasm): `check_fraction_parity`
+  pins the hash of fraction arithmetic over random, everyday and raw-bit operands (subnormals
+  included), and `check_signature_parity` signs with the RFC's test vectors, so those two agree
+  across the targets bit for bit. `check_hash_parity` and `check_eval_parity` check the bridge
+  against the core within one target (a unit's hash as the bridge gives it and as the core
+  does; a few evaluations, NaN by `is_nan`): no unit's hash is pinned as a literal. That the
+  editor's hashes are the server's is shown end to end, by every sample the editor deploys.
 
 ### Fast paths answer as the plain ones
 
@@ -183,8 +187,11 @@ Every sample is a test ([`CLAUDE.md`](../../../CLAUDE.md)):
 
 - `samples.rs`: each builds, with a unique name and port; its text says what its entry says; it is
   as `fmt` writes it; a mistake in one names it and the line.
-- `editor/src/samples.test.ts`: each builds through the real wasm core against the live catalog,
-  and its routes, clocks, file handlers and capabilities are what its entry says.
+- `editor/src/samples.test.ts`: each builds through the real wasm core against the live catalog;
+  its names are unique, each is one of a server, a clock or a file handler, servers on ports of
+  their own; its endpoints, clocks and file handlers are as many as its document's `request`,
+  `every` and `on_file` templates; its capabilities ask for nothing unknown and no `Spawn`, and
+  for the secrets, optional permissions and `keep`/`limit` lines its entry names.
 - `editor/e2e/samples.e2e.ts`: the flows page lists every sample; each opens and deploys through
   the real editor and server, its consent screen included.
 
