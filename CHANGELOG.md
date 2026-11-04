@@ -32,6 +32,11 @@
   encoding: measured, a server of flows without a js node held about 8 times its `--flow-cache`,
   and the value cache about 3 times its 64 MiB. Each now keeps a little less than its size, never
   more.
+- **Sweeps no longer hold up a deployment's runs.** The sweeps of file texts and of the store
+  read each log's file a line at a time with its lock released, instead of whole while holding
+  it: a 60 MB log held up the deployment's runs while it was read. The file texts' sweep is
+  skipped when there is nothing it could remove (no folder keeps texts), and parses only the
+  lines that name one.
 - **No run waits while its log is cut back.** A log's file is cut back to what it keeps by the
   periodic sync, with its lock released for all but the last few lines, instead of by the run that
   found it full, holding the lock: no run waits the 100–150 ms a large log's cut-back takes. The

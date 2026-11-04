@@ -798,6 +798,46 @@ impl LogCell {
         out
     }
 
+    /// Each of the log's lines, oldest first, as `Log::lines` has them, given to `f`: a file's read
+    /// with the lock released, a line at a time, so no run waits for it and no more than a line is
+    /// held (docs/L4s/resilience-audit-L4.md, R5). A file is only ever replaced whole (renamed
+    /// over, by a cut-back), so what is read is one file's lines; the newest may be one being
+    /// written, cut short, which `f` finds isn't whole. A log kept in memory only is read under
+    /// the lock.
+    pub fn each_line(&self, mut f: impl FnMut(&str)) {
+        use std::io::BufRead;
+        let file = self.with(|log| log.file.clone());
+        let Some(path) = file else {
+            let lines: Vec<String> = self.with(|log| log.entries.iter().filter_map(|e| serde_json::to_string(e).ok()).collect());
+            return lines.iter().for_each(|l| f(l));
+        };
+        let Ok(file) = std::fs::File::open(&path) else { return };
+        let mut reader = std::io::BufReader::with_capacity(64 << 10, file);
+        let mut line = Vec::new();
+        loop {
+            line.clear();
+            match reader.read_until(b'\n', &mut line) {
+                Ok(0) | Err(_) => break,
+                Ok(_) => {}
+            }
+            let bytes = line.strip_suffix(b"\n").unwrap_or(&line);
+            if let Ok(text) = std::str::from_utf8(bytes.strip_suffix(b"\r").unwrap_or(bytes)) {
+                f(text);
+            }
+        }
+    }
+
+    /// The log's lines that hold `needle`, oldest first (`each_line`).
+    pub fn lines_holding(&self, needle: &str) -> Vec<String> {
+        let mut held = Vec::new();
+        self.each_line(|l| {
+            if l.contains(needle) {
+                held.push(l.to_string());
+            }
+        });
+        held
+    }
+
     /// Make the cut-back a run left, if one did: with the lock released, then swapped in under it
     /// (docs/L4s/resilience-audit-L4.md, R4). Called by the logs' periodic sync (`sync_logs`), so
     /// no run waits for it, its own included: until then the file holds past twice what it keeps,
@@ -1697,6 +1737,59 @@ mod tests {
         let back = Log::open_keeping(Some(path.clone()), 50);
         assert!(back.breaks().is_empty(), "the chain unbroken");
         assert_eq!(back.next_seq(), 2000);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A log read a line at a time (the sweeps', R5) is read with its lock let go, so a run can log
+    /// meanwhile, its own reader's included; it gives the lines `lines` does; and read while runs
+    /// log and its file is cut back, what it gives is one file's lines, in order, none missing,
+    /// only the newest maybe cut short.
+    #[test]
+    fn a_log_read_a_line_at_a_time_holds_no_lock_and_sees_one_file_whole() {
+        let dir = temp_dir("each-line");
+        let path = dir.join("slug.jsonl");
+        for file in [Some(path.clone()), None] {
+            let cell = LogCell::new(Log::open_keeping(file, 1_000));
+            for i in 0..10 {
+                cell.with(|log| log.push(LogEntry { at_ms: 1_000 + i, ..entry() }));
+            }
+            let mut read = Vec::new();
+            cell.each_line(|l| {
+                // The lock is free: taking it again here would never return otherwise.
+                cell.with(|log| log.next_seq());
+                read.push(l.to_string());
+            });
+            assert_eq!(read, cell.with(|log| log.lines()));
+            assert_eq!(cell.lines_holding("\"at_ms\":1003").len(), 1);
+        }
+        let _ = std::fs::remove_file(&path);
+        let cell = std::sync::Arc::new(LogCell::new(Log::open_keeping(Some(path.clone()), 40)));
+        let writers: Vec<_> = (0..4)
+            .map(|_| {
+                let cell = std::sync::Arc::clone(&cell);
+                std::thread::spawn(move || {
+                    for i in 0..300 {
+                        cell.with(|log| log.push(entry()));
+                        if i % 20 == 0 {
+                            cell.cut_if_planned();
+                        }
+                    }
+                })
+            })
+            .collect();
+        let mut reads = 0;
+        while !writers.iter().all(|w| w.is_finished()) || reads == 0 {
+            let mut lines = Vec::new();
+            cell.each_line(|l| lines.push(l.to_string()));
+            let whole = lines.len().saturating_sub(1);
+            let seqs: Vec<u64> = lines[..whole].iter().map(|l| serde_json::from_str::<LogEntry>(l).expect("a line before the last is whole").seq).collect();
+            assert!(seqs.windows(2).all(|w| w[1] == w[0] + 1), "in order, none missing: {seqs:?}");
+            reads += 1;
+        }
+        for w in writers {
+            w.join().unwrap();
+        }
+        assert!(reads > 1, "read while the runs logged");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -1698,13 +1698,21 @@ pub(crate) const SWEEP_SPARES_MS: u64 = 5 * 60 * 1000;
 /// hash keeps none; one no longer bound keeps them all), except those kept in the last
 /// `spare_ms`. A run whose text is swept stays provable by its hash; `holon verify` then runs it
 /// again only with the file given.
+///
+/// What it costs (docs/L4s/resilience-audit-L4.md, R5): nothing, when the store holds nothing a
+/// sweep could remove (no folder keeps texts, or none kept them long enough ago); otherwise each
+/// log is read with its lock and the table's let go, so no run waits for it, and only the lines
+/// that name a kept text are parsed.
 pub(crate) fn sweep(folders: &Folders, deployments: &Mutex<BTreeMap<String, Deployment>>, now_ms: u64, spare_ms: u64) -> Result<blobs::Swept, String> {
-    // Each log read with the table let go: reading its file holds up no run.
+    let before_ms = now_ms.saturating_sub(spare_ms);
+    if !folders.blobs.any_put_before(before_ms) {
+        return Ok(blobs::Swept::default());
+    }
     let cells: Vec<(String, Arc<crate::recorder::LogCell>)> = deployments.lock().unwrap().iter().map(|(slug, d)| (slug.clone(), Arc::clone(&d.log))).collect();
-    let logs: Vec<(String, Vec<String>)> = cells.into_iter().map(|(slug, log)| (slug, log.with(|log| log.lines()))).collect();
     let mut live = BTreeSet::new();
-    for (slug, lines) in &logs {
-        for entry in lines.iter().filter_map(|l| serde_json::from_str::<LogEntry>(l).ok()) {
+    for (slug, log) in &cells {
+        // A line naming a kept text holds its key, as written: one that doesn't names none.
+        for entry in log.lines_holding(BLOB_KEY).iter().filter_map(|l| serde_json::from_str::<LogEntry>(l).ok()) {
             for read in &entry.reads {
                 let Some(blob) = read.file.as_ref().and_then(|f| f.blob.as_ref()) else { continue };
                 let folder = match &read.request {
@@ -1721,8 +1729,11 @@ pub(crate) fn sweep(folders: &Folders, deployments: &Mutex<BTreeMap<String, Depl
             }
         }
     }
-    folders.blobs.sweep(&live, now_ms.saturating_sub(spare_ms))
+    folders.blobs.sweep(&live, before_ms)
 }
+
+/// The key a logged file read names its kept text by (`LoggedFile::blob`), as a log's line has it.
+const BLOB_KEY: &str = "\"blob\":";
 
 /// How many files a restore's dry run names, and the most of a file's text it shows.
 const FILES_SINCE: usize = 50;

@@ -221,6 +221,20 @@ impl Blobs {
         Ok(Some(bytes))
     }
 
+    /// Whether it holds a text or a chunk put before `before_ms`: what a sweep could remove. None,
+    /// and a sweep has nothing to do (docs/L4s/resilience-audit-L4.md, R5); a listing, stopped at
+    /// the first.
+    pub(crate) fn any_put_before(&self, before_ms: u64) -> bool {
+        let Some(dir) = &self.dir else {
+            let mem = self.mem.lock().unwrap();
+            return mem.texts.values().any(|(_, at)| *at < before_ms) || mem.chunks.values().any(|(_, at)| *at < before_ms);
+        };
+        let old = |d: &Path| {
+            std::fs::read_dir(d).is_ok_and(|entries| entries.flatten().any(|e| e.file_name().to_str().is_some_and(is_id) && changed_ms(&e.path()) < before_ms))
+        };
+        old(dir) || old(&dir.join("chunks"))
+    }
+
     /// Remove every text not in `live` put before `before_ms`, then every chunk put before it that
     /// no text left names. A text or chunk put since is spared: a run that just kept one may not
     /// have logged it yet.
@@ -342,6 +356,10 @@ mod tests {
             assert_eq!(blobs.get(&"0".repeat(64)).unwrap(), None);
             assert_eq!(blobs.get("../x").unwrap(), None);
 
+            // Only what was put before a time is a sweep's to remove: none, and it has nothing to do.
+            assert!(!blobs.any_put_before(0), "nothing put before then");
+            assert!(blobs.any_put_before(now_ms() + 1_000));
+
             // Swept: what no run refers to goes, what one does stays, and so do its chunks.
             let live = BTreeSet::from([id2.clone()]);
             assert_eq!(blobs.sweep(&live, 0).unwrap(), Swept::default(), "nothing put before then");
@@ -352,6 +370,7 @@ mod tests {
             assert!(swept.chunks <= 1, "the grown text uses every chunk the first did but its last");
             let all = blobs.sweep(&BTreeSet::new(), now_ms() + 1_000).unwrap();
             assert_eq!((all.texts, blobs.held()), (1, Held::default()));
+            assert!(!blobs.any_put_before(now_ms() + 1_000), "and once swept, nothing is left to");
         }
         // A damaged chunk is found, not answered.
         let blobs = Blobs::at(dir.clone());
