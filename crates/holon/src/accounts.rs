@@ -129,6 +129,10 @@ pub(crate) struct Accounts {
     /// The one-time code that creates the first admin, while there is none.
     setup_code: Mutex<Option<String>>,
     failures: Mutex<HashMap<String, Tries>>,
+    /// Wrong setup codes: as a name's wrong passwords, `MAX_FAILURES` then locked for
+    /// `LOCKED_FOR`, so the code (about 40 bits) can't be guessed at speed while the server waits
+    /// for its first admin.
+    setup_tries: Mutex<Tries>,
     /// The identity provider, discovered from `book.oidc` (oidc.rs).
     oidc: RwLock<Option<crate::oidc::Oidc>>,
     /// The local token's hash and who it is (local.rs): made when the server starts, good as that
@@ -220,7 +224,7 @@ impl Accounts {
 
     fn with(path: Option<PathBuf>, book: Book) -> Accounts {
         let code = book.users.is_empty().then(|| std::env::var("HOLON_SETUP_CODE").ok().filter(|c| !c.trim().is_empty()).unwrap_or_else(new_setup_code));
-        Accounts { path, book: Mutex::new(book), setup_code: Mutex::new(code), failures: Mutex::new(HashMap::new()), oidc: RwLock::new(None), local: Mutex::new(None) }
+        Accounts { path, book: Mutex::new(book), setup_code: Mutex::new(code), failures: Mutex::new(HashMap::new()), setup_tries: Mutex::new(Tries::default()), oidc: RwLock::new(None), local: Mutex::new(None) }
     }
 
     fn save(&self, book: &Book) -> Result<(), String> {
@@ -258,8 +262,20 @@ impl Accounts {
     /// The first admin, with the setup code; signed in.
     pub(crate) fn setup(&self, code: &str, name: &str, password: &str) -> Result<(String, Account), String> {
         let expected = self.setup_code().ok_or("this server is set up already")?;
-        if !same(&code.trim().to_uppercase(), &expected) {
-            return Err("that isn't the setup code (it is printed when the server starts)".into());
+        {
+            let mut tries = self.setup_tries.lock().unwrap();
+            if tries.locked.is_some_and(|at| at.elapsed() < LOCKED_FOR) {
+                return Err("too many wrong setup codes: wait a minute, then try again".into());
+            }
+            if !same(&code.trim().to_uppercase(), &expected) {
+                tries.wrong += 1;
+                if tries.wrong >= MAX_FAILURES {
+                    (tries.wrong, tries.locked) = (0, Some(Instant::now()));
+                    eprintln!("holon: {MAX_FAILURES} wrong setup codes in a row: setting up is refused for a minute");
+                }
+                return Err("that isn't the setup code (it is printed when the server starts)".into());
+            }
+            *tries = Tries::default();
         }
         valid_name(name)?;
         check_password(password)?;
@@ -613,6 +629,28 @@ mod tests {
         assert!(!a.needs_setup());
         assert_eq!(a.setup_code(), None);
         assert!(a.setup(&code, "eve", PW).is_err(), "only once");
+    }
+
+    /// Wrong setup codes lock setting up for a while, as wrong passwords lock a name: the code
+    /// can't be guessed at speed while the server waits for its first admin.
+    #[test]
+    fn wrong_setup_codes_lock_setting_up_for_a_while() {
+        let a = Accounts::memory();
+        let code = a.setup_code().unwrap();
+        for _ in 0..MAX_FAILURES {
+            assert!(a.setup("WRNG-CODE", "ada", PW).unwrap_err().contains("isn't the setup code"));
+        }
+        assert!(a.setup(&code, "ada", PW).unwrap_err().contains("too many"), "locked, even with the right one");
+        assert!(a.needs_setup());
+        // A minute on, the right code sets it up.
+        a.setup_tries.lock().unwrap().locked = Some(Instant::now() - LOCKED_FOR - Duration::from_secs(1));
+        let (_, account) = a.setup(&code, "ada", PW).unwrap();
+        assert_eq!(account.role, Role::Admin);
+        // A wrong code then right one counts afresh: one wrong code isn't a lock.
+        let b = Accounts::memory();
+        let code = b.setup_code().unwrap();
+        assert!(b.setup("WRNG-CODE", "ada", PW).is_err());
+        assert!(b.setup(&code, "ada", PW).is_ok());
     }
 
     #[test]

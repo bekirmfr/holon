@@ -25,7 +25,8 @@ its hash as it is read (`Store::get`, [holon-host](../components/holon-host.md))
 - **First run.** A server with no accounts prints a setup code (`new_setup_code`: 8 characters
   from a 32-letter alphabet, `XXXX-XXXX`; or `HOLON_SETUP_CODE`) and answers 403 to all but the
   open paths below until `Accounts::setup` is given it; the code is then cleared. Whoever enters
-  it is the first admin.
+  it is the first admin. `MAX_FAILURES` (5) wrong codes in a row refuse setting up for
+  `LOCKED_FOR` (a minute; `setup_tries`), so the code (about 40 bits) can't be guessed at speed.
 - **Passwords**: at least `MIN_PASSWORD` (10) characters, kept as argon2id hashes. `MAX_FAILURES`
   (5) wrong in a row lock the name for `LOCKED_FOR` (a minute); sign-ins in flight count toward it,
   so sending them at once doesn't buy more tries. A name with no account is checked against
@@ -214,8 +215,8 @@ What is not defended, or only partly:
   loopback port is reachable by any local program and, through DNS rebinding, by a web page;
   `browsers` decides only which other origins' pages may read its answers.
 - **The control plane is not hardened against load**: a thread per request (rouille's default),
-  sign-in throttled per name only (so a known name can be locked out a minute at a time), and the
-  setup code is checked with no throttle while the server is unset.
+  and sign-in throttled per name only (so a known name can be locked out a minute at a time;
+  likewise anyone can hold setting up off a minute at a time with wrong codes).
 - **Approval is one editor's**: any editor or admin may acknowledge anything the policy allows.
 - **The server's own files, as folders refuse them**: `server_files` names the files it was given,
   the `logs`, `arrivals` and `heads` beside the deployments file, and `~/.holon`; with `--data`
@@ -257,8 +258,7 @@ What is not defended, or only partly:
   `a_witness_is_reached_over_https_or_on_this_machine`.
 
 Gaps: nothing asserts the mode of the store's, flows' or backups' files, or of a directory; no
-data-plane request under a foreign `Host`, no repeated
-setup code is sent; no link is swapped between a folder's check and its open; the `.state`
+data-plane request under a foreign `Host` is sent; no link is swapped between a folder's check and its open; the `.state`
 folder isn't among the folders `no_folder_is_or_holds_what_the_server_keeps_beside_its_files`
 tries.
 

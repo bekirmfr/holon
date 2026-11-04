@@ -7,6 +7,9 @@
   (`email_verified` true); before, one was taken unless the provider said it wasn't, and a
   provider that lets a person type any email signed them in as whoever had it. A token that
   doesn't say signs no one in, and the refusal says why.
+- **The setup code can't be guessed.** Five wrong setup codes in a row refuse setting up for a
+  minute, as five wrong passwords lock a name; before, a server waiting for its first admin
+  checked codes as fast as they came.
 - **Every run's record is on disk before its answer.** A run of a route, clock, file handler or
   action is answered (or counts as done) once its log entry is synced, not only written: an
   answered run is recorded, a power loss or not. Runs at once share the sync. A handler that only

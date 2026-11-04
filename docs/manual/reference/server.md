@@ -171,7 +171,8 @@ to the current ceilings whenever the server loads.
 
 Everyone signs in; there is no trust for requests from this machine. A new server prints a
 setup code (`XXXX-XXXX`, or `HOLON_SETUP_CODE`); whoever enters it in the editor is the first
-admin. Until then the server answers everything but setting up with 403.
+admin. Until then the server answers everything but setting up with 403; five wrong codes in a
+row refuse setting up for a minute, so the code can't be guessed.
 
 | Role | May |
 |---|---|
