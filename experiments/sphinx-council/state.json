@@ -1,17 +1,21 @@
 {
-  "fen": "rnbqkbnr/pppp1ppp/8/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R b KQkq - 1 2",
+  "fen": "r1bqkbnr/pppp1ppp/2n5/1B2p3/4P3/5N2/PPPP1PPP/RNBQK2R b KQkq - 3 3",
   "moves": [
     "e4",
     "e5",
-    "Nf3"
+    "Nf3",
+    "Nc6",
+    "Bb5"
   ],
   "seen": [
     "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq -",
     "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3",
     "rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq e6",
-    "rnbqkbnr/pppp1ppp/8/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R b KQkq -"
+    "rnbqkbnr/pppp1ppp/8/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R b KQkq -",
+    "r1bqkbnr/pppp1ppp/2n5/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq -",
+    "r1bqkbnr/pppp1ppp/2n5/1B2p3/4P3/5N2/PPPP1PPP/RNBQK2R b KQkq -"
   ],
-  "last": "g1f3",
+  "last": "f1b5",
   "status": "playing",
   "winner": "",
   "result": "*",
@@ -19,9 +23,29 @@
     "white": 39,
     "black": 39
   },
-  "pgn": "1. e4 e5 2. Nf3 *",
+  "pgn": "1. e4 e5 2. Nf3 Nc6 3. Bb5 *",
   "turn": "b",
   "legal": [
+    {
+      "san": "Nb4",
+      "uci": "c6b4"
+    },
+    {
+      "san": "Nd4",
+      "uci": "c6d4"
+    },
+    {
+      "san": "Na5",
+      "uci": "c6a5"
+    },
+    {
+      "san": "Nce7",
+      "uci": "c6e7"
+    },
+    {
+      "san": "Nb8",
+      "uci": "c6b8"
+    },
     {
       "san": "a6",
       "uci": "a7a6"
@@ -33,18 +57,6 @@
     {
       "san": "b6",
       "uci": "b7b6"
-    },
-    {
-      "san": "b5",
-      "uci": "b7b5"
-    },
-    {
-      "san": "c6",
-      "uci": "c7c6"
-    },
-    {
-      "san": "c5",
-      "uci": "c7c5"
     },
     {
       "san": "d6",
@@ -79,12 +91,8 @@
       "uci": "h7h5"
     },
     {
-      "san": "Na6",
-      "uci": "b8a6"
-    },
-    {
-      "san": "Nc6",
-      "uci": "b8c6"
+      "san": "Rb8",
+      "uci": "a8b8"
     },
     {
       "san": "Qe7",
@@ -135,7 +143,7 @@
       "uci": "g8h6"
     },
     {
-      "san": "Ne7",
+      "san": "Nge7",
       "uci": "g8e7"
     }
   ],
@@ -145,10 +153,16 @@
       "proposed": "e5",
       "kept": "kept",
       "played": "e5"
+    },
+    {
+      "ply": 4,
+      "proposed": "Nc6",
+      "kept": "kept",
+      "played": "Nc6"
     }
   ],
   "fallback": {
-    "san": "c6",
-    "uci": "c7c6"
+    "san": "d6",
+    "uci": "d7d6"
   }
 }
