@@ -176,6 +176,9 @@ by the syncer when they changed.
   default: a strict run then fails its sync and answers 500 rather than answer unrecorded),
   pause what records runs until there is room (records kept, runs refused), or cut the oldest
   runs of the biggest logs (runs answered, history shortened). Each is said on the timeline.
+- **Sealed.** A log keeps its newest 128 runs as written and seals the older ones, gzipped, as it
+  cuts back (storage-L4.md, step 9): the run's path, its append and its sync, unchanged; a cut
+  that crashes between sealing and replacing the file leaves runs in both, read once.
 - **Packed.** The values a sweep keeps, once an hour old, are packed (deflated together, a pack
   written whole before their files go): a used store's 140,026 files became one pack of 1 MiB
   (storage-L4.md, step 10; the soaks' "7.7 files a write" is gone for what is kept).

@@ -116,6 +116,10 @@ A slower path that is still right would pass every test above; these fail instea
   entry after entry), `lines_written_while_a_cut_is_made_outside_the_lock_are_all_kept_in_order`
   (8 threads), `a_cut_overtaken_by_the_file_changing_is_made_afresh_and_a_deleted_log_stays_deleted`,
   `a_file_changed_outside_holon_is_read_afresh_by_its_cut_back`.
+- `a_log_seals_its_older_runs_and_reads_them_back_as_it_wrote_them` (step 9: against a log in
+  memory, run for run and line for line, the cut outside the lock and the one holding it alike,
+  every run let go of backed up), `a_run_sealed_and_still_in_the_file_after_a_crash_is_read_once`,
+  `the_states_sealed_runs_left_are_kept_by_a_sweep`.
 - `a_log_on_file_keeps_its_newest_runs_in_memory_and_reads_the_rest_from_its_file` (R8): against
   a log keeping them all in memory, run for run; `a_read_planned_before_a_cut_back_reads_the_runs_it_planned`.
 - `a_log_read_a_line_at_a_time_holds_no_lock_and_sees_one_file_whole` (R5): taking the lock inside

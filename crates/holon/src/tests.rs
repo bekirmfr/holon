@@ -1425,6 +1425,50 @@ fn the_values_a_sweep_keeps_are_packed_and_read_back() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// The states runs sealed in their log's segments left stay named: a store sweep keeps them, and
+/// each kept run's state reads back, sealed or not.
+#[test]
+fn the_states_sealed_runs_left_are_kept_by_a_sweep() {
+    let dir = unique_temp_path("sealed-sweep");
+    let disk = FileStore::new(&dir).unwrap();
+    let values = disk.values_dir();
+    let mut state = test_state_with(SharedStore::on_disk(Box::new(disk), values));
+    let data = unique_temp_path("sealed-data");
+    std::fs::create_dir_all(&data).unwrap();
+    state.deployments_path = std::path::Path::new(&data).join("deployments.json").display().to_string();
+    let plan = holon_author::agent::plan("flow kept\nkeep 60 runs\nstate n\ncollection notes\n\naction bump (input) {\n  n = (state.n ?? 0) + 1\n  state.n = n\n  notes[\"k{n}\"] = n\n}\n").unwrap_or_else(|e| panic!("{e}"));
+    let requirements = plan.requirements.clone().unwrap();
+    for u in &plan.units {
+        assert_eq!(route(&state, &req("POST", "/unit", u.clone())).status_code, 200);
+    }
+    let preview = body_json(route(&state, &req("POST", "/deploy/preview", serde_json::to_vec(&serde_json::json!({ "slug": "kept", "unit": plan.unit, "requirements": requirements })).unwrap())));
+    let ask = serde_json::json!({ "acknowledge": preview["needs_approval"], "requirements": requirements });
+    assert_eq!(deploy_json(&state, "kept", parse_hash(&plan.unit).unwrap(), ask).status_code, 200);
+    state.deployments.lock().unwrap()["kept"].log.with(|l| l.set_hot(5));
+    for i in 0..80 {
+        assert_eq!(route(&state, &req("POST", "/trigger/kept/bump", b"{}".to_vec())).status_code, 200);
+        if i % 4 == 0 {
+            crate::recorder::sync_logs(&state.deployments).unwrap();
+        }
+    }
+    crate::recorder::sync_logs(&state.deployments).unwrap();
+    let (segments, sealed, _) = state.deployments.lock().unwrap()["kept"].log.with(|l| l.sealed_holds());
+    assert!(segments > 0 && sealed > 30, "{segments} segments, {sealed} runs sealed");
+    let swept = sweep::sweep(&state.store, &state.deployments, SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as u64 + 2 * sweep::SPARES_MS, sweep::SPARES_MS, false, false).unwrap().unwrap();
+    assert!(swept.values > 0, "the cut runs' states went: {swept:?}");
+    state.store.4.set_budget(0);
+    let kept = state.deployments.lock().unwrap()["kept"].log.after(None, usize::MAX);
+    assert_eq!(kept.len(), 60);
+    for e in &kept {
+        let snapshot = e.state_after.as_deref().unwrap_or_else(|| panic!("run {} left a state", e.seq));
+        restore::load_snapshot(snapshot, &state.store).unwrap_or_else(|err| panic!("run {}'s state: {err}", e.seq));
+    }
+    let host = body_json(route(&state, &req("GET", "/deployments/kept/holds", vec![])));
+    assert!(host["log"]["sealed"]["segments"].as_u64().unwrap() > 0, "{host}");
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(&data);
+}
+
 /// An admin sets how often the server sweeps (`POST /admin/storage`): written into `holon.toml`'s
 /// `[storage]`, the rest of the file as it was, comments too, and in force at once; a setting that
 /// isn't one changes nothing.

@@ -37,6 +37,12 @@
   things on, how full it is for the server (a quota counts) and what it keeps there; the content
   store's values and the disk they take, the logs and the folders' kept texts (counted at start
   and after each round of sweeps); and the sweeps (`GET /admin/host`).
+- **Logs seal their older runs, gzipped.** A log keeps its newest 128 runs in its file as
+  written, as before, and the older ones it keeps in segments beside it,
+  `deployments.logs/<slug>.sealed/<first>-<last>.jsonl.gz`, sealed as it cuts back; a whole
+  segment goes once none of its runs is kept (to the backup first, when there is one). The
+  soaks' logs went from 192 MB to 37 MB on start; runs, pages, exports and `holon verify` read
+  them as before. A log keeping no more than 128 runs seals nothing.
 - **The store packs its long-lived values.** Each value was a file of its own, a 358-byte one
   taking a 4 KiB block, and a store writing state left thousands. The server's own sweep now
   moves the values it keeps, once an hour old, into packs deflated together, removing their files:

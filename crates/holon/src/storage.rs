@@ -557,7 +557,7 @@ impl Sweeps {
             let dep = table.get(slug)?;
             (std::sync::Arc::clone(&dep.log), dep.unit, dep.state.clone())
         };
-        let (kept, entries, entry_bytes, lines) = log.with(|l| l.holds());
+        let ((kept, entries, entry_bytes, lines), (segments, sealed_runs, sealed_bytes)) = log.with(|l| (l.holds(), l.sealed_holds()));
         let mut file = Count::default();
         if let Some(path) = crate::recorder::file_for(&state.deployments_path, slug)
             && let Ok(m) = std::fs::metadata(path)
@@ -572,12 +572,12 @@ impl Sweeps {
         let texts = shares.map(|s| s.file_texts.get(slug).copied().unwrap_or_default());
         let log_memory = entry_bytes * ENTRY_MEMORY;
         let memory = log_memory + state_memory + flow.map_or(0, |f| f.0);
-        let disk = file.on_disk + store.map_or(0, |s| s.1) + texts.map_or(0, |t| t.1);
+        let disk = file.on_disk + sealed_bytes + store.map_or(0, |s| s.1) + texts.map_or(0, |t| t.1);
         Some(serde_json::json!({
             "slug": slug,
             "memory": memory,
             "disk": disk,
-            "log": { "kept": kept, "entries": entries, "entry_bytes": entry_bytes, "memory": log_memory, "lines": lines, "file": file },
+            "log": { "kept": kept, "entries": entries, "entry_bytes": entry_bytes, "memory": log_memory, "lines": lines, "file": file, "sealed": { "segments": segments, "runs": sealed_runs, "bytes": sealed_bytes } },
             "state_memory": state_memory,
             "flow_cache": flow.map(|(own, shared)| serde_json::json!({ "own": own, "shared": shared })),
             "store": store.map(|(values, bytes)| serde_json::json!({ "values": values, "bytes": bytes })),
@@ -889,6 +889,9 @@ pub(crate) fn holds_lines(v: &serde_json::Value) -> Vec<String> {
     });
     lines.push(format!("on disk      {}", size(&v["disk"])));
     lines.push(format!("  its log      {}: {} lines", size(&log["file"]["on_disk"]), n(&log["lines"])));
+    if n(&log["sealed"]["segments"]) > 0 {
+        lines.push(format!("    sealed       {} older runs in {} segments, {} gzipped", n(&log["sealed"]["runs"]), n(&log["sealed"]["segments"]), size(&log["sealed"]["bytes"])));
+    }
     let at = v["shares_at_ms"].as_u64().map(|at| format!(" (as the store's last sweep found, {} ago)", span(now_ms().saturating_sub(at))));
     match (v["store"].as_object(), &at) {
         (Some(st), Some(at)) => lines.push(format!("  its states   {} values, {}{at}", n(&st["values"]), size(&st["bytes"]))),

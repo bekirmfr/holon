@@ -496,6 +496,10 @@ pub struct Log {
     backup: Option<(PathBuf, bool)>,
     /// Why the last cut-back couldn't write them there (and so didn't cut), if it couldn't.
     backup_error: Option<String>,
+    /// Its sealed segments, oldest first: the runs it keeps older than the newest `hot`.
+    sealed: Vec<Sealed>,
+    /// How many of its newest runs it keeps in its file as written (`HOT`).
+    hot: usize,
 }
 
 /// A cut-back to be made with the log's lock released: the file as it was when it was planned
@@ -504,6 +508,8 @@ pub struct Log {
 struct CutPlan {
     path: PathBuf,
     backup: Option<(PathBuf, bool)>,
+    sealed: Vec<Sealed>,
+    hot: usize,
     generation: u64,
     file_len: u64,
     lines: VecDeque<LineAt>,
@@ -526,6 +532,10 @@ struct CutMade {
     /// The oldest line kept, when lines before it were let go (the witness hears of it).
     trimmed: Option<(u64, String)>,
     oldest_ms: u64,
+    /// The runs it seals: a segment written aside, to be renamed in before the file is replaced.
+    seal: Option<(PathBuf, PathBuf, Sealed)>,
+    /// The segments none of whose runs it keeps, to go once the file is replaced.
+    drop: Vec<PathBuf>,
 }
 
 impl CutMade {
@@ -566,21 +576,21 @@ impl CutPlan {
         }
         let in_file = |at: &LineAt| bytes.get(at.offset as usize..at.offset as usize + at.len);
         let lines: Vec<(&[u8], &LineAt)> = self.lines.iter().filter_map(|at| in_file(at).map(|b| (b, at))).collect();
-        let newest = lines.len().saturating_sub(1);
-        let start = lines.len().saturating_sub(self.keep);
-        let kept: Vec<&(&[u8], &LineAt)> = lines
-            .iter()
-            .enumerate()
-            .filter(|(i, (_, at))| *i == newest || (*i >= start && self.cutoff.is_none_or(|c| at.at_ms >= c)))
-            .map(|(_, l)| l)
-            .collect();
-        if kept.len() == lines.len() {
+        let hot_keep = self.keep.min(self.hot);
+        let split = split(&self.sealed, &lines, self.keep, hot_keep, self.cutoff);
+        if split.seal.is_empty() && split.gone.is_empty() && split.drop.is_empty() {
             return Ok(None);
         }
         // What it lets go of, written to the backup first: if it can't be, the cut fails, and the
         // cut made holding the lock instead finds the same and doesn't cut (`cut_back`).
-        let gone: Vec<&(&[u8], &LineAt)> = lines.iter().enumerate().filter(|(i, (_, at))| !(*i == newest || (*i >= start && self.cutoff.is_none_or(|c| at.at_ms >= c)))).map(|(_, l)| l).collect();
+        let gone: Vec<&(&[u8], &LineAt)> = split.gone.iter().map(|i| &lines[*i]).collect();
         keep_aside(self.backup.as_ref(), &self.path, &gone)?;
+        let dropped: Vec<&Sealed> = split.drop.iter().map(|j| &self.sealed[*j]).collect();
+        keep_segments_aside(self.backup.as_ref(), &self.path, &dropped)?;
+        // What it keeps older than the newest `hot`, sealed beside the file.
+        let to_seal: Vec<&(&[u8], &LineAt)> = split.seal.iter().map(|i| &lines[*i]).collect();
+        let seal = if to_seal.is_empty() { None } else { Some(write_segment(&self.path, &to_seal)?) };
+        let kept: Vec<&(&[u8], &LineAt)> = split.stay.iter().map(|i| &lines[*i]).collect();
         let mut all = Vec::with_capacity(kept.iter().map(|(b, _)| b.len() + 1).sum());
         let mut index = VecDeque::with_capacity(kept.len());
         for (b, at) in &kept {
@@ -588,10 +598,10 @@ impl CutPlan {
             all.extend_from_slice(b);
             all.push(b'\n');
         }
-        let trimmed = kept.first().filter(|(_, oldest)| !oldest.prev.is_empty()).map(|(_, oldest)| (oldest.seq, oldest.prev.clone()));
-        let oldest_ms = kept.first().map_or(0, |(_, at)| at.at_ms);
+        let (trimmed, oldest_ms) = oldest_kept(&self.sealed, &split, seal.as_ref().map(|s| &s.2), &kept, !split.gone.is_empty() || !split.drop.is_empty());
         let tmp = crate::sealing::write_aside(&self.path, &all)?;
-        Ok(Some(CutMade { path: self.path, generation: self.generation, tmp, file_len: self.file_len, copied: self.file_len, len: all.len() as u64, index, trimmed, oldest_ms }))
+        let drop = dropped.iter().map(|s| s.path.clone()).collect();
+        Ok(Some(CutMade { path: self.path, generation: self.generation, tmp, file_len: self.file_len, copied: self.file_len, len: all.len() as u64, index, trimmed, oldest_ms, seal, drop }))
     }
 }
 
@@ -617,6 +627,42 @@ fn keep_aside(backup: Option<&(PathBuf, bool)>, path: &Path, gone: &[&(&[u8], &L
         Err(e) if !*may_drop => Err(std::io::Error::other(format!("the runs it lets go of couldn't be written to the backup {}: {e}", dir.display()))),
         _ => Ok(()),
     }
+}
+
+/// After a cut that `split` made (of `sealed` then the file's lines, `seal` the segment it seals,
+/// `stay` the lines left in the file): the oldest run it keeps, when runs before it went (`went`)
+/// and it names one before it (the witness hears of it, as a `trim`), and when it ran.
+fn oldest_kept(sealed: &[Sealed], split: &Split, seal: Option<&Sealed>, stay: &[&(&[u8], &LineAt)], went: bool) -> (Option<(u64, String)>, u64) {
+    let first = sealed
+        .iter()
+        .enumerate()
+        .find(|(j, _)| !split.drop.contains(j))
+        .map(|(_, s)| (s.first(), s.first_prev.clone(), s.runs.first().map_or(0, |r| r.1)))
+        .or_else(|| seal.map(|s| (s.first(), s.first_prev.clone(), s.runs.first().map_or(0, |r| r.1))))
+        .or_else(|| stay.first().map(|(_, at)| (at.seq, at.prev.clone(), at.at_ms)));
+    match first {
+        Some((seq, prev, at_ms)) => ((went && !prev.is_empty()).then_some((seq, prev)), at_ms),
+        None => (None, 0),
+    }
+}
+
+/// `keep_aside` for whole segments: their lines, read back, written to the backup first.
+fn keep_segments_aside(backup: Option<&(PathBuf, bool)>, path: &Path, segments: &[&Sealed]) -> std::io::Result<()> {
+    if backup.is_none() {
+        return Ok(());
+    }
+    for s in segments {
+        let text = match read_segment(&s.path) {
+            Ok(t) => t,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => return Err(e),
+        };
+        let ats: Vec<LineAt> = s.runs.iter().map(|(seq, at_ms)| LineAt { offset: 0, len: 0, at_ms: *at_ms, seq: *seq, prev: String::new() }).collect();
+        let lines: Vec<(&[u8], &LineAt)> = text.lines().map(str::as_bytes).zip(&ats).collect();
+        let refs: Vec<&(&[u8], &LineAt)> = lines.iter().collect();
+        keep_aside(backup, path, &refs)?;
+    }
+    Ok(())
 }
 
 /// How often the logs' files are synced to disk (`sync_logs`): what a power loss can lose of them,
@@ -756,6 +802,95 @@ fn lines_of(text: &str) -> impl Iterator<Item = (&str, Option<LogEntry>, u64)> {
     })
 }
 
+/// How many of its newest runs a log keeps in its file as they were written; the older ones it
+/// keeps are sealed, gzipped, in segments beside it (`<slug>.sealed/<first>-<last>.jsonl.gz`),
+/// each cut-back sealing what has left the newest (docs/L4s/storage-L4.md, step 9). A log keeping
+/// no more than this seals nothing.
+pub(crate) const HOT: usize = 128;
+
+/// One sealed segment of a log: the runs in it, in order (seq, when it ran), the hash its first
+/// line names as the one before it (what a witness hears when the runs before it go), its size.
+#[derive(Debug, Clone)]
+struct Sealed {
+    path: PathBuf,
+    runs: Vec<(u64, u64)>,
+    first_prev: String,
+    size: u64,
+}
+
+impl Sealed {
+    fn first(&self) -> u64 {
+        self.runs.first().map_or(0, |r| r.0)
+    }
+    fn last(&self) -> u64 {
+        self.runs.last().map_or(0, |r| r.0)
+    }
+}
+
+/// Where a log's sealed segments are: beside its file, `<slug>.sealed/`.
+fn sealed_dir(file: &Path) -> PathBuf {
+    file.with_extension("sealed")
+}
+
+/// A sealed segment's lines, as written.
+fn read_segment(path: &Path) -> std::io::Result<String> {
+    let bytes = std::fs::read(path)?;
+    let mut text = String::new();
+    std::io::Read::read_to_string(&mut flate2::read::GzDecoder::new(&bytes[..]), &mut text)?;
+    Ok(text)
+}
+
+/// `lines` gzipped into a segment beside the file at `file`, written aside and synced (renamed in
+/// by whoever made it, `seal_in`): where it is to go, where it is now, and what it holds.
+fn write_segment(file: &Path, lines: &[&(&[u8], &LineAt)]) -> std::io::Result<(PathBuf, PathBuf, Sealed)> {
+    let (Some((_, first)), Some((_, last))) = (lines.first(), lines.last()) else { return Err(std::io::Error::other("an empty segment")) };
+    let dir = sealed_dir(file);
+    std::fs::create_dir_all(&dir)?;
+    let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    for (b, _) in lines {
+        std::io::Write::write_all(&mut gz, b)?;
+        std::io::Write::write_all(&mut gz, b"\n")?;
+    }
+    let bytes = gz.finish()?;
+    let path = dir.join(format!("{:020}-{:020}.jsonl.gz", first.seq, last.seq));
+    let aside = crate::sealing::write_aside(&path, &bytes)?;
+    let sealed = Sealed { path: path.clone(), runs: lines.iter().map(|(_, at)| (at.seq, at.at_ms)).collect(), first_prev: first.prev.clone(), size: bytes.len() as u64 };
+    Ok((path, aside, sealed))
+}
+
+/// How a cut-back splits a log, its sealed segments (`sealed`) then its file's lines (`hot`), by
+/// what it keeps (the newest `keep`, none older than `cutoff`, always the newest line): the file's
+/// lines that stay in it (its newest `hot_keep` it keeps), those to seal (the rest it keeps), those
+/// that go; and the segments that go (none of whose runs it keeps). Indexes into each.
+#[derive(Debug, Default, PartialEq)]
+struct Split {
+    stay: Vec<usize>,
+    seal: Vec<usize>,
+    gone: Vec<usize>,
+    drop: Vec<usize>,
+}
+
+fn split(sealed: &[Sealed], hot: &[(&[u8], &LineAt)], keep: usize, hot_keep: usize, cutoff: Option<u64>) -> Split {
+    let in_sealed: usize = sealed.iter().map(|s| s.runs.len()).sum();
+    let total = in_sealed + hot.len();
+    let (start, newest) = (total.saturating_sub(keep), total.saturating_sub(1));
+    let kept = |i: usize, at_ms: u64| i == newest || (i >= start && cutoff.is_none_or(|c| at_ms >= c));
+    let mut out = Split::default();
+    let mut base = 0;
+    for (j, s) in sealed.iter().enumerate() {
+        if !s.runs.iter().enumerate().any(|(k, (_, at))| kept(base + k, *at)) {
+            out.drop.push(j);
+        }
+        base += s.runs.len();
+    }
+    let kept_hot: Vec<usize> = (0..hot.len()).filter(|i| kept(in_sealed + i, hot[*i].1.at_ms)).collect();
+    out.gone = (0..hot.len()).filter(|i| !kept_hot.contains(i)).collect();
+    let stays_from = kept_hot.len().saturating_sub(hot_keep);
+    out.seal = kept_hot[..stays_from].to_vec();
+    out.stay = kept_hot[stays_from..].to_vec();
+    out
+}
+
 /// How many of its newest runs a log on file keeps in memory, whole: what a runs list shows first
 /// and a view polling for new runs asks for. The others it keeps are read from its file when asked
 /// (docs/L4s/resilience-audit-L4.md, R8: kept whole, a log's runs took 1.1 to 3.6 times their
@@ -769,6 +904,8 @@ pub(crate) const IN_MEMORY: usize = 32;
 pub struct Wanted {
     memory: Vec<LogEntry>,
     file: Option<(std::fs::File, Vec<At>)>,
+    /// The older runs in sealed segments: each segment, and each run's place in it and seq.
+    sealed: Vec<(PathBuf, Vec<(usize, u64)>)>,
 }
 
 /// Where a run's line is in a log's file: its offset, its length, and the run's seq.
@@ -785,6 +922,22 @@ impl Wanted {
     fn read_if(self, keep: impl Fn(&str) -> bool) -> Vec<LogEntry> {
         use std::io::{Read, Seek, SeekFrom};
         let mut out = Vec::new();
+        for (path, picks) in self.sealed {
+            // A segment let go of since: its runs are no longer kept.
+            let Ok(text) = read_segment(&path) else { continue };
+            let lines: Vec<&str> = text.lines().collect();
+            for (i, seq) in picks {
+                let Some(line) = lines.get(i) else { continue };
+                if !keep(line) {
+                    continue;
+                }
+                if let Ok(entry) = serde_json::from_str::<LogEntry>(line)
+                    && entry.seq == seq
+                {
+                    out.push(entry);
+                }
+            }
+        }
         if let Some((mut file, at)) = self.file {
             let mut buf = Vec::new();
             for (offset, len, seq) in at {
@@ -901,12 +1054,20 @@ impl LogCell {
     /// the lock.
     pub fn each_line(&self, mut f: impl FnMut(&str)) {
         use std::io::BufRead;
-        let file = self.with(|log| log.file.clone());
-        let Some(path) = file else {
+        // Its file opened and its segments named under the lock, so they agree: a cut sealing lines
+        // after this leaves them in the file opened, and one letting a segment go drops runs no
+        // longer kept.
+        let (file, segments) = self.with(|log| (log.file.as_ref().map(std::fs::File::open), log.sealed.iter().map(|s| s.path.clone()).collect::<Vec<_>>()));
+        let Some(file) = file else {
             let lines: Vec<String> = self.with(|log| log.entries.iter().filter_map(|e| serde_json::to_string(e).ok()).collect());
             return lines.iter().for_each(|l| f(l));
         };
-        let Ok(file) = std::fs::File::open(&path) else { return };
+        for p in segments {
+            if let Ok(text) = read_segment(&p) {
+                text.lines().for_each(&mut f);
+            }
+        }
+        let Ok(file) = file else { return };
         let mut reader = std::io::BufReader::with_capacity(64 << 10, file);
         let mut line = Vec::new();
         loop {
@@ -1032,17 +1193,65 @@ impl Log {
             generation: 0,
             backup: None,
             backup_error: None,
+            sealed: Vec::new(),
+            hot: HOT,
         };
-        let Some(path) = &log.file else { return log };
-        let Ok(text) = std::fs::read_to_string(path) else { return log };
+        let Some(path) = log.file.clone() else { return log };
+        let mut chained = false;
+        // Its sealed segments first, oldest first, each read as the file's lines are; what a cut
+        // that crashed left aside, removed.
+        let dir = sealed_dir(&path);
+        let mut segments: Vec<PathBuf> = Vec::new();
+        for e in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+            let p = e.path();
+            let name = e.file_name().to_string_lossy().into_owned();
+            if name.ends_with(".jsonl.gz") {
+                segments.push(p);
+            } else if name.contains(".cut-") {
+                let _ = std::fs::remove_file(&p);
+            }
+        }
+        segments.sort();
+        for p in segments {
+            let text = match read_segment(&p) {
+                Ok(t) => t,
+                Err(e) => {
+                    eprintln!("holon: the sealed segment {} can't be read, its runs are missing from the log: {e}", p.display());
+                    continue;
+                }
+            };
+            let size = std::fs::metadata(&p).map_or(0, |m| m.len());
+            let mut runs = Vec::new();
+            let mut first_prev = None;
+            for (line, entry, _) in lines_of(&text) {
+                if let Some(entry) = entry {
+                    if entry.seq < log.next_seq {
+                        continue;
+                    }
+                    first_prev.get_or_insert_with(|| entry.prev.clone());
+                    runs.push((entry.seq, entry.at_ms));
+                    log.read_line(line, entry, &mut chained);
+                }
+            }
+            if !runs.is_empty() {
+                log.sealed.push(Sealed { path: p, runs, first_prev: first_prev.unwrap_or_default(), size });
+            }
+        }
+        let Ok(text) = std::fs::read_to_string(&path) else { return log.opened() };
         log.cut = !text.is_empty() && !text.ends_with('\n');
         log.file_len = text.len() as u64;
-        let mut chained = false;
+        let sealed_up_to = log.next_seq;
+        let mut twice = false;
         for (line, entry, offset) in lines_of(&text) {
             log.written += 1;
             // A line a crash cut short is skipped, not fatal: the others still replay, and the
             // chain goes on from the line before it.
             if let Some(entry) = entry {
+                // Sealed already: a cut that crashed between sealing it and replacing the file.
+                if entry.seq < sealed_up_to {
+                    twice = true;
+                    continue;
+                }
                 log.lines.push_back(LineAt { offset, len: line.len(), at_ms: entry.at_ms, seq: entry.seq, prev: entry.prev.clone() });
                 if (chained || !entry.prev.is_empty()) && !log.head.is_empty() && entry.prev != log.head {
                     log.breaks.push(entry.seq);
@@ -1064,9 +1273,82 @@ impl Log {
                 }
             }
         }
-        log.prune(now_ms());
-        log.cut_back_if_aged();
-        log
+        if twice {
+            // Its file written again without the lines sealed already.
+            log.cut_wanted = false;
+            if let Err(e) = log.rewrite_file() {
+                eprintln!("holon: could not write the flow log {path:?} again without the runs sealed already: {e}");
+            }
+        }
+        log.opened()
+    }
+
+    /// The last of opening it: what it keeps pruned, the file cut back when it is past its age; and
+    /// a file holding more than a cut-back leaves it (one written before logs sealed their older
+    /// runs, or a log not written to since) cut back by the next sync, so an idle log seals too.
+    fn opened(mut self) -> Log {
+        self.prune(now_ms());
+        self.cut_back_if_aged();
+        if self.written > 2 * self.keep.min(self.hot) {
+            self.want_cut();
+        }
+        self
+    }
+
+    /// Take in one of its lines read as it opens (a sealed segment's): the chain checked, the run
+    /// numbered and kept, the newest few kept in memory.
+    fn read_line(&mut self, line: &str, entry: LogEntry, chained: &mut bool) {
+        if (*chained || !entry.prev.is_empty()) && !self.head.is_empty() && entry.prev != self.head {
+            self.breaks.push(entry.seq);
+        }
+        *chained |= !entry.prev.is_empty();
+        if self.kept.is_empty() {
+            self.file_oldest_ms = entry.at_ms;
+        }
+        self.head = line_hash(line);
+        self.next_seq = self.next_seq.max(entry.seq + 1);
+        self.kept.push_back((entry.seq, entry.at_ms));
+        self.entries.push_back(entry);
+        self.entry_lines.push_back(line.len());
+        self.entry_bytes += line.len() as u64;
+        if self.entries.len() > IN_MEMORY {
+            self.entries.pop_front();
+            self.entry_bytes -= self.entry_lines.pop_front().unwrap_or(0) as u64;
+        }
+    }
+
+    /// Write its file again as its index says it is (without lines it skipped reading).
+    fn rewrite_file(&mut self) -> std::io::Result<()> {
+        let Some(path) = self.file.clone() else { return Ok(()) };
+        let bytes = std::fs::read(&path)?;
+        let mut all = Vec::with_capacity(bytes.len());
+        let mut index = VecDeque::with_capacity(self.lines.len());
+        for at in &self.lines {
+            let Some(b) = bytes.get(at.offset as usize..at.offset as usize + at.len) else { continue };
+            index.push_back(LineAt { offset: all.len() as u64, ..at.clone() });
+            all.extend_from_slice(b);
+            all.push(b'\n');
+        }
+        self.handle = None;
+        crate::sealing::write_private(&path, &all)?;
+        sync_dir_of(&path);
+        self.written = index.len();
+        self.file_len = all.len() as u64;
+        self.lines = index;
+        self.cut = false;
+        self.generation += 1;
+        Ok(())
+    }
+
+    /// Keep `hot` of its newest runs in its file as written (`HOT`), for a test.
+    #[cfg(test)]
+    pub fn set_hot(&mut self, hot: usize) {
+        self.hot = hot.max(1);
+    }
+
+    /// Its sealed segments: how many, how many runs in them, their bytes on disk.
+    pub fn sealed_holds(&self) -> (usize, usize, u64) {
+        (self.sealed.len(), self.sealed.iter().map(|s| s.runs.len()).sum(), self.sealed.iter().map(|s| s.size).sum())
     }
 
     /// Keep `keep` entries from now on, none older than `max_age_ms` (none: any age): the
@@ -1212,7 +1494,7 @@ impl Log {
         {
             std::fs::create_dir_all(dir)?;
         }
-        let past = self.written + 1 > 2 * self.keep || self.file_aged(now_ms());
+        let past = self.written + 1 > 2 * self.keep.min(self.hot) || self.file_aged(now_ms());
         // Cut holding the lock (a log used on its own); one that couldn't keep what it lets go of
         // aside didn't cut, and the line is appended as any is.
         if past && !self.defer_cuts && self.cut_back(Some((line, at.clone())))? {
@@ -1268,7 +1550,7 @@ impl Log {
         self.cut_wanted = false;
         self.cutting = true;
         let cutoff = self.max_age_ms.map(|age| now_ms().saturating_sub(age));
-        Some(CutPlan { path, backup: self.backup.clone(), generation: self.generation, file_len: self.file_len, lines: self.lines.clone(), keep: self.keep, cutoff })
+        Some(CutPlan { path, backup: self.backup.clone(), sealed: self.sealed.clone(), hot: self.hot, generation: self.generation, file_len: self.file_len, lines: self.lines.clone(), keep: self.keep, cutoff })
     }
 
     /// How long the file is, as this log has written it, while the cut planned at `generation` is
@@ -1297,6 +1579,9 @@ impl Log {
         // A log no longer kept in that file (deleted, or moved) has nothing to cut.
         if self.file.as_deref() != Some(made.path.as_path()) || !made.path.exists() {
             let _ = std::fs::remove_file(&made.tmp);
+            if let Some((_, aside, _)) = &made.seal {
+                let _ = std::fs::remove_file(aside);
+            }
             return;
         }
         let swapped = (|| -> std::io::Result<bool> {
@@ -1306,12 +1591,22 @@ impl Log {
             }
             // What the log wrote since the cut last caught up: small, the rest copied already.
             made.catch_up(self.file_len)?;
+            // The runs it seals, in beside the file before the file is replaced: a crash between
+            // leaves them in both, which opening the log reads once (`open_retaining`).
+            if let Some((path, aside, _)) = &made.seal {
+                std::fs::rename(aside, path)?;
+                sync_dir_of(path);
+            }
             // Closed before the file is replaced: the next line opens the new one.
             self.handle = None;
             std::fs::rename(&made.tmp, &made.path)?;
             // The rename on disk too, so a crash can't bring back the file it replaced, whose
             // newest lines may not have been synced.
             sync_dir_of(&made.path);
+            if let Some((_, _, sealed)) = made.seal.take() {
+                self.sealed.push(sealed);
+            }
+            self.drop_segments(&made.drop);
             let shift = made.len as i64 - made.file_len as i64;
             let moved: Vec<LineAt> = self.lines.iter().filter(|at| at.offset >= made.file_len).map(|at| LineAt { offset: (at.offset as i64 + shift) as u64, ..at.clone() }).collect();
             let mut index = std::mem::take(&mut made.index);
@@ -1332,6 +1627,9 @@ impl Log {
             }
             other => {
                 let _ = std::fs::remove_file(&made.tmp);
+                if let Some((_, aside, _)) = &made.seal {
+                    let _ = std::fs::remove_file(aside);
+                }
                 if let Err(e) = other {
                     eprintln!("holon: the flow log {:?} is cut back holding its lock: {e}", self.file);
                 }
@@ -1366,21 +1664,16 @@ impl Log {
         if let Some((line, at)) = &line {
             lines.push((line.as_bytes(), at));
         }
-        let newest = lines.len().saturating_sub(1);
-        let start = lines.len().saturating_sub(self.keep);
-        let kept: Vec<&(&[u8], &LineAt)> = lines
-            .iter()
-            .enumerate()
-            .filter(|(i, (_, at))| *i == newest || (*i >= start && cutoff.is_none_or(|c| at.at_ms >= c)))
-            .map(|(_, l)| l)
-            .collect();
-        if kept.len() == lines.len() && line.is_none() {
+        let split = split(&self.sealed, &lines, self.keep, self.keep.min(self.hot), cutoff);
+        if split.seal.is_empty() && split.gone.is_empty() && split.drop.is_empty() && line.is_none() {
             return Ok(true);
         }
         // What it lets go of, written to the backup first; if it can't be, no cut: the file
         // holds them until it can, and the host warns (storage.rs).
-        let gone: Vec<&(&[u8], &LineAt)> = lines.iter().enumerate().filter(|(i, (_, at))| !(*i == newest || (*i >= start && cutoff.is_none_or(|c| at.at_ms >= c)))).map(|(_, l)| l).collect();
-        match keep_aside(self.backup.as_ref(), &path, &gone) {
+        let gone: Vec<&(&[u8], &LineAt)> = split.gone.iter().map(|i| &lines[*i]).collect();
+        let dropped: Vec<Sealed> = split.drop.iter().map(|j| self.sealed[*j].clone()).collect();
+        let aside = keep_aside(self.backup.as_ref(), &path, &gone).and_then(|()| keep_segments_aside(self.backup.as_ref(), &path, &dropped.iter().collect::<Vec<_>>()));
+        match aside {
             Ok(()) => self.backup_error = None,
             Err(e) => {
                 // Not cut: the newest line, if one waits, is appended as any line is.
@@ -1388,6 +1681,15 @@ impl Log {
                 return Ok(false);
             }
         }
+        // What it keeps older than the newest `hot`, sealed beside the file, in before the file
+        // is replaced.
+        let to_seal: Vec<&(&[u8], &LineAt)> = split.seal.iter().map(|i| &lines[*i]).collect();
+        let seal = if to_seal.is_empty() { None } else { Some(write_segment(&path, &to_seal)?) };
+        if let Some((final_path, aside, _)) = &seal {
+            std::fs::rename(aside, final_path)?;
+            sync_dir_of(final_path);
+        }
+        let kept: Vec<&(&[u8], &LineAt)> = split.stay.iter().map(|i| &lines[*i]).collect();
         let mut all = Vec::with_capacity(kept.iter().map(|(b, _)| b.len() + 1).sum());
         let mut index = VecDeque::with_capacity(kept.len());
         for (b, at) in &kept {
@@ -1396,13 +1698,11 @@ impl Log {
             all.push(b'\n');
         }
         // The witness hears that the runs before the oldest kept are gone by the host's choice.
-        if let Some((_, oldest)) = kept.first()
-            && !oldest.prev.is_empty()
-            && kept.len() < lines.len()
-        {
-            self.export("trim", oldest.seq, &oldest.prev, now_ms());
+        let (trimmed, oldest_ms) = oldest_kept(&self.sealed, &split, seal.as_ref().map(|s| &s.2), &kept, !split.gone.is_empty() || !split.drop.is_empty());
+        if let Some((seq, prev)) = trimmed {
+            self.export("trim", seq, &prev, now_ms());
         }
-        self.file_oldest_ms = kept.first().map_or(0, |(_, at)| at.at_ms);
+        self.file_oldest_ms = oldest_ms;
         // Written whole and synced (write_private), the newest line with it.
         crate::sealing::write_private(&path, &all)?;
         sync_dir_of(&path);
@@ -1412,7 +1712,22 @@ impl Log {
         self.lines = index;
         self.cut = false;
         self.dirty = false;
+        if let Some((_, _, sealed)) = seal {
+            self.sealed.push(sealed);
+        }
+        self.drop_segments(&dropped.iter().map(|s| s.path.clone()).collect::<Vec<_>>());
         Ok(true)
+    }
+
+    /// Let go of the sealed segments at `paths`: none of their runs is kept any more.
+    fn drop_segments(&mut self, paths: &[PathBuf]) {
+        if paths.is_empty() {
+            return;
+        }
+        self.sealed.retain(|s| !paths.contains(&s.path));
+        for p in paths {
+            let _ = std::fs::remove_file(p);
+        }
     }
 
     /// The file to sync, if lines were written since it last was: the flag is cleared, and put
@@ -1444,7 +1759,10 @@ impl Log {
     /// written.
     pub fn lines(&self) -> Vec<String> {
         if let Some(path) = &self.file {
-            return std::fs::read_to_string(path).map(|t| t.lines().map(str::to_string).collect()).unwrap_or_default();
+            // Its sealed segments' first, oldest first, then its file's.
+            let mut lines: Vec<String> = self.sealed.iter().filter_map(|s| read_segment(&s.path).ok()).flat_map(|t| t.lines().map(str::to_string).collect::<Vec<_>>()).collect();
+            lines.extend(std::fs::read_to_string(path).map(|t| t.lines().map(str::to_string).collect::<Vec<_>>()).unwrap_or_default());
+            return lines;
         }
         self.entries.iter().filter_map(|e| serde_json::to_string(e).ok()).collect()
     }
@@ -1467,8 +1785,10 @@ impl Log {
         self.lines.clear();
         self.file_len = 0;
         self.generation += 1;
+        self.sealed.clear();
         if let Some(path) = &self.file {
             let _ = std::fs::remove_file(path);
+            let _ = std::fs::remove_dir_all(sealed_dir(path));
         }
     }
 
@@ -1487,7 +1807,19 @@ impl Log {
         let from = newer.clone().nth(n.saturating_sub(limit)).map_or(u64::MAX, |(seq, _)| *seq);
         let memory: Vec<LogEntry> = self.entries.iter().filter(|e| e.seq >= from && after.is_none_or(|a| e.seq > a)).cloned().collect();
         let in_memory_from = self.entries.front().map_or(u64::MAX, |e| e.seq);
-        let older: Vec<u64> = newer.map(|(seq, _)| *seq).filter(|seq| *seq >= from && *seq < in_memory_from).collect();
+        let mut older: Vec<u64> = newer.map(|(seq, _)| *seq).filter(|seq| *seq >= from && *seq < in_memory_from).collect();
+        // Those sealed, by segment: each its place in it.
+        let mut sealed: Vec<(PathBuf, Vec<(usize, u64)>)> = Vec::new();
+        older.retain(|seq| {
+            let Some(s) = self.sealed.iter().find(|s| s.first() <= *seq && *seq <= s.last()) else { return true };
+            if let Ok(i) = s.runs.binary_search_by_key(seq, |r| r.0) {
+                match sealed.last_mut() {
+                    Some((p, picks)) if *p == s.path => picks.push((i, *seq)),
+                    _ => sealed.push((s.path.clone(), vec![(i, *seq)])),
+                }
+            }
+            false
+        });
         let file = match (&self.file, older.is_empty()) {
             (Some(path), false) => std::fs::File::open(path).ok().map(|f| {
                 let at = older
@@ -1502,7 +1834,7 @@ impl Log {
             }),
             _ => None,
         };
-        Wanted { memory, file }
+        Wanted { memory, file, sealed }
     }
 
     /// The seq the next entry will get.
@@ -1979,6 +2311,89 @@ mod tests {
         assert!(cell.shows("n", "root-160"), "an old run's state, from the file");
         assert!(cell.shows("n", "root-249"), "the newest, from memory");
         assert!(!cell.shows("n", "root-10"), "one it no longer keeps");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A log keeping more than `hot` runs seals the older ones it keeps, gzipped, beside its file
+    /// (storage step 9): it gives what a log keeping them all in memory gives, run for run and line
+    /// for line, as it cuts back (with the lock released, or holding it, the same), as segments go
+    /// with retention (to the backup first), and opened again.
+    #[test]
+    fn a_log_seals_its_older_runs_and_reads_them_back_as_it_wrote_them() {
+        let dir = temp_dir("sealed");
+        let (cell_path, held_path) = (dir.join("cell.jsonl"), dir.join("held.jsonl"));
+        let backup = dir.join("backup");
+        let cell = LogCell::new(Log::open_keeping(Some(cell_path.clone()), 300));
+        cell.with(|l| {
+            l.set_hot(20);
+            l.set_backup(Some((backup.clone(), false)));
+        });
+        let mut held = Log::open_keeping(Some(held_path.clone()), 300);
+        held.set_hot(20);
+        let mut in_memory = Log::open_keeping(None, 300);
+        let numbered = |i: u64| LogEntry { at_ms: 1_000 + i, state_before: BTreeMap::from([("n".to_string(), SValue::Text(format!("root-{i}")))]), ..entry() };
+        let lines = |runs: Vec<LogEntry>| runs.iter().map(|e| serde_json::to_string(e).unwrap()).collect::<Vec<_>>();
+        for i in 0..1000 {
+            cell.with(|l| l.push(numbered(i)));
+            cell.cut_if_planned();
+            held.push(numbered(i));
+            in_memory.push(numbered(i));
+            if i % 97 == 0 {
+                for (after, limit) in [(None, usize::MAX), (None, 5), (Some(i.saturating_sub(250)), 40), (Some(i), 3)] {
+                    let want = lines(in_memory.after(after, limit));
+                    assert_eq!(lines(cell.after(after, limit)), want, "the cell, after {after:?}, the newest {limit}, at run {i}");
+                    assert_eq!(lines(held.after(after, limit)), want, "held, after {after:?}, the newest {limit}, at run {i}");
+                }
+            }
+        }
+        let (segments, sealed_runs, sealed_bytes) = cell.with(|l| l.sealed_holds());
+        assert!(segments > 1 && sealed_runs >= 300 - 40, "{segments} segments, {sealed_runs} runs");
+        let raw: usize = cell.with(|l| l.lines()).iter().take(sealed_runs).map(|l| l.len() + 1).sum();
+        assert!((sealed_bytes as usize) * 5 < raw, "gzipped: {sealed_bytes} bytes for {raw}");
+        // Every line, as written: the export's and the sweeps' (each_line), the same, and the
+        // cut made holding the lock leaves what the one made without it leaves.
+        let all = cell.with(|l| l.lines());
+        assert_eq!(all, held.lines(), "sealed alike, with the lock released or held");
+        let mut seen = Vec::new();
+        cell.each_line(|l| seen.push(l.to_string()));
+        assert_eq!(seen, all);
+        let seqs: Vec<u64> = all.iter().map(|l| serde_json::from_str::<LogEntry>(l).unwrap().seq).collect();
+        assert!(seqs.windows(2).all(|w| w[1] == w[0] + 1) && seqs.last() == Some(&999), "in order, none twice");
+        assert!(cell.shows("n", "root-750"), "a sealed run's state, found");
+        // What retention let go of went to the backup first, segments too.
+        let backed: usize = std::fs::read_dir(backup.join("cell")).unwrap().flatten().map(|e| std::fs::read_to_string(e.path()).unwrap().lines().count()).sum();
+        assert_eq!(backed + seqs.len(), 1000, "every run backed up or still in the log, once");
+        // Opened again: the same runs, the chain unbroken.
+        let back = Log::open_keeping(Some(cell_path.clone()), 300);
+        assert!(back.breaks().is_empty(), "{:?}", back.breaks());
+        assert_eq!(back.next_seq(), 1000);
+        assert_eq!(lines(back.after(None, usize::MAX)), lines(in_memory.after(None, usize::MAX)));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A cut that crashed between sealing runs and replacing the file leaves them in both: opening
+    /// the log reads each once, and writes its file again without them.
+    #[test]
+    fn a_run_sealed_and_still_in_the_file_after_a_crash_is_read_once() {
+        let dir = temp_dir("sealed-crash");
+        let path = dir.join("slug.jsonl");
+        let mut log = Log::open_keeping(Some(path.clone()), 100);
+        log.set_hot(1000);
+        for i in 0..30 {
+            log.push(LogEntry { at_ms: 1_000 + i, ..entry() });
+        }
+        // The crash: the oldest 20 sealed, the file not yet replaced.
+        let bytes = std::fs::read(&path).unwrap();
+        let first: Vec<(&[u8], LineAt)> = log.lines.iter().take(20).map(|at| (&bytes[at.offset as usize..at.offset as usize + at.len], at.clone())).collect();
+        let refs: Vec<(&[u8], &LineAt)> = first.iter().map(|(b, at)| (*b, at)).collect();
+        let (to, aside, _) = write_segment(&path, &refs.iter().collect::<Vec<_>>()).unwrap();
+        std::fs::rename(aside, to).unwrap();
+        let back = Log::open_keeping(Some(path.clone()), 100);
+        let seqs: Vec<u64> = back.after(None, usize::MAX).iter().map(|e| e.seq).collect();
+        assert_eq!(seqs, (0..30).collect::<Vec<_>>(), "each once");
+        assert!(back.breaks().is_empty());
+        assert_eq!(std::fs::read_to_string(&path).unwrap().lines().count(), 10, "the file written again without the 20 sealed");
+        assert_eq!(back.lines().len(), 30);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
