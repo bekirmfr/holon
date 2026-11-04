@@ -180,3 +180,30 @@ transcript). Sphinx 1,539 (running total 14,427 less 12,888). **Round total: 64,
 ## Round 6: 6. O-O
 
 Position: `r1bqk2r/1pppbppp/p1n2n2/4p3/B3P3/2N2N2/PPPP1PPP/R1BQ1RK1 b kq - 5 6`.
+
+Council (proposal and case only; motivation hints, not reasoning):
+
+| Piece | Proposal | Case |
+|---|---|---|
+| knight c6 | Nd4 | Nd4 is the most active square, and the e5 pawn guards it. |
+| pawn a6 | a5 | a5 fixes the bishop on a4 and claims queenside space. |
+| knight f6 | Ng4 | Ng4 keeps the knight active and safe for now; Ng8 is the solid fallback. |
+| pawn b7 | b5 | b5 kicks the bishop off a4, and a6 recaptures if White trades on b5. |
+| pawn d7 | d6 | d6 steadies the centre and opens the c8 bishop and the queen's path. |
+| bishop e7 | Bc5 | Bc5 activates the bishop toward f2 while staying safe. |
+| pawn g7 | g6 | g5 loses a pawn to Nxg5, so g6 shores up the kingside. |
+| pawn h7 | h6 | h6 keeps the structure intact and stops Bg5 pinning the knight. |
+| rook a8 | Rb8 | Rb8 frees the rook from the corner and prepares ...b5 or ...d6. |
+| king e8 | O-O | Castling brings the rook into play and tucks the king into a safer corner. |
+| rook h8 | Rf8 | Rf8 claims the f-file and keeps the castling corner available. |
+
+**The Sphinx:** 6... **O-O** (kept, matching the king e8). Verdict on 6. O-O: good. Mood: confident.
+Comment: "The king tucks himself away, and the rook wakes up." Say: (none).
+
+Deliberation: "White castled, and nothing in the position is urgent. Castling now gets my king safe and
+brings the rook toward the centre. It also keeps ...b5 and ...d6 available for later."
+
+**White:** 7. **d4**.
+
+**Tokens:** council 55,757 across eleven pieces. Sphinx 1,353 (running total 15,780 less 14,427).
+**Round total: 57,110.**
