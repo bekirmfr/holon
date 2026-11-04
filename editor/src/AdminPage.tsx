@@ -34,7 +34,7 @@ import {
   sweepStore,
   getHost,
   setSweepEvery,
-  type HostSweeps,
+  type HostView,
   unbindDatabase,
   unbindFolder,
   unbindServerSecret,
@@ -50,7 +50,7 @@ import {
   type SecretInfo,
   type TokenEntry,
 } from "./server";
-import { isEvery, reportLine, scheduleLine, sizeText } from "./storage";
+import { cacheLine, diskFull, diskLine, isEvery, keptLines, reportLine, scheduleLine, sizeText } from "./storage";
 import { useDialog } from "./Dialog";
 import { FolderPicker } from "./FolderPicker";
 import { ActivityList } from "./Pages";
@@ -133,8 +133,9 @@ export function AdminPage({ me, onOpenDeployment }: { me: string; onOpenDeployme
   const [reloaded, setReloaded] = useState<{ at: number; attention: [string, string][] } | null>(null);
   // What the last sweep of the store and of the file texts said.
   const [swept, setSwept] = useState<{ store?: string; folders?: string }>({});
-  // The server's own sweeps (`GET /admin/host`), and the setting being edited.
-  const [sweeps, setSweeps] = useState<HostSweeps | null>(null);
+  // What the host holds and how it sweeps (`GET /admin/host`), and the sweep setting being edited.
+  const [host, setHost] = useState<HostView | null>(null);
+  const sweeps = host?.sweeps ?? null;
   const [everyDraft, setEveryDraft] = useState("");
   const [kind, setKind] = useState("everything");
   const [version, setVersion] = useState(0);
@@ -149,8 +150,9 @@ export function AdminPage({ me, onOpenDeployment }: { me: string; onOpenDeployme
     getPermissions().then(setPolicy).catch((e: unknown) => setMsg(messageOf(e)));
     getHost()
       .then((h) => {
-        setSweeps(h.sweeps);
-        setEveryDraft(h.sweeps.every);
+        setHost(h);
+        // What the admin is typing stays: a refresh only fills the field when it is empty.
+        setEveryDraft((d) => d || h.sweeps.every);
       })
       .catch((e: unknown) => setMsg(messageOf(e)));
     getOidcSettings()
@@ -737,6 +739,38 @@ export function AdminPage({ me, onOpenDeployment }: { me: string; onOpenDeployme
             </button>
           </form>
 
+          {host && (
+            <>
+              <div style={head}>the host</div>
+              <div style={about}>
+                What this server holds: its memory, each disk it keeps things on, and what it keeps there. The store and the file texts are counted when the
+                server starts and after each round of sweeps; the rest is read now. The same as <code>holon host</code>.
+              </div>
+              <div style={{ ...row, flexDirection: "column", alignItems: "stretch", gap: 4 }}>
+                <div>
+                  memory: {host.memory.resident === null ? <span style={quiet}>not told on this system</span> : `${sizeText(host.memory.resident)} (at most ${sizeText(host.memory.peak ?? 0)} so far)`}
+                </div>
+                <div style={quiet}>flow cache: {cacheLine(host.memory.flow_cache, "flows")}</div>
+                <div style={quiet}>value cache: {cacheLine(host.memory.value_cache, "values")}</div>
+              </div>
+              {host.disks.map((d) => (
+                <div key={d.path} style={{ ...row, flexDirection: "column", alignItems: "stretch", gap: 4 }} title={d.path}>
+                  <div>disk: {diskLine(d)}</div>
+                  <div role="meter" aria-label={`disk ${d.path} in use`} aria-valuenow={diskFull(d)} aria-valuemin={0} aria-valuemax={100} style={{ height: 6, background: "#1b2a45", borderRadius: 3 }}>
+                    <div style={{ width: `${diskFull(d)}%`, height: "100%", borderRadius: 3, background: diskFull(d) >= 95 ? "#e5484d" : diskFull(d) >= 85 ? "#f5a524" : "#3b82f6" }} />
+                  </div>
+                </div>
+              ))}
+              <div style={{ ...row, flexDirection: "column", alignItems: "stretch", gap: 4 }}>
+                {keptLines(host.kept, Date.now()).map((l, i) => (
+                  <div key={l} style={i === 0 ? quiet : undefined}>
+                    {l}
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
+
           <div style={head}>storage</div>
           <div style={about}>
             What runs leave on this host that nothing kept names any more: states of runs the logs no longer keep, and the texts of files no kept run read or wrote. Anything put in
@@ -750,7 +784,7 @@ export function AdminPage({ me, onOpenDeployment }: { me: string; onOpenDeployme
                   e.preventDefault();
                   act(async () => {
                     const set = await setSweepEvery(everyDraft.trim());
-                    setSweeps(set.sweeps);
+                    setHost((h) => (h ? { ...h, sweeps: set.sweeps } : h));
                     setEveryDraft(set.sweeps.every);
                   });
                 }}

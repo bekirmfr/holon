@@ -21,6 +21,7 @@ Everything is one program, `holon`. `holon help` lists the commands; `serve`, `e
 | [`holon grant`](#holon-grant) | what a deployment is granted; revoke, grant back, lower |
 | [`holon grants`](#holon-grants) | who holds what |
 | [`holon policy`](#holon-policy) | the host's policy, and reading it again |
+| [`holon host`](#holon-host) | what the host holds: memory, its disks, what it keeps on them, its sweeps |
 | [`holon secret`](#holon-secret) | a deployment's secrets: set, roll back, remove, their history; the server's own, and where each may go |
 | [`holon flows`](#holon-flows) | the flows saved on the server |
 | [`holon activity`](#holon-activity) | what was done on the server, by whom |
@@ -319,6 +320,31 @@ policy file again and holds every deployment to it at once, saying which it no l
 (those pause). Editors and admins reload. `--sweep-every` sets how often the server sweeps what
 nothing kept names (`90s`, `10m`, `2h`, `1d`, a minute at the least, or `off`), written into the
 policy file's [`[storage]`](server.md#the-policy); an admin's. See [The host's policy](../guides/deploying.md#the-hosts-policy).
+
+### `holon host`
+
+```
+holon host [--json] [--server PORT|URL]
+```
+
+What the host holds: the server's memory and its caches against their sizes; each disk it keeps
+things on and how full it is for the server; what it keeps there (the content store's values,
+the logs, the folders' kept texts, counted at start and after each round of sweeps, and what a
+crash left, removed once old); and how often it sweeps, when next, and what the last sweeps
+removed. An admin's. See [What it holds](server.md#what-it-holds).
+
+```
+memory       742 MiB (at most 811 MiB so far)
+  flow cache   12 flows, 32 MiB of 256 MiB (12%)
+  value cache  1234 values, 48 MiB of 64 MiB (75%)
+disk         60% full: 40 GiB free of 100 GiB (60 GiB in use): data, logs, state heads, store (/srv/holon/data)
+kept         counted 3 min ago
+  store        432808 values, 2 GiB on disk (1 GiB of bytes); 3200 put since
+  logs         34 logs, 192 MiB on disk
+sweeps       every 10m; the next in 7 min
+  store        last: 3 min ago: 271 values, 56 KiB freed in 8 s
+  file texts   last: 3 min ago: nothing to remove (0 s)
+```
 
 ## `holon secret`
 

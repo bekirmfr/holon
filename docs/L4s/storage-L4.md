@@ -166,7 +166,7 @@ downgrade is refused with a reason, not misread.
 ## 6. Build order
 
 1. **`[storage] sweep_every`**, both sweeps, shown on the admin page; `off`. **Done**: one housekeeping loop (`storage.rs`, looking every 10 s), `GET /admin/host`'s `sweeps`, `POST /admin/storage` (it writes `holon.toml` with its comments kept, then reloads), `holon policy --sweep-every`, the admin page and the terminal editor's admin view.
-2. **`GET /admin/host`**, `holon host`, the admin page's panel: memory, disks, what is kept, sweeps.
+2. **`GET /admin/host`**, `holon host`, the admin page's panel: memory, disks, what is kept, sweeps. **Done** (`storage.rs`): the store and the folders' texts counted by the housekeeping thread at its first look and after each round; logs, caches, memory (`/proc/self/status`) and disks (`statvfs`, one entry a disk, how full for the server: what isn't free to it) read when asked. Found on the way: what a crash leaves aside (`….tmp-<pid>-<n>`, `….cut-<pid>-<n>`) was never removed (60 MB in the soaks' data folder); the count removes it once older than 15 minutes. Measured live: the store's 7,974 values took 31.3 MiB on disk for 2.2 MiB of bytes (whole 4 KiB blocks), what step 10 is for.
 3. **Per-flow shares**: counted in the sweeps' walks and as entries, states and closures change;
    `GET /deployments/<slug>/holds`; the panel's rows, each flow's page in both editors.
 4. **`warn_at`** and the warnings.

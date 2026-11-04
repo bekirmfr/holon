@@ -190,6 +190,8 @@ Admins manage, from here:
 - **secrets**: the server's own, read by every deployment that reads one and has none of its
   own, each with where it may go
   ([The server's own secrets](deploying.md#the-servers-own-secrets));
+- **the host**: what the server holds: its memory and caches against their sizes, each disk it
+  keeps things on and how full it is, and what it keeps there, as `holon host` says;
 - **storage**: how often the server sweeps on its own, what its last sweeps removed and when the
   next is due, set here into its `holon.toml` (`[storage] sweep_every`); and sweeping now what
   nothing kept names any more, the content store's states and values (it counts first, then asks)

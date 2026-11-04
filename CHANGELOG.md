@@ -32,6 +32,15 @@
   encoding: measured, a server of flows without a js node held about 8 times its `--flow-cache`,
   and the value cache about 3 times its 64 MiB. Each now keeps a little less than its size, never
   more.
+- **The host says what it holds.** `holon host`, the admin page's **the host** and the terminal
+  editor's admin view: the server's memory and its caches against their sizes; each disk it keeps
+  things on, how full it is for the server (a quota counts) and what it keeps there; the content
+  store's values and the disk they take, the logs and the folders' kept texts (counted at start
+  and after each round of sweeps); and the sweeps (`GET /admin/host`).
+- **What a crash left is cleared.** A server stopped in the middle of a write (each is made aside,
+  then renamed over) left its temporary file behind for good: a copy of the soaks' data folder
+  held 60 MB of them. The server now removes them once they are older than any write takes, and
+  says so.
 - **How often the server sweeps is a setting.** `[storage] sweep_every` in `holon.toml` (`10m` by
   default, a minute at the least, or `off`), set from the admin page or with `holon policy
   --sweep-every`, covers both sweeps: the content store's and the folders' kept file texts. The

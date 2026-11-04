@@ -408,6 +408,12 @@ impl FlowCache {
         let kept = self.0.lock().unwrap();
         (kept.closures.len(), kept.units.len(), kept.bytes)
     }
+
+    /// What it holds against its budget, for the host's view (storage.rs): closures, bytes, budget.
+    pub(crate) fn usage(&self) -> (usize, u64, u64) {
+        let kept = self.0.lock().unwrap();
+        (kept.closures.len(), kept.bytes, kept.budget)
+    }
 }
 
 impl Kept {
@@ -687,5 +693,11 @@ impl ValueCache {
     pub(crate) fn size(&self) -> (usize, u64) {
         let kept = self.0.lock().unwrap();
         (kept.values.len(), kept.bytes)
+    }
+
+    /// What it holds against its budget, for the host's view (storage.rs): values, bytes, budget.
+    pub(crate) fn usage(&self) -> (usize, u64, u64) {
+        let kept = self.0.lock().unwrap();
+        (kept.values.len(), kept.bytes, kept.budget)
     }
 }

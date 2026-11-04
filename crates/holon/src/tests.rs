@@ -1057,6 +1057,43 @@ fn the_server_sweeps_as_often_as_its_storage_setting_says() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// What the host holds (`GET /admin/host`): its memory and caches against their sizes, the disk
+/// the store is on, and what the store holds, counted at the first look and again after a round
+/// of sweeps, with what was put since.
+#[test]
+fn the_host_says_what_it_holds_in_memory_and_on_its_disks() {
+    let dir = unique_temp_path("host-view");
+    let disk = FileStore::new(&dir).unwrap();
+    let values = disk.values_dir();
+    let state = test_state_with(SharedStore::on_disk(Box::new(disk), values.clone()));
+    let host = || body_json(route(&state, &req("GET", "/admin/host", vec![])));
+    let before = host();
+    assert_eq!(before["kept"]["store"], serde_json::Value::Null, "not counted before the first look: {before}");
+    assert_eq!(before["memory"]["flow_cache"]["budget"], units::FLOW_CACHE_BYTES, "{before}");
+    if cfg!(target_os = "linux") {
+        assert!(before["memory"]["resident"].as_u64().unwrap() > 1 << 20, "{before}");
+        assert!(before["memory"]["peak"].as_u64() >= before["memory"]["resident"].as_u64(), "{before}");
+    }
+    for i in 0..3 {
+        state.store.clone().put_value(&Value::Text(format!("value {i}"))).unwrap();
+    }
+    let t0 = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as u64;
+    state.sweeps.tick(&state, t0);
+    let counted = host();
+    let store = &counted["kept"]["store"];
+    let on_disk = std::fs::read_dir(&values).unwrap().count() as u64;
+    assert_eq!((store["values"].as_u64(), store["put_since"].as_u64()), (Some(on_disk), Some(0)), "{counted}");
+    assert!(store["on_disk"].as_u64().unwrap() >= store["bytes"].as_u64().unwrap(), "whole blocks: {counted}");
+    state.store.clone().put_value(&Value::Text("one more".into())).unwrap();
+    assert_eq!(host()["kept"]["store"]["put_since"], 1);
+    let disks = counted["disks"].as_array().unwrap();
+    assert_eq!(disks.len(), 1, "one disk, named once: {counted}");
+    assert_eq!(disks[0]["holds"], serde_json::json!(["store"]));
+    let (size, free, used) = (disks[0]["size"].as_u64().unwrap(), disks[0]["free"].as_u64().unwrap(), disks[0]["used"].as_u64().unwrap());
+    assert!(size > 0 && free <= size && used <= size, "{counted}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// An admin sets how often the server sweeps (`POST /admin/storage`): written into `holon.toml`'s
 /// `[storage]`, the rest of the file as it was, comments too, and in force at once; a setting that
 /// isn't one changes nothing.

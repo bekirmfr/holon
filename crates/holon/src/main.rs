@@ -550,6 +550,7 @@ const USAGE: &str = "usage: holon <command>
   folder add|list|remove             bind a name flows use to a folder on this machine (admin)
   database add|list|remove|tables    bind a name flows use to a database on this machine (admin)
   store sweep [--dry-run]            clear the stored states no kept run, version or state names
+  host                               what the host holds: memory, its disks, what it keeps (admin)
                                      (admin)
   mcp [--server PORT|URL]            tools for an agent (MCP, on stdin and stdout): check, deploy,
                                      call and explain flows; it never approves what they may do
@@ -650,6 +651,7 @@ fn main() {
         Some("oidc") => std::process::exit(accountscmd::oidc(&rest)),
         Some("folder") => std::process::exit(folders::cli(&rest)),
         Some("store") => std::process::exit(sweep::cli(&rest)),
+        Some("host") => std::process::exit(storage::cli(&rest)),
         Some("database") => std::process::exit(databases::cli(&rest)),
         // Not in the usage: the server runs it for the admin page's "browse…" (pick.rs).
         Some("pick-folder") => std::process::exit(pick::cli(&rest)),

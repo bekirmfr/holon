@@ -137,6 +137,11 @@ impl Blobs {
         Blobs { dir: None, mem: Mutex::new(Mem::default()), busy: Mutex::new(()) }
     }
 
+    /// Where it keeps its texts, if on disk.
+    pub(crate) fn dir(&self) -> Option<&Path> {
+        self.dir.as_deref()
+    }
+
     /// Kept in `dir` (made when the first text is put).
     pub(crate) fn at(dir: PathBuf) -> Blobs {
         Blobs { dir: Some(dir), ..Blobs::memory() }

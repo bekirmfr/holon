@@ -1451,6 +1451,12 @@ test("rolling-log keeps only its newest 5 runs, as its deploy settings ask, whil
     await asks.getByRole("button", { name: "Cancel" }).click();
   }
   expect((await dryRun()).kept.values).toBeGreaterThan(0);
+  // What the host holds: its memory and caches, each disk it keeps things on and how full, and
+  // what it keeps there.
+  await expect(page.getByText(/^memory: \d/)).toBeVisible();
+  await expect(page.getByText(/^flow cache: \d+ flows, .* of 256 MiB/)).toBeVisible();
+  await expect(page.getByText(/^disk: \d+% full: .* free of .* in use\): data, /).first()).toBeVisible();
+  await expect(page.getByRole("meter").first()).toBeVisible();
   // How often the server sweeps on its own: shown here, and set here, into its holon.toml.
   const schedule = page.getByText("the server sweeps on its own").locator("..");
   await expect(schedule).toContainText("every 10m");

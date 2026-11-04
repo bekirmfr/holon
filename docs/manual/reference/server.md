@@ -40,6 +40,25 @@ to start when one of them can't be read, rather than starting without it.
 To move a server, stop it and copy the data folder; the secrets key goes with it only if it is in
 a file (see [The secrets key](#the-secrets-key)).
 
+### What it holds
+
+`holon host`, the admin page's **the host** and the terminal editor's admin view say what the
+server holds now:
+
+- **memory**: the server's, and at most so far; each cache's use against its size
+  (`--flow-cache`, `--value-cache`);
+- **each disk** it keeps things on, once: how full it is for the server (what isn't free to it: a
+  quota, or the space a disk keeps for root, counts as full), what is free, and what it keeps
+  there;
+- **what it keeps**: the content store's values (their bytes, and the disk they take: a small
+  value's file takes a whole 4 KiB block), the logs, the folders' kept file texts. The store and
+  the texts are counted shortly after the server starts and after each round of sweeps, so a
+  view never lists millions of files; it says when, and how many values were put since;
+- **what crashes left**: a file is written aside and renamed over, so a server stopped in the
+  middle of a write can leave a `….tmp-…` or `….cut-…` file. Once one is older than any write
+  takes (15 minutes), the count removes it, and says so in the server's log and its activity;
+- **the sweeps**: how often, when next, and what the last of each removed.
+
 ## The policy
 
 `holon.toml` in the data folder (or `--policy PATH`) says what this server may ever grant, and

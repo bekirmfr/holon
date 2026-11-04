@@ -155,6 +155,11 @@ by the syncer when they changed.
   rate about 5.5–6.4 GB (1.4–1.65 million files) of unnamed values is the floor while writes go
   on. Fewer, larger files per write would lower it; not done. What a deleted deployment let go
   of waits for the sweep after the next put.
+- **What crashes leave.** Every file is written aside and renamed over, so a server stopped in the
+  middle of a write leaves the aside file; nothing removed them (60 MB in the soaks' data folder).
+  The housekeeping count removes one once it is older than any write takes (15 minutes).
+- **Seen.** `holon host` and the admin page say how full each disk is and what is kept on it
+  (storage-L4.md, step 2).
 - **Tests.** `the_server_sweeps_its_store_on_its_own_and_not_again_for_nothing`,
   `a_store_sweep_clears_the_states_no_kept_run_names_and_nothing_else`.
 

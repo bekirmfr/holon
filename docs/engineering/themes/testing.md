@@ -122,6 +122,9 @@ A slower path that is still right would pass every test above; these fail instea
   `the_server_sweeps_as_often_as_its_storage_setting_says`,
   `an_admin_sets_how_often_the_server_sweeps_in_its_policy_file` (its other sections and comments
   kept; the e2e `rolling-log` test sets it from the admin page),
+  `the_host_says_what_it_holds_in_memory_and_on_its_disks`,
+  `what_a_crash_left_is_removed_once_it_is_old_and_nothing_else_is`,
+  `a_write_made_aside_is_known_by_its_name_and_nothing_else_is`,
   `a_store_sweep_clears_the_states_no_kept_run_names_and_nothing_else`,
   `a_journal_keeps_what_its_runs_read_in_chunks_for_a_while_and_stays_under_its_cap`,
   `a_hash_is_exactly_64_hex_digits_anywhere_in_a_text`.

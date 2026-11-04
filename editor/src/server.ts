@@ -199,8 +199,27 @@ export async function sweepFolders(): Promise<{ texts: number; chunks: number; b
 export type SweepReport = { at_ms: number; took_ms: number; removed: number; bytes: number; skipped: boolean; error: string | null };
 /** `GET /admin/host`'s sweeps: how often (`"10m"`, `"off"`), when the next is due, what the last of each did. */
 export type HostSweeps = { every: string; next_at_ms: number | null; sweeping: boolean; store: SweepReport | null; folders: SweepReport | null };
-/** `GET /admin/host` (storage.rs): what the host keeps, and how it sweeps. */
-export const getHost = async () => asJson<{ sweeps: HostSweeps }>(await api(`${BASE}/admin/host`));
+/** Files, their bytes, and the disk they take in whole blocks (storage.rs `Count`). */
+export type Counted3 = { files: number; bytes: number; on_disk: number };
+/** A cache's use against its size. */
+export type CacheUse = { entries: number; bytes: number; budget: number };
+/** One disk the server keeps things on, with what it keeps there. */
+export type HostDisk = { path: string; holds: string[]; size: number; free: number; used: number };
+/** `GET /admin/host` (storage.rs): memory, disks, what the host keeps on them (the store and the
+ *  folders' texts as of their last count), and how it sweeps. */
+export type HostView = {
+  memory: { resident: number | null; peak: number | null; flow_cache: CacheUse; value_cache: CacheUse };
+  disks: HostDisk[];
+  kept: {
+    at_ms: number | null;
+    store: { values: number; bytes: number; on_disk: number; put_since: number } | null;
+    logs: Counted3 | null;
+    file_texts: { texts: number; chunks: number; bytes: number } | null;
+    leftovers: { removed: Counted3; waiting: Counted3 };
+  };
+  sweeps: HostSweeps;
+};
+export const getHost = async () => asJson<HostView>(await api(`${BASE}/admin/host`));
 /** `POST /admin/storage`: how often the server sweeps (`"10m"`, `"2h"`, `"off"`), written into its `holon.toml`. */
 export async function setSweepEvery(every: string): Promise<{ sweeps: HostSweeps }> {
   return asJson(await post(`${BASE}/admin/storage`, { sweep_every: every }));

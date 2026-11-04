@@ -84,6 +84,16 @@ impl Puts {
         self.dir.is_some()
     }
 
+    /// Where the store keeps its values on disk, if it does.
+    pub(crate) fn dir(&self) -> Option<&std::path::Path> {
+        self.dir.as_deref()
+    }
+
+    /// How many puts there have been since the server began.
+    pub(crate) fn count(&self) -> u64 {
+        self.count.load(Ordering::Relaxed)
+    }
+
     /// Note `hash` as just put. Called with the store held, so a sweep, which holds it too while
     /// it removes a value, sees every put before it or none of it.
     pub(crate) fn put(&self, hash: Hash) {
