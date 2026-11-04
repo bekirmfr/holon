@@ -26,23 +26,44 @@ const WHO: &str = "holon load";
 
 fn usage() -> String {
     format!(
-        "usage: holon load <slug> [--route \"METHOD /path\"]… [--for SECONDS] [--connections N]
-                  [--body JSON] [--to URL] [--json] [--server PORT|URL]
+        "usage: holon load <slug> [options]
 
-  Sends a deployed flow's routes as many requests as they answer, one route after another,
-  from N connections kept open (default 8), for SECONDS each (default 10). Each second it says
-  how many each answered and how fast. Then, for each route: its requests a second, how long
-  they took (p50, p90, p99, the slowest), the errors (an answer other than 2xx, or no answer),
-  and what the server did with their runs: how many it recorded, how many times it synced its
-  log to disk for them (one sync covers every run written before it), and how many it only
-  counted (unrecorded). The server's counts are the deployment's: other requests to it
-  meanwhile are in them. --json: all of it as JSON, each second's too.
+  Load-tests a deployed flow: sends each of its routes as many requests as it can answer,
+  one route at a time, then reports how fast it answered and what the server did with the runs.
 
-  Its routes: every GET route (a path parameter sent as 1), or those --route names (repeatable,
-  any method; a route other than GET is sent --body, as JSON). Its port is on the server's own
-  host, over plain HTTP; --to http://HOST:PORT names where else it answers, such as a proxy's
-  address. Load from the same machine shares its processors with the server, so what one
-  route does beside another says more than the numbers alone.
+  --route \"METHOD /path\"   a route to load; repeat it for more, loaded in the order given.
+                           Default: every GET route, strict first, then lazy, then unrecorded.
+                           A path parameter is sent as 1 unless you give it (GET /items/42).
+  --for SECONDS            how long to load each route (default 10, at most 3600)
+  --connections N          connections kept open, each sending its next request as soon as
+                           the last one is answered (default 8, at most 1024)
+  --body JSON              the body sent to each route other than GET (default {{}})
+  --to http://HOST:PORT    where the flow answers, if not at its port on the server's host
+                           (a proxy in front, say); plain HTTP only
+  --json                   print the results as JSON, with each second's numbers
+  --server PORT|URL        which holon server to ask (see below)
+
+  While it runs, it prints a line a second for the route being loaded: requests answered,
+  p50 and p99. At the end, a table with a row per route:
+
+    req/s, p50 … max   requests answered a second, and how long they took
+    errors             answers other than 2xx, and requests that got no answer
+    recorded           runs the server wrote to the flow's log
+    syncs              times the server synced that log to disk (one sync covers every
+                       run written before it)
+    counted            runs of an unrecorded route: counted, not logged
+
+  The server's counts cover the whole deployment, so other traffic during the test shows up
+  in them. Run on the same machine, the load shares its processors with the server: compare
+  routes with each other rather than reading the numbers on their own. Exits 1 when a route
+  never answered.
+
+examples:
+  holon load stress-test
+  holon load stress-test --for 5 --connections 32
+  holon load stress-test --route \"GET /strict\" --route \"GET /unrecorded\"
+  holon load notes-api --route \"PUT /notes/7\" --body '{{\"text\":\"hi\"}}'
+  holon load stress-test --json > load.json
 
 {SIGN_IN}"
     )

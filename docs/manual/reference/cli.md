@@ -273,14 +273,22 @@ it, so strict runs arriving together share one), and the runs it only counted (u
 are the deployment's: other requests to it meanwhile are in them.
 
 Its routes are every GET route, strict first, then lazy, then unrecorded, a path parameter sent as
-`1`; `--route` names others (repeatable, any method, a path parameter given or not), and a route
-other than GET is sent `--body` (`{}` without one). The flow's port is on the server's host, over
+`1`; `--route` names others (repeat it for more, loaded in the order given; any method, a path
+parameter given or not), and a route other than GET is sent `--body` (`{}` without one). The flow's port is on the server's host, over
 plain HTTP; `--to` names where else it answers, such as a proxy's address. `--json` prints all of
 it as JSON, each second's numbers too (the live lines still go to stderr). Exits 1 when nothing
 answered a route. The [`stress-test`](../../../crates/holon-author/samples/stress-test.holon)
 sample has one route of each log level. Load from the same machine shares its processors with the
 server, so read a route beside another rather than its numbers alone. Anyone signed in, a
 viewer too: it only reads the server, and sends the flow's port what anyone may.
+
+```
+holon load stress-test
+holon load stress-test --for 5 --connections 32
+holon load stress-test --route "GET /strict" --route "GET /unrecorded"
+holon load notes-api --route "PUT /notes/7" --body '{"text":"hi"}'
+holon load stress-test --json > load.json
+```
 
 ### `holon action`
 
