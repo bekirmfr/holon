@@ -183,6 +183,7 @@ mod folders;
 mod http;
 mod lifecycle;
 mod listeners;
+mod load;
 mod locks;
 mod local;
 mod lsp;
@@ -538,6 +539,8 @@ const USAGE: &str = "usage: holon <command>
   deployments [<slug>]               what is deployed; one's details and its waiting runs
   run|pause|stop|remove <slug>       start (--fresh, --session N), hold, end or delete a deployment
   call <slug> METHOD PATH            send a deployed flow a request (-H, --body)
+  load <slug> [--for SECONDS]        its routes under load, one after another: requests a second,
+                                     latency, and the runs the server recorded, synced, counted
   action <slug> <name>               run one of a deployment's actions (--input JSON)
   trigger <slug> | tick <slug> CLOCK run a flow with no route by hand, or fire a clock now
   state <slug>                       its live state (--collection NAME, --sessions)
@@ -558,7 +561,6 @@ const USAGE: &str = "usage: holon <command>
   database add|list|remove|tables    bind a name flows use to a database on this machine (admin)
   store sweep [--dry-run]            clear the stored states no kept run, version or state names
   host                               what the host holds: memory, its disks, what it keeps (admin)
-                                     (admin)
   mcp [--server PORT|URL]            tools for an agent (MCP, on stdin and stdout): check, deploy,
                                      call and explain flows; it never approves what they may do
   mcp setup [HOST…|--all]            add holon mcp to an agent host's settings (mcp hosts: which)
@@ -644,6 +646,7 @@ fn main() {
         Some("deployments") => std::process::exit(opscmd::deployments(&rest)),
         Some(cmd @ ("run" | "pause" | "stop" | "remove")) => std::process::exit(opscmd::lifecycle(cmd, &rest)),
         Some("call") => std::process::exit(opscmd::call(&rest)),
+        Some("load") => std::process::exit(load::cli(&rest)),
         Some("action") => std::process::exit(opscmd::action(&rest)),
         Some("trigger") => std::process::exit(opscmd::trigger(&rest)),
         Some("tick") => std::process::exit(opscmd::tick(&rest)),

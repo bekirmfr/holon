@@ -977,7 +977,7 @@ pub struct LogCell {
     next_seq: AtomicU64,
     /// Every entry before this seq is on disk.
     synced: Mutex<u64>,
-    /// How many times its file was synced, for the tests and the throughput check.
+    /// How many times its file was synced, since the server started.
     syncs: AtomicU64,
 }
 
@@ -1023,8 +1023,7 @@ impl LogCell {
         Ok(())
     }
 
-    /// How many times its file was synced.
-    #[cfg(test)]
+    /// How many times its file was synced (`GET /deployments/<slug>/log`'s `syncs`).
     pub fn syncs(&self) -> u64 {
         self.syncs.load(Ordering::Relaxed)
     }

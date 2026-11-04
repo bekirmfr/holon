@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+- **`holon load`: a flow's routes under load.** `holon load <slug>` sends each of a deployed flow's
+  GET routes (or those `--route` names) as many requests as it answers, from connections kept
+  open (`--connections`, default 8) for `--for` seconds each (default 10), with a line a second,
+  then the routes side by side: requests a second, p50, p90, p99, the slowest, the errors, and
+  from the server the runs it recorded, the times it synced the log to disk for them and the runs
+  it only counted. `--json` gives all of it, each second's too. The `stress-test` sample has one
+  route of each log level, to see what each costs.
+- **What a deployment says of itself.** The deployments listing names a server's routes, each with
+  how its runs are recorded as granted (`routes`: method, path, `log`), and a deployment's log
+  says how many times it was synced to disk since the server started (`syncs`); `limit=0` gives
+  the counts without the runs.
+
 ## 0.1.0-rc.32
 
 Every run's record is on disk before its answer, and a handler says when it needn't be (`lazy`,

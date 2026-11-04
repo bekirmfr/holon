@@ -8198,6 +8198,19 @@ fn an_unrecorded_run_leaves_no_entry_failed_or_not_and_is_counted() {
     // The log API gives the tallies, and the deployments file keeps them.
     let page = body_json(route(&state, &req("GET", &format!("/deployments/{slug}/log"), vec![])));
     assert_eq!(page["tallies"]["GET /health"]["runs"], 3, "{page}");
+    // And how many times the log was synced (holon load's syncs); limit=0, the counts alone.
+    assert_eq!(page["syncs"], log.syncs(), "{page}");
+    let counts = body_json(route(&state, &req("GET", &format!("/deployments/{slug}/log?limit=0"), vec![])));
+    assert_eq!((counts["entries"].as_array().map(Vec::len), &counts["next"]), (Some(0), &serde_json::json!(1)), "{counts}");
+    // The listing names each route with how its runs are recorded, as granted.
+    let levels = |state: &AppState| {
+        let listed = body_json(route(state, &req("GET", "/deployments", vec![])));
+        let dep = listed["deployments"].as_array().unwrap().iter().find(|d| d["slug"] == slug.as_str()).cloned().unwrap();
+        let mut levels = dep["routes"].as_array().unwrap().iter().map(|r| format!("{} {} {}", r["method"].as_str().unwrap(), r["path"].as_str().unwrap(), r["log"].as_str().unwrap())).collect::<Vec<_>>();
+        levels.sort();
+        levels
+    };
+    assert_eq!(levels(&state), ["GET /broken unrecorded", "GET /health unrecorded", "POST /notes strict"]);
     persist_deployments(&state.deployments_path, &state.deployments);
     let kept: serde_json::Value = serde_json::from_slice(&std::fs::read(&state.deployments_path).unwrap()).unwrap();
     let record = kept.as_array().unwrap().iter().find(|r| r["slug"] == slug.as_str()).unwrap();
@@ -8210,6 +8223,7 @@ fn an_unrecorded_run_leaves_no_entry_failed_or_not_and_is_counted() {
     assert_eq!(call("GET", "/health", ""), 200);
     assert_eq!((log.next_seq(), log.syncs()), (2, syncs + 1), "recorded, and strictly");
     assert_eq!(tally("GET /health").runs, 3, "and not counted as unrecorded");
+    assert_eq!(levels(&state)[1], "GET /health strict", "the listing says so");
     let _ = std::fs::remove_file(&state.deployments_path);
     let _ = std::fs::remove_dir_all(Path::new(&state.deployments_path).with_extension("logs"));
 }

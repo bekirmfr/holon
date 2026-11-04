@@ -1,7 +1,7 @@
 # Command line
 
 Everything is one program, `holon`. `holon help` lists the commands; `serve`, `export`,
-`verify`, `folder`, `database`, `mcp` and `lsp` say more with `--help`.
+`verify`, `load`, `folder`, `database`, `mcp` and `lsp` say more with `--help`.
 
 | Command | |
 |---|---|
@@ -15,6 +15,7 @@ Everything is one program, `holon`. `holon help` lists the commands; `serve`, `e
 | [`holon deployments`](#holon-deployments) | what is deployed, and each one's waiting runs |
 | [`holon run`, `pause`, `stop`, `remove`](#holon-run-pause-stop-remove) | start, hold, end and delete a deployment |
 | [`holon call`](#holon-call) | send a deployed flow a request |
+| [`holon load`](#holon-load) | a deployed flow's routes under load: requests a second, latency, and what the server did with the runs |
 | [`holon action`](#holon-action) | run one of a deployment's actions |
 | [`holon trigger`, `holon tick`](#holon-trigger-holon-tick) | run a flow by hand, or fire one of its clocks now |
 | [`holon state`](#holon-state) | a deployment's state, collections and sessions |
@@ -246,6 +247,40 @@ Sends a deployed server flow a request, as the editor's request panel does, logg
 prints its answer's body (its status on stderr; `--json`: status, headers and body). `--body -`
 reads the body piped in. Exits 1 when it answers 400 or more. In Git Bash on Windows, set
 `MSYS_NO_PATHCONV=1`, or the shell rewrites `/orders` into a Windows path.
+
+### `holon load`
+
+```
+holon load <slug> [--route "METHOD /path"]… [--for SECONDS] [--connections N] [--body JSON]
+                  [--to http://HOST:PORT] [--json]
+```
+
+Sends a deployed flow's routes as many requests as they answer, one route after another, from N
+connections kept open (default 8), for SECONDS each (default 10), and prints a line a second for
+each: requests answered, p50 and p99. Then the routes side by side:
+
+```
+route            log         req/s   p50      p90      p99      max      errors  recorded  syncs   counted
+GET /strict      strict      7,731   1.85 ms  2.99 ms  5.41 ms  36.9 ms  0       77,309    12,136  0
+GET /lazy        lazy        14,596  0.83 ms  1.96 ms  4.02 ms  73.6 ms  0       145,959   9       0
+GET /unrecorded  unrecorded  49,110  0.32 ms  0.48 ms  0.70 ms  40.8 ms  0       0         0       491,104
+```
+
+`errors` are answers other than 2xx and requests with no answer, each kind said below the table.
+The last three columns are the server's, read before and after each route: the runs it wrote to
+the log, the times it synced the log to disk for them (one sync covers every run written before
+it, so strict runs arriving together share one), and the runs it only counted (unrecorded). They
+are the deployment's: other requests to it meanwhile are in them.
+
+Its routes are every GET route, strict first, then lazy, then unrecorded, a path parameter sent as
+`1`; `--route` names others (repeatable, any method, a path parameter given or not), and a route
+other than GET is sent `--body` (`{}` without one). The flow's port is on the server's host, over
+plain HTTP; `--to` names where else it answers, such as a proxy's address. `--json` prints all of
+it as JSON, each second's numbers too (the live lines still go to stderr). Exits 1 when nothing
+answered a route. The [`stress-test`](../../../crates/holon-author/samples/stress-test.holon)
+sample has one route of each log level. Load from the same machine shares its processors with the
+server, so read a route beside another rather than its numbers alone. Anyone signed in, a
+viewer too: it only reads the server, and sends the flow's port what anyone may.
 
 ### `holon action`
 
