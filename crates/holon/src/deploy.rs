@@ -1195,16 +1195,16 @@ pub(crate) fn handle_get_log(deployments: &Mutex<BTreeMap<String, Deployment>>, 
     let Some((log, tallies)) = deployments.lock().unwrap().get(slug).map(|dep| (Arc::clone(&dep.log), dep.tallies.clone())) else {
         return err(404, format!("no deployment {slug:?}"));
     };
-    // Under one lock, so the entries, the head and the breaks agree.
-    log.with(|log| {
-        Response::json(&serde_json::json!({
-            "entries": log.after(after, limit),
-            "next": log.next_seq(),
-            "head": log.head(),
-            "breaks": log.breaks(),
-            "tallies": tallies,
-        }))
-    })
+    // Planned under one lock, so the entries, the head and the breaks agree; the older runs read
+    // from its file with the lock released (R8).
+    let (wanted, next, head, breaks) = log.with(|log| (log.plan(after, limit), log.next_seq(), log.head().to_string(), log.breaks().to_vec()));
+    Response::json(&serde_json::json!({
+        "entries": wanted.read(),
+        "next": next,
+        "head": head,
+        "breaks": breaks,
+        "tallies": tallies,
+    }))
 }
 
 /// Keep a flow document in the content store, as a text value holding its JSON: its hash (hex).
@@ -1457,7 +1457,7 @@ fn restore_plan(state: &AppState, slug: &str, point: Point, code: bool, with_sta
             return Err(err(409, format!("can't restore {slug:?}'s state: {}", crate::lifecycle::LifecycleError::Stopped.message())));
         }
     }
-    let kept = dep.log.with(|log| log.after(None, usize::MAX));
+    let kept = dep.log.after(None, usize::MAX);
     let (version, put_back) = match point {
         Point::Version(n) => {
             let Some(i) = dep.versions.iter().position(|v| v.number == n) else {
@@ -1564,11 +1564,13 @@ fn state_change(state: &AppState, slug: &str, snapshot: &str, label: &str, since
         Some(d) => {
             // The runs before the point: what a file was there, the last write before it.
             let first = since.first().map_or(u64::MAX, |e| e.seq);
-            let before = if since.is_empty() { Vec::new() } else { d.log.with(|log| log.after(None, usize::MAX)).into_iter().filter(|e| e.seq < first).collect() };
-            (d.state.clone(), Some(Redactor::of(&d.secrets)), before)
+            let log = (!since.is_empty()).then(|| (Arc::clone(&d.log), first));
+            (d.state.clone(), Some(Redactor::of(&d.secrets)), log)
         }
-        None => (None, None, Vec::new()),
+        None => (None, None, None),
     };
+    // Read with the table let go.
+    let before: Vec<LogEntry> = before.map(|(log, first)| log.after(None, usize::MAX).into_iter().filter(|e| e.seq < first).collect()).unwrap_or_default();
     let now = live.as_ref().map(|arc| arc.state.lock().unwrap().refs()).unwrap_or_default();
     let changed: Vec<&String> = back.iter().filter(|(k, h)| now.get(*k).is_some_and(|n| n != *h)).map(|(k, _)| k).collect();
     let added: Vec<&String> = back.keys().filter(|k| !now.contains_key(*k)).collect();

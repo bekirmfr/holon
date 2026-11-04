@@ -322,7 +322,34 @@ Fewer, larger files per write would lower it.
 
 | # | Where | What | Fix |
 |---|---|---|---|
-| R8 | recorder.rs, `Log::entries` | **Found by storage step 3** (storage-L4.md). A log keeps every run it keeps in memory, whole, as parsed entries, beside its file: 1.1 to 3.6 times the lines they were written as (`measure_log_memory`, on the soaks' logs). The soaks' `notes` listing holds about 86 MB, `crunch` about 52 MB, most of the server's memory beyond its caches; and nothing bounds it: no cache's size counts it, and a deployment approved to keep 20,000 runs (the ceiling) of a 50 KB line would hold about 3.6 GB. | To decide: a log on file keeps only its newest few runs in memory (what the runs list shows first) and reads older ones from its file by the index it keeps already (`lines`), as a cut-back does. |
+| R8 | recorder.rs, `Log::entries` | **Found by storage step 3** (storage-L4.md). A log keeps every run it keeps in memory, whole, as parsed entries, beside its file: 1.1 to 3.6 times the lines they were written as (`measure_log_memory`, on the soaks' logs). The soaks' `notes` listing holds about 86 MB, `crunch` about 52 MB, most of the server's memory beyond its caches; and nothing bounds it: no cache's size counts it, and a deployment approved to keep 20,000 runs (the ceiling) of a 50 KB line would hold about 3.6 GB. | A log on file keeps only its newest few runs in memory (what the runs list shows first) and reads older ones from its file by the index it keeps already (`lines`), as a cut-back does. **Done** (below). |
+
+**Fixed.** A log on file keeps its newest `IN_MEMORY` (32) runs in memory, whole, and of the others
+it keeps only their seqs and times (`kept`, 16 bytes a run); a read of older runs is planned under
+the log's lock (what is in memory, cloned; where the others are in the file, the file opened) and
+read and parsed with it released (`Wanted::read`): a file is only ever replaced by a rename, so the
+one opened holds those lines whatever is written or cut meanwhile. A log in memory only keeps them
+all, as before. The readers that held the deployments table's lock while reading every run (the
+cell history, a restore's dry run, a collection's old root) now read them with it let go. Opening
+a log parses its file a line at a time instead of all at once.
+
+Measured on copies of the soaks' data folder, the old build and the new in alternating rounds:
+
+| | Before | After |
+|---|---|---|
+| The server's memory once started | 319–320 MB | **39 MB** |
+| After 18 s of load (lazy and strict `hello`, the `notes` listing at 64 connections) | 482–505 MB | **148–155 MB** |
+| Lazy `hello` | 14,393–16,426 | 16,453–17,958 |
+| The `notes` listing | 1,258–1,934 | 2,368–2,390 |
+| Strict `hello` | 5,453–6,073 | 6,766–6,855 |
+| A page of the newest 200 runs, `notes` (50 KB lines) / `crunch` (95 KB) | 527–574 / 117–131 ms | 468–471 / 122–126 ms |
+| The newest 32, `crunch`, a warm server | 18–46 ms | 21–26 ms |
+
+Throughput rose: each run let go of the entry it pushed out as before, but the server no longer
+moves hundreds of MB of entries through the allocator. Tests: a log on file gives what a log in
+memory gives, run for run, as it cuts back, opens again and keeps more; a read planned before a
+cut-back reads what it planned; reads while four threads log and cut back are whole and in order;
+`shows` finds a state only the file holds; the end-to-end suite (72 passed).
 
 ## 3. Order
 

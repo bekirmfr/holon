@@ -58,15 +58,16 @@ pub(crate) fn handle_get_changes(state: &AppState, slug: &str, request: &Request
     let item = request.get_param("item");
     let before = request.get_param("before").and_then(|s| s.parse::<u64>().ok()).unwrap_or(u64::MAX);
     let limit = request.get_param("limit").and_then(|s| s.parse::<usize>().ok()).unwrap_or(LIMIT).clamp(1, 200);
-    let (entries, older, events, redactor, now) = {
+    let (log, events, redactor, now) = {
         let table = state.deployments.lock().unwrap();
         let Some(dep) = table.get(slug) else { return err(404, format!("no deployment {slug:?}")) };
-        let mut entries: Vec<LogEntry> = dep.log.with(|log| log.after(None, usize::MAX)).into_iter().filter(|e| e.seq < before).collect();
-        let more = entries.len() > SCAN;
-        entries.drain(..entries.len().saturating_sub(SCAN));
         let live = dep.state.as_ref().map(|arc| arc.state.lock().unwrap().values()).unwrap_or_default();
-        (entries, more, dep.events.entries().to_vec(), Redactor::of(&dep.secrets), live)
+        (Arc::clone(&dep.log), dep.events.entries().to_vec(), Redactor::of(&dep.secrets), live)
     };
+    // The runs read with the table let go: the older ones come from the log's file (R8).
+    let mut entries: Vec<LogEntry> = log.after(None, usize::MAX).into_iter().filter(|e| e.seq < before).collect();
+    let older = entries.len() > SCAN;
+    entries.drain(..entries.len().saturating_sub(SCAN));
     let collection = format!("#collection:{name}");
     let is_collection = now.contains_key(&collection) || entries.iter().any(|e| e.state_before.contains_key(&collection));
     let target = match (is_collection, item) {

@@ -37,6 +37,11 @@
   things on, how full it is for the server (a quota counts) and what it keeps there; the content
   store's values and the disk they take, the logs and the folders' kept texts (counted at start
   and after each round of sweeps); and the sweeps (`GET /admin/host`).
+- **A deployment's log keeps only its newest runs in memory.** It kept every run it keeps (500 by
+  default) in memory, whole, beside its file: 1.1 to 3.6 times their lines, counted by no cache's
+  size. Now it keeps its newest 32 there and reads older ones from its file when a page asks,
+  without holding up its runs. A server on the soaks' data folder starts in 39 MB instead of 320,
+  and answers faster for it (the `notes` listing 1,258–1,934 → 2,368–2,390 requests a second).
 - **Each flow says what it holds.** In memory, its log's kept runs, its live state and its flow in
   the cache; on disk, its log's file and its states and file texts in the store (as the store's
   last sweep found them). A row each on the admin page and in `holon host`, the most first; a

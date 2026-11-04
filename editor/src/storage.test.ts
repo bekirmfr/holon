@@ -57,9 +57,9 @@ describe("what the host holds, as the admin page says it", () => {
 describe("what one flow holds", () => {
   const h = {
     slug: "notes-api",
-    memory: 90 << 20,
+    memory: 6 << 20,
     disk: 60 << 20,
-    log: { entries: 500, entry_bytes: 30 << 20, memory: 90 << 20, lines: 1130, file: { files: 1, bytes: 56 << 20, on_disk: 56 << 20 } },
+    log: { kept: 500, entries: 32, entry_bytes: 2 << 20, memory: 6 << 20, lines: 1130, file: { files: 1, bytes: 56 << 20, on_disk: 56 << 20 } },
     state_memory: 2048,
     flow_cache: { own: 195 << 10, shared: 0 },
     store: { values: 1234, bytes: 4 << 20 },
@@ -68,7 +68,7 @@ describe("what one flow holds", () => {
   };
   it("says its memory and its disk", () => {
     expect(holdsLines(h, at + 120_000)).toEqual([
-      "about 90 MiB in memory: its log about 90 MiB (500 runs kept), its state 2 KiB, its flow 195 KiB",
+      "about 6 MiB in memory: its log about 6 MiB (the newest 32 of 500 runs), its state 2 KiB, its flow 195 KiB",
       "60 MiB on disk: its log 56 MiB (1130 lines), its states 1234 values, 4 MiB (as the store's last sweep found, 2 min ago)",
     ]);
     expect(holdsLines({ ...h, store: null, shares_at_ms: null, flow_cache: null }, at)[1]).toContain("not counted yet");

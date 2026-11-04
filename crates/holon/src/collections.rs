@@ -131,28 +131,31 @@ pub(crate) fn apply(state: &mut State, store: &mut SharedStore, name: &str, payl
 pub(crate) fn handle_get_collection(state: &AppState, slug: &str, name: &str, request: &Request) -> Response {
     let cell = cell_key(name);
     let asked = request.get_param("root");
-    let (root, redactor) = {
+    let (root, redactor, check) = {
         let table = state.deployments.lock().unwrap();
         let Some(dep) = table.get(slug) else { return err(404, format!("no deployment {slug:?}")) };
         let live = dep.state.as_ref().and_then(|s| match s.state.lock().unwrap().get(&cell) {
             Some(Value::Text(hex)) => parse_hash(hex),
             _ => None,
         });
-        let root = match &asked {
+        // A root that isn't the live one is looked for in the log, with the table let go.
+        let (root, check) = match &asked {
             None => match live {
-                Some(r) => r,
+                Some(r) => (r, None),
                 None => return err(404, format!("{slug:?} has no collection {name:?} yet")),
             },
             Some(hex) => {
                 let Some(r) = parse_hash(hex) else { return err(400, "root is not a 64-char hex hash") };
-                if live != Some(r) && !dep.log.with(|log| log.shows(&cell, hex)) {
-                    return err(404, format!("{name:?} was never at that root in {slug:?}'s log"));
-                }
-                r
+                (r, (live != Some(r)).then(|| (Arc::clone(&dep.log), hex.clone())))
             }
         };
-        (root, Redactor::of(&dep.secrets))
+        (root, Redactor::of(&dep.secrets), check)
     };
+    if let Some((log, hex)) = check
+        && !log.shows(&cell, &hex)
+    {
+        return err(404, format!("{name:?} was never at that root in {slug:?}'s log"));
+    }
     let item = |(k, v): (String, Value)| serde_json::json!([k, SValue::from_core(&v)]);
     let mut reply = if let Some(key) = request.get_param("key") {
         match collection::get(&state.store, &root, &key) {

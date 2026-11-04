@@ -433,6 +433,9 @@ impl holon_core::Observer for Timer {
 pub struct Log {
     next_seq: u64,
     entries: VecDeque<LogEntry>,
+    /// Every run it keeps, oldest first, by its seq and when it ran: in memory are only the newest
+    /// `IN_MEMORY` of them (`entries`) when it has a file; the rest are read from it when asked.
+    kept: VecDeque<(u64, u64)>,
     /// The length of the line each entry in memory was written as, in step with `entries`: what
     /// the host's view counts a log's memory by (storage.rs; an entry takes 1.1 to 3.6 times its
     /// line in memory, measured by `measure_log_memory`).
@@ -707,16 +710,67 @@ struct LineAt {
 
 /// The lines of a log file's `text`, as `open_retaining` reads them: each line (as `str::lines`
 /// splits them) with its entry when it parses, and where it is.
-fn lines_of(text: &str) -> Vec<(&str, Option<LogEntry>, u64)> {
+fn lines_of(text: &str) -> impl Iterator<Item = (&str, Option<LogEntry>, u64)> {
     let mut offset = 0u64;
-    text.split_inclusive('\n')
-        .map(|raw| {
-            let at = offset;
-            offset += raw.len() as u64;
-            let line = raw.strip_suffix('\n').map_or(raw, |l| l.strip_suffix('\r').unwrap_or(l));
-            (line, serde_json::from_str::<LogEntry>(line).ok(), at)
-        })
-        .collect()
+    // One line parsed at a time: a log opened holds one entry more than it keeps, not its file's.
+    text.split_inclusive('\n').map(move |raw| {
+        let at = offset;
+        offset += raw.len() as u64;
+        let line = raw.strip_suffix('\n').map_or(raw, |l| l.strip_suffix('\r').unwrap_or(l));
+        (line, serde_json::from_str::<LogEntry>(line).ok(), at)
+    })
+}
+
+/// How many of its newest runs a log on file keeps in memory, whole: what a runs list shows first
+/// and a view polling for new runs asks for. The others it keeps are read from its file when asked
+/// (docs/L4s/resilience-audit-L4.md, R8: kept whole, a log's runs took 1.1 to 3.6 times their
+/// lines in memory, bounded by no cache's size).
+pub(crate) const IN_MEMORY: usize = 32;
+
+/// What a read of a log's runs needs, planned under its lock (`Log::plan`) and read with it
+/// released (`Wanted::read`): the runs it keeps in memory, cloned, and where in its file the
+/// older ones are, the file opened. A file is only ever replaced whole, renamed over, so the one
+/// opened holds those lines as they were whatever is written or cut meanwhile.
+pub struct Wanted {
+    memory: Vec<LogEntry>,
+    file: Option<(std::fs::File, Vec<At>)>,
+}
+
+/// Where a run's line is in a log's file: its offset, its length, and the run's seq.
+type At = (u64, usize, u64);
+
+impl Wanted {
+    /// The runs, oldest first: those read from the file (each checked to be the run it should be:
+    /// a line that isn't is left out), then those from memory.
+    pub fn read(self) -> Vec<LogEntry> {
+        self.read_if(|_| true)
+    }
+
+    /// As `read`, parsing only the file's lines `keep` says may hold what is looked for.
+    fn read_if(self, keep: impl Fn(&str) -> bool) -> Vec<LogEntry> {
+        use std::io::{Read, Seek, SeekFrom};
+        let mut out = Vec::new();
+        if let Some((mut file, at)) = self.file {
+            let mut buf = Vec::new();
+            for (offset, len, seq) in at {
+                buf.resize(len, 0);
+                if file.seek(SeekFrom::Start(offset)).is_err() || file.read_exact(&mut buf).is_err() {
+                    continue;
+                }
+                let Ok(line) = std::str::from_utf8(&buf) else { continue };
+                if !keep(line) {
+                    continue;
+                }
+                if let Ok(entry) = serde_json::from_str::<LogEntry>(line)
+                    && entry.seq == seq
+                {
+                    out.push(entry);
+                }
+            }
+        }
+        out.extend(self.memory);
+        out
+    }
 }
 
 /// One deployment's log behind a lock of its own (docs/L4s/request-path-L4.md, C2): runs of one
@@ -833,6 +887,19 @@ impl LogCell {
         }
     }
 
+    /// The runs it keeps after `after`, the newest `limit` of them, oldest first (`Log::after`):
+    /// planned under the lock, read from the file with it released, so a page reading old runs
+    /// holds up none of the deployment's runs.
+    pub fn after(&self, after: Option<u64>, limit: usize) -> Vec<LogEntry> {
+        self.with(|log| log.plan(after, limit)).read()
+    }
+
+    /// Whether some run it keeps had `text` in cell `key` before it ran: a collection root this
+    /// deployment's log has seen. Its file read with the lock released.
+    pub fn shows(&self, key: &str, text: &str) -> bool {
+        shows_in(self.with(|log| log.plan(None, usize::MAX)), key, text)
+    }
+
     /// The log's lines that hold `needle`, oldest first (`each_line`).
     pub fn lines_holding(&self, needle: &str) -> Vec<String> {
         let mut held = Vec::new();
@@ -906,6 +973,7 @@ impl Log {
         let mut log = Log {
             next_seq: 0,
             entries: VecDeque::new(),
+            kept: VecDeque::new(),
             entry_lines: VecDeque::new(),
             entry_bytes: 0,
             keep: keep.max(1),
@@ -943,14 +1011,20 @@ impl Log {
                     log.breaks.push(entry.seq);
                 }
                 chained |= !entry.prev.is_empty();
-                if log.entries.is_empty() {
+                if log.kept.is_empty() {
                     log.file_oldest_ms = entry.at_ms;
                 }
                 log.head = line_hash(line);
                 log.next_seq = log.next_seq.max(entry.seq + 1);
+                log.kept.push_back((entry.seq, entry.at_ms));
                 log.entries.push_back(entry);
                 log.entry_lines.push_back(line.len());
                 log.entry_bytes += line.len() as u64;
+                // Only the newest few stay in memory as it reads them.
+                if log.entries.len() > IN_MEMORY {
+                    log.entries.pop_front();
+                    log.entry_bytes -= log.entry_lines.pop_front().unwrap_or(0) as u64;
+                }
             }
         }
         log.prune(now_ms());
@@ -983,7 +1057,13 @@ impl Log {
     /// Only the entries kept count for breaks (the oldest has nothing before it to check).
     fn prune(&mut self, now_ms: u64) {
         let cutoff = self.max_age_ms.map(|age| now_ms.saturating_sub(age));
-        while self.entries.len() > self.keep || self.entries.front().is_some_and(|e| cutoff.is_some_and(|c| e.at_ms < c)) {
+        while self.kept.len() > self.keep || self.kept.front().is_some_and(|(_, at)| cutoff.is_some_and(|c| *at < c)) {
+            self.kept.pop_front();
+        }
+        // In memory: what it keeps, and with a file only the newest few of it.
+        let oldest = self.kept.front().map_or(u64::MAX, |(seq, _)| *seq);
+        let most = if self.file.is_some() { IN_MEMORY } else { usize::MAX };
+        while self.entries.front().is_some_and(|e| e.seq < oldest) || self.entries.len() > most {
             if let Some(n) = self.entry_lines.pop_front() {
                 self.entry_bytes -= n as u64;
             }
@@ -994,7 +1074,7 @@ impl Log {
                 }
             }
         }
-        self.breaks.retain(|seq| self.entries.front().is_some_and(|oldest| *seq >= oldest.seq));
+        self.breaks.retain(|seq| *seq >= oldest);
     }
 
     /// Whether the file's oldest line is a day past the age it keeps: time to cut it back.
@@ -1040,6 +1120,7 @@ impl Log {
         self.head = line_hash(&line);
         self.export("run", entry.seq, &self.head, entry.at_ms);
         let at = LineAt { offset: 0, len: line.len(), at_ms: entry.at_ms, seq: entry.seq, prev: entry.prev.clone() };
+        self.kept.push_back((entry.seq, entry.at_ms));
         self.entries.push_back(entry);
         self.entry_lines.push_back(line.len());
         self.entry_bytes += line.len() as u64;
@@ -1213,7 +1294,6 @@ impl Log {
         if bytes.len() as u64 != self.file_len {
             let text = String::from_utf8_lossy(&bytes);
             self.lines = lines_of(&text)
-                .into_iter()
                 .filter_map(|(l, e, offset)| e.map(|e| LineAt { offset, len: l.len(), at_ms: e.at_ms, seq: e.seq, prev: e.prev }))
                 .collect();
         }
@@ -1295,10 +1375,10 @@ impl Log {
         self.entries.iter().filter_map(|e| serde_json::to_string(e).ok()).collect()
     }
 
-    /// What it holds, for the host's view: the entries kept in memory and the bytes of the lines
-    /// they were written as; the lines its file holds.
-    pub fn holds(&self) -> (usize, u64, usize) {
-        (self.entries.len(), self.entry_bytes, self.written)
+    /// What it holds, for the host's view: the runs it keeps, those of them in memory and the
+    /// bytes of the lines they were written as; the lines its file holds.
+    pub fn holds(&self) -> (usize, usize, u64, usize) {
+        (self.kept.len(), self.entries.len(), self.entry_bytes, self.written)
     }
 
     /// The seqs of the entries kept that don't follow the line before them: the log was changed
@@ -1318,11 +1398,37 @@ impl Log {
         }
     }
 
-    /// The entries after `after` (all of them for `None`), oldest first, at most `limit`
-    /// (the newest `limit`, when there are more).
+    /// The runs it keeps after `after` (all of them for `None`), oldest first, at most `limit`
+    /// (the newest `limit`, when there are more): those in memory, and the older ones read from
+    /// its file. Read here, with whatever lock it is under held; a `LogCell`'s `after` reads them
+    /// with its lock released.
     pub fn after(&self, after: Option<u64>, limit: usize) -> Vec<LogEntry> {
-        let newer: Vec<&LogEntry> = self.entries.iter().filter(|e| after.is_none_or(|a| e.seq > a)).collect();
-        newer[newer.len().saturating_sub(limit)..].iter().map(|e| (*e).clone()).collect()
+        self.plan(after, limit).read()
+    }
+
+    /// What reading the runs it keeps after `after`, the newest `limit` of them, needs (`Wanted`).
+    pub fn plan(&self, after: Option<u64>, limit: usize) -> Wanted {
+        let newer = self.kept.iter().filter(|(seq, _)| after.is_none_or(|a| *seq > a));
+        let n = newer.clone().count();
+        let from = newer.clone().nth(n.saturating_sub(limit)).map_or(u64::MAX, |(seq, _)| *seq);
+        let memory: Vec<LogEntry> = self.entries.iter().filter(|e| e.seq >= from && after.is_none_or(|a| e.seq > a)).cloned().collect();
+        let in_memory_from = self.entries.front().map_or(u64::MAX, |e| e.seq);
+        let older: Vec<u64> = newer.map(|(seq, _)| *seq).filter(|seq| *seq >= from && *seq < in_memory_from).collect();
+        let file = match (&self.file, older.is_empty()) {
+            (Some(path), false) => std::fs::File::open(path).ok().map(|f| {
+                let at = older
+                    .iter()
+                    .filter_map(|seq| {
+                        let i = self.lines.binary_search_by_key(seq, |l| l.seq).ok().or_else(|| self.lines.iter().position(|l| l.seq == *seq))?;
+                        let l = &self.lines[i];
+                        Some((l.offset, l.len, l.seq))
+                    })
+                    .collect();
+                (f, at)
+            }),
+            _ => None,
+        };
+        Wanted { memory, file }
     }
 
     /// The seq the next entry will get.
@@ -1330,12 +1436,13 @@ impl Log {
         self.next_seq
     }
 
-    /// Whether some entry's state before held `text` in cell `key`: a collection root this
-    /// deployment's log has seen.
-    pub fn shows(&self, key: &str, text: &str) -> bool {
-        let want = SValue::from_core(&holon_core::Value::Text(text.to_string()));
-        self.entries.iter().any(|e| e.state_before.get(key) == Some(&want))
-    }
+}
+
+/// Whether a run `wanted` reads had `text` in cell `key` before it ran: only the file's lines
+/// holding `text` are parsed.
+fn shows_in(wanted: Wanted, key: &str, text: &str) -> bool {
+    let want = SValue::from_core(&holon_core::Value::Text(text.to_string()));
+    wanted.read_if(|line| line.contains(text)).iter().any(|e| e.state_before.get(key) == Some(&want))
 }
 
 /// Now, in milliseconds since the epoch.
@@ -1758,6 +1865,93 @@ mod tests {
         let back = Log::open_keeping(Some(path.clone()), 50);
         assert!(back.breaks().is_empty(), "the chain unbroken");
         assert_eq!(back.next_seq(), 2000);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A log on file keeps only its newest runs in memory (R8), and reads the others it keeps from
+    /// its file: every read gives what a log keeping them all in memory gives, run for run, as it
+    /// cuts back and as the keep changes; what it holds in memory stays bounded.
+    #[test]
+    fn a_log_on_file_keeps_its_newest_runs_in_memory_and_reads_the_rest_from_its_file() {
+        let dir = temp_dir("in-memory");
+        let path = dir.join("slug.jsonl");
+        let mut on_file = Log::open_keeping(Some(path.clone()), 100);
+        let mut in_memory = Log::open_keeping(None, 100);
+        let numbered = |i: u64| LogEntry { at_ms: 1_000 + i, state_before: BTreeMap::from([("n".to_string(), SValue::Text(format!("root-{i}")))]), ..entry() };
+        // Run for run: each as its line says it.
+        let lines = |runs: Vec<LogEntry>| runs.iter().map(|e| serde_json::to_string(e).unwrap()).collect::<Vec<_>>();
+        for i in 0..250 {
+            on_file.push(numbered(i));
+            in_memory.push(numbered(i));
+            if i % 37 == 0 {
+                for (after, limit) in [(None, usize::MAX), (None, 5), (Some(i.saturating_sub(60)), 10), (Some(i), 3)] {
+                    assert_eq!(lines(on_file.after(after, limit)), lines(in_memory.after(after, limit)), "after {after:?}, the newest {limit}, at run {i}");
+                }
+            }
+        }
+        let (kept, held, bytes, _) = on_file.holds();
+        assert_eq!((kept, held), (100, IN_MEMORY), "it keeps 100, the newest {IN_MEMORY} in memory");
+        assert!(bytes < 32 * 2048, "{bytes} bytes of lines in memory");
+        assert_eq!(in_memory.holds().1, 100, "a log in memory only keeps them all there");
+        assert_eq!(on_file.after(None, usize::MAX).iter().map(|e| e.seq).collect::<Vec<_>>(), (150..250).collect::<Vec<_>>());
+        // Opened again, it reads them as it did; told to keep more, it reads more back from its file.
+        let mut back = Log::open_keeping(Some(path.clone()), 100);
+        assert_eq!(lines(back.after(None, usize::MAX)), lines(in_memory.after(None, usize::MAX)));
+        assert_eq!(back.holds().1, IN_MEMORY);
+        back.retain(150, None);
+        assert!(back.after(None, usize::MAX).len() > 100, "its file holds past what it kept");
+        // A state only an old run's line still shows is found in the file.
+        let cell = LogCell::new(Log::open_keeping(Some(path.clone()), 100));
+        assert!(cell.shows("n", "root-160"), "an old run's state, from the file");
+        assert!(cell.shows("n", "root-249"), "the newest, from memory");
+        assert!(!cell.shows("n", "root-10"), "one it no longer keeps");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A read is planned with the lock held and read with it released: a cut-back and more lines
+    /// coming between them change nothing it reads (the file opened is the one planned on).
+    #[test]
+    fn a_read_planned_before_a_cut_back_reads_the_runs_it_planned() {
+        let dir = temp_dir("planned-read");
+        let path = dir.join("slug.jsonl");
+        let cell = LogCell::new(Log::open_keeping(Some(path.clone()), 40));
+        for i in 0..60 {
+            cell.with(|log| log.push(LogEntry { at_ms: 1_000 + i, ..entry() }));
+        }
+        let planned = cell.with(|log| log.plan(None, usize::MAX));
+        // Past twice what it keeps, then cut back, with the plan still unread.
+        for i in 60..200 {
+            cell.with(|log| log.push(LogEntry { at_ms: 1_000 + i, ..entry() }));
+            cell.cut_if_planned();
+        }
+        let read: Vec<u64> = planned.read().iter().map(|e| e.seq).collect();
+        assert_eq!(read, (20..60).collect::<Vec<_>>(), "the 40 it kept when planned, from the file it planned on");
+        assert_eq!(cell.after(None, usize::MAX).iter().map(|e| e.seq).collect::<Vec<_>>(), (160..200).collect::<Vec<_>>());
+        // Read while four threads log and cut back: each read the runs it keeps, in order.
+        let cell = std::sync::Arc::new(cell);
+        let writers: Vec<_> = (0..4)
+            .map(|_| {
+                let cell = std::sync::Arc::clone(&cell);
+                std::thread::spawn(move || {
+                    for i in 0..300 {
+                        cell.with(|log| log.push(entry()));
+                        if i % 25 == 0 {
+                            cell.cut_if_planned();
+                        }
+                    }
+                })
+            })
+            .collect();
+        let mut reads = 0;
+        while !writers.iter().all(|w| w.is_finished()) || reads == 0 {
+            let seqs: Vec<u64> = cell.after(None, usize::MAX).iter().map(|e| e.seq).collect();
+            assert!(seqs.len() >= 39 && seqs.len() <= 40, "{} runs read", seqs.len());
+            assert!(seqs.windows(2).all(|w| w[1] == w[0] + 1), "in order, none missing: {seqs:?}");
+            reads += 1;
+        }
+        for w in writers {
+            w.join().unwrap();
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 

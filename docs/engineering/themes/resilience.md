@@ -122,6 +122,18 @@ never more (S1, S5).
   `the_store_keeps_the_values_it_read_within_a_budget`,
   `the_value_caches_size_is_a_setting_it_keeps_to`.
 
+### G7b. A log's memory is bounded
+
+A log on file keeps its newest 32 runs in memory (`IN_MEMORY`) and of the rest only their seqs and
+times; older runs are read from its file, planned under its lock and read with it released
+(`Log::plan`, `Wanted::read`). Before, it kept every run it kept, whole: about 86 MB for the soaks'
+`notes` listing, 3.6 GB at the `keep_runs` ceiling for a 50 KB line (R8).
+
+- **Limits.** A page of old runs is parsed from the file each time it is read (the same time as
+  cloning them was, measured). A log in memory only (`--deployments :memory:`) keeps them all.
+- **Tests.** `a_log_on_file_keeps_its_newest_runs_in_memory_and_reads_the_rest_from_its_file`,
+  `a_read_planned_before_a_cut_back_reads_the_runs_it_planned`.
+
 ### G8. An unrecorded run leaves no entry, failed or not, and is counted
 
 `count_if_unrecorded` (`firing.rs`), the one rule every path calls (D2), counts the run in its
@@ -187,9 +199,10 @@ host can refuse them all).
 
 ## 5. Open
 
-- R8: a log keeps every run it keeps in memory, whole (1.1 to 3.6 times its lines), bounded by no
-  cache's size: the soaks' `notes` listing holds about 86 MB (RA §2.12). The host's view shows it,
-  a row per flow (storage-L4.md, step 3).
+- R8, fixed (RA §2.12): a log kept every run it keeps in memory, whole (1.1 to 3.6 times its
+  lines), bounded by no cache's size; now a log on file keeps its newest 32 there and reads the
+  rest from its file with its lock released: a server on the soaks' data folder starts at 39 MB
+  instead of 320.
 
 - R6's second half: fewer, larger files per write.
 - A review of `aa2704a..HEAD` by a reader given the code, not the audit.

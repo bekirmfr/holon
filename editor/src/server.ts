@@ -228,7 +228,8 @@ export type Holds = {
   slug: string;
   memory: number;
   disk: number;
-  log: { entries: number; entry_bytes: number; memory: number; lines: number; file: Counted3 };
+  /** The runs it keeps, the newest `entries` of them in memory (the rest are read from its file). */
+  log: { kept: number; entries: number; entry_bytes: number; memory: number; lines: number; file: Counted3 };
   state_memory: number;
   flow_cache: { own: number; shared: number } | null;
   store: { values: number; bytes: number } | null;

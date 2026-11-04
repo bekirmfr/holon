@@ -280,7 +280,7 @@ impl Sweeps {
             let dep = table.get(slug)?;
             (std::sync::Arc::clone(&dep.log), dep.unit, dep.state.clone())
         };
-        let (entries, entry_bytes, lines) = log.with(|l| l.holds());
+        let (kept, entries, entry_bytes, lines) = log.with(|l| l.holds());
         let mut file = Count::default();
         if let Some(path) = crate::recorder::file_for(&state.deployments_path, slug)
             && let Ok(m) = std::fs::metadata(path)
@@ -300,7 +300,7 @@ impl Sweeps {
             "slug": slug,
             "memory": memory,
             "disk": disk,
-            "log": { "entries": entries, "entry_bytes": entry_bytes, "memory": log_memory, "lines": lines, "file": file },
+            "log": { "kept": kept, "entries": entries, "entry_bytes": entry_bytes, "memory": log_memory, "lines": lines, "file": file },
             "state_memory": state_memory,
             "flow_cache": flow.map(|(own, shared)| serde_json::json!({ "own": own, "shared": shared })),
             "store": store.map(|(values, bytes)| serde_json::json!({ "values": values, "bytes": bytes })),
@@ -530,7 +530,7 @@ pub(crate) fn host_lines(v: &serde_json::Value) -> Vec<String> {
         let mut rows = vec![["flow", "memory", "disk", "log in memory", "log on disk", "in the store"].map(String::from).to_vec()];
         for f in &flows {
             let store = if f["store"].is_object() { format!("{} values", n(&f["store"]["values"])) } else { "not counted yet".into() };
-            rows.push(vec![s(&f["slug"]).to_string(), format!("~{}", size(&f["memory"])), size(&f["disk"]), format!("~{} ({} runs)", size(&f["log"]["memory"]), n(&f["log"]["entries"])), size(&f["log"]["file"]["on_disk"]), store]);
+            rows.push(vec![s(&f["slug"]).to_string(), format!("~{}", size(&f["memory"])), size(&f["disk"]), format!("~{} ({} of {} runs)", size(&f["log"]["memory"]), n(&f["log"]["entries"]), n(&f["log"]["kept"])), size(&f["log"]["file"]["on_disk"]), store]);
         }
         lines.push("flows        what each holds, the most first (memory about: a run kept in memory takes about 3 times its line)".to_string());
         lines.extend(crate::cmdline::table(&rows).into_iter().map(|l| format!("  {l}")));
@@ -557,7 +557,7 @@ pub(crate) fn holds_lines(v: &serde_json::Value) -> Vec<String> {
     let log = &v["log"];
     let mut lines = vec![
         format!("in memory    about {}", size(&v["memory"])),
-        format!("  its log      about {}: {} runs kept, {} as written", size(&log["memory"]), n(&log["entries"]), size(&log["entry_bytes"])),
+        format!("  its log      about {}: the newest {} of the {} runs it keeps, {} as written", size(&log["memory"]), n(&log["entries"]), n(&log["kept"]), size(&log["entry_bytes"])),
         format!("  its state    {}", size(&v["state_memory"])),
     ];
     lines.push(match v["flow_cache"].as_object() {
@@ -759,16 +759,16 @@ mod tests {
     #[test]
     fn what_a_flow_holds_reads_as_lines() {
         let v = serde_json::json!({
-            "slug": "notes-api", "memory": 90 << 20, "disk": 60 << 20,
-            "log": { "entries": 500, "entry_bytes": 30 << 20, "memory": 90 << 20, "lines": 1130, "file": { "files": 1, "bytes": 56 << 20, "on_disk": 56 << 20 } },
+            "slug": "notes-api", "memory": 6 << 20, "disk": 60 << 20,
+            "log": { "kept": 500, "entries": 32, "entry_bytes": 2 << 20, "memory": 6 << 20, "lines": 1130, "file": { "files": 1, "bytes": 56 << 20, "on_disk": 56 << 20 } },
             "state_memory": 2048, "flow_cache": { "own": 195 << 10, "shared": 0 },
             "store": null, "file_texts": null, "shares_at_ms": null,
         });
         assert_eq!(
             holds_lines(&v),
             [
-                "in memory    about 90 MiB",
-                "  its log      about 90 MiB: 500 runs kept, 30 MiB as written",
+                "in memory    about 6 MiB",
+                "  its log      about 6 MiB: the newest 32 of the 500 runs it keeps, 2 MiB as written",
                 "  its state    2 KiB",
                 "  its flow     195 KiB cached (0 bytes more shared with other flows)",
                 "on disk      60 MiB",

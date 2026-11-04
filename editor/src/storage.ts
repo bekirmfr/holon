@@ -83,7 +83,7 @@ export function keptLines(k: HostView["kept"], now: number): string[] {
 /** What one flow holds, as two lines: in memory, and on disk, as of `now`. */
 export function holdsLines(h: Holds, now: number): [string, string] {
   const flow = h.flow_cache ? `its flow ${sizeText(h.flow_cache.own)}${h.flow_cache.shared > 0 ? ` (and ${sizeText(h.flow_cache.shared)} shared)` : ""}` : "its flow not cached now";
-  const memory = `about ${sizeText(h.memory)} in memory: its log about ${sizeText(h.log.memory)} (${h.log.entries} runs kept), its state ${sizeText(h.state_memory)}, ${flow}`;
+  const memory = `about ${sizeText(h.memory)} in memory: its log about ${sizeText(h.log.memory)} (the newest ${h.log.entries} of ${h.log.kept} runs), its state ${sizeText(h.state_memory)}, ${flow}`;
   const states =
     h.store && h.shares_at_ms !== null
       ? `its states ${h.store.values} values, ${sizeText(h.store.bytes)} (as the store's last sweep found, ${span(now - h.shares_at_ms)} ago)`
