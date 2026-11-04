@@ -8349,7 +8349,43 @@ fn what_an_unrecorded_writer_leaves_out_is_unchecked_not_a_break() {
     assert_eq!(states.unchecked.get(why), Some(&vec![1]), "{said}");
     assert!(said.contains(why), "{said}");
 
-    let dry = body_json(route(&state, &req("POST", &format!("/deployments/{slug}/restore"), serde_json::json!({ "run": 0, "state": true, "dry_run": true }).to_string().into_bytes())));
+    // Only what it may write: a cell it doesn't write that moved is a break, and so is what moved
+    // where its units aren't all here, as it may then write any.
+    let copy = || -> verify::Export { serde_json::from_value(serde_json::to_value(&export).unwrap()).unwrap() };
+    let broke = (1, "it began from a state the run before it (run 0) didn't leave, nor a run beside it".to_string());
+    let mut moved = copy();
+    let mut line: serde_json::Value = serde_json::from_str(&moved.lines[1]).unwrap();
+    line["state_before"]["k"] = serde_json::json!({ "type": "Number", "value": 5.0 });
+    moved.lines[1] = serde_json::to_string(&line).unwrap();
+    moved.head = recorder::line_hash(&moved.lines[1]);
+    let report = verify::check(&moved, None, &BTreeMap::new());
+    assert!(report.breaks.is_empty() && report.head_matches, "chained again");
+    assert!(report.states.as_ref().unwrap().breaks.contains(&broke), "{}", verify::describe(&report, None));
+
+    let units: BTreeMap<Hash, Unit> =
+        export.units.values().map(|hex| decode_preimage(&verify::bytes_of(hex).unwrap()).unwrap()).map(|u| (hash_unit(&u).unwrap(), u)).collect();
+    let closure = |from: Hash| {
+        let (mut seen, mut stack) = (BTreeSet::from([from]), vec![from]);
+        while let Some(h) = stack.pop() {
+            stack.extend(holon_core::child_refs(&units[&h]).into_iter().filter(|c| seen.insert(*c)));
+        }
+        seen
+    };
+    let server = state.deployments.lock().unwrap()[&slug].server.clone().unwrap();
+    let quiet = server.handlers().find(|(label, _, _)| label == "POST /quiet").unwrap().2;
+    let mut only_its = closure(quiet);
+    only_its.remove(&quiet);
+    for (_, _, h) in server.handlers().filter(|(label, _, _)| label != "POST /quiet") {
+        only_its.retain(|u| !closure(h).contains(u));
+    }
+    assert!(!only_its.is_empty());
+    let mut missing = copy();
+    missing.units.retain(|name, _| !only_its.iter().any(|h| to_hex(h) == *name));
+    let report = verify::check(&missing, None, &BTreeMap::new());
+    assert!(report.reruns.iter().all(|(_, r)| *r == verify::Rerun::Matched), "{:?}", report.reruns);
+    assert!(report.states.as_ref().unwrap().breaks.contains(&broke), "{}", verify::describe(&report, None));
+
+    let dry =body_json(route(&state, &req("POST", &format!("/deployments/{slug}/restore"), serde_json::json!({ "run": 0, "state": true, "dry_run": true }).to_string().into_bytes())));
     assert_eq!(dry["state"]["unrecorded"], serde_json::json!(["POST /quiet"]), "{dry}");
     assert!(restore::state_lines(&dry["state"]).contains("runs of POST /quiet (unrecorded) aren't logged"), "{}", restore::state_lines(&dry["state"]));
     let _ = std::fs::remove_file(&state.deployments_path);

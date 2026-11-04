@@ -201,7 +201,7 @@ fn hex_of(bytes: &[u8]) -> String {
     holon_core::hex(bytes)
 }
 
-fn bytes_of(hex: &str) -> Option<Vec<u8>> {
+pub(crate) fn bytes_of(hex: &str) -> Option<Vec<u8>> {
     if !hex.len().is_multiple_of(2) {
         return None;
     }
@@ -506,8 +506,9 @@ fn beside(a: &LogEntry, b: &LogEntry) -> bool {
 /// checked, in a state a later run began from.
 ///
 /// A run of an unrecorded handler isn't in the log, nor a lazy one's whose record a restart lost:
-/// where a version has one that writes the state, a state that doesn't follow is said unchecked,
-/// as its author chose, not a break.
+/// where every cell that doesn't follow is one such a handler may write, it is said unchecked, as
+/// its author chose, not a break. A cell no such handler writes, a handler whose units aren't all
+/// here, or a run before it that couldn't be run again leaves it a break.
 fn check_states(entries: &[(LogEntry, &str)], lefts: &[Option<Left>], events: &[crate::events::Event], marks: &Marks, resolver: &impl holon_core::Resolver) -> Option<States> {
     if !entries.iter().any(|(e, _)| e.state_after.is_some()) {
         return None;
@@ -517,7 +518,7 @@ fn check_states(entries: &[(LogEntry, &str)], lefts: &[Option<Left>], events: &[
     for (e, _) in entries {
         light.entry(e.unit.as_str()).or_insert_with(|| Light::of(&e.unit, resolver));
     }
-    let light = |e: &LogEntry| light[e.unit.as_str()];
+    let light = |e: &LogEntry| &light[e.unit.as_str()];
     // Each run's state as it began: its snapshot's hash, and the state.
     let began: Vec<Option<(String, State)>> = entries
         .iter()
@@ -550,14 +551,14 @@ fn check_states(entries: &[(LogEntry, &str)], lefts: &[Option<Left>], events: &[
             },
             Some(h) => {
                 // The run before it that committed: one that failed didn't.
-                match entries[..i].iter().rev().map(|(e, _)| e).find(|e| ran(e) && e.error.is_none()) {
+                match entries[..i].iter().rposition(|(e, _)| ran(e) && e.error.is_none()) {
                     None => states.unchecked("where it began: no run before it here", b.seq),
-                    Some(p) => match &p.state_after {
+                    Some(pi) => match &entries[pi].0.state_after {
                         None => states.unchecked("where it began: the run before it kept no state it left (logged before rc.30)", b.seq),
                         Some(left) if left == h => states.began.push(b.seq),
                         // A deploy, a restore or a stop between them put a state in place: a
                         // restore of a run's state, the one that run left (deploy.rs).
-                        Some(_) if let Some(ev) = events.iter().rfind(|ev| moves_state(ev) && p.seq < ev.run_seq && ev.run_seq <= b.seq) => {
+                        Some(_) if let Some(ev) = events.iter().rfind(|ev| moves_state(ev) && entries[pi].0.seq < ev.run_seq && ev.run_seq <= b.seq) => {
                             let from = ev.from.as_deref().and_then(|f| f.strip_prefix("run ")).and_then(|n| n.parse::<u64>().ok());
                             match from.and_then(|n| entries.iter().find(|(e, _)| e.seq == n)).and_then(|(e, _)| e.state_after.as_ref().map(|s| (e.seq, s))) {
                                 Some((_, put)) if ev.kind == "restore" && put == h => {
@@ -574,6 +575,7 @@ fn check_states(entries: &[(LogEntry, &str)], lefts: &[Option<Left>], events: &[
                             }
                         }
                         Some(_) => {
+                            let p = &entries[pi].0;
                             let ends = span(b).1 + 1;
                             let from_before =
                                 beside(p, b) && others().any(|(a, (e, _))| e.at_ms <= ends && (e.state_after.as_ref() == Some(h) || hash(a) == Some(h)));
@@ -581,10 +583,12 @@ fn check_states(entries: &[(LogEntry, &str)], lefts: &[Option<Left>], events: &[
                             if from_before || from_beside {
                                 states.began.push(b.seq);
                                 states.beside.push(b.seq);
-                            } else if light(p).unrecorded || light(b).unrecorded {
-                                states.unchecked("where it began: an unrecorded handler that writes the state may have run before it, which the log doesn't hold", b.seq);
-                            } else if light(p).lazy && p.session != b.session {
-                                states.unchecked("where it began: a lazy handler that writes the state may have run before a restart, its record lost", b.seq);
+                            } else if let Some(why) = began[i]
+                                .as_ref()
+                                .and_then(|(_, now)| moved(p, lefts[pi].as_ref(), now))
+                                .and_then(|moved| lightly(&moved, light(p), light(b), p.session != b.session))
+                            {
+                                states.unchecked(why, b.seq);
                             } else {
                                 states.breaks.push((b.seq, format!("it began from a state the run before it (run {}) didn't leave, nor a run beside it", p.seq)));
                             }
@@ -594,10 +598,11 @@ fn check_states(entries: &[(LogEntry, &str)], lefts: &[Option<Left>], events: &[
             }
         }
 
-        // What it left. An unrecorded handler's runs may have written beside it, as another
-        // run may.
+        // What it left. An unrecorded handler's runs may have written the cells it writes beside
+        // it, as another run may any.
         let (Some(after), Some(left)) = (&b.state_after, &lefts[i]) else { continue };
-        let (ran_beside, side_by_side) = (side_by_side, side_by_side || light(b).unrecorded);
+        let unrecorded = &light(b).unrecorded;
+        let (ran_beside, side_by_side) = (side_by_side, side_by_side || !unrecorded.is_empty());
         if resumed {
             states.unchecked("what it left: it is a resumed part, whose writes land on the state as it is by then", b.seq);
             continue;
@@ -624,10 +629,10 @@ fn check_states(entries: &[(LogEntry, &str)], lefts: &[Option<Left>], events: &[
             continue;
         };
         let same = |k: &String| then.hash_of(k) == left.state.hash_of(k);
-        let rest = || then.iter().chain(left.state.iter()).map(|(k, _)| k).filter(|k| !left.collections.contains(*k)).all(same);
+        let rest = || then.iter().chain(left.state.iter()).map(|(k, _)| k).filter(|k| !left.collections.contains(*k) && !unrecorded.contains(*k)).all(same);
         if !left.wrote.iter().all(same) {
             states.breaks.push((b.seq, "the state it left doesn't hold what it wrote".into()));
-        } else if !side_by_side && !rest() {
+        } else if !ran_beside && !rest() {
             states.breaks.push((b.seq, "the state it left isn't the one it began with, its writes applied".into()));
         } else {
             states.left.push(b.seq);
@@ -636,28 +641,86 @@ fn check_states(entries: &[(LogEntry, &str)], lefts: &[Option<Left>], events: &[
     Some(states)
 }
 
-/// Whether a version (its unit, hex) has a handler that may write the state and whose runs the log
-/// may not hold: an unrecorded one, or a lazy one. One that doesn't resolve may write anything.
-#[derive(Clone, Copy, Default)]
+/// The cells a run began with otherwise than the run before it (`p`) left them: as its writes made
+/// of the state it began with, run again (`left`). A collection it wrote, whose root only its trie
+/// gives, is taken as it is now if that makes the state `p` says it left; if not, it moved.
+/// `None`: `p` couldn't be run again, so what it left isn't known.
+fn moved(p: &LogEntry, left: Option<&Left>, now: &State) -> Option<BTreeSet<String>> {
+    let left = left?;
+    let keys = || left.state.iter().chain(now.iter()).map(|(k, _)| k);
+    let mut moved: BTreeSet<String> = keys().filter(|k| !left.collections.contains(*k) && left.state.hash_of(k) != now.hash_of(k)).cloned().collect();
+    let mut guess = left.state.clone();
+    for k in &left.collections {
+        match now.get(k) {
+            Some(v) => guess.insert(k.clone(), v.clone()).ok()?,
+            None => drop(guess.remove(k)),
+        }
+    }
+    if restore::snapshot_hash(&guess).ok() != p.state_after {
+        moved.extend(left.collections.iter().cloned());
+    }
+    Some(moved)
+}
+
+/// Why the cells that `moved` between two runs (of `p`'s version, then `b`'s) are left unchecked:
+/// each is one a handler whose runs the log doesn't hold may write, an unrecorded one, or a lazy
+/// one across a restart. `None`: one isn't, which is a break.
+fn lightly(moved: &BTreeSet<String>, p: &Light, b: &Light, restarted: bool) -> Option<&'static str> {
+    let unrecorded = |k: &String| p.unrecorded.contains(k) || b.unrecorded.contains(k);
+    let lazy = |k: &String| restarted && p.lazy.contains(k);
+    if moved.is_empty() || !moved.iter().all(|k| unrecorded(k) || lazy(k)) {
+        None
+    } else if moved.iter().all(unrecorded) {
+        Some("where it began: an unrecorded handler that writes the state may have run before it, which the log doesn't hold")
+    } else {
+        Some("where it began: a lazy handler that writes the state may have run before a restart, its record lost")
+    }
+}
+
+/// The cells a version's (its unit, hex) handlers whose runs the log may not hold may write: its
+/// unrecorded handlers', and its lazy ones' (a collection's by its key in the state). A handler
+/// whose units aren't all here may write any, so it gives none: what moved stays a break.
+#[derive(Default)]
 struct Light {
-    unrecorded: bool,
-    lazy: bool,
+    unrecorded: BTreeSet<String>,
+    lazy: BTreeSet<String>,
 }
 
 impl Light {
     fn of(unit: &str, resolver: &impl holon_core::Resolver) -> Light {
-        let Some(server) = parse_hash(unit).and_then(|h| resolver.resolve(&h)).and_then(|u| read_server(u, resolver).ok()) else { return Light::default() };
-        let writes = |h: &Hash| resolver.resolve(h).is_none_or(|u| capabilities(u, resolver).iter().any(|c| matches!(c, Capability::StateWrite(_) | Capability::CollectionWrite(_))));
         let mut light = Light::default();
+        let Some(server) = parse_hash(unit).and_then(|h| resolver.resolve(&h)).and_then(|u| read_server(u, resolver).ok()) else { return light };
         for (_, level, handler) in server.handlers() {
-            match level {
-                holon_core::LogLevel::Unrecorded if !light.unrecorded => light.unrecorded = writes(&handler),
-                holon_core::LogLevel::Lazy if !light.lazy => light.lazy = writes(&handler),
-                _ => {}
-            }
+            let cells = match level {
+                holon_core::LogLevel::Unrecorded => &mut light.unrecorded,
+                holon_core::LogLevel::Lazy => &mut light.lazy,
+                holon_core::LogLevel::Strict => continue,
+            };
+            let Some(unit) = resolver.resolve(&handler).filter(|u| whole(u, resolver)) else { continue };
+            cells.extend(capabilities(unit, resolver).iter().filter_map(|c| match c {
+                Capability::StateWrite(key) => Some(key),
+                Capability::CollectionWrite(name) => Some(collections::cell_key(&name)),
+                _ => None,
+            }));
         }
         light
     }
+}
+
+/// Whether every unit `unit` references is here, and every one those reference.
+fn whole(unit: &holon_core::Unit, resolver: &impl holon_core::Resolver) -> bool {
+    let (mut seen, mut stack) = (BTreeSet::new(), vec![unit]);
+    while let Some(unit) = stack.pop() {
+        for h in holon_core::child_refs(unit) {
+            if seen.insert(h) {
+                match resolver.resolve(&h) {
+                    Some(child) => stack.push(child),
+                    None => return false,
+                }
+            }
+        }
+    }
+    true
 }
 
 /// The events' chain: unbroken from the first (nothing before it, as they are kept for good) to

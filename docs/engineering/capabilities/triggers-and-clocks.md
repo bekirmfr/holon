@@ -127,7 +127,7 @@ syncs the same way but has no one to answer.
 - **Strict by default; lazy and unrecorded where the author says.** Whether a run's record is
   worth its cost is the flow author's call, not the host's: a handler that writes, calls out,
   sends or waits may be lighter too, and what relies on the record says what it then can't do
-  (`holon verify` leaves the state unchecked, a restore's dry run names the unrecorded handlers,
+  (`holon verify` leaves the cells they write unchecked, a restore's dry run names the unrecorded handlers,
   their packs go out live, the other flow's log says the run isn't logged). It was refused once
   (C5, `b1259e3`). Unrouted requests are lazy, because strict
   would let anyone cause an fsync a request (Q12).
