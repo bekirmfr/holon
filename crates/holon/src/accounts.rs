@@ -154,7 +154,7 @@ pub(crate) struct Accounts {
     local: Mutex<Option<(String, String)>>,
 }
 
-/// A new secret token: `prefix` and 32 random bytes, base64url.
+/// A new secret token: `prefix` and 32 random bytes, in hex.
 fn new_token(prefix: &str) -> String {
     let mut bytes = [0u8; 32];
     getrandom::fill(&mut bytes).expect("the OS random source");

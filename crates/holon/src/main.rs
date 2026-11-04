@@ -136,13 +136,13 @@
 //! published — the units themselves stay on disk in `FileStore`, only the "is it published"
 //! flag is lost. Not a bug in this inch; a pre-existing, named scope boundary of `Registry`.
 //!
-//! Localhost-only by design (the L4's Fork 1 resolution): binds `127.0.0.1`, and CORS is
-//! scoped to `localhost`/`127.0.0.1` origins only — never `*`. CORS alone never stopped a
-//! request from *running*, though, so every request first passes `reject_untrusted` (Host,
-//! Origin, Content-Type) and bodies are capped at `MAX_BODY_BYTES`. No auth: there is no "who" to
-//! gatekeep on a single local process, and content-addressing already answers "can I trust
-//! what I got back," which is the only question a stranger-facing boundary would have needed
-//! auth *for*.
+//! Binds `127.0.0.1` unless told another address (`--at`), and answers only a `Host` and an
+//! `Origin` it knows (localhost, or a name given with `--allow-host` / `--allow-origin`): CORS
+//! never `*`. CORS alone never stopped a request from *running*, so every request first passes
+//! `reject_untrusted` (Host, Origin, Content-Type), bodies are capped at `MAX_BODY_BYTES`, and
+//! no more than `MAX_IN_FLIGHT` are answered at once. Everyone signs in (access.rs): accounts
+//! with roles, API tokens, an identity provider, or this machine's own user through the run file
+//! (local.rs); docs/engineering/themes/security.md says what each guards and what it doesn't.
 
 mod access;
 mod accounts;
