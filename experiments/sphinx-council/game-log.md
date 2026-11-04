@@ -207,3 +207,39 @@ brings the rook toward the centre. It also keeps ...b5 and ...d6 available for l
 
 **Tokens:** council 55,757 across eleven pieces. Sphinx 1,353 (running total 15,780 less 14,427).
 **Round total: 57,110.**
+
+## Round 7: 7. d4
+
+Position: `r1bq1rk1/1pppbppp/p1n2n2/4p3/B2PP3/2N2N2/PPP2PPP/R1BQ1RK1 b - d3 0 7`.
+
+Council (proposal and case only; motivation hints, not reasoning):
+
+| Piece | Proposal | Case |
+|---|---|---|
+| pawn e5 | exd4 | Capturing on d4 is the only legal move; it trades the tension on Black's terms. |
+| pawn a6 | a5 | a5 fixes the bishop on a4 and gains space. |
+| knight c6 | Nxd4 | Nxd4 wins a pawn, and the exchanges on d4 come out roughly even with e5 supporting. |
+| knight f6 | Ng4 | Ng4 adds a second defender to e5, which d4 and Nf3 attack. |
+| pawn b7 | b6 | Nothing defends b5 and Ba4 would take it, so b6 keeps the chain sound. |
+| pawn d7 | d6 | d6 keeps e5 supported and the centre closed. |
+| bishop e7 | Bd6 | Bd6 defends e5 and blocks the d-file. |
+| pawn g7 | g6 | g5 hangs the pawn to Nxg5. |
+| pawn h7 | h6 | h6 keeps Bg5 and Ng5 off the table; if Bxh6, gxh6 wins the bishop for a pawn. |
+| rook a8 | Rb8 | Rb8 backs a possible ...b5 break; Ra7 is passive. |
+| queen d8 | Qe8 | Qe8 is the queen's only legal move and supports ...exd4 on the e-file. |
+| rook f8 | Re8 | Re8 is the rook's only legal move and keeps it active on the e-file. |
+| king g8 | Kh8 | Kh8 is the king's only legal move and does not weaken the pawns. |
+
+The knight on c6 ended without a report; its proposal (Nxd4) was recovered from its transcript.
+
+**The Sphinx:** 7... **exd4** (kept, matching the e5 pawn). Verdict on 7. d4: good. Mood: confident.
+Comment: "I take what you offer, and we will see whether it was a gift or a riddle." Say: (none).
+
+Deliberation: "d4 challenges my e5 pawn and the centre is about to open. exd4 resolves the tension on my
+terms and fits the Ruy Lopez structure. After e5, Ne4 gives me active play. The council's d6 and Nxd4
+were playable, but taking with the pawn is the cleanest."
+
+**White:** 8. **Nxd4**.
+
+**Tokens:** council 68,482 across thirteen pieces (the knight's failed run is included). Sphinx 1,564
+(running total 17,344 less 15,780). **Round total: 70,046.**

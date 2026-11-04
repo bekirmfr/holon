@@ -1,5 +1,5 @@
 {
-  "fen": "r1bq1rk1/1pppbppp/p1n2n2/4p3/B2PP3/2N2N2/PPP2PPP/R1BQ1RK1 b - d3 0 7",
+  "fen": "r1bq1rk1/1pppbppp/p1n2n2/8/B2NP3/2N5/PPP2PPP/R1BQ1RK1 b - - 0 8",
   "moves": [
     "e4",
     "e5",
@@ -13,7 +13,9 @@
     "Be7",
     "O-O",
     "O-O",
-    "d4"
+    "d4",
+    "exd4",
+    "Nxd4"
   ],
   "seen": [
     "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq -",
@@ -29,23 +31,21 @@
     "r1bqk2r/1pppbppp/p1n2n2/4p3/B3P3/2N2N2/PPPP1PPP/R1BQK2R w KQkq -",
     "r1bqk2r/1pppbppp/p1n2n2/4p3/B3P3/2N2N2/PPPP1PPP/R1BQ1RK1 b kq -",
     "r1bq1rk1/1pppbppp/p1n2n2/4p3/B3P3/2N2N2/PPPP1PPP/R1BQ1RK1 w - -",
-    "r1bq1rk1/1pppbppp/p1n2n2/4p3/B2PP3/2N2N2/PPP2PPP/R1BQ1RK1 b - d3"
+    "r1bq1rk1/1pppbppp/p1n2n2/4p3/B2PP3/2N2N2/PPP2PPP/R1BQ1RK1 b - d3",
+    "r1bq1rk1/1pppbppp/p1n2n2/8/B2pP3/2N2N2/PPP2PPP/R1BQ1RK1 w - -",
+    "r1bq1rk1/1pppbppp/p1n2n2/8/B2NP3/2N5/PPP2PPP/R1BQ1RK1 b - -"
   ],
-  "last": "d2d4",
+  "last": "f3d4",
   "status": "playing",
   "winner": "",
   "result": "*",
   "material": {
-    "white": 39,
-    "black": 39
+    "white": 38,
+    "black": 38
   },
-  "pgn": "1. e4 e5 2. Nf3 Nc6 3. Bb5 a6 4. Ba4 Nf6 5. Nc3 Be7 6. O-O O-O 7. d4 *",
+  "pgn": "1. e4 e5 2. Nf3 Nc6 3. Bb5 a6 4. Ba4 Nf6 5. Nc3 Be7 6. O-O O-O 7. d4 exd4 8. Nxd4 *",
   "turn": "b",
   "legal": [
-    {
-      "san": "exd4",
-      "uci": "e5d4"
-    },
     {
       "san": "a5",
       "uci": "a6a5"
@@ -61,6 +61,10 @@
     {
       "san": "Na5",
       "uci": "c6a5"
+    },
+    {
+      "san": "Ne5",
+      "uci": "c6e5"
     },
     {
       "san": "Na7",
@@ -195,10 +199,16 @@
       "proposed": "O-O",
       "kept": "kept",
       "played": "O-O"
+    },
+    {
+      "ply": 14,
+      "proposed": "exd4",
+      "kept": "kept",
+      "played": "exd4"
     }
   ],
   "fallback": {
-    "san": "exd4",
-    "uci": "e5d4"
+    "san": "Nxd4",
+    "uci": "c6d4"
   }
 }
