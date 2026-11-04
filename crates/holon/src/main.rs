@@ -576,7 +576,8 @@ const SERVE_USAGE: &str = "usage: holon serve [options]
   --data DIR                 keep everything below in DIR (or HOLON_DATA; default
                              ~/.holon/data, or HOLON_HOME/data)
   --data-host IP             where deployed flows' own servers listen (default 127.0.0.1)
-  --allow-host HOST          a host name it answers to besides localhost (repeatable)
+  --allow-host HOST          a host name it answers to besides localhost, on its own port and
+                             each flow's (repeatable): one a proxy in front forwards
   --allow-origin ORIGIN      an editor origin it answers besides localhost's (repeatable)
   --keep-runs N              runs each deployment's log keeps (default 500; or HOLON_KEEP_RUNS)
   --flow-cache SIZE          memory kept for loaded flows, such as 64M or 1G; 0 keeps none
@@ -1193,6 +1194,8 @@ fn serve(args: Vec<String>) {
     if let Some(code) = accounts.setup_code() {
         println!("holon: no accounts yet. Open the editor and set up the first admin with this code: {code}");
     }
+    // The names a flow's port answers to as well (dataplane.rs `host_allowed`).
+    data_limits.names = allow_hosts.clone();
     let access = access::Access::new(Arc::clone(&accounts), allow_hosts, allow_origins);
     let activity = activity::Activity::beside(&deployments_arg);
     store.1.connect(Arc::clone(&deployments), deployments_arg.clone());

@@ -3392,19 +3392,28 @@ fn a_server_deployment_answers_on_its_own_port_within_limits() {
     sync_listeners(&state);
 
     let body = r#"{"title":"buy milk"}"#;
-    let posted = raw_http(port, format!("POST /todos HTTP/1.1\r\nHost: x\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes());
+    let posted = raw_http(port, format!("POST /todos HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes());
     assert!(posted.starts_with("HTTP/1.1 200"), "{posted}");
-    let listed = raw_http(port, b"GET /todos HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n");
+    let listed = raw_http(port, b"GET /todos HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n");
     assert!(listed.starts_with("HTTP/1.1 200") && listed.contains("buy milk"), "{listed}");
-    assert!(raw_http(port, b"GET /nope HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n").starts_with("HTTP/1.1 404"));
+    assert!(raw_http(port, b"GET /nope HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n").starts_with("HTTP/1.1 404"));
+
+    // Asked by a name it wasn't given (a page's, rebound to this machine): refused, saying how to
+    // let a proxy's name in; by an address, localhost or a listed name, answered.
+    let named = raw_http(port, b"GET /todos HTTP/1.1\r\nHost: evil.example:80\r\nConnection: close\r\n\r\n");
+    assert!(named.starts_with("HTTP/1.1 421") && named.contains("--allow-host evil.example"), "{named}");
+    for host in ["localhost", &format!("localhost:{port}"), "[::1]", "app.localhost"] {
+        let answered = raw_http(port, format!("GET /todos HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n").as_bytes());
+        assert!(answered.starts_with("HTTP/1.1 200"), "{host}: {answered}");
+    }
 
     // Over the body limit: refused on its Content-Length, nothing read.
-    let large = raw_http(port, b"POST /todos HTTP/1.1\r\nHost: x\r\nContent-Length: 4096\r\nConnection: close\r\n\r\n");
+    let large = raw_http(port, b"POST /todos HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: 4096\r\nConnection: close\r\n\r\n");
     assert!(large.starts_with("HTTP/1.1 413"), "{large}");
 
     // Headers that never finish: the connection is closed, not held.
     let started = std::time::Instant::now();
-    let slow = raw_http(port, b"GET /todos HTTP/1.1\r\nHost: x\r\n");
+    let slow = raw_http(port, b"GET /todos HTTP/1.1\r\nHost: 127.0.0.1\r\n");
     assert!(started.elapsed() < Duration::from_secs(5), "closed after the header timeout: {slow:?}");
     assert!(!slow.contains("200"), "{slow}");
 
@@ -3455,17 +3464,17 @@ fn a_light_route_answers_on_the_data_planes_worker_as_any_route_does() {
     assert!(!light("POST", "/notes") && !light("GET", "/uuid") && !light("GET", "/nowhere"), "strict, calling out, or no route: the pool");
 
     let body = r#"{"id":"a","text":"hi"}"#;
-    let posted = raw_http(port, format!("POST /notes HTTP/1.1\r\nHost: x\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes());
+    let posted = raw_http(port, format!("POST /notes HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes());
     assert!(posted.starts_with("HTTP/1.1 200"), "{posted}");
-    let health = raw_http(port, b"GET /health HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n");
+    let health = raw_http(port, b"GET /health HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n");
     assert!(health.starts_with("HTTP/1.1 200") && health.ends_with("ok"), "{health}");
-    let listed = raw_http(port, b"GET /notes HTTP/1.1\r\nHost: x\r\nOrigin: https://a.example\r\nConnection: close\r\n\r\n");
+    let listed = raw_http(port, b"GET /notes HTTP/1.1\r\nHost: 127.0.0.1\r\nOrigin: https://a.example\r\nConnection: close\r\n\r\n");
     assert!(listed.starts_with("HTTP/1.1 200") && listed.contains(r#"{"a":"hi"}"#), "{listed}");
     assert!(listed.to_ascii_lowercase().contains("access-control-allow-origin: https://a.example"), "CORS as for any route: {listed}");
     // Many at once, each answered.
     std::thread::scope(|s| {
         for _ in 0..16 {
-            s.spawn(|| assert!(raw_http(port, b"GET /health HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n").starts_with("HTTP/1.1 200")));
+            s.spawn(|| assert!(raw_http(port, b"GET /health HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n").starts_with("HTTP/1.1 200")));
         }
     });
     assert_eq!(state.deployments.lock().unwrap()[&slug].tallies["GET /health"].runs, 17);
@@ -3484,7 +3493,7 @@ fn a_run_that_panics_is_answered_500_inline_as_on_the_pool() {
     let text = format!("flow boom\nport {port}\n\nroute GET /light/:name (req) unrecorded {{\n  respond \"hi {{req.params.name}}\"\n}}\n\nroute GET /pooled/:name (req) {{\n  respond \"hi {{req.params.name}}\"\n}}\n");
     let slug = deploy_plain_text(&state, &text);
     sync_listeners(&state);
-    let get = |path: &str| raw_http(port, format!("GET {path} HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n").as_bytes());
+    let get = |path: &str| raw_http(port, format!("GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n").as_bytes());
     // Loaded by a first run, so the light route runs inline from here on.
     assert!(get("/light/a").ends_with("hi a"));
     let here = Mutex::new(dataplane::Here::default());
@@ -3523,7 +3532,7 @@ fn a_server_deployment_whose_port_is_taken_says_it_is_not_answering() {
     assert_eq!(deploy_server(&state, "todo", api).status_code, 200);
     let freed = entry(&state);
     assert!(freed.get("listen_error").is_none(), "{freed}");
-    let listed = raw_http(port, b"GET /todos HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n");
+    let listed = raw_http(port, b"GET /todos HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n");
     assert!(listed.starts_with("HTTP/1.1 200"), "{listed}");
     assert_eq!(route(&state, &req("POST", "/deployments/todo/stop", vec![])).status_code, 200);
 }
@@ -7682,7 +7691,7 @@ fn a_channel_streams_each_runs_packs_to_its_subscribers() {
         let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
         stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
         let last = last.map(|id| format!("Last-Event-ID: {id}\r\n")).unwrap_or_default();
-        stream.write_all(format!("GET {path} HTTP/1.1\r\nHost: x\r\n{last}\r\n").as_bytes()).unwrap();
+        stream.write_all(format!("GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\n{last}\r\n").as_bytes()).unwrap();
         let mut reader = BufReader::new(stream);
         let mut head = String::new();
         while !head.ends_with("\r\n\r\n") {
@@ -7704,7 +7713,7 @@ fn a_channel_streams_each_runs_packs_to_its_subscribers() {
             }
         }
     };
-    let post = |path: &str, body: &str| raw_http(port, format!("POST {path} HTTP/1.1\r\nHost: x\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes());
+    let post = |path: &str, body: &str| raw_http(port, format!("POST {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes());
 
     let (head, mut live) = subscribe("/live", None);
     assert!(head.starts_with("HTTP/1.1 200") && head.contains("content-type: text/event-stream"), "{head}");
@@ -7747,7 +7756,7 @@ allow_private_addresses = true").unwrap());
         let table = state.deployments.lock().unwrap();
         table[&slug].channels.kept("orders", true).iter().map(|p| format!("{} {}", p.id.unwrap(), p.json)).collect()
     };
-    let posted = raw_http(port, b"POST /orders HTTP/1.1\r\nHost: x\r\nContent-Length: 15\r\nConnection: close\r\n\r\n{\"item\":\"book\"}");
+    let posted = raw_http(port, b"POST /orders HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: 15\r\nConnection: close\r\n\r\n{\"item\":\"book\"}");
     assert!(posted.starts_with("HTTP/1.1 200"), "{posted}");
     assert!(posted.contains("content-length:"), "a whole answer says its length: {posted}");
     let link = posted[posted.find("/paid/").unwrap()..].trim_end_matches(['"', '\r', '\n']).to_string();
@@ -7755,7 +7764,7 @@ allow_private_addresses = true").unwrap());
     assert_eq!(parked.len(), 1, "{parked:?}");
     assert!(parked[0].ends_with(r#"{"item":"book","status":"waiting"}"#), "{parked:?}");
 
-    let paid = raw_http(port, format!("GET {link} HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n").as_bytes());
+    let paid = raw_http(port, format!("GET {link} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n").as_bytes());
     assert!(paid.starts_with("HTTP/1.1 200"), "{paid}");
     let both = kept(&state);
     assert_eq!(both.len(), 2, "the waiting one isn't sent again: {both:?}");
@@ -7803,7 +7812,7 @@ fn a_streamed_reply_forwards_the_upstream_as_it_arrives() {
 
     let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
     stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
-    stream.write_all(b"POST /ask HTTP/1.1\r\nHost: x\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}").unwrap();
+    stream.write_all(b"POST /ask HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}").unwrap();
     let mut reader = BufReader::new(stream);
     let mut head = String::new();
     while !head.ends_with("\r\n\r\n") {
@@ -7853,7 +7862,7 @@ fn a_streamed_reply_whose_call_fails_answers_with_its_status() {
 
     let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
     stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
-    stream.write_all(b"POST /ask HTTP/1.1\r\nHost: x\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}").unwrap();
+    stream.write_all(b"POST /ask HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}").unwrap();
     let mut answer = String::new();
     let _ = stream.read_to_string(&mut answer);
     let entry = log_entries(&state, &slug).into_iter().find(|e| e["route"] == "POST /ask").unwrap();
@@ -7893,7 +7902,7 @@ fn a_piped_call_sends_its_answer_to_the_channel_as_it_arrives() {
 
     let mut live = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
     live.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
-    live.write_all(b"GET /live HTTP/1.1\r\nHost: x\r\n\r\n").unwrap();
+    live.write_all(b"GET /live HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n").unwrap();
     let mut live = BufReader::new(live);
     let mut head = String::new();
     while !head.ends_with("\r\n\r\n") {
@@ -7912,7 +7921,7 @@ fn a_piped_call_sends_its_answer_to_the_channel_as_it_arrives() {
             }
         }
     };
-    let asked = std::thread::spawn(move || raw_http(port, b"POST /ask HTTP/1.1\r\nHost: x\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}"));
+    let asked = std::thread::spawn(move || raw_http(port, b"POST /ask HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}"));
     assert_eq!(next_event(&mut live), [r#"data: "Rivers run""#], "the first piece, while the upstream holds the rest");
     seen_tx.send(()).unwrap();
     assert_eq!(next_event(&mut live), [r#"data: " to the sea.""#]);
@@ -9304,4 +9313,35 @@ fn the_server_keeps_its_files_for_its_owner_and_says_when_its_folder_isnt() {
     let said = crate::open_to_others(&dir).expect("readable by others: said");
     assert!(said.contains("mode 755") && said.contains("chmod 700"), "{said}");
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A flow's port answers a request by an address, by localhost or by a name the server was given
+/// (`--allow-host`, a proxy's), and nothing else: a page loaded from a name pointed at this
+/// machine (DNS rebinding) can't read a flow's answers as its own.
+#[test]
+fn a_flows_port_answers_only_an_address_localhost_or_a_name_it_was_given() {
+    use crate::dataplane::host_allowed;
+    let names = vec!["hooks.example.com".to_string()];
+    for host in ["127.0.0.1", "127.0.0.1:8103", "10.0.0.5:80", "[::1]:8103", "[2001:db8::1]", "localhost", "LOCALHOST:8103", "app.localhost", "hooks.example.com", "Hooks.Example.COM:443", "hooks.example.com."] {
+        assert!(host_allowed(Some(host), &names), "{host}");
+    }
+    assert!(host_allowed(None, &names) && host_allowed(Some(""), &names), "no host: an HTTP/1.0 client, never a browser");
+    for host in ["evil.example", "evil.example:8103", "hooks.example.com.evil.example", "localhost.evil.example", "[not-an-address]", "127.0.0.1.nip.io"] {
+        assert!(!host_allowed(Some(host), &names), "{host}");
+    }
+    assert!(!host_allowed(Some("hooks.example.com"), &[]), "a name not given");
+
+    // Through a real port: a name given is answered.
+    let mut state = test_state();
+    state.listeners = Some(Mutex::new(BTreeMap::new()));
+    state.data_limits.names = names;
+    let port = free_port();
+    let api = todo_server(&state, &port.to_string());
+    assert_eq!(deploy_server(&state, "todo", api).status_code, 200);
+    sync_listeners(&state);
+    let listed = raw_http(port, b"GET /todos HTTP/1.1\r\nHost: hooks.example.com\r\nConnection: close\r\n\r\n");
+    assert!(listed.starts_with("HTTP/1.1 200"), "{listed}");
+    let refused = raw_http(port, b"GET /todos HTTP/1.1\r\nHost: other.example.com\r\nConnection: close\r\n\r\n");
+    assert!(refused.starts_with("HTTP/1.1 421"), "{refused}");
+    assert_eq!(route(&state, &req("POST", "/deployments/todo/stop", vec![])).status_code, 200);
 }

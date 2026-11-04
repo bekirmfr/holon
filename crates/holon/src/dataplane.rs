@@ -46,6 +46,29 @@ pub(crate) struct DataLimits {
     pub(crate) max_body_bytes: usize,
     /// Open connections per listener.
     pub(crate) max_connections: usize,
+    /// The names a request may name its host by besides an IP address and `localhost`
+    /// (`--allow-host`, as the control plane): a name a proxy in front forwards (`host_allowed`).
+    pub(crate) names: Vec<String>,
+}
+
+/// Whether a request naming its host `host` (its `Host` header, or its authority) is one this
+/// data plane answers: by an IP address, by `localhost` (or a name under it), or by a name in
+/// `names`. Any other name is refused: DNS rebinding points a name a page was loaded from at this
+/// machine, and the page then reads a flow's answers as its own origin's, past the browser's
+/// cross-origin rules; it can't do that by an address, and a name of the operator's is listed.
+/// No host at all (an HTTP/1.0 client) is answered: a browser always sends one.
+pub(crate) fn host_allowed(host: Option<&str>, names: &[String]) -> bool {
+    let Some(host) = host.map(str::trim).filter(|h| !h.is_empty()) else { return true };
+    // The name without its port: `[v6]:port`, `name:port`, or a bare one.
+    let name = match host.strip_prefix('[') {
+        Some(rest) => return rest.split(']').next().is_some_and(|v6| v6.parse::<std::net::Ipv6Addr>().is_ok()),
+        None => host.rsplit_once(':').filter(|(_, port)| port.bytes().all(|b| b.is_ascii_digit())).map_or(host, |(n, _)| n),
+    };
+    let name = name.trim_end_matches('.').to_ascii_lowercase();
+    name.parse::<IpAddr>().is_ok()
+        || name == "localhost"
+        || name.ends_with(".localhost")
+        || names.iter().any(|n| n.trim_end_matches('.').eq_ignore_ascii_case(&name) || n.eq_ignore_ascii_case(host))
 }
 
 impl Default for DataLimits {
@@ -56,6 +79,7 @@ impl Default for DataLimits {
             body_timeout: Duration::from_secs(30),
             max_body_bytes: 10 * 1024 * 1024,
             max_connections: 1024,
+            names: Vec::new(),
         }
     }
 }
@@ -266,6 +290,14 @@ impl Body for Answer {
 /// the answer into an HTTP response.
 async fn answer(listener: Arc<Listener>, request: hyper::Request<Incoming>) -> hyper::Response<Answer> {
     let (parts, body) = request.into_parts();
+    let host = parts.headers.get(hyper::header::HOST).and_then(|v| v.to_str().ok()).or_else(|| parts.uri.authority().map(|a| a.as_str()));
+    if !host_allowed(host, &listener.limits.names) {
+        let host = host.unwrap_or_default();
+        return to_hyper(DataResponse::json_error(
+            421,
+            &format!("Host {host:?} isn't a name this server answers to (a page loaded from a name pointed at this machine can't read a flow's answers): reach it by its address or localhost, or start the server with --allow-host {}", host.rsplit_once(':').map_or(host, |(n, _)| n)),
+        ));
+    }
     let limit = listener.limits.max_body_bytes;
     let too_large = || DataResponse::json_error(413, &format!("the request body is larger than {limit} bytes"));
     let declared = parts.headers.get(hyper::header::CONTENT_LENGTH).and_then(|v| v.to_str().ok()?.parse::<u64>().ok());

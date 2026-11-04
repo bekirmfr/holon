@@ -71,6 +71,12 @@ Sign-in is a bearer token in `Authorization`, never a cookie, so a page a browse
 a request carry it. The built-in editor's files (editor.rs) are answered before the gate, to GET
 only, as any web page is.
 
+A flow's own port (dataplane.rs `answer`) answers a request whose `Host` (or authority) is an
+address, `localhost` or a name under it, or a name given with `--allow-host` (`host_allowed`,
+`DataLimits::names`), and refuses any other with 421, saying to reach it by its address or to give
+the name: a page loaded from a name rebound to this machine can't read a flow's answers as its own
+origin's. A request with no `Host` (HTTP/1.0) is answered; a browser always sends one.
+
 ### 2.3 What `/admin/` requires
 
 The `admin` role, for every path under it: `Access::check` refuses any other role there ("that
@@ -230,9 +236,10 @@ What is not defended, or only partly:
 - **Redaction catches a secret's literal value**, as written or JSON-escaped, and what the graph
   shows computed from it; a value transformed where the graph can't see (a far side echoing it
   encoded) isn't recognised (secrets.rs's notes).
-- **The data plane has no sign-in and no Host check**: a flow guards its own routes. A flow on a
-  loopback port is reachable by any local program and, through DNS rebinding, by a web page;
-  `browsers` decides only which other origins' pages may read its answers.
+- **The data plane has no sign-in**: a flow guards its own routes. A flow on a loopback port is
+  reachable by any local program; a web page reaches it only by an address (a cross-origin
+  request, which `browsers` decides whose pages may read), never under a name of its own (§2.2).
+  A proxy that forwards the name it was reached by needs that name given (`--allow-host`).
 - **The control plane is not hardened against load**: a thread per request (rouille's default),
   and sign-in throttled per name only (so a known name can be locked out a minute at a time;
   likewise anyone can hold setting up off a minute at a time with wrong codes).
@@ -247,6 +254,9 @@ What is not defended, or only partly:
 
 ## 5. What the tests hold
 
+- **A flow's port**: `a_flows_port_answers_only_an_address_localhost_or_a_name_it_was_given` (by
+  function and through a real port), and `a_server_deployment_answers_on_its_own_port_within_limits`
+  (a foreign name refused with how to let it in; localhost, `[::1]`, a name under localhost answered).
 - **The gate**: `cross_site_and_rebinding_requests_are_refused_before_routing` (seven attacks: a
   text/plain or JSON POST from another site, `Origin: null`, a look-alike origin, a rebinding or
   wrong-port Host, a form POST; none saves anything, the editor and curl still do);
@@ -283,7 +293,7 @@ What is not defended, or only partly:
   `exported_runs_verify_and_a_rewritten_log_doesnt`, `a_batch_goes_only_after_its_hook_has_run`,
   `a_witness_is_reached_over_https_or_on_this_machine`.
 
-Gaps: no data-plane request under a foreign `Host` is sent.
+Gaps: none named here beyond the limits above.
 
 ## 6. History
 

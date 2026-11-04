@@ -33,6 +33,14 @@
   and the write, that leads the server outside it; and a write no longer makes folders on its way
   before checking where they are. A link inside a folder isn't followed now, even to inside it
   (elsewhere than Linux, one inside it still is).
+- **A flow's port answers only its address, localhost, or a name it was given.** A web page whose
+  name was pointed at your machine (DNS rebinding) could call a flow on 127.0.0.1 and read its
+  answers as its own; a request under any other name now answers 421, saying what to do. **A
+  proxy that forwards the name it was reached by** (Caddy and nginx do) **needs the name given**:
+  `holon serve --allow-host hooks.example.com`, as the control plane already did, or the proxy
+  told to send the address (`header_up Host {upstream_hostport}`); a tunnel likewise
+  (`cloudflared … --http-host-header 127.0.0.1`). [Public HTTPS](docs/manual/guides/public-https.md)
+  says how.
 - **Every run's record is on disk before its answer.** A run of a route, clock, file handler or
   action is answered (or counts as done) once its log entry is synced, not only written: an
   answered run is recorded, a power loss or not. Runs at once share the sync. A handler that only
