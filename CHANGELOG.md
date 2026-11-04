@@ -37,6 +37,12 @@
   things on, how full it is for the server (a quota counts) and what it keeps there; the content
   store's values and the disk they take, the logs and the folders' kept texts (counted at start
   and after each round of sweeps); and the sweeps (`GET /admin/host`).
+- **The host warns before its disk fills.** Past `[storage] warn_at` (`85%` full for the server
+  unless said, or space left: `5G`), a disk is warned of with what to do and the flow growing
+  fastest; so is a cache at its size most of the last hour, and sweeping off while the store
+  takes a tenth of its disk. First on the admin page, on the home page for admins, in `holon host`
+  and the terminal editor; once in the server's log and its activity. Set it from the admin page
+  or with `holon policy --warn-at`.
 - **A deployment's log keeps only its newest runs in memory.** It kept every run it keeps (500 by
   default) in memory, whole, beside its file: 1.1 to 3.6 times their lines, counted by no cache's
   size. Now it keeps its newest 32 there and reads older ones from its file when a page asks,

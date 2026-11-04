@@ -171,7 +171,7 @@ by the syncer when they changed.
   middle of a write leaves the aside file; nothing removed them (60 MB in the soaks' data folder).
   The housekeeping count removes one once it is older than any write takes (15 minutes).
 - **Seen.** `holon host` and the admin page say how full each disk is and what is kept on it
-  (storage-L4.md, step 2).
+  (storage-L4.md, step 2), and warn past `[storage] warn_at` with what to do (step 4).
 - **Tests.** `the_server_sweeps_its_store_on_its_own_and_not_again_for_nothing`,
   `a_store_sweep_clears_the_states_no_kept_run_names_and_nothing_else`.
 

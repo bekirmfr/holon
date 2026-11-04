@@ -990,6 +990,7 @@ function Canvas({
               deployments={deployments}
               samples={samples()}
               market={{ url: market.url, entries: market.catalog }}
+              admin={me.role === "admin"}
               actions={{
                 newFlow: start.onNew,
                 openFlow: (name) => getFlow(name).then((rec) => onOpenFlow(rec)).catch((e: unknown) => setDeployError(e instanceof Error ? e.message : String(e))),

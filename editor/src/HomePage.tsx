@@ -5,7 +5,7 @@
 
 import { useEffect, useState, type CSSProperties, type ReactNode } from "react";
 import { addPane, changePane, movePane, PANE_INFO, PANE_KINDS, removePane, type Pane, type PaneKind } from "./home";
-import { listFlows, type DeploymentEntry, type FlowListEntry } from "./server";
+import { getWarnings, listFlows, type DeploymentEntry, type FlowListEntry, type HostWarning } from "./server";
 import { ActivityList } from "./Pages";
 import type { Sample } from "./samples";
 import type { Listing } from "./marketplace";
@@ -31,6 +31,7 @@ export function HomePage({
   samples,
   market,
   actions,
+  admin = false,
 }: {
   panes: Pane[];
   onPanes: (panes: Pane[]) => void;
@@ -38,8 +39,17 @@ export function HomePage({
   samples: Sample[];
   market: { url: string; entries: { listing: Listing; adoption: number }[] };
   actions: HomeActions;
+  /** An admin sees what the host warns of (storage.rs), first. */
+  admin?: boolean;
 }) {
   const [customizing, setCustomizing] = useState(false);
+  const [warnings, setWarnings] = useState<HostWarning[]>([]);
+  useEffect(() => {
+    if (!admin) return;
+    getWarnings()
+      .then(setWarnings)
+      .catch(() => setWarnings([]));
+  }, [admin, deployments]);
   const [flows, setFlows] = useState<FlowListEntry[]>([]);
   useEffect(() => {
     listFlows()
@@ -170,6 +180,16 @@ export function HomePage({
 
   return (
     <div style={{ maxWidth: 980 }}>
+      {warnings.length > 0 && (
+        <div role="alert" aria-label="what the host warns of" style={{ marginBottom: 12, padding: "8px 10px", border: "1px solid #e5484d", borderRadius: 4, background: "#2a1418", fontSize: 12, display: "grid", gap: 4 }}>
+          {warnings.map((w) => (
+            <div key={w.key}>
+              <span style={{ color: "#ffb3b5" }}>⚠ {w.says}</span>
+              <div style={{ color: "#c9a5a7", fontSize: 11 }}>{w.todo}</div>
+            </div>
+          ))}
+        </div>
+      )}
       <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12 }}>
         <span style={{ color: "#cfe3ff", fontSize: 14, letterSpacing: "0.04em", flex: 1 }}>home</span>
         {customizing && (

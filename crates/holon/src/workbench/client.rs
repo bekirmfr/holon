@@ -17,6 +17,8 @@ pub(crate) struct Client {
     pub(crate) flows: Vec<Value>,
     /// What was done on the server lately, newest first (`GET /activity`): at, action, target, by.
     pub(crate) activity: Vec<Value>,
+    /// What the host warns of (`GET /admin/warnings`, storage.rs): says, todo. An admin's only.
+    pub(crate) warnings: Vec<Value>,
 }
 
 /// One deployment's pages: what it may do, its runs, its history, its access.
@@ -74,7 +76,7 @@ pub(crate) fn strings(v: &Value, key: &str) -> Vec<String> {
 
 impl Client {
     pub(crate) fn new(api: Box<dyn Api>) -> Client {
-        Client { api, me: None, deployments: vec![], flows: vec![], activity: vec![] }
+        Client { api, me: None, deployments: vec![], flows: vec![], activity: vec![], warnings: vec![] }
     }
 
     pub(crate) fn server(&self) -> String {
@@ -102,6 +104,7 @@ impl Client {
         }
         // Only an admin may read it all; for anyone else it stays empty.
         self.activity = self.get("/activity?limit=30").map(|a| list(&a, "entries")).unwrap_or_default();
+        self.warnings = self.get("/admin/warnings").map(|w| list(&w, "warnings")).unwrap_or_default();
         self.deployments = deployments;
         self.flows = flows;
         Ok(())

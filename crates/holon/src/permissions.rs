@@ -424,11 +424,72 @@ pub(crate) struct Policy {
 pub(crate) struct Storage {
     /// How often the server sweeps its store and the folders' kept texts; none: only an admin's.
     pub(crate) sweep_every: Option<Duration>,
+    /// When a disk the server keeps things on is full enough to warn of.
+    pub(crate) warn_at: Threshold,
 }
 
 impl Default for Storage {
     fn default() -> Storage {
-        Storage { sweep_every: Some(Duration::from_secs(10 * 60)) }
+        Storage { sweep_every: Some(Duration::from_secs(10 * 60)), warn_at: Threshold::Full(85) }
+    }
+}
+
+/// How full a disk is to be for something to happen: a percentage of it full for the server (what
+/// isn't free to it), or space left, in bytes.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum Threshold {
+    Full(u8),
+    Free(u64),
+}
+
+impl Threshold {
+    /// Whether a disk of `size` bytes with `free` of them free to the server is past it.
+    pub(crate) fn past(&self, size: u64, free: u64) -> bool {
+        match self {
+            Threshold::Full(pct) => size > 0 && size.saturating_sub(free) * 100 >= size * *pct as u64,
+            Threshold::Free(bytes) => free < *bytes,
+        }
+    }
+}
+
+/// A threshold as `[storage]` writes it: `85%` full, or `5G` (`500M`, `1T`) free.
+pub(crate) fn parse_threshold(text: &str) -> Result<Threshold, String> {
+    let t = text.trim();
+    let wrong = || format!("{t:?} isn't a threshold: write how full, 85%, or how much free, 5G (500M, 1T)");
+    if let Some(pct) = t.strip_suffix('%') {
+        let n: u8 = pct.trim().parse().map_err(|_| wrong())?;
+        return if (1..=99).contains(&n) { Ok(Threshold::Full(n)) } else { Err(format!("{t:?}: a percentage from 1% to 99%")) };
+    }
+    let unit = t.chars().last().unwrap_or(' ').to_ascii_uppercase();
+    let scale: u64 = match unit {
+        'K' => 1 << 10,
+        'M' => 1 << 20,
+        'G' => 1 << 30,
+        'T' => 1 << 40,
+        _ => return Err(wrong()),
+    };
+    let n: f64 = t[..t.len() - 1].trim().parse().map_err(|_| wrong())?;
+    if n.is_nan() || n <= 0.0 {
+        return Err(wrong());
+    }
+    Ok(Threshold::Free((n * scale as f64) as u64))
+}
+
+/// A threshold as `[storage]` writes it (`parse_threshold`'s other way).
+pub(crate) fn threshold_text(t: Threshold) -> String {
+    match t {
+        Threshold::Full(n) => format!("{n}%"),
+        Threshold::Free(b) => {
+            // The largest unit it is a whole number of tenths of.
+            for (scale, unit) in [(1u64 << 40, "T"), (1 << 30, "G"), (1 << 20, "M"), (1 << 10, "K")] {
+                let tenths = b as f64 * 10.0 / scale as f64;
+                if b >= scale && (tenths - tenths.round()).abs() < 1e-6 {
+                    let n = tenths.round() / 10.0;
+                    return if n.fract() == 0.0 { format!("{n:.0}{unit}") } else { format!("{n:.1}{unit}") };
+                }
+            }
+            format!("{}K", b.div_ceil(1 << 10))
+        }
     }
 }
 
@@ -512,6 +573,8 @@ struct PolicyFile {
 struct StorageFile {
     #[serde(default)]
     sweep_every: Option<String>,
+    #[serde(default)]
+    warn_at: Option<String>,
 }
 
 #[derive(Deserialize, Default)]
@@ -575,6 +638,9 @@ impl Policy {
         policy.allow_unrecorded = file.grants.allow_unrecorded.unwrap_or(true);
         if let Some(every) = &file.storage.sweep_every {
             policy.storage.sweep_every = parse_every(every).map_err(|e| format!("storage.sweep_every: {e}"))?;
+        }
+        if let Some(at) = &file.storage.warn_at {
+            policy.storage.warn_at = parse_threshold(at).map_err(|e| format!("storage.warn_at: {e}"))?;
         }
         Ok(policy)
     }
@@ -1054,6 +1120,18 @@ mod tests {
         for text in ["90s", "10m", "2h", "1d", "off"] {
             assert_eq!(every_text(parse_every(text).unwrap()), text, "written back as given");
         }
+
+        // When to warn: 85% full unless said, a percentage or space left.
+        assert_eq!(Policy::default().storage.warn_at, Threshold::Full(85));
+        assert_eq!(Policy::parse("[storage]\nwarn_at = \"5G\"").unwrap().storage.warn_at, Threshold::Free(5 << 30));
+        for text in ["90%", "5G", "500M", "1.5T", "1%"] {
+            assert_eq!(threshold_text(parse_threshold(text).unwrap()), text, "written back as given");
+        }
+        for wrong in ["0%", "100%", "lots", "5", "-1G", "0G"] {
+            assert!(parse_threshold(wrong).is_err(), "{wrong}");
+        }
+        assert!(Threshold::Full(85).past(100, 10) && !Threshold::Full(85).past(100, 20), "90% full, then 80%");
+        assert!(Threshold::Free(5 << 30).past(100 << 30, 4 << 30) && !Threshold::Free(5 << 30).past(100 << 30, 6 << 30));
 
         // The durable-run limits are limits like the others.
         let p = Policy::parse("[limits]\nmax_waiting_runs = 500\n[ceilings]\nmax_waiting_runs = 1000").unwrap();

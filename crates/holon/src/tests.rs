@@ -1140,6 +1140,67 @@ fn each_flow_says_what_it_holds_in_memory_and_on_disk() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// The host warns of a disk past `[storage] warn_at` and of a cache at its size most of the last
+/// hour, each with what to do; says each once in its activity as it starts; and an admin sets the
+/// threshold as the other storage settings.
+#[test]
+fn the_host_warns_of_a_full_disk_and_a_full_cache_once_each() {
+    let dir = unique_temp_path("warnings");
+    let disk = FileStore::new(&dir).unwrap();
+    let values = disk.values_dir();
+    let mut state = test_state_with(SharedStore::on_disk(Box::new(disk), values));
+    let path = std::path::PathBuf::from(unique_temp_path("warn-policy")).with_extension("toml");
+    state.policy_path = path.display().to_string();
+    let warnings = || body_json(route(&state, &req("GET", "/admin/warnings", vec![])))["warnings"].as_array().cloned().unwrap();
+    let set = |body: &str| route(&state, &req("POST", "/admin/storage", body.as_bytes().to_vec()));
+    // Nothing near a 1 KiB floor: no warning.
+    assert_eq!(set(r#"{"warn_at":"1K"}"#).status_code, 200);
+    assert_eq!(warnings(), Vec::<serde_json::Value>::new());
+    // A floor no disk has: its disk warns, with what to do.
+    assert_eq!(set(r#"{"warn_at":"1000T"}"#).status_code, 200);
+    let w = warnings();
+    assert_eq!(w.len(), 1, "{w:?}");
+    assert!(w[0]["key"].as_str().unwrap().starts_with("disk:"), "{w:?}");
+    assert!(w[0]["says"].as_str().unwrap().contains("it warns at 1000T"), "{w:?}");
+    assert!(w[0]["todo"].as_str().unwrap().contains("holon host"), "{w:?}");
+    assert_eq!(body_json(route(&state, &req("GET", "/admin/host", vec![])))["warnings"].as_array().unwrap().len(), 1);
+    // Said once in the activity, however many looks see it.
+    let t0 = 1_000_000_000;
+    for i in 0..3 {
+        state.sweeps.tick(&state, t0 + i);
+    }
+    let warned = body_json(route(&state, &req("GET", "/activity?limit=50", vec![])))["entries"].as_array().unwrap().iter().filter(|e| e["action"] == "warned").count();
+    assert_eq!(warned, 1);
+    assert_eq!(set(r#"{"warn_at":"100%"}"#).status_code, 400, "not a threshold");
+    assert_eq!(set(r#"{"warn_at":"1K"}"#).status_code, 200);
+    // A value cache at its size at most looks of the last hour (or the five minutes it waits
+    // for at the least) warns; a look or two doesn't.
+    state.store.4.set_budget(4 << 10);
+    let mut hashes = Vec::new();
+    for i in 0..40 {
+        hashes.push(state.store.clone().put_value(&Value::Text(format!("a value some {i} runs read, {}", "x".repeat(100)))).unwrap());
+    }
+    // Between each look, runs read more than it keeps: it lets go of some.
+    let reads = || {
+        for h in &hashes {
+            state.store.get_value(h).unwrap();
+        }
+    };
+    for i in 0..3 {
+        reads();
+        state.sweeps.tick(&state, t0 + 10 + i);
+    }
+    assert!(warnings().iter().all(|w| w["key"] != "cache:values"), "not yet: {:?}", warnings());
+    for i in 0..40 {
+        reads();
+        state.sweeps.tick(&state, t0 + 20 + i);
+    }
+    let w = warnings();
+    assert!(w.iter().any(|w| w["key"] == "cache:values" && w["todo"].as_str().unwrap().contains("--value-cache")), "{w:?}");
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_file(&path);
+}
+
 /// An admin sets how often the server sweeps (`POST /admin/storage`): written into `holon.toml`'s
 /// `[storage]`, the rest of the file as it was, comments too, and in force at once; a setting that
 /// isn't one changes nothing.

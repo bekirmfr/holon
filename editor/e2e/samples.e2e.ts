@@ -1459,6 +1459,18 @@ test("rolling-log keeps only its newest 5 runs, as its deploy settings ask, whil
   await expect(page.getByRole("meter").first()).toBeVisible();
   // And what each flow holds, a row each: this one among them.
   await expect(page.getByLabel("what each flow holds").getByText("rolling-log", { exact: true })).toBeVisible();
+  // When the host warns its disk is full: set here; past it, the disk is warned of, with what to
+  // do; a floor nothing nears, and the warning goes.
+  const warnAt = page.getByLabel("when the host warns its disk is full");
+  const warnForm = warnAt.locator("..");
+  await warnAt.fill("1000T");
+  await warnForm.getByRole("button", { name: "set" }).click();
+  const alert = page.getByRole("alert", { name: "what the host warns of" });
+  await expect(alert).toContainText("it warns at 1000T");
+  await expect(alert).toContainText("make room");
+  await warnAt.fill("1K");
+  await warnForm.getByRole("button", { name: "set" }).click();
+  await expect(alert).toBeHidden();
   // How often the server sweeps on its own: shown here, and set here, into its holon.toml.
   const schedule = page.getByText("the server sweeps on its own").locator("..");
   await expect(schedule).toContainText("every 10m");

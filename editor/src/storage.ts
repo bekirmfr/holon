@@ -91,3 +91,12 @@ export function holdsLines(h: Holds, now: number): [string, string] {
   const texts = h.file_texts && h.file_texts.texts > 0 ? `, file texts ${h.file_texts.texts} (${sizeText(h.file_texts.bytes)})` : "";
   return [memory, `${sizeText(h.disk)} on disk: its log ${sizeText(h.log.file.on_disk)} (${h.log.lines} lines), ${states}${texts}`];
 }
+
+/** Whether `text` is a threshold the server takes: `85%` full (1% to 99%), or `5G` free (`500M`, `1.5T`). */
+export function isThreshold(text: string): boolean {
+  const t = text.trim();
+  const pct = /^(\d+)\s*%$/.exec(t);
+  if (pct) return Number(pct[1]) >= 1 && Number(pct[1]) <= 99;
+  const free = /^(\d+(\.\d+)?)\s*[kKmMgGtT]$/.exec(t);
+  return !!free && Number(free[1]) > 0;
+}

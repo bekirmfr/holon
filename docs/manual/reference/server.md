@@ -58,6 +58,7 @@ server holds now:
   middle of a write can leave a `….tmp-…` or `….cut-…` file. Once one is older than any write
   takes (15 minutes), the count removes it, and says so in the server's log and its activity;
 - **the sweeps**: how often, when next, and what the last of each removed;
+- **warnings** ([below](#warnings));
 - **each flow**, the most first (`holon host --for SLUG`, `GET /deployments/<slug>/holds`, each
   flow's page in both editors): its log in memory (the newest 32 of the runs it keeps, about three
   times the lines they were written as: measured 1.1 to 3.6 times; the others it reads from its
@@ -65,6 +66,21 @@ server holds now:
   cache (and what it shares with other flows there), and its states and file texts in the store,
   as the store's last sweep found them: a value two flows name is counted once, as shared.
 
+
+### Warnings
+
+The server looks at what it holds every ten seconds, and warns of:
+
+- **a disk past `warn_at`**, naming the flow whose share grew most since the store was last
+  counted;
+- **a cache at its size** most of the last hour: it let go of flows (or values) to make room at
+  most looks, so runs load them from disk again;
+- **sweeping off** while the store takes more than a tenth of its disk.
+
+Each says what to do. They are shown first in `holon host` and on the admin page's **the host**,
+on the home page for admins, and in the terminal editor's top bar and overview
+(`GET /admin/warnings`); and each is said once in the server's log and its activity as it starts,
+and in the log as it ends.
 ## The policy
 
 `holon.toml` in the data folder (or `--policy PATH`) says what this server may ever grant, and
@@ -106,6 +122,10 @@ allow_plain_http = true
     2,500 values a second at most) so the server's runs hardly notice it. An admin sets it from the
     admin page or with `holon policy --sweep-every`, which write it here; a change applies within
     ten seconds.
+  - `warn_at`: when a disk the server keeps things on is full enough to warn of: how full it is
+    for the server, `85%` (the default; a quota, or the space a disk keeps for root, counts as
+    full), or how much is left, `5G` (`500M`, `1T`). Set as `sweep_every` is (`holon policy
+    --warn-at`). See [Warnings](#warnings).
 
 An unknown section or key is a mistake, and so is a limit name the server doesn't know. The limits,
 their defaults and their ceilings are in [Permissions](permissions.md#limits).

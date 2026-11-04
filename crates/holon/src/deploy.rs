@@ -733,7 +733,7 @@ pub(crate) fn permissions_view(policy: &Policy) -> serde_json::Value {
         "allow_plain_http": policy.allow_plain_http,
         "allow_private_addresses": policy.allow_private_addresses,
         "allow_unrecorded": policy.allow_unrecorded,
-        "storage": { "sweep_every": crate::permissions::every_text(policy.storage.sweep_every) },
+        "storage": { "sweep_every": crate::permissions::every_text(policy.storage.sweep_every), "warn_at": crate::permissions::threshold_text(policy.storage.warn_at) },
     })
 }
 

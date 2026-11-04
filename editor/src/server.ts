@@ -219,7 +219,14 @@ export type HostView = {
   };
   deployments: { each: Holds[]; shared_in_store: { values: number; bytes: number } | null };
   sweeps: HostSweeps;
+  /** `[storage] warn_at`: `"85%"` full, or `"5G"` free. */
+  warn_at: string;
+  warnings: HostWarning[];
 };
+/** Something about the host an admin should know (storage.rs `Warning`), and what to do about it. */
+export type HostWarning = { key: string; says: string; todo: string };
+/** `GET /admin/warnings`: what the host warns of now. */
+export const getWarnings = async () => (await asJson<{ warnings: HostWarning[] }>(await api(`${BASE}/admin/warnings`))).warnings;
 export const getHost = async () => asJson<HostView>(await api(`${BASE}/admin/host`));
 /** What one deployment holds, in memory and on disk (storage.rs `holds`): its log (in memory,
  *  about 3 times the lines its kept runs were written as; and its file), its live state, its flow
@@ -238,10 +245,12 @@ export type Holds = {
 };
 /** `GET /deployments/<slug>/holds`. */
 export const getHolds = async (slug: string) => asJson<Holds>(await api(`${BASE}/deployments/${encodeURIComponent(slug)}/holds`));
-/** `POST /admin/storage`: how often the server sweeps (`"10m"`, `"2h"`, `"off"`), written into its `holon.toml`. */
-export async function setSweepEvery(every: string): Promise<{ sweeps: HostSweeps }> {
-  return asJson(await post(`${BASE}/admin/storage`, { sweep_every: every }));
+/** `POST /admin/storage`: the server's `[storage]` settings, written into its `holon.toml`: how
+ *  often it sweeps (`"10m"`, `"2h"`, `"off"`), when it warns its disk is full (`"85%"`, `"5G"`). */
+export async function setStorage(set: { sweep_every?: string; warn_at?: string }): Promise<{ sweeps: HostSweeps; warnings: HostWarning[] }> {
+  return asJson(await post(`${BASE}/admin/storage`, set));
 }
+export const setSweepEvery = (every: string) => setStorage({ sweep_every: every });
 /** One deployment's grant as `GET /admin/grants` lists it (grants.rs): what it holds, what was taken back since. */
 export type HeldGrant = { slug: string; status: DeploymentEntry["status"]; attention: string | null; items: string[]; revoked: string[] };
 export const listGrants = async () => asJson<HeldGrant[]>(await api(`${BASE}/admin/grants`));
@@ -531,7 +540,7 @@ export type HostPolicy = {
   allow_plain_http: boolean;
   allow_private_addresses: boolean;
   /** `[storage]`: how often the server sweeps (`"10m"`, `"off"`). */
-  storage?: { sweep_every: string };
+  storage?: { sweep_every: string; warn_at?: string };
 };
 
 export async function getPermissions(): Promise<HostPolicy> {

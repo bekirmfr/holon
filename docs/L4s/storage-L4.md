@@ -176,7 +176,7 @@ downgrade is refused with a reason, not misread.
    soaks' `notes` listing holds about 86 MB, `crunch` about 52 MB, and nothing bounds it: a
    deployment approved to keep 20,000 runs (the ceiling) of a 50 KB line would hold about 3.6 GB.
    See resilience-audit-L4.md, R8: fixed, a log on file keeps its newest 32 runs in memory.
-4. **`warn_at`** and the warnings.
+4. **`warn_at`** and the warnings. **Done**: `Threshold` (`85%` full, or `5G` free), set with `POST /admin/storage` and `holon policy --warn-at`; `storage::warnings` (a disk past it, with the flow that grew most between the store's counts; a cache that let go of something to fit at most looks of the last hour, counted by what each cache lets go of; sweeping off with the store past a tenth of its disk), looked at every 10 s and said once as each starts and ends; `GET /admin/warnings` for the terminal editor. The admin page's disk meter is red when its disk is warned of.
 5. **`full_at` and `when_full`**: `warn`, `pause` (and resuming), `roll`.
 6. **`backup` to a folder**: retention and `roll` export what they cut there first.
 7. **`backup` to object storage**; Holon Cloud named as coming.

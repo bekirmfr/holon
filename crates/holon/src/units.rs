@@ -315,6 +315,9 @@ struct Kept {
     tick: u64,
     closures: HashMap<Hash, KeptClosure>,
     units: HashMap<Hash, KeptUnit>,
+    /// How many closures it let go of to fit its budget, ever: the host's view tells a cache too
+    /// small by it (storage.rs).
+    evicted: u64,
 }
 
 struct KeptClosure {
@@ -339,7 +342,7 @@ impl Default for FlowCache {
 
 impl FlowCache {
     pub(crate) fn with_budget(budget: u64) -> FlowCache {
-        FlowCache(Mutex::new(Kept { budget, bytes: 0, tick: 0, closures: HashMap::new(), units: HashMap::new() }))
+        FlowCache(Mutex::new(Kept { budget, bytes: 0, tick: 0, closures: HashMap::new(), units: HashMap::new(), evicted: 0 }))
     }
 
     /// Keep at most `budget` bytes from now on, letting go of what no longer fits.
@@ -430,6 +433,11 @@ impl FlowCache {
         let kept = self.0.lock().unwrap();
         (kept.closures.len(), kept.bytes, kept.budget)
     }
+
+    /// How many closures it has let go of to fit its budget.
+    pub(crate) fn evicted(&self) -> u64 {
+        self.0.lock().unwrap().evicted
+    }
 }
 
 impl Kept {
@@ -440,6 +448,7 @@ impl Kept {
                 break;
             };
             let gone = self.closures.remove(&oldest).expect("it was just found");
+            self.evicted += 1;
             self.bytes -= gone.bytes;
             for hash in gone.loaded.0.units.keys() {
                 let unit = self.units.get_mut(hash).expect("a kept closure's units are kept");
@@ -624,6 +633,8 @@ const VALUE_CACHE_LARGEST: u64 = 1 << 20;
 pub(crate) struct ValueCache(Mutex<KeptValues>);
 
 struct KeptValues {
+    /// How many values it let go of to fit its budget, ever (the host's view, storage.rs).
+    evicted: u64,
     budget: u64,
     bytes: u64,
     tick: u64,
@@ -638,7 +649,7 @@ impl Default for ValueCache {
 
 impl ValueCache {
     pub(crate) fn with_budget(budget: u64) -> ValueCache {
-        ValueCache(Mutex::new(KeptValues { budget, bytes: 0, tick: 0, values: HashMap::new() }))
+        ValueCache(Mutex::new(KeptValues { evicted: 0, budget, bytes: 0, tick: 0, values: HashMap::new() }))
     }
 
     /// Keep at most `budget` bytes from now on (`holon serve --value-cache`), letting go of the
@@ -700,6 +711,7 @@ impl ValueCache {
                 }
                 kept.values.remove(&h);
                 kept.bytes -= n;
+                kept.evicted += 1;
             }
         }
     }
@@ -715,5 +727,10 @@ impl ValueCache {
     pub(crate) fn usage(&self) -> (usize, u64, u64) {
         let kept = self.0.lock().unwrap();
         (kept.values.len(), kept.bytes, kept.budget)
+    }
+
+    /// How many values it has let go of to fit its budget.
+    pub(crate) fn evicted(&self) -> u64 {
+        self.0.lock().unwrap().evicted
     }
 }

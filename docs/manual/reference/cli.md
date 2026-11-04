@@ -311,7 +311,7 @@ can't run, if it can't. Admins.
 ### `holon policy`
 
 ```
-holon policy [--reload] [--sweep-every 10m|off] [--json]
+holon policy [--reload] [--sweep-every 10m|off] [--warn-at 85%|5G] [--json]
 ```
 
 The host's policy: what it grants without asking, whether flows may call plain `http` or private
@@ -319,7 +319,9 @@ addresses, how often the server sweeps, and each limit's default and ceiling. `-
 policy file again and holds every deployment to it at once, saying which it no longer covers
 (those pause). Editors and admins reload. `--sweep-every` sets how often the server sweeps what
 nothing kept names (`90s`, `10m`, `2h`, `1d`, a minute at the least, or `off`), written into the
-policy file's [`[storage]`](server.md#the-policy); an admin's. See [The host's policy](../guides/deploying.md#the-hosts-policy).
+policy file's [`[storage]`](server.md#the-policy); an admin's. `--warn-at` sets when a disk is
+full enough to warn of: how full for the server (`85%`), or how much is left (`5G`); an admin's,
+written there too ([Warnings](server.md#warnings)). See [The host's policy](../guides/deploying.md#the-hosts-policy).
 
 ### `holon host`
 
@@ -327,7 +329,8 @@ policy file's [`[storage]`](server.md#the-policy); an admin's. See [The host's p
 holon host [--for SLUG] [--json] [--server PORT|URL]
 ```
 
-What the host holds: the server's memory and its caches against their sizes; each disk it keeps
+What the host warns of, first (each with what to do), then what it holds: the server's memory and
+its caches against their sizes; each disk it keeps
 things on and how full it is for the server; what it keeps there (the content store's values,
 the logs, the folders' kept texts, counted at start and after each round of sweeps, and what a
 crash left, removed once old); and how often it sweeps, when next, and what the last sweeps

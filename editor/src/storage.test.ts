@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { cacheLine, diskLine, holdsLines, isEvery, keptLines, reportLine, scheduleLine, sizeText, span } from "./storage";
+import { cacheLine, diskLine, holdsLines, isEvery, isThreshold, keptLines, reportLine, scheduleLine, sizeText, span } from "./storage";
 
 const at = 1_000_000_000_000;
 const report = { at_ms: at, took_ms: 50_500, removed: 137962, bytes: 60_293_120, skipped: false, error: null };
@@ -72,5 +72,12 @@ describe("what one flow holds", () => {
       "60 MiB on disk: its log 56 MiB (1130 lines), its states 1234 values, 4 MiB (as the store's last sweep found, 2 min ago)",
     ]);
     expect(holdsLines({ ...h, store: null, shares_at_ms: null, flow_cache: null }, at)[1]).toContain("not counted yet");
+  });
+});
+
+describe("when the host warns", () => {
+  it("takes what the server takes", () => {
+    for (const t of ["85%", "1%", "99%", "5G", "500M", "1.5T", " 90 % "]) expect(isThreshold(t)).toBe(true);
+    for (const t of ["0%", "100%", "5", "lots", "-1G", "0G", ""]) expect(isThreshold(t)).toBe(false);
   });
 });

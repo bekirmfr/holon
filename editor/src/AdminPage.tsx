@@ -34,6 +34,7 @@ import {
   sweepStore,
   getHost,
   setSweepEvery,
+  setStorage,
   type HostView,
   unbindDatabase,
   unbindFolder,
@@ -50,7 +51,7 @@ import {
   type SecretInfo,
   type TokenEntry,
 } from "./server";
-import { cacheLine, diskFull, diskLine, holdsLines, isEvery, keptLines, reportLine, scheduleLine, sizeText } from "./storage";
+import { cacheLine, diskFull, diskLine, holdsLines, isEvery, isThreshold, keptLines, reportLine, scheduleLine, sizeText } from "./storage";
 import { useDialog } from "./Dialog";
 import { FolderPicker } from "./FolderPicker";
 import { ActivityList } from "./Pages";
@@ -137,6 +138,7 @@ export function AdminPage({ me, onOpenDeployment }: { me: string; onOpenDeployme
   const [host, setHost] = useState<HostView | null>(null);
   const sweeps = host?.sweeps ?? null;
   const [everyDraft, setEveryDraft] = useState("");
+  const [warnDraft, setWarnDraft] = useState("");
   const [kind, setKind] = useState("everything");
   const [version, setVersion] = useState(0);
 
@@ -153,6 +155,7 @@ export function AdminPage({ me, onOpenDeployment }: { me: string; onOpenDeployme
         setHost(h);
         // What the admin is typing stays: a refresh only fills the field when it is empty.
         setEveryDraft((d) => d || h.sweeps.every);
+        setWarnDraft((d) => d || h.warn_at);
       })
       .catch((e: unknown) => setMsg(messageOf(e)));
     getOidcSettings()
@@ -742,6 +745,16 @@ export function AdminPage({ me, onOpenDeployment }: { me: string; onOpenDeployme
           {host && (
             <>
               <div style={head}>the host</div>
+              {host.warnings.length > 0 && (
+                <div role="alert" aria-label="what the host warns of" style={{ ...row, flexDirection: "column", alignItems: "stretch", gap: 4, borderColor: "#e5484d" }}>
+                  {host.warnings.map((w) => (
+                    <div key={w.key}>
+                      <div style={{ color: "#ffb3b5" }}>⚠ {w.says}</div>
+                      <div style={quiet}>{w.todo}</div>
+                    </div>
+                  ))}
+                </div>
+              )}
               <div style={about}>
                 What this server holds: its memory, each disk it keeps things on, and what it keeps there. The store and the file texts are counted when the
                 server starts and after each round of sweeps; the rest is read now. The same as <code>holon host</code>.
@@ -757,7 +770,7 @@ export function AdminPage({ me, onOpenDeployment }: { me: string; onOpenDeployme
                 <div key={d.path} style={{ ...row, flexDirection: "column", alignItems: "stretch", gap: 4 }} title={d.path}>
                   <div>disk: {diskLine(d)}</div>
                   <div role="meter" aria-label={`disk ${d.path} in use`} aria-valuenow={diskFull(d)} aria-valuemin={0} aria-valuemax={100} style={{ height: 6, background: "#1b2a45", borderRadius: 3 }}>
-                    <div style={{ width: `${diskFull(d)}%`, height: "100%", borderRadius: 3, background: diskFull(d) >= 95 ? "#e5484d" : diskFull(d) >= 85 ? "#f5a524" : "#3b82f6" }} />
+                    <div style={{ width: `${diskFull(d)}%`, height: "100%", borderRadius: 3, background: host.warnings.some((w) => w.key === `disk:${d.path}`) ? "#e5484d" : "#3b82f6" }} />
                   </div>
                 </div>
               ))}
@@ -780,6 +793,30 @@ export function AdminPage({ me, onOpenDeployment }: { me: string; onOpenDeployme
                   })}
                 </div>
               )}
+              <form
+                style={row}
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  act(async () => {
+                    const set = await setStorage({ warn_at: warnDraft.trim() });
+                    setHost((h) => (h ? { ...h, warn_at: warnDraft.trim(), sweeps: set.sweeps, warnings: set.warnings } : h));
+                  });
+                }}
+              >
+                <span style={{ flex: 1 }}>
+                  it warns when a disk is <span style={quiet}>· {host.warn_at.endsWith("%") ? `${host.warn_at} full for the server` : `down to ${host.warn_at} free`}</span>
+                </span>
+                <input
+                  aria-label="when the host warns its disk is full"
+                  title="how full for the server (85%), or how much is left (5G, 500M, 1T); written into the server's holon.toml [storage]"
+                  value={warnDraft}
+                  onChange={(e) => setWarnDraft(e.target.value)}
+                  style={{ ...input, width: 80 }}
+                />
+                <button type="submit" style={small} disabled={!isThreshold(warnDraft) || warnDraft.trim() === host.warn_at}>
+                  set
+                </button>
+              </form>
               <div style={{ ...row, flexDirection: "column", alignItems: "stretch", gap: 4 }}>
                 {keptLines(host.kept, Date.now()).map((l, i) => (
                   <div key={l} style={i === 0 ? quiet : undefined}>
