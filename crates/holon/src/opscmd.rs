@@ -37,8 +37,9 @@ const LIFECYCLE_USAGE: &str = "usage: holon run <slug> [--fresh | --session N]
     --session N            from the state session N left (holon state <slug> --sessions)
   pause                    hold its runs; its state is kept
   stop                     end it; run starts it again
-  remove                   delete a stopped deployment and forget its secrets; its runs' log
-                           stays on disk. --yes says you mean it
+  remove                   delete a stopped deployment for good: its runs' log, its timeline,
+                           its state and its secrets (holon export keeps its runs first).
+                           --yes says you mean it
 
 examples:
   holon pause shop
@@ -270,7 +271,7 @@ pub(crate) fn lifecycle(action: &str, args: &[String]) -> i32 {
         }
         "remove" => {
             if !args.flag("--yes") {
-                eprintln!("{who}: this deletes {slug:?} and forgets its secrets; its runs' log stays on disk. Run it again with --yes to go ahead.");
+                eprintln!("{who}: this deletes {slug:?} for good: its runs' log, its timeline, its state and its secrets (holon export {slug} keeps its runs first). Run it again with --yes to go ahead.");
                 return 2;
             }
             cmdline::json(&who, &args, "DELETE", &path, None)

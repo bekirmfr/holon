@@ -863,7 +863,7 @@ pub(crate) fn handle_delete_deployment(
             persist_deployments(deployments_path, deployments);
             Response::json(&deployment_entry(slug, &dep))
         }
-        None => Response::empty_404(),
+        None => err(404, format!("no deployment {slug:?}")),
     }
 }
 

@@ -690,7 +690,9 @@ fn delete_deployment_stops_future_clock_ticks() {
 #[test]
 fn delete_unknown_deployment_is_404() {
     let state = test_state();
-    assert_eq!(route(&state, &req("DELETE", "/deployments/nope", vec![])).status_code, 404);
+    let answer = route(&state, &req("DELETE", "/deployments/nope", vec![]));
+    assert_eq!(answer.status_code, 404);
+    assert_eq!(body_json(answer)["error"], "no deployment \"nope\"", "it says why, for holon remove to print");
 }
 
 // ── capability-consent ───────────────────────────────────────────────────────────────

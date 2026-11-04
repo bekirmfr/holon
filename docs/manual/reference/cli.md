@@ -234,8 +234,9 @@ holon remove <slug> --yes
 
 `run` starts a paused or stopped deployment again, from its latest state, from none (`--fresh`),
 or from the state session N left (`holon state <slug> --sessions` lists them). `pause` holds its
-runs, its state kept; `stop` ends its session. `remove` deletes a stopped deployment and forgets
-its secrets; its runs' log stays on disk. Editors and admins.
+runs, its state kept; `stop` ends its session. `remove` deletes a stopped deployment for good:
+its runs' log, its timeline, its state and its secrets (`holon export` first keeps its runs).
+Editors and admins.
 
 ### `holon call`
 
