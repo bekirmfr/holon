@@ -3,8 +3,9 @@
 # A clock flow that beats every second and keeps only its newest 5 runs, none older than a day:
 # its keep line says how long the deployment's log keeps its runs (the deploy settings' keep_runs
 # and keep_run_days), and keeping fewer than the host's default asks nobody. Its state still
-# counts every beat. The states its cut runs left stay in the store until an admin's holon store
-# sweep clears what nothing kept names.
+# counts every beat. The states its cut runs left stay in the store until a sweep clears what
+# nothing kept names: the server's own (holon.toml's [storage] sweep_every, ten minutes unless
+# said), or an admin's holon store sweep.
 #
 # Try it: deploy it and wait a few seconds: view mode's runs list holds the newest 5 (or
 # holon history rolling-log), their seqs climbing, while the state counts every beat. Then

@@ -370,7 +370,7 @@ fn fire_one_arrival(
     let Value::Record(mut handle) = handle else { return };
     handle.insert("event".to_string(), Value::Text(event.name().to_string()));
     let handle = Value::Record(handle);
-    let resolver = match materialize_closure(store, unit_hash) {
+    let resolver = match closure(store, unit_hash) {
         Ok(r) => r,
         Err(e) => {
             eprintln!("new file [{slug}]: store error while materializing closure: {e:?}");
@@ -404,12 +404,16 @@ fn fire_one_arrival(
         Err(e) => entry.error = Some(e),
     }
     let parked_any = !entry.parked.is_empty();
-    log_run(deployments, slug, entry, Redactor::tokens(&waits.tokens));
+    if let Some(l) = log_run(deployments, slug, entry, Redactor::tokens(&waits.tokens), handler.map_or_else(Default::default, |h| h.log)) {
+        l.said(slug);
+    }
     let which = label.as_ref().map(|l| format!(" {l}")).unwrap_or_default();
     println!("{} file [{slug}]{which} {folder}/{name}: {} effect(s) performed", event.name(), run.performed.len());
     record_trigger(deployments, slug, false);
-    if state.is_some() || parked_any {
-        persist_deployments(deployments_path, deployments, store);
+    // The state is kept by its head, written as the change landed (claims.rs); the deployments
+    // file changes only with the deployment's definition, here its waiting runs.
+    if parked_any {
+        persist_deployments(deployments_path, deployments);
     }
 }
 

@@ -182,8 +182,8 @@ Points are kept as long as the timeline keeps their entries.
   ceiling (20000 runs, ten years) is refused. A grant lowered later holds the log at once. A run
   past it is cut from the front of the file, which keeps its newest line so numbering and the
   chain go on; the chain checks from the oldest kept, and a witness hears a `trim` (heads.rs).
-- **Sweeping the states no kept entry names** (built, an admin's: `holon store sweep`,
-  `POST /admin/store/sweep`, sweep.rs). A run cut by retention leaves its snapshot and the values
+- **Sweeping the states no kept entry names** (built: the server's own every ten minutes, and an
+  admin's, `holon store sweep`, `POST /admin/store/sweep`, sweep.rs). A run cut by retention leaves its snapshot and the values
   only it changed in the content store; a sweep removes every value nothing kept names, directly
   or through another value. Kept: each deployment's live state, its sessions, its versions (their
   documents and states), its events, its waiting runs and every line its log's file holds (up to twice

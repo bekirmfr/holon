@@ -122,7 +122,7 @@ pub(crate) fn fire_one_clock_tick(
     clock: Option<&Clock>,
     now: SystemTime,
 ) {
-    let resolver = match materialize_closure(store, unit_hash) {
+    let resolver = match closure(store, unit_hash) {
         Ok(r) => r,
         Err(e) => {
             eprintln!("clock tick [{slug}]: store error while materializing closure: {e:?}");
@@ -144,7 +144,6 @@ pub(crate) fn fire_one_clock_tick(
         (Capability::Clock, Value::Number(epoch_seconds as f64)),
         (Capability::Random, Value::Number(rand::random::<f64>())),
     ];
-    let is_state = state.is_some();
     let started = started_now();
     let (folders, channels) = deployments.lock().unwrap().get(&slug).map(|d| (Arc::clone(&d.folders), Arc::clone(&d.channels))).unzip();
     let mut waits = RunWaits { folders, channels, slug: Some(slug.clone()), ..Default::default() };
@@ -157,7 +156,10 @@ pub(crate) fn fire_one_clock_tick(
         Err(e) => entry.error = Some(e),
     }
     let parked_any = !entry.parked.is_empty();
-    log_run(deployments, &slug, entry, Redactor::tokens(&waits.tokens));
+    // A whole flow on its interval is strict; a server's clock is as its line says.
+    if let Some(l) = log_run(deployments, &slug, entry, Redactor::tokens(&waits.tokens), clock.map_or_else(Default::default, |c| c.log)) {
+        l.said(&slug);
+    }
 
     // What it produced isn't printed: a secret or a resume token in it would land in the server's
     // console, which nothing redacts.
@@ -193,8 +195,10 @@ pub(crate) fn fire_one_clock_tick(
             }
         }
     }
-    if is_state || parked_any {
-        persist_deployments(deployments_path, deployments, store);
+    // The state is kept by its head, written as the change landed (claims.rs); the deployments
+    // file changes only with the deployment's definition, here its waiting runs.
+    if parked_any {
+        persist_deployments(deployments_path, deployments);
     }
 }
 

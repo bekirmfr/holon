@@ -96,10 +96,36 @@ pub(crate) fn handle_get_export(
             Some(Err(_)) => return err(400, "max_files_bytes is a number of bytes"),
         }
     };
-    let (lines, head, redactor, events, events_head) = match deployments.lock().unwrap().get(slug) {
-        Some(dep) => (dep.log.lines(), dep.log.head().to_string(), crate::secrets::Redactor::of(&dep.secrets), dep.events.lines(), dep.events.head().to_string()),
+    let (log, redactor, events, events_head) = match deployments.lock().unwrap().get(slug) {
+        Some(dep) => (std::sync::Arc::clone(&dep.log), crate::secrets::Redactor::of(&dep.secrets), dep.events.lines(), dep.events.head().to_string()),
         None => return err(404, format!("no deployment {slug:?}")),
     };
+    // The lines and their head under one lock, so the export's chain ends at its head.
+    let (lines, head) = log.with(|log| (log.lines(), log.head().to_string()));
+    match export_of(store, folders, Some(&redactor), slug, lines, head, events, events_head, budget) {
+        Ok(export) => Response::json(&export).with_additional_header("Content-Disposition", format!("attachment; filename=\"{slug}-runs.json\"")),
+        Err(e) => err(500, e),
+    }
+}
+
+/// An export of `lines` (a log's, as written), ending at `head`: every unit their runs ran, from
+/// the store, and the file texts they read that the server keeps, up to `budget` bytes of them
+/// (none holding one of the deployment's secrets, `redactor`'s; none at all without it). What
+/// `GET /deployments/<slug>/export` answers, and what a backup of the runs a log lets go of is
+/// (storage.rs).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn export_of(
+    store: &SharedStore,
+    folders: &folders::Folders,
+    redactor: Option<&crate::secrets::Redactor>,
+    slug: &str,
+    lines: Vec<String>,
+    head: String,
+    events: Vec<String>,
+    events_head: String,
+    budget: u64,
+) -> Result<Export, String> {
+    let budget = if redactor.is_some() { budget } else { 0 };
     let mut units = BTreeMap::new();
     let entries: Vec<LogEntry> = lines.iter().filter_map(|l| serde_json::from_str::<LogEntry>(l).ok()).collect();
     let mut blobs = BTreeMap::new();
@@ -112,7 +138,7 @@ pub(crate) fn handle_get_export(
         match folders::kept_text(folders, store, blob) {
             // A text holding one of the deployment's secrets isn't shipped: it is as if the
             // server didn't keep it, and verify asks for the file instead.
-            Ok(Some(text)) if redactor.holds(&text) => not_kept += 1,
+            Ok(Some(text)) if redactor.is_none_or(|r| r.holds(&text)) => not_kept += 1,
             Ok(Some(text)) => {
                 let size = text.len() as u64;
                 if held.saturating_add(size) > budget {
@@ -124,7 +150,7 @@ pub(crate) fn handle_get_export(
                 blobs.insert(blob.clone(), text);
             }
             Ok(None) => not_kept += 1,
-            Err(e) => return err(500, e),
+            Err(e) => return Err(e),
         }
     }
     let mut queue: Vec<Hash> = entries.iter().filter_map(|e| parse_hash(&e.unit)).collect();
@@ -136,7 +162,7 @@ pub(crate) fn handle_get_export(
         let unit = match store.get(&h) {
             Ok(Some(unit)) => unit,
             Ok(None) => continue,
-            Err(e) => return err(500, format!("store error: {e:?}")),
+            Err(e) => return Err(format!("store error: {e:?}")),
         };
         queue.extend(child_refs(&unit));
         if let Ok(bytes) = encode_preimage(&unit) {
@@ -144,7 +170,7 @@ pub(crate) fn handle_get_export(
         }
     }
     let files_left_out = (left_out.files > 0).then_some(left_out);
-    let export = Export {
+    Ok(Export {
         export: FORMAT.into(),
         deployment: slug.into(),
         head,
@@ -155,12 +181,24 @@ pub(crate) fn handle_get_export(
         files_not_kept: not_kept,
         events,
         events_head,
+    })
+}
+
+/// An export from its file: as written, or gzipped (a backup's, storage.rs).
+pub(crate) fn read_export(path: &Path) -> Result<Export, String> {
+    let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
+    let text = if bytes.starts_with(&[0x1f, 0x8b]) {
+        let mut text = String::new();
+        std::io::Read::read_to_string(&mut flate2::read::GzDecoder::new(&bytes[..]), &mut text).map_err(|e| format!("it is gzipped, but: {e}"))?;
+        text
+    } else {
+        String::from_utf8(bytes).map_err(|e| e.to_string())?
     };
-    Response::json(&export).with_additional_header("Content-Disposition", format!("attachment; filename=\"{slug}-runs.json\""))
+    serde_json::from_str(&text).map_err(|e| e.to_string())
 }
 
 fn hex_of(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
+    holon_core::hex(bytes)
 }
 
 fn bytes_of(hex: &str) -> Option<Vec<u8>> {
@@ -992,7 +1030,7 @@ impl Observer for Asserting {
     fn failed(&mut self, path: &[u32], reason: &str) {
         self.timer.failed(path, reason)
     }
-    fn asserted(&mut self, path: &[u32], unit: &holon_core::Unit, inputs: &[Option<Value>]) -> Option<Vec<Option<Value>>> {
+    fn asserted(&mut self, path: &[u32], unit: &holon_core::Unit, inputs: &[Option<&Value>]) -> Option<Vec<Option<Value>>> {
         if matches!(unit.body, holon_core::UnitBody::Composite { .. }) || !inputs.iter().flatten().any(|v| self.marks.carried(v)) {
             return None;
         }
@@ -1163,7 +1201,7 @@ pub(crate) fn run(args: &[String]) -> i32 {
         eprintln!("{USAGE}");
         return 2;
     };
-    let export: Export = match std::fs::read_to_string(&file).map_err(|e| e.to_string()).and_then(|t| serde_json::from_str(&t).map_err(|e| e.to_string())) {
+    let export: Export = match read_export(Path::new(&file)) {
         Ok(e) => e,
         Err(e) => {
             eprintln!("holon verify: can't read {file}: {e}");
@@ -1441,9 +1479,10 @@ pub(crate) fn export(args: &[String]) -> i32 {
             return 1;
         }
     };
+    // Its owner's only, as the log it is a copy of.
     let written = match out.parent().filter(|d| !d.as_os_str().is_empty()) {
-        Some(dir) => std::fs::create_dir_all(dir).and_then(|()| std::fs::write(&out, &body)),
-        None => std::fs::write(&out, &body),
+        Some(dir) => std::fs::create_dir_all(dir).and_then(|()| holon_host::write_atomically(&out, body.as_bytes())),
+        None => holon_host::write_atomically(&out, body.as_bytes()),
     };
     if let Err(e) = written {
         eprintln!("holon export: can't write {}: {e}", out.display());

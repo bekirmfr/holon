@@ -45,7 +45,9 @@ pub fn mistakes(source: &str) -> Vec<Mistake> {
     let mut store = MapResolver::new();
     text::restore(&compiled.doc, &mut store, &Names::new());
     let span = flow_span(source);
-    commands::problems(&compiled, &mut store).into_iter().map(|message| Mistake { span, message }).collect()
+    // A problem that is one node's (a handler that can't be lazy, say) at that node; the rest at
+    // the `flow` header.
+    commands::problems(&compiled, &mut store).into_iter().map(|(message, at)| Mistake { span: at.unwrap_or(span), message }).collect()
 }
 
 /// The text in the canonical form, as `holon fmt` writes it; or why it can't be.

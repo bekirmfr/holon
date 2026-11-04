@@ -16,8 +16,10 @@ agents or by people. Before a flow runs, and every time it runs:
 - **It runs only that.** The host's policy sets what may ever be granted, and a person approves
   what a deployment may do. An effect outside the grant is refused when a run tries it, whatever
   the flow says. A grant can be narrowed while the flow runs.
-- **It keeps a record of every run.** The request, the state it read, the clock, randomness and
-  every response it got, with the version and grant it ran under. Evaluation is pure, so a run
+- **It keeps a record of every run,** on disk before it answers, except handlers a person
+  approved as unrecorded, which change nothing (their runs are counted, failed or not).
+  The request, the state it read, the clock, randomness and every response it got, with the
+  version and grant it ran under. Evaluation is pure, so a run
   replays exactly, node by node, and anyone can check a deployment's runs offline. The record
   is a hash chain, so a run changed or taken out afterwards shows.
 
@@ -352,6 +354,8 @@ Design documents:
 - [`docs/LANGUAGE.md`](docs/LANGUAGE.md): the language, by example and in full.
 - [`docs/PLATFORM_LAYOUT.md`](docs/PLATFORM_LAYOUT.md): the runtime (permissions, effects,
   durable runs, the run record) and the plan.
+- [`docs/engineering/`](docs/engineering/README.md): why it is the way it is: performance,
+  resilience, testing, measuring and the lessons learned, with their numbers and limits.
 - [`docs/L4s/`](docs/L4s): a design note per feature, with what was built.
 - [`docs/README.md`](docs/README.md): which documents are current.
 

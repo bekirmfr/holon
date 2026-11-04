@@ -376,7 +376,7 @@ impl FlowBuilder {
             if let Some(entry) = crate::modules::entry_of(unit, &crate::to_hex(&h)) {
                 modules.push(entry);
             } else if let Ok(bytes) = encode_preimage(unit) {
-                units.push(bytes.iter().map(|b| format!("{b:02x}")).collect());
+                units.push(holon_core::hex(bytes));
             }
         }
         FlowDocument {

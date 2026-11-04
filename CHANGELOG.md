@@ -2,6 +2,153 @@
 
 ## Unreleased
 
+- **Signing in through an identity provider needs a verified email.** An account is matched by
+  its email, so an ID token's email is taken only when the provider says it verified it
+  (`email_verified` true); before, one was taken unless the provider said it wasn't, and a
+  provider that lets a person type any email signed them in as whoever had it. A token that
+  doesn't say signs no one in, and the refusal says why.
+- **The setup code can't be guessed.** Five wrong setup codes in a row refuse setting up for a
+  minute, as five wrong passwords lock a name; before, a server waiting for its first admin
+  checked codes as fast as they came.
+- **What the server keeps is its own.** Every file it writes is readable by its owner only
+  (`0600`), whatever the umask: the content store's units and values, the packs, the kept file
+  texts, the flows, the activity log, the witness's queue, the backup's batches and exports, and
+  `holon export`'s file joined what was owner-only already (accounts, secrets, logs, the
+  deployments). The data folder and the store's folders it makes are `0700`. A data folder there
+  already that other users may read is said at start, with the `chmod 700` that makes it yours
+  alone; the server doesn't change it.
+- **No folder may be the server's state.** With the data folder outside `~/.holon`, an admin could
+  bind the folder of state heads beside the deployments file (`deployments.state/`), and a flow
+  given it read-write could rewrite another deployment's state; it is refused now, as the logs'
+  folder was, and so are the arrivals, the heads, the activity log and the secrets' audit.
+- **A waiting run is always sealed on disk.** What it keeps that may hold a secret (the request
+  that started it, the requests it made) is sealed in the deployments file under the secrets key;
+  but once a deployment's secrets were read again (one set, or a source refreshed) its vault lost
+  the key, and waiting runs were written in the clear from then on. They are sealed now whatever
+  happened to the vault, and with `--secrets :memory:` under a key never kept (so after a restart
+  such a run says it can't be opened, as its secrets are gone too).
+- **A flow's file stays in its folder, whatever else writes there.** On Linux a file name is walked
+  to a part at a time with no link followed, and the file is read or written through its folder as
+  opened, so a program that can write in a bound folder can't swap in a link, between the check
+  and the write, that leads the server outside it; and a write no longer makes folders on its way
+  before checking where they are. A link inside a folder isn't followed now, even to inside it
+  (elsewhere than Linux, one inside it still is).
+- **A flow's port answers only its address, localhost, or a name it was given.** A web page whose
+  name was pointed at your machine (DNS rebinding) could call a flow on 127.0.0.1 and read its
+  answers as its own; a request under any other name now answers 421, saying what to do. **A
+  proxy that forwards the name it was reached by** (Caddy and nginx do) **needs the name given**:
+  `holon serve --allow-host hooks.example.com`, as the control plane already did, or the proxy
+  told to send the address (`header_up Host {upstream_hostport}`); a tunnel likewise
+  (`cloudflared … --http-host-header 127.0.0.1`). [Public HTTPS](docs/manual/guides/public-https.md)
+  says how.
+- **A flood of requests or sign-ins can't take the server down.** Five wrong passwords lock a
+  name for the address they came from only, so someone who knows a name can't keep its owner
+  out; tries under ever new names are forgotten after a minute. A few passwords are checked at
+  once, on threads kept for it (each check takes 19 MiB): 600 sign-ins sent 200 at a time left
+  the server at 178 MB, where running each on its request's thread left it near 1 GB. Past 512
+  requests being answered at once, one more is answered 503 at once.
+- **Every run's record is on disk before its answer.** A run of a route, clock, file handler or
+  action is answered (or counts as done) once its log entry is synced, not only written: an
+  answered run is recorded, a power loss or not. Runs at once share the sync. A handler that only
+  reads and answers may say `lazy` on its line (`route GET /notes (req) lazy { … }`) to be synced
+  within a second instead, as every run was before, and faster for it; one that writes, calls out
+  or waits can't, and `holon check` says why at the line. Requests no route took are lazy. A run
+  whose record couldn't be written or synced is answered with a 500. New sample:
+  `status-board`; `notes-api` and `orders-api` list lazily.
+- **A handler can keep its runs out of the log.** `unrecorded` on a handler's line (`route GET
+  /health (req) unrecorded { … }`), for one that only reads and answers, asks for
+  `Unrecorded("GET /health")` at deploy: "keep runs of GET /health out of its log, failed or not
+  (they are counted)". Approved, its runs leave no entry, failed or not, and are counted instead
+  (runs, failures, time, the last one, and the last failure's status and error, never its request),
+  shown where its runs would be in view mode, the deployment card, the terminal editor and `holon
+  history`. A failed one isn't run again; to see why it fails, make it `lazy` for a while. Taken
+  back, its next run is recorded and the flow runs on. A host can refuse it whole with `[grants]
+  allow_unrecorded = false`. `holon check` says it, and an agent's `call` says a run was counted,
+  not logged. `status-board` shows it.
+- **A slow deployment no longer slows the others.** A request runs on the data plane's own
+  worker only when its run can never wait: an unrecorded handler that reads only its request, the
+  clock and random numbers, its flow in memory. Any other runs on the blocking pool, where waiting
+  holds up nothing else: a lazy handler (it appends to its log), one reading state, a collection or
+  a secret (behind a lock a writer holds while it syncs to disk). Before, a deployment whose reads
+  waited on its log or on a write's sync could slow every other deployment's routes a hundredfold.
+  A run that panics there is answered 500, as on the pool, not dropped.
+- **The caches keep to their sizes in memory.** `--flow-cache` and the new `--value-cache` (or
+  `HOLON_VALUE_CACHE`, default 64M) count what a loaded flow or a read value takes in memory, not its
+  encoding: measured, a server of flows without a js node held about 8 times its `--flow-cache`,
+  and the value cache about 3 times its 64 MiB. Each now keeps a little less than its size, never
+  more.
+- **The host says what it holds.** `holon host`, the admin page's **the host** and the terminal
+  editor's admin view: the server's memory and its caches against their sizes; each disk it keeps
+  things on, how full it is for the server (a quota counts) and what it keeps there; the content
+  store's values and the disk they take, the logs and the folders' kept texts (counted at start
+  and after each round of sweeps); and the sweeps (`GET /admin/host`).
+- **Logs seal their older runs, gzipped.** A log keeps its newest 128 runs in its file as
+  written, as before, and the older ones it keeps in segments beside it,
+  `deployments.logs/<slug>.sealed/<first>-<last>.jsonl.gz`, sealed as it cuts back; a whole
+  segment goes once none of its runs is kept (to the backup first, when there is one). The
+  soaks' logs went from 192 MB to 37 MB on start; runs, pages, exports and `holon verify` read
+  them as before. A log keeping no more than 128 runs seals nothing.
+- **The store packs its long-lived values.** Each value was a file of its own, a 358-byte one
+  taking a 4 KiB block, and a store writing state left thousands. The server's own sweep now
+  moves the values it keeps, once an hour old, into packs deflated together, removing their files:
+  a copy of the soaks' store went from 140,026 files and 562 MB on disk to one pack of 1 MiB.
+  Packed values read back faster than files did (no value cache: 811–825 requests a second
+  against 636–672), keeping up to 8 MiB of inflated blocks; what nothing names any more is swept
+  from the pack. `holon host` says what is packed.
+- **The runs a log lets go of can be backed up, compressed.** With `[storage] backup` set to a
+  folder (an external drive, a cloud client's synced folder), the runs a log cuts back are
+  written there first and made into gzipped exports `holon verify` checks (it reads `.json.gz`
+  as it reads `.json`): about 360 bytes a run for a small route, 13 to 30 times smaller than the
+  log's lines. A backup that can't be written to keeps the runs in the log, and the host warns.
+  Every file the server writes there starts with `holon-archive-`, and whatever else the folder
+  holds is left alone: only the server's own batches are exported and removed. Set on the admin page or with `holon policy --backup`.
+- **An admin chooses what happens when the disk fills.** Past `[storage] full_at` (`95%` unless
+  said), `when_full` is `warn` (the default: nothing changes), `pause` (every flow that records
+  runs is paused by the host, and resumed once there is room; unrecorded ones go on) or `roll`
+  (the biggest log on disk is cut to half its runs every ten seconds, never below 20, and the
+  store swept; each keeps its runs as granted again once there is room). Each on the flow's
+  timeline. Set on the admin page or with `holon policy --full-at --when-full`.
+- **The host warns before its disk fills.** Past `[storage] warn_at` (`85%` full for the server
+  unless said, or space left: `5G`), a disk is warned of with what to do and the flow growing
+  fastest; so is a cache at its size most of the last hour, and sweeping off while the store
+  takes a tenth of its disk. First on the admin page, on the home page for admins, in `holon host`
+  and the terminal editor; once in the server's log and its activity. Set it from the admin page
+  or with `holon policy --warn-at`.
+- **A deployment's log keeps only its newest runs in memory.** It kept every run it keeps (500 by
+  default) in memory, whole, beside its file: 1.1 to 3.6 times their lines, counted by no cache's
+  size. Now it keeps its newest 32 there and reads older ones from its file when a page asks,
+  without holding up its runs. A server on the soaks' data folder starts in 39 MB instead of 320,
+  and answers faster for it (the `notes` listing 1,258–1,934 → 2,368–2,390 requests a second).
+- **Each flow says what it holds.** In memory, its log's kept runs, its live state and its flow in
+  the cache; on disk, its log's file and its states and file texts in the store (as the store's
+  last sweep found them). A row each on the admin page and in `holon host`, the most first; a
+  **holds** fold on its card on the deployed page; on its page in the terminal editor; `holon host
+  --for SLUG`; `GET /deployments/<slug>/holds`.
+- **What a crash left is cleared.** A server stopped in the middle of a write (each is made aside,
+  then renamed over) left its temporary file behind for good: a copy of the soaks' data folder
+  held 60 MB of them. The server now removes them once they are older than any write takes, and
+  says so.
+- **How often the server sweeps is a setting.** `[storage] sweep_every` in `holon.toml` (`10m` by
+  default, a minute at the least, or `off`), set from the admin page or with `holon policy
+  --sweep-every`, covers both sweeps: the content store's and the folders' kept file texts. The
+  admin page, the terminal editor and `holon policy` say how often, when the next is due and what
+  the last of each removed.
+- **The server sweeps its content store on its own.** Every ten minutes it removes the values
+  nothing kept names, as `holon store sweep` does (an hour after they were put, as before), and
+  logs what it freed in its activity. Before, only an admin's sweep did: a server writing state
+  filled its disk, by about 5 GB an hour at 50 writes a second. A sweep is skipped when nothing
+  was put since the last one and it spared nothing, and paces what it removes (at most about
+  2,500 values a second), so a deployment's runs lose 7–12% while it runs, not two thirds. An
+  admin's `holon store sweep` still removes as fast as it can.
+- **Sweeps no longer hold up a deployment's runs.** The sweeps of file texts and of the store
+  read each log's file a line at a time with its lock released, instead of whole while holding
+  it: a 60 MB log held up the deployment's runs while it was read. The file texts' sweep is
+  skipped when there is nothing it could remove (no folder keeps texts), and parses only the
+  lines that name one.
+- **No run waits while its log is cut back.** A log's file is cut back to what it keeps by the
+  periodic sync, with its lock released for all but the last few lines, instead of by the run that
+  found it full, holding the lock: no run waits the 100–150 ms a large log's cut-back takes. The
+  directory is synced after the file is replaced, so a crash can't bring back the file it replaced.
 - **`chess`: a Sphinx that doesn't answer in time keeps its turn.** When its move call times out,
   the rules no longer play for it at once: the page says so and offers Try again (ask it once
   more) or Let the rules play. While its turn waits, `POST /move` takes only `again` or `rules`,

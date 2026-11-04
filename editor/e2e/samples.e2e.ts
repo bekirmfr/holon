@@ -25,6 +25,25 @@ async function openSample(page: Page, title: string, reload = true) {
   await expect(page.locator(".hl-tab--active")).toBeVisible();
 }
 
+/** Wait until `locator` stops moving: its box the same over two reads 100 ms apart. An overlay
+ *  fits its view again a moment after it opens (CompositeOverlay.tsx, 240 ms then 200 ms of
+ *  animation), and a drag begun meanwhile aims at where a handle a few pixels wide was, and
+ *  misses it. */
+async function still(locator: Locator) {
+  let last = "";
+  await expect
+    .poll(
+      async () => {
+        const now = JSON.stringify(await locator.boundingBox());
+        const same = now === last;
+        last = now;
+        return same;
+      },
+      { intervals: [100], timeout: 5_000 },
+    )
+    .toBe(true);
+}
+
 /** Open the deployment settings panel if it is closed. */
 async function openDeployPanel(page: Page) {
   const panel = page.getByRole("complementary", { name: "Deployment settings" });
@@ -437,7 +456,11 @@ test("a port added inside a holon takes its first wire's type, and the flow's no
   await expect(stamp).toHaveAttribute("title", /^any/);
   // Wired from the clock: it's a number now.
   const clockOut = overlay.locator(".react-flow__node", { hasText: "clock" }).locator(".react-flow__handle.source");
-  await clockOut.dragTo(outputs.locator('.react-flow__handle[data-handleid="stamp"]'));
+  const stampIn = outputs.locator('.react-flow__handle[data-handleid="stamp"]');
+  // Once the overlay has stopped fitting its view: both handles where they will stay.
+  await still(clockOut);
+  await still(stampIn);
+  await clockOut.dragTo(stampIn);
   await expect(stamp).toHaveAttribute("title", /^number/);
   await overlay.getByRole("button", { name: "apply" }).click();
   await expect(overlay).toContainText("applied");
@@ -1451,6 +1474,53 @@ test("rolling-log keeps only its newest 5 runs, as its deploy settings ask, whil
     await asks.getByRole("button", { name: "Cancel" }).click();
   }
   expect((await dryRun()).kept.values).toBeGreaterThan(0);
+  // What the host holds: its memory and caches, each disk it keeps things on and how full, and
+  // what it keeps there.
+  await expect(page.getByText(/^memory: \d/)).toBeVisible();
+  await expect(page.getByText(/^flow cache: \d+ flows, .* of 256 MiB/)).toBeVisible();
+  await expect(page.getByText(/^disk: \d+% full: .* free of .* in use\): data, /).first()).toBeVisible();
+  await expect(page.getByRole("meter").first()).toBeVisible();
+  // And what each flow holds, a row each: this one among them.
+  await expect(page.getByLabel("what each flow holds").getByText("rolling-log", { exact: true })).toBeVisible();
+  // When the host warns its disk is full: set here; past it, the disk is warned of, with what to
+  // do; floors nothing nears, and the warning goes (where it acts too: a disk past full_at is
+  // warned of as well, and the default 95% may be this machine's).
+  const warnAt = page.getByLabel("when the host warns its disk is full");
+  const warnForm = warnAt.locator("..");
+  await warnAt.fill("1000T");
+  await warnForm.getByRole("button", { name: "set" }).click();
+  const alert = page.getByRole("alert", { name: "what the host warns of" });
+  await expect(alert).toContainText("it warns at 1000T");
+  await expect(alert).toContainText("make room");
+  await warnAt.fill("2K");
+  await warnForm.getByRole("button", { name: "set" }).click();
+  const fullAt = page.getByLabel("when the host acts on a full disk");
+  await fullAt.fill("1K");
+  await fullAt.locator("..").getByRole("button", { name: "set" }).click();
+  await expect(alert).toBeHidden();
+  // Back as they were, for the tests after: warn_at first, so full_at stays past it.
+  await warnAt.fill("85%");
+  await warnForm.getByRole("button", { name: "set" }).click();
+  await fullAt.fill("95%");
+  await fullAt.locator("..").getByRole("button", { name: "set" }).click();
+  await expect(page.getByText(/^when a disk is full/)).toContainText("past 95% full");
+  // What it does when a disk is full: shown, and chosen here (left as it was: only warn).
+  await expect(page.getByLabel("what the host does when its disk is full")).toHaveValue("warn");
+  await expect(page.getByText(/^when a disk is full/)).toContainText("it only warns");
+  await expect(page.getByText(/^backup/).first()).toContainText("none: the runs logs let go of go");
+  // How often the server sweeps on its own: shown here, and set here, into its holon.toml.
+  const schedule = page.getByText("the server sweeps on its own").locator("..");
+  await expect(schedule).toContainText("every 10m");
+  const every = schedule.getByLabel("how often the server sweeps");
+  await every.fill("5s");
+  await expect(schedule.getByRole("button", { name: "set" }), "too often: not a setting it takes").toBeDisabled();
+  await every.fill("2h");
+  await schedule.getByRole("button", { name: "set" }).click();
+  await expect(schedule).toContainText("every 2h");
+  expect(((await (await request.get(`${SERVER}/permissions`, { headers: auth })).json()) as { storage: { sweep_every: string } }).storage.sweep_every).toBe("2h");
+  await every.fill("10m");
+  await schedule.getByRole("button", { name: "set" }).click();
+  await expect(schedule).toContainText("every 10m");
   // Its clock would beat for the rest of the run.
   await request.post(`${SERVER}/deployments/rolling-log/stop`, { data: {}, headers: auth });
 });

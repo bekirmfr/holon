@@ -243,7 +243,7 @@ static SAMPLES: &[Sample] = &[
     Sample {
         name: "rolling-log",
         title: "Rolling log (retention)",
-        description: "A clock flow that keeps only its newest 5 runs, none older than a day: its `keep` line says how long a deployment's log keeps its runs (the deploy settings' keep_runs and keep_run_days), and keeping fewer than the host's default asks nobody. The states its cut runs left stay in the store until an admin's holon store sweep clears what nothing kept names.",
+        description: "A clock flow that keeps only its newest 5 runs, none older than a day: its `keep` line says how long a deployment's log keeps its runs (the deploy settings' keep_runs and keep_run_days), and keeping fewer than the host's default asks nobody. The states its cut runs left stay in the store until a sweep clears what nothing kept names: the server's own (holon.toml's [storage] sweep_every, ten minutes unless said), or an admin's holon store sweep.",
         shows: &["keep", "retention", "keep_runs", "keep_run_days", "clock", "state across runs", "holon store sweep"],
         port: None,
         interval: Some("1"),
@@ -759,6 +759,19 @@ static SAMPLES: &[Sample] = &[
         browsers: None,
         try_it: r#"curl -X POST -d '{"amount":100}' http://127.0.0.1:8162/accounts/a/move, then the same with b and 5, and a with -30: curl http://127.0.0.1:8162/accounts/a answers 70. holon history balance-trail --cell balances --item a lists the two runs that moved a (nothing → 100, 100 → 70), not b's; --cell moves lists all three. Put the state the first run left back (holon restore balance-trail --to-run SEQ --state) and move a by 1: its history shows the restore between the runs (70 → 100) and the new run (100 → 101). In the editor: view, pick a run, Flow state, ⧗ beside balances or one of its items"#,
         text: include_str!("../samples/balance-trail.holon"),
+    },
+    Sample {
+        name: "status-board",
+        title: "Status board (how each handler's runs are recorded)",
+        description: "A log level per handler: every run is recorded, and by default on disk before it answers (strict). A handler that only reads and answers may say lazy (recorded all the same, on disk within a second, so it answers without waiting on the disk) or unrecorded (counted, not logged, failed or not; a person approves it). One that writes is strict whatever it says.",
+        shows: &["log levels", "strict", "lazy", "unrecorded", "collections"],
+        port: Some("8170"),
+        interval: None,
+        secrets: &[],
+        optional: &[],
+        browsers: None,
+        try_it: r#"deploy it (its approval asks to keep runs of GET /health and action report out of its log), then curl http://127.0.0.1:8170/health a few times ("ok", counted), curl -X POST -d '{"id":"a","text":"hi"}' http://127.0.0.1:8170/notes ("saved", strict) and curl http://127.0.0.1:8170/notes (the notes, lazy): holon history status-board lists the two notes runs and the health checks as one counted line, and view mode shows that line above the runs. Put lazy on POST /notes and holon check says why it can't be"#,
+        text: include_str!("../samples/status-board.holon"),
     },
 ];
 

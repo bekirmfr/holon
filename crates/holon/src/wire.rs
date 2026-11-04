@@ -216,18 +216,51 @@ pub(crate) struct DeployRequestBody {
 /// now, though — surviving a restart is the whole reason a deployment gets its own durable
 /// state instead of an in-memory-only scratch value. Every new field is `#[serde(default)]`
 /// so a deployments file written before this inch still loads without error.
+/// What a deployment's log doesn't hold of an unrecorded handler's runs (docs/L4s/request-path-L4.md,
+/// C5): how many ran, how many failed, how long they took in all, when the last one started, and
+/// what the last failure was. An unrecorded run is never logged, failed or not: its handler was
+/// declared so (resilience-audit-L4.md, §2.8). Kept per handler, by its label.
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+pub(crate) struct Tally {
+    pub(crate) runs: u64,
+    pub(crate) failed: u64,
+    pub(crate) total_ms: f64,
+    pub(crate) last_at_ms: u64,
+    /// The newest failure: when, its answer's status, and its error, redacted and cut short. Never
+    /// its request.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) last_failure: Option<Failure>,
+}
+
+/// A run that failed, as a tally keeps it.
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+pub(crate) struct Failure {
+    pub(crate) at_ms: u64,
+    pub(crate) status: u16,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) error: Option<String>,
+}
+
+impl Tally {
+    /// One more run, started at `at_ms`, taking `ms`; `failure` when it failed.
+    pub(crate) fn add(&mut self, at_ms: u64, ms: f64, failure: Option<Failure>) {
+        self.runs += 1;
+        self.total_ms += ms;
+        self.last_at_ms = self.last_at_ms.max(at_ms);
+        if let Some(failure) = failure {
+            self.failed += 1;
+            if self.last_failure.as_ref().is_none_or(|f| f.at_ms <= failure.at_ms) {
+                self.last_failure = Some(failure);
+            }
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize)]
 pub(crate) struct DeploymentRecord {
     pub(crate) slug: String,
     pub(crate) unit: String,
     pub(crate) interval_seconds: Option<u64>,
-    /// The state by reference: each key's value hash (hex), the values in the content store.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) state_refs: Option<BTreeMap<String, String>>,
-    /// The state as files before `state_refs` held it, values inline. Read once at load, when
-    /// the values move into the store; never written.
-    #[serde(default, skip_serializing)]
-    pub(crate) state: Option<BTreeMap<String, SValue>>,
     #[serde(default)]
     pub(crate) deployed_at_epoch_seconds: Option<u64>,
     /// Who did it (access.rs's caller: a named user, `admin`), when the server knows.
@@ -237,6 +270,9 @@ pub(crate) struct DeploymentRecord {
     pub(crate) trigger_count: u64,
     #[serde(default)]
     pub(crate) error_count: u64,
+    /// Its unrecorded handlers' runs, counted, by label.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub(crate) tallies: BTreeMap<String, Tally>,
     /// Absent in files written before the lifecycle existed: such a deployment was running.
     #[serde(default)]
     pub(crate) status: Option<Status>,
@@ -300,6 +336,9 @@ pub(crate) struct DeploymentEntry {
     pub(crate) sessions: usize,
     pub(crate) trigger_count: u64,
     pub(crate) error_count: u64,
+    /// Its unrecorded handlers' runs, counted, by label: none while it has none.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub(crate) tallies: BTreeMap<String, Tally>,
     pub(crate) deployed_at_epoch_seconds: u64,
     /// Who did it (access.rs's caller: a named user, `admin`), when the server knows.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -359,7 +398,7 @@ pub(crate) struct DeploymentsBody {
 }
 
 pub(crate) fn to_hex(h: &Hash) -> String {
-    h.iter().map(|b| format!("{b:02x}")).collect()
+    holon_core::hex(h)
 }
 
 /// One deploy of a deployment, kept for good (docs/L4s/history-L4.md): what it deployed, when,

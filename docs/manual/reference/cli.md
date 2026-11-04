@@ -21,6 +21,7 @@ Everything is one program, `holon`. `holon help` lists the commands; `serve`, `e
 | [`holon grant`](#holon-grant) | what a deployment is granted; revoke, grant back, lower |
 | [`holon grants`](#holon-grants) | who holds what |
 | [`holon policy`](#holon-policy) | the host's policy, and reading it again |
+| [`holon host`](#holon-host) | what the host holds: memory, its disks, what it keeps on them, its sweeps |
 | [`holon secret`](#holon-secret) | a deployment's secrets: set, roll back, remove, their history; the server's own, and where each may go |
 | [`holon flows`](#holon-flows) | the flows saved on the server |
 | [`holon activity`](#holon-activity) | what was done on the server, by whom |
@@ -122,9 +123,11 @@ its first admin. [Server configuration](server.md) covers what it keeps and wher
 | `--at [IP:]PORT` | where the server and editor listen. Default `127.0.0.1:7420`; a port alone means 127.0.0.1. Or `HOLON_SERVER_ADDR` |
 | `--data DIR` | where everything is kept. Or `HOLON_DATA`; default `~/.holon/data` (or `HOLON_HOME/data`) |
 | `--data-host IP` | where deployed flows' own servers listen (default `127.0.0.1`) |
-| `--allow-host HOST` | a host name it answers to besides localhost; repeatable |
+| `--allow-host HOST` | a host name it answers to besides localhost, on its own port and each flow's (one a proxy in front forwards); repeatable |
 | `--allow-origin ORIGIN` | an origin the editor may be served from, besides localhost's; repeatable |
 | `--keep-runs N` | runs each deployment's log keeps unless its deploy settings say (the `keep_runs` limit's default: 500 without it; or `HOLON_KEEP_RUNS`) |
+| `--flow-cache SIZE` | memory kept for the flows runs have loaded, so a run doesn't read its flow from the store again: `64M`, `1G`, or `0` to keep none (default `256M`; or `HOLON_FLOW_CACHE`). What it counts is the memory a flow takes once loaded (measured within a few percent, rounded up so it keeps a little less, never more), each unit once, however many flows place it; past the size, the flows used least recently are let go and load again when next run. Beside it, the store keeps the values runs read from disk (a collection's items, state), up to `--value-cache` |
+| `--value-cache SIZE` | memory kept for the values runs read from the store's disk (a collection's items and trie, a file's text by hash), so a read doesn't open the file again: `64M`, `1G`, or `0` to keep none (default `64M`; or `HOLON_VALUE_CACHE`). What it counts is the memory a value takes in it. Past the size, the values used least recently are let go |
 | `--export-heads URL` | send each run's head to a witness (or `HOLON_EXPORT_HEADS`); its token in `HOLON_EXPORT_HEADS_TOKEN` |
 | `--secrets-key os\|env:VAR\|file:PATH` | where the secrets file's key is kept (default: the OS key store) |
 | `--new-secrets-key` | print a fresh key for `--secrets-key env:VAR`, and exit |
@@ -167,7 +170,7 @@ bottom. It reaches the server as `holon deploy` does, signed in as you.
 | 1 Overview | what is deployed, what waits for a person, the saved flows |
 | 2 Approvals | each thing waiting for you; enter reviews it: a saved or changed flow opens with what it may do, and you approve it by deploying it |
 | 3 Flows | every deployment and saved flow; enter opens its page, `e` its text |
-| 4 the open flow | its status (routes, what it may do and whether its grant covers it, the secrets it reads), its runs (enter shows one over its text, with each statement's value), its history, state and access (enter on a secret sets it: a value typed as dots, a `HOLON_SECRET_…` name the server reads, or a Vault field), and its graph; `g`, `p`, `x` run, pause or stop it |
+| 4 the open flow | its status (routes, what it may do and whether its grant covers it, the secrets it reads), its runs (enter shows one over its text, with each statement's value), its history, state and access (enter on a secret sets it: a value typed as dots, a `HOLON_SECRET_…` name the server reads, or a Vault field), and its graph; its status says what it holds in memory and on disk; `g`, `p`, `x` run, pause or stop it |
 | 5 Editor | flows' text in tabs, coloured and checked as you type, with its problems below and, beside it, what it may do (`+` marks what deploying would add) and what the name at the cursor is |
 | 6 Library | the samples; enter opens a copy |
 | 7 Admin | people (invite, role, email, disable, a reset link, remove), API keys, the folders and databases flows use (bound with the same flags as [`holon folder`](#holon-folder) and [`holon database`](#holon-database)), the secrets each flow reads, and the server: its policy, the grants held, the sign-in provider, sweeping the store and the folder texts. An admin's page |
@@ -308,13 +311,48 @@ can't run, if it can't. Admins.
 ### `holon policy`
 
 ```
-holon policy [--reload] [--json]
+holon policy [--reload] [--sweep-every 10m|off] [--warn-at 85%|5G] [--full-at 95%|1G] [--when-full warn|pause|roll] [--backup DIR|none] [--json]
 ```
 
 The host's policy: what it grants without asking, whether flows may call plain `http` or private
-addresses, and each limit's default and ceiling. `--reload` reads the policy file again and holds
-every deployment to it at once, saying which it no longer covers (those pause). Editors and
-admins reload. See [The host's policy](../guides/deploying.md#the-hosts-policy).
+addresses, how often the server sweeps, and each limit's default and ceiling. `--reload` reads the
+policy file again and holds every deployment to it at once, saying which it no longer covers
+(those pause). Editors and admins reload. `--sweep-every` sets how often the server sweeps what
+nothing kept names (`90s`, `10m`, `2h`, `1d`, a minute at the least, or `off`), written into the
+policy file's [`[storage]`](server.md#the-policy); an admin's. `--warn-at` sets when a disk is
+full enough to warn of: how full for the server (`85%`), or how much is left (`5G`); an admin's,
+written there too ([Warnings](server.md#warnings)). `--full-at` and `--when-full`: past where it
+warns, when it acts and what it does then: `warn`, `pause` (every flow that records runs, until
+there is room) or `roll` (cut the oldest runs of the biggest logs); an admin's
+([The policy](server.md#the-policy)). `--backup DIR` keeps the runs logs let go of there, as
+gzipped exports (`none`: they go); an admin's. See [The host's policy](../guides/deploying.md#the-hosts-policy).
+
+### `holon host`
+
+```
+holon host [--for SLUG] [--json] [--server PORT|URL]
+```
+
+What the host warns of, first (each with what to do), then what it holds: the server's memory and
+its caches against their sizes; each disk it keeps
+things on and how full it is for the server; what it keeps there (the content store's values,
+the logs, the folders' kept texts, counted at start and after each round of sweeps, and what a
+crash left, removed once old); and how often it sweeps, when next, and what the last sweeps
+removed; and what each flow holds, the most first. An admin's. `--for SLUG`: what one flow holds,
+in memory and on disk (anyone who may read the deployment). See [What it holds](server.md#what-it-holds).
+
+```
+memory       742 MiB (at most 811 MiB so far)
+  flow cache   12 flows, 32 MiB of 256 MiB (12%)
+  value cache  1234 values, 48 MiB of 64 MiB (75%)
+disk         60% full: 40 GiB free of 100 GiB (60 GiB in use): data, logs, state heads, store (/srv/holon/data)
+kept         counted 3 min ago
+  store        432808 values, 2 GiB on disk (1 GiB of bytes); 3200 put since
+  logs         34 logs, 192 MiB on disk
+sweeps       every 10m; the next in 7 min
+  store        last: 3 min ago: 271 values, 56 KiB freed in 8 s
+  file texts   last: 3 min ago: nothing to remove (0 s)
+```
 
 ## `holon secret`
 
@@ -436,10 +474,11 @@ read; `--without-files` ships none. See [Checking runs](../guides/checking-runs.
 ### `holon verify`
 
 ```
-holon verify <export.json> [--head HEX] [--files DIR]
+holon verify <export.json | export.json.gz> [--head HEX] [--files DIR]
 ```
 
-Checks exported runs, offline: the chain, each unit's hash, every run, run again, and that each
+Checks exported runs, offline (an export, or a backup's gzipped one, [`[storage]
+backup`](server.md#the-policy)): the chain, each unit's hash, every run, run again, and that each
 run's state follows from the one before. `--head`
 checks that a head a witness holds is in the export. `--files` gives the files runs read whose
 texts the export doesn't hold. Exits 0 when it all checks, 1 when something doesn't, 2 for a file
@@ -511,7 +550,8 @@ minutes).
 holon store sweep [--dry-run] [--server PORT|URL]
 ```
 
-Removes from the server's content store the values nothing kept names: the states of runs the
+Removes from the server's content store, now, the values nothing kept names (the server does it
+on its own every ten minutes): the states of runs the
 logs no longer keep (retention cut them, and the log's file has been cut back too: it holds up to
 twice what it keeps, so a keep raised later gets them back), and the values only those states
 held. A value stays
@@ -594,6 +634,8 @@ the body uses undeclared. It needs no server. The VS Code extension starts it.
 | `HOLON_DATA` | the server's data folder (default `HOLON_HOME/data`) |
 | `HOLON_SERVER_ADDR` | `holon serve --at` |
 | `HOLON_KEEP_RUNS` | `holon serve --keep-runs` |
+| `HOLON_FLOW_CACHE` | `holon serve --flow-cache` |
+| `HOLON_VALUE_CACHE` | `holon serve --value-cache` |
 | `HOLON_SETUP_CODE` | the first admin's setup code |
 | `HOLON_EXPORT_HEADS`, `HOLON_EXPORT_HEADS_TOKEN` | the witness heads are sent to, and its token |
 | `HOLON_SECRET_<NAME>` | values for secrets whose source is env |

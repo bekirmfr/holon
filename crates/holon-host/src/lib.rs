@@ -18,6 +18,7 @@
 //! like a graph cycle is broken by storage *between rounds* — no `validate` change, no
 //! `eval` change.
 
+use std::cell::OnceCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::{self, Write};
@@ -25,6 +26,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 pub mod collection;
+pub mod packs;
 mod rounds;
 mod state;
 pub use rounds::{run_rounds, Claim, Exchange, Limits, NoWaits, Performer, Recorded, Round, RunError, RunOutcome, Waiting, Waits};
@@ -315,43 +317,59 @@ impl Host for StateHost {
 /// leaf against a sourced entry for its *own* key. It **owns** the constants it hands out,
 /// since `resolve` returns `&Unit`. Performed leaves (sinks, `store_write`) are never
 /// substituted, so the effect manifest is intact.
+/// A sourced value's constant, made the first time a leaf asks for it: its unit and the pieces
+/// it is built from, or none for a value a constant can't rebuild.
+type Constant = OnceCell<Option<(Unit, Parts)>>;
+
 struct SourcedResolver<'a, R: Resolver> {
-    sourced: Vec<(Capability, Unit)>,
-    /// The pieces a non-scalar constant is built from (see `constant_unit`).
-    parts: Parts,
+    /// Each sourced value, and its constant once a leaf has asked for it: made then, not before,
+    /// so a run pays only for what its graph reads (docs/L4s/interpreter-path-L4.md, the
+    /// per-request bookkeeping). None inside: a value that can't be rebuilt (see `new`).
+    sourced: Vec<(&'a Capability, &'a Value, Constant)>,
     real: &'a R,
 }
 
 impl<'a, R: Resolver> SourcedResolver<'a, R> {
-    fn new(sourced: &[(Capability, Value)], real: &'a R) -> Self {
+    fn new(sourced: &'a [(Capability, Value)], real: &'a R) -> Self {
         // A value that can't be faithfully reconstructed (`constant_unit` → `None`: an
-        // `Effect`, or a sum that isn't an Option) is dropped here rather than substituted —
+        // `Effect`, or a sum that isn't an Option) is dropped rather than substituted —
         // which routes it through the SAME seam `fire_sourced`'s doc comment already names for
         // an unsupplied capability: "evaluates to nothing." No new failure mode.
-        let mut parts = Parts::default();
-        let sourced = sourced
-            .iter()
-            .filter_map(|(cap, value)| constant_unit(value, &mut parts).map(|u| (cap.clone(), u)))
-            .collect();
-        SourcedResolver { sourced, parts, real }
+        SourcedResolver { sourced: sourced.iter().map(|(cap, value)| (cap, value, OnceCell::new())).collect(), real }
     }
 }
 
 impl<R: Resolver> Resolver for SourcedResolver<'_, R> {
     fn resolve(&self, hash: &Hash) -> Option<&Unit> {
-        if let Some(part) = self.parts.units.get(hash) {
-            return Some(part);
+        // The pieces a non-scalar constant made so far is built from (see `constant_unit`).
+        for (_, _, made) in &self.sourced {
+            if let Some(Some((_, parts))) = made.get()
+                && let Some(part) = parts.units.get(hash)
+            {
+                return Some(part);
+            }
         }
         let u = self.real.resolve(hash)?;
         if let UnitBody::Primitive { name } = &u.body
             && let Some(caps) = capabilities_of(name, &u.params) {
-                for (cap, constant) in &self.sourced {
-                    if caps.contains(cap.clone()) {
-                        return Some(constant);
+                for (i, (cap, value, made)) in self.sourced.iter().enumerate() {
+                    if caps.contains((*cap).clone()) {
+                        // Each value's pieces under keys of their own (`Parts::within`).
+                        let made = made.get_or_init(|| {
+                            let mut parts = Parts::within(i as u64);
+                            constant_unit(value, &mut parts).map(|unit| (unit, parts))
+                        });
+                        if let Some((constant, _)) = made {
+                            return Some(constant);
+                        }
                     }
                 }
             }
         Some(u)
+    }
+
+    fn shape(&self, unit: &holon_core::Unit) -> Option<&holon_core::Shape> {
+        self.real.shape(unit)
     }
 
     fn run_module(&self, bytes: &[u8], limits: &holon_core::ModuleLimits, inputs: &[Option<Value>]) -> Result<Vec<Option<Value>>, String> {
@@ -450,16 +468,24 @@ fn built_from(parts: &mut Parts, elements: Vec<Unit>, ctor: &str, out: Type) -> 
 }
 
 /// Units built by `constant_unit`, under private keys. They are never hashed (a value is not a
-/// unit: hashing each part would only cost) and never leave the resolver. Keys are 24 bytes of
-/// 0xFF followed by a counter, which no blake3 output will realistically equal.
+/// unit: hashing each part would only cost) and never leave the resolver. Keys are 16 bytes of
+/// 0xFF, the space of the value they are part of, and a counter, which no blake3 output will
+/// realistically equal.
 #[derive(Default)]
 struct Parts {
     units: BTreeMap<Hash, Unit>,
+    /// Which sourced value's pieces these are: each value's keys apart from every other's.
+    space: u64,
 }
 
 impl Parts {
+    fn within(space: u64) -> Parts {
+        Parts { units: BTreeMap::new(), space }
+    }
+
     fn add(&mut self, unit: Unit) -> Hash {
         let mut key = [0xFF; 32];
+        key[16..24].copy_from_slice(&self.space.to_be_bytes());
         key[24..].copy_from_slice(&(self.units.len() as u64).to_be_bytes());
         self.units.insert(key, unit);
         key
@@ -558,11 +584,7 @@ fn decode_verified(key: &Hash, bytes: &[u8]) -> Result<Unit, StoreError> {
 }
 
 fn hex(key: &Hash) -> String {
-    let mut s = String::with_capacity(64);
-    for b in key {
-        s.push_str(&format!("{b:02x}"));
-    }
-    s
+    holon_core::hex(key)
 }
 
 /// In-memory content-addressed store. For tests and any in-process need; shares
@@ -613,14 +635,22 @@ impl Store for MemStore {
 /// under a single root directory. Where units actually live on a machine.
 pub struct FileStore {
     root: PathBuf,
+    /// Its long-lived values, packed (packs.rs): read when a value's own file isn't there.
+    packs: std::sync::Arc<packs::Packs>,
 }
 
 impl FileStore {
     /// Open (creating if needed) a store rooted at `root`.
     pub fn new(root: impl Into<PathBuf>) -> io::Result<Self> {
         let root = root.into();
-        fs::create_dir_all(&root)?;
-        Ok(FileStore { root })
+        create_private_dir(&root)?;
+        let packs = packs::Packs::shared(&root.join("values"))?;
+        Ok(FileStore { root, packs })
+    }
+
+    /// Its packs, shared with whoever packs its values (the server's sweep).
+    pub fn packs(&self) -> std::sync::Arc<packs::Packs> {
+        std::sync::Arc::clone(&self.packs)
     }
     fn path(&self, key: &Hash) -> PathBuf {
         self.root.join(hex(key))
@@ -639,13 +669,35 @@ impl FileStore {
 /// truncated mix: write a sibling temp file, flush it to disk, then rename it over `path` (an
 /// atomic replace on Unix and Windows alike). The temp name is unique per process and call, so
 /// two threads writing the same path never share one.
+/// Make `path` and any folder above it that isn't there, each it makes open to its owner only
+/// (`0o700` where the system has modes); folders there already are left as they are.
+pub fn create_private_dir(path: &Path) -> io::Result<()> {
+    let mut builder = fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(0o700);
+    }
+    builder.create(path)
+}
+
 pub fn write_atomically(path: &Path, bytes: &[u8]) -> io::Result<()> {
     static NEXT: AtomicU64 = AtomicU64::new(0);
     let mut tmp = path.as_os_str().to_owned();
     tmp.push(format!(".tmp-{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
     let tmp = PathBuf::from(tmp);
     let result = (|| {
-        let mut file = fs::File::create(&tmp)?;
+        // Readable by its owner only, whatever the umask: what the server writes this way (the
+        // store's units and values, file texts, flows, backups, its policy) is its own.
+        let mut options = fs::OpenOptions::new();
+        options.write(true).create(true).truncate(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = options.open(&tmp)?;
         file.write_all(bytes)?;
         file.sync_all()?;
         fs::rename(&tmp, path)
@@ -673,9 +725,10 @@ impl Store for FileStore {
     fn put_value(&mut self, value: &Value) -> Result<Hash, StoreError> {
         let (key, bytes) = encode_value_keyed(value)?;
         let path = self.value_path(&key);
-        // Content-addressed: a file already there holds these very bytes (a read verifies it).
-        if !path.exists() {
-            fs::create_dir_all(self.values_dir()).map_err(StoreError::Io)?;
+        // Content-addressed: a file already there, or the value packed, holds these very bytes (a
+        // read verifies it).
+        if !path.exists() && !self.packs.contains(&key) {
+            create_private_dir(&self.values_dir()).map_err(StoreError::Io)?;
             write_atomically(&path, &bytes).map_err(StoreError::Io)?;
         }
         Ok(key)
@@ -683,7 +736,11 @@ impl Store for FileStore {
     fn get_value(&self, key: &Hash) -> Result<Option<Value>, StoreError> {
         let bytes = match fs::read(self.value_path(key)) {
             Ok(b) => b,
-            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+            // Not a file of its own: packed, or not there.
+            Err(e) if e.kind() == io::ErrorKind::NotFound => match self.packs.get(key).map_err(StoreError::Io)? {
+                Some(b) => b,
+                None => return Ok(None),
+            },
             Err(e) => return Err(StoreError::Io(e)),
         };
         decode_value_verified(key, &bytes).map(Some)
@@ -1151,6 +1208,51 @@ mod shared_cache_tests {
         let mut cache = SharedCache::new();
         cache.ingest(key, entry).unwrap(); // ...so ingest admits it
         assert_eq!(cache.get_verified(&key, &r), None); // ...but re-execution catches the wrong output
+    }
+}
+
+/// Sourced values made into constants only when a leaf asks (`SourcedResolver`): two of them that
+/// are lists and records, read in one run, each come back whole, their pieces under keys of their
+/// own; one no leaf reads is never made; one a constant can't rebuild still reads as nothing.
+#[cfg(test)]
+mod sourced_tests {
+    use super::*;
+    use holon_core::{Edge, Port, BOUNDARY};
+
+    fn read(key: &str) -> Unit {
+        Unit { params: vec![Param::frozen("key", key)], ..holon_core::interface_of("store_read").unwrap() }
+    }
+
+    #[test]
+    fn two_sourced_lists_read_in_one_run_each_come_back_whole() {
+        let mut real = MapResolver::new();
+        let (a, b, c) = (real.insert(read("a")).unwrap(), real.insert(read("b")).unwrap(), real.insert(read("c")).unwrap());
+        let root = Unit {
+            body: UnitBody::Composite {
+                children: vec![a, b, c],
+                edges: (0..3).map(|i| Edge { from_child: i, from_port: 0, to_child: BOUNDARY, to_port: i }).collect(),
+            },
+            params: vec![],
+            inputs: vec![],
+            outputs: (0..3).map(|i| Port { name: format!("out{i}"), ty: Type::Any }).collect(),
+        };
+        let text = |s: &str| Value::Text(s.into());
+        let list_a = Value::List(vec![text("x"), Value::Record(BTreeMap::from([("k".to_string(), Value::List(vec![Value::Number(1.0), Value::Number(2.0)]))])), Value::List(vec![])]);
+        let list_b = Value::List(vec![Value::Record(BTreeMap::from([("n".to_string(), text("y")), ("m".to_string(), Value::Boolean(true))])), text("z")]);
+        let effect = Value::Effect { sink: "egress".into(), payload: Box::new(text("no")) };
+        let sourced = vec![
+            (Capability::StateRead("unread".into()), Value::List(vec![text("never made")])),
+            (Capability::StateRead("a".into()), list_a.clone()),
+            (Capability::StateRead("b".into()), list_b.clone()),
+            (Capability::StateRead("c".into()), effect),
+        ];
+        let resolver = SourcedResolver::new(&sourced, &real);
+        let outputs = holon_core::eval(&root, &[], &resolver).into_vec();
+        assert_eq!(outputs, vec![Some(list_a), Some(list_b), None], "each whole; one that can't be rebuilt reads as nothing");
+        assert!(resolver.sourced[0].2.get().is_none(), "one no leaf reads is never made");
+        // Pieces of the two lists are kept apart: none of one's keys is the other's.
+        let keys = |i: usize| resolver.sourced[i].2.get().unwrap().as_ref().unwrap().1.units.keys().copied().collect::<BTreeSet<_>>();
+        assert!(!keys(1).is_empty() && !keys(2).is_empty() && keys(1).is_disjoint(&keys(2)));
     }
 }
 
@@ -1981,6 +2083,31 @@ mod tests {
         let names: Vec<_> = fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name()).collect();
         assert_eq!(names, vec![std::ffi::OsString::from("doc.json")]);
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// What the store writes, and the folders it makes, are its owner's only, whatever the umask:
+    /// they hold every state and value a flow keeps.
+    #[cfg(unix)]
+    #[test]
+    fn the_store_writes_its_files_and_folders_for_its_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = |p: &Path| fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        let dir = unique_temp_dir().join("nested").join("store");
+        let mut store = FileStore::new(&dir).unwrap();
+        assert_eq!(mode(&dir), 0o700, "the store's folder");
+        assert_eq!(mode(dir.parent().unwrap()), 0o700, "and one it made above it");
+        let unit = store.put(&number("7")).unwrap();
+        let value = store.put_value(&Value::Text("a secret-ish state".into())).unwrap();
+        assert_eq!(mode(&store.path(&unit)), 0o600, "a unit");
+        assert_eq!(mode(&store.values_dir()), 0o700, "the values' folder");
+        assert_eq!(mode(&store.value_path(&value)), 0o600, "a value");
+        // A file there already, readable by others, is written again for its owner only.
+        let other = dir.join("doc.json");
+        fs::write(&other, b"old").unwrap();
+        fs::set_permissions(&other, fs::Permissions::from_mode(0o644)).unwrap();
+        write_atomically(&other, b"new").unwrap();
+        assert_eq!(mode(&other), 0o600);
+        fs::remove_dir_all(dir.parent().unwrap().parent().unwrap()).unwrap();
     }
 
     #[test]

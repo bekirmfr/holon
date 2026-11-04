@@ -291,6 +291,11 @@ pub(crate) struct Requirements {
     /// `AgentRuns("reset")`: off unless asked for, and taken back like any grant.
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     pub(crate) agents: BTreeSet<String>,
+    /// The handlers declared `unrecorded`, by label (`GET /health`): each an item a person grants,
+    /// `Unrecorded("GET /health")`, without which its runs are recorded (docs/L4s/request-path-L4.md,
+    /// C5). Read from the unit (`with_unrecorded`), never taken from what a client sends.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub(crate) unrecorded: BTreeSet<String>,
 }
 
 impl Requirements {
@@ -304,6 +309,19 @@ impl Requirements {
             *asked = (*asked).max(n);
         }
         self
+    }
+
+    /// These requirements with the handlers of `root` declared `unrecorded`, by label, in place of
+    /// any a client sent: what the unit says is what is asked.
+    pub(crate) fn with_unrecorded(mut self, root: &holon_core::Unit, resolver: &impl holon_core::Resolver) -> Requirements {
+        self.unrecorded = holon_core::read_server(root, resolver).map(|s| s.unrecorded()).unwrap_or_default();
+        self
+    }
+
+    /// [`with_module_limits`](Requirements::with_module_limits) and
+    /// [`with_unrecorded`](Requirements::with_unrecorded): what the unit itself asks for.
+    pub(crate) fn of_unit(self, root: &holon_core::Unit, resolver: &impl holon_core::Resolver) -> Requirements {
+        self.with_module_limits(root, resolver).with_unrecorded(root, resolver)
     }
 }
 
@@ -328,7 +346,7 @@ impl Manifest {
     /// `PrivateAddresses`).
     pub(crate) fn items(&self) -> BTreeSet<String> {
         let r = &self.requirements;
-        holon_core::manifest_items(&self.capabilities, &r.limits, &r.plain_http, r.private_addresses, &r.agents)
+        holon_core::manifest_items(&self.capabilities, &r.limits, &r.plain_http, r.private_addresses, &r.agents, &r.unrecorded)
     }
 
     /// The manifest's content hash: equal manifests, equal hashes. Which items are optional is
@@ -393,6 +411,178 @@ pub(crate) struct Policy {
     /// Whether a deployment may ever be granted plain HTTP, or private addresses.
     pub(crate) allow_plain_http: bool,
     pub(crate) allow_private_addresses: bool,
+    /// Whether a handler's runs may ever be kept out of its log (`Unrecorded("GET /health")`): on
+    /// by default, since only a handler that does nothing outside its run may ask, and a person
+    /// approves each (docs/L4s/request-path-L4.md, §8 Q9).
+    pub(crate) allow_unrecorded: bool,
+    /// How the host keeps what it stores (`[storage]`, docs/L4s/storage-L4.md).
+    pub(crate) storage: Storage,
+}
+
+/// `[storage]`: how the host keeps what it stores (docs/L4s/storage-L4.md).
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Storage {
+    /// How often the server sweeps its store and the folders' kept texts; none: only an admin's.
+    pub(crate) sweep_every: Option<Duration>,
+    /// When a disk the server keeps things on is full enough to warn of.
+    pub(crate) warn_at: Threshold,
+    /// When it is full enough for `when_full` to act, and what that does.
+    pub(crate) full_at: Threshold,
+    pub(crate) when_full: WhenFull,
+    /// Where the runs a log lets go of are written first, gzipped exports `holon verify` checks:
+    /// a folder (an external drive, a folder a cloud client keeps in sync). None: they go.
+    pub(crate) backup: Option<std::path::PathBuf>,
+}
+
+/// `[storage] backup` as written: a folder's whole path, or `none`.
+pub(crate) fn parse_backup(text: &str) -> Result<Option<std::path::PathBuf>, String> {
+    let t = text.trim();
+    if t.is_empty() || t == "none" {
+        return Ok(None);
+    }
+    if t.starts_with("s3://") || t.contains("://") {
+        return Err(format!("{t:?}: object storage is to come; for now a folder: an external drive, or a folder a cloud client keeps in sync (Dropbox, Google Drive, OneDrive)"));
+    }
+    if t == "holon-cloud" {
+        return Err("Holon Cloud is coming; for now a folder: an external drive, or a folder a cloud client keeps in sync".into());
+    }
+    let path = std::path::PathBuf::from(t);
+    if !path.is_absolute() {
+        return Err(format!("{t:?}: the backup is a folder's whole path (/mnt/archive)"));
+    }
+    Ok(Some(path))
+}
+
+impl Default for Storage {
+    fn default() -> Storage {
+        Storage { sweep_every: Some(Duration::from_secs(10 * 60)), warn_at: Threshold::Full(85), full_at: Threshold::Full(95), when_full: WhenFull::Warn, backup: None }
+    }
+}
+
+/// What the server does when a disk it keeps things on is past `full_at` (docs/L4s/storage-L4.md
+/// §2): nothing but warn; pause every deployment that records runs until there is room again;
+/// or cut the oldest runs from the logs keeping the most.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum WhenFull {
+    Warn,
+    Pause,
+    Roll,
+}
+
+impl WhenFull {
+    pub(crate) fn parse(text: &str) -> Result<WhenFull, String> {
+        match text.trim() {
+            "warn" => Ok(WhenFull::Warn),
+            "pause" => Ok(WhenFull::Pause),
+            "roll" => Ok(WhenFull::Roll),
+            other => Err(format!("{other:?} isn't what to do when full: warn, pause or roll")),
+        }
+    }
+
+    pub(crate) fn text(&self) -> &'static str {
+        match self {
+            WhenFull::Warn => "warn",
+            WhenFull::Pause => "pause",
+            WhenFull::Roll => "roll",
+        }
+    }
+}
+
+/// How full a disk is to be for something to happen: a percentage of it full for the server (what
+/// isn't free to it), or space left, in bytes.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum Threshold {
+    Full(u8),
+    Free(u64),
+}
+
+impl Threshold {
+    /// Whether a disk of `size` bytes with `free` of them free to the server is past it.
+    pub(crate) fn past(&self, size: u64, free: u64) -> bool {
+        match self {
+            Threshold::Full(pct) => size > 0 && size.saturating_sub(free) * 100 >= size * *pct as u64,
+            Threshold::Free(bytes) => free < *bytes,
+        }
+    }
+}
+
+/// A threshold as `[storage]` writes it: `85%` full, or `5G` (`500M`, `1T`) free.
+pub(crate) fn parse_threshold(text: &str) -> Result<Threshold, String> {
+    let t = text.trim();
+    let wrong = || format!("{t:?} isn't a threshold: write how full, 85%, or how much free, 5G (500M, 1T)");
+    if let Some(pct) = t.strip_suffix('%') {
+        let n: u8 = pct.trim().parse().map_err(|_| wrong())?;
+        return if (1..=99).contains(&n) { Ok(Threshold::Full(n)) } else { Err(format!("{t:?}: a percentage from 1% to 99%")) };
+    }
+    let unit = t.chars().last().unwrap_or(' ').to_ascii_uppercase();
+    let scale: u64 = match unit {
+        'K' => 1 << 10,
+        'M' => 1 << 20,
+        'G' => 1 << 30,
+        'T' => 1 << 40,
+        _ => return Err(wrong()),
+    };
+    let n: f64 = t[..t.len() - 1].trim().parse().map_err(|_| wrong())?;
+    if n.is_nan() || n <= 0.0 {
+        return Err(wrong());
+    }
+    Ok(Threshold::Free((n * scale as f64) as u64))
+}
+
+/// A threshold as `[storage]` writes it (`parse_threshold`'s other way).
+pub(crate) fn threshold_text(t: Threshold) -> String {
+    match t {
+        Threshold::Full(n) => format!("{n}%"),
+        Threshold::Free(b) => {
+            // The largest unit it is a whole number of tenths of.
+            for (scale, unit) in [(1u64 << 40, "T"), (1 << 30, "G"), (1 << 20, "M"), (1 << 10, "K")] {
+                let tenths = b as f64 * 10.0 / scale as f64;
+                if b >= scale && (tenths - tenths.round()).abs() < 1e-6 {
+                    let n = tenths.round() / 10.0;
+                    return if n.fract() == 0.0 { format!("{n:.0}{unit}") } else { format!("{n:.1}{unit}") };
+                }
+            }
+            format!("{}K", b.div_ceil(1 << 10))
+        }
+    }
+}
+
+/// The least `sweep_every` may be: a sweep reads every log and lists the store, so one every few
+/// seconds would cost more than it frees.
+pub(crate) const SWEEP_EVERY_LEAST: Duration = Duration::from_secs(60);
+
+/// A duration as `[storage]` writes it, `30s`, `10m`, `2h` or `1d`, or `off`: none.
+pub(crate) fn parse_every(text: &str) -> Result<Option<Duration>, String> {
+    let text = text.trim();
+    if text == "off" {
+        return Ok(None);
+    }
+    let unit = text.chars().last().unwrap_or(' ');
+    let seconds = match unit {
+        's' => 1,
+        'm' => 60,
+        'h' => 60 * 60,
+        'd' => 24 * 60 * 60,
+        _ => return Err(format!("{text:?} isn't a duration: write it as 30s, 10m, 2h or 1d, or off")),
+    };
+    let n: u64 = text[..text.len() - 1].trim().parse().map_err(|_| format!("{text:?} isn't a duration: write it as 30s, 10m, 2h or 1d, or off"))?;
+    let every = Duration::from_secs(n.saturating_mul(seconds));
+    if every < SWEEP_EVERY_LEAST {
+        return Err(format!("{text:?} is too often: at most one sweep a minute (or off)"));
+    }
+    Ok(Some(every))
+}
+
+/// A duration as `[storage]` writes it (`parse_every`'s other way): the largest unit it is whole in.
+pub(crate) fn every_text(every: Option<Duration>) -> String {
+    let Some(every) = every else { return "off".into() };
+    let s = every.as_secs();
+    match s {
+        _ if s % 86_400 == 0 => format!("{}d", s / 86_400),
+        _ if s % 3_600 == 0 => format!("{}h", s / 3_600),
+        _ if s % 60 == 0 => format!("{}m", s / 60),
+        _ => format!("{s}s"),
+    }
 }
 
 impl Default for Policy {
@@ -412,6 +602,8 @@ impl Default for Policy {
             auto: Vec::new(),
             allow_plain_http: false,
             allow_private_addresses: false,
+            allow_unrecorded: true,
+            storage: Storage::default(),
         }
     }
 }
@@ -426,6 +618,23 @@ struct PolicyFile {
     ceilings: BTreeMap<String, u64>,
     #[serde(default)]
     grants: GrantsFile,
+    #[serde(default)]
+    storage: StorageFile,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+struct StorageFile {
+    #[serde(default)]
+    sweep_every: Option<String>,
+    #[serde(default)]
+    warn_at: Option<String>,
+    #[serde(default)]
+    full_at: Option<String>,
+    #[serde(default)]
+    when_full: Option<String>,
+    #[serde(default)]
+    backup: Option<String>,
 }
 
 #[derive(Deserialize, Default)]
@@ -437,6 +646,9 @@ struct GrantsFile {
     allow_plain_http: bool,
     #[serde(default)]
     allow_private_addresses: bool,
+    /// Absent: on (§8 Q9).
+    #[serde(default)]
+    allow_unrecorded: Option<bool>,
 }
 
 impl Policy {
@@ -483,6 +695,32 @@ impl Policy {
         policy.auto = file.grants.auto;
         policy.allow_plain_http = file.grants.allow_plain_http;
         policy.allow_private_addresses = file.grants.allow_private_addresses;
+        policy.allow_unrecorded = file.grants.allow_unrecorded.unwrap_or(true);
+        if let Some(every) = &file.storage.sweep_every {
+            policy.storage.sweep_every = parse_every(every).map_err(|e| format!("storage.sweep_every: {e}"))?;
+        }
+        if let Some(at) = &file.storage.warn_at {
+            policy.storage.warn_at = parse_threshold(at).map_err(|e| format!("storage.warn_at: {e}"))?;
+        }
+        if let Some(at) = &file.storage.full_at {
+            policy.storage.full_at = parse_threshold(at).map_err(|e| format!("storage.full_at: {e}"))?;
+        }
+        if let Some(backup) = &file.storage.backup {
+            policy.storage.backup = parse_backup(backup).map_err(|e| format!("storage.backup: {e}"))?;
+        }
+        if let Some(what) = &file.storage.when_full {
+            policy.storage.when_full = WhenFull::parse(what).map_err(|e| format!("storage.when_full: {e}"))?;
+        }
+        // Acting at a point fuller than warning, so it warns first; measured the same way, that is.
+        let (warn, full) = (policy.storage.warn_at, policy.storage.full_at);
+        let before = match (warn, full) {
+            (Threshold::Full(w), Threshold::Full(f)) => f > w,
+            (Threshold::Free(w), Threshold::Free(f)) => f < w,
+            _ => true,
+        };
+        if !before {
+            return Err(format!("storage.full_at ({}) is to be past storage.warn_at ({}): fuller, or less free", threshold_text(full), threshold_text(warn)));
+        }
         Ok(policy)
     }
 
@@ -524,6 +762,11 @@ impl Policy {
         }
         if item == "PrivateAddresses" && !self.allow_private_addresses {
             return Some("this host never grants private addresses (holon.toml: grants.allow_private_addresses)".into());
+        }
+        if let Some(label) = item.strip_prefix("Unrecorded(\"").and_then(|l| l.strip_suffix("\")"))
+            && !self.allow_unrecorded
+        {
+            return Some(format!("this host never lets a handler go unrecorded, asked for {label} (holon.toml: grants.allow_unrecorded)"));
         }
         None
     }
@@ -585,6 +828,10 @@ pub(crate) struct Grant {
     /// Whether the deployment is paused because of this grant (so covering it again resumes it).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub(crate) paused: bool,
+    /// Whether the host paused it because a disk was full (`[storage] when_full = "pause"`), so
+    /// room made resumes it (storage.rs).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub(crate) paused_full: bool,
     /// Every change the host made since the deploy, oldest first.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(crate) changes: Vec<GrantChange>,
@@ -627,6 +874,7 @@ impl Grant {
             lowered: BTreeMap::new(),
             keep_running: false,
             paused: false,
+            paused_full: false,
             changes: Vec::new(),
         }
     }
@@ -775,6 +1023,12 @@ pub(crate) struct Permit {
     pub(crate) outbound: Outbound,
     /// The grant's hash (hex), for the flow log.
     pub(crate) grant: String,
+    /// The handlers whose runs it keeps out of the log, by label: declared `unrecorded`, granted,
+    /// and allowed by the policy.
+    pub(crate) unrecorded: BTreeSet<String>,
+    /// The names inside its items, by kind (`CollectionRead("notes")` → `notes` under
+    /// `CollectionRead`), worked out once: every run asks (docs/L4s/request-path-plan.md, 12.4).
+    names: BTreeMap<String, BTreeSet<String>>,
 }
 
 impl Permit {
@@ -821,7 +1075,32 @@ impl Permit {
                 && grant.items.contains("PrivateAddresses")
                 && policy.allow_private_addresses,
         };
-        Permit { deployment, items: grant.items.clone(), request_limits, clock_limits, durable, files, databases, channels, log, outbound, grant: to_hex(&grant.hash()) }
+        let unrecorded = grant
+            .requirements
+            .unrecorded
+            .iter()
+            .filter(|l| policy.allow_unrecorded && grant.items.contains(&format!("Unrecorded({l:?})")))
+            .cloned()
+            .collect();
+        let mut names: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+        for item in &grant.items {
+            if let Some((kind, rest)) = item.split_once("(\"")
+                && let Some(name) = rest.strip_suffix("\")")
+            {
+                names.entry(kind.to_string()).or_default().insert(name.to_string());
+            }
+        }
+        Permit { deployment, items: grant.items.clone(), request_limits, clock_limits, durable, files, databases, channels, log, outbound, grant: to_hex(&grant.hash()), unrecorded, names }
+    }
+
+    /// How a run of the handler labelled `label`, declared `declared`, is recorded: as declared,
+    /// except that `unrecorded` holds only where it is granted (and the policy allows it), and is
+    /// strict otherwise.
+    pub(crate) fn log_level(&self, label: Option<&str>, declared: holon_core::LogLevel) -> holon_core::LogLevel {
+        match declared {
+            holon_core::LogLevel::Unrecorded if !label.is_some_and(|l| self.unrecorded.contains(l)) => holon_core::LogLevel::Strict,
+            level => level,
+        }
     }
 
     /// Whether the grant covers this capability.
@@ -831,8 +1110,7 @@ impl Permit {
 
     /// The names inside the granted items of one kind (`CollectionRead("notes")` → `notes`).
     fn named(&self, kind: &str) -> BTreeSet<String> {
-        let prefix = format!("{kind}(\"");
-        self.items.iter().filter_map(|i| i.strip_prefix(prefix.as_str())?.strip_suffix("\")").map(str::to_string)).collect()
+        self.names.get(kind).cloned().unwrap_or_default()
     }
 
     /// The collections it may read, by name.
@@ -915,6 +1193,43 @@ mod tests {
         assert!(Policy::parse("[limits]\nmax_request = 3").unwrap_err().contains("unknown limit"));
         assert!(Policy::parse("[limits]\nmax_requests = 5000").unwrap_err().contains("above its ceiling"));
         assert!(Policy::parse("[grant]\nauto = []").is_err(), "a misspelt section is an error, not ignored");
+
+        // How often the server sweeps: ten minutes unless said, off, or as often as once a minute.
+        assert_eq!(Policy::default().storage.sweep_every, Some(Duration::from_secs(600)));
+        assert_eq!(Policy::parse("[storage]\nsweep_every = \"2h\"").unwrap().storage.sweep_every, Some(Duration::from_secs(7200)));
+        assert_eq!(Policy::parse("[storage]\nsweep_every = \"off\"").unwrap().storage.sweep_every, None);
+        assert!(Policy::parse("[storage]\nsweep_every = \"5s\"").unwrap_err().contains("too often"));
+        assert!(Policy::parse("[storage]\nsweep_every = \"often\"").unwrap_err().contains("isn't a duration"));
+        assert!(Policy::parse("[storage]\nsweep = \"1h\"").is_err(), "a misspelt key is an error");
+        for text in ["90s", "10m", "2h", "1d", "off"] {
+            assert_eq!(every_text(parse_every(text).unwrap()), text, "written back as given");
+        }
+
+        // When to warn: 85% full unless said, a percentage or space left.
+        assert_eq!(Policy::default().storage.warn_at, Threshold::Full(85));
+        assert_eq!(Policy::parse("[storage]\nwarn_at = \"5G\"").unwrap().storage.warn_at, Threshold::Free(5 << 30));
+        for text in ["90%", "5G", "500M", "1.5T", "1%"] {
+            assert_eq!(threshold_text(parse_threshold(text).unwrap()), text, "written back as given");
+        }
+        for wrong in ["0%", "100%", "lots", "5", "-1G", "0G"] {
+            assert!(parse_threshold(wrong).is_err(), "{wrong}");
+        }
+        assert!(Threshold::Full(85).past(100, 10) && !Threshold::Full(85).past(100, 20), "90% full, then 80%");
+        // When full: 95% unless said, warn only unless said; past where it warns.
+        assert_eq!((Policy::default().storage.full_at, Policy::default().storage.when_full), (Threshold::Full(95), WhenFull::Warn));
+        let p = Policy::parse("[storage]\nwarn_at = \"20G\"\nfull_at = \"5G\"\nwhen_full = \"pause\"").unwrap();
+        assert_eq!((p.storage.full_at, p.storage.when_full), (Threshold::Free(5 << 30), WhenFull::Pause));
+        assert!(Policy::parse("[storage]\nfull_at = \"80%\"").unwrap_err().contains("past storage.warn_at"));
+        assert!(Policy::parse("[storage]\nwarn_at = \"5G\"\nfull_at = \"10G\"").unwrap_err().contains("past storage.warn_at"));
+        assert!(Policy::parse("[storage]\nwhen_full = \"panic\"").unwrap_err().contains("warn, pause or roll"));
+        // Backups: a folder, by its whole path; object storage and Holon Cloud not yet.
+        assert_eq!(Policy::default().storage.backup, None);
+        assert_eq!(Policy::parse("[storage]\nbackup = \"/mnt/archive\"").unwrap().storage.backup, Some("/mnt/archive".into()));
+        assert_eq!(Policy::parse("[storage]\nbackup = \"none\"").unwrap().storage.backup, None);
+        assert!(Policy::parse("[storage]\nbackup = \"archive\"").unwrap_err().contains("whole path"));
+        assert!(Policy::parse("[storage]\nbackup = \"s3://bucket/runs\"").unwrap_err().contains("object storage is to come"));
+        assert!(Policy::parse("[storage]\nbackup = \"holon-cloud\"").unwrap_err().contains("Holon Cloud is coming"));
+        assert!(Threshold::Free(5 << 30).past(100 << 30, 4 << 30) && !Threshold::Free(5 << 30).past(100 << 30, 6 << 30));
 
         // The durable-run limits are limits like the others.
         let p = Policy::parse("[limits]\nmax_waiting_runs = 500\n[ceilings]\nmax_waiting_runs = 1000").unwrap();

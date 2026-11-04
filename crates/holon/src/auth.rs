@@ -47,7 +47,10 @@ pub(crate) fn route(state: &AppState, request: &Request, caller: &Caller) -> Opt
     if let Some(response) = crate::folders::route(state, request, caller.name.as_deref().unwrap_or("")) {
         return Some(response);
     }
-    // The content store's sweep (sweep.rs).
+    // What the host stores, and how often it sweeps (storage.rs); the content store's sweep (sweep.rs).
+    if let Some(response) = crate::storage::route(state, request, caller.name.as_deref().unwrap_or("")) {
+        return Some(response);
+    }
     if let Some(response) = crate::sweep::route(state, request, caller.name.as_deref().unwrap_or("")) {
         return Some(response);
     }
@@ -107,7 +110,8 @@ pub(crate) fn route(state: &AppState, request: &Request, caller: &Caller) -> Opt
                 password: String,
             }
             return respond(body::<SignIn>(request).and_then(|s| {
-                let (token, a) = accounts.sign_in(&s.name, &s.password).map_err(|e| err(401, e))?;
+                let from = request.remote_addr().ip().to_string();
+                let (token, a) = accounts.sign_in_from(&s.name, &s.password, &from).map_err(|e| err(if e.contains("busy") { 503 } else { 401 }, e))?;
                 Ok(signed_in(&token, &a))
             }));
         }

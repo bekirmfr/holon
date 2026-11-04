@@ -291,7 +291,7 @@ export function describeItemSending(item: string, byHand: boolean, sent: Record<
  *  beyond the host's defaults, sorted as the server sorts them. */
 export function manifestItems(
   capabilities: string[],
-  requirements?: { limits?: Record<string, number>; plain_http?: string[]; private_addresses?: boolean; agents?: string[] },
+  requirements?: { limits?: Record<string, number>; plain_http?: string[]; private_addresses?: boolean; agents?: string[]; unrecorded?: string[] },
 ): string[] {
   return manifest_items(capabilities, requirements ?? null);
 }

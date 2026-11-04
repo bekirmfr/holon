@@ -19,7 +19,8 @@ pub(crate) fn serve_data(
     slug: &str,
     request: &DataRequest,
 ) -> DataResponse {
-    serve_data_forwarding(store, deployments, deployments_path, slug, request, None)
+    let allowed = allowed_origin(deployments, slug, &request.headers);
+    serve_data_forwarding(store, deployments, deployments_path, slug, request, None, allowed)
 }
 
 /// The origin a page sent the request from, when `slug` answers pages from there (`browsers`).
@@ -30,7 +31,9 @@ pub(crate) fn allowed_origin(deployments: &Mutex<BTreeMap<String, Deployment>>, 
 }
 
 /// [`serve_data`], a streamed call's answer forwarded to the caller as it arrives (`forward`)
-/// when the route's run makes one.
+/// when the route's run makes one. `allowed` is the request's origin when the deployment answers
+/// pages from there (`allowed_origin`), worked out once by the caller, which needs it too.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn serve_data_forwarding(
     store: &SharedStore,
     deployments: &Mutex<BTreeMap<String, Deployment>>,
@@ -38,8 +41,8 @@ pub(crate) fn serve_data_forwarding(
     slug: &str,
     request: &DataRequest,
     forward: Option<outbound::Forwarder>,
+    allowed: Option<String>,
 ) -> DataResponse {
-    let allowed = allowed_origin(deployments, slug, &request.headers);
     if request.method == "OPTIONS"
         && let Some(origin) = &allowed
     {
@@ -73,6 +76,29 @@ pub(crate) fn is_origin_or_any(o: &str) -> bool {
 }
 
 /// The flow's own answer to a data-plane request.
+/// A request's handler run, as `serve_flow` keeps it until it is logged or counted.
+struct Ran {
+    run: FiredRun,
+    request: Option<Value>,
+    route: String,
+    /// What its entry's error is (before a park's): the run's, or a secret it wasn't approved to
+    /// answer with. What the answer's checks read.
+    error: Option<String>,
+    /// Its entry, made as it ran when it is to be logged whatever comes of it (a recorded run).
+    entry: Option<LogEntry>,
+}
+
+/// A request's entry, from its run: as the run made it, with its route, its request, and its
+/// error.
+/// Its timeline is moved out of the run: nothing reads the run's after.
+fn ran_entry(started: (u64, std::time::Instant), sourced: &[(Capability, Value)], run: &mut FiredRun, route: &str, request: &Option<Value>, error: Option<String>) -> LogEntry {
+    let mut entry = run_entry_taking("request", started, sourced, run);
+    entry.error = error;
+    entry.route = Some(route.to_string());
+    entry.request = request.as_ref().map(SValue::from_core);
+    entry
+}
+
 fn serve_flow(
     store: &SharedStore,
     deployments: &Mutex<BTreeMap<String, Deployment>>,
@@ -81,6 +107,8 @@ fn serve_flow(
     request: &DataRequest,
     forward: Option<outbound::Forwarder>,
 ) -> DataResponse {
+    #[cfg(test)]
+    panic_for_tests::check(&request.url);
     let found = deployments
         .lock()
         .unwrap()
@@ -92,15 +120,15 @@ fn serve_flow(
     if status != Status::Running {
         return DataResponse::json_error(503, &format!("{slug:?} is {}", status_word(status)));
     }
-    let resolver = match materialize_closure(store, unit_hash) {
+    let resolver = match closure(store, unit_hash) {
         Ok(r) => r,
         Err(e) => return DataResponse::json_error(500, &format!("store error while materializing closure: {e:?}")),
     };
     let (method, raw_url, headers, body) = (request.method.as_str(), request.url.as_str(), &request.headers, &request.body);
-    let epoch_seconds = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
+    let epoch_seconds = clock_seconds();
     let sourced = [
         (Capability::Clock, Value::Number(epoch_seconds as f64)),
-        (Capability::Random, Value::Number(rand::random::<f64>())),
+        (Capability::Random, Value::Number(random_number())),
     ];
     let started = started_now();
     let http = data::HttpRequest { method, url: raw_url, headers, body };
@@ -108,7 +136,9 @@ fn serve_flow(
     // A resume route needs a run waiting for its token, or it answers nothing at all.
     let (path, query) = raw_url.split_once('?').unwrap_or((raw_url, ""));
     let mut resume: Option<(durable::Claimed, String, Value, String)> = None;
-    if let Some((route, params)) = holon_core::match_route(&server, method, path)
+    // Only a flow with a resume route looks for one.
+    if server.routes.iter().any(|r| r.resume.is_some())
+        && let Some((route, params)) = holon_core::match_route(&server, method, path)
         && let Some(name) = &route.resume
     {
         let from_query = query.split('&').find_map(|kv| kv.strip_prefix("token=")).map(data::percent_decode);
@@ -123,7 +153,12 @@ fn serve_flow(
         resume = Some((claimed, name.clone(), event, token));
     }
 
-    let mut ran: Option<LogEntry> = None;
+    // The handler's run, once it has run: its entry is made only if it is logged (an unrecorded
+    // run that didn't fail is only counted, docs/L4s/interpreter-path-L4.md, the per-request
+    // bookkeeping), and what the answer's checks read of it.
+    let mut ran: Option<Ran> = None;
+    // How its run is recorded: its route's level, or, a request no route took, lazy (C5).
+    let mut level = holon_core::LogLevel::Lazy;
     // Whether its answer may be computed from a secret: the log keeps it withheld then.
     let mut answer_derived = false;
     // A secret its answer carries that it wasn't approved to answer with: the caller gets a 500.
@@ -136,11 +171,18 @@ fn serve_flow(
         &server,
         &resolver,
         &http,
-        |endpoint, route, req, sourced| {
-            let run = fire_with_state(endpoint, &[Some(req.clone())], &resolver, store, state.as_ref(), sourced, &permit, false, &secrets, &mut waits, None);
-            let unit = hash_unit(endpoint).unwrap_or([0; 32]);
-            parked = durable::park_if_waiting(deployments, store, slug, &unit, "request", Some(route.to_string()), &[Some(req.clone())], sourced, &run, &waits);
-            let mut entry = run_entry("request", started, sourced, &run);
+        |endpoint, matched, req, sourced| {
+            // The route's label, its level and its endpoint's hash, as the server read them.
+            let label = format!("{} {}", matched.method, matched.path);
+            let route = label.as_str();
+            level = matched.log;
+            // A run that won't be logged keeps no timeline (§4.5 a), and is never logged, failed or
+            // not: its tally keeps the last failure (resilience-audit-L4.md, §2.8).
+            waits.unrecorded = permit.log_level(Some(route), level) == holon_core::LogLevel::Unrecorded;
+            // One copy of the request, lent to the run, the check for a wait and the entry.
+            let inputs = [Some(req)];
+            let mut run = fire_with_state(endpoint, &inputs, &resolver, store, state.as_ref(), sourced, &permit, false, &secrets, &mut waits, None);
+            parked = durable::park_if_waiting(deployments, store, slug, &matched.endpoint, "request", Some(route.to_string()), &inputs, sourced, &run, &waits);
             answer_derived = run.secret_fed.derives_output(0);
             // An answer carrying a secret goes to the caller only where a person approved it
             // (`SecretAnswer("name")`): one the graph says may carry it, or one that holds its
@@ -152,13 +194,18 @@ fn serve_flow(
                 carried.extend(holon_core::answered_secrets(endpoint, &resolver));
             }
             unapproved = carried.into_iter().find(|name| !permit.allows(&Capability::SecretAnswer(name.clone())));
-            if let Some(name) = &unapproved {
-                entry.error = Some(format!("refused to answer with the secret {name:?}: this deployment wasn't approved to answer its callers with it"));
-            }
-            entry.route = Some(route.to_string());
-            entry.request = Some(SValue::from_core(&req));
-            ran = Some(entry);
-            run.outputs
+            let error = match &unapproved {
+                Some(name) => Some(format!("refused to answer with the secret {name:?}: this deployment wasn't approved to answer its callers with it")),
+                None => run.error.clone(),
+            };
+            let [request] = inputs;
+            // The answer, and the run kept to make its entry from if it is logged: a recorded one's
+            // entry is made now, and it gives its outputs up to the answer; an unrecorded one keeps
+            // them, its answer a copy, in case it is logged after all.
+            let entry = (!waits.unrecorded).then(|| ran_entry(started, sourced, &mut run, route, &request, error.clone()));
+            let outputs = if waits.unrecorded { run.outputs.clone() } else { std::mem::take(&mut run.outputs) };
+            ran = Some(Ran { run, request, route: route.to_string(), error, entry });
+            outputs
         },
         &sourced,
     );
@@ -176,17 +223,17 @@ fn serve_flow(
     }
     // A run that waited as long as it may for a key another run holds is turned away, not
     // answered from nothing: its client may try again.
-    if let Some(busy) = ran.as_ref().and_then(|e| e.error.as_deref()).filter(|e| e.starts_with("busy:")) {
+    if let Some(busy) = ran.as_ref().and_then(|r| r.error.as_deref()).filter(|e| e.starts_with("busy:")) {
         answer = data::DataResponse::json_error(503, busy);
     }
     // One whose file read failed (a name that leaves its folder, a file too big or not text) did
     // nothing: it says so, not "not found". Why is in the run log, not told to the caller.
-    if ran.as_ref().and_then(|e| e.error.as_deref()).is_some_and(|e| e.starts_with(folders::READ_FAILED)) {
+    if ran.as_ref().and_then(|r| r.error.as_deref()).is_some_and(|e| e.starts_with(folders::READ_FAILED)) {
         answer = data::DataResponse::json_error(500, "a file this flow reads couldn't be read: its run log says why");
     }
     // One whose database read failed, or whose writes there didn't land, likewise; one whose
     // statement didn't change the rows it expects is the data saying no: nothing it did was written.
-    let error = ran.as_ref().and_then(|e| e.error.as_deref());
+    let error = ran.as_ref().and_then(|r| r.error.as_deref());
     if error.is_some_and(|e| e.starts_with(databases::READ_FAILED)) {
         answer = data::DataResponse::json_error(500, "a database this flow reads couldn't be read: its run log says why");
     }
@@ -197,35 +244,58 @@ fn serve_flow(
         answer = data::DataResponse::json_error(409, unmet);
     }
     // One whose file write didn't land (a folder past its cap, say) didn't do what it answered.
-    if ran.as_ref().and_then(|e| e.error.as_deref()).is_some_and(|e| e.starts_with(folders::WRITE_FAILED)) {
+    if ran.as_ref().and_then(|r| r.error.as_deref()).is_some_and(|e| e.starts_with(folders::WRITE_FAILED)) {
         answer = data::DataResponse::json_error(500, "a file this flow writes couldn't be written: its run log says why");
     }
     // One whose packs were past its limits did nothing.
-    if ran.as_ref().and_then(|e| e.error.as_deref()).is_some_and(|e| e.starts_with(channels::SEND_FAILED)) {
+    if ran.as_ref().and_then(|r| r.error.as_deref()).is_some_and(|e| e.starts_with(channels::SEND_FAILED)) {
         answer = data::DataResponse::json_error(500, "this flow's packs were past its channel limits: its run log says why");
     }
     record_trigger(deployments, slug, answer.status >= 500);
-    // Every request is logged, routed or not; an unrouted one (404, 405) never ran a handler.
-    let mut entry = ran.unwrap_or_else(|| run_entry("request", started, &sourced, &FiredRun::nothing()));
-    entry.duration_ms = started.1.elapsed().as_secs_f64() * 1000.0;
-    entry.method = Some(method.to_string());
-    entry.url = Some(raw_url.to_string());
-    entry.status = Some(answer.status);
-    entry.response_body = Some(if answer_derived { crate::taint::WITHHELD.to_string() } else { recorder::body_text(&answer.body) });
-    entry.by = request.by.clone();
-    match parked {
-        Ok(names) => entry.parked = names,
-        Err(e) => entry.error = Some(e),
+    // Every request is logged, routed or not; an unrouted one (404, 405) never ran a handler. Its
+    // entry is made only where it is logged: an unrecorded run that didn't fail is counted.
+    let route = ran.as_ref().map(|r| r.route.clone());
+    let error = match &parked {
+        Err(e) => Some(e.clone()),
+        Ok(_) => ran.as_ref().and_then(|r| r.error.clone()),
+    };
+    let parked_any = matches!(&parked, Ok(names) if !names.is_empty());
+    let entry = || {
+        let mut entry = match ran {
+            Some(Ran { entry: Some(entry), .. }) => entry,
+            Some(Ran { mut run, request, route, error, .. }) => ran_entry(started, &sourced, &mut run, &route, &request, error),
+            None => run_entry("request", started, &sourced, &FiredRun::nothing()),
+        };
+        entry.duration_ms = started.1.elapsed().as_secs_f64() * 1000.0;
+        entry.method = Some(method.to_string());
+        entry.url = Some(raw_url.to_string());
+        entry.status = Some(answer.status);
+        entry.response_body = Some(if answer_derived { crate::taint::WITHHELD.to_string() } else { recorder::body_text(&answer.body) });
+        entry.by = request.by.clone();
+        match parked {
+            Ok(names) => entry.parked = names,
+            Err(e) => entry.error = Some(e),
+        }
+        entry
+    };
+    let tokens = || {
+        let tokens = Redactor::tokens(&waits.tokens);
+        // A resume route's request carries the token it delivers (in its URL): redacted too.
+        match &resume {
+            Some((_, name, _, token)) => tokens.and(Redactor::tokens(&BTreeMap::from([(name.clone(), token.clone())]))),
+            None => tokens,
+        }
+    };
+    // A strict run answers once its record is on disk; one whose record may not be isn't
+    // answered as done (C2 e).
+    let counted = Counted { route: route.as_deref(), at_ms: started.0, duration_ms: started.1.elapsed().as_secs_f64() * 1000.0, status: answer.status, error: error.as_deref() };
+    if let Some(Logged { kept: Err(e), .. }) = log_or_count(deployments, slug, counted, entry, tokens, level) {
+        answer = data::DataResponse::json_error(500, &format!("the request ran, but {e}"));
     }
-    let mut tokens = Redactor::tokens(&waits.tokens);
-    // A resume route's request carries the token it delivers (in its URL): redacted too.
-    if let Some((_, name, _, token)) = &resume {
-        tokens = tokens.and(Redactor::tokens(&BTreeMap::from([(name.clone(), token.clone())])));
-    }
-    let parked_any = !entry.parked.is_empty();
-    log_run(deployments, slug, entry, tokens);
-    if state.is_some() || parked_any {
-        persist_deployments(deployments_path, deployments, store);
+    // The state is kept by its head, written as the change landed (claims.rs); the deployments
+    // file changes only with the deployment's definition, here its waiting runs.
+    if parked_any {
+        persist_deployments(deployments_path, deployments);
     }
     // The route's own handler has answered; now the waiting run continues.
     if let Some((claimed, name, event, _)) = resume {
@@ -337,4 +407,27 @@ pub(crate) fn handle_post_request(state: &AppState, slug: &str, request: &Reques
     let headers = answer.headers.iter().map(|(k, v)| (k.to_string(), redactor.text(v))).collect();
     let body = redactor.text(&String::from_utf8_lossy(&answer.body));
     Response::json(&SentResponseBody { status: answer.status, headers, body })
+}
+
+/// A panic a test asks for, on requests whose path starts with one it names (R1's test).
+#[cfg(test)]
+pub(crate) mod panic_for_tests {
+    use std::sync::Mutex;
+
+    static PATHS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+    pub(crate) fn on(path: &str) {
+        PATHS.lock().unwrap().push(path.to_string());
+    }
+
+    pub(crate) fn off() {
+        PATHS.lock().unwrap().clear();
+    }
+
+    pub(super) fn check(url: &str) {
+        let hit = PATHS.lock().unwrap().iter().any(|p| url.starts_with(p.as_str()));
+        if hit {
+            panic!("a panic a test asked for");
+        }
+    }
 }

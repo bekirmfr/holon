@@ -9,7 +9,11 @@ export const METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"] as const;
 export type Method = (typeof METHODS)[number];
 
 /** One endpoint of the server being built: its route, and the endpoint unit's hash. */
-export type EndpointDraft = { method: Method; path: string; hash: string };
+/** How a handler's runs are recorded (docs/L4s/request-path-L4.md, C5): `lazy` or `unrecorded`
+ *  as its line says, or "" (absent here too) for strict, the default. */
+export type LogWord = "" | "lazy" | "unrecorded";
+
+export type EndpointDraft = { method: Method; path: string; hash: string; log?: LogWord };
 
 /** A route path's segments as core's `parse_path` reads them (`/`, or `/` then literals and
  *  params written `:name` or `{name}`), or null for a path core refuses. */

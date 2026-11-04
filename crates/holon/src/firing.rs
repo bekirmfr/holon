@@ -115,6 +115,15 @@ struct Attempt {
     overtaken: bool,
 }
 
+/// Whether `live` is another state than `start`: a key added, gone, or holding another value. The
+/// same answer as comparing their snapshots' hashes (`restore::snapshot_hash`), since a snapshot is
+/// each key's value hash and nothing else, without hashing either (docs/L4s/request-path-L4.md,
+/// C3 a; interpreter-path-L4.md, step 2). A run that only read, or wrote back what was there,
+/// changed nothing.
+fn changed_from(start: &State, live: &State) -> bool {
+    start.len() != live.len() || start.iter().zip(live.iter()).any(|((a, _), (b, _))| a != b || start.hash_of(a) != live.hash_of(b))
+}
+
 // Everything a run is held to arrives here, so it takes them all.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn fire_with_state(
@@ -228,6 +237,7 @@ pub(crate) fn fire_with_state(
                     };
                     if done {
                         a.run.state_after = snapshot_after(&live, a.start.as_ref(), store, &a.run.run_id);
+                        keep_if_changed(cell, &a.run, &live);
                         a.run.retries = retries;
                         if let Some(c) = waits.claiming.take() {
                             a.run.claims = c.finish();
@@ -257,7 +267,7 @@ pub(crate) fn fire_with_state(
     // them all, whole, for its whole run, once those are let go, so none calls out over them
     // meanwhile.
     let shared = waits.folders.clone();
-    let holder = format!("last:{}", nonce.iter().map(|b| format!("{b:02x}")).collect::<String>());
+    let holder = format!("last:{}", holon_core::hex(nonce));
     let _claimed = shared.as_deref().and_then(|f| {
         let keys = claims::whole_of(f, permit);
         if keys.is_empty() {
@@ -296,6 +306,7 @@ pub(crate) fn fire_with_state(
                     failed.extend(db);
                     not_all_written(&mut a.run, failed);
                     a.run.state_after = snapshot_after(&live, a.start.as_ref(), store, &a.run.run_id);
+                    keep_if_changed(cell, &a.run, &live);
                 }
                 databases::Commit::Refused(why) => refused(&mut a.run, &why),
                 databases::Commit::Again(why) => nothing_written(&mut a.run, &why),
@@ -438,7 +449,24 @@ fn still_as_read(
     if !cells_unchanged {
         return false;
     }
-    let now = collections::Readable { store: store.clone(), roots: collections::roots(live), granted: permit.collections_read() };
+    // Nothing read but its cells: nothing more to ask (interpreter-path-L4.md, step 2).
+    if reads.is_empty() {
+        return true;
+    }
+    let granted = permit.collections_read();
+    // A collection read of one whose root is the one the run read it at is answered the same:
+    // the root names its contents. Asked again only when the root moved.
+    let same_root = |request: &Value| match request {
+        Value::Record(q) => match q.get("collection") {
+            Some(Value::Text(name)) if granted.contains(name) => {
+                let key = collections::cell_key(name);
+                start.hash_of(&key) == live.hash_of(&key)
+            }
+            _ => false,
+        },
+        _ => false,
+    };
+    let mut now: Option<collections::Readable> = None;
     let mut files = folders.map(|f| folders::Readable::new(Arc::clone(f), permit));
     reads.iter().all(|r| {
         // A database's reads are checked in its own commit transaction (databases.rs).
@@ -446,7 +474,11 @@ fn still_as_read(
             return true;
         }
         if !matches!(&r.request, Value::Record(q) if q.contains_key("folder")) {
-            return pinned || now.answer(&r.request) == r.answer;
+            if pinned || same_root(&r.request) {
+                return true;
+            }
+            let now = now.get_or_insert_with(|| collections::Readable { store: store.clone(), roots: collections::roots(live), granted: granted.clone() });
+            return now.answer(&r.request) == r.answer;
         }
         files.as_mut().is_none_or(|files| files.answer(&r.request, false).is_ok_and(|(answer, _)| answer == r.answer))
     })
@@ -455,6 +487,17 @@ fn still_as_read(
 /// The state a run left, kept as a snapshot (its hash), taken under the state's lock as it commits:
 /// the cells it changed since `start` go into the content store, then the snapshot. A store that
 /// can't take it leaves the run without one (it can't be restored to), and says so.
+/// Write the deployment's state head when `run` changed its state (C3 b): its snapshot is in the
+/// store already, and the cell's lock is held, so heads land in commit order. A run that changed
+/// nothing writes nothing, so a read costs no fsync.
+fn keep_if_changed(cell: &claims::StateCell, run: &FiredRun, live: &State) {
+    if let (Some(start), Some(snapshot)) = (&run.start_state, &run.state_after)
+        && changed_from(start, live)
+    {
+        cell.write_head(snapshot);
+    }
+}
+
 fn snapshot_after(live: &State, start: Option<&State>, store: &SharedStore, run_id: &str) -> Option<String> {
     crate::restore::save_snapshot(live, start, store)
         .map_err(|e| eprintln!("holon: run {run_id}: the state it left wasn't kept: {e}"))
@@ -511,7 +554,9 @@ fn run_attempt(
     let state_before = start.as_ref().map(State::values).unwrap_or_default();
     let run_id = run_id_of(permit.deployment, inputs, start.as_ref(), extra_sourced, nonce);
     // Its resume tokens are derived from its id (durable.rs).
-    waits.run_id = Some(to_hex(&run_id));
+    // Hex once: its resume tokens, its claims and its entry all name it so.
+    let run_hex = to_hex(&run_id);
+    waits.run_id = Some(run_hex.clone());
     // Its collections, as it found them, for the reads it was granted.
     waits.reads.clear();
     waits.collections = Some(collections::Readable {
@@ -557,7 +602,7 @@ fn run_attempt(
     let secret_sends = (!secret_fed.is_empty()).then(|| folders::SecretSends { vault: secrets, sent: holon_core::sent_secrets(root_unit, resolver) });
 
     let mut host = RecordingHost { performed: Vec::new() };
-    let mut timer = recorder::Timer::new();
+    let mut timer = if waits.unrecorded { recorder::Timer::off() } else { recorder::Timer::new() };
     // Outbound requests go only where the grant allows, within its limits.
     let limits = if clock { &permit.clock_limits } else { &permit.request_limits };
     // What this attempt will hold before it sends anything: the keys it reads that it may write,
@@ -578,7 +623,7 @@ fn run_attempt(
             if own { permit.collections_written() } else { BTreeSet::new() },
             permit.collections_read(),
             shared,
-            to_hex(&run_id),
+            run_hex.clone(),
             limits.claim_wait,
             records,
         )
@@ -677,7 +722,7 @@ fn run_attempt(
             .or(past_limit.map(|e| format!("{}{e}", folders::WRITE_FAILED)))
             .or(past_packs.map(|e| format!("{}{e}", channels::SEND_FAILED)))
             .or(outcome.error.map(|e| e.message())),
-        run_id: to_hex(&run_id),
+        run_id: run_hex,
         unit: to_hex(&permit.deployment),
         nonce: hex_bytes(nonce),
         grant: permit.grant.clone(),
@@ -698,12 +743,59 @@ fn run_attempt(
 /// 128 bits from the operating system's secure generator.
 fn new_nonce() -> [u8; 16] {
     let mut nonce = [0u8; 16];
+    #[cfg(test)]
+    if let Some(n) = fixed::next() {
+        nonce[..8].copy_from_slice(&n.to_le_bytes());
+        return nonce;
+    }
     getrandom::fill(&mut nonce).expect("the OS has a secure random generator");
     nonce
 }
 
+/// The clock a run is sourced with, in seconds since the epoch.
+pub(crate) fn clock_seconds() -> u64 {
+    #[cfg(test)]
+    if let Some(n) = fixed::next() {
+        return 1_800_000_000 + n;
+    }
+    SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs()
+}
+
+/// The random number a run is sourced with, in [0, 1).
+pub(crate) fn random_number() -> f64 {
+    #[cfg(test)]
+    if let Some(n) = fixed::next() {
+        return ((n * 7919) % 1000) as f64 / 1000.0;
+    }
+    rand::random::<f64>()
+}
+
+/// In a test, the sources made fixed: a counter, from which each run's clock, random number and
+/// nonce follow (the server's golden runs, tests.rs). Unset, they are the system's.
+#[cfg(test)]
+pub(crate) mod fixed {
+    use std::cell::Cell;
+
+    thread_local! {
+        static NEXT: Cell<Option<u64>> = const { Cell::new(None) };
+    }
+
+    /// Fix this thread's sources from `n` on; none, back to the system's.
+    pub(crate) fn from(n: Option<u64>) {
+        NEXT.with(|c| c.set(n));
+    }
+
+    pub(super) fn next() -> Option<u64> {
+        NEXT.with(|c| {
+            let n = c.get()?;
+            c.set(Some(n + 1));
+            Some(n)
+        })
+    }
+}
+
 fn hex_bytes(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
+    holon_core::hex(bytes)
 }
 
 /// A run's id (§4.4): its deployment, and the Merkle root of what it started from: the host
@@ -740,7 +832,7 @@ pub(crate) fn run_id_of(
 /// real and different work, deliberately not this endpoint — see the L4.
 ///
 /// `root` must already be resolvable from the store (staged via `/unit`, or published) — this
-/// reuses `materialize_closure` exactly as the cache endpoints do, rather than accepting the
+/// resolves it through `closure` exactly as the cache endpoints do, rather than accepting the
 /// unit fresh in the body, since firing something implies it's a real, referenceable unit, not
 /// a throwaway one.
 pub(crate) fn handle_post_fire(store: &SharedStore, request: &Request) -> Response {
@@ -758,7 +850,7 @@ pub(crate) fn handle_post_fire(store: &SharedStore, request: &Request) -> Respon
         Ok(b) => b,
         Err(e) => return err(400, format!("not a valid fire request JSON: {e}")),
     };
-    let resolver = match materialize_closure(store, root_hash) {
+    let resolver = match closure(store, root_hash) {
         Ok(r) => r,
         Err(e) => return e.response(),
     };
@@ -783,25 +875,186 @@ pub(crate) fn handle_post_fire(store: &SharedStore, request: &Request) -> Respon
 
 /// Add a run to `slug`'s flow log, in its current session: redacted of its secrets and of
 /// `tokens` (the run's), in one pass, so that the log's marks are only ever its own.
-pub(crate) fn log_run(deployments: &Mutex<BTreeMap<String, Deployment>>, slug: &str, mut entry: LogEntry, tokens: Redactor) {
-    if let Some(dep) = deployments.lock().unwrap().get_mut(slug) {
-        let answered = std::mem::take(&mut entry.answered);
-        tokens.and(Redactor::of(&dep.secrets)).and(Redactor::answers(&answered.0, &dep.secrets)).entry(&mut entry);
-        entry.session = dep.life.sessions.last().map_or(0, |s| s.number);
-        // Its packs go out as it is logged: the run is over and its writes have landed, and what
-        // a subscriber gets is what the log holds (channels.rs).
-        let packs = dep.channels.packs_of(&entry, dep.log.next_seq());
-        dep.log.push(entry);
-        for (name, pack) in packs {
-            dep.channels.send(&name, pack, &dep.permit.channels);
+///
+/// The table is held only to take what the entry needs; the entry is redacted with no lock held,
+/// then numbered, chained and written under the deployment's own log lock, so a run of one
+/// deployment never waits on another's log (docs/L4s/request-path-L4.md, C2).
+///
+/// How the run is recorded is its handler's level (`declared`, C5), as its grant holds it
+/// (`Permit::log_level`): a strict run returns once its entry is on disk, sharing the sync with
+/// the runs around it (C2 e); a lazy one is synced within `SYNC_EVERY`; an unrecorded one is
+/// counted in its handler's tally and leaves no entry, failed or not (resilience-audit-L4.md,
+/// §2.8, which reversed §8 Q10). Answers the seq the entry got (none for an unrecorded run that left none),
+/// and whether it is known kept.
+pub(crate) fn log_run(deployments: &Mutex<BTreeMap<String, Deployment>>, slug: &str, entry: LogEntry, tokens: Redactor, declared: holon_core::LogLevel) -> Option<Logged> {
+    let Some((log, seq, level)) = push_run(deployments, slug, entry, tokens, declared)? else {
+        return Some(Logged { seq: None, kept: Ok(()) });
+    };
+    let kept = match level {
+        holon_core::LogLevel::Strict => log.sync_through(seq),
+        holon_core::LogLevel::Lazy | holon_core::LogLevel::Unrecorded => Ok(()),
+    };
+    Some(Logged { seq: Some(seq), kept })
+}
+
+/// What counting an unrecorded run takes: its route (none: no route took it), when it ran, how
+/// long it took, its answer's status and its error, if any: it failed with an error, or a 5xx.
+pub(crate) struct Counted<'a> {
+    pub(crate) route: Option<&'a str>,
+    pub(crate) at_ms: u64,
+    pub(crate) duration_ms: f64,
+    pub(crate) status: u16,
+    pub(crate) error: Option<&'a str>,
+}
+
+impl Counted<'_> {
+    fn failed(&self) -> bool {
+        self.error.is_some() || self.status >= 500
+    }
+}
+
+/// [`log_run`], the entry (and the tokens it is redacted of) made only if it is logged: a run its
+/// grant has unrecorded is counted under the table's lock, as `log_run` counts it, and nothing more
+/// is made of it (docs/L4s/interpreter-path-L4.md, the per-request bookkeeping). Otherwise
+/// `log_run`, which reads the level again.
+pub(crate) fn log_or_count(
+    deployments: &Mutex<BTreeMap<String, Deployment>>,
+    slug: &str,
+    counted: Counted,
+    entry: impl FnOnce() -> LogEntry,
+    tokens: impl FnOnce() -> Redactor,
+    declared: holon_core::LogLevel,
+) -> Option<Logged> {
+    {
+        let mut table = deployments.lock().unwrap();
+        let dep = table.get_mut(slug)?;
+        if count_if_unrecorded(dep, &counted, declared).1 {
+            return Some(Logged { seq: None, kept: Ok(()) });
         }
     }
+    log_run(deployments, slug, entry(), tokens(), declared)
+}
+
+/// [`count_if_unrecorded`] for a test, the handler declared unrecorded: whether it was counted only.
+#[cfg(test)]
+pub(crate) fn count_for_tests(dep: &mut Deployment, counted: &Counted) -> bool {
+    count_if_unrecorded(dep, counted, holon_core::LogLevel::Unrecorded).1
+}
+
+/// The level `dep`'s grant logs a run at now, and, for an unrecorded run, the run counted in its
+/// route's tally, a failure with its status and its error (redacted of the deployment's secrets, cut
+/// short); with whether that is all there is to do, which for an unrecorded run it always is: its
+/// handler was declared so, and its runs are never logged, failed or not (resilience-audit-L4.md,
+/// §2.8). The one rule `push_run` and `log_or_count` both keep (D2). Called with the table's lock
+/// held.
+fn count_if_unrecorded(dep: &mut Deployment, counted: &Counted, declared: holon_core::LogLevel) -> (holon_core::LogLevel, bool) {
+    let level = dep.permit.log_level(counted.route, declared);
+    if level != holon_core::LogLevel::Unrecorded {
+        return (level, false);
+    }
+    let failure = counted.failed().then(|| wire::Failure {
+        at_ms: counted.at_ms,
+        status: counted.status.max(if counted.error.is_some() { 500 } else { 0 }),
+        error: counted.error.map(|e| {
+            const MOST: usize = 300;
+            let e = Redactor::of(&dep.secrets).text(e);
+            match e.char_indices().nth(MOST) {
+                Some((cut, _)) => format!("{}…", &e[..cut]),
+                None => e,
+            }
+        }),
+    });
+    dep.tallies.entry(counted.route.unwrap_or_default().to_string()).or_default().add(counted.at_ms, counted.duration_ms, failure);
+    dep.tallies_changed = true;
+    (level, true)
+}
+
+/// A run as `log_run` logged it: its entry's seq (none: unrecorded, so only counted), and, for
+/// a strict run, whether the entry is on disk (an error says why not).
+#[derive(Debug)]
+pub(crate) struct Logged {
+    pub(crate) seq: Option<u64>,
+    pub(crate) kept: Result<(), String>,
+}
+
+impl Logged {
+    /// Said on the console when a strict run's record isn't known kept: for a run that answers
+    /// nobody (a clock's, a file's, a resumed run's).
+    pub(crate) fn said(self, slug: &str) {
+        if let Err(e) = &self.kept {
+            eprintln!("holon: {slug:?}: a run's record may not be on disk: {e}");
+        }
+    }
+}
+
+/// `log_run`'s write: the run's level as its grant holds it, and, unless it is an unrecorded run
+/// (counted, and nothing written: `Some(None)`), the entry pushed under the
+/// deployment's log lock, with the log it went to. None: no such deployment.
+#[allow(clippy::type_complexity)]
+fn push_run(
+    deployments: &Mutex<BTreeMap<String, Deployment>>,
+    slug: &str,
+    mut entry: LogEntry,
+    tokens: Redactor,
+    declared: holon_core::LogLevel,
+) -> Option<Option<(Arc<recorder::LogCell>, u64, holon_core::LogLevel)>> {
+    let (log, secrets, channels, permit, session, level) = {
+        let mut table = deployments.lock().unwrap();
+        let dep = table.get_mut(slug)?;
+        let counted = Counted { route: entry.route.as_deref(), at_ms: entry.at_ms, duration_ms: entry.duration_ms, status: entry.status.unwrap_or(200), error: entry.error.as_deref() };
+        let (level, only_counted) = count_if_unrecorded(dep, &counted, declared);
+        if only_counted {
+            return Some(None);
+        }
+        (Arc::clone(&dep.log), Arc::clone(&dep.secrets), Arc::clone(&dep.channels), Arc::clone(&dep.permit), dep.life.sessions.last().map_or(0, |s| s.number), level)
+    };
+    let answered = std::mem::take(&mut entry.answered);
+    let redactor = tokens.and(Redactor::of(&secrets)).and(Redactor::answers(&answered.0, &secrets));
+    entry.session = session;
+    // Its line made before the lock is taken, so runs of one deployment don't wait while another
+    // run's is: under the lock only its seq and the line before's hash go in.
+    let made = redacted_line(&redactor, &mut entry);
+    let seq = log.with(|log| {
+        // Its packs go out as it is logged, in the log's order: the run is over and its writes
+        // have landed, and what a subscriber gets is what the log holds (channels.rs).
+        let packs = channels.packs_of(&entry, log.next_seq());
+        let seq = log.push_made(entry, made);
+        for (name, pack) in packs {
+            channels.send(&name, pack, &permit.channels);
+        }
+        seq
+    });
+    Some(Some((log, seq, level)))
+}
+
+/// `entry` redacted by `redactor`, and its line. With nothing to mark, redacting can only escape a
+/// look-alike of a mark (text with a `‹`), an entry's records being in key order already
+/// (`SValue::from_core`): a line without one is the line redaction would make, so it is made once
+/// and looked at, not walked (docs/L4s/interpreter-path-L4.md, the per-request bookkeeping).
+fn redacted_line(redactor: &Redactor, entry: &mut LogEntry) -> recorder::Made {
+    if redactor.is_empty() {
+        let made = recorder::Made::of(entry);
+        if !made.may_hold_a_mark() {
+            // In a debug build (every test), checked against redacting first: the line and the
+            // entry the same, or what the shortcut assumes stopped holding (D3).
+            #[cfg(debug_assertions)]
+            {
+                let mut walked = entry.clone();
+                redactor.entry(&mut walked);
+                assert_eq!(made.line(1, ""), recorder::Made::of(&walked).line(1, ""), "the shortcut's line isn't the redacted one");
+                assert_eq!(serde_json::to_value(&walked).ok(), serde_json::to_value(&*entry).ok(), "the shortcut's entry isn't the redacted one");
+            }
+            return made;
+        }
+    }
+    redactor.entry(entry);
+    recorder::Made::of(entry)
 }
 
 /// The timeline, with the outputs of each node that carries the text of a file the log keeps by
 /// hash (read, or written past the inline size) left out: that text isn't in the log by another
 /// way.
-fn without_kept_files(timeline: &[recorder::NodeTiming], reads: &[collections::Read], performed: &[(Capability, Value)]) -> Vec<recorder::NodeTiming> {
+fn without_kept_files(mut timeline: Vec<recorder::NodeTiming>, reads: &[collections::Read], performed: &[(Capability, Value)]) -> Vec<recorder::NodeTiming> {
     let read = reads.iter().filter(|r| r.file.as_ref().is_some_and(|f| !f.inline)).filter_map(|r| match &r.answer {
         Some(Value::Text(t)) => Some(t.as_str()),
         _ => None,
@@ -817,7 +1070,6 @@ fn without_kept_files(timeline: &[recorder::NodeTiming], reads: &[collections::R
         .filter_map(|t| serde_json::to_string(t).ok().map(|q| q[1..q.len() - 1].to_string()))
         .chain(lines)
         .collect();
-    let mut timeline = timeline.to_vec();
     if kept.is_empty() {
         return timeline;
     }
@@ -846,10 +1098,15 @@ fn withheld_or(derived: bool, value: &Value) -> SValue {
     if derived { SValue::from_core(&Value::Text(taint::WITHHELD.into())) } else { SValue::from_core(value) }
 }
 
+/// [`withheld_or`], the value made only when it is shown.
+fn withheld_or_shown(derived: bool, shown: impl FnOnce() -> Value) -> SValue {
+    if derived { withheld_or(true, &Value::Boolean(false)) } else { SValue::from_core(&shown()) }
+}
+
 /// A run's outputs as its log entry and history keep them (`shown`: how each looks there), each
 /// that may be computed from a secret withheld.
 pub(crate) fn logged_outputs(run: &FiredRun, shown: impl Fn(&Value) -> Value) -> Vec<Option<SValue>> {
-    run.outputs.iter().enumerate().map(|(port, o)| o.as_ref().map(|v| withheld_or(run.secret_fed.derives_output(port), &shown(v)))).collect()
+    run.outputs.iter().enumerate().map(|(port, o)| o.as_ref().map(|v| withheld_or_shown(run.secret_fed.derives_output(port), || shown(v)))).collect()
 }
 
 /// What a run performed as its log entry and history keep it (`shown`: how each payload looks
@@ -857,7 +1114,7 @@ pub(crate) fn logged_outputs(run: &FiredRun, shown: impl Fn(&Value) -> Value) ->
 pub(crate) fn logged_performed(run: &FiredRun, shown: impl Fn(&Capability, &Value) -> Value) -> Vec<PerformedEntry> {
     run.performed
         .iter()
-        .map(|(c, p)| PerformedEntry { capability: format!("{c:?}"), payload: withheld_or(run.secret_fed.derives_effect(c), &shown(c, p)) })
+        .map(|(c, p)| PerformedEntry { capability: format!("{c:?}"), payload: withheld_or_shown(run.secret_fed.derives_effect(c), || shown(c, p)) })
         .collect()
 }
 
@@ -880,6 +1137,29 @@ pub(crate) fn run_entry(
     sourced: &[(Capability, Value)],
     run: &FiredRun,
 ) -> LogEntry {
+    entry_with(kind, started, sourced, run, run.timeline.clone())
+}
+
+/// [`run_entry`], its timeline moved out of `run` instead of copied: for a run nothing reads after
+/// its entry is made (docs/L4s/interpreter-path-L4.md, the per-request bookkeeping).
+pub(crate) fn run_entry_taking(
+    kind: &'static str,
+    started: (u64, std::time::Instant),
+    sourced: &[(Capability, Value)],
+    run: &mut FiredRun,
+) -> LogEntry {
+    let timeline = std::mem::take(&mut run.timeline);
+    entry_with(kind, started, sourced, run, timeline)
+}
+
+/// A run's entry, with `timeline` as the run's timeline.
+fn entry_with(
+    kind: &'static str,
+    started: (u64, std::time::Instant),
+    sourced: &[(Capability, Value)],
+    run: &FiredRun,
+    timeline: Vec<recorder::NodeTiming>,
+) -> LogEntry {
     LogEntry {
         seq: 0,
         prev: String::new(),
@@ -899,7 +1179,7 @@ pub(crate) fn run_entry(
         performed: logged_performed(run, folders::loggable),
         response_body: None,
         error: run.error.clone(),
-        timeline: without_secret_derived(without_kept_files(&run.timeline, &run.reads, &run.performed), &run.secret_fed),
+        timeline: without_secret_derived(without_kept_files(timeline, &run.reads, &run.performed), &run.secret_fed),
         rounds: run.rounds.iter().map(|r| logged_round(r, &run.secret_fed)).collect(),
         run_id: run.run_id.clone(),
         unit: run.unit.clone(),
@@ -985,4 +1265,176 @@ impl FiredRun {
 pub(crate) fn started_now() -> (u64, std::time::Instant) {
     let ms = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as u64;
     (ms, std::time::Instant::now())
+}
+
+/// The commit's checks made cheaper in step 2 (docs/L4s/interpreter-path-L4.md): each gives what
+/// the work it replaces gave.
+#[cfg(test)]
+mod commit_checks {
+    use super::*;
+
+    fn state_of(pairs: &[(&str, f64)]) -> State {
+        State::from_values(pairs.iter().map(|(k, v)| (k.to_string(), Value::Number(*v))).collect()).unwrap()
+    }
+
+    /// `changed_from` says what comparing the two states' snapshot hashes says.
+    #[test]
+    fn a_state_changed_exactly_when_its_snapshot_hash_moved() {
+        let states = [
+            state_of(&[]),
+            state_of(&[("a", 1.0)]),
+            state_of(&[("a", 2.0)]),
+            state_of(&[("b", 1.0)]),
+            state_of(&[("a", 1.0), ("b", 1.0)]),
+            state_of(&[("a", 1.0), ("b", 2.0)]),
+            state_of(&[("a", 2.0), ("b", 1.0)]),
+        ];
+        for x in &states {
+            for y in &states {
+                let by_hash = crate::restore::snapshot_hash(x).unwrap() != crate::restore::snapshot_hash(y).unwrap();
+                assert_eq!(changed_from(x, y), by_hash, "{:?} → {:?}", x.values(), y.values());
+            }
+        }
+    }
+
+    /// A collection read whose collection's root is still the one it was read at isn't asked again,
+    /// and comes out as asking again would have; one whose root moved is asked again, and holds
+    /// only when its answer is still the same.
+    #[test]
+    fn a_collection_read_is_asked_again_only_when_its_root_moved() {
+        let store = SharedStore::new(Box::new(MemStore::new()));
+        let mut writer = store.clone();
+        let put = |key: &str, value: &str| Value::Record(BTreeMap::from([("key".to_string(), Value::Text(key.into())), ("value".to_string(), Value::Text(value.into()))]));
+        let mut start = State::new();
+        collections::apply(&mut start, &mut writer, "notes", &put("a", "one")).unwrap();
+        let grant: permissions::Grant = serde_json::from_value(serde_json::json!({
+            "manifest": "", "items": ["CollectionRead(\"notes\")"], "requirements": {}, "granted_at": 0, "by": "deploy",
+        }))
+        .unwrap();
+        let permit = Permit::new([0; 32], &grant, &Policy::parse("").unwrap());
+        let request = Value::Record(BTreeMap::from([("collection".to_string(), Value::Text("notes".into())), ("get".to_string(), Value::Text("a".into()))]));
+        let read = |answer: &str| collections::Read { path: vec![0], request: request.clone(), answer: Some(Value::Text(answer.into())), file: None };
+        let asked = |live: &State, r: &collections::Read| {
+            let now = collections::Readable { store: store.clone(), roots: collections::roots(live), granted: permit.collections_read() };
+            now.answer(&r.request) == r.answer
+        };
+        let check = |live: &State, r: collections::Read| {
+            let held = still_as_read(&start, live, std::slice::from_ref(&r), &permit, &store, None, false);
+            assert_eq!(held, asked(live, &r), "the same as asking again");
+            held
+        };
+
+        // The same root: held, as asking again holds it.
+        assert!(check(&start.clone(), read("one")));
+        // Another item changed: the root moved, it is asked again, and its answer still holds.
+        let mut other = start.clone();
+        collections::apply(&mut other, &mut writer, "notes", &put("b", "two")).unwrap();
+        assert!(check(&other, read("one")));
+        // Its item changed: asked again, and found changed.
+        let mut changed = start.clone();
+        collections::apply(&mut changed, &mut writer, "notes", &put("a", "uno")).unwrap();
+        assert!(!check(&changed, read("one")));
+        // Nothing read: held.
+        assert!(still_as_read(&start, &changed, &[], &permit, &store, None, false));
+    }
+
+    /// A line made without walking the entry (`redacted_line`, nothing to mark and no `‹` in it) is
+    /// the line redacting it first makes, and the entry is the one redaction leaves; with a `‹`
+    /// anywhere, or something to mark, it is redacted.
+    #[test]
+    fn a_line_with_nothing_to_redact_is_the_redacted_line() {
+        let text = |s: &str| Value::Text(s.into());
+        let request = |body: &str| {
+            Value::Record(BTreeMap::from([
+                ("method".to_string(), text("GET")),
+                ("headers".to_string(), Value::Record(BTreeMap::from([("x-b".to_string(), text("2")), ("x-a".to_string(), text("1"))]))),
+                ("body".to_string(), text(body)),
+            ]))
+        };
+        let entry = |body: &str| {
+            let mut e = run_entry("request", (0, std::time::Instant::now()), &[(Capability::Clock, Value::Number(1.0))], &FiredRun::nothing());
+            e.request = Some(SValue::from_core(&request(body)));
+            e.response_body = Some(body.to_string());
+            e.duration_ms = 0.0;
+            e
+        };
+        let tokens = |pairs: &[(&str, &str)]| Redactor::tokens(&pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect());
+        for body in ["plain", "with ‹ in it", "‹token:paid›", "‹‹secret:x›", "a {\"‹k\": 1}", ""] {
+            for redactor in [tokens(&[]), tokens(&[("paid", "tok-1")])] {
+                let (mut fast, mut walked) = (entry(body), entry(body));
+                let line = redacted_line(&redactor, &mut fast);
+                redactor.entry(&mut walked);
+                let line_walked = recorder::Made::of(&walked);
+                assert_eq!(line.line(1, ""), line_walked.line(1, ""), "body {body:?}");
+                // The entry the log keeps in memory too: as redaction leaves it.
+                assert_eq!(serde_json::to_value(&fast).unwrap(), serde_json::to_value(&walked).unwrap(), "body {body:?}");
+            }
+        }
+    }
+
+    /// A store that fails every read while `failing` is set.
+    struct Flaky {
+        inner: MemStore,
+        failing: Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    impl Store for Flaky {
+        fn put(&mut self, unit: &Unit) -> Result<Hash, StoreError> {
+            self.inner.put(unit)
+        }
+        fn get(&self, key: &Hash) -> Result<Option<Unit>, StoreError> {
+            self.inner.get(key)
+        }
+        fn put_value(&mut self, value: &Value) -> Result<Hash, StoreError> {
+            self.inner.put_value(value)
+        }
+        fn get_value(&self, key: &Hash) -> Result<Option<Value>, StoreError> {
+            if self.failing.load(std::sync::atomic::Ordering::SeqCst) {
+                return Err(StoreError::Io(std::io::Error::other("the disk is away")));
+            }
+            self.inner.get_value(key)
+        }
+    }
+
+    /// The store failing as a run commits: a run whose collection didn't move commits on what it
+    /// read, where asking again would have failed and sent it round again for nothing; a run whose
+    /// collection moved is asked again as before, and a read that fails then counts as changed,
+    /// so it runs again, whether or not its item changed. Once the store is back, a moved root
+    /// whose item is unchanged holds.
+    #[test]
+    fn a_store_failing_at_the_commit_check_fails_only_a_run_whose_collection_moved() {
+        let failing = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        // In memory: the store keeps no values beside it, so a failing read fails.
+        let store = SharedStore::new(Box::new(Flaky { inner: MemStore::new(), failing: Arc::clone(&failing) }));
+        let mut writer = store.clone();
+        let put = |key: &str, value: &str| Value::Record(BTreeMap::from([("key".to_string(), Value::Text(key.into())), ("value".to_string(), Value::Text(value.into()))]));
+        let mut start = State::new();
+        collections::apply(&mut start, &mut writer, "notes", &put("a", "one")).unwrap();
+        let mut moved = start.clone();
+        collections::apply(&mut moved, &mut writer, "notes", &put("b", "two")).unwrap();
+        let mut changed = start.clone();
+        collections::apply(&mut changed, &mut writer, "notes", &put("a", "uno")).unwrap();
+        let grant: permissions::Grant = serde_json::from_value(serde_json::json!({
+            "manifest": "", "items": ["CollectionRead(\"notes\")"], "requirements": {}, "granted_at": 0, "by": "deploy",
+        }))
+        .unwrap();
+        let permit = Permit::new([0; 32], &grant, &Policy::parse("").unwrap());
+        let request = Value::Record(BTreeMap::from([("collection".to_string(), Value::Text("notes".into())), ("get".to_string(), Value::Text("a".into()))]));
+        // What the run read, at its start, while the store answered.
+        let answer = collections::Readable { store: store.clone(), roots: collections::roots(&start), granted: permit.collections_read() }.answer(&request);
+        assert_eq!(answer, Some(Value::Text("one".into())));
+        let reads = [collections::Read { path: vec![0], request: request.clone(), answer, file: None }];
+        let held = |live: &State| still_as_read(&start, live, &reads, &permit, &store, None, false);
+
+        failing.store(true, std::sync::atomic::Ordering::SeqCst);
+        let asked_again = collections::Readable { store: store.clone(), roots: collections::roots(&start), granted: permit.collections_read() }.answer(&request);
+        assert_eq!(asked_again, None, "the store fails: asking again finds nothing");
+        assert!(held(&start.clone()), "its collection didn't move: it commits on what it read");
+        assert!(!held(&moved), "its collection moved: asked again, the failed read counts as changed");
+        assert!(!held(&changed), "its item changed: it runs again");
+
+        failing.store(false, std::sync::atomic::Ordering::SeqCst);
+        assert!(held(&moved), "the store back: the moved root still holds its item");
+        assert!(!held(&changed));
+    }
 }

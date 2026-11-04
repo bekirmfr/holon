@@ -104,7 +104,7 @@ pub(crate) fn load_host_key(path: &str) -> Result<(), String> {
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 let key = random_key();
-                let hex: String = key.iter().map(|b| format!("{b:02x}")).collect();
+                let hex: String = holon_core::hex(key);
                 crate::sealing::write_private(std::path::Path::new(path), format!("{hex}\n").as_bytes())
                     .map_err(|e| format!("could not write {path:?}: {e}"))?;
                 key
@@ -125,7 +125,7 @@ pub(crate) fn token_for(run_id: &str, name: &str) -> String {
     data.push(0);
     data.extend_from_slice(name.as_bytes());
     let mac = blake3::keyed_hash(HOST_KEY.get_or_init(random_key), &data);
-    format!("rt_{}", mac.as_bytes()[..16].iter().map(|b| format!("{b:02x}")).collect::<String>())
+    format!("rt_{}", holon_core::hex(&mac.as_bytes()[..16]))
 }
 
 /// Whether `a` and `b` are equal, comparing every byte: how a presented token is checked, so the
@@ -172,6 +172,9 @@ pub(crate) struct RunWaits {
     /// The flows whose calls led to this run, the first being the one that started the chain: empty
     /// unless a flow's call started it (calls.rs).
     pub(crate) chain: Vec<String>,
+    /// Its run won't be logged (an unrecorded handler's, unless it fails): no timeline is kept
+    /// (docs/L4s/request-path-L4.md §4.5 a).
+    pub(crate) unrecorded: bool,
 }
 
 impl Waits for RunWaits {
@@ -634,7 +637,7 @@ pub(crate) fn resume_parked(
     waits.folders = Some(folders);
     waits.channels = Some(channels);
     waits.slug = Some(slug.to_string());
-    let resolver = materialize_closure(store, unit).map_err(|e| format!("store error: {e:?}"))?;
+    let resolver = closure(store, unit).map_err(|e| format!("store error: {e:?}"))?;
     let root = resolver.resolve(&unit).ok_or("the run's unit no longer resolves")?;
     let started = started_now();
     let resolver = holon_module::WithEngine::new(&resolver, holon_module::shared());
@@ -648,7 +651,11 @@ pub(crate) fn resume_parked(
     entry.request = inputs.first().cloned().flatten().map(|r| SValue::from_core(&r));
     entry.events = waits.events.iter().map(|(k, v)| (k.clone(), SValue::from_core(v))).collect();
     entry.parked = run.waiting.iter().map(|w| w.name.clone()).collect();
-    log_run(deployments, slug, entry, Redactor::tokens(&waits.tokens));
+    // A run that waits is strict (only a handler that does nothing outside its run may be
+    // otherwise, and waiting is something), so its every part is.
+    if let Some(l) = log_run(deployments, slug, entry, Redactor::tokens(&waits.tokens), holon_core::LogLevel::Strict) {
+        l.said(slug);
+    }
 
     {
         let mut table = deployments.lock().unwrap();
@@ -681,7 +688,7 @@ pub(crate) fn resume_parked(
             }
         }
     }
-    persist_deployments(deployments_path, deployments, store);
+    persist_deployments(deployments_path, deployments);
     match run.error {
         Some(e) => Err(e),
         None => Ok(()),

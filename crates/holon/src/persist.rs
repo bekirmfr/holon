@@ -19,23 +19,21 @@ use crate::*;
 /// was held throughout, so one deployment mid-fire (holding its state lock) or one slow disk
 /// write stalled every endpoint and the clock scheduler. `PERSIST` serializes whole
 /// snapshot-and-write passes, so an older snapshot can never land on disk after a newer one.
-pub(crate) fn persist_deployments(path: &str, deployments: &Mutex<BTreeMap<String, Deployment>>, store: &SharedStore) {
+pub(crate) fn persist_deployments(path: &str, deployments: &Mutex<BTreeMap<String, Deployment>>) {
     static PERSIST: Mutex<()> = Mutex::new(());
     if path == ":memory:" {
         return;
     }
     let _persist = PERSIST.lock().unwrap();
-    let snapshot: Vec<(DeploymentRecord, Option<DeploymentState>)> = deployments
+    let records: Vec<DeploymentRecord> = deployments
         .lock()
         .unwrap()
         .iter()
         .map(|(slug, dep)| {
-            let record = DeploymentRecord {
+            DeploymentRecord {
                 slug: slug.clone(),
                 unit: to_hex(&dep.unit),
                 interval_seconds: dep.interval_seconds,
-                state_refs: None,
-                state: None,
                 deployed_at_epoch_seconds: dep
                     .deployed_at
                     .duration_since(UNIX_EPOCH)
@@ -46,6 +44,7 @@ pub(crate) fn persist_deployments(path: &str, deployments: &Mutex<BTreeMap<Strin
                 browsers: dep.browsers.clone(),
                 trigger_count: dep.trigger_count,
                 error_count: dep.error_count,
+                tallies: dep.tallies.clone(),
                 status: Some(dep.life.status),
                 sessions: dep.life.sessions.clone(),
                 document: dep.document.clone(),
@@ -58,28 +57,9 @@ pub(crate) fn persist_deployments(path: &str, deployments: &Mutex<BTreeMap<Strin
                     let sealer = dep.secrets.lock().unwrap().sealer.clone();
                     dep.parked.values().map(|p| sealer.as_deref().map_or_else(|| p.clone(), |s| p.sealed_for_disk(slug, s))).collect()
                 },
-            };
-            (record, dep.state.clone())
+            }
         })
         .collect();
-    // Each state's values go into the content store (one already there isn't written again);
-    // the record keeps their references.
-    let mut values = store.clone();
-    let mut records: Vec<DeploymentRecord> = Vec::new();
-    for (mut record, state) in snapshot {
-        if let Some(arc) = state {
-            match arc.state.lock().unwrap().save(&mut values) {
-                Ok(refs) => record.state_refs = Some(refs.iter().map(|(k, h)| (k.clone(), to_hex(h))).collect()),
-                Err(e) => {
-                    // Writing the record without its state would lose the state at the next
-                    // load, so keep the previous file and say why.
-                    eprintln!("warning: deployments not persisted: {:?}'s state couldn't be stored: {e:?}", record.slug);
-                    return;
-                }
-            }
-        }
-        records.push(record);
-    }
     match serde_json::to_vec_pretty(&records) {
         Ok(bytes) => {
             // Owner-only, as the secrets and the flow log are: it holds the flows' documents,
@@ -90,6 +70,13 @@ pub(crate) fn persist_deployments(path: &str, deployments: &Mutex<BTreeMap<Strin
         }
         Err(e) => eprintln!("warning: failed to serialize deployments: {e}"),
     }
+}
+
+/// Where deployment `slug`'s state is kept for the deployments file at `path`: a file beside its
+/// run log's folder holding the hash of its current snapshot (docs/L4s/request-path-L4.md, C3 b),
+/// written as each change lands. None for `:memory:`.
+pub(crate) fn state_head_for(path: &str, slug: &str) -> Option<PathBuf> {
+    (path != ":memory:").then(|| Path::new(path).with_extension("state").join(slug))
 }
 
 /// Load deployments from `path` at startup — the inverse of `persist_deployments`. Returns an
@@ -129,7 +116,7 @@ pub(crate) fn load_deployments(
         let Some(unit_hash) = parse_hash(&record.unit) else {
             return Err(format!("deployment {slug:?} in {path:?}: {:?} is not a valid hash", record.unit));
         };
-        let resolver = materialize_closure(store, unit_hash)
+        let resolver = closure(store, unit_hash)
             .map_err(|e| format!("deployment {slug:?} in {path:?}: store error: {e:?}"))?;
         let Some(root_unit) = resolver.resolve(&unit_hash) else {
             return Err(format!(
@@ -169,32 +156,21 @@ pub(crate) fn load_deployments(
         }
         let permit = Arc::new(Permit::new(unit_hash, &grant, policy));
 
-        let mut values = store.clone();
-        let state = match (&record.state_refs, record.state) {
-            (Some(refs), _) => {
-                let refs = refs
-                    .iter()
-                    .map(|(k, h)| parse_hash(h).map(|h| (k.clone(), h)))
-                    .collect::<Option<BTreeMap<String, Hash>>>()
-                    .ok_or_else(|| format!("deployment {slug:?} in {path:?}: a state reference is not a hash"))?;
-                let state = State::load(&refs, &values)
+        // Its state as its head names it (C3 b): no head, none kept yet. No older form is read
+        // forward (Holon is in development: a data folder from before heads loads empty).
+        let head = state_head_for(path, slug);
+        let state = match head.as_deref().and_then(|h| std::fs::read_to_string(h).ok()) {
+            Some(hex) => {
+                let refs = crate::restore::snapshot_refs(hex.trim(), store)
+                    .map_err(|e| format!("deployment {slug:?} in {path:?}: its state head names no snapshot the store has: {e}"))?;
+                let state = State::load(&refs, store)
                     .map_err(|e| format!("deployment {slug:?} in {path:?}: its state can't be loaded from the store: {e:?}"))?;
-                Some(Arc::new(claims::StateCell::new(state)))
+                Some(Arc::new(claims::StateCell::kept_at(state, head)))
             }
-            // A file from before state was kept by reference: move its values into the store.
-            (None, Some(inline)) => Some(Arc::new(claims::StateCell::new(migrate_inline(slug, path, inline, &mut values)?))),
-            (None, None) if derives_state(caps.iter()) => Some(Arc::new(claims::StateCell::new(State::new()))),
-            (None, None) => None,
+            None if derives_state(caps.iter()) => Some(Arc::new(claims::StateCell::kept_at(State::new(), head))),
+            None => None,
         };
-        let mut sessions = record.sessions;
-        for session in &mut sessions {
-            if let Some(inline) = session.state.take() {
-                let refs = migrate_inline(slug, path, inline, &mut values)?.save(&mut values).map_err(|e| {
-                    format!("deployment {slug:?} in {path:?}: session {}'s snapshot can't be stored: {e:?}", session.number)
-                })?;
-                session.state_refs = Some(refs.iter().map(|(k, h)| (k.clone(), to_hex(h))).collect());
-            }
-        }
+        let sessions = record.sessions;
         let deployed_at = record
             .deployed_at_epoch_seconds
             .map(|secs| UNIX_EPOCH + Duration::from_secs(secs))
@@ -214,6 +190,7 @@ pub(crate) fn load_deployments(
             first_seq: None,
             document: record.document.clone(),
         };
+        let values = store.clone();
         let versions = crate::deploy::complete_versions(kept, current, &values)
             .map_err(|e| format!("deployment {slug:?} in {path:?}: {e}"))?;
 
@@ -274,30 +251,18 @@ pub(crate) fn load_deployments(
                 folders: Arc::new(folders::Scoped::memory()),
                 arrivals,
                 parked: record.parked.into_iter().map(|p| (p.run_id.clone(), p)).collect(),
-                log,
+                log: Arc::new(LogCell::new(log)),
                 document: record.document,
                 versions,
                 trigger_count: record.trigger_count,
                 error_count: record.error_count,
+                tallies: record.tallies,
+                tallies_changed: false,
                 deployed_at,
             },
         );
     }
     Ok(loaded)
-}
-
-/// A state written inline (files from before references), as a `State` whose values are now in
-/// the store.
-fn migrate_inline(
-    slug: &str,
-    path: &str,
-    inline: BTreeMap<String, SValue>,
-    store: &mut SharedStore,
-) -> Result<State, String> {
-    let state = State::from_values(inline.into_iter().map(|(k, v)| (k, v.into_core())).collect())
-        .map_err(|e| format!("deployment {slug:?} in {path:?}: a state value can't be encoded: {e:?}"))?;
-    state.save(store).map_err(|e| format!("deployment {slug:?} in {path:?}: its state can't be stored: {e:?}"))?;
-    Ok(state)
 }
 
 /// Persist the flows table — same write-through discipline and `":memory:"` opt-out as

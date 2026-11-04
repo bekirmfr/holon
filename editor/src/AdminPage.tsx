@@ -32,6 +32,10 @@ import {
   setOidcSettings,
   sweepFolders,
   sweepStore,
+  getHost,
+  setSweepEvery,
+  setStorage,
+  type HostView,
   unbindDatabase,
   unbindFolder,
   unbindServerSecret,
@@ -47,6 +51,7 @@ import {
   type SecretInfo,
   type TokenEntry,
 } from "./server";
+import { cacheLine, diskFull, diskLine, holdsLines, isEvery, isThreshold, keptLines, reportLine, scheduleLine, sizeText, whenFullLine } from "./storage";
 import { useDialog } from "./Dialog";
 import { FolderPicker } from "./FolderPicker";
 import { ActivityList } from "./Pages";
@@ -89,20 +94,6 @@ const RUN_LOCK_COST = "every run that writes it goes one at a time, for its whol
 const messageOf = (e: unknown) => (e instanceof Error ? e.message : String(e));
 /** The link someone opens to set their password. */
 const linkFor = (token: string) => `${location.origin}${location.pathname}?invite=${encodeURIComponent(token)}`;
-/** A size in bytes as people read it (folders.rs's `size_text`): `512 bytes`, `64 KiB`, `1.5 MiB`. */
-function sizeText(bytes: number): string {
-  for (const [size, unit] of [
-    [2 ** 30, "GiB"],
-    [2 ** 20, "MiB"],
-    [2 ** 10, "KiB"],
-  ] as const) {
-    if (bytes >= size) {
-      const n = bytes / size;
-      return Number.isInteger(n) || n >= 100 ? `${n.toFixed(0)} ${unit}` : `${n.toFixed(1)} ${unit}`;
-    }
-  }
-  return `${bytes} bytes`;
-}
 /** A connection typed in as a URL (`postgres://user:…@host/shop`), not where one is kept: the page never sends it. */
 const isUrl = (s: string) => /^[a-z][a-z0-9+.-]*:\/\//i.test(s.trim());
 const keyOf = (b: { name: string; deployment: string | null }) => `${b.deployment ?? ""}/${b.name}`;
@@ -143,6 +134,13 @@ export function AdminPage({ me, onOpenDeployment }: { me: string; onOpenDeployme
   const [reloaded, setReloaded] = useState<{ at: number; attention: [string, string][] } | null>(null);
   // What the last sweep of the store and of the file texts said.
   const [swept, setSwept] = useState<{ store?: string; folders?: string }>({});
+  // What the host holds and how it sweeps (`GET /admin/host`), and the sweep setting being edited.
+  const [host, setHost] = useState<HostView | null>(null);
+  const sweeps = host?.sweeps ?? null;
+  const [everyDraft, setEveryDraft] = useState("");
+  const [warnDraft, setWarnDraft] = useState("");
+  const [fullDraft, setFullDraft] = useState("");
+  const [backupDraft, setBackupDraft] = useState<string | null>(null);
   const [kind, setKind] = useState("everything");
   const [version, setVersion] = useState(0);
 
@@ -154,6 +152,15 @@ export function AdminPage({ me, onOpenDeployment }: { me: string; onOpenDeployme
     listServerSecrets().then(setServerSecrets).catch((e: unknown) => setMsg(messageOf(e)));
     listGrants().then(setGrants).catch((e: unknown) => setMsg(messageOf(e)));
     getPermissions().then(setPolicy).catch((e: unknown) => setMsg(messageOf(e)));
+    getHost()
+      .then((h) => {
+        setHost(h);
+        // What the admin is typing stays: a refresh only fills the field when it is empty.
+        setEveryDraft((d) => d || h.sweeps.every);
+        setWarnDraft((d) => d || h.warn_at);
+        setFullDraft((d) => d || h.full_at);
+      })
+      .catch((e: unknown) => setMsg(messageOf(e)));
     getOidcSettings()
       .then((s) => {
         setOidc(s);
@@ -738,11 +745,203 @@ export function AdminPage({ me, onOpenDeployment }: { me: string; onOpenDeployme
             </button>
           </form>
 
+          {host && (
+            <>
+              <div style={head}>the host</div>
+              {host.warnings.length > 0 && (
+                <div role="alert" aria-label="what the host warns of" style={{ ...row, flexDirection: "column", alignItems: "stretch", gap: 4, borderColor: "#e5484d" }}>
+                  {host.warnings.map((w) => (
+                    <div key={w.key}>
+                      <div style={{ color: "#ffb3b5" }}>⚠ {w.says}</div>
+                      <div style={quiet}>{w.todo}</div>
+                    </div>
+                  ))}
+                </div>
+              )}
+              <div style={about}>
+                What this server holds: its memory, each disk it keeps things on, and what it keeps there. The store and the file texts are counted when the
+                server starts and after each round of sweeps; the rest is read now. The same as <code>holon host</code>.
+              </div>
+              <div style={{ ...row, flexDirection: "column", alignItems: "stretch", gap: 4 }}>
+                <div>
+                  memory: {host.memory.resident === null ? <span style={quiet}>not told on this system</span> : `${sizeText(host.memory.resident)} (at most ${sizeText(host.memory.peak ?? 0)} so far)`}
+                </div>
+                <div style={quiet}>flow cache: {cacheLine(host.memory.flow_cache, "flows")}</div>
+                <div style={quiet}>value cache: {cacheLine(host.memory.value_cache, "values")}</div>
+              </div>
+              {host.disks.map((d) => (
+                <div key={d.path} style={{ ...row, flexDirection: "column", alignItems: "stretch", gap: 4 }} title={d.path}>
+                  <div>disk: {diskLine(d)}</div>
+                  <div role="meter" aria-label={`disk ${d.path} in use`} aria-valuenow={diskFull(d)} aria-valuemin={0} aria-valuemax={100} style={{ height: 6, background: "#1b2a45", borderRadius: 3 }}>
+                    <div style={{ width: `${diskFull(d)}%`, height: "100%", borderRadius: 3, background: host.warnings.some((w) => w.key === `disk:${d.path}`) ? "#e5484d" : "#3b82f6" }} />
+                  </div>
+                </div>
+              ))}
+              {host.deployments.each.length > 0 && (
+                <div style={{ ...row, flexDirection: "column", alignItems: "stretch", gap: 2 }} aria-label="what each flow holds">
+                  <div style={quiet}>what each flow holds, the most first (a run kept in memory takes about 3 times its line)</div>
+                  {host.deployments.each.map((h) => {
+                    const [memory, disk] = holdsLines(h, Date.now());
+                    const most = Math.max(1, ...host.deployments.each.map((x) => x.memory + x.disk));
+                    return (
+                      <div key={h.slug} style={{ display: "flex", gap: 8, alignItems: "center" }} title={`${memory}\n${disk}`}>
+                        <span style={{ width: 140, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{h.slug}</span>
+                        <span style={{ width: 90 }}>~{sizeText(h.memory)}</span>
+                        <span style={{ width: 90 }}>{sizeText(h.disk)}</span>
+                        <div style={{ flex: 1, height: 6, background: "#1b2a45", borderRadius: 3 }}>
+                          <div style={{ width: `${((h.memory + h.disk) * 100) / most}%`, height: "100%", borderRadius: 3, background: "#3b82f6" }} />
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+              <form
+                style={row}
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  act(async () => {
+                    const set = await setStorage({ warn_at: warnDraft.trim() });
+                    setHost((h) => (h ? { ...h, warn_at: warnDraft.trim(), sweeps: set.sweeps, warnings: set.warnings } : h));
+                  });
+                }}
+              >
+                <span style={{ flex: 1 }}>
+                  it warns when a disk is <span style={quiet}>· {host.warn_at.endsWith("%") ? `${host.warn_at} full for the server` : `down to ${host.warn_at} free`}</span>
+                </span>
+                <input
+                  aria-label="when the host warns its disk is full"
+                  title="how full for the server (85%), or how much is left (5G, 500M, 1T); written into the server's holon.toml [storage]"
+                  value={warnDraft}
+                  onChange={(e) => setWarnDraft(e.target.value)}
+                  style={{ ...input, width: 80 }}
+                />
+                <button type="submit" style={small} disabled={!isThreshold(warnDraft) || warnDraft.trim() === host.warn_at}>
+                  set
+                </button>
+              </form>
+              <form
+                style={{ ...row, flexWrap: "wrap" }}
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  act(async () => {
+                    const set = await setStorage({ full_at: fullDraft.trim() });
+                    setHost((h) => (h ? { ...h, full_at: fullDraft.trim(), sweeps: set.sweeps, warnings: set.warnings } : h));
+                  });
+                }}
+              >
+                <span style={{ flex: 1, minWidth: 260 }}>
+                  when a disk is full <span style={quiet}>· {whenFullLine(host.full_at, host.when_full)}</span>
+                  {host.acting.paused.length > 0 && <div style={{ color: "#ffb3b5" }}>paused for the full disk: {host.acting.paused.join(", ")}</div>}
+                  {host.acting.rolled.length > 0 && <div style={{ color: "#ffb3b5" }}>logs cut for the full disk: {host.acting.rolled.join(", ")}</div>}
+                </span>
+                <input
+                  aria-label="when the host acts on a full disk"
+                  title="past where it warns: how full for the server (95%), or how much is left (1G); written into the server's holon.toml [storage]"
+                  value={fullDraft}
+                  onChange={(e) => setFullDraft(e.target.value)}
+                  style={{ ...input, width: 80 }}
+                />
+                <button type="submit" style={small} disabled={!isThreshold(fullDraft) || fullDraft.trim() === host.full_at}>
+                  set
+                </button>
+                <select
+                  aria-label="what the host does when its disk is full"
+                  value={host.when_full}
+                  onChange={(e) => {
+                    const when_full = e.target.value;
+                    act(async () => {
+                      const set = await setStorage({ when_full });
+                      setHost((h) => (h ? { ...h, when_full: when_full as HostView["when_full"], sweeps: set.sweeps, warnings: set.warnings } : h));
+                    });
+                  }}
+                  style={input}
+                >
+                  <option value="warn">only warn</option>
+                  <option value="pause">pause what records runs</option>
+                  <option value="roll">cut the oldest runs</option>
+                </select>
+              </form>
+              <form
+                style={{ ...row, flexWrap: "wrap" }}
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  const backup = (backupDraft ?? "").trim() || "none";
+                  act(async () => {
+                    await setStorage({ backup });
+                    setBackupDraft(null);
+                    refresh();
+                  });
+                }}
+              >
+                <span style={{ flex: 1, minWidth: 260 }}>
+                  backup{" "}
+                  <span style={quiet}>
+                    ·{" "}
+                    {host.backup
+                      ? `the runs logs let go of are kept in ${host.backup.dir}: ${host.backup.exports} exports, ${sizeText(host.backup.bytes)}${host.backup.waiting ? `, ${host.backup.waiting} to make` : ""}`
+                      : "none: the runs logs let go of go"}
+                  </span>
+                </span>
+                <input
+                  aria-label="where the host backs up the runs logs let go of"
+                  title="a folder's whole path on the server's machine (an external drive, a folder a cloud client keeps in sync); empty: none. Object storage comes next, Holon Cloud is coming"
+                  placeholder="/mnt/archive"
+                  value={backupDraft ?? host.backup?.dir ?? ""}
+                  onChange={(e) => setBackupDraft(e.target.value)}
+                  style={{ ...input, width: 220 }}
+                />
+                <button type="submit" style={small} disabled={backupDraft === null}>
+                  set
+                </button>
+              </form>
+              <div style={{ ...row, flexDirection: "column", alignItems: "stretch", gap: 4 }}>
+                {keptLines(host.kept, Date.now()).map((l, i) => (
+                  <div key={l} style={i === 0 ? quiet : undefined}>
+                    {l}
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
+
           <div style={head}>storage</div>
           <div style={about}>
             What runs leave on this host that nothing kept names any more: states of runs the logs no longer keep, and the texts of files no kept run read or wrote. Anything put in
             the last hour, and code, is never swept. The same as <code>holon store sweep</code> and <code>holon folder sweep</code>.
           </div>
+          {sweeps && (
+            <>
+              <form
+                style={row}
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  act(async () => {
+                    const set = await setSweepEvery(everyDraft.trim());
+                    setHost((h) => (h ? { ...h, sweeps: set.sweeps } : h));
+                    setEveryDraft(set.sweeps.every);
+                  });
+                }}
+              >
+                <span style={{ flex: 1 }}>
+                  the server sweeps on its own <span style={quiet}>· {scheduleLine(sweeps, Date.now())}</span>
+                </span>
+                <input
+                  aria-label="how often the server sweeps"
+                  title="how often: 90s, 10m, 2h, 1d (a minute at the least), or off; written into the server's holon.toml [storage]"
+                  value={everyDraft}
+                  onChange={(e) => setEveryDraft(e.target.value)}
+                  style={{ ...input, width: 80 }}
+                />
+                <button type="submit" style={small} disabled={!isEvery(everyDraft) || everyDraft.trim() === sweeps.every}>
+                  set
+                </button>
+              </form>
+              <div style={{ ...row, ...quiet }}>
+                last: the store {reportLine(sweeps.store, "values", Date.now())}; file texts {reportLine(sweeps.folders, "texts", Date.now())}
+              </div>
+            </>
+          )}
           <div style={row}>
             <span style={{ flex: 1 }}>the store: states and values{swept.store && <span style={quiet}> · {swept.store}</span>}</span>
             <button

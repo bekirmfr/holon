@@ -116,9 +116,9 @@
 //! `Resolver` (it re-executes the cached computation to check the claimed output), but `Store`
 //! only hands back owned units, not a `Resolver`. `Registry::fork` faces the identical problem
 //! internally (its own doc: "materialize the root's bounded closure into one [resolver]") — so
-//! this inch reuses that shape rather than inventing a second one: `materialize_closure` walks
+//! this inch reuses that shape rather than inventing a second one: `closure` (units.rs) walks
 //! a unit's closure via `child_refs` (the same primitive `Registry::publish`'s own dangling-
-//! reference check already uses) and populates a fresh `MapResolver`, once per request. `SharedCache`
+//! reference check already uses), once per root hash: the flow cache keeps it after that. `SharedCache`
 //! itself is also in-memory only, same as `Registry`'s published set — restarting the server
 //! forgets ingested/cached entries too, worth restating rather than assuming obvious.
 //!
@@ -136,13 +136,13 @@
 //! published — the units themselves stay on disk in `FileStore`, only the "is it published"
 //! flag is lost. Not a bug in this inch; a pre-existing, named scope boundary of `Registry`.
 //!
-//! Localhost-only by design (the L4's Fork 1 resolution): binds `127.0.0.1`, and CORS is
-//! scoped to `localhost`/`127.0.0.1` origins only — never `*`. CORS alone never stopped a
-//! request from *running*, though, so every request first passes `reject_untrusted` (Host,
-//! Origin, Content-Type) and bodies are capped at `MAX_BODY_BYTES`. No auth: there is no "who" to
-//! gatekeep on a single local process, and content-addressing already answers "can I trust
-//! what I got back," which is the only question a stranger-facing boundary would have needed
-//! auth *for*.
+//! Binds `127.0.0.1` unless told another address (`--at`), and answers only a `Host` and an
+//! `Origin` it knows (localhost, or a name given with `--allow-host` / `--allow-origin`): CORS
+//! never `*`. CORS alone never stopped a request from *running*, so every request first passes
+//! `reject_untrusted` (Host, Origin, Content-Type), bodies are capped at `MAX_BODY_BYTES`, and
+//! no more than `MAX_IN_FLIGHT` are answered at once. Everyone signs in (access.rs): accounts
+//! with roles, API tokens, an identity provider, or this machine's own user through the run file
+//! (local.rs); docs/engineering/themes/security.md says what each guards and what it doesn't.
 
 mod access;
 mod accounts;
@@ -197,6 +197,7 @@ mod ranges;
 mod recorder;
 mod restore;
 mod scheduler;
+mod storage;
 mod sweep;
 mod sealing;
 mod secret_sources;
@@ -230,7 +231,7 @@ use holon_host::{
     run_rounds, PublishError, Waiting, Registry, Round, SharedCache, State, Store, StoreError,
 };
 use lifecycle::{Lifecycle, RunFrom, Session, Status};
-use recorder::{Log, LogEntry};
+use recorder::{Log, LogCell, LogEntry};
 use rouille::{Request, Response};
 use serde::{Deserialize, Serialize};
 
@@ -250,13 +251,20 @@ use scheduler::*;
 use units::*;
 use wire::*;
 
+/// What the server keeps beside its deployments file: the flow logs (and their sealed segments
+/// inside), the state heads, the arrivals it noted, the heads it published, its activity log.
+const BESIDE_DEPLOYMENTS: [&str; 5] = ["logs", "state", "arrivals", "heads", "activity.jsonl"];
+
 /// The server's own files, which no folder may be or hold: those it was given (`files`), what it
-/// keeps beside its deployments file (the flow logs, the arrivals it noted, the heads it
-/// published), the `.env` it reads secrets from, and the secrets key's file.
-fn server_files(files: &[&String], deployments: &str, dotenv: Option<&str>, key: &sealing::KeySource) -> Vec<PathBuf> {
+/// keeps beside its deployments file (`BESIDE_DEPLOYMENTS`) and beside its secrets file (their
+/// audit), the `.env` it reads secrets from, and the secrets key's file.
+fn server_files(files: &[&String], deployments: &str, secrets: &str, dotenv: Option<&str>, key: &sealing::KeySource) -> Vec<PathBuf> {
     let mut own: Vec<PathBuf> = files.iter().filter(|p| p.as_str() != ":memory:").map(PathBuf::from).collect();
     if deployments != ":memory:" {
-        own.extend(["logs", "arrivals", "heads"].map(|beside| Path::new(deployments).with_extension(beside)));
+        own.extend(BESIDE_DEPLOYMENTS.map(|beside| Path::new(deployments).with_extension(beside)));
+    }
+    if secrets != ":memory:" {
+        own.push(Path::new(secrets).with_extension("audit.jsonl"));
     }
     own.extend(dotenv.map(PathBuf::from));
     if let sealing::KeySource::File(path) = key {
@@ -276,20 +284,23 @@ type DynStore = Box<dyn Store + Send>;
 /// second clone stays with the server for direct `/unit` reads/writes — both clones lock the
 /// same underlying `Mutex`, so they see the same data. See the module doc for why this exists
 /// instead of a `holon-host` change.
-/// The third part notes the values put lately, for a sweep to spare (sweep.rs).
+/// The third part notes the values put lately, for a sweep to spare (sweep.rs); the fourth keeps
+/// the closures runs have loaded (units.rs's `FlowCache`); the fifth the values runs have read
+/// from disk (units.rs's `ValueCache`).
 #[derive(Clone)]
-struct SharedStore(Arc<Mutex<DynStore>>, Arc<calls::Hub>, Arc<sweep::Puts>);
+struct SharedStore(Arc<Mutex<DynStore>>, Arc<calls::Hub>, Arc<sweep::Puts>, Arc<units::FlowCache>, Arc<units::ValueCache>);
 
 impl SharedStore {
     /// A handle onto `backend`, which no run can yet reach the other deployments through: the
     /// server connects that once its table of deployments exists (`calls::Hub::connect`).
     fn new(backend: DynStore) -> SharedStore {
-        SharedStore(Arc::new(Mutex::new(backend)), Arc::default(), Arc::default())
+        // In memory already: nothing to keep beside it.
+        SharedStore(Arc::new(Mutex::new(backend)), Arc::default(), Arc::default(), Arc::default(), Arc::new(units::ValueCache::with_budget(0)))
     }
 
     /// The same onto a `FileStore` keeping its values in `values`, which a sweep may clear.
     fn on_disk(backend: DynStore, values: PathBuf) -> SharedStore {
-        SharedStore(Arc::new(Mutex::new(backend)), Arc::default(), Arc::new(sweep::Puts::at(values)))
+        SharedStore(Arc::new(Mutex::new(backend)), Arc::default(), Arc::new(sweep::Puts::at(values)), Arc::default(), Arc::default())
     }
 }
 
@@ -307,7 +318,15 @@ impl Store for SharedStore {
         Ok(hash)
     }
     fn get_value(&self, key: &Hash) -> Result<Option<Value>, StoreError> {
-        self.0.lock().unwrap().get_value(key)
+        // A value is its hash's forever, so one read from disk once is the same one kept.
+        if let Some(value) = self.4.get(key) {
+            return Ok(Some(value));
+        }
+        let value = self.0.lock().unwrap().get_value(key)?;
+        if let Some(v) = &value {
+            self.4.keep(*key, v);
+        }
+        Ok(value)
     }
 }
 
@@ -370,6 +389,8 @@ struct AppState {
     activity: activity::Activity,
     /// The editor, served at `/` (editor.rs): built in, or a folder; none without either.
     editor: Option<editor::Source>,
+    /// The server's own sweeps, on `[storage] sweep_every`'s schedule (storage.rs).
+    sweeps: storage::Sweeps,
 }
 
 impl AppState {
@@ -439,6 +460,13 @@ struct Deployment {
     /// unsupplied capability) is *not* an error — it's the same honest, expected outcome
     /// this whole project treats as normal everywhere else, not a fault to count.
     error_count: u64,
+    /// The runs of its unrecorded handlers, counted, by label: what the log doesn't hold of them.
+    /// Persisted with the deployments file, as the counts above are.
+    tallies: BTreeMap<String, wire::Tally>,
+    /// Its tallies changed since the deployments file was last written: the logs' periodic sync
+    /// writes it, so a restart keeps them, the last second's at most lost (an unrecorded handler's
+    /// failures are in its tally alone, resilience-audit-L4.md §2.8). Never persisted.
+    tallies_changed: bool,
     /// The routes and port, when the unit is a server declaration (`holon_core::read_server`):
     /// such a deployment is answered on its own port by the data plane (`data.rs`), not by
     /// `/trigger` or the clock. Derived from the unit at deploy and load time, never persisted.
@@ -479,8 +507,9 @@ struct Deployment {
     /// each pinned to the unit it started on.
     parked: BTreeMap<String, ParkedRun>,
     /// Every run, with what it read and produced (recorder.rs): the newest in memory, kept beside
-    /// the deployments file so a restart reads them back.
-    log: Log,
+    /// the deployments file so a restart reads them back. Behind a lock of its own, so a run's
+    /// entry is written without holding the table (docs/L4s/request-path-L4.md, C2).
+    log: Arc<LogCell>,
     /// Its channels, with their kept packs and subscribers (channels.rs): kept across redeploys,
     /// rebuilt from the log at load.
     channels: Arc<channels::Channels>,
@@ -528,6 +557,7 @@ const USAGE: &str = "usage: holon <command>
   folder add|list|remove             bind a name flows use to a folder on this machine (admin)
   database add|list|remove|tables    bind a name flows use to a database on this machine (admin)
   store sweep [--dry-run]            clear the stored states no kept run, version or state names
+  host                               what the host holds: memory, its disks, what it keeps (admin)
                                      (admin)
   mcp [--server PORT|URL]            tools for an agent (MCP, on stdin and stdout): check, deploy,
                                      call and explain flows; it never approves what they may do
@@ -546,9 +576,14 @@ const SERVE_USAGE: &str = "usage: holon serve [options]
   --data DIR                 keep everything below in DIR (or HOLON_DATA; default
                              ~/.holon/data, or HOLON_HOME/data)
   --data-host IP             where deployed flows' own servers listen (default 127.0.0.1)
-  --allow-host HOST          a host name it answers to besides localhost (repeatable)
+  --allow-host HOST          a host name it answers to besides localhost, on its own port and
+                             each flow's (repeatable): one a proxy in front forwards
   --allow-origin ORIGIN      an editor origin it answers besides localhost's (repeatable)
   --keep-runs N              runs each deployment's log keeps (default 500; or HOLON_KEEP_RUNS)
+  --flow-cache SIZE          memory kept for loaded flows, such as 64M or 1G; 0 keeps none
+                             (default 256M; or HOLON_FLOW_CACHE)
+  --value-cache SIZE         memory kept for values runs read from disk, such as 64M; 0 keeps
+                             none (default 64M; or HOLON_VALUE_CACHE)
   --export-heads URL         send each run's head to a witness (or HOLON_EXPORT_HEADS; its
                              token in HOLON_EXPORT_HEADS_TOKEN)
   --secrets PATH             the secrets file
@@ -624,6 +659,7 @@ fn main() {
         Some("oidc") => std::process::exit(accountscmd::oidc(&rest)),
         Some("folder") => std::process::exit(folders::cli(&rest)),
         Some("store") => std::process::exit(sweep::cli(&rest)),
+        Some("host") => std::process::exit(storage::cli(&rest)),
         Some("database") => std::process::exit(databases::cli(&rest)),
         // Not in the usage: the server runs it for the admin page's "browse…" (pick.rs).
         Some("pick-folder") => std::process::exit(pick::cli(&rest)),
@@ -701,6 +737,11 @@ fn serve(args: Vec<String>) {
     let mut data_limits = dataplane::DataLimits::default();
     // How many runs each deployment's log keeps (`--keep-runs N`, or HOLON_KEEP_RUNS; recorder.rs).
     let mut keep_runs: Option<String> = std::env::var("HOLON_KEEP_RUNS").ok().filter(|v| !v.trim().is_empty());
+    // How much memory loaded flows may keep (`--flow-cache SIZE`, or HOLON_FLOW_CACHE; units.rs).
+    let mut flow_cache: Option<String> = std::env::var("HOLON_FLOW_CACHE").ok().filter(|v| !v.trim().is_empty());
+    // How much memory values read from disk may keep (`--value-cache SIZE`, or HOLON_VALUE_CACHE;
+    // units.rs's `ValueCache`).
+    let mut value_cache: Option<String> = std::env::var("HOLON_VALUE_CACHE").ok().filter(|v| !v.trim().is_empty());
     // A witness every run's head goes to (`--export-heads URL`, or HOLON_EXPORT_HEADS; heads.rs).
     let mut export_heads: Option<String> = std::env::var("HOLON_EXPORT_HEADS").ok().filter(|v| !v.trim().is_empty());
     while let Some(a) = args.next() {
@@ -723,6 +764,18 @@ fn serve(args: Vec<String>) {
             keep_runs = args.next();
             if keep_runs.is_none() {
                 eprintln!("--keep-runs needs a number of runs (at least 1)");
+                std::process::exit(2);
+            }
+        } else if a == "--flow-cache" {
+            flow_cache = args.next();
+            if flow_cache.is_none() {
+                eprintln!("--flow-cache needs a size: 64M, 1G, or 0 to keep none");
+                std::process::exit(2);
+            }
+        } else if a == "--value-cache" {
+            value_cache = args.next();
+            if value_cache.is_none() {
+                eprintln!("--value-cache needs a size: 64M, 1G, or 0 to keep none");
                 std::process::exit(2);
             }
         } else if a == "--data-host" {
@@ -975,11 +1028,15 @@ fn serve(args: Vec<String>) {
     inside(&mut accounts_arg, ".holon-accounts.json", "accounts.json");
     inside(&mut host_key_arg, ".holon-host-key", "host.key");
     if landed {
-        if let Err(e) = std::fs::create_dir_all(&dir) {
+        // Its owner's only when it is made here: it holds every flow's state, logs and secrets.
+        if let Err(e) = holon_host::create_private_dir(&dir) {
             eprintln!("holon: the data folder {}: {e}", dir.display());
             std::process::exit(1);
         }
         println!("holon: data in {}", dir.display());
+        if let Some(warning) = open_to_others(&dir) {
+            eprintln!("holon: warning: {warning}");
+        }
     }
     if let Some(note) = migrate::left_here() {
         println!("holon: {note}");
@@ -1001,6 +1058,11 @@ fn serve(args: Vec<String>) {
         let cell = Arc::clone(&state_cell);
         rouille::Server::new(&addr, move |request| {
             let state = cell.get().expect("the server runs once its state is set");
+            // Each request has a thread of its own (rouille's): past MAX_IN_FLIGHT being answered
+            // at once, one more is told to try again rather than given work, signed in or not.
+            let Some(_admitted) = Admitted::take(&IN_FLIGHT, MAX_IN_FLIGHT) else {
+                return with_cors(&state.access, request, rouille::Response::json(&serde_json::json!({ "error": "the server is answering too many requests at once: try again in a moment" })).with_status_code(503).with_additional_header("Retry-After", "1"));
+            };
             with_cors(&state.access, request, route(state, request))
         })
     }
@@ -1019,6 +1081,24 @@ fn serve(args: Vec<String>) {
         let values = store.values_dir();
         SharedStore::on_disk(Box::new(store), values)
     };
+    if let Some(v) = flow_cache {
+        match verify::budget_of(&v) {
+            Some(bytes) => store.3.set_budget(bytes),
+            None => {
+                eprintln!("holon: --flow-cache (or HOLON_FLOW_CACHE) needs a size: 1048576, 64K, 64M or 1G, or 0 to keep none, not {v:?}");
+                std::process::exit(2);
+            }
+        }
+    }
+    if let Some(v) = value_cache {
+        match verify::budget_of(&v) {
+            Some(bytes) => store.4.set_budget(bytes),
+            None => {
+                eprintln!("holon: --value-cache (or HOLON_VALUE_CACHE) needs a size: 1048576, 64K, 64M or 1G, or 0 to keep none, not {v:?}");
+                std::process::exit(2);
+            }
+        }
+    }
     let registry = Mutex::new(Registry::new(store.clone()));
     let cache = Mutex::new(SharedCache::new());
     let refuse_to_start = |e: String| -> ! {
@@ -1046,6 +1126,7 @@ fn serve(args: Vec<String>) {
     let mut own = server_files(
         &[&store_arg, &deployments_arg, &flows_arg, &policy_arg, &secrets_arg, &folders_arg, &databases_arg, &accounts_arg, &host_key_arg],
         &deployments_arg,
+        &secrets_arg,
         dotenv_arg.as_deref(),
         &secrets_key,
     );
@@ -1075,21 +1156,41 @@ fn serve(args: Vec<String>) {
     spawn_clock_scheduler(store.clone(), Arc::clone(&deployments), deployments_arg.clone());
     arrivals::spawn_watcher(store.clone(), Arc::clone(&deployments), deployments_arg.clone());
     {
-        // The texts of files no kept run refers to any more are swept (folders.rs).
-        let (folders, deployments) = (Arc::clone(&folders), Arc::clone(&deployments));
+        // The run logs and event logs are synced to disk every second, so a power loss loses at most
+        // the last second of them (recorder.rs's `sync_logs`); and before each batch of heads goes
+        // to a witness, so a witness never holds a head whose line the disk lacks. A log a run found
+        // past what it keeps is cut back here too, so no run waits for it.
+        let syncing = Arc::clone(&deployments);
+        let kept_at = deployments_arg.clone();
         std::thread::spawn(move || {
+            let mut failing = false;
             loop {
-                let now = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64);
-                match folders::sweep(&folders, &deployments, now, folders::SWEEP_SPARES_MS) {
-                    Ok(s) if s.texts > 0 || s.chunks > 0 => {
-                        println!("holon: swept {} file texts no kept run refers to ({} freed)", s.texts, folders::size_text(s.bytes));
-                    }
-                    Ok(_) => {}
-                    Err(e) => eprintln!("holon: sweeping file texts: {e}"),
+                std::thread::sleep(recorder::SYNC_EVERY);
+                // Tallies counted since the deployments file was last written: written now.
+                // Every flag cleared, not only up to the first one set.
+                let mut counted = false;
+                for d in syncing.lock().unwrap().values_mut() {
+                    counted |= std::mem::take(&mut d.tallies_changed);
                 }
-                std::thread::sleep(folders::SWEEP_EVERY);
+                if counted {
+                    persist_deployments(&kept_at, &syncing);
+                }
+                match recorder::sync_logs(&syncing) {
+                    Ok(()) if failing => {
+                        println!("holon: the run logs are synced to disk again");
+                        failing = false;
+                    }
+                    Ok(()) => {}
+                    Err(e) if !failing => {
+                        eprintln!("holon: {e} (tried again every second)");
+                        failing = true;
+                    }
+                    Err(_) => {}
+                }
             }
         });
+        let before = Arc::clone(&deployments);
+        heads::before_send(Box::new(move || recorder::sync_logs(&before)));
     }
     let port = bound.port();
     // Everyone signs in (access.rs); a new server first needs its admin, set up with the code
@@ -1098,6 +1199,8 @@ fn serve(args: Vec<String>) {
     if let Some(code) = accounts.setup_code() {
         println!("holon: no accounts yet. Open the editor and set up the first admin with this code: {code}");
     }
+    // The names a flow's port answers to as well (dataplane.rs `host_allowed`).
+    data_limits.names = allow_hosts.clone();
     let access = access::Access::new(Arc::clone(&accounts), allow_hosts, allow_origins);
     let activity = activity::Activity::beside(&deployments_arg);
     store.1.connect(Arc::clone(&deployments), deployments_arg.clone());
@@ -1119,6 +1222,7 @@ fn serve(args: Vec<String>) {
         activity,
         access,
         editor: editor::Source::pick(editor_dir.map(std::path::PathBuf::from)),
+        sweeps: storage::Sweeps::default(),
     };
     sync_listeners(&state);
 
@@ -1138,5 +1242,50 @@ fn serve(args: Vec<String>) {
     if state_cell.set(state).is_err() {
         unreachable!("the state is set once");
     }
+    // The store's values and the folders' texts no kept run names any more are swept (storage.rs).
+    storage::start(Arc::clone(&state_cell));
     server.run();
+}
+
+/// Why the data folder `dir` is a warning, if it is: other users of this machine may read it
+/// (its mode lets the group or others in). A folder the server makes is its owner's only
+/// (`create_private_dir`), and so is every file it writes; one made before, or by someone else,
+/// is left as it is and said, since what it already holds (the store's values) isn't written
+/// again. None where the system has no modes.
+fn open_to_others(dir: &std::path::Path) -> Option<String> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(dir).ok()?.permissions().mode() & 0o777;
+        (mode & 0o077 != 0).then(|| format!("the data folder {} can be read by other users of this machine (mode {mode:o}): it holds every flow's state and logs; make it yours alone: chmod 700 {}", dir.display(), dir.display()))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = dir;
+        None
+    }
+}
+
+/// The control plane's requests being answered now, and how many may be at once: a request past
+/// it is answered 503 at once (`Admitted::take`), so a flood takes threads that end at once, not
+/// work (a run, a sign-in's hash). A stream's answer, once its handler has returned, isn't
+/// counted.
+static IN_FLIGHT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+const MAX_IN_FLIGHT: usize = 512;
+
+/// One request counted in `IN_FLIGHT` while it is answered.
+pub(crate) struct Admitted<'a>(&'a std::sync::atomic::AtomicUsize);
+
+impl<'a> Admitted<'a> {
+    /// Count one more in `in_flight`, unless `most` are there already.
+    pub(crate) fn take(in_flight: &'a std::sync::atomic::AtomicUsize, most: usize) -> Option<Admitted<'a>> {
+        use std::sync::atomic::Ordering;
+        in_flight.fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| (n < most).then_some(n + 1)).ok().map(|_| Admitted(in_flight))
+    }
+}
+
+impl Drop for Admitted<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+    }
 }

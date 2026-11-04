@@ -265,6 +265,10 @@ pub(crate) fn route(state: &AppState, request: &Request) -> Response {
             if method == "GET" {
                 return handle_get_versions(&state.deployments, slug);
             }
+        } else if let Some(slug) = rest.strip_suffix("/holds") {
+            if method == "GET" {
+                return crate::storage::handle_get_holds(state, slug);
+            }
         } else if let Some(slug) = rest.strip_suffix("/restore") {
             if method == "POST" {
                 let response = handle_post_restore(state, slug, request, by, agent);
@@ -306,7 +310,7 @@ pub(crate) fn route(state: &AppState, request: &Request) -> Response {
                 return scheduler::handle_post_tick(state, slug, request);
             }
         } else if method == "DELETE" {
-            let response = handle_delete_deployment(&state.store, &state.deployments, &state.deployments_path, rest);
+            let response = handle_delete_deployment(&state.deployments, &state.deployments_path, rest);
             if response.status_code == 200
                 && let Err(e) = state.secrets.forget(rest, by)
             {

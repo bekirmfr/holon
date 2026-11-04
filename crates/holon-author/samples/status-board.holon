@@ -1,0 +1,43 @@
+# Status board: how each handler's runs are recorded.
+#
+# Every run is recorded, and by default its record is on disk before the run answers: the handler
+# is strict. A handler that does nothing outside its run (it reads and answers) may say otherwise
+# on its line:
+#   lazy        recorded all the same, on disk within a second of the answer, so it answers
+#               without waiting on the disk;
+#   unrecorded  not in the log at all, failed or not: its runs are counted, with the last
+#               failure's status and error. A person approves it at deploy, "keep runs of
+#               GET /health out of its log, failed or not".
+# A handler that writes, calls out or waits is strict whatever it says: either word on one is an
+# error at the line that does it.
+#
+# Try it: deploy it (holon deploy status-board.holon, approving what it asks), then
+#   curl http://127.0.0.1:8170/health                                       "ok", counted
+#   curl -X POST -d '{"id":"a","text":"hi"}' http://127.0.0.1:8170/notes    "saved", strict
+#   curl http://127.0.0.1:8170/notes                                        the notes, lazy
+# holon history status-board lists the two notes runs, and the health checks as one counted line.
+# Put lazy on POST /notes and holon check says why it can't be.
+flow status-board
+port 8170
+collection notes
+
+# Answers the load balancer, every few seconds: not recorded, counted.
+route GET /health (req) unrecorded {
+  respond "ok"
+}
+
+# Lists the notes. Recorded, on disk within a second.
+route GET /notes (req) lazy {
+  respond notes.list(limit: 50)
+}
+
+# Adds a note. Strict, the default: its record is what the change is undone and explained by.
+route POST /notes (req) {
+  notes[req.json.id] = req.json.text
+  respond "saved"
+}
+
+# The notes, for whoever asks by hand. Not recorded.
+action report (input) unrecorded {
+  respond notes.list(limit: 50)
+}

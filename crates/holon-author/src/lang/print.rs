@@ -33,6 +33,15 @@ const RESERVED: &[&str] = &[
     "parse_json",
 ];
 
+/// A handler's log level as its line ends in it, before the block: ` lazy` or ` unrecorded`, and
+/// nothing for strict, which is the default and never written (docs/L4s/request-path-L4.md, C5).
+fn log_word(log: &str) -> String {
+    match holon_core::LogLevel::parse(log) {
+        Some(holon_core::LogLevel::Strict) | None => String::new(),
+        Some(level) => format!(" {}", level.word()),
+    }
+}
+
 /// Precedence of a printed expression, for parentheses: higher binds tighter.
 const ATOM: u8 = 100;
 const PREC_IF: u8 = 0;
@@ -675,7 +684,7 @@ impl<'s> Printer<'s> {
                     if !f.matching.is_empty() {
                         head.push_str(&format!(" matching {}", quote(&f.matching)));
                     }
-                    lines.push((format!("{head} ({name}) {{"), vec![f.on_file_id.clone()]));
+                    lines.push((format!("{head} ({name}){} {{", log_word(&f.log)), vec![f.on_file_id.clone()]));
                     let mut body = Block::new(self, &group, "  ", Some((f.on_file_id.clone(), name)));
                     lines.extend(body.statements()?);
                     lines.push(("}".into(), vec![]));
@@ -693,7 +702,7 @@ impl<'s> Printer<'s> {
                         lines.push((String::new(), vec![]));
                     }
                     let name = self.handle_name(by_id[a.action_id.as_str()], "input");
-                    lines.push((format!("action {} ({name}) {{", a.name), vec![a.action_id.clone()]));
+                    lines.push((format!("action {} ({name}){} {{", a.name, log_word(&a.log)), vec![a.action_id.clone()]));
                     let mut body = Block::new(self, &group, "  ", Some((a.action_id.clone(), name)));
                     lines.extend(body.statements()?);
                     lines.push(("}".into(), vec![]));
@@ -710,7 +719,7 @@ impl<'s> Printer<'s> {
                     if !lines.is_empty() {
                         lines.push((String::new(), vec![]));
                     }
-                    lines.push((format!("every {} {{", holon_core::period_text(c.seconds)), vec![c.every_id.clone()]));
+                    lines.push((format!("every {}{} {{", holon_core::period_text(c.seconds), log_word(&c.log)), vec![c.every_id.clone()]));
                     let mut body = Block::new(self, &group, "  ", None);
                     body.tick = Some(c.every_id.clone());
                     lines.extend(body.statements()?);
@@ -731,6 +740,7 @@ impl<'s> Printer<'s> {
             if !r.resume.is_empty() {
                 head.push_str(&format!(" resumes {}", r.resume));
             }
+            head.push_str(&log_word(&r.log));
             head.push_str(" {");
             if !lines.is_empty() {
                 lines.push((String::new(), vec![]));

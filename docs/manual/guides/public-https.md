@@ -41,7 +41,16 @@ and `caddy run` in its folder, `https://hooks.example.com/stripe` reaches the St
 proxy works the same way (nginx, Traefik, a cloud load balancer): forward HTTPS to the flow's port
 on 127.0.0.1.
 
-A flow's port accepts any `Host` header, so nothing in Holon needs to change.
+The proxy passes on the name it was reached by (`Host: hooks.example.com`), and a flow's port
+answers only an address, `localhost`, or a name the server was given, so give it the name:
+
+```sh
+holon serve --allow-host hooks.example.com
+```
+
+Without it the flow answers 421, saying so. (This keeps a web page you open, whose name was
+pointed at your machine, from reading what your flows answer: DNS rebinding.) Or have the proxy
+send the address instead: `reverse_proxy 127.0.0.1:8103 { header_up Host {upstream_hostport} }`.
 
 Several flows can share one name, by path:
 
@@ -78,8 +87,9 @@ DNS or certificates:
 cloudflared tunnel --url http://127.0.0.1:8103
 ```
 
-prints an `https://….trycloudflare.com` address that reaches the flow. `ngrok http 8103` does the
-same. A quick tunnel's address changes each time it starts, so update the webhook's endpoint
+prints an `https://….trycloudflare.com` address that reaches the flow, with
+`--http-host-header 127.0.0.1` so the flow is asked by its address (or start the server with
+`--allow-host` and the tunnel's name). `ngrok http 8103 --host-header=rewrite` does the same. A quick tunnel's address changes each time it starts, so update the webhook's endpoint
 (and, for Stripe, its signing secret) when it does. For something lasting, use a named tunnel or
 a proxy.
 
@@ -100,7 +110,8 @@ holon serve --allow-host holon.example.com --allow-origin https://holon.example.
 ```
 
 - `--allow-host`: the server answers only requests whose `Host` is localhost or a name it was
-  given, which keeps other sites from reaching it through your browser. Give the name the proxy
+  given (its flows' ports, an address too), which keeps other sites from reaching it through your
+  browser. Give the name the proxy
   passes on (and `name:port` if the public port differs from the one it listens on).
 - `--allow-origin`: the editor's own requests carry their page's origin, which must be one the
   server knows.

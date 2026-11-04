@@ -70,6 +70,8 @@ tokio = { version = "1", features = ["rt-multi-thread", "net", "time", "sync", "
 toml = "0.8"
 # `holon mcp setup` (mcphosts.rs) edits Codex's config.toml with its comments kept.
 toml_edit = "0.22"
+# Backups of the runs a log lets go of, gzipped (storage.rs).
+flate2 = "1"
 ureq = "2"
 zeroize = "1"
 

@@ -26,6 +26,14 @@ pub trait Resolver {
     fn run_module(&self, _bytes: &[u8], _limits: &ModuleLimits, _inputs: &[Option<Value>]) -> Result<Vec<Option<Value>>, String> {
         Err("this host runs no code".into())
     }
+
+    /// The shape kept for `unit` (a composite this resolver handed out, found by the unit itself,
+    /// see [`crate::Shapes`]), so a run needn't work it out again. The default keeps none, and
+    /// each run works it out: the same shape, made again. A wrapper over another resolver
+    /// forwards.
+    fn shape(&self, _unit: &Unit) -> Option<&crate::Shape> {
+        None
+    }
 }
 
 /// In-memory resolver (Phase A): a deterministic map, populated as units are built.
@@ -48,6 +56,11 @@ impl MapResolver {
         let h = hash_unit(&unit)?;
         self.units.insert(h, unit);
         Ok(h)
+    }
+
+    /// Every unit it holds, in hash order.
+    pub fn units(&self) -> impl Iterator<Item = &Unit> {
+        self.units.values()
     }
 }
 

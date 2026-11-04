@@ -36,6 +36,7 @@ pub(crate) fn part(item: &str) -> (&'static str, &'static str, String, String) {
         "Clock" => ("other", "clock", arg, s("read")),
         "Action" => ("triggers", "action", arg, s("by hand")),
         "AgentRuns" => ("triggers", "action", arg, s("by agents")),
+        "Unrecorded" => ("other", "log", arg, s("not recorded")),
         "Await" => ("triggers", "wait", arg, s("wait for it")),
         "FileArrival" => ("resources", "folder", arg, s("watch")),
         "FileRead" => ("resources", "folder", arg, s("read")),

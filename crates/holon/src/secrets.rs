@@ -60,8 +60,10 @@ pub(crate) struct Resolved {
     /// name → the version its current value is of, and when it was last read from its source.
     fetched: BTreeMap<String, (u32, std::time::Instant)>,
     /// What seals what the deployment keeps on disk that may hold these values (a waiting run's
-    /// requests): the store's, under its master key. None for a store that keeps no key
-    /// (`":memory:"`), whose seal couldn't be opened after a restart.
+    /// requests): the store's, under its master key; a store that keeps no key (`":memory:"`)
+    /// seals under one that is never kept, so what it sealed can't be opened after a restart, as
+    /// its secrets aren't there after one. Set whenever the vault is (`vault`, `resolve`): a
+    /// waiting run is never written to disk unsealed. None only for a vault no store made.
     pub(crate) sealer: Option<Arc<Sealer>>,
     /// What fingerprints a value the log shows by a mark (a token a call answered), for every
     /// store, an in-memory one too: unlike `sealer`, nothing is opened with it later.
@@ -384,9 +386,10 @@ impl SecretStore {
             }
             Arc::clone(&slugs[slug].vault)
         };
-        vault.lock().unwrap().prints.get_or_insert_with(|| Arc::clone(&self.sealer));
-        if self.path != ":memory:" {
-            vault.lock().unwrap().sealer.get_or_insert_with(|| Arc::clone(&self.sealer));
+        {
+            let mut v = vault.lock().unwrap();
+            v.prints.get_or_insert_with(|| Arc::clone(&self.sealer));
+            v.sealer.get_or_insert_with(|| Arc::clone(&self.sealer));
         }
         vault
     }
@@ -673,7 +676,9 @@ impl SecretStore {
     /// A value from a remote source that can't be read now is kept, for [`STALE_AFTER`] at most.
     /// `server`: the server's secrets ([`SERVER`]), read where the deployment has none of its own.
     fn resolve(&self, slug: &str, entry: &Slug, server: Option<&Slug>) {
-        let mut resolved = Resolved { prints: Some(Arc::clone(&self.sealer)), ..Resolved::default() };
+        // Its sealer too: a vault rebuilt without one (a secret set, a source read again) left a
+        // waiting run to be written to disk unsealed.
+        let mut resolved = Resolved { prints: Some(Arc::clone(&self.sealer)), sealer: Some(Arc::clone(&self.sealer)), ..Resolved::default() };
         let mut before = std::mem::take(&mut *entry.vault.lock().unwrap());
         let now = std::time::Instant::now();
         let caps = self.caps.lock().unwrap();
@@ -901,6 +906,11 @@ impl Redactor {
         self
     }
 
+    /// Whether it has nothing to replace.
+    pub(crate) fn is_empty(&self) -> bool {
+        self.pairs.is_empty()
+    }
+
     /// Whether `s` holds any of its values.
     pub(crate) fn holds(&self, s: &str) -> bool {
         self.pairs.iter().any(|(value, _)| !value.is_empty() && s.contains(value.as_str()))
@@ -951,11 +961,13 @@ impl Redactor {
     /// `s` as the log writes it: each value replaced by its mark (the leftmost first, the longest
     /// where two start together), and a look-alike of a mark in the run's own text escaped
     /// ([`write_marked`]). Whether one was.
-    fn logged(&self, s: &str) -> (String, bool) {
-        let mut next: Vec<Option<usize>> = self.pairs.iter().map(|(value, _)| (!value.is_empty()).then(|| s.find(value.as_str())).flatten()).collect();
-        if !s.contains('‹') && next.iter().all(Option::is_none) {
-            return (s.to_string(), false);
+    fn logged(&self, s: &str) -> Option<(String, bool)> {
+        // Nothing to mark and nothing that reads as a mark: the text stays as it is, uncopied
+        // (interpreter-path-L4.md, step 2).
+        if !s.contains('‹') && self.pairs.iter().all(|(value, _)| value.is_empty() || !s.contains(value.as_str())) {
+            return None;
         }
+        let mut next: Vec<Option<usize>> = self.pairs.iter().map(|(value, _)| (!value.is_empty()).then(|| s.find(value.as_str())).flatten()).collect();
         let mut pieces = Vec::new();
         let mut at = 0;
         loop {
@@ -971,15 +983,16 @@ impl Redactor {
             at = p + self.pairs[k].0.len();
         }
         pieces.push((&s[at..], false));
-        write_marked(&pieces)
+        Some(write_marked(&pieces))
     }
 
     fn logged_svalue(&self, v: &mut SValue) -> bool {
         let mut escaped = false;
         texts_mut(v, &mut |s| {
-            let (out, e) = self.logged(s);
-            *s = out;
-            escaped |= e;
+            if let Some((out, e)) = self.logged(s) {
+                *s = out;
+                escaped |= e;
+            }
         });
         escaped
     }
@@ -1018,9 +1031,10 @@ impl Redactor {
             }
         }
         for s in [&mut e.response_body, &mut e.error, &mut e.url].into_iter().flatten() {
-            let (out, e) = self.logged(s);
-            *s = out;
-            escaped |= e;
+            if let Some((out, e)) = self.logged(s) {
+                *s = out;
+                escaped |= e;
+            }
         }
         e.escaped |= escaped;
     }
@@ -1037,7 +1051,10 @@ pub(crate) fn texts_mut(v: &mut SValue, f: &mut impl FnMut(&mut String)) {
                 f(k);
                 texts_mut(x, f);
             }
-            fields.sort_by(|a, b| a.0.cmp(&b.0));
+            // A stable sort leaves keys already in order as they are: only sorted when not.
+            if !fields.is_sorted_by(|a, b| a.0 <= b.0) {
+                fields.sort_by(|a, b| a.0.cmp(&b.0));
+            }
         }
         SValue::Effect { payload, .. } | SValue::Sum { payload, .. } => texts_mut(payload, f),
         SValue::Number(_) | SValue::Boolean(_) => {}
@@ -1120,6 +1137,29 @@ pub(crate) fn unescaped(v: &mut SValue) {
 
 #[cfg(test)]
 mod tests {
+    /// A redactor with nothing to mark leaves every text without a `‹` as it is (D3): what the log's
+    /// shortcut (`firing::redacted_line`) counts on. Thousands of texts of the awkward kinds: quotes,
+    /// backslashes, `›`, the words a mark is made of, text of several bytes a character.
+    #[test]
+    fn with_nothing_to_mark_a_text_without_a_mark_sign_stays_as_it_is() {
+        let none = Redactor::tokens(&BTreeMap::new());
+        assert!(none.is_empty());
+        let pieces = ["a", " ", "\"", "\\", "\n", "›", "secret:", "token:", "é", "😀", "{", "}", "#", "x1"];
+        let mut seed = 0x1234_5678_9abc_def0u64;
+        let mut next = move |m: u64| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed % m
+        };
+        for _ in 0..5000 {
+            let text: String = (0..next(12)).map(|_| pieces[next(pieces.len() as u64) as usize]).collect();
+            assert_eq!(none.logged(&text), None, "{text:?}");
+        }
+        // And one with a `‹` is looked at (escaped where it reads as a mark).
+        assert_eq!(none.logged("sent ‹token:paid›"), Some(("sent ‹‹token:paid›".to_string(), true)));
+    }
+
     use super::*;
 
     fn temp(name: &str) -> (String, KeySource) {
@@ -1428,7 +1468,8 @@ mod tests {
             ("‹‹secret:key› and ‹sk_123456", "‹‹‹‹secret:key› and ‹‹‹secret:key›", "‹‹secret:key› and ‹[‹secret:key›]"),
             ("open ‹token:paid", "open ‹‹token:paid", "open ‹token:paid"),
         ] {
-            let (out, escaped) = r.logged(run);
+            // Unchanged comes back as none: the text as it is, nothing escaped.
+            let (out, escaped) = r.logged(run).unwrap_or_else(|| (run.to_string(), false));
             assert_eq!(out, logged, "{run:?}");
             assert_eq!(escaped, logged != run.replace("sk_123456", "‹secret:key›").replace("tok-abcdef", "‹token:paid›"), "{run:?}");
             assert_eq!(read(&out, escaped), marks, "{run:?}");

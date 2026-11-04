@@ -155,7 +155,7 @@ pub enum WBody {
 }
 
 fn bytes_to_hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
+    holon_core::hex(bytes)
 }
 
 fn hex_to_bytes(hex: &str) -> Result<Vec<u8>, String> {

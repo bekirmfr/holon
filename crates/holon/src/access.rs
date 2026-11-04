@@ -167,10 +167,13 @@ impl Access {
             };
             match identity.email.as_deref().and_then(|e| accounts.by_email(e)) {
                 Some(who) => Ok(who),
-                None => {
-                    let shown = identity.email.unwrap_or(identity.subject);
-                    Err(err(403, format!("signed in as {shown}, who has no account here: ask an admin to add you with that email")))
-                }
+                None => match (identity.email, identity.unverified) {
+                    (None, Some(email)) => Err(err(403, format!("your identity provider gave {email} but didn't say it verified it: an account here is matched by an email the provider vouches for (email_verified); ask your provider's admin"))),
+                    (email, _) => {
+                        let shown = email.unwrap_or(identity.subject);
+                        Err(err(403, format!("signed in as {shown}, who has no account here: ask an admin to add you with that email")))
+                    }
+                },
             }
         } else {
             match accounts.who(presented) {
@@ -321,6 +324,10 @@ mod tests {
         assert_eq!(call(&access, "POST", "/flows", Some(&cy)), Err(403), "still a viewer");
         let eve = token(serde_json::json!({ "email": "eve@example.com", "email_verified": true }));
         assert_eq!(call(&access, "GET", "/flows", Some(&eve)), Err(403), "no account with that email");
+        // The provider doesn't say it verified cy's email: not cy (a person can type any email at
+        // some providers), and so no one.
+        let unsaid = token(serde_json::json!({ "email": "cy@example.com" }));
+        assert_eq!(call(&access, "GET", "/flows", Some(&unsaid)), Err(403), "an email not said to be verified");
         let expired = token(serde_json::json!({ "email": "cy@example.com", "exp": crate::deploy::epoch_now() - 3600 }));
         assert_eq!(call(&access, "GET", "/flows", Some(&expired)), Err(401));
     }

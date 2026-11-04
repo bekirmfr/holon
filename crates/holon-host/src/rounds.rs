@@ -353,7 +353,7 @@ impl<O: Observer, W: Waits> Observer for Asking<'_, O, W> {
     fn failed(&mut self, path: &[u32], reason: &str) {
         self.inner.failed(path, reason);
     }
-    fn asserted(&mut self, path: &[u32], unit: &Unit, inputs: &[Option<Value>]) -> Option<Vec<Option<Value>>> {
+    fn asserted(&mut self, path: &[u32], unit: &Unit, inputs: &[Option<&Value>]) -> Option<Vec<Option<Value>>> {
         self.inner.asserted(path, unit, inputs)
     }
     fn answer(&mut self, path: &[u32], request: &Value) -> Answer {

@@ -9,7 +9,8 @@
 // (replayed, replay.ts).
 
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
-import { downloadRuns, getCollectionItems, getLog, type LogEntry, type VersionEntry } from "./server";
+import { downloadRuns, getCollectionItems, getLog, type LogEntry, type Tally, type VersionEntry } from "./server";
+import { tallyRows } from "./tallies";
 import { BackButton, everything, HistoryList, itemDetails, useHistory, useRestore } from "./HistoryPane";
 import { CellHistoryButton } from "./CellHistory";
 import { buildTimeline, targetOf, type CodeText, type TimelineItem } from "./timeline";
@@ -86,18 +87,21 @@ export function nodeLabel(n: ViewNode): string {
 function useFlowLog(slug: string) {
   const [entries, setEntries] = useState<LogEntry[]>([]);
   const [chain, setChain] = useState<{ head: string; breaks: number[] }>({ head: "", breaks: [] });
+  const [tallies, setTallies] = useState<Record<string, Tally>>({});
   const [error, setError] = useState("");
   const last = useRef<number | undefined>(undefined);
   useEffect(() => {
     last.current = undefined;
     setEntries([]);
     setChain({ head: "", breaks: [] });
+    setTallies({});
     let stopped = false;
     const poll = () =>
       getLog(slug, last.current)
-        .then(({ entries: fresh, head, breaks }) => {
+        .then(({ entries: fresh, head, breaks, tallies: counted }) => {
           if (stopped) return;
           setChain((old) => (old.head === head && old.breaks.length === (breaks ?? []).length ? old : { head, breaks: breaks ?? [] }));
+          setTallies((old) => (JSON.stringify(old) === JSON.stringify(counted ?? {}) ? old : (counted ?? {})));
           if (fresh.length === 0) return;
           last.current = fresh[fresh.length - 1].seq;
           setEntries((old) => [...old, ...fresh].slice(-KEEP));
@@ -111,7 +115,7 @@ function useFlowLog(slug: string) {
       clearInterval(timer);
     };
   }, [slug]);
-  return { entries, chain, error };
+  return { entries, chain, tallies, error };
 }
 
 function Tabs<T extends string>({
@@ -281,7 +285,7 @@ export function BottomPane({
   /** Fit the canvas to a set of nodes (double-click run). */
   onFitToNodes: (ids: string[]) => void;
 }) {
-  const { entries, chain, error } = useFlowLog(slug);
+  const { entries, chain, tallies, error } = useFlowLog(slug);
   // The pane's height, dragged by its top edge: set on the canvas grid it is a row of
   // (`--view-height`, styles.css), so the canvas above takes the rest.
   const pane = useRef<HTMLDivElement>(null);
@@ -406,6 +410,7 @@ export function BottomPane({
       )}
       <LogTab
         entries={entries}
+        tallies={tallies}
         selected={selected}
         pick={pick}
         unpick={unpick}
@@ -440,6 +445,7 @@ type FilterableCol = "session" | "label" | "actions" | "status";
 
 function LogTab({
   entries,
+  tallies,
   selected,
   pick,
   unpick,
@@ -463,6 +469,8 @@ function LogTab({
   onRestored?: () => void;
   codeText?: CodeText;
   entries: LogEntry[];
+  /** Its unrecorded handlers' runs, counted: a row each above the runs. */
+  tallies: Record<string, Tally>;
   selected: LogEntry | null;
   pick: (e: LogEntry) => void;
   /** Show no run: a history row that isn't one is picked. */
@@ -781,7 +789,19 @@ function LogTab({
             <span style={{ width: 64, flexShrink: 0 }} />
           </div>
           <div style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: "0 0 8px" }}>
-            {sorted.length === 0 && (
+            {tallyRows(tallies).map((t) => (
+              <div
+                key={t.label}
+                className="hl-view__tally"
+                style={{ display: "flex", gap: 10, padding: "2px 6px", color: dim, borderBottom: "1px solid #1b2a45" }}
+                title="this handler's line says unrecorded: its runs are counted, not logged, failed or not, so they can't be replayed or explained; make it lazy for a while to see why one fails"
+              >
+                <span style={{ color: ink }}>{t.label}</span>
+                <span>not recorded</span>
+                <span>{t.line}</span>
+              </div>
+            ))}
+            {sorted.length === 0 && tallyRows(tallies).length === 0 && (
               <div style={{ padding: 8, color: dim }}>
                 {entries.length === 0 ? "no runs yet: send it a request" : "no runs match the filter"}
               </div>

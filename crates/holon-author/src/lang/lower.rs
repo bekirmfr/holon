@@ -1058,6 +1058,9 @@ impl<'a> Lowerer<'a> {
         if let Some(res) = &r.resumes {
             params.push(("resume".into(), res.text.clone()));
         }
+        if let Some(log) = &r.log {
+            params.push(("log".into(), log.text.clone()));
+        }
         let request = self.node("request", &params, r.method.span.to(r.path.span))?;
         let Val::Out { id, .. } = &request else { unreachable!() };
         let id = id.clone();
@@ -1108,7 +1111,9 @@ impl<'a> Lowerer<'a> {
     fn every(&mut self, e: &'a EveryDef) -> R<()> {
         let seconds = if e.seconds.fract() == 0.0 && e.seconds >= 1.0 { number_text(e.seconds) } else { String::new() };
         crate::templates::period(&seconds).or_else(|_| err(e.head, format!("every {}: a clock runs every whole number of seconds, from 1s to 366d", e.text)))?;
-        let tick = self.node("every", &[("seconds".to_string(), seconds)], e.head)?;
+        let mut params = vec![("seconds".to_string(), seconds)];
+        params.extend(e.log.iter().map(|w| ("log".to_string(), w.text.clone())));
+        let tick = self.node("every", &params, e.head)?;
         let Val::Out { id, .. } = &tick else { unreachable!() };
         let id = id.clone();
         let mut frame = Frame::new(FrameKind::Every { tick: id.clone() });
@@ -1139,6 +1144,7 @@ impl<'a> Lowerer<'a> {
         if let Some(m) = &o.on.matching {
             params.push(("matching".into(), m.clone()));
         }
+        params.extend(o.log.iter().map(|w| ("log".to_string(), w.text.clone())));
         let file = self.node("on_file", &params, o.head)?;
         let Val::Out { id, .. } = &file else { unreachable!() };
         let id = id.clone();
@@ -1170,7 +1176,9 @@ impl<'a> Lowerer<'a> {
     /// §2, §3); `respond v` answers.
     fn action(&mut self, a: &'a ActionDef) -> R<()> {
         crate::templates::action_name(&[WParam::frozen("name", &a.name.text)]).or_else(|e| err(a.name.span, e))?;
-        let node = self.node("action", &[("name".to_string(), a.name.text.clone())], a.head)?;
+        let mut params = vec![("name".to_string(), a.name.text.clone())];
+        params.extend(a.log.iter().map(|w| ("log".to_string(), w.text.clone())));
+        let node = self.node("action", &params, a.head)?;
         let Val::Out { id, .. } = &node else { unreachable!() };
         let id = id.clone();
         self.names.insert(id.clone(), a.input.text.clone());
