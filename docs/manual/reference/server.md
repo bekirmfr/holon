@@ -73,7 +73,7 @@ server holds now:
 
 The server looks at what it holds every ten seconds, and warns of:
 
-- **a disk past `warn_at`**, naming the flow whose share grew most since the store was last
+- **a disk past `warn_at`** (or past `full_at`, if that is reached first), naming the flow whose share grew most since the store was last
   counted;
 - **a cache at its size** most of the last hour: it let go of flows (or values) to make room at
   most looks, so runs load them from disk again;
@@ -135,11 +135,12 @@ allow_plain_http = true
     free), what the server does. `warn` (the default): nothing but the warning; once the disk
     fills, a strict run fails its sync and answers 500. `pause`: every deployment that records
     runs is paused by the host (its routes answer 503, its clocks stop; one whose runs are all
-    unrecorded goes on), and resumed once every disk is back under `warn_at`; one a person resumes
+    unrecorded goes on), and resumed once every disk is back under `warn_at` (and under `full_at`:
+    one written in another unit, `85%` and `500G` free, may be reached first); one a person resumes
     while the disk is still full is paused again, one a person paused stays paused. `roll`: every
     ten seconds, the biggest log on disk is cut to half the runs it keeps (never below 20), its
     file cut back within a second, and the first cut sweeps the store at once; once back under
-    `warn_at`, each log keeps its runs as granted again (what was cut stays cut). Each is said on
+    both, each log keeps its runs as granted again (what was cut stays cut). Each is said on
     the deployment's timeline. Set with `holon policy --full-at --when-full`, or on the admin page.
   - `backup`: a folder's whole path (an external or second drive, or a folder a cloud client
     keeps in sync: Dropbox, Google Drive, OneDrive), or `none` (the default). The runs a log lets

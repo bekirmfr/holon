@@ -1155,8 +1155,8 @@ fn the_host_warns_of_a_full_disk_and_a_full_cache_once_each() {
     state.policy_path = path.display().to_string();
     let warnings = || body_json(route(&state, &req("GET", "/admin/warnings", vec![])))["warnings"].as_array().cloned().unwrap();
     let set = |body: &str| route(&state, &req("POST", "/admin/storage", body.as_bytes().to_vec()));
-    // Nothing near a 1 KiB floor: no warning.
-    assert_eq!(set(r#"{"warn_at":"1K"}"#).status_code, 200);
+    // Nothing near a 2 KiB floor (nor past the 1 KiB it acts at, warned of too): no warning.
+    assert_eq!(set(r#"{"warn_at":"2K","full_at":"1K"}"#).status_code, 200);
     assert_eq!(warnings(), Vec::<serde_json::Value>::new());
     // A floor no disk has: its disk warns, with what to do.
     assert_eq!(set(r#"{"warn_at":"1000T","full_at":"1K"}"#).status_code, 200);
@@ -1247,6 +1247,19 @@ fn a_full_disk_pauses_what_records_runs_until_there_is_room() {
     assert_eq!(route(&state, &req("POST", &format!("/deployments/{recorded}/pause"), b"{}".to_vec())).status_code, 200);
     state.sweeps.act(&state, 4);
     assert_eq!(status(&recorded), crate::lifecycle::Status::Paused);
+    // A full_at in another unit than warn_at, reached first (a floor of free space no disk has,
+    // and a percentage no disk is past): paused, warned of, and not resumed at the next look.
+    assert_eq!(route(&state, &req("POST", &format!("/deployments/{recorded}/run"), b"{}".to_vec())).status_code, 200);
+    assert_eq!(set(r#"{"warn_at":"99%","full_at":"1000T"}"#).status_code, 200);
+    let pauses = || events(&recorded).matches("paused by the host").count();
+    let before = pauses();
+    for look in 5..8 {
+        state.sweeps.act(&state, look);
+        assert_eq!(status(&recorded), crate::lifecycle::Status::Paused, "look {look}");
+    }
+    assert_eq!(pauses(), before + 1, "paused once, not paused and resumed at each look: {}", events(&recorded));
+    let w = body_json(route(&state, &req("GET", "/admin/warnings", vec![])))["warnings"].clone();
+    assert!(w.as_array().unwrap().iter().any(|w| w["key"].as_str().unwrap().starts_with("disk:") && w["todo"].as_str().unwrap().contains("paused until")), "warned of: {w}");
     let _ = std::fs::remove_file(&path);
     let _ = std::fs::remove_dir_all(&disk);
 }

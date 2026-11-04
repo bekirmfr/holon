@@ -253,7 +253,9 @@ pub(crate) fn warnings(state: &AppState) -> Vec<Warning> {
     let disks = disks(state);
     for d in &disks {
         let (total, free) = (d["size"].as_u64().unwrap_or(0), d["free"].as_u64().unwrap_or(0));
-        if !at.past(total, free) {
+        // Past `full_at` is warned of too: one written in another unit than `warn_at` (85%, and
+        // 500G free) may be reached first.
+        if !at.past(total, free) && !policy.storage.full_at.past(total, free) {
             continue;
         }
         let holds: Vec<&str> = d["holds"].as_array().into_iter().flatten().filter_map(|h| h.as_str()).collect();
@@ -388,7 +390,8 @@ impl Sweeps {
 
     /// When a disk is past `[storage] full_at`, do what `when_full` says: pause every deployment
     /// that records runs, or cut the oldest runs of the biggest log on disk to half (to
-    /// `ROLL_FLOOR` at the least), one a look, sweeping at the first; once every disk is back under `warn_at`, resume what it paused
+    /// `ROLL_FLOOR` at the least), one a look, sweeping at the first; once every disk is back under
+/// `warn_at` and `full_at`, resume what it paused
     /// and keep what it cut as granted again. Each on its deployment's timeline.
     pub(crate) fn act(&self, state: &AppState, now_ms: u64) {
         let policy = state.policy();
@@ -455,8 +458,10 @@ impl Sweeps {
             }
             _ => {}
         }
-        if !warned {
-            // Room again: what it did, undone.
+        if !warned && full_pct.is_none() {
+            // Room again: what it did, undone. Under `full_at` too: one written in another unit
+            // than `warn_at` may be reached first, and undoing what it does at once would pause
+            // and resume (or cut and keep again) at every look.
             let rolled = std::mem::take(&mut self.watch.lock().unwrap().rolled);
             let mut table = state.deployments.lock().unwrap();
             for (slug, dep) in table.iter_mut() {
