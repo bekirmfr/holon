@@ -475,6 +475,18 @@ for (let r = 8; r >= 1; r--) $("ranks").append(Object.assign(document.createElem
 for (const f of "abcdefgh") $("files").append(Object.assign(document.createElement("span"), { textContent: f }));
 start.talk.forEach((t) => exchange(t, false));
 draw();
+// The Sphinx may move over MCP, and a piece may speak, without this page's own requests: so the page
+// asks GET /game every two seconds, and reloads (the state is all on the server) when the game or the
+// chat has changed. It waits while the player is moving or looking at an earlier position.
+const stamp = (g) => JSON.stringify([g.pgn, g.waiting ? 1 : 0, g.status, (g.talk || []).length]);
+let shown = stamp({ ...start.board, talk: start.talk });
+setInterval(async () => {
+  if (busy || sent || pending || drag || sel || view !== null) return;
+  try {
+    const r = await fetch("/game", { cache: "no-store" });
+    if (r.ok && stamp(await r.json()) !== shown) location.reload();
+  } catch (_) {}
+}, 2000);
 </script>`;
 }
 
@@ -1011,7 +1023,8 @@ route GET / (req) {
 
 # The game as it stands, with its PGN.
 route GET /game (req) {
-  respond games["current"] ?? rules(opponent(""), "")
+  board = games["current"] ?? rules(opponent(""), "")
+  respond { ..board, talk: games["chat"] ?? [] }
 }
 
 # The player's move (or "resign"), checked by the rules (400 if it isn't legal, and nothing
