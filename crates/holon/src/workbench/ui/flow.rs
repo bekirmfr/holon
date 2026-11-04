@@ -166,7 +166,13 @@ fn dashboard(f: &mut Frame, app: &App, d: &Detail, area: Rect) {
 
     // Left: the last day, then what it may do.
     let may = crate::workbench::client::strings(&d.manifest, "items");
-    let [day, may_area] = Layout::vertical([Constraint::Length(5), Constraint::Min(3)]).areas(left);
+    // What it holds, in memory and on disk (storage.rs), below what it may do.
+    let holds: Vec<String> = if d.holds.is_object() { crate::storage::holds_lines(&d.holds) } else { vec![] };
+    let holds_h = if holds.is_empty() { 0 } else { holds.len() as u16 + 2 };
+    let [day, may_area, holds_area] = Layout::vertical([Constraint::Length(5), Constraint::Min(3), Constraint::Length(holds_h)]).areas(left);
+    if holds_h > 0 {
+        f.render_widget(Paragraph::new(holds.into_iter().map(|l| Line::from(Span::raw(l))).collect::<Vec<_>>()).block(panel("It holds", false)), holds_area);
+    }
     let block = panel("Last 24 h", false);
     let inner = block.inner(day);
     f.render_widget(block, day);
@@ -229,8 +235,10 @@ fn dashboard(f: &mut Frame, app: &App, d: &Detail, area: Rect) {
     let block = panel("Latest runs", false);
     let inner = block.inner(latest);
     f.render_widget(block, latest);
-    let shown = (inner.height as usize).min(d.runs.len());
-    let lines: Vec<Line> = d.runs.iter().rev().take(shown).map(|r| run_row(d, r, inner.width as usize)).collect();
+    // Its unrecorded handlers first, a line each: their runs are counted, not in the list.
+    let mut lines: Vec<Line> = unrecorded_lines(d).into_iter().map(|(label, said)| Line::from(vec![Span::styled(format!("{label}  "), Style::new().fg(Color::White)), dim(fit(&said, (inner.width as usize).saturating_sub(label.len() + 2)))])).collect();
+    let shown = (inner.height as usize).saturating_sub(lines.len()).min(d.runs.len());
+    lines.extend(d.runs.iter().rev().take(shown).map(|r| run_row(d, r, inner.width as usize)));
     if lines.is_empty() {
         f.render_widget(Paragraph::new(dim("No runs yet: c calls it.")), inner);
     } else {
@@ -240,6 +248,40 @@ fn dashboard(f: &mut Frame, app: &App, d: &Detail, area: Rect) {
 }
 
 // ── the split panes ──────────────────────────────────────────────────────────────────────────
+
+/// Its unrecorded handlers, by label, each with what its tally says (docs/L4s/request-path-L4.md,
+/// C5): "not recorded: 1204 runs, 0.4 ms each, 2 failed, the last 503: why".
+pub(crate) fn unrecorded_lines(d: &Detail) -> Vec<(String, String)> {
+    let Some(tallies) = d.entry["tallies"].as_object() else { return vec![] };
+    tallies
+        .iter()
+        .map(|(label, t)| {
+            let (runs, failed, total) = (t["runs"].as_u64().unwrap_or(0), t["failed"].as_u64().unwrap_or(0), t["total_ms"].as_f64().unwrap_or(0.0));
+            let mut said = format!("not recorded: {runs} run{}", if runs == 1 { "" } else { "s" });
+            if runs > 0 {
+                said.push_str(&format!(", {:.1} ms each", total / runs as f64));
+            }
+            if failed > 0 {
+                said.push_str(&format!(", {failed} failed{}", last_failure(&t["last_failure"])));
+            }
+            (label.clone(), said)
+        })
+        .collect()
+}
+
+/// A tally's last failure, as a line says it: ", the last 503: why" (nothing when there is none).
+fn last_failure(f: &serde_json::Value) -> String {
+    let Some(status) = f["status"].as_u64() else { return String::new() };
+    match f["error"].as_str() {
+        Some(e) => format!(", the last {status}: {e}"),
+        None => format!(", the last {status}"),
+    }
+}
+
+/// How many runs of its unrecorded handlers were counted.
+fn unrecorded_runs(d: &Detail) -> u64 {
+    d.entry["tallies"].as_object().map_or(0, |t| t.values().filter_map(|t| t["runs"].as_u64()).sum())
+}
 
 /// A run on one line: its number, when, its version, what came in, its answer, how long.
 fn run_row(d: &Detail, r: &Value, width: usize) -> Line<'static> {
@@ -381,7 +423,12 @@ fn split(f: &mut Frame, app: &mut App, area: Rect) {
     let sel = app.flow.sel();
     let focused = !app.flow.right;
     let (title, n) = match s {
-        Section::Runs => (format!("Runs, newest first ({})", d.runs.len()), d.runs.len()),
+        Section::Runs => {
+            let counted: u64 = unrecorded_runs(d);
+            // Runs of unrecorded handlers, counted, not logged: a line each in the latest runs.
+            let more = if counted > 0 { format!(", +{counted} unrecorded") } else { String::new() };
+            (format!("Runs, newest first ({}{more})", d.runs.len()), d.runs.len())
+        }
         Section::History => ("History, newest first: one chain".to_string(), d.moments().len()),
         Section::State => (format!("Its state ({})", app.flow.cells.len()), app.flow.cells.len()),
         Section::Graph => (app.flow.graph.as_ref().map(graph_title).unwrap_or_else(|| "Graph".into()), app.flow.graph.as_ref().map_or(0, |g| g.rows.len())),

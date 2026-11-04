@@ -43,13 +43,21 @@ messages), `SecretAccess` (read secrets) and `Spawn` (start processes).
 
 ## Exceptions
 
-Two items lift a protection that is on by default. A deployment can only be granted them when the
+Three items lift a protection that is on by default. A deployment can only be granted them when the
 server's policy allows them at all.
 
 | Name | Shown as | |
 |---|---|---|
 | `PlainHttp("host")` | call host over plain HTTP (not encrypted) | the deploy settings' **plain HTTP to**; needs `allow_plain_http = true` |
 | `PrivateAddresses` | reach private addresses (this machine and its network) | the deploy settings' **private addresses**; needs `allow_private_addresses = true` |
+| `Unrecorded("GET /health")` | keep runs of GET /health out of its log, failed or not (they are counted) | a handler whose line says `unrecorded`; allowed unless `allow_unrecorded = false` |
+
+`Unrecorded` is asked for by the flow itself, one item per handler whose line says `unrecorded`
+([Language reference](../language/reference.md#clocks-files-and-actions)), and only a handler
+that does nothing outside its run can say it. It is optional: without it, or once it is taken
+back, the handler's runs are recorded again, from the next one, and the deployment runs on. Its
+runs are counted (how many, how many failed, how long they took, the last one), and a failed one is
+logged.
 
 Without `PrivateAddresses`, a call is refused when the host resolves to a private address
 (loopback, the private ranges, link-local and cloud metadata addresses, and their IPv6 forms),

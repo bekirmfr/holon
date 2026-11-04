@@ -998,3 +998,31 @@ fn a_secret_is_set_as_a_value_a_name_the_server_reads_or_a_vault_field() {
         screen(&mut app, w, h);
     }
 }
+
+/// An unrecorded action's runs aren't in the runs list: the flow page says them, counted, a line
+/// for the handler in its latest runs and a count in the runs section's title
+/// (docs/L4s/request-path-L4.md, C5).
+#[test]
+fn a_flows_unrecorded_handlers_show_counted_beside_its_runs() {
+    let (mut app, _) = app();
+    let text = "flow peek\nstate n\n\naction peek (input) unrecorded {\n  respond state.n ?? 0\n}\n\naction bump (input) {\n  state.n = (state.n ?? 0) + 1\n  respond \"bumped\"\n}\n";
+    tab_with(&mut app, text);
+    ctrl(&mut app, 'd');
+    let Some(Modal::Approve { .. }) = &app.modal else { panic!("no dialog: {:?}", app.note.as_ref().map(|n| &n.text)) };
+    let shown = screen(&mut app, 140, 44);
+    assert!(shown.contains("+ log action peek: not recorded"), "the approval says it: {shown}");
+    press(&mut app, KeyCode::Enter);
+    assert!(app.note.as_ref().is_some_and(|n| !n.error), "{:?}", app.note.as_ref().map(|n| &n.text));
+    let c = app.client.as_ref().unwrap();
+    for _ in 0..3 {
+        assert!(!c.action("peek", "peek", "{}").unwrap().1);
+    }
+    assert!(!c.action("peek", "bump", "{}").unwrap().1);
+    app.client.as_mut().unwrap().refresh().unwrap();
+    app.open_flow("peek");
+    let shown = screen(&mut app, 140, 44);
+    assert!(shown.contains("action peek  not recorded: 3 runs"), "{shown}");
+    app.flow_section(Section::Runs);
+    let shown = screen(&mut app, 140, 44);
+    assert!(shown.contains("Runs, newest first (1, +3 unrecorded)"), "{shown}");
+}

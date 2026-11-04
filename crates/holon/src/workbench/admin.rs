@@ -24,7 +24,7 @@ pub(crate) enum Part {
 pub(crate) const PARTS: [(Part, &str); 6] = [(Part::People, "People"), (Part::Keys, "API keys"), (Part::Folders, "Folders"), (Part::Databases, "Databases"), (Part::Secrets, "Secrets"), (Part::Server, "Server")];
 
 /// The server section's rows.
-pub(crate) const SERVER_ROWS: [&str; 5] = ["Permissions (holon.toml)", "Grants held", "Sign-in provider", "Store", "Folder texts"];
+pub(crate) const SERVER_ROWS: [&str; 6] = ["Permissions (holon.toml)", "Grants held", "Sign-in provider", "Store", "Folder texts", "Host: memory and disks"];
 
 #[derive(Default)]
 pub(crate) struct AdminView {
@@ -247,8 +247,24 @@ impl App {
                     rows.push(text(Tone::Dim, "enter: set it, or clear it"));
                     rows
                 }
-                3 => vec![text(Tone::Head, "The store"), text(Tone::Plain, "Values nothing kept names any more: no run, version or state."), text(Tone::Dim, "enter: count what a sweep would remove, then ask")],
-                _ => vec![text(Tone::Head, "Folder texts"), text(Tone::Plain, "The file texts no live run, kept run or folder names."), text(Tone::Dim, "enter: remove them")],
+                3 => {
+                    let mut rows = vec![text(Tone::Head, "The store"), text(Tone::Plain, "Values nothing kept names any more: no run, version or state.")];
+                    rows.extend(lines(c.get("/admin/host"), |v| crate::storage::sweep_lines(&v["sweeps"], "store", "values")));
+                    rows.push(text(Tone::Dim, "enter: count what a sweep would remove, then ask; holon policy --sweep-every sets how often"));
+                    rows
+                }
+                5 => {
+                    let mut rows = vec![text(Tone::Head, "What the host holds: memory, its disks, and what it keeps on them")];
+                    rows.extend(lines(c.get("/admin/host"), crate::storage::host_lines));
+                    rows.push(text(Tone::Dim, "enter: count again; holon host says the same"));
+                    rows
+                }
+                _ => {
+                    let mut rows = vec![text(Tone::Head, "Folder texts"), text(Tone::Plain, "The file texts no live run, kept run or folder names.")];
+                    rows.extend(lines(c.get("/admin/host"), |v| crate::storage::sweep_lines(&v["sweeps"], "folders", "texts")));
+                    rows.push(text(Tone::Dim, "enter: remove them"));
+                    rows
+                }
             },
         };
         self.admin.pane = Some((key, rows));
@@ -412,6 +428,7 @@ impl App {
                 }
                 3 => self.admin_do(AdminDo::SweepStore),
                 4 => self.sure("Remove the folder texts nothing names?", &["Texts a live run, a kept run or a folder still names stay."], AdminDo::SweepFolders),
+                5 => self.admin_pane(),
                 _ => {}
             },
             _ => {}

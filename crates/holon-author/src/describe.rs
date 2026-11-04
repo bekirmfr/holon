@@ -26,7 +26,7 @@ pub fn describe_item(item: &str) -> String {
         return format!("keep its runs in its log for up to {n} days");
     }
     type Say = fn(&str) -> String;
-    let named: [(&str, Say); 21] = [
+    let named: [(&str, Say); 22] = [
         ("HttpRequest", |a| format!("call https://{a}")),
         ("StateRead", |a| format!("read its state \"{a}\"")),
         ("StateWrite", |a| format!("write its state \"{a}\"")),
@@ -36,6 +36,7 @@ pub fn describe_item(item: &str) -> String {
         ("FileArrival", |a| format!("run on each file new, changed or removed in the folder \"{a}\" (as its on file lines say), and pass it on")),
         ("Action", |a| format!("can be run by hand: {a}")),
         ("AgentRuns", |a| format!("let agents run its action {a}")),
+        ("Unrecorded", |a| format!("keep runs of {a} out of its log, failed or not (they are counted)")),
         ("RunsAction", |a| match a.split_once('/') {
             Some((flow, action)) => format!("run the action {action} of the flow {flow}"),
             None => format!("run an action of the flow {a}"),
@@ -222,6 +223,7 @@ mod tests {
         assert_eq!(super::describe_item_of("Clock", true), "read the clock");
         assert_eq!(describe_item(r#"Action("reset")"#), "can be run by hand: reset");
         assert_eq!(describe_item(r#"AgentRuns("reset")"#), "let agents run its action reset");
+        assert_eq!(describe_item(r#"Unrecorded("GET /health")"#), "keep runs of GET /health out of its log, failed or not (they are counted)");
         assert_eq!(describe_item("Something(new)"), "Something(new)");
     }
 }

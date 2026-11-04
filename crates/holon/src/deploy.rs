@@ -159,7 +159,7 @@ fn deploy(
         return err(400, "unit is not a 64-char hex hash");
     };
 
-    let resolver = match materialize_closure(store, unit_hash) {
+    let resolver = match closure(store, unit_hash) {
         Ok(r) => r,
         Err(e) => return e.response(),
     };
@@ -220,7 +220,7 @@ fn deploy(
     // what its author declares; policy refuses what it never grants, grants what it grants
     // without asking, and everything else must be acknowledged. A redeploy asks only for what
     // the previous grant didn't already cover.
-    let manifest = Manifest::new(caps.iter(), body.requirements.clone().with_module_limits(root_unit, &resolver));
+    let manifest = Manifest::new(caps.iter(), body.requirements.clone().of_unit(root_unit, &resolver));
     let seen = Arc::new(folders::Scoped::new(Arc::clone(folders), &body.slug));
     if let Some(why) = policy.refuses(&manifest).or_else(|| seen.refuses(&manifest)).or_else(|| secrets.refuses(&body.slug, &holon_core::sent_secrets(root_unit, &resolver))) {
         return err(400, format!("this host can't grant that: {why}"));
@@ -334,11 +334,12 @@ fn deploy(
             }
             None => Lifecycle::deployed(now_secs),
         };
-        let (mut log, old_document, mut versions, mut events) = match deployments.get_mut(&body.slug) {
-            Some(old) => (std::mem::take(&mut old.log), old.document.take(), std::mem::take(&mut old.versions), std::mem::take(&mut old.events)),
-            None => (Log::for_deployment(deployments_path, &body.slug), None, Vec::new(), crate::events::Events::for_deployment(deployments_path, &body.slug)),
+        let (log, old_document, mut versions, mut events) = match deployments.get_mut(&body.slug) {
+            // The log goes on across versions: a run of the old version still in flight logs to it.
+            Some(old) => (Arc::clone(&old.log), old.document.take(), std::mem::take(&mut old.versions), std::mem::take(&mut old.events)),
+            None => (Arc::new(LogCell::new(Log::for_deployment(deployments_path, &body.slug))), None, Vec::new(), crate::events::Events::for_deployment(deployments_path, &body.slug)),
         };
-        log.retain(permit.log.keep_runs as usize, permit.log.max_age_ms());
+        log.with(|log| log.retain(permit.log.keep_runs as usize, permit.log.max_age_ms()));
         // Every deploy is a version, kept for good with what it asked, so it can be deployed
         // again; one deployed without a canvas keeps the canvas it had.
         version = versions.last().map_or(1, |v| v.number + 1);
@@ -379,7 +380,7 @@ fn deploy(
         let parked = deployments.get(&body.slug).map(|old| old.parked.clone()).unwrap_or_default();
         let state = match carried {
             Some(arc) => Some(arc),
-            None if is_state => Some(Arc::new(claims::StateCell::new(State::new()))),
+            None if is_state => Some(Arc::new(claims::StateCell::kept_at(State::new(), state_head_for(deployments_path, &body.slug)))),
             None => None,
         };
         arrivals.baseline(&seen);
@@ -404,6 +405,8 @@ fn deploy(
                 server,
                 trigger_count: 0,
                 error_count: 0,
+                tallies: BTreeMap::new(),
+                tallies_changed: false,
                 deployed_at: SystemTime::now(),
                 deployed_by: by.map(String::from),
                 uses: body.uses.clone(),
@@ -417,7 +420,7 @@ fn deploy(
             },
         );
     }
-    persist_deployments(deployments_path, deployments, store);
+    persist_deployments(deployments_path, deployments);
     activity.record(if restored_from.is_some() { "restored" } else { "deployed" }, &body.slug, by);
 
     Response::json(&DeployResponseBody { slug: body.slug, unit: to_hex(&unit_hash), triggers, interval_seconds, version })
@@ -439,6 +442,7 @@ pub(crate) fn deployment_entry(slug: &str, dep: &Deployment) -> DeploymentEntry 
         sessions: dep.life.sessions.len(),
         trigger_count: dep.trigger_count,
         error_count: dep.error_count,
+        tallies: dep.tallies.clone(),
         deployed_at_epoch_seconds: dep.deployed_at.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs(),
         deployed_by: dep.deployed_by.clone(),
         uses: dep.uses.clone(),
@@ -504,13 +508,13 @@ fn preview_value(
     let Some(unit_hash) = parse_hash(&body.unit) else {
         return Err(err(400, "unit is not a 64-char hex hash"));
     };
-    let resolver = materialize_closure(store, unit_hash).map_err(|e| e.response())?;
+    let resolver = closure(store, unit_hash).map_err(|e| e.response())?;
     let Some(root_unit) = resolver.resolve(&unit_hash) else {
         return Err(err(404, "no unit stored at that hash — stage or publish it first"));
     };
     // As the deploy will derive it: on a schedule, it runs on the clock.
     let scheduled = body.interval_seconds.is_some() && declaration_of(root_unit) != Some("server");
-    let manifest = Manifest::new(holon_core::deployed_capabilities(root_unit, &resolver, scheduled).iter(), body.requirements.clone().with_module_limits(root_unit, &resolver));
+    let manifest = Manifest::new(holon_core::deployed_capabilities(root_unit, &resolver, scheduled).iter(), body.requirements.clone().of_unit(root_unit, &resolver));
     let (previous, previous_unit, previous_browsers) = previous_of(deployments, &body.slug);
     let (mut needs, withheld) = approval_needed(policy, &manifest, previous.as_ref(), previous_unit, unit_hash, agent);
     if agent {
@@ -728,6 +732,8 @@ pub(crate) fn permissions_view(policy: &Policy) -> serde_json::Value {
         "auto": policy.auto,
         "allow_plain_http": policy.allow_plain_http,
         "allow_private_addresses": policy.allow_private_addresses,
+        "allow_unrecorded": policy.allow_unrecorded,
+        "storage": { "sweep_every": crate::permissions::every_text(policy.storage.sweep_every), "warn_at": crate::permissions::threshold_text(policy.storage.warn_at), "full_at": crate::permissions::threshold_text(policy.storage.full_at), "when_full": policy.storage.when_full.text(), "backup": policy.storage.backup.as_ref().map(|b| b.display().to_string()) },
     })
 }
 
@@ -746,12 +752,12 @@ pub(crate) fn handle_get_permission_view(
     if which == "grant" {
         return Response::json(&serde_json::json!({ "grant": grant, "hash": to_hex(&grant.hash()), "attention": attention }));
     }
-    let resolver = match materialize_closure(store, unit) {
+    let resolver = match closure(store, unit) {
         Ok(r) => r,
         Err(e) => return e.response(),
     };
     let Some(root) = resolver.resolve(&unit) else { return err(500, "deployed unit no longer resolves in the store") };
-    let manifest = Manifest::new(holon_core::deployed_capabilities(root, &resolver, scheduled).iter(), grant.requirements.clone().with_module_limits(root, &resolver));
+    let manifest = Manifest::new(holon_core::deployed_capabilities(root, &resolver, scheduled).iter(), grant.requirements.clone().of_unit(root, &resolver));
     Response::json(&serde_json::json!({
         "hash": to_hex(&manifest.hash()),
         "capabilities": manifest.capabilities,
@@ -822,7 +828,6 @@ pub(crate) fn handle_get_state(deployments: &Mutex<BTreeMap<String, Deployment>>
 /// slug that was never deployed. Returns the removed deployment's last known info, or 404 if
 /// the slug didn't exist.
 pub(crate) fn handle_delete_deployment(
-    store: &SharedStore,
     deployments: &Mutex<BTreeMap<String, Deployment>>,
     deployments_path: &str,
     slug: &str,
@@ -838,11 +843,14 @@ pub(crate) fn handle_delete_deployment(
     };
     match removed {
         Some(dep) => {
-            dep.log.delete_file();
+            dep.log.with(|log| log.delete_file());
             dep.events.delete_file();
+            if let Some(head) = state_head_for(deployments_path, slug) {
+                let _ = std::fs::remove_file(head);
+            }
             dep.arrivals.forget();
             dep.channels.close();
-            persist_deployments(deployments_path, deployments, store);
+            persist_deployments(deployments_path, deployments);
             Response::json(&deployment_entry(slug, &dep))
         }
         None => Response::empty_404(),
@@ -921,7 +929,7 @@ pub(crate) fn handle_post_trigger(
         Ok(s) => s,
         Err(_) => return err(400, "request body is not valid UTF-8 text"),
     };
-    let resolver = match materialize_closure(store, unit_hash) {
+    let resolver = match closure(store, unit_hash) {
         Ok(r) => r,
         Err(e) => {
             record_trigger(deployments, slug, true);
@@ -952,10 +960,16 @@ pub(crate) fn handle_post_trigger(
         Err(e) => entry.error = Some(e),
     }
     let parked_any = !entry.parked.is_empty();
-    log_run(deployments, slug, entry, Redactor::tokens(&waits.tokens));
+    // A whole flow run by hand is not a handler, so it is strict (C5).
+    let logged = log_run(deployments, slug, entry, Redactor::tokens(&waits.tokens), holon_core::LogLevel::Strict);
     let FiredRun { outputs, performed, answered, .. } = run;
-    if state.is_some() || parked_any {
-        persist_deployments(deployments_path, deployments, store);
+    // The state is kept by its head, written as the change landed (claims.rs); the deployments
+    // file changes only with the deployment's definition, here its waiting runs.
+    if parked_any {
+        persist_deployments(deployments_path, deployments);
+    }
+    if let Some(Logged { kept: Err(e), .. }) = logged {
+        return err(500, format!("the run happened, but {e}"));
     }
 
     let redactor = Redactor::of(&vault);
@@ -1076,7 +1090,7 @@ pub(crate) fn run_action(
         record_trigger(deployments, slug, true);
         ActionRan::refused(500, "failed", message)
     };
-    let resolver = match materialize_closure(store, action.handler) {
+    let resolver = match closure(store, action.handler) {
         Ok(r) => r,
         Err(e) => return failed_to_start(format!("store error while materializing closure: {e:?}")),
     };
@@ -1084,12 +1098,15 @@ pub(crate) fn run_action(
         return failed_to_start("the action's handler no longer resolves in the store".into());
     };
 
-    let epoch_seconds = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
-    let sourced = [(Capability::Clock, Value::Number(epoch_seconds as f64)), (Capability::Random, Value::Number(rand::random::<f64>()))];
+    let epoch_seconds = clock_seconds();
+    let sourced = [(Capability::Clock, Value::Number(epoch_seconds as f64)), (Capability::Random, Value::Number(random_number()))];
     let started = started_now();
     let inputs = [Some(input.clone())];
     let mut waits = RunWaits { folders: Some(folders), channels: Some(channels), slug: Some(slug.to_string()), chain: chain.to_vec(), ..Default::default() };
     let resolver = holon_module::WithEngine::new(&resolver, holon_module::shared());
+    // As a route's (listeners.rs): an unrecorded run keeps no timeline, and is never logged, failed
+    // or not (resilience-audit-L4.md, §2.8).
+    waits.unrecorded = permit.log_level(Some(&action.label), action.log) == holon_core::LogLevel::Unrecorded;
     let run = fire_with_state(handler, &inputs, &resolver, store, state.as_ref(), &sourced, &permit, false, &vault, &mut waits, None);
 
     // Output 0 is the respond's envelope, or (an action that only writes) an effect.
@@ -1114,15 +1131,31 @@ pub(crate) fn run_action(
         Ok(names) => entry.parked = names,
         Err(e) => entry.error = Some(e),
     }
-    let (parked_any, error) = (!entry.parked.is_empty(), entry.error.is_some());
-    let seq = deployments.lock().unwrap().get(slug).map_or(0, |d| d.log.next_seq());
-    log_run(deployments, slug, entry, Redactor::tokens(&waits.tokens));
-    if state.is_some() || parked_any {
-        persist_deployments(deployments_path, deployments, store);
+    // A failed one says so in its entry (an unrecorded action's tally takes it from there).
+    if failed {
+        entry.status = Some(status.max(500));
     }
-    let ran = |status: u16, reply: serde_json::Value, answer: Option<Value>, waiting: bool, error: Option<String>, why: Option<&'static str>| ActionRan { status, reply, answer, seq: Some(seq), waiting, error, why };
+    let (parked_any, error) = (!entry.parked.is_empty(), entry.error.is_some());
+    // The seq its entry got, not the next one read beforehand: another run may log between.
+    let (seq, kept) = log_run(deployments, slug, entry, Redactor::tokens(&waits.tokens), action.log).map_or((None, Ok(())), |l| (l.seq, l.kept));
+    // The state is kept by its head, written as the change landed (claims.rs); the deployments
+    // file changes only with the deployment's definition, here its waiting runs.
+    if parked_any {
+        persist_deployments(deployments_path, deployments);
+    }
+    let ran = |status: u16, reply: serde_json::Value, answer: Option<Value>, waiting: bool, error: Option<String>, why: Option<&'static str>| ActionRan { status, reply, answer, seq, waiting, error, why };
+    // A strict run whose record isn't on disk isn't answered as done: it may not be on record.
+    if let Err(e) = kept {
+        let message = format!("the action ran, but {e}");
+        return ran(500, serde_json::json!({ "error": message }), None, false, Some(message), Some("failed"));
+    }
     if error {
-        let message = format!("the action failed: its run log says why (entry {seq})");
+        // A recorded run is in its log; an unrecorded one isn't, failed or not: its tally keeps the
+        // last failure.
+        let message = match seq {
+            Some(seq) => format!("the action failed: its run log says why (entry {seq})"),
+            None => "the action failed; its runs aren't logged (it is unrecorded): its tally keeps the last failure".to_string(),
+        };
         return ran(500, serde_json::json!({ "error": message }), None, false, Some(message), Some("failed"));
     }
     if parked_any {
@@ -1151,19 +1184,27 @@ pub(crate) fn run_action(
 /// without), oldest first, at most `limit` (default 200) newest. `next` is the seq the next
 /// entry will get, so a poller can ask for `after=next-1`. `head` is the hash of the newest
 /// entry's line, and `breaks` the seqs of entries that don't follow the one before them: the log
-/// file was changed outside holon there (recorder.rs).
+/// file was changed outside holon there (recorder.rs). `tallies` counts the runs of its unrecorded
+/// handlers, by label (`{runs, failed, total_ms, last_at_ms, last_failure}`): the log holds none of
+/// their runs, failed or not.
 pub(crate) fn handle_get_log(deployments: &Mutex<BTreeMap<String, Deployment>>, slug: &str, request: &Request) -> Response {
     let after = request.get_param("after").and_then(|a| a.parse::<u64>().ok());
     let limit = request.get_param("limit").and_then(|l| l.parse::<usize>().ok()).unwrap_or(200);
-    match deployments.lock().unwrap().get(slug) {
-        Some(dep) => Response::json(&serde_json::json!({
-            "entries": dep.log.after(after, limit),
-            "next": dep.log.next_seq(),
-            "head": dep.log.head(),
-            "breaks": dep.log.breaks(),
-        })),
-        None => err(404, format!("no deployment {slug:?}")),
-    }
+    // The table only to find the log (and the counts of its unrecorded handlers' runs, which
+    // the log doesn't hold), so a page reading it never holds up another deployment.
+    let Some((log, tallies)) = deployments.lock().unwrap().get(slug).map(|dep| (Arc::clone(&dep.log), dep.tallies.clone())) else {
+        return err(404, format!("no deployment {slug:?}"));
+    };
+    // Planned under one lock, so the entries, the head and the breaks agree; the older runs read
+    // from its file with the lock released (R8).
+    let (wanted, next, head, breaks) = log.with(|log| (log.plan(after, limit), log.next_seq(), log.head().to_string(), log.breaks().to_vec()));
+    Response::json(&serde_json::json!({
+        "entries": wanted.read(),
+        "next": next,
+        "head": head,
+        "breaks": breaks,
+        "tallies": tallies,
+    }))
 }
 
 /// Keep a flow document in the content store, as a text value holding its JSON: its hash (hex).
@@ -1358,7 +1399,7 @@ pub(crate) fn handle_post_restore(state: &AppState, slug: &str, request: &Reques
             Ok(n) => n,
             Err(r) => return r,
         };
-        persist_deployments(&state.deployments_path, &state.deployments, &state.store);
+        persist_deployments(&state.deployments_path, &state.deployments);
         state.activity.record("restored state", slug, by);
         answer["state"] = serde_json::json!({ "from": label, "session": session });
     }
@@ -1523,11 +1564,13 @@ fn state_change(state: &AppState, slug: &str, snapshot: &str, label: &str, since
         Some(d) => {
             // The runs before the point: what a file was there, the last write before it.
             let first = since.first().map_or(u64::MAX, |e| e.seq);
-            let before = if since.is_empty() { Vec::new() } else { d.log.after(None, usize::MAX).into_iter().filter(|e| e.seq < first).collect() };
-            (d.state.clone(), Some(Redactor::of(&d.secrets)), before)
+            let log = (!since.is_empty()).then(|| (Arc::clone(&d.log), first));
+            (d.state.clone(), Some(Redactor::of(&d.secrets)), log)
         }
-        None => (None, None, Vec::new()),
+        None => (None, None, None),
     };
+    // Read with the table let go.
+    let before: Vec<LogEntry> = before.map(|(log, first)| log.after(None, usize::MAX).into_iter().filter(|e| e.seq < first).collect()).unwrap_or_default();
     let now = live.as_ref().map(|arc| arc.state.lock().unwrap().refs()).unwrap_or_default();
     let changed: Vec<&String> = back.iter().filter(|(k, h)| now.get(*k).is_some_and(|n| n != *h)).map(|(k, _)| k).collect();
     let added: Vec<&String> = back.keys().filter(|k| !now.contains_key(*k)).collect();
@@ -1618,6 +1661,7 @@ fn put_state_back(state: &AppState, slug: &str, loaded: State, label: &str, by: 
     let refs = live.save(&mut state.store.clone()).map_err(|e| err(500, format!("the state it has now couldn't be kept: {e:?}")))?;
     dep.life.restart(Some(&refs), label, epoch_now()).map_err(|e| err(409, format!("can't restore {slug:?}'s state: {}", e.message())))?;
     *live = loaded;
+    arc.keep(&live, &state.store);
     drop(live);
     let session = dep.life.sessions.last().map_or(0, |s| s.number);
     dep.note("restore", format!("put back the state {label} left, in session {session}"), by, crate::events::Detail { session: Some(session), from: Some(label.to_string()), ..Default::default() });
@@ -1706,7 +1750,9 @@ pub(crate) fn handle_lifecycle(state: &AppState, slug: &str, action: &str, reque
             }
             _ => dep.life.run(from, now).map(|start_from| {
                 if let (Some(arc), Some(_)) = (&live, start_from) {
-                    *arc.state.lock().unwrap() = restored.unwrap_or_default();
+                    let mut now_live = arc.state.lock().unwrap();
+                    *now_live = restored.unwrap_or_default();
+                    arc.keep(&now_live, &state.store);
                 }
                 // A clock deployment fires on its next pass once running again.
                 dep.arm_clocks(SystemTime::now());
@@ -1732,7 +1778,7 @@ pub(crate) fn handle_lifecycle(state: &AppState, slug: &str, action: &str, reque
         dep.grant.paused = false;
         deployment_entry(slug, dep)
     };
-    persist_deployments(&state.deployments_path, &state.deployments, &state.store);
+    persist_deployments(&state.deployments_path, &state.deployments);
     Response::json(&entry)
 }
 

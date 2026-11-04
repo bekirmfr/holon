@@ -196,6 +196,10 @@ fn draw_top(f: &mut Frame, app: &App, area: Rect) {
         right.push(dim(" · "));
         right.push(if waiting > 0 { coloured(format!("{waiting} waiting for you"), WARN) } else { dim("nothing waiting") });
         right.push(dim(" · "));
+        if !c.warnings.is_empty() {
+            right.push(coloured(format!("! {} host warning{}", c.warnings.len(), if c.warnings.len() == 1 { "" } else { "s" }), BAD));
+            right.push(dim(" · "));
+        }
     }
     right.push(Span::raw(format!("{} tab{} ", app.tabs.len(), if app.tabs.len() == 1 { "" } else { "s" })));
     right.push(Span::styled(" ctrl+p ", Style::new().fg(Color::Black).bg(Color::Gray)));
@@ -454,7 +458,9 @@ fn draw_overview(f: &mut Frame, app: &App, area: Rect) {
     let runs: u64 = c.deployments.iter().filter_map(|d| d["trigger_count"].as_u64()).sum();
     let failed: u64 = c.deployments.iter().filter_map(|d| d["error_count"].as_u64()).sum();
     let tiles_height = if area.height >= 20 { 5 } else { 0 };
-    let wait_height = (waiting.len().clamp(1, 6) + 2) as u16;
+    // What the host warns of, then what waits for a person, in one panel.
+    let warned: Vec<(String, String)> = c.warnings.iter().map(|w| (w["says"].as_str().unwrap_or_default().to_string(), w["todo"].as_str().unwrap_or_default().to_string())).collect();
+    let wait_height = (waiting.len().clamp(1, 6) + warned.len().min(3) * 2 + 2) as u16;
     let [tiles, rest] = Layout::vertical([Constraint::Length(tiles_height), Constraint::Min(3)]).areas(area);
     if tiles_height > 0 {
         let parts = Layout::horizontal([Constraint::Ratio(1, 4); 4]).split(tiles);
@@ -477,11 +483,12 @@ fn draw_overview(f: &mut Frame, app: &App, area: Rect) {
         list(f, app, inner, List::Page(Page::Overview), c.deployments.len(), Some(app.sel[0]), true, |i, w| deployment_row(&c.deployments[i], w));
     }
 
-    let lines: Vec<Line> = if waiting.is_empty() {
-        vec![Line::from(dim("Nothing waits for a person."))]
+    let mut lines: Vec<Line> = warned.iter().take(3).flat_map(|(says, todo)| [Line::from(vec![coloured("! ", BAD), Span::raw(says.clone())]), Line::from(dim(format!("  {todo}")))]).collect();
+    if waiting.is_empty() {
+        lines.push(Line::from(dim("Nothing waits for a person.")));
     } else {
-        waiting.iter().take(6).map(|(slug, w)| Line::from(vec![coloured("● ", WARN), bold(format!("{slug}  ")), Span::raw(w.clone())])).collect()
-    };
+        lines.extend(waiting.iter().take(6).map(|(slug, w)| Line::from(vec![coloured("● ", WARN), bold(format!("{slug}  ")), Span::raw(w.clone())])));
+    }
     f.render_widget(Paragraph::new(lines).block(panel(&format!("Waiting for you ({})", waiting.len()), false)), waits);
     app.hit(waits, Click::Page(Page::Approvals));
 

@@ -1500,6 +1500,7 @@ dependencies = [
  "axoupdater",
  "blake3",
  "bytes",
+ "flate2",
  "getrandom 0.3.4",
  "holon-author",
  "holon-core",
@@ -1562,6 +1563,8 @@ dependencies = [
 name = "holon-host"
 version = "0.1.0"
 dependencies = [
+ "blake3",
+ "flate2",
  "holon-core",
 ]
 

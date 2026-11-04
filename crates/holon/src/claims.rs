@@ -26,11 +26,40 @@ use crate::{collections, databases, folders, SharedStore};
 pub(crate) struct StateCell {
     pub(crate) state: Mutex<State>,
     pub(crate) claims: Claims,
+    /// Where the deployment's state is kept: a file holding its snapshot's hash (persist.rs's
+    /// `state_head_for`), written as each change lands. None for one kept in memory only.
+    head: Option<std::path::PathBuf>,
 }
 
 impl StateCell {
-    pub(crate) fn new(state: State) -> StateCell {
-        StateCell { state: Mutex::new(state), claims: Claims::default() }
+    /// A state kept at `head` too.
+    pub(crate) fn kept_at(state: State, head: Option<std::path::PathBuf>) -> StateCell {
+        StateCell { state: Mutex::new(state), claims: Claims::default(), head }
+    }
+
+    /// Make the snapshot `hex` (its values and record already in the store) the deployment's
+    /// durable state: the head is written whole and synced (`write_private`) before this returns.
+    /// Called with the state's lock held, so heads land in the order changes do
+    /// (docs/L4s/request-path-L4.md, C3 b). A failure is said, as a failed persist always was.
+    pub(crate) fn write_head(&self, hex: &str) {
+        let Some(head) = &self.head else { return };
+        let written = head.parent().map_or(Ok(()), std::fs::create_dir_all).and_then(|()| crate::sealing::write_private(head, hex.as_bytes()));
+        if let Err(e) = written {
+            eprintln!("holon: the state wasn't kept in {}: {e}", head.display());
+        }
+    }
+
+    /// Keep `live` (the state now in place, its lock held by the caller) as the deployment's
+    /// durable state: its snapshot into the store, then the head. For a state put in place
+    /// outside a run: a restore, or a session started from another's state.
+    pub(crate) fn keep(&self, live: &State, store: &SharedStore) {
+        if self.head.is_none() {
+            return;
+        }
+        match crate::restore::save_snapshot(live, None, store) {
+            Ok(hex) => self.write_head(&hex),
+            Err(e) => eprintln!("holon: the state put in place wasn't kept: {e}"),
+        }
     }
 }
 

@@ -765,7 +765,21 @@ pub fn parse_hash(hex: &str) -> Option<Hash> {
 /// [`parse_hash`]). Used when constructing a hash-valued param (e.g. `map`'s `fn`),
 /// and when re-pinning one during a fork.
 pub(crate) fn to_hex(h: &Hash) -> String {
-    h.iter().map(|b| format!("{b:02x}")).collect()
+    hex(h)
+}
+
+/// `bytes` as lowercase hex, two digits a byte: what every hash's text is (a store's file names, a
+/// run id, a log entry's unit). From a table, not a `format!` a byte, which cost a quarter of a
+/// short run (docs/L4s/request-path-plan.md, 12.4).
+pub fn hex(bytes: impl AsRef<[u8]>) -> String {
+    const DIGITS: &[u8; 16] = b"0123456789abcdef";
+    let bytes = bytes.as_ref();
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for &b in bytes {
+        out.push(DIGITS[usize::from(b >> 4)] as char);
+        out.push(DIGITS[usize::from(b & 15)] as char);
+    }
+    out
 }
 
 // ── Tests: the governing property ───────────────────────────────────────────
@@ -773,6 +787,16 @@ pub(crate) fn to_hex(h: &Hash) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The table gives what a `format!` a byte gave, for every byte: every hash's text is
+    /// unchanged (a store's file names, run ids, log entries).
+    #[test]
+    fn hex_is_two_lowercase_digits_a_byte() {
+        let all: Vec<u8> = (0..=255).collect();
+        assert_eq!(hex(&all), all.iter().map(|b| format!("{b:02x}")).collect::<String>());
+        assert_eq!(hex([0xabu8, 0x01]), "ab01");
+        assert_eq!(hex(&[] as &[u8]), "");
+    }
 
     fn prim(name: &str) -> Unit {
         Unit {

@@ -1,6 +1,8 @@
 //! Units, the registry, forks and the shared cache: the content-addressed side of the control plane.
 
 use crate::*;
+use std::collections::HashMap;
+use holon_core::{Shape, Shapes};
 
 pub(crate) fn handle_get_unit(store: &SharedStore, hash_hex: &str) -> Response {
     let Some(key) = parse_hash(hash_hex) else {
@@ -142,22 +144,85 @@ pub(crate) fn handle_post_fork(registry: &Mutex<Registry<SharedStore>>, request:
     }
 }
 
-/// Build a `Resolver` over `root`'s full closure by walking `child_refs` (the same closure
-/// definition `Registry::publish`'s own dangling-reference check already uses — one definition
-/// of "what a unit references," not a second) and fetching each referenced unit from the store.
-/// This is the same shape `Registry::fork` already needs internally for the identical reason
-/// (`Store` yields owned units; `Resolver` wants borrowed ones) — reused, not reinvented.
+/// A flow's closure, as runs resolve it: `root` and every unit it reaches through `child_refs`
+/// (the closure definition `Registry::publish`'s dangling-reference check uses, so there is one
+/// definition of "what a unit references", not two). Cheap to clone: each unit is an `Arc`, shared
+/// with every other closure that places it, so a js node's engine module is held once however
+/// many flows place it.
 ///
-/// A hash that doesn't resolve in the store is left out of the resolver rather than erroring —
-/// `eval`/`verify_entry` already treat an unresolved reference as "nothing evaluable" and fail
-/// closed on it, so this doesn't need its own dangling-reference error path; it just doesn't
-/// promise more than the store actually has.
+/// A hash that doesn't resolve in the store is left out rather than an error: `eval` and
+/// `verify_entry` already treat an unresolved reference as "nothing evaluable" and fail closed on
+/// it, so a closure promises no more than the store has. Such a closure isn't kept (`closure`).
+///
+/// It keeps each composite's shape beside its units (docs/L4s/interpreter-path-L4.md, step 1b),
+/// found by the unit itself: the units are `Arc`s the closure holds, so each stays where the
+/// shapes found it for as long as the closure lives.
+#[derive(Clone, Default)]
+pub(crate) struct Loaded(Arc<Held>);
+
+#[derive(Default)]
+pub(crate) struct Held {
+    units: BTreeMap<Hash, Arc<Unit>>,
+    /// Built over `units`, never changed after.
+    shapes: Shapes,
+}
+
+impl Loaded {
+    fn of(units: BTreeMap<Hash, Arc<Unit>>) -> Loaded {
+        let shapes = Shapes::of(units.values().map(|u| u.as_ref()));
+        Loaded(Arc::new(Held { units, shapes }))
+    }
+}
+
+impl Resolver for Loaded {
+    fn resolve(&self, hash: &Hash) -> Option<&Unit> {
+        self.0.units.get(hash).map(|u| u.as_ref())
+    }
+
+    fn shape(&self, unit: &Unit) -> Option<&Shape> {
+        self.0.shapes.get(unit)
+    }
+}
+
+#[cfg(test)]
+impl Loaded {
+    /// Whether it is the very closure `other` is (the same kept one), not just an equal one.
+    pub(crate) fn is(&self, other: &Loaded) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+    /// The unit it holds under `hash`, as shared.
+    pub(crate) fn unit(&self, hash: &Hash) -> Option<Arc<Unit>> {
+        self.0.units.get(hash).cloned()
+    }
+}
+
+/// The closure of `root`, from memory when it was loaded whole before (docs/L4s/request-path-L4.md,
+/// C1). A hash names one closure forever, so nothing kept ever goes stale: a redeploy is another
+/// hash, a rollback or a resumed run of an older version is a hash already kept, and units are
+/// never swept (sweep.rs). Only a whole closure is kept (a unit put later could complete a partial
+/// one), and never an error.
 ///
 /// A closure past [`MAX_CLOSURE_UNITS`] units, or nested deeper than [`MAX_CLOSURE_DEPTH`], is
 /// refused ([`Closure::TooBig`]): evaluating one recurses a level per nested unit, and its units
 /// are anyone's who can stage them.
-pub(crate) fn materialize_closure(store: &SharedStore, root: Hash) -> Result<MapResolver, Closure> {
-    let mut resolver = MapResolver::new();
+pub(crate) fn closure(store: &SharedStore, root: Hash) -> Result<Loaded, Closure> {
+    let cache = &store.3;
+    if let Some(kept) = cache.get(&root) {
+        return Ok(kept);
+    }
+    let (loaded, whole) = load_closure(store, root)?;
+    if whole {
+        cache.keep(root, &loaded);
+    }
+    Ok(loaded)
+}
+
+/// Walk and fetch `root`'s closure, taking each unit the cache already holds from memory and the
+/// rest from the store (which checks each against its hash). Says whether every reference
+/// resolved. No cache lock is held while the store is read.
+fn load_closure(store: &SharedStore, root: Hash) -> Result<(Loaded, bool), Closure> {
+    let mut units: BTreeMap<Hash, Arc<Unit>> = BTreeMap::new();
+    let mut whole = true;
     // Each unit's references, as it was fetched: the depth below is measured over these.
     let mut refs: BTreeMap<Hash, Vec<Hash>> = BTreeMap::new();
     let mut queue = vec![root];
@@ -165,8 +230,15 @@ pub(crate) fn materialize_closure(store: &SharedStore, root: Hash) -> Result<Map
         if refs.contains_key(&h) {
             continue;
         }
-        let Some(unit) = store.get(&h).map_err(Closure::Store)? else {
-            continue;
+        let unit = match store.3.unit(&h) {
+            Some(unit) => unit,
+            None => match store.get(&h).map_err(Closure::Store)? {
+                Some(unit) => Arc::new(unit),
+                None => {
+                    whole = false;
+                    continue;
+                }
+            },
         };
         if refs.len() >= MAX_CLOSURE_UNITS {
             return Err(Closure::TooBig(format!("its closure has more than {MAX_CLOSURE_UNITS} units")));
@@ -174,13 +246,220 @@ pub(crate) fn materialize_closure(store: &SharedStore, root: Hash) -> Result<Map
         let children = child_refs(&unit);
         queue.extend(children.iter().copied());
         refs.insert(h, children);
-        resolver.insert(unit).map_err(|e| Closure::Store(StoreError::Encode(e)))?;
+        units.insert(h, unit);
     }
     let depth = closure_depth(root, &refs);
     if depth > MAX_CLOSURE_DEPTH {
         return Err(Closure::TooBig(format!("it nests more than {MAX_CLOSURE_DEPTH} units deep")));
     }
-    Ok(resolver)
+    Ok((Loaded::of(units), whole))
+}
+
+/// What the cache's own entry for a unit takes beside it: its hash, its count and its `Arc`, in a
+/// map that doubles as it grows.
+const KEPT_UNIT_BYTES: u64 = 96;
+
+/// About what `unit` takes in memory, behind its `Arc`: the unit itself and what it owns on the
+/// heap (a primitive's name, a composite's children and edges, a module's bytes, its params' and
+/// ports' texts and types), each allocation a little more for the allocator's own.
+fn unit_footprint(unit: &Unit) -> u64 {
+    // A unit is mostly short texts (names like `out`, `i0`), each its own allocation, which the
+    // allocator rounds up to its smallest chunk.
+    const ALLOC: u64 = 32;
+    fn type_heap(ty: &holon_core::Type) -> u64 {
+        use holon_core::Type;
+        let own = std::mem::size_of::<Type>() as u64;
+        match ty {
+            Type::List(t) => ALLOC + own + type_heap(t),
+            Type::Product(ts) | Type::Sum(ts) => ALLOC + ts.iter().map(|t| own + type_heap(t)).sum::<u64>(),
+            _ => 0,
+        }
+    }
+    let ports = |ps: &[holon_core::Port]| ALLOC + ps.iter().map(|p| std::mem::size_of::<holon_core::Port>() as u64 + p.name.len() as u64 + ALLOC + type_heap(&p.ty)).sum::<u64>();
+    let body = match &unit.body {
+        UnitBody::Primitive { name } => name.len() as u64 + ALLOC,
+        UnitBody::Composite { children, edges } => (children.len() * 32 + edges.len() * std::mem::size_of::<holon_core::Edge>()) as u64 + 2 * ALLOC,
+        UnitBody::Module { bytes } => bytes.len() as u64 + ALLOC,
+    };
+    let params = ALLOC + unit.params.iter().map(|p| std::mem::size_of::<Param>() as u64 + 2 * ALLOC + p.name().len() as u64 + p.value().map_or(0, str::len) as u64).sum::<u64>();
+    std::mem::size_of::<Unit>() as u64 + 16 + ALLOC + body + params + ports(&unit.inputs) + ports(&unit.outputs)
+}
+
+/// What the flow cache counts for `unit`, held once however many closures place it.
+#[cfg(test)]
+pub(crate) fn counted_for_tests(unit: &Unit) -> u64 {
+    (unit_footprint(unit) + KEPT_UNIT_BYTES) * 5 / 4
+}
+
+/// About what a closure takes beside its units: its tree of them (nodes of 11 hashes and `Arc`s,
+/// about two thirds full) and its shapes (`Shapes::footprint`).
+fn closure_footprint(loaded: &Loaded) -> u64 {
+    let n = loaded.0.units.len() as u64;
+    let node = 11 * (32 + 8) + 24 + 16;
+    n.div_ceil(8) * node + loaded.0.shapes.footprint() + 64
+}
+
+/// How much memory the flow cache holds by default: every sample flow about 40 times over, with
+/// units shared (docs/L4s/request-path-L4.md, C1). `holon serve --flow-cache SIZE` sets it.
+pub(crate) const FLOW_CACHE_BYTES: u64 = 256 << 20;
+
+/// The closures runs have loaded, kept by their root hash up to a budget in bytes (a unit's
+/// encoded size, each unit counted once however many closures hold it), the least recently used
+/// let go first. Its lock is a leaf: nothing else is locked under it, and the store is never read
+/// while it is held.
+pub(crate) struct FlowCache(Mutex<Kept>);
+
+struct Kept {
+    budget: u64,
+    bytes: u64,
+    tick: u64,
+    closures: HashMap<Hash, KeptClosure>,
+    units: HashMap<Hash, KeptUnit>,
+    /// How many closures it let go of to fit its budget, ever: the host's view tells a cache too
+    /// small by it (storage.rs).
+    evicted: u64,
+}
+
+struct KeptClosure {
+    loaded: Loaded,
+    used: u64,
+    /// What the closure itself takes beside its units: its own map of them and its shapes.
+    bytes: u64,
+}
+
+struct KeptUnit {
+    unit: Arc<Unit>,
+    bytes: u64,
+    /// How many kept closures hold it.
+    holders: usize,
+}
+
+impl Default for FlowCache {
+    fn default() -> FlowCache {
+        FlowCache::with_budget(FLOW_CACHE_BYTES)
+    }
+}
+
+impl FlowCache {
+    pub(crate) fn with_budget(budget: u64) -> FlowCache {
+        FlowCache(Mutex::new(Kept { budget, bytes: 0, tick: 0, closures: HashMap::new(), units: HashMap::new(), evicted: 0 }))
+    }
+
+    /// Keep at most `budget` bytes from now on, letting go of what no longer fits.
+    pub(crate) fn set_budget(&self, budget: u64) {
+        let mut kept = self.0.lock().unwrap();
+        kept.budget = budget;
+        kept.shrink(None);
+    }
+
+    /// Whether the closure of `root` is kept in memory, without loading it or counting it as used.
+    pub(crate) fn holds(&self, root: &Hash) -> bool {
+        self.0.lock().unwrap().closures.contains_key(root)
+    }
+
+    /// The closure kept for `root`, now the most recently used.
+    fn get(&self, root: &Hash) -> Option<Loaded> {
+        let mut kept = self.0.lock().unwrap();
+        kept.tick += 1;
+        let tick = kept.tick;
+        kept.closures.get_mut(root).map(|c| {
+            c.used = tick;
+            c.loaded.clone()
+        })
+    }
+
+    /// A unit some kept closure holds.
+    fn unit(&self, hash: &Hash) -> Option<Arc<Unit>> {
+        self.0.lock().unwrap().units.get(hash).map(|u| Arc::clone(&u.unit))
+    }
+
+    /// Keep `loaded` as `root`'s closure, when it fits the budget at all.
+    fn keep(&self, root: Hash, loaded: &Loaded) {
+        // Sized before the lock is taken: what each takes in memory, not its encoding, so the
+        // budget is the memory kept (resilience-audit-L4.md, S1: counted by encoding, a cache of
+        // flows without a js node held 7.8 times its budget).
+        // Rounded up a quarter for what the estimate can't see (each small allocation's rounding,
+        // the maps' spare room): a cache that keeps a little less than its budget, never more.
+        let sizes: Vec<(Hash, u64)> = loaded.0.units.iter().map(|(h, u)| (*h, (unit_footprint(u) + KEPT_UNIT_BYTES) * 5 / 4)).collect();
+        let own = closure_footprint(loaded);
+        if sizes.iter().map(|(_, n)| n).sum::<u64>() + own > self.0.lock().unwrap().budget {
+            return;
+        }
+        let mut kept = self.0.lock().unwrap();
+        if kept.closures.contains_key(&root) {
+            return; // Another run loaded it meanwhile.
+        }
+        for (hash, bytes) in sizes {
+            match kept.units.get_mut(&hash) {
+                Some(unit) => unit.holders += 1,
+                None => {
+                    kept.bytes += bytes;
+                    kept.units.insert(hash, KeptUnit { unit: Arc::clone(&loaded.0.units[&hash]), bytes, holders: 1 });
+                }
+            }
+        }
+        kept.tick += 1;
+        let used = kept.tick;
+        kept.bytes += own;
+        kept.closures.insert(root, KeptClosure { loaded: loaded.clone(), used, bytes: own });
+        kept.shrink(Some(root));
+    }
+
+    /// How many closures and units it holds, and their bytes.
+    #[cfg(test)]
+    pub(crate) fn held(&self) -> (usize, usize, u64) {
+        let kept = self.0.lock().unwrap();
+        (kept.closures.len(), kept.units.len(), kept.bytes)
+    }
+
+    /// What `root`'s closure takes, if it is kept, for the host's view (storage.rs): its own bytes
+    /// and its units held by it alone, and its units other closures hold too.
+    pub(crate) fn held_for(&self, root: &Hash) -> Option<(u64, u64)> {
+        let kept = self.0.lock().unwrap();
+        let closure = kept.closures.get(root)?;
+        let (mut own, mut shared) = (closure.bytes, 0);
+        for hash in closure.loaded.0.units.keys() {
+            match kept.units.get(hash) {
+                Some(u) if u.holders > 1 => shared += u.bytes,
+                Some(u) => own += u.bytes,
+                None => {}
+            }
+        }
+        Some((own, shared))
+    }
+
+    /// What it holds against its budget, for the host's view (storage.rs): closures, bytes, budget.
+    pub(crate) fn usage(&self) -> (usize, u64, u64) {
+        let kept = self.0.lock().unwrap();
+        (kept.closures.len(), kept.bytes, kept.budget)
+    }
+
+    /// How many closures it has let go of to fit its budget.
+    pub(crate) fn evicted(&self) -> u64 {
+        self.0.lock().unwrap().evicted
+    }
+}
+
+impl Kept {
+    /// Let go of the least recently used closures, never `spare`, until it fits the budget.
+    fn shrink(&mut self, spare: Option<Hash>) {
+        while self.bytes > self.budget {
+            let Some(oldest) = self.closures.iter().filter(|(h, _)| Some(**h) != spare).min_by_key(|(_, c)| c.used).map(|(h, _)| *h) else {
+                break;
+            };
+            let gone = self.closures.remove(&oldest).expect("it was just found");
+            self.evicted += 1;
+            self.bytes -= gone.bytes;
+            for hash in gone.loaded.0.units.keys() {
+                let unit = self.units.get_mut(hash).expect("a kept closure's units are kept");
+                unit.holders -= 1;
+                if unit.holders == 0 {
+                    self.bytes -= unit.bytes;
+                    self.units.remove(hash);
+                }
+            }
+        }
+    }
 }
 
 /// The most units a closure holds.
@@ -253,7 +532,7 @@ pub(crate) fn handle_get_cache(cache: &Mutex<SharedCache>, store: &SharedStore, 
             None => return Response::empty_404(),
         }
     };
-    let resolver = match materialize_closure(store, unit_hash) {
+    let resolver = match closure(store, unit_hash) {
         Ok(r) => r,
         Err(e) => return e.response(),
     };
@@ -308,5 +587,150 @@ pub(crate) fn handle_post_cache_ingest(cache: &Mutex<SharedCache>, request: &Req
             ),
         ),
         Err(CacheIngestError::Encode(e)) => err(500, format!("encode error: {e:?}")),
+    }
+}
+
+/// How many bytes of values the store keeps in memory beside the disk (`ValueCache`).
+pub(crate) const VALUE_CACHE_BYTES: u64 = 64 << 20;
+
+/// What the cache's own entry for a value takes beside the value: its hash and its counts, in a
+/// map that doubles as it grows (a bucket and a half on average, each with its control byte).
+const ENTRY_BYTES: u64 = 104;
+
+/// About what `value` takes in memory: its own `Value`, and what it owns on the heap (a text's
+/// bytes, a list's items, a record's entries and keys, a payload's box), each allocation a little
+/// more for the allocator's own (resilience-audit-L4.md, S1: counted by encoding, the cache held
+/// 2.8 times its budget).
+pub(crate) fn footprint(value: &Value) -> u64 {
+    const ALLOC: u64 = 16;
+    let own = std::mem::size_of::<Value>() as u64;
+    own + match value {
+        Value::Number(_) | Value::Boolean(_) => 0,
+        Value::Text(t) => t.len() as u64 + ALLOC,
+        Value::List(xs) => ALLOC + xs.iter().map(footprint).sum::<u64>(),
+        // A tree's nodes, each with room for 11 keys and values whatever it holds, about two thirds
+        // full; each key's text; each value's own heap (the value itself is in its node).
+        Value::Record(fields) if fields.is_empty() => 0,
+        Value::Record(fields) => {
+            let slot = std::mem::size_of::<String>() as u64 + own;
+            let nodes = (fields.len() as u64).div_ceil(8);
+            nodes * (11 * slot + 24 + ALLOC) + fields.iter().map(|(k, v)| k.len() as u64 + ALLOC + footprint(v) - own).sum::<u64>()
+        }
+        Value::Effect { sink, payload } => sink.len() as u64 + 2 * ALLOC + footprint(payload),
+        Value::Sum { payload, .. } => ALLOC + footprint(payload),
+    }
+}
+
+/// The largest value it keeps: a file's text kept by hash can be big, and is read once.
+const VALUE_CACHE_LARGEST: u64 = 1 << 20;
+
+/// The values runs have read from the on-disk store, kept in memory up to a budget (by encoded
+/// size), the least recently used let go first (docs/L4s/request-path-plan.md, 12.4): a collection
+/// read walks its trie, a value a node, each a file named by its hash, opened, decoded and checked
+/// under the store's lock. A value is its hash's forever, so a kept one is never stale, and one a
+/// sweep has since removed from disk is one no live root reaches, so no run asks for it. Its lock
+/// is a leaf: the store is never read while it is held.
+pub(crate) struct ValueCache(Mutex<KeptValues>);
+
+struct KeptValues {
+    /// How many values it let go of to fit its budget, ever (the host's view, storage.rs).
+    evicted: u64,
+    budget: u64,
+    bytes: u64,
+    tick: u64,
+    values: HashMap<Hash, (Value, u64, u64)>,
+}
+
+impl Default for ValueCache {
+    fn default() -> ValueCache {
+        ValueCache::with_budget(VALUE_CACHE_BYTES)
+    }
+}
+
+impl ValueCache {
+    pub(crate) fn with_budget(budget: u64) -> ValueCache {
+        ValueCache(Mutex::new(KeptValues { evicted: 0, budget, bytes: 0, tick: 0, values: HashMap::new() }))
+    }
+
+    /// Keep at most `budget` bytes from now on (`holon serve --value-cache`), letting go of the
+    /// least recently used past it.
+    pub(crate) fn set_budget(&self, budget: u64) {
+        let mut kept = self.0.lock().unwrap();
+        kept.budget = budget;
+        if kept.bytes > budget {
+            let mut by_use: Vec<(u64, Hash, u64)> = kept.values.iter().map(|(h, (_, n, used))| (*used, *h, *n)).collect();
+            by_use.sort_unstable();
+            for (_, h, n) in by_use {
+                if kept.bytes <= budget {
+                    break;
+                }
+                kept.values.remove(&h);
+                kept.bytes -= n;
+            }
+        }
+    }
+
+    /// The value kept for `key`, now the most recently used.
+    pub(crate) fn get(&self, key: &Hash) -> Option<Value> {
+        let mut kept = self.0.lock().unwrap();
+        if kept.budget == 0 {
+            return None;
+        }
+        kept.tick += 1;
+        let tick = kept.tick;
+        kept.values.get_mut(key).map(|(v, _, used)| {
+            *used = tick;
+            v.clone()
+        })
+    }
+
+    /// Keep `value` as `key`'s, when it is small enough; let go of the least recently used past the
+    /// budget, down to three quarters of it, so the next few fit without another pass.
+    pub(crate) fn keep(&self, key: Hash, value: &Value) {
+        if self.0.lock().unwrap().budget == 0 {
+            return;
+        }
+        // Sized before the lock is taken: what it takes in memory, not its encoding, so the budget is
+        // the memory kept (resilience-audit-L4.md, S1).
+        let bytes = footprint(value) + ENTRY_BYTES;
+        let mut kept = self.0.lock().unwrap();
+        if bytes > VALUE_CACHE_LARGEST.min(kept.budget) || kept.values.contains_key(&key) {
+            return;
+        }
+        kept.tick += 1;
+        let tick = kept.tick;
+        kept.values.insert(key, (value.clone(), bytes, tick));
+        kept.bytes += bytes;
+        if kept.bytes > kept.budget {
+            let mut by_use: Vec<(u64, Hash, u64)> = kept.values.iter().map(|(h, (_, n, used))| (*used, *h, *n)).collect();
+            by_use.sort_unstable();
+            let target = kept.budget / 4 * 3;
+            for (_, h, n) in by_use {
+                if kept.bytes <= target {
+                    break;
+                }
+                kept.values.remove(&h);
+                kept.bytes -= n;
+                kept.evicted += 1;
+            }
+        }
+    }
+
+    /// How many values it keeps, and their bytes.
+    #[cfg(test)]
+    pub(crate) fn size(&self) -> (usize, u64) {
+        let kept = self.0.lock().unwrap();
+        (kept.values.len(), kept.bytes)
+    }
+
+    /// What it holds against its budget, for the host's view (storage.rs): values, bytes, budget.
+    pub(crate) fn usage(&self) -> (usize, u64, u64) {
+        let kept = self.0.lock().unwrap();
+        (kept.values.len(), kept.bytes, kept.budget)
+    }
+
+    /// How many values it has let go of to fit its budget.
+    pub(crate) fn evicted(&self) -> u64 {
+        self.0.lock().unwrap().evicted
     }
 }

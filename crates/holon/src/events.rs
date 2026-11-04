@@ -78,6 +78,9 @@ pub(crate) struct Events {
     /// Whether the file ends in a line a crash cut short, which the next line mustn't join.
     cut: bool,
     slug: Option<String>,
+    /// Whether events were written since the file was last synced to disk (recorder.rs's
+    /// `sync_logs`).
+    dirty: bool,
 }
 
 /// Where `slug`'s events are kept for the deployments file at `deployments_path`, if anywhere:
@@ -166,7 +169,20 @@ impl Events {
         if new {
             crate::sealing::restrict_to_owner(&path)?;
         }
-        file.write_all(text.as_bytes())
+        file.write_all(text.as_bytes())?;
+        self.dirty = true;
+        Ok(())
+    }
+
+    /// The file to sync, if events were written since it last was: the flag is cleared, and put
+    /// back with `still_dirty` if the sync fails.
+    pub(crate) fn take_dirty(&mut self) -> Option<PathBuf> {
+        std::mem::take(&mut self.dirty).then(|| self.file.clone()).flatten()
+    }
+
+    /// Its file still needs syncing: the last sync of it failed.
+    pub(crate) fn still_dirty(&mut self) {
+        self.dirty = true;
     }
 
     /// Every event, oldest first.

@@ -48,6 +48,11 @@ fn err<T>(pos: Pos, message: impl Into<String>) -> R<T> {
 }
 
 /// A token as an error message names it.
+/// `lazy` or `unrecorded`: a handler's log level, the words a handler's line may end in.
+fn is_log_word(t: &Token) -> bool {
+    t.tok == Tok::Ident && matches!(t.text.as_str(), "lazy" | "unrecorded")
+}
+
 fn describe(t: &Token) -> String {
     match t.tok {
         Tok::Ident | Tok::Number | Tok::Duration(_) | Tok::Scaled(_) => format!("\"{}\"", t.text),
@@ -275,7 +280,9 @@ impl Parser {
                 Tok::RBrace => return err(t.span.start, "a } without a block to close"),
                 Tok::Ident => match t.text.as_str() {
                     // `every 2s {` opens a clock handler; `every 2s` alone is the old header.
-                    "every" if self.peek_at(2).tok == Tok::LBrace => file.items.push(Item::Every(self.every()?)),
+                    "every" if self.peek_at(2).tok == Tok::LBrace || (is_log_word(self.peek_at(2)) && self.peek_at(3).tok == Tok::LBrace) => {
+                        file.items.push(Item::Every(self.every()?))
+                    }
                     // A header's word before `.` is a node's name in the wiring form (`every.now -> …`).
                     "flow" | "port" | "every" | "interval" | "browsers" | "optional" | "collection" | "folder" | "database" | "channel" if self.peek_at(1).tok != Tok::Dot => {
                         let h = self.header()?;
@@ -585,8 +592,9 @@ impl Parser {
         } else {
             None
         };
+        let log = self.log_word();
         let (body, end) = self.block()?;
-        Ok(RouteDef { method, path, request, resumes, body, span: head.span.to(end) })
+        Ok(RouteDef { method, path, request, resumes, log, body, span: head.span.to(end) })
     }
 
     /// After `on`: `file inbox [deleted] [matching "…"]`.
@@ -619,8 +627,9 @@ impl Parser {
         self.expect(&Tok::LParen, "\"(\" and a name for the file")?;
         let file = self.ident("a name for the file")?;
         let close = self.expect(&Tok::RParen, "\")\"")?;
+        let log = self.log_word();
         let (body, end) = self.block()?;
-        Ok(OnFileDef { on, file, head: head.span.to(close.span), body, span: head.span.to(end) })
+        Ok(OnFileDef { on, file, head: head.span.to(close.span), log, body, span: head.span.to(end) })
     }
 
     /// `action reset (input) { … }`.
@@ -630,8 +639,9 @@ impl Parser {
         self.expect(&Tok::LParen, "\"(\" and a name for what is sent")?;
         let input = self.ident("a name for what is sent")?;
         let close = self.expect(&Tok::RParen, "\")\"")?;
+        let log = self.log_word();
         let (body, end) = self.block()?;
-        Ok(ActionDef { name, input, head: head.span.to(close.span), body, span: head.span.to(end) })
+        Ok(ActionDef { name, input, head: head.span.to(close.span), log, body, span: head.span.to(end) })
     }
 
     /// `every 2s { … }`.
@@ -643,8 +653,19 @@ impl Parser {
             Tok::Number => t.text.parse().map_err(|_| ParseError { pos: t.span.start, message: format!("{} is not a number", t.text) })?,
             _ => return err(t.span.start, format!("expected how often, like 10s or 5m, found {}", describe(&t))),
         };
+        let log = self.log_word();
         let (body, end) = self.block()?;
-        Ok(EveryDef { seconds, text: t.text, head: head.span.to(t.span), body, span: head.span.to(end) })
+        Ok(EveryDef { seconds, text: t.text, head: head.span.to(t.span), log, body, span: head.span.to(end) })
+    }
+
+    /// After a handler's head, before its block: `lazy` or `unrecorded`, how its runs are recorded
+    /// (docs/L4s/request-path-L4.md, C5). Contextual: a name everywhere else.
+    fn log_word(&mut self) -> Option<Name> {
+        if is_log_word(self.peek()) && self.peek_at(1).tok == Tok::LBrace {
+            let t = self.next();
+            return Some(Name { text: t.text, span: t.span });
+        }
+        None
     }
 
     /// `{ statements }`, and the span of the closing brace.

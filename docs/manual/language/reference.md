@@ -263,7 +263,7 @@ Rules:
 ## Routes
 
 ```
-route METHOD /path (req) [resumes NAME] {
+route METHOD /path (req) [resumes NAME] [lazy | unrecorded] {
   statements
 }
 ```
@@ -335,6 +335,44 @@ route GET /seen/:name (req) {
   name is letters, digits and `_`, one block per name. The network never reaches it: a person runs
   it from the editor or a script, and an agent only one a person lets agents run
   ([Actions](../guides/actions.md)).
+
+**How runs are recorded.** Every handler is *strict* unless its line says otherwise: each run is
+a line of the deployment's log, which is what the runs table, replay, revert and explain read.
+A word right before the block changes that:
+
+| Word | Its runs |
+|---|---|
+| (none) | strict: recorded |
+| `lazy` | recorded, and may reach the disk up to a second after the answer |
+| `unrecorded` | not in the log, failed or not: counted (how many, how many failed, the last failure's status and error); they can't be replayed, reverted or explained. To see why one fails, make it `lazy` for a while. A person approves it at deploy, `Unrecorded("GET /health")` |
+
+```holon
+flow board
+port 8170
+collection notes
+
+route GET /health (req) unrecorded {
+  respond "ok"
+}
+
+route GET /notes (req) lazy {
+  respond notes.list(limit: 50)
+}
+```
+
+Only a handler that does nothing outside its run may say either: one that reads (state, a
+collection, a folder, a database, a secret, the time, `random`) and answers. One that writes,
+calls out, sends on or streams a channel, waits with `await` or answers with a secret is strict,
+and the word on it is a mistake at the line that does it:
+
+```
+board.holon:15:3: POST /notes can't be unrecorded: it may put and delete items of its collection "notes"; only a handler that does nothing outside its run may be lazy or unrecorded
+    notes[req.json.id] = req.json.text
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+```
+
+The words go the same place on the other handlers (`every 1m lazy { … }`, `on file inbox (f)
+unrecorded { … }`, `action report (input) unrecorded { … }`), and are names anywhere else.
 
 `respond` belongs to routes and actions: a clock's or a file's run answers nobody. `ingress` isn't
 used in a block: a file handler and an action name what they receive, and a clock receives

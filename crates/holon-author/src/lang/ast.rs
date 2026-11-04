@@ -124,6 +124,8 @@ pub struct ActionDef {
     pub input: Name,
     /// `action reset (input)`.
     pub head: Span,
+    /// `lazy` or `unrecorded` before the block: how its runs are recorded (strict without one).
+    pub log: Option<Name>,
     pub body: Vec<Stmt>,
     pub span: Span,
 }
@@ -137,6 +139,8 @@ pub struct OnFileDef {
     pub file: Name,
     /// `on file inbox … (f)`.
     pub head: Span,
+    /// `lazy` or `unrecorded` before the block: how its runs are recorded (strict without one).
+    pub log: Option<Name>,
     pub body: Vec<Stmt>,
     pub span: Span,
 }
@@ -150,6 +154,8 @@ pub struct EveryDef {
     pub text: String,
     /// `every 2s`.
     pub head: Span,
+    /// `lazy` or `unrecorded` before the block: how its runs are recorded (strict without one).
+    pub log: Option<Name>,
     pub body: Vec<Stmt>,
     pub span: Span,
 }
@@ -212,6 +218,8 @@ pub struct RouteDef {
     pub path: Name,
     pub request: Name,
     pub resumes: Option<Name>,
+    /// `lazy` or `unrecorded` before the block: how its runs are recorded (strict without one).
+    pub log: Option<Name>,
     pub body: Vec<Stmt>,
     pub span: Span,
 }

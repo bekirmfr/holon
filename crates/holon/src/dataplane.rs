@@ -46,6 +46,29 @@ pub(crate) struct DataLimits {
     pub(crate) max_body_bytes: usize,
     /// Open connections per listener.
     pub(crate) max_connections: usize,
+    /// The names a request may name its host by besides an IP address and `localhost`
+    /// (`--allow-host`, as the control plane): a name a proxy in front forwards (`host_allowed`).
+    pub(crate) names: Vec<String>,
+}
+
+/// Whether a request naming its host `host` (its `Host` header, or its authority) is one this
+/// data plane answers: by an IP address, by `localhost` (or a name under it), or by a name in
+/// `names`. Any other name is refused: DNS rebinding points a name a page was loaded from at this
+/// machine, and the page then reads a flow's answers as its own origin's, past the browser's
+/// cross-origin rules; it can't do that by an address, and a name of the operator's is listed.
+/// No host at all (an HTTP/1.0 client) is answered: a browser always sends one.
+pub(crate) fn host_allowed(host: Option<&str>, names: &[String]) -> bool {
+    let Some(host) = host.map(str::trim).filter(|h| !h.is_empty()) else { return true };
+    // The name without its port: `[v6]:port`, `name:port`, or a bare one.
+    let name = match host.strip_prefix('[') {
+        Some(rest) => return rest.split(']').next().is_some_and(|v6| v6.parse::<std::net::Ipv6Addr>().is_ok()),
+        None => host.rsplit_once(':').filter(|(_, port)| port.bytes().all(|b| b.is_ascii_digit())).map_or(host, |(n, _)| n),
+    };
+    let name = name.trim_end_matches('.').to_ascii_lowercase();
+    name.parse::<IpAddr>().is_ok()
+        || name == "localhost"
+        || name.ends_with(".localhost")
+        || names.iter().any(|n| n.trim_end_matches('.').eq_ignore_ascii_case(&name) || n.eq_ignore_ascii_case(host))
 }
 
 impl Default for DataLimits {
@@ -56,6 +79,7 @@ impl Default for DataLimits {
             body_timeout: Duration::from_secs(30),
             max_body_bytes: 10 * 1024 * 1024,
             max_connections: 1024,
+            names: Vec::new(),
         }
     }
 }
@@ -83,6 +107,9 @@ struct Listener {
     deployments_path: String,
     slug: String,
     limits: DataLimits,
+    /// Whether each route's endpoint, by its hash, runs on the worker that read its request (see
+    /// [`runs_here_for`]): worked out once per version of the route.
+    here: Mutex<Here>,
 }
 
 /// Start the data-plane listener for `slug` on `port`, returning its stop signal. The port is
@@ -103,6 +130,7 @@ pub(crate) fn start_listener(state: &AppState, slug: &str, port: u16) -> Result<
         deployments_path: state.deployments_path.clone(),
         slug: slug.to_string(),
         limits,
+        here: Mutex::new(Here::default()),
     });
     runtime.spawn(async move {
         let permits = Arc::new(Semaphore::new(listener.limits.max_connections));
@@ -262,6 +290,14 @@ impl Body for Answer {
 /// the answer into an HTTP response.
 async fn answer(listener: Arc<Listener>, request: hyper::Request<Incoming>) -> hyper::Response<Answer> {
     let (parts, body) = request.into_parts();
+    let host = parts.headers.get(hyper::header::HOST).and_then(|v| v.to_str().ok()).or_else(|| parts.uri.authority().map(|a| a.as_str()));
+    if !host_allowed(host, &listener.limits.names) {
+        let host = host.unwrap_or_default();
+        return to_hyper(DataResponse::json_error(
+            421,
+            &format!("Host {host:?} isn't a name this server answers to (a page loaded from a name pointed at this machine can't read a flow's answers): reach it by its address or localhost, or start the server with --allow-host {}", host.rsplit_once(':').map_or(host, |(n, _)| n)),
+        ));
+    }
     let limit = listener.limits.max_body_bytes;
     let too_large = || DataResponse::json_error(413, &format!("the request body is larger than {limit} bytes"));
     let declared = parts.headers.get(hyper::header::CONTENT_LENGTH).and_then(|v| v.to_str().ok()?.parse::<u64>().ok());
@@ -289,11 +325,22 @@ async fn answer(listener: Arc<Listener>, request: hyper::Request<Incoming>) -> h
     let deployments = Arc::clone(&listener.deployments);
     let slug = listener.slug.clone();
     let origin = allowed_origin(&deployments, &slug, &request.headers);
+    // A short route runs here, on the worker that read its request: no hop onto the blocking
+    // pool, and no channel to forward on, since it calls out to nothing (§4.5 a, `runs_here_for`).
+    if runs_here_for(&listener.store, &listener.deployments, &listener.slug, &request, &listener.here) {
+        // A run that panics is answered as one on the blocking pool is (R1), not dropped.
+        let answered = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            serve_data_forwarding(&listener.store, &listener.deployments, &listener.deployments_path, &listener.slug, &request, None, origin)
+        }))
+        .unwrap_or_else(|_| DataResponse::json_error(500, "the request's handler failed"));
+        return to_hyper(answered);
+    }
     // A streamed call's answer comes back as it is read, before the run is over.
     let (pieces, mut forwarded) = tokio::sync::mpsc::channel(64);
     let forward = outbound::Forwarder::new(Arc::new(Replying(pieces)));
+    let allowed = origin.clone();
     let mut run = tokio::task::spawn_blocking(move || {
-        serve_data_forwarding(&listener.store, &listener.deployments, &listener.deployments_path, &listener.slug, &request, Some(forward))
+        serve_data_forwarding(&listener.store, &listener.deployments, &listener.deployments_path, &listener.slug, &request, Some(forward), allowed)
     });
     let (head, done) = tokio::select! {
         head = forwarded.recv() => (head, None),
@@ -325,6 +372,70 @@ async fn answer(listener: Arc<Listener>, request: hyper::Request<Incoming>) -> h
             with_headers(answered.status, &answered.headers, Answer::Events(Events { subscription, heartbeat, ended: false }))
         }
     }
+}
+
+/// What a run on the worker that read its request may read: only what never waits. Its request,
+/// the clock and random numbers are in hand; state, collections, secrets, databases and folders sit
+/// behind locks a writer holds while it syncs to disk (a state's head, the store's values, the
+/// vault), so a route reading one goes to the blocking pool (docs/L4s/resilience-audit-L4.md, R2).
+const READS_HERE: &[&str] = &["NetworkIngress", "Clock", "Random"];
+
+/// Which of a deployment's routes run inline, by endpoint hash, for the version of the deployment
+/// it was worked out for: one deployed afresh starts it again, so it holds only the live version's.
+#[derive(Default)]
+pub(crate) struct Here {
+    unit: Option<holon_core::Hash>,
+    endpoints: std::collections::HashMap<holon_core::Hash, bool>,
+}
+
+/// Whether `request` runs on the data plane's worker rather than the blocking pool (§4.5 a): only a
+/// run that can never wait, since a worker that waits holds up every other connection on it
+/// (docs/L4s/resilience-audit-L4.md, R2). Its route's runs are unrecorded (granted so), so it
+/// writes no log line and waits on no log's lock; it reads only [`READS_HERE`], so it calls out to
+/// nothing and waits on no writer; and its flow is in memory already, so nothing is loaded from the
+/// store. The hop costs 30–60 µs, about what such a run takes. Worked out once per endpoint hash;
+/// anything unknown goes to the pool.
+pub(crate) fn runs_here_for(
+    store: &SharedStore,
+    deployments: &Mutex<BTreeMap<String, Deployment>>,
+    slug: &str,
+    request: &DataRequest,
+    here: &Mutex<Here>,
+) -> bool {
+    let path = request.url.split_once('?').map_or(request.url.as_str(), |(p, _)| p);
+    let (unit, endpoint) = {
+        let table = deployments.lock().unwrap();
+        let Some(dep) = table.get(slug) else { return false };
+        let Some((route, _)) = dep.server.as_ref().and_then(|s| holon_core::match_route(s, &request.method, path)) else { return false };
+        let label = format!("{} {}", route.method, route.path);
+        if dep.permit.log_level(Some(&label), route.log) != holon_core::LogLevel::Unrecorded {
+            return false;
+        }
+        (dep.unit, route.endpoint)
+    };
+    // Loaded already, or it would be read from the store here: the pool loads it.
+    if !store.3.holds(&unit) {
+        return false;
+    }
+    {
+        let mut known = here.lock().unwrap();
+        if known.unit != Some(unit) {
+            *known = Here { unit: Some(unit), endpoints: std::collections::HashMap::new() };
+        }
+        if let Some(short) = known.endpoints.get(&endpoint) {
+            return *short;
+        }
+    }
+    let short = crate::units::closure(store, unit).is_ok_and(|resolver| {
+        holon_core::Resolver::resolve(&resolver, &endpoint).is_some_and(|unit| {
+            holon_core::capabilities(unit, &resolver).iter().all(|c| READS_HERE.contains(&holon_core::consent_name(&c).split('(').next().unwrap_or("")))
+        })
+    });
+    let mut known = here.lock().unwrap();
+    if known.unit == Some(unit) {
+        known.endpoints.insert(endpoint, short);
+    }
+    short
 }
 
 /// An answer as an HTTP response.

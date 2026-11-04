@@ -508,7 +508,7 @@ impl Session {
             }
             Conn::My(m) => {
                 use mysql::prelude::Queryable;
-                let k: String = id.iter().map(|b| format!("{b:02x}")).collect();
+                let k: String = holon_core::hex(id);
                 if !self.began {
                     m.query_drop("set transaction isolation level read committed").and_then(|_| m.query_drop("start transaction")).map_err(|e| my_said(&e))?;
                     self.began = true;
@@ -797,9 +797,9 @@ fn pg_value(ty: &Type, raw: &[u8]) -> Result<Value, String> {
         Type::TEXT | Type::VARCHAR | Type::BPCHAR | Type::NAME | Type::UNKNOWN | Type::CHAR => Value::Text(String::from_utf8_lossy(raw).into_owned()),
         Type::JSON => holon_core::parse_json(&String::from_utf8_lossy(raw)).ok_or("a json value Holon can't read")?,
         Type::JSONB => holon_core::parse_json(&String::from_utf8_lossy(raw.get(1..).ok_or_else(short)?)).ok_or("a jsonb value Holon can't read")?,
-        Type::BYTEA => Value::Text(raw.iter().map(|b| format!("{b:02x}")).collect()),
+        Type::BYTEA => Value::Text(holon_core::hex(raw)),
         Type::UUID => {
-            let h: String = be(16)?.iter().map(|b| format!("{b:02x}")).collect();
+            let h: String = holon_core::hex(be(16)?);
             Value::Text(format!("{}-{}-{}-{}-{}", &h[..8], &h[8..12], &h[12..16], &h[16..20], &h[20..]))
         }
         Type::DATE => {

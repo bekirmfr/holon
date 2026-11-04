@@ -9,6 +9,10 @@ Current:
 - `manual/`: the user manual: getting started, concepts, the language (a tour, the reference,
   every leaf), guides and the command line and server reference. A test compiles every flow in it
   and keeps its page of leaves equal to the catalog.
+- `engineering/`: why Holon is the way it is, for someone who will change it: themes
+  (performance, resilience, testing, measuring, lessons), and to come, a doc per component and
+  per host capability. Each says how it works, why, how far it reaches and where it stops, and
+  what the tests hold.
 - `../CLAUDE.md`: how work is done here (samples for every feature, commits).
 - `PLATFORM_LAYOUT.md`: the current plan: one product, the crates, permissions (manifest, policy,
   grant, permit), effects that answer, runs that last, what has landed, and what comes next

@@ -11,7 +11,7 @@ import { encapErrorNodeIndices, isWEncapError } from "./diagnostics";
 import { isTemplate, templateDefaults, templateInterface } from "./templates";
 import { unitFor } from "./canvasUnits";
 import { defaultBoundaryValue } from "./BoundaryField";
-import type { EndpointDraft } from "./endpoint";
+import type { EndpointDraft, LogWord } from "./endpoint";
 import { restoreDocument } from "./docUnits";
 import { findRoutes } from "./derive";
 
@@ -39,15 +39,15 @@ export function traceOfUnit(hash: string, group: PrimitiveNodeType[], ev: Evalua
 
 /** One clock of the derived server (an `every` node's group): its period, its label (`every 2s`)
  *  and its handler unit's hash. */
-export type ClockDraft = { seconds: number; label: string; hash: string };
+export type ClockDraft = { seconds: number; label: string; hash: string; log?: LogWord };
 
 /** One file handler of the derived server (an `on_file` node's group): the folder it watches, its
  *  label (`on file inbox`) and its handler unit's hash. */
-export type FileDraft = { folder: string; label: string; hash: string };
+export type FileDraft = { folder: string; label: string; hash: string; log?: LogWord };
 
 /** One action of the derived server (an `action` node's group): its name, its label (`action
  *  reset`) and its handler unit's hash. */
-export type ActionDraft = { name: string; label: string; hash: string };
+export type ActionDraft = { name: string; label: string; hash: string; log?: LogWord };
 
 /** The server a canvas declares: its endpoints, clocks, file handlers and actions, why any handler can't be one, the
  *  server unit's hash once every handler is sound (and `portText` is a port, with a route), and
@@ -58,6 +58,9 @@ export type DerivedServer = {
   files: FileDraft[];
   actions: ActionDraft[];
   errors: string[];
+  /** The errors that are about one node (a lazy or unrecorded handler that does something
+   *  outside its run, at the node that does it), with that node's id; each is in `errors` too. */
+  placed: { node: string; message: string }[];
   serverHash: string | null;
   trace: Record<string, string[]>;
 };

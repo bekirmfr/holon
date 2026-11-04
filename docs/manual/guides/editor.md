@@ -175,6 +175,9 @@ deployment with actions shows a row for each, with its box and **run**, as the s
 - **manifest ▸**: what it may do, and what isn't granted.
 - **permissions ▸**: what is granted, with **revoke** and **grant back**, limits that were
   lowered, and the latest changes ([Changing a grant](deploying.md#changing-a-grant)).
+- **holds ▸**: what it holds, in memory and on disk: its log (the runs it keeps in memory, and
+  its file), its live state, its flow in the cache, and its states in the store as the store's
+  last sweep found them ([What it holds](../reference/server.md#what-it-holds)).
 
 The **activity** list at the bottom says who did what, and when.
 
@@ -190,9 +193,17 @@ Admins manage, from here:
 - **secrets**: the server's own, read by every deployment that reads one and has none of its
   own, each with where it may go
   ([The server's own secrets](deploying.md#the-servers-own-secrets));
-- **storage**: sweeping what nothing kept names any more, the content store's states and values
-  (it counts first, then asks) and the texts of files runs read and wrote, as `holon store sweep`
-  and `holon folder sweep` do;
+- **the host**: what the host warns of, first ([Warnings](../reference/server.md#warnings)), and
+  when it warns of a full disk (set here: `85%`, or `5G` free), and when and how it acts on one
+  (`95%`; only warn, pause what records runs, or cut the oldest runs), and where the runs logs let
+  go of are backed up (a folder, set here); what the server holds: its memory
+  and caches against their sizes, each disk it
+  keeps things on and how full it is, what it keeps there, and what each flow holds, a row each,
+  the most first, as `holon host` says;
+- **storage**: how often the server sweeps on its own, what its last sweeps removed and when the
+  next is due, set here into its `holon.toml` (`[storage] sweep_every`); and sweeping now what
+  nothing kept names any more, the content store's states and values (it counts first, then asks)
+  and the texts of files runs read and wrote, as `holon store sweep` and `holon folder sweep` do;
 - **signing in through an identity provider** (OpenID Connect): its issuer and client id.
 
 Every one of these has a command too: `holon user`, `holon token`, `holon oidc`, `holon folder`,

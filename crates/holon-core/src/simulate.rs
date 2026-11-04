@@ -111,6 +111,10 @@ impl<R: Resolver> Resolver for Simulated<'_, R> {
     fn run_module(&self, bytes: &[u8], limits: &crate::ModuleLimits, inputs: &[Option<Value>]) -> Result<Vec<Option<Value>>, String> {
         self.real.run_module(bytes, limits, inputs)
     }
+
+    fn shape(&self, unit: &crate::Unit) -> Option<&crate::Shape> {
+        self.real.shape(unit)
+    }
 }
 
 /// Walk a root's closure via the shared [`crate::child_refs`] (children ∪ the `fn` param)

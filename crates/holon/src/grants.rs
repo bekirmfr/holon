@@ -16,7 +16,7 @@ use crate::*;
 /// What `unit` needs as its graph derives it, read from the store with no table lock held;
 /// `scheduled` (deployed with an interval: a clock flow), with the clock it runs on.
 pub(crate) fn derived_capabilities(store: &SharedStore, unit: Hash, scheduled: bool) -> Result<Capabilities, String> {
-    let resolver = materialize_closure(store, unit).map_err(|e| format!("store error while materializing closure: {e:?}"))?;
+    let resolver = closure(store, unit).map_err(|e| format!("store error while materializing closure: {e:?}"))?;
     let root = resolver.resolve(&unit).ok_or("the deployed unit no longer resolves in the store")?;
     Ok(holon_core::deployed_capabilities(root, &resolver, scheduled))
 }
@@ -44,7 +44,8 @@ pub(crate) fn recheck(dep: &mut Deployment, caps: &Capabilities, policy: &Policy
         _ => {}
     }
     dep.permit = Arc::new(Permit::new(dep.unit, &dep.grant, policy));
-    dep.log.retain(dep.permit.log.keep_runs as usize, dep.permit.log.max_age_ms());
+    let (keep, age) = (dep.permit.log.keep_runs as usize, dep.permit.log.max_age_ms());
+    dep.log.with(|log| log.retain(keep, age));
 }
 
 /// What the grant view says about a deployment: its grant, the grant's hash, and why it can't
@@ -123,7 +124,7 @@ pub(crate) fn handle_post_grant(state: &AppState, slug: &str, request: &Request,
         recheck(dep, &caps, &policy, now);
         grant_view(dep)
     };
-    persist_deployments(&state.deployments_path, &state.deployments, &state.store);
+    persist_deployments(&state.deployments_path, &state.deployments);
     sync_listeners(state);
     Response::json(&reply)
 }
@@ -164,7 +165,7 @@ pub(crate) fn handle_post_permissions_reload(state: &AppState) -> Response {
             .collect()
     };
     eprintln!("holon: policy reloaded from {:?}", state.policy_path);
-    persist_deployments(&state.deployments_path, &state.deployments, &state.store);
+    persist_deployments(&state.deployments_path, &state.deployments);
     sync_listeners(state);
     let mut reply = permissions_view(&policy);
     reply["attention"] = serde_json::to_value(attention).unwrap_or_default();

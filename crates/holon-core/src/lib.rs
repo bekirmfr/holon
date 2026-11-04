@@ -61,7 +61,7 @@ pub use primitives::{MAX_AWAIT_SECONDS, MAX_RANGE};
 pub use determinism::is_finite_number;
 pub use encapsulate::{default_spec, derive_and_freeze, EncapError, EncapSpec, Expose, Promote};
 pub use promote::{instantiate, open_param, open_params, ParamError};
-pub use eval::{choice_next, eval, eval_observed, eval_one, Answer, Choice, NoObserver, Observer, Slot};
+pub use eval::{choice_next, eval, eval_observed, eval_one, would_plan, Answer, Choice, NoObserver, Observer, Shape, Shapes, Slot};
 pub use fork::{refork, Refork};
 pub use advisory::{advise, Advisory};
 pub use catalog::{genesis_units, interface_of, open_trigger, takes_trigger, GENESIS, PASSES_EXTRA, TRIGGER, TRIGGERED, VARIADIC};
@@ -72,7 +72,7 @@ pub use memo::{entry_key, memo_key, verify_entry, CacheEntry};
 pub use value_hash::{decode_value, encode_value, hash_value, run_id, state_root};
 pub use hash::{
     canonical_child_order,
-    decode_preimage, encode_preimage, hash_unit, parse_hash, DecodeError, Edge, EncodeError, Hash,
+    decode_preimage, encode_preimage, hash_unit, hex, parse_hash, DecodeError, Edge, EncodeError, Hash,
     Param, Port, Type, Unit, UnitBody, ENCODING_VERSION, MAX_TYPE_DEPTH,
 };
 pub use kind::{
@@ -91,8 +91,8 @@ pub use validate::{compatible, validate, ValidationError};
 pub use value::Value;
 pub use json::{parse as parse_json, stringify as stringify_json};
 pub use declare::{
-    clock_label, declaration_of, match_route, parse_path, period_text, read_clock, read_action, read_endpoint, read_file_handler, read_server,
-    Action, Clock, DeclError, EndpointError, FileHandler, Route, Segment, Server, MAX_PERIOD, METHODS,
+    clock_label, declaration_of, log_level, match_route, may_record_lightly, parse_path, period_text, read_clock, read_action, read_endpoint,
+    read_file_handler, read_server, Action, Clock, DeclError, EndpointError, FileHandler, LogLevel, Route, Segment, Server, MAX_PERIOD, METHODS,
 };
 
 /// Reserved edge endpoint denoting a composite's **boundary** (its own interface)

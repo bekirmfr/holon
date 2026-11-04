@@ -53,7 +53,7 @@ impl Activity {
         let appended = (|| -> std::io::Result<()> {
             use std::io::Write;
             let line = serde_json::to_string(&entry).map_err(std::io::Error::other)? + "\n";
-            std::fs::OpenOptions::new().append(true).create(true).open(path)?.write_all(line.as_bytes())
+            crate::sealing::append_private(path)?.write_all(line.as_bytes())
         })();
         if let Err(e) = appended {
             eprintln!("holon: could not append to the activity log {path:?}: {e}");

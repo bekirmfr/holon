@@ -19,6 +19,8 @@ pub struct RouteGroup {
     pub path: String,
     #[serde(rename = "requestId")]
     pub request_id: String,
+    /// How its runs are recorded: its trigger node's `log`, `lazy` or `unrecorded`, or "" (strict).
+    pub log: String,
     #[serde(rename = "nodeIds")]
     pub node_ids: Vec<String>,
     /// The waiting point this route resumes (its request node's `resume`), or "".
@@ -66,6 +68,8 @@ pub struct ClockGroup {
     pub label: String,
     #[serde(rename = "everyId")]
     pub every_id: String,
+    /// How its runs are recorded: its trigger node's `log`, `lazy` or `unrecorded`, or "" (strict).
+    pub log: String,
     #[serde(rename = "nodeIds")]
     pub node_ids: Vec<String>,
 }
@@ -80,6 +84,8 @@ pub struct FileGroup {
     pub label: String,
     #[serde(rename = "onFileId")]
     pub on_file_id: String,
+    /// How its runs are recorded: its trigger node's `log`, `lazy` or `unrecorded`, or "" (strict).
+    pub log: String,
     #[serde(rename = "nodeIds")]
     pub node_ids: Vec<String>,
 }
@@ -92,6 +98,8 @@ pub struct ActionGroup {
     pub label: String,
     #[serde(rename = "actionId")]
     pub action_id: String,
+    /// How its runs are recorded: its trigger node's `log`, `lazy` or `unrecorded`, or "" (strict).
+    pub log: String,
     #[serde(rename = "nodeIds")]
     pub node_ids: Vec<String>,
 }
@@ -148,7 +156,7 @@ pub fn find_clocks(nodes: &[Node], wires: &[Wire]) -> (Vec<ClockGroup>, Vec<Stri
             errors.push(format!("{label} is written twice: one clock per period"));
             continue;
         }
-        clocks.push(ClockGroup { seconds, label, every_id: every.id.clone(), node_ids: ids });
+        clocks.push(ClockGroup { seconds, label, every_id: every.id.clone(), log: every.param("log").into(), node_ids: ids });
     }
     (clocks, errors)
 }
@@ -177,7 +185,7 @@ pub fn find_files(nodes: &[Node], wires: &[Wire]) -> (Vec<FileGroup>, Vec<String
             errors.push(format!("{label} is written twice: one block per line"));
             continue;
         }
-        files.push(FileGroup { folder: t.folder, deleted: t.deleted, matching: t.matching, label, on_file_id: on_file.id.clone(), node_ids: ids });
+        files.push(FileGroup { folder: t.folder, deleted: t.deleted, matching: t.matching, label, on_file_id: on_file.id.clone(), log: on_file.param("log").into(), node_ids: ids });
     }
     // In the order they are written.
     files.sort_by_key(|f| node_ids.iter().position(|id| *id == f.on_file_id));
@@ -208,7 +216,7 @@ pub fn find_actions(nodes: &[Node], wires: &[Wire]) -> (Vec<ActionGroup>, Vec<St
             errors.push(format!("{label} is written twice: one block per name"));
             continue;
         }
-        actions.push(ActionGroup { name, label, action_id: action.id.clone(), node_ids: ids });
+        actions.push(ActionGroup { name, label, action_id: action.id.clone(), log: action.param("log").into(), node_ids: ids });
     }
     // In the order they are written.
     actions.sort_by_key(|a| node_ids.iter().position(|id| *id == a.action_id));
@@ -266,6 +274,7 @@ pub fn find_routes(nodes: &[Node], wires: &[Wire]) -> (Vec<RouteGroup>, Vec<Stri
             request_id: req.id.clone(),
             node_ids: ids,
             resume: req.param("resume").into(),
+            log: req.param("log").into(),
         });
     }
     (routes, errors)
@@ -416,6 +425,20 @@ pub fn file_unit(handler: Hash, outputs: &[Port], trigger: &holon_core::FileTrig
         params,
         inputs: vec![],
         outputs: outputs.to_vec(),
+    }
+}
+
+/// `unit` (a handler unit: an endpoint, a clock's, a file's or an action's) with its log level
+/// (docs/L4s/request-path-L4.md, C5): its frozen `log` param, set only when it isn't strict, so a
+/// handler written without one hashes as it always did. An error for a word that isn't a level.
+pub fn with_log(mut unit: Unit, log: &str) -> Result<Unit, String> {
+    match holon_core::LogLevel::parse(log) {
+        None => Err(format!("\"{log}\" is not a log level (lazy or unrecorded; strict is the default)")),
+        Some(holon_core::LogLevel::Strict) => Ok(unit),
+        Some(level) => {
+            unit.params.push(Param::Frozen { name: "log".into(), value: level.word().into() });
+            Ok(unit)
+        }
     }
 }
 
@@ -671,6 +694,23 @@ mod tests {
         assert_eq!(plain.params.len(), 3);
         assert_eq!(resume.params.last(), Some(&Param::Frozen { name: "resume".into(), value: "paid".into() }));
         assert!(endpoint_unit(h, &[], &out, "GET", "/x", "a b").unwrap_err().contains("not a waiting point's name"));
+    }
+
+    /// A handler's log level is a frozen `log` param only when it isn't strict, so a handler
+    /// written without a word is the unit it always was (docs/L4s/request-path-L4.md, C5).
+    #[test]
+    fn a_handlers_log_level_is_in_its_unit_only_when_it_isnt_strict() {
+        let h = [7u8; 32];
+        let out = [port("o", Type::Any)];
+        let plain = endpoint_unit(h, &[], &out, "GET", "/notes", "").unwrap();
+        assert_eq!(with_log(plain.clone(), "").unwrap(), plain);
+        assert!(!plain.params.iter().any(|p| matches!(p, Param::Frozen { name, .. } if name == "log")));
+        for word in ["lazy", "unrecorded"] {
+            let u = with_log(plain.clone(), word).unwrap();
+            assert_eq!(u.params.last(), Some(&Param::Frozen { name: "log".into(), value: word.into() }));
+            assert_eq!(holon_core::log_level(&u), holon_core::LogLevel::parse(word));
+        }
+        assert!(with_log(plain, "verbose").unwrap_err().contains("not a log level"));
     }
 
     #[test]

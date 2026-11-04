@@ -33,8 +33,8 @@ route POST /orders (req) {
   respond { placed: req.json.customer }, status: 201
 }
 
-# A customer's orders, in the order they were placed.
-route GET /orders/:customer (req) {
+# A customer's orders, in the order they were placed. Lazy: it only reads.
+route GET /orders/:customer (req) lazy {
   respond shop.query("select id, total, refunded from orders where customer = $1 order by id", req.params.customer)
 }
 

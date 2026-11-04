@@ -195,6 +195,69 @@ export async function sweepStore(dryRun: boolean): Promise<{ dry_run: boolean; s
 export async function sweepFolders(): Promise<{ texts: number; chunks: number; bytes: number; kept: { texts: number; chunks: number; bytes: number } }> {
   return asJson(await post(`${BASE}/admin/folders/sweep`, {}));
 }
+/** What one of the server's own sweeps did (storage.rs `Report`). */
+export type SweepReport = { at_ms: number; took_ms: number; removed: number; bytes: number; skipped: boolean; error: string | null };
+/** `GET /admin/host`'s sweeps: how often (`"10m"`, `"off"`), when the next is due, what the last of each did. */
+export type HostSweeps = { every: string; next_at_ms: number | null; sweeping: boolean; store: SweepReport | null; folders: SweepReport | null };
+/** Files, their bytes, and the disk they take in whole blocks (storage.rs `Count`). */
+export type Counted3 = { files: number; bytes: number; on_disk: number };
+/** A cache's use against its size. */
+export type CacheUse = { entries: number; bytes: number; budget: number };
+/** One disk the server keeps things on, with what it keeps there. */
+export type HostDisk = { path: string; holds: string[]; size: number; free: number; used: number };
+/** `GET /admin/host` (storage.rs): memory, disks, what the host keeps on them (the store and the
+ *  folders' texts as of their last count), and how it sweeps. */
+export type HostView = {
+  memory: { resident: number | null; peak: number | null; flow_cache: CacheUse; value_cache: CacheUse };
+  disks: HostDisk[];
+  kept: {
+    at_ms: number | null;
+    store: { values: number; bytes: number; on_disk: number; put_since: number } | null;
+    logs: Counted3 | null;
+    file_texts: { texts: number; chunks: number; bytes: number } | null;
+    leftovers: { removed: Counted3; waiting: Counted3 };
+  };
+  deployments: { each: Holds[]; shared_in_store: { values: number; bytes: number } | null };
+  sweeps: HostSweeps;
+  /** `[storage] warn_at`: `"85%"` full, or `"5G"` free. */
+  warn_at: string;
+  /** `[storage] full_at` and `when_full`: past it, what the server does. */
+  full_at: string;
+  when_full: "warn" | "pause" | "roll";
+  /** What `when_full` has done and not yet undone. */
+  acting: { paused: string[]; rolled: string[] };
+  /** `[storage] backup`: where the runs a log lets go of go first, and what it holds; null: none. */
+  backup: { dir: string; exports: number; bytes: number; waiting: number; error: string | null } | null;
+  warnings: HostWarning[];
+};
+/** Something about the host an admin should know (storage.rs `Warning`), and what to do about it. */
+export type HostWarning = { key: string; says: string; todo: string };
+/** `GET /admin/warnings`: what the host warns of now. */
+export const getWarnings = async () => (await asJson<{ warnings: HostWarning[] }>(await api(`${BASE}/admin/warnings`))).warnings;
+export const getHost = async () => asJson<HostView>(await api(`${BASE}/admin/host`));
+/** What one deployment holds, in memory and on disk (storage.rs `holds`): its log (in memory,
+ *  about 3 times the lines its kept runs were written as; and its file), its live state, its flow
+ *  in the cache, and its states and file texts as the store's last sweep found them. */
+export type Holds = {
+  slug: string;
+  memory: number;
+  disk: number;
+  /** The runs it keeps, the newest `entries` of them in memory (the rest are read from its file). */
+  log: { kept: number; entries: number; entry_bytes: number; memory: number; lines: number; file: Counted3 };
+  state_memory: number;
+  flow_cache: { own: number; shared: number } | null;
+  store: { values: number; bytes: number } | null;
+  file_texts: { texts: number; bytes: number } | null;
+  shares_at_ms: number | null;
+};
+/** `GET /deployments/<slug>/holds`. */
+export const getHolds = async (slug: string) => asJson<Holds>(await api(`${BASE}/deployments/${encodeURIComponent(slug)}/holds`));
+/** `POST /admin/storage`: the server's `[storage]` settings, written into its `holon.toml`: how
+ *  often it sweeps (`"10m"`, `"2h"`, `"off"`), when it warns its disk is full (`"85%"`, `"5G"`). */
+export async function setStorage(set: { sweep_every?: string; warn_at?: string; full_at?: string; when_full?: string; backup?: string }): Promise<{ sweeps: HostSweeps; warnings: HostWarning[] }> {
+  return asJson(await post(`${BASE}/admin/storage`, set));
+}
+export const setSweepEvery = (every: string) => setStorage({ sweep_every: every });
 /** One deployment's grant as `GET /admin/grants` lists it (grants.rs): what it holds, what was taken back since. */
 export type HeldGrant = { slug: string; status: DeploymentEntry["status"]; attention: string | null; items: string[]; revoked: string[] };
 export const listGrants = async () => asJson<HeldGrant[]>(await api(`${BASE}/admin/grants`));
@@ -483,6 +546,8 @@ export type HostPolicy = {
   auto: string[];
   allow_plain_http: boolean;
   allow_private_addresses: boolean;
+  /** `[storage]`: how often the server sweeps (`"10m"`, `"off"`). */
+  storage?: { sweep_every: string; warn_at?: string };
 };
 
 export async function getPermissions(): Promise<HostPolicy> {
@@ -506,6 +571,8 @@ export type DeploymentEntry = {
   has_state: boolean;
   trigger_count: number;
   error_count: number;
+  /** Its unrecorded handlers' runs, counted, by label: absent while it has none. */
+  tallies?: Record<string, Tally>;
   deployed_at_epoch_seconds: number;
   /** Who deployed it (a named user, or `admin`), when the server knows. */
   deployed_by?: string;
@@ -703,10 +770,16 @@ export type LoggedRound = {
   exchanges: { path: number[]; request: WValue; response: WValue; start_us: number; end_us: number }[];
 };
 
+/** What the log doesn't hold of an unrecorded handler's runs: how many ran, how many failed, how
+ *  long they took in all, when the last one started, and the last failure's time, status and error
+ *  (never its request): none of its runs is logged, failed or not. */
+export type Tally = { runs: number; failed: number; total_ms: number; last_at_ms: number; last_failure?: { at_ms: number; status: number; error?: string } };
+
 /** `GET /deployments/<slug>/log` — entries past `after` (all without), oldest first. `next` is
  *  the seq the next entry will get; `head` the hash the log chains up to (what a witness holds),
- *  `breaks` the runs that don't follow the one before them (changed outside holon). */
-export async function getLog(slug: string, after?: number): Promise<{ entries: LogEntry[]; next: number; head: string; breaks: number[] }> {
+ *  `breaks` the runs that don't follow the one before them (changed outside holon); `tallies` the
+ *  counts of its unrecorded handlers' runs, by label (absent from a server before them). */
+export async function getLog(slug: string, after?: number): Promise<{ entries: LogEntry[]; next: number; head: string; breaks: number[]; tallies?: Record<string, Tally> }> {
   const q = after === undefined ? "" : `?after=${after}`;
   const res = await api(`${BASE}/deployments/${encodeURIComponent(slug)}/log${q}`);
   return asJson(res);

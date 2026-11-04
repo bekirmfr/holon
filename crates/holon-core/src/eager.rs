@@ -62,7 +62,7 @@ fn composite(children: &[Hash], edges: &[Edge], n_outputs: usize, inputs: &[Opti
                 None => None,
             })
             .collect();
-        crate::eval::open_triggers(child, &mut gathered, |p| incoming.contains_key(&(ci as u32, p as u32)));
+        crate::eval::open_triggers(child, &mut gathered, crate::open_trigger, |p| incoming.contains_key(&(ci as u32, p as u32)));
         let wired_but_absent = (0..k).any(|p| gathered[p].is_none() && incoming.contains_key(&(ci as u32, p as u32)));
         let held = wired_but_absent
             && matches!(&child.body, UnitBody::Primitive { name } if primitives::has_optional_ports(name) || crate::TRIGGERED.contains(&name.as_str()));

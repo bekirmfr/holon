@@ -96,7 +96,7 @@ pub fn handle(
     server: &Server,
     resolver: &impl Resolver,
     request: &HttpRequest,
-    fire: impl FnOnce(&holon_core::Unit, &str, Value, &[(Capability, Value)]) -> Vec<Option<Value>>,
+    fire: impl FnOnce(&holon_core::Unit, &holon_core::Route, Value, &[(Capability, Value)]) -> Vec<Option<Value>>,
     sourced: &[(Capability, Value)],
 ) -> DataResponse {
     let HttpRequest { method, url, headers, body } = *request;
@@ -124,7 +124,7 @@ pub fn handle(
     let request = request_record(method, path, params, query, headers, &body_text);
     let mut sourced = sourced.to_vec();
     sourced.push((Capability::NetworkIngress, Value::Text(body_text)));
-    let outputs = fire(endpoint, &format!("{} {}", route.method, route.path), request, &sourced);
+    let outputs = fire(endpoint, route, request, &sourced);
     respond(outputs.first().and_then(Option::as_ref))
 }
 

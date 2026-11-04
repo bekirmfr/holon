@@ -9,6 +9,7 @@ import type { Edge } from "@xyflow/react";
 import type { PrimitiveNodeType } from "./PrimitiveNode";
 import { deriveServer, flowUnitHash } from "./canvasOps";
 import { compileHolon, printHolon, printHolonLines, sourceLineOf } from "./holonText";
+import { manifestItems } from "./holon";
 import { buildSample, samples } from "./samples";
 
 
@@ -45,6 +46,29 @@ describe("flows as text", () => {
     const server = deriveServer(doc.nodes as PrimitiveNodeType[], doc.edges as Edge[], ev, "8101");
     expect(server.errors).toEqual([]);
     expect(server.endpoints.map((e) => `${e.method} ${e.path}`)).toEqual(["GET /hello/:name"]);
+  });
+
+  it("carries a handler's log word to its draft, and places a word it can't have at the node", () => {
+    const ev = new Evaluator();
+    const board =
+      'flow board\nport 8170\ncollection notes\n\nroute GET /health (req) unrecorded {\n  respond "ok"\n}\n\nroute GET /notes (req) lazy {\n  respond notes.list(limit: 50)\n}\n\nroute POST /notes (req) {\n  notes[req.json.id] = req.json.text\n  respond "saved"\n}\n';
+    const { doc } = compileHolon(board, ev);
+    const derive = (d: typeof doc) => deriveServer(d.nodes as PrimitiveNodeType[], d.edges as Edge[], ev, "8170");
+    const fine = derive(doc);
+    expect([fine.errors, fine.placed]).toEqual([[], []]);
+    expect(fine.endpoints.map((e) => `${e.method} ${e.path} ${e.log}`)).toEqual(["GET /health unrecorded", "GET /notes lazy", "POST /notes "]);
+    expect(printHolon("board", doc, ev)).toBe(board);
+    // An unrecorded handler is an item to approve, by its label, as the server asks for it.
+    expect(manifestItems(["NetworkIngress"], { unrecorded: ["GET /health"] })).toEqual(["NetworkIngress", 'Unrecorded("GET /health")']);
+    // A write can't be unrecorded: the error names the route and sits at the node that writes.
+    const bad = compileHolon(board.replace("route POST /notes (req) {", "route POST /notes (req) unrecorded {"), ev);
+    const server = derive(bad.doc);
+    expect(server.placed).toHaveLength(1);
+    expect(server.placed[0].message).toMatch(/^POST \/notes can't be unrecorded: it may put and delete items of its collection "notes"/);
+    expect(server.errors).toContain(server.placed[0].message);
+    const at = (bad.doc.nodes as PrimitiveNodeType[]).find((n) => n.id === server.placed[0].node)!;
+    expect(at.data.name).toBe("collection_put");
+    expect(server.serverHash).toBeNull();
   });
 
   it("is the same unit written in either form: nodes and wires, or the expression form", () => {

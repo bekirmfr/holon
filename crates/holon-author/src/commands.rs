@@ -13,7 +13,7 @@
 use holon_core::{consent_name, MapResolver, Resolver};
 
 use crate::composites::Names;
-use crate::describe::describe_item_sending;
+use crate::describe::{describe_item, describe_item_sending};
 use crate::flow::{derive_server, flow_unit, DerivedServer};
 use crate::lang::ast::Pos;
 use crate::lang::{self, Lowered};
@@ -160,13 +160,32 @@ pub(crate) fn while_it_runs(caps: &[String]) -> Vec<String> {
 
 /// What `check` finds wrong with a text that compiles: its server's mistakes, and why it has no
 /// unit.
-pub(crate) fn problems(c: &Lowered, store: &mut MapResolver) -> Vec<String> {
+pub(crate) fn problems(c: &Lowered, store: &mut MapResolver) -> Vec<(String, Option<lang::ast::Span>)> {
     let (server, unit) = derive(c, store);
     let mut problems = server.errors;
     problems.extend(unit.err());
     let mut seen = std::collections::BTreeSet::new();
     problems.retain(|p| seen.insert(p.clone()));
-    problems
+    problems.into_iter().map(|p| { let at = placed_at(c, &server.placed, &p); (p, at) }).collect()
+}
+
+/// Where in the text a problem that belongs to one node is (`DerivedServer::placed`): that node's
+/// span, as lowering kept it.
+fn placed_at(c: &Lowered, placed: &[crate::flow::Placed], problem: &str) -> Option<lang::ast::Span> {
+    placed.iter().find(|p| p.message == problem).and_then(|p| c.spans.get(&p.node)).copied()
+}
+
+/// A problem said at `span` of `source`, as `mistake` says a lowering error: `file:line:col:`, the
+/// line, and a caret under it.
+fn said_at(file: &str, source: &str, span: lang::ast::Span, message: &str) -> Vec<String> {
+    let mut err = vec![format!("{file}:{}:{}: {message}", span.start.line, span.start.col)];
+    if let Some(line) = source.lines().nth((span.start.line as usize).saturating_sub(1)) {
+        err.push(format!("  {line}"));
+        let col = span.start.col.max(1) as usize;
+        let width = if span.end.line == span.start.line && span.end.col > span.start.col { (span.end.col - span.start.col) as usize } else { 1 };
+        err.push(format!("  {}{}", " ".repeat(col - 1), "^".repeat(width)));
+    }
+    err
 }
 
 /// `holon check`: compiled, its routes and clocks, its unit and what it may do; each problem on
@@ -218,15 +237,28 @@ pub fn check(file: &str, source: &str) -> Report {
     if let (Some(fuel), Some(memory)) = (modules.get(holon_core::FUEL_LIMIT), modules.get(holon_core::MEMORY_LIMIT)) {
         out.push(format!("  run code it carries (a js node): up to {fuel} instructions and {} MiB per call, reaching nothing outside", memory / (1024 * 1024)));
     }
+    // Its unrecorded handlers, each asked for at deploy, said as the approval says it (C5).
+    let unrecorded = server.endpoints.iter().map(|e| (format!("{} {}", e.method, e.path), &e.log)).chain(server.clocks.iter().map(|c| (c.label.clone(), &c.log))).chain(server.files.iter().map(|f| (f.label.clone(), &f.log))).chain(server.actions.iter().map(|a| (a.label.clone(), &a.log)));
+    let mut unrecorded: Vec<String> = unrecorded.filter(|(_, log)| log.as_str() == "unrecorded").map(|(label, _)| format!("  {}", describe_item(&format!("Unrecorded({label:?})")))).collect();
+    unrecorded.sort();
+    out.extend(unrecorded);
     out.extend(while_it_runs(&caps));
     if problems.is_empty() && starts_nothing(&c, &mut store) {
         out.push(STARTS_NOTHING.into());
     }
+    let placed = server.placed.clone();
     problems.splice(0..0, server.errors);
-    // The flow has no unit because of its routes' errors: each said once.
+    // The flow has no unit because of its routes' errors: each said once, at its node when it is
+    // one node's.
     let mut seen = std::collections::BTreeSet::new();
     problems.retain(|p| seen.insert(p.clone()));
-    let mut err: Vec<String> = problems.iter().map(|p| format!("{file}: {p}")).collect();
+    let mut err: Vec<String> = Vec::new();
+    for p in &problems {
+        match placed_at(&c, &placed, p) {
+            Some(span) => err.extend(said_at(file, source, span, p)),
+            None => err.push(format!("{file}: {p}")),
+        }
+    }
     err.extend(js_mistakes(file, source));
     let code = if err.is_empty() { 0 } else { 1 };
     Report { out, err, code }
@@ -677,6 +709,58 @@ mod tests {
             let r = check(name, crate::samples::sample(name).unwrap().text);
             assert!(!r.out.iter().any(|l| l.contains("while it runs")), "{name}: {:?}", r.out);
         }
+    }
+
+    const BOARD: &str = "flow status-board\nport 8170\ncollection notes\n\n# Answers the load balancer.\nroute GET /health (req) unrecorded {\n  respond \"ok\"\n}\n\nroute GET /notes (req) lazy {\n  respond notes.list(limit: 50)\n}\n\nroute POST /notes (req) {\n  notes[req.json.id] = req.json.text\n  respond \"saved\"\n}\n\naction report (input) unrecorded {\n  respond notes.list(limit: 50)\n}\n";
+
+    /// `lazy` and `unrecorded` after a handler's head (docs/L4s/request-path-L4.md, C5): fmt
+    /// writes them back where they were, they are names everywhere else, and a handler that does
+    /// something outside its run can't have them: check says so at the node that does it.
+    #[test]
+    fn a_handlers_log_word_is_kept_and_held_to_what_it_does() {
+        assert_eq!(fmt("b.holon", BOARD).unwrap(), BOARD);
+        let r = check("b.holon", BOARD);
+        assert_eq!((r.code, r.err.clone()), (0, vec![]), "{r:?}");
+        // What the approval will ask, said as it says it.
+        for label in ["GET /health", "action report"] {
+            assert!(r.out.contains(&format!("  keep runs of {label} out of its log, failed or not (they are counted)")), "{:?}", r.out);
+        }
+        // A word that isn't before a block is a name.
+        let names = "flow n\nstate lazy\n\naction a (unrecorded) {\n  state.lazy = unrecorded\n  respond state.lazy\n}\n";
+        assert_eq!(fmt("n.holon", names).unwrap(), names);
+        assert_eq!(check("n.holon", names).code, 0);
+        // The word changes the handler's unit: each level is its own.
+        let unit = |text: &str| check("u.holon", text).out.into_iter().find(|l| l.starts_with("unit ")).unwrap();
+        let strict = "flow u\nport 8172\n\nroute GET /x (req) {\n  respond 1\n}\n";
+        let lazy = strict.replace("(req) {", "(req) lazy {");
+        assert_ne!(unit(strict), unit(&lazy));
+        assert_ne!(unit(&lazy), unit(&strict.replace("(req) {", "(req) unrecorded {")));
+        // A route that writes can't be unrecorded: said at the write, with its line and a caret.
+        let r = check("b.holon", &BOARD.replace("route POST /notes (req) {", "route POST /notes (req) unrecorded {"));
+        assert_eq!(r.code, 1);
+        assert_eq!(
+            r.err,
+            [
+                "b.holon:15:3: POST /notes can't be unrecorded: it may put and delete items of its collection \"notes\"; only a handler that does nothing outside its run may be lazy or unrecorded",
+                "    notes[req.json.id] = req.json.text",
+                &format!("    {}", "^".repeat(34)),
+            ]
+        );
+        // Nor a clock that writes its state be lazy.
+        let r = check("t.holon", "flow t\nstate n\n\nevery 1m lazy {\n  state.n = (state.n ?? 0) + 1\n}\n");
+        assert_eq!(r.code, 1);
+        assert!(r.err[0].starts_with("t.holon:5:3: every 1m can't be lazy: it may write its state \"n\""), "{:?}", r.err);
+        // Nor an action that calls out.
+        let r = check("o.holon", "flow o\n\naction ping (input) lazy {\n  respond http.get(\"httpbin.org\", \"/uuid\").body\n}\n");
+        assert_eq!(r.code, 1, "{r:?}");
+        assert!(r.err[0].contains("action ping can't be lazy: it may "), "{:?}", r.err);
+        // Nor a file handler that writes; and fmt keeps the word on every kind of handler, held
+        // or not (fmt writes the text, check holds it to what it does).
+        let files = "flow f\ncollection seen\n\non file inbox (f) unrecorded {\n  seen[f.name] = f.size\n}\n\nevery 1m lazy {\n  seen[\"tick\"] = now\n}\n";
+        assert_eq!(fmt("f.holon", files).unwrap(), files);
+        let r = check("f.holon", files);
+        assert!(r.err.iter().any(|l| l.starts_with("f.holon:5:3: on file inbox can't be unrecorded: it may ")), "{:?}", r.err);
+        assert!(r.err.iter().any(|l| l.starts_with("f.holon:9:3: every 1m can't be lazy: it may ")), "{:?}", r.err);
     }
 
     #[test]

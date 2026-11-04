@@ -268,10 +268,13 @@ struct AskedFor {
     plain_http: std::collections::BTreeSet<String>,
     private_addresses: bool,
     agents: std::collections::BTreeSet<String>,
+    /// The handlers kept out of the log, by label (each declared `unrecorded`).
+    unrecorded: std::collections::BTreeSet<String>,
 }
 
 /// A manifest's items (core's `manifest_items`, the rule the server grants by): `capabilities`
-/// (consent names), then what `requirements` (`{limits, plain_http, private_addresses, agents}`) ask.
+/// (consent names), then what `requirements` (`{limits, plain_http, private_addresses, agents,
+/// unrecorded}`) ask.
 #[wasm_bindgen]
 pub fn manifest_items(capabilities: Vec<String>, requirements: JsValue) -> Result<Vec<String>, JsError> {
     let asked: AskedFor = if requirements.is_undefined() || requirements.is_null() {
@@ -279,7 +282,7 @@ pub fn manifest_items(capabilities: Vec<String>, requirements: JsValue) -> Resul
     } else {
         serde_wasm_bindgen::from_value(requirements).map_err(|e| JsError::new(&format!("requirements: {e}")))?
     };
-    Ok(holon_core::manifest_items(&capabilities, &asked.limits, &asked.plain_http, asked.private_addresses, &asked.agents).into_iter().collect())
+    Ok(holon_core::manifest_items(&capabilities, &asked.limits, &asked.plain_http, asked.private_addresses, &asked.agents, &asked.unrecorded).into_iter().collect())
 }
 
 /// What starts the runs of a unit with these capabilities (core's `trigger`).

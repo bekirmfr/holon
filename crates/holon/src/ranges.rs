@@ -196,7 +196,7 @@ pub(crate) fn slice_span(size: u64, offset: i64, length: u64) -> (u64, u64) {
 
 /// Bytes as lowercase hex, as the log writes them.
 pub(crate) fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
+    holon_core::hex(bytes)
 }
 
 /// The bytes hex text names: none if it isn't hex.

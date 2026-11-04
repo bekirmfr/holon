@@ -440,13 +440,26 @@ pub(crate) fn is_private(ip: IpAddr) -> bool {
             if let Some(v4) = v6.to_ipv4_mapped() {
                 return is_private(IpAddr::V4(v4));
             }
-            let first = v6.segments()[0];
+            let seg = v6.segments();
+            let v4_at = |hi: u16, lo: u16| IpAddr::V4(std::net::Ipv4Addr::new((hi >> 8) as u8, hi as u8, (lo >> 8) as u8, lo as u8));
+            // An IPv4 address carried inside one: private as it is. IPv4-compatible (::a.b.c.d,
+            // deprecated, but a stack may still route it), and 6to4 (2002:aabb:ccdd::/48).
+            if seg[..6] == [0, 0, 0, 0, 0, 0] && !v6.is_loopback() && !v6.is_unspecified() {
+                return is_private(v4_at(seg[6], seg[7]));
+            }
+            if seg[0] == 0x2002 && is_private(v4_at(seg[1], seg[2])) {
+                return true;
+            }
+            let first = seg[0];
             v6.is_loopback()
                 || v6.is_unspecified()
                 || v6.is_multicast()
                 || (first & 0xfe00) == 0xfc00 // fc00::/7, unique local
                 || (first & 0xffc0) == 0xfe80 // fe80::/10, link-local
-                || v6.segments()[..6] == [0x64, 0xff9b, 0, 0, 0, 0] // 64:ff9b::/96, NAT64: an IPv4 address behind it
+                || seg[..6] == [0x64, 0xff9b, 0, 0, 0, 0] // 64:ff9b::/96, NAT64: an IPv4 address behind it
+                || seg[..3] == [0x64, 0xff9b, 1] // 64:ff9b:1::/48, NAT64 for local use (RFC 8215)
+                || seg[..2] == [0x2001, 0] // 2001::/32, Teredo: an IPv4 client hidden in it, unknowable here
+                || seg[..2] == [0x2001, 0xdb8] // 2001:db8::/32, documentation: never a real host
         }
     }
 }
@@ -724,10 +737,16 @@ mod tests {
 
     #[test]
     fn private_addresses_are_recognised() {
-        for ip in ["127.0.0.1", "10.1.2.3", "172.16.0.1", "192.168.1.1", "169.254.169.254", "100.64.0.1", "0.0.0.0", "::1", "fc00::1", "fe80::1", "::ffff:127.0.0.1", "64:ff9b::a9fe:a9fe"] {
+        for ip in [
+            "127.0.0.1", "10.1.2.3", "172.16.0.1", "192.168.1.1", "169.254.169.254", "100.64.0.1", "0.0.0.0", "::1", "fc00::1", "fe80::1", "::ffff:127.0.0.1", "64:ff9b::a9fe:a9fe",
+            // An IPv4 one carried inside: IPv4-compatible, 6to4; NAT64 for local use, Teredo,
+            // documentation.
+            "::127.0.0.1", "::a9fe:a9fe", "2002:a9fe:a9fe::1", "2002:0a00:0001::", "2002:7f00:1::", "64:ff9b:1::a00:1", "2001:0:4136:e378:8000:63bf:3fff:fdd2", "2001:db8::1",
+        ] {
             assert!(is_private(ip.parse().unwrap()), "{ip}");
         }
-        for ip in ["8.8.8.8", "1.1.1.1", "172.32.0.1", "100.128.0.1", "2606:4700::1111"] {
+        // A public IPv4 address inside 6to4 or IPv4-compatible is the public host.
+        for ip in ["8.8.8.8", "1.1.1.1", "172.32.0.1", "100.128.0.1", "2606:4700::1111", "2002:0808:0808::1", "::8.8.8.8", "2001:4860:4860::8888"] {
             assert!(!is_private(ip.parse().unwrap()), "{ip}");
         }
     }
