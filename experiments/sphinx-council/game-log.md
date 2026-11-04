@@ -6,6 +6,10 @@ sample's own `rules` holon (`crates/holon-author/samples/chess.holon`), and the 
 held to the contract: a move not among the legal moves would be "broken" and the rules' fallback
 played instead.
 
+Agent overhead, measured before round 2: one `chess-piece` agent (Haiku) given "Do not use any
+tools. Reply with exactly: OK" cost **4,578** tokens, against 60,117 for `general-purpose` (Haiku)
+and 32,793 for `claude-code-guide` (Haiku) in the previous session.
+
 ## Round 1: 1. e4
 
 The Sphinx first answered alone (c5), because it could not spawn agents itself; that answer was not
@@ -34,4 +38,40 @@ pick, so I let the council move me toward the classical reply."
 
 ## Round 2: 2. Nf3
 
-Position: `rnbqkbnr/pppp1ppp/8/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R b KQkq - 1 2`. Waiting for the council.
+Position: `rnbqkbnr/pppp1ppp/8/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R b KQkq - 1 2`.
+
+| Piece | Proposal | Case |
+|---|---|---|
+| pawn a7 | a6 | Sphinx, a6 is the prophylactic answer to Bb5 and keeps every other option open, while a5 only weakens b5 and the queenside for no gain. |
+| pawn b7 | b6 | b6 is the safe, flexible move that keeps my pawn supported and opens the c8 bishop's diagonal without overextending on b5. |
+| pawn c7 | c6 | Sphinx, c6 is the sound, flexible choice that supports d5 and keeps the position closed and safe, while c5 loosens my structure for little gain. |
+| pawn d7 | d6 | Sphinx, play d6 so the e5 pawn is defended and Black keeps a solid Philidor-style centre. |
+| pawn f7 | f5 | f5 challenges White's e4 pawn and gains activity right away, which is the more energetic of my two options, though it is a real gambit that your king will need to handle carefully. |
+| pawn g7 | g6 | g6 opens the bishop's path to g7 and keeps the kingside solid, while g5 would be a loose pawn that White can harass with Bh4 or other attacks. |
+| pawn h7 | h6 | h6 stops Bg5 and Ng5 ideas, gives the king a little luft on the edge, and keeps the pawn chain flexible, while h5 would only loosen my kingside for no clear gain. |
+| knight b8 | Nc6 | Nc6 develops with purpose, adds a defender to e5 against Nf3, and keeps the knight out of the corner that Na6 would leave it in. |
+| queen d8 | Qe7 | Qe7 is the only safe move that still guards e5 while keeping the queen out of the knight's reach. |
+| king e8 | hold | Ke7 is my only legal move and it forfeits castling, so keeping the king on e8 while Black develops the knights and bishops is the sounder choice. |
+| bishop f8 | Bc5 | Sphinx, Bc5 develops the bishop with pressure on f2 and keeps Black's position flexible and well coordinated. |
+| knight g8 | Nf6 | Nf6 develops with tempo on the e4 pawn and is the standard reply to 2. Nf3, while Nh6 and Ne7 are passive. |
+
+Notes: the queen's thought claimed Qh4 and Qg5 step onto squares the knight attacks (only Qg5 does).
+The king took "do not use any tools" literally and never delivered its answer through the hand-back
+call, even when asked again; its answer was read from its transcript, and it cost two runs.
+
+**The Sphinx:** 2... **Nc6** (kept; the knight b8's proposal). Verdict on 2. Nf3: good. Mood: confident.
+Comment: "A knight to guard my pawn and keep the riddle going, mortal." Say: (none).
+
+Deliberation: "Nf3 attacks e5, so it needs defending. Nc6 defends it and develops a piece toward the
+centre, which is the principled answer. Nf6 would also be fine, but it allows Nxe5, so I preferred
+the solid choice."
+
+**White:** 3. **Bb5**.
+
+Tokens: pawns a7 4,693, b7 5,323, c7 4,641, d7 5,065, f7 4,951, g7 4,834, h7 4,565; knight b8 4,562;
+queen 4,888; king 13,156 (6,208 + 6,948); bishop f8 4,722; knight g8 4,439; council 65,839; Sphinx
+6,808. **Round total: 72,647.**
+
+## Round 3: 3. Bb5
+
+Position: `r1bqkbnr/pppp1ppp/2n5/1B2p3/4P3/5N2/PPPP1PPP/RNBQK2R b KQkq - 3 3`.
