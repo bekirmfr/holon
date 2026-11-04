@@ -1483,7 +1483,8 @@ test("rolling-log keeps only its newest 5 runs, as its deploy settings ask, whil
   // And what each flow holds, a row each: this one among them.
   await expect(page.getByLabel("what each flow holds").getByText("rolling-log", { exact: true })).toBeVisible();
   // When the host warns its disk is full: set here; past it, the disk is warned of, with what to
-  // do; a floor nothing nears, and the warning goes.
+  // do; floors nothing nears, and the warning goes (where it acts too: a disk past full_at is
+  // warned of as well, and the default 95% may be this machine's).
   const warnAt = page.getByLabel("when the host warns its disk is full");
   const warnForm = warnAt.locator("..");
   await warnAt.fill("1000T");
@@ -1491,9 +1492,18 @@ test("rolling-log keeps only its newest 5 runs, as its deploy settings ask, whil
   const alert = page.getByRole("alert", { name: "what the host warns of" });
   await expect(alert).toContainText("it warns at 1000T");
   await expect(alert).toContainText("make room");
-  await warnAt.fill("1K");
+  await warnAt.fill("2K");
   await warnForm.getByRole("button", { name: "set" }).click();
+  const fullAt = page.getByLabel("when the host acts on a full disk");
+  await fullAt.fill("1K");
+  await fullAt.locator("..").getByRole("button", { name: "set" }).click();
   await expect(alert).toBeHidden();
+  // Back as they were, for the tests after: warn_at first, so full_at stays past it.
+  await warnAt.fill("85%");
+  await warnForm.getByRole("button", { name: "set" }).click();
+  await fullAt.fill("95%");
+  await fullAt.locator("..").getByRole("button", { name: "set" }).click();
+  await expect(page.getByText(/^when a disk is full/)).toContainText("past 95% full");
   // What it does when a disk is full: shown, and chosen here (left as it was: only warn).
   await expect(page.getByLabel("what the host does when its disk is full")).toHaveValue("warn");
   await expect(page.getByText(/^when a disk is full/)).toContainText("it only warns");
