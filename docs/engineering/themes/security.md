@@ -293,3 +293,6 @@ Since then:
 | `07d83e4` | `holon deploy --approve` approves, as the person signed in |
 | `4bb40a8` | An unrecorded run is never logged, failed or not: a handler may be unrecorded to keep its requests out |
 | `cf1f961` | Tripwires on the redaction shortcut (D3) |
+| `4c984bb` | An identity provider's email is taken only when it says it verified it |
+| `46c44dd` | Wrong setup codes lock setting up for a minute |
+| `5d0bdf2` | Every file the server writes is its owner's only; the data folder and the store's folders `0o700`; a data folder open to others said at start |
