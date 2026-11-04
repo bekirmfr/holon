@@ -2290,6 +2290,9 @@ fn a_waiting_runs_record_is_sealed_on_disk() {
     );
     let ack = serde_json::json!({ "acknowledge": ["NetworkIngress", "Await(\"paid\")", "StateWrite(\"paid\")"] });
     assert_eq!(deploy_json(&state, "sealed", server, ack).status_code, 200);
+    // A secret set for it rebuilds its vault, as a source read again does: it still seals.
+    state.secrets.set("sealed", "api_key", "sk_live_abcdef", Some("ada")).unwrap();
+    assert!(state.deployments.lock().unwrap()["sealed"].secrets.lock().unwrap().sealer.is_some(), "a vault rebuilt keeps its sealer");
     // The order carries its caller's credential, which the waiting run keeps with its request.
     let mut order = fake_data("POST", "/orders", vec![]);
     order.headers.push(("authorization".into(), "Bearer caller_credential_xyz".into()));
@@ -2321,6 +2324,55 @@ fn a_waiting_runs_record_is_sealed_on_disk() {
     let paid = serve_data(&state.store, &state.deployments, &state.deployments_path, "sealed", &fake_data("GET", &format!("/paid/{token}"), vec![]));
     assert_eq!(paid.status, 200);
     assert!(state.deployments.lock().unwrap()["sealed"].parked.is_empty(), "resumed and finished");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// With secrets kept in memory only (`--secrets :memory:`) and the deployments on disk, a waiting
+/// run is sealed all the same, under a key that is never kept: the file never holds what it
+/// keeps, and after a restart (its secrets gone with it) it says it can't be opened.
+#[test]
+fn a_waiting_run_is_sealed_on_disk_with_secrets_in_memory_too() {
+    let mut state = test_state();
+    let dir = unique_temp_path("sealed-memory");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = format!("{dir}/deployments.json");
+    state.deployments_path = path.clone();
+    state.secrets = Arc::new(SecretStore::memory());
+    let e = |fc, fp, tc, tp| Edge { from_child: fc, from_port: fp, to_child: tc, to_port: tp };
+    let iface = |name: &str, params: Vec<Param>| Unit { params, ..holon_core::interface_of(name).unwrap() };
+    let frozen = |k: &str, v: &str| Param::frozen(k, v);
+    let children = vec![
+        iface("resume_token", vec![frozen("await", "paid")]),
+        iface("await", vec![frozen("name", "paid"), frozen("expires", "3600")]),
+        iface("field", vec![frozen("name", "method")]),
+        test_store_write("paid"),
+    ];
+    let edges = vec![e(1, 0, 2, 0), e(2, 0, 3, 0), e(0, 0, BOUNDARY, 0), e(3, 0, BOUNDARY, 1)];
+    let orders = endpoint(&state, "POST", "/orders", children, edges, 1);
+    let server = stage(
+        &state,
+        &Unit {
+            body: UnitBody::Composite { children: vec![orders], edges: vec![] },
+            params: vec![frozen("declare", "server"), frozen("port", "18095")],
+            inputs: vec![],
+            outputs: vec![],
+        },
+    );
+    let ack = serde_json::json!({ "acknowledge": ["NetworkIngress", "Await(\"paid\")", "StateWrite(\"paid\")"] });
+    assert_eq!(deploy_json(&state, "sealed", server, ack).status_code, 200);
+    let mut order = fake_data("POST", "/orders", vec![]);
+    order.headers.push(("authorization".into(), "Bearer caller_credential_xyz".into()));
+    serve_data(&state.store, &state.deployments, &state.deployments_path, "sealed", &order);
+    let on_disk = std::fs::read_to_string(&path).unwrap();
+    assert!(!on_disk.contains("caller_credential_xyz"), "the file holds the credential: {on_disk}");
+    assert!(on_disk.contains("\"sealed\""), "{on_disk}");
+    // A restart, with a new in-memory store: its key is another, and the run says so.
+    let mut reloaded = load_deployments(&path, &state.store, &state.policy()).unwrap();
+    let dep = reloaded.get_mut("sealed").unwrap();
+    dep.secrets = SecretStore::memory().vault("sealed");
+    let sealer = dep.secrets.lock().unwrap().sealer.clone();
+    let run = dep.parked.values_mut().next().unwrap();
+    assert!(run.open("sealed", sealer.as_deref()).is_err(), "its key went with the server");
     let _ = std::fs::remove_dir_all(&dir);
 }
 

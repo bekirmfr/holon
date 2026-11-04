@@ -115,9 +115,9 @@ The value is set for the deployment (the editor's ⚙, `holon secret set`), or o
 - **A revoked Vault value works for up to `STALE_AFTER`**; a source read fails loudly, once, in
   the audit.
 - **In memory in the clear** while the server runs (`Zeroizing`, wiped when dropped).
-- **`--secrets :memory:`** keeps nothing across a restart and has no key to seal with: a waiting
-  run's requests, which may hold a secret, go into a persisted deployments file as they are
-  (`persist_deployments`).
+- **`--secrets :memory:`** keeps nothing across a restart: a waiting run's requests are sealed in
+  a persisted deployments file under a key that is never kept, so after a restart (the secrets
+  gone with it) the run can't be opened, and says so.
 
 ## 5. What the tests hold
 

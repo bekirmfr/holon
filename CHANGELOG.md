@@ -21,6 +21,12 @@
   bind the folder of state heads beside the deployments file (`deployments.state/`), and a flow
   given it read-write could rewrite another deployment's state; it is refused now, as the logs'
   folder was, and so are the arrivals, the heads, the activity log and the secrets' audit.
+- **A waiting run is always sealed on disk.** What it keeps that may hold a secret (the request
+  that started it, the requests it made) is sealed in the deployments file under the secrets key;
+  but once a deployment's secrets were read again (one set, or a source refreshed) its vault lost
+  the key, and waiting runs were written in the clear from then on. They are sealed now whatever
+  happened to the vault, and with `--secrets :memory:` under a key never kept (so after a restart
+  such a run says it can't be opened, as its secrets are gone too).
 - **Every run's record is on disk before its answer.** A run of a route, clock, file handler or
   action is answered (or counts as done) once its log entry is synced, not only written: an
   answered run is recorded, a power loss or not. Runs at once share the sync. A handler that only

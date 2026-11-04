@@ -142,7 +142,9 @@ going to isn't sent (`folders::SecretSends`: `blocked_secret`).
   the value, so which value a run had is told without holding it); what is computed from a secret
   is withheld (`taint::WITHHELD`); a run's own look-alike of a mark is escaped. Control-plane
   replies about a deployment are redacted the same way (`Redactor::json`). A waiting run's
-  request is sealed under the same key on disk (`sealed_for_disk`).
+  request is sealed under the same key on disk (`sealed_for_disk`): the vault carries the sealer
+  however it is rebuilt (`SecretStore::vault`, `resolve`), and an in-memory store seals under a key
+  never kept.
 
 ### 2.7 What a flow can reach
 

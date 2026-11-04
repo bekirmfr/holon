@@ -60,8 +60,10 @@ pub(crate) struct Resolved {
     /// name → the version its current value is of, and when it was last read from its source.
     fetched: BTreeMap<String, (u32, std::time::Instant)>,
     /// What seals what the deployment keeps on disk that may hold these values (a waiting run's
-    /// requests): the store's, under its master key. None for a store that keeps no key
-    /// (`":memory:"`), whose seal couldn't be opened after a restart.
+    /// requests): the store's, under its master key; a store that keeps no key (`":memory:"`)
+    /// seals under one that is never kept, so what it sealed can't be opened after a restart, as
+    /// its secrets aren't there after one. Set whenever the vault is (`vault`, `resolve`): a
+    /// waiting run is never written to disk unsealed. None only for a vault no store made.
     pub(crate) sealer: Option<Arc<Sealer>>,
     /// What fingerprints a value the log shows by a mark (a token a call answered), for every
     /// store, an in-memory one too: unlike `sealer`, nothing is opened with it later.
@@ -384,9 +386,10 @@ impl SecretStore {
             }
             Arc::clone(&slugs[slug].vault)
         };
-        vault.lock().unwrap().prints.get_or_insert_with(|| Arc::clone(&self.sealer));
-        if self.path != ":memory:" {
-            vault.lock().unwrap().sealer.get_or_insert_with(|| Arc::clone(&self.sealer));
+        {
+            let mut v = vault.lock().unwrap();
+            v.prints.get_or_insert_with(|| Arc::clone(&self.sealer));
+            v.sealer.get_or_insert_with(|| Arc::clone(&self.sealer));
         }
         vault
     }
@@ -673,7 +676,9 @@ impl SecretStore {
     /// A value from a remote source that can't be read now is kept, for [`STALE_AFTER`] at most.
     /// `server`: the server's secrets ([`SERVER`]), read where the deployment has none of its own.
     fn resolve(&self, slug: &str, entry: &Slug, server: Option<&Slug>) {
-        let mut resolved = Resolved { prints: Some(Arc::clone(&self.sealer)), ..Resolved::default() };
+        // Its sealer too: a vault rebuilt without one (a secret set, a source read again) left a
+        // waiting run to be written to disk unsealed.
+        let mut resolved = Resolved { prints: Some(Arc::clone(&self.sealer)), sealer: Some(Arc::clone(&self.sealer)), ..Resolved::default() };
         let mut before = std::mem::take(&mut *entry.vault.lock().unwrap());
         let now = std::time::Instant::now();
         let caps = self.caps.lock().unwrap();
