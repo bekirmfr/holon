@@ -7,7 +7,8 @@ This revises [host capabilities](host-capabilities-L4.md), which filed inbound W
 "later" (§5's table, the end of §5.9, Tier 3 in §7): "channels (SSE) and a POST cover what a
 browser sends and hears". Decided 2026-11-04 that they are fundamental: the libraries web apps
 are built on (collaborative editing, GraphQL subscriptions, presence) expect one two-way
-connection, not two half-connections. Where the step sits in §7's tiers is a fork (§10).
+connection, not two half-connections. It is Tier 1, step 1.9, on track D beside 1.6, whose
+engine it shares (host capabilities §7, revised the same day).
 
 It follows host capabilities §5.9's rules for every connection that outlives a run: **the host
 owns the connection; a run sees whole messages, never bytes off the wire; what a run received and
@@ -208,9 +209,9 @@ as a binary frame. Nothing here needs a second representation of binary data.
 
 ## 10. Forks, surfaced
 
-1. **Where it sits in host capabilities' plan (§7).** *Lean:* Tier 1, as its own step beside
-   1.6 (messaging), sharing its engine; the room sample needs nothing else from Tier 1. Text
-   frames first, binary frames once 1.1 lands.
+1. **Where it sits in host capabilities' plan (§7):** decided 2026-11-04, Tier 1, step 1.9,
+   track D beside 1.6 (messaging), sharing its engine; the room sample needs nothing else from
+   Tier 1. Text frames first, binary frames once 1.1 lands.
 2. **Subprotocols** (`Sec-WebSocket-Protocol`, which GraphQL over WebSocket and some sync
    libraries use): open's answer names one from the request's list. *Lean:* in the first slice
    if a target library needs it, otherwise the second.

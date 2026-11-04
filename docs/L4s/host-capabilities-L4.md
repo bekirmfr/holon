@@ -5,7 +5,10 @@ design as of 2befd26. Revised 2026-10-29 against rc.29 (6bc5c68): commands and p
 terminals (§5.7), a shell in a sandbox whose walls are the grant (§5.8), outbound streams and
 long-lived connections (§5.9), a bytes value with decimals decided beside it (§5.10), R5 reworded
 around boundaries, and the implementation plan in three tiers (§7, replacing the order for payment
-operations), with history as step 2.5 ([history](history-L4.md)). It sets rules and sorts candidates; each capability it says to build gets its own L4,
+operations), with history as step 2.5 ([history](history-L4.md)). Revised 2026-11-04 against
+450e3de: answering a route with a file (step 1.8, [static files](static-files-L4.md)) and inbound
+WebSockets (step 1.9, [inbound WebSockets](websockets-L4.md)) join Tier 1; inbound WebSockets were
+"later" until then. It sets rules and sorts candidates; each capability it says to build gets its own L4,
 as folders, databases and channels did. Builds on
 [host resources](host-resources-L4.md) (resources the host defines, their addresses),
 [named folders](named-folders-L4.md), [databases](databases-L4.md),
@@ -199,8 +202,9 @@ Each one's L4 has a section for each of these. A capability that can't answer on
 | a streamed HTTP answer in one run; polling | covered | R2 | `http_stream` (rc.23), `every` and `http.get` |
 | an SSE, WebSocket or gRPC feed; Postgres `LISTEN`; MQTT | host capability: a **feed** (a trigger) | R3a, R3d | §5.9 |
 | a WebSocket session (send, wait for the reply) | host capability: a terminal backend | R3a | §5.9 |
+| a file as a route's answer, any size, binary too | host capability: `FileServe` on a folder | R3b | step 1.8; answering callers with a folder's files is a finer item than reading them |
 | ISO 8583, FIX, SMPP, a bank's own socket | host capability: a **socket** | R3a, R3c, R3d | §5.9; when a job brings one |
-| inbound WebSockets | later | — | channels and a POST cover browsers |
+| inbound WebSockets | host capability: a trigger on the flow's port, `WebSocket(path)` | R3a, R3d | §5.9, step 1.9 |
 | a shell or `Spawn` with the server's reach | never | R5 | for flows and for agents |
 | a shell in a sandbox whose walls are the grant | host capability: a **sandbox** | R3c, R5 | §5.8; Linux first, refused where the OS can't hold the walls |
 | a program an admin binds (a vendor CLI, a script) | host capability: a **command** | R3c, R5 | §5.7 |
@@ -534,11 +538,14 @@ holon socket add processor tls://10.0.4.12:5000 --identity processor --frame len
   10.0.4.12:5000)", and the `on message` trigger. Such links sit on private networks, so a socket
   an admin binds may reach a private address; a flow's own text never can (§8, fork 19).
 
-**Inbound WebSockets** aren't needed yet: channels (SSE) and a POST cover what a browser sends and
-hears. They wait for a job with two-way traffic from a browser.
+**Inbound WebSockets** (step 1.9, [inbound WebSockets](websockets-L4.md)): a browser connects to
+the flow's own port, and each message it sends starts a run, by the same four rules. Until
+2026-11-04 they waited for a job ("channels (SSE) and a POST cover what a browser sends and
+hears"). Decided then that they are fundamental: the libraries web apps are built on expect one
+two-way connection. The statement is `websocket`, since *socket* is the bound connection above.
 
 **Engines.** The data plane already runs on tokio, so a WebSocket client is tokio-tungstenite on
-that runtime. SSE is a streaming read the outbound client can do. A Postgres `LISTEN` is the
+that runtime, and inbound WebSockets' server side is the same crate. SSE is a streaming read the outbound client can do. A Postgres `LISTEN` is the
 `postgres` crate's notifications, beside `engines.rs`. MQTT is rumqttc. gRPC (tonic, HTTP/2 and
 protobuf) waits for a job that brings one. A socket's framing and session are Holon's own code,
 small; the protocols' meaning stays in leaves.
@@ -639,6 +646,8 @@ engine.
 | 1.5 | **Secure connectivity:** keys the host holds (PGP decrypt and sign) and client identities (mutual TLS, a private CA) (§5.3, §5.4) | bank-connectivity-L4 | 1.1, 1.2 | M |
 | 1.6 | **Messaging:** one subscription runtime (position, once per message, backpressure, reconnect), feeds (SSE, WebSocket, Postgres `LISTEN`) and one queue engine, publish and consume (§5.5, §5.9) | streams-L4 | 1.4's request signing, for SQS (fork 8) | L |
 | 1.7 | **Commands:** programs an admin binds, typed arguments, logged output, killed on timeout (§5.7) | commands-L4 | — | M |
+| 1.8 | **Static files:** a route's rest segment (`/*path`, routing, no item), and answering with a file from a folder (`site.serve(name)`, `FileServe`), streamed by the host and checked against the handle's hash | static-files-L4 | — | M |
+| 1.9 | **Inbound WebSockets:** `websocket PATH { open … message … close … }`, a run per message, replies and channel packs out, a record per connection (§5.9) | websockets-L4 | 1.1 for binary frames | M |
 
 - **Samples, one at least per step:**
   - 1.1 `file-checksums` (a binary file's hash, into a manifest);
@@ -648,10 +657,13 @@ engine.
   - 1.4 `bank-drop` (statements arriving over SFTP, into a collection);
   - 1.5 `bank-statements` (SFTP, PGP decrypt, camt.053 parsed);
   - 1.6 `price-feed` and `payout-events`;
-  - 1.7 `nightly-reconcile` (a bound program on a clock, its output into a folder).
+  - 1.7 `nightly-reconcile` (a bound program on a clock, its output into a folder);
+  - 1.8 `site` (a built web app and its API, with a deep link falling back to `index.html`);
+  - 1.9 `room` (a chat: joins, messages and leaves over one connection per browser).
 - **Stand-ins for e2e:** an SMTP sink and an IMAP server, an SFTP server and an S3 stub, an HTTPS
   server that requires a client certificate, an SSE and WebSocket stub, a test program; each
-  started by the e2e setup. A queue engine that can't be stubbed in-process (a real broker) is
+  started by the e2e setup. 1.8 and 1.9 need none: a fixture folder, and the browser as the
+  client. A queue engine that can't be stubbed in-process (a real broker) is
   settled in streams-L4.
 - **Alongside 1.7:** retire `egress` and `Spawn` from `Capability` and the catalog (§8, fork 7),
   `CommandRun` taking `Spawn`'s place. S.
@@ -662,11 +674,12 @@ engine.
 A  1.1 ──► 1.2 ──► 1.5
 B  1.4  (text files at once; binary files once 1.1 lands)
 C  1.3  (text mail at once; attachments once 1.1 lands)
-D  1.6  (feeds at once; the SQS engine once 1.4's signing lands)
+D  1.6, 1.9  (one engine, tokio-tungstenite; 1.9's text frames at once, binary once 1.1 lands)
 E  1.7
+F  1.8  (the rest segment, then FileServe)
 ```
 
-Five tracks, so five worktrees at most; tracks that touch the same files (`kind.rs`, the catalog,
+Six tracks, so six worktrees at most; tracks that touch the same files (`kind.rs`, the catalog,
 `tests.rs`) merge into `main` one at a time, each rebased on the last.
 
 ### Tier 2: operationally essential
@@ -695,7 +708,6 @@ Taken when a job or a user asks, each with its L4 and its sample all the same:
   job runs on a card processor's link.
 - **More engines:** the queues 1.6 didn't take (Kafka, NATS, SQS or RabbitMQ), MQTT, gRPC streams.
 - **Mailboxes through OAuth:** Microsoft Graph, the Gmail API (§8, fork 2).
-- **Inbound WebSockets.**
 - **Stronger or wider sandboxes:** a micro-VM, TLS inspection at the proxy, a WASI backend
   (§8, forks 15 and 16).
 - **The rest:** time zones (fork 3), PDF output, SMB and Azure Blob folder backends, keys in a
@@ -794,5 +806,6 @@ Taken when a job or a user asks, each with its L4 and its sample all the same:
 ## 10. The L4s that follow
 
 One per step of §7, written when its step starts: value-kinds, payment-formats, mail,
-folder-backends, bank-connectivity, streams and commands for Tier 1; approvals, telemetry, a
+folder-backends, bank-connectivity, streams and commands for Tier 1, and static-files and
+websockets (already written); approvals, telemetry, a
 revision of host-resources, sandbox, and history (already written) for Tier 2; Tier 3's as they are asked for.

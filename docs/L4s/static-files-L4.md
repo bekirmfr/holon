@@ -293,11 +293,8 @@ faster, but the host would never see the bytes, so it couldn't stand behind the 
 - **Assets bundled with the version** (a flow's own files, content-addressed into its unit, so
   they are covered by its hash and need no folder) are the natural next step. They are not
   designed here.
-- **Where it sits in host capabilities' plan (§7).** The plan schedules capabilities, not this
-  note (R4), and the plan doesn't list this one yet. It needs nothing from Tier 1, `Bytes`
-  included, and the rest segment needs nothing at all, so it can go anywhere. *Lean:* a step of
-  its own in Tier 1, beside 1.7, since a flow has no way today to answer with a file it doesn't
-  read whole.
+- **Where it sits in host capabilities' plan (§7):** decided 2026-11-04, Tier 1, step 1.8, track
+  F. It needs nothing else from Tier 1, `Bytes` included.
 
 ## 11. Invariant check
 
