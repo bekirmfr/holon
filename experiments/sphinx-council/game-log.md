@@ -111,3 +111,38 @@ Tokens: knight c6 5,391; pawns a7 4,564, b7 4,717, d7 5,161, f7 4,923, g7 5,005,
 ## Round 4: 4. Ba4
 
 Position: `r1bqkbnr/1ppp1ppp/p1n5/4p3/B3P3/5N2/PPPP1PPP/RNBQK2R b KQkq - 1 4`.
+
+From this round the council is passed on as PROPOSAL and CASE only; the THOUGHT lines are left out
+(the player's instruction, after the classifier stopped the verbatim relay twice). The notes below
+are a summary, not the council's full text.
+
+| Piece | Proposal | Case |
+|---|---|---|
+| pawn a6 | a5 | a5 is my only legal move, and it doesn't hang anything, since Ba4 does not attack a5. |
+| knight c6 | Nd4 | Nd4 is the most active of my squares and forces White to choose between trading knights or spending a tempo to take e5. |
+| pawn b7 | b5 | The a6 pawn defends b5, so b5 gains space and challenges the bishop on a4 without losing material. |
+| pawn d7 | d6 | d6 keeps the e5 pawn protected and avoids opening the centre before Black's pieces are developed. |
+| pawn f7 | f6 | f6 keeps the e5 pawn supported and avoids the loss of material that f5 allows to exf5. |
+| pawn g7 | g6 | g6 is safe because nothing attacks g6, while g5 simply drops a pawn to Nxg5. |
+| pawn h7 | h6 | h6 is the safer pawn move and covers g5 if White brings a piece toward that diagonal. |
+| rook a8 | Rb8 | Rb8 brings the rook into play and keeps the b-file open for a later b5, whereas Ra7 is a dead end. |
+| queen d8 | Qe7 | Qe7 defends the e5 pawn along the open e-file and keeps the queen safe from Ng5 and g3 ideas. |
+| king e8 | Ke7 | Ke7 is safe and is my only legal move, though it gives up castling. |
+| bishop f8 | Be7 | Be7 is the safest development and clears the way for kingside castling. |
+| knight g8 | Nf6 | Nf6 develops with tempo on e4, keeps e5 supported, and leaves g8 free to castle. |
+
+**The Sphinx:** 4... **Nf6** (kept; the knight g8's proposal). Verdict on 4. Ba4: good. Mood: confident.
+Comment: "A knight leaps out to poke your king's pawn, traveler." Say: (none).
+
+Deliberation: "Ba4 is the main line, so there is nothing to fear. Nf6 develops with tempo on e4 and keeps
+castling easy. The council backed several sound moves, such as b5 and Be7, but Nf6 is the most natural."
+
+**White:** 5. **Nc3**.
+
+Tokens: council 62,959 across twelve pieces (the king's first run cost 6,193 and delivered nothing;
+its answer was read from its transcript); Sphinx 12,888.
+**Round total: 75,847.**
+
+## Round 5: 5. Nc3
+
+Position: `r1bqkb1r/1ppp1ppp/p1n2n2/4p3/B3P3/2N2N2/PPPP1PPP/R1BQK2R b KQkq - 3 5`.
