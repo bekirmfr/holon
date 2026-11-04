@@ -1351,9 +1351,6 @@ impl Log {
         (self.sealed.len(), self.sealed.iter().map(|s| s.runs.len()).sum(), self.sealed.iter().map(|s| s.size).sum())
     }
 
-    /// Keep `keep` entries from now on, none older than `max_age_ms` (none: any age): the
-    /// deployment's retention, set at deploy and load and when its grant changes. Keeping more
-    /// than it did reads back what the file still holds.
     /// Where the runs it lets go of are written first, and whether a cut may go on without
     /// (storage.rs keeps it as `[storage] backup` says).
     pub fn set_backup(&mut self, backup: Option<(PathBuf, bool)>) {
@@ -1378,18 +1375,29 @@ impl Log {
         }
     }
 
+    /// Keep `keep` entries from now on, none older than `max_age_ms` (none: any age): the
+    /// deployment's retention, set at deploy and load and when its grant changes, and by the host
+    /// rolling a full disk. Keeping more than it did keeps again what its segments and file still
+    /// hold.
     pub fn retain(&mut self, keep: usize, max_age_ms: Option<u64>) {
         let keep = keep.max(1);
         if (keep, max_age_ms) == (self.keep, self.max_age_ms) {
             return;
         }
-        if keep > self.keep && self.file.is_some() {
-            let slug = self.slug.take();
-            // Read afresh: a cut planned before is stale, and the log cuts as it did.
-            let (defer_cuts, generation) = (self.defer_cuts, self.generation + 1);
-            *self = Log::open_retaining(self.file.take(), keep, max_age_ms);
-            (self.slug, self.defer_cuts, self.generation) = (slug, defer_cuts, generation);
-            return;
+        let older = match (max_age_ms, self.max_age_ms) {
+            (None, Some(_)) => true,
+            (Some(new), Some(old)) => new > old,
+            _ => false,
+        };
+        if (keep > self.keep || older) && self.file.is_some() {
+            // Keeping more: the runs its segments and file still hold, kept again, from the index
+            // it has of them (each run's seq and when it ran), with the file and every flag as
+            // they are: nothing read, and nothing it was doing forgotten (whether its newest lines
+            // are synced, those that couldn't be written, its backup).
+            let mut runs: BTreeMap<u64, u64> = self.sealed.iter().flat_map(|s| s.runs.iter().copied()).collect();
+            runs.extend(self.lines.iter().map(|l| (l.seq, l.at_ms)));
+            runs.extend(self.kept.iter().copied());
+            self.kept = runs.into_iter().collect();
         }
         (self.keep, self.max_age_ms) = (keep, max_age_ms);
         self.prune(now_ms());
@@ -1417,7 +1425,9 @@ impl Log {
                 }
             }
         }
-        self.breaks.retain(|seq| *seq >= oldest);
+        // The breaks of runs still in its segments or file are kept, for keeping more again.
+        let on_disk = self.sealed.first().map(Sealed::first).or_else(|| self.lines.front().map(|l| l.seq)).map_or(oldest, |s| s.min(oldest));
+        self.breaks.retain(|seq| *seq >= on_disk);
     }
 
     /// Whether the file's oldest line is a day past the age it keeps: time to cut it back.
@@ -1776,7 +1786,8 @@ impl Log {
     /// The seqs of the entries kept that don't follow the line before them: the log was changed
     /// outside holon there.
     pub fn breaks(&self) -> &[u64] {
-        &self.breaks
+        let oldest = self.kept.front().map_or(u64::MAX, |(seq, _)| *seq);
+        &self.breaks[self.breaks.partition_point(|seq| *seq < oldest)..]
     }
 
     /// Delete the file: its deployment was deleted.
@@ -2110,6 +2121,40 @@ mod tests {
         assert_eq!(seqs(&log), [7, 8]);
         log.retain(10, None);
         assert_eq!(seqs(&log), [3, 4, 5, 6, 7, 8], "read back from the file");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Keeping fewer runs then more again keeps again what the file holds, and forgets nothing
+    /// the log was doing: that its newest line isn't synced yet, its backup, the breaks in what
+    /// it keeps again (docs/L4s/storage-L4.md, the review of steps 1 to 10).
+    #[test]
+    fn keeping_more_again_forgets_nothing_the_log_was_doing() {
+        let dir = temp_dir("keep-more");
+        let path = dir.join("slug.jsonl");
+        let mut log = Log::open_keeping(Some(path.clone()), 10);
+        for _ in 0..5 {
+            log.push(entry());
+        }
+        let mut lines: Vec<String> = std::fs::read_to_string(&path).unwrap().lines().map(str::to_string).collect();
+        lines[1] = lines[1].replace("\"tick\"", "\"trigger\"");
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+        let mut log = Log::open_keeping(Some(path.clone()), 10);
+        assert_eq!(log.breaks(), [2]);
+        log.push(entry());
+        let backup = Some((dir.join("backup"), false));
+        log.set_backup(backup.clone());
+        log.retain(2, None);
+        assert_eq!(log.breaks(), &[] as &[u64], "the break is before what it keeps");
+        log.retain(10, None);
+        assert_eq!(log.after(None, 100).iter().map(|e| e.seq).collect::<Vec<_>>(), [0, 1, 2, 3, 4, 5], "kept again from the file");
+        assert_eq!(log.breaks(), [2], "and its break with it");
+        assert_eq!(log.backup, backup, "its backup kept");
+        assert_eq!(log.take_dirty(), Some(path.clone()), "its newest line still to be synced");
+        // And by age: none kept past a millisecond, then every one again once any age may be.
+        log.retain(10, Some(1));
+        assert_eq!(log.after(None, 100).len(), 0);
+        log.retain(10, None);
+        assert_eq!(log.after(None, 100).len(), 6);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
