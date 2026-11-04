@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **Signing in through an identity provider needs a verified email.** An account is matched by
+  its email, so an ID token's email is taken only when the provider says it verified it
+  (`email_verified` true); before, one was taken unless the provider said it wasn't, and a
+  provider that lets a person type any email signed them in as whoever had it. A token that
+  doesn't say signs no one in, and the refusal says why.
 - **Every run's record is on disk before its answer.** A run of a route, clock, file handler or
   action is answered (or counts as done) once its log entry is synced, not only written: an
   answered run is recorded, a power loss or not. Runs at once share the sync. A handler that only

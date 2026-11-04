@@ -197,7 +197,9 @@ admin. Until then the server answers everything but setting up with 403.
 
 An admin can turn on OpenID Connect on the admin page, with the provider's issuer URL and a
 client id (a public client; the editor signs in with the authorization code flow and PKCE). A
-person signs in through the provider when an account here has their email. Accounts are still
+person signs in through the provider when an account here has their email, and the provider
+says it verified that email (`email_verified` true in its ID token): one that doesn't say so
+signs no one in, since some providers let a person type any email. Accounts are still
 made here, with a role; the provider only proves who is signing in.
 
 ## Secrets

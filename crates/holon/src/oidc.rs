@@ -7,7 +7,8 @@
 //! A token is accepted only when its signature checks against the provider's published keys
 //! (JWKS: read when set, read again for a key it doesn't know, at most once a minute), it was
 //! issued by that issuer for this client, and it hasn't expired (a minute's leeway for clocks).
-//! Who it is (its email, when the provider says it is verified) is then matched to an account
+//! Who it is (its email, only when the provider says it verified it: `email_verified` true) is
+//! then matched to an account
 //! (access.rs), whose role says what they may do. Signing in proves who someone is; their
 //! account decides what they may do.
 
@@ -23,6 +24,9 @@ use serde::Deserialize;
 pub(crate) struct Identity {
     pub(crate) subject: String,
     pub(crate) email: Option<String>,
+    /// An email the token gave that the provider didn't say it verified: not who it is, but said
+    /// back when it matches no one, so the person knows why.
+    pub(crate) unverified: Option<String>,
 }
 
 /// The algorithms accepted: what providers sign ID tokens with. Never `none`, never HMAC (that
@@ -106,8 +110,13 @@ impl Oidc {
         validation.set_required_spec_claims(&["exp", "iss", "aud", "sub"]);
         validation.leeway = 60;
         let claims = jsonwebtoken::decode::<Claims>(token, &key, &validation).map_err(|e| format!("{e}"))?.claims;
-        let email = claims.email.filter(|_| claims.email_verified != Some(false)).map(|e| e.to_lowercase());
-        Ok(Identity { subject: claims.sub, email })
+        // Only an email the provider says it verified: an account is matched by its email
+        // (access.rs), so one a person merely typed at the provider would sign them in as whoever
+        // has it. A provider that doesn't say (no `email_verified`) signs nobody in by email.
+        let verified = claims.email_verified == Some(true);
+        let email = claims.email.map(|e| e.to_lowercase());
+        let (email, unverified) = if verified { (email, None) } else { (None, email) };
+        Ok(Identity { subject: claims.sub, email, unverified })
     }
 
     /// The key `kid` names (or the only one, when the token names none); the provider's keys read
@@ -188,10 +197,12 @@ pub(crate) mod tests {
     #[test]
     fn a_token_the_provider_signed_for_this_client_says_who() {
         let who = provider().verify(&token(serde_json::json!({ "email": "Ada@Example.com", "email_verified": true }))).unwrap();
-        assert_eq!(who, Identity { subject: "user-1".into(), email: Some("ada@example.com".into()) });
-        // An email the provider hasn't verified isn't taken.
+        assert_eq!(who, Identity { subject: "user-1".into(), email: Some("ada@example.com".into()), unverified: None });
+        // An email the provider hasn't verified isn't taken; nor one it doesn't say of.
         let unverified = provider().verify(&token(serde_json::json!({ "email": "ada@example.com", "email_verified": false }))).unwrap();
         assert_eq!(unverified.email, None);
+        let unsaid = provider().verify(&token(serde_json::json!({ "email": "ada@example.com" }))).unwrap();
+        assert_eq!((unsaid.email, unsaid.unverified.as_deref()), (None, Some("ada@example.com")), "no email_verified: not taken");
     }
 
     #[test]

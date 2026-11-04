@@ -39,7 +39,9 @@ its hash as it is read (`Store::get`, [holon-host](../components/holon-host.md))
 - **An identity provider** (OpenID Connect, optional, set by an admin): an ID token is accepted as
   a bearer only if it is signed with an RSA or EC algorithm (`ALGORITHMS`: never `none`, never
   HMAC) by a key the provider publishes, for this issuer and client id, unexpired (60 s leeway);
-  its email is then matched to an account (`Accounts::by_email`), whose role applies.
+  its email, only when the provider says it verified it (`email_verified` true), is then matched
+  to an account (`Accounts::by_email`), whose role applies; a token that doesn't say signs no
+  one in, and is told why.
 - **The OS user running the server** signs in through the run file `local::publish` writes
   (`~/.holon/run/<port>.json`, owner-only): an `hl_` token, an admin's, for this run only.
 - **Roles** (`Access::check`): `viewer` reads (GET); `editor` also saves, deploys and approves,
@@ -215,9 +217,6 @@ What is not defended, or only partly:
   sign-in throttled per name only (so a known name can be locked out a minute at a time), and the
   setup code is checked with no throttle while the server is unset.
 - **Approval is one editor's**: any editor or admin may acknowledge anything the policy allows.
-- **A provider's email is taken unless it says unverified**: `Oidc::verify` keeps the email when
-  `email_verified` is absent, not only when it is true (its notes say "when the provider says it
-  is verified"). An admin trusts the provider's emails by turning it on.
 - **The server's own files, as folders refuse them**: `server_files` names the files it was given,
   the `logs`, `arrivals` and `heads` beside the deployments file, and `~/.holon`; with `--data`
   outside `~/.holon`, the `.state` folder of state heads beside it isn't among them.
@@ -258,7 +257,7 @@ What is not defended, or only partly:
   `a_witness_is_reached_over_https_or_on_this_machine`.
 
 Gaps: nothing asserts the mode of the store's, flows' or backups' files, or of a directory; no
-ID token without `email_verified`, no data-plane request under a foreign `Host`, no repeated
+data-plane request under a foreign `Host`, no repeated
 setup code is sent; no link is swapped between a folder's check and its open; the `.state`
 folder isn't among the folders `no_folder_is_or_holds_what_the_server_keeps_beside_its_files`
 tries.
