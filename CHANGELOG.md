@@ -27,6 +27,12 @@
   the key, and waiting runs were written in the clear from then on. They are sealed now whatever
   happened to the vault, and with `--secrets :memory:` under a key never kept (so after a restart
   such a run says it can't be opened, as its secrets are gone too).
+- **A flow's file stays in its folder, whatever else writes there.** On Linux a file name is walked
+  to a part at a time with no link followed, and the file is read or written through its folder as
+  opened, so a program that can write in a bound folder can't swap in a link, between the check
+  and the write, that leads the server outside it; and a write no longer makes folders on its way
+  before checking where they are. A link inside a folder isn't followed now, even to inside it
+  (elsewhere than Linux, one inside it still is).
 - **Every run's record is on disk before its answer.** A run of a route, clock, file handler or
   action is answered (or counts as done) once its log entry is synced, not only written: an
   answered run is recorded, a power loss or not. Runs at once share the sync. A handler that only

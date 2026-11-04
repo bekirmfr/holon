@@ -51,7 +51,11 @@ has that name. Reads ask `FileRead("logs")`, writes `FileWrite("archive")`; `on 
   bound. A deploy is refused until each folder it needs is bound, read-write where it writes.
 - **Confined.** `bad_file_name` refuses before the OS sees it: empty, `\`, `:`, a root, `.` or
   `..` parts, a part ending in a dot or space, Windows' reserved names, the host's `.holon-tmp-`
-  files; the opened file must still be inside the folder once links are followed.
+  files. A name is walked to a part at a time: on Linux with no link followed, even one to inside
+  the folder (`walk_beneath`), each missing folder made only in the one just checked, and the file
+  acted on through its folder as opened (`Placed`), so a link swapped in afterwards leads nowhere;
+  elsewhere each folder is checked to be inside before one is made in it, and the file must be
+  inside once links are followed.
 - **Reads** are answered on the spot from the folder as the run found it, as text (UTF-8, up to
   `inline_file_bytes`; anything else fails the run, saying to read a handle), and kept with the
   run's reads with the file's hash and size (`Seen`). A text up to `LOG_INLINE_BYTES` (4 KiB) is
@@ -127,6 +131,8 @@ has that name. Reads ask `FileRead("logs")`, writes `FileWrite("archive")`; `on 
 ## 5. What the tests hold
 
 - folders.rs: `a_name_stays_inside_its_folder`, `a_link_out_of_the_folder_is_never_followed`,
+  `a_write_through_a_link_makes_nothing_outside_and_links_arent_followed`,
+  `a_folder_swapped_for_a_link_after_the_check_leads_nowhere`,
   `a_bound_folder_reads_writes_lists_and_deletes_and_nothing_leaves_it`,
   `a_deployment_sees_its_own_binding_of_a_name_and_no_one_else_does`,
   `commits_lock_the_files_they_touch_and_a_listing_its_folder`, `keep_is_bytes_hash_or_bytes_for_a_while`,

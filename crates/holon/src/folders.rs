@@ -465,12 +465,25 @@ impl Scoped {
     /// File `file` of folder `name`, opened, and its metadata: none if there is no such file.
     pub(crate) fn open_file(&self, name: &str, file: &str) -> Result<Option<(std::fs::File, std::fs::Metadata)>, String> {
         let folder = self.folder(name)?;
-        let Some(path) = existing(&folder.path, file)? else { return Ok(None) };
-        let meta = std::fs::metadata(&path).map_err(|e| format!("{name}/{file}: {e}"))?;
+        let Some(placed) = existing(&folder.path, file)? else { return Ok(None) };
+        // Opened with no link followed (a link put in its place since it was checked is refused),
+        // and what it is read from the file opened.
+        let mut options = std::fs::OpenOptions::new();
+        options.read(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.custom_flags(libc::O_NOFOLLOW);
+        }
+        let f = match options.open(&placed.path) {
+            Ok(f) => f,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(format!("{name}/{file} can't be read: {e}")),
+        };
+        let meta = f.metadata().map_err(|e| format!("{name}/{file}: {e}"))?;
         if !meta.is_file() {
             return Ok(None);
         }
-        let f = std::fs::File::open(&path).map_err(|e| format!("{name}/{file} can't be read: {e}"))?;
         Ok(Some((f, meta)))
     }
 
@@ -569,10 +582,10 @@ impl Scoped {
     /// A write of `text` as file `file` of folder `name`, made ready: its bytes beside the file.
     fn ready_write(&self, name: &str, file: &str, text: &str, create: bool) -> Result<Ready, String> {
         let folder = self.writable(name)?;
-        let path = for_writing(&folder.path, file)?;
+        let placed = for_writing(&folder.path, file)?;
         let why = |e: String| format!("{name}/{file} not written: {e}");
-        let beside = fill_beside(&path, create, |f| f.write_all(text.as_bytes()).map_err(|e| e.to_string())).map_err(why)?;
-        Ok(Ready { name: name.into(), file: file.into(), path, beside, size: text.len() as u64, create, verb: "written" })
+        let beside = fill_beside(&placed.path, create, |f| f.write_all(text.as_bytes()).map_err(|e| e.to_string())).map_err(why)?;
+        Ok(Ready { name: name.into(), file: file.into(), beside, size: text.len() as u64, create, verb: "written", placed })
     }
 
     /// Copy file `from_file` of folder `from` as file `file` of folder `name`, streamed beside it
@@ -600,8 +613,8 @@ impl Scoped {
         let Some((mut src, meta)) = self.open_file(from, from_file)? else {
             return Err(format!("{from}/{from_file} isn't there any more: not copied to {name}/{file}"));
         };
-        let path = for_writing(&folder.path, file)?;
-        let beside = fill_beside(&path, create, |f| {
+        let placed = for_writing(&folder.path, file)?;
+        let beside = fill_beside(&placed.path, create, |f| {
             let mut hasher = blake3::Hasher::new();
             let mut block = vec![0u8; 64 * 1024];
             loop {
@@ -618,14 +631,14 @@ impl Scoped {
             Ok(())
         })
         .map_err(|e| format!("{name}/{file} not copied: {e}"))?;
-        Ok(Ready { name: name.into(), file: file.into(), path, beside, size: meta.len(), create, verb: "copied" })
+        Ok(Ready { name: name.into(), file: file.into(), beside, size: meta.len(), create, verb: "copied", placed })
     }
 
     /// Delete file `file` of folder `name`; nothing to do if there is none.
     pub(crate) fn delete(&self, name: &str, file: &str) -> Result<(), String> {
         let folder = self.writable(name)?;
         match existing(&folder.path, file)? {
-            Some(path) if path.is_file() => {
+            Some(Placed { path, .. }) if path.is_file() => {
                 // Noted first, so a watcher that finds it gone knows it was its own.
                 if self.watched.lock().unwrap().contains(name) {
                     self.removed.lock().unwrap().insert((name.to_string(), file.to_string()));
@@ -905,23 +918,25 @@ fn put(beside: Beside, path: &Path, create: bool) -> Result<(), String> {
 pub(crate) struct Ready {
     name: String,
     file: String,
-    path: PathBuf,
     beside: Beside,
     size: u64,
     create: bool,
     /// What the error says it wasn't: written, or copied.
     verb: &'static str,
+    /// Where it lands: last, so the folder it holds open outlives what is beside the file.
+    placed: Placed,
 }
 
 impl Ready {
     /// Put it in place, within the folder's cap as it now is.
     fn land(self, folders: &Scoped) -> Result<(), String> {
-        let Ready { name, file, path, beside, size, create, verb } = self;
+        let Ready { name, file, beside, size, create, verb, placed } = self;
+        let path = &placed.path;
         let why = |e: String| format!("{name}/{file} not {verb}: {e}");
         let folder = folders.writable(&name)?;
-        fits(&name, &folder, &path, size).map_err(why)?;
-        put(beside, &path, create).map_err(why)?;
-        folders.note_landed(&name, &file, &path);
+        fits(&name, &folder, path, size).map_err(why)?;
+        put(beside, path, create).map_err(why)?;
+        folders.note_landed(&name, &file, path);
         Ok(())
     }
 }
@@ -1007,10 +1022,96 @@ pub(crate) fn bad_file_name(name: &str) -> Option<String> {
     Some(format!("{name:?} can't name a file: {why}"))
 }
 
-/// The file `name` names in `root`, if there is one, after links: refused if it is outside `root`.
-fn existing(root: &Path, name: &str) -> Result<Option<PathBuf>, String> {
+/// A file's place in a folder, checked: the path to act on, and (on Linux) the folder holding it,
+/// opened as it was walked to, so what is done goes through that folder as opened. A path the
+/// check passed can't be made, by a link swapped in on the way afterwards, to lead elsewhere:
+/// `path` is `/proc/self/fd/<that folder>/<file>`, which the kernel resolves to the opened folder,
+/// not by walking the names again. Kept as long as the path is used.
+#[derive(Debug)]
+pub(crate) struct Placed {
+    pub(crate) path: PathBuf,
+    _dir: Option<std::fs::File>,
+}
+
+/// Why a link on the way to `name` is refused.
+fn link_refused(name: &str) -> String {
+    format!("{name:?} leads outside its folder: a link on its way isn't followed")
+}
+
+/// The folder `name` is in, under `root`, walked to a part at a time with no link followed
+/// (`openat` with `O_NOFOLLOW`), each missing one made (`mkdirat`) only if `make`: the folder
+/// opened, and the file's own name. None when a folder on the way isn't there (and isn't made).
+#[cfg(target_os = "linux")]
+fn walk_beneath(root: &Path, name: &str, make: bool) -> Result<Option<(std::fs::File, String)>, String> {
+    use std::os::fd::{AsRawFd, FromRawFd};
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut dir = std::fs::OpenOptions::new().read(true).custom_flags(libc::O_DIRECTORY | libc::O_CLOEXEC).open(root).map_err(|e| format!("{name}: {e}"))?;
+    let parts: Vec<&str> = name.split('/').collect();
+    let (last, folders) = parts.split_last().ok_or("no file name")?;
+    let open_at = |dir: &std::fs::File, c: &std::ffi::CString| unsafe { libc::openat(dir.as_raw_fd(), c.as_ptr(), libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC) };
+    for part in folders {
+        let c = std::ffi::CString::new(*part).map_err(|_| format!("{name:?} can't name a file: it has a NUL"))?;
+        let mut fd = open_at(&dir, &c);
+        if fd < 0 && std::io::Error::last_os_error().raw_os_error() == Some(libc::ENOENT) {
+            if !make {
+                return Ok(None);
+            }
+            if unsafe { libc::mkdirat(dir.as_raw_fd(), c.as_ptr(), 0o777) } < 0 {
+                let e = std::io::Error::last_os_error();
+                if e.raw_os_error() != Some(libc::EEXIST) {
+                    return Err(format!("{name}: {e}"));
+                }
+            }
+            fd = open_at(&dir, &c);
+        }
+        if fd < 0 {
+            let e = std::io::Error::last_os_error();
+            // A link opened with O_NOFOLLOW and O_DIRECTORY says ELOOP or ENOTDIR: told apart from
+            // a file by what the entry is.
+            let is_link = || std::fs::symlink_metadata(format!("/proc/self/fd/{}/{part}", dir.as_raw_fd())).is_ok_and(|m| m.file_type().is_symlink());
+            return Err(match e.raw_os_error() {
+                Some(libc::ELOOP) => link_refused(name),
+                Some(libc::ENOTDIR) if is_link() => link_refused(name),
+                Some(libc::ENOTDIR) => format!("{name:?}: {part:?} on its way is a file, not a folder"),
+                _ => format!("{name}: {e}"),
+            });
+        }
+        // SAFETY: `fd` was just opened here, and is owned by nothing else.
+        dir = unsafe { std::fs::File::from_raw_fd(fd) };
+    }
+    Ok(Some((dir, last.to_string())))
+}
+
+/// `name` in the folder `dir` opened: the path the kernel resolves through the open folder.
+#[cfg(target_os = "linux")]
+fn through(dir: std::fs::File, last: &str) -> Placed {
+    use std::os::fd::AsRawFd;
+    Placed { path: PathBuf::from(format!("/proc/self/fd/{}/{last}", dir.as_raw_fd())), _dir: Some(dir) }
+}
+
+/// Whether paths through an open folder work here (`/proc` mounted): where they don't, a folder
+/// is checked by its names (the fallback below), as on other systems.
+#[cfg(target_os = "linux")]
+fn pinned_paths() -> bool {
+    static PROC: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *PROC.get_or_init(|| Path::new("/proc/self/fd").is_dir())
+}
+
+/// The file `name` names in `root`, if there is one: refused if a link on its way (or it) leads
+/// out of `root` (on Linux, if there is a link on its way at all).
+fn existing(root: &Path, name: &str) -> Result<Option<Placed>, String> {
     if let Some(why) = bad_file_name(name) {
         return Err(why);
+    }
+    #[cfg(target_os = "linux")]
+    if pinned_paths() {
+        let Some((dir, last)) = walk_beneath(root, name, false)? else { return Ok(None) };
+        let placed = through(dir, &last);
+        return match std::fs::symlink_metadata(&placed.path) {
+            Err(_) => Ok(None),
+            Ok(m) if m.file_type().is_symlink() => Err(link_refused(name)),
+            Ok(_) => Ok(Some(placed)),
+        };
     }
     let joined = root.join(name);
     if std::fs::symlink_metadata(&joined).is_err() {
@@ -1020,28 +1121,45 @@ fn existing(root: &Path, name: &str) -> Result<Option<PathBuf>, String> {
     if !at.starts_with(root) {
         return Err(format!("{name:?} leads outside its folder"));
     }
-    Ok(Some(at))
+    Ok(Some(Placed { path: at, _dir: None }))
 }
 
-/// Where to write file `name` in `root`: its folders made, and nothing on the way leading out.
-fn for_writing(root: &Path, name: &str) -> Result<PathBuf, String> {
+/// Where to write file `name` in `root`: its folders made, each only once the one above it is
+/// checked, and nothing on the way leading out (on Linux, no link on the way at all).
+fn for_writing(root: &Path, name: &str) -> Result<Placed, String> {
     if let Some(why) = bad_file_name(name) {
         return Err(why);
     }
-    let joined = root.join(name);
-    let dir = joined.parent().ok_or("no folder")?;
-    std::fs::create_dir_all(dir).map_err(|e| format!("{name}: {e}"))?;
-    let dir = canonical(dir).map_err(|e| format!("{name}: {e}"))?;
-    if !dir.starts_with(root) {
-        return Err(format!("{name:?} leads outside its folder"));
+    #[cfg(target_os = "linux")]
+    if pinned_paths() {
+        let (dir, last) = walk_beneath(root, name, true)?.ok_or("no folder")?;
+        let placed = through(dir, &last);
+        if std::fs::symlink_metadata(&placed.path).is_ok_and(|m| m.file_type().is_symlink()) {
+            return Err(link_refused(name));
+        }
+        return Ok(placed);
     }
-    let path = dir.join(joined.file_name().ok_or("no file name")?);
+    // Elsewhere: a part at a time, each folder checked to be inside before one is made in it.
+    let parts: Vec<&str> = name.split('/').collect();
+    let (last, folders) = parts.split_last().ok_or("no file name")?;
+    let mut dir = root.to_path_buf();
+    for part in folders {
+        let next = dir.join(part);
+        if std::fs::symlink_metadata(&next).is_err() {
+            std::fs::create_dir(&next).or_else(|e| if e.kind() == std::io::ErrorKind::AlreadyExists { Ok(()) } else { Err(e) }).map_err(|e| format!("{name}: {e}"))?;
+        }
+        dir = canonical(&next).map_err(|e| format!("{name}: {e}"))?;
+        if !dir.starts_with(root) {
+            return Err(format!("{name:?} leads outside its folder"));
+        }
+    }
+    let path = dir.join(last);
     if let Ok(at) = canonical(&path)
         && !at.starts_with(root)
     {
         return Err(format!("{name:?} leads outside its folder"));
     }
-    Ok(path)
+    Ok(Placed { path, _dir: None })
 }
 
 /// The files under `dir`, by the BLAKE3 of their bytes (hex): what `holon verify --files` answers
@@ -2161,6 +2279,66 @@ mod tests {
             assert!(folders.write("inbox", "out/x.txt", "x").unwrap_err().contains("outside"));
             assert!(folders.list("inbox", "", None, 10).unwrap().is_empty(), "a listing doesn't follow the link");
         }
+        let _ = std::fs::remove_dir_all(inbox);
+        let _ = std::fs::remove_dir_all(outside);
+    }
+
+    /// A write through a link out of its folder makes nothing outside on its way (its folders
+    /// are made only once the one above is checked); and on Linux a link inside a folder isn't
+    /// followed, even to inside it.
+    #[cfg(unix)]
+    #[test]
+    fn a_write_through_a_link_makes_nothing_outside_and_links_arent_followed() {
+        let inbox = temp("links-made");
+        let outside = temp("outside-made");
+        std::os::unix::fs::symlink(&outside, inbox.join("out")).unwrap();
+        let folders = Scoped::memory();
+        folders.all.bind("inbox", inbox.to_str().unwrap(), FolderAccess::ReadWrite, Keep::Bytes, None, None).unwrap();
+        assert!(folders.write("inbox", "out/new/deeper/x.txt", "x").unwrap_err().contains("outside"));
+        assert!(!outside.join("new").exists(), "no folder made outside on the way");
+        // A link to a folder inside it, and one to a file inside it.
+        std::fs::create_dir_all(inbox.join("real")).unwrap();
+        std::fs::write(inbox.join("real/a.txt"), "a").unwrap();
+        std::os::unix::fs::symlink(inbox.join("real"), inbox.join("alias")).unwrap();
+        std::os::unix::fs::symlink(inbox.join("real/a.txt"), inbox.join("a-link.txt")).unwrap();
+        assert_eq!(folders.read("inbox", "real/a.txt", MAX_FILE_BYTES).unwrap().as_deref(), Some(&b"a"[..]), "the file itself reads");
+        #[cfg(target_os = "linux")]
+        {
+            assert!(folders.read("inbox", "alias/a.txt", MAX_FILE_BYTES).unwrap_err().contains("link"), "a link on the way, though inside");
+            assert!(folders.read("inbox", "a-link.txt", MAX_FILE_BYTES).unwrap_err().contains("link"), "a link as the file, though inside");
+            assert!(folders.write("inbox", "a-link.txt", "b").unwrap_err().contains("link"), "nor written through");
+            assert_eq!(std::fs::read_to_string(inbox.join("real/a.txt")).unwrap(), "a");
+        }
+        let _ = std::fs::remove_dir_all(inbox);
+        let _ = std::fs::remove_dir_all(outside);
+    }
+
+    /// On Linux a write checked and made ready lands in the folder it was checked in, even if a
+    /// folder on its way is swapped for a link out of it before it lands: it goes through that
+    /// folder as opened, not by its names again.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_folder_swapped_for_a_link_after_the_check_leads_nowhere() {
+        let inbox = temp("swapped");
+        let outside = temp("outside-swapped");
+        std::fs::create_dir_all(inbox.join("sub")).unwrap();
+        let folders = Scoped::memory();
+        folders.all.bind("inbox", inbox.to_str().unwrap(), FolderAccess::ReadWrite, Keep::Bytes, None, None).unwrap();
+        let ready = folders.ready_write("inbox", "sub/x.txt", "mine", false).unwrap();
+        // Between the check and the landing, someone with a hand in the folder moves sub away
+        // and puts a link to outside in its place.
+        std::fs::rename(inbox.join("sub"), inbox.join("moved")).unwrap();
+        std::os::unix::fs::symlink(&outside, inbox.join("sub")).unwrap();
+        ready.land(&folders).unwrap();
+        assert!(!outside.join("x.txt").exists(), "nothing written outside");
+        assert_eq!(std::fs::read_to_string(inbox.join("moved/x.txt")).unwrap(), "mine", "landed in the folder it was checked in");
+        // A read the same way: checked, then the folder swapped, then opened.
+        std::fs::write(outside.join("secret.txt"), "s").unwrap();
+        std::fs::write(inbox.join("moved/secret.txt"), "own").unwrap();
+        let placed = existing(&inbox, "moved/secret.txt").unwrap().unwrap();
+        std::fs::rename(inbox.join("moved"), inbox.join("moved-again")).unwrap();
+        std::os::unix::fs::symlink(&outside, inbox.join("moved")).unwrap();
+        assert_eq!(std::fs::read_to_string(&placed.path).unwrap(), "own", "read in the folder it was checked in");
         let _ = std::fs::remove_dir_all(inbox);
         let _ = std::fs::remove_dir_all(outside);
     }

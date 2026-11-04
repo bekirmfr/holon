@@ -151,7 +151,11 @@ going to isn't sent (`folders::SecretSends`: `blocked_secret`).
 Only what its capabilities name, each granted: its own deployment's state and collections (two
 deployments never share one: claims.rs); the named folders an admin bound, read or read-write as
 bound (`FolderAccess`), by a name, never a path, each file name checked (`bad_file_name`) and
-refused if it leads outside the folder once links are followed (`existing`, `for_writing`); the
+walked to a part at a time (`existing`, `for_writing`): on Linux with no link followed
+(`walk_beneath`: `openat` with `O_NOFOLLOW`, a missing folder made with `mkdirat` only in the one
+just checked), and acted on through the folder as opened (`Placed`: `/proc/self/fd/<folder>/<file>`),
+so a link swapped in after the check leads nowhere; elsewhere each folder on the way is checked to
+be inside before one is made in it, and the file once links are followed; the
 databases an admin bound, only the tables granted, no DDL (databases.rs); the granted hosts
 (above); its secrets by name; other flows' actions (calls.rs, never handed a secret:
 `a_secret_is_never_sent_to_another_flow`); the clock, random numbers and its request. A module
@@ -235,9 +239,9 @@ What is not defended, or only partly:
 - **Approval is one editor's**: any editor or admin may acknowledge anything the policy allows.
 - **`X-Holon-Role` is a promise its sender keeps**: an agent with a shell can read the run file
   and leave it off; an `agent`-role API token is the guarantee (agent-surface L4, decision 6).
-- **A folder's confinement is checked, then opened**: another process writing in the folder
-  between the two can swap a link, and `for_writing` makes a name's folders before it checks where
-  they lead.
+- **A folder's confinement off Linux is checked by names**: on macOS and Windows another process
+  writing in the folder can swap a link between the check and the open (on Linux, without
+  `/proc`, too). On Linux no link in a folder is followed, even one to inside it.
 - **Secrets in memory are in the clear** (`Resolved`, wiped when dropped), as is any process's.
 - **Plain HTTP** to the server and data plane unless an ingress ends TLS in front.
 
@@ -271,13 +275,15 @@ What is not defended, or only partly:
   (and `0o600`), `a_missing_or_wrong_key_refuses_instead_of_starting_empty`,
   `a_sealed_value_opens_only_where_it_was_sealed` (another slug, name, version or key fails).
 - **Reach**: `a_name_stays_inside_its_folder`, `a_link_out_of_the_folder_is_never_followed`,
+  `a_write_through_a_link_makes_nothing_outside_and_links_arent_followed`,
+  `a_folder_swapped_for_a_link_after_the_check_leads_nowhere` (a write and a read checked, the
+  folder on their way then swapped for a link out: each lands, or reads, where it was checked),
   `no_folder_is_or_holds_what_the_server_keeps_beside_its_files`.
 - **The record**: `a_flow_log_is_a_chain_and_a_changed_run_shows_as_a_break`,
   `exported_runs_verify_and_a_rewritten_log_doesnt`, `a_batch_goes_only_after_its_hook_has_run`,
   `a_witness_is_reached_over_https_or_on_this_machine`.
 
-Gaps: no data-plane request under a foreign `Host` is sent; no link is swapped between a folder's
-check and its open.
+Gaps: no data-plane request under a foreign `Host` is sent.
 
 ## 6. History
 
