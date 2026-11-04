@@ -28,9 +28,15 @@ its hash as it is read (`Store::get`, [holon-host](../components/holon-host.md))
   it is the first admin. `MAX_FAILURES` (5) wrong codes in a row refuse setting up for
   `LOCKED_FOR` (a minute; `setup_tries`), so the code (about 40 bits) can't be guessed at speed.
 - **Passwords**: at least `MIN_PASSWORD` (10) characters, kept as argon2id hashes. `MAX_FAILURES`
-  (5) wrong in a row lock the name for `LOCKED_FOR` (a minute); sign-ins in flight count toward it,
-  so sending them at once doesn't buy more tries. A name with no account is checked against
-  `stand_in_hash`, so a refusal takes as long either way.
+  (5) wrong in a row lock the name, for the address they came from (`sign_in_from`: the name and
+  the client's address), for `LOCKED_FOR` (a minute); sign-ins in flight count toward it, so
+  sending them at once doesn't buy more tries. Tries older than a minute are forgotten once more
+  than `TRIES_KEPT` (4,096) are kept (`forget_old_tries`). A name with no account is checked
+  against `stand_in_hash`, so a refusal takes as long either way. No more than `CHECKS_AT_ONCE`
+  (4) passwords are hashed or checked at once, on as many threads kept for it (`checking`,
+  `on_a_checker`); one more waits up to `CHECK_WAIT` (2 s), then is answered busy (503).
+- **Requests at once**: the control plane admits `MAX_IN_FLIGHT` (512) being answered at once
+  (`Admitted`); one more is answered 503 with `Retry-After: 1`, before any work.
 - **Tokens** are a prefix and 32 random bytes: sessions `hs_` (`SESSION_SECONDS`, 7 days), invite
   and reset links `hi_` (`INVITE_SECONDS`, 7 days, once), API tokens `ht_` (made by an admin with a
   role, shown once), and the local token `hl_`. Only their BLAKE3 hashes are kept (`hash_of`),
@@ -240,9 +246,11 @@ What is not defended, or only partly:
   reachable by any local program; a web page reaches it only by an address (a cross-origin
   request, which `browsers` decides whose pages may read), never under a name of its own (§2.2).
   A proxy that forwards the name it was reached by needs that name given (`--allow-host`).
-- **The control plane is not hardened against load**: a thread per request (rouille's default),
-  and sign-in throttled per name only (so a known name can be locked out a minute at a time;
-  likewise anyone can hold setting up off a minute at a time with wrong codes).
+- **The control plane's limits under load**: each request still has a thread of its own (rouille's
+  default), and a stream's answer, once its handler returns, isn't among the `MAX_IN_FLIGHT`; a
+  sign-in's lock is per address, so many addresses each get their tries (5 a minute a name each),
+  and behind a proxy it is the name's for everyone; anyone can hold setting up off a minute at a
+  time with wrong codes.
 - **Approval is one editor's**: any editor or admin may acknowledge anything the policy allows.
 - **`X-Holon-Role` is a promise its sender keeps**: an agent with a shell can read the run file
   and leave it off; an `agent`-role API token is the guarantee (agent-surface L4, decision 6).
@@ -266,6 +274,9 @@ What is not defended, or only partly:
   `wrong_passwords_sent_at_once_lock_a_name_as_soon`, `an_unknown_name_is_checked_like_a_wrong_password`,
   `an_admin_is_always_left`, `kept_as_hashes_and_read_back` (no token or password in the file),
   `wrong_setup_codes_lock_setting_up_for_a_while`,
+  `wrong_passwords_lock_a_name_for_their_address_only_and_old_tries_are_forgotten`,
+  `passwords_are_checked_a_few_at_once_and_the_rest_wait_or_are_told_busy`,
+  `the_control_plane_admits_so_many_requests_at_once`,
   `a_token_for_another_client_issuer_expired_or_forged_is_refused`,
   `a_token_the_provider_signed_for_this_client_says_who` and
   `signed_in_through_a_provider_is_matched_by_email` (an email not said to be verified signs no

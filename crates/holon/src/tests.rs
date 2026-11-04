@@ -9345,3 +9345,15 @@ fn a_flows_port_answers_only_an_address_localhost_or_a_name_it_was_given() {
     assert!(refused.starts_with("HTTP/1.1 421"), "{refused}");
     assert_eq!(route(&state, &req("POST", "/deployments/todo/stop", vec![])).status_code, 200);
 }
+
+/// Past `MAX_IN_FLIGHT` requests being answered at once, the control plane admits no more until
+/// one ends.
+#[test]
+fn the_control_plane_admits_so_many_requests_at_once() {
+    let in_flight = std::sync::atomic::AtomicUsize::new(0);
+    let held: Vec<_> = (0..3).map(|_| crate::Admitted::take(&in_flight, 3).expect("room")).collect();
+    assert!(crate::Admitted::take(&in_flight, 3).is_none(), "a fourth isn't admitted");
+    drop(held);
+    assert_eq!(in_flight.load(std::sync::atomic::Ordering::Acquire), 0);
+    assert!(crate::Admitted::take(&in_flight, 3).is_some(), "admitted again once they end");
+}

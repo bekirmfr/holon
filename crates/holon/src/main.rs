@@ -1058,6 +1058,11 @@ fn serve(args: Vec<String>) {
         let cell = Arc::clone(&state_cell);
         rouille::Server::new(&addr, move |request| {
             let state = cell.get().expect("the server runs once its state is set");
+            // Each request has a thread of its own (rouille's): past MAX_IN_FLIGHT being answered
+            // at once, one more is told to try again rather than given work, signed in or not.
+            let Some(_admitted) = Admitted::take(&IN_FLIGHT, MAX_IN_FLIGHT) else {
+                return with_cors(&state.access, request, rouille::Response::json(&serde_json::json!({ "error": "the server is answering too many requests at once: try again in a moment" })).with_status_code(503).with_additional_header("Retry-After", "1"));
+            };
             with_cors(&state.access, request, route(state, request))
         })
     }
@@ -1258,5 +1263,29 @@ fn open_to_others(dir: &std::path::Path) -> Option<String> {
     {
         let _ = dir;
         None
+    }
+}
+
+/// The control plane's requests being answered now, and how many may be at once: a request past
+/// it is answered 503 at once (`Admitted::take`), so a flood takes threads that end at once, not
+/// work (a run, a sign-in's hash). A stream's answer, once its handler has returned, isn't
+/// counted.
+static IN_FLIGHT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+const MAX_IN_FLIGHT: usize = 512;
+
+/// One request counted in `IN_FLIGHT` while it is answered.
+pub(crate) struct Admitted<'a>(&'a std::sync::atomic::AtomicUsize);
+
+impl<'a> Admitted<'a> {
+    /// Count one more in `in_flight`, unless `most` are there already.
+    pub(crate) fn take(in_flight: &'a std::sync::atomic::AtomicUsize, most: usize) -> Option<Admitted<'a>> {
+        use std::sync::atomic::Ordering;
+        in_flight.fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| (n < most).then_some(n + 1)).ok().map(|_| Admitted(in_flight))
+    }
+}
+
+impl Drop for Admitted<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
     }
 }

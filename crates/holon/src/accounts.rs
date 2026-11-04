@@ -121,6 +121,19 @@ struct Tries {
     wrong: u32,
     locked: Option<Instant>,
     checking: u32,
+    /// When it was last tried.
+    last: Option<Instant>,
+}
+
+/// How many names' tries are kept before the old ones are forgotten.
+const TRIES_KEPT: usize = 4096;
+
+/// Forget the tries no longer locking, checking or recent (a minute), once there are more than
+/// `TRIES_KEPT`: sign-ins under ever new names can't grow the map for good.
+fn forget_old_tries(failures: &mut HashMap<(String, String), Tries>) {
+    if failures.len() > TRIES_KEPT {
+        failures.retain(|_, t| t.checking > 0 || t.locked.is_some_and(|at| at.elapsed() < LOCKED_FOR) || t.last.is_some_and(|at| at.elapsed() < LOCKED_FOR));
+    }
 }
 
 pub(crate) struct Accounts {
@@ -128,7 +141,8 @@ pub(crate) struct Accounts {
     book: Mutex<Book>,
     /// The one-time code that creates the first admin, while there is none.
     setup_code: Mutex<Option<String>>,
-    failures: Mutex<HashMap<String, Tries>>,
+    /// Each name's sign-ins from each address (`sign_in_from`).
+    failures: Mutex<HashMap<(String, String), Tries>>,
     /// Wrong setup codes: as a name's wrong passwords, `MAX_FAILURES` then locked for
     /// `LOCKED_FOR`, so the code (about 40 bits) can't be guessed at speed while the server waits
     /// for its first admin.
@@ -171,22 +185,123 @@ fn check_password(password: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn hash_password(password: &str) -> Result<String, String> {
+/// How many passwords are hashed or checked at once, at most: each takes argon2's memory (19 MiB
+/// by default) and a core for tens of milliseconds, so sign-ins sent by the thousand at once
+/// would take the machine's memory. The rest wait their turn, up to `CHECK_WAIT`, then are told
+/// the server is busy.
+const CHECKS_AT_ONCE: usize = 4;
+const CHECK_WAIT: Duration = Duration::from_secs(2);
+
+/// Slots for work done a few at once: how many are taken, and how long one waits for a free one.
+struct Slots {
+    taken: Mutex<usize>,
+    freed: std::sync::Condvar,
+    most: usize,
+    wait: Duration,
+}
+
+impl Slots {
+    const fn new(most: usize, wait: Duration) -> Slots {
+        Slots { taken: Mutex::new(0), freed: std::sync::Condvar::new(), most, wait }
+    }
+
+    /// Run `f` once a slot is free, or say the server is busy past `wait`.
+    fn run<T>(&self, f: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+        struct Slot<'a>(&'a Slots);
+        impl Drop for Slot<'_> {
+            fn drop(&mut self) {
+                *self.0.taken.lock().unwrap() -= 1;
+                self.0.freed.notify_one();
+            }
+        }
+        let deadline = Instant::now() + self.wait;
+        let mut taken = self.taken.lock().unwrap();
+        while *taken >= self.most {
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return Err(BUSY.into());
+            }
+            taken = self.freed.wait_timeout(taken, left).unwrap().0;
+        }
+        *taken += 1;
+        drop(taken);
+        let _slot = Slot(self);
+        f()
+    }
+}
+
+/// Run `f` (a password hashed or checked) once one of `CHECKS_AT_ONCE` slots is free, on one of
+/// as many threads kept for it (`on_a_checker`).
+fn checking<T: Send + 'static>(f: impl FnOnce() -> Result<T, String> + Send + 'static) -> Result<T, String> {
+    static CHECKS: Slots = Slots::new(CHECKS_AT_ONCE, CHECK_WAIT);
+    CHECKS.run(|| on_a_checker(f))
+}
+
+/// A job for a checker thread.
+type Check = Box<dyn FnOnce() + Send>;
+
+/// Run `f` on one of `CHECKS_AT_ONCE` threads kept for checking passwords, and wait for it. Each
+/// check takes argon2's 19 MiB, and the allocator keeps what a thread freed for that thread
+/// (glibc's arenas): run on each request's own thread, a flood of sign-ins left the server
+/// holding about 900 MB after (measured, 200 at once on 4 cores); on threads of its own, only
+/// theirs hold it. A slot is had first (`checking`), so a checker is always free.
+fn on_a_checker<T: Send + 'static>(f: impl FnOnce() -> Result<T, String> + Send + 'static) -> Result<T, String> {
+    static QUEUE: OnceLock<Mutex<std::sync::mpsc::Sender<Check>>> = OnceLock::new();
+    let queue = QUEUE.get_or_init(|| {
+        let (send, receive) = std::sync::mpsc::channel::<Check>();
+        let receive = std::sync::Arc::new(Mutex::new(receive));
+        for i in 0..CHECKS_AT_ONCE {
+            let receive = std::sync::Arc::clone(&receive);
+            let spawned = std::thread::Builder::new().name(format!("holon-password-{i}")).spawn(move || {
+                loop {
+                    let job = receive.lock().unwrap().recv();
+                    match job {
+                        Ok(job) => job(),
+                        Err(_) => return,
+                    }
+                }
+            });
+            if let Err(e) = spawned {
+                eprintln!("holon: a password checker couldn't start: {e}");
+            }
+        }
+        Mutex::new(send)
+    });
+    let (done, result) = std::sync::mpsc::channel();
+    queue.lock().unwrap().send(Box::new(move || {
+        let _ = done.send(f());
+    })).map_err(|_| "the server's password checkers stopped".to_string())?;
+    result.recv().map_err(|_| "a password check didn't finish".to_string())?
+}
+
+/// Why a password wasn't checked: every slot was taken (`checking`).
+const BUSY: &str = "the server is busy checking other sign-ins: try again in a moment";
+
+/// `password` hashed, unhurried: what `hash_password` does in a slot, and the stand-in is made
+/// with (once, never refused).
+fn hash_raw(password: &str) -> Result<String, String> {
     let mut salt = [0u8; 16];
     getrandom::fill(&mut salt).map_err(|e| e.to_string())?;
     let salt = SaltString::encode_b64(&salt).map_err(|e| e.to_string())?;
     Argon2::default().hash_password(password.as_bytes(), &salt).map(|h| h.to_string()).map_err(|e| e.to_string())
 }
 
-fn password_matches(password: &str, hash: &str) -> bool {
-    PasswordHash::new(hash).is_ok_and(|h| Argon2::default().verify_password(password.as_bytes(), &h).is_ok())
+fn hash_password(password: &str) -> Result<String, String> {
+    let password = zeroize::Zeroizing::new(password.to_string());
+    checking(move || hash_raw(&password))
+}
+
+/// Whether `password` is the one `hash` was made from; an error when no slot came free in time.
+fn password_matches(password: &str, hash: &str) -> Result<bool, String> {
+    let (password, hash) = (zeroize::Zeroizing::new(password.to_string()), hash.to_string());
+    checking(move || Ok(PasswordHash::new(&hash).is_ok_and(|h| Argon2::default().verify_password(password.as_bytes(), &h).is_ok())))
 }
 
 /// A hash no password is checked against to sign in, made as an account's is: checking against
 /// it takes as long as checking against theirs.
 fn stand_in_hash() -> &'static str {
     static HASH: OnceLock<String> = OnceLock::new();
-    HASH.get_or_init(|| hash_password("no account has this password").unwrap_or_default())
+    HASH.get_or_init(|| hash_raw("no account has this password").unwrap_or_default())
 }
 
 /// A setup code a person can type: 8 letters and digits that can't be misread, as `XXXX-XXXX`.
@@ -292,12 +407,24 @@ impl Accounts {
         Ok(out)
     }
 
-    /// Sign `name` in with `password`: a session token, or why not (never saying which was wrong).
+    /// Sign `name` in with `password`, from nowhere in particular: a test's.
+    #[cfg(test)]
     pub(crate) fn sign_in(&self, name: &str, password: &str) -> Result<(String, Account), String> {
+        self.sign_in_from(name, password, "")
+    }
+
+    /// Sign `name` in with `password`, sent from `from` (the client's address): a session token,
+    /// or why not (never saying which was wrong). Wrong passwords lock the name for that address
+    /// only, so someone elsewhere who knows the name can't keep its owner out; behind a proxy every
+    /// address is the proxy's, and the lock is the name's, as it was.
+    pub(crate) fn sign_in_from(&self, name: &str, password: &str, from: &str) -> Result<(String, Account), String> {
         let refused = || "that name and password don't match an account here".to_string();
+        let key = (name.to_string(), from.to_string());
         {
             let mut failures = self.failures.lock().unwrap();
-            let tries = failures.entry(name.to_string()).or_default();
+            forget_old_tries(&mut failures);
+            let tries = failures.entry(key.clone()).or_default();
+            tries.last = Some(Instant::now());
             if tries.locked.is_some_and(|at| at.elapsed() < LOCKED_FOR) {
                 return Err("too many wrong passwords: wait a minute, then try again".into());
             }
@@ -313,10 +440,12 @@ impl Accounts {
         // A name with no account (or no password yet, or disabled) is refused as slowly as a wrong
         // password, so how long a refusal takes doesn't say which names are accounts.
         let matches = password_matches(password, hash.unwrap_or(stand_in_hash()));
-        let ok = hash.is_some() && matches;
         let mut failures = self.failures.lock().unwrap();
-        let tries = failures.entry(name.to_string()).or_default();
+        let tries = failures.entry(key.clone()).or_default();
         tries.checking -= 1;
+        // Not checked (the server was busy): not a wrong password either.
+        let matches = matches?;
+        let ok = hash.is_some() && matches;
         if !ok {
             tries.wrong += 1;
             if tries.wrong >= MAX_FAILURES {
@@ -325,7 +454,7 @@ impl Accounts {
             return Err(refused());
         }
         if tries.checking == 0 {
-            failures.remove(name);
+            failures.remove(&key);
         } else {
             (tries.wrong, tries.locked) = (0, None);
         }
@@ -393,7 +522,7 @@ impl Accounts {
         let hash = hash_password(new)?;
         self.change(|book| {
             let account = book.users.iter_mut().find(|u| u.name == name).ok_or("no such account")?;
-            if !account.password.as_deref().is_some_and(|h| password_matches(current, h)) {
+            if !account.password.as_deref().map(|h| password_matches(current, h)).transpose()?.unwrap_or(false) {
                 return Err("that isn't the current password".to_string());
             }
             account.password = Some(hash);
@@ -629,6 +758,65 @@ mod tests {
         assert!(!a.needs_setup());
         assert_eq!(a.setup_code(), None);
         assert!(a.setup(&code, "eve", PW).is_err(), "only once");
+    }
+
+    /// Wrong passwords from one address lock the name for that address only: its owner signs in
+    /// from another. Tries under ever new names are forgotten once old.
+    #[test]
+    fn wrong_passwords_lock_a_name_for_their_address_only_and_old_tries_are_forgotten() {
+        let (a, _) = set_up();
+        for _ in 0..MAX_FAILURES {
+            assert!(a.sign_in_from("ada", "wrong password!", "203.0.113.9").is_err());
+        }
+        assert!(a.sign_in_from("ada", PW, "203.0.113.9").unwrap_err().contains("too many"), "locked for the address that tried");
+        assert!(a.sign_in_from("ada", PW, "198.51.100.4").is_ok(), "its owner, elsewhere, signs in");
+        let mut failures = a.failures.lock().unwrap();
+        let old = Instant::now() - LOCKED_FOR - Duration::from_secs(1);
+        for i in 0..=TRIES_KEPT {
+            failures.insert((format!("name-{i}"), "203.0.113.9".into()), Tries { wrong: 1, last: Some(old), ..Tries::default() });
+        }
+        failures.insert(("fresh".into(), "203.0.113.9".into()), Tries { wrong: 1, last: Some(Instant::now()), ..Tries::default() });
+        forget_old_tries(&mut failures);
+        assert!(failures.contains_key(&("fresh".to_string(), "203.0.113.9".to_string())), "a recent try is kept");
+        assert!(failures.contains_key(&("ada".to_string(), "203.0.113.9".to_string())), "and a lock");
+        assert!(failures.len() < 10, "the old ones forgotten: {}", failures.len());
+    }
+
+    /// No more than `CHECKS_AT_ONCE` passwords are checked at once; one more waits its turn, and
+    /// past `CHECK_WAIT` is told the server is busy, not that it is wrong.
+    #[test]
+    fn passwords_are_checked_a_few_at_once_and_the_rest_wait_or_are_told_busy() {
+        // Slots of its own, so other tests' passwords aren't held up.
+        let slots = std::sync::Arc::new(Slots::new(2, Duration::from_millis(300)));
+        let (release, wait) = std::sync::mpsc::channel::<()>();
+        let wait = std::sync::Arc::new(Mutex::new(wait));
+        let held: Vec<_> = (0..2)
+            .map(|_| {
+                let (slots, wait) = (std::sync::Arc::clone(&slots), std::sync::Arc::clone(&wait));
+                std::thread::spawn(move || slots.run(|| Ok(wait.lock().unwrap().recv_timeout(Duration::from_secs(10)).ok())))
+            })
+            .collect();
+        while *slots.taken.lock().unwrap() < 2 {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let started = Instant::now();
+        assert_eq!(slots.run(|| Ok(())).unwrap_err(), BUSY);
+        assert!(started.elapsed() >= Duration::from_millis(250), "it waited its turn first");
+        // A slot freed while one waits: it goes on.
+        let waiter = {
+            let slots = std::sync::Arc::clone(&slots);
+            std::thread::spawn(move || slots.run(|| Ok(7)))
+        };
+        std::thread::sleep(Duration::from_millis(50));
+        release.send(()).unwrap();
+        assert_eq!(waiter.join().unwrap(), Ok(7), "given the slot freed");
+        release.send(()).unwrap();
+        for h in held {
+            h.join().unwrap().unwrap();
+        }
+        assert_eq!(*slots.taken.lock().unwrap(), 0);
+        // The server's own: CHECKS_AT_ONCE of them.
+        assert_eq!((CHECKS_AT_ONCE, CHECK_WAIT), (4, Duration::from_secs(2)));
     }
 
     /// Wrong setup codes lock setting up for a while, as wrong passwords lock a name: the code
