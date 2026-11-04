@@ -188,9 +188,12 @@ fn check_password(password: &str) -> Result<(), String> {
 /// How many passwords are hashed or checked at once, at most: each takes argon2's memory (19 MiB
 /// by default) and a core for tens of milliseconds, so sign-ins sent by the thousand at once
 /// would take the machine's memory. The rest wait their turn, up to `CHECK_WAIT`, then are told
-/// the server is busy.
+/// the server is busy. The wait is long: the cap is what bounds the memory, and a sign-in that
+/// waits its turn is better than one turned away on a busy machine (two seconds turned away
+/// sign-ins on a loaded two-core CI runner, where a check in a debug build takes longer).
+/// What waits is bounded by the requests admitted at once (main.rs, `MAX_IN_FLIGHT`).
 const CHECKS_AT_ONCE: usize = 4;
-const CHECK_WAIT: Duration = Duration::from_secs(2);
+const CHECK_WAIT: Duration = Duration::from_secs(30);
 
 /// Slots for work done a few at once: how many are taken, and how long one waits for a free one.
 struct Slots {
@@ -816,7 +819,7 @@ mod tests {
         }
         assert_eq!(*slots.taken.lock().unwrap(), 0);
         // The server's own: CHECKS_AT_ONCE of them.
-        assert_eq!((CHECKS_AT_ONCE, CHECK_WAIT), (4, Duration::from_secs(2)));
+        assert_eq!((CHECKS_AT_ONCE, CHECK_WAIT), (4, Duration::from_secs(30)));
     }
 
     /// Wrong setup codes lock setting up for a while, as wrong passwords lock a name: the code
