@@ -183,6 +183,7 @@ mod folders;
 mod http;
 mod lifecycle;
 mod listeners;
+mod load;
 mod locks;
 mod local;
 mod lsp;
@@ -536,8 +537,10 @@ const USAGE: &str = "usage: holon <command>
   editor [file|slug] [--server …]    the editor in this terminal: flows, runs, approvals, and
                                      flows' text in tabs, checked as you type
   deployments [<slug>]               what is deployed; one's details and its waiting runs
-  run|pause|stop|remove <slug>       start (--fresh, --session N), hold, end or delete a deployment
+  run|pause|stop|remove <slug>       start (--fresh, --session N), hold, end or delete one
   call <slug> METHOD PATH            send a deployed flow a request (-H, --body)
+  load <slug> [--for SECONDS]        its routes under load, one after another: requests a second,
+                                     latency, and the runs the server recorded, synced, counted
   action <slug> <name>               run one of a deployment's actions (--input JSON)
   trigger <slug> | tick <slug> CLOCK run a flow with no route by hand, or fire a clock now
   state <slug>                       its live state (--collection NAME, --sessions)
@@ -558,47 +561,63 @@ const USAGE: &str = "usage: holon <command>
   database add|list|remove|tables    bind a name flows use to a database on this machine (admin)
   store sweep [--dry-run]            clear the stored states no kept run, version or state names
   host                               what the host holds: memory, its disks, what it keeps (admin)
-                                     (admin)
   mcp [--server PORT|URL]            tools for an agent (MCP, on stdin and stdout): check, deploy,
                                      call and explain flows; it never approves what they may do
-  mcp setup [HOST…|--all]            add holon mcp to an agent host's settings (mcp hosts: which)
+  mcp setup [HOST…|--all]            add holon mcp to an agent host's settings (hosts: which)
   lsp                                a language server for editors (LSP, on stdin and stdout):
                                      mistakes as you type, hover, formatting
   version                            this build's version
   update [--check] [--to VERSION]    install the newest release (or see if there is one)
   migrate [--yes] [--check]          move what an older release left elsewhere into ~/.holon
-  uninstall [--purge] [--yes]        remove holon (and with --purge, all of ~/.holon)";
+  uninstall [--purge] [--yes]        remove holon (and with --purge, all of ~/.holon)
+
+  Each command says more, with examples: holon <command> --help.";
 
 const SERVE_USAGE: &str = "usage: holon serve [options]
 
-  --at [IP:]PORT             where the server and editor listen (default 127.0.0.1:7420;
-                             a port alone means 127.0.0.1; or HOLON_SERVER_ADDR)
-  --data DIR                 keep everything below in DIR (or HOLON_DATA; default
-                             ~/.holon/data, or HOLON_HOME/data)
-  --data-host IP             where deployed flows' own servers listen (default 127.0.0.1)
-  --allow-host HOST          a host name it answers to besides localhost, on its own port and
-                             each flow's (repeatable): one a proxy in front forwards
-  --allow-origin ORIGIN      an editor origin it answers besides localhost's (repeatable)
-  --keep-runs N              runs each deployment's log keeps (default 500; or HOLON_KEEP_RUNS)
-  --flow-cache SIZE          memory kept for loaded flows, such as 64M or 1G; 0 keeps none
-                             (default 256M; or HOLON_FLOW_CACHE)
-  --value-cache SIZE         memory kept for values runs read from disk, such as 64M; 0 keeps
-                             none (default 64M; or HOLON_VALUE_CACHE)
-  --export-heads URL         send each run's head to a witness (or HOLON_EXPORT_HEADS; its
-                             token in HOLON_EXPORT_HEADS_TOKEN)
-  --secrets PATH             the secrets file
-  --folders PATH             the named folders an admin bound (holon folder --help)
-  --databases PATH           the databases an admin bound (holon database --help)
-  --secrets-key os|env:VAR|file:PATH
-                             where the secrets file's key is kept (default: the OS key store)
-  --new-secrets-key          print a fresh key for --secrets-key env:VAR, and exit
-  --dotenv FILE              a .env file HOLON_SECRET_* values are also read from
-  --editor DIR               serve the editor from DIR instead of the built-in one
-  --store PATH|:memory:      --deployments PATH|:memory:   --flows PATH
-  --accounts PATH            --policy PATH                 --host-key PATH
-                             where each of those is kept
+  Runs the server: the editor at its address, the API the other commands use, and each deployed
+  flow's own port. A new server prints a one-time setup code for its first admin (or takes
+  HOLON_SETUP_CODE). An option's environment variable, where it has one, is in brackets.
 
-A new server prints a one-time setup code for its first admin (or takes HOLON_SETUP_CODE).";
+  --at [IP:]PORT           where the server and editor listen (default 127.0.0.1:7420; a port
+                           alone means 127.0.0.1) [HOLON_SERVER_ADDR]
+  --data DIR               keep everything below in DIR (default ~/.holon/data, or
+                           HOLON_HOME/data) [HOLON_DATA]
+  --data-host IP           where deployed flows' own ports listen (default 127.0.0.1)
+  --allow-host HOST        a host name it answers to besides localhost, on its own port and each
+                           flow's (repeatable): one a proxy in front forwards
+  --allow-origin ORIGIN    an editor origin it answers besides localhost's (repeatable)
+  --keep-runs N            runs each deployment's log keeps (default 500) [HOLON_KEEP_RUNS]
+  --flow-cache SIZE        memory kept for loaded flows, such as 64M or 1G; 0 keeps none
+                           (default 256M) [HOLON_FLOW_CACHE]
+  --value-cache SIZE       memory kept for values runs read from disk, such as 64M; 0 keeps
+                           none (default 64M) [HOLON_VALUE_CACHE]
+  --export-heads URL       send each run's head to a witness [HOLON_EXPORT_HEADS; its token in
+                           HOLON_EXPORT_HEADS_TOKEN]
+  --secrets-key SOURCE     where the secrets file's key is kept: os, the OS key store (the
+                           default); env:VAR; or file:PATH
+  --new-secrets-key        print a fresh key for --secrets-key env:VAR, and exit
+  --dotenv FILE            a .env file HOLON_SECRET_* values are also read from
+  --editor DIR             serve the editor from DIR instead of the built-in one
+
+  Where each part is kept, if not in the data folder:
+  --store PATH|:memory:    the content store: units, values, packs (:memory: keeps it only
+                           while the server runs)
+  --deployments PATH|:memory:
+                           the deployments file (:memory: too)
+  --flows PATH             the saved flows
+  --secrets PATH           the secrets file
+  --folders PATH           the folders an admin bound (holon folder --help)
+  --databases PATH         the databases an admin bound (holon database --help)
+  --accounts PATH          the accounts: who may sign in, and as what
+  --policy PATH            the host's policy file
+  --host-key PATH          the key the tokens it hands out are signed with
+
+examples:
+  holon serve
+  holon serve --at 0.0.0.0:7420 --allow-host holon.example.com
+  holon serve --data /srv/holon --keep-runs 5000 --flow-cache 1G
+  holon serve --secrets-key env:HOLON_SECRETS_KEY --dotenv .env";
 
 /// Where `--at` (or HOLON_SERVER_ADDR) says to listen: `IP:PORT`, or a port alone on 127.0.0.1.
 fn parse_at(v: &str) -> Result<std::net::SocketAddr, String> {
@@ -644,6 +663,7 @@ fn main() {
         Some("deployments") => std::process::exit(opscmd::deployments(&rest)),
         Some(cmd @ ("run" | "pause" | "stop" | "remove")) => std::process::exit(opscmd::lifecycle(cmd, &rest)),
         Some("call") => std::process::exit(opscmd::call(&rest)),
+        Some("load") => std::process::exit(load::cli(&rest)),
         Some("action") => std::process::exit(opscmd::action(&rest)),
         Some("trigger") => std::process::exit(opscmd::trigger(&rest)),
         Some("tick") => std::process::exit(opscmd::tick(&rest)),

@@ -1425,30 +1425,52 @@ pub(crate) fn cli(args: &[String]) -> i32 {
     0
 }
 
-const FOLDER_USAGE: &str = "usage: holon folder add NAME PATH [--read-only] [--keep hash|30d] [--cap SIZE] [--shared] [--lock run] [--for SLUG]
+const FOLDER_USAGE: &str = "usage: holon folder add NAME PATH [--read-only] [--keep bytes|hash|30d] [--cap SIZE] [--shared]
+                                  [--lock run|commit] [--for SLUG]
        holon folder list
        holon folder remove NAME [--for SLUG]
        holon folder sweep
-       (each takes --server PORT|URL)
+       (each with [--server PORT|URL])
 
-  Binds a name a flow uses (folder inbox) to a real folder on the server's machine, for an admin.
-  A flow reads and writes files only in the folders it names, and only by name: never a path.
-  --for SLUG binds it for that deployment only: it sees that folder as NAME, whatever the
-  server's NAME is, and no other deployment sees it.
-  --read-only: flows may read it, not write it. --keep hash: the run log keeps a hash of what
-  each run read, not its text (holon verify --files then supplies the files); --keep 30d keeps
-  the text for 30 days (s, m, h or d), then only its hash. --cap 10M: a write that would take the
-  folder's files past 10 MiB in all doesn't land. --shared: other servers bind it too (a network
-  share): a run's commit also locks a file in it, .holon-tmp-commit.lock, so their runs never
-  write over each other's. --lock run: each run that touches it holds it from before it starts
-  until it commits, fails or waits, shared if it only reads it, alone if it may write it, so
-  every run that writes it goes one at a time, for its whole length, across every deployment
-  bound to it (and every server, with --shared: .holon-tmp-run.lock); one that waits past its
-  claim_wait is turned away (503). For files a program expects one writer for. Removing a
-  binding leaves the files where they are; deployments that use it stop until it is bound
-  again.
-  sweep removes now the texts runs read that no kept run refers to (the server does it every 10
-  minutes).";
+  Binds a name a flow uses (folder inbox) to a real folder on the server's machine. A flow
+  reads and writes files only in the folders it names, and only by name: never by a path.
+  Admins.
+
+  add NAME PATH            bind NAME to the folder at PATH
+    --read-only            flows may read it, not write it
+    --keep WHAT            what the run log keeps of each file a run reads: bytes, its text
+                           (the default); hash, only its hash (holon verify --files then
+                           supplies the files); or a time (30d, 12h; s, m, h or d), its text for
+                           that long, then only its hash
+    --cap SIZE             refuse a write that would take the folder's files past SIZE in all
+                           (64K, 10M, 2G)
+    --shared               other servers bind it too (a network share): a run's commit also
+                           locks .holon-tmp-commit.lock in it, so their runs never write over
+                           each other's
+    --lock WHEN            when a run holds it: commit, only while it commits (the default);
+                           or run, from before it starts until it commits, fails or waits,
+                           shared if it only reads, alone if it may write, across every
+                           deployment bound to it (and every server, with --shared). One that
+                           waits past its claim_wait is turned away (503). For files a program
+                           expects one writer for
+    --for SLUG             bind it for that deployment only: it sees the folder as NAME,
+                           whatever the server's NAME is, and no other deployment sees it
+  list                     the names bound, and where each is
+  remove NAME              unbind it (--for SLUG: that deployment's). The files stay where they
+                           are; deployments that use it stop until it is bound again
+  sweep                    remove now the texts runs read that no kept run refers to (the
+                           server does it on its own too: holon policy --sweep-every)
+  --server PORT|URL        which holon server to ask (see below)
+
+examples:
+  holon folder add inbox /srv/inbox
+  holon folder add reports /srv/reports --read-only --keep 30d
+  holon folder add drop /mnt/share/drop --shared --lock run --cap 2G
+  holon folder remove inbox
+
+  From the holon serve you run on this machine, signed in as you; with several running,
+  --server <port> picks one. A server elsewhere: --server <URL> (or HOLON_SERVER), signed in
+  with an API token in HOLON_TOKEN.";
 
 /// What a run's read of a file kept: its hash and size, and where its text is if not in the log.
 #[derive(Clone, Debug, PartialEq)]

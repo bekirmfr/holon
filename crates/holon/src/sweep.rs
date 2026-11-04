@@ -464,11 +464,22 @@ pub(crate) fn route(state: &AppState, request: &rouille::Request, by: &str) -> O
 
 const STORE_USAGE: &str = "usage: holon store sweep [--dry-run] [--server PORT|URL]
 
-  Removes from the server's content store the values nothing kept names, for an admin: the
-  states of runs its logs no longer keep (retention cut them), and what only they held. What a
-  kept run, a version, an event, a session, a waiting run or the live state names stays, and
-  everything that names in turn; so does anything put in the last hour. Code is never swept.
-  --dry-run: what it would remove, removing nothing.";
+  Removes from the server's content store the values nothing kept names: the states of runs its
+  logs no longer keep (retention cut them), and what only they held. What a kept run, a
+  version, an event, a session, a waiting run or the live state names stays, and everything
+  that names in turn; so does anything put in the last hour. Code is never swept. The server
+  sweeps on its own too (holon policy --sweep-every). Admins.
+
+  --dry-run                say what it would remove, removing nothing
+  --server PORT|URL        which holon server to ask (see below)
+
+examples:
+  holon store sweep --dry-run
+  holon store sweep
+
+  From the holon serve you run on this machine, signed in as you; with several running,
+  --server <port> picks one. A server elsewhere: --server <URL> (or HOLON_SERVER), signed in
+  with an API token in HOLON_TOKEN.";
 
 /// `holon store sweep [--dry-run]`: sweep the store of the server this user runs here (or
 /// `--server`).

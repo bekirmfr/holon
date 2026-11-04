@@ -6,18 +6,29 @@
 
 use crate::local::admin_call;
 
-const HISTORY_USAGE: &str = "usage: holon history <slug> [--last N] [--events] [--server PORT|URL]
-       holon history <slug> --cell NAME [--item KEY] [--last N] [--server PORT|URL]
+const HISTORY_USAGE: &str = "usage: holon history <slug> [--last N] [--events]
+       holon history <slug> --cell NAME [--item KEY] [--last N]
+       (each with [--server PORT|URL])
 
-  A deployment's timeline, oldest first: its runs, and what was done to it, by whom: deploys,
-  restores, grant changes, secrets (never their values), folders and databases bound for it,
-  pausing, stopping and running. --last N: the newest N runs (default 20), with the events among
-  them. --events: every event, kept for good, without the runs.
+  Prints a deployment's timeline, oldest first: its runs, and what was done to it, by whom:
+  deploys, restores, grant changes, secrets (never their values), folders and databases bound
+  for it, pausing, stopping and running.
 
-  --cell NAME: one cell's history (state.NAME), or a collection's: the runs that changed it,
-  oldest first, each with its value before and after (a collection's, the items it changed),
-  and a restore or a deploy between two runs that moved it. --item KEY: one item of the
-  collection NAME. --last N: its newest N changes (default 20).
+  --last N                 the newest N runs, with the events among them (default 20)
+  --events                 every event, kept for good, without the runs
+  --cell NAME              one value's history instead (state.NAME), or a collection's: the runs
+                           that changed it, each with its value before and after (a
+                           collection's, the items it changed), and a restore or deploy between
+                           two runs that moved it; --last N: its newest N changes
+  --item KEY               with --cell, one item of the collection NAME
+  --server PORT|URL        which holon server to ask (see below)
+
+examples:
+  holon history shop
+  holon history shop --last 100
+  holon history shop --events
+  holon history counter --cell hits
+  holon history notes-api --cell notes --item 7
 
   From the holon serve you run on this machine, signed in as you; with several running,
   --server <port> picks one. A server elsewhere: --server <URL> (or HOLON_SERVER), signed in

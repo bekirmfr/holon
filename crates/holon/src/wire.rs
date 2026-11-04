@@ -316,6 +316,16 @@ pub(crate) struct DeployResponseBody {
     pub(crate) version: u32,
 }
 
+/// One route of a server deployment, in its listing.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub(crate) struct RouteEntry {
+    pub(crate) method: String,
+    /// As declared, e.g. `/todos/:id`.
+    pub(crate) path: String,
+    /// `strict`, `lazy` or `unrecorded`.
+    pub(crate) log: String,
+}
+
 #[derive(Serialize)]
 pub(crate) struct DeploymentEntry {
     pub(crate) slug: String,
@@ -330,6 +340,11 @@ pub(crate) struct DeploymentEntry {
     pub(crate) has_state: bool,
     /// The port a server deployment answers on; `None` for any other deployment.
     pub(crate) port: Option<u16>,
+    /// A server's routes, as declared, each with how its runs are recorded as granted (an
+    /// unrecorded route its grant doesn't keep out of the log is strict): none for any other
+    /// deployment. What `holon load` asks.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) routes: Vec<RouteEntry>,
     pub(crate) status: Status,
     /// The current session's number, or the last one's when stopped.
     pub(crate) session: u32,

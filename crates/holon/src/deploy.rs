@@ -437,6 +437,16 @@ pub(crate) fn deployment_entry(slug: &str, dep: &Deployment) -> DeploymentEntry 
         interval_seconds: dep.interval_seconds,
         has_state: dep.state.is_some(),
         port: dep.server.as_ref().and_then(|s| s.port),
+        routes: dep
+            .server
+            .iter()
+            .flat_map(|s| &s.routes)
+            .map(|r| {
+                let label = format!("{} {}", r.method, r.path);
+                let log = dep.permit.log_level(Some(&label), r.log).word().to_string();
+                crate::wire::RouteEntry { method: r.method.clone(), path: r.path.clone(), log }
+            })
+            .collect(),
         status: dep.life.status,
         session: dep.life.sessions.last().map_or(0, |s| s.number),
         sessions: dep.life.sessions.len(),
@@ -853,7 +863,7 @@ pub(crate) fn handle_delete_deployment(
             persist_deployments(deployments_path, deployments);
             Response::json(&deployment_entry(slug, &dep))
         }
-        None => Response::empty_404(),
+        None => err(404, format!("no deployment {slug:?}")),
     }
 }
 
@@ -1186,7 +1196,9 @@ pub(crate) fn run_action(
 /// entry's line, and `breaks` the seqs of entries that don't follow the one before them: the log
 /// file was changed outside holon there (recorder.rs). `tallies` counts the runs of its unrecorded
 /// handlers, by label (`{runs, failed, total_ms, last_at_ms, last_failure}`): the log holds none of
-/// their runs, failed or not.
+/// their runs, failed or not. `syncs` is how many times its file was synced to disk since the
+/// server started (one sync covers every run written before it: group commit). `limit=0` asks for
+/// the counts alone, without looking at the runs it keeps.
 pub(crate) fn handle_get_log(deployments: &Mutex<BTreeMap<String, Deployment>>, slug: &str, request: &Request) -> Response {
     let after = request.get_param("after").and_then(|a| a.parse::<u64>().ok());
     let limit = request.get_param("limit").and_then(|l| l.parse::<usize>().ok()).unwrap_or(200);
@@ -1197,13 +1209,15 @@ pub(crate) fn handle_get_log(deployments: &Mutex<BTreeMap<String, Deployment>>, 
     };
     // Planned under one lock, so the entries, the head and the breaks agree; the older runs read
     // from its file with the lock released (R8).
-    let (wanted, next, head, breaks) = log.with(|log| (log.plan(after, limit), log.next_seq(), log.head().to_string(), log.breaks().to_vec()));
+    let (wanted, next, head, breaks) =
+        log.with(|log| ((limit > 0).then(|| log.plan(after, limit)), log.next_seq(), log.head().to_string(), log.breaks().to_vec()));
     Response::json(&serde_json::json!({
-        "entries": wanted.read(),
+        "entries": wanted.map(|w| w.read()).unwrap_or_default(),
         "next": next,
         "head": head,
         "breaks": breaks,
         "tallies": tallies,
+        "syncs": log.syncs(),
     }))
 }
 

@@ -11,51 +11,117 @@ use holon_author::agent::show;
 
 const DEPLOYMENTS_USAGE: &str = "usage: holon deployments [<slug>] [--json] [--server PORT|URL]
 
-  Every deployment: its status, how it starts (its port, its schedule), its runs and errors, and
-  the runs waiting for an approval or an event. With a slug, that one's details, its waiting runs
-  among them. --json: as the server answers.
+  Lists what is deployed: each deployment's status, how it starts (its port, its schedule), its
+  runs and errors, and the runs waiting for an approval or an event. With a slug, that one's
+  details, its waiting runs among them.
+
+  --json                   print what the server answers, as JSON
+  --server PORT|URL        which holon server to ask (see below)
+
+examples:
+  holon deployments
+  holon deployments shop
+  holon deployments --json
 ";
 
-const LIFECYCLE_USAGE: &str = "usage: holon run <slug> [--fresh | --session N] [--server PORT|URL]
-       holon pause <slug> [--server PORT|URL]
-       holon stop <slug> [--server PORT|URL]
-       holon remove <slug> --yes [--server PORT|URL]
+const LIFECYCLE_USAGE: &str = "usage: holon run <slug> [--fresh | --session N]
+       holon pause <slug>
+       holon stop <slug>
+       holon remove <slug> --yes
+       (each with [--server PORT|URL])
 
-  run: start it again, from its latest state (--fresh: from none; --session N: from the state
-  session N left). pause: hold its runs, its state kept. stop: end it; it runs again with run.
-  remove: delete a stopped deployment, and forget its secrets (--yes, to say so).
+  Starts, holds, ends or deletes a deployment, as the editor's buttons do.
+
+  run                      start it again, from the state it last had
+    --fresh                from no state at all
+    --session N            from the state session N left (holon state <slug> --sessions)
+  pause                    hold its runs; its state is kept
+  stop                     end it; run starts it again
+  remove                   delete a stopped deployment for good: its runs' log, its timeline,
+                           its state and its secrets (holon export keeps its runs first).
+                           --yes says you mean it
+
+examples:
+  holon pause shop
+  holon run shop
+  holon run shop --session 2
+  holon stop shop && holon remove shop --yes
 ";
 
-const CALL_USAGE: &str = "usage: holon call <slug> METHOD PATH [-H 'Name: value']… [--body TEXT|-] [--body-file FILE]
-                 [--json] [--server PORT|URL]
+const CALL_USAGE: &str = "usage: holon call <slug> METHOD PATH [options]
 
-  Send a request to a deployed server flow, as the editor's request panel does, and print its
-  answer's body. -H: a header (repeatable). --body -: the body piped in. --json: the status,
-  headers and body as JSON. Exits 1 when it answers 400 or more.
+  Sends a deployed flow one request, as the editor's request panel does, and prints the body of
+  its answer, with its status on stderr. Exits 1 when the status is 400 or more.
+
+  -H \"Name: value\"         a header to send (repeatable; also --header)
+  --body TEXT              the body to send; - reads it from stdin
+  --body-file FILE         the body to send, read from FILE
+  --json                   print the status, headers and body as JSON
+  --server PORT|URL        which holon server to ask (see below)
+
+  In Git Bash on Windows, set MSYS_NO_PATHCONV=1, or the shell turns /orders into a path.
+
+examples:
+  holon call hello-api GET /hello/Ada
+  holon call notes-api PUT /notes/7 --body '{\"text\":\"hi\"}'
+  holon call notes-api GET /notes -H \"Accept: application/json\" --json
+  echo '{\"op\":\"add\",\"a\":1,\"b\":2}' | holon call calc POST /calc --body -
 ";
 
-const ACTION_USAGE: &str = "usage: holon action <slug> <name> [--input JSON|-] [--input-file FILE] [--server PORT|URL]
+const ACTION_USAGE: &str = "usage: holon action <slug> <name> [options]
 
-  Run one of a deployment's actions, as the editor's ▶ does, and print its answer. --input: its
-  input, a JSON value (- to pipe it in). A run that waits for an approval or an event says so.
+  Runs one of a deployment's actions (action charge (input) { … }), as the editor's ▶ does,
+  and prints what it answered and the run's number. A run that waits for an approval or an
+  event says so. Exits 1 when the action answers 400 or more.
+
+  --input JSON             its input ({} without one); - reads it from stdin
+  --input-file FILE        its input, read from FILE
+  --server PORT|URL        which holon server to ask (see below)
+
+examples:
+  holon action status-board report
+  holon action billing charge --input '{\"id\":\"c1\",\"amount\":30}'
+  holon action billing refund --input-file refund.json
 ";
 
-const TRIGGER_USAGE: &str = "usage: holon trigger <slug> [--body TEXT|-] [--body-file FILE] [--server PORT|URL]
-       holon tick <slug> <clock> [--server PORT|URL]
+const TRIGGER_USAGE: &str = "usage: holon trigger <slug> [--body TEXT | --body-file FILE]
+       holon tick <slug> <clock>
+       (each with [--server PORT|URL])
 
-  trigger: run a flow that has no route of its own once, with that body (- to pipe it in): what
-  it produced and what it did. tick: fire one of a server flow's clocks now, by its label
-  (\"every 2s\", as holon deployments shows its triggers).
+  trigger runs a flow that has no route of its own, once, and prints what it produced and what
+  it did. tick fires one of a server flow's clocks now, by its label as holon deployments shows
+  it (\"every 2s\").
+
+  --body TEXT              the body trigger runs it with (none without one); - reads stdin
+  --body-file FILE         that body, read from FILE
+  --server PORT|URL        which holon server to ask (see below)
+
+examples:
+  holon trigger heartbeat
+  holon tick ticker \"every 2s\"
 ";
 
-const STATE_USAGE: &str = "usage: holon state <slug> [--json] [--server PORT|URL]
+const STATE_USAGE: &str = "usage: holon state <slug> [--json]
        holon state <slug> --collection NAME [--key KEY | --prefix TEXT] [--limit N] [--all]
        holon state <slug> --sessions
+       (each with [--server PORT|URL])
 
-  A deployment's live state, a line per value, as the editor's state panel shows it.
-  --collection: one of its collections' items (50 at a time; --limit up to 1000, --all every
-  one). --sessions: each session it ran, from where, and the state it left. --json: as the
-  server answers.
+  Prints a deployment's live state, a line per value, as the editor's state panel shows it.
+
+  --collection NAME        one of its collections' items instead, 50 at a time
+  --key KEY                just that item
+  --prefix TEXT            just the items whose key starts with TEXT
+  --limit N                how many items at a time (default 50, at most 1000)
+  --all                    every item, however many
+  --sessions               each session it ran, where it started from, and the state it left
+  --json                   print what the server answers, as JSON
+  --server PORT|URL        which holon server to ask (see below)
+
+examples:
+  holon state counter
+  holon state notes-api --collection notes --prefix 7
+  holon state notes-api --collection notes --all --json
+  holon state counter --sessions
 ";
 
 fn usage(text: &str) -> String {
@@ -205,7 +271,7 @@ pub(crate) fn lifecycle(action: &str, args: &[String]) -> i32 {
         }
         "remove" => {
             if !args.flag("--yes") {
-                eprintln!("{who}: this deletes {slug:?} and forgets its secrets; its runs' log stays on disk. Run it again with --yes to go ahead.");
+                eprintln!("{who}: this deletes {slug:?} for good: its runs' log, its timeline, its state and its secrets (holon export {slug} keeps its runs first). Run it again with --yes to go ahead.");
                 return 2;
             }
             cmdline::json(&who, &args, "DELETE", &path, None)

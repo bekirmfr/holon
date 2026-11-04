@@ -14,17 +14,39 @@ const FLOWS_USAGE: &str = "usage: holon flows [list] [--json]
        holon flows remove <name>
        (each with [--server PORT|URL])
 
-  The flows saved on the server, as the editor's flows page has them: who saved each, when,
-  and whether it is deployed. show: one's text (--out: into a file). save: compile a file and
-  save it, not deployed, with its text as written, for someone to open in the editor (a flow
-  someone else saved under that name is kept, unless --replace). remove: delete a saved flow
-  (a deployment of it stays).
+  The flows saved on the server, as the editor's flows page has them.
+
+  list                     each saved flow: who saved it, when, and whether it is deployed
+                           (what holon flows does alone)
+  show <name>              print one's text
+    --out FILE             write it into FILE instead
+  save <file>              compile a file and save it, not deployed, with its text as written,
+                           for someone to open in the editor
+    --name NAME            save it under NAME instead of the flow's own name
+    --replace              replace a flow someone else saved under that name (kept otherwise)
+  remove <name>            delete a saved flow (a deployment of it stays)
+  --json                   print what the server answers, as JSON
+  --server PORT|URL        which holon server to ask (see below)
+
+examples:
+  holon flows
+  holon flows save shop.holon
+  holon flows show shop --out shop.holon
+  holon flows remove shop
 ";
 
 const ACTIVITY_USAGE: &str = "usage: holon activity [--last N] [--json] [--server PORT|URL]
 
-  What was done on the server, newest first, by whom: saves, deploys, runs, pauses, stops,
-  grants, deletes, bindings (the newest 50; --last up to 500).
+  Lists what was done on the server, newest first, and by whom: saves, deploys, runs, pauses,
+  stops, grants, deletes and bindings.
+
+  --last N                 how many (default 50, at most 500)
+  --json                   print what the server answers, as JSON
+  --server PORT|URL        which holon server to ask (see below)
+
+examples:
+  holon activity
+  holon activity --last 200 --json
 ";
 
 pub(crate) fn flows(args: &[String]) -> i32 {

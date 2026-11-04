@@ -530,27 +530,47 @@ fn keep_token_for(server: &str) -> Result<(), String> {
 
 pub(crate) const SETUP_USAGE: &str = "usage: holon mcp setup [HOST…|--all] [options]
 
-Add holon mcp to an agent host's settings: its entry in the host's own file, the rest of the file
-left as it was. With no host, the hosts holon knows and which are on this machine.
+  Adds holon mcp to an agent host's settings: its entry in the host's own file, the rest of the
+  file left as it was. With no host, lists the hosts holon knows and which are on this machine.
 
-  HOST…                  the hosts to set it up in (holon mcp hosts lists them)
-  --all                  every host found on this machine
-  --server PORT|URL      reach that server (a server elsewhere: holon asks for an API token
-                         with role agent, checks it, and keeps it; HOLON_TOKEN gives it)
-  --project DIR          the hosts' project files in DIR instead of yours (the entry runs
-                         `holon`, found on PATH, since the file is shared)
-  --name NAME            the entry's name (default holon), e.g. for a second server
-  --print                show the entry and where it goes; write nothing
-  --remove               take the entry out (with --server, and forget its token)
+  HOST…                    the hosts to set it up in (holon mcp hosts lists them)
+  --all                    every host found on this machine
+  --server PORT|URL        reach that server; for a server elsewhere, holon asks for an API
+                           token with role agent, checks it and keeps it (HOLON_TOKEN gives it)
+  --project DIR            write the hosts' project files in DIR instead of yours (the entry
+                           runs holon found on PATH, since the file is shared)
+  --name NAME              the entry's name (default holon), e.g. for a second server
+  --print                  show the entry and where it goes, writing nothing
+  --remove                 take the entry out (with --server, and forget its token)
   --config PATH --like HOST [--key KEY]
-                         a file holon doesn't know, written as HOST's is (holon mcp hosts
-                         add keeps one for next time)";
+                           a file holon doesn't know, written as HOST's is (holon mcp hosts
+                           add keeps one for next time)
 
-pub(crate) const HOSTS_USAGE: &str = "usage: holon mcp hosts [add NAME --config PATH --like HOST [--key KEY] [--title TITLE] | remove NAME]
+examples:
+  holon mcp setup
+  holon mcp setup claude-code cursor
+  holon mcp setup claude-code --server https://holon.example.com --name holon-prod
+  holon mcp setup vscode --project . --print
+  holon mcp setup claude-code --remove";
 
-The hosts holon mcp setup knows: where each keeps its settings on this machine, whether it is
-here, and the holon entry in it. `add` keeps a host of your own (in ~/.holon/mcp-hosts.toml),
-written as the host it is like; `--key` is where its servers are, dotted (mcp.servers).";
+pub(crate) const HOSTS_USAGE: &str = "usage: holon mcp hosts
+       holon mcp hosts add NAME --config PATH --like HOST [--key KEY] [--title TITLE]
+       holon mcp hosts remove NAME
+
+  Lists the hosts holon mcp setup knows: where each keeps its settings on this machine, whether
+  it is here, and the holon entry in it.
+
+  add NAME                 keep a host of your own (in ~/.holon/mcp-hosts.toml)
+    --config PATH          its settings file
+    --like HOST            written as that host's file is
+    --key KEY              where its servers are in the file, dotted (mcp.servers)
+    --title TITLE          its name as setup shows it
+  remove NAME              forget a host of your own
+
+examples:
+  holon mcp hosts
+  holon mcp hosts add my-ide --config ~/.my-ide/mcp.json --like cursor --title \"My IDE\"
+  holon mcp hosts remove my-ide";
 
 struct Options {
     hosts: Vec<String>,

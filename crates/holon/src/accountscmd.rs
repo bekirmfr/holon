@@ -15,11 +15,29 @@ const USER_USAGE: &str = "usage: holon user list
        holon user remove <name> --yes
        (each with [--json] [--server PORT|URL])
 
-  The server's people, as the admin page has them. invite: a new account, and the link its
-  person opens to choose a password (printed once: send it to them). set: change a role, sign
-  someone out for good (--disable) or back in (--enable), or their email (\"\" clears it).
-  reset: clear a password and end their sessions, with a new link. remove: delete an account.
-  Admins.
+  The server's people, as the admin page has them. Admins.
+
+  list                     every account: its role and email, since when and by whom, and whether
+                           it is disabled or still invited
+  invite <name>            a new account, and the link its person opens to choose a password,
+                           printed once: send it to them
+    --role ROLE            viewer (reads), editor (also saves, deploys, runs) or admin
+    --email ADDRESS        the email a provider signs them in by (holon oidc)
+  set <name>               change an account
+    --role ROLE            its role
+    --disable              sign them out for good, until --enable
+    --enable               let them sign in again
+    --email ADDRESS        their email (\"\" clears it)
+  reset <name>             clear their password and end their sessions, with a new link
+  remove <name>            delete the account; --yes says you mean it
+  --json                   print what the server answers, as JSON
+  --server PORT|URL        which holon server to ask (see below)
+
+examples:
+  holon user invite ada --role editor --email ada@example.com
+  holon user set ada --role admin
+  holon user set bob --disable
+  holon user remove bob --yes
 ";
 
 const TOKEN_USAGE: &str = "usage: holon token list
@@ -27,8 +45,20 @@ const TOKEN_USAGE: &str = "usage: holon token list
        holon token revoke <id>
        (each with [--json] [--server PORT|URL])
 
-  API tokens, for scripts and CI (HOLON_TOKEN), as the admin page has them. add prints the new
-  token once: keep it where the script reads it. revoke ends it at once. Admins.
+  API tokens, for scripts and CI (they sign in with HOLON_TOKEN), as the admin page has them.
+  Admins.
+
+  list                     every token: its id, label and role, when it was made and by whom
+  add <label>              a new token, printed once: keep it where the script reads it
+    --role ROLE            viewer, editor, admin, or agent (proposes, never approves)
+  revoke <id>              end a token at once
+  --json                   print what the server answers, as JSON
+  --server PORT|URL        which holon server to ask (see below)
+
+examples:
+  holon token add ci --role editor
+  holon token list
+  holon token revoke 3f9a1c0b7d2e
 ";
 
 const OIDC_USAGE: &str = "usage: holon oidc [show]
@@ -36,8 +66,19 @@ const OIDC_USAGE: &str = "usage: holon oidc [show]
        holon oidc off
        (each with [--server PORT|URL])
 
-  Signing in through a provider (OpenID Connect): its issuer and the client id this server is
-  registered with. A person signs in as the account whose email the provider confirms. Admins.
+  Signing in through a provider (OpenID Connect). A person signs in as the account whose email
+  the provider has verified. Admins.
+
+  show                     the issuer and client id it uses, if any (what holon oidc does alone)
+  set <issuer> <client-id> sign in through that issuer, with the client id this server is
+                           registered with there
+  off                      stop signing in through a provider; passwords still work
+  --server PORT|URL        which holon server to ask (see below)
+
+examples:
+  holon oidc set https://accounts.google.com 1234.apps.googleusercontent.com
+  holon oidc
+  holon oidc off
 ";
 
 const ROLES: [&str; 4] = ["viewer", "editor", "admin", "agent"];

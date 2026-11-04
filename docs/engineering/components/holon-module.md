@@ -104,9 +104,9 @@ It is used by the server (`crates/holon`: `deploy.rs`, `listeners.rs`, `schedule
 - **Only where a caller wraps its resolver.** `holon-host` doesn't depend on this crate: its
   firing paths run a module only when their caller hands them a `WithEngine`, as the server does.
   Any other resolver gives nothing for a module.
-- **Doc drift.** The crate header says `holon-host` uses it and that the editor's bundle carries an
-  engine only where it places a module; neither is so (the bundle always links it, through
-  holon-author). `build.sh` says CI rebuilds the js engine and compares it; no workflow does.
+- **The bundle always carries the engine.** The editor's wasm links it, and the js engine module
+  with it (`JS_ENGINE`, 3.2 MB), whether or not a flow places a module. No CI job rebuilds the js
+  engine; the committed `js-engine.wasm` is trusted as built (`build.sh` says so).
 
 ## 5. What the tests hold
 
