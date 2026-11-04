@@ -37,6 +37,12 @@ pub(crate) struct Count {
 impl Count {
     fn add(&mut self, m: &std::fs::Metadata) {
         self.files += 1;
+        self.add_bytes(m);
+    }
+
+    /// Its bytes and the disk it takes, as one file more of something counted already (a log's
+    /// sealed segment, beside its file).
+    fn add_bytes(&mut self, m: &std::fs::Metadata) {
         self.bytes += m.len();
         #[cfg(unix)]
         {
@@ -426,10 +432,18 @@ impl Sweeps {
             }
             (crate::permissions::WhenFull::Roll, Some(pct)) => {
                 let logs: Vec<(String, std::sync::Arc<crate::recorder::LogCell>)> = state.deployments.lock().unwrap().iter().map(|(s, d)| (s.clone(), std::sync::Arc::clone(&d.log))).collect();
-                // The biggest on disk, of those keeping more than the floor: what frees the most.
-                let size = |slug: &str| crate::recorder::file_for(&state.deployments_path, slug).and_then(|p| std::fs::metadata(p).ok()).map_or(0, |m| m.len());
-                let most = logs.iter().map(|(slug, log)| (slug, log, log.with(|l| l.holds().0))).filter(|(_, _, kept)| *kept > ROLL_FLOOR).max_by_key(|(slug, _, kept)| (size(slug), *kept));
-                if let Some((slug, log, kept)) = most {
+                // The biggest on disk, its file and its sealed segments, of those keeping more
+                // than the floor: what frees the most.
+                let file = |slug: &str| crate::recorder::file_for(&state.deployments_path, slug).and_then(|p| std::fs::metadata(p).ok()).map_or(0, |m| m.len());
+                let most = logs
+                    .iter()
+                    .map(|(slug, log)| {
+                        let (kept, sealed) = log.with(|l| (l.holds().0, l.sealed_holds().2));
+                        (slug, log, kept, file(slug) + sealed)
+                    })
+                    .filter(|(_, _, kept, _)| *kept > ROLL_FLOOR)
+                    .max_by_key(|(_, _, kept, disk)| (*disk, *kept));
+                if let Some((slug, log, kept, _)) = most {
                     let keep = (kept / 2).max(ROLL_FLOOR);
                     log.with(|l| {
                         let age = l.max_age_ms();
@@ -503,6 +517,10 @@ impl Sweeps {
                 "store" => store = count_dir(&dir, |n| n.len() == 64, now, &mut left),
                 "logs" | "state heads" | "data" => {
                     count_dir(&dir, |_| false, now, &mut left);
+                    // And beside each log, its sealed segments' folder.
+                    for sealed in std::fs::read_dir(&dir).into_iter().flatten().flatten().filter(|e| e.file_name().to_string_lossy().ends_with(".sealed")) {
+                        count_dir(&sealed.path(), |_| false, now, &mut left);
+                    }
                 }
                 _ => {}
             }
@@ -636,7 +654,8 @@ impl Sweeps {
         let mut left = Count::default();
         if state.deployments_path != ":memory:" {
             let dir = Path::new(&state.deployments_path).with_extension("logs");
-            // Counted now: one file a deployment. What crashes left is removed by the census only.
+            // Counted now: one file a deployment, and its sealed segments beside it (their bytes,
+            // not more logs). What crashes left is removed by the census only.
             logs = std::fs::read_dir(&dir).ok().map(|entries| {
                 let mut c = Count::default();
                 for e in entries.flatten() {
@@ -644,6 +663,15 @@ impl Sweeps {
                     match (name.to_str(), e.metadata()) {
                         (Some(n), Ok(m)) if m.is_file() && n.ends_with(".jsonl") => c.add(&m),
                         (Some(n), Ok(m)) if m.is_file() && is_aside(n) => left.add(&m),
+                        (Some(n), Ok(m)) if m.is_dir() && n.ends_with(".sealed") => {
+                            for f in std::fs::read_dir(e.path()).into_iter().flatten().flatten() {
+                                match (f.file_name().to_str(), f.metadata()) {
+                                    (Some(n), Ok(m)) if m.is_file() && n.ends_with(".jsonl.gz") => c.add_bytes(&m),
+                                    (Some(n), Ok(m)) if m.is_file() && is_aside(n) => left.add(&m),
+                                    _ => {}
+                                }
+                            }
+                        }
                         _ => {}
                     }
                 }

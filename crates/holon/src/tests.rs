@@ -1304,6 +1304,51 @@ fn a_full_disk_rolling_sweeps_what_only_the_cut_runs_named() {
     let _ = std::fs::remove_file(&path);
 }
 
+/// A log's size on disk is its file and its sealed segments: what roll picks the biggest by, and
+/// what the host's view counts its logs by.
+#[test]
+fn a_full_disk_rolls_the_log_biggest_with_its_sealed_runs() {
+    let mut state = claims_state("");
+    let path = std::path::PathBuf::from(unique_temp_path("roll-sealed-policy")).with_extension("toml");
+    std::fs::write(&path, "[grants]\nallow_plain_http = true\nallow_private_addresses = true\n").unwrap();
+    state.policy_path = path.display().to_string();
+    let disk = unique_temp_path("roll-sealed-disk");
+    std::fs::create_dir_all(&disk).unwrap();
+    state.deployments_path = std::path::Path::new(&disk).join("deployments.json").display().to_string();
+    let many = deploy_text_to(&state, "flow many\nport 8304\nstate n\n\naction bump (input) {\n  state.n = (state.n ?? 0) + 1\n}\n", &[]);
+    let wide = deploy_text_to(&state, "flow wide\nport 8305\nstate s\n\naction keep (input) {\n  state.s = input\n}\n", &[]);
+    // Two lines in each file as written, the rest sealed.
+    for slug in [&many, &wide] {
+        state.deployments.lock().unwrap()[slug].log.with(|l| l.set_hot(2));
+    }
+    for _ in 0..600 {
+        assert_eq!(route(&state, &req("POST", &format!("/trigger/{many}/bump"), b"{}".to_vec())).status_code, 200);
+    }
+    // Long lines that seal small: its file is the bigger, its segments the smaller.
+    for i in 0..30 {
+        let body = serde_json::json!({ "s": format!("{i}{}", "x".repeat(8_000)) });
+        assert_eq!(route(&state, &req("POST", &format!("/trigger/{wide}/keep"), serde_json::to_vec(&body).unwrap())).status_code, 200);
+    }
+    crate::recorder::sync_logs(&state.deployments).unwrap();
+    let logs = std::path::Path::new(&disk).join("deployments.logs");
+    let file = |slug: &str| std::fs::metadata(logs.join(format!("{slug}.jsonl"))).unwrap().len();
+    let sealed = |slug: &str| state.deployments.lock().unwrap()[slug].log.with(|l| l.sealed_holds().2);
+    assert!(file(&wide) > file(&many), "wide's file is the bigger: {} and {}", file(&wide), file(&many));
+    assert!(file(&many) + sealed(&many) > file(&wide) + sealed(&wide), "many holds the more: {} + {} and {} + {}", file(&many), sealed(&many), file(&wide), sealed(&wide));
+    // The host's view counts the logs with their segments.
+    let host = body_json(route(&state, &req("GET", "/admin/host", vec![])));
+    let jsonl = std::fs::read_dir(&logs).unwrap().flatten().filter(|e| e.file_name().to_string_lossy().ends_with(".jsonl")).count() as u64;
+    assert_eq!(host["kept"]["logs"]["files"].as_u64(), Some(jsonl), "segments are no more logs: {host}");
+    assert!(host["kept"]["logs"]["bytes"].as_u64().unwrap() >= file(&many) + sealed(&many) + file(&wide) + sealed(&wide), "{host}");
+    let set = |body: &str| route(&state, &req("POST", "/admin/storage", body.as_bytes().to_vec()));
+    assert_eq!(set(r#"{"warn_at":"1000T","full_at":"999T","when_full":"roll"}"#).status_code, 200);
+    state.sweeps.act(&state, 1);
+    let kept = |slug: &str| state.deployments.lock().unwrap()[slug].log.with(|l| l.holds().0);
+    assert_eq!((kept(&many), kept(&wide)), (250, 30), "the one holding the most on disk is cut");
+    let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_dir_all(&disk);
+}
+
 /// Past `full_at`, `when_full = "roll"` cuts the log keeping the most to half (never below 20),
 /// look after look, and keeps it as granted again once back under `warn_at`.
 #[test]

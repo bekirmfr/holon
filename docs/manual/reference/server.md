@@ -138,7 +138,7 @@ allow_plain_http = true
     unrecorded goes on), and resumed once every disk is back under `warn_at` (and under `full_at`:
     one written in another unit, `85%` and `500G` free, may be reached first); one a person resumes
     while the disk is still full is paused again, one a person paused stays paused. `roll`: every
-    ten seconds, the biggest log on disk is cut to half the runs it keeps (never below 20), its
+    ten seconds, the biggest log on disk (its file and its sealed segments) is cut to half the runs it keeps (never below 20), its
     file cut back at once, and the first cut sweeps the store after it; once back under
     both, each log keeps its runs as granted again (what was cut stays cut). Each is said on
     the deployment's timeline. Set with `holon policy --full-at --when-full`, or on the admin page.
