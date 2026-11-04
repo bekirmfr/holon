@@ -1226,8 +1226,8 @@ leaf (R1) would parse it. Setting several cookies isn't: a response's headers ar
 text values (`data.rs` 186), so `set-cookie` can't repeat. A header whose value is a list of
 texts becomes one header line each. A session is then covered by what exists: a cookie signed
 with `hmac_sha256` over a secret and checked with `secure_equals` (a one-way leaf, so `taint.rs`
-lets it out), or a random id keyed into a collection. Way: covered, once headers take lists (data plane, no item); a sample,
-`sign-in`.
+lets it out), or a random id keyed into a collection. Way: covered, once headers take lists
+(data plane, no item); a sample, `sign-in`.
 
 **A Content-Security-Policy.** A flow sets one today, as any header. Holon can't derive one: the
 manifest is the server's reach, and a page's reach is the browser's, which Holon neither sees nor
