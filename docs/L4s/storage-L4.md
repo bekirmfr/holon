@@ -182,7 +182,7 @@ downgrade is refused with a reason, not misread.
 7. **`backup` to object storage**; Holon Cloud named as coming.
 8. **Compressed archives** (with 6, if small enough to go with it). **Done** with 6: gzip (`flate2`), `holon verify` reading either. Measured live on the soaks' data: `hello-api` 10,669 runs, 51 MB as JSON → 3.9 MB (13×, 361 bytes a run); `notes-api` 10,049 runs, 618 MB → 20 MB (30×); `holon verify` of a batch: chain unbroken, 2,744 runs re-run, each as its entry says.
 9. **Logs in compressed segments.**
-10. **The store's old values in compressed packs.**
+10. **The store's old values in compressed packs.** **Done** (holon-host `packs.rs`): the server's own sweep moves the values it keeps that are older than it spares into a pack (deflated blocks of about 64 KiB, an index of 52 bytes a value at its end, written whole and renamed in, then the values' files removed, paced); a read looks for a value's own file, then the packs' index, in memory; a packed value nothing names any more is swept by rewriting its pack (under the store's lock, so no put comes between). Measured on a copy of the soaks' data folder: 140,026 files, 562 MB on disk, became one pack of 1.0 MiB (the 7,974 values kept, 2.2 MiB of bytes; the rest swept). The `notes` listing with no value cache (every read from disk) answered 636–672 requests a second from files of their own, 74–82 from the pack keeping 16 inflated blocks (a read inflated a block again at most reads), 811–825 keeping 8 MiB of them; with the default value cache, 2,201–2,355, as before.
 
 Each step lands measured (what the counting costs a request: nothing on the request path but
 counters), with its tests, its docs, and a sample where a flow shows it (a flow that fills its

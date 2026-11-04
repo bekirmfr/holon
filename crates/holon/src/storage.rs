@@ -149,6 +149,8 @@ pub(crate) struct Report {
     pub(crate) bytes: u64,
     /// Nothing was put since a sweep that spared nothing: it had nothing to look at.
     pub(crate) skipped: bool,
+    /// The store's: the named values older than it spares it moved into packs.
+    pub(crate) packed: u64,
     pub(crate) error: Option<String>,
 }
 
@@ -514,6 +516,10 @@ impl Sweeps {
                 self.note(&s, now_ms);
                 report.removed = s.values as u64;
                 report.bytes = s.bytes;
+                report.packed = s.packed as u64;
+                if s.packed > 0 {
+                    println!("holon: packed {} of the store's long-lived values ({})", s.packed, folders::size_text(s.packed_bytes));
+                }
                 if s.values > 0 {
                     let freed = format!("{} values, {} freed", s.values, folders::size_text(s.bytes));
                     println!("holon: swept the store: {freed}, in {:.1} s", began.elapsed().as_secs_f64());
@@ -616,7 +622,17 @@ impl Sweeps {
         }
         serde_json::json!({
             "at_ms": at,
-            "store": census.store.map(|(c, at_puts)| serde_json::json!({ "values": c.files, "bytes": c.bytes, "on_disk": c.on_disk, "put_since": puts.saturating_sub(at_puts) })),
+            "store": census.store.map(|(c, at_puts)| {
+                // Its values each their own file, and those packed (read now: the packs' index is in memory).
+                let packed = state.store.2.packs().map(|p| p.held()).unwrap_or_default();
+                serde_json::json!({
+                    "values": c.files + packed.values as u64,
+                    "bytes": c.bytes + packed.bytes,
+                    "on_disk": c.on_disk + packed.on_disk,
+                    "put_since": puts.saturating_sub(at_puts),
+                    "packed": { "values": packed.values, "packs": packed.packs, "bytes": packed.bytes, "on_disk": packed.on_disk },
+                })
+            }),
             "logs": logs,
             "file_texts": census.file_texts.map(|h| serde_json::json!({ "texts": h.texts, "chunks": h.chunks, "bytes": h.bytes })),
             "leftovers": { "removed": census.leftovers, "waiting": left },
@@ -818,6 +834,9 @@ pub(crate) fn host_lines(v: &serde_json::Value) -> Vec<String> {
     if k["store"].is_object() {
         let st = &k["store"];
         lines.push(format!("  store        {} values, {} on disk ({} of bytes); {} put since", n(&st["values"]), size(&st["on_disk"]), size(&st["bytes"]), n(&st["put_since"])));
+        if n(&st["packed"]["values"]) > 0 {
+            lines.push(format!("    packed       {} of them in {} packs, {} on disk", n(&st["packed"]["values"]), n(&st["packed"]["packs"]), size(&st["packed"]["on_disk"])));
+        }
     }
     if k["logs"].is_object() {
         lines.push(format!("  logs         {} logs, {} on disk", n(&k["logs"]["files"]), size(&k["logs"]["on_disk"])));

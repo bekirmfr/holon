@@ -37,6 +37,13 @@
   things on, how full it is for the server (a quota counts) and what it keeps there; the content
   store's values and the disk they take, the logs and the folders' kept texts (counted at start
   and after each round of sweeps); and the sweeps (`GET /admin/host`).
+- **The store packs its long-lived values.** Each value was a file of its own, a 358-byte one
+  taking a 4 KiB block, and a store writing state left thousands. The server's own sweep now
+  moves the values it keeps, once an hour old, into packs deflated together, removing their files:
+  a copy of the soaks' store went from 140,026 files and 562 MB on disk to one pack of 1 MiB.
+  Packed values read back faster than files did (no value cache: 811–825 requests a second
+  against 636–672), keeping up to 8 MiB of inflated blocks; what nothing names any more is swept
+  from the pack. `holon host` says what is packed.
 - **The runs a log lets go of can be backed up, compressed.** With `[storage] backup` set to a
   folder (an external drive, a cloud client's synced folder), the runs a log cuts back are
   written there first and made into gzipped exports `holon verify` checks (it reads `.json.gz`

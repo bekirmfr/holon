@@ -1013,7 +1013,9 @@ fn the_server_sweeps_its_store_on_its_own_and_not_again_for_nothing() {
     let later = now + 2 * sweep::SPARES_MS;
     let would = sweep::sweep(&state.store, &state.deployments, later, sweep::SPARES_MS, true, false).unwrap().unwrap();
     let swept = scheduled.sweep(&state.store, &state.deployments, later).unwrap().unwrap();
-    assert_eq!(swept, would);
+    // The same, but that the server's own sweep packs what it keeps, past the hour too.
+    assert_eq!(sweep::Swept { packed: 0, packed_bytes: 0, ..swept.clone() }, would);
+    assert_eq!(swept.packed, swept.kept, "{swept:?}");
     assert!(swept.values > 0 && swept.spared == 0, "{swept:?}");
     assert_eq!(scheduled.sweep(&state.store, &state.deployments, later).unwrap(), None, "nothing put since, nothing to find");
     bump();
@@ -1366,6 +1368,61 @@ fn the_runs_a_log_lets_go_of_are_backed_up_as_exports_verify_checks() {
     let _ = std::fs::remove_dir_all(&backup);
     let _ = std::fs::remove_file(&blocked);
     let _ = std::fs::remove_file(&path);
+}
+
+/// The server's own sweep packs the store's values that outlive it (named, older than it spares):
+/// their files go, a pack holds them, and every kept state and collection reads back as before.
+/// Values packed that nothing names later are swept from the pack.
+#[test]
+fn the_values_a_sweep_keeps_are_packed_and_read_back() {
+    let dir = unique_temp_path("pack-store");
+    let disk = FileStore::new(&dir).unwrap();
+    let values = disk.values_dir();
+    let state = test_state_with(SharedStore::on_disk(Box::new(disk), values.clone()));
+    let plan = holon_author::agent::plan("flow kept\nkeep 3 runs\nstate n\ncollection notes\n\naction bump (input) {\n  n = (state.n ?? 0) + 1\n  state.n = n\n  notes[\"k{n}\"] = n\n}\n").unwrap_or_else(|e| panic!("{e}"));
+    let requirements = plan.requirements.clone().unwrap();
+    for u in &plan.units {
+        assert_eq!(route(&state, &req("POST", "/unit", u.clone())).status_code, 200);
+    }
+    let preview = body_json(route(&state, &req("POST", "/deploy/preview", serde_json::to_vec(&serde_json::json!({ "slug": "kept", "unit": plan.unit, "requirements": requirements })).unwrap())));
+    let ask = serde_json::json!({ "acknowledge": preview["needs_approval"], "requirements": requirements });
+    assert_eq!(deploy_json(&state, "kept", parse_hash(&plan.unit).unwrap(), ask).status_code, 200);
+    let bump = || assert_eq!(route(&state, &req("POST", "/trigger/kept/bump", b"{}".to_vec())).status_code, 200);
+    for _ in 0..10 {
+        bump();
+    }
+    let loose = || std::fs::read_dir(&values).unwrap().flatten().filter(|e| e.file_name().len() == 64).count();
+    let before = loose();
+    let later = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as u64 + 2 * sweep::SPARES_MS;
+    let mut scheduled = sweep::Scheduled::default();
+    let swept = scheduled.sweep(&state.store, &state.deployments, later).unwrap().unwrap();
+    assert!(swept.values > 0 && swept.packed > 0, "{swept:?}");
+    assert_eq!(swept.packed, swept.kept, "every value it keeps, packed");
+    assert_eq!(loose(), 0, "no value left a file of its own (of {before})");
+    let packs = state.store.2.packs().unwrap().held();
+    assert_eq!((packs.packs, packs.values), (1, swept.packed));
+    // Read back from the pack: each kept run's state, and the live collection, the value cache
+    // let go of so every read is from disk.
+    state.store.4.set_budget(0);
+    let log = body_json(route(&state, &req("GET", "/deployments/kept/log", vec![])));
+    for e in log["entries"].as_array().unwrap() {
+        restore::load_snapshot(e["state_after"].as_str().unwrap(), &state.store).unwrap_or_else(|err| panic!("a kept run's state: {err}"));
+    }
+    let notes = body_json(route(&state, &req("GET", "/deployments/kept/collections/notes", vec![])));
+    assert_eq!(notes["items"].as_array().unwrap().len(), 10, "{notes}");
+    // More runs: the packed states of runs cut since are named no more, and are swept from it.
+    for _ in 0..5 {
+        bump();
+    }
+    let much_later = later + 2 * sweep::SPARES_MS;
+    let again = sweep::sweep(&state.store, &state.deployments, much_later, sweep::SPARES_MS, false, false).unwrap().unwrap();
+    assert!(again.values > 0, "{again:?}");
+    let packed = state.store.2.packs().unwrap().held();
+    assert!(packed.values < packs.values, "{packed:?} after {packs:?}");
+    let notes = body_json(route(&state, &req("GET", "/deployments/kept/collections/notes", vec![])));
+    assert_eq!(notes["items"].as_array().unwrap().len(), 15, "{notes}");
+    assert_eq!(body_json(route(&state, &req("GET", "/admin/host", vec![])))["kept"]["store"], serde_json::Value::Null, "counted at the first look only");
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// An admin sets how often the server sweeps (`POST /admin/storage`): written into `holon.toml`'s

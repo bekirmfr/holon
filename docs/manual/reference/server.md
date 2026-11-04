@@ -51,7 +51,9 @@ server holds now:
   quota, or the space a disk keeps for root, counts as full), what is free, and what it keeps
   there;
 - **what it keeps**: the content store's values (their bytes, and the disk they take: a small
-  value's file takes a whole 4 KiB block), the logs, the folders' kept file texts. The store and
+  value's file takes a whole 4 KiB block, which is why the sweep packs the values it keeps once
+  they are an hour old: deflated together in `store/values/packs/`, read back as any), the logs,
+  the folders' kept file texts. The store and
   the texts are counted shortly after the server starts and after each round of sweeps, so a
   view never lists millions of files; it says when, and how many values were put since;
 - **what crashes left**: a file is written aside and renamed over, so a server stopped in the

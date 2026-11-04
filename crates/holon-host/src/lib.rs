@@ -26,6 +26,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 pub mod collection;
+pub mod packs;
 mod rounds;
 mod state;
 pub use rounds::{run_rounds, Claim, Exchange, Limits, NoWaits, Performer, Recorded, Round, RunError, RunOutcome, Waiting, Waits};
@@ -634,6 +635,8 @@ impl Store for MemStore {
 /// under a single root directory. Where units actually live on a machine.
 pub struct FileStore {
     root: PathBuf,
+    /// Its long-lived values, packed (packs.rs): read when a value's own file isn't there.
+    packs: std::sync::Arc<packs::Packs>,
 }
 
 impl FileStore {
@@ -641,7 +644,13 @@ impl FileStore {
     pub fn new(root: impl Into<PathBuf>) -> io::Result<Self> {
         let root = root.into();
         fs::create_dir_all(&root)?;
-        Ok(FileStore { root })
+        let packs = packs::Packs::shared(&root.join("values"))?;
+        Ok(FileStore { root, packs })
+    }
+
+    /// Its packs, shared with whoever packs its values (the server's sweep).
+    pub fn packs(&self) -> std::sync::Arc<packs::Packs> {
+        std::sync::Arc::clone(&self.packs)
     }
     fn path(&self, key: &Hash) -> PathBuf {
         self.root.join(hex(key))
@@ -694,8 +703,9 @@ impl Store for FileStore {
     fn put_value(&mut self, value: &Value) -> Result<Hash, StoreError> {
         let (key, bytes) = encode_value_keyed(value)?;
         let path = self.value_path(&key);
-        // Content-addressed: a file already there holds these very bytes (a read verifies it).
-        if !path.exists() {
+        // Content-addressed: a file already there, or the value packed, holds these very bytes (a
+        // read verifies it).
+        if !path.exists() && !self.packs.contains(&key) {
             fs::create_dir_all(self.values_dir()).map_err(StoreError::Io)?;
             write_atomically(&path, &bytes).map_err(StoreError::Io)?;
         }
@@ -704,7 +714,11 @@ impl Store for FileStore {
     fn get_value(&self, key: &Hash) -> Result<Option<Value>, StoreError> {
         let bytes = match fs::read(self.value_path(key)) {
             Ok(b) => b,
-            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+            // Not a file of its own: packed, or not there.
+            Err(e) if e.kind() == io::ErrorKind::NotFound => match self.packs.get(key).map_err(StoreError::Io)? {
+                Some(b) => b,
+                None => return Ok(None),
+            },
             Err(e) => return Err(StoreError::Io(e)),
         };
         decode_value_verified(key, &bytes).map(Some)

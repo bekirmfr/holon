@@ -128,6 +128,9 @@ A slower path that is still right would pass every test above; these fail instea
   `each_flow_says_what_it_holds_in_memory_and_on_disk`,
   `the_host_warns_of_a_full_disk_and_a_full_cache_once_each`,
   `a_full_disk_pauses_what_records_runs_until_there_is_room`, `a_full_disk_rolls_the_log_keeping_the_most`,
+  `the_values_a_sweep_keeps_are_packed_and_read_back` (and swept from the pack once named no
+  more), holon-host's `packed_values_read_back_as_put_and_a_rewrite_leaves_the_rest`,
+  `a_pack_cut_short_is_an_error_not_missing_values`,
   `the_runs_a_log_lets_go_of_are_backed_up_as_exports_verify_checks` (with the log, every run once;
   a backup that can't be written keeps them in the log),
   `what_a_crash_left_is_removed_once_it_is_old_and_nothing_else_is`,
