@@ -269,8 +269,54 @@ probe of unrecorded `hello` every minute.
 
 | # | Where | What | Fix |
 |---|---|---|---|
-| R5 | folders.rs, `sweep` (every `SWEEP_EVERY`, 10 minutes) | **Found by the soak.** The sweep of folders' kept file texts reads every deployment's whole log (`Log::lines`, which reads the file, under the log's lock: up to 60 MB here, every run of the deployment waiting) and parses every entry in full, every 10 minutes, whether or not any deployment has a folder (none here did). About 200 MB of lines parsed each time; what it frees the allocator keeps: the 45 MB steps. | Skip it when no folder keeps a file's text; read each log outside its lock (as a cut-back does); parse only the lines that name a kept text. |
-| R6 | the content store (holon-host's `FileStore`), `sweep.rs` | **Found by the soak; predates the throughput work.** Each state or collection write puts its changed values and a snapshot as files of their own, synced: 77,220 note writes added 594,619 files and 2.35 GB (7.7 files, about 30 KB of disk each: files of 1.8 KB on average, each a 4 KB block). Values nothing names any more are removed only by `holon store sweep` (or `POST /admin/store/sweep`), an admin's: at this soak's 51 writes a second the disk fills by about 5.4 GB an hour until someone sweeps. | To decide: the store swept on its own on a schedule (what a sweep spares, a value put in the last hour, is already safe for it), and fewer, larger files per write (packed small values). |
+| R5 | folders.rs, `sweep` (every `SWEEP_EVERY`, 10 minutes) | **Found by the soak.** The sweep of folders' kept file texts reads every deployment's whole log (`Log::lines`, which reads the file, under the log's lock: up to 60 MB here, every run of the deployment waiting) and parses every entry in full, every 10 minutes, whether or not any deployment has a folder (none here did). About 200 MB of lines parsed each time; what it frees the allocator keeps: the 45 MB steps. | Skip it when no folder keeps a file's text; read each log outside its lock (as a cut-back does); parse only the lines that name a kept text. **Done** (`42a75f9`, §2.11). |
+| R6 | the content store (holon-host's `FileStore`), `sweep.rs` | **Found by the soak; predates the throughput work.** Each state or collection write puts its changed values and a snapshot as files of their own, synced: 77,220 note writes added 594,619 files and 2.35 GB (7.7 files, about 30 KB of disk each: files of 1.8 KB on average, each a 4 KB block). Values nothing names any more are removed only by `holon store sweep` (or `POST /admin/store/sweep`), an admin's: at this soak's 51 writes a second the disk fills by about 5.4 GB an hour until someone sweeps. | The store swept on its own on a schedule (what a sweep spares, a value put in the last hour, is already safe for it): **done** (`6d764f5`, paced since, §2.11). Fewer, larger files per write (packed small values): to decide. |
+
+## 2.11 Fixed: R5 and R6, and what the second soak found
+
+- **R5** (`42a75f9`): the folders' sweep is skipped when the blob store holds nothing put before
+  what it spares (`Blobs::any_put_before`); otherwise it reads each log's file a line at a time
+  with the lock released (`LogCell::each_line`: a file is only ever replaced by a rename, so what
+  is read is one file's lines, in order) and parses only the lines holding `"blob":`. The store's
+  sweep reads the logs the same way, scanning each line for hashes.
+- **R6** (`6d764f5`): the server sweeps its store every `sweep::EVERY` (10 minutes), sparing what
+  was put in the last hour as an admin's sweep does, and skips a sweep when nothing was put since
+  one that spared nothing (`sweep::Scheduled`); the two take turns (`Puts::sweeping`).
+
+**The second soak** (22 minutes at `6d764f5`, set up as the first, on a fresh copy of the data
+folder with its files' times kept): 19.2 million requests, none failing but the failing route's,
+nothing in the server's log; threads 72, open files 72–75, the logs' folder 164–224 MB, the probe's
+p50 1.48–1.86 ms and p99 5.2–8.2 ms throughout. No memory step at 10 minutes from the folders'
+sweep (R5): none of the copy's deployments keeps file texts, and the sweep was skipped. The
+store's sweep ran twice: at 10 minutes it removed the copy's old values, **137,962 in 50.5 s**; at
+20, 271 in 8.3 s (everything newer spared). The data folder ended at 1,899 MB and 432,808 files,
+against the first soak's 3,105 MB and 734,795 after 25 minutes.
+
+**It found the sweep's own cost.** Memory stepped up about 110 MB as the first sweep ran (607 →
+717 MB) and stayed (the allocator's, as before). And the `notes` routes ran 17% below the first
+soak (listing 347 → 287 requests a second, writes 51 → 43, their p99 doubled), the other routes
+3–8% (this machine's noise). Measured on its own, an admin's sweep on a fresh copy, the `notes`
+listing at 8 connections with one writer, two rounds:
+
+| While | Requests a second (before → during → after) |
+|---|---|
+| no sweep (the same wait instead) | 419 → 466 → 452; 362 → 373 → 375 |
+| a dry run (reads everything kept, removes nothing) | 352 → 401 → 362; 378 → 392 → 354 |
+| a sweep removing 134,000 values (27 s) | 384 → **123** → 352; 375 → **125** → 356 |
+| the same, paced (61 s) | 381 → 337 → 346; 387 → 356 → 345 |
+
+Reading and checking cost nothing; removing does: each removal holds the store's lock, back to
+back, and ext4 journals each unlink. Read past the value cache, and listing the store by hash
+only, measured the same (two rounds each), and were left out. **Fixed:** the server's own sweep
+pauses 100 ms after every 256 values it removes (`PACE`, `PAUSE`), about 2,500 a second at most:
+the listing loses 7–12% while it runs instead of 67%, and a store writing 50 states a second
+leaves about 400 values a second to sweep, so it still keeps up six times over. An admin's sweep
+is not paced: asked for now, it removes as fast as it can (paced, a large one would outlast the
+command's 60-second wait), and holds up the server's runs while it does.
+
+**Still bounded, not small:** a value is swept 60 to 70 minutes after it was put; at 51 writes a
+second that is about 5.5–6.4 GB (1.4–1.65 million files) of unnamed values while writes go on.
+Fewer, larger files per write would lower it.
 
 ## 3. Order
 
@@ -281,5 +327,5 @@ probe of unrecorded `hello` every minute.
    - **the end-to-end suite** (`editor/e2e`, the real editor and server, every sample deployed):
      run at `9969f8b`, **72 passed**, 1 skipped (`atlas-notes`, which runs only against a MongoDB
      replica set named by `HOLON_TEST_MONGODB`), in 7.1 minutes;
-   - a soak under load watching memory;
+   - a soak under load watching memory: run (§2.10), found R5 and R6, fixed, run again (§2.11);
    - a review of `aa2704a..HEAD` by a reader given the code, not this note.

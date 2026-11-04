@@ -942,7 +942,7 @@ action bump (input) {
     assert_eq!(kept.iter().map(|(s, _)| *s).collect::<Vec<_>>(), [7, 8, 9]);
     let files = || std::fs::read_dir(&values).unwrap().count();
     let before = files();
-    let sweep = |spare: u64, dry_run: bool| sweep::sweep(&state.store, &state.deployments, SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as u64, spare, dry_run).unwrap().unwrap();
+    let sweep = |spare: u64, dry_run: bool| sweep::sweep(&state.store, &state.deployments, SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as u64, spare, dry_run, false).unwrap().unwrap();
 
     // Everything is new: spared, whoever names it.
     let new = sweep(sweep::SPARES_MS, false);
@@ -1010,7 +1010,7 @@ fn the_server_sweeps_its_store_on_its_own_and_not_again_for_nothing() {
     assert!(again.is_some(), "a sweep that spared some is made again");
     // Past the hour: what the cut runs left goes, as an admin's dry run says it would.
     let later = now + 2 * sweep::SPARES_MS;
-    let would = sweep::sweep(&state.store, &state.deployments, later, sweep::SPARES_MS, true).unwrap().unwrap();
+    let would = sweep::sweep(&state.store, &state.deployments, later, sweep::SPARES_MS, true, false).unwrap().unwrap();
     let swept = scheduled.sweep(&state.store, &state.deployments, later).unwrap().unwrap();
     assert_eq!(swept, would);
     assert!(swept.values > 0 && swept.spared == 0, "{swept:?}");

@@ -80,8 +80,12 @@ and [Measuring](measuring.md) hold the details.
   work. Run long, on a used data folder, and watch what grows.
 - **Memory that rises isn't a leak until it rises with the allocator pinned.** glibc keeps what it
   is given back; pinned, the soak was flat.
-- **Background work is measured under load too.** A sweep is free when nothing is there; on a used
-  store it took 50 seconds and its memory stayed with the process.
+- **Background work is measured under load too, against a control.** The second soak showed the
+  `notes` routes 17% slower. The first guess (the sweep pushing hot values out of the cache) was
+  fixed and measured: no change. Measured instead with a control (no sweep) and a dry run (all the
+  reading, no removing): the reading cost nothing, the removing took the listing from about 380
+  requests a second to 123. Pacing the removals brought it to a 7–12% dip. A fix for a guessed
+  cause, measured and found to change nothing, is taken out.
 
 ## How the work was run
 

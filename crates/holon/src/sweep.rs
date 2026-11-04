@@ -41,6 +41,14 @@ pub(crate) const SPARES_MS: u64 = 60 * 60 * 1000;
 /// removes is bounded by `SPARES_MS` either way: a value is swept an hour to an hour and ten
 /// minutes after it was put.
 pub(crate) const EVERY: Duration = Duration::from_secs(10 * 60);
+/// How the server's own sweep paces its removals: a pause of `PAUSE` after every `PACE` values
+/// removed, about 2,500 a second at most. Removed as fast as they can be, 134,000 values took
+/// 27 seconds and a deployment's listing fell from about 400 requests a second to 123 meanwhile
+/// (each removal holds the store's lock, and ext4 journals each unlink); paced, a sweep takes
+/// longer and holds up nothing. A store writing 50 states a second leaves about 400 values a
+/// second to sweep: paced, a sweep still keeps up six times over.
+const PACE: usize = 256;
+const PAUSE: Duration = Duration::from_millis(100);
 /// How many puts `Puts` notes before it forgets the ones a sweep no longer spares.
 const FORGET_AT: usize = 4096;
 
@@ -180,9 +188,10 @@ fn named(deployments: &Mutex<BTreeMap<String, Deployment>>) -> Result<BTreeSet<H
 }
 
 /// Remove from `store` every value nothing the deployments keep names, directly or through another
-/// value, except those put since `now_ms - spare_ms`; with `dry_run`, only count them. None for a
-/// store in memory, which has nothing on disk to sweep.
-pub(crate) fn sweep(store: &SharedStore, deployments: &Mutex<BTreeMap<String, Deployment>>, now_ms: u64, spare_ms: u64, dry_run: bool) -> Result<Option<Swept>, String> {
+/// value, except those put since `now_ms - spare_ms`; with `dry_run`, only count them; `paced`,
+/// pausing as it removes them (`PACE`), as the server's own sweep does. None for a store in
+/// memory, which has nothing on disk to sweep.
+pub(crate) fn sweep(store: &SharedStore, deployments: &Mutex<BTreeMap<String, Deployment>>, now_ms: u64, spare_ms: u64, dry_run: bool, paced: bool) -> Result<Option<Swept>, String> {
     let Some(dir) = &store.2.dir else { return Ok(None) };
     let _turn = store.2.sweeping.lock().unwrap_or_else(|e| e.into_inner());
     // The values there are now: one put after this isn't a candidate, whoever names it.
@@ -218,7 +227,7 @@ pub(crate) fn sweep(store: &SharedStore, deployments: &Mutex<BTreeMap<String, De
             continue;
         }
         // Held while it is looked at and removed, so no put of it comes between.
-        let _store = store.0.lock().unwrap();
+        let held = store.0.lock().unwrap();
         let put = store.2.recent.lock().unwrap().get(&hash).copied().unwrap_or(0);
         if put.max(changed_ms(&path)) > since {
             swept.spared += 1;
@@ -234,6 +243,10 @@ pub(crate) fn sweep(store: &SharedStore, deployments: &Mutex<BTreeMap<String, De
         }
         swept.values += 1;
         swept.bytes += size;
+        if paced && !dry_run && swept.values.is_multiple_of(PACE) {
+            drop(held);
+            std::thread::sleep(PAUSE);
+        }
     }
     Ok(Some(swept))
 }
@@ -253,7 +266,7 @@ impl Scheduled {
         if self.last == Some((puts, false)) {
             return Ok(None);
         }
-        let swept = sweep(store, deployments, now_ms, SPARES_MS, false)?;
+        let swept = sweep(store, deployments, now_ms, SPARES_MS, false, true)?;
         self.last = swept.map(|s| (puts, s.spared > 0));
         Ok(swept)
     }
@@ -272,7 +285,8 @@ pub(crate) fn route(state: &AppState, request: &rouille::Request, by: &str) -> O
         Err(r) => return Some(r),
     };
     let dry_run = serde_json::from_slice::<serde_json::Value>(&body).ok().and_then(|b| b["dry_run"].as_bool()).unwrap_or(false);
-    Some(match sweep(&state.store, &state.deployments, now_ms(), SPARES_MS, dry_run) {
+    // An admin's, now: as fast as it can, holding up the server's runs while it removes (`PACE`).
+    Some(match sweep(&state.store, &state.deployments, now_ms(), SPARES_MS, dry_run, false) {
         Ok(Some(s)) => {
             if !dry_run && s.values > 0 {
                 state.activity.record("swept the store", &format!("{} values, {} freed", s.values, size_text(s.bytes)), Some(by));

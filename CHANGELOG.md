@@ -36,7 +36,9 @@
   nothing kept names, as `holon store sweep` does (an hour after they were put, as before), and
   logs what it freed in its activity. Before, only an admin's sweep did: a server writing state
   filled its disk, by about 5 GB an hour at 50 writes a second. A sweep is skipped when nothing
-  was put since the last one and it spared nothing.
+  was put since the last one and it spared nothing, and paces what it removes (at most about
+  2,500 values a second), so a deployment's runs lose 7–12% while it runs, not two thirds. An
+  admin's `holon store sweep` still removes as fast as it can.
 - **Sweeps no longer hold up a deployment's runs.** The sweeps of file texts and of the store
   read each log's file a line at a time with its lock released, instead of whole while holding
   it: a 60 MB log held up the deployment's runs while it was read. The file texts' sweep is

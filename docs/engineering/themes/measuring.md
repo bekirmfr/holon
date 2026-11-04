@@ -48,6 +48,10 @@ wrk -t1 -c1  -d6s --latency http://127.0.0.1:<port>/<route>    # one connection:
 - **CPU per request**: the server's `utime + stime` (fields 14 and 15 of `/proc/<pid>/stat`, in
   clock ticks) before and after, divided by the requests completed. Compare it at 64 connections:
   .NET spins its thread pool at one, inflating its figure.
+- **Isolate a cost with a control**: to see what a background task costs a route, measure the
+  route before, during and after it, and the same with the task replaced by a wait (the control)
+  and by a version of it that does part of the work (a dry run). The store sweep's cost was all in
+  its removals, which only the dry run showed.
 - **Against others in the same rounds**: the C# service (plain, and keeping the same record) and,
   once, n8n and Node-RED, each run and measured as Holon is, one after another.
 

@@ -95,9 +95,15 @@ nothing old enough to remove, and parses only the lines naming a kept text (R5).
 - **Why.** The folders' sweep read every whole log under its lock every ten minutes (a 60 MB log
   held its runs up), and parsed every entry: about 200 MB, even with no folder at all. The soak
   saw it as 45 MB memory steps.
-- **Limits.** The store's sweep still holds each deployment's state lock while it reads the live
-  state, and the store's lock for each value it checks and removes. Measured under the soak's
-  load: a sweep of 137,962 values took 50.5 s with the probe's latency unchanged.
+- **Removing is what costs, so the server's sweep is paced.** Each removal holds the store's lock
+  and ext4 journals each unlink: removing 134,000 values back to back (27 s) took a deployment's
+  `notes` listing from about 380 requests a second to 123 while it ran; reading and checking
+  everything without removing cost nothing (RA §2.11). The server's own sweep pauses 100 ms after
+  every 256 values (`PACE`, `PAUSE`): the listing loses 7–12% while it runs.
+- **Limits.** An admin's `holon store sweep` is not paced (asked for now, it removes as fast as it
+  can, and holds up the server's runs while it does). The store's sweep holds each deployment's
+  state lock while it reads the live state. Its memory stays with the process: about 110 MB more
+  after the soak's first sweep.
 - **Tests.** `a_log_read_a_line_at_a_time_holds_no_lock_and_sees_one_file_whole`.
 
 ### G7. The caches keep to their sizes in memory
@@ -140,9 +146,9 @@ by the syncer when they changed.
   fewer), its file at most about twice that.
 - **The content store**: each state write leaves its changed values and a snapshot as files; once
   retention cuts the run, nothing names them. The server sweeps them every ten minutes
-  (`sweep::EVERY`), sparing what was put in the last hour (`SPARES_MS`); the sweep is skipped when
-  nothing was put since one that spared nothing (R6). An admin's `holon store sweep` takes turns
-  with it.
+  (`sweep::EVERY`), sparing what was put in the last hour (`SPARES_MS`), paced (G6); the sweep is
+  skipped when nothing was put since one that spared nothing (R6). An admin's `holon store sweep`
+  takes turns with it.
 - **Why.** Only an admin's sweep removed them: at the soak's 51 writes a second (7.7 files and
   about 30 KB of disk each), the disk filled by about 5.4 GB an hour.
 - **Limits.** Bounded, not small: a value is swept 60 to 70 minutes after it was put, so at that
