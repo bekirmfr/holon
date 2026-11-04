@@ -982,6 +982,48 @@ action bump (input) {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// The server sweeps its store on its own (R6): what an admin's sweep would remove, the same way;
+/// and not again until something is put or a sweep spared something.
+#[test]
+fn the_server_sweeps_its_store_on_its_own_and_not_again_for_nothing() {
+    let dir = unique_temp_path("sweep-scheduled");
+    let disk = FileStore::new(&dir).unwrap();
+    let values = disk.values_dir();
+    let state = test_state_with(SharedStore::on_disk(Box::new(disk), values.clone()));
+    let plan = holon_author::agent::plan("flow kept\nkeep 2 runs\nstate n\n\naction bump (input) {\n  state.n = (state.n ?? 0) + 1\n}\n").unwrap_or_else(|e| panic!("{e}"));
+    let requirements = plan.requirements.clone().unwrap();
+    for u in &plan.units {
+        assert_eq!(route(&state, &req("POST", "/unit", u.clone())).status_code, 200);
+    }
+    let preview = body_json(route(&state, &req("POST", "/deploy/preview", serde_json::to_vec(&serde_json::json!({ "slug": "kept", "unit": plan.unit, "requirements": requirements })).unwrap())));
+    let ask = serde_json::json!({ "acknowledge": preview["needs_approval"], "requirements": requirements });
+    assert_eq!(deploy_json(&state, "kept", parse_hash(&plan.unit).unwrap(), ask).status_code, 200);
+    let bump = || assert_eq!(route(&state, &req("POST", "/trigger/kept/bump", b"{}".to_vec())).status_code, 200);
+    for _ in 0..6 {
+        bump();
+    }
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as u64;
+    let mut scheduled = sweep::Scheduled::default();
+    let first = scheduled.sweep(&state.store, &state.deployments, now).unwrap().unwrap();
+    assert_eq!((first.values, first.spared > 0), (0, true), "within the hour, all spared: {first:?}");
+    let again = scheduled.sweep(&state.store, &state.deployments, now).unwrap();
+    assert!(again.is_some(), "a sweep that spared some is made again");
+    // Past the hour: what the cut runs left goes, as an admin's dry run says it would.
+    let later = now + 2 * sweep::SPARES_MS;
+    let would = sweep::sweep(&state.store, &state.deployments, later, sweep::SPARES_MS, true).unwrap().unwrap();
+    let swept = scheduled.sweep(&state.store, &state.deployments, later).unwrap().unwrap();
+    assert_eq!(swept, would);
+    assert!(swept.values > 0 && swept.spared == 0, "{swept:?}");
+    assert_eq!(scheduled.sweep(&state.store, &state.deployments, later).unwrap(), None, "nothing put since, nothing to find");
+    bump();
+    assert!(scheduled.sweep(&state.store, &state.deployments, later).unwrap().is_some(), "a put since, and it sweeps");
+    let log = body_json(route(&state, &req("GET", "/deployments/kept/log", vec![])));
+    for e in log["entries"].as_array().unwrap() {
+        restore::load_snapshot(e["state_after"].as_str().unwrap(), &state.store).unwrap_or_else(|err| panic!("a kept run's state: {err}"));
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn an_in_memory_store_has_nothing_to_sweep() {
     let state = test_state();

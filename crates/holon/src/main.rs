@@ -1186,6 +1186,34 @@ fn serve(args: Vec<String>) {
             }
         });
     }
+    {
+        // The store's values no kept run names any more are swept (sweep.rs, R6).
+        let (store, deployments, activity) = (store.clone(), Arc::clone(&deployments), activity::Activity::beside(&deployments_arg));
+        std::thread::spawn(move || {
+            let mut scheduled = sweep::Scheduled::default();
+            let mut failing = false;
+            loop {
+                std::thread::sleep(sweep::EVERY);
+                let now = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64);
+                let began = std::time::Instant::now();
+                match scheduled.sweep(&store, &deployments, now) {
+                    Ok(swept) => {
+                        failing = false;
+                        if let Some(s) = swept.filter(|s| s.values > 0) {
+                            let freed = format!("{} values, {} freed", s.values, folders::size_text(s.bytes));
+                            println!("holon: swept the store: {freed}, in {:.1} s", began.elapsed().as_secs_f64());
+                            activity.record("swept the store", &freed, None);
+                        }
+                    }
+                    Err(e) if !failing => {
+                        eprintln!("holon: sweeping the store: {e} (tried again every {} minutes)", sweep::EVERY.as_secs() / 60);
+                        failing = true;
+                    }
+                    Err(_) => {}
+                }
+            }
+        });
+    }
     let port = bound.port();
     // Everyone signs in (access.rs); a new server first needs its admin, set up with the code
     // it prints here.

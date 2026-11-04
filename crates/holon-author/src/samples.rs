@@ -243,7 +243,7 @@ static SAMPLES: &[Sample] = &[
     Sample {
         name: "rolling-log",
         title: "Rolling log (retention)",
-        description: "A clock flow that keeps only its newest 5 runs, none older than a day: its `keep` line says how long a deployment's log keeps its runs (the deploy settings' keep_runs and keep_run_days), and keeping fewer than the host's default asks nobody. The states its cut runs left stay in the store until an admin's holon store sweep clears what nothing kept names.",
+        description: "A clock flow that keeps only its newest 5 runs, none older than a day: its `keep` line says how long a deployment's log keeps its runs (the deploy settings' keep_runs and keep_run_days), and keeping fewer than the host's default asks nobody. The states its cut runs left stay in the store until a sweep clears what nothing kept names: the server's own, every ten minutes, or an admin's holon store sweep.",
         shows: &["keep", "retention", "keep_runs", "keep_run_days", "clock", "state across runs", "holon store sweep"],
         port: None,
         interval: Some("1"),

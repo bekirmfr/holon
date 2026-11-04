@@ -1,5 +1,6 @@
 //! Sweeping the content store's values that nothing kept names (docs/L4s/history-L4.md §7):
-//! `holon store sweep`, `POST /admin/store/sweep`, an admin's.
+//! the server's own, every `EVERY` (docs/L4s/resilience-audit-L4.md, R6), and an admin's, `holon
+//! store sweep` or `POST /admin/store/sweep`, at any time.
 //!
 //! A run keeps the state it left as a snapshot (restore.rs): a record naming each cell's value by
 //! hash, with the values it changed put beside it. Once retention cuts the run from its log,
@@ -23,8 +24,9 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use holon_core::{parse_hash, Hash, Value};
 use holon_host::Store;
@@ -34,6 +36,11 @@ use crate::{err, to_hex, AppState, Deployment, Response, SharedStore};
 
 /// How new a value a sweep spares, whoever names it: four times the longest a run may take.
 pub(crate) const SPARES_MS: u64 = 60 * 60 * 1000;
+/// How often the server sweeps its store on its own: a write leaves values no kept run will name
+/// once retention cuts it, and a store left to an admin's sweep fills its disk (R6). What it
+/// removes is bounded by `SPARES_MS` either way: a value is swept an hour to an hour and ten
+/// minutes after it was put.
+pub(crate) const EVERY: Duration = Duration::from_secs(10 * 60);
 /// How many puts `Puts` notes before it forgets the ones a sweep no longer spares.
 const FORGET_AT: usize = 4096;
 
@@ -54,6 +61,12 @@ pub(crate) struct Puts {
     dir: Option<PathBuf>,
     /// Each value put lately, with when (ms since 1970).
     recent: Mutex<HashMap<Hash, u64>>,
+    /// How many puts there have been: none since a sweep that spared nothing, and the next has
+    /// nothing new to find (but what a deployment deleted since let go, left to the sweep after
+    /// the next put, or an admin's).
+    count: AtomicU64,
+    /// Held by a sweep: the server's and an admin's take turns.
+    sweeping: Mutex<()>,
 }
 
 impl Puts {
@@ -68,6 +81,7 @@ impl Puts {
             return;
         }
         let now = now_ms();
+        self.count.fetch_add(1, Ordering::Relaxed);
         let mut recent = self.recent.lock().unwrap();
         recent.insert(hash, now);
         // Held to what a sweep still spares, so a server that never sweeps doesn't grow it for good.
@@ -145,11 +159,13 @@ fn named(deployments: &Mutex<BTreeMap<String, Deployment>>) -> Result<BTreeSet<H
         }
         table.values().filter_map(|d| d.state.clone()).collect()
     };
-    // The logs' files read with the table let go: reading them holds up no run.
-    for log in logs {
-        texts.extend(log.with(|log| log.lines()));
-    }
     let mut hashes = BTreeSet::new();
+    // The logs' files read with the table and their own locks let go, a line at a time: reading
+    // them holds up no run (docs/L4s/resilience-audit-L4.md, R5, R6). A line a run appends after
+    // its file is read names values put since, which the sweep spares.
+    for log in logs {
+        log.each_line(|line| named_in(line, &mut hashes));
+    }
     for cell in states {
         let state = cell.state.lock().unwrap();
         for (key, value) in state.iter() {
@@ -168,6 +184,7 @@ fn named(deployments: &Mutex<BTreeMap<String, Deployment>>) -> Result<BTreeSet<H
 /// store in memory, which has nothing on disk to sweep.
 pub(crate) fn sweep(store: &SharedStore, deployments: &Mutex<BTreeMap<String, Deployment>>, now_ms: u64, spare_ms: u64, dry_run: bool) -> Result<Option<Swept>, String> {
     let Some(dir) = &store.2.dir else { return Ok(None) };
+    let _turn = store.2.sweeping.lock().unwrap_or_else(|e| e.into_inner());
     // The values there are now: one put after this isn't a candidate, whoever names it.
     let mut there: BTreeMap<Hash, (PathBuf, u64)> = BTreeMap::new();
     if let Ok(entries) = std::fs::read_dir(dir) {
@@ -219,6 +236,27 @@ pub(crate) fn sweep(store: &SharedStore, deployments: &Mutex<BTreeMap<String, De
         swept.bytes += size;
     }
     Ok(Some(swept))
+}
+
+/// What the server's own sweeps remember of the last: how many puts there had been when it began,
+/// and whether it spared anything.
+#[derive(Default)]
+pub(crate) struct Scheduled {
+    last: Option<(u64, bool)>,
+}
+
+impl Scheduled {
+    /// Sweep, unless nothing was put since the last sweep and it spared nothing: none then, and
+    /// none for a store in memory.
+    pub(crate) fn sweep(&mut self, store: &SharedStore, deployments: &Mutex<BTreeMap<String, Deployment>>, now_ms: u64) -> Result<Option<Swept>, String> {
+        let puts = store.2.count.load(Ordering::Relaxed);
+        if self.last == Some((puts, false)) {
+            return Ok(None);
+        }
+        let swept = sweep(store, deployments, now_ms, SPARES_MS, false)?;
+        self.last = swept.map(|s| (puts, s.spared > 0));
+        Ok(swept)
+    }
 }
 
 /// `POST /admin/store/sweep` (`{"dry_run": true}` only counts), or None for any other path.
