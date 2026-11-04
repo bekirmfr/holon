@@ -34,8 +34,11 @@ In the data folder (`--data`, `HOLON_DATA`):
 | `holon.toml` | the policy | `--policy` |
 | `host.key` | the key resume tokens are signed with | `--host-key` |
 
-Files with secrets or tokens in them are readable only by the server's user. The server refuses
-to start when one of them can't be read, rather than starting without it.
+Every file the server writes there is readable only by the server's user, and a data folder it
+makes is that user's alone. One there already that other users can read is said at start, with
+the command that makes it yours alone (`chmod 700 …`); the server leaves it as it is. The server
+refuses to start when a file with secrets or tokens in it can't be read, rather than starting
+without it.
 
 To move a server, stop it and copy the data folder; the secrets key goes with it only if it is in
 a file (see [The secrets key](#the-secrets-key)).

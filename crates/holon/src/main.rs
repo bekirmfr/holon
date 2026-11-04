@@ -1020,11 +1020,15 @@ fn serve(args: Vec<String>) {
     inside(&mut accounts_arg, ".holon-accounts.json", "accounts.json");
     inside(&mut host_key_arg, ".holon-host-key", "host.key");
     if landed {
-        if let Err(e) = std::fs::create_dir_all(&dir) {
+        // Its owner's only when it is made here: it holds every flow's state, logs and secrets.
+        if let Err(e) = holon_host::create_private_dir(&dir) {
             eprintln!("holon: the data folder {}: {e}", dir.display());
             std::process::exit(1);
         }
         println!("holon: data in {}", dir.display());
+        if let Some(warning) = open_to_others(&dir) {
+            eprintln!("holon: warning: {warning}");
+        }
     }
     if let Some(note) = migrate::left_here() {
         println!("holon: {note}");
@@ -1225,4 +1229,23 @@ fn serve(args: Vec<String>) {
     // The store's values and the folders' texts no kept run names any more are swept (storage.rs).
     storage::start(Arc::clone(&state_cell));
     server.run();
+}
+
+/// Why the data folder `dir` is a warning, if it is: other users of this machine may read it
+/// (its mode lets the group or others in). A folder the server makes is its owner's only
+/// (`create_private_dir`), and so is every file it writes; one made before, or by someone else,
+/// is left as it is and said, since what it already holds (the store's values) isn't written
+/// again. None where the system has no modes.
+fn open_to_others(dir: &std::path::Path) -> Option<String> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(dir).ok()?.permissions().mode() & 0o777;
+        (mode & 0o077 != 0).then(|| format!("the data folder {} can be read by other users of this machine (mode {mode:o}): it holds every flow's state and logs; make it yours alone: chmod 700 {}", dir.display(), dir.display()))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = dir;
+        None
+    }
 }

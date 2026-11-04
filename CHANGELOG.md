@@ -10,6 +10,13 @@
 - **The setup code can't be guessed.** Five wrong setup codes in a row refuse setting up for a
   minute, as five wrong passwords lock a name; before, a server waiting for its first admin
   checked codes as fast as they came.
+- **What the server keeps is its own.** Every file it writes is readable by its owner only
+  (`0600`), whatever the umask: the content store's units and values, the packs, the kept file
+  texts, the flows, the activity log, the witness's queue, the backup's batches and exports, and
+  `holon export`'s file joined what was owner-only already (accounts, secrets, logs, the
+  deployments). The data folder and the store's folders it makes are `0700`. A data folder there
+  already that other users may read is said at start, with the `chmod 700` that makes it yours
+  alone; the server doesn't change it.
 - **Every run's record is on disk before its answer.** A run of a route, clock, file handler or
   action is answered (or counts as done) once its log entry is synced, not only written: an
   answered run is recorded, a power loss or not. Runs at once share the sync. A handler that only

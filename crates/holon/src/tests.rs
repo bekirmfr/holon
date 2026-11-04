@@ -9225,3 +9225,23 @@ fn the_server_records_what_its_golden_record_holds() {
     }
     panic!("the record has {} lines, the server now {} (last case: {case})", kept.lines().count(), out.lines().count());
 }
+
+/// What the server appends to (its activity, the witness's queue) is its owner's only, and a data
+/// folder others may read is said at start: a folder it makes is its owner's only already.
+#[cfg(unix)]
+#[test]
+fn the_server_keeps_its_files_for_its_owner_and_says_when_its_folder_isnt() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = std::path::PathBuf::from(unique_temp_path("owner-only"));
+    holon_host::create_private_dir(&dir).unwrap();
+    let mode = |p: &std::path::Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode(&dir), 0o700);
+    assert_eq!(crate::open_to_others(&dir), None, "its owner's only: nothing to say");
+    let log = dir.join("activity.jsonl");
+    std::io::Write::write_all(&mut crate::sealing::append_private(&log).unwrap(), b"{}\n").unwrap();
+    assert_eq!(mode(&log), 0o600, "appended to, for its owner only");
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let said = crate::open_to_others(&dir).expect("readable by others: said");
+    assert!(said.contains("mode 755") && said.contains("chmod 700"), "{said}");
+    let _ = std::fs::remove_dir_all(&dir);
+}

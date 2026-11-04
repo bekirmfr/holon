@@ -643,7 +643,7 @@ impl FileStore {
     /// Open (creating if needed) a store rooted at `root`.
     pub fn new(root: impl Into<PathBuf>) -> io::Result<Self> {
         let root = root.into();
-        fs::create_dir_all(&root)?;
+        create_private_dir(&root)?;
         let packs = packs::Packs::shared(&root.join("values"))?;
         Ok(FileStore { root, packs })
     }
@@ -669,13 +669,35 @@ impl FileStore {
 /// truncated mix: write a sibling temp file, flush it to disk, then rename it over `path` (an
 /// atomic replace on Unix and Windows alike). The temp name is unique per process and call, so
 /// two threads writing the same path never share one.
+/// Make `path` and any folder above it that isn't there, each it makes open to its owner only
+/// (`0o700` where the system has modes); folders there already are left as they are.
+pub fn create_private_dir(path: &Path) -> io::Result<()> {
+    let mut builder = fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(0o700);
+    }
+    builder.create(path)
+}
+
 pub fn write_atomically(path: &Path, bytes: &[u8]) -> io::Result<()> {
     static NEXT: AtomicU64 = AtomicU64::new(0);
     let mut tmp = path.as_os_str().to_owned();
     tmp.push(format!(".tmp-{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
     let tmp = PathBuf::from(tmp);
     let result = (|| {
-        let mut file = fs::File::create(&tmp)?;
+        // Readable by its owner only, whatever the umask: what the server writes this way (the
+        // store's units and values, file texts, flows, backups, its policy) is its own.
+        let mut options = fs::OpenOptions::new();
+        options.write(true).create(true).truncate(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = options.open(&tmp)?;
         file.write_all(bytes)?;
         file.sync_all()?;
         fs::rename(&tmp, path)
@@ -706,7 +728,7 @@ impl Store for FileStore {
         // Content-addressed: a file already there, or the value packed, holds these very bytes (a
         // read verifies it).
         if !path.exists() && !self.packs.contains(&key) {
-            fs::create_dir_all(self.values_dir()).map_err(StoreError::Io)?;
+            create_private_dir(&self.values_dir()).map_err(StoreError::Io)?;
             write_atomically(&path, &bytes).map_err(StoreError::Io)?;
         }
         Ok(key)
@@ -2061,6 +2083,31 @@ mod tests {
         let names: Vec<_> = fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name()).collect();
         assert_eq!(names, vec![std::ffi::OsString::from("doc.json")]);
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// What the store writes, and the folders it makes, are its owner's only, whatever the umask:
+    /// they hold every state and value a flow keeps.
+    #[cfg(unix)]
+    #[test]
+    fn the_store_writes_its_files_and_folders_for_its_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = |p: &Path| fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        let dir = unique_temp_dir().join("nested").join("store");
+        let mut store = FileStore::new(&dir).unwrap();
+        assert_eq!(mode(&dir), 0o700, "the store's folder");
+        assert_eq!(mode(dir.parent().unwrap()), 0o700, "and one it made above it");
+        let unit = store.put(&number("7")).unwrap();
+        let value = store.put_value(&Value::Text("a secret-ish state".into())).unwrap();
+        assert_eq!(mode(&store.path(&unit)), 0o600, "a unit");
+        assert_eq!(mode(&store.values_dir()), 0o700, "the values' folder");
+        assert_eq!(mode(&store.value_path(&value)), 0o600, "a value");
+        // A file there already, readable by others, is written again for its owner only.
+        let other = dir.join("doc.json");
+        fs::write(&other, b"old").unwrap();
+        fs::set_permissions(&other, fs::Permissions::from_mode(0o644)).unwrap();
+        write_atomically(&other, b"new").unwrap();
+        assert_eq!(mode(&other), 0o600);
+        fs::remove_dir_all(dir.parent().unwrap().parent().unwrap()).unwrap();
     }
 
     #[test]

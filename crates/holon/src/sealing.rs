@@ -301,6 +301,19 @@ pub(crate) fn write_aside(path: &Path, bytes: &[u8]) -> std::io::Result<PathBuf>
     }
 }
 
+/// `path` opened for appending, made if it isn't there, for its owner only (`0o600` where the
+/// system has modes): the server's own logs (its activity, the witness's queue).
+pub(crate) fn append_private(path: &Path) -> std::io::Result<std::fs::File> {
+    let mut options = std::fs::OpenOptions::new();
+    options.append(true).create(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    options.open(path)
+}
+
 pub(crate) fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     use std::sync::atomic::{AtomicU64, Ordering};
     static NEXT: AtomicU64 = AtomicU64::new(0);

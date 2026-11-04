@@ -145,7 +145,7 @@ impl Exporter {
         let line = serde_json::to_string(head).map_err(std::io::Error::other)? + "\n";
         if queue.file.is_none() {
             std::fs::create_dir_all(dir)?;
-            queue.file = Some(std::fs::OpenOptions::new().append(true).create(true).open(dir.join("pending.jsonl"))?);
+            queue.file = Some(crate::sealing::append_private(&dir.join("pending.jsonl"))?);
         }
         use std::io::Write;
         let written = queue.file.as_mut().expect("opened above").write_all(line.as_bytes());

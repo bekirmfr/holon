@@ -1479,9 +1479,10 @@ pub(crate) fn export(args: &[String]) -> i32 {
             return 1;
         }
     };
+    // Its owner's only, as the log it is a copy of.
     let written = match out.parent().filter(|d| !d.as_os_str().is_empty()) {
-        Some(dir) => std::fs::create_dir_all(dir).and_then(|()| std::fs::write(&out, &body)),
-        None => std::fs::write(&out, &body),
+        Some(dir) => std::fs::create_dir_all(dir).and_then(|()| holon_host::write_atomically(&out, body.as_bytes())),
+        None => holon_host::write_atomically(&out, body.as_bytes()),
     };
     if let Err(e) = written {
         eprintln!("holon export: can't write {}: {e}", out.display());

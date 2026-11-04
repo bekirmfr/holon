@@ -162,7 +162,13 @@ Windows, `restrict_to_owner`), syncs it and renames it over. It keeps the accoun
 file, the secrets file and key file, the host key, the folders' and databases' bindings, the run
 files and `~/.holon/tokens.json`, each state head, and each log as a cut-back rewrites it.
 Logs, events and the secrets audit are opened `0o600` when created; sealed log segments go through
-`write_aside`. What is **not** owner-only is in §4.
+`write_aside`. holon-host's `write_atomically` creates its file `0o600` too, so the content store
+(units and every state and value), the packs, the kept file texts, the flows file, the policy as
+the admin page writes it, the backup's batches and exports and `holon export`'s file are owner-only;
+`append_private` opens the activity log and the witness's queue so. The data folder and the
+store's folders are made `0o700` (`create_private_dir`); a data folder there already that others
+may read is left as it is and said at start (`open_to_others`: "chmod 700 …"), since what it
+holds was written before and isn't written again.
 
 ### 2.9 The record, the witness and `holon verify` (recorder.rs, heads.rs, verify.rs)
 
@@ -201,10 +207,12 @@ What is not defended, or only partly:
   run file (an admin token), the logs and the store, and rewrite them (local.rs says so: it
   "trusts no more than the machine already does"). An `env:` or `os` key moves that to the
   environment or the key store, not out of reach of the same user.
-- **Other users on the machine**: only §2.8's files are owner-only. The content store
-  (`FileStore`, via `write_atomically`: units and every state value), the kept file texts
-  (blobs.rs), the flows file (`persist_flows`), the activity log, the backup's batches and exports,
-  and `holon export`'s file are written with the process's umask, and no directory is restricted.
+- **Other users on the machine**: every file the server writes is owner-only, and the folders it
+  makes are (§2.8). A data folder made before, or by someone else, open to others is said at start
+  and not changed; its older files (a store's values, never written again) keep their mode until
+  the admin restricts the folder. Folders inside the data folder (the logs', the state heads') are
+  made with the umask, behind the data folder's own `0o700`. On Windows, `write_atomically`'s files
+  take the folder's inherited ACL, not `restrict_to_owner`'s.
 - **A log rewritten whole**: the chain is an unkeyed hash, so whoever can write the file can write
   a consistent new one; lines before the chain (no `prev`) check only once one with a `prev` is seen.
   Only a witness holding a later head shows it, and only up to the last head sent.
@@ -239,7 +247,14 @@ What is not defended, or only partly:
   (15 paths refused it; the header lowers, never raises), `a_new_server_answers_only_its_setup`,
   `wrong_passwords_sent_at_once_lock_a_name_as_soon`, `an_unknown_name_is_checked_like_a_wrong_password`,
   `an_admin_is_always_left`, `kept_as_hashes_and_read_back` (no token or password in the file),
-  `a_token_for_another_client_issuer_expired_or_forged_is_refused`.
+  `wrong_setup_codes_lock_setting_up_for_a_while`,
+  `a_token_for_another_client_issuer_expired_or_forged_is_refused`,
+  `a_token_the_provider_signed_for_this_client_says_who` and
+  `signed_in_through_a_provider_is_matched_by_email` (an email not said to be verified signs no
+  one in).
+- **Files**: holon-host's `the_store_writes_its_files_and_folders_for_its_owner_only` (a unit, a
+  value, their folders, one made above them, a file readable by others written again `0o600`),
+  `the_server_keeps_its_files_for_its_owner_and_says_when_its_folder_isnt`.
 - **Grants**: `deploy_asks_for_what_policy_doesnt_grant_and_only_once`,
   `an_effect_outside_the_grant_is_refused_at_perform_time`, `revoking_an_item_pauses_until_it_is_granted_back`.
 - **Outbound**: `every_rule_is_enforced_at_perform_time` (an ungranted host, plain HTTP, a private
@@ -257,8 +272,7 @@ What is not defended, or only partly:
   `exported_runs_verify_and_a_rewritten_log_doesnt`, `a_batch_goes_only_after_its_hook_has_run`,
   `a_witness_is_reached_over_https_or_on_this_machine`.
 
-Gaps: nothing asserts the mode of the store's, flows' or backups' files, or of a directory; no
-data-plane request under a foreign `Host` is sent; no link is swapped between a folder's check and its open; the `.state`
+Gaps: no data-plane request under a foreign `Host` is sent; no link is swapped between a folder's check and its open; the `.state`
 folder isn't among the folders `no_folder_is_or_holds_what_the_server_keeps_beside_its_files`
 tries.
 
