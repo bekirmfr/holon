@@ -66,19 +66,44 @@ pub(crate) fn is_aside(name: &str) -> bool {
     digits(parts.next()) && digits(parts.next()) && parts.next().is_none()
 }
 
-/// Whether `name` is a batch of runs a log wrote to the backup (recorder.rs `keep_aside`):
-/// `<first seq>-<last seq>.jsonl`, each 20 digits. Nothing else in the backup is the server's to
-/// export or remove: it may be a drive or a synced folder that holds other things too.
-pub(crate) fn is_batch(name: &str) -> bool {
-    let Some((first, last)) = name.strip_suffix(".jsonl").and_then(|n| n.split_once('-')) else { return false };
-    let seq = |p: &str| p.len() == 20 && p.bytes().all(|b| b.is_ascii_digit());
-    seq(first) && seq(last)
+/// What every file the server writes to the backup is named starting with: the server's own are
+/// known by it at a glance (to the server, and to a person looking at the drive), and the server
+/// only ever exports or removes a file that has it. The backup may be a drive or a synced folder
+/// that holds other things too.
+pub(crate) const ARCHIVE_PREFIX: &str = "holon-archive-";
+
+/// The name of a batch of runs a log lets go of, `<first seq>` to `<last seq>` (recorder.rs
+/// `keep_aside`): `holon-archive-<first>-<last>.jsonl`, each seq 20 digits.
+pub(crate) fn batch_name(first: u64, last: u64) -> String {
+    format!("{ARCHIVE_PREFIX}{first:020}-{last:020}.jsonl")
 }
 
-/// Whether `name` is an export the housekeeping made of a batch (`archive_one`):
-/// `<slug>-runs-<first>-<last>.json.gz`.
+/// The seqs a batch's name holds, `<first>-<last>` (each 20 digits), if it is one.
+fn batch_seqs(name: &str) -> Option<&str> {
+    let seqs = name.strip_prefix(ARCHIVE_PREFIX)?.strip_suffix(".jsonl")?;
+    let (first, last) = seqs.split_once('-')?;
+    let seq = |p: &str| p.len() == 20 && p.bytes().all(|b| b.is_ascii_digit());
+    (seq(first) && seq(last)).then_some(seqs)
+}
+
+/// Whether `name` is a batch of runs a log wrote to the backup (`batch_name`): nothing else in
+/// the backup is the server's to export or remove.
+pub(crate) fn is_batch(name: &str) -> bool {
+    batch_seqs(name).is_some()
+}
+
+/// The name of the export the housekeeping makes of the batch `batch` of `slug`'s runs:
+/// `holon-archive-<slug>-runs-<first>-<last>.json.gz`.
+fn export_name(slug: &str, batch: &str) -> Option<String> {
+    batch_seqs(batch).map(|seqs| format!("{ARCHIVE_PREFIX}{slug}-runs-{seqs}.json.gz"))
+}
+
+/// Whether `name` is an export the housekeeping made of a batch (`export_name`).
 fn is_export(name: &str) -> bool {
-    name.strip_suffix(".json.gz").and_then(|n| n.rsplit_once("-runs-")).is_some_and(|(slug, batch)| !slug.is_empty() && is_batch(&format!("{batch}.jsonl")))
+    name.strip_prefix(ARCHIVE_PREFIX)
+        .and_then(|n| n.strip_suffix(".json.gz"))
+        .and_then(|n| n.rsplit_once("-runs-"))
+        .is_some_and(|(slug, seqs)| !slug.is_empty() && is_batch(&format!("{ARCHIVE_PREFIX}{seqs}.jsonl")))
 }
 
 /// Count `dir`'s files that `keep` names (none for a folder that isn't there), removing each one a
@@ -1030,9 +1055,9 @@ fn sweep_folders(state: &AppState, now_ms: u64) -> Report {
     report
 }
 
-/// Turn each batch of runs a log wrote aside to the backup (`<backup>/<slug>/<first>-<last>.jsonl`,
-/// recorder.rs `keep_aside`) into an export `holon verify` checks, gzipped:
-/// `<backup>/<slug>/<slug>-runs-<first>-<last>.json.gz`, with the units the runs ran and the file
+/// Turn each batch of runs a log wrote aside to the backup
+/// (`<backup>/<slug>/holon-archive-<first>-<last>.jsonl`, recorder.rs `keep_aside`) into an export
+/// `holon verify` checks, gzipped: `<backup>/<slug>/holon-archive-<slug>-runs-<first>-<last>.json.gz`, with the units the runs ran and the file
 /// texts they read that the server keeps (none if the deployment is gone). The batch is removed
 /// once its export is written; one that can't be stays (its runs are in it still, as lines), is
 /// warned of, and is tried again at the next look, the others made meanwhile.
@@ -1071,8 +1096,8 @@ fn archive_one(state: &AppState, slug: &str, batch: &Path) -> Result<(), String>
     let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
     std::io::Write::write_all(&mut gz, &json).map_err(|e| e.to_string())?;
     let bytes = gz.finish().map_err(|e| e.to_string())?;
-    let stem = batch.file_stem().and_then(|s| s.to_str()).unwrap_or("runs");
-    let to = batch.with_file_name(format!("{slug}-runs-{stem}.json.gz"));
+    let name = batch.file_name().and_then(|n| n.to_str()).unwrap_or_default();
+    let to = batch.with_file_name(export_name(slug, name).ok_or("not a batch's name")?);
     holon_host::write_atomically(&to, &bytes).map_err(|e| e.to_string())?;
     std::fs::remove_file(batch).map_err(|e| e.to_string())
 }
@@ -1223,14 +1248,19 @@ mod tests {
     /// be a drive that holds other things.
     #[test]
     fn a_backup_batch_and_its_export_are_known_by_their_names_and_nothing_else_is() {
-        let batch = format!("{:020}-{:020}.jsonl", 3, 17);
+        let batch = batch_name(3, 17);
+        assert_eq!(batch, format!("holon-archive-{:020}-{:020}.jsonl", 3, 17));
         assert!(is_batch(&batch), "{batch}");
-        assert!(is_export(&format!("notes-runs-{:020}-{:020}.json.gz", 3, 17)));
-        assert!(is_export(&format!("my-runs-app-runs-{:020}-{:020}.json.gz", 3, 17)), "a slug with -runs- in it");
-        for not in ["data.jsonl", "3-17.jsonl", &format!("{:020}-{:020}.json", 3, 17), &format!("{:020}-{:019}.jsonl", 3, 17), &format!("{:020}-{:020}.jsonl.tmp-1-2", 3, 17)] {
+        let export = export_name("notes", &batch).unwrap();
+        assert_eq!(export, format!("holon-archive-notes-runs-{:020}-{:020}.json.gz", 3, 17));
+        assert!(is_export(&export), "{export}");
+        assert!(is_export(&export_name("my-runs-app", &batch).unwrap()), "a slug with -runs- in it");
+        let unprefixed = format!("{:020}-{:020}.jsonl", 3, 17);
+        for not in ["data.jsonl", "holon-archive-data.jsonl", "holon-archive-3-17.jsonl", &unprefixed, &format!("holon-archive-{:020}-{:020}.json", 3, 17), &format!("holon-archive-{:020}-{:019}.jsonl", 3, 17), &format!("{batch}.tmp-1-2"), &format!("x-{batch}")] {
             assert!(!is_batch(not), "{not}");
         }
-        for not in ["photos.json.gz", "notes-runs-3-17.json.gz", &format!("-runs-{:020}-{:020}.json.gz", 3, 17)] {
+        assert_eq!(export_name("notes", "data.jsonl"), None);
+        for not in ["photos.json.gz", "holon-archive-photos.json.gz", "holon-archive-notes-runs-3-17.json.gz", &format!("notes-runs-{:020}-{:020}.json.gz", 3, 17), &format!("holon-archive--runs-{:020}-{:020}.json.gz", 3, 17)] {
             assert!(!is_export(not), "{not}");
         }
     }

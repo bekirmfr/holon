@@ -1449,14 +1449,15 @@ fn the_runs_a_log_lets_go_of_are_backed_up_as_exports_verify_checks() {
     }
     crate::recorder::sync_logs(&state.deployments).unwrap();
     // The folder holds other things too (a drive's, or a synced folder's): they are left alone.
-    let theirs = [backup.join("projects/data.jsonl"), backup.join("projects/empty.jsonl"), backup.join("kept/notes.jsonl"), backup.join("kept/photo.json.gz")];
+    // Even one named as a batch was before the server's files had their prefix.
+    let theirs = [backup.join("projects/data.jsonl"), backup.join("projects/empty.jsonl"), backup.join("kept/notes.jsonl"), backup.join("kept/photo.json.gz"), backup.join(format!("kept/{:020}-{:020}.jsonl", 1, 2))];
     for (i, p) in theirs.iter().enumerate() {
         std::fs::create_dir_all(p.parent().unwrap()).unwrap();
         std::fs::write(p, if i == 1 { "" } else { "{\"mine\":1}\n" }).unwrap();
     }
     // A batch that can't be made an export (not text): the others are made all the same, and it
     // stays, warned of.
-    let bad = backup.join(format!("kept/{:020}-{:020}.jsonl", 0, 0));
+    let bad = backup.join(format!("kept/{}", storage::batch_name(0, 0)));
     std::fs::write(&bad, [0xff, 0xfe, b'\n']).unwrap();
     storage::archive(&state);
     assert!(bad.exists(), "the batch that can't be made an export stays");
@@ -1473,7 +1474,7 @@ fn the_runs_a_log_lets_go_of_are_backed_up_as_exports_verify_checks() {
     }
     assert!(!backup.join("projects").read_dir().unwrap().flatten().any(|e| e.file_name().to_string_lossy().ends_with(".json.gz")), "nothing exported of what isn't a batch");
     let exports: Vec<std::path::PathBuf> = std::fs::read_dir(backup.join("kept")).unwrap().flatten().map(|e| e.path()).filter(|p| !theirs.contains(p)).collect();
-    assert!(!exports.is_empty() && exports.iter().all(|p| p.to_string_lossy().ends_with(".json.gz")), "{exports:?}");
+    assert!(!exports.is_empty() && exports.iter().all(|p| { let n = p.file_name().unwrap().to_string_lossy(); n.starts_with("holon-archive-kept-runs-") && n.ends_with(".json.gz") }), "{exports:?}");
     let mut seqs = Vec::new();
     for p in &exports {
         let export = verify::read_export(p).unwrap();

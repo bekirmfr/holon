@@ -606,7 +606,7 @@ impl CutPlan {
 }
 
 /// Write the lines a cut-back lets go of (`gone`, the file at `path`'s) to `backup`, when there is
-/// one: `<backup>/<slug>/<first seq>-<last seq>.jsonl`, written whole then renamed in, so the same
+/// one: `<backup>/<slug>/holon-archive-<first seq>-<last seq>.jsonl`, written whole then renamed in, so the same
 /// cut made again writes the same file; the housekeeping turns it into an export `holon verify`
 /// checks, gzipped (storage.rs). An error if it can't be written, unless the cut may go on
 /// without (`backup`'s flag).
@@ -621,7 +621,7 @@ fn keep_aside(backup: Option<&(PathBuf, bool)>, path: &Path, gone: &[&(&[u8], &L
             bytes.extend_from_slice(b);
             bytes.push(b'\n');
         }
-        holon_host::write_atomically(&dir.join(format!("{:020}-{:020}.jsonl", first.seq, last.seq)), &bytes)
+        holon_host::write_atomically(&dir.join(crate::storage::batch_name(first.seq, last.seq)), &bytes)
     })();
     match written {
         Err(e) if !*may_drop => Err(std::io::Error::other(format!("the runs it lets go of couldn't be written to the backup {}: {e}", dir.display()))),
