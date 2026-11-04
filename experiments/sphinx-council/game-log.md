@@ -75,3 +75,39 @@ queen 4,888; king 13,156 (6,208 + 6,948); bishop f8 4,722; knight g8 4,439; coun
 ## Round 3: 3. Bb5
 
 Position: `r1bqkbnr/pppp1ppp/2n5/1B2p3/4P3/5N2/PPPP1PPP/RNBQK2R b KQkq - 3 3`.
+
+| Piece | Proposal | Case |
+|---|---|---|
+| knight c6 | Nd4 | Nd4 is the most active of my moves, and if Nxd4 exd4 the Black position stays sound, while Nce7 is the solid fallback. |
+| pawn a7 | a6 | a6 forces the bishop to decide whether to retreat or trade, and it costs nothing, since a5 would only weaken the b5 square and leave the pawn overextended. |
+| pawn b7 | b6 | Playing b6 develops the c8 bishop toward b7 and adds support to the c5 and a5 squares without weakening the king, and it is my only legal pawn move anyway. |
+| pawn d7 | d6 | d6 defends the e5 pawn against Nf3 and opens the c8 bishop and queen's diagonals, while d5 would let White win e5 after exd5 Nxd5. |
+| pawn f7 | f6 | f6 keeps the pawn chain intact and avoids dropping a pawn to exf5, while still giving the king a little air. |
+| pawn g7 | g6 | The single step keeps the kingside solid and gives Bf8 a diagonal to g7, while g5 is a loose advance that white's knight and bishop can exploit. |
+| pawn h7 | h6 | h6 is the safe tempo move that keeps the kingside intact and takes g5 away from White's pieces, while h5 only weakens the structure around my king. |
+| rook a8 | Rb8 | Rb8 is my only legal move, and it lets the rook step onto the b-file, where it can support a later ...a6 and ...b5 or simply come alive. |
+| queen d8 | Qe7 | Qe7 is the safe, solid development that defends e5 along the e-file and keeps the queen out of Nf3's reach, while Qh4 would simply lose the queen to Nxh4. |
+| king e8 | Ke7 | Stepping to e7 takes the king off the b5-e8 diagonal, which frees the Nc6 to move and Black's development to continue. |
+| bishop f8 | Bc5 | Bc5 develops with pressure on f2 and is the standard active setup in this Italian position, while Be7 would only be a passive regrouping. |
+| knight g8 | Nf6 | Nf6 is the natural developing move that attacks e4 and keeps the kingside solid, while Nh6 and Nge7 are passive or block the e7 development. |
+
+Notes: several pieces misread the position. The king and the h-pawn saw a pin on c6 that isn't
+there (d7 still stands between the bishop and the king), the queen thought Qh4 loses to Nxh4, and
+the bishop called it an Italian. Every piece delivered its answer this round.
+
+**The Sphinx:** 3... **a6** (kept; the a-pawn's proposal). Verdict on 3. Bb5: good. Mood: amused.
+Comment: "A small pawn asks the bishop a big question: stay or go?" Say: (none).
+
+Deliberation: "Bb5 is the Ruy Lopez, a sound and classical choice. The council was split between a6
+and Nf6, and both are fine. I chose a6 because it costs nothing and forces the bishop to decide now,
+and if it takes on c6, my structure holds up."
+
+**White:** 4. **Ba4**.
+
+Tokens: knight c6 5,391; pawns a7 4,564, b7 4,717, d7 5,161, f7 4,923, g7 5,005, h7 4,885; rook a8
+4,620; queen 5,558; king 5,065; bishop f8 4,635; knight g8 5,116; council 59,640; Sphinx 9,644.
+**Round total: 69,284.**
+
+## Round 4: 4. Ba4
+
+Position: `r1bqkbnr/1ppp1ppp/p1n5/4p3/B3P3/5N2/PPPP1PPP/RNBQK2R b KQkq - 1 4`.

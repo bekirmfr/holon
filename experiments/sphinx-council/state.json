@@ -1,11 +1,13 @@
 {
-  "fen": "r1bqkbnr/pppp1ppp/2n5/1B2p3/4P3/5N2/PPPP1PPP/RNBQK2R b KQkq - 3 3",
+  "fen": "r1bqkbnr/1ppp1ppp/p1n5/4p3/B3P3/5N2/PPPP1PPP/RNBQK2R b KQkq - 1 4",
   "moves": [
     "e4",
     "e5",
     "Nf3",
     "Nc6",
-    "Bb5"
+    "Bb5",
+    "a6",
+    "Ba4"
   ],
   "seen": [
     "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq -",
@@ -13,9 +15,11 @@
     "rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq e6",
     "rnbqkbnr/pppp1ppp/8/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R b KQkq -",
     "r1bqkbnr/pppp1ppp/2n5/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq -",
-    "r1bqkbnr/pppp1ppp/2n5/1B2p3/4P3/5N2/PPPP1PPP/RNBQK2R b KQkq -"
+    "r1bqkbnr/pppp1ppp/2n5/1B2p3/4P3/5N2/PPPP1PPP/RNBQK2R b KQkq -",
+    "r1bqkbnr/1ppp1ppp/p1n5/1B2p3/4P3/5N2/PPPP1PPP/RNBQK2R w KQkq -",
+    "r1bqkbnr/1ppp1ppp/p1n5/4p3/B3P3/5N2/PPPP1PPP/RNBQK2R b KQkq -"
   ],
-  "last": "f1b5",
+  "last": "b5a4",
   "status": "playing",
   "winner": "",
   "result": "*",
@@ -23,9 +27,13 @@
     "white": 39,
     "black": 39
   },
-  "pgn": "1. e4 e5 2. Nf3 Nc6 3. Bb5 *",
+  "pgn": "1. e4 e5 2. Nf3 Nc6 3. Bb5 a6 4. Ba4 *",
   "turn": "b",
   "legal": [
+    {
+      "san": "a5",
+      "uci": "a6a5"
+    },
     {
       "san": "Nb4",
       "uci": "c6b4"
@@ -39,6 +47,10 @@
       "uci": "c6a5"
     },
     {
+      "san": "Na7",
+      "uci": "c6a7"
+    },
+    {
       "san": "Nce7",
       "uci": "c6e7"
     },
@@ -47,16 +59,12 @@
       "uci": "c6b8"
     },
     {
-      "san": "a6",
-      "uci": "a7a6"
-    },
-    {
-      "san": "a5",
-      "uci": "a7a5"
-    },
-    {
       "san": "b6",
       "uci": "b7b6"
+    },
+    {
+      "san": "b5",
+      "uci": "b7b5"
     },
     {
       "san": "d6",
@@ -89,6 +97,10 @@
     {
       "san": "h5",
       "uci": "h7h5"
+    },
+    {
+      "san": "Ra7",
+      "uci": "a8a7"
     },
     {
       "san": "Rb8",
@@ -159,6 +171,12 @@
       "proposed": "Nc6",
       "kept": "kept",
       "played": "Nc6"
+    },
+    {
+      "ply": 6,
+      "proposed": "a6",
+      "kept": "kept",
+      "played": "a6"
     }
   ],
   "fallback": {
