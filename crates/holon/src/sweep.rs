@@ -113,7 +113,7 @@ impl Puts {
 
 /// What a sweep found: how many values and bytes it removed (or would, in a dry run), kept as
 /// named, and spared as new.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct Swept {
     pub(crate) values: usize,
     pub(crate) bytes: u64,
@@ -121,6 +121,14 @@ pub(crate) struct Swept {
     pub(crate) kept_bytes: u64,
     pub(crate) spared: usize,
     pub(crate) spared_bytes: u64,
+    /// What is kept, by the deployment that names it (values, bytes): a value is the first
+    /// deployment's to reach it; one another reaches too is `shared`'s (and what it names stays
+    /// the first's: the walk doesn't go through a value twice).
+    pub(crate) held: BTreeMap<String, (usize, u64)>,
+    pub(crate) shared: (usize, u64),
+    /// The kept file texts each deployment's log names (texts, their bytes), read on the same
+    /// pass over the logs: the folders' sweep, skipped when it has nothing to remove, can't say.
+    pub(crate) file_texts: BTreeMap<String, (usize, u64)>,
 }
 
 /// Each 64-digit hex in `text` (a run of exactly that many hex digits), as a hash.
@@ -162,41 +170,59 @@ fn named_in_value(value: &Value, out: &mut BTreeSet<Hash>) {
 
 /// Every hash the deployments name: their live states (each cell by its hash and by what its value
 /// names), and every line, record and document they keep.
-fn named(deployments: &Mutex<BTreeMap<String, Deployment>>) -> Result<BTreeSet<Hash>, String> {
+/// What one deployment names: the hashes, and the file texts its log keeps (each text's id, its
+/// size).
+type Names = (String, BTreeSet<Hash>, BTreeMap<String, u64>);
+
+/// Every hash each deployment names: its live state (each cell by its hash and by what its value
+/// names), and every line, record and document it keeps; and the file texts its log names.
+fn named(deployments: &Mutex<BTreeMap<String, Deployment>>) -> Result<Vec<Names>, String> {
     let json = |what: &str, r: serde_json::Result<String>| r.map_err(|e| format!("its {what} can't be read for what they name: {e}"));
-    let mut texts = Vec::new();
-    let mut logs = Vec::new();
-    let states: Vec<_> = {
+    let mut each = Vec::new();
+    {
         let table = deployments.lock().unwrap();
-        for dep in table.values() {
-            logs.push(std::sync::Arc::clone(&dep.log));
-            texts.extend(dep.events.lines());
+        for (slug, dep) in table.iter() {
+            let mut texts = dep.events.lines();
             texts.push(json("sessions", serde_json::to_string(&dep.life.sessions))?);
             texts.push(json("versions", serde_json::to_string(&dep.versions))?);
             texts.push(json("waiting runs", serde_json::to_string(&dep.parked))?);
             texts.push(json("ticks", serde_json::to_string(&dep.history))?);
             texts.extend(dep.document.as_ref().map(|d| d.to_string()));
-        }
-        table.values().filter_map(|d| d.state.clone()).collect()
-    };
-    let mut hashes = BTreeSet::new();
-    // The logs' files read with the table and their own locks let go, a line at a time: reading
-    // them holds up no run (docs/L4s/resilience-audit-L4.md, R5, R6). A line a run appends after
-    // its file is read names values put since, which the sweep spares.
-    for log in logs {
-        log.each_line(|line| named_in(line, &mut hashes));
-    }
-    for cell in states {
-        let state = cell.state.lock().unwrap();
-        for (key, value) in state.iter() {
-            hashes.extend(state.hash_of(key).copied());
-            named_in_value(value, &mut hashes);
+            each.push((slug.clone(), std::sync::Arc::clone(&dep.log), texts, dep.state.clone()));
         }
     }
-    for text in &texts {
-        named_in(text, &mut hashes);
+    let mut named = Vec::new();
+    for (slug, log, texts, state) in each {
+        let mut hashes = BTreeSet::new();
+        let mut file_texts = BTreeMap::new();
+        // The log's file read with the table and its own lock let go, a line at a time: reading it
+        // holds up no run (docs/L4s/resilience-audit-L4.md, R5, R6). A line a run appends after
+        // its file is read names values put since, which the sweep spares.
+        log.each_line(|line| {
+            named_in(line, &mut hashes);
+            if line.contains("\"blob\":")
+                && let Ok(entry) = serde_json::from_str::<crate::recorder::LogEntry>(line)
+            {
+                for file in entry.reads.iter().filter_map(|r| r.file.as_ref()) {
+                    if let Some(blob) = &file.blob {
+                        file_texts.insert(blob.clone(), file.size);
+                    }
+                }
+            }
+        });
+        if let Some(cell) = state {
+            let state = cell.state.lock().unwrap();
+            for (key, value) in state.iter() {
+                hashes.extend(state.hash_of(key).copied());
+                named_in_value(value, &mut hashes);
+            }
+        }
+        for text in &texts {
+            named_in(text, &mut hashes);
+        }
+        named.push((slug, hashes, file_texts));
     }
-    Ok(hashes)
+    Ok(named)
 }
 
 /// Remove from `store` every value nothing the deployments keep names, directly or through another
@@ -215,27 +241,43 @@ pub(crate) fn sweep(store: &SharedStore, deployments: &Mutex<BTreeMap<String, De
             there.insert(hash, (entry.path(), entry.metadata().map_or(0, |m| m.len())));
         }
     }
-    let mut kept = BTreeSet::new();
-    let mut next: Vec<Hash> = named(deployments)?.into_iter().filter(|h| there.contains_key(h)).collect();
-    while let Some(hash) = next.pop() {
-        if !kept.insert(hash) {
-            continue;
+    // Walked from each deployment's names in turn: a value is kept, and the first deployment's to
+    // reach it; one another reaches too is shared.
+    const SHARED: usize = usize::MAX;
+    let named = named(deployments)?;
+    let mut owner: HashMap<Hash, usize> = HashMap::new();
+    for (i, (_, hashes, _)) in named.iter().enumerate() {
+        let mut next: Vec<Hash> = hashes.iter().filter(|h| there.contains_key(*h)).copied().collect();
+        while let Some(hash) = next.pop() {
+            if let Some(o) = owner.get_mut(&hash) {
+                if *o != i {
+                    *o = SHARED;
+                }
+                continue;
+            }
+            owner.insert(hash, i);
+            let value = match store.get_value(&hash) {
+                Ok(Some(v)) => v,
+                Ok(None) => continue,
+                Err(e) => return Err(format!("the value {} can't be read, so what it names can't be told: {e:?}", to_hex(&hash))),
+            };
+            let mut names = BTreeSet::new();
+            named_in_value(&value, &mut names);
+            next.extend(names.into_iter().filter(|h| there.contains_key(h) && owner.get(h).is_none_or(|o| *o != i)));
         }
-        let value = match store.get_value(&hash) {
-            Ok(Some(v)) => v,
-            Ok(None) => continue,
-            Err(e) => return Err(format!("the value {} can't be read, so what it names can't be told: {e:?}", to_hex(&hash))),
-        };
-        let mut names = BTreeSet::new();
-        named_in_value(&value, &mut names);
-        next.extend(names.into_iter().filter(|h| there.contains_key(h) && !kept.contains(h)));
     }
     let since = now_ms.saturating_sub(spare_ms);
     let mut swept = Swept::default();
     for (hash, (path, size)) in there {
-        if kept.contains(&hash) {
+        if let Some(o) = owner.get(&hash) {
             swept.kept += 1;
             swept.kept_bytes += size;
+            let held = match named.get(*o) {
+                Some((slug, _, _)) => swept.held.entry(slug.clone()).or_default(),
+                None => &mut swept.shared,
+            };
+            held.0 += 1;
+            held.1 += size;
             continue;
         }
         // Held while it is looked at and removed, so no put of it comes between.
@@ -260,6 +302,11 @@ pub(crate) fn sweep(store: &SharedStore, deployments: &Mutex<BTreeMap<String, De
             std::thread::sleep(PAUSE);
         }
     }
+    for (slug, _, texts) in &named {
+        if !texts.is_empty() {
+            swept.file_texts.insert(slug.clone(), (texts.len(), texts.values().sum()));
+        }
+    }
     Ok(Some(swept))
 }
 
@@ -279,7 +326,7 @@ impl Scheduled {
             return Ok(None);
         }
         let swept = sweep(store, deployments, now_ms, SPARES_MS, false, true)?;
-        self.last = swept.map(|s| (puts, s.spared > 0));
+        self.last = swept.as_ref().map(|s| (puts, s.spared > 0));
         Ok(swept)
     }
 }
@@ -298,8 +345,10 @@ pub(crate) fn route(state: &AppState, request: &rouille::Request, by: &str) -> O
     };
     let dry_run = serde_json::from_slice::<serde_json::Value>(&body).ok().and_then(|b| b["dry_run"].as_bool()).unwrap_or(false);
     // An admin's, now: as fast as it can, holding up the server's runs while it removes (`PACE`).
-    Some(match sweep(&state.store, &state.deployments, now_ms(), SPARES_MS, dry_run, false) {
+    let now = now_ms();
+    Some(match sweep(&state.store, &state.deployments, now, SPARES_MS, dry_run, false) {
         Ok(Some(s)) => {
+            state.sweeps.note(&s, now);
             if !dry_run && s.values > 0 {
                 state.activity.record("swept the store", &format!("{} values, {} freed", s.values, size_text(s.bytes)), Some(by));
             }

@@ -433,6 +433,12 @@ impl holon_core::Observer for Timer {
 pub struct Log {
     next_seq: u64,
     entries: VecDeque<LogEntry>,
+    /// The length of the line each entry in memory was written as, in step with `entries`: what
+    /// the host's view counts a log's memory by (storage.rs; an entry takes 1.1 to 3.6 times its
+    /// line in memory, measured by `measure_log_memory`).
+    entry_lines: VecDeque<usize>,
+    /// Their sum.
+    entry_bytes: u64,
     /// How many entries it keeps.
     keep: usize,
     /// How old an entry it keeps, in milliseconds (none: any age).
@@ -900,6 +906,8 @@ impl Log {
         let mut log = Log {
             next_seq: 0,
             entries: VecDeque::new(),
+            entry_lines: VecDeque::new(),
+            entry_bytes: 0,
             keep: keep.max(1),
             max_age_ms,
             file_oldest_ms: 0,
@@ -941,6 +949,8 @@ impl Log {
                 log.head = line_hash(line);
                 log.next_seq = log.next_seq.max(entry.seq + 1);
                 log.entries.push_back(entry);
+                log.entry_lines.push_back(line.len());
+                log.entry_bytes += line.len() as u64;
             }
         }
         log.prune(now_ms());
@@ -974,6 +984,9 @@ impl Log {
     fn prune(&mut self, now_ms: u64) {
         let cutoff = self.max_age_ms.map(|age| now_ms.saturating_sub(age));
         while self.entries.len() > self.keep || self.entries.front().is_some_and(|e| cutoff.is_some_and(|c| e.at_ms < c)) {
+            if let Some(n) = self.entry_lines.pop_front() {
+                self.entry_bytes -= n as u64;
+            }
             if let Some(old) = self.entries.pop_front() {
                 // Freed after the lock, unless nobody frees them (a log used without its cell).
                 if self.gone.len() < 64 {
@@ -1028,6 +1041,8 @@ impl Log {
         self.export("run", entry.seq, &self.head, entry.at_ms);
         let at = LineAt { offset: 0, len: line.len(), at_ms: entry.at_ms, seq: entry.seq, prev: entry.prev.clone() };
         self.entries.push_back(entry);
+        self.entry_lines.push_back(line.len());
+        self.entry_bytes += line.len() as u64;
         self.prune(now_ms());
         if let Err(e) = self.keep_line(&line, at) {
             eprintln!("holon: could not keep the flow log in {:?}: {e}", self.file);
@@ -1278,6 +1293,12 @@ impl Log {
             return std::fs::read_to_string(path).map(|t| t.lines().map(str::to_string).collect()).unwrap_or_default();
         }
         self.entries.iter().filter_map(|e| serde_json::to_string(e).ok()).collect()
+    }
+
+    /// What it holds, for the host's view: the entries kept in memory and the bytes of the lines
+    /// they were written as; the lines its file holds.
+    pub fn holds(&self) -> (usize, u64, usize) {
+        (self.entries.len(), self.entry_bytes, self.written)
     }
 
     /// The seqs of the entries kept that don't follow the line before them: the log was changed

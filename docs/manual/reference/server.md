@@ -57,7 +57,12 @@ server holds now:
 - **what crashes left**: a file is written aside and renamed over, so a server stopped in the
   middle of a write can leave a `….tmp-…` or `….cut-…` file. Once one is older than any write
   takes (15 minutes), the count removes it, and says so in the server's log and its activity;
-- **the sweeps**: how often, when next, and what the last of each removed.
+- **the sweeps**: how often, when next, and what the last of each removed;
+- **each flow**, the most first (`holon host --for SLUG`, `GET /deployments/<slug>/holds`, each
+  flow's page in both editors): its log in memory (the runs it keeps, about three times the lines
+  they were written as: measured 1.1 to 3.6 times) and on disk, its live state, its flow in the
+  cache (and what it shares with other flows there), and its states and file texts in the store,
+  as the store's last sweep found them: a value two flows name is counted once, as shared.
 
 ## The policy
 

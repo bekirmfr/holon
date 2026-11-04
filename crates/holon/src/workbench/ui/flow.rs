@@ -166,7 +166,13 @@ fn dashboard(f: &mut Frame, app: &App, d: &Detail, area: Rect) {
 
     // Left: the last day, then what it may do.
     let may = crate::workbench::client::strings(&d.manifest, "items");
-    let [day, may_area] = Layout::vertical([Constraint::Length(5), Constraint::Min(3)]).areas(left);
+    // What it holds, in memory and on disk (storage.rs), below what it may do.
+    let holds: Vec<String> = if d.holds.is_object() { crate::storage::holds_lines(&d.holds) } else { vec![] };
+    let holds_h = if holds.is_empty() { 0 } else { holds.len() as u16 + 2 };
+    let [day, may_area, holds_area] = Layout::vertical([Constraint::Length(5), Constraint::Min(3), Constraint::Length(holds_h)]).areas(left);
+    if holds_h > 0 {
+        f.render_widget(Paragraph::new(holds.into_iter().map(|l| Line::from(Span::raw(l))).collect::<Vec<_>>()).block(panel("It holds", false)), holds_area);
+    }
     let block = panel("Last 24 h", false);
     let inner = block.inner(day);
     f.render_widget(block, day);

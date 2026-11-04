@@ -794,7 +794,7 @@ function LogTab({
                 key={t.label}
                 className="hl-view__tally"
                 style={{ display: "flex", gap: 10, padding: "2px 6px", color: dim, borderBottom: "1px solid #1b2a45" }}
-                title="this handler's line says unrecorded: its runs are counted, not logged, so they can't be replayed or explained; a failed one is in the log"
+                title="this handler's line says unrecorded: its runs are counted, not logged, failed or not, so they can't be replayed or explained; make it lazy for a while to see why one fails"
               >
                 <span style={{ color: ink }}>{t.label}</span>
                 <span>not recorded</span>

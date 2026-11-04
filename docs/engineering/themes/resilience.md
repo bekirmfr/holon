@@ -187,6 +187,10 @@ host can refuse them all).
 
 ## 5. Open
 
+- R8: a log keeps every run it keeps in memory, whole (1.1 to 3.6 times its lines), bounded by no
+  cache's size: the soaks' `notes` listing holds about 86 MB (RA §2.12). The host's view shows it,
+  a row per flow (storage-L4.md, step 3).
+
 - R6's second half: fewer, larger files per write.
 - A review of `aa2704a..HEAD` by a reader given the code, not the audit.
 - Gaps in the tests ([Testing](testing.md#4-gaps)): nothing in CI checks the caches against real

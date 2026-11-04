@@ -117,7 +117,22 @@ struct Census {
     file_texts: Option<crate::blobs::Held>,
     /// The temporary files a crash left, removed since the server began.
     leftovers: Count,
+    /// What each deployment's names keep in the store, and the file texts its log names, as the
+    /// last store sweep (the server's or an admin's, a dry run too) walked them.
+    shares: Option<Shares>,
 }
+
+/// What the store's last sweep found each deployment holds there (sweep.rs, `Swept::held`).
+struct Shares {
+    at_ms: u64,
+    store: std::collections::BTreeMap<String, (usize, u64)>,
+    shared: (usize, u64),
+    file_texts: std::collections::BTreeMap<String, (usize, u64)>,
+}
+
+/// An entry kept in a log's memory takes about this many times the line it was written as:
+/// measured 1.1 to 3.6 times on the soaks' logs (`measure_log_memory`).
+const ENTRY_MEMORY: u64 = 3;
 
 fn now_ms() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64)
@@ -232,6 +247,7 @@ impl Sweeps {
         let mut report = Report { at_ms: now_ms, ..Report::default() };
         match self.scheduled.lock().unwrap().sweep(&state.store, &state.deployments, now_ms) {
             Ok(Some(s)) => {
+                self.note(&s, now_ms);
                 report.removed = s.values as u64;
                 report.bytes = s.bytes;
                 if s.values > 0 {
@@ -250,6 +266,58 @@ impl Sweeps {
         }
         report.took_ms = began.elapsed().as_millis() as u64;
         Some(report)
+    }
+
+    /// Note what a store sweep found each deployment holds (a dry run's too: it walks the same).
+    pub(crate) fn note(&self, swept: &sweep::Swept, at_ms: u64) {
+        self.census.lock().unwrap().shares = Some(Shares { at_ms, store: swept.held.clone(), shared: swept.shared, file_texts: swept.file_texts.clone() });
+    }
+
+    /// What `slug` holds, in memory and on disk, or none if there is no such deployment.
+    fn holds(&self, state: &AppState, slug: &str) -> Option<serde_json::Value> {
+        let (log, unit, cell) = {
+            let table = state.deployments.lock().unwrap();
+            let dep = table.get(slug)?;
+            (std::sync::Arc::clone(&dep.log), dep.unit, dep.state.clone())
+        };
+        let (entries, entry_bytes, lines) = log.with(|l| l.holds());
+        let mut file = Count::default();
+        if let Some(path) = crate::recorder::file_for(&state.deployments_path, slug)
+            && let Ok(m) = std::fs::metadata(path)
+        {
+            file.add(&m);
+        }
+        let state_memory: u64 = cell.map_or(0, |c| c.state.lock().unwrap().iter().map(|(k, v)| k.len() as u64 + crate::units::footprint(v)).sum());
+        let flow = state.store.3.held_for(&unit);
+        let census = self.census.lock().unwrap();
+        let shares = census.shares.as_ref();
+        let store = shares.map(|s| s.store.get(slug).copied().unwrap_or_default());
+        let texts = shares.map(|s| s.file_texts.get(slug).copied().unwrap_or_default());
+        let log_memory = entry_bytes * ENTRY_MEMORY;
+        let memory = log_memory + state_memory + flow.map_or(0, |f| f.0);
+        let disk = file.on_disk + store.map_or(0, |s| s.1) + texts.map_or(0, |t| t.1);
+        Some(serde_json::json!({
+            "slug": slug,
+            "memory": memory,
+            "disk": disk,
+            "log": { "entries": entries, "entry_bytes": entry_bytes, "memory": log_memory, "lines": lines, "file": file },
+            "state_memory": state_memory,
+            "flow_cache": flow.map(|(own, shared)| serde_json::json!({ "own": own, "shared": shared })),
+            "store": store.map(|(values, bytes)| serde_json::json!({ "values": values, "bytes": bytes })),
+            "file_texts": texts.map(|(texts, bytes)| serde_json::json!({ "texts": texts, "bytes": bytes })),
+            "shares_at_ms": shares.map(|s| s.at_ms),
+        }))
+    }
+
+    /// Every deployment's `holds`, the most first; and what the store keeps that more than one names.
+    fn all_holds(&self, state: &AppState) -> serde_json::Value {
+        let slugs: Vec<String> = state.deployments.lock().unwrap().keys().cloned().collect();
+        let mut each: Vec<serde_json::Value> = slugs.iter().filter_map(|s| self.holds(state, s)).collect();
+        let total = |v: &serde_json::Value| v["memory"].as_u64().unwrap_or(0) + v["disk"].as_u64().unwrap_or(0);
+        each.sort_by_key(|v| std::cmp::Reverse(total(v)));
+        let census = self.census.lock().unwrap();
+        let shared = census.shares.as_ref().map(|s| serde_json::json!({ "values": s.shared.0, "bytes": s.shared.1 }));
+        serde_json::json!({ "each": each, "shared_in_store": shared })
     }
 
     /// `GET /admin/host`'s part about what the store and the folders' texts hold.
@@ -361,6 +429,7 @@ pub(crate) fn host_view(state: &AppState) -> serde_json::Value {
         },
         "disks": disks(state),
         "kept": state.sweeps.kept_view(state),
+        "deployments": state.sweeps.all_holds(state),
         "sweeps": state.sweeps.view(&state.policy()),
     })
 }
@@ -456,6 +525,16 @@ pub(crate) fn host_lines(v: &serde_json::Value) -> Vec<String> {
     if n(&removed["files"]) > 0 || n(&waiting["files"]) > 0 {
         lines.push(format!("  left by crashes  {} files removed ({}), {} still to remove", n(&removed["files"]), size(&removed["on_disk"]), n(&waiting["files"])));
     }
+    let flows = v["deployments"]["each"].as_array().cloned().unwrap_or_default();
+    if !flows.is_empty() {
+        let mut rows = vec![["flow", "memory", "disk", "log in memory", "log on disk", "in the store"].map(String::from).to_vec()];
+        for f in &flows {
+            let store = if f["store"].is_object() { format!("{} values", n(&f["store"]["values"])) } else { "not counted yet".into() };
+            rows.push(vec![s(&f["slug"]).to_string(), format!("~{}", size(&f["memory"])), size(&f["disk"]), format!("~{} ({} runs)", size(&f["log"]["memory"]), n(&f["log"]["entries"])), size(&f["log"]["file"]["on_disk"]), store]);
+        }
+        lines.push("flows        what each holds, the most first (memory about: a run kept in memory takes about 3 times its line)".to_string());
+        lines.extend(crate::cmdline::table(&rows).into_iter().map(|l| format!("  {l}")));
+    }
     let sw = &v["sweeps"];
     let mut store = sweep_lines(sw, "store", "values").into_iter();
     lines.push(format!("sweeps       {}", store.next().unwrap_or_default().trim_start_matches("the server sweeps ")));
@@ -470,33 +549,67 @@ pub(crate) fn full(disk: &serde_json::Value) -> u64 {
     if size == 0 { 0 } else { (size.saturating_sub(free) * 100).div_ceil(size) }
 }
 
+/// `GET /deployments/<slug>/holds` as lines (`holon host --for SLUG`, each flow's page in the
+/// terminal editor).
+pub(crate) fn holds_lines(v: &serde_json::Value) -> Vec<String> {
+    let size = |x: &serde_json::Value| x.as_u64().map_or("?".to_string(), folders::size_text);
+    let n = |x: &serde_json::Value| x.as_u64().unwrap_or(0);
+    let log = &v["log"];
+    let mut lines = vec![
+        format!("in memory    about {}", size(&v["memory"])),
+        format!("  its log      about {}: {} runs kept, {} as written", size(&log["memory"]), n(&log["entries"]), size(&log["entry_bytes"])),
+        format!("  its state    {}", size(&v["state_memory"])),
+    ];
+    lines.push(match v["flow_cache"].as_object() {
+        Some(f) => format!("  its flow     {} cached ({} more shared with other flows)", size(&f["own"]), size(&f["shared"])),
+        None => "  its flow     not in the cache now".to_string(),
+    });
+    lines.push(format!("on disk      {}", size(&v["disk"])));
+    lines.push(format!("  its log      {}: {} lines", size(&log["file"]["on_disk"]), n(&log["lines"])));
+    let at = v["shares_at_ms"].as_u64().map(|at| format!(" (as the store's last sweep found, {} ago)", span(now_ms().saturating_sub(at))));
+    match (v["store"].as_object(), &at) {
+        (Some(st), Some(at)) => lines.push(format!("  its states   {} values, {}{at}", n(&st["values"]), size(&st["bytes"]))),
+        _ => lines.push("  its states   not counted yet: the store's first sweep counts them".to_string()),
+    }
+    if let Some(t) = v["file_texts"].as_object().filter(|t| n(&t["texts"]) > 0) {
+        lines.push(format!("  file texts   {} its runs read, {}", n(&t["texts"]), size(&t["bytes"])));
+    }
+    lines
+}
+
 fn s(v: &serde_json::Value) -> &str {
     v.as_str().unwrap_or("")
 }
 
-const HOST_USAGE: &str = "usage: holon host [--json] [--server PORT|URL]
+const HOST_USAGE: &str = "usage: holon host [--for SLUG] [--json] [--server PORT|URL]
 
   What the host holds: the server's memory and its caches against their sizes; each disk it keeps
   things on, how full; what it keeps there (the content store's values, counted at its last
   sweep, the logs, the folders' kept texts, and what a crash left, removed once it is old); and
-  how often it sweeps, when next, and what the last sweeps removed. An admin's.
+  how often it sweeps, when next, and what the last sweeps removed; and what each flow holds, the
+  most first. An admin's. --for SLUG: what one flow holds, in memory and on disk (anyone who may
+  read the deployment).
 ";
 
 /// `holon host`.
 pub(crate) fn cli(args: &[String]) -> i32 {
     const WHO: &str = "holon host";
     let usage = format!("{HOST_USAGE}\n{}", crate::cmdline::SIGN_IN);
-    let args = match crate::cmdline::parse(WHO, &usage, args, &[], &["--json"]) {
+    let args = match crate::cmdline::parse(WHO, &usage, args, &["--for"], &["--json"]) {
         Ok(a) => a,
         Err(code) => return code,
     };
-    match crate::cmdline::json(WHO, &args, "GET", "/admin/host", None) {
+    let (path, lines): (String, fn(&serde_json::Value) -> Vec<String>) = match args.value("--for") {
+        Some(slug) => (format!("/deployments/{}/holds", crate::cmdline::seg(slug)), holds_lines),
+        None => ("/admin/host".into(), host_lines),
+    };
+    match crate::cmdline::json(WHO, &args, "GET", &path, None) {
         Ok(v) if args.flag("--json") => {
             crate::cmdline::print_json(&v);
             0
         }
         Ok(v) => {
-            host_lines(&v).iter().for_each(|l| println!("{l}"));
+            lines(&v).iter().for_each(|l| println!("{l}"));
             0
         }
         Err(code) => code,
@@ -535,6 +648,15 @@ pub(crate) fn start(state: std::sync::Arc<std::sync::OnceLock<AppState>>) {
             state.sweeps.tick(state, now_ms());
         }
     });
+}
+
+/// `GET /deployments/<slug>/holds`: what one deployment holds, in memory and on disk; as readable
+/// as the deployment is.
+pub(crate) fn handle_get_holds(state: &AppState, slug: &str) -> Response {
+    match state.sweeps.holds(state, slug) {
+        Some(v) => Response::json(&v),
+        None => err(404, format!("no deployment {slug:?}")),
+    }
 }
 
 /// Write `sweep_every` into the policy file's `[storage]`, its other sections, keys and comments
@@ -632,6 +754,28 @@ mod tests {
         assert_eq!(names, ["a.jsonl", "b.jsonl", "notes"].map(String::from).into_iter().collect());
         assert!(count_dir(&dir.join("none"), |_| true, later, &mut left).is_none(), "a folder not there counts nothing");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn what_a_flow_holds_reads_as_lines() {
+        let v = serde_json::json!({
+            "slug": "notes-api", "memory": 90 << 20, "disk": 60 << 20,
+            "log": { "entries": 500, "entry_bytes": 30 << 20, "memory": 90 << 20, "lines": 1130, "file": { "files": 1, "bytes": 56 << 20, "on_disk": 56 << 20 } },
+            "state_memory": 2048, "flow_cache": { "own": 195 << 10, "shared": 0 },
+            "store": null, "file_texts": null, "shares_at_ms": null,
+        });
+        assert_eq!(
+            holds_lines(&v),
+            [
+                "in memory    about 90 MiB",
+                "  its log      about 90 MiB: 500 runs kept, 30 MiB as written",
+                "  its state    2 KiB",
+                "  its flow     195 KiB cached (0 bytes more shared with other flows)",
+                "on disk      60 MiB",
+                "  its log      56 MiB: 1130 lines",
+                "  its states   not counted yet: the store's first sweep counts them",
+            ]
+        );
     }
 
     #[test]

@@ -1094,6 +1094,52 @@ fn the_host_says_what_it_holds_in_memory_and_on_its_disks() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// What each flow holds (`GET /deployments/<slug>/holds`, and a row each in `GET /admin/host`):
+/// its log in memory (about three times the lines its kept runs were written as) and on disk, its
+/// live state, its flow in the cache; and its states in the store once a store sweep (an admin's
+/// dry run too) has walked them.
+#[test]
+fn each_flow_says_what_it_holds_in_memory_and_on_disk() {
+    let dir = unique_temp_path("holds");
+    let disk = FileStore::new(&dir).unwrap();
+    let values = disk.values_dir();
+    let state = test_state_with(SharedStore::on_disk(Box::new(disk), values));
+    let plan = holon_author::agent::plan("flow kept\nkeep 3 runs\nstate n\n\naction bump (input) {\n  state.n = (state.n ?? 0) + 1\n}\n").unwrap_or_else(|e| panic!("{e}"));
+    let requirements = plan.requirements.clone().unwrap();
+    for u in &plan.units {
+        assert_eq!(route(&state, &req("POST", "/unit", u.clone())).status_code, 200);
+    }
+    let preview = body_json(route(&state, &req("POST", "/deploy/preview", serde_json::to_vec(&serde_json::json!({ "slug": "kept", "unit": plan.unit, "requirements": requirements })).unwrap())));
+    let ask = serde_json::json!({ "acknowledge": preview["needs_approval"], "requirements": requirements });
+    assert_eq!(deploy_json(&state, "kept", parse_hash(&plan.unit).unwrap(), ask).status_code, 200);
+    for _ in 0..5 {
+        assert_eq!(route(&state, &req("POST", "/trigger/kept/bump", b"{}".to_vec())).status_code, 200);
+    }
+    let holds = || body_json(route(&state, &req("GET", "/deployments/kept/holds", vec![])));
+    let h = holds();
+    let log = &h["log"];
+    assert_eq!(log["entries"], 3, "the runs it keeps: {h}");
+    let entry_bytes = log["entry_bytes"].as_u64().unwrap();
+    assert!(entry_bytes > 1000, "{h}");
+    assert_eq!(log["memory"].as_u64(), Some(entry_bytes * 3));
+    assert!(h["state_memory"].as_u64().unwrap() > 0, "it keeps n: {h}");
+    let flow_own = h["flow_cache"]["own"].as_u64().unwrap();
+    assert!(flow_own > 0, "{h}");
+    assert_eq!(h["memory"].as_u64(), Some(entry_bytes * 3 + h["state_memory"].as_u64().unwrap() + flow_own));
+    assert_eq!((h["store"].clone(), h["shares_at_ms"].clone()), (serde_json::Value::Null, serde_json::Value::Null), "not counted before a sweep: {h}");
+    // A store sweep, an admin's dry run, walks what each names.
+    let dry = route(&state, &req("POST", "/admin/store/sweep", br#"{"dry_run":true}"#.to_vec()));
+    assert_eq!(dry.status_code, 200);
+    let h = holds();
+    assert!(h["store"]["values"].as_u64().unwrap() > 0, "its live state and kept runs' states: {h}");
+    assert!(h["shares_at_ms"].as_u64().is_some());
+    assert_eq!(h["disk"].as_u64(), Some(h["log"]["file"]["on_disk"].as_u64().unwrap() + h["store"]["bytes"].as_u64().unwrap()));
+    let host = body_json(route(&state, &req("GET", "/admin/host", vec![])));
+    assert_eq!(host["deployments"]["each"][0]["slug"], "kept", "{host}");
+    assert_eq!(route(&state, &req("GET", "/deployments/nobody/holds", vec![])).status_code, 404);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// An admin sets how often the server sweeps (`POST /admin/storage`): written into `holon.toml`'s
 /// `[storage]`, the rest of the file as it was, comments too, and in force at once; a setting that
 /// isn't one changes nothing.
@@ -7839,6 +7885,28 @@ fn a_partial_closure_is_loaded_again_once_it_is_whole() {
     store.put(&leaf).unwrap();
     assert!(closure(&state.store, a).unwrap().resolve(&l).is_some());
     assert_eq!(state.store.3.held().0, 1);
+}
+
+/// How much memory a log's entries take against the lines they were written as: what the host's
+/// view counts a log in memory by (storage.rs). By hand, on a real log:
+/// `HOLON_MEASURE_LOG=path/to/slug.jsonl cargo test --release -p holon -- --ignored measure_log_memory --nocapture`.
+#[test]
+#[ignore]
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+fn measure_log_memory() {
+    fn in_use() -> u64 {
+        // SAFETY: mallinfo2 only reads the allocator's counters.
+        unsafe { libc::mallinfo2().uordblks as u64 }
+    }
+    let Ok(path) = std::env::var("HOLON_MEASURE_LOG") else { return };
+    let text = std::fs::read_to_string(&path).unwrap();
+    let lines: Vec<&str> = text.lines().collect();
+    let written: usize = lines.iter().map(|l| l.len()).sum();
+    let before = in_use();
+    let entries: Vec<recorder::LogEntry> = lines.iter().filter_map(|l| serde_json::from_str(l).ok()).collect();
+    let after = in_use();
+    println!("{path}: {} entries, {written} bytes as lines, {} bytes in memory: {:.2}x", entries.len(), after - before, (after - before) as f64 / written as f64);
+    drop(entries);
 }
 
 /// How much memory the flow and value caches hold against what their budgets count (S1): the

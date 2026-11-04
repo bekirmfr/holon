@@ -123,6 +123,7 @@ A slower path that is still right would pass every test above; these fail instea
   `an_admin_sets_how_often_the_server_sweeps_in_its_policy_file` (its other sections and comments
   kept; the e2e `rolling-log` test sets it from the admin page),
   `the_host_says_what_it_holds_in_memory_and_on_its_disks`,
+  `each_flow_says_what_it_holds_in_memory_and_on_disk`,
   `what_a_crash_left_is_removed_once_it_is_old_and_nothing_else_is`,
   `a_write_made_aside_is_known_by_its_name_and_nothing_else_is`,
   `a_store_sweep_clears_the_states_no_kept_run_names_and_nothing_else`,
@@ -172,6 +173,7 @@ None of these fail on a slower build; they print numbers. See [Measuring](measur
 | `request_throughput` | `cargo test --release -p holon -- --ignored request_throughput --nocapture` (`HOLON_PERF_SECS`) | requests a second, p50 and p99 at 1, 8 and 64 threads, beside 30 other deployments, in process |
 | `profile_one_route` | `HOLON_PROFILE=hello\|notes\|crunch HOLON_PROFILE_N=2000 cargo test --release -p holon -- --ignored profile_one_route`, under callgrind | one route, repeated, for a profiler |
 | `measure_cache_memory` | `cargo test --release -p holon -- --ignored measure_cache_memory --nocapture` (Linux, glibc) | each cache's bytes in use (`mallinfo2`) against what it counts |
+| `measure_log_memory` | `HOLON_MEASURE_LOG=path/to/slug.jsonl cargo test --release -p holon -- --ignored measure_log_memory --nocapture` (Linux, glibc) | a log's entries' bytes in memory against the lines they were written as (1.1 to 3.6 times, on the soaks' logs) |
 | `what_a_call_costs` | `cargo test -p holon-module --test js_engine -- --ignored` | a js call's cost, cold and warm |
 
 ## 4. Gaps

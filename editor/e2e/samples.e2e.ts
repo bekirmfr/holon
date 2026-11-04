@@ -1457,6 +1457,8 @@ test("rolling-log keeps only its newest 5 runs, as its deploy settings ask, whil
   await expect(page.getByText(/^flow cache: \d+ flows, .* of 256 MiB/)).toBeVisible();
   await expect(page.getByText(/^disk: \d+% full: .* free of .* in use\): data, /).first()).toBeVisible();
   await expect(page.getByRole("meter").first()).toBeVisible();
+  // And what each flow holds, a row each: this one among them.
+  await expect(page.getByLabel("what each flow holds").getByText("rolling-log", { exact: true })).toBeVisible();
   // How often the server sweeps on its own: shown here, and set here, into its holon.toml.
   const schedule = page.getByText("the server sweeps on its own").locator("..");
   await expect(schedule).toContainText("every 10m");

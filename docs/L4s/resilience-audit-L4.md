@@ -318,6 +318,12 @@ command's 60-second wait), and holds up the server's runs while it does.
 second that is about 5.5–6.4 GB (1.4–1.65 million files) of unnamed values while writes go on.
 Fewer, larger files per write would lower it.
 
+## 2.12 Found by the host's view: R8
+
+| # | Where | What | Fix |
+|---|---|---|---|
+| R8 | recorder.rs, `Log::entries` | **Found by storage step 3** (storage-L4.md). A log keeps every run it keeps in memory, whole, as parsed entries, beside its file: 1.1 to 3.6 times the lines they were written as (`measure_log_memory`, on the soaks' logs). The soaks' `notes` listing holds about 86 MB, `crunch` about 52 MB, most of the server's memory beyond its caches; and nothing bounds it: no cache's size counts it, and a deployment approved to keep 20,000 runs (the ceiling) of a 50 KB line would hold about 3.6 GB. | To decide: a log on file keeps only its newest few runs in memory (what the runs list shows first) and reads older ones from its file by the index it keeps already (`lines`), as a cut-back does. |
+
 ## 3. Order
 
 1. **R1–R4**: done (§2.6).

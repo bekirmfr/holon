@@ -409,6 +409,22 @@ impl FlowCache {
         (kept.closures.len(), kept.units.len(), kept.bytes)
     }
 
+    /// What `root`'s closure takes, if it is kept, for the host's view (storage.rs): its own bytes
+    /// and its units held by it alone, and its units other closures hold too.
+    pub(crate) fn held_for(&self, root: &Hash) -> Option<(u64, u64)> {
+        let kept = self.0.lock().unwrap();
+        let closure = kept.closures.get(root)?;
+        let (mut own, mut shared) = (closure.bytes, 0);
+        for hash in closure.loaded.0.units.keys() {
+            match kept.units.get(hash) {
+                Some(u) if u.holders > 1 => shared += u.bytes,
+                Some(u) => own += u.bytes,
+                None => {}
+            }
+        }
+        Some((own, shared))
+    }
+
     /// What it holds against its budget, for the host's view (storage.rs): closures, bytes, budget.
     pub(crate) fn usage(&self) -> (usize, u64, u64) {
         let kept = self.0.lock().unwrap();

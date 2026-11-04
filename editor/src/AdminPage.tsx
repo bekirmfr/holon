@@ -50,7 +50,7 @@ import {
   type SecretInfo,
   type TokenEntry,
 } from "./server";
-import { cacheLine, diskFull, diskLine, isEvery, keptLines, reportLine, scheduleLine, sizeText } from "./storage";
+import { cacheLine, diskFull, diskLine, holdsLines, isEvery, keptLines, reportLine, scheduleLine, sizeText } from "./storage";
 import { useDialog } from "./Dialog";
 import { FolderPicker } from "./FolderPicker";
 import { ActivityList } from "./Pages";
@@ -761,6 +761,25 @@ export function AdminPage({ me, onOpenDeployment }: { me: string; onOpenDeployme
                   </div>
                 </div>
               ))}
+              {host.deployments.each.length > 0 && (
+                <div style={{ ...row, flexDirection: "column", alignItems: "stretch", gap: 2 }} aria-label="what each flow holds">
+                  <div style={quiet}>what each flow holds, the most first (a run kept in memory takes about 3 times its line)</div>
+                  {host.deployments.each.map((h) => {
+                    const [memory, disk] = holdsLines(h, Date.now());
+                    const most = Math.max(1, ...host.deployments.each.map((x) => x.memory + x.disk));
+                    return (
+                      <div key={h.slug} style={{ display: "flex", gap: 8, alignItems: "center" }} title={`${memory}\n${disk}`}>
+                        <span style={{ width: 140, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{h.slug}</span>
+                        <span style={{ width: 90 }}>~{sizeText(h.memory)}</span>
+                        <span style={{ width: 90 }}>{sizeText(h.disk)}</span>
+                        <div style={{ flex: 1, height: 6, background: "#1b2a45", borderRadius: 3 }}>
+                          <div style={{ width: `${((h.memory + h.disk) * 100) / most}%`, height: "100%", borderRadius: 3, background: "#3b82f6" }} />
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
               <div style={{ ...row, flexDirection: "column", alignItems: "stretch", gap: 4 }}>
                 {keptLines(host.kept, Date.now()).map((l, i) => (
                   <div key={l} style={i === 0 ? quiet : undefined}>

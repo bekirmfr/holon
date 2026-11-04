@@ -1,5 +1,5 @@
 // What the admin page says of the server's own sweeps (storage.rs, docs/L4s/storage-L4.md).
-import type { CacheUse, HostDisk, HostView, HostSweeps, SweepReport } from "./server";
+import type { CacheUse, Holds, HostDisk, HostView, HostSweeps, SweepReport } from "./server";
 
 /** A span of milliseconds, said roughly: "40 s", "7 min", "3 h", "2 days". */
 export function span(ms: number): string {
@@ -78,4 +78,16 @@ export function keptLines(k: HostView["kept"], now: number): string[] {
   const { removed, waiting } = k.leftovers;
   if (removed.files > 0 || waiting.files > 0) lines.push(`left by crashes: ${removed.files} files removed (${sizeText(removed.on_disk)}), ${waiting.files} still to remove`);
   return lines;
+}
+
+/** What one flow holds, as two lines: in memory, and on disk, as of `now`. */
+export function holdsLines(h: Holds, now: number): [string, string] {
+  const flow = h.flow_cache ? `its flow ${sizeText(h.flow_cache.own)}${h.flow_cache.shared > 0 ? ` (and ${sizeText(h.flow_cache.shared)} shared)` : ""}` : "its flow not cached now";
+  const memory = `about ${sizeText(h.memory)} in memory: its log about ${sizeText(h.log.memory)} (${h.log.entries} runs kept), its state ${sizeText(h.state_memory)}, ${flow}`;
+  const states =
+    h.store && h.shares_at_ms !== null
+      ? `its states ${h.store.values} values, ${sizeText(h.store.bytes)} (as the store's last sweep found, ${span(now - h.shares_at_ms)} ago)`
+      : "its states not counted yet (the store's first sweep counts them)";
+  const texts = h.file_texts && h.file_texts.texts > 0 ? `, file texts ${h.file_texts.texts} (${sizeText(h.file_texts.bytes)})` : "";
+  return [memory, `${sizeText(h.disk)} on disk: its log ${sizeText(h.log.file.on_disk)} (${h.log.lines} lines), ${states}${texts}`];
 }

@@ -7,12 +7,15 @@ import { formatOutputs, summarizeState } from "./diagnostics";
 import { describeItem, permissionKind } from "./holon";
 import { KindBadge, ManifestSection } from "./Manifest";
 import { ActionRows } from "./ActionRows";
+import { holdsLines, sizeText as holdsSize } from "./storage";
 import {
   changeGrant,
   getGrant,
   getManifest,
+  getHolds,
   getSessions,
   listWaitingRuns,
+  type Holds as HoldsView,
   type GrantView,
   type WaitingRun,
   type DeploymentEntry,
@@ -200,6 +203,7 @@ export function DeploymentCard({
         }
       />
       <Permissions slug={entry.slug} version={`${entry.unit} ${entry.status} ${entry.attention ?? ""}`} onChanged={onChanged} focus={focus} byHand={byHand} />
+      <Holds slug={entry.slug} version={entry.trigger_count} />
 
       {open &&
         (sessions ?? []).slice().reverse().map((s) => (
@@ -251,6 +255,41 @@ export function DeploymentCard({
     </div>
   );
 }
+
+/** What the deployment holds, in memory and on disk (`GET /deployments/<slug>/holds`), read when
+ *  opened and again as it runs (`version`: its runs so far). */
+function Holds({ slug, version }: { slug: string; version: number }) {
+  const [open, setOpen] = useState(false);
+  const [holds, setHolds] = useState<HoldsView | null>(null);
+  const [msg, setMsg] = useState("");
+  useEffect(() => {
+    if (!open) return;
+    getHolds(slug)
+      .then((h) => {
+        setHolds(h);
+        setMsg("");
+      })
+      .catch((e: unknown) => setMsg(e instanceof Error ? e.message : String(e)));
+  }, [open, slug, version]);
+  return (
+    <>
+      <div style={{ color: "#9fb4d4", cursor: "pointer", fontSize: 11 }} onClick={() => setOpen(!open)} title="what it holds in memory and on disk">
+        holds {holds && !open ? <span style={{ color: "#7e8ea8" }}>about {sizeOf(holds.memory)} in memory, {sizeOf(holds.disk)} on disk </span> : null}
+        {open ? "▾" : "▸"}
+      </div>
+      {open && msg && <div style={{ paddingLeft: 14, color: "#e0916f" }}>{msg}</div>}
+      {open &&
+        holds &&
+        holdsLines(holds, Date.now()).map((l) => (
+          <div key={l} style={{ paddingLeft: 14, color: "#7e8ea8" }}>
+            {l}
+          </div>
+        ))}
+    </>
+  );
+}
+
+const sizeOf = holdsSize;
 
 /** A deployment's runs waiting for an event: what each waits for, and until when. Never their
  *  tokens (the server doesn't list them). */

@@ -37,6 +37,8 @@ pub(crate) struct Detail {
     pub(crate) secrets: Value,
     /// Runs parked, waiting for something (`…/runs`).
     pub(crate) parked: Vec<Value>,
+    /// What it holds in memory and on disk (`…/holds`, storage.rs); null from an older server.
+    pub(crate) holds: Value,
 }
 
 /// One moment of a deployment's history: a run, or something done to it.
@@ -144,7 +146,8 @@ impl Client {
         let mut secrets = self.get(&format!("{path}/secrets")).unwrap_or_else(|_| json!({}));
         secrets["reads"] = json!(crate::secretcmd::reads(&manifest));
         let parked = if entry["waiting"].as_u64().unwrap_or_default() > 0 { self.get(&format!("{path}/runs")).map(|r| list(&r, "runs")).unwrap_or_default() } else { vec![] };
-        Ok(Detail { slug: slug.to_string(), entry, manifest, runs, events, versions, grant, secrets, parked })
+        let holds = self.get(&format!("{path}/holds")).unwrap_or(Value::Null);
+        Ok(Detail { slug: slug.to_string(), entry, manifest, runs, events, versions, grant, secrets, parked, holds })
     }
 
     /// Its text as deployed now, or as version `unit` was.

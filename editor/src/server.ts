@@ -217,9 +217,26 @@ export type HostView = {
     file_texts: { texts: number; chunks: number; bytes: number } | null;
     leftovers: { removed: Counted3; waiting: Counted3 };
   };
+  deployments: { each: Holds[]; shared_in_store: { values: number; bytes: number } | null };
   sweeps: HostSweeps;
 };
 export const getHost = async () => asJson<HostView>(await api(`${BASE}/admin/host`));
+/** What one deployment holds, in memory and on disk (storage.rs `holds`): its log (in memory,
+ *  about 3 times the lines its kept runs were written as; and its file), its live state, its flow
+ *  in the cache, and its states and file texts as the store's last sweep found them. */
+export type Holds = {
+  slug: string;
+  memory: number;
+  disk: number;
+  log: { entries: number; entry_bytes: number; memory: number; lines: number; file: Counted3 };
+  state_memory: number;
+  flow_cache: { own: number; shared: number } | null;
+  store: { values: number; bytes: number } | null;
+  file_texts: { texts: number; bytes: number } | null;
+  shares_at_ms: number | null;
+};
+/** `GET /deployments/<slug>/holds`. */
+export const getHolds = async (slug: string) => asJson<Holds>(await api(`${BASE}/deployments/${encodeURIComponent(slug)}/holds`));
 /** `POST /admin/storage`: how often the server sweeps (`"10m"`, `"2h"`, `"off"`), written into its `holon.toml`. */
 export async function setSweepEvery(every: string): Promise<{ sweeps: HostSweeps }> {
   return asJson(await post(`${BASE}/admin/storage`, { sweep_every: every }));

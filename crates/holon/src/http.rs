@@ -265,6 +265,10 @@ pub(crate) fn route(state: &AppState, request: &Request) -> Response {
             if method == "GET" {
                 return handle_get_versions(&state.deployments, slug);
             }
+        } else if let Some(slug) = rest.strip_suffix("/holds") {
+            if method == "GET" {
+                return crate::storage::handle_get_holds(state, slug);
+            }
         } else if let Some(slug) = rest.strip_suffix("/restore") {
             if method == "POST" {
                 let response = handle_post_restore(state, slug, request, by, agent);

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { cacheLine, diskLine, isEvery, keptLines, reportLine, scheduleLine, sizeText, span } from "./storage";
+import { cacheLine, diskLine, holdsLines, isEvery, keptLines, reportLine, scheduleLine, sizeText, span } from "./storage";
 
 const at = 1_000_000_000_000;
 const report = { at_ms: at, took_ms: 50_500, removed: 137962, bytes: 60_293_120, skipped: false, error: null };
@@ -51,5 +51,26 @@ describe("what the host holds, as the admin page says it", () => {
       "left by crashes: 3 files removed (62 MiB), 0 still to remove",
     ]);
     expect(keptLines({ ...kept, at_ms: null, store: null, logs: null, leftovers: { removed: none, waiting: none } }, at)[0]).toContain("not counted yet");
+  });
+});
+
+describe("what one flow holds", () => {
+  const h = {
+    slug: "notes-api",
+    memory: 90 << 20,
+    disk: 60 << 20,
+    log: { entries: 500, entry_bytes: 30 << 20, memory: 90 << 20, lines: 1130, file: { files: 1, bytes: 56 << 20, on_disk: 56 << 20 } },
+    state_memory: 2048,
+    flow_cache: { own: 195 << 10, shared: 0 },
+    store: { values: 1234, bytes: 4 << 20 },
+    file_texts: null,
+    shares_at_ms: at,
+  };
+  it("says its memory and its disk", () => {
+    expect(holdsLines(h, at + 120_000)).toEqual([
+      "about 90 MiB in memory: its log about 90 MiB (500 runs kept), its state 2 KiB, its flow 195 KiB",
+      "60 MiB on disk: its log 56 MiB (1130 lines), its states 1234 values, 4 MiB (as the store's last sweep found, 2 min ago)",
+    ]);
+    expect(holdsLines({ ...h, store: null, shares_at_ms: null, flow_cache: null }, at)[1]).toContain("not counted yet");
   });
 });

@@ -169,6 +169,13 @@ downgrade is refused with a reason, not misread.
 2. **`GET /admin/host`**, `holon host`, the admin page's panel: memory, disks, what is kept, sweeps. **Done** (`storage.rs`): the store and the folders' texts counted by the housekeeping thread at its first look and after each round; logs, caches, memory (`/proc/self/status`) and disks (`statvfs`, one entry a disk, how full for the server: what isn't free to it) read when asked. Found on the way: what a crash leaves aside (`….tmp-<pid>-<n>`, `….cut-<pid>-<n>`) was never removed (60 MB in the soaks' data folder); the count removes it once older than 15 minutes. Measured live: the store's 7,974 values took 31.3 MiB on disk for 2.2 MiB of bytes (whole 4 KiB blocks), what step 10 is for.
 3. **Per-flow shares**: counted in the sweeps' walks and as entries, states and closures change;
    `GET /deployments/<slug>/holds`; the panel's rows, each flow's page in both editors.
+   **Done**: the store's sweep walks each deployment's names in turn (a value is the first's to
+   reach it, shared if another reaches it too) and notes the file texts each log names on the
+   same pass over the logs; a log counts the bytes its kept entries were written as. **Found:** a
+   log keeps its runs in memory whole, 1.1 to 3.6 times their lines (`measure_log_memory`): the
+   soaks' `notes` listing holds about 86 MB, `crunch` about 52 MB, and nothing bounds it: a
+   deployment approved to keep 20,000 runs (the ceiling) of a 50 KB line would hold about 3.6 GB.
+   See resilience-audit-L4.md, R8.
 4. **`warn_at`** and the warnings.
 5. **`full_at` and `when_full`**: `warn`, `pause` (and resuming), `roll`.
 6. **`backup` to a folder**: retention and `roll` export what they cut there first.

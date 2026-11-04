@@ -37,6 +37,11 @@
   things on, how full it is for the server (a quota counts) and what it keeps there; the content
   store's values and the disk they take, the logs and the folders' kept texts (counted at start
   and after each round of sweeps); and the sweeps (`GET /admin/host`).
+- **Each flow says what it holds.** In memory, its log's kept runs, its live state and its flow in
+  the cache; on disk, its log's file and its states and file texts in the store (as the store's
+  last sweep found them). A row each on the admin page and in `holon host`, the most first; a
+  **holds** fold on its card on the deployed page; on its page in the terminal editor; `holon host
+  --for SLUG`; `GET /deployments/<slug>/holds`.
 - **What a crash left is cleared.** A server stopped in the middle of a write (each is made aside,
   then renamed over) left its temporary file behind for good: a copy of the soaks' data folder
   held 60 MB of them. The server now removes them once they are older than any write takes, and
