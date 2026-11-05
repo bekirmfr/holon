@@ -205,7 +205,8 @@ reads asks only to read it.
 - **The rest stays derived, as today:** waiting points (`Await`), a secret a route may answer, an
   action another flow runs, file arrivals, database tables.
 - **Options are import attributes** where they belong to the thing imported:
-  `with { optional: true }` for today's `optional`.
+  `with { optional: "true" }` for today's `optional`, in quotes, as an import attribute's value is
+  a string.
 - **Items by brackets, methods by dot.** `games["current"]`, as the samples write today
   (`chess.holon:938-983`); `games.list()`, `replies.pipe(…)`, `replies.subscribe()`. A key named
   `list` is `games["list"]`, so items never collide with methods.
