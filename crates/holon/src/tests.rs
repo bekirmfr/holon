@@ -8291,6 +8291,44 @@ fn a_run_that_waits_parks_and_resumes_at_its_handlers_level() {
     let _ = std::fs::remove_dir_all(Path::new(&state.deployments_path).with_extension("logs"));
 }
 
+/// What a waiting run sent as it parked is kept with its record, as a logged run's is in its log:
+/// after a restart, an unrecorded run's later part doesn't send it again.
+#[test]
+fn a_waiting_unrecorded_run_doesnt_send_again_after_a_restart() {
+    let mut state = test_state();
+    state.deployments_path = unique_temp_path("waits-sent");
+    let text = "flow hold-sends\nport 18203\nchannel updates\n\nroute POST /hold (req) unrecorded {\n  updates.send({ held: req.method })\n  respond { token: \"{resume_token(paid)}\" }\n  paid = await paid, expires: 1h\n  updates.send({ paid: paid.method })\n}\n\nroute GET /paid/:token (req) resumes paid {\n  respond \"thanks\"\n}\n";
+    let slug = deploy_plain_text(&state, text);
+    let subscribe = |state: &AppState| {
+        let table = state.deployments.lock().unwrap();
+        table[&slug].channels.subscribe("updates", false, None, &table[&slug].permit.channels).unwrap()
+    };
+    let got = |sub: &mut channels::Subscription| std::iter::from_fn(|| sub.packs.try_recv().ok()).map(|p| p.json.clone()).collect::<Vec<_>>();
+    let mut before = subscribe(&state);
+    let (status, held, _) = data_call(&state, &slug, "POST", "/hold", "");
+    assert_eq!(status, 200, "{held}");
+    assert_eq!(got(&mut before), [r#"{"held":"POST"}"#]);
+    let token = serde_json::from_str::<serde_json::Value>(&held).unwrap()["token"].as_str().unwrap().to_string();
+
+    // A restart: the run loaded with what it sent, opened with its deployment's vault.
+    let mut reloaded = load_deployments(&state.deployments_path, &state.store, &state.policy()).unwrap();
+    {
+        let dep = reloaded.get_mut(&slug).unwrap();
+        dep.secrets = state.secrets.vault(&slug);
+        let sealer = dep.secrets.lock().unwrap().sealer.clone();
+        let run = dep.parked.values_mut().next().unwrap();
+        assert_eq!(run.sent, [("updates".to_string(), r#"{"held":"POST"}"#.to_string())]);
+        run.open(&slug, sealer.as_deref()).unwrap();
+    }
+    *state.deployments.lock().unwrap() = reloaded;
+    let mut after = subscribe(&state);
+    assert_eq!(data_call(&state, &slug, "GET", &format!("/paid/{token}"), "").0, 200);
+    assert!(state.deployments.lock().unwrap()[&slug].parked.is_empty(), "resumed, and done");
+    assert_eq!(got(&mut after), [r#"{"paid":"GET"}"#], "what it sent as it parked isn't sent again");
+    let _ = std::fs::remove_file(&state.deployments_path);
+    let _ = std::fs::remove_dir_all(Path::new(&state.deployments_path).with_extension("logs"));
+}
+
 /// An unrecorded handler that writes and sends is what its author wrote: approved as any
 /// unrecorded one is (`Unrecorded("POST /notes")`), its runs leave no entry, what they write lands
 /// all the same, and its packs go to the subscribers there then, live, with no id, and aren't kept

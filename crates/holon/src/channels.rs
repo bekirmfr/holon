@@ -11,6 +11,9 @@
 //! - **An unrecorded run's packs** go out live, as it is counted, to the subscribers there then:
 //!   with no id and never kept, as the log, which ids and kept packs come from, doesn't hold the
 //!   run. A reconnecting `EventSource` doesn't get them again, nor does one after a restart.
+//! - **What a waiting run sent as it parked** is kept with its record (`ParkedRun::sent`), given
+//!   back when the server starts: a later part settles it again and doesn't send it twice, after a
+//!   restart too, whatever its level (an unrecorded run's log holds none of it).
 //! - **A slow subscriber** whose queue (`channel_buffer`) is full is dropped with `event: missed`
 //!   rather than holding the run or the other subscribers; it reconnects and catches up from
 //!   the kept packs. Pausing or stopping the deployment ends every subscription with
@@ -214,6 +217,19 @@ impl Channels {
             for s in channel.subscribers.drain(..) {
                 *s.end.lock().unwrap() = Some(End::Closed);
             }
+        }
+    }
+
+    /// What waiting run `run_id` sent as it parked (channel, JSON): kept with its record on disk.
+    pub(crate) fn waiting_sent(&self, run_id: &str) -> Vec<(String, String)> {
+        self.sent_waiting.lock().unwrap().get(run_id).cloned().unwrap_or_default()
+    }
+
+    /// What waiting run `run_id`'s record says it sent as it parked, given back when the server
+    /// starts: its later parts don't send it again.
+    pub(crate) fn keep_waiting_sent(&self, run_id: &str, sent: Vec<(String, String)>) {
+        if !sent.is_empty() {
+            self.sent_waiting.lock().unwrap().insert(run_id.to_string(), sent);
         }
     }
 

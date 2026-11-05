@@ -52,7 +52,9 @@ entry names the points it waits at (`LogEntry::parked`); the deployments file is
 
 A parked run keeps what it waits with in its own record (`ParkedRun`), not in the log, so a lazy
 or unrecorded handler waits as a strict one does: the record keeps its handler's level
-(`ParkedRun::log`), and each resumed part is logged at it, unrecorded where granted.
+(`ParkedRun::log`), and each resumed part is logged at it, unrecorded where granted. What it sent
+as it parked is kept there too (`ParkedRun::sent`), so after a restart a later part doesn't send
+it again, though an unrecorded run's log doesn't hold it.
 
 ### Tokens
 

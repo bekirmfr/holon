@@ -53,9 +53,13 @@ pub(crate) fn persist_deployments(path: &str, deployments: &Mutex<BTreeMap<Strin
                 grant: Some(dep.grant.clone()),
                 // What a waiting run keeps that may hold a secret is sealed under the secrets
                 // master key, which is kept apart from this file: a backup of it carries none.
+                // With what each sent as it parked, which its channels hold.
                 parked: {
                     let sealer = dep.secrets.lock().unwrap().sealer.clone();
-                    dep.parked.values().map(|p| sealer.as_deref().map_or_else(|| p.clone(), |s| p.sealed_for_disk(slug, s))).collect()
+                    dep.parked
+                        .values()
+                        .map(|p| ParkedRun { sent: dep.channels.waiting_sent(&p.run_id), ..sealer.as_deref().map_or_else(|| p.clone(), |s| p.sealed_for_disk(slug, s)) })
+                        .collect()
                 },
             }
         })
@@ -206,6 +210,9 @@ pub(crate) fn load_deployments(
             );
         }
         let channels = Arc::new(channels::Channels::from_log(&log, &permit.channels));
+        for p in &record.parked {
+            channels.keep_waiting_sent(&p.run_id, p.sent.clone());
+        }
         let events = crate::events::Events::for_deployment(path, &record.slug);
         if !events.breaks().is_empty() {
             eprintln!("holon: {:?}'s events were changed outside holon: event {:?} doesn't follow the one before it", record.slug, events.breaks());

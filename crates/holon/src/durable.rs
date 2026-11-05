@@ -295,6 +295,11 @@ pub(crate) struct ParkedRun {
     /// logged as of that version, whose canvas shows it. Absent for runs parked before.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub(crate) version: String,
+    /// The packs its parts sent as they parked (channel, JSON), as its channels hold them
+    /// (`Channels::waiting_sent`): written with it, and given back to them when the server starts,
+    /// so a later part doesn't send them again after a restart, an unrecorded run's too.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) sent: Vec<(String, String)>,
     /// Its inputs, sourced values, requests, events and tokens, sealed, as the deployments file
     /// keeps them (they may hold a secret, a caller's credential, a token); opened again when
     /// the server starts (`open`). Never set on a run in memory that could be opened.
@@ -409,6 +414,7 @@ impl ParkedRun {
             waiting: waiting.iter().map(|w| StoredWaiting { name: w.name.clone(), expires_at: now + w.expires }).collect(),
             parked_at: now,
             version: String::new(),
+            sent: Vec::new(),
             sealed: None,
             resuming: false,
         })
