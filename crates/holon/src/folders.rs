@@ -2134,7 +2134,7 @@ mod tests {
         let all = Arc::new(Folders::open(":memory:", std::slice::from_ref(&data)).unwrap());
         let folders = Scoped::new(Arc::clone(&all), "app");
         let inbox = temp("inbox");
-        assert!(all.bind("inbox", "relative/path", FolderAccess::Read, Keep::Bytes, None, None).unwrap_err().contains("absolute"));
+        assert!(all.bind("inbox", "relative/path", FolderAccess::Read, Keep::Bytes, None, None).unwrap_err().contains("isn't a whole path"));
         assert!(all.bind("inbox", data.to_str().unwrap(), FolderAccess::Read, Keep::Bytes, None, None).unwrap_err().contains("own data"));
         assert!(all.bind("all", data.parent().unwrap().to_str().unwrap(), FolderAccess::Read, Keep::Bytes, None, None).unwrap_err().contains("holds"));
         all.bind("inbox", inbox.to_str().unwrap(), FolderAccess::Read, Keep::Bytes, None, None).unwrap();

@@ -1566,7 +1566,7 @@ mod tests {
         let tables: Vec<String> = conn.prepare("select name from sqlite_master where type = 'table' order by name").unwrap().query_map([], |r| r.get(0)).unwrap().map(Result::unwrap).collect();
         assert_eq!(tables, ["holon_commits", "orders"]);
         assert!(dbs.bind("x", own.join("a.db").to_str().unwrap(), FolderAccess::Read, Some("create table t (a)"), None).unwrap_err().contains("own data"));
-        assert!(dbs.bind("x", "shop.db", FolderAccess::Read, None, None).unwrap_err().contains("absolute"));
+        assert!(dbs.bind("x", "shop.db", FolderAccess::Read, None, None).unwrap_err().contains("isn't a whole path"));
         std::fs::write(dir.join("not.db"), "hello, this is text and not a database at all, really").unwrap();
         assert!(dbs.bind("x", dir.join("not.db").to_str().unwrap(), FolderAccess::Read, None, None).unwrap_err().contains("isn't a SQLite database"));
         assert!(dbs.bind("x", path, FolderAccess::Read, Some("create tabel"), None).unwrap_err().contains("schema didn't run"));
