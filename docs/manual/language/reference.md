@@ -229,8 +229,9 @@ Each of these is one building block, and each is one thing the flow may do.
 | `http.put(host, path, headers: h, file: handle)` | the same, sending a file as the body, by handle: the server streams its bytes, which never pass through the flow (any method) |
 | `stripe.verify(req, secret, now, tolerance: 5m)` | a verified Stripe webhook; `.event` is the event |
 | `flow.action(x)` (with `calls flow`) | run the action `action` of the deployed flow `flow` with `x`, a value (`{}` when none is written); the answer is `{answer, run}` when it ran, `{error, message}` when it didn't |
-| `await name, expires: d` | park the run until the event `name` arrives |
-| `resume_token(name)` | the token a resuming route takes to deliver `name` |
+| `start(action, x)`, `start(flow.action, x)` (with `calls flow`) | start a run of this flow's action (the flow says its name first, `flow NAME`), or another flow's, with `x`; the answer is `{run, waiting}` once it waits, `waiting` the token for each point it waits at, `{answer, run}` if it finishes first, `{error, message}` when it didn't run |
+| `await name, expires: d` | park the run until the event `name` arrives (in an action, not a route) |
+| `resume_token(name)` | the token a resuming route takes to deliver `name` (in an action, not a route) |
 | `json(x)`, `parse_json(text)` | JSON out, JSON in |
 
 Rules:
@@ -257,6 +258,11 @@ Rules:
   every failure at once, as the answer has no value then. A call nobody uses is a statement; to
   say why one failed, bind it and look at `error` and `message`. See
   [Actions](../guides/actions.md#run-by-another-flow).
+- **A route answers and is done.** It doesn't wait: `await` and `resume_token` in a route are
+  refused. What waits is an action the route starts, `started = start(payment, req.json)`, and the
+  route answers with its link, `respond "/paid/{started.waiting.paid}"`. A start goes out and is
+  kept as a call is, so a retry never starts the run again; a start of the flow's own action is
+  allowed, as the route doesn't wait for it.
 - **The method forms** (`notes.put(k, v)`, `state.set(k, v)`) are the same writes as values: for a
   holon that names its writes as outputs, or to pass a write on.
 
@@ -273,7 +279,8 @@ route METHOD /path (req) [resumes NAME] [lazy | unrecorded] {
   `req.params.name` reads. The most specific route wins: `/todos/new` before `/todos/:id`.
 - **`(req)`** names the request; any name works.
 - **`resumes NAME`** makes the route deliver the event a parked run is waiting for (see
-  [`await`](#how-a-flow-runs)): the request carries the token from `resume_token(NAME)`.
+  [`await`](#how-a-flow-runs)): the request carries the token the run's `start` was answered
+  with, `started.waiting.NAME`.
 
 **Answering.** A route has exactly one `respond`, or at least one effect (it then answers 204). A
 call's answer is the far side's, never the route's: a route whose only effects are calls answers
@@ -576,8 +583,9 @@ range(n)                         # [0, 1, …, n-1], at most 10000
   when the run reaches the statement, whatever reads `page`; one written in a branch (`x ?? http.get(…)`,
   `if c then http.get(…)`) is made only when the branch needs it, so a branch not taken makes no
   call. To make a bound call only sometimes, say so on it: `charged = http.post(…) after first`.
-- **Waiting.** `await name` parks the run; a later request to a route that `resumes name`, with
-  the token, delivers the event and the run continues. `expires:` sets how long it waits.
+- **Waiting.** `await name` parks the run, an action's: a route answers and is done, and starts
+  the action that waits with `start(action, x)`. A later request to a route that `resumes name`,
+  with the token, delivers the event and the run continues. `expires:` sets how long it waits.
 - **Sharing is explicit.** A binding is one value used many times. The same expression written
   twice is computed twice.
 - **Every run ends.** There are no loops and no recursion: `map` and `fold` go over a list, and

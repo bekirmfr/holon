@@ -1,9 +1,10 @@
 # Order approval: a durable run.
 #
-# An order waits for its payment. The run answers with a pay link at once, parks at the await,
-# and finishes when the link is opened, hours or days later (the link lasts a day). Its progress
-# goes out on the channel orders as it happens: "waiting for payment" as the run parks, "paid"
-# when it finishes, and never the first one twice.
+# An order waits for its payment. The route that takes the order starts the order's run, an
+# action, and answers with its pay link at once: a route answers and is done, and what waits is the
+# run it starts. That run parks at the await and finishes when the link is opened, hours or days
+# later (the link lasts a day). Its progress goes out on the channel orders as it happens:
+# "waiting for payment" as the run parks, "paid" when it finishes, and never the first one twice.
 #
 # Try it: deploy it, then
 #   curl -X POST -H "Content-Type: application/json" -d '{"item":"book"}' \
@@ -17,13 +18,18 @@ port 8105
 state last_order
 channel orders
 
-# Answers the pay link, says the order is waiting, then parks until the link is opened.
+# Starts the order's run and answers its pay link: the token that resumes it where it waits.
 route POST /orders (req) {
-  respond "/paid/{resume_token(paid)}"
-  orders.send({ item: req.json.item, status: "waiting for payment" })
+  started = start(payment, req.json)
+  respond "/paid/{started.waiting.paid}"
+}
+
+# The order's run: says it is waiting, parks until the link is opened, then records the payment.
+action payment (order) {
+  orders.send({ item: order.item, status: "waiting for payment" })
   paid = await paid, expires: 1d
-  state.last_order = { ..req.json, paid_via: paid.method }
-  orders.send({ item: req.json.item, status: "paid", via: paid.method })
+  state.last_order = { ..order, paid_via: paid.method }
+  orders.send({ item: order.item, status: "paid", via: paid.method })
 }
 
 # The pay link: opening it wakes the waiting order's run.

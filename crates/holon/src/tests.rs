@@ -17,16 +17,25 @@ pub(crate) fn test_state() -> AppState {
 
 /// The same over `store`: an on-disk one, say.
 fn test_state_with(store: SharedStore) -> AppState {
+    test_state_in(store, Place::Nowhere)
+}
+
+/// One whose deployments file is at `at`: a run a flow's start parks is kept there too.
+fn test_state_at(at: Place) -> AppState {
+    test_state_in(SharedStore::new(Box::new(MemStore::new())), at)
+}
+
+fn test_state_in(store: SharedStore, at: Place) -> AppState {
     let registry = Mutex::new(Registry::new(store.clone()));
     let cache = Mutex::new(SharedCache::new());
     let deployments = Arc::new(Mutex::new(BTreeMap::new()));
-    store.1.connect(Arc::clone(&deployments), Place::Nowhere);
+    store.1.connect(Arc::clone(&deployments), at.clone());
     AppState {
         store,
         registry,
         cache,
         deployments,
-        deployments_path: Place::Nowhere,
+        deployments_path: at,
         flows: Mutex::new(BTreeMap::new()),
         flows_path: Place::Nowhere,
         port: TEST_PORT,
@@ -5114,7 +5123,7 @@ fn a_run_that_received_a_secret_or_a_token_keeps_its_logged_run_id() {
     let value = "tok_live_abcdef123";
     let set = req("POST", "/deployments/gate/secrets/api_token", serde_json::to_vec(&serde_json::json!({ "value": value })).unwrap());
     assert_eq!(route(&state, &set).status_code, 200);
-    let text = "flow gate\nport 18197\nsecret api_token\ncollection seen\n\nroute POST /me (req) {\n  ok = secure_equals(req.body, \"Bearer {secret.api_token}\")\n  respond \"/paid/{resume_token(paid)}\" when ok, missing: 401\n  paid = await paid, expires: 1h\n  seen[\"last\"] = { at: req.path, via: paid.method }\n}\n\nroute GET /paid/:token (req) resumes paid {\n  respond \"thanks\"\n}\n";
+    let text = "flow gate\nport 18197\nsecret api_token\ncollection seen\n\nroute POST /me (req) {\n  ok = secure_equals(req.body, \"Bearer {secret.api_token}\")\n  started = start(visit, req.path)\n  respond \"/paid/{started.waiting.paid}\" when ok, missing: 401\n}\n\naction visit (path) {\n  paid = await paid, expires: 1h\n  seen[\"last\"] = { at: path, via: paid.method }\n}\n\nroute GET /paid/:token (req) resumes paid {\n  respond \"thanks\"\n}\n";
     let slug = deploy_text(&state, text, "127.0.0.1:9");
     let (status, link, _) = data_call(&state, &slug, "POST", "/me", &format!("Bearer {value}"));
     assert_eq!(status, 200, "{link}");
@@ -5123,13 +5132,17 @@ fn a_run_that_received_a_secret_or_a_token_keeps_its_logged_run_id() {
 
     let export: verify::Export = serde_json::from_value(body_json(route(&state, &req("GET", "/deployments/gate/export", vec![])))).unwrap();
     let token = &link["/paid/".len()..];
-    assert!(export.lines.iter().all(|l| !l.contains(value) && !l.contains(token)), "the log holds neither");
+    for l in &export.lines {
+        assert!(!l.contains(value) && !l.contains(token), "the log holds neither the secret nor the token: {l}");
+    }
     let report = verify::check(&export, Some(&export.head), &BTreeMap::new());
     assert!(report.ok() && report.reruns.iter().all(|(_, r)| *r == verify::Rerun::Matched), "{}", verify::describe(&report, None));
     let seqs: Vec<u64> = report.reruns.iter().map(|(seq, _)| *seq).collect();
     assert!(seqs.len() >= 3, "the request, the resume and the resumed part: {seqs:?}");
-    let resume = export.lines.iter().map(|l| serde_json::from_str::<serde_json::Value>(l).unwrap()).find(|e| e["route"] == "GET /paid/:token").unwrap();
-    assert!(report.ids_given.contains(&0), "the request carried the secret: {}", verify::describe(&report, None));
+    let entry = |route: &str| export.lines.iter().map(|l| serde_json::from_str::<serde_json::Value>(l).unwrap()).find(|e| e["route"] == route).unwrap();
+    // The run the request started parks, and is logged, before the request's run is.
+    let (request, resume) = (entry("POST /me"), entry("GET /paid/:token"));
+    assert!(report.ids_given.contains(&request["seq"].as_u64().unwrap()), "the request carried the secret: {}", verify::describe(&report, None));
     assert!(report.ids_given.contains(&resume["seq"].as_u64().unwrap()), "the resume carried the token: {}", verify::describe(&report, None));
     assert!(verify::describe(&report, None).contains("checked given the run id the log kept"), "{}", verify::describe(&report, None));
 }
@@ -5580,11 +5593,15 @@ route POST /chain (req) {{
 }}
 
 route POST /hold/:k (req) {{
-  prior = seen[req.params.k]
+  started = start(hold, req.params.k)
+  respond started.waiting.paid
+}}
+
+action hold (k) {{
+  prior = seen[k]
   got = http.get("{host}", "/fast").body
-  respond "{{resume_token(paid)}}"
   paid = await paid, expires: 1h
-  seen[req.params.k] = {{ got: got, paid: paid.body, prior: prior ?? "none" }}
+  seen[k] = {{ got: got, paid: paid.body, prior: prior ?? "none" }}
 }}
 
 route GET /paid/:token (req) resumes paid {{
@@ -7242,7 +7259,7 @@ fn a_file_a_run_deletes_starts_no_run() {
 /// databases L4). Parked, it holds nothing on the row.
 fn waiting_tally_text(host: &str) -> String {
     format!(
-        "flow paid-tally\nport 18191\ndatabase shop\n\nroute POST /hold (req) {{\n  row = shop.one(\"select n from counts where id = $1\", 1)\n  asked = http.get(\"{host}\", \"/fast\").body\n  respond {{ token: \"{{resume_token(paid)}}\", n: row.n, asked: asked }}\n  paid = await paid, expires: 1h\n  later = http.get(\"{host}\", \"/slow\", headers: {{ \"x-paid\": json(paid.body) }}).body\n  shop.exec(\"update counts set n = $1, note = $2 where id = $3\", row.n + 1, later, 1, expect: 1)\n}}\n\nroute GET /paid/:token (req) resumes paid {{\n  respond \"ok\"\n}}\n"
+        "flow paid-tally\nport 18191\ndatabase shop\n\nroute POST /hold (req) {{\n  started = start(tally)\n  respond {{ token: started.waiting.paid }}\n}}\n\naction tally (input) {{\n  row = shop.one(\"select n from counts where id = $1\", 1)\n  asked = http.get(\"{host}\", \"/fast\").body\n  paid = await paid, expires: 1h\n  later = http.get(\"{host}\", \"/slow\", headers: {{ \"x-paid\": json(paid.body), \"x-asked\": asked }}).body\n  shop.exec(\"update counts set n = $1, note = $2 where id = $3\", row.n + 1, later, 1, expect: 1)\n}}\n\nroute GET /paid/:token (req) resumes paid {{\n  respond \"ok\"\n}}\n"
     )
 }
 
@@ -7311,10 +7328,11 @@ fn a_resumed_run_whose_row_changed_runs_again_from_its_last_wait() {
         let export: verify::Export = serde_json::from_value(body_json(route(&state, &req("GET", &format!("/deployments/{slug}/export"), vec![])))).unwrap();
         let report = verify::check(&export, None, &BTreeMap::new());
         assert!(report.ok(), "{engine}: {}", verify::describe(&report, None));
-        // Every part re-runs: the token its first part answered with, and the request that
-        // carried it, are checked given what the log kept, and the resumed part that ran again too.
+        // Every part re-runs: the request and the first part of the run it started; the token it
+        // was handed back, and the request that carried it, checked given what the log kept; and
+        // the resumed part that ran again too.
         let matched = report.reruns.iter().filter(|(_, r)| *r == verify::Rerun::Matched).count();
-        assert_eq!(matched, 3, "{engine}: the resumed part that ran again re-runs offline: {}", verify::describe(&report, None));
+        assert_eq!(matched, 4, "{engine}: the resumed part that ran again re-runs offline: {}", verify::describe(&report, None));
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -7331,7 +7349,7 @@ fn a_resumed_run_whose_file_changed_runs_again_from_its_last_wait() {
     let body = serde_json::json!({ "name": "ledger", "path": dir.display().to_string(), "access": "read-write" });
     assert_eq!(route(&state, &req("POST", "/admin/folders", serde_json::to_vec(&body).unwrap())).status_code, 200);
     let text = format!(
-        "flow paid-lines\nport 18192\nfolder ledger\n\nroute POST /hold (req) {{\n  before = ledger[\"lines.txt\"] ?? \"\"\n  respond {{ token: \"{{resume_token(paid)}}\", before: before }}\n  paid = await paid, expires: 1h\n  later = http.get(\"{host}\", \"/slow\", headers: {{ \"x-paid\": json(paid.body) }}).body\n  ledger[\"lines.txt\"] = \"{{before}}{{later}}\\n\"\n}}\n\nroute GET /paid/:token (req) resumes paid {{\n  respond \"ok\"\n}}\n"
+        "flow paid-lines\nport 18192\nfolder ledger\n\nroute POST /hold (req) {{\n  started = start(append)\n  respond {{ token: started.waiting.paid }}\n}}\n\naction append (input) {{\n  before = ledger[\"lines.txt\"] ?? \"\"\n  paid = await paid, expires: 1h\n  later = http.get(\"{host}\", \"/slow\", headers: {{ \"x-paid\": json(paid.body) }}).body\n  ledger[\"lines.txt\"] = \"{{before}}{{later}}\\n\"\n}}\n\nroute GET /paid/:token (req) resumes paid {{\n  respond \"ok\"\n}}\n"
     );
     let slug = deploy_text(&state, &text, &host);
     let (status, held, _) = data_call(&state, &slug, "POST", "/hold", "");
@@ -7737,7 +7755,7 @@ allow_plain_http = true
 allow_private_addresses = true").unwrap());
     let port = free_port();
     let text = format!(
-        "flow orders\nport {port}\nchannel orders\n\nroute POST /orders (req) {{\n  respond \"/paid/{{resume_token(paid)}}\"\n  orders.send({{ item: req.json.item, status: \"waiting\" }})\n  paid = await paid, expires: 1d\n  orders.send({{ item: req.json.item, status: \"paid\", via: paid.method }})\n}}\n\nroute GET /paid/:token (req) resumes paid {{\n  respond \"thanks\"\n}}\n"
+        "flow orders\nport {port}\nchannel orders\n\nroute POST /orders (req) {{\n  started = start(payment, req.json)\n  respond \"/paid/{{started.waiting.paid}}\"\n}}\n\naction payment (order) {{\n  orders.send({{ item: order.item, status: \"waiting\" }})\n  paid = await paid, expires: 1d\n  orders.send({{ item: order.item, status: \"paid\", via: paid.method }})\n}}\n\nroute GET /paid/:token (req) resumes paid {{\n  respond \"thanks\"\n}}\n"
     );
     let slug = deploy_text(&state, &text, "x");
     sync_listeners(&state);
@@ -8255,11 +8273,10 @@ fn an_unrecorded_failure_is_kept_redacted_and_cut_short() {
 /// as lazy, without a sync before they are done. Its write lands either way.
 #[test]
 fn a_run_that_waits_parks_and_resumes_at_its_handlers_level() {
-    let mut state = test_state();
-    state.deployments_path = unique_temp_path("waits-light").into();
+    let state = test_state_at(unique_temp_path("waits-light").into());
     let text = |level: &str, port: u16| {
         format!(
-            "flow hold-{level}\nport {port}\ncollection seen\n\nroute POST /hold (req) {level} {{\n  respond {{ token: \"{{resume_token(paid)}}\" }}\n  paid = await paid, expires: 1h\n  seen[\"last\"] = paid.method\n}}\n\nroute GET /paid/:token (req) resumes paid {{\n  respond \"thanks\"\n}}\n\nroute GET /seen (req) {{\n  respond {{ last: seen[\"last\"] }}\n}}\n"
+            "flow hold-{level}\nport {port}\ncollection seen\n\nroute POST /hold (req) {level} {{\n  started = start(hold, req.method)\n  respond {{ token: started.waiting.paid }}\n}}\n\naction hold (asked) {level} {{\n  paid = await paid, expires: 1h\n  seen[\"last\"] = paid.method\n}}\n\nroute GET /paid/:token (req) resumes paid {{\n  respond \"thanks\"\n}}\n\nroute GET /seen (req) {{\n  respond {{ last: seen[\"last\"] }}\n}}\n"
         )
     };
     for (level, port) in [("unrecorded", 18201), ("lazy", 18202)] {
@@ -8276,13 +8293,14 @@ fn a_run_that_waits_parks_and_resumes_at_its_handlers_level() {
         let seen = data_call(&state, &slug, "GET", "/seen", "").1;
         assert_eq!(serde_json::from_str::<serde_json::Value>(&seen).unwrap()["last"], "GET", "{level}: its write landed");
         let routes: Vec<String> = log_entries(&state, &slug).iter().map(|e| format!("{} {}", e["kind"].as_str().unwrap(), e["route"].as_str().unwrap_or(""))).collect();
-        let hold = state.deployments.lock().unwrap()[&slug].tallies.get("POST /hold").map_or(0, |t| t.runs);
+        let tally = |label: &str| state.deployments.lock().unwrap()[&slug].tallies.get(label).map_or(0, |t| t.runs);
+        let counted = (tally("POST /hold"), tally("action hold"));
         if level == "unrecorded" {
             assert_eq!(routes, ["request GET /paid/:token", "request GET /seen"], "neither part logged");
-            assert_eq!(hold, 2, "each part counted");
+            assert_eq!(counted, (1, 2), "the request counted, and each part of the run it started");
         } else {
-            assert_eq!(routes, ["request POST /hold", "request GET /paid/:token", "resume POST /hold", "request GET /seen"]);
-            assert_eq!(hold, 0, "logged, not counted");
+            assert_eq!(routes, ["trigger action hold", "request POST /hold", "request GET /paid/:token", "resume action hold", "request GET /seen"]);
+            assert_eq!(counted, (0, 0), "logged, not counted");
             // The resume route's request is strict, the resumed part lazy: one sync between them.
             assert_eq!(log.syncs(), syncs + 2, "the resume request's sync, and the strict /seen's; not the lazy part's");
         }
@@ -8295,9 +8313,8 @@ fn a_run_that_waits_parks_and_resumes_at_its_handlers_level() {
 /// after a restart, an unrecorded run's later part doesn't send it again.
 #[test]
 fn a_waiting_unrecorded_run_doesnt_send_again_after_a_restart() {
-    let mut state = test_state();
-    state.deployments_path = unique_temp_path("waits-sent").into();
-    let text = "flow hold-sends\nport 18203\nchannel updates\n\nroute POST /hold (req) unrecorded {\n  updates.send({ held: req.method })\n  respond { token: \"{resume_token(paid)}\" }\n  paid = await paid, expires: 1h\n  updates.send({ paid: paid.method })\n}\n\nroute GET /paid/:token (req) resumes paid {\n  respond \"thanks\"\n}\n";
+    let state = test_state_at(unique_temp_path("waits-sent").into());
+    let text = "flow hold-sends\nport 18203\nchannel updates\n\nroute POST /hold (req) unrecorded {\n  started = start(hold, req.method)\n  respond { token: started.waiting.paid }\n}\n\naction hold (asked) unrecorded {\n  updates.send({ held: asked })\n  paid = await paid, expires: 1h\n  updates.send({ paid: paid.method })\n}\n\nroute GET /paid/:token (req) resumes paid {\n  respond \"thanks\"\n}\n";
     let slug = deploy_plain_text(&state, text);
     let subscribe = |state: &AppState| {
         let table = state.deployments.lock().unwrap();
@@ -9457,7 +9474,9 @@ fn the_server_records_what_its_golden_record_holds() {
         }
         let preview = body_json(route(&state, &req("POST", "/deploy/preview", serde_json::to_vec(&serde_json::json!({ "slug": plan.name, "unit": plan.unit })).unwrap())));
         let asked: Vec<String> = serde_json::from_value(preview["needs_approval"].clone()).unwrap_or_default();
-        if !preview["refused"].is_null() || asked.iter().any(|a| OUTSIDE.iter().any(|o| a.starts_with(o))) {
+        // A start of its own action stays on the server; another flow's needs that flow.
+        let own = format!("RunsAction(\"{}/", plan.name);
+        if !preview["refused"].is_null() || asked.iter().any(|a| !a.starts_with(&own) && OUTSIDE.iter().any(|o| a.starts_with(o))) {
             skipped.push(sample.name);
             continue;
         }

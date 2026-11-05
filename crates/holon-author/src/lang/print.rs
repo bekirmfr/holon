@@ -225,6 +225,8 @@ impl<'g> Group<'g> {
 
 pub struct Printer<'s> {
     store: &'s MapResolver,
+    /// The flow's own name: a `flow_start` of its own action is `start(payment, x)`.
+    own: Option<String>,
     names: Names,
     bindings: BTreeMap<String, String>,
     holon_names: HashMap<String, String>,
@@ -272,6 +274,7 @@ pub fn print_lines(name: Option<&str>, doc: &FlowDocument, store: &mut MapResolv
     let names = restore(doc, store, known);
     let mut p = Printer {
         store,
+        own: name.filter(|n| !n.is_empty()).map(String::from),
         names,
         bindings: bindings.clone(),
         holon_names: HashMap::new(),
@@ -289,6 +292,10 @@ pub fn print_lines(name: Option<&str>, doc: &FlowDocument, store: &mut MapResolv
         holon_defs: HashSet::new(),
     };
     p.collect_collections(&doc.nodes)?;
+    // A start of its own action needs no `calls` line: it is its own.
+    if let Some(own) = &p.own {
+        p.calls.remove(own);
+    }
     // Files start the runs: `on file` lines, and the file's handle is `ingress`.
     (p.on_files, p.ingress_chains) = on_file_lines(doc);
     let mut out: Vec<Line> = Vec::new();
@@ -512,7 +519,7 @@ fn expressible(nodes: &[&Node], incoming: &HashMap<(String, String), Src>, reque
             let optional = n.data.body == PlacedBody::Primitive
                 && matches!(
                     (n.data.name.as_str(), p.name.as_str()),
-                    ("http_request" | "http_stream", "headers" | "body") | ("http_upload", "headers") | ("flow_call", "input") | ("collection_list" | "file_list", "prefix" | "after") | ("file_lines", "from")
+                    ("http_request" | "http_stream", "headers" | "body") | ("http_upload", "headers") | ("flow_call" | "flow_start", "input") | ("collection_list" | "file_list", "prefix" | "after") | ("file_lines", "from")
                 );
             optional || p.name == TRIGGER || (n.is_template("respond") && p.name == "body") || incoming.contains_key(&(n.id.clone(), p.name.clone()))
         })
@@ -547,7 +554,7 @@ impl<'s> Printer<'s> {
             } else if leaf == "http_stream" {
                 // A piped call's channel (empty when it isn't piped).
                 Some("pipe")
-            } else if leaf == "flow_call" {
+            } else if leaf == "flow_call" || leaf == "flow_start" {
                 Some("flow")
             } else {
                 None
@@ -1388,6 +1395,7 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
                 "file_slice" => "part".into(),
                 "http_request" => "response".into(),
                 "flow_call" if plain(node.param("action")) => node.param("action").to_string(),
+                "flow_start" => "started".into(),
                 "stripe_verify" => "verified".into(),
                 "clock" => "t".into(),
                 "const" => "c".into(),
@@ -1562,6 +1570,18 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
             "flow_call" if plain(node.param("action")) && plain(&call_noun(node.param("flow"))) => {
                 let input = self.arg(node, "input")?.map(|(t, _)| t).unwrap_or_default();
                 atom(format!("{}.{}({input})", call_noun(node.param("flow")), node.param("action")))
+            }
+            // `start(payment, x)` for its own action, `start(billing.charge, x)` for another flow's.
+            "flow_start" if plain(node.param("action")) && plain(&call_noun(node.param("flow"))) => {
+                let action = node.param("action");
+                let what = match self.p.own.as_deref() == Some(node.param("flow")) {
+                    true => action.to_string(),
+                    false => format!("{}.{action}", call_noun(node.param("flow"))),
+                };
+                match self.arg(node, "input")? {
+                    Some((input, _)) => atom(format!("start({what}, {input})")),
+                    None => atom(format!("start({what})")),
+                }
             }
             "channel_send" if plain(node.param("channel")) => atom(format!("{}.send({})", node.param("channel"), self.required(node, "pack")?)),
             "channel_subscribe" if plain(node.param("channel")) => match node.param("from") {
@@ -2543,9 +2563,22 @@ limit max_requests 6")).contains("one limit line says max_requests"));
         assert!(!text.contains("holon fn"), "no function printed as a holon:\n{text}");
     }
 
+    /// A start prints as written: `start(pay, x)` for the flow's own action, with no `calls` line,
+    /// `start(billing.charge, x)` for another flow's, with one.
+    #[test]
+    fn a_start_prints_as_written() {
+        for src in [
+            "flow f\nport 8080\n\nroute POST /a (req) {\n  started = start(pay, req.json)\n  respond started.waiting.paid\n}\n\naction pay (order) {\n  paid = await paid, expires: 1h\n  respond paid.method\n}\n",
+            "flow f\nport 8080\ncalls billing\n\nroute POST /a (req) {\n  start(billing.charge, req.json)\n  respond 204\n}\n",
+        ] {
+            let l = compile(src).unwrap_or_else(|e| panic!("{e}"));
+            assert_eq!(round_trips("f", &l.doc, &l.names), src);
+        }
+    }
+
     #[test]
     fn the_natural_spellings_print_as_written() {
-        let src = "flow f\nport 8200\nsecret tok\ncollection notes\nstate last\n\nholon twice(n) -> o {\n  o = n + n\n}\n\nroute POST /x (req) {\n  item = notes[req.params.id] ?? { k: [1, \"a\"] }\n  ok = req.headers.authorization == \"Bearer {secret.tok}\" && !(item.done)\n  sent = http.post(\"h.example\", \"/p\", body: json({ ..item, n: twice(item.n) }))\n  paid = await paid, expires: 2h\n  notes[req.params.id] = if ok then item else { }\n  state.last = { ..req.json, paid_via: paid.method }\n  respond { status: sent.status } when ok, status: 201, missing: 401\n}\n";
+        let src = "flow f\nport 8200\nsecret tok\ncollection notes\nstate last\n\nholon twice(n) -> o {\n  o = n + n\n}\n\nroute POST /x (req) {\n  item = notes[req.params.id] ?? { k: [1, \"a\"] }\n  ok = req.headers.authorization == \"Bearer {secret.tok}\" && !(item.done)\n  sent = http.post(\"h.example\", \"/p\", body: json({ ..item, n: twice(item.n) }))\n  notes[req.params.id] = if ok then item else { }\n  respond { status: sent.status } when ok, status: 201, missing: 401\n}\n\naction pay (input) {\n  paid = await paid, expires: 2h\n  state.last = { ..input, paid_via: paid.method }\n}\n";
         let first = compile(src).unwrap_or_else(|e| panic!("{e}"));
         let text = round_trips("f", &first.doc, &first.names);
         for line in [
@@ -2555,7 +2588,7 @@ limit max_requests 6")).contains("one limit line says max_requests"));
             "  sent = http.post(\"h.example\", \"/p\", body: json({ ..item, n: twice(item.n) }))",
             "  paid = await paid, expires: 2h",
             "  notes[req.params.id] = if ok then item else {}",
-            "  state.last = { ..req.json, paid_via: paid.method }",
+            "  state.last = { ..input, paid_via: paid.method }",
             "  respond { status: sent.status } when ok, status: 201, missing: 401",
         ] {
             assert!(text.contains(line), "missing {line:?} in\n{text}");

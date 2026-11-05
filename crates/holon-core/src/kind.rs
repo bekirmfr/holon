@@ -151,7 +151,8 @@ pub enum Capability {
     /// Lets callers subscribe to the named channel: `channel_subscribe`, a route answering with
     /// the stream of its packs.
     ChannelRead(String),
-    /// Runs the action of another deployed flow and gets its answer: `flow_call`. Named by the
+    /// Runs the action of another deployed flow and gets its answer: `flow_call`, or starts it,
+    /// another's or its own, without waiting for its end: `flow_start`. Named by the
     /// flow and the action, `"billing/charge"`, so consent names which action a flow may run, not
     /// just "other flows" (`docs/L4s/triggers-L4.md` §9, slice 6).
     RunsAction(String),
@@ -357,7 +358,7 @@ pub fn capabilities_of(name: &str, params: &[Param]) -> Option<Capabilities> {
         // A call to another flow's action: performed by the host between rounds, in-process, its
         // answer sourced back as an http response is. Both names are frozen params, so the
         // capability names the action exactly.
-        "flow_call" => vec![RunsAction(format!("{}/{}", ident(params, "flow")?, ident(params, "action")?))],
+        "flow_call" | "flow_start" => vec![RunsAction(format!("{}/{}", ident(params, "flow")?, ident(params, "action")?))],
         // A request whose answer the host forwards as it reads it: to the route's caller, or,
         // piped, to a channel's subscribers, which is sending on that channel too.
         "http_stream" => match params.iter().find(|p| p.name() == "pipe").and_then(|p| p.value()).filter(|v| !v.is_empty()) {

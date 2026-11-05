@@ -293,7 +293,7 @@ pub(crate) fn is_optional_input(n: &Node, port: Option<&str>) -> bool {
         "http_request" => &["headers", "body"],
         "http_upload" => &["headers"],
         "http_stream" => &["headers", "body"],
-        "flow_call" => &["input"],
+        "flow_call" | "flow_start" => &["input"],
         "collection_list" | "file_list" => &["prefix", "after"],
         "file_lines" => &["from"],
         _ => &[],
@@ -309,6 +309,10 @@ pub(crate) fn is_optional_input(n: &Node, port: Option<&str>) -> bool {
 /// absent when the endpoint runs, rather than refusing the route.
 /// `group` is in the same order as the children the spec was proposed over.
 pub fn route_spec(spec: EncapSpec, group: &[&Node], label: &str) -> Result<EncapSpec, String> {
+    // A route answers and is done: what waits is an action it starts (docs/L4s/typescript-syntax-L4.md §9).
+    if let Some(n) = group.iter().find(|n| n.data.body == PlacedBody::Primitive && matches!(n.data.name.as_str(), "await" | "resume_token")) {
+        return Err(format!("{label}: a route answers and is done, so it doesn't wait ({}): start an action that waits with a flow_start, and answer with what it says", n.data.name));
+    }
     caller_spec(spec, group, label, "request")
 }
 
@@ -627,6 +631,19 @@ mod tests {
             route_spec(base(), &group, "POST /todos").unwrap_err(),
             "POST /todos: add a respond node (or an effect, answered 204)"
         );
+    }
+
+    /// A route answers and is done: one with an `await` or a `resume_token` is refused, the
+    /// canvas's as the text's (docs/L4s/typescript-syntax-L4.md §9).
+    #[test]
+    fn a_route_doesnt_wait() {
+        for leaf in ["await", "resume_token"] {
+            let g = [req("r", "POST", "/a"), plain("w", leaf), res("s")];
+            let group: Vec<&Node> = g.iter().collect();
+            let spec = EncapSpec { promote: vec![promote(0, 0, "request")], expose: vec![expose(2, 0, "response")] };
+            let e = route_spec(spec, &group, "POST /a").unwrap_err();
+            assert!(e.starts_with("POST /a: a route answers and is done, so it doesn't wait"), "{e}");
+        }
     }
 
     #[test]

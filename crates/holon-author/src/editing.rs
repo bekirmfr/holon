@@ -139,10 +139,10 @@ const KEYWORDS: &[(&str, &str)] = &[
     ("holon", "`holon name(inputs) -> outputs { … }`: a flow inside a flow, a function placed as one node. One with several outputs is used as `h(…).name`. With `js` after the outputs, its body is JavaScript."),
     ("js", "`holon name(inputs) -> outputs js fuel 50M memory 16MB { … }`: a holon whose body is JavaScript, run with no clock, randomness or I/O, under its budgets (200M instructions and 16 MiB when not written)."),
     ("route", "`route METHOD /path/:param (req) { … }`: answers requests on the flow's port. Every statement in it uses `req`, directly or through a binding."),
-    ("resumes", "`route … (req) resumes name { … }`: the route that resumes a run parked at `await name`, taking its `resume_token`."),
+    ("resumes", "`route … (req) resumes name { … }`: the route that resumes a run parked at `await name`, taking the token its `start` was answered with."),
     ("respond", "`respond <body>, status: 201, missing: 400`: the route's answer; `missing:` is the status when the body has no value. `respond 204` answers a status alone."),
     ("delete", "`delete name[key]`: removes an item from a collection, or a file from a folder, when the run finishes."),
-    ("await", "`await event, expires: 1d`: parks the run until the event arrives; the route that `resumes` it goes on."),
+    ("await", "`await event, expires: 1d`: parks an action's run until the event arrives; the route that `resumes` it goes on. A route doesn't wait: it starts the action, `start(payment, x)`."),
     ("if", "`if c then a else b`: `a` when `c` is true, else `b`. A fallback, not a branch: when `a` has no value, `b`. Only the side it needs runs."),
     ("then", "`if c then a else b`: `a` when `c` is true, else `b`."),
     ("else", "`if c then a else b`: `b` when `c` isn't true, or `a` has no value. In a `match`, `else -> v`: `v` when no pattern matched."),
@@ -320,11 +320,11 @@ pub struct Completion {
 }
 
 /// Leaves a text doesn't call by name: it writes them as nouns (`http.get`, `state.x`,
-/// `notes[k]`, `now`, `secret.k`, `await`) or literals (`1`, `{ … }`).
+/// `notes[k]`, `now`, `secret.k`, `await`, `start(pay, x)`) or literals (`1`, `{ … }`).
 const SPOKEN_OTHERWISE: &[&str] = &[
     "http_request", "http_upload", "http_stream", "clock", "random", "ingress", "file_arrival", "secret", "await", "store_read", "store_write", "collection_get", "collection_list", "collection_put",
     "collection_delete", "file_read", "file_list", "file_write", "file_delete", "file_handle", "file_lines", "file_slice", "file_copy", "file_create", "file_create_copy", "egress",
-    "channel_send", "channel_subscribe", "const", "record", "json_parse", "json_stringify",
+    "channel_send", "channel_subscribe", "const", "record", "json_parse", "json_stringify", "flow_start",
 ];
 
 /// The leaves a text calls by name, as it names them: their name, signature and what they do.
@@ -334,6 +334,10 @@ fn callable() -> Vec<(String, String, String)> {
         if let Some((_, sig, doc)) = agent::leaves().into_iter().find(|(n, _, _)| n == leaf) {
             all.push((written.into(), sig.replacen(leaf, written, 1), doc.to_string()));
         }
+    }
+    // An action and what to send it, the action named as written: `pay`, or `billing.charge`.
+    if let Some((_, _, doc)) = agent::leaves().into_iter().find(|(n, _, _)| n == "flow_start") {
+        all.push(("start".into(), "start(action, input)".into(), doc.to_string()));
     }
     all
 }

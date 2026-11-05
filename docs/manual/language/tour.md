@@ -329,9 +329,13 @@ port 8111
 state last_order
 
 route POST /orders (req) {
-  respond "/paid/{resume_token(paid)}"
+  started = start(payment, req.json)
+  respond "/paid/{started.waiting.paid}"
+}
+
+action payment (order) {
   paid = await paid, expires: 1d
-  state.last_order = { ..req.json, paid_via: paid.method }
+  state.last_order = { ..order, paid_via: paid.method }
 }
 
 route GET /paid/:token (req) resumes paid {
@@ -339,10 +343,11 @@ route GET /paid/:token (req) resumes paid {
 }
 ```
 
-The first route answers at once with a link, then waits at `await`. When the link is opened, the
-second route delivers the event, and the first run finishes: it writes the order. If nobody opens
-the link within a day, the run expires. Order in the text doesn't matter: a value is computed when
-what it needs has arrived.
+A route answers and is done, so what waits is a run it starts: `start(payment, req.json)` starts
+the action `payment` and answers once that run waits, with the token that resumes it, and the
+route answers at once with the link. When the link is opened, the third route delivers the event,
+and the order's run finishes: it writes the order. If nobody opens the link within a day, the run
+expires. Order in the text doesn't matter: a value is computed when what it needs has arrived.
 
 ## Files
 

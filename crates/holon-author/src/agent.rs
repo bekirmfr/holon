@@ -649,8 +649,12 @@ THE OUTSIDE WORLD (each is one permission the flow asks for)
   r = billing.charge({ id: 1 })            runs its action charge with a value ({} if none):
                                            r is {answer, run}, or {error, message} when it
                                            didn't run; a permission, and never a loop
-  await paid, expires: 1d                  park the run until the event arrives
-  resume_token(paid)                       the token a resuming route takes
+  started = start(payment, req.json)       start this flow's action payment (or another's,
+                                           start(billing.charge, x)): started is {run, waiting}
+                                           once it waits, waiting.paid the token for paid
+  await paid, expires: 1d                  park the run until the event arrives: in an action,
+                                           as a route answers and is done; a route starts it
+  resume_token(paid)                       the token a resuming route takes (in an action)
   route GET /paid/:token (req) resumes paid { … }
   json(x), parse_json(text)
 

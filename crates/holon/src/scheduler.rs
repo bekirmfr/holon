@@ -160,7 +160,7 @@ pub(crate) fn fire_one_clock_tick(
     }
     let parked_any = !entry.parked.is_empty();
     // A whole flow on its interval is strict; a server's clock is as its line says.
-    if let Some(l) = log_run(deployments, &slug, entry, Redactor::tokens(&waits.tokens), declared) {
+    if let Some(l) = log_run(deployments, &slug, entry, Redactor::tokens(&waits.tokens).and(Redactor::handed(&calls::handed(&run.rounds))), declared) {
         l.said(&slug);
     }
 
@@ -178,7 +178,7 @@ pub(crate) fn fire_one_clock_tick(
     };
     // Redacted as its log entry is: the history is read by whoever may read the deployment.
     redact_tick(&mut tick, &Redactor::of(secrets));
-    redact_tick(&mut tick, &Redactor::tokens(&waits.tokens));
+    redact_tick(&mut tick, &Redactor::tokens(&waits.tokens).and(Redactor::handed(&calls::handed(&run.rounds))));
     redact_tick(&mut tick, &Redactor::answers(&run.answered.0, secrets));
 
     {

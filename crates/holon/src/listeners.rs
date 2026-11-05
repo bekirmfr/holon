@@ -262,6 +262,9 @@ fn serve_flow(
     let parked_any = matches!(&parked, Ok(names) if !names.is_empty());
     // Whether an unrecorded run sent packs, which go out even though it isn't logged.
     let sends = level == holon_core::LogLevel::Unrecorded && ran.as_ref().is_some_and(|r| r.run.performed.iter().chain(&r.run.progress).any(|(c, _)| matches!(c, Capability::ChannelSend(_))));
+    // The tokens its starts were handed for the runs they started (calls.rs): bearer credentials
+    // as its own are, kept out of its log though its caller is answered with them.
+    let handed = ran.as_ref().map_or_else(Vec::new, |r| calls::handed(&r.run.rounds));
     let entry = || {
         let mut entry = match ran {
             Some(Ran { entry: Some(entry), .. }) => entry,
@@ -281,7 +284,7 @@ fn serve_flow(
         entry
     };
     let tokens = || {
-        let tokens = Redactor::tokens(&waits.tokens);
+        let tokens = Redactor::tokens(&waits.tokens).and(Redactor::handed(&handed));
         // A resume route's request carries the token it delivers (in its URL): redacted too.
         match &resume {
             Some((_, name, _, token)) => tokens.and(Redactor::tokens(&BTreeMap::from([(name.clone(), token.clone())]))),

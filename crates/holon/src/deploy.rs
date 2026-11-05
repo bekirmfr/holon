@@ -993,7 +993,7 @@ pub(crate) fn handle_post_trigger(
     }
     let parked_any = !entry.parked.is_empty();
     // A whole flow run by hand is not a handler, so it is strict (C5).
-    let logged = log_run(deployments, slug, entry, Redactor::tokens(&waits.tokens), holon_core::LogLevel::Strict);
+    let logged = log_run(deployments, slug, entry, Redactor::tokens(&waits.tokens).and(Redactor::handed(&calls::handed(&run.rounds))), holon_core::LogLevel::Strict);
     let FiredRun { outputs, performed, answered, .. } = run;
     // The state is kept by its head, written as the change landed (claims.rs); the deployments
     // file changes only with the deployment's definition, here its waiting runs.
@@ -1068,6 +1068,9 @@ pub(crate) struct ActionRan {
     pub(crate) seq: Option<u64>,
     /// It parked at an `await`: the run goes on when the event arrives.
     pub(crate) waiting: bool,
+    /// Each point it parked at, with the token that resumes it there: what a start hands back
+    /// (calls.rs).
+    pub(crate) waiting_at: Vec<(String, String)>,
     /// Why it didn't answer, in words.
     pub(crate) error: Option<String>,
     /// Which refusal or failure it was, for a flow's call to say as `error`.
@@ -1077,7 +1080,7 @@ pub(crate) struct ActionRan {
 impl ActionRan {
     fn refused(status: u16, why: &'static str, message: impl Into<String>) -> ActionRan {
         let message = message.into();
-        ActionRan { status, reply: serde_json::json!({ "error": message }), answer: None, seq: None, waiting: false, error: Some(message), why: Some(why) }
+        ActionRan { status, reply: serde_json::json!({ "error": message }), answer: None, seq: None, waiting: false, waiting_at: Vec::new(), error: Some(message), why: Some(why) }
     }
 }
 
@@ -1100,7 +1103,7 @@ pub(crate) fn run_action(
     let (action, state, permit, vault, folders, channels) = {
         let deployments = deployments.lock().unwrap();
         let Some(dep) = deployments.get(slug) else {
-            return ActionRan { status: 404, reply: serde_json::Value::Null, answer: None, seq: None, waiting: false, error: Some(format!("no deployment {slug:?}")), why: Some("not_found") };
+            return ActionRan { status: 404, reply: serde_json::Value::Null, answer: None, seq: None, waiting: false, waiting_at: Vec::new(), error: Some(format!("no deployment {slug:?}")), why: Some("not_found") };
         };
         if dep.life.status != Status::Running {
             return ActionRan::refused(409, "not_running", format!("{slug:?} is {}", status_word(dep.life.status)));
@@ -1168,14 +1171,20 @@ pub(crate) fn run_action(
         entry.status = Some(status.max(500));
     }
     let (parked_any, error) = (!entry.parked.is_empty(), entry.error.is_some());
+    // Where it waits, each point with its token, for a start to hand back: derived from the run's
+    // id as the run's own `resume_token` is.
+    let waiting_at: Vec<(String, String)> = match &waits.run_id {
+        Some(id) => entry.parked.iter().map(|name| (name.clone(), durable::token_for(id, name))).collect(),
+        None => Vec::new(),
+    };
     // The seq its entry got, not the next one read beforehand: another run may log between.
-    let (seq, kept) = log_run(deployments, slug, entry, Redactor::tokens(&waits.tokens), action.log).map_or((None, Ok(())), |l| (l.seq, l.kept));
+    let (seq, kept) = log_run(deployments, slug, entry, Redactor::tokens(&waits.tokens).and(Redactor::handed(&calls::handed(&run.rounds))), action.log).map_or((None, Ok(())), |l| (l.seq, l.kept));
     // The state is kept by its head, written as the change landed (claims.rs); the deployments
     // file changes only with the deployment's definition, here its waiting runs.
     if parked_any {
         persist_deployments(deployments_path, deployments);
     }
-    let ran = |status: u16, reply: serde_json::Value, answer: Option<Value>, waiting: bool, error: Option<String>, why: Option<&'static str>| ActionRan { status, reply, answer, seq, waiting, error, why };
+    let ran = |status: u16, reply: serde_json::Value, answer: Option<Value>, waiting: bool, error: Option<String>, why: Option<&'static str>| ActionRan { status, reply, answer, seq, waiting, waiting_at: if waiting { waiting_at.clone() } else { Vec::new() }, error, why };
     // A strict run whose record isn't on disk isn't answered as done: it may not be on record.
     if let Err(e) = kept {
         let message = format!("the action ran, but {e}");

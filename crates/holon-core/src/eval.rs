@@ -228,6 +228,7 @@ enum Request {
     Http,
     Upload,
     FlowCall,
+    FlowStart,
     Stream,
     Await,
     CollectionGet,
@@ -250,6 +251,7 @@ impl Request {
             "http_request" => Request::Http,
             "http_upload" => Request::Upload,
             "flow_call" => Request::FlowCall,
+            "flow_start" => Request::FlowStart,
             "http_stream" => Request::Stream,
             "await" => Request::Await,
             "collection_get" => Request::CollectionGet,
@@ -276,7 +278,9 @@ impl Request {
             // One whose body is a file: the host streams it.
             Request::Upload => primitives::http_upload(&owned(inputs), params),
             // A call to another flow's action: the host runs it in-process and answers.
-            Request::FlowCall => primitives::flow_call_request(&owned(inputs), params),
+            Request::FlowCall => primitives::flow_call_request(&owned(inputs), params, false),
+            // A start of one: the host runs it until it finishes or first waits, and answers then.
+            Request::FlowStart => primitives::flow_call_request(&owned(inputs), params, true),
             // One whose answer the host forwards to the route's caller as it arrives.
             Request::Stream => primitives::http_stream(&owned(inputs), params),
             // A durable run's waiting point and its token: also the host's to answer.

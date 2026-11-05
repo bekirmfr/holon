@@ -170,6 +170,8 @@ struct Frame {
     guarded_calls: Vec<(String, Expr)>,
     /// The bindings another name, a record or a write holds too.
     shared: BTreeSet<String>,
+    /// Whether it is a route's: a route answers and is done, so it doesn't wait.
+    route: bool,
 }
 
 /// A `return`, under the branches it is in.
@@ -309,6 +311,9 @@ struct Reader<'s, 't> {
     state_keys: BTreeSet<String>,
     defs: HashMap<String, Def>,
     consts: HashMap<String, String>,
+    /// The file's own actions (`export const payment = action(…)`), which a handler starts by
+    /// calling one, `payment(x)`.
+    actions: BTreeSet<String>,
     /// The top level's `type` aliases, each read as the type it names where it is used, and its
     /// interfaces, each a record.
     aliases: HashMap<String, &'t js::TSType<'t>>,
@@ -331,6 +336,7 @@ impl<'s, 't> Reader<'s, 't> {
             state_keys: BTreeSet::new(),
             defs: HashMap::new(),
             consts: HashMap::new(),
+            actions: BTreeSet::new(),
             aliases: HashMap::new(),
             interfaces: BTreeSet::new(),
             scopes: Vec::new(),
@@ -458,6 +464,7 @@ impl<'s, 't> Reader<'s, 't> {
                         "status" => Vocab::Status,
                         "stripe" => Vocab::Stripe,
                         "event" => Vocab::Event,
+                        "start" => return fail(self.span(n.span), START_IS_A_CALL),
                         "tour" | "component" => return fail(self.span(n.span), format!("{what} comes with tours and components, not yet")),
                         leaf if interface_of(alias(leaf)).is_some() || templates::is_template(leaf) => Vocab::Leaf(leaf.to_string()),
                         other => return fail(self.span(n.span), format!("\"holon\" has no \"{other}\": its vocabulary (flow, route, every, on, action, js, respond, status, stripe, event) and its leaves")),
@@ -544,6 +551,19 @@ impl<'s, 't> Reader<'s, 't> {
                         js::Expression::ArrowFunctionExpression(_) | js::Expression::FunctionExpression(_) => self.define(id.name.as_str(), Def::Holon, id.span)?,
                         js::Expression::CallExpression(c) if self.vocab_of(&c.callee) == Some(Vocab::Js) => self.define(id.name.as_str(), Def::Js, id.span)?,
                         _ => {}
+                    }
+                }
+            }
+            // An action, which a handler may start before it is written.
+            js::Statement::ExportDeclaration(e) => {
+                if let js::Declaration::VariableDeclaration(v) = &e.declaration {
+                    for d in &v.declarations {
+                        if let (js::BindingPattern::BindingIdentifier(id), Some(init)) = (&d.id, &d.init)
+                            && let js::Expression::CallExpression(c) = self.unwrap(init)
+                            && self.vocab_of(&c.callee) == Some(Vocab::Action)
+                        {
+                            self.actions.insert(id.name.to_string());
+                        }
                     }
                 }
             }
@@ -898,6 +918,7 @@ impl<'s, 't> Reader<'s, 't> {
         }
         let saved = std::mem::take(&mut self.frame);
         self.frame.used.insert(received.to_string());
+        self.frame.route = block == Block::Route;
         self.scopes.push(HashMap::new());
         let mut stmts = Vec::new();
         let result = self.handler_statements(f, block, received, &mut stmts);
@@ -2584,8 +2605,16 @@ impl<'s, 't> Reader<'s, 't> {
                 {
                     return self.event(c, span);
                 }
-                // A request or a call is read as today's graph does, between rounds; their order
-                // and what `await` adds come with slice 7.
+                // An action awaited is called, its answer read; one not awaited is started (`call`).
+                if let js::Expression::CallExpression(c) = self.unwrap(&a.argument)
+                    && let js::Expression::Identifier(i) = self.unwrap(&c.callee)
+                    && let Some((flow, action)) = self.action_named(i.name.as_str())
+                {
+                    let callee = self.name(i.name.as_str(), i.span);
+                    return self.called(c, flow, action, callee, span);
+                }
+                // A request is read as today's graph does, between rounds; its order and what
+                // `await` adds come with slice 7.
                 self.expr(&a.argument)
             }
             js::Expression::ObjectExpression(o) => self.record(o, span),
@@ -2817,15 +2846,13 @@ impl<'s, 't> Reader<'s, 't> {
                     let args = self.positional(&c.arguments)?;
                     return ok(ExprKind::Call { callee, args });
                 }
+                if let Some((flow, action)) = self.action_named(name) {
+                    return self.start(c, flow, action, callee, span);
+                }
                 match self.imports.get(name).cloned() {
                     Some(Noun::Vocab(Vocab::Leaf(leaf))) => {
                         let args = self.args(&c.arguments, &Takes::of_leaf(&leaf))?;
                         ok(ExprKind::Call { callee: Name { text: leaf, span: callee.span }, args })
-                    }
-                    Some(Noun::Action { flow, action }) => {
-                        let args = self.positional(&c.arguments)?;
-                        let receiver = Name { text: super::lower::call_noun(&flow), span: callee.span };
-                        ok(ExprKind::Method { receiver, method: Name { text: action, span: callee.span }, args })
                     }
                     Some(Noun::Vocab(Vocab::Status | Vocab::Respond)) => fail(span, "status(…) and respond(…) are a route's answer: return them"),
                     Some(Noun::Vocab(Vocab::Event)) => fail(span, "an event is waited for: await event(\"paid\")"),
@@ -2840,10 +2867,66 @@ impl<'s, 't> Reader<'s, 't> {
         }
     }
 
+    /// The action `name` names, if it names one: another flow's, imported (its flow and action),
+    /// or the file's own (no flow). A binding or a function of that name is not one.
+    fn action_named(&self, name: &str) -> Option<(Option<String>, String)> {
+        if self.lookup(name).is_some() || self.defs.contains_key(name) {
+            return None;
+        }
+        match self.imports.get(name) {
+            Some(Noun::Action { flow, action }) => Some((Some(flow.clone()), action.clone())),
+            Some(_) => None,
+            None => self.actions.contains(name).then(|| (None, name.to_string())),
+        }
+    }
+
+    /// `payment(x)` without `await`: the action started and not waited for. It is answered once
+    /// its run first waits, `{ run, waiting }` with the token for each point it waits at, or once
+    /// it ends, as a JavaScript async function runs to its first `await` before it hands back its
+    /// promise. `.holon` writes it `start(payment, x)`, `start(billing.charge, x)` (the note's §9).
+    fn start(&mut self, c: &js::CallExpression, flow: Option<String>, action: String, callee: Name, span: Span) -> R<Expr> {
+        let at = callee.span;
+        let target = match flow {
+            Some(flow) => {
+                let base = Expr { kind: ExprKind::Name(super::lower::call_noun(&flow)), span: at };
+                Expr { kind: ExprKind::Field { base: Box::new(base), name: Name { text: action, span: at } }, span: at }
+            }
+            None => Expr { kind: ExprKind::Name(action), span: at },
+        };
+        let mut args = vec![Arg { name: None, value: target }];
+        args.extend(self.sent(c, &callee.text, span)?);
+        Ok(Expr { kind: ExprKind::Call { callee: Name { text: "start".into(), span: at }, args }, span })
+    }
+
+    /// `await charge(x)`: another flow's action called and its answer read, `{ answer, run }`, or
+    /// `{ error, message }` when it didn't run or waits. Waiting for the end of one that waits, the
+    /// flow's own among them, comes with calls that park their caller (the note's §9).
+    fn called(&mut self, c: &js::CallExpression, flow: Option<String>, action: String, callee: Name, span: Span) -> R<Expr> {
+        let Some(flow) = flow else {
+            let name = &callee.text;
+            return fail(span, format!("await {name}(…) would wait for this flow's own action to end, which a flow can't yet: start it without await, const started = {name}(x), and answer with where it waits, started.waiting"));
+        };
+        let args = self.sent(c, &callee.text, span)?;
+        let receiver = Name { text: super::lower::call_noun(&flow), span: callee.span };
+        Ok(Expr { kind: ExprKind::Method { receiver, method: Name { text: action, span: callee.span }, args }, span })
+    }
+
+    /// What an action is sent: one value, or nothing.
+    fn sent(&mut self, c: &js::CallExpression, name: &str, span: Span) -> R<Vec<Arg>> {
+        let args = self.positional(&c.arguments)?;
+        if args.len() > 1 {
+            return fail(span, format!("an action is sent one value: {name}({{ … }}), a record for more"));
+        }
+        Ok(args)
+    }
+
     /// `await event("paid", { expires: "1d" })`: the run waits for the event, as `await paid,
     /// expires: 1d` does.
     fn event(&mut self, c: &js::CallExpression, span: Span) -> R<Expr> {
         let shape = "await event(\"paid\", { expires: \"1d\" })";
+        if self.frame.route {
+            return fail(span, ROUTE_WAITS);
+        }
         let args: Vec<&js::Expression> = c.arguments.iter().filter_map(|a| a.as_expression()).collect();
         if args.len() != c.arguments.len() || args.is_empty() || args.len() > 2 {
             return fail(span, format!("event takes its name, then its options: {shape}"));
@@ -3281,6 +3364,7 @@ impl Takes {
             ("database", "find_one") => return Takes { required: 2, named: vec!["sort".into()] },
             ("database", "update") => return Takes { required: 3, named: vec!["expect".into()] },
             ("database", "delete") => return Takes { required: 2, named: vec!["expect".into()] },
+            ("channel", "subscribe") => return Takes { required: 0, named: vec!["from".into()] },
             _ => return Takes { required: usize::MAX, named: vec![] },
         };
         let mut t = Takes::of_leaf(leaf);
@@ -3288,6 +3372,13 @@ impl Takes {
         t
     }
 }
+
+/// `start` is `.holon`'s word: here an action called is started, and one awaited is called.
+const START_IS_A_CALL: &str =
+    "start is .holon's word: in TypeScript an action called without await is started, const started = payment(req.json), and one awaited is called, await charge(x)";
+
+/// A route that waits, refused as `.holon`'s is, in this form's words.
+const ROUTE_WAITS: &str = "a route answers and is done, so it doesn't wait: start an action that waits, const started = payment(req.json), and answer with its link, started.waiting.paid";
 
 /// A route's request's parts, each an output of its node: a name for one is the node itself.
 const REQUEST_PARTS: &[&str] = &["request", "params", "query", "headers", "body", "json"];
@@ -3899,9 +3990,10 @@ mod tests {
         ($($name:literal),* $(,)?) => { [$(($name, include_str!(concat!("../../tests/ts-parity/", $name, ".holon.ts")))),*] };
     }
 
-    /// The samples that use only what slices 1 and 2 read, each written in TypeScript in
+    /// The samples that use only what slices 1 to 3 read, each written in TypeScript in
     /// tests/ts-parity.
-    const TWINS: [(&str, &str); 18] = twins![
+    const TWINS: [(&str, &str); 19] = twins![
+        "approval",
         "basket",
         "billing",
         "browser-key",
@@ -3973,8 +4065,8 @@ mod tests {
                 "flow p\nport 8000\n\nholon total(sum, json_) -> out {\n  out = sum + json_.extra\n}\n\nroute POST /t (req) {\n  respond { total: total(req.json.sum, req.json), more: map(req.json.xs, fn: fn(sum) -> sum + 1) }\n}\n",
             ),
             (
-                "a flow's action",
-                "import { flow, route } from \"holon\"\nimport { charge } from \"flow:billing\"\nflow(\"c\", { port: 8000 })\nroute.post(\"/c\", (req) => charge(req.json))\n",
+                "a flow's action called",
+                "import { flow, route } from \"holon\"\nimport { charge } from \"flow:billing\"\nflow(\"c\", { port: 8000 })\nroute.post(\"/c\", async (req) => await charge(req.json))\n",
                 "flow c\nport 8000\ncalls billing\n\nroute POST /c (req) {\n  respond billing.charge(req.json)\n}\n",
             ),
         ];
@@ -4087,18 +4179,33 @@ route.post("/s", (req) => {
                 "flow s\nport 8000\n\nroute POST /s (req) {\n  a = req.json.a\n  b = req.json.b\n  a_2 = b\n  b_2 = a\n  respond { a: a_2, b: b_2 }\n}\n",
             ),
             (
-                "an event awaited",
-                r#"import { flow, route, event } from "holon"
+                "an action started, which awaits an event",
+                r#"import { flow, route, action, event } from "holon"
 import state from "state"
 flow("e", { port: 8000 })
-route.post("/orders", async (req) => {
+route.post("/orders", (req) => {
+  const started = order(req.json)
+  return `/paid/${started.waiting.paid}`
+})
+export const order = action(async (input) => {
   const paid = await event("paid", { expires: "1d" })
-  state.last_order = { ...req.json, paid_via: paid.method }
-  return "paid"
+  state.last_order = { ...input, paid_via: paid.method }
 })
 route.get("/paid/:token", () => "thanks", { resumes: "paid" })
 "#,
-                "flow e\nport 8000\nstate last_order\n\nroute POST /orders (req) {\n  paid = await paid, expires: 1d\n  state.last_order = { ..req.json, paid_via: paid.method }\n  respond \"paid\"\n}\n\nroute GET /paid/:token (req) resumes paid {\n  respond \"thanks\"\n}\n",
+                "flow e\nport 8000\nstate last_order\n\nroute POST /orders (req) {\n  started = start(order, req.json)\n  respond \"/paid/{started.waiting.paid}\"\n}\n\naction order (input) {\n  paid = await paid, expires: 1d\n  state.last_order = { ..input, paid_via: paid.method }\n}\n\nroute GET /paid/:token (req) resumes paid {\n  respond \"thanks\"\n}\n",
+            ),
+            (
+                "another flow's action started",
+                r#"import { flow, route } from "holon"
+import { charge } from "flow:billing"
+flow("s", { port: 8000 })
+route.post("/s", (req) => {
+  const started = charge(req.json)
+  return started.run
+})
+"#,
+                "flow s\nport 8000\ncalls billing\n\nroute POST /s (req) {\n  started = start(billing.charge, req.json)\n  respond started.run\n}\n",
             ),
             (
                 "a call under an if, read by nothing",
@@ -4163,6 +4270,31 @@ route.post("/t", (req) => price(req.json.amount))
             }
         }
         assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+    }
+
+    /// An action called without `await` is started, and one awaited is called, as a JavaScript
+    /// async function runs to its first `await` before it hands back its promise (the note's §9).
+    /// What can't be is refused, saying what to write.
+    #[test]
+    fn an_action_not_awaited_is_started() {
+        let head = "import { flow, route, action, event } from \"holon\"\nimport { charge } from \"flow:billing\"\nflow(\"f\", { port: 8000 })\nexport const pay = action(async (order) => {\n  const paid = await event(\"paid\", { expires: \"1h\" })\n  return paid.method\n})\n";
+        let refused = [
+            ("route.post(\"/\", async (req) => await pay(req.json))\n", "await pay(…) would wait for this flow's own action to end, which a flow can't yet: start it without await, const started = pay(x)"),
+            ("route.post(\"/\", async (req) => {\n  const paid = await event(\"paid\", { expires: \"1h\" })\n  return paid.method\n})\n", ROUTE_WAITS),
+            ("route.post(\"/\", (req) => charge(req.json, 2))\n", "an action is sent one value: charge({ … }), a record for more"),
+        ];
+        for (body, expected) in refused {
+            let e = parse(&format!("{head}{body}")).map(|_| ()).unwrap_err().to_string();
+            assert!(e.contains(expected), "{body}\n  => {e}");
+        }
+        let e = parse("import { flow, start } from \"holon\"\nflow(\"f\", { port: 8000 })\n").map(|_| ()).unwrap_err().to_string();
+        assert!(e.contains(START_IS_A_CALL), "{e}");
+        // Started, the flow's own as another's; awaited, another's is called.
+        let started = parse(&format!("{head}route.post(\"/\", (req) => pay(req.json).waiting.paid)\n")).unwrap_or_else(|e| panic!("{e}"));
+        let called = parse(&format!("{head}route.post(\"/\", async (req) => (await charge(req.json)).answer)\n")).unwrap_or_else(|e| panic!("{e}"));
+        let leaves = |file: &File| format!("{file:?}");
+        assert!(leaves(&started).contains("\"start\""), "{started:?}");
+        assert!(leaves(&called).contains("Method"), "{called:?}");
     }
 
     fn holon_of(ts: &str) -> HolonDef {

@@ -475,7 +475,7 @@ Whether two values are the same.
 
 Each of these is something a flow may do, and so a line of what it asks for when it is deployed. The language writes most of them as nouns (`req`, `now`, `secret.x`, `state.x`, `http.get`, a collection or a folder). The writes and the calls out take a `trigger` last: what starts them, the request of the route they are in, the trigger of the holon they are in, or what `after` names. The language ties it, so it is never an argument.
 
-[`http_request`](#http_request) · [`http_upload`](#http_upload) · [`http_stream`](#http_stream) · [`flow_call`](#flow_call) · [`clock`](#clock) · [`random`](#random) · [`ingress`](#ingress) · [`secret`](#secret) · [`file_arrival`](#file_arrival) · [`await`](#await) · [`resume_token`](#resume_token) · [`store_read`](#store_read) · [`store_write`](#store_write) · [`collection_get`](#collection_get) · [`collection_list`](#collection_list) · [`collection_put`](#collection_put) · [`collection_delete`](#collection_delete) · [`file_read`](#file_read) · [`file_list`](#file_list) · [`file_write`](#file_write) · [`file_delete`](#file_delete) · [`file_handle`](#file_handle) · [`file_lines`](#file_lines) · [`file_slice`](#file_slice) · [`file_copy`](#file_copy) · [`file_create`](#file_create) · [`file_create_copy`](#file_create_copy) · [`db_query`](#db_query) · [`db_one`](#db_one) · [`db_exec`](#db_exec) · [`db_find`](#db_find) · [`db_find_one`](#db_find_one) · [`db_insert`](#db_insert) · [`db_update`](#db_update) · [`db_delete`](#db_delete) · [`channel_send`](#channel_send) · [`channel_subscribe`](#channel_subscribe) · [`egress`](#egress)
+[`http_request`](#http_request) · [`http_upload`](#http_upload) · [`http_stream`](#http_stream) · [`flow_call`](#flow_call) · [`flow_start`](#flow_start) · [`clock`](#clock) · [`random`](#random) · [`ingress`](#ingress) · [`secret`](#secret) · [`file_arrival`](#file_arrival) · [`await`](#await) · [`resume_token`](#resume_token) · [`store_read`](#store_read) · [`store_write`](#store_write) · [`collection_get`](#collection_get) · [`collection_list`](#collection_list) · [`collection_put`](#collection_put) · [`collection_delete`](#collection_delete) · [`file_read`](#file_read) · [`file_list`](#file_list) · [`file_write`](#file_write) · [`file_delete`](#file_delete) · [`file_handle`](#file_handle) · [`file_lines`](#file_lines) · [`file_slice`](#file_slice) · [`file_copy`](#file_copy) · [`file_create`](#file_create) · [`file_create_copy`](#file_create_copy) · [`db_query`](#db_query) · [`db_one`](#db_one) · [`db_exec`](#db_exec) · [`db_find`](#db_find) · [`db_find_one`](#db_find_one) · [`db_insert`](#db_insert) · [`db_update`](#db_update) · [`db_delete`](#db_delete) · [`channel_send`](#channel_send) · [`channel_subscribe`](#channel_subscribe) · [`egress`](#egress)
 
 ### `http_request`
 
@@ -508,6 +508,14 @@ flow_call(input: Any, trigger: Any) -> out: Record  {flow: billing, action: char
 ```
 
 Runs the action set on the node of the deployed flow set on the node, with the input (a value; {} when none is wired), and answers {answer, run} when it ran, or {error, message} when it didn't (not_found, not_running, no_action, waiting, failed, too_deep, refused). Performed by the server between rounds, in-process, as an ordinary action run of the other flow, logged there as run by this flow; the pair is a permission it asks for. Holds back when a wired input didn't arrive.
+
+### `flow_start`
+
+```
+flow_start(input: Any, trigger: Any) -> out: Record  {flow: billing, action: charge}
+```
+
+Starts the action set on the node of the deployed flow set on the node (this flow's own, or another's), with the input (a value; {} when none is wired), and doesn't wait for it to end: the server runs it in-process until it finishes or first waits, and answers then, {answer, run} when it finished, {run, waiting} when it waits (waiting names each point it waits at, with the token that resumes it), or {error, message} when it didn't run. Never waits itself, so a route hands out the link of a run that waits. The pair is a permission it asks for. Holds back when a wired input didn't arrive.
 
 ### `clock`
 

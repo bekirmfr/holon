@@ -15,10 +15,17 @@
 //! says which), `failed` and `too_deep`. A call is a permission (`RunsAction("billing/charge")`),
 //! checked when it is made, so revoking it refuses the next call at once.
 //!
+//! A start (`flow_start`, `start: true` in what it asks) is a call that doesn't wait for the run
+//! it starts (docs/L4s/typescript-syntax-L4.md §9): where that run waits, it answers
+//! `{run, waiting}`, each point it waits at with the token that resumes it there, so a route can
+//! hand out the link of a run that goes on waiting, which a route never does itself. The tokens
+//! are kept out of the starting run's log ([`handed`]), as its own are.
+//!
 //! Three rules keep calls from running away. A flow isn't called from its own chain (`shop` calls
 //! `billing`, which can't call `shop` or `billing` again): a call back would wait for the run that
-//! made it. A chain is at most `max_call_depth` calls long. And what is sent is a value, never a
-//! secret, whose value or whose derivation would reach the other flow's log.
+//! made it. A start of the flow's own action is let through, as nothing waits on it. A chain is at
+//! most `max_call_depth` calls long. And what is sent is a value, never a secret, whose value or
+//! whose derivation would reach the other flow's log.
 
 use crate::*;
 
@@ -57,6 +64,10 @@ pub(crate) struct Caller<'a> {
     /// Whether the run won't be logged (its handler is unrecorded, and granted so): the other
     /// flow's log says so, its run there pointing to none here.
     pub(crate) unrecorded: bool,
+    /// In a test, the run's fixed sources (firing::fixed): a call runs on a thread of its own,
+    /// whose run takes them from a range of its own, by the call's place.
+    #[cfg(test)]
+    pub(crate) fixed: Option<u64>,
 }
 
 /// An answer that says why nothing ran.
@@ -75,7 +86,8 @@ impl Caller<'_> {
         if !self.permit.allows(&Capability::RunsAction(format!("{flow}/{action}"))) {
             return failure("refused", format!("this deployment may not run the action {action:?} of {flow:?}"));
         }
-        if flow == self.slug || self.chain.iter().any(|f| f == flow) {
+        let start = r.get("start") == Some(&Value::Boolean(true));
+        if (flow == self.slug && !start) || self.chain.iter().any(|f| f == flow) {
             return failure("refused", format!("{flow:?} is already in this chain of calls: a flow isn't called back"));
         }
         let depth = self.chain.len() as u64 + 1;
@@ -91,8 +103,17 @@ impl Caller<'_> {
             false => format!("flow {}, run {}", self.slug, self.run),
         };
         let chain: Vec<String> = self.chain.iter().cloned().chain(std::iter::once(self.slug.to_string())).collect();
+        #[cfg(test)]
+        crate::firing::fixed::from(self.fixed.map(|n| ((n + 1) << 20) + ((path.iter().fold(0u64, |a, &p| a * 31 + p as u64) % 1024) << 10)));
         let ran = deploy::run_action(self.store, &host.deployments, &host.deployments_path, flow, action, Ok(input.clone()), Some(&by), false, &chain);
         let run = ran.seq.map(|s| Value::Number(s as f64));
+        if ran.waiting && start {
+            // Started, and waiting: each point it waits at, with its token.
+            let waiting = ran.waiting_at.iter().map(|(name, token)| (name.clone(), Value::Text(token.clone()))).collect();
+            let mut started = BTreeMap::from([("waiting".to_string(), Value::Record(waiting))]);
+            started.extend(run.map(|n| ("run".to_string(), n)));
+            return Value::Record(started);
+        }
         if ran.waiting {
             let mut waiting = BTreeMap::from([("error".to_string(), Value::Text("waiting".into())), ("message".to_string(), Value::Text(format!("{action:?} of {flow:?} is waiting for an event; its run goes on when it arrives")))]);
             waiting.extend(run.map(|n| ("run".to_string(), n)));
@@ -115,6 +136,20 @@ impl Caller<'_> {
             }
         }
     }
+}
+
+/// The tokens the starts in `rounds` were handed (`{run, waiting}`), each with its waiting point's
+/// name: what resumes a run another flow's start set going, kept out of the starter's log.
+pub(crate) fn handed(rounds: &[holon_host::Round]) -> Vec<(String, String)> {
+    let started = |e: &&holon_host::Exchange| matches!(&e.request, Value::Record(r) if r.get("start") == Some(&Value::Boolean(true)));
+    let waiting = |e: &holon_host::Exchange| match &e.response {
+        Value::Record(r) => match r.get("waiting") {
+            Some(Value::Record(w)) => w.iter().filter_map(|(name, t)| if let Value::Text(t) = t { Some((name.clone(), t.clone())) } else { None }).collect(),
+            _ => Vec::new(),
+        },
+        _ => Vec::new(),
+    };
+    rounds.iter().flat_map(|r| &r.exchanges).filter(started).flat_map(waiting).collect()
 }
 
 /// Whether `request` is a call to another flow's action (`{flow, action, input}`).

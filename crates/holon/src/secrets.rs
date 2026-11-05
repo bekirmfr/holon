@@ -898,6 +898,14 @@ impl Redactor {
         Redactor { pairs }
     }
 
+    /// The tokens a run's starts were handed (`calls::handed`), each as `‹token:name›`, as the
+    /// run's own are: the same name may come from several starts.
+    pub(crate) fn handed(handed: &[(String, String)]) -> Redactor {
+        let mut pairs: Vec<(String, String)> = handed.iter().map(|(name, token)| (token.clone(), format!("‹token:{name}›"))).collect();
+        pairs.sort_by_key(|(value, _)| std::cmp::Reverse(value.len()));
+        Redactor { pairs }
+    }
+
     /// This and `other` together: an entry is redacted once, so a mark one of them writes is
     /// never read by the other as a run's own text.
     pub(crate) fn and(mut self, other: Redactor) -> Redactor {

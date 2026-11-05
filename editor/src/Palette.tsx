@@ -25,7 +25,7 @@ export const FLOW_PREFIX = "flow:";
 const CATALOG_GROUPS: readonly { name: string; items: ReadonlySet<string> }[] = [
   {
     name: "net",
-    items: new Set(["http_request", "http_upload", "http_stream", "flow_call"]),
+    items: new Set(["http_request", "http_upload", "http_stream", "flow_call", "flow_start"]),
   },
   {
     name: "core",

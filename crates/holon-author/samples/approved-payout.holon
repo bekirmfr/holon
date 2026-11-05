@@ -1,7 +1,8 @@
 # Approved payout: a waiting run checks what it read.
 #
-# Asks for a payout from an account, answers with an approval link (202) and waits for it, a day
-# at most, holding nothing on the account meanwhile: a deposit goes ahead while it waits. Once
+# Asks for a payout from an account. The route answers with an approval link (202) and the
+# account's balance, and starts the payout's run, an action, which waits for the approval, a day at
+# most, holding nothing on the account meanwhile: a deposit goes ahead while it waits. Once
 # approved, the run reads the balance as it is now, sends the payout (to httpbin.org, standing in
 # for a bank), and writes the new balance and a record of the payout. At its commit it checks what
 # it read: if the balance was changed outside Holon while the payout was in flight, it runs again
@@ -24,15 +25,22 @@ flow approved-payout
 port 8153
 database bank
 
-# Answers an approval link, waits for it, then pays the payout and records it.
+# Starts the payout's run and answers its approval link, with the balance as it is now.
 route POST /payout/:account (req) {
   account = bank.one("select id, balance from accounts where id = $1", req.params.account)
-  respond { approve: "/approve/{resume_token(approved)}", balance: account.balance }, status: 202
+  started = start(payout, { account: account.id, amount: req.json.amount })
+  respond { approve: "/approve/{started.waiting.approved}", balance: account.balance }, status: 202
+}
+
+# The payout's run: waits for its approval, then pays from the balance as it is then, and
+# records it.
+action payout (asked) {
+  account = bank.one("select id, balance from accounts where id = $1", asked.account)
   # The run waits here until the link is opened, for a day at most.
   approved = await approved, expires: 1d
-  sent = http.post("httpbin.org", "/anything/payouts", headers: { "content-type": "application/json" }, body: json({ account: account.id, amount: req.json.amount, by: parse_json(approved.body).by }))
-  bank.exec("update accounts set balance = $1 where id = $2", account.balance - req.json.amount, account.id, expect: 1)
-  bank.exec("insert into payouts (account, amount, status) values ($1, $2, $3)", account.id, req.json.amount, sent.status)
+  sent = http.post("httpbin.org", "/anything/payouts", headers: { "content-type": "application/json" }, body: json({ account: account.id, amount: asked.amount, by: parse_json(approved.body).by }))
+  bank.exec("update accounts set balance = $1 where id = $2", account.balance - asked.amount, account.id, expect: 1)
+  bank.exec("insert into payouts (account, amount, status) values ($1, $2, $3)", account.id, asked.amount, sent.status)
 }
 
 # Opening the link approves the waiting payout; its body's `by` says who approved.

@@ -118,8 +118,11 @@ fn piped(d: &crate::canvas::NodeData) -> bool {
 /// `has_optional_ports`).
 pub(crate) fn is_optional(leaf: &str, input: &str) -> bool {
     input == TRIGGER
-        || matches!((leaf, input), ("http_request" | "http_stream", "headers" | "body") | ("http_upload", "headers") | ("flow_call", "input") | ("collection_list" | "file_list", "prefix" | "after") | ("file_lines", "from"))
+        || matches!((leaf, input), ("http_request" | "http_stream", "headers" | "body") | ("http_upload", "headers") | ("flow_call" | "flow_start", "input") | ("collection_list" | "file_list", "prefix" | "after") | ("file_lines", "from"))
 }
+
+/// Why a route can't wait: it answers and is done (docs/L4s/typescript-syntax-L4.md §9).
+const ROUTE_WAITS: &str = "a route answers and is done, so it doesn't wait: start an action that waits, started = start(payment, req.json), and answer with its link, started.waiting.paid";
 
 /// A declared collection's or folder's leaves, and the names of what they take: `c[k]` reads with
 /// `get`, `c[k] = v` writes with `put`, `delete c[k]` with `delete`; `c.list(…)` with `list`.
@@ -255,6 +258,9 @@ struct Lowerer<'a> {
     /// The flows the header names (`calls billing`), by the noun that calls them (`billing`, or
     /// `billing_v2` for `billing-v2`): their slugs.
     calls: HashMap<String, String>,
+    /// The flow's own name (`flow approval`), and its actions: what `start(payment, x)` starts.
+    flow: Option<String>,
+    actions: HashSet<String>,
     /// The secrets the header declares (`secret signing_key`, `optional secret receipt_key`):
     /// the only ones `secret.…` may read.
     secrets: HashSet<String>,
@@ -301,6 +307,8 @@ impl<'a> Lowerer<'a> {
             })
             .collect();
         let state = file.headers.iter().filter_map(|h| if let HeaderKind::State(k) = &h.kind { Some(k.clone()) } else { None }).collect();
+        let flow = file.headers.iter().find_map(|h| if let HeaderKind::Flow(n) = &h.kind { Some(n.clone()) } else { None });
+        let actions = file.items.iter().filter_map(|i| if let Item::Action(a) = i { Some(a.name.text.clone()) } else { None }).collect();
         let folders = file
             .headers
             .iter()
@@ -322,6 +330,8 @@ impl<'a> Lowerer<'a> {
             databases,
             channels,
             calls,
+            flow,
+            actions,
             secrets,
             state,
             streamed: None,
@@ -1631,6 +1641,9 @@ impl<'a> Lowerer<'a> {
             }
             ExprKind::Match { subject, arms, els, .. } => self.match_expr(subject, arms, els.as_deref(), e.span),
             ExprKind::Await { name, expires } => {
+                if matches!(self.cur().kind, FrameKind::Route { .. }) {
+                    return err(e.span, ROUTE_WAITS);
+                }
                 let mut params = vec![("name".to_string(), name.text.clone())];
                 if let Some(x) = expires {
                     params.push(("expires".into(), self.literal_text(x)?));
@@ -1876,6 +1889,13 @@ impl<'a> Lowerer<'a> {
         if self.cur().env.contains_key(&callee.text) {
             return err(callee.span, format!("\"{}\" is a value, not something to call", callee.text));
         }
+        if name == "start" {
+            return self.start(args, span);
+        }
+        // A token resumes the run that hands it out where it waits, and a route never waits.
+        if name == "resume_token" && matches!(self.cur().kind, FrameKind::Route { .. }) {
+            return err(callee.span, ROUTE_WAITS);
+        }
         if templates::is_template(name) {
             return match name {
                 "request" => err(callee.span, "a route declares its request: route GET /path (req) { … }"),
@@ -1893,6 +1913,39 @@ impl<'a> Lowerer<'a> {
         let inputs: Vec<WPort> = unit.inputs.iter().map(WPort::from_core).collect();
         let params: Vec<WParam> = unit.params.iter().map(WParam::from_core).collect();
         self.unit_call(name, &inputs, &params, &[], args, span)
+    }
+
+    /// `start(payment, x)`: start this flow's action `payment` with `x`, or another flow's,
+    /// `start(billing.charge, x)`, and don't wait for it to end (docs/L4s/typescript-syntax-L4.md
+    /// §9). It answers once the run finishes or first waits: `{answer, run}`, or `{run, waiting}`
+    /// with each point it waits at and the token that resumes it there.
+    fn start(&mut self, args: &'a [Arg], span: Span) -> R<Val> {
+        let shape = "start takes an action, then what to send it: start(payment, req.json), or start(billing.charge, x) for another flow's";
+        let (Some(first), rest) = (args.first(), args.get(1..).unwrap_or_default()) else { return err(span, shape) };
+        if let Some(named) = args.iter().find_map(|a| a.name.as_ref()) {
+            return err(named.span, shape);
+        }
+        if rest.len() > 1 {
+            return err(rest[1].value.span, format!("an action takes one input: {shape}"));
+        }
+        let (flow, action) = match &first.value.kind {
+            ExprKind::Name(a) if self.actions.contains(a) => match &self.flow {
+                Some(flow) => (flow.clone(), a.clone()),
+                None => return err(first.value.span, "a flow that starts its own action says its name first: flow approval"),
+            },
+            ExprKind::Field { base, name } => match &base.kind {
+                ExprKind::Name(c) if self.calls.contains_key(c) => (self.calls[c].clone(), name.text.clone()),
+                _ => return err(first.value.span, shape),
+            },
+            ExprKind::Name(a) => return err(first.value.span, format!("\"{a}\" isn't an action of this flow: action {a} (input) {{ … }}, or start(billing.charge, x) for another flow's")),
+            _ => return err(first.value.span, shape),
+        };
+        if action.len() > 64 {
+            return err(first.value.span, "an action's name is at most 64 characters");
+        }
+        let u = interface_of("flow_start").expect("a genesis leaf");
+        let (inputs, params) = (u.inputs.iter().map(WPort::from_core).collect::<Vec<_>>(), u.params.iter().map(WParam::from_core).collect::<Vec<_>>());
+        self.unit_call("flow_start", &inputs, &params, &[("flow".to_string(), flow), ("action".to_string(), action)], rest, span)
     }
 
     fn method(&mut self, receiver: &Name, method: &Name, args: &'a [Arg], span: Span) -> R<Val> {
@@ -2748,6 +2801,29 @@ pub(crate) mod tests {
         // The same request twice is two requests, each kept apart by where it goes.
         let (s, _) = server("route POST /hook (req) {\n  a = http.post(\"hooks.example.com\", \"/a\", body: req.body)\n  b = http.post(\"hooks.example.com\", \"/a\", body: req.body)\n  respond \"ok\"\n}\n");
         assert_eq!(s.endpoints.len(), 1);
+    }
+
+    /// A route answers and is done: what waits is an action it starts, `start(payment, x)`, which
+    /// answers once the run finishes or first waits (docs/L4s/typescript-syntax-L4.md §9). A route
+    /// that waits, or hands out a token of its own, is refused, saying what to write instead.
+    #[test]
+    fn a_route_starts_what_waits() {
+        let refused = |body: &str| compile(&format!("flow f\nport 8080\n\nroute POST /a (req) {{\n{body}\n}}\n\nroute GET /paid/:t (req) resumes paid {{\n  respond \"ok\"\n}}\n")).unwrap_err().message;
+        for body in ["  paid = await paid, expires: 1h\n  respond paid.method", "  respond \"/paid/{resume_token(paid)}\""] {
+            assert!(refused(body).starts_with("a route answers and is done, so it doesn't wait"), "{body}");
+        }
+        // In an action it waits, and a route starts it: this flow's own, or another flow's.
+        let own = compiled("flow f\nport 8080\n\nroute POST /a (req) {\n  started = start(pay, req.json)\n  respond started.waiting.paid\n}\n\naction pay (order) {\n  paid = await paid, expires: 1h\n  respond paid.method\n}\n").doc;
+        let start = own.nodes.iter().find(|n| n.data.name == "flow_start").expect("a start");
+        assert_eq!((start.param("flow"), start.param("action")), ("f", "pay"));
+        let other = compiled("flow f\nport 8080\ncalls billing\n\nroute POST /a (req) {\n  start(billing.charge)\n  respond 204\n}\n").doc;
+        let start = other.nodes.iter().find(|n| n.data.name == "flow_start").expect("a start");
+        assert_eq!((start.param("flow"), start.param("action")), ("billing", "charge"));
+        // What isn't an action, a start with options, or one of a flow without a name, is refused.
+        let error = |src: &str| compile(src).unwrap_err().message;
+        assert!(error("flow f\nport 8080\n\nroute POST /a (req) {\n  respond start(nope, 1)\n}\n").starts_with("\"nope\" isn't an action of this flow"));
+        assert!(error("flow f\nport 8080\n\nroute POST /a (req) {\n  respond start(pay, 1, now: true)\n}\n\naction pay (x) {\n  respond x\n}\n").starts_with("start takes an action"));
+        assert!(error("port 8080\n\nroute POST /a (req) {\n  respond start(pay, 1)\n}\n\naction pay (x) {\n  respond x\n}\n").starts_with("a flow that starts its own action says its name"));
     }
 
     /// A call is made when the run reaches its statement, under its `after`, whatever reads its

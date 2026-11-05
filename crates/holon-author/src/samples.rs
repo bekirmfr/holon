@@ -269,8 +269,8 @@ static SAMPLES: &[Sample] = &[
     Sample {
         name: "approval",
         title: "Order approval (durable run)",
-        description: "An order waits for payment: the run hands out a pay link, parks, and finishes when the link is opened, hours or days later. Its progress goes out on the channel orders as it happens: the pack that doesn't wait for the payment as the run parks, the one that does when it finishes, never the first twice.",
-        shows: &["await", "resume_token", "resume routes", "durable runs", "channels", "progress from a waiting run"],
+        description: "An order waits for payment: the route that takes it starts the order's run and answers its pay link at once, and the run parks and finishes when the link is opened, hours or days later. A route answers and is done; what waits is the action it starts. Its progress goes out on the channel orders as it happens: the pack that doesn't wait for the payment as the run parks, the one that does when it finishes, never the first twice.",
+        shows: &["start", "await", "resume routes", "durable runs", "channels", "progress from a waiting run"],
         port: Some("8105"),
         interval: None,
         secrets: &[],
@@ -633,8 +633,8 @@ static SAMPLES: &[Sample] = &[
     Sample {
         name: "approved-payout",
         title: "Approved payout (a waiting run checks what it read)",
-        description: "Asks for a payout from an account, answers with an approval link (202) and waits for it, a day at most, holding nothing on the account meanwhile: a deposit goes ahead while it waits. Approved, the run reads the balance as it is now and holds the row from its payout until it commits, as any run does (a deposit meanwhile waits, and runs again on the new balance). And it checks what it read at its commit as any run does: if the balance was changed by a program outside Holon while the payout was in flight, it runs again from the approval, on the balance as it now is, the payout and the approval answered from its record, not sent or asked again. No deposit is written over, and nothing is paid twice.",
-        shows: &["durable runs", "databases", "checks at commit", "running again"],
+        description: "Asks for a payout from an account: the route answers with an approval link (202) and starts the payout's run, which waits for it, a day at most, holding nothing on the account meanwhile: a deposit goes ahead while it waits. Approved, the run reads the balance as it is now and holds the row from its payout until it commits, as any run does (a deposit meanwhile waits, and runs again on the new balance). And it checks what it read at its commit as any run does: if the balance was changed by a program outside Holon while the payout was in flight, it runs again from the approval, on the balance as it now is, the payout and the approval answered from its record, not sent or asked again. No deposit is written over, and nothing is paid twice.",
+        shows: &["start", "durable runs", "databases", "checks at commit", "running again"],
         port: Some("8153"),
         interval: None,
         secrets: &[],

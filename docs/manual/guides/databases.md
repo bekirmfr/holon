@@ -272,7 +272,8 @@ shows it beside `orders-api`, on the same database.
 ## Runs that wait
 
 A run that waits for an event (`await`) holds nothing while it waits: a row it read is anyone's
-to change until the event comes. When it does, the run goes on from where it waited, its own
+to change until the event comes. A route never waits: it starts the run that does, an action,
+and answers with its link. When the event comes, the run goes on from where it waited, its own
 state as it first found it, and its databases and files **as they are now**: it reads them again.
 Its commit checks those reads as any run's does, and holds what it reads before it calls out, so
 if a row changed again in between, it runs again from where it waited, its requests and the
@@ -285,11 +286,16 @@ database bank
 
 route POST /payout/:account (req) {
   account = bank.one("select id, balance from accounts where id = $1", req.params.account)
-  respond { approve: "/approve/{resume_token(approved)}", balance: account.balance }, status: 202
+  started = start(payout, { account: account.id, amount: req.json.amount })
+  respond { approve: "/approve/{started.waiting.approved}", balance: account.balance }, status: 202
+}
+
+action payout (asked) {
+  account = bank.one("select id, balance from accounts where id = $1", asked.account)
   approved = await approved, expires: 1d
-  sent = http.post("httpbin.org", "/anything/payouts", headers: { "content-type": "application/json" }, body: json({ account: account.id, amount: req.json.amount, by: parse_json(approved.body).by }))
-  bank.exec("update accounts set balance = $1 where id = $2", account.balance - req.json.amount, account.id, expect: 1)
-  bank.exec("insert into payouts (account, amount, status) values ($1, $2, $3)", account.id, req.json.amount, sent.status)
+  sent = http.post("httpbin.org", "/anything/payouts", headers: { "content-type": "application/json" }, body: json({ account: account.id, amount: asked.amount, by: parse_json(approved.body).by }))
+  bank.exec("update accounts set balance = $1 where id = $2", account.balance - asked.amount, account.id, expect: 1)
+  bank.exec("insert into payouts (account, amount, status) values ($1, $2, $3)", account.id, asked.amount, sent.status)
 }
 
 route POST /approve/:token (req) resumes approved {

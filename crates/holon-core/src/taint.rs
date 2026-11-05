@@ -55,7 +55,7 @@ const PASSES_LITERALLY: &[&str] = &[
 
 /// Leaves whose output is what the far side answered: an outbound request's response, a
 /// database read's rows. (One that echoes a secret back holds its value, where the host finds it.)
-const ANSWERED: &[&str] = &["http_request", "http_upload", "http_stream", "flow_call", "db_query", "db_one", "db_find", "db_find_one"];
+const ANSWERED: &[&str] = &["http_request", "http_upload", "http_stream", "flow_call", "flow_start", "db_query", "db_one", "db_find", "db_find_one"];
 
 /// Deeper than this, a composite is taken as computing with whatever reaches it.
 const MAX_DEPTH: usize = 128;

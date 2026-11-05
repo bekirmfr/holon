@@ -672,7 +672,14 @@ pub(crate) fn resume_parked(
     entry.request = inputs.first().cloned().flatten().map(|r| SValue::from_core(&r));
     entry.events = waits.events.iter().map(|(k, v)| (k.clone(), SValue::from_core(v))).collect();
     entry.parked = run.waiting.iter().map(|w| w.name.clone()).collect();
-    if let Some(l) = log_run(deployments, slug, entry, Redactor::tokens(&waits.tokens), declared) {
+    // Its tokens, whether it handed them out itself or a start handed them back for it: each
+    // derived from its id, for each point it waited at or waits at now. The event that woke it
+    // may carry one.
+    let mut tokens = waits.tokens.clone();
+    for name in waits.events.keys().chain(run.waiting.iter().map(|w| &w.name)) {
+        tokens.entry(name.clone()).or_insert_with(|| token_for(run_id, name));
+    }
+    if let Some(l) = log_run(deployments, slug, entry, Redactor::tokens(&tokens).and(Redactor::handed(&calls::handed(&run.rounds))), declared) {
         l.said(slug);
     }
 

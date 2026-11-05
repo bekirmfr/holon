@@ -407,7 +407,7 @@ fn fire_one_arrival(
         Err(e) => entry.error = Some(e),
     }
     let parked_any = !entry.parked.is_empty();
-    if let Some(l) = log_run(deployments, slug, entry, Redactor::tokens(&waits.tokens), declared) {
+    if let Some(l) = log_run(deployments, slug, entry, Redactor::tokens(&waits.tokens).and(Redactor::handed(&calls::handed(&run.rounds))), declared) {
         l.said(slug);
     }
     let which = label.as_ref().map(|l| format!(" {l}")).unwrap_or_default();

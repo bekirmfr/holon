@@ -355,20 +355,24 @@ mod tests {
     fn a_flow_is_its_statements_by_trigger_with_the_nodes_under_them() {
         let g = graph(PAYOUT, false).unwrap();
         let titles: Vec<&str> = g.bands.iter().map(|b| b.title.as_str()).collect();
-        assert_eq!(titles, ["route POST /payout/:account (req)", "route POST /approve/:token (req) resumes approved", "route POST /deposit/:account (req)", "route GET /accounts/:account (req)"]);
-        let payout = &g.bands[0];
+        assert_eq!(titles, ["route POST /payout/:account (req)", "action payout (asked)", "route POST /approve/:token (req) resumes approved", "route POST /deposit/:account (req)", "route GET /accounts/:account (req)"]);
+        let route = &g.bands[0];
+        let names: Vec<&str> = route.rows.iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(names, ["route POST /payout/:account (req)", "account", "started", "respond"]);
+        assert_eq!(route.rows[0].does, "request");
+        assert_eq!(route.rows[2].does, "flow_start");
+        let payout = &g.bands[1];
         let names: Vec<&str> = payout.rows.iter().map(|r| r.name.as_str()).collect();
-        assert_eq!(names, ["route POST /payout/:account (req)", "account", "respond", "approved", "sent", "bank.exec", "bank.exec"]);
-        assert_eq!(payout.rows[0].does, "request");
+        assert_eq!(names, ["action payout (asked)", "account", "approved", "sent", "bank.exec", "bank.exec"]);
         assert_eq!(payout.rows[1].does, "db_one");
-        // `sent` takes from the request, the account and the approval; not from the plumbing.
-        assert_eq!(payout.rows[4].from, [0, 1, 3]);
+        // `sent` takes from what was asked, the account and the approval; not from the plumbing.
+        assert_eq!(payout.rows[3].from, [0, 1, 2]);
         assert!(payout.rows[1].parts.iter().any(|p| p.leaf == "field"), "its plumbing is its detail");
         assert!(payout.rows.iter().all(|r| r.line > 0 && r.last >= r.line));
         assert!(g.nodes > payout.rows.len() * 3, "far fewer rows than nodes");
 
         let every = graph(PAYOUT, true).unwrap();
-        assert_eq!(every.bands[0].rows.len(), every.bands[0].rows.iter().skip(1).map(|r| r.parts.len()).sum::<usize>() + 1);
+        assert_eq!(every.bands[1].rows.len(), every.bands[1].rows.iter().skip(1).map(|r| r.parts.len()).sum::<usize>() + 1);
     }
 
     #[test]

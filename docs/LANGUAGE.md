@@ -83,6 +83,7 @@ same graph are the same unit.
 | Routes | `route METHOD /path (req) [resumes name] { … }`; `respond` is a statement wired to the request implicitly | §5.11 |
 | Flows without handlers | The top-level statements are the one unit, started as its headers say | §5.12 |
 | Another flow's action | `calls billing`, then `billing.charge(x)`: run by the host in-process, answered `{answer, run}` or `{error, message}`, a permission, never a loop | §5.4 |
+| A run that waits | A route answers and is done: what waits (`await`) is an action, which the route starts with `start(payment, x)` (or another flow's, `start(billing.charge, x)`), answered `{run, waiting}` with the token for each point it waits at | §5.4 |
 | Sharing | A binding used twice is one node with two wires; the same expression written twice is two nodes. No common-subexpression elimination | §6.2 |
 | Hash | The lowered DAG's. Binding names, holon names, layout and comments are not in it | §7 |
 | Layout | Not in the text. Positions live in the flow document; import lays out automatically | §8 |
@@ -325,11 +326,15 @@ state last_order
 channel orders
 
 route POST /orders (req) {
-  respond "/paid/{resume_token(paid)}"
-  orders.send({ item: req.json.item, status: "waiting for payment" })
+  started = start(payment, req.json)
+  respond "/paid/{started.waiting.paid}"
+}
+
+action payment (order) {
+  orders.send({ item: order.item, status: "waiting for payment" })
   paid = await paid, expires: 1d
-  state.last_order = { ..req.json, paid_via: paid.method }
-  orders.send({ item: req.json.item, status: "paid", via: paid.method })
+  state.last_order = { ..order, paid_via: paid.method }
+  orders.send({ item: order.item, status: "paid", via: paid.method })
 }
 
 route GET /paid/:token (req) resumes paid {
@@ -341,10 +346,13 @@ route GET /orders/live (req) {
 }
 ```
 
-Statement order carries no meaning beyond names being defined before use: the response is
-produced in the first round, the run parks at `await`, and the state write happens when the link
-is opened. `{ ..base, k: v }` is `with_field` over an existing record (§5.5). `resumes paid` is
-the request template's `resume` param.
+A route answers and is done, so what waits is a run it starts: `start(payment, req.json)` runs
+the action `payment` with the order and is answered once that run parks, with the token for each
+point it waits at, so the route answers the link at once. When the link is opened, the second
+route delivers the event, and the order's run finishes: the state write happens then. Statement
+order carries no meaning beyond names being defined before use. `{ ..base, k: v }` is
+`with_field` over an existing record (§5.5). `resumes paid` is the request template's `resume`
+param.
 
 A waiting run performs nothing, but its progress goes out: the packs it has settled when it
 parks, the ones that don't wait for the payment, are sent then (and logged with the parked part,
@@ -1083,8 +1091,9 @@ Each form is exactly one leaf. This table is exhaustive; nothing else is sugared
 | `http.post(host, path, headers: h, body: b, stream: true)`, any method | `http_stream{method, host}(path, h, b)` | a call whose answer is forwarded to the route's caller as it arrives (`respond sent.body, stream: true`) |
 | `updates.pipe(http.post(host, path, headers: h, body: b))`, any method | `http_stream{method, host, pipe: updates}(path, h, b)` | a call whose answer goes to the channel's subscribers as it arrives, piece by piece |
 | `stripe.verify(req, secret, now, tolerance: d)` | the `stripe_verify` template | a verified Stripe event |
-| `await paid, expires: 1d` | `await{name: paid, expires: 86400}` | the event, when it arrives |
-| `resume_token(paid)` | `resume_token{await: paid}` | the token that delivers it |
+| `await paid, expires: 1d` | `await{name: paid, expires: 86400}` | the event, when it arrives (in an action, never a route) |
+| `resume_token(paid)` | `resume_token{await: paid}` | the token that delivers it (in an action) |
+| `start(payment, x)`, `start(billing.charge, x)` | `flow_start{flow, action}(x, trigger)` | the run of that action, started: `{run, waiting}` once it waits, `{answer, run}` if it finishes first |
 | `json(x)`, `parse_json(x)` | `json_stringify(x)`, `json_parse(x)` | JSON out, JSON in |
 
 Rules the table implies:
@@ -1154,6 +1163,20 @@ Rules the table implies:
   calls long (3 by default, 8 at most). Calls to one flow in a round go one at a time, in the
   order of their nodes. Revoking the permission pauses the caller, as any required one does, or
   with **keep running** ticked refuses the next call.
+- **A route answers and is done.** A route that waits (`await`), or hands out a token of its own
+  (`resume_token`), is refused, saying what to write instead, the canvas's route as the text's:
+  what waits is an action, and the route starts it. `start(payment, x)` starts the flow's own
+  action `payment` (the flow says its name first, `flow approval`), and `start(billing.charge, x)`
+  another flow's, declared by `calls billing`. It lowers to the sink
+  `flow_start{flow, action}(input, trigger)`, performed and recorded as a call is (above), so a
+  retry, a replay and `holon verify` answer it from the log and never start it again. It is
+  answered once the started run first waits, `{run, waiting}`, `waiting` the token for each point
+  it waits at (`started.waiting.paid` is the pay link's), or once it finishes, `{answer, run}`, or
+  `{error, message}` when nothing ran. A start of the flow's own action is let through the rule
+  against calling back, as the route doesn't wait for it; the started run is in the chain, so it
+  can't start its own flow's action again. It asks `RunsAction("approval/payment")`, said "run the
+  action payment of the flow approval". The token is the started run's: the starter's log keeps it
+  as `‹token:paid›`, and the started run's own entries the same, never its value.
 - `state.x` on the right of `=` and on the left are different leaves, read and write, and that is
   the whole semantics of state in Holon: read at the start, write at the end. The same key may be
   written once per run (one `store_write` per key), or the error says which two lines collide.
@@ -1900,6 +1923,13 @@ Decided ones are kept, with the decision, for a reader who wonders why.
   written in the text and in a flow without handlers, a call bound on a statement is still made
   when its answer is needed, as the holon's boundary would need an output the printer can't yet
   write back.
+- **F14. Routes answer, actions wait.** A route answered first and waited after, so one handler
+  was two in disguise: a request answered with a link, and a run that went on for days. Decided
+  and built: a route answers and is done, and what waits is an action it starts,
+  `start(payment, x)` (in TypeScript the action called without `await`, `payment(x)`), answered
+  with the started run's tokens once it waits (§5.4). `await` and
+  `resume_token` in a route are refused, saying so. The `approval` and `approved-payout` samples
+  show it. `docs/L4s/typescript-syntax-L4.md` §9.
 
 ## 14. What this document does not decide
 

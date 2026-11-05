@@ -598,14 +598,16 @@ export const review = action(async (input) => {
   a value: one that only writes answers `{ run }` (`calls.rs:12`), and its success has no `answer`
   either.
 - **`await` is required to read the call's answer**, as on a request. A call not awaited is
-  started: awaited later, passed to `Promise.all`, or, written as a statement of its own, not
-  waited for at all, as a request is (above).
+  started (below): its handle is there at once, and awaited later or passed to `Promise.all` it
+  is waited for then; written as a statement of its own, it isn't waited for at all, as a request
+  isn't (above).
 - **A fast answer stays immediate**: a callee that answers at once is answered at once, as today.
 - **A slow one parks the caller**, durably, until the callee's run finishes, fails or expires.
   Nothing is held open.
 - **A route never parks** (below). A call it awaits is answered within its run: what the callee
   answered, or, when the callee waits, `{ error: "waiting", run }`, as today (`calls.rs:96-100`).
-  A route that wants the callee to go on waiting starts it, and answers with what the start says.
+  A route that wants the callee to go on waiting calls it without `await`, starting it, and
+  answers with where it waits.
 - **The timeout** is the call's waiting point's deadline. Without one it is the `await` leaf's
   default, 7 days (`catalog.rs:257`), held to the deployment's `max_await_seconds` (30 days by
   default, `permissions.rs:54`) at deploy (`durable.rs:66-72`) and when the run parks
@@ -654,11 +656,12 @@ A route that answers and then waits is two handlers in one. In the approval samp
 answer goes to that caller; what comes after runs because someone paid, perhaps a day later, long
 after that caller was answered. TypeScript can't write it: `return` ends the handler, and an
 `await` before the `return` parks the run, which answers its caller what it answered meanwhile,
-404 (`listeners.rs:183-185`). So a route doesn't wait. It starts an action that does:
+404 (`listeners.rs:183-185`). So a route doesn't wait. It starts an action that does, by calling
+it without `await`:
 
 ```ts
-route.post("/orders", async (req) => {
-  const started = await start(payment, req.json)
+route.post("/orders", (req) => {
+  const started = payment(req.json)
   return `/paid/${started.waiting.paid}`
 })
 
@@ -672,48 +675,67 @@ export const payment = action(async (order) => {
 route.get("/paid/:token", () => "thanks, the order is paid", { resumes: "paid" })
 ```
 
-- **A route's run never parks.** `await event(…)` and `sleep(…)` in a route are refused (§12), as
-  `await` in a `.holon` route is. Waiting belongs to actions, clocks and file handlers,
-  whose runs have no caller holding a request open. A route that answers before it writes needs
-  nothing new: without a wait, where its answer is written changes nothing its caller sees, as the
-  answer goes out when the run is done.
-- **`start(action, input)` starts a run and doesn't wait for it to end.** The action runs in-process
-  between the route's rounds, as a call's callee does (`calls.rs:68-117`), until it finishes or
-  first waits, and the start answers then: `{ run, answer }` when it finished, `{ run, waiting }`
-  when it waits, `waiting` naming each point it waits at with that point's token, or
-  `{ error, message, run }` as a call does. It is awaited as a request is, within the run, and
-  never parks its caller, in any handler. Temporal's TypeScript client draws the same line:
-  `await client.workflow.start(…)` answers once the workflow is started, `execute` once it ends.
-- **In `.holon`**, `started = start payment(req.json)`, or `start billing.charge(x)` for another
-  flow's action, whose import is approved as a call's is (`calls.rs:75-77`).
-- **`start(…)` is for reading what the start answered.** A call written as a statement of its own
-  is started too, and nothing waits for it (above).
+- **`await` is the only thing that waits, and a run waits as long as whoever waits for it.** An
+  action started has nobody holding it open: it waits for days. A route's caller holds a
+  connection, which can't be put on disk, and browsers, proxies and Stripe give up in seconds. So
+  `await event(…)` and `sleep(…)` in a route are refused (§12), as `await` in a `.holon` route is;
+  a wait its caller outlasts, held in memory within the request's limit, comes with slice 8. A route
+  that answers before it writes needs nothing new: without a wait, where its answer is written
+  changes nothing its caller sees, as the answer goes out when the run is done.
+- **An action called without `await` is started.** `payment(x)` runs the action in-process between
+  the route's rounds, as a call's callee does (`calls.rs:68-117`), until it finishes or first
+  waits, and answers then: `{ run, answer }` when it finished, `{ run, waiting }` when it waits,
+  `waiting` naming each point it waits at with that point's token, or `{ error, message, run }` as
+  a call does. That is JavaScript's own order: an async function runs to its first `await` before
+  it hands back its promise, so the handle is there when the call returns, and reading `.waiting`
+  needs no `await`. It never parks its caller, in any handler. `await charge(x)` calls it instead,
+  its answer read (above). Temporal and .NET draw the same line with an API of their own
+  (`client.workflow.start(…)` and `execute(…)`; `ScheduleNewOrchestrationInstanceAsync` and
+  `CallSubOrchestratorAsync`); here the language's `await` draws it.
+- **The handle is data, not a promise.** A promise lives in one process's memory; a started run's
+  handle goes into a link, an email or a payment's metadata and still works days and restarts
+  later, and its tokens can't be guessed, each delivering one event to one run. `holon.d.ts`
+  types `payment(x)` as a `Run`, which can be awaited and has `run` and `waiting` (§13), so
+  `charge(x).answer`, an `await` forgotten, is a type error. Awaiting a handle later, to wait for
+  its run's end, comes with calls that park their caller (slice 7).
+- **In `.holon`**, which has no `await` on calls, it is `started = start(payment, req.json)`, or
+  `start(billing.charge, x)` for another flow's action, whose import is approved as a call's is
+  (`calls.rs:75-77`). The flow's own action needs the flow's name, `flow approval`, as the pair
+  names it. `start` isn't a word of TypeScript's form: importing it is refused, saying to call the
+  action.
 - **The token is the started run's.** It is derived from the run and the point
   (`durable.rs:122-129`), so the start can hand it out the moment the run waits, and the resume
   route claims the run waiting there as today (`durable.rs:614-619`). The run's later waiting
-  points hand out their own, with `resume_token(…)` inside the action.
+  points hand out their own: `resume_token(…)` today, and with slice 7 an `event(…)` not awaited,
+  a wait point whose `.token` is there before the run waits on it.
 - **A flow may start its own action.** A flow isn't called back today (`calls.rs:78-80`); a start of
   its own action is let through, as nothing waits on it, so no two runs can wait on each other, and
-  its depth still counts (`calls.rs:81-84`). It asks for nothing new. The action stays exported
-  (§4): a person or another flow may start it too, as approved today.
+  its depth still counts (`calls.rs:81-84`). It asks `RunsAction("approval/payment")`, as a call
+  does, said "run the action payment of the flow approval". The action stays exported (§4): a
+  person or another flow may start it too, as approved today.
 - **What crosses the wait is the action's input.** Today's route carries every name it bound across
   `await paid`; the action carries what it was given, and its record shows it.
 - **approved-payout splits the same way.** Its route reads the balance to answer it and starts the
   payout; the action waits for `approved`, then reads the balance again, the reading it pays on,
   checked at its commit as today (`approved-payout.holon:1-9`).
 
-**What has to be built** (slice 3):
+**What was built** (slice 3, 2026-11-05):
 
-1. **`start`** in both forms: a call that doesn't wait, answering `{ run, waiting }` with the
-   waiting points and their tokens (`token_for`, `durable.rs:122-129`) where a call answers
-   `{ error: "waiting" }` (`calls.rs:96-100`). It is one of the calls, made for what it does
-   (`CALLS`, LANGUAGE.md §5.4).
-2. **Its own action:** a start let through `calls.rs:78-80`, its depth counted.
-3. **The record:** "started, run N" kept with the round, so a run evaluated again
-   (`durable.rs:653-665`) answers the start from its record and never starts a second run.
-4. **The refusal:** `await` in a route, in both forms, saying to start an action.
+1. **The start** in both forms, `start(payment, x)` in `.holon` and `payment(x)` without `await` in
+   TypeScript: the leaf `flow_start`, a call whose request says `start: true`,
+   answering `{ run, waiting }` with the waiting points and their tokens (`token_for`,
+   `durable.rs:122-129`) where a call answers `{ error: "waiting" }`. It is one of the calls,
+   made for what it does (`CALLS`, LANGUAGE.md §5.4).
+2. **Its own action:** a start let through the rule against calling back, its depth counted.
+3. **The record:** the start is an exchange of the round, so a run evaluated again answers it
+   from its record and never starts a second run. The token handed back is kept out of the
+   starter's log (`‹token:paid›`), and a resumed part keeps its own tokens out of its entry, the
+   event that woke it carrying one; `holon verify` re-runs a resumed action's part as it does a
+   route's.
+4. **The refusal:** `await` and `resume_token` in a route, in both forms and on the canvas, saying
+   to start an action.
 5. **The samples:** approval and approved-payout rewritten as a route that starts an action, run
-   live; LANGUAGE.md states the rule.
+   live; a TypeScript twin of approval; LANGUAGE.md states the rule (§5.4, F14).
 
 ## 10. Loops
 
@@ -888,8 +910,10 @@ Each refusal says what to write instead.
 | `\|\|`, `&&` on non-booleans; `+` on texts; an index in a `map` callback | `??`; a template literal; extras |
 | `switch` with fall-through | a `case` per value |
 | `status(…)` or `respond(…)` outside a route's answer | a value, in an action |
-| `await` on anything but a request, a call, a start or an event | leave it out |
-| `await event(…)` or `sleep(…)` in a route | an action that waits, which the route starts: `await start(payment, req.json)` (§9) |
+| `await` on anything but a request, a call or an event | leave it out |
+| `await event(…)` or `sleep(…)` in a route | an action that waits, which the route starts by calling it without `await`: `const started = payment(req.json)` (§9); a wait the caller outlasts comes with slice 8 |
+| `start(…)`, `.holon`'s word | the action called without `await`: `payment(x)` |
+| `await payment(x)`, the flow's own action | `payment(x)`, started, until a call waits for its run's end (slice 7) |
 | A pattern that writes (`({ a: state.x } = r)`, `[coll[k]] = xs`) | bind the name, then write it |
 | An `action(…)` that isn't exported; `export function` | `export const name = action(…)` |
 | A pattern as a function's parameter, an arrow's, a `js()` function's or a `for … of` binding | a name, destructured on the first line: `(order) => { const { price, qty } = order; … }` |
@@ -914,8 +938,10 @@ Each refusal says what to write instead.
   - **The graph printer stays** for exporting a canvas as text, printing the `const` form.
 - **Types, checked.** A `holon.d.ts` for `"holon"` and the import prefixes, so any TypeScript
   language server completes `route.post` and `on.file.created` and checks what they take and give:
-  a request is `Promise<Response>`, a flow call `Promise<{ answer?, error?, message?, run? }>`, a
-  start `Promise<{ run?, answer?, waiting?, error?, message? }>`,
+  a request is `Promise<Response>`, an action awaited `Promise<{ answer?, error?, message?, run? }>`,
+  one not awaited a `Run`, a `PromiseLike` of the same that is already
+  `{ run?, answer?, waiting?, error?, message? }`, as the start has answered by the time the call
+  returns,
   `event(…)` a `Promise` of what is delivered. `holon lsp` (`docs/L4s/language-server-L4.md`) adds
   Holon's checks over it.
 - **The VS Code extension** uses TypeScript's grammar for `.holon.ts`; its `.holon` grammar
@@ -953,7 +979,8 @@ Holon is in development, so the new form replaces today's at once:
 2. **Statements.** `let`, `var`, reassignment, destructuring, merged branch writes, `if` around writes, `if (x !==
    undefined)` for `after`, `switch` for `match`, early `return`, local mutation, the refusals of
    §12, and a single `await event("paid", { expires: "1d" })`, today's `await paid, expires: 1d`.
-3. **Routes answer, actions wait.** §9's five pieces: `start` in both forms, a start of the flow's
+3. **Routes answer, actions wait.** *Built.* §9's five pieces: the start in both forms (`start(…)`
+   in `.holon`, an action called without `await` in TypeScript), a start of the flow's
    own action, the start in the run's record, `await` refused in a route, and approval and
    approved-payout split into a route and the action it starts. It comes before the switch, as
    those two samples can't be written in TypeScript without it; a TypeScript twin of approval stands
@@ -965,11 +992,18 @@ Holon is in development, so the new form replaces today's at once:
 6. **Computing loops.** `while` to `fold`, the loop's turns, nested folds past 10000, `fold`
    stopping when done, a step budget in core.
 7. **Calls and requests that wait.** §9's seven pieces, `timeout`, `await` required on requests and
-   calls, the sample that calls.
-8. **Waiting loops.** The turn-numbered `await` leaf, one token for every turn, `event` in a loop,
+   calls, the sample that calls. A started run's handle awaited later, or passed to
+   `Promise.all`, waits for its run's end; an `event(…)` not awaited is a wait point with its
+   `.token`, and `resume_token` goes.
+8. **Waits a route's caller outlasts.** A route's `await` held in memory, within the request's
+   limit, the event delivered to a run that isn't on disk, and a wait that could outlast the limit
+   refused, saying to start an action. And, as Durable Functions'
+   `WaitForCompletionOrCreateCheckStatusResponseAsync` does, a route awaiting a start for a few
+   seconds: the result if its run ended by then, its link if it waits.
+9. **Waiting loops.** The turn-numbered `await` leaf, one token for every turn, `event` in a loop,
    and `sleep`.
-9. **Failures with a reason.** A failed slot state, `catch (e)`, `catch` catching failures only.
-10. **Editors and tools.** `holon.d.ts`, the LSP over it, both editors, the VS Code extension. Tours
+10. **Failures with a reason.** A failed slot state, `catch (e)`, `catch` catching failures only.
+11. **Editors and tools.** `holon.d.ts`, the LSP over it, both editors, the VS Code extension. Tours
     and components are built in this form from their first slice.
 
 ## 16. Forks, surfaced
@@ -1062,8 +1096,8 @@ Holon is in development, so the new form replaces today's at once:
     decided, an object type checks as `Record`, and the other two are refused.
 20. **A route that answers, then waits?** No: routes answer, actions wait (§9). A route that hands
     out a link and waits for it is two handlers in one, the code after the wait running for the
-    event, not for the request. It starts an action that waits, with `start(…)`, whose answer
-    carries the token. Considered and dropped:
+    event, not for the request. It starts an action that waits, calling it without `await` (fork
+    21), and answers with the token the start hands back. Considered and dropped:
     - A `respond(…)` statement, the route going on after it, as Express's `res.json()` does: one
       handler doing two handlers' work, and a route that waits without answering first answers 404
       (`listeners.rs:183-185`).
@@ -1074,3 +1108,17 @@ Holon is in development, so the new form replaces today's at once:
       in an option.
     Left open: a resume that finds its run by a key the route chose, which a payment provider's
     webhook needs, as it carries the provider's reference, not Holon's token.
+21. **How a handler starts an action?** By calling it without `await`, as JavaScript does: an
+    async function runs to its first `await` and hands back its promise, which is where a started
+    run answers with its handle (§9). `await` is the only thing that waits, and a run waits as long
+    as whoever waits for it: an action for days, a route as long as its caller (slice 8). Considered
+    and dropped:
+    - `await start(payment, x)`, a word of Holon's, built first in slice 3: a waiting word around a
+      word that says it doesn't wait. `.holon`, which has no `await` on calls, keeps `start(…)`
+      until slice 4.
+    - A route that parks and is answered `202` with its run's handle, as Durable Functions'
+      `CreateCheckStatusResponseAsync` answers: a route's answer is its author's contract with its
+      client (Stripe wants a 2xx within seconds, a browser a page, the approval its own link), which
+      a generic `202` breaks.
+    - A start as an API of its own, as Temporal's `client.workflow.start(…)` and .NET's
+      `ScheduleNewOrchestrationInstanceAsync` are: the language's own `await` already says it.
