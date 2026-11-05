@@ -281,6 +281,12 @@ reads asks only to read it.
   shop's `respond …, status: 201, missing: 502`.
 - `respond(body, { headers, stream })` is for the rest.
 - `?? status(404)` is today's `missing: 404`.
+- **Several `return`s are one answer**, the route's one `respond`: each body and status is chosen
+  where its branch is taken, as `if` and `match` choose (§5), with one `missing:` for all, and two
+  `return`s that say it differently are refused. A `return status(s)` alone answers `s` with an
+  empty body; where `s` is what an absent body answers anyway, it is that absent body. So calc's
+  `switch`, each case `return a + b ?? status(400)` and `return status(400)` after it, is the
+  sample's `respond match …, missing: 400`.
 - `status` and `respond` are a route's answer and nothing else: a `status(…)` stored, passed to a
   function or returned from an action is refused, as an action answers with a value alone
   (reference.md:332-334).
@@ -870,7 +876,7 @@ Holon is in development, so the new form replaces today's at once:
    written in TypeScript, lowers to the same server unit, by hash, as its `.holon` form.
 2. **Statements.** `let`, `var`, reassignment, destructuring, merged branch writes, `if` around writes, `if (x !==
    undefined)` for `after`, `switch` for `match`, early `return`, local mutation, the refusals of
-   §12.
+   §12, and a single `await event("paid", { expires: "1d" })`, today's `await paid, expires: 1d`.
 3. **The source formatter and the switch.** `holon fmt` on TypeScript; every sample, test flow and
    manual example rewritten; today's parser and the `.holon` grammar removed; the canvas showing a
    lone `out` as its type (§7).
@@ -879,7 +885,8 @@ Holon is in development, so the new form replaces today's at once:
    stopping when done, a step budget in core.
 6. **Calls and requests that wait.** §9's seven pieces, `timeout`, `await` required on requests and
    calls, the sample that calls.
-7. **Waiting loops.** The turn-numbered `await` leaf, one token for every turn, `event` and `sleep`.
+7. **Waiting loops.** The turn-numbered `await` leaf, one token for every turn, `event` in a loop,
+   and `sleep`.
 8. **Failures with a reason.** A failed slot state, `catch (e)`, `catch` catching failures only.
 9. **Editors and tools.** `holon.d.ts`, the LSP over it, both editors, the VS Code extension. Tours
    and components are built in this form from their first slice.

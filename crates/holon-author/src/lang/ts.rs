@@ -1,9 +1,12 @@
 //! A flow written in TypeScript's syntax, `NAME.holon.ts` (docs/L4s/typescript-syntax-L4.md): read
 //! with a TypeScript parser, oxc's, into the same syntax tree as a `.holon` text ([`super::ast`]),
 //! so the lowering after it is the one both forms share and a flow written either way is the same
-//! unit. This is the note's first slice: imports, the kind statement, the four handlers and their
-//! options, `const`, writes, `return`, `status` and `respond`, functions, in-place arrows, `js()`,
-//! the library's methods and types as port types. What a later slice brings is refused, saying so.
+//! unit. This is the note's first two slices: imports, the kind statement, the four handlers and
+//! their options, `const`, writes, `return`, `status` and `respond`, functions, in-place arrows,
+//! `js()`, the library's methods and types as port types; then the statements (§5): `let` and
+//! `var`, each new value a new name, destructuring, `if` and `switch` choosing names and writes
+//! as `if` and `match` do, `if (x !== undefined)` as `after`, early returns folded into one
+//! answer, changes in place, and `await event(…)`. What a later slice brings is refused, saying so.
 //!
 //! Each import names one thing the flow uses (§3): a secret, the state, a collection, a folder, a
 //! database, a channel, an outbound host, the clock, randomness or another flow's action; from
@@ -81,6 +84,7 @@ enum Vocab {
     Respond,
     Status,
     Stripe,
+    Event,
     /// A leaf (or template) called by its name: `sha256(text)`.
     Leaf(String),
 }
@@ -106,6 +110,9 @@ enum Noun {
 enum Local {
     /// A binding or a parameter, by the name the lowering knows it by.
     Bound(String),
+    /// A `let`'s or a `var`'s name, by the name the lowering knows its value by now: `None`
+    /// before it is given one.
+    Var(Option<String>),
     /// A name that stands for an expression: a part of a destructured request, a clock's tick.
     Alias(Expr),
 }
@@ -127,6 +134,172 @@ enum Def {
     Js,
 }
 
+/// A condition the statement being read runs under (§5).
+#[derive(Clone, Debug)]
+enum Guard {
+    /// An `if`'s or a case's condition.
+    Branch(Expr),
+    /// That a `return` before it, in the same list of statements, didn't answer.
+    Live(Expr),
+    /// `x`, in `if (x !== undefined) { … }`: what the writes and calls in it wait for.
+    After(Expr),
+}
+
+/// What a handler's or a function's body has read so far, beside its scopes.
+#[derive(Default)]
+struct Frame {
+    /// The names bound so far, so that each new one is new.
+    used: BTreeSet<String>,
+    /// The parameters, by the text's names: each stays what it was passed.
+    params: BTreeSet<String>,
+    guards: Vec<Guard>,
+    /// How many branches in.
+    depth: usize,
+    /// Each state key written, with what it holds by now: written once, where it is last settled.
+    writes: Vec<(String, Expr, Span)>,
+    /// The returns, in order.
+    exits: Vec<Exit>,
+    /// The collections and folders this run writes to: read after, refused (§12).
+    written: BTreeSet<String>,
+    /// The state keys written in an `if (x !== undefined)`, tied to `x`.
+    tied: BTreeSet<String>,
+    /// The bindings made for a condition or a subject, written back where read if read once.
+    hidden: Vec<String>,
+    /// Each call bound under a condition, by its binding's name, and what it is tied to if
+    /// nothing reads it.
+    guarded_calls: Vec<(String, Expr)>,
+    /// The bindings another name, a record or a write holds too.
+    shared: BTreeSet<String>,
+}
+
+/// A `return`, under the branches it is in.
+#[derive(Clone, Debug)]
+struct Exit {
+    cond: Option<Expr>,
+    kind: ExitKind,
+    span: Span,
+}
+
+#[derive(Clone, Debug)]
+enum ExitKind {
+    One(Answer),
+    /// A switch's returns: each case's patterns and its answer (`None` where it breaks), and the
+    /// default's.
+    Switch { subject: Expr, arms: Vec<(Vec<Expr>, Option<Answer>)>, default: Option<Answer> },
+}
+
+/// An object's fields, each with its key and where it is written.
+type Fields = Vec<(String, Expr, Span)>;
+
+/// What a `return` answers.
+#[derive(Clone, Debug)]
+enum Answer {
+    /// A route's.
+    Response(Box<Response>),
+    /// A function's or an action's; for a function, the binding it names (the text's name and
+    /// the lowering's) or an object's fields.
+    Value { value: Expr, name: Option<(String, String)>, fields: Option<Fields> },
+    /// A clock's or a file handler's `return` alone.
+    Nothing,
+}
+
+/// A route's answer, as one `respond` gives it.
+#[derive(Clone, Debug)]
+struct Response {
+    body: Option<Expr>,
+    status: Option<Expr>,
+    missing: Option<Expr>,
+    headers: Option<Expr>,
+    stream: Option<Expr>,
+    span: Span,
+}
+
+/// Whether a statement returns: never, always, or when its condition holds.
+#[derive(Clone, Debug)]
+enum Ret {
+    Never,
+    Always,
+    When(Expr),
+}
+
+impl Ret {
+    /// This statement's, then the next's.
+    fn or(self, next: Ret) -> Ret {
+        match (self, next) {
+            (Ret::Always, _) | (_, Ret::Always) => Ret::Always,
+            (Ret::Never, r) | (r, Ret::Never) => r,
+            (Ret::When(a), Ret::When(b)) => Ret::When(binary(BinOp::Or, truthy(&a), b)),
+        }
+    }
+}
+
+/// What picks among branches: an `if`'s condition, or a switch's subject and each case's
+/// patterns.
+enum Choice {
+    If(Expr),
+    Match(Expr, Vec<Vec<Expr>>),
+}
+
+/// What a branch leaves: its names, its state writes, whether it returned, how many returns it
+/// made.
+struct Path {
+    scopes: Vec<HashMap<String, Local>>,
+    writes: Vec<(String, Expr, Span)>,
+    ret: Ret,
+    exits: usize,
+}
+
+/// What an assignment writes.
+enum Place {
+    /// A `let`'s or a `var`'s name.
+    Local(String, Span),
+    /// `state.k`.
+    State(String, Span),
+    /// `notes[k]`: the collection or folder, its name's span, the key.
+    Store(String, Span, Expr),
+    /// A field or an item of a local: `order.total`, `counts[k]`.
+    Member(String, Span, Vec<Seg>),
+}
+
+/// A step into a value: a field by name, or an item by key.
+#[derive(Clone, Debug)]
+enum Seg {
+    Field(String, Span),
+    Key(Expr),
+}
+
+/// How a name is given its value.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Decl {
+    Const,
+    Let,
+    /// An assignment, a `var`'s included.
+    Assign,
+}
+
+/// A change in place at the end of a path into a value.
+enum Edit {
+    Set(Expr),
+    Remove(Seg),
+}
+
+/// An assignment's pattern: `[a, b] = [b, a]`, `({ total } = order)`.
+enum TargetPattern {
+    Name(String, Span),
+    Default(Box<TargetPattern>, Expr),
+    Record(Vec<(String, Span, TargetPattern)>, Span),
+    List(Vec<Option<TargetPattern>>, Option<Box<TargetPattern>>, Span),
+}
+
+/// One case of a switch, the empty ones before it among its patterns.
+struct Case<'a, 'b> {
+    patterns: Vec<Expr>,
+    default: bool,
+    body: &'a [js::Statement<'b>],
+    broke: bool,
+    span: Span,
+}
+
 struct Reader<'s, 't> {
     src: &'s str,
     lines: Lines<'s>,
@@ -141,8 +314,10 @@ struct Reader<'s, 't> {
     aliases: HashMap<String, &'t js::TSType<'t>>,
     interfaces: BTreeSet<String>,
     scopes: Vec<HashMap<String, Local>>,
-    /// The hidden bindings made so far, for destructuring a call's result once.
-    hidden: usize,
+    /// The body being read: its names, conditions, writes and returns.
+    frame: Frame,
+    /// Every name the text writes, so a name the reader makes is never one of them.
+    taken: BTreeSet<String>,
     kind_seen: bool,
 }
 
@@ -159,7 +334,8 @@ impl<'s, 't> Reader<'s, 't> {
             aliases: HashMap::new(),
             interfaces: BTreeSet::new(),
             scopes: Vec::new(),
-            hidden: 0,
+            frame: Frame::default(),
+            taken: BTreeSet::new(),
             kind_seen: false,
         }
     }
@@ -185,6 +361,18 @@ impl<'s, 't> Reader<'s, 't> {
     // ── the file ─────────────────────────────────────────────────────────────────────────────
 
     fn program(mut self, p: &'t js::Program<'t>) -> R<File> {
+        struct Words(BTreeSet<String>);
+        impl<'a> Visit<'a> for Words {
+            fn visit_binding_identifier(&mut self, id: &js::BindingIdentifier<'a>) {
+                self.0.insert(id.name.to_string());
+            }
+            fn visit_identifier_reference(&mut self, id: &js::IdentifierReference<'a>) {
+                self.0.insert(id.name.to_string());
+            }
+        }
+        let mut words = Words(BTreeSet::new());
+        words.visit_program(p);
+        self.taken = words.0;
         // Imports first, wherever they are written, as ES hoists them; then the definitions,
         // which a handler may use before they appear; then the rest in order.
         for s in &p.body {
@@ -269,9 +457,10 @@ impl<'s, 't> Reader<'s, 't> {
                         "respond" => Vocab::Respond,
                         "status" => Vocab::Status,
                         "stripe" => Vocab::Stripe,
+                        "event" => Vocab::Event,
                         "tour" | "component" => return fail(self.span(n.span), format!("{what} comes with tours and components, not yet")),
                         leaf if interface_of(alias(leaf)).is_some() || templates::is_template(leaf) => Vocab::Leaf(leaf.to_string()),
-                        other => return fail(self.span(n.span), format!("\"holon\" has no \"{other}\": its vocabulary (flow, route, every, on, action, js, respond, status, stripe) and its leaves")),
+                        other => return fail(self.span(n.span), format!("\"holon\" has no \"{other}\": its vocabulary (flow, route, every, on, action, js, respond, status, stripe, event) and its leaves")),
                     };
                     self.bind_import(&n.local, Noun::Vocab(vocab))?;
                 }
@@ -699,7 +888,7 @@ impl<'s, 't> Reader<'s, 't> {
     }
 
     /// A handler's statements, its parameter in scope as `received`: a route's request, an
-    /// action's input, a file's handle, a clock's tick.
+    /// action's input, a file's handle, a clock's tick. Its returns fold into its one answer.
     fn handler_body(&mut self, handler: &js::Expression, block: Block, received: &str) -> R<Vec<Stmt>> {
         let f = self.unwrap(handler);
         if let js::Expression::FunctionExpression(f) = f
@@ -707,16 +896,28 @@ impl<'s, 't> Reader<'s, 't> {
         {
             return fail(self.span(f.span), "a handler isn't a generator");
         }
-        let params = function_params(f);
+        let saved = std::mem::take(&mut self.frame);
+        self.frame.used.insert(received.to_string());
         self.scopes.push(HashMap::new());
         let mut stmts = Vec::new();
+        let result = self.handler_statements(f, block, received, &mut stmts);
+        self.scopes.pop();
+        self.frame = saved;
+        result.map(|()| stmts)
+    }
+
+    fn handler_statements(&mut self, f: &js::Expression, block: Block, received: &str, stmts: &mut Vec<Stmt>) -> R<()> {
+        let params = function_params(f);
         if let Some(p) = params.items.first() {
             match (&p.pattern, block) {
                 (js::BindingPattern::BindingIdentifier(id), Block::Every) => {
                     let now = Expr { kind: ExprKind::Noun(Noun::Now.into()), span: self.span(id.span) };
                     self.bind_local(id.name.as_str(), Local::Alias(now));
                 }
-                (js::BindingPattern::BindingIdentifier(id), _) => self.bind_local(id.name.as_str(), Local::Bound(received.to_string())),
+                (js::BindingPattern::BindingIdentifier(id), _) => {
+                    self.frame.params.insert(id.name.to_string());
+                    self.bind_local(id.name.as_str(), Local::Bound(received.to_string()));
+                }
                 (js::BindingPattern::ObjectPattern(o), Block::Route) => {
                     // The request's parts are its outputs: each is the request node itself, so a
                     // name for one is no node, read where it is used.
@@ -726,219 +927,1295 @@ impl<'s, 't> Reader<'s, 't> {
                         let part = Expr { kind: ExprKind::Field { base: Box::new(req.clone()), name: self.name(&key, prop.key.span()) }, span: self.span(prop.span) };
                         match &prop.value {
                             js::BindingPattern::BindingIdentifier(id) if REQUEST_PARTS.contains(&key.as_str()) => self.bind_local(id.name.as_str(), Local::Alias(part)),
-                            pattern => self.destructure(pattern, part, &mut stmts)?,
+                            pattern => self.destructure(pattern, part, Decl::Const, stmts)?,
                         }
                     }
                     if let Some(rest) = &o.rest {
-                        return fail(self.span(rest.span), "a rest pattern comes in a later slice: name what you read");
+                        return fail(self.span(rest.span), "the request's parts are named one by one: params, query, headers, body, json, method, path");
                     }
                 }
                 (pattern, Block::Action | Block::File) => {
                     let whole = Expr { kind: ExprKind::Name(received.to_string()), span: self.span(pattern.span()) };
-                    self.destructure(pattern, whole, &mut stmts)?;
+                    self.destructure(pattern, whole, Decl::Const, stmts)?;
                 }
                 (pattern, _) => return fail(self.span(pattern.span()), "a clock's tick is a name: every(\"1h\", (now) => …)"),
             }
         }
-        let result = self.function_body(f, block, &mut stmts);
-        self.scopes.pop();
-        result?;
-        Ok(stmts)
+        let ret = self.body(f, block, stmts)?;
+        let at = self.span(f.span());
+        self.finish(block, ret, stmts, at)
     }
 
-    /// The statements of a function or handler body, onto `stmts`: an arrow's expression is its
-    /// answer, as `return` is.
-    fn function_body(&mut self, f: &js::Expression, block: Block, stmts: &mut Vec<Stmt>) -> R<()> {
+    /// A function's or handler's body: its statements, or an arrow's expression, which answers as
+    /// `return` does.
+    fn body(&mut self, f: &js::Expression, block: Block, stmts: &mut Vec<Stmt>) -> R<Ret> {
         match f {
             js::Expression::ArrowFunctionExpression(a) => match &a.body {
-                js::ArrowFunctionBody::FunctionBody(b) => self.statements(&b.statements, block, stmts),
+                js::ArrowFunctionBody::FunctionBody(b) => self.top(&b.statements, block, stmts),
                 body => {
                     let e = body.as_expression().expect("an arrow's body is a block or an expression");
-                    let s = self.answer_stmt(e, block)?;
-                    stmts.push(s);
-                    Ok(())
+                    self.arrow_answer(e, block, stmts)
                 }
             },
             js::Expression::FunctionExpression(f) => match &f.body {
-                Some(b) => self.statements(&b.statements, block, stmts),
+                Some(b) => self.top(&b.statements, block, stmts),
                 None => fail(self.span(f.span), "a function needs a body"),
             },
             _ => unreachable!("checked to be a function"),
         }
     }
 
-    fn statements(&mut self, body: &[js::Statement], block: Block, stmts: &mut Vec<Stmt>) -> R<()> {
-        for (i, s) in body.iter().enumerate() {
-            let at = self.span(s.span());
-            match s {
-                js::Statement::ReturnStatement(r) => {
-                    if i + 1 != body.len() {
-                        return fail(at, "a return comes last, for now: an early return comes in a later slice");
-                    }
-                    let Some(e) = &r.argument else {
-                        return fail(at, "a bare return answers nothing: leave it out");
-                    };
-                    let stmt = self.answer_stmt(e, block)?;
-                    stmts.push(stmt);
+    /// A body's statements, each `var` in it declared first, as JavaScript does.
+    fn top(&mut self, body: &[js::Statement], block: Block, stmts: &mut Vec<Stmt>) -> R<Ret> {
+        let mut vars = Vec::new();
+        hoisted(body, &mut vars);
+        for name in vars {
+            if self.scopes.last().is_some_and(|s| !s.contains_key(&name)) {
+                self.bind_local(&name, Local::Var(None));
+            }
+        }
+        self.list(body, block, stmts)
+    }
+
+    /// An arrow's expression as its body: a route's or an action's answer, a function's output,
+    /// or what a clock's or a file's run does.
+    fn arrow_answer(&mut self, e: &js::Expression, block: Block, stmts: &mut Vec<Stmt>) -> R<Ret> {
+        if matches!(block, Block::Every | Block::File) {
+            if matches!(self.unwrap(e), js::Expression::AssignmentExpression(_) | js::Expression::UnaryExpression(_) | js::Expression::CallExpression(_) | js::Expression::UpdateExpression(_)) {
+                self.effect(e, stmts, 0)?;
+                return Ok(Ret::Never);
+            }
+            return fail(self.span(e.span()), format!("a {}'s run answers nobody: it writes, sends or calls", block_word(block)));
+        }
+        self.exit(e, block)?;
+        Ok(Ret::Always)
+    }
+
+    /// The end of a handler's body: its returns, folded, as its one `respond`.
+    fn finish(&mut self, block: Block, ret: Ret, stmts: &mut Vec<Stmt>, at: Span) -> R<()> {
+        let exits = std::mem::take(&mut self.frame.exits);
+        let span = exits.last().map_or(at, |e| e.span);
+        match self.fold(exits, matches!(ret, Ret::Always))? {
+            Some(Answer::Response(r)) => stmts.push(Stmt { span: r.span, kind: StmtKind::Respond(respond_args(*r)), after: None }),
+            Some(Answer::Value { value, .. }) if block == Block::Action => stmts.push(Stmt { kind: StmtKind::Respond(vec![Arg { name: None, value }]), span, after: None }),
+            _ => {}
+        }
+        self.settle(stmts, &[]);
+        Ok(())
+    }
+
+    /// What a body still owes once read. A call bound under a condition that nothing reads is
+    /// tied to the condition (`after`), as a call nothing reads is made whatever else holds; one
+    /// read is asked for only where it is read. A hidden condition read once is written back
+    /// where it is read, as the `.holon` form writes it. `outputs` are a function's.
+    fn settle(&mut self, stmts: &mut Vec<Stmt>, outputs: &[String]) {
+        let live = live_bindings(stmts, outputs);
+        for (name, trigger) in std::mem::take(&mut self.frame.guarded_calls) {
+            if !live.contains(&name)
+                && let Some(s) = stmts.iter_mut().find(|s| matches!(&s.kind, StmtKind::Bind { name: n, .. } if n.text == name))
+            {
+                s.after = Some(trigger);
+            }
+        }
+        for h in std::mem::take(&mut self.frame.hidden) {
+            if uses(stmts, &h) > 1 {
+                continue;
+            }
+            let Some(i) = stmts.iter().position(|s| matches!(&s.kind, StmtKind::Bind { name, .. } if name.text == h)) else { continue };
+            let StmtKind::Bind { value, .. } = stmts.remove(i).kind else { unreachable!("found as a binding") };
+            each_expr(stmts, &mut |e| {
+                if matches!(&e.kind, ExprKind::Name(n) if *n == h) {
+                    *e = value.clone();
                 }
-                js::Statement::VariableDeclaration(v) => {
-                    if v.kind != js::VariableDeclarationKind::Const {
-                        return fail(at, "let and var come in a later slice: use const, one name per value");
-                    }
-                    for d in &v.declarations {
-                        let Some(init) = &d.init else { return fail(self.span(d.span), "a const needs a value") };
-                        let value = self.expr(init)?;
-                        self.destructure(&d.id, value, stmts)?;
-                    }
+                true
+            });
+        }
+    }
+
+    // ── statements ───────────────────────────────────────────────────────────────────────────
+
+    /// A list of statements, a body's or a branch's: what follows a `return` that may have
+    /// answered runs only when it didn't, until the list ends.
+    fn list(&mut self, body: &[js::Statement], block: Block, stmts: &mut Vec<Stmt>) -> R<Ret> {
+        let start = self.frame.guards.len();
+        let ret = self.run(body, block, stmts, start);
+        self.frame.guards.truncate(start);
+        ret
+    }
+
+    /// `body`'s statements in order, in the list whose conditions begin at guard `start`.
+    fn run(&mut self, body: &[js::Statement], block: Block, stmts: &mut Vec<Stmt>, start: usize) -> R<Ret> {
+        let mut ret = Ret::Never;
+        for s in body {
+            if matches!(s, js::Statement::EmptyStatement(_)) {
+                continue;
+            }
+            if matches!(ret, Ret::Always) {
+                return fail(self.span(s.span()), "nothing after a return runs: remove it");
+            }
+            let r = match s {
+                js::Statement::BlockStatement(b) => {
+                    self.scopes.push(HashMap::new());
+                    let r = self.run(&b.body, block, stmts, start);
+                    self.scopes.pop();
+                    r?
                 }
-                js::Statement::ExpressionStatement(e) => {
-                    let stmt = self.effect(&e.expression)?;
-                    stmts.push(stmt);
-                }
-                js::Statement::IfStatement(f) => {
-                    // `if (c) coll[k] = v`: the write, guarded, as `… when c`.
-                    if f.alternate.is_some() {
-                        return fail(at, "an if with an else comes in a later slice: write the value with c ? a : b");
+                _ => {
+                    let r = self.statement(s, block, stmts, start)?;
+                    if let Ret::When(e) = &r {
+                        self.frame.guards.push(Guard::Live(otherwise(e)));
                     }
-                    let inner = match &f.consequent {
-                        js::Statement::ExpressionStatement(e) => &e.expression,
-                        js::Statement::BlockStatement(b) if b.body.len() == 1 && matches!(&b.body[0], js::Statement::ExpressionStatement(_)) => {
-                            let js::Statement::ExpressionStatement(e) = &b.body[0] else { unreachable!() };
-                            &e.expression
+                    r
+                }
+            };
+            ret = ret.or(r);
+        }
+        Ok(ret)
+    }
+
+    fn statement(&mut self, s: &js::Statement, block: Block, stmts: &mut Vec<Stmt>, start: usize) -> R<Ret> {
+        let at = self.span(s.span());
+        match s {
+            js::Statement::ReturnStatement(r) => {
+                match &r.argument {
+                    Some(e) => self.exit(e, block)?,
+                    None => self.bare_exit(block, at)?,
+                }
+                Ok(Ret::Always)
+            }
+            js::Statement::VariableDeclaration(v) => {
+                self.declaration(v, stmts)?;
+                Ok(Ret::Never)
+            }
+            js::Statement::ExpressionStatement(e) => {
+                self.effect(&e.expression, stmts, start)?;
+                Ok(Ret::Never)
+            }
+            js::Statement::IfStatement(f) => self.if_statement(f, block, stmts, start),
+            js::Statement::SwitchStatement(w) => self.switch(w, block, stmts, start),
+            js::Statement::BreakStatement(_) => fail(at, "break ends a case, last in it"),
+            js::Statement::FunctionDeclaration(_) => fail(at, "a function is defined at the top level, where every handler can use it"),
+            _ => fail(at, format!("{} isn't something a {} holds yet", statement_kind(s), block_word(block))),
+        }
+    }
+
+    /// `const`, `let` or `var`: a binding per name, and for `let` and `var` a new one at each
+    /// assignment (§5).
+    fn declaration(&mut self, v: &js::VariableDeclaration, stmts: &mut Vec<Stmt>) -> R<()> {
+        let decl = match v.kind {
+            js::VariableDeclarationKind::Const => Decl::Const,
+            js::VariableDeclarationKind::Let => Decl::Let,
+            // Declared where the body begins (`top`): here it is given its value.
+            js::VariableDeclarationKind::Var => Decl::Assign,
+            _ => return fail(self.span(v.span), "using isn't something a flow has: a const holds a value"),
+        };
+        for d in &v.declarations {
+            let Some(init) = &d.init else {
+                match decl {
+                    Decl::Const => return fail(self.span(d.span), "a const needs a value"),
+                    Decl::Let => {
+                        let mut names = Vec::new();
+                        pattern_names(&d.id, &mut names);
+                        for n in names {
+                            self.bind_local(&n, Local::Var(None));
                         }
-                        _ => return fail(at, "an if around more than one write comes in a later slice: guard each write"),
-                    };
-                    let cond = self.expr(&f.test)?;
-                    let mut stmt = self.effect(inner)?;
-                    let guard = |value: &mut Expr| {
-                        let span = value.span.to(cond.span);
-                        let v = std::mem::replace(value, Expr { kind: ExprKind::Bool(false), span });
-                        *value = Expr { kind: ExprKind::Binary { op: BinOp::When, lhs: Box::new(v), rhs: Box::new(cond.clone()) }, span };
-                    };
-                    match &mut stmt.kind {
-                        StmtKind::StateWrite { value, .. } | StmtKind::CollectionWrite { value, .. } | StmtKind::Expr(value) => guard(value),
-                        _ => return fail(at, "an if around a delete comes in a later slice"),
                     }
-                    stmt.span = at;
-                    stmts.push(stmt);
+                    Decl::Assign => {}
                 }
-                js::Statement::EmptyStatement(_) => {}
-                js::Statement::FunctionDeclaration(_) => return fail(at, "a function is defined at the top level, where every handler can use it"),
-                _ => return fail(at, format!("{} isn't something a {} holds yet", statement_kind(s), block_word(block))),
+                continue;
+            };
+            let value = self.expr(init)?;
+            let from_local = self.share(init);
+            self.destructure(&d.id, value, decl, stmts)?;
+            if from_local {
+                // `const b = a`, `const { items } = order`: what they bind holds what `a` does.
+                let mut names = Vec::new();
+                pattern_names(&d.id, &mut names);
+                for n in names {
+                    self.share_name(&n);
+                }
             }
         }
         Ok(())
     }
 
-    /// `const pattern = value`: one binding per name, a `field` for each part read.
-    fn destructure(&mut self, pattern: &js::BindingPattern, value: Expr, stmts: &mut Vec<Stmt>) -> R<()> {
+    /// `pattern = value`: one binding per name, a `field`, `get`, `head` or `tail` for each part
+    /// read (§5's table).
+    fn destructure(&mut self, pattern: &js::BindingPattern, value: Expr, decl: Decl, stmts: &mut Vec<Stmt>) -> R<()> {
         let at = self.span(pattern.span());
         match pattern {
             js::BindingPattern::BindingIdentifier(id) => {
-                let name = self.local_name(id.name.as_str());
-                self.bind_local(id.name.as_str(), Local::Bound(name.clone()));
-                stmts.push(Stmt { kind: StmtKind::Bind { name: self.name(&name, id.span), value }, span: at, after: None });
-                Ok(())
+                let span = self.span(id.span);
+                self.bind_name(id.name.as_str(), span, value, decl, stmts)
             }
             js::BindingPattern::AssignmentPattern(a) => {
                 let fallback = self.expr(&a.right)?;
                 let span = value.span;
                 let value = Expr { kind: ExprKind::Binary { op: BinOp::Coalesce, lhs: Box::new(value), rhs: Box::new(fallback) }, span };
-                self.destructure(&a.left, value, stmts)
+                self.destructure(&a.left, value, decl, stmts)
             }
             js::BindingPattern::ObjectPattern(o) => {
-                if let Some(rest) = &o.rest {
-                    return fail(self.span(rest.span), "a rest pattern comes in a later slice: name what you read");
-                }
-                // A value that isn't a name is bound once, so each part reads the one value.
-                let base = if matches!(value.kind, ExprKind::Name(_)) {
-                    value
-                } else {
-                    self.hidden += 1;
-                    let name = format!("parts_{}", self.hidden);
-                    stmts.push(Stmt { kind: StmtKind::Bind { name: Name { text: name.clone(), span: at }, value }, span: at, after: None });
-                    Expr { kind: ExprKind::Name(name), span: at }
-                };
+                let base = self.once(value, at, stmts);
+                let mut read = Vec::new();
                 for prop in &o.properties {
-                    let key = self.property_key(&prop.key, prop.computed)?;
-                    let part = Expr { kind: ExprKind::Field { base: Box::new(base.clone()), name: self.name(&key, prop.key.span()) }, span: self.span(prop.span) };
-                    self.destructure(&prop.value, part, stmts)?;
+                    let span = self.span(prop.span);
+                    let part = if prop.computed {
+                        let key = self.expr(prop.key.as_expression().expect("a computed key is an expression"))?;
+                        read.push(Seg::Key(key.clone()));
+                        Expr { kind: ExprKind::Index { base: Box::new(base.clone()), key: Box::new(key) }, span }
+                    } else {
+                        let key = self.property_key(&prop.key, false)?;
+                        let key_span = self.span(prop.key.span());
+                        read.push(Seg::Field(key.clone(), key_span));
+                        Expr { kind: ExprKind::Field { base: Box::new(base.clone()), name: Name { text: key, span: key_span } }, span }
+                    };
+                    self.destructure(&prop.value, part, decl, stmts)?;
+                }
+                if let Some(rest) = &o.rest {
+                    // The record without each key read.
+                    let mut without = base;
+                    for seg in read {
+                        without = match seg {
+                            Seg::Field(name, span) => call("without_field", vec![arg(without), named("name", Expr { kind: ExprKind::Text(name), span })], span),
+                            Seg::Key(k) => call("remove", vec![arg(without), arg(k)], at),
+                        };
+                    }
+                    self.destructure(&rest.argument, without, decl, stmts)?;
                 }
                 Ok(())
             }
-            js::BindingPattern::ArrayPattern(_) => fail(at, "a list pattern comes in a later slice: read each item with xs[0]"),
+            js::BindingPattern::ArrayPattern(a) => {
+                // `[a, b] = [b, a]`: each item bound as it is, and no list made.
+                if a.rest.is_none()
+                    && let ExprKind::List(items) = &value.kind
+                {
+                    let items = items.clone();
+                    for (i, el) in a.elements.iter().enumerate() {
+                        if let Some(el) = el {
+                            let item = items.get(i).cloned().unwrap_or_else(|| absent(at));
+                            self.destructure(el, item, decl, stmts)?;
+                        }
+                    }
+                    return Ok(());
+                }
+                let base = self.once(value, at, stmts);
+                match &a.rest {
+                    None => {
+                        for (i, el) in a.elements.iter().enumerate() {
+                            if let Some(el) = el {
+                                let index = Expr { kind: ExprKind::Number { value: i as f64, text: i.to_string() }, span: self.span(el.span()) };
+                                self.destructure(el, call("get", vec![arg(base.clone()), arg(index)], self.span(el.span())), decl, stmts)?;
+                            }
+                        }
+                    }
+                    Some(rest) => {
+                        // `[first, ...rest]` is `head` and `tail`; `[a, b, ...rest]` is `tail` twice.
+                        let mut list = base;
+                        let n = a.elements.len();
+                        for (i, el) in a.elements.iter().enumerate() {
+                            if let Some(el) = el {
+                                self.destructure(el, call("head", vec![arg(list.clone())], self.span(el.span())), decl, stmts)?;
+                            }
+                            let tail = call("tail", vec![arg(list)], at);
+                            list = if i + 1 < n { self.once(tail, at, stmts) } else { tail };
+                        }
+                        self.destructure(&rest.argument, list, decl, stmts)?;
+                    }
+                }
+                Ok(())
+            }
         }
     }
 
-    /// A statement for its effect: a write, a delete, or a call that does something.
-    fn effect(&mut self, e: &js::Expression) -> R<Stmt> {
+    /// `ts` bound to `value`: a `const`'s one name, a `let`'s first, or an assignment's new one.
+    fn bind_name(&mut self, ts: &str, span: Span, value: Expr, decl: Decl, stmts: &mut Vec<Stmt>) -> R<()> {
+        if decl == Decl::Assign {
+            return self.new_version(ts, span, value, stmts, false);
+        }
+        let name = self.fresh(ts);
+        self.note_call(&name, &value, span);
+        stmts.push(Stmt { kind: StmtKind::Bind { name: Name { text: name.clone(), span }, value }, span, after: None });
+        self.bind_local(ts, if decl == Decl::Let { Local::Var(Some(name)) } else { Local::Bound(name) });
+        Ok(())
+    }
+
+    /// `ts` given a new value: a `let`'s or `var`'s assignment, or a local changed in place
+    /// (`mutation`, which a `const` may be too). Either is a new name for the new value (§5).
+    fn new_version(&mut self, ts: &str, span: Span, value: Expr, stmts: &mut Vec<Stmt>, mutation: bool) -> R<()> {
+        let Some(depth) = self.scopes.iter().rposition(|s| s.contains_key(ts)) else {
+            return fail(
+                span,
+                if self.imports.contains_key(ts) {
+                    format!("\"{ts}\" is imported, and stays what it is: give a value of its own a name of its own")
+                } else if self.defs.contains_key(ts) || self.consts.contains_key(ts) {
+                    format!("\"{ts}\" is defined at the top level, and stays what it is")
+                } else {
+                    format!("unknown name \"{ts}\": declare it with let first")
+                },
+            );
+        };
+        let kept = match &self.scopes[depth][ts] {
+            Local::Var(None) if mutation => return fail(span, format!("\"{ts}\" has no value to change yet")),
+            Local::Var(_) => false,
+            Local::Bound(_) if mutation => true,
+            Local::Bound(_) if self.frame.params.contains(ts) => return fail(span, format!("\"{ts}\" is a parameter, which stays what it was passed: give the new value a name of its own")),
+            Local::Bound(_) => return fail(span, format!("\"{ts}\" is a const: declare it with let to give it a new value")),
+            Local::Alias(_) => return fail(span, format!("\"{ts}\" is a part of what the handler received, which stays what it is: give the new value a name of its own")),
+        };
+        let name = self.fresh(ts);
+        self.note_call(&name, &value, span);
+        stmts.push(Stmt { kind: StmtKind::Bind { name: Name { text: name.clone(), span }, value }, span, after: None });
+        self.scopes[depth].insert(ts.to_string(), if kept { Local::Bound(name) } else { Local::Var(Some(name)) });
+        Ok(())
+    }
+
+    /// A binding of a call that does something, made under a condition: tied to it if nothing
+    /// reads the binding ([`Self::settle`]).
+    fn note_call(&mut self, name: &str, value: &Expr, span: Span) {
+        if self.contains_sink(value)
+            && let Some(trigger) = self.trigger(span)
+        {
+            self.frame.guarded_calls.push((name.to_string(), trigger));
+        }
+    }
+
+    /// Whether `e` makes a call the host answers: a request, another flow's action, a send, a
+    /// write.
+    fn contains_sink(&self, e: &Expr) -> bool {
+        let mut found = false;
+        walk(&mut e.clone(), &mut |x| {
+            if let ExprKind::Method { receiver, method, .. } = &x.kind {
+                let m = method.text.as_str();
+                found |= receiver.text == "http"
+                    || self.imports.values().any(|n| match n {
+                        Noun::Action { flow, .. } => super::lower::call_noun(flow) == receiver.text,
+                        Noun::Declared(kind, name) if *name == receiver.text => match *kind {
+                            "channel" => matches!(m, "send" | "pipe"),
+                            "collection" => matches!(m, "put" | "delete"),
+                            "folder" => !matches!(m, "list" | "lines" | "slice" | "read" | "get"),
+                            "database" => matches!(m, "exec" | "insert" | "update" | "delete"),
+                            _ => false,
+                        },
+                        _ => false,
+                    });
+            }
+            !matches!(x.kind, ExprKind::Lambda { .. })
+        });
+        found
+    }
+
+    /// A statement for its effect: a write, a delete, a change to a local, or a call that does
+    /// something. Under a condition, a write's value, a deleted key or a call's trigger is
+    /// guarded by it, so nothing is done when it doesn't hold.
+    fn effect(&mut self, e: &js::Expression, stmts: &mut Vec<Stmt>, start: usize) -> R<()> {
         let at = self.span(e.span());
-        let stmt = |kind| Ok(Stmt { kind, span: at, after: None });
         match self.unwrap(e) {
-            js::Expression::AssignmentExpression(a) => {
-                if a.operator != js::AssignmentOperator::Assign {
-                    return fail(at, format!("{} comes in a later slice: write the new value, x = …", a.operator.as_str()));
-                }
-                let value = self.expr(&a.right)?;
-                match &a.left {
-                    js::AssignmentTarget::StaticMemberExpression(m) if self.is_state(&m.object) => {
-                        let key = m.property.name.to_string();
-                        self.state_keys.insert(key.clone());
-                        stmt(StmtKind::StateWrite { key: self.name(&key, m.property.span), value })
-                    }
-                    js::AssignmentTarget::ComputedMemberExpression(m) => {
-                        let Some(collection) = self.store_name(&m.object) else {
-                            return fail(self.span(m.object.span()), "only an imported collection or folder is written by key: import notes from \"collection:notes\"");
-                        };
-                        let key = self.expr(&m.expression)?;
-                        stmt(StmtKind::CollectionWrite { collection: self.name(&collection, m.object.span()), key, value })
-                    }
-                    js::AssignmentTarget::AssignmentTargetIdentifier(i) => fail(self.span(i.span), format!("\"{}\" is a const: a new value is a new name, for now (let comes in a later slice)", i.name)),
-                    _ => fail(at, "only state, a collection or a folder is written: state.k = v, notes[k] = v"),
-                }
+            js::Expression::AssignmentExpression(a) => self.assignment(a, stmts, start),
+            js::Expression::UpdateExpression(u) => {
+                let op = if u.operator == js::UpdateOperator::Increment { BinOp::Add } else { BinOp::Sub };
+                let place = self.place(&u.argument)?;
+                let old = self.read_place(&place, at)?;
+                let one = Expr { kind: ExprKind::Number { value: 1.0, text: "1".into() }, span: at };
+                self.write_place(place, binary(op, old, one), at, stmts, start)
             }
-            js::Expression::UnaryExpression(u) if u.operator == js::UnaryOperator::Delete => {
-                let js::Expression::ComputedMemberExpression(m) = self.unwrap(&u.argument) else {
-                    return fail(at, "delete takes an item of a collection or folder: delete notes[k]");
-                };
-                let Some(collection) = self.store_name(&m.object) else {
-                    return fail(self.span(m.object.span()), "only an imported collection or folder has items to delete");
-                };
-                let key = self.expr(&m.expression)?;
-                stmt(StmtKind::Delete { collection: self.name(&collection, m.object.span()), key })
-            }
+            js::Expression::UnaryExpression(u) if u.operator == js::UnaryOperator::Delete => self.delete(u, stmts),
+            js::Expression::CallExpression(c) if let Some((ts, method)) = self.local_method(c) => self.mutate(c, &ts, &method, stmts),
             other => {
                 let value = self.expr(other)?;
-                stmt(StmtKind::Expr(value))
+                let after = if self.contains_sink(&value) { self.trigger(at) } else { None };
+                // A request made for what it does is bound, as the `.holon` form binds one: its
+                // answer is nobody's.
+                let kind = if matches!(&value.kind, ExprKind::Method { receiver, .. } if receiver.text == "http") {
+                    StmtKind::Bind { name: Name { text: self.hidden_name("reply"), span: at }, value }
+                } else {
+                    StmtKind::Expr(value)
+                };
+                stmts.push(Stmt { kind, span: at, after });
+                Ok(())
             }
         }
     }
 
-    /// What `return e` (or an arrow's expression) is in `block`: a route's or an action's answer,
-    /// or a function's output.
-    fn answer_stmt(&mut self, e: &js::Expression, block: Block) -> R<Stmt> {
-        let at = self.span(e.span());
-        match block {
-            Block::Route => {
-                let args = self.answer(e)?;
-                Ok(Stmt { kind: StmtKind::Respond(args), span: at, after: None })
+    /// `target = value`, or `target op= value`.
+    fn assignment(&mut self, a: &js::AssignmentExpression, stmts: &mut Vec<Stmt>, start: usize) -> R<()> {
+        use js::AssignmentOperator as A;
+        let at = self.span(a.span);
+        let op = match a.operator {
+            A::Assign => None,
+            A::Addition => Some(BinOp::Add),
+            A::Subtraction => Some(BinOp::Sub),
+            A::Multiplication => Some(BinOp::Mul),
+            A::Division => Some(BinOp::Div),
+            A::LogicalNullish => Some(BinOp::Coalesce),
+            A::LogicalOr => Some(BinOp::Or),
+            A::LogicalAnd => Some(BinOp::And),
+            op => return fail(at, format!("{} isn't an operator Holon has", op.as_str())),
+        };
+        if op == Some(BinOp::Add) && is_text(self.unwrap(&a.right)) {
+            return fail(at, "there is no + on texts: use a template literal, `${a}${b}`");
+        }
+        let Some(target) = a.left.as_simple_assignment_target() else {
+            return self.assign_pattern(&a.left, &a.right, stmts);
+        };
+        let place = self.place(target)?;
+        let rhs = self.expr(&a.right)?;
+        let value = match op {
+            None => {
+                if self.share(&a.right)
+                    && let Place::Local(ts, _) = &place
+                {
+                    let ts = ts.clone();
+                    self.write_place(place, rhs, at, stmts, start)?;
+                    self.share_name(&ts);
+                    return Ok(());
+                }
+                rhs
             }
+            Some(op) => {
+                let old = self.read_place(&place, at)?;
+                binary(op, old, rhs)
+            }
+        };
+        self.write_place(place, value, at, stmts, start)
+    }
+
+    /// `[a, b] = [b, a]`, `({ total } = order)`: each name given its part, as a `let`'s new value.
+    fn assign_pattern(&mut self, target: &js::AssignmentTarget, value: &js::Expression, stmts: &mut Vec<Stmt>) -> R<()> {
+        let pattern = self.target_pattern(target)?;
+        let v = self.expr(value)?;
+        self.destructure_target(&pattern, v, stmts)
+    }
+
+    /// An assignment's pattern, its targets each a name: one that writes is refused (§12).
+    fn target_pattern(&mut self, t: &js::AssignmentTarget) -> R<TargetPattern> {
+        let at = self.span(t.span());
+        let writes = || fail(at, "a pattern that writes is refused: bind the name, then write it");
+        Ok(match t {
+            js::AssignmentTarget::AssignmentTargetIdentifier(i) => TargetPattern::Name(i.name.to_string(), self.span(i.span)),
+            js::AssignmentTarget::ArrayAssignmentTarget(a) => {
+                let mut items = Vec::new();
+                for el in &a.elements {
+                    items.push(match el {
+                        None => None,
+                        Some(el) => Some(self.target_default(el)?),
+                    });
+                }
+                let rest = match &a.rest {
+                    Some(r) => Some(Box::new(self.target_pattern(&r.target)?)),
+                    None => None,
+                };
+                TargetPattern::List(items, rest, at)
+            }
+            js::AssignmentTarget::ObjectAssignmentTarget(o) => {
+                let mut fields = Vec::new();
+                for p in &o.properties {
+                    match p {
+                        js::AssignmentTargetProperty::AssignmentTargetPropertyIdentifier(i) => {
+                            let name = i.binding.name.to_string();
+                            let span = self.span(i.binding.span);
+                            let mut pattern = TargetPattern::Name(name.clone(), span);
+                            if let Some(init) = &i.init {
+                                pattern = TargetPattern::Default(Box::new(pattern), self.expr(init)?);
+                            }
+                            fields.push((name, span, pattern));
+                        }
+                        js::AssignmentTargetProperty::AssignmentTargetPropertyProperty(p) => {
+                            let key = self.property_key(&p.name, p.computed)?;
+                            fields.push((key, self.span(p.name.span()), self.target_default(&p.binding)?));
+                        }
+                    }
+                }
+                if let Some(r) = &o.rest {
+                    return fail(self.span(r.span), "a rest in an assignment's pattern comes in a later slice: declare it, const { a, ...rest } = r");
+                }
+                TargetPattern::Record(fields, at)
+            }
+            _ => return writes(),
+        })
+    }
+
+    fn target_default(&mut self, t: &js::AssignmentTargetMaybeDefault) -> R<TargetPattern> {
+        match t {
+            js::AssignmentTargetMaybeDefault::AssignmentTargetWithDefault(d) => {
+                let inner = self.target_pattern(&d.binding)?;
+                Ok(TargetPattern::Default(Box::new(inner), self.expr(&d.init)?))
+            }
+            other => match other.as_assignment_target() {
+                Some(t) => self.target_pattern(t),
+                None => fail(self.span(other.span()), "a pattern that writes is refused: bind the name, then write it"),
+            },
+        }
+    }
+
+    fn destructure_target(&mut self, p: &TargetPattern, value: Expr, stmts: &mut Vec<Stmt>) -> R<()> {
+        match p {
+            TargetPattern::Name(ts, span) => self.new_version(ts, *span, value, stmts, false),
+            TargetPattern::Default(inner, fallback) => {
+                let span = value.span;
+                self.destructure_target(inner, binary_at(BinOp::Coalesce, value, fallback.clone(), span), stmts)
+            }
+            TargetPattern::Record(fields, at) => {
+                let base = self.once(value, *at, stmts);
+                for (key, span, pattern) in fields {
+                    let part = Expr { kind: ExprKind::Field { base: Box::new(base.clone()), name: Name { text: key.clone(), span: *span } }, span: *span };
+                    self.destructure_target(pattern, part, stmts)?;
+                }
+                Ok(())
+            }
+            TargetPattern::List(items, rest, at) => {
+                if rest.is_none()
+                    && let ExprKind::List(values) = &value.kind
+                {
+                    // `[a, b] = [b, a]`: no node, two new names, each value read before either is set.
+                    let values = values.clone();
+                    for (i, item) in items.iter().enumerate() {
+                        if let Some(item) = item {
+                            self.destructure_target(item, values.get(i).cloned().unwrap_or_else(|| absent(*at)), stmts)?;
+                        }
+                    }
+                    return Ok(());
+                }
+                let base = self.once(value, *at, stmts);
+                match rest {
+                    None => {
+                        for (i, item) in items.iter().enumerate() {
+                            if let Some(item) = item {
+                                let index = Expr { kind: ExprKind::Number { value: i as f64, text: i.to_string() }, span: *at };
+                                self.destructure_target(item, call("get", vec![arg(base.clone()), arg(index)], *at), stmts)?;
+                            }
+                        }
+                    }
+                    Some(rest) => {
+                        let mut list = base;
+                        let n = items.len();
+                        for (i, item) in items.iter().enumerate() {
+                            if let Some(item) = item {
+                                self.destructure_target(item, call("head", vec![arg(list.clone())], *at), stmts)?;
+                            }
+                            let tail = call("tail", vec![arg(list)], *at);
+                            list = if i + 1 < n { self.once(tail, *at, stmts) } else { tail };
+                        }
+                        self.destructure_target(rest, list, stmts)?;
+                    }
+                }
+                Ok(())
+            }
+        }
+    }
+
+    /// What an assignment's target is.
+    fn place(&mut self, t: &js::SimpleAssignmentTarget) -> R<Place> {
+        let at = self.span(t.span());
+        match t {
+            js::SimpleAssignmentTarget::AssignmentTargetIdentifier(i) => Ok(Place::Local(i.name.to_string(), self.span(i.span))),
+            js::SimpleAssignmentTarget::StaticMemberExpression(m) if self.is_state(&m.object) => Ok(Place::State(m.property.name.to_string(), self.span(m.property.span))),
+            js::SimpleAssignmentTarget::ComputedMemberExpression(m) if self.is_state(&m.object) => fail(at, "a state key is a name: state.hits = …; a key computed is a collection's, notes[k] = …"),
+            js::SimpleAssignmentTarget::ComputedMemberExpression(m) if let Some(collection) = self.store_name(&m.object) => {
+                let key = self.expr(&m.expression)?;
+                Ok(Place::Store(collection, self.span(m.object.span()), key))
+            }
+            js::SimpleAssignmentTarget::StaticMemberExpression(_) | js::SimpleAssignmentTarget::ComputedMemberExpression(_) => {
+                let m = t.as_member_expression().expect("a member");
+                self.member_place(m)
+            }
+            _ => fail(at, "only state, a collection, a folder or a local is written: state.k = v, notes[k] = v, x = v"),
+        }
+    }
+
+    /// A field or an item of a local, as the target of a change in place: `order.total`,
+    /// `counts[k]`, `a.b.c`.
+    fn member_place(&mut self, m: &js::MemberExpression) -> R<Place> {
+        let mut path = Vec::new();
+        let mut m = m;
+        loop {
+            let object = match m {
+                js::MemberExpression::StaticMemberExpression(s) => {
+                    path.push(Seg::Field(s.property.name.to_string(), self.span(s.property.span)));
+                    &s.object
+                }
+                js::MemberExpression::ComputedMemberExpression(c) => {
+                    path.push(Seg::Key(self.expr(&c.expression)?));
+                    &c.object
+                }
+                js::MemberExpression::PrivateFieldExpression(p) => return fail(self.span(p.span), "a class's private field: a flow has no classes"),
+            };
+            match self.unwrap(object) {
+                js::Expression::Identifier(i) => {
+                    return match self.lookup(i.name.as_str()) {
+                        Some(Local::Bound(_) | Local::Var(Some(_))) => {
+                            path.reverse();
+                            Ok(Place::Member(i.name.to_string(), self.span(i.span), path))
+                        }
+                        Some(Local::Var(None)) => fail(self.span(i.span), format!("\"{}\" has no value to change yet", i.name)),
+                        _ => fail(self.span(i.span), format!("\"{}\" isn't a local of this handler: only state, a collection, a folder or a local is written", i.name)),
+                    };
+                }
+                other => match other.as_member_expression() {
+                    Some(inner) => m = inner,
+                    None => return fail(self.span(other.span()), "only a local's fields are changed in place: give the value a name first"),
+                },
+            }
+        }
+    }
+
+    /// What `place` holds now, for `+=` and `++`.
+    fn read_place(&mut self, place: &Place, at: Span) -> R<Expr> {
+        match place {
+            Place::Local(ts, span) => self.identifier(ts, *span),
+            Place::State(key, _) => self.state_read(key, at),
+            Place::Store(collection, span, key) => {
+                self.check_unwritten(collection, at)?;
+                Ok(Expr { kind: ExprKind::Index { base: Box::new(Expr { kind: ExprKind::Name(collection.clone()), span: *span }), key: Box::new(key.clone()) }, span: at })
+            }
+            Place::Member(root, span, path) => {
+                let mut e = self.identifier(root, *span)?;
+                for seg in path {
+                    e = read_seg(e, seg, at);
+                }
+                Ok(e)
+            }
+        }
+    }
+
+    fn write_place(&mut self, place: Place, value: Expr, at: Span, stmts: &mut Vec<Stmt>, start: usize) -> R<()> {
+        match place {
+            Place::Local(ts, span) => self.new_version(&ts, span, value, stmts, false),
+            Place::State(key, key_span) => self.state_write(key, value, at, key_span, stmts, start),
+            Place::Store(collection, span, key) => {
+                self.frame.written.insert(collection.clone());
+                let value = self.guarded(value);
+                stmts.push(Stmt { kind: StmtKind::CollectionWrite { collection: Name { text: collection, span }, key, value }, span: at, after: self.after_value() });
+                Ok(())
+            }
+            Place::Member(root, span, path) => {
+                self.check_unshared(&root, at)?;
+                let base = self.identifier(&root, span)?;
+                let changed = rebuilt(base, &path, Edit::Set(value), at);
+                self.new_version(&root, span, changed, stmts, true)
+            }
+        }
+    }
+
+    /// `delete notes[k]`, or `delete order.note` on a local.
+    fn delete(&mut self, u: &js::UnaryExpression, stmts: &mut Vec<Stmt>) -> R<()> {
+        let at = self.span(u.span);
+        let Some(m) = self.unwrap(&u.argument).as_member_expression() else {
+            return fail(at, "delete takes an item of a collection or folder, or a field of a local: delete notes[k]");
+        };
+        if let js::MemberExpression::ComputedMemberExpression(c) = m
+            && let Some(collection) = self.store_name(&c.object)
+        {
+            let key = self.expr(&c.expression)?;
+            let key = self.guarded(key);
+            self.frame.written.insert(collection.clone());
+            let collection = self.name(&collection, c.object.span());
+            stmts.push(Stmt { kind: StmtKind::Delete { collection, key }, span: at, after: self.after_value() });
+            return Ok(());
+        }
+        let Place::Member(root, span, mut path) = self.member_place(m)? else { unreachable!("a member's place") };
+        self.check_unshared(&root, at)?;
+        let base = self.identifier(&root, span)?;
+        let last = path.pop().expect("a member has a field");
+        let changed = rebuilt(base, &path, Edit::Remove(last), at);
+        self.new_version(&root, span, changed, stmts, true)
+    }
+
+    /// `xs.push(…)` and the like, on a local: its name and the method's.
+    fn local_method(&self, c: &js::CallExpression) -> Option<(String, String)> {
+        let js::Expression::StaticMemberExpression(m) = self.unwrap(&c.callee) else { return None };
+        let js::Expression::Identifier(i) = self.unwrap(&m.object) else { return None };
+        let method = m.property.name.as_str();
+        (MUTATORS.contains(&method) && matches!(self.lookup(i.name.as_str()), Some(Local::Bound(_) | Local::Var(_)))).then(|| (i.name.to_string(), method.to_string()))
+    }
+
+    /// `xs.push(a, b)`: `xs` is now `append(append(xs, a), b)` (§5).
+    fn mutate(&mut self, c: &js::CallExpression, ts: &str, method: &str, stmts: &mut Vec<Stmt>) -> R<()> {
+        let at = self.span(c.span);
+        if method != "push" {
+            return fail(at, format!("{method} changes the list in place, which comes in a later slice: write the new list, {ts} = …"));
+        }
+        self.check_unshared(ts, at)?;
+        let mut list = self.identifier(ts, at)?;
+        for item in self.positional(&c.arguments)? {
+            list = call("append", vec![arg(list), item], at);
+        }
+        self.new_version(ts, at, list, stmts, true)
+    }
+
+    /// A state key's value read: what it held when the run began, as a write is made when the
+    /// run ends (§6).
+    fn state_read(&mut self, key: &str, at: Span) -> R<Expr> {
+        self.state_keys.insert(key.to_string());
+        Ok(Expr { kind: ExprKind::State(key.to_string()), span: at })
+    }
+
+    fn check_unwritten(&self, collection: &str, at: Span) -> R<()> {
+        if self.frame.written.contains(collection) {
+            return fail(at, format!("{collection} is read after this run writes to it, and a write is made when the run ends: use the value written"));
+        }
+        Ok(())
+    }
+
+    /// A local changed in place must be its own: one another name, a record or a write holds
+    /// too would change behind them (§12).
+    fn check_unshared(&self, ts: &str, at: Span) -> R<()> {
+        if self.frame.params.contains(ts) {
+            return fail(at, format!("\"{ts}\" is a parameter, which a change in place would change for whoever passed it too: copy it first, const copy = {{ ...{ts} }}"));
+        }
+        let held = match self.lookup(ts) {
+            Some(Local::Bound(n) | Local::Var(Some(n))) => self.frame.shared.contains(&n),
+            _ => false,
+        };
+        if held {
+            return fail(at, format!("\"{ts}\" is held elsewhere too (by another name, a record or a write), which a change in place would change behind it: copy it first, const copy = [...{ts}] or {{ ...{ts} }}"));
+        }
+        Ok(())
+    }
+
+    /// Whether `e` is a local named as it is (`b = a`, `{ items }`, `state.k = xs`), which then
+    /// holds what another does: it is marked so, and `true` returned.
+    fn share(&mut self, e: &js::Expression) -> bool {
+        match self.unwrap(e) {
+            js::Expression::Identifier(i) => self.share_name(i.name.as_str()),
+            _ => false,
+        }
+    }
+
+    fn share_name(&mut self, ts: &str) -> bool {
+        match self.lookup(ts) {
+            Some(Local::Bound(n) | Local::Var(Some(n))) => {
+                self.frame.shared.insert(n);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// `state.k = v`: what the key holds is `v` where this point is reached and what it held
+    /// otherwise, written once, where its value is last settled (§5).
+    fn state_write(&mut self, key: String, value: Expr, at: Span, key_span: Span, stmts: &mut Vec<Stmt>, start: usize) -> R<()> {
+        self.state_keys.insert(key.clone());
+        let twice = || fail(at, format!("state.{key} is written twice, in an if (… !== undefined) and elsewhere: a run writes a key once"));
+        if let Some(after) = self.after_value() {
+            if self.frame.writes.iter().any(|(k, ..)| *k == key) || self.frame.tied.contains(&key) {
+                return twice();
+            }
+            let value = self.guarded(value);
+            self.frame.tied.insert(key.clone());
+            stmts.push(Stmt { kind: StmtKind::StateWrite { key: Name { text: key, span: key_span }, value }, span: at, after: Some(after) });
+            return Ok(());
+        }
+        if self.frame.tied.contains(&key) {
+            return twice();
+        }
+        self.update_write(key, value, at, key_span, stmts, start);
+        Ok(())
+    }
+
+    fn update_write(&mut self, key: String, value: Expr, at: Span, key_span: Span, stmts: &mut Vec<Stmt>, start: usize) {
+        let i = self.frame.writes.iter().position(|(k, ..)| *k == key);
+        let old = i.map(|i| self.frame.writes[i].1.clone());
+        let value = match conj(self.frame.guards[start..].iter().filter_map(|g| if let Guard::Live(c) = g { Some(c.clone()) } else { None })) {
+            Some(live) => choose(&Choice::If(live), vec![Some(value)], old, at).expect("a value"),
+            None => value,
+        };
+        match i {
+            Some(i) => self.frame.writes[i] = (key.clone(), value.clone(), key_span),
+            None => self.frame.writes.push((key.clone(), value.clone(), key_span)),
+        }
+        if self.frame.depth == 0 {
+            stmts.retain(|s| !matches!(&s.kind, StmtKind::StateWrite { key: k, .. } if k.text == key));
+            stmts.push(Stmt { kind: StmtKind::StateWrite { key: Name { text: key, span: key_span }, value }, span: at, after: None });
+        }
+    }
+
+    /// Every branch's condition and every `return` not taken, that the statement being read
+    /// runs under.
+    fn live(&self) -> Option<Expr> {
+        conj(self.frame.guards.iter().filter_map(|g| match g {
+            Guard::Branch(c) | Guard::Live(c) => Some(c.clone()),
+            Guard::After(_) => None,
+        }))
+    }
+
+    /// What an `if (x !== undefined)` around the statement waits for.
+    fn after_value(&self) -> Option<Expr> {
+        self.frame.guards.iter().find_map(|g| if let Guard::After(x) = g { Some(x.clone()) } else { None })
+    }
+
+    /// A write's value under the conditions it runs under: absent, so not written, when they
+    /// don't hold.
+    fn guarded(&self, value: Expr) -> Expr {
+        match self.live() {
+            Some(c) => when(value, c),
+            None => value,
+        }
+    }
+
+    /// What a call's trigger is tied to: what it waits for, guarded by the conditions it runs
+    /// under, so it isn't made when they don't hold.
+    fn trigger(&self, at: Span) -> Option<Expr> {
+        match (self.after_value(), self.live()) {
+            (Some(x), Some(c)) => Some(when(x, c)),
+            (Some(x), None) => Some(x),
+            (None, Some(c)) => Some(when(Expr { kind: ExprKind::Bool(true), span: at }, c)),
+            (None, None) => None,
+        }
+    }
+
+    /// `if (c) … else …`: each branch read under its condition, then each name and state key
+    /// they change holds `if c then a else b` (§5).
+    fn if_statement(&mut self, f: &js::IfStatement, block: Block, stmts: &mut Vec<Stmt>, start: usize) -> R<Ret> {
+        let at = self.span(f.span);
+        if let Some(x) = self.present(&f.test)? {
+            return self.after_block(f, x, block, stmts, at);
+        }
+        let cond = self.expr(&f.test)?;
+        let cond = self.hide(cond, "cond", stmts);
+        let branches = vec![(Guard::Branch(cond.clone()), Some(statements_of(&f.consequent))), (Guard::Branch(otherwise(&cond)), f.alternate.as_ref().map(statements_of))];
+        let mut paths = self.branches(branches, block, stmts)?;
+        let b = paths.pop().expect("an else");
+        let a = paths.pop().expect("a then");
+        let ret = ret_if(&cond, &a.ret, &b.ret);
+        self.join(&Choice::If(cond), vec![a], b, stmts, start, at);
+        Ok(ret)
+    }
+
+    /// `x !== undefined`, as an `if` tests it to wait for `x` (§5): `x`.
+    fn present(&mut self, test: &js::Expression) -> R<Option<Expr>> {
+        let js::Expression::BinaryExpression(b) = self.unwrap(test) else { return Ok(None) };
+        if !matches!(b.operator, js::BinaryOperator::StrictInequality | js::BinaryOperator::Inequality) {
+            return Ok(None);
+        }
+        let undefined = |e: &js::Expression| matches!(self.unwrap(e), js::Expression::Identifier(i) if i.name == "undefined" && self.lookup("undefined").is_none());
+        let x = if undefined(&b.right) {
+            &b.left
+        } else if undefined(&b.left) {
+            &b.right
+        } else {
+            return Ok(None);
+        };
+        Ok(Some(self.expr(x)?))
+    }
+
+    /// `if (x !== undefined) { … }`: the writes and calls inside are tied to `x` (`after x`), so
+    /// they are made once it has a value, and not at all when it has none (§5).
+    fn after_block(&mut self, f: &js::IfStatement, x: Expr, block: Block, stmts: &mut Vec<Stmt>, at: Span) -> R<Ret> {
+        if let Some(alt) = &f.alternate {
+            return fail(self.span(alt.span()), "an if (x !== undefined) has no else, for now: what is done without x is written after it, with ??");
+        }
+        if self.after_value().is_some() {
+            return fail(at, "an if (… !== undefined) inside another comes in a later slice: tie the inner one's writes to the outer value");
+        }
+        let x = self.hide(x, "cond", stmts);
+        let before = self.scopes.clone();
+        self.frame.guards.push(Guard::After(x));
+        self.scopes.push(HashMap::new());
+        let r = self.list(statements_of(&f.consequent), block, stmts);
+        self.scopes.pop();
+        self.frame.guards.pop();
+        r?;
+        for (d, scope) in before.iter().enumerate() {
+            for (ts, local) in scope {
+                if version(local) != self.scopes[d].get(ts).and_then(version) {
+                    return fail(at, format!("\"{ts}\" is given a value inside if (… !== undefined), which comes in a later slice: give it its value after it, with ??"));
+                }
+            }
+        }
+        Ok(Ret::Never)
+    }
+
+    /// Each branch read from what holds before them, under its condition: what each leaves.
+    fn branches(&mut self, branches: Vec<(Guard, Option<&[js::Statement]>)>, block: Block, stmts: &mut Vec<Stmt>) -> R<Vec<Path>> {
+        let scopes = self.scopes.clone();
+        let writes = self.frame.writes.clone();
+        let written = self.frame.written.clone();
+        let mut all_written = written.clone();
+        self.frame.depth += 1;
+        let mut paths = Vec::new();
+        for (guard, body) in branches {
+            self.frame.written = written.clone();
+            let exits = self.frame.exits.len();
+            self.frame.guards.push(guard);
+            self.scopes.push(HashMap::new());
+            let ret = match body {
+                Some(b) => self.list(b, block, stmts),
+                None => Ok(Ret::Never),
+            };
+            self.scopes.pop();
+            self.frame.guards.pop();
+            let ret = ret?;
+            all_written.extend(self.frame.written.iter().cloned());
+            let exits = self.frame.exits.len() - exits;
+            paths.push(Path { scopes: std::mem::replace(&mut self.scopes, scopes.clone()), writes: std::mem::replace(&mut self.frame.writes, writes.clone()), ret, exits });
+        }
+        self.frame.depth -= 1;
+        self.frame.written = all_written;
+        Ok(paths)
+    }
+
+    /// After branches (`arms`, then `els`): each name and state key one of them changed holds
+    /// what `choice` picks among them. A branch that returned leaves no name behind, but its
+    /// writes were made.
+    fn join(&mut self, choice: &Choice, arms: Vec<Path>, els: Path, stmts: &mut Vec<Stmt>, start: usize, at: Span) {
+        let mut paths = arms;
+        paths.push(els);
+        let goes_on: Vec<bool> = paths.iter().map(|p| !matches!(p.ret, Ret::Always)).collect();
+        if goes_on.iter().any(|g| *g) {
+            for d in 0..self.scopes.len() {
+                let mut names: Vec<String> = self.scopes[d].keys().cloned().collect();
+                names.sort();
+                for ts in names {
+                    let before = self.scopes[d][&ts].clone();
+                    let Some(v0) = version(&before) else { continue };
+                    let vs: Vec<Option<String>> = paths.iter().map(|p| p.scopes[d].get(&ts).and_then(version).flatten()).collect();
+                    let going: Vec<Option<String>> = vs.iter().zip(&goes_on).filter(|(_, g)| **g).map(|(v, _)| v.clone()).collect();
+                    if going.iter().all(|v| *v == v0) {
+                        continue;
+                    }
+                    let now = if going.iter().all(|v| *v == going[0]) {
+                        going[0].clone()
+                    } else {
+                        // A branch that returned picks what the last that goes on has: it is never read.
+                        let fallback = going.last().cloned().flatten();
+                        let named = |v: &Option<String>| v.as_ref().map(|n| Expr { kind: ExprKind::Name(n.clone()), span: at });
+                        let mut picks: Vec<Option<Expr>> = vs.iter().zip(&goes_on).map(|(v, g)| if *g { named(v) } else { named(&fallback) }).collect();
+                        let els = picks.pop().expect("an else");
+                        match choose(choice, picks, els, at) {
+                            Some(value) => {
+                                let name = self.fresh(&ts);
+                                stmts.push(Stmt { kind: StmtKind::Bind { name: Name { text: name.clone(), span: at }, value }, span: at, after: None });
+                                Some(name)
+                            }
+                            None => None,
+                        }
+                    };
+                    let local = match (&before, now) {
+                        (Local::Bound(_), Some(n)) => Local::Bound(n),
+                        (_, now) => Local::Var(now),
+                    };
+                    self.scopes[d].insert(ts, local);
+                }
+            }
+        }
+        let mut keys: Vec<(String, Span)> = Vec::new();
+        for p in &paths {
+            for (k, _, s) in &p.writes {
+                if !keys.iter().any(|(x, _)| x == k) {
+                    keys.push((k.clone(), *s));
+                }
+            }
+        }
+        for (key, key_span) in keys {
+            let old = self.frame.writes.iter().find(|(k, ..)| *k == key).map(|(_, v, _)| v.clone());
+            let mut picks: Vec<Option<Expr>> = paths.iter().map(|p| p.writes.iter().find(|(k, ..)| *k == key).map(|(_, v, _)| v.clone())).collect();
+            if picks.iter().all(|v| *v == old) {
+                continue;
+            }
+            let els = picks.pop().expect("an else");
+            if let Some(value) = choose(choice, picks, els, at) {
+                self.update_write(key, value, at, key_span, stmts, start);
+            }
+        }
+    }
+
+    /// `switch (x) { case …: … }` as `match` (§5): each case's names, writes and answer chosen by
+    /// `x`. A case ends with `break` or `return`; one that runs on into the next is refused.
+    fn switch(&mut self, w: &js::SwitchStatement, block: Block, stmts: &mut Vec<Stmt>, start: usize) -> R<Ret> {
+        let at = self.span(w.span);
+        let subject = self.expr(&w.discriminant)?;
+        let subject = self.hide(subject, "subject", stmts);
+        let mut cases: Vec<Case> = Vec::new();
+        let (mut patterns, mut default) = (Vec::new(), false);
+        for (i, c) in w.cases.iter().enumerate() {
+            match &c.test {
+                Some(t) => patterns.push(self.pattern(t)?),
+                None => default = true,
+            }
+            // `case "a": case "b": …` is one case of two patterns.
+            if c.consequent.is_empty() && i + 1 < w.cases.len() {
+                continue;
+            }
+            let (body, broke) = case_body(&c.consequent);
+            cases.push(Case { patterns: std::mem::take(&mut patterns), default: std::mem::take(&mut default), body, broke, span: self.span(c.span) });
+        }
+        let all: Vec<Expr> = cases.iter().filter(|c| !c.default).flat_map(|c| c.patterns.clone()).collect();
+        if all.is_empty() {
+            return fail(at, "a switch with a default alone is its statements: write them without it");
+        }
+        let branches = cases.iter().map(|c| (Guard::Branch(if c.default { otherwise(&matched(&subject, &all, at)) } else { matched(&subject, &c.patterns, at) }), Some(c.body))).collect();
+        let exits_before = self.frame.exits.len();
+        let paths = self.branches(branches, block, stmts)?;
+        for (i, (c, p)) in cases.iter().zip(&paths).enumerate() {
+            let returned = matches!(p.ret, Ret::Always);
+            if !returned && !c.broke && i + 1 < cases.len() {
+                return fail(c.span, "a case runs on into the next: end it with break or return");
+            }
+            if p.exits != usize::from(returned) {
+                return fail(c.span, "a case returns once, last in it, for now: an early return inside a case comes in a later slice");
+            }
+        }
+        let mut answers = self.frame.exits.split_off(exits_before).into_iter();
+        let (mut arms, mut default_answer, mut returning, mut breaking) = (Vec::new(), None, Vec::new(), Vec::new());
+        let mut default_returns = false;
+        for (c, p) in cases.iter().zip(&paths) {
+            let answer = if p.exits == 1 {
+                match answers.next().map(|e| e.kind) {
+                    Some(ExitKind::One(a)) => Some(a),
+                    _ => unreachable!("a case's return is one"),
+                }
+            } else {
+                None
+            };
+            if c.default {
+                default_returns = answer.is_some();
+                default_answer = answer;
+            } else {
+                if answer.is_some() { returning.extend(c.patterns.clone()) } else { breaking.extend(c.patterns.clone()) }
+                arms.push((c.patterns.clone(), answer));
+            }
+        }
+        let ret = if returning.is_empty() && !default_returns {
+            Ret::Never
+        } else if default_returns {
+            if breaking.is_empty() { Ret::Always } else { Ret::When(otherwise(&matched(&subject, &breaking, at))) }
+        } else {
+            Ret::When(matched(&subject, &returning, at))
+        };
+        if !matches!(ret, Ret::Never) {
+            self.push_exit(ExitKind::Switch { subject: subject.clone(), arms, default: default_answer }, at)?;
+        }
+        let (mut case_paths, mut case_patterns, mut default_path) = (Vec::new(), Vec::new(), None);
+        for (c, p) in cases.into_iter().zip(paths) {
+            if c.default {
+                default_path = Some(p);
+            } else {
+                case_patterns.push(c.patterns);
+                case_paths.push(p);
+            }
+        }
+        let els = default_path.unwrap_or_else(|| Path { scopes: self.scopes.clone(), writes: self.frame.writes.clone(), ret: Ret::Never, exits: 0 });
+        self.join(&Choice::Match(subject, case_patterns), case_paths, els, stmts, start, at);
+        Ok(ret)
+    }
+
+    /// A case's value: a literal, as a `match` arm's pattern is.
+    fn pattern(&mut self, t: &js::Expression) -> R<Expr> {
+        let p = self.expr(t)?;
+        match p.kind {
+            ExprKind::Number { .. } | ExprKind::Text(_) | ExprKind::Bool(_) => Ok(p),
+            _ => fail(p.span, "a case is a literal: a number, a text, true or false; to test a condition, use if"),
+        }
+    }
+
+    // ── returns ──────────────────────────────────────────────────────────────────────────────
+
+    /// `return e`: what it answers, under the branches it is in.
+    fn exit(&mut self, e: &js::Expression, block: Block) -> R<()> {
+        let at = self.span(e.span());
+        let answer = match block {
+            Block::Route => Answer::Response(Box::new(self.response(e)?)),
             Block::Action => {
                 if self.answers_with(e).is_some() {
                     return fail(at, "an action answers with a value alone: return it, without status or respond");
                 }
-                let value = self.expr(e)?;
-                Ok(Stmt { kind: StmtKind::Respond(vec![Arg { name: None, value }]), span: at, after: None })
+                Answer::Value { value: self.expr(e)?, name: None, fields: None }
             }
-            Block::Every | Block::File => {
-                // An arrow's expression is a statement here: what the run does.
-                if matches!(self.unwrap(e), js::Expression::AssignmentExpression(_) | js::Expression::UnaryExpression(_) | js::Expression::CallExpression(_)) {
-                    return self.effect(e);
-                }
-                fail(at, format!("a {}'s run answers nobody: it writes, sends or calls", block_word(block)))
-            }
-            Block::Function => fail(at, "a function returns once, last: its value is its output"),
+            Block::Function => self.returned(e)?,
+            Block::Every | Block::File => return fail(at, format!("a {}'s run answers nobody: return alone ends it", block_word(block))),
+        };
+        self.push_exit(ExitKind::One(answer), at)
+    }
+
+    fn bare_exit(&mut self, block: Block, at: Span) -> R<()> {
+        match block {
+            Block::Route => fail(at, "a route answers: return status(204) for an answer with no body"),
+            Block::Function => fail(at, "a function returns a value"),
+            _ => self.push_exit(ExitKind::One(Answer::Nothing), at),
         }
+    }
+
+    fn push_exit(&mut self, kind: ExitKind, span: Span) -> R<()> {
+        if self.after_value().is_some() {
+            return fail(span, "a return inside if (x !== undefined) comes in a later slice: return after it, with ?? for when x has no value");
+        }
+        let cond = conj(self.frame.guards.iter().filter_map(|g| if let Guard::Branch(c) = g { Some(c.clone()) } else { None }));
+        self.frame.exits.push(Exit { cond, kind, span });
+        Ok(())
+    }
+
+    /// A function's `return e`: its value, with the binding it names or the object's fields,
+    /// which name the function's outputs.
+    fn returned(&mut self, e: &js::Expression) -> R<Answer> {
+        let name = match self.unwrap(e) {
+            js::Expression::Identifier(i) => match self.lookup(i.name.as_str()) {
+                Some(Local::Bound(n) | Local::Var(Some(n))) => Some((i.name.to_string(), n)),
+                _ => None,
+            },
+            _ => None,
+        };
+        let fields = match self.unwrap(e) {
+            js::Expression::ObjectExpression(o) if !o.properties.is_empty() && o.properties.iter().all(|p| matches!(p, js::ObjectPropertyKind::ObjectProperty(p) if !p.computed)) => {
+                let mut out = Vec::new();
+                for (key, value, span) in self.fields(o)? {
+                    out.push((key, self.expr(value)?, span));
+                }
+                Some(out)
+            }
+            _ => None,
+        };
+        Ok(Answer::Value { value: self.expr(e)?, name, fields })
+    }
+
+    /// The returns, last to first, folded into one answer (`None` where none answers). The last
+    /// answers whenever the ones before it didn't, if the body ends with a return on every path
+    /// (`ended`).
+    fn fold(&mut self, exits: Vec<Exit>, ended: bool) -> R<Option<Answer>> {
+        let mut acc: Option<Answer> = None;
+        let n = exits.len();
+        for (i, exit) in exits.into_iter().enumerate().rev() {
+            let here = match exit.kind {
+                ExitKind::One(a) => Some(a),
+                ExitKind::Switch { subject, arms, default } => {
+                    // A case that breaks answers what follows the switch, as no case does.
+                    let rest = acc.clone();
+                    let els = default.or_else(|| rest.clone());
+                    let patterns = arms.iter().map(|(p, _)| p.clone()).collect();
+                    let answers = arms.into_iter().map(|(_, a)| a.or_else(|| rest.clone())).collect();
+                    self.merge(&Choice::Match(subject, patterns), answers, els, exit.span)?
+                }
+            };
+            acc = match exit.cond {
+                Some(c) if !(ended && i + 1 == n) => self.merge(&Choice::If(c), vec![here], acc, exit.span)?,
+                _ => here,
+            };
+        }
+        Ok(acc)
+    }
+
+    /// One answer choosing among `arms` by `choice`, else `els`: `None` where none answers.
+    fn merge(&mut self, choice: &Choice, arms: Vec<Option<Answer>>, els: Option<Answer>, span: Span) -> R<Option<Answer>> {
+        let mut sides = arms;
+        sides.push(els);
+        let sides: Vec<Option<Answer>> = sides.into_iter().map(|a| a.filter(|a| !matches!(a, Answer::Nothing))).collect();
+        match sides.iter().flatten().next() {
+            None => Ok(None),
+            Some(Answer::Response(_)) => {
+                let responses = sides
+                    .into_iter()
+                    .map(|a| {
+                        a.map(|a| match a {
+                            Answer::Response(r) => *r,
+                            _ => unreachable!("a route's returns are responses"),
+                        })
+                    })
+                    .collect();
+                Ok(self.merge_responses(choice, responses, span)?.map(|r| Answer::Response(Box::new(r))))
+            }
+            Some(_) => {
+                let parts: Vec<Option<(Expr, Option<Fields>)>> = sides
+                    .into_iter()
+                    .map(|a| {
+                        a.map(|a| match a {
+                            Answer::Value { value, fields, .. } => (value, fields),
+                            _ => unreachable!("a function's and an action's returns are values"),
+                        })
+                    })
+                    .collect();
+                // Every side that answers an object of the same keys: each key chosen alone.
+                let keys: Option<Vec<String>> = parts.iter().flatten().next().and_then(|(_, f)| f.as_ref()).map(|f| f.iter().map(|(k, ..)| k.clone()).collect());
+                let keys = keys.filter(|keys| {
+                    parts.iter().flatten().all(|(_, f)| f.as_ref().is_some_and(|f| f.len() == keys.len() && f.iter().all(|(k, ..)| keys.contains(k))))
+                });
+                let fields = keys.map(|keys| {
+                    keys.iter()
+                        .map(|k| {
+                            let mut picks: Vec<Option<Expr>> = parts.iter().map(|p| p.as_ref().and_then(|(_, f)| f.as_ref()).and_then(|f| f.iter().find(|(x, ..)| x == k)).map(|(_, v, _)| v.clone())).collect();
+                            let els = picks.pop().expect("an else");
+                            (k.clone(), choose(choice, picks, els, span).expect("a side answers"), span)
+                        })
+                        .collect()
+                });
+                let mut values: Vec<Option<Expr>> = parts.into_iter().map(|p| p.map(|(v, _)| v)).collect();
+                let els = values.pop().expect("an else");
+                Ok(Some(Answer::Value { value: choose(choice, values, els, span).expect("a side answers"), name: None, fields }))
+            }
+        }
+    }
+
+    /// One route answer choosing among several, as one `respond` gives it: its body chosen, its
+    /// status chosen when they differ, and one `missing:` for an absent body. A `status(s)` alone
+    /// is that absent body where `s` is what an absent body answers anyway; elsewhere it answers
+    /// `s` with an empty body. A route that ends without an answer answers 404.
+    fn merge_responses(&mut self, choice: &Choice, sides: Vec<Option<Response>>, span: Span) -> R<Option<Response>> {
+        if sides.iter().all(Option::is_none) {
+            return Ok(None);
+        }
+        if let Some(r) = sides.iter().flatten().find(|r| r.stream.is_some()) {
+            return fail(r.span, "a streamed answer is a route's only one: return it, not one of several");
+        }
+        let number = |text: &str| Expr { kind: ExprKind::Number { value: text.parse().unwrap_or(0.0), text: text.into() }, span };
+        let status_text = |s: &Option<Expr>| match s.as_ref().map(|e| &e.kind) {
+            None => Some("200".to_string()),
+            Some(ExprKind::Number { text, .. }) => Some(text.clone()),
+            _ => None,
+        };
+        let last = sides.len() - 1;
+        if sides.iter().flatten().all(|r| r.body.is_none()) {
+            // Statuses alone: the one chosen, 404 where the route ends unanswered.
+            let mut statuses: Vec<Option<Expr>> = sides.into_iter().map(|r| Some(r.and_then(|r| r.status).unwrap_or_else(|| number("404")))).collect();
+            let els = statuses.pop().expect("an else");
+            return Ok(Some(Response { body: None, status: choose(choice, statuses, els, span), missing: None, headers: None, stream: None, span }));
+        }
+        let mut missing: Option<(String, Span)> = None;
+        for r in sides.iter().flatten().filter(|r| r.body.is_some()) {
+            let m = match r.missing.as_ref().map(|e| &e.kind) {
+                Some(ExprKind::Number { text, .. }) => text.clone(),
+                _ => "404".into(),
+            };
+            if let Some((first, at)) = &missing
+                && *first != m
+            {
+                return fail(r.span, format!("this answer is {m} when its body is absent, and the one on line {} is {first}: say it the same for both", at.start.line));
+            }
+            missing.get_or_insert((m, r.span));
+        }
+        let missing = missing.map(|(m, _)| m).expect("a body");
+        let any_headers = sides.iter().flatten().any(|r| r.headers.is_some());
+        let (mut bodies, mut statuses, mut headers) = (Vec::new(), Vec::new(), Vec::new());
+        for (i, side) in sides.into_iter().enumerate() {
+            // `if`'s sides and a match's else may be the absent body; a match's arm can't.
+            let may_be_absent = matches!(choice, Choice::If(_)) || i == last;
+            let (body, status, h) = match side {
+                None if missing == "404" => (None, None, None),
+                None => (Some(text_expr("", span)), Some(number("404")), None),
+                Some(r) if r.body.is_none() && may_be_absent && status_text(&r.status).as_deref() == Some(missing.as_str()) => (None, None, None),
+                Some(r) if r.body.is_none() => (Some(text_expr("", r.span)), r.status, None),
+                Some(r) => (r.body, Some(r.status.unwrap_or_else(|| number("200"))), r.headers),
+            };
+            bodies.push(body);
+            statuses.push(status);
+            headers.push(h);
+        }
+        let first = statuses.iter().flatten().next().cloned().expect("a body");
+        let status = if statuses.iter().flatten().all(|s| same(s, &first)) {
+            Some(first).filter(|s| status_text(&Some(s.clone())).as_deref() != Some("200"))
+        } else {
+            let mut picks: Vec<Option<Expr>> = statuses.into_iter().map(|s| Some(s.unwrap_or_else(|| first.clone()))).collect();
+            let els = picks.pop().expect("an else");
+            choose(choice, picks, els, span)
+        };
+        let headers = if any_headers {
+            let empty = Expr { kind: ExprKind::Record { spread: None, fields: vec![] }, span };
+            let mut picks: Vec<Option<Expr>> = headers.into_iter().map(|h| Some(h.unwrap_or_else(|| empty.clone()))).collect();
+            let els = picks.pop().expect("an else");
+            choose(choice, picks, els, span)
+        } else {
+            None
+        };
+        let els = bodies.pop().expect("an else");
+        let body = choose(choice, bodies, els, span);
+        Ok(Some(Response { body, status, missing: (missing != "404").then(|| number(&missing)), headers, stream: None, span }))
     }
 
     /// `status(…)` or `respond(…)`, if `e` is one, and its call.
@@ -953,12 +2230,12 @@ impl<'s, 't> Reader<'s, 't> {
         }
     }
 
-    /// A route's answer as `respond`'s arguments: `return v` answers 200 with it, `status(code,
-    /// body)` that code, `respond(body, { headers, stream })` the rest, `… ?? status(404)` what it
-    /// answers when the body is absent.
-    fn answer(&mut self, e: &js::Expression) -> R<Vec<Arg>> {
-        let at = self.span(e.span());
-        let named = |name: &str, value: Expr| Arg { name: Some(Name { text: name.into(), span: value.span }), value };
+    /// A route's `return e` as its response: `return v` answers 200 with it, `status(code, body)`
+    /// that code, `status(code)` the code alone, `respond(body, { headers, stream, status })` the
+    /// rest, `… ?? status(404)` what it answers when the body is absent.
+    fn response(&mut self, e: &js::Expression) -> R<Response> {
+        let span = self.span(e.span());
+        let mut r = Response { body: None, status: None, missing: None, headers: None, stream: None, span };
         match self.unwrap(e) {
             js::Expression::LogicalExpression(l) if l.operator == js::LogicalOperator::Coalesce && self.answers_with(&l.right).is_some() => {
                 let Some((Vocab::Status, c)) = self.answers_with(&l.right) else {
@@ -967,49 +2244,58 @@ impl<'s, 't> Reader<'s, 't> {
                 let [code] = c.arguments.as_slice() else {
                     return fail(self.span(c.span), "after ?? comes a status alone: ?? status(404)");
                 };
-                let code = self.expr(code.as_expression().ok_or(()).or_else(|_| fail(at, "a status is a number"))?)?;
-                let mut args = self.answer(&l.left)?;
-                if args.iter().any(|a| a.name.as_ref().is_some_and(|n| n.text == "missing")) {
-                    return fail(at, "one ?? status(…) says what an absent answer is");
+                let code = self.expr(code.as_expression().ok_or(()).or_else(|_| fail(span, "a status is a number"))?)?;
+                if !matches!(code.kind, ExprKind::Number { .. }) {
+                    return fail(code.span, "what an absent answer is, is a status written out: ?? status(404)");
                 }
-                args.push(named("missing", code));
-                Ok(args)
+                let mut left = self.response(&l.left)?;
+                if left.missing.is_some() {
+                    return fail(span, "one ?? status(…) says what an absent answer is");
+                }
+                left.missing = Some(code);
+                left.span = span;
+                Ok(left)
             }
             js::Expression::CallExpression(c) if self.vocab_of(&c.callee) == Some(Vocab::Status) => {
                 let args: Vec<&js::Expression> = c.arguments.iter().filter_map(|a| a.as_expression()).collect();
                 match args.as_slice() {
-                    [code] => Ok(vec![Arg { name: None, value: self.expr(code)? }]),
+                    [code] => r.status = Some(self.expr(code)?),
                     [code, body] => {
-                        let code = self.expr(code)?;
-                        Ok(vec![Arg { name: None, value: self.expr(body)? }, named("status", code)])
+                        r.status = Some(self.expr(code)?);
+                        r.body = Some(self.expr(body)?);
                     }
-                    _ => fail(at, "status takes the code, then the body: status(201, body)"),
+                    _ => return fail(span, "status takes the code, then the body: status(201, body)"),
                 }
+                Ok(r)
             }
             js::Expression::CallExpression(c) if self.vocab_of(&c.callee) == Some(Vocab::Respond) => {
                 let args: Vec<&js::Expression> = c.arguments.iter().filter_map(|a| a.as_expression()).collect();
                 let (body, options) = match args.as_slice() {
                     [body] => (body, None),
                     [body, options] => (body, Some(*options)),
-                    _ => return fail(at, "respond takes the body, then its options: respond(body, { headers, stream })"),
+                    _ => return fail(span, "respond takes the body, then its options: respond(body, { headers, stream })"),
                 };
-                let mut out = vec![Arg { name: None, value: self.expr(body)? }];
+                r.body = Some(self.expr(body)?);
                 if let Some(o) = options {
                     let js::Expression::ObjectExpression(o) = self.unwrap(o) else {
                         return fail(self.span(o.span()), "respond's options are an object: { headers: { … } }");
                     };
-                    for (key, value, span) in self.fields(o)? {
-                        if !["headers", "stream", "status"].contains(&key.as_str()) {
-                            return fail(span, format!("respond's options are headers, stream and status, not \"{key}\""));
-                        }
+                    for (key, value, at) in self.fields(o)? {
                         let value = self.expr(value)?;
-                        out.push(Arg { name: Some(Name { text: key, span }), value });
+                        match key.as_str() {
+                            "headers" => r.headers = Some(value),
+                            "stream" => r.stream = Some(value),
+                            "status" => r.status = Some(value),
+                            _ => return fail(at, format!("respond's options are headers, stream and status, not \"{key}\"")),
+                        }
                     }
                 }
-                Ok(out)
+                Ok(r)
             }
-            js::Expression::NumericLiteral(_) => Ok(vec![named("body", self.expr(e)?)]),
-            _ => Ok(vec![Arg { name: None, value: self.expr(e)? }]),
+            _ => {
+                r.body = Some(self.expr(e)?);
+                Ok(r)
+            }
         }
     }
 
@@ -1028,7 +2314,7 @@ impl<'s, 't> Reader<'s, 't> {
         let Some(body) = &f.body else { return fail(at, "a function needs a body") };
         let inputs = self.ports(&f.params, false)?;
         let returns = f.return_type.as_ref().map(|t| self.type_expr(&t.type_annotation)).transpose()?;
-        self.holon_def(name, name_span, inputs, returns, at, |me, stmts| me.statements_to_output(&body.statements, stmts))
+        self.holon_def(name, name_span, inputs, returns, at, |me, stmts| me.function_statements(&body.statements, stmts, at))
     }
 
     /// `const name = (params) => …` at the top level: a graph holon, as a function is.
@@ -1043,10 +2329,13 @@ impl<'s, 't> Reader<'s, 't> {
         let inputs = self.ports(&a.params, false)?;
         let returns = a.return_type.as_ref().map(|t| self.type_expr(&t.type_annotation)).transpose()?;
         self.holon_def(name, name_span, inputs, returns, at, |me, stmts| match &a.body {
-            js::ArrowFunctionBody::FunctionBody(b) => me.statements_to_output(&b.statements, stmts),
+            js::ArrowFunctionBody::FunctionBody(b) => me.function_statements(&b.statements, stmts, at),
             body => {
                 let e = body.as_expression().expect("an expression body");
-                me.output_of(e, stmts)
+                me.exit(e, Block::Function)?;
+                let outputs = me.outputs(Ret::Always, stmts, at)?;
+                me.settle(stmts, &outputs);
+                Ok(outputs)
             }
         })
     }
@@ -1060,12 +2349,16 @@ impl<'s, 't> Reader<'s, 't> {
         at: Span,
         body: impl FnOnce(&mut Self, &mut Vec<Stmt>) -> R<Vec<String>>,
     ) -> R<HolonDef> {
+        let saved = std::mem::take(&mut self.frame);
+        self.frame.used.extend(inputs.iter().map(|(_, port)| port.name.text.clone()));
+        self.frame.params.extend(inputs.iter().map(|(param, _)| param.clone()));
         // Each parameter reads, in the body, as the port it is.
         self.scopes.push(inputs.iter().map(|(param, port)| (param.clone(), Local::Bound(port.name.text.clone()))).collect());
         let inputs: Vec<PortDecl> = inputs.into_iter().map(|(_, port)| port).collect();
         let mut stmts = Vec::new();
         let outputs = body(self, &mut stmts);
         self.scopes.pop();
+        self.frame = saved;
         let outputs = outputs?;
         if returns.is_some() && outputs.len() != 1 {
             return fail(at, "a return type names one output's type: a function returning an object has one output per key");
@@ -1074,43 +2367,85 @@ impl<'s, 't> Reader<'s, 't> {
         Ok(HolonDef { name: self.name(name, name_span), inputs, outputs, body: stmts, span: at })
     }
 
-    /// A function body: its statements, then the output its last statement returns.
-    fn statements_to_output(&mut self, body: &[js::Statement], stmts: &mut Vec<Stmt>) -> R<Vec<String>> {
-        let Some((js::Statement::ReturnStatement(r), rest)) = body.split_last() else {
-            return fail(body.last().map(|s| self.span(s.span())).unwrap_or_default(), "a function returns its value last: return slug");
-        };
-        self.statements(rest, Block::Function, stmts)?;
-        let Some(e) = &r.argument else { return fail(self.span(r.span), "a function returns a value") };
-        self.output_of(e, stmts)
+    /// A function body: its statements, then its outputs, from what it returns.
+    fn function_statements(&mut self, body: &[js::Statement], stmts: &mut Vec<Stmt>, at: Span) -> R<Vec<String>> {
+        let ret = self.top(body, Block::Function, stmts)?;
+        let outputs = self.outputs(ret, stmts, at)?;
+        self.settle(stmts, &outputs);
+        Ok(outputs)
     }
 
-    /// The outputs `return e` gives: a name returned names the output after it; an object
-    /// literal, one output per key; anything else one output, `out`, as a function written in
-    /// place has (the note's fork 7). A body's own `const out` is `out_`, so it never clashes.
-    fn output_of(&mut self, e: &js::Expression, stmts: &mut Vec<Stmt>) -> R<Vec<String>> {
-        let at = self.span(e.span());
-        match self.unwrap(e) {
-            js::Expression::Identifier(i) if matches!(self.lookup(i.name.as_str()), Some(Local::Bound(_))) && self.is_binding(i.name.as_str(), stmts) => {
-                let Some(Local::Bound(n)) = self.lookup(i.name.as_str()) else { unreachable!() };
-                Ok(vec![n])
-            }
-            js::Expression::ObjectExpression(o) if !o.properties.is_empty() && o.properties.iter().all(|p| matches!(p, js::ObjectPropertyKind::ObjectProperty(_))) => {
-                let mut outputs = Vec::new();
-                for (key, value, span) in self.fields(o)? {
-                    let bound_here = matches!(self.unwrap(value), js::Expression::Identifier(i) if i.name == key.as_str() && self.is_binding(&key, stmts));
-                    if !bound_here {
-                        let value = self.expr(value)?;
-                        stmts.push(Stmt { kind: StmtKind::Bind { name: Name { text: key.clone(), span }, value }, span, after: None });
-                    }
-                    outputs.push(key);
+    /// A function's returns as its outputs. One return names them as it says: a name returned
+    /// names the output after it, an object literal one output per key, anything else one output,
+    /// `out`, as a function written in place has (the note's fork 7). Several returns, each an
+    /// object of the same keys, give one output per key, else one, `out`; each output is chosen
+    /// among the returns as `if` chooses. A body's own `const out` is `out_`, so it never clashes.
+    fn outputs(&mut self, ret: Ret, stmts: &mut Vec<Stmt>, at: Span) -> R<Vec<String>> {
+        let exits = std::mem::take(&mut self.frame.exits);
+        if exits.is_empty() {
+            return fail(at, "a function returns its value: return slug");
+        }
+        let ended = matches!(ret, Ret::Always);
+        if exits.len() == 1
+            && ended
+            && let Some(Exit { kind: ExitKind::One(Answer::Value { value, name, fields }), span, .. }) = exits.first().cloned()
+        {
+            if let Some((ts, n)) = name
+                && self.is_binding(&n, stmts)
+            {
+                // `let fee = 0; …; return fee`: the output is `fee`, whichever name holds it last.
+                let plain = self.local_name(&ts);
+                if n != plain {
+                    self.free(&plain, stmts);
+                    rename(stmts, &n, &plain);
                 }
-                Ok(outputs)
+                return Ok(vec![plain]);
             }
-            _ => {
-                let value = self.expr(e)?;
-                stmts.push(Stmt { kind: StmtKind::Bind { name: Name { text: "out".into(), span: at }, value }, span: at, after: None });
+            return match fields {
+                Some(fields) => Ok(self.output_fields(fields, stmts)),
+                None => {
+                    self.output("out", value, span, stmts);
+                    Ok(vec!["out".into()])
+                }
+            };
+        }
+        match self.fold(exits, ended)? {
+            Some(Answer::Value { fields: Some(fields), .. }) => Ok(self.output_fields(fields, stmts)),
+            Some(Answer::Value { value, .. }) => {
+                self.output("out", value, at, stmts);
                 Ok(vec!["out".into()])
             }
+            _ => fail(at, "a function returns a value"),
+        }
+    }
+
+    fn output_fields(&mut self, fields: Fields, stmts: &mut Vec<Stmt>) -> Vec<String> {
+        let mut outputs = Vec::new();
+        for (key, value, span) in fields {
+            let bound_here = matches!(&value.kind, ExprKind::Name(n) if *n == key) && self.is_binding(&key, stmts);
+            if !bound_here {
+                self.output(&key, value, span, stmts);
+            }
+            outputs.push(key);
+        }
+        outputs
+    }
+
+    /// Output `name` bound to `value`; a binding the body made of that name before is renamed.
+    fn output(&mut self, name: &str, mut value: Expr, span: Span, stmts: &mut Vec<Stmt>) {
+        if self.is_binding(name, stmts) {
+            let other = self.hidden_name(name);
+            rename(stmts, name, &other);
+            rename_expr(&mut value, name, &other);
+        }
+        stmts.push(Stmt { kind: StmtKind::Bind { name: Name { text: name.into(), span }, value }, span, after: None });
+    }
+
+    /// `name` made free for an output: a binding of it the body made is renamed.
+    fn free(&mut self, name: &str, stmts: &mut [Stmt]) {
+        if self.is_binding(name, stmts) {
+            let other = self.hidden_name(name);
+            rename(stmts, name, &other);
         }
     }
 
@@ -1251,21 +2586,47 @@ impl<'s, 't> Reader<'s, 't> {
             js::Expression::ComputedMemberExpression(m) => self.computed_member(m),
             js::Expression::CallExpression(c) => self.call(c),
             js::Expression::AwaitExpression(a) => {
-                // Slice 1 reads a request or a call as today's graph does, between rounds; their
-                // order and what `await` adds come with slice 6.
+                if let js::Expression::CallExpression(c) = self.unwrap(&a.argument)
+                    && self.vocab_of(&c.callee) == Some(Vocab::Event)
+                {
+                    return self.event(c, span);
+                }
+                // A request or a call is read as today's graph does, between rounds; their order
+                // and what `await` adds come with slice 6.
                 self.expr(&a.argument)
             }
             js::Expression::ObjectExpression(o) => self.record(o, span),
             js::Expression::ArrayExpression(a) => {
+                // `[...xs, y]` is `append(xs, y)`, `[...xs, ...ys]` `extend(xs, ys)`, `[...xs]` `xs`.
+                let mut list: Option<Expr> = None;
                 let mut items = Vec::new();
                 for item in &a.elements {
                     match item {
-                        js::ArrayExpressionElement::SpreadElement(s) => return fail(self.span(s.span), "a spread in a list comes in a later slice: append(list, item) or extend(list, items)"),
+                        js::ArrayExpressionElement::SpreadElement(s) => {
+                            let spread = self.expr(&s.argument)?;
+                            let before = match list.take() {
+                                None if items.is_empty() => None,
+                                None => Some(Expr { kind: ExprKind::List(std::mem::take(&mut items)), span }),
+                                l => l,
+                            };
+                            list = Some(match before {
+                                None => spread,
+                                Some(l) => call("extend", vec![arg(l), arg(spread)], span),
+                            });
+                        }
                         js::ArrayExpressionElement::Elision(s) => return fail(self.span(s.span), "a list has no holes"),
-                        _ => items.push(self.expr(item.as_expression().expect("an item"))?),
+                        _ => {
+                            let e = item.as_expression().expect("an item");
+                            let value = self.expr(e)?;
+                            self.share(e);
+                            match list.take() {
+                                Some(l) => list = Some(call("append", vec![arg(l), arg(value)], span)),
+                                None => items.push(value),
+                            }
+                        }
                     }
                 }
-                ok(ExprKind::List(items))
+                Ok(list.unwrap_or(Expr { kind: ExprKind::List(items), span }))
             }
             js::Expression::UnaryExpression(u) => match u.operator {
                 js::UnaryOperator::LogicalNot => ok(ExprKind::Not(Box::new(self.expr(&u.argument)?))),
@@ -1303,6 +2664,10 @@ impl<'s, 't> Reader<'s, 't> {
                 if self.answers_with(e).is_some() {
                     return fail(span, "status(…) and respond(…) are a route's answer: return them");
                 }
+                let literal = matches!(self.unwrap(&l.right), js::Expression::StringLiteral(_) | js::Expression::NumericLiteral(_) | js::Expression::TemplateLiteral(_) | js::Expression::ObjectExpression(_) | js::Expression::ArrayExpression(_));
+                if l.operator != js::LogicalOperator::Coalesce && literal {
+                    return fail(span, format!("{} takes booleans: a value for where one is absent is ??, x ?? \"none\"", l.operator.as_str()));
+                }
                 let op = match l.operator {
                     js::LogicalOperator::Or => BinOp::Or,
                     js::LogicalOperator::And => BinOp::And,
@@ -1322,6 +2687,7 @@ impl<'s, 't> Reader<'s, 't> {
             }
             js::Expression::ArrowFunctionExpression(_) | js::Expression::FunctionExpression(_) => fail(span, "a function written in place goes to map or reduce: xs.map((x) => …); define the others at the top level"),
             js::Expression::AssignmentExpression(_) => fail(span, "a write is a statement of its own"),
+            js::Expression::UpdateExpression(_) => fail(span, "++ and -- are a statement of their own: n++"),
             _ => fail(span, format!("{} isn't something Holon computes: do it in a js() function", expression_kind(e))),
         }
     }
@@ -1359,6 +2725,7 @@ impl<'s, 't> Reader<'s, 't> {
                     let text = self.property_key(&p.key, p.computed)?;
                     let key = Key { text, quoted, span: self.span(p.key.span()) };
                     fields.push((key, self.expr(&p.value)?));
+                    self.share(&p.value);
                 }
             }
         }
@@ -1394,7 +2761,8 @@ impl<'s, 't> Reader<'s, 't> {
         let ok = |kind: ExprKind| Ok(Expr { kind, span });
         if let Some(local) = self.lookup(name) {
             return match local {
-                Local::Bound(n) => ok(ExprKind::Name(n)),
+                Local::Bound(n) | Local::Var(Some(n)) => ok(ExprKind::Name(n)),
+                Local::Var(None) => fail(span, format!("\"{name}\" has no value here: give it one first, let {name} = …")),
                 Local::Alias(e) => Ok(Expr { span, ..e }),
             };
         }
@@ -1420,8 +2788,7 @@ impl<'s, 't> Reader<'s, 't> {
         let span = self.span(m.span);
         let prop = m.property.name.as_str();
         if self.is_state(&m.object) {
-            self.state_keys.insert(prop.to_string());
-            return Ok(Expr { kind: ExprKind::State(prop.to_string()), span });
+            return self.state_read(prop, span);
         }
         if prop == "length" {
             return fail(span, "a list's length is length(xs), a text's text_length(s), imported from \"holon\": .length comes in a later slice");
@@ -1432,6 +2799,9 @@ impl<'s, 't> Reader<'s, 't> {
 
     fn computed_member(&mut self, m: &js::ComputedMemberExpression) -> R<Expr> {
         let span = self.span(m.span);
+        if let Some(store) = self.store_name(&m.object) {
+            self.check_unwritten(&store, span)?;
+        }
         let base = self.expr(&m.object)?;
         let key = self.expr(&m.expression)?;
         Ok(Expr { kind: ExprKind::Index { base: Box::new(base), key: Box::new(key) }, span })
@@ -1465,6 +2835,7 @@ impl<'s, 't> Reader<'s, 't> {
                         ok(ExprKind::Method { receiver, method: Name { text: action, span: callee.span }, args })
                     }
                     Some(Noun::Vocab(Vocab::Status | Vocab::Respond)) => fail(span, "status(…) and respond(…) are a route's answer: return them"),
+                    Some(Noun::Vocab(Vocab::Event)) => fail(span, "an event is waited for: await event(\"paid\")"),
                     Some(Noun::Vocab(v)) => fail(span, format!("{} is a statement of the top level", vocab_word(&v))),
                     Some(_) => fail(callee.span, format!("\"{name}\" isn't something to call")),
                     None if self.consts.contains_key(name) => fail(callee.span, format!("\"{name}\" is a value, not something to call")),
@@ -1474,6 +2845,38 @@ impl<'s, 't> Reader<'s, 't> {
             js::Expression::StaticMemberExpression(m) => self.method_call(c, m),
             _ => fail(span, "a call names what it calls: a function, a leaf, or a method of something imported"),
         }
+    }
+
+    /// `await event("paid", { expires: "1d" })`: the run waits for the event, as `await paid,
+    /// expires: 1d` does.
+    fn event(&mut self, c: &js::CallExpression, span: Span) -> R<Expr> {
+        let shape = "await event(\"paid\", { expires: \"1d\" })";
+        let args: Vec<&js::Expression> = c.arguments.iter().filter_map(|a| a.as_expression()).collect();
+        if args.len() != c.arguments.len() || args.is_empty() || args.len() > 2 {
+            return fail(span, format!("event takes its name, then its options: {shape}"));
+        }
+        let js::Expression::StringLiteral(name) = self.unwrap(args[0]) else {
+            return fail(self.span(args[0].span()), format!("an event's name is written in quotes: {shape}"));
+        };
+        let mut expires = None;
+        if let Some(o) = args.get(1) {
+            let js::Expression::ObjectExpression(o) = self.unwrap(o) else {
+                return fail(self.span(o.span()), format!("event's options are an object: {shape}"));
+            };
+            for (key, value, at) in self.fields(o)? {
+                if key != "expires" {
+                    return fail(at, format!("event's option is expires, not \"{key}\""));
+                }
+                let js::Expression::StringLiteral(s) = self.unwrap(value) else {
+                    return fail(self.span(value.span()), format!("expires is a duration in quotes: {shape}"));
+                };
+                let Some(seconds) = duration(s.value.as_str()) else {
+                    return fail(self.span(s.span), format!("{:?} isn't a duration: \"60s\", \"5m\", \"2h\", \"1d\"", s.value.as_str()));
+                };
+                expires = Some(Box::new(Expr { kind: ExprKind::Duration { seconds, text: s.value.to_string() }, span: self.span(s.span) }));
+            }
+        }
+        Ok(Expr { kind: ExprKind::Await { name: self.name(name.value.as_str(), name.span), expires }, span })
     }
 
     /// `notes.list({ limit: 50 })`, `api.post("/p", { body })`, `JSON.parse(text)`, `xs.map(f)`.
@@ -1495,6 +2898,9 @@ impl<'s, 't> Reader<'s, 't> {
                     return ok(ExprKind::Method { receiver: Name { text: "http".into(), span: self.span(r.span) }, method: method_name, args });
                 }
                 (Some(Noun::Declared(kind, name)), _) => {
+                    if matches!((kind, method), ("collection", "list") | ("folder", "list" | "lines" | "slice")) {
+                        self.check_unwritten(&name, span)?;
+                    }
                     let takes = Takes::of_method(kind, method);
                     let args = self.args(&c.arguments, &takes)?;
                     return ok(ExprKind::Method { receiver: Name { text: name, span: self.span(r.span) }, method: method_name, args });
@@ -1718,6 +3124,65 @@ impl<'s, 't> Reader<'s, 't> {
         if RESERVED.contains(&name) && name != "in" && name != "out" { format!("{name}_") } else { name.to_string() }
     }
 
+    /// A new name for the text's `ts`: its own the first time (see [`Self::local_name`]), then
+    /// `ts_2`, `ts_3`, … for each new value (§5), never one the body or the top level has.
+    fn fresh(&mut self, ts: &str) -> String {
+        let base = self.local_name(ts);
+        let mut name = base.clone();
+        let mut n = 1;
+        while self.frame.used.contains(&name) || self.top_level(&name) || (n > 1 && self.taken.contains(&name)) {
+            n += 1;
+            name = format!("{base}_{n}");
+        }
+        self.frame.used.insert(name.clone());
+        name
+    }
+
+    /// A name the text doesn't write, for a binding the reader makes itself: `cond_1`, `parts_2`.
+    fn hidden_name(&mut self, base: &str) -> String {
+        let mut n = 1;
+        loop {
+            let name = format!("{base}_{n}");
+            if !self.frame.used.contains(&name) && !self.top_level(&name) && !self.taken.contains(&name) {
+                self.frame.used.insert(name.clone());
+                return name;
+            }
+            n += 1;
+        }
+    }
+
+    /// Whether the top level has `name`: a function, a const, or a collection, folder, database
+    /// or channel.
+    fn top_level(&self, name: &str) -> bool {
+        self.defs.contains_key(name) || self.consts.contains_key(name) || self.imports.values().any(|n| matches!(n, Noun::Declared(_, d) if d == name))
+    }
+
+    /// `value` bound to a hidden name, for an `if`'s condition or a switch's subject that each
+    /// branch reads: written back where it is read if it is read once ([`Self::settle`]).
+    fn hide(&mut self, value: Expr, base: &str, stmts: &mut Vec<Stmt>) -> Expr {
+        if matches!(value.kind, ExprKind::Name(_)) {
+            return value;
+        }
+        let span = value.span;
+        let name = self.hidden_name(base);
+        self.note_call(&name, &value, span);
+        stmts.push(Stmt { kind: StmtKind::Bind { name: Name { text: name.clone(), span }, value }, span, after: None });
+        self.frame.hidden.push(name.clone());
+        Expr { kind: ExprKind::Name(name), span }
+    }
+
+    /// `value` as a name, bound once when it isn't one, so that each part read reads the one
+    /// value.
+    fn once(&mut self, value: Expr, at: Span, stmts: &mut Vec<Stmt>) -> Expr {
+        if matches!(value.kind, ExprKind::Name(_)) {
+            return value;
+        }
+        let name = self.hidden_name("parts");
+        self.note_call(&name, &value, at);
+        stmts.push(Stmt { kind: StmtKind::Bind { name: Name { text: name.clone(), span: at }, value }, span: at, after: None });
+        Expr { kind: ExprKind::Name(name), span: at }
+    }
+
     fn vocab(&self, name: &str) -> Option<Vocab> {
         match self.imports.get(name) {
             Some(Noun::Vocab(v)) if self.lookup(name).is_none() => Some(v.clone()),
@@ -1906,7 +3371,6 @@ fn statement_kind(s: &js::Statement) -> &'static str {
     match s {
         js::Statement::ForStatement(_) | js::Statement::ForOfStatement(_) | js::Statement::ForInStatement(_) | js::Statement::WhileStatement(_) | js::Statement::DoWhileStatement(_) => "a loop",
         js::Statement::TryStatement(_) | js::Statement::ThrowStatement(_) => "try and throw",
-        js::Statement::SwitchStatement(_) => "a switch",
         js::Statement::ClassDeclaration(_) => "a class",
         _ => "this statement",
     }
@@ -1923,6 +3387,424 @@ fn expression_kind(e: &js::Expression) -> &'static str {
         js::Expression::SequenceExpression(_) => "a comma expression",
         js::Expression::UpdateExpression(_) => "++ and --",
         _ => "this",
+    }
+}
+
+/// A list's methods that change it in place: `push` is a new list with the items after it; the
+/// rest come in a later slice.
+const MUTATORS: &[&str] = &["push", "pop", "shift", "unshift", "splice", "sort", "reverse", "fill", "copyWithin"];
+
+fn call(leaf: &str, args: Vec<Arg>, span: Span) -> Expr {
+    Expr { kind: ExprKind::Call { callee: Name { text: leaf.into(), span }, args }, span }
+}
+
+fn arg(value: Expr) -> Arg {
+    Arg { name: None, value }
+}
+
+fn named(name: &str, value: Expr) -> Arg {
+    Arg { name: Some(Name { text: name.into(), span: value.span }), value }
+}
+
+fn text_expr(text: &str, span: Span) -> Expr {
+    Expr { kind: ExprKind::Text(text.into()), span }
+}
+
+/// A value that is never there: `if false then false`.
+fn absent(span: Span) -> Expr {
+    let no = Expr { kind: ExprKind::Bool(false), span };
+    Expr { kind: ExprKind::If { cond: Box::new(no.clone()), then: Box::new(no), els: None }, span }
+}
+
+fn binary(op: BinOp, lhs: Expr, rhs: Expr) -> Expr {
+    let span = lhs.span.to(rhs.span);
+    binary_at(op, lhs, rhs, span)
+}
+
+fn binary_at(op: BinOp, lhs: Expr, rhs: Expr, span: Span) -> Expr {
+    Expr { kind: ExprKind::Binary { op, lhs: Box::new(lhs), rhs: Box::new(rhs) }, span }
+}
+
+/// `value when c`.
+fn when(value: Expr, c: Expr) -> Expr {
+    binary(BinOp::When, value, c)
+}
+
+/// `(c ?? false)`: `c` as an `if` reads it, false where it is absent.
+fn truthy(c: &Expr) -> Expr {
+    let no = Expr { kind: ExprKind::Bool(false), span: c.span };
+    Expr { kind: ExprKind::Paren(Box::new(binary_at(BinOp::Coalesce, c.clone(), no, c.span))), span: c.span }
+}
+
+/// `!(c ?? false)`: what holds where an `if (c)` takes its else.
+fn otherwise(c: &Expr) -> Expr {
+    Expr { kind: ExprKind::Not(Box::new(truthy(c))), span: c.span }
+}
+
+/// The conditions, all of them: `a && b && …`.
+fn conj(cs: impl IntoIterator<Item = Expr>) -> Option<Expr> {
+    cs.into_iter().reduce(|a, b| binary(BinOp::And, a, b))
+}
+
+/// Whether `subject` is one of `patterns`.
+fn matched(subject: &Expr, patterns: &[Expr], at: Span) -> Expr {
+    patterns.iter().map(|p| binary_at(BinOp::Eq, subject.clone(), p.clone(), at)).reduce(|a, b| binary_at(BinOp::Or, a, b, at)).expect("a case has a pattern")
+}
+
+/// Whether `if (c) a else b` returns, from whether each branch does.
+fn ret_if(c: &Expr, a: &Ret, b: &Ret) -> Ret {
+    match (a, b) {
+        (Ret::Never, Ret::Never) => Ret::Never,
+        (Ret::Always, Ret::Always) => Ret::Always,
+        (Ret::Always, Ret::Never) => Ret::When(c.clone()),
+        (Ret::Never, Ret::Always) => Ret::When(otherwise(c)),
+        (Ret::When(x), Ret::Never) => Ret::When(binary(BinOp::And, c.clone(), x.clone())),
+        (Ret::Never, Ret::When(y)) => Ret::When(binary(BinOp::And, otherwise(c), y.clone())),
+        (Ret::Always, Ret::When(y)) => Ret::When(binary(BinOp::Or, truthy(c), y.clone())),
+        (Ret::When(x), Ret::Always) => Ret::When(binary(BinOp::Or, otherwise(c), x.clone())),
+        (Ret::When(x), Ret::When(y)) => Ret::When(Expr { kind: ExprKind::If { cond: Box::new(c.clone()), then: Box::new(x.clone()), els: Some(Box::new(y.clone())) }, span: c.span }),
+    }
+}
+
+/// One value choosing among `arms` by `choice`, else `els`; `None` where no side has one. Where
+/// one side alone has a value, it is that value `when` its side is taken (§5).
+fn choose(choice: &Choice, arms: Vec<Option<Expr>>, els: Option<Expr>, at: Span) -> Option<Expr> {
+    let first = arms.iter().chain(std::iter::once(&els)).flatten().next()?.clone();
+    if arms.iter().chain(std::iter::once(&els)).all(|s| s.as_ref().is_some_and(|s| same(s, &first))) {
+        return Some(first);
+    }
+    match choice {
+        Choice::If(c) => match (arms.into_iter().next().flatten(), els) {
+            (Some(a), Some(b)) => Some(Expr { kind: ExprKind::If { cond: Box::new(c.clone()), then: Box::new(a), els: Some(Box::new(b)) }, span: at }),
+            (Some(a), None) => Some(when(a, c.clone())),
+            (None, Some(b)) => Some(when(b, otherwise(c))),
+            (None, None) => None,
+        },
+        Choice::Match(subject, patterns) => {
+            let mut out = Vec::new();
+            for (p, a) in patterns.iter().zip(arms) {
+                match (a, &els) {
+                    (Some(a), Some(e)) if same(&a, e) => {}
+                    (Some(a), _) => out.push(Arm { patterns: p.clone(), value: a }),
+                    // A case without a value, and an else with one: the case's is absent.
+                    (None, Some(_)) => out.push(Arm { patterns: p.clone(), value: absent(at) }),
+                    (None, None) => {}
+                }
+            }
+            if out.is_empty() {
+                return els;
+            }
+            Some(Expr { kind: ExprKind::Match { subject: Box::new(subject.clone()), arms: out, els: els.map(Box::new), open: at }, span: at })
+        }
+    }
+}
+
+/// Whether two values are one: the same literal or name, wherever written.
+fn same(a: &Expr, b: &Expr) -> bool {
+    match (&a.kind, &b.kind) {
+        (ExprKind::Number { text: x, .. }, ExprKind::Number { text: y, .. }) => x == y,
+        (ExprKind::Text(x), ExprKind::Text(y)) | (ExprKind::Name(x), ExprKind::Name(y)) => x == y,
+        (ExprKind::Bool(x), ExprKind::Bool(y)) => x == y,
+        _ => a == b,
+    }
+}
+
+/// The lowering's name a local holds now (`None` for a `let` not given a value yet), if it is
+/// a binding.
+fn version(local: &Local) -> Option<Option<String>> {
+    match local {
+        Local::Bound(n) => Some(Some(n.clone())),
+        Local::Var(v) => Some(v.clone()),
+        Local::Alias(_) => None,
+    }
+}
+
+fn read_seg(base: Expr, seg: &Seg, at: Span) -> Expr {
+    match seg {
+        Seg::Field(name, span) => Expr { kind: ExprKind::Field { base: Box::new(base), name: Name { text: name.clone(), span: *span } }, span: at },
+        Seg::Key(k) => Expr { kind: ExprKind::Index { base: Box::new(base), key: Box::new(k.clone()) }, span: at },
+    }
+}
+
+/// `base` with the value at `path` changed by `edit`: `{ ...base, k: v }` for a field,
+/// `insert(base, k, v)` for a key, `without_field` or `remove` to delete one (§5).
+fn rebuilt(base: Expr, path: &[Seg], edit: Edit, at: Span) -> Expr {
+    match path.split_first() {
+        None => match edit {
+            Edit::Set(v) => v,
+            Edit::Remove(Seg::Field(name, span)) => call("without_field", vec![arg(base), named("name", text_expr(&name, span))], at),
+            Edit::Remove(Seg::Key(k)) => call("remove", vec![arg(base), arg(k)], at),
+        },
+        Some((seg, rest)) => {
+            let inner = rebuilt(read_seg(base.clone(), seg, at), rest, edit, at);
+            match seg {
+                Seg::Field(name, span) => Expr { kind: ExprKind::Record { spread: Some(Box::new(base)), fields: vec![(Key { text: name.clone(), quoted: false, span: *span }, inner)] }, span: at },
+                Seg::Key(k) => call("insert", vec![arg(base), arg(k.clone()), arg(inner)], at),
+            }
+        }
+    }
+}
+
+/// A route's answer as `respond`'s arguments.
+fn respond_args(r: Response) -> Vec<Arg> {
+    let mut args = Vec::new();
+    match r.body {
+        // `respond 204`, as a status alone is written; a computed one is named.
+        None => {
+            if let Some(s) = r.status {
+                let bare = matches!(s.kind, ExprKind::Number { .. }) && r.missing.is_none() && r.headers.is_none();
+                args.push(if bare { arg(s) } else { named("status", s) });
+            }
+        }
+        Some(body) => {
+            args.push(if matches!(body.kind, ExprKind::Number { .. }) { named("body", body) } else { arg(body) });
+            if let Some(s) = r.status {
+                args.push(named("status", s));
+            }
+        }
+    }
+    for (name, value) in [("missing", r.missing), ("headers", r.headers), ("stream", r.stream)] {
+        if let Some(v) = value {
+            args.push(named(name, v));
+        }
+    }
+    args
+}
+
+/// A branch's statements: a block's, or the one statement it is.
+fn statements_of<'a, 'b>(s: &'a js::Statement<'b>) -> &'a [js::Statement<'b>] {
+    match s {
+        js::Statement::BlockStatement(b) => &b.body[..],
+        s => std::slice::from_ref(s),
+    }
+}
+
+/// A case's statements without the `break` that ends it, and whether one did.
+fn case_body<'a, 'b>(body: &'a [js::Statement<'b>]) -> (&'a [js::Statement<'b>], bool) {
+    let plain_break = |s: &js::Statement| matches!(s, js::Statement::BreakStatement(b) if b.label.is_none());
+    match body {
+        [js::Statement::BlockStatement(b)] => match b.body.split_last() {
+            Some((last, rest)) if plain_break(last) => (rest, true),
+            _ => (body, false),
+        },
+        [rest @ .., last] if plain_break(last) => (rest, true),
+        _ => (body, false),
+    }
+}
+
+/// Each `var`'s names in `body`, at any depth but a function's.
+fn hoisted(body: &[js::Statement], vars: &mut Vec<String>) {
+    for s in body {
+        match s {
+            js::Statement::VariableDeclaration(v) if v.kind == js::VariableDeclarationKind::Var => {
+                for d in &v.declarations {
+                    pattern_names(&d.id, vars);
+                }
+            }
+            js::Statement::BlockStatement(b) => hoisted(&b.body, vars),
+            js::Statement::IfStatement(f) => {
+                hoisted(std::slice::from_ref(&f.consequent), vars);
+                if let Some(a) = &f.alternate {
+                    hoisted(std::slice::from_ref(a), vars);
+                }
+            }
+            js::Statement::SwitchStatement(w) => {
+                for c in &w.cases {
+                    hoisted(&c.consequent, vars);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// The names a pattern binds.
+fn pattern_names(p: &js::BindingPattern, names: &mut Vec<String>) {
+    match p {
+        js::BindingPattern::BindingIdentifier(id) => names.push(id.name.to_string()),
+        js::BindingPattern::AssignmentPattern(a) => pattern_names(&a.left, names),
+        js::BindingPattern::ObjectPattern(o) => {
+            for prop in &o.properties {
+                pattern_names(&prop.value, names);
+            }
+            if let Some(r) = &o.rest {
+                pattern_names(&r.argument, names);
+            }
+        }
+        js::BindingPattern::ArrayPattern(a) => {
+            for el in a.elements.iter().flatten() {
+                pattern_names(el, names);
+            }
+            if let Some(r) = &a.rest {
+                pattern_names(&r.argument, names);
+            }
+        }
+    }
+}
+
+/// `f` on every expression of `stmts`, as [`walk`] goes.
+fn each_expr(stmts: &mut [Stmt], f: &mut dyn FnMut(&mut Expr) -> bool) {
+    for s in stmts {
+        match &mut s.kind {
+            StmtKind::Bind { value, .. } | StmtKind::StateWrite { value, .. } | StmtKind::Expr(value) => walk(value, f),
+            StmtKind::CollectionWrite { key, value, .. } => {
+                walk(key, f);
+                walk(value, f);
+            }
+            StmtKind::Delete { key, .. } => walk(key, f),
+            StmtKind::Respond(args) => {
+                for a in args {
+                    walk(&mut a.value, f);
+                }
+            }
+            StmtKind::Node { .. } | StmtKind::Wire { .. } => {}
+        }
+        if let Some(a) = &mut s.after {
+            walk(a, f);
+        }
+    }
+}
+
+/// `f` on `e`, then on each expression in it while `f` says to go on.
+fn walk(e: &mut Expr, f: &mut dyn FnMut(&mut Expr) -> bool) {
+    if !f(e) {
+        return;
+    }
+    match &mut e.kind {
+        ExprKind::Interpolated(parts) => {
+            for p in parts {
+                if let Part::Expr(x) = p {
+                    walk(x, f);
+                }
+            }
+        }
+        ExprKind::Call { args, .. } | ExprKind::Method { args, .. } => {
+            for a in args {
+                walk(&mut a.value, f);
+            }
+        }
+        ExprKind::Field { base, .. } => walk(base, f),
+        ExprKind::Index { base, key } => {
+            walk(base, f);
+            walk(key, f);
+        }
+        ExprKind::Record { spread, fields } => {
+            if let Some(s) = spread {
+                walk(s, f);
+            }
+            for (_, v) in fields {
+                walk(v, f);
+            }
+        }
+        ExprKind::List(items) => {
+            for i in items {
+                walk(i, f);
+            }
+        }
+        ExprKind::Not(x) | ExprKind::Paren(x) | ExprKind::Lambda { body: x, .. } => walk(x, f),
+        ExprKind::Binary { lhs, rhs, .. } => {
+            walk(lhs, f);
+            walk(rhs, f);
+        }
+        ExprKind::If { cond, then, els } => {
+            walk(cond, f);
+            walk(then, f);
+            if let Some(e) = els {
+                walk(e, f);
+            }
+        }
+        ExprKind::Match { subject, arms, els, .. } => {
+            walk(subject, f);
+            for a in arms {
+                for p in &mut a.patterns {
+                    walk(p, f);
+                }
+                walk(&mut a.value, f);
+            }
+            if let Some(e) = els {
+                walk(e, f);
+            }
+        }
+        ExprKind::Await { expires: Some(x), .. } => walk(x, f),
+        _ => {}
+    }
+}
+
+/// How many times `stmts` read `name`.
+fn uses(stmts: &mut [Stmt], name: &str) -> usize {
+    let mut n = 0;
+    each_expr(stmts, &mut |e| {
+        if matches!(&e.kind, ExprKind::Name(x) if x == name) {
+            n += 1;
+        }
+        true
+    });
+    n
+}
+
+/// The bindings something reads: a statement that isn't a binding, `outputs`, or a binding read
+/// so, through any number of others.
+fn live_bindings(stmts: &mut [Stmt], outputs: &[String]) -> BTreeSet<String> {
+    let mut reads = Vec::new();
+    for s in stmts.iter_mut() {
+        let bound = match &s.kind {
+            StmtKind::Bind { name, .. } => Some(name.text.clone()),
+            _ => None,
+        };
+        let mut names = BTreeSet::new();
+        each_expr(std::slice::from_mut(s), &mut |e| {
+            if let ExprKind::Name(n) = &e.kind {
+                names.insert(n.clone());
+            }
+            true
+        });
+        reads.push((bound, names));
+    }
+    let mut live: BTreeSet<String> = outputs.iter().cloned().collect();
+    for (bound, names) in &reads {
+        if bound.is_none() {
+            live.extend(names.iter().cloned());
+        }
+    }
+    loop {
+        let before = live.len();
+        for (bound, names) in &reads {
+            if bound.as_ref().is_some_and(|b| live.contains(b)) {
+                live.extend(names.iter().cloned());
+            }
+        }
+        if live.len() == before {
+            return live;
+        }
+    }
+}
+
+/// `from` renamed `to`, where it is bound and where it is read.
+fn rename(stmts: &mut [Stmt], from: &str, to: &str) {
+    for s in stmts.iter_mut() {
+        if let StmtKind::Bind { name, .. } = &mut s.kind
+            && name.text == from
+        {
+            name.text = to.into();
+        }
+    }
+    each_expr(stmts, &mut |e| rename_one(e, from, to));
+}
+
+fn rename_expr(e: &mut Expr, from: &str, to: &str) {
+    walk(e, &mut |x| rename_one(x, from, to));
+}
+
+/// `e` renamed if it reads `from`; a function written in place whose parameter is `from` reads
+/// its own.
+fn rename_one(e: &mut Expr, from: &str, to: &str) -> bool {
+    match &mut e.kind {
+        ExprKind::Name(n) if n == from => {
+            *n = to.into();
+            true
+        }
+        ExprKind::Lambda { params, .. } => !params.iter().any(|p| p.text == from),
+        _ => true,
     }
 }
 
@@ -2024,12 +3906,14 @@ mod tests {
         ($($name:literal),* $(,)?) => { [$(($name, include_str!(concat!("../../tests/ts-parity/", $name, ".holon.ts")))),*] };
     }
 
-    /// The samples that use only what this slice reads, each written in TypeScript in
+    /// The samples that use only what slices 1 and 2 read, each written in TypeScript in
     /// tests/ts-parity.
-    const TWINS: [(&str, &str); 16] = twins![
+    const TWINS: [(&str, &str); 18] = twins![
         "basket",
         "billing",
         "browser-key",
+        "calc",
+        "counter",
         "drop-board",
         "fetch-json",
         "guarded-api",
@@ -2106,6 +3990,191 @@ mod tests {
         }
     }
 
+    /// Slice 2's statements, each beside the `.holon` text it is: a `let` given a new value is a
+    /// new name, branches join with `if` and `match`, returns fold into one `respond`.
+    #[test]
+    fn each_statement_lowers_as_its_holon_form() {
+        let pairs = [
+            (
+                "let, if and else if",
+                r#"import { flow, route } from "holon"
+flow("f", { port: 8000 })
+route.post("/fee", (req) => {
+  let fee = 0
+  if (req.json.express) {
+    fee = 5
+  } else if (req.json.amount > 100) {
+    fee = 2
+  }
+  return { fee }
+})
+"#,
+                "flow f\nport 8000\n\nroute POST /fee (req) {\n  fee = 0\n  fee_2 = 5\n  fee_3 = 2\n  fee_4 = if req.json.amount > 100 then fee_3 else fee\n  fee_5 = if req.json.express then fee_2 else fee_4\n  respond { fee: fee_5 }\n}\n",
+            ),
+            (
+                "an early return",
+                r#"import { flow, route, status } from "holon"
+import state from "state"
+flow("p", { port: 8000 })
+route.post("/pay", (req) => {
+  const amount = req.json.amount
+  if (amount > 1000) return status(403, "too much")
+  state.paid = amount
+  return { paid: amount }
+})
+"#,
+                "flow p\nport 8000\nstate paid\n\nroute POST /pay (req) {\n  amount = req.json.amount\n  cond_1 = amount > 1000\n  state.paid = amount when !(cond_1 ?? false)\n  respond if cond_1 then \"too much\" else { paid: amount }, status: if cond_1 then 403 else 200\n}\n",
+            ),
+            (
+                "a switch's writes",
+                r#"import { flow, route } from "holon"
+import state from "state"
+import notes from "collection:notes"
+flow("l", { port: 8000 })
+route.post("/level", (req) => {
+  switch (req.json.level) {
+    case "high":
+    case "urgent":
+      state.alert = true
+      notes[req.json.id] = "urgent"
+      break
+    case "low":
+      state.alert = false
+      break
+    default:
+      notes[req.json.id] = "other"
+  }
+  return "ok"
+})
+"#,
+                "flow l\nport 8000\nstate alert\ncollection notes\n\nroute POST /level (req) {\n  subject_1 = req.json.level\n  notes[req.json.id] = \"urgent\" when subject_1 == \"high\" || subject_1 == \"urgent\"\n  notes[req.json.id] = \"other\" when !((subject_1 == \"high\" || subject_1 == \"urgent\" || subject_1 == \"low\") ?? false)\n  state.alert = match subject_1 {\n    \"high\", \"urgent\" -> true\n    \"low\" -> false\n  }\n  respond \"ok\"\n}\n",
+            ),
+            (
+                "the rest of destructuring, and changes in place",
+                r#"import { flow, route } from "holon"
+flow("o", { port: 8000 })
+route.post("/order", (req) => {
+  const { id, ...rest } = req.json
+  const [first, ...others] = rest.items
+  const tags = [...others, "new"]
+  const order = { id, first }
+  order.count = 2
+  delete order.first
+  tags.push("x")
+  return { order, tags, rest }
+})
+"#,
+                "flow o\nport 8000\n\nroute POST /order (req) {\n  parts_1 = req.json\n  id = parts_1.id\n  rest = without_field(parts_1, name: \"id\")\n  parts_2 = rest.items\n  first = head(parts_2)\n  others = tail(parts_2)\n  tags = append(others, \"new\")\n  order = { id: id, first: first }\n  order_2 = { ..order, count: 2 }\n  order_3 = without_field(order_2, name: \"first\")\n  tags_2 = append(tags, \"x\")\n  respond { order: order_3, tags: tags_2, rest: rest }\n}\n",
+            ),
+            (
+                "updates",
+                r#"import { flow, every } from "holon"
+import state from "state"
+flow("u", { port: 8000 })
+every("1m", () => {
+  let n = state.beats ?? 0
+  n++
+  n += 2
+  state.beats = n
+})
+"#,
+                "flow u\nport 8000\nstate beats\n\nevery 1m {\n  n = state.beats ?? 0\n  n_2 = n + 1\n  n_3 = n_2 + 2\n  state.beats = n_3\n}\n",
+            ),
+            (
+                "a swap, and var",
+                r#"import { flow, route } from "holon"
+flow("s", { port: 8000 })
+route.post("/s", (req) => {
+  var a = req.json.a;
+  var b = req.json.b;
+  [a, b] = [b, a];
+  return { a, b }
+})
+"#,
+                "flow s\nport 8000\n\nroute POST /s (req) {\n  a = req.json.a\n  b = req.json.b\n  a_2 = b\n  b_2 = a\n  respond { a: a_2, b: b_2 }\n}\n",
+            ),
+            (
+                "an event awaited",
+                r#"import { flow, route, event } from "holon"
+import state from "state"
+flow("e", { port: 8000 })
+route.post("/orders", async (req) => {
+  const paid = await event("paid", { expires: "1d" })
+  state.last_order = { ...req.json, paid_via: paid.method }
+  return "paid"
+})
+route.get("/paid/:token", () => "thanks", { resumes: "paid" })
+"#,
+                "flow e\nport 8000\nstate last_order\n\nroute POST /orders (req) {\n  paid = await paid, expires: 1d\n  state.last_order = { ..req.json, paid_via: paid.method }\n  respond \"paid\"\n}\n\nroute GET /paid/:token (req) resumes paid {\n  respond \"thanks\"\n}\n",
+            ),
+            (
+                "a call under an if, read by nothing",
+                r#"import { flow, route } from "holon"
+import api from "host:api.example.com"
+flow("g", { port: 8000 })
+route.post("/ping", async (req) => {
+  if (req.json.loud) {
+    const sent = await api.post("/ping", { body: req.json })
+  }
+  return "ok"
+})
+route.post("/again", async (req) => {
+  if (req.json.twice) await api.post("/again", { body: req.json })
+  return "ok"
+})
+"#,
+                "flow g\nport 8000\n\nroute POST /ping (req) {\n  sent = http.post(\"api.example.com\", \"/ping\", body: req.json) after true when req.json.loud\n  respond \"ok\"\n}\n\nroute POST /again (req) {\n  reply_1 = http.post(\"api.example.com\", \"/again\", body: req.json) after true when req.json.twice\n  respond \"ok\"\n}\n",
+            ),
+            (
+                "a function's let, returned",
+                r#"import { flow, route } from "holon"
+flow("t", { port: 8000 })
+function price(amount) {
+  let fee = 1
+  if (amount > 100) fee = 2
+  return fee
+}
+route.post("/t", (req) => price(req.json.amount))
+"#,
+                "flow t\nport 8000\n\nholon price(amount) -> fee {\n  fee_1 = 1\n  fee_2 = 2\n  fee = if amount > 100 then fee_2 else fee_1\n}\n\nroute POST /t (req) {\n  respond price(req.json.amount)\n}\n",
+            ),
+        ];
+        for (what, ts, holon) in pairs {
+            same_unit(what, ts, holon);
+        }
+    }
+
+    /// What slice 2 refuses (§12), each saying what to write instead.
+    #[test]
+    fn a_refusal_says_what_to_write() {
+        let refused = [
+            ("route.post(\"/\", (req) => {\n  switch (req.json.op) {\n    case \"a\":\n      notes[req.json.id] = 1\n    case \"b\":\n      notes[req.json.id] = 2\n  }\n  return 1\n})\n", "7:5: a case runs on into the next: end it with break or return"),
+            ("route.post(\"/\", (req) => {\n  if (req.json.a) {\n    break\n  }\n  return 1\n})\n", "7:5: break ends a case, last in it"),
+            ("route.post(\"/\", (req) => {\n  const xs = [1]\n  const ys = xs\n  ys.push(2)\n  return ys\n})\n", "8:3: \"ys\" is held elsewhere too (by another name, a record or a write), which a change in place would change behind it: copy it first, const copy = [...ys] or { ...ys }"),
+            ("route.post(\"/\", (req) => {\n  let a = 1;\n  [notes[req.json.id]] = [a]\n  return a\n})\n", "7:4: a pattern that writes is refused: bind the name, then write it"),
+            ("route.get(\"/\", (req) => req.query.name || \"anon\")\n", "5:25: || takes booleans: a value for where one is absent is ??, x ?? \"none\""),
+            ("route.post(\"/\", (req) => {\n  notes[req.json.id] = req.json\n  return notes[req.json.id]\n})\n", "7:10: notes is read after this run writes to it, and a write is made when the run ends: use the value written"),
+            ("route.post(\"/\", (req) => {\n  return 1\n  notes[req.json.id] = 2\n})\n", "7:3: nothing after a return runs: remove it"),
+            ("route.post(\"/\", (req) => {\n  const n = 1\n  n = 2\n  return n\n})\n", "7:3: \"n\" is a const: declare it with let to give it a new value"),
+            ("route.post(\"/\", (req) => {\n  req = 2\n  return 1\n})\n", "6:3: \"req\" is a parameter, which stays what it was passed: give the new value a name of its own"),
+            ("route.post(\"/\", (req) => {\n  if (req.json.a !== undefined) {\n    return 1\n  }\n  return 2\n})\n", "7:12: a return inside if (x !== undefined) comes in a later slice: return after it, with ?? for when x has no value"),
+            ("route.post(\"/\", (req) => {\n  const xs = [1]\n  xs.sort()\n  return xs\n})\n", "7:3: sort changes the list in place, which comes in a later slice: write the new list, xs = …"),
+            ("route.post(\"/\", (req) => {\n  switch (req.json.op) {\n    case req.json.other:\n      return 1\n  }\n  return 2\n})\n", "7:10: a case is a literal: a number, a text, true or false; to test a condition, use if"),
+            ("route.post(\"/\", (req) => {\n  if (req.json.a) return status(200, 1)\n  return 2 ?? status(400)\n})\n", "7:10: this answer is 400 when its body is absent, and the one on line 6 is 404: say it the same for both"),
+            ("route.post(\"/\", (req) => {\n  const n = req.json.n++\n  return n\n})\n", "6:13: ++ and -- are a statement of their own: n++"),
+            ("route.post(\"/\", (req) => {\n  state[req.json.k] = 1\n  return 1\n})\n", "6:3: a state key is a name: state.hits = …; a key computed is a collection's, notes[k] = …"),
+        ];
+        let head = "import { flow, route, status } from \"holon\"\nimport notes from \"collection:notes\"\nimport state from \"state\"\nflow(\"f\", { port: 8000 })\n";
+        let mut wrong = Vec::new();
+        for (body, expected) in refused {
+            let got = parse(&format!("{head}{body}")).map(|_| ()).map_err(|e| e.to_string());
+            if got.as_ref().err().map(String::as_str) != Some(expected) {
+                wrong.push(format!("{body:?}\n  => {got:?}"));
+            }
+        }
+        assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+    }
+
     fn holon_of(ts: &str) -> HolonDef {
         let file = parse(ts).unwrap_or_else(|e| panic!("{e}"));
         file.items.into_iter().find_map(|i| if let Item::Holon(h) = i { Some(h) } else { None }).expect("a function")
@@ -2154,13 +4223,13 @@ mod tests {
     /// What a later slice brings is refused where it is written, saying so.
     #[test]
     fn a_mistake_names_its_line_and_column() {
-        assert_eq!(mistake("route.get(\"/\", () => {\n  let n = 1\n  return n\n})\n"), "5:3: let and var come in a later slice: use const, one name per value");
+        assert_eq!(mistake("route.get(\"/\", () => {\n  let n\n  return n\n})\n"), "6:10: \"n\" has no value here: give it one first, let n = …");
         assert_eq!(mistake("route.get(\"/\", (req) => \"a\" + req.query.b)\n"), "4:25: there is no + on texts: use a template literal, `${a}${b}`");
         assert_eq!(mistake("route.get(\"/\", (req) => fetch(req.query.u))\n"), "4:25: unknown function \"fetch\": define it at the top level, or import the leaf from \"holon\"");
         assert_eq!(mistake("route.get(\"/\", (req) => req.query.xs.length)\n"), "4:25: a list's length is length(xs), a text's text_length(s), imported from \"holon\": .length comes in a later slice");
         assert_eq!(mistake("route.fetch(\"/\", () => 1)\n"), "4:7: route has no \"fetch\": get, post, put, patch or delete");
         assert_eq!(mistake("route.get(\"/\", () => 1, { log: \"loud\" })\n"), "4:32: log is \"strict\", \"lazy\" or \"unrecorded\"");
-        assert_eq!(mistake("route.get(\"/\", () => {\n  notes = 1\n  return 1\n})\n"), "5:3: \"notes\" is a const: a new value is a new name, for now (let comes in a later slice)");
+        assert_eq!(mistake("route.get(\"/\", () => {\n  notes = 1\n  return 1\n})\n"), "5:3: \"notes\" is imported, and stays what it is: give a value of its own a name of its own");
         let unknown = parse("import x from \"npm:left-pad\"\n").unwrap_err();
         assert!(unknown.to_string().starts_with("1:15: \"npm:left-pad\" isn't something a flow imports"), "{unknown}");
         let syntax = parse("import { flow } from \"holon\"\nflow(\"f\", {\n").unwrap_err();
