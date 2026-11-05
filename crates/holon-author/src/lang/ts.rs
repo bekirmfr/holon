@@ -1813,7 +1813,8 @@ impl<'s, 't> Reader<'s, 't> {
     }
 
     /// `if (x !== undefined) { … }`: the writes and calls inside are tied to `x` (`after x`), so
-    /// they are made once it has a value, and not at all when it has none (§5).
+    /// they are made once it has a value, and not at all when it has none (§5). A `let` given its
+    /// first value inside is tied to it too: `let y; if (x !== undefined) y = f()`.
     fn after_block(&mut self, f: &js::IfStatement, x: Expr, block: Block, stmts: &mut Vec<Stmt>, at: Span) -> R<Ret> {
         if let Some(alt) = &f.alternate {
             return fail(self.span(alt.span()), "an if (x !== undefined) has no else, for now: what is done without x is written after it, with ??");
@@ -1823,7 +1824,8 @@ impl<'s, 't> Reader<'s, 't> {
         }
         let x = self.hide(x, "cond", stmts);
         let before = self.scopes.clone();
-        self.frame.guards.push(Guard::After(x));
+        let from = stmts.len();
+        self.frame.guards.push(Guard::After(x.clone()));
         self.scopes.push(HashMap::new());
         let r = self.list(statements_of(&f.consequent), block, stmts);
         self.scopes.pop();
@@ -1831,9 +1833,19 @@ impl<'s, 't> Reader<'s, 't> {
         r?;
         for (d, scope) in before.iter().enumerate() {
             for (ts, local) in scope {
-                if version(local) != self.scopes[d].get(ts).and_then(version) {
-                    return fail(at, format!("\"{ts}\" is given a value inside if (… !== undefined), which comes in a later slice: give it its value after it, with ??"));
+                let now = self.scopes[d].get(ts).and_then(version);
+                if version(local) == now {
+                    continue;
                 }
+                // A `let` with no value before, given one inside: its value is tied to x, as
+                // `.holon`'s `y = … after x` is, and absent when x is.
+                if let (Local::Var(None), Some(Some(name))) = (local, &now)
+                    && let Some(s) = stmts[from..].iter_mut().rev().find(|s| matches!(&s.kind, StmtKind::Bind { name: n, .. } if n.text == *name))
+                {
+                    s.after = Some(x.clone());
+                    continue;
+                }
+                return fail(at, format!("\"{ts}\" had a value before if (… !== undefined) and is given another inside, which comes in a later slice: give it its value after it, with ??"));
             }
         }
         Ok(Ret::Never)
@@ -2250,6 +2262,12 @@ impl<'s, 't> Reader<'s, 't> {
     fn response(&mut self, e: &js::Expression) -> R<Response> {
         let span = self.span(e.span());
         let mut r = Response { body: None, status: None, missing: None, headers: None, stream: None, span };
+        // A long answer broken in parentheses, as fmt breaks one, `return (… ?? status(400))`: the
+        // parentheses change nothing.
+        let mut e = e;
+        while let js::Expression::ParenthesizedExpression(p) = e {
+            e = &p.expression;
+        }
         match self.unwrap(e) {
             js::Expression::LogicalExpression(l) if l.operator == js::LogicalOperator::Coalesce && self.answers_with(&l.right).is_some() => {
                 let Some((Vocab::Status, c)) = self.answers_with(&l.right) else {
@@ -3099,14 +3117,16 @@ impl<'s, 't> Reader<'s, 't> {
     }
 
     /// Arguments in order, and a last object literal, when what is called takes it so, as its
-    /// named inputs and params: `notes.list({ limit: 50 })`, `api.post("/p", { body })`. It is
-    /// read so when the arguments before it give every input that can't be left out, and each
-    /// of its keys is one the call takes by name; otherwise it is a record, passed in order.
+    /// named inputs and params: `notes.list({ limit: 50 })`, `api.post("/p", { body })`,
+    /// `logs.slice(name, { offset: 0, length: 256 })`. It is read so when each of its keys is one
+    /// the call takes by name, and with the arguments before it it gives every input that can't
+    /// be left out; otherwise it is a record, passed in order.
     fn args(&mut self, args: &[js::Argument], takes: &Takes) -> R<Vec<Arg>> {
         let options = match args.split_last() {
-            Some((js::Argument::ObjectExpression(o), before)) if before.len() >= takes.required && !o.properties.is_empty() => {
+            Some((js::Argument::ObjectExpression(o), before)) if !o.properties.is_empty() => {
                 let named = self.fields(o).ok().filter(|fields| fields.iter().all(|(k, _, _)| takes.named.iter().any(|n| n == k)));
-                named.map(|n| (before, n))
+                let given = |fields: &Vec<(String, &js::Expression, Span)>| before.len() + fields.iter().filter(|(k, _, _)| takes.needed.contains(k)).count();
+                named.filter(|n| given(n) >= takes.required).map(|n| (before, n))
             }
             _ => None,
         };
@@ -3319,10 +3339,12 @@ impl From<Noun> for super::ast::Noun {
     }
 }
 
-/// What a call takes by name, and how many inputs come before that can't be left out.
+/// What a call takes by name, and how many inputs can't be left out: given in order, or by name
+/// (`needed`).
 struct Takes {
     required: usize,
     named: Vec<String>,
+    needed: Vec<String>,
 }
 
 impl Takes {
@@ -3338,18 +3360,19 @@ impl Takes {
             (vec![], vec![])
         };
         let inputs: Vec<String> = inputs.into_iter().filter(|n| n != TRIGGER).collect();
-        let required = inputs.iter().filter(|n| !is_optional(leaf, n)).count();
+        let needed: Vec<String> = inputs.iter().filter(|n| !is_optional(leaf, n)).cloned().collect();
+        let required = needed.len();
         // A variadic leaf's inputs are more of the same: only its params are named.
         let mut named = params.into_iter().filter(|p| p != "fn").collect::<Vec<_>>();
         if !VARIADIC.contains(&leaf) {
             named.extend(inputs);
         }
-        Takes { required, named }
+        Takes { required, named, needed }
     }
 
     /// An outbound request's, after its host: the path, then headers, body, a file or stream.
     fn request() -> Takes {
-        Takes { required: 1, named: ["headers", "body", "file", "stream"].map(String::from).to_vec() }
+        Takes { required: 1, named: ["headers", "body", "file", "stream"].map(String::from).to_vec(), needed: vec![] }
     }
 
     /// A method of a declared collection, folder, database or channel.
@@ -3359,13 +3382,13 @@ impl Takes {
             ("folder", "list") => "file_list",
             ("folder", "lines") => "file_lines",
             ("folder", "slice") => "file_slice",
-            ("database", "exec") => return Takes { required: 1, named: vec!["expect".into()] },
-            ("database", "find") => return Takes { required: 2, named: vec!["sort".into(), "limit".into()] },
-            ("database", "find_one") => return Takes { required: 2, named: vec!["sort".into()] },
-            ("database", "update") => return Takes { required: 3, named: vec!["expect".into()] },
-            ("database", "delete") => return Takes { required: 2, named: vec!["expect".into()] },
-            ("channel", "subscribe") => return Takes { required: 0, named: vec!["from".into()] },
-            _ => return Takes { required: usize::MAX, named: vec![] },
+            ("database", "exec") => return Takes { required: 1, named: vec!["expect".into()], needed: vec![] },
+            ("database", "find") => return Takes { required: 2, named: vec!["sort".into(), "limit".into()], needed: vec![] },
+            ("database", "find_one") => return Takes { required: 2, named: vec!["sort".into()], needed: vec![] },
+            ("database", "update") => return Takes { required: 3, named: vec!["expect".into()], needed: vec![] },
+            ("database", "delete") => return Takes { required: 2, named: vec!["expect".into()], needed: vec![] },
+            ("channel", "subscribe") => return Takes { required: 0, named: vec!["from".into()], needed: vec![] },
+            _ => return Takes { required: usize::MAX, named: vec![], needed: vec![] },
         };
         let mut t = Takes::of_leaf(leaf);
         t.named.retain(|n| n != "collection" && n != "folder");

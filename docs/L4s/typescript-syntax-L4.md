@@ -315,7 +315,9 @@ unit, as tours-L4 §11 fork 2 requires. Both notes are rewritten in this form wh
 - **Writes in two branches to one key merge into one write**: `if (a) state.k = 1; else state.k =
   2` lowers to `state.k = if a then 1 else 2`, as a run writes a key once (`lower.rs:726-729`).
 - **`if (x !== undefined) { … }`** is `after x`: the statements inside happen once `x` has a value,
-  and not at all when it has none (reference.md:402-404). `undefined` is the way to write "no
+  and not at all when it has none (reference.md:402-404). A `let` with no value before it, given
+  one inside, is tied to `x` too: `let sent; if (x !== undefined) sent = await api.post(…)` is
+  today's `sent = http.post(…) after x`, absent when `x` is. `undefined` is the way to write "no
   value", in this test and as a branch: `c ? a : undefined` is today's `if c then a`.
 - **`switch`** with a `return` or an assignment in each `case` lowers to `match` (`lower.rs:1579`, `1746`);
   fall-through is refused.
@@ -992,7 +994,12 @@ Holon is in development, so the new form replaces today's at once:
    expression keeping its statement as written, and one rule of Holon's own, a handler's options
    kept after its function's closing brace (`}, { log: "lazy" })`). It answers only once the text
    it wrote compiles to the same flow, its comments all there; the twins are kept as it writes
-   them.
+   them. *The converter is built* (`lang/to_ts.rs`, 2026-11-06): a `.holon` tree written in
+   TypeScript's syntax, its comments carried over by line, laid out by `fmt`. 54 of the 55 samples
+   convert: 50 to the same unit (a test holds them to it), and the four without handlers each to
+   one handler. slugs binds a `state.set`'s answer, which TypeScript has no form for, so it is written by
+   hand. `compile` takes a text in either form, told apart by how it starts, while the samples and
+   the tools switch.
 5. **`try`, `catch {}`, `throw`, `finally`,** and the `fail` leaf.
 6. **Computing loops.** `while` to `fold`, the loop's turns, nested folds past 10000, `fold`
    stopping when done, a step budget in core.
