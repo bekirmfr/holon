@@ -635,7 +635,10 @@ fn the_mouse_opens_pages_picks_rows_and_presses_buttons() {
     screen(&mut app, 130, 40);
     click(&mut app, Click::DetailTab(2));
     assert_eq!(app.flow.tab(), 2);
-    let shown = screen(&mut app, 130, 40);
+    // The closed shell line takes what the keys leave, and its prompt starts with user@host, which
+    // is as long as the machine's (a CI runner's, runner@ip-10-0-128-198, cut it at 130): the screen
+    // is as much wider, so it has room for the whole prompt on any machine.
+    let shown = screen(&mut app, 130 + super::shell::who().chars().count() as u16, 40);
     assert!(shown.lines().last().is_some_and(|keys| keys.contains("refresh")), "every page but the editor's says r refreshes:\n{shown}");
     let keys = shown.lines().last().unwrap_or_default();
     let ends = if cfg!(windows) { "holon>" } else { "holon$" };
