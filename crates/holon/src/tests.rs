@@ -1698,14 +1698,13 @@ fn a_deployment_keeps_as_many_runs_as_its_retention_says() {
 /// outbound request reaches a server on this machine over plain HTTP and its answer flows on.
 #[test]
 fn granted_exceptions_let_a_request_reach_a_local_server() {
-    use std::io::{Read, Write};
+    use std::io::Write;
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let host = listener.local_addr().unwrap().to_string();
     std::thread::spawn(move || {
         for stream in listener.incoming().take(1) {
             let mut stream = stream.unwrap();
-            let mut buf = [0u8; 4096];
-            let _ = stream.read(&mut buf);
+            let _ = read_request(&mut stream);
             let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\nConnection: close\r\n\r\nhello");
         }
     });
@@ -3366,6 +3365,34 @@ fn a_slow_run_holds_up_no_other_and_retries_without_resending() {
 /// A port nothing listens on just now.
 fn free_port() -> u16 {
     std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port()
+}
+
+/// One request read whole from `stream`, its head as sent and its body (by its Content-Length),
+/// for a server of the tests to read before it answers: a client may send its head and body in two
+/// writes, and a socket closed with the body unread is reset (on Windows), which can drop the
+/// answer before the client reads it. None: the connection ended before its head did.
+fn read_request(stream: &mut std::net::TcpStream) -> Option<(String, Vec<u8>)> {
+    use std::io::Read;
+    let mut got = Vec::new();
+    let mut buf = [0u8; 8192];
+    let head_end = loop {
+        if let Some(i) = got.windows(4).position(|w| w == b"\r\n\r\n") {
+            break i + 4;
+        }
+        match stream.read(&mut buf) {
+            Ok(0) | Err(_) => return None,
+            Ok(n) => got.extend_from_slice(&buf[..n]),
+        }
+    };
+    let head = String::from_utf8_lossy(&got[..head_end]).into_owned();
+    let length: usize = head.lines().find_map(|l| l.to_ascii_lowercase().strip_prefix("content-length:").map(|v| v.trim().parse().unwrap_or(0))).unwrap_or(0);
+    while got.len() < head_end + length {
+        match stream.read(&mut buf) {
+            Ok(0) | Err(_) => break,
+            Ok(n) => got.extend_from_slice(&buf[..n]),
+        }
+    }
+    Some((head, got.split_off(head_end)))
 }
 
 /// One raw HTTP/1.1 exchange on `port`: everything the server sends back until it closes.
@@ -5111,7 +5138,7 @@ fn a_run_that_received_a_secret_or_a_token_keeps_its_logged_run_id() {
 /// A local HTTP server that counts hits per path: `/slow` answers after 400 ms, the rest at once.
 /// Lives as long as the test process.
 fn counting_server() -> (String, Arc<Mutex<BTreeMap<String, usize>>>) {
-    use std::io::{Read, Write};
+    use std::io::Write;
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let host = listener.local_addr().unwrap().to_string();
     let hits = Arc::new(Mutex::new(BTreeMap::new()));
@@ -5121,31 +5148,7 @@ fn counting_server() -> (String, Arc<Mutex<BTreeMap<String, usize>>>) {
             let Ok(mut stream) = stream else { continue };
             let counted = Arc::clone(&counted);
             std::thread::spawn(move || {
-                // The whole request, body too, before answering: a client may send its head and
-                // body in two writes, and a socket closed with the body unread is reset (on
-                // Windows), which can drop the answer before the client reads it.
-                let mut got = Vec::new();
-                let mut buf = [0u8; 8192];
-                let head_end = loop {
-                    if let Some(i) = got.windows(4).position(|w| w == b"\r\n\r\n") {
-                        break i + 4;
-                    }
-                    match stream.read(&mut buf) {
-                        Ok(0) | Err(_) => return,
-                        Ok(n) => got.extend_from_slice(&buf[..n]),
-                    }
-                };
-                let head = String::from_utf8_lossy(&got[..head_end]).to_string();
-                let length: usize = head
-                    .lines()
-                    .find_map(|l| l.to_ascii_lowercase().strip_prefix("content-length:").map(|v| v.trim().parse().unwrap_or(0)))
-                    .unwrap_or(0);
-                while got.len() < head_end + length {
-                    match stream.read(&mut buf) {
-                        Ok(0) | Err(_) => break,
-                        Ok(n) => got.extend_from_slice(&buf[..n]),
-                    }
-                }
+                let Some((head, _)) = read_request(&mut stream) else { return };
                 let path = head.split_whitespace().nth(1).unwrap_or("").split('?').next().unwrap_or("").to_string();
                 *counted.lock().unwrap().entry(path.clone()).or_insert(0) += 1;
                 let body = match path.as_str() {
@@ -7069,32 +7072,14 @@ fn a_journal_keeps_what_its_runs_read_in_chunks_for_a_while_and_stays_under_its_
 
 /// A server on this machine that answers each request with the BLAKE3 of the body it got.
 fn hashing_server() -> String {
-    use std::io::{Read, Write};
+    use std::io::Write;
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let host = listener.local_addr().unwrap().to_string();
     std::thread::spawn(move || {
         for stream in listener.incoming() {
             let Ok(mut stream) = stream else { continue };
-            let mut got = Vec::new();
-            let mut buf = [0u8; 8192];
-            let head_end = loop {
-                if let Some(i) = got.windows(4).position(|w| w == b"\r\n\r\n") {
-                    break i + 4;
-                }
-                match stream.read(&mut buf) {
-                    Ok(0) | Err(_) => break got.len(),
-                    Ok(n) => got.extend_from_slice(&buf[..n]),
-                }
-            };
-            let head = String::from_utf8_lossy(&got[..head_end]).to_ascii_lowercase();
-            let length: usize = head.lines().find_map(|l| l.strip_prefix("content-length:").map(|v| v.trim().parse().unwrap_or(0))).unwrap_or(0);
-            while got.len() < head_end + length {
-                match stream.read(&mut buf) {
-                    Ok(0) | Err(_) => break,
-                    Ok(n) => got.extend_from_slice(&buf[..n]),
-                }
-            }
-            let body = blake3::hash(&got[head_end..]).to_hex().to_string();
+            let Some((_, got)) = read_request(&mut stream) else { continue };
+            let body = blake3::hash(&got).to_hex().to_string();
             let _ = stream.write_all(format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes());
         }
     });
@@ -7793,8 +7778,7 @@ fn a_streamed_reply_forwards_the_upstream_as_it_arrives() {
     let (seen_tx, seen_rx) = std::sync::mpsc::channel::<()>();
     std::thread::spawn(move || {
         let (mut stream, _) = upstream.accept().unwrap();
-        let mut buf = [0u8; 4096];
-        let _ = stream.read(&mut buf);
+        let _ = read_request(&mut stream);
         let piece = |s: &str| format!("{:x}\r\n{s}\r\n", s.len());
         let head = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n";
         stream.write_all(format!("{head}{}", piece("data: a\n\n")).as_bytes()).unwrap();
@@ -7848,8 +7832,7 @@ fn a_streamed_reply_whose_call_fails_answers_with_its_status() {
     let host = upstream.local_addr().unwrap().to_string();
     std::thread::spawn(move || {
         let (mut stream, _) = upstream.accept().unwrap();
-        let mut buf = [0u8; 4096];
-        let _ = stream.read(&mut buf);
+        let _ = read_request(&mut stream);
         let body = r#"{"type":"error","error":{"type":"authentication_error","message":"invalid x-api-key"}}"#;
         let answer = format!("HTTP/1.1 401 Unauthorized\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
         stream.write_all(answer.as_bytes()).unwrap();
@@ -7877,14 +7860,13 @@ fn a_streamed_reply_whose_call_fails_answers_with_its_status() {
 /// run goes on; the packs it sends once it is over follow, with ids.
 #[test]
 fn a_piped_call_sends_its_answer_to_the_channel_as_it_arrives() {
-    use std::io::{BufRead, BufReader, Read, Write};
+    use std::io::{BufRead, BufReader, Write};
     let upstream = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let host = upstream.local_addr().unwrap().to_string();
     let (seen_tx, seen_rx) = std::sync::mpsc::channel::<()>();
     std::thread::spawn(move || {
         let (mut stream, _) = upstream.accept().unwrap();
-        let mut buf = [0u8; 4096];
-        let _ = stream.read(&mut buf);
+        let _ = read_request(&mut stream);
         let piece = |s: &str| format!("{:x}\r\n{s}\r\n", s.len());
         let head = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n";
         stream.write_all(format!("{head}{}", piece("Rivers run")).as_bytes()).unwrap();
