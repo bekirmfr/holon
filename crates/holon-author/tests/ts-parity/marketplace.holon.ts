@@ -13,7 +13,9 @@ route.get("/listings/:id", (req) => listings[req.params.id])
 // Publishes a listing for whoever holds the key.
 route.post("/listings", (req) => {
   const id = `${req.json.name}@${req.json.root}`
-  const listing = secure_equals(req.headers.authorization, `Bearer ${publish_key}`) ? { ...req.json, published_at: now, id } : undefined
+  const listing = secure_equals(req.headers.authorization, `Bearer ${publish_key}`)
+    ? { ...req.json, published_at: now, id }
+    : undefined
   listings[id] = listing
   return listing ?? status(401)
 })
@@ -21,7 +23,9 @@ route.post("/listings", (req) => {
 // Marks a listing yanked, for whoever holds the key.
 route.post("/listings/:id/yank", (req) => {
   const id = req.params.id
-  const yanked = secure_equals(req.headers.authorization, `Bearer ${publish_key}`) ? { ...listings[id], yanked: true } : undefined
+  const yanked = secure_equals(req.headers.authorization, `Bearer ${publish_key}`)
+    ? { ...listings[id], yanked: true }
+    : undefined
   listings[id] = yanked
   return yanked ?? status(401)
 })

@@ -39,7 +39,9 @@ export const reset = action((input) => {
   return { was: state.ticks ?? 0, set: input.to ?? 0 }
 })
 
-route.get("/", () => respond(page(state.ticks ?? 0), { headers: { "content-type": "text/html; charset=utf-8" } }))
+route.get("/", () =>
+  respond(page(state.ticks ?? 0), { headers: { "content-type": "text/html; charset=utf-8" } }),
+)
 
 route.get("/count", () => state.ticks ?? 0)
 

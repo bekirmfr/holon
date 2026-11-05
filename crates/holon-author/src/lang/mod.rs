@@ -8,9 +8,11 @@
 //! through the flow builder, every node from the live catalog, so a text and the same flow drawn
 //! on the canvas are the same unit; [`print`] writes a flow document back as canonical text, the
 //! same unit again; [`layout`] places a compiled text's nodes on the canvas; [`ts`] reads a flow
-//! written in TypeScript's syntax (`NAME.holon.ts`) into the same tree, so it lowers the same way.
+//! written in TypeScript's syntax (`NAME.holon.ts`) into the same tree, so it lowers the same way;
+//! [`format`] lays such a text out as `holon fmt` writes it, from the text, not the graph.
 
 pub mod ast;
+pub mod format;
 pub mod layout;
 pub mod lex;
 pub mod lower;

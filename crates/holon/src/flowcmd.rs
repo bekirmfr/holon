@@ -43,12 +43,14 @@ const FMT_USAGE: &str = "usage: holon fmt <file>
 
   Rewrites a flow in place in the canonical form, the one the samples and holon new are written
   in. A name the body uses that the header doesn't declare (secret.api_key with no secret
-  api_key line) is declared for it, and it says so. A flow that doesn't compile is left as it
+  api_key line) is declared for it, and it says so. A flow written in TypeScript's syntax
+  (NAME.holon.ts) is laid out as written, Prettier's way: its comments kept, var and == made
+  const or let and ===, a js() body never touched. A flow that doesn't compile is left as it
   is, its mistakes printed. It needs no server.
 
 examples:
   holon fmt shop.holon
-  holon fmt shop.holon && git diff shop.holon";
+  holon fmt shop.holon.ts && git diff shop.holon.ts";
 
 /// The help of the flow command `cmd`.
 fn usage(cmd: &str) -> String {

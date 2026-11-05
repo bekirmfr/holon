@@ -36,6 +36,8 @@ on.file.deleted(board, (f) => {
   drops.send({ event: f.event, name: f.name, size: f.size })
 })
 
-route.get("/", () => respond(page(state.files ?? 0), { headers: { "content-type": "text/html; charset=utf-8" } }))
+route.get("/", () =>
+  respond(page(state.files ?? 0), { headers: { "content-type": "text/html; charset=utf-8" } }),
+)
 
 route.get("/live", () => drops.subscribe())

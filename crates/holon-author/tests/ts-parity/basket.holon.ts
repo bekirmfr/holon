@@ -12,6 +12,9 @@ route.put("/prices/:item", (req) => {
 
 // Prices each line from the collection, and sums them.
 route.post("/basket", (req) => {
-  const lines = req.json.items.map((item) => ({ name: item.name, total: prices[item.name] * item.qty }))
+  const lines = req.json.items.map((item) => ({
+    name: item.name,
+    total: prices[item.name] * item.qty,
+  }))
   return { lines, total: lines.reduce((acc, line) => acc + line.total, 0) }
 })

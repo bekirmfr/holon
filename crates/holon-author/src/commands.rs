@@ -72,9 +72,15 @@ fn mistake(file: &str, source: &str, e: &lang::LowerError) -> Report {
 
 /// The file compiled, its units in `store`; or its mistake, said with its line and a caret.
 pub(crate) fn compile(file: &str, source: &str, store: &mut MapResolver) -> Result<Lowered, Report> {
-    let compiled = lang::compile(source).map_err(|e| mistake(file, source, &e))?;
+    let compiled = if typescript(file) { lang::ts::compile(source) } else { lang::compile(source) };
+    let compiled = compiled.map_err(|e| mistake(file, source, &e))?;
     text::restore(&compiled.doc, store, &Names::new());
     Ok(compiled)
+}
+
+/// Whether `file` is written in TypeScript's syntax, `NAME.holon.ts`.
+fn typescript(file: &str) -> bool {
+    file.ends_with(".holon.ts")
 }
 
 fn port_of(c: &Lowered) -> &str {
@@ -332,6 +338,9 @@ pub fn fmt(file: &str, source: &str) -> Result<String, Report> {
 /// (`secret.signing_key` without `secret signing_key`) is declared for it, the one mistake fmt
 /// mends, since it prints from what the text compiles to (docs/L4s/declared-names-L4.md §5).
 pub fn fmt_declaring(file: &str, source: &str) -> Result<(String, Vec<String>), Report> {
+    if typescript(file) {
+        return lang::format::format(source).map(|text| (text, Vec::new())).map_err(|e| mistake(file, source, &e));
+    }
     let (fixed, c, declared) = with_declarations(source).map_err(|e| mistake(file, source, &e))?;
     let mut store = MapResolver::new();
     text::restore(&c.doc, &mut store, &Names::new());

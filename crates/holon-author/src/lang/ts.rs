@@ -3984,6 +3984,9 @@ mod tests {
 
     fn same_unit(what: &str, ts: &str, holon: &str) {
         assert_eq!(deployed(&format!("{what}.holon.ts"), compile(ts)), deployed(&format!("{what}.holon"), super::super::compile(holon)), "{what}");
+        // And fmt lays it out, as the same flow (which it checks), once for good.
+        let laid = super::super::format::format(ts).unwrap_or_else(|e| panic!("{what}: fmt: {e}\n{ts}"));
+        assert_eq!(super::super::format::format(&laid).unwrap_or_else(|e| panic!("{what}: fmt again: {e}\n{laid}")), laid, "{what}: fmt again changed it");
     }
 
     macro_rules! twins {
@@ -4022,6 +4025,14 @@ mod tests {
         for (name, ts) in TWINS {
             let holon = crate::samples::sample(name).unwrap_or_else(|| panic!("no sample {name}")).text;
             same_unit(name, ts, holon);
+        }
+    }
+
+    /// Each twin is kept as `holon fmt` writes it, as the samples are.
+    #[test]
+    fn a_twin_is_as_fmt_writes_it() {
+        for (name, ts) in TWINS {
+            assert_eq!(super::super::format::format(ts).unwrap_or_else(|e| panic!("{name}: {e}")), ts, "{name}: holon fmt tests/ts-parity/{name}.holon.ts");
         }
     }
 

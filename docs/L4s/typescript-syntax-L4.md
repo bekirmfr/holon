@@ -987,7 +987,12 @@ Holon is in development, so the new form replaces today's at once:
    in, as slice 1's parity tests do.
 4. **The source formatter and the switch.** `holon fmt` on TypeScript; every sample, test flow and
    manual example rewritten; today's parser and the `.holon` grammar removed; the canvas showing a
-   lone `out` as its type (§7).
+   lone `out` as its type (§7). *The formatter is built* (`lang/format.rs`, 2026-11-05): Prettier's
+   layout at 100 columns without semicolons, its comments and blank lines kept, a comment inside an
+   expression keeping its statement as written, and one rule of Holon's own, a handler's options
+   kept after its function's closing brace (`}, { log: "lazy" })`). It answers only once the text
+   it wrote compiles to the same flow, its comments all there; the twins are kept as it writes
+   them.
 5. **`try`, `catch {}`, `throw`, `finally`,** and the `fail` leaf.
 6. **Computing loops.** `while` to `fold`, the loop's turns, nested folds past 10000, `fold`
    stopping when done, a step budget in core.
