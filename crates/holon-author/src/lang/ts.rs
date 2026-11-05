@@ -2585,7 +2585,7 @@ impl<'s, 't> Reader<'s, 't> {
                     return self.event(c, span);
                 }
                 // A request or a call is read as today's graph does, between rounds; their order
-                // and what `await` adds come with slice 6.
+                // and what `await` adds come with slice 7.
                 self.expr(&a.argument)
             }
             js::Expression::ObjectExpression(o) => self.record(o, span),
@@ -3922,7 +3922,7 @@ mod tests {
         "tickets",
     ];
 
-    /// Until the samples are written in TypeScript (the note's slice 3), each one this slice can
+    /// Until the samples are written in TypeScript (the note's slice 4), each one this slice can
     /// read deploys, written so, as the server unit its `.holon` form does: the same hash, the same
     /// settings.
     #[test]
