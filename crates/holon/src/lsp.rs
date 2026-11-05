@@ -14,10 +14,14 @@ use serde_json::{json, Value};
 
 const USAGE: &str = "usage: holon lsp
 
-A language server on stdin and stdout, for an editor to start (the VS Code extension in
-editors/vscode does): each mistake holon check finds, as you type; what a word is, on hover;
-what may be written, as completions; formatting, as holon fmt writes it; and a quick fix that
-declares a secret or state key the body uses undeclared. It needs no server.";
+  A language server on stdin and stdout, for an editor to start (the VS Code extension in
+  editors/vscode does): each mistake holon check finds, as you type; what a word is, on hover;
+  what may be written, as completions; formatting, as holon fmt writes it; and a quick fix that
+  declares a secret or state key the body uses undeclared. It needs no server, and takes no
+  options.
+
+examples:
+  holon lsp        (started by an editor, not by hand)";
 
 // ── framing ─────────────────────────────────────────────────────────────────────────────────
 

@@ -1330,14 +1330,21 @@ pub(crate) fn run(args: &[String]) -> i32 {
     if report.ok() { 0 } else { 1 }
 }
 
-const USAGE: &str = "usage: holon verify <export.json> [--head <hex>] [--files DIR]
+const USAGE: &str = "usage: holon verify <export.json> [--head HEX] [--files DIR]
 
-  Checks a deployment's runs, exported from GET /deployments/<slug>/export: that its run log's
-  hash chain is unbroken, that every unit is what its hash says, and that every run, run again
-  from its log entry, produces what the log says it did. --head checks that a head a witness
-  holds is in the export, so no run up to it was changed or removed. --files gives the files the
-  runs read (whole, or part of) whose folder keeps only their hashes: each is found by its hash, wherever
-  it is under DIR. Exits 0 when it all checks.";
+  Checks a deployment's exported runs (holon export), offline: that its run log's hash chain is
+  unbroken, that every unit is what its hash says, and that every run, run again from its log
+  entry, produces what the log says it did. Exits 0 when it all checks, 1 when anything doesn't.
+
+  --head HEX               a head a witness holds: check it is in the export, so no run up to
+                           it was changed or removed
+  --files DIR              where the files the runs read are, for those whose log keeps only
+                           their hashes: each is found by its hash, wherever it is under DIR
+
+examples:
+  holon verify shop-runs.json
+  holon verify shop-runs.json --head \"$(cat witness-head.txt)\"
+  holon verify file-audit-runs.json --files /srv/inbox";
 
 /// What a report says, in a few lines.
 pub(crate) fn describe(r: &Report, head: Option<&str>) -> String {
@@ -1650,19 +1657,27 @@ pub(crate) fn export_path(slug: &str, to: Option<&str>, name: Option<&str>, out:
     Ok(Path::new(to.unwrap_or("")).join(name))
 }
 
-const EXPORT_USAGE: &str = "usage: holon export <slug> [--server PORT|URL] [--to FOLDER] [--as NAME]
-                    [--max-files-bytes N | --without-files]
+const EXPORT_USAGE: &str = "usage: holon export <slug> [options]
 
-  Writes a deployment's runs (its run log, exactly as written, and every unit they ran) to a file
-  for holon verify: NAME (default <slug>-runs.json) in FOLDER (default this one, made if it
-  isn't there). From the holon serve you run on this machine,
-  signed in as you; with several running, --server <port> picks one. A server elsewhere:
-  --server <URL> (or HOLON_SERVER), signed in with an API token in HOLON_TOKEN.
+  Writes a deployment's runs to a file for holon verify: its run log exactly as written, and
+  every unit its runs ran. With them come the texts of the files they read that their log keeps
+  only by hash (a big file, or part of one); it says what it left out.
 
-  With the runs come the texts of the files they read that their log keeps by hash (a big file,
-  or part of one). --max-files-bytes N (64K, 10M, 2G) ships them up to N bytes in all, the oldest
-  runs' first; --without-files ships none. It says what it left out: holon verify checks those
-  runs with --files, the folder of the originals.";
+  --to FOLDER              the folder to write in (default this one; made if it isn't there)
+  --as NAME                the file's name (default <slug>-runs.json)
+  --max-files-bytes N      ship the files' texts up to N bytes in all (64K, 10M, 2G), the
+                           oldest runs' first
+  --without-files          ship none of them: holon verify checks those runs with --files
+  --server PORT|URL        which holon server to ask (see below)
+
+examples:
+  holon export shop
+  holon export shop --to backups --as shop-2026-11.json
+  holon export file-audit --max-files-bytes 10M
+
+  From the holon serve you run on this machine, signed in as you; with several running,
+  --server <port> picks one. A server elsewhere: --server <URL> (or HOLON_SERVER), signed in
+  with an API token in HOLON_TOKEN.";
 
 #[cfg(test)]
 mod tests {

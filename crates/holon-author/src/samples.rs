@@ -773,6 +773,19 @@ static SAMPLES: &[Sample] = &[
         try_it: r#"deploy it (its approval asks to keep runs of GET /health and action report out of its log), then curl http://127.0.0.1:8170/health a few times ("ok", counted), curl -X POST -d '{"id":"a","text":"hi"}' http://127.0.0.1:8170/notes ("saved", strict), curl http://127.0.0.1:8170/notes (the notes, lazy) and curl -X POST -d '{"by":"sam"}' http://127.0.0.1:8170/notes/a/seen ("ok", lazy, though it writes): holon history status-board lists the notes runs and the health checks as one counted line, and view mode shows that line above the runs"#,
         text: include_str!("../samples/status-board.holon"),
     },
+    Sample {
+        name: "stress-test",
+        title: "Stress test (what each log level costs, under load)",
+        description: "Three routes doing the same small work, recorded three ways: strict (on disk before it answers, a sync shared by the runs waiting at once), lazy (on disk within a second) and unrecorded (counted, not logged). holon load sends each as many requests as it answers and puts them side by side: requests a second, latency, and the runs the server recorded, synced and counted.",
+        shows: &["log levels", "strict", "lazy", "unrecorded", "holon load"],
+        port: Some("8171"),
+        interval: None,
+        secrets: &[],
+        optional: &[],
+        browsers: None,
+        try_it: r#"deploy it (its approval asks to keep runs of GET /unrecorded out of its log), then holon load stress-test: each route for 10 s from 8 connections, a line a second, then the three side by side (req/s, p50, p90, p99, the slowest, errors, and the runs recorded, the log's syncs, the runs counted). holon load stress-test --for 5 --connections 32 --route "GET /strict" loads one harder; curl http://127.0.0.1:8171/strict answers "strict ok""#,
+        text: include_str!("../samples/stress-test.holon"),
+    },
 ];
 
 #[cfg(test)]

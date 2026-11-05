@@ -1,6 +1,6 @@
 // Sample flows: one per capability, opened from the flows page as an unsaved copy. They are
-// holon-author's (crates/holon-author/src/samples.rs), built from the live catalog through the
-// flow builder, never from hand-copied node shapes, so a sample can't drift from core:
+// holon-author's (crates/holon-author/src/samples.rs): `.holon` files compiled from their text
+// against the live catalog, never hand-copied node shapes, so a sample can't drift from core:
 // samples.test.ts builds every one and derives it through the real core. Every new feature ships
 // with a sample that shows it (CLAUDE.md).
 

@@ -15,15 +15,20 @@ use crate::sealing::{self, KeySource};
 
 const USAGE: &str = "usage: holon migrate [--yes] [--check] [--from DIR] [--secrets-key os|env:VAR|file:PATH]
 
-  moves what an older release left where this one doesn't look:
+  Moves what an older release left where this one doesn't look:
   - a server's data kept as .holon-* files in a folder (this one, or --from DIR), into
     ~/.holon/data (or HOLON_HOME/data, or HOLON_DATA)
   - secrets keys kept in ~/.config/holon/keys, into ~/.holon/keys
 
-  --yes                      go ahead without asking
-  --check                    change nothing; exit 1 if anything needs migrating
-  --from DIR                 where the .holon-* files are (default: this folder)
-  --secrets-key …            where the old secrets file's key is, if not the default";
+  --yes                    go ahead without asking
+  --check                  change nothing; exit 1 if anything needs migrating
+  --from DIR               where the .holon-* files are (default: this folder)
+  --secrets-key SOURCE     where the old secrets file's key is, if not the OS key store:
+                           env:VAR or file:PATH
+
+examples:
+  holon migrate --check
+  holon migrate --from ~/old-server --yes";
 
 /// A server's files as releases before 0.1.0-rc.17 named them in the folder it ran in, and their
 /// names in the data folder. Each is a file or a folder.

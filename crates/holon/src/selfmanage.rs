@@ -18,10 +18,56 @@ const LEGACY_APP: &str = "holon-server";
 const OWNER: &str = "bekirmfr";
 const REPO: &str = "holon";
 
-use crate::USAGE;
 
 /// The exit code, when `args` (after the program name) is one of these commands.
+const VERSION_USAGE: &str = "usage: holon version
+
+  Prints this build's version (holon --version and holon -V too).";
+
+const UPDATE_USAGE: &str = "usage: holon update [--check] [--pre] [--to VERSION]
+
+  Installs the newest release in place of this one, from the project's GitHub releases. A
+  pre-release build follows pre-releases; a full release, only full releases. A running holon
+  serve goes on running this one until it is started again.
+
+  --check                  only say whether there is a newer release, installing nothing
+  --pre                    follow pre-releases too
+  --to VERSION             install that release instead (0.1.0-rc.32)
+
+  HOLON_GITHUB_TOKEN, if set, signs its requests to GitHub, past the limit on unsigned ones.
+
+examples:
+  holon update --check
+  holon update
+  holon update --to 0.1.0-rc.31";
+
+const UNINSTALL_USAGE: &str = "usage: holon uninstall [--purge [--data DIR]] [--yes]
+
+  Removes holon: this program, and the installer's alias and receipt beside it. Your data stays,
+  unless --purge. It says what it will remove, and asks first.
+
+  --purge                  remove your data too, and the rest of ~/.holon: keys, run files,
+                           tokens, the MCP host list
+  --data DIR               the data folder --purge removes, if not ~/.holon/data [HOLON_DATA]
+  --yes                    go ahead without asking (also -y)
+
+examples:
+  holon uninstall
+  holon uninstall --purge --yes";
+
 pub(crate) fn dispatch(args: &[String]) -> Option<i32> {
+    let help = |text: &str| {
+        println!("{text}");
+        Some(0)
+    };
+    if args.get(1..).unwrap_or_default().iter().any(|a| a == "--help" || a == "-h") {
+        match args.first().map(String::as_str) {
+            Some("version") => return help(VERSION_USAGE),
+            Some("update") => return help(UPDATE_USAGE),
+            Some("uninstall") => return help(UNINSTALL_USAGE),
+            _ => {}
+        }
+    }
     let result = match args.first().map(String::as_str) {
         Some("version" | "--version" | "-V") => {
             println!("holon {VERSION}");
@@ -50,7 +96,7 @@ fn update(args: &[String]) -> Result<(), String> {
             "--check" => check = true,
             "--pre" => pre = true,
             "--to" => to = Some(args.next().ok_or("--to needs a version, e.g. 0.1.0")?.trim_start_matches('v').to_string()),
-            other => return Err(format!("update: unknown argument {other:?}\n\n{USAGE}")),
+            other => return Err(format!("update: no option {other:?} (holon update --help says how)")),
         }
     }
     let current = Version::parse(VERSION).map_err(|e| format!("this build's version {VERSION:?}: {e}"))?;
@@ -132,7 +178,7 @@ fn uninstall(args: &[String]) -> Result<(), String> {
             "--yes" | "-y" => yes = true,
             "--purge" => purge = true,
             "--data" => data_dir = Some(PathBuf::from(args.next().ok_or("--data needs a folder")?)),
-            other => return Err(format!("uninstall: unknown argument {other:?}\n\n{USAGE}")),
+            other => return Err(format!("uninstall: no option {other:?} (holon uninstall --help says how)")),
         }
     }
     let home = home_dir();

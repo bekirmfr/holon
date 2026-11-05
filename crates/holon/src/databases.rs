@@ -1488,32 +1488,53 @@ pub(crate) fn cli(args: &[String]) -> i32 {
     0
 }
 
-const DATABASE_USAGE: &str = "usage: holon database add NAME PATH|SOURCE [--read-only] [--schema SQL | --schema-file FILE] [--lock run] [--for SLUG]
+const DATABASE_USAGE: &str = "usage: holon database add NAME PATH|SOURCE [--read-only] [--schema SQL | --schema-file FILE]
+                                           [--lock run|commit] [--for SLUG]
        holon database list
        holon database remove NAME [--for SLUG]
        holon database tables NAME [--for SLUG]
-       (each takes --server PORT|URL)
+       (each with [--server PORT|URL])
 
-  Binds a name a flow uses (database shop) to a database, for an admin: a SQLite database's file
-  on the server's machine (PATH), or a Postgres or MySQL database whose URL the server fetches
-  from SOURCE, as a secret's: env:HOLON_SECRET_SHOP_URL (the server's environment or --dotenv)
-  or vault:<mount>/<path>#<field>. The URL (postgres://user:password@host/db, mysql://…) is never
-  stored, shown or logged; ?sslmode= (Postgres) and ?ssl-mode= (MySQL) choose TLS. A flow reads
-  and writes only the tables it was granted, by the SQL it is written with; it never sees where
-  the database is, and runs no DDL.
-  --schema runs the admin's SQL (create table …) when it is bound, creating a SQLite file if
-  there is none; without it, PATH must be a SQLite database already. --read-only: flows may read
-  it, not write it. A writable database gets a table holon_commits, where each run's commit
-  marks it done, so a run is never applied twice (and on MySQL a table holon_claims, whose rows'
-  locks are the claims of several servers). --lock run: each run that touches it holds it from
-  before it starts until it commits, fails or waits, shared if it only reads it, alone if it
-  may write it, so every run that writes it goes one at a time, for its whole length, across
-  every deployment bound to it (and, on Postgres or MySQL, every server); one that waits past
-  its claim_wait is turned away (503). For what a commit's check can't cover: a sequence's
-  next value, a queue, or contention so high that running again costs more than waiting.
-  --for SLUG binds it for that deployment only.
-  Removing a binding leaves the database where it is; deployments that use it stop until it is
-  bound again. tables: the tables it has, read now (the ones a flow's grant may name).";
+  Binds a name a flow uses (database shop) to a database. A flow reads and writes only the
+  tables it was granted, by the SQL it is written with; it never sees where the database is,
+  and runs no DDL. Admins.
+
+  add NAME PATH            bind NAME to a SQLite database's file on the server's machine
+  add NAME SOURCE          or to a Postgres or MySQL database whose URL the server reads as it
+                           reads a secret: env:HOLON_SECRET_SHOP_URL (its environment or
+                           --dotenv file) or vault:<mount>/<path>#<field>. The URL
+                           (postgres://user:password@host/db, mysql://…) is never stored, shown
+                           or logged; ?sslmode= (Postgres) and ?ssl-mode= (MySQL) choose TLS
+    --schema SQL           run the admin's SQL (create table …) as it is bound, making the
+                           SQLite file if there is none; without it, PATH must be a SQLite
+                           database already
+    --schema-file FILE     that SQL, read from FILE
+    --read-only            flows may read it, not write it. A writable one gets a table
+                           holon_commits, where each run's commit marks it done, so no run is
+                           applied twice (and on MySQL holon_claims, the claims of several
+                           servers)
+    --lock WHEN            when a run holds it: commit, only while it commits (the default);
+                           or run, from before it starts until it commits, fails or waits,
+                           shared if it only reads, alone if it may write, across every
+                           deployment bound to it (and, on Postgres or MySQL, every server).
+                           One that waits past its claim_wait is turned away (503). For what a
+                           commit's check can't cover: a sequence's next value, a queue
+    --for SLUG             bind it for that deployment only
+  list                     the names bound, and what each is
+  remove NAME              unbind it (--for SLUG: that deployment's). The database stays where
+                           it is; deployments that use it stop until it is bound again
+  tables NAME              the tables it has, read now: the ones a flow's grant may name
+  --server PORT|URL        which holon server to ask (see below)
+
+examples:
+  holon database add shop /srv/shop.db --schema-file shop.sql
+  holon database add shop env:HOLON_SECRET_SHOP_URL
+  holon database add ledger vault:secret/holon#ledger_url --lock run
+  holon database tables shop
+
+  From the holon serve you run on this machine, signed in as you; with several running,
+  --server <port> picks one. A server elsewhere: --server <URL> (or HOLON_SERVER), signed in
+  with an API token in HOLON_TOKEN.";
 
 #[cfg(test)]
 mod tests {

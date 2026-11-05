@@ -86,12 +86,14 @@ impl Kind {
 // them, so the two cannot drift.
 
 /// A category of effect — what a leaf touches outside its inputs. Grouped by the
-/// [`Kind`] each projects to. Every variant is atomic (no payload) **except**
-/// `StateRead`/`StateWrite`, which carry the state key they name — see the
-/// keyed-state-capability L4. That's a deliberate, narrower precision upgrade than
-/// the general "resource parameter" idea named early in this project's own history
-/// (`NetworkEgress("api.evil.com")` and friends stay atomic; only the two state
-/// capabilities are keyed, on the concrete need that actually showed up).
+/// [`Kind`] each projects to. A variant carries the name of what it touches where a grant
+/// is given per thing: a state key or collection (`StateRead`, `StateWrite`,
+/// `CollectionRead`, `CollectionWrite`), a folder (`FileRead`, `FileWrite`,
+/// `FileArrival`), a secret (`SecretRead`, `SecretAnswer`), a host (`HttpRequest`), a
+/// channel (`ChannelSend`, `ChannelRead`), a database (`DbRead`, `DbWrite`), an action
+/// (`Action`, `RunsAction`) or a wait (`Await`). The rest stay atomic (`Clock`, `Random`,
+/// `NetworkIngress`, `NetworkEgress`, `SecretAccess`, `Spawn`). State keys came first (the
+/// keyed-state-capability L4); the others followed as each capability did.
 ///
 /// `PartialOrd`/`Ord` exist for deterministic [`BTreeSet`] storage only — storage
 /// order, not a danger ranking (same disclaimer as [`Kind`]). **No longer `Copy`**

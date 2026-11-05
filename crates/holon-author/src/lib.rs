@@ -17,8 +17,10 @@
 //! - [`builder`]: a flow document built node by node, as the samples and the text format do.
 //! - [`text`]: the `.holon` text format's wiring form: parsed, compiled, printed.
 //! - [`lang`]: the language (docs/LANGUAGE.md): both forms of the text as one syntax tree, with
-//!   spans. Its lowering and printer are the build order's next steps.
-//! - [`samples`]: the sample flows, one per capability, built with the builder.
+//!   spans, lowered to a flow document (`lang::lower`) and printed back in the canonical form
+//!   `holon fmt` writes (`lang::print`).
+//! - [`samples`]: the sample flows, one per capability: `.holon` files in `samples/`, compiled
+//!   from their text through the same lowering as any flow.
 //! - [`describe`]: what a manifest item lets a flow do, in words.
 //! - [`commands`]: `holon new`, `check`, `show` and `fmt`, text in and text out.
 //! - [`editing`]: what an editor asks of a text as it is typed (`holon lsp`).

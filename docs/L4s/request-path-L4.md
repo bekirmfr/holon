@@ -1548,6 +1548,8 @@ The end-to-end tests (`editor/e2e`) and `editor/src/samples.test.ts` must stay g
     steps compute now, under a later release, not what they gave then; and a run's values would
     depend on its units and kept file texts outliving it. The record of what happened stays a
     record.
+17. **Proposed: answers that change nothing may record lightly** (`FileServe`, then `ChannelRead`):
+    [host capabilities](host-capabilities-L4.md) §8, forks 22 and 23.
 
 ## 9. Invariant check
 

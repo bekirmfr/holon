@@ -7,39 +7,75 @@ use serde_json::{json, Map, Value};
 
 use crate::cmdline::{self, seg, when, SIGN_IN};
 
-const GRANT_USAGE: &str = "usage: holon grant <slug> [--json] [--server PORT|URL]
+const GRANT_USAGE: &str = "usage: holon grant <slug> [--json]
        holon grant <slug> [--revoke ITEM]… [--grant ITEM]… [--lower LIMIT=N]…
                           [--keep-running | --pause-when-uncovered]
+       (each with [--server PORT|URL])
 
-  What a deployment is granted: each item, those revoked since, the limits lowered, and what its
-  version asks for that its grant doesn't cover. Changed, as the editor's grant panel does,
-  without a redeploy, whole or not at all: --revoke takes an item back (as this prints it),
-  --grant gives one its version asks for (back), --lower holds a limit below what it was
-  (raising one takes a deploy). A grant that no longer covers it pauses it, unless
-  --keep-running: then the calls it lacks fail. Editors and admins.
+  Prints what a deployment is granted: each item, those revoked since, the limits lowered, and
+  what its version asks for that its grant doesn't cover. The options change it without a
+  redeploy, as the editor's grant panel does, all at once or not at all. Editors and admins.
+
+  --revoke ITEM            take an item back, named as this prints it (repeatable)
+  --grant ITEM             give back an item its version asks for (repeatable)
+  --lower LIMIT=N          hold a limit below what it is (repeatable); raising one takes a
+                           deploy
+  --keep-running           from now on, when its grant no longer covers it, keep it running:
+                           the calls it lacks fail
+  --pause-when-uncovered   from now on, pause it instead until its grant covers it (the default)
+  --json                   print what the server answers, as JSON
+  --server PORT|URL        which holon server to ask (see below)
+
+examples:
+  holon grant status-board
+  holon grant status-board --revoke 'Unrecorded(\"GET /health\")'
+  holon grant status-board --grant 'Unrecorded(\"GET /health\")'
+  holon grant shop --lower request_timeout_ms=2000 --keep-running
 ";
 
 const GRANTS_USAGE: &str = "usage: holon grants [--json] [--server PORT|URL]
 
-  Who holds what: each deployment's granted items and those revoked since, its status, and why
-  it can't run, if it can't. Admins.
+  Lists who holds what: each deployment's granted items and those revoked since, its status,
+  and why it can't run, if it can't. Admins.
+
+  --json                   print what the server answers, as JSON
+  --server PORT|URL        which holon server to ask (see below)
+
+examples:
+  holon grants
+  holon grants --json
 ";
 
-const POLICY_USAGE: &str = "usage: holon policy [--reload] [--sweep-every 10m|off] [--warn-at 85%|5G] [--full-at 95%|1G] [--when-full warn|pause|roll] [--backup DIR|none] [--json] [--server PORT|URL]
+const POLICY_USAGE: &str = "usage: holon policy [options]
 
-  The host's policy: each limit's default and ceiling, what is granted without asking, whether
-  flows may call plain http or private addresses, and how often the server sweeps. --reload: read
-  the policy file again and hold every deployment to it at once (a lowered ceiling pauses a
-  deployment it no longer covers). Editors and admins reload. --sweep-every: how often the server
-  sweeps its store and the folders' kept texts (a minute at the least: 90s, 10m, 2h, 1d; off:
-  only an admin's), written into the policy file's [storage]; an admin's. --warn-at: when a disk
-  the server keeps things on is full enough to warn of: how full for the server (85%), or how
-  much is left (5G, 500M, 1T); an admin's, written there too. --full-at, past warn-at: when to
-  act, and --when-full what to do then: warn (only), pause (every flow that records runs, until
-  the disk is back under warn-at) or roll (cut the oldest runs of the logs keeping the most, and
-  sweep); an admin's. --backup: a folder (an external drive, a folder a cloud client keeps in
-  sync) where the runs a log lets go of are written first, as gzipped exports holon verify
-  checks; none: they go. An admin's.
+  Prints the host's policy: each limit's default and ceiling, what is granted without asking,
+  whether flows may call plain http or private addresses, and how the server looks after its
+  disks. The options other than --reload and --json change it, in the policy file's [storage]
+  section; they are an admin's.
+
+  --reload                 read the policy file again and hold every deployment to it at once
+                           (a lowered ceiling pauses a deployment it no longer covers); editors
+                           and admins
+  --sweep-every TIME       how often the server sweeps its store and the folders' kept texts:
+                           90s, 10m, 2h, 1d (a minute at least), or off (only when an admin
+                           asks)
+  --warn-at LEVEL          when a disk it keeps things on is full enough to warn of: how full
+                           (85%), or how much is left (5G, 500M, 1T)
+  --full-at LEVEL          past --warn-at, when to act, in the same terms (95%, 1G)
+  --when-full ACTION       what to do then: warn (only), pause (every flow that records runs,
+                           until the disk is back under --warn-at) or roll (cut the oldest runs
+                           of the logs keeping the most, and sweep)
+  --backup DIR|none        a folder (an external drive, one a cloud client keeps in sync) the
+                           runs a log lets go of are written to first, as gzipped exports holon
+                           verify checks; none: they go
+  --json                   print what the server answers, as JSON
+  --server PORT|URL        which holon server to ask (see below)
+
+examples:
+  holon policy
+  holon policy --reload
+  holon policy --warn-at 80% --full-at 2G --when-full pause
+  holon policy --sweep-every 1h --backup /mnt/backup/holon
 ";
 
 fn usage(text: &str) -> String {

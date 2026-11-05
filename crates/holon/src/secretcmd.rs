@@ -20,20 +20,44 @@ const USAGE: &str = "usage: holon secret list <slug>
        holon secret env
        (each with [--json] [--server PORT|URL])
 
-  list: the secrets a deployment reads, and the version, source and age of each one set.
-  history: one secret's kept versions and what was done to it, by whom. Never a value.
-  set: a new version, its value piped in (… | holon secret set shop api_key), or read by the
-  server from its environment or a vault. rollback: make a kept version current again, as a new
-  version; --dry-run says which values (by fingerprint) it would swap. remove: forget it, every
-  version. env: the HOLON_SECRET_* names the server can read. Admins set, roll back and remove.
+  A deployment's secrets, and the server's own, as the editor's secrets panel has them. A value
+  is never printed, nor taken as an argument, where your shell's history would keep it: it is
+  piped in, or read by the server from where --from says.
 
-  bind: the server's own secret, read by every deployment that reads one of that name and has
-  none of its own (one set for a deployment overrides it), its value piped in or --from, as set.
-  --to says where it may go: hosts (api.stripe.com, with :port if not 443) and databases
-  (db:shop). A deploy whose flow sends it elsewhere is refused, and so is a request a run makes
-  with it; a deployment with its own isn't held to it. cap: change only where it may go
-  (--anywhere: wherever its flows' approvals show). bound: the server's secrets, and where each
-  may go. unbind: remove one, every version.
+  A deployment's:
+  list <slug>              the secrets it reads, and the version, source and age of each one set
+  history <slug> <name>    one secret's kept versions, and what was done to it, by whom
+  set <slug> <name>        a new version, its value piped in
+    --from SOURCE          or read by the server: env:HOLON_SECRET_X (its environment or
+                           --dotenv file) or vault:PATH#FIELD
+  rollback <slug> <name>   make a kept version current again, as a new version
+    --to VERSION           the version to bring back (history lists them)
+    --dry-run              say which values (by fingerprint) it would swap, changing nothing
+  remove <slug> <name>     forget it, every version
+  env                      the HOLON_SECRET_* names the server can read
+
+  The server's own, read by each deployment that reads one of that name and has none of its own
+  (one set for a deployment overrides it):
+  bind <name>              set it, its value piped in, or --from as set reads it
+    --to HOST,…            where it may go: hosts (api.stripe.com, with :port if not 443) and
+                           databases (db:shop). A deploy whose flow sends it elsewhere is
+                           refused, and so is a request a run makes with it
+  cap <name>               change only where it may go: --to HOST,…, or --anywhere (wherever its
+                           flows' approvals show)
+  bound                    the server's secrets, and where each may go
+  unbind <name>            remove one, every version
+
+  --json                   print what the server answers, as JSON
+  --server PORT|URL        which holon server to ask (see below)
+
+  Admins set, roll back, remove, bind, cap and unbind.
+
+examples:
+  printf %s \"$STRIPE_KEY\" | holon secret set shop stripe_key
+  holon secret set shop stripe_key --from env:HOLON_SECRET_STRIPE_KEY
+  holon secret history shop stripe_key
+  holon secret rollback shop stripe_key --to 2 --dry-run
+  printf %s \"$SLACK_URL\" | holon secret bind slack_url --to hooks.slack.com
 ";
 
 pub(crate) fn cli(args: &[String]) -> i32 {

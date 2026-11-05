@@ -1,13 +1,13 @@
-// A typed client for holon-server's REST API — the localhost transport that gives a browser-built
-// flow somewhere real to live: staged (POST /unit), deployed (POST /deploy), triggered
-// (POST /trigger/<slug>), and removed (DELETE /deployments/<slug>). Mirrors holon-server's actual
-// JSON wire shapes exactly (crates/holon-server/src/main.rs) — the same "typed exactly against the
-// real other side" discipline holon.ts already holds for the wasm bridge, now applied to this
-// OTHER boundary the editor has.
+// A typed client for the Holon server's REST API (`holon serve`, crates/holon): the transport that
+// gives a browser-built flow somewhere real to live: staged (POST /unit), deployed (POST /deploy),
+// triggered (POST /trigger/<slug>), and removed (DELETE /deployments/<slug>). Mirrors the server's
+// actual JSON wire shapes exactly (its handlers in crates/holon/src) — the same "typed exactly
+// against the real other side" discipline holon.ts already holds for the wasm bridge, applied to
+// this OTHER boundary the editor has.
 //
-// holon-server is on this machine by default (VITE_HOLON_SERVER names another), open there
-// unless it was started with tokens (crates/holon-server/src/access.rs): then every request
-// carries one, from what this browser was given under "access" (`api` below).
+// The server is the one this editor was served from, or 127.0.0.1:7420 in development
+// (VITE_HOLON_SERVER names another). Everyone signs in (crates/holon/src/access.rs): every request
+// carries the session this browser was given, a bearer token, never a cookie (AuthGate.tsx).
 
 import { browsersOf } from "./DeployBar";
 import { signedIn, signOut, type AuthConfig } from "./signin";

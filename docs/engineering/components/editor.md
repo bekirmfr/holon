@@ -169,8 +169,6 @@ edits, checks and formats files.
   editor builds its unit and document through the bridge in `useDeployFlow.ts`. They are meant
   to send the same document ([agent-surface L4](../../L4s/agent-surface-L4.md), decision 5), and
   no test compares them.
-- **Stale comments.** `editor/README.md` still describes the first proof (a `const(7)` graph);
-  `server.ts` names `crates/holon-server`, now `crates/holon`.
 
 ## 5. What the tests hold
 

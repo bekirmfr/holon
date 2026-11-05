@@ -42,6 +42,15 @@ wrk -t2 -c64 -d6s --latency http://127.0.0.1:<port>/<route>    # throughput, p50
 wrk -t1 -c1  -d6s --latency http://127.0.0.1:<port>/<route>    # one connection: latency
 ```
 
+`holon load <slug>` (load.rs) does the same from the command line, a route at a time, and adds
+the server's side: the runs recorded, the log's syncs (`GET /deployments/<slug>/log`'s `syncs`,
+since the server started) and the runs counted unrecorded, read before and after each route. Its
+client is a few lines of HTTP/1.1 on sockets kept open, its latencies a fixed-size histogram
+(within 1.6%), so it costs the machine about what `wrk` does. The `stress-test` sample is three
+routes doing the same work, strict, lazy and unrecorded. On the machine above, 16 connections,
+10 s each, when it was written: strict 7,731 req/s (77,309 runs in 12,136 syncs, about 6
+runs a sync), lazy 14,596 (9 syncs), unrecorded 49,110.
+
 - **A/B in alternating rounds**: the build before, the build after, then both again; report both
   rounds as a range. The machine drifts between minutes; one round each is not a comparison.
 - **Warm up**: 2 seconds of the same load before the 6 measured.

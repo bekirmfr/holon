@@ -102,8 +102,7 @@ counts them. The samples: `samples`, `build_sample`. Templates and routes: `temp
 - **Everything is in one bundle.** The module engine and the js engine's bytes
   (`holon_module::JS_ENGINE`, 3.2 MB, [js-node-L4 §4](../../L4s/js-node-L4.md)) are linked in
   whether a flow places a js node or not: `holon-author` uses them to lower text, with no feature
-  to leave them out. holon-module's own header says the bundle carries an engine only where it
-  places a module; that is not what the build does.
+  to leave them out.
 - **Unoptimised.** The package is built `--no-opt`. Its size is not measured or tracked anywhere.
 - **The workspace only grows.** The `Evaluator` has no way to remove a unit; units inserted over a
   long session stay until the page is reloaded. Not measured.
@@ -117,8 +116,6 @@ counts them. The samples: `samples`, `build_sample`. Templates and routes: `temp
   is bounded by `MAX_TYPE_DEPTH`; past it, an error, not a stack overflow.
 - **No wasm-pack, no automatic rebuild.** The e2e script's rebuild calls wasm-pack; on a machine
   without it, build by hand (above) before `npm run e2e`.
-- The crate header still says it depends on core only; it depends on holon-author and holon-module
-  too (`Cargo.toml`).
 
 ## 5. What the tests hold
 

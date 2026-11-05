@@ -64,22 +64,35 @@ pub(crate) fn load_snapshot(hex: &str, store: &SharedStore) -> Result<State, Str
     })
 }
 
-const RESTORE_USAGE: &str = "usage: holon restore <slug> [--server PORT|URL]
-       holon restore <slug> --to N [--code] [--state] [--dry-run] [--approve] [--server PORT|URL]
-       holon restore <slug> --to-run SEQ [--code] [--state] [--dry-run] [--approve] [--server PORT|URL]
+const RESTORE_USAGE: &str = "usage: holon restore <slug>
+       holon restore <slug> --to N [--code] [--state] [--dry-run] [--approve]
+       holon restore <slug> --to-run SEQ [--code] [--state] [--dry-run] [--approve]
+       (each with [--server PORT|URL])
 
-  With no --to: the deployment's versions, newest first. Every deploy is a version, kept for
-  good, numbered from 1.
-  --to N: version N. --code deploys its code again (its flow, with what its deploy asked), as a
-  new version. --state puts back the state it left (the one the version after it was deployed
-  with). Both: the code, then the state.
-  --to-run SEQ: run SEQ of the log. --state puts back the state it left; --code deploys the code
-  it ran on again, unless that is the code deployed now.
-  The code is checked against the grant the deployment has now, not the one it had: what it
-  needs that isn't granted now is listed, and approved only with --approve. A state put back
-  starts a new session, the state it replaces kept as the last one's, so it can be restored in
-  turn; the deployment must be running or paused. --dry-run: what it would do, changing nothing,
-  with the runs since that point and what they did outside, which a restore doesn't undo.
+  Lists a deployment's versions, newest first; with --to or --to-run, puts one back. Every
+  deploy is a version, kept for good and numbered from 1.
+
+  --to N                   version N
+  --to-run SEQ             the point after run SEQ of the log (as the editor's runs number them)
+  --code                   deploy that point's code again (its flow, with what its deploy
+                           asked), as a new version; from --to-run, only if it isn't the code
+                           deployed now
+  --state                  put back the state it left (for --to N, the state the version after
+                           it was deployed with). With --code too: the code, then the state
+  --dry-run                say what it would do, changing nothing: with the runs since that
+                           point and what they did outside, which a restore doesn't undo
+  --approve                approve, as you, what the code needs that the grant it has now
+                           doesn't cover (it is checked against today's grant, not the old one)
+  --server PORT|URL        which holon server to ask (see below)
+
+  A state put back starts a new session, the state it replaces kept as the last one's, so that
+  one can be restored in turn. The deployment must be running or paused.
+
+examples:
+  holon restore shop
+  holon restore shop --to 3 --code --dry-run
+  holon restore shop --to 3 --code --approve
+  holon restore counter --to-run 41 --state
 
   From the holon serve you run on this machine, signed in as you; with several running,
   --server <port> picks one. A server elsewhere: --server <URL> (or HOLON_SERVER), signed in

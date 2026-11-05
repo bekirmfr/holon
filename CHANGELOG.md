@@ -1,5 +1,37 @@
 # Changelog
 
+## 0.1.0-rc.33
+
+What each log level costs can now be measured from the command line: `holon load` puts a flow's
+routes under load and says, beside the requests a second and the latency, what the server did
+with their runs; the `stress-test` sample has one route of each level. Every command's help is
+written one way, with examples, and `holon remove` now says what it deletes. Nothing changes for
+deployed flows; the deployments listing and a deployment's log only gain fields.
+
+- **`holon load`: a flow's routes under load.** `holon load <slug>` sends each of a deployed flow's
+  GET routes (or those `--route` names) as many requests as it answers, from connections kept
+  open (`--connections`, default 8) for `--for` seconds each (default 10), with a line a second,
+  then the routes side by side: requests a second, p50, p90, p99, the slowest, the errors, and
+  from the server the runs it recorded, the times it synced the log to disk for them and the runs
+  it only counted. `--json` gives all of it, each second's too. The `stress-test` sample has one
+  route of each log level, to see what each costs.
+- **Every command's help, written one way.** `holon <command> --help` says what the command does
+  in a sentence or two, lists each option on a line of its own with its default and limits
+  (and a subcommand's options under it), and ends with examples, each run against a server
+  before it was written down. `holon new`, `check`, `show` and `fmt` have help of their own
+  (they took `--help` for a file's name and printed every command), and so do `update`,
+  `uninstall` and `version` (they refused it). `folder` and `database` say their `--lock`
+  takes `commit`, the default, as well as `run`.
+- **`holon remove` says what it deletes.** Removing a deployment deletes its runs' log, its
+  timeline, its state and its secrets, as the editor's button says; the command's warning, its
+  help and the manual said its runs' log stayed on disk. They now say what goes, and that
+  `holon export` keeps the runs first. Removing a deployment there isn't says so (`no deployment
+  "x"`), where it printed `answered 404:` and nothing.
+- **What a deployment says of itself.** The deployments listing names a server's routes, each with
+  how its runs are recorded as granted (`routes`: method, path, `log`), and a deployment's log
+  says how many times it was synced to disk since the server started (`syncs`); `limit=0` gives
+  the counts without the runs.
+
 ## 0.1.0-rc.32
 
 Every run's record is on disk before its answer, and a handler says when it needn't be (`lazy`,

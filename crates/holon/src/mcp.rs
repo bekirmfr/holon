@@ -18,20 +18,30 @@ use crate::local;
 const VERSIONS: &[&str] = &["2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25"];
 
 const USAGE: &str = "usage: holon mcp [--server PORT|URL]
-       holon mcp setup [HOST…|--all] [--server PORT|URL] [--project DIR] [--print] [--remove]
+       holon mcp setup [HOST…|--all] [options]
        holon mcp hosts [add NAME --config PATH --like HOST | remove NAME]
 
-An MCP server on stdin and stdout, for an agent's host to start (Claude Code, an IDE): tools to
-look up the language, check a flow, deploy it, call it, list its runs and explain one, read a
-deployment's history and see what a restore would change (only ever a dry run). It reaches
-holon serve as holon export does: --server (or HOLON_SERVER) if given, else the one server you
-run on this machine, signed in as you. Its tools never approve what a flow may do: a deploy that
-needs approval is saved for a person to deploy from the editor. It asks as an agent, so the server
-holds it to proposing too; for an agent with a shell, give it an API token with role agent and
---server (setup --server keeps the token; HOLON_TOKEN gives one).
+  An MCP server on stdin and stdout, for an agent's host (Claude Code, an IDE) to start: tools
+  to look up the language, check a flow, deploy it, call it, list its runs and explain one, read
+  a deployment's history, and see what a restore would change (only ever a dry run). Its tools
+  never approve what a flow may do: a deploy that needs approval is saved for a person to deploy
+  from the editor. It asks as an agent, so the server holds it to proposing too.
 
-`holon mcp setup HOST` adds it to a host's settings (Claude Code, Claude Desktop, Cursor, VS Code,
-Codex, Zed and more: `holon mcp hosts` lists them, and adds your own). `--help` on either says more.";
+  --server PORT|URL        which holon server to ask (see below)
+  setup                    add it to a host's settings (holon mcp setup --help says more)
+  hosts                    the hosts setup knows, and adding your own (holon mcp hosts --help)
+
+  For an agent with a shell of its own, give it an API token with role agent (holon token add
+  … --role agent) rather than yours: setup --server keeps one, HOLON_TOKEN gives one.
+
+examples:
+  holon mcp setup claude-code
+  holon mcp setup --all --print
+  holon mcp hosts
+
+  From the holon serve you run on this machine, signed in as you; with several running,
+  --server <port> picks one. A server elsewhere: --server <URL> (or HOLON_SERVER), signed in
+  with an API token in HOLON_TOKEN.";
 
 const INSTRUCTIONS: &str = "Holon runs small services (flows) written in its own language, and \
 shows what each may do before it runs. Call `reference` first for the language and its leaves, \
