@@ -150,6 +150,9 @@ enum Src {
     In(String),
 }
 
+/// A wire within a block: its source, and the node and input it feeds.
+type BlockWire = (Src, String, String);
+
 /// A connected set of nodes printed as one block: a route's, a holon's, or the whole flow's.
 struct Group<'g> {
     nodes: Vec<&'g Node>,
@@ -467,7 +470,7 @@ pub(crate) fn js_statement(store: &MapResolver, unit: &holon_core::Unit, hname: 
 /// trigger (a route's request, an `every` block's tick, an `on file` block's file, a holon's own `trigger`, or the
 /// pass-through the lowering places when that feeds several, which goes too, with its `true`).
 /// What's left on a trigger is written `after`. Also the nodes whose ties went.
-fn without_block_ties(nodes: Vec<&Node>, wires: Vec<(Src, String, String)>) -> (Vec<&Node>, Vec<(Src, String, String)>, HashSet<String>) {
+fn without_block_ties(nodes: Vec<&Node>, wires: Vec<BlockWire>) -> (Vec<&Node>, Vec<BlockWire>, HashSet<String>) {
     let by_id: HashMap<&str, &Node> = nodes.iter().map(|n| (n.id.as_str(), *n)).collect();
     // The last wire into an input is the one that counts, as `Group` keeps it: a holon's
     // boundary is listed as its node first, then as the port.

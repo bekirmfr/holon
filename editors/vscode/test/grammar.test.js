@@ -53,7 +53,7 @@ test("every sample tokenizes, with a scope for each line's words", async () => {
 
 test("each kind of word gets its scope", async () => {
   const g = await grammar();
-  const text = fs.readFileSync(path.join(samples, "slugs.holon"), "utf8") + fs.readFileSync(path.join(samples, "approval.holon"), "utf8") + "# a note\nflow beat\nevery 10s\nn = 1.5 + now\n";
+  const text = fs.readFileSync(path.join(samples, "slugs.holon"), "utf8") + fs.readFileSync(path.join(samples, "approval.holon"), "utf8") + "# a note\nflow beat\nevery 10s\nn = 1.5 + now\nlink = \"/orders/{uppercase(n)}\"\n";
   const t = tokenize(g, text);
   assert.equal(scopeOf(t, "flow"), "keyword.other.flow.holon");
   assert.equal(scopeOf(t, "slugs"), "entity.name.namespace.holon");
@@ -85,7 +85,7 @@ test("each kind of word gets its scope", async () => {
   assert.equal(scopeOf(t, "now", 1), "variable.language.noun.holon");
   assert.equal(scopeOf(t, "# a note"), "comment.line.number-sign.holon");
   // Inside a string's {…}: the expression, as code; around it, the string.
-  const interpolated = t.find(([w, , scopes]) => w === "resume_token" && scopes.includes("meta.interpolation.holon"));
+  const interpolated = t.find(([w, , scopes]) => w === "uppercase" && scopes.includes("meta.interpolation.holon"));
   assert.ok(interpolated, "a call inside an interpolation");
   assert.equal(interpolated[1], "entity.name.function.call.holon");
   assert.equal(scopeOf(t, "/paid/"), "string.quoted.double.holon");
