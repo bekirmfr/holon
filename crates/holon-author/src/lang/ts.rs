@@ -1015,8 +1015,8 @@ impl<'s, 't> Reader<'s, 't> {
 
     // ── functions ────────────────────────────────────────────────────────────────────────────
 
-    /// `function name(params) { …; return out }`: a graph holon, its output named after what it
-    /// returns (a name, or each key of a returned object), else after the function.
+    /// `function name(params) { …; return slug }`: a graph holon, its output named after what it
+    /// returns (a name, or each key of a returned object), else `out`.
     fn function(&mut self, name: &str, name_span: oxc_span::Span, f: &js::Function) -> R<HolonDef> {
         let at = self.span(f.span);
         if f.generator || f.r#async {
@@ -1026,9 +1026,9 @@ impl<'s, 't> Reader<'s, 't> {
             return fail(at, "a type parameter is refused for now: a port has one type");
         }
         let Some(body) = &f.body else { return fail(at, "a function needs a body") };
-        let inputs = self.ports(&f.params)?;
+        let inputs = self.ports(&f.params, false)?;
         let returns = f.return_type.as_ref().map(|t| self.type_expr(&t.type_annotation)).transpose()?;
-        self.holon_def(name, name_span, inputs, returns, at, |me, stmts| me.statements_to_output(name, &body.statements, stmts))
+        self.holon_def(name, name_span, inputs, returns, at, |me, stmts| me.statements_to_output(&body.statements, stmts))
     }
 
     /// `const name = (params) => …` at the top level: a graph holon, as a function is.
@@ -1040,13 +1040,13 @@ impl<'s, 't> Reader<'s, 't> {
         if a.type_parameters.is_some() {
             return fail(at, "a type parameter is refused for now: a port has one type");
         }
-        let inputs = self.ports(&a.params)?;
+        let inputs = self.ports(&a.params, false)?;
         let returns = a.return_type.as_ref().map(|t| self.type_expr(&t.type_annotation)).transpose()?;
         self.holon_def(name, name_span, inputs, returns, at, |me, stmts| match &a.body {
-            js::ArrowFunctionBody::FunctionBody(b) => me.statements_to_output(name, &b.statements, stmts),
+            js::ArrowFunctionBody::FunctionBody(b) => me.statements_to_output(&b.statements, stmts),
             body => {
                 let e = body.as_expression().expect("an expression body");
-                me.output_of(name, e, stmts)
+                me.output_of(e, stmts)
             }
         })
     }
@@ -1055,12 +1055,14 @@ impl<'s, 't> Reader<'s, 't> {
         &mut self,
         name: &str,
         name_span: oxc_span::Span,
-        inputs: Vec<PortDecl>,
+        inputs: Vec<(String, PortDecl)>,
         returns: Option<TypeExpr>,
         at: Span,
         body: impl FnOnce(&mut Self, &mut Vec<Stmt>) -> R<Vec<String>>,
     ) -> R<HolonDef> {
-        self.scopes.push(inputs.iter().map(|p| (p.name.text.clone(), Local::Bound(p.name.text.clone()))).collect());
+        // Each parameter reads, in the body, as the port it is.
+        self.scopes.push(inputs.iter().map(|(param, port)| (param.clone(), Local::Bound(port.name.text.clone()))).collect());
+        let inputs: Vec<PortDecl> = inputs.into_iter().map(|(_, port)| port).collect();
         let mut stmts = Vec::new();
         let outputs = body(self, &mut stmts);
         self.scopes.pop();
@@ -1073,18 +1075,19 @@ impl<'s, 't> Reader<'s, 't> {
     }
 
     /// A function body: its statements, then the output its last statement returns.
-    fn statements_to_output(&mut self, function: &str, body: &[js::Statement], stmts: &mut Vec<Stmt>) -> R<Vec<String>> {
+    fn statements_to_output(&mut self, body: &[js::Statement], stmts: &mut Vec<Stmt>) -> R<Vec<String>> {
         let Some((js::Statement::ReturnStatement(r), rest)) = body.split_last() else {
             return fail(body.last().map(|s| self.span(s.span())).unwrap_or_default(), "a function returns its value last: return slug");
         };
         self.statements(rest, Block::Function, stmts)?;
         let Some(e) = &r.argument else { return fail(self.span(r.span), "a function returns a value") };
-        self.output_of(function, e, stmts)
+        self.output_of(e, stmts)
     }
 
     /// The outputs `return e` gives: a name returned names the output after it; an object
-    /// literal, one output per key; anything else, one output named after the function.
-    fn output_of(&mut self, function: &str, e: &js::Expression, stmts: &mut Vec<Stmt>) -> R<Vec<String>> {
+    /// literal, one output per key; anything else one output, `out`, as a function written in
+    /// place has (the note's fork 7). A body's own `const out` is `out_`, so it never clashes.
+    fn output_of(&mut self, e: &js::Expression, stmts: &mut Vec<Stmt>) -> R<Vec<String>> {
         let at = self.span(e.span());
         match self.unwrap(e) {
             js::Expression::Identifier(i) if matches!(self.lookup(i.name.as_str()), Some(Local::Bound(_))) && self.is_binding(i.name.as_str(), stmts) => {
@@ -1105,9 +1108,8 @@ impl<'s, 't> Reader<'s, 't> {
             }
             _ => {
                 let value = self.expr(e)?;
-                let out = format!("{function}_out");
-                stmts.push(Stmt { kind: StmtKind::Bind { name: Name { text: out.clone(), span: at }, value }, span: at, after: None });
-                Ok(vec![out])
+                stmts.push(Stmt { kind: StmtKind::Bind { name: Name { text: "out".into(), span: at }, value }, span: at, after: None });
+                Ok(vec!["out".into()])
             }
         }
     }
@@ -1117,8 +1119,11 @@ impl<'s, 't> Reader<'s, 't> {
         stmts.iter().any(|s| matches!(&s.kind, StmtKind::Bind { name: n, .. } if n.text == name))
     }
 
-    /// A function's parameters as ports: a name each, typed when annotated.
-    fn ports(&mut self, params: &js::FormalParameters) -> R<Vec<PortDecl>> {
+    /// A function's parameters as ports, each with the name the body reads it by: typed when
+    /// annotated, and named as written, but for a graph function's keyword (see [`Self::port_name`]).
+    /// A js() function's keep their names whatever they are, as its body is JavaScript that reads
+    /// them; a keyword there is the lowering's mistake to name.
+    fn ports(&mut self, params: &js::FormalParameters, js: bool) -> R<Vec<(String, PortDecl)>> {
         if let Some(rest) = &params.rest {
             return fail(self.span(rest.span), "a function takes its inputs by name, not as a rest");
         }
@@ -1131,7 +1136,9 @@ impl<'s, 't> Reader<'s, 't> {
                 return fail(self.span(p.span), "a parameter has no default: every input is wired");
             }
             let ty = p.type_annotation.as_ref().map(|t| self.type_expr(&t.type_annotation)).transpose()?;
-            ports.push(PortDecl { name: self.name(&self.local_name(id.name.as_str()), id.span), ty, unit: None });
+            let param = id.name.to_string();
+            let port = if js { param.clone() } else { self.port_name(&param) };
+            ports.push((param, PortDecl { name: self.name(&port, id.span), ty, unit: None }));
         }
         Ok(ports)
     }
@@ -1154,7 +1161,7 @@ impl<'s, 't> Reader<'s, 't> {
             return fail(self.span(f.span), "a js() function runs to its end: no async, no generator");
         }
         let Some(body) = &f.body else { return fail(self.span(f.span), "a js() function needs a body") };
-        let inputs = self.ports(&f.params)?;
+        let inputs: Vec<PortDecl> = self.ports(&f.params, true)?.into_iter().map(|(_, port)| port).collect();
         let returns = f.return_type.as_ref().map(|t| self.type_expr(&t.type_annotation)).transpose()?;
         let (mut fuel, mut memory, mut outputs) = (None, None, None);
         if let Some(o) = args.get(1) {
@@ -1571,7 +1578,7 @@ impl<'s, 't> Reader<'s, 't> {
                     let js::BindingPattern::BindingIdentifier(id) = &p.pattern else {
                         return fail(self.span(p.span), "a parameter is a name: (x) => { const { id } = x; … }, in a later slice");
                     };
-                    params.push(self.name(&self.local_name(id.name.as_str()), id.span));
+                    params.push(self.name(&self.port_name(id.name.as_str()), id.span));
                 }
                 if params.len() != takes || arrow.params.rest.is_some() {
                     return fail(span, if takes == 1 { "map's function takes the item: (x) => …; an index isn't passed" } else { "reduce's function takes the result so far and the item: (acc, x) => …" });
@@ -1702,6 +1709,13 @@ impl<'s, 't> Reader<'s, 't> {
     fn local_name(&self, name: &str) -> String {
         let taken = RESERVED.contains(&name) || interface_of(alias(name)).is_some() || templates::is_template(name);
         if taken { format!("{name}_") } else { name.to_string() }
+    }
+
+    /// The name a parameter's port takes: its own, a leaf's included, as a port may be called
+    /// after a leaf (`lower.rs` `check_port_name`); a keyword other than `in` and `out` has an
+    /// underscore after it.
+    fn port_name(&self, name: &str) -> String {
+        if RESERVED.contains(&name) && name != "in" && name != "out" { format!("{name}_") } else { name.to_string() }
     }
 
     fn vocab(&self, name: &str) -> Option<Vocab> {
@@ -2070,6 +2084,16 @@ mod tests {
                 "defaults and constants",
                 "import { flow, route } from \"holon\"\nflow(\"d\", { port: 8000 })\nconst limit = 50\nroute.get(\"/d\", ({ query }) => {\n  const { after = \"\", by } = query\n  return { after, by, limit }\n})\n",
                 "flow d\nport 8000\n\nlimit = 50\n\nroute GET /d (req) {\n  after = req.query.after ?? \"\"\n  by = req.query.by\n  respond { after: after, by: by, limit: limit }\n}\n",
+            ),
+            (
+                "a function returning an expression",
+                "import { flow, route } from \"holon\"\nflow(\"o\", { port: 8000 })\nfunction slugify(text) {\n  return text.toLowerCase().split(\" \").join(\"-\")\n}\nroute.post(\"/s\", (req) => slugify(req.json.title))\n",
+                "flow o\nport 8000\n\nholon slugify(text) -> out {\n  out = join(split(lowercase(text), \" \"), \"-\")\n}\n\nroute POST /s (req) {\n  respond slugify(req.json.title)\n}\n",
+            ),
+            (
+                "ports named after a leaf and a keyword",
+                "import { flow, route } from \"holon\"\nflow(\"p\", { port: 8000 })\nconst total = (sum, json) => sum + json.extra\nroute.post(\"/t\", (req) => ({ total: total(req.json.sum, req.json), more: req.json.xs.map((sum) => sum + 1) }))\n",
+                "flow p\nport 8000\n\nholon total(sum, json_) -> out {\n  out = sum + json_.extra\n}\n\nroute POST /t (req) {\n  respond { total: total(req.json.sum, req.json), more: map(req.json.xs, fn: fn(sum) -> sum + 1) }\n}\n",
             ),
             (
                 "a flow's action",
