@@ -43,6 +43,13 @@ without it.
 To move a server, stop it and copy the data folder; the secrets key goes with it only if it is in
 a file (see [The secrets key](#the-secrets-key)).
 
+A path given to the server (an option, the `backup` setting, a folder or a database to bind, a
+folder to browse) is read as its machine reads one, and kept and shown in that machine's form. On
+Windows `/` and `\` both separate (`D:/archive` is `D:\archive`), and a whole path starts at a
+drive or a share (`D:\archive`, `\\nas\runs`); on Linux and macOS it starts at `/`, and `\` is
+part of a name. An option's path that isn't whole is taken from the folder the server was started
+in; a setting or a binding asks for a whole one.
+
 ### What it holds
 
 `holon host`, the admin page's **the host** and the terminal editor's admin view say what the
@@ -121,8 +128,7 @@ allow_plain_http = true
   - `allow_private_addresses`: whether it may ever reach this machine and its network (default
     `false`).
   - `allow_unrecorded`: whether a handler's runs may ever be kept out of its log, each approved as
-    `Unrecorded("GET /health")` (default `true`: only a handler that does nothing outside its run
-    may ask, and a person approves each).
+    `Unrecorded("GET /health")` (default `true`: a person approves each).
 
 - **`[storage]`**: how the server keeps what it stores.
   - `sweep_every`: how often the server sweeps, on its own, what nothing kept names any more: the
@@ -279,7 +285,7 @@ entry), so a placeholder in the log is always the server's own.
 
 A run's entry is on disk before its answer is sent: an answered run is recorded, a power loss
 or not. Runs at once share the sync, so a busy deployment syncs its log far less often than once
-a run. A handler that only reads and answers may say `lazy` on its line ([Language
+a run. A handler may say `lazy` on its line ([Language
 reference](../language/reference.md#clocks-files-and-actions)): its runs' entries are written
 before the answer and synced within a second, as the deployment's events are, so a power loss can
 lose the last second of them, never more. So are requests no route took (a 404, a 405). A run

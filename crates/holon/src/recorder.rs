@@ -31,6 +31,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use holon_core::Value;
 
+use crate::paths::Place;
 use crate::{PerformedEntry, SValue};
 
 /// How many entries a deployment keeps when the host doesn't say; older ones drop off the front.
@@ -698,18 +699,21 @@ pub fn sync_file(path: &Path) -> std::io::Result<()> {
 /// queued while its line is written, under its log's lock (or the table's, for an event), so once
 /// this has taken each lock, the line of every head queued before it is written, and the sync
 /// after covers it. No lock is held while a file syncs. A failure puts that log's flag back.
+/// The packs of the runs a sync covered go out (channels.rs): a lazy run's wait for this.
+#[allow(clippy::type_complexity)]
 pub(crate) fn sync_logs(deployments: &std::sync::Mutex<BTreeMap<String, crate::Deployment>>) -> Result<(), String> {
-    let (logs, events): (Vec<std::sync::Arc<LogCell>>, Vec<(String, PathBuf)>) = {
+    let (logs, events): (Vec<(std::sync::Arc<LogCell>, std::sync::Arc<crate::channels::Channels>, std::sync::Arc<crate::Permit>)>, Vec<(String, PathBuf)>) = {
         let mut table = deployments.lock().unwrap();
-        let logs = table.values().map(|d| std::sync::Arc::clone(&d.log)).collect();
+        let logs = table.values().map(|d| (std::sync::Arc::clone(&d.log), std::sync::Arc::clone(&d.channels), std::sync::Arc::clone(&d.permit))).collect();
         let events = table.iter_mut().filter_map(|(slug, d)| d.events.take_dirty().map(|p| (slug.clone(), p))).collect();
         (logs, events)
     };
     let mut failed: Option<String> = None;
-    for log in logs {
+    for (log, channels, permit) in logs {
         // Through the cell, so a strict run waiting on its sync knows when it is done.
-        if let Err(e) = log.sync() {
-            failed.get_or_insert(e);
+        match log.sync() {
+            Ok(()) => channels.release(log.synced(), &permit.channels),
+            Err(e) => drop(failed.get_or_insert(e)),
         }
         // And its file cut back, if a run found it past what it keeps.
         log.cut_if_planned();
@@ -1010,6 +1014,11 @@ impl LogCell {
         self.sync_locked(&mut self.synced.lock().unwrap())
     }
 
+    /// Every entry before this seq is on disk.
+    pub fn synced(&self) -> u64 {
+        *self.synced.lock().unwrap()
+    }
+
     fn sync_locked(&self, synced: &mut u64) -> Result<(), String> {
         let (path, upto) = self.with(|log| (log.take_dirty(), log.next_seq));
         if let Some(path) = path {
@@ -1139,8 +1148,8 @@ impl Default for Log {
 }
 
 /// Where `slug`'s log is kept for the deployments file at `deployments_path`, if anywhere.
-pub fn file_for(deployments_path: &str, slug: &str) -> Option<PathBuf> {
-    (deployments_path != ":memory:").then(|| Path::new(deployments_path).with_extension("logs").join(format!("{slug}.jsonl")))
+pub fn file_for(deployments_path: &Place, slug: &str) -> Option<PathBuf> {
+    deployments_path.beside("logs").map(|logs| logs.join(format!("{slug}.jsonl")).into())
 }
 
 impl Log {
@@ -1152,7 +1161,7 @@ impl Log {
 
     /// The log of deployment `slug`, kept beside the deployments file at `deployments_path`: its
     /// heads go to the witness, if one is set.
-    pub fn for_deployment(deployments_path: &str, slug: &str) -> Log {
+    pub fn for_deployment(deployments_path: &Place, slug: &str) -> Log {
         let mut log = Log::open(file_for(deployments_path, slug));
         log.slug = Some(slug.to_string());
         log

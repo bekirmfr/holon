@@ -266,9 +266,14 @@ pub(crate) struct ParkedRun {
     pub(crate) run_id: String,
     /// The unit it ran (hex): the endpoint for a request, the deployment's unit otherwise.
     pub(crate) unit: String,
-    /// `"request"`, `"trigger"` or `"tick"`, and the route, for a request.
+    /// `"request"`, `"trigger"`, `"tick"` or `"file"`, and its handler's label (the route, for a
+    /// request).
     pub(crate) kind: String,
     pub(crate) route: Option<String>,
+    /// Its handler's level, as declared (`lazy`, `unrecorded`; empty for strict): each later part
+    /// is recorded as the first was. What it waits with is kept here whatever the level.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub(crate) log: String,
     pub(crate) inputs: Vec<Option<SValue>>,
     /// The sourced values it saw (`"Clock"`, `"Random"`, `"NetworkIngress"`).
     pub(crate) sourced: Vec<(String, SValue)>,
@@ -290,6 +295,11 @@ pub(crate) struct ParkedRun {
     /// logged as of that version, whose canvas shows it. Absent for runs parked before.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub(crate) version: String,
+    /// The packs its parts sent as they parked (channel, JSON), as its channels hold them
+    /// (`Channels::waiting_sent`): written with it, and given back to them when the server starts,
+    /// so a later part doesn't send them again after a restart, an unrecorded run's too.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) sent: Vec<(String, String)>,
     /// Its inputs, sourced values, requests, events and tokens, sealed, as the deployments file
     /// keeps them (they may hold a secret, a caller's credential, a token); opened again when
     /// the server starts (`open`). Never set on a run in memory that could be opened.
@@ -389,6 +399,7 @@ impl ParkedRun {
             unit: to_hex(unit),
             kind: kind.to_string(),
             route,
+            log: String::new(),
             inputs: inputs.iter().map(|i| i.as_ref().map(SValue::from_core)).collect(),
             sourced: sourced
                 .iter()
@@ -403,6 +414,7 @@ impl ParkedRun {
             waiting: waiting.iter().map(|w| StoredWaiting { name: w.name.clone(), expires_at: now + w.expires }).collect(),
             parked_at: now,
             version: String::new(),
+            sent: Vec::new(),
             sealed: None,
             resuming: false,
         })
@@ -520,9 +532,10 @@ impl ParkedRun {
     }
 }
 
-/// After a fresh run: keep it as a parked run if it settled waiting (and didn't fail). The names
-/// it waits on, for its log entry; an error when the deployment already has as many runs waiting
-/// as it may (`max_waiting_runs`). Each deadline is held to its `max_await_seconds`.
+/// After a fresh run: keep it as a parked run if it settled waiting (and didn't fail), whatever
+/// its handler's level `log`: a parked run is its own record. The names it waits on, for its log
+/// entry; an error when the deployment already has as many runs waiting as it may
+/// (`max_waiting_runs`). Each deadline is held to its `max_await_seconds`.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn park_if_waiting(
     deployments: &Mutex<BTreeMap<String, Deployment>>,
@@ -531,6 +544,7 @@ pub(crate) fn park_if_waiting(
     unit: &Hash,
     kind: &str,
     route: Option<String>,
+    log: holon_core::LogLevel,
     inputs: &[Option<Value>],
     sourced: &[(Capability, Value)],
     run: &FiredRun,
@@ -555,6 +569,9 @@ pub(crate) fn park_if_waiting(
         store,
     )?;
     record.version = run.unit.clone();
+    if log != holon_core::LogLevel::Strict {
+        record.log = log.word().to_string();
+    }
     let mut table = deployments.lock().unwrap();
     let dep = table.get_mut(slug).ok_or("the deployment is gone")?;
     let limits = &dep.permit.durable;
@@ -618,7 +635,7 @@ fn claim<'a>(deployments: &'a Mutex<BTreeMap<String, Deployment>>, slug: &str, r
 pub(crate) fn resume_parked(
     store: &SharedStore,
     deployments: &Mutex<BTreeMap<String, Deployment>>,
-    deployments_path: &str,
+    deployments_path: &Place,
     slug: &str,
     claimed: Claimed<'_>,
     name: &str,
@@ -634,6 +651,10 @@ pub(crate) fn resume_parked(
         (record, dep.state.clone(), Arc::clone(&dep.permit), Arc::clone(&dep.secrets), Arc::clone(&dep.folders), Arc::clone(&dep.channels))
     };
     let Resumption { unit, inputs, sourced, mut waits, resumed } = record.resume(name, event, store)?;
+    // Each part is recorded as its handler declares, its grant holding `unrecorded` as for any
+    // run: what it waits with is the parked run's own, whatever the level.
+    let declared = holon_core::LogLevel::parse(&record.log).unwrap_or_default();
+    waits.unrecorded = permit.log_level(record.route.as_deref(), declared) == holon_core::LogLevel::Unrecorded;
     waits.folders = Some(folders);
     waits.channels = Some(channels);
     waits.slug = Some(slug.to_string());
@@ -651,9 +672,7 @@ pub(crate) fn resume_parked(
     entry.request = inputs.first().cloned().flatten().map(|r| SValue::from_core(&r));
     entry.events = waits.events.iter().map(|(k, v)| (k.clone(), SValue::from_core(v))).collect();
     entry.parked = run.waiting.iter().map(|w| w.name.clone()).collect();
-    // A run that waits is strict (only a handler that does nothing outside its run may be
-    // otherwise, and waiting is something), so its every part is.
-    if let Some(l) = log_run(deployments, slug, entry, Redactor::tokens(&waits.tokens), holon_core::LogLevel::Strict) {
+    if let Some(l) = log_run(deployments, slug, entry, Redactor::tokens(&waits.tokens), declared) {
         l.said(slug);
     }
 
@@ -696,7 +715,7 @@ pub(crate) fn resume_parked(
 }
 
 /// Deliver `{expired: true}` to every waiting point past its deadline.
-pub(crate) fn expire_waiting(store: &SharedStore, deployments: &Mutex<BTreeMap<String, Deployment>>, deployments_path: &str, now: u64) {
+pub(crate) fn expire_waiting(store: &SharedStore, deployments: &Mutex<BTreeMap<String, Deployment>>, deployments_path: &Place, now: u64) {
     let mut due: Vec<(String, String, String)> = Vec::new();
     for (slug, dep) in deployments.lock().unwrap().iter() {
         for p in dep.parked.values() {

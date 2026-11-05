@@ -1,5 +1,43 @@
 # Changelog
 
+## Unreleased
+
+- **A handler's log level is its author's choice.** `lazy` and `unrecorded` may be written on any
+  handler, one that writes, calls out, sends or waits too: `unrecorded` for runs whose record
+  isn't worth keeping (a health check, a read, what would only fill the log), `lazy` for what must
+  answer fast where losing the last second of records to a crash is fine. A person still approves
+  an unrecorded handler at deploy, and the host's policy still decides. A run that waits keeps its
+  handler's level in each later part. The `status-board` sample adds a lazy handler that writes
+  (`POST /notes/:id/seen`).
+- **What a lazy or unrecorded writer leaves out is said, not taken for a break.** `holon verify`
+  leaves unchecked the cells an unrecorded handler, or across a restart a lazy one, may have
+  written where the log doesn't hold it; a cell none of them writes is still a break. A restore's
+  dry run names the unrecorded handlers granted that act outside the state, and `holon restore`
+  and the editor say their runs aren't counted in the runs since.
+- **An agent that changes an unrecorded handler's code has its runs logged.** A person approves
+  `Unrecorded("GET /health")` for that handler's code: an agent's version that changes it deploys
+  with the grant withheld and offered back to a person.
+- **An unrecorded run's packs go out live.** They were dropped with its entry; subscribers now get
+  them as they are sent, redacted as a logged run's, with no id and never kept. A flow it calls
+  logs the run as `unrecorded: not in its log`.
+- **A logged run's packs go out once its record is on disk.** A lazy run's packs went out at once,
+  so after a power loss a subscriber could be given a pack id it already had, and skip the next
+  pack when it reconnected. Packs are now held in the log's order and go out with the sync that
+  puts their record on disk; a lazy run still answers at once.
+- **A waiting run doesn't send again what it sent as it parked.** After a restart, an unrecorded
+  run that waited sent its earlier packs again: the parked run's record now keeps what it sent.
+- **Paths, read as each platform writes them.** Every path given to the server (the data folder,
+  the path options, the backup folder, a folder or database to bind) is read as its machine reads
+  it: on Windows `/` and `\` both separate and a whole path has a drive or a share, so
+  `/mnt/archive` isn't one; on Unix `..` stays, as the folder it leads up from may be a link. A
+  path that isn't whole says what one is on this machine (`D:\archive` on Windows).
+- **Windows: the host reads its disks and memory.** `holon host`, the admin page and the host's
+  sweeps read no disk and no memory on Windows, so a full disk was never warned of and
+  `when_full = "pause"` or `"roll"` never acted. They now read each folder's volume, and the
+  process's working set and its peak.
+- **The editor: undo starts off when a flow opens.** A flow just opened had undo on with nothing
+  to undo: the canvas measuring its nodes was taken for an edit.
+
 ## 0.1.0-rc.33
 
 What each log level costs can now be measured from the command line: `holon load` puts a flow's

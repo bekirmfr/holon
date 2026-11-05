@@ -90,13 +90,10 @@ pub(crate) fn route(request: &Request) -> Option<Response> {
 /// machine writes it and its parent.
 fn browse(path: Option<&str>) -> Result<(String, Option<String>, Vec<Place>, bool), String> {
     let at = match path.map(str::trim).filter(|p| !p.is_empty()) {
-        Some(p) => PathBuf::from(p),
+        Some(p) => crate::paths::whole(p).ok_or_else(|| format!("{p} isn't a whole path ({})", crate::paths::EXAMPLE))?,
         None => crate::local::home().filter(|h| h.is_dir()).or_else(|| roots_paths().into_iter().next()).ok_or("no folder to start from")?,
     };
-    if !at.is_absolute() {
-        return Err(format!("{} isn't a whole path", at.display()));
-    }
-    let at = crate::folders::canonical(&at).map_err(|e| format!("{}: {e}", at.display()))?;
+    let at = crate::paths::canonical(&at).map_err(|e| format!("{}: {e}", at.display()))?;
     if !at.is_dir() {
         return Err(format!("{} isn't a folder", at.display()));
     }
@@ -333,7 +330,7 @@ mod tests {
         }
         std::fs::write(dir.join("file.txt"), "not a folder").unwrap();
         let (path, parent, folders, more) = browse(Some(dir.to_str().unwrap())).unwrap();
-        let real = crate::folders::canonical(&dir).unwrap();
+        let real = crate::paths::canonical(&dir).unwrap();
         assert_eq!((path.as_str(), parent, more), (real.to_str().unwrap(), real.parent().map(|p| p.display().to_string()), false));
         assert_eq!(folders.iter().map(|f| f.name.as_str()).collect::<Vec<_>>(), ["A", "b", "c"], "folders only, by name");
         assert_eq!(folders[2].path, real.join("c").display().to_string());

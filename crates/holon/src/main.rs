@@ -191,6 +191,7 @@ mod migrate;
 mod mcp;
 mod mcphosts;
 mod outbound;
+mod paths;
 mod permissions;
 mod persist;
 mod pick;
@@ -244,6 +245,7 @@ use fixtures::*;
 use flows::*;
 use http::*;
 use listeners::*;
+use paths::{HostPath, Place};
 use permissions::{Grant, Manifest, Permit, Policy, Requirements};
 use secrets::{Redactor, SecretStore, Vault};
 use durable::{ParkedRun, Resumed, RunWaits};
@@ -346,9 +348,9 @@ struct AppState {
     /// `persist_deployments`/`load_deployments`) — a deployment definition surviving a restart
     /// is the whole point of "standing," unlike a cache entry or a publish record.
     deployments: Arc<Mutex<BTreeMap<String, Deployment>>>,
-    /// Where `deployments` is persisted, or the literal `":memory:"` sentinel (matching
+    /// Where `deployments` is persisted, or nowhere (`--deployments :memory:`, matching
     /// `--store`'s own convention) to opt out entirely.
-    deployments_path: String,
+    deployments_path: Place,
     /// name → saved flow document. A flow is a *workspace file* — the editor's canvas exactly
     /// as it was left (node positions, viewport, UI settings), saved and re-opened by name —
     /// deliberately NOT a content-addressed unit: positions and zoom are presentation, and the
@@ -362,8 +364,8 @@ struct AppState {
     /// scheduler thread; nothing but HTTP handlers ever touches flows.
     flows: Mutex<BTreeMap<String, FlowRecord>>,
     /// Where `flows` is persisted (write-through, same discipline as `deployments_path`), or
-    /// `":memory:"` to opt out.
-    flows_path: String,
+    /// nowhere to opt out.
+    flows_path: Place,
     /// Who may use the control plane: tokens, and hosts and origins beyond loopback (access.rs).
     access: access::Access,
     /// The port this server listens on — the one a request's `Host` must name
@@ -379,8 +381,8 @@ struct AppState {
     /// The host operator's policy (`--policy`, default `holon.toml`): limits, ceilings, what
     /// is granted without asking. Read at startup, and again on `POST /permissions/reload`.
     policy: std::sync::RwLock<Arc<Policy>>,
-    /// Where the policy is read from.
-    policy_path: String,
+    /// Where the policy is read from: nowhere, the defaults (the tests).
+    policy_path: Place,
     /// Every deployment's secrets (`--secrets`, secrets.rs): written over the control plane,
     /// never returned.
     secrets: Arc<SecretStore>,
@@ -1024,7 +1026,7 @@ fn serve(args: Vec<String>) {
 
     // Whatever wasn't named on its own goes in the data folder: `--data`, else HOLON_DATA, else
     // ~/.holon/data (docs/L4s/holon-home-L4.md). The folder it was started from doesn't matter.
-    let dir = match data_dir.map(PathBuf::from).or_else(|| local::holon_home().map(|h| h.join("data"))) {
+    let dir = match data_dir.map(PathBuf::from).or_else(|| local::holon_home().map(|h| h.join("data"))).map(paths::normalize) {
         Some(d) => d,
         None => {
             eprintln!("holon: no home folder (USERPROFILE or HOME) to keep the server's data in: pass --data DIR");
@@ -1047,6 +1049,13 @@ fn serve(args: Vec<String>) {
     inside(&mut databases_arg, ".holon-databases.json", "databases.json");
     inside(&mut accounts_arg, ".holon-accounts.json", "accounts.json");
     inside(&mut host_key_arg, ".holon-host-key", "host.key");
+    // Each in its platform's form, whole (paths.rs): as it is kept, joined, shown and compared.
+    for arg in [&mut store_arg, &mut deployments_arg, &mut flows_arg, &mut policy_arg, &mut secrets_arg, &mut folders_arg, &mut databases_arg, &mut accounts_arg, &mut host_key_arg] {
+        if arg.as_str() != ":memory:" {
+            *arg = paths::normalize(&*arg).to_string_lossy().into_owned();
+        }
+    }
+    let (deployments_at, flows_at, policy_at) = (Place::parse(&deployments_arg), Place::parse(&flows_arg), Place::parse(&policy_arg));
     if landed {
         // Its owner's only when it is made here: it holds every flow's state, logs and secrets.
         if let Err(e) = holon_host::create_private_dir(&dir) {
@@ -1064,7 +1073,7 @@ fn serve(args: Vec<String>) {
     if let Some(url) = &export_heads {
         // The token stays out of the command line: HOLON_EXPORT_HEADS_TOKEN.
         let token = std::env::var("HOLON_EXPORT_HEADS_TOKEN").ok();
-        if let Err(e) = heads::start(url, token, heads::dir_for(&deployments_arg), Duration::from_secs(5)) {
+        if let Err(e) = heads::start(url, token, heads::dir_for(&deployments_at), Duration::from_secs(5)) {
             eprintln!("holon: {e}");
             std::process::exit(2);
         }
@@ -1126,7 +1135,7 @@ fn serve(args: Vec<String>) {
         eprintln!("holon: refusing to start rather than overwrite it — fix the file or move it aside");
         std::process::exit(1);
     };
-    let policy = Arc::new(Policy::load(&policy_arg).unwrap_or_else(|e| refuse_to_start(e)));
+    let policy = Arc::new(Policy::load(&policy_at).unwrap_or_else(|e| refuse_to_start(e)));
     let secrets_key = sealing::KeySource::parse(secrets_key_arg.as_deref(), &secrets_arg).unwrap_or_else(|e| refuse_to_start(e));
     let dotenv_path = dotenv_arg.clone().map(std::path::PathBuf::from);
     let sources = secret_sources::Sources::new(dotenv_path.clone()).unwrap_or_else(|e| refuse_to_start(e));
@@ -1159,7 +1168,7 @@ fn serve(args: Vec<String>) {
     // The texts of files runs read are kept beside the content store (blobs.rs).
     let folders = Arc::new(if store_arg == ":memory:" { folders } else { folders.with_blobs(blobs::Blobs::at(Path::new(&store_arg).join("blobs"))) });
     durable::load_host_key(&host_key_arg).unwrap_or_else(|e| refuse_to_start(e));
-    let mut initial_deployments = load_deployments(&deployments_arg, &store, &policy).unwrap_or_else(|e| refuse_to_start(e));
+    let mut initial_deployments = load_deployments(&deployments_at, &store, &policy).unwrap_or_else(|e| refuse_to_start(e));
     for (slug, dep) in initial_deployments.iter_mut() {
         dep.secrets = secrets.vault(slug);
         // Its waiting runs' sealed parts open under the secrets key.
@@ -1171,17 +1180,17 @@ fn serve(args: Vec<String>) {
         }
         dep.folders = Arc::new(folders::Scoped::new(Arc::clone(&folders), slug));
     }
-    let flows = Mutex::new(load_flows(&flows_arg).unwrap_or_else(|e| refuse_to_start(e)));
+    let flows = Mutex::new(load_flows(&flows_at).unwrap_or_else(|e| refuse_to_start(e)));
     let deployments: Arc<Mutex<BTreeMap<String, Deployment>>> = Arc::new(Mutex::new(initial_deployments));
-    spawn_clock_scheduler(store.clone(), Arc::clone(&deployments), deployments_arg.clone());
-    arrivals::spawn_watcher(store.clone(), Arc::clone(&deployments), deployments_arg.clone());
+    spawn_clock_scheduler(store.clone(), Arc::clone(&deployments), deployments_at.clone());
+    arrivals::spawn_watcher(store.clone(), Arc::clone(&deployments), deployments_at.clone());
     {
         // The run logs and event logs are synced to disk every second, so a power loss loses at most
         // the last second of them (recorder.rs's `sync_logs`); and before each batch of heads goes
         // to a witness, so a witness never holds a head whose line the disk lacks. A log a run found
         // past what it keeps is cut back here too, so no run waits for it.
         let syncing = Arc::clone(&deployments);
-        let kept_at = deployments_arg.clone();
+        let kept_at = deployments_at.clone();
         std::thread::spawn(move || {
             let mut failing = false;
             loop {
@@ -1222,26 +1231,26 @@ fn serve(args: Vec<String>) {
     // The names a flow's port answers to as well (dataplane.rs `host_allowed`).
     data_limits.names = allow_hosts.clone();
     let access = access::Access::new(Arc::clone(&accounts), allow_hosts, allow_origins);
-    let activity = activity::Activity::beside(&deployments_arg);
-    store.1.connect(Arc::clone(&deployments), deployments_arg.clone());
+    let activity = activity::Activity::beside(&deployments_at);
+    store.1.connect(Arc::clone(&deployments), deployments_at.clone());
     let state = AppState {
         store,
         registry,
         cache,
         deployments,
-        deployments_path: deployments_arg,
+        deployments_path: deployments_at,
         flows,
-        flows_path: flows_arg,
+        flows_path: flows_at,
         port,
         listeners: Some(Mutex::new(BTreeMap::new())),
         data_limits,
         policy: std::sync::RwLock::new(policy),
-        policy_path: policy_arg,
+        policy_path: policy_at,
         secrets,
         folders,
         activity,
         access,
-        editor: editor::Source::pick(editor_dir.map(std::path::PathBuf::from)),
+        editor: editor::Source::pick(editor_dir.map(paths::normalize)),
         sweeps: storage::Sweeps::default(),
     };
     sync_listeners(&state);

@@ -48,11 +48,25 @@ pub(crate) fn is_valid_slug(s: &str) -> bool {
     !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 }
 
-/// The slug's current grant and unit, if it is deployed.
-fn previous_of(deployments: &Mutex<BTreeMap<String, Deployment>>, slug: &str) -> (Option<Grant>, Option<Hash>, Vec<String>) {
+/// What the slug's deployment holds now, if it is deployed.
+#[derive(Default)]
+struct Previous {
+    grant: Option<Grant>,
+    unit: Option<Hash>,
+    browsers: Vec<String>,
+    /// Its server's handlers, by label: each one's unit.
+    handlers: BTreeMap<String, Hash>,
+}
+
+fn previous_of(deployments: &Mutex<BTreeMap<String, Deployment>>, slug: &str) -> Previous {
     match deployments.lock().unwrap().get(slug) {
-        Some(d) => (Some(d.grant.clone()), Some(d.unit), d.browsers.clone()),
-        None => (None, None, Vec::new()),
+        Some(d) => Previous {
+            grant: Some(d.grant.clone()),
+            unit: Some(d.unit),
+            browsers: d.browsers.clone(),
+            handlers: d.server.iter().flat_map(|s| s.handlers()).map(|(label, _, h)| (label, h)).collect(),
+        },
+        None => Previous::default(),
     }
 }
 
@@ -68,24 +82,31 @@ fn browsers_added(browsers: &[String], previous: &[String]) -> Vec<String> {
 /// let the old code read, because a secret goes only to code a person has looked at (redaction
 /// catches a secret's literal value only, so code that encodes it first would hand the agent the
 /// value). When an agent changes the code, a secret it can run without is withheld from the grant,
-/// offered back to a person, and one it needs waits for a person's approval.
-fn approval_needed(
-    policy: &Policy,
-    manifest: &Manifest,
-    previous: Option<&Grant>,
-    previous_unit: Option<Hash>,
-    unit: Hash,
-    agent: bool,
-) -> (BTreeSet<String>, BTreeSet<String>) {
-    let mut needed = policy.needs_approval(manifest, previous);
+/// offered back to a person, and one it needs waits for a person's approval. Nor does an unrecorded
+/// handler whose code it changed stay unrecorded: a person let that code's runs out of the log, not
+/// what an agent put in its place, so it is withheld too, and its runs logged until a person grants
+/// it back (an agent's later versions keep it withheld).
+fn approval_needed(policy: &Policy, manifest: &Manifest, previous: &Previous, server: Option<&Server>, unit: Hash, agent: bool) -> (BTreeSet<String>, BTreeSet<String>) {
+    let mut needed = policy.needs_approval(manifest, previous.grant.as_ref());
     let mut withheld = BTreeSet::new();
-    if agent && previous_unit != Some(unit) {
-        for item in manifest.items().into_iter().filter(|item| item.starts_with("SecretRead(")) {
+    if agent && previous.unit != Some(unit) {
+        let items = manifest.items();
+        for item in items.iter().filter(|item| item.starts_with("SecretRead(")).cloned() {
             if manifest.is_optional(&item) {
                 needed.remove(&item);
                 withheld.insert(item);
             } else {
                 needed.insert(item);
+            }
+        }
+        let (granted, revoked) = previous.grant.as_ref().map(|g| (&g.items, &g.revoked)).unzip();
+        for (label, _, h) in server.iter().flat_map(|s| s.handlers()) {
+            let item = format!("Unrecorded({label:?})");
+            let changed = previous.handlers.get(&label) != Some(&h);
+            let held = |set: Option<&BTreeSet<String>>| set.is_some_and(|s| s.contains(&item));
+            if items.contains(&item) && (changed && held(granted) || held(revoked)) {
+                needed.remove(&item);
+                withheld.insert(item);
             }
         }
     }
@@ -105,7 +126,7 @@ fn approval_needed(
 pub(crate) fn handle_post_deploy(
     store: &SharedStore,
     deployments: &Mutex<BTreeMap<String, Deployment>>,
-    deployments_path: &str,
+    deployments_path: &Place,
     policy: &Policy,
     secrets: &SecretStore,
     folders: &Arc<folders::Folders>,
@@ -133,7 +154,7 @@ pub(crate) fn handle_post_deploy(
 fn deploy(
     store: &SharedStore,
     deployments: &Mutex<BTreeMap<String, Deployment>>,
-    deployments_path: &str,
+    deployments_path: &Place,
     policy: &Policy,
     secrets: &SecretStore,
     folders: &Arc<folders::Folders>,
@@ -225,10 +246,10 @@ fn deploy(
     if let Some(why) = policy.refuses(&manifest).or_else(|| seen.refuses(&manifest)).or_else(|| secrets.refuses(&body.slug, &holon_core::sent_secrets(root_unit, &resolver))) {
         return err(400, format!("this host can't grant that: {why}"));
     }
-    let (previous, previous_unit, previous_browsers) = previous_of(deployments, &body.slug);
-    let (mut needed, withheld) = approval_needed(policy, &manifest, previous.as_ref(), previous_unit, unit_hash, agent);
+    let previous = previous_of(deployments, &body.slug);
+    let (mut needed, withheld) = approval_needed(policy, &manifest, &previous, server.as_ref(), unit_hash, agent);
     if agent {
-        needed.extend(browsers_added(&body.browsers, &previous_browsers));
+        needed.extend(browsers_added(&body.browsers, &previous.browsers));
     }
     let missing: Vec<String> = needed.into_iter().filter(|item| !body.acknowledge.contains(item)).collect();
     if agent && !missing.is_empty() {
@@ -258,7 +279,7 @@ fn deploy(
     }
     // Limits the host lowered stay lowered: a new version doesn't undo the host's choice, unless
     // the deploy asks for that limit anew and a person approves it.
-    if let Some(previous) = &previous {
+    if let Some(previous) = &previous.grant {
         grant.lowered = previous
             .lowered
             .iter()
@@ -525,10 +546,11 @@ fn preview_value(
     // As the deploy will derive it: on a schedule, it runs on the clock.
     let scheduled = body.interval_seconds.is_some() && declaration_of(root_unit) != Some("server");
     let manifest = Manifest::new(holon_core::deployed_capabilities(root_unit, &resolver, scheduled).iter(), body.requirements.clone().of_unit(root_unit, &resolver));
-    let (previous, previous_unit, previous_browsers) = previous_of(deployments, &body.slug);
-    let (mut needs, withheld) = approval_needed(policy, &manifest, previous.as_ref(), previous_unit, unit_hash, agent);
+    let previous = previous_of(deployments, &body.slug);
+    let server = read_server(root_unit, &resolver).ok();
+    let (mut needs, withheld) = approval_needed(policy, &manifest, &previous, server.as_ref(), unit_hash, agent);
     if agent {
-        needs.extend(browsers_added(&body.browsers, &previous_browsers));
+        needs.extend(browsers_added(&body.browsers, &previous.browsers));
     }
     let items = manifest.items();
     let granted: Vec<&String> = items.iter().filter(|i| !needs.contains(*i) && !withheld.contains(*i)).collect();
@@ -537,7 +559,7 @@ fn preview_value(
         let table = deployments.lock().unwrap();
         (table.keys().cloned().collect(), table.get(&body.slug).and_then(|d| d.versions.last()).and_then(|v| v.request.clone()))
     };
-    let now: Option<Vec<String>> = previous.as_ref().map(|g| g.items.iter().cloned().collect());
+    let now: Option<Vec<String>> = previous.grant.as_ref().map(|g| g.items.iter().cloned().collect());
     let optional: Vec<String> = manifest.requirements.optional.iter().cloned().collect();
     let server = touches::Server { slug: &body.slug, secrets, folders, policy, deployed };
     let list = |set: &BTreeSet<String>| set.iter().cloned().collect::<Vec<_>>();
@@ -561,7 +583,7 @@ fn preview_value(
         // Where each secret it reads is sent (secret → hosts): said beside the secret's item.
         "sent": &sent,
         // What the slug's grant covers now (none for a first deploy): beside `items`, what changes.
-        "granted_now": previous.as_ref().map(|g| &g.items),
+        "granted_now": previous.grant.as_ref().map(|g| &g.items),
         // Secrets it can run without that an agent's deploy leaves out, for a person to grant back.
         "withheld": withheld,
         "refused": policy.refuses(&manifest).or_else(|| {
@@ -839,7 +861,7 @@ pub(crate) fn handle_get_state(deployments: &Mutex<BTreeMap<String, Deployment>>
 /// the slug didn't exist.
 pub(crate) fn handle_delete_deployment(
     deployments: &Mutex<BTreeMap<String, Deployment>>,
-    deployments_path: &str,
+    deployments_path: &Place,
     slug: &str,
 ) -> Response {
     let removed = {
@@ -911,7 +933,7 @@ pub(crate) fn record_trigger(deployments: &Mutex<BTreeMap<String, Deployment>>, 
 pub(crate) fn handle_post_trigger(
     store: &SharedStore,
     deployments: &Mutex<BTreeMap<String, Deployment>>,
-    deployments_path: &str,
+    deployments_path: &Place,
     slug: &str,
     request: &Request,
 ) -> Response {
@@ -965,7 +987,7 @@ pub(crate) fn handle_post_trigger(
 
     record_trigger(deployments, slug, false);
     let mut entry = run_entry("trigger", started, &extra_sourced, &run);
-    match durable::park_if_waiting(deployments, store, slug, &unit_hash, "trigger", None, &[], &extra_sourced, &run, &waits) {
+    match durable::park_if_waiting(deployments, store, slug, &unit_hash, "trigger", None, holon_core::LogLevel::Strict, &[], &extra_sourced, &run, &waits) {
         Ok(names) => entry.parked = names,
         Err(e) => entry.error = Some(e),
     }
@@ -1007,7 +1029,7 @@ pub(crate) fn handle_post_trigger(
 pub(crate) fn handle_post_action(
     store: &SharedStore,
     deployments: &Mutex<BTreeMap<String, Deployment>>,
-    deployments_path: &str,
+    deployments_path: &Place,
     slug: &str,
     name: &str,
     request: &Request,
@@ -1067,7 +1089,7 @@ impl ActionRan {
 pub(crate) fn run_action(
     store: &SharedStore,
     deployments: &Mutex<BTreeMap<String, Deployment>>,
-    deployments_path: &str,
+    deployments_path: &Place,
     slug: &str,
     name: &str,
     input: Result<Value, String>,
@@ -1137,7 +1159,7 @@ pub(crate) fn run_action(
     entry.by = by.map(String::from);
     let answer_json = answer.as_ref().map_or(Some("null".to_string()), holon_core::stringify_json);
     entry.response_body = Some(if run.secret_fed.derives_output(0) { crate::taint::WITHHELD.to_string() } else { answer_json.clone().unwrap_or_default() });
-    match durable::park_if_waiting(deployments, store, slug, &action.handler, "trigger", Some(action.label.clone()), &inputs, &sourced, &run, &waits) {
+    match durable::park_if_waiting(deployments, store, slug, &action.handler, "trigger", Some(action.label.clone()), action.log, &inputs, &sourced, &run, &waits) {
         Ok(names) => entry.parked = names,
         Err(e) => entry.error = Some(e),
     }
@@ -1574,15 +1596,27 @@ fn restore_plan(state: &AppState, slug: &str, point: Point, code: bool, with_sta
 /// and collections aren't counted: those are what it puts back.
 fn state_change(state: &AppState, slug: &str, snapshot: &str, label: &str, since: &[LogEntry]) -> Result<serde_json::Value, Response> {
     let back = crate::restore::snapshot_refs(snapshot, &state.store).map_err(|e| err(500, format!("the state {label} left can't be read: {e}")))?;
-    let (live, redactor, before) = match state.deployments.lock().unwrap().get(slug) {
+    let (live, redactor, before, unrecorded) = match state.deployments.lock().unwrap().get(slug) {
         Some(d) => {
             // The runs before the point: what a file was there, the last write before it.
             let first = since.first().map_or(u64::MAX, |e| e.seq);
             let log = (!since.is_empty()).then(|| (Arc::clone(&d.log), first));
-            (d.state.clone(), Some(Redactor::of(&d.secrets)), log)
+            // Only when it keeps a handler unrecorded: finding which do something outside its
+            // state loads its unit's closure.
+            let unrecorded = d.server.as_ref().filter(|_| !d.permit.unrecorded.is_empty()).map(|s| (s.clone(), d.unit, Arc::clone(&d.permit)));
+            (d.state.clone(), Some(Redactor::of(&d.secrets)), log, unrecorded)
         }
-        None => (None, None, None),
+        None => (None, None, None, None),
     };
+    // The handlers it keeps unrecorded that do something outside its state: what their runs did
+    // isn't in the runs since.
+    let unrecorded: Vec<String> = unrecorded
+        .and_then(|(server, unit, permit)| {
+            let resolver = closure(&state.store, unit).ok()?;
+            let outside = |h: &Hash| resolver.resolve(h).is_none_or(|u| capabilities(u, &resolver).iter().any(|c| !c.is_sourced() && !matches!(c, Capability::StateWrite(_) | Capability::CollectionWrite(_))));
+            Some(server.handlers().filter(|(label, _, h)| permit.unrecorded.contains(label) && outside(h)).map(|(label, _, _)| label).collect())
+        })
+        .unwrap_or_default();
     // Read with the table let go.
     let before: Vec<LogEntry> = before.map(|(log, first)| log.after(None, usize::MAX).into_iter().filter(|e| e.seq < first).collect()).unwrap_or_default();
     let now = live.as_ref().map(|arc| arc.state.lock().unwrap().refs()).unwrap_or_default();
@@ -1628,6 +1662,7 @@ fn state_change(state: &AppState, slug: &str, snapshot: &str, label: &str, since
         "files_more": values["files"]["more"],
         "runs_since": since.len(),
         "effects_since": effects,
+        "unrecorded": unrecorded,
     }))
 }
 

@@ -98,14 +98,17 @@ test("the flow's text drives its canvas, and the canvas its text", async ({ page
   expect(doc.source).toContain("uppercase(");
 
   // A canvas change writes the text again: the comment goes, and says so; undo brings it back.
+  // The canvas commits an edit 400 ms after it settles (history.ts), and the steps above can each
+  // come quicker than that (picking a line picks its node, a change too), folding the text's
+  // version into the delete, whose undo then goes back to the sample: so the delete waits until
+  // the text's version is a step of its own, which enables undo. Undo is pressed as such: a
+  // dispatched click doesn't wait for it to be enabled as a pointer click does.
+  const undo = page.locator(".hl-canvas").getByRole("button", { name: "⟲" });
+  await expect(undo).toBeEnabled();
   await pick(nodeNamed(page, "uppercase"));
   await page.keyboard.press("Delete");
   await expect(pane.getByRole("status")).toContainText("a comment was dropped");
   await expect(editor).not.toContainText("# says hello");
-  // Undo is enabled once the canvas commits the edit (400 ms after it settles, history.ts); a
-  // dispatched click doesn't wait for that as a pointer click does, and a disabled one is dropped.
-  const undo = page.locator(".hl-canvas").getByRole("button", { name: "⟲" });
-  await expect(undo).toBeEnabled();
   await undo.dispatchEvent("click");
   await expect(editor).toContainText("# says hello, loudly");
 });

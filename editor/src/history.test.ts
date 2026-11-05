@@ -1,5 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { History } from "./history";
+import type { PrimitiveNodeType } from "./PrimitiveNode";
+import { newHistory, snapshotOf } from "./useCanvasHistory";
 
 const make = (initial = "A") => new History<string>(initial, (a, b) => a === b);
 
@@ -40,5 +42,18 @@ describe("History", () => {
     expect(h.commit(0)).toBe(false);
     for (let i = 1; i <= 5; i++) h.commit(i);
     expect(h.past).toEqual([2, 3, 4]);
+  });
+});
+
+describe("the canvas's snapshots", () => {
+  // Regression: a flow opens unmeasured and React Flow measures it, which was committed as an
+  // edit: undo was on with nothing to undo, and a test waiting for it waited for nothing.
+  it("leave out what React Flow measures, so measuring is no edit", () => {
+    const node = { id: "a-0", type: "primitive", position: { x: 0, y: 0 }, data: {} } as unknown as PrimitiveNodeType;
+    const h = newHistory(snapshotOf([node], []));
+    const measured = { ...node, measured: { width: 160, height: 80 }, width: 160, height: 80, selected: true };
+    expect(h.commit(snapshotOf([measured], []))).toBe(false);
+    expect(h.past).toHaveLength(0);
+    expect(h.commit(snapshotOf([{ ...measured, position: { x: 40, y: 0 } }], []))).toBe(true);
   });
 });

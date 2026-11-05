@@ -25,7 +25,7 @@
 //! tried again after a growing pause, up to five minutes, and said so once until it recovers.
 
 use std::collections::VecDeque;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
@@ -75,8 +75,8 @@ struct Queue {
 static EXPORTER: OnceLock<Arc<Exporter>> = OnceLock::new();
 
 /// Where the heads' queue and receipts are kept for the deployments file at `deployments_path`.
-pub fn dir_for(deployments_path: &str) -> Option<PathBuf> {
-    (deployments_path != ":memory:").then(|| Path::new(deployments_path).with_extension("heads"))
+pub fn dir_for(deployments_path: &crate::paths::Place) -> Option<PathBuf> {
+    deployments_path.beside("heads").map(PathBuf::from)
 }
 
 /// Send heads to `url` from now on, every `every`: the exporter every run's head goes to.

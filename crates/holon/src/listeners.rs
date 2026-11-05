@@ -15,7 +15,7 @@ use crate::*;
 pub(crate) fn serve_data(
     store: &SharedStore,
     deployments: &Mutex<BTreeMap<String, Deployment>>,
-    deployments_path: &str,
+    deployments_path: &Place,
     slug: &str,
     request: &DataRequest,
 ) -> DataResponse {
@@ -37,7 +37,7 @@ pub(crate) fn allowed_origin(deployments: &Mutex<BTreeMap<String, Deployment>>, 
 pub(crate) fn serve_data_forwarding(
     store: &SharedStore,
     deployments: &Mutex<BTreeMap<String, Deployment>>,
-    deployments_path: &str,
+    deployments_path: &Place,
     slug: &str,
     request: &DataRequest,
     forward: Option<outbound::Forwarder>,
@@ -102,7 +102,7 @@ fn ran_entry(started: (u64, std::time::Instant), sourced: &[(Capability, Value)]
 fn serve_flow(
     store: &SharedStore,
     deployments: &Mutex<BTreeMap<String, Deployment>>,
-    deployments_path: &str,
+    deployments_path: &Place,
     slug: &str,
     request: &DataRequest,
     forward: Option<outbound::Forwarder>,
@@ -182,7 +182,7 @@ fn serve_flow(
             // One copy of the request, lent to the run, the check for a wait and the entry.
             let inputs = [Some(req)];
             let mut run = fire_with_state(endpoint, &inputs, &resolver, store, state.as_ref(), sourced, &permit, false, &secrets, &mut waits, None);
-            parked = durable::park_if_waiting(deployments, store, slug, &matched.endpoint, "request", Some(route.to_string()), &inputs, sourced, &run, &waits);
+            parked = durable::park_if_waiting(deployments, store, slug, &matched.endpoint, "request", Some(route.to_string()), level, &inputs, sourced, &run, &waits);
             answer_derived = run.secret_fed.derives_output(0);
             // An answer carrying a secret goes to the caller only where a person approved it
             // (`SecretAnswer("name")`): one the graph says may carry it, or one that holds its
@@ -260,6 +260,8 @@ fn serve_flow(
         Ok(_) => ran.as_ref().and_then(|r| r.error.clone()),
     };
     let parked_any = matches!(&parked, Ok(names) if !names.is_empty());
+    // Whether an unrecorded run sent packs, which go out even though it isn't logged.
+    let sends = level == holon_core::LogLevel::Unrecorded && ran.as_ref().is_some_and(|r| r.run.performed.iter().chain(&r.run.progress).any(|(c, _)| matches!(c, Capability::ChannelSend(_))));
     let entry = || {
         let mut entry = match ran {
             Some(Ran { entry: Some(entry), .. }) => entry,
@@ -289,7 +291,7 @@ fn serve_flow(
     // A strict run answers once its record is on disk; one whose record may not be isn't
     // answered as done (C2 e).
     let counted = Counted { route: route.as_deref(), at_ms: started.0, duration_ms: started.1.elapsed().as_secs_f64() * 1000.0, status: answer.status, error: error.as_deref() };
-    if let Some(Logged { kept: Err(e), .. }) = log_or_count(deployments, slug, counted, entry, tokens, level) {
+    if let Some(Logged { kept: Err(e), .. }) = log_or_count(deployments, slug, counted, entry, tokens, level, sends) {
         answer = data::DataResponse::json_error(500, &format!("the request ran, but {e}"));
     }
     // The state is kept by its head, written as the change landed (claims.rs); the deployments

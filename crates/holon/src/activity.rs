@@ -4,10 +4,12 @@
 //! this log keeps that it was, and who did it. Secrets have their own audit (secrets.rs).
 //! `GET /activity?limit=n` answers the newest first.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Mutex;
 
 use rouille::{Request, Response};
+
+use crate::paths::Place;
 use serde::{Deserialize, Serialize};
 
 /// One thing done.
@@ -32,15 +34,15 @@ pub(crate) struct Activity {
 const MAX_READ: usize = 500;
 
 impl Activity {
-    /// Beside the deployments file, or in memory for `":memory:"`.
-    pub(crate) fn beside(deployments_path: &str) -> Activity {
-        let path = (deployments_path != ":memory:").then(|| Path::new(deployments_path).with_extension("activity.jsonl"));
+    /// Beside the deployments file, or in memory if that is kept nowhere.
+    pub(crate) fn beside(deployments_path: &Place) -> Activity {
+        let path = deployments_path.beside("activity.jsonl").map(PathBuf::from);
         Activity { path, kept: Mutex::new(Vec::new()) }
     }
 
     #[cfg(test)]
     pub(crate) fn memory() -> Activity {
-        Activity::beside(":memory:")
+        Activity::beside(&Place::Nowhere)
     }
 
     pub(crate) fn record(&self, action: &str, target: &str, by: Option<&str>) {

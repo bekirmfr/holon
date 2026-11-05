@@ -8,7 +8,7 @@ use crate::*;
 /// separator) and avoids any path-traversal-shaped weirdness reaching `strip_prefix`.
 /// Write the whole current deployments table to `path` as a JSON array of `DeploymentRecord`
 /// (write-through — called after every successful deploy/delete, not batched or scheduled).
-/// A no-op for the `":memory:"` sentinel. Failures are logged, not fatal — a person's server
+/// A no-op for a table kept nowhere. Failures are logged, not fatal — a person's server
 /// keeps working even if the disk write failed; they just won't survive a restart until it
 /// succeeds again, which is the honest degradation for something that was opt-in persistence
 /// to begin with.
@@ -19,11 +19,9 @@ use crate::*;
 /// was held throughout, so one deployment mid-fire (holding its state lock) or one slow disk
 /// write stalled every endpoint and the clock scheduler. `PERSIST` serializes whole
 /// snapshot-and-write passes, so an older snapshot can never land on disk after a newer one.
-pub(crate) fn persist_deployments(path: &str, deployments: &Mutex<BTreeMap<String, Deployment>>) {
+pub(crate) fn persist_deployments(path: &Place, deployments: &Mutex<BTreeMap<String, Deployment>>) {
     static PERSIST: Mutex<()> = Mutex::new(());
-    if path == ":memory:" {
-        return;
-    }
+    let Some(path) = path.at() else { return };
     let _persist = PERSIST.lock().unwrap();
     let records: Vec<DeploymentRecord> = deployments
         .lock()
@@ -53,9 +51,13 @@ pub(crate) fn persist_deployments(path: &str, deployments: &Mutex<BTreeMap<Strin
                 grant: Some(dep.grant.clone()),
                 // What a waiting run keeps that may hold a secret is sealed under the secrets
                 // master key, which is kept apart from this file: a backup of it carries none.
+                // With what each sent as it parked, which its channels hold.
                 parked: {
                     let sealer = dep.secrets.lock().unwrap().sealer.clone();
-                    dep.parked.values().map(|p| sealer.as_deref().map_or_else(|| p.clone(), |s| p.sealed_for_disk(slug, s))).collect()
+                    dep.parked
+                        .values()
+                        .map(|p| ParkedRun { sent: dep.channels.waiting_sent(&p.run_id), ..sealer.as_deref().map_or_else(|| p.clone(), |s| p.sealed_for_disk(slug, s)) })
+                        .collect()
                 },
             }
         })
@@ -64,7 +66,7 @@ pub(crate) fn persist_deployments(path: &str, deployments: &Mutex<BTreeMap<Strin
         Ok(bytes) => {
             // Owner-only, as the secrets and the flow log are: it holds the flows' documents,
             // grants and what their waiting runs need.
-            if let Err(e) = crate::sealing::write_private(Path::new(path), &bytes) {
+            if let Err(e) = crate::sealing::write_private(path, &bytes) {
                 eprintln!("warning: failed to persist deployments to {path:?}: {e}");
             }
         }
@@ -74,13 +76,13 @@ pub(crate) fn persist_deployments(path: &str, deployments: &Mutex<BTreeMap<Strin
 
 /// Where deployment `slug`'s state is kept for the deployments file at `path`: a file beside its
 /// run log's folder holding the hash of its current snapshot (docs/L4s/request-path-L4.md, C3 b),
-/// written as each change lands. None for `:memory:`.
-pub(crate) fn state_head_for(path: &str, slug: &str) -> Option<PathBuf> {
-    (path != ":memory:").then(|| Path::new(path).with_extension("state").join(slug))
+/// written as each change lands. None for a table kept nowhere.
+pub(crate) fn state_head_for(path: &Place, slug: &str) -> Option<PathBuf> {
+    path.beside("state").map(|dir| dir.join(slug).into())
 }
 
 /// Load deployments from `path` at startup — the inverse of `persist_deployments`. Returns an
-/// empty table for the `":memory:"` sentinel or a missing file (first run). A file that exists
+/// empty table for one kept nowhere or a missing file (first run). A file that exists
 /// but can't be read or parsed is an `Err`, and the server refuses to start: starting empty
 /// would let the first deploy overwrite the file — every deployment and all its state — with
 /// the empty table. Each record is re-materialized against the
@@ -94,41 +96,39 @@ pub(crate) fn state_head_for(path: &str, slug: &str) -> Option<PathBuf> {
 /// state-capable unit with no persisted state (an old file predating this feature) starts from
 /// an empty map, same as a fresh `/deploy`.
 pub(crate) fn load_deployments(
-    path: &str,
+    path: &Place,
     store: &SharedStore,
     policy: &Policy,
 ) -> Result<BTreeMap<String, Deployment>, String> {
     let mut loaded = BTreeMap::new();
-    if path == ":memory:" {
-        return Ok(loaded);
-    }
+    let Some(file) = path.at() else { return Ok(loaded) };
 
-    let bytes = match std::fs::read(path) {
+    let bytes = match std::fs::read(file) {
         Ok(b) => b,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(loaded),
-        Err(e) => return Err(format!("could not read {path:?}: {e}")),
+        Err(e) => return Err(format!("could not read {file:?}: {e}")),
     };
     let records: Vec<DeploymentRecord> = serde_json::from_slice(&bytes)
-        .map_err(|e| format!("{path:?} is not valid deployment JSON: {e}"))?;
+        .map_err(|e| format!("{file:?} is not valid deployment JSON: {e}"))?;
 
     for record in records {
         let slug = &record.slug;
         let Some(unit_hash) = parse_hash(&record.unit) else {
-            return Err(format!("deployment {slug:?} in {path:?}: {:?} is not a valid hash", record.unit));
+            return Err(format!("deployment {slug:?} in {file:?}: {:?} is not a valid hash", record.unit));
         };
         let resolver = closure(store, unit_hash)
-            .map_err(|e| format!("deployment {slug:?} in {path:?}: store error: {e:?}"))?;
+            .map_err(|e| format!("deployment {slug:?} in {file:?}: store error: {e:?}"))?;
         let Some(root_unit) = resolver.resolve(&unit_hash) else {
             return Err(format!(
-                "deployment {slug:?} in {path:?}: unit {} is not in the store. Start with the --store it \
-                 was deployed into, run with --deployments :memory:, or move {path:?} aside",
+                "deployment {slug:?} in {file:?}: unit {} is not in the store. Start with the --store it \
+                 was deployed into, run with --deployments :memory:, or move {file:?} aside",
                 record.unit
             ));
         };
         let server = match declaration_of(root_unit) {
             Some("server") => Some(
                 read_server(root_unit, &resolver)
-                    .map_err(|e| format!("deployment {slug:?} in {path:?}: not a valid server declaration: {e:?}"))?,
+                    .map_err(|e| format!("deployment {slug:?} in {file:?}: not a valid server declaration: {e:?}"))?,
             ),
             _ => None,
         };
@@ -162,9 +162,9 @@ pub(crate) fn load_deployments(
         let state = match head.as_deref().and_then(|h| std::fs::read_to_string(h).ok()) {
             Some(hex) => {
                 let refs = crate::restore::snapshot_refs(hex.trim(), store)
-                    .map_err(|e| format!("deployment {slug:?} in {path:?}: its state head names no snapshot the store has: {e}"))?;
+                    .map_err(|e| format!("deployment {slug:?} in {file:?}: its state head names no snapshot the store has: {e}"))?;
                 let state = State::load(&refs, store)
-                    .map_err(|e| format!("deployment {slug:?} in {path:?}: its state can't be loaded from the store: {e:?}"))?;
+                    .map_err(|e| format!("deployment {slug:?} in {file:?}: its state can't be loaded from the store: {e:?}"))?;
                 Some(Arc::new(claims::StateCell::kept_at(state, head)))
             }
             None if derives_state(caps.iter()) => Some(Arc::new(claims::StateCell::kept_at(State::new(), head))),
@@ -192,9 +192,9 @@ pub(crate) fn load_deployments(
         };
         let values = store.clone();
         let versions = crate::deploy::complete_versions(kept, current, &values)
-            .map_err(|e| format!("deployment {slug:?} in {path:?}: {e}"))?;
+            .map_err(|e| format!("deployment {slug:?} in {file:?}: {e}"))?;
 
-        println!("loaded deployment {:?} from {path:?} (triggers: {triggers:?})", record.slug);
+        println!("loaded deployment {:?} from {file:?} (triggers: {triggers:?})", record.slug);
         let mut log = Log::for_deployment(path, &record.slug);
         log.retain(permit.log.keep_runs as usize, permit.log.max_age_ms());
         if !log.breaks().is_empty() {
@@ -206,6 +206,9 @@ pub(crate) fn load_deployments(
             );
         }
         let channels = Arc::new(channels::Channels::from_log(&log, &permit.channels));
+        for p in &record.parked {
+            channels.keep_waiting_sent(&p.run_id, p.sent.clone());
+        }
         let events = crate::events::Events::for_deployment(path, &record.slug);
         if !events.breaks().is_empty() {
             eprintln!("holon: {:?}'s events were changed outside holon: event {:?} doesn't follow the one before it", record.slug, events.breaks());
@@ -265,17 +268,15 @@ pub(crate) fn load_deployments(
     Ok(loaded)
 }
 
-/// Persist the flows table — same write-through discipline and `":memory:"` opt-out as
+/// Persist the flows table — same write-through discipline and opt-out (kept nowhere) as
 /// `persist_deployments`, but simpler: a `FlowRecord` is already its own on-disk shape (no
 /// store cross-references, no re-derivation needed on the way back in).
-pub(crate) fn persist_flows(path: &str, flows: &BTreeMap<String, FlowRecord>) {
-    if path == ":memory:" {
-        return;
-    }
+pub(crate) fn persist_flows(path: &Place, flows: &BTreeMap<String, FlowRecord>) {
+    let Some(path) = path.at() else { return };
     let records: Vec<&FlowRecord> = flows.values().collect();
     match serde_json::to_vec_pretty(&records) {
         Ok(bytes) => {
-            if let Err(e) = write_atomically(Path::new(path), &bytes) {
+            if let Err(e) = write_atomically(path, &bytes) {
                 eprintln!("warning: failed to persist flows to {path:?}: {e}");
             }
         }
@@ -284,14 +285,12 @@ pub(crate) fn persist_flows(path: &str, flows: &BTreeMap<String, FlowRecord>) {
 }
 
 /// Load flows at startup — the inverse of `persist_flows`. A missing file (first run) or
-/// `":memory:"` yields an empty table; an unreadable or unparseable file is an `Err` and the
+/// one kept nowhere yields an empty table; an unreadable or unparseable file is an `Err` and the
 /// server refuses to start, for the same reason as `load_deployments`: the next save would
 /// overwrite every flow with the empty table. A record whose name fails `is_valid_slug` is an
 /// `Err` too, for the same reason.
-pub(crate) fn load_flows(path: &str) -> Result<BTreeMap<String, FlowRecord>, String> {
-    if path == ":memory:" {
-        return Ok(BTreeMap::new());
-    }
+pub(crate) fn load_flows(path: &Place) -> Result<BTreeMap<String, FlowRecord>, String> {
+    let Some(path) = path.at() else { return Ok(BTreeMap::new()) };
     let bytes = match std::fs::read(path) {
         Ok(b) => b,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(BTreeMap::new()),

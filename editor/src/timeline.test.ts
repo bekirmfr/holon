@@ -92,6 +92,8 @@ describe("a restore's words", () => {
       "The state it replaces is kept, as the ending session's.",
     ]);
     expect(stateLines({ ...change, changed: [], removed: [], runs_since: 0, effects_since: {} })[0]).toMatch(/changes no key/);
+    expect(stateLines({ ...change, unrecorded: ["POST /quiet"] })).toContain("Runs of POST /quiet (unrecorded) aren't logged: what they did outside its state isn't counted here.");
+    expect(stateLines(change).some((l) => l.includes("unrecorded"))).toBe(false);
   });
 
   it("asks for approval when the code needs it", () => {

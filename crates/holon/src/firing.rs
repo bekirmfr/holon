@@ -631,7 +631,7 @@ fn run_attempt(
     // A file as a request's body is sent from a folder the deployment reads.
     let forward = waits.forward.clone();
     let (slug, run, chain) = (waits.slug.clone().unwrap_or_default(), waits.run_id.clone().unwrap_or_default(), waits.chain.clone());
-    let caller = calls::Caller { store, fed: &secret_fed, permit, vault: secrets, slug: &slug, run: &run, chain: &chain };
+    let caller = calls::Caller { store, fed: &secret_fed, permit, vault: secrets, slug: &slug, run: &run, chain: &chain, unrecorded: waits.unrecorded };
     let sender = folders::Sender {
         outbound: &permit.outbound,
         folders: waits.folders.clone(),
@@ -886,14 +886,20 @@ pub(crate) fn handle_post_fire(store: &SharedStore, request: &Request) -> Respon
 /// counted in its handler's tally and leaves no entry, failed or not (resilience-audit-L4.md,
 /// §2.8, which reversed §8 Q10). Answers the seq the entry got (none for an unrecorded run that left none),
 /// and whether it is known kept.
+///
+/// Its packs go out once its record is on disk (channels.rs): a strict run's, with those of every
+/// run before it, once its sync is done; a lazy one's with the next sync (`sync_logs`).
 pub(crate) fn log_run(deployments: &Mutex<BTreeMap<String, Deployment>>, slug: &str, entry: LogEntry, tokens: Redactor, declared: holon_core::LogLevel) -> Option<Logged> {
-    let Some((log, seq, level)) = push_run(deployments, slug, entry, tokens, declared)? else {
+    let Some(Pushed { log, seq, level, channels, permit }) = push_run(deployments, slug, entry, tokens, declared)? else {
         return Some(Logged { seq: None, kept: Ok(()) });
     };
     let kept = match level {
         holon_core::LogLevel::Strict => log.sync_through(seq),
-        holon_core::LogLevel::Lazy | holon_core::LogLevel::Unrecorded => Ok(()),
+        holon_core::LogLevel::Lazy | holon_core::LogLevel::Unrecorded => return Some(Logged { seq: Some(seq), kept: Ok(()) }),
     };
+    if kept.is_ok() {
+        channels.release(seq + 1, &permit.channels);
+    }
     Some(Logged { seq: Some(seq), kept })
 }
 
@@ -915,8 +921,9 @@ impl Counted<'_> {
 
 /// [`log_run`], the entry (and the tokens it is redacted of) made only if it is logged: a run its
 /// grant has unrecorded is counted under the table's lock, as `log_run` counts it, and nothing more
-/// is made of it (docs/L4s/interpreter-path-L4.md, the per-request bookkeeping). Otherwise
-/// `log_run`, which reads the level again.
+/// is made of it (docs/L4s/interpreter-path-L4.md, the per-request bookkeeping), unless it `sends`
+/// packs, which go out live ([`send_unlogged`]). Otherwise `log_run`, which reads the level again.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn log_or_count(
     deployments: &Mutex<BTreeMap<String, Deployment>>,
     slug: &str,
@@ -924,15 +931,41 @@ pub(crate) fn log_or_count(
     entry: impl FnOnce() -> LogEntry,
     tokens: impl FnOnce() -> Redactor,
     declared: holon_core::LogLevel,
+    sends: bool,
 ) -> Option<Logged> {
-    {
+    let sending = {
         let mut table = deployments.lock().unwrap();
         let dep = table.get_mut(slug)?;
-        if count_if_unrecorded(dep, &counted, declared).1 {
+        if !count_if_unrecorded(dep, &counted, declared).1 {
+            None
+        } else if sends {
+            Some((Arc::clone(&dep.channels), Arc::clone(&dep.secrets)))
+        } else {
             return Some(Logged { seq: None, kept: Ok(()) });
         }
+    };
+    if let Some((channels, secrets)) = sending {
+        send_unlogged(&channels, &secrets, entry(), tokens());
+        return Some(Logged { seq: None, kept: Ok(()) });
     }
     log_run(deployments, slug, entry(), tokens(), declared)
+}
+
+/// An unrecorded run's packs (channels.rs): what it sent, or for a part that settled waiting what
+/// it settled, redacted as a logged run's are, but sent live, with no id, and never kept. A pack's
+/// id is its run's log seq and the kept packs are rebuilt from the log, which doesn't hold the
+/// run: a subscriber there now gets them, and one that reconnects, or comes after a restart,
+/// doesn't.
+fn send_unlogged(channels: &channels::Channels, secrets: &Arc<Mutex<secrets::Resolved>>, mut entry: LogEntry, tokens: Redactor) {
+    if entry.performed.iter().chain(&entry.progress).any(|p| p.capability.starts_with("ChannelSend(")) {
+        let answered = std::mem::take(&mut entry.answered);
+        tokens.and(Redactor::of(secrets)).and(Redactor::answers(&answered.0, secrets)).entry(&mut entry);
+    }
+    // Through `packs_of` all the same: a parked run's earlier parts' sends aren't sent again, and
+    // a finished run lets go of them.
+    for (name, pack) in channels.packs_of(&entry, 0) {
+        channels.send_live(&name, pack.json);
+    }
 }
 
 /// [`count_if_unrecorded`] for a test, the handler declared unrecorded: whether it was counted only.
@@ -987,27 +1020,32 @@ impl Logged {
     }
 }
 
+/// A run's entry as `push_run` wrote it: the log it went to, its seq, its level, and the channels
+/// its packs are held in until it is on disk, with the deployment's limits for them.
+struct Pushed {
+    log: Arc<recorder::LogCell>,
+    seq: u64,
+    level: holon_core::LogLevel,
+    channels: Arc<channels::Channels>,
+    permit: Arc<Permit>,
+}
+
 /// `log_run`'s write: the run's level as its grant holds it, and, unless it is an unrecorded run
-/// (counted, and nothing written: `Some(None)`), the entry pushed under the
-/// deployment's log lock, with the log it went to. None: no such deployment.
-#[allow(clippy::type_complexity)]
-fn push_run(
-    deployments: &Mutex<BTreeMap<String, Deployment>>,
-    slug: &str,
-    mut entry: LogEntry,
-    tokens: Redactor,
-    declared: holon_core::LogLevel,
-) -> Option<Option<(Arc<recorder::LogCell>, u64, holon_core::LogLevel)>> {
-    let (log, secrets, channels, permit, session, level) = {
+/// (counted, its packs sent live, and nothing written: `Some(None)`), the entry pushed under the
+/// deployment's log lock, its packs held. None: no such deployment.
+fn push_run(deployments: &Mutex<BTreeMap<String, Deployment>>, slug: &str, mut entry: LogEntry, tokens: Redactor, declared: holon_core::LogLevel) -> Option<Option<Pushed>> {
+    let (log, secrets, channels, permit, session, level, only_counted) = {
         let mut table = deployments.lock().unwrap();
         let dep = table.get_mut(slug)?;
         let counted = Counted { route: entry.route.as_deref(), at_ms: entry.at_ms, duration_ms: entry.duration_ms, status: entry.status.unwrap_or(200), error: entry.error.as_deref() };
         let (level, only_counted) = count_if_unrecorded(dep, &counted, declared);
-        if only_counted {
-            return Some(None);
-        }
-        (Arc::clone(&dep.log), Arc::clone(&dep.secrets), Arc::clone(&dep.channels), Arc::clone(&dep.permit), dep.life.sessions.last().map_or(0, |s| s.number), level)
+        let session = dep.life.sessions.last().map_or(0, |s| s.number);
+        (Arc::clone(&dep.log), Arc::clone(&dep.secrets), Arc::clone(&dep.channels), Arc::clone(&dep.permit), session, level, only_counted)
     };
+    if only_counted {
+        send_unlogged(&channels, &secrets, entry, tokens);
+        return Some(None);
+    }
     let answered = std::mem::take(&mut entry.answered);
     let redactor = tokens.and(Redactor::of(&secrets)).and(Redactor::answers(&answered.0, &secrets));
     entry.session = session;
@@ -1015,16 +1053,15 @@ fn push_run(
     // run's is: under the lock only its seq and the line before's hash go in.
     let made = redacted_line(&redactor, &mut entry);
     let seq = log.with(|log| {
-        // Its packs go out as it is logged, in the log's order: the run is over and its writes
-        // have landed, and what a subscriber gets is what the log holds (channels.rs).
+        // Its packs are held in the log's order, to go out once its record is on disk: the run is
+        // over and its writes have landed, and what a subscriber gets is what the log holds, after
+        // a power loss too, so no pack's id is given twice (channels.rs).
         let packs = channels.packs_of(&entry, log.next_seq());
         let seq = log.push_made(entry, made);
-        for (name, pack) in packs {
-            channels.send(&name, pack, &permit.channels);
-        }
+        channels.hold(seq, packs);
         seq
     });
-    Some(Some((log, seq, level)))
+    Some(Some(Pushed { log, seq, level, channels, permit }))
 }
 
 /// `entry` redacted by `redactor`, and its line. With nothing to mark, redacting can only escape a

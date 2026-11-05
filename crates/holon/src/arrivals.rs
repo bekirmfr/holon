@@ -82,7 +82,7 @@ impl Watch {
     /// The folders `caps` start runs on, for deployment `slug`, as `triggers` say (a folder none
     /// names: its files new or changed), with what it saw of them before (kept beside the
     /// deployments file at `deployments_path`), or none seen yet.
-    pub(crate) fn open(deployments_path: &str, slug: &str, caps: &holon_core::Capabilities, mut triggers: Vec<holon_core::FileTrigger>) -> Watch {
+    pub(crate) fn open(deployments_path: &Place, slug: &str, caps: &holon_core::Capabilities, mut triggers: Vec<holon_core::FileTrigger>) -> Watch {
         let folders: BTreeSet<String> = caps
             .iter()
             .filter_map(|c| match c {
@@ -96,7 +96,7 @@ impl Watch {
                 triggers.push(holon_core::FileTrigger { folder: f.clone(), deleted: false, matching: String::new() });
             }
         }
-        let file = (deployments_path != ":memory:").then(|| Path::new(deployments_path).with_extension("arrivals").join(format!("{slug}.json")));
+        let file = deployments_path.beside("arrivals").map(|dir| dir.join(format!("{slug}.json")).into());
         let mut seen: BTreeMap<String, Seen> =
             file.as_ref().and_then(|f| std::fs::read(f).ok()).and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
         seen.retain(|f, _| folders.contains(f));
@@ -226,7 +226,7 @@ type Watching = (String, Hash, Option<DeploymentState>, Arc<Permit>, Vault, Arc<
 /// One look at every running deployment's watched folders, each deployment on its own thread:
 /// the runs new files start, one after another, before it returns.
 #[cfg(test)]
-pub(crate) fn run_arrivals(store: &SharedStore, deployments: &Mutex<BTreeMap<String, Deployment>>, deployments_path: &str) {
+pub(crate) fn run_arrivals(store: &SharedStore, deployments: &Mutex<BTreeMap<String, Deployment>>, deployments_path: &Place) {
     look_at(store, deployments, deployments_path, None);
 }
 
@@ -296,7 +296,7 @@ impl Notices {
 
 /// One look at the watched folders: all of them without `notices`, else those that may have
 /// changed.
-fn look_at(store: &SharedStore, deployments: &Mutex<BTreeMap<String, Deployment>>, deployments_path: &str, notices: Option<&mut Notices>) {
+fn look_at(store: &SharedStore, deployments: &Mutex<BTreeMap<String, Deployment>>, deployments_path: &Place, notices: Option<&mut Notices>) {
     let watching: Vec<Watching> = deployments
         .lock()
         .unwrap()
@@ -309,7 +309,7 @@ fn look_at(store: &SharedStore, deployments: &Mutex<BTreeMap<String, Deployment>
         .collect();
     // The folders each looks at: by their paths, those that may have changed.
     let paths = |files: &folders::Scoped, watch: &Watch| -> BTreeMap<String, PathBuf> {
-        watch.folders.iter().filter_map(|f| files.get(f).map(|b| (f.clone(), b.path))).collect()
+        watch.folders.iter().filter_map(|f| files.get(f).map(|b| (f.clone(), b.path.into()))).collect()
     };
     let due: Option<BTreeSet<PathBuf>> = notices.map(|n| n.changed(&watching.iter().flat_map(|w| paths(&w.5, &w.6).into_values()).collect()));
     thread::scope(|scope| {
@@ -340,7 +340,7 @@ fn look_at(store: &SharedStore, deployments: &Mutex<BTreeMap<String, Deployment>
 fn fire_one_arrival(
     store: &SharedStore,
     deployments: &Mutex<BTreeMap<String, Deployment>>,
-    deployments_path: &str,
+    deployments_path: &Place,
     slug: &str,
     unit_hash: Hash,
     handler: Option<&holon_core::FileHandler>,
@@ -394,17 +394,20 @@ fn fire_one_arrival(
     ];
     let started = started_now();
     let channels = deployments.lock().unwrap().get(slug).map(|d| Arc::clone(&d.channels));
-    let mut waits = RunWaits { folders: Some(Arc::clone(files)), channels, slug: Some(slug.to_string()), ..Default::default() };
+    let declared = handler.map_or_else(Default::default, |h| h.log);
+    // As a route's (listeners.rs): a run that won't be logged keeps no timeline.
+    let unrecorded = permit.log_level(label.as_deref(), declared) == holon_core::LogLevel::Unrecorded;
+    let mut waits = RunWaits { folders: Some(Arc::clone(files)), channels, slug: Some(slug.to_string()), unrecorded, ..Default::default() };
     let resolver = holon_module::WithEngine::new(&resolver, holon_module::shared());
     let run = fire_with_state(root_unit, &[], &resolver, store, state, &extra_sourced, permit, true, secrets, &mut waits, None);
     let mut entry = run_entry("file", started, &extra_sourced, &run);
     entry.route = label.clone();
-    match durable::park_if_waiting(deployments, store, slug, &unit_hash, "file", label.clone(), &[], &extra_sourced, &run, &waits) {
+    match durable::park_if_waiting(deployments, store, slug, &unit_hash, "file", label.clone(), declared, &[], &extra_sourced, &run, &waits) {
         Ok(names) => entry.parked = names,
         Err(e) => entry.error = Some(e),
     }
     let parked_any = !entry.parked.is_empty();
-    if let Some(l) = log_run(deployments, slug, entry, Redactor::tokens(&waits.tokens), handler.map_or_else(Default::default, |h| h.log)) {
+    if let Some(l) = log_run(deployments, slug, entry, Redactor::tokens(&waits.tokens), declared) {
         l.said(slug);
     }
     let which = label.as_ref().map(|l| format!(" {l}")).unwrap_or_default();
@@ -418,7 +421,7 @@ fn fire_one_arrival(
 }
 
 /// The watcher: a thread that looks at the watched folders that may have changed every [`POLL`].
-pub(crate) fn spawn_watcher(store: SharedStore, deployments: Arc<Mutex<BTreeMap<String, Deployment>>>, deployments_path: String) {
+pub(crate) fn spawn_watcher(store: SharedStore, deployments: Arc<Mutex<BTreeMap<String, Deployment>>>, deployments_path: Place) {
     thread::spawn(move || {
         let mut notices = Notices::new();
         loop {

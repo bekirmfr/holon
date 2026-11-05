@@ -147,6 +147,8 @@ export function stateLines(change: StateChange): string[] {
         ? `${runs} run(s) logged since ${change.from}, which did nothing outside its state.`
         : `${runs} run(s) logged since ${change.from} also did, outside its state, what a restore doesn't undo: ${effects.join(", ")}.`,
   );
+  const unrecorded = change.unrecorded ?? [];
+  if (unrecorded.length > 0) lines.push(`Runs of ${unrecorded.join(", ")} (unrecorded) aren't logged: what they did outside its state isn't counted here.`);
   lines.push("The state it replaces is kept, as the ending session's.");
   return lines;
 }

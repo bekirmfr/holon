@@ -763,14 +763,14 @@ static SAMPLES: &[Sample] = &[
     Sample {
         name: "status-board",
         title: "Status board (how each handler's runs are recorded)",
-        description: "A log level per handler: every run is recorded, and by default on disk before it answers (strict). A handler that only reads and answers may say lazy (recorded all the same, on disk within a second, so it answers without waiting on the disk) or unrecorded (counted, not logged, failed or not; a person approves it). One that writes is strict whatever it says.",
+        description: "A log level per handler, as its author chooses: every run is recorded, and by default on disk before it answers (strict). A handler may say lazy (recorded all the same, on disk within a second, so it answers without waiting on the disk), here one that writes, or unrecorded (counted, not logged, failed or not; a person approves it).",
         shows: &["log levels", "strict", "lazy", "unrecorded", "collections"],
         port: Some("8170"),
         interval: None,
         secrets: &[],
         optional: &[],
         browsers: None,
-        try_it: r#"deploy it (its approval asks to keep runs of GET /health and action report out of its log), then curl http://127.0.0.1:8170/health a few times ("ok", counted), curl -X POST -d '{"id":"a","text":"hi"}' http://127.0.0.1:8170/notes ("saved", strict) and curl http://127.0.0.1:8170/notes (the notes, lazy): holon history status-board lists the two notes runs and the health checks as one counted line, and view mode shows that line above the runs. Put lazy on POST /notes and holon check says why it can't be"#,
+        try_it: r#"deploy it (its approval asks to keep runs of GET /health and action report out of its log), then curl http://127.0.0.1:8170/health a few times ("ok", counted), curl -X POST -d '{"id":"a","text":"hi"}' http://127.0.0.1:8170/notes ("saved", strict), curl http://127.0.0.1:8170/notes (the notes, lazy) and curl -X POST -d '{"by":"sam"}' http://127.0.0.1:8170/notes/a/seen ("ok", lazy, though it writes): holon history status-board lists the notes runs and the health checks as one counted line, and view mode shows that line above the runs"#,
         text: include_str!("../samples/status-board.holon"),
     },
     Sample {

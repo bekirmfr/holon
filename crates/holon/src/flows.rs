@@ -7,7 +7,7 @@ use crate::*;
 /// document is stored as-is; the server never inspects inside it (see `AppState::flows`).
 pub(crate) fn handle_post_flows(
     flows: &Mutex<BTreeMap<String, FlowRecord>>,
-    flows_path: &str,
+    flows_path: &Place,
     request: &Request,
     by: Option<&str>,
     // Whether an agent saves it (access.rs): it may replace only its own.
@@ -75,7 +75,7 @@ pub(crate) fn handle_get_flow(flows: &Mutex<BTreeMap<String, FlowRecord>>, name:
 /// `DELETE /flows/<name>` — remove a saved flow. 404 if it was never there.
 pub(crate) fn handle_delete_flow(
     flows: &Mutex<BTreeMap<String, FlowRecord>>,
-    flows_path: &str,
+    flows_path: &Place,
     name: &str,
 ) -> Response {
     let mut table = flows.lock().unwrap();

@@ -10,9 +10,11 @@ export type Snapshot = { nodes: PrimitiveNodeType[]; edges: Edge[] };
 export const newHistory = (s: Snapshot) => new History<Snapshot>(s, (a, b) => JSON.stringify(a) === JSON.stringify(b));
 
 // Selection and drag flags are normalized out of snapshots — undoing a *selection* would be
-// noise, and restoring a node mid-"dragging" would wedge it to the cursor.
+// noise, and restoring a node mid-"dragging" would wedge it to the cursor — and so are the sizes
+// React Flow measures, as the composite's levels leave them out (CompositeOverlay.tsx): a flow
+// opens unmeasured, and measuring it is no edit (it once left undo on, with nothing to undo).
 export const snapshotOf = (ns: PrimitiveNodeType[], es: Edge[]): Snapshot => ({
-  nodes: ns.map((n) => ({ ...n, selected: false, dragging: false })),
+  nodes: ns.map(({ measured: _m, width: _w, height: _h, ...n }) => ({ ...n, selected: false, dragging: false })),
   edges: es.map((e) => ({ ...e, selected: false })),
 });
 

@@ -101,9 +101,7 @@ A handler's line may say `lazy` or `unrecorded` (the frozen `log` param; strict 
 | a request no route took | `lazy` (Q12) |
 | a flow without handlers (on an interval, on files, by hand), a resumed part | strict |
 
-Only a handler that does nothing outside its run may be `lazy` or `unrecorded`
-(`may_record_lightly`): every capability sourced, none a wait; a write, a call out, a send, a flow
-call or an `await` keeps it strict, said at the line by `holon check`. `unrecorded` holds only where
+Any handler may be `lazy` or `unrecorded`, as its author writes it, whatever it does. `unrecorded` holds only where
 granted (`Unrecorded("GET /health")`, and `[grants] allow_unrecorded`); ungranted, the run is
 strict. A strict run answers once its entry is synced; a lazy one once it is written; an unrecorded
 one is counted, not logged (`count_if_unrecorded`). A run nobody waits for (a tick, a file run)
@@ -126,11 +124,13 @@ syncs the same way but has no one to answer.
   missed while the server was down is not made up, the next is now.
 - **A file runs once it settles**: a file read while being written would be read half; two looks
   alike is the cheapest test that needs no cooperation from the writer.
-- **Strict by default; lazy and unrecorded only for a handler that only reads and answers.** A
-  handler that writes, calls out, sends or waits has a record others rely on (`holon verify`'s
-  state check, restore, a channel's packs, the other flow's log), so it can't be lighter
-  (C5, `b1259e3`). Unrouted requests are lazy, because strict would let anyone cause an fsync a
-  request (Q12).
+- **Strict by default; lazy and unrecorded where the author says.** Whether a run's record is
+  worth its cost is the flow author's call, not the host's: a handler that writes, calls out,
+  sends or waits may be lighter too, and what relies on the record says what it then can't do
+  (`holon verify` leaves the cells they write unchecked, a restore's dry run names the unrecorded handlers,
+  their packs go out live, the other flow's log says the run isn't logged). It was refused once
+  (C5, `b1259e3`). Unrouted requests are lazy, because strict
+  would let anyone cause an fsync a request (Q12).
 
 ## 4. Reach and limits
 

@@ -26,7 +26,7 @@ effect is a value core builds and the host performs ([holon-host](holon-host.md)
 | `catalog.rs`, `primitives.rs`, `docs.rs`, `crypto.rs` | `GENESIS`, `interface_of`, `VARIADIC`, `PASSES_EXTRA`, `TRIGGERED`; `compute`, the `ops!` list; `describe` |
 | `eval.rs`, `eager.rs` | `eval`, `eval_observed`, `Observer`, `Slot`, `Answer`, `choice_next`, `Shape`, `Shapes`; the eager oracle |
 | `kind.rs`, `manifest.rs`, `taint.rs`, `sql.rs`, `documents.rs` | `Capability`, `Kind`, `capabilities`; `manifest_items`, `consent_name`; secret flow; what a database leaf touches |
-| `declare.rs`, `triggers.rs` | `read_server`, `match_route`, `LogLevel`, `may_record_lightly`; file triggers |
+| `declare.rs`, `triggers.rs` | `read_server`, `match_route`, `LogLevel`, `Server::handlers`; file triggers |
 | `module.rs` | `validate_module`, `module_limits`, `ModuleLimits` |
 | `encapsulate.rs`, `promote.rs`, `fork.rs`, `inspect.rs`, `memo.rs`, `simulate.rs`, `advisory.rs`, `determinism.rs` | grouping into a holon, templates, re-pinning, `child_refs`, memo keys, design mode, the float rule |
 

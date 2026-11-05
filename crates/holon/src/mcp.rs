@@ -1370,6 +1370,50 @@ mod tests {
         assert_eq!(route(&state, &req("POST", "/deployments/hello-api/stop", vec![])).status_code, 200);
     }
 
+    /// A person let an unrecorded handler's code keep its runs out of the log, not the code an agent
+    /// puts in its place: an agent's version that changes another handler keeps it unrecorded; one
+    /// that changes its code deploys with its runs logged, `Unrecorded` withheld and offered back to
+    /// a person; and the agent's later versions keep it withheld.
+    #[test]
+    fn an_agent_changing_an_unrecorded_handler_has_its_runs_logged() {
+        let mut state = test_state();
+        let accounts = std::sync::Arc::new(crate::accounts::Accounts::memory());
+        let (ada, _) = accounts.setup(&accounts.setup_code().unwrap(), "ada", "correct horse battery").unwrap();
+        state.access = crate::access::Access::new(std::sync::Arc::clone(&accounts), vec![], vec![]);
+        let (agent, person) = (Signed { state: &state, token: &ada, agent: true }, Signed { state: &state, token: &ada, agent: false });
+        let (text, slug) = ("flow quiet-api\nport 18261\n\nroute GET /health (req) unrecorded {\n  respond \"ok\"\n}\n\nroute GET /hi (req) {\n  respond \"hi\"\n}\n", Some("quiet-api"));
+        assert!(deploy(&agent, text, slug).unwrap().starts_with("Not deployed yet"));
+        let plan = agent::plan(text).unwrap();
+        let preview = json_of(&person, "POST", "/deploy/preview", Some(Body::Json(json!({ "slug": "quiet-api", "unit": plan.unit })))).unwrap();
+        let approve = json!({ "slug": "quiet-api", "unit": plan.unit, "acknowledge": preview["needs_approval"], "document": plan.document });
+        json_of(&person, "POST", "/deploy", Some(Body::Json(approve))).unwrap();
+        let item = json!("Unrecorded(\"GET /health\")");
+        let grant = || json_of(&person, "GET", "/deployments/quiet-api/grant", None).unwrap()["grant"].clone();
+        let deployed = |text: &str| {
+            let said = deploy(&agent, text, slug).unwrap();
+            assert!(said.starts_with("Deployed \"quiet-api\""), "{said}");
+        };
+        let health = || call(&agent, &json!({ "slug": "quiet-api", "method": "GET", "path": "/health" })).unwrap();
+        assert!(grant()["items"].as_array().unwrap().contains(&item), "{}", grant());
+
+        let other = text.replace("respond \"hi\"", "respond \"hello\"");
+        deployed(&other);
+        assert!(grant()["items"].as_array().unwrap().contains(&item), "{}", grant());
+        let called = health();
+        assert!(called.contains("Runs of GET /health aren't recorded"), "{called}");
+
+        let changed = other.replace("respond \"ok\"", "respond \"fine\"");
+        deployed(&changed);
+        let withheld = grant();
+        assert!(!withheld["items"].as_array().unwrap().contains(&item) && withheld["revoked"].as_array().unwrap().contains(&item), "{withheld}");
+        let called = health();
+        assert!(called.starts_with("GET /health → 200") && !called.contains("aren't recorded"), "{called}");
+
+        deployed(&changed.replace("respond \"hello\"", "respond \"hey\""));
+        assert!(grant()["revoked"].as_array().unwrap().contains(&item), "{}", grant());
+        assert_eq!(person.send("POST", "/deployments/quiet-api/stop", None).unwrap().0, 200);
+    }
+
     fn tool_as(api: &dyn Api, name: &str, args: Value) -> Result<String, String> {
         let connect = || -> Result<Box<dyn Api + '_>, String> {
             struct By<'b>(&'b dyn Api);

@@ -932,6 +932,9 @@ export type StateChange = {
   runs_since: number;
   /** Outside effects the runs since performed, by capability: a restore doesn't undo them. */
   effects_since: Record<string, number>;
+  /** The handlers kept unrecorded that do something outside its state: their runs aren't counted
+   *  in the runs since. */
+  unrecorded?: string[];
   /** Each key it touches (the first 50), as it is now and as it would be; null: absent. A
    *  collection's are in `collections` instead. */
   values?: Record<string, { now: WValue | null; then: WValue | null }>;

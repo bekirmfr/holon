@@ -53,7 +53,7 @@ accounts) stops the start (`refuse_to_start`: "refusing to start rather than ove
 | Triggers | scheduler.rs, arrivals.rs, durable.rs, calls.rs | clocks, files arriving, runs that wait for an event, flows calling flows |
 | Resources | folders.rs, blobs.rs, ranges.rs, databases.rs, engines.rs, mongo.rs, collections.rs, outbound.rs, secret_sources.rs, sealing.rs | what a flow touches outside its run, each bound or granted by the host |
 | The record | recorder.rs, heads.rs, verify.rs, changes.rs, touches.rs | the hash-chained run logs, the witness, export and `holon verify`, what a dry run shows |
-| Housekeeping | storage.rs, sweep.rs | the server's sweeps, the host's view, warnings, what happens when a disk fills |
+| Housekeeping | storage.rs, sweep.rs, paths.rs | the server's sweeps, the host's view, warnings, what happens when a disk fills; every path it keeps, whole and in its platform's form (`HostPath`, or a `Place` that may be nowhere, `:memory:`) |
 | Commands | flowcmd.rs, deploycmd.rs, opscmd.rs, load.rs, grantcmd.rs, secretcmd.rs, flowscmd.rs, accountscmd.rs, cmdline.rs, workbench/, mcp.rs, mcphosts.rs, lsp.rs, pick.rs, jsonedit.rs, selfmanage.rs, migrate.rs | the CLI, the terminal editor, the agent and editor protocols |
 
 Every module does `use crate::*`, and main.rs brings most modules' items into the crate root

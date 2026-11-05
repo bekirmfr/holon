@@ -412,8 +412,8 @@ pub(crate) struct Policy {
     pub(crate) allow_plain_http: bool,
     pub(crate) allow_private_addresses: bool,
     /// Whether a handler's runs may ever be kept out of its log (`Unrecorded("GET /health")`): on
-    /// by default, since only a handler that does nothing outside its run may ask, and a person
-    /// approves each (docs/L4s/request-path-L4.md, §8 Q9).
+    /// by default, since its author chose it and a person approves each (docs/L4s/request-path-L4.md,
+    /// §8 Q9).
     pub(crate) allow_unrecorded: bool,
     /// How the host keeps what it stores (`[storage]`, docs/L4s/storage-L4.md).
     pub(crate) storage: Storage,
@@ -431,11 +431,11 @@ pub(crate) struct Storage {
     pub(crate) when_full: WhenFull,
     /// Where the runs a log lets go of are written first, gzipped exports `holon verify` checks:
     /// a folder (an external drive, a folder a cloud client keeps in sync). None: they go.
-    pub(crate) backup: Option<std::path::PathBuf>,
+    pub(crate) backup: Option<crate::paths::HostPath>,
 }
 
 /// `[storage] backup` as written: a folder's whole path, or `none`.
-pub(crate) fn parse_backup(text: &str) -> Result<Option<std::path::PathBuf>, String> {
+pub(crate) fn parse_backup(text: &str) -> Result<Option<crate::paths::HostPath>, String> {
     let t = text.trim();
     if t.is_empty() || t == "none" {
         return Ok(None);
@@ -446,11 +446,10 @@ pub(crate) fn parse_backup(text: &str) -> Result<Option<std::path::PathBuf>, Str
     if t == "holon-cloud" {
         return Err("Holon Cloud is coming; for now a folder: an external drive, or a folder a cloud client keeps in sync".into());
     }
-    let path = std::path::PathBuf::from(t);
-    if !path.is_absolute() {
-        return Err(format!("{t:?}: the backup is a folder's whole path (/mnt/archive)"));
+    match crate::paths::HostPath::whole(t) {
+        Some(path) => Ok(Some(path)),
+        None => Err(format!("{t:?}: the backup is a folder's whole path ({})", crate::paths::EXAMPLE)),
     }
-    Ok(Some(path))
 }
 
 impl Default for Storage {
@@ -655,7 +654,8 @@ impl Policy {
     /// The policy in `path`, or the defaults when there is no such file. A file that exists but
     /// doesn't parse, names an unknown limit, or sets a default above its ceiling is an error:
     /// the server refuses to start rather than run under a policy nobody wrote.
-    pub(crate) fn load(path: &str) -> Result<Policy, String> {
+    pub(crate) fn load(path: &crate::paths::Place) -> Result<Policy, String> {
+        let Some(path) = path.at() else { return Ok(Policy::default()) };
         let text = match std::fs::read_to_string(path) {
             Ok(t) => t,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Policy::default()),
@@ -1224,7 +1224,8 @@ mod tests {
         assert!(Policy::parse("[storage]\nwhen_full = \"panic\"").unwrap_err().contains("warn, pause or roll"));
         // Backups: a folder, by its whole path; object storage and Holon Cloud not yet.
         assert_eq!(Policy::default().storage.backup, None);
-        assert_eq!(Policy::parse("[storage]\nbackup = \"/mnt/archive\"").unwrap().storage.backup, Some("/mnt/archive".into()));
+        let example = crate::paths::EXAMPLE;
+        assert_eq!(Policy::parse(&format!("[storage]\nbackup = {example:?}")).unwrap().storage.backup, crate::paths::HostPath::whole(example));
         assert_eq!(Policy::parse("[storage]\nbackup = \"none\"").unwrap().storage.backup, None);
         assert!(Policy::parse("[storage]\nbackup = \"archive\"").unwrap_err().contains("whole path"));
         assert!(Policy::parse("[storage]\nbackup = \"s3://bucket/runs\"").unwrap_err().contains("object storage is to come"));
