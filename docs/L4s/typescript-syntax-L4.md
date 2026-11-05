@@ -407,12 +407,16 @@ const near  = js(function closest(points, to) { … }, { outputs: ["best", "dist
 
 - **A plain function or arrow is a graph holon**, drawn on the canvas, as `holon name(…) -> … { … }`
   and `fn(…) -> …` are today. Its body may be statements (§5), not only one expression.
-- **Its output's name** labels the canvas's wire. A function that returns a binding names its
-  output after it (`return slug` gives `slug`, as `holon slugify(text) -> slug` does today), and
-  after the function otherwise. A function whose every `return` is an object literal with the same
-  keys has one output per key (`summarize -> (rows, report)`), and its callers destructure it.
+- **Its output's name** is in the hash, and the canvas writes it where the wire leaves the node. A
+  function that returns a binding names its output after it (`return slug` gives `slug`, as
+  `holon slugify(text) -> slug` does today), and `out` otherwise: `return text.toLowerCase()`
+  gives `slugify -> out`. A function whose every `return` is an object literal with the same keys
+  has one output per key (`summarize -> (rows, report)`), and its callers destructure it. So
+  `const slug = …; return slug` and `return …` are two units computing one thing; a caller with one
+  output never writes it. A lone `out` shows on the canvas as its type, as a leaf's single output
+  does today, and any other name as written (`PrimitiveNode.tsx:585-593`).
 - **An arrow passed in place** (`xs.map((x) => …)`) is today's `fn(x) -> …`, whose output is `out`
-  (`lower.rs:1484`); here it is named from its body. Each name it captures becomes an input port
+  (`lower.rs:1484`), as a function's is. Each name it captures becomes an input port
   named after the variable (`lower.rs:1448-1480`). `let`'s renaming (§5) never renames a captured variable's port.
 - **`js(function name(…) { … }, { fuel, memory, outputs })`** is today's `holon name(…) -> out
   js fuel N { … }`: the body runs in the Boa sandbox under its budgets, with all of JavaScript. Its
@@ -868,7 +872,8 @@ Holon is in development, so the new form replaces today's at once:
    undefined)` for `after`, `switch` for `match`, early `return`, local mutation, the refusals of
    §12.
 3. **The source formatter and the switch.** `holon fmt` on TypeScript; every sample, test flow and
-   manual example rewritten; today's parser and the `.holon` grammar removed.
+   manual example rewritten; today's parser and the `.holon` grammar removed; the canvas showing a
+   lone `out` as its type (§7).
 4. **`try`, `catch {}`, `throw`, `finally`,** and the `fail` leaf.
 5. **Computing loops.** `while` to `fold`, the loop's turns, nested folds past 10000, `fold`
    stopping when done, a step budget in core.
@@ -901,8 +906,15 @@ Holon is in development, so the new form replaces today's at once:
    - Every request parking the run: a route would answer before its request did (`listeners.rs:183-185`),
      each request would write to disk, and a request out during a restart would be sent again.
    - Parking only when slow, `await` optional: the two spellings would differ only after a restart.
-7. **Output names.** From the returned binding or object keys, or the function's name; `outputs` for
-   a `js()` with several (§7). Open: whether the canvas shows them on every wire.
+7. **Output names.** From the returned binding or object keys, else `out`, as an arrow written in
+   place has (`lower.rs:1484`); `outputs` for a `js()` with several (§7). The canvas shows a lone
+   `out` as its type, as it shows a leaf's single output, and a name an author chose as written
+   (`PrimitiveNode.tsx:585-593`): `out` says nothing the node's title doesn't. Considered and dropped:
+   - The function's name, `slugify -> slugify`: a port may not take a holon's name
+     (`lower.rs:1214-1217`), and the node already says it.
+   - The function's name with `_out`, `slugify_out`: a name nobody would write.
+   - `out` written on the node, as the canvas writes a placed holon's output name today: a word on
+     most nodes that tells nothing.
 8. **`while` as a node of its own, or a fold?** A fold (§10): no new primitive, every run still ends
    by construction.
 9. **`await` inside `while`?** Allowed, with a turn-numbered waiting point (§10): one run per item
