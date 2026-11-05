@@ -816,8 +816,7 @@ fn hosts_with(args: &[String]) -> Result<(), String> {
 }
 
 fn absolute(path: &str) -> PathBuf {
-    let p = PathBuf::from(path);
-    if p.is_absolute() { p } else { std::env::current_dir().map(|d| d.join(&p)).unwrap_or(p) }
+    crate::paths::normalize(path)
 }
 
 /// The custom hosts file's text with `name` added (or replaced).

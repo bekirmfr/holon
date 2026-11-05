@@ -33,6 +33,7 @@ use rouille::{Request, Response};
 use crate::outbound::{self, Body, FileBody, Outbound};
 
 use crate::http::{err, read_body};
+use crate::paths::canonical;
 
 use crate::*;
 
@@ -214,20 +215,9 @@ pub(crate) fn is_folder_name(name: &str) -> bool {
     !name.is_empty() && name.len() <= 64 && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
 
-/// A path made absolute and, where it exists, with its links resolved.
+/// A path made whole and, where it exists, with its links resolved (paths.rs).
 fn real(path: &Path) -> PathBuf {
-    canonical(path).unwrap_or_else(|_| std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf()))
-}
-
-/// The path with its links resolved, as `fs::canonicalize` gives it, but without Windows'
-/// verbatim prefix on a path with a drive letter: the form people write, and the one every path
-/// here is compared in.
-pub(crate) fn canonical(path: &Path) -> std::io::Result<PathBuf> {
-    let p = std::fs::canonicalize(path)?;
-    Ok(match p.to_str().and_then(|s| s.strip_prefix(r"\\?\")) {
-        Some(rest) if rest.as_bytes().get(1) == Some(&b':') => PathBuf::from(rest),
-        _ => p,
-    })
+    canonical(path).unwrap_or_else(|_| crate::paths::normalize(path))
 }
 
 impl Folders {
@@ -313,10 +303,9 @@ impl Folders {
         if let Some(slug) = for_deployment.filter(|s| !is_folder_name(s)) {
             return Err(format!("{slug:?} isn't a deployment's name"));
         }
-        let given = PathBuf::from(path.trim());
-        if !given.is_absolute() {
-            return Err(format!("{path:?} isn't an absolute path: give the whole path, as this server's machine sees it"));
-        }
+        let Some(given) = crate::paths::whole(path) else {
+            return Err(format!("{path:?} isn't a whole path: give it as this server's machine sees it ({})", crate::paths::EXAMPLE));
+        };
         if !given.is_dir() {
             return Err(format!("{path:?} isn't a folder on this server's machine"));
         }

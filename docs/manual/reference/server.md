@@ -43,6 +43,13 @@ without it.
 To move a server, stop it and copy the data folder; the secrets key goes with it only if it is in
 a file (see [The secrets key](#the-secrets-key)).
 
+A path given to the server (an option, the `backup` setting, a folder or a database to bind, a
+folder to browse) is read as its machine reads one, and kept and shown in that machine's form. On
+Windows `/` and `\` both separate (`D:/archive` is `D:\archive`), and a whole path starts at a
+drive or a share (`D:\archive`, `\\nas\runs`); on Linux and macOS it starts at `/`, and `\` is
+part of a name. An option's path that isn't whole is taken from the folder the server was started
+in; a setting or a binding asks for a whole one.
+
 ### What it holds
 
 `holon host`, the admin page's **the host** and the terminal editor's admin view say what the

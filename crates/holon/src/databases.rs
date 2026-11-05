@@ -296,10 +296,9 @@ impl Databases {
 
     /// The SQLite database at `path`, its schema run (the file made if there is none).
     fn open_sqlite(&self, path: &str, access: FolderAccess, schema: Option<&str>) -> Result<(Database, Open), String> {
-        let given = PathBuf::from(path);
-        if !given.is_absolute() {
-            return Err(format!("{path:?} isn't an absolute path: give the whole path, as this server's machine sees it (or a connection: env:HOLON_SECRET_… or vault:…)"));
-        }
+        let Some(given) = crate::paths::whole(path) else {
+            return Err(format!("{path:?} isn't a whole path: give it as this server's machine sees it ({}), or a connection: env:HOLON_SECRET_… or vault:…", crate::paths::EXAMPLE));
+        };
         if !given.is_file() && schema.is_none() {
             return Err(format!("there is no database at {path:?}: give a schema to create one there"));
         }
@@ -517,12 +516,12 @@ impl Databases {
 
 /// The path with its links resolved where it exists; a file not made yet, its folder's.
 fn real_file(path: &Path) -> PathBuf {
-    if let Ok(p) = folders::canonical(path) {
+    if let Ok(p) = crate::paths::canonical(path) {
         return p;
     }
-    match (path.parent().and_then(|p| folders::canonical(p).ok()), path.file_name()) {
+    match (path.parent().and_then(|p| crate::paths::canonical(p).ok()), path.file_name()) {
         (Some(dir), Some(name)) => dir.join(name),
-        _ => std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf()),
+        _ => crate::paths::normalize(path),
     }
 }
 

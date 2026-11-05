@@ -1273,7 +1273,7 @@ fn a_pack_that_cant_be_read_is_warned_of_and_the_store_opens() {
         let disk = FileStore::new(&dir).unwrap();
         disk.packs().pack(&[([7u8; 32], b"a value".to_vec())]).unwrap();
     }
-    let packs = std::path::Path::new(&dir).join("values/packs");
+    let packs = std::path::Path::new(&dir).join("values").join("packs");
     let pack = std::fs::read_dir(&packs).unwrap().flatten().next().unwrap().path();
     std::fs::write(&pack, b"not a pack").unwrap();
     let disk = FileStore::new(&dir).unwrap();
@@ -1457,7 +1457,7 @@ fn the_runs_a_log_lets_go_of_are_backed_up_as_exports_verify_checks() {
     }
     // A batch that can't be made an export (not text): the others are made all the same, and it
     // stays, warned of.
-    let bad = backup.join(format!("kept/{}", storage::batch_name(0, 0)));
+    let bad = backup.join("kept").join(storage::batch_name(0, 0));
     std::fs::write(&bad, [0xff, 0xfe, b'\n']).unwrap();
     storage::archive(&state);
     assert!(bad.exists(), "the batch that can't be made an export stays");

@@ -446,11 +446,10 @@ pub(crate) fn parse_backup(text: &str) -> Result<Option<std::path::PathBuf>, Str
     if t == "holon-cloud" {
         return Err("Holon Cloud is coming; for now a folder: an external drive, or a folder a cloud client keeps in sync".into());
     }
-    let path = std::path::PathBuf::from(t);
-    if !path.is_absolute() {
-        return Err(format!("{t:?}: the backup is a folder's whole path (/mnt/archive)"));
+    match crate::paths::whole(t) {
+        Some(path) => Ok(Some(path)),
+        None => Err(format!("{t:?}: the backup is a folder's whole path ({})", crate::paths::EXAMPLE)),
     }
-    Ok(Some(path))
 }
 
 impl Default for Storage {
@@ -1224,7 +1223,8 @@ mod tests {
         assert!(Policy::parse("[storage]\nwhen_full = \"panic\"").unwrap_err().contains("warn, pause or roll"));
         // Backups: a folder, by its whole path; object storage and Holon Cloud not yet.
         assert_eq!(Policy::default().storage.backup, None);
-        assert_eq!(Policy::parse("[storage]\nbackup = \"/mnt/archive\"").unwrap().storage.backup, Some("/mnt/archive".into()));
+        let example = crate::paths::EXAMPLE;
+        assert_eq!(Policy::parse(&format!("[storage]\nbackup = {example:?}")).unwrap().storage.backup, Some(example.into()));
         assert_eq!(Policy::parse("[storage]\nbackup = \"none\"").unwrap().storage.backup, None);
         assert!(Policy::parse("[storage]\nbackup = \"archive\"").unwrap_err().contains("whole path"));
         assert!(Policy::parse("[storage]\nbackup = \"s3://bucket/runs\"").unwrap_err().contains("object storage is to come"));

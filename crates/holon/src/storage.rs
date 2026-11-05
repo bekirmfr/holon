@@ -916,7 +916,7 @@ pub(crate) fn host_lines(v: &serde_json::Value) -> Vec<String> {
             size(&b["bytes"]),
             if n(&b["waiting"]) > 0 { format!(", {} batches to make into exports", n(&b["waiting"])) } else { String::new() }
         )),
-        None => lines.push("backup       none: the runs a log lets go of go (holon policy --backup /mnt/archive)".into()),
+        None => lines.push(format!("backup       none: the runs a log lets go of go (holon policy --backup {})", crate::paths::EXAMPLE)),
     }
     let k = &v["kept"];
     let counted = k["at_ms"].as_u64().map_or("not counted yet".to_string(), |at| format!("counted {} ago", span(now_ms().saturating_sub(at))));
@@ -1329,7 +1329,7 @@ mod tests {
                 "  flow cache   12 flows, 32 MiB of 256 MiB (12%)",
                 "  value cache  1234 values, 48 MiB of 64 MiB (75%)",
                 "disk         60% full: 40 GiB free of 100 GiB (60 GiB in use): data, logs, store (/data)",
-                "backup       none: the runs a log lets go of go (holon policy --backup /mnt/archive)",
+                &format!("backup       none: the runs a log lets go of go (holon policy --backup {})", crate::paths::EXAMPLE),
                 "kept         counted 3 min ago",
                 "  store        432808 values, 2 GiB on disk (1 GiB of bytes); 3200 put since",
                 "  logs         34 logs, 192 MiB on disk",

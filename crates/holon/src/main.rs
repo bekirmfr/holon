@@ -190,6 +190,7 @@ mod migrate;
 mod mcp;
 mod mcphosts;
 mod outbound;
+mod paths;
 mod permissions;
 mod persist;
 mod pick;
@@ -1004,7 +1005,7 @@ fn serve(args: Vec<String>) {
 
     // Whatever wasn't named on its own goes in the data folder: `--data`, else HOLON_DATA, else
     // ~/.holon/data (docs/L4s/holon-home-L4.md). The folder it was started from doesn't matter.
-    let dir = match data_dir.map(PathBuf::from).or_else(|| local::holon_home().map(|h| h.join("data"))) {
+    let dir = match data_dir.map(PathBuf::from).or_else(|| local::holon_home().map(|h| h.join("data"))).map(paths::normalize) {
         Some(d) => d,
         None => {
             eprintln!("holon: no home folder (USERPROFILE or HOME) to keep the server's data in: pass --data DIR");
@@ -1027,6 +1028,12 @@ fn serve(args: Vec<String>) {
     inside(&mut databases_arg, ".holon-databases.json", "databases.json");
     inside(&mut accounts_arg, ".holon-accounts.json", "accounts.json");
     inside(&mut host_key_arg, ".holon-host-key", "host.key");
+    // Each in its platform's form, whole (paths.rs): as it is kept, joined, shown and compared.
+    for arg in [&mut store_arg, &mut deployments_arg, &mut flows_arg, &mut policy_arg, &mut secrets_arg, &mut folders_arg, &mut databases_arg, &mut accounts_arg, &mut host_key_arg] {
+        if arg.as_str() != ":memory:" {
+            *arg = paths::normalize(&*arg).to_string_lossy().into_owned();
+        }
+    }
     if landed {
         // Its owner's only when it is made here: it holds every flow's state, logs and secrets.
         if let Err(e) = holon_host::create_private_dir(&dir) {
@@ -1221,7 +1228,7 @@ fn serve(args: Vec<String>) {
         folders,
         activity,
         access,
-        editor: editor::Source::pick(editor_dir.map(std::path::PathBuf::from)),
+        editor: editor::Source::pick(editor_dir.map(paths::normalize)),
         sweeps: storage::Sweeps::default(),
     };
     sync_listeners(&state);
