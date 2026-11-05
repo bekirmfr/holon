@@ -360,6 +360,12 @@ route GET /notes (req) lazy {
 }
 ```
 
+What strict costs is the disk's: a strict run answers once its record is synced, and runs that
+arrive together share one sync. On a desktop SSD a sync takes a few milliseconds (strict at
+about 1,600 requests a second at 8 connections on one Windows machine, about half that under
+WSL2); on a server drive with power-loss protection it takes microseconds. `holon load` measures
+it on yours.
+
 Which to say is the flow author's choice, on any handler. `unrecorded` is for runs whose record
 isn't worth keeping: a health check, a handler that only reads, one called so often its records
 would only fill the log. `lazy` is for a handler that must answer fast, where losing its last
