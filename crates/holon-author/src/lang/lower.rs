@@ -82,7 +82,7 @@ pub fn lower(file: &File) -> R<Lowered> {
 }
 
 /// Words a binding may not take: the keywords and nouns of the language, and the wiring form's.
-const RESERVED: &[&str] = &[
+pub(crate) const RESERVED: &[&str] = &[
     "flow", "port", "every", "browsers", "optional", "collection", "folder", "database", "channel", "holon", "js", "route", "resumes", "respond", "delete", "await", "if", "then", "else",
     "when", "match", "fn", "true", "false", "node", "at", "in", "out", "interval", "secret", "state", "now", "random", "ingress", "http", "stripe", "json",
     "parse_json",
@@ -95,7 +95,7 @@ pub(crate) fn call_noun(flow: &str) -> String {
 }
 
 /// Plain names for two leaves, read as English.
-fn alias(name: &str) -> &str {
+pub(crate) fn alias(name: &str) -> &str {
     match name {
         "json" => "json_stringify",
         "parse_json" => "json_parse",
@@ -116,7 +116,7 @@ fn piped(d: &crate::canvas::NodeData) -> bool {
 
 /// Inputs a node works without, left unwired (routes.rs `is_optional_input`, core's
 /// `has_optional_ports`).
-fn is_optional(leaf: &str, input: &str) -> bool {
+pub(crate) fn is_optional(leaf: &str, input: &str) -> bool {
     input == TRIGGER
         || matches!((leaf, input), ("http_request" | "http_stream", "headers" | "body") | ("http_upload", "headers") | ("flow_call", "input") | ("collection_list" | "file_list", "prefix" | "after") | ("file_lines", "from"))
 }

@@ -1,3 +1,5 @@
 # Flows as text keep LF on every checkout: the samples are embedded and must be exactly what
 # `holon fmt` writes (crates/holon-author/samples).
 *.holon text eol=lf
+# And so do flows in TypeScript's syntax: a js() body is its text, byte for byte.
+*.holon.ts text eol=lf
