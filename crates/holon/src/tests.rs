@@ -1344,9 +1344,11 @@ fn a_full_disk_rolls_the_log_biggest_with_its_sealed_runs() {
     for _ in 0..600 {
         assert_eq!(route(&state, &req("POST", &format!("/trigger/{many}/bump"), b"{}".to_vec())).status_code, 200);
     }
-    // Long lines that seal small: its file is the bigger, its segments the smaller.
+    // Long lines that seal small: its file is the bigger, its segments the smaller, by margins a
+    // run's timings don't decide (as precise as the platform's clock: more digits on Linux than on
+    // Windows, so its runs seal bigger there).
     for i in 0..30 {
-        let body = serde_json::json!({ "s": format!("{i}{}", "x".repeat(8_000)) });
+        let body = serde_json::json!({ "s": format!("{i}{}", "x".repeat(5_000)) });
         assert_eq!(route(&state, &req("POST", &format!("/trigger/{wide}/keep"), serde_json::to_vec(&body).unwrap())).status_code, 200);
     }
     crate::recorder::sync_logs(&state.deployments).unwrap();
