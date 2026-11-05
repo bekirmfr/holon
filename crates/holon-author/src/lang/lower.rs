@@ -12,7 +12,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
 
-use holon_core::{interface_of, PASSES_EXTRA, TRIGGER, VARIADIC};
+use holon_core::{interface_of, CALLS, PASSES_EXTRA, TRIGGER, VARIADIC};
 use serde_json::json;
 
 use super::ast::*;
@@ -756,8 +756,9 @@ impl<'a> Lowerer<'a> {
             StmtKind::Expr(e) => {
                 let v = self.expr(e)?;
                 let top_without_routes = matches!(self.cur().kind, FrameKind::Flow { has_routes: false });
-                // A call to another flow's action is made for what it does, whatever it answers.
-                let a_call = matches!(&v, Val::Out { id, .. } if self.b.data(id).is_some_and(|d| d.name == "flow_call"));
+                // A call (a request, another flow's action) is made for what it does, whatever it
+                // answers.
+                let a_call = matches!(&v, Val::Out { id, .. } if self.b.data(id).is_some_and(|d| CALLS.contains(&d.name.as_str())));
                 if v.effectful() || a_call || top_without_routes {
                     return self.effect(v, s.span);
                 }
@@ -1016,6 +1017,28 @@ impl<'a> Lowerer<'a> {
         Ok(())
     }
 
+    /// Whether this block's only effects are calls: it makes one, and writes nothing.
+    fn calls_alone(&self) -> bool {
+        let f = self.cur();
+        let made = |is: &dyn Fn(&crate::canvas::NodeData) -> bool| f.created.iter().any(|id| self.b.data(id).is_some_and(is));
+        !f.wiring_form && made(&|d| CALLS.contains(&d.name.as_str())) && !made(&|d| d.outputs.iter().any(|p| p.ty == WType::Effect))
+    }
+
+    /// The answer of a route or action whose only effects are calls: 204 with no body, as one
+    /// that writes is answered. A call's answer is the far side's, not the block's to give, so
+    /// `route_spec` never takes it for the block's answer.
+    fn answer_nothing(&mut self, from: &str, port: &str, span: Span) -> R<()> {
+        let node = self.node("respond", &[("status".to_string(), "204".to_string()), ("missing".to_string(), "404".to_string())], span)?;
+        let Val::Out { id, .. } = &node else { unreachable!() };
+        let id = id.clone();
+        self.b.wire(from, port, &id, "request").or_else(|e| err(span, e))?;
+        match &mut self.frame().kind {
+            FrameKind::Route { responded, .. } | FrameKind::Action { responded, .. } => *responded = Some(span),
+            _ => {}
+        }
+        Ok(())
+    }
+
     /// The `http_stream` node `e` is the body of (`sent.body`, `sent` bound to one), if it is.
     fn streamed_call(&self, e: &Expr) -> Option<String> {
         let ExprKind::Field { base, name } = &e.kind else { return None };
@@ -1084,6 +1107,12 @@ impl<'a> Lowerer<'a> {
             }),
         };
         self.tie_block(&request, r.method.span.to(r.path.span))?;
+        if let FrameKind::Route { request, responded: None } = &self.cur().kind
+            && self.calls_alone()
+        {
+            let request = request.clone();
+            self.answer_nothing(&request, "request", r.method.span.to(r.path.span))?;
+        }
         let frame = self.frames.pop().expect("the route's frame");
         // A streamed call is forwarded to the caller: the route says so where it answers.
         let streams: Vec<&String> = frame.created.iter().filter(|id| self.b.data(id).is_some_and(|d| d.name == "http_stream" && !piped(d))).collect();
@@ -1191,6 +1220,11 @@ impl<'a> Lowerer<'a> {
             self.stmt(s)?;
         }
         let tied = self.tie_block(&node, a.head)?;
+        if let FrameKind::Action { responded: None, .. } = &self.cur().kind
+            && self.calls_alone()
+        {
+            self.answer_nothing(&id, "input", a.head)?;
+        }
         let frame = self.frames.pop().expect("the block's frame");
         let FrameKind::Action { responded, .. } = frame.kind else { unreachable!() };
         if responded.is_none() && !tied {
@@ -2663,19 +2697,38 @@ pub(crate) mod tests {
         compiled("route GET /a (req) {\n  calls = 1\n  respond calls + req.query.n\n}");
     }
 
-    /// A clock, a file handler or an action whose only work is a call is a handler: the call is
-    /// made for what it does, whatever it answers.
+    /// A block whose only work is calls (a request, another flow's action) is a handler: a call is
+    /// made for what it does, whatever it answers, read or not, bound or a statement. A route or
+    /// action of calls alone answers 204, as one that writes does: never with a call's answer.
     #[test]
     fn a_block_of_calls_alone_is_a_handler() {
-        let d = compiled("calls billing\nevery 1h {\n  billing.reset()\n}\n").doc;
         let mut store = MapResolver::new();
-        let server = crate::flow::derive_server(&d.nodes, &d.edges, &mut store, "8080");
-        assert_eq!(server.errors, Vec::<String>::new());
-        assert_eq!(server.clocks.iter().map(|c| c.label.as_str()).collect::<Vec<_>>(), vec!["every 1h"]);
-        let d = compiled("calls billing\naction run (input) {\n  r = billing.charge(input)\n  respond r\n}\n").doc;
-        let server = crate::flow::derive_server(&d.nodes, &d.edges, &mut store, "8080");
-        assert_eq!(server.errors, Vec::<String>::new());
-        assert_eq!(server.actions.len(), 1);
+        let mut server = |src: &str| {
+            let d = compiled(src).doc;
+            let server = crate::flow::derive_server(&d.nodes, &d.edges, &mut store, "8080");
+            assert_eq!(server.errors, Vec::<String>::new(), "{src}");
+            let answers: Vec<String> = d.nodes.iter().filter(|n| n.is_template("respond")).map(|n| n.param("status").to_string()).collect();
+            (server, answers)
+        };
+        let (s, _) = server("calls billing\nevery 1h {\n  billing.reset()\n}\n");
+        assert_eq!(s.clocks.iter().map(|c| c.label.as_str()).collect::<Vec<_>>(), vec!["every 1h"]);
+        let (s, answers) = server("calls billing\naction run (input) {\n  r = billing.charge(input)\n  respond r\n}\n");
+        assert_eq!((s.actions.len(), answers), (1, vec!["200".to_string()]));
+        // A heartbeat, a call as a statement or bound and read by nothing.
+        let (s, _) = server("every 1h {\n  http.post(\"hooks.example.com\", \"/beat\", body: \"alive\")\n}\n");
+        assert_eq!(s.clocks.len(), 1);
+        let (s, _) = server("every 1h {\n  sent = http.post(\"hooks.example.com\", \"/beat\", body: \"alive\")\n}\n");
+        assert_eq!(s.clocks.len(), 1);
+        // A route or an action of calls alone answers 204; one that also writes answers by it.
+        let (s, answers) = server("route POST /hook (req) {\n  http.post(\"hooks.example.com\", \"/a\", body: req.body)\n}\n");
+        assert_eq!((s.endpoints.len(), answers), (1, vec!["204".to_string()]));
+        let (s, answers) = server("calls billing\naction notify (input) {\n  sent = http.post(\"hooks.example.com\", \"/a\", body: input)\n  billing.reset()\n}\n");
+        assert_eq!((s.actions.len(), answers), (1, vec!["204".to_string()]));
+        let (s, answers) = server("collection c\nroute POST /hook (req) {\n  http.post(\"hooks.example.com\", \"/a\", body: req.body)\n  c[\"last\"] = req.body\n}\n");
+        assert_eq!((s.endpoints.len(), answers), (1, vec![]));
+        // The same request twice is two requests, each kept apart by where it goes.
+        let (s, _) = server("route POST /hook (req) {\n  a = http.post(\"hooks.example.com\", \"/a\", body: req.body)\n  b = http.post(\"hooks.example.com\", \"/a\", body: req.body)\n  respond \"ok\"\n}\n");
+        assert_eq!(s.endpoints.len(), 1);
     }
 
     /// `every 2s { … }` is a clock handler: its tick node, everything wired to it, its sinks tied

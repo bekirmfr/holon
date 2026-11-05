@@ -423,6 +423,11 @@ pub const TRIGGERED: &[&str] = &[
     "flow_call",
 ];
 
+/// The sinks that answer: each asks the far side to do something and gives back what it said.
+/// Once made, a call can't be taken back, so it is made for what it does: it is kept as an effect
+/// whether or not its answer is read, and its answer is never its caller's to give.
+pub const CALLS: &[&str] = &["http_request", "http_upload", "http_stream", "flow_call"];
+
 /// Whether `unit` is a sink leaf with its trigger: the last input, by name (a leaf placed before
 /// sinks had one has none, and is computed as it always was).
 pub fn takes_trigger(unit: &Unit) -> bool {

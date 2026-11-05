@@ -1102,6 +1102,15 @@ Rules the table implies:
   for; a host from a wire is an error that says so. A database's SQL the same: its tables are
   `DbRead("shop/orders")` and `DbWrite("shop/orders")`, a statement that names no table is an
   error, and so is a count of values that isn't the SQL's `$n`s.
+- A call, a request or another flow's action (`CALLS`, `catalog.rs`), is an effect: the host makes
+  it, and once made it can't be taken back. So it is made for what it does, whether or not its
+  answer is read. One nobody uses stands as a statement, `http.post("hooks.example.com", "/a",
+  body: b)`, as `billing.reset()` does; bound and never read, it is made just the same, and the
+  printer writes it as a statement. Its handler keeps it as it keeps a write, so the same call
+  written twice is two calls. Its answer is the far side's, never its handler's: a route or an
+  action whose only effects are calls answers 204, the lowering writing its `respond 204` where it
+  is left out (the canvas asks for the respond). A clock or file block of calls alone is a
+  handler. The `fan-out` sample shows it.
 - A streamed call is a route's, and the route answers with it: `stream:` comes last, takes
   `true` or `false`, sends a body (not a `file:`), and a route makes one; its `respond` is
   `respond sent.body, stream: true`, without `status:` or `headers:` (its status is the call's,
@@ -1132,8 +1141,8 @@ Rules the table implies:
   `failed` and `too_deep`. A value that isn't there is absent as anywhere (§6.3), so `respond
   paid.answer, missing: 502` answers 502 whatever went wrong. The call is tied to the block's
   trigger as a write is, `billing.charge(x) after found` ties it to a value (§5.11), and one nobody
-  uses stands as a statement, made for what it does; a clock, file or action block of calls alone
-  is a handler. It asks `RunsAction("billing/charge")`, which an approval says as "run the action
+  uses stands as a statement, made for what it does: a call is an effect, as a request is (below).
+  It asks `RunsAction("billing/charge")`, which an approval says as "run the action
   charge of the flow billing", and the call is in the flow's hash: pointing it at another flow or
   action is a new version.
   The other flow runs an ordinary action run, under its own grant and limits, logged there `by`
@@ -1352,12 +1361,13 @@ does a holon that reads.
 ### 5.10 Effects and statements
 
 The IR has one rule for effects: an Effect-typed output that nothing consumes is exposed by the
-group, and the host performs it when the run finishes (writes, puts, deletes, egress). The
-language keeps that rule and adds no `perform` keyword:
+group, and the host performs it when the run finishes (writes, puts, deletes, egress). A call's
+answer that nothing consumes is exposed the same way, after them: the call was made, and the
+handler keeps it (§5.4). The language keeps that rule and adds no `perform` keyword:
 
 - The write statements, `state.k = e`, `notes[k] = e` and `delete notes[k]`, are effects.
 - An expression statement whose type is `Effect` is an effect: `egress(payload)`,
-  `notes.put(k, v)`.
+  `notes.put(k, v)`. So is a call: `http.post(host, path, body: b)`, `billing.reset()`.
 - An expression statement of any other type is an error: "a value nobody uses". Bind it or
   remove it. (A binding never used is a warning, printed by `check`.)
 - A binding to an Effect and never used is still performed; naming it changes nothing.
@@ -1401,7 +1411,8 @@ respond_args = expr ("," "status" ":" (number | expr))? ("," "missing" ":" numbe
   `respond body: 42`. The hidden `request` input is wired to the route's request node by the
   lowering; `respond` outside a route is an error.
 - A route needs one `respond`, or at least one effect (answered 204); more than one `respond` is
-  an error naming the route, as `route_spec` says today.
+  an error naming the route, as `route_spec` says today. A call's answer is never the route's:
+  without a `respond`, a write answers, and a route of calls alone answers `respond 204`.
 - Two handlers may not share a node. A top-level binding would wire two of them into one group,
   so at the top level of a flow with handlers only bindings of literals are allowed, lowered by
   placing a fresh `const` in each block that uses them. A top-level binding of anything else is an
@@ -1864,6 +1875,12 @@ Decided ones are kept, with the decision, for a reader who wonders why.
   waits instead of deciding early (§6.4). No value changes, only what the host is asked. `select`
   stays strict: an absent side makes it absent, so it needs both. The `cache-aside` sample shows
   it. `docs/L4s/lazy-choices-L4.md`.
+- **F13. Calls are effects.** A request nobody read was refused as a statement and dropped from
+  its handler's effects, so a route or clock of requests alone did nothing and the same request
+  twice was refused as a value computed twice; a route of `flow_call`s alone answered with the
+  call's answer. Decided and built: a call is an effect, kept by its handler whether or not its
+  answer is read, and its answer is never its handler's (§5.4, §5.10). The `fan-out` sample shows
+  it.
 
 ## 14. What this document does not decide
 

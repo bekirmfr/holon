@@ -1323,14 +1323,7 @@ impl<'s, 't> Reader<'s, 't> {
             other => {
                 let value = self.expr(other)?;
                 let after = if self.contains_sink(&value) { self.trigger(at) } else { None };
-                // A request made for what it does is bound, as the `.holon` form binds one: its
-                // answer is nobody's.
-                let kind = if matches!(&value.kind, ExprKind::Method { receiver, .. } if receiver.text == "http") {
-                    StmtKind::Bind { name: Name { text: self.hidden_name("reply"), span: at }, value }
-                } else {
-                    StmtKind::Expr(value)
-                };
-                stmts.push(Stmt { kind, span: at, after });
+                stmts.push(Stmt { kind: StmtKind::Expr(value), span: at, after });
                 Ok(())
             }
         }
@@ -4116,14 +4109,11 @@ route.post("/ping", async (req) => {
   if (req.json.loud) {
     const sent = await api.post("/ping", { body: req.json })
   }
-  return "ok"
-})
-route.post("/again", async (req) => {
   if (req.json.twice) await api.post("/again", { body: req.json })
   return "ok"
 })
 "#,
-                "flow g\nport 8000\n\nroute POST /ping (req) {\n  sent = http.post(\"api.example.com\", \"/ping\", body: req.json) after true when req.json.loud\n  respond \"ok\"\n}\n\nroute POST /again (req) {\n  reply_1 = http.post(\"api.example.com\", \"/again\", body: req.json) after true when req.json.twice\n  respond \"ok\"\n}\n",
+                "flow g\nport 8000\n\nroute POST /ping (req) {\n  sent = http.post(\"api.example.com\", \"/ping\", body: req.json) after true when req.json.loud\n  http.post(\"api.example.com\", \"/again\", body: req.json) after true when req.json.twice\n  respond \"ok\"\n}\n",
             ),
             (
                 "a function's let, returned",

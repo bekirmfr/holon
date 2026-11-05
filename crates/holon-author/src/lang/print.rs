@@ -15,7 +15,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
-use holon_core::{interface_of, MapResolver, Resolver, UnitBody, BOUNDARY, TRIGGER};
+use holon_core::{interface_of, MapResolver, Resolver, UnitBody, BOUNDARY, CALLS, TRIGGER};
 
 use crate::builder::FlowDocument;
 use crate::canvas::{Node, PlacedBody};
@@ -1324,8 +1324,9 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
                 lines.push(l);
                 continue;
             }
-            // A call to another flow's action nobody uses is a statement, made for what it does.
-            if total == 0 && single && node.data.name == "flow_call" {
+            // A call nobody uses (a request, another flow's action) is a statement, made for what
+            // it does.
+            if total == 0 && single && CALLS.contains(&node.data.name.as_str()) {
                 let (text, _) = self.render(node, &node.data.outputs[0].name)?;
                 let after = self.after(node)?;
                 let l = self.line(format!("{}{text}{after}", self.indent));

@@ -114,7 +114,7 @@ and a record or list is written as JSON.
 | `coll[key] = expr` | Writes an item of a collection (or a file of a folder) when the run finishes. |
 | `delete coll[key]` | Deletes an item (or a file) when the run finishes. |
 | `respond …` | What a route or an action answers (see [Routes](#routes)). |
-| `expr` | An effect, such as `notes.put(k, v)` or an `http.post(…)` whose answer isn't used. |
+| `expr` | An effect, such as `notes.put(k, v)` or an `http.post(…)` whose answer isn't used: a call is made for what it does, read or not. |
 | `statement after x` | Its writes and calls tied to `x` (see [What a block holds](#what-a-block-holds)). |
 
 An expression statement that isn't an effect is a mistake ("a value nobody uses"): bind it or
@@ -275,7 +275,9 @@ route METHOD /path (req) [resumes NAME] [lazy | unrecorded] {
 - **`resumes NAME`** makes the route deliver the event a parked run is waiting for (see
   [`await`](#how-a-flow-runs)): the request carries the token from `resume_token(NAME)`.
 
-**Answering.** A route has exactly one `respond`, or at least one effect (it then answers 204):
+**Answering.** A route has exactly one `respond`, or at least one effect (it then answers 204). A
+call's answer is the far side's, never the route's: a route whose only effects are calls answers
+204 too, as if it ended with `respond 204`, which `fmt` writes in.
 
 | Form | Answers |
 |---|---|
