@@ -1,12 +1,14 @@
 //! Channels (`docs/L4s/channels-L4.md`): packs a flow sends with `updates.send(v)`, to whoever
 //! subscribes on one of its routes (`respond updates.subscribe()`), as server-sent events.
 //!
-//! - **When a pack goes out:** once its run is over and its writes have landed, as it is logged
-//!   (`log_run`): a run that fails, parks, or is run again sends nothing, and what a subscriber
-//!   gets is what the log holds, secrets redacted.
+//! - **When a pack goes out:** once its run is over, its writes have landed and its record is on
+//!   disk (`hold`, then `release`): a strict run's before it answers, a lazy one's with the next
+//!   sync, within a second (`SYNC_EVERY`). A run that fails, parks, or is run again sends nothing,
+//!   and what a subscriber gets is what the log holds, secrets redacted, after a power loss too.
 //! - **A pack's id** is its run's log seq and its place among the run's packs (`12.0`, `12.1`):
-//!   it only grows, across restarts too, so a reconnecting `EventSource` (`Last-Event-ID`) gets
-//!   the kept packs after the last one it saw.
+//!   it only grows, across restarts and power losses too (a seq a lost record had sent no pack),
+//!   so a reconnecting `EventSource` (`Last-Event-ID`) gets the kept packs after the last one it
+//!   saw.
 //! - **Kept packs** (`channel_keep` of them) live in memory, rebuilt from the log at load.
 //! - **An unrecorded run's packs** go out live, as it is counted, to the subscribers there then:
 //!   with no id and never kept, as the log, which ids and kept packs come from, doesn't hold the
@@ -124,6 +126,9 @@ pub(crate) struct Channels {
     /// The packs each waiting run sent as it parked (channel, JSON), by run id: the sends a later
     /// part of it settles again, and doesn't send twice.
     sent_waiting: Mutex<BTreeMap<String, Vec<(String, String)>>>,
+    /// The packs of logged runs whose records may not be on disk yet, in the log's order (the
+    /// entry's seq, the channel, the pack): they go out once they are.
+    held: Mutex<VecDeque<(u64, String, Pack)>>,
 }
 
 impl fmt::Debug for Channels {
@@ -217,6 +222,19 @@ impl Channels {
             for s in channel.subscribers.drain(..) {
                 *s.end.lock().unwrap() = Some(End::Closed);
             }
+        }
+    }
+
+    /// Hold the packs of a logged run (entry `seq`, just written) until its record is on disk.
+    pub(crate) fn hold(&self, seq: u64, packs: Vec<(String, Pack)>) {
+        self.held.lock().unwrap().extend(packs.into_iter().map(|(name, pack)| (seq, name, pack)));
+    }
+
+    /// Send the held packs of every entry before `synced`, which are on disk, in the log's order.
+    pub(crate) fn release(&self, synced: u64, limits: &ChannelLimits) {
+        let mut held = self.held.lock().unwrap();
+        while let Some((_, name, pack)) = held.pop_front_if(|(seq, _, _)| *seq < synced) {
+            self.send(&name, pack, limits);
         }
     }
 

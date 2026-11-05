@@ -366,8 +366,10 @@ would only fill the log. `lazy` is for a handler that must answer fast, where lo
 second of records to a crash is fine. A handler that writes, calls out or waits may say either,
 and is what it says: an unrecorded one's writes, calls and messages are in no run, and a crash
 may lose a lazy one's last second. `holon verify` leaves the state they may have moved unchecked
-rather than calling it a break, a restore's dry run says unrecorded runs aren't counted, and a
-channel message an unrecorded run sends reaches whoever is listening then and isn't kept. A run that waits keeps what it waits with, whatever its level.
+rather than calling it a break, a restore's dry run says unrecorded runs aren't counted, a
+channel message an unrecorded run sends reaches whoever is listening then and isn't kept, and a
+lazy run's goes out once its record is on disk, within a second. A run that waits keeps what it
+waits with, and what it sent as it parked, whatever its level.
 
 The words go the same place on the other handlers (`every 1m lazy { … }`, `on file inbox (f)
 unrecorded { … }`, `action report (input) unrecorded { … }`), and are names anywhere else.

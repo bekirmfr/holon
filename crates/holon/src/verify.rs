@@ -505,7 +505,7 @@ fn beside(a: &LogEntry, b: &LogEntry) -> bool {
 /// left cells it couldn't read as the other wrote them: of those, only the cells it wrote are
 /// checked, in a state a later run began from.
 ///
-/// A run of an unrecorded handler isn't in the log, nor a lazy one's whose record a restart lost:
+/// A run of an unrecorded handler isn't in the log, nor a lazy one's whose record a power loss lost:
 /// where every cell that doesn't follow is one such a handler may write, it is said unchecked, as
 /// its author chose, not a break. A cell no such handler writes, a handler whose units aren't all
 /// here, or a run before it that couldn't be run again leaves it a break.
@@ -586,7 +586,7 @@ fn check_states(entries: &[(LogEntry, &str)], lefts: &[Option<Left>], events: &[
                             } else if let Some(why) = began[i]
                                 .as_ref()
                                 .and_then(|(_, now)| moved(p, lefts[pi].as_ref(), now))
-                                .and_then(|moved| lightly(&moved, light(p), light(b), p.session != b.session))
+                                .and_then(|moved| lightly(&moved, light(p), light(b)))
                             {
                                 states.unchecked(why, b.seq);
                             } else {
@@ -664,16 +664,17 @@ fn moved(p: &LogEntry, left: Option<&Left>, now: &State) -> Option<BTreeSet<Stri
 
 /// Why the cells that `moved` between two runs (of `p`'s version, then `b`'s) are left unchecked:
 /// each is one a handler whose runs the log doesn't hold may write, an unrecorded one, or a lazy
-/// one across a restart. `None`: one isn't, which is a break.
-fn lightly(moved: &BTreeSet<String>, p: &Light, b: &Light, restarted: bool) -> Option<&'static str> {
+/// one, whose last second of records a power loss may have lost (nothing in the log says one
+/// came between them). `None`: one isn't, which is a break.
+fn lightly(moved: &BTreeSet<String>, p: &Light, b: &Light) -> Option<&'static str> {
     let unrecorded = |k: &String| p.unrecorded.contains(k) || b.unrecorded.contains(k);
-    let lazy = |k: &String| restarted && p.lazy.contains(k);
+    let lazy = |k: &String| p.lazy.contains(k) || b.lazy.contains(k);
     if moved.is_empty() || !moved.iter().all(|k| unrecorded(k) || lazy(k)) {
         None
     } else if moved.iter().all(unrecorded) {
         Some("where it began: an unrecorded handler that writes the state may have run before it, which the log doesn't hold")
     } else {
-        Some("where it began: a lazy handler that writes the state may have run before a restart, its record lost")
+        Some("where it began: a lazy handler that writes the state may have run before it, its record lost to a power loss")
     }
 }
 

@@ -8329,6 +8329,38 @@ fn a_waiting_unrecorded_run_doesnt_send_again_after_a_restart() {
     let _ = std::fs::remove_dir_all(Path::new(&state.deployments_path).with_extension("logs"));
 }
 
+/// A logged run's packs go out once its record is on disk: a lazy run's with the next sync, a
+/// strict one's, with those of the runs before it, once its own is done, in the log's order. So a
+/// pack a subscriber got is in the log after a power loss too, and its id is never given again.
+#[test]
+fn a_runs_packs_go_out_once_its_record_is_on_disk() {
+    let mut state = test_state();
+    state.deployments_path = unique_temp_path("packs-on-disk");
+    let text = "flow sends-lightly\nport 18204\nchannel updates\n\nroute POST /fast (req) lazy {\n  updates.send({ fast: req.method })\n  respond \"ok\"\n}\n\nroute POST /sure (req) {\n  updates.send({ sure: req.method })\n  respond \"ok\"\n}\n";
+    let slug = deploy_plain_text(&state, text);
+    let mut sub = {
+        let table = state.deployments.lock().unwrap();
+        table[&slug].channels.subscribe("updates", false, None, &table[&slug].permit.channels).unwrap()
+    };
+    let mut got = || std::iter::from_fn(|| sub.packs.try_recv().ok()).map(|p| (p.id.unwrap().to_string(), p.json.clone())).collect::<Vec<_>>();
+    let fast = |seq: u64| (format!("{seq}.0"), r#"{"fast":"POST"}"#.to_string());
+    let sure = |seq: u64| (format!("{seq}.0"), r#"{"sure":"POST"}"#.to_string());
+    let next = || state.deployments.lock().unwrap()[&slug].log.next_seq();
+
+    let first = next();
+    assert_eq!(data_call(&state, &slug, "POST", "/fast", "").0, 200);
+    assert_eq!(got(), [], "its record isn't on disk yet");
+    recorder::sync_logs(&state.deployments).unwrap();
+    assert_eq!(got(), [fast(first)]);
+
+    let (lazy, strict) = (next(), next() + 1);
+    assert_eq!(data_call(&state, &slug, "POST", "/fast", "").0, 200);
+    assert_eq!(data_call(&state, &slug, "POST", "/sure", "").0, 200);
+    assert_eq!(got(), [fast(lazy), sure(strict)], "the strict run's sync covers the lazy run before it");
+    let _ = std::fs::remove_file(&state.deployments_path);
+    let _ = std::fs::remove_dir_all(Path::new(&state.deployments_path).with_extension("logs"));
+}
+
 /// An unrecorded handler that writes and sends is what its author wrote: approved as any
 /// unrecorded one is (`Unrecorded("POST /notes")`), its runs leave no entry, what they write lands
 /// all the same, and its packs go to the subscribers there then, live, with no id, and aren't kept
@@ -8426,6 +8458,43 @@ fn what_an_unrecorded_writer_leaves_out_is_unchecked_not_a_break() {
     let dry =body_json(route(&state, &req("POST", &format!("/deployments/{slug}/restore"), serde_json::json!({ "run": 0, "state": true, "dry_run": true }).to_string().into_bytes())));
     assert_eq!(dry["state"]["unrecorded"], serde_json::json!(["POST /quiet"]), "{dry}");
     assert!(restore::state_lines(&dry["state"]).contains("runs of POST /quiet (unrecorded) aren't logged"), "{}", restore::state_lines(&dry["state"]));
+    let _ = std::fs::remove_file(&state.deployments_path);
+    let _ = std::fs::remove_dir_all(Path::new(&state.deployments_path).with_extension("logs"));
+}
+
+/// A lazy run's record a power loss lost leaves no mark in the log: the state the next run began
+/// from moved where only a lazy handler writes, and that is unchecked, not a break; a cell no lazy
+/// or unrecorded handler writes that moved is a break all the same.
+#[test]
+fn what_a_lost_lazy_record_moved_is_unchecked_not_a_break() {
+    let mut state = test_state();
+    state.deployments_path = unique_temp_path("lazy-verify");
+    let text = "flow lazy-verify\nport 18205\ncollection notes\ncollection seen\n\nroute POST /notes (req) {\n  notes[req.json.id] = req.json.text\n  respond \"saved\"\n}\n\nroute POST /seen (req) lazy {\n  seen[req.json.id] = req.json.by\n  respond \"ok\"\n}\n";
+    let slug = deploy_plain_text(&state, text);
+    assert_eq!(data_call(&state, &slug, "POST", "/notes", r#"{"id":"a","text":"hi"}"#).0, 200);
+    assert_eq!(data_call(&state, &slug, "POST", "/seen", r#"{"id":"a","by":"sam"}"#).0, 200);
+    assert_eq!(data_call(&state, &slug, "POST", "/notes", r#"{"id":"b","text":"there"}"#).0, 200);
+    let export: verify::Export = serde_json::from_value(body_json(route(&state, &req("GET", &format!("/deployments/{slug}/export"), vec![])))).unwrap();
+    assert_eq!(export.lines.len(), 3);
+    // The lazy run's line lost, and the line after it chained to the one before, as the log
+    // goes on after a power loss.
+    let lost = |edit: &dyn Fn(&mut serde_json::Value)| {
+        let mut copy: verify::Export = serde_json::from_value(serde_json::to_value(&export).unwrap()).unwrap();
+        let mut after: serde_json::Value = serde_json::from_str(&export.lines[2]).unwrap();
+        after["prev"] = serde_json::Value::String(recorder::line_hash(&export.lines[0]));
+        edit(&mut after);
+        copy.lines = vec![export.lines[0].clone(), serde_json::to_string(&after).unwrap()];
+        copy.head = recorder::line_hash(&copy.lines[1]);
+        let report = verify::check(&copy, None, &BTreeMap::new());
+        assert!(report.breaks.is_empty() && report.head_matches, "chained again: {}", verify::describe(&report, None));
+        report.states.unwrap()
+    };
+    let states = lost(&|_| {});
+    let why = "where it began: a lazy handler that writes the state may have run before it, its record lost to a power loss";
+    assert_eq!(states.unchecked.get(why), Some(&vec![2]), "{:?}", states.unchecked);
+    assert!(states.breaks.is_empty(), "{:?}", states.breaks);
+    let states = lost(&|after| after["state_before"]["k"] = serde_json::json!({ "type": "Number", "value": 5.0 }));
+    assert!(states.breaks.contains(&(2, "it began from a state the run before it (run 0) didn't leave, nor a run beside it".to_string())), "{:?}", states.breaks);
     let _ = std::fs::remove_file(&state.deployments_path);
     let _ = std::fs::remove_dir_all(Path::new(&state.deployments_path).with_extension("logs"));
 }

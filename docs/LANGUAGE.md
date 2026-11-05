@@ -633,8 +633,9 @@ route GET /live (req) {
 
 `channel updates` declares a channel: packs the flow sends to whoever subscribes
 (`docs/L4s/channels-L4.md`). `updates.send(v)` is an effect, `channel_send{channel: updates}(v)`:
-the pack goes out once the run is over and its writes have landed, so a subscriber never hears of
-a ticket that wasn't stored; a run that fails, or is run again, sends nothing. A route answers
+the pack goes out once the run is over, its writes have landed and its record is on disk (a lazy
+run's within a second), so a subscriber never hears of a ticket that wasn't stored, nor of one a
+power loss took back; a run that fails, or is run again, sends nothing. A route answers
 with `respond updates.subscribe()`: a 200 whose body is the channel's packs as server-sent events
 (`id: 12.0`, `data: {"at":…,"title":…}`), while the caller stays. `subscribe(from: "kept")` sends
 the packs the channel keeps first; a browser's `EventSource` that reconnects says the last id it
@@ -952,9 +953,10 @@ only fill the log), `lazy` where a handler must answer fast and losing its last 
 to a crash is fine. A handler that writes, calls out (`http.*`, another flow's action), sends on a
 channel or parks a durable run is what it says too: an unrecorded one's runs aren't in the log,
 and a crash may lose a lazy one's last second, so `holon verify` leaves the state they may have
-moved unchecked (not a break), a restore's dry run says unrecorded runs aren't counted, and an
-unrecorded run's channel messages go to whoever is listening then, not kept. A parked run keeps what it waits with whatever its level, and each
-part after is recorded at its handler's.
+moved unchecked (not a break), a restore's dry run says unrecorded runs aren't counted, an
+unrecorded run's channel messages go to whoever is listening then, not kept, and a lazy run's go
+out once its record is on disk, within a second. A parked run keeps what it waits with, and what
+it sent as it parked, whatever its level, and each part after is recorded at its handler's.
 `strict` isn't a word: it is what an unsaid handler is. `lazy` and `unrecorded` are words only
 right before a block; everywhere else they are names (`action a (unrecorded) { … }`). The word
 is part of the handler's unit (its trigger's `log` param, docs/L4s/request-path-L4.md C5): a
