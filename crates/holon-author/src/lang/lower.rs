@@ -220,11 +220,15 @@ struct Frame {
     /// Whether any wiring-form statement appeared (a holon with none of its own boundary wires
     /// then freezes with the proposed boundary, as the wiring form always did).
     wiring_form: bool,
+    /// How deep in a choice's branches the expression being lowered is (`branch`).
+    branches: usize,
+    /// The calls placed in a branch: made only when the branch needs them, so left untied.
+    in_branches: HashSet<String>,
 }
 
 impl Frame {
     fn new(kind: FrameKind) -> Frame {
-        Frame { kind, env: HashMap::new(), wiring_in: vec![], wiring_out: vec![], written: HashMap::new(), shared: HashMap::new(), created: vec![], wiring_form: false }
+        Frame { kind, env: HashMap::new(), wiring_in: vec![], wiring_out: vec![], written: HashMap::new(), shared: HashMap::new(), created: vec![], wiring_form: false, branches: 0, in_branches: HashSet::new() }
     }
 }
 
@@ -563,7 +567,20 @@ impl<'a> Lowerer<'a> {
         let id = self.b.node(leaf, params, None).or_else(|e| err(span, e))?;
         self.spans.insert(id.clone(), span);
         self.frame().created.push(id.clone());
+        if self.cur().branches > 0 && CALLS.contains(&leaf) {
+            self.frame().in_branches.insert(id.clone());
+        }
         Ok(self.out(&id))
+    }
+
+    /// `e` where a choice runs it only when it needs it: a branch of `if`, `when` or `match`, or
+    /// what `??` falls back to. A call made there is made only then, so it isn't tied to its
+    /// block; one made anywhere else in a statement is made when the run reaches the statement.
+    fn branch(&mut self, e: &'a Expr) -> R<Val> {
+        self.frame().branches += 1;
+        let v = self.expr(e);
+        self.frame().branches -= 1;
+        v
     }
 
     fn out(&self, id: &str) -> Val {
@@ -677,11 +694,13 @@ impl<'a> Lowerer<'a> {
         Ok(())
     }
 
-    /// Whether node `id` takes a trigger (a sink, or a holon with one) that nothing feeds yet.
+    /// Whether node `id` takes a trigger (a sink, or a holon with one) that nothing feeds yet,
+    /// and is no call made in a branch (`branch`).
     fn untied(&self, id: &str) -> bool {
         self.b.data(id).is_some_and(|d| d.inputs.iter().any(|p| p.name == TRIGGER))
             && !self.b.is_wired(id, TRIGGER)
             && !self.cur().wiring_in.iter().any(|(_, node, input)| node == id && input == TRIGGER)
+            && !self.cur().in_branches.contains(id)
     }
 
     /// Every sink placed in this block and not tied by `after`, tied to `v`: the block's trigger.
@@ -1603,7 +1622,7 @@ impl<'a> Lowerer<'a> {
             ExprKind::Binary { op, lhs, rhs } => self.binary(*op, lhs, rhs, e.span),
             ExprKind::If { cond, then, els } => {
                 let c = self.expr(cond)?;
-                let t = self.expr(then)?;
+                let t = self.branch(then)?;
                 let guarded = self.node_with("guard", &[], &[("cond", c), ("value", t)], e.span)?;
                 match els {
                     None => Ok(guarded),
@@ -1713,7 +1732,7 @@ impl<'a> Lowerer<'a> {
     fn binary(&mut self, op: BinOp, lhs: &'a Expr, rhs: &'a Expr, span: Span) -> R<Val> {
         match op {
             BinOp::When => {
-                let v = self.expr(lhs)?;
+                let v = self.branch(lhs)?;
                 let c = self.expr(rhs)?;
                 self.node_with("guard", &[], &[("cond", c), ("value", v)], span)
             }
@@ -1798,7 +1817,7 @@ impl<'a> Lowerer<'a> {
                 eqs.push(self.node_with("equals", &[], &[("a", s.clone()), ("b", c)], p.span)?);
             }
             let m = self.any_of(eqs, span)?;
-            let v = self.expr(&arm.value)?;
+            let v = self.branch(&arm.value)?;
             let at = arm.patterns[0].span.to(arm.value.span);
             let guarded = self.node_with("guard", &[], &[("cond", m.clone()), ("value", v)], at)?;
             matched.push(m);
@@ -1811,7 +1830,7 @@ impl<'a> Lowerer<'a> {
         if let Some(e) = els {
             let any = self.any_of(matched, span)?;
             let none = self.node_with("not", &[], &[("v", any)], span)?;
-            let v = self.expr(e)?;
+            let v = self.branch(e)?;
             let guarded = self.node_with("guard", &[], &[("cond", none), ("value", v)], e.span)?;
             chain = self.node_with("coalesce", &[], &[("a", chain), ("b", guarded)], span)?;
         }
@@ -1833,7 +1852,7 @@ impl<'a> Lowerer<'a> {
         if let Some((ty, value)) = literal_param(b) {
             return self.node_with("default", &[("value".into(), value), ("type".into(), ty.into())], &[("value", a)], span);
         }
-        let v = self.expr(b)?;
+        let v = self.branch(b)?;
         self.node_with("coalesce", &[], &[("a", a), ("b", v)], span)
     }
 
@@ -2419,7 +2438,7 @@ pub(crate) mod tests {
     use crate::composites::Names;
     use crate::flow::{derive_server, flow_unit};
     use crate::{commands, samples, text, to_hex};
-    use holon_core::{MapResolver, Resolver};
+    use holon_core::{parse_hash, MapResolver, Resolver, UnitBody};
 
     /// The unit a document deploys as, through the real core.
     fn hash_of(doc: &FlowDocument) -> String {
@@ -2729,6 +2748,40 @@ pub(crate) mod tests {
         // The same request twice is two requests, each kept apart by where it goes.
         let (s, _) = server("route POST /hook (req) {\n  a = http.post(\"hooks.example.com\", \"/a\", body: req.body)\n  b = http.post(\"hooks.example.com\", \"/a\", body: req.body)\n  respond \"ok\"\n}\n");
         assert_eq!(s.endpoints.len(), 1);
+    }
+
+    /// A call is made when the run reaches its statement, under its `after`, whatever reads its
+    /// answer: tied to its block, the handler keeps it as an output, so a branch not taken doesn't
+    /// keep it from being made. One written in a branch (of `if`, `when`, `match`, or what `??`
+    /// falls back to) is made only when the branch needs it: it is left untied, and not kept.
+    #[test]
+    fn a_call_is_made_where_its_statement_is() {
+        let kept = |src: &str| {
+            let d = compiled(src).doc;
+            let mut store = MapResolver::new();
+            let server = crate::flow::derive_server(&d.nodes, &d.edges, &mut store, "8080");
+            assert_eq!(server.errors, Vec::<String>::new(), "{src}");
+            let endpoint = store.resolve(&parse_hash(&server.endpoints[0].hash).unwrap()).unwrap().clone();
+            let UnitBody::Composite { children, .. } = &endpoint.body else { panic!("an endpoint wraps its handler") };
+            let handler = store.resolve(&children[0]).unwrap();
+            let call = d.nodes.iter().find(|n| n.data.name == "http_request").unwrap();
+            let tied = d.edges.iter().any(|w| w.target == call.id && w.input() == TRIGGER);
+            (tied, handler.outputs.iter().map(|p| p.name.clone()).collect::<Vec<_>>())
+        };
+        // The respond's answer first, then the call's.
+        let answer_and_call = vec!["response".to_string(), "out".to_string()];
+        let reached = kept("route GET /a (req) {\n  page = http.get(\"a.example\", \"/x\")\n  respond page.body when req.json.go\n}\n");
+        assert_eq!(reached, (true, answer_and_call.clone()));
+        let guarded = kept("route GET /a (req) {\n  page = http.get(\"a.example\", \"/x\") after true when req.json.go\n  respond page.body ?? \"no\"\n}\n");
+        assert_eq!(guarded, (true, answer_and_call));
+        for in_branch in [
+            "route GET /a (req) {\n  respond http.get(\"a.example\", \"/x\").body when req.json.go\n}\n",
+            "route GET /a (req) {\n  respond if req.json.go then http.get(\"a.example\", \"/x\").body else \"no\"\n}\n",
+            "route GET /a (req) {\n  respond req.json.cached ?? http.get(\"a.example\", \"/x\").body\n}\n",
+            "route GET /a (req) {\n  respond match req.json.op { \"go\" -> http.get(\"a.example\", \"/x\").body, else -> \"no\" }\n}\n",
+        ] {
+            assert_eq!(kept(in_branch), (false, vec!["response".to_string()]), "{in_branch}");
+        }
     }
 
     /// `every 2s { … }` is a clock handler: its tick node, everything wired to it, its sinks tied

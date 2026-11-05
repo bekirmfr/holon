@@ -5546,7 +5546,8 @@ route POST /go (req) {
     assert!(report.ok(), "{}", verify::describe(&report, None));
 }
 
-/// The read-call-write flows the claim tests run, calling `host` over plain HTTP.
+/// The read-call-write flows the claim tests run, calling `host` over plain HTTP: the call is
+/// written in the `??` it falls back to, so it is made only when there is no prior record.
 fn idem_text(host: &str) -> String {
     format!(
         r#"flow idem
@@ -5555,8 +5556,7 @@ collection seen
 
 route POST /go/:k (req) {{
   prior = seen[req.params.k]
-  fresh = {{ got: http.get("{host}", "/slow").body }}
-  result = prior ?? fresh
+  result = prior ?? {{ got: http.get("{host}", "/slow").body }}
   seen[req.params.k] = result
   respond result
 }}

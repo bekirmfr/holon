@@ -243,11 +243,19 @@ pub fn default_spec(
     };
     let consumed: BTreeSet<(u32, u32)> =
         inner_edges.iter().filter(|e| !effect_into_trigger(e)).map(|e| (e.from_child, e.from_port)).collect();
+    // A call tied to a trigger is made when the trigger arrives, whatever reads its answer: once
+    // made it can't be taken back (`CALLS`). Its answer leaves the boundary too, so the call is
+    // made even when what reads it is a branch not taken. One left untied is made when needed.
+    let tied_call = |ci: usize| {
+        let child = resolved[ci];
+        matches!(&child.body, UnitBody::Primitive { name } if crate::CALLS.contains(&name.as_str()))
+            && inner_edges.iter().any(|e| e.to_child as usize == ci && child.inputs.get(e.to_port as usize).is_some_and(|p| p.name == crate::TRIGGER))
+    };
 
     let mut expose = Vec::new();
     for (ci, child) in resolved.iter().enumerate().take(k) {
         for (p, port) in child.outputs.iter().enumerate() {
-            if !consumed.contains(&(ci as u32, p as u32)) {
+            if !consumed.contains(&(ci as u32, p as u32)) || tied_call(ci) {
                 expose.push(Expose {
                     child: ci as u32,
                     port: p as u32,
@@ -296,6 +304,23 @@ mod tests {
         assert!(!promoted.contains(&crate::TRIGGER), "{promoted:?}");
         let exposed: Vec<(u32, u32)> = spec.expose.iter().map(|x| (x.child, x.port)).collect();
         assert_eq!(exposed, vec![(0, 0), (1, 0)], "both effects leave the boundary");
+    }
+
+    /// A call tied to a trigger is made when the trigger arrives, so its answer leaves the
+    /// boundary though a branch reads it; one left untied is made only when it is needed.
+    #[test]
+    fn a_tied_call_is_exposed_though_its_answer_is_read() {
+        let mut r = MapResolver::new();
+        let go = r.insert(Unit { params: vec![crate::Param::frozen("value", "true"), crate::Param::frozen("type", "Boolean")], ..crate::interface_of("const").unwrap() }).unwrap();
+        let call = crate::interface_of("http_request").unwrap();
+        let trigger = call.inputs.iter().position(|p| p.name == crate::TRIGGER).unwrap() as u32;
+        let call = r.insert(Unit { params: vec![crate::Param::frozen("method", "GET"), crate::Param::frozen("host", "a.example")], ..call }).unwrap();
+        let guard = r.insert(crate::interface_of("guard").unwrap()).unwrap();
+        // call.response → guard.value, read only when guard's cond is true.
+        let read = e(1, 0, 2, 1);
+        let exposed = |edges: &[Edge]| default_spec(&[go, call, guard], edges, &r).unwrap().expose.iter().map(|x| (x.child, x.port)).collect::<Vec<_>>();
+        assert_eq!(exposed(&[e(0, 0, 1, trigger), read]), vec![(1, 0), (2, 0)], "tied: made when reached");
+        assert_eq!(exposed(&[read]), vec![(0, 0), (2, 0)], "untied: made when the branch needs it");
     }
 
     #[test]

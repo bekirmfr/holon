@@ -24,8 +24,10 @@ route POST /charges (req) {
   prior = stored when stored.expires_at > now
   replayed = (prior.fingerprint ?? "") == fingerprint
   mismatch = (prior.fingerprint ?? fingerprint) != fingerprint
-  # Runs only when there is no prior charge: only the fresh charge needs it.
-  processed = http.post("httpbin.org", "/post", headers: { "content-type": "application/json" }, body: req.body)
+  # The charge is sent only when there is no prior one: once sent it can't be taken back, so the
+  # request says when it goes out.
+  first_charge = true when !replayed && !mismatch
+  processed = http.post("httpbin.org", "/post", headers: { "content-type": "application/json" }, body: req.body) after first_charge
   fresh = { id: slice(sha256("{key}:{now}:{random}"), 0, 12), amount: req.json.amount, currency: req.json.currency ?? "EUR", processor_saw: parse_json(processed.body).json, fingerprint: fingerprint, charged_at: now, expires_at: now + 86400 }
   result = prior ?? fresh when !mismatch
   charges[key] = result

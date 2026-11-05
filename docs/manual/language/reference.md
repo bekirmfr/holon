@@ -572,7 +572,10 @@ range(n)                         # [0, 1, …, n-1], at most 10000
   the run began. Writes are performed when the run finishes, and only if granted. A run never sees
   its own writes. When two runs change the same item at once, one is run again, so none is lost.
 - **Calls out happen between rounds.** An `http.*` call is made when the run gets to it; the run
-  continues with the answer. A branch not taken makes no call.
+  continues with the answer. A call bound on a statement of its own (`page = http.get(…)`) is made
+  when the run reaches the statement, whatever reads `page`; one written in a branch (`x ?? http.get(…)`,
+  `if c then http.get(…)`) is made only when the branch needs it, so a branch not taken makes no
+  call. To make a bound call only sometimes, say so on it: `charged = http.post(…) after first`.
 - **Waiting.** `await name` parks the run; a later request to a route that `resumes name`, with
   the token, delivers the event and the run continues. `expires:` sets how long it waits.
 - **Sharing is explicit.** A binding is one value used many times. The same expression written

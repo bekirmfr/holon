@@ -1110,7 +1110,9 @@ Rules the table implies:
   written twice is two calls. Its answer is the far side's, never its handler's: a route or an
   action whose only effects are calls answers 204, the lowering writing its `respond 204` where it
   is left out (the canvas asks for the respond). A clock or file block of calls alone is a
-  handler. The `fan-out` sample shows it.
+  handler. The `fan-out` sample shows it. A call bound on a statement is made when the run
+  reaches it, under its `after`, though only a branch reads its answer (§6.4): the `idempotent`
+  sample's charge says when it goes out, `after first_charge`.
 - A streamed call is a route's, and the route answers with it: `stream:` comes last, takes
   `true` or `false`, sends a body (not a `file:`), and a route makes one; its `respond` is
   `respond sent.body, stream: true`, without `status:` or `headers:` (its status is the call's,
@@ -1524,6 +1526,17 @@ no value, only what runs. While `c` (or `x`) waits on an answer from the host, t
 too, and decides in the next round. A holon's inputs are computed before it is entered, as a
 call's arguments are: `h(go, http.get(…))` sends the request even if `h` only uses it when `go`.
 
+A binding isn't a branch. A call written in a branch, `ids[name] ?? http.get(…)` or `if c then
+http.get(…)`, is made only when the branch needs it; a call bound on a statement of its own,
+`page = http.get(…)`, is made when the run reaches the statement, whatever reads `page`, even a
+branch not taken (§5.4). In the graph the difference is the call's trigger: one bound on a
+statement is tied to its block's trigger, or to what its `after` names, and its handler keeps it as
+an output; one written in a branch is left untied, and is made when its answer is needed. So
+whether a call goes out is said where it is written: in the branch that needs it, or by its own
+`after`, `charged = http.post(…) after true when first`, never by a reader somewhere else. The
+printer keeps each where it was written. (In a holon, and in a flow without handlers, a call
+bound on a statement is still made when its answer is needed: F13.)
+
 The strict three-way choice, where an absent arm makes the whole result absent whatever `c` says,
 is `select(c, a, b)`, written as a call. Being strict, it needs, and runs, both arms. It is rarely
 what a flow wants.
@@ -1880,7 +1893,13 @@ Decided ones are kept, with the decision, for a reader who wonders why.
   twice was refused as a value computed twice; a route of `flow_call`s alone answered with the
   call's answer. Decided and built: a call is an effect, kept by its handler whether or not its
   answer is read, and its answer is never its handler's (§5.4, §5.10). The `fan-out` sample shows
-  it.
+  it. And a call bound on a statement was made only when something needed its answer, so whether
+  a charge went out could be decided by a reader lines away. Decided and built: a call is made
+  where it is written, when the run reaches its statement or when the branch it is written in
+  needs it (§6.4); the `idempotent` sample's charge says its own condition. Left open: in a holon
+  written in the text and in a flow without handlers, a call bound on a statement is still made
+  when its answer is needed, as the holon's boundary would need an output the printer can't yet
+  write back.
 
 ## 14. What this document does not decide
 

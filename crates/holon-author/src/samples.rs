@@ -465,7 +465,7 @@ static SAMPLES: &[Sample] = &[
         name: "idempotent",
         title: "Idempotent charges (one call per key)",
         description: "Charge once per Idempotency-Key: the same key with the same body answers the first charge again, the same key with a different body is refused (409), a key expires after a day, and the processor is called only when there is no prior charge. Two identical requests at once: the second waits for the first's claim on the key, reads what it wrote, and sends nothing (docs/L4s/key-claims-L4.md).",
-        shows: &["idempotency key", "key claims", "lazy ??", "sha256 fingerprint", "collection", "absence as refusal"],
+        shows: &["idempotency key", "key claims", "a request's after", "sha256 fingerprint", "collection", "absence as refusal"],
         port: Some("8121"),
         interval: None,
         secrets: &[],

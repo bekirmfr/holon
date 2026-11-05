@@ -158,11 +158,13 @@ struct Group<'g> {
     /// Boundary outputs: `(node, output, port)`.
     outs: Vec<(String, String, String)>,
     order: Vec<String>,
+    /// The nodes tied to their block's trigger, which the text doesn't write.
+    block_tied: HashSet<String>,
 }
 
 impl<'g> Group<'g> {
     fn new(nodes: Vec<&'g Node>, wires: Vec<(Src, String, String)>, outs: Vec<(String, String, String)>) -> Group<'g> {
-        let (nodes, wires) = without_block_ties(nodes, wires);
+        let (nodes, wires, block_tied) = without_block_ties(nodes, wires);
         let ids: HashSet<&str> = nodes.iter().map(|n| n.id.as_str()).collect();
         let mut incoming = HashMap::new();
         let mut consumers: HashMap<(String, String), usize> = HashMap::new();
@@ -205,7 +207,7 @@ impl<'g> Group<'g> {
                 }
             }
         }
-        Group { nodes, incoming, consumers, outs, order }
+        Group { nodes, incoming, consumers, outs, order, block_tied }
     }
 
     fn node(&self, id: &str) -> &'g Node {
@@ -457,8 +459,8 @@ pub(crate) fn js_statement(store: &MapResolver, unit: &holon_core::Unit, hname: 
 /// `nodes` and `wires` without the ties the text doesn't write: a trigger fed by its block's
 /// trigger (a route's request, an `every` block's tick, an `on file` block's file, a holon's own `trigger`, or the
 /// pass-through the lowering places when that feeds several, which goes too, with its `true`).
-/// What's left on a trigger is written `after`.
-fn without_block_ties(nodes: Vec<&Node>, wires: Vec<(Src, String, String)>) -> (Vec<&Node>, Vec<(Src, String, String)>) {
+/// What's left on a trigger is written `after`. Also the nodes whose ties went.
+fn without_block_ties(nodes: Vec<&Node>, wires: Vec<(Src, String, String)>) -> (Vec<&Node>, Vec<(Src, String, String)>, HashSet<String>) {
     let by_id: HashMap<&str, &Node> = nodes.iter().map(|n| (n.id.as_str(), *n)).collect();
     // The last wire into an input is the one that counts, as `Group` keeps it: a holon's
     // boundary is listed as its node first, then as the port.
@@ -492,7 +494,8 @@ fn without_block_ties(nodes: Vec<&Node>, wires: Vec<(Src, String, String)>) -> (
     }
     let touches_gone = |(src, to, _): &(Src, String, String)| gone.contains(to) || matches!(src, Src::Node { id, .. } if gone.contains(id));
     let kept: Vec<(Src, String, String)> = wires.iter().filter(|w| !tie(&w.0, &w.2) && !touches_gone(w)).cloned().collect();
-    (nodes.into_iter().filter(|n| !gone.contains(&n.id)).collect(), kept)
+    let tied: HashSet<String> = wires.iter().filter(|w| tie(&w.0, &w.2)).map(|w| w.1.clone()).collect();
+    (nodes.into_iter().filter(|n| !gone.contains(&n.id)).collect(), kept, tied)
 }
 
 /// Whether the expression form can spell `nodes` as wired: every input a node needs is wired
@@ -1245,7 +1248,26 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
     /// Whether `node`'s one output prints inline at its one consumer. A node the text named keeps
     /// its binding: fmt keeps an author's names.
     fn inline(&self, node: &Node) -> bool {
-        self.free(node) && (self.g.consumed_total(node) == 1 || self.absorbed.contains(&node.id)) && !self.tied_elsewhere(node) && !self.awaited(node)
+        self.free(node) && (self.g.consumed_total(node) == 1 || self.absorbed.contains(&node.id)) && !self.tied_elsewhere(node) && !self.awaited(node) && !self.made_before_a_branch(node)
+    }
+
+    /// Whether `node` is a call its block makes when reached (tied to the block's trigger) that,
+    /// inline, would be written in a branch, where the lowering makes a call only when the branch
+    /// needs it: it keeps its binding, a statement of its own.
+    fn made_before_a_branch(&self, node: &Node) -> bool {
+        CALLS.contains(&node.data.name.as_str()) && self.g.block_tied.contains(&node.id) && self.lands_in_a_branch(node)
+    }
+
+    /// Whether `node`'s one use, followed through the nodes that print inline, is a branch of a
+    /// choice: a `guard`'s value (`if`, `when`, a `match` arm) or what a `coalesce` falls back to.
+    fn lands_in_a_branch(&self, node: &Node) -> bool {
+        let used = self.g.incoming.iter().find(|(_, src)| matches!(src, Src::Node { id, .. } if *id == node.id));
+        let Some(((to, input), _)) = used else { return false };
+        let next = self.g.node(to);
+        match (next.data.name.as_str(), input.as_str()) {
+            ("guard", "value") | ("coalesce", "b") => true,
+            _ => self.inline(next) && self.lands_in_a_branch(next),
+        }
     }
 
     /// Whether `node`'s trigger is fed by something other than its block's trigger: `after`.
@@ -2353,6 +2375,22 @@ limit max_requests 6")).contains("one limit line says max_requests"));
         let again = printed(Some(name), &back.doc, &back.names);
         assert_eq!(again, text, "{name}: printing isn't idempotent");
         text
+    }
+
+    /// A call bound as a statement is made when the run reaches it, so a branch reading it keeps
+    /// it a statement; one written in a branch is made only when the branch needs it, and stays
+    /// there. Two units, each printed as written.
+    #[test]
+    fn a_call_stays_where_it_was_written_beside_a_branch() {
+        let reached = "flow f\nport 8080\n\nroute GET /a (req) {\n  page = http.get(\"a.example\", \"/x\")\n  respond page.body when req.json.go\n}\n";
+        let in_branch = "flow f\nport 8080\n\nroute GET /a (req) {\n  respond http.get(\"a.example\", \"/x\").body when req.json.go\n}\n";
+        let mut hashes = Vec::new();
+        for src in [reached, in_branch] {
+            let l = compile(src).unwrap_or_else(|e| panic!("{e}"));
+            assert_eq!(round_trips("f", &l.doc, &l.names), src);
+            hashes.push(hash_of(&l.doc));
+        }
+        assert_ne!(hashes[0], hashes[1], "made when reached, or when the branch needs it");
     }
 
     #[test]
