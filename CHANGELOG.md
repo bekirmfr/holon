@@ -1,6 +1,12 @@
 # Changelog
 
-## Unreleased
+## 0.1.0-rc.33
+
+What each log level costs can now be measured from the command line: `holon load` puts a flow's
+routes under load and says, beside the requests a second and the latency, what the server did
+with their runs; the `stress-test` sample has one route of each level. Every command's help is
+written one way, with examples, and `holon remove` now says what it deletes. Nothing changes for
+deployed flows; the deployments listing and a deployment's log only gain fields.
 
 - **`holon load`: a flow's routes under load.** `holon load <slug>` sends each of a deployed flow's
   GET routes (or those `--route` names) as many requests as it answers, from connections kept
