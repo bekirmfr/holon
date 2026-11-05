@@ -16,6 +16,7 @@ use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
 
+use crate::paths::Place;
 use crate::recorder::line_hash;
 use crate::Deployment;
 
@@ -85,14 +86,14 @@ pub(crate) struct Events {
 
 /// Where `slug`'s events are kept for the deployments file at `deployments_path`, if anywhere:
 /// beside its run log.
-fn file_for(deployments_path: &str, slug: &str) -> Option<PathBuf> {
+fn file_for(deployments_path: &Place, slug: &str) -> Option<PathBuf> {
     crate::recorder::file_for(deployments_path, slug).map(|p| p.with_extension("events.jsonl"))
 }
 
 impl Events {
     /// The events of deployment `slug`, read back from beside the deployments file at
     /// `deployments_path`, their chain checked.
-    pub(crate) fn for_deployment(deployments_path: &str, slug: &str) -> Events {
+    pub(crate) fn for_deployment(deployments_path: &Place, slug: &str) -> Events {
         let mut events = Events::open(file_for(deployments_path, slug));
         events.slug = Some(slug.to_string());
         events

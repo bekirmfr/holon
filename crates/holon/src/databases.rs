@@ -51,9 +51,9 @@ pub(crate) const UNMET: &str = "a statement didn't change the rows it expects: "
 pub(crate) struct Database {
     /// Which engine: `sqlite`, `postgres`, `mysql` or `mongodb`.
     pub(crate) engine: String,
-    /// A SQLite database's file, as bound (absolute, links resolved).
-    #[serde(default, skip_serializing_if = "is_empty_path")]
-    pub(crate) path: PathBuf,
+    /// A SQLite database's file, as bound (whole, links resolved).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) path: Option<HostPath>,
     /// A Postgres or MySQL database's connection: where the host fetches its URL from (`env:…`,
     /// `vault:…`), never the URL itself.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -67,15 +67,11 @@ pub(crate) struct Database {
     pub(crate) lock: locks::Setting,
 }
 
-fn is_empty_path(p: &Path) -> bool {
-    p.as_os_str().is_empty()
-}
-
 impl Database {
     /// What the database is known by: its file, or where its connection points. Two bindings of
     /// one database are one database to claims and commit locks.
     pub(crate) fn at(&self) -> String {
-        self.address.clone().unwrap_or_else(|| self.path.display().to_string())
+        self.address.clone().or_else(|| self.path.as_ref().map(HostPath::to_string)).unwrap_or_default()
     }
 }
 
@@ -163,7 +159,7 @@ pub(crate) struct Bound {
 pub(crate) struct Databases {
     file: Option<PathBuf>,
     /// The server's own files and folders: never bound, nor anything inside them.
-    forbidden: Vec<PathBuf>,
+    forbidden: Vec<HostPath>,
     bound: RwLock<Bound>,
     /// Each database open, every deployment's runs through it, by what it is known by
     /// ([`Database::at`]).
@@ -193,7 +189,7 @@ impl Databases {
     /// The databases bound in `file` (none yet if it doesn't exist), refusing ever to bind one in
     /// `forbidden`.
     pub(crate) fn open(file: &str, forbidden: &[PathBuf]) -> Result<Databases, String> {
-        let forbidden: Vec<PathBuf> = forbidden.iter().map(|p| real_file(p)).collect();
+        let forbidden: Vec<HostPath> = forbidden.iter().map(|p| real_file(p)).collect();
         if file == ":memory:" {
             return Ok(Databases { forbidden, ..Databases::memory() });
         }
@@ -272,7 +268,7 @@ impl Databases {
             if access == FolderAccess::ReadWrite || lock == locks::Setting::Run {
                 mongo.keep_collections()?;
             }
-            let database = Database { engine: "mongodb".into(), path: PathBuf::new(), connection: Some(source.to_string()), address: Some(mongo.address.clone()), access, lock };
+            let database = Database { engine: "mongodb".into(), path: None, connection: Some(source.to_string()), address: Some(mongo.address.clone()), access, lock };
             return Ok((database, Open::Mongo(Arc::new(mongo))));
         }
         let remote = Remote::open(url)?;
@@ -285,7 +281,7 @@ impl Databases {
         }
         let database = Database {
             engine: remote.engine.name().into(),
-            path: PathBuf::new(),
+            path: None,
             connection: Some(source.to_string()),
             address: Some(remote.address.clone()),
             access,
@@ -296,7 +292,7 @@ impl Databases {
 
     /// The SQLite database at `path`, its schema run (the file made if there is none).
     fn open_sqlite(&self, path: &str, access: FolderAccess, schema: Option<&str>) -> Result<(Database, Open), String> {
-        let Some(given) = crate::paths::whole(path) else {
+        let Some(given) = HostPath::whole(path) else {
             return Err(format!("{path:?} isn't a whole path: give it as this server's machine sees it ({}), or a connection: env:HOLON_SECRET_… or vault:…", crate::paths::EXAMPLE));
         };
         if !given.is_file() && schema.is_none() {
@@ -323,7 +319,7 @@ impl Databases {
             conn.execute_batch(&format!("create table if not exists {COMMITS_TABLE} (run text primary key, at integer not null)"))
                 .map_err(|e| format!("can't keep {COMMITS_TABLE} in it: {e}"))?;
         }
-        let database = Database { engine: "sqlite".into(), path: at, connection: None, address: None, access, lock: locks::Setting::Commit };
+        let database = Database { engine: "sqlite".into(), path: Some(at.clone()), connection: None, address: None, access, lock: locks::Setting::Commit };
         Ok((database, Open::Sqlite(Arc::new(Mutex::new(conn)))))
     }
 
@@ -365,10 +361,11 @@ impl Databases {
         let opened = match &database.connection {
             Some(source) => Open::at_url(self.sources.fetch(&Reference::parse(source)?)?)?,
             None => {
+                let path = database.path.as_ref().ok_or("a SQLite database is bound by its file, and this one has none")?;
                 let rw = OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX;
-                let conn = Connection::open_with_flags(&database.path, rw)
-                    .or_else(|_| Connection::open_with_flags(&database.path, OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX))
-                    .map_err(|e| format!("the database at {} can't be opened: {e}", database.path.display()))?;
+                let conn = Connection::open_with_flags(path, rw)
+                    .or_else(|_| Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX))
+                    .map_err(|e| format!("the database at {path} can't be opened: {e}"))?;
                 Open::Sqlite(Arc::new(Mutex::new(conn)))
             }
         };
@@ -515,13 +512,13 @@ impl Databases {
 }
 
 /// The path with its links resolved where it exists; a file not made yet, its folder's.
-fn real_file(path: &Path) -> PathBuf {
-    if let Ok(p) = crate::paths::canonical(path) {
+fn real_file(path: &Path) -> HostPath {
+    if let Ok(p) = HostPath::canonical(path) {
         return p;
     }
-    match (path.parent().and_then(|p| crate::paths::canonical(p).ok()), path.file_name()) {
+    match (path.parent().and_then(|p| HostPath::canonical(p).ok()), path.file_name()) {
         (Some(dir), Some(name)) => dir.join(name),
-        _ => crate::paths::normalize(path),
+        _ => HostPath::new(path),
     }
 }
 
@@ -1274,7 +1271,7 @@ fn shown(name: &str, deployment: Option<&str>, d: &Database) -> serde_json::Valu
             shown["connection"] = serde_json::json!(source);
             shown["address"] = serde_json::json!(address);
         }
-        _ => shown["path"] = serde_json::json!(d.path.display().to_string()),
+        _ => shown["path"] = serde_json::json!(d.path),
     }
     shown
 }

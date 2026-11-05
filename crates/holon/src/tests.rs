@@ -20,20 +20,20 @@ fn test_state_with(store: SharedStore) -> AppState {
     let registry = Mutex::new(Registry::new(store.clone()));
     let cache = Mutex::new(SharedCache::new());
     let deployments = Arc::new(Mutex::new(BTreeMap::new()));
-    store.1.connect(Arc::clone(&deployments), ":memory:".to_string());
+    store.1.connect(Arc::clone(&deployments), Place::Nowhere);
     AppState {
         store,
         registry,
         cache,
         deployments,
-        deployments_path: ":memory:".to_string(),
+        deployments_path: Place::Nowhere,
         flows: Mutex::new(BTreeMap::new()),
-        flows_path: ":memory:".to_string(),
+        flows_path: Place::Nowhere,
         port: TEST_PORT,
         listeners: None,
         data_limits: dataplane::DataLimits::default(),
         policy: std::sync::RwLock::new(Arc::new(Policy::default())),
-        policy_path: ":none:".to_string(),
+        policy_path: Place::Nowhere,
         secrets: Arc::new(SecretStore::memory()),
         folders: Arc::new(folders::Folders::memory()),
         access: access::Access::default(),
@@ -1152,7 +1152,7 @@ fn the_host_warns_of_a_full_disk_and_a_full_cache_once_each() {
     let values = disk.values_dir();
     let mut state = test_state_with(SharedStore::on_disk(Box::new(disk), values));
     let path = std::path::PathBuf::from(unique_temp_path("warn-policy")).with_extension("toml");
-    state.policy_path = path.display().to_string();
+    state.policy_path = path.display().to_string().into();
     let warnings = || body_json(route(&state, &req("GET", "/admin/warnings", vec![])))["warnings"].as_array().cloned().unwrap();
     let set = |body: &str| route(&state, &req("POST", "/admin/storage", body.as_bytes().to_vec()));
     // Nothing near a 2 KiB floor (nor past the 1 KiB it acts at, warned of too): no warning.
@@ -1214,10 +1214,10 @@ fn a_full_disk_pauses_what_records_runs_until_there_is_room() {
     let path = std::path::PathBuf::from(unique_temp_path("full-policy")).with_extension("toml");
     // The policy the claims server has, in the file the settings are written into.
     std::fs::write(&path, "[grants]\nallow_plain_http = true\nallow_private_addresses = true\n").unwrap();
-    state.policy_path = path.display().to_string();
+    state.policy_path = path.display().to_string().into();
     let disk = unique_temp_path("full-disk");
     std::fs::create_dir_all(&disk).unwrap();
-    state.deployments_path = std::path::Path::new(&disk).join("deployments.json").display().to_string();
+    state.deployments_path = std::path::Path::new(&disk).join("deployments.json").display().to_string().into();
     let set = |body: &str| route(&state, &req("POST", "/admin/storage", body.as_bytes().to_vec()));
     let recorded = deploy_text_to(&state, "flow kept\nport 8301\nstate n\n\naction bump (input) {\n  state.n = (state.n ?? 0) + 1\n}\n", &[]);
     let quiet = deploy_text_to(&state, "flow health\nport 8302\n\nroute GET /health (req) unrecorded {\n  respond \"ok\"\n}\n", &[]);
@@ -1294,9 +1294,9 @@ fn a_full_disk_rolling_sweeps_what_only_the_cut_runs_named() {
     let mut state = test_state_with(SharedStore::on_disk(Box::new(disk), values.clone()));
     let data = unique_temp_path("roll-sweep-data");
     std::fs::create_dir_all(&data).unwrap();
-    state.deployments_path = std::path::Path::new(&data).join("deployments.json").display().to_string();
+    state.deployments_path = std::path::Path::new(&data).join("deployments.json").display().to_string().into();
     let path = std::path::PathBuf::from(unique_temp_path("roll-sweep-policy")).with_extension("toml");
-    state.policy_path = path.display().to_string();
+    state.policy_path = path.display().to_string().into();
     let plan = holon_author::agent::plan("flow kept\nkeep 200 runs\nstate n\n\naction bump (input) {\n  state.n = (state.n ?? 0) + 1\n}\n").unwrap_or_else(|e| panic!("{e}"));
     let requirements = plan.requirements.clone().unwrap();
     for u in &plan.units {
@@ -1331,10 +1331,10 @@ fn a_full_disk_rolls_the_log_biggest_with_its_sealed_runs() {
     let mut state = claims_state("");
     let path = std::path::PathBuf::from(unique_temp_path("roll-sealed-policy")).with_extension("toml");
     std::fs::write(&path, "[grants]\nallow_plain_http = true\nallow_private_addresses = true\n").unwrap();
-    state.policy_path = path.display().to_string();
+    state.policy_path = path.display().to_string().into();
     let disk = unique_temp_path("roll-sealed-disk");
     std::fs::create_dir_all(&disk).unwrap();
-    state.deployments_path = std::path::Path::new(&disk).join("deployments.json").display().to_string();
+    state.deployments_path = std::path::Path::new(&disk).join("deployments.json").display().to_string().into();
     let many = deploy_text_to(&state, "flow many\nport 8304\nstate n\n\naction bump (input) {\n  state.n = (state.n ?? 0) + 1\n}\n", &[]);
     let wide = deploy_text_to(&state, "flow wide\nport 8305\nstate s\n\naction keep (input) {\n  state.s = input\n}\n", &[]);
     // Two lines in each file as written, the rest sealed.
@@ -1379,10 +1379,10 @@ fn a_full_disk_rolls_the_log_keeping_the_most() {
     let path = std::path::PathBuf::from(unique_temp_path("roll-policy")).with_extension("toml");
     // The policy the claims server has, in the file the settings are written into.
     std::fs::write(&path, "[grants]\nallow_plain_http = true\nallow_private_addresses = true\n").unwrap();
-    state.policy_path = path.display().to_string();
+    state.policy_path = path.display().to_string().into();
     let disk = unique_temp_path("roll-disk");
     std::fs::create_dir_all(&disk).unwrap();
-    state.deployments_path = std::path::Path::new(&disk).join("deployments.json").display().to_string();
+    state.deployments_path = std::path::Path::new(&disk).join("deployments.json").display().to_string().into();
     let set = |body: &str| route(&state, &req("POST", "/admin/storage", body.as_bytes().to_vec()));
     let slug = deploy_text_to(&state, "flow kept\nport 8303\nstate n\n\naction bump (input) {\n  state.n = (state.n ?? 0) + 1\n}\n", &[]);
     for _ in 0..120 {
@@ -1426,9 +1426,9 @@ fn the_runs_a_log_lets_go_of_are_backed_up_as_exports_verify_checks() {
     let mut state = test_state_with(SharedStore::on_disk(Box::new(disk), values));
     let data = unique_temp_path("backup-data");
     std::fs::create_dir_all(&data).unwrap();
-    state.deployments_path = std::path::Path::new(&data).join("deployments.json").display().to_string();
+    state.deployments_path = std::path::Path::new(&data).join("deployments.json").display().to_string().into();
     let path = std::path::PathBuf::from(unique_temp_path("backup-policy")).with_extension("toml");
-    state.policy_path = path.display().to_string();
+    state.policy_path = path.display().to_string().into();
     let backup = std::path::PathBuf::from(unique_temp_path("backup"));
     let set = |body: serde_json::Value| route(&state, &req("POST", "/admin/storage", serde_json::to_vec(&body).unwrap()));
     assert_eq!(set(serde_json::json!({ "backup": backup.display().to_string() })).status_code, 200);
@@ -1579,7 +1579,7 @@ fn the_states_sealed_runs_left_are_kept_by_a_sweep() {
     let mut state = test_state_with(SharedStore::on_disk(Box::new(disk), values));
     let data = unique_temp_path("sealed-data");
     std::fs::create_dir_all(&data).unwrap();
-    state.deployments_path = std::path::Path::new(&data).join("deployments.json").display().to_string();
+    state.deployments_path = std::path::Path::new(&data).join("deployments.json").display().to_string().into();
     let plan = holon_author::agent::plan("flow kept\nkeep 60 runs\nstate n\ncollection notes\n\naction bump (input) {\n  n = (state.n ?? 0) + 1\n  state.n = n\n  notes[\"k{n}\"] = n\n}\n").unwrap_or_else(|e| panic!("{e}"));
     let requirements = plan.requirements.clone().unwrap();
     for u in &plan.units {
@@ -1622,7 +1622,7 @@ fn an_admin_sets_how_often_the_server_sweeps_in_its_policy_file() {
     let path = std::path::PathBuf::from(unique_temp_path("policy")).with_extension("toml");
     let before = "# the host's policy\n[limits]\nrequest_timeout_ms = 20000 # long calls\n";
     std::fs::write(&path, before).unwrap();
-    state.policy_path = path.display().to_string();
+    state.policy_path = path.display().to_string().into();
     let set = |body: &str| route(&state, &req("POST", "/admin/storage", body.as_bytes().to_vec()));
     let answer = set(r#"{"sweep_every":"30m"}"#);
     assert_eq!(answer.status_code, 200);
@@ -1909,7 +1909,7 @@ fn a_limit_can_be_lowered_without_a_redeploy_but_not_raised() {
 fn reloading_the_policy_holds_every_deployment_to_it() {
     let mut state = test_state();
     let path = unique_temp_path("policy");
-    state.policy_path = path.clone();
+    state.policy_path = path.clone().into();
     let writer = stage_stateful_writer(&state, test_ingress(), "k");
     let requirements = serde_json::json!({ "limits": { "request_timeout_ms": 60000 } });
     let ack = serde_json::json!(["NetworkIngress", "StateWrite(\"k\")", "Limit(request_timeout_ms=60000)"]);
@@ -1941,7 +1941,7 @@ fn reloading_the_policy_holds_every_deployment_to_it() {
 fn load_rechecks_each_grant_and_migrates_older_records() {
     let mut state = test_state();
     let path = unique_temp_path("grants");
-    state.deployments_path = path.clone();
+    state.deployments_path = path.clone().into();
     let writer = stage_stateful_writer(&state, test_ingress(), "k");
     let ack = serde_json::json!({ "acknowledge": ["NetworkIngress", "StateWrite(\"k\")"] });
     assert_eq!(deploy_json(&state, "w", writer, ack.clone()).status_code, 200);
@@ -1950,7 +1950,7 @@ fn load_rechecks_each_grant_and_migrates_older_records() {
     let mut file: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
     file[0]["grant"]["items"] = serde_json::json!(["NetworkIngress"]);
     std::fs::write(&path, serde_json::to_vec(&file).unwrap()).unwrap();
-    let reloaded = load_deployments(&path, &state.store, &state.policy()).unwrap();
+    let reloaded = load_deployments(&Place::parse(&path), &state.store, &state.policy()).unwrap();
     let w = &reloaded["w"];
     assert_eq!(w.life.status, Status::Paused);
     assert!(w.attention.as_deref().unwrap().contains("StateWrite(\"k\")"), "{:?}", w.attention);
@@ -1967,7 +1967,7 @@ fn load_rechecks_each_grant_and_migrates_older_records() {
     let mut file: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
     file[0].as_object_mut().unwrap().remove("grant");
     std::fs::write(&path, serde_json::to_vec(&file).unwrap()).unwrap();
-    let migrated = load_deployments(&path, &state.store, &state.policy()).unwrap();
+    let migrated = load_deployments(&Place::parse(&path), &state.store, &state.policy()).unwrap();
     assert_eq!(migrated["w"].grant.by, "migrated");
     assert!(migrated["w"].attention.is_none() && migrated["w"].grant.items.contains("StateWrite(\"k\")"));
     let _ = std::fs::remove_file(&path);
@@ -2134,7 +2134,7 @@ fn a_secret_reaches_its_runs_and_nothing_else() {
 fn a_durable_run_waits_resumes_by_token_and_expires() {
     let mut state = test_state();
     let path = unique_temp_path("durable");
-    state.deployments_path = path.clone();
+    state.deployments_path = path.clone().into();
     let e = |fc, fp, tc, tp| Edge { from_child: fc, from_port: fp, to_child: tc, to_port: tp };
     let iface = |name: &str, params: Vec<Param>| Unit { params, ..holon_core::interface_of(name).unwrap() };
     let frozen = |k: &str, v: &str| Param::frozen(k, v);
@@ -2193,7 +2193,7 @@ fn a_durable_run_waits_resumes_by_token_and_expires() {
     assert!(!listed.contains(&token) && !log.contains(&token), "a token is never listed or logged");
     assert!(log.contains("‹token:paid›"));
     // It survives a restart, and its record holds no token: it is derived again when needed.
-    assert_eq!(load_deployments(&path, &state.store, &state.policy()).unwrap()["shop"].parked.len(), 1);
+    assert_eq!(load_deployments(&Place::parse(&path), &state.store, &state.policy()).unwrap()["shop"].parked.len(), 1);
     let on_disk = std::fs::read_to_string(&path).unwrap();
     assert!(!on_disk.contains(&token) && !on_disk.contains("\"tokens\""), "a run record holds no token");
 
@@ -2256,7 +2256,7 @@ fn a_waiting_runs_record_is_sealed_on_disk() {
     let dir = unique_temp_path("sealed-parked");
     std::fs::create_dir_all(&dir).unwrap();
     let path = format!("{dir}/deployments.json");
-    state.deployments_path = path.clone();
+    state.deployments_path = path.clone().into();
     let key = crate::sealing::KeySource::File(std::path::PathBuf::from(format!("{dir}/secrets.key")));
     state.secrets = Arc::new(SecretStore::open(&format!("{dir}/secrets.json"), &key, crate::secret_sources::Sources::none()).unwrap());
     let e = |fc, fp, tc, tp| Edge { from_child: fc, from_port: fp, to_child: tc, to_port: tp };
@@ -2310,7 +2310,7 @@ fn a_waiting_runs_record_is_sealed_on_disk() {
     }
 
     // A restart: loaded sealed, opened with the deployment's vault, and it resumes.
-    let mut reloaded = load_deployments(&path, &state.store, &state.policy()).unwrap();
+    let mut reloaded = load_deployments(&Place::parse(&path), &state.store, &state.policy()).unwrap();
     {
         let dep = reloaded.get_mut("sealed").unwrap();
         dep.secrets = state.secrets.vault("sealed");
@@ -2337,7 +2337,7 @@ fn a_waiting_run_is_sealed_on_disk_with_secrets_in_memory_too() {
     let dir = unique_temp_path("sealed-memory");
     std::fs::create_dir_all(&dir).unwrap();
     let path = format!("{dir}/deployments.json");
-    state.deployments_path = path.clone();
+    state.deployments_path = path.clone().into();
     state.secrets = Arc::new(SecretStore::memory());
     let e = |fc, fp, tc, tp| Edge { from_child: fc, from_port: fp, to_child: tc, to_port: tp };
     let iface = |name: &str, params: Vec<Param>| Unit { params, ..holon_core::interface_of(name).unwrap() };
@@ -2368,7 +2368,7 @@ fn a_waiting_run_is_sealed_on_disk_with_secrets_in_memory_too() {
     assert!(!on_disk.contains("caller_credential_xyz"), "the file holds the credential: {on_disk}");
     assert!(on_disk.contains("\"sealed\""), "{on_disk}");
     // A restart, with a new in-memory store: its key is another, and the run says so.
-    let mut reloaded = load_deployments(&path, &state.store, &state.policy()).unwrap();
+    let mut reloaded = load_deployments(&Place::parse(&path), &state.store, &state.policy()).unwrap();
     let dep = reloaded.get_mut("sealed").unwrap();
     dep.secrets = SecretStore::memory().vault("sealed");
     let sealer = dep.secrets.lock().unwrap().sealer.clone();
@@ -2533,7 +2533,7 @@ fn deployments_persist_across_a_simulated_restart() {
 
     // "First run": nothing to load yet, deploy, which persists write-through.
     {
-        let deployments = Arc::new(Mutex::new(load_deployments(&deployments_path, &store, &Policy::default()).unwrap()));
+        let deployments = Arc::new(Mutex::new(load_deployments(&Place::parse(&deployments_path), &store, &Policy::default()).unwrap()));
         assert_eq!(deployments.lock().unwrap().len(), 0);
 
         let state = AppState {
@@ -2541,14 +2541,14 @@ fn deployments_persist_across_a_simulated_restart() {
             registry: Mutex::new(Registry::new(store.clone())),
             cache: Mutex::new(SharedCache::new()),
             deployments,
-            deployments_path: deployments_path.clone(),
+            deployments_path: Place::parse(&deployments_path),
             flows: Mutex::new(BTreeMap::new()),
-            flows_path: ":memory:".to_string(),
+            flows_path: Place::Nowhere,
             port: TEST_PORT,
             listeners: None,
             data_limits: dataplane::DataLimits::default(),
             policy: std::sync::RwLock::new(Arc::new(Policy::default())),
-        policy_path: ":none:".to_string(),
+        policy_path: Place::Nowhere,
             secrets: Arc::new(SecretStore::memory()),
         folders: Arc::new(folders::Folders::memory()),
         access: access::Access::default(),
@@ -2567,7 +2567,7 @@ fn deployments_persist_across_a_simulated_restart() {
 
     // "Restart": a fresh load from the same path/store reconstructs the deployment, with
     // triggers re-derived (not read back from disk), and it actually works.
-    let reloaded = load_deployments(&deployments_path, &store, &Policy::default()).unwrap();
+    let reloaded = load_deployments(&Place::parse(&deployments_path), &store, &Policy::default()).unwrap();
     assert_eq!(reloaded.len(), 1);
     let dep = reloaded.get("echo").unwrap();
     assert_eq!(dep.unit, flow_hash);
@@ -2578,14 +2578,14 @@ fn deployments_persist_across_a_simulated_restart() {
         registry: Mutex::new(Registry::new(store.clone())),
         cache: Mutex::new(SharedCache::new()),
         deployments: Arc::new(Mutex::new(reloaded)),
-        deployments_path: deployments_path.clone(),
+        deployments_path: Place::parse(&deployments_path),
         flows: Mutex::new(BTreeMap::new()),
-        flows_path: ":memory:".to_string(),
+        flows_path: Place::Nowhere,
         port: TEST_PORT,
         listeners: None,
         data_limits: dataplane::DataLimits::default(),
         policy: std::sync::RwLock::new(Arc::new(Policy::default())),
-        policy_path: ":none:".to_string(),
+        policy_path: Place::Nowhere,
         secrets: Arc::new(SecretStore::memory()),
         folders: Arc::new(folders::Folders::memory()),
         access: access::Access::default(),
@@ -2714,7 +2714,7 @@ fn flows_persist_across_a_simulated_restart() {
     // "First run": save one flow against a real on-disk path, then drop the whole state.
     {
         let mut state = test_state();
-        state.flows_path = flows_path.clone();
+        state.flows_path = flows_path.clone().into();
         let save =
             serde_json::to_vec(&serde_json::json!({ "name": "keeper", "document": doc })).unwrap();
         assert_eq!(route(&state, &req("POST", "/flows", save)).status_code, 200);
@@ -2722,8 +2722,8 @@ fn flows_persist_across_a_simulated_restart() {
 
     // "Restart": a fresh state loads the table the way main() does, from the same path.
     let mut state2 = test_state();
-    state2.flows = Mutex::new(load_flows(&flows_path).unwrap());
-    state2.flows_path = flows_path.clone();
+    state2.flows = Mutex::new(load_flows(&Place::parse(&flows_path)).unwrap());
+    state2.flows_path = flows_path.clone().into();
     let loaded = body_json(route(&state2, &req("GET", "/flows/keeper", vec![])));
     assert_eq!(loaded["document"], doc);
 
@@ -2740,17 +2740,17 @@ fn unloadable_records_are_an_error_and_state_always_survives_a_restart() {
     let missing = format!("{{\"slug\":\"gone\",\"unit\":\"{}\",\"trigger_count\":3,\"error_count\":0}}", "ab".repeat(32));
     for contents in [format!("[{missing}]"), r#"[{"slug":"bad","unit":"not-hex","trigger_count":0,"error_count":0}]"#.to_string()] {
         std::fs::write(&path, &contents).unwrap();
-        let e = load_deployments(&path, &state.store, &state.policy()).err().expect("must refuse, not skip");
+        let e = load_deployments(&Place::parse(&path), &state.store, &state.policy()).err().expect("must refuse, not skip");
         assert!(e.contains("deployment"), "{e}");
         assert_eq!(std::fs::read_to_string(&path).unwrap(), contents, "file left as it was");
     }
     std::fs::write(&path, r#"[{"name":"../evil","document":{},"saved_at_epoch_seconds":0}]"#).unwrap();
-    assert!(load_flows(&path).is_err());
+    assert!(load_flows(&Place::parse(&path)).is_err());
 
     // Regression 2: a redeploy keeps a slug's state across a stateless version, but loading
     // only restored state for units deriving a state capability, so a restart dropped it.
     let mut state = test_state();
-    state.deployments_path = path.clone();
+    state.deployments_path = path.clone().into();
     let deploy = |unit: Hash, ack: serde_json::Value| {
         let body = serde_json::to_vec(&serde_json::json!({ "slug": "writer", "unit": to_hex(&unit), "acknowledge": ack }))
             .unwrap();
@@ -2762,7 +2762,7 @@ fn unloadable_records_are_an_error_and_state_always_survives_a_restart() {
     let stateless = stage_ingress_plus_driver(&state, test_random());
     deploy(stateless, serde_json::json!(["NetworkIngress", "Random"]));
 
-    let reloaded = load_deployments(&path, &state.store, &state.policy()).unwrap();
+    let reloaded = load_deployments(&Place::parse(&path), &state.store, &state.policy()).unwrap();
     let held = reloaded["writer"].state.as_ref().expect("state must survive the restart").state.lock().unwrap().clone();
     assert_eq!(held.get("k"), Some(&Value::Text("kept".into())));
     let _ = std::fs::remove_file(&path);
@@ -2776,7 +2776,7 @@ fn unloadable_records_are_an_error_and_state_always_survives_a_restart() {
 fn state_is_kept_by_reference_and_its_root_survives_a_restart() {
     let mut state = test_state();
     let path = unique_temp_path("merkle");
-    state.deployments_path = path.clone();
+    state.deployments_path = path.clone().into();
     let writer = stage_stateful_writer(&state, test_ingress(), "k");
     let body = serde_json::to_vec(&serde_json::json!({
         "slug": "writer", "unit": to_hex(&writer), "acknowledge": ["NetworkIngress", "StateWrite(\"k\")"],
@@ -2798,10 +2798,10 @@ fn state_is_kept_by_reference_and_its_root_survives_a_restart() {
     // file holding no state at all; and a restart gets the same root back.
     let file: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
     assert!(file[0].get("state").is_none() && file[0].get("state_refs").is_none(), "no state in the deployments file: {}", file[0]);
-    let head = std::fs::read_to_string(state_head_for(&path, "writer").unwrap()).unwrap();
+    let head = std::fs::read_to_string(state_head_for(&Place::parse(&path), "writer").unwrap()).unwrap();
     let hash = hash_value(&Value::Text("kept".into())).unwrap();
     assert_eq!(crate::restore::snapshot_refs(head.trim(), &state.store).unwrap()["k"], hash);
-    let reloaded = load_deployments(&path, &state.store, &state.policy()).unwrap();
+    let reloaded = load_deployments(&Place::parse(&path), &state.store, &state.policy()).unwrap();
     assert_eq!(to_hex(&reloaded["writer"].state.as_ref().unwrap().state.lock().unwrap().root()), root);
 
     // Stop (session 1 keeps "kept"), start fresh and write something else (session 2), then
@@ -2813,7 +2813,7 @@ fn state_is_kept_by_reference_and_its_root_survives_a_restart() {
     act("stop", "");
     act("run", r#"{"from":1}"#);
     assert_eq!(current()["root"], root.as_str(), "session 1 restored exactly");
-    let reloaded = load_deployments(&path, &state.store, &state.policy()).unwrap();
+    let reloaded = load_deployments(&Place::parse(&path), &state.store, &state.policy()).unwrap();
     assert_eq!(to_hex(&reloaded["writer"].state.as_ref().unwrap().state.lock().unwrap().root()), root, "and kept by the head");
     act("stop", "");
     let sessions = body_json(route(&state, &req("GET", "/deployments/writer/sessions", vec![])));
@@ -2836,15 +2836,15 @@ fn corrupt_persistence_file_is_an_error_not_an_empty_table() {
     for (label, contents) in [("truncated", &b"[{\"slug\": \"wri"[..]), ("foreign", &b"{\"not\": \"a list\"}"[..])] {
         let path = unique_temp_path(&format!("corrupt-{label}"));
         std::fs::write(&path, contents).unwrap();
-        assert!(load_deployments(&path, &state.store, &state.policy()).is_err(), "{label} deployments file");
-        assert!(load_flows(&path).is_err(), "{label} flows file");
+        assert!(load_deployments(&Place::parse(&path), &state.store, &state.policy()).is_err(), "{label} deployments file");
+        assert!(load_flows(&Place::parse(&path)).is_err(), "{label} flows file");
         assert_eq!(std::fs::read(&path).unwrap(), contents, "the bad file must be left as it was");
         let _ = std::fs::remove_file(&path);
     }
     // A missing file is still a normal first run, not an error.
     let missing = unique_temp_path("missing");
-    assert!(load_deployments(&missing, &state.store, &Policy::default()).unwrap().is_empty());
-    assert!(load_flows(&missing).unwrap().is_empty());
+    assert!(load_deployments(&Place::parse(&missing), &state.store, &Policy::default()).unwrap().is_empty());
+    assert!(load_flows(&Place::parse(&missing)).unwrap().is_empty());
 }
 
 /// Persisting goes through `write_atomically`: the file always holds one whole, parseable
@@ -2860,11 +2860,11 @@ fn persist_writes_whole_files_and_leaves_no_temp_files() {
             name.to_string(),
             FlowRecord { name: name.to_string(), saved_at_epoch_seconds: 0, document: serde_json::json!({}), saved_by: None, uses: None },
         );
-        persist_flows(&path, &flows);
+        persist_flows(&Place::parse(&path), &flows);
     }
     flows.remove("a");
-    persist_flows(&path, &flows); // shrinking: no stale tail from the longer write
-    assert_eq!(load_flows(&path).unwrap().keys().collect::<Vec<_>>(), vec!["b"]);
+    persist_flows(&Place::parse(&path), &flows); // shrinking: no stale tail from the longer write
+    assert_eq!(load_flows(&Place::parse(&path)).unwrap().keys().collect::<Vec<_>>(), vec!["b"]);
     assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -3154,7 +3154,7 @@ fn todo_server(state: &AppState, port: &str) -> Hash {
 fn a_collection_keeps_items_by_key_across_runs_and_restarts() {
     let mut state = test_state();
     let path = unique_temp_path("collection");
-    state.deployments_path = path.clone();
+    state.deployments_path = path.clone().into();
     let e = |fc, fp, tc, tp| Edge { from_child: fc, from_port: fp, to_child: tc, to_port: tp };
     let iface = |name: &str, params: Vec<Param>| Unit { params, ..holon_core::interface_of(name).unwrap() };
     let frozen = |k: &str, v: &str| Param::frozen(k, v);
@@ -3250,7 +3250,7 @@ fn a_collection_keeps_items_by_key_across_runs_and_restarts() {
     assert_eq!(route(&state, &req("GET", "/deployments/shelf/collections/nothing", vec![])).status_code, 404);
 
     // Persisted: reloaded from disk, the items are there.
-    *state.deployments.lock().unwrap() = load_deployments(&path, &state.store, &state.policy()).unwrap();
+    *state.deployments.lock().unwrap() = load_deployments(&Place::parse(&path), &state.store, &state.policy()).unwrap();
     assert_eq!(call(&state, "GET", "/items/3", ""), (200, r#"{"n":3}"#.to_string()));
     let _ = std::fs::remove_file(&path);
 }
@@ -3580,7 +3580,7 @@ fn deploy_server(state: &AppState, slug: &str, unit: Hash) -> Response {
 fn a_server_deployment_answers_requests_and_keeps_state() {
     let mut state = test_state();
     let path = unique_temp_path("todo-api");
-    state.deployments_path = path.clone();
+    state.deployments_path = path.clone().into();
     let api = todo_server(&state, "18080");
     let deployed = deploy_server(&state, "todo-api", api);
     let code = deployed.status_code;
@@ -3624,7 +3624,7 @@ fn a_server_deployment_answers_requests_and_keeps_state() {
     assert_eq!(deploy_server(&state, "bad", bad).status_code, 400);
 
     // A restart reloads it as a server, with its items.
-    let reloaded = load_deployments(&path, &state.store, &state.policy()).unwrap();
+    let reloaded = load_deployments(&Place::parse(&path), &state.store, &state.policy()).unwrap();
     assert_eq!(reloaded["todo-api"].server.as_ref().and_then(|s| s.port), Some(18080));
     assert_eq!(reloaded["todo-api"].triggers, vec!["Http :18080"], "labelled as when it was deployed");
     let todos = reloaded["todo-api"].state.as_ref().unwrap().state.lock().unwrap().get("todos").unwrap().clone();
@@ -3784,7 +3784,7 @@ fn the_flow_log_records_each_run_well_enough_to_replay_it() {
 fn a_deployment_runs_pauses_stops_and_keeps_every_session() {
     let mut state = test_state();
     let path = unique_temp_path("lifecycle");
-    state.deployments_path = path.clone();
+    state.deployments_path = path.clone().into();
     let api = todo_server(&state, "18082");
     assert_eq!(deploy_server(&state, "todo", api).status_code, 200);
     let call = |method: &str, body: &str| {
@@ -3834,7 +3834,7 @@ fn a_deployment_runs_pauses_stops_and_keeps_every_session() {
 
     // A restart keeps the status and every session.
     act("stop", "");
-    let reloaded = load_deployments(&path, &state.store, &state.policy()).unwrap();
+    let reloaded = load_deployments(&Place::parse(&path), &state.store, &state.policy()).unwrap();
     assert_eq!(reloaded["todo"].life.status, Status::Stopped);
     assert_eq!(reloaded["todo"].life.sessions.len(), 3);
     assert_eq!(route(&state, &req("DELETE", "/deployments/todo", vec![])).status_code, 200);
@@ -3878,7 +3878,7 @@ fn a_fire_in_progress_does_not_stall_the_table() {
 
     let mut state = test_state();
     let path = unique_temp_path("stall");
-    state.deployments_path = path.clone();
+    state.deployments_path = path.clone().into();
     let deploy = |state: &AppState, slug: &str, unit: Hash, ack: serde_json::Value| {
         let body = serde_json::to_vec(&serde_json::json!({ "slug": slug, "unit": to_hex(&unit), "acknowledge": ack }))
             .unwrap();
@@ -3908,7 +3908,7 @@ fn a_fire_in_progress_does_not_stall_the_table() {
         assert_eq!(deploying.join().unwrap(), 200);
     });
 
-    let reloaded = load_deployments(&path, &state.store, &state.policy()).unwrap();
+    let reloaded = load_deployments(&Place::parse(&path), &state.store, &state.policy()).unwrap();
     assert_eq!(reloaded.keys().collect::<Vec<_>>(), vec!["a", "b"]);
     let _ = std::fs::remove_file(&path);
 }
@@ -4101,20 +4101,20 @@ fn state_persists_across_a_simulated_restart() {
 
     // "First run": deploy and trigger once — writes "before-restart".
     {
-        let deployments = Arc::new(Mutex::new(load_deployments(&deployments_path, &store, &Policy::default()).unwrap()));
+        let deployments = Arc::new(Mutex::new(load_deployments(&Place::parse(&deployments_path), &store, &Policy::default()).unwrap()));
         let state = AppState {
             store: store.clone(),
             registry: Mutex::new(Registry::new(store.clone())),
             cache: Mutex::new(SharedCache::new()),
             deployments,
-            deployments_path: deployments_path.clone(),
+            deployments_path: Place::parse(&deployments_path),
             flows: Mutex::new(BTreeMap::new()),
-            flows_path: ":memory:".to_string(),
+            flows_path: Place::Nowhere,
             port: TEST_PORT,
             listeners: None,
             data_limits: dataplane::DataLimits::default(),
             policy: std::sync::RwLock::new(Arc::new(Policy::default())),
-        policy_path: ":none:".to_string(),
+        policy_path: Place::Nowhere,
             secrets: Arc::new(SecretStore::memory()),
         folders: Arc::new(folders::Folders::memory()),
         access: access::Access::default(),
@@ -4135,7 +4135,7 @@ fn state_persists_across_a_simulated_restart() {
 
     // "Restart": a fresh load from the same path/store — the state survives, and the
     // deployment can still be triggered again afterward.
-    let reloaded = load_deployments(&deployments_path, &store, &Policy::default()).unwrap();
+    let reloaded = load_deployments(&Place::parse(&deployments_path), &store, &Policy::default()).unwrap();
     let dep = reloaded.get("writer").unwrap();
     let restored_state = dep.state.as_ref().unwrap().state.lock().unwrap();
     assert_eq!(restored_state.get("counter"), Some(&Value::Text("before-restart".to_string())));
@@ -4146,14 +4146,14 @@ fn state_persists_across_a_simulated_restart() {
         registry: Mutex::new(Registry::new(store.clone())),
         cache: Mutex::new(SharedCache::new()),
         deployments: Arc::new(Mutex::new(reloaded)),
-        deployments_path: deployments_path.clone(),
+        deployments_path: Place::parse(&deployments_path),
         flows: Mutex::new(BTreeMap::new()),
-        flows_path: ":memory:".to_string(),
+        flows_path: Place::Nowhere,
         port: TEST_PORT,
         listeners: None,
         data_limits: dataplane::DataLimits::default(),
         policy: std::sync::RwLock::new(Arc::new(Policy::default())),
-        policy_path: ":none:".to_string(),
+        policy_path: Place::Nowhere,
         secrets: Arc::new(SecretStore::memory()),
         folders: Arc::new(folders::Folders::memory()),
         access: access::Access::default(),
@@ -4479,7 +4479,7 @@ fn a_runs_code_and_state_come_back_together() {
 fn what_was_done_to_a_deployment_is_its_events() {
     let mut state = test_state();
     let path = unique_temp_path("events");
-    state.deployments_path = path.clone();
+    state.deployments_path = path.clone().into();
     let writer = stage_stateful_writer(&state, test_ingress(), "k");
     let ack = serde_json::json!({ "acknowledge": ["NetworkIngress", "StateWrite(\"k\")"] });
     assert_eq!(deploy_json(&state, "ev", writer, ack).status_code, 200);
@@ -4528,7 +4528,7 @@ fn what_was_done_to_a_deployment_is_its_events() {
     assert_eq!((report.ok(), report.event_breaks.clone()), (false, vec![3]));
 
     // Kept for good, across a restart.
-    let reloaded = load_deployments(&path, &state.store, &state.policy()).unwrap();
+    let reloaded = load_deployments(&Place::parse(&path), &state.store, &state.policy()).unwrap();
     assert_eq!(reloaded["ev"].events.entries().len(), 11);
     assert!(reloaded["ev"].events.breaks().is_empty());
     route(&state, &req("POST", "/deployments/ev/stop", vec![]));
@@ -4560,7 +4560,7 @@ fn versions_from_before_are_numbered_and_open_but_dont_restore() {
 fn versions_survive_a_restart() {
     let mut state = test_state();
     let path = unique_temp_path("kept-versions");
-    state.deployments_path = path.clone();
+    state.deployments_path = path.clone().into();
     let writer = stage_stateful_writer(&state, test_ingress(), "k");
     let ack = serde_json::json!({ "acknowledge": ["NetworkIngress", "StateWrite(\"k\")"], "document": { "rev": 1 } });
     assert_eq!(deploy_json(&state, "kept", writer, ack.clone()).status_code, 200);
@@ -4572,7 +4572,7 @@ fn versions_survive_a_restart() {
     assert_eq!(kept.len(), 2);
     assert!(kept.iter().all(|v| v.get("document").is_none() && v["document_ref"].is_string()), "canvases are kept by hash, not inline");
 
-    let reloaded = load_deployments(&path, &state.store, &state.policy()).unwrap();
+    let reloaded = load_deployments(&Place::parse(&path), &state.store, &state.policy()).unwrap();
     let versions = &reloaded["kept"].versions;
     assert_eq!(versions.iter().map(|v| v.number).collect::<Vec<_>>(), [1, 2]);
     assert!(versions.iter().all(|v| v.request.is_some() && v.document_ref.is_some()));
@@ -4587,17 +4587,17 @@ fn versions_survive_a_restart() {
 fn a_flow_log_survives_a_restart_and_goes_with_its_deployment() {
     let mut state = test_state();
     let path = unique_temp_path("kept-log");
-    state.deployments_path = path.clone();
+    state.deployments_path = path.clone().into();
     let writer = stage_stateful_writer(&state, test_ingress(), "k");
     let ack = serde_json::json!({ "acknowledge": ["NetworkIngress", "StateWrite(\"k\")"] });
     assert_eq!(deploy_json(&state, "kept", writer, ack).status_code, 200);
     for _ in 0..2 {
         assert_eq!(route(&state, &req("POST", "/trigger/kept", b"hello".to_vec())).status_code, 200);
     }
-    let file = recorder::file_for(&path, "kept").unwrap();
+    let file = recorder::file_for(&Place::parse(&path), "kept").unwrap();
     assert!(file.exists());
 
-    let reloaded = load_deployments(&path, &state.store, &state.policy()).unwrap();
+    let reloaded = load_deployments(&Place::parse(&path), &state.store, &state.policy()).unwrap();
     let entries = reloaded["kept"].log.with(|log| log.after(None, 10));
     assert_eq!(entries.iter().map(|e| e.seq).collect::<Vec<_>>(), [0, 1], "read back after a restart");
     assert_eq!(entries[1].unit, to_hex(&writer));
@@ -4615,7 +4615,7 @@ fn a_flow_log_survives_a_restart_and_goes_with_its_deployment() {
 fn a_flow_log_is_a_chain_and_a_changed_run_shows_as_a_break() {
     let mut state = test_state();
     let path = unique_temp_path("chained-log");
-    state.deployments_path = path.clone();
+    state.deployments_path = path.clone().into();
     let writer = stage_stateful_writer(&state, test_ingress(), "k");
     let ack = serde_json::json!({ "acknowledge": ["NetworkIngress", "StateWrite(\"k\")"] });
     assert_eq!(deploy_json(&state, "chained", writer, ack).status_code, 200);
@@ -4625,19 +4625,19 @@ fn a_flow_log_is_a_chain_and_a_changed_run_shows_as_a_break() {
     let log = body_json(route(&state, &req("GET", "/deployments/chained/log", vec![])));
     let entries = log["entries"].as_array().unwrap();
     assert_eq!(entries[0].get("prev"), None, "the first run has nothing before it");
-    let file = recorder::file_for(&path, "chained").unwrap();
+    let file = recorder::file_for(&Place::parse(&path), "chained").unwrap();
     let text = std::fs::read_to_string(&file).unwrap();
     let lines: Vec<&str> = text.lines().collect();
     assert_eq!(entries[1]["prev"], recorder::line_hash(lines[0]));
     assert_eq!(log["head"], recorder::line_hash(lines[2]));
     assert_eq!(log["breaks"], serde_json::json!([]));
-    assert!(load_deployments(&path, &state.store, &state.policy()).unwrap()["chained"].log.with(|log| log.breaks().is_empty()));
+    assert!(load_deployments(&Place::parse(&path), &state.store, &state.policy()).unwrap()["chained"].log.with(|log| log.breaks().is_empty()));
 
     // The first run's body changed in the file: the second no longer follows it.
     let changed = text.replacen("hello", "jello", 1);
     assert_ne!(changed, text, "the run's request is in the file");
     std::fs::write(&file, changed).unwrap();
-    let reloaded = load_deployments(&path, &state.store, &state.policy()).unwrap();
+    let reloaded = load_deployments(&Place::parse(&path), &state.store, &state.policy()).unwrap();
     assert_eq!(reloaded["chained"].log.with(|log| log.breaks().to_vec()), [1]);
 
     route(&state, &req("POST", "/deployments/chained/stop", vec![]));
@@ -4874,7 +4874,7 @@ fn listening_beyond_loopback_warns_that_it_is_plain_http() {
 #[test]
 fn verify_checks_that_each_runs_state_follows_from_the_one_before() {
     let mut state = test_state();
-    state.deployments_path = unique_temp_path("state-follows");
+    state.deployments_path = unique_temp_path("state-follows").into();
     let writer = stage_stateful_writer(&state, test_ingress(), "k");
     let ack = serde_json::json!({ "acknowledge": ["NetworkIngress", "StateWrite(\"k\")"] });
     assert_eq!(deploy_json(&state, "follows", writer, ack).status_code, 200);
@@ -4976,7 +4976,7 @@ fn verify_checks_that_each_runs_state_follows_from_the_one_before() {
 fn exported_runs_verify_and_a_rewritten_log_doesnt() {
     let mut state = test_state();
     let path = unique_temp_path("verified-log");
-    state.deployments_path = path.clone();
+    state.deployments_path = path.clone().into();
     let writer = stage_stateful_writer(&state, test_ingress(), "k");
     let ack = serde_json::json!({ "acknowledge": ["NetworkIngress", "StateWrite(\"k\")"] });
     assert_eq!(deploy_json(&state, "verified", writer, ack).status_code, 200);
@@ -8052,7 +8052,7 @@ fn one_deployments_log_doesnt_hold_up_another() {
 #[test]
 fn sync_logs_syncs_what_was_written_and_keeps_a_log_that_fails_dirty() {
     let mut state = test_state();
-    state.deployments_path = unique_temp_path("sync-logs");
+    state.deployments_path = unique_temp_path("sync-logs").into();
     // Lazy: its runs are left to the syncer (a strict one syncs before it answers).
     let slug = deploy_plain_text(&state, "flow hello-api\nport 8101\n\nroute GET /hello/:name (req) lazy {\n  respond \"Hello, {req.params.name}\"\n}\n");
     assert_eq!(serve_data(&state.store, &state.deployments, &state.deployments_path, &slug, &fake_data("GET", "/hello/Ada", vec![])).status, 200);
@@ -8072,8 +8072,8 @@ fn sync_logs_syncs_what_was_written_and_keeps_a_log_that_fails_dirty() {
     std::fs::remove_dir(&file).unwrap();
     assert_eq!(recorder::sync_logs(&state.deployments), Ok(()));
     assert_eq!(log.with(Log::take_dirty), None);
-    let _ = std::fs::remove_file(&state.deployments_path);
-    let _ = std::fs::remove_dir_all(Path::new(&state.deployments_path).with_extension("logs"));
+    let _ = std::fs::remove_file(state.deployments_path.at().unwrap());
+    let _ = std::fs::remove_dir_all(state.deployments_path.beside("logs").unwrap());
 }
 
 /// A run is recorded strictly unless its handler says otherwise (docs/L4s/request-path-L4.md,
@@ -8083,7 +8083,7 @@ fn sync_logs_syncs_what_was_written_and_keeps_a_log_that_fails_dirty() {
 #[test]
 fn a_strict_run_is_on_disk_before_its_answer_and_a_lazy_one_waits_for_the_syncer() {
     let mut state = test_state();
-    state.deployments_path = unique_temp_path("strict-sync");
+    state.deployments_path = unique_temp_path("strict-sync").into();
     let slug = deploy_plain_text(
         &state,
         "flow board\nport 8170\ncollection notes\nfolder docs\n\nroute GET /health (req) {\n  respond \"ok\"\n}\n\nroute GET /notes (req) lazy {\n  respond notes.list(limit: 50)\n}\n\nroute POST /notes (req) {\n  notes[req.json.id] = req.json.text\n  respond \"saved\"\n}\n\naction report (input) lazy {\n  respond notes.list(limit: 50)\n}\n\naction count (input) {\n  respond notes.list(limit: 50)\n}\n",
@@ -8123,8 +8123,8 @@ fn a_strict_run_is_on_disk_before_its_answer_and_a_lazy_one_waits_for_the_syncer
     assert!((1..=32).contains(&syncs), "{syncs} syncs for 32 runs");
     assert!(synced());
     eprintln!("32 strict runs at once: {syncs} syncs");
-    let _ = std::fs::remove_file(&state.deployments_path);
-    let _ = std::fs::remove_dir_all(Path::new(&state.deployments_path).with_extension("logs"));
+    let _ = std::fs::remove_file(state.deployments_path.at().unwrap());
+    let _ = std::fs::remove_dir_all(state.deployments_path.beside("logs").unwrap());
 }
 
 /// A board with an unrecorded health check, an unrecorded action, one that fails unrecorded, and a
@@ -8140,7 +8140,7 @@ const UNRECORDED_BOARD: &str = "flow board\nport 8171\ncollection notes\nfolder 
 #[test]
 fn an_unrecorded_run_leaves_no_entry_failed_or_not_and_is_counted() {
     let mut state = test_state();
-    state.deployments_path = unique_temp_path("unrecorded");
+    state.deployments_path = unique_temp_path("unrecorded").into();
     let plan = holon_author::agent::plan(UNRECORDED_BOARD).unwrap();
     for u in &plan.units {
         assert_eq!(route(&state, &req("POST", "/unit", u.clone())).status_code, 200);
@@ -8183,7 +8183,7 @@ fn an_unrecorded_run_leaves_no_entry_failed_or_not_and_is_counted() {
     let page = body_json(route(&state, &req("GET", &format!("/deployments/{slug}/log"), vec![])));
     assert_eq!(page["tallies"]["GET /health"]["runs"], 3, "{page}");
     persist_deployments(&state.deployments_path, &state.deployments);
-    let kept: serde_json::Value = serde_json::from_slice(&std::fs::read(&state.deployments_path).unwrap()).unwrap();
+    let kept: serde_json::Value = serde_json::from_slice(&std::fs::read(state.deployments_path.at().unwrap()).unwrap()).unwrap();
     let record = kept.as_array().unwrap().iter().find(|r| r["slug"] == slug.as_str()).unwrap();
     assert_eq!(record["tallies"]["GET /health"]["runs"], 3, "{record}");
 
@@ -8194,8 +8194,8 @@ fn an_unrecorded_run_leaves_no_entry_failed_or_not_and_is_counted() {
     assert_eq!(call("GET", "/health", ""), 200);
     assert_eq!((log.next_seq(), log.syncs()), (2, syncs + 1), "recorded, and strictly");
     assert_eq!(tally("GET /health").runs, 3, "and not counted as unrecorded");
-    let _ = std::fs::remove_file(&state.deployments_path);
-    let _ = std::fs::remove_dir_all(Path::new(&state.deployments_path).with_extension("logs"));
+    let _ = std::fs::remove_file(state.deployments_path.at().unwrap());
+    let _ = std::fs::remove_dir_all(state.deployments_path.beside("logs").unwrap());
 }
 
 /// What an unrecorded run's tally keeps of a failure: its error redacted of the deployment's secrets
@@ -8204,7 +8204,7 @@ fn an_unrecorded_run_leaves_no_entry_failed_or_not_and_is_counted() {
 #[test]
 fn an_unrecorded_failure_is_kept_redacted_and_cut_short() {
     let mut state = test_state();
-    state.deployments_path = unique_temp_path("unrecorded-failure");
+    state.deployments_path = unique_temp_path("unrecorded-failure").into();
     let slug = deploy_plain_text(&state, UNRECORDED_BOARD);
     let set = serde_json::to_vec(&serde_json::json!({ "value": "sk_live_42" })).unwrap();
     assert_eq!(route(&state, &req("POST", &format!("/deployments/{slug}/secrets/api_key"), set)).status_code, 200);
@@ -8229,8 +8229,8 @@ fn an_unrecorded_failure_is_kept_redacted_and_cut_short() {
     assert_eq!(log.next_seq(), 0, "nothing logged");
     let tally = state.deployments.lock().unwrap()[&failing].tallies["action check"].clone();
     assert_eq!((tally.runs, tally.failed, tally.last_failure), (1, 0, None));
-    let _ = std::fs::remove_file(&state.deployments_path);
-    let _ = std::fs::remove_dir_all(Path::new(&state.deployments_path).with_extension("logs"));
+    let _ = std::fs::remove_file(state.deployments_path.at().unwrap());
+    let _ = std::fs::remove_dir_all(state.deployments_path.beside("logs").unwrap());
 }
 
 /// A handler that waits is as its author declares it (C5): a parked run keeps what it waits with
@@ -8240,7 +8240,7 @@ fn an_unrecorded_failure_is_kept_redacted_and_cut_short() {
 #[test]
 fn a_run_that_waits_parks_and_resumes_at_its_handlers_level() {
     let mut state = test_state();
-    state.deployments_path = unique_temp_path("waits-light");
+    state.deployments_path = unique_temp_path("waits-light").into();
     let text = |level: &str, port: u16| {
         format!(
             "flow hold-{level}\nport {port}\ncollection seen\n\nroute POST /hold (req) {level} {{\n  respond {{ token: \"{{resume_token(paid)}}\" }}\n  paid = await paid, expires: 1h\n  seen[\"last\"] = paid.method\n}}\n\nroute GET /paid/:token (req) resumes paid {{\n  respond \"thanks\"\n}}\n\nroute GET /seen (req) {{\n  respond {{ last: seen[\"last\"] }}\n}}\n"
@@ -8271,8 +8271,8 @@ fn a_run_that_waits_parks_and_resumes_at_its_handlers_level() {
             assert_eq!(log.syncs(), syncs + 2, "the resume request's sync, and the strict /seen's; not the lazy part's");
         }
     }
-    let _ = std::fs::remove_file(&state.deployments_path);
-    let _ = std::fs::remove_dir_all(Path::new(&state.deployments_path).with_extension("logs"));
+    let _ = std::fs::remove_file(state.deployments_path.at().unwrap());
+    let _ = std::fs::remove_dir_all(state.deployments_path.beside("logs").unwrap());
 }
 
 /// What a waiting run sent as it parked is kept with its record, as a logged run's is in its log:
@@ -8280,7 +8280,7 @@ fn a_run_that_waits_parks_and_resumes_at_its_handlers_level() {
 #[test]
 fn a_waiting_unrecorded_run_doesnt_send_again_after_a_restart() {
     let mut state = test_state();
-    state.deployments_path = unique_temp_path("waits-sent");
+    state.deployments_path = unique_temp_path("waits-sent").into();
     let text = "flow hold-sends\nport 18203\nchannel updates\n\nroute POST /hold (req) unrecorded {\n  updates.send({ held: req.method })\n  respond { token: \"{resume_token(paid)}\" }\n  paid = await paid, expires: 1h\n  updates.send({ paid: paid.method })\n}\n\nroute GET /paid/:token (req) resumes paid {\n  respond \"thanks\"\n}\n";
     let slug = deploy_plain_text(&state, text);
     let subscribe = |state: &AppState| {
@@ -8309,8 +8309,8 @@ fn a_waiting_unrecorded_run_doesnt_send_again_after_a_restart() {
     assert_eq!(data_call(&state, &slug, "GET", &format!("/paid/{token}"), "").0, 200);
     assert!(state.deployments.lock().unwrap()[&slug].parked.is_empty(), "resumed, and done");
     assert_eq!(got(&mut after), [r#"{"paid":"GET"}"#], "what it sent as it parked isn't sent again");
-    let _ = std::fs::remove_file(&state.deployments_path);
-    let _ = std::fs::remove_dir_all(Path::new(&state.deployments_path).with_extension("logs"));
+    let _ = std::fs::remove_file(state.deployments_path.at().unwrap());
+    let _ = std::fs::remove_dir_all(state.deployments_path.beside("logs").unwrap());
 }
 
 /// A logged run's packs go out once its record is on disk: a lazy run's with the next sync, a
@@ -8319,7 +8319,7 @@ fn a_waiting_unrecorded_run_doesnt_send_again_after_a_restart() {
 #[test]
 fn a_runs_packs_go_out_once_its_record_is_on_disk() {
     let mut state = test_state();
-    state.deployments_path = unique_temp_path("packs-on-disk");
+    state.deployments_path = unique_temp_path("packs-on-disk").into();
     let text = "flow sends-lightly\nport 18204\nchannel updates\n\nroute POST /fast (req) lazy {\n  updates.send({ fast: req.method })\n  respond \"ok\"\n}\n\nroute POST /sure (req) {\n  updates.send({ sure: req.method })\n  respond \"ok\"\n}\n";
     let slug = deploy_plain_text(&state, text);
     let mut sub = {
@@ -8341,8 +8341,8 @@ fn a_runs_packs_go_out_once_its_record_is_on_disk() {
     assert_eq!(data_call(&state, &slug, "POST", "/fast", "").0, 200);
     assert_eq!(data_call(&state, &slug, "POST", "/sure", "").0, 200);
     assert_eq!(got(), [fast(lazy), sure(strict)], "the strict run's sync covers the lazy run before it");
-    let _ = std::fs::remove_file(&state.deployments_path);
-    let _ = std::fs::remove_dir_all(Path::new(&state.deployments_path).with_extension("logs"));
+    let _ = std::fs::remove_file(state.deployments_path.at().unwrap());
+    let _ = std::fs::remove_dir_all(state.deployments_path.beside("logs").unwrap());
 }
 
 /// An unrecorded handler that writes and sends is what its author wrote: approved as any
@@ -8352,7 +8352,7 @@ fn a_runs_packs_go_out_once_its_record_is_on_disk() {
 #[test]
 fn an_unrecorded_handler_that_writes_and_sends_runs_as_written() {
     let mut state = test_state();
-    state.deployments_path = unique_temp_path("unrecorded-writes");
+    state.deployments_path = unique_temp_path("unrecorded-writes").into();
     let text = "flow quiet-notes\nport 8174\ncollection notes\nchannel updates\n\nroute POST /notes (req) unrecorded {\n  notes[req.json.id] = req.json.text\n  updates.send({ id: req.json.id })\n  respond \"saved\"\n}\n\nroute GET /notes/:id (req) {\n  respond { text: notes[req.params.id] }\n}\n";
     let plan = holon_author::agent::plan(text).unwrap();
     for u in &plan.units {
@@ -8377,8 +8377,8 @@ fn an_unrecorded_handler_that_writes_and_sends_runs_as_written() {
     assert!(channels.kept("updates", true).is_empty(), "and not kept");
     let (_, read, _) = data_call(&state, &slug, "GET", "/notes/a", "");
     assert_eq!(serde_json::from_str::<serde_json::Value>(&read).unwrap()["text"], "hi", "its write landed");
-    let _ = std::fs::remove_file(&state.deployments_path);
-    let _ = std::fs::remove_dir_all(Path::new(&state.deployments_path).with_extension("logs"));
+    let _ = std::fs::remove_file(state.deployments_path.at().unwrap());
+    let _ = std::fs::remove_dir_all(state.deployments_path.beside("logs").unwrap());
 }
 
 /// What an unrecorded handler that writes leaves out is said as such: `holon verify` takes a state
@@ -8387,7 +8387,7 @@ fn an_unrecorded_handler_that_writes_and_sends_runs_as_written() {
 #[test]
 fn what_an_unrecorded_writer_leaves_out_is_unchecked_not_a_break() {
     let mut state = test_state();
-    state.deployments_path = unique_temp_path("unrecorded-verify");
+    state.deployments_path = unique_temp_path("unrecorded-verify").into();
     let text = "flow light-verify\nport 8176\ncollection notes\nchannel updates\n\nroute POST /notes (req) {\n  notes[req.json.id] = req.json.text\n  respond \"saved\"\n}\n\nroute POST /quiet (req) unrecorded {\n  notes[req.json.id] = req.json.text\n  updates.send({ id: req.json.id })\n  respond \"saved\"\n}\n\nroute GET /notes/:id (req) {\n  respond { text: notes[req.params.id] }\n}\n";
     let slug = deploy_plain_text(&state, text);
     assert_eq!(data_call(&state, &slug, "POST", "/notes", r#"{"id":"a","text":"hi"}"#).0, 200);
@@ -8442,8 +8442,8 @@ fn what_an_unrecorded_writer_leaves_out_is_unchecked_not_a_break() {
     let dry =body_json(route(&state, &req("POST", &format!("/deployments/{slug}/restore"), serde_json::json!({ "run": 0, "state": true, "dry_run": true }).to_string().into_bytes())));
     assert_eq!(dry["state"]["unrecorded"], serde_json::json!(["POST /quiet"]), "{dry}");
     assert!(restore::state_lines(&dry["state"]).contains("runs of POST /quiet (unrecorded) aren't logged"), "{}", restore::state_lines(&dry["state"]));
-    let _ = std::fs::remove_file(&state.deployments_path);
-    let _ = std::fs::remove_dir_all(Path::new(&state.deployments_path).with_extension("logs"));
+    let _ = std::fs::remove_file(state.deployments_path.at().unwrap());
+    let _ = std::fs::remove_dir_all(state.deployments_path.beside("logs").unwrap());
 }
 
 /// A lazy run's record a power loss lost leaves no mark in the log: the state the next run began
@@ -8452,7 +8452,7 @@ fn what_an_unrecorded_writer_leaves_out_is_unchecked_not_a_break() {
 #[test]
 fn what_a_lost_lazy_record_moved_is_unchecked_not_a_break() {
     let mut state = test_state();
-    state.deployments_path = unique_temp_path("lazy-verify");
+    state.deployments_path = unique_temp_path("lazy-verify").into();
     let text = "flow lazy-verify\nport 18205\ncollection notes\ncollection seen\n\nroute POST /notes (req) {\n  notes[req.json.id] = req.json.text\n  respond \"saved\"\n}\n\nroute POST /seen (req) lazy {\n  seen[req.json.id] = req.json.by\n  respond \"ok\"\n}\n";
     let slug = deploy_plain_text(&state, text);
     assert_eq!(data_call(&state, &slug, "POST", "/notes", r#"{"id":"a","text":"hi"}"#).0, 200);
@@ -8479,8 +8479,8 @@ fn what_a_lost_lazy_record_moved_is_unchecked_not_a_break() {
     assert!(states.breaks.is_empty(), "{:?}", states.breaks);
     let states = lost(&|after| after["state_before"]["k"] = serde_json::json!({ "type": "Number", "value": 5.0 }));
     assert!(states.breaks.contains(&(2, "it began from a state the run before it (run 0) didn't leave, nor a run beside it".to_string())), "{:?}", states.breaks);
-    let _ = std::fs::remove_file(&state.deployments_path);
-    let _ = std::fs::remove_dir_all(Path::new(&state.deployments_path).with_extension("logs"));
+    let _ = std::fs::remove_file(state.deployments_path.at().unwrap());
+    let _ = std::fs::remove_dir_all(state.deployments_path.beside("logs").unwrap());
 }
 
 /// A host whose policy never lets a handler go unrecorded (holon.toml: grants.allow_unrecorded =
@@ -8507,13 +8507,13 @@ fn a_policy_without_allow_unrecorded_refuses_the_deploy() {
 #[test]
 fn a_run_writes_only_its_state_head_and_only_when_it_changed_the_state() {
     let mut state = test_state();
-    state.deployments_path = unique_temp_path("persist-on-change");
+    state.deployments_path = unique_temp_path("persist-on-change").into();
     let counter = deploy_plain_text(&state, include_str!("../../holon-author/samples/counter.holon"));
     let same = deploy_plain_text(&state, "flow same\nport 8199\nstate k\n\nroute POST /k (req) {\n  state.k = \"x\"\n  respond \"ok\"\n}\n");
     let call = |slug: &str, method: &str, url: &str| {
         assert_eq!(serve_data(&state.store, &state.deployments, &state.deployments_path, slug, &fake_data(method, url, vec![])).status, 200, "{method} {url}");
     };
-    let file = || std::fs::read(&state.deployments_path).unwrap();
+    let file = || std::fs::read(state.deployments_path.at().unwrap()).unwrap();
     let head = |slug: &str| std::fs::read_to_string(state_head_for(&state.deployments_path, slug).unwrap()).ok();
     let counted = |slug: &str| -> (u64, u64) {
         let on_disk: serde_json::Value = serde_json::from_slice(&file()).unwrap();
@@ -8541,9 +8541,9 @@ fn a_run_writes_only_its_state_head_and_only_when_it_changed_the_state() {
     assert!(kept.is_some());
     call(&same, "POST", "/k");
     assert_eq!(head(&same), kept, "writing back the value that was there changed nothing");
-    let _ = std::fs::remove_file(&state.deployments_path);
+    let _ = std::fs::remove_file(state.deployments_path.at().unwrap());
     for folder in ["logs", "state"] {
-        let _ = std::fs::remove_dir_all(Path::new(&state.deployments_path).with_extension(folder));
+        let _ = std::fs::remove_dir_all(state.deployments_path.at().unwrap().with_extension(folder));
     }
 }
 
@@ -8553,7 +8553,7 @@ fn a_run_writes_only_its_state_head_and_only_when_it_changed_the_state() {
 #[test]
 fn a_state_is_kept_by_its_head_across_restarts_concurrent_writes_and_a_delete() {
     let mut state = test_state();
-    state.deployments_path = unique_temp_path("state-head");
+    state.deployments_path = unique_temp_path("state-head").into();
     let counter = deploy_plain_text(&state, include_str!("../../holon-author/samples/counter.holon"));
     let call = |method: &str, url: &str| {
         let r = serve_data(&state.store, &state.deployments, &state.deployments_path, &counter, &fake_data(method, url, vec![]));
@@ -8586,9 +8586,9 @@ fn a_state_is_kept_by_its_head_across_restarts_concurrent_writes_and_a_delete() 
     let deleted = route(&state, &req("DELETE", &format!("/deployments/{counter}"), vec![]));
     assert_eq!(deleted.status_code, 200);
     assert!(!state_head_for(&state.deployments_path, &counter).unwrap().exists(), "the head goes with its deployment");
-    let _ = std::fs::remove_file(&state.deployments_path);
+    let _ = std::fs::remove_file(state.deployments_path.at().unwrap());
     for folder in ["logs", "state"] {
-        let _ = std::fs::remove_dir_all(Path::new(&state.deployments_path).with_extension(folder));
+        let _ = std::fs::remove_dir_all(state.deployments_path.at().unwrap().with_extension(folder));
     }
 }
 
@@ -8825,7 +8825,7 @@ fn the_store_keeps_the_values_it_read_within_a_budget() {
     let disk = FileStore::new(&store_dir).unwrap();
     let values = disk.values_dir();
     let mut state = test_state_with(SharedStore::on_disk(Box::new(disk), values));
-    state.deployments_path = ":memory:".into();
+    state.deployments_path = Place::Nowhere;
     let slug = deploy_plain_text(&state, "flow c\nport 8302\ncollection notes\n\nroute POST /notes (req) {\n  notes[req.json.id] = req.json.text\n  respond \"saved\"\n}\n\nroute GET /notes (req) lazy {\n  respond notes.list(limit: 50)\n}\n");
     let call = |method: &str, body: &str| serve_data(&state.store, &state.deployments, &state.deployments_path, &slug, &fake_data(method, "/notes", body.as_bytes().to_vec()));
     assert_eq!(call("POST", r#"{"id":"a","text":"hi"}"#).status, 200);
@@ -8939,7 +8939,7 @@ fn a_servers_file_handlers_run_alone_for_their_lines_beside_its_routes_and_verif
 #[test]
 fn a_servers_actions_run_by_name_with_what_was_sent_and_verify() {
     let mut state = claims_state("");
-    state.deployments_path = unique_temp_path("action-blocks");
+    state.deployments_path = unique_temp_path("action-blocks").into();
     let slug = deploy_text(&state, include_str!("../../holon-author/samples/ticker.holon"), "127.0.0.1:9");
     let mut triggers = state.deployments.lock().unwrap()[&slug].triggers.clone();
     triggers.sort();
@@ -8993,7 +8993,7 @@ fn a_servers_actions_run_by_name_with_what_was_sent_and_verify() {
 fn a_servers_clock_ticks_on_its_period_beside_its_routes_and_verifies() {
     let mut state = claims_state("");
     let path = unique_temp_path("clock-blocks");
-    state.deployments_path = path.clone();
+    state.deployments_path = path.clone().into();
     let text = "flow ticks\nport 18257\nstate n\n\nevery 2s {\n  state.n = (state.n ?? 0) + 1\n}\n\nroute GET /n (req) {\n  respond state.n ?? 0\n}\n";
     let slug = deploy_text(&state, text, "127.0.0.1:9");
     let triggers = state.deployments.lock().unwrap()[&slug].triggers.clone();
@@ -9234,7 +9234,7 @@ fn request_throughput() {
     let disk = FileStore::new(&store_dir).unwrap();
     let values = disk.values_dir();
     let mut state = test_state_with(SharedStore::on_disk(Box::new(disk), values));
-    state.deployments_path = unique_temp_path("throughput");
+    state.deployments_path = unique_temp_path("throughput").into();
     let calc = include_str!("../../holon-author/samples/calc.holon");
     let (hello, counter) = (include_str!("../../holon-author/samples/hello-api.holon"), include_str!("../../holon-author/samples/counter.holon"));
     for text in [hello, calc, counter] {
@@ -9259,7 +9259,7 @@ fn request_throughput() {
         deploy_plain_text(&state, &text);
     }
     let deployments = state.deployments.lock().unwrap().len();
-    let file_kb = std::fs::metadata(&state.deployments_path).map_or(0, |m| m.len() / 1024);
+    let file_kb = std::fs::metadata(state.deployments_path.at().unwrap()).map_or(0, |m| m.len() / 1024);
 
     let routes = [
         ("hello-api", "GET", "/hello/Ada", ""),
@@ -9346,8 +9346,8 @@ fn request_throughput() {
         calc as f64 / elapsed
     );
     let _ = std::fs::remove_dir_all(&store_dir);
-    let _ = std::fs::remove_file(&state.deployments_path);
-    let _ = std::fs::remove_dir_all(Path::new(&state.deployments_path).with_extension("logs"));
+    let _ = std::fs::remove_file(state.deployments_path.at().unwrap());
+    let _ = std::fs::remove_dir_all(state.deployments_path.beside("logs").unwrap());
 }
 
 /// A compute-heavy route: statistics over a list of numbers and a record per item, all with `map`
@@ -9367,7 +9367,7 @@ fn profile_one_route() {
     let disk = FileStore::new(&store_dir).unwrap();
     let values = disk.values_dir();
     let mut state = test_state_with(SharedStore::on_disk(Box::new(disk), values));
-    state.deployments_path = unique_temp_path("profile");
+    state.deployments_path = unique_temp_path("profile").into();
     let which = std::env::var("HOLON_PROFILE").unwrap_or_else(|_| "hello".into());
     let (text, method, url, body) = match which.as_str() {
         "crunch" => (CRUNCH, "POST", "/stats", ""),

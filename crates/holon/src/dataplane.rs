@@ -104,7 +104,7 @@ fn runtime() -> &'static tokio::runtime::Runtime {
 struct Listener {
     store: SharedStore,
     deployments: Arc<Mutex<BTreeMap<String, Deployment>>>,
-    deployments_path: String,
+    deployments_path: Place,
     slug: String,
     limits: DataLimits,
     /// Whether each route's endpoint, by its hash, runs on the worker that read its request (see

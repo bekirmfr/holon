@@ -31,12 +31,12 @@ pub(crate) struct Hub {
 
 struct Host {
     deployments: Arc<Mutex<BTreeMap<String, Deployment>>>,
-    deployments_path: String,
+    deployments_path: Place,
 }
 
 impl Hub {
     /// Let runs reach `deployments`, kept at `deployments_path`.
-    pub(crate) fn connect(&self, deployments: Arc<Mutex<BTreeMap<String, Deployment>>>, deployments_path: String) {
+    pub(crate) fn connect(&self, deployments: Arc<Mutex<BTreeMap<String, Deployment>>>, deployments_path: Place) {
         let _ = self.host.set(Host { deployments, deployments_path });
     }
 }

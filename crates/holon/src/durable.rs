@@ -635,7 +635,7 @@ fn claim<'a>(deployments: &'a Mutex<BTreeMap<String, Deployment>>, slug: &str, r
 pub(crate) fn resume_parked(
     store: &SharedStore,
     deployments: &Mutex<BTreeMap<String, Deployment>>,
-    deployments_path: &str,
+    deployments_path: &Place,
     slug: &str,
     claimed: Claimed<'_>,
     name: &str,
@@ -715,7 +715,7 @@ pub(crate) fn resume_parked(
 }
 
 /// Deliver `{expired: true}` to every waiting point past its deadline.
-pub(crate) fn expire_waiting(store: &SharedStore, deployments: &Mutex<BTreeMap<String, Deployment>>, deployments_path: &str, now: u64) {
+pub(crate) fn expire_waiting(store: &SharedStore, deployments: &Mutex<BTreeMap<String, Deployment>>, deployments_path: &Place, now: u64) {
     let mut due: Vec<(String, String, String)> = Vec::new();
     for (slug, dep) in deployments.lock().unwrap().iter() {
         for p in dep.parked.values() {

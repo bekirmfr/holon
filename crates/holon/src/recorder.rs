@@ -31,6 +31,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use holon_core::Value;
 
+use crate::paths::Place;
 use crate::{PerformedEntry, SValue};
 
 /// How many entries a deployment keeps when the host doesn't say; older ones drop off the front.
@@ -1148,8 +1149,8 @@ impl Default for Log {
 }
 
 /// Where `slug`'s log is kept for the deployments file at `deployments_path`, if anywhere.
-pub fn file_for(deployments_path: &str, slug: &str) -> Option<PathBuf> {
-    (deployments_path != ":memory:").then(|| Path::new(deployments_path).with_extension("logs").join(format!("{slug}.jsonl")))
+pub fn file_for(deployments_path: &Place, slug: &str) -> Option<PathBuf> {
+    deployments_path.beside("logs").map(|logs| logs.join(format!("{slug}.jsonl")).into())
 }
 
 impl Log {
@@ -1161,7 +1162,7 @@ impl Log {
 
     /// The log of deployment `slug`, kept beside the deployments file at `deployments_path`: its
     /// heads go to the witness, if one is set.
-    pub fn for_deployment(deployments_path: &str, slug: &str) -> Log {
+    pub fn for_deployment(deployments_path: &Place, slug: &str) -> Log {
         let mut log = Log::open(file_for(deployments_path, slug));
         log.slug = Some(slug.to_string());
         log

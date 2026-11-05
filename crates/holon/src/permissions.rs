@@ -431,11 +431,11 @@ pub(crate) struct Storage {
     pub(crate) when_full: WhenFull,
     /// Where the runs a log lets go of are written first, gzipped exports `holon verify` checks:
     /// a folder (an external drive, a folder a cloud client keeps in sync). None: they go.
-    pub(crate) backup: Option<std::path::PathBuf>,
+    pub(crate) backup: Option<crate::paths::HostPath>,
 }
 
 /// `[storage] backup` as written: a folder's whole path, or `none`.
-pub(crate) fn parse_backup(text: &str) -> Result<Option<std::path::PathBuf>, String> {
+pub(crate) fn parse_backup(text: &str) -> Result<Option<crate::paths::HostPath>, String> {
     let t = text.trim();
     if t.is_empty() || t == "none" {
         return Ok(None);
@@ -446,7 +446,7 @@ pub(crate) fn parse_backup(text: &str) -> Result<Option<std::path::PathBuf>, Str
     if t == "holon-cloud" {
         return Err("Holon Cloud is coming; for now a folder: an external drive, or a folder a cloud client keeps in sync".into());
     }
-    match crate::paths::whole(t) {
+    match crate::paths::HostPath::whole(t) {
         Some(path) => Ok(Some(path)),
         None => Err(format!("{t:?}: the backup is a folder's whole path ({})", crate::paths::EXAMPLE)),
     }
@@ -654,7 +654,8 @@ impl Policy {
     /// The policy in `path`, or the defaults when there is no such file. A file that exists but
     /// doesn't parse, names an unknown limit, or sets a default above its ceiling is an error:
     /// the server refuses to start rather than run under a policy nobody wrote.
-    pub(crate) fn load(path: &str) -> Result<Policy, String> {
+    pub(crate) fn load(path: &crate::paths::Place) -> Result<Policy, String> {
+        let Some(path) = path.at() else { return Ok(Policy::default()) };
         let text = match std::fs::read_to_string(path) {
             Ok(t) => t,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Policy::default()),
@@ -1224,7 +1225,7 @@ mod tests {
         // Backups: a folder, by its whole path; object storage and Holon Cloud not yet.
         assert_eq!(Policy::default().storage.backup, None);
         let example = crate::paths::EXAMPLE;
-        assert_eq!(Policy::parse(&format!("[storage]\nbackup = {example:?}")).unwrap().storage.backup, Some(example.into()));
+        assert_eq!(Policy::parse(&format!("[storage]\nbackup = {example:?}")).unwrap().storage.backup, crate::paths::HostPath::whole(example));
         assert_eq!(Policy::parse("[storage]\nbackup = \"none\"").unwrap().storage.backup, None);
         assert!(Policy::parse("[storage]\nbackup = \"archive\"").unwrap_err().contains("whole path"));
         assert!(Policy::parse("[storage]\nbackup = \"s3://bucket/runs\"").unwrap_err().contains("object storage is to come"));

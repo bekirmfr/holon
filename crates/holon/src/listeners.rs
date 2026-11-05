@@ -15,7 +15,7 @@ use crate::*;
 pub(crate) fn serve_data(
     store: &SharedStore,
     deployments: &Mutex<BTreeMap<String, Deployment>>,
-    deployments_path: &str,
+    deployments_path: &Place,
     slug: &str,
     request: &DataRequest,
 ) -> DataResponse {
@@ -37,7 +37,7 @@ pub(crate) fn allowed_origin(deployments: &Mutex<BTreeMap<String, Deployment>>, 
 pub(crate) fn serve_data_forwarding(
     store: &SharedStore,
     deployments: &Mutex<BTreeMap<String, Deployment>>,
-    deployments_path: &str,
+    deployments_path: &Place,
     slug: &str,
     request: &DataRequest,
     forward: Option<outbound::Forwarder>,
@@ -102,7 +102,7 @@ fn ran_entry(started: (u64, std::time::Instant), sourced: &[(Capability, Value)]
 fn serve_flow(
     store: &SharedStore,
     deployments: &Mutex<BTreeMap<String, Deployment>>,
-    deployments_path: &str,
+    deployments_path: &Place,
     slug: &str,
     request: &DataRequest,
     forward: Option<outbound::Forwarder>,

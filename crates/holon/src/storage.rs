@@ -137,13 +137,12 @@ fn count_dir(dir: &Path, keep: impl Fn(&str) -> bool, now: SystemTime, left: &mu
 /// disk.
 fn places(state: &AppState) -> Vec<(&'static str, PathBuf)> {
     let mut places = Vec::new();
-    if state.deployments_path != ":memory:" {
-        let deployments = Path::new(&state.deployments_path);
+    if let Some(deployments) = state.deployments_path.at() {
         if let Some(data) = deployments.parent() {
-            places.push(("data", if data.as_os_str().is_empty() { PathBuf::from(".") } else { data.to_path_buf() }));
+            places.push(("data", data.into()));
         }
-        places.push(("logs", deployments.with_extension("logs")));
-        places.push(("state heads", deployments.with_extension("state")));
+        places.push(("logs", deployments.with_extension("logs").into()));
+        places.push(("state heads", deployments.with_extension("state").into()));
     }
     if let Some(dir) = state.store.2.dir() {
         places.push(("store", dir.to_path_buf()));
@@ -441,7 +440,7 @@ impl Sweeps {
         // Each log writes what it lets go of to the backup, as the policy says now; a full disk
         // rolling may let them go without, if it can't (the admin chose room over history).
         let may_drop = policy.storage.when_full == crate::permissions::WhenFull::Roll && full_pct.is_some();
-        let backup = policy.storage.backup.clone().map(|dir| (dir, may_drop));
+        let backup = policy.storage.backup.clone().map(|dir| (dir.into(), may_drop));
         let logs: Vec<std::sync::Arc<crate::recorder::LogCell>> = state.deployments.lock().unwrap().values().map(|d| std::sync::Arc::clone(&d.log)).collect();
         for log in logs {
             log.with(|l| l.set_backup(backup.clone()));
@@ -684,8 +683,7 @@ impl Sweeps {
         let at = (census.at_ms > 0).then_some(census.at_ms);
         let mut logs = None;
         let mut left = Count::default();
-        if state.deployments_path != ":memory:" {
-            let dir = Path::new(&state.deployments_path).with_extension("logs");
+        if let Some(dir) = state.deployments_path.beside("logs") {
             // Counted now: one file a deployment, and its sealed segments beside it (their bytes,
             // not more logs). What crashes left is removed by the census only.
             logs = std::fs::read_dir(&dir).ok().map(|entries| {
@@ -1249,10 +1247,11 @@ pub(crate) fn route(state: &AppState, request: &rouille::Request, by: &str) -> O
 /// Write `set` into the policy file's `[storage]` and read it again, holding every deployment to
 /// it as a reload does. The file is left as it was if the new text isn't a policy.
 fn set_storage(state: &AppState, set: &[(&str, &str)], by: &str) -> Response {
-    let mut text = match std::fs::read_to_string(&state.policy_path) {
+    let Some(policy_path) = state.policy_path.at() else { return err(409, "this server reads its policy from no file, so there is none to write it into") };
+    let mut text = match std::fs::read_to_string(policy_path) {
         Ok(t) => t,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
-        Err(e) => return err(500, format!("could not read {:?}: {e}", state.policy_path)),
+        Err(e) => return err(500, format!("could not read {policy_path:?}: {e}")),
     };
     // Each key written, then the whole checked: two set at once may only make sense together.
     let mut doc: toml_edit::DocumentMut = match text.parse() {
@@ -1269,8 +1268,8 @@ fn set_storage(state: &AppState, set: &[(&str, &str)], by: &str) -> Response {
     if let Err(e) = Policy::parse(&text) {
         return err(400, e);
     }
-    if let Err(e) = holon_host::write_atomically(std::path::Path::new(&state.policy_path), text.as_bytes()) {
-        return err(500, format!("could not write {:?}: {e}", state.policy_path));
+    if let Err(e) = holon_host::write_atomically(policy_path, text.as_bytes()) {
+        return err(500, format!("could not write {policy_path:?}: {e}"));
     }
     let reloaded = crate::grants::handle_post_permissions_reload(state);
     if reloaded.status_code != 200 {

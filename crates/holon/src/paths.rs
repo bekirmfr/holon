@@ -14,8 +14,162 @@
 //! Either way a separator at the end goes. The reading is the platform's own
 //! (`std::path::absolute`), not one of ours, so a path can't mean one thing here and another to
 //! the system. `canonical` resolves links too, on a path that is there.
+//!
+//! A path the server keeps (where its deployments, flows and policy are, a folder or a database
+//! bound, the backup) is a [`HostPath`], which only these make: one kept is never relative, nor
+//! written with the other platform's separators. Where it may be kept nowhere, it is a [`Place`].
 
+use std::ffi::OsStr;
+use std::fmt;
+use std::ops::Deref;
 use std::path::{Path, PathBuf};
+
+/// A whole path in its platform's form, as [`normalize`] writes it, and made only by it (or by
+/// [`whole`] or [`canonical`]). It reads as a `Path`; `join`, `with_extension` and `parent` keep it
+/// one. Kept in a file as its text, and read back through `normalize`.
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(crate) struct HostPath(PathBuf);
+
+impl HostPath {
+    /// `path` whole, in its platform's form ([`normalize`]).
+    pub(crate) fn new(path: impl AsRef<Path>) -> HostPath {
+        HostPath(normalize(path))
+    }
+
+    /// The whole path a person wrote ([`whole`]); none if it isn't whole here.
+    pub(crate) fn whole(text: &str) -> Option<HostPath> {
+        whole(text).map(HostPath)
+    }
+
+    /// `path` with its links resolved ([`canonical`]), if it is there.
+    pub(crate) fn canonical(path: impl AsRef<Path>) -> std::io::Result<HostPath> {
+        canonical(path.as_ref()).map(HostPath)
+    }
+
+    /// `part` below it, read as its platform reads it (`a/b` is two parts on Windows).
+    pub(crate) fn join(&self, part: impl AsRef<Path>) -> HostPath {
+        HostPath::new(self.0.join(part))
+    }
+
+    /// The file beside it with this extension (`deployments.logs` beside `deployments.json`).
+    pub(crate) fn with_extension(&self, extension: impl AsRef<OsStr>) -> HostPath {
+        HostPath(self.0.with_extension(extension))
+    }
+
+    /// The folder it is in; none for a root.
+    pub(crate) fn parent(&self) -> Option<HostPath> {
+        self.0.parent().map(|p| HostPath(p.to_path_buf()))
+    }
+}
+
+impl Deref for HostPath {
+    type Target = Path;
+    fn deref(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl AsRef<Path> for HostPath {
+    fn as_ref(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl From<HostPath> for PathBuf {
+    fn from(path: HostPath) -> PathBuf {
+        path.0
+    }
+}
+
+/// As a `Path` is: quoted, as messages say a path.
+impl fmt::Debug for HostPath {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl fmt::Display for HostPath {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.display().fmt(f)
+    }
+}
+
+impl serde::Serialize for HostPath {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        self.0.serialize(s)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for HostPath {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<HostPath, D::Error> {
+        PathBuf::deserialize(d).map(HostPath::new)
+    }
+}
+
+/// Where the server keeps a file: at a whole path, or nowhere, only in memory (`:memory:`: the
+/// tests, and a server told so).
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) enum Place {
+    Nowhere,
+    At(HostPath),
+}
+
+impl Place {
+    /// As an option names it: `:memory:` for nowhere, else a path, made whole.
+    pub(crate) fn parse(text: &str) -> Place {
+        if text == ":memory:" { Place::Nowhere } else { Place::At(HostPath::new(text)) }
+    }
+
+    /// Its path, if it is kept anywhere.
+    pub(crate) fn at(&self) -> Option<&HostPath> {
+        match self {
+            Place::Nowhere => None,
+            Place::At(path) => Some(path),
+        }
+    }
+
+    /// What is kept beside it, by its extension: nothing beside nowhere.
+    pub(crate) fn beside(&self, extension: &str) -> Option<HostPath> {
+        self.at().map(|p| p.with_extension(extension))
+    }
+}
+
+impl From<&str> for Place {
+    fn from(text: &str) -> Place {
+        Place::parse(text)
+    }
+}
+
+impl From<String> for Place {
+    fn from(text: String) -> Place {
+        Place::parse(&text)
+    }
+}
+
+impl From<HostPath> for Place {
+    fn from(path: HostPath) -> Place {
+        Place::At(path)
+    }
+}
+
+/// As its path is, or `":memory:"`.
+impl fmt::Debug for Place {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Place::Nowhere => ":memory:".fmt(f),
+            Place::At(path) => path.fmt(f),
+        }
+    }
+}
+
+impl fmt::Display for Place {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Place::Nowhere => f.write_str(":memory:"),
+            Place::At(path) => path.fmt(f),
+        }
+    }
+}
 
 /// A whole path, as an example: one this machine takes.
 pub(crate) const EXAMPLE: &str = if cfg!(windows) { r"D:\archive" } else { "/mnt/archive" };
@@ -83,6 +237,27 @@ mod tests {
         assert_eq!(normalize(dir.join("values/packs")).display().to_string(), dir.join("values").join("packs").display().to_string());
         // Not whole: from the folder it was started in.
         assert_eq!(normalize("kept"), std::env::current_dir().unwrap().join("kept"));
+    }
+
+    #[test]
+    fn a_kept_path_stays_whole_and_its_platforms() {
+        let dir = HostPath::new(std::env::temp_dir());
+        let packs = dir.join("values/packs");
+        assert_eq!(packs, HostPath::new(dir.join("values").join("packs")));
+        assert_eq!(packs.to_string(), std::env::temp_dir().join("values").join("packs").display().to_string(), "its platform's separators");
+        assert_eq!(dir.join("deployments.json").with_extension("logs"), dir.join("deployments.logs"));
+        assert_eq!(packs.parent(), Some(dir.join("values")));
+        // Kept as its text, and read back in its platform's form, however it was written there.
+        let text = serde_json::to_string(&packs).unwrap();
+        assert_eq!(serde_json::from_str::<HostPath>(&text).unwrap(), packs);
+        let written = serde_json::to_string(&format!("{}/values/./packs/", std::env::temp_dir().display())).unwrap();
+        assert_eq!(serde_json::from_str::<HostPath>(&written).unwrap(), packs);
+        // Kept nowhere, or at a path; nothing beside nowhere.
+        assert_eq!(Place::parse(":memory:"), Place::Nowhere);
+        assert_eq!(Place::Nowhere.beside("logs"), None);
+        let deployments = Place::from(dir.join("deployments.json"));
+        assert_eq!(deployments.beside("logs"), Some(dir.join("deployments.logs")));
+        assert_eq!(Place::parse(&dir.join("deployments.json").to_string()), deployments);
     }
 
     #[test]

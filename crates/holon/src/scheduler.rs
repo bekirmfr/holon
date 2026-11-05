@@ -18,7 +18,7 @@ type DueTick = (String, Hash, Option<DeploymentState>, u64, Arc<Permit>, Vault, 
 pub(crate) fn run_due_clock_ticks(
     store: &SharedStore,
     deployments: &Mutex<BTreeMap<String, Deployment>>,
-    deployments_path: &str,
+    deployments_path: &Place,
     now: SystemTime,
 ) {
     let due: Vec<DueTick> = {
@@ -112,7 +112,7 @@ pub(crate) fn handle_post_tick(state: &AppState, slug: &str, request: &Request) 
 pub(crate) fn fire_one_clock_tick(
     store: &SharedStore,
     deployments: &Mutex<BTreeMap<String, Deployment>>,
-    deployments_path: &str,
+    deployments_path: &Place,
     slug: String,
     unit_hash: Hash,
     state: Option<DeploymentState>,
@@ -220,7 +220,7 @@ fn redact_tick(tick: &mut TickEntry, redactor: &Redactor) {
 /// `Arc` handle onto `deployments` (no async runtime needed for this workload; a plain sleep
 /// loop is enough). Every second, hands off to `run_due_clock_ticks`, which fires whatever's
 /// due — concurrently within that one pass, see there for why and for the honest limit.
-pub(crate) fn spawn_clock_scheduler(store: SharedStore, deployments: Arc<Mutex<BTreeMap<String, Deployment>>>, deployments_path: String) {
+pub(crate) fn spawn_clock_scheduler(store: SharedStore, deployments: Arc<Mutex<BTreeMap<String, Deployment>>>, deployments_path: Place) {
     thread::spawn(move || loop {
         thread::sleep(Duration::from_secs(1));
         run_due_clock_ticks(&store, &deployments, &deployments_path, SystemTime::now());

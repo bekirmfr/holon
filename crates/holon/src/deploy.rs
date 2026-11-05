@@ -126,7 +126,7 @@ fn approval_needed(policy: &Policy, manifest: &Manifest, previous: &Previous, se
 pub(crate) fn handle_post_deploy(
     store: &SharedStore,
     deployments: &Mutex<BTreeMap<String, Deployment>>,
-    deployments_path: &str,
+    deployments_path: &Place,
     policy: &Policy,
     secrets: &SecretStore,
     folders: &Arc<folders::Folders>,
@@ -154,7 +154,7 @@ pub(crate) fn handle_post_deploy(
 fn deploy(
     store: &SharedStore,
     deployments: &Mutex<BTreeMap<String, Deployment>>,
-    deployments_path: &str,
+    deployments_path: &Place,
     policy: &Policy,
     secrets: &SecretStore,
     folders: &Arc<folders::Folders>,
@@ -851,7 +851,7 @@ pub(crate) fn handle_get_state(deployments: &Mutex<BTreeMap<String, Deployment>>
 /// the slug didn't exist.
 pub(crate) fn handle_delete_deployment(
     deployments: &Mutex<BTreeMap<String, Deployment>>,
-    deployments_path: &str,
+    deployments_path: &Place,
     slug: &str,
 ) -> Response {
     let removed = {
@@ -923,7 +923,7 @@ pub(crate) fn record_trigger(deployments: &Mutex<BTreeMap<String, Deployment>>, 
 pub(crate) fn handle_post_trigger(
     store: &SharedStore,
     deployments: &Mutex<BTreeMap<String, Deployment>>,
-    deployments_path: &str,
+    deployments_path: &Place,
     slug: &str,
     request: &Request,
 ) -> Response {
@@ -1019,7 +1019,7 @@ pub(crate) fn handle_post_trigger(
 pub(crate) fn handle_post_action(
     store: &SharedStore,
     deployments: &Mutex<BTreeMap<String, Deployment>>,
-    deployments_path: &str,
+    deployments_path: &Place,
     slug: &str,
     name: &str,
     request: &Request,
@@ -1079,7 +1079,7 @@ impl ActionRan {
 pub(crate) fn run_action(
     store: &SharedStore,
     deployments: &Mutex<BTreeMap<String, Deployment>>,
-    deployments_path: &str,
+    deployments_path: &Place,
     slug: &str,
     name: &str,
     input: Result<Value, String>,

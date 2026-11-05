@@ -139,8 +139,8 @@ pub(crate) fn size_text(bytes: u64) -> String {
 /// One bound folder.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub(crate) struct Folder {
-    /// The real folder, as bound (absolute, links resolved).
-    pub(crate) path: PathBuf,
+    /// The real folder, as bound (whole, links resolved).
+    pub(crate) path: HostPath,
     pub(crate) access: FolderAccess,
     #[serde(default)]
     pub(crate) keep: Keep,
@@ -177,7 +177,7 @@ pub(crate) struct Folders {
     /// The bindings file (owner-only), or none (in memory).
     file: Option<PathBuf>,
     /// The server's own files and folders: never bound, nor anything holding them.
-    forbidden: Vec<PathBuf>,
+    forbidden: Vec<HostPath>,
     bound: RwLock<Bound>,
     /// The texts of the files runs read, kept for their logs (blobs.rs).
     pub(crate) blobs: blobs::Blobs,
@@ -216,8 +216,8 @@ pub(crate) fn is_folder_name(name: &str) -> bool {
 }
 
 /// A path made whole and, where it exists, with its links resolved (paths.rs).
-fn real(path: &Path) -> PathBuf {
-    canonical(path).unwrap_or_else(|_| crate::paths::normalize(path))
+fn real(path: &Path) -> HostPath {
+    HostPath::canonical(path).unwrap_or_else(|_| HostPath::new(path))
 }
 
 impl Folders {
@@ -247,7 +247,7 @@ impl Folders {
     /// The folders bound in `file` (none yet if it doesn't exist), refusing ever to bind one of
     /// `forbidden` or anything holding it.
     pub(crate) fn open(file: &str, forbidden: &[PathBuf]) -> Result<Folders, String> {
-        let forbidden: Vec<PathBuf> = forbidden.iter().map(|p| real(p)).collect();
+        let forbidden: Vec<HostPath> = forbidden.iter().map(|p| real(p)).collect();
         if file == ":memory:" {
             return Ok(Folders { forbidden, ..Folders::memory() });
         }
@@ -303,7 +303,7 @@ impl Folders {
         if let Some(slug) = for_deployment.filter(|s| !is_folder_name(s)) {
             return Err(format!("{slug:?} isn't a deployment's name"));
         }
-        let Some(given) = crate::paths::whole(path) else {
+        let Some(given) = HostPath::whole(path) else {
             return Err(format!("{path:?} isn't a whole path: give it as this server's machine sees it ({})", crate::paths::EXAMPLE));
         };
         if !given.is_dir() {
@@ -780,7 +780,7 @@ impl Scoped {
                     address: format!("run:folder:{}", folder.path.display()),
                     label: format!("the folder {name:?}"),
                     mode,
-                    file: folder.shared.then(|| folder.path.join(locks::RUN_LOCK_FILE)),
+                    file: folder.shared.then(|| folder.path.join(locks::RUN_LOCK_FILE).into()),
                 })
             })
             .collect()
@@ -794,7 +794,7 @@ impl Scoped {
             address: format!("folder:{}", folder.path.display()),
             label: format!("the folder {name:?}"),
             mode,
-            file: folder.shared.then(|| folder.path.join(locks::LOCK_FILE)),
+            file: folder.shared.then(|| folder.path.join(locks::LOCK_FILE).into()),
         })
     }
 
@@ -2112,7 +2112,7 @@ mod tests {
     fn temp(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("holon-folders-{tag}-{}-{}", std::process::id(), rand::random::<u32>()));
         std::fs::create_dir_all(&dir).unwrap();
-        real(&dir)
+        real(&dir).into()
     }
 
     #[test]
@@ -2197,8 +2197,8 @@ mod tests {
         all.bind("inbox", own.to_str().unwrap(), FolderAccess::ReadWrite, Keep::Hash, None, Some("billing")).unwrap();
         assert!(all.bind("inbox", own.to_str().unwrap(), FolderAccess::Read, Keep::Bytes, None, Some("../x")).is_err(), "a slug is a name");
         let (billing, other) = (Scoped::new(Arc::clone(&all), "billing"), Scoped::new(Arc::clone(&all), "other"));
-        assert_eq!(billing.get("inbox").unwrap().path, own);
-        assert_eq!(other.get("inbox").unwrap().path, shared, "the server's, for everyone else");
+        assert_eq!(billing.get("inbox").unwrap().path, HostPath::new(&own));
+        assert_eq!(other.get("inbox").unwrap().path, HostPath::new(&shared), "the server's, for everyone else");
         billing.write("inbox", "a.txt", "mine").unwrap();
         assert!(other.write("inbox", "a.txt", "no").unwrap_err().contains("read-only"));
         assert_eq!(other.read("inbox", "a.txt", MAX_FILE_BYTES).unwrap(), None, "nor does it see billing's files");
@@ -2211,7 +2211,7 @@ mod tests {
 
         assert!(all.unbind("inbox", Some("billing")).unwrap());
         assert!(!all.unbind("inbox", Some("billing")).unwrap());
-        assert_eq!(billing.get("inbox").unwrap().path, shared, "unbound: the server's again");
+        assert_eq!(billing.get("inbox").unwrap().path, HostPath::new(&shared), "unbound: the server's again");
         assert!(all.all().deployments.is_empty());
         let only_billing = Arc::new(Folders::memory());
         only_billing.bind("logs", own.to_str().unwrap(), FolderAccess::Read, Keep::Bytes, None, Some("billing")).unwrap();
