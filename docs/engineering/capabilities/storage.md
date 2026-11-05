@@ -59,8 +59,8 @@ s), so a changed setting applies within it. Each look:
    (`Watch::grew`, for the warning's "the flow that grew most").
 
 The store and the texts are counted only then, never on a view: a busy store holds millions of
-files. The logs, caches, memory (`/proc/self/status`) and disks (one `statvfs` a device) are read
-when asked.
+files. The logs, caches, memory (`/proc/self/status` on Linux, the working set on Windows) and
+disks (one `statvfs` a device; on Windows `GetDiskFreeSpaceExW` a volume) are read when asked.
 
 ### The sweeps
 

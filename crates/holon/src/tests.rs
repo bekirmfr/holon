@@ -1072,7 +1072,7 @@ fn the_host_says_what_it_holds_in_memory_and_on_its_disks() {
     let before = host();
     assert_eq!(before["kept"]["store"], serde_json::Value::Null, "not counted before the first look: {before}");
     assert_eq!(before["memory"]["flow_cache"]["budget"], units::FLOW_CACHE_BYTES, "{before}");
-    if cfg!(target_os = "linux") {
+    if cfg!(any(target_os = "linux", windows)) {
         assert!(before["memory"]["resident"].as_u64().unwrap() > 1 << 20, "{before}");
         assert!(before["memory"]["peak"].as_u64() >= before["memory"]["resident"].as_u64(), "{before}");
     }

@@ -746,6 +746,7 @@ impl Sweeps {
 }
 
 /// The process's memory, from `/proc/self/status` (Linux): resident and its peak, in bytes.
+#[cfg(not(windows))]
 fn memory() -> (Option<u64>, Option<u64>) {
     let Ok(status) = std::fs::read_to_string("/proc/self/status") else { return (None, None) };
     let field = |name: &str| {
@@ -754,42 +755,100 @@ fn memory() -> (Option<u64>, Option<u64>) {
     (field("VmRSS:"), field("VmHWM:"))
 }
 
+/// The process's memory, its working set (Windows): resident and its peak, in bytes.
+#[cfg(windows)]
+fn memory() -> (Option<u64>, Option<u64>) {
+    use windows_sys::Win32::System::ProcessStatus::{GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS};
+    use windows_sys::Win32::System::Threading::GetCurrentProcess;
+    let mut counters = PROCESS_MEMORY_COUNTERS::default();
+    // SAFETY: the current process's handle is a pseudo-handle, never closed; `counters` is the
+    // struct of the size given, which the call fills.
+    if unsafe { GetProcessMemoryInfo(GetCurrentProcess(), &mut counters, std::mem::size_of::<PROCESS_MEMORY_COUNTERS>() as u32) } == 0 {
+        return (None, None);
+    }
+    // The peak is counted a moment behind the set as it grows: never below what is resident now.
+    (Some(counters.WorkingSetSize as u64), Some(counters.PeakWorkingSetSize.max(counters.WorkingSetSize) as u64))
+}
+
 /// Each disk the server keeps things on, once, with what it keeps there: its size, what is free
 /// to the server (what a quota or the space kept for root leaves it: what it can still write),
 /// and what is in use. How full it is for the server is what isn't free to it.
-#[cfg(unix)]
 fn disks(state: &AppState) -> Vec<serde_json::Value> {
-    use std::os::unix::fs::MetadataExt;
-    let mut seen: Vec<(u64, PathBuf, Vec<&'static str>)> = Vec::new();
+    let mut seen: Vec<(Disk, PathBuf, Vec<&'static str>)> = Vec::new();
     for (what, dir) in places(state) {
         // A folder not made yet is on its parent's disk.
         let Some(at) = dir.ancestors().find(|p| p.exists()).map(Path::to_path_buf) else { continue };
-        let Ok(meta) = std::fs::metadata(&at) else { continue };
-        match seen.iter_mut().find(|(dev, _, _)| *dev == meta.dev()) {
+        let Some(disk) = disk_of(&at) else { continue };
+        match seen.iter_mut().find(|(d, _, _)| *d == disk) {
             Some((_, _, holds)) => holds.push(what),
-            None => seen.push((meta.dev(), at, vec![what])),
+            None => seen.push((disk, at, vec![what])),
         }
     }
     seen.into_iter()
-        .filter_map(|(_, at, holds)| {
-            let path = std::ffi::CString::new(at.as_os_str().as_encoded_bytes()).ok()?;
-            let mut vfs: libc::statvfs = unsafe { std::mem::zeroed() };
-            // SAFETY: `path` is a NUL-terminated string and `vfs` is a statvfs the call fills.
-            if unsafe { libc::statvfs(path.as_ptr(), &mut vfs) } != 0 {
-                return None;
-            }
-            let unit = vfs.f_frsize as u64;
-            let size = vfs.f_blocks as u64 * unit;
-            let free = vfs.f_bavail as u64 * unit;
-            let used = size.saturating_sub(vfs.f_bfree as u64 * unit);
+        .filter_map(|(disk, at, holds)| {
+            let (size, free, used) = space_of(&disk, &at)?;
             Some(serde_json::json!({ "path": at.display().to_string(), "holds": holds, "size": size, "free": free, "used": used }))
         })
         .collect()
 }
 
-#[cfg(not(unix))]
-fn disks(_state: &AppState) -> Vec<serde_json::Value> {
-    Vec::new()
+/// The disk a folder is on: its device.
+#[cfg(unix)]
+type Disk = u64;
+
+#[cfg(unix)]
+fn disk_of(at: &Path) -> Option<Disk> {
+    use std::os::unix::fs::MetadataExt;
+    std::fs::metadata(at).ok().map(|m| m.dev())
+}
+
+/// A disk's size, what is free to the server and what is in use, read at a folder on it.
+#[cfg(unix)]
+fn space_of(_: &Disk, at: &Path) -> Option<(u64, u64, u64)> {
+    let path = std::ffi::CString::new(at.as_os_str().as_encoded_bytes()).ok()?;
+    let mut vfs: libc::statvfs = unsafe { std::mem::zeroed() };
+    // SAFETY: `path` is a NUL-terminated string and `vfs` is a statvfs the call fills.
+    if unsafe { libc::statvfs(path.as_ptr(), &mut vfs) } != 0 {
+        return None;
+    }
+    let unit = vfs.f_frsize as u64;
+    let size = vfs.f_blocks as u64 * unit;
+    Some((size, vfs.f_bavail as u64 * unit, size.saturating_sub(vfs.f_bfree as u64 * unit)))
+}
+
+/// The disk a folder is on: its volume's root (`C:\`, a share's `\\nas\runs\`, or the folder a
+/// volume is mounted at), in capitals, as Windows reads a name the same in either case.
+#[cfg(windows)]
+type Disk = std::ffi::OsString;
+
+#[cfg(windows)]
+fn disk_of(at: &Path) -> Option<Disk> {
+    use std::os::windows::ffi::{OsStrExt, OsStringExt};
+    use windows_sys::Win32::Storage::FileSystem::GetVolumePathNameW;
+    let wide: Vec<u16> = at.as_os_str().encode_wide().chain(Some(0)).collect();
+    // As long as a path may be.
+    let mut root = vec![0u16; 32_768];
+    // SAFETY: `wide` is NUL-terminated, and `root` holds as many as the length given.
+    if unsafe { GetVolumePathNameW(wide.as_ptr(), root.as_mut_ptr(), root.len() as u32) } == 0 {
+        return None;
+    }
+    let len = root.iter().position(|c| *c == 0)?;
+    Some(std::ffi::OsString::from_wide(&root[..len]).to_ascii_uppercase())
+}
+
+/// A disk's size, what is free to the server (what a quota leaves it) and what is in use, read at
+/// its root.
+#[cfg(windows)]
+fn space_of(disk: &Disk, _: &Path) -> Option<(u64, u64, u64)> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
+    let root: Vec<u16> = disk.encode_wide().chain(Some(0)).collect();
+    let (mut free, mut size, mut unused) = (0u64, 0u64, 0u64);
+    // SAFETY: `root` is NUL-terminated, and each pointer is to a u64 the call fills.
+    if unsafe { GetDiskFreeSpaceExW(root.as_ptr(), &mut free, &mut size, &mut unused) } == 0 {
+        return None;
+    }
+    Some((size, free, size.saturating_sub(unused)))
 }
 
 /// `GET /admin/host`: memory, disks, what the server keeps on them, and its sweeps.
