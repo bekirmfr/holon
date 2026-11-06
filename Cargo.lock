@@ -1573,6 +1573,7 @@ name = "holon-author"
 version = "0.1.0"
 dependencies = [
  "holon-core",
+ "holon-host",
  "holon-module",
  "oxc_allocator",
  "oxc_ast",
