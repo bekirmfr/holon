@@ -147,6 +147,23 @@ commit), Holon strict reaches 77–96% of it; at one connection the two are alik
 - **Strict is the disk's pace.** About 60% of a strict request is the fsync; any service keeping
   such a record pays it (IP §5). An fsync of an appended file costs about 0.6 ms on ext4, against
   113 µs for a small new file: the size change goes through the journal.
+- **On a desktop drive, the drive's own flush is the cost.** Measured on a Windows desktop's SSD
+  (NTFS, rc.33, `holon load stress-test`, 8 connections, 10 s a route, 2026-11-05):
+
+  | | strict req/s | p50 | runs a sync | a sync |
+  |---|---|---|---|---|
+  | Windows | 1,649 | 4.64 ms | 16,491 ÷ 4,133 ≈ 4.0 | ≈ 2.4 ms |
+  | WSL2, same machine | 803 | 9.66 ms | 8,025 ÷ 1,992 ≈ 4.0 | ≈ 5.0 ms |
+
+  Lazy (22,388 and 26,774) and unrecorded (65,467 and 60,673) don't wait for the disk and are
+  about even. A probe timing 3,000 syncs each way on that drive found the durable ones at about
+  2.0 ms and a flush without the drive's cache flush at 32 µs: the drive emptying its own cache
+  is about 98% of a strict sync, and no way of syncing removes it without breaking strict's
+  promise. Strict's throughput is about the syncs a second times the runs each covers; more
+  connections share each sync, and p50 stays near two syncs (the one under way, then its own).
+  WSL2's sync passes through Hyper-V to a `.vhdx` on NTFS and, on ext4, likely commits the new
+  size through the journal as well: about twice Windows'. A drive with power-loss protection
+  (most server SSDs) answers a flush in microseconds, on any system.
 - **Writes sync three times** (value, snapshot, head) under the cell's lock. A group commit across
   writes (C4, Q4) is not done; the store's global lock is still taken on a miss and every put.
 - **Compute-heavy flows** are 3–14 times slower than C#. What is left is allocating and freeing
@@ -172,7 +189,19 @@ commit), Holon strict reaches 77–96% of it; at one connection the two are alik
 - **Writing the log in the background** (RP C2): little gain for CPU-bound work, and it would lose
   "answered means recorded", read-your-writes and the packs' timing.
 - **Retention per handler** (RP C5): would cut lines from the middle of the chain.
-- **Syncing through a handle kept open** (`8e5eb6f`): no change measured.
+- **Syncing through a handle kept open** (`8e5eb6f`): no change measured. Tried again on Windows
+  (2026-11-05), where opening a file passes the file-system filters (Defender's among them):
+  the open and close cost about 87 µs of a 2 ms sync, and two runs of 3,000 syncs each put the
+  kept handle 1–5% ahead, within their rounds' noise (one run's better p99 didn't repeat). Not
+  built: a kept handle not renewed when the log's file is replaced (a cut, a seal) would sync
+  the old file, and a strict run would answer without its record on disk, saying nothing.
+- **Flushing less metadata** (Windows, 2026-11-05): `NtFlushBuffersFileEx` with
+  `FLUSH_FLAGS_FILE_DATA_SYNC_ONLY`, and a log written over zeros so a sync never records a new
+  size, each saved nothing measurable on Windows: every durable way's rounds fell within
+  1.98–2.06 ms, the kept handle's among them. On Linux
+  (ext4, virtio) the zeroed file synced about 30% faster, but that would need reading and
+  recovery to stop where the written lines end, for syncs already about 0.3 ms there.
+  `FLUSH_FLAGS_FILE_DATA_ONLY` (32 µs) leaves out the drive's cache flush: not durable.
 - **Shared values in `Value`** (IP step 4): deferred, as above.
 - **Composites evaluated by reference** (JOURNAL, 2026-06-30): every primitive about 24 ns slower
   for a 5–10% gain; reverted. Inputs by reference for primitives was kept (`native_sum` −91%).

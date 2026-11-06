@@ -9,7 +9,8 @@ ways below ([Standards](../README.md#standards-these-docs-record)).
 The numbers in these docs come from one machine unless they say otherwise: a 4-vCPU Linux container
 (kernel 6.18), ext4 on a virtio disk, the load generator (`wrk`) on the same machine over loopback.
 A number from another machine is not comparable with them; a ratio measured in the same rounds
-(Holon against C#, a build against the one before) mostly is.
+(Holon against C#, a build against the one before) mostly is. For strict, record the drive as
+well as the machine: its flush decides the number ([Performance](performance.md#limits)).
 
 ## 2. Instructions
 
@@ -116,6 +117,17 @@ Each of these gave a wrong number once:
 - **An fsync's cost depends on what changed**: about 0.6 ms for a file appended to (its size goes
   through ext4's journal), 113 µs for a small new file. A guess of 150 µs for strict's cost was
   four times low (Q6).
+- **A virtual disk's sync isn't the drive's**: this machine's virtio disk syncs an appended file
+  in 0.3–0.8 ms, a Windows desktop's SSD in about 2 ms. A cloud VM's fsync is answered by the
+  hypervisor's storage, so a strict number from one says little of bare metal.
+- **WSL2 isn't Linux on the drive**: on the same Windows machine, strict ran at half the native
+  rate (803 against 1,649 requests a second), each sync passing through Hyper-V to a `.vhdx` on
+  NTFS. Its syncs did reach the drive (slower, not faster), so it is durable, but its numbers
+  are WSL's, not Linux's.
+- **A stall that isn't the code**: maxima of 60–150 ms showed in every durable way of syncing on
+  the Windows machine and never in the one without the drive's flush: the drive or the system
+  holding up a flush now and then. Report the p99 and the rounds' p50s, and treat one max as
+  one sample.
 - **The baseline moves**: plain .NET itself varied from 96,980 to 133,151 requests a second on
   this machine. Compare within rounds.
 - **A test fixture that isn't the real thing**: the throughput check's deployments file (above).
