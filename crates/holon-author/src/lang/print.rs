@@ -50,6 +50,7 @@ const JS_RESERVED: &[&str] = &[
 /// it reads as leaves (`Math.round`, `parseInt`): never a name here.
 const GLOBALS: &[&str] = &[
     "fetch", "Date", "Math", "setTimeout", "setInterval", "process", "globalThis", "window", "console", "Promise", "require", "Number", "parseInt", "parseFloat", "isNaN", "isFinite",
+    "String", "encodeURIComponent", "encodeURI", "decodeURIComponent", "decodeURI", "btoa", "atob",
 ];
 
 /// `"holon"`'s own words: the top level's, the answers', and the waits'.
@@ -72,6 +73,17 @@ const POW: u8 = 13;
 const UNARY: u8 = 14;
 const MEMBER: u8 = 15;
 const ATOM: u8 = 16;
+
+/// The frozen param that picks a text leaf's JavaScript method, where one does.
+fn family_param(leaf: &str) -> &'static str {
+    match leaf {
+        "code_at" => "mode",
+        "text_contains" => "at",
+        "trim" | "pad" => "side",
+        "replace" => "count",
+        _ => "",
+    }
+}
 
 /// `text` in parentheses when it binds less tightly than `min`.
 fn wrap((text, power): (String, u8), min: u8) -> String {
@@ -2666,21 +2678,34 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
                 member(format!("{s}.{}()", if d.name == "uppercase" { "toUpperCase" } else { "toLowerCase" }))
             }
             "split" | "join" | "index_of" if self.p.changed_params(node).is_empty() => {
-                let (subject, arg, method) = match d.name.as_str() {
-                    "split" => ("text", "sep", "split"),
-                    "join" => ("list", "sep", "join"),
-                    _ => ("haystack", "needle", "indexOf"),
+                let (subject, arg, method, then) = match d.name.as_str() {
+                    "split" => ("text", "sep", "split", Some("limit")),
+                    "join" => ("list", "sep", "join", None),
+                    _ => ("haystack", "needle", "indexOf", Some("from")),
                 };
                 if self.arg_wired(node, subject) && self.arg_wired(node, arg) {
-                    let s = self.required(node, subject, MEMBER)?;
+                    let s = self.receiver(node, subject)?;
                     let a = self.required(node, arg, COND)?;
-                    return member(format!("{s}.{method}({a})"));
+                    let more = match then.filter(|t| self.arg_wired(node, t)) {
+                        Some(t) => format!(", {}", self.required(node, t, COND)?),
+                        None => String::new(),
+                    };
+                    return member(format!("{s}.{method}({a}{more})"));
                 }
                 self.generic(node)
             }
+            // `.length`, where what it is read on is known to be a text or a list, as the lowering
+            // picks the leaf by it.
+            "text_length" if self.known(node, "s", WType::Text) => member(format!("{}.length", self.required(node, "s", MEMBER)?)),
+            "length" if self.known_by(node, "list", |t| matches!(t, WType::List(_))) => member(format!("{}.length", self.required(node, "list", MEMBER)?)),
+            "text_at" | "code_at" | "from_codes" | "text_contains" | "trim" | "pad" | "repeat" | "replace" | "normalize" | "uri_encode" | "uri_decode" | "is_well_formed" => self.text_form(node),
+            "base64" if node.param("bytes") == "latin1" && node.param("alphabet") == "standard" && self.arg_wired(node, "text") => {
+                let f = if node.param("mode") == "decode" { "atob" } else { "btoa" };
+                member(format!("{f}({})", self.required(node, "text", COND)?))
+            }
             "map" | "fold" | "any" | "all" | "filter" | "find" | "find_index" | "find_last" | "find_last_index" | "sort_by" => self.map(node, None),
             "at" | "indices" | "entries" | "includes" | "last_index_of" | "reverse" | "sort" | "to_spliced" | "with_item" | "fill" | "copy_within" | "flat" | "is_list" | "unique" => self.list_form(node),
-            "slice" if node.param("mode") == "end" => self.list_form(node),
+            "slice" if matches!(node.param("mode"), "end" | "substring") => self.list_form(node),
             "math" | "max" | "min" | "aggregate" | "atan2" | "power" | "remainder" | "bitwise" | "number_test" | "to_number" | "number_format" => self.number_form(node),
             "concat" => self.concat(node),
             "as_text" => atom(format!("`${{{}}}`", self.required(node, "value", 0)?)),
@@ -2755,13 +2780,8 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
                     let v = self.arg(node, &p.name)?.ok_or_else(|| format!("{}: its {} isn't wired", d.name, p.name))?;
                     let min = if i == 0 && !same { prec } else { prec + 1 };
                     let mut text = wrap(v, min);
-                    // ts.rs refuses a text after `+` and a literal after `||` or `&&`: in parentheses,
-                    // they are read the same.
-                    let refused = match d.name.as_str() {
-                        "add" => text.starts_with(['"', '`']),
-                        "and" | "or" => i > 0 && (text.starts_with(['"', '`', '{', '[']) || text.starts_with(|c: char| c.is_ascii_digit())),
-                        _ => false,
-                    };
+                    // ts.rs refuses a literal after `||` or `&&`: in parentheses, it is read the same.
+                    let refused = matches!(d.name.as_str(), "and" | "or") && i > 0 && (text.starts_with(['"', '`', '{', '[']) || text.starts_with(|c: char| c.is_ascii_digit()));
                     if refused {
                         text = format!("({text})");
                     }
@@ -2987,13 +3007,19 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
     /// Whether what feeds `node`'s `input` is a node's output of type `ty`, by its name or
     /// written in place.
     fn known(&self, node: &Node, input: &str, ty: WType) -> bool {
+        self.known_by(node, input, |t| *t == ty)
+    }
+
+    /// Whether what feeds `node`'s `input` is a node's output whose type `is` takes, by its name
+    /// or written in place.
+    fn known_by(&self, node: &Node, input: &str, is: impl Fn(&WType) -> bool) -> bool {
         let Some(Src::Node { id, output }) = self.g.incoming.get(&(node.id.clone(), input.to_string())) else { return false };
         if self.captured.contains_key(&(id.clone(), output.clone())) || self.request.as_ref().is_some_and(|(r, _)| r == id) || self.is_tick(id) {
             return false;
         }
         let src = self.g.node(id);
         let port = src.data.outputs.iter().find(|p| p.name == *output).or_else(|| if src.data.outputs.len() == 1 { src.data.outputs.first() } else { None });
-        self.pass_through(src).is_none() && port.is_some_and(|p| p.ty == ty)
+        self.pass_through(src).is_none() && port.is_some_and(|p| is(&p.ty))
     }
 
     /// A number method's receiver: a number literal in parentheses, as `5.toFixed()` doesn't
@@ -3114,6 +3140,56 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
             }
             _ => self.generic(node),
         }
+    }
+
+    /// A text leaf in its JavaScript form (ts.rs reads each back to its leaf): `s.charAt(i)`,
+    /// `s.startsWith(t, p)`, `s.trim()`, `s.padStart(n, f)`, `s.replaceAll(a, b)`,
+    /// `s.normalize("NFD")`, `encodeURIComponent(s)`, `String.fromCharCode(a, b)`, …; by name
+    /// where its inputs aren't wired as JavaScript passes them, in order with none left out
+    /// before one given.
+    fn text_form(&mut self, node: &Node) -> Result<(String, u8), String> {
+        let d = &node.data;
+        let wired: Vec<bool> = d.inputs.iter().map(|p| self.arg_wired(node, &p.name)).collect();
+        let given = wired.iter().take_while(|w| **w).count();
+        let complete = d.inputs.iter().skip(given).all(|p| is_optional(&d.name, &p.name)) && !wired[given..].iter().any(|w| *w);
+        if given == 0 || !complete {
+            return self.generic(node);
+        }
+        let ports: Vec<String> = d.inputs.iter().take(given).map(|p| p.name.clone()).collect();
+        let call = |f: &str, args: Vec<String>| Ok((format!("{f}({})", args.join(", ")), MEMBER));
+        match (d.name.as_str(), node.param("mode"), node.param("set")) {
+            ("from_codes", "unit", _) => return call("String.fromCharCode", self.texts(node, &ports)?),
+            ("from_codes", "point", _) => return call("String.fromCodePoint", self.texts(node, &ports)?),
+            ("uri_encode", _, "component") => return call("encodeURIComponent", self.texts(node, &ports)?),
+            ("uri_encode", _, "uri") => return call("encodeURI", self.texts(node, &ports)?),
+            ("uri_decode", _, "component") => return call("decodeURIComponent", self.texts(node, &ports)?),
+            ("uri_decode", _, "uri") => return call("decodeURI", self.texts(node, &ports)?),
+            _ => {}
+        }
+        let method = match (d.name.as_str(), node.param(family_param(&d.name))) {
+            ("text_at", _) => "charAt",
+            ("code_at", "unit") => "charCodeAt",
+            ("code_at", "point") => "codePointAt",
+            ("text_contains", "start") => "startsWith",
+            ("text_contains", "end") => "endsWith",
+            ("trim", "both") => "trim",
+            ("trim", "start") => "trimStart",
+            ("trim", "end") => "trimEnd",
+            ("pad", "start") => "padStart",
+            ("pad", "end") => "padEnd",
+            ("repeat", _) => "repeat",
+            ("replace", "first") => "replace",
+            ("replace", "all") => "replaceAll",
+            ("normalize", _) => "normalize",
+            ("is_well_formed", _) => "isWellFormed",
+            _ => return self.generic(node),
+        };
+        let s = self.receiver(node, &ports[0])?;
+        let mut args = self.texts(node, &ports[1..])?;
+        if d.name == "normalize" && node.param("form") != "NFC" {
+            args.push(quote(node.param("form")));
+        }
+        Ok((format!("{s}.{method}({})", args.join(", ")), MEMBER))
     }
 
     /// The collection, folder or database a store's leaf names.
@@ -3274,6 +3350,7 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
                     "reverse" => "toReversed",
                     "sort" => "toSorted",
                     "with_item" => "with",
+                    _ if node.param("mode") == "substring" => "substring",
                     _ => "slice",
                 };
                 let xs = self.required(node, &ports[0], MEMBER)?;
@@ -3281,6 +3358,13 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
                 member(format!("{xs}.{method}({})", args.join(", ")))
             }
         }
+    }
+
+    /// Whether what feeds `node`'s `input` is written as a text in quotes or a template, as a
+    /// literal, a `concat` or an `as_text` in place can be: a text's `concat` reads such an
+    /// argument as itself, where it reads anything else as `String(x)` writes it.
+    fn text_written(&self, node: &Node, input: &str) -> bool {
+        self.inline_source(node, input, "const").is_some_and(|c| c.param("type") == "Text") || self.inline_source(node, input, "concat").is_some() || self.inline_source(node, input, "as_text").is_some()
     }
 
     /// What feeds each of `node`'s `inputs`, as arguments.
@@ -3292,6 +3376,34 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
     /// One of values only, or with two texts side by side, is a call, as a template would read
     /// otherwise.
     fn concat(&mut self, node: &Node) -> Result<(String, u8), String> {
+        let ins: Vec<String> = node.data.inputs.iter().map(|p| p.name.clone()).collect();
+        // `s.toWellFormed()`: the text and "", which is the text for a text and nothing else.
+        if let [s, e] = ins.as_slice()
+            && self.arg_wired(node, s)
+            && let Some(c) = self.inline_source(node, e, "const").filter(|c| c.param("type") == "Text" && c.param("value").is_empty())
+        {
+            self.touch(c);
+            return Ok((format!("{}.toWellFormed()", self.receiver(node, s)?), MEMBER));
+        }
+        // `s.concat(a, …)` on a text known to be one, each argument as `String(x)` writes it or a
+        // text in quotes: what the lowering reads back as these nodes.
+        if ins.len() >= 2
+            && self.known(node, &ins[0], WType::Text)
+            && !self.text_written(node, &ins[0])
+            && ins[1..].iter().all(|i| self.inline_source(node, i, "const").is_some_and(|c| c.param("type") == "Text") || self.inline_source(node, i, "as_text").is_some_and(|a| !self.text_written(a, "value")))
+        {
+            let s = self.required(node, &ins[0], MEMBER)?;
+            let mut args = Vec::new();
+            for i in &ins[1..] {
+                if let Some(a) = self.inline_source(node, i, "as_text") {
+                    self.touch(a);
+                    args.push(self.required(a, "value", COND)?);
+                } else {
+                    args.push(self.required(node, i, COND)?);
+                }
+            }
+            return Ok((format!("{s}.concat({})", args.join(", ")), MEMBER));
+        }
         let mut pieces = Vec::new();
         let mut touched = Vec::new();
         let mut values = 0;
@@ -3839,6 +3951,70 @@ mod tests {
         prints_back(src);
     }
 
+    /// Each text leaf in its JavaScript form prints back as written: `fmt` keeps the forms,
+    /// `.length` where the value is known to be a text or a list, and `+` beside a text.
+    #[test]
+    fn the_text_leaves_print_as_javascript_writes_them() {
+        let src = r#"import { action, flow } from "holon"
+
+flow("f")
+
+export const t = action((input) => {
+  const s = input.s.trim()
+  const n = parseFloat(input.n)
+  return {
+    len: s.length,
+    pieces: s.split(",", 2).length,
+    c: s.charAt(1),
+    code: s.charCodeAt(0),
+    point: s.codePointAt(2),
+    made: String.fromCharCode(97, n),
+    emoji: String.fromCodePoint(128512),
+    starts: s.startsWith("a"),
+    ends: s.endsWith("z", 3),
+    has: s.includes("b", 1),
+    at: s.indexOf("b", 2),
+    last: s.lastIndexOf("b", 4),
+    mid: s.slice(1, -1),
+    sub: s.substring(1, 3),
+    left: s.trimStart(),
+    right: s.trimEnd(),
+    padded: s.padStart(5, "0"),
+    wide: s.padEnd(8),
+    again: s.repeat(3),
+    once: s.replace("a", "b"),
+    all: s.replaceAll("a", "$&$&"),
+    nfc: s.normalize(),
+    nfd: s.normalize("NFD"),
+    ok: s.isWellFormed(),
+    whole: s.toWellFormed(),
+    joined: s.concat("-", n),
+    enc: encodeURIComponent(s),
+    uri: encodeURI(s),
+    dec: decodeURIComponent(s),
+    full: decodeURI(s),
+    b64: btoa(s),
+    text: atob(s),
+    label: "n=" + n + s,
+    first: s < input.t,
+  }
+})
+"#;
+        prints_back(src);
+    }
+
+    /// The text leaves called by name print in their JavaScript forms where they have one, and
+    /// by name where the form would read back otherwise: `text_length` of a value not known to be
+    /// a text, `slice`'s `length` mode.
+    #[test]
+    fn the_text_leaves_called_by_name_round_trip() {
+        let src = "import { action, code_at, flow, pad, replace, slice, text_contains, text_length, trim, uri_encode } from \"holon\"\n\nflow(\"f\")\n\nexport const t = action((input) => {\n  return { a: trim(input.s, { side: \"start\" }), b: pad(input.s, 4), c: text_contains(input.s, \"x\", { at: \"end\" }), d: replace(input.s, \"a\", \"b\", { count: \"all\" }), e: text_length(input.s), f: slice(input.s, 1, 2, { mode: \"length\" }), g: uri_encode(input.s, { set: \"uri\" }), h: code_at(input.s, 1, { mode: \"point\" }) }\n})\n";
+        let text = reprinted(src);
+        for form in ["a: input.s.trimStart()", "b: input.s.padStart(4)", "c: input.s.endsWith(\"x\")", "d: input.s.replaceAll(\"a\", \"b\")", "e: text_length(input.s)", "f: slice(input.s, 1, 2)", "g: encodeURI(input.s)", "h: input.s.codePointAt(1)"] {
+            assert!(text.contains(form), "{form}: {text}");
+        }
+    }
+
     /// Each list leaf in its JavaScript form prints back as written: the methods that take a
     /// function, written in place with the values they use from around it, the value forms of
     /// the methods that change a list in place, and a parameter a function doesn't use.
@@ -4165,7 +4341,7 @@ export const t = action((input) => {
         b.wire(&look, "out", &respond, "body").unwrap();
         let doc = b.finish(crate::builder::Settings { port: "8080".into(), ..Default::default() });
         let text = round_trips("canvas", &doc, &BTreeMap::new());
-        assert!(text.contains("function shout(s) {\n  return concat(s.toUpperCase(), \"!\")\n}"), "its input as core proposed it: {text}");
+        assert!(text.contains("function shout(s) {\n  return s.toUpperCase().concat(\"!\")\n}"), "its input as core proposed it: {text}");
         assert!(text.contains("concat(shout(req.body), shout(req.body), req.body)"), "{text}");
         assert!(text.contains("req.json[concat("), "{text}");
     }

@@ -92,7 +92,7 @@ counts code units ([Units](#units)).
 
 | JavaScript | Verdict | How (leaf, or composite name) | Measured (ratio composite / candidate, by size) | Why |
 |---|---|---|---|---|
-| `s.length` | reader | `text_length` (code units) | | rule 1: the leaf exists; the reader refuses `.length` today |
+| `s.length` | reader | `text_length` (code units) | | rule 1: the leaf exists; read where the value is known to be a text |
 | `s.at(i)` | leaf | `at`, the leaf lists and texts share | `js_at`: 25.8 / 23.0 / 2.2 (8/64/4096); mapped 11.0 / 10.9 / 13.9 | rule 3: same class, 23 at 64 (mapped 11) is above 3 |
 | `s.charAt(i)` | leaf | `text_at` | `js_char_at`: 20.2 / 18.3 / 1.7; mapped 7.1 / 7.5 / 7.2 | rule 3: same class, 18 at 64 (mapped 7.5) is above 3 |
 | `s.charCodeAt(i)` | leaf | `code_at {mode: "unit"}` | | rule 2: no leaf turns a character into a number (`hex` gives UTF-8 bytes as text) |
@@ -577,23 +577,31 @@ texts through each leaf and through `js()`'s Boa, compared value for value.
 
 ## Reader changes
 
+Built on 2026-11-07, as this section says, but where it says otherwise below.
+
 - **Methods to leaves.** Each row above maps a JavaScript form to its leaf, with the param
   (`mode`, `at`, `side`, `count`, `set`, `bytes`, `form`, `shape`) fixed by the method's name. An
-  optional argument left out is an input left unwired, except `charAt()` and `charCodeAt()`,
-  which read 0.
-- **`.length`** on a text lowers to `text_length`. The reader refuses `.length` today ("comes in
-  a later slice"); a list's `.length` is lists.md's, so the form needs the value's type, from an
-  annotation or from the leaf that made it.
-- **`+` with a text literal** lowers to `add` once `add` concatenates. Today the reader refuses
-  it and points to a template literal.
+  optional argument left out is an input left unwired, except `charAt()`, `charCodeAt()` and
+  `codePointAt()`, which read 0 as JavaScript does (the last was left out here, and is read so
+  too).
+- **`.length`** on a text lowers to `text_length`. A list's `.length` is lists.md's, so the form
+  needs the value's type: the lowering takes it from the leaf that made the value, `text_length`
+  for a node whose output is a `Text`, `length` for a `List`, and refuses `.length` on anything
+  else (a request's field, a function's parameter), naming both. `fmt` writes `.length` back
+  where it would read back so.
+- **`+` with a text** lowers to `add`, which concatenates. The reader's refusal is gone, and so
+  is the printer's parenthesizing of a text after `+`.
 - **`<` and the other comparisons** on texts need no type: `compare` takes either two numbers or
   two texts.
-- **`String(x)`, `x.toString()`** lower to `as_text`; **`x.valueOf()`** to the value itself;
-  **`s.toWellFormed()`** to `concat(s, "")`; **`s.concat(a, …)`** to `concat` of `as_text` of
-  each; **`` String.raw`…` ``** to `concat` of the raw quasis (`raw`, not `cooked`) and `as_text`
-  of each expression.
-- **Regular expression literals** are parsed and compiled at read time (`regress`), and their
-  flags checked as [Regular expressions](#regular-expressions) says.
+- **`String(x)`, `x.toString()`** lower to `as_text` (`toString()` on a value known to be a
+  number stays `number_format`, as the number step read it); **`x.valueOf()`** to the value
+  itself; **`s.toWellFormed()`** to `concat(s, "")`; **`s.concat(a, …)`** to `concat` of `s` and
+  `as_text` of each argument (a text as itself) where `s` is a text written in place or known to
+  be one, and to a list's `concat` otherwise; **`` String.raw`…` ``** to `concat` of the raw
+  quasis (`raw`, not `cooked`) and `as_text` of each expression.
+- **Regular expression literals** wait (the owner's decision): where a method takes one
+  (`match`, `matchAll`, `search`, a pattern in `replace` or `split`), it is refused, naming
+  `js()`.
 
 Four things the reader does today constrain what a composite can say. The first changes meaning;
 it should be fixed whatever the verdicts:

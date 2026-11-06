@@ -1406,9 +1406,6 @@ impl<'s, 't> Reader<'s, 't> {
             _ if number.is_some() => None,
             op => return fail(at, format!("{} isn't an operator Holon has", op.as_str())),
         };
-        if op == Some(BinOp::Add) && is_text(self.unwrap(&a.right)) {
-            return fail(at, "there is no + on texts: use a template literal, `${a}${b}`");
-        }
         let Some(target) = a.left.as_simple_assignment_target() else {
             return self.assign_pattern(&a.left, &a.right, stmts);
         };
@@ -2746,12 +2743,7 @@ impl<'s, 't> Reader<'s, 't> {
                     B::LessEqualThan => BinOp::Le,
                     B::GreaterThan => BinOp::Gt,
                     B::GreaterEqualThan => BinOp::Ge,
-                    B::Addition => {
-                        if is_text(self.unwrap(&b.left)) || is_text(self.unwrap(&b.right)) {
-                            return fail(span, "there is no + on texts: use a template literal, `${a}${b}`");
-                        }
-                        BinOp::Add
-                    }
+                    B::Addition => BinOp::Add,
                     B::Subtraction => BinOp::Sub,
                     B::Multiplication => BinOp::Mul,
                     B::Division => BinOp::Div,
@@ -2793,6 +2785,7 @@ impl<'s, 't> Reader<'s, 't> {
             }
             js::Expression::ArrowFunctionExpression(_) | js::Expression::FunctionExpression(_) => fail(span, "a function written in place goes to a list's method that takes one, xs.map((x) => …), xs.filter((x) => …); define the others at the top level"),
             js::Expression::NewExpression(n) => self.new_expr(n, span),
+            js::Expression::TaggedTemplateExpression(t) => self.tagged(t, span),
             js::Expression::AssignmentExpression(_) => fail(span, "a write is a statement of its own"),
             js::Expression::UpdateExpression(_) => fail(span, "++ and -- are a statement of their own: n++"),
             _ => fail(span, format!("{} isn't something Holon computes: do it in a js() function", expression_kind(e))),
@@ -2937,10 +2930,11 @@ impl<'s, 't> Reader<'s, 't> {
             let names = constants.iter().map(|(k, _)| format!("{ns}.{k}")).collect::<Vec<_>>().join(", ");
             return fail(span, format!("{ns}.{prop} isn't a value: {ns}'s constants are {names}, and its functions are called, {ns}.{prop}(…)"));
         }
-        if prop == "length" {
-            return fail(span, "a list's length is length(xs), a text's text_length(s), imported from \"holon\": .length comes in a later slice");
-        }
         let base = self.expr(&m.object)?;
+        if prop == "length" {
+            let method = self.name(prop, m.property.span);
+            return Ok(Expr { kind: ExprKind::TextOrList { subject: Box::new(base), method, args: vec![] }, span });
+        }
         Ok(Expr { kind: ExprKind::Field { base: Box::new(base), name: self.name(prop, m.property.span) }, span })
     }
 
@@ -2985,6 +2979,21 @@ impl<'s, 't> Reader<'s, 't> {
                     Some(_) => fail(callee.span, format!("\"{name}\" isn't something to call")),
                     None if self.consts.contains_key(name) => fail(callee.span, format!("\"{name}\" is a value, not something to call")),
                     None if NUMBER_GLOBALS.contains(&name) => self.number_global(c, name, span),
+                    // `String(x)` as a template writes `x`; `String()` the empty text.
+                    None if name == "String" => {
+                        let mut args = self.counted(c, (0, 1), "String takes one value: String(x)", span)?;
+                        Ok(match args.pop() {
+                            Some(x) => leaf("as_text", &[], vec![x], span),
+                            None => text_expr("", span),
+                        })
+                    }
+                    None if let Some((leaf_name, params)) = text_global(name) => {
+                        let args = self.counted(c, (1, 1), &format!("{name} takes one text: {name}(s)"), span)?;
+                        Ok(leaf(leaf_name, params, args, span))
+                    }
+                    None if name == "escape" || name == "unescape" => {
+                        fail(callee.span, format!("{name} is JavaScript's legacy form, which a flow doesn't read: {}(s)", if name == "escape" { "encodeURIComponent" } else { "decodeURIComponent" }))
+                    }
                     // A flow's values never change in place: a copy is the value.
                     None if name == "structuredClone" => Ok(self.counted(c, (1, 1), "structuredClone takes one value: structuredClone(x)", span)?.remove(0)),
                     None => fail(callee.span, format!("unknown function \"{name}\": define it at the top level, or import the leaf from \"holon\"")),
@@ -3120,6 +3129,7 @@ impl<'s, 't> Reader<'s, 't> {
                 (None, "Math") => return self.math_call(c, method, method_name.span, span),
                 (None, "Array") => return self.array_call(c, method, method_name.span, span),
                 (None, "Number") => return self.number_call(c, method, method_name.span, span),
+                (None, "String") => return self.string_call(c, method, method_name.span, span),
                 (None, g) if GLOBALS.contains(&g) => return fail(self.span(r.span), format!("{g} isn't there: a flow has no globals; import what it uses")),
                 _ => {}
             }
@@ -3263,22 +3273,28 @@ impl<'s, 't> Reader<'s, 't> {
                 let params: Vec<(&str, &str)> = depth.as_deref().map(|d| ("depth", d)).into_iter().collect();
                 return Ok(leaf("flat", &params, vec![subject], span));
             }
-            // A list is spread into the list, anything else added to it: which is written decides.
+            // A text's joins each argument as `String(x)` writes it; a list's spreads a list into
+            // it and adds anything else. On a text written in place, the text's; otherwise the
+            // lowering decides by the type of the node that made the subject.
             "concat" => {
-                let mut list = subject;
-                for a in &c.arguments {
-                    let at = self.span(a.span());
-                    let Some(e) = a.as_expression() else { return fail(at, "a spread argument isn't passed: name each") };
-                    let item = self.expr(e)?;
-                    list = match self.unwrap(e) {
-                        js::Expression::ArrayExpression(_) => call("extend", vec![first(list), first(item)])?,
-                        js::Expression::NumericLiteral(_) | js::Expression::StringLiteral(_) | js::Expression::BooleanLiteral(_) | js::Expression::TemplateLiteral(_) | js::Expression::ObjectExpression(_) => {
-                            call("append", vec![first(list), first(item)])?
-                        }
-                        _ => return fail(at, "concat spreads a list and adds anything else, and this could be either: write [...xs, ...ys] for a list, [...xs, y] for an item"),
-                    };
+                let args = self.positional(&c.arguments)?;
+                if args.is_empty() {
+                    return Ok(subject);
                 }
-                return Ok(list);
+                if matches!(subject.kind, ExprKind::Text(_) | ExprKind::Interpolated(_)) {
+                    let mut parts = vec![subject];
+                    parts.extend(args.into_iter().map(|a| joined(a.value)));
+                    return Ok(leaf("concat", &[], parts, span));
+                }
+                return Ok(Expr { kind: ExprKind::TextOrList { subject: Box::new(subject), method: Name { text: method.into(), span: at }, args }, span });
+            }
+            // Regular expressions wait (texts.md, "Regular expressions").
+            "match" | "matchAll" | "search" => return fail(at, format!("{method} takes a regular expression, which a flow has none of yet: do it in a js() function")),
+            "replace" | "replaceAll" | "split" if c.arguments.first().and_then(|a| a.as_expression()).is_some_and(|e| matches!(self.unwrap(e), js::Expression::RegExpLiteral(_))) => {
+                return fail(self.span(c.arguments[0].span()), format!("a regular expression, which a flow has none of yet: {method} takes a text, or do it in a js() function"));
+            }
+            "replace" | "replaceAll" if c.arguments.get(1).and_then(|a| a.as_expression()).is_some_and(|e| matches!(self.unwrap(e), js::Expression::ArrowFunctionExpression(_) | js::Expression::FunctionExpression(_))) => {
+                return fail(self.span(c.arguments[1].span()), format!("{method} takes the replacement as a text, where $& is the match: a function in its place is done in a js() function"));
             }
             _ => {}
         }
@@ -3297,20 +3313,75 @@ impl<'s, 't> Reader<'s, 't> {
                 call(leaf, args)
             }
             ("join", 0) => call("join", vec![first(subject), first(text_expr(",", span))]),
-            ("toUpperCase", 0) => call("uppercase", vec![first(subject)]),
-            ("toLowerCase", 0) => call("lowercase", vec![first(subject)]),
-            // A list's, and some a text's too: one leaf that takes either.
+            ("toUpperCase" | "toLocaleUpperCase", 0) => call("uppercase", vec![first(subject)]),
+            ("toLowerCase" | "toLocaleLowerCase", 0) => call("lowercase", vec![first(subject)]),
+            ("toLocaleUpperCase" | "toLocaleLowerCase" | "localeCompare", _) => {
+                let instead = if method == "localeCompare" { "a < b ? -1 : a > b ? 1 : 0 compares in code units" } else { "toUpperCase() and toLowerCase() use Unicode's own mappings" };
+                fail(at, format!("a flow has no locale: {instead}"))
+            }
+            // A list's, and some a text's too: one leaf that takes either; the position to start
+            // from, when given, its `from`.
             ("at", 1) => Ok(leaf("at", &[], with(subject, rest), span)),
-            ("includes", 1) => Ok(leaf("includes", &[], with(subject, rest), span)),
-            ("lastIndexOf", 1) => Ok(leaf("last_index_of", &[], with(subject, rest), span)),
+            ("indexOf", 2) => Ok(leaf("index_of", &[], with(subject, rest), span)),
+            ("includes", 1 | 2) => Ok(leaf("includes", &[], with(subject, rest), span)),
+            ("lastIndexOf", 1 | 2) => Ok(leaf("last_index_of", &[], with(subject, rest), span)),
+            ("split", 2) => Ok(leaf("split", &[], with(subject, rest), span)),
+            // A text's: the subject is taken as one, and the leaf gives nothing for anything else.
+            // `charAt()` and `charCodeAt()` read 0, as JavaScript reads the index left out.
+            ("charAt", 0 | 1) => Ok(leaf("text_at", &[], with(subject, or_zero(rest, span)), span)),
+            ("charCodeAt" | "codePointAt", 0 | 1) => {
+                let mode = if method == "charCodeAt" { "unit" } else { "point" };
+                Ok(leaf("code_at", &[("mode", mode)], with(subject, or_zero(rest, span)), span))
+            }
+            ("startsWith" | "endsWith", 1 | 2) => Ok(leaf("text_contains", &[("at", if method == "startsWith" { "start" } else { "end" })], with(subject, rest), span)),
+            ("trim" | "trimStart" | "trimEnd", 0) => {
+                let side = match method {
+                    "trim" => "both",
+                    "trimStart" => "start",
+                    _ => "end",
+                };
+                Ok(leaf("trim", &[("side", side)], vec![subject], span))
+            }
+            ("padStart" | "padEnd", 1 | 2) => Ok(leaf("pad", &[("side", if method == "padStart" { "start" } else { "end" })], with(subject, rest), span)),
+            ("repeat", 1) => Ok(leaf("repeat", &[], with(subject, rest), span)),
+            ("replace" | "replaceAll", 2) => Ok(leaf("replace", &[("count", if method == "replace" { "first" } else { "all" })], with(subject, rest), span)),
+            ("normalize", 0) => Ok(leaf("normalize", &[], vec![subject], span)),
+            ("normalize", 1) => match &rest[0].value.kind {
+                ExprKind::Text(form) if ["NFC", "NFD", "NFKC", "NFKD"].contains(&form.as_str()) => {
+                    let form = form.clone();
+                    Ok(leaf("normalize", &[("form", &form)], vec![subject], span))
+                }
+                _ => fail(rest[0].value.span, "normalize's form is \"NFC\", \"NFD\", \"NFKC\" or \"NFKD\", written in place"),
+            },
+            ("isWellFormed", 0) => Ok(leaf("is_well_formed", &[], vec![subject], span)),
+            // A text is always well formed in a flow: the text itself, and nothing for anything
+            // else, as `concat` gives.
+            ("toWellFormed", 0) => Ok(leaf("concat", &[], vec![subject, text_expr("", span)], span)),
+            ("valueOf", 0) => Ok(subject),
             ("toReversed" | "reverse", 0) => Ok(leaf("reverse", &[], vec![subject], span)),
             ("toSorted" | "sort", 0) => Ok(leaf("sort", &[], vec![subject], span)),
             ("slice", 0) => Ok(subject),
             ("slice", 1 | 2) => Ok(leaf("slice", &[("mode", "end")], with(subject, rest), span)),
+            ("substring", 1 | 2) => Ok(leaf("slice", &[("mode", "substring")], with(subject, rest), span)),
             ("with", 2) => Ok(leaf("with_item", &[], with(subject, rest), span)),
             ("fill", 1..=3) => Ok(leaf("fill", &[], with(subject, rest), span)),
             ("copyWithin", 1..=3) => Ok(leaf("copy_within", &[], with(subject, rest), span)),
-            ("includes" | "indexOf" | "lastIndexOf", _) => fail(span, format!("{method} takes the item alone: a position to start from isn't passed, xs.{method}(x)")),
+            ("includes" | "indexOf" | "lastIndexOf", _) => fail(span, format!("{method} takes the item and where to start from, if not the {}: xs.{method}(x, i)", if method == "lastIndexOf" { "end" } else { "start" })),
+            ("split", _) => fail(span, "split takes the separator and, if there is one, how many pieces to keep: s.split(\",\", 2)"),
+            ("charAt" | "charCodeAt" | "codePointAt" | "substring" | "startsWith" | "endsWith" | "trim" | "trimStart" | "trimEnd" | "padStart" | "padEnd" | "repeat" | "replace" | "replaceAll" | "normalize" | "isWellFormed" | "toWellFormed" | "valueOf", _) => {
+                let shape = match method {
+                    "substring" => "s.substring(start, end), the end left out for the rest".into(),
+                    "charAt" | "charCodeAt" | "codePointAt" => format!("s.{method}(i)"),
+                    "startsWith" => "s.startsWith(t), or s.startsWith(t, i) from i".into(),
+                    "endsWith" => "s.endsWith(t), or s.endsWith(t, i) ending at i".into(),
+                    "padStart" | "padEnd" => format!("s.{method}(n), or s.{method}(n, fill)"),
+                    "repeat" => "s.repeat(n)".into(),
+                    "replace" | "replaceAll" => format!("s.{method}(t, replacement)"),
+                    "normalize" => "s.normalize(), or s.normalize(\"NFD\")".into(),
+                    _ => format!("s.{method}()"),
+                };
+                fail(span, format!("{method} is written {shape}"))
+            }
             ("keys" | "entries" | "values", 0) => fail(at, format!("xs.{method}() is an iterator, which a flow has none of: [...xs.{method}()] is the list")),
             ("at" | "with" | "toReversed" | "toSorted" | "reverse" | "sort" | "slice" | "fill" | "copyWithin" | "join", _) => {
                 let shape = match method {
@@ -3881,6 +3952,45 @@ impl<'s, 't> Reader<'s, 't> {
     }
 
     /// `Number.<method>(…)`: each its leaf; `Number.isNaN(x)` is `false`, as a flow has no NaN.
+    /// `String.fromCharCode(…)` and `String.fromCodePoint(…)`: `from_codes` of the numbers, and
+    /// the empty text for none.
+    fn string_call(&mut self, c: &js::CallExpression, method: &str, at: Span, span: Span) -> R<Expr> {
+        let mode = match method {
+            "fromCharCode" => "unit",
+            "fromCodePoint" => "point",
+            "raw" => return fail(at, "String.raw is a tag, written before a template: String.raw`a\\n${x}`"),
+            _ => return fail(at, format!("String.{method} isn't one a flow has: String.fromCharCode(…), String.fromCodePoint(…) and String.raw`…` are")),
+        };
+        let codes: Vec<Expr> = self.positional(&c.arguments)?.into_iter().map(|a| a.value).collect();
+        if codes.is_empty() {
+            return Ok(text_expr("", span));
+        }
+        Ok(leaf("from_codes", &[("mode", mode)], codes, span))
+    }
+
+    /// `` String.raw`…` ``: the template with its text as written, escapes kept (`raw`, not
+    /// `cooked`). No other tag is read.
+    fn tagged(&mut self, t: &js::TaggedTemplateExpression, span: Span) -> R<Expr> {
+        let raw = matches!(self.unwrap(&t.tag), js::Expression::StaticMemberExpression(m) if m.property.name == "raw" && matches!(self.unwrap(&m.object), js::Expression::Identifier(i) if i.name == "String" && self.lookup("String").is_none() && !self.imports.contains_key("String")));
+        if !raw || t.type_arguments.is_some() {
+            return fail(self.span(t.tag.span()), "a tag before a template calls a function, which a flow does only for String.raw`…`: write the call, f(`…`)");
+        }
+        let mut parts = Vec::new();
+        for (i, q) in t.quasi.quasis.iter().enumerate() {
+            if !q.value.raw.is_empty() {
+                parts.push(Part::Text(q.value.raw.to_string()));
+            }
+            if let Some(e) = t.quasi.expressions.get(i) {
+                parts.push(Part::Expr(self.expr(e)?));
+            }
+        }
+        Ok(match parts.as_slice() {
+            [] => text_expr("", span),
+            [Part::Text(only)] => text_expr(only, span),
+            _ => Expr { kind: ExprKind::Interpolated(parts), span },
+        })
+    }
+
     fn number_call(&mut self, c: &js::CallExpression, method: &str, at: Span, span: Span) -> R<Expr> {
         let (name, params, most): (&str, &[(&str, &str)], usize) = match method {
             "isFinite" => ("number_test", &[("test", "finite"), ("coerce", "none")], 1),
@@ -4333,6 +4443,19 @@ pub(crate) const NUMBER_CONSTANTS: &[(&str, &str)] = &[
 /// JavaScript's number functions called by name, each a leaf: `parseInt(s, 16)`, `isNaN(x)`.
 const NUMBER_GLOBALS: &[&str] = &["Number", "parseInt", "parseFloat", "isNaN", "isFinite"];
 
+/// A global function of one text and the leaf that is it: the URI functions, `btoa` and `atob`.
+fn text_global(name: &str) -> Option<(&'static str, &'static [(&'static str, &'static str)])> {
+    Some(match name {
+        "encodeURIComponent" => ("uri_encode", &[]),
+        "encodeURI" => ("uri_encode", &[("set", "uri")]),
+        "decodeURIComponent" => ("uri_decode", &[]),
+        "decodeURI" => ("uri_decode", &[("set", "uri")]),
+        "btoa" => ("base64", &[("bytes", "latin1")]),
+        "atob" => ("base64", &[("bytes", "latin1"), ("mode", "decode")]),
+        _ => return None,
+    })
+}
+
 /// Whether `Math.<name>` is a one-number function, `math` with that `fn`.
 fn is_math_fn(name: &str) -> bool {
     family_values("math", "fn").is_some_and(|values| values.contains(&name))
@@ -4361,10 +4484,6 @@ fn is_word(s: &str) -> bool {
 
 fn declares_method(m: &str) -> bool {
     holon_core::METHODS.contains(&m)
-}
-
-fn is_text(e: &js::Expression) -> bool {
-    matches!(e, js::Expression::StringLiteral(_) | js::Expression::TemplateLiteral(_))
 }
 
 /// A number as the lowering reads it: its digits as written, without `_` separators.
@@ -4641,6 +4760,23 @@ fn minus_one(span: Span) -> Expr {
     Expr { kind: ExprKind::Number { value: -1.0, text: "-1".into() }, span }
 }
 
+/// An index's arguments, 0 where it is left out (`s.charAt()`).
+fn or_zero(args: Vec<Arg>, span: Span) -> Vec<Arg> {
+    if args.is_empty() { vec![arg(Expr { kind: ExprKind::Number { value: 0.0, text: "0".into() }, span })] } else { args }
+}
+
+/// What a text's `concat` joins for `x`: a text written in place as itself, anything else as
+/// `String(x)` writes it (`as_text`).
+fn joined(x: Expr) -> Expr {
+    match x.kind {
+        ExprKind::Text(_) | ExprKind::Interpolated(_) => x,
+        _ => {
+            let span = x.span;
+            leaf("as_text", &[], vec![x], span)
+        }
+    }
+}
+
 fn binary(op: BinOp, lhs: Expr, rhs: Expr) -> Expr {
     let span = lhs.span.to(rhs.span);
     binary_at(op, lhs, rhs, span)
@@ -4903,6 +5039,12 @@ fn walk(e: &mut Expr, f: &mut dyn FnMut(&mut Expr) -> bool) {
             }
         }
         ExprKind::Call { args, .. } | ExprKind::Method { args, .. } | ExprKind::Leaf { args, .. } => {
+            for a in args {
+                walk(&mut a.value, f);
+            }
+        }
+        ExprKind::TextOrList { subject, args, .. } => {
+            walk(subject, f);
             for a in args {
                 walk(&mut a.value, f);
             }
@@ -5547,10 +5689,20 @@ route.post("/t", (req) => price(req.json.amount))
             ("route.post(\"/\", (req) => {\n  const xs = [3, 1]\n  const ys = xs\n  return ys.reverse()\n})\n", "8:10: \"ys\" is held elsewhere too (by another name, a record or a write), which reverse would change in place behind it: write ys.toReversed()"),
             ("route.post(\"/\", (req) => req.json.xs.sort())\n", "5:26: sort would change req.json.xs in place, and what holds it with it: write req.json.xs.toSorted()"),
             ("route.post(\"/\", (req) => req.json.rows.map((row) => row.sort()))\n", "5:53: \"row\" is a parameter, which sort would change in place for whoever passed it too: write row.toSorted()"),
-            ("route.post(\"/\", (req) => req.json.xs.concat(req.json.ys))\n", "5:45: concat spreads a list and adds anything else, and this could be either: write [...xs, ...ys] for a list, [...xs, y] for an item"),
             ("route.post(\"/\", (req) => req.json.xs.keys())\n", "5:38: xs.keys() is an iterator, which a flow has none of: [...xs.keys()] is the list"),
             ("route.post(\"/\", (req) => req.json.xs.flat(req.json.n))\n", "5:43: flat's depth is a number written in place, or Infinity: xs.flat(2)"),
-            ("route.post(\"/\", (req) => req.json.xs.includes(1, 2))\n", "5:26: includes takes the item alone: a position to start from isn't passed, xs.includes(x)"),
+            ("route.post(\"/\", (req) => req.json.xs.includes(1, 2, 3))\n", "5:26: includes takes the item and where to start from, if not the start: xs.includes(x, i)"),
+            ("route.post(\"/\", (req) => req.json.s.match(\"a\"))\n", "5:37: match takes a regular expression, which a flow has none of yet: do it in a js() function"),
+            ("route.post(\"/\", (req) => req.json.s.replace(/a/g, \"b\"))\n", "5:45: a regular expression, which a flow has none of yet: replace takes a text, or do it in a js() function"),
+            ("route.post(\"/\", (req) => req.json.s.replaceAll(\"a\", (m) => m))\n", "5:53: replaceAll takes the replacement as a text, where $& is the match: a function in its place is done in a js() function"),
+            ("route.post(\"/\", (req) => req.json.s.normalize(req.json.f))\n", "5:47: normalize's form is \"NFC\", \"NFD\", \"NFKC\" or \"NFKD\", written in place"),
+            ("route.post(\"/\", (req) => req.json.s.localeCompare(req.json.t))\n", "5:37: a flow has no locale: a < b ? -1 : a > b ? 1 : 0 compares in code units"),
+            ("route.post(\"/\", (req) => req.json.s.toLocaleUpperCase(\"tr\"))\n", "5:37: a flow has no locale: toUpperCase() and toLowerCase() use Unicode's own mappings"),
+            ("route.post(\"/\", (req) => req.json.s.padStart())\n", "5:26: padStart is written s.padStart(n), or s.padStart(n, fill)"),
+            ("route.post(\"/\", (req) => escape(req.json.s))\n", "5:26: escape is JavaScript's legacy form, which a flow doesn't read: encodeURIComponent(s)"),
+            ("route.post(\"/\", (req) => String.raw(req.json.s))\n", "5:33: String.raw is a tag, written before a template: String.raw`a\\n${x}`"),
+            ("route.post(\"/\", (req) => String.trim(req.json.s))\n", "5:33: String.trim isn't one a flow has: String.fromCharCode(…), String.fromCodePoint(…) and String.raw`…` are"),
+            ("route.post(\"/\", (req) => tag`a${req.json.s}`)\n", "5:26: a tag before a template calls a function, which a flow does only for String.raw`…`: write the call, f(`…`)"),
             ("route.post(\"/\", (req) => req.json.xs.map((x) => x * 2).reduce((a, b) => a + b))\n", "5:26: reduce without a start reads the list twice, its first item and the rest: name it first, const xs = …, or give the start, xs.reduce(f, start)"),
             ("route.post(\"/\", (req) => Array.from({ length: 3 }))\n", "5:26: Array.from({ length: n }) has n items that are undefined, which a flow has none of: Array.from({ length: n }, (_, i) => …)"),
             ("route.post(\"/\", (req) => {\n  switch (req.json.op) {\n    case req.json.other:\n      return 1\n  }\n  return 2\n})\n", "7:10: a case is a literal: a number, a text, true or false; to test a condition, use if"),
@@ -5643,9 +5795,7 @@ route.post("/t", (req) => price(req.json.amount))
     #[test]
     fn a_mistake_names_its_line_and_column() {
         assert_eq!(mistake("route.get(\"/\", () => {\n  let n\n  return n\n})\n"), "6:10: \"n\" has no value here: give it one first, let n = …");
-        assert_eq!(mistake("route.get(\"/\", (req) => \"a\" + req.query.b)\n"), "4:25: there is no + on texts: use a template literal, `${a}${b}`");
         assert_eq!(mistake("route.get(\"/\", (req) => fetch(req.query.u))\n"), "4:25: unknown function \"fetch\": define it at the top level, or import the leaf from \"holon\"");
-        assert_eq!(mistake("route.get(\"/\", (req) => req.query.xs.length)\n"), "4:25: a list's length is length(xs), a text's text_length(s), imported from \"holon\": .length comes in a later slice");
         assert_eq!(mistake("route.fetch(\"/\", () => 1)\n"), "4:7: route has no \"fetch\": get, post, put, patch or delete");
         assert_eq!(mistake("route.get(\"/\", () => 1, { log: \"loud\" })\n"), "4:32: log is \"strict\", \"lazy\" or \"unrecorded\"");
         assert_eq!(mistake("route.get(\"/\", () => {\n  notes = 1\n  return 1\n})\n"), "5:3: \"notes\" is imported, and stays what it is: give a value of its own a name of its own");

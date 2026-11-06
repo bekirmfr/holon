@@ -168,9 +168,9 @@ From lowest to highest precedence; binary operators group left to right.
 | `a \|\| b`, `a && b`, `!a` | logic, on booleans; a text or number after `\|\|` is refused, with "use `??`" |
 | `a \| b`, `a ^ b`, `a & b` | bitwise or, xor and and, on 32-bit integers |
 | `a === b`, `a !== b` | structural equality of any two values, never converted: `1` is not `"1"`. `==` and `!=` mean the same, and `fmt` writes `===` |
-| `a < b`, `<=`, `>`, `>=` | comparison, on numbers |
+| `a < b`, `<=`, `>`, `>=` | comparison, of two numbers or of two texts (in UTF-16 code units, as JavaScript compares them) |
 | `a << b`, `a >> b`, `a >>> b` | shifts, on 32-bit integers; `>>>` gives one without a sign |
-| `a + b`, `a - b`, `a * b`, `a / b` | arithmetic, on numbers. There is no `+` on texts: use a template literal, `` `${a}${b}` `` |
+| `a + b`, `a - b`, `a * b`, `a / b` | arithmetic, on numbers; `+` with a text on either side joins the two, a number written as JavaScript writes it: `"n=" + 1` is `"n=1"` |
 | `a % b`, `a ** b` | the remainder, with `a`'s sign, and `a` to the power `b`; `**` groups right to left |
 | `-a`, `+a`, `~a` | `a * -1`; `a` as a number, `Number(a)`; the bits of `a` flipped |
 | `f(…)` | a call (see [Calls](#calls)) |
@@ -201,19 +201,19 @@ hmac_sha256(key, text, { encoding: "hex" })   // encoding: a parameter
 ```
 
 - A leaf is imported from `"holon"` before it is called: `import { hmac_sha256 } from "holon"`.
-- Some leaves take any number of inputs: `add`, `multiply`, `and`, `or`, `concat`, `list`.
+- Some leaves take any number of inputs: `add`, `multiply`, `and`, `or`, `concat`, `list`,
+  `from_codes`.
 - Some inputs are optional (a request's `headers` and `body`, a collection's `.list` `prefix` and
   `after`) and may be left out. Leaving out any other input is a mistake that names it.
 - Parameters not given take their defaults.
 - A leaf with no inputs still takes parentheses: `record()`, `none()`.
 
 **Methods are leaves.** A text's or list's method is the leaf that does it: `t.toUpperCase()` is
-`uppercase`, `t.toLowerCase()` `lowercase`, `t.split(",")` `split`, `xs.join("-")` `join`,
-`t.indexOf(x)` `index_of`, `xs.map(f)` `map`, `xs.reduce(f, 0)` `fold`, and a list's other
-methods those under [Lists](#lists), a record's under [Records](#records) and a date's under
-[Dates](#dates); `JSON.parse` and `JSON.stringify` are `json_parse` and `json_stringify`,
-`Object.keys` is `keys`. A list's length is `length(xs)`, a text's
-`text_length(t)`. A method no leaf does is refused, with "do it in a `js()` function".
+`uppercase`, `t.split(",")` `split`, `xs.join("-")` `join`, `xs.map(f)` `map`, `xs.reduce(f, 0)`
+`fold`, and a text's other methods those under [Texts](#texts), a list's under [Lists](#lists), a
+record's under [Records](#records) and a date's under [Dates](#dates); `JSON.parse` and
+`JSON.stringify` are `json_parse` and `json_stringify`, `Object.keys` is `keys`. A method no leaf
+does is refused, with "do it in a `js()` function".
 
 ### Numbers
 
@@ -232,10 +232,41 @@ it first, `Number(s)`.
 | `Number(x)`, `parseFloat(s)`, `parseInt(s, 16)` | a value as a number (`to_number`); `Number.parseFloat` and `Number.parseInt` are the same |
 | `Number.isInteger(x)`, `Number.isFinite(x)`, `isNaN(s)`, `isFinite(s)` | tests (`number_test`); `Number.isNaN(x)` is `false`, as a flow has no NaN |
 | `x.toFixed(2)`, `x.toPrecision(3)`, `x.toExponential()`, `x.toString(16)` | a number as text (`number_format`) |
-| `x.toString()` | the same, when `x` is known to be a number, as an arithmetic result is; otherwise refused, naming `number_format`, since a text and a list have the method too |
+| `x.toString()` | the same, when `x` is known to be a number, as an arithmetic result is; otherwise `String(x)` |
 
 `Math.random()` is refused: a run's random number is `import { random } from "holon:random"`, one
 for the run, recorded.
+
+### Texts
+
+A text's positions and lengths count UTF-16 code units, as JavaScript's do: `"a😀b".length` is 4.
+A result that would cut an emoji in half gives no value, as a flow's text can't hold half of one.
+A text leaf given anything but a text gives no value too.
+
+| Form | Meaning |
+|---|---|
+| `s.length` | the length (`text_length`), when `s` is known to be a text, as a text method's result is; on a list known to be one, its length (`length`). On a value of no known type, such as a request's field, refused: call `text_length(s)` or `length(xs)` |
+| `s.at(i)`, `s.charAt(i)`, `s.charCodeAt(i)`, `s.codePointAt(i)` | the character at `i` (`at`, from the end when negative; `text_at`, `""` outside the text), its code unit, its code point (`code_at`); the index left out is 0 |
+| `s.slice(a, b)`, `s.substring(a, b)` | a part (`slice`), as JavaScript's: `slice` counts a negative position from the end, `substring` swaps its two |
+| `s.indexOf(t, i)`, `s.lastIndexOf(t, i)`, `s.includes(t, i)` | where `t` is, or whether it is, from `i` when given; the same leaves as a list's |
+| `s.startsWith(t, i)`, `s.endsWith(t, i)` | whether `s` begins or ends with `t` (`text_contains`) |
+| `s.split(t, n)` | the pieces between each `t`, `n` of them at most when given; `s.split("")` each code unit |
+| `s.trim()`, `s.trimStart()`, `s.trimEnd()` | without JavaScript's white space at both ends, the start or the end (`trim`) |
+| `s.padStart(n, f)`, `s.padEnd(n, f)`, `s.repeat(n)` | padded to `n` with `f`, a space when left out (`pad`); `n` times over (`repeat`) |
+| `s.replace(a, b)`, `s.replaceAll(a, b)` | the first or every `a` replaced (`replace`); in `b`, `$&` is what was found, `$$` a dollar |
+| `s.normalize()`, `s.normalize("NFD")` | the Unicode normal form, `"NFC"` when left out (`normalize`) |
+| `s.toUpperCase()`, `s.toLowerCase()`, `s.toLocaleUpperCase()`, `s.toLocaleLowerCase()` | in capitals, in small letters, by Unicode's own rules: a flow has no locale |
+| `s.concat(a, b)`, `"a" + b`, `` `${a}${b}` `` | joined, numbers written as JavaScript writes them |
+| `String(x)`, `x.toString()` | `x` as a template writes it (`as_text`) |
+| `s.isWellFormed()`, `s.toWellFormed()` | `true`, and `s`: a flow's text is always well formed |
+| `String.fromCharCode(a, b)`, `String.fromCodePoint(a, b)` | the text of those code units or code points (`from_codes`) |
+| `` String.raw`a\n${x}` `` | the template's text as written, its escapes kept |
+| `encodeURIComponent(s)`, `encodeURI(s)`, `decodeURIComponent(s)`, `decodeURI(s)` | a text escaped for a URL and back (`uri_encode`, `uri_decode`); a malformed escape gives no value |
+| `btoa(s)`, `atob(s)` | base64 of a text whose characters are bytes, and back (`base64` with `bytes: "latin1"`) |
+
+`s.localeCompare(t)` is refused, as a flow has no locale; `a < b` compares texts in code units.
+Regular expressions (`s.match(re)`, `s.search(re)`, a pattern in `replace` or `split`) are
+refused: do them in a `js()` function.
 
 ### Lists
 
@@ -723,7 +754,7 @@ broken.holon.ts:5:23: unknown name "nope"
 | input `p` can't be left out | the call |
 | `Text` doesn't fit `Number` | the argument |
 | a value nobody uses | the statement |
-| there is no `+` on texts; `\|\|` takes booleans | the expression |
+| `\|\|` takes booleans | the expression |
 | a collection is read after this run writes to it | the read |
 | `status(…)` and `respond(…)` are a route's answer: return them | the expression |
 | an action answers with a value alone | the `status(…)` or `respond(…)` |

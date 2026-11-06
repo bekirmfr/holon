@@ -276,6 +276,9 @@ pub enum ExprKind {
     /// shares its name. `number`: the form is a number's and another type's method
     /// (`toString`), so its first argument must be a value the lowering knows is a number.
     Leaf { leaf: Name, params: Vec<(String, String)>, args: Vec<Arg>, number: bool },
+    /// `x.length`, `x.concat(…)`: a method a text and a list both have, done by different
+    /// leaves, so the lowering picks them by the type of the node that made `subject`.
+    TextOrList { subject: Box<Expr>, method: Name, args: Vec<Arg> },
     /// `receiver.method(args)`: `notes.list(…)`, `api.post(…)`, `stripe.verify(…)`.
     Method { receiver: Name, method: Name, args: Vec<Arg> },
     /// `base.name`: an output or a field, decided by the lowering.

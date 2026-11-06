@@ -132,6 +132,25 @@ const TICK: &str = "the time of the tick, in seconds since the epoch.";
 const METHOD_LEAVES: &[(&str, &str)] = &[
     ("toUpperCase", "uppercase"),
     ("toLowerCase", "lowercase"),
+    ("toLocaleUpperCase", "uppercase"),
+    ("toLocaleLowerCase", "lowercase"),
+    ("charAt", "text_at"),
+    ("charCodeAt", "code_at"),
+    ("codePointAt", "code_at"),
+    ("startsWith", "text_contains"),
+    ("endsWith", "text_contains"),
+    ("substring", "slice"),
+    ("trim", "trim"),
+    ("trimStart", "trim"),
+    ("trimEnd", "trim"),
+    ("padStart", "pad"),
+    ("padEnd", "pad"),
+    ("repeat", "repeat"),
+    ("replace", "replace"),
+    ("replaceAll", "replace"),
+    ("normalize", "normalize"),
+    ("isWellFormed", "is_well_formed"),
+    ("toWellFormed", "concat"),
     ("split", "split"),
     ("join", "join"),
     ("indexOf", "index_of"),
@@ -1073,6 +1092,7 @@ fn member(o: &Outline, code: &[&Lexeme], k: usize) -> Option<String> {
                 ("Date", "UTC") => return leaf("date_utc"),
                 ("Date", "parse") => return leaf("date_parse"),
                 ("Array", "isArray") => return leaf("is_list"),
+                ("String", "fromCharCode" | "fromCodePoint") => return leaf("from_codes"),
                 _ => {}
             }
         }

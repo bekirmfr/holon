@@ -675,6 +675,11 @@ CALLS
   const d = new Date(t); d.getUTCHours(), d.toISOString(), d.setUTCHours(0, 0, 0, 0);
   Date.UTC(y, m, d), Date.parse(t)   (UTC only: no local time, and new Date() is refused,
   as the time is now * 1000 from "holon:clock"; a Date is read by its methods, d.getTime())
+  s.trim(), s.padStart(4, "0"), s.replaceAll("a", "b"), s.startsWith(t), s.slice(1, -1),
+  s.charCodeAt(0), s.normalize(), String.fromCharCode(97), encodeURIComponent(s), btoa(s),
+  "n=" + n, String(x), s.length   (positions count UTF-16 code units, as JavaScript's do;
+  .length where s is known to be a text or a list, as a method's result is: else text_length(s)
+  or length(xs); no regular expressions: s.match(re) and friends are done in js())
 
 FUNCTIONS (a flow inside a flow, placed as one node)
   function slugify(text) {

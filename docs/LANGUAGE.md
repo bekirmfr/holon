@@ -185,8 +185,7 @@ derived from the leaves, never from the words.
 | `class`, `this`, `new`, generators, `eval` | A flow is a module of functions and records; computing that needs all of JavaScript goes in a `js()` function |
 | Generics, type parameters, types beyond the nine | The checker is wire-time compatibility over nine types (§6.8). A type system is a different project |
 | Imports of code, packages | An import names something outside a run. Reuse across files is the marketplace's job (a published holon placed by hash), not an import of code (the `marketplace` sample). Revisit when people share holons across flows |
-| Globals: `fetch`, `Date`, `setTimeout`, `process` | A flow uses only what it imports, so the top of the file is the whole of what it touches. `JSON`, `Object`'s record functions, `Math`, `Number`, `parseInt`, `parseFloat`, `isNaN`, `isFinite`, `structuredClone`, and `Date` in UTC (`new Date(t)` read by its methods, `Date.UTC`, `Date.parse`) are there, as the leaves that do them (§5.3, §5.6). `new Date()` and `Date.now()` are the time now, which is the clock's: `now * 1000`, `now` imported from `"holon:clock"`. `NaN` and `Infinity` aren't values: a leaf gives nothing where JavaScript gives one |
-| `+` on texts | An operator lowers to one node, and most values are `Any`, so `+` could not choose between `add` and `concat`. A template literal is the natural spelling; `concat(a, b)` the explicit one |
+| Globals: `fetch`, `Date`, `setTimeout`, `process` | A flow uses only what it imports, so the top of the file is the whole of what it touches. `JSON`, `Object`'s record functions, `Math`, `Number`, `parseInt`, `parseFloat`, `isNaN`, `isFinite`, `String`, the URI functions, `btoa`, `atob`, `structuredClone`, and `Date` in UTC (`new Date(t)` read by its methods, `Date.UTC`, `Date.parse`) are there, as the leaves that do them (§5.3, §5.6). `new Date()` and `Date.now()` are the time now, which is the clock's: `now * 1000`, `now` imported from `"holon:clock"`. `NaN` and `Infinity` aren't values: a leaf gives nothing where JavaScript gives one |
 | `\|\|` and `&&` on anything but booleans | `a \|\| "none"` is JavaScript's fallback, and Holon's logic is on booleans: the fallback is `??` |
 | Common-subexpression elimination | The text's structure is the graph's. Sharing is explicit (a binding), so the canvas shows what was written |
 | `null` | Absence is not a value. `undefined` is written only for "no value": as a branch, `c ? a : undefined`, and in `x !== undefined`. `none()` is the optional's empty arm (§6.3) |
@@ -1291,7 +1290,7 @@ otherwise a param, frozen into the node (`{ encoding: "hex" }`, `{ limit: 50 }`)
 - The one unit with an input and a param of the same name is `default`, and it is never written:
   `??` is its spelling.
 - Too many positional arguments is an error, except on a variadic leaf (`add`, `multiply`, `and`,
-  `or`, `concat`, `list`), where each extra argument grows the node by one input, named as the
+  `or`, `concat`, `list`, `from_codes`), where each extra argument grows the node by one input, named as the
   canvas names them (`c`, `d`, … then `in<n>`), through `FlowBuilder::arity`; a variadic leaf's
   inputs aren't named.
 - An optional input (`http_request`'s `headers` and `body`, `collection_list`'s `prefix` and
@@ -1308,9 +1307,23 @@ Every catalog leaf is callable by its own name with this rule (`concat(a, b)`, `
 
 | Written | Lowers to |
 |---|---|
-| `t.toLowerCase()`, `t.toUpperCase()` | `lowercase(t)`, `uppercase(t)` |
-| `t.split(sep)`, `xs.join(sep)` | `split(t, sep)`, `join(xs, sep)` |
-| `t.indexOf(x)` | `index_of(t, x)` |
+| `t.toLowerCase()`, `t.toUpperCase()` | `lowercase(t)`, `uppercase(t)`; `toLocaleLowerCase()` and `toLocaleUpperCase()` the same, without a locale (one given is refused, as a flow has none) |
+| `t.split(sep)`, `t.split(sep, n)`, `xs.join(sep)` | `split(t, sep)`, the limit wired when given (`""` cuts every code unit); `join(xs, sep)` |
+| `t.length`, `xs.length` | `text_length(t)` where `t` is known to be a text, `length(xs)` where `xs` is known to be a list: a node whose output is a `Text`, or a `List`. On anything else (a request's field, a function's parameter), refused, naming both, to call by name |
+| `t.charAt(i)`, `t.charCodeAt(i)`, `t.codePointAt(i)` | `text_at(t, i)`, `code_at{mode: unit, point}(t, i)`; the index left out is 0 |
+| `t.startsWith(s, p)`, `t.endsWith(s, e)` | `text_contains{at: start, end}(t, s, p)`, the position unwired when left out |
+| `t.substring(a, b)` | `slice{mode: substring}(t, a, b)`, the end unwired when left out |
+| `t.trim()`, `t.trimStart()`, `t.trimEnd()` | `trim{side: both, start, end}(t)` |
+| `t.padStart(n, f)`, `t.padEnd(n, f)`, `t.repeat(n)` | `pad{side: start, end}(t, n, f)`, the fill unwired when left out (a space); `repeat(t, n)` |
+| `t.replace(a, b)`, `t.replaceAll(a, b)` | `replace{count: first, all}(t, a, b)`: `a` a text, `b` JavaScript's replacement (`$&` the match, `$$`, `` $` ``, `$'`); a regular expression or a function in their place is refused, naming `js()` |
+| `t.normalize()`, `t.normalize("NFD")` | `normalize{form}(t)`, the form one of `"NFC"`, `"NFD"`, `"NFKC"`, `"NFKD"` written in place |
+| `t.isWellFormed()`, `t.toWellFormed()` | `is_well_formed(t)`; `concat(t, "")`: a flow's text is always well formed |
+| `t.concat(a, b)` | `concat(t, a, b)` where `t` is a text written in place or known to be one, each argument as `String(x)` writes it (`as_text`), a text as itself; on anything else, a list's (below) |
+| `String(x)`, `x.valueOf()` | `as_text(x)`, as a template writes `x`; `x` itself |
+| `String.fromCharCode(a, b)`, `String.fromCodePoint(a, b)` | `from_codes{mode: unit, point}(a, b)`, variadic; with none, `""` |
+| `` String.raw`a\n${x}` `` | the template of its text as written, escapes kept |
+| `encodeURIComponent(t)`, `encodeURI(t)`, `decodeURIComponent(t)`, `decodeURI(t)` | `uri_encode{set: component, uri}(t)`, `uri_decode{set: component, uri}(t)` |
+| `btoa(t)`, `atob(t)` | `base64{bytes: latin1}(t)`, `base64{bytes: latin1, mode: decode}(t)` |
 | `xs.map(f)` | `map{fn: f}(xs)` (§5.9) |
 | `xs.reduce(f, start)` | `fold{fn: f}(start, xs)` (§5.9) |
 | `xs.map((x, i) => …)` | `indices(xs).map((i) => …)`, `x` read as `get(xs, i)`; `xs` is a name or a field of one, as it is read twice |
@@ -1318,13 +1331,13 @@ Every catalog leaf is callable by its own name with this rule (`concat(a, b)`, `
 | `xs.filter(f)`, `xs.some(f)`, `xs.every(f)`, `xs.find(f)`, `xs.findIndex(f)`, `xs.findLast(f)`, `xs.findLastIndex(f)` | `filter`, `any`, `all`, `find`, `find_index`, `find_last`, `find_last_index`, each `{fn: f}(xs)`: `f`'s answer read as JavaScript's truthiness, and `some`, `every` and the finds apply `f` to nothing after the item that decides |
 | `xs.toSorted(f)`, `xs.toSorted()` | `sort_by{fn: f}(xs)`, a stable merge sort on the sign of `f(a, b)`; `sort(xs)`, by each item's `String(x)` in UTF-16 code units, as JavaScript sorts |
 | `xs.flatMap(f)`, `xs.flat()`, `xs.flat(2)`, `xs.flat(Infinity)` | `flat(map{fn: f}(xs))`; `flat{depth}(xs)`, `depth: all` for `Infinity` (a number written in place) |
-| `xs.at(i)`, `xs.includes(x)`, `xs.indexOf(x)`, `xs.lastIndexOf(x)` | `at`, `includes`, `index_of`, `last_index_of`: each one leaf for a list and a text (a text's `at`, `includes` and `lastIndexOf` give nothing until the text leaves take them); a position to start from isn't passed |
-| `xs.slice(s, e)`, `xs.slice(s)`, `xs.slice()` | `slice{mode: end}(xs, s, e)`, the end unwired when left out; `xs` itself |
+| `xs.at(i)`, `xs.includes(x, i)`, `xs.indexOf(x, i)`, `xs.lastIndexOf(x, i)` | `at`, `includes`, `index_of`, `last_index_of`: each one leaf for a list and a text; the position to start from, when given, wired to `from` |
+| `xs.slice(s, e)`, `xs.slice(s)`, `xs.slice()` | `slice{mode: end}(xs, s, e)`, the end unwired when left out, on a list or a text; `xs` itself |
 | `xs.toReversed()`, `xs.toSpliced(s, c, ...items)`, `xs.with(i, v)` | `reverse(xs)`, `to_spliced(xs, s, c, items)` with the rest as one list, `with_item(xs, i, v)` |
 | `xs.sort()`, `xs.sort(f)`, `xs.reverse()`, `xs.fill(v, s, e)`, `xs.copyWithin(t, s, e)` as a value | `sort`, `sort_by`, `reverse`, `fill`, `copy_within`: the list they give, on a list made where they are called (`[...xs].fill(0)`) or a binding of the handler's own that isn't read after; on a parameter, a part of one or a list another name holds, refused, naming the value form |
 | `[...xs.keys()]`, `[...xs.entries()]`, `[...xs.values()]`, each also as `Array.from(…)` | `indices(xs)`, `entries(xs)` (the `[index, item]` pairs), `xs` |
 | `[...new Set(xs)]`, `Array.from(new Set(xs))` | `unique(xs)`: each item's first occurrence, by value |
-| `xs.join()`, `xs.concat(ys, x)` | `join(xs, ",")`; `extend` for a list written as one, `append` for a literal that isn't one, and refused for anything else, which could be either |
+| `xs.join()`, `xs.concat(ys, x)` | `join(xs, ",")`; on a value not known to be a text, `extend` for a list written as one, `append` for a literal that isn't one, and refused for anything else, which could be either |
 | `Array.isArray(x)`, `Array.of(a, b)`, `Array.from(xs)`, `Array.from(xs, f)`, `Array.from({ length: n }, (_, i) => …)` | `is_list(x)`, `[a, b]`, `xs`, `map{fn: f}(xs)`, `range(n).map((i) => …)` (the item, JavaScript's undefined, read as absent) |
 | `JSON.parse(t)`, `JSON.stringify(x)` | `json_parse(t)`, `json_stringify(x)` |
 | `JSON.parse(t, (k, v) => …)`, `JSON.stringify(x, (k, v) => …)` | `json_parse{fn}(t)`, `json_stringify{fn}(x)`: the reviver applied bottom-up, the replacer top-down, as JavaScript's; what the function gives nothing for is left out of a record and `null` in a list |
@@ -1350,7 +1363,7 @@ Every catalog leaf is callable by its own name with this rule (`concat(a, b)`, `
 | `Number.isFinite(x)`, `Number.isInteger(x)`, `Number.isSafeInteger(x)`, `isNaN(x)`, `isFinite(x)` | `number_test{test, coerce}(x)`: `coerce: none` for `Number.`'s, `number` for the globals |
 | `Number.isNaN(x)` | `false`: a flow has no NaN |
 | `x.toFixed(d)`, `x.toPrecision(p)`, `x.toExponential(d)`, `x.toString(r)` | `number_format{style}(x, d)`, `d` wired when given |
-| `x.toString()` | `number_format{style: string}(x)` when `x` is known to be a number (a node whose output is a `Number`); refused otherwise, naming `number_format`, as a text and a list have the method too |
+| `x.toString()` | `number_format{style: string}(x)` when `x` is known to be a number (a node whose output is a `Number`); otherwise `as_text(x)`, as `String(x)` |
 
 A Date is JavaScript's in UTC: a flow has no time zone, so a local-time method (`getHours`,
 `setDate`, `toString`, …) is refused, naming its UTC one, and `new Date(y, m, …)` names
@@ -1364,10 +1377,17 @@ and `new Set()` outside a spread.
 `Math` and `Number` are namespaces the reader knows, as it knows `JSON`, `Object` and `Date`; a
 flow's own function named `parseInt` is the one `parseInt(s)` calls, as in JavaScript, and
 `Math.max` is the leaf whatever the flow defines. `Math.random()` is refused, with `import { random
-} from "holon:random"`, a run's one recorded number. A list's length is `length(xs)` and a text's
-`text_length(t)`, called as leaves: `.length` comes in a later slice. A method no leaf does is
+} from "holon:random"`, a run's one recorded number. `.length` is a text's `text_length` or a
+list's `length`, by the type of the node that made the value. A method no leaf does is
 refused, with "do it in a `js()` function". `fmt` writes `entries` as `Object.entries(r)` where
 `r` is known to be a record (a node whose output is a `Record`), else as `[...xs.entries()]`.
+
+A text's positions and lengths count UTF-16 code units, as JavaScript's do; a result that would
+begin or end inside a surrogate pair (half an emoji) gives no value, as a flow's text can't hold
+half of one. `s.localeCompare(t)` is refused, as a flow has no locale (`a < b` compares texts in
+code units), and so are the regular expressions (`s.match(re)`, `s.search(re)`, a pattern in
+`replace` or `split`): they are done in a `js()` function. `escape` and `unescape` are refused,
+naming the URI functions.
 
 ### 5.4 The outside world, as imported names
 
@@ -1564,9 +1584,9 @@ Lowest to highest precedence, as TypeScript has them; binary operators are left-
 | `a && b` | `and(a, b)` | variadic; booleans only |
 | `a \| b`, `a ^ b`, `a & b` | `bitwise{op: or, xor, and}(a, b)` | on int32s; each its own level, in that order, below `===` |
 | `a === b`, `a !== b` | `equals(a, b)`, `not(equals(a, b))` | structural, any two values, never coerced; `==` and `!=` mean the same, and `fmt` writes `===` |
-| `a < b`, `<=`, `>`, `>=` | `compare{op}(a, b)` | numbers only, as `compare` is |
+| `a < b`, `<=`, `>`, `>=` | `compare{op}(a, b)` | two numbers, or two texts in UTF-16 code-unit order; a number and a text give nothing |
 | `a << b`, `a >> b`, `a >>> b` | `bitwise{op: shl, shr, ushr}(a, b)` | `>>>` gives a uint32 |
-| `a + b`, `a - b` | `add(a, b)`, `subtract(a, b)` | numbers only; `add` variadic |
+| `a + b`, `a - b` | `add(a, b)`, `subtract(a, b)` | `+` adds numbers, and with a text on either side joins both as `String(x)` writes them, left to right (`1 + 2 + "a"` is `"3a"`); `-` on numbers only; `add` variadic |
 | `a * b`, `a / b`, `a % b` | `multiply(a, b)`, `divide(a, b)`, `remainder(a, b)` | `multiply` variadic; `%` is fmod, with `a`'s sign |
 | `a ** b` | `power(a, b)` | right-associative; its left is never a unary expression, so `(-2) ** b` |
 | `!a` | `not(a)` | |
@@ -1590,10 +1610,10 @@ sample uses it to keep the time of its first beat: `state.first_beat = state.fir
 
 Variadic flattening applies only to a chain of the *same* operator: `a && b && c` is one `and`
 with three inputs; `(a && b) && c`, with explicit parentheses, is two nodes, and `fmt` keeps the
-parentheses. They are the author saying "two". There is no text operator: a template literal is
-the spelling, `concat(a, b)` the explicit call. `||` or `&&` with a text, number, record or list
-literal on its right (`a || "none"`) is refused with "use `??`", as that is JavaScript's fallback
-and not logic.
+parentheses. They are the author saying "two". `+` joins texts as JavaScript's does; a template
+literal is the other spelling, `concat(a, b)` the explicit call. `||` or `&&` with a text,
+number, record or list literal on its right (`a || "none"`) is refused with "use `??`", as that
+is JavaScript's fallback and not logic.
 
 ### 5.7 Multi-output values: `.name`
 
@@ -2118,7 +2138,7 @@ The error catalogue the reader and the lowering produce, each with the span it p
 | `f` has no input or param `p` / `p` given twice | the name |
 | input `p` can't be left out | the call |
 | a value nobody uses: bind it, or remove it | the statement |
-| there is no `+` on texts; `\|\|` takes booleans | the expression |
+| `\|\|` takes booleans | the expression |
 | `notes` is read after this run writes to it | the read |
 | `state.k` written twice, in an `if (… !== undefined)` and elsewhere | the second write |
 | `status(…)` and `respond(…)` are a route's answer: return them | the expression |
@@ -2370,7 +2390,9 @@ is `status(204)`).
 
 - **F3. String interpolation.** *Decided (2026-10-24), and kept by the switch:* a template literal,
   `` `Hello, ${name}` ``, lowers to one `concat` over its pieces, each `${…}` part wrapped in
-  `as_text`, the leaf added for this. `+` stays numeric, and is refused beside a text.
+  `as_text`, the leaf added for this. `+` stayed numeric, refused beside a text, until
+  *2026-11-07:* `add` takes any values and joins texts as JavaScript's `+` does, so `+` beside a
+  text is read (js-library-races/texts.md).
 - **F4. Top-level bindings beyond literals.** The restriction exists because handlers must be
   separate groups. An alternative is duplicating the whole subexpression per handler, which keeps
   them separate at the cost of hidden node copies. Refused for now: the error message points at

@@ -187,6 +187,14 @@ impl Val {
     }
 }
 
+/// The type of the output `v` is, as the node that gives it says; a function's input has none.
+fn typed(v: &Val) -> Option<&WType> {
+    match v {
+        Val::Out { outputs, port, .. } => outputs.get(*port).map(|p| &p.ty),
+        Val::In(_) => None,
+    }
+}
+
 enum FrameKind {
     /// The flow's own frame: its constants.
     Flow,
@@ -1512,6 +1520,7 @@ impl<'a> Lowerer<'a> {
             ExprKind::Noun(n) => self.node(if *n == Noun::Now { "clock" } else { "random" }, &[], e.span),
             ExprKind::Call { callee, args } => self.call(callee, args, e.span),
             ExprKind::Leaf { leaf, params, args, number } => self.leaf_form(leaf, params, args, *number, e.span),
+            ExprKind::TextOrList { subject, method, args } => self.text_or_list(subject, method, args, e.span),
             ExprKind::Method { receiver, method, args } => self.method(receiver, method, args, e.span),
             ExprKind::Field { base, name } => {
                 let v = self.expr(base)?;
@@ -1801,22 +1810,73 @@ impl<'a> Lowerer<'a> {
     }
 
     /// A leaf the reader placed for a JavaScript form, with its params. `toString()` is a text's
-    /// and a list's method as well as a number's, so it is `number_format` only on a value known
-    /// to be a number: one from a node whose output is a `Number`.
+    /// and a list's method as well as a number's, so it is `number_format` on a value known to be
+    /// a number (one from a node whose output is a `Number`), and `as_text`, as `String(x)`
+    /// writes it, on anything else.
     fn leaf_form(&mut self, leaf: &Name, params: &[(String, String)], args: &'a [Arg], number: bool, span: Span) -> R<Val> {
         let unit = interface_of(&leaf.text).expect("a genesis leaf");
         let inputs: Vec<WPort> = unit.inputs.iter().map(WPort::from_core).collect();
         if number && let [subject] = args {
             let v = self.expr(&subject.value)?;
-            let known = matches!(&v, Val::Out { outputs, port, .. } if outputs.get(*port).is_some_and(|p| p.ty == WType::Number));
-            if !known {
-                let given = params.iter().map(|(k, v)| format!("{k}: \"{v}\"")).collect::<Vec<_>>().join(", ");
-                return err(span, format!(".toString() is {0}(x, {{ {given} }}) on a number, and this value isn't known to be one: import {0} from \"holon\" and call it so, or write `${{x}}` for any value", leaf.text));
+            if typed(&v).is_some_and(|t| *t == WType::Number) {
+                return self.node_with(&leaf.text, params, &[(inputs[0].name.as_str(), v)], span);
             }
-            return self.node_with(&leaf.text, params, &[(inputs[0].name.as_str(), v)], span);
+            return self.node_with("as_text", &[], &[("value", v)], span);
         }
         let defaults: Vec<WParam> = unit.params.iter().map(WParam::from_core).collect();
         self.unit_call(&leaf.text, &inputs, &defaults, params, args, span)
+    }
+
+    /// `x.length` and `x.concat(…)`, which a text and a list both have and different leaves do,
+    /// picked by the type of the node that made `x`. On a `Text`: `text_length`, and `concat` of
+    /// it and each argument as `String(x)` writes it. On a `List`: `length`. A `concat` on
+    /// anything but a text is a list's: `extend` for a list written as one, `append` for a literal
+    /// that isn't one, and refused for anything else, which could be either. A `.length` on a
+    /// value of no known type is refused, naming the two leaves.
+    fn text_or_list(&mut self, subject: &'a Expr, method: &Name, args: &'a [Arg], span: Span) -> R<Val> {
+        let v = self.expr(subject)?;
+        let ty = typed(&v).cloned();
+        if method.text == "length" {
+            // One output of several, named `length`, as `.name` picks one.
+            if let Val::Out { id, outputs, explicit: false, .. } = &v
+                && outputs.len() > 1
+                && let Some(k) = outputs.iter().position(|p| p.name == "length")
+            {
+                return Ok(Val::Out { id: id.clone(), outputs: outputs.clone(), port: k, explicit: true });
+            }
+            return match ty {
+                Some(WType::Text) => self.node_with("text_length", &[], &[("s", v)], span),
+                Some(WType::List(_)) => self.node_with("length", &[], &[("list", v)], span),
+                Some(WType::Record) => err(span, "a record's field named length is read r[\"length\"]"),
+                _ => err(span, ".length is a text's text_length or a list's length, and this value isn't known to be either: import the one it is from \"holon\" and call it, text_length(s) or length(xs)"),
+            };
+        }
+        if ty == Some(WType::Text) {
+            let mut vals = vec![v];
+            for a in args {
+                let x = self.expr(&a.value)?;
+                vals.push(match a.value.kind {
+                    ExprKind::Text(_) | ExprKind::Interpolated(_) => x,
+                    _ => self.node_with("as_text", &[], &[("value", x)], a.value.span)?,
+                });
+            }
+            let first: Vec<WPort> = interface_of("concat").expect("a genesis leaf").inputs.iter().map(WPort::from_core).collect();
+            let ports = Self::variadic_ports(&first, vals.len());
+            let inputs: Vec<(&str, Val)> = ports.iter().map(String::as_str).zip(vals).collect();
+            return self.node_with("concat", &[], &inputs, span);
+        }
+        let mut list = v;
+        for a in args {
+            let at = a.value.span;
+            let spread = match &a.value.kind {
+                ExprKind::List(_) => true,
+                ExprKind::Number { .. } | ExprKind::Text(_) | ExprKind::Bool(_) | ExprKind::Interpolated(_) | ExprKind::Record { .. } => false,
+                _ => return err(at, "concat spreads a list and adds anything else, and this could be either: write [...xs, ...ys] for a list, [...xs, y] for an item"),
+            };
+            let item = self.expr(&a.value)?;
+            list = if spread { self.node_with("extend", &[], &[("list", list), ("items", item)], at)? } else { self.node_with("append", &[], &[("list", list), ("item", item)], at)? };
+        }
+        Ok(list)
     }
 
     /// `payment(x)` without `await`, the tree's `start(payment, x)`: start this flow's action
@@ -2807,7 +2867,6 @@ every("10s", async () => {
     #[test]
     fn the_number_forms_a_flow_lacks_are_refused() {
         let refused = |body: &str| error(&number_flow(&format!("  return {body}"))).2;
-        assert!(refused("x.s.toString()").starts_with(".toString() is number_format(x, { style: \"string\" }) on a number"), "{}", refused("x.s.toString()"));
         assert!(refused("Math.random()").contains("import { random } from \"holon:random\""));
         assert!(refused("Math.max(n)").starts_with("Math.max takes two numbers or more"));
         assert!(refused("Math.sqrt(n, 2)").starts_with("Math.sqrt takes one number"));
@@ -2819,6 +2878,106 @@ every("10s", async () => {
         assert!(refused("Math").starts_with("Math is a namespace"));
         assert!(refused("parseInt(x.s, 16, 2)").starts_with("parseInt takes a text and a radix"));
         assert!(refused("n.toLocaleString()").starts_with("a flow has no locale"));
+    }
+
+    /// An action returning `body`, its input `x`, a text `s` and a number `n` bound first.
+    fn text_flow(body: &str) -> String {
+        format!("import {{ action, append, concat, extend, flow, length, text_length }} from \"holon\"\n\nflow(\"f\")\n\nexport const t = action((x) => {{\n  const s = x.s.trim()\n  const n = parseFloat(x.n)\n{body}\n}})\n")
+    }
+
+    /// JavaScript's text forms read as their leaves, each with its params: a text's methods,
+    /// `String`'s, the URI functions, `btoa` and `atob`, and `.length` on a known text or list.
+    #[test]
+    fn javascript_s_text_forms_read_as_their_leaves() {
+        let placed = |expr: &str, leaf: &str| {
+            let d = compiled(&text_flow(&format!("  return {expr}"))).doc;
+            let node = d.nodes.iter().rev().find(|n| n.data.name == leaf).unwrap_or_else(|| panic!("{expr}: no {leaf} in {:?}", leaves(&d)));
+            ["mode", "at", "side", "count", "form", "set", "bytes", "op"].iter().filter(|k| interface_of(leaf).is_some_and(|u| u.params.iter().any(|p| p.name() == **k))).map(|k| format!("{k}={}", node.param(k))).collect::<Vec<_>>().join(",")
+        };
+        let cases = [
+            ("s.length", "text_length", ""),
+            ("s.split(\",\").length", "length", ""),
+            ("s.charAt(1)", "text_at", ""),
+            ("s.charCodeAt(0)", "code_at", "mode=unit"),
+            ("s.codePointAt(0)", "code_at", "mode=point"),
+            ("String.fromCharCode(97, 98)", "from_codes", "mode=unit"),
+            ("String.fromCodePoint(128512)", "from_codes", "mode=point"),
+            ("s.startsWith(\"a\")", "text_contains", "at=start"),
+            ("s.endsWith(\"a\", 3)", "text_contains", "at=end"),
+            ("s.includes(\"a\", 1)", "includes", ""),
+            ("s.indexOf(\"a\", 1)", "index_of", ""),
+            ("s.lastIndexOf(\"a\", 1)", "last_index_of", ""),
+            ("s.slice(1, -1)", "slice", "mode=end"),
+            ("s.substring(1, 3)", "slice", "mode=substring"),
+            ("s.split(\",\", 2)", "split", ""),
+            ("s.trim()", "trim", "side=both"),
+            ("s.trimStart()", "trim", "side=start"),
+            ("s.trimEnd()", "trim", "side=end"),
+            ("s.padStart(5, \"0\")", "pad", "side=start"),
+            ("s.padEnd(5)", "pad", "side=end"),
+            ("s.repeat(3)", "repeat", ""),
+            ("s.replace(\"a\", \"b\")", "replace", "count=first"),
+            ("s.replaceAll(\"a\", \"b\")", "replace", "count=all"),
+            ("s.normalize()", "normalize", "form=NFC"),
+            ("s.normalize(\"NFKD\")", "normalize", "form=NFKD"),
+            ("s.isWellFormed()", "is_well_formed", ""),
+            ("s.toWellFormed()", "concat", ""),
+            ("s.concat(\"-\", n)", "concat", ""),
+            ("s.toLocaleUpperCase()", "uppercase", ""),
+            ("encodeURIComponent(s)", "uri_encode", "set=component"),
+            ("encodeURI(s)", "uri_encode", "set=uri"),
+            ("decodeURIComponent(s)", "uri_decode", "set=component"),
+            ("decodeURI(s)", "uri_decode", "set=uri"),
+            ("btoa(s)", "base64", "mode=encode,bytes=latin1"),
+            ("atob(s)", "base64", "mode=decode,bytes=latin1"),
+            ("String(n)", "as_text", ""),
+            ("x.s.toString()", "as_text", ""),
+            ("\"n=\" + n", "add", ""),
+            ("s < x.t", "compare", "op=<"),
+        ];
+        for (expr, leaf, params) in cases {
+            assert_eq!(placed(expr, leaf), params, "{expr}");
+        }
+    }
+
+    /// Each text form lowers to the unit its spelled-out form does: an index left out to 0, a
+    /// text's `concat` to `concat` of `String(x)` of each argument, `String(x)` and `toString()`
+    /// on what isn't known to be a number to a template, `.length` to the leaf of the value's
+    /// type, `+` with a text to `add`, `String.raw` to the template of its text as written.
+    #[test]
+    fn a_text_form_is_the_unit_of_what_it_stands_for() {
+        let same = [
+            ("return s.charAt()", "return s.charAt(0)"),
+            ("return s.charCodeAt()", "return s.charCodeAt(0)"),
+            ("return s.concat(\"-\", n)", "return concat(s, \"-\", `${n}`)"),
+            ("return \"a\".concat(n, \"b\")", "return `a${n}b`"),
+            ("return s.toWellFormed()", "return concat(s, \"\")"),
+            ("return s.valueOf()", "return s"),
+            ("return String(n)", "return `${n}`"),
+            ("return x.s.toString()", "return `${x.s}`"),
+            ("return String.fromCharCode()", "return \"\""),
+            ("return String.raw`a\\n${n}`", "return `a\\\\n${n}`"),
+            ("return s.length", "return text_length(s)"),
+            ("return s.split(\",\").length", "return length(s.split(\",\"))"),
+            ("return x.xs.concat([1], 2)", "return append(extend(x.xs, [1]), 2)"),
+            ("let u = s\n  u += \"!\"\n  return u", "let u = s\n  u = u + \"!\"\n  return u"),
+        ];
+        for (form, spelled) in same {
+            let (a, b) = (compiled(&text_flow(&format!("  {form}"))), compiled(&text_flow(&format!("  {spelled}"))));
+            assert_eq!(hash_of(&a.doc), hash_of(&b.doc), "{form} is {spelled}");
+        }
+        // `+` beside a text is one `add`, its operands in order.
+        let d = compiled(&text_flow("  return \"a\" + n + s")).doc;
+        assert_eq!(leaves(&d).iter().filter(|l| *l == "add").count(), 1);
+    }
+
+    /// What a text form can't be read as is refused, saying what to write instead.
+    #[test]
+    fn the_text_forms_a_flow_lacks_are_refused() {
+        let refused = |body: &str| error(&text_flow(&format!("  return {body}"))).2;
+        assert!(refused("x.s.length").starts_with(".length is a text's text_length or a list's length, and this value isn't known to be either"), "{}", refused("x.s.length"));
+        assert!(refused("({ a: 1 }).length").starts_with("a record's field named length is read r[\"length\"]"));
+        assert!(refused("x.xs.concat(x.ys)").starts_with("concat spreads a list and adds anything else, and this could be either"));
     }
 
     /// A flow's own function keeps its name's calls, as JavaScript's would shadow the global;
