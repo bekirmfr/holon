@@ -1623,6 +1623,216 @@
   [0, 55] Record({"body": Record({"error": Text("no value to answer with")}), "status": Number(400.0)})
   [0] Record({"body": Record({"error": Text("no value to answer with")}), "status": Number(400.0)})
   => Record({"body": Record({"error": Text("no value to answer with")}), "status": Number(400.0)})
+== leaderboard · POST /board · input 0
+  [0, 0, 0] Record({})
+  [0, 0, 1] Record({"after": Text("a")})
+  [0, 0, 2] Record({"content-type": Text("application/json")})
+  [0, 0, 3] Text("")
+  [0, 0, 4] ·
+  [0, 0] Record({"body": Text(""), "headers": Record({"content-type": Text("application/json")}), "method": Text("POST"), "params": Record({}), "path": Text("/board"), "… #e0ecc1a0a78317e7 | Record({}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("") | ·
+  [0, 6] Record({})
+  [0, 1] ·
+  [0, 2] ·
+  [0, 3] Number(0.0)
+  [0, 4] Number(3.0)
+  [0, 5] ·
+  [0, 7] ·
+  [0, 8] ·
+  [0, 9] ·
+  [0, 10] ·
+  [0, 11] ·
+  [0, 12] ·
+  [0, 13] ·
+  [0, 14] ·
+  [0, 15] ·
+  [0, 16] Text("nobody")
+  [0, 17] ·
+  [0, 18] ·
+  [0, 19] ·
+  [0, 20] Number(0.0)
+  [0, 21] ·
+  [0, 22] ·
+  [0, 23, 0] Record({})
+  [0, 23, 1] Number(200.0)
+  [0, 23, 2] Record({"status": Number(200.0)})
+  [0, 23, 3] ·
+  [0, 23, 4] Record({"body": Record({"error": Text("no value to answer with")}), "status": Number(400.0)})
+  [0, 23] Record({"body": Record({"error": Text("no value to answer with")}), "status": Number(400.0)})
+  [0] Record({"body": Record({"error": Text("no value to answer with")}), "status": Number(400.0)})
+  => Record({"body": Record({"error": Text("no value to answer with")}), "status": Number(400.0)})
+== leaderboard · POST /board · input 1
+  [0, 0, 0] Record({})
+  [0, 0, 1] Record({"after": Text("a")})
+  [0, 0, 2] Record({"content-type": Text("application/json")})
+  [0, 0, 3] Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\"event\":\"gig\"… #7441bf0c70954823
+  [0, 0, 4] Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
+  [0, 0] Record({"body": Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\… #42be1656bd901a41 | Record({}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\"event\":\"gig\"… #7441bf0c70954823 | Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
+  [0, 6] Record({})
+  [0, 1] ·
+  [0, 2] ·
+  [0, 3] Number(0.0)
+  [0, 4] Number(3.0)
+  [0, 5] ·
+  [0, 7] ·
+  [0, 8] ·
+  [0, 9] ·
+  [0, 10] ·
+  [0, 11] ·
+  [0, 12] ·
+  [0, 13] ·
+  [0, 14] ·
+  [0, 15] ·
+  [0, 16] Text("nobody")
+  [0, 17] ·
+  [0, 18] ·
+  [0, 19] ·
+  [0, 20] Number(0.0)
+  [0, 21] ·
+  [0, 22] ·
+  [0, 23, 0] Record({})
+  [0, 23, 1] Number(200.0)
+  [0, 23, 2] Record({"status": Number(200.0)})
+  [0, 23, 3] ·
+  [0, 23, 4] Record({"body": Record({"error": Text("no value to answer with")}), "status": Number(400.0)})
+  [0, 23] Record({"body": Record({"error": Text("no value to answer with")}), "status": Number(400.0)})
+  [0] Record({"body": Record({"error": Text("no value to answer with")}), "status": Number(400.0)})
+  => Record({"body": Record({"error": Text("no value to answer with")}), "status": Number(400.0)})
+== leaderboard · POST /board · input 2
+  [0, 0, 0] Record({})
+  [0, 0, 1] Record({"after": Text("a")})
+  [0, 0, 2] Record({"content-type": Text("application/json")})
+  [0, 0, 3] Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,14.25,51.25,88.2… #30defbf00c11dd9c
+  [0, 0, 4] Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
+  [0, 0] Record({"body": Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,… #7ca8e48599cab947 | Record({}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,14.25,51.25,88.2… #30defbf00c11dd9c | Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
+  [0, 6] Record({})
+  [0, 1] ·
+  [0, 2] ·
+  [0, 3] Number(0.0)
+  [0, 4] Number(3.0)
+  [0, 5] ·
+  [0, 7] ·
+  [0, 8] ·
+  [0, 9] ·
+  [0, 10] ·
+  [0, 11] ·
+  [0, 12] ·
+  [0, 13] ·
+  [0, 14] ·
+  [0, 15] ·
+  [0, 16] Text("nobody")
+  [0, 17] ·
+  [0, 18] ·
+  [0, 19] ·
+  [0, 20] Number(0.0)
+  [0, 21] ·
+  [0, 22] ·
+  [0, 23, 0] Record({})
+  [0, 23, 1] Number(200.0)
+  [0, 23, 2] Record({"status": Number(200.0)})
+  [0, 23, 3] ·
+  [0, 23, 4] Record({"body": Record({"error": Text("no value to answer with")}), "status": Number(400.0)})
+  [0, 23] Record({"body": Record({"error": Text("no value to answer with")}), "status": Number(400.0)})
+  [0] Record({"body": Record({"error": Text("no value to answer with")}), "status": Number(400.0)})
+  => Record({"body": Record({"error": Text("no value to answer with")}), "status": Number(400.0)})
+== leaderboard · POST /board/:player · input 0
+  [0, 0, 0] Record({"player": Text("tea")})
+  [0, 0, 1] Record({"after": Text("a")})
+  [0, 0, 2] Record({"content-type": Text("application/json")})
+  [0, 0, 3] Text("")
+  [0, 0, 4] ·
+  [0, 0] Record({"body": Text(""), "headers": Record({"content-type": Text("application/json")}), "method": Text("POST"), "params": Record({"player": Text("tea")}), "pat… #861e928a5c9b091f | Record({"player": Text("tea")}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("") | ·
+  [0, 6] Record({})
+  [0, 2] Text("tea")
+  [0, 7] Record({"player": Text("tea")})
+  [0, 1] ·
+  [0, 3] ·
+  [0, 4] ·
+  [0, 8] ·
+  [0, 9] ·
+  [0, 10] ·
+  [0, 11] ·
+  [0, 12] ·
+  [0, 13] ·
+  [0, 14] ·
+  [0, 5] ·
+  [0, 15] ·
+  [0, 16] Number(1.0)
+  [0, 17] ·
+  [0, 18] ·
+  [0, 19, 0] Record({})
+  [0, 19, 1] Number(200.0)
+  [0, 19, 2] Record({"status": Number(200.0)})
+  [0, 19, 3] ·
+  [0, 19, 4] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0, 19] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  => Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+== leaderboard · POST /board/:player · input 1
+  [0, 0, 0] Record({"player": Text("tea")})
+  [0, 0, 1] Record({"after": Text("a")})
+  [0, 0, 2] Record({"content-type": Text("application/json")})
+  [0, 0, 3] Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\"event\":\"gig\"… #7441bf0c70954823
+  [0, 0, 4] Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
+  [0, 0] Record({"body": Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\… #8516c7ea737ffe0b | Record({"player": Text("tea")}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\"event\":\"gig\"… #7441bf0c70954823 | Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
+  [0, 6] Record({})
+  [0, 2] Text("tea")
+  [0, 7] Record({"player": Text("tea")})
+  [0, 1] ·
+  [0, 3] ·
+  [0, 4] ·
+  [0, 8] ·
+  [0, 9] ·
+  [0, 10] ·
+  [0, 11] ·
+  [0, 12] ·
+  [0, 13] ·
+  [0, 14] ·
+  [0, 5] ·
+  [0, 15] ·
+  [0, 16] Number(1.0)
+  [0, 17] ·
+  [0, 18] ·
+  [0, 19, 0] Record({})
+  [0, 19, 1] Number(200.0)
+  [0, 19, 2] Record({"status": Number(200.0)})
+  [0, 19, 3] ·
+  [0, 19, 4] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0, 19] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  => Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+== leaderboard · POST /board/:player · input 2
+  [0, 0, 0] Record({"player": Text("tea")})
+  [0, 0, 1] Record({"after": Text("a")})
+  [0, 0, 2] Record({"content-type": Text("application/json")})
+  [0, 0, 3] Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,14.25,51.25,88.2… #30defbf00c11dd9c
+  [0, 0, 4] Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
+  [0, 0] Record({"body": Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,… #2d90133c6d20c249 | Record({"player": Text("tea")}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,14.25,51.25,88.2… #30defbf00c11dd9c | Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
+  [0, 6] Record({})
+  [0, 2] Text("tea")
+  [0, 7] Record({"player": Text("tea")})
+  [0, 1] ·
+  [0, 3] ·
+  [0, 4] ·
+  [0, 8] ·
+  [0, 9] ·
+  [0, 10] ·
+  [0, 11] ·
+  [0, 12] ·
+  [0, 13] ·
+  [0, 14] ·
+  [0, 5] ·
+  [0, 15] ·
+  [0, 16] Number(1.0)
+  [0, 17] ·
+  [0, 18] ·
+  [0, 19, 0] Record({})
+  [0, 19, 1] Number(200.0)
+  [0, 19, 2] Record({"status": Number(200.0)})
+  [0, 19, 3] ·
+  [0, 19, 4] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0, 19] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  => Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
 == heartbeat · every 10s · input 0
   [0, 0, 0] ·
   [0, 0] ·

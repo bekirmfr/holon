@@ -239,6 +239,18 @@ static SAMPLES: &[Sample] = &[
         text: include_str!("../samples/loan.holon.ts"),
     },
     Sample {
+        name: "leaderboard",
+        title: "Leaderboard (a list's methods)",
+        description: "Post a round's scores and get the board JavaScript's list methods make of it: toSorted ranks by points (a tie keeps its order), slice and map's index give the top three their places, new Set names each player once, find the first to reach 100, some whether anyone scored nothing, and reduce the total. POST /board/:player filters one player's points, takes their best with reduce and no start, and finds where it ranks with findIndex. No list changes in place.",
+        shows: &["list leaves", "toSorted", "filter", "find", "findIndex", "some", "new Set", "map with an index", "reduce without a start"],
+        port: Some("8174"),
+        secrets: &[],
+        optional: &[],
+        browsers: None,
+        try_it: r#"curl -d '{"scores":[{"player":"ada","points":90},{"player":"bo","points":120},{"player":"cy","points":0},{"player":"ada","points":130}]}' http://127.0.0.1:8174/board answers {"any_zero":true,"first_to_100":"bo","players":["ada","bo","cy"],"top":["1. ada 130","2. bo 120","3. ada 90"],"total":340}; the same body to /board/ada answers {"best":130,"place":1,"player":"ada","points":[90,130],"rounds":2}, to /board/dee 404; a body without scores 400"#,
+        text: include_str!("../samples/leaderboard.holon.ts"),
+    },
+    Sample {
         name: "heartbeat",
         title: "Heartbeat",
         description: "A clock flow: every 10 seconds it records the time, counts the beats in its state, and keeps the time of the first beat (a fallback that is itself a value: coalesce).",
