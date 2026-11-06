@@ -411,26 +411,26 @@ as `1000000000000000000000` (they write JavaScript's `1e+21` and `1e-7` now, `pr
 `c ? a : b` gives `b` when `c` is true and `a` is absent, which [LANGUAGE.md](../../LANGUAGE.md)
 §6.4 chose (a fallback, not a branch) and §9 lists.
 
-**Open, for a decision:**
+**Decided, and what is open:**
 
-1. **Text units.** JavaScript counts UTF-16 code units; Holon's text leaves count Unicode scalar
-   values. Counting code units measured 1.0 to 1.7 times scalars, the same class, and makes
-   `length`, `slice`, `indexOf` and `charCodeAt` JavaScript's; a result that would split a
-   surrogate pair gives nothing. It changes what those leaves give on astral text
-   ([texts.md](js-library-races/texts.md#units)).
-2. **Key order.** JavaScript keeps a record's keys in insertion order, integers first; Holon's are
-   sorted. Keeping them sorted is recommended: insertion order would make two equal records hash
-   or print differently. `JSON.stringify(v, keys)` writes keys in a chosen order
+1. **Text units.** Decided and built: the text leaves count UTF-16 code units, as JavaScript's do
+   (measured 1.0 to 1.7 times counting scalar values, the same class), so `length`, `slice`,
+   `indexOf` and `charCodeAt` are JavaScript's; a result that would split a surrogate pair gives
+   nothing ([texts.md](js-library-races/texts.md#units)).
+2. **Key order.** Decided: a record's keys stay sorted, where JavaScript keeps insertion order,
+   integers first; insertion order would make two equal records hash or print differently.
+   `JSON.stringify(v, keys)` writes keys in a chosen order
    ([records.md](js-library-races/records.md#key-order)).
 3. **Inline library composites.** Placed in its caller's graph instead of called, `x * -1` costs
    1.2 times a leaf, `abs` 2.05, `max` 2.07, `Number.isFinite` 1.48. A reader that inlines a
    library composite would turn several leaves into reader rows, at the price of the one named node
    the canvas shows ([numbers.md](js-library-races/numbers.md)).
 4. **A family's parameter checked when wired.** Decided and built: core's `validate` refuses a
-   family's parameter outside its values (`ValidationError::FamilyParam`, `catalog::FAMILIES`),
-   and the author refuses it where it is written.
-5. **A regular expression's budget.** `regress` backtracks and has no step limit: literal patterns
-   first, a step budget, or a cap on the text's length.
+   family's parameter outside its values, `compare {op}`'s included (`ValidationError::FamilyParam`,
+   `catalog::FAMILIES`), and the author refuses it where it is written.
+5. **Regular expressions.** Decided: they wait. The reader refuses a pattern, naming `js()`.
+   When they come, their budget is open: `regress` backtracks and has no step limit (literal
+   patterns first, a step budget, or a cap on the text's length).
 6. **Smaller ones.** Refuse `escape`/`unescape` (Annex B); what `+` and `String(x)` give for a list
    or a record (JSON today, `"1,2"` and `"[object Object]"` in JavaScript); `JSON.parse` of a key
    given twice (refused by design, JavaScript keeps the last); whether `==` is refused rather than
