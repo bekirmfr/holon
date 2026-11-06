@@ -589,7 +589,26 @@ So the getters are expressible once `floor` is a leaf (numbers.md). They lose on
 ## Reader changes
 
 Each is in `crates/holon-author/src/lang/ts.rs`, with a test of its JavaScript meaning. What it
-says today was checked by compiling each form.
+said before ("today" below) was checked by compiling each form. All are built (2026-11-07), and
+the printer writes each back in its JavaScript form (`print.rs`; the print and `fmt` round trips
+hold). Where the build differs from the plan below:
+
+- `new Date(text)` is `date_part {part: "time"}` of the text, not `date_parse`: every date leaf
+  takes a text as `new Date(text)` does, so `new Date(t).getUTCHours()` is one node whichever `t`
+  is. `new Date(ms)` is always a `date_part` node; no node is left out for a known whole time
+  value.
+- A date's methods are read on `new Date(x)` itself and on a local bound from `new Date`. A local
+  from `Date.UTC` or `Date.parse` is a number in JavaScript, not a Date, so its date methods are
+  refused, naming `new Date(x).getUTCHours()`, as on any other value; `: Date` annotations aren't
+  read. A Date bound to a name is read only by its methods: returned, compared or put in a record,
+  it is refused, naming `d.getTime()` and `d.toISOString()`, since JavaScript's would be an
+  object (`JSON.stringify` writes it as its ISO text).
+- A setter on a Date bound to a name, as a value, is the time value it gives; in `const t =
+  d.setUTCHours(h)` the local becomes the new date too, and elsewhere in an expression the local is
+  read no more.
+- The printer writes a date leaf as a method of `new Date(t)`, `new Date(t).getTime()` for the
+  time value, and `entries` as `Object.entries(r)` where `r` is known to be a record, else as a
+  list's `[...xs.entries()]`.
 
 **`method_call`'s `(None, "Object")` arm** today answers "Object has keys, not "…": do the rest in
 a js() function".

@@ -2674,6 +2674,131 @@ every("10s", async () => {
         assert!(held, "the function (_) => 1: a const, and the node holding _");
     }
 
+    fn record_flow(body: &str) -> String {
+        format!("import {{ action, flow, insert, merge, type_of }} from \"holon\"\n\nflow(\"f\")\n\nexport const t = action((x) => {{\n  const r = x.r\n{body}\n}})\n")
+    }
+
+    /// JavaScript's record, JSON and date forms read as their leaves, each with the params it
+    /// sets (`fn` where a function is given).
+    #[test]
+    fn javascript_s_record_and_date_forms_read_as_their_leaves() {
+        let placed = |expr: &str, leaf: &str| {
+            let d = compiled(&record_flow(&format!("  return {expr}"))).doc;
+            let node = d.nodes.iter().rev().find(|n| n.data.name == leaf).unwrap_or_else(|| panic!("{expr}: no {leaf} in {:?}", leaves(&d)));
+            let params = interface_of(leaf).map(|u| u.params.iter().map(|p| p.name().to_string()).collect::<Vec<_>>()).unwrap_or_default();
+            params.iter().filter(|k| !node.param(k).is_empty()).map(|k| if k == "fn" { k.clone() } else { format!("{k}={}", node.param(k)) }).collect::<Vec<_>>().join(",")
+        };
+        let cases = [
+            ("Object.values(r)", "values", ""),
+            ("Object.entries(r)", "entries", ""),
+            ("Object.fromEntries(x.pairs)", "from_entries", ""),
+            ("Object.getOwnPropertyNames(r)", "keys", ""),
+            ("Object.groupBy(x.xs, (v) => v.kind)", "group_by", "fn"),
+            ("Object.hasOwn(r, \"k\")", "has", ""),
+            ("r.hasOwnProperty(\"k\")", "has", ""),
+            ("\"k\" in r", "has", ""),
+            ("Object.is(r, x.s)", "same_value", ""),
+            ("typeof r", "type_of", ""),
+            ("{ ...r, ...x.s }", "merge", ""),
+            ("Object.assign({}, r, x.s)", "merge", ""),
+            ("{ [x.k]: 1 }", "insert", ""),
+            ("JSON.parse(x.t, (k, v) => [k, v])", "json_parse", "fn"),
+            ("JSON.stringify(r, null, 2)", "json_stringify", "indent=  "),
+            ("JSON.stringify(r, undefined, 20)", "json_stringify", "indent=          "),
+            ("JSON.stringify(r, [\"id\", \"name\"])", "json_stringify", "keys=[\"id\",\"name\"]"),
+            ("JSON.stringify(r, (k, v) => [k, v], \"\\t\")", "json_stringify", "indent=\t,fn"),
+            ("new Date(x.t).getTime()", "date_part", "part=time"),
+            ("new Date(x.t).valueOf()", "date_part", "part=time"),
+            ("new Date(x.t).getUTCFullYear()", "date_part", "part=year"),
+            ("new Date(x.t).getUTCHours()", "date_part", "part=hours"),
+            ("new Date(x.t).toISOString()", "date_text", "format=iso"),
+            ("new Date(x.t).toJSON()", "date_text", "format=iso"),
+            ("new Date(x.t).toUTCString()", "date_text", "format=utc"),
+            ("new Date(x.t).setUTCHours(1, 2)", "date_set", "part=hours"),
+            ("new Date(x.t).setUTCFullYear(2001)", "date_set", "part=year"),
+            ("Date.UTC(2000, 1, 29)", "date_utc", ""),
+            ("Date.parse(x.t)", "date_parse", ""),
+        ];
+        for (expr, leaf, params) in cases {
+            assert_eq!(placed(expr, leaf), params, "{expr}");
+        }
+    }
+
+    /// Each record and date form lowers to the unit its spelled-out form does: a literal read
+    /// left to right, a Date bound to a name its time value, and the copies the value itself.
+    #[test]
+    fn a_record_or_date_form_is_the_unit_of_what_it_stands_for() {
+        let same = [
+            ("return { ...r, ...x.s, ...x.u }", "return merge(r, x.s, x.u)"),
+            ("return { a: 1, ...r }", "return merge({ a: 1 }, r)"),
+            ("return { ...r, a: 1, ...x.s }", "return merge({ ...r, a: 1 }, x.s)"),
+            ("return { ...r, [x.k]: 1 }", "return insert(r, x.k, 1)"),
+            ("return { [x.k]: 1, b: 2 }", "return { ...insert({}, x.k, 1), b: 2 }"),
+            ("return Object.assign({}, r)", "return r"),
+            ("return Object.assign({ a: 1 }, r)", "return { a: 1, ...r }"),
+            ("return Object.freeze(r)", "return r"),
+            ("return structuredClone(r)", "return r"),
+            ("return Object.create(null)", "return {}"),
+            ("const s = { ...r }\n  Object.assign(s, x.u)\n  return s", "return { ...r, ...x.u }"),
+            ("return typeof r === \"object\"", "return (type_of(r) ?? \"undefined\") === \"object\""),
+            ("return \"k\" in r", "return Object.hasOwn(r, \"k\")"),
+            ("return JSON.stringify(r, null, \"  \")", "return JSON.stringify(r, undefined, 2)"),
+            ("return JSON.stringify(r, null)", "return JSON.stringify(r)"),
+            ("const d = new Date(x.t)\n  return d.getUTCFullYear()", "return new Date(new Date(x.t).getTime()).getUTCFullYear()"),
+            ("const d = new Date(x.t)\n  return d.getTime()", "return new Date(x.t).getTime()"),
+            ("const d = new Date(x.t)\n  d.setUTCHours(0, 0, 0, 0)\n  return d.toISOString()", "return new Date(new Date(new Date(x.t).getTime()).setUTCHours(0, 0, 0, 0)).toISOString()"),
+            ("const d = new Date(x.t)\n  const e = new Date(d)\n  return e.getUTCDate()", "return new Date(new Date(x.t).getTime()).getUTCDate()"),
+            ("const d = new Date(x.t)\n  const ms = d.setUTCHours(0)\n  return [ms, d.toISOString()]", "const s = new Date(new Date(x.t).getTime()).setUTCHours(0)\n  return [s, new Date(s).toISOString()]"),
+            ("const d = new Date(x.t)\n  return d.setUTCDate(1)", "return new Date(new Date(x.t).getTime()).setUTCDate(1)"),
+            ("const f = { a: 1 }\n  Object.freeze(f)\n  return f", "return { a: 1 }"),
+            ("const d = new Date(x.t)\n  d.setTime(d.getTime() + 5)\n  return d.getUTCDay()", "return new Date(new Date(new Date(x.t).getTime() + 5).getTime()).getUTCDay()"),
+        ];
+        for (form, spelled) in same {
+            let (a, b) = (compiled(&record_flow(&format!("  {form}"))), compiled(&record_flow(&format!("  {spelled}"))));
+            assert_eq!(hash_of(&a.doc), hash_of(&b.doc), "{form} is {spelled}");
+        }
+    }
+
+    /// The record and date forms a flow can't have are refused, each naming what it can write.
+    #[test]
+    fn the_record_and_date_forms_a_flow_lacks_are_refused() {
+        let refused = |body: &str| error(&record_flow(&format!("  {body}"))).2;
+        let cases = [
+            ("return new Date()", "new Date() is the time now, which a flow reads from its clock: import { now } from \"holon:clock\", in seconds, and new Date(now * 1000) is its date"),
+            ("return Date.now()", "Date.now() is the time now, which a flow reads from its clock: import { now } from \"holon:clock\", in seconds, so now * 1000"),
+            ("return new Date(2000, 1)", "new Date(y, m, …) is local time, which a flow has none of: new Date(Date.UTC(y, m, …)) is the date in UTC"),
+            ("return new Date(x.t)", "new Date(x.t) is a Date, which a flow holds as its time value and reads by its methods: new Date(x.t).getTime() is the number, new Date(x.t).toISOString() the text; or name it, const d = new Date(x.t)"),
+            ("const d = new Date(x.t)\n  return d", "\"d\" is a Date, which a flow holds as its time value and reads by its methods: d.getTime() is the number, d.toISOString() the text"),
+            ("return new Date(x.t).getHours()", "a flow has no local time, only UTC: new Date(x.t).getUTCHours(…)"),
+            ("return new Date(x.t).toString()", "a flow has no local time, only UTC: new Date(x.t).toISOString(), or new Date(x.t).toUTCString()"),
+            ("const d = new Date(x.t)\n  const t = [d.setUTCHours(1)]\n  return d.getTime()", "\"d\" is read after d.setUTCHours(…) changed it in place: give the change a statement of its own, d.setUTCHours(…), and read d after it"),
+            ("const d = new Date(x.t)\n  const t = [d.setUTCHours(1)]\n  return [t, d]", "\"d\" is a Date, which a flow holds as its time value and reads by its methods: d.getTime() is the number, d.toISOString() the text"),
+            ("const f = Object.freeze({ a: 1 })\n  f.a = 2\n  return f", "\"f\" is frozen, and a change in place would throw in JavaScript: write a new record, const copy = { ...f, k: v }"),
+            ("const f = { a: 1 }\n  Object.seal(f)\n  delete f.a\n  return f", "\"f\" is frozen, and a change in place would throw in JavaScript: write a new record, const copy = { ...f, k: v }"),
+            ("const f = Object.freeze({ a: 1 })\n  Object.assign(f, x.s)\n  return f", "\"f\" is frozen, and a change in place would throw in JavaScript: write a new record, const copy = { ...f, k: v }"),
+            ("return new Date(x.t).setUTCDate(1, 2)", "setUTCDate takes one number: d.setUTCDate(n)"),
+            ("return new Date(x.t).setUTCHours()", "setUTCHours takes 1 to 4 numbers, from its own part on"),
+            ("return x.t.getUTCHours()", "getUTCHours is a Date's: new Date(x).getUTCHours(…), x a time value or a text, or a Date bound with const d = new Date(x)"),
+            ("return Date.UTC()", "Date.UTC takes a year and, if there are, a month (from 0), date, hours, minutes, seconds and milliseconds: Date.UTC(2000, 1, 29)"),
+            ("return new Map()", "a flow's map is a record, by text key: {} to start, r[k] to read, { ...r, [k]: v } to add"),
+            ("return r instanceof Array", "a flow's values have no classes: Array.isArray(x) tells a list, typeof x the rest"),
+            ("return Object.assign(r, x.s)", "Object.assign changes its first record in place, which a flow's record doesn't: { ...a, ...b } is the record they make together"),
+            ("Object.assign(x.r, x.s)\n  return 1", "Object.assign changes its first record in place, which a flow's record doesn't: { ...a, ...b } is the record they make together"),
+            ("return Object.defineProperty(r, \"k\", {})", "a record holds values by key, with no descriptors and no prototype: { ...r, k: v } is r with k"),
+            ("return Object.isFrozen(r)", "a flow's values never change in place, so each is frozen already: Object.isFrozen has nothing to tell"),
+            ("return Object.create(r)", "a record has no prototype: Object.create(null) is {}, and nothing else is made this way"),
+            ("return Object.values(r, 1)", "Object.values takes one record: Object.values(r)"),
+            ("return JSON.stringify(r, x.keys)", "JSON.stringify's replacer is written in place: null, a list of keys, [\"id\", \"name\"], or a function of each key and value, (k, v) => …"),
+            ("return JSON.stringify(r, null, x.n)", "JSON.stringify's indent is written in place: a number of spaces, 2, or a text, \"\\t\""),
+            ("return JSON.stringify(r, [1])", "a replacer's keys are texts written in place: [\"id\", \"name\"]"),
+            ("return JSON.parse(x.t, (k, v, w) => v)", "JSON.parse's function takes the key and the value: (k, v) => …"),
+            ("return Object.groupBy(x.xs, (v, i) => i)", "groupBy's function takes the item: (x) => …; an index isn't passed"),
+        ];
+        for (body, want) in cases {
+            assert_eq!(refused(body), want, "{body}");
+        }
+    }
+
     /// The forms a flow can't have are refused, each naming what it can write.
     #[test]
     fn the_number_forms_a_flow_lacks_are_refused() {

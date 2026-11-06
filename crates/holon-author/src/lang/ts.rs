@@ -172,6 +172,12 @@ struct Frame {
     /// The bindings a method changed in place, read as the list it gave (`xs.sort()`), with
     /// the method: read after, refused, as JavaScript's would be the list changed.
     changed: BTreeMap<String, String>,
+    /// The bindings that are a Date (`const d = new Date(x)`), each holding its time value: read
+    /// only by a Date's methods, as JavaScript's is an object.
+    dates: BTreeSet<String>,
+    /// The bindings `Object.freeze`, `seal` or `preventExtensions` was given: a change in place,
+    /// which would throw in JavaScript, is refused.
+    frozen: BTreeSet<String>,
     /// Whether it is a route's: a route answers and is done, so it doesn't wait.
     route: bool,
 }
@@ -1147,9 +1153,33 @@ impl<'s, 't> Reader<'s, 't> {
                 }
                 continue;
             };
+            // `const t = d.setUTCHours(h)`: `d` is the new date, and `t` its time value.
+            if let js::Expression::CallExpression(c) = self.unwrap(init)
+                && let Some((ts, name, method)) = self.date_mutation(c)
+            {
+                self.set_date(c, &ts, name, &method, stmts)?;
+                let Some(Local::Bound(n) | Local::Var(Some(n))) = self.lookup(&ts) else { unreachable!("a Date just given its value") };
+                let value = Expr { kind: ExprKind::Name(n), span: self.span(c.span) };
+                self.destructure(&d.id, value, decl, stmts)?;
+                continue;
+            }
+            // `const d = new Date(x)`: a Date, held as its time value, read by its methods.
+            if let js::BindingPattern::BindingIdentifier(id) = &d.id
+                && let Some(n) = self.new_date(init)
+            {
+                let value = self.date_value(n)?;
+                let span = self.span(id.span);
+                self.bind_name(id.name.as_str(), span, value, decl, stmts)?;
+                self.mark_date(id.name.as_str());
+                continue;
+            }
             let value = self.expr(init)?;
             let from_local = self.share(init);
+            let frozen = self.frozen_call(init).is_some();
             self.destructure(&d.id, value, decl, stmts)?;
+            if frozen && let js::BindingPattern::BindingIdentifier(id) = &d.id {
+                self.mark_frozen(id.name.as_str());
+            }
             if from_local {
                 // `const b = a`, `const { items } = order`: what they bind holds what `a` does.
                 let mut names = Vec::new();
@@ -1343,6 +1373,12 @@ impl<'s, 't> Reader<'s, 't> {
             }
             js::Expression::UnaryExpression(u) if u.operator == js::UnaryOperator::Delete => self.delete(u, stmts),
             js::Expression::CallExpression(c) if let Some((ts, method)) = self.local_method(c) => self.mutate(c, &ts, &method, stmts),
+            js::Expression::CallExpression(c) if let Some((ts, name, method)) = self.date_mutation(c) => self.set_date(c, &ts, name, &method, stmts),
+            js::Expression::CallExpression(c) if let Some(ts) = self.assigned_local(c) => self.assign_into(c, &ts, stmts),
+            js::Expression::CallExpression(_) if let Some(js::Expression::Identifier(t)) = self.frozen_call(e).and_then(|a| a.as_expression()).map(|x| self.unwrap(x)) && self.lookup(t.name.as_str()).is_some() => {
+                self.mark_frozen(t.name.as_str());
+                Ok(())
+            }
             other => {
                 let value = self.expr(other)?;
                 let after = if self.contains_sink(&value) { self.trigger(at) } else { None };
@@ -1377,6 +1413,18 @@ impl<'s, 't> Reader<'s, 't> {
             return self.assign_pattern(&a.left, &a.right, stmts);
         };
         let place = self.place(target)?;
+        // `d = new Date(x)`: `d` is a Date again.
+        if op.is_none()
+            && number.is_none()
+            && let Place::Local(ts, _) = &place
+            && let Some(n) = self.new_date(&a.right)
+        {
+            let ts = ts.clone();
+            let value = self.date_value(n)?;
+            self.write_place(place, value, at, stmts, start)?;
+            self.mark_date(&ts);
+            return Ok(());
+        }
         let rhs = self.expr(&a.right)?;
         let value = match op {
             None if let Some((name, params)) = number => {
@@ -1688,6 +1736,9 @@ impl<'s, 't> Reader<'s, 't> {
     fn check_unshared(&self, ts: &str, at: Span) -> R<()> {
         if self.frame.params.contains(ts) {
             return fail(at, format!("\"{ts}\" is a parameter, which a change in place would change for whoever passed it too: copy it first, const copy = {{ ...{ts} }}"));
+        }
+        if matches!(self.lookup(ts), Some(Local::Bound(n) | Local::Var(Some(n))) if self.frame.frozen.contains(&n)) {
+            return fail(at, format!("\"{ts}\" is frozen, and a change in place would throw in JavaScript: write a new record, const copy = {{ ...{ts}, k: v }}"));
         }
         let held = match self.lookup(ts) {
             Some(Local::Bound(n) | Local::Var(Some(n))) => self.frame.shared.contains(&n),
@@ -2675,6 +2726,11 @@ impl<'s, 't> Reader<'s, 't> {
                     Ok(leaf("bitwise", &[("op", "xor")], vec![x, minus_one(span)], span))
                 }
                 js::UnaryOperator::Delete => fail(span, "delete is a statement: delete notes[k]"),
+                // What JavaScript's would say, and "undefined" where nothing arrives.
+                js::UnaryOperator::Typeof => {
+                    let x = self.expr(&u.argument)?;
+                    Ok(binary_at(BinOp::Coalesce, leaf("type_of", &[], vec![x], span), text_expr("undefined", span), span))
+                }
                 op => fail(span, format!("{} isn't an operator Holon has", op.as_str())),
             },
             js::Expression::BinaryExpression(b) => {
@@ -2699,6 +2755,12 @@ impl<'s, 't> Reader<'s, 't> {
                     B::Subtraction => BinOp::Sub,
                     B::Multiplication => BinOp::Mul,
                     B::Division => BinOp::Div,
+                    // A record has no prototype: `in` is its own keys.
+                    B::In => {
+                        let (k, r) = (self.expr(&b.left)?, self.expr(&b.right)?);
+                        return Ok(leaf("has", &[], vec![r, k], span));
+                    }
+                    B::Instanceof => return fail(span, "a flow's values have no classes: Array.isArray(x) tells a list, typeof x the rest"),
                     op => return fail(span, format!("{} isn't an operator Holon has", op.as_str())),
                 };
                 let (lhs, rhs) = (self.expr(&b.left)?, self.expr(&b.right)?);
@@ -2730,6 +2792,7 @@ impl<'s, 't> Reader<'s, 't> {
                 ok(ExprKind::If { cond: Box::new(cond), then: Box::new(then), els })
             }
             js::Expression::ArrowFunctionExpression(_) | js::Expression::FunctionExpression(_) => fail(span, "a function written in place goes to a list's method that takes one, xs.map((x) => …), xs.filter((x) => …); define the others at the top level"),
+            js::Expression::NewExpression(n) => self.new_expr(n, span),
             js::Expression::AssignmentExpression(_) => fail(span, "a write is a statement of its own"),
             js::Expression::UpdateExpression(_) => fail(span, "++ and -- are a statement of their own: n++"),
             _ => fail(span, format!("{} isn't something Holon computes: do it in a js() function", expression_kind(e))),
@@ -2754,16 +2817,37 @@ impl<'s, 't> Reader<'s, 't> {
         })
     }
 
+    /// `{ k: v, ...r, [key]: x }`, read left to right as JavaScript builds it: the fields after a
+    /// spread or a computed key on what is before them (`with_field`), a spread after anything
+    /// `merge` (one for several in a row), a computed key `insert`.
     fn record(&mut self, o: &js::ObjectExpression, span: Span) -> R<Expr> {
-        let mut spread = None;
+        let mut base: Option<Expr> = None;
         let mut fields = Vec::new();
-        for (i, p) in o.properties.iter().enumerate() {
+        for p in &o.properties {
             match p {
-                js::ObjectPropertyKind::SpreadProperty(s) if i == 0 => spread = Some(Box::new(self.expr(&s.argument)?)),
-                js::ObjectPropertyKind::SpreadProperty(s) => return fail(self.span(s.span), "a record spreads one base, first: { ...base, k: v }"),
+                js::ObjectPropertyKind::SpreadProperty(s) => {
+                    let at = self.span(s.span);
+                    let x = self.expr(&s.argument)?;
+                    base = Some(match settled(base.take(), std::mem::take(&mut fields), span) {
+                        None => x,
+                        Some(Expr { kind: ExprKind::Leaf { leaf, params, mut args, number }, span: from }) if leaf.text == "merge" => {
+                            args.push(arg(x));
+                            Expr { kind: ExprKind::Leaf { leaf, params, args, number }, span: from.to(at) }
+                        }
+                        Some(before) => leaf("merge", &[], vec![before, x], span),
+                    });
+                }
                 js::ObjectPropertyKind::ObjectProperty(p) => {
                     if p.kind != js::PropertyKind::Init || p.method {
                         return fail(self.span(p.span), "a record holds values: no getters, setters or methods");
+                    }
+                    if p.computed {
+                        let key = self.expr(p.key.as_expression().expect("a computed key is an expression"))?;
+                        let value = self.expr(&p.value)?;
+                        self.share(&p.value);
+                        let before = settled(base.take(), std::mem::take(&mut fields), span).unwrap_or(Expr { kind: ExprKind::Record { spread: None, fields: vec![] }, span });
+                        base = Some(leaf("insert", &[], vec![before, key, value], self.span(p.span)));
+                        continue;
                     }
                     let quoted = matches!(&p.key, js::PropertyKey::StringLiteral(_));
                     let text = self.property_key(&p.key, p.computed)?;
@@ -2773,7 +2857,7 @@ impl<'s, 't> Reader<'s, 't> {
                 }
             }
         }
-        Ok(Expr { kind: ExprKind::Record { spread, fields }, span })
+        Ok(Expr { kind: ExprKind::Record { spread: base.map(Box::new), fields }, span })
     }
 
     fn property_key(&self, key: &js::PropertyKey, computed: bool) -> R<String> {
@@ -2805,6 +2889,9 @@ impl<'s, 't> Reader<'s, 't> {
         let ok = |kind: ExprKind| Ok(Expr { kind, span });
         if let Some(local) = self.lookup(name) {
             return match local {
+                Local::Bound(n) | Local::Var(Some(n)) if self.frame.dates.contains(&n) => {
+                    fail(span, format!("\"{name}\" is a Date, which a flow holds as its time value and reads by its methods: {name}.getTime() is the number, {name}.toISOString() the text"))
+                }
                 Local::Bound(n) | Local::Var(Some(n)) if let Some(method) = self.frame.changed.get(&n) => {
                     fail(span, format!("\"{name}\" is read after {name}.{method}(…) changed it in place: use the list {method} gave, or write {} and keep \"{name}\" as it was", value_form(name, method)))
                 }
@@ -2898,6 +2985,8 @@ impl<'s, 't> Reader<'s, 't> {
                     Some(_) => fail(callee.span, format!("\"{name}\" isn't something to call")),
                     None if self.consts.contains_key(name) => fail(callee.span, format!("\"{name}\" is a value, not something to call")),
                     None if NUMBER_GLOBALS.contains(&name) => self.number_global(c, name, span),
+                    // A flow's values never change in place: a copy is the value.
+                    None if name == "structuredClone" => Ok(self.counted(c, (1, 1), "structuredClone takes one value: structuredClone(x)", span)?.remove(0)),
                     None => fail(callee.span, format!("unknown function \"{name}\": define it at the top level, or import the leaf from \"holon\"")),
                 }
             }
@@ -3025,28 +3114,29 @@ impl<'s, 't> Reader<'s, 't> {
                     return ok(ExprKind::Method { receiver: Name { text: "stripe".into(), span: self.span(r.span) }, method: method_name, args });
                 }
                 (Some(Noun::State), _) => return fail(span, format!("the state is read and written by key: {receiver}.k, {receiver}.k = v")),
-                (None, "JSON") => {
-                    let leaf = match method {
-                        "parse" => "json_parse",
-                        "stringify" => "json_stringify",
-                        other => return fail(method_name.span, format!("JSON has parse and stringify, not \"{other}\"")),
-                    };
-                    let args = self.positional(&c.arguments)?;
-                    return ok(ExprKind::Call { callee: Name { text: leaf.into(), span: method_name.span }, args });
-                }
-                (None, "Object") => {
-                    if method != "keys" {
-                        return fail(method_name.span, format!("Object has keys, not \"{method}\": do the rest in a js() function"));
-                    }
-                    let args = self.positional(&c.arguments)?;
-                    return ok(ExprKind::Call { callee: Name { text: "keys".into(), span: method_name.span }, args });
-                }
+                (None, "JSON") => return self.json_call(c, method, method_name.span, span),
+                (None, "Object") => return self.object_call(c, method, method_name.span, span),
+                (None, "Date") => return self.date_call(c, method, method_name.span, span),
                 (None, "Math") => return self.math_call(c, method, method_name.span, span),
                 (None, "Array") => return self.array_call(c, method, method_name.span, span),
                 (None, "Number") => return self.number_call(c, method, method_name.span, span),
                 (None, g) if GLOBALS.contains(&g) => return fail(self.span(r.span), format!("{g} isn't there: a flow has no globals; import what it uses")),
                 _ => {}
             }
+        }
+        // A Date's: on `new Date(x)`, or a Date the handler bound.
+        if let Some(n) = self.new_date(&m.object) {
+            let x = self.date_arg(n)?;
+            let subject = self.text(m.object.span()).to_string();
+            return self.date_method(c, method, method_name.span, x, true, &subject, span);
+        }
+        if let Some(name) = self.date_local(&m.object) {
+            let subject = self.text(m.object.span()).to_string();
+            if let Some(setter) = self.frame.changed.get(&name) {
+                return fail(span, format!("\"{subject}\" is read after {subject}.{setter}(…) changed it in place: give the change a statement of its own, {subject}.{setter}(…), and read {subject} after it"));
+            }
+            let x = Expr { kind: ExprKind::Name(name), span: self.span(m.object.span()) };
+            return self.date_method(c, method, method_name.span, x, false, &subject, span);
         }
         // A method of a value: the library's, mapped to the leaves that have them.
         if MUTATORS.contains(&method) && !IN_PLACE.contains(&method) {
@@ -3261,6 +3351,9 @@ impl<'s, 't> Reader<'s, 't> {
             }
             ("toFixed" | "toPrecision" | "toExponential" | "toString", _) => fail(span, format!(".{method}(…) takes one number at most")),
             ("toLocaleString", _) => fail(at, "a flow has no locale: toFixed(d) writes a number with d decimals"),
+            ("hasOwnProperty", 1) => Ok(leaf("has", &[], with(subject, rest), span)),
+            ("hasOwnProperty", _) => fail(span, "hasOwnProperty takes the key: r.hasOwnProperty(k)"),
+            _ if is_date_method(method) => fail(at, format!("{method} is a Date's: new Date(x).{method}(…), x a time value or a text, or a Date bound with const d = new Date(x)")),
             _ => fail(at, format!("no leaf does .{method}(…): do it in a js() function")),
         }
     }
@@ -3400,6 +3493,331 @@ impl<'s, 't> Reader<'s, 't> {
                 }
             }
             other => fail(at, format!("Array has isArray, of and from a flow can call, not \"{other}\"")),
+        }
+    }
+
+    /// `Object.<method>(…)`: the record leaves (records.md, "Reader changes"). A flow's record
+    /// never changes in place, so `assign` makes a new one and `freeze` is the record itself.
+    fn object_call(&mut self, c: &js::CallExpression, method: &str, at: Span, span: Span) -> R<Expr> {
+        match method {
+            "keys" | "getOwnPropertyNames" | "values" | "entries" | "fromEntries" | "freeze" | "seal" | "preventExtensions" => {
+                let shape = if method == "fromEntries" { "Object.fromEntries takes one list of [key, value] pairs: Object.fromEntries(pairs)".to_string() } else { format!("Object.{method} takes one record: Object.{method}(r)") };
+                let x = self.counted(c, (1, 1), &shape, span)?;
+                Ok(match method {
+                    "keys" | "getOwnPropertyNames" => leaf("keys", &[], x, span),
+                    "values" => leaf("values", &[], x, span),
+                    "entries" => leaf("entries", &[], x, span),
+                    "fromEntries" => leaf("from_entries", &[], x, span),
+                    // Frozen already.
+                    _ => x.into_iter().next().expect("one"),
+                })
+            }
+            "groupBy" => {
+                let shape = "Object.groupBy takes a list and a function of an item that answers its group's key: Object.groupBy(xs, (x) => x.kind)";
+                let [xs, f] = c.arguments.as_slice() else { return fail(span, shape) };
+                let Some(xs) = xs.as_expression() else { return fail(span, shape) };
+                let xs = self.expr(xs)?;
+                let f = self.function_arg(f, "groupBy", 1)?;
+                Ok(leaf_with("group_by", &[], vec![arg(xs), f], span))
+            }
+            // Into a record written in place, the record they make; into anything else, a change
+            // in place, refused (as a statement on a local, `assign_into`).
+            "assign" => {
+                let shape = "Object.assign changes its first record in place, which a flow's record doesn't: { ...a, ...b } is the record they make together";
+                let Some(target) = c.arguments.first().and_then(|a| a.as_expression()) else { return fail(span, shape) };
+                let js::Expression::ObjectExpression(o) = self.unwrap(target) else { return fail(span, shape) };
+                let mut parts = Vec::new();
+                if !o.properties.is_empty() {
+                    parts.push(self.expr(target)?);
+                }
+                parts.extend(self.positional(&c.arguments[1..])?.into_iter().map(|a| a.value));
+                Ok(match parts.len() {
+                    0 => Expr { kind: ExprKind::Record { spread: None, fields: vec![] }, span },
+                    1 => parts.remove(0),
+                    _ => leaf("merge", &[], parts, span),
+                })
+            }
+            "hasOwn" => Ok(leaf("has", &[], self.counted(c, (2, 2), "Object.hasOwn takes a record and a key: Object.hasOwn(r, k)", span)?, span)),
+            "is" => Ok(leaf("same_value", &[], self.counted(c, (2, 2), "Object.is takes two values: Object.is(a, b)", span)?, span)),
+            "create" => match c.arguments.as_slice() {
+                [a] if matches!(a.as_expression().map(|e| self.unwrap(e)), Some(js::Expression::NullLiteral(_))) => Ok(Expr { kind: ExprKind::Record { spread: None, fields: vec![] }, span }),
+                _ => fail(span, "a record has no prototype: Object.create(null) is {}, and nothing else is made this way"),
+            },
+            "isFrozen" | "isSealed" | "isExtensible" => fail(at, format!("a flow's values never change in place, so each is frozen already: Object.{method} has nothing to tell")),
+            "defineProperty" | "defineProperties" | "getOwnPropertyDescriptor" | "getOwnPropertyDescriptors" | "getOwnPropertySymbols" | "getPrototypeOf" | "setPrototypeOf" => {
+                fail(at, "a record holds values by key, with no descriptors and no prototype: { ...r, k: v } is r with k")
+            }
+            other => fail(at, format!("Object has keys, values, entries, fromEntries, groupBy, assign, hasOwn, is, create(null) and freeze a flow can call, not \"{other}\": do the rest in a js() function")),
+        }
+    }
+
+    /// `Object.assign(t, …)` alone, on a local of the handler's own: `t` is now `merge(t, …)`.
+    fn assigned_local(&self, c: &js::CallExpression) -> Option<String> {
+        let js::Expression::StaticMemberExpression(m) = self.unwrap(&c.callee) else { return None };
+        if m.property.name != "assign" || !matches!(self.unwrap(&m.object), js::Expression::Identifier(i) if i.name == "Object") || !self.is_global(&m.object) {
+            return None;
+        }
+        let js::Expression::Identifier(t) = self.unwrap(c.arguments.first()?.as_expression()?) else { return None };
+        matches!(self.lookup(t.name.as_str()), Some(Local::Bound(_) | Local::Var(Some(_)))).then(|| t.name.to_string())
+    }
+
+    fn assign_into(&mut self, c: &js::CallExpression, ts: &str, stmts: &mut Vec<Stmt>) -> R<()> {
+        let at = self.span(c.span);
+        self.check_unshared(ts, at)?;
+        let mut parts = vec![self.identifier(ts, at)?];
+        parts.extend(self.positional(&c.arguments[1..])?.into_iter().map(|a| a.value));
+        if parts.len() == 1 {
+            return Ok(());
+        }
+        self.new_version(ts, at, leaf("merge", &[], parts, at), stmts, true)
+    }
+
+    /// `JSON.parse(t, reviver)` and `JSON.stringify(x, replacer, space)`: the JSON leaves, a
+    /// function by its `fn`, a replacer's keys and the indent written in place as their params.
+    fn json_call(&mut self, c: &js::CallExpression, method: &str, at: Span, span: Span) -> R<Expr> {
+        match method {
+            "parse" => {
+                let shape = "JSON.parse takes the text and, if there is one, a function of each key and value: JSON.parse(t, (k, v) => …)";
+                if c.arguments.is_empty() || c.arguments.len() > 2 {
+                    return fail(span, shape);
+                }
+                let mut args = self.positional(&c.arguments[..1])?;
+                if let Some(f) = c.arguments.get(1) {
+                    args.push(self.function_arg(f, "JSON.parse", 2)?);
+                }
+                Ok(leaf_with("json_parse", &[], args, span))
+            }
+            "stringify" => {
+                if c.arguments.is_empty() || c.arguments.len() > 3 {
+                    return fail(span, "JSON.stringify takes the value and, if there are, a replacer and an indent: JSON.stringify(x, null, 2)");
+                }
+                let mut args = self.positional(&c.arguments[..1])?;
+                let mut keys = String::new();
+                if let Some(r) = c.arguments.get(1) {
+                    let shape = "JSON.stringify's replacer is written in place: null, a list of keys, [\"id\", \"name\"], or a function of each key and value, (k, v) => …";
+                    match r.as_expression().map(|e| self.unwrap(e)) {
+                        Some(e) if self.is_nothing(e) => {}
+                        Some(js::Expression::ArrayExpression(a)) => {
+                            let mut list = Vec::new();
+                            for item in &a.elements {
+                                match item.as_expression().map(|e| self.unwrap(e)) {
+                                    Some(js::Expression::StringLiteral(s)) => list.push(s.value.to_string()),
+                                    _ => return fail(self.span(item.span()), "a replacer's keys are texts written in place: [\"id\", \"name\"]"),
+                                }
+                            }
+                            keys = serde_json::to_string(&list).expect("texts");
+                        }
+                        Some(js::Expression::ArrowFunctionExpression(_)) => args.push(self.function_arg(r, "JSON.stringify", 2)?),
+                        Some(js::Expression::Identifier(i)) if self.defs.contains_key(i.name.as_str()) => args.push(self.function_arg(r, "JSON.stringify", 2)?),
+                        _ => return fail(self.span(r.span()), shape),
+                    }
+                }
+                let mut indent = String::new();
+                if let Some(s) = c.arguments.get(2) {
+                    match s.as_expression().map(|e| self.unwrap(e)) {
+                        Some(e) if self.is_nothing(e) => {}
+                        // As many spaces, 10 at most (ToIntegerOrInfinity, then min).
+                        Some(js::Expression::NumericLiteral(n)) => indent = " ".repeat(n.value.clamp(0.0, 10.0) as usize),
+                        Some(js::Expression::StringLiteral(t)) => indent = t.value.to_string(),
+                        _ => return fail(self.span(s.span()), "JSON.stringify's indent is written in place: a number of spaces, 2, or a text, \"\\t\""),
+                    }
+                }
+                let mut params = Vec::new();
+                if !keys.is_empty() {
+                    params.push(("keys", keys.as_str()));
+                }
+                if !indent.is_empty() {
+                    params.push(("indent", indent.as_str()));
+                }
+                Ok(leaf_with("json_stringify", &params, args, span))
+            }
+            other => fail(at, format!("JSON has parse and stringify, not \"{other}\"")),
+        }
+    }
+
+    /// `null` or `undefined` written in place: an argument left as JavaScript's default.
+    fn is_nothing(&self, e: &js::Expression) -> bool {
+        match self.unwrap(e) {
+            js::Expression::NullLiteral(_) => true,
+            js::Expression::Identifier(i) => i.name == "undefined" && self.lookup("undefined").is_none(),
+            _ => false,
+        }
+    }
+
+    /// `Date.UTC(…)` and `Date.parse(t)`: the date leaves. `Date.now()` is the clock's.
+    fn date_call(&mut self, c: &js::CallExpression, method: &str, at: Span, span: Span) -> R<Expr> {
+        match method {
+            "UTC" => Ok(leaf("date_utc", &[], self.counted(c, (1, 7), "Date.UTC takes a year and, if there are, a month (from 0), date, hours, minutes, seconds and milliseconds: Date.UTC(2000, 1, 29)", span)?, span)),
+            "parse" => Ok(leaf("date_parse", &[], self.counted(c, (1, 1), "Date.parse takes one text: Date.parse(t)", span)?, span)),
+            "now" => fail(span, "Date.now() is the time now, which a flow reads from its clock: import { now } from \"holon:clock\", in seconds, so now * 1000"),
+            other => fail(at, format!("Date has UTC and parse a flow can call, not \"{other}\"")),
+        }
+    }
+
+    /// `new Date(…)`, when `e` is one and `Date` is JavaScript's.
+    fn new_date<'a>(&self, e: &'a js::Expression<'a>) -> Option<&'a js::NewExpression<'a>> {
+        match self.unwrap(e) {
+            js::Expression::NewExpression(n) if matches!(self.unwrap(&n.callee), js::Expression::Identifier(i) if i.name == "Date") && self.is_global(&n.callee) => Some(&**n),
+            _ => None,
+        }
+    }
+
+    /// `new Date(x)`'s argument, as the date leaves take it: a time value or a text (a Date the
+    /// handler bound, its time value). Local time and the time now are refused, naming what to
+    /// write.
+    fn date_arg(&mut self, n: &js::NewExpression) -> R<Expr> {
+        let span = self.span(n.span);
+        match n.arguments.as_slice() {
+            [] => fail(span, "new Date() is the time now, which a flow reads from its clock: import { now } from \"holon:clock\", in seconds, and new Date(now * 1000) is its date"),
+            [js::Argument::SpreadElement(s)] => fail(self.span(s.span), "a Date is made of one value: new Date(x), a time value or a text"),
+            [a] => {
+                let e = a.as_expression().expect("an argument that isn't a spread");
+                match self.date_local(e) {
+                    Some(name) => Ok(Expr { kind: ExprKind::Name(name), span: self.span(e.span()) }),
+                    None => self.expr(e),
+                }
+            }
+            _ => fail(span, "new Date(y, m, …) is local time, which a flow has none of: new Date(Date.UTC(y, m, …)) is the date in UTC"),
+        }
+    }
+
+    /// `new Date(x)` held by a name: its time value, `date_part {part: time}`; another Date's is
+    /// its own.
+    fn date_value(&mut self, n: &js::NewExpression) -> R<Expr> {
+        let span = self.span(n.span);
+        let x = self.date_arg(n)?;
+        if matches!(&x.kind, ExprKind::Name(name) if self.frame.dates.contains(name)) {
+            return Ok(x);
+        }
+        Ok(leaf("date_part", &[("part", "time")], vec![x], span))
+    }
+
+    /// The name a Date the handler bound has, when `e` is one.
+    fn date_local(&self, e: &js::Expression) -> Option<String> {
+        let js::Expression::Identifier(i) = self.unwrap(e) else { return None };
+        match self.lookup(i.name.as_str()) {
+            Some(Local::Bound(n) | Local::Var(Some(n))) if self.frame.dates.contains(&n) => Some(n),
+            _ => None,
+        }
+    }
+
+    /// `Object.freeze(x)`, `seal(x)` or `preventExtensions(x)`, when `e` is one: its argument.
+    fn frozen_call<'a>(&self, e: &'a js::Expression<'a>) -> Option<&'a js::Argument<'a>> {
+        let js::Expression::CallExpression(c) = self.unwrap(e) else { return None };
+        let js::Expression::StaticMemberExpression(m) = self.unwrap(&c.callee) else { return None };
+        let freezes = matches!(m.property.name.as_str(), "freeze" | "seal" | "preventExtensions");
+        let object = matches!(self.unwrap(&m.object), js::Expression::Identifier(i) if i.name == "Object") && self.is_global(&m.object);
+        match c.arguments.as_slice() {
+            [a] if freezes && object => Some(a),
+            _ => None,
+        }
+    }
+
+    fn mark_frozen(&mut self, ts: &str) {
+        if let Some(Local::Bound(n) | Local::Var(Some(n))) = self.lookup(ts) {
+            self.frame.frozen.insert(n);
+        }
+    }
+
+    fn mark_date(&mut self, ts: &str) {
+        if let Some(Local::Bound(n) | Local::Var(Some(n))) = self.lookup(ts) {
+            self.frame.dates.insert(n);
+        }
+    }
+
+    /// A Date's method, on `new Date(x)` (`fresh`, `x` its argument) or on a Date the handler
+    /// bound (`x` its time value): getTime and each getUTC… `date_part`, toISOString and
+    /// toUTCString `date_text`, a setUTC… on `new Date(x)` `date_set`. Local time is refused,
+    /// naming UTC's.
+    #[allow(clippy::too_many_arguments)]
+    fn date_method(&mut self, c: &js::CallExpression, method: &str, at: Span, x: Expr, fresh: bool, subject: &str, span: Span) -> R<Expr> {
+        let bare = |what: &str| if c.arguments.is_empty() { Ok(()) } else { fail(span, format!("{method} takes nothing: {subject}.{method}(){what}")) };
+        if let Some(&(_, part)) = DATE_GETTERS.iter().find(|(m, _)| *m == method).or(if method == "valueOf" { Some(&("getTime", "time")) } else { None }) {
+            bare("")?;
+            return Ok(if part == "time" && !fresh { x } else { leaf("date_part", &[("part", part)], vec![x], span) });
+        }
+        if let Some(format) = date_format(method) {
+            bare("")?;
+            return Ok(leaf("date_text", &[("format", format)], vec![x], span));
+        }
+        if let Some(&(_, part, takes)) = DATE_SETTERS.iter().find(|(m, ..)| *m == method) {
+            if c.arguments.is_empty() || c.arguments.len() > takes {
+                return fail(span, setter_shape(method, takes));
+            }
+            // On a Date bound to a name, as a value: the time value it gives, and the Date,
+            // changed in place, read no more (`const t = d.setUTCHours(h)` and a statement of its
+            // own give it the new value).
+            let changed = match (&x.kind, fresh) {
+                (ExprKind::Name(n), false) => Some(n.clone()),
+                _ => None,
+            };
+            let mut args = vec![arg(x)];
+            args.extend(self.positional(&c.arguments)?);
+            if let Some(n) = changed {
+                self.frame.changed.insert(n, method.to_string());
+            }
+            return Ok(leaf_with("date_set", &[("part", part)], args, span));
+        }
+        match method {
+            "setTime" => fail(span, "setTime changes the date in place: new Date(t) is the date at t"),
+            "getTimezoneOffset" => fail(at, "a flow has no local time, only UTC, whose offset is 0"),
+            "getYear" => fail(at, format!("a flow has no local time, only UTC: {subject}.getUTCFullYear()")),
+            "toString" | "toDateString" | "toTimeString" | "toLocaleString" | "toLocaleDateString" | "toLocaleTimeString" => {
+                fail(at, format!("a flow has no local time, only UTC: {subject}.toISOString(), or {subject}.toUTCString()"))
+            }
+            m if let Some(utc) = utc_of(m) => fail(at, format!("a flow has no local time, only UTC: {subject}.{utc}(…)")),
+            _ => fail(at, format!("a Date has getTime, the getUTC… and setUTC… methods, toISOString and toUTCString, not .{method}(…)")),
+        }
+    }
+
+    /// `d.setUTCHours(h)` alone, on a Date the handler bound: `d` is now
+    /// `date_set {part: hours}(d, h)`; `d.setTime(t)`, the date at `t`.
+    fn date_mutation(&self, c: &js::CallExpression) -> Option<(String, String, String)> {
+        let js::Expression::StaticMemberExpression(m) = self.unwrap(&c.callee) else { return None };
+        let method = m.property.name.as_str();
+        if method != "setTime" && !DATE_SETTERS.iter().any(|(s, ..)| *s == method) {
+            return None;
+        }
+        let name = self.date_local(&m.object)?;
+        let js::Expression::Identifier(i) = self.unwrap(&m.object) else { return None };
+        Some((i.name.to_string(), name, method.to_string()))
+    }
+
+    fn set_date(&mut self, c: &js::CallExpression, ts: &str, name: String, method: &str, stmts: &mut Vec<Stmt>) -> R<()> {
+        let at = self.span(c.span);
+        let d = Expr { kind: ExprKind::Name(name), span: at };
+        let value = match DATE_SETTERS.iter().find(|(m, ..)| *m == method) {
+            Some(&(_, part, takes)) => {
+                if c.arguments.is_empty() || c.arguments.len() > takes {
+                    return fail(at, setter_shape(method, takes));
+                }
+                let mut args = vec![arg(d)];
+                args.extend(self.positional(&c.arguments)?);
+                leaf_with("date_set", &[("part", part)], args, at)
+            }
+            None => leaf("date_part", &[("part", "time")], self.counted(c, (1, 1), &format!("setTime takes one time value: {ts}.setTime(t)"), at)?, at),
+        };
+        self.new_version(ts, at, value, stmts, true)?;
+        self.mark_date(ts);
+        Ok(())
+    }
+
+    /// `new X(…)` where a flow has no place for it: a Date is read by its methods, a Map is a
+    /// record and a Set a list of items once each.
+    fn new_expr(&mut self, n: &js::NewExpression, span: Span) -> R<Expr> {
+        let name = match self.unwrap(&n.callee) {
+            js::Expression::Identifier(i) if self.is_global(&n.callee) => i.name.as_str(),
+            _ => "",
+        };
+        match name {
+            "Date" => {
+                self.date_arg(n)?;
+                let t = self.text(n.span);
+                fail(span, format!("{t} is a Date, which a flow holds as its time value and reads by its methods: {t}.getTime() is the number, {t}.toISOString() the text; or name it, const d = {t}"))
+            }
+            "Map" | "WeakMap" => fail(span, "a flow's map is a record, by text key: {} to start, r[k] to read, { ...r, [k]: v } to add"),
+            "Set" | "WeakSet" => fail(span, "a flow's set is a list, each item once: [...new Set(xs)]"),
+            _ => fail(span, "new isn't something Holon computes: do it in a js() function"),
         }
     }
 
@@ -4144,12 +4562,71 @@ enum Hands {
     Counted,
 }
 
+/// What a record literal has built so far, if anything: its base with the fields after it.
+fn settled(base: Option<Expr>, fields: Vec<(Key, Expr)>, span: Span) -> Option<Expr> {
+    match (base, fields.is_empty()) {
+        (None, true) => None,
+        (Some(b), true) => Some(b),
+        (b, false) => Some(Expr { kind: ExprKind::Record { spread: b.map(Box::new), fields }, span }),
+    }
+}
+
+/// A Date's getters, each with the `date_part` part it reads (the printer writes them back).
+pub(crate) const DATE_GETTERS: &[(&str, &str)] = &[
+    ("getTime", "time"),
+    ("getUTCFullYear", "year"),
+    ("getUTCMonth", "month"),
+    ("getUTCDate", "date"),
+    ("getUTCDay", "day"),
+    ("getUTCHours", "hours"),
+    ("getUTCMinutes", "minutes"),
+    ("getUTCSeconds", "seconds"),
+    ("getUTCMilliseconds", "milliseconds"),
+];
+
+/// A Date's setUTC…, each with the `date_set` part it starts at and how many numbers it takes.
+pub(crate) const DATE_SETTERS: &[(&str, &str, usize)] = &[
+    ("setUTCFullYear", "year", 3),
+    ("setUTCMonth", "month", 2),
+    ("setUTCDate", "date", 1),
+    ("setUTCHours", "hours", 4),
+    ("setUTCMinutes", "minutes", 3),
+    ("setUTCSeconds", "seconds", 2),
+    ("setUTCMilliseconds", "milliseconds", 1),
+];
+
+/// A Date's text, as `date_text`'s format.
+fn date_format(method: &str) -> Option<&'static str> {
+    match method {
+        "toISOString" | "toJSON" => Some("iso"),
+        "toUTCString" | "toGMTString" => Some("utc"),
+        _ => None,
+    }
+}
+
+/// The UTC method a local-time one is written as: `getHours` is `getUTCHours`.
+fn utc_of(method: &str) -> Option<String> {
+    let (verb, rest) = (method.get(..3)?, method.get(3..)?);
+    let utc = format!("{verb}UTC{rest}");
+    (matches!(verb, "get" | "set") && (DATE_GETTERS.iter().any(|(m, _)| *m == utc) || DATE_SETTERS.iter().any(|(m, ..)| *m == utc))).then_some(utc)
+}
+
+/// Whether only a Date has `method`: refused on anything else, naming `new Date(x)`.
+fn is_date_method(method: &str) -> bool {
+    DATE_GETTERS.iter().any(|(m, _)| *m == method) || DATE_SETTERS.iter().any(|(m, ..)| *m == method) || matches!(method, "toISOString" | "toUTCString" | "toGMTString")
+}
+
+fn setter_shape(method: &str, takes: usize) -> String {
+    if takes == 1 { format!("{method} takes one number: d.{method}(n)") } else { format!("{method} takes 1 to {takes} numbers, from its own part on") }
+}
+
 /// What a function that takes another number of values than its method hands is told.
 fn takes_message(method: &str) -> String {
     match method {
         "map" | "Array.from" => format!("{method}'s function takes the item and its index: (x) => …, (x, i) => …; the list isn't passed, as it has a name"),
         "reduce" | "reduceRight" => format!("{method}'s function takes the result so far and the item: (acc, x) => …; an index isn't passed"),
         "toSorted" | "sort" => format!("{method}'s function takes the two items it compares: (a, b) => …"),
+        "JSON.parse" | "JSON.stringify" => format!("{method}'s function takes the key and the value: (k, v) => …"),
         _ => format!("{method}'s function takes the item: (x) => …; an index isn't passed"),
     }
 }

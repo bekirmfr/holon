@@ -668,6 +668,13 @@ CALLS
   is refused. A list never changes: xs.sort() is read as the list it gives, xs.toSorted(),
   where xs isn't read after; xs.push(x) alone is xs = [...xs, x]; pop, shift, unshift and
   splice are refused, naming what to write)
+  { ...a, k: v, ...b, [key]: x }, Object.values(r), Object.entries(r), Object.fromEntries(ps),
+  Object.groupBy(xs, (x) => x.kind), Object.hasOwn(r, k), k in r, typeof x, Object.is(a, b),
+  JSON.stringify(x, ["id"], 2), JSON.parse(t, (k, v) => …)   (a record never changes:
+  Object.assign(t, a) alone on a local is t = { ...t, ...a })
+  const d = new Date(t); d.getUTCHours(), d.toISOString(), d.setUTCHours(0, 0, 0, 0);
+  Date.UTC(y, m, d), Date.parse(t)   (UTC only: no local time, and new Date() is refused,
+  as the time is now * 1000 from "holon:clock"; a Date is read by its methods, d.getTime())
 
 FUNCTIONS (a flow inside a flow, placed as one node)
   function slugify(text) {

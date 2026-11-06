@@ -85,11 +85,11 @@ as; its options are the deploy settings:
 **Identifiers** are TypeScript's. A name bound in a handler is visible after its binding, in that
 handler; functions and top-level `const`s are visible to the whole file.
 
-**No globals.** JavaScript's globals aren't there: a flow has no `fetch`, `Date` or `setTimeout`,
-and the mistake says to import what it uses. `JSON.parse`, `JSON.stringify`, `Object.keys`,
-`Math`, `Number`, `parseInt`, `parseFloat`, `isNaN` and `isFinite` are there, as the leaves that do
-them (see [Numbers](#numbers)). `NaN` and `Infinity` aren't values: where JavaScript gives one, a
-leaf gives no value.
+**No globals.** JavaScript's globals aren't there: a flow has no `fetch` or `setTimeout`, and the
+mistake says to import what it uses. `JSON`, `Object`'s record functions, `Math`, `Number`,
+`parseInt`, `parseFloat`, `isNaN`, `isFinite`, `structuredClone` and `Date` in UTC are there, as
+the leaves that do them (see [Numbers](#numbers), [Records](#records) and [Dates](#dates)). `NaN`
+and `Infinity` aren't values: where JavaScript gives one, a leaf gives no value.
 
 | Literal | Examples | Notes |
 |---|---|---|
@@ -210,8 +210,9 @@ hmac_sha256(key, text, { encoding: "hex" })   // encoding: a parameter
 **Methods are leaves.** A text's or list's method is the leaf that does it: `t.toUpperCase()` is
 `uppercase`, `t.toLowerCase()` `lowercase`, `t.split(",")` `split`, `xs.join("-")` `join`,
 `t.indexOf(x)` `index_of`, `xs.map(f)` `map`, `xs.reduce(f, 0)` `fold`, and a list's other
-methods those under [Lists](#lists); `JSON.parse` and `JSON.stringify` are `json_parse` and
-`json_stringify`, `Object.keys` is `keys`. A list's length is `length(xs)`, a text's
+methods those under [Lists](#lists), a record's under [Records](#records) and a date's under
+[Dates](#dates); `JSON.parse` and `JSON.stringify` are `json_parse` and `json_stringify`,
+`Object.keys` is `keys`. A list's length is `length(xs)`, a text's
 `text_length(t)`. A method no leaf does is refused, with "do it in a `js()` function".
 
 ### Numbers
@@ -259,6 +260,49 @@ naming the form to write (`xs.toSorted()`). `xs.push(x)` alone is `xs = [...xs, 
 JavaScript compares objects by identity: `[[1]].includes([1])` is `true`, and `new Set` keeps one
 of two equal records.
 
+### Records
+
+A record's keys are kept sorted, so `Object.keys`, `Object.values` and `Object.entries` list them
+in key order.
+
+| Form | Meaning |
+|---|---|
+| `{ a: 1, ...r, ...s, [k]: v }` | built left to right, as JavaScript builds it: a later key replaces an earlier one (`merge` for the spreads, `insert` for a computed key) |
+| `Object.values(r)`, `Object.entries(r)`, `Object.fromEntries(pairs)` | the values; the `[key, value]` pairs; a record of pairs, a later one for a key winning |
+| `Object.groupBy(xs, (x) => x.kind)` | a record of lists, each item under the key its function gives (`group_by`) |
+| `Object.hasOwn(r, k)`, `r.hasOwnProperty(k)`, `k in r` | whether `r` has the key (`has`) |
+| `Object.is(a, b)` | whether two values are the same, `NaN` and `-0` by value (`same_value`) |
+| `typeof x` | `"number"`, `"string"`, `"boolean"`, `"object"` (a record, a list or `null`), or `"undefined"` when `x` has no value (`type_of`) |
+| `Object.assign({}, a, b)`, `structuredClone(x)`, `Object.freeze(x)`, `Object.create(null)` | `{ ...a, ...b }`; `x`; `x`; `{}` |
+| `JSON.stringify(x, ["id", "name"], 2)`, `JSON.stringify(x, null, "\t")`, `JSON.stringify(x, (k, v) => …)`, `JSON.parse(t, (k, v) => …)` | JSON with only the keys listed, laid out with an indent; with a replacer or a reviver applied to each key and value |
+
+A record never changes. `Object.assign(t, a)` alone on one of the handler's own records is
+`t = { ...t, ...a }`; on a parameter, or into anything but a record written in place, it is
+refused, naming `{ ...a, ...b }`. A record given to `Object.freeze` can't be changed after, as in
+JavaScript: `r.k = v` on it is refused. A replacer's keys and an indent are written in place. Records
+have no prototype or property descriptors: `Object.defineProperty`, `Object.getPrototypeOf`,
+`Object.isFrozen` and `instanceof` are refused, and a flow has no `Map`.
+
+### Dates
+
+A date is JavaScript's `Date` in UTC: its time value, milliseconds since 1970-01-01T00:00:00Z. A
+flow has no time zone, so only the UTC methods are there.
+
+| Form | Meaning |
+|---|---|
+| `new Date(t).getTime()` | the time value of `t`, a number of milliseconds or a text `Date.parse` reads (`date_part`) |
+| `new Date(t).getUTCFullYear()`, `.getUTCMonth()`, `.getUTCDate()`, `.getUTCDay()`, `.getUTCHours()`, `.getUTCMinutes()`, `.getUTCSeconds()`, `.getUTCMilliseconds()` | a part, the month from 0, the day 0 for Sunday (`date_part`) |
+| `new Date(t).toISOString()`, `new Date(t).toUTCString()` | `2000-02-29T12:00:00.000Z`; `Tue, 29 Feb 2000 12:00:00 GMT` (`date_text`) |
+| `new Date(t).setUTCHours(0, 0, 0, 0)`, `.setUTCDate(1)`, … | the time value with those parts replaced, a part past its end carried (`date_set`) |
+| `Date.UTC(2000, 1, 29)`, `Date.parse("2000-02-29T12:00:00Z")` | the time value of a date's parts; of a date's text, in JavaScript's format, with `Z` or an offset after a time |
+| `const d = new Date(t)`, then `d.getUTCDay()`, `d.setUTCDate(1)` | a Date held by a name, read by its methods; a setter alone, or `const ms = d.setUTCDate(1)`, changes `d` |
+
+A date out of range (±8.64e15 ms) or a text that isn't one gives no value. A Date is read only by
+its methods: `new Date(t)` alone, or `d` returned or put in a record, is refused, naming
+`d.getTime()` and `d.toISOString()`. Local time is refused, naming the UTC method (`getHours`
+names `getUTCHours`, `new Date(y, m)` names `new Date(Date.UTC(y, m))`), and `new Date()` and
+`Date.now()` name the clock: `now * 1000`, `now` imported from `"holon:clock"`.
+
 ## The outside world
 
 Each of these is one building block, and each is one thing the flow may do.
@@ -295,7 +339,7 @@ Each of these is one building block, and each is one thing the flow may do.
 | `await charge(x)` (`import { charge } from "flow:billing"`) | run the action `charge` of the deployed flow `billing` with `x`, a value (`{}` when none is written); the answer is `{answer, run}` when it ran, `{error, message}` when it didn't |
 | `payment(x)`, `charge(x)`, not awaited | start a run of this flow's action, or another flow's, with `x`; the answer is `{run, waiting}` once it waits, `waiting` the token for each point it waits at, `{answer, run}` if it finishes first, `{error, message}` when it didn't run |
 | `await event(name, { expires: d })` | park the run until the event `name` arrives (in an action, not a route) |
-| `JSON.stringify(x)`, `JSON.parse(text)` | JSON out, JSON in |
+| `JSON.stringify(x)`, `JSON.parse(text)` | JSON out, JSON in (see [Records](#records) for a replacer, a reviver and an indent) |
 
 Rules:
 

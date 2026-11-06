@@ -90,7 +90,7 @@ unit.
 | Writes | Assignment: `state.key = v`, `notes[key] = v`, `delete notes[key]`, `reports[name] = text`. Method forms (`notes.put(k, v)`) when the write is a value to name | §5.4, §5.10 |
 | Bindings | `const name = expr`; a `let` given a new value is a new name; destructuring is a `field` per name | §5.2 |
 | Calls | `leaf(inputs…, { named… })`: positional arguments are inputs; a last record whose keys the unit takes names inputs and params. A method of a text or list is the leaf that does it | §5.3 |
-| Literals | Numbers, texts, `true`, `false`; a template literal interpolates through `as_text`; `{…}` and `[…]` lower to `record`/`with_field` and `list`; a duration is a text, `"10s"`, where one is asked | §5.5 |
+| Literals | Numbers, texts, `true`, `false`; a template literal interpolates through `as_text`; `{…}` and `[…]` lower to `record`/`with_field` (`merge` for a spread after anything, `insert` for a computed key) and `list`; a duration is a text, `"10s"`, where one is asked | §5.5 |
 | Operators | Arithmetic and comparison on numbers, logic on booleans, `??` (fallback), `===` (structural), `.` (field or output), `[ ]` (lookup), `c ? a : undefined` (guard), `c ? a : b` (guard plus fallback), `switch` (a choice by value) | §5.6, §6.4, §6.5 |
 | Multi-output values | `.name` selects an output when the name is one; otherwise it is a field. A bare multi-output value is its first output | §5.7 |
 | Functions | `function name(inputs) { …; return out }` is a holon, its outputs named by what it returns; an arrow written in place for a list's methods that take one (`map`, `reduce`, `filter`, `toSorted`, …), a name it uses from around it an input of its own | §5.8, §5.9 |
@@ -185,7 +185,7 @@ derived from the leaves, never from the words.
 | `class`, `this`, `new`, generators, `eval` | A flow is a module of functions and records; computing that needs all of JavaScript goes in a `js()` function |
 | Generics, type parameters, types beyond the nine | The checker is wire-time compatibility over nine types (§6.8). A type system is a different project |
 | Imports of code, packages | An import names something outside a run. Reuse across files is the marketplace's job (a published holon placed by hash), not an import of code (the `marketplace` sample). Revisit when people share holons across flows |
-| Globals: `fetch`, `Date`, `setTimeout`, `process` | A flow uses only what it imports, so the top of the file is the whole of what it touches. `JSON.parse`, `JSON.stringify`, `Object.keys`, `Math`, `Number`, `parseInt`, `parseFloat`, `isNaN` and `isFinite` are there, as the leaves that do them (§5.3, §5.6). `NaN` and `Infinity` aren't values: a leaf gives nothing where JavaScript gives one |
+| Globals: `fetch`, `Date`, `setTimeout`, `process` | A flow uses only what it imports, so the top of the file is the whole of what it touches. `JSON`, `Object`'s record functions, `Math`, `Number`, `parseInt`, `parseFloat`, `isNaN`, `isFinite`, `structuredClone`, and `Date` in UTC (`new Date(t)` read by its methods, `Date.UTC`, `Date.parse`) are there, as the leaves that do them (§5.3, §5.6). `new Date()` and `Date.now()` are the time now, which is the clock's: `now * 1000`, `now` imported from `"holon:clock"`. `NaN` and `Infinity` aren't values: a leaf gives nothing where JavaScript gives one |
 | `+` on texts | An operator lowers to one node, and most values are `Any`, so `+` could not choose between `add` and `concat`. A template literal is the natural spelling; `concat(a, b)` the explicit one |
 | `\|\|` and `&&` on anything but booleans | `a \|\| "none"` is JavaScript's fallback, and Holon's logic is on booleans: the fallback is `??` |
 | Common-subexpression elimination | The text's structure is the graph's. Sharing is explicit (a binding), so the canvas shows what was written |
@@ -1230,6 +1230,9 @@ handler (§10, §12).
 | `let name = expr`, `name = expr`, `var name = expr` | a new name per assignment; where branches assign it, the value after them is the branch taken's, chosen as `?:` and `switch` choose (`guard`, `coalesce`). `var` reads as `let`, and `fmt` writes it as `const` or `let` |
 | `n++`, `n += 2`, `x ??= y` | an assignment of `n + 1`, `n + 2`, `x ?? y`; `%=`, `**=`, `&=`, `\|=`, `^=`, `<<=`, `>>=` and `>>>=` likewise, each its operator's leaf (§5.6) |
 | `xs.push(x)`, `order.total = t` (on a local) | a new value: `[...xs, x]` (`append`), `{ ...order, total: t }` (`with_field`) |
+| `Object.assign(t, a, b)` alone, on a local | a new value, `{ ...t, ...a, ...b }` (`merge`); on a parameter or a record another name holds, refused, as for `push` |
+| `const d = new Date(t)`; `d.setUTCHours(h, m)` alone; `d = new Date(t2)` | `d` is a Date, held as its time value (`date_part{part: time}(t)`) and read only by a Date's methods (§5.3); a setter alone gives `d` a new value, `date_set{part: hours}(d, h, m)`, and `const ms = d.setUTCHours(h)` gives it that and `ms` the time value; a setter elsewhere in an expression is the time value, and `d`, changed in place, is read no more; `d` read any other way is refused, naming `d.getTime()` and `d.toISOString()` |
+| `Object.freeze(r)` alone, `const r = Object.freeze(x)` (`seal`, `preventExtensions`) | `r` itself, marked frozen: a later change in place (`r.k = v`, `delete r.k`, `Object.assign(r, …)`), which would throw in JavaScript, is refused, naming a new record |
 | `xs.sort()`, `xs.reverse()`, `xs.fill(v)`, `xs.copyWithin(t, s)` alone; `xs.pop()`, `shift()`, `unshift(x)`, `splice(…)` | refused, naming what to write: `xs = xs.toSorted()`, `xs = xs.toReversed()`, `xs = [...xs].fill(…)`; `xs.at(-1)` and `xs.slice(0, -1)`, `xs.at(0)` and `xs.slice(1)`, `[x, ...xs]`, `xs.toSpliced(…)` (a flow's list doesn't change) |
 | `const { a, b = 1, ...rest } = r` | a `field` per name; `b = 1` is `r.b ?? 1` (`default`, or `coalesce` when the default is computed); `rest` is `without_field` per named key |
 | `const [x, y] = xs`, `const [first, ...rest] = xs` | `get` at each index; `head` and `tail` |
@@ -1324,7 +1327,20 @@ Every catalog leaf is callable by its own name with this rule (`concat(a, b)`, `
 | `xs.join()`, `xs.concat(ys, x)` | `join(xs, ",")`; `extend` for a list written as one, `append` for a literal that isn't one, and refused for anything else, which could be either |
 | `Array.isArray(x)`, `Array.of(a, b)`, `Array.from(xs)`, `Array.from(xs, f)`, `Array.from({ length: n }, (_, i) => …)` | `is_list(x)`, `[a, b]`, `xs`, `map{fn: f}(xs)`, `range(n).map((i) => …)` (the item, JavaScript's undefined, read as absent) |
 | `JSON.parse(t)`, `JSON.stringify(x)` | `json_parse(t)`, `json_stringify(x)` |
-| `Object.keys(r)` | `keys(r)` |
+| `JSON.parse(t, (k, v) => …)`, `JSON.stringify(x, (k, v) => …)` | `json_parse{fn}(t)`, `json_stringify{fn}(x)`: the reviver applied bottom-up, the replacer top-down, as JavaScript's; what the function gives nothing for is left out of a record and `null` in a list |
+| `JSON.stringify(x, ["id", "name"], 2)`, `JSON.stringify(x, null, "\t")` | `json_stringify{keys: "[\"id\",\"name\"]", indent: "  "}(x)`: the keys a list of texts written in place, the indent a number written in place (that many spaces, ten at most) or a text; `null` and `undefined` leave either out |
+| `Object.keys(r)`, `Object.getOwnPropertyNames(r)` | `keys(r)` |
+| `Object.values(r)`, `Object.entries(r)`, `Object.fromEntries(pairs)` | `values(r)`, `entries(r)` (the `[key, value]` pairs, in key order), `from_entries(pairs)` (a later pair for a key replacing the earlier, a key a text) |
+| `Object.groupBy(xs, (x) => …)` | `group_by{fn}(xs)`: a record of lists, each item under the text its function answers (an item it answers nothing or no text for is left out); `Map.groupBy` is refused, as a flow has no Map |
+| `Object.assign({}, a, b)`, `Object.assign({ k: v }, a)` | `merge(a, b)`, `merge({ k: v }, a)`: into a record written in place; into anything else a change in place, refused, naming `{ ...a, ...b }` |
+| `Object.hasOwn(r, k)`, `r.hasOwnProperty(k)`, `k in r` | `has(r, k)`: a record has no prototype, so `in` is its own keys |
+| `Object.is(a, b)` | `same_value(a, b)`: `===` but for `NaN` and `-0`, by value |
+| `typeof x` | `type_of(x) ?? "undefined"`: `"number"`, `"string"`, `"boolean"`, `"object"` (a record, a list or `null`), and `"undefined"` where nothing arrives |
+| `structuredClone(x)`, `Object.freeze(x)`, `Object.seal(x)`, `Object.create(null)` | `x`, `x`, `x`, `{}`: a flow's values never change in place, so a copy is the value and each is frozen already |
+| `new Date(t).getTime()`, `.getUTCFullYear()`, `.getUTCMonth()`, `.getUTCDate()`, `.getUTCDay()`, `.getUTCHours()`, … | `date_part{part: time, year, month, date, day, hours, minutes, seconds, milliseconds}(t)`, `t` a time value in milliseconds or a text `Date.parse` reads; on a Date bound to a name, the same of its time value |
+| `new Date(t).toISOString()`, `.toUTCString()` | `date_text{format: iso, utc}(t)` (`toJSON` and `toGMTString` the same) |
+| `new Date(t).setUTCHours(h, m)`, `.setUTCFullYear(y)`, … as a value | `date_set{part: hours, year, …}(t, h, m)`: the time value the setter gives, as many numbers as it takes |
+| `Date.UTC(y, m, d, …)`, `Date.parse(text)` | `date_utc(y, m, d, …)` (variadic, 1 to 7 numbers), `date_parse(text)` |
 | `Math.round(x)`, `Math.sqrt(x)`, … | `math{fn: round}(x)`: each of `Math`'s one-number functions, `f16round` and `clz32` among them, is `math` with its name |
 | `Math.max(a, b, …)`, `Math.min(a, b, …)` | `max(a, b, …)`, `min(a, b, …)`, variadic |
 | `Math.max(...xs)`, `Math.min(...xs)`, `Math.hypot(a, b, …)`, `Math.hypot(...xs)`, `Math.sumPrecise(xs)` | `aggregate{fn}(xs)`, the list built in place for `hypot`'s numbers |
@@ -1336,12 +1352,22 @@ Every catalog leaf is callable by its own name with this rule (`concat(a, b)`, `
 | `x.toFixed(d)`, `x.toPrecision(p)`, `x.toExponential(d)`, `x.toString(r)` | `number_format{style}(x, d)`, `d` wired when given |
 | `x.toString()` | `number_format{style: string}(x)` when `x` is known to be a number (a node whose output is a `Number`); refused otherwise, naming `number_format`, as a text and a list have the method too |
 
-`Math` and `Number` are namespaces the reader knows, as it knows `JSON`; a flow's own function
-named `parseInt` is the one `parseInt(s)` calls, as in JavaScript, and `Math.max` is the leaf
-whatever the flow defines. `Math.random()` is refused, with `import { random } from
-"holon:random"`, a run's one recorded number. A list's length is `length(xs)` and a text's
+A Date is JavaScript's in UTC: a flow has no time zone, so a local-time method (`getHours`,
+`setDate`, `toString`, …) is refused, naming its UTC one, and `new Date(y, m, …)` names
+`new Date(Date.UTC(y, m, …))`. A Date is an object in JavaScript and a time value in a flow, so it
+is read only by its methods: `new Date(t)` alone, or a Date's name, returned, compared or put in a
+record, is refused, naming `getTime()` and `toISOString()`. `new Date()` and `Date.now()` are
+refused, naming the clock. `Object`'s functions that describe properties or prototypes
+(`defineProperty`, `getPrototypeOf`, `isFrozen`, …) are refused, as is `instanceof`, `new Map()`
+and `new Set()` outside a spread.
+
+`Math` and `Number` are namespaces the reader knows, as it knows `JSON`, `Object` and `Date`; a
+flow's own function named `parseInt` is the one `parseInt(s)` calls, as in JavaScript, and
+`Math.max` is the leaf whatever the flow defines. `Math.random()` is refused, with `import { random
+} from "holon:random"`, a run's one recorded number. A list's length is `length(xs)` and a text's
 `text_length(t)`, called as leaves: `.length` comes in a later slice. A method no leaf does is
-refused, with "do it in a `js()` function".
+refused, with "do it in a `js()` function". `fmt` writes `entries` as `Object.entries(r)` where
+`r` is known to be a record (a node whose output is a `Record`), else as `[...xs.entries()]`.
 
 ### 5.4 The outside world, as imported names
 
@@ -1501,7 +1527,8 @@ Rules the table implies:
 | `true`, `false` | `const{type: Boolean, value: …}` |
 | `` `Hello, ${name}!` `` | one `concat` over the pieces: `const` for each literal piece, `as_text(expr)` for each `${…}`; a template that is one `${expr}` with no literal text is `as_text(expr)` alone, and one with no `${…}` is a text |
 | `{ k: e, "k 2": e2 }`, `{ k }` | `record()` then one `with_field{name: k}(record, e)` per field, in written order; `{ k }` is `{ k: k }` |
-| `{ ...base, k: e }` | `with_field{name: k}` chained onto `base`'s value; one base, first; fields in written order |
+| `{ ...base, k: e }` | `with_field{name: k}` chained onto `base`'s value, fields in written order |
+| `{ a: 1, ...r, ...s, [k]: v, b: 2 }` | read left to right, as JavaScript builds it: a spread after anything `merge` (one for several in a row, `merge(with_field{name: a}(record(), 1), r, s)`), a computed key `insert(…, k, v)`, and the fields after either `with_field` on what is before them |
 | `[e1, e2, e3]` | `list(e1, e2, e3)`, variadic |
 | `[]` | `const{type: Json, value: "[]"}`: a placed `list` has at least its two declared inputs, so the empty list is the one literal that is a `const` |
 | `[e]` | `append(list: const "[]", item: e)`, for the same reason |
@@ -1518,7 +1545,7 @@ of that rule; the alternative, skipping it when the part is statically `Text`, w
 depend on type annotations elsewhere in the file.
 
 Record keys are names or texts; a key that is not a plain word must be quoted (`"content-type"`),
-and a computed key, `{ [k]: v }`, comes in a later slice (`insert(record, key, value)` until then).
+and a computed key, `{ [k]: v }`, is `insert`, its key a text.
 Record and list literals always lower structurally, never to a `const` of type `Json`, so the
 lowering is one-to-one and the canvas shows the fields. A single-node JSON constant is the right
 side of `??` (§5.6).
@@ -1546,6 +1573,8 @@ Lowest to highest precedence, as TypeScript has them; binary operators are left-
 | `-a` | `multiply(a, -1)` | in parentheses, one node; exact at `-0`, where `0 - a` isn't. A minus before a number literal is the literal (`-1`) |
 | `+a` | `to_number(a)` | `Number(a)` |
 | `~a` | `bitwise{op: xor}(a, -1)` | |
+| `typeof a` | `default{type: Text, value: undefined}(type_of(a))` | §5.3; `fmt` writes it back as `typeof a` |
+| `k in r` | `has(r, k)` | on the level of `<`; `instanceof` is refused, naming `Array.isArray` and `typeof` |
 | `a.name`, `a?.name` | an output, or `field{name}(a)` | §5.7; `?.` means what `.` does |
 | `a[e]` | `lookup(record: a, key: e)` when `a` is not an imported collection or folder | the key arrives on a wire |
 
@@ -2152,8 +2181,13 @@ lowering. The algorithm:
    `stripe.verify(…)`, `await event(…)`); consts print as literals, a duration-shaped period or
    `expires` as a duration text; `concat` over `as_text` parts and consts prints as a template
    literal; `record`/`with_field` chains print as object literals when the chain starts at
-   `record()` or as `{ ...base, … }` when it does not; `list` as an array literal; `default` with a
-   literal param and `coalesce` as `??`; `guard` as `c ? a : undefined`, and `coalesce` over a
+   `record()` or as `{ ...base, … }` when it does not, a `merge` as its spreads and an `insert` as
+   `[k]: v`, a record built in place under them written in the same literal where ts.rs reads it
+   back as the same nodes (`{ a: 1, ...r, ...s, [k]: v }`); each date leaf as a method of
+   `new Date(t)` (`new Date(t).getTime()` for the time value), `Date.UTC(…)` and `Date.parse(t)`;
+   `list` as an array literal; `type_of` under a `default` of `"undefined"` as `typeof x`;
+   `default` with a literal param and `coalesce` as `??`; `guard` as `c ? a : undefined`, and
+   `coalesce` over a
    `guard` as `c ? a : b`; binary leaves as operators; `field` chains as `.name`; `respond` as the
    handler's `return`; MongoDB templates as the records they were frozen from.
 5. Names: a binding takes the node's name from the text it came from when it has one (the

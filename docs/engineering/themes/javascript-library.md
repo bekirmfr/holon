@@ -47,15 +47,16 @@ around line 2587), `method_call` (namespaces and methods, around line 2968), `st
 (`.length`, around line 2818); the lowering of each operator to its leaf is `lower.rs`'s `binary`
 and `expr`. Each mistake quoted below is the reader's own text.
 
-**In numbers:** of JavaScript's library functions, these are read: `JSON.parse`,
-`JSON.stringify`, `Object.keys`, the methods `.split`, `.join`, `.indexOf`, `.toUpperCase`,
+**In numbers:** of JavaScript's library functions, these are read: `JSON.parse` (with a
+reviver), `JSON.stringify` (with a replacer, keys and an indent), `Object`'s record functions
+(§8), `Date` in UTC (§8), `structuredClone`, the methods `.split`, `.join`, `.indexOf`, `.toUpperCase`,
 `.toLowerCase`, a list's methods but `forEach` and those that change the list and answer
 something else (`push` as a value, `pop`, `shift`, `unshift`, `splice`), as the list leaves (§7), `Array.isArray`,
 `Array.of` and `Array.from`, every one of `Math`'s functions but `random` and its 8 constants
 (§4), `Number` and its functions and constants (§5), `parseInt`, `parseFloat`, `isNaN` and
 `isFinite` (§3), and a number's `toFixed`, `toPrecision`, `toExponential` and `toString` (§5), as
-the eleven number leaves. The operators are mapped but for `typeof`, `void`, `in`, `instanceof` and
-the comma (§1), and the literals mostly (§2). Of the catalog's 88 computing leaves, 17 can only be called by name (§10).
+the eleven number leaves. The operators are mapped but for `void`, `instanceof` and the comma
+(§1), and the literals mostly (§2). Of the catalog's 88 computing leaves, 17 can only be called by name (§10).
 
 ## 1. Operators
 
@@ -72,7 +73,8 @@ the comma (§1), and the literals mostly (§2). Of the catalog's 88 computing le
 | `-x` | `const`; `multiply` | mapped | a number literal is itself (`-1`); any other value is `x * -1`, one node, exact at `-0` where `0 - x` isn't |
 | `+x` | `to_number` | mapped | `Number(x)` |
 | `~x` | `bitwise {op: xor}` | mapped | `x ^ -1` |
-| `typeof`, `void` | | js() | "… isn't an operator Holon has" |
+| `typeof x` | `type_of`, `default` | mapped | `type_of(x) ?? "undefined"`; a record, a list and `null` are `"object"` |
+| `void` | | js() | "void isn't an operator Holon has" |
 | `x++`, `x--`, `x += 1`, `x %= 2`, `x **= 2`, `x &= m`, `x <<= 1`, … | `add`, `subtract`, and each operator's leaf | mapped as statements | "++ and -- are a statement of their own: n++" in an expression |
 | `a === b`, `a == b` | `equals` | mapped; differs on records and lists | `==` is `===` (no coercion); records and lists compare by value |
 | `a !== b`, `a != b` | `equals`, `not` | mapped | |
@@ -82,7 +84,8 @@ the comma (§1), and the literals mostly (§2). Of the catalog's 88 computing le
 | `a ?? b` | `default` (b a literal), `coalesce` | mapped | `b` is computed only when `a` is absent |
 | `c ? a : b` | `guard`, then `default` or `coalesce` | mapped | only the branch taken runs; `c ? a : undefined` is the `guard` alone |
 | `x?.k`, `x?.[k]` | `field`, `lookup` | mapped | absence passes along anyway, so `?.` and `.` lower alike |
-| `k in r`, `instanceof` | | js() | "in isn't an operator Holon has" |
+| `k in r` | `has` | mapped | a record has no prototype: its own keys |
+| `instanceof` | | refused | "a flow's values have no classes: Array.isArray(x) tells a list, typeof x the rest" |
 | `&`, `\|`, `^`, `<<`, `>>`, `>>>` | `bitwise {op}` | mapped | on ToInt32 (ToUint32 for `>>>`), with TypeScript's precedence |
 | `a, b` (comma), assignment in an expression | | refused | "a write is a statement of its own" |
 | `delete store[k]` (a statement) | `collection_delete`, `file_delete` | mapped | for a collection or folder; in an expression, "delete is a statement" |
@@ -96,8 +99,9 @@ the comma (§1), and the literals mostly (§2). Of the catalog's 88 computing le
 | `[a, b]` | `list` | mapped | |
 | `[...xs, y]`, `[...xs, ...ys]` | `append`, `extend` | mapped | `[x, ...xs]` is `extend` of a one-item list (`cons`, by name, isn't used) |
 | `{ k: v }` | `record`, `with_field` per field | mapped | |
-| `{ ...base, k: v }` | `with_field` over `base` | mapped | one spread, first: "a record spreads one base, first" |
-| `{ [k]: v }` | `insert` | by name | "a computed key comes in a later slice: name the key, or use insert(record, key, value)" |
+| `{ ...base, k: v }` | `with_field` over `base` | mapped | |
+| `{ a: 1, ...r, ...s, k: v }` | `merge`, `with_field` | mapped | read left to right: a spread after anything is `merge`, one for several in a row |
+| `{ [k]: v }` | `insert` | mapped | the key a text; read in place, left to right |
 | `r.k` | `field` | mapped | |
 | `r[k]` | `lookup` | mapped for a record | a list: differs, `xs[0]` answers nothing; `get(xs, 0)` by name |
 | `store[k]` (a collection, folder, database) | `collection_get`, `file_read`, … | mapped | §8 |
@@ -106,6 +110,8 @@ the comma (§1), and the literals mostly (§2). Of the catalog's 88 computing le
 | `null` | | refused | "null isn't a value here: a value that isn't there is absent, undefined" |
 | `NaN`, `Infinity` | | refused | "NaN isn't a value a flow has: a leaf gives nothing where JavaScript gives NaN, so test for presence, x !== undefined, or give a fallback, x ?? 0" |
 | `/re/` | | js() | "a regular expression isn't something Holon computes" |
+| `new Date(t)` | `date_part {part: time}` | mapped, by its methods | §8; alone: refused, naming `.getTime()` and `.toISOString()` |
+| `new Map()`, `new Set()` | | refused | a record by text key; `[...new Set(xs)]` is read (§7) |
 | `new X(…)` | | js() | |
 | `class`, getters, setters, methods in a record | | refused | "a record holds values: no getters, setters or methods" |
 | `(x) => …` | the function of `map`, `fold`, `filter`, `find`, `sort_by` and the other higher-order leaves | mapped there only | elsewhere: "a function written in place goes to a list's method: xs.map((x) => …)"; a parameter it doesn't use is fine (`_`, or any name) |
@@ -119,7 +125,7 @@ the comma (§1), and the literals mostly (§2). Of the catalog's 88 computing le
 | `Boolean(x)`, `!!x` | by name | `is_truthy(x)` |
 | `isNaN(x)`, `isFinite(x)` | mapped | `number_test {test, coerce: number}`: `isNaN("abc")` is true |
 | `encodeURIComponent`, `decodeURIComponent`, `encodeURI`, `decodeURI` | js() | a route's `req.params` and `req.query` come decoded |
-| `structuredClone` | not needed | values are never changed in place |
+| `structuredClone(x)` | mapped | `x`: values are never changed in place |
 | `setTimeout`, `setInterval` | refused, import | a flow has no globals: a clock is a handler, `every("5s", () => …)`; a wait is `await event("paid", { expires: "1d" })` |
 | `fetch` | refused, import | `import api from "host:api.example.com"`, `await api.get("/p")` (§8) |
 | `console.log` | refused | not needed: each node's value is in the run's record (`holon explain`) |
@@ -221,12 +227,23 @@ give, or refused naming the form that gives it. Items compare by value (§9).
 
 | JavaScript | Leaf | Status | Note |
 |---|---|---|---|
-| `Object.keys(r)` | `keys` | mapped | |
-| `Object.values`, `entries`, `fromEntries`, `assign`, `freeze`, `hasOwn`, `groupBy`, … | | js() | "Object has keys, not "values": do the rest in a js() function" |
+| `Object.keys(r)`, `Object.getOwnPropertyNames(r)` | `keys` | mapped | |
+| `Object.values(r)`, `Object.entries(r)`, `Object.fromEntries(ps)` | `values`, `entries`, `from_entries` | mapped | key order (§11, open 2) |
+| `Object.groupBy(xs, f)` | `group_by {fn}` | mapped | an item whose key isn't a text is left out |
+| `Object.assign({}, a, b)` | `merge` | mapped | into a record written in place; alone on a local, `t = merge(t, …)`; into anything else, refused: "Object.assign changes its first record in place …" |
+| `Object.hasOwn(r, k)`, `r.hasOwnProperty(k)` | `has` | mapped | |
+| `Object.is(a, b)` | `same_value` | mapped | |
+| `Object.freeze(x)`, `seal`, `preventExtensions`, `Object.create(null)` | | mapped | the value itself, a local marked frozen (a later change to it refused, where JavaScript throws); `{}` |
+| `Object.defineProperty`, `getPrototypeOf`, `isFrozen`, `create(proto)`, … | | refused | a record has no descriptors or prototype; every value is frozen already |
 | `delete r.k` (a record value) | `without_field`, `remove` | by name | |
-| `JSON.parse(t)` | `json_parse` | mapped | invalid JSON: nothing, where JavaScript throws; a reviver: refused |
-| `JSON.stringify(v)` | `json_stringify` | mapped | a replacer or indent: refused |
-| `Date`, `Date.now()`, `new Date()` | `clock` | refused, import | `import { now } from "holon:clock"`: seconds, fixed for the run (`Date.now()` is milliseconds, and moves); formatting a date: js(), the time passed in |
+| `JSON.parse(t)`, `JSON.parse(t, (k, v) => …)` | `json_parse {fn}` | mapped | invalid JSON: nothing, where JavaScript throws; the reviver bottom-up |
+| `JSON.stringify(v)`, `JSON.stringify(v, replacer, space)` | `json_stringify {fn, keys, indent}` | mapped | the replacer a function, a list of texts written in place or `null`; the space a number or a text written in place |
+| `new Date(t).getTime()`, `.getUTCFullYear()` and the other `getUTC…` | `date_part {part}` | mapped | `t` a time value or a text; on a Date bound to a name, its time value |
+| `new Date(t).toISOString()`, `.toUTCString()` | `date_text {format}` | mapped | |
+| `new Date(t).setUTCHours(…)` and the other `setUTC…` | `date_set {part}` | mapped | as a value; on a Date bound to a name, alone or in `const t = d.setUTC…(…)`, a new value for it, and elsewhere in an expression the Date read no more |
+| `Date.UTC(…)`, `Date.parse(t)` | `date_utc`, `date_parse` | mapped | |
+| `getHours()` and the other local-time methods, `new Date(y, m, …)` | | refused | "a flow has no local time, only UTC", naming the UTC method or `Date.UTC` |
+| `Date.now()`, `new Date()` | `clock` | refused, import | `import { now } from "holon:clock"`: seconds, fixed for the run, so `now * 1000` |
 | `Intl` | | js() | not inside `js()` either: locale is the environment |
 | `Map`, `Set`, `WeakMap`, `Symbol`, `BigInt`, `Proxy`, `Reflect`, typed arrays | | js() | inside `js()` only (a `BigInt` can't cross out) |
 | `Promise.all` | | refused | in slice 7, a started run's handle may be awaited or passed to it |
@@ -377,8 +394,8 @@ pages share are made one (a leaf taking a list or a text, so the reader needn't 
 **What only the reader needs to read**, over leaves that exist: the `Math` and `Number` constants
 (each bit-checked) and `-x` as `x * -1` (exact at `-0`), both read now, as are `++`, `--` and the
 compound assignments, and `concat`, `Array.from(xs)` and `Array.of`; `.length` and `xs[i]` by
-the value's type, `{ [k]: v }`, `Object.freeze` and `structuredClone` as the value itself, a
-date's `getTime`.
+the value's type, `{ [k]: v }` (read now), `Object.freeze` and `structuredClone` as the value
+itself (read now), a date's `getTime` (read now).
 
 **What the races found wrong**, fixed since but for one: `add` gave `0` for `-0 + -0` (it summed
 from `+0`; it starts from `-0` now); `add`, `subtract`, `multiply` and `divide` could overflow to an

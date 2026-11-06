@@ -32,6 +32,7 @@ use crate::builder::FlowDocument;
 use crate::canvas::{Node, PlacedBody};
 use crate::composites::{inner_canvas, resolve, Names};
 use crate::lang::lower::{alias, call_noun, is_optional, RESERVED, UNUSED};
+use crate::lang::ts::{DATE_GETTERS, DATE_SETTERS};
 use crate::routes::{components, find_actions, find_clocks, find_files, find_routes};
 use crate::templates;
 use crate::text::restore;
@@ -2629,9 +2630,37 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
                 let key = self.required(node, "key", COND)?;
                 member(format!("{base}[{key}]"))
             }
-            "json_parse" => member(format!("JSON.parse({})", self.required(node, "text", COND)?)),
-            "json_stringify" => member(format!("JSON.stringify({})", self.required(node, "value", COND)?)),
+            "json_parse" if node.param("fn").is_empty() => member(format!("JSON.parse({})", self.required(node, "text", COND)?)),
+            "json_parse" => {
+                let t = self.required(node, "text", COND)?;
+                let f = self.function_text(node)?;
+                member(format!("JSON.parse({t}, {f})"))
+            }
+            "json_stringify" => self.json_stringify(node),
             "keys" => member(format!("Object.keys({})", self.required(node, "record", COND)?)),
+            "values" => member(format!("Object.values({})", self.required(node, "record", COND)?)),
+            "from_entries" => member(format!("Object.fromEntries({})", self.required(node, "entries", COND)?)),
+            "has" => {
+                let r = self.required(node, "record", COND)?;
+                let k = self.required(node, "key", COND)?;
+                member(format!("Object.hasOwn({r}, {k})"))
+            }
+            "same_value" => {
+                let a = self.required(node, "a", COND)?;
+                let b = self.required(node, "b", COND)?;
+                member(format!("Object.is({a}, {b})"))
+            }
+            "group_by" => {
+                let xs = self.required(node, "list", COND)?;
+                let f = self.function_text(node)?;
+                member(format!("Object.groupBy({xs}, {f})"))
+            }
+            "date_part" | "date_text" | "date_set" => self.date_form(node),
+            "date_utc" if self.every_wired(node) => {
+                let ports: Vec<String> = d.inputs.iter().map(|p| p.name.clone()).collect();
+                member(format!("Date.UTC({})", self.texts(node, &ports)?.join(", ")))
+            }
+            "date_parse" => member(format!("Date.parse({})", self.required(node, "text", COND)?)),
             "uppercase" | "lowercase" => {
                 let s = self.required(node, "s", MEMBER)?;
                 member(format!("{s}.{}()", if d.name == "uppercase" { "toUpperCase" } else { "toLowerCase" }))
@@ -2657,6 +2686,7 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
             "as_text" => atom(format!("`${{{}}}`", self.required(node, "value", 0)?)),
             "record" => atom("{}".into()),
             "with_field" => self.record(node),
+            "merge" | "insert" if self.every_wired(node) => self.record(node),
             "list" if d.inputs.len() >= 2 => {
                 let mut items = Vec::new();
                 for p in &d.inputs {
@@ -2672,6 +2702,15 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
                 }
                 let list = self.required(node, "list", COND)?;
                 atom(format!("[...{list}, {item}]"))
+            }
+            // `typeof x`: what `type_of` says, "undefined" where nothing arrives.
+            "default"
+                if node.param("type") == "Text"
+                    && node.param("value") == "undefined"
+                    && let Some(t) = self.inline_source(node, "value", "type_of").filter(|t| self.arg_wired(t, "value")) =>
+            {
+                self.touch(t);
+                Ok((format!("typeof {}", self.required(t, "value", UNARY)?), UNARY))
             }
             "default" => match literal(node.param("type"), node.param("value")) {
                 Some((l, _)) => {
@@ -2942,13 +2981,19 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
     /// Whether what feeds `node`'s `input` reads back as a value the lowering knows is a number
     /// (lower.rs `leaf_form`): a node's `Number` output, by its name or written in place.
     fn known_number(&self, node: &Node, input: &str) -> bool {
+        self.known(node, input, WType::Number)
+    }
+
+    /// Whether what feeds `node`'s `input` is a node's output of type `ty`, by its name or
+    /// written in place.
+    fn known(&self, node: &Node, input: &str, ty: WType) -> bool {
         let Some(Src::Node { id, output }) = self.g.incoming.get(&(node.id.clone(), input.to_string())) else { return false };
         if self.captured.contains_key(&(id.clone(), output.clone())) || self.request.as_ref().is_some_and(|(r, _)| r == id) || self.is_tick(id) {
             return false;
         }
         let src = self.g.node(id);
         let port = src.data.outputs.iter().find(|p| p.name == *output).or_else(|| if src.data.outputs.len() == 1 { src.data.outputs.first() } else { None });
-        self.pass_through(src).is_none() && port.is_some_and(|p| p.ty == WType::Number)
+        self.pass_through(src).is_none() && port.is_some_and(|p| p.ty == ty)
     }
 
     /// A number method's receiver: a number literal in parentheses, as `5.toFixed()` doesn't
@@ -3130,9 +3175,7 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
     /// name it, the values it uses from around it by their names.
     fn map(&mut self, node: &Node, method: Option<&str>) -> Result<(String, u8), String> {
         let d = &node.data;
-        let (own, base) = (function_takes(&d.name), leaf_inputs(&d.name));
-        let hash = node.param("fn").to_string();
-        if hash.is_empty() {
+        if node.param("fn").is_empty() {
             return Err(format!("{} without a function has no TypeScript form", d.name));
         }
         let fold = d.name == "fold";
@@ -3145,18 +3188,7 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
             None => self.required(node, "list", MEMBER)?,
         };
         let init = if fold { Some(self.required(node, "init", COND)?) } else { None };
-        let (_, unit) = resolve(self.p.store, &hash)?;
-        let ports: Vec<String> = unit.inputs.iter().skip(own).map(|p| p.name.clone()).collect();
-        let mut captures = Vec::new();
-        for (port, input) in ports.iter().zip(d.inputs.iter().skip(base)) {
-            let text = self.required(node, &input.name, ATOM)?;
-            captures.push((port.clone(), text));
-        }
-        let f = match self.p.lambda_text(&hash, &captures, own)? {
-            Some(f) => f,
-            None if captures.is_empty() => self.p.function_for(&hash, "f")?,
-            None => return Err(format!("{}'s function uses values from around it and is more than one expression, which TypeScript can't write in place: give the values to it some other way", d.name)),
-        };
+        let f = self.function_text(node)?;
         let method = method.unwrap_or(match d.name.as_str() {
             "fold" if reversed.is_some() => "reduceRight",
             "fold" => "reduce",
@@ -3189,6 +3221,8 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
         let ports: Vec<String> = d.inputs.iter().take(given).map(|p| p.name.clone()).collect();
         let (atom, member) = (|s: String| Ok((s, ATOM)), |s: String| Ok((s, MEMBER)));
         match d.name.as_str() {
+            // A record's pairs where it is known to be one, `Object.entries(r)`; else a list's.
+            "entries" if self.known(node, &ports[0], WType::Record) => member(format!("Object.entries({})", self.required(node, &ports[0], COND)?)),
             "indices" | "entries" => {
                 let xs = self.required(node, &ports[0], MEMBER)?;
                 atom(format!("[...{xs}.{}()]", if d.name == "indices" { "keys" } else { "entries" }))
@@ -3297,9 +3331,138 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
         Ok((out, ATOM))
     }
 
-    /// A chain of `with_field`s as a record literal: `{ k: v, … }` from a `record()`, or
-    /// `{ ...base, k: v, … }` from anything else.
+    /// A higher-order leaf's function as its method takes it: written in place when the text
+    /// didn't name it, the values it uses from around it by their names; else by its name.
+    fn function_text(&mut self, node: &Node) -> Result<String, String> {
+        let d = &node.data;
+        let (own, base) = (function_takes(&d.name), leaf_inputs(&d.name));
+        let hash = node.param("fn").to_string();
+        if hash.is_empty() {
+            return Err(format!("{} without a function has no TypeScript form", d.name));
+        }
+        let (_, unit) = resolve(self.p.store, &hash)?;
+        let ports: Vec<String> = unit.inputs.iter().skip(own).map(|p| p.name.clone()).collect();
+        let mut captures = Vec::new();
+        for (port, input) in ports.iter().zip(d.inputs.iter().skip(base)) {
+            let text = self.required(node, &input.name, ATOM)?;
+            captures.push((port.clone(), text));
+        }
+        match self.p.lambda_text(&hash, &captures, own)? {
+            Some(f) => Ok(f),
+            None if captures.is_empty() => self.p.function_for(&hash, "f"),
+            None => Err(format!("{}'s function uses values from around it and is more than one expression, which TypeScript can't write in place: give the values to it some other way", d.name)),
+        }
+    }
+
+    /// `JSON.stringify(x)`, with the replacer and the indent where they are set: the function,
+    /// the keys as a list, or `null`; the indent as a number of spaces, or a text.
+    fn json_stringify(&mut self, node: &Node) -> Result<(String, u8), String> {
+        let (keys, f, indent) = (node.param("keys"), node.param("fn"), node.param("indent"));
+        if !keys.is_empty() && !f.is_empty() {
+            return Err("json_stringify with both keys and a function has no TypeScript form: JavaScript's replacer is one or the other".into());
+        }
+        // The keys as ts.rs writes them, a list of texts, read back the same.
+        let listed = match keys {
+            "" => None,
+            k => match serde_json::from_str::<Vec<String>>(k) {
+                Ok(list) if serde_json::to_string(&list).is_ok_and(|s| s == k) => Some(format!("[{}]", list.iter().map(|k| quote(k)).collect::<Vec<_>>().join(", "))),
+                _ => return self.generic(node),
+            },
+        };
+        let mut args = vec![self.required(node, "value", COND)?];
+        let replacer = if f.is_empty() { listed } else { Some(self.function_text(node)?) };
+        let space = match indent {
+            "" => None,
+            s if s.len() <= 10 && s.bytes().all(|b| b == b' ') => Some(s.len().to_string()),
+            s => Some(quote(s)),
+        };
+        if replacer.is_some() || space.is_some() {
+            args.push(replacer.unwrap_or_else(|| "null".into()));
+        }
+        args.extend(space);
+        Ok((format!("JSON.stringify({})", args.join(", ")), MEMBER))
+    }
+
+    /// A date leaf as a method of `new Date(t)`: `new Date(t).getUTCHours()`,
+    /// `new Date(t).toISOString()`, `new Date(t).setUTCHours(h, m)`, and `new Date(t).getTime()`
+    /// for the time value; by name where JavaScript has no such method or call.
+    fn date_form(&mut self, node: &Node) -> Result<(String, u8), String> {
+        let d = &node.data;
+        let given = d.inputs.len() - 1;
+        let method = match (d.name.as_str(), node.param("part"), node.param("format")) {
+            ("date_part", part, _) => DATE_GETTERS.iter().find(|(_, p)| *p == part).map(|(m, _)| *m),
+            ("date_text", _, "iso") => Some("toISOString"),
+            ("date_text", _, "utc") => Some("toUTCString"),
+            ("date_set", part, _) => DATE_SETTERS.iter().find(|(_, p, takes)| *p == part && given <= *takes).map(|(m, ..)| *m),
+            _ => None,
+        };
+        let Some(method) = method.filter(|_| self.every_wired(node)) else { return self.generic(node) };
+        let t = self.required(node, "time", COND)?;
+        let ports: Vec<String> = d.inputs.iter().skip(1).map(|p| p.name.clone()).collect();
+        let args = self.texts(node, &ports)?;
+        Ok((format!("new Date({t}).{method}({})", args.join(", ")), MEMBER))
+    }
+
+
+    /// A record built in place as the items of the literal ts.rs reads back as it: a chain of
+    /// `with_field`s its fields, an `insert` its `[k]: v`, a `merge` its spreads, each on what it
+    /// builds on when that is built in place too (`{ ...a, ...b, k: v }`), else spread.
+    fn built(&mut self, node: &Node) -> Result<Vec<String>, String> {
+        match node.data.name.as_str() {
+            "record" => Ok(Vec::new()),
+            "merge" => {
+                let mut items = Vec::new();
+                for (i, p) in node.data.inputs.iter().enumerate() {
+                    // The first, built in place with something in it, is read back as its items.
+                    match self.builder_source(node, &p.name, &["with_field", "insert"]) {
+                        Some(b) if i == 0 => {
+                            self.touch(b);
+                            items.extend(self.built(b)?);
+                        }
+                        _ => items.push(format!("...{}", self.required(node, &p.name, COND)?)),
+                    }
+                }
+                Ok(items)
+            }
+            "insert" => {
+                let mut items = self.base_items(node)?;
+                let k = self.required(node, "key", COND)?;
+                let v = self.required(node, "value", COND)?;
+                items.push(format!("[{k}]: {v}"));
+                Ok(items)
+            }
+            _ => self.fields_of(node),
+        }
+    }
+
+    /// What a `with_field` or an `insert` builds on, as items: none for `{}`, a `merge`'s or an
+    /// `insert`'s own, else the record spread.
+    fn base_items(&mut self, node: &Node) -> Result<Vec<String>, String> {
+        if let Some(b) = self.builder_source(node, "record", &["record", "merge", "insert"]) {
+            self.touch(b);
+            return self.built(b);
+        }
+        Ok(vec![format!("...{}", self.required(node, "record", COND)?)])
+    }
+
+    /// The node feeding `input`, written in place, when it is one of `leaves` with every input
+    /// wired.
+    fn builder_source(&self, node: &Node, input: &str, leaves: &[&str]) -> Option<&'g Node> {
+        leaves.iter().find_map(|l| self.inline_source(node, input, l)).filter(|b| self.every_wired(b))
+    }
+
+    fn every_wired(&self, node: &Node) -> bool {
+        node.data.inputs.iter().all(|p| self.arg_wired(node, &p.name))
+    }
+
+    /// A record built in place as a record literal: `{ k: v, … }` from a `record()`, `{ ...base,
+    /// k: v, … }` from anything else.
     fn record(&mut self, node: &Node) -> Result<(String, u8), String> {
+        Ok((object(&self.built(node)?), ATOM))
+    }
+
+    /// A chain of `with_field`s as items: what it builds on, then its fields.
+    fn fields_of(&mut self, node: &Node) -> Result<Vec<String>, String> {
         let mut chain: Vec<&Node> = vec![self.g.node(&node.id)];
         let mut keys: Vec<String> = vec![node.param("name").to_string()];
         let base = loop {
@@ -3317,16 +3480,12 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
         for c in &chain[1..] {
             self.touch(c);
         }
-        let mut items = Vec::new();
-        match self.inline_source(base, "record", "record") {
-            Some(empty) => self.touch(empty),
-            None => items.push(format!("...{}", self.required(base, "record", COND)?)),
-        }
+        let mut items = self.base_items(base)?;
         for c in &chain {
             let value = self.required(c, "value", COND)?;
             items.push(field(c.param("name"), &value));
         }
-        Ok((object(&items), ATOM))
+        Ok(items)
     }
 
     /// A database call's values, one for each `$n` of its SQL, when they are a list written in
@@ -3651,6 +3810,26 @@ mod tests {
         assert!(text.contains("parseInt(input.text, 16)"), "{text}");
         assert!(text.contains("Math.hypot(x, y)"), "{text}");
         assert!(!text.contains("from \"holon\"\nimport") && text.starts_with("import { action, flow } from \"holon\"\n"), "no leaf is imported:\n{text}");
+    }
+
+    /// Each record, JSON and date form prints back as written: `fmt` keeps the forms.
+    #[test]
+    fn the_record_and_date_leaves_print_as_javascript_writes_them() {
+        let src = "import { action, flow } from \"holon\"\n\nflow(\"f\")\n\nexport const t = action((input) => {\n  const r = input.r\n  const made = { ...r, k: 1 }\n  return {\n    values: Object.values(r),\n    entries: Object.entries(made),\n    pairs: Object.fromEntries(input.pairs),\n    groups: Object.groupBy(input.xs, (x) => x.kind),\n    merged: { ...r, ...input.s, k: 1 },\n    first: { a: 1, ...r, ...input.s },\n    keyed: { ...made, [input.k]: 2, b: 3 },\n    has: Object.hasOwn(r, input.k),\n    same: Object.is(r, input.s),\n    kind: typeof r,\n    parsed: JSON.parse(input.t, (k, v) => [k, v]),\n    text: JSON.stringify(r, [\"id\", \"name\"], 2),\n    tabbed: JSON.stringify(r, null, \"\\t\"),\n    replaced: JSON.stringify(r, (k, v) => [k, v]),\n    time: new Date(input.t).getTime(),\n    hours: new Date(input.t).getUTCHours(),\n    iso: new Date(input.t).toISOString(),\n    utc: new Date(input.t).toUTCString(),\n    midnight: new Date(input.t).setUTCHours(0, 0, 0, 0),\n    built: Date.UTC(2000, 1, 29),\n    read: Date.parse(input.t),\n  }\n})\n";
+        prints_back(src);
+    }
+
+    /// Records built by name in shapes a literal reads otherwise print as literals that read back
+    /// as the same nodes: a merge of a merge spreads it whole, an empty first record is spread.
+    #[test]
+    fn the_record_leaves_called_by_name_round_trip() {
+        let src = "import { action, flow, insert, merge, type_of } from \"holon\"\n\nflow(\"f\")\n\nexport const t = action((input) => {\n  const r = input.r\n  return { a: merge(merge(r, input.s), input.u), b: merge({}, r), c: insert(insert(r, input.k, 1), input.j, 2), d: type_of(r), e: { ...merge(r, input.s), k: 1 } }\n})\n";
+        let text = reprinted(src);
+        assert!(text.contains("a: { ...{ ...r, ...input.s }, ...input.u }"), "{text}");
+        assert!(text.contains("b: { ...{}, ...r }"), "{text}");
+        assert!(text.contains("c: { ...r, [input.k]: 1, [input.j]: 2 }"), "{text}");
+        assert!(text.contains("d: type_of(r)"), "{text}");
+        assert!(text.contains("e: { ...r, ...input.s, k: 1 }"), "{text}");
     }
 
     /// Each number leaf in its JavaScript form prints back as written: `fmt` keeps the forms.
