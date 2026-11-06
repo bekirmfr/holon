@@ -198,7 +198,12 @@ pub(crate) fn compute_op(op: Op, name: &str, inputs: &[&Value], params: &[Param]
 
         // ── text ──
         Op::Concat => {
-            let mut s = String::new();
+            // Measured first, so the text is made once at its length rather than grown.
+            let mut len = 0;
+            for v in inputs {
+                len += as_text(v)?.len();
+            }
+            let mut s = String::with_capacity(len);
             for v in inputs {
                 s.push_str(as_text(v)?);
             }
@@ -328,7 +333,11 @@ pub(crate) fn compute_op(op: Op, name: &str, inputs: &[&Value], params: &[Param]
             let [s, start, len] = inputs else { return None };
             let (s, start, len) = (as_text(s)?, as_index(start)?, as_index(len)?);
             // start past the end ⇒ empty; len past the end ⇒ truncated. Total for valid types.
-            Some(Value::Text(s.chars().skip(start).take(len).collect()))
+            // The chars from `start`, `len` of them: found by where they begin in the text, and
+            // copied at once rather than char by char.
+            let rest = &s[s.char_indices().nth(start).map_or(s.len(), |(b, _)| b)..];
+            let piece = &rest[..rest.char_indices().nth(len).map_or(rest.len(), |(b, _)| b)];
+            Some(Value::Text(piece.to_string()))
         }
         // The pieces of `text` between each occurrence of `sep`, in order: `join`'s inverse, so
         // `join(split(t, s), s) == t`. Text without `sep` is one piece (the empty text too);
@@ -360,7 +369,9 @@ pub(crate) fn compute_op(op: Op, name: &str, inputs: &[&Value], params: &[Param]
         }
         Op::Append => {
             let [l, item] = inputs else { return None };
-            let mut xs = as_list(l)?.to_vec();
+            let l = as_list(l)?;
+            let mut xs = Vec::with_capacity(l.len() + 1);
+            xs.extend_from_slice(l);
             xs.push((*item).clone());
             Some(Value::List(xs))
         }
@@ -368,8 +379,10 @@ pub(crate) fn compute_op(op: Op, name: &str, inputs: &[&Value], params: &[Param]
         // list; a single item is `append`'s job, never wrapped here.
         Op::Extend => {
             let [l, items] = inputs else { return None };
-            let mut xs = as_list(l)?.to_vec();
-            xs.extend_from_slice(as_list(items)?);
+            let (l, items) = (as_list(l)?, as_list(items)?);
+            let mut xs = Vec::with_capacity(l.len() + items.len());
+            xs.extend_from_slice(l);
+            xs.extend_from_slice(items);
             Some(Value::List(xs))
         }
         Op::Length => {
@@ -396,12 +409,23 @@ pub(crate) fn compute_op(op: Op, name: &str, inputs: &[&Value], params: &[Param]
         }
         Op::Join => {
             let [l, sep] = inputs else { return None };
-            let sep = as_text(sep)?;
-            let mut parts = Vec::new();
-            for v in as_list(l)? {
-                parts.push(as_text(v)?.to_string());
+            let (items, sep) = (as_list(l)?, as_text(sep)?);
+            // Measured first, then written once into one text, not each item copied to a piece
+            // and the pieces copied again.
+            // Saturating, as a capacity is only a hint: a separator long enough to overflow it on
+            // a 32-bit target is no reason to panic before the items are found not to be texts.
+            let mut len = sep.len().saturating_mul(items.len().saturating_sub(1));
+            for v in items {
+                len = len.saturating_add(as_text(v)?.len());
             }
-            Some(Value::Text(parts.join(sep)))
+            let mut s = String::with_capacity(len);
+            for (k, v) in items.iter().enumerate() {
+                if k > 0 {
+                    s.push_str(sep);
+                }
+                s.push_str(as_text(v)?);
+            }
+            Some(Value::Text(s))
         }
 
         // ── list structure (§13 irreducibles): O(1) build / inspect. `fold`-composites
@@ -1408,6 +1432,17 @@ mod tests {
         assert_eq!(compute("slice", &[&txt("hi"), &num(5.0), &num(2.0)], &[]), Some(txt("")));
         assert_eq!(compute("index_of", &[&txt("hello"), &txt("ll")], &[]), Some(num(2.0)));
         assert_eq!(compute("index_of", &[&txt("hello"), &txt("z")], &[]), Some(num(-1.0)));
+        // `slice` finds where its chars begin and copies them at once: the chars `start..start +
+        // len` exactly, as taking them one by one gives, in texts of one-, two-, three- and
+        // four-byte chars, wherever the bounds fall.
+        for s in ["", "hello", "ab\u{00e7}d", "\u{00e7}\u{20ac}x\u{1f600}y", "\u{1f600}\u{1f600}"] {
+            for start in 0..7 {
+                for len in 0..7 {
+                    let one_by_one: String = s.chars().skip(start).take(len).collect();
+                    assert_eq!(compute("slice", &[&txt(s), &num(start as f64), &num(len as f64)], &[]), Some(txt(&one_by_one)), "{s:?} {start} {len}");
+                }
+            }
+        }
     }
     #[test]
     fn to_text_covers_every_value_shape() {
