@@ -227,6 +227,18 @@ static SAMPLES: &[Sample] = &[
         text: include_str!("../samples/calc.holon.ts"),
     },
     Sample {
+        name: "loan",
+        title: "Loan payments (JavaScript's numbers)",
+        description: "The monthly payment on a loan, computed as JavaScript computes it: parseFloat and parseInt read the query, ** compounds the rate, Math.round rounds to the cent, toFixed writes the cents, and Math.floor and % split the term. A part that isn't a number has no value, where JavaScript gives NaN, so the route answers 400.",
+        shows: &["number leaves", "Math", "parseFloat", "parseInt", "**", "%", "toFixed", "missing"],
+        port: Some("8173"),
+        secrets: &[],
+        optional: &[],
+        browsers: None,
+        try_it: r#"curl "http://127.0.0.1:8173/payment?amount=250000&rate=6.5&months=360" answers {"interest":"318861.20","payment":"1580.17","term":"30y 0m","total":"568861.20"}; with amount=lots it answers 400"#,
+        text: include_str!("../samples/loan.holon.ts"),
+    },
+    Sample {
         name: "heartbeat",
         title: "Heartbeat",
         description: "A clock flow: every 10 seconds it records the time, counts the beats in its state, and keeps the time of the first beat (a fallback that is itself a value: coalesce).",

@@ -47,11 +47,13 @@ around line 2587), `method_call` (namespaces and methods, around line 2968), `st
 (`.length`, around line 2818); the lowering of each operator to its leaf is `lower.rs`'s `binary`
 and `expr`. Each mistake quoted below is the reader's own text.
 
-**In numbers:** of JavaScript's library functions, ten are read: `JSON.parse`, `JSON.stringify`,
-`Object.keys`, and the methods `.map`, `.reduce`, `.split`, `.join`, `.indexOf`, `.toUpperCase`,
-`.toLowerCase`. None of `Math`'s 35 functions and 8 constants is. The operators and literals are
-mostly mapped (§1, §2). Of the catalog's 56 computing leaves, 19 can only be called by name
-(§10).
+**In numbers:** of JavaScript's library functions, these are read: `JSON.parse`,
+`JSON.stringify`, `Object.keys`, the methods `.map`, `.reduce`, `.split`, `.join`, `.indexOf`,
+`.toUpperCase`, `.toLowerCase`, every one of `Math`'s functions but `random` and its 8 constants
+(§4), `Number` and its functions and constants (§5), `parseInt`, `parseFloat`, `isNaN` and
+`isFinite` (§3), and a number's `toFixed`, `toPrecision`, `toExponential` and `toString` (§5), as
+the eleven number leaves. The operators are mapped but for `typeof`, `void`, `in`, `instanceof` and
+the comma (§1), and the literals mostly (§2). Of the catalog's 67 computing leaves, 19 can only be called by name (§10).
 
 ## 1. Operators
 
@@ -63,10 +65,13 @@ mostly mapped (§1, §2). Of the catalog's 56 computing leaves, 19 can only be c
 | `a - b` | `subtract` | mapped | |
 | `a * b` | `multiply` | mapped | a chain is one node |
 | `a / b` | `divide` | differs | by zero: nothing, where JavaScript gives `Infinity` or `NaN` |
-| `a % b`, `a ** b` | | js() | "% isn't an operator Holon has" |
-| `-x` | `const` | mapped for a number literal | any other: "a minus needs a number after it (to negate a value, write 0 - x)" |
-| `+x`, `typeof`, `void`, `~` | | js() | "… isn't an operator Holon has" |
-| `x++`, `x--`, `x += 1` | `add`, `subtract` | mapped as statements | "++ and -- are a statement of their own: n++" in an expression |
+| `a % b` | `remainder` | mapped | fmod, with `a`'s sign; by zero: nothing |
+| `a ** b` | `power` | mapped | right-associative; `Math.pow(a, b)` too; nothing where JavaScript gives `NaN` or an infinity |
+| `-x` | `const`; `multiply` | mapped | a number literal is itself (`-1`); any other value is `x * -1`, one node, exact at `-0` where `0 - x` isn't |
+| `+x` | `to_number` | mapped | `Number(x)` |
+| `~x` | `bitwise {op: xor}` | mapped | `x ^ -1` |
+| `typeof`, `void` | | js() | "… isn't an operator Holon has" |
+| `x++`, `x--`, `x += 1`, `x %= 2`, `x **= 2`, `x &= m`, `x <<= 1`, … | `add`, `subtract`, and each operator's leaf | mapped as statements | "++ and -- are a statement of their own: n++" in an expression |
 | `a === b`, `a == b` | `equals` | mapped; differs on records and lists | `==` is `===` (no coercion); records and lists compare by value |
 | `a !== b`, `a != b` | `equals`, `not` | mapped | |
 | `a < b`, `<=`, `>`, `>=` | `compare {op}` | mapped for numbers | texts: differs, nothing (JavaScript compares them in order) |
@@ -76,7 +81,7 @@ mostly mapped (§1, §2). Of the catalog's 56 computing leaves, 19 can only be c
 | `c ? a : b` | `guard`, then `default` or `coalesce` | mapped | only the branch taken runs; `c ? a : undefined` is the `guard` alone |
 | `x?.k`, `x?.[k]` | `field`, `lookup` | mapped | absence passes along anyway, so `?.` and `.` lower alike |
 | `k in r`, `instanceof` | | js() | "in isn't an operator Holon has" |
-| `&`, `\|`, `^`, `<<`, `>>`, `>>>` | | js() | |
+| `&`, `\|`, `^`, `<<`, `>>`, `>>>` | `bitwise {op}` | mapped | on ToInt32 (ToUint32 for `>>>`), with TypeScript's precedence |
 | `a, b` (comma), assignment in an expression | | refused | "a write is a statement of its own" |
 | `delete store[k]` (a statement) | `collection_delete`, `file_delete` | mapped | for a collection or folder; in an expression, "delete is a statement" |
 
@@ -97,7 +102,7 @@ mostly mapped (§1, §2). Of the catalog's 56 computing leaves, 19 can only be c
 | `xs.length`, `s.length` | `length`, `text_length` | by name | "a list's length is length(xs), a text's text_length(s), imported from "holon": .length comes in a later slice" |
 | `undefined` | | as a branch | `c ? a : undefined`, `x !== undefined` in an `if`; else "undefined is written as a branch" |
 | `null` | | refused | "null isn't a value here: a value that isn't there is absent, undefined" |
-| `NaN`, `Infinity` | | refused | unknown names |
+| `NaN`, `Infinity` | | refused | "NaN isn't a value a flow has: a leaf gives nothing where JavaScript gives NaN, so test for presence, x !== undefined, or give a fallback, x ?? 0" |
 | `/re/` | | js() | "a regular expression isn't something Holon computes" |
 | `new X(…)` | | js() | |
 | `class`, getters, setters, methods in a record | | refused | "a record holds values: no getters, setters or methods" |
@@ -108,9 +113,9 @@ mostly mapped (§1, §2). Of the catalog's 56 computing leaves, 19 can only be c
 | JavaScript | Status | In Holon |
 |---|---|---|
 | `String(x)` | by name; compose | `as_text(x)`, or `` `${x}` `` |
-| `Number(s)`, `parseFloat(s)`, `parseInt(s)` | js(); compose | no leaf reads a number from text; `JSON.parse(s)` reads `"42"` as 42 |
+| `Number(s)`, `parseFloat(s)`, `parseInt(s)`, `parseInt(s, r)` | mapped | `to_number {grammar: number, float, int}`, the radix wired when given; a flow's own function of the name is the one called |
 | `Boolean(x)`, `!!x` | by name | `is_truthy(x)` |
-| `isNaN`, `isFinite` | js() | a computation that fails gives nothing, never `NaN` |
+| `isNaN(x)`, `isFinite(x)` | mapped | `number_test {test, coerce: number}`: `isNaN("abc")` is true |
 | `encodeURIComponent`, `decodeURIComponent`, `encodeURI`, `decodeURI` | js() | a route's `req.params` and `req.query` come decoded |
 | `structuredClone` | not needed | values are never changed in place |
 | `setTimeout`, `setInterval` | refused, import | a flow has no globals: a clock is a handler, `every("5s", () => …)`; a wait is `await event("paid", { expires: "1d" })` |
@@ -120,32 +125,30 @@ mostly mapped (§1, §2). Of the catalog's 56 computing leaves, 19 can only be c
 
 ## 4. `Math`
 
-Every member is refused today, with "Math isn't there: a flow has no globals; import what it
-uses" (there is nothing to import), so each is **js()**. The numeric leaves are `add`,
-`subtract`, `multiply`, `divide`, `compare`, `sum` and `range`.
+`Math` is a namespace the reader knows, as it knows `JSON` (`ts.rs` `math_call`); `Math.max` is
+the leaf whatever the flow defines.
 
-| Member | Status | Compose from mapped forms |
-|---|---|---|
-| `max(a, b)`, `min(a, b)` | js(); compose | `a > b ? a : b`, `a < b ? a : b` |
-| `abs(x)` | js(); compose | `x < 0 ? 0 - x : x` |
-| `sign(x)` | js(); compose | `x > 0 ? 1 : x < 0 ? -1 : 0` |
-| `max(...xs)`, `min(...xs)` | js(); compose | `xs.reduce((m, x) => (x > m ? x : m), xs0)`, the start given |
-| `round`, `floor`, `ceil`, `trunc` | js() | no leaf rounds |
-| `pow`, `sqrt`, `cbrt`, `hypot`, `exp`, `expm1`, `log`, `log10`, `log2`, `log1p` | js() | `pow(x, 2)` composes as `x * x` |
-| `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2`, `sinh`, `cosh`, `tanh`, `asinh`, `acosh`, `atanh` | js() | |
-| `clz32`, `fround`, `imul` | js() | |
-| `random()` | refused, import | `import { random } from "holon:random"`: one number for the run, recorded so it replays; `Math.random` gives a new one each call |
-| `PI`, `E`, `LN2`, `LN10`, `LOG2E`, `LOG10E`, `SQRT2`, `SQRT1_2` | refused | write the number |
+| Member | Leaf | Status | Note |
+|---|---|---|---|
+| `abs`, `sign`, `floor`, `ceil`, `trunc`, `round`, `sqrt`, `cbrt`, `exp`, `expm1`, `log`, `log2`, `log10`, `log1p`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `sinh`, `cosh`, `tanh`, `asinh`, `acosh`, `atanh`, `fround`, `f16round`, `clz32` | `math {fn}` | mapped | IEEE-exact, or `libm` 0.2.16's bits (§9) |
+| `max(a, b, …)`, `min(a, b, …)` | `max`, `min` | mapped | variadic; one argument is refused |
+| `max(...xs)`, `min(...xs)`, `hypot(a, b, …)`, `hypot(...xs)`, `sumPrecise(xs)` | `aggregate {fn}` | mapped | `hypot`'s numbers made a list in place; V8's `hypot` |
+| `atan2(y, x)`, `pow(a, b)`, `imul(a, b)` | `atan2`, `power`, `bitwise {op: imul}` | mapped | |
+| `random()` | | refused, import | `import { random } from "holon:random"`: one number for the run, recorded so it replays; `Math.random` gives a new one each call |
+| `PI`, `E`, `LN2`, `LN10`, `LOG2E`, `LOG10E`, `SQRT2`, `SQRT1_2` | `const` | mapped | the double's literal, checked against Rust's constants |
 
 ## 5. `Number`
 
 | Member | Status | In Holon |
 |---|---|---|
-| `Number.isInteger`, `isFinite`, `isNaN`, `isSafeInteger` | js() | (`Number` is an unknown name) |
-| `Number.parseFloat`, `Number.parseInt` | js() | as `parseFloat` (§3) |
-| `MAX_SAFE_INTEGER`, `MIN_SAFE_INTEGER`, `EPSILON`, `MAX_VALUE`, `MIN_VALUE` | refused | write the number |
-| `x.toString()` | compose | `` `${x}` `` |
-| `x.toString(radix)`, `toFixed`, `toPrecision`, `toExponential`, `toLocaleString` | js() | "no leaf does .toFixed(…)" |
+| `Number.isInteger`, `isFinite`, `isSafeInteger` | mapped | `number_test {test, coerce: none}` |
+| `Number.isNaN(x)` | mapped | `false`: a flow has no NaN (§9) |
+| `Number.parseFloat`, `Number.parseInt` | mapped | as `parseFloat` and `parseInt` (§3) |
+| `MAX_SAFE_INTEGER`, `MIN_SAFE_INTEGER`, `EPSILON`, `MAX_VALUE`, `MIN_VALUE` | mapped | the double's literal |
+| `NaN`, `POSITIVE_INFINITY`, `NEGATIVE_INFINITY` | refused | "a flow has no NaN or Infinity" |
+| `x.toFixed(d)`, `x.toPrecision(p)`, `x.toExponential(d)`, `x.toString(radix)` | mapped | `number_format {style}`; exact digits, half up, as V8 writes them |
+| `x.toString()` | mapped where `x` is known to be a number | `number_format {style: string}` on a node whose output is a `Number`; otherwise refused, naming `number_format`, as a text and a list have the method too; `` `${x}` `` for any value |
+| `x.toLocaleString()` | refused | "a flow has no locale" |
 
 ## 6. `String.prototype`
 
@@ -250,6 +253,11 @@ author sees no mistake; the run answers nothing where JavaScript answers somethi
 | `xs.indexOf(x)` on a list | `index_of`: nothing | `index_of` searches texts |
 | `s.split("")` | nothing | an empty separator gives nothing (`Op::Split`) |
 | `a / 0`, and `+`, `-`, `*` or `/` past the largest number | nothing | JavaScript gives `Infinity` or `NaN`, which Holon has no value for |
+| `Math.log(0)`, `0 ** -1`, `(-8) ** (1/3)`, `a % 0`, `parseInt("x")`, `Number("abc")`, `(1e21).toFixed(101)` | nothing | the same: JavaScript gives `NaN`, an infinity, or throws a RangeError |
+| `Number.isNaN(x)` | `false` | the reader writes `false`: no leaf gives `NaN`, so a flow tests for presence, `x !== undefined` |
+| `Math.max("5", 3)`, `"5" & 3`, `"7" % 2`, `Math.sqrt("4")` | nothing | a number leaf takes numbers; JavaScript converts the text first. `Number(s)` converts |
+| `Math.sin`, `Math.exp`, `a ** b` and the other transcendental functions | `libm` 0.2.16's bits | JavaScript leaves them approximated by the engine; one may differ from Holon in the last bit |
+| `Math.hypot(a, b)` | V8's bits | other engines may differ in the last bit |
 | `{ a: 1 } === { a: 1 }` | `true` | compared by value; JavaScript compares objects by identity |
 | `1 == "1"` | `false` | `==` is `===` |
 | `JSON.parse("bad")` | nothing | JavaScript throws; Holon has no `catch` until slice 5 |
@@ -350,8 +358,8 @@ pages share are made one (a leaf taking a list or a text, so the reader needn't 
   JavaScript does, `json_stringify {indent, keys, fn}`, `json_parse {fn}`, `base64 {bytes}`.
 
 **What only the reader needs to read**, over leaves that exist: the `Math` and `Number` constants
-(each bit-checked), `-x` as `x * -1` (exact at `-0`; the mistake today says `0 - x`, which isn't),
-`++`, `--` and the compound assignments, `.length` and `xs[i]` by the value's type, `concat`,
+(each bit-checked) and `-x` as `x * -1` (exact at `-0`), both read now, as are `++`, `--` and the
+compound assignments; `.length` and `xs[i]` by the value's type, `concat`,
 `Array.from(xs)`, `Array.of`, `{ [k]: v }`, `Object.freeze` and `structuredClone` as the value
 itself, a date's `getTime`.
 
@@ -379,8 +387,9 @@ as `1000000000000000000000` (they write JavaScript's `1e+21` and `1e-7` now, `pr
    1.2 times a leaf, `abs` 2.05, `max` 2.07, `Number.isFinite` 1.48. A reader that inlines a
    library composite would turn several leaves into reader rows, at the price of the one named node
    the canvas shows ([numbers.md](js-library-races/numbers.md)).
-4. **A family's parameter checked when wired.** An unknown `compare` `op` gives nothing at run
-   time today; a family with 29 values should refuse an unknown one at the wiring.
+4. **A family's parameter checked when wired.** Decided and built: core's `validate` refuses a
+   family's parameter outside its values (`ValidationError::FamilyParam`, `catalog::FAMILIES`),
+   and the author refuses it where it is written.
 5. **A regular expression's budget.** `regress` backtracks and has no step limit: literal patterns
    first, a step budget, or a cap on the text's length.
 6. **Smaller ones.** Refuse `escape`/`unescape` (Annex B); what `+` and `String(x)` give for a list
