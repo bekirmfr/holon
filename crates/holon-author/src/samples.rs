@@ -786,6 +786,20 @@ static SAMPLES: &[Sample] = &[
         try_it: r#"deploy it (its approval asks to keep runs of GET /unrecorded out of its log), then holon load stress-test: each route for 10 s from 8 connections, a line a second, then the three side by side (req/s, p50, p90, p99, the slowest, errors, and the runs recorded, the log's syncs, the runs counted). holon load stress-test --for 5 --connections 32 --route "GET /strict" loads one harder; curl http://127.0.0.1:8171/strict answers "strict ok""#,
         text: include_str!("../samples/stress-test.holon"),
     },
+    Sample {
+        name: "dexpaprika",
+        title: "An n8n node, translated (DexPaprika)",
+        description: "The n8n community node n8n-nodes-dexpaprika (MIT), translated by hand into Holon text, none of its JavaScript run: each operation a holon calling http.get on a literal host (the permission), the optional credential an optional secret the approval says goes to those hosts only, parameters as inputs, the node's path check in Holon, and its query string escaped by one js holon. docs/L4s/n8n-import-L4.md has the mapping.",
+        shows: &["n8n import", "http_request", "holons", "optional secrets", "where secrets go", "js holons", "host permissions"],
+        port: Some("8172"),
+        interval: None,
+        secrets: &[SampleSecret { name: "dexpaprika_key", what: "optional: a DexPaprika key (console.dexpaprika.com), sent as the whole Authorization header for a higher rate limit and the pro operations; without it the free tier answers", from: None }],
+        // Without a key it calls the free tier: revoking the secret doesn't pause it.
+        optional: &[r#"SecretRead("dexpaprika_key")"#],
+        browsers: None,
+        try_it: r#"curl http://127.0.0.1:8172/networks lists the networks; curl "http://127.0.0.1:8172/search?query=weth" searches every network; curl "http://127.0.0.1:8172/networks/ethereum/pools?limit=3" the top three pools; an id with a / ? # or % answers 400 and nothing is sent"#,
+        text: include_str!("../samples/dexpaprika.holon"),
+    },
 ];
 
 #[cfg(test)]
