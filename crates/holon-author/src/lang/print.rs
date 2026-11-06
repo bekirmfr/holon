@@ -2447,7 +2447,7 @@ limit max_requests 6")).contains("one limit line says max_requests"));
         let heartbeat = samples::build(samples::sample("heartbeat").unwrap()).unwrap();
         assert_eq!(
             printed(Some("heartbeat"), &heartbeat, &BTreeMap::new()),
-            "flow heartbeat\nevery 10s\nstate beats\nstate first_beat\nstate last_beat\n\nt = now\nstate.last_beat = t\nstate.beats = (state.beats ?? 0) + 1\nstate.first_beat = state.first_beat ?? t\n"
+            "flow heartbeat\nstate beats\nstate first_beat\nstate last_beat\n\nevery 10s {\n  state.last_beat = now\n  state.beats = (state.beats ?? 0) + 1\n  state.first_beat = state.first_beat ?? now\n}\n"
         );
         let likes = compile(samples::sample("likes").unwrap().text).unwrap();
         let text = printed(Some("likes"), &likes.doc, &likes.names);

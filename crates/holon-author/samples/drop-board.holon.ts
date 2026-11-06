@@ -1,0 +1,57 @@
+// Drop board: files on a live page.
+//
+// File handlers beside routes: each file new or changed in a folder on the host (once it stops
+// changing) counts in the flow's state and goes out on a channel, and so does each file removed
+// from it. The page listens on the channel and lists each one as it happens.
+//
+// Before it works, an admin binds the folder:
+//   holon folder add board ~/holon-board --read-only
+//
+// Try it: deploy it, open http://127.0.0.1:8157/, then copy any file into ~/holon-board: within
+// two seconds the page shows it, with its size, and deleting it shows that too.
+import { flow, js, on, respond, route } from "holon"
+import state from "state"
+import drops from "channel:drops"
+import board from "folder:board"
+
+flow("drop-board", { port: 8157 })
+
+// The page: the count so far, and a list the channel fills as files come and go.
+const page = js(function html(count) {
+  return `<!doctype html>
+<meta charset="utf-8">
+<title>Drop board</title>
+<style>body{font:16px/1.5 system-ui;max-width:40em;margin:3em auto;padding:0 1em}li.new{animation:in 1s}@keyframes in{from{background:#ffd}}</style>
+<h1>Drop board</h1>
+<p>${count} files dropped so far; each one dropped into the folder, or removed from it, shows below as it happens.</p>
+<ul id="files"></ul>
+<script>
+const list = document.getElementById("files");
+new EventSource("/live").onmessage = (e) => {
+  const file = JSON.parse(e.data);
+  const li = document.createElement("li");
+  li.className = "new";
+  li.textContent = file.event + " " + file.name + (file.event === "deleted" ? "" : " (" + file.size + " bytes)");
+  list.prepend(li);
+};
+</script>`;
+})
+
+// A file new or changed in the folder: count it, and send it to the page.
+on.file.created(board, (f) => {
+  state.files = (state.files ?? 0) + 1
+  drops.send({ event: f.event, name: f.name, size: f.size })
+})
+
+// A file removed from the folder: send it to the page, without counting it.
+on.file.deleted(board, (f) => {
+  drops.send({ event: f.event, name: f.name, size: f.size })
+})
+
+// Serves the page with the count so far.
+route.get("/", () =>
+  respond(page(state.files ?? 0), { headers: { "content-type": "text/html; charset=utf-8" } }),
+)
+
+// The channel as server-sent events, which the page listens to.
+route.get("/live", () => drops.subscribe())

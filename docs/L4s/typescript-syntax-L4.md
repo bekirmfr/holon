@@ -999,7 +999,16 @@ Holon is in development, so the new form replaces today's at once:
    convert: 50 to the same unit (a test holds them to it), and the four without handlers each to
    one handler. slugs binds a `state.set`'s answer, which TypeScript has no form for, so it is written by
    hand. `compile` takes a text in either form, told apart by how it starts, while the samples and
-   the tools switch.
+   the tools switch. *The samples are switched* (2026-11-06): all 55 are `.holon.ts`, read so by
+   `samples.rs`, the bridge, `editor/src/samples.test.ts`, the e2e tests and `holon new`, whose
+   starter is TypeScript too. Heartbeat and rolling-log tick by an `every` handler, so a sample no
+   longer has an interval and `holon tick` runs heartbeat by hand where `holon trigger` did;
+   drop-box and file-audit answer by `on.file.*` handlers, their triggers labeled `on file inbox
+   matching "*.csv"`. A write inside a function is its output `write` (slugs' `publish`). The
+   twins are retired. The tools that still read only `.holon` (the LSP's hover, completion and
+   format; the workbench graph; the inspector's examples, which now come from no sample; the
+   editor's canvas printer and a saved flow's export) keep their fixtures in
+   `crates/holon-author/tests/holon/` until they move to TypeScript with the parser's removal.
 5. **`try`, `catch {}`, `throw`, `finally`,** and the `fail` leaf.
 6. **Computing loops.** `while` to `fold`, the loop's turns, nested folds past 10000, `fold`
    stopping when done, a step budget in core.

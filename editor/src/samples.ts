@@ -1,5 +1,5 @@
 // Sample flows: one per capability, opened from the flows page as an unsaved copy. They are
-// holon-author's (crates/holon-author/src/samples.rs): `.holon` files compiled from their text
+// holon-author's (crates/holon-author/src/samples.rs): `.holon.ts` files compiled from their text
 // against the live catalog, never hand-copied node shapes, so a sample can't drift from core:
 // samples.test.ts builds every one and derives it through the real core. Every new feature ships
 // with a sample that shows it (CLAUDE.md).
@@ -17,9 +17,8 @@ export type Sample = {
   description: string;
   /** The features it shows, as the palette and docs name them. */
   shows: string[];
-  /** Deploy settings: a server's port, or a clock flow's interval in seconds. */
+  /** Deploy settings: a server's port, for a flow that answers requests. */
   port?: string;
-  interval?: string;
   /** Secrets to set under ⚙ before it works, what each is, and where to keep it when not a
    *  value sealed by the server (`env:HOLON_SECRET_…`, `vault:…`). */
   secrets?: { name: string; what: string; from?: string }[];

@@ -4012,54 +4012,7 @@ mod tests {
         assert_eq!(super::super::format::format(&laid).unwrap_or_else(|e| panic!("{what}: fmt again: {e}\n{laid}")), laid, "{what}: fmt again changed it");
     }
 
-    macro_rules! twins {
-        ($($name:literal),* $(,)?) => { [$(($name, include_str!(concat!("../../tests/ts-parity/", $name, ".holon.ts")))),*] };
-    }
-
-    /// The samples that use only what slices 1 to 3 read, each written in TypeScript in
-    /// tests/ts-parity.
-    const TWINS: [(&str, &str); 19] = twins![
-        "approval",
-        "basket",
-        "billing",
-        "browser-key",
-        "calc",
-        "counter",
-        "drop-board",
-        "fetch-json",
-        "guarded-api",
-        "hello-api",
-        "marketplace",
-        "nearest",
-        "notes-api",
-        "quote",
-        "sign-payload",
-        "status-board",
-        "stress-test",
-        "ticker",
-        "tickets",
-    ];
-
-    /// Until the samples are written in TypeScript (the note's slice 4), each one this slice can
-    /// read deploys, written so, as the server unit its `.holon` form does: the same hash, the same
-    /// settings.
-    #[test]
-    fn a_sample_written_in_typescript_is_the_same_unit() {
-        for (name, ts) in TWINS {
-            let holon = crate::samples::sample(name).unwrap_or_else(|| panic!("no sample {name}")).text;
-            same_unit(name, ts, holon);
-        }
-    }
-
-    /// Each twin is kept as `holon fmt` writes it, as the samples are.
-    #[test]
-    fn a_twin_is_as_fmt_writes_it() {
-        for (name, ts) in TWINS {
-            assert_eq!(super::super::format::format(ts).unwrap_or_else(|e| panic!("{name}: {e}")), ts, "{name}: holon fmt tests/ts-parity/{name}.holon.ts");
-        }
-    }
-
-    /// What no twin says, each beside the `.holon` text it is.
+    /// Each construct, beside the `.holon` text it is.
     #[test]
     fn each_construct_lowers_as_its_holon_form() {
         let pairs = [

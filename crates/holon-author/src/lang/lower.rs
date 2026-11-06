@@ -2490,7 +2490,7 @@ pub(crate) mod tests {
     use super::*;
     use crate::composites::Names;
     use crate::flow::{derive_server, flow_unit};
-    use crate::{commands, samples, text, to_hex};
+    use crate::{samples, text, to_hex};
     use holon_core::{parse_hash, MapResolver, Resolver, UnitBody};
 
     /// The unit a document deploys as, through the real core.
@@ -2552,8 +2552,6 @@ pub(crate) mod tests {
             assert_eq!(hash_of(&got.doc), builders_hash(s.name), "{}", s.name);
             assert_eq!(got.name.as_deref(), Some(s.name));
         }
-        // And the starter, in the expression form.
-        assert!(compile(commands::STARTER).is_ok());
     }
 
     // ── each construct, by the nodes it places ──

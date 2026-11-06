@@ -61,13 +61,12 @@ function derive(name: string): { caps: string[]; endpoints: number; clocks: numb
 }
 
 describe("sample flows", () => {
-  it("have unique names, and a port, an interval or new files to start them", () => {
+  it("have unique names, and a port, a clock or new files to start them", () => {
     expect(new Set(samples().map((s) => s.name)).size).toBe(samples().length);
     for (const s of samples()) {
-      // New files start a flow of `on file` lines; a server's `on file` blocks are beside its port.
+      // Without a port, its every(…) or on.file handlers start it.
       const d = derive(s.name);
-      const onFile = d.caps.some((c) => c.startsWith("FileArrival(")) && d.files === 0;
-      expect([Boolean(s.port), Boolean(s.interval), onFile].filter(Boolean).length, s.name).toBe(1);
+      expect(Boolean(s.port) || d.clocks > 0 || d.files > 0, s.name).toBe(true);
     }
     const ports = samples().flatMap((s) => (s.port ? [s.port] : []));
     expect(new Set(ports).size, "each server its own port").toBe(ports.length);
@@ -88,11 +87,12 @@ describe("sample flows", () => {
         expect(caps).toContain(item);
         expect(item).not.toBe(manifestTrigger(caps));
       }
-      // Its `keep` and `limit` lines open as the limits the deploy asks for.
-      const keep = /^keep (?:(\d+) )?runs(?: for (\d+)d)?$/m.exec(s.text);
+      // Its flow(…)'s `keep` and `limits` open as the limits the deploy asks for.
+      const said = /^flow\(.*$/m.exec(s.text)?.[0] ?? "";
+      const keep = /keep: \{ (?:runs: (\d+))?(?:, )?(?:days: (\d+))? \}/.exec(said);
       const limits: Record<string, number> = keep ? { ...(keep[1] ? { keep_runs: Number(keep[1]) } : {}), ...(keep[2] ? { keep_run_days: Number(keep[2]) } : {}) } : {};
       const SECONDS: Record<string, number> = { s: 1, m: 60, h: 3600, d: 86400 };
-      for (const [, name, n, unit] of s.text.matchAll(/^limit (\w+) (\d+)([smhd])?$/gm)) {
+      for (const [, name, n, unit] of (/limits: \{ ([^}]*) \}/.exec(said)?.[1] ?? "").matchAll(/(\w+): "?(\d+)([smhd])?"?/g)) {
         limits[name] = unit ? Number(n) * SECONDS[unit] * (name.endsWith("_ms") ? 1000 : 1) : Number(n);
       }
       expect(settingsOf(doc.server).requirements?.limits ?? {}).toEqual(limits);
@@ -215,10 +215,10 @@ describe("sample flows", () => {
     expect(publish.data.inputs.map((p) => p.name)).toEqual(["slug", "author", "trigger"]);
     const out = ev.eval(buildPreimage(unit), [{ type: "Text", value: "hello-holon" }, { type: "Text", value: "ada" }, { type: "Boolean", value: true }]) as (WValue | null)[];
     const untriggered = ev.eval(buildPreimage(unit), [{ type: "Text", value: "hello-holon" }, { type: "Text", value: "ada" }, null]) as (WValue | null)[];
-    expect(untriggered[publish.data.outputs.findIndex((p) => p.name === "saved")] ?? null, "no trigger, no write").toBeNull();
+    expect(untriggered[publish.data.outputs.findIndex((p) => p.name === "write")] ?? null, "no trigger, no write").toBeNull();
     const at = (name: string) => out[publish.data.outputs.findIndex((p) => p.name === name)] ?? null;
     expect(at("receipt")).toEqual({ type: "Text", value: "unsigned" });
-    expect(at("saved")).toEqual({ type: "Effect", value: { sink: "store_write:last_post", payload: { type: "Text", value: "hello-holon" } } });
+    expect(at("write")).toEqual({ type: "Effect", value: { sink: "store_write:last_post", payload: { type: "Text", value: "hello-holon" } } });
     expect(at("put")).toBeNull();
     // Everything it reads and writes inside is in the flow's manifest; the receipt key optional.
     const { caps } = derive("slugs");
@@ -329,8 +329,8 @@ placed.slug -> upper.s
     ]);
     expect(boundary(BOUNDARY_OUT).ports.map((p) => [p.name, p.outside])).toEqual([
       ["put", []],
-      ["saved", []],
       ["receipt", ["with_field.value"]],
+      ["write", []],
     ]);
     // Every wire lands on a real port: inside, and through the boundary both ways.
     const ports = new Map(opened.nodes.map((n) => [n.id, n]));
@@ -382,7 +382,7 @@ placed.slug -> upper.s
     if (!other.ok) throw new Error(other.message);
     expect(other.hash).not.toBe(same.hash);
     const out = ev.eval(buildPreimage(ev.get_unit(other.hash) as WUnit), [{ type: "Text", value: "x" }, { type: "Text", value: "y" }, { type: "Boolean", value: true }]) as (WValue | null)[];
-    expect(out[2]).toEqual({ type: "Text", value: "not signed" });
+    expect(out[1]).toEqual({ type: "Text", value: "not signed" });
 
     // An input feeds one port; an output needs a source.
     const authorEdge = canvas.edges.find((e) => e.source === BOUNDARY_IN && e.sourceHandle === "author")!;

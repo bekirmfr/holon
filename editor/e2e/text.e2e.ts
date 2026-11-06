@@ -35,7 +35,7 @@ test("a wide window opens a flow with its text beside the canvas", async ({ page
   await page.setViewportSize({ width: 1700, height: 900 });
   await openSample(page, "Hello API");
   await expect(page.locator(".hl-canvas").getByRole("button", { name: "text on" })).toBeVisible();
-  await expect(page.getByRole("region", { name: "Text" }).locator(".cm-content")).toContainText("flow hello-api");
+  await expect(page.getByRole("region", { name: "Text" }).locator(".cm-content")).toContainText('flow("hello-api", { port: 8101 })');
 });
 
 test("the flow's text drives its canvas, and the canvas its text", async ({ page, request, adminToken }) => {
@@ -44,8 +44,8 @@ test("the flow's text drives its canvas, and the canvas its text", async ({ page
   await page.locator(".hl-canvas").getByRole("button", { name: "text off" }).click();
   const pane = page.getByRole("region", { name: "Text" });
   const editor = pane.locator(".cm-content");
-  await expect(editor).toContainText("flow hello-api");
-  await expect(editor).toContainText('respond "Hello, {req.params.name}"');
+  await expect(editor).toContainText('flow("hello-api", { port: 8101 })');
+  await expect(editor).toContainText("(req) => `Hello, ${req.params.name}`");
   const nodes = page.locator(".react-flow__node");
   const before = await nodes.count();
   const requestAt = await nodeNamed(page, "request").getAttribute("style");

@@ -807,7 +807,7 @@ pub fn reference(topic: Option<&str>) -> Result<String, String> {
                 return Ok(format!("{t} (a template)\n\n{doc}"));
             }
             if let Some(s) = samples::sample(t) {
-                return Ok(format!("# {}: {}\n# try it: {}\n{}", s.title, s.description, s.try_it, s.text));
+                return Ok(format!("// {}: {}\n// try it: {}\n{}", s.title, s.description, s.try_it, s.text));
             }
             Err(format!("no leaf, template or sample is called \"{t}\"; reference with no topic lists them all"))
         }
@@ -829,10 +829,10 @@ mod tests {
         assert!(!p.units.is_empty());
         let trace = p.document["trace"]["GET /hello/:name"].as_array().unwrap();
         assert_eq!(trace.len(), p.document["nodes"].as_array().unwrap().len(), "every node of the route, in the handler's stored order");
-        // A clock flow is traced whole, and keeps its names.
+        // A clock is traced as its handler, and keeps its names.
         let beat = plan(samples::sample("heartbeat").unwrap().text).unwrap();
-        assert_eq!(beat.interval_seconds, Some(10));
-        assert!(beat.document["trace"]["*"].is_array());
+        assert_eq!(beat.interval_seconds, None, "its clock is a handler's, not the flow's");
+        assert!(beat.document["trace"]["every 10s"].is_array(), "{}", beat.document["trace"]);
         assert!(beat.document["bindings"].as_object().unwrap().values().any(|v| v == "t"));
     }
 
@@ -874,7 +874,8 @@ mod tests {
         assert_eq!(text_of("slugs", &document).unwrap(), text, "the text as saved");
         document["source"] = json!("flow slugs\nroute GET /a (req) {\n  respond nope\n}\n");
         assert_eq!(text_of("slugs", &document).unwrap(), printed, "a saved text that doesn't compile gives way to the canvas");
-        // A text saved before secrets were declared: the same text, its header line added.
+        // A `.holon` text saved before secrets were declared: the same text, its header line added.
+        let text = include_str!("../tests/holon/slugs.holon");
         let before = text.replace("optional secret receipt_key\n", "");
         document["source"] = json!(before);
         let shown = text_of("slugs", &document).unwrap();
@@ -983,7 +984,7 @@ mod tests {
         assert!(all.contains("HANDLERS") && all.contains("  concat(") && all.contains("  hello-api: "), "{all}");
         assert!(reference(Some("coalesce")).unwrap().starts_with("coalesce("));
         assert!(reference(Some("respond")).unwrap().contains("(a template)"));
-        assert!(reference(Some("likes")).unwrap().contains("collection likes"));
+        assert!(reference(Some("likes")).unwrap().contains("\nimport likes from \"collection:likes\"\n"));
         assert!(reference(Some("nope")).is_err());
     }
 

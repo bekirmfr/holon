@@ -35,17 +35,18 @@ describe("the text and the graph, linked", () => {
   });
 
   it("picks the nodes one expression lowers to together, and a choice by what is written of it alone", () => {
-    const text = readFileSync(join(process.cwd(), "..", "crates", "holon-author", "samples", "calc.holon"), "utf8");
+    const text = readFileSync(join(process.cwd(), "..", "crates", "holon-author", "samples", "calc.holon.ts"), "utf8");
     const { doc, spans } = compileHolon(text, new Evaluator());
     // Where each is written in the code, not in the comments above it.
-    const at = (s: string) => text.indexOf(s, text.indexOf("\nflow "));
+    const at = (s: string) => text.indexOf(s, text.indexOf("\nflow("));
     expect(named(doc, pickAt(spans, at('"add"') + 1))).toEqual(["const", "equals"]);
-    expect(named(doc, pickAt(spans, at("->")))).toEqual(["guard"]);
+    // Between a case's pattern and its value: the guard choosing it.
+    expect(named(doc, pickAt(spans, at("return a + b") - 1))).toEqual(["guard"]);
     expect(named(doc, pickAt(spans, at("a + b") + 2))).toEqual(["add"]);
   });
 
   it("dims what a run of calc didn't run: the values of the arms not chosen, not their patterns", () => {
-    const text = readFileSync(join(process.cwd(), "..", "crates", "holon-author", "samples", "calc.holon"), "utf8");
+    const text = readFileSync(join(process.cwd(), "..", "crates", "holon-author", "samples", "calc.holon.ts"), "utf8");
     const ev = new Evaluator();
     const { doc, spans } = compileHolon(text, ev);
     const evalNode = (node: ReplayNode, inputs: (WValue | null)[]) => {

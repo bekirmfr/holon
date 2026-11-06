@@ -54,8 +54,8 @@ export function FlowsPage({
   /** Sample flows (holon-author's samples.rs), one per capability: opening one starts an unsaved copy. */
   samples: Sample[];
   onOpenSample: (sample: Sample) => void;
-  /** Flows as text (holonText.ts): a `.holon` file opened as an unsaved flow (answers why not,
-   *  when it can't be), and a saved flow written as one. */
+  /** Flows as text (holonText.ts): a `.holon.ts` (or `.holon`) file opened as an unsaved flow
+   *  (answers why not, when it can't be), and a saved flow written as one. */
   holonText: { onImport: (text: string) => string | null; exportOf: (name: string) => Promise<string>; textOfSample: (sample: Sample) => string };
 }) {
   const dialog = useDialog();
@@ -111,12 +111,12 @@ export function FlowsPage({
     <div style={{ maxWidth: 560 }}>
       <div style={{ color: "#cfe3ff", fontSize: 14, letterSpacing: "0.04em", marginBottom: 12, display: "flex", alignItems: "center", gap: 10 }}>
         <span style={{ flex: 1 }}>flows</span>
-        <label style={{ ...smallBtn, fontSize: 11, letterSpacing: 0 }} title="open a flow written as text (.holon) as an unsaved flow, in a tab of its own">
-          import .holon
+        <label style={{ ...smallBtn, fontSize: 11, letterSpacing: 0 }} title="open a flow written as text (.holon.ts, or .holon) as an unsaved flow, in a tab of its own">
+          import text
           <input
             type="file"
-            accept=".holon,text/plain"
-            aria-label="import a .holon file"
+            accept=".ts,.holon,text/plain"
+            aria-label="import a flow's text"
             style={{ display: "none" }}
             onChange={async (e) => {
               const file = e.target.files?.[0];
@@ -272,13 +272,13 @@ export function FlowsPage({
           </button>
           <button
             style={smallBtn}
-            title="download it as text (.holon), as the language writes it: read it, change it anywhere, check it with `holon check`"
+            title="download it as text (.holon.ts), as it is written: read it, change it anywhere, check it with `holon check`"
             onClick={() => {
               try {
                 const url = URL.createObjectURL(new Blob([holonText.textOfSample(s)], { type: "text/plain" }));
                 const a = document.createElement("a");
                 a.href = url;
-                a.download = `${s.name}.holon`;
+                a.download = `${s.name}.holon.ts`;
                 a.click();
                 URL.revokeObjectURL(url);
               } catch (e) {
@@ -286,7 +286,7 @@ export function FlowsPage({
               }
             }}
           >
-            .holon
+            .holon.ts
           </button>
         </div>
       ))}

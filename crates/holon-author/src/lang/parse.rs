@@ -1334,7 +1334,7 @@ impl Parser {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{commands, samples, text};
+    use crate::{samples, text};
 
     fn file(src: &str) -> File {
         parse(src).unwrap_or_else(|e| panic!("{e}\n{src}"))
@@ -1762,7 +1762,6 @@ mod tests {
             let doc = samples::build(s).unwrap();
             texts.push((s.name.to_string(), text::print(Some(s.name), &doc, &mut holon_core::MapResolver::new(), &crate::composites::Names::new()).unwrap()));
         }
-        assert!(parse(commands::STARTER).is_ok());
         for (name, src) in texts {
             let new = parse(&src).unwrap_or_else(|e| panic!("{name}: {e}\n{src}"));
             // A js node is written as its statement in either form (the netlist has no spelling

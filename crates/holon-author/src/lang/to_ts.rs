@@ -1,9 +1,9 @@
 //! A `.holon` text rewritten in TypeScript's syntax (docs/L4s/typescript-syntax-L4.md §14), its
 //! comments carried over, laid out as `holon fmt` writes it. Each construct is written the way the
-//! TypeScript reader ([`super::ts`]) reads it back, so the two texts lower to the same unit, which
-//! a test holds every sample to; a flow without handlers is the exception, as it becomes one (§4).
-//! What TypeScript has no form for yet is refused, naming it: a binding tied to another with
-//! `after`, `state.set`, a `match` inside an expression, the wiring form.
+//! TypeScript reader ([`super::ts`]) reads it back, so the two texts lower to the same unit, as the
+//! samples did when they were converted with it; a flow without handlers is the exception, as it
+//! becomes one (§4). What TypeScript has no form for yet is refused, naming it: a `state.set`
+//! whose answer is bound, a `match` inside an expression, the wiring form.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
@@ -1187,56 +1187,12 @@ mod tests {
         (lowered.name, server.server_hash, lowered.doc.server)
     }
 
-    /// The samples the converter refuses, each with the word its refusal names: they are written
-    /// in TypeScript by hand, as their unit changes.
-    const BY_HAND: &[(&str, &str)] = &[("slugs", "state.set")];
-
-    /// Every sample converts, and its TypeScript lowers to the same unit as it does, but for a
-    /// flow without handlers, which becomes one, and those written by hand.
-    #[test]
-    fn every_sample_converts_to_the_same_unit() {
-        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("samples");
-        let mut failed = Vec::new();
-        let mut files: Vec<_> = std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().path()).filter(|p| p.extension().is_some_and(|e| e == "holon")).collect();
-        files.sort();
-        for path in files {
-            let name = path.file_stem().unwrap().to_string_lossy().to_string();
-            let src = std::fs::read_to_string(&path).unwrap();
-            let by_hand = BY_HAND.iter().find(|(n, _)| *n == name).map(|(_, why)| *why);
-            let ts = match (convert(&src), by_hand) {
-                (Ok(ts), None) => ts,
-                (Err(e), Some(why)) if e.message.contains(why) => continue,
-                (Err(e), _) => {
-                    failed.push(format!("{name}: {e}"));
-                    continue;
-                }
-                (Ok(_), Some(_)) => {
-                    failed.push(format!("{name}: converts now, so it needn't be written by hand"));
-                    continue;
-                }
-            };
-            let handlerless = !super::super::parse(&src).unwrap().items.iter().any(|i| matches!(i, Item::Route(_) | Item::Every(_) | Item::OnFile(_) | Item::Action(_)));
-            if handlerless {
-                if let Err(e) = super::super::ts::compile(&ts) {
-                    failed.push(format!("{name}: {e}\n{ts}"));
-                }
-                continue;
-            }
-            let same = std::panic::catch_unwind(|| deployed(&format!("{name}.holon.ts"), super::super::ts::compile(&ts)) == deployed(&format!("{name}.holon"), super::super::compile(&src)));
-            match same {
-                Ok(true) => {}
-                Ok(false) => failed.push(format!("{name}: a different unit\n{ts}")),
-                Err(_) => failed.push(format!("{name}: didn't lower\n{ts}")),
-            }
-        }
-        assert!(failed.is_empty(), "{} samples:\n\n{}", failed.len(), failed.join("\n\n"));
-    }
-
     #[test]
     fn a_text_converts_as_typescript_writes_it() {
         let holon = "# Visits.\nflow visits\nport 8080\nstate last\ncollection seen\n\n# One visit, kept.\nroute POST /v/:id (req) {\n  id = req.params.id\n  saved = seen.put(id, now)\n  state.last = id after saved\n\n  # Its items, priced.\n  respond map(req.json.items, fn: fn(x) -> { name: x.name }) when id != \"\", missing: 400\n}\n\naction count (input) lazy {\n  respond fold(\"\", keys(seen.list()), fn: fn(acc, k) -> \"{acc}{k}\")\n}\n";
         let ts = "// Visits.\nimport { action, flow, route, status } from \"holon\"\nimport state from \"state\"\nimport seen from \"collection:seen\"\nimport { now } from \"holon:clock\"\n\nflow(\"visits\", { port: 8080 })\n\n// One visit, kept.\nroute.post(\"/v/:id\", (req) => {\n  const id = req.params.id\n  const saved = seen.put(id, now)\n  if (saved !== undefined) state.last = id\n\n  // Its items, priced.\n  return (id !== \"\" ? req.json.items.map((x) => ({ name: x.name })) : undefined) ?? status(400)\n})\n\nexport const count = action(\n  () => Object.keys(seen.list()).reduce((acc, k) => `${acc}${k}`, \"\"),\n  { log: \"lazy\" },\n)\n";
         assert_eq!(convert(holon).unwrap(), ts);
+        assert_eq!(deployed("visits.holon.ts", super::super::ts::compile(ts)), deployed("visits.holon", super::super::lower::compile(holon)), "the same unit");
     }
 
     #[test]

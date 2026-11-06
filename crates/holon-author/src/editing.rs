@@ -814,7 +814,9 @@ mod tests {
     use super::*;
     use crate::samples;
 
-    const SLUGS: &str = include_str!("../samples/slugs.holon");
+    /// `.holon` texts (tests/holon), which this reads until the language server reads TypeScript's
+    /// syntax, the samples' form.
+    const SLUGS: &str = include_str!("../tests/holon/slugs.holon");
 
     /// A flow nothing would start becomes an action, run by hand: its statements moved into the
     /// block, its value answered, its holons left where they were.
@@ -929,12 +931,12 @@ mod tests {
         assert!(says(SLUGS, "receipt_key", 0).contains("a secret of this flow, used as `secret.receipt_key`"), "a declared secret");
         assert!(says(SLUGS, "last_post", 0).contains("a key of this flow's state"), "a declared state key");
         // Where a secret goes, on its header and where it is used; one only verified with goes nowhere.
-        let stripe = include_str!("../samples/stripe-to-slack.holon");
+        let stripe = include_str!("../tests/holon/stripe-to-slack.holon");
         assert!(hover(stripe, at(stripe, "secret slack_webhook_path", 0, 7)).unwrap().text.contains("This flow sends it to https://hooks.slack.com."), "a declared secret, sent");
         assert!(hover(stripe, at(stripe, "secret.slack_webhook_path", 0, 7)).unwrap().text.contains("This flow sends it to https://hooks.slack.com."), "a secret used, sent");
         let verified = hover(stripe, at(stripe, "secret.stripe_webhook_secret", 0, 7)).unwrap().text;
         assert!(verified.contains("a secret of this flow") && !verified.contains("sends it"), "{verified}");
-        let license = include_str!("../samples/license-check.holon");
+        let license = include_str!("../tests/holon/license-check.holon");
         assert!(hover(license, at(license, "secret.license_key", 0, 7)).unwrap().text.contains("This flow sends it to the database \"vendor\"."), "a query's parameter");
         assert_eq!(hover(SLUGS, at(SLUGS, "\"-\"", 0, 1)), None, "inside a string");
         assert_eq!(hover(SLUGS, at(SLUGS, "published.receipt", 0, 10)), None, "a field of a value");

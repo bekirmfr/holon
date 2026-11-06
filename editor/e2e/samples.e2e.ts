@@ -243,10 +243,10 @@ test("shared-key reads the server's secret, which may go only where an admin sai
   await expect(settings).toContainText("the server's · may go only to https://httpbin.dev");
   // The text changed to send it elsewhere: the deploy is refused, saying why.
   await page.locator(".hl-canvas").getByRole("button", { name: "text off" }).dispatchEvent("click");
-  const text = readFileSync(new URL("../../crates/holon-author/samples/shared-key.holon", import.meta.url), "utf8");
+  const text = readFileSync(new URL("../../crates/holon-author/samples/shared-key.holon.ts", import.meta.url), "utf8");
   await page.getByRole("region", { name: "Text" }).locator(".cm-content").click();
   await page.keyboard.press("Control+A");
-  await page.keyboard.insertText(text.replace('"httpbin.dev", "/bearer"', '"postman-echo.com", "/get"'));
+  await page.keyboard.insertText(text.replace('"host:httpbin.dev"', '"host:postman-echo.com"').replace('"/bearer"', '"/get"'));
   await expect(page.locator(".hl-node__secret").filter({ hasText: "postman-echo.com" })).toHaveCount(1);
   await page.locator(".hl-canvas").getByRole("button", { name: /^(deploy|update)/ }).dispatchEvent("click");
   await expect(page.getByText(`the server's secret "ops_api_key" may go only to https://httpbin.dev, and this flow sends it to https://postman-echo.com`)).toBeVisible();
@@ -263,11 +263,11 @@ test("a sample deployed as it is keeps its text and the names it binds", async (
   // alone is a canvas change the text doesn't have, so the loop above deploys the canvas alone.
   await openSample(page, "Cache-aside (a branch not taken)");
   const port = 8115 + SAMPLE_SHIFT;
-  const text = readFileSync(new URL("../../crates/holon-author/samples/cache-aside.holon", import.meta.url), "utf8");
+  const text = readFileSync(new URL("../../crates/holon-author/samples/cache-aside.holon.ts", import.meta.url), "utf8");
   await page.locator(".hl-canvas").getByRole("button", { name: "text off" }).dispatchEvent("click");
   await page.getByRole("region", { name: "Text" }).locator(".cm-content").click();
   await page.keyboard.press("Control+A");
-  await page.keyboard.insertText(text.replace("port 8115", `port ${port}`));
+  await page.keyboard.insertText(text.replace("port: 8115", `port: ${port}`));
   await settingsSayPort(page, String(port));
   expect(await deploy(page, 0)).toBe(port);
   const deployed = await request.get(`${SERVER}/deployments/cache-aside/document`, { headers: { Authorization: `Bearer ${adminToken}` } });
@@ -610,7 +610,7 @@ test("a flow as text: exported as .holon, checked by the command line, imported 
   expect(checked).toContain("it only computes");
 
   // Imported back: an unsaved tab of its own, with the same node.
-  await page.getByLabel("import a .holon file").setInputFiles(file);
+  await page.getByLabel("import a flow's text").setInputFiles(file);
   await expect(page.locator(".hl-tab--active")).toContainText(name);
   await expect(page.locator(".hl-canvas__flow > .react-flow .react-flow__node", { hasText: "uppercase" })).toHaveCount(1);
 });
@@ -737,11 +737,11 @@ test("price-rollback: an earlier version's code restored from view mode's histor
   const total = async () => ((await (await request.get(`http://127.0.0.1:${port}/quote/${tea}`)).json()) as { total: number }).total;
   expect(await total()).toBe(4.5);
   // Another version: its fee changed in the text, on the same port.
-  const text = readFileSync(new URL("../../crates/holon-author/samples/price-rollback.holon", import.meta.url), "utf8");
+  const text = readFileSync(new URL("../../crates/holon-author/samples/price-rollback.holon.ts", import.meta.url), "utf8");
   await page.locator(".hl-canvas").getByRole("button", { name: "text off" }).click();
   await page.getByRole("region", { name: "Text" }).locator(".cm-content").click();
   await page.keyboard.press("Control+A");
-  await page.keyboard.insertText(text.replace("port 8160", `port ${port}`).replace("fee = 0.5", "fee = 5"));
+  await page.keyboard.insertText(text.replace("port: 8160", `port: ${port}`).replace("const fee = 0.5", "const fee = 5"));
   // Compiled: the canvas is no longer what is deployed. (Its port already was: ⚙ saying so
   // doesn't show the new text has landed.)
   await expect(page.locator(".hl-canvas").getByTitle("the canvas has changed since it was deployed")).toBeVisible({ timeout: 15_000 });
@@ -928,12 +928,12 @@ data: ${JSON.stringify(data)}
     await openSample(page, "Chat proxy (a streamed reply)");
     // The sample calls api.anthropic.com: here, the stand-in, over plain HTTP to this machine. The
     // text says the port (with the text open, it is the text's), moved up as deploy() moves it.
-    const text = readFileSync(new URL("../../crates/holon-author/samples/chat-proxy.holon", import.meta.url), "utf8");
+    const text = readFileSync(new URL("../../crates/holon-author/samples/chat-proxy.holon.ts", import.meta.url), "utf8");
     await page.locator(".hl-canvas").getByRole("button", { name: "text off" }).click();
     const editor = page.getByRole("region", { name: "Text" }).locator(".cm-content");
     await editor.click();
     await page.keyboard.press("Control+A");
-    await page.keyboard.insertText(text.replaceAll('"api.anthropic.com"', `"${host}"`).replace("port 8127", `port ${8127 + SAMPLE_SHIFT}`));
+    await page.keyboard.insertText(text.replaceAll('"host:api.anthropic.com"', `"host:${host}"`).replace("port: 8127", `port: ${8127 + SAMPLE_SHIFT}`));
     await settingsSayPort(page, String(8127 + SAMPLE_SHIFT));
     const port = await deploy(page, 0, async (settings) => {
       await settings.getByTitle("comma-separated host[:port]").fill(host);
@@ -1023,12 +1023,12 @@ test("gemini-chat forwards Gemini's streamed answer as it arrives, and says so w
     await openSample(page, "Gemini chat (a streamed reply, free tier)");
     // The sample calls generativelanguage.googleapis.com: here, the stand-in, over plain HTTP to
     // this machine, on a port the text says (the text's wins while it is open).
-    const text = readFileSync(new URL("../../crates/holon-author/samples/gemini-chat.holon", import.meta.url), "utf8");
+    const text = readFileSync(new URL("../../crates/holon-author/samples/gemini-chat.holon.ts", import.meta.url), "utf8");
     await page.locator(".hl-canvas").getByRole("button", { name: "text off" }).click();
     const editor = page.getByRole("region", { name: "Text" }).locator(".cm-content");
     await editor.click();
     await page.keyboard.press("Control+A");
-    await page.keyboard.insertText(text.replaceAll('"generativelanguage.googleapis.com"', `"${host}"`).replace("port 8128", `port ${8128 + SAMPLE_SHIFT}`));
+    await page.keyboard.insertText(text.replaceAll('"host:generativelanguage.googleapis.com"', `"host:${host}"`).replace("port: 8128", `port: ${8128 + SAMPLE_SHIFT}`));
     await settingsSayPort(page, String(8128 + SAMPLE_SHIFT));
     const port = await deploy(page, 0, async (settings) => {
       await settings.getByTitle("comma-separated host[:port]").fill(host);
@@ -1130,12 +1130,12 @@ test("chess holds its agent to the legal moves, streams its chat replies and kee
     await openSample(page, "Chess against an agent (held to its interface)");
     // The sample calls generativelanguage.googleapis.com: here, the stand-in, over plain HTTP to
     // this machine, on a port the text says (the text's wins while it is open).
-    const text = readFileSync(new URL("../../crates/holon-author/samples/chess.holon", import.meta.url), "utf8");
+    const text = readFileSync(new URL("../../crates/holon-author/samples/chess.holon.ts", import.meta.url), "utf8");
     await page.locator(".hl-canvas").getByRole("button", { name: "text off" }).click();
     const editor = page.getByRole("region", { name: "Text" }).locator(".cm-content");
     await editor.click();
     await page.keyboard.press("Control+A");
-    await page.keyboard.insertText(text.replaceAll('"generativelanguage.googleapis.com"', `"${host}"`).replace("port 8168", `port ${8168 + SAMPLE_SHIFT}`).replace("limit request_timeout_ms 50s", "limit request_timeout_ms 5s"));
+    await page.keyboard.insertText(text.replaceAll('"host:generativelanguage.googleapis.com"', `"host:${host}"`).replace("port: 8168", `port: ${8168 + SAMPLE_SHIFT}`).replace('request_timeout_ms: "50s"', 'request_timeout_ms: "5s"'));
     await settingsSayPort(page, String(8168 + SAMPLE_SHIFT));
     const port = await deploy(page, 0, async (settings) => {
       await settings.getByTitle("comma-separated host[:port]").fill(host);
@@ -1434,14 +1434,14 @@ test("rolling-log keeps only its newest 5 runs, as its deploy settings ask, whil
   // it; the settings changed, the line is written again.
   await page.locator(".hl-canvas").getByRole("button", { name: "text off" }).click();
   const text = page.getByRole("region", { name: "Text" }).locator(".cm-content");
-  await expect(text).toContainText("keep 5 runs for 1d");
-  const source = readFileSync(new URL("../../crates/holon-author/samples/rolling-log.holon", import.meta.url), "utf8");
+  await expect(text).toContainText("keep: { runs: 5, days: 1 }");
+  const source = readFileSync(new URL("../../crates/holon-author/samples/rolling-log.holon.ts", import.meta.url), "utf8");
   await text.click();
   await page.keyboard.press("Control+A");
-  await page.keyboard.insertText(source.replace("keep 5 runs for 1d", "keep 7 runs for 1d"));
+  await page.keyboard.insertText(source.replace("keep: { runs: 5, days: 1 }", "keep: { runs: 7, days: 1 }"));
   await expect(runs).toHaveValue("7", { timeout: 15_000 });
   await runs.fill("5");
-  await expect(text).toContainText("keep 5 runs for 1d");
+  await expect(text).toContainText("keep: { runs: 5, days: 1 }");
   await deploy(page);
   const auth = { Authorization: `Bearer ${adminToken}` };
   const seqs = async () =>
@@ -1715,11 +1715,11 @@ test("shared-ledger, deployed twice, loses no line when both append to one file 
   await openSample(page, "Shared ledger (one file, several deployments)");
   const first = await deploy(page);
   // A second deployment of the same text, under another name and port, imported as a file.
-  const text = readFileSync(join(process.cwd(), "..", "crates", "holon-author", "samples", "shared-ledger.holon"), "utf8");
-  const copy = join(mkdtempSync(join(tmpdir(), "holon-ledger-")), "shared-ledger-2.holon");
-  writeFileSync(copy, text.replace("flow shared-ledger", "flow shared-ledger-2").replace("port 8140", "port 8141"));
+  const text = readFileSync(join(process.cwd(), "..", "crates", "holon-author", "samples", "shared-ledger.holon.ts"), "utf8");
+  const copy = join(mkdtempSync(join(tmpdir(), "holon-ledger-")), "shared-ledger-2.holon.ts");
+  writeFileSync(copy, text.replace('flow("shared-ledger"', 'flow("shared-ledger-2"').replace("port: 8140", "port: 8141"));
   await page.getByRole("button", { name: "flows", exact: true }).click();
-  await page.getByLabel("import a .holon file").setInputFiles(copy);
+  await page.getByLabel("import a flow's text").setInputFiles(copy);
   await expect(page.locator(".hl-tab--active")).toContainText("shared-ledger-2");
   const second = await deploy(page);
   expect(second).not.toBe(first);

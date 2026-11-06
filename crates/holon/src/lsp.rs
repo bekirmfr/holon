@@ -259,7 +259,8 @@ pub(crate) fn run(args: &[String]) -> i32 {
 mod tests {
     use super::*;
 
-    const SLUGS: &str = include_str!("../../holon-author/samples/slugs.holon");
+    /// A `.holon` text: the language server reads that form until it reads TypeScript's syntax.
+    const SLUGS: &str = include_str!("../../holon-author/tests/holon/slugs.holon");
 
     fn framed(messages: &[Value]) -> Vec<u8> {
         let mut bytes = vec![];

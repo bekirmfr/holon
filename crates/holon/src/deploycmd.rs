@@ -23,9 +23,9 @@ const USAGE: &str = "usage: holon deploy <file> [options]
   --server PORT|URL        which holon server to ask (see below)
 
 examples:
-  holon deploy shop.holon
-  holon deploy shop.holon --approve
-  holon deploy shop.holon --slug shop-staging --server https://holon.example.com
+  holon deploy shop.holon.ts
+  holon deploy shop.holon.ts --approve
+  holon deploy shop.holon.ts --slug shop-staging --server https://holon.example.com
 
   From the holon serve you run on this machine, signed in as you; with several running,
   --server <port> picks one. A server elsewhere: --server <URL> (or HOLON_SERVER), signed in

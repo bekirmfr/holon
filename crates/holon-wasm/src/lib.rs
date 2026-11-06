@@ -1209,7 +1209,7 @@ pub fn holon_highlight(source: &str) -> Result<JsValue, JsError> {
 }
 
 /// The sample flows, one per capability, in the order the flows page lists them: `[{name, title,
-/// description, shows, port?, interval?, secrets?, optional?, browsers?, tryIt}]` (samples.rs).
+/// description, shows, port?, secrets?, optional?, browsers?, tryIt, text}]` (samples.rs).
 #[wasm_bindgen]
 pub fn samples() -> Result<JsValue, JsError> {
     to_js(&holon_author::samples::samples())

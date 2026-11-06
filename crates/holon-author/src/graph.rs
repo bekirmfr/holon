@@ -349,7 +349,8 @@ pub fn lanes(rows: &[Row]) -> Vec<String> {
 mod tests {
     use super::{graph, lanes};
 
-    const PAYOUT: &str = include_str!("../samples/approved-payout.holon");
+    /// A `.holon` text, which the Graph reads until it reads TypeScript's syntax, the samples' form.
+    const PAYOUT: &str = include_str!("../tests/holon/approved-payout.holon");
 
     #[test]
     fn a_flow_is_its_statements_by_trigger_with_the_nodes_under_them() {

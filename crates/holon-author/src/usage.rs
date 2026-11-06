@@ -1,6 +1,8 @@
 //! What an editor's inspector says of a word beside its hover (`holon editor`): the grammar it
 //! is written by, as docs/LANGUAGE.md §5 gives it (read from the document itself, so the two
-//! can't differ), and lines of a sample that use it (samples compile, so the lines are real).
+//! can't differ), and lines of a sample that use it (samples compile, so the lines are real). The
+//! samples are written in TypeScript's syntax now, which this grammar isn't, so none is shown
+//! until the inspector reads that form (docs/L4s/typescript-syntax-L4.md, slice 4).
 
 use crate::agent;
 use crate::lang::ast::{HeaderKind, Pos};
@@ -210,9 +212,14 @@ pub fn usage(source: &str, at: Pos) -> Option<Usage> {
     Some(Usage { grammar, example: example(&needle) })
 }
 
+/// The samples written in the form this grammar is of.
+fn holon_samples() -> impl Iterator<Item = &'static samples::Sample> {
+    samples::samples().iter().filter(|s| !crate::lang::is_typescript(s.text))
+}
+
 /// Whether some sample has `needle` where its code is.
 fn word_in_samples(needle: &str) -> bool {
-    samples::samples().iter().any(|s| s.text.lines().any(|l| at_word(code_of(l), needle).is_some()))
+    holon_samples().any(|s| s.text.lines().any(|l| at_word(code_of(l), needle).is_some()))
 }
 
 /// A line without its comment.
@@ -250,7 +257,7 @@ fn at_word(code: &str, needle: &str) -> Option<usize> {
 /// characters, a complete statement; a block it opens with it, when short.
 fn example(needle: &str) -> Option<(&'static str, Vec<String>)> {
     let mut best: Option<(usize, &'static str, Vec<String>)> = None;
-    for s in samples::samples() {
+    for s in holon_samples() {
         let lines: Vec<&str> = s.text.lines().collect();
         for (n, line) in lines.iter().enumerate() {
             let code = code_of(line).trim_end();
@@ -319,24 +326,20 @@ mod tests {
         let u = usage(BUMP, at(8, 3)).expect("respond");
         assert!(u.grammar.iter().any(|g| g.starts_with("statement = \"respond\" respond_args")), "{:#?}", u.grammar);
         assert!(u.grammar.iter().any(|g| g.starts_with("respond_args = ")), "{:#?}", u.grammar);
-        let (sample, lines) = u.example.expect("a sample responds");
-        assert!(!sample.is_empty() && lines[0].starts_with("respond"), "{lines:?}");
+        // No sample is written in this form now, so no line of one is shown.
+        assert_eq!(u.example, None);
 
         // A block's keyword: the block, when short.
         let u = usage(BUMP, at(4, 1)).expect("action");
         assert!(u.grammar.iter().any(|g| g.contains("\"action\" ident")), "{:#?}", u.grammar);
-        let (_, lines) = u.example.unwrap();
-        assert!(lines[0].starts_with("action ") && lines.last().is_some_and(|l| l == "}"), "{lines:?}");
 
         // A member of a noun: what writes it.
         let u = usage(BUMP, at(6, 9)).expect("state.n");
         assert!(u.grammar.iter().any(|g| g.contains("\"state\" \".\" ident \"=\" expr")), "{:#?}", u.grammar);
-        assert!(u.example.is_some_and(|(_, l)| l.iter().any(|l| l.contains("state."))));
 
         // A leaf: the call's rules, and a sample's call.
         let u = usage(BUMP, at(7, 17)).expect("split");
         assert!(u.grammar[0].starts_with("call = ident \"(\""), "{:#?}", u.grammar);
-        assert!(u.example.is_some_and(|(_, l)| l.iter().any(|l| l.contains("split("))));
 
         // A name the text declares, and one it binds.
         let u = usage(BUMP, at(7, 4)).expect("notes");

@@ -33,7 +33,7 @@ function ok(token: string, args: string[], input = ""): string {
 
 test("a deployment is run, called, read and changed from the command line, as its card does", async ({ adminToken }) => {
   // Ticker's own slug: its port is its text's, so a browser test's ticker is this one, redeployed.
-  ok(adminToken, ["deploy", join(SAMPLES, "ticker.holon"), "--approve"]);
+  ok(adminToken, ["deploy", join(SAMPLES, "ticker.holon.ts"), "--approve"]);
   holon(adminToken, ["run", "ticker"]);
   expect(ok(adminToken, ["deployments"])).toMatch(/^ticker\s+running\s+:\d+/m);
   expect(ok(adminToken, ["deployments", "ticker"])).toContain("waiting    no run");
@@ -58,11 +58,11 @@ test("a deployment is run, called, read and changed from the command line, as it
   expect(ok(adminToken, ["state", "ticker", "--sessions"])).toMatch(/^session \d+ {2}from /m);
 });
 
-test("a flow with no route is run by hand, its grant and secrets changed, and it is removed, from the command line", async ({ adminToken }) => {
+test("a clock flow is run by hand, its grant and secrets changed, and it is removed, from the command line", async ({ adminToken }) => {
   const slug = `cli-beats-${Date.now()}`;
-  ok(adminToken, ["deploy", join(SAMPLES, "heartbeat.holon"), "--slug", slug, "--approve"]);
+  ok(adminToken, ["deploy", join(SAMPLES, "heartbeat.holon.ts"), "--slug", slug, "--approve"]);
   // Its clock beats on its own too, every 10s.
-  expect(ok(adminToken, ["trigger", slug])).toMatch(/^did {8}StateWrite\("beats"\) \d+$/m);
+  expect(ok(adminToken, ["tick", slug, "every 10s"])).toMatch(/^did {8}StateWrite\("beats"\) \d+$/m);
   expect(ok(adminToken, ["state", slug])).toMatch(/^beats\s+\d+$/m);
 
   // Its grant: an item taken back pauses it; given back, it runs again.
@@ -98,9 +98,9 @@ test("a flow with no route is run by hand, its grant and secrets changed, and it
 
 test("flows are saved and read back, and people and tokens managed, from the command line, as the flows and admin pages do", async ({ adminToken }) => {
   const name = `cli-flow-${Date.now()}`;
-  ok(adminToken, ["flows", "save", join(SAMPLES, "heartbeat.holon"), "--name", name]);
+  ok(adminToken, ["flows", "save", join(SAMPLES, "heartbeat.holon.ts"), "--name", name]);
   expect(ok(adminToken, ["flows"])).toMatch(new RegExp(`^${name}\\s+\\S+\\s+\\S+\\s+no$`, "m"));
-  expect(ok(adminToken, ["flows", "show", name])).toContain("flow heartbeat\nevery 10s");
+  expect(ok(adminToken, ["flows", "show", name])).toContain('flow("heartbeat")\n\n// Each beat');
   ok(adminToken, ["flows", "remove", name]);
   expect(ok(adminToken, ["activity", "--last", "5"])).toMatch(new RegExp(`deleted flow\\s+${name}`));
 

@@ -1,0 +1,42 @@
+// Price rollback: an earlier version's code, or its prices, back.
+//
+// Every deploy is a version, kept for good, and every run keeps the state it left. Deploy a version
+// with another fee, and holon restore --code deploys an earlier one's code again, as a new version
+// that names it, its prices as they are. Set a wrong price, and --state puts back the prices a
+// version left, in a new session; --to-run SEQ does the same for a run. Restored code is checked
+// against today's grant, not the one it had. holon history shows each deploy and restore among the
+// runs, and view mode's history in the editor is the same timeline.
+//
+// Try it: deploy it (holon deploy price-rollback.holon.ts), then
+//   curl -X PUT -d '{"price":4}' http://127.0.0.1:8160/prices/tea
+//   curl http://127.0.0.1:8160/quote/tea                   a total of 4.5
+// Change the fee from 0.5 to 5 and deploy again (a total of 9). Then
+//   holon restore price-rollback                           lists the versions
+//   holon restore price-rollback --to N --code             N: the one before; 4.5 again, tea still 4
+//   curl -X PUT -d '{"price":40}' http://127.0.0.1:8160/prices/tea       a total of 40.5
+//   holon restore price-rollback --to N --state --dry-run  says what would change
+//   holon restore price-rollback --to N --state            tea is 4 again
+//   holon history price-rollback                           the runs, deploys and restores
+// Or in the editor: view, then history, pick the version before, and press code (then, after the
+// wrong price, state).
+import { flow, route } from "holon"
+import prices from "collection:prices"
+
+flow("price-rollback", { port: 8160 })
+
+// Sets an item's price.
+route.put("/prices/:item", (req) => {
+  prices[req.params.item] = req.json.price
+  return { item: req.params.item, price: req.json.price }
+})
+
+// Quotes an item: its price, the fee, and the total. Change the fee to make a second version.
+route.get("/quote/:item", (req) => {
+  const fee = 0.5
+  return {
+    item: req.params.item,
+    price: prices[req.params.item],
+    fee,
+    total: prices[req.params.item] + fee,
+  }
+})

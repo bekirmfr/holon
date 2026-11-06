@@ -1,0 +1,49 @@
+// Tally a CSV: a js node parsing text.
+//
+// Post a CSV and get a glance at each column: the min, max and mean of a number column, the
+// number of distinct values and the top three of a text column. Parsing text into structure is
+// a js node's work; the flow keeps the last summary in its state and answers it.
+//
+// Try it: deploy it, then
+//   printf 'city,temp\nOslo,4\nRome,19\nOslo,6\n' |
+//     curl -s -X POST --data-binary @- http://127.0.0.1:8119/tally
+// answers rows 3 and two columns (city: text, 2 distinct; temp: number, 4 to 19, mean 9.666...).
+//   curl http://127.0.0.1:8119/tally/last
+// then answers the same again, with when it was made.
+import { flow, js, route, status } from "holon"
+import state from "state"
+import { now } from "holon:clock"
+
+flow("tally", { port: 8119 })
+
+// Sums up each column of a CSV: its kind, then min, max and mean, or distinct values and top three.
+const summarize = js(function summarize(csv) {
+  const lines = csv.split(/\r?\n/).filter((line) => line.trim() !== "");
+  if (lines.length === 0) throw new Error("the CSV has no header line");
+  const cells = (line) => line.split(",").map((cell) => cell.trim());
+  const header = cells(lines[0]);
+  const records = lines.slice(1).map(cells);
+  const columns = header.map((name, i) => {
+    const values = records.map((record) => record[i] ?? "");
+    const numbers = values.map(Number);
+    if (values.length > 0 && values.every((v, k) => v !== "" && !Number.isNaN(numbers[k]))) {
+      const sum = numbers.reduce((a, b) => a + b, 0);
+      return { name, kind: "number", min: Math.min(...numbers), max: Math.max(...numbers), mean: sum / numbers.length };
+    }
+    const counts = new Map();
+    for (const v of values) counts.set(v, (counts.get(v) ?? 0) + 1);
+    const top = [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 3).map(([value, n]) => ({ value, n }));
+    return { name, kind: "text", distinct: counts.size, top };
+  });
+  return { rows: records.length, columns };
+}, { outputs: ["rows", "columns"] })
+
+// Summarizes the posted CSV, keeps the summary with when, and answers it; an empty CSV gets a 400.
+route.post("/tally", (req) => {
+  const summary = summarize(req.body)
+  state.last = { rows: summary.rows, columns: summary.columns, at: now }
+  return { rows: summary.rows, columns: summary.columns } ?? status(400)
+})
+
+// The last summary, with when it was made.
+route.get("/tally/last", () => state.last)

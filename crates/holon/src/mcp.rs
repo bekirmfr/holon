@@ -1073,7 +1073,7 @@ mod tests {
         }
     }
 
-    const SLUGS_TEXT: &str = include_str!("../../holon-author/samples/slugs.holon");
+    const SLUGS_TEXT: &str = include_str!("../../holon-author/samples/slugs.holon.ts");
 
     #[test]
     fn a_flow_goes_from_text_to_an_explained_run_and_the_agent_never_approves() {
@@ -1251,7 +1251,7 @@ mod tests {
         let (ada, _) = accounts.setup(&accounts.setup_code().unwrap(), "ada", "correct horse battery").unwrap();
         state.access = crate::access::Access::new(std::sync::Arc::clone(&accounts), vec![], vec![]);
         let (agent, person) = (Signed { state: &state, token: &ada, agent: true }, Signed { state: &state, token: &ada, agent: false });
-        let text = include_str!("../../holon-author/samples/price-rollback.holon").replace("port 8160", "port 18170");
+        let text = include_str!("../../holon-author/samples/price-rollback.holon.ts").replace("port: 8160", "port: 18170");
         // Proposed by the agent (its unit stored), approved by the person.
         assert!(deploy(&agent, &text, None).unwrap().starts_with("Not deployed yet"));
         let plan = agent::plan(&text).unwrap();
@@ -1311,7 +1311,7 @@ mod tests {
         let (ada, _) = accounts.setup(&accounts.setup_code().unwrap(), "ada", "correct horse battery").unwrap();
         state.access = crate::access::Access::new(std::sync::Arc::clone(&accounts), vec![], vec![]);
         let (agent, person) = (Signed { state: &state, token: &ada, agent: true }, Signed { state: &state, token: &ada, agent: false });
-        let text = include_str!("../../holon-author/samples/ticker.holon").replace("port 8156", "port 18259");
+        let text = include_str!("../../holon-author/samples/ticker.holon.ts").replace("port: 8156", "port: 18259");
         let plan = agent::plan(&text).unwrap();
         for unit in &plan.units {
             json_of(&person, "POST", "/unit", Some(Body::Bytes(unit.clone()))).unwrap();
@@ -1349,7 +1349,7 @@ mod tests {
     #[test]
     fn an_agents_deploy_asking_for_unrecorded_stops_for_approval() {
         let state = test_state();
-        let text = include_str!("../../holon-author/samples/hello-api.holon").replace("port 8101", "port 18260");
+        let text = include_str!("../../holon-author/samples/hello-api.holon.ts").replace("port: 8101", "port: 18260");
         let approve = |text: &str| {
             let plan = agent::plan(text).unwrap();
             let preview: Value = serde_json::from_slice(&body_bytes(route(&state, &req("POST", "/deploy/preview", serde_json::to_vec(&json!({ "slug": "hello-api", "unit": plan.unit })).unwrap())))).unwrap();
@@ -1358,7 +1358,7 @@ mod tests {
         };
         assert!(tool(&state, "deploy", json!({ "text": text })).unwrap().starts_with("Not deployed yet"));
         approve(&text);
-        let unrecorded = text.replace("route GET /hello/:name (req) {", "route GET /hello/:name (req) unrecorded {");
+        let unrecorded = text.replace("${req.params.name}`)", r#"${req.params.name}`, { log: "unrecorded" })"#);
         let asked = tool(&state, "deploy", json!({ "text": unrecorded })).unwrap();
         assert!(asked.starts_with("Not deployed yet") && asked.contains("keep runs of GET /hello/:name out of its log"), "{asked}");
         approve(&unrecorded);

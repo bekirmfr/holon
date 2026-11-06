@@ -548,7 +548,7 @@ impl App {
     /// page, else a saved flow.
     pub(crate) fn open_arg(&mut self, arg: &str) {
         let path = PathBuf::from(arg);
-        if path.exists() || arg.ends_with(".holon") {
+        if path.exists() || arg.ends_with(".holon") || arg.ends_with(".holon.ts") {
             return self.open_file(path);
         }
         if self.client.as_ref().is_some_and(|c| c.deployment(arg).is_some()) {
@@ -720,7 +720,7 @@ impl App {
             self.modal = Some(Modal::Input {
                 title: format!("Save {} as", tab.name),
                 lines: vec![format!("A file, from {here} (~ is your home folder):"), "Enter writes it there; esc leaves it a draft.".into()],
-                value: format!("{name}.holon"),
+                value: format!("{name}.holon.ts"),
                 masked: false,
                 then: Ask::SaveAs(i),
             });

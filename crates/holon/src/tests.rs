@@ -5495,7 +5495,7 @@ fn a_route_answers_with_a_secret_only_where_a_person_approved_it() {
 #[test]
 fn the_preview_says_where_each_secret_is_sent() {
     let state = claims_state("");
-    let plan = holon_author::agent::plan(include_str!("../../holon-author/samples/stripe-to-slack.holon")).unwrap();
+    let plan = holon_author::agent::plan(include_str!("../../holon-author/samples/stripe-to-slack.holon.ts")).unwrap();
     for u in &plan.units {
         route(&state, &req("POST", "/unit", u.clone()));
     }
@@ -5826,9 +5826,9 @@ fn two_deployments_appending_to_one_shared_file_lose_no_line() {
     std::fs::create_dir_all(&dir).unwrap();
     let body = serde_json::json!({ "name": "ledger", "path": dir.display().to_string(), "access": "read-write" });
     assert_eq!(route(&state, &req("POST", "/admin/folders", serde_json::to_vec(&body).unwrap())).status_code, 200);
-    let text = include_str!("../../holon-author/samples/shared-ledger.holon");
+    let text = include_str!("../../holon-author/samples/shared-ledger.holon.ts");
     let a = deploy_text(&state, text, "");
-    let b = deploy_text(&state, &text.replace("flow shared-ledger", "flow shared-ledger-2").replace("port 8140", "port 8141"), "");
+    let b = deploy_text(&state, &text.replace(r#"flow("shared-ledger""#, r#"flow("shared-ledger-2""#).replace("port: 8140", "port: 8141"), "");
 
     let lines: Vec<String> = (0..40).map(|i| format!("line {i}")).collect();
     std::thread::scope(|s| {
@@ -5861,7 +5861,7 @@ fn a_flow_reads_and_writes_a_bound_database() {
     let dir = std::env::temp_dir().join(format!("holon-orders-{}-{}", std::process::id(), rand::random::<u32>()));
     std::fs::create_dir_all(&dir).unwrap();
     let file = dir.join("shop.db");
-    let text = include_str!("../../holon-author/samples/orders-api.holon");
+    let text = include_str!("../../holon-author/samples/orders-api.holon.ts");
     let plan = holon_author::agent::plan(text).unwrap();
     for u in &plan.units {
         route(&state, &req("POST", "/unit", u.clone()));
@@ -5965,9 +5965,9 @@ fn two_deployments_refunding_one_order_call_the_payment_api_once() {
     let schema = "create table orders (id integer primary key, customer text not null, total numeric not null, refunded integer not null default 0); create table refunds (order_id integer not null, amount numeric not null, status integer); insert into orders (customer, total) values ('ada', 5), ('bo', 7), ('cy', 9)";
     let body = serde_json::json!({ "name": "shop", "path": dir.join("shop.db").display().to_string(), "schema": schema });
     assert_eq!(route(&state, &req("POST", "/admin/databases", serde_json::to_vec(&body).unwrap())).status_code, 200);
-    let text = include_str!("../../holon-author/samples/refund-once.holon").replace("\"httpbin.org\", \"/anything/refunds\"", &format!("\"{host}\", \"/slow\"")).replace("port 8151", "port 18151");
+    let text = include_str!("../../holon-author/samples/refund-once.holon.ts").replace("host:httpbin.org", &format!("host:{host}")).replace(r#""/anything/refunds""#, r#""/slow""#).replace("port: 8151", "port: 18151");
     let a = deploy_text(&state, &text, &host);
-    let b = deploy_text(&state, &text.replace("flow refund-once", "flow refund-once-2").replace("port 18151", "port 18152"), &host);
+    let b = deploy_text(&state, &text.replace(r#"flow("refund-once""#, r#"flow("refund-once-2""#).replace("port: 18151", "port: 18152"), &host);
     let race = |id: u32| -> Vec<u16> {
         std::thread::scope(|s| {
             let first = s.spawn(|| data_call(&state, &a, "POST", &format!("/refund/{id}"), ""));
@@ -6135,7 +6135,7 @@ fn an_admin_sees_each_databases_tables_and_who_holds_what() {
     assert_eq!(route(&state, &req("GET", "/admin/databases/shop/tables?deployment=other", vec![])).status_code, 404, "bound for the server, not for other");
     assert_eq!(route(&state, &req("POST", "/admin/databases/shop/tables", vec![])).status_code, 404);
 
-    let slug = deploy_text(&state, include_str!("../../holon-author/samples/orders-api.holon"), "");
+    let slug = deploy_text(&state, include_str!("../../holon-author/samples/orders-api.holon.ts"), "");
     let held = body_json(route(&state, &req("GET", "/admin/grants", vec![])));
     let entry = held.as_array().unwrap().iter().find(|d| d["slug"] == slug.as_str()).unwrap_or_else(|| panic!("{held}"));
     assert_eq!(entry["status"], "running", "{entry}");
@@ -6187,7 +6187,7 @@ fn orders_api_runs_on_postgres_and_mysql_as_on_sqlite() {
         let listed = body_json(route(&state, &req("GET", "/admin/databases", vec![])));
         assert_eq!((listed[0]["engine"].as_str(), listed[0]["connection"].as_str()), (Some(engine), Some("env:HOLON_SECRET_SHOP_URL")));
         assert!(!listed.to_string().contains(&url) && !listed.to_string().contains("@"), "the URL is never shown: {listed}");
-        let text = include_str!("../../holon-author/samples/orders-api.holon");
+        let text = include_str!("../../holon-author/samples/orders-api.holon.ts");
         let slug = deploy_text(&state, text, "");
         assert_eq!(data_call(&state, &slug, "POST", "/orders", r#"{"customer":"ada","total":"12.50"}"#).0, 201, "{engine}");
         assert_eq!(data_call(&state, &slug, "POST", "/orders", r#"{"customer":"ada","total":7}"#).0, 201, "{engine}");
@@ -6231,7 +6231,7 @@ fn two_servers_refunding_one_order_call_the_payment_api_once() {
         let servers = [server_with_database(&url), server_with_database(&url)];
         assert_eq!(bind_shop(&servers[0], Some(&format!("{}; insert into orders (id, customer, total) values (1, 'ada', 5), (2, 'bo', 7), (3, 'cy', 9)", shop_schema(engine)))).status_code, 200, "{engine}");
         assert_eq!(bind_shop(&servers[1], None).status_code, 200, "{engine}");
-        let text = include_str!("../../holon-author/samples/refund-once.holon").replace("\"httpbin.org\", \"/anything/refunds\"", &format!("\"{host}\", \"/slow\""));
+        let text = include_str!("../../holon-author/samples/refund-once.holon.ts").replace("host:httpbin.org", &format!("host:{host}")).replace(r#""/anything/refunds""#, r#""/slow""#);
         let slugs = [deploy_text(&servers[0], &text, &host), deploy_text(&servers[1], &text, &host)];
         let (first, second) = std::thread::scope(|s| {
             let first = s.spawn(|| data_call(&servers[0], &slugs[0], "POST", "/refund/1", ""));
@@ -6487,7 +6487,7 @@ claim_wait_ms = 100").unwrap());
 #[test]
 fn a_cells_history_is_the_runs_that_changed_it_and_a_restore_between_them() {
     let state = claims_state("");
-    let slug = deploy_text(&state, include_str!("../../holon-author/samples/balance-trail.holon"), "");
+    let slug = deploy_text(&state, include_str!("../../holon-author/samples/balance-trail.holon.ts"), "");
     for (account, amount) in [("a", 100), ("b", 5), ("a", -30)] {
         assert_eq!(data_call(&state, &slug, "POST", &format!("/accounts/{account}/move"), &format!(r#"{{"amount":{amount}}}"#)).0, 200);
     }
@@ -6543,7 +6543,7 @@ fn a_restores_dry_run_names_the_files_written_since_and_an_edit_outside_a_run() 
     std::fs::create_dir_all(&sheets).unwrap();
     let body = serde_json::json!({ "name": "sheets", "path": sheets.display().to_string(), "access": "read-write", "keep": "bytes" });
     assert_eq!(route(&state, &req("POST", "/admin/folders", serde_json::to_vec(&body).unwrap())).status_code, 200);
-    let slug = deploy_text(&state, include_str!("../../holon-author/samples/stock-sheet.holon"), "");
+    let slug = deploy_text(&state, include_str!("../../holon-author/samples/stock-sheet.holon.ts"), "");
     assert_eq!(data_call(&state, &slug, "PUT", "/stock/tea", r#"{"count":4}"#).0, 200);
     assert_eq!(data_call(&state, &slug, "PUT", "/stock/tea", r#"{"count":40}"#).0, 200);
     let seqs: Vec<u64> = log_entries(&state, &slug).iter().map(|e| e["seq"].as_u64().unwrap()).collect();
@@ -6597,7 +6597,7 @@ fn a_flow_reads_and_writes_bound_folders_and_its_runs_verify() {
     std::fs::create_dir_all(&inbox).unwrap();
     std::fs::create_dir_all(&reports).unwrap();
     std::fs::write(inbox.join("sales.csv"), "region,amount\nnorth,10\nsouth,32\n").unwrap();
-    let text = include_str!("../../holon-author/samples/inbox-report.holon");
+    let text = include_str!("../../holon-author/samples/inbox-report.holon.ts");
 
     // Not bound: deploying it is refused, saying which folder and how to bind it.
     let plan = holon_author::agent::plan(text).unwrap();
@@ -6752,7 +6752,7 @@ fn a_run_past_its_file_limits_fails_and_says_which() {
             let body = serde_json::json!({ "name": name, "path": path.display().to_string(), "access": access });
             assert_eq!(route_status(&state, &body), 200);
         }
-        let slug = deploy_text(&state, include_str!("../../holon-author/samples/log-archive.holon"), "");
+        let slug = deploy_text(&state, include_str!("../../holon-author/samples/log-archive.holon.ts"), "");
         let (status, answer, _) = data_call(&state, &slug, route, url, body);
         assert_eq!(status, 500, "{limits}: {answer}");
         let error = log_entries(&state, &slug).last().unwrap()["error"].as_str().unwrap_or_default().to_string();
@@ -6962,7 +6962,7 @@ fn a_big_file_is_read_by_range_and_copied_by_handle_and_its_runs_verify() {
     };
     assert_eq!(bind("logs", &logs, "read", "bytes"), 200);
     assert_eq!(bind("archive", &archive, "read-write", "bytes"), 200);
-    let slug = deploy_text(&state, include_str!("../../holon-author/samples/log-archive.holon"), "");
+    let slug = deploy_text(&state, include_str!("../../holon-author/samples/log-archive.holon.ts"), "");
 
     let (status, tail, _) = data_call(&state, &slug, "GET", "/logs/app.log/tail", "");
     assert_eq!(status, 200, "{tail}");
@@ -7036,7 +7036,7 @@ fn a_journal_keeps_what_its_runs_read_in_chunks_for_a_while_and_stays_under_its_
     assert_eq!(bind("bytes for a week", serde_json::json!(null)).status_code, 400);
     assert_eq!(bind("bytes", serde_json::json!("lots")).status_code, 400);
     assert_eq!(bind("bytes", serde_json::json!(0)).status_code, 400);
-    let slug = deploy_text(&state, include_str!("../../holon-author/samples/journal.holon"), "");
+    let slug = deploy_text(&state, include_str!("../../holon-author/samples/journal.holon.ts"), "");
 
     // A page already long: each run reads it whole, and keeps its text by content, in chunks.
     let page: String = (0..8_000).map(|i| format!("{i:05} an entry of the journal, written that day\n")).collect();
@@ -7181,9 +7181,9 @@ fn on_file_lines_run_on_several_folders_deletions_and_matching_names() {
         assert_eq!(route_status(&state, &serde_json::json!({ "name": name, "path": path.display().to_string(), "access": access })), 200);
     }
     std::fs::write(inbox.join("old.txt"), "there before").unwrap();
-    let slug = deploy_text(&state, include_str!("../../holon-author/samples/file-audit.holon"), "");
+    let slug = deploy_text(&state, include_str!("../../holon-author/samples/file-audit.holon.ts"), "");
     let triggers = body_json(route(&state, &req("GET", "/deployments", vec![])))["deployments"][0]["triggers"].clone();
-    assert_eq!(triggers, serde_json::json!(["Files inbox", "Files outbox"]));
+    assert_eq!(triggers, serde_json::json!(["on file inbox matching \"*.csv\"", "on file inbox deleted", "on file outbox"]), "each file handler its own trigger");
     let look = || {
         arrivals::run_arrivals(&state.store, &state.deployments, &state.deployments_path);
         arrivals::run_arrivals(&state.store, &state.deployments, &state.deployments_path);
@@ -7413,7 +7413,7 @@ fn approved_payout_keeps_the_deposits_made_while_it_waited() {
     let schema = "create table accounts (id integer primary key, balance integer not null); insert into accounts values (1, 100); create table payouts (account integer not null, amount integer not null, status integer)";
     let body = serde_json::json!({ "name": "bank", "path": dir.join("bank.db").display().to_string(), "access": "read-write", "schema": schema });
     assert_eq!(route(&state, &req("POST", "/admin/databases", serde_json::to_vec(&body).unwrap())).status_code, 200);
-    let text = include_str!("../../holon-author/samples/approved-payout.holon").replace("\"httpbin.org\", \"/anything/payouts\"", &format!("\"{host}\", \"/slow\""));
+    let text = include_str!("../../holon-author/samples/approved-payout.holon.ts").replace("host:httpbin.org", &format!("host:{host}")).replace(r#""/anything/payouts""#, r#""/slow""#);
     let slug = deploy_text(&state, &text, &host);
     let balance = || serde_json::from_str::<serde_json::Value>(&data_call(&state, &slug, "GET", "/accounts/1", "").1).unwrap()["balance"].as_i64().unwrap();
 
@@ -7503,7 +7503,7 @@ fn atlas_notes_keeps_notes_as_documents_on_mongodb() {
     let listed = body_json(route(&state, &req("GET", "/admin/databases", vec![])));
     assert_eq!(listed[0]["engine"], "mongodb");
     assert!(!listed.to_string().contains(&db.url), "the URL is never shown: {listed}");
-    let slug = deploy_text(&state, include_str!("../../holon-author/samples/atlas-notes.holon"), "");
+    let slug = deploy_text(&state, include_str!("../../holon-author/samples/atlas-notes.holon.ts"), "");
     let call = |method: &str, path: &str, body: &str| {
         let (status, body, _) = data_call(&state, &slug, method, path, body);
         (status, body)
@@ -8047,8 +8047,8 @@ fn an_actions_reported_entry_is_its_own_under_concurrent_runs() {
 #[test]
 fn one_deployments_log_doesnt_hold_up_another() {
     let state = test_state();
-    let busy = deploy_plain_text(&state, include_str!("../../holon-author/samples/calc.holon"));
-    let other = deploy_plain_text(&state, include_str!("../../holon-author/samples/hello-api.holon"));
+    let busy = deploy_plain_text(&state, include_str!("../../holon-author/samples/calc.holon.ts"));
+    let other = deploy_plain_text(&state, include_str!("../../holon-author/samples/hello-api.holon.ts"));
     let held = Arc::clone(&state.deployments.lock().unwrap()[&busy].log);
     let (holding, held_now) = std::sync::mpsc::channel();
     thread::scope(|s| {
@@ -8541,7 +8541,7 @@ fn a_policy_without_allow_unrecorded_refuses_the_deploy() {
 fn a_run_writes_only_its_state_head_and_only_when_it_changed_the_state() {
     let mut state = test_state();
     state.deployments_path = unique_temp_path("persist-on-change").into();
-    let counter = deploy_plain_text(&state, include_str!("../../holon-author/samples/counter.holon"));
+    let counter = deploy_plain_text(&state, include_str!("../../holon-author/samples/counter.holon.ts"));
     let same = deploy_plain_text(&state, "flow same\nport 8199\nstate k\n\nroute POST /k (req) {\n  state.k = \"x\"\n  respond \"ok\"\n}\n");
     let call = |slug: &str, method: &str, url: &str| {
         assert_eq!(serve_data(&state.store, &state.deployments, &state.deployments_path, slug, &fake_data(method, url, vec![])).status, 200, "{method} {url}");
@@ -8587,7 +8587,7 @@ fn a_run_writes_only_its_state_head_and_only_when_it_changed_the_state() {
 fn a_state_is_kept_by_its_head_across_restarts_concurrent_writes_and_a_delete() {
     let mut state = test_state();
     state.deployments_path = unique_temp_path("state-head").into();
-    let counter = deploy_plain_text(&state, include_str!("../../holon-author/samples/counter.holon"));
+    let counter = deploy_plain_text(&state, include_str!("../../holon-author/samples/counter.holon.ts"));
     let call = |method: &str, url: &str| {
         let r = serve_data(&state.store, &state.deployments, &state.deployments_path, &counter, &fake_data(method, url, vec![]));
         assert_eq!(r.status, 200, "{method} {url}");
@@ -8917,7 +8917,7 @@ fn a_servers_file_handlers_run_alone_for_their_lines_beside_its_routes_and_verif
     let board = dir.join("board");
     std::fs::create_dir_all(&board).unwrap();
     assert_eq!(route_status(&state, &serde_json::json!({ "name": "board", "path": board.display().to_string(), "access": "read" })), 200);
-    let slug = deploy_text(&state, include_str!("../../holon-author/samples/drop-board.holon"), "");
+    let slug = deploy_text(&state, include_str!("../../holon-author/samples/drop-board.holon.ts"), "");
     // A server's handlers are in its unit's canonical order, by hash.
     let mut triggers = state.deployments.lock().unwrap()[&slug].triggers.clone();
     triggers.sort();
@@ -8973,7 +8973,7 @@ fn a_servers_file_handlers_run_alone_for_their_lines_beside_its_routes_and_verif
 fn a_servers_actions_run_by_name_with_what_was_sent_and_verify() {
     let mut state = claims_state("");
     state.deployments_path = unique_temp_path("action-blocks").into();
-    let slug = deploy_text(&state, include_str!("../../holon-author/samples/ticker.holon"), "127.0.0.1:9");
+    let slug = deploy_text(&state, include_str!("../../holon-author/samples/ticker.holon.ts"), "127.0.0.1:9");
     let mut triggers = state.deployments.lock().unwrap()[&slug].triggers.clone();
     triggers.sort();
     assert_eq!(triggers, ["Http :8156", "action reset", "every 2s"]);
@@ -9268,8 +9268,8 @@ fn request_throughput() {
     let values = disk.values_dir();
     let mut state = test_state_with(SharedStore::on_disk(Box::new(disk), values));
     state.deployments_path = unique_temp_path("throughput").into();
-    let calc = include_str!("../../holon-author/samples/calc.holon");
-    let (hello, counter) = (include_str!("../../holon-author/samples/hello-api.holon"), include_str!("../../holon-author/samples/counter.holon"));
+    let calc = include_str!("../../holon-author/samples/calc.holon.ts");
+    let (hello, counter) = (include_str!("../../holon-author/samples/hello-api.holon.ts"), include_str!("../../holon-author/samples/counter.holon.ts"));
     for text in [hello, calc, counter] {
         deploy_plain_text(&state, text);
     }

@@ -1,0 +1,36 @@
+// File audit: runs on several folders, removals and some names.
+//
+// Keeps an audit trail of two folders on the host, one entry per change: a CSV new or changed in
+// the inbox, any file removed from the inbox, and any file new or changed in the outbox. A file
+// no handler is for (a .txt in the inbox) starts nothing. Each entry is created, never replaced: a
+// write that would replace one fails the run.
+//
+// Before it works, an admin binds the three folders:
+//   holon folder add inbox ~/holon-inbox --read-only
+//   holon folder add outbox ~/holon-outbox --read-only
+//   holon folder add audit ~/holon-audit
+//
+// Try it: deploy it, then copy a .csv into ~/holon-inbox, delete a file from it, or drop any file
+// into ~/holon-outbox. Within two seconds ~/holon-audit/<folder>/ holds an entry for each change.
+import { flow, on } from "holon"
+import audit from "folder:audit"
+import inbox from "folder:inbox"
+import outbox from "folder:outbox"
+
+flow("file-audit")
+
+// Each writes the file's handle and its event (new, changed or deleted) as a new audit entry:
+// a CSV new or changed in the inbox,
+on.file.created(inbox, (f) => {
+  audit.create(`${f.folder}/${f.modified}-${f.event}-${f.name}.json`, JSON.stringify(f))
+}, { matching: "*.csv" })
+
+// any file removed from the inbox,
+on.file.deleted(inbox, (f) => {
+  audit.create(`${f.folder}/${f.modified}-${f.event}-${f.name}.json`, JSON.stringify(f))
+})
+
+// and any file new or changed in the outbox.
+on.file.created(outbox, (f) => {
+  audit.create(`${f.folder}/${f.modified}-${f.event}-${f.name}.json`, JSON.stringify(f))
+})

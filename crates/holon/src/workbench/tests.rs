@@ -500,9 +500,9 @@ fn the_inspector_reads_a_name_as_it_is_typed_with_its_grammar_and_an_example() {
     typed(&mut app, "\ncollection");
     let shown = screen(&mut app, 130, 40);
     assert!(shown.contains("Inspector: collection") && shown.contains("Grammar") && shown.contains("header = \"collection\" ident"), "{shown}");
-    let (sample, lines) = app.tabs[0].inspected.as_ref().and_then(|i| i.usage.as_ref()).and_then(|u| u.example.clone()).expect("a sample's lines");
-    assert!(lines.iter().any(|l| l.starts_with("collection ")), "{lines:?}");
-    assert!(shown.contains("Example") && shown.contains(&format!("from the sample {sample}")), "{shown}");
+    // No sample is written in this form now, so its grammar comes without one's lines.
+    assert!(app.tabs[0].inspected.as_ref().and_then(|i| i.usage.as_ref()).is_some_and(|u| u.example.is_none()));
+    assert!(!shown.contains("from the sample"), "{shown}");
     // The cursor elsewhere, on no name: the inspector keeps it.
     app.tabs[0].buf.go(4, 1);
     assert!(screen(&mut app, 130, 40).contains("Inspector: collection"));
@@ -731,7 +731,7 @@ fn every_page_draws_narrow_and_wide_and_without_a_server() {
     assert!(shown.contains("No server reached") && shown.contains("no server: editing files only"), "{shown}");
     offline.open_sample("hello-api");
     let shown = screen(&mut offline, 120, 30);
-    assert!(shown.contains("hello-api (sample)") && shown.contains("route GET /hello/:name"), "{shown}");
+    assert!(shown.contains("hello-api (sample)") && shown.contains(r#"route.get("/hello/:name""#), "{shown}");
     ctrl(&mut offline, 'd');
     assert!(offline.note.as_ref().is_some_and(|n| n.error && n.text.contains("no server")));
 }
@@ -777,7 +777,7 @@ fn a_draft_opens_in_a_new_tab_and_its_first_save_asks_for_a_file() {
 
     ctrl(&mut app, 's');
     let Some(Modal::Input { value, .. }) = &app.modal else { panic!("no dialog") };
-    assert_eq!(value, "my-flow.holon", "named for its flow");
+    assert_eq!(value, "my-flow.holon.ts", "named for its flow");
     let shown = screen(&mut app, 120, 30);
     assert!(shown.contains("Save draft 2 as"), "{shown}");
     // A file that is there already is never written over from here.
@@ -788,18 +788,18 @@ fn a_draft_opens_in_a_new_tab_and_its_first_save_asks_for_a_file() {
     assert_eq!(std::fs::read_to_string(&there).unwrap(), "flow there\n");
     assert!(app.tabs[1].draft);
 
-    let file = dir.join("mine.holon");
+    let file = dir.join("mine.holon.ts");
     let _ = std::fs::remove_file(&file);
     ctrl(&mut app, 's');
     answer(&mut app, &file.display().to_string());
     assert_eq!(std::fs::read_to_string(&file).unwrap(), holon_author::commands::STARTER);
     let tab = &app.tabs[1];
-    assert!(!tab.draft && !tab.dirty() && tab.name == "mine.holon" && tab.path.as_deref() == Some(file.as_path()));
+    assert!(!tab.draft && !tab.dirty() && tab.name == "mine.holon.ts" && tab.path.as_deref() == Some(file.as_path()));
     // Saved, it saves to its file without asking.
-    typed(&mut app, "# more\n");
+    typed(&mut app, "// more\n");
     ctrl(&mut app, 's');
     assert!(app.modal.is_none());
-    assert!(std::fs::read_to_string(&file).unwrap().starts_with("# more\n"));
+    assert!(std::fs::read_to_string(&file).unwrap().starts_with("// more\n"));
     // The next draft takes the first number free.
     ctrl(&mut app, 'n');
     assert_eq!(app.tabs[2].name, "draft 2");
@@ -936,7 +936,7 @@ fn a_secret_is_set_as_a_value_a_name_the_server_reads_or_a_vault_field() {
     let state: &'static AppState = Box::leak(Box::new(state));
     let mut app = App::new(None);
     app.attach(Client::new(Box::new(InProcess(state, None))));
-    tab_with(&mut app, include_str!("../../../holon-author/samples/sign-payload.holon"));
+    tab_with(&mut app, include_str!("../../../holon-author/samples/sign-payload.holon.ts"));
     ctrl(&mut app, 'd');
     press(&mut app, KeyCode::Enter);
     app.open_flow("sign-payload");

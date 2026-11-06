@@ -97,7 +97,7 @@ const TRIGGER_USAGE: &str = "usage: holon trigger <slug> [--body TEXT | --body-f
   --server PORT|URL        which holon server to ask (see below)
 
 examples:
-  holon trigger heartbeat
+  holon tick heartbeat \"every 10s\"
   holon tick ticker \"every 2s\"
 ";
 

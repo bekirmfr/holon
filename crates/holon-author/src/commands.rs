@@ -35,13 +35,12 @@ impl Report {
     }
 }
 
-pub const STARTER: &str = r#"# A flow: a route, and what it answers. Run `holon check` on it as you go.
-flow my-flow
-port 8200
+pub const STARTER: &str = r#"// A flow: a route, and what it answers. Run `holon check` on it as you go.
+import { flow, route } from "holon"
 
-route GET /hello/:name (req) {
-  respond "Hello, {req.params.name}"
-}
+flow("my-flow", { port: 8200 })
+
+route.get("/hello/:name", (req) => `Hello, ${req.params.name}`)
 "#;
 
 /// A new flow's text: the starter, or the sample `sample` (its comments say what it is).
@@ -630,20 +629,20 @@ mod tests {
         assert_eq!(marks.get("respond"), Some(&vec!["answers its caller with the secret \"k\" (approved apart, at deploy)".to_string()]), "{marks:?}");
         assert_eq!(marks.len(), 3, "nothing else: {marks:?}");
 
-        let stripe = marks_of(include_str!("../samples/stripe-to-slack.holon"));
+        let stripe = marks_of(include_str!("../samples/stripe-to-slack.holon.ts"));
         assert_eq!(stripe.get("sent"), Some(&vec!["sends the secret \"slack_webhook_path\" to https://hooks.slack.com".to_string()]), "{stripe:?}");
         assert_eq!(stripe.len(), 1, "verifying with the Stripe secret marks nothing: {stripe:?}");
 
         // A token exchange: the secret to the OAuth server, what is answered to it to the API.
-        let exchange = marks_of(include_str!("../samples/client-credentials.holon"));
+        let exchange = marks_of(include_str!("../samples/client-credentials.holon.ts"));
         assert_eq!(exchange.get("got"), Some(&vec!["sends the secret \"client_secret\" to https://demo.duendesoftware.com".to_string()]), "{exchange:?}");
         assert_eq!(exchange.get("called"), Some(&vec!["sends what is answered to the secret \"client_secret\" to https://httpbin.dev".to_string()]), "{exchange:?}");
         assert_eq!(exchange.len(), 2, "{exchange:?}");
-        let echoed = marks_of(include_str!("../samples/echoed-key.holon"));
+        let echoed = marks_of(include_str!("../samples/echoed-key.holon.ts"));
         assert_eq!(echoed.get("passed"), Some(&vec!["sends what is answered to the secret \"demo_key\" to https://postman-echo.com".to_string()]), "{echoed:?}");
 
         // A database read the key is a parameter of: the key goes to the database.
-        let license = marks_of(include_str!("../samples/license-check.holon"));
+        let license = marks_of(include_str!("../samples/license-check.holon.ts"));
         assert_eq!(license.into_values().collect::<Vec<_>>(), vec![vec!["sends the secret \"license_key\" to the database \"vendor\", reading its table \"licenses\"".to_string()]]);
     }
 
@@ -651,7 +650,7 @@ mod tests {
     /// and only verifies a signature with the Stripe secret, which sends it nowhere.
     #[test]
     fn check_says_where_each_secret_is_sent() {
-        let r = check("stripe-to-slack.holon", include_str!("../samples/stripe-to-slack.holon"));
+        let r = check("stripe-to-slack.holon", include_str!("../samples/stripe-to-slack.holon.ts"));
         assert_eq!(r.code, 0, "{r:?}");
         assert!(r.out.iter().any(|l| l == "  read the secret \"slack_webhook_path\", and send it to https://hooks.slack.com"), "{:?}", r.out);
         assert!(r.out.iter().any(|l| l == "  read the secret \"stripe_webhook_secret\""), "{:?}", r.out);
@@ -899,19 +898,17 @@ route POST /t (req) {
         assert_eq!(fmt("hello.holon", &once).unwrap(), once);
         for s in samples::samples() {
             let text = new_flow(Some(s.name)).unwrap();
-            assert_eq!(check(&format!("{}.holon", s.name), &text).code, 0, "{}", s.name);
+            assert_eq!(check(&format!("{}.holon.ts", s.name), &text).code, 0, "{}", s.name);
             // The sample's own text, its names and comments and all.
             assert_eq!(text, s.text, "{}", s.name);
         }
         assert_eq!(new_flow(None).unwrap(), STARTER);
-        assert_eq!(check("my-flow.holon", STARTER).code, 0);
+        assert_eq!(check("my-flow.holon.ts", STARTER).code, 0);
         // The starter is already canonical, its comment and all.
-        assert_eq!(fmt("my-flow.holon", STARTER).unwrap(), STARTER);
+        assert_eq!(fmt("my-flow.holon.ts", STARTER).unwrap(), STARTER);
         let likes = new_flow(Some("likes")).unwrap();
-        assert!(likes.contains("collection likes
-"), "{likes}");
-        assert!(likes.contains("route POST /posts/:id/like (req) {
-"), "{likes}");
+        assert!(likes.contains("\nimport likes from \"collection:likes\"\n"), "{likes}");
+        assert!(likes.contains("\nroute.post(\"/posts/:id/like\", (req) => {\n"), "{likes}");
         assert!(new_flow(Some("nope")).unwrap_err().starts_with("no sample \"nope\""));
     }
 }
