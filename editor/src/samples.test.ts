@@ -148,6 +148,13 @@ describe("sample flows", () => {
       "NetworkIngress",
       'SecretRead("gemini_api_key")',
     ]);
+    // An n8n node translated into text asks for what its description said: the host of its
+    // requestDefaults and the one two operations name as their own baseURL, each a permission,
+    // and its credential as a secret it runs without; its one js holon reaches nothing outside.
+    const dex = derive("dexpaprika").caps;
+    expect(dex).toEqual(['HttpRequest("api-pro.dexpaprika.com")', 'HttpRequest("api.dexpaprika.com")', "NetworkIngress", 'SecretRead("dexpaprika_key")']);
+    const dexOptional = samples().find((s) => s.name === "dexpaprika")!.optional;
+    expect(permissionKind('SecretRead("dexpaprika_key")', dexOptional, manifestTrigger(dex)).kind).toBe("optional");
     // An action agents may run is a grant of its own, which a person can take back without
     // pausing the flow.
     const ticker = derive("ticker").caps;
