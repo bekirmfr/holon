@@ -251,6 +251,18 @@ static SAMPLES: &[Sample] = &[
         text: include_str!("../samples/leaderboard.holon.ts"),
     },
     Sample {
+        name: "invoice",
+        title: "Invoice (records and dates)",
+        description: "Post an order and get its invoice, made with JavaScript's record and date functions: a spread puts the order's defaults under what was posted, Object.groupBy groups its priced lines by category and Object.fromEntries gives each group's subtotal, in says whether it is a rush order, and new Date gives the dates: the day it was issued, the day it is due (setUTCDate past the month's end carries into the next) and the month's last day (Date.UTC with day 0), as ISO and UTC text. POST /invoice/lines writes the order as JSON text with only the listed keys, indented: JSON.stringify with a key list and an indent.",
+        shows: &["record leaves", "spread", "Object.groupBy", "Object.fromEntries", "in", "new Date", "setUTCDate", "Date.UTC", "toISOString", "JSON.stringify with keys and an indent"],
+        port: Some("8175"),
+        secrets: &[],
+        optional: &[],
+        browsers: None,
+        try_it: r#"curl -d '{"customer":"ada","date":"2026-11-07","lines":[{"sku":"b1","category":"books","price":12,"qty":2},{"sku":"p1","category":"pens","price":3,"qty":5},{"sku":"b2","category":"books","price":30,"qty":1}]}' http://127.0.0.1:8175/invoice answers {"categories":["books","pens"],"currency":"EUR","customer":"ada","due":"2026-12-07T00:00:00.000Z","due_text":"Mon, 07 Dec 2026 00:00:00 GMT","issued":"2026-11-07T00:00:00.000Z","month_end":"2026-11-30T00:00:00.000Z","rush":false,"subtotals":{"books":54,"pens":15},"total":69}; the same body to /invoice/lines answers the customer and each line's sku and qty, two spaces in; a body without lines 400"#,
+        text: include_str!("../samples/invoice.holon.ts"),
+    },
+    Sample {
         name: "heartbeat",
         title: "Heartbeat",
         description: "A clock flow: every 10 seconds it records the time, counts the beats in its state, and keeps the time of the first beat (a fallback that is itself a value: coalesce).",
