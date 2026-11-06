@@ -674,18 +674,18 @@ What JavaScript's typeof says of a value: "number", "boolean", "string" or "obje
 ### `json_parse`
 
 ```
-json_parse(text: Text) -> out: Any
+json_parse(text: Text) -> out: Any  {fn}
 ```
 
-Reads JSON text into a value (records, lists, numbers, text…); nothing when it isn't valid JSON.
+Reads JSON text into a value (records, lists, numbers, text…); nothing when it isn't valid JSON. With fn, a function of each key and value, applied from the inside out, its answer standing in for the value (JSON.parse(t, reviver)); one it answers nothing for is left out.
 
 ### `json_stringify`
 
 ```
-json_stringify(value: Any) -> out: Text
+json_stringify(value: Any) -> out: Text  {indent, keys, fn}
 ```
 
-Writes a value out as JSON text.
+Writes a value out as JSON text, as JavaScript's JSON.stringify: indent lays it out a member a line, keys (a JSON list) keeps only those keys of every record, in that order, and fn, a function of each key and value applied from the outside in, writes its answer instead (the replacer); one it answers nothing for is left out.
 
 ### `sha256`
 

@@ -253,6 +253,171 @@ fn write(v: &Value, out: &mut String) -> Option<()> {
     Some(())
 }
 
+/// How `JSON.stringify(v, keys, space)` lays a value out: the gap its `space` gives (`""` for
+/// none), and the keys a replacer list keeps, in the list's order.
+pub(crate) struct Layout<'a> {
+    pub gap: &'a str,
+    pub keys: Option<&'a [String]>,
+}
+
+/// The gap a `json_stringify`'s `indent` gives: its first 10 UTF-16 code units, as JavaScript takes
+/// a text `space`, short of an astral character the tenth would split (a text can't hold half of
+/// one). The reader writes a number `space` as that many spaces, at most 10.
+pub(crate) fn gap(indent: &str) -> &str {
+    let mut units = 0;
+    for (i, c) in indent.char_indices() {
+        units += c.len_utf16();
+        if units > 10 {
+            return &indent[..i];
+        }
+    }
+    indent
+}
+
+/// The keys a replacer list keeps (JavaScript's PropertyList): its texts, each once, in its order.
+/// An item that isn't a text is skipped; JavaScript converts a number, which Holon doesn't.
+pub(crate) fn key_list(items: &[Value]) -> Vec<String> {
+    let mut keys: Vec<String> = Vec::new();
+    for k in items {
+        if let Value::Text(k) = k
+            && !keys.contains(k)
+        {
+            keys.push(k.clone());
+        }
+    }
+    keys
+}
+
+/// `JSON.stringify(value, keys, space)`: ECMA-262's SerializeJSONObject and SerializeJSONArray.
+/// With a gap, each member on a line of its own indented by one more gap, `": "` after a key, the
+/// closing bracket at the outer indent, and an empty list or record `[]` or `{}`. With keys, every
+/// record at every depth written with only the listed keys it has, in the list's order; lists
+/// whole. With neither, [`stringify`].
+pub(crate) fn stringify_laid_out(value: &Value, layout: &Layout) -> Option<String> {
+    if layout.gap.is_empty() && layout.keys.is_none() {
+        return stringify(value);
+    }
+    let mut out = String::new();
+    write_laid_out(value, layout, "", &mut out)?;
+    Some(out)
+}
+
+fn write_laid_out(v: &Value, layout: &Layout, indent: &str, out: &mut String) -> Option<()> {
+    match v {
+        Value::Sum { arm: 0, payload } => write_laid_out(payload, layout, indent, out),
+        Value::List(xs) => write_members(xs.iter().map(|x| (None, x)), ('[', ']'), layout, indent, out),
+        Value::Record(fields) => match layout.keys {
+            Some(keys) => write_members(keys.iter().filter_map(|k| fields.get(k).map(|x| (Some(k.as_str()), x))), ('{', '}'), layout, indent, out),
+            None => write_members(fields.iter().map(|(k, x)| (Some(k.as_str()), x)), ('{', '}'), layout, indent, out),
+        },
+        _ => write(v, out),
+    }
+}
+
+/// A list's items or a record's members, each laid out at one more gap.
+fn write_members<'v>(members: impl Iterator<Item = (Option<&'v str>, &'v Value)>, (open, close): (char, char), layout: &Layout, indent: &str, out: &mut String) -> Option<()> {
+    let inner = format!("{indent}{}", layout.gap);
+    let laid = !layout.gap.is_empty();
+    out.push(open);
+    let mut any = false;
+    for (key, x) in members {
+        if any {
+            out.push(',');
+        }
+        any = true;
+        if laid {
+            out.push('\n');
+            out.push_str(&inner);
+        }
+        if let Some(k) = key {
+            write_string(k, out);
+            out.push_str(if laid { ": " } else { ":" });
+        }
+        write_laid_out(x, layout, &inner, out)?;
+    }
+    if any && laid {
+        out.push('\n');
+        out.push_str(indent);
+    }
+    out.push(close);
+    Some(())
+}
+
+/// `JSON.parse(text, reviver)` once the text is parsed: ECMA-262's InternalizeJSONProperty.
+/// `revive` is applied to each member of a record or list before the record or list itself (a
+/// list item's key its index as text), and last to the whole value with key `""`; what it answers
+/// stands in for the member. A record member it answers nothing for is removed, and a list item
+/// it answers nothing for is `none()`, JSON's `null` (JavaScript leaves a hole, which reads as
+/// `undefined` and is written `null`); nothing for the whole value is nothing. JavaScript visits a
+/// record's keys in the text's order and this in sorted order; the function is pure, so the order
+/// can't be seen. An `Err` from `revive` stops the walk there.
+pub(crate) fn revive<E>(value: Value, revive: &mut impl FnMut(&str, &Value) -> Result<Option<Value>, E>) -> Result<Option<Value>, E> {
+    internalize("", value, revive)
+}
+
+fn internalize<E>(key: &str, value: Value, revive: &mut impl FnMut(&str, &Value) -> Result<Option<Value>, E>) -> Result<Option<Value>, E> {
+    let value = match value {
+        Value::List(xs) => {
+            let mut items = Vec::with_capacity(xs.len());
+            for (i, x) in xs.into_iter().enumerate() {
+                items.push(internalize(&i.to_string(), x, revive)?.unwrap_or_else(null));
+            }
+            Value::List(items)
+        }
+        Value::Record(fields) => {
+            let mut kept = BTreeMap::new();
+            for (k, x) in fields {
+                if let Some(x) = internalize(&k, x, revive)? {
+                    kept.insert(k, x);
+                }
+            }
+            Value::Record(kept)
+        }
+        v => v,
+    };
+    revive(key, &value)
+}
+
+/// `JSON.stringify(value, replacer)`'s value once replaced: ECMA-262's SerializeJSONProperty with a
+/// replacer function, top-down. `replace` is applied first to the whole value with key `""`, then
+/// to each member of what it answered (a list item's key its index as text). A record member it
+/// answers nothing for is left out, and a list item it answers nothing for is `none()` (written
+/// `null`); nothing for the whole value is nothing (JavaScript's `undefined`). `some(x)` has `x`'s
+/// members, as it is written as `x`. An `Err` from `replace` stops the walk there.
+pub(crate) fn replace<E>(value: &Value, replace: &mut impl FnMut(&str, &Value) -> Result<Option<Value>, E>) -> Result<Option<Value>, E> {
+    serialize_property("", value, replace)
+}
+
+fn serialize_property<E>(key: &str, value: &Value, replace: &mut impl FnMut(&str, &Value) -> Result<Option<Value>, E>) -> Result<Option<Value>, E> {
+    match replace(key, value)? {
+        Some(v) => replaced_members(v, replace).map(Some),
+        None => Ok(None),
+    }
+}
+
+fn replaced_members<E>(value: Value, replace: &mut impl FnMut(&str, &Value) -> Result<Option<Value>, E>) -> Result<Value, E> {
+    Ok(match value {
+        Value::Sum { arm: 0, payload } => replaced_members(*payload, replace)?,
+        Value::List(xs) => {
+            let mut items = Vec::with_capacity(xs.len());
+            for (i, x) in xs.iter().enumerate() {
+                items.push(serialize_property(&i.to_string(), x, replace)?.unwrap_or_else(null));
+            }
+            Value::List(items)
+        }
+        Value::Record(fields) => {
+            let mut kept = BTreeMap::new();
+            for (k, x) in &fields {
+                if let Some(x) = serialize_property(k, x, replace)? {
+                    kept.insert(k.clone(), x);
+                }
+            }
+            Value::Record(kept)
+        }
+        v => v,
+    })
+}
+
 /// A text as JSON, escaped as JavaScript's QuoteJSONString escapes it: `\b`, `\f`, `\n`, `\r` and
 /// `\t` by name, any other code point below U+0020 as `\u00xx` in lowercase hex.
 fn write_string(s: &str, out: &mut String) {
@@ -357,6 +522,72 @@ mod tests {
             f.insert("owner".into(), t("me"));
         }
         assert_eq!(parse(&s), Some(back));
+    }
+
+    /// The layouts the races pinned against what JavaScript writes for the same keys in the same
+    /// order (races_records.rs): an indent's gap, and a key list at every depth.
+    #[test]
+    fn an_indent_and_a_key_list_lay_out_as_javascript_does() {
+        let doc = parse(r#"{"a": "x", "b": [1, {}, []], "c": {"d": true}}"#).unwrap();
+        let indented = |indent: &str| stringify_laid_out(&doc, &Layout { gap: gap(indent), keys: None }).unwrap();
+        assert_eq!(indented("  "), "{\n  \"a\": \"x\",\n  \"b\": [\n    1,\n    {},\n    []\n  ],\n  \"c\": {\n    \"d\": true\n  }\n}");
+        assert_eq!(indented("\t"), "{\n\t\"a\": \"x\",\n\t\"b\": [\n\t\t1,\n\t\t{},\n\t\t[]\n\t],\n\t\"c\": {\n\t\t\"d\": true\n\t}\n}");
+        assert_eq!(indented(""), r#"{"a":"x","b":[1,{},[]],"c":{"d":true}}"#);
+        assert_eq!(indented("abcdefghijkl").lines().nth(1), Some("abcdefghij\"a\": \"x\","));
+        // Ten UTF-16 code units: an astral character the tenth would split is left out.
+        assert_eq!(gap("abcdefghi😀"), "abcdefghi");
+        assert_eq!(gap("abcdefgh😀z"), "abcdefgh😀");
+        assert_eq!(stringify_laid_out(&n(1.5), &Layout { gap: "  ", keys: None }).as_deref(), Some("1.5"));
+        let some = Value::Sum { arm: 0, payload: Box::new(Value::List(vec![n(1.0)])) };
+        assert_eq!(stringify_laid_out(&some, &Layout { gap: " ", keys: None }).as_deref(), Some("[\n 1\n]"));
+        let keyed = parse(r#"{"b": 1, "a": {"b": 2, "c": 3}, "d": [{"a": 4, "e": 5}]}"#).unwrap();
+        let keys = |list: &str| {
+            let Some(Value::List(items)) = parse(list) else { panic!("{list}") };
+            let keys = key_list(&items);
+            stringify_laid_out(&keyed, &Layout { gap: "", keys: Some(&keys) }).unwrap()
+        };
+        assert_eq!(keys(r#"["b", "a"]"#), r#"{"b":1,"a":{"b":2}}"#);
+        assert_eq!(keys(r#"["d", "a", "a", 7]"#), r#"{"d":[{"a":4}],"a":{}}"#);
+        assert_eq!(keys("[]"), "{}");
+        let both = stringify_laid_out(&keyed, &Layout { gap: " ", keys: Some(&["a".to_string(), "x".to_string()]) }).unwrap();
+        assert_eq!(both, "{\n \"a\": {}\n}");
+    }
+
+    /// The reviver is applied bottom-up and the replacer top-down, each member by its key (an
+    /// item's index as text); what either answers nothing for is removed from a record and `null`
+    /// in a list; an `Err` stops either where it is.
+    #[test]
+    fn a_reviver_walks_bottom_up_and_a_replacer_top_down() {
+        let doc = parse(r#"{"a": [1, 2], "b": {"c": 3}}"#).unwrap();
+        let mut seen = Vec::new();
+        let doubled = revive(doc.clone(), &mut |k: &str, v: &Value| {
+            seen.push(k.to_string());
+            Ok::<_, ()>(match v {
+                Value::Number(_) if k == "1" => None,
+                Value::Number(x) => Some(n(x * 2.0)),
+                _ if k == "b" => None,
+                v => Some(v.clone()),
+            })
+        });
+        assert_eq!(seen, ["0", "1", "a", "c", "b", ""]);
+        assert_eq!(doubled, Ok(Some(parse(r#"{"a": [2, null]}"#).unwrap())));
+        assert_eq!(revive(n(1.0), &mut |_: &str, _: &Value| Ok::<_, ()>(None)), Ok(None));
+        assert_eq!(revive(doc.clone(), &mut |k: &str, v: &Value| if k == "c" { Err("stop") } else { Ok(Some(v.clone())) }), Err("stop"));
+
+        let mut seen = Vec::new();
+        let replaced = replace(&doc, &mut |k: &str, v: &Value| {
+            seen.push(k.to_string());
+            Ok::<_, ()>(match v {
+                // The whole value answered with another record: its members are the new one's.
+                _ if k.is_empty() => Some(rec(&[("a", parse("[1, 2]").unwrap()), ("x", n(0.0)), ("s", Value::Sum { arm: 0, payload: Box::new(rec(&[("t", n(5.0))])) })])),
+                Value::Number(_) if k == "1" || k == "x" => None,
+                v => Some(v.clone()),
+            })
+        });
+        assert_eq!(seen, ["", "a", "0", "1", "s", "t", "x"]);
+        assert_eq!(replaced, Ok(Some(parse(r#"{"a": [1, null], "s": {"t": 5}}"#).unwrap())));
+        assert_eq!(replace(&doc, &mut |_: &str, _: &Value| Ok::<_, ()>(None)), Ok(None));
+        assert_eq!(replace(&doc, &mut |k: &str, v: &Value| if k == "a" { Err("stop") } else { Ok(Some(v.clone())) }), Err("stop"));
     }
 
     #[test]

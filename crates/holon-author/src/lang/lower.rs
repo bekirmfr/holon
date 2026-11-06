@@ -2273,6 +2273,7 @@ impl<'a> Lowerer<'a> {
                 let item = match leaf {
                     "fold" => "the result so far and the item",
                     "sort_by" => "the two items it compares",
+                    "json_parse" | "json_stringify" => "the key and the value",
                     _ => "the item",
                 };
                 let more = extra.len() + captured.len();

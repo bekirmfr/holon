@@ -1603,14 +1603,14 @@ fn check_variadic_primitives() {
     assert_eq!(
         sorted,
         vec![
-            "add", "all", "and", "any", "concat", "filter", "find", "find_index", "find_last", "find_last_index", "fold", "group_by", "list", "map", "max", "merge", "min",
-            "multiply", "or", "sort_by"
+            "add", "all", "and", "any", "concat", "filter", "find", "find_index", "find_last", "find_last_index", "fold", "group_by", "json_parse", "json_stringify", "list",
+            "map", "max", "merge", "min", "multiply", "or", "sort_by"
         ]
     );
     // A higher-order leaf's extra inputs are passed to its function: any type, not more of one port.
     let mut extra = passes_extra_primitives();
     extra.sort();
-    assert_eq!(extra, vec!["all", "any", "filter", "find", "find_index", "find_last", "find_last_index", "fold", "group_by", "map", "sort_by"]);
+    assert_eq!(extra, vec!["all", "any", "filter", "find", "find_index", "find_last", "find_last_index", "fold", "group_by", "json_parse", "json_stringify", "map", "sort_by"]);
     // subtract shares add's catalog interface line but must NOT be offered as growable — it's
     // not associative, core gives it no N-ary meaning.
     assert!(!names.contains(&"subtract".to_string()));

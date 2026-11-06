@@ -102,8 +102,8 @@ pub fn describe(name: &str) -> Option<&'static str> {
         "group_by" => "The items of a list in lists by the key its function answers for each, a text: Object.groupBy(xs, f). Each list keeps the items' order; the keys come sorted. A key that isn't a text produces nothing.",
         "same_value" => "Whether two values are the same as JavaScript's Object.is says: -0 isn't 0. Lists and records compare by what they hold.",
         "type_of" => "What JavaScript's typeof says of a value: \"number\", \"boolean\", \"string\" or \"object\" (a list, a record or null).",
-        "json_parse" => "Reads JSON text into a value (records, lists, numbers, text…); nothing when it isn't valid JSON.",
-        "json_stringify" => "Writes a value out as JSON text.",
+        "json_parse" => "Reads JSON text into a value (records, lists, numbers, text…); nothing when it isn't valid JSON. With fn, a function of each key and value, applied from the inside out, its answer standing in for the value (JSON.parse(t, reviver)); one it answers nothing for is left out.",
+        "json_stringify" => "Writes a value out as JSON text, as JavaScript's JSON.stringify: indent lays it out a member a line, keys (a JSON list) keeps only those keys of every record, in that order, and fn, a function of each key and value applied from the outside in, writes its answer instead (the replacer); one it answers nothing for is left out.",
 
         // ── signatures and encodings ──
         "sha256" => "The SHA-256 digest of a text, as hex or base64.",

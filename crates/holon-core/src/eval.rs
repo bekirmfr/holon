@@ -255,6 +255,9 @@ enum Body {
     SortBy,
     /// `group_by`, putting the items in lists by the key its function answers ([`eval_group_by`]).
     GroupBy,
+    /// `json_parse` with a reviver, `json_stringify` with a replacer ([`eval_json`]); without one,
+    /// each is a [`Body::Leaf`].
+    Json(Json),
     /// A request the host answers.
     Ask(Request),
     Coalesce,
@@ -295,6 +298,24 @@ impl Test {
     /// Whether it answers with items of its list, which a list given to it moves rather than copies.
     fn keeps_items(self) -> bool {
         matches!(self, Test::Filter | Test::Find | Test::FindLast)
+    }
+}
+
+/// The JSON leaves when their `fn` is set: `json_parse`'s reviver, `json_stringify`'s replacer.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Json {
+    Parse,
+    Stringify,
+}
+
+impl Json {
+    fn of(name: &str, params: &[Param]) -> Option<Json> {
+        let json = match name {
+            "json_parse" => Json::Parse,
+            "json_stringify" => Json::Stringify,
+            _ => return None,
+        };
+        params.iter().any(|p| p.name() == "fn" && p.value().is_some_and(|f| !f.is_empty())).then_some(json)
     }
 }
 
@@ -394,10 +415,11 @@ impl NodeKind {
                     "sort_by" => Body::SortBy,
                     "group_by" => Body::GroupBy,
                     "coalesce" => Body::Coalesce,
-                    _ => match (Test::of(name), Request::of(name)) {
-                        (Some(test), _) => Body::Test(test),
-                        (None, Some(request)) => Body::Ask(request),
-                        (None, None) => Body::Leaf { variadic: VARIADIC.contains(&name), op: Op::of(name) },
+                    _ => match (Test::of(name), Request::of(name), Json::of(name, &unit.params)) {
+                        (Some(test), _, _) => Body::Test(test),
+                        (None, Some(request), _) => Body::Ask(request),
+                        (None, None, Some(json)) => Body::Json(json),
+                        (None, None, None) => Body::Leaf { variadic: VARIADIC.contains(&name), op: Op::of(name) },
                     },
                 };
                 let choice = match name {
@@ -434,6 +456,7 @@ fn eval_as(
         (Body::Test(test), _) => smallvec![eval_test(test, &mut lent(inputs), &unit.params, resolver, observer, path)],
         (Body::SortBy, _) => smallvec![eval_sort_by(&mut lent(inputs), &unit.params, resolver, observer, path)],
         (Body::GroupBy, _) => smallvec![eval_group_by(&mut lent(inputs), &unit.params, resolver, observer, path)],
+        (Body::Json(json), _) => smallvec![eval_json(json, &mut lent(inputs), &unit.params, resolver, observer, path)],
         (Body::Ask(request), _) => ask(request.build(inputs, &unit.params), observer, path),
         // `coalesce` is the one leaf whose meaning is about absence: the first input that
         // arrived. The generic arm below would give the same answer today (it gathers present
@@ -493,6 +516,7 @@ fn eval_given<'r>(unit: &'r Unit, kind: &NodeKind, args: &mut Args<'_>, resolver
         (Body::Test(test), _) => smallvec![eval_test(test, &mut args[..n], &unit.params, resolver, observer, path)],
         (Body::SortBy, _) => smallvec![eval_sort_by(&mut args[..n], &unit.params, resolver, observer, path)],
         (Body::GroupBy, _) => smallvec![eval_group_by(&mut args[..n], &unit.params, resolver, observer, path)],
+        (Body::Json(json), _) => smallvec![eval_json(json, &mut args[..n], &unit.params, resolver, observer, path)],
         (_, UnitBody::Composite { children, edges }) => eval_composite(unit, children, edges, &mut args[..n], resolver, observer, path),
         (Body::Leaf { variadic, op: Some(op) }, UnitBody::Primitive { name }) if args.iter().any(|a| matches!(a, Some(Cow::Owned(v)) if heavy(v))) => {
             smallvec![leaf_given(op, name, variadic, &mut args[..n], &unit.params)]
@@ -2251,6 +2275,62 @@ fn eval_group_by(inputs: &mut [Option<Cow<'_, Value>>], params: &[Param], resolv
     }
 }
 
+/// `json_parse` with a reviver and `json_stringify` with a replacer: the unit the `fn` param names,
+/// applied to a key and a value (`fn(key, value, extra…)`, the inputs after the first passed after
+/// the value), bottom-up over the parsed text ([`crate::json::revive`]) or top-down over the value
+/// before it is written ([`crate::json::replace`], then laid out by `indent`). What it answers
+/// nothing for is left out (`null` in a list), and nothing for the whole value makes the leaf give
+/// nothing, as JavaScript's `undefined` does. A text that isn't JSON, a value with no JSON form, or
+/// `keys` set beside `fn` gives nothing.
+///
+/// An application that waits makes the leaf wait, and stops it there: what is applied next depends
+/// on that answer (a reviver's answer is part of the value its holder's application is given, a
+/// replacer's decides which members are visited). The `k`th application asks at the node's path
+/// then `k`, in the walk's order.
+fn eval_json(json: Json, inputs: &mut [Option<Cow<'_, Value>>], params: &[Param], resolver: &impl Resolver, observer: &mut impl Observer, path: &mut Vec<u32>) -> Slot {
+    if !matches!(inputs.first(), Some(Some(_))) || !present(&inputs[1..]) {
+        return Slot::Absent;
+    }
+    let param = |name: &str| params.iter().find(|p| p.name() == name).and_then(|p| p.value()).unwrap_or("");
+    if json == Json::Stringify && !param("keys").is_empty() {
+        return Slot::Absent;
+    }
+    let Some(unit) = function(params, resolver) else { return Slot::Absent };
+    let unit = Ready::of(unit, resolver);
+    let (first, extra) = inputs.split_at_mut(1);
+    let mut asks = Asks(observer);
+    let mut applied = 0;
+    let mut answer = |key: &str, value: &Value| -> Result<Option<Value>, Slot> {
+        let key = Value::Text(key.to_string());
+        let mut args: Args = SmallVec::with_capacity(2 + extra.len());
+        args.push(Some(Cow::Borrowed(&key)));
+        args.push(Some(Cow::Borrowed(value)));
+        args.extend(extra.iter().map(|v| v.as_deref().map(Cow::Borrowed)));
+        applied += 1;
+        match apply(&unit, &mut args, resolver, &mut asks, path, applied - 1) {
+            Slot::Value(v) => Ok(Some(v)),
+            Slot::Absent => Ok(None),
+            Slot::Pending => Err(Slot::Pending),
+        }
+    };
+    let first = first[0].as_deref().expect("checked present");
+    let done = match json {
+        Json::Parse => {
+            let Value::Text(text) = first else { return Slot::Absent };
+            let Some(parsed) = crate::json::parse(text) else { return Slot::Absent };
+            crate::json::revive(parsed, &mut answer)
+        }
+        Json::Stringify => crate::json::replace(first, &mut answer).map(|replaced| {
+            replaced.and_then(|v| crate::json::stringify_laid_out(&v, &crate::json::Layout { gap: crate::json::gap(param("indent")), keys: None })).map(Value::Text)
+        }),
+    };
+    match done {
+        Ok(Some(v)) => Slot::Value(v),
+        Ok(None) => Slot::Absent,
+        Err(stop) => stop,
+    }
+}
+
 /// The unit a `map`/`fold` applies, named by its `fn` param.
 fn function<'r>(params: &[Param], resolver: &'r impl Resolver) -> Option<&'r Unit> {
     let fn_hex = params.iter().find(|p| p.name() == "fn").and_then(|p| p.value())?;
@@ -3480,6 +3560,90 @@ mod tests {
         assert_eq!(run(&["a", "b", "a"]), (vec![Slot::Value(grouped)], vec![vec![0], vec![1], vec![2]]));
         assert_eq!(run(&["gone", "wait", "a"]), (vec![Slot::Pending], vec![vec![0], vec![1], vec![2]]));
         assert_eq!(run(&["gone", "a"]), (vec![Slot::Absent], vec![vec![0], vec![1]]));
+    }
+
+    /// A JSON leaf of `fn_hash`, its function's extras after the first input, and its params.
+    fn json_leaf(name: &str, fn_hash: &Hash, extras: usize, more: &[(&str, &str)]) -> Unit {
+        let first = if name == "json_parse" { "text" } else { "value" };
+        let mut inputs = vec![Port { name: first.into(), ty: Type::Any }];
+        inputs.extend((0..extras).map(|i| Port { name: format!("extra{i}"), ty: Type::Any }));
+        let mut params = vec![Param::frozen("fn", hex(fn_hash))];
+        params.extend(more.iter().map(|&(k, v)| Param::frozen(k, v)));
+        Unit { body: UnitBody::Primitive { name: name.into() }, params, inputs, outputs: vec![Port { name: "out".into(), ty: Type::Any }] }
+    }
+
+    /// `json_parse` with a reviver and `json_stringify` with a replacer apply their function to
+    /// each key and value, hand it the inputs after the first, leave out what it answers nothing
+    /// for, and give what the eager oracle gives; a waiting answer stops either, waiting.
+    #[test]
+    fn a_reviver_and_a_replacer_apply_their_function_to_each_key_and_value() {
+        use crate::eager::eval_eager;
+        let mut r = MapResolver::new();
+        // tens(k, v, by) = v * by: a number times the extra, and nothing for anything else.
+        let mul = r.insert(prim("multiply", 2, Type::Number)).unwrap();
+        let tens = r
+            .insert(composite(
+                vec![Port { name: "k".into(), ty: Type::Any }, Port { name: "v".into(), ty: Type::Any }, Port { name: "by".into(), ty: Type::Any }],
+                Type::Any,
+                vec![mul],
+                vec![edge(BOUNDARY, 1, 0, 0), edge(BOUNDARY, 2, 0, 1), edge(0, 0, BOUNDARY, 0)],
+            ))
+            .unwrap();
+        // value_of(k, v) = v: every value as it is.
+        let same = r.insert(Unit { params: vec![Param::frozen("type", "Number"), Param::frozen("value", "0")], ..prim("default", 1, Type::Any) }).unwrap();
+        let value_of = r
+            .insert(composite(
+                vec![Port { name: "k".into(), ty: Type::Any }, Port { name: "v".into(), ty: Type::Any }],
+                Type::Any,
+                vec![same],
+                vec![edge(BOUNDARY, 1, 0, 0), edge(0, 0, BOUNDARY, 0)],
+            ))
+            .unwrap();
+        let text = |s: &str| Some(txt(s));
+        let cases: Vec<(Unit, Vec<Option<Value>>, Option<Value>)> = vec![
+            // A reviver that answers numbers only: every record and list answered nothing, so the whole is nothing.
+            (json_leaf("json_parse", &tens, 1, &[]), vec![text("[1, 2]"), Some(num(10.0))], None),
+            (json_leaf("json_parse", &tens, 1, &[]), vec![text("3"), Some(num(10.0))], Some(num(30.0))),
+            (json_leaf("json_parse", &tens, 1, &[]), vec![text("3"), None], None),
+            (json_leaf("json_parse", &value_of, 0, &[]), vec![text(r#"{"a": [1, {"b": null}]}"#)], crate::json::parse(r#"{"a": [1, {"b": null}]}"#)),
+            (json_leaf("json_parse", &value_of, 0, &[]), vec![text("{")], None),
+            (json_leaf("json_stringify", &value_of, 0, &[]), vec![crate::json::parse(r#"{"a": [1, {"b": null}]}"#)], text(r#"{"a":[1,{"b":null}]}"#)),
+            (json_leaf("json_stringify", &value_of, 0, &[("indent", " ")]), vec![crate::json::parse(r#"{"a": [1]}"#)], text("{\n \"a\": [\n  1\n ]\n}")),
+            (json_leaf("json_stringify", &tens, 1, &[]), vec![Some(num(4.0)), Some(num(10.0))], text("40")),
+            (json_leaf("json_stringify", &tens, 1, &[]), vec![crate::json::parse("[4]"), Some(num(10.0))], None),
+            (json_leaf("json_stringify", &value_of, 0, &[("keys", r#"["a"]"#)]), vec![crate::json::parse(r#"{"a": 1}"#)], None),
+        ];
+        for (unit, inputs, want) in cases {
+            assert_eq!(eval(&unit, &inputs, &r).into_vec(), vec![want.clone()], "{unit:?} on {inputs:?}");
+            assert_eq!(eval_eager(&unit, &inputs, &r), vec![want], "{unit:?} on {inputs:?}, eagerly");
+        }
+        // Without a function, the leaf as it is: `fn` unset.
+        let plain = Unit { params: vec![Param::frozen("fn", "")], ..json_leaf("json_parse", &tens, 0, &[]) };
+        assert_eq!(eval(&plain, &[text("[1]")], &r).into_vec(), vec![crate::json::parse("[1]")]);
+        // Each application asks the host at the node's path then its place in the walk; a
+        // waiting answer stops the walk there, waiting.
+        struct Asked(Vec<(Vec<u32>, String)>);
+        impl Observer for Asked {
+            fn answer(&mut self, path: &[u32], request: &Value) -> Answer {
+                let Value::Record(r) = request else { return Answer::Absent };
+                let Some(Value::Text(k)) = r.get("get") else { return Answer::Absent };
+                self.0.push((path.to_vec(), k.clone()));
+                if k == "wait" { Answer::NotYet } else { Answer::Value(num(1.0)) }
+            }
+        }
+        let get = r.insert(Unit { params: vec![Param::frozen("collection", "c")], ..prim("collection_get", 1, Type::Any) }).unwrap();
+        let by_key = r
+            .insert(composite(vec![Port { name: "k".into(), ty: Type::Any }, Port { name: "v".into(), ty: Type::Any }], Type::Any, vec![get], vec![edge(BOUNDARY, 0, 0, 0), edge(0, 0, BOUNDARY, 0)]))
+            .unwrap();
+        let run = |name: &str, input: Value| {
+            let mut asked = Asked(Vec::new());
+            let out = eval_at(&json_leaf(name, &by_key, 0, &[]), &[Some(&input)], &r, &mut asked, &mut Vec::new());
+            (out.into_vec(), asked.0)
+        };
+        let at = |items: &[(u32, &str)]| items.iter().map(|(k, key)| (vec![*k, 0], key.to_string())).collect::<Vec<_>>();
+        assert_eq!(run("json_parse", txt(r#"{"a": 1, "b": [2]}"#)), (vec![Slot::Value(num(1.0))], at(&[(0, "a"), (1, "0"), (2, "b"), (3, "")])));
+        assert_eq!(run("json_parse", txt(r#"{"wait": 1, "z": 2}"#)), (vec![Slot::Pending], at(&[(0, "wait")])));
+        assert_eq!(run("json_stringify", crate::json::parse(r#"{"a": 1}"#).unwrap()), (vec![Slot::Value(txt("1"))], at(&[(0, "")])));
     }
 
     /// times(x, k) = x * k: a function of the item and one value from around it.

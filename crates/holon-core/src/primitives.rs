@@ -688,13 +688,29 @@ pub(crate) fn compute_op(op: Op, name: &str, inputs: &[&Value], params: &[Param]
 
         // ── JSON (M1): request and response bodies. See json.rs for the mapping; malformed input,
         // or a value with no JSON form, is absent. ──
+        // With a function (`fn`), the evaluator applies it (eval.rs, `eval_json`); here there is
+        // none to apply.
         Op::JsonParse => {
             let [Value::Text(s)] = inputs else { return None };
+            if param(params, "fn").is_some_and(|f| !f.is_empty()) {
+                return None;
+            }
             crate::json::parse(s)
         }
         Op::JsonStringify => {
             let [v] = inputs else { return None };
-            crate::json::stringify(v).map(Value::Text)
+            if param(params, "fn").is_some_and(|f| !f.is_empty()) {
+                return None;
+            }
+            let keys = match param(params, "keys").unwrap_or("") {
+                "" => None,
+                list => match crate::json::parse(list)? {
+                    Value::List(items) => Some(crate::json::key_list(&items)),
+                    _ => return None,
+                },
+            };
+            let layout = crate::json::Layout { gap: crate::json::gap(param(params, "indent").unwrap_or("")), keys: keys.as_deref() };
+            crate::json::stringify_laid_out(v, &layout).map(Value::Text)
         }
 
         // ── signatures and encodings (crypto.rs): over a text's UTF-8 bytes. An unknown

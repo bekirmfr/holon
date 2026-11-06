@@ -112,19 +112,19 @@ pub const GENESIS: &[&str] = &[
 /// hand-listing names in TypeScript that could silently drift from what `compute` actually does.
 pub const VARIADIC: &[&str] = &[
     "add", "multiply", "max", "min", "and", "or", "concat", "list", "map", "fold", "any", "all", "filter", "find", "find_index", "find_last",
-    "find_last_index", "sort_by", "merge", "group_by",
+    "find_last_index", "sort_by", "merge", "group_by", "json_parse", "json_stringify",
 ];
 
 /// The variadic leaves whose extra inputs are any type, passed to their function, rather than
 /// more of the same port: the higher-order leaves, whose function rides their `fn` param.
-pub const PASSES_EXTRA: &[&str] = &["map", "fold", "any", "all", "filter", "find", "find_index", "find_last", "find_last_index", "sort_by", "group_by"];
+pub const PASSES_EXTRA: &[&str] = &["map", "fold", "any", "all", "filter", "find", "find_index", "find_last", "find_last_index", "sort_by", "group_by", "json_parse", "json_stringify"];
 
 /// How many inputs a higher-order leaf ([`PASSES_EXTRA`]) hands its function before the extras:
-/// `fold` the result so far and the item, `sort_by` the two items it compares, the others the
-/// item.
+/// `fold` the result so far and the item, `sort_by` the two items it compares, `json_parse`'s
+/// reviver and `json_stringify`'s replacer the key and the value, the others the item.
 pub fn function_takes(name: &str) -> usize {
     match name {
-        "fold" | "sort_by" => 2,
+        "fold" | "sort_by" | "json_parse" | "json_stringify" => 2,
         _ => 1,
     }
 }
@@ -312,8 +312,17 @@ pub fn interface_of(name: &str) -> Option<Unit> {
         "group_by" => prim(vec![port("list", Type::list_any())], vec![Param::open("fn", "fn")], Type::Record),
         "same_value" => prim(vec![port("a", Any), port("b", Any)], vec![], Boolean),
         "type_of" => prim(vec![port("value", Any)], vec![], Text),
-        "json_parse" => prim(vec![port("text", Text)], vec![], Any),
-        "json_stringify" => prim(vec![port("value", Any)], vec![], Text),
+        // JSON. `fn`, when set, is a function of the key and the value, as `fold`'s takes two:
+        // `json_parse`'s reviver, `json_stringify`'s replacer; unset (`""`), neither is applied.
+        // `indent` is the gap itself (the reader writes a number as that many spaces), `keys` a
+        // JSON list of the keys to keep, unset `""`; `keys` and `fn` exclusive, as the replacer is
+        // one argument in JavaScript.
+        "json_parse" => prim(vec![port("text", Text)], vec![Param::frozen("fn", "")], Any),
+        "json_stringify" => prim(
+            vec![port("value", Any)],
+            vec![Param::frozen("indent", ""), Param::frozen("keys", ""), Param::frozen("fn", "")],
+            Text,
+        ),
         "pair" => prim(vec![port("a", Any), port("b", Any)], vec![], Product(vec![Any, Any])),
 
         // ── pure — signatures and encodings (crypto.rs) ── digests as lowercase `hex` or `base64`.
