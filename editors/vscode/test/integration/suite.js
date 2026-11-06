@@ -29,7 +29,7 @@ async function checks() {
   assert.deepEqual([mistake.range.start.line, mistake.range.start.character, mistake.range.end.character], [4, 38, 42]);
 
   // Completion: where a name starts, Holon's vocabulary among what may be written, each said.
-  const list = await vscode.commands.executeCommand("vscode.executeCompletionItemProvider", uri, new vscode.Position(4, 40));
+  const list = await vscode.commands.executeCommand("vscode.executeCompletionItemProvider", uri, new vscode.Position(4, 38));
   const status = list.items.find((i) => i.label === "status" && /vocabulary/.test(i.detail ?? ""));
   assert.ok(status, `offered: ${list.items.map((i) => i.label).join(", ")}`);
 
