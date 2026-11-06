@@ -86,7 +86,7 @@ fn row(case: &str, n: usize, ns: f64) {
 
 /// A compiled function's own unit as the store holds it (the harness keeps a copy outside it),
 /// so a resolver keeping shapes by address finds the top unit's too.
-fn stored<'a>(c: &'a Composite) -> &'a Unit {
+fn stored(c: &Composite) -> &Unit {
     c.store.resolve(&hash_unit(&c.unit).expect("hashed")).expect("stored")
 }
 

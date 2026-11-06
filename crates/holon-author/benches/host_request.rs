@@ -34,13 +34,16 @@ impl Resolver for Keeping {
     }
 }
 
+/// A node's entry in the timer's timeline: its path, when it started and ended, what it produced.
+type Timed = (Vec<u32>, f64, f64, Option<Vec<Option<Value>>>);
+
 /// The recorder's timer, as far as the evaluator sees it: a clock read at each node's start and
 /// end down to three levels, and its outputs kept.
 struct Timer {
     start: Instant,
     open: Vec<f64>,
     produced: Option<Vec<Option<Value>>>,
-    timeline: Vec<(Vec<u32>, f64, f64, Option<Vec<Option<Value>>>)>,
+    timeline: Vec<Timed>,
 }
 
 impl Timer {
