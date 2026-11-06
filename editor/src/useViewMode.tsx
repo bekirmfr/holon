@@ -7,7 +7,7 @@
 
 import { useCallback, useEffect, useMemo, useState, type MutableRefObject } from "react";
 import type { Edge } from "@xyflow/react";
-import { buildPreimage, readsFromOutside, type Evaluator, type WUnit, type WValue } from "./holon";
+import { buildPreimage, passesExtraPrimitives, readsFromOutside, type Evaluator, type WUnit, type WValue } from "./holon";
 import { FAIL, type PrimitiveNodeType } from "./PrimitiveNode";
 import { unitFor } from "./canvasUnits";
 import { restoreDocument } from "./docUnits";
@@ -170,10 +170,10 @@ export function useViewMode(input: ViewModeInput) {
       // Stepped through in the order the run evaluated its nodes.
       executionOrder(nodeTimings(selectedRun, viewTrace)),
       // A holon reading from outside within itself replays from what the run recorded.
-      // So does a map or fold whose function reads from outside.
+      // So does a map, fold or other higher-order leaf whose function reads from outside.
       (node) => {
         const { body, name, params } = (node as PrimitiveNodeType).data;
-        const fn = body.kind === "Primitive" && (name === "map" || name === "fold") ? params.find((p) => p.kind === "Frozen" && p.name === "fn") : undefined;
+        const fn = body.kind === "Primitive" && passesExtraPrimitives().has(name) ? params.find((p) => p.kind === "Frozen" && p.name === "fn") : undefined;
         const hash = body.kind === "Composite" ? body.hash : fn?.kind === "Frozen" ? fn.value : "";
         if (!hash) return false;
         try {

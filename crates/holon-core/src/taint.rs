@@ -45,10 +45,13 @@ const ONE_WAY: &[&str] = &["sha256", "hmac_sha256", "secure_equals"];
 
 /// Leaves whose output holds their inputs as they are, or a part of them unchanged: a secret in
 /// an input is in the output literally, where redaction finds it. (`json_stringify` escapes, but
-/// redaction matches a secret's JSON-escaped form too.)
+/// redaction matches a secret's JSON-escaped form too.) The list leaves that rearrange a list's
+/// items are here; those that take a text too (`at`, `slice`) are not, since a part of a text
+/// isn't the secret.
 const PASSES_LITERALLY: &[&str] = &[
     "const", "select", "cons", "head", "tail", "concat", "list", "get", "append", "extend", "join", "pair", "some",
-    "record", "field", "with_field", "without_field", "lookup", "insert", "remove", "find", "as_text", "guard",
+    "entries", "reverse", "to_spliced", "with_item", "fill", "copy_within", "sort", "flat", "unique",
+    "record", "field", "with_field", "without_field", "lookup", "insert", "remove", "as_text", "guard",
     "default", "coalesce", "json_stringify", "store_write", "collection_put", "file_write", "file_create",
     "channel_send", "egress",
 ];
@@ -548,6 +551,50 @@ mod tests {
             assert!(fed.derives(&[node]), "{what} of a secret is derived");
         }
         assert!(!fed.derives(&[4]), "a number_test answers a Boolean");
+    }
+
+    /// A list holding a secret, reversed, still holds it as it is; whether it holds an item is a
+    /// Boolean, which cuts it; a position in it is derived from it; and a `filter` over it applies
+    /// a function, which isn't followed.
+    #[test]
+    fn the_list_leaves_keep_a_secret_literal_and_a_search_cuts_it() {
+        let mut r = MapResolver::new();
+        let secret = leaf(&mut r, "secret", vec![Param::frozen("name", "k")]);
+        let list = leaf(&mut r, "list", vec![]);
+        let reverse = leaf(&mut r, "reverse", vec![]);
+        let includes = leaf(&mut r, "includes", vec![]);
+        let index_of = leaf(&mut r, "index_of", vec![]);
+        let truthy = leaf(&mut r, "is_truthy", vec![]);
+        let filter = leaf(&mut r, "filter", vec![Param::frozen("fn", crate::hash::to_hex(&truthy))]);
+        let e = |fc, fp, tc, tp| Edge { from_child: fc, from_port: fp, to_child: tc, to_port: tp };
+        let root = Unit {
+            body: UnitBody::Composite {
+                children: vec![secret, list, reverse, includes, index_of, filter],
+                edges: vec![
+                    e(0, 0, 1, 0),
+                    e(BOUNDARY, 0, 1, 1),
+                    e(1, 0, 2, 0),
+                    e(1, 0, 3, 0),
+                    e(BOUNDARY, 0, 3, 1),
+                    e(1, 0, 4, 0),
+                    e(BOUNDARY, 0, 4, 1),
+                    e(1, 0, 5, 0),
+                    e(2, 0, BOUNDARY, 0),
+                    e(3, 0, BOUNDARY, 1),
+                    e(4, 0, BOUNDARY, 2),
+                    e(5, 0, BOUNDARY, 3),
+                ],
+            },
+            params: vec![],
+            inputs: vec![Port { name: "x".into(), ty: Type::Any }],
+            outputs: ["reversed", "has", "at", "kept"].map(|n| Port { name: n.into(), ty: Type::Any }).to_vec(),
+        };
+        let fed = SecretFed::of(&root, &r);
+        assert_eq!(fed.output(&[1], 0), Taint::Literal, "the list holds it as it is");
+        assert_eq!(fed.output(&[2], 0), Taint::Literal, "and so does the list reversed");
+        assert!(!fed.derives(&[3]), "includes answers a Boolean");
+        assert!(fed.derives(&[4]), "a position in it is derived");
+        assert!(fed.derives(&[5]), "a filter's function isn't followed");
     }
 
     /// `secret → base64` into a state write and the answer, `secret → hmac` into another write: the

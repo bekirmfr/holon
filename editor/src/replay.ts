@@ -697,7 +697,11 @@ function whyNothing(node: ReplayNode, trace: NodeTrace): string {
     case "file_slice":
       return `no file "${textOf(a) ?? "?"}" in the folder "${p("folder")}"`;
     case "find":
-      return `no item whose "${p("name")}" matches`;
+    case "find_last":
+      return "its function answered true for no item";
+    case "at":
+    case "with_item":
+      return "no item at that index";
     case "get":
       return "no item at that index";
     case "head":

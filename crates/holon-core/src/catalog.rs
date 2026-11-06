@@ -25,20 +25,24 @@ pub const GENESIS: &[&str] = &[
     // of functions told apart by a frozen param (`FAMILIES`)
     "math", "max", "min", "aggregate", "atan2", "power", "remainder", "bitwise", "number_test", "to_number",
     "number_format",
-    // pure — text (7)
+    // pure — text (7): `slice` and `index_of` take a list too, as JavaScript names them on both
     "concat", "uppercase", "lowercase", "text_length", "slice", "index_of", "split",
     // pure — list convenience, demotion-deferred (7)
     "list", "get", "append", "extend", "length", "sum", "join",
+    // pure — lists (22): JavaScript's array methods (lists.rs). The higher-order ones take their
+    // function as `map` does; `at`, `includes` and `last_index_of` take a text too
+    "at", "indices", "entries", "any", "all", "filter", "find", "find_index", "find_last", "find_last_index", "sort_by",
+    "includes", "last_index_of", "reverse", "to_spliced", "with_item", "fill", "copy_within", "sort", "flat", "is_list",
+    "unique",
     // pure — counting (1): 0 to n-1, n capped, so a map over it still ends
     "range",
     // pure — product constructor (1)
     "pair",
     // pure — sum constructor (2)
     "some", "none",
-    // pure — record kit (9): field names frozen (field, with_field, without_field), or keys that
-    // arrive on a wire (lookup, insert, remove), e.g. a route's path param; and find, a list of
-    // records searched by one field's value
-    "record", "field", "with_field", "without_field", "keys", "lookup", "insert", "remove", "find",
+    // pure — record kit (8): field names frozen (field, with_field, without_field), or keys that
+    // arrive on a wire (lookup, insert, remove), e.g. a route's path param
+    "record", "field", "with_field", "without_field", "keys", "lookup", "insert", "remove",
     // pure — JSON (2)
     "json_parse", "json_stringify",
     // pure — signatures and encodings (5): checking a webhook's signature
@@ -90,9 +94,10 @@ pub const GENESIS: &[&str] = &[
 /// meaning core has chosen to give it — this list names only the leaves where growing arity is
 /// unambiguous, not "everything binary-shaped."
 ///
-/// `map` and `fold` grow differently: inputs after their list, of any type, are passed to their
-/// function after the item (`fn(item, extra…)`, `fn(acc, item, extra…)`), the same on every
-/// application. That is how a lambda's captures reach it as inputs (eval's `eval_map`).
+/// `map`, `fold` and the other higher-order leaves ([`PASSES_EXTRA`]) grow differently: inputs
+/// after their list, of any type, are passed to their function after the item (`fn(item,
+/// extra…)`, `fn(acc, item, extra…)`), the same on every application. That is how a lambda's
+/// captures reach it as inputs (eval's `eval_map`).
 ///
 /// The 4th catalog fact, alongside `compute` / `capabilities_of` / `interface_of`. Purely an
 /// editor concern: growing a *placed* node's port count past the catalog's declared default (2,
@@ -102,11 +107,24 @@ pub const GENESIS: &[&str] = &[
 /// and `fold`) already handles whatever count of values it's actually given. This constant exists so the editor
 /// derives "which leaves may grow" from core, the same way it derives everything else, instead of
 /// hand-listing names in TypeScript that could silently drift from what `compute` actually does.
-pub const VARIADIC: &[&str] = &["add", "multiply", "max", "min", "and", "or", "concat", "list", "map", "fold"];
+pub const VARIADIC: &[&str] = &[
+    "add", "multiply", "max", "min", "and", "or", "concat", "list", "map", "fold", "any", "all", "filter", "find", "find_index", "find_last",
+    "find_last_index", "sort_by",
+];
 
 /// The variadic leaves whose extra inputs are any type, passed to their function, rather than
-/// more of the same port.
-pub const PASSES_EXTRA: &[&str] = &["map", "fold"];
+/// more of the same port: the higher-order leaves, whose function rides their `fn` param.
+pub const PASSES_EXTRA: &[&str] = &["map", "fold", "any", "all", "filter", "find", "find_index", "find_last", "find_last_index", "sort_by"];
+
+/// How many inputs a higher-order leaf ([`PASSES_EXTRA`]) hands its function before the extras:
+/// `fold` the result so far and the item, `sort_by` the two items it compares, the others the
+/// item.
+pub fn function_takes(name: &str) -> usize {
+    match name {
+        "fold" | "sort_by" => 2,
+        _ => 1,
+    }
+}
 
 /// The leaves that share one shape, told apart by a frozen parameter: each leaf, its family
 /// parameter and the values that parameter may take. The parameter is part of the unit's hash, so
@@ -129,6 +147,7 @@ pub const FAMILIES: &[(&str, &str, &[&str])] = &[
     ("number_test", "coerce", &["none", "number"]),
     ("to_number", "grammar", &["number", "float", "int"]),
     ("number_format", "style", &["string", "fixed", "precision", "exponential"]),
+    ("slice", "mode", &["length", "end"]),
 ];
 
 /// The values leaf `name`'s family parameter `param` may take, if it is one.
@@ -199,12 +218,14 @@ pub fn interface_of(name: &str) -> Option<Unit> {
         "concat" => prim(vec![port("a", Text), port("b", Text)], vec![], Text),
         "uppercase" | "lowercase" => prim(vec![port("s", Text)], vec![], Text),
         "text_length" => prim(vec![port("s", Text)], vec![], Number),
+        // Part of a text or a list. `mode: "length"` reads `end` as a count, `"end"` as a relative
+        // position, optional (core's `has_optional_ports`).
         "slice" => prim(
-            vec![port("s", Text), port("start", Number), port("len", Number)],
-            vec![],
-            Text,
+            vec![port("value", Any), port("start", Number), port("end", Number)],
+            vec![Param::frozen("mode", "length")],
+            Any,
         ),
-        "index_of" => prim(vec![port("haystack", Text), port("needle", Text)], vec![], Number),
+        "index_of" => prim(vec![port("haystack", Any), port("needle", Any)], vec![], Number),
         // The pieces of `text` between each `sep`: `join`'s inverse.
         "split" => prim(vec![port("text", Text), port("sep", Text)], vec![], Type::List(Box::new(Text))),
 
@@ -221,6 +242,40 @@ pub fn interface_of(name: &str) -> Option<Unit> {
         // old runtime None. A constructed List<Any> still bridges in (the Any wildcard).
         "sum" => prim(vec![port("list", Type::List(Box::new(Number)))], vec![], Number),
         "join" => prim(vec![port("list", Type::List(Box::new(Text))), port("sep", Text)], vec![], Text),
+
+        // ── pure — lists ── the higher-order ones carry their function as `map` does.
+        "at" => prim(vec![port("value", Any), port("index", Number)], vec![], Any),
+        "indices" => prim(vec![port("list", Type::list_any())], vec![], Type::List(Box::new(Number))),
+        // A list's `[index, item]` pairs, or a record's `[key, value]` pairs.
+        "entries" => prim(vec![port("value", Any)], vec![], Type::list_any()),
+        "any" | "all" => prim(vec![port("list", Type::list_any())], vec![Param::open("fn", "fn")], Boolean),
+        "filter" | "sort_by" => prim(vec![port("list", Type::list_any())], vec![Param::open("fn", "fn")], Type::list_any()),
+        "find" | "find_last" => prim(vec![port("list", Type::list_any())], vec![Param::open("fn", "fn")], Any),
+        "find_index" | "find_last_index" => prim(vec![port("list", Type::list_any())], vec![Param::open("fn", "fn")], Number),
+        "includes" => prim(vec![port("haystack", Any), port("needle", Any)], vec![], Boolean),
+        "last_index_of" => prim(vec![port("haystack", Any), port("needle", Any)], vec![], Number),
+        "reverse" | "sort" | "unique" => prim(vec![port("list", Type::list_any())], vec![], Type::list_any()),
+        // `count` and `items` are optional, as are `fill`'s and `copy_within`'s `start` and `end`
+        // (core's `has_optional_ports`).
+        "to_spliced" => prim(
+            vec![port("list", Type::list_any()), port("start", Number), port("count", Number), port("items", Type::list_any())],
+            vec![],
+            Type::list_any(),
+        ),
+        "with_item" => prim(vec![port("list", Type::list_any()), port("index", Number), port("value", Any)], vec![], Type::list_any()),
+        "fill" => prim(
+            vec![port("list", Type::list_any()), port("value", Any), port("start", Number), port("end", Number)],
+            vec![],
+            Type::list_any(),
+        ),
+        "copy_within" => prim(
+            vec![port("list", Type::list_any()), port("target", Number), port("start", Number), port("end", Number)],
+            vec![],
+            Type::list_any(),
+        ),
+        // `depth`: a whole number, or `all`.
+        "flat" => prim(vec![port("list", Type::list_any())], vec![Param::frozen("depth", "1")], Type::list_any()),
+        "is_list" => prim(vec![port("value", Any)], vec![], Boolean),
 
         // ── pure — product ──
         // pair: the binary Product constructor. Output Product([Any, Any]); the value rides the list
@@ -244,8 +299,6 @@ pub fn interface_of(name: &str) -> Option<Unit> {
             Type::Record,
         ),
         "remove" => prim(vec![port("record", Type::Record), port("key", Text)], vec![], Type::Record),
-        // The first record in a list whose `name` field equals `value`.
-        "find" => prim(vec![port("list", Type::list_any()), port("value", Any)], vec![Param::frozen("name", "id")], Any),
         "json_parse" => prim(vec![port("text", Text)], vec![], Any),
         "json_stringify" => prim(vec![port("value", Any)], vec![], Text),
         "pair" => prim(vec![port("a", Any), port("b", Any)], vec![], Product(vec![Any, Any])),
@@ -516,7 +569,7 @@ mod tests {
     }
 
     #[test]
-    fn genesis_has_106_leaves() {
+    fn genesis_has_127_leaves() {
         // The §13a count — a tripwire if the frozen set is ever changed by accident.
         // 37 + to_text + is_truthy + guard + default + equals (the universal any-typed
         // primitives) + the record kit (record, field, with_field, without_field, keys), added
@@ -533,8 +586,11 @@ mod tests {
         // (db_query, db_one, db_exec), and the document kit (db_find, db_find_one, db_insert,
         // db_update, db_delete), and flow_call and flow_start; less ingress, which a flow without
         // handlers read its trigger by; and the number leaves (math, max, min, aggregate, atan2,
-        // power, remainder, bitwise, number_test, to_number, number_format).
-        assert_eq!(GENESIS.len(), 106);
+        // power, remainder, bitwise, number_test, to_number, number_format); and the list leaves
+        // (at, indices, entries, any, all, filter, find_index, find_last, find_last_index,
+        // sort_by, includes, last_index_of, reverse, to_spliced, with_item, fill, copy_within,
+        // sort, flat, is_list, unique), find among them now.
+        assert_eq!(GENESIS.len(), 127);
     }
 
     #[test]

@@ -22,6 +22,8 @@ fn primitive(name: &str, unit: &Unit, inputs: &[Option<Value>], resolver: &impl 
     match name {
         "map" => map(inputs, &unit.params, resolver),
         "fold" => fold(inputs, &unit.params, resolver),
+        "any" | "all" | "filter" | "find" | "find_index" | "find_last" | "find_last_index" => test(name, inputs, &unit.params, resolver),
+        "sort_by" => sort_by(inputs, &unit.params, resolver),
         // The leaves that ask the host: nobody answers here.
         "http_request" | "http_upload" | "http_stream" | "flow_call" | "flow_start" | "await" | "collection_get" | "collection_list" | "file_read" | "file_list" | "file_handle" | "file_lines" | "file_slice"
         | "db_query" | "db_one" | "db_find" | "db_find_one" | "resume_token" => None,
@@ -112,4 +114,64 @@ fn fold(inputs: &[Option<Value>], params: &[Param], resolver: &impl Resolver) ->
         acc = apply(unit, &[&[Some(acc), Some(x.clone())][..], extra].concat(), resolver)?;
     }
     Some(acc)
+}
+
+/// The function's answer for one item, read as JavaScript's ToBoolean; none when it gives none.
+fn passes(unit: &Unit, x: &Value, extra: &[Option<Value>], resolver: &impl Resolver) -> Option<bool> {
+    apply(unit, &[&[Some(x.clone())][..], extra].concat(), resolver).map(|v| crate::lists::truthy(&v))
+}
+
+/// `any`, `all`, `filter` and the `find` family, each stopping where it decides.
+fn test(name: &str, inputs: &[Option<Value>], params: &[Param], resolver: &impl Resolver) -> Option<Value> {
+    let Some(Some(Value::List(xs))) = inputs.first() else { return None };
+    let extra = &inputs[1..];
+    if extra.iter().any(Option::is_none) {
+        return None;
+    }
+    let unit = function(params, resolver)?;
+    let pass = |x: &Value| passes(unit, x, extra, resolver);
+    Some(match name {
+        "filter" => {
+            let answers: Vec<bool> = xs.iter().map(pass).collect::<Option<_>>()?;
+            Value::List(xs.iter().zip(answers).filter(|(_, keep)| *keep).map(|(x, _)| x.clone()).collect())
+        }
+        "any" | "all" => {
+            let decides = name == "any";
+            for x in xs {
+                if pass(x)? == decides {
+                    return Some(Value::Boolean(decides));
+                }
+            }
+            Value::Boolean(!decides)
+        }
+        _ => {
+            let backward = matches!(name, "find_last" | "find_last_index");
+            let positions: Vec<usize> = if backward { (0..xs.len()).rev().collect() } else { (0..xs.len()).collect() };
+            for k in positions {
+                if pass(&xs[k])? {
+                    return Some(if matches!(name, "find" | "find_last") { xs[k].clone() } else { Value::Number(k as f64) });
+                }
+            }
+            if matches!(name, "find" | "find_last") {
+                return None;
+            }
+            Value::Number(-1.0)
+        }
+    })
+}
+
+/// `sort_by`, through the same pinned merge sort.
+fn sort_by(inputs: &[Option<Value>], params: &[Param], resolver: &impl Resolver) -> Option<Value> {
+    let Some(Some(Value::List(xs))) = inputs.first() else { return None };
+    let extra = &inputs[1..];
+    if extra.iter().any(Option::is_none) {
+        return None;
+    }
+    let unit = function(params, resolver)?;
+    let order = crate::lists::merge_sort(xs.len(), |a, b| match apply(unit, &[&[Some(xs[a].clone()), Some(xs[b].clone())][..], extra].concat(), resolver) {
+        Some(Value::Number(n)) => Ok(n > 0.0),
+        _ => Err(()),
+    })
+    .ok()?;
+    Some(Value::List(order.into_iter().map(|k| xs[k].clone()).collect()))
 }

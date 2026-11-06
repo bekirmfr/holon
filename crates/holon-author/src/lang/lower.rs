@@ -105,6 +105,9 @@ pub(crate) fn is_optional(leaf: &str, input: &str) -> bool {
                 | ("file_lines", "from")
                 | ("to_number", "radix")
                 | ("number_format", "digits")
+                | ("slice", "end")
+                | ("to_spliced", "count" | "items")
+                | ("fill" | "copy_within", "start" | "end")
         )
 }
 
@@ -2215,7 +2218,7 @@ impl<'a> Lowerer<'a> {
                         if params.iter().any(|(k, _)| *k == n.text) {
                             return err(n.span, format!("\"{}\" is given twice", n.text));
                         }
-                        // A `map`'s or `fold`'s `fn` is a function; a family's (`math`) is a name.
+                        // A higher-order leaf's `fn` is a function; a family's (`math`) is a name.
                         let value = if n.text == "fn" && PASSES_EXTRA.contains(&leaf) {
                             let (hash, takes, captured) = self.fn_param(&a.value)?;
                             function = Some((takes, captured, a.value.span));
@@ -2248,7 +2251,11 @@ impl<'a> Lowerer<'a> {
         {
             let gives = inputs.len() + extra.len() + captured.len();
             if *takes != gives {
-                let item = if leaf == "fold" { "the result so far and the item" } else { "the item" };
+                let item = match leaf {
+                    "fold" => "the result so far and the item",
+                    "sort_by" => "the two items it compares",
+                    _ => "the item",
+                };
                 let more = extra.len() + captured.len();
                 let after = if more == 0 { String::new() } else { format!(", then {more} more") };
                 return err(*fn_span, format!("\"{leaf}\" gives its function {gives} inputs ({item}{after}); this one takes {takes}"));

@@ -211,7 +211,7 @@ fn the_compute_heavy_flows_functions_all_run_down_a_plan() {
     let mut functions = Vec::new();
     for unit in store.units() {
         if let holon_core::UnitBody::Primitive { name } = &unit.body
-            && (name == "map" || name == "fold")
+            && holon_core::PASSES_EXTRA.contains(&name.as_str())
             && let Some(f) = unit.params.iter().find(|p| p.name() == "fn").and_then(|p| p.value()).and_then(parse_hash)
         {
             functions.push(f);

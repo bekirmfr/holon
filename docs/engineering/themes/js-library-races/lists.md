@@ -54,7 +54,7 @@ raced.
 | `entries` | leaf | `entries` | 64: 14.4 µs / 2.32 µs = 6.2; 4096: 6.8 | same class, > 3; over `range`, also inexact past MAX_RANGE |
 | `every` | leaf, re-race once a fold can stop | `all {fn}` | first fails: 64: 208, 4096: 16390; all pass: 64: 163; map: 1.3–2.1 | no early exit: the ratio grows with n where JavaScript stops at the first false |
 | `fill` | leaf | `fill` | 64: 27.1 µs / 376 ns = 72; 4096: 51 | > 3: a function per item where the leaf copies once. Value form only |
-| `filter` | leaf, re-race after the evaluator change | `filter {fn}` | all kept: 64: 78.7 µs / 913 ns = 86; 512: 484; map: 8: 2.9–3.2, 64: 8.1–9.3, 512: 26–38 | copy: the fold's `extend` copies the accumulator each step, so the ratio grows with n |
+| `filter` | leaf (re-raced after the evaluator change) | `filter {fn}` | re-raced on f764335: all kept: 64: 51.4 µs / 476 ns = 108 (108–111); 512: 151–156; map: 8: 4.3–4.9, 64: 5.9–7.7, 512: 6.2–7.8 (before the change: 64: 8.1–9.3, 512: 26–38) | same class as `map` now (the fold's copy is gone: 5.9 → 6.2 from 64 to 512), but > 3 at 64: a `fold` step and its `extend` per item cost about 6× `map`'s application |
 | `find` | leaf | `find {fn}` | first: 64: 695, 4096: 38848; none: 64: 406; map: 3.5–3.6 | > 3 against `map` even when nothing matches, and no early exit |
 | `findIndex` | leaf | `find_index {fn}` | first: 64: 424, 4096: 23911; none: 64: 424; map: 3.6–4.1 | > 3 against `map`, and no early exit |
 | `findLast` | leaf, re-race once a fold can stop | `find_last {fn}` | match last: 64: 497, 4096: 27709; none: 64: 225; map: 2.2–2.6 | no early exit: JavaScript stops at the last match, scanning from the end |
@@ -97,8 +97,8 @@ raced.
 | `new Set(xs)` | leaf | `unique` | `[...new Set(xs)]`: 64: 488 µs / 11.7 µs = 42; 512: 368 | worse class: each item is compared with every kept one, O(n²) without any copy |
 
 **In numbers:** 50 rows. 13 reader, 4 composite (`map((x, i) => …)`, `reduce(f)`, `reduceRight`,
-`flatMap` over `flat`), 22 leaf, 5 leaf pending a re-race (`filter` after the evaluator change, for
-the copy; `some`, `every`, `findLast`, `findLastIndex` once a fold can stop), 6 refused.
+`flatMap` over `flat`), 23 leaf (`filter` among them, re-raced after the evaluator change), 4 leaf
+pending a re-race (`some`, `every`, `findLast`, `findLastIndex` once a fold can stop), 6 refused.
 
 With `sublist` and `to_spliced` as leaves, `with`, `copyWithin` and `pop`'s rest could be
 composites of one or two leaf calls (`xs.with(i, v)` as `to_spliced(xs, j, 1, [v])` behind a
@@ -939,3 +939,38 @@ The rows near a threshold, re-raced (`-- against`, twice, then `-- join`):
 | 64 | 11.13 µs | 4.96 µs | 2.24 |
 | 512 | 157.83 µs | 40.43 µs | 3.90 |
 | 4096 | 716.62 µs | 316.11 µs | 2.27 |
+
+`filter`, re-raced after the evaluator change (#43) on f764335, twice
+(`cargo bench -p holon-author --bench races_lists -- filter`):
+
+### filter, all kept (first run)
+
+| n | composite js_filter (11 leaves) | native candidate | ratio |
+|---:|---:|---:|---:|
+| 8 | 8.54 µs | 136 ns | 63.01 |
+| 64 | 51.43 µs | 476 ns | 108.14 |
+| 512 | 399.10 µs | 2.64 µs | 151.22 |
+
+### filter, against map (first run)
+
+| n | composite js_filter (11 leaves) | composite xs.map((x) => x > 10) (3 leaves) | ratio |
+|---:|---:|---:|---:|
+| 8 | 8.23 µs | 1.91 µs | 4.32 |
+| 64 | 51.26 µs | 8.69 µs | 5.90 |
+| 512 | 392.95 µs | 63.66 µs | 6.17 |
+
+### filter, all kept (second run)
+
+| n | composite js_filter (11 leaves) | native candidate | ratio |
+|---:|---:|---:|---:|
+| 8 | 8.37 µs | 133 ns | 62.93 |
+| 64 | 52.45 µs | 471 ns | 111.29 |
+| 512 | 397.81 µs | 2.55 µs | 155.74 |
+
+### filter, against map (second run)
+
+| n | composite js_filter (11 leaves) | composite xs.map((x) => x > 10) (3 leaves) | ratio |
+|---:|---:|---:|---:|
+| 8 | 8.53 µs | 1.73 µs | 4.93 |
+| 64 | 50.98 µs | 6.66 µs | 7.66 |
+| 512 | 376.70 µs | 48.38 µs | 7.79 |

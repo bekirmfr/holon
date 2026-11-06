@@ -331,7 +331,7 @@ fn js_space(c: char) -> bool {
 
 /// ToString of a Holon value as JavaScript writes it: a number as `number_text`, a list as its
 /// items joined with `,`, a record as `[object Object]`.
-fn js_string(v: &Value) -> String {
+pub(crate) fn js_string(v: &Value) -> String {
     match v {
         Value::Number(x) => number_text(*x),
         Value::Text(s) => s.clone(),

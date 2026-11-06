@@ -13,7 +13,7 @@ last record (see [Calls](reference.md#calls)). Many are written another way (`a 
 
 These touch nothing outside: given the same inputs, they always give the same output.
 
-[`const`](#const) · [`add`](#add) · [`multiply`](#multiply) · [`subtract`](#subtract) · [`divide`](#divide) · [`compare`](#compare) · [`and`](#and) · [`or`](#or) · [`not`](#not) · [`select`](#select) · [`cons`](#cons) · [`head`](#head) · [`tail`](#tail) · [`is_empty`](#is_empty) · [`fold`](#fold) · [`map`](#map) · [`math`](#math) · [`max`](#max) · [`min`](#min) · [`aggregate`](#aggregate) · [`atan2`](#atan2) · [`power`](#power) · [`remainder`](#remainder) · [`bitwise`](#bitwise) · [`number_test`](#number_test) · [`to_number`](#to_number) · [`number_format`](#number_format) · [`concat`](#concat) · [`uppercase`](#uppercase) · [`lowercase`](#lowercase) · [`text_length`](#text_length) · [`slice`](#slice) · [`index_of`](#index_of) · [`split`](#split) · [`list`](#list) · [`get`](#get) · [`append`](#append) · [`extend`](#extend) · [`length`](#length) · [`sum`](#sum) · [`join`](#join) · [`range`](#range) · [`pair`](#pair) · [`some`](#some) · [`none`](#none) · [`record`](#record) · [`field`](#field) · [`with_field`](#with_field) · [`without_field`](#without_field) · [`keys`](#keys) · [`lookup`](#lookup) · [`insert`](#insert) · [`remove`](#remove) · [`find`](#find) · [`json_parse`](#json_parse) · [`json_stringify`](#json_stringify) · [`sha256`](#sha256) · [`hmac_sha256`](#hmac_sha256) · [`hex`](#hex) · [`base64`](#base64) · [`secure_equals`](#secure_equals) · [`to_text`](#to_text) · [`as_text`](#as_text) · [`is_truthy`](#is_truthy) · [`guard`](#guard) · [`default`](#default) · [`coalesce`](#coalesce) · [`equals`](#equals)
+[`const`](#const) · [`add`](#add) · [`multiply`](#multiply) · [`subtract`](#subtract) · [`divide`](#divide) · [`compare`](#compare) · [`and`](#and) · [`or`](#or) · [`not`](#not) · [`select`](#select) · [`cons`](#cons) · [`head`](#head) · [`tail`](#tail) · [`is_empty`](#is_empty) · [`fold`](#fold) · [`map`](#map) · [`math`](#math) · [`max`](#max) · [`min`](#min) · [`aggregate`](#aggregate) · [`atan2`](#atan2) · [`power`](#power) · [`remainder`](#remainder) · [`bitwise`](#bitwise) · [`number_test`](#number_test) · [`to_number`](#to_number) · [`number_format`](#number_format) · [`concat`](#concat) · [`uppercase`](#uppercase) · [`lowercase`](#lowercase) · [`text_length`](#text_length) · [`slice`](#slice) · [`index_of`](#index_of) · [`split`](#split) · [`list`](#list) · [`get`](#get) · [`append`](#append) · [`extend`](#extend) · [`length`](#length) · [`sum`](#sum) · [`join`](#join) · [`at`](#at) · [`indices`](#indices) · [`entries`](#entries) · [`any`](#any) · [`all`](#all) · [`filter`](#filter) · [`find`](#find) · [`find_index`](#find_index) · [`find_last`](#find_last) · [`find_last_index`](#find_last_index) · [`sort_by`](#sort_by) · [`includes`](#includes) · [`last_index_of`](#last_index_of) · [`reverse`](#reverse) · [`to_spliced`](#to_spliced) · [`with_item`](#with_item) · [`fill`](#fill) · [`copy_within`](#copy_within) · [`sort`](#sort) · [`flat`](#flat) · [`is_list`](#is_list) · [`unique`](#unique) · [`range`](#range) · [`pair`](#pair) · [`some`](#some) · [`none`](#none) · [`record`](#record) · [`field`](#field) · [`with_field`](#with_field) · [`without_field`](#without_field) · [`keys`](#keys) · [`lookup`](#lookup) · [`insert`](#insert) · [`remove`](#remove) · [`json_parse`](#json_parse) · [`json_stringify`](#json_stringify) · [`sha256`](#sha256) · [`hmac_sha256`](#hmac_sha256) · [`hex`](#hex) · [`base64`](#base64) · [`secure_equals`](#secure_equals) · [`to_text`](#to_text) · [`as_text`](#as_text) · [`is_truthy`](#is_truthy) · [`guard`](#guard) · [`default`](#default) · [`coalesce`](#coalesce) · [`equals`](#equals)
 
 ### `const`
 
@@ -266,18 +266,18 @@ How many characters a text has.
 ### `slice`
 
 ```
-slice(s: Text, start: Number, len: Number) -> out: Text
+slice(value: Any, start: Number, end: Number) -> out: Any  {mode: length}
 ```
 
-Part of a text: len characters, from character start (counting from 0).
+Part of a text or a list, by mode. length: end characters or items from start (counting from 0). end: the items from start up to end, each counting from the end when negative, end the length when unwired (xs.slice(start, end)); a text in this mode produces nothing for now.
 
 ### `index_of`
 
 ```
-index_of(haystack: Text, needle: Text) -> out: Number
+index_of(haystack: Any, needle: Any) -> out: Number
 ```
 
-Where needle first appears in haystack, counting characters from 0; −1 when it doesn't.
+Where needle first appears: in a list, the first item that equals it; in a text, counting characters from 0. −1 when it doesn't.
 
 ### `split`
 
@@ -342,6 +342,182 @@ join(list: List<Text>, sep: Text) -> out: Text
 ```
 
 Joins a list of texts into one, with sep between each.
+
+### `at`
+
+```
+at(value: Any, index: Number) -> out: Any
+```
+
+The item of a list at index, counting from the end when it is negative (xs.at(-1) is the last); nothing out of range. A text produces nothing for now.
+
+### `indices`
+
+```
+indices(list: List<Any>) -> out: List<Number>
+```
+
+A list's positions: 0 to its length − 1 (xs.keys()).
+
+### `entries`
+
+```
+entries(value: Any) -> out: List<Any>
+```
+
+A list's [index, item] pairs, or a record's [key, value] pairs in key order.
+
+### `any`
+
+```
+any(list: List<Any>) -> out: Boolean  {fn}
+```
+
+Whether its function answers true for any item of a list, stopping at the first (xs.some). Its answer is read as JavaScript reads a condition: false, 0 and "" are false, anything else true.
+
+### `all`
+
+```
+all(list: List<Any>) -> out: Boolean  {fn}
+```
+
+Whether its function answers true for every item of a list, stopping at the first false (xs.every).
+
+### `filter`
+
+```
+filter(list: List<Any>) -> out: List<Any>  {fn}
+```
+
+The items of a list its function answers true for, in order.
+
+### `find`
+
+```
+find(list: List<Any>) -> out: Any  {fn}
+```
+
+The first item of a list its function answers true for, stopping there; nothing when none does.
+
+### `find_index`
+
+```
+find_index(list: List<Any>) -> out: Number  {fn}
+```
+
+The position of the first item its function answers true for, stopping there; −1 when none does.
+
+### `find_last`
+
+```
+find_last(list: List<Any>) -> out: Any  {fn}
+```
+
+The last item of a list its function answers true for, looking from the end; nothing when none does.
+
+### `find_last_index`
+
+```
+find_last_index(list: List<Any>) -> out: Number  {fn}
+```
+
+The position of the last item its function answers true for, looking from the end; −1 when none does.
+
+### `sort_by`
+
+```
+sort_by(list: List<Any>) -> out: List<Any>  {fn}
+```
+
+The items of a list in the order its function puts them: given two items a and b, it answers a number, below 0 for a first, above 0 for b first, 0 to keep their order. Stable, and the same order every time. An answer that isn't a number produces nothing.
+
+### `includes`
+
+```
+includes(haystack: Any, needle: Any) -> out: Boolean
+```
+
+Whether an item of a list equals needle (lists and records by what they hold). A text produces nothing for now.
+
+### `last_index_of`
+
+```
+last_index_of(haystack: Any, needle: Any) -> out: Number
+```
+
+The position of the last item of a list that equals needle; −1 when none does. A text produces nothing for now.
+
+### `reverse`
+
+```
+reverse(list: List<Any>) -> out: List<Any>
+```
+
+The items of a list in reverse order.
+
+### `to_spliced`
+
+```
+to_spliced(list: List<Any>, start: Number, count: Number, items: List<Any>) -> out: List<Any>
+```
+
+A list with count items from start replaced by the items of items: start counts from the end when negative; count unwired is the rest of the list, items unwired is none.
+
+### `with_item`
+
+```
+with_item(list: List<Any>, index: Number, value: Any) -> out: List<Any>
+```
+
+A list with the item at index replaced by value, index counting from the end when negative; nothing out of range.
+
+### `fill`
+
+```
+fill(list: List<Any>, value: Any, start: Number, end: Number) -> out: List<Any>
+```
+
+A list with the positions from start up to end set to value, each counting from the end when negative; start unwired is 0, end the length.
+
+### `copy_within`
+
+```
+copy_within(list: List<Any>, target: Number, start: Number, end: Number) -> out: List<Any>
+```
+
+A list with the items from start up to end copied over those from target, as they were before; each counts from the end when negative, start unwired is 0, end the length.
+
+### `sort`
+
+```
+sort(list: List<Any>) -> out: List<Any>
+```
+
+The items of a list in JavaScript's default order: each written as text and compared character by character (so 10 comes before 9). Stable.
+
+### `flat`
+
+```
+flat(list: List<Any>) -> out: List<Any>  {depth: 1}
+```
+
+A list with the items of its lists spread into it, depth levels deep (a whole number, or all).
+
+### `is_list`
+
+```
+is_list(value: Any) -> out: Boolean
+```
+
+Whether a value is a list.
+
+### `unique`
+
+```
+unique(list: List<Any>) -> out: List<Any>
+```
+
+Each item of a list once, where it first appears (lists and records by what they hold).
 
 ### `range`
 
@@ -438,14 +614,6 @@ remove(record: Record, key: Text) -> out: Record
 ```
 
 The record without key, the key arriving on a wire.
-
-### `find`
-
-```
-find(list: List<Any>, value: Any) -> out: Any  {name: id}
-```
-
-The first record in a list whose field (named on the node) equals value; nothing when none does.
 
 ### `json_parse`
 

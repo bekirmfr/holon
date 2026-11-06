@@ -48,11 +48,16 @@ const CATALOG_GROUPS: readonly { name: string; items: ReadonlySet<string> }[] = 
   },
   {
     name: "list",
-    items: new Set(["list", "get", "append", "extend", "length", "sum", "join", "range", "pair", "some", "none"]),
+    items: new Set([
+      "list", "get", "append", "extend", "length", "sum", "join", "range", "pair", "some", "none",
+      "at", "indices", "entries", "any", "all", "filter", "find", "find_index", "find_last", "find_last_index",
+      "sort_by", "includes", "last_index_of", "reverse", "to_spliced", "with_item", "fill", "copy_within",
+      "sort", "flat", "is_list", "unique",
+    ]),
   },
   {
     name: "record",
-    items: new Set(["record", "field", "with_field", "without_field", "keys", "lookup", "insert", "remove", "find"]),
+    items: new Set(["record", "field", "with_field", "without_field", "keys", "lookup", "insert", "remove"]),
   },
   {
     name: "encode",

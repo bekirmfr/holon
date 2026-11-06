@@ -298,6 +298,9 @@ pub(crate) fn is_optional_input(n: &Node, port: Option<&str>) -> bool {
         "file_lines" => &["from"],
         "to_number" => &["radix"],
         "number_format" => &["digits"],
+        "slice" => &["end"],
+        "to_spliced" => &["count", "items"],
+        "fill" | "copy_within" => &["start", "end"],
         _ => &[],
     };
     n.data.body == PlacedBody::Primitive && port.is_some_and(|p| optional.contains(&p))
