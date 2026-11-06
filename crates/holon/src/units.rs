@@ -204,7 +204,9 @@ impl Loaded {
 ///
 /// A closure past [`MAX_CLOSURE_UNITS`] units, or nested deeper than [`MAX_CLOSURE_DEPTH`], is
 /// refused ([`Closure::TooBig`]): evaluating one recurses a level per nested unit, and its units
-/// are anyone's who can stage them.
+/// are anyone's who can stage them. So is one with a unit core's `validate` refuses
+/// ([`Closure::Invalid`]): `POST /unit` only decodes what it stores, and the evaluator is written
+/// for wiring that validates.
 pub(crate) fn closure(store: &SharedStore, root: Hash) -> Result<Loaded, Closure> {
     let cache = &store.3;
     if let Some(kept) = cache.get(&root) {
@@ -220,8 +222,12 @@ pub(crate) fn closure(store: &SharedStore, root: Hash) -> Result<Loaded, Closure
 /// Walk and fetch `root`'s closure, taking each unit the cache already holds from memory and the
 /// rest from the store (which checks each against its hash). Says whether every reference
 /// resolved. No cache lock is held while the store is read.
+///
+/// Each unit read from the store is validated against the closure; one the cache holds was when
+/// its closure was loaded, and a hash names one unit and, through it, its children for ever.
 fn load_closure(store: &SharedStore, root: Hash) -> Result<(Loaded, bool), Closure> {
     let mut units: BTreeMap<Hash, Arc<Unit>> = BTreeMap::new();
+    let mut fresh: Vec<Hash> = Vec::new();
     let mut whole = true;
     // Each unit's references, as it was fetched: the depth below is measured over these.
     let mut refs: BTreeMap<Hash, Vec<Hash>> = BTreeMap::new();
@@ -233,7 +239,10 @@ fn load_closure(store: &SharedStore, root: Hash) -> Result<(Loaded, bool), Closu
         let unit = match store.3.unit(&h) {
             Some(unit) => unit,
             None => match store.get(&h).map_err(Closure::Store)? {
-                Some(unit) => Arc::new(unit),
+                Some(unit) => {
+                    fresh.push(h);
+                    Arc::new(unit)
+                }
                 None => {
                     whole = false;
                     continue;
@@ -252,7 +261,25 @@ fn load_closure(store: &SharedStore, root: Hash) -> Result<(Loaded, bool), Closu
     if depth > MAX_CLOSURE_DEPTH {
         return Err(Closure::TooBig(format!("it nests more than {MAX_CLOSURE_DEPTH} units deep")));
     }
-    Ok((Loaded::of(units), whole))
+    let loaded = Loaded::of(units);
+    for h in &fresh {
+        if let Some(why) = loaded.resolve(h).and_then(|unit| invalid(unit, &loaded)) {
+            return Err(Closure::Invalid(format!("unit {} {why}", to_hex(h))));
+        }
+    }
+    Ok((loaded, whole))
+}
+
+/// What core's `validate` refuses in `unit`, if anything, but a child `resolver` doesn't hold:
+/// a run fails closed on that one by itself.
+pub(crate) fn invalid(unit: &Unit, resolver: &impl Resolver) -> Option<String> {
+    let errors = holon_core::validate(unit, resolver).err()?;
+    let errors: Vec<String> = errors
+        .iter()
+        .filter(|e| !matches!(e, holon_core::ValidationError::UnresolvedChild { .. }))
+        .map(ToString::to_string)
+        .collect();
+    (!errors.is_empty()).then(|| format!("doesn't validate: {}", errors.join("; ")))
 }
 
 /// What the cache's own entry for a unit takes beside it: its hash, its count and its `Arc`, in a
@@ -474,6 +501,8 @@ pub(crate) enum Closure {
     Store(StoreError),
     /// Past the bounds above: a request's fault, a 400 where one asked for it.
     TooBig(String),
+    /// A unit in it that core's `validate` refuses: as much the request's fault.
+    Invalid(String),
 }
 
 impl Closure {
@@ -481,6 +510,7 @@ impl Closure {
     pub(crate) fn response(&self) -> Response {
         match self {
             Closure::TooBig(why) => err(400, format!("this unit is too big to run: {why}")),
+            Closure::Invalid(why) => err(400, format!("this unit can't run: {why}")),
             Closure::Store(e) => err(500, format!("store error while materializing closure: {e:?}")),
         }
     }

@@ -421,9 +421,10 @@ Three audits ran before the change went to main (#43), for correctness, security
 `differential.sh` to run it against any earlier commit) generates worlds of leaves, composites
 nested four deep and maps and folds of them, with valid edges and with edges only decoding would
 take, and runs every case under each observer a host uses, comparing outputs and every observer
-call between two versions. It mattered that the unvalidated edges were in: a host never calls
-`validate` on a unit it stores (the server's `POST /unit` only decodes), so those edges can reach
-the evaluator. It found, besides the bare `fold` above, the two the review noted:
+call between two versions. It mattered that the unvalidated edges were in: a host called
+`validate` on no unit it stored (the server's `POST /unit` only decodes), so those edges could
+reach the evaluator. Since, the server refuses a closure with a unit `validate` refuses before it
+runs one (holon's `units.rs`, `load_closure`), and `holon verify` doesn't run one again. It found, besides the bare `fold` above, the two the review noted:
 
 - a choice that lends was read as its value at an output port it doesn't have (a choice unit
   declaring a second output passes `validate`): it now reads through only at port 0;

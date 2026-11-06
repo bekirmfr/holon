@@ -182,6 +182,14 @@ given, what it keeps beside the deployments file (`BESIDE_DEPLOYMENTS`: the logs
 the arrivals, the heads, the activity log), the secrets' audit, the `.env`, the key's file, and
 `~/.holon`.
 
+What a flow is made of is checked before it runs, since its units are anyone's who can stage
+them and `POST /unit` only decodes what it stores: a closure nested past 64 units or holding more
+than 20,000 is refused, and so is one with a unit core's `validate` refuses (an edge outside its
+children's ports, two sources for one port, a cycle, types that don't fit, a module that isn't
+one), each unit validated once, the first time a closure reads it from the store (units.rs
+`load_closure`). A deploy of one is a 400 saying which unit and why; `holon verify` doesn't run
+one again (verify.rs `past_bounds`).
+
 ### 2.8 Files on disk (sealing.rs)
 
 `write_private` writes a file aside created with mode `0o600` (a protected owner-and-SYSTEM DACL on
@@ -304,6 +312,12 @@ What is not defended, or only partly:
   `a_folder_swapped_for_a_link_after_the_check_leads_nowhere` (a write and a read checked, the
   folder on their way then swapped for a link out: each lands, or reads, where it was checked),
   `no_folder_is_or_holds_what_the_server_keeps_beside_its_files`.
+- **Units**: `a_closure_with_a_unit_that_doesnt_validate_is_refused` (a port a child doesn't have,
+  two sources for one, a cycle; the unit as the root and nested), `a_closure_too_big_to_run_is_refused_and_every_sample_is_well_inside`
+  (every sample's closure loads, so every sample validates; holon-author's
+  `every_samples_units_pass_validation` says so before the server), `effect_written_to_state_does_not_take_the_server_down`
+  (an effect wired into a write is refused at deploy), and `holon verify`'s
+  `a_unit_that_doesnt_validate_is_not_run_again` and `a_unit_nested_past_the_servers_bound_is_not_run_again`.
 - **The record**: `a_flow_log_is_a_chain_and_a_changed_run_shows_as_a_break`,
   `exported_runs_verify_and_a_rewritten_log_doesnt`, `a_batch_goes_only_after_its_hook_has_run`,
   `a_witness_is_reached_over_https_or_on_this_machine`.

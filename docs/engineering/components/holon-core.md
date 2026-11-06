@@ -170,7 +170,8 @@ actions, each handler's `LogLevel`) and fails closed on anything malformed.
 - **One number type** (`f64`), **no bytes value**, and an open `Record` type (any fields). A `Sum`
   value's `ty()` is `Sum([Any, Any])` whatever its true arity, honest only while `some` and `none`
   are the only constructors (`value.rs`).
-- **`validate` checks one level**: a composite's own wiring, its children by their interfaces.
+- **`validate` checks one level**: a composite's own wiring, its children by their interfaces. A
+  host validates every unit of a closure (holon's `units.rs`, `load_closure`).
 - **The SQL scan refuses what it doesn't understand** (`sql.rs`), on purpose: a statement outside its
   small part of SQL can't be deployed until the scan grows.
 - **A state key named `<unknown>`** reads as the saturation marker (`SATURATED_STATE_KEY`); nothing

@@ -866,6 +866,27 @@ mod tests {
         assert!(checked > 40, "{checked}");
     }
 
+    /// The server validates every unit of a closure before it runs one (crates/holon/src/units.rs
+    /// `load_closure`): a sample with a unit `validate` refuses would never deploy.
+    #[test]
+    fn every_samples_units_pass_validation() {
+        let mut checked = 0;
+        for s in samples() {
+            let lowered = lang::compile(s.text).unwrap_or_else(|e| panic!("{}: {e}", s.name));
+            let mut store = MapResolver::new();
+            crate::text::restore(&lowered.doc, &mut store, &Names::new());
+            let port = lowered.doc.server.as_ref().map(|x| x.port.clone()).unwrap_or_default();
+            crate::flow::flow_unit(&lowered.doc.nodes, &lowered.doc.edges, &mut store, &port).unwrap_or_else(|e| panic!("{}: {e}", s.name));
+            for unit in store.units() {
+                if let Err(errors) = holon_core::validate(unit, &store) {
+                    panic!("{}: {:?} refused: {errors:?}", s.name, holon_core::hash_unit(unit).map(holon_core::hex));
+                }
+                checked += 1;
+            }
+        }
+        assert!(checked > 100, "{checked}");
+    }
+
     #[test]
     fn slugs_places_one_unit_twice() {
         let doc = build(sample("slugs").unwrap()).unwrap();

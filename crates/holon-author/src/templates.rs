@@ -199,8 +199,20 @@ fn put(store: &mut MapResolver, u: Unit) -> Result<Hash, String> {
 }
 
 /// A genesis leaf as the catalog declares it, with `params` (and, for a variadic one, `inputs`).
+/// A `const`'s output takes the type it is frozen with, as one placed from the palette does
+/// (builder.rs `Builder::node`).
 fn add_leaf(store: &mut MapResolver, prim: &str, params: Vec<Param>, inputs: Option<Vec<Port>>) -> Result<Hash, String> {
     let mut u = interface_of(prim).ok_or_else(|| format!("\"{prim}\" is not in the catalog"))?;
+    if prim == "const" {
+        let ty = match params.iter().find(|p| p.name() == "type").and_then(Param::value) {
+            Some("Text") => Type::Text,
+            Some("Boolean") => Type::Boolean,
+            _ => Type::Number,
+        };
+        for p in &mut u.outputs {
+            p.ty = ty.clone();
+        }
+    }
     u.params = params;
     if let Some(inputs) = inputs {
         u.inputs = inputs;
@@ -354,7 +366,6 @@ pub fn build(name: &str, params: &[WParam], store: &mut MapResolver) -> Result<U
                 e(4, 0, 5, 0),
                 e(3, 0, 5, 1),
                 e(5, 0, 6, 0),
-                e(5, 0, 7, 0),
                 e(B, 0, 8, 0),
                 e(6, 0, 10, 0),
                 e(9, 0, 10, 1),

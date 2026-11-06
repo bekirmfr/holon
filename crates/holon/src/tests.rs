@@ -3507,7 +3507,9 @@ fn a_fire_in_progress_does_not_stall_the_table() {
 /// Regression: `egress → store_write` stored the `Effect` itself, the next run panicked in
 /// holon-host's `constant_unit` while holding the state lock, and the poisoned mutex then took
 /// down every later `/deploy`, `/deployments` and run. A route that writes an effect (built by
-/// hand: the language can't write one) and reads the key back.
+/// hand: the language can't write one) and reads the key back. The sink's own check refuses the
+/// effect at run time (primitives.rs `sink_effect`); before that, `validate` refuses its wiring, so
+/// the server never deploys it.
 #[test]
 fn effect_written_to_state_does_not_take_the_server_down() {
     let state = test_state();
@@ -3536,14 +3538,10 @@ fn effect_written_to_state_does_not_take_the_server_down() {
     };
     let unit = stage(&state, &server);
     let ack = serde_json::json!(["NetworkIngress", "NetworkEgress", "StateRead(\"cell\")", "StateWrite(\"cell\")"]);
-    assert_eq!(deploy_json(&state, "bad-writer", unit, serde_json::json!({ "acknowledge": ack })).status_code, 200);
-
-    for _ in 0..2 {
-        let (status, body, _) = data_call(&state, "bad-writer", "POST", "/cell", "x");
-        assert_eq!((status, body.as_str()), (200, "none"), "nothing was kept");
-    }
-    let s = body_json(route(&state, &req("GET", "/deployments/bad-writer/state", vec![])));
-    assert!(s["state"].get("cell").is_none(), "an effect request is not data: {s}");
+    let refused = deploy_json(&state, "bad-writer", unit, serde_json::json!({ "acknowledge": ack }));
+    assert_eq!(refused.status_code, 400);
+    let why = body_json(refused);
+    assert!(why.to_string().contains("doesn't validate") && why.to_string().contains("incompatible types: Effect"), "{why}");
     assert_eq!(route(&state, &req("GET", "/deployments", vec![])).status_code, 200);
 }
 
@@ -7570,6 +7568,40 @@ fn a_closure_too_big_to_run_is_refused_and_every_sample_is_well_inside() {
     // One level less is materialized.
     let inside = match store.get(&below).unwrap().unwrap().body { UnitBody::Composite { children, .. } => children[0], _ => unreachable!() };
     closure(&state.store, inside).unwrap();
+}
+
+/// `POST /unit` only decodes what it stores, so a unit whose wiring `validate` refuses can be
+/// staged; the closure it is in is refused before anything runs it, and a deploy of it is a 400.
+/// Every sample's closure loads (the test above), so every sample validates.
+#[test]
+fn a_closure_with_a_unit_that_doesnt_validate_is_refused() {
+    let state = test_state();
+    let mut store = state.store.clone();
+    let clock = store.put(&Unit { params: vec![], ..holon_core::interface_of("clock").unwrap() }).unwrap();
+    let e = |fc, fp, tc, tp| Edge { from_child: fc, from_port: fp, to_child: tc, to_port: tp };
+    let out = |ty| vec![Port { name: "out".into(), ty }];
+    // An output port the clock doesn't have, two sources for one port, and a cycle.
+    let no_such_port = Unit { body: UnitBody::Composite { children: vec![clock], edges: vec![e(0, 3, BOUNDARY, 0)] }, params: vec![], inputs: vec![], outputs: out(Type::Number) };
+    let random = store.put(&Unit { params: vec![], ..holon_core::interface_of("random").unwrap() }).unwrap();
+    let two_sources = Unit { body: UnitBody::Composite { children: vec![clock, random], edges: vec![e(0, 0, BOUNDARY, 0), e(1, 0, BOUNDARY, 0)] }, params: vec![], inputs: vec![], outputs: out(Type::Number) };
+    let not = store.put(&holon_core::interface_of("not").unwrap()).unwrap();
+    let and = store.put(&holon_core::interface_of("and").unwrap()).unwrap();
+    let cycle = Unit { body: UnitBody::Composite { children: vec![not, and], edges: vec![e(0, 0, 1, 0), e(1, 0, 0, 0), e(1, 0, BOUNDARY, 0)] }, params: vec![], inputs: vec![], outputs: out(Type::Boolean) };
+    for (bad, says) in [(no_such_port, "has no such output"), (two_sources, "more than one source"), (cycle, "contains a cycle")] {
+        let bad = store.put(&bad).unwrap();
+        // Refused whether it is the root or nested in one.
+        let wrapper = store.put(&Unit { body: UnitBody::Composite { children: vec![bad], edges: vec![] }, params: vec![], inputs: vec![], outputs: vec![] }).unwrap();
+        for root in [bad, wrapper] {
+            let Err(e) = closure(&state.store, root) else { panic!("{says}: a closure with a unit that doesn't validate is refused") };
+            assert!(matches!(&e, crate::units::Closure::Invalid(why) if why.contains(&to_hex(&bad)) && why.contains("doesn't validate") && why.contains(says)), "{e:?}");
+        }
+        let deployed = route(&state, &req("POST", "/deploy", serde_json::to_vec(&serde_json::json!({ "slug": "unwired", "unit": to_hex(&wrapper) })).unwrap()));
+        assert_eq!(deployed.status_code, 400);
+        assert!(String::from_utf8_lossy(&body_bytes(deployed)).contains("can't run"));
+    }
+    // The clock alone, its closure loaded from the store, and again from memory.
+    closure(&state.store, clock).unwrap();
+    closure(&state.store, clock).unwrap();
 }
 
 /// An action's answer names its own run's entry, however many runs of its deployment log at once
