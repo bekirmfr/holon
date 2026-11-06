@@ -49,14 +49,29 @@ pub(crate) fn entries(x: &Value) -> Option<Value> {
     }))
 }
 
-/// The first position whose item equals `x`, or `-1`.
-pub(crate) fn index_of(xs: &[Value], x: &Value) -> Value {
-    Value::Number(xs.iter().position(|y| y == x).map_or(-1.0, |k| k as f64))
+/// `xs.indexOf(x, from)`: the first position at or after relative `from` (0 when unwired) whose
+/// item equals `x`, or `-1`.
+pub(crate) fn index_of(xs: &[Value], x: &Value, from: Option<f64>) -> Value {
+    let k = from.map_or(0, |f| relative(f, xs.len()));
+    Value::Number(xs[k..].iter().position(|y| y == x).map_or(-1.0, |i| (k + i) as f64))
 }
 
-/// The last position whose item equals `x`, scanning from the end, or `-1`.
-pub(crate) fn last_index_of(xs: &[Value], x: &Value) -> Value {
-    Value::Number(xs.iter().rposition(|y| y == x).map_or(-1.0, |k| k as f64))
+/// `xs.includes(x, from)`: whether an item at or after relative `from` equals `x`.
+pub(crate) fn includes(xs: &[Value], x: &Value, from: Option<f64>) -> Value {
+    Value::Boolean(xs[from.map_or(0, |f| relative(f, xs.len()))..].contains(x))
+}
+
+/// `xs.lastIndexOf(x, from)`: the last position at or before `from` (from the end when negative;
+/// the last item when unwired) whose item equals `x`, scanning back, or `-1`.
+pub(crate) fn last_index_of(xs: &[Value], x: &Value, from: Option<f64>) -> Value {
+    let len = xs.len();
+    let end = match from.map(f64::trunc) {
+        None => len,
+        Some(n) if n >= len as f64 => len,
+        Some(n) if n >= 0.0 => n as usize + 1,
+        Some(n) => (len as f64 + n + 1.0).max(0.0) as usize,
+    };
+    Value::Number(xs[..end].iter().rposition(|y| y == x).map_or(-1.0, |k| k as f64))
 }
 
 /// The range `slice {mode: "end"}` keeps: from relative `start` up to relative `end` (the length

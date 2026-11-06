@@ -13,6 +13,9 @@ hmac = "0.12"
 libm = "0.2.16"
 sha2 = "0.10"
 smallvec = "1"
+# `normalize`'s tables (texts.rs). Pinned at 0.1.26 in Cargo.lock; a new version can treat a
+# character assigned in a later Unicode version differently.
+unicode-normalization = "0.1.26"
 
 [features]
 # The eager evaluator, for differential tests in other crates.
@@ -21,7 +24,7 @@ eager-oracle = []
 [dev-dependencies]
 criterion = "0.5"
 # Tests assemble tiny modules from text (docs/L4s/wasm-module-L4.md §7); never a dependency of
-# core itself, whose purity-by-dependency argument keeps it to its five.
+# core itself, whose purity-by-dependency argument keeps it to its six.
 wat = "1"
 
 [[bench]]

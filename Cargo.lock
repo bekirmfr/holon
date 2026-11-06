@@ -1594,6 +1594,7 @@ dependencies = [
  "libm",
  "sha2 0.10.9",
  "smallvec",
+ "unicode-normalization",
  "wat",
 ]
 

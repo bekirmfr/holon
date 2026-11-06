@@ -50,6 +50,7 @@ mod numbers;
 mod resolve;
 mod simulate;
 pub mod taint;
+mod texts;
 mod triggers;
 mod validate;
 mod value;

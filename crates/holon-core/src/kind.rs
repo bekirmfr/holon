@@ -284,6 +284,8 @@ pub fn capabilities_of(name: &str, params: &[Param]) -> Option<Capabilities> {
         | "compare" | "and" | "or" | "not" | "select"
         | "math" | "max" | "min" | "aggregate" | "atan2" | "power" | "remainder" | "bitwise" | "number_test" | "to_number" | "number_format"
         | "concat" | "uppercase" | "lowercase" | "text_length" | "slice" | "index_of" | "split"
+        | "text_at" | "code_at" | "from_codes" | "text_contains" | "trim" | "pad" | "repeat" | "replace" | "normalize"
+        | "uri_encode" | "uri_decode" | "is_well_formed"
         | "list" | "get" | "append" | "extend" | "length" | "sum" | "join" | "range"
         | "at" | "indices" | "entries" | "includes" | "last_index_of" | "reverse" | "to_spliced" | "with_item" | "fill" | "copy_within" | "sort" | "flat" | "is_list" | "unique"
         | "any" | "all" | "filter" | "find" | "find_index" | "find_last" | "find_last_index" | "sort_by"
@@ -830,7 +832,8 @@ mod tests {
             "const", "add", "multiply",
             "subtract", "divide", "compare", "and", "or", "not", "select",
             "math", "max", "min", "aggregate", "atan2", "power", "remainder", "bitwise", "number_test", "to_number", "number_format",
-            "concat", "uppercase", "lowercase", "text_length", "slice", "index_of",
+            "concat", "uppercase", "lowercase", "text_length", "slice", "index_of", "split",
+            "text_at", "code_at", "from_codes", "text_contains", "trim", "pad", "repeat", "replace", "normalize", "uri_encode", "uri_decode", "is_well_formed",
             "list", "get", "append", "length", "sum",
             "at", "indices", "entries", "includes", "last_index_of", "reverse", "to_spliced", "with_item", "fill", "copy_within", "sort", "flat", "is_list", "unique",
             "any", "all", "filter", "find", "find_index", "find_last", "find_last_index", "sort_by",

@@ -13,7 +13,7 @@
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 
-use crate::{dates, lists, records};
+use crate::{dates, lists, records, texts};
 use crate::{Param, Value};
 
 /// Dispatch a primitive by name to its native computation. Evaluate primitive `name` on its present inputs: none for a name that isn't one, or a driver
@@ -87,6 +87,18 @@ ops! {
     "slice" => Slice,
     "split" => Split,
     "index_of" => IndexOf,
+    "text_at" => TextAt,
+    "code_at" => CodeAt,
+    "from_codes" => FromCodes,
+    "text_contains" => TextContains,
+    "trim" => Trim,
+    "pad" => Pad,
+    "repeat" => Repeat,
+    "replace" => Replace,
+    "normalize" => Normalize,
+    "uri_encode" => UriEncode,
+    "uri_decode" => UriDecode,
+    "is_well_formed" => IsWellFormed,
     "list" => List,
     "get" => Get,
     "append" => Append,
@@ -208,19 +220,37 @@ pub(crate) fn compute_op(op: Op, name: &str, inputs: &[&Value], params: &[Param]
 
         // ── arithmetic ── A sum starts from `-0`, the one number adding which changes nothing
         // (`-0 + -0` is `-0`; from `+0` it was `+0`). A result past the largest number is no
-        // number Holon has (`const` refuses one, as `json_parse` does `1e999`): nothing.
-        Op::Add => fold_numbers(inputs, -0.0, |a, b| a + b).filter(finite),
+        // number Holon has (`const` refuses one, as `json_parse` does `1e999`): nothing. `add` is
+        // JavaScript's `+`: with a text among its operands, it joins them (texts.rs).
+        Op::Add => match fold_numbers(inputs, -0.0, |a, b| a + b) {
+            Some(sum) => Some(sum).filter(finite),
+            None => texts::plus(inputs),
+        },
         Op::Multiply => fold_numbers(inputs, 1.0, |a, b| a * b).filter(finite),
         Op::Subtract => bin_numbers(inputs).map(|(a, b)| Value::Number(a - b)).filter(finite),
         Op::Divide => bin_numbers(inputs)
             .and_then(|(a, b)| if b == 0.0 { None } else { Some(Value::Number(a / b)) })
             .filter(finite),
 
-        // ── comparison (op param) ──
-        Op::Compare => {
-            let (a, b) = bin_numbers(inputs)?;
-            compare(a, b, param(params, "op")?).map(Value::Boolean)
-        }
+        // ── comparison (op param): two numbers, or two texts in code-unit order ──
+        Op::Compare => match inputs {
+            [Value::Text(a), Value::Text(b)] => {
+                let o = texts::order(a, b);
+                Some(Value::Boolean(match param(params, "op")? {
+                    "<" => o.is_lt(),
+                    ">" => o.is_gt(),
+                    "<=" => o.is_le(),
+                    ">=" => o.is_ge(),
+                    "=" => o.is_eq(),
+                    "!=" => o.is_ne(),
+                    _ => return None,
+                }))
+            }
+            _ => {
+                let (a, b) = bin_numbers(inputs)?;
+                compare(a, b, param(params, "op")?).map(Value::Boolean)
+            }
+        },
 
         // ── numbers (numbers.rs): JavaScript's Math, Number and numeric operators, each family's
         // function a frozen param (catalog `FAMILIES`) ──
@@ -291,8 +321,8 @@ pub(crate) fn compute_op(op: Op, name: &str, inputs: &[&Value], params: &[Param]
             Some(Value::Text(as_text(v)?.to_uppercase()))
         }
         // ── text irreducibles (§13): `Text` stays opaque; these touch the encoding, so they
-        // are native. Char-based throughout (Unicode scalar values), so length/slice/index
-        // agree. Casing uses Unicode **default** (locale-independent) mapping — Rust's
+        // are native. Positions and lengths count UTF-16 code units throughout, as JavaScript
+        // does (texts.rs). Casing uses Unicode **default** (locale-independent) mapping — Rust's
         // to_uppercase/to_lowercase — so it can never vary by locale and poison a hash (I2). ──
         Op::Lowercase => {
             let [v] = inputs else { return None };
@@ -300,7 +330,7 @@ pub(crate) fn compute_op(op: Op, name: &str, inputs: &[&Value], params: &[Param]
         }
         Op::TextLength => {
             let [v] = inputs else { return None };
-            Some(Value::Number(as_text(v)?.chars().count() as f64))
+            Some(Value::Number(texts::units(as_text(v)?) as f64))
         }
 
         // ── universal (any → text): the one primitive that accepts every value kind, not a
@@ -408,44 +438,76 @@ pub(crate) fn compute_op(op: Op, name: &str, inputs: &[&Value], params: &[Param]
 
         // Part of a text or a list, by `mode`: `"length"` reads `end` as how many (both whole and
         // not negative, cut short at the end), `"end"` as a relative position, the length when
-        // unwired (`xs.slice(s, e)`). A text in `"end"` mode gives nothing until texts count
-        // UTF-16 code units.
-        Op::Slice => match (param(params, "mode")?, inputs) {
-            (_, [Value::List(xs), rest @ ..]) => Some(Value::List(xs[list_slice(params, xs.len(), rest)?].to_vec())),
-            ("length", [Value::Text(s), start, len]) => {
-                let (start, len) = (as_index(start)?, as_index(len)?);
-                // start past the end ⇒ empty; len past the end ⇒ truncated. Total for valid types.
-                // The chars from `start`, `len` of them: found by where they begin in the text, and
-                // copied at once rather than char by char.
-                let rest = &s[s.char_indices().nth(start).map_or(s.len(), |(b, _)| b)..];
-                let piece = &rest[..rest.char_indices().nth(len).map_or(rest.len(), |(b, _)| b)];
-                Some(Value::Text(piece.to_string()))
-            }
+        // unwired (`xs.slice(s, e)`), and `"substring"` (a text's: `s.substring(a, b)`) as a
+        // position clamped to the text, the two swapped when `end` is before `start`.
+        Op::Slice => match inputs {
+            [Value::List(xs), rest @ ..] => Some(Value::List(xs[list_slice(params, xs.len(), rest)?].to_vec())),
+            [Value::Text(s), start, end @ ..] if end.len() < 2 => texts::slice(param(params, "mode")?, s, start, end.first().copied()),
             _ => None,
         },
         // The pieces of `text` between each occurrence of `sep`, in order: `join`'s inverse, so
-        // `join(split(t, s), s) == t`. Text without `sep` is one piece (the empty text too);
-        // an empty `sep` has no pieces to cut, and is absent.
-        Op::Split => {
-            let [Value::Text(text), Value::Text(sep)] = inputs else { return None };
-            if sep.is_empty() {
-                return None;
-            }
-            Some(Value::List(text.split(sep.as_str()).map(|s| Value::Text(s.to_string())).collect()))
-        }
-        // On a list, the first position whose item `equals` the needle; on a text, the char index
-        // of the first match. Either way -1 when there is none (not-found is a normal answer, not a
-        // None-propagating failure).
+        // `join(split(t, s), s) == t`. Text without `sep` is one piece (the empty text too); an
+        // empty `sep` cuts every code unit. `limit`, when wired, keeps that many pieces.
+        Op::Split => match inputs {
+            [Value::Text(text), Value::Text(sep), limit @ ..] if limit.len() < 2 => texts::split(text, sep, optional_number(limit.first().copied())?),
+            _ => None,
+        },
+        // On a list, the first position at or after `from` whose item `equals` the needle; on a
+        // text, the code-unit index of the first match at or after it. Either way -1 when there
+        // is none (not-found is a normal answer, not a None-propagating failure).
         Op::IndexOf => match inputs {
-            [Value::List(xs), x] => Some(lists::index_of(xs, x)),
-            [Value::Text(h), Value::Text(n)] => {
-                // `find` is byte-based, so re-count chars before it.
-                let idx = match h.find(n.as_str()) {
-                    Some(b) => h[..b].chars().count() as f64,
-                    None => -1.0,
-                };
-                Some(Value::Number(idx))
-            }
+            [Value::List(xs), x, from @ ..] if from.len() < 2 => Some(lists::index_of(xs, x, optional_number(from.first().copied())?)),
+            [Value::Text(h), Value::Text(n), from @ ..] if from.len() < 2 => Some(texts::index_of(h, n, optional_number(from.first().copied())?)),
+            _ => None,
+        },
+
+        // ── JavaScript's string methods (texts.rs), each family's choice a frozen param ──
+        Op::TextAt => match inputs {
+            [Value::Text(s), i] => texts::char_at(s, as_number(i)?),
+            _ => None,
+        },
+        Op::CodeAt => match inputs {
+            [Value::Text(s), i] => texts::code_at(param(params, "mode")?, s, as_number(i)?),
+            _ => None,
+        },
+        Op::FromCodes => texts::from_codes(param(params, "mode")?, inputs),
+        Op::TextContains => match inputs {
+            [Value::Text(s), Value::Text(t), position @ ..] if position.len() < 2 => texts::contains(param(params, "at")?, s, t, optional_number(position.first().copied())?),
+            _ => None,
+        },
+        Op::Trim => match inputs {
+            [Value::Text(s)] => texts::trim(param(params, "side")?, s).map(|t| Value::Text(t.to_string())),
+            _ => None,
+        },
+        // The fill is a space when unwired.
+        Op::Pad => match inputs {
+            [Value::Text(s), length] => texts::pad(param(params, "side")?, s, as_number(length)?, " "),
+            [Value::Text(s), length, Value::Text(fill)] => texts::pad(param(params, "side")?, s, as_number(length)?, fill),
+            _ => None,
+        },
+        Op::Repeat => match inputs {
+            [Value::Text(s), count] => texts::repeat(s, as_number(count)?),
+            _ => None,
+        },
+        Op::Replace => match inputs {
+            [Value::Text(s), Value::Text(a), Value::Text(b)] => texts::replace(param(params, "count")?, s, a, b),
+            _ => None,
+        },
+        Op::Normalize => match inputs {
+            [Value::Text(s)] => texts::normalize(param(params, "form")?, s),
+            _ => None,
+        },
+        Op::UriEncode => match inputs {
+            [Value::Text(s)] => texts::uri_encode(param(params, "set")?, s),
+            _ => None,
+        },
+        Op::UriDecode => match inputs {
+            [Value::Text(s)] => texts::uri_decode(param(params, "set")?, s),
+            _ => None,
+        },
+        // A Holon text can't hold a lone surrogate, so every text is well formed.
+        Op::IsWellFormed => match inputs {
+            [Value::Text(_)] => Some(Value::Boolean(true)),
             _ => None,
         },
 
@@ -547,9 +609,10 @@ pub(crate) fn compute_op(op: Op, name: &str, inputs: &[&Value], params: &[Param]
         // only the declared TYPE differs (Product([A,B]) vs List<T>), and the recursive checker keeps
         // them apart. So Dictionary<K,V> is List<Pair<K,V>>, expressible with no new value kind. ──
         // ── lists (lists.rs): JavaScript's array methods. `at`, `includes` and `last_index_of`
-        // take a text too, and give nothing for one until texts count UTF-16 code units. ──
+        // take a text too (texts.rs), and the searches a position to search from. ──
         Op::At => match inputs {
             [Value::List(xs), i] => xs.get(lists::position(as_number(i)?, xs.len())?).cloned(),
+            [Value::Text(s), i] => texts::at(s, as_number(i)?),
             _ => None,
         },
         Op::Indices => {
@@ -561,11 +624,13 @@ pub(crate) fn compute_op(op: Op, name: &str, inputs: &[&Value], params: &[Param]
             lists::entries(x)
         }
         Op::Includes => match inputs {
-            [Value::List(xs), x] => Some(Value::Boolean(xs.contains(x))),
+            [Value::List(xs), x, from @ ..] if from.len() < 2 => Some(lists::includes(xs, x, optional_number(from.first().copied())?)),
+            [Value::Text(s), Value::Text(t), from @ ..] if from.len() < 2 => Some(texts::includes(s, t, optional_number(from.first().copied())?)),
             _ => None,
         },
         Op::LastIndexOf => match inputs {
-            [Value::List(xs), x] => Some(lists::last_index_of(xs, x)),
+            [Value::List(xs), x, from @ ..] if from.len() < 2 => Some(lists::last_index_of(xs, x, optional_number(from.first().copied())?)),
+            [Value::Text(s), Value::Text(t), from @ ..] if from.len() < 2 => Some(texts::last_index_of(s, t, optional_number(from.first().copied())?)),
             _ => None,
         },
         Op::Reverse => {
@@ -756,14 +821,18 @@ pub(crate) fn compute_op(op: Op, name: &str, inputs: &[&Value], params: &[Param]
                 _ => None,
             }
         }
-        // `standard` encodes padded, `url` unpadded; either decodes with or without padding.
+        // `standard` encodes padded, `url` unpadded; either decodes with or without padding. The
+        // bytes are the text's UTF-8, or (`latin1`, `btoa` and `atob`'s, the standard alphabet
+        // only) each character one byte.
         Op::Base64 => {
             let [Value::Text(s)] = inputs else { return None };
             let name = param(params, "alphabet")?;
             let alphabet = crate::crypto::alphabet(name)?;
-            match param(params, "mode")? {
-                "encode" => Some(Value::Text(crate::crypto::base64_encode(s.as_bytes(), alphabet, name == "standard"))),
-                "decode" => String::from_utf8(crate::crypto::base64_decode(s, alphabet)?).ok().map(Value::Text),
+            match (param(params, "bytes")?, param(params, "mode")?) {
+                ("utf8", "encode") => Some(Value::Text(crate::crypto::base64_encode(s.as_bytes(), alphabet, name == "standard"))),
+                ("utf8", "decode") => String::from_utf8(crate::crypto::base64_decode(s, alphabet)?).ok().map(Value::Text),
+                ("latin1", "encode") if name == "standard" => texts::latin1_base64(s).map(Value::Text),
+                ("latin1", "decode") if name == "standard" => texts::base64_latin1(s).map(Value::Text),
                 _ => None,
             }
         }
@@ -1425,8 +1494,8 @@ pub(crate) fn resume_token_request(params: &[Param]) -> Option<Value> {
 
 /// Whether leaf `name` has optional input ports, read as "none" when left unwired: a request's
 /// headers and body, a listing's prefix and after, a `to_number`'s radix, a `number_format`'s
-/// digits, a list `slice`'s end, `to_spliced`'s count and items, `fill`'s and `copy_within`'s
-/// start and end. Inside a composite, such a port that *is* wired holds the node back while its value is
+/// digits, a `slice`'s end, `to_spliced`'s count and items, `fill`'s and `copy_within`'s start and
+/// end, the position a search starts from, a `split`'s limit and a `pad`'s fill. Inside a composite, such a port that *is* wired holds the node back while its value is
 /// absent (eval.rs), like any other leaf's input.
 pub(crate) fn has_optional_ports(name: &str) -> bool {
     matches!(
@@ -1445,6 +1514,12 @@ pub(crate) fn has_optional_ports(name: &str) -> bool {
             | "to_spliced"
             | "fill"
             | "copy_within"
+            | "index_of"
+            | "includes"
+            | "last_index_of"
+            | "text_contains"
+            | "split"
+            | "pad"
     )
 }
 
@@ -1892,7 +1967,7 @@ mod tests {
         assert_eq!(compute("split", &[&txt("a::b"), &txt("::")], &[]), texts(&["a", "b"]));
         assert_eq!(compute("split", &[&txt("abc"), &txt(",")], &[]), texts(&["abc"]));
         assert_eq!(compute("split", &[&txt(""), &txt(",")], &[]), texts(&[""]));
-        assert_eq!(compute("split", &[&txt("abc"), &txt("")], &[]), None, "an empty separator");
+        assert_eq!(compute("split", &[&txt("abc"), &txt("")], &[]), texts(&["a", "b", "c"]), "an empty separator cuts every unit");
         assert_eq!(compute("split", &[&txt("abc"), &num(1.0)], &[]), None);
         let pieces = compute("split", &[&txt("x, y,,z"), &txt(", ")], &[]).unwrap();
         assert_eq!(compute("join", &[&pieces, &txt(", ")], &[]), Some(txt("x, y,,z")));
@@ -1914,7 +1989,7 @@ mod tests {
         assert_eq!(compute("sha256", &[&txt("abc")], &[p("encoding", "binary")]), None);
         assert_eq!(compute("sha256", &[&num(1.0)], &[p("encoding", "hex")]), None);
 
-        let b64 = |mode: &str, alphabet: &str| vec![p("mode", mode), p("alphabet", alphabet)];
+        let b64 = |mode: &str, alphabet: &str| vec![p("mode", mode), p("alphabet", alphabet), p("bytes", "utf8")];
         assert_eq!(compute("base64", &[&txt("foob")], &b64("encode", "standard")), Some(txt("Zm9vYg==")));
         assert_eq!(compute("base64", &[&txt("foob")], &b64("encode", "url")), Some(txt("Zm9vYg")));
         assert_eq!(compute("base64", &[&txt("w7xuw68=")], &b64("decode", "standard")), Some(txt("ünï")));
@@ -1967,8 +2042,8 @@ mod tests {
                 ("[[1, 2, 3], 1.5]", Some("2")),
                 ("[[1, 2, 3], -1.5]", Some("3")),
                 ("[[1, 2, 3], 4294967296]", None),
-                // A text gives nothing until texts count UTF-16 code units.
-                ("[\"abc\", 0]", None),
+                // A text's code unit (texts.rs has the rest).
+                ("[\"abc\", 0]", Some("\"a\"")),
                 ("[{\"a\": 1}, 0]", None),
             ],
         );
@@ -2021,10 +2096,28 @@ mod tests {
             assert_eq!(compute("index_of", &[&xs, &x], &[]), Some(num(at)));
             assert_eq!(compute("last_index_of", &[&xs, &x], &[]), Some(num(at)));
         }
-        // A text: index_of as before, the others nothing until texts count UTF-16 code units.
+        // From a position: relative, as JavaScript's array methods read it.
+        // (inputs, includes, indexOf, lastIndexOf)
+        let from = [
+            ("[[1, 2, 1, 2], 1, 1]", "true", "2", "0"),
+            ("[[1, 2, 1, 2], 1, -2]", "true", "2", "2"),
+            ("[[1, 2, 1, 2], 2, -1]", "true", "3", "3"),
+            ("[[1, 2, 1, 2], 1, 9]", "false", "-1", "2"),
+            ("[[1, 2, 1, 2], 1, -9]", "true", "0", "-1"),
+            ("[[1, 2, 1, 2], 2, 0]", "true", "1", "-1"),
+            ("[[], 1, 0]", "false", "-1", "-1"),
+            ("[[1, 2], 2, 1.5]", "true", "1", "1"),
+        ];
+        for (inputs, has, first, last) in from {
+            gives("includes", &[], &[(inputs, Some(has))]);
+            gives("index_of", &[], &[(inputs, Some(first))]);
+            gives("last_index_of", &[], &[(inputs, Some(last))]);
+        }
+        gives("index_of", &[], &[("[[1], 1, \"0\"]", None)]);
+        // A text: by code units (texts.rs has the rest).
         gives("index_of", &[], &[("[\"abc\", \"c\"]", Some("2")), ("[\"abc\", 1]", None)]);
-        gives("includes", &[], &[("[\"abc\", \"b\"]", None)]);
-        gives("last_index_of", &[], &[("[\"abc\", \"b\"]", None)]);
+        gives("includes", &[], &[("[\"abc\", \"b\"]", Some("true"))]);
+        gives("last_index_of", &[], &[("[\"abc\", \"b\"]", Some("1"))]);
     }
 
     #[test]
@@ -2049,8 +2142,8 @@ mod tests {
                 ("[[1, 2, 3], 1]", Some("[2, 3]")),
                 ("[[1, 2, 3], -1]", Some("[3]")),
                 ("[[1, 2, 3], \"1\"]", None),
-                // A text gives nothing in this mode until texts count UTF-16 code units.
-                ("[\"abc\", 0, 1]", None),
+                // A text, by code units (texts.rs has the rest).
+                ("[\"abc\", 0, 1]", Some("\"a\"")),
             ],
         );
         let length = [p("mode", "length")];
@@ -2267,22 +2360,25 @@ mod tests {
     #[test]
     fn text_irreducibles() {
         assert_eq!(compute("lowercase", &[&txt("AbC")], &[]), Some(txt("abc")));
-        // char-based (Unicode scalar values), not byte-based: "ab\u{00e7}" is 3 chars / 4 bytes.
+        // UTF-16 code units, not bytes: "ab\u{00e7}" is 3 units / 4 bytes, "a\u{1f600}" 3 units.
         assert_eq!(compute("text_length", &[&txt("ab\u{00e7}")], &[]), Some(num(3.0)));
+        assert_eq!(compute("text_length", &[&txt("a\u{1f600}")], &[]), Some(num(3.0)));
         let length = [p("mode", "length")];
         assert_eq!(compute("slice", &[&txt("hello"), &num(1.0), &num(3.0)], &length), Some(txt("ell")));
         // start past the end ⇒ empty (total, never None for valid types).
         assert_eq!(compute("slice", &[&txt("hi"), &num(5.0), &num(2.0)], &length), Some(txt("")));
         assert_eq!(compute("index_of", &[&txt("hello"), &txt("ll")], &[]), Some(num(2.0)));
         assert_eq!(compute("index_of", &[&txt("hello"), &txt("z")], &[]), Some(num(-1.0)));
-        // `slice` finds where its chars begin and copies them at once: the chars `start..start +
-        // len` exactly, as taking them one by one gives, in texts of one-, two-, three- and
-        // four-byte chars, wherever the bounds fall.
+        // `slice` finds where its units begin and copies them at once: the code units `start..start
+        // + len` exactly, as taking them one by one gives, in texts of one-, two-, three- and
+        // four-byte chars, wherever the bounds fall; nothing where a bound cuts a pair.
         for s in ["", "hello", "ab\u{00e7}d", "\u{00e7}\u{20ac}x\u{1f600}y", "\u{1f600}\u{1f600}"] {
+            let units: Vec<u16> = s.encode_utf16().collect();
             for start in 0..7 {
                 for len in 0..7 {
-                    let one_by_one: String = s.chars().skip(start).take(len).collect();
-                    assert_eq!(compute("slice", &[&txt(s), &num(start as f64), &num(len as f64)], &length), Some(txt(&one_by_one)), "{s:?} {start} {len}");
+                    let (from, to) = (start.min(units.len()), (start + len).min(units.len()));
+                    let one_by_one = String::from_utf16(&units[from..to]).ok().map(|t| txt(&t));
+                    assert_eq!(compute("slice", &[&txt(s), &num(start as f64), &num(len as f64)], &length), one_by_one, "{s:?} {start} {len}");
                 }
             }
         }
@@ -2691,7 +2787,7 @@ mod tests {
     #[test]
     fn runtime_type_mismatch_is_none() {
         // An `any` port could feed a wrong runtime type; compute guards it.
-        assert_eq!(compute("add", &[&num(1.0), &txt("x")], &[]), None);
+        assert_eq!(compute("add", &[&num(1.0), &boo(true)], &[]), None);
         assert_eq!(compute("not", &[&num(1.0)], &[]), None);
         assert_eq!(compute("sum", &[&list(vec![num(1.0), txt("x")])], &[]), None);
     }

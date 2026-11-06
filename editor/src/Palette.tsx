@@ -48,7 +48,10 @@ const CATALOG_GROUPS: readonly { name: string; items: ReadonlySet<string> }[] = 
   },
   {
     name: "text",
-    items: new Set(["concat", "uppercase", "lowercase", "text_length", "slice", "index_of", "split"]),
+    items: new Set([
+      "concat", "uppercase", "lowercase", "text_length", "slice", "index_of", "split",
+      "text_at", "code_at", "from_codes", "text_contains", "trim", "pad", "repeat", "replace", "normalize", "uri_encode", "uri_decode", "is_well_formed",
+    ]),
   },
   {
     name: "list",

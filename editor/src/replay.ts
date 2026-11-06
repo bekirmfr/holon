@@ -700,8 +700,29 @@ function whyNothing(node: ReplayNode, trace: NodeTrace): string {
     case "find_last":
       return "its function answered true for no item";
     case "at":
+      return "no item at that index, or half of an emoji in a text";
     case "with_item":
       return "no item at that index";
+    case "slice":
+      return "a position it can't use, or the piece would cut an emoji in half";
+    case "text_at":
+      return "that index is half of an emoji";
+    case "code_at":
+      return "no character at that index";
+    case "from_codes":
+      return "a number isn't a character's, or half of an emoji is left alone";
+    case "split":
+      return "an empty separator can't cut a text with an emoji";
+    case "pad":
+      return "the fill would be cut through an emoji, or the text would be too long";
+    case "repeat":
+      return "the count is negative, or the text would be too long";
+    case "replace":
+      return "the result would cut an emoji in half, or be too long";
+    case "uri_decode":
+      return "an escape isn't %XX, or isn't valid UTF-8";
+    case "base64":
+      return "its text isn't base64, or a character is past U+00FF (latin1)";
     case "get":
       return "no item at that index";
     case "head":

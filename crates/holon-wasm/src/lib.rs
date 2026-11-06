@@ -1595,14 +1595,14 @@ fn check_primitive_catalog() {
     let cat = catalog_wunits();
     // Every leaf core has crosses the mirror intact, however many that is.
     assert_eq!(cat.len(), genesis_units().len());
-    // A known interface survives core→WUnit: add = (a:Number, b:Number) -> Number.
-    let add = cat
+    // A known interface survives core→WUnit: subtract = (a:Number, b:Number) -> Number.
+    let subtract = cat
         .iter()
-        .find(|w| matches!(&w.body, WBody::Primitive { name } if name == "add"))
-        .expect("add in catalog");
-    assert_eq!(add.inputs.len(), 2);
-    assert!(add.inputs.iter().all(|p| p.ty == WType::Number));
-    assert_eq!(add.outputs[0].ty, WType::Number);
+        .find(|w| matches!(&w.body, WBody::Primitive { name } if name == "subtract"))
+        .expect("subtract in catalog");
+    assert_eq!(subtract.inputs.len(), 2);
+    assert!(subtract.inputs.iter().all(|p| p.ty == WType::Number));
+    assert_eq!(subtract.outputs[0].ty, WType::Number);
     // A higher-order leaf keeps its function param: map carries an open `fn`.
     let map = cat
         .iter()
@@ -1620,15 +1620,15 @@ fn check_variadic_primitives() {
     assert_eq!(
         sorted,
         vec![
-            "add", "all", "and", "any", "concat", "date_set", "date_utc", "filter", "find", "find_index", "find_last", "find_last_index", "fold", "group_by", "json_parse",
-            "json_stringify", "list", "map", "max", "merge", "min", "multiply", "or", "sort_by"
+            "add", "all", "and", "any", "concat", "date_set", "date_utc", "filter", "find", "find_index", "find_last", "find_last_index", "fold", "from_codes", "group_by",
+            "json_parse", "json_stringify", "list", "map", "max", "merge", "min", "multiply", "or", "sort_by"
         ]
     );
     // A higher-order leaf's extra inputs are passed to its function: any type, not more of one port.
     let mut extra = passes_extra_primitives();
     extra.sort();
     assert_eq!(extra, vec!["all", "any", "filter", "find", "find_index", "find_last", "find_last_index", "fold", "group_by", "json_parse", "json_stringify", "map", "sort_by"]);
-    // subtract shares add's catalog interface line but must NOT be offered as growable — it's
+    // subtract is two-input like add but must NOT be offered as growable — it's
     // not associative, core gives it no N-ary meaning.
     assert!(!names.contains(&"subtract".to_string()));
 }

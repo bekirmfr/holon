@@ -13,7 +13,7 @@ last record (see [Calls](reference.md#calls)). Many are written another way (`a 
 
 These touch nothing outside: given the same inputs, they always give the same output.
 
-[`const`](#const) · [`add`](#add) · [`multiply`](#multiply) · [`subtract`](#subtract) · [`divide`](#divide) · [`compare`](#compare) · [`and`](#and) · [`or`](#or) · [`not`](#not) · [`select`](#select) · [`cons`](#cons) · [`head`](#head) · [`tail`](#tail) · [`is_empty`](#is_empty) · [`fold`](#fold) · [`map`](#map) · [`math`](#math) · [`max`](#max) · [`min`](#min) · [`aggregate`](#aggregate) · [`atan2`](#atan2) · [`power`](#power) · [`remainder`](#remainder) · [`bitwise`](#bitwise) · [`number_test`](#number_test) · [`to_number`](#to_number) · [`number_format`](#number_format) · [`concat`](#concat) · [`uppercase`](#uppercase) · [`lowercase`](#lowercase) · [`text_length`](#text_length) · [`slice`](#slice) · [`index_of`](#index_of) · [`split`](#split) · [`list`](#list) · [`get`](#get) · [`append`](#append) · [`extend`](#extend) · [`length`](#length) · [`sum`](#sum) · [`join`](#join) · [`at`](#at) · [`indices`](#indices) · [`entries`](#entries) · [`any`](#any) · [`all`](#all) · [`filter`](#filter) · [`find`](#find) · [`find_index`](#find_index) · [`find_last`](#find_last) · [`find_last_index`](#find_last_index) · [`sort_by`](#sort_by) · [`includes`](#includes) · [`last_index_of`](#last_index_of) · [`reverse`](#reverse) · [`to_spliced`](#to_spliced) · [`with_item`](#with_item) · [`fill`](#fill) · [`copy_within`](#copy_within) · [`sort`](#sort) · [`flat`](#flat) · [`is_list`](#is_list) · [`unique`](#unique) · [`range`](#range) · [`pair`](#pair) · [`some`](#some) · [`none`](#none) · [`record`](#record) · [`field`](#field) · [`with_field`](#with_field) · [`without_field`](#without_field) · [`keys`](#keys) · [`lookup`](#lookup) · [`insert`](#insert) · [`remove`](#remove) · [`values`](#values) · [`from_entries`](#from_entries) · [`merge`](#merge) · [`has`](#has) · [`group_by`](#group_by) · [`same_value`](#same_value) · [`type_of`](#type_of) · [`json_parse`](#json_parse) · [`json_stringify`](#json_stringify) · [`date_part`](#date_part) · [`date_utc`](#date_utc) · [`date_set`](#date_set) · [`date_text`](#date_text) · [`date_parse`](#date_parse) · [`sha256`](#sha256) · [`hmac_sha256`](#hmac_sha256) · [`hex`](#hex) · [`base64`](#base64) · [`secure_equals`](#secure_equals) · [`to_text`](#to_text) · [`as_text`](#as_text) · [`is_truthy`](#is_truthy) · [`guard`](#guard) · [`default`](#default) · [`coalesce`](#coalesce) · [`equals`](#equals)
+[`const`](#const) · [`add`](#add) · [`multiply`](#multiply) · [`subtract`](#subtract) · [`divide`](#divide) · [`compare`](#compare) · [`and`](#and) · [`or`](#or) · [`not`](#not) · [`select`](#select) · [`cons`](#cons) · [`head`](#head) · [`tail`](#tail) · [`is_empty`](#is_empty) · [`fold`](#fold) · [`map`](#map) · [`math`](#math) · [`max`](#max) · [`min`](#min) · [`aggregate`](#aggregate) · [`atan2`](#atan2) · [`power`](#power) · [`remainder`](#remainder) · [`bitwise`](#bitwise) · [`number_test`](#number_test) · [`to_number`](#to_number) · [`number_format`](#number_format) · [`concat`](#concat) · [`uppercase`](#uppercase) · [`lowercase`](#lowercase) · [`text_length`](#text_length) · [`slice`](#slice) · [`index_of`](#index_of) · [`split`](#split) · [`text_at`](#text_at) · [`code_at`](#code_at) · [`from_codes`](#from_codes) · [`text_contains`](#text_contains) · [`trim`](#trim) · [`pad`](#pad) · [`repeat`](#repeat) · [`replace`](#replace) · [`normalize`](#normalize) · [`uri_encode`](#uri_encode) · [`uri_decode`](#uri_decode) · [`is_well_formed`](#is_well_formed) · [`list`](#list) · [`get`](#get) · [`append`](#append) · [`extend`](#extend) · [`length`](#length) · [`sum`](#sum) · [`join`](#join) · [`at`](#at) · [`indices`](#indices) · [`entries`](#entries) · [`any`](#any) · [`all`](#all) · [`filter`](#filter) · [`find`](#find) · [`find_index`](#find_index) · [`find_last`](#find_last) · [`find_last_index`](#find_last_index) · [`sort_by`](#sort_by) · [`includes`](#includes) · [`last_index_of`](#last_index_of) · [`reverse`](#reverse) · [`to_spliced`](#to_spliced) · [`with_item`](#with_item) · [`fill`](#fill) · [`copy_within`](#copy_within) · [`sort`](#sort) · [`flat`](#flat) · [`is_list`](#is_list) · [`unique`](#unique) · [`range`](#range) · [`pair`](#pair) · [`some`](#some) · [`none`](#none) · [`record`](#record) · [`field`](#field) · [`with_field`](#with_field) · [`without_field`](#without_field) · [`keys`](#keys) · [`lookup`](#lookup) · [`insert`](#insert) · [`remove`](#remove) · [`values`](#values) · [`from_entries`](#from_entries) · [`merge`](#merge) · [`has`](#has) · [`group_by`](#group_by) · [`same_value`](#same_value) · [`type_of`](#type_of) · [`json_parse`](#json_parse) · [`json_stringify`](#json_stringify) · [`date_part`](#date_part) · [`date_utc`](#date_utc) · [`date_set`](#date_set) · [`date_text`](#date_text) · [`date_parse`](#date_parse) · [`sha256`](#sha256) · [`hmac_sha256`](#hmac_sha256) · [`hex`](#hex) · [`base64`](#base64) · [`secure_equals`](#secure_equals) · [`to_text`](#to_text) · [`as_text`](#as_text) · [`is_truthy`](#is_truthy) · [`guard`](#guard) · [`default`](#default) · [`coalesce`](#coalesce) · [`equals`](#equals)
 
 ### `const`
 
@@ -26,10 +26,10 @@ A fixed value set on the node: a number, true or false, text, or JSON. The type 
 ### `add`
 
 ```
-add(a: Number, b: Number) -> out: Number
+add(a: Any, b: Any) -> out: Any
 ```
 
-Adds its numbers. Takes more inputs with +.
+Adds its numbers, as JavaScript's + does; with a text among them, joins them, writing a number or a boolean as text (1 + 2 + "a" is "3a"). Takes more inputs with +.
 
 ### `multiply`
 
@@ -58,10 +58,10 @@ Divides a by b: a ÷ b. Dividing by zero produces nothing.
 ### `compare`
 
 ```
-compare(a: Number, b: Number) -> out: Boolean  {op: =}
+compare(a: Any, b: Any) -> out: Boolean  {op: =}
 ```
 
-Compares two numbers with the chosen operator (=, !=, <, <=, >, >=): true or false.
+Compares two numbers, or two texts code unit by code unit as JavaScript does, with the chosen operator (=, !=, <, <=, >, >=): true or false.
 
 ### `and`
 
@@ -261,7 +261,7 @@ The text in lower case.
 text_length(s: Text) -> out: Number
 ```
 
-How many characters a text has.
+How long a text is in UTF-16 code units, as JavaScript's s.length counts: a character past U+FFFF, an emoji say, is two.
 
 ### `slice`
 
@@ -269,23 +269,119 @@ How many characters a text has.
 slice(value: Any, start: Number, end: Number) -> out: Any  {mode: length}
 ```
 
-Part of a text or a list, by mode. length: end characters or items from start (counting from 0). end: the items from start up to end, each counting from the end when negative, end the length when unwired (xs.slice(start, end)); a text in this mode produces nothing for now.
+Part of a text or a list, by mode, a text in UTF-16 code units. length: end units or items from start (counting from 0). end: from start up to end, each counting from the end when negative, end the length when unwired (s.slice(start, end)). substring: a text's, from start up to end, each clamped to the text, the two swapped when end comes first. Nothing when a piece would cut an emoji in half.
 
 ### `index_of`
 
 ```
-index_of(haystack: Any, needle: Any) -> out: Number
+index_of(haystack: Any, needle: Any, from: Number) -> out: Number
 ```
 
-Where needle first appears: in a list, the first item that equals it; in a text, counting characters from 0. −1 when it doesn't.
+Where needle first appears at or after from (0 when unwired): in a list, the first item that equals it, from counting from the end when negative; in a text, in UTF-16 code units. −1 when it doesn't.
 
 ### `split`
 
 ```
-split(text: Text, sep: Text) -> out: List<Text>
+split(text: Text, sep: Text, limit: Number) -> out: List<Text>
 ```
 
-Cuts a text at each sep into a list of pieces; join's inverse. An empty sep produces nothing.
+Cuts a text at each sep into a list of pieces; join's inverse. An empty sep cuts every UTF-16 code unit (nothing for a text with an emoji); limit, when wired, keeps that many pieces.
+
+### `text_at`
+
+```
+text_at(text: Text, index: Number) -> out: Text
+```
+
+The UTF-16 code unit of a text at index, as a text: s.charAt(i). The empty text past either end; nothing for half of an emoji.
+
+### `code_at`
+
+```
+code_at(text: Text, index: Number) -> out: Number  {mode: unit}
+```
+
+The number of a text's character at index: unit, the UTF-16 code unit (s.charCodeAt(i)); point, the code point an emoji begins there (s.codePointAt(i)). Nothing past either end.
+
+### `from_codes`
+
+```
+from_codes(a: Number) -> out: Text  {mode: unit}
+```
+
+A text made of character numbers: unit, UTF-16 code units (String.fromCharCode); point, code points (String.fromCodePoint). Takes more inputs with +. Nothing when a half of an emoji is left alone, or a number isn't a code point.
+
+### `text_contains`
+
+```
+text_contains(text: Text, part: Text, position: Number) -> out: Boolean  {at: start}
+```
+
+Whether part begins a text at position (start, s.startsWith(t, p)), or ends it there (end, s.endsWith(t, p)). Unwired, position is the start or the end.
+
+### `trim`
+
+```
+trim(text: Text) -> out: Text  {side: both}
+```
+
+A text without JavaScript's white space and line ends on one side or both: s.trim(), s.trimStart(), s.trimEnd().
+
+### `pad`
+
+```
+pad(text: Text, length: Number, fill: Text) -> out: Text  {side: start}
+```
+
+A text filled to length UTF-16 code units at its start or end with fill, a space when unwired: s.padStart(n, f), s.padEnd(n, f).
+
+### `repeat`
+
+```
+repeat(text: Text, count: Number) -> out: Text
+```
+
+A text count times over: s.repeat(k). Nothing for a negative count.
+
+### `replace`
+
+```
+replace(text: Text, pattern: Text, replacement: Text) -> out: Text  {count: first}
+```
+
+A text with the first match of pattern, or every match, replaced: s.replace(a, b), s.replaceAll(a, b). In the replacement, $& is the match, $` what comes before it, $' what comes after and $$ a $.
+
+### `normalize`
+
+```
+normalize(text: Text) -> out: Text  {form: NFC}
+```
+
+A text in a Unicode normalization form, NFC, NFD, NFKC or NFKD: s.normalize(form).
+
+### `uri_encode`
+
+```
+uri_encode(text: Text) -> out: Text  {set: component}
+```
+
+A text escaped for a URL: component (encodeURIComponent) escapes all but letters, digits and -_.!~*'(); uri (encodeURI) keeps ;/?:@&=+$,# too.
+
+### `uri_decode`
+
+```
+uri_decode(text: Text) -> out: Text  {set: component}
+```
+
+A text with its %XX escapes read back as UTF-8: decodeURIComponent, decodeURI (uri, which leaves ;/?:@&=+$,# escaped). Nothing for an escape that isn't valid.
+
+### `is_well_formed`
+
+```
+is_well_formed(value: Any) -> out: Boolean
+```
+
+True for a text, which is always well formed in Holon: s.isWellFormed(). Nothing for anything else.
 
 ### `list`
 
@@ -349,7 +445,7 @@ Joins a list of texts into one, with sep between each.
 at(value: Any, index: Number) -> out: Any
 ```
 
-The item of a list at index, counting from the end when it is negative (xs.at(-1) is the last); nothing out of range. A text produces nothing for now.
+The item of a list, or the UTF-16 code unit of a text, at index, counting from the end when it is negative (xs.at(-1) is the last); nothing out of range or for half of an emoji.
 
 ### `indices`
 
@@ -434,18 +530,18 @@ The items of a list in the order its function puts them: given two items a and b
 ### `includes`
 
 ```
-includes(haystack: Any, needle: Any) -> out: Boolean
+includes(haystack: Any, needle: Any, from: Number) -> out: Boolean
 ```
 
-Whether an item of a list equals needle (lists and records by what they hold). A text produces nothing for now.
+Whether an item of a list at or after from equals needle (lists and records by what they hold), or a text holds needle at or after from; from 0 when unwired.
 
 ### `last_index_of`
 
 ```
-last_index_of(haystack: Any, needle: Any) -> out: Number
+last_index_of(haystack: Any, needle: Any, from: Number) -> out: Number
 ```
 
-The position of the last item of a list that equals needle; −1 when none does. A text produces nothing for now.
+The position of the last item of a list that equals needle, or of needle in a text, at or before from (the end when unwired); −1 when there is none.
 
 ### `reverse`
 
@@ -754,10 +850,10 @@ Encodes text as hex, or decodes hex back to text.
 ### `base64`
 
 ```
-base64(text: Text) -> out: Text  {mode: encode, alphabet: standard}
+base64(text: Text) -> out: Text  {mode: encode, alphabet: standard, bytes: utf8}
 ```
 
-Encodes text as base64, or decodes it back; standard or URL-safe alphabet.
+Encodes text as base64, or decodes it back; standard or URL-safe alphabet. Its bytes are the text's UTF-8, or with latin1 each character one byte: btoa(s), atob(s).
 
 ### `secure_equals`
 

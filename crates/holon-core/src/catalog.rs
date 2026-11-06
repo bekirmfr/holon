@@ -25,8 +25,11 @@ pub const GENESIS: &[&str] = &[
     // of functions told apart by a frozen param (`FAMILIES`)
     "math", "max", "min", "aggregate", "atan2", "power", "remainder", "bitwise", "number_test", "to_number",
     "number_format",
-    // pure — text (7): `slice` and `index_of` take a list too, as JavaScript names them on both
+    // pure — text (19): JavaScript's string methods and the URI functions (texts.rs), counting
+    // UTF-16 code units; `slice` and `index_of` take a list too, as JavaScript names them on both
     "concat", "uppercase", "lowercase", "text_length", "slice", "index_of", "split",
+    "text_at", "code_at", "from_codes", "text_contains", "trim", "pad", "repeat", "replace", "normalize",
+    "uri_encode", "uri_decode", "is_well_formed",
     // pure — list convenience, demotion-deferred (7)
     "list", "get", "append", "extend", "length", "sum", "join",
     // pure — lists (22): JavaScript's array methods (lists.rs). The higher-order ones take their
@@ -94,8 +97,8 @@ pub const GENESIS: &[&str] = &[
 /// count check at all. Every one is well-defined at ANY count, including zero (`max`/`min` keep
 /// the largest or smallest, and with none give nothing, as JavaScript gives ±Infinity).
 ///
-/// `subtract`/`divide`/`compare` are deliberately excluded even though they share `add`'s catalog
-/// line: subtraction and division aren't associative, so "variadic subtract" has no natural
+/// `subtract`/`divide`/`compare` are deliberately excluded even though they are two-input like
+/// `add`: subtraction and division aren't associative, so "variadic subtract" has no natural
 /// meaning core has chosen to give it — this list names only the leaves where growing arity is
 /// unambiguous, not "everything binary-shaped."
 ///
@@ -114,7 +117,7 @@ pub const GENESIS: &[&str] = &[
 /// hand-listing names in TypeScript that could silently drift from what `compute` actually does.
 pub const VARIADIC: &[&str] = &[
     "add", "multiply", "max", "min", "and", "or", "concat", "list", "map", "fold", "any", "all", "filter", "find", "find_index", "find_last",
-    "find_last_index", "sort_by", "merge", "group_by", "json_parse", "json_stringify", "date_utc", "date_set",
+    "find_last_index", "sort_by", "merge", "group_by", "json_parse", "json_stringify", "date_utc", "date_set", "from_codes",
 ];
 
 /// The variadic leaves whose extra inputs are any type, passed to their function, rather than
@@ -152,7 +155,16 @@ pub const FAMILIES: &[(&str, &str, &[&str])] = &[
     ("number_test", "coerce", &["none", "number"]),
     ("to_number", "grammar", &["number", "float", "int"]),
     ("number_format", "style", &["string", "fixed", "precision", "exponential"]),
-    ("slice", "mode", &["length", "end"]),
+    ("slice", "mode", &["length", "end", "substring"]),
+    ("code_at", "mode", &["unit", "point"]),
+    ("from_codes", "mode", &["unit", "point"]),
+    ("text_contains", "at", &["start", "end"]),
+    ("trim", "side", &["both", "start", "end"]),
+    ("pad", "side", &["start", "end"]),
+    ("replace", "count", &["first", "all"]),
+    ("normalize", "form", &["NFC", "NFD", "NFKC", "NFKD"]),
+    ("uri_encode", "set", &["component", "uri"]),
+    ("uri_decode", "set", &["component", "uri"]),
     ("date_part", "part", crate::dates::PARTS),
     ("date_set", "part", crate::dates::SET_PARTS),
     ("date_text", "format", crate::dates::FORMATS),
@@ -183,11 +195,14 @@ pub fn interface_of(name: &str) -> Option<Unit> {
             vec![Param::frozen("value", "0"), Param::frozen("type", "Number")],
             Number,
         ),
-        "add" | "multiply" | "subtract" | "divide" => {
+        // `add` is JavaScript's `+`: numbers add, and a text on either side joins (texts.rs).
+        "add" => prim(vec![port("a", Any), port("b", Any)], vec![], Any),
+        "multiply" | "subtract" | "divide" => {
             prim(vec![port("a", Number), port("b", Number)], vec![], Number)
         }
+        // Two numbers, or two texts in code-unit order.
         "compare" => prim(
-            vec![port("a", Number), port("b", Number)],
+            vec![port("a", Any), port("b", Any)],
             vec![Param::frozen("op", "=")],
             Boolean,
         ),
@@ -227,15 +242,32 @@ pub fn interface_of(name: &str) -> Option<Unit> {
         "uppercase" | "lowercase" => prim(vec![port("s", Text)], vec![], Text),
         "text_length" => prim(vec![port("s", Text)], vec![], Number),
         // Part of a text or a list. `mode: "length"` reads `end` as a count, `"end"` as a relative
-        // position, optional (core's `has_optional_ports`).
+        // position and `"substring"` (a text's) as a position clamped, optional (core's
+        // `has_optional_ports`), as are the positions, the limit and the fill below.
         "slice" => prim(
             vec![port("value", Any), port("start", Number), port("end", Number)],
             vec![Param::frozen("mode", "length")],
             Any,
         ),
-        "index_of" => prim(vec![port("haystack", Any), port("needle", Any)], vec![], Number),
-        // The pieces of `text` between each `sep`: `join`'s inverse.
-        "split" => prim(vec![port("text", Text), port("sep", Text)], vec![], Type::List(Box::new(Text))),
+        "index_of" => prim(vec![port("haystack", Any), port("needle", Any), port("from", Number)], vec![], Number),
+        // The pieces of `text` between each `sep`: `join`'s inverse; `limit` keeps that many.
+        "split" => prim(vec![port("text", Text), port("sep", Text), port("limit", Number)], vec![], Type::List(Box::new(Text))),
+        // `charAt`; a text's `at` is `at`'s. `code_at` is `charCodeAt` (`mode: "unit"`) and
+        // `codePointAt` (`"point"`); `from_codes` their inverse, taking more numbers with +.
+        "text_at" => prim(vec![port("text", Text), port("index", Number)], vec![], Text),
+        "code_at" => prim(vec![port("text", Text), port("index", Number)], vec![Param::frozen("mode", "unit")], Number),
+        "from_codes" => prim(vec![port("a", Number)], vec![Param::frozen("mode", "unit")], Text),
+        // `startsWith` (`at: "start"`) and `endsWith` (`"end"`); a text's `includes` is
+        // `includes`'s.
+        "text_contains" => prim(vec![port("text", Text), port("part", Text), port("position", Number)], vec![Param::frozen("at", "start")], Boolean),
+        "trim" => prim(vec![port("text", Text)], vec![Param::frozen("side", "both")], Text),
+        "pad" => prim(vec![port("text", Text), port("length", Number), port("fill", Text)], vec![Param::frozen("side", "start")], Text),
+        "repeat" => prim(vec![port("text", Text), port("count", Number)], vec![], Text),
+        "replace" => prim(vec![port("text", Text), port("pattern", Text), port("replacement", Text)], vec![Param::frozen("count", "first")], Text),
+        "normalize" => prim(vec![port("text", Text)], vec![Param::frozen("form", "NFC")], Text),
+        "uri_encode" | "uri_decode" => prim(vec![port("text", Text)], vec![Param::frozen("set", "component")], Text),
+        // `true` for a text, which is always well formed in Holon; nothing for anything else.
+        "is_well_formed" => prim(vec![port("value", Any)], vec![], Boolean),
 
         // ── pure — list convenience ──
         "list" => prim(vec![port("a", Any), port("b", Any)], vec![], Type::list_any()),
@@ -260,8 +292,8 @@ pub fn interface_of(name: &str) -> Option<Unit> {
         "filter" | "sort_by" => prim(vec![port("list", Type::list_any())], vec![Param::open("fn", "fn")], Type::list_any()),
         "find" | "find_last" => prim(vec![port("list", Type::list_any())], vec![Param::open("fn", "fn")], Any),
         "find_index" | "find_last_index" => prim(vec![port("list", Type::list_any())], vec![Param::open("fn", "fn")], Number),
-        "includes" => prim(vec![port("haystack", Any), port("needle", Any)], vec![], Boolean),
-        "last_index_of" => prim(vec![port("haystack", Any), port("needle", Any)], vec![], Number),
+        "includes" => prim(vec![port("haystack", Any), port("needle", Any), port("from", Number)], vec![], Boolean),
+        "last_index_of" => prim(vec![port("haystack", Any), port("needle", Any), port("from", Number)], vec![], Number),
         "reverse" | "sort" | "unique" => prim(vec![port("list", Type::list_any())], vec![], Type::list_any()),
         // `count` and `items` are optional, as are `fill`'s and `copy_within`'s `start` and `end`
         // (core's `has_optional_ports`).
@@ -344,9 +376,10 @@ pub fn interface_of(name: &str) -> Option<Unit> {
         "sha256" => prim(vec![port("text", Text)], vec![Param::frozen("encoding", "hex")], Text),
         "hmac_sha256" => prim(vec![port("key", Text), port("message", Text)], vec![Param::frozen("encoding", "hex")], Text),
         "hex" => prim(vec![port("text", Text)], vec![Param::frozen("mode", "encode")], Text),
+        // `bytes: "latin1"` is `btoa`/`atob`'s: each character one byte, the standard alphabet.
         "base64" => prim(
             vec![port("text", Text)],
-            vec![Param::frozen("mode", "encode"), Param::frozen("alphabet", "standard")],
+            vec![Param::frozen("mode", "encode"), Param::frozen("alphabet", "standard"), Param::frozen("bytes", "utf8")],
             Text,
         ),
         "secure_equals" => prim(vec![port("a", Text), port("b", Text)], vec![], Boolean),
@@ -606,7 +639,7 @@ mod tests {
     }
 
     #[test]
-    fn genesis_has_139_leaves() {
+    fn genesis_has_151_leaves() {
         // The §13a count — a tripwire if the frozen set is ever changed by accident.
         // 37 + to_text + is_truthy + guard + default + equals (the universal any-typed
         // primitives) + the record kit (record, field, with_field, without_field, keys), added
@@ -628,8 +661,10 @@ mod tests {
         // sort_by, includes, last_index_of, reverse, to_spliced, with_item, fill, copy_within,
         // sort, flat, is_list, unique), find among them now; and the record leaves (values,
         // from_entries, merge, has, group_by, same_value, type_of); and the date leaves (date_part,
-        // date_utc, date_set, date_text, date_parse).
-        assert_eq!(GENESIS.len(), 139);
+        // date_utc, date_set, date_text, date_parse); and the text leaves (text_at, code_at,
+        // from_codes, text_contains, trim, pad, repeat, replace, normalize, uri_encode, uri_decode,
+        // is_well_formed).
+        assert_eq!(GENESIS.len(), 151);
     }
 
     #[test]
@@ -741,8 +776,8 @@ mod tests {
     #[test]
     fn variadic_leaves_actually_tolerate_more_than_two_inputs() {
         // Not just trusting the classification: prove every VARIADIC name's compute genuinely
-        // folds 3 inputs correctly, and that a strictly-binary sibling (subtract, sharing add's
-        // catalog line) correctly refuses to, via the arity mismatch in its own destructure.
+        // folds 3 inputs correctly, and that a strictly-binary sibling (subtract, two-input like
+        // add) correctly refuses to, via the arity mismatch in its own destructure.
         use crate::primitives::compute;
         let n = |x: f64| Value::Number(x);
         let b = |x: bool| Value::Boolean(x);
@@ -765,7 +800,7 @@ mod tests {
         let r = |k: &str, x: f64| Value::Record([(k.to_string(), n(x))].into());
         assert_eq!(compute("merge", &[&r("a", 1.0), &r("b", 2.0), &r("a", 3.0)], &[]), Some(Value::Record([("a".to_string(), n(3.0)), ("b".to_string(), n(2.0))].into())));
 
-        // subtract shares add's catalog interface line but is NOT variadic — not associative, so
+        // subtract is two-input like add but is NOT variadic — not associative, so
         // core gives it no N-ary meaning. Its own strict-binary destructure refuses 3 inputs.
         assert!(!VARIADIC.contains(&"subtract"));
         assert_eq!(compute("subtract", &[&n(1.0), &n(2.0), &n(3.0)], &[]), None);

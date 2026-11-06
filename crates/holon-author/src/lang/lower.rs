@@ -113,6 +113,10 @@ pub(crate) fn is_optional(leaf: &str, input: &str) -> bool {
                 | ("slice", "end")
                 | ("to_spliced", "count" | "items")
                 | ("fill" | "copy_within", "start" | "end")
+                | ("index_of" | "includes" | "last_index_of", "from")
+                | ("text_contains", "position")
+                | ("split", "limit")
+                | ("pad", "fill")
         )
 }
 

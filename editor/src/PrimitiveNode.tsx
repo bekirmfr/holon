@@ -17,7 +17,7 @@ const PARAM_CHOICES: Record<string, Record<string, readonly string[]>> = {
   sha256: { encoding: ["hex", "base64"] },
   hmac_sha256: { encoding: ["hex", "base64"] },
   hex: { mode: ["encode", "decode"] },
-  base64: { mode: ["encode", "decode"], alphabet: ["standard", "url"] },
+  base64: { mode: ["encode", "decode"], alphabet: ["standard", "url"], bytes: ["utf8", "latin1"] },
 };
 import { templateInterface } from "./templates";
 import { typeColor, typeLabel, outputColor, TYPE_COLOR } from "./theme";

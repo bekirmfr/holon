@@ -7,6 +7,12 @@ between runs an absolute time moved by up to 2× and a ratio by up to a third (b
 are timed in the same window). No verdict changed across the four full runs made today; the tables
 below come from the last one.
 
+The leaves were built on 2026-11-07, counting code units: core's `texts.rs` holds the native
+candidates, ported, and its tests assert the oracle's 1,525 cases. Since then the bench checks and
+races each composite through those leaves. The tables below were measured before, through leaves
+that counted scalars, except the race of `type_of(s) === "string"` for `isWellFormed`, run that
+day. Where a leaf came out other than specified here, [Leaf specs](#leaf-specs) says so.
+
 The bench gives three kinds of evidence, in order:
 
 1. **The oracle.** Each native candidate counts UTF-16 code units and gives what JavaScript gives
@@ -17,23 +23,21 @@ The bench gives three kinds of evidence, in order:
    trims, `padStart`, `padEnd`, `repeat`, `replace`, `replaceAll`, `split`,
    `String.fromCharCode`, `String.fromCodePoint`, `<` and the other comparisons, the four URI
    functions, `btoa`, `atob`, `String(x)` and `+`.
-2. **The checks.** Each composite, compiled by the reader, gives what its candidate gives, run
-   twice. The first run goes through today's leaves, which count Unicode scalar values, against
-   the candidate counting scalars. The second simulates code units: each code unit of the inputs
-   becomes one scalar (a surrogate becomes a private-use stand-in), and every `slice` gives
-   nothing where it would cut a pair (the `strict_slice` below). That run is checked against the
-   candidate counting code units.
-3. **The races.** Each composite against its candidate, both counting scalars as today's leaves
-   do, through the real `eval`.
+2. **The checks.** Each composite, compiled by the reader, gives what its candidate gives,
+   through the leaves as built, in code units. Before the leaves counted code units, a second run
+   simulated them (see [Composites](#composites)).
+3. **The races.** Each composite against its candidate, through the real `eval`. The tables
+   below counted scalars on both sides, as the leaves then did.
 
 ## Units
 
-JavaScript counts a text in UTF-16 code units. Holon's leaves count Unicode scalar values today
-(`text_length`, `slice` and `index_of` in `primitives.rs`). The two agree on every text without an
+JavaScript counts a text in UTF-16 code units. Holon's leaves counted Unicode scalar values
+(`text_length`, `slice` and `index_of`) until the text leaves were built, and count code units
+since, as recommended below. The two agree on every text without an
 astral character (one above U+FFFF, such as an emoji) and disagree from the first one on. For
 `s = "a😀b"`:
 
-| JavaScript | Code units (JavaScript's) | Scalar values (today's leaves) |
+| JavaScript | Code units (JavaScript's, the leaves') | Scalar values (the leaves before) |
 |---|---|---|
 | `s.length` | 4 | 3 |
 | `s.slice(1, 2)` | `"\uD83D"`, a lone surrogate | `"😀"` |
@@ -62,7 +66,8 @@ and a two-byte character in every 29 characters:
 The meaning of `text_length`, `slice`, `index_of` and `split` changes on astral text. A flow that
 slices such text answers differently and its hash changes; in the dev phase no old meaning is kept.
 
-**Recommendation: code units.** Every text leaf counts UTF-16 code units, as JavaScript does, and
+**Recommendation: code units** (the owner's decision, and built). Every text leaf counts UTF-16
+code units, as JavaScript does, and
 a result that would hold a lone surrogate gives nothing. Then every position JavaScript code
 computes agrees with JavaScript on every text, astral included: an `indexOf` fed to `slice`,
 `length` arithmetic, a regular expression's `index`. Under scalars they agree only until the first
@@ -88,17 +93,17 @@ counts code units ([Units](#units)).
 | JavaScript | Verdict | How (leaf, or composite name) | Measured (ratio composite / candidate, by size) | Why |
 |---|---|---|---|---|
 | `s.length` | reader | `text_length` (code units) | | rule 1: the leaf exists; the reader refuses `.length` today |
-| `s.at(i)` | leaf | `text_at {mode: "at"}` | `js_at`: 25.8 / 23.0 / 2.2 (8/64/4096); mapped 11.0 / 10.9 / 13.9 | rule 3: same class, 23 at 64 (mapped 11) is above 3 |
-| `s.charAt(i)` | leaf | `text_at {mode: "char"}` | `js_char_at`: 20.2 / 18.3 / 1.7; mapped 7.1 / 7.5 / 7.2 | rule 3: same class, 18 at 64 (mapped 7.5) is above 3 |
+| `s.at(i)` | leaf | `at`, the leaf lists and texts share | `js_at`: 25.8 / 23.0 / 2.2 (8/64/4096); mapped 11.0 / 10.9 / 13.9 | rule 3: same class, 23 at 64 (mapped 11) is above 3 |
+| `s.charAt(i)` | leaf | `text_at` | `js_char_at`: 20.2 / 18.3 / 1.7; mapped 7.1 / 7.5 / 7.2 | rule 3: same class, 18 at 64 (mapped 7.5) is above 3 |
 | `s.charCodeAt(i)` | leaf | `code_at {mode: "unit"}` | | rule 2: no leaf turns a character into a number (`hex` gives UTF-8 bytes as text) |
 | `s.codePointAt(i)` | leaf | `code_at {mode: "point"}` | | rule 2: the same |
 | `s.concat(a, …)` | reader | `concat` of `as_text` of each argument | | rule 1: as template literals lower; numbers need the `as_text` change |
 | `s.endsWith(t, e)` | leaf | `text_contains {at: "end"}` | `js_ends_with`: 39.9 / 41.2 / 50.6 / 190.2 (8/64/4096/65536) | rule 3: worse class (two `text_length` walks where JavaScript compares `t`'s units) |
-| `s.includes(t, p)` | leaf | `text_contains {at: "any"}` | `js_includes`: 16.2 / 12.9 / 1.7; mapped 6.2 / 5.1 / 1.3 | rule 3: same class, 12.9 at 64 (mapped 5.1) is above 3 |
+| `s.includes(t, p)` | leaf | `includes`, shared with lists, with a `from` input | `js_includes`: 16.2 / 12.9 / 1.7; mapped 6.2 / 5.1 / 1.3 | rule 3: same class, 12.9 at 64 (mapped 5.1) is above 3 |
 | `s.indexOf(t)` | reader | `index_of` (exists, code units) | | rule 1: mapped today |
 | `s.indexOf(t, p)` | leaf change | `index_of` gains a `from` input | `js_index_from`: 54.2 / 36.2 / 3.9 | rule 3: same class, 36 at 64 is above 3 |
-| `s.isWellFormed()` | leaf | `is_well_formed` | `js_is_well_formed`: 21.9 / 21.9 / 22.2, mapped 7.2 / 7.3 / 7.2; `s === s` (leaf `equals`): 1.21 / 1.24 / 3.25 | rule 3: the O(1) composite is above 3; `equals(s, s)` is a worse class and true for a number |
-| `s.lastIndexOf(t, p)` | leaf | `last_index_of` | `js_last_index_of`: 86.2 / 246.2 / 604.3 (8/64/512) | rule 3: worse class (a `fold` over every position, a `slice` each) |
+| `s.isWellFormed()` | leaf | `is_well_formed` | `js_is_well_formed`: 21.9 / 21.9 / 22.2, mapped 7.2 / 7.3 / 7.2; `s === s` (leaf `equals`): 1.21 / 1.24 / 3.25; `type_of(s) === "string" ? true : undefined` (5 leaves, 2026-11-07): 13.6 / 20.2 / 13.7, mapped 10.2 / 9.5 / 9.5 | rule 3: both O(1) composites are above 3; `equals(s, s)` is a worse class and true for a number, and `type_of(s) === "string"` is false for a number where JavaScript throws |
+| `s.lastIndexOf(t, p)` | leaf | `last_index_of`, shared with lists, with a `from` input | `js_last_index_of`: 86.2 / 246.2 / 604.3 (8/64/512) | rule 3: worse class (a `fold` over every position, a `slice` each) |
 | `s.localeCompare(t)` | refused | `a < b ? -1 : a > b ? 1 : 0` | | rule 4: a locale reads the machine (javascript-library.md §12) |
 | `s.match(re)` | leaf | `regex_exec`; with `g`, `regex_matches {shape: "texts"}` | | rule 2: no pattern matching among the leaves |
 | `s.matchAll(re)` | leaf | `regex_matches {shape: "records"}` | | rule 2 |
@@ -113,7 +118,7 @@ counts code units ([Units](#units)).
 | `s.search(re)` | leaf | `regex_search` | | rule 2 |
 | `s.slice(a, b)` | leaf change | `slice {mode: "end"}` | `js_slice`: 37.1 / 28.9 / 3.8; mapped 13.8 / 12.1 / 2.7 | rule 3: same class, 29 at 64 (mapped 12) is above 3 |
 | `s.split(t)` | reader | `split` (exists) | | rule 1: mapped today |
-| `s.split("")` | leaf change | `split` gives each code unit for `""` | `js_split_units`: 8.8 / 5.9 / 4.8 (8/64/512) | rule 3: same class, 5.9 at 64 is above 3; the leaf gives nothing for `""` today |
+| `s.split("")` | leaf change | `split` gives each code unit for `""` | `js_split_units`: 8.8 / 5.9 / 4.8 (8/64/512) | rule 3: same class, 5.9 at 64 is above 3; the leaf gave nothing for `""` before |
 | `s.split(t, limit)` | leaf change | `split` gains a `limit` input | `js_split_limit`: 10.1 / 20.4 / 217.1 | rule 2: inexact, `limit` -1 (ToUint32's 4294967295) gives nothing; a worse class besides |
 | `s.split(re, limit)` | leaf | `regex_split` | | rule 2 |
 | `s.startsWith(t, p)` | leaf | `text_contains {at: "start"}` | `js_starts_with`: 25.9 / 27.7 / 27.7 / 26.2 (8/64/4096/65536); mapped 9.5 / 9.1 / 9.1 | rule 3: same class (no walk: `slice` stops at `t`'s length), 27.7 at 64 is above 3 |
@@ -147,7 +152,9 @@ counts code units ([Units](#units)).
 
 In all, 57 rows: 13 *reader*, 41 *leaf* and 3 *refused* (one of them proposed); no *composite*.
 Of the 41 leaf rows, 10 change an existing leaf (`index_of`, `slice`, `split`, `as_text`, `add`,
-`compare`, `base64`; `text_length` changes too, for `length`'s units). By reason: 22 are not
+`compare`, `base64`; `text_length` changes too, for `length`'s units). Since the list step, `at`,
+`includes` and `last_index_of` are leaves lists and texts share, so their rows build a leaf's text
+side. The regular-expression rows wait: no `regex_*` leaf is built (the owner's decision). By reason: 22 are not
 expressible (17 lack an atom, 5 have a composite that is inexact on the input the row names), 9 are
 in a worse class, and 10 are in the same class with a ratio above 3 at n = 64.
 
@@ -180,18 +187,20 @@ Common to every text leaf:
 |---|---|---|---|---|
 | `text_length` (change) | `text` | code units: the scalars, plus one more for each astral character | not a text | `s.length` |
 | `slice` (change) | `text`, `start`, `end`; `mode` | `"length"` (today's, `substr`'s): `end` is a length, both whole and not negative. `"end"`: a negative position counts from the end, both clamped to the text, empty when `end` ≤ `start`; `end` defaults to the length. `"substring"`: both clamped to 0 and the length, swapped when `start` > `end` | a cut pair; `"length"` with a negative or fractional input | `s.substr(a, n)`, `s.slice(a, b)`, `s.substring(a, b)` |
-| `index_of` (change) | `text`, `part`, `from`? | the first `part` at or after `from` (clamped to 0 and the length; 0 when unwired), as a unit index; `""` is found at `from`; -1 when absent | not texts | `s.indexOf(t, p)` |
+| `index_of` (change) | `haystack`, `needle`, `from`? | the first `needle` at or after `from` (clamped to 0 and the length; 0 when unwired), as a unit index; `""` is found at `from`; -1 when absent | not texts | `s.indexOf(t, p)` |
 | `split` (change) | `text`, `separator`, `limit`? | the pieces between each `separator`. `""` cuts every code unit, so `"".split("")` is `[]`. `limit` is ToUint32 (truncated, modulo 2^32) and keeps that many pieces; unwired, all | `""` on a text with an astral character | `s.split(t)`, `s.split(t, n)` |
-| `text_at` | `text`, `index`; `mode` | `"at"`: a negative index counts from the end, and an index outside the text gives nothing. `"char"`: a negative index or one past the end gives `""`. Otherwise the one code unit at `index` | half a pair; `"at"` outside the text (`undefined`) | `s.at(i)`, `s.charAt(i)` (`charAt()` reads 0) |
+| `at` (text side) | `value`, `index` | a negative index counts from the end; the one code unit at `index` | half a pair; an index outside the text (`undefined`) | `s.at(i)` |
+| `text_at` | `text`, `index` | the one code unit at `index`; a negative index or one past the end gives `""` | half a pair | `s.charAt(i)` (`charAt()` reads 0) |
 | `code_at` | `text`, `index`; `mode` | `"unit"`: the code unit at `index`, 0 to 65535. `"point"`: at a pair's first half the code point, otherwise the unit | an index outside the text (`NaN`, `undefined`) | `s.charCodeAt(i)`, `s.codePointAt(i)` |
 | `from_codes` | numbers, any count; `mode` | `"unit"`: each ToUint16 (truncated, modulo 2^16). `"point"`: each a code point. The units joined; none gives `""` | a lone surrogate left over; `"point"`: a number that isn't whole, is negative or is past U+10FFFF (`RangeError`) | `String.fromCharCode(…)`, `String.fromCodePoint(…)` |
-| `text_contains` | `text`, `part`, `position`?; `at` | `"any"`: `part` found at or after `position` (default 0). `"start"`: `part` begins at `position` (default 0). `"end"`: `part` ends at `position` (default the length). Positions clamped to 0 and the length | not texts | `s.includes(t, p)`, `s.startsWith(t, p)`, `s.endsWith(t, e)` |
-| `last_index_of` | `text`, `part`, `from`? | the last `part` beginning at or before `from` (clamped to 0 and length − `part`'s length; unwired, the end); -1 when absent or longer than the text | not texts | `s.lastIndexOf(t, p)` |
+| `includes` (text side) | `haystack`, `needle`, `from`? | `needle` found at or after `from` (clamped to 0 and the length; 0 when unwired) | not texts | `s.includes(t, p)` |
+| `text_contains` | `text`, `part`, `position`?; `at` | `"start"`: `part` begins at `position` (default 0). `"end"`: `part` ends at `position` (default the length). Positions clamped to 0 and the length | not texts | `s.startsWith(t, p)`, `s.endsWith(t, e)` |
+| `last_index_of` (text side) | `haystack`, `needle`, `from`? | the last `needle` beginning at or before `from` (clamped to 0 and length − `needle`'s length; unwired, the end); -1 when absent or longer than the text | not texts | `s.lastIndexOf(t, p)` |
 | `trim` | `text`; `side` | `"both"`, `"start"`, `"end"`: drops JavaScript's WhiteSpace and LineTerminator from that side: U+0009 to U+000D, U+0020, U+00A0, U+1680, U+2000 to U+200A, U+2028, U+2029, U+202F, U+205F, U+3000, U+FEFF. That is not Rust's `char::is_whitespace`, which takes U+0085 and leaves out U+FEFF | not a text | `s.trim()`, `s.trimStart()`, `s.trimEnd()` |
 | `pad` | `text`, `length`, `fill`?; `side` | unchanged when `length` (truncated) is at most the text's or `fill` is `""`; otherwise `fill` (default `" "`) repeated and cut to the units missing, before (`"start"`) or after (`"end"`) | a cut pair in the fill; past the maximum length | `s.padStart(n, f)`, `s.padEnd(n, f)` |
 | `repeat` | `text`, `count` | the text `count` times (truncated); `""` for 0 or `""` | a negative count (`RangeError`); past the maximum length | `s.repeat(k)` |
 | `replace` | `text`, `pattern`, `replacement`; `count` | `"first"`: the first match of the text `pattern`; `"all"`: every match, left to right, not overlapping. `""` matches at 0 (`"first"`) or at every unit boundary (`"all"`). The replacement is GetSubstitution's: `$$` is `$`, `$&` the match, `` $` `` what precedes it, `$'` what follows; any other `$` stays | a result holding a lone surrogate (`"all"` with `""` on astral text) | `s.replace(a, b)`, `s.replaceAll(a, b)` with texts |
-| `normalize` | `text`; `form` | Unicode normalization `"NFC"` (the default), `"NFD"`, `"NFKC"` or `"NFKD"`, by `unicode-normalization` 0.1.26 (in the lock already; `holon-core` would depend on it directly, pinned) | not a text; the reader refuses a form that isn't one of the four literals (`RangeError`) | `s.normalize(f)` |
+| `normalize` | `text`; `form` | Unicode normalization `"NFC"` (the default), `"NFD"`, `"NFKC"` or `"NFKD"`, by `unicode-normalization` 0.1.26 (`holon-core` depends on it directly, pinned) | not a text; the reader refuses a form that isn't one of the four literals (`RangeError`) | `s.normalize(f)` |
 | `compare` (change) | `a`, `b`; `op` | two numbers as today; two texts in code-unit order, unit by unit, a prefix first (not Rust's `str` order, which differs between U+E000–U+FFFF and astral characters) | a number and a text (JavaScript converts) | `a < b`, `>`, `<=`, `>=` |
 | `add` (change) | values, any count | a left fold from the first operand (not from 0, so `-0 + -0` stays `-0`). Each step: two numbers add; with a text on either side, both are written as `as_text` writes them and joined. `1 + 2 + "a"` is `"3a"`, `"a" + 1 + 2` is `"a12"` | a boolean without a text, a list or a record (see Differences) | `a + b` |
 | `as_text` (change) | `value` | a number in Number::prototype::toString's layout: the shortest digits that read back, with an exponent from 1e21 up and below 1e-6 (`1e+21`, `1e-7`); `-0` is `"0"` as today. Texts, booleans, lists and records unchanged | never | `String(x)`, `` `${x}` ``, `x.toString()` |
@@ -200,10 +209,16 @@ Common to every text leaf:
 | `base64` (change) | `text`; `mode`, `alphabet`, `bytes` | `bytes: "utf8"` is today's. `"latin1"` (standard alphabet only): encoding takes each character as one byte and pads; decoding is WHATWG's forgiving-base64: ASCII whitespace dropped, one or two `=` dropped when the length is a multiple of 4, extra bits dropped, each byte one character | `"latin1"`: a character past U+00FF, a length of 1 modulo 4, a character outside the alphabet (InvalidCharacterError) | `btoa(s)`, `atob(s)` |
 | `is_well_formed` | `value` | `true` for a text (a Holon text is always well formed) | not a text (JavaScript's TypeError) | `s.isWellFormed()` |
 
-`is_well_formed` is a leaf only because nothing cheaper gives `true` for a text alone. If
-records.md's `type_of` lands, the reader can lower `s.isWellFormed()` to `type_of(s) === "text"`
-instead, re-raced then. The regex leaves are specified in
-[Regular expressions](#regular-expressions).
+**Made redundant by the shared leaves, so not built.** `at`, `includes`, `index_of`,
+`last_index_of` and `slice` each take a list or a text, so `text_at {mode: "at"}` is `at` on a
+text and `text_contains {at: "any"}` is `includes` with its `from`. `text_at` keeps `charAt`'s
+meaning alone and has no mode; `text_contains` takes `"start"` and `"end"`.
+
+`is_well_formed` is a leaf only because nothing cheaper gives `true` for a text alone. Once
+records.md's `type_of` landed, `type_of(s) === "string" ? true : undefined` was raced against it
+(2026-11-07): 20.2 times the leaf at 64, 9.5 mapped, and it gives `false` for a number where
+JavaScript throws. The leaf stays. The regex leaves are specified in
+[Regular expressions](#regular-expressions); they wait.
 
 ## Composites
 
@@ -394,6 +409,16 @@ function js_to_well_formed(s) {
 }
 ```
 
+Once `type_of` landed, `isWellFormed` was raced against it too, made exact (nothing for anything
+but a text):
+
+```ts
+import { type_of } from "holon"
+function js_is_string_exact(s) {
+  return type_of(s) === "string" ? true : undefined
+}
+```
+
 `a + b`. The kind of each side comes from the first character of its JSON:
 
 ```ts
@@ -445,36 +470,29 @@ function js_decode_component(s) {
 }
 ```
 
-For the code-unit check, every `slice(` call in a composite becomes `strict_slice(`, appended to
-its text:
-
-```ts
-function strict_slice(s, a, l) {
-  const r = slice(s, a, l)
-  const n = text_length(r)
-  const whole = n === 0 ? true : (slice(hex(slice(r, 0, 1)), 0, 5) !== "f3b09" && slice(hex(slice(r, n - 1, 1)), 0, 5) !== "f3b08")
-  return whole ? r : undefined
-}
-```
-
-A stand-in for a pair's first half is U+F0000 to U+F03FF, whose UTF-8 begins `f3b08`; for its
-second half, U+F0400 to U+F07FF, `f3b09`.
+Before the leaves counted code units, the check ran twice. The second run simulated code units:
+each code unit of the inputs became one scalar (a pair's first half U+F0000 to U+F03FF, its second
+U+F0400 to U+F07FF), and every `slice(` in a composite became a `strict_slice(` that gave nothing
+where it cut a pair. The simulation went once the leaves counted code units.
 
 **What the checks found.** Every composite above gives its candidate's answer on its cases (empty
 texts, one character, astral characters alone, together and between others, a combining mark,
-matches first, last and overlapping, positions negative, fractional and past either end), in both
-units, except these. The bench asserts each difference, so this list stays true:
+matches first, last and overlapping, positions negative, fractional and past either end), through
+the code-unit leaves, except these. The bench asserts each difference, so this list stays true:
 
 - `split` with a limit: `("a,b", ",", -1)` gives nothing; JavaScript's ToUint32 makes -1
   4294967295, so it gives `["a", "b"]`.
 - `replaceAll`: `("abc", "b", "$&$&")` gives `"a$&$&c"` where JavaScript gives `"abbc"`;
-  `("abc", "", "-")` gives nothing (`split` refuses `""`) where JavaScript gives `"-a-b-c-"`.
+  `("abc", "", "-")` gives `"a-b-c"` (`split("")` has no piece before the first unit or after the
+  last) where JavaScript gives `"-a-b-c-"`.
 - `replace`: ``("abc", "b", "[$`]")`` gives ``"a[$`]c"`` where JavaScript gives `"a[a]c"`.
-- `+`: `(1e21, "")` gives `"1000000000000000000000"` where JavaScript gives `"1e+21"` (today's
-  `as_text`); `(-0, -0)` gives 0 where JavaScript gives -0 (`add` folds from 0, numbers.md's to
-  settle; the `add` spec above starts from the first operand).
-- `encodeURIComponent`, in code units: `"a😀"` gives nothing, because the one-unit `slice` cuts
-  the pair, where JavaScript gives `"a%F0%9F%98%80"`.
+- `encodeURIComponent`: `"a😀"` gives nothing, because the one-unit `slice` cuts the pair, where
+  JavaScript gives `"a%F0%9F%98%80"`.
+- `isWellFormed`: `js_is_well_formed([1])` gives `false`, because `slice` takes a list too, and
+  `type_of(1) === "string"` gives `false`, where JavaScript throws for both.
+
+`+` differed before the number step: `(1e21, "")` gave `"1000000000000000000000"` and `(-0, -0)`
+gave 0. `as_text` now writes `"1e+21"` and `add` starts from its first operand, so both agree.
 
 ## Regular expressions
 
@@ -883,4 +901,55 @@ encodeURIComponent: inexact, as texts.md says: on [Text("a😀")] the composite 
 | 8 | 4.53 µs | 75 ns | 60.39 |
 | 64 | 19.73 µs | 212 ns | 93.21 |
 | 4096 | 1.12 ms | 9.77 µs | 114.37 |
+```
+
+### `isWellFormed`, re-raced on 2026-11-07
+
+Through the code-unit leaves, once `type_of` had landed
+(`cargo bench -q -p holon-author --bench races_texts -- isWellFormed`, exit 0), the part of its
+output on `isWellFormed`:
+
+```text
+isWellFormed, a list: inexact, as texts.md says: on [List([Number(1.0)])] the composite gives Some(Boolean(false)), JavaScript None
+
+### s.isWellFormed()
+
+| n | composite js_is_well_formed (5 leaves) | native candidate | ratio |
+|---:|---:|---:|---:|
+| 8 | 569 ns | 44 ns | 13.03 |
+| 64 | 581 ns | 41 ns | 14.27 |
+| 4096 | 818 ns | 42 ns | 19.68 |
+
+### s.isWellFormed(), mapped over 16 texts
+
+| n | composite each_well_formed (6 leaves) | native candidate, mapped | ratio |
+|---:|---:|---:|---:|
+| 8 | 4.55 µs | 598 ns | 7.61 |
+| 64 | 5.05 µs | 594 ns | 8.50 |
+| 4096 | 8.31 µs | 592 ns | 14.03 |
+
+### s.isWellFormed() as s === s, the leaf equals
+
+| n | leaf equals | native candidate | ratio |
+|---:|---:|---:|---:|
+| 8 | 48 ns | 43 ns | 1.13 |
+| 64 | 50 ns | 42 ns | 1.18 |
+| 4096 | 130 ns | 42 ns | 3.07 |
+isWellFormed as type_of(s) === "string": inexact, as texts.md says: on [Number(1.0)] the composite gives Some(Boolean(false)), JavaScript None
+
+### s.isWellFormed() as type_of(s) === "string" ? true : undefined
+
+| n | composite js_is_string_exact (5 leaves) | native candidate | ratio |
+|---:|---:|---:|---:|
+| 8 | 599 ns | 44 ns | 13.63 |
+| 64 | 880 ns | 44 ns | 20.24 |
+| 4096 | 581 ns | 42 ns | 13.71 |
+
+### s.isWellFormed() as type_of(s) === "string" ? true : undefined, mapped over 16 texts
+
+| n | composite each_is_string (6 leaves) | native candidate, mapped | ratio |
+|---:|---:|---:|---:|
+| 8 | 6.06 µs | 592 ns | 10.23 |
+| 64 | 5.60 µs | 589 ns | 9.50 |
+| 4096 | 5.58 µs | 590 ns | 9.46 |
 ```

@@ -372,19 +372,19 @@ pages share are made one (a leaf taking a list or a text, so the reader needn't 
   `bitwise {op}`, `number_test {test}`, `to_number {grammar}` (`Number`, `parseFloat`,
   `parseInt`), `number_format {style}` (`toString(radix)`, `toFixed`, `toPrecision`,
   `toExponential`, exact digits).
-- **Texts:** `text_at`, `code_at`, `from_codes`, `text_contains {at: any|start|end}`, `trim {side}`,
-  `pad {side}`, `repeat`, `replace {count}`, `normalize {form}`, `uri_encode`, `uri_decode`;
-  regular expressions on `regress` (Boa's engine): `regex_test`, `regex_exec`,
-  `regex_matches`, `regex_search`, `regex_replace`, `regex_split`.
+- **Texts** (built), counting UTF-16 code units: `text_at`, `code_at {mode}`, `from_codes {mode}`,
+  `text_contains {at: start|end}`, `trim {side}`, `pad {side}`, `repeat`, `replace {count}`,
+  `normalize {form}`, `uri_encode {set}`, `uri_decode {set}`, `is_well_formed`. Regular
+  expressions on `regress` (Boa's engine) wait: `regex_test`, `regex_exec`, `regex_matches`,
+  `regex_search`, `regex_replace`, `regex_split`.
 - **Lists** (built, and read): `indices`, `entries`, `any`, `all`, `filter`, `find`, `find_index`,
   `find_last`, `find_last_index` (each taking its function by a `fn` param, as `map` does),
   `reverse`, `to_spliced`, `with_item`, `fill`, `copy_within`, `sort` and `sort_by` (a pinned
   stable merge sort), `flat {depth}`, `unique`, `is_list`.
-- **Shared by lists and texts:** `at`, `index_of`, `includes`, `last_index_of` and `slice {mode:
-  end}`, each taking either; the list side is built, the text side gives nothing until the texts.
+- **Shared by lists and texts** (built): `at`, `index_of`, `includes` and `last_index_of` (the
+  last three with a `from`), and `slice {mode: end}`, each taking either.
 - **Records and values:** `values`, `entries` (built with the lists: a record's pairs in key
-  order), `from_entries`, `merge`, `group_by {fn}`, `type_of` (which also answers `isWellFormed`),
-  `same_value` (`Object.is`).
+  order), `from_entries`, `merge`, `group_by {fn}`, `type_of`, `same_value` (`Object.is`).
 - **Dates**, a date being its time value in milliseconds: `date_part {part}`, `date_utc`,
   `date_set {part}`, `date_text {format}`, `date_parse`.
 - **Changes to leaves:** `text_length`, `slice {mode}`, `index_of` (a start), `split` (`""` and a

@@ -3791,11 +3791,11 @@ mod tests {
 
     #[test]
     fn fold_none_propagates() {
-        // add(acc, "x") fails ⇒ the whole fold is None.
+        // add(acc, true) fails ⇒ the whole fold is None.
         let mut r = MapResolver::new();
         let hadd = r.insert(prim("add", 2, Type::Number)).unwrap();
         let f = fold_unit(&hadd);
-        let xs = list(vec![num(3.0), txt("x")]);
+        let xs = list(vec![num(3.0), Value::Boolean(true)]);
         assert_eq!(eval(&f, &[Some(num(0.0)), Some(xs)], &r).into_vec(), vec![None]);
     }
 

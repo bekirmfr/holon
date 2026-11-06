@@ -49,8 +49,10 @@ const ONE_WAY: &[&str] = &["sha256", "hmac_sha256", "secure_equals"];
 /// items are here; those that take a text too (`at`, `slice`) are not, since a part of a text
 /// isn't the secret. So are the record leaves that move values between records and lists
 /// (`values`, `from_entries`, `merge`); `has` and `same_value` answer a Boolean, which cuts it.
+/// `add` joins texts as `concat` does (a number it adds is no secret's text); the other text
+/// leaves (`trim`, `replace`, `pad`, …) make a text from part of theirs, which is derived.
 const PASSES_LITERALLY: &[&str] = &[
-    "const", "select", "cons", "head", "tail", "concat", "list", "get", "append", "extend", "join", "pair", "some",
+    "const", "select", "cons", "head", "tail", "concat", "add", "list", "get", "append", "extend", "join", "pair", "some",
     "entries", "reverse", "to_spliced", "with_item", "fill", "copy_within", "sort", "flat", "unique",
     "values", "from_entries", "merge",
     "record", "field", "with_field", "without_field", "lookup", "insert", "remove", "as_text", "guard",
@@ -553,6 +555,41 @@ mod tests {
             assert!(fed.derives(&[node]), "{what} of a secret is derived");
         }
         assert!(!fed.derives(&[4]), "a number_test answers a Boolean");
+    }
+
+    /// `"Bearer " + secret` holds it as it is, as a template literal's `concat` does; a trimmed
+    /// secret is derived from it; whether it begins with a text is a Boolean, which cuts it.
+    #[test]
+    fn a_secret_joined_by_add_stays_literal_and_a_trimmed_one_is_derived() {
+        let mut r = MapResolver::new();
+        let secret = leaf(&mut r, "secret", vec![Param::frozen("name", "k")]);
+        let bearer = leaf(&mut r, "const", vec![Param::frozen("value", "Bearer "), Param::frozen("type", "Text")]);
+        let add = leaf(&mut r, "add", vec![]);
+        let trim = leaf(&mut r, "trim", vec![]);
+        let starts = leaf(&mut r, "text_contains", vec![]);
+        let e = |fc, fp, tc, tp| Edge { from_child: fc, from_port: fp, to_child: tc, to_port: tp };
+        let root = Unit {
+            body: UnitBody::Composite {
+                children: vec![secret, bearer, add, trim, starts],
+                edges: vec![
+                    e(1, 0, 2, 0),
+                    e(0, 0, 2, 1),
+                    e(0, 0, 3, 0),
+                    e(0, 0, 4, 0),
+                    e(BOUNDARY, 0, 4, 1),
+                    e(2, 0, BOUNDARY, 0),
+                    e(3, 0, BOUNDARY, 1),
+                    e(4, 0, BOUNDARY, 2),
+                ],
+            },
+            params: vec![],
+            inputs: vec![Port { name: "prefix".into(), ty: Type::Text }],
+            outputs: ["header", "trimmed", "starts"].map(|n| Port { name: n.into(), ty: Type::Any }).to_vec(),
+        };
+        let fed = SecretFed::of(&root, &r);
+        assert_eq!(fed.output(&[2], 0), Taint::Literal, "the header holds it as it is");
+        assert!(fed.derives(&[3]), "a trimmed secret is derived");
+        assert!(!fed.derives(&[4]), "startsWith answers a Boolean");
     }
 
     /// A record holding a secret, merged into another, still holds it as it is, and so do its
