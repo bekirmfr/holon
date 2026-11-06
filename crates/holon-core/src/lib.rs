@@ -25,6 +25,7 @@
 mod determinism;
 mod advisory;
 mod catalog;
+mod dates;
 mod declare;
 mod docs;
 mod encapsulate;

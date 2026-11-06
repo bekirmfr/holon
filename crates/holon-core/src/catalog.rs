@@ -48,6 +48,8 @@ pub const GENESIS: &[&str] = &[
     "values", "from_entries", "merge", "has", "group_by", "same_value", "type_of",
     // pure — JSON (2)
     "json_parse", "json_stringify",
+    // pure — dates (5): JavaScript's Date in UTC, a date its time value in milliseconds (dates.rs)
+    "date_part", "date_utc", "date_set", "date_text", "date_parse",
     // pure — signatures and encodings (5): checking a webhook's signature
     "sha256", "hmac_sha256", "hex", "base64", "secure_equals",
     // pure — universal, any-typed (7): as_text is to_text's message form, the identity on text;
@@ -112,7 +114,7 @@ pub const GENESIS: &[&str] = &[
 /// hand-listing names in TypeScript that could silently drift from what `compute` actually does.
 pub const VARIADIC: &[&str] = &[
     "add", "multiply", "max", "min", "and", "or", "concat", "list", "map", "fold", "any", "all", "filter", "find", "find_index", "find_last",
-    "find_last_index", "sort_by", "merge", "group_by", "json_parse", "json_stringify",
+    "find_last_index", "sort_by", "merge", "group_by", "json_parse", "json_stringify", "date_utc", "date_set",
 ];
 
 /// The variadic leaves whose extra inputs are any type, passed to their function, rather than
@@ -151,6 +153,9 @@ pub const FAMILIES: &[(&str, &str, &[&str])] = &[
     ("to_number", "grammar", &["number", "float", "int"]),
     ("number_format", "style", &["string", "fixed", "precision", "exponential"]),
     ("slice", "mode", &["length", "end"]),
+    ("date_part", "part", crate::dates::PARTS),
+    ("date_set", "part", crate::dates::SET_PARTS),
+    ("date_text", "format", crate::dates::FORMATS),
 ];
 
 /// The values leaf `name`'s family parameter `param` may take, if it is one.
@@ -324,6 +329,16 @@ pub fn interface_of(name: &str) -> Option<Unit> {
             Text,
         ),
         "pair" => prim(vec![port("a", Any), port("b", Any)], vec![], Product(vec![Any, Any])),
+
+        // ── pure — dates ── a date is its time value, milliseconds since 1970 in UTC; a leaf takes
+        // a text for it too, as `new Date(t)` does. `date_utc` takes 1 to 7 numbers with + (the
+        // year, then month, date, hours, minutes, seconds, milliseconds), `date_set` the date and
+        // 1 to 4 numbers, from its `part` on.
+        "date_part" => prim(vec![port("time", Any)], vec![Param::frozen("part", "time")], Number),
+        "date_utc" => prim(vec![port("year", Number)], vec![], Number),
+        "date_set" => prim(vec![port("time", Any), port("value", Number)], vec![Param::frozen("part", "year")], Number),
+        "date_text" => prim(vec![port("time", Any)], vec![Param::frozen("format", "iso")], Text),
+        "date_parse" => prim(vec![port("text", Text)], vec![], Number),
 
         // ── pure — signatures and encodings (crypto.rs) ── digests as lowercase `hex` or `base64`.
         "sha256" => prim(vec![port("text", Text)], vec![Param::frozen("encoding", "hex")], Text),
@@ -591,7 +606,7 @@ mod tests {
     }
 
     #[test]
-    fn genesis_has_134_leaves() {
+    fn genesis_has_139_leaves() {
         // The §13a count — a tripwire if the frozen set is ever changed by accident.
         // 37 + to_text + is_truthy + guard + default + equals (the universal any-typed
         // primitives) + the record kit (record, field, with_field, without_field, keys), added
@@ -612,8 +627,9 @@ mod tests {
         // (at, indices, entries, any, all, filter, find_index, find_last, find_last_index,
         // sort_by, includes, last_index_of, reverse, to_spliced, with_item, fill, copy_within,
         // sort, flat, is_list, unique), find among them now; and the record leaves (values,
-        // from_entries, merge, has, group_by, same_value, type_of).
-        assert_eq!(GENESIS.len(), 134);
+        // from_entries, merge, has, group_by, same_value, type_of); and the date leaves (date_part,
+        // date_utc, date_set, date_text, date_parse).
+        assert_eq!(GENESIS.len(), 139);
     }
 
     #[test]

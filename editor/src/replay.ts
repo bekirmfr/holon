@@ -711,6 +711,13 @@ function whyNothing(node: ReplayNode, trace: NodeTrace): string {
       return "its condition was false";
     case "json_parse":
       return "its text isn't valid JSON";
+    case "date_part":
+    case "date_set":
+    case "date_text":
+    case "date_utc":
+      return "the date is out of range (±8.64e15 ms), or isn't one";
+    case "date_parse":
+      return "its text isn't a date in JavaScript's format, with Z or an offset after a time";
     case "from_entries":
       return "an entry isn't a [key, value] pair with a text key";
     case "group_by":

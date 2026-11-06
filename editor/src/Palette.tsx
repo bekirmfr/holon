@@ -43,6 +43,10 @@ const CATALOG_GROUPS: readonly { name: string; items: ReadonlySet<string> }[] = 
     ]),
   },
   {
+    name: "date",
+    items: new Set(["date_part", "date_utc", "date_set", "date_text", "date_parse"]),
+  },
+  {
     name: "text",
     items: new Set(["concat", "uppercase", "lowercase", "text_length", "slice", "index_of", "split"]),
   },

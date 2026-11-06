@@ -1495,9 +1495,26 @@ fn check_fraction_parity() {
             results.push(one(&family("number_format", &[("style", style)]), &[va.clone(), num(digits)]));
         }
         results.push(one(&family("number_format", &[("style", "exponential")]), std::slice::from_ref(&va)));
+
+        // The date leaves (core's dates.rs): i64 parts and MakeDay and MakeTime's IEEE sums, a
+        // time value across the whole range from each operand, and the operands as parts.
+        let time = num((a * 8.64e12).trunc());
+        for part in holon_core::family_values("date_part", "part").unwrap() {
+            results.push(one(&family("date_part", &[("part", part)]), std::slice::from_ref(&time)));
+        }
+        for format in holon_core::family_values("date_text", "format").unwrap() {
+            results.push(one(&family("date_text", &[("format", format)]), std::slice::from_ref(&time)));
+        }
+        let parts: Vec<Value> = (0..7).map(|k| num(if k == 0 { a } else { operand(i) })).collect();
+        results.push(one(&Unit { inputs: vec![], ..prim("date_utc") }, &parts));
+        for part in holon_core::family_values("date_set", "part").unwrap() {
+            results.push(one(&family("date_set", &[("part", part)]), &[time.clone(), vb.clone()]));
+        }
+        let iso = one(&family("date_text", &[("format", "iso")]), std::slice::from_ref(&time));
+        results.push(one(&prim("date_parse"), &[iso]));
     }
     let digest = to_hex(&holon_core::hash_value(&Value::List(results)).unwrap());
-    assert_eq!(digest, "6f852091e2fd30f2442b19df99f222a9d8a34a25088d7d64cc30692ba22b0326");
+    assert_eq!(digest, "a67e5e95e3a16b6bfb256e77484abf204fbe80589934cb5fea8e7bb6f545762e");
 }
 
 /// A family leaf with its params set (`fn: "sin"`), as `prim` builds a leaf.
@@ -1603,8 +1620,8 @@ fn check_variadic_primitives() {
     assert_eq!(
         sorted,
         vec![
-            "add", "all", "and", "any", "concat", "filter", "find", "find_index", "find_last", "find_last_index", "fold", "group_by", "json_parse", "json_stringify", "list",
-            "map", "max", "merge", "min", "multiply", "or", "sort_by"
+            "add", "all", "and", "any", "concat", "date_set", "date_utc", "filter", "find", "find_index", "find_last", "find_last_index", "fold", "group_by", "json_parse",
+            "json_stringify", "list", "map", "max", "merge", "min", "multiply", "or", "sort_by"
         ]
     );
     // A higher-order leaf's extra inputs are passed to its function: any type, not more of one port.

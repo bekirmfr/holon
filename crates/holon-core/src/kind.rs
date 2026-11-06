@@ -293,6 +293,7 @@ pub fn capabilities_of(name: &str, params: &[Param]) -> Option<Capabilities> {
         | "record" | "field" | "with_field" | "without_field" | "keys"
         | "lookup" | "insert" | "remove"
         | "values" | "from_entries" | "merge" | "has" | "group_by" | "same_value" | "type_of"
+        | "date_part" | "date_utc" | "date_set" | "date_text" | "date_parse"
         | "json_parse" | "json_stringify"
         | "sha256" | "hmac_sha256" | "hex" | "base64" | "secure_equals"
         | "to_text" | "as_text" | "is_truthy" | "guard" | "default" | "coalesce" | "equals"
@@ -834,6 +835,7 @@ mod tests {
             "at", "indices", "entries", "includes", "last_index_of", "reverse", "to_spliced", "with_item", "fill", "copy_within", "sort", "flat", "is_list", "unique",
             "any", "all", "filter", "find", "find_index", "find_last", "find_last_index", "sort_by",
             "values", "from_entries", "merge", "has", "group_by", "same_value", "type_of",
+            "date_part", "date_utc", "date_set", "date_text", "date_parse",
             "join", "cons", "head", "tail", "is_empty", "pair", "some", "none", "to_text", "as_text", "is_truthy", "guard", "default", "coalesce", "equals", "fold", "map",
         ];
         for name in PURE {

@@ -24,7 +24,7 @@ effect is a value core builds and the host performs ([holon-host](holon-host.md)
 | `hash.rs` | `Unit`, `UnitBody`, `Param`, `Port`, `Edge`, `Type`; `encode_preimage`, `decode_preimage`, `hash_unit`, `canonical_child_order` |
 | `value.rs`, `value_hash.rs`, `json.rs` | `Value`; `encode_value`, `decode_value`, `hash_value`, `state_root`, `run_id`; JSON both ways |
 | `validate.rs`, `resolve.rs` | `validate`, `compatible`; the `Resolver` trait and `MapResolver` |
-| `catalog.rs`, `primitives.rs`, `numbers.rs`, `lists.rs`, `records.rs`, `docs.rs`, `crypto.rs` | `GENESIS`, `interface_of`, `VARIADIC`, `PASSES_EXTRA`, `function_takes`, `FAMILIES`, `TRIGGERED`; `compute`, the `ops!` list, the number leaves, the list leaves and `sort_by`'s merge sort, the record leaves; `describe` |
+| `catalog.rs`, `primitives.rs`, `numbers.rs`, `lists.rs`, `records.rs`, `dates.rs`, `docs.rs`, `crypto.rs` | `GENESIS`, `interface_of`, `VARIADIC`, `PASSES_EXTRA`, `function_takes`, `FAMILIES`, `TRIGGERED`; `compute`, the `ops!` list, the number leaves, the list leaves and `sort_by`'s merge sort, the record and date leaves; `describe` |
 | `eval.rs`, `eager.rs` | `eval`, `eval_observed`, `Observer`, `Slot`, `Answer`, `choice_next`, `Shape`, `Shapes`; the eager oracle |
 | `kind.rs`, `manifest.rs`, `taint.rs`, `sql.rs`, `documents.rs` | `Capability`, `Kind`, `capabilities`; `manifest_items`, `consent_name`; secret flow; what a database leaf touches |
 | `declare.rs`, `triggers.rs` | `read_server`, `match_route`, `LogLevel`, `Server::handlers`; file triggers |
@@ -64,9 +64,9 @@ collected, for the editor.
 
 ### The catalog
 
-`GENESIS` names the 134 primitives. Each name has its facts in one place each: its interface
+`GENESIS` names the 139 primitives. Each name has its facts in one place each: its interface
 (`interface_of`), its capabilities (`capabilities_of`, `kind.rs`), what it does in words
-(`describe`), whether it grows inputs (`VARIADIC`) and its computation. `compute` covers 100 of them,
+(`describe`), whether it grows inputs (`VARIADIC`) and its computation. `compute` covers 105 of them,
 by an `Op` that one list (`ops!`) makes along with `Op::of`, so a name can't be in one and not the
 other (RA D1). The rest are not computed here: `map`, `fold` and the other higher-order leaves
 (`PASSES_EXTRA`: `filter`, `any`, the `find` family, `sort_by`, `group_by`, …) are the evaluator's; 18 build a

@@ -13,7 +13,7 @@ last record (see [Calls](reference.md#calls)). Many are written another way (`a 
 
 These touch nothing outside: given the same inputs, they always give the same output.
 
-[`const`](#const) · [`add`](#add) · [`multiply`](#multiply) · [`subtract`](#subtract) · [`divide`](#divide) · [`compare`](#compare) · [`and`](#and) · [`or`](#or) · [`not`](#not) · [`select`](#select) · [`cons`](#cons) · [`head`](#head) · [`tail`](#tail) · [`is_empty`](#is_empty) · [`fold`](#fold) · [`map`](#map) · [`math`](#math) · [`max`](#max) · [`min`](#min) · [`aggregate`](#aggregate) · [`atan2`](#atan2) · [`power`](#power) · [`remainder`](#remainder) · [`bitwise`](#bitwise) · [`number_test`](#number_test) · [`to_number`](#to_number) · [`number_format`](#number_format) · [`concat`](#concat) · [`uppercase`](#uppercase) · [`lowercase`](#lowercase) · [`text_length`](#text_length) · [`slice`](#slice) · [`index_of`](#index_of) · [`split`](#split) · [`list`](#list) · [`get`](#get) · [`append`](#append) · [`extend`](#extend) · [`length`](#length) · [`sum`](#sum) · [`join`](#join) · [`at`](#at) · [`indices`](#indices) · [`entries`](#entries) · [`any`](#any) · [`all`](#all) · [`filter`](#filter) · [`find`](#find) · [`find_index`](#find_index) · [`find_last`](#find_last) · [`find_last_index`](#find_last_index) · [`sort_by`](#sort_by) · [`includes`](#includes) · [`last_index_of`](#last_index_of) · [`reverse`](#reverse) · [`to_spliced`](#to_spliced) · [`with_item`](#with_item) · [`fill`](#fill) · [`copy_within`](#copy_within) · [`sort`](#sort) · [`flat`](#flat) · [`is_list`](#is_list) · [`unique`](#unique) · [`range`](#range) · [`pair`](#pair) · [`some`](#some) · [`none`](#none) · [`record`](#record) · [`field`](#field) · [`with_field`](#with_field) · [`without_field`](#without_field) · [`keys`](#keys) · [`lookup`](#lookup) · [`insert`](#insert) · [`remove`](#remove) · [`values`](#values) · [`from_entries`](#from_entries) · [`merge`](#merge) · [`has`](#has) · [`group_by`](#group_by) · [`same_value`](#same_value) · [`type_of`](#type_of) · [`json_parse`](#json_parse) · [`json_stringify`](#json_stringify) · [`sha256`](#sha256) · [`hmac_sha256`](#hmac_sha256) · [`hex`](#hex) · [`base64`](#base64) · [`secure_equals`](#secure_equals) · [`to_text`](#to_text) · [`as_text`](#as_text) · [`is_truthy`](#is_truthy) · [`guard`](#guard) · [`default`](#default) · [`coalesce`](#coalesce) · [`equals`](#equals)
+[`const`](#const) · [`add`](#add) · [`multiply`](#multiply) · [`subtract`](#subtract) · [`divide`](#divide) · [`compare`](#compare) · [`and`](#and) · [`or`](#or) · [`not`](#not) · [`select`](#select) · [`cons`](#cons) · [`head`](#head) · [`tail`](#tail) · [`is_empty`](#is_empty) · [`fold`](#fold) · [`map`](#map) · [`math`](#math) · [`max`](#max) · [`min`](#min) · [`aggregate`](#aggregate) · [`atan2`](#atan2) · [`power`](#power) · [`remainder`](#remainder) · [`bitwise`](#bitwise) · [`number_test`](#number_test) · [`to_number`](#to_number) · [`number_format`](#number_format) · [`concat`](#concat) · [`uppercase`](#uppercase) · [`lowercase`](#lowercase) · [`text_length`](#text_length) · [`slice`](#slice) · [`index_of`](#index_of) · [`split`](#split) · [`list`](#list) · [`get`](#get) · [`append`](#append) · [`extend`](#extend) · [`length`](#length) · [`sum`](#sum) · [`join`](#join) · [`at`](#at) · [`indices`](#indices) · [`entries`](#entries) · [`any`](#any) · [`all`](#all) · [`filter`](#filter) · [`find`](#find) · [`find_index`](#find_index) · [`find_last`](#find_last) · [`find_last_index`](#find_last_index) · [`sort_by`](#sort_by) · [`includes`](#includes) · [`last_index_of`](#last_index_of) · [`reverse`](#reverse) · [`to_spliced`](#to_spliced) · [`with_item`](#with_item) · [`fill`](#fill) · [`copy_within`](#copy_within) · [`sort`](#sort) · [`flat`](#flat) · [`is_list`](#is_list) · [`unique`](#unique) · [`range`](#range) · [`pair`](#pair) · [`some`](#some) · [`none`](#none) · [`record`](#record) · [`field`](#field) · [`with_field`](#with_field) · [`without_field`](#without_field) · [`keys`](#keys) · [`lookup`](#lookup) · [`insert`](#insert) · [`remove`](#remove) · [`values`](#values) · [`from_entries`](#from_entries) · [`merge`](#merge) · [`has`](#has) · [`group_by`](#group_by) · [`same_value`](#same_value) · [`type_of`](#type_of) · [`json_parse`](#json_parse) · [`json_stringify`](#json_stringify) · [`date_part`](#date_part) · [`date_utc`](#date_utc) · [`date_set`](#date_set) · [`date_text`](#date_text) · [`date_parse`](#date_parse) · [`sha256`](#sha256) · [`hmac_sha256`](#hmac_sha256) · [`hex`](#hex) · [`base64`](#base64) · [`secure_equals`](#secure_equals) · [`to_text`](#to_text) · [`as_text`](#as_text) · [`is_truthy`](#is_truthy) · [`guard`](#guard) · [`default`](#default) · [`coalesce`](#coalesce) · [`equals`](#equals)
 
 ### `const`
 
@@ -686,6 +686,46 @@ json_stringify(value: Any) -> out: Text  {indent, keys, fn}
 ```
 
 Writes a value out as JSON text, as JavaScript's JSON.stringify: indent lays it out a member a line, keys (a JSON list) keeps only those keys of every record, in that order, and fn, a function of each key and value applied from the outside in, writes its answer instead (the replacer); one it answers nothing for is left out.
+
+### `date_part`
+
+```
+date_part(time: Any) -> out: Number  {part: time}
+```
+
+A date's time value, or one of its parts in UTC, chosen by part: time (new Date(x): a number of milliseconds since 1970, or a text as date_parse reads it), year, month (0 to 11), date, day (0 is Sunday), hours, minutes, seconds, milliseconds (getUTCFullYear() and the rest). Nothing for a date out of range.
+
+### `date_utc`
+
+```
+date_utc(year: Number) -> out: Number
+```
+
+The time value of a date and time in UTC: Date.UTC(year, month, date, hours, minutes, seconds, ms), month counting from 0, the parts after the year optional (month 0, date 1, the rest 0); a year 0 to 99 is 1900 plus it. Takes the parts after the year with +.
+
+### `date_set`
+
+```
+date_set(time: Any, value: Number) -> out: Number  {part: year}
+```
+
+A date with parts replaced, from part on, the rest its own: new Date(t).setUTCHours(h, m, s, ms) and the other setUTC… methods, as the time value they give. The date is a time value or a text, as for new Date(t). A part past its end carries (hour 25 is 1 the next day).
+
+### `date_text`
+
+```
+date_text(time: Any) -> out: Text  {format: iso}
+```
+
+A date as text, by format: iso (new Date(t).toISOString(): 2000-02-29T12:00:00.000Z) or utc (toUTCString(): Tue, 29 Feb 2000 12:00:00 GMT). The date is a time value or a text, as for new Date(t).
+
+### `date_parse`
+
+```
+date_parse(text: Text) -> out: Number
+```
+
+The time value a date's text gives: Date.parse(t), in JavaScript's date format (2000-02-29, 2000-02-29T12:00:00Z, …). A time without Z or an offset produces nothing: Holon has no local time.
 
 ### `sha256`
 

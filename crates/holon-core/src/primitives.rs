@@ -13,7 +13,7 @@
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 
-use crate::{lists, records};
+use crate::{dates, lists, records};
 use crate::{Param, Value};
 
 /// Dispatch a primitive by name to its native computation. Evaluate primitive `name` on its present inputs: none for a name that isn't one, or a driver
@@ -127,6 +127,11 @@ ops! {
     "has" => Has,
     "same_value" => SameValue,
     "type_of" => TypeOf,
+    "date_part" => DatePart,
+    "date_utc" => DateUtc,
+    "date_set" => DateSet,
+    "date_text" => DateText,
+    "date_parse" => DateParse,
     "json_parse" => JsonParse,
     "json_stringify" => JsonStringify,
     "sha256" => Sha256,
@@ -684,6 +689,25 @@ pub(crate) fn compute_op(op: Op, name: &str, inputs: &[&Value], params: &[Param]
         Op::TypeOf => {
             let [x] = inputs else { return None };
             records::type_of(x).map(|t| Value::Text(t.to_string()))
+        }
+
+        // ── dates (dates.rs): JavaScript's Date in UTC, a date its time value. ──
+        Op::DatePart => {
+            let [x] = inputs else { return None };
+            dates::part(x, param(params, "part")?).map(Value::Number)
+        }
+        Op::DateUtc => dates::utc(inputs).map(Value::Number),
+        Op::DateSet => {
+            let [t, given @ ..] = inputs else { return None };
+            dates::set(t, given, param(params, "part")?).map(Value::Number)
+        }
+        Op::DateText => {
+            let [t] = inputs else { return None };
+            dates::text(t, param(params, "format")?).map(Value::Text)
+        }
+        Op::DateParse => {
+            let [Value::Text(s)] = inputs else { return None };
+            dates::parse(s).map(Value::Number)
         }
 
         // ── JSON (M1): request and response bodies. See json.rs for the mapping; malformed input,
