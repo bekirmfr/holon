@@ -10,6 +10,7 @@
 //! through an `any` port, since wire-time checking (P1.3.1) already rules out the rest.
 //! The higher-order `Map` (and the eval `ctx` it needs) arrive with P1.5.1.
 
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 
 use crate::{Param, Value};
@@ -198,7 +199,12 @@ pub(crate) fn compute_op(op: Op, name: &str, inputs: &[&Value], params: &[Param]
 
         // ── text ──
         Op::Concat => {
-            let mut s = String::new();
+            // Measured first, so the text is made once at its length rather than grown.
+            let mut len = 0;
+            for v in inputs {
+                len += as_text(v)?.len();
+            }
+            let mut s = String::with_capacity(len);
             for v in inputs {
                 s.push_str(as_text(v)?);
             }
@@ -328,7 +334,11 @@ pub(crate) fn compute_op(op: Op, name: &str, inputs: &[&Value], params: &[Param]
             let [s, start, len] = inputs else { return None };
             let (s, start, len) = (as_text(s)?, as_index(start)?, as_index(len)?);
             // start past the end ⇒ empty; len past the end ⇒ truncated. Total for valid types.
-            Some(Value::Text(s.chars().skip(start).take(len).collect()))
+            // The chars from `start`, `len` of them: found by where they begin in the text, and
+            // copied at once rather than char by char.
+            let rest = &s[s.char_indices().nth(start).map_or(s.len(), |(b, _)| b)..];
+            let piece = &rest[..rest.char_indices().nth(len).map_or(rest.len(), |(b, _)| b)];
+            Some(Value::Text(piece.to_string()))
         }
         // The pieces of `text` between each occurrence of `sep`, in order: `join`'s inverse, so
         // `join(split(t, s), s) == t`. Text without `sep` is one piece (the empty text too);
@@ -360,7 +370,9 @@ pub(crate) fn compute_op(op: Op, name: &str, inputs: &[&Value], params: &[Param]
         }
         Op::Append => {
             let [l, item] = inputs else { return None };
-            let mut xs = as_list(l)?.to_vec();
+            let l = as_list(l)?;
+            let mut xs = Vec::with_capacity(l.len() + 1);
+            xs.extend_from_slice(l);
             xs.push((*item).clone());
             Some(Value::List(xs))
         }
@@ -368,8 +380,10 @@ pub(crate) fn compute_op(op: Op, name: &str, inputs: &[&Value], params: &[Param]
         // list; a single item is `append`'s job, never wrapped here.
         Op::Extend => {
             let [l, items] = inputs else { return None };
-            let mut xs = as_list(l)?.to_vec();
-            xs.extend_from_slice(as_list(items)?);
+            let (l, items) = (as_list(l)?, as_list(items)?);
+            let mut xs = Vec::with_capacity(l.len() + items.len());
+            xs.extend_from_slice(l);
+            xs.extend_from_slice(items);
             Some(Value::List(xs))
         }
         Op::Length => {
@@ -396,12 +410,23 @@ pub(crate) fn compute_op(op: Op, name: &str, inputs: &[&Value], params: &[Param]
         }
         Op::Join => {
             let [l, sep] = inputs else { return None };
-            let sep = as_text(sep)?;
-            let mut parts = Vec::new();
-            for v in as_list(l)? {
-                parts.push(as_text(v)?.to_string());
+            let (items, sep) = (as_list(l)?, as_text(sep)?);
+            // Measured first, then written once into one text, not each item copied to a piece
+            // and the pieces copied again.
+            // Saturating, as a capacity is only a hint: a separator long enough to overflow it on
+            // a 32-bit target is no reason to panic before the items are found not to be texts.
+            let mut len = sep.len().saturating_mul(items.len().saturating_sub(1));
+            for v in items {
+                len = len.saturating_add(as_text(v)?.len());
             }
-            Some(Value::Text(parts.join(sep)))
+            let mut s = String::with_capacity(len);
+            for (k, v) in items.iter().enumerate() {
+                if k > 0 {
+                    s.push_str(sep);
+                }
+                s.push_str(as_text(v)?);
+            }
+            Some(Value::Text(s))
         }
 
         // ── list structure (§13 irreducibles): O(1) build / inspect. `fold`-composites
@@ -701,6 +726,203 @@ pub(crate) fn compute_op(op: Op, name: &str, inputs: &[&Value], params: &[Param]
 
         // An unknown name has no Op: `compute` gives none for it, a driver or state boundary unit
         // being the host's.
+    }
+}
+
+/// The present inputs of a leaf as the evaluator hands them over when it can give some: each lent
+/// (`Cow::Borrowed`), or given (`Cow::Owned`), moved out of where it was kept because nothing will
+/// read it there again (eval.rs, `Prepared::fire_giving`).
+pub(crate) type Given<'v> = smallvec::SmallVec<[Cow<'v, Value>; 4]>;
+
+/// Whether leaf `op` builds its output from its input at `port` when that input is given, instead
+/// of copying it: what makes giving it worth anything. `append` grows its list in place, `field`
+/// moves the field out of its record, and so on; a leaf that only reads an input (`length`,
+/// `compare`) gains nothing from owning it.
+pub(crate) fn keeps(op: Op, port: usize) -> bool {
+    match op {
+        Op::Append | Op::Extend | Op::Cons | Op::WithField | Op::Pair => port < 2,
+        Op::Insert => port < 3,
+        Op::Select => port == 1 || port == 2,
+        Op::Tail | Op::WithoutField | Op::Remove | Op::Concat | Op::Head | Op::Get | Op::Field | Op::Lookup | Op::Some | Op::Default => port == 0,
+        Op::List => true,
+        _ => false,
+    }
+}
+
+/// [`compute_op`] on inputs some of which may be given (`Cow::Owned`): a leaf that builds its
+/// output from a given input builds it in place of that input, so `append` to a given list pushes
+/// onto it instead of copying it first, and `insert` adds to a given record. The output is always
+/// `compute_op`'s on the same values; only what is copied to make it differs. When there is no
+/// output, the inputs come back unchanged (`Err`), so a caller that gave one can put it back where
+/// it was: every arm checks everything it needs before it takes anything. They come back as they
+/// went in, not boxed, which would allocate for every leaf that produces nothing.
+#[allow(clippy::result_large_err)]
+pub(crate) fn compute_given<'v>(op: Op, name: &str, mut inputs: Given<'v>, params: &[Param]) -> Result<Value, Given<'v>> {
+    /// A given input's value, or a copy of a lent one.
+    fn own(v: Cow<'_, Value>) -> Value {
+        v.into_owned()
+    }
+    /// The items of a list input, already checked to be one.
+    fn items(v: Cow<'_, Value>) -> Vec<Value> {
+        match v {
+            Cow::Owned(Value::List(xs)) => xs,
+            Cow::Borrowed(Value::List(xs)) => xs.clone(),
+            _ => unreachable!("checked to be a list"),
+        }
+    }
+    /// The fields of a record input, already checked to be one.
+    fn fields(v: Cow<'_, Value>) -> BTreeMap<String, Value> {
+        match v {
+            Cow::Owned(Value::Record(fs)) => fs,
+            Cow::Borrowed(Value::Record(fs)) => fs.clone(),
+            _ => unreachable!("checked to be a record"),
+        }
+    }
+    /// The text of a text input, already checked to be one.
+    fn string(v: Cow<'_, Value>) -> String {
+        match v {
+            Cow::Owned(Value::Text(s)) => s,
+            Cow::Borrowed(Value::Text(s)) => s.clone(),
+            _ => unreachable!("checked to be a text"),
+        }
+    }
+    let is = |i: usize, f: fn(&Value) -> bool| inputs.get(i).is_some_and(|v| f(v));
+    let list = |v: &Value| matches!(v, Value::List(_));
+    let record = |v: &Value| matches!(v, Value::Record(_));
+    let text = |v: &Value| matches!(v, Value::Text(_));
+    let n = inputs.len();
+    match op {
+        Op::Append if n == 2 && is(0, list) => {
+            let item = own(inputs.pop().unwrap());
+            let mut xs = items(inputs.pop().unwrap());
+            xs.push(item);
+            Ok(Value::List(xs))
+        }
+        Op::Extend if n == 2 && is(0, list) && is(1, list) => {
+            let more = inputs.pop().unwrap();
+            let first = inputs.pop().unwrap();
+            let shorter = |first: &Value, ys: &[Value]| as_list(first).is_some_and(|xs| xs.len() < ys.len());
+            match more {
+                // The second list given and the longer (`[x, ...acc]`): the first's items go in
+                // front of it, where it is, rather than it behind a copy of them.
+                Cow::Owned(Value::List(mut ys)) if shorter(&first, &ys) => {
+                    ys.splice(0..0, items(first));
+                    Ok(Value::List(ys))
+                }
+                more => {
+                    let mut xs = items(first);
+                    match more {
+                        Cow::Owned(Value::List(mut ys)) => xs.append(&mut ys),
+                        more => xs.extend_from_slice(as_list(&more).expect("checked to be a list")),
+                    }
+                    Ok(Value::List(xs))
+                }
+            }
+        }
+        Op::Cons if n == 2 && is(1, list) => {
+            let mut xs = items(inputs.pop().unwrap());
+            xs.insert(0, own(inputs.pop().unwrap()));
+            Ok(Value::List(xs))
+        }
+        Op::Tail if n == 1 && matches!(&*inputs[0], Value::List(xs) if !xs.is_empty()) => {
+            let mut xs = items(inputs.pop().unwrap());
+            xs.remove(0);
+            Ok(Value::List(xs))
+        }
+        Op::Insert if n == 3 && is(0, record) && is(1, text) => {
+            let v = own(inputs.pop().unwrap());
+            let key = string(inputs.pop().unwrap());
+            let mut fs = fields(inputs.pop().unwrap());
+            fs.insert(key, v);
+            Ok(Value::Record(fs))
+        }
+        Op::WithField if n == 2 && is(0, record) && param(params, "name").is_some() => {
+            let v = own(inputs.pop().unwrap());
+            let mut fs = fields(inputs.pop().unwrap());
+            fs.insert(param(params, "name").expect("checked").to_string(), v);
+            Ok(Value::Record(fs))
+        }
+        Op::WithoutField if n == 1 && is(0, record) && param(params, "name").is_some() => {
+            let mut fs = fields(inputs.pop().unwrap());
+            fs.remove(param(params, "name").expect("checked"));
+            Ok(Value::Record(fs))
+        }
+        Op::Remove if n == 2 && is(0, record) && is(1, text) => {
+            let key = inputs.pop().unwrap();
+            let mut fs = fields(inputs.pop().unwrap());
+            fs.remove(as_text(&key).expect("checked to be a text"));
+            Ok(Value::Record(fs))
+        }
+        // The first text grows by the others: one allocation, sized once.
+        Op::Concat if inputs.iter().all(|v| text(v)) => {
+            let more: usize = inputs.iter().skip(1).map(|v| as_text(v).map_or(0, str::len)).sum();
+            let mut parts = inputs.into_iter();
+            let mut s = parts.next().map_or_else(String::new, string);
+            s.reserve(more);
+            for v in parts {
+                s.push_str(as_text(&v).expect("checked to be a text"));
+            }
+            Ok(Value::Text(s))
+        }
+        Op::Select if n == 3 && matches!(*inputs[0], Value::Boolean(_)) => {
+            let b = inputs.pop().unwrap();
+            let a = inputs.pop().unwrap();
+            Ok(own(if matches!(*inputs[0], Value::Boolean(true)) { a } else { b }))
+        }
+        Op::Head if n == 1 && matches!(&*inputs[0], Value::List(xs) if !xs.is_empty()) => Ok(items_first(inputs.pop().unwrap())),
+        Op::Get if n == 2 && matches!((&*inputs[0], as_index(&inputs[1])), (Value::List(xs), Some(i)) if i < xs.len()) => {
+            let i = as_index(&inputs.pop().unwrap()).expect("checked");
+            Ok(match inputs.pop().unwrap() {
+                Cow::Owned(Value::List(mut xs)) => xs.swap_remove(i),
+                l => as_list(&l).expect("checked")[i].clone(),
+            })
+        }
+        Op::Field if n == 1 && matches!((&*inputs[0], param(params, "name")), (Value::Record(fs), Some(k)) if fs.contains_key(k)) => {
+            let k = param(params, "name").expect("checked");
+            Ok(match inputs.pop().unwrap() {
+                Cow::Owned(Value::Record(mut fs)) => fs.remove(k).expect("checked"),
+                r => field_of(&r, k),
+            })
+        }
+        Op::Lookup if n == 2 && matches!((&*inputs[0], &*inputs[1]), (Value::Record(fs), Value::Text(k)) if fs.contains_key(k)) => {
+            let key = inputs.pop().unwrap();
+            let k = as_text(&key).expect("checked");
+            Ok(match inputs.pop().unwrap() {
+                Cow::Owned(Value::Record(mut fs)) => fs.remove(k).expect("checked"),
+                r => field_of(&r, k),
+            })
+        }
+        Op::List => Ok(Value::List(inputs.into_iter().map(own).collect())),
+        Op::Pair if n == 2 => {
+            let b = own(inputs.pop().unwrap());
+            Ok(Value::List(vec![own(inputs.pop().unwrap()), b]))
+        }
+        Op::Some if n == 1 => Ok(Value::Sum { arm: 0, payload: Box::new(own(inputs.pop().unwrap())) }),
+        Op::Default if n == 1 => Ok(own(inputs.pop().unwrap())),
+        // Anything else reads its inputs: lent, as it always is.
+        _ => {
+            let out = {
+                let lent: smallvec::SmallVec<[&Value; 4]> = inputs.iter().map(|v| v.as_ref()).collect();
+                compute_op(op, name, &lent, params)
+            };
+            out.ok_or(inputs)
+        }
+    }
+}
+
+/// The first item of a non-empty list input, moved out of it when it is given.
+fn items_first(v: Cow<'_, Value>) -> Value {
+    match v {
+        Cow::Owned(Value::List(xs)) => xs.into_iter().next().expect("checked to be non-empty"),
+        l => as_list(&l).and_then(|xs| xs.first()).expect("checked to be non-empty").clone(),
+    }
+}
+
+/// The field `k` of a record input, already checked to hold it, copied.
+fn field_of(r: &Value, k: &str) -> Value {
+    match r {
+        Value::Record(fs) => fs[k].clone(),
+        _ => unreachable!("checked to be a record"),
     }
 }
 
@@ -1409,6 +1631,17 @@ mod tests {
         assert_eq!(compute("slice", &[&txt("hi"), &num(5.0), &num(2.0)], &[]), Some(txt("")));
         assert_eq!(compute("index_of", &[&txt("hello"), &txt("ll")], &[]), Some(num(2.0)));
         assert_eq!(compute("index_of", &[&txt("hello"), &txt("z")], &[]), Some(num(-1.0)));
+        // `slice` finds where its chars begin and copies them at once: the chars `start..start +
+        // len` exactly, as taking them one by one gives, in texts of one-, two-, three- and
+        // four-byte chars, wherever the bounds fall.
+        for s in ["", "hello", "ab\u{00e7}d", "\u{00e7}\u{20ac}x\u{1f600}y", "\u{1f600}\u{1f600}"] {
+            for start in 0..7 {
+                for len in 0..7 {
+                    let one_by_one: String = s.chars().skip(start).take(len).collect();
+                    assert_eq!(compute("slice", &[&txt(s), &num(start as f64), &num(len as f64)], &[]), Some(txt(&one_by_one)), "{s:?} {start} {len}");
+                }
+            }
+        }
     }
     #[test]
     fn to_text_covers_every_value_shape() {
@@ -1774,5 +2007,56 @@ mod tests {
         let owned = [num(3.0), num(7.0), num(5.0)];
         let inputs: Vec<&Value> = owned.iter().collect();
         assert_eq!(compute("add", &inputs, &[]), compute("add", &inputs, &[]));
+    }
+
+    /// Every leaf that builds on a given input computes what it computes lent, on every mix of
+    /// given and lent inputs over values of every kind, the wrong ones included; and when it
+    /// computes nothing, it hands back what it was given, unchanged and in order.
+    #[test]
+    fn given_inputs_compute_what_lent_ones_do() {
+        let record = |fs: &[(&str, Value)]| Value::Record(fs.iter().map(|(k, v)| (k.to_string(), v.clone())).collect());
+        let pool = [
+            num(0.0),
+            num(1.0),
+            num(-2.5),
+            boo(true),
+            boo(false),
+            txt(""),
+            txt("a"),
+            txt("bé"),
+            list(vec![]),
+            list(vec![num(1.0), txt("a")]),
+            list(vec![list(vec![num(1.0)]), num(2.0), num(3.0)]),
+            record(&[]),
+            record(&[("a", num(1.0)), ("b", txt("x"))]),
+            Value::Sum { arm: 0, payload: Box::new(num(1.0)) },
+        ];
+        let params = [p("name", "a"), p("type", "Number"), p("value", "5")];
+        let mut checked = 0;
+        for &(name, op) in Op::ALL {
+            if !(0..3).any(|port| keeps(op, port)) {
+                continue;
+            }
+            for arity in 0..=3usize {
+                let combos = pool.len().pow(arity as u32);
+                for combo in 0..combos {
+                    let inputs: Vec<&Value> = (0..arity).map(|i| &pool[combo / pool.len().pow(i as u32) % pool.len()]).collect();
+                    let lent = compute_op(op, name, &inputs, &params);
+                    for mask in 0..(1usize << arity) {
+                        let given: Given = inputs.iter().enumerate().map(|(i, v)| if mask >> i & 1 == 1 { Cow::Owned((*v).clone()) } else { Cow::Borrowed(*v) }).collect();
+                        match compute_given(op, name, given, &params) {
+                            Ok(v) => assert_eq!(Some(&v), lent.as_ref(), "{name} on {inputs:?}, given {mask:b}"),
+                            Err(back) => {
+                                assert_eq!(lent, None, "{name} on {inputs:?}, given {mask:b}: computed nothing given");
+                                let back: Vec<&Value> = back.iter().map(|v| v.as_ref()).collect();
+                                assert_eq!(back, inputs, "{name}, given {mask:b}: what came back");
+                            }
+                        }
+                        checked += 1;
+                    }
+                }
+            }
+        }
+        assert!(checked > 100_000, "{checked}");
     }
 }

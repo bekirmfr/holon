@@ -34,8 +34,10 @@ use crate::{primitives, Edge, Hash, Param, Resolver, Unit, UnitBody, Value, BOUN
 use crate::hash::parse_hash;
 use smallvec::{smallvec, SmallVec};
 use std::borrow::Cow;
+use std::cell::{OnceCell, RefCell};
 use std::collections::HashMap;
 use std::hash::{BuildHasherDefault, Hasher};
+use std::rc::Rc;
 
 /// The evaluator's own output shape (P4.7 + the SmallVec perf inch, 2026-07-02).
 /// Inline storage for 0 or 1 outputs — every genesis primitive declares exactly one, forever,
@@ -151,11 +153,24 @@ pub trait Observer {
     fn asserted(&mut self, _path: &[u32], _unit: &Unit, _inputs: &[Option<&Value>]) -> Option<Vec<Option<Value>>> {
         None
     }
+    /// Whether [`produced`](Observer::produced) looks at the outputs it is handed: yes (the
+    /// default) for anything that keeps or shows them. One that doesn't says so, and a choice
+    /// (`guard`, `coalesce`) that passes on a value it can't move, one its composite was lent or
+    /// one read elsewhere too, then lends it to its readers instead of keeping a copy as its own
+    /// output; it is reported `produced` with no outputs. A list a function uses twice goes
+    /// through a shared `guard`, so this is the copy of that list on every call.
+    fn reads_produced(&self) -> bool {
+        true
+    }
 }
 
 /// Observes nothing: what plain [`eval`] uses.
 pub struct NoObserver;
-impl Observer for NoObserver {}
+impl Observer for NoObserver {
+    fn reads_produced(&self) -> bool {
+        false
+    }
+}
 
 /// [`eval`], reporting each composite child's evaluation to `observer`. The result is identical.
 pub fn eval_observed(
@@ -172,6 +187,28 @@ pub fn eval_observed(
 /// own inputs, or the output of the child that made it), never copied to be read
 /// (docs/L4s/interpreter-path-L4.md, step 3). Inline for the usual few.
 type Refs<'a> = SmallVec<[Option<&'a Value>; 4]>;
+
+/// A node's inputs when some may be given: each lent (`Cow::Borrowed`) as [`Refs`] lends it, or
+/// given (`Cow::Owned`), moved out of where it was kept because nothing reads it there again, so
+/// the node builds on it instead of copying it (a `fold`'s accumulator, `append`'s list; see
+/// [`Prepared::fire_giving`]).
+type Args<'v> = SmallVec<[Option<Cow<'v, Value>>; 4]>;
+
+/// `inputs`, every one lent.
+fn lent<'v>(inputs: &[Option<&'v Value>]) -> Args<'v> {
+    inputs.iter().map(|v| v.map(Cow::Borrowed)).collect()
+}
+
+/// `args` as [`Refs`]: each read where it is, given or lent.
+fn refs<'a>(args: &'a [Option<Cow<'_, Value>>]) -> Refs<'a> {
+    args.iter().map(|v| v.as_deref()).collect()
+}
+
+/// Whether copying `v` copies anything more than its few bytes: what makes giving it, rather
+/// than lending it to be copied, worth the evaluator's while.
+fn heavy(v: &Value) -> bool {
+    !matches!(v, Value::Number(_) | Value::Boolean(_))
+}
 
 /// `inputs` owned, for the few nodes whose builders take them so (a request, a module).
 fn owned(inputs: &[Option<&Value>]) -> Vec<Option<Value>> {
@@ -348,10 +385,10 @@ fn eval_as(
     // absent): it is dropped here, so the leaf computes on its own inputs as it always did.
     let inputs = if kind.takes_trigger && inputs.len() == unit.inputs.len() { &inputs[..inputs.len() - 1] } else { inputs };
     match (kind.body, &unit.body) {
-        (Body::Map, _) => smallvec![eval_map(inputs, &unit.params, resolver, observer, path)],
+        (Body::Map, _) => smallvec![eval_map(&mut lent(inputs), &unit.params, resolver, observer, path)],
         // `fold` is the one iteration primitive (the universal list donor). It threads an
         // accumulator, which `map` does not.
-        (Body::Fold, _) => smallvec![eval_fold(inputs, &unit.params, resolver, observer, path)],
+        (Body::Fold, _) => smallvec![eval_fold(&mut lent(inputs), &unit.params, resolver, observer, path)],
         (Body::Ask(request), _) => ask(request.build(inputs, &unit.params), observer, path),
         // `coalesce` is the one leaf whose meaning is about absence: the first input that
         // arrived. The generic arm below would give the same answer today (it gathers present
@@ -376,7 +413,7 @@ fn eval_as(
             let present: SmallVec<[&Value; 4]> = inputs.iter().flatten().copied().collect();
             smallvec![Slot::of(op.and_then(|op| primitives::compute_op(op, name, &present, &unit.params)))]
         }
-        (_, UnitBody::Composite { children, edges }) => eval_composite(unit, children, edges, inputs, resolver, observer, path),
+        (_, UnitBody::Composite { children, edges }) => eval_composite(unit, children, edges, &mut lent(inputs), resolver, observer, path),
         // A module body: the engine behind the resolver runs it (docs/L4s/wasm-module-L4.md §5);
         // when it can't, the observer hears why, at this node.
         (_, UnitBody::Module { bytes }) => {
@@ -390,6 +427,86 @@ fn eval_as(
         // were, nothing is computed, as for a leaf that isn't one, instead of stopping the run
         // (docs/L4s/resilience-audit-L4.md, R3).
         (_, UnitBody::Primitive { .. }) => smallvec![Slot::Absent; unit.outputs.len()],
+    }
+}
+
+/// [`eval_as`] on inputs some of which may be given (a `fold`'s accumulator, a value its last
+/// reader takes): a leaf builds on what it is given ([`primitives::compute_given`]), a `map`,
+/// `fold` or composite hands it on, and anything else reads it as it would read it lent. The
+/// outputs are `eval_as`'s on the same values.
+///
+/// A `map`, `fold` or composite is handed `args` as they are, given or lent, rather than lent
+/// again through `eval_as`: the recursion from one function into the next comes this way, and
+/// goes through one frame fewer.
+#[inline(never)]
+fn eval_given<'r>(unit: &'r Unit, kind: &NodeKind, args: &mut Args<'_>, resolver: &'r impl Resolver, observer: &mut impl Observer, path: &mut Vec<u32>) -> Slots {
+    // A sink's trigger only has to be there, as `eval_as` reads it.
+    let n = if kind.takes_trigger && args.len() == unit.inputs.len() { args.len() - 1 } else { args.len() };
+    match (kind.body, &unit.body) {
+        (Body::Map, _) => smallvec![eval_map(&mut args[..n], &unit.params, resolver, observer, path)],
+        (Body::Fold, _) => smallvec![eval_fold(&mut args[..n], &unit.params, resolver, observer, path)],
+        (_, UnitBody::Composite { children, edges }) => eval_composite(unit, children, edges, &mut args[..n], resolver, observer, path),
+        (Body::Leaf { variadic, op: Some(op) }, UnitBody::Primitive { name }) if args.iter().any(|a| matches!(a, Some(Cow::Owned(v)) if heavy(v))) => {
+            smallvec![leaf_given(op, name, variadic, &mut args[..n], &unit.params)]
+        }
+        // Nothing given worth building on (a `fold` of numbers), or a node that only reads: lent,
+        // as always.
+        _ => eval_as(unit, kind, &refs(args), resolver, observer, path),
+    }
+}
+
+/// A leaf computed on `args`, building on what is given: what is given is the leaf's; what is
+/// lent stays where it is, for the caller's next application (a `map`'s extras). Apart from
+/// [`eval_given`], so the recursion through it doesn't carry this frame.
+#[inline(never)]
+fn leaf_given(op: Op, name: &str, variadic: bool, args: &mut [Option<Cow<'_, Value>>], params: &[Param]) -> Slot {
+    if variadic && args.iter().any(Option::is_none) {
+        return Slot::Absent;
+    }
+    let present = args
+        .iter_mut()
+        .filter_map(|arg| match arg {
+            Some(Cow::Owned(_)) => arg.take(),
+            Some(Cow::Borrowed(v)) => Some(Cow::Borrowed(*v)),
+            None => None,
+        })
+        .collect();
+    Slot::of(primitives::compute_given(op, name, present, params).ok())
+}
+
+/// What a leaf that produced nothing hands back of what it was given, by port ([`give_to_leaf`]).
+type Back = SmallVec<[(usize, Value); 2]>;
+
+/// A leaf, child of a composite, computed on `args` some of which are given ([`Prepared::fire_giving`]):
+/// its outputs, and when it produces nothing, what it was given, by port, to be put back where it
+/// was kept. Apart from `fire_giving`, so the recursion through it doesn't carry this frame.
+#[inline(never)]
+fn give_to_leaf(op: Op, name: &str, variadic: bool, args: Args<'_>, params: &[Param]) -> (Slots, Back) {
+    let back = |args: Args| -> Back {
+        args.into_iter()
+            .enumerate()
+            .filter_map(|(p, v)| match v {
+                Some(Cow::Owned(v)) => Some((p, v)),
+                _ => None,
+            })
+            .collect()
+    };
+    if variadic && args.iter().any(Option::is_none) {
+        return (smallvec![Slot::Absent], back(args));
+    }
+    // Present inputs in port order, as a lent leaf computes on them; what comes back is what went
+    // in, in order, each put back at its own port.
+    let ports: SmallVec<[usize; 4]> = (0..args.len()).filter(|&p| args[p].is_some()).collect();
+    let present = args.into_iter().flatten().collect();
+    match primitives::compute_given(op, name, present, params) {
+        Ok(v) => (smallvec![Slot::Value(v)], Back::new()),
+        Err(returned) => {
+            let mut at: Args = smallvec![None; ports.last().map_or(0, |&p| p + 1)];
+            for (v, p) in returned.into_iter().zip(ports) {
+                at[p] = Some(v);
+            }
+            (smallvec![Slot::Absent], back(at))
+        }
     }
 }
 
@@ -454,7 +571,7 @@ pub fn choice_next(name: &str, seen: &[Option<Slot>]) -> Option<Choice> {
     let at = |p: usize| seen.get(p).map_or(Some(In::Absent), |s| s.as_ref().map(In::of_slot));
     Some(match choose(which, at) {
         Chosen::Need(p) => Choice::Need(p),
-        Chosen::Done(slot) => Choice::Done(slot.owned()),
+        Chosen::Done(slot, _) => Choice::Done(slot.owned()),
     })
 }
 
@@ -499,10 +616,10 @@ impl<'a> In<'a> {
     }
 }
 
-/// [`Choice`], its output borrowed.
+/// [`Choice`], its output borrowed, with the port it was read from when it is an input's.
 enum Chosen<'a> {
     Need(usize),
-    Done(In<'a>),
+    Done(In<'a>, Option<usize>),
 }
 
 /// [`choice_next`]'s rule, over the inputs as `at` gives them (`None`: not yet evaluated).
@@ -510,31 +627,31 @@ fn choose<'a>(which: Which, at: impl Fn(usize) -> Option<In<'a>>) -> Chosen<'a> 
     match which {
         Which::Guard => match at(0) {
             None => Chosen::Need(0),
-            Some(In::Pending) => Chosen::Done(In::Pending),
+            Some(In::Pending) => Chosen::Done(In::Pending, None),
             Some(In::Value(Value::Boolean(true))) => match at(1) {
                 None => Chosen::Need(1),
-                Some(v) => Chosen::Done(v),
+                Some(v) => Chosen::Done(v, Some(1)),
             },
             // false, absent, or not a boolean: absent, as `guard` is.
-            Some(_) => Chosen::Done(In::Absent),
+            Some(_) => Chosen::Done(In::Absent, None),
         },
         Which::Coalesce => match at(0) {
             None => Chosen::Need(0),
             Some(In::Absent) => match at(1) {
                 None => Chosen::Need(1),
-                Some(v) => Chosen::Done(v),
+                Some(v) => Chosen::Done(v, Some(1)),
             },
-            Some(first) => Chosen::Done(first),
+            Some(first) => Chosen::Done(first, Some(0)),
         },
     }
 }
 
-fn eval_composite(
-    unit: &Unit,
+fn eval_composite<'r>(
+    unit: &'r Unit,
     children: &[Hash],
     edges: &[Edge],
-    inputs: &[Option<&Value>],
-    resolver: &impl Resolver,
+    inputs: &mut [Option<Cow<'_, Value>>],
+    resolver: &'r impl Resolver,
     observer: &mut impl Observer,
     path: &mut Vec<u32>,
 ) -> Slots {
@@ -542,6 +659,67 @@ fn eval_composite(
     match Prepared::of(unit, children, edges, resolver) {
         Some(prepared) => prepared.run(n_outputs, inputs, resolver, observer, path),
         None => smallvec![Slot::Absent; n_outputs],
+    }
+}
+
+/// How many shapes each thread keeps for units no resolver keeps one for ([`kept_shape`]).
+const KEPT_SHAPES: usize = 64;
+
+/// A shape kept by [`kept_shape`], with what it was made from.
+#[derive(Debug)]
+struct KeptShape {
+    /// Where the unit it was made for lived.
+    at: usize,
+    children: usize,
+    edges: Box<[Edge]>,
+    shape: Shape,
+}
+
+thread_local! {
+    /// The shapes [`kept_shape`] made last, by where their units live.
+    static KEPT: RefCell<[Option<Rc<KeptShape>>; KEPT_SHAPES]> = const { RefCell::new([const { None }; KEPT_SHAPES]) };
+}
+
+/// The shape of `unit` (a composite of `children` children joined by `edges`), for a resolver that
+/// keeps none: kept from the last time a unit at the same place had the same edges, else made and
+/// kept. Working a shape out takes a dozen small allocations, more than running a small composite
+/// does, and a composite is mostly evaluated again where it was before (a function called for
+/// every request, one placed inside a `map`'s function). A shape is a function of the children's
+/// count and the edges alone, and one is used only for a unit with exactly those, so whatever unit
+/// lives at an address now, the shape found there is its own. A few dozen per thread, each place
+/// keeping the last unit found there.
+#[inline(never)]
+fn kept_shape(unit: &Unit, children: usize, edges: &[Edge]) -> Rc<KeptShape> {
+    let at = unit as *const Unit as usize;
+    let place = (((at >> 4) as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 32) as usize % KEPT_SHAPES;
+    KEPT.with(|kept| {
+        let mut kept = kept.borrow_mut();
+        if let Some(found) = &kept[place]
+            && found.at == at
+            && found.children == children
+            && *found.edges == *edges
+        {
+            return found.clone();
+        }
+        let made = Rc::new(KeptShape { at, children, edges: edges.into(), shape: Shape::of(children, edges) });
+        kept[place] = Some(made.clone());
+        made
+    })
+}
+
+/// A composite's shape, as a run has it: the resolver's ([`Resolver::shape`]), or one kept for it.
+enum ShapeOf<'r> {
+    Resolver(&'r Shape),
+    Kept(Rc<KeptShape>),
+}
+
+impl std::ops::Deref for ShapeOf<'_> {
+    type Target = Shape;
+    fn deref(&self) -> &Shape {
+        match self {
+            ShapeOf::Resolver(shape) => shape,
+            ShapeOf::Kept(kept) => &kept.shape,
+        }
     }
 }
 
@@ -679,15 +857,18 @@ impl Hasher for AddressHasher {
 /// nothing an application changes. Its children are resolved for each run, never kept: a
 /// resolver may hand a run its own unit under a hash (a sourced value's constant).
 struct Prepared<'r> {
+    unit: &'r Unit,
     resolved: Vec<&'r Unit>,
     /// What each child is ([`NodeKind`]), decided once here.
     kinds: Vec<NodeKind>,
-    shape: Cow<'r, Shape>,
+    shape: ShapeOf<'r>,
     /// The walk's scratch, kept for the next run of the same preparation (a `map`'s next item):
     /// emptied after each run, its room kept.
-    scratch: std::cell::RefCell<Vec<Option<Slots>>>,
+    scratch: RefCell<Vec<Option<Slots>>>,
     /// The walk worked out ahead ([`Plan`]), for one run many times over: none, walked.
     plan: Option<Plan>,
+    /// What a preparation run many times keeps beside it ([`Many`]); none for one run once.
+    many: Option<Box<Many<'r>>>,
 }
 
 /// One step of a [`Plan`].
@@ -695,6 +876,9 @@ struct Prepared<'r> {
 enum Step {
     /// Evaluate this child, every child feeding it evaluated already.
     Eval(u32),
+    /// The same, for a child that builds on what it reads at some port ([`builds`]): it may be
+    /// given a value, so the run looks for one, and only for it.
+    Build(u32),
     /// This pass-through guard's condition is evaluated: go on only if it is `true`, as it is
     /// made to be; if not (an observer stood in for it), the walk carries on from here.
     Check(u32),
@@ -712,6 +896,123 @@ struct Plan {
     sources: Vec<Source>,
 }
 
+/// What a preparation run many times (a `map`'s or `fold`'s function, and the composites inside
+/// it) keeps beside it, worked out once for all its runs:
+///
+/// - each composite child's own preparation, made the first time the child runs instead of at
+///   every run (a function that calls another function prepared it once per item);
+/// - each `const` child's value, its literal read once instead of at every run;
+/// - for each input port, whether the value read there may be **given** to its node, moved out of
+///   where it is kept instead of lent to be copied. A node is given a value when it builds on it
+///   (`append` grows a list, a `fold` its accumulator, a composite hands it on; [`builds`]) and
+///   every other reader of the value is done with it: already evaluated, never to be evaluated in
+///   this run, or unable to read it once the node has produced a value ([`Gives`]). So a `fold`
+///   that grows its accumulator grows it in place, O(n) where copying it each step was O(n²).
+struct Many<'r> {
+    nested: Box<[OnceCell<Option<Box<Prepared<'r>>>>]>,
+    /// What each `const` child computes (`compute` of its params alone); none for anything else.
+    consts: Box<[Option<Slot>]>,
+    /// Whether some port of each child builds on what it reads ([`builds`]).
+    builds: Vec<bool>,
+    /// Who reads what, worked out the first time a value worth giving reaches a port that builds on
+    /// it: a function over numbers never needs it.
+    gives: OnceCell<Gives>,
+}
+
+/// What can't be read in a run where a leaf produces a value ([`Prepared::excluded_by`]): the
+/// reads (child, port) that won't happen, and, by child, whether it won't be evaluated.
+type Excluded = (Vec<(u32, u32)>, Vec<bool>);
+
+/// Which ports may be given their value, and what each waits on ([`Many`]).
+struct Gives {
+    /// Each child's ports in `gives`, from `starts[child]` to `starts[child + 1]`.
+    starts: Vec<u32>,
+    gives: Vec<Give>,
+    /// The readers a [`Give`] waits on, each a child.
+    waits: Vec<u32>,
+    /// The children reading each child's outputs, `consumers[consumer_starts[c]..consumer_starts[c + 1]]`.
+    consumer_starts: Vec<u32>,
+    consumers: Vec<u32>,
+    /// The walk's roots ([`Shape`]): evaluated whatever reads them.
+    root: Vec<bool>,
+}
+
+/// Whether a node builds its output on what it reads at port `p`, so that giving it the value
+/// saves a copy: a choice's value, a leaf that keeps its input ([`primitives::keeps`]), what a
+/// composite is handed, a `map`'s list and a `fold`'s accumulator and list.
+fn builds(kind: &NodeKind, p: usize) -> bool {
+    match (kind.choice, kind.body) {
+        (Some(Which::Guard), _) => p == 1,
+        (Some(Which::Coalesce), _) => p < 2,
+        (None, Body::Leaf { op: Some(op), .. }) => !kind.takes_trigger && primitives::keeps(op, p),
+        (None, Body::Composite) => true,
+        (None, Body::Map) => p == 0,
+        (None, Body::Fold) => p < 2,
+        _ => false,
+    }
+}
+
+/// Whether the value one port reads may be given to its node, and when.
+#[derive(Clone, Copy, Debug, Default)]
+struct Give {
+    /// The node builds on the value when it is given (`primitives::keeps`, a choice's value, a
+    /// composite's, `map`'s or `fold`'s input), and no output of the composite reads it.
+    on: bool,
+    /// The other readers that must be done with it first: `Many::waits[from..to]`.
+    from: u32,
+    to: u32,
+    /// Some readers are passed over because they can't read it once this node, a leaf, has
+    /// produced a value (a `coalesce` whose first input is that value): the leaf is given it
+    /// before that is known, and it is put back if the leaf produces nothing.
+    speculative: bool,
+}
+
+impl<'r> Many<'r> {
+    /// Child `ci`'s own preparation, run many times as its parent is: made the first time.
+    fn nested(&self, ci: usize, child: &'r Unit, resolver: &'r impl Resolver) -> Option<&Prepared<'r>> {
+        #[inline(never)]
+        fn prepare<'r>(child: &'r Unit, resolver: &'r impl Resolver) -> Option<Box<Prepared<'r>>> {
+            match &child.body {
+                UnitBody::Composite { children, edges } => Prepared::of(child, children, edges, resolver).map(|p| Box::new(p.planned())),
+                _ => None,
+            }
+        }
+        self.nested[ci].get_or_init(|| prepare(child, resolver)).as_deref()
+    }
+}
+
+impl Gives {
+    fn consumers(&self, c: usize) -> &[u32] {
+        &self.consumers[self.consumer_starts[c] as usize..self.consumer_starts[c + 1] as usize]
+    }
+
+    /// Port `p` of child `ci`'s entry. Every port the walk reads has one ([`Prepared::gives_of`]);
+    /// one that somehow hadn't is given nothing, rather than another port's entry read.
+    fn give(&self, ci: usize, p: usize) -> Option<Give> {
+        let (from, to) = (*self.starts.get(ci)? as usize, *self.starts.get(ci + 1)? as usize);
+        (from + p < to).then(|| self.gives[from + p])
+    }
+}
+
+/// Whether the walk will never evaluate child `c`: it isn't evaluated, isn't a root, and
+/// everything reading it is evaluated (so won't ask for it) or never evaluated itself. Only
+/// something still to run pulls a child in, so nothing will. Each child is looked at once a
+/// question (`seen`: 1 unneeded, 2 needed), so the work is the composite's size whatever its
+/// shape; past 64 readers up it is taken as needed, which only keeps a value where it is.
+fn unneeded(gives: &Gives, c: usize, scratch: &[Option<Slots>], seen: &mut SmallVec<[u8; 32]>, depth: usize) -> bool {
+    match seen.get(c) {
+        Some(1) => return true,
+        Some(2) => return false,
+        _ => {}
+    }
+    let found = scratch[c].is_none() && !gives.root[c] && depth < 64 && gives.consumers(c).iter().all(|&r| scratch[r as usize].is_some() || unneeded(gives, r as usize, scratch, seen, depth + 1));
+    if seen.len() < scratch.len() {
+        seen.resize(scratch.len(), 0);
+    }
+    seen[c] = if found { 1 } else { 2 };
+    found
+}
+
 impl<'r> Prepared<'r> {
     /// None when a child doesn't resolve or the edges hold a cycle: then nothing is evaluable,
     /// and every declared output slot is absent.
@@ -724,18 +1025,19 @@ impl<'r> Prepared<'r> {
             resolved.push(resolver.resolve(h)?);
         }
         let shape = match resolver.shape(unit) {
-            Some(kept) => Cow::Borrowed(kept),
-            None => Cow::Owned(Shape::of(children.len(), edges)),
+            Some(kept) => ShapeOf::Resolver(kept),
+            None => ShapeOf::Kept(kept_shape(unit, children.len(), edges)),
         };
         if shape.cyclic {
             return None;
         }
         let kinds = resolved.iter().map(|u| NodeKind::of(u)).collect();
-        Some(Prepared { resolved, kinds, shape, scratch: std::cell::RefCell::new(Vec::new()), plan: None })
+        Some(Prepared { unit, resolved, kinds, shape, scratch: RefCell::new(Vec::new()), plan: None, many: None })
     }
 
-    /// Evaluate it on `inputs`.
-    fn run(&self, n_outputs: usize, inputs: &[Option<&Value>], resolver: &impl Resolver, observer: &mut impl Observer, path: &mut Vec<u32>) -> Slots {
+    /// Evaluate it on `inputs`: lent, or given when the caller has no further use for one (a
+    /// `fold`'s accumulator), which the run may then build on.
+    fn run(&self, n_outputs: usize, inputs: &mut [Option<Cow<'_, Value>>], resolver: &'r impl Resolver, observer: &mut impl Observer, path: &mut Vec<u32>) -> Slots {
         // The scratch kept from the last run, or a fresh one if a run of this very preparation is
         // somehow under way.
         let mut kept = self.scratch.try_borrow_mut().ok();
@@ -752,13 +1054,30 @@ impl<'r> Prepared<'r> {
         outs
     }
 
-    /// It, with its walk worked out ahead ([`Plan`]) when it has no choice: for a preparation
-    /// run many times (a `map`'s or `fold`'s function).
+    /// It, to be run many times (a `map`'s or `fold`'s function): with its walk worked out ahead
+    /// ([`Plan`]) when it has no choice, and what [`Many`] keeps.
+    #[inline(never)]
     fn planned(mut self) -> Prepared<'r> {
         if (0..self.kinds.len()).all(|ci| self.kinds[ci].choice.is_none() || self.passes(ci)) {
             self.plan = Some(self.plan_of());
         }
+        let n = self.resolved.len();
+        let builds = (0..n).map(|c| (0..self.resolved[c].inputs.len()).any(|p| builds(&self.kinds[c], p))).collect();
+        let consts = (0..n)
+            .map(|c| match (self.kinds[c].body, &self.resolved[c].body) {
+                (Body::Leaf { op: Some(Op::Const), .. }, UnitBody::Primitive { name }) if self.resolved[c].inputs.is_empty() => {
+                    Some(Slot::of(primitives::compute_op(Op::Const, name, &[], &self.resolved[c].params)))
+                }
+                _ => None,
+            })
+            .collect();
+        self.many = Some(Box::new(Many { nested: (0..n).map(|_| OnceCell::new()).collect(), consts, builds, gives: OnceCell::new() }));
         self
+    }
+
+    /// What [`Many`] keeps for which ports may be given their values, made the first time it is asked.
+    fn gives<'m>(&self, many: &'m Many<'r>) -> &'m Gives {
+        many.gives.get_or_init(|| self.gives_of())
     }
 
     /// Whether child `ci` is a pass-through: a `guard` whose condition is a `const` `true` (how
@@ -811,7 +1130,7 @@ impl<'r> Prepared<'r> {
             }
             stack.pop();
             done[ci] = true;
-            order.push(Step::Eval(ci as u32));
+            order.push(if (0..k).any(|p| builds(&self.kinds[ci], p)) { Step::Build(ci as u32) } else { Step::Eval(ci as u32) });
         }
         let mut starts = Vec::with_capacity(n + 1);
         let mut sources = Vec::new();
@@ -823,14 +1142,313 @@ impl<'r> Prepared<'r> {
         Plan { order, starts, sources }
     }
 
+    /// Who reads each value a run keeps, and from that which ports may be given theirs ([`Gives`]).
+    #[inline(never)]
+    fn gives_of(&self) -> Gives {
+        let incoming = &self.shape.incoming;
+        let n = self.resolved.len();
+        let n_in = self.unit.inputs.len();
+        // The ports the walk reads: those a child declares, and a choice's two whatever it
+        // declares (`choose` reads a `guard`'s value and a `coalesce`'s fallback at port 1), so
+        // that a reader there is counted and its port has a place in `starts`.
+        let ports = |c: usize| self.resolved[c].inputs.len().max(if self.kinds[c].choice.is_some() { 2 } else { 0 });
+        let outs = |c: usize| self.resolved[c].outputs.len();
+        // Every value a run keeps, numbered: the composite's inputs, then each child's outputs.
+        let mut out_starts = Vec::with_capacity(n + 1);
+        let mut values = n_in;
+        for c in 0..n {
+            out_starts.push(values);
+            values += outs(c);
+        }
+        out_starts.push(values);
+        let value_of = |s: Source| match s {
+            Source::Input(fp) if (fp as usize) < n_in => Some(fp as usize),
+            Source::Child(fc, fp) if (fp as usize) < outs(fc as usize) => Some(out_starts[fc as usize] + fp as usize),
+            _ => None,
+        };
+        // Who reads each value: the ports the walk reads it at, and whether an output does.
+        let mut reader_starts = vec![0u32; values + 1];
+        for ci in 0..n {
+            for p in 0..ports(ci) {
+                if let Some(v) = value_of(incoming.source(ci, p)) {
+                    reader_starts[v + 1] += 1;
+                }
+            }
+        }
+        for v in 0..values {
+            reader_starts[v + 1] += reader_starts[v];
+        }
+        let mut readers = vec![(0u32, 0u32); reader_starts[values] as usize];
+        let mut fill = reader_starts.clone();
+        for ci in 0..n {
+            for p in 0..ports(ci) {
+                if let Some(v) = value_of(incoming.source(ci, p)) {
+                    readers[fill[v] as usize] = (ci as u32, p as u32);
+                    fill[v] += 1;
+                }
+            }
+        }
+        let readers_of = |v: usize| &readers[reader_starts[v] as usize..reader_starts[v + 1] as usize];
+        let mut output = vec![false; values];
+        for op in 0..self.unit.outputs.len() as u32 {
+            match incoming.get(BOUNDARY, op) {
+                Some((BOUNDARY, fp)) if (fp as usize) < n_in => output[fp as usize] = true,
+                Some((fc, fp)) if (fc as usize) < n => {
+                    if let Some(v) = value_of(Source::Child(fc, fp)) {
+                        output[v] = true;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let mut root = vec![false; n];
+        for &c in &self.shape.roots {
+            root[c] = true;
+        }
+        let mut consumer_starts = Vec::with_capacity(n + 1);
+        let mut consumers = Vec::new();
+        for c in 0..n {
+            consumer_starts.push(consumers.len() as u32);
+            let first = consumers.len();
+            for v in out_starts[c]..out_starts[c + 1] {
+                for &(r, _) in readers_of(v) {
+                    if !consumers[first..].contains(&r) {
+                        consumers.push(r);
+                    }
+                }
+            }
+        }
+        consumer_starts.push(consumers.len() as u32);
+
+        let mut starts = Vec::with_capacity(n + 1);
+        starts.push(0u32);
+        for c in 0..n {
+            starts.push(starts[c] + ports(c) as u32);
+        }
+        let mut gives = vec![Give::default(); starts[n] as usize];
+        let mut waits = Vec::new();
+        let coalesces = self.kinds.iter().any(|k| k.choice == Some(Which::Coalesce));
+        for ci in 0..n {
+            let kind = &self.kinds[ci];
+            let leaf = matches!((kind.choice, kind.body), (None, Body::Leaf { op: Some(_), .. })) && !kind.takes_trigger;
+            // The leaves whose having produced a value means some readers won't read: worked out
+            // once for the node, when it might matter.
+            let mut excluded: Option<Excluded> = None;
+            for p in 0..ports(ci) {
+                let Some(v) = value_of(incoming.source(ci, p)).filter(|&v| builds(kind, p) && !output[v]) else { continue };
+                let mut others: SmallVec<[(u32, u32); 4]> = readers_of(v).iter().copied().collect();
+                if let Some(at) = others.iter().position(|&r| r == (ci as u32, p as u32)) {
+                    others.remove(at);
+                }
+                // The node reads it at another port too: it can't be given one and lent the other.
+                if others.iter().any(|&(c, _)| c as usize == ci) {
+                    continue;
+                }
+                let mut speculative = false;
+                let from = waits.len() as u32;
+                for (c, q) in others {
+                    if leaf && coalesces {
+                        let (reads, nodes) = excluded.get_or_insert_with(|| self.excluded_by(ci, &out_starts, &readers_of, &output, &root));
+                        if reads.contains(&(c, q)) || nodes[c as usize] {
+                            speculative = true;
+                            continue;
+                        }
+                    }
+                    waits.push(c);
+                }
+                gives[(starts[ci] as usize) + p] = Give { on: true, from, to: waits.len() as u32, speculative };
+            }
+        }
+        Gives { starts, gives, waits, consumer_starts, consumers, root }
+    }
+
+    /// What can't be read in a run where leaf `ci` produces a value: the reads (child, port) that
+    /// won't happen, and the children that won't be evaluated. A `coalesce` reads its second input
+    /// only when its first is absent, so if its first input is `ci`'s value, carried up through
+    /// `guard`s that pass a value only when their condition is `true` (each link read by the next
+    /// alone, so `ci` runs only when every condition on the way is), that read won't happen; and a
+    /// child that isn't a root, read only where reading won't happen, isn't evaluated.
+    fn excluded_by<'a>(&self, ci: usize, out_starts: &[usize], readers_of: &impl Fn(usize) -> &'a [(u32, u32)], output: &[bool], root: &[bool]) -> Excluded {
+        let n = self.resolved.len();
+        let mut reads = Vec::new();
+        let mut chain = vec![false; n];
+        let mut at = ci;
+        loop {
+            chain[at] = true;
+            if self.resolved[at].outputs.len() != 1 || root[at] || output[out_starts[at]] {
+                break;
+            }
+            let &[(g, q)] = readers_of(out_starts[at]) else { break };
+            match self.kinds[g as usize].choice {
+                Some(Which::Guard) if q == 1 => at = g as usize,
+                Some(Which::Coalesce) if q == 0 => {
+                    reads.push((g, 1));
+                    at = g as usize;
+                }
+                _ => break,
+            }
+        }
+        let mut nodes = vec![false; n];
+        if reads.is_empty() {
+            return (reads, nodes);
+        }
+        loop {
+            let mut more = false;
+            for c in 0..n {
+                if nodes[c] || chain[c] || root[c] {
+                    continue;
+                }
+                let unread = (out_starts[c]..out_starts[c + 1])
+                    .all(|v| !output[v] && readers_of(v).iter().all(|&(r, p)| nodes[r as usize] || reads.contains(&(r, p))));
+                if unread {
+                    nodes[c] = true;
+                    more = true;
+                }
+            }
+            if !more {
+                return (reads, nodes);
+            }
+        }
+    }
+
+    /// The value at port `p` of child `ci`, borrowed where it is kept.
+    fn read<'s>(&self, ci: usize, p: usize, scratch: &'s [Option<Slots>], inputs: &'s [Option<Cow<'_, Value>>]) -> In<'s> {
+        match self.shape.incoming.source(ci, p) {
+            Source::Input(fp) => In::of_value(inputs.get(fp as usize).and_then(|v| v.as_deref())),
+            Source::Child(fc, fp) => self.output(fc as usize, fp as usize, scratch, inputs).unwrap_or(In::Absent),
+            Source::Unwired | Source::Missing(..) => In::Absent,
+        }
+    }
+
+    /// Child `fc`'s output `fp`, borrowed where it is kept; `None` while `fc` isn't evaluated. A
+    /// choice that lends what it decided on ([`lends`](Prepared::lends)) reads as that, where it
+    /// is kept, at its one output; at a port it doesn't have, absent, as it reads when it keeps a
+    /// copy (a choice unit may declare more outputs than it produces).
+    #[inline]
+    fn output<'s>(&self, fc: usize, fp: usize, scratch: &'s [Option<Slots>], inputs: &'s [Option<Cow<'_, Value>>]) -> Option<In<'s>> {
+        let outs = scratch[fc].as_ref()?;
+        Some(match outs.get(fp) {
+            Some(slot) => In::of_slot(slot),
+            None if fp == 0 => self.read_through(fc, scratch, inputs),
+            None => In::Absent,
+        })
+    }
+
+    /// What child `c`, evaluated, reads as at an output it doesn't keep: what it lends, if it is
+    /// a choice that lends; else absent. Apart from [`output`](Prepared::output), which every
+    /// read goes through, so that stays small.
+    #[cold]
+    #[inline(never)]
+    fn read_through<'s>(&self, c: usize, scratch: &'s [Option<Slots>], inputs: &'s [Option<Cow<'_, Value>>]) -> In<'s> {
+        if self.lends(c, scratch) {
+            self.read(c, self.lent_port(c, scratch, inputs), scratch, inputs)
+        } else {
+            In::Absent
+        }
+    }
+
+    /// Whether child `c` is a choice that lends what it decided on: kept as no outputs (a choice
+    /// has one), its readers read through it ([`chosen`](Prepared::chosen)).
+    fn lends(&self, c: usize, scratch: &[Option<Slots>]) -> bool {
+        self.kinds[c].choice.is_some() && scratch[c].as_ref().is_some_and(|outs| outs.is_empty())
+    }
+
+    /// The port a choice that lends decided on, decided again: a `guard`'s value, a `coalesce`'s
+    /// first input if that is a value, else its second. What it reads doesn't change after the
+    /// choice (a value lent is never moved), so the choice comes out as it did.
+    fn lent_port(&self, c: usize, scratch: &[Option<Slots>], inputs: &[Option<Cow<'_, Value>>]) -> usize {
+        match self.kinds[c].choice {
+            Some(Which::Coalesce) if !matches!(self.read(c, 0, scratch, inputs), In::Value(_)) => 1,
+            Some(Which::Coalesce) => 0,
+            _ => 1,
+        }
+    }
+
+    /// Whether the value at port `p` of child `ci` may be given to it now, and if so whether only
+    /// for as long as it produces a value (`Some(speculative)`): its port may be given one
+    /// ([`Give`]), the value is worth moving and is the run's to move, and every other reader is
+    /// done with it. Reading `walked`, a reader not yet evaluated whose readers are all done is
+    /// done too: the walk only evaluates what something still to run needs. A choice that lends
+    /// the value is never done with it: its readers read it where it is.
+    fn may_give(&self, ci: usize, p: usize, scratch: &[Option<Slots>], inputs: &[Option<Cow<'_, Value>>], walked: bool) -> Option<bool> {
+        let many = self.many.as_deref()?;
+        if !(builds(&self.kinds[ci], p) && self.movable(ci, p, scratch, inputs)) {
+            return None;
+        }
+        let gives = self.gives(many);
+        let give = gives.give(ci, p)?;
+        let mut seen = SmallVec::new();
+        let done = |&r: &u32| (scratch[r as usize].is_some() && !self.lends(r as usize, scratch)) || walked && unneeded(gives, r as usize, scratch, &mut seen, 0);
+        (give.on && gives.waits[give.from as usize..give.to as usize].iter().all(done)).then_some(give.speculative)
+    }
+
+    /// The value at port `p` of child `ci`, moved out of where it is kept (which then reads as
+    /// absent: [`may_give`](Prepared::may_give) has found nothing will read it there).
+    fn take(&self, ci: usize, p: usize, scratch: &mut [Option<Slots>], inputs: &mut [Option<Cow<'_, Value>>]) -> Option<Value> {
+        match self.shape.incoming.source(ci, p) {
+            Source::Input(fp) => match inputs.get_mut(fp as usize) {
+                Some(slot @ Some(Cow::Owned(_))) => slot.take().map(Cow::into_owned),
+                _ => None,
+            },
+            Source::Child(fc, fp) => scratch[fc as usize].as_mut().and_then(|o| o.get_mut(fp as usize)).and_then(|slot| std::mem::replace(slot, Slot::Absent).into_value()),
+            Source::Unwired | Source::Missing(..) => None,
+        }
+    }
+
+    /// Put `value`, taken for port `p` of child `ci` by [`take`](Prepared::take), back.
+    fn put_back(&self, ci: usize, p: usize, value: Value, scratch: &mut [Option<Slots>], inputs: &mut [Option<Cow<'_, Value>>]) {
+        match self.shape.incoming.source(ci, p) {
+            Source::Input(fp) => inputs[fp as usize] = Some(Cow::Owned(value)),
+            Source::Child(fc, fp) => {
+                if let Some(slot) = scratch[fc as usize].as_mut().and_then(|o| o.get_mut(fp as usize)) {
+                    *slot = Slot::Value(value);
+                }
+            }
+            Source::Unwired | Source::Missing(..) => {}
+        }
+    }
+
+    /// A choice's outputs, once it decided on the value at port `p`: the value given to it when
+    /// nothing else will read it; else, when `lend` (the observer doesn't look at what it
+    /// produced) and a copy would cost, none, its readers reading the value where it is
+    /// ([`output`](Prepared::output)); else a copy.
+    #[inline(never)]
+    fn chosen(&self, ci: usize, p: usize, scratch: &mut [Option<Slots>], inputs: &mut [Option<Cow<'_, Value>>], walked: bool, lend: bool) -> Slots {
+        if self.may_give(ci, p, scratch, inputs, walked).is_some() {
+            return smallvec![Slot::of(self.take(ci, p, scratch, inputs))];
+        }
+        match self.read(ci, p, scratch, inputs) {
+            In::Value(v) if lend && heavy(v) => Slots::new(),
+            read => smallvec![read.owned()],
+        }
+    }
+
+    /// Whether child `ci` goes through [`fire_giving`](Prepared::fire_giving): it builds on what it
+    /// reads at some port, and a value worth giving is there, the run's to move. A value lent to
+    /// the run (a `map`'s item) can't be given, so its node fires as any other.
+    fn giving(&self, ci: usize, gathered: &[Option<&Value>], scratch: &[Option<Slots>], inputs: &[Option<Cow<'_, Value>>]) -> bool {
+        self.many.as_ref().is_some_and(|many| many.builds[ci]) && (0..gathered.len()).any(|p| builds(&self.kinds[ci], p) && self.movable(ci, p, scratch, inputs))
+    }
+
+    /// Whether the value at port `p` of child `ci` is worth moving and the run's to move: an input
+    /// the run owns, or a child's output.
+    fn movable(&self, ci: usize, p: usize, scratch: &[Option<Slots>], inputs: &[Option<Cow<'_, Value>>]) -> bool {
+        match self.shape.incoming.source(ci, p) {
+            Source::Input(fp) => matches!(inputs.get(fp as usize), Some(Some(Cow::Owned(v))) if heavy(v)),
+            Source::Child(fc, fp) => matches!(scratch[fc as usize].as_ref().and_then(|o| o.get(fp as usize)), Some(Slot::Value(v)) if heavy(v)),
+            Source::Unwired | Source::Missing(..) => false,
+        }
+    }
+
     /// [`run_in`](Prepared::run_in), down its [`Plan`].
     #[allow(clippy::too_many_arguments)]
-    fn run_planned(&self, plan: &Plan, scratch: &mut Vec<Option<Slots>>, n_outputs: usize, inputs: &[Option<&Value>], resolver: &impl Resolver, observer: &mut impl Observer, path: &mut Vec<u32>) -> Slots {
+    fn run_planned(&self, plan: &Plan, scratch: &mut Vec<Option<Slots>>, n_outputs: usize, inputs: &mut [Option<Cow<'_, Value>>], resolver: &'r impl Resolver, observer: &mut impl Observer, path: &mut Vec<u32>) -> Slots {
         scratch.resize(self.resolved.len(), None);
         let open = crate::open_trigger();
         for &step in &plan.order {
-            let ci = match step {
-                Step::Eval(ci) => ci as usize,
+            let (ci, builder) = match step {
+                Step::Eval(ci) => (ci as usize, false),
+                Step::Build(ci) => (ci as usize, true),
                 Step::Check(g) => {
                     let cond = match self.shape.incoming.source(g as usize, 0) {
                         Source::Child(c, 0) => scratch[c as usize].as_ref().and_then(|outs| outs.first()),
@@ -852,32 +1470,26 @@ impl<'r> Prepared<'r> {
                     Source::Child(c, 0) => scratch[c as usize].as_ref().and_then(|outs| outs.first()),
                     _ => None,
                 };
-                let value = match self.shape.incoming.source(ci, 1) {
-                    Source::Input(fp) => Some(Slot::of(inputs.get(fp as usize).copied().flatten().cloned())),
-                    Source::Child(fc, fp) => scratch[fc as usize].as_ref().map(|o| o.get(fp as usize).cloned().unwrap_or(Slot::Absent)),
-                    Source::Unwired | Source::Missing(..) => Some(Slot::Absent),
+                let ready = match self.shape.incoming.source(ci, 1) {
+                    Source::Child(fc, _) => scratch[fc as usize].is_some(),
+                    Source::Input(_) | Source::Unwired | Source::Missing(..) => true,
                 };
-                let (Some(Slot::Value(Value::Boolean(true))), Some(value)) = (cond, value) else {
+                if cond != Some(&Slot::Value(Value::Boolean(true))) || !ready {
                     return self.run_in(scratch, n_outputs, inputs, resolver, observer, path);
-                };
-                let outs: Slots = smallvec![value];
-                path.push(ci as u32);
-                observer.enter(path);
-                observer.produced(path, &outs);
-                observer.leave(path);
-                path.pop();
-                scratch[ci] = Some(outs);
+                }
+                let outs = self.chosen(ci, 1, scratch, inputs, false, !observer.reads_produced());
+                scratch[ci] = Some(self.decided(ci, outs, observer, path));
                 continue;
             }
-            let outs = {
+            let fired = {
                 let mut gathered: Refs = SmallVec::new();
                 let mut pending = false;
                 let mut ahead = false;
                 for source in &plan.sources[plan.starts[ci] as usize..plan.starts[ci + 1] as usize] {
                     let slot = match *source {
-                        Source::Input(fp) => In::of_value(inputs.get(fp as usize).copied().flatten()),
-                        Source::Child(fc, fp) => match &scratch[fc as usize] {
-                            Some(outs) => outs.get(fp as usize).map_or(In::Absent, In::of_slot),
+                        Source::Input(fp) => In::of_value(inputs.get(fp as usize).and_then(|v| v.as_deref())),
+                        Source::Child(fc, fp) => match self.output(fc as usize, fp as usize, scratch, inputs) {
+                            Some(slot) => slot,
                             // Never so (the plan is the walk's order), but if it were, the walk
                             // carries on from here, as it does after a failed check (R3).
                             None => {
@@ -890,10 +1502,18 @@ impl<'r> Prepared<'r> {
                     pending |= slot == In::Pending;
                     gathered.push(slot.value());
                 }
-                (!ahead).then(|| self.fire(ci, &mut gathered, pending, &open, resolver, observer, path))
+                if ahead {
+                    Fired::Ahead
+                } else if builder && !pending && self.giving(ci, &gathered, scratch, inputs) {
+                    Fired::Giving
+                } else {
+                    Fired::Done(self.fire(ci, &mut gathered, pending, &open, resolver, observer, path))
+                }
             };
-            let Some(outs) = outs else {
-                return self.run_in(scratch, n_outputs, inputs, resolver, observer, path);
+            let outs = match fired {
+                Fired::Done(outs) => outs,
+                Fired::Giving => self.fire_giving(ci, scratch, inputs, false, resolver, observer, path),
+                Fired::Ahead => return self.run_in(scratch, n_outputs, inputs, resolver, observer, path),
             };
             scratch[ci] = Some(outs);
         }
@@ -904,38 +1524,100 @@ impl<'r> Prepared<'r> {
     /// still waiting on an answer), telling the observer: what the walk and the plan do with a
     /// child once its inputs are in.
     #[allow(clippy::too_many_arguments)]
-    fn fire<'v>(&self, ci: usize, gathered: &mut Refs<'v>, pending: bool, open: &'v Value, resolver: &impl Resolver, observer: &mut impl Observer, path: &mut Vec<u32>) -> Slots {
-        let (child, kind, incoming) = (self.resolved[ci], &self.kinds[ci], &self.shape.incoming);
-        let k = child.inputs.len();
+    fn fire<'v>(&self, ci: usize, gathered: &mut Refs<'v>, pending: bool, open: &'v Value, resolver: &'r impl Resolver, observer: &mut impl Observer, path: &mut Vec<u32>) -> Slots {
+        let (child, kind) = (self.resolved[ci], &self.kinds[ci]);
         if pending {
             // Waiting on an answer: not run in this round.
             return smallvec![Slot::Pending; child.outputs.len()];
         }
-        // A leaf with optional ports (an `http_request`'s headers and body) reads an *unwired*
-        // one as "none"; a *wired* one whose value is absent means what absence means everywhere
-        // else: the node doesn't fire. Otherwise a request downstream of a check that failed (a
-        // webhook whose signature didn't verify) still went out, bodiless.
-        open_triggers(child, gathered, || open, |p| incoming.wired(ci as u32, p as u32));
-        // A sink is held the same way: its trigger, wired, hasn't arrived.
-        let held = kind.held_when_absent && (0..k).any(|p| gathered[p].is_none() && incoming.wired(ci as u32, p as u32));
+        self.told(ci, observer, path, |observer, path| match self.ahead(ci, gathered, open, observer, path) {
+            Some(outs) => outs,
+            None => match (kind.body, &self.many) {
+                // A composite child of a preparation run many times runs its own, kept.
+                (Body::Composite, Some(many)) => match many.nested(ci, child, resolver) {
+                    Some(nested) => nested.run(child.outputs.len(), &mut lent(gathered), resolver, observer, path),
+                    None => smallvec![Slot::Absent; child.outputs.len()],
+                },
+                // A `const`: what it computed once.
+                (Body::Leaf { .. }, Some(many)) if many.consts[ci].is_some() => many.consts[ci].iter().cloned().collect(),
+                _ => eval_as(child, kind, gathered, resolver, observer, path),
+            },
+        })
+    }
+
+    /// `eval`, told to the observer as child `ci`'s evaluation: entered, produced and left, at
+    /// its path. Inlined, so it adds no frame to the recursion through `fire`.
+    #[inline(always)]
+    fn told<O: Observer>(&self, ci: usize, observer: &mut O, path: &mut Vec<u32>, eval: impl FnOnce(&mut O, &mut Vec<u32>) -> Slots) -> Slots {
         path.push(ci as u32);
         observer.enter(path);
-        let outs = if held {
-            smallvec![Slot::Absent; child.outputs.len()]
-        } else {
-            match observer.asserted(path, child, gathered) {
-                Some(asserted) if asserted.len() == child.outputs.len() => asserted.into_iter().map(Slot::of).collect(),
-                _ => eval_as(child, kind, gathered, resolver, observer, path),
-            }
-        };
+        let outs = eval(observer, path);
         observer.produced(path, &outs);
         observer.leave(path);
         path.pop();
         outs
     }
 
+    /// What child `ci` produces without being computed, if anything: held, or what the observer
+    /// stands in for it ([`Observer::asserted`]), on its inputs (`gathered`, which gets the open
+    /// triggers it reads). Asked once the child is entered.
+    fn ahead<'v>(&self, ci: usize, gathered: &mut Refs<'v>, open: &'v Value, observer: &mut impl Observer, path: &[u32]) -> Option<Slots> {
+        let (child, kind, incoming) = (self.resolved[ci], &self.kinds[ci], &self.shape.incoming);
+        // A leaf with optional ports (an `http_request`'s headers and body) reads an *unwired*
+        // one as "none"; a *wired* one whose value is absent means what absence means everywhere
+        // else: the node doesn't fire. Otherwise a request downstream of a check that failed (a
+        // webhook whose signature didn't verify) still went out, bodiless.
+        open_triggers(child, gathered, || open, |p| incoming.wired(ci as u32, p as u32));
+        // A sink is held the same way: its trigger, wired, hasn't arrived.
+        if kind.held_when_absent && (0..child.inputs.len()).any(|p| gathered[p].is_none() && incoming.wired(ci as u32, p as u32)) {
+            return Some(smallvec![Slot::Absent; child.outputs.len()]);
+        }
+        observer.asserted(path, child, gathered).filter(|a| a.len() == child.outputs.len()).map(|a| a.into_iter().map(Slot::of).collect())
+    }
+
+    /// [`fire`](Prepared::fire), for a child of a preparation run many times that may be given
+    /// some of its inputs ([`Many`]), none of them pending. It is told about exactly as `fire`
+    /// tells it, and asserted, held and computed on the same values; then each input nothing
+    /// else will read is moved out of where it is kept and given to it, the others lent. A leaf
+    /// that produces nothing hands what it was given back ([`give_to_leaf`]), so a reader passed
+    /// over because the leaf would produce a value (a `coalesce`'s fallback) still finds it.
+    #[allow(clippy::too_many_arguments)]
+    #[inline(never)]
+    fn fire_giving(&self, ci: usize, scratch: &mut [Option<Slots>], inputs: &mut [Option<Cow<'_, Value>>], walked: bool, resolver: &'r impl Resolver, observer: &mut impl Observer, path: &mut Vec<u32>) -> Slots {
+        let (child, kind, incoming) = (self.resolved[ci], &self.kinds[ci], &self.shape.incoming);
+        let Some(many) = self.many.as_deref() else { return smallvec![Slot::Absent; child.outputs.len()] };
+        let k = child.inputs.len();
+        let open = crate::open_trigger();
+        self.told(ci, observer, path, |observer, path| {
+            let ahead = {
+                let mut gathered: Refs = (0..k).map(|p| self.read(ci, p, scratch, inputs).value()).collect();
+                self.ahead(ci, &mut gathered, &open, observer, path)
+            };
+            if let Some(outs) = ahead {
+                return outs;
+            }
+            let given: SmallVec<[Option<Value>; 4]> = (0..k).map(|p| self.may_give(ci, p, scratch, inputs, walked).and_then(|_| self.take(ci, p, scratch, inputs))).collect();
+            let (outs, back) = {
+                let mut args: Args = given.into_iter().enumerate().map(|(p, v)| v.map(Cow::Owned).or_else(|| self.read(ci, p, scratch, inputs).value().map(Cow::Borrowed))).collect();
+                open_triggers(child, &mut args, || Cow::Borrowed(&open), |p| incoming.wired(ci as u32, p as u32));
+                match (kind.body, &child.body) {
+                    (Body::Leaf { variadic, op: Some(op) }, UnitBody::Primitive { name }) if !kind.takes_trigger => give_to_leaf(op, name, variadic, args, &child.params),
+                    (Body::Composite, _) => match many.nested(ci, child, resolver) {
+                        Some(nested) => (nested.run(child.outputs.len(), &mut args, resolver, observer, path), Back::new()),
+                        None => (smallvec![Slot::Absent; child.outputs.len()], Back::new()),
+                    },
+                    _ => (eval_given(child, kind, &mut args, resolver, observer, path), Back::new()),
+                }
+            };
+            for (p, v) in back {
+                self.put_back(ci, p, v, scratch, inputs);
+            }
+            outs
+        })
+    }
+
     /// [`run`](Prepared::run), in `scratch` (empty).
-    fn run_in(&self, scratch: &mut Vec<Option<Slots>>, n_outputs: usize, inputs: &[Option<&Value>], resolver: &impl Resolver, observer: &mut impl Observer, path: &mut Vec<u32>) -> Slots {
+    fn run_in(&self, scratch: &mut Vec<Option<Slots>>, n_outputs: usize, inputs: &mut [Option<Cow<'_, Value>>], resolver: &'r impl Resolver, observer: &mut impl Observer, path: &mut Vec<u32>) -> Slots {
         let (resolved, incoming) = (&self.resolved, &self.shape.incoming);
         let n = resolved.len();
         let mut stack: SmallVec<[usize; 8]> = self.shape.roots.iter().copied().collect();
@@ -943,16 +1625,6 @@ impl<'r> Prepared<'r> {
         // Per-evaluation scratch, indexed by child: `None` not evaluated (yet, or at all), else
         // EACH child's own output slots (a child may itself be a multi-output composite).
         scratch.resize(n, None);
-
-        // The slot feeding a child's input port, borrowed where it is kept: `None` while its
-        // source child is unevaluated.
-        fn slot_in<'s>(incoming: &Incoming, inputs: &[Option<&'s Value>], scratch: &'s [Option<Slots>], ci: usize, p: usize) -> Option<In<'s>> {
-            match incoming.source(ci, p) {
-                Source::Input(fp) => Some(In::of_value(inputs.get(fp as usize).copied().flatten())),
-                Source::Child(fc, fp) => scratch[fc as usize].as_ref().map(|outs| outs.get(fp as usize).map_or(In::Absent, In::of_slot)),
-                Source::Unwired | Source::Missing(..) => Some(In::Absent),
-            }
-        }
 
         // What a placed holon's open trigger reads as (`open_triggers`).
         let open = crate::open_trigger();
@@ -967,76 +1639,141 @@ impl<'r> Prepared<'r> {
             }
             let (child, kind) = (resolved[ci], &self.kinds[ci]);
             let k = child.inputs.len();
-            let outs: Slots = {
-                let at = |p: usize| slot_in(incoming, inputs, scratch, ci, p);
+            let walk = {
+                // The slot feeding an input port, borrowed where it is kept: `None` while its
+                // source child is unevaluated.
+                let at = |p: usize| match incoming.source(ci, p) {
+                    Source::Input(fp) => Some(In::of_value(inputs.get(fp as usize).and_then(|v| v.as_deref()))),
+                    Source::Child(fc, fp) => self.output(fc as usize, fp as usize, scratch, inputs),
+                    Source::Unwired | Source::Missing(..) => Some(In::Absent),
+                };
                 // A choice pulls what it needs; anything else, every input not yet evaluated. Its
                 // inputs are gathered in the same pass that looks for one not yet evaluated.
                 let mut gathered: Refs = SmallVec::new();
                 let mut pending = false;
-                let need = match kind.choice.map(|which| choose(which, at)) {
-                    Some(Chosen::Need(p)) => Some(p),
-                    Some(Chosen::Done(slot)) => {
-                        stack.pop();
-                        path.push(ci as u32);
-                        observer.enter(path);
-                        let outs: Slots = smallvec![slot.owned()];
-                        observer.produced(path, &outs);
-                        observer.leave(path);
-                        path.pop();
-                        drop(gathered);
-                        scratch[ci] = Some(outs);
-                        continue;
-                    }
-                    None => (0..k).find(|&p| match at(p) {
+                match kind.choice.map(|which| choose(which, at)) {
+                    Some(Chosen::Need(p)) => Walk::Need(p),
+                    // A value read at a port, to be copied or given once nothing is borrowed.
+                    Some(Chosen::Done(In::Value(_), Some(p))) => Walk::Chosen(p),
+                    Some(Chosen::Done(slot, _)) => Walk::Decided(slot.owned()),
+                    None => match (0..k).find(|&p| match at(p) {
                         None => true,
                         Some(slot) => {
                             pending |= slot == In::Pending;
                             gathered.push(slot.value());
                             false
                         }
-                    }),
-                };
-                if let Some(p) = need {
+                    }) {
+                        Some(p) => Walk::Need(p),
+                        None if !pending && self.giving(ci, &gathered, scratch, inputs) => Walk::Giving,
+                        None => Walk::Fired(self.fire(ci, &mut gathered, pending, &open, resolver, observer, path)),
+                    },
+                }
+            };
+            let outs = match walk {
+                Walk::Need(p) => {
                     let (fc, _) = incoming.get(ci as u32, p as u32).expect("only a wired port is unevaluated");
                     stack.push(fc as usize);
                     continue;
                 }
-                stack.pop();
-                self.fire(ci, &mut gathered, pending, &open, resolver, observer, path)
+                Walk::Chosen(p) => {
+                    let outs = self.chosen(ci, p, scratch, inputs, true, !observer.reads_produced());
+                    self.decided(ci, outs, observer, path)
+                }
+                Walk::Decided(slot) => self.decided(ci, smallvec![slot], observer, path),
+                Walk::Giving => self.fire_giving(ci, scratch, inputs, true, resolver, observer, path),
+                Walk::Fired(outs) => outs,
             };
+            stack.pop();
             scratch[ci] = Some(outs);
         }
 
         self.outputs(scratch, n_outputs, inputs)
     }
 
+    /// A choice's outputs once it has decided, told to the observer as a child's are.
+    fn decided(&self, ci: usize, outs: Slots, observer: &mut impl Observer, path: &mut Vec<u32>) -> Slots {
+        self.told(ci, observer, path, |_, _| outs)
+    }
+
     /// The composite's outputs, from the children's slots in `scratch` (moved out where only one
-    /// output reads one) or its own inputs.
-    fn outputs(&self, scratch: &mut [Option<Slots>], n_outputs: usize, inputs: &[Option<&Value>]) -> Slots {
+    /// output reads one) or its own inputs (moved out likewise when given). Apart from the walks,
+    /// so the recursion through them doesn't carry this frame.
+    #[inline(never)]
+    fn outputs(&self, scratch: &mut [Option<Slots>], n_outputs: usize, inputs: &mut [Option<Cow<'_, Value>>]) -> Slots {
         let incoming = &self.shape.incoming;
         // Each exposed output is whatever feeds that boundary-output port: a child's output at the
         // right port, or — symmetric with the child-input case above — a promoted input routed
         // straight through. (A composite whose output *is* one of its inputs is a valid,
         // validate-accepted shape; the BOUNDARY→BOUNDARY arm below is why that doesn't panic.)
-        // The scratch goes when this returns, so a child's output only one exposed output reads is
-        // moved out of it, not copied.
-        let source = |op: u32| incoming.get(BOUNDARY, op);
-        (0..n_outputs as u32)
-            .map(|op| match source(op) {
-                Some((BOUNDARY, fp)) => Slot::of(inputs.get(fp as usize).copied().flatten().cloned()),
-                Some((fc, fp)) => {
-                    let shared = (0..n_outputs as u32).any(|other| other != op && source(other) == Some((fc, fp)));
-                    let kept = scratch.get_mut(fc as usize).and_then(|o| o.as_mut()).and_then(|o| o.get_mut(fp as usize));
-                    match kept {
-                        Some(slot) if !shared => std::mem::replace(slot, Slot::Absent),
-                        Some(slot) => slot.clone(),
-                        None => Slot::Absent,
-                    }
-                }
+        // The scratch goes when this returns, and the run is done with its inputs, so a value only
+        // one exposed output reads is moved out, not copied. An output fed by a choice that lends
+        // is fed by where the value is kept, so two outputs reading one value through different
+        // choices are seen to share it.
+        let place = |op: u32| {
+            let mut at = incoming.get(BOUNDARY, op)?;
+            while at.0 != BOUNDARY && at.1 == 0 && (at.0 as usize) < self.kinds.len() && self.lends(at.0 as usize, scratch) {
+                let c = at.0 as usize;
+                at = match incoming.source(c, self.lent_port(c, scratch, inputs)) {
+                    Source::Input(fp) => (BOUNDARY, fp),
+                    Source::Child(fc, fp) => (fc, fp),
+                    Source::Unwired | Source::Missing(..) => return None,
+                };
+            }
+            Some(at)
+        };
+        // The value at `at`, moved out unless another output reads it there too.
+        fn slot_at(at: Option<(u32, u32)>, shared: bool, scratch: &mut [Option<Slots>], inputs: &mut [Option<Cow<'_, Value>>]) -> Slot {
+            match at {
+                Some((BOUNDARY, fp)) => match inputs.get_mut(fp as usize) {
+                    Some(given @ Some(Cow::Owned(_))) if !shared => Slot::of(given.take().map(Cow::into_owned)),
+                    Some(Some(v)) => Slot::Value(v.as_ref().clone()),
+                    _ => Slot::Absent,
+                },
+                Some((fc, fp)) => match scratch.get_mut(fc as usize).and_then(|o| o.as_mut()).and_then(|o| o.get_mut(fp as usize)) {
+                    Some(slot) if !shared => std::mem::replace(slot, Slot::Absent),
+                    Some(slot) => slot.clone(),
+                    None => Slot::Absent,
+                },
                 None => Slot::Absent,
+            }
+        }
+        if n_outputs == 1 {
+            // One output, as most are: nothing else reads its value, and no list of places is
+            // made for each run (a `map`'s every item).
+            let at = place(0);
+            return smallvec![slot_at(at, false, scratch, inputs)];
+        }
+        let places: SmallVec<[Option<(u32, u32)>; 2]> = (0..n_outputs as u32).map(place).collect();
+        (0..n_outputs)
+            .map(|op| {
+                let shared = places.iter().enumerate().any(|(other, at)| other != op && at.is_some() && *at == places[op]);
+                slot_at(places[op], shared, scratch, inputs)
             })
             .collect()
     }
+}
+
+/// What the plan does with a child once it has looked at its inputs.
+enum Fired {
+    Done(Slots),
+    /// It may be given some of them: fired once nothing is borrowed.
+    Giving,
+    /// An input isn't evaluated yet: the walk carries on.
+    Ahead,
+}
+
+/// What the walk does with a child once it has looked at its inputs.
+enum Walk {
+    /// Evaluate what feeds this port first.
+    Need(usize),
+    /// A choice decided on the value at this port.
+    Chosen(usize),
+    /// A choice decided on this.
+    Decided(Slot),
+    /// It may be given some of its inputs: fired once nothing is borrowed.
+    Giving,
+    Fired(Slots),
 }
 
 /// A composite's edges by destination: for each child's input port, and each boundary output, the
@@ -1222,31 +1959,64 @@ pub(crate) fn topo_order(n: usize, edges: &[Edge]) -> Option<Vec<usize>> {
 /// lifted to an input of its own) while staying a sealed unit. Like any variadic leaf, `map`
 /// fires only when every extra input is present. Each application asks the host for what it
 /// requests or reads at its own path (see [`Observer`]).
-fn eval_map(inputs: &[Option<&Value>], params: &[Param], resolver: &impl Resolver, observer: &mut impl Observer, path: &mut Vec<u32>) -> Slot {
-    let list = match inputs.first() {
-        Some(Some(Value::List(xs))) => xs,
+fn eval_map(inputs: &mut [Option<Cow<'_, Value>>], params: &[Param], resolver: &impl Resolver, observer: &mut impl Observer, path: &mut Vec<u32>) -> Slot {
+    let len = match inputs.first() {
+        Some(Some(list)) => match list.as_ref() {
+            Value::List(xs) => xs.len(),
+            _ => return Slot::Absent,
+        },
         _ => return Slot::Absent,
     };
-    let Some(extra) = present(&inputs[1..]) else { return Slot::Absent };
+    if !present(&inputs[1..]) {
+        return Slot::Absent;
+    }
     let Some(unit) = function(params, resolver) else { return Slot::Absent };
     let unit = Ready::of(unit, resolver);
 
-    let mut out = Vec::with_capacity(list.len());
+    let mut out = Vec::with_capacity(len);
     let (mut pending, mut absent) = (false, false);
     let mut asks = Asks(observer);
+    // Every item is applied, even after one comes out absent, so each item's requests are asked
+    // in the same round rather than one round per item.
+    let mut tally = |slot: Slot| match slot {
+        Slot::Value(v) => out.push(v),
+        Slot::Absent => absent = true,
+        Slot::Pending => pending = true,
+    };
     // The item and the extras, lent: an application copies only what it keeps. Made once, the
-    // item put in place for each.
-    let mut args: Refs = SmallVec::with_capacity(1 + extra.len());
-    args.push(None);
-    args.extend_from_slice(extra);
-    for (k, elem) in list.iter().enumerate() {
-        args[0] = Some(elem);
-        // Every item is applied, even after one comes out absent, so each item's requests are
-        // asked in the same round rather than one round per item.
-        match apply(&unit, &args, resolver, &mut asks, path, k) {
-            Slot::Value(v) => out.push(v),
-            Slot::Absent => absent = true,
-            Slot::Pending => pending = true,
+    // item put in place for each. A list given to the map gives each item to its application.
+    let (list, extra) = inputs.split_at_mut(1);
+    match (&unit, &list[0]) {
+        // A leaf over items lent, nothing to give it: by reference, as `eval_as` reads them, which
+        // saves a tenth of a leaf's application.
+        (Ready::Other(leaf, kind), Some(Cow::Borrowed(Value::List(xs)))) => {
+            let mut refs: Refs = SmallVec::with_capacity(1 + extra.len());
+            refs.push(None);
+            refs.extend(extra.iter().map(|v| v.as_deref()));
+            for (k, x) in xs.iter().enumerate() {
+                refs[0] = Some(x);
+                tally(at_item(k, path, |path| eval_as(leaf, kind, &refs, resolver, &mut asks, path)));
+            }
+        }
+        // A composite over items lent: run, each item put in place.
+        (Ready::Composite(unit, Some(prepared)), Some(Cow::Borrowed(Value::List(xs)))) if !crate::takes_trigger(unit) => {
+            let mut args: Args = SmallVec::with_capacity(1 + extra.len());
+            args.push(None);
+            args.extend(extra.iter().map(|v| v.as_deref().map(Cow::Borrowed)));
+            for (k, x) in xs.iter().enumerate() {
+                args[0] = Some(Cow::Borrowed(x));
+                tally(at_item(k, path, |path| prepared.run(unit.outputs.len(), &mut args, resolver, &mut asks, path)));
+            }
+        }
+        _ => {
+            let mut args: Args = SmallVec::with_capacity(1 + extra.len());
+            args.push(None);
+            args.extend(extra.iter().map(|v| v.as_deref().map(Cow::Borrowed)));
+            let Some(items) = Items::of(list[0].take()) else { return Slot::Absent };
+            for (k, item) in items.enumerate() {
+                args[0] = Some(item);
+                tally(apply(&unit, &mut args, resolver, &mut asks, path, k));
+            }
         }
     }
     if pending {
@@ -1281,35 +2051,43 @@ enum Ready<'r> {
     /// A composite: its unit, and it prepared; or None, when it can't be (each application then
     /// gives nothing, as `eval_composite` would).
     Composite(&'r Unit, Option<Box<Prepared<'r>>>),
-    /// Anything else, evaluated as it always is.
-    Other(&'r Unit),
+    /// Anything else, evaluated as it always is, what it is decided once.
+    Other(&'r Unit, NodeKind),
 }
 
 impl<'r> Ready<'r> {
     fn of(unit: &'r Unit, resolver: &'r impl Resolver) -> Ready<'r> {
         match &unit.body {
             UnitBody::Composite { children, edges } => Ready::Composite(unit, Prepared::of(unit, children, edges, resolver).map(|p| Box::new(p.planned()))),
-            _ => Ready::Other(unit),
+            _ => Ready::Other(unit, NodeKind::of(unit)),
         }
     }
 }
 
 /// One application of a `map`/`fold` function, to item `k`: evaluated at the node's path then
 /// `k`, its one output (or absent, as [`eval_one`]). A composite runs as `eval_at` would run it.
-fn apply(unit: &Ready, args: &[Option<&Value>], resolver: &impl Resolver, asks: &mut Asks, path: &mut Vec<u32>, k: usize) -> Slot {
-    let Ok(k) = u32::try_from(k) else { return Slot::Absent };
-    path.push(k);
-    let mut outs = match unit {
-        Ready::Other(unit) => eval_at(unit, args, resolver, asks, path),
+/// What `args` gives (a `fold`'s accumulator), the function may build on.
+fn apply<'r>(unit: &Ready<'r>, args: &mut Args<'_>, resolver: &'r impl Resolver, asks: &mut Asks, path: &mut Vec<u32>, k: usize) -> Slot {
+    at_item(k, path, |path| match unit {
+        Ready::Other(unit, kind) if args.iter().any(|a| matches!(a, Some(Cow::Owned(v)) if heavy(v))) => eval_given(unit, kind, args, resolver, asks, path),
+        Ready::Other(unit, kind) => eval_as(unit, kind, &refs(args), resolver, asks, path),
         Ready::Composite(unit, prepared) => {
             // As `eval_at`: a sink's trigger only has to be there.
-            let args = if crate::takes_trigger(unit) && args.len() == unit.inputs.len() { &args[..args.len() - 1] } else { args };
+            let n = if crate::takes_trigger(unit) && args.len() == unit.inputs.len() { args.len() - 1 } else { args.len() };
             match prepared {
-                Some(prepared) => prepared.run(unit.outputs.len(), args, resolver, asks, path),
+                Some(prepared) => prepared.run(unit.outputs.len(), &mut args[..n], resolver, asks, path),
                 None => smallvec![Slot::Absent; unit.outputs.len()],
             }
         }
-    };
+    })
+}
+
+/// What `eval` makes of item `k`'s application: evaluated at the node's path then `k`, its one
+/// output (or absent, as [`eval_one`]).
+fn at_item(k: usize, path: &mut Vec<u32>, eval: impl FnOnce(&mut Vec<u32>) -> Slots) -> Slot {
+    let Ok(k) = u32::try_from(k) else { return Slot::Absent };
+    path.push(k);
+    let mut outs = eval(path);
     path.pop();
     if outs.len() == 1 { outs.pop().unwrap() } else { Slot::Absent }
 }
@@ -1323,11 +2101,14 @@ impl Observer for Asks<'_> {
     fn answer(&mut self, path: &[u32], request: &Value) -> Answer {
         self.0.answer(path, request)
     }
+    fn reads_produced(&self) -> bool {
+        false
+    }
 }
 
-/// The inputs, when every one is present.
-fn present<'a, 'v>(inputs: &'a [Option<&'v Value>]) -> Option<&'a [Option<&'v Value>]> {
-    inputs.iter().all(Option::is_some).then_some(inputs)
+/// Whether every one of the inputs is present.
+fn present(inputs: &[Option<Cow<'_, Value>>]) -> bool {
+    inputs.iter().all(Option::is_some)
 }
 
 /// Higher-order `fold` — the **one** iteration primitive, and the universal list donor
@@ -1341,29 +2122,44 @@ fn present<'a, 'v>(inputs: &'a [Option<&'v Value>]) -> Option<&'a [Option<&'v Va
 /// hash transitively depends on it (I6), and inspection (P3.2.1) must treat hash-valued params
 /// as references. Inputs after the list are passed after the item, as `map` passes them:
 /// `fn(acc, elem, extra…)`, and each application asks at its own path, as `map`'s do.
-fn eval_fold(inputs: &[Option<&Value>], params: &[Param], resolver: &impl Resolver, observer: &mut impl Observer, path: &mut Vec<u32>) -> Slot {
-    let init = match inputs.first() {
-        Some(Some(v)) => (*v).clone(),
-        _ => return Slot::Absent,
-    };
-    let list = match inputs.get(1) {
-        Some(Some(Value::List(xs))) => xs,
-        _ => return Slot::Absent,
-    };
-    let Some(extra) = present(inputs.get(2..).unwrap_or_default()) else { return Slot::Absent };
+///
+/// The accumulator is given to each application, not lent: nothing else reads it, so a function
+/// that grows it (`[...acc, x]`, `insert(acc, k, v)`) grows it in place, one step O(1) where
+/// copying it made the fold O(n²).
+fn eval_fold(inputs: &mut [Option<Cow<'_, Value>>], params: &[Param], resolver: &impl Resolver, observer: &mut impl Observer, path: &mut Vec<u32>) -> Slot {
+    if !matches!(inputs.first(), Some(Some(_))) || !matches!(inputs.get(1), Some(Some(list)) if matches!(list.as_ref(), Value::List(_))) {
+        return Slot::Absent;
+    }
+    if !present(inputs.get(2..).unwrap_or_default()) {
+        return Slot::Absent;
+    }
     let Some(unit) = function(params, resolver) else { return Slot::Absent };
     let unit = Ready::of(unit, resolver);
 
-    let mut acc = init;
+    let (head, extra) = inputs.split_at_mut(2);
+    let mut acc = take_given(&mut head[0]).map(Cow::into_owned).expect("checked present");
     let mut asks = Asks(observer);
-    for (k, elem) in list.iter().enumerate() {
-        // fn(acc, elem, extra…) → new acc; absent or pending ⇒ the whole fold is. All lent.
-        let next = {
-            let mut args: Refs = SmallVec::with_capacity(2 + extra.len());
-            args.push(Some(&acc));
-            args.push(Some(elem));
-            args.extend_from_slice(extra);
-            apply(&unit, &args, resolver, &mut asks, path, k)
+    // A list given to the fold gives each item to its application too.
+    let Some(items) = Items::of(take_given(&mut head[1])) else { return Slot::Absent };
+    for (k, elem) in items.enumerate() {
+        // fn(acc, elem, extra…) → new acc; absent or pending ⇒ the whole fold is.
+        let next = match &unit {
+            // A leaf, and nothing worth giving it (a sum's number): by reference, as `eval_as`
+            // reads them, which saves a quarter of a step.
+            Ready::Other(leaf, kind) if !heavy(&acc) && !matches!(&elem, Cow::Owned(v) if heavy(v)) => {
+                let mut refs: Refs = SmallVec::with_capacity(2 + extra.len());
+                refs.push(Some(&acc));
+                refs.push(Some(&*elem));
+                refs.extend(extra.iter().map(|v| v.as_deref()));
+                at_item(k, path, |path| eval_as(leaf, kind, &refs, resolver, &mut asks, path))
+            }
+            _ => {
+                let mut args: Args = SmallVec::with_capacity(2 + extra.len());
+                args.push(Some(Cow::Owned(acc)));
+                args.push(Some(elem));
+                args.extend(extra.iter().map(|v| v.as_deref().map(Cow::Borrowed)));
+                apply(&unit, &mut args, resolver, &mut asks, path, k)
+            }
         };
         acc = match next {
             Slot::Value(v) => v,
@@ -1371,6 +2167,43 @@ fn eval_fold(inputs: &[Option<&Value>], params: &[Param], resolver: &impl Resolv
         };
     }
     Slot::Value(acc)
+}
+
+/// An input moved out when it was given, as nothing else reads it; a lent one is lent again and
+/// left in its slot, as a `map` hands the same extras to each item's application (a `fold` that is
+/// a `map`'s function gets the map's extra as its list, at every item).
+fn take_given<'v>(slot: &mut Option<Cow<'v, Value>>) -> Option<Cow<'v, Value>> {
+    match slot {
+        Some(Cow::Borrowed(v)) => Some(Cow::Borrowed(*v)),
+        _ => slot.take(),
+    }
+}
+
+/// The items of a `map`'s or `fold`'s list: each given when the list was, else lent.
+enum Items<'v> {
+    Given(std::vec::IntoIter<Value>),
+    Lent(std::slice::Iter<'v, Value>),
+}
+
+impl<'v> Items<'v> {
+    /// The items of `list`, when it is one.
+    fn of(list: Option<Cow<'v, Value>>) -> Option<Items<'v>> {
+        match list? {
+            Cow::Owned(Value::List(xs)) => Some(Items::Given(xs.into_iter())),
+            Cow::Borrowed(Value::List(xs)) => Some(Items::Lent(xs.iter())),
+            _ => None,
+        }
+    }
+}
+
+impl<'v> Iterator for Items<'v> {
+    type Item = Cow<'v, Value>;
+    fn next(&mut self) -> Option<Cow<'v, Value>> {
+        match self {
+            Items::Given(xs) => xs.next().map(Cow::Owned),
+            Items::Lent(xs) => xs.next().map(Cow::Borrowed),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1578,12 +2411,12 @@ mod tests {
         let refs: Refs = inputs.iter().map(Option::as_ref).collect();
         let walk = Prepared::of(unit, children, edges, r).unwrap();
         let (mut walked, mut walked_path) = (observer(), Vec::new());
-        let walked_out = walk.run(n_out, &refs, r, &mut walked, &mut walked_path);
+        let walked_out = walk.run(n_out, &mut lent(&refs), r, &mut walked, &mut walked_path);
         let plan = Prepared::of(unit, children, edges, r).unwrap().planned();
         assert!(plan.plan.is_some(), "no choice but pass-throughs: it has a plan");
         for _ in 0..2 {
             let (mut ran, mut ran_path) = (observer(), Vec::new());
-            let ran_out = plan.run(n_out, &refs, r, &mut ran, &mut ran_path);
+            let ran_out = plan.run(n_out, &mut lent(&refs), r, &mut ran, &mut ran_path);
             assert_eq!(ran.0, walked.0, "events, edges {edges:?}");
             assert_eq!(ran_out, walked_out, "outputs, edges {edges:?}");
         }
@@ -1634,13 +2467,13 @@ mod tests {
         let refs: Refs = inputs.iter().map(Option::as_ref).collect();
         let mut handed = 0;
         for (unit, children, edges, n_out) in &cases {
-            let walked = Prepared::of(unit, children, edges, &r).unwrap().run(*n_out, &refs, &r, &mut NoObserver, &mut Vec::new());
+            let walked = Prepared::of(unit, children, edges, &r).unwrap().run(*n_out, &mut lent(&refs), &r, &mut NoObserver, &mut Vec::new());
             let mut plan = Prepared::of(unit, children, edges, &r).unwrap().planned();
             let order = &mut plan.plan.as_mut().unwrap().order;
             let before = order.clone();
             order.reverse();
             handed += usize::from(*order != before);
-            assert_eq!(plan.run(*n_out, &refs, &r, &mut NoObserver, &mut Vec::new()), walked, "edges {edges:?}");
+            assert_eq!(plan.run(*n_out, &mut lent(&refs), &r, &mut NoObserver, &mut Vec::new()), walked, "edges {edges:?}");
         }
         assert!(handed > 500, "{handed} plans turned around");
         let add = prim("add", 2, Type::Number);
@@ -1660,9 +2493,9 @@ mod tests {
         let refs: Refs = inputs.iter().map(Option::as_ref).collect();
         for (unit, children, edges, n_out) in &cases {
             for prepared in [Prepared::of(unit, children, edges, &r).unwrap(), Prepared::of(unit, children, edges, &r).unwrap().planned()] {
-                let free = prepared.run(*n_out, &refs, &r, &mut NoObserver, &mut Vec::new());
+                let free = prepared.run(*n_out, &mut lent(&refs), &r, &mut NoObserver, &mut Vec::new());
                 let _taken = prepared.scratch.borrow_mut();
-                assert_eq!(prepared.run(*n_out, &refs, &r, &mut NoObserver, &mut Vec::new()), free, "edges {edges:?}");
+                assert_eq!(prepared.run(*n_out, &mut lent(&refs), &r, &mut NoObserver, &mut Vec::new()), free, "edges {edges:?}");
             }
         }
     }
@@ -2052,6 +2885,35 @@ mod tests {
             .join()
             .unwrap();
         assert_eq!(out, vec![Some(num(15.0))]);
+    }
+
+    #[test]
+    fn maps_nested_as_deep_as_a_host_runs_fit_half_a_threads_stack() {
+        // The same bound through `map`s, each function mapping the next over its item: the
+        // recursion that goes through a function's preparation, its giving and `eval_map` at
+        // every level, the deepest per level there is (docs/engineering/themes/js-library-races/leaves.md).
+        // 32 maps, each with its function, are 64 units deep.
+        let mut r = MapResolver::new();
+        let item = || Port { name: "item".into(), ty: Type::Any };
+        let mut f = r.insert(composite(vec![item()], Type::Any, vec![], vec![edge(BOUNDARY, 0, BOUNDARY, 0)])).unwrap();
+        for _ in 0..31 {
+            let map = r.insert(map_unit(&f)).unwrap();
+            f = r.insert(composite(vec![item()], Type::Any, vec![map], vec![edge(BOUNDARY, 0, 0, 0), edge(0, 0, BOUNDARY, 0)])).unwrap();
+        }
+        let top = map_unit(&f);
+        // A list nested as deep, so every level has a list to map.
+        let mut list = num(1.0);
+        for _ in 0..32 {
+            list = Value::List(vec![list]);
+        }
+        let want = list.clone();
+        let out = std::thread::Builder::new()
+            .stack_size(1024 * 1024)
+            .spawn(move || eval(&top, &[Some(list)], &r).into_vec())
+            .unwrap()
+            .join()
+            .unwrap();
+        assert_eq!(out, vec![Some(want)]);
     }
 
     #[test]
@@ -2682,5 +3544,235 @@ mod tests {
             }
         }
         assert_eq!(checked, 8000);
+    }
+
+    /// Giving and lending (a value moved to the node that builds on it, a choice reading through
+    /// to where its value is kept) change no value. On generated functions over lists, texts and
+    /// records, of the leaves that build on what they read, choices, composites, and `map`s and
+    /// `fold`s of earlier functions, each called once, applied by a `fold` (its accumulator given)
+    /// and by a `map` (its items lent), `eval` gives what evaluating every node gives. An observer
+    /// that reads what each node produced sees the same steps at the same paths as one that
+    /// doesn't, and the same outputs.
+    #[test]
+    fn giving_and_lending_agree_with_eager_on_generated_graphs() {
+        use crate::eager::eval_eager;
+        struct Rng(u64);
+        impl Rng {
+            fn next(&mut self) -> u64 {
+                self.0 ^= self.0 << 13;
+                self.0 ^= self.0 >> 7;
+                self.0 ^= self.0 << 17;
+                self.0
+            }
+            fn below(&mut self, n: usize) -> usize {
+                (self.next() % n as u64) as usize
+            }
+        }
+        /// Every step, and what each node produced when it reads that.
+        struct Seen {
+            reads: bool,
+            steps: Vec<(u8, Vec<u32>)>,
+            produced: Vec<Vec<Slot>>,
+        }
+        impl Observer for Seen {
+            fn enter(&mut self, path: &[u32]) {
+                self.steps.push((b'e', path.to_vec()));
+            }
+            fn leave(&mut self, path: &[u32]) {
+                self.steps.push((b'l', path.to_vec()));
+            }
+            fn produced(&mut self, path: &[u32], outputs: &[Slot]) {
+                self.steps.push((b'p', path.to_vec()));
+                if self.reads {
+                    self.produced.push(outputs.to_vec());
+                }
+            }
+            fn reads_produced(&self) -> bool {
+                self.reads
+            }
+        }
+        const LEAVES: &[(&str, &[(&str, &str)])] = &[
+            ("guard", &[]),
+            ("coalesce", &[]),
+            ("append", &[]),
+            ("extend", &[]),
+            ("cons", &[]),
+            ("tail", &[]),
+            ("head", &[]),
+            ("get", &[]),
+            ("length", &[]),
+            ("concat", &[]),
+            ("insert", &[]),
+            ("lookup", &[]),
+            ("remove", &[]),
+            ("with_field", &[("name", "a")]),
+            ("field", &[("name", "a")]),
+            ("select", &[]),
+            ("pair", &[]),
+            ("is_truthy", &[]),
+            ("equals", &[]),
+        ];
+        let rec = |kv: &[(&str, Value)]| Value::Record(kv.iter().map(|(k, v)| (k.to_string(), v.clone())).collect());
+        let values = [
+            None,
+            Some(Value::Boolean(true)),
+            Some(Value::Boolean(false)),
+            Some(num(0.0)),
+            Some(num(1.0)),
+            Some(text("x")),
+            Some(text("a")),
+            Some(list(vec![])),
+            Some(list(vec![num(1.0), text("a")])),
+            Some(list(vec![list(vec![num(2.0)])])),
+            Some(rec(&[])),
+            Some(rec(&[("a", num(1.0)), ("x", list(vec![]))])),
+        ];
+
+        fn graph(rng: &mut Rng, pool: &[(Hash, usize)]) -> Unit {
+            let n = 2 + rng.below(9);
+            let mut children = Vec::new();
+            let mut edges = Vec::new();
+            for c in 0..n {
+                let (h, k) = pool[rng.below(pool.len())];
+                children.push(h);
+                for p in 0..k {
+                    match rng.below(12) {
+                        0 => {}
+                        1..=4 => edges.push(edge(BOUNDARY, rng.below(2) as u32, c as u32, p as u32)),
+                        _ if c > 0 => edges.push(edge(rng.below(c) as u32, 0, c as u32, p as u32)),
+                        _ => edges.push(edge(BOUNDARY, rng.below(2) as u32, c as u32, p as u32)),
+                    }
+                }
+            }
+            // One output, or two, the second sometimes an input itself: what a run moves out at
+            // its end must still be there for every output that reads it.
+            let outs = 1 + rng.below(2);
+            edges.push(edge(rng.below(n) as u32, 0, BOUNDARY, 0));
+            if outs == 2 {
+                match rng.below(3) {
+                    0 => edges.push(edge(BOUNDARY, rng.below(2) as u32, BOUNDARY, 1)),
+                    _ => edges.push(edge(rng.below(n) as u32, 0, BOUNDARY, 1)),
+                }
+            }
+            multi_composite(vec![Port { name: "a".into(), ty: Type::Any }, Port { name: "b".into(), ty: Type::Any }], vec![Type::Any; outs], children, edges)
+        }
+
+        let mut r = MapResolver::new();
+        let mut pool: Vec<(Hash, usize)> = LEAVES
+            .iter()
+            .map(|&(name, params)| {
+                let mut unit = crate::interface_of(name).unwrap_or_else(|| panic!("no leaf {name}"));
+                unit.params = params.iter().map(|&(k, v)| Param::frozen(k, v)).collect();
+                let k = unit.inputs.len();
+                (r.insert(unit).unwrap(), k)
+            })
+            .collect();
+        // A `fold` and a `map` of a leaf: each application a leaf given its item.
+        for name in ["append", "extend", "cons", "concat", "pair"] {
+            let leaf = pool[LEAVES.iter().position(|&(n, _)| n == name).unwrap()].0;
+            let mut fold = fold_unit(&leaf);
+            fold.inputs[0].ty = Type::Any;
+            let mut map = map_unit(&leaf);
+            map.inputs.push(Port { name: "extra".into(), ty: Type::Any });
+            for unit in [fold, map] {
+                pool.push((r.insert(unit).unwrap(), 2));
+            }
+        }
+        // And a `fold` and a `map` of each of those: a function that is itself a bare `map` or
+        // `fold`, handed the outer one's extras at every item.
+        let hofs: Vec<Hash> = pool[LEAVES.len()..].iter().map(|&(hof, _)| hof).collect();
+        for hof in hofs {
+            let mut fold = fold_unit(&hof);
+            fold.inputs[0].ty = Type::Any;
+            let mut map = map_unit(&hof);
+            map.inputs.push(Port { name: "extra".into(), ty: Type::Any });
+            for unit in [fold, map] {
+                pool.push((r.insert(unit).unwrap(), 2));
+            }
+        }
+        let mut rng = Rng(0x2545_F491_4F6C_DD1D);
+        let mut checked = 0;
+        for round in 0..1500 {
+            let g = graph(&mut rng, &pool);
+            let Ok(h) = r.insert(g.clone()) else { continue };
+            let mut fold = fold_unit(&h);
+            fold.inputs[0].ty = Type::Any;
+            let mut map = map_unit(&h);
+            map.inputs.push(Port { name: "extra".into(), ty: Type::Any });
+            for _ in 0..3 {
+                let pick = |rng: &mut Rng| values[rng.below(values.len())].clone();
+                let (a, b) = (pick(&mut rng), pick(&mut rng));
+                let items = Some(list((0..rng.below(4)).filter_map(|_| pick(&mut rng)).collect()));
+                for (unit, inputs) in [(&g, vec![a.clone(), b.clone()]), (&fold, vec![a.clone(), items.clone()]), (&map, vec![items.clone(), b.clone()])] {
+                    let lazy = eval(unit, &inputs, &r).into_vec();
+                    let show = |u: &Unit| -> String {
+                        let UnitBody::Composite { children, edges } = &u.body else { return format!("{:?}", u.body) };
+                        let names: Vec<String> = children.iter().map(|c| r.resolve(c).map_or("?".into(), |c| format!("{:?}{:?}", c.body, c.params))).collect();
+                        format!("{names:#?}\n{edges:?}")
+                    };
+                    assert_eq!(lazy, eval_eager(unit, &inputs, &r), "{unit:?} on {inputs:?}\nfunction {}", show(&g));
+                    let mut reading = Seen { reads: true, steps: Vec::new(), produced: Vec::new() };
+                    let mut blind = Seen { reads: false, steps: Vec::new(), produced: Vec::new() };
+                    assert_eq!(eval_observed(unit, &inputs, &r, &mut reading).into_vec(), lazy);
+                    assert_eq!(eval_observed(unit, &inputs, &r, &mut blind).into_vec(), lazy);
+                    assert_eq!(reading.steps, blind.steps, "{unit:?} on {inputs:?}");
+                    assert!(reading.produced.iter().all(|outs| !outs.is_empty()), "a reading observer is handed every output");
+                    checked += 1;
+                }
+            }
+            // Some functions join the pool, as themselves (a composite inside a composite) and
+            // mapped and folded, so later functions nest them and give them what they build on.
+            if round % 50 == 0 && pool.len() < LEAVES.len() + 54 {
+                pool.push((h, 2));
+                let mut fold = fold_unit(&h);
+                fold.inputs[0].ty = Type::Any;
+                if let Ok(hf) = r.insert(fold) {
+                    pool.push((hf, 2));
+                }
+                let mut map = map_unit(&h);
+                map.inputs.push(Port { name: "extra".into(), ty: Type::Any });
+                if let Ok(hm) = r.insert(map) {
+                    pool.push((hm, 2));
+                }
+            }
+        }
+        assert!(checked > 12_000, "{checked}");
+    }
+
+    /// A `map` whose function is a bare `fold` hands the fold its extra as the list at every item:
+    /// given its own list (here as an outer fold's accumulator), it still lends the extra, so the
+    /// second item's fold has its list too.
+    #[test]
+    fn a_map_of_a_bare_fold_keeps_its_extra_for_every_item() {
+        use crate::eager::eval_eager;
+        let mut r = MapResolver::new();
+        let happend = r.insert(prim("append", 2, Type::Any)).unwrap();
+        let mut inner = fold_unit(&happend);
+        inner.inputs[0].ty = Type::Any;
+        let hinner = r.insert(inner).unwrap();
+        let mut m = map_unit(&hinner);
+        m.inputs.push(Port { name: "extra".into(), ty: Type::Any });
+        let hm = r.insert(m).unwrap();
+        let want = vec![Some(list(vec![list(vec![num(0.0), num(1.0), num(2.0)]), list(vec![num(10.0), num(1.0), num(2.0)])]))];
+        let inputs = vec![Some(list(vec![list(vec![num(0.0)]), list(vec![num(10.0)])])), Some(list(vec![list(vec![num(1.0), num(2.0)])]))];
+
+        // fold(map(fn: fold(append))): the map is given the outer fold's accumulator.
+        let outer = fold_unit(&hm);
+        assert_eq!(eval_eager(&outer, &inputs, &r), want);
+        assert_eq!(eval(&outer, &inputs, &r).into_vec(), want);
+
+        // The same through a composite step(acc, x) = map(acc, x, fn: fold(append)), which gives
+        // its accumulator to its map child.
+        let step = composite(
+            vec![Port { name: "acc".into(), ty: Type::Any }, Port { name: "x".into(), ty: Type::Any }],
+            Type::Any,
+            vec![hm],
+            vec![edge(BOUNDARY, 0, 0, 0), edge(BOUNDARY, 1, 0, 1), edge(0, 0, BOUNDARY, 0)],
+        );
+        let hstep = r.insert(step).unwrap();
+        let mut outer = fold_unit(&hstep);
+        outer.inputs[0].ty = Type::Any;
+        assert_eq!(eval_eager(&outer, &inputs, &r), want);
+        assert_eq!(eval(&outer, &inputs, &r).into_vec(), want);
     }
 }
