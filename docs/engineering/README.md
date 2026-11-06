@@ -9,7 +9,7 @@ Holon's other docs answer other questions:
 |---|---|---|
 | [`docs/manual/`](../manual/README.md) | How do I use it? | for users, as the product is |
 | [`docs/LANGUAGE.md`](../LANGUAGE.md) | What does the language say? | the language's reference |
-| [`docs/L4s/`](../L4s/) | What did we decide for this change, and what did we try? | one note per piece of work, as it was done; not rewritten after |
+| [`docs/L4s/`](../L4s/) | What did we decide for this change, and what did we try? | one note per piece of work, as it was done; not rewritten after. Host capabilities are designed in one, [host capabilities](../L4s/host-capabilities-L4.md), a section each |
 | `docs/engineering/` (here) | Why is it this way now, and what holds it there? | rewritten as the code changes |
 
 An L4 note is a record of the work: its plan, measurements and reversals in the order they
