@@ -1265,11 +1265,11 @@ fn main() {
         vec![v("[1,2]"), text("a")],
         vec![text("a"), v("{\"a\":1}")],
         vec![text("\u{1F600}"), text("e\u{301}")],
+        // `as_text` writes a number as JavaScript does, and `add` sums from -0.
+        vec![num(1e21), text("")],
+        vec![num(-0.0), num(-0.0)],
     ];
     let c = checked("+", PLUS, "js_plus", 2, plus, plus, &pairs);
-    differs("+", &c, plus, &[num(1e21), text("")], false);
-    // Not a text's: `add` folds from 0, so -0 + -0 gives 0 (numbers.md's to settle).
-    differs("+", &c, plus, &[num(-0.0), num(-0.0)], false);
     race("a + b, two texts of n/2", &Side::Composite(&c), &Side::Native(plus), SIZES, |n| vec![text(&sample(n / 2)), text(&sample(n / 2))]);
 
     // encodeURIComponent: a character at a time; decodeURIComponent: one hex decode.

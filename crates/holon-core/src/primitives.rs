@@ -170,12 +170,15 @@ pub(crate) fn compute_op(op: Op, name: &str, inputs: &[&Value], params: &[Param]
             Some(Value::Boolean(a == b))
         }
 
-        // ── arithmetic ──
-        Op::Add => fold_numbers(inputs, 0.0, |a, b| a + b),
-        Op::Multiply => fold_numbers(inputs, 1.0, |a, b| a * b),
-        Op::Subtract => bin_numbers(inputs).map(|(a, b)| Value::Number(a - b)),
+        // ── arithmetic ── A sum starts from `-0`, the one number adding which changes nothing
+        // (`-0 + -0` is `-0`; from `+0` it was `+0`). A result past the largest number is no
+        // number Holon has (`const` refuses one, as `json_parse` does `1e999`): nothing.
+        Op::Add => fold_numbers(inputs, -0.0, |a, b| a + b).filter(finite),
+        Op::Multiply => fold_numbers(inputs, 1.0, |a, b| a * b).filter(finite),
+        Op::Subtract => bin_numbers(inputs).map(|(a, b)| Value::Number(a - b)).filter(finite),
         Op::Divide => bin_numbers(inputs)
-            .and_then(|(a, b)| if b == 0.0 { None } else { Some(Value::Number(a / b)) }),
+            .and_then(|(a, b)| if b == 0.0 { None } else { Some(Value::Number(a / b)) })
+            .filter(finite),
 
         // ── comparison (op param) ──
         Op::Compare => {
@@ -400,13 +403,14 @@ pub(crate) fn compute_op(op: Op, name: &str, inputs: &[&Value], params: &[Param]
             }
             Some(Value::List((0..n as u64).map(|k| Value::Number(k as f64)).collect()))
         }
+        // As `add` sums: from `-0`, and nothing past the largest number.
         Op::Sum => {
             let [l] = inputs else { return None };
-            let mut acc = 0.0;
+            let mut acc = -0.0;
             for v in as_list(l)? {
                 acc += as_number(v)?;
             }
-            Some(Value::Number(acc))
+            Some(Value::Number(acc)).filter(finite)
         }
         Op::Join => {
             let [l, sep] = inputs else { return None };
@@ -1250,8 +1254,7 @@ fn contains_effect(v: &Value) -> bool {
 /// impl: deterministic and portable (I2), not something to hand-roll.
 fn to_text_str(v: &Value) -> String {
     match v {
-        // `-0` prints as `0`: the two are equal, and the canonical value encoding folds them.
-        Value::Number(n) if *n == 0.0 => "0".to_string(),
+        Value::Number(n) if n.is_finite() => number_text(*n),
         Value::Number(n) => n.to_string(),
         Value::Boolean(b) => b.to_string(),
         Value::Text(s) => format!("\"{s}\""),
@@ -1317,6 +1320,40 @@ fn parse_bool(s: &str) -> Option<bool> {
         _ => None,
     }
 }
+/// A finite number as JavaScript writes it (ECMA-262 `Number::toString`): its shortest digits
+/// that read back as it, in full from 1e-6 up to 1e21 and in exponent form outside
+/// (`1e+21`, `1.5e-7`). `-0` is `0`: the two are equal, and the canonical value encoding folds
+/// them.
+pub(crate) fn number_text(n: f64) -> String {
+    if n == 0.0 {
+        return "0".to_string();
+    }
+    // Rust's `{:e}` writes the same shortest digits, as `d.ddde<exp>`.
+    let e = format!("{:e}", n.abs());
+    let (mantissa, exp) = e.split_once('e').expect("{:e} writes an exponent");
+    let digits: String = mantissa.chars().filter(|c| *c != '.').collect();
+    let k = digits.len() as i32;
+    // Where the decimal point falls after the first `point` digits.
+    let point = exp.parse::<i32>().expect("an exponent is a number") + 1;
+    let body = if k <= point && point <= 21 {
+        format!("{digits}{}", "0".repeat((point - k) as usize))
+    } else if 0 < point && point <= 21 {
+        format!("{}.{}", &digits[..point as usize], &digits[point as usize..])
+    } else if -6 < point && point <= 0 {
+        format!("0.{}{digits}", "0".repeat(-point as usize))
+    } else {
+        let sign = if point >= 1 { '+' } else { '-' };
+        let rest = if k == 1 { String::new() } else { format!(".{}", &digits[1..]) };
+        format!("{}{rest}e{sign}{}", &digits[..1], (point - 1).abs())
+    };
+    if n < 0.0 { format!("-{body}") } else { body }
+}
+
+/// Whether `v` is a finite number: what arithmetic gives, else nothing.
+fn finite(v: &Value) -> bool {
+    matches!(v, Value::Number(n) if n.is_finite())
+}
+
 fn fold_numbers(inputs: &[&Value], init: f64, f: fn(f64, f64) -> f64) -> Option<Value> {
     let mut acc = init;
     for v in inputs {
@@ -1666,6 +1703,55 @@ mod tests {
         let some5 = Value::Sum { arm: 0, payload: Box::new(num(5.0)) };
         assert_eq!(compute("to_text", &[&some5], &[]), Some(txt("sum#0(5)")));
     }
+    /// What the JavaScript-library races found (docs/engineering/themes/javascript-library.md §9):
+    /// `-0 + -0` is `-0`, and arithmetic past the largest number gives nothing, not an infinity.
+    #[test]
+    fn a_sum_of_negative_zeros_is_negative_zero_and_an_overflow_is_nothing() {
+        let bits = |v: Option<Value>| match v {
+            Some(Value::Number(n)) => Some(n.to_bits()),
+            _ => None,
+        };
+        assert_eq!(bits(compute("add", &[&num(-0.0), &num(-0.0)], &[])), Some((-0.0f64).to_bits()));
+        assert_eq!(bits(compute("add", &[&num(-0.0), &num(-0.0), &num(-0.0)], &[])), Some((-0.0f64).to_bits()));
+        assert_eq!(bits(compute("add", &[&num(-0.0), &num(0.0)], &[])), Some(0.0f64.to_bits()));
+        assert_eq!(compute("add", &[&num(1.5), &num(2.0)], &[]), Some(num(3.5)));
+        let max = f64::MAX;
+        assert_eq!(compute("add", &[&num(max), &num(max)], &[]), None);
+        assert_eq!(compute("subtract", &[&num(-max), &num(max)], &[]), None);
+        assert_eq!(compute("multiply", &[&num(max), &num(2.0)], &[]), None);
+        assert_eq!(compute("divide", &[&num(max), &num(0.5)], &[]), None);
+        assert_eq!(compute("multiply", &[&num(1e200), &num(1e100)], &[]), Some(num(1e300)));
+    }
+
+    /// A number as text is JavaScript's `String(n)`: in full from 1e-6 up to 1e21, in exponent
+    /// form outside, its shortest digits that read back as it.
+    #[test]
+    fn a_number_as_text_is_as_javascript_writes_it() {
+        for (n, js) in [
+            (0.0, "0"),
+            (-0.0, "0"),
+            (1.0, "1"),
+            (-1.5, "-1.5"),
+            (0.1, "0.1"),
+            (123.456, "123.456"),
+            (1e20, "100000000000000000000"),
+            (1e21, "1e+21"),
+            (-1e21, "-1e+21"),
+            (1.5e300, "1.5e+300"),
+            (9007199254740992.0, "9007199254740992"),
+            (0.000001, "0.000001"),
+            (0.0000001, "1e-7"),
+            (1.23e-18, "1.23e-18"),
+            (5e-324, "5e-324"),
+            (f64::MAX, "1.7976931348623157e+308"),
+            (123456789012345680000.0, "123456789012345680000"),
+        ] {
+            assert_eq!(number_text(n), js, "{n:e}");
+            assert_eq!(compute("as_text", &[&num(n)], &[]), Some(txt(js)), "{n:e}");
+            assert_eq!(crate::json::stringify(&list(vec![num(n)])), Some(format!("[{js}]")), "{n:e}");
+        }
+    }
+
     #[test]
     fn as_text_is_the_identity_on_text_and_renders_everything_else() {
         // The whole point: a text comes back bare, where to_text would quote it.

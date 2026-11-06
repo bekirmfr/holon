@@ -219,8 +219,8 @@ pub fn stringify(value: &Value) -> Option<String> {
 
 fn write(v: &Value, out: &mut String) -> Option<()> {
     match v {
-        Value::Number(n) if *n == 0.0 => out.push('0'), // `-0` too, as `to_text` prints it
-        Value::Number(n) if n.is_finite() => out.push_str(&n.to_string()),
+        // As JavaScript writes a number (`1e+21`), `-0` as `0`, as `to_text` prints them.
+        Value::Number(n) if n.is_finite() => out.push_str(&crate::primitives::number_text(*n)),
         Value::Number(_) => return None,
         Value::Boolean(b) => out.push_str(if *b { "true" } else { "false" }),
         Value::Text(s) => write_string(s, out),

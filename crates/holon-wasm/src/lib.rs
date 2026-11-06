@@ -1348,11 +1348,9 @@ fn check_eval_parity() {
     let r = MapResolver::new();
     assert_eq!(holon_core::eval(&prim("add"), &[Some(num(2.0)), Some(num(3.0))], &r).into_vec(), vec![Some(num(5.0))]);
     assert_eq!(holon_core::eval(&prim("multiply"), &[Some(num(4.0)), Some(num(5.0))], &r).into_vec(), vec![Some(num(20.0))]);
-    // NaN (inf - inf): assert *is_nan*, not bits — the canonical view, and what is target-stable.
-    match holon_core::eval(&prim("subtract"), &[Some(num(f64::INFINITY)), Some(num(f64::INFINITY))], &r).as_slice() {
-        [Some(Value::Number(x))] => assert!(x.is_nan()),
-        other => panic!("expected NaN, got {other:?}"),
-    }
+    // A result that isn't a finite number (inf - inf, or past the largest) is nothing.
+    assert_eq!(holon_core::eval(&prim("subtract"), &[Some(num(f64::INFINITY)), Some(num(f64::INFINITY))], &r).into_vec(), vec![None]);
+    assert_eq!(holon_core::eval(&prim("multiply"), &[Some(num(f64::MAX)), Some(num(2.0))], &r).into_vec(), vec![None]);
     // composite through the resolver: const(7) wired to the boundary ⇒ 7
     let mut r2 = MapResolver::new();
     let kh = r2.insert(konst("7")).unwrap();
@@ -1371,8 +1369,9 @@ fn check_eval_parity() {
 /// Arithmetic on fractions gives the same bits natively and in wasm. Random operands, everyday
 /// fractions and raw bit patterns across the whole finite range (subnormals included), go
 /// through the core's add, subtract, multiply, divide, sum and compare; each result must be
-/// exactly the IEEE operation on this target, and the hash of all of them is pinned, so the
-/// native and wasm runs must agree with each other bit for bit.
+/// exactly the IEEE operation on this target, or nothing where that is past the largest number,
+/// and the hash of all of them is pinned, so the native and wasm runs must agree with each other
+/// bit for bit.
 #[cfg(test)]
 fn check_fraction_parity() {
     // splitmix64: a fixed seed, so both targets draw the same operands.
@@ -1399,15 +1398,18 @@ fn check_fraction_parity() {
     let r = MapResolver::new();
     let less = Unit { params: vec![Param::frozen("op", "<")], ..prim("compare") };
     let sum = Unit { inputs: vec![], ..prim("sum") };
+    // One output, nothing written as `none` so the pinned list can hold it.
     let one = |unit: &Unit, inputs: &[Value]| -> Value {
         let inputs: Vec<Option<Value>> = inputs.iter().cloned().map(Some).collect();
         match holon_core::eval(unit, &inputs, &r).into_vec().as_slice() {
             [Some(v)] => v.clone(),
-            other => panic!("expected one value, got {other:?}"),
+            [None] => Value::Text("none".into()),
+            other => panic!("expected one output, got {other:?}"),
         }
     };
     let same = |got: &Value, want: f64| match got {
-        Value::Number(x) => assert!(x.to_bits() == want.to_bits() || (x.is_nan() && want.is_nan()), "{x} != {want}"),
+        Value::Number(x) => assert!(want.is_finite() && x.to_bits() == want.to_bits(), "{x} != {want}"),
+        Value::Text(none) if none == "none" => assert!(!want.is_finite(), "nothing for {want}"),
         other => panic!("expected a number, got {other:?}"),
     };
     let mut results = Vec::new();
@@ -1424,13 +1426,13 @@ fn check_fraction_parity() {
         same(&over, a / b);
         let list: Vec<f64> = (0..5).map(|_| operand(i)).collect();
         let total = one(&sum, &[Value::List(list.iter().copied().map(num).collect())]);
-        same(&total, list.iter().fold(0.0, |acc, x| acc + x));
+        same(&total, list.iter().fold(-0.0, |acc, x| acc + x));
         let below = one(&less, &[va, vb]);
         assert_eq!(below, Value::Boolean(a < b));
         results.extend([added, taken, times, over, total, below]);
     }
     let digest = to_hex(&holon_core::hash_value(&Value::List(results)).unwrap());
-    assert_eq!(digest, "7cfce01fd18b2d61697e95827946a049328984738904c64e6af56b9bfb2fb0e2");
+    assert_eq!(digest, "ccc61ae7cb73774afb81afee82dfaa072fb7445e39ab34a6ab3be8bd25d789ab");
 }
 
 /// The signature kit computes the same digests natively and in wasm (sha2/hmac are pure Rust, so

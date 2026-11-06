@@ -249,14 +249,11 @@ author sees no mistake; the run answers nothing where JavaScript answers somethi
 | `a + b` on texts that aren't literals | `add`: nothing | `add` takes numbers; refused only when a side is a text literal |
 | `xs.indexOf(x)` on a list | `index_of`: nothing | `index_of` searches texts |
 | `s.split("")` | nothing | an empty separator gives nothing (`Op::Split`) |
-| `a / 0` | nothing | JavaScript gives `Infinity` or `NaN`, which Holon has no value for |
+| `a / 0`, and `+`, `-`, `*` or `/` past the largest number | nothing | JavaScript gives `Infinity` or `NaN`, which Holon has no value for |
 | `{ a: 1 } === { a: 1 }` | `true` | compared by value; JavaScript compares objects by identity |
 | `1 == "1"` | `false` | `==` is `===` |
 | `JSON.parse("bad")` | nothing | JavaScript throws; Holon has no `catch` until slice 5 |
-| `-0 + -0` | `add`: `0` | `add` sums from `+0` (`fold_numbers`); JavaScript gives `-0` |
-| `` `${1e21}` ``, `String(1e21)`, `JSON.stringify(1e21)` | `"1000000000000000000000"` | `as_text` and `json_stringify` write Rust's digits; JavaScript writes `1e+21` (and `1e-7` for `0.0000001`) |
 | `c ? a : b` with `c` true and `a` absent | `b` | it lowers to `guard(c, a) ?? b`; JavaScript gives `a`'s nothing |
-| a function returning `{ a: x, b: y }`, called | its first field only | the record literal as a function's answer is read as its first output (numbers.md, reader limits) |
 | `"a😀b".length`, `.slice`, `.indexOf`, `.charCodeAt` | counted in Unicode scalar values (3) | JavaScript counts UTF-16 code units (4); §11, open 1 |
 | `Object.keys(r)`, `JSON.stringify(r)` | keys sorted | JavaScript keeps insertion order, integer keys first; §11, open 2 |
 | `JSON.parse` of a key given twice | nothing | `json.rs` refuses it; JavaScript keeps the last |
@@ -358,11 +355,14 @@ pages share are made one (a leaf taking a list or a text, so the reader needn't 
 `Array.from(xs)`, `Array.of`, `{ [k]: v }`, `Object.freeze` and `structuredClone` as the value
 itself, a date's `getTime`.
 
-**What the races found wrong today**, each listed in §9: `add` gives `0` for `-0 + -0` (it sums
-from `+0`); `add`, `subtract` and `multiply` can overflow to an infinity Holon says it has no value
-for; `as_text` writes `1e21` as `1000000000000000000000` (JavaScript: `1e+21`); `c ? a : b` gives `b`
-when `c` is true and `a` is absent (it lowers to `guard(c, a) ?? b`); and a function returning a
-record literal gives only its first field.
+**What the races found wrong**, fixed since but for one: `add` gave `0` for `-0 + -0` (it summed
+from `+0`; it starts from `-0` now); `add`, `subtract`, `multiply` and `divide` could overflow to an
+infinity Holon has no value for (they give nothing now); `as_text` and `json_stringify` wrote `1e21`
+as `1000000000000000000000` (they write JavaScript's `1e+21` and `1e-7` now, `primitives.rs`
+`number_text`); and a function returning a record literal gave only its first field when read whole
+(it is the record now: answered, passed on, mapped or folded, `lower.rs` `whole`). Left as it is:
+`c ? a : b` gives `b` when `c` is true and `a` is absent, which [LANGUAGE.md](../../LANGUAGE.md)
+§6.4 chose (a fallback, not a branch) and §9 lists.
 
 **Open, for a decision:**
 

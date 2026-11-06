@@ -28,9 +28,10 @@ fn abs(xs: &[&Value]) -> Option<Value> {
     Some(Value::Number(x.abs()))
 }
 
+/// `x * 2 + 1`; nothing past the largest number, as arithmetic gives.
 fn lin(xs: &[&Value]) -> Option<Value> {
     let [Value::Number(x)] = xs else { return None };
-    Some(Value::Number(x * 2.0 + 1.0))
+    Some(x * 2.0 + 1.0).filter(|y| y.is_finite()).map(Value::Number)
 }
 
 /// `xs.filter((x) => x > 10)`.
@@ -63,30 +64,32 @@ fn entries(xs: &[&Value]) -> Option<Value> {
     Some(Value::Record(out))
 }
 
-/// [`SCORE`], natively.
-fn score_of(a: f64, b: f64) -> f64 {
+/// [`SCORE`], natively: nothing past the largest number, as arithmetic gives (a step past it
+/// leaves every later one past it too).
+fn score_of(a: f64, b: f64) -> Option<Value> {
     let s = a + b;
     let d = a - b;
     let q = s * d / 4.0;
-    if q > 100.0 {
+    let r = if q > 100.0 {
         q - 100.0
     } else if q < 0.0 {
         0.0 - q
     } else {
         q * 3.0 + 1.0
-    }
+    };
+    Some(r).filter(|r| r.is_finite()).map(Value::Number)
 }
 
 fn score(xs: &[&Value]) -> Option<Value> {
     let [Value::Number(a), Value::Number(b)] = xs else { return None };
-    Some(Value::Number(score_of(*a, *b)))
+    score_of(*a, *b)
 }
 
 /// [`SCORE`] of each item and 7, natively.
 fn each_score(xs: &[&Value]) -> Option<Value> {
     let [Value::List(items)] = xs else { return None };
     items.iter().map(|x| match x {
-        Value::Number(a) => Some(Value::Number(score_of(*a, 7.0))),
+        Value::Number(a) => score_of(*a, 7.0),
         _ => None,
     }).collect::<Option<Vec<_>>>().map(Value::List)
 }

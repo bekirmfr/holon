@@ -516,12 +516,40 @@ impl<'a> Lowerer<'a> {
         Val::Out { id: id.into(), outputs, port: 0, explicit: false }
     }
 
+    /// `v` read whole. A function placed with several value outputs (one returning `{ a, b }`,
+    /// which lowers to one output per key) is the record of them, as JavaScript reads what such a
+    /// function gives; its effects stay outputs of their own. One output, one picked by `.name`,
+    /// or a template's first (a route's request) is itself.
+    fn whole(&mut self, v: Val, span: Span) -> R<Val> {
+        let Val::Out { id, outputs, explicit: false, .. } = &v else { return Ok(v) };
+        let placed = self.b.data(id).is_some_and(|d| matches!(d.body, crate::canvas::PlacedBody::Composite { .. }));
+        let values: Vec<usize> = (0..outputs.len()).filter(|&k| outputs[k].ty != WType::Effect).collect();
+        if !placed || values.len() < 2 {
+            return Ok(v);
+        }
+        let (id, outputs) = (id.clone(), outputs.clone());
+        let mut acc = self.node("record", &[], span)?;
+        for k in values {
+            let value = Val::Out { id: id.clone(), outputs: outputs.clone(), port: k, explicit: true };
+            acc = self.node_with("with_field", &[("name".into(), outputs[k].name.clone())], &[("record", acc), ("value", value)], span)?;
+        }
+        Ok(acc)
+    }
+
     /// Wire `v` into `to`'s `input`; a holon's or function's input is recorded for its boundary.
     ///
     /// A boundary input feeds exactly one inner port (core promotes one edge per input), so an
     /// input used twice passes through one node the uses share: `guard(true, input)`, the
     /// identity on presence. It is placed on the second use, and the first use is moved onto it.
     fn connect(&mut self, v: &Val, to: &str, input: &str, span: Span) -> R<()> {
+        if let Val::Out { explicit: false, outputs, .. } = v
+            && outputs.len() > 1
+        {
+            let whole = self.whole(v.clone(), span)?;
+            if !matches!((&whole, v), (Val::Out { id: a, .. }, Val::Out { id: b, .. }) if a == b) {
+                return self.connect(&whole, to, input, span);
+            }
+        }
         match v {
             Val::Out { id, outputs, port, .. } => {
                 let output = outputs.get(*port).map(|p| p.name.clone()).unwrap_or_else(|| "out".into());
@@ -656,6 +684,7 @@ impl<'a> Lowerer<'a> {
                     if let Val::In(_) = v {
                         return err(value.span, "an output can't be an input passed straight through: put a node between");
                     }
+                    let v = self.whole(v, value.span)?;
                     if let FrameKind::Holon { bound, .. } = &mut self.frame().kind {
                         bound.insert(name.text.clone(), (v, s.span));
                     }
@@ -1382,8 +1411,12 @@ impl<'a> Lowerer<'a> {
         }
         self.frames.push(frame);
         let result = self.expr(body);
+        let v = match result {
+            Ok(v) => self.whole(v, body.span),
+            Err(e) => Err(e),
+        };
         let frame = self.frames.pop().expect("the function's frame");
-        let v = result?;
+        let v = v?;
         let Val::Out { id, outputs, port, .. } = &v else {
             return err(body.span, "a function's body can't be a parameter passed straight through: put a node between");
         };
@@ -2217,7 +2250,29 @@ impl<'a> Lowerer<'a> {
         match &e.kind {
             ExprKind::Name(n) if self.is_def(n) => {
                 let h = self.holon(n, e.span)?;
-                Ok((h.hash, h.inputs.len(), vec![]))
+                if h.outputs.iter().filter(|p| p.ty != WType::Effect).count() < 2 {
+                    return Ok((h.hash, h.inputs.len(), vec![]));
+                }
+                // `map` and `fold` read a function's one answer: one returning `{ a, b }` is
+                // placed in a function of the same inputs that answers the record of them.
+                self.lambdas += 1;
+                let name = format!("fn_{}", self.lambdas);
+                self.b.begin_holon(&name);
+                self.frames.push(Frame::new(FrameKind::Lambda { captures: vec![] }));
+                let id = self.b.place(&h, None);
+                let placed = (|| {
+                    for p in &h.inputs {
+                        self.connect(&Val::In(p.name.clone()), &id, &p.name, e.span)?;
+                    }
+                    let out = self.out(&id);
+                    self.whole(out, e.span)
+                })();
+                let frame = self.frames.pop().expect("the function's frame");
+                let Val::Out { id: rec, outputs, port, .. } = placed? else { unreachable!("a record") };
+                let output = outputs.get(port).map(|o| o.name.clone()).unwrap_or_else(|| "out".into());
+                let inputs: Vec<HolonPort> = h.inputs.iter().map(|p| HolonPort { name: p.name.clone(), unit: None }).collect();
+                let wrapped = self.b.end_holon_exact(&name, &inputs, &[HolonPort { name: "out".into(), unit: None }], &frame.wiring_in, &[(rec, output, "out".into())]).or_else(|err_| err(e.span, err_))?;
+                Ok((wrapped.hash, inputs.len(), vec![]))
             }
             ExprKind::Name(n) => err(e.span, format!("\"{n}\" is not a holon: fn: takes a holon's name or fn(…) -> …")),
             ExprKind::Lambda { params, body } => self.lambda(params, body, e.span),
@@ -2606,6 +2661,76 @@ route.get("/x", (req) => {
         assert_eq!(fields, ["id", "path", "body"]);
         let from_params = d.edges.iter().filter(|w| w.output() == "params").count();
         assert_eq!(from_params, 1);
+    }
+
+    /// Each route's answer, its body as text, for a GET of its path: the flow compiled from its
+    /// text and its endpoints run through core's `eval`.
+    pub(crate) fn bodies(src: &str) -> Vec<(String, String)> {
+        use holon_core::{eval, Value};
+        use std::collections::BTreeMap;
+        let lowered = ts::compile(src).unwrap_or_else(|e| panic!("{e}"));
+        let mut store = MapResolver::new();
+        text::restore(&lowered.doc, &mut store, &Names::new());
+        let port = lowered.doc.server.as_ref().map(|x| x.port.clone()).unwrap_or_default();
+        let server = derive_server(&lowered.doc.nodes, &lowered.doc.edges, &mut store, &port);
+        let text = |s: &str| Value::Text(s.into());
+        server
+            .endpoints
+            .iter()
+            .map(|e| {
+                let unit = store.resolve(&parse_hash(&e.hash).unwrap()).unwrap();
+                let request = Value::Record(BTreeMap::from([
+                    ("method".to_string(), text(&e.method)),
+                    ("path".to_string(), text(&e.path)),
+                    ("params".to_string(), Value::Record(BTreeMap::new())),
+                    ("query".to_string(), Value::Record(BTreeMap::new())),
+                    ("headers".to_string(), Value::Record(BTreeMap::new())),
+                    ("body".to_string(), text("")),
+                ]));
+                let out = eval(unit, &[Some(request)], &store).into_vec();
+                // The answer's body, as the server writes it: a text as itself, a value as JSON.
+                let body = match out.first() {
+                    Some(Some(Value::Record(r))) if !r.contains_key("error") => match r.get("body") {
+                        Some(Value::Text(t)) => t.clone(),
+                        Some(v) => holon_core::stringify_json(v).unwrap_or_default(),
+                        None => String::new(),
+                    },
+                    other => format!("{other:?}"),
+                };
+                (e.path.clone(), body)
+            })
+            .collect()
+    }
+
+    /// A function returning `{ a, b }` lowers to one output per key; read whole, it is the
+    /// record, as JavaScript reads it: answered, passed on, mapped and folded. Picked by key, it
+    /// is that output.
+    #[test]
+    fn a_function_returning_a_record_is_the_record_when_read_whole() {
+        let src = r#"import { flow, route } from "holon"
+
+flow("f", { port: 8000 })
+
+function pair(p) {
+  return { a: `<${p}>`, b: 1 }
+}
+
+function step(acc, x) {
+  return { n: acc.n + 1, sum: acc.sum + x }
+}
+
+route.get("/whole", (req) => pair("w"))
+route.get("/passed", (req) => JSON.stringify(pair("p")))
+route.get("/mapped", (req) => ["x", "y"].map(pair))
+route.get("/folded", (req) => [1, 2, 3].reduce(step, { n: 0, sum: 0 }))
+route.get("/picked", (req) => `${pair("k").a}!`)
+"#;
+        let got: BTreeMap<String, String> = bodies(src).into_iter().collect();
+        assert_eq!(got["/whole"], r#"{"a":"<w>","b":1}"#);
+        assert_eq!(got["/passed"], r#"{"a":"<p>","b":1}"#);
+        assert_eq!(got["/mapped"], r#"[{"a":"<x>","b":1},{"a":"<y>","b":1}]"#);
+        assert_eq!(got["/folded"], r#"{"n":3,"sum":6}"#);
+        assert_eq!(got["/picked"], "<k>!");
     }
 
     #[test]

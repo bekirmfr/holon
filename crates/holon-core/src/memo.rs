@@ -242,17 +242,21 @@ mod tests {
 
     #[test]
     fn nan_output_verifies_canonically() {
-        // inf - inf = NaN. `Value` is only `PartialEq` (NaN ≠ NaN), so this verifies ONLY because
-        // the oracle compares canonically — the very property that makes a NaN result checkable
-        // across machines (whose NaN bit patterns may differ).
+        // A NaN passed through. `Value` is only `PartialEq` (NaN ≠ NaN), so this verifies ONLY
+        // because the oracle compares canonically — the very property that makes a NaN result
+        // checkable across machines (whose NaN bit patterns may differ). Arithmetic makes none:
+        // inf - inf gives nothing.
         let mut r = MapResolver::new();
-        let h = r.insert(prim("subtract")).unwrap();
-        let inf = f64::INFINITY;
+        let h = r.insert(prim("coalesce")).unwrap();
         let entry = CacheEntry {
             unit_hash: h,
-            inputs: vec![Some(Value::Number(inf)), Some(Value::Number(inf))],
+            inputs: vec![Some(Value::Number(f64::NAN)), None],
             outputs: vec![Some(Value::Number(f64::NAN))],
         };
+        assert!(verify_entry(&entry, &r));
+        let h = r.insert(prim("subtract")).unwrap();
+        let inf = f64::INFINITY;
+        let entry = CacheEntry { unit_hash: h, inputs: vec![Some(Value::Number(inf)), Some(Value::Number(inf))], outputs: vec![None] };
         assert!(verify_entry(&entry, &r));
     }
 
