@@ -22,7 +22,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
-use holon_core::{interface_of, MapResolver, Resolver, UnitBody, BOUNDARY, CALLS, PASSES_EXTRA, TRIGGER, VARIADIC};
+use holon_core::{family_values, interface_of, MapResolver, Resolver, UnitBody, BOUNDARY, CALLS, PASSES_EXTRA, TRIGGER, VARIADIC};
 use oxc_allocator::Allocator;
 use oxc_ast::ast as js;
 use oxc_parser::Parser;
@@ -45,8 +45,11 @@ const JS_RESERVED: &[&str] = &[
     "protected", "public", "static", "yield", "await", "async", "undefined", "arguments", "eval", "NaN", "Infinity", "JSON", "Object",
 ];
 
-/// JavaScript's globals a flow doesn't have (ts.rs names them in a mistake): never a name here.
-const GLOBALS: &[&str] = &["fetch", "Date", "Math", "setTimeout", "setInterval", "process", "globalThis", "window", "console", "Promise", "require"];
+/// JavaScript's globals a flow doesn't have (ts.rs names them in a mistake), and the number ones
+/// it reads as leaves (`Math.round`, `parseInt`): never a name here.
+const GLOBALS: &[&str] = &[
+    "fetch", "Date", "Math", "setTimeout", "setInterval", "process", "globalThis", "window", "console", "Promise", "require", "Number", "parseInt", "parseFloat", "isNaN", "isFinite",
+];
 
 /// `"holon"`'s own words: the top level's, the answers', and the waits'.
 const VOCAB: &[&str] = &["flow", "route", "every", "on", "action", "js", "respond", "status", "stripe", "event"];
@@ -56,13 +59,18 @@ const COND: u8 = 1;
 const COALESCE: u8 = 2;
 const OR: u8 = 3;
 const AND: u8 = 4;
-const EQ: u8 = 5;
-const REL: u8 = 6;
-const ADD: u8 = 7;
-const MUL: u8 = 8;
-const UNARY: u8 = 9;
-const MEMBER: u8 = 10;
-const ATOM: u8 = 11;
+const BITOR: u8 = 5;
+const BITXOR: u8 = 6;
+const BITAND: u8 = 7;
+const EQ: u8 = 8;
+const REL: u8 = 9;
+const SHIFT: u8 = 10;
+const ADD: u8 = 11;
+const MUL: u8 = 12;
+const POW: u8 = 13;
+const UNARY: u8 = 14;
+const MEMBER: u8 = 15;
+const ATOM: u8 = 16;
 
 /// `text` in parentheses when it binds less tightly than `min`.
 fn wrap((text, power): (String, u8), min: u8) -> String {
@@ -2348,7 +2356,7 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
     /// `value ?? status(missing)`: the answer when the value is absent.
     fn missing(&mut self, value: (String, u8), missing: &str) -> String {
         self.p.vocab.insert("status".into());
-        let left = if value.1 == COALESCE || value.1 >= EQ { value.0 } else { format!("({})", value.0) };
+        let left = if value.1 == COALESCE || value.1 >= BITOR { value.0 } else { format!("({})", value.0) };
         format!("{left} ?? status({missing})")
     }
 
@@ -2634,6 +2642,7 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
                 self.generic(node)
             }
             "map" | "fold" => self.map(node),
+            "math" | "max" | "min" | "aggregate" | "atan2" | "power" | "remainder" | "bitwise" | "number_test" | "to_number" | "number_format" => self.number_form(node),
             "concat" => self.concat(node),
             "as_text" => atom(format!("`${{{}}}`", self.required(node, "value", 0)?)),
             "record" => atom("{}".into()),
@@ -2676,7 +2685,7 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
                     return Ok((format!("{c} ? {t} : {e}"), COND));
                 }
                 let a = self.coalesce_left(node, "a")?;
-                let b = self.required(node, "b", EQ)?;
+                let b = self.required(node, "b", BITOR)?;
                 Ok((format!("{a} ?? {b}"), COALESCE))
             }
             "guard" => {
@@ -2908,11 +2917,148 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
         self.g.incoming.contains_key(&(node.id.clone(), input.to_string()))
     }
 
-    /// The left of `??`, in parentheses unless it is a `??` itself or binds tighter than `||`,
+    /// The left of `??`, in parentheses unless it is a `??` itself or binds tighter than `&&`,
     /// which TypeScript refuses beside it.
     fn coalesce_left(&mut self, node: &Node, input: &str) -> Result<String, String> {
         let (text, prec) = self.arg(node, input)?.ok_or_else(|| format!("{}: its {input} isn't wired", node.data.name))?;
-        Ok(if prec == COALESCE || prec >= EQ { text } else { format!("({text})") })
+        Ok(if prec == COALESCE || prec >= BITOR { text } else { format!("({text})") })
+    }
+
+    /// Whether every input `node` names is wired.
+    fn all_wired(&self, node: &Node, inputs: &[&str]) -> bool {
+        inputs.iter().all(|i| self.arg_wired(node, i))
+    }
+
+    /// Whether what feeds `node`'s `input` reads back as a value the lowering knows is a number
+    /// (lower.rs `leaf_form`): a node's `Number` output, by its name or written in place.
+    fn known_number(&self, node: &Node, input: &str) -> bool {
+        let Some(Src::Node { id, output }) = self.g.incoming.get(&(node.id.clone(), input.to_string())) else { return false };
+        if self.captured.contains_key(&(id.clone(), output.clone())) || self.request.as_ref().is_some_and(|(r, _)| r == id) || self.is_tick(id) {
+            return false;
+        }
+        let src = self.g.node(id);
+        let port = src.data.outputs.iter().find(|p| p.name == *output).or_else(|| if src.data.outputs.len() == 1 { src.data.outputs.first() } else { None });
+        self.pass_through(src).is_none() && port.is_some_and(|p| p.ty == WType::Number)
+    }
+
+    /// A number method's receiver: a number literal in parentheses, as `5.toFixed()` doesn't
+    /// parse.
+    fn receiver(&mut self, node: &Node, input: &str) -> Result<String, String> {
+        let x = self.required(node, input, MEMBER)?;
+        Ok(if x.starts_with(|c: char| c.is_ascii_digit() || c == '.') { format!("({x})") } else { x })
+    }
+
+    /// A number leaf in its JavaScript form (ts.rs reads each back to its leaf), or by its name
+    /// where it has none: a family value with no form, an input left out.
+    fn number_form(&mut self, node: &Node) -> Result<(String, u8), String> {
+        let d = &node.data;
+        let member = |s: String| Ok((s, MEMBER));
+        match d.name.as_str() {
+            "math" if self.arg_wired(node, "x") && family_values("math", "fn").is_some_and(|v| v.contains(&node.param("fn"))) => {
+                let x = self.required(node, "x", COND)?;
+                member(format!("Math.{}({x})", node.param("fn")))
+            }
+            "max" | "min" if d.inputs.iter().all(|p| self.arg_wired(node, &p.name)) => {
+                let mut args = Vec::new();
+                for p in &d.inputs {
+                    args.push(self.required(node, &p.name, COND)?);
+                }
+                member(format!("Math.{}({})", d.name, args.join(", ")))
+            }
+            "aggregate" if self.arg_wired(node, "xs") => {
+                let f = node.param("fn");
+                match f {
+                    "sum_precise" => member(format!("Math.sumPrecise({})", self.required(node, "xs", COND)?)),
+                    "max" | "min" | "hypot" => {
+                        // `Math.hypot(a, b)` built its list in place.
+                        if f == "hypot"
+                            && let Some(list) = self.inline_source(node, "xs", "list").filter(|l| l.data.inputs.len() >= 2 && l.data.inputs.iter().all(|p| self.arg_wired(l, &p.name)))
+                        {
+                            self.touch(list);
+                            let mut items = Vec::new();
+                            for p in &list.data.inputs {
+                                items.push(self.required(list, &p.name, COND)?);
+                            }
+                            return member(format!("Math.hypot({})", items.join(", ")));
+                        }
+                        member(format!("Math.{f}(...{})", self.required(node, "xs", COND)?))
+                    }
+                    _ => self.generic(node),
+                }
+            }
+            "atan2" if self.all_wired(node, &["y", "x"]) => {
+                let y = self.required(node, "y", COND)?;
+                let x = self.required(node, "x", COND)?;
+                member(format!("Math.atan2({y}, {x})"))
+            }
+            "power" if self.all_wired(node, &["a", "b"]) => {
+                // Right-associative, and its left can't be a unary expression (`(-2) ** x`).
+                let a = self.required(node, "a", MEMBER)?;
+                let b = self.required(node, "b", POW)?;
+                Ok((format!("{a} ** {b}"), POW))
+            }
+            "remainder" if self.all_wired(node, &["a", "b"]) => {
+                let a = self.required(node, "a", MUL)?;
+                let b = self.required(node, "b", MUL + 1)?;
+                Ok((format!("{a} % {b}"), MUL))
+            }
+            "bitwise" if self.all_wired(node, &["a", "b"]) => {
+                let (op, prec) = match node.param("op") {
+                    "and" => ("&", BITAND),
+                    "or" => ("|", BITOR),
+                    "xor" => ("^", BITXOR),
+                    "shl" => ("<<", SHIFT),
+                    "shr" => (">>", SHIFT),
+                    "ushr" => (">>>", SHIFT),
+                    "imul" => {
+                        let a = self.required(node, "a", COND)?;
+                        let b = self.required(node, "b", COND)?;
+                        return member(format!("Math.imul({a}, {b})"));
+                    }
+                    _ => return self.generic(node),
+                };
+                let a = self.required(node, "a", prec)?;
+                let b = self.required(node, "b", prec + 1)?;
+                Ok((format!("{a} {op} {b}"), prec))
+            }
+            "number_test" if self.arg_wired(node, "x") => {
+                let call = match (node.param("test"), node.param("coerce")) {
+                    ("finite", "none") => "Number.isFinite",
+                    ("integer", "none") => "Number.isInteger",
+                    ("safe_integer", "none") => "Number.isSafeInteger",
+                    ("nan", "number") => "isNaN",
+                    ("finite", "number") => "isFinite",
+                    _ => return self.generic(node),
+                };
+                member(format!("{call}({})", self.required(node, "x", COND)?))
+            }
+            "to_number" if self.arg_wired(node, "x") => {
+                let radix = self.arg_wired(node, "radix");
+                let call = match (node.param("grammar"), radix) {
+                    ("number", false) => "Number",
+                    ("float", false) => "parseFloat",
+                    ("int", _) => "parseInt",
+                    _ => return self.generic(node),
+                };
+                let x = self.required(node, "x", COND)?;
+                let r = if radix { format!(", {}", self.required(node, "radix", COND)?) } else { String::new() };
+                member(format!("{call}({x}{r})"))
+            }
+            "number_format" if self.arg_wired(node, "x") => {
+                let digits = self.arg_wired(node, "digits");
+                let method = match node.param("style") {
+                    "fixed" => "toFixed",
+                    "precision" => "toPrecision",
+                    "exponential" => "toExponential",
+                    "string" if digits || self.known_number(node, "x") => "toString",
+                    _ => return self.generic(node),
+                };
+                let x = self.receiver(node, "x")?;
+                let d = if digits { self.required(node, "digits", COND)? } else { String::new() };
+                member(format!("{x}.{method}({d})"))
+            }
+            _ => self.generic(node),
+        }
     }
 
     /// The collection, folder or database a store's leaf names.
@@ -3355,8 +3501,9 @@ mod tests {
         assert!(text.contains("route.get(\"/likes\", () => likes.list())"), "{text}");
     }
 
-    /// The number leaves called by name: a family's `fn` is a name, written by name, where a
-    /// `map`'s is its function; an optional radix or digits left out is left unwired.
+    /// The number leaves called by name: a family's `fn` is a name, where a `map`'s is its
+    /// function; an optional radix or digits left out is left unwired. Printed, each is written
+    /// in its JavaScript form.
     #[test]
     fn the_number_leaves_called_by_name_round_trip() {
         let src = "import { action, aggregate, flow, math, max, number_format, power, to_number } from \"holon\"\n\nflow(\"f\")\n\nexport const t = action((input) => {\n  const x = to_number(input.text, { grammar: \"int\" })\n  const y = to_number(input.text, 16, { grammar: \"int\" })\n  return { text: number_format(math(power(max(x, y, 3), 2), { fn: \"sqrt\" }), 2, { style: \"fixed\" }), h: aggregate([x, y], { fn: \"hypot\" }) }\n})\n";
@@ -3366,7 +3513,17 @@ mod tests {
         let reads: Vec<usize> = lowered.doc.nodes.iter().filter(|n| n.data.name == "to_number").map(|n| lowered.doc.edges.iter().filter(|w| w.target == n.id).count()).collect();
         assert_eq!(reads, [1, 2], "the radix wired only where it is given");
         let text = reprinted(src);
-        assert!(text.contains("{ fn: \"sqrt\" }"), "{text}");
+        assert!(text.contains("Math.sqrt(Math.max(x, y, 3) ** 2).toFixed(2)"), "{text}");
+        assert!(text.contains("parseInt(input.text, 16)"), "{text}");
+        assert!(text.contains("Math.hypot(x, y)"), "{text}");
+        assert!(!text.contains("from \"holon\"\nimport") && text.starts_with("import { action, flow } from \"holon\"\n"), "no leaf is imported:\n{text}");
+    }
+
+    /// Each number leaf in its JavaScript form prints back as written: `fmt` keeps the forms.
+    #[test]
+    fn the_number_leaves_print_as_javascript_writes_them() {
+        let src = "import { action, flow } from \"holon\"\n\nflow(\"f\")\n\nexport const t = action((input) => {\n  const a = parseFloat(input.a)\n  const b = parseInt(input.b, 16)\n  const n = Number(input.n)\n  return {\n    root: Math.sqrt(a),\n    big: Math.max(a, b, n),\n    most: Math.max(...input.xs),\n    h: Math.hypot(a, b),\n    sum: Math.sumPrecise(input.xs),\n    angle: Math.atan2(a, b),\n    p: a ** b ** 2,\n    q: (a ** b) ** 2,\n    m: a % b,\n    bits: (a & b | n ^ 3) << 2 >> 1 >>> 0,\n    neg: a * -1,\n    mul: Math.imul(a, b),\n    finite: Number.isFinite(a),\n    whole: Number.isInteger(a),\n    safe: Number.isSafeInteger(a),\n    nan: isNaN(input.s),\n    fin: isFinite(input.s),\n    fixed: a.toFixed(2),\n    prec: b.toPrecision(3),\n    exp: n.toExponential(),\n    text: a.toString(),\n    hex: b.toString(16),\n    lit: (5).toFixed(1),\n    pi: 3.141592653589793,\n  }\n})\n";
+        prints_back(src);
     }
 
     /// How long the log keeps runs, and the other limits, in `flow(…)`: in the order the limits

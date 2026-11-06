@@ -271,6 +271,11 @@ pub enum ExprKind {
     Noun(Noun),
     /// `f(args)`.
     Call { callee: Name, args: Vec<Arg> },
+    /// A leaf the reader placed for one of JavaScript's own forms (`Math.sqrt(x)`, `a % b`,
+    /// `parseInt(s)`, `x.toFixed(2)`), with its params: never a function of the flow's that
+    /// shares its name. `number`: the form is a number's and another type's method
+    /// (`toString`), so its first argument must be a value the lowering knows is a number.
+    Leaf { leaf: Name, params: Vec<(String, String)>, args: Vec<Arg>, number: bool },
     /// `receiver.method(args)`: `notes.list(…)`, `api.post(…)`, `stripe.verify(…)`.
     Method { receiver: Name, method: Name, args: Vec<Arg> },
     /// `base.name`: an output or a field, decided by the lowering.

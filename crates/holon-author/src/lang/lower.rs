@@ -1485,6 +1485,7 @@ impl<'a> Lowerer<'a> {
             ExprKind::Noun(Noun::Now) if let FrameKind::Every { tick } = &self.cur().kind => Ok(self.out(&tick.clone())),
             ExprKind::Noun(n) => self.node(if *n == Noun::Now { "clock" } else { "random" }, &[], e.span),
             ExprKind::Call { callee, args } => self.call(callee, args, e.span),
+            ExprKind::Leaf { leaf, params, args, number } => self.leaf_form(leaf, params, args, *number, e.span),
             ExprKind::Method { receiver, method, args } => self.method(receiver, method, args, e.span),
             ExprKind::Field { base, name } => {
                 let v = self.expr(base)?;
@@ -1771,6 +1772,25 @@ impl<'a> Lowerer<'a> {
         let inputs: Vec<WPort> = unit.inputs.iter().map(WPort::from_core).collect();
         let params: Vec<WParam> = unit.params.iter().map(WParam::from_core).collect();
         self.unit_call(name, &inputs, &params, &[], args, span)
+    }
+
+    /// A leaf the reader placed for a JavaScript form, with its params. `toString()` is a text's
+    /// and a list's method as well as a number's, so it is `number_format` only on a value known
+    /// to be a number: one from a node whose output is a `Number`.
+    fn leaf_form(&mut self, leaf: &Name, params: &[(String, String)], args: &'a [Arg], number: bool, span: Span) -> R<Val> {
+        let unit = interface_of(&leaf.text).expect("a genesis leaf");
+        let inputs: Vec<WPort> = unit.inputs.iter().map(WPort::from_core).collect();
+        if number && let [subject] = args {
+            let v = self.expr(&subject.value)?;
+            let known = matches!(&v, Val::Out { outputs, port, .. } if outputs.get(*port).is_some_and(|p| p.ty == WType::Number));
+            if !known {
+                let given = params.iter().map(|(k, v)| format!("{k}: \"{v}\"")).collect::<Vec<_>>().join(", ");
+                return err(span, format!(".toString() is {0}(x, {{ {given} }}) on a number, and this value isn't known to be one: import {0} from \"holon\" and call it so, or write `${{x}}` for any value", leaf.text));
+            }
+            return self.node_with(&leaf.text, params, &[(inputs[0].name.as_str(), v)], span);
+        }
+        let defaults: Vec<WParam> = unit.params.iter().map(WParam::from_core).collect();
+        self.unit_call(&leaf.text, &inputs, &defaults, params, args, span)
     }
 
     /// `payment(x)` without `await`, the tree's `start(payment, x)`: start this flow's action
@@ -2443,6 +2463,134 @@ every("10s", async () => {
         let d = compiled(&src("<=")).doc;
         let compare = d.nodes.iter().find(|n| n.data.name == "compare").expect("a compare");
         assert_eq!(compare.param("op"), "<=");
+    }
+
+    /// An action returning `body`, its input `x` and a number `n` bound first.
+    fn number_flow(body: &str) -> String {
+        format!("import {{ action, flow }} from \"holon\"\n\nflow(\"f\")\n\nexport const t = action((x) => {{\n  let n = parseFloat(x.n)\n{body}\n}})\n")
+    }
+
+    /// JavaScript's number forms read as their leaves, each with its params: the operators, the
+    /// unary ones, `Math`, `Number`, the globals and a number's methods.
+    #[test]
+    fn javascript_s_number_forms_read_as_their_leaves() {
+        let placed = |expr: &str, leaf: &str| {
+            let d = compiled(&number_flow(&format!("  return {expr}"))).doc;
+            let node = d.nodes.iter().rev().find(|n| n.data.name == leaf).unwrap_or_else(|| panic!("{expr}: no {leaf} in {:?}", leaves(&d)));
+            ["fn", "op", "test", "coerce", "grammar", "style"].iter().filter(|k| interface_of(leaf).is_some_and(|u| u.params.iter().any(|p| p.name() == **k))).map(|k| format!("{k}={}", node.param(k))).collect::<Vec<_>>().join(",")
+        };
+        let cases: &[(&str, &str, &str)] = &[
+            ("n % 3", "remainder", ""),
+            ("n ** 2", "power", ""),
+            ("Math.pow(n, 2)", "power", ""),
+            ("n & 3", "bitwise", "op=and"),
+            ("n | 3", "bitwise", "op=or"),
+            ("n ^ 3", "bitwise", "op=xor"),
+            ("n << 3", "bitwise", "op=shl"),
+            ("n >> 3", "bitwise", "op=shr"),
+            ("n >>> 3", "bitwise", "op=ushr"),
+            ("~n", "bitwise", "op=xor"),
+            ("Math.imul(n, 3)", "bitwise", "op=imul"),
+            ("Math.round(n)", "math", "fn=round"),
+            ("Math.f16round(n)", "math", "fn=f16round"),
+            ("Math.max(n, 1, 2)", "max", ""),
+            ("Math.min(n, 1)", "min", ""),
+            ("Math.max(...x.xs)", "aggregate", "fn=max"),
+            ("Math.hypot(n, 1)", "aggregate", "fn=hypot"),
+            ("Math.sumPrecise(x.xs)", "aggregate", "fn=sum_precise"),
+            ("Math.atan2(n, 1)", "atan2", ""),
+            ("Number.isFinite(n)", "number_test", "test=finite,coerce=none"),
+            ("Number.isInteger(n)", "number_test", "test=integer,coerce=none"),
+            ("Number.isSafeInteger(n)", "number_test", "test=safe_integer,coerce=none"),
+            ("isNaN(x.s)", "number_test", "test=nan,coerce=number"),
+            ("isFinite(x.s)", "number_test", "test=finite,coerce=number"),
+            ("+x.s", "to_number", "grammar=number"),
+            ("Number(x.s)", "to_number", "grammar=number"),
+            ("parseFloat(x.s)", "to_number", "grammar=float"),
+            ("Number.parseInt(x.s, 16)", "to_number", "grammar=int"),
+            ("n.toFixed(2)", "number_format", "style=fixed"),
+            ("n.toPrecision(3)", "number_format", "style=precision"),
+            ("n.toExponential()", "number_format", "style=exponential"),
+            ("n.toString(16)", "number_format", "style=string"),
+            ("n.toString()", "number_format", "style=string"),
+            ("x.s.toString(2)", "number_format", "style=string"),
+        ];
+        for (expr, leaf, params) in cases {
+            assert_eq!(placed(expr, leaf), *params, "{expr}");
+        }
+        // `-x` is `x * -1`; the constants are their literals; `Number.isNaN` is false.
+        for (expr, value) in [("Math.PI", "3.141592653589793"), ("Number.MAX_SAFE_INTEGER", "9007199254740991"), ("Number.MIN_VALUE", "5e-324"), ("Number.isNaN(n)", "false")] {
+            let d = compiled(&number_flow(&format!("  return {{ v: {expr}, n }}"))).doc;
+            assert!(d.nodes.iter().any(|c| c.data.name == "const" && c.param("value") == value), "{expr}: {:?}", leaves(&d));
+        }
+    }
+
+    /// Each form lowers to the unit its spelled-out form does: `-x` to `x * -1`, `~x` to
+    /// `x ^ -1`, a compound assignment to its operator.
+    #[test]
+    fn a_number_form_is_the_unit_of_what_it_stands_for() {
+        let same = [
+            ("return -n", "return n * -1"),
+            ("return ~n", "return n ^ -1"),
+            ("return +x.s", "return Number(x.s)"),
+            ("return Math.pow(n, 2)", "return n ** 2"),
+            ("return Number.parseFloat(x.s)", "return parseFloat(x.s)"),
+            ("return -(n * 2) * 3", "return ((n * 2) * -1) * 3"),
+            ("n %= 3\n  return n", "n = n % 3\n  return n"),
+            ("n **= 2\n  return n", "n = n ** 2\n  return n"),
+            ("n &= 3\n  n |= 4\n  n ^= 5\n  return n", "n = n & 3\n  n = n | 4\n  n = n ^ 5\n  return n"),
+            ("n <<= 1\n  n >>= 2\n  n >>>= 3\n  return n", "n = n << 1\n  n = n >> 2\n  n = n >>> 3\n  return n"),
+        ];
+        for (form, spelled) in same {
+            let (a, b) = (compiled(&number_flow(&format!("  {form}"))), compiled(&number_flow(&format!("  {spelled}"))));
+            assert_eq!(hash_of(&a.doc), hash_of(&b.doc), "{form} is {spelled}");
+        }
+        // `-(n * 2) * 3` keeps its negation one node, as written.
+        let d = compiled(&number_flow("  return -(n * 2) * 3")).doc;
+        assert_eq!(leaves(&d).iter().filter(|l| *l == "multiply").count(), 3);
+    }
+
+    /// The forms a flow can't have are refused, each naming what it can write.
+    #[test]
+    fn the_number_forms_a_flow_lacks_are_refused() {
+        let refused = |body: &str| error(&number_flow(&format!("  return {body}"))).2;
+        assert!(refused("x.s.toString()").starts_with(".toString() is number_format(x, { style: \"string\" }) on a number"), "{}", refused("x.s.toString()"));
+        assert!(refused("Math.random()").contains("import { random } from \"holon:random\""));
+        assert!(refused("Math.max(n)").starts_with("Math.max takes two numbers or more"));
+        assert!(refused("Math.sqrt(n, 2)").starts_with("Math.sqrt takes one number"));
+        assert!(refused("Math.clamp(n)").starts_with("Math has no \"clamp\""));
+        assert!(refused("Math.TAU").starts_with("Math.TAU isn't a value: Math's constants are Math.E"));
+        assert!(refused("Number.NaN").starts_with("a flow has no NaN or Infinity"));
+        assert!(refused("NaN").starts_with("NaN isn't a value a flow has"));
+        assert!(refused("Infinity").starts_with("Infinity isn't a value a flow has"));
+        assert!(refused("Math").starts_with("Math is a namespace"));
+        assert!(refused("parseInt(x.s, 16, 2)").starts_with("parseInt takes a text and a radix"));
+        assert!(refused("n.toLocaleString()").starts_with("a flow has no locale"));
+    }
+
+    /// A flow's own function keeps its name's calls, as JavaScript's would shadow the global;
+    /// `Math.max` is the leaf whatever the flow defines.
+    #[test]
+    fn a_flow_s_function_shadows_a_global_and_never_math_s() {
+        let src = "import { action, flow } from \"holon\"\n\nfunction max(a) {\n  return a * 2\n}\n\nfunction parseFloat(s) {\n  return s ?? 1\n}\n\nflow(\"f\")\n\nexport const t = action((x) => {\n  return { m: Math.max(x.a, 1), own: max(x.a), p: parseFloat(x.s) }\n})\n";
+        let d = compiled(src).doc;
+        let placed = |name: &str, composite: bool| d.nodes.iter().filter(|n| n.data.name == name && matches!(n.data.body, crate::canvas::PlacedBody::Composite { .. }) == composite).count();
+        assert_eq!((placed("max", false), placed("max", true)), (1, 1), "Math.max is the leaf, max(…) the flow's function: {:?}", leaves(&d));
+        assert_eq!((placed("to_number", false), placed("parseFloat", true)), (0, 1), "parseFloat is the flow's own: {:?}", leaves(&d));
+    }
+
+    /// `Math`'s and `Number`'s constants are the doubles JavaScript has.
+    #[test]
+    fn the_constants_are_javascript_s_doubles() {
+        use std::f64::consts;
+        let math = [consts::E, consts::LN_10, consts::LN_2, consts::LOG10_E, consts::LOG2_E, consts::PI, consts::FRAC_1_SQRT_2, consts::SQRT_2];
+        for ((name, text), want) in ts::MATH_CONSTANTS.iter().zip(math) {
+            assert_eq!(text.parse::<f64>().unwrap().to_bits(), want.to_bits(), "Math.{name}");
+        }
+        let number = [f64::EPSILON, 9007199254740991.0, -9007199254740991.0, f64::MAX, f64::from_bits(1)];
+        for ((name, text), want) in ts::NUMBER_CONSTANTS.iter().zip(number) {
+            assert_eq!(text.parse::<f64>().unwrap().to_bits(), want.to_bits(), "Number.{name}");
+        }
     }
 
     // ── each construct, by the nodes it places ──

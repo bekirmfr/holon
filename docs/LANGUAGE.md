@@ -185,7 +185,7 @@ derived from the leaves, never from the words.
 | `class`, `this`, `new`, generators, `eval` | A flow is a module of functions and records; computing that needs all of JavaScript goes in a `js()` function |
 | Generics, type parameters, types beyond the nine | The checker is wire-time compatibility over nine types (§6.8). A type system is a different project |
 | Imports of code, packages | An import names something outside a run. Reuse across files is the marketplace's job (a published holon placed by hash), not an import of code (the `marketplace` sample). Revisit when people share holons across flows |
-| Globals: `fetch`, `Date`, `Math`, `setTimeout`, `process` | A flow uses only what it imports, so the top of the file is the whole of what it touches. `JSON.parse`, `JSON.stringify` and `Object.keys` are there, as the leaves that do them |
+| Globals: `fetch`, `Date`, `setTimeout`, `process` | A flow uses only what it imports, so the top of the file is the whole of what it touches. `JSON.parse`, `JSON.stringify`, `Object.keys`, `Math`, `Number`, `parseInt`, `parseFloat`, `isNaN` and `isFinite` are there, as the leaves that do them (§5.3, §5.6). `NaN` and `Infinity` aren't values: a leaf gives nothing where JavaScript gives one |
 | `+` on texts | An operator lowers to one node, and most values are `Any`, so `+` could not choose between `add` and `concat`. A template literal is the natural spelling; `concat(a, b)` the explicit one |
 | `\|\|` and `&&` on anything but booleans | `a \|\| "none"` is JavaScript's fallback, and Holon's logic is on booleans: the fallback is `??` |
 | Common-subexpression elimination | The text's structure is the graph's. Sharing is explicit (a binding), so the canvas shows what was written |
@@ -1048,8 +1048,8 @@ it reaches it as an input after the item (§5.9): `tax` here.
 - **Identifiers** are TypeScript's. Any name may be bound; names aren't in the hash (§7), except a
   function's parameters, which are its ports.
 - **Numbers:** a finite decimal: `0`, `86400`, `2.5`, `1e3`, `1_000_000` (the separators are left
-  out of the value). A minus is written before a number (`-1`); to negate a value, `0 - x`. No
-  infinity, no NaN, since `const` refuses them.
+  out of the value). A minus before a number is part of it (`-1`); before any other value it is
+  `x * -1` (§5.6). No infinity, no NaN, since `const` refuses them.
 - **Texts:** `"…"` or `'…'` with JavaScript's escapes, and template literals, `` `Hello, ${name}` ``,
   whose `${…}` parts are any expression (§5.5).
 - **Durations** are texts where one is asked: `every("10s", …)`, `event("paid", { expires: "1d" })`,
@@ -1228,7 +1228,7 @@ handler (§10, §12).
 |---|---|
 | `const name = expr` | a binding: a name for the node `expr` places, no node of its own |
 | `let name = expr`, `name = expr`, `var name = expr` | a new name per assignment; where branches assign it, the value after them is the branch taken's, chosen as `?:` and `switch` choose (`guard`, `coalesce`). `var` reads as `let`, and `fmt` writes it as `const` or `let` |
-| `n++`, `n += 2`, `x ??= y` | an assignment of `n + 1`, `n + 2`, `x ?? y` |
+| `n++`, `n += 2`, `x ??= y` | an assignment of `n + 1`, `n + 2`, `x ?? y`; `%=`, `**=`, `&=`, `\|=`, `^=`, `<<=`, `>>=` and `>>>=` likewise, each its operator's leaf (§5.6) |
 | `xs.push(x)`, `order.total = t` (on a local) | a new value: `[...xs, x]` (`append`), `{ ...order, total: t }` (`with_field`) |
 | `const { a, b = 1, ...rest } = r` | a `field` per name; `b = 1` is `r.b ?? 1` (`default`, or `coalesce` when the default is computed); `rest` is `without_field` per named key |
 | `const [x, y] = xs`, `const [first, ...rest] = xs` | `get` at each index; `head` and `tail` |
@@ -1311,9 +1311,23 @@ Every catalog leaf is callable by its own name with this rule (`concat(a, b)`, `
 | `xs.reduce(f, start)` | `fold{fn: f}(start, xs)` (§5.9) |
 | `JSON.parse(t)`, `JSON.stringify(x)` | `json_parse(t)`, `json_stringify(x)` |
 | `Object.keys(r)` | `keys(r)` |
+| `Math.round(x)`, `Math.sqrt(x)`, … | `math{fn: round}(x)`: each of `Math`'s one-number functions, `f16round` and `clz32` among them, is `math` with its name |
+| `Math.max(a, b, …)`, `Math.min(a, b, …)` | `max(a, b, …)`, `min(a, b, …)`, variadic |
+| `Math.max(...xs)`, `Math.min(...xs)`, `Math.hypot(a, b, …)`, `Math.hypot(...xs)`, `Math.sumPrecise(xs)` | `aggregate{fn}(xs)`, the list built in place for `hypot`'s numbers |
+| `Math.atan2(y, x)`, `Math.pow(a, b)`, `Math.imul(a, b)` | `atan2(y, x)`, `power(a, b)`, `bitwise{op: imul}(a, b)` |
+| `Math.PI`, `Math.E`, `Number.EPSILON`, `Number.MAX_SAFE_INTEGER`, … | the constant's literal: `3.141592653589793` |
+| `Number(x)`, `parseFloat(s)`, `parseInt(s)`, `parseInt(s, r)` | `to_number{grammar: number, float or int}(x)`, the radix wired when given; `Number.parseFloat` and `Number.parseInt` the same |
+| `Number.isFinite(x)`, `Number.isInteger(x)`, `Number.isSafeInteger(x)`, `isNaN(x)`, `isFinite(x)` | `number_test{test, coerce}(x)`: `coerce: none` for `Number.`'s, `number` for the globals |
+| `Number.isNaN(x)` | `false`: a flow has no NaN |
+| `x.toFixed(d)`, `x.toPrecision(p)`, `x.toExponential(d)`, `x.toString(r)` | `number_format{style}(x, d)`, `d` wired when given |
+| `x.toString()` | `number_format{style: string}(x)` when `x` is known to be a number (a node whose output is a `Number`); refused otherwise, naming `number_format`, as a text and a list have the method too |
 
-A list's length is `length(xs)` and a text's `text_length(t)`, called as leaves: `.length` comes in
-a later slice. A method no leaf does is refused, with "do it in a `js()` function".
+`Math` and `Number` are namespaces the reader knows, as it knows `JSON`; a flow's own function
+named `parseInt` is the one `parseInt(s)` calls, as in JavaScript, and `Math.max` is the leaf
+whatever the flow defines. `Math.random()` is refused, with `import { random } from
+"holon:random"`, a run's one recorded number. A list's length is `length(xs)` and a text's
+`text_length(t)`, called as leaves: `.length` comes in a later slice. A method no leaf does is
+refused, with "do it in a `js()` function".
 
 ### 5.4 The outside world, as imported names
 
@@ -1497,7 +1511,8 @@ side of `??` (§5.6).
 
 ### 5.6 Operators
 
-Lowest to highest precedence, as TypeScript has them; binary operators are left-associative.
+Lowest to highest precedence, as TypeScript has them; binary operators are left-associative, but
+`**`.
 
 | Operator | Lowers to | Note |
 |---|---|---|
@@ -1506,11 +1521,17 @@ Lowest to highest precedence, as TypeScript has them; binary operators are left-
 | `a ?? b` | `coalesce(a, b)`; with a literal `b`, `default{type, value}(a)` | `a` when present, else `b`. The two leaves have one meaning; `default` is the one-node form for a literal (a number, text, boolean, or a record/list literal with only literals inside, frozen as `Json`) |
 | `a \|\| b` | `or(a, b)` | variadic: `a \|\| b \|\| c` is one node; booleans only |
 | `a && b` | `and(a, b)` | variadic; booleans only |
+| `a \| b`, `a ^ b`, `a & b` | `bitwise{op: or, xor, and}(a, b)` | on int32s; each its own level, in that order, below `===` |
 | `a === b`, `a !== b` | `equals(a, b)`, `not(equals(a, b))` | structural, any two values, never coerced; `==` and `!=` mean the same, and `fmt` writes `===` |
 | `a < b`, `<=`, `>`, `>=` | `compare{op}(a, b)` | numbers only, as `compare` is |
+| `a << b`, `a >> b`, `a >>> b` | `bitwise{op: shl, shr, ushr}(a, b)` | `>>>` gives a uint32 |
 | `a + b`, `a - b` | `add(a, b)`, `subtract(a, b)` | numbers only; `add` variadic |
-| `a * b`, `a / b` | `multiply(a, b)`, `divide(a, b)` | `multiply` variadic |
+| `a * b`, `a / b`, `a % b` | `multiply(a, b)`, `divide(a, b)`, `remainder(a, b)` | `multiply` variadic; `%` is fmod, with `a`'s sign |
+| `a ** b` | `power(a, b)` | right-associative; its left is never a unary expression, so `(-2) ** b` |
 | `!a` | `not(a)` | |
+| `-a` | `multiply(a, -1)` | in parentheses, one node; exact at `-0`, where `0 - a` isn't. A minus before a number literal is the literal (`-1`) |
+| `+a` | `to_number(a)` | `Number(a)` |
+| `~a` | `bitwise{op: xor}(a, -1)` | |
 | `a.name`, `a?.name` | an output, or `field{name}(a)` | §5.7; `?.` means what `.` does |
 | `a[e]` | `lookup(record: a, key: e)` when `a` is not an imported collection or folder | the key arrives on a wire |
 

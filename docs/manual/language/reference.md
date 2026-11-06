@@ -85,9 +85,11 @@ as; its options are the deploy settings:
 **Identifiers** are TypeScript's. A name bound in a handler is visible after its binding, in that
 handler; functions and top-level `const`s are visible to the whole file.
 
-**No globals.** JavaScript's globals aren't there: a flow has no `fetch`, `Date` or `Math`, and
-the mistake says to import what it uses. `JSON.parse`, `JSON.stringify` and `Object.keys` are
-there, as the leaves that do them.
+**No globals.** JavaScript's globals aren't there: a flow has no `fetch`, `Date` or `setTimeout`,
+and the mistake says to import what it uses. `JSON.parse`, `JSON.stringify`, `Object.keys`,
+`Math`, `Number`, `parseInt`, `parseFloat`, `isNaN` and `isFinite` are there, as the leaves that do
+them (see [Numbers](#numbers)). `NaN` and `Infinity` aren't values: where JavaScript gives one, a
+leaf gives no value.
 
 | Literal | Examples | Notes |
 |---|---|---|
@@ -109,6 +111,7 @@ and a record or list is written as JSON.
 |---|---|
 | `const name = expr` | Binds a name. |
 | `let name = expr`, `name = expr` | A name that may be bound again: each assignment is a new value, and where branches assign it, the value is the branch taken's. `var` is read as `let`. |
+| `n++`, `n += 2`, `n %= 3`, `x ??= y` | An assignment of `n + 1`, `n + 2`, `n % 3`, `x ?? y`; each of TypeScript's compound operators the same way. |
 | `const { a, b } = r`, `const [x, y] = xs` | Destructuring: a field each, an index each; `{ a = 1 }` takes a default, `[first, ...rest]` the head and the tail. |
 | `state.key = expr` | Writes the flow's state under `key` when the run finishes. |
 | `coll[key] = expr` | Writes an item of a collection (or a file of a folder) when the run finishes. |
@@ -163,9 +166,13 @@ From lowest to highest precedence; binary operators group left to right.
 | `c ? a : undefined` | `a` when `c` is `true`; otherwise no value |
 | `a ?? b` | `a`, or `b` when `a` has no value |
 | `a \|\| b`, `a && b`, `!a` | logic, on booleans; a text or number after `\|\|` is refused, with "use `??`" |
+| `a \| b`, `a ^ b`, `a & b` | bitwise or, xor and and, on 32-bit integers |
 | `a === b`, `a !== b` | structural equality of any two values, never converted: `1` is not `"1"`. `==` and `!=` mean the same, and `fmt` writes `===` |
 | `a < b`, `<=`, `>`, `>=` | comparison, on numbers |
+| `a << b`, `a >> b`, `a >>> b` | shifts, on 32-bit integers; `>>>` gives one without a sign |
 | `a + b`, `a - b`, `a * b`, `a / b` | arithmetic, on numbers. There is no `+` on texts: use a template literal, `` `${a}${b}` `` |
+| `a % b`, `a ** b` | the remainder, with `a`'s sign, and `a` to the power `b`; `**` groups right to left |
+| `-a`, `+a`, `~a` | `a * -1`; `a` as a number, `Number(a)`; the bits of `a` flipped |
 | `f(…)` | a call (see [Calls](#calls)) |
 | `a.name`, `a?.name` | an output named `name`, else the field `name` of a record; `?.` means the same |
 | `a[e]` | the field whose name is `e`'s value; on a collection or folder, an item or a file |
@@ -206,6 +213,28 @@ hmac_sha256(key, text, { encoding: "hex" })   // encoding: a parameter
 `JSON.stringify` are `json_parse` and `json_stringify`, `Object.keys` is `keys`. A list's length
 is `length(xs)`, a text's `text_length(t)`. A method no leaf does is refused, with "do it in a
 `js()` function".
+
+### Numbers
+
+A number is a finite double. Where JavaScript would give `NaN` or an infinity (`Math.log(0)`,
+`parseInt("x")`, `0 ** -1`), the leaf gives no value, so a flow tests for one with `x !==
+undefined` or gives a fallback with `??`. A number leaf given a text gives no value too: convert
+it first, `Number(s)`.
+
+| Form | Meaning |
+|---|---|
+| `Math.round(x)`, `Math.sqrt(x)`, `Math.sin(x)`, … | `Math`'s one-number functions, `math` with the function's name; `Math.round` rounds a half up, as JavaScript's does |
+| `Math.max(a, b, …)`, `Math.min(a, b, …)` | the largest, the smallest |
+| `Math.max(...xs)`, `Math.min(...xs)`, `Math.hypot(a, b)`, `Math.sumPrecise(xs)` | over a list (`aggregate`) |
+| `Math.atan2(y, x)`, `Math.pow(a, b)`, `Math.imul(a, b)` | as JavaScript's |
+| `Math.PI`, `Math.E`, `Number.EPSILON`, `Number.MAX_SAFE_INTEGER` | the constants, as their literals |
+| `Number(x)`, `parseFloat(s)`, `parseInt(s, 16)` | a value as a number (`to_number`); `Number.parseFloat` and `Number.parseInt` are the same |
+| `Number.isInteger(x)`, `Number.isFinite(x)`, `isNaN(s)`, `isFinite(s)` | tests (`number_test`); `Number.isNaN(x)` is `false`, as a flow has no NaN |
+| `x.toFixed(2)`, `x.toPrecision(3)`, `x.toExponential()`, `x.toString(16)` | a number as text (`number_format`) |
+| `x.toString()` | the same, when `x` is known to be a number, as an arithmetic result is; otherwise refused, naming `number_format`, since a text and a list have the method too |
+
+`Math.random()` is refused: a run's random number is `import { random } from "holon:random"`, one
+for the run, recorded.
 
 ## The outside world
 

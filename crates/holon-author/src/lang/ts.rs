@@ -14,7 +14,7 @@
 
 use std::collections::{BTreeSet, HashMap};
 
-use holon_core::{interface_of, PASSES_EXTRA, TRIGGER, VARIADIC};
+use holon_core::{family_values, interface_of, PASSES_EXTRA, TRIGGER, VARIADIC};
 use oxc_allocator::Allocator;
 use oxc_ast::ast as js;
 use oxc_ast_visit::Visit;
@@ -1353,6 +1353,8 @@ impl<'s, 't> Reader<'s, 't> {
     fn assignment(&mut self, a: &js::AssignmentExpression, stmts: &mut Vec<Stmt>, start: usize) -> R<()> {
         use js::AssignmentOperator as A;
         let at = self.span(a.span);
+        // `%=`, `**=` and the bitwise ones: their operator's leaf.
+        let number = a.operator.to_binary_operator().and_then(number_operator);
         let op = match a.operator {
             A::Assign => None,
             A::Addition => Some(BinOp::Add),
@@ -1362,6 +1364,7 @@ impl<'s, 't> Reader<'s, 't> {
             A::LogicalNullish => Some(BinOp::Coalesce),
             A::LogicalOr => Some(BinOp::Or),
             A::LogicalAnd => Some(BinOp::And),
+            _ if number.is_some() => None,
             op => return fail(at, format!("{} isn't an operator Holon has", op.as_str())),
         };
         if op == Some(BinOp::Add) && is_text(self.unwrap(&a.right)) {
@@ -1373,6 +1376,10 @@ impl<'s, 't> Reader<'s, 't> {
         let place = self.place(target)?;
         let rhs = self.expr(&a.right)?;
         let value = match op {
+            None if let Some((name, params)) = number => {
+                let old = self.read_place(&place, at)?;
+                leaf(name, params, vec![old, rhs], at)
+            }
             None => {
                 if self.share(&a.right)
                     && let Place::Local(ts, _) = &place
@@ -2663,13 +2670,32 @@ impl<'s, 't> Reader<'s, 't> {
                 js::UnaryOperator::LogicalNot => ok(ExprKind::Not(Box::new(self.expr(&u.argument)?))),
                 js::UnaryOperator::UnaryNegation => match self.unwrap(&u.argument) {
                     js::Expression::NumericLiteral(n) => ok(ExprKind::Number { value: -n.value, text: format!("-{}", number_text(n)) }),
-                    _ => fail(span, "a minus needs a number after it (to negate a value, write 0 - x)"),
+                    // `x * -1`, exact at `-0` where `0 - x` isn't; in parentheses, one node.
+                    _ => {
+                        let x = self.expr(&u.argument)?;
+                        ok(ExprKind::Paren(Box::new(binary_at(BinOp::Mul, x, minus_one(span), span))))
+                    }
                 },
+                js::UnaryOperator::UnaryPlus => match self.unwrap(&u.argument) {
+                    js::Expression::NumericLiteral(n) => ok(ExprKind::Number { value: n.value, text: number_text(n) }),
+                    _ => {
+                        let x = self.expr(&u.argument)?;
+                        Ok(leaf("to_number", &[], vec![x], span))
+                    }
+                },
+                js::UnaryOperator::BitwiseNot => {
+                    let x = self.expr(&u.argument)?;
+                    Ok(leaf("bitwise", &[("op", "xor")], vec![x, minus_one(span)], span))
+                }
                 js::UnaryOperator::Delete => fail(span, "delete is a statement: delete notes[k]"),
                 op => fail(span, format!("{} isn't an operator Holon has", op.as_str())),
             },
             js::Expression::BinaryExpression(b) => {
                 use js::BinaryOperator as B;
+                if let Some((name, params)) = number_operator(b.operator) {
+                    let (lhs, rhs) = (self.expr(&b.left)?, self.expr(&b.right)?);
+                    return Ok(leaf(name, params, vec![lhs, rhs], span));
+                }
                 let op = match b.operator {
                     B::Equality | B::StrictEquality => BinOp::Eq,
                     B::Inequality | B::StrictInequality => BinOp::Ne,
@@ -2811,6 +2837,8 @@ impl<'s, 't> Reader<'s, 't> {
             Some(Noun::Vocab(Vocab::Leaf(l))) => ok(ExprKind::Name(l)),
             Some(Noun::Vocab(_)) => fail(span, format!("{name} is a handler or an answer, not a value")),
             None if name == "undefined" => fail(span, "undefined is written as a branch: c ? a : undefined"),
+            None if name == "Math" || name == "Number" => fail(span, format!("{name} is a namespace: call its functions, {}", if name == "Math" { "Math.round(x)" } else { "Number.isInteger(x)" })),
+            None if name == "NaN" || name == "Infinity" => fail(span, format!("{name} isn't a value a flow has: a leaf gives nothing where JavaScript gives {name}, so test for presence, x !== undefined, or give a fallback, x ?? 0")),
             None => fail(span, format!("unknown name \"{name}\"{}", if GLOBALS.contains(&name) { ": a flow has no globals; import what it uses" } else { "" })),
         }
     }
@@ -2820,6 +2848,17 @@ impl<'s, 't> Reader<'s, 't> {
         let prop = m.property.name.as_str();
         if self.is_state(&m.object) {
             return self.state_read(prop, span);
+        }
+        if let Some(ns) = self.namespace(&m.object) {
+            let constants = if ns == "Math" { MATH_CONSTANTS } else { NUMBER_CONSTANTS };
+            if let Some((_, text)) = constants.iter().find(|(k, _)| *k == prop) {
+                return Ok(Expr { kind: ExprKind::Number { value: text.parse().expect("a double's literal"), text: text.to_string() }, span });
+            }
+            if ns == "Number" && ["NaN", "POSITIVE_INFINITY", "NEGATIVE_INFINITY"].contains(&prop) {
+                return fail(span, "a flow has no NaN or Infinity: a leaf gives nothing where JavaScript gives one");
+            }
+            let names = constants.iter().map(|(k, _)| format!("{ns}.{k}")).collect::<Vec<_>>().join(", ");
+            return fail(span, format!("{ns}.{prop} isn't a value: {ns}'s constants are {names}, and its functions are called, {ns}.{prop}(…)"));
         }
         if prop == "length" {
             return fail(span, "a list's length is length(xs), a text's text_length(s), imported from \"holon\": .length comes in a later slice");
@@ -2868,6 +2907,7 @@ impl<'s, 't> Reader<'s, 't> {
                     Some(Noun::Vocab(v)) => fail(span, format!("{} is a statement of the top level", vocab_word(&v))),
                     Some(_) => fail(callee.span, format!("\"{name}\" isn't something to call")),
                     None if self.consts.contains_key(name) => fail(callee.span, format!("\"{name}\" is a value, not something to call")),
+                    None if NUMBER_GLOBALS.contains(&name) => self.number_global(c, name, span),
                     None => fail(callee.span, format!("unknown function \"{name}\": define it at the top level, or import the leaf from \"holon\"")),
                 }
             }
@@ -3011,6 +3051,8 @@ impl<'s, 't> Reader<'s, 't> {
                     let args = self.positional(&c.arguments)?;
                     return ok(ExprKind::Call { callee: Name { text: "keys".into(), span: method_name.span }, args });
                 }
+                (None, "Math") => return self.math_call(c, method, method_name.span, span),
+                (None, "Number") => return self.number_call(c, method, method_name.span, span),
                 (None, g) if GLOBALS.contains(&g) => return fail(self.span(r.span), format!("{g} isn't there: a flow has no globals; import what it uses")),
                 _ => {}
             }
@@ -3048,8 +3090,126 @@ impl<'s, 't> Reader<'s, 't> {
             }
             ("toUpperCase", 0) => call("uppercase", vec![first(subject)]),
             ("toLowerCase", 0) => call("lowercase", vec![first(subject)]),
+            // A number's: only a number has these, so the subject is taken as one.
+            ("toFixed" | "toPrecision" | "toExponential", 0 | 1) => {
+                let style = match method {
+                    "toFixed" => "fixed",
+                    "toPrecision" => "precision",
+                    _ => "exponential",
+                };
+                let mut args = vec![subject];
+                args.extend(rest.into_iter().map(|a| a.value));
+                Ok(leaf("number_format", &[("style", style)], args, span))
+            }
+            // With a radix, only a number's; without one, a text's and a list's too, so the
+            // lowering takes it on a value it knows is a number.
+            ("toString", 1) => {
+                let radix = rest.into_iter().map(|a| a.value).collect::<Vec<_>>();
+                Ok(leaf("number_format", &[("style", "string")], [vec![subject], radix].concat(), span))
+            }
+            ("toString", 0) => {
+                let mut e = leaf("number_format", &[("style", "string")], vec![subject], span);
+                if let ExprKind::Leaf { number, .. } = &mut e.kind {
+                    *number = true;
+                }
+                Ok(e)
+            }
+            ("toFixed" | "toPrecision" | "toExponential" | "toString", _) => fail(span, format!(".{method}(…) takes one number at most")),
+            ("toLocaleString", _) => fail(method_name.span, "a flow has no locale: toFixed(d) writes a number with d decimals"),
             _ => fail(method_name.span, format!("no leaf does .{method}(…): do it in a js() function")),
         }
+    }
+
+    /// `Math` or `Number`, when `e` names one and nothing of the file's has the name.
+    fn namespace(&self, e: &js::Expression) -> Option<&'static str> {
+        let js::Expression::Identifier(i) = self.unwrap(e) else { return None };
+        let name = i.name.as_str();
+        let own = self.lookup(name).is_some() || self.defs.contains_key(name) || self.consts.contains_key(name) || self.imports.contains_key(name);
+        match name {
+            "Math" if !own => Some("Math"),
+            "Number" if !own => Some("Number"),
+            _ => None,
+        }
+    }
+
+    /// A call's arguments, `n` of them (`min` to `max`), each a value: none spread.
+    fn counted(&mut self, c: &js::CallExpression, (min, max): (usize, usize), shape: &str, span: Span) -> R<Vec<Expr>> {
+        if c.arguments.len() < min || c.arguments.len() > max {
+            return fail(span, shape.to_string());
+        }
+        Ok(self.positional(&c.arguments)?.into_iter().map(|a| a.value).collect())
+    }
+
+    /// `Math.<method>(…)`: each its leaf (numbers.md, "Reader changes").
+    fn math_call(&mut self, c: &js::CallExpression, method: &str, at: Span, span: Span) -> R<Expr> {
+        match method {
+            "max" | "min" | "hypot" => {
+                // A list spread is the list's: `aggregate`.
+                if let [js::Argument::SpreadElement(s)] = c.arguments.as_slice() {
+                    let xs = self.expr(&s.argument)?;
+                    return Ok(leaf("aggregate", &[("fn", method)], vec![xs], span));
+                }
+                let shape = format!("Math.{method} takes two numbers or more, Math.{method}(a, b), or one list spread, Math.{method}(...xs)");
+                let args = self.counted(c, (2, usize::MAX), &shape, span)?;
+                if method == "hypot" {
+                    let list = Expr { kind: ExprKind::List(args), span };
+                    return Ok(leaf("aggregate", &[("fn", "hypot")], vec![list], span));
+                }
+                Ok(leaf(method, &[], args, span))
+            }
+            "sumPrecise" => {
+                let xs = self.counted(c, (1, 1), "Math.sumPrecise takes a list of numbers, Math.sumPrecise(xs)", span)?;
+                Ok(leaf("aggregate", &[("fn", "sum_precise")], xs, span))
+            }
+            "atan2" | "pow" | "imul" => {
+                let (name, params, shape): (&str, &[(&str, &str)], &str) = match method {
+                    "atan2" => ("atan2", &[], "Math.atan2 takes two numbers, Math.atan2(y, x)"),
+                    "pow" => ("power", &[], "Math.pow takes two numbers, Math.pow(a, b), or write a ** b"),
+                    _ => ("bitwise", &[("op", "imul")], "Math.imul takes two numbers, Math.imul(a, b)"),
+                };
+                let args = self.counted(c, (2, 2), shape, span)?;
+                Ok(leaf(name, params, args, span))
+            }
+            "random" => fail(span, "a run has one random number, recorded: import { random } from \"holon:random\""),
+            m if is_math_fn(m) => {
+                let x = self.counted(c, (1, 1), &format!("Math.{m} takes one number, Math.{m}(x)"), span)?;
+                Ok(leaf("math", &[("fn", m)], x, span))
+            }
+            other => fail(at, format!("Math has no \"{other}\" a flow can call: do it in a js() function")),
+        }
+    }
+
+    /// `Number.<method>(…)`: each its leaf; `Number.isNaN(x)` is `false`, as a flow has no NaN.
+    fn number_call(&mut self, c: &js::CallExpression, method: &str, at: Span, span: Span) -> R<Expr> {
+        let (name, params, most): (&str, &[(&str, &str)], usize) = match method {
+            "isFinite" => ("number_test", &[("test", "finite"), ("coerce", "none")], 1),
+            "isInteger" => ("number_test", &[("test", "integer"), ("coerce", "none")], 1),
+            "isSafeInteger" => ("number_test", &[("test", "safe_integer"), ("coerce", "none")], 1),
+            "parseFloat" => ("to_number", &[("grammar", "float")], 1),
+            "parseInt" => ("to_number", &[("grammar", "int")], 2),
+            "isNaN" => {
+                self.counted(c, (1, 1), "Number.isNaN takes one value", span)?;
+                return Ok(Expr { kind: ExprKind::Bool(false), span });
+            }
+            other => return fail(at, format!("Number has no \"{other}\" a flow can call: Number(x), Number.isFinite, isInteger, isSafeInteger, isNaN, parseFloat and parseInt are there")),
+        };
+        let shape = if most == 2 { "Number.parseInt takes a text and a radix, Number.parseInt(s, 16)".to_string() } else { format!("Number.{method} takes one value") };
+        let args = self.counted(c, (1, most), &shape, span)?;
+        Ok(leaf(name, params, args, span))
+    }
+
+    /// `Number(x)`, `parseInt(s, r)`, `parseFloat(s)`, `isNaN(x)`, `isFinite(x)`: each its leaf.
+    fn number_global(&mut self, c: &js::CallExpression, name: &str, span: Span) -> R<Expr> {
+        let (leaf_name, params, most): (&str, &[(&str, &str)], usize) = match name {
+            "Number" => ("to_number", &[], 1),
+            "parseInt" => ("to_number", &[("grammar", "int")], 2),
+            "parseFloat" => ("to_number", &[("grammar", "float")], 1),
+            "isNaN" => ("number_test", &[("test", "nan"), ("coerce", "number")], 1),
+            _ => ("number_test", &[("test", "finite"), ("coerce", "number")], 1),
+        };
+        let shape = if most == 2 { "parseInt takes a text and a radix, parseInt(s, 16)".to_string() } else { format!("{name} takes one value, {name}(x)") };
+        let args = self.counted(c, (1, most), &shape, span)?;
+        Ok(leaf(leaf_name, params, args, span))
     }
 
     /// The function `map` or `reduce` takes: a holon by name, or an arrow written in place, its
@@ -3397,7 +3557,53 @@ const START_IS_A_CALL: &str =
 const REQUEST_PARTS: &[&str] = &["request", "params", "query", "headers", "body", "json"];
 
 /// JavaScript's globals a flow doesn't have, named in the mistake.
-const GLOBALS: &[&str] = &["fetch", "Date", "Math", "setTimeout", "setInterval", "process", "globalThis", "window", "console", "Promise", "require"];
+const GLOBALS: &[&str] = &["fetch", "Date", "setTimeout", "setInterval", "process", "globalThis", "window", "console", "Promise", "require"];
+
+/// `Math`'s constants, each the literal of its double (numbers.md, "Race output").
+pub(crate) const MATH_CONSTANTS: &[(&str, &str)] = &[
+    ("E", "2.718281828459045"),
+    ("LN10", "2.302585092994046"),
+    ("LN2", "0.6931471805599453"),
+    ("LOG10E", "0.4342944819032518"),
+    ("LOG2E", "1.4426950408889634"),
+    ("PI", "3.141592653589793"),
+    ("SQRT1_2", "0.7071067811865476"),
+    ("SQRT2", "1.4142135623730951"),
+];
+
+/// `Number`'s constants. `NaN` and the infinities aren't values a flow has.
+pub(crate) const NUMBER_CONSTANTS: &[(&str, &str)] = &[
+    ("EPSILON", "2.220446049250313e-16"),
+    ("MAX_SAFE_INTEGER", "9007199254740991"),
+    ("MIN_SAFE_INTEGER", "-9007199254740991"),
+    ("MAX_VALUE", "1.7976931348623157e308"),
+    ("MIN_VALUE", "5e-324"),
+];
+
+/// JavaScript's number functions called by name, each a leaf: `parseInt(s, 16)`, `isNaN(x)`.
+const NUMBER_GLOBALS: &[&str] = &["Number", "parseInt", "parseFloat", "isNaN", "isFinite"];
+
+/// Whether `Math.<name>` is a one-number function, `math` with that `fn`.
+fn is_math_fn(name: &str) -> bool {
+    family_values("math", "fn").is_some_and(|values| values.contains(&name))
+}
+
+/// A number operator the language writes as a leaf, `%`, `**` and the bitwise ones: the leaf and
+/// its params.
+fn number_operator(op: js::BinaryOperator) -> Option<(&'static str, &'static [(&'static str, &'static str)])> {
+    use js::BinaryOperator as B;
+    Some(match op {
+        B::Remainder => ("remainder", &[]),
+        B::Exponential => ("power", &[]),
+        B::BitwiseAnd => ("bitwise", &[("op", "and")]),
+        B::BitwiseOR => ("bitwise", &[("op", "or")]),
+        B::BitwiseXOR => ("bitwise", &[("op", "xor")]),
+        B::ShiftLeft => ("bitwise", &[("op", "shl")]),
+        B::ShiftRight => ("bitwise", &[("op", "shr")]),
+        B::ShiftRightZeroFill => ("bitwise", &[("op", "ushr")]),
+        _ => return None,
+    })
+}
 
 fn is_word(s: &str) -> bool {
     !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') && !s.starts_with(|c: char| c.is_ascii_digit())
@@ -3532,6 +3738,17 @@ fn text_expr(text: &str, span: Span) -> Expr {
 fn absent(span: Span) -> Expr {
     let no = Expr { kind: ExprKind::Bool(false), span };
     Expr { kind: ExprKind::If { cond: Box::new(no.clone()), then: Box::new(no), els: None }, span }
+}
+
+/// A leaf placed for one of JavaScript's forms, with its params (`ExprKind::Leaf`).
+fn leaf(leaf: &str, params: &[(&str, &str)], args: Vec<Expr>, span: Span) -> Expr {
+    let params = params.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+    Expr { kind: ExprKind::Leaf { leaf: Name { text: leaf.into(), span }, params, args: args.into_iter().map(arg).collect(), number: false }, span }
+}
+
+/// `-1`, as `-x` and `~x` use it.
+fn minus_one(span: Span) -> Expr {
+    Expr { kind: ExprKind::Number { value: -1.0, text: "-1".into() }, span }
 }
 
 fn binary(op: BinOp, lhs: Expr, rhs: Expr) -> Expr {
@@ -3795,7 +4012,7 @@ fn walk(e: &mut Expr, f: &mut dyn FnMut(&mut Expr) -> bool) {
                 }
             }
         }
-        ExprKind::Call { args, .. } | ExprKind::Method { args, .. } => {
+        ExprKind::Call { args, .. } | ExprKind::Method { args, .. } | ExprKind::Leaf { args, .. } => {
             for a in args {
                 walk(&mut a.value, f);
             }
