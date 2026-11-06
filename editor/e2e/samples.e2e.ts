@@ -273,7 +273,7 @@ test("a sample deployed as it is keeps its text and the names it binds", async (
   const deployed = await request.get(`${SERVER}/deployments/cache-aside/document`, { headers: { Authorization: `Bearer ${adminToken}` } });
   expect(deployed.status()).toBe(200);
   const document = (await deployed.json()) as { source?: string; bindings?: Record<string, string> };
-  expect(document.source).toContain("flow cache-aside");
+  expect(document.source).toContain('flow("cache-aside"');
   expect(Object.values(document.bindings ?? {})).toEqual(expect.arrayContaining(["name", "id"]));
 });
 
@@ -1441,7 +1441,8 @@ test("rolling-log keeps only its newest 5 runs, as its deploy settings ask, whil
   await page.keyboard.insertText(source.replace("keep: { runs: 5, days: 1 }", "keep: { runs: 7, days: 1 }"));
   await expect(runs).toHaveValue("7", { timeout: 15_000 });
   await runs.fill("5");
-  await expect(text).toContainText("keep: { runs: 5, days: 1 }");
+  // Written again from the canvas, in the .holon form the printer writes until it writes TypeScript.
+  await expect(text).toContainText("keep 5 runs for 1d");
   await deploy(page);
   const auth = { Authorization: `Bearer ${adminToken}` };
   const seqs = async () =>
@@ -1560,8 +1561,8 @@ test("guarded-api's token rolls back under ⚙ once a dry run has said what it w
   expect((await versions())[0]).toMatchObject({ version: now + 1, current: true });
 });
 
-test("calc's match answers the chosen arm or 400 when it has no value, and view mode shows the other arms as not run", async ({ page, request }) => {
-  await openSample(page, "Calculator (a match)");
+test("calc's switch answers the chosen arm or 400 when it has no value, and view mode shows the other arms as not run", async ({ page, request }) => {
+  await openSample(page, "Calculator (a switch)");
   const port = await deploy(page);
   // `a / b` has no value when b is 0; an arm not chosen doesn't matter.
   const add = await request.post(`http://127.0.0.1:${port}/calc`, { data: { op: "add", a: 1, b: 0 } });
