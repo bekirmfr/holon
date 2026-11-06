@@ -29,6 +29,8 @@ serde_json = "1"
 [dev-dependencies]
 # The eager evaluator, the oracle the samples are checked against.
 holon-core = { path = "../holon-core", features = ["eager-oracle"] }
+# A deployed flow's request run as the server runs it (benches/host_request.rs): its rounds.
+holon-host = { path = "../holon-host" }
 
 # The races (benches/race/mod.rs): each gap of JavaScript's library, a composite written in
 # TypeScript against a native candidate, through the real eval
@@ -51,4 +53,16 @@ harness = false
 
 [[bench]]
 name = "races_evaluator"
+harness = false
+
+# What the races don't cover, for racing the evaluator before a change against after it: one call
+# at the top level under the server's resolver and observer, and map and fold over numbers, texts
+# and records (benches/perf_audit.rs); a sample flow's request through the host's rounds
+# (benches/host_request.rs).
+[[bench]]
+name = "perf_audit"
+harness = false
+
+[[bench]]
+name = "host_request"
 harness = false
