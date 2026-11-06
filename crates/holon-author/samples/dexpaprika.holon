@@ -1,0 +1,201 @@
+# DexPaprika: an n8n community node, translated into Holon text.
+#
+# n8n-nodes-dexpaprika (CoinPaprika, MIT) is a declarative n8n node for DEX and on-chain market
+# data across 36 blockchains, free without a key. Each of its thirteen operations is a holon here,
+# and a route calls each so it can be tried; none of the node's JavaScript runs. How each piece
+# maps is in docs/L4s/n8n-import-L4.md:
+#   requestDefaults.baseURL      the host, a literal: api.dexpaprika.com is a permission asked for
+#   an operation's own baseURL   a second host, api-pro.dexpaprika.com (paid plans), asked for apart
+#   the optional credential      optional secret dexpaprika_key, the whole authorization header; the
+#                                approval says it is sent to those two hosts and nowhere else
+#   ={{$parameter.network}}      the holon's input, interpolated into the path
+#   send: { type: 'query' }      the caller's parameters over the node's defaults, made a query
+#                                string by a js holon (Holon has no leaf that escapes a URL)
+#   preSend assertPathParameter  the holon segment: an id that would add to the path is refused
+#
+# Optional: set dexpaprika_key under the deployment's settings (the gear) for a higher rate limit
+# and the two pro operations (token ohlcv and indicators); without it the free tier answers.
+#
+# Try it: deploy it, then
+#   curl http://127.0.0.1:8172/networks
+#   curl "http://127.0.0.1:8172/search?query=weth"
+#   curl "http://127.0.0.1:8172/networks/ethereum/pools?limit=3"
+# Each answers DexPaprika's status and JSON. An id with / \ ? # or % in it answers 400, and nothing
+# is sent.
+flow dexpaprika
+port 8172
+optional secret dexpaprika_key
+
+# requestDefaults and the credential: a GET to the host with JSON accepted, and the key as the
+# whole authorization value when one is set. Answers the API's status and JSON (its text when it
+# isn't JSON; 502 and why when the call got no answer).
+holon dexpaprika(path) -> answer {
+  response = http.get("api.dexpaprika.com", path, headers: { accept: "application/json", authorization: secret.dexpaprika_key } ?? { accept: "application/json" })
+  answer = { status: if response.status == 0 then 502 else response.status, body: (parse_json(response.body) ?? response.body) ?? { error: response.error, message: response.message } }
+}
+
+# Network: List Networks. Each operation is a holon, its parameters its inputs.
+holon networks() -> answer {
+  answer = dexpaprika("/networks")
+}
+
+# The node's preSend check (assertPathParameter): a network id or an address goes into the path,
+# so one that would add a segment, a query or a fragment is absent, and nothing is sent. Holon
+# refuses a path with whitespace or a control character itself.
+holon segment(value) -> ok {
+  ok = value when value != "" && value != "." && value != ".." && index_of(value, "/") < 0 && index_of(value, "\\") < 0 && index_of(value, "?") < 0 && index_of(value, "#") < 0 && index_of(value, "%") < 0
+}
+
+# Network: List DEXes.
+holon dexes(network) -> answer {
+  answer = dexpaprika("/networks/{segment(network)}/dexes")
+}
+
+# Network: Get Stats.
+holon stats() -> answer {
+  answer = dexpaprika("/stats")
+}
+
+# send: { type: 'query' }: each parameter the caller gave, else the node's default for it, escaped
+# as axios would, the empty ones left out.
+holon query(given, defaults) -> text js {
+  const q = { ...defaults };
+  for (const k of Object.keys(defaults)) if (given[k] !== undefined && given[k] !== "") q[k] = given[k];
+  return Object.entries(q).filter(([, v]) => v !== "").map(([k, v]) => `${k}=${encodeURIComponent(v)}`).join("&");
+}
+
+# Token: Search, across every network.
+holon search(given) -> answer {
+  answer = dexpaprika("/search?{query(given, { query: "" })}")
+}
+
+# Token: Get Top Tokens.
+holon top_tokens(network, given) -> answer {
+  answer = dexpaprika("/networks/{segment(network)}/tokens/search?{query(given, { limit: 50 })}")
+}
+
+# Token: Get Details.
+holon token(network, contractAddress) -> answer {
+  answer = dexpaprika("/networks/{segment(network)}/tokens/{segment(contractAddress)}")
+}
+
+# Token: Get Prices (Batch), up to 10 comma-separated addresses.
+holon prices(network, given) -> answer {
+  answer = dexpaprika("/networks/{segment(network)}/multi/prices?{query(given, { tokens: "" })}")
+}
+
+# The same on the pro host, which two token operations name as their own baseURL.
+holon dexpaprika_pro(path) -> answer {
+  response = http.get("api-pro.dexpaprika.com", path, headers: { accept: "application/json", authorization: secret.dexpaprika_key } ?? { accept: "application/json" })
+  answer = { status: if response.status == 0 then 502 else response.status, body: (parse_json(response.body) ?? response.body) ?? { error: response.error, message: response.message } }
+}
+
+# Token: Get Token OHLCV (pro).
+holon token_ohlcv(network, contractAddress, given) -> answer {
+  answer = dexpaprika_pro("/networks/{segment(network)}/tokens/{segment(contractAddress)}/ohlcv?{query(given, { start: "-24h", end: "", interval: "24h", limit: 50 })}")
+}
+
+# Token: Get Indicator (pro): indicator and interval, then the additional fields, sent only when
+# given ("" is no default).
+holon token_indicator(network, contractAddress, given) -> answer {
+  answer = dexpaprika_pro("/networks/{segment(network)}/tokens/{segment(contractAddress)}/indicators?{query(given, { indicator: "rsi", interval: "", cursor: "", end: "", fast_period: "", limit: "", period: "", signal_period: "", slow_period: "", std_dev: "", start: "" })}")
+}
+
+# Pool: Get Top Pools.
+holon top_pools(network, given) -> answer {
+  answer = dexpaprika("/networks/{segment(network)}/pools/search?{query(given, { limit: 50 })}")
+}
+
+# Pool: Get Details.
+holon pool(network, poolAddress) -> answer {
+  answer = dexpaprika("/networks/{segment(network)}/pools/{segment(poolAddress)}")
+}
+
+# Pool: Get OHLCV.
+holon pool_ohlcv(network, poolAddress, given) -> answer {
+  answer = dexpaprika("/networks/{segment(network)}/pools/{segment(poolAddress)}/ohlcv?{query(given, { start: "-24h", interval: "24h", limit: 50 })}")
+}
+
+# Pool: Get Indicator, with the same fields.
+holon pool_indicator(network, poolAddress, given) -> answer {
+  answer = dexpaprika("/networks/{segment(network)}/pools/{segment(poolAddress)}/indicators?{query(given, { indicator: "rsi", interval: "", cursor: "", end: "", fast_period: "", limit: "", period: "", signal_period: "", slow_period: "", std_dev: "", start: "" })}")
+}
+
+# Each operation as a route, answered with DexPaprika's status and JSON; 400 when an id can't
+# be a path segment. The networks DexPaprika covers.
+route GET /networks (req) {
+  found = networks()
+  respond found.body, status: found.status, missing: 400
+}
+
+# The exchanges on one network.
+route GET /networks/:network/dexes (req) {
+  found = dexes(req.params.network)
+  respond found.body, status: found.status, missing: 400
+}
+
+# Platform statistics.
+route GET /stats (req) {
+  found = stats()
+  respond found.body, status: found.status, missing: 400
+}
+
+# Tokens, pools and exchanges matching ?query=, across every network.
+route GET /search (req) {
+  found = search(req.query)
+  respond found.body, status: found.status, missing: 400
+}
+
+# The top tokens on a network by volume (?limit=, 50 by default).
+route GET /networks/:network/tokens (req) {
+  found = top_tokens(req.params.network, req.query)
+  respond found.body, status: found.status, missing: 400
+}
+
+# One token's price and metadata.
+route GET /networks/:network/tokens/:address (req) {
+  found = token(req.params.network, req.params.address)
+  respond found.body, status: found.status, missing: 400
+}
+
+# USD prices for ?tokens=a,b,c on one network.
+route GET /networks/:network/prices (req) {
+  found = prices(req.params.network, req.query)
+  respond found.body, status: found.status, missing: 400
+}
+
+# A token's candles (?start= &end= &interval= &limit=); a pro plan's key.
+route GET /networks/:network/tokens/:address/ohlcv (req) {
+  found = token_ohlcv(req.params.network, req.params.address, req.query)
+  respond found.body, status: found.status, missing: 400
+}
+
+# A token's indicator (?indicator= &interval= and the rest); a pro plan's key.
+route GET /networks/:network/tokens/:address/indicators (req) {
+  found = token_indicator(req.params.network, req.params.address, req.query)
+  respond found.body, status: found.status, missing: 400
+}
+
+# The top pools on a network by volume (?limit=, 50 by default).
+route GET /networks/:network/pools (req) {
+  found = top_pools(req.params.network, req.query)
+  respond found.body, status: found.status, missing: 400
+}
+
+# One pool.
+route GET /networks/:network/pools/:address (req) {
+  found = pool(req.params.network, req.params.address)
+  respond found.body, status: found.status, missing: 400
+}
+
+# A pool's candles (?start= &interval= &limit=).
+route GET /networks/:network/pools/:address/ohlcv (req) {
+  found = pool_ohlcv(req.params.network, req.params.address, req.query)
+  respond found.body, status: found.status, missing: 400
+}
+
+# A pool's indicator (?indicator= &interval= and the rest).
+route GET /networks/:network/pools/:address/indicators (req) {
+  found = pool_indicator(req.params.network, req.params.address, req.query)
+  respond found.body, status: found.status, missing: 400
+}
