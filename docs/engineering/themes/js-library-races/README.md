@@ -13,6 +13,7 @@ through the real `eval` against a native candidate.
 | [texts.md](texts.md) | `String.prototype`, `String.*`, text operators and comparison, regular expressions, URI functions |
 | [lists.md](lists.md) | `Array.prototype`, `Array.*`, list access and `.length` |
 | [records.md](records.md) | `Object.*`, `JSON` options, `in`/`delete`/spread, `typeof`, `structuredClone`, dates |
+| [rerace.md](rerace.md) | every race run again once the evaluator change of leaves.md was merged, and the verdicts it moved |
 
 ## The decision rule
 
@@ -30,6 +31,9 @@ For each gap, in this order:
    - *composite* when it is in the same complexity class (its ratio to the candidate doesn't grow
      with `n`: the ratio at the largest size is at most 1.5× the ratio at the smallest) **and** its
      ratio at the representative size (n = 64, or the scalar) is **at most 3**;
+   - a scalar's representative measure is mapped over 64 items (`race::mapped`), where a library
+     call is hot; one call also pays the call's preparation, which [leaves.md](leaves.md) §8
+     proposes to keep in the resolver;
    - *leaf* when the ratio grows with `n` (a worse class), or exceeds 3; a scalar operation paid in
      inner loops (arithmetic, comparison, rounding: COMPOSABLE_VM_DESIGN.md §13's "hot and
      pervasive") is a *leaf* above **2**.

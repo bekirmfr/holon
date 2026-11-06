@@ -253,6 +253,13 @@ author sees no mistake; the run answers nothing where JavaScript answers somethi
 | `{ a: 1 } === { a: 1 }` | `true` | compared by value; JavaScript compares objects by identity |
 | `1 == "1"` | `false` | `==` is `===` |
 | `JSON.parse("bad")` | nothing | JavaScript throws; Holon has no `catch` until slice 5 |
+| `-0 + -0` | `add`: `0` | `add` sums from `+0` (`fold_numbers`); JavaScript gives `-0` |
+| `` `${1e21}` ``, `String(1e21)`, `JSON.stringify(1e21)` | `"1000000000000000000000"` | `as_text` and `json_stringify` write Rust's digits; JavaScript writes `1e+21` (and `1e-7` for `0.0000001`) |
+| `c ? a : b` with `c` true and `a` absent | `b` | it lowers to `guard(c, a) ?? b`; JavaScript gives `a`'s nothing |
+| a function returning `{ a: x, b: y }`, called | its first field only | the record literal as a function's answer is read as its first output (numbers.md, reader limits) |
+| `"a😀b".length`, `.slice`, `.indexOf`, `.charCodeAt` | counted in Unicode scalar values (3) | JavaScript counts UTF-16 code units (4); §11, open 1 |
+| `Object.keys(r)`, `JSON.stringify(r)` | keys sorted | JavaScript keeps insertion order, integer keys first; §11, open 2 |
+| `JSON.parse` of a key given twice | nothing | `json.rs` refuses it; JavaScript keeps the last |
 
 Each is a candidate for the reader to refuse with the right form, or to lower by the value's type
 (`xs[i]` to `get`, `!x` to `not(is_truthy(x))`, `<` on texts to a text comparison), once the
@@ -283,101 +290,106 @@ read; reading it is a line in `ts.rs` each, with a test of its meaning:
 | `to_text` | none (`JSON.stringify` of a text is near it) | |
 | `pair`, `some`, `none` | none | the lowering's own: two values together, an optional value |
 
-## 11. Closing the gaps, by the gate
+## 11. Closing the gaps, measured
 
-Each gap of §1–§8, and the way [§0](#0-the-rule) closes it. The reasons are those of
-COMPOSABLE_VM_DESIGN.md §13: a composite
-where it stays in the leaf's class and close to its cost, a leaf where it wouldn't. Two facts of
-the evaluator decide most rows: `fold` visits every item (JavaScript's `some`, `find` and
-`includes` stop at the first), and `append`, `extend`, `cons` and `insert` copy their whole input
-(`primitives.rs`, `Op::Append`: `as_list(l)?.to_vec()`), so a `fold` that grows a list or a record
-by them is O(n²) where JavaScript is O(n). "Measure" marks a row whose class is the leaf's and
-whose constant the benchmark decides.
+Each gap was decided by measurement, by the rule in
+[js-library-races/README.md](js-library-races/README.md): where a composite of today's leaves can
+give JavaScript's result, it was written in TypeScript, compiled by the reader, checked against a
+native candidate with JavaScript's meaning (numbers by their bits, so `-0` counts), and raced
+through `eval`; where none can, the row is a leaf by expressibility. The evaluator was then made
+cheaper without changing a value or a hash ([leaves.md](js-library-races/leaves.md)), and every race
+run again ([rerace.md](js-library-races/rerace.md)). The pages hold every row, each composite's
+text, each leaf's spec and the races' output:
 
-Both facts belong to the evaluator, not to the language, and changing them moves rows. A list is a
-`Vec` and a record a `BTreeMap` (`value.rs`), and a leaf reads its inputs by reference, so it must
-copy to grow one; a `fold` that handed its accumulator to the step by value, with `append` and
-`insert` growing an input nobody else holds in place, would make `filter`, `reverse`, `flat`,
-`fromEntries` and `groupBy` O(n) composites; a `fold` that can stop (slice 6, "`fold` stopping when
-done") does the same for `some`, `every`, `find` and `includes`. Those rows are leaves only until
-then, and the benchmark decides once they are composites in the same class.
+| Domain | Rows | Reader | Composite | Leaf | Refused, or differs and stays |
+|---|---:|---:|---:|---:|---:|
+| [Numbers](js-library-races/numbers.md) | 83 | 18 | 0 | 61, in 11 families | 4 |
+| [Texts](js-library-races/texts.md) | 57 | 13 | 0 | 41 (10 of them changes to a leaf) | 3 |
+| [Lists](js-library-races/lists.md) | 50 | 13 | 4 | 27 | 6 |
+| [Records, JSON, dates](js-library-races/records.md) | 64 | 12 | 3 | 33 (5 of them changes) | 16 |
 
-**Numbers**
+**Why nearly every gap is a leaf.** A composite pays for each node it places; the leaf it would
+replace pays only its body. Before the evaluator change a node in a function cost about 90 ns and
+a function called from another 600 to 770 ns more, against 5 to 40 ns for a leaf's whole body, so
+every scalar composite lost by 15 to 70 times. The change took a node to about 30 ns and a nested
+call to 40 to 90 ns, and made every fold that grows its accumulator linear; the races halved, but a
+composite of k nodes over a scalar still costs about k times its leaf. A composite stays within 3
+times only where it wraps a leaf that does O(n) work, which few gaps are: `map((x, i) => …)` over
+`indices`, `reduce` without a start over `head` and `tail`, `reduceRight` over `toReversed`,
+`flatMap` over `flat`, and `has` (`k in r`) over `lookup`.
 
-| Gap | Closes by | Why |
-|---|---|---|
-| `Math.round`, `floor`, `ceil`, `trunc` | leaf | not expressible: no atom drops a fraction. IEEE-exact; `round` is JavaScript's (halves toward +∞, `Math.round(-2.5)` is −2), not Rust's `f64::round` (−3) |
-| `a % b` | leaf | `a - b * Math.trunc(a / b)` rounds in the division where JavaScript's `%` is exact (fmod), so the composite differs |
-| `-x` | composite: `x * -1` | exact in IEEE, `-0` included (`0 - x` gives `0` for `0`, where `-0` is right) |
-| `Math.sqrt` | leaf | correctly rounded by IEEE |
-| `a ** b`, `Math.pow`, `exp`, `expm1`, `log`, `log2`, `log10`, `log1p`, `cbrt`, `hypot`, trigonometry | leaf, pinned | not expressible; the same bits natively and in wasm need one pure-Rust implementation (`libm`) |
-| `Math.abs`, `sign`, `min(a, b)`, `max(a, b)` | measure; likely leaf | a comparison and a choice are the leaf's class, but they must match at `-0` (`Math.max(-0, 0)` is `0`), which a plain `a > b ? a : b` doesn't, and they are paid in inner loops (§13's "hot and pervasive") |
-| `Math.min(...xs)`, `Math.max(...xs)` | composite: `fold` of the two-input one | O(n) like a leaf; measure the fold's step |
-| `Number(s)`, `parseFloat`, `parseInt`, `+s` | leaf | not expressible: text to number. `JSON.parse` takes only JSON's grammar (no `" 42 "`, no `"0x1F"`) |
-| `x.toFixed`, `toString(radix)`, `toPrecision`, `toExponential` | leaf | JavaScript's exact formatting |
-| `Number.isInteger(x)` | composite: `x === Math.trunc(x)` | once `trunc` is a leaf |
-| `Number.isNaN`, `Number.isFinite` | composite: a constant | Holon's numbers are always finite (§12) |
-| `isNaN(s)`, `isFinite(s)` on a text | composite: whether `Number(s)` gives a number | once `Number` is a leaf |
+The evaluator change itself: a `map`'s or `fold`'s function keeps its nested composites prepared
+after the first item, a value moves to the last node that reads it (a fold gives its accumulator,
+and `append`, `extend`, `insert`, `with_field` grow it in place), a choice lends what it passes on
+instead of copying it, and `join`, `concat` and `slice` copy once. Abs mapped went from 1.5 µs to
+347 ns an item; a filter written as a fold from 170 to 2.3 ms at 4096 items.
 
-**Texts**
+**The leaves.** Grouped by a frozen parameter where they share a shape, as `compare {op}` is: the
+parameter is part of the unit's hash, so adding a value later re-hashes nothing, and the family
+measured 1.07 times a single leaf. Across the four pages, about 60 new leaves after the names the
+pages share are made one (a leaf taking a list or a text, so the reader needn't know which):
 
-| Gap | Closes by | Why |
-|---|---|---|
-| `s.length` | `text_length` (exists) | read the form, by the value's type |
-| `s.slice(a, b)`, `substring`, `charAt`, `at` | composite over `slice` and `text_length` | a few O(1) nodes around an O(n) leaf |
-| `includes(t)` | composite: `s.indexOf(t) !== -1` | the same scan |
-| `startsWith`, `endsWith` | leaf | `index_of` scans the whole text: O(n) where JavaScript compares the m characters |
-| `lastIndexOf` | leaf | a composite loops over positions |
-| `trim`, `trimStart`, `trimEnd` | leaf | a composite walks the characters through `fold`, a node per character |
-| `repeat(n)` | leaf | a `fold` of `concat` copies the text each step: O(n²) |
-| `padStart`, `padEnd` | composite over `repeat`, `slice`, `text_length` | once `repeat` is a leaf |
-| `replaceAll(a, b)` with texts | composite: `s.split(a).join(b)` | two passes, the same class |
-| `replace(a, b)` with texts | composite over `index_of`, `slice`, `concat` | the same class |
-| `split("")`, `split(sep, limit)` | leaf change: `split` takes `""` as the characters; a limit as a parameter | the leaf answers nothing for `""` today |
-| `charCodeAt`, `codePointAt`, `String.fromCharCode`, `fromCodePoint` | leaf | not expressible |
-| `normalize` | leaf | Unicode's tables (`unicode-normalization` is in the build) |
-| `a < b` on texts, `localeCompare` | leaf change: `compare` on texts | code-unit order, as JavaScript's `<`; no locale (§12) |
-| `toLocaleUpperCase`, `toLocaleLowerCase` | the same as `toUpperCase`, `toLowerCase` | no locale, as inside `js()` |
-| `isWellFormed`, `toWellFormed` | composite: `true`, the text itself | a Holon text is always well formed (UTF-8) |
-| `/re/.test`, `match`, `matchAll`, `search`, `replace` with a pattern | leaf | not expressible. ECMAScript's own pattern grammar, through `regress` (the pure-Rust engine Boa uses), so a pattern means what it means inside `js()` |
-| `encodeURIComponent`, `decodeURIComponent`, `encodeURI`, `decodeURI` | leaf | byte by byte |
+- **Numbers:** `math {fn}` (29 one-number functions: rounding, roots, logs, trigonometry, `fround`,
+  `clz32`, IEEE-exact or `libm` 0.2.16), `max` and `min` (variadic, `-0` below `0`),
+  `aggregate {fn}` over a list (max, min, hypot, sumPrecise), `atan2`, `power`, `remainder`,
+  `bitwise {op}`, `number_test {test}`, `to_number {grammar}` (`Number`, `parseFloat`,
+  `parseInt`), `number_format {style}` (`toString(radix)`, `toFixed`, `toPrecision`,
+  `toExponential`, exact digits).
+- **Texts:** `text_at`, `code_at`, `from_codes`, `text_contains {at: any|start|end}`, `trim {side}`,
+  `pad {side}`, `repeat`, `replace {count}`, `normalize {form}`, `uri_encode`, `uri_decode`;
+  regular expressions on `regress` (Boa's engine): `regex_test`, `regex_exec`,
+  `regex_matches`, `regex_search`, `regex_replace`, `regex_split`.
+- **Lists:** `indices`, `entries`, `any`, `all`, `filter`, `find`, `find_index`, `find_last`,
+  `find_last_index` (each taking its function by a `fn` param, as `map` does), `reverse`,
+  `sublist`, `to_spliced`, `with_item`, `fill`, `copy_within`, `sort` and `sort_by` (a pinned
+  stable merge sort), `flat {depth}`, `unique`.
+- **Shared by lists and texts:** `at`, `index_of` and `includes` (taking either), `last_index_of`.
+- **Records and values:** `values`, `entries` (as for lists), `from_entries`, `merge`, `group_by {fn}`,
+  `type_of` (which also answers `Array.isArray` and `isWellFormed`), `same_value` (`Object.is`).
+- **Dates**, a date being its time value in milliseconds: `date_part {part}`, `date_utc`,
+  `date_set {part}`, `date_text {format}`, `date_parse`.
+- **Changes to leaves:** `text_length`, `slice {mode}`, `index_of` (a start), `split` (`""` and a
+  limit), `compare` on texts, `add` joining texts, `as_text` and `json_stringify` writing numbers as
+  JavaScript does, `json_stringify {indent, keys, fn}`, `json_parse {fn}`, `base64 {bytes}`.
 
-**Lists**
+**What only the reader needs to read**, over leaves that exist: the `Math` and `Number` constants
+(each bit-checked), `-x` as `x * -1` (exact at `-0`; the mistake today says `0 - x`, which isn't),
+`++`, `--` and the compound assignments, `.length` and `xs[i]` by the value's type, `concat`,
+`Array.from(xs)`, `Array.of`, `{ [k]: v }`, `Object.freeze` and `structuredClone` as the value
+itself, a date's `getTime`.
 
-| Gap | Closes by | Why |
-|---|---|---|
-| `xs.length`, `xs[i]`, `at(i)` | `length`, `get` (exist); `at(-1)` a composite with `length` | read the forms, by the value's type (§9) |
-| `filter(f)` | leaf, with its function as `map` takes one | a `fold` of `[...acc, x]` copies the list each step: O(n²) |
-| `some`, `every`, `includes`, `indexOf`, `find(f)`, `findIndex` | leaf, stopping at the first | `fold` visits every item; JavaScript stops |
-| `findLast`, `findLastIndex`, `lastIndexOf` | leaf | the same, from the end |
-| `flat()` | leaf | a `fold` of `extend` copies: O(n²) |
-| `flatMap(f)` | composite: `flat` of `map` | once `flat` is a leaf |
-| `sort`, `toSorted`, with or without a comparator | leaf | not expressible in O(n log n). JavaScript's default compares as texts, and its sort is stable |
-| `reverse`, `toReversed` | leaf | a `fold` of `cons` copies: O(n²) |
-| `slice(a, b)` | leaf | one copy, where a composite gets each item through its own node |
-| `splice`, `toSpliced`, `with`, `fill` | composite over list `slice` and `extend` | the same class once `slice` is a leaf |
-| `join()` | composite: `join(xs, ",")` | |
-| `reduceRight` | composite: `fold` over `reverse` | |
-| `keys()`, `entries()`, `Array.from({ length: n }, f)` | composite over `range` and `map` | |
-| `[...new Set(xs)]` | leaf `unique` | a composite compares each item with every other: O(n²) |
-| `Array.isArray`, `typeof` | leaf `type_of` | not expressible: nothing tells a value's kind today |
+**What the races found wrong today**, each listed in §9: `add` gives `0` for `-0 + -0` (it sums
+from `+0`); `add`, `subtract` and `multiply` can overflow to an infinity Holon says it has no value
+for; `as_text` writes `1e21` as `1000000000000000000000` (JavaScript: `1e+21`); `c ? a : b` gives `b`
+when `c` is true and `a` is absent (it lowers to `guard(c, a) ?? b`); and a function returning a
+record literal gives only its first field.
 
-**Records, JSON, dates**
+**Open, for a decision:**
 
-| Gap | Closes by | Why |
-|---|---|---|
-| `Object.values`, `Object.entries` | composite: `map` over `keys`, a `lookup` each | the same class; measure |
-| `Object.fromEntries`, `Object.assign`, `{ ...a, ...b }`, `Object.groupBy` | leaf | a `fold` of `insert` copies the record each step: O(n²) |
-| `k in r`, `Object.hasOwn(r, k)` | composite: `r[k] !== undefined` | a record never holds an absent value, so it is exact |
-| `{ [k]: v }`, `delete r[k]` | `insert`, `remove` (exist) | read the forms |
-| `structuredClone(v)`, `Object.freeze(v)` | composite: the value itself | values never change in place |
-| `JSON.stringify(v, null, 2)` | leaf change: an indent parameter | JavaScript's exact layout |
-| a date from `now`: `new Date(now * 1000).toISOString()`, its UTC year, month, day | leaf (UTC parts and ISO text) | calendar arithmetic, pinned; a composite of `divide` and `floor` is possible but long. No time zones (§12) |
-
-Besides the leaves, some rows need the reader to change, not the catalog: a form whose leaf
-depends on the value's type (`.length`, `xs[i]`, `<`, `!`) needs the reader to know that type
-where the form is, from a type annotation (L4 §7) or from the leaf that made the value; where it
-can't, the form is refused, saying which leaf to call.
+1. **Text units.** JavaScript counts UTF-16 code units; Holon's text leaves count Unicode scalar
+   values. Counting code units measured 1.0 to 1.7 times scalars, the same class, and makes
+   `length`, `slice`, `indexOf` and `charCodeAt` JavaScript's; a result that would split a
+   surrogate pair gives nothing. It changes what those leaves give on astral text
+   ([texts.md](js-library-races/texts.md#units)).
+2. **Key order.** JavaScript keeps a record's keys in insertion order, integers first; Holon's are
+   sorted. Keeping them sorted is recommended: insertion order would make two equal records hash
+   or print differently. `JSON.stringify(v, keys)` writes keys in a chosen order
+   ([records.md](js-library-races/records.md#key-order)).
+3. **Inline library composites.** Placed in its caller's graph instead of called, `x * -1` costs
+   1.2 times a leaf, `abs` 2.05, `max` 2.07, `Number.isFinite` 1.48. A reader that inlines a
+   library composite would turn several leaves into reader rows, at the price of the one named node
+   the canvas shows ([numbers.md](js-library-races/numbers.md)).
+4. **A family's parameter checked when wired.** An unknown `compare` `op` gives nothing at run
+   time today; a family with 29 values should refuse an unknown one at the wiring.
+5. **A regular expression's budget.** `regress` backtracks and has no step limit: literal patterns
+   first, a step budget, or a cap on the text's length.
+6. **Smaller ones.** Refuse `escape`/`unescape` (Annex B); what `+` and `String(x)` give for a list
+   or a record (JSON today, `"1,2"` and `"[object Object]"` in JavaScript); `JSON.parse` of a key
+   given twice (refused by design, JavaScript keeps the last); whether `==` is refused rather than
+   read as `===`.
+7. **The evaluator's next steps** ([leaves.md](js-library-races/leaves.md) §8): a composite's
+   preparation kept in the resolver (one call of a 25-node function from 1.6 to about 0.9 µs),
+   and the fifth more a function written in place pays per item since the change.
 
 ## 12. What stays refused
 
