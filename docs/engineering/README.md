@@ -32,6 +32,8 @@ the note.
 - [Testing](themes/testing.md): which tests hold which property, and why each exists.
 - [Measuring](themes/measuring.md): how a cost is measured here, and the traps.
 - [Lessons](themes/lessons.md): what the work taught, the designs that were worse included.
+- [JavaScript's library](themes/javascript-library.md): each operator, global, namespace and
+  method of JavaScript's library and the leaf it lowers to, what differs, and how each gap closes.
 
 **Components**, one per crate or part:
 
