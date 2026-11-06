@@ -3,7 +3,9 @@
 Every race of [numbers.md](numbers.md), [texts.md](texts.md), [lists.md](lists.md) and
 [records.md](records.md) was run again on 2026-11-06 once the evaluator change of
 [leaves.md](leaves.md) was merged, one bench after another with no other race
-running, and every check passed again: the change kept every value the composites give.
+running, and every check passed again: the change kept every value the composites give. They ran
+on the change as it was before its audit; what the audit changed before the merge (#43) changed
+no value, and its own benches measured what it did to time ([leaves.md](leaves.md) §6 and §9).
 
 Each row is a race's ratio (the first side's time over the second's) at its representative size:
 n = 64 where it was raced there, else its smallest size. *Before* is the race page's own output,

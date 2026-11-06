@@ -19,7 +19,12 @@ cargo bench -p holon-author --bench races_evaluator -- filter    # the races who
 cargo bench -p holon-author --bench races_evaluator -- "as it was"   # each changed leaf against its old body
 cargo bench -p holon-author --bench races_evaluator -- arc       # the Arc estimate
 cargo bench -p holon-core --bench native_vs_composite            # criterion: fold, the wrapping tax
+cargo bench -p holon-author --bench perf_audit                   # one call as the server makes it; maps and folds
+cargo bench -p holon-author --bench host_request                 # samples' requests, in-process, as the server runs them
 ```
+
+`perf_audit` and `host_request` use only the public API, so the same file builds against the
+evaluator before a change and after it, and the two binaries are raced in turn (§9).
 
 This machine's noise is large: the same binary run twice apart gave times 20 to 40% apart, and
 other sessions were building at the same time. So "before" and "after" were raced as two copies
@@ -48,7 +53,7 @@ resolver that keeps none did; the nested preparation and the copies were paid ev
 ## 2. What changed, each with its effect
 
 All in `crates/holon-core/src/eval.rs` and `primitives.rs`. Effects are from the races of §3 and
-the criterion runs of §4.
+the criterion runs of §4; what the audit changed before the merge is in §9.
 
 | Change | What it does | Measured |
 |---|---|---|
@@ -306,15 +311,22 @@ loops, and nothing changed there.
 
 ## 6. What isn't better
 
-- **A function written in place in a `map` costs about a fifth more an item.**
-  `xs.map((x) => x * 2 + 1)` went from 167 to 203 ns an item (lin in place, §3), while its one
-  call got faster (×0.67, the preparation kept). Ruled out, by building the change without each
-  part and racing it against the base: the `const` cache and the giving check (both off, the cost
-  stayed), and whether the map, fold, composite and cold paths are inlined. Running a composite
-  directly over a lent list took back about 11 ns an item. What is left is in the run of the
-  preparation itself, which now carries its inputs as `Option<Cow<Value>>`, several times the
-  size of the `Option<&Value>` it carried, and checks at each node whether it may give and whether
-  it reads through a choice. Not found further.
+- **A function written in place in a `map` cost about a fifth more an item, until the audit
+  (§9).** `xs.map((x) => x * 2 + 1)` went from 167 to 203 ns an item (lin in place, §3). The
+  performance audit found where: every run of a plan looked at every node for a value to give, and
+  worked out a place for each output. The plan now marks the children that build on an input
+  (`Step::Build`), a node goes through `fire_giving` only when the value can be moved, and one
+  output takes a short path: lin in place 180 → 168 ns an item against the base, and as merged
+  ×0.88 to ×0.98 by size (`perf_audit`).
+- **What is slower as merged** (#43, `perf_audit` and `host_request` against the base, medians of
+  interleaved rounds). One call through a resolver that keeps shapes, the deployed server's:
+  ×1.16 to ×1.23 (lin 395 → 472 ns), ×1.08 to ×1.15 under an observer that reads outputs; 10 to
+  15 ns a node neither audit could place, a third of it come with the audit's fixes and the
+  smaller frames. `${s}!` mapped over texts ×1.35 (likely `concat` given `as_text`'s fresh short
+  text and growing it, not measured). Folds of a number over a composite ×1.09 to ×1.20. A filter
+  by fold over 16 items ×1.16 (×0.21 and below from 256). `last` of 4096 under an observer that
+  reads outputs, without kept shapes, ×2.0, cause not found. Whole requests (hello, calc, quote,
+  basket, fetch-json, slugs) all within noise, ×0.87 to ×1.05.
 - **One call of `score` is ×0.71, not halved** (×0.70 to 0.80 by round). What it pays now is
   mostly its preparation (about 616 ns of 1.6 µs): resolving 25 children through the resolver
   (437 ns on a `MapResolver`), deciding each child's kind, and the lists that hold them. Keeping
@@ -370,7 +382,8 @@ copy is one `memcpy` (8 times an `Arc`'s at 10 KB), not worth its 327 sites.
 
 1. **Keep a composite's preparation in the resolver**, as its shape is kept, so one call pays its
    run and not its preparation: one call of `score` from 1.6 to about 0.9 µs.
-2. **Find the rest of the in-place regression** (§6), with a profiler, on a machine with one.
+2. **Place what one call pays with kept shapes** (§6, 10 to 15 ns a node), and `${s}!`, with a
+   profiler, on a machine with one.
 3. **`reverse` as a leaf**, as §11 says; `cons` and `[x, ...acc]` stay O(n) a step whatever the
    evaluator does.
 4. **The host's observers that only record say so**, if a recorded run's outputs can be read where
@@ -396,7 +409,45 @@ seed over five seeds), found one output the change got wrong, fixed since:
   folds and maps the bare `map`s and `fold`s too.
 
 And three it couldn't make fail, noted: an edge from an output port a child doesn't have, or into
-an input port it doesn't declare, could mislead the giving (both are refused by `validate`, so only
-unvalidated bytes could carry them); the check that a value is never read again has no memo, so a
-wide, deep branch not taken costs more to check than it should; and `join` sized its text before
-checking its items, which could overflow on a 32-bit target (it saturates now).
+an input port it doesn't declare, could mislead the giving; the check that a value is never read
+again had no memo; and `join` sized its text before checking its items, which could overflow on a
+32-bit target (it saturates now). The audit made the first fail and fixed the second.
+
+### The audit, before it was merged
+
+Three audits ran before the change went to main (#43), for correctness, security and performance.
+
+**Correctness.** A differential harness (`crates/holon-core/tests/differential.rs`, with
+`differential.sh` to run it against any earlier commit) generates worlds of leaves, composites
+nested four deep and maps and folds of them, with valid edges and with edges only decoding would
+take, and runs every case under each observer a host uses, comparing outputs and every observer
+call between two versions. It mattered that the unvalidated edges were in: a host never calls
+`validate` on a unit it stores (the server's `POST /unit` only decodes), so those edges can reach
+the evaluator. It found, besides the bare `fold` above, the two the review noted:
+
+- a choice that lends was read as its value at an output port it doesn't have (a choice unit
+  declaring a second output passes `validate`): it now reads through only at port 0;
+- a choice fed at a port it doesn't declare wasn't counted among the value's readers, so the
+  value could be given away under it, and a lookup could run past its child's entries (a panic):
+  a choice's two ports count whatever it declares, and an entry is looked up within its child's.
+
+With them fixed: no divergence from the base in 1,000,000 cases (5,246,846 evaluations), run again
+on the merged code, and the eager oracle disagreeing with both in the same 611 cases, all odd
+interfaces or unvalidated edges.
+
+**Security and resilience** (`tests/audit_security.rs`, `examples/audit_stack_probe.rs`). No panic
+on any unit that decodes; no shape kept for one unit handed to another; no limit skipped on the
+giving path (every leaf with a limit isn't one that builds on a given value); memory flat over
+2,000,000 calls on one thread. Two found: `holon verify` ran a record's units without the bounds
+the server holds a closure to (64 deep, 20,000 units), so a crafted record nested deeper could
+overflow its stack, and it now refuses a unit past them; and the change's frames were larger, so
+maps nested in maps evaluated only 200 levels deep on a 1 MiB thread, where the base reached 500.
+What only a leaf needs is now out of line: 400 levels on 1 MiB and 850 on 2 MiB, for maps in maps
+and composites alike, against the base's 500 and 1000 and a host's 64. The never-read check (`unneeded`) now
+looks at each child once a question, so its work is the composite's size whatever its shape.
+
+**Performance** (`benches/perf_audit.rs`, `benches/host_request.rs`). Speculative giving, a
+`coalesce`'s fallback given ahead, stays: without it four folds go O(n²) again, 31 to 232 times
+slower at 4096. The in-place regression was placed and fixed (§6). The never-read check's cap of 8
+kept a fold's accumulator from being given behind four or more untaken branches (4096 items: 44
+ms); with the memo the cap is 64 (3.5 to 3.8 ms). What is slower as merged is in §6.
