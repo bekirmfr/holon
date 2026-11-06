@@ -9,7 +9,8 @@ operations), with history as step 2.5 ([history](history-L4.md)). Revised 2026-1
 450e3de, and again against ff03a80 (`main` after the request path's work): static files (§5.11,
 step 1.8) and inbound WebSockets (§5.12, step 1.9) designed here and put in Tier 1, inbound
 WebSockets having been "later" until then; what else a web app asks for, sorted (§5.13); and a
-flow as a command-line app (§5.14). It
+flow as a command-line app (§5.14). Revised 2026-11-06 against af9de3a: what a trading bot
+adds to feeds (§5.9, forks 25–27), log levels having come in rc.32 since §5.9 was written. It
 sets rules and sorts candidates. Most capabilities it says to build get their own L4, as folders,
 databases and channels did; the web's are designed here, so the theme is in one place. Builds on
 [host resources](host-resources-L4.md) (resources the host defines, their addresses),
@@ -552,6 +553,41 @@ message it sends starts a run, by the same four rules. Until
 2026-11-04 they waited for a job ("channels (SSE) and a POST cover what a browser sends and
 hears"). Decided then that they are fundamental: the libraries web apps are built on expect one
 two-way connection. The statement is `websocket`, since *socket* is the bound connection above.
+
+**What a trading bot adds** (2026-11-06). A bot that trades on a market feed is the feed's
+hardest job, and the shapes above hold it: a feed for prices, a socket for FIX, `http.post` for
+an exchange's REST orders, signed with `hmac_sha256` and `hex`, which core has. Four things the
+shapes don't yet say:
+
+- **A feed's handler has a log level.** §5.9 was written before rc.32's `lazy` and `unrecorded`;
+  they go on `on event` as on any handler (`on event prices (e) lazy { … }`). A strict run per
+  message is paced by the disk's sync: about 2 ms on a desktop SSD, so 1,600 strict runs a second
+  at 8 connections on one Windows machine
+  ([performance](../engineering/themes/performance.md#limits)), short of a busy market feed. The
+  position then follows the record: it moves past a message once that run's record is on disk
+  (strict: at its end; lazy: at the next sync); an unrecorded run's message moves it when the run
+  ends. So a crash delivers again what wasn't on disk, a lazy handler's last second, and those
+  runs run again: their claims were in the records lost. A handler whose run has an effect that
+  mustn't repeat (an order) stays strict, or makes the effect safe to repeat (below); the prices
+  it reads can be lazy (fork 25).
+- **The newest price, not the queue.** `on_full: skip` drops what arrives while the buffer is
+  full and keeps what is queued: for prices, the stale ones. A market feed wants **conflation**:
+  `on_full: latest, key: symbol` keeps one waiting message per key, the newest, and the run hears
+  how many it replaced (`e.replaced`), as `e.missed` says skipped ones (fork 26).
+- **Periods under a second.** Clocks take whole seconds and are checked once a second
+  ([triggers](triggers-L4.md)), so a bot can't poll a price, or give up on an unfilled order,
+  faster than that. A change to the scheduler's one-second pass, not a host capability (fork 27).
+- **An order out before its record.** A run's requests go out during its rounds and its entry is
+  written after (`firing.rs`: the rounds, then `log_run`'s `sync_through`), so a crash between an
+  exchange accepting an order and the entry's sync leaves an order no record shows. G1 (an
+  answered strict run is on disk) holds; it never covered what a run did before its answer. The
+  exchange's acceptance is outside Holon, so the flow makes it safe, and step 1.6's sample shows
+  how: a client order id derived from what decided the order (the signal's id, the candle's
+  time), never from the run's nonce, since a retried request is a new run with a new one, so the
+  exchange refuses the second; and on start a reconciliation against the exchange's open orders.
+  A socket's FIX correlates by `ClOrdID` the same way. The same holds for any call with an effect
+  (a payment, a message sent); `refund-once`'s claim covers two runs at once, not a crash between
+  a call and its commit.
 
 **Engines.** The data plane already runs on tokio, so a WebSocket client is tokio-tungstenite on
 that runtime, and inbound WebSockets' server side is the same crate. SSE is a streaming read the
@@ -1413,7 +1449,10 @@ engine.
     `invoice-inbox` (an invoice's attachment into a folder);
   - 1.4 `bank-drop` (statements arriving over SFTP, into a collection);
   - 1.5 `bank-statements` (SFTP, PGP decrypt, camt.053 parsed);
-  - 1.6 `price-feed` and `payout-events`;
+  - 1.6 `price-feed` and `payout-events`, and `trading-bot` (a feed of prices, conflated; a
+    lazy handler for the prices and a strict one for the order; a client order id from the
+    signal; an order over a limit waiting for approval; reconciliation on start), against a
+    stand-in exchange;
   - 1.7 `nightly-reconcile` (a bound program on a clock, its output into a folder);
   - 1.8 `site` (a built web app and its API, with a deep link falling back to `index.html`);
   - 1.9 `room` (a chat: joins, messages and leaves over one connection per browser).
@@ -1562,6 +1601,19 @@ Taken when a job or a user asks, each with its L4 and its sample all the same:
     `~/.holon`, and a log beside it, as `holon serve` keeps one. *Lean:* not until a job asks;
     `holon do` against a local `holon serve` covers it, and the single-user host is the shape to
     take if one does.
+
+25. **A feed's position under `lazy` and `unrecorded`** (§5.9, what a trading bot adds). *Lean:*
+    the position follows the record: strict at the run's end, lazy at the next sync, unrecorded
+    at the run's end. A crash delivers again what wasn't on disk, and those runs run again, since
+    their claims went with their records: once per message holds for strict handlers only. The
+    approval of a lazy or unrecorded feed handler says so ("after a crash, the last second's
+    messages may run again").
+26. **Conflation, `on_full: latest`.** Keep one waiting message per key, the newest. *Lean:* yes,
+    beside `stop` and `skip`, with the key a field the binding names and `e.replaced` the count;
+    `stop` stays the default (fork 17).
+27. **Clock periods under a second.** *Lean:* milliseconds down to 100, the scheduler waking for
+    the next due tick rather than once a second; a later change to the triggers, its own test,
+    not step 1.6.
 
 ## 9. What stays true
 
