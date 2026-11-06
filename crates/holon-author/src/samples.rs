@@ -263,6 +263,18 @@ static SAMPLES: &[Sample] = &[
         text: include_str!("../samples/invoice.holon.ts"),
     },
     Sample {
+        name: "share-link",
+        title: "Share link (a text's methods)",
+        description: "An article's share link, built from the query with JavaScript's text methods: trim cuts the spaces around the title, toLowerCase and replaceAll make it a slug (an & reads \"and\"), split, filter and join drop the doubled spaces between its words, padStart writes the id in six digits, and encodeURIComponent escapes the tag for the link's query. + and a template literal join the parts, .length counts the title as JavaScript does, in UTF-16 code units, and startsWith says whether the link is secure. A query without a title or an id answers 400.",
+        shows: &["text leaves", "trim", "replaceAll", "split", "padStart", "encodeURIComponent", "+ on texts", ".length", "startsWith"],
+        port: Some("8177"),
+        secrets: &[],
+        optional: &[],
+        browsers: None,
+        try_it: r#"curl "http://127.0.0.1:8177/link?title=%20Rust%20%26%20WebAssembly%20%20Tips%20&id=42&tag=c%2B%2B%20%26%20wasm" answers {"length":24,"secure":true,"slug":"rust-and-webassembly-tips","title":"Rust & WebAssembly  Tips","url":"https://example.com/a/000042/rust-and-webassembly-tips?tag=c%2B%2B%20%26%20wasm"}; with only id=42 it answers 400"#,
+        text: include_str!("../samples/share-link.holon.ts"),
+    },
+    Sample {
         name: "heartbeat",
         title: "Heartbeat",
         description: "A clock flow: every 10 seconds it records the time, counts the beats in its state, and keeps the time of the first beat (a fallback that is itself a value: coalesce).",
