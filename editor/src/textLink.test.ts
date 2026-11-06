@@ -16,7 +16,7 @@ import { dimmed, pickAt } from "./textLink";
 
 initSync({ module: readFileSync(join(process.cwd(), "wasm", "holon_wasm_bg.wasm")) });
 
-const SIGN = 'flow f\nport 8199\n\nroute POST /x (req) {\n  respond { said: "😀 hi", body_base64: base64(uppercase(req.body)) }\n}\n';
+const SIGN = 'import { base64, flow, route } from "holon"\n\nflow("f", { port: 8199 })\n\nroute.post("/x", (req) => ({ said: "😀 hi", body_base64: base64(req.body.toUpperCase()) }))\n';
 
 /** What each picked node is, by its primitive's name. */
 const named = (doc: { nodes: unknown[] }, ids: string[]) => ids.map((id) => (doc.nodes as PrimitiveNodeType[]).find((n) => n.id === id)?.data.name);
@@ -27,8 +27,8 @@ describe("the text and the graph, linked", () => {
     const { doc, spans } = compileHolon(SIGN, new Evaluator());
     const at = (s: string, k = 0) => SIGN.indexOf(s) + k;
     expect(named(doc, pickAt(spans, at("base64(")))).toEqual(["base64"]);
-    expect(named(doc, pickAt(spans, at("uppercase(", 3)))).toEqual(["uppercase"]);
-    // Inside the call's argument: still the call written over it (req.body is a port, no node).
+    expect(named(doc, pickAt(spans, at("toUpperCase(", 3)))).toEqual(["uppercase"]);
+    // Inside the call's receiver: still the call written over it (req.body is a port, no node).
     expect(named(doc, pickAt(spans, at("req.body", 2)))).toEqual(["uppercase"]);
     expect(named(doc, pickAt(spans, at("😀")))).toEqual(["const"]);
     expect(pickAt(spans, at("port"))).toEqual([]);

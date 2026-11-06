@@ -543,10 +543,10 @@ mod tests {
     /// fmt leaves the body whole, and still puts back the comments around the statement.
     #[test]
     fn fmt_leaves_a_hash_inside_a_js_body_alone() {
-        let src = "flow f\nport 8203\n\n# the page\nholon page(x) -> html js {\n  return `<style>a{color:#777}</style>${x}`; // #not a holon comment\n}\n\nroute GET /p (req) {\n  respond page(req.query.x ?? \"y\") # answered\n}\n";
-        let out = fmt("f.holon", src).unwrap();
+        let src = "import { flow, js, route } from \"holon\"\n\nflow(\"f\", { port: 8203 })\n\n// the page\nconst page = js(function html(x) {\n  return `<style>a{color:#777}</style>${x}`; // #not a holon comment\n})\n\nroute.get(\"/p\", (req) => {\n  return page(req.query.x ?? \"y\")\n  // answered\n})\n";
+        let out = fmt("f.holon.ts", src).unwrap();
         assert_eq!(out, src, "{out}");
-        assert_eq!(fmt("f.holon", &out).unwrap(), out, "and again");
+        assert_eq!(fmt("f.holon.ts", &out).unwrap(), out, "and again");
         // A body on one line, with a comment after its brace.
         let one = "flow f\nstate k\n\nholon tag(x) -> t js { return `#${x}` } # a tag\n\nstate.k = tag(1)\n";
         assert_eq!(fmt("f.holon", one).unwrap(), one);
@@ -578,12 +578,12 @@ mod tests {
     /// says it listens on no port; `show` lists them too.
     #[test]
     fn check_and_show_list_its_clocks() {
-        let r = check("t.holon", "flow t\nport 8080\nstate n\n\nevery 2s {\n  state.n = 1\n}\n\nroute GET / (req) {\n  respond 1\n}\n");
+        let r = check("t.holon", "import { every, flow, route, status } from \"holon\"\nimport state from \"state\"\n\nflow(\"t\", { port: 8080 })\n\nevery(\"2s\", () => {\n  state.n = 1\n})\n\nroute.get(\"/\", () => status(1))\n");
         assert_eq!(r.code, 0, "{r:?}");
         assert_eq!(r.out[1..5], ["a server on :8080", "  GET /", "and its clocks", "  every 2s"]);
-        let r = check("b.holon", "flow b\nstate n\n\nevery 1h {\n  state.n = now\n}\n");
+        let r = check("b.holon", "import { every, flow } from \"holon\"\nimport state from \"state\"\nimport { now } from \"holon:clock\"\n\nflow(\"b\")\n\nevery(\"1h\", () => {\n  state.n = now\n})\n");
         assert_eq!(r.out[1..3], ["a server of clocks, listening on no port", "  every 1h"]);
-        assert!(show("b.holon", "flow b\nstate n\n\nevery 1h {\n  state.n = now\n}\n").out[1..3] == ["  clocks", "    every 1h"]);
+        assert!(show("b.holon", "import { every, flow } from \"holon\"\nimport state from \"state\"\nimport { now } from \"holon:clock\"\n\nflow(\"b\")\n\nevery(\"1h\", () => {\n  state.n = now\n})\n").out[1..3] == ["  clocks", "    every 1h"]);
     }
 
     #[test]
@@ -600,7 +600,7 @@ mod tests {
     /// signs with a secret doesn't answer with it.
     #[test]
     fn check_says_a_route_answers_with_a_secret() {
-        let text = "flow leaky\nport 8102\nsecret key\nsecret token\n\nroute GET /plain (req) {\n  respond base64(secret.token)\n}\n\nroute POST /sign (req) {\n  respond hmac_sha256(secret.key, req.body), missing: 400\n}\n";
+        let text = "import { base64, flow, hmac_sha256, route, status } from \"holon\"\nimport key from \"secret:key\"\nimport token from \"secret:token\"\n\nflow(\"leaky\", { port: 8102 })\n\nroute.get(\"/plain\", () => base64(token))\n\nroute.post(\"/sign\", (req) => hmac_sha256(key, req.body) ?? status(400))\n";
         let r = check("leaky.holon", text);
         assert_eq!(r.code, 0, "{r:?}");
         let may = r.out.iter().position(|l| l == "it may:").unwrap_or_else(|| panic!("{:?}", r.out));
@@ -615,7 +615,7 @@ mod tests {
     /// verify, an hmac inside) isn't marked.
     #[test]
     fn the_canvas_marks_each_sink_a_secret_reaches() {
-        let text = "flow marks\nport 8199\nsecret k\nstate kept\n\nroute GET /x (req) {\n  sent = http.get(\"api.example.com\", \"/v1\", headers: { authorization: \"Bearer {secret.k}\" })\n  state.kept = secret.k\n  respond { key: secret.k, status: sent.status }\n}\n";
+        let text = "import { flow, route } from \"holon\"\nimport state from \"state\"\nimport k from \"secret:k\"\nimport example from \"host:api.example.com\"\n\nflow(\"marks\", { port: 8199 })\n\nroute.get(\"/x\", async () => {\n  const sent = await example.get(\"/v1\", { headers: { authorization: `Bearer ${k}` } })\n  state.kept = k\n  return { key: k, status: sent.status }\n})\n";
         let marks_of = |text: &str| {
             let mut store = MapResolver::new();
             let c = compile("t.holon", text, &mut store).unwrap_or_else(|r| panic!("{r:?}"));
@@ -662,7 +662,7 @@ mod tests {
     #[test]
     fn check_says_a_flow_on_a_schedule_runs_on_the_clock() {
         // `every` starts its runs, so it reads the clock as deployed, though nothing reads `now`.
-        let r = check("beats.holon", "flow beats\nevery 5s\nstate beats\n\nstate.beats = (state.beats ?? 0) + 1\n");
+        let r = check("beats.holon", "import { every, flow } from \"holon\"\nimport state from \"state\"\n\nflow(\"beats\")\n\nevery(\"5s\", () => {\n  state.beats = (state.beats ?? 0) + 1\n})\n");
         assert_eq!(r.code, 0, "{r:?}");
         let may = r.out.iter().position(|l| l == "it may:").unwrap_or_else(|| panic!("{:?}", r.out));
         assert_eq!(r.out[may + 1..], ["  read the clock", "  read its state \"beats\"", "  write its state \"beats\""]);
@@ -692,14 +692,14 @@ mod tests {
         }
     }
 
-    const BOARD: &str = "flow status-board\nport 8170\ncollection notes\n\n# Answers the load balancer.\nroute GET /health (req) unrecorded {\n  respond \"ok\"\n}\n\nroute GET /notes (req) lazy {\n  respond notes.list(limit: 50)\n}\n\nroute POST /notes (req) {\n  notes[req.json.id] = req.json.text\n  respond \"saved\"\n}\n\naction report (input) unrecorded {\n  respond notes.list(limit: 50)\n}\n";
+    const BOARD: &str = "import { action, flow, route } from \"holon\"\nimport notes from \"collection:notes\"\n\nflow(\"status-board\", { port: 8170 })\n\n// Answers the load balancer.\nroute.get(\"/health\", () => \"ok\", { log: \"unrecorded\" })\n\nroute.get(\"/notes\", () => notes.list({ limit: 50 }), { log: \"lazy\" })\n\nroute.post(\"/notes\", (req) => {\n  notes[req.json.id] = req.json.text\n  return \"saved\"\n})\n\nexport const report = action(() => notes.list({ limit: 50 }), { log: \"unrecorded\" })\n";
 
     /// `lazy` and `unrecorded` after a handler's head (docs/L4s/request-path-L4.md, C5): fmt
     /// writes them back where they were, they are names everywhere else, and any handler may have
     /// them, whatever it does: the level is what its author writes.
     #[test]
     fn a_handlers_log_word_is_kept_as_written() {
-        assert_eq!(fmt("b.holon", BOARD).unwrap(), BOARD);
+        assert_eq!(fmt("b.holon.ts", BOARD).unwrap(), BOARD);
         let r = check("b.holon", BOARD);
         assert_eq!((r.code, r.err.clone()), (0, vec![]), "{r:?}");
         // What the approval will ask, said as it says it.
@@ -707,26 +707,28 @@ mod tests {
             assert!(r.out.contains(&format!("  keep runs of {label} out of its log, failed or not (they are counted)")), "{:?}", r.out);
         }
         // A word that isn't before a block is a name.
-        let names = "flow n\nstate lazy\n\naction a (unrecorded) {\n  state.lazy = unrecorded\n  respond state.lazy\n}\n";
-        assert_eq!(fmt("n.holon", names).unwrap(), names);
+        let names = "import { action, flow } from \"holon\"\nimport state from \"state\"\n\nflow(\"n\")\n\nexport const a = action((unrecorded) => {\n  state.lazy = unrecorded\n  return state.lazy\n})\n";
+        assert_eq!(fmt("n.holon.ts", names).unwrap(), names);
         assert_eq!(check("n.holon", names).code, 0);
         // The word changes the handler's unit: each level is its own.
         let unit = |text: &str| check("u.holon", text).out.into_iter().find(|l| l.starts_with("unit ")).unwrap();
-        let strict = "flow u\nport 8172\n\nroute GET /x (req) {\n  respond 1\n}\n";
-        let lazy = strict.replace("(req) {", "(req) lazy {");
+        let strict = "import { flow, route, status } from \"holon\"\n\nflow(\"u\", { port: 8172 })\n\nroute.get(\"/x\", () => status(1))\n";
+        let lazy = strict.replace("status(1))", "status(1), { log: \"lazy\" })");
         assert_ne!(unit(strict), unit(&lazy));
-        assert_ne!(unit(&lazy), unit(&strict.replace("(req) {", "(req) unrecorded {")));
+        assert_ne!(unit(&lazy), unit(&strict.replace("status(1))", "status(1), { log: \"unrecorded\" })")));
         // A handler is as its author writes it, whatever it does: a route that writes compiles
         // unrecorded, a clock that writes its state lazy, an action that calls out lazy, a file
         // handler that writes unrecorded; and fmt keeps the word on every kind of handler.
-        let r = check("b.holon", &BOARD.replace("route POST /notes (req) {", "route POST /notes (req) unrecorded {"));
+        let r = check("b.holon", &BOARD.replace("  return \"saved\"
+})", "  return \"saved\"
+}, { log: \"unrecorded\" })"));
         assert_eq!((r.code, r.err.clone()), (0, vec![]), "{r:?}");
-        let r = check("t.holon", "flow t\nstate n\n\nevery 1m lazy {\n  state.n = (state.n ?? 0) + 1\n}\n");
+        let r = check("t.holon", "import { every, flow } from \"holon\"\nimport state from \"state\"\n\nflow(\"t\")\n\nevery(\"1m\", () => {\n  state.n = (state.n ?? 0) + 1\n}, { log: \"lazy\" })\n");
         assert_eq!((r.code, r.err.clone()), (0, vec![]), "{r:?}");
-        let r = check("o.holon", "flow o\n\naction ping (input) lazy {\n  respond http.get(\"httpbin.org\", \"/uuid\").body\n}\n");
+        let r = check("o.holon", "import { action, flow } from \"holon\"\nimport httpbin from \"host:httpbin.org\"\n\nflow(\"o\")\n\nexport const ping = action(async () => (await httpbin.get(\"/uuid\")).body, { log: \"lazy\" })\n");
         assert_eq!((r.code, r.err.clone()), (0, vec![]), "{r:?}");
-        let files = "flow f\ncollection seen\n\non file inbox (f) unrecorded {\n  seen[f.name] = f.size\n}\n\nevery 1m lazy {\n  seen[\"tick\"] = now\n}\n";
-        assert_eq!(fmt("f.holon", files).unwrap(), files);
+        let files = "import { every, flow, on } from \"holon\"\nimport seen from \"collection:seen\"\nimport inbox from \"folder:inbox\"\nimport { now } from \"holon:clock\"\n\nflow(\"f\")\n\non.file.created(inbox, (f) => {\n  seen[f.name] = f.size\n}, { log: \"unrecorded\" })\n\nevery(\"1m\", () => {\n  seen[\"tick\"] = now\n}, { log: \"lazy\" })\n";
+        assert_eq!(fmt("f.holon.ts", files).unwrap(), files);
         let r = check("f.holon", files);
         assert_eq!((r.code, r.err.clone()), (0, vec![]), "{r:?}");
     }
@@ -751,30 +753,14 @@ mod tests {
     fn a_route_of_many_interpolations_compiles_and_unused_twins_are_said() {
         let parts: Vec<String> = (0..12).map(|i| format!("{{req.json.f{i}}}")).collect();
         let text = format!(
-            "flow links
-port 8106
-
-route POST /links (req) {{
-  a = \"{}\"
-  b = \"{}/{}\"
-  respond {{ a: a, b: b }}
-}}
-",
+            "import {{ flow, route }} from \"holon\"\n\nflow(\"links\", {{ port: 8106 }})\n\nroute.post(\"/links\", () => {{\n  const a = \"{}\"\n  const b = \"{}/{}\"\n  return {{ a, b }}\n}})\n",
             parts.join("/"),
             parts[..6].join("/"),
             parts[6..].join("-")
         );
         let r = check("links.holon", &text);
         assert_eq!(r.code, 0, "{r:?}");
-        let r = check("twins.holon", "flow t
-port 8107
-
-route POST /t (req) {
-  x = lowercase(req.json.a)
-  y = lowercase(req.json.a)
-  respond \"ok\"
-}
-");
+        let r = check("twins.holon", "import { flow, route } from \"holon\"\n\nflow(\"t\", { port: 8107 })\n\nroute.post(\"/t\", (req) => {\n  const x = req.json.a.toLowerCase()\n  const y = req.json.a.toLowerCase()\n  return \"ok\"\n})\n");
         assert_eq!(r.code, 1);
         assert_eq!(r.err, ["twins.holon: POST /t: the same value is computed twice and never used, so nothing tells the two apart: remove one, or use it"]);
     }
@@ -804,27 +790,27 @@ route POST /t (req) {
 
     #[test]
     fn fmt_writes_folders_back_as_written() {
-        let text = "flow files\nport 8200\nfolder inbox\nfolder out\n\nroute POST /move (req) {\n  t = inbox[req.json.name]\n  out[\"{req.json.name}.md\"] = \"# {t}\"\n  delete out[\"{req.json.name}.old\"]\n  respond inbox.list(prefix: \"2026/\", limit: 5)\n}\n";
+        let text = "import { flow, route } from \"holon\"\nimport inbox from \"folder:inbox\"\nimport out from \"folder:out\"\n\nflow(\"files\", { port: 8200 })\n\nroute.post(\"/move\", (req) => {\n  const t = inbox[req.json.name]\n  out[`${req.json.name}.md`] = `# ${t}`\n  delete out[`${req.json.name}.old`]\n  return inbox.list({ prefix: \"2026/\", limit: 5 })\n})\n";
         assert_eq!(check("files.holon", text).code, 0);
-        assert_eq!(fmt("files.holon", text).unwrap(), text);
+        assert_eq!(fmt("files.holon.ts", text).unwrap(), text);
     }
 
     #[test]
     fn fmt_writes_channels_back_as_written() {
-        let text = "flow board\nport 8200\nchannel updates\n\nroute POST /t (req) {\n  updates.send({ new: req.json.title })\n  respond { ok: true }, status: 201\n}\n\nroute GET /live (req) {\n  respond updates.subscribe()\n}\n\nroute GET /all (req) {\n  respond updates.subscribe(from: \"kept\"), headers: { \"cache-control\": \"no-store\" }\n}\n";
+        let text = "import { flow, respond, route, status } from \"holon\"\nimport updates from \"channel:updates\"\n\nflow(\"board\", { port: 8200 })\n\nroute.post(\"/t\", (req) => {\n  updates.send({ new: req.json.title })\n  return status(201, { ok: true })\n})\n\nroute.get(\"/live\", () => updates.subscribe())\n\nroute.get(\"/all\", () =>\n  respond(updates.subscribe({ from: \"kept\" }), { headers: { \"cache-control\": \"no-store\" } }),\n)\n";
         assert_eq!(check("board.holon", text).code, 0, "{:?}", check("board.holon", text).err);
-        assert_eq!(fmt("board.holon", text).unwrap(), text);
+        assert_eq!(fmt("board.holon.ts", text).unwrap(), text);
     }
 
     #[test]
     fn fmt_writes_a_streamed_reply_back_as_written() {
-        let text = "flow chat\nport 8200\ncollection said\n\nroute POST /ask (req) {\n  sent = http.post(\"api.example.com\", \"/v1/chat\", body: req.json, stream: true)\n  said[as_text(now)] = sent.body\n  respond sent.body, stream: true\n}\n";
+        let text = "import { as_text, flow, respond, route } from \"holon\"\nimport said from \"collection:said\"\nimport example from \"host:api.example.com\"\nimport { now } from \"holon:clock\"\n\nflow(\"chat\", { port: 8200 })\n\nroute.post(\"/ask\", async (req) => {\n  const sent = await example.post(\"/v1/chat\", { body: req.json, stream: true })\n  said[as_text(now)] = sent.body\n  return respond(sent.body, { stream: true })\n})\n";
         assert_eq!(check("chat.holon", text).code, 0, "{:?}", check("chat.holon", text).err);
-        assert_eq!(fmt("chat.holon", text).unwrap(), text);
+        assert_eq!(fmt("chat.holon.ts", text).unwrap(), text);
         // A computed status, written as it was.
-        let computed = "flow codes\nport 8200\n\nroute POST /a (req) {\n  respond { ok: false }, status: req.json.code, missing: 400\n}\n";
+        let computed = "import { flow, route, status } from \"holon\"\n\nflow(\"codes\", { port: 8200 })\n\nroute.post(\"/a\", (req) => status(req.json.code, { ok: false }) ?? status(400))\n";
         assert_eq!(check("codes.holon", computed).code, 0, "{:?}", check("codes.holon", computed).err);
-        assert_eq!(fmt("codes.holon", computed).unwrap(), computed);
+        assert_eq!(fmt("codes.holon.ts", computed).unwrap(), computed);
     }
 
     #[test]
@@ -843,12 +829,12 @@ route POST /t (req) {
 
     #[test]
     fn a_piped_call_goes_to_its_channel_as_it_arrives() {
-        let text = "flow room\nport 8200\ncollection said\nchannel room\n\nroute POST /ask (req) {\n  sent = room.pipe(http.post(\"api.example.com\", \"/v1/chat\", body: req.json))\n  said[as_text(now)] = sent.body\n  respond { ok: true }, status: 202\n}\n";
+        let text = "import { as_text, flow, route, status } from \"holon\"\nimport said from \"collection:said\"\nimport room from \"channel:room\"\nimport example from \"host:api.example.com\"\nimport { now } from \"holon:clock\"\n\nflow(\"room\", { port: 8200 })\n\nroute.post(\"/ask\", (req) => {\n  const sent = room.pipe(example.post(\"/v1/chat\", { body: req.json }))\n  said[as_text(now)] = sent.body\n  return status(202, { ok: true })\n})\n";
         let checked = check("room.holon", text);
         assert_eq!(checked.code, 0, "{:?}", checked.err);
-        assert_eq!(fmt("room.holon", text).unwrap(), text);
+        assert_eq!(fmt("room.holon.ts", text).unwrap(), text);
         // Not a route's: a clock flow may pipe too.
-        assert_eq!(check("room.holon", "flow room\nevery 10s\nchannel room\nstate x\n\nstate.x = room.pipe(http.get(\"a.com\", \"/x\")).body\n").code, 0);
+        assert_eq!(check("room.holon", "import { every, flow } from \"holon\"\nimport state from \"state\"\nimport room from \"channel:room\"\nimport a from \"host:a.com\"\n\nflow(\"room\")\n\nevery(\"10s\", () => {\n  state.x = room.pipe(a.get(\"/x\")).body\n})\n").code, 0);
         let fails = |line: &str| check("room.holon", &format!("flow room\nport 8200\nchannel room\n\nroute POST /ask (req) {{\n{line}\n  respond {{ ok: true }}, status: 202\n}}\n")).err.join("\n");
         assert!(fails("  s = room.pipe(http.post(\"a.com\", \"/x\", stream: true))").contains("without stream:"));
         assert!(fails("  s = room.pipe(1)").contains("only a call's answer can be piped"));

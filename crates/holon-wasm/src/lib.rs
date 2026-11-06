@@ -1678,7 +1678,7 @@ mod native_tests {
     /// argument's range is inside its call's; every range is inside the text.
     #[test]
     fn node_spans_are_utf16_ranges_that_nest() {
-        let text = "flow f\nport 8199\n\nroute POST /x (req) {\n  respond { said: \"😀 hi\", body_base64: base64(uppercase(req.body)) }\n}\n";
+        let text = "import { base64, flow, route } from \"holon\"\n\nflow(\"f\", { port: 8199 })\n\nroute.post(\"/x\", (req) => ({ said: \"😀 hi\", body_base64: base64(req.body.toUpperCase()) }))\n";
         let compiled = lang::compile(text).unwrap();
         let spans = spans_of(text, &compiled.spans);
         let units: Vec<u16> = text.encode_utf16().collect();

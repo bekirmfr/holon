@@ -898,14 +898,7 @@ fn deploy_asks_for_what_policy_doesnt_grant_and_only_once() {
 #[test]
 fn a_flows_keep_line_is_the_retention_its_deploy_asks_for() {
     let state = test_state();
-    let plan = holon_author::agent::plan("flow kept
-keep 3 runs
-state n
-
-action bump (input) {
-  state.n = (state.n ?? 0) + 1
-}
-").unwrap_or_else(|e| panic!("{e}"));
+    let plan = holon_author::agent::plan("import { action, flow } from \"holon\"\nimport state from \"state\"\n\nflow(\"kept\", { keep: { runs: 3 } })\n\nexport const bump = action(() => {\n  state.n = (state.n ?? 0) + 1\n})\n").unwrap_or_else(|e| panic!("{e}"));
     let requirements = plan.requirements.clone().expect("its keep line");
     assert_eq!(requirements, serde_json::json!({ "limits": { "keep_runs": 3 } }));
     for u in &plan.units {
@@ -928,17 +921,7 @@ fn a_store_sweep_clears_the_states_no_kept_run_names_and_nothing_else() {
     let disk = FileStore::new(&dir).unwrap();
     let values = disk.values_dir();
     let state = test_state_with(SharedStore::on_disk(Box::new(disk), values.clone()));
-    let plan = holon_author::agent::plan("flow kept
-keep 3 runs
-state n
-collection notes
-
-action bump (input) {
-  n = (state.n ?? 0) + 1
-  state.n = n
-  notes[\"k{n}\"] = n
-}
-").unwrap_or_else(|e| panic!("{e}"));
+    let plan = holon_author::agent::plan("import { action, flow } from \"holon\"\nimport state from \"state\"\nimport notes from \"collection:notes\"\n\nflow(\"kept\", { keep: { runs: 3 } })\n\nexport const bump = action(() => {\n  const n = (state.n ?? 0) + 1\n  state.n = n\n  notes[`k${n}`] = n\n})\n").unwrap_or_else(|e| panic!("{e}"));
     let requirements = plan.requirements.clone().unwrap();
     for u in &plan.units {
         assert_eq!(route(&state, &req("POST", "/unit", u.clone())).status_code, 200);
@@ -1002,7 +985,7 @@ fn the_server_sweeps_its_store_on_its_own_and_not_again_for_nothing() {
     let disk = FileStore::new(&dir).unwrap();
     let values = disk.values_dir();
     let state = test_state_with(SharedStore::on_disk(Box::new(disk), values.clone()));
-    let plan = holon_author::agent::plan("flow kept\nkeep 2 runs\nstate n\n\naction bump (input) {\n  state.n = (state.n ?? 0) + 1\n}\n").unwrap_or_else(|e| panic!("{e}"));
+    let plan = holon_author::agent::plan("import { action, flow } from \"holon\"\nimport state from \"state\"\n\nflow(\"kept\", { keep: { runs: 2 } })\n\nexport const bump = action(() => {\n  state.n = (state.n ?? 0) + 1\n})\n").unwrap_or_else(|e| panic!("{e}"));
     let requirements = plan.requirements.clone().unwrap();
     for u in &plan.units {
         assert_eq!(route(&state, &req("POST", "/unit", u.clone())).status_code, 200);
@@ -1117,7 +1100,7 @@ fn each_flow_says_what_it_holds_in_memory_and_on_disk() {
     let disk = FileStore::new(&dir).unwrap();
     let values = disk.values_dir();
     let state = test_state_with(SharedStore::on_disk(Box::new(disk), values));
-    let plan = holon_author::agent::plan("flow kept\nkeep 3 runs\nstate n\n\naction bump (input) {\n  state.n = (state.n ?? 0) + 1\n}\n").unwrap_or_else(|e| panic!("{e}"));
+    let plan = holon_author::agent::plan("import { action, flow } from \"holon\"\nimport state from \"state\"\n\nflow(\"kept\", { keep: { runs: 3 } })\n\nexport const bump = action(() => {\n  state.n = (state.n ?? 0) + 1\n})\n").unwrap_or_else(|e| panic!("{e}"));
     let requirements = plan.requirements.clone().unwrap();
     for u in &plan.units {
         assert_eq!(route(&state, &req("POST", "/unit", u.clone())).status_code, 200);
@@ -1230,8 +1213,8 @@ fn a_full_disk_pauses_what_records_runs_until_there_is_room() {
     std::fs::create_dir_all(&disk).unwrap();
     state.deployments_path = std::path::Path::new(&disk).join("deployments.json").display().to_string().into();
     let set = |body: &str| route(&state, &req("POST", "/admin/storage", body.as_bytes().to_vec()));
-    let recorded = deploy_text_to(&state, "flow kept\nport 8301\nstate n\n\naction bump (input) {\n  state.n = (state.n ?? 0) + 1\n}\n", &[]);
-    let quiet = deploy_text_to(&state, "flow health\nport 8302\n\nroute GET /health (req) unrecorded {\n  respond \"ok\"\n}\n", &[]);
+    let recorded = deploy_text_to(&state, "import { action, flow } from \"holon\"\nimport state from \"state\"\n\nflow(\"kept\", { port: 8301 })\n\nexport const bump = action(() => {\n  state.n = (state.n ?? 0) + 1\n})\n", &[]);
+    let quiet = deploy_text_to(&state, "import { flow, route } from \"holon\"\n\nflow(\"health\", { port: 8302 })\n\nroute.get(\"/health\", () => \"ok\", { log: \"unrecorded\" })\n", &[]);
     let status = |slug: &str| state.deployments.lock().unwrap()[slug].life.status;
     // Floors of free space no disk has: its disk is full.
     assert_eq!(set(r#"{"warn_at":"1000T","full_at":"999T","when_full":"pause"}"#).status_code, 200);
@@ -1308,7 +1291,7 @@ fn a_full_disk_rolling_sweeps_what_only_the_cut_runs_named() {
     state.deployments_path = std::path::Path::new(&data).join("deployments.json").display().to_string().into();
     let path = std::path::PathBuf::from(unique_temp_path("roll-sweep-policy")).with_extension("toml");
     state.policy_path = path.display().to_string().into();
-    let plan = holon_author::agent::plan("flow kept\nkeep 200 runs\nstate n\n\naction bump (input) {\n  state.n = (state.n ?? 0) + 1\n}\n").unwrap_or_else(|e| panic!("{e}"));
+    let plan = holon_author::agent::plan("import { action, flow } from \"holon\"\nimport state from \"state\"\n\nflow(\"kept\", { keep: { runs: 200 } })\n\nexport const bump = action(() => {\n  state.n = (state.n ?? 0) + 1\n})\n").unwrap_or_else(|e| panic!("{e}"));
     let requirements = plan.requirements.clone().unwrap();
     for u in &plan.units {
         assert_eq!(route(&state, &req("POST", "/unit", u.clone())).status_code, 200);
@@ -1346,8 +1329,8 @@ fn a_full_disk_rolls_the_log_biggest_with_its_sealed_runs() {
     let disk = unique_temp_path("roll-sealed-disk");
     std::fs::create_dir_all(&disk).unwrap();
     state.deployments_path = std::path::Path::new(&disk).join("deployments.json").display().to_string().into();
-    let many = deploy_text_to(&state, "flow many\nport 8304\nstate n\n\naction bump (input) {\n  state.n = (state.n ?? 0) + 1\n}\n", &[]);
-    let wide = deploy_text_to(&state, "flow wide\nport 8305\nstate s\n\naction keep (input) {\n  state.s = input\n}\n", &[]);
+    let many = deploy_text_to(&state, "import { action, flow } from \"holon\"\nimport state from \"state\"\n\nflow(\"many\", { port: 8304 })\n\nexport const bump = action(() => {\n  state.n = (state.n ?? 0) + 1\n})\n", &[]);
+    let wide = deploy_text_to(&state, "import { action, flow } from \"holon\"\nimport state from \"state\"\n\nflow(\"wide\", { port: 8305 })\n\nexport const keep = action((input) => {\n  state.s = input\n})\n", &[]);
     // Two lines in each file as written, the rest sealed.
     for slug in [&many, &wide] {
         state.deployments.lock().unwrap()[slug].log.with(|l| l.set_hot(2));
@@ -1395,7 +1378,7 @@ fn a_full_disk_rolls_the_log_keeping_the_most() {
     std::fs::create_dir_all(&disk).unwrap();
     state.deployments_path = std::path::Path::new(&disk).join("deployments.json").display().to_string().into();
     let set = |body: &str| route(&state, &req("POST", "/admin/storage", body.as_bytes().to_vec()));
-    let slug = deploy_text_to(&state, "flow kept\nport 8303\nstate n\n\naction bump (input) {\n  state.n = (state.n ?? 0) + 1\n}\n", &[]);
+    let slug = deploy_text_to(&state, "import { action, flow } from \"holon\"\nimport state from \"state\"\n\nflow(\"kept\", { port: 8303 })\n\nexport const bump = action(() => {\n  state.n = (state.n ?? 0) + 1\n})\n", &[]);
     for _ in 0..120 {
         assert_eq!(route(&state, &req("POST", &format!("/trigger/{slug}/bump"), b"{}".to_vec())).status_code, 200);
     }
@@ -1444,7 +1427,7 @@ fn the_runs_a_log_lets_go_of_are_backed_up_as_exports_verify_checks() {
     let set = |body: serde_json::Value| route(&state, &req("POST", "/admin/storage", serde_json::to_vec(&body).unwrap()));
     assert_eq!(set(serde_json::json!({ "backup": backup.display().to_string() })).status_code, 200);
     assert_eq!(set(serde_json::json!({ "backup": "s3://bucket" })).status_code, 400);
-    let plan = holon_author::agent::plan("flow kept\nkeep 5 runs\nstate n\n\naction bump (input) {\n  state.n = (state.n ?? 0) + 1\n}\n").unwrap_or_else(|e| panic!("{e}"));
+    let plan = holon_author::agent::plan("import { action, flow } from \"holon\"\nimport state from \"state\"\n\nflow(\"kept\", { keep: { runs: 5 } })\n\nexport const bump = action(() => {\n  state.n = (state.n ?? 0) + 1\n})\n").unwrap_or_else(|e| panic!("{e}"));
     let requirements = plan.requirements.clone().unwrap();
     for u in &plan.units {
         assert_eq!(route(&state, &req("POST", "/unit", u.clone())).status_code, 200);
@@ -1534,7 +1517,7 @@ fn the_values_a_sweep_keeps_are_packed_and_read_back() {
     let disk = FileStore::new(&dir).unwrap();
     let values = disk.values_dir();
     let state = test_state_with(SharedStore::on_disk(Box::new(disk), values.clone()));
-    let plan = holon_author::agent::plan("flow kept\nkeep 3 runs\nstate n\ncollection notes\n\naction bump (input) {\n  n = (state.n ?? 0) + 1\n  state.n = n\n  notes[\"k{n}\"] = n\n}\n").unwrap_or_else(|e| panic!("{e}"));
+    let plan = holon_author::agent::plan("import { action, flow } from \"holon\"\nimport state from \"state\"\nimport notes from \"collection:notes\"\n\nflow(\"kept\", { keep: { runs: 3 } })\n\nexport const bump = action(() => {\n  const n = (state.n ?? 0) + 1\n  state.n = n\n  notes[`k${n}`] = n\n})\n").unwrap_or_else(|e| panic!("{e}"));
     let requirements = plan.requirements.clone().unwrap();
     for u in &plan.units {
         assert_eq!(route(&state, &req("POST", "/unit", u.clone())).status_code, 200);
@@ -1591,7 +1574,7 @@ fn the_states_sealed_runs_left_are_kept_by_a_sweep() {
     let data = unique_temp_path("sealed-data");
     std::fs::create_dir_all(&data).unwrap();
     state.deployments_path = std::path::Path::new(&data).join("deployments.json").display().to_string().into();
-    let plan = holon_author::agent::plan("flow kept\nkeep 60 runs\nstate n\ncollection notes\n\naction bump (input) {\n  n = (state.n ?? 0) + 1\n  state.n = n\n  notes[\"k{n}\"] = n\n}\n").unwrap_or_else(|e| panic!("{e}"));
+    let plan = holon_author::agent::plan("import { action, flow } from \"holon\"\nimport state from \"state\"\nimport notes from \"collection:notes\"\n\nflow(\"kept\", { keep: { runs: 60 } })\n\nexport const bump = action(() => {\n  const n = (state.n ?? 0) + 1\n  state.n = n\n  notes[`k${n}`] = n\n})\n").unwrap_or_else(|e| panic!("{e}"));
     let requirements = plan.requirements.clone().unwrap();
     for u in &plan.units {
         assert_eq!(route(&state, &req("POST", "/unit", u.clone())).status_code, 200);
@@ -3479,7 +3462,7 @@ fn a_light_route_answers_on_the_data_planes_worker_as_any_route_does() {
     state.listeners = Some(Mutex::new(BTreeMap::new()));
     let port = free_port();
     let text = format!(
-        "flow light\nport {port}\nbrowsers \"https://a.example\"\ncollection notes\nfolder docs\n\nroute GET /health (req) unrecorded {{\n  respond \"ok\"\n}}\n\nroute GET /notes (req) lazy {{\n  respond notes.list(limit: 50)\n}}\n\nroute POST /notes (req) {{\n  notes[req.json.id] = req.json.text\n  respond \"saved\"\n}}\n\nroute GET /uuid (req) {{\n  respond http.get(\"httpbin.org\", \"/uuid\").body\n}}\n\nroute GET /file (req) lazy {{\n  respond docs.get(\"a.txt\")\n}}\n"
+        "import {{ flow, route }} from \"holon\"\nimport notes from \"collection:notes\"\nimport docs from \"folder:docs\"\nimport httpbin from \"host:httpbin.org\"\n\nflow(\"light\", {{ port: {port}, browsers: \"https://a.example\" }})\n\nroute.get(\"/health\", () => \"ok\", {{ log: \"unrecorded\" }})\n\nroute.get(\"/notes\", () => notes.list({{ limit: 50 }}), {{ log: \"lazy\" }})\n\nroute.post(\"/notes\", (req) => {{\n  notes[req.json.id] = req.json.text\n  return \"saved\"\n}})\n\nroute.get(\"/uuid\", async () => (await httpbin.get(\"/uuid\")).body)\n\nroute.get(\"/file\", () => docs.get(\"a.txt\"), {{ log: \"lazy\" }})\n"
     );
     let dir = std::env::temp_dir().join(format!("holon-light-docs-{}-{}", std::process::id(), rand::random::<u32>()));
     std::fs::create_dir_all(&dir).unwrap();
@@ -3530,7 +3513,7 @@ fn a_run_that_panics_is_answered_500_inline_as_on_the_pool() {
     let mut state = test_state();
     state.listeners = Some(Mutex::new(BTreeMap::new()));
     let port = free_port();
-    let text = format!("flow boom\nport {port}\n\nroute GET /light/:name (req) unrecorded {{\n  respond \"hi {{req.params.name}}\"\n}}\n\nroute GET /pooled/:name (req) {{\n  respond \"hi {{req.params.name}}\"\n}}\n");
+    let text = format!("import {{ flow, route }} from \"holon\"\n\nflow(\"boom\", {{ port: {port} }})\n\nroute.get(\"/light/:name\", (req) => `hi ${{req.params.name}}`, {{ log: \"unrecorded\" }})\n\nroute.get(\"/pooled/:name\", (req) => `hi ${{req.params.name}}`)\n");
     let slug = deploy_plain_text(&state, &text);
     sync_listeners(&state);
     let get = |path: &str| raw_http(port, format!("GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n").as_bytes());
@@ -5041,7 +5024,7 @@ fn a_run_that_computes_with_a_secret_is_checked_given_what_that_node_produced() 
     let value = "whsec_test_123456";
     let set = req("POST", "/deployments/signer/secrets/signing_key", serde_json::to_vec(&serde_json::json!({ "value": value })).unwrap());
     assert_eq!(route(&state, &set).status_code, 200);
-    let text = "flow signer\nport 18199\nsecret signing_key\n\nroute POST /sign (req) {\n  respond hmac_sha256(secret.signing_key, req.body), missing: 400\n}\n";
+    let text = "import { flow, hmac_sha256, route, status } from \"holon\"\nimport signing_key from \"secret:signing_key\"\n\nflow(\"signer\", { port: 18199 })\n\nroute.post(\"/sign\", (req) => hmac_sha256(signing_key, req.body) ?? status(400))\n";
     let slug = deploy_text(&state, text, "127.0.0.1:9");
     assert_eq!(slug, "signer");
     let (status, signature, _) = data_call(&state, &slug, "POST", "/sign", "hello");
@@ -5093,7 +5076,7 @@ fn a_run_that_computes_with_a_secret_is_checked_given_what_that_node_produced() 
 #[test]
 fn a_look_alike_of_a_placeholder_is_computed_with_not_taken_as_given() {
     let state = claims_state("");
-    let text = "flow echo\nport 18198\n\nroute POST /echo (req) {\n  respond \"got {req.body}\"\n}\n";
+    let text = "import { flow, route } from \"holon\"\n\nflow(\"echo\", { port: 18198 })\n\nroute.post(\"/echo\", (req) => `got ${req.body}`)\n";
     let slug = deploy_text(&state, text, "127.0.0.1:9");
     let (status, answer, _) = data_call(&state, &slug, "POST", "/echo", "‹token:paid›");
     assert_eq!((status, answer.as_str()), (200, "got ‹token:paid›"), "the caller gets what it sent");
@@ -5123,7 +5106,7 @@ fn a_run_that_received_a_secret_or_a_token_keeps_its_logged_run_id() {
     let value = "tok_live_abcdef123";
     let set = req("POST", "/deployments/gate/secrets/api_token", serde_json::to_vec(&serde_json::json!({ "value": value })).unwrap());
     assert_eq!(route(&state, &set).status_code, 200);
-    let text = "flow gate\nport 18197\nsecret api_token\ncollection seen\n\nroute POST /me (req) {\n  ok = secure_equals(req.body, \"Bearer {secret.api_token}\")\n  started = start(visit, req.path)\n  respond \"/paid/{started.waiting.paid}\" when ok, missing: 401\n}\n\naction visit (path) {\n  paid = await paid, expires: 1h\n  seen[\"last\"] = { at: path, via: paid.method }\n}\n\nroute GET /paid/:token (req) resumes paid {\n  respond \"thanks\"\n}\n";
+    let text = "import { action, event, flow, route, secure_equals, status } from \"holon\"\nimport api_token from \"secret:api_token\"\nimport seen from \"collection:seen\"\n\nflow(\"gate\", { port: 18197 })\n\nroute.post(\"/me\", (req) => {\n  const ok = secure_equals(req.body, `Bearer ${api_token}`)\n  const started = visit(req.path)\n  return (ok ? `/paid/${started.waiting.paid}` : undefined) ?? status(401)\n})\n\nexport const visit = action(async (path) => {\n  const paid = await event(\"paid\", { expires: \"1h\" })\n  seen[\"last\"] = { at: path, via: paid.method }\n})\n\nroute.get(\"/paid/:token\", () => \"thanks\", { resumes: \"paid\" })\n";
     let slug = deploy_text(&state, text, "127.0.0.1:9");
     let (status, link, _) = data_call(&state, &slug, "POST", "/me", &format!("Bearer {value}"));
     assert_eq!(status, 200, "{link}");
@@ -5192,18 +5175,25 @@ fn a_secret_computed_into_something_else_stays_out_of_the_log() {
     let (host, _) = counting_server();
     let state = claims_state("");
     let text = format!(
-        r#"flow leaky
-port 18141
-secret api_key
-secret pem
-secret service_account
+        r#"import {{ base64, flow, route }} from "holon"
+import api_key from "secret:api_key"
+import pem from "secret:pem"
+import service_account from "secret:service_account"
+import host from "host:{host}"
 
-route POST /go (req) {{
-  basic = http.get("{host}", "/basic", headers: {{ authorization: "Basic {{base64(secret.api_key)}}" }})
-  account = json_parse(secret.service_account)
-  sent = http.post("{host}", "/json", headers: {{ "content-type": "application/json", "x-email": account.client_email }}, body: json({{ key: secret.pem }}))
-  respond {{ basic: basic.status, sent: sent.status }}
-}}
+flow("leaky", {{ port: 18141 }})
+
+route.post("/go", async () => {{
+  const basic = await host.get("/basic", {{
+    headers: {{ authorization: `Basic ${{base64(api_key)}}` }},
+  }})
+  const account = JSON.parse(service_account)
+  const sent = await host.post("/json", {{
+    headers: {{ "content-type": "application/json", "x-email": account.client_email }},
+    body: JSON.stringify({{ key: pem }}),
+  }})
+  return {{ basic: basic.status, sent: sent.status }}
+}})
 "#
     );
     let slug = deploy_text(&state, &text, &host);
@@ -5240,15 +5230,22 @@ fn a_secret_goes_only_where_its_approval_shows_it_going() {
     let (other, other_hits) = counting_server();
     let state = claims_state("");
     let text = format!(
-        r#"flow sends
-port 18143
-secret token
+        r#"import {{ flow, route }} from "holon"
+import token from "secret:token"
+import shown from "host:{shown}"
+import other from "host:{other}"
 
-route POST /go (req) {{
-  authed = http.get("{shown}", "/api", headers: {{ authorization: "Bearer {{secret.token}}" }})
-  passed = http.post("{other}", "/relay", body: req.body)
-  respond {{ authed: authed.status, passed: passed.error ?? passed.status, message: passed.message ?? "" }}
-}}
+flow("sends", {{ port: 18143 }})
+
+route.post("/go", async (req) => {{
+  const authed = await shown.get("/api", {{ headers: {{ authorization: `Bearer ${{token}}` }} }})
+  const passed = await other.post("/relay", {{ body: req.body }})
+  return {{
+    authed: authed.status,
+    passed: passed.error ?? passed.status,
+    message: passed.message ?? "",
+  }}
+}})
 "#
     );
     let slug = deploy_text_to(&state, &text, &[&shown, &other]);
@@ -5364,34 +5361,40 @@ fn a_token_a_call_answers_with_a_secret_is_kept_out_of_the_log_and_out_of_state(
     let (host, _) = counting_server();
     let state = claims_state("");
     let text = format!(
-        r#"flow oauth
-port 18150
-secret client_secret
-state cached
-state expires
-state open_token
+        r#"import {{ flow, route }} from "holon"
+import state from "state"
+import client_secret from "secret:client_secret"
+import host from "host:{host}"
 
-route POST /call (req) {{
-  got = http.post("{host}", "/token", headers: {{ "x-client-secret": secret.client_secret }}, body: req.body)
-  parsed = json_parse(got.body)
-  used = http.get("{host}", "/name", headers: {{ authorization: parsed.access_token }})
-  respond {{ used: used.status, expires: parsed.expires_in }}
-}}
+flow("oauth", {{ port: 18150 }})
 
-route POST /cache (req) {{
-  got = http.post("{host}", "/token", headers: {{ "x-client-secret": secret.client_secret }}, body: req.body)
-  parsed = json_parse(got.body)
+route.post("/call", async (req) => {{
+  const got = await host.post("/token", {{
+    headers: {{ "x-client-secret": client_secret }},
+    body: req.body,
+  }})
+  const parsed = JSON.parse(got.body)
+  const used = await host.get("/name", {{ headers: {{ authorization: parsed.access_token }} }})
+  return {{ used: used.status, expires: parsed.expires_in }}
+}})
+
+route.post("/cache", async (req) => {{
+  const got = await host.post("/token", {{
+    headers: {{ "x-client-secret": client_secret }},
+    body: req.body,
+  }})
+  const parsed = JSON.parse(got.body)
   state.cached = parsed.access_token
   state.expires = parsed.expires_in
-  respond "cached"
-}}
+  return "cached"
+}})
 
-route POST /open (req) {{
-  got = http.post("{host}", "/token", body: req.body)
-  parsed = json_parse(got.body)
+route.post("/open", async (req) => {{
+  const got = await host.post("/token", {{ body: req.body }})
+  const parsed = JSON.parse(got.body)
   state.open_token = parsed.access_token
-  respond "open"
-}}
+  return "open"
+}})
 "#
     );
     let slug = deploy_text(&state, &text, &host);
@@ -5447,7 +5450,7 @@ route POST /open (req) {{
 #[test]
 fn a_route_answers_with_a_secret_only_where_a_person_approved_it() {
     let state = claims_state("");
-    let text = "flow answers\nport 18178\nsecret key\nsecret token\n\nroute GET /plain (req) {\n  respond secret.token\n}\n\nroute GET /encoded (req) {\n  respond base64(secret.token)\n}\n\nroute POST /sign (req) {\n  respond hmac_sha256(secret.key, req.body), missing: 400\n}\n";
+    let text = "import { base64, flow, hmac_sha256, route, status } from \"holon\"\nimport key from \"secret:key\"\nimport token from \"secret:token\"\n\nflow(\"answers\", { port: 18178 })\n\nroute.get(\"/plain\", () => token)\n\nroute.get(\"/encoded\", () => base64(token))\n\nroute.post(\"/sign\", (req) => hmac_sha256(key, req.body) ?? status(400))\n";
     let plan = holon_author::agent::plan(text).unwrap();
     for u in &plan.units {
         route(&state, &req("POST", "/unit", u.clone()));
@@ -5514,22 +5517,22 @@ fn the_preview_says_where_each_secret_is_sent() {
 #[test]
 fn what_is_computed_from_a_secret_is_neither_kept_nor_logged() {
     let state = claims_state("");
-    let text = r#"flow derived
-port 18144
-secret api_key
-collection kept
-channel news
-state plain
-state token
+    let text = r#"import { base64, flow, route } from "holon"
+import state from "state"
+import api_key from "secret:api_key"
+import kept from "collection:kept"
+import news from "channel:news"
 
-route POST /go (req) {
-  token = "{req.body}:{base64(secret.api_key)}"
+flow("derived", { port: 18144 })
+
+route.post("/go", (req) => {
+  const token = `${req.body}:${base64(api_key)}`
   state.token = token
   kept["k"] = token
   news.send({ t: token })
   state.plain = req.body
-  respond { echoed: token }
-}
+  return { echoed: token }
+})
 "#;
     let slug = deploy_text(&state, text, "x");
     let value = "sk_live_derived_secret_value";
@@ -5563,50 +5566,48 @@ route POST /go (req) {
 /// written in the `??` it falls back to, so it is made only when there is no prior record.
 fn idem_text(host: &str) -> String {
     format!(
-        r#"flow idem
-port 18131
-collection seen
+        r#"import {{ action, event, flow, route }} from "holon"
+import seen from "collection:seen"
+import host from "host:{host}"
 
-route POST /go/:k (req) {{
-  prior = seen[req.params.k]
-  result = prior ?? {{ got: http.get("{host}", "/slow").body }}
+flow("idem", {{ port: 18131 }})
+
+route.post("/go/:k", async (req) => {{
+  const prior = seen[req.params.k]
+  const result = prior ?? {{ got: (await host.get("/slow")).body }}
   seen[req.params.k] = result
-  respond result
-}}
+  return result
+}})
 
-route PUT /set/:k (req) {{
+route.put("/set/:k", (req) => {{
   seen[req.params.k] = {{ got: req.body }}
-  respond {{ set: req.body }}
-}}
+  return {{ set: req.body }}
+}})
 
-route GET /seen/:k (req) {{
-  respond seen[req.params.k]
-}}
+route.get("/seen/:k", (req) => seen[req.params.k])
 
-route POST /chain (req) {{
-  mine = seen["b"] ?? "none"
-  name = http.get("{host}", "/name").body
-  other = seen[name] ?? "nobody"
-  done = http.get("{host}", "/fast", headers: {{ "x-other": json(other) }}).body
-  seen["b"] = {{ mine: mine, other: other, done: done, who: req.body }}
-  respond {{ other: other }}
-}}
+route.post("/chain", async (req) => {{
+  const mine = seen["b"] ?? "none"
+  const name = (await host.get("/name")).body
+  const other = seen[name] ?? "nobody"
+  const done = (await host.get("/fast", {{ headers: {{ "x-other": JSON.stringify(other) }} }})).body
+  seen["b"] = {{ mine, other, done, who: req.body }}
+  return {{ other }}
+}})
 
-route POST /hold/:k (req) {{
-  started = start(hold, req.params.k)
-  respond started.waiting.paid
-}}
+route.post("/hold/:k", (req) => {{
+  const started = hold(req.params.k)
+  return started.waiting.paid
+}})
 
-action hold (k) {{
-  prior = seen[k]
-  got = http.get("{host}", "/fast").body
-  paid = await paid, expires: 1h
-  seen[k] = {{ got: got, paid: paid.body, prior: prior ?? "none" }}
-}}
+export const hold = action(async (k) => {{
+  const prior = seen[k]
+  const got = (await host.get("/fast")).body
+  const paid = await event("paid", {{ expires: "1h" }})
+  seen[k] = {{ got, paid: paid.body, prior: prior ?? "none" }}
+}})
 
-route GET /paid/:token (req) resumes paid {{
-  respond "ok"
-}}
+route.get("/paid/:token", () => "ok", {{ resumes: "paid" }})
 "#
     )
 }
@@ -5932,9 +5933,9 @@ fn two_deployments_counting_in_one_row_lose_no_count() {
         "schema": "create table counts (id integer primary key, n integer not null); insert into counts values (1, 0)",
     });
     assert_eq!(route(&state, &req("POST", "/admin/databases", serde_json::to_vec(&body).unwrap())).status_code, 200);
-    let text = "flow counter\nport 8160\ndatabase shop\n\nroute POST /hit/:id (req) {\n  row = shop.one(\"select n from counts where id = $1\", req.params.id)\n  shop.exec(\"update counts set n = $1 where id = $2\", row.n + 1, req.params.id, expect: 1)\n  respond { n: row.n + 1 }\n}\n";
+    let text = "import { flow, route } from \"holon\"\nimport shop from \"database:shop\"\n\nflow(\"counter\", { port: 8160 })\n\nroute.post(\"/hit/:id\", (req) => {\n  const row = shop.one(\"select n from counts where id = $1\", req.params.id)\n  shop.exec(\"update counts set n = $1 where id = $2\", row.n + 1, req.params.id, { expect: 1 })\n  return { n: row.n + 1 }\n})\n";
     let a = deploy_text(&state, text, "");
-    let b = deploy_text(&state, &text.replace("flow counter", "flow counter-2").replace("port 8160", "port 8161"), "");
+    let b = deploy_text(&state, &text.replace(r#"flow("counter""#, r#"flow("counter-2""#).replace("port: 8160", "port: 8161"), "");
     std::thread::scope(|s| {
         for i in 0..30 {
             let (state, slug) = (&state, if i % 2 == 0 { &a } else { &b });
@@ -6014,10 +6015,10 @@ fn two_deployments_caching_into_one_file_call_out_once() {
     let body = serde_json::json!({ "name": "memos", "path": dir.display().to_string() });
     assert_eq!(route(&state, &req("POST", "/admin/folders", serde_json::to_vec(&body).unwrap())).status_code, 200);
     let text = format!(
-        "flow memo\nport 18161\nfolder memos\n\nroute POST /memo/:name (req) {{\n  memo = memos[req.params.name] ?? http.get(\"{host}\", \"/slow\").body\n  memos[req.params.name] = memo\n  respond memo\n}}\n"
+        "import {{ flow, route }} from \"holon\"\nimport memos from \"folder:memos\"\nimport host from \"host:{host}\"\n\nflow(\"memo\", {{ port: 18161 }})\n\nroute.post(\"/memo/:name\", async (req) => {{\n  const memo = memos[req.params.name] ?? (await host.get(\"/slow\")).body\n  memos[req.params.name] = memo\n  return memo\n}})\n"
     );
     let a = deploy_text(&state, &text, &host);
-    let b = deploy_text(&state, &text.replace("flow memo", "flow memo-2").replace("port 18161", "port 18162"), &host);
+    let b = deploy_text(&state, &text.replace(r#"flow("memo""#, r#"flow("memo-2""#).replace("port: 18161", "port: 18162"), &host);
     let (first, second) = std::thread::scope(|s| {
         let first = s.spawn(|| data_call(&state, &a, "POST", "/memo/x.txt", ""));
         std::thread::sleep(Duration::from_millis(60));
@@ -6275,7 +6276,7 @@ fn a_row_another_program_changed_sends_the_run_round_again() {
         let state = server_with_database(&url);
         assert_eq!(bind_shop(&state, Some("create table counts (id integer primary key, n integer not null); insert into counts values (1, 0)")).status_code, 200, "{engine}");
         let text = format!(
-            "flow tally\nport 18171\ndatabase shop\n\nroute POST /tally (req) {{\n  row = shop.one(\"select n from counts where id = $1\", 1)\n  seen = http.get(\"{host}\", \"/slow\").body\n  shop.exec(\"update counts set n = $1 where id = $2\", row.n + 1, 1, expect: 1)\n  respond {{ n: row.n + 1, seen: seen }}\n}}\n"
+            "import {{ flow, route }} from \"holon\"\nimport shop from \"database:shop\"\nimport host from \"host:{host}\"\n\nflow(\"tally\", {{ port: 18171 }})\n\nroute.post(\"/tally\", async () => {{\n  const row = shop.one(\"select n from counts where id = $1\", 1)\n  const seen = (await host.get(\"/slow\")).body\n  shop.exec(\"update counts set n = $1 where id = $2\", row.n + 1, 1, {{ expect: 1 }})\n  return {{ n: row.n + 1, seen }}\n}})\n"
         );
         let slug = deploy_text(&state, &text, &host);
         let outside = || match engine {
@@ -6402,10 +6403,10 @@ fn a_folder_held_for_whole_runs_runs_its_writers_one_at_a_time() {
     assert_eq!(route(&state, &req("POST", "/admin/folders", serde_json::to_vec(&body).unwrap())).status_code, 200);
     assert_eq!(body_json(route(&state, &req("GET", "/admin/folders", vec![])))[0]["lock"], "run");
     let text = format!(
-        "flow tally\nport 18191\nfolder ledger\n\nroute POST /add (req) {{\n  lines = ledger[\"lines.txt\"] ?? \"\"\n  sent = http.get(\"{host}\", \"/slow\").body\n  ledger[\"lines.txt\"] = \"{{lines}}{{sent}}\\n\"\n  respond {{ sent: sent }}\n}}\n"
+        "import {{ flow, route }} from \"holon\"\nimport ledger from \"folder:ledger\"\nimport host from \"host:{host}\"\n\nflow(\"tally\", {{ port: 18191 }})\n\nroute.post(\"/add\", async () => {{\n  const lines = ledger[\"lines.txt\"] ?? \"\"\n  const sent = (await host.get(\"/slow\")).body\n  ledger[\"lines.txt\"] = `${{lines}}${{sent}}\n`\n  return {{ sent }}\n}})\n"
     );
     let a = deploy_text(&state, &text, &host);
-    let b = deploy_text(&state, &text.replace("flow tally", "flow tally-2").replace("port 18191", "port 18192"), &host);
+    let b = deploy_text(&state, &text.replace(r#"flow("tally""#, r#"flow("tally-2""#).replace("port: 18191", "port: 18192"), &host);
     let (first, second) = two_at_once(&state, (&a, "POST", "/add"), (&b, "POST", "/add"));
     assert_eq!((first.0, second.0), (200, 200), "{} / {}", first.1, second.1);
     assert!(second.2 > Duration::from_millis(700), "it ran after the first, whole: {:?}", second.2);
@@ -6772,17 +6773,27 @@ fn route_status(state: &AppState, body: &serde_json::Value) -> u16 {
 #[test]
 fn a_reply_is_framed_by_the_host() {
     let state = claims_state("");
-    let text = r#"flow framed
-port 18148
+    let text = r#"import { flow, respond, route } from "holon"
 
-route GET /a (req) {
-  respond "HTTP/1.1 200 OK", status: 200, headers: { "content-length": "0", "Transfer-Encoding": "chunked", connection: "keep-alive", upgrade: "h2c", "x-kept": "yes" }
-}
+flow("framed", { port: 18148 })
 
-route GET /b (req) {
-  switching = 100 + 1
-  respond "", status: switching, headers: { upgrade: "websocket" }
-}
+route.get("/a", () =>
+  respond("HTTP/1.1 200 OK", {
+    headers: {
+      "content-length": "0",
+      "Transfer-Encoding": "chunked",
+      connection: "keep-alive",
+      upgrade: "h2c",
+      "x-kept": "yes",
+    },
+    status: 200,
+  }),
+)
+
+route.get("/b", () => {
+  const switching = 100 + 1
+  return respond("", { headers: { upgrade: "websocket" }, status: switching })
+})
 "#;
     let slug = deploy_text(&state, text, "x");
     let r = serve_data(&state.store, &state.deployments, &state.deployments_path, &slug, &fake_data("GET", "/a", vec![]));
@@ -6807,7 +6818,7 @@ fn a_run_shows_which_secret_value_it_had_and_still_checks_after_it_rotates() {
         assert_eq!(route(&state, &req("POST", "/deployments/rotor/secrets/signing_key", body)).status_code, 200);
     };
     set("whsec_first_123456");
-    let text = "flow rotor\nport 18149\nsecret signing_key\n\nroute POST /sign (req) {\n  respond hmac_sha256(secret.signing_key, req.body), missing: 400\n}\n";
+    let text = "import { flow, hmac_sha256, route, status } from \"holon\"\nimport signing_key from \"secret:signing_key\"\n\nflow(\"rotor\", { port: 18149 })\n\nroute.post(\"/sign\", (req) => hmac_sha256(signing_key, req.body) ?? status(400))\n";
     let slug = deploy_text(&state, text, "127.0.0.1:9");
     assert_eq!(data_call(&state, &slug, "POST", "/sign", "hello").0, 200);
     set("whsec_second_654321");
@@ -6845,14 +6856,15 @@ fn a_run_shows_which_secret_value_it_had_and_still_checks_after_it_rotates() {
 #[test]
 fn a_secret_as_a_key_is_redacted_and_the_run_checks() {
     let state = claims_state("");
-    let text = r#"flow tenants
-port 18147
-secret partner_key
+    let text = r#"import { flow, insert, lookup, route } from "holon"
+import partner_key from "secret:partner_key"
 
-route GET /who (req) {
-  tenants = insert({}, secret.partner_key, "acme")
-  respond { tenant: lookup(tenants, req.headers["x-api-key"]) ?? "nobody" }
-}
+flow("tenants", { port: 18147 })
+
+route.get("/who", (req) => {
+  const tenants = insert({}, partner_key, "acme")
+  return { tenant: lookup(tenants, req.headers["x-api-key"]) ?? "nobody" }
+})
 "#;
     let slug = deploy_text(&state, text, "x");
     let value = "pk_live_partner_key_value";
@@ -6889,29 +6901,26 @@ fn a_secret_stays_out_of_files_and_of_what_the_log_keeps_of_them() {
     };
     assert_eq!(bind("logs", &logs, "read"), 200);
     assert_eq!(bind("out", &out, "read-write"), 200);
-    let flow = r#"flow filer
-port 18146
-secret api_key
-folder logs
-folder out
+    let flow = r#"import { base64, flow, route } from "holon"
+import api_key from "secret:api_key"
+import logs from "folder:logs"
+import out from "folder:out"
 
-route POST /lit (req) {
-  out["lit.txt"] = "{req.body}:{secret.api_key}"
-  respond { ok: true }
-}
+flow("filer", { port: 18146 })
 
-route POST /der (req) {
-  out["der.txt"] = "{req.body}:{base64(secret.api_key)}"
-  respond { ok: true }
-}
+route.post("/lit", (req) => {
+  out["lit.txt"] = `${req.body}:${api_key}`
+  return { ok: true }
+})
 
-route GET /tail/:name (req) {
-  respond logs.lines(req.params.name, from: -2, limit: 2)
-}
+route.post("/der", (req) => {
+  out["der.txt"] = `${req.body}:${base64(api_key)}`
+  return { ok: true }
+})
 
-route GET /whole/:name (req) {
-  respond logs[req.params.name]
-}
+route.get("/tail/:name", (req) => logs.lines(req.params.name, { from: -2, limit: 2 }))
+
+route.get("/whole/:name", (req) => logs[req.params.name])
 "#;
     let slug = deploy_text(&state, flow, "");
     let set = req("POST", &format!("/deployments/{slug}/secrets/api_key"), serde_json::to_vec(&serde_json::json!({ "value": value })).unwrap());
@@ -7008,7 +7017,7 @@ fn a_big_file_is_read_by_range_and_copied_by_handle_and_its_runs_verify() {
     assert_eq!(with.reruns.last().unwrap(), &(last, verify::Rerun::Matched), "{}", verify::describe(&with, None));
 
     // A handle is only a record: one made up, naming a folder this flow doesn't read, copies nothing.
-    let forged = "flow forge\nport 8199\nfolder archive\n\nroute POST /c (req) {\n  archive.copy(\"stolen.log\", { folder: \"logs\", name: \"app.log\", hash: req.json.hash })\n  respond 1\n}\n";
+    let forged = "import { flow, route, status } from \"holon\"\nimport archive from \"folder:archive\"\n\nflow(\"forge\", { port: 8199 })\n\nroute.post(\"/c\", (req) => {\n  archive.copy(\"stolen.log\", { folder: \"logs\", name: \"app.log\", hash: req.json.hash })\n  return status(1)\n})\n";
     let forge = deploy_text(&state, forged, "");
     assert_eq!(data_call(&state, &forge, "POST", "/c", &format!(r#"{{"hash":"{hash}"}}"#)).0, 200);
     assert!(!archive.join("stolen.log").exists(), "a copy from a folder it doesn't read is refused");
@@ -7259,7 +7268,7 @@ fn a_file_a_run_deletes_starts_no_run() {
 /// databases L4). Parked, it holds nothing on the row.
 fn waiting_tally_text(host: &str) -> String {
     format!(
-        "flow paid-tally\nport 18191\ndatabase shop\n\nroute POST /hold (req) {{\n  started = start(tally)\n  respond {{ token: started.waiting.paid }}\n}}\n\naction tally (input) {{\n  row = shop.one(\"select n from counts where id = $1\", 1)\n  asked = http.get(\"{host}\", \"/fast\").body\n  paid = await paid, expires: 1h\n  later = http.get(\"{host}\", \"/slow\", headers: {{ \"x-paid\": json(paid.body), \"x-asked\": asked }}).body\n  shop.exec(\"update counts set n = $1, note = $2 where id = $3\", row.n + 1, later, 1, expect: 1)\n}}\n\nroute GET /paid/:token (req) resumes paid {{\n  respond \"ok\"\n}}\n"
+        "import {{ action, event, flow, route }} from \"holon\"\nimport shop from \"database:shop\"\nimport host from \"host:{host}\"\n\nflow(\"paid-tally\", {{ port: 18191 }})\n\nroute.post(\"/hold\", () => {{\n  const started = tally()\n  return {{ token: started.waiting.paid }}\n}})\n\nexport const tally = action(async () => {{\n  const row = shop.one(\"select n from counts where id = $1\", 1)\n  const asked = (await host.get(\"/fast\")).body\n  const paid = await event(\"paid\", {{ expires: \"1h\" }})\n  const later = (await host.get(\"/slow\", {{\n    headers: {{ \"x-paid\": JSON.stringify(paid.body), \"x-asked\": asked }},\n  }})).body\n  shop.exec(\"update counts set n = $1, note = $2 where id = $3\", row.n + 1, later, 1, {{ expect: 1 }})\n}})\n\nroute.get(\"/paid/:token\", () => \"ok\", {{ resumes: \"paid\" }})\n"
     )
 }
 
@@ -7349,7 +7358,7 @@ fn a_resumed_run_whose_file_changed_runs_again_from_its_last_wait() {
     let body = serde_json::json!({ "name": "ledger", "path": dir.display().to_string(), "access": "read-write" });
     assert_eq!(route(&state, &req("POST", "/admin/folders", serde_json::to_vec(&body).unwrap())).status_code, 200);
     let text = format!(
-        "flow paid-lines\nport 18192\nfolder ledger\n\nroute POST /hold (req) {{\n  started = start(append)\n  respond {{ token: started.waiting.paid }}\n}}\n\naction append (input) {{\n  before = ledger[\"lines.txt\"] ?? \"\"\n  paid = await paid, expires: 1h\n  later = http.get(\"{host}\", \"/slow\", headers: {{ \"x-paid\": json(paid.body) }}).body\n  ledger[\"lines.txt\"] = \"{{before}}{{later}}\\n\"\n}}\n\nroute GET /paid/:token (req) resumes paid {{\n  respond \"ok\"\n}}\n"
+        "import {{ action, event, flow, route }} from \"holon\"\nimport ledger from \"folder:ledger\"\nimport host from \"host:{host}\"\n\nflow(\"paid-lines\", {{ port: 18192 }})\n\nroute.post(\"/hold\", () => {{\n  const started = append()\n  return {{ token: started.waiting.paid }}\n}})\n\nexport const append = action(async () => {{\n  const before = ledger[\"lines.txt\"] ?? \"\"\n  const paid = await event(\"paid\", {{ expires: \"1h\" }})\n  const later = (await host.get(\"/slow\", {{\n    headers: {{ \"x-paid\": JSON.stringify(paid.body) }},\n  }})).body\n  ledger[\"lines.txt\"] = `${{before}}${{later}}\n`\n}})\n\nroute.get(\"/paid/:token\", () => \"ok\", {{ resumes: \"paid\" }})\n"
     );
     let slug = deploy_text(&state, &text, &host);
     let (status, held, _) = data_call(&state, &slug, "POST", "/hold", "");
@@ -7448,7 +7457,7 @@ fn approved_payout_keeps_the_deposits_made_while_it_waited() {
 fn a_record_literal_freezes_its_keys_sorted_as_the_editor_does() {
     let v: serde_json::Value = serde_json::from_str(r#"{"k":1,"done":false}"#).unwrap();
     assert_eq!(v.to_string(), r#"{"done":false,"k":1}"#, "serde_json keeps keys as written here: a dependency turned on preserve_order");
-    let text = "flow keys\nport 18199\n\nroute GET /k (req) {\n  respond req.json ?? { k: 1, done: false }\n}\n";
+    let text = "import { flow, route } from \"holon\"\n\nflow(\"keys\", { port: 18199 })\n\nroute.get(\"/k\", (req) => req.json ?? { k: 1, done: false })\n";
     let unit = |t: &str| holon_author::agent::plan(t).unwrap_or_else(|e| panic!("{e}")).unit;
     assert_eq!(unit(text), unit(&text.replace("k: 1, done: false", "done: false, k: 1")), "one record, written in either order, is one unit");
 }
@@ -7561,7 +7570,7 @@ fn a_document_that_changed_before_its_commit_runs_again() {
     assert_eq!(bind_notes(&state).status_code, 200);
     db.notes().insert_one(mongodb::bson::doc! { "_id": "n1", "owner": "ada", "text": "first", "edits": 0 }).run().unwrap();
     let text = format!(
-        "flow stamp\nport 18171\ndatabase notes\n\nroute POST /stamp/:id (req) {{\n  note = notes.find_one(\"notes\", {{ _id: req.params.id }})\n  r = http.get(\"{host}\", \"/slow\")\n  notes.update(\"notes\", {{ _id: note._id }}, {{ \"$set\": {{ text: \"{{note.text}} ({{r.body}})\" }} }}, expect: 1)\n  respond {{ was: note.text }}\n}}\n"
+        "import {{ flow, route }} from \"holon\"\nimport notes from \"database:notes\"\nimport host from \"host:{host}\"\n\nflow(\"stamp\", {{ port: 18171 }})\n\nroute.post(\"/stamp/:id\", async (req) => {{\n  const note = notes.find_one(\"notes\", {{ _id: req.params.id }})\n  const r = await host.get(\"/slow\")\n  notes.update(\n    \"notes\",\n    {{ _id: note._id }},\n    {{ \"$set\": {{ text: `${{note.text}} (${{r.body}})` }} }},\n    {{ expect: 1 }},\n  )\n  return {{ was: note.text }}\n}})\n"
     );
     let slug = deploy_text(&state, &text, &host);
     let outside = std::thread::scope(|s| {
@@ -7594,7 +7603,7 @@ fn two_servers_hold_one_document_through_mongodb() {
     }
     db.notes().insert_one(mongodb::bson::doc! { "_id": "n1", "paid": false }).run().unwrap();
     let text = format!(
-        "flow pay-note\nport 18172\ndatabase notes\n\nroute POST /pay/:id (req) {{\n  note = notes.find_one(\"notes\", {{ _id: req.params.id, paid: false }})\n  r = http.get(\"{host}\", \"/slow?note={{note._id}}\")\n  notes.update(\"notes\", {{ _id: note._id }}, {{ \"$set\": {{ paid: true, by: r.body }} }}, expect: 1)\n  respond {{ paid: note._id }}\n}}\n"
+        "import {{ flow, route }} from \"holon\"\nimport notes from \"database:notes\"\nimport host from \"host:{host}\"\n\nflow(\"pay-note\", {{ port: 18172 }})\n\nroute.post(\"/pay/:id\", async (req) => {{\n  const note = notes.find_one(\"notes\", {{ _id: req.params.id, paid: false }})\n  const r = await host.get(`/slow?note=${{note._id}}`)\n  notes.update(\"notes\", {{ _id: note._id }}, {{ \"$set\": {{ paid: true, by: r.body }} }}, {{ expect: 1 }})\n  return {{ paid: note._id }}\n}})\n"
     );
     let slugs = [deploy_text(&servers[0], &text, &host), deploy_text(&servers[1], &text, &host)];
     let (first, second) = std::thread::scope(|s| {
@@ -7689,7 +7698,7 @@ fn a_channel_streams_each_runs_packs_to_its_subscribers() {
     *state.policy.write().unwrap() = Arc::new(Policy::parse("[grants]\nallow_plain_http = true\nallow_private_addresses = true").unwrap());
     let port = free_port();
     let text = format!(
-        "flow board\nport {port}\nchannel updates\n\nroute POST /t (req) {{\n  updates.send({{ new: req.json.title }})\n  respond {{ ok: true }}, status: 201\n}}\n\nroute GET /live (req) {{\n  respond updates.subscribe()\n}}\n\nroute GET /all (req) {{\n  respond updates.subscribe(from: \"kept\")\n}}\n"
+        "import {{ flow, route, status }} from \"holon\"\nimport updates from \"channel:updates\"\n\nflow(\"board\", {{ port: {port} }})\n\nroute.post(\"/t\", (req) => {{\n  updates.send({{ new: req.json.title }})\n  return status(201, {{ ok: true }})\n}})\n\nroute.get(\"/live\", () => updates.subscribe())\n\nroute.get(\"/all\", () => updates.subscribe({{ from: \"kept\" }}))\n"
     );
     let slug = deploy_text(&state, &text, "x");
     sync_listeners(&state);
@@ -7755,7 +7764,7 @@ allow_plain_http = true
 allow_private_addresses = true").unwrap());
     let port = free_port();
     let text = format!(
-        "flow orders\nport {port}\nchannel orders\n\nroute POST /orders (req) {{\n  started = start(payment, req.json)\n  respond \"/paid/{{started.waiting.paid}}\"\n}}\n\naction payment (order) {{\n  orders.send({{ item: order.item, status: \"waiting\" }})\n  paid = await paid, expires: 1d\n  orders.send({{ item: order.item, status: \"paid\", via: paid.method }})\n}}\n\nroute GET /paid/:token (req) resumes paid {{\n  respond \"thanks\"\n}}\n"
+        "import {{ action, event, flow, route }} from \"holon\"\nimport orders from \"channel:orders\"\n\nflow(\"orders\", {{ port: {port} }})\n\nroute.post(\"/orders\", (req) => {{\n  const started = payment(req.json)\n  return `/paid/${{started.waiting.paid}}`\n}})\n\nexport const payment = action(async (order) => {{\n  orders.send({{ item: order.item, status: \"waiting\" }})\n  const paid = await event(\"paid\", {{ expires: \"1d\" }})\n  orders.send({{ item: order.item, status: \"paid\", via: paid.method }})\n}})\n\nroute.get(\"/paid/:token\", () => \"thanks\", {{ resumes: \"paid\" }})\n"
     );
     let slug = deploy_text(&state, &text, "x");
     sync_listeners(&state);
@@ -7811,7 +7820,7 @@ fn a_streamed_reply_forwards_the_upstream_as_it_arrives() {
     *state.policy.write().unwrap() = Arc::new(Policy::parse("[grants]\nallow_plain_http = true\nallow_private_addresses = true").unwrap());
     let port = free_port();
     let text = format!(
-        "flow chat\nport {port}\ncollection said\n\nroute POST /ask (req) {{\n  sent = http.post(\"{host}\", \"/v1\", body: req.json, stream: true)\n  said[\"last\"] = sent.body\n  respond sent.body, stream: true\n}}\n"
+        "import {{ flow, respond, route }} from \"holon\"\nimport said from \"collection:said\"\nimport host from \"host:{host}\"\n\nflow(\"chat\", {{ port: {port} }})\n\nroute.post(\"/ask\", async (req) => {{\n  const sent = await host.post(\"/v1\", {{ body: req.json, stream: true }})\n  said[\"last\"] = sent.body\n  return respond(sent.body, {{ stream: true }})\n}})\n"
     );
     let slug = deploy_text(&state, &text, &host);
     sync_listeners(&state);
@@ -7861,7 +7870,7 @@ fn a_streamed_reply_whose_call_fails_answers_with_its_status() {
     state.listeners = Some(Mutex::new(BTreeMap::new()));
     *state.policy.write().unwrap() = Arc::new(Policy::parse("[grants]\nallow_plain_http = true\nallow_private_addresses = true").unwrap());
     let port = free_port();
-    let text = format!("flow chat\nport {port}\n\nroute POST /ask (req) {{\n  sent = http.post(\"{host}\", \"/v1\", body: req.json, stream: true)\n  respond sent.body, stream: true\n}}\n");
+    let text = format!("import {{ flow, respond, route }} from \"holon\"\nimport host from \"host:{host}\"\n\nflow(\"chat\", {{ port: {port} }})\n\nroute.post(\"/ask\", async (req) => {{\n  const sent = await host.post(\"/v1\", {{ body: req.json, stream: true }})\n  return respond(sent.body, {{ stream: true }})\n}})\n");
     let slug = deploy_text(&state, &text, &host);
     sync_listeners(&state);
 
@@ -7899,7 +7908,7 @@ fn a_piped_call_sends_its_answer_to_the_channel_as_it_arrives() {
     *state.policy.write().unwrap() = Arc::new(Policy::parse("[grants]\nallow_plain_http = true\nallow_private_addresses = true").unwrap());
     let port = free_port();
     let text = format!(
-        "flow room\nport {port}\nchannel room\n\nroute POST /ask (req) {{\n  sent = room.pipe(http.post(\"{host}\", \"/v1\", body: req.json))\n  room.send({{ said: sent.body }})\n  respond {{ ok: true }}, status: 202\n}}\n\nroute GET /live (req) {{\n  respond room.subscribe()\n}}\n"
+        "import {{ flow, route, status }} from \"holon\"\nimport room from \"channel:room\"\nimport host from \"host:{host}\"\n\nflow(\"room\", {{ port: {port} }})\n\nroute.post(\"/ask\", (req) => {{\n  const sent = room.pipe(host.post(\"/v1\", {{ body: req.json }}))\n  room.send({{ said: sent.body }})\n  return status(202, {{ ok: true }})\n}})\n\nroute.get(\"/live\", () => room.subscribe())\n"
     );
     deploy_text(&state, &text, &host);
     sync_listeners(&state);
@@ -8013,7 +8022,7 @@ fn a_closure_too_big_to_run_is_refused_and_every_sample_is_well_inside() {
 #[test]
 fn an_actions_reported_entry_is_its_own_under_concurrent_runs() {
     let state = test_state();
-    let slug = deploy_plain_text(&state, "flow echoer\n\naction echo (input) {\n  respond { id: input.id }\n}\n");
+    let slug = deploy_plain_text(&state, "import { action, flow } from \"holon\"\n\nflow(\"echoer\")\n\nexport const echo = action((input) => ({ id: input.id }))\n");
     let answered: Vec<(String, u64)> = thread::scope(|s| {
         let workers: Vec<_> = (0..8)
             .map(|t| {
@@ -8074,7 +8083,7 @@ fn sync_logs_syncs_what_was_written_and_keeps_a_log_that_fails_dirty() {
     let mut state = test_state();
     state.deployments_path = unique_temp_path("sync-logs").into();
     // Lazy: its runs are left to the syncer (a strict one syncs before it answers).
-    let slug = deploy_plain_text(&state, "flow hello-api\nport 8101\n\nroute GET /hello/:name (req) lazy {\n  respond \"Hello, {req.params.name}\"\n}\n");
+    let slug = deploy_plain_text(&state, "import { flow, route } from \"holon\"\n\nflow(\"hello-api\", { port: 8101 })\n\nroute.get(\"/hello/:name\", (req) => `Hello, ${req.params.name}`, { log: \"lazy\" })\n");
     assert_eq!(serve_data(&state.store, &state.deployments, &state.deployments_path, &slug, &fake_data("GET", "/hello/Ada", vec![])).status, 200);
     let log = Arc::clone(&state.deployments.lock().unwrap()[&slug].log);
     assert_eq!(recorder::sync_logs(&state.deployments), Ok(()));
@@ -8106,7 +8115,7 @@ fn a_strict_run_is_on_disk_before_its_answer_and_a_lazy_one_waits_for_the_syncer
     state.deployments_path = unique_temp_path("strict-sync").into();
     let slug = deploy_plain_text(
         &state,
-        "flow board\nport 8170\ncollection notes\nfolder docs\n\nroute GET /health (req) {\n  respond \"ok\"\n}\n\nroute GET /notes (req) lazy {\n  respond notes.list(limit: 50)\n}\n\nroute POST /notes (req) {\n  notes[req.json.id] = req.json.text\n  respond \"saved\"\n}\n\naction report (input) lazy {\n  respond notes.list(limit: 50)\n}\n\naction count (input) {\n  respond notes.list(limit: 50)\n}\n",
+        "import { action, flow, route } from \"holon\"\nimport notes from \"collection:notes\"\nimport docs from \"folder:docs\"\n\nflow(\"board\", { port: 8170 })\n\nroute.get(\"/health\", () => \"ok\")\n\nroute.get(\"/notes\", () => notes.list({ limit: 50 }), { log: \"lazy\" })\n\nroute.post(\"/notes\", (req) => {\n  notes[req.json.id] = req.json.text\n  return \"saved\"\n})\n\nexport const report = action(() => notes.list({ limit: 50 }), { log: \"lazy\" })\n\nexport const count = action(() => notes.list({ limit: 50 }))\n",
     );
     let log = Arc::clone(&state.deployments.lock().unwrap()[&slug].log);
     let call = |method: &str, url: &str, body: &str| serve_data(&state.store, &state.deployments, &state.deployments_path, &slug, &fake_data(method, url, body.as_bytes().to_vec())).status;
@@ -8149,7 +8158,7 @@ fn a_strict_run_is_on_disk_before_its_answer_and_a_lazy_one_waits_for_the_syncer
 
 /// A board with an unrecorded health check, an unrecorded action, one that fails unrecorded, and a
 /// strict write (docs/L4s/request-path-L4.md, C5).
-const UNRECORDED_BOARD: &str = "flow board\nport 8171\ncollection notes\nfolder docs\n\nroute GET /health (req) unrecorded {\n  respond \"ok\"\n}\n\nroute GET /broken (req) unrecorded {\n  respond \"down\", status: 503\n}\n\nroute POST /notes (req) {\n  notes[req.json.id] = req.json.text\n  respond \"saved\"\n}\n\naction report (input) unrecorded {\n  respond notes.list(limit: 50)\n}\n";
+const UNRECORDED_BOARD: &str = "import { action, flow, route, status } from \"holon\"\nimport notes from \"collection:notes\"\nimport docs from \"folder:docs\"\n\nflow(\"board\", { port: 8171 })\n\nroute.get(\"/health\", () => \"ok\", { log: \"unrecorded\" })\n\nroute.get(\"/broken\", () => status(503, \"down\"), { log: \"unrecorded\" })\n\nroute.post(\"/notes\", (req) => {\n  notes[req.json.id] = req.json.text\n  return \"saved\"\n})\n\nexport const report = action(() => notes.list({ limit: 50 }), { log: \"unrecorded\" })\n";
 
 /// An unrecorded handler's runs leave no entry in the log, failed or not, and are counted in its
 /// tally instead (runs, failures, time, the last one, the last failure's time, status and error),
@@ -8256,7 +8265,7 @@ fn an_unrecorded_failure_is_kept_redacted_and_cut_short() {
     assert!(error.chars().count() <= 301 && error.ends_with('…'), "cut short: {} chars", error.chars().count());
     // An unrecorded action is counted and never logged; one with no answer is answered 404
     // (missing), which isn't a failure.
-    let failing = deploy_plain_text(&state, "flow failing\nport 8173\n\naction check (input) unrecorded {\n  respond input.nowhere\n}\n");
+    let failing = deploy_plain_text(&state, "import { action, flow } from \"holon\"\n\nflow(\"failing\", { port: 8173 })\n\nexport const check = action((input) => input.nowhere, { log: \"unrecorded\" })\n");
     let log = Arc::clone(&state.deployments.lock().unwrap()[&failing].log);
     let ran = run_action(&state.store, &state.deployments, &state.deployments_path, &failing, "check", Ok(Value::Record(BTreeMap::new())), None, false, &[]);
     assert_eq!((ran.status, ran.seq), (404, None), "no answer: missing, with no entry: {:?}", ran.error);
@@ -8314,7 +8323,7 @@ fn a_run_that_waits_parks_and_resumes_at_its_handlers_level() {
 #[test]
 fn a_waiting_unrecorded_run_doesnt_send_again_after_a_restart() {
     let state = test_state_at(unique_temp_path("waits-sent").into());
-    let text = "flow hold-sends\nport 18203\nchannel updates\n\nroute POST /hold (req) unrecorded {\n  started = start(hold, req.method)\n  respond { token: started.waiting.paid }\n}\n\naction hold (asked) unrecorded {\n  updates.send({ held: asked })\n  paid = await paid, expires: 1h\n  updates.send({ paid: paid.method })\n}\n\nroute GET /paid/:token (req) resumes paid {\n  respond \"thanks\"\n}\n";
+    let text = "import { action, event, flow, route } from \"holon\"\nimport updates from \"channel:updates\"\n\nflow(\"hold-sends\", { port: 18203 })\n\nroute.post(\"/hold\", (req) => {\n  const started = hold(req.method)\n  return { token: started.waiting.paid }\n}, { log: \"unrecorded\" })\n\nexport const hold = action(async (asked) => {\n  updates.send({ held: asked })\n  const paid = await event(\"paid\", { expires: \"1h\" })\n  updates.send({ paid: paid.method })\n}, { log: \"unrecorded\" })\n\nroute.get(\"/paid/:token\", () => \"thanks\", { resumes: \"paid\" })\n";
     let slug = deploy_plain_text(&state, text);
     let subscribe = |state: &AppState| {
         let table = state.deployments.lock().unwrap();
@@ -8353,7 +8362,7 @@ fn a_waiting_unrecorded_run_doesnt_send_again_after_a_restart() {
 fn a_runs_packs_go_out_once_its_record_is_on_disk() {
     let mut state = test_state();
     state.deployments_path = unique_temp_path("packs-on-disk").into();
-    let text = "flow sends-lightly\nport 18204\nchannel updates\n\nroute POST /fast (req) lazy {\n  updates.send({ fast: req.method })\n  respond \"ok\"\n}\n\nroute POST /sure (req) {\n  updates.send({ sure: req.method })\n  respond \"ok\"\n}\n";
+    let text = "import { flow, route } from \"holon\"\nimport updates from \"channel:updates\"\n\nflow(\"sends-lightly\", { port: 18204 })\n\nroute.post(\"/fast\", (req) => {\n  updates.send({ fast: req.method })\n  return \"ok\"\n}, { log: \"lazy\" })\n\nroute.post(\"/sure\", (req) => {\n  updates.send({ sure: req.method })\n  return \"ok\"\n})\n";
     let slug = deploy_plain_text(&state, text);
     let mut sub = {
         let table = state.deployments.lock().unwrap();
@@ -8386,7 +8395,7 @@ fn a_runs_packs_go_out_once_its_record_is_on_disk() {
 fn an_unrecorded_handler_that_writes_and_sends_runs_as_written() {
     let mut state = test_state();
     state.deployments_path = unique_temp_path("unrecorded-writes").into();
-    let text = "flow quiet-notes\nport 8174\ncollection notes\nchannel updates\n\nroute POST /notes (req) unrecorded {\n  notes[req.json.id] = req.json.text\n  updates.send({ id: req.json.id })\n  respond \"saved\"\n}\n\nroute GET /notes/:id (req) {\n  respond { text: notes[req.params.id] }\n}\n";
+    let text = "import { flow, route } from \"holon\"\nimport notes from \"collection:notes\"\nimport updates from \"channel:updates\"\n\nflow(\"quiet-notes\", { port: 8174 })\n\nroute.post(\"/notes\", (req) => {\n  notes[req.json.id] = req.json.text\n  updates.send({ id: req.json.id })\n  return \"saved\"\n}, { log: \"unrecorded\" })\n\nroute.get(\"/notes/:id\", (req) => ({ text: notes[req.params.id] }))\n";
     let plan = holon_author::agent::plan(text).unwrap();
     for u in &plan.units {
         assert_eq!(route(&state, &req("POST", "/unit", u.clone())).status_code, 200);
@@ -8421,7 +8430,7 @@ fn an_unrecorded_handler_that_writes_and_sends_runs_as_written() {
 fn what_an_unrecorded_writer_leaves_out_is_unchecked_not_a_break() {
     let mut state = test_state();
     state.deployments_path = unique_temp_path("unrecorded-verify").into();
-    let text = "flow light-verify\nport 8176\ncollection notes\nchannel updates\n\nroute POST /notes (req) {\n  notes[req.json.id] = req.json.text\n  respond \"saved\"\n}\n\nroute POST /quiet (req) unrecorded {\n  notes[req.json.id] = req.json.text\n  updates.send({ id: req.json.id })\n  respond \"saved\"\n}\n\nroute GET /notes/:id (req) {\n  respond { text: notes[req.params.id] }\n}\n";
+    let text = "import { flow, route } from \"holon\"\nimport notes from \"collection:notes\"\nimport updates from \"channel:updates\"\n\nflow(\"light-verify\", { port: 8176 })\n\nroute.post(\"/notes\", (req) => {\n  notes[req.json.id] = req.json.text\n  return \"saved\"\n})\n\nroute.post(\"/quiet\", (req) => {\n  notes[req.json.id] = req.json.text\n  updates.send({ id: req.json.id })\n  return \"saved\"\n}, { log: \"unrecorded\" })\n\nroute.get(\"/notes/:id\", (req) => ({ text: notes[req.params.id] }))\n";
     let slug = deploy_plain_text(&state, text);
     assert_eq!(data_call(&state, &slug, "POST", "/notes", r#"{"id":"a","text":"hi"}"#).0, 200);
     assert_eq!(data_call(&state, &slug, "POST", "/quiet", r#"{"id":"b","text":"shh"}"#).0, 200);
@@ -8486,7 +8495,7 @@ fn what_an_unrecorded_writer_leaves_out_is_unchecked_not_a_break() {
 fn what_a_lost_lazy_record_moved_is_unchecked_not_a_break() {
     let mut state = test_state();
     state.deployments_path = unique_temp_path("lazy-verify").into();
-    let text = "flow lazy-verify\nport 18205\ncollection notes\ncollection seen\n\nroute POST /notes (req) {\n  notes[req.json.id] = req.json.text\n  respond \"saved\"\n}\n\nroute POST /seen (req) lazy {\n  seen[req.json.id] = req.json.by\n  respond \"ok\"\n}\n";
+    let text = "import { flow, route } from \"holon\"\nimport notes from \"collection:notes\"\nimport seen from \"collection:seen\"\n\nflow(\"lazy-verify\", { port: 18205 })\n\nroute.post(\"/notes\", (req) => {\n  notes[req.json.id] = req.json.text\n  return \"saved\"\n})\n\nroute.post(\"/seen\", (req) => {\n  seen[req.json.id] = req.json.by\n  return \"ok\"\n}, { log: \"lazy\" })\n";
     let slug = deploy_plain_text(&state, text);
     assert_eq!(data_call(&state, &slug, "POST", "/notes", r#"{"id":"a","text":"hi"}"#).0, 200);
     assert_eq!(data_call(&state, &slug, "POST", "/seen", r#"{"id":"a","by":"sam"}"#).0, 200);
@@ -8542,7 +8551,7 @@ fn a_run_writes_only_its_state_head_and_only_when_it_changed_the_state() {
     let mut state = test_state();
     state.deployments_path = unique_temp_path("persist-on-change").into();
     let counter = deploy_plain_text(&state, include_str!("../../holon-author/samples/counter.holon.ts"));
-    let same = deploy_plain_text(&state, "flow same\nport 8199\nstate k\n\nroute POST /k (req) {\n  state.k = \"x\"\n  respond \"ok\"\n}\n");
+    let same = deploy_plain_text(&state, "import { flow, route } from \"holon\"\nimport state from \"state\"\n\nflow(\"same\", { port: 8199 })\n\nroute.post(\"/k\", () => {\n  state.k = \"x\"\n  return \"ok\"\n})\n");
     let call = |slug: &str, method: &str, url: &str| {
         assert_eq!(serve_data(&state.store, &state.deployments, &state.deployments_path, slug, &fake_data(method, url, vec![])).status, 200, "{method} {url}");
     };
@@ -8859,7 +8868,7 @@ fn the_store_keeps_the_values_it_read_within_a_budget() {
     let values = disk.values_dir();
     let mut state = test_state_with(SharedStore::on_disk(Box::new(disk), values));
     state.deployments_path = Place::Nowhere;
-    let slug = deploy_plain_text(&state, "flow c\nport 8302\ncollection notes\n\nroute POST /notes (req) {\n  notes[req.json.id] = req.json.text\n  respond \"saved\"\n}\n\nroute GET /notes (req) lazy {\n  respond notes.list(limit: 50)\n}\n");
+    let slug = deploy_plain_text(&state, "import { flow, route } from \"holon\"\nimport notes from \"collection:notes\"\n\nflow(\"c\", { port: 8302 })\n\nroute.post(\"/notes\", (req) => {\n  notes[req.json.id] = req.json.text\n  return \"saved\"\n})\n\nroute.get(\"/notes\", () => notes.list({ limit: 50 }), { log: \"lazy\" })\n");
     let call = |method: &str, body: &str| serve_data(&state.store, &state.deployments, &state.deployments_path, &slug, &fake_data(method, "/notes", body.as_bytes().to_vec()));
     assert_eq!(call("POST", r#"{"id":"a","text":"hi"}"#).status, 200);
     let first = call("GET", "");
@@ -9011,7 +9020,7 @@ fn a_servers_actions_run_by_name_with_what_was_sent_and_verify() {
     route(&state, &req("DELETE", &format!("/deployments/{slug}"), vec![]));
 
     // A flow of actions alone deploys, listening on no port, and is run by name.
-    let slug = deploy_text(&state, "flow notes\nstate note\n\naction note (n) {\n  state.note = n\n  respond \"noted\"\n}\n", "");
+    let slug = deploy_text(&state, "import { action, flow } from \"holon\"\nimport state from \"state\"\n\nflow(\"notes\")\n\nexport const note = action((n) => {\n  state.note = n\n  return \"noted\"\n})\n", "");
     assert_eq!(state.deployments.lock().unwrap()[&slug].triggers, ["action note"]);
     let r = body_json(route(&state, &req("POST", &format!("/trigger/{slug}/note"), b"\"hi\"".to_vec())));
     assert_eq!(r["answer"], "noted");
@@ -9027,7 +9036,7 @@ fn a_servers_clock_ticks_on_its_period_beside_its_routes_and_verifies() {
     let mut state = claims_state("");
     let path = unique_temp_path("clock-blocks");
     state.deployments_path = path.clone().into();
-    let text = "flow ticks\nport 18257\nstate n\n\nevery 2s {\n  state.n = (state.n ?? 0) + 1\n}\n\nroute GET /n (req) {\n  respond state.n ?? 0\n}\n";
+    let text = "import { every, flow, route } from \"holon\"\nimport state from \"state\"\n\nflow(\"ticks\", { port: 18257 })\n\nevery(\"2s\", () => {\n  state.n = (state.n ?? 0) + 1\n})\n\nroute.get(\"/n\", () => state.n ?? 0)\n";
     let slug = deploy_text(&state, text, "127.0.0.1:9");
     let triggers = state.deployments.lock().unwrap()[&slug].triggers.clone();
     assert_eq!(triggers, ["Http :18257", "every 2s"]);
@@ -9060,7 +9069,7 @@ fn a_servers_clock_ticks_on_its_period_beside_its_routes_and_verifies() {
     assert_eq!(report.reruns.iter().filter(|(_, r)| *r == verify::Rerun::Matched).count(), 7, "three ticks and four requests");
 
     // Clocks alone: no port, and no interval besides the text's.
-    let alone = deploy_text(&state, "flow beats\nstate n\n\nevery 1h {\n  state.n = (state.n ?? 0) + 1\n}\n", "127.0.0.1:9");
+    let alone = deploy_text(&state, "import { every, flow } from \"holon\"\nimport state from \"state\"\n\nflow(\"beats\")\n\nevery(\"1h\", () => {\n  state.n = (state.n ?? 0) + 1\n})\n", "127.0.0.1:9");
     let (triggers, unit, port) = {
         let deployments = state.deployments.lock().unwrap();
         let d = &deployments[&alone];
@@ -9086,8 +9095,8 @@ fn a_servers_clock_ticks_on_its_period_beside_its_routes_and_verifies() {
 
 // ── flow calls (docs/L4s/triggers-L4.md §9, slice 6) ─────────────────────────────────────────────
 
-const BILLING: &str = "flow billing\ncollection charges\nstate resets\n\naction charge (input) {\n  charges[input.id] = input\n  respond { ok: true, total: input.amount * 2 }\n}\n\naction reset (input) {\n  state.resets = (state.resets ?? 0) + 1\n}\n";
-const SHOP: &str = "flow shop\nport 18311\ncalls billing\n\nroute POST /orders (req) {\n  charged = billing.charge({ id: req.json.id, amount: req.json.total })\n  respond charged\n}\n\nroute POST /reset (req) {\n  billing.reset()\n  respond 204\n}\n";
+const BILLING: &str = "import { action, flow } from \"holon\"\nimport state from \"state\"\nimport charges from \"collection:charges\"\n\nflow(\"billing\")\n\nexport const charge = action((input) => {\n  charges[input.id] = input\n  return { ok: true, total: input.amount * 2 }\n})\n\nexport const reset = action(() => {\n  state.resets = (state.resets ?? 0) + 1\n})\n";
+const SHOP: &str = "import { flow, route, status } from \"holon\"\nimport { charge, reset } from \"flow:billing\"\n\nflow(\"shop\", { port: 18311 })\n\nroute.post(\"/orders\", async (req) => {\n  const charged = await charge({ id: req.json.id, amount: req.json.total })\n  return charged\n})\n\nroute.post(\"/reset\", async () => {\n  await reset()\n  return status(204)\n})\n";
 
 fn order(state: &AppState, id: &str, total: f64) -> serde_json::Value {
     let (status, body, _) = data_call(state, "shop", "POST", "/orders", &format!("{{\"id\":\"{id}\",\"total\":{total}}}"));
@@ -9101,7 +9110,9 @@ fn order(state: &AppState, id: &str, total: f64) -> serde_json::Value {
 fn a_call_from_an_unrecorded_run_says_its_run_isnt_logged() {
     let state = claims_state("");
     deploy_text(&state, BILLING, "127.0.0.1:9");
-    deploy_text(&state, &SHOP.replace("route POST /orders (req) {", "route POST /orders (req) unrecorded {"), "127.0.0.1:9");
+    deploy_text(&state, &SHOP.replace("  return charged
+})", "  return charged
+}, { log: \"unrecorded\" })"), "127.0.0.1:9");
     assert_eq!(order(&state, "o1", 5.0)["answer"]["total"], 10.0);
     assert!(log_entries(&state, "shop").is_empty(), "the caller's run isn't logged");
     let theirs = log_entries(&state, "billing");
@@ -9161,7 +9172,7 @@ fn a_call_that_cant_be_made_says_why() {
     let error = |id: &str| order(&state, id, 1.0)["error"].as_str().map(str::to_string);
     assert_eq!(error("a").as_deref(), Some("not_found"), "billing isn't deployed");
 
-    deploy_text(&state, "flow billing\nstate n\n\naction other (input) {\n  state.n = 1\n}\n", "127.0.0.1:9");
+    deploy_text(&state, "import { action, flow } from \"holon\"\nimport state from \"state\"\n\nflow(\"billing\")\n\nexport const other = action(() => {\n  state.n = 1\n})\n", "127.0.0.1:9");
     assert_eq!(error("b").as_deref(), Some("no_action"), "it has no such action");
 
     deploy_text(&state, BILLING, "127.0.0.1:9");
@@ -9209,7 +9220,7 @@ fn a_chain_of_calls_is_never_a_loop_and_is_only_so_long() {
     assert!(!r.contains("too_deep"), "{r}");
 
     // It refuses itself, whatever the name.
-    deploy_text(&state, "flow me\ncalls me\n\naction go (input) {\n  r = me.go(input)\n  respond r\n}\n", "127.0.0.1:9");
+    deploy_text(&state, "import { action, flow } from \"holon\"\nimport { go } from \"flow:me\"\n\nflow(\"me\")\n\nexport const go = action(async (input) => {\n  const r = await go(input)\n  return r\n})\n", "127.0.0.1:9");
     let r = body_json(route(&state, &req("POST", "/trigger/me/go", b"{}".to_vec()))).to_string();
     assert!(r.contains("already in this chain"), "{r}");
 }
@@ -9219,7 +9230,7 @@ fn a_chain_of_calls_is_never_a_loop_and_is_only_so_long() {
 fn a_secret_is_never_sent_to_another_flow() {
     let state = claims_state("");
     deploy_text(&state, BILLING, "127.0.0.1:9");
-    let text = "flow vault\nsecret token\ncalls billing\n\naction leak (input) {\n  r = billing.charge({ id: secret.token, amount: 1 })\n  respond r\n}\n\naction joined (input) {\n  r = billing.charge({ id: \"id-{secret.token}\", amount: 1 })\n  respond r\n}\n";
+    let text = "import { action, flow } from \"holon\"\nimport token from \"secret:token\"\nimport { charge } from \"flow:billing\"\n\nflow(\"vault\")\n\nexport const leak = action(async () => {\n  const r = await charge({ id: token, amount: 1 })\n  return r\n})\n\nexport const joined = action(async () => {\n  const r = await charge({ id: `id-${token}`, amount: 1 })\n  return r\n})\n";
     let plan = holon_author::agent::plan(text).unwrap();
     for u in &plan.units {
         route(&state, &req("POST", "/unit", u.clone()));
@@ -9404,8 +9415,8 @@ fn profile_one_route() {
     let which = std::env::var("HOLON_PROFILE").unwrap_or_else(|_| "hello".into());
     let (text, method, url, body) = match which.as_str() {
         "crunch" => (CRUNCH, "POST", "/stats", ""),
-        "notes" => ("flow p\nport 8301\ncollection notes\n\nroute POST /notes (req) {\n  notes[req.json.id] = req.json.text\n  respond \"saved\"\n}\n\nroute GET /notes (req) lazy {\n  respond notes.list(limit: 50)\n}\n", "GET", "/notes", ""),
-        _ => ("flow p\nport 8301\n\nroute GET /hello/:name (req) unrecorded {\n  respond \"Hello, {req.params.name}\"\n}\n", "GET", "/hello/Ada", ""),
+        "notes" => ("import { flow, route } from \"holon\"\nimport notes from \"collection:notes\"\n\nflow(\"p\", { port: 8301 })\n\nroute.post(\"/notes\", (req) => {\n  notes[req.json.id] = req.json.text\n  return \"saved\"\n})\n\nroute.get(\"/notes\", () => notes.list({ limit: 50 }), { log: \"lazy\" })\n", "GET", "/notes", ""),
+        _ => ("import { flow, route } from \"holon\"\n\nflow(\"p\", { port: 8301 })\n\nroute.get(\"/hello/:name\", (req) => `Hello, ${req.params.name}`, { log: \"unrecorded\" })\n", "GET", "/hello/Ada", ""),
     };
     let slug = deploy_plain_text(&state, text);
     // A list of numbers to crunch, `HOLON_PROFILE_ITEMS` long (1,000 by default).
