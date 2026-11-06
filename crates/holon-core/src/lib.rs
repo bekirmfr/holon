@@ -64,7 +64,7 @@ pub use promote::{instantiate, open_param, open_params, ParamError};
 pub use eval::{choice_next, eval, eval_observed, eval_one, would_plan, Answer, Choice, NoObserver, Observer, Shape, Shapes, Slot};
 pub use fork::{refork, Refork};
 pub use advisory::{advise, Advisory};
-pub use catalog::{genesis_units, interface_of, open_trigger, takes_trigger, CALLS, GENESIS, PASSES_EXTRA, TRIGGER, TRIGGERED, VARIADIC};
+pub use catalog::{family_values, genesis_units, interface_of, open_trigger, takes_trigger, CALLS, FAMILIES, GENESIS, PASSES_EXTRA, TRIGGER, TRIGGERED, VARIADIC};
 pub use docs::describe;
 pub use manifest::{consent_name, manifest_items, permission_kind, reads_from_outside, trigger, PermissionKind};
 pub use inspect::{adoption_counts, child_refs, dependencies};

@@ -7,7 +7,9 @@
 //! 2. **acyclicity** — the inner child→child graph is a DAG;
 //! 3. **type compatibility** — `dst == any ∨ src == any ∨ src == dst` (§5).
 //!
-//! Errors are **collected** so an editor can surface all problems at once.
+//! Errors are **collected** so an editor can surface all problems at once. A primitive has no
+//! wiring: what is checked of one is that each family parameter it has is one of its values
+//! ([`crate::FAMILIES`]).
 //!
 //! ## The composite boundary
 //! The composite's interface↔inner binding rides the ordinary edge mechanism via the
@@ -47,6 +49,9 @@ pub enum ValidationError {
     /// A module body isn't one (`module::validate_module`): imports, a missing export, a bad
     /// budget, or not WebAssembly at all.
     Module(crate::ModuleError),
+    /// A family leaf's parameter isn't one of its values ([`crate::FAMILIES`]): what it holds,
+    /// none when it has no such parameter.
+    FamilyParam { leaf: String, param: String, value: Option<String> },
 }
 
 impl std::fmt::Display for ValidationError {
@@ -80,6 +85,13 @@ impl std::fmt::Display for ValidationError {
                 write!(f, "edge {edge} connects incompatible types: {src:?} does not fit {dst:?}")
             }
             ValidationError::Module(e) => write!(f, "{e}"),
+            ValidationError::FamilyParam { leaf, param, value } => {
+                let values = crate::family_values(leaf, param).unwrap_or_default().join(", ");
+                match value {
+                    Some(v) => write!(f, "{leaf}'s {param} is one of {values}: \"{v}\" isn't one"),
+                    None => write!(f, "{leaf}'s {param} is one of {values}, and it has none"),
+                }
+            }
         }
     }
 }
@@ -111,11 +123,31 @@ fn mentions_effect(ty: &Type) -> bool {
     }
 }
 
-/// Validate a unit's graph. A primitive always passes. A composite is checked for
-/// well-formedness, acyclicity, and type compatibility — including its boundary edges.
+/// What a family leaf's frozen parameters hold that isn't one of their values ([`crate::FAMILIES`]).
+/// An open one is a hole, checked once its template is instantiated.
+fn family_mistakes(name: &str, params: &[crate::Param]) -> Vec<ValidationError> {
+    crate::FAMILIES
+        .iter()
+        .filter(|(leaf, _, _)| *leaf == name)
+        .filter_map(|(leaf, param, values)| {
+            let mistake = |value: Option<&str>| ValidationError::FamilyParam { leaf: leaf.to_string(), param: param.to_string(), value: value.map(str::to_string) };
+            match params.iter().find(|p| p.name() == *param) {
+                None => Some(mistake(None)),
+                Some(p) => p.value().filter(|v| !values.contains(v)).map(|v| mistake(Some(v))),
+            }
+        })
+        .collect()
+}
+
+/// Validate a unit's graph. A primitive passes when each family parameter it has is one of its
+/// values. A composite is checked for well-formedness, acyclicity, and type compatibility —
+/// including its boundary edges.
 pub fn validate(unit: &Unit, resolver: &impl Resolver) -> Result<(), Vec<ValidationError>> {
     let (children, edges) = match &unit.body {
-        UnitBody::Primitive { .. } => return Ok(()),
+        UnitBody::Primitive { name } => {
+            let errors = family_mistakes(name, &unit.params);
+            return if errors.is_empty() { Ok(()) } else { Err(errors) };
+        }
         UnitBody::Composite { children, edges } => (children, edges),
         // A module is admitted by its own sections: no imports, the ABI's exports, sane budgets.
         UnitBody::Module { bytes } => {
@@ -351,6 +383,31 @@ mod tests {
     fn primitive_always_valid() {
         let r = MapResolver::new();
         assert_eq!(validate(&num_binop("add"), &r), Ok(()));
+    }
+
+    /// A family leaf's parameter is one of its values, or the unit is refused: `compare`'s `op`
+    /// would otherwise give nothing each time it ran. A hole is filled, and checked, later.
+    #[test]
+    fn a_family_parameter_outside_its_values_is_refused() {
+        let r = MapResolver::new();
+        let compare = |params: Vec<crate::Param>| Unit { params, ..crate::interface_of("compare").unwrap() };
+        for op in ["=", "!=", "<", "<=", ">", ">="] {
+            assert_eq!(validate(&compare(vec![crate::Param::frozen("op", op)]), &r), Ok(()), "{op}");
+        }
+        let errors = validate(&compare(vec![crate::Param::frozen("op", "~")]), &r).unwrap_err();
+        assert_eq!(errors, vec![ValidationError::FamilyParam { leaf: "compare".into(), param: "op".into(), value: Some("~".into()) }]);
+        assert_eq!(errors[0].to_string(), "compare's op is one of =, !=, <, <=, >, >=: \"~\" isn't one");
+        let errors = validate(&compare(vec![]), &r).unwrap_err();
+        assert_eq!(errors[0].to_string(), "compare's op is one of =, !=, <, <=, >, >=, and it has none");
+        assert_eq!(validate(&compare(vec![crate::Param::open("op", "OP")]), &r), Ok(()));
+        // Every family names a genesis leaf, its parameter is one the catalog gives it, and the
+        // catalog's default is one of its values, so a dropped node is valid at once.
+        for (leaf, param, values) in crate::FAMILIES {
+            let unit = crate::interface_of(leaf).unwrap_or_else(|| panic!("{leaf} isn't a leaf"));
+            let default = unit.params.iter().find(|p| p.name() == *param).and_then(|p| p.value());
+            assert!(default.is_some_and(|d| values.contains(&d)), "{leaf}'s {param} defaults to {default:?}");
+            assert_eq!(validate(&unit, &r), Ok(()), "{leaf}");
+        }
     }
 
     #[test]

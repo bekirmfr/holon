@@ -2424,6 +2424,17 @@ every("10s", async () => {
         assert!(inputs.is_empty(), "headers, body, prefix and after stay unbound, not {inputs:?}");
     }
 
+    /// A family leaf's parameter outside its values is refused where it is written, in core's
+    /// words; one of its values is placed.
+    #[test]
+    fn a_family_parameter_outside_its_values_is_refused_where_it_is_written() {
+        let src = |op: &str| format!("import {{ action, compare, flow }} from \"holon\"\n\nflow(\"f\")\n\nexport const t = action((a) => {{\n  return compare(a, 1, {{ op: \"{op}\" }})\n}})\n");
+        assert_eq!(error(&src("~")), (6, 10, "compare's op is one of =, !=, <, <=, >, >=: \"~\" isn't one".into()));
+        let d = compiled(&src("<=")).doc;
+        let compare = d.nodes.iter().find(|n| n.data.name == "compare").expect("a compare");
+        assert_eq!(compare.param("op"), "<=");
+    }
+
     // ── each construct, by the nodes it places ──
 
     #[test]

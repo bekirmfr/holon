@@ -403,6 +403,8 @@ pub enum WValidationError {
     TypeMismatch { edge: usize, src: WType, dst: WType, message: String },
     /// A module body that isn't one: the message says what (imports, a missing export, a budget).
     Module { message: String },
+    /// A family leaf's parameter outside its values: the leaf, the parameter, what it holds.
+    FamilyParam { leaf: String, param: String, value: Option<String>, message: String },
 }
 
 impl WValidationError {
@@ -432,6 +434,9 @@ impl WValidationError {
             }
             ValidationError::Cycle => WValidationError::Cycle { message },
             ValidationError::Module(_) => WValidationError::Module { message },
+            ValidationError::FamilyParam { leaf, param, value } => {
+                WValidationError::FamilyParam { leaf: leaf.clone(), param: param.clone(), value: value.clone(), message }
+            }
             ValidationError::TypeMismatch { edge, src, dst } => WValidationError::TypeMismatch {
                 edge: *edge,
                 src: WType::from_core(src),

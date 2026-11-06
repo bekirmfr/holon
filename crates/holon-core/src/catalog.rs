@@ -103,6 +103,18 @@ pub const VARIADIC: &[&str] = &["add", "multiply", "and", "or", "concat", "list"
 /// more of the same port.
 pub const PASSES_EXTRA: &[&str] = &["map", "fold"];
 
+/// The leaves that share one shape, told apart by a frozen parameter: each leaf, its family
+/// parameter and the values that parameter may take. The parameter is part of the unit's hash, so
+/// `compare {op: "<"}` and `compare {op: ">"}` never collide, and a value added later re-hashes
+/// nothing. Any other value is refused when the flow is wired (`validate`), where it would
+/// otherwise give nothing each time it runs.
+pub const FAMILIES: &[(&str, &str, &[&str])] = &[("compare", "op", &["=", "!=", "<", "<=", ">", ">="])];
+
+/// The values leaf `name`'s family parameter `param` may take, if it is one.
+pub fn family_values(name: &str, param: &str) -> Option<&'static [&'static str]> {
+    FAMILIES.iter().find(|(leaf, p, _)| *leaf == name && *p == param).map(|(_, _, values)| *values)
+}
+
 /// The canonical genesis interface for `name`, or `None` if it is not a genesis primitive
 /// (fail-closed, mirroring [`crate::capabilities_of`]).
 pub fn interface_of(name: &str) -> Option<Unit> {
