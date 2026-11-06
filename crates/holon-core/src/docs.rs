@@ -89,7 +89,6 @@ pub fn describe(name: &str) -> Option<&'static str> {
         "file_arrival" => "The file in a folder that started the run: its handle {folder, name, size, hash, modified, event}, event new or changed; for a file deleted (on: deleted), as last seen, without a hash. A flow with one runs once for each file that arrives there and settles (or, on: deleted, is removed), its name matching the glob matching if set, not on requests.",
         "clock" => "The time the run started, in seconds since 1970. The same everywhere in one run, and recorded, so a replay sees it too.",
         "random" => "A random number from 0 up to 1, the same everywhere in one run, and recorded.",
-        "ingress" => "What arrived at the deployment (a request's body, a trigger's payload).",
         "secret" => "A secret's value, by the name set on the node, from the deployment's secrets (set under ⚙). Never logged: it shows as ‹secret:name›. Reading it is a permission.",
         "await" => "Waits for an event: the run parks here and continues, perhaps days later, when the event arrives (through its resume_token), or answers {expired: true} after expires seconds.",
         "resume_token" => "The token that delivers an event to the waiting point (await) named on the node: put it in a link or a callback. Never logged.",

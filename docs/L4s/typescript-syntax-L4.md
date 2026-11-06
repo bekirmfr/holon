@@ -1032,8 +1032,14 @@ Holon is in development, so the new form replaces today's at once:
    `tests/holon/` are gone. `docs/LANGUAGE.md`, the editor guide, the engineering pages, the
    editor's and the workbench's test flows, the server's tests and the VS Code extension's test
    are TypeScript; to VS Code a flow is a TypeScript file, `holon lsp` beside its own server.
-   The server still runs a canvas without handlers (an interval, an `ingress` or `file_arrival`
-   node, `holon trigger`); taking that out is a step of its own.
+   *Flows without handlers are gone from the server* (2026-11-06): deploy refuses a unit that
+   isn't a server with a route, clock, file handler or action, saying to add one, and a saved
+   one is skipped at load. The deploy setting `interval_seconds`, the scheduler's whole-unit
+   ticks, the `ingress` leaf (catalog 95 leaves), `holon trigger` and the unnamed
+   `POST /trigger/<slug>` run went with it, and the editor's interval field and the deployed
+   page's box that ran such a flow; `file_arrival` stays, read inside `on.file.*` handlers. The
+   server's tests that deployed a bare canvas deploy TypeScript flows instead, run through an
+   action, a route or a clock.
 5. **`try`, `catch {}`, `throw`, `finally`,** and the `fail` leaf.
 6. **Computing loops.** `while` to `fold`, the loop's turns, nested folds past 10000, `fold`
    stopping when done, a step budget in core.

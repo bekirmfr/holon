@@ -1,12 +1,12 @@
 // Deploying the open flow: one action for the whole flow, named after it (DeployBar in the
-// header). A flow with routes deploys as its derived server; any other flow as the whole canvas
-// projected into one unit (a clock or ingress flow). Before anything is sent, the person sees
+// header). It deploys as the server its handlers derive (routes, clocks, file handlers, actions);
+// a flow with none starts nothing, and doesn't deploy. Before anything is sent, the person sees
 // exactly what it may touch (the server's consent gate checks the same list), in the dialog.
 // And running, pausing or stopping it once deployed.
 
 import { useCallback, useMemo, useState, type MutableRefObject } from "react";
 import type { Edge, Viewport } from "@xyflow/react";
-import { flowUnitHash, traceOfUnit, type DerivedServer } from "./canvasOps";
+import type { DerivedServer } from "./canvasOps";
 import { documentUnits } from "./docUnits";
 import { bindingsOf } from "./holonText";
 import { isWEncapError } from "./diagnostics";
@@ -91,34 +91,17 @@ export function useDeployFlow({
       setFlowName(name);
     }
     let hash: string;
-    let isServer = false;
-    let trace = derived.trace;
+    const trace = derived.trace;
     try {
       if (derived.errors.length > 0) throw new Error(derived.errors.join("; "));
-      if (derived.endpoints.length > 0 || derived.clocks.length > 0 || derived.files.length > 0 || derived.actions.length > 0) {
-        if (!derived.serverHash) throw new Error(`"${settings.port}" is not a port (set it under ⚙)`);
-        hash = derived.serverHash;
-        isServer = true;
-      } else {
-        const { nodes: ns, edges: es } = live.current;
-        if (ns.length === 0) throw new Error("nothing to deploy: the canvas is empty");
-        hash = flowUnitHash(ns, es, ev, settings.port);
-        trace = { "*": traceOfUnit(hash, ns, ev) };
+      if (derived.endpoints.length + derived.clocks.length + derived.files.length + derived.actions.length === 0) {
+        throw new Error(live.current.nodes.length === 0 ? "nothing to deploy: the canvas is empty" : "nothing would start a run: add a route, a clock, a file handler or an action");
       }
+      if (!derived.serverHash) throw new Error(`"${settings.port}" is not a port (set it under ⚙)`);
+      hash = derived.serverHash;
     } catch (err) {
       setError(isWEncapError(err) ? err.message : err instanceof Error ? err.message : String(err));
       return;
-    }
-    // On a schedule (an interval, and no routes), it runs on the clock whether or not it reads it.
-    const scheduled = !isServer && settings.interval.trim() !== "";
-    const caps = ev.deployed_capability_names(hash, scheduled) as string[];
-    let interval: number | undefined;
-    if (!isServer && caps.includes("Clock")) {
-      interval = Number(settings.interval);
-      if (!Number.isInteger(interval) || interval < 1) {
-        setError("this flow reads the clock: set how often it fires under ⚙ (whole seconds, at least 1)");
-        return;
-      }
     }
     // The host decides what needs approval (its policy, and what this deployment was already
     // granted): ask it, then show asked against granted, and acknowledge exactly what it asks.
@@ -127,7 +110,7 @@ export function useDeployFlow({
     let ask: string[];
     try {
       await stageClosure(ev, hash, new Set());
-      const preview = await previewDeploy(name, hash, requirements, interval);
+      const preview = await previewDeploy(name, hash, requirements);
       if (preview.refused) {
         setError(`this host can't grant that: ${preview.refused}`);
         return;
@@ -135,9 +118,7 @@ export function useDeployFlow({
       ask = preview.needs_approval;
       // Each item says whether the flow can run without it (deploy settings' optional ones).
       const optional = requirements?.optional ?? [];
-      // A flow with no routes that reads `ingress` is run by hand, and its approval says so.
-      const byHand = derived.endpoints.length === 0;
-      const said = (i: string) => `• ${describeItemSending(i, byHand, preview.sent)}${optional.includes(i) ? " (optional: it runs without it)" : ""}`;
+      const said = (i: string) => `• ${describeItemSending(i, preview.sent)}${optional.includes(i) ? " (optional: it runs without it)" : ""}`;
       const lines = [`${existing ? "Update" : "Deploy"} "${name}"?`];
       if (ask.length > 0) lines.push("", "It needs your approval to:", ...ask.map(said));
       // Everything it touches, beside what it touches now, and whether this server is ready for
@@ -149,7 +130,7 @@ export function useDeployFlow({
         lines.push("", `Not set yet: ${preview.missing_secrets.join(", ")} (set under ⚙ → secrets; until then those nodes stay empty)`);
       }
       const pages = browsersOf(settings);
-      if (isServer && pages.length > 0) lines.push("", `Web pages from ${pages.includes("*") ? "any site" : pages.join(", ")} may call its routes.`);
+      if (pages.length > 0) lines.push("", `Web pages from ${pages.includes("*") ? "any site" : pages.join(", ")} may call its routes.`);
       if (existing) lines.push("", "Its state and sessions are kept.");
       const action = ask.length > 0 ? "Approve and deploy" : existing ? "Update" : "Deploy";
       if (!(await dialog.confirm(lines.join("\n"), action))) return;
@@ -174,7 +155,7 @@ export function useDeployFlow({
         ...(source !== null ? { source } : {}),
         ...(bindings ? { bindings } : {}),
       };
-      await deployUnit(name, hash, ask, interval, document, requirements);
+      await deployUnit(name, hash, ask, document, requirements);
       refreshDeployments();
       onDeployed?.();
     } catch (err) {

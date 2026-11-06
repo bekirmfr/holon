@@ -4,7 +4,7 @@ import { useCallback, useEffect, useState, type CSSProperties } from "react";
 import { holonIndex, type HolonUse } from "./holonUsage";
 import { setMarketplaceUrl, type Listing } from "./marketplace";
 import { getActivity, type ActivityEntry, type Role } from "./server";
-import { deleteFlow, getFlow, listDeployments, listFlows, type DeploymentEntry, type FlowDocument, type FlowListEntry, type FlowRecord, type TriggerResult } from "./server";
+import { deleteFlow, getFlow, listDeployments, listFlows, type DeploymentEntry, type FlowDocument, type FlowListEntry, type FlowRecord } from "./server";
 import { ManifestSection, type ManifestView } from "./Manifest";
 import { openChoice } from "./tabs";
 import { useDialog } from "./Dialog";
@@ -312,17 +312,11 @@ function UsedBy({ uses, lead, title }: { uses: HolonUse[]; lead: string; title: 
   );
 }
 
-export type TriggerOutcome = { ok: true; result: TriggerResult } | { ok: false; message: string };
-
 /** The deployed page: the server's live table, one card per deployment. */
 export function DeployedPage({
   deployments,
   error,
   onAction,
-  triggerInputs,
-  onTriggerInputChange,
-  onTrigger,
-  triggerResults,
   onDelete,
   onView,
   onChanged,
@@ -332,10 +326,6 @@ export function DeployedPage({
   deployments: DeploymentEntry[];
   error: string;
   onAction: (slug: string, action: "run" | "pause" | "stop", from?: "latest" | "fresh" | number) => Promise<void>;
-  triggerInputs: Record<string, string>;
-  onTriggerInputChange: (slug: string, value: string) => void;
-  onTrigger: (slug: string) => void;
-  triggerResults: Record<string, TriggerOutcome>;
   onDelete: (slug: string) => void;
   /** Open a deployment in view mode, on one of its runs when `seq` is given. */
   onView: (slug: string, seq?: number) => void;
@@ -366,14 +356,10 @@ export function DeployedPage({
           key={entry.slug}
           entry={entry}
           onAction={(action, from) => onAction(entry.slug, action, from)}
-          triggerInput={triggerInputs[entry.slug] ?? ""}
-          onTriggerInputChange={(v) => onTriggerInputChange(entry.slug, v)}
-          onTrigger={() => onTrigger(entry.slug)}
           onDelete={() => onDelete(entry.slug)}
           onView={(seq) => onView(entry.slug, seq)}
           onChanged={onChanged}
           role={role}
-          result={triggerResults[entry.slug]}
           focus={focus?.slug === entry.slug ? focus.n : undefined}
         />
       ))}

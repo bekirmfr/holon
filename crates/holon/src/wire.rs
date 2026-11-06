@@ -178,11 +178,10 @@ pub(crate) struct FlowListEntry {
 
 /// `POST /deploy`'s request body. `unit` must already be resolvable in the store (staged via
 /// `/unit`, or published — see the L4's Fork 1: deploy deliberately does not require
-/// publication, a separate, marketplace-facing concept). `interval_seconds` is **only**
-/// consulted (and required) if the unit's own derived capabilities include `Clock` — nothing
-/// about *which* trigger(s) apply is asserted by the caller; that's read off the unit itself.
-/// `acknowledge` **is** something the caller must assert — not the capability *set* (still
-/// fully derived), but that the caller has actually reviewed it: every capability
+/// publication, a separate, marketplace-facing concept). Nothing about *which* triggers apply
+/// is asserted by the caller; that's read off the unit itself (its handlers). `acknowledge`
+/// **is** something the caller must assert — not the capability *set* (still fully derived),
+/// but that the caller has actually reviewed it: every capability
 /// `capabilities()` derives for this unit — its whole manifest, not just the trigger-relevant
 /// ones — must appear in `acknowledge` (by its `{:?}` name, e.g. `"NetworkEgress"`) or the
 /// deploy is refused, naming exactly what's missing. `#[serde(default)]` so an omitted field
@@ -192,7 +191,6 @@ pub(crate) struct FlowListEntry {
 pub(crate) struct DeployRequestBody {
     pub(crate) slug: String,
     pub(crate) unit: String,
-    pub(crate) interval_seconds: Option<u64>,
     #[serde(default)]
     pub(crate) acknowledge: Vec<String>,
     /// The flow document (canvas) being deployed, for view mode. Optional.
@@ -260,7 +258,6 @@ impl Tally {
 pub(crate) struct DeploymentRecord {
     pub(crate) slug: String,
     pub(crate) unit: String,
-    pub(crate) interval_seconds: Option<u64>,
     #[serde(default)]
     pub(crate) deployed_at_epoch_seconds: Option<u64>,
     /// Who did it (access.rs's caller: a named user, `admin`), when the server knows.
@@ -308,10 +305,8 @@ pub(crate) struct DeploymentRecord {
 pub(crate) struct DeployResponseBody {
     pub(crate) slug: String,
     pub(crate) unit: String,
-    /// What was actually derived from the unit's own capabilities — `"Ingress"`, `"Clock"`,
-    /// both, or (refused before reaching this response) neither.
+    /// What starts its runs, as its server declares them: `Http :8080`, `every 5s`, `action reset`.
     pub(crate) triggers: Vec<String>,
-    pub(crate) interval_seconds: Option<u64>,
     /// The version this deploy made (`GET /deployments/<slug>/versions`).
     pub(crate) version: u32,
 }
@@ -331,7 +326,6 @@ pub(crate) struct DeploymentEntry {
     pub(crate) slug: String,
     pub(crate) unit: String,
     pub(crate) triggers: Vec<String>,
-    pub(crate) interval_seconds: Option<u64>,
     /// Whether this deployment's own derived capabilities include a state axis — `true` means
     /// it carries a real, persisted `state` slot; `false` means it's stateless and `state`
     /// below is always `null`. The actual state *values* aren't exposed here yet (a real,
@@ -458,8 +452,6 @@ pub(crate) struct Version {
 /// What a deploy asked beside its unit and document: what deploying it again asks.
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
 pub(crate) struct VersionRequest {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) interval_seconds: Option<u64>,
     #[serde(default)]
     pub(crate) requirements: Requirements,
     #[serde(default, skip_serializing_if = "Option::is_none")]

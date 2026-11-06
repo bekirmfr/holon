@@ -17,7 +17,7 @@ Everything is one program, `holon`. `holon help` lists the commands; `serve`, `e
 | [`holon call`](#holon-call) | send a deployed flow a request |
 | [`holon load`](#holon-load) | a deployed flow's routes under load: requests a second, latency, and what the server did with the runs |
 | [`holon action`](#holon-action) | run one of a deployment's actions |
-| [`holon trigger`, `holon tick`](#holon-trigger-holon-tick) | run a flow by hand, or fire one of its clocks now |
+| [`holon tick`](#holon-tick) | fire one of a flow's clocks now |
 | [`holon state`](#holon-state) | a deployment's state, collections and sessions |
 | [`holon grant`](#holon-grant) | what a deployment is granted; revoke, grant back, lower |
 | [`holon grants`](#holon-grants) | who holds what |
@@ -302,16 +302,14 @@ Runs one of a deployment's actions (`export const reset = action(…)`), as the 
 that input (`{}` without one), and prints what it answered and the run's number. A run that waits
 for an approval or an event says so. Exits 1 when the action answers 400 or more.
 
-### `holon trigger`, `holon tick`
+### `holon tick`
 
 ```
-holon trigger <slug> [--body TEXT | --body - | --body-file FILE]
 holon tick <slug> <clock>
 ```
 
-`tick` fires one of a flow's clocks now, by its label as `holon deployments` shows it
-(`"every 2s"`): what the run did, as a tick on its own would. `trigger` runs a flow without
-handlers once, with that body: what it produced, and what it did.
+Fires one of a flow's clocks now, by its label as `holon deployments` shows it (`"every 2s"`):
+what the run did, as a tick on its own would.
 
 ### `holon state`
 

@@ -122,7 +122,7 @@ the flow's mistakes, hovers, completion and formatting.
 `agent::plan(source)` is what deploying a text sends, computed without a server: it compiles,
 derives the server (refusing on its errors), takes `flow_unit`, and answers a `Plan`: `name`,
 `unit`, `units` (the closure as preimages, children first), `document` (with its `trace` and the
-text's `bindings`), `routes`, `port`, `interval_seconds`, `requirements`, `browsers`, `may`
+text's `bindings`), `routes`, `port`, `requirements`, `browsers`, `may`
 (consent names, with each module's budget as a `Limit(...)` item) and `sent` (core's
 `sent_secrets`). `holon mcp`, `holon deploy` and `holon editor` deploy from it, and `holon flows
 save` saves from it.
@@ -137,8 +137,8 @@ Each sample is a `.holon.ts` file in `samples/`, embedded by `include_str!` in a
 `browsers`, `try_it`, `text`). `samples::build` compiles the text and carries it as the document's
 `source`, so the text pane opens on it and a deploy keeps its names. The editor reads them through
 the bridge (`samples`, `build_sample`); `holon new --sample` and the flows page's download write
-the text as it is. A sample without a port is started by its clock or its files, an `every(…)` or
-`on.file.*` handler: no sample has an interval. There are 55, counted as the files in `samples/`
+the text as it is. A sample without a port is started by its clock, its files or its actions, an `every(…)`,
+`on.file.*` or `action(…)` handler. There are 55, counted as the files in `samples/`
 and the `include_str!` lines in `samples.rs`, one each.
 
 [`CLAUDE.md`](../../../CLAUDE.md) makes a sample part of every feature: a `.holon.ts` file in the
@@ -232,8 +232,7 @@ holon-author golden` writes it afresh.
 
 - **Samples** (`samples.rs`): `every_sample_builds_with_a_unique_name_and_port`;
   `a_samples_text_says_what_its_entry_says` (name, port, browsers, optional permissions and
-  secrets agree between the text and the entry, both ways for secrets; no interval, a clock being
-  an `every(…)` handler); `every_sample_is_as_fmt_writes_it` (`commands::fmt` leaves each file as
+  secrets agree between the text and the entry, both ways for secrets); `every_sample_is_as_fmt_writes_it` (`commands::fmt` leaves each file as
   it is; each opens with a comment); `every_samples_routes_give_what_the_eager_evaluator_gives`
   (every route, with a body and without, against core's eager evaluator, at least 40 cases).
 - **Reading** (`ts.rs`): `each_construct_lowers_as_its_plain_form` and

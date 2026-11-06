@@ -812,7 +812,7 @@ impl App {
                 }
                 self.refresh();
                 let approved = if needs == 0 { String::new() } else { format!(", approving {needs} new permission{} as you", if needs == 1 { "" } else { "s" }) };
-                let reach = if plan.routes.is_empty() { plan.interval_seconds.map(|i| format!("; runs every {i} s")).unwrap_or_default() } else { format!("; {}", plan.routes.join(", ")) };
+                let reach = if plan.routes.is_empty() { started_by(&plan).map(|s| format!("; {s}")).unwrap_or_default() } else { format!("; {}", plan.routes.join(", ")) };
                 self.say(format!("deployed \"{slug}\" ({}){approved}{reach}", &plan.unit[..12]));
             }
             Err(e) => self.fail(e),
@@ -1783,6 +1783,13 @@ impl App {
 
 /// What a deploy changes, to look at before approving it: its code against the text deployed now
 /// (none for a first deploy), what it touches, its routes; and what deploying it approves.
+/// What starts a flow's runs besides requests and a person: its clocks and file handlers (`every
+/// 5s`, `on file inbox`), as its plan's handlers are labeled; none when it has neither.
+pub(crate) fn started_by(plan: &agent::Plan) -> Option<String> {
+    let labels: Vec<&str> = plan.document["trace"].as_object().into_iter().flat_map(|t| t.keys()).map(String::as_str).filter(|l| l.starts_with("every ") || l.starts_with("on file ")).collect();
+    (!labels.is_empty()).then(|| labels.join(", "))
+}
+
 fn deploy_review(slug: &str, plan: &agent::Plan, staged: &Staged, now: Option<&str>, text: &str, server: &str) -> Review {
     let mut review = Review { top: vec![(Tone::Dim, format!("Deploying \"{slug}\" ({}) to {server}.", &plan.unit[..12]))], ..Review::default() };
     if let Some(now) = now {

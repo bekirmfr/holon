@@ -39,8 +39,6 @@ pub struct HolonPort {
 pub struct Settings {
     #[serde(default)]
     pub port: String,
-    #[serde(default)]
-    pub interval: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub requirements: Option<Requirements>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

@@ -223,7 +223,7 @@ use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use holon_core::{
-    capabilities, child_refs, declaration_of, decode_preimage, encode_preimage, hash_unit, hash_value, parse_hash, run_id,
+    capabilities, child_refs, decode_preimage, encode_preimage, hash_unit, hash_value, parse_hash, run_id,
     state_root,
     read_server, Capability, CacheEntry, Server, Edge, Hash, MapResolver, Param, Port, Resolver, Type, Unit, UnitBody,
     Value, BOUNDARY,
@@ -404,11 +404,8 @@ impl AppState {
 }
 
 impl Deployment {
-    /// Fire on the scheduler's next pass: its interval, if it has one, and each of its clocks.
+    /// Fire each of its clocks on the scheduler's next pass.
     fn arm_clocks(&mut self, now: SystemTime) {
-        if self.interval_seconds.is_some() {
-            self.next_due = Some(now);
-        }
         self.clock_due = self.server.as_ref().map(|s| vec![now; s.clocks.len()]).unwrap_or_default();
     }
 }
@@ -422,13 +419,11 @@ type DeploymentState = Arc<claims::StateCell>;
 /// A registered deployment. `triggers` is derived **once**, at deploy time, from the unit's
 /// own capability closure (`capabilities()`) — safe to cache rather than re-derive on every
 /// `GET /deployments`, since a unit's hash is its whole identity: the same hash can never later
-/// have different capabilities. `next_due`/`history` are `Clock`-only; `None`/empty for a
-/// purely `Ingress`-triggered deployment.
+/// have different capabilities. `clock_due`/`history` are its clocks'; empty for a deployment
+/// with none.
 struct Deployment {
     unit: Hash,
     triggers: Vec<String>,
-    interval_seconds: Option<u64>,
-    next_due: Option<SystemTime>,
     /// When each of its server's clocks (`server.clocks`, in order) fires next: due at deploy,
     /// at load and when it runs again, then a period after each tick.
     clock_due: Vec<SystemTime>,
@@ -544,7 +539,7 @@ const USAGE: &str = "usage: holon <command>
   load <slug> [--for SECONDS]        its routes under load, one after another: requests a second,
                                      latency, and the runs the server recorded, synced, counted
   action <slug> <name>               run one of a deployment's actions (--input JSON)
-  trigger <slug> | tick <slug> CLOCK run a flow with no route by hand, or fire a clock now
+  tick <slug> CLOCK                  fire one of a flow's clocks now
   state <slug>                       its live state (--collection NAME, --sessions)
   grant <slug>                       what it is granted; --revoke, --grant, --lower LIMIT=N
   grants | policy [--reload]         who holds what (admin); the host's policy
@@ -667,7 +662,6 @@ fn main() {
         Some("call") => std::process::exit(opscmd::call(&rest)),
         Some("load") => std::process::exit(load::cli(&rest)),
         Some("action") => std::process::exit(opscmd::action(&rest)),
-        Some("trigger") => std::process::exit(opscmd::trigger(&rest)),
         Some("tick") => std::process::exit(opscmd::tick(&rest)),
         Some("state") => std::process::exit(opscmd::state(&rest)),
         Some("grant") => std::process::exit(grantcmd::grant(&rest)),
@@ -930,74 +924,6 @@ fn serve(args: Vec<String>) {
                 "wrote {} bytes to {path} — an egress sink; stage it via /unit, then POST /fire \
                  with {{\"inputs\":[{{\"type\":\"Text\",\"value\":\"hello\"}}]}} to see it in performed",
                 bytes.len()
-            );
-            return;
-        } else if a == "--emit-test-ingress-flow" {
-            let (Some(ingress_path), Some(egress_path), Some(composite_path)) =
-                (args.next(), args.next(), args.next())
-            else {
-                eprintln!("--emit-test-ingress-flow needs <ingress-path> <egress-path> <composite-path>");
-                std::process::exit(1);
-            };
-            let ingress = test_ingress();
-            let ingress_hash = hash_unit(&ingress).expect("test_ingress() is a fixed, valid unit");
-            let ingress_bytes = encode_preimage(&ingress).expect("test_ingress() is a fixed, valid unit");
-            let egress = test_sink();
-            let egress_hash = hash_unit(&egress).expect("test_sink() is a fixed, valid unit");
-            let egress_bytes = encode_preimage(&egress).expect("test_sink() is a fixed, valid unit");
-            let composite = test_ingress_flow(ingress_hash, egress_hash);
-            let composite_hash =
-                hash_unit(&composite).expect("test_ingress_flow() is a fixed, valid unit");
-            let composite_bytes = encode_preimage(&composite)
-                .expect("test_ingress_flow() is a fixed, valid unit given any two leaf hashes");
-            std::fs::write(&ingress_path, &ingress_bytes)
-                .unwrap_or_else(|e| panic!("write {ingress_path}: {e}"));
-            std::fs::write(&egress_path, &egress_bytes)
-                .unwrap_or_else(|e| panic!("write {egress_path}: {e}"));
-            std::fs::write(&composite_path, &composite_bytes)
-                .unwrap_or_else(|e| panic!("write {composite_path}: {e}"));
-            println!("wrote ingress ({} bytes) to {ingress_path}", ingress_bytes.len());
-            println!("wrote egress ({} bytes) to {egress_path}", egress_bytes.len());
-            println!(
-                "wrote composite ingress->egress ({} bytes, hash {}) to {composite_path}",
-                composite_bytes.len(),
-                to_hex(&composite_hash)
-            );
-            println!("stage all three via /unit (order doesn't matter), then /deploy the composite's hash, then POST /trigger/<slug>.");
-            return;
-        } else if a == "--emit-test-clock-flow" {
-            let (Some(clock_path), Some(egress_path), Some(composite_path)) =
-                (args.next(), args.next(), args.next())
-            else {
-                eprintln!("--emit-test-clock-flow needs <clock-path> <egress-path> <composite-path>");
-                std::process::exit(1);
-            };
-            let clock = test_clock();
-            let clock_hash = hash_unit(&clock).expect("test_clock() is a fixed, valid unit");
-            let clock_bytes = encode_preimage(&clock).expect("test_clock() is a fixed, valid unit");
-            let egress = test_sink();
-            let egress_hash = hash_unit(&egress).expect("test_sink() is a fixed, valid unit");
-            let egress_bytes = encode_preimage(&egress).expect("test_sink() is a fixed, valid unit");
-            let composite = test_clock_flow(clock_hash, egress_hash);
-            let composite_hash =
-                hash_unit(&composite).expect("test_clock_flow() is a fixed, valid unit");
-            let composite_bytes = encode_preimage(&composite)
-                .expect("test_clock_flow() is a fixed, valid unit given any two leaf hashes");
-            std::fs::write(&clock_path, &clock_bytes)
-                .unwrap_or_else(|e| panic!("write {clock_path}: {e}"));
-            std::fs::write(&egress_path, &egress_bytes)
-                .unwrap_or_else(|e| panic!("write {egress_path}: {e}"));
-            std::fs::write(&composite_path, &composite_bytes)
-                .unwrap_or_else(|e| panic!("write {composite_path}: {e}"));
-            println!("wrote clock ({} bytes) to {clock_path}", clock_bytes.len());
-            println!("wrote egress ({} bytes) to {egress_path}", egress_bytes.len());
-            println!(
-                "wrote composite clock->egress ({} bytes, hash {}) to {composite_path}",
-                composite_bytes.len(),
-                to_hex(&composite_hash)
-            );
-            println!(
-                "stage all three via /unit, then POST /deploy with {{\"slug\":\"...\",\"unit\":\"<hash>\",\"interval_seconds\":5}}."
             );
             return;
         } else {

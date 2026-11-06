@@ -57,7 +57,7 @@ const CATALOG_GROUPS: readonly { name: string; items: ReadonlySet<string> }[] = 
   },
   {
     name: "drivers",
-    items: new Set(["clock", "random", "ingress", "secret", "file_arrival", "await", "resume_token"]),
+    items: new Set(["clock", "random", "secret", "file_arrival", "await", "resume_token"]),
   },
   {
     name: "state",

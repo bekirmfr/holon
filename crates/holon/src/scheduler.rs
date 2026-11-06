@@ -1,12 +1,10 @@
-//! The clock: fires each clock-driven deployment on its interval, and each clock of a server
-//! (its `every` blocks) on its period.
+//! The clock: fires each clock of a deployment (its `every` handlers) on its period.
 
 use crate::*;
 use holon_core::Clock;
 
-/// A deployment due to tick: its slug, unit, state, period, permit and secrets, and which of its
-/// server's clocks it is (none for a flow on an interval).
-type DueTick = (String, Hash, Option<DeploymentState>, u64, Arc<Permit>, Vault, Option<Clock>);
+/// A clock due to tick: its deployment's slug, unit, state, permit and secrets, and the clock.
+type DueTick = (String, Hash, Option<DeploymentState>, Arc<Permit>, Vault, Clock);
 
 /// The tick-firing logic for one scheduler pass, callable directly with a controlled `now` —
 /// pulled out of `spawn_clock_scheduler`'s sleep loop specifically so it's testable without real
@@ -25,16 +23,10 @@ pub(crate) fn run_due_clock_ticks(
         let deployments = deployments.lock().unwrap();
         let mut due = Vec::new();
         for (slug, dep) in deployments.iter().filter(|(_, d)| d.life.status == Status::Running) {
-            let tick = |seconds, clock| (slug.clone(), dep.unit, dep.state.clone(), seconds, Arc::clone(&dep.permit), Arc::clone(&dep.secrets), clock);
-            if let (Some(interval), Some(next_due)) = (dep.interval_seconds, dep.next_due)
-                && now >= next_due
-            {
-                due.push(tick(interval, None));
-            }
             let clocks = dep.server.as_ref().map(|s| s.clocks.as_slice()).unwrap_or_default();
             for (clock, next_due) in clocks.iter().zip(&dep.clock_due) {
                 if now >= *next_due {
-                    due.push(tick(clock.seconds, Some(clock.clone())));
+                    due.push((slug.clone(), dep.unit, dep.state.clone(), Arc::clone(&dep.permit), Arc::clone(&dep.secrets), clock.clone()));
                 }
             }
         }
@@ -56,10 +48,8 @@ pub(crate) fn run_due_clock_ticks(
     // enough to matter, the fix is a bounded worker pool (or a semaphore capping concurrent
     // fires), not more threads. Left open on purpose.
     thread::scope(|scope| {
-        for (slug, unit_hash, state, interval, permit, secrets, clock) in due {
-            scope.spawn(move || {
-                fire_one_clock_tick(store, deployments, deployments_path, slug, unit_hash, state, &permit, &secrets, interval, clock.as_ref(), now)
-            });
+        for (slug, unit_hash, state, permit, secrets, clock) in due {
+            scope.spawn(move || fire_one_clock_tick(store, deployments, deployments_path, slug, unit_hash, state, &permit, &secrets, &clock, now));
         }
     });
 }
@@ -93,7 +83,7 @@ pub(crate) fn handle_post_tick(state: &AppState, slug: &str, request: &Request) 
         (dep.unit, dep.state.clone(), Arc::clone(&dep.permit), Arc::clone(&dep.secrets), clock.clone())
     };
     let (unit, cell, permit, secrets, clock) = found;
-    fire_one_clock_tick(&state.store, &state.deployments, &state.deployments_path, slug.to_string(), unit, cell, &permit, &secrets, clock.seconds, Some(&clock), SystemTime::now());
+    fire_one_clock_tick(&state.store, &state.deployments, &state.deployments_path, slug.to_string(), unit, cell, &permit, &secrets, &clock, SystemTime::now());
     let deployments = state.deployments.lock().unwrap();
     let Some(dep) = deployments.get(slug) else { return Response::empty_404() };
     let mut reply = serde_json::to_value(dep.history.last()).unwrap_or_default();
@@ -101,9 +91,8 @@ pub(crate) fn handle_post_tick(state: &AppState, slug: &str, request: &Request) 
     Response::json(&reply)
 }
 
-/// One deployment's single tick — settle it via `fire_sourced` with the real wall-clock time
-/// injected, log the result, append it to that deployment's bounded history. With `clock`, the
-/// tick is that clock's: its handler alone runs, logged under its label. Runs on its own
+/// One clock's single tick — its handler settled via `fire_sourced` with the real wall-clock time
+/// injected, the result logged under its label and appended to its deployment's bounded history. Runs on its own
 /// scoped thread when called from `run_due_clock_ticks`'s per-tick fan-out (see there), but has
 /// no threading concerns of its own: it only ever touches `store` (internally locked,
 /// `Sync`-safe) and this one deployment's own map entry (via the shared `deployments` lock,
@@ -118,8 +107,7 @@ pub(crate) fn fire_one_clock_tick(
     state: Option<DeploymentState>,
     permit: &Permit,
     secrets: &Vault,
-    interval: u64,
-    clock: Option<&Clock>,
+    clock: &Clock,
     now: SystemTime,
 ) {
     let resolver = match closure(store, unit_hash) {
@@ -130,14 +118,14 @@ pub(crate) fn fire_one_clock_tick(
             return;
         }
     };
-    // A server's clock runs its handler, which is the unit its run is of.
-    let unit_hash = clock.map_or(unit_hash, |c| c.handler);
+    // A clock runs its handler, which is the unit its run is of.
+    let unit_hash = clock.handler;
     let Some(root_unit) = resolver.resolve(&unit_hash) else {
         eprintln!("clock tick [{slug}]: deployed unit no longer resolves in the store");
         record_trigger(deployments, &slug, true);
         return;
     };
-    let label = clock.map(|c| c.label.clone());
+    let label = Some(clock.label.clone());
 
     let epoch_seconds = now.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
     let extra_sourced = [
@@ -146,7 +134,7 @@ pub(crate) fn fire_one_clock_tick(
     ];
     let started = started_now();
     let (folders, channels) = deployments.lock().unwrap().get(&slug).map(|d| (Arc::clone(&d.folders), Arc::clone(&d.channels))).unzip();
-    let declared = clock.map_or_else(Default::default, |c| c.log);
+    let declared = clock.log;
     // As a route's (listeners.rs): a run that won't be logged keeps no timeline.
     let unrecorded = permit.log_level(label.as_deref(), declared) == holon_core::LogLevel::Unrecorded;
     let mut waits = RunWaits { folders, channels, slug: Some(slug.clone()), unrecorded, ..Default::default() };
@@ -159,7 +147,7 @@ pub(crate) fn fire_one_clock_tick(
         Err(e) => entry.error = Some(e),
     }
     let parked_any = !entry.parked.is_empty();
-    // A whole flow on its interval is strict; a server's clock is as its line says.
+    // As its handler's options say.
     if let Some(l) = log_run(deployments, &slug, entry, Redactor::tokens(&waits.tokens).and(Redactor::handed(&calls::handed(&run.rounds))), declared) {
         l.said(&slug);
     }
@@ -184,11 +172,11 @@ pub(crate) fn fire_one_clock_tick(
     {
         let mut deployments = deployments.lock().unwrap();
         if let Some(dep) = deployments.get_mut(&slug) {
-            let next = now + Duration::from_secs(interval);
-            match clock.and_then(|c| dep.server.as_ref()?.clocks.iter().position(|o| o == c)) {
-                Some(i) if i < dep.clock_due.len() => dep.clock_due[i] = next,
-                Some(_) => {}
-                None => dep.next_due = Some(next),
+            let next = now + Duration::from_secs(clock.seconds);
+            if let Some(i) = dep.server.as_ref().and_then(|s| s.clocks.iter().position(|o| o == clock))
+                && i < dep.clock_due.len()
+            {
+                dep.clock_due[i] = next;
             }
             dep.trigger_count += 1;
             dep.life.record(false);

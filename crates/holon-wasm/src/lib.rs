@@ -653,12 +653,11 @@ impl Evaluator {
         Ok(holon_core::capabilities(unit, &self.resolver).iter().map(|c| holon_core::consent_name(&c)).collect())
     }
 
-    /// The same, as a flow deploys: `scheduled` (an interval, and no routes) adds the clock it
-    /// runs on, whether or not it reads the time (core's `Capabilities::deployed`, the rule the
-    /// server deploys and grants by).
-    pub fn deployed_capability_names(&self, hash: &str, scheduled: bool) -> Result<Vec<String>, JsError> {
+    /// The same, as a flow deploys (core's `deployed_capabilities`, the rule the server deploys and
+    /// grants by): a secret its routes may answer with is one more.
+    pub fn deployed_capability_names(&self, hash: &str) -> Result<Vec<String>, JsError> {
         let unit = self.resolve_hash(hash)?;
-        Ok(holon_core::deployed_capabilities(unit, &self.resolver, scheduled).iter().map(|c| holon_core::consent_name(&c)).collect())
+        Ok(holon_core::deployed_capabilities(unit, &self.resolver).iter().map(|c| holon_core::consent_name(&c)).collect())
     }
 
     /// The coarse kind-set of a unit's whole closure, by hash — core's `effects_of`, the fixed
@@ -1061,19 +1060,12 @@ pub fn describe_item(item: &str) -> String {
     holon_author::describe::describe_item(item)
 }
 
-/// `item` in words for a flow run by hand (no routes) when `by_hand`: its `NetworkIngress` is
-/// "can be run by hand".
-#[wasm_bindgen]
-pub fn describe_item_of(item: &str, by_hand: bool) -> String {
-    holon_author::describe::describe_item_of(item, by_hand)
-}
-
-/// `item` in words, as [`describe_item_of`], and beside a secret it reads, where the flow sends
+/// `item` in words, as [`describe_item`], and beside a secret it reads, where the flow sends
 /// it: `sent` is the deploy preview's `sent` (secret → hosts), none when JS passed nothing.
 #[wasm_bindgen]
-pub fn describe_item_sending(item: &str, by_hand: bool, sent: JsValue) -> Result<String, JsError> {
+pub fn describe_item_sending(item: &str, sent: JsValue) -> Result<String, JsError> {
     let sent: std::collections::BTreeMap<String, std::collections::BTreeSet<String>> = if sent.is_undefined() || sent.is_null() { Default::default() } else { from_js(sent, "sent")? };
-    Ok(holon_author::describe::describe_item_sending(item, by_hand, &sent))
+    Ok(holon_author::describe::describe_item_sending(item, &sent))
 }
 
 /// A flow's TypeScript text (`NAME.holon.ts`) as a flow document: `{name, doc, names, lines, spans}` (each
@@ -1750,15 +1742,13 @@ mod wasm_tests {
         );
     }
 
-    // A flow deployed on a schedule runs on the clock: the editor asks core, as the server does,
-    // so a clock flow that never reads the time still shows and asks for its trigger.
+    // What a flow asks for as it deploys: the editor asks core, as the server does.
     #[wasm_bindgen_test]
     fn deployed_capabilities_cross_js_boundary() {
         let mut ev = Evaluator::new();
         let hex = ev.insert(&encode_preimage(&binop("add")).unwrap()).unwrap();
         assert_eq!(ev.capability_names(&hex).unwrap(), Vec::<String>::new());
-        assert_eq!(ev.deployed_capability_names(&hex, false).unwrap(), Vec::<String>::new());
-        assert_eq!(ev.deployed_capability_names(&hex, true).unwrap(), vec!["Clock".to_string()]);
+        assert_eq!(ev.deployed_capability_names(&hex).unwrap(), Vec::<String>::new());
     }
 
     // get_unit (P4.3.1, expand-to-inspect's actual primitive): a hash already resolved in this

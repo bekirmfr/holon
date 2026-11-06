@@ -429,13 +429,12 @@ function Canvas({
       const port = doc.server?.port ?? DEFAULT_SETTINGS.port;
       const hash = flowUnitHash(doc.nodes as PrimitiveNodeType[], doc.edges as Edge[], ev, port);
       const server = deriveServer(doc.nodes as PrimitiveNodeType[], doc.edges as Edge[], ev, port);
-      const scheduled = (doc.server?.interval ?? "").trim() !== "" && server.endpoints.length === 0 && server.clocks.length === 0 && server.files.length === 0 && server.actions.length === 0;
-      const caps = ev.deployed_capability_names(hash, scheduled) as string[];
+      const caps = ev.deployed_capability_names(hash) as string[];
       // Its unrecorded handlers, each an item to approve (the server reads them from the unit).
       const unrecorded = [...server.endpoints.map((e) => ({ label: `${e.method} ${e.path}`, log: e.log })), ...server.clocks, ...server.files, ...server.actions]
         .filter((h) => h.log === "unrecorded")
         .map((h) => h.label);
-      return { items: manifestItems(caps, { ...doc.server?.requirements, unrecorded }), optional: doc.server?.requirements?.optional ?? [], trigger: manifestTrigger(caps), byHand: server.endpoints.length === 0 };
+      return { items: manifestItems(caps, { ...doc.server?.requirements, unrecorded }), optional: doc.server?.requirements?.optional ?? [], trigger: manifestTrigger(caps) };
     },
     [ev, byName],
   );
@@ -456,14 +455,13 @@ function Canvas({
       const { nodes: ns, edges: es } = live.current;
       if (ns.length === 0) return null;
       const hash = flowUnitHash(ns, es, ev, settings.port);
-      const scheduled = settings.interval.trim() !== "" && derived.endpoints.length === 0 && derived.clocks.length === 0 && derived.files.length === 0 && derived.actions.length === 0;
-      return ((ev.deployed_capability_names(hash, scheduled) as string[])).sort();
+      return (ev.deployed_capability_names(hash) as string[]).sort();
     } catch {
       return null;
     }
     // live.current is read on purpose, as `derived` above.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [canvasKey, ev, byName, settings.port, settings.interval, derived]);
+  }, [canvasKey, ev, byName, settings.port]);
   const flowCapabilities = useMemo(() => flowCaps ?? [], [flowCaps]);
   // What each node does with a secret (a request it is sent in, a write the host refuses, the
   // route's answer), by node id: the canvas marks them.
@@ -477,14 +475,10 @@ function Canvas({
     // live.current is read on purpose, as `derived` above.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [canvasKey, ev, byName, settings.port]);
-  // Nothing would start a run: no route, clock, file handler or action, nor, on a canvas, an
-  // `ingress` or `file_arrival` node or an interval (docs/L4s/triggers-L4.md fork 14). Deploy is greyed, saying
-  // what to add. Not said of a canvas that doesn't derive: that has its own error.
-  const startsNothing =
-    flowCaps !== null &&
-    derived.endpoints.length + derived.clocks.length + derived.files.length + derived.actions.length === 0 &&
-    settings.interval.trim() === "" &&
-    !flowCaps.some((c) => c === "NetworkIngress" || c.startsWith("FileArrival("));
+  // Nothing would start a run: no route, clock, file handler or action (docs/L4s/triggers-L4.md
+  // fork 14). Deploy is greyed, saying what to add. Not said of a canvas that doesn't derive: that
+  // has its own error.
+  const startsNothing = flowCaps !== null && derived.endpoints.length + derived.clocks.length + derived.files.length + derived.actions.length === 0;
 
   // A wire is legal iff the upstream output type and the downstream input type are core-compatible,
   // and the input isn't already fed. The type rule is core's — `compatible` bridges to
@@ -998,10 +992,6 @@ function Canvas({
               deployments={deployments}
               error={deployError || listError}
               onAction={(slug, action, from) => changeDeployment(slug, action, from).then(() => refreshDeployments())}
-              triggerInputs={deploymentTable.triggerInputs}
-              onTriggerInputChange={deploymentTable.onTriggerInputChange}
-              onTrigger={deploymentTable.onTrigger}
-              triggerResults={deploymentTable.triggerResults}
               onDelete={deploymentTable.onDelete}
               onView={onView}
               onChanged={refreshDeployments}

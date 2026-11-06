@@ -31,7 +31,6 @@ pub struct Plan {
     /// Its routes, `METHOD /path`; none for a flow without routes.
     pub routes: Vec<String>,
     pub port: Option<u16>,
-    pub interval_seconds: Option<u64>,
     pub requirements: Option<Value>,
     pub browsers: Option<String>,
     /// What it may do, as consent names (`NetworkIngress`, `StateWrite("beats")`), sorted.
@@ -62,7 +61,7 @@ pub fn plan(source: &str) -> Result<Plan, String> {
     } else {
         server.trace.clone()
     };
-    let mut may: Vec<String> = holon_core::deployed_capabilities(&root, &store, commands::scheduled(&c, &server)).iter().map(|c| consent_name(&c)).collect();
+    let mut may: Vec<String> = holon_core::deployed_capabilities(&root, &store).iter().map(|c| consent_name(&c)).collect();
     // A module (a js node) adds no capability; its budgets are limits the deploy asks for, and
     // the person approving sees them (the server merges them into the manifest the same way).
     may.extend(holon_core::module_limits_of(&root, &store).iter().map(|(name, n)| format!("Limit({name}={n})")));
@@ -81,7 +80,6 @@ pub fn plan(source: &str) -> Result<Plan, String> {
         document,
         routes: server.endpoints.iter().map(|e| format!("{} {}", e.method, e.path)).collect(),
         port: settings.port.trim().parse().ok(),
-        interval_seconds: settings.interval.trim().parse().ok(),
         requirements: settings.requirements.as_ref().and_then(|r| serde_json::to_value(r).ok()),
         browsers: settings.browsers.clone(),
         may,
@@ -111,7 +109,7 @@ pub fn describe(item: &str) -> String {
 /// A consent name as a person reads it, and beside a secret it reads, where the flow sends it
 /// (`sent`, as [`Plan::sent`]): "read the secret "k", and send it to https://api.example.com".
 pub fn describe_sending(item: &str, sent: &BTreeMap<String, BTreeSet<String>>) -> String {
-    describe_item_sending(item, false, sent)
+    describe_item_sending(item, sent)
 }
 
 // ── values ──────────────────────────────────────────────────────────────────────────────────
@@ -837,7 +835,6 @@ mod tests {
         assert_eq!(trace.len(), p.document["nodes"].as_array().unwrap().len(), "every node of the route, in the handler's stored order");
         // A clock is traced as its handler, and keeps its names.
         let beat = plan(samples::sample("heartbeat").unwrap().text).unwrap();
-        assert_eq!(beat.interval_seconds, None, "its clock is a handler's, not the flow's");
         assert!(beat.document["trace"]["every 10s"].is_array(), "{}", beat.document["trace"]);
         assert!(beat.document["bindings"].as_object().unwrap().values().any(|v| v == "t"));
     }

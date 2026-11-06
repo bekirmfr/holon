@@ -321,10 +321,6 @@ fn deploy(api: &dyn Api, text: &str, slug: Option<&str>) -> Result<String, Strin
     if let Some(r) = &plan.requirements {
         body["requirements"] = r.clone();
     }
-    // With its schedule, so the preview asks what the deploy will: a clock flow runs on the clock.
-    if let Some(i) = plan.interval_seconds {
-        body["interval_seconds"] = json!(i);
-    }
     if let Some(b) = &plan.browsers {
         // The plan keeps the origins on one line (`https://a.example *`); the deploy request
         // takes them one by one, as the editor sends them. The preview gets them too: answering
@@ -367,8 +363,8 @@ fn deploy(api: &dyn Api, text: &str, slug: Option<&str>) -> Result<String, Strin
     if !plan.routes.is_empty() {
         let port = entry.get("port").and_then(Value::as_u64).map(|p| p.to_string()).or(plan.port.map(|p| p.to_string())).unwrap_or_else(|| "?".into());
         out.push(format!("Its routes, answering on port {port}:\n{}", plan.routes.iter().map(|r| format!("  {r}")).collect::<Vec<_>>().join("\n")));
-    } else if let Some(i) = plan.interval_seconds {
-        out.push(format!("It runs every {i} s."));
+    } else if let Some(t) = plan.document["trace"].as_object().filter(|t| !t.is_empty()) {
+        out.push(format!("What starts its runs: {}.", t.keys().cloned().collect::<Vec<_>>().join(", ")));
     }
     if let Some(e) = entry.get("listen_error").and_then(Value::as_str) {
         out.push(format!("But its port can't be opened: {e}"));
@@ -468,8 +464,8 @@ fn deployment_line(d: &Value) -> String {
     let mut line = format!("{}: {}, version {}", s("slug"), s("status"), &unit[..unit.len().min(12)]);
     if let Some(p) = d.get("port").and_then(Value::as_u64) {
         line.push_str(&format!(", port {p}"));
-    } else if let Some(i) = d.get("interval_seconds").and_then(Value::as_u64) {
-        line.push_str(&format!(", every {i} s"));
+    } else if let Some(t) = d.get("triggers").and_then(Value::as_array).filter(|t| !t.is_empty()) {
+        line.push_str(&format!(", {}", t.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(", ")));
     }
     let runs = n("trigger_count");
     line.push_str(&format!("; {runs} run{}, {} failed", if runs == 1 { "" } else { "s" }, n("error_count")));

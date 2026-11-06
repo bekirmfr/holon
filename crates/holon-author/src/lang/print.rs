@@ -1064,7 +1064,7 @@ impl<'s> Printer<'s> {
         let handled: HashSet<&String> = routes.iter().flat_map(|r| &r.node_ids).chain(clocks.iter().flat_map(|c| &c.node_ids)).chain(files.iter().flat_map(|f| &f.node_ids)).chain(actions.iter().flat_map(|a| &a.node_ids)).collect();
         let stray: Vec<Vec<String>> = components(&ids, &doc.edges).into_iter().filter(|g| !g.iter().any(|id| handled.contains(id))).collect();
         if !stray.is_empty() {
-            let what = if doc.nodes.iter().any(|n| n.data.name == "file_arrival" || n.data.name == "ingress") {
+            let what = if doc.nodes.iter().any(|n| n.data.name == "file_arrival") {
                 " (a file that arrives is a file handler's parameter now: on.file.created(folder, (f) => …))"
             } else {
                 ""

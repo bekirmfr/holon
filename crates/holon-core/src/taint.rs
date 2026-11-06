@@ -423,11 +423,11 @@ pub fn sent_secrets(root: &Unit, resolver: &impl Resolver) -> BTreeMap<String, B
 /// What marks a destination in [`sent_secrets`] as where what is answered to a secret goes.
 pub const ANSWER: &str = "answer:";
 
-/// A unit's manifest as deployed: [`Capabilities::deployed`], and `SecretAnswer` for each secret
-/// its routes may answer with ([`answered_secrets`]). The host deploys and grants by it, and
+/// A unit's manifest as deployed: what its graph derives, and `SecretAnswer` for each secret its
+/// routes may answer with ([`answered_secrets`]). The host deploys and grants by it, and
 /// `holon check` and the editor show it.
-pub fn deployed_capabilities(root: &Unit, resolver: &impl Resolver, scheduled: bool) -> Capabilities {
-    let mut caps = capabilities(root, resolver).deployed(scheduled);
+pub fn deployed_capabilities(root: &Unit, resolver: &impl Resolver) -> Capabilities {
+    let mut caps = capabilities(root, resolver);
     for name in answered_secrets(root, resolver) {
         caps.insert(Capability::SecretAnswer(name));
     }
@@ -623,7 +623,7 @@ mod tests {
         // base64(token) and hmac(key, request) answered together.
         let leaks = endpoint(vec![e(0, 0, 2, 0), e(1, 0, 3, 0), e(BOUNDARY, 0, 3, 1), e(2, 0, 4, 0), e(3, 0, 4, 1), e(4, 0, BOUNDARY, 0)]);
         assert_eq!(answered_secrets(&leaks, &r), BTreeSet::from(["token".to_string()]));
-        let caps = deployed_capabilities(&leaks, &r, false);
+        let caps = deployed_capabilities(&leaks, &r);
         assert!(caps.contains(Capability::SecretAnswer("token".into())) && !caps.contains(Capability::SecretAnswer("key".into())));
         assert!(caps.contains(Capability::SecretRead("key".into())), "both are still read");
         // Only the hmac answered.

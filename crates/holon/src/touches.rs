@@ -250,16 +250,12 @@ pub(crate) fn with_restore(touches: &mut Value, since: &[LogEntry], state: &Valu
 }
 
 /// The deploy settings that differ between the version deployed now (`now`) and the one a dry run
-/// would deploy (`then`): how often it runs, and the sites whose pages it answers.
-pub(crate) fn settings(now: (Option<u64>, &[String]), then: (Option<u64>, &[String])) -> Value {
-    let every = |s: Option<u64>| s.map_or_else(|| "not on a clock".to_string(), |n| format!("every {}", holon_core::period_text(n)));
+/// would deploy (`then`): the sites whose pages it answers.
+pub(crate) fn settings(now: &[String], then: &[String]) -> Value {
     let sites = |b: &[String]| if b.is_empty() { "none".to_string() } else { b.join(" ") };
     let mut out = vec![];
-    if now.0 != then.0 {
-        out.push(json!({ "name": "runs", "now": every(now.0), "then": every(then.0) }));
-    }
-    if now.1 != then.1 {
-        out.push(json!({ "name": "answers pages from", "now": sites(now.1), "then": sites(then.1) }));
+    if now != then {
+        out.push(json!({ "name": "answers pages from", "now": sites(now), "then": sites(then) }));
     }
     Value::Array(out)
 }
@@ -468,7 +464,7 @@ mod tests {
         };
         let since = [ran(&["HttpRequest(\"b.example\")", "StateWrite(\"count\")"]), ran(&["HttpRequest(\"b.example\")"])];
         with_restore(&mut rows, &since, &json!({ "changed": ["count"], "added": [], "removed": [] }));
-        let said = text(&lines(&rows, &settings((None, &[]), (Some(60), &[]))));
+        let said = text(&lines(&rows, &settings(&[], &["https://shop.example".to_string()])));
         assert_eq!(
             said,
             [
@@ -484,7 +480,7 @@ mod tests {
                 "What it keeps",
                 "  · key count: write — putting the state back changes it",
                 "Its settings",
-                "  ~ runs: not on a clock → every 1m",
+                "  ~ answers pages from: none → https://shop.example",
             ]
         );
     }

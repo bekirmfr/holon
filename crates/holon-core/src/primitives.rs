@@ -567,7 +567,7 @@ pub(crate) fn compute_op(op: Op, name: &str, inputs: &[&Value], params: &[Param]
         Op::Egress => sink_effect("egress", inputs),
         // A state write is a Fork-B sink too: it constructs a `store_write` request; the host
         // performs it by *storing* (capability `StateWrite`). `store_read` has no pure compute
-        // — it is sourced (host-supplied), like a driver. `ingress` is sourced too (no compute).
+        // — it is sourced (host-supplied), like a driver. Drivers are sourced too (no compute).
         //
         // Keyed now (see the keyed-state-capability L4): the settled `Value::Effect` this
         // constructs is the ONLY thing that survives evaluation — the leaf's own `params` are
@@ -1738,7 +1738,6 @@ mod tests {
             compute("egress", &[&payload], &[]),
             Some(Value::Effect { sink: "egress".into(), payload: Box::new(payload) })
         );
-        assert_eq!(compute("ingress", &[], &[]), None); // ingress is sourced, not computed
     }
     #[test]
     fn pair_builds_a_pair() {

@@ -164,14 +164,12 @@ describe("sample flows", () => {
     expect(manifestTrigger(shop)).toBe("NetworkIngress");
     expect(describeItem('RunsAction("billing/charge")')).toBe("run the action charge of the flow billing");
     expect(derive("billing").caps).toContain('Action("charge")');
-    // An old flow run by hand (no routes, `ingress`) says so where a server receives requests.
-    expect(describeItem("NetworkIngress", true)).toBe("can be run by hand");
     expect(describeItem("NetworkIngress")).toBe("receive requests");
     // The approval says where each secret goes, beside it (the deploy preview's `sent`).
     const sent = { slack_webhook_path: ["hooks.slack.com"] };
-    expect(describeItemSending('SecretRead("slack_webhook_path")', false, sent)).toBe('read the secret "slack_webhook_path", and send it to https://hooks.slack.com');
-    expect(describeItemSending('SecretRead("stripe_webhook_secret")', false, sent)).toBe('read the secret "stripe_webhook_secret"');
-    expect(describeItemSending("NetworkIngress", false, undefined)).toBe("receive requests");
+    expect(describeItemSending('SecretRead("slack_webhook_path")', sent)).toBe('read the secret "slack_webhook_path", and send it to https://hooks.slack.com');
+    expect(describeItemSending('SecretRead("stripe_webhook_secret")', sent)).toBe('read the secret "stripe_webhook_secret"');
+    expect(describeItemSending("NetworkIngress", undefined)).toBe("receive requests");
   });
 
   it("tell required permissions from optional ones, the trigger always required", () => {

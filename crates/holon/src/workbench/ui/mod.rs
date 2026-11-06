@@ -411,14 +411,12 @@ pub(super) fn status(d: &Value) -> Span<'static> {
     }
 }
 
-/// How a deployment is reached: its port, its clock, or what starts its runs besides a person
-/// (its clock handlers, `every 5s`, and file handlers, `on file inbox`).
+/// How a deployment is reached: its port, or what starts its runs besides a person (its clock
+/// handlers, `every 5s`, and file handlers, `on file inbox`).
 pub(super) fn reach(d: &Value) -> String {
     let started = d["triggers"].as_array().into_iter().flatten().filter_map(Value::as_str).filter(|t| t.starts_with("every ") || t.starts_with("on file ")).collect::<Vec<_>>();
     if let Some(p) = d["port"].as_u64() {
         format!(":{p}")
-    } else if let Some(i) = d["interval_seconds"].as_u64() {
-        format!("every {i}s")
     } else if !started.is_empty() {
         started.join(", ")
     } else {

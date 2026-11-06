@@ -17,10 +17,9 @@ is [Performance](../themes/performance.md#three-levels-of-record) and
 | `on.file.created(inbox, (f) => { … }, { matching: "…" })`, `on.file.deleted(…)` | a file settling in, or leaving, a named folder | one a file, `f` its handle | `FileArrival("inbox")` | `arrivals.rs` |
 | `export const reset = action((input) => { … })` | a person, an agent or another flow, through Holon | one a call, `input` what was sent | `Action("reset")` | `deploy.rs` |
 
-Every flow written has handlers. The forms without them (`every 10s` or `on file inbox` as a
-header, the whole flow its unit; a flow reading `ingress` and nothing else) went with the switch to
-TypeScript (LANGUAGE.md §10). The server still runs such a unit, as a canvas can still make one: on
-an interval, on files, or by hand through `/trigger/<slug>`. A **resume** route
+Every flow has handlers. The forms without them (`every 10s` or `on file inbox` as a header, the
+whole flow its unit; a flow reading `ingress` and nothing else) went with the switch to TypeScript
+(LANGUAGE.md §10), and the server, the `ingress` leaf and `holon trigger` with them. A **resume** route
 (`{ resumes: "paid" }`) continues a waiting run ([Durable runs](durable-runs.md)). A **channel**
 starts nothing: a send is a sink, and a subscription is a route's run.
 
@@ -35,10 +34,9 @@ routes), `billing` and `shop` (actions, and a flow calling another's), `approval
 ### What deploy reads
 
 Deploy derives the triggers from the unit: a server's `routes`, `clocks`, `files` and `actions`
-(`read_server`, `declare.rs`: a `Server`), or, for a unit without handlers (a canvas frozen
-whole), its capabilities. A unit whose capabilities include `Clock` and has no handlers needs
-`interval_seconds` (at least 1) as a deploy setting; a flow with `every` handlers refuses one
-("this flow's clocks are in its text"). A flow nothing would start is refused with what to write.
+(`read_server`, `declare.rs`: a `Server`). A unit that isn't a server, or one with no handler,
+would start nothing, and is refused with what to write (`STARTS_NOTHING`); a saved deployment of
+one is skipped at load, saying so.
 Each handler has a label core gives it (`GET /notes`, `every 2s`, `on file inbox`,
 `action reset`), the label is the log entry's `route`, and a trigger is never an optional
 permission (`permission_kind`). A clock's period is at most `MAX_PERIOD` (366 days).
@@ -58,10 +56,9 @@ over the control plane.
 ### Clocks
 
 `spawn_clock_scheduler` starts one thread that, every second, calls `run_due_clock_ticks` and then
-`expire_waiting`. A running deployment is due when its `next_due` (a flow on an interval) or one
-of its `clock_due` (one per `every` handler, `server.clocks`) has passed; every due tick of the pass
-fires on its own scoped thread, and the pass ends when all have. `fire_one_clock_tick` fires the
-handler (or the whole unit) with no inputs, `Clock` (the tick's epoch seconds) and `Random`
+`expire_waiting`. A clock of a running deployment is due when its `clock_due` (one per `every`
+handler, `server.clocks`) has passed; every due tick of the pass fires on its own scoped thread,
+and the pass ends when all have. `fire_one_clock_tick` fires the handler with no inputs, `Clock` (the tick's epoch seconds) and `Random`
 sourced and the clock budget, logs a `tick` under the handler's label, keeps the last 20 ticks
 (`history`), and sets the next due a period after the pass's `now`. `arm_clocks` makes every clock
 due at once: at deploy, at load, and when a deployment runs again. **Tick now** is
@@ -80,14 +77,13 @@ are seen, not run on; a file the flow's own runs wrote, copied or deleted starts
 starts at most `MAX_RUNS_PER_LOOK` (100) runs a deployment. A server's file handlers each run
 alone, a file two handlers are for starting a run of each, logged as `file` under the label.
 
-### Actions, `/trigger` and flow calls
+### Actions and flow calls
 
 `POST /trigger/<slug>/<name>` (`handle_post_action`) runs one action with a JSON body (nothing is
 `{}`), logged as a `trigger` under `action <name>` with `by` saying who ran it; it answers
 `{answer, seq}`. An editor or admin may run it; an agent only with `AgentRuns("<name>")` in the
-grant (403 otherwise); the network never. `POST /trigger/<slug>` (`handle_post_trigger`) runs a
-unit without handlers once, its body the `ingress` value; on a server it answers 400 naming the
-way in. Another flow runs an action through its own grant (`RunsAction("billing/charge")`) with
+grant (403 otherwise); the network never. `POST /trigger/<slug>`, naming no action, answers 400
+naming the way in (`unnamed_action`), or 404 for a deployment with no action. Another flow runs an action through its own grant (`RunsAction("billing/charge")`) with
 `flow_call`, performed between rounds like an outbound call, its answer kept in the caller's record
 so a retry and `holon verify` never call again; a chain is at most `max_call_depth` deep (3 by
 default, 8 at most) and answers `too_deep` past it.
@@ -101,7 +97,7 @@ strict when absent):
 |---|---|
 | a route, an `every` handler, a file handler, an action | as its `log` option says (`Permit::log_level`) |
 | a request no route took | `lazy` (Q12) |
-| a unit without handlers (on an interval, on files, by hand), a resumed part | strict |
+| a resumed part | strict |
 
 Any handler may be `lazy` or `unrecorded`, as its author writes it, whatever it does. `unrecorded` holds only where
 granted (`Unrecorded("GET /health")`, and `[grants] allow_unrecorded`); ungranted, the run is
@@ -114,8 +110,9 @@ syncs the same way but has no one to answer.
 - **Handlers, not one trigger a flow.** The trigger shouldn't decide what a flow can be: a clock
   beside routes shares the routes' state, channels and grant, one deployment, one log, one chain,
   one approval (TL4 §2). At rc.29 the forms without handlers lowered as before, every sink gaining
-  a `trigger` input; with the switch to TypeScript every flow written has handlers, and units got
-  new hashes (Holon keeps nothing compatible while in development).
+  a `trigger` input; with the switch to TypeScript every flow has handlers, units got new hashes
+  (Holon keeps nothing compatible while in development), and the server stopped running a unit
+  without them.
 - **A port per deployment.** A deployment is a server of its own; one slow or busy deployment's
   listener is not another's, and stopping it releases its port (lifecycle).
 - **Actions never from the network.** A route is the network's way in; an action is Holon's, so who
@@ -163,17 +160,17 @@ In `crates/holon/src/tests.rs`:
   `a_server_deployment_whose_port_is_taken_says_it_is_not_answering`,
   `listening_beyond_loopback_warns_that_it_is_plain_http`,
   `a_light_route_answers_on_the_data_planes_worker_as_any_route_does` (G2).
-- Clocks: `deploy_clock_unit_requires_a_valid_interval`, `clock_ticks_fire_when_due_and_not_before`,
+- Clocks: `clock_ticks_fire_when_due_and_not_before`,
   `multiple_due_clock_deployments_all_fire_in_one_pass`, `clock_tick_with_state_persists_across_ticks`,
-  `a_flow_on_a_schedule_deploys_without_reading_the_clock`, `a_clock_runs_history_never_shows_a_secret`,
-  `delete_deployment_stops_future_clock_ticks`,
+  `a_clock_runs_history_never_shows_a_secret`, `delete_deployment_stops_future_clock_ticks`,
   `a_servers_clock_ticks_on_its_period_beside_its_routes_and_verifies`.
 - Files: `new_files_start_runs_that_send_them_on_by_handle`,
   `on_file_lines_run_on_several_folders_deletions_and_matching_names`,
   `a_file_a_run_deletes_starts_no_run`,
   `a_servers_file_handlers_run_alone_for_their_lines_beside_its_routes_and_verify`.
-- By hand: `deploy_derives_ingress_trigger_and_the_trigger_endpoint_fires_it`,
-  `trigger_with_state_persists_across_calls`, `a_servers_actions_run_by_name_with_what_was_sent_and_verify`,
+- Actions: `a_servers_actions_run_by_name_with_what_was_sent_and_verify`,
+  `trigger_with_state_persists_across_calls`, `an_actions_run_is_given_the_clock_and_randomness`,
+  `delete_deployment_stops_its_actions_and_removes_it_from_the_list`,
   `an_actions_reported_entry_is_its_own_under_concurrent_runs`,
   `a_flow_runs_another_flows_action_and_both_logs_say_so`, `a_call_that_cant_be_made_says_why`,
   `a_chain_of_calls_is_never_a_loop_and_is_only_so_long`.
@@ -203,3 +200,4 @@ files, or a folder whose OS notices are dropped.
 | `e40e7b5` | `unrecorded` handlers, approved per handler, counted |
 | `c5e5556`, `dc21f76` | A short route answered on the data plane's worker (12.1); narrowed to runs that can never wait (R2) |
 | `4bb40a8` | An unrecorded run is never logged, failed or not |
+| TypeScript L4, step 7 | Flows without handlers gone from the server: no `interval_seconds`, no `ingress` leaf, no `holon trigger` or unnamed `/trigger/<slug>` run |

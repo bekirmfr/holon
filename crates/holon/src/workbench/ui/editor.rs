@@ -394,7 +394,7 @@ fn draw_side(f: &mut Frame, app: &App, area: Rect) {
             if tab.deployed.as_ref().is_some_and(|d| plan.may.iter().any(|i| !d.contains(i))) {
                 may.push(Line::from(coloured("+ new since deployed: deploying asks you", WARN)));
             }
-            let reach = if !plan.routes.is_empty() { plan.routes.join("  ") } else { plan.interval_seconds.map(|i| format!("every {i} s")).unwrap_or_else(|| "started by hand".into()) };
+            let reach = if !plan.routes.is_empty() { plan.routes.join("  ") } else { crate::workbench::app::started_by(plan).unwrap_or_else(|| "started by hand".into()) };
             may.push(Line::default());
             may.push(Line::from(dim(reach)));
         }

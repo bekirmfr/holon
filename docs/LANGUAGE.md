@@ -2269,7 +2269,8 @@ the syntax to TypeScript's, keeping the lowering.
      so `holon tick` runs heartbeat by hand where `holon trigger` did. The manual's flows are `ts`
      blocks checked as `.holon.ts`, its reference and tour rewritten; the test flows and the agent's guide are TypeScript. The slice's last part
      removes the `.holon` parser and grammar, and with them the wiring form and flows without
-     handlers (§10); the printer writes TypeScript (§11).
+     handlers (§10); the printer writes TypeScript (§11). Then the server stopped running a unit
+     without handlers: no interval setting, no `ingress` leaf, no `holon trigger`.
 
    Next are the L4's slices 5 to 11: `try`, `catch {}`, `throw` and `finally`, over a `fail` leaf;
    computing loops, as folds over a bounded range; requests and calls that wait (`await` with

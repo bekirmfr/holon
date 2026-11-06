@@ -113,11 +113,6 @@ impl Watch {
         !self.folders.is_empty()
     }
 
-    /// The trigger labels it adds (`Files inbox`).
-    pub(crate) fn labels(&self) -> impl Iterator<Item = String> + '_ {
-        self.folders.iter().map(|f| format!("Files {f}"))
-    }
-
     /// Forget what it saw (the deployment is deleted).
     pub(crate) fn forget(&self) {
         if let Some(f) = &self.file {

@@ -120,7 +120,7 @@ digits, `-` and `_`.
 
 The deploy bar (edit mode, in the toolbar) has **deploy** (or **update**, with **•** when the
 canvas differs from what is deployed), the deployment's state and port, **pause**, **resume**,
-**stop** and **run**, and **⚙** for its settings: port, interval, limits, secrets, optional
+**stop** and **run**, and **⚙** for its settings: port, limits, secrets, optional
 permissions and which actions agents may run. Deploying shows what the flow may do and asks you
 to approve what isn't granted yet. [Deploying and permissions](deploying.md) covers it in full.
 

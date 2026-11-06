@@ -785,7 +785,6 @@ mod tests {
             assert_eq!(lowered.name.as_deref(), Some(s.name), "{}: flow name", s.name);
             let server = lowered.doc.server.unwrap_or_default();
             assert_eq!(server.port, s.port.unwrap_or_default(), "{}: port", s.name);
-            assert!(server.interval.is_empty(), "{}: a clock is an every(…) handler", s.name);
             assert_eq!(server.browsers.as_deref(), s.browsers, "{}: browsers", s.name);
             let optional: Vec<String> = server.requirements.and_then(|r| r.optional).unwrap_or_default();
             assert_eq!(optional, s.optional, "{}: optional", s.name);

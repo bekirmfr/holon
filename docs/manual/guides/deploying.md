@@ -75,7 +75,7 @@ open and deploy ([Working with agents](agents.md)).
 |---|---|
 | port | the port a server flow answers on (the text's `port` line) |
 | web pages from | origins whose web pages may call the routes from a browser (CORS): `*`, or `https://site`; the text's `browsers` line |
-| interval (s) | how often a clock flow runs (the text's `every` line). A flow with `every` blocks has its periods in the text and shows them here instead, `clocks every 2s`: it takes no interval |
+| clocks | its `every` handlers' periods, `every 2s`, as the text says them (shown, not set here) |
 | needs | limits for this deployment, each blank for the host's default: timeouts, run budgets, requests per run, sizes, redirects, the longest `await`, runs waiting at once |
 | plain HTTP to | hosts it may call over plain `http://` (only if the policy allows plain HTTP at all) |
 | private addresses | whether it may call this machine and its network (only if the policy allows it) |

@@ -48,8 +48,8 @@ pub const GENESIS: &[&str] = &[
     // and a call to another deployed flow's action, which the host runs in-process, and a start
     // of one, which doesn't wait for it to end (2)
     "flow_call", "flow_start",
-    // drivers — sourced, no compute (5): a new file in a folder starts a run, as a request does
-    "clock", "random", "ingress", "secret", "file_arrival",
+    // drivers — sourced, no compute (4): a new file in a folder starts a run, as a request does
+    "clock", "random", "secret", "file_arrival",
     // durable runs — answered by the host when an event arrives (2)
     "await", "resume_token",
     // state cell (2)
@@ -242,7 +242,6 @@ pub fn interface_of(name: &str) -> Option<Unit> {
         //    the payload is genuinely polymorphic (the editor may specialize later). ──
         "clock" => prim(vec![], vec![], Number),
         "random" => prim(vec![], vec![], Number),
-        "ingress" => prim(vec![], vec![], Any),
         // The handle of the new file that started the run.
         // `on`: `new` (a file new or changed) or `deleted`; `matching`: a glob on its name, empty
         // for every file. The host reads both from the deployed graph.
@@ -487,8 +486,9 @@ mod tests {
         // http_upload), and the create-only pair (file_create, file_create_copy), and the
         // channel pair (channel_send, channel_subscribe), and http_stream, and the database kit
         // (db_query, db_one, db_exec), and the document kit (db_find, db_find_one, db_insert,
-        // db_update, db_delete), and flow_call and flow_start.
-        assert_eq!(GENESIS.len(), 96);
+        // db_update, db_delete), and flow_call and flow_start; less ingress, which a flow without
+        // handlers read its trigger by.
+        assert_eq!(GENESIS.len(), 95);
     }
 
     #[test]

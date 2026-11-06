@@ -28,21 +28,18 @@ pub(crate) fn derives_state(mut caps: impl Iterator<Item = Capability>) -> bool 
 /// `Ingress` for a unit that takes requests some other way, plus `Clock` for a flow on an
 /// interval (`clock` is false for a server, whose clocks are its own). Deploy and reload both
 /// derive it here.
-pub(crate) fn trigger_labels(server: Option<&Server>, ingress: bool, clock: bool) -> Vec<String> {
+pub(crate) fn trigger_labels(s: &Server) -> Vec<String> {
     let mut triggers = Vec::new();
-    if let Some(s) = server {
-        triggers.extend(s.port.map(|port| format!("Http :{port}")));
-        triggers.extend(s.clocks.iter().map(|c| c.label.clone()));
-        triggers.extend(s.files.iter().map(|f| f.label.clone()));
-        triggers.extend(s.actions.iter().map(|a| a.label.clone()));
-    } else if ingress {
-        triggers.push("Ingress".to_string());
-    }
-    if clock {
-        triggers.push("Clock".to_string());
-    }
+    triggers.extend(s.port.map(|port| format!("Http :{port}")));
+    triggers.extend(s.clocks.iter().map(|c| c.label.clone()));
+    triggers.extend(s.files.iter().map(|f| f.label.clone()));
+    triggers.extend(s.actions.iter().map(|a| a.label.clone()));
     triggers
 }
+
+/// What a deploy of a unit nothing would start says.
+pub(crate) const STARTS_NOTHING: &str =
+    "nothing would start a run: it has no route, clock, file handler or action (an action runs by hand: `export const run = action((input) => { … })`)";
 
 pub(crate) fn is_valid_slug(s: &str) -> bool {
     !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
@@ -113,15 +110,12 @@ fn approval_needed(policy: &Policy, manifest: &Manifest, previous: &Previous, se
     (needed, withheld)
 }
 
-/// `POST /deploy` — register `slug → unit`. The trigger(s) are **derived**, not asserted:
-/// `capabilities(unit, resolver)` (the same closure-union already used for capability-consent
-/// elsewhere in this project) tells us whether the unit needs `Ingress`, `Clock`, both, or
-/// neither — the caller only supplies what genuinely can't be read off the graph
-/// (`interval_seconds`: nothing tells you "every 3600 seconds" from structure alone). A unit
-/// without routes deployed with an interval runs on the clock, so `Clock` is in its manifest
-/// whether or not it reads the time (core's `Capabilities::deployed`). A unit with no trigger is
-/// refused — nothing would start a run. A repeat slug is a redeploy, not an error (the L4's Fork 2): the unit, triggers
-/// and schedule are replaced, but the slug's **state is kept** (see the insert below).
+/// `POST /deploy` — register `slug → unit`. The triggers are **derived**, not asserted: the
+/// unit is a server declaration whose handlers (routes, clocks, file handlers, actions) are what
+/// start its runs (`read_server`). A unit that isn't one, or has no handler, is refused —
+/// nothing would start a run (`STARTS_NOTHING`). A repeat slug is a redeploy, not an error (the
+/// L4's Fork 2): the unit and its triggers are replaced, but the slug's **state is kept** (see
+/// the insert below).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn handle_post_deploy(
     store: &SharedStore,
@@ -188,49 +182,34 @@ fn deploy(
         return err(404, "no unit stored at that hash — stage or publish it first");
     };
 
-    // A server declaration is answered on its own port (the data plane), so it needs neither
-    // `/trigger` nor a schedule. Its clock/random leaves are sourced per request instead.
-    let server = match declaration_of(root_unit) {
-        Some("server") => match read_server(root_unit, &resolver) {
-            Ok(s) => Some(s),
-            Err(e) => return err(400, format!("not a valid server declaration: {e:?}")),
-        },
-        _ => None,
+    // A flow is a server declaration: its routes answered on its own port (the data plane), its
+    // clocks, file handlers and actions run by the host. A unit that isn't one, or a server with
+    // no handler, has nothing to start a run.
+    let server = match read_server(root_unit, &resolver) {
+        Ok(s) => s,
+        Err(holon_core::DeclError::NotAServer | holon_core::DeclError::NoHandlers) => return err(400, STARTS_NOTHING),
+        Err(e) => return err(400, format!("not a valid server declaration: {e:?}")),
     };
-    // A flow deployed on a schedule runs on the clock, whether or not it reads the time.
-    let caps = holon_core::deployed_capabilities(root_unit, &resolver, body.interval_seconds.is_some() && server.is_none());
-    let is_ingress = caps.contains(Capability::NetworkIngress);
-    let is_clock = caps.contains(Capability::Clock) && server.is_none();
-    let has_clocks = server.as_ref().is_some_and(|s| !s.clocks.is_empty());
-    let has_actions = server.as_ref().is_some_and(|s| !s.actions.is_empty());
+    let caps = holon_core::deployed_capabilities(root_unit, &resolver);
     let arrivals = Arc::new(arrivals::Watch::open(deployments_path, &body.slug, &caps, holon_core::file_triggers(root_unit, &resolver)));
-    if !is_ingress && !is_clock && !has_clocks && !has_actions && !arrivals.watches() {
-        return err(
-            400,
-            "nothing would start a run: it has no route, clock, file handler or action. To run it by hand, put it in an `action run (input) { … }`",
-        );
-    }
-    if has_clocks && body.interval_seconds.is_some() {
-        return err(400, "this flow's clocks are in its text (its `every` blocks): it takes no interval_seconds");
-    }
     // What starts its clocks' runs is never optional, beside routes too (the manifest names one
     // trigger, `NetworkIngress`, then).
-    if has_clocks && body.requirements.optional.contains("Clock") {
-        return err(400, "Clock starts this flow's clocks (its `every` blocks): it can't be optional");
+    if !server.clocks.is_empty() && body.requirements.optional.contains("Clock") {
+        return err(400, "Clock starts this flow's clocks (its `every` handlers): it can't be optional");
     }
     // Nor is what starts its file handlers' runs.
-    for f in server.iter().flat_map(|s| &s.files) {
+    for f in &server.files {
         let named = format!("FileArrival({:?})", f.trigger.folder);
         if body.requirements.optional.contains(&named) {
             return err(400, format!("{named} starts this flow's {}: it can't be optional", f.label));
         }
     }
     // Agents may run only actions it has.
-    if let Some(name) = body.requirements.agents.iter().find(|n| server.as_ref().is_none_or(|s| s.action(n).is_none())) {
+    if let Some(name) = body.requirements.agents.iter().find(|n| server.action(n).is_none()) {
         return err(400, format!("agents may run {name:?}, but it has no action {name:?}"));
     }
     // Nor its actions'.
-    for a in server.iter().flat_map(|s| &s.actions) {
+    for a in &server.actions {
         let named = format!("Action({:?})", a.name);
         if body.requirements.optional.contains(&named) {
             return err(400, format!("{named} starts this flow's {}: it can't be optional", a.label));
@@ -247,7 +226,7 @@ fn deploy(
         return err(400, format!("this host can't grant that: {why}"));
     }
     let previous = previous_of(deployments, &body.slug);
-    let (mut needed, withheld) = approval_needed(policy, &manifest, &previous, server.as_ref(), unit_hash, agent);
+    let (mut needed, withheld) = approval_needed(policy, &manifest, &previous, Some(&server), unit_hash, agent);
     if agent {
         needed.extend(browsers_added(&body.browsers, &previous.browsers));
     }
@@ -292,24 +271,7 @@ fn deploy(
         return err(400, format!("this host can't grant that: {why}"));
     }
 
-    let interval_seconds = if is_clock {
-        match body.interval_seconds {
-            Some(n) if n >= 1 => Some(n),
-            Some(_) => return err(400, "interval_seconds must be at least 1 (the L4's Fork 3 floor)"),
-            None => {
-                return err(400, "this unit's derived capabilities include Clock — interval_seconds is required")
-            }
-        }
-    } else {
-        None
-    };
-    // Fires on the scheduler's very next pass rather than waiting a full interval the first
-    // time — a person deploying a clock flow wants to see it work now, not in an hour.
-    let next_due = interval_seconds.map(|_| SystemTime::now());
-
-    let mut triggers = trigger_labels(server.as_ref(), is_ingress, is_clock);
-    // A server's file handlers are named by their lines, among its triggers already.
-    triggers.extend(arrivals.labels().filter(|_| server.is_none()));
+    let triggers = trigger_labels(&server);
     let is_state = derives_state(caps.iter());
     // Its canvas goes into the content store before anything changes, so a store that can't take
     // it refuses the deploy rather than losing the version's canvas.
@@ -324,12 +286,11 @@ fn deploy(
 
     {
         let mut deployments = deployments.lock().unwrap();
-        if let Some(s) = &server
-            && let Some((other, _)) = deployments
-                .iter()
-                .find(|(other, d)| **other != body.slug && s.port.is_some() && d.server.as_ref().is_some_and(|o| o.port == s.port))
+        if let Some((other, _)) = deployments
+            .iter()
+            .find(|(other, d)| **other != body.slug && server.port.is_some() && d.server.as_ref().is_some_and(|o| o.port == server.port))
         {
-            return err(409, format!("port {} is already served by deployment {other:?}", s.port.unwrap_or_default()));
+            return err(409, format!("port {} is already served by deployment {other:?}", server.port.unwrap_or_default()));
         }
         // A redeploy keeps the slug's state: shipping a fix must never wipe the data the
         // previous version wrote. The *same* `Arc` is carried over (not a copy), so a fire still
@@ -379,7 +340,6 @@ fn deploy(
             by: by.map(String::from),
             restored_from,
             request: Some(VersionRequest {
-                interval_seconds: body.interval_seconds,
                 requirements: body.requirements.clone(),
                 uses: body.uses.clone(),
                 browsers: body.browsers.clone(),
@@ -418,12 +378,10 @@ fn deploy(
                 parked,
                 unit: unit_hash,
                 triggers: triggers.clone(),
-                interval_seconds,
-                next_due,
-                clock_due: server.as_ref().map(|s| vec![SystemTime::now(); s.clocks.len()]).unwrap_or_default(),
+                clock_due: vec![SystemTime::now(); server.clocks.len()],
                 history: Vec::new(),
                 state,
-                server,
+                server: Some(server),
                 trigger_count: 0,
                 error_count: 0,
                 tallies: BTreeMap::new(),
@@ -444,7 +402,7 @@ fn deploy(
     persist_deployments(deployments_path, deployments);
     activity.record(if restored_from.is_some() { "restored" } else { "deployed" }, &body.slug, by);
 
-    Response::json(&DeployResponseBody { slug: body.slug, unit: to_hex(&unit_hash), triggers, interval_seconds, version })
+    Response::json(&DeployResponseBody { slug: body.slug, unit: to_hex(&unit_hash), triggers, version })
 }
 
 /// Build the wire-facing summary of one deployment — shared by `GET /deployments` and
@@ -455,7 +413,6 @@ pub(crate) fn deployment_entry(slug: &str, dep: &Deployment) -> DeploymentEntry 
         slug: slug.to_string(),
         unit: to_hex(&dep.unit),
         triggers: dep.triggers.clone(),
-        interval_seconds: dep.interval_seconds,
         has_state: dep.state.is_some(),
         port: dep.server.as_ref().and_then(|s| s.port),
         routes: dep
@@ -543,9 +500,7 @@ fn preview_value(
     let Some(root_unit) = resolver.resolve(&unit_hash) else {
         return Err(err(404, "no unit stored at that hash — stage or publish it first"));
     };
-    // As the deploy will derive it: on a schedule, it runs on the clock.
-    let scheduled = body.interval_seconds.is_some() && declaration_of(root_unit) != Some("server");
-    let manifest = Manifest::new(holon_core::deployed_capabilities(root_unit, &resolver, scheduled).iter(), body.requirements.clone().of_unit(root_unit, &resolver));
+    let manifest = Manifest::new(holon_core::deployed_capabilities(root_unit, &resolver).iter(), body.requirements.clone().of_unit(root_unit, &resolver));
     let previous = previous_of(deployments, &body.slug);
     let server = read_server(root_unit, &resolver).ok();
     let (mut needs, withheld) = approval_needed(policy, &manifest, &previous, server.as_ref(), unit_hash, agent);
@@ -568,7 +523,7 @@ fn preview_value(
     let sent = holon_core::sent_secrets(root_unit, &resolver);
     let touches = touches::touches(&server, &touches::Ask { now: now.as_deref(), then: &then, needs: &needing, withheld: &withholding, optional: &optional, sent: &sent });
     let settings = match &asked_now {
-        Some(a) => touches::settings((a.interval_seconds, &a.browsers), (body.interval_seconds, &body.browsers)),
+        Some(a) => touches::settings(&a.browsers, &body.browsers),
         None => serde_json::json!([]),
     };
     Ok(serde_json::json!({
@@ -777,8 +732,8 @@ pub(crate) fn handle_get_permission_view(
     slug: &str,
     which: &str,
 ) -> Response {
-    let (unit, grant, attention, scheduled) = match deployments.lock().unwrap().get(slug) {
-        Some(d) => (d.unit, d.grant.clone(), d.attention.clone(), d.interval_seconds.is_some()),
+    let (unit, grant, attention) = match deployments.lock().unwrap().get(slug) {
+        Some(d) => (d.unit, d.grant.clone(), d.attention.clone()),
         None => return err(404, format!("no deployment {slug:?}")),
     };
     if which == "grant" {
@@ -789,7 +744,7 @@ pub(crate) fn handle_get_permission_view(
         Err(e) => return e.response(),
     };
     let Some(root) = resolver.resolve(&unit) else { return err(500, "deployed unit no longer resolves in the store") };
-    let manifest = Manifest::new(holon_core::deployed_capabilities(root, &resolver, scheduled).iter(), grant.requirements.clone().of_unit(root, &resolver));
+    let manifest = Manifest::new(holon_core::deployed_capabilities(root, &resolver).iter(), grant.requirements.clone().of_unit(root, &resolver));
     Response::json(&serde_json::json!({
         "hash": to_hex(&manifest.hash()),
         "capabilities": manifest.capabilities,
@@ -889,18 +844,8 @@ pub(crate) fn handle_delete_deployment(
     }
 }
 
-/// `POST /trigger/<slug>` — the ingress trigger. Looks up the deployed unit, materializes its
-/// closure exactly as `/fire` and the cache endpoints do, and settles it via `fire_sourced`
-/// with the raw request body injected as `Capability::NetworkIngress` — wrapped as
-/// `Value::Text`, the L4's Fork 3 default (`ingress`'s declared output type is `Any`; nothing
-/// forces this choice, but Text matches how every other text-shaped payload already crosses
-/// this boundary). A flow wanting structured data parses that Text itself, downstream, using
-/// this project's own `Sum`/`select` machinery — not a format this endpoint imposes. Works
-/// against any deployed unit regardless of its derived triggers (a `Clock`-only unit just won't
-/// have an `ingress` leaf for the resolver to substitute, so this is harmless, not unsafe, to
-/// allow uniformly rather than gating on which triggers were derived at deploy time).
 /// Bump a deployment's trigger/error counters after a fire attempt — a small, shared tail
-/// step for both `handle_post_trigger` and `fire_one_clock_tick`. Locks the table only
+/// step for its runs (an action's, a clock's tick, a file's). Locks the table only
 /// briefly; if the deployment was deleted concurrently between the earlier lookup and this
 /// call, this quietly no-ops rather than panicking, the same defensive shape
 /// `fire_one_clock_tick`'s own history write-back already uses.
@@ -914,109 +859,12 @@ pub(crate) fn record_trigger(deployments: &Mutex<BTreeMap<String, Deployment>>, 
     }
 }
 
-/// `POST /trigger/<slug>` — the ingress trigger. Looks up the deployed unit, materializes its
-/// closure exactly as `/fire` and the cache endpoints do, and settles it via `fire_with_state`
-/// with the raw request body injected as `Capability::NetworkIngress` — wrapped as
-/// `Value::Text`, the L4's Fork 3 default (`ingress`'s declared output type is `Any`; nothing
-/// forces this choice, but Text matches how every other text-shaped payload already crosses
-/// this boundary). A flow wanting structured data parses that Text itself, downstream, using
-/// this project's own `Sum`/`select` machinery — not a format this endpoint imposes. Works
-/// against any deployed unit regardless of its derived triggers (a `Clock`-only unit just won't
-/// have an `ingress` leaf for the resolver to substitute, so this is harmless, not unsafe, to
-/// allow uniformly rather than gating on which triggers were derived at deploy time).
-///
-/// Only ever holds the deployments-table lock briefly — once to look up the unit and clone out
-/// this deployment's own state handle (an `Arc` clone, not the state itself), and once at the
-/// end to bump counters (and, for a stateful deployment, persist). The fire itself, and any
-/// state locking it needs, happens with the table lock released, so one slow trigger never
-/// blocks any other deployment.
-pub(crate) fn handle_post_trigger(
-    store: &SharedStore,
-    deployments: &Mutex<BTreeMap<String, Deployment>>,
-    deployments_path: &Place,
-    slug: &str,
-    request: &Request,
-) -> Response {
-    let (unit_hash, state, permit, vault, folders, channels) = {
-        let deployments = deployments.lock().unwrap();
-        match deployments.get(slug) {
-            Some(dep) if dep.life.status != Status::Running => {
-                return err(409, format!("{slug:?} is {}", status_word(dep.life.status)));
-            }
-            Some(dep) if let Some(action) = dep.server.as_ref().and_then(|s| s.actions.first()) => {
-                return err(400, format!("this deployment's actions run by name: POST /trigger/{slug}/{}", action.name));
-            }
-            Some(dep) if dep.server.is_some() => {
-                return err(400, "this deployment is an HTTP server: send requests to its own port");
-            }
-            Some(dep) => (dep.unit, dep.state.clone(), Arc::clone(&dep.permit), Arc::clone(&dep.secrets), Arc::clone(&dep.folders), Arc::clone(&dep.channels)),
-            None => return Response::empty_404(),
-        }
-    };
-    let bytes = match read_body(request) {
-        Ok(b) => b,
-        Err(r) => return r,
-    };
-    let body_text = match String::from_utf8(bytes) {
-        Ok(s) => s,
-        Err(_) => return err(400, "request body is not valid UTF-8 text"),
-    };
-    let resolver = match closure(store, unit_hash) {
-        Ok(r) => r,
-        Err(e) => {
-            record_trigger(deployments, slug, true);
-            return err(500, format!("store error while materializing closure: {e:?}"));
-        }
-    };
-    let Some(root_unit) = resolver.resolve(&unit_hash) else {
-        record_trigger(deployments, slug, true);
-        return err(500, "deployed unit no longer resolves in the store");
-    };
-
-    let now = SystemTime::now();
-    let epoch_seconds = now.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
-    let extra_sourced = [
-        (Capability::NetworkIngress, Value::Text(body_text)),
-        (Capability::Clock, Value::Number(epoch_seconds as f64)),
-        (Capability::Random, Value::Number(rand::random::<f64>())),
-    ];
-    let started = started_now();
-    let mut waits = RunWaits { folders: Some(folders), channels: Some(channels), slug: Some(slug.to_string()), ..Default::default() };
-    let resolver = holon_module::WithEngine::new(&resolver, holon_module::shared());
-    let run = fire_with_state(root_unit, &[], &resolver, store, state.as_ref(), &extra_sourced, &permit, false, &vault, &mut waits, None);
-
-    record_trigger(deployments, slug, false);
-    let mut entry = run_entry("trigger", started, &extra_sourced, &run);
-    match durable::park_if_waiting(deployments, store, slug, &unit_hash, "trigger", None, holon_core::LogLevel::Strict, &[], &extra_sourced, &run, &waits) {
-        Ok(names) => entry.parked = names,
-        Err(e) => entry.error = Some(e),
+/// `POST /trigger/<slug>`, naming no action: how its actions are run, if it has any.
+pub(crate) fn unnamed_action(deployments: &Mutex<BTreeMap<String, Deployment>>, slug: &str) -> Response {
+    match deployments.lock().unwrap().get(slug).and_then(|d| d.server.as_ref()?.actions.first().map(|a| a.name.clone())) {
+        Some(name) => err(400, format!("this deployment's actions run by name: POST /trigger/{slug}/{name}")),
+        None => Response::empty_404(),
     }
-    let parked_any = !entry.parked.is_empty();
-    // A whole flow run by hand is not a handler, so it is strict (C5).
-    let logged = log_run(deployments, slug, entry, Redactor::tokens(&waits.tokens).and(Redactor::handed(&calls::handed(&run.rounds))), holon_core::LogLevel::Strict);
-    let FiredRun { outputs, performed, answered, .. } = run;
-    // The state is kept by its head, written as the change landed (claims.rs); the deployments
-    // file changes only with the deployment's definition, here its waiting runs.
-    if parked_any {
-        persist_deployments(deployments_path, deployments);
-    }
-    if let Some(Logged { kept: Err(e), .. }) = logged {
-        return err(500, format!("the run happened, but {e}"));
-    }
-
-    let redactor = Redactor::of(&vault);
-    let answers = Redactor::answers(&answered.0, &vault);
-    let mut reply = serde_json::to_value(FireResponseBody {
-        outputs: outputs.iter().map(|o| o.as_ref().map(SValue::from_core)).collect(),
-        performed: performed
-            .into_iter()
-            .map(|(capability, payload)| PerformedEntry { capability: format!("{capability:?}"), payload: SValue::from_core(&payload) })
-            .collect(),
-    })
-    .unwrap_or_default();
-    redactor.json(&mut reply);
-    answers.json(&mut reply);
-    Response::json(&reply)
 }
 
 /// `POST /trigger/<slug>/<name>`: run the deployment's action `name` by hand, what was sent the
@@ -1585,7 +1433,6 @@ fn restore_plan(state: &AppState, slug: &str, point: Point, code: bool, with_sta
             let body = DeployRequestBody {
                 slug: slug.to_string(),
                 unit: v.unit.clone(),
-                interval_seconds: asked.interval_seconds,
                 acknowledge: Vec::new(),
                 document: version_document(&state.store, &v),
                 requirements: asked.requirements,

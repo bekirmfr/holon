@@ -42,8 +42,8 @@ the two relate. The language and compiler it calls are [holon-author](holon-auth
   greyed, and the bar says what to add: a route, a clock, a file handler or an action.
 - **View mode.** `useViewMode.tsx`, `ViewPanes.tsx`, `HistoryPane.tsx`, `CellHistory.tsx`: a
   deployed flow, read only, with its runs. `replay.ts` replays a logged run on the canvas node by
-  node from what the log recorded (the request, the state read, the clock, random numbers,
-  ingress), and the editor says whether that reproduced the run; which nodes ran follows core's
+  node from what the log recorded (the request, the state read, the clock, random numbers, the
+  new file), and the editor says whether that reproduced the run; which nodes ran follows core's
   choice rule (`choiceNext`). `timeline.ts` merges runs, versions and events as `holon history`
   does.
 - **The API client.** `server.ts`, typed against the server's JSON. Its `BASE` is
@@ -146,7 +146,8 @@ edits, checks and formats files.
 - **No quick fixes.** Neither the web editor nor `holon lsp` rewrites a flow for its author: a
   TypeScript flow declares what it uses by importing it, so there is nothing to declare, and a
   flow nothing would start is told what to add. The button that made such a flow runnable by hand
-  went with the switch to TypeScript.
+  went with the switch to TypeScript, and the deployed page's box that ran one went with the
+  server's runs of it.
 - **The text pane** edits no holon's inner text from its overlay; the cursor inside a holon's
   definition picks nothing (text-graph-link, decision 7); a layout lives only in the editor's
   saved flow, so a `.holon.ts` imported is laid out afresh; no two people on one flow

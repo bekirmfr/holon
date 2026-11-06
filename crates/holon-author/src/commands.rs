@@ -73,24 +73,11 @@ fn port_of(c: &Lowered) -> &str {
     c.doc.server.as_ref().map(|s| s.port.as_str()).unwrap_or_default()
 }
 
-/// Whether the flow deploys on a schedule: `every`, and no routes or handler blocks. It then runs on the clock, so
-/// what it may do includes the clock (core's `Capabilities::deployed`), as the deploy will ask.
-pub(crate) fn scheduled(c: &Lowered, server: &DerivedServer) -> bool {
-    server.endpoints.is_empty() && server.clocks.is_empty() && server.files.is_empty() && server.actions.is_empty() && c.doc.server.as_ref().is_some_and(|s| !s.interval.trim().is_empty())
-}
-
-/// Nothing would start a run of it: no route, clock, file handler or action, nor, on a canvas, an
-/// `ingress` or `file_arrival` node or an interval. It is a holon, placed in other flows; deploy
-/// refuses it (docs/L4s/triggers-L4.md fork 14).
+/// Nothing would start a run of it: no route, clock, file handler or action. It is a holon, placed
+/// in other flows; deploy refuses it (docs/L4s/triggers-L4.md fork 14).
 pub fn starts_nothing(c: &Lowered, store: &mut MapResolver) -> bool {
-    let (server, unit) = derive(c, store);
-    let caps = unit.map(|(_, caps)| caps).unwrap_or_default();
-    server.endpoints.is_empty()
-        && server.clocks.is_empty()
-        && server.files.is_empty()
-        && server.actions.is_empty()
-        && !scheduled(c, &server)
-        && !caps.iter().any(|c| c == "NetworkIngress" || c.starts_with("FileArrival("))
+    let server = derive_server(&c.doc.nodes, &c.doc.edges, store, port_of(c));
+    server.endpoints.is_empty() && server.clocks.is_empty() && server.files.is_empty() && server.actions.is_empty()
 }
 
 /// What `check` says of a flow nothing would start.
@@ -99,9 +86,8 @@ pub const STARTS_NOTHING: &str = "nothing would start a run: add a route, a cloc
 /// What the flow derives to: its server's routes (or none), its unit, what it may do, sorted.
 fn derive(c: &Lowered, store: &mut MapResolver) -> (DerivedServer, Result<(String, Vec<String>), String>) {
     let server = derive_server(&c.doc.nodes, &c.doc.edges, store, port_of(c));
-    let scheduled = scheduled(c, &server);
     let unit = flow_unit(&c.doc.nodes, &c.doc.edges, store, port_of(c)).map(|hash| {
-        let mut caps: Vec<String> = store.resolve(&hash).map(|u| holon_core::deployed_capabilities(u, store, scheduled).iter().map(|c| consent_name(&c)).collect()).unwrap_or_default();
+        let mut caps: Vec<String> = store.resolve(&hash).map(|u| holon_core::deployed_capabilities(u, store).iter().map(|c| consent_name(&c)).collect()).unwrap_or_default();
         caps.sort();
         (to_hex(&hash), caps)
     });
@@ -204,9 +190,7 @@ pub fn check(file: &str, source: &str) -> Report {
         Err(e) => (vec![], Default::default(), Default::default(), vec![e]),
     };
     out.push(if caps.is_empty() && modules.is_empty() { "it only computes: it reads and changes nothing outside" } else { "it may:" }.into());
-    // A flow with no routes is run by hand: its NetworkIngress says so.
-    let by_hand = server.endpoints.is_empty();
-    out.extend(caps.iter().map(|c| format!("  {}", describe_item_sending(c, by_hand, &sent))));
+    out.extend(caps.iter().map(|c| format!("  {}", describe_item_sending(c, &sent))));
     if let (Some(fuel), Some(memory)) = (modules.get(holon_core::FUEL_LIMIT), modules.get(holon_core::MEMORY_LIMIT)) {
         out.push(format!("  run code it carries (a js node): up to {fuel} instructions and {} MiB per call, reaching nothing outside", memory / (1024 * 1024)));
     }

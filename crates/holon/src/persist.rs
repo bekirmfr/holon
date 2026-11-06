@@ -31,7 +31,6 @@ pub(crate) fn persist_deployments(path: &Place, deployments: &Mutex<BTreeMap<Str
             DeploymentRecord {
                 slug: slug.clone(),
                 unit: to_hex(&dep.unit),
-                interval_seconds: dep.interval_seconds,
                 deployed_at_epoch_seconds: dep
                     .deployed_at
                     .duration_since(UNIX_EPOCH)
@@ -125,24 +124,22 @@ pub(crate) fn load_deployments(
                 record.unit
             ));
         };
-        let server = match declaration_of(root_unit) {
-            Some("server") => Some(
-                read_server(root_unit, &resolver)
-                    .map_err(|e| format!("deployment {slug:?} in {file:?}: not a valid server declaration: {e:?}"))?,
-            ),
-            _ => None,
+        // A deployment from before every flow was a server (one run by an interval or by hand,
+        // with no handler) isn't loaded: nothing would start it now (Holon is in development,
+        // so it isn't carried forward).
+        let server = match read_server(root_unit, &resolver) {
+            Ok(s) => s,
+            Err(holon_core::DeclError::NotAServer | holon_core::DeclError::NoHandlers) => {
+                eprintln!("holon: deployment {slug:?} isn't loaded: it has no route, clock, file handler or action, so nothing would start a run. Deploy it again with one.");
+                continue;
+            }
+            Err(e) => return Err(format!("deployment {slug:?} in {file:?}: not a valid server declaration: {e:?}")),
         };
-        // As its deploy derived it: on a schedule, it runs on the clock.
-        let caps = holon_core::deployed_capabilities(root_unit, &resolver, record.interval_seconds.is_some() && server.is_none());
+        let caps = holon_core::deployed_capabilities(root_unit, &resolver);
         let arrivals = Arc::new(arrivals::Watch::open(path, slug, &caps, holon_core::file_triggers(root_unit, &resolver)));
-        let mut triggers = trigger_labels(
-            server.as_ref(),
-            caps.contains(Capability::NetworkIngress),
-            caps.contains(Capability::Clock) && server.is_none(),
-        );
-        triggers.extend(arrivals.labels().filter(|_| server.is_none()));
-        let next_due = record.interval_seconds.filter(|_| server.is_none()).map(|_| SystemTime::now());
-        let clock_due = server.as_ref().map(|s| vec![SystemTime::now(); s.clocks.len()]).unwrap_or_default();
+        let triggers = trigger_labels(&server);
+        let clock_due = vec![SystemTime::now(); server.clocks.len()];
+        let server = Some(server);
 
         // The grant, re-checked against what the unit needs now and the policy in force. A record
         // from before grants is granted what it was acknowledged for at its deploy.
@@ -220,11 +217,9 @@ pub(crate) fn load_deployments(
                 channels,
                 unit: unit_hash,
                 triggers,
-                interval_seconds: record.interval_seconds,
                 deployed_by: record.deployed_by.clone(),
                 uses: record.uses.clone(),
                 browsers: record.browsers.clone(),
-                next_due,
                 clock_due,
                 history: Vec::new(),
                 state,

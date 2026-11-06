@@ -124,12 +124,10 @@ pub(crate) fn run(args: &[String]) -> i32 {
             println!("    - {}", agent::describe_sending(cap, &plan.sent));
         }
     }
-    if !plan.routes.is_empty() {
-        for r in &plan.routes {
-            println!("  {r}");
-        }
-    } else if let Some(i) = plan.interval_seconds {
-        println!("  runs every {i}s");
+    // What starts its runs: its routes, else its other handlers (`every 10s`, `action reset`).
+    let handlers: Vec<&String> = plan.document["trace"].as_object().map(|t| t.keys().collect()).unwrap_or_default();
+    for r in if plan.routes.is_empty() { handlers } else { plan.routes.iter().collect() } {
+        println!("  {r}");
     }
     0
 }
@@ -155,9 +153,6 @@ pub(crate) fn stage(api: &dyn Api, plan: &agent::Plan, slug: &str) -> Result<Sta
         post_bytes(api, "/unit", unit).map_err(|e| format!("staging a unit: {e}"))?;
     }
     let mut body = json!({ "slug": slug, "unit": plan.unit });
-    if let Some(i) = plan.interval_seconds {
-        body["interval_seconds"] = json!(i);
-    }
     if let Some(r) = &plan.requirements {
         body["requirements"] = r.clone();
     }

@@ -1,4 +1,4 @@
-//! Test units: the small units the CLI's fixture flags emit and the tests deploy.
+//! Test units: the small units the CLI's fixture flags emit and the tests stage and fire.
 
 use crate::*;
 
@@ -55,69 +55,6 @@ pub(crate) fn test_sink() -> Unit {
         body: UnitBody::Primitive { name: "egress".into() },
         params: vec![],
         inputs: vec![Port { name: "msg".into(), ty: Type::Text }],
-        outputs: vec![Port { name: "out".into(), ty: Type::Effect }],
-    }
-}
-
-/// The `ingress` driver primitive — zero inputs, output `Any` (its real genesis interface,
-/// confirmed against `catalog.rs`, not assumed). For testing `POST /trigger/<slug>`: nothing
-/// this session has fired a real driver leaf before, so this is a genuinely new shape, not a
-/// variant of `test_sink`/`test_unit`.
-pub(crate) fn test_ingress() -> Unit {
-    Unit {
-        body: UnitBody::Primitive { name: "ingress".into() },
-        params: vec![],
-        inputs: vec![],
-        outputs: vec![Port { name: "out".into(), ty: Type::Any }],
-    }
-}
-
-/// `ingress → egress`: whatever `/trigger/<slug>` injects for `NetworkIngress` flows straight
-/// through to `egress`'s payload. Exercises both halves of `POST /trigger/<slug>` at once —
-/// the *sourced* substitution (this composite's own settled output should equal whatever was
-/// sent) and `performed` (the `egress` sink should show up, same as `test_sink` alone proved
-/// for `/fire`, but now reached via a real driver instead of a positional input).
-pub(crate) fn test_ingress_flow(ingress_hash: Hash, egress_hash: Hash) -> Unit {
-    Unit {
-        body: UnitBody::Composite {
-            children: vec![ingress_hash, egress_hash],
-            edges: vec![
-                Edge { from_child: 0, from_port: 0, to_child: 1, to_port: 0 },
-                Edge { from_child: 1, from_port: 0, to_child: BOUNDARY, to_port: 0 },
-            ],
-        },
-        params: vec![],
-        inputs: vec![],
-        outputs: vec![Port { name: "out".into(), ty: Type::Effect }],
-    }
-}
-
-/// The `clock` driver primitive — zero inputs, output `Number` (its real genesis interface;
-/// unlike `ingress`, this one is concretely typed, not `Any`).
-pub(crate) fn test_clock() -> Unit {
-    Unit {
-        body: UnitBody::Primitive { name: "clock".into() },
-        params: vec![],
-        inputs: vec![],
-        outputs: vec![Port { name: "out".into(), ty: Type::Number }],
-    }
-}
-
-/// `clock → egress`: wire-compatible because `egress`'s `payload` port is `Any` (`compatible`'s
-/// rule: `dst==Any` accepts anything). For exercising `POST /deploy`'s derived-`Clock` path and
-/// `spawn_clock_scheduler` end to end — every tick should record a `NetworkEgress` carrying
-/// that tick's epoch-seconds value.
-pub(crate) fn test_clock_flow(clock_hash: Hash, egress_hash: Hash) -> Unit {
-    Unit {
-        body: UnitBody::Composite {
-            children: vec![clock_hash, egress_hash],
-            edges: vec![
-                Edge { from_child: 0, from_port: 0, to_child: 1, to_port: 0 },
-                Edge { from_child: 1, from_port: 0, to_child: BOUNDARY, to_port: 0 },
-            ],
-        },
-        params: vec![],
-        inputs: vec![],
         outputs: vec![Port { name: "out".into(), ty: Type::Effect }],
     }
 }

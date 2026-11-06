@@ -97,9 +97,6 @@ fn unique_temp_path(label: &str) -> String {
     path.to_string_lossy().to_string()
 }
 
-/// Stages a full `test_stateful_counter` graph (a driver leaf — `test_ingress()` or
-/// `test_clock()` — plus `store_read(key)`/`one`/`add`/`store_write(key)`) and returns the
-/// composite's hash, ready to deploy.
 /// `store_read(key)` — reads this deployment's own state at `key`.
 fn test_store_read(key: &str) -> Unit {
     Unit {
@@ -120,117 +117,50 @@ fn test_store_write(key: &str) -> Unit {
     }
 }
 
-/// `driver -> store_write(key)`: writes whatever the trigger supplies (the ingress body as
-/// text, or the clock's own epoch number) directly to this deployment's state at `key` —
-/// no read involved. Deliberately write-only, not a read-and-increment counter: a
-/// `store_read → add → store_write` graph cannot bootstrap its own first value with only
-/// this primitive set — an absent key's read fails the *whole* single-output settle
-/// (`fire_sourced`'s own honest-absence rule), and there's no coalesce-with-default
-/// primitive to route around that. A real, named limitation of the primitive set itself,
-/// not something to fight with a contrived test. This unit tests exactly what this inch
-/// actually delivers instead: a write from one fire is still there for the *next* fire to
-/// see — checked via `GET /deployments/<slug>/state`, not by asking the flow to read back
-/// its own prior write.
-fn test_stateful_writer(driver_hash: Hash, write_hash: Hash) -> Unit {
-    Unit {
-        body: UnitBody::Composite {
-            children: vec![driver_hash, write_hash],
-            edges: vec![
-                Edge { from_child: 0, from_port: 0, to_child: 1, to_port: 0 }, // driver → store_write.value
-                Edge { from_child: 1, from_port: 0, to_child: BOUNDARY, to_port: 0 }, // store_write → out
-            ],
-        },
-        params: vec![],
-        inputs: vec![],
-        outputs: vec![Port { name: "out".into(), ty: Type::Effect }],
+/// A flow whose one action, `put`, writes what it is sent at `key`: the state most tests here
+/// keep, written by one run and still there for the next (checked through
+/// `GET /deployments/<slug>/state`).
+fn writer_text(key: &str) -> String {
+    format!("import {{ action, flow }} from \"holon\"\nimport state from \"state\"\n\nflow(\"writer\")\n\nexport const put = action((value) => {{\n  state.{key} = value\n}})\n")
+}
+
+/// A flow without state: its action `echo` answers what it is sent.
+const ECHO: &str = "import { action, flow } from \"holon\"\n\nflow(\"echo\")\n\nexport const echo = action((value) => value)\n";
+
+/// A flow whose action `bump` adds one to `count` each run.
+const COUNTER: &str = "import { action, flow } from \"holon\"\nimport state from \"state\"\n\nflow(\"counter\")\n\nexport const bump = action(() => {\n  state.count = (state.count ?? 0) + 1\n})\n";
+
+/// A flow of one clock: every 5 seconds it writes the time of the tick at `last_tick`.
+const TICKER: &str = "import { every, flow } from \"holon\"\nimport state from \"state\"\nimport { now } from \"holon:clock\"\n\nflow(\"tick\")\n\nevery(\"5s\", () => {\n  state.last_tick = now\n})\n";
+
+/// `text` compiled with the language and its units staged: its unit, to deploy under any slug.
+fn stage_text(state: &AppState, text: &str) -> Hash {
+    let plan = holon_author::agent::plan(text).unwrap_or_else(|e| panic!("{e}"));
+    for u in &plan.units {
+        assert_eq!(route(state, &req("POST", "/unit", u.clone())).status_code, 200);
     }
+    parse_hash(&plan.unit).unwrap()
 }
 
-/// The `random` driver primitive — zero inputs, output `Number`, same shape as `clock`.
-fn test_random() -> Unit {
-    Unit {
-        body: UnitBody::Primitive { name: "random".into() },
-        params: vec![],
-        inputs: vec![],
-        outputs: vec![Port { name: "out".into(), ty: Type::Number }],
-    }
+/// [`writer_text`] staged: its unit.
+fn stage_writer(state: &AppState, key: &str) -> Hash {
+    stage_text(state, &writer_text(key))
 }
 
-/// `ingress` (unwired, present only so the composite derives `NetworkIngress` and is
-/// therefore deployable at all — same convention `stage_stateful_reader` already uses)
-/// alongside `driver` wired straight to the boundary output. For proving a *second*
-/// driver's own capability is honestly sourced even when `NetworkIngress` is what actually
-/// triggered the fire — the exact gap `Random` (and `Clock`-via-`/trigger`) had.
-fn stage_ingress_plus_driver(state: &AppState, driver: Unit) -> Hash {
-    let ingress = test_ingress();
-    let ingress_hash = hash_unit(&ingress).unwrap();
-    route(state, &req("POST", "/unit", encode_preimage(&ingress).unwrap()));
-
-    let driver_hash = hash_unit(&driver).unwrap();
-    route(state, &req("POST", "/unit", encode_preimage(&driver).unwrap()));
-
-    let composite = Unit {
-        body: UnitBody::Composite {
-            children: vec![ingress_hash, driver_hash],
-            edges: vec![Edge { from_child: 1, from_port: 0, to_child: BOUNDARY, to_port: 0 }],
-        },
-        params: vec![],
-        inputs: vec![],
-        outputs: vec![Port { name: "out".into(), ty: Type::Number }],
-    };
-    let composite_hash = hash_unit(&composite).unwrap();
-    route(state, &req("POST", "/unit", encode_preimage(&composite).unwrap()));
-    composite_hash
+/// Run `slug`'s action `name`, sending `value` as its JSON.
+fn run_action_named(state: &AppState, slug: &str, name: &str, value: serde_json::Value) -> Response {
+    route(state, &req("POST", &format!("/trigger/{slug}/{name}"), serde_json::to_vec(&value).unwrap()))
 }
 
-fn stage_stateful_writer(state: &AppState, driver: Unit, key: &str) -> Hash {
-    let driver_hash = hash_unit(&driver).unwrap();
-    route(state, &req("POST", "/unit", encode_preimage(&driver).unwrap()));
-
-    let write = test_store_write(key);
-    let write_hash = hash_unit(&write).unwrap();
-    route(state, &req("POST", "/unit", encode_preimage(&write).unwrap()));
-
-    let composite = test_stateful_writer(driver_hash, write_hash);
-    let composite_hash = hash_unit(&composite).unwrap();
-    route(state, &req("POST", "/unit", encode_preimage(&composite).unwrap()));
-
-    composite_hash
+/// A writer's run: `text` sent to its `put`.
+fn put(state: &AppState, slug: &str, text: &str) -> Response {
+    run_action_named(state, slug, "put", serde_json::json!(text))
 }
 
-/// `ingress, store_read(key) -> egress`: for testing the honest-absence side directly —
-/// a fresh deployment's never-written key evaluates to nothing, so the whole single-output
-/// settle fails, proven end to end through `holon-server`, not just at the core level.
-fn stage_stateful_reader(state: &AppState, key: &str) -> Hash {
-    let ingress = test_ingress();
-    let ingress_hash = hash_unit(&ingress).unwrap();
-    route(state, &req("POST", "/unit", encode_preimage(&ingress).unwrap()));
-
-    let read = test_store_read(key);
-    let read_hash = hash_unit(&read).unwrap();
-    route(state, &req("POST", "/unit", encode_preimage(&read).unwrap()));
-
-    let egress = test_sink();
-    let egress_hash = hash_unit(&egress).unwrap();
-    route(state, &req("POST", "/unit", encode_preimage(&egress).unwrap()));
-
-    let composite = Unit {
-        body: UnitBody::Composite {
-            // ingress is an unwired child, present only so this composite derives
-            // NetworkIngress and is therefore deployable/triggerable at all.
-            children: vec![ingress_hash, read_hash, egress_hash],
-            edges: vec![
-                Edge { from_child: 1, from_port: 0, to_child: 2, to_port: 0 }, // store_read → egress
-                Edge { from_child: 2, from_port: 0, to_child: BOUNDARY, to_port: 0 }, // egress → out
-            ],
-        },
-        params: vec![],
-        inputs: vec![],
-        outputs: vec![Port { name: "out".into(), ty: Type::Effect }],
-    };
-    let composite_hash = hash_unit(&composite).unwrap();
-    route(state, &req("POST", "/unit", encode_preimage(&composite).unwrap()));
-    composite_hash
+/// A flow whose action `call` sends a GET for the path it is sent to `host`, and answers with the
+/// response.
+fn caller_text(host: &str) -> String {
+    format!("import {{ action, flow }} from \"holon\"\nimport api from \"host:{host}\"\n\nflow(\"caller\")\n\nexport const call = action(async (path) => {{\n  const r = await api.get(path)\n  return r\n}})\n")
 }
 
 // ── /health ──────────────────────────────────────────────────────────────────────────
@@ -427,38 +357,6 @@ fn fire_sink_unit_records_a_performed_effect() {
 // ── /deploy + /trigger ───────────────────────────────────────────────────────────────
 
 #[test]
-fn deploy_derives_ingress_trigger_and_the_trigger_endpoint_fires_it() {
-    let state = test_state();
-    let ingress = test_ingress();
-    let ingress_hash = hash_unit(&ingress).unwrap();
-    route(&state, &req("POST", "/unit", encode_preimage(&ingress).unwrap()));
-    route(&state, &req("POST", "/unit", encode_preimage(&test_sink()).unwrap()));
-    let egress_hash = hash_unit(&test_sink()).unwrap();
-    let flow = test_ingress_flow(ingress_hash, egress_hash);
-    let flow_hash = hash_unit(&flow).unwrap();
-    route(&state, &req("POST", "/unit", encode_preimage(&flow).unwrap()));
-
-    let deploy_body = serde_json::to_vec(&serde_json::json!({
-        "slug": "echo",
-        "unit": to_hex(&flow_hash),
-        "acknowledge": ["NetworkIngress", "NetworkEgress"],
-    }))
-    .unwrap();
-    let d = route(&state, &req("POST", "/deploy", deploy_body));
-    assert_eq!(d.status_code, 200);
-    assert_eq!(body_json(d)["triggers"].as_array().unwrap(), &vec![serde_json::json!("Ingress")]);
-
-    let list = route(&state, &req("GET", "/deployments", vec![]));
-    assert_eq!(body_json(list)["deployments"].as_array().unwrap().len(), 1);
-
-    let triggered = route(&state, &req("POST", "/trigger/echo", b"hello from test".to_vec()));
-    assert_eq!(triggered.status_code, 200);
-    let tv = body_json(triggered);
-    assert_eq!(tv["performed"][0]["capability"], "NetworkEgress");
-    assert_eq!(tv["performed"][0]["payload"]["value"], "hello from test");
-}
-
-#[test]
 fn trigger_unknown_slug_is_404() {
     let state = test_state();
     assert_eq!(route(&state, &req("POST", "/trigger/nope", b"x".to_vec())).status_code, 404);
@@ -474,78 +372,25 @@ fn deploy_rejects_a_unit_with_no_driver_capability() {
     assert_eq!(route(&state, &req("POST", "/deploy", body)).status_code, 400);
 }
 
-#[test]
-fn deploy_clock_unit_requires_a_valid_interval() {
-    let state = test_state();
-    let clock = test_clock();
-    let clock_hash = hash_unit(&clock).unwrap();
-    route(&state, &req("POST", "/unit", encode_preimage(&clock).unwrap()));
-    route(&state, &req("POST", "/unit", encode_preimage(&test_sink()).unwrap()));
-    let egress_hash = hash_unit(&test_sink()).unwrap();
-    let flow = test_clock_flow(clock_hash, egress_hash);
-    let flow_hash = hash_unit(&flow).unwrap();
-    route(&state, &req("POST", "/unit", encode_preimage(&flow).unwrap()));
-
-    let no_interval = serde_json::to_vec(&serde_json::json!({
-        "slug": "tick",
-        "unit": to_hex(&flow_hash),
-        "acknowledge": ["Clock", "NetworkEgress"],
-    }))
-    .unwrap();
-    assert_eq!(route(&state, &req("POST", "/deploy", no_interval)).status_code, 400);
-
-    let zero_interval = serde_json::to_vec(&serde_json::json!({
-        "slug": "tick",
-        "unit": to_hex(&flow_hash),
-        "interval_seconds": 0,
-        "acknowledge": ["Clock", "NetworkEgress"],
-    }))
-    .unwrap();
-    assert_eq!(route(&state, &req("POST", "/deploy", zero_interval)).status_code, 400);
-
-    let ok = serde_json::to_vec(&serde_json::json!({
-        "slug": "tick",
-        "unit": to_hex(&flow_hash),
-        "interval_seconds": 5,
-        "acknowledge": ["Clock", "NetworkEgress"],
-    }))
-    .unwrap();
-    let r = route(&state, &req("POST", "/deploy", ok));
-    assert_eq!(r.status_code, 200);
-    assert_eq!(body_json(r)["triggers"].as_array().unwrap(), &vec![serde_json::json!("Clock")]);
-}
-
 // ── the clock scheduler, with a controlled clock — no real sleeping ────────────────────
 
+/// A clock ticks when it is due and not before: due at deploy, then once its period has passed,
+/// each tick kept in the deployment's history with what it did.
 #[test]
 fn clock_ticks_fire_when_due_and_not_before() {
     let state = test_state();
-    let clock = test_clock();
-    let clock_hash = hash_unit(&clock).unwrap();
-    route(&state, &req("POST", "/unit", encode_preimage(&clock).unwrap()));
-    route(&state, &req("POST", "/unit", encode_preimage(&test_sink()).unwrap()));
-    let egress_hash = hash_unit(&test_sink()).unwrap();
-    let flow = test_clock_flow(clock_hash, egress_hash);
-    let flow_hash = hash_unit(&flow).unwrap();
-    route(&state, &req("POST", "/unit", encode_preimage(&flow).unwrap()));
-
-    let deploy_body = serde_json::to_vec(&serde_json::json!({
-        "slug": "tick",
-        "unit": to_hex(&flow_hash),
-        "interval_seconds": 5,
-        "acknowledge": ["Clock", "NetworkEgress"],
-    }))
-    .unwrap();
-    route(&state, &req("POST", "/deploy", deploy_body));
+    let unit = stage_text(&state, TICKER);
+    let ack = serde_json::json!({ "acknowledge": ["Clock", "StateWrite(\"last_tick\")"] });
+    assert_eq!(deploy_json(&state, "tick", unit, ack).status_code, 200);
 
     let t0 = SystemTime::now();
 
-    // Due immediately — next_due was set to "now" at deploy time.
+    // Due immediately — a clock is due at deploy.
     run_due_clock_ticks(&state.store, &state.deployments, &state.deployments_path, t0);
     let h1 = route(&state, &req("GET", "/deployments/tick/history", vec![]));
     assert_eq!(body_json(h1)["ticks"].as_array().unwrap().len(), 1);
 
-    // Not due yet — only 1s of a 5s interval has passed.
+    // Not due yet — only 1s of a 5s period has passed.
     run_due_clock_ticks(&state.store, &state.deployments, &state.deployments_path, t0 + Duration::from_secs(1));
     let h2 = route(&state, &req("GET", "/deployments/tick/history", vec![]));
     assert_eq!(body_json(h2)["ticks"].as_array().unwrap().len(), 1);
@@ -555,41 +400,7 @@ fn clock_ticks_fire_when_due_and_not_before() {
     let h3 = route(&state, &req("GET", "/deployments/tick/history", vec![]));
     let ticks = body_json(h3)["ticks"].as_array().unwrap().clone();
     assert_eq!(ticks.len(), 2);
-    assert_eq!(ticks[0]["performed"][0]["capability"], "NetworkEgress");
-}
-
-/// A clock flow that never reads the time (`every`, and a counter) deploys: its schedule starts
-/// its runs, so the preview and the deploy ask for the clock, its manifest names the clock its
-/// trigger, and it runs on it. Its schedule is in its text, so an interval besides it is refused.
-#[test]
-fn a_flow_on_a_schedule_deploys_without_reading_the_clock() {
-    let state = test_state();
-    let plan = holon_author::agent::plan("import { every, flow } from \"holon\"\nimport state from \"state\"\n\nflow(\"beats\")\n\nevery(\"5s\", () => {\n  state.beats = (state.beats ?? 0) + 1\n})\n").unwrap();
-    assert!(plan.may.contains(&"Clock".to_string()), "{:?}", plan.may);
-    for u in &plan.units {
-        assert_eq!(route(&state, &req("POST", "/unit", u.clone())).status_code, 200);
-    }
-    let unit = parse_hash(&plan.unit).unwrap();
-
-    let interval = deploy_json(&state, "beats", unit, serde_json::json!({ "interval_seconds": 5 }));
-    assert_eq!(interval.status_code, 400);
-    let said = String::from_utf8_lossy(&body_bytes(interval)).into_owned();
-    assert!(said.contains("clocks are in its text"), "{said}");
-
-    let body = serde_json::json!({ "slug": "beats", "unit": plan.unit });
-    let preview = body_json(route(&state, &req("POST", "/deploy/preview", serde_json::to_vec(&body).unwrap())));
-    let asked: Vec<String> = serde_json::from_value(preview["needs_approval"].clone()).unwrap();
-    assert!(asked.contains(&"Clock".to_string()), "{asked:?}");
-    let r = deploy_json(&state, "beats", unit, serde_json::json!({ "acknowledge": asked }));
-    let status = r.status_code;
-    assert_eq!(status, 200, "{}", String::from_utf8_lossy(&body_bytes(r)));
-
-    let manifest = body_json(route(&state, &req("GET", "/deployments/beats/manifest", vec![])));
-    assert_eq!(manifest["trigger"], "Clock");
-    assert_eq!(manifest["not_granted"], serde_json::json!([]));
-    run_due_clock_ticks(&state.store, &state.deployments, &state.deployments_path, SystemTime::now());
-    let ticks = body_json(route(&state, &req("GET", "/deployments/beats/history", vec![])))["ticks"].as_array().unwrap().clone();
-    assert_eq!(ticks.len(), 1);
+    assert_eq!(ticks[0]["performed"][0]["capability"], "StateWrite(\"last_tick\")");
 }
 
 /// A clock run's history is redacted as its log entry is: whoever may read the deployment reads
@@ -628,59 +439,37 @@ fn deployments_history_for_unknown_slug_is_404() {
     assert_eq!(route(&state, &req("GET", "/deployments/nope/history", vec![])).status_code, 404);
 }
 
+/// Deleting a deployment takes its actions with it: a running one is stopped first, and once it
+/// is gone its action is not found, as for a slug never deployed, and it is off the list.
 #[test]
-fn delete_deployment_stops_ingress_trigger_and_removes_it_from_the_list() {
+fn delete_deployment_stops_its_actions_and_removes_it_from_the_list() {
     let state = test_state();
-    let ingress = test_ingress();
-    let ingress_hash = hash_unit(&ingress).unwrap();
-    route(&state, &req("POST", "/unit", encode_preimage(&ingress).unwrap()));
-    route(&state, &req("POST", "/unit", encode_preimage(&test_sink()).unwrap()));
-    let egress_hash = hash_unit(&test_sink()).unwrap();
-    let flow = test_ingress_flow(ingress_hash, egress_hash);
-    let flow_hash = hash_unit(&flow).unwrap();
-    route(&state, &req("POST", "/unit", encode_preimage(&flow).unwrap()));
-    let deploy_body = serde_json::to_vec(&serde_json::json!({
-        "slug": "echo",
-        "unit": to_hex(&flow_hash),
-        "acknowledge": ["NetworkIngress", "NetworkEgress"],
-    }))
-    .unwrap();
-    route(&state, &req("POST", "/deploy", deploy_body));
+    let unit = stage_text(&state, ECHO);
+    assert_eq!(deploy_json(&state, "echo", unit, serde_json::json!({ "acknowledge": ["Action(\"echo\")"] })).status_code, 200);
+    let echo = || run_action_named(&state, "echo", "echo", serde_json::json!("x")).status_code;
 
     // Works before deletion.
-    assert_eq!(route(&state, &req("POST", "/trigger/echo", b"x".to_vec())).status_code, 200);
+    assert_eq!(echo(), 200);
 
     assert_eq!(route(&state, &req("DELETE", "/deployments/echo", vec![])).status_code, 409, "stop it first");
     assert_eq!(route(&state, &req("POST", "/deployments/echo/stop", vec![])).status_code, 200);
     let deleted = route(&state, &req("DELETE", "/deployments/echo", vec![]));
     assert_eq!(deleted.status_code, 200);
-    assert_eq!(body_json(deleted)["unit"], to_hex(&flow_hash));
+    assert_eq!(body_json(deleted)["unit"], to_hex(&unit));
 
     // 404s after deletion — same as a slug that was never deployed.
-    assert_eq!(route(&state, &req("POST", "/trigger/echo", b"x".to_vec())).status_code, 404);
+    assert_eq!(echo(), 404);
     let list = route(&state, &req("GET", "/deployments", vec![]));
     assert_eq!(body_json(list)["deployments"].as_array().unwrap().len(), 0);
 }
 
+/// Deleting a clock's deployment stops its ticks: the scheduler only acts on what is in the table.
 #[test]
 fn delete_deployment_stops_future_clock_ticks() {
     let state = test_state();
-    let clock = test_clock();
-    let clock_hash = hash_unit(&clock).unwrap();
-    route(&state, &req("POST", "/unit", encode_preimage(&clock).unwrap()));
-    route(&state, &req("POST", "/unit", encode_preimage(&test_sink()).unwrap()));
-    let egress_hash = hash_unit(&test_sink()).unwrap();
-    let flow = test_clock_flow(clock_hash, egress_hash);
-    let flow_hash = hash_unit(&flow).unwrap();
-    route(&state, &req("POST", "/unit", encode_preimage(&flow).unwrap()));
-    let deploy_body = serde_json::to_vec(&serde_json::json!({
-        "slug": "tick",
-        "unit": to_hex(&flow_hash),
-        "interval_seconds": 5,
-        "acknowledge": ["Clock", "NetworkEgress"],
-    }))
-    .unwrap();
-    route(&state, &req("POST", "/deploy", deploy_body));
+    let unit = stage_text(&state, TICKER);
+    let ack = serde_json::json!({ "acknowledge": ["Clock", "StateWrite(\"last_tick\")"] });
+    assert_eq!(deploy_json(&state, "tick", unit, ack).status_code, 200);
 
     let t0 = SystemTime::now();
     run_due_clock_ticks(&state.store, &state.deployments, &state.deployments_path, t0);
@@ -706,123 +495,87 @@ fn delete_unknown_deployment_is_404() {
 
 // ── capability-consent ───────────────────────────────────────────────────────────────
 
+/// A deploy acknowledges the whole manifest its unit derives, or is refused: none of it, or part
+/// of it, isn't enough.
 #[test]
 fn deploy_refuses_without_full_capability_acknowledgment() {
     let state = test_state();
-    let ingress = test_ingress();
-    let ingress_hash = hash_unit(&ingress).unwrap();
-    route(&state, &req("POST", "/unit", encode_preimage(&ingress).unwrap()));
-    route(&state, &req("POST", "/unit", encode_preimage(&test_sink()).unwrap()));
-    let egress_hash = hash_unit(&test_sink()).unwrap();
-    let flow = test_ingress_flow(ingress_hash, egress_hash);
-    let flow_hash = hash_unit(&flow).unwrap();
-    route(&state, &req("POST", "/unit", encode_preimage(&flow).unwrap()));
+    let writer = stage_writer(&state, "k");
 
     // No acknowledgment at all.
-    let no_ack =
-        serde_json::to_vec(&serde_json::json!({"slug": "echo", "unit": to_hex(&flow_hash)})).unwrap();
-    assert_eq!(route(&state, &req("POST", "/deploy", no_ack)).status_code, 400);
+    assert_eq!(deploy_json(&state, "w", writer, serde_json::json!({})).status_code, 400);
 
     // Only half the real manifest acknowledged — still refused, not partially accepted.
-    let partial_ack = serde_json::to_vec(&serde_json::json!({
-        "slug": "echo",
-        "unit": to_hex(&flow_hash),
-        "acknowledge": ["NetworkIngress"],
-    }))
-    .unwrap();
-    assert_eq!(route(&state, &req("POST", "/deploy", partial_ack)).status_code, 400);
+    let partial = serde_json::json!({ "acknowledge": ["Action(\"put\")"] });
+    assert_eq!(deploy_json(&state, "w", writer, partial).status_code, 400);
 
     // The whole derived manifest acknowledged — succeeds.
-    let full_ack = serde_json::to_vec(&serde_json::json!({
-        "slug": "echo",
-        "unit": to_hex(&flow_hash),
-        "acknowledge": ["NetworkIngress", "NetworkEgress"],
-    }))
-    .unwrap();
-    assert_eq!(route(&state, &req("POST", "/deploy", full_ack)).status_code, 200);
+    let full = serde_json::json!({ "acknowledge": ["Action(\"put\")", "StateWrite(\"k\")"] });
+    assert_eq!(deploy_json(&state, "w", writer, full).status_code, 200);
 }
 
-/// An `http_request` puts its host in the flow's manifest: deploy needs that host acknowledged,
-/// by name, and "the network" in general isn't enough.
+/// A unit nothing would start is refused, saying what to add: a handler deployed without its
+/// server, and a server with no handler.
+#[test]
+fn a_deploy_nothing_would_start_is_refused_saying_what_to_add() {
+    let state = test_state();
+    let refused = |unit: Hash| {
+        let r = deploy_json(&state, "idle", unit, serde_json::json!({ "acknowledge": [] }));
+        assert_eq!(r.status_code, 400);
+        assert_eq!(body_json(r)["error"], crate::deploy::STARTS_NOTHING);
+    };
+    // Echo's action, the unit its server runs, deployed alone (the plan's units are children first).
+    stage_text(&state, ECHO);
+    let units = holon_author::agent::plan(ECHO).unwrap().units;
+    let handler = decode_preimage(&units[units.len() - 2]).unwrap();
+    assert_eq!(holon_core::declaration_of(&handler), Some("action"));
+    refused(hash_unit(&handler).unwrap());
+    refused(stage(&state, &Unit { body: UnitBody::Composite { children: vec![], edges: vec![] }, params: vec![Param::frozen("declare", "server")], inputs: vec![], outputs: vec![] }));
+    assert_eq!(body_json(route(&state, &req("GET", "/deployments", vec![])))["deployments"], serde_json::json!([]));
+}
+
+/// A flow's outbound host puts that host in its manifest: deploy needs it acknowledged, by name,
+/// and "the network" in general isn't enough.
 #[test]
 fn deploy_needs_each_requested_host_acknowledged_by_name() {
     let state = test_state();
-    let ingress = test_ingress();
-    let request = Unit {
-        params: vec![Param::frozen("method", "GET"), Param::frozen("host", "api.example.com")],
-        ..holon_core::interface_of("http_request").unwrap()
-    };
-    let flow = Unit {
-        body: UnitBody::Composite {
-            children: vec![stage(&state, &ingress), stage(&state, &request)],
-            edges: vec![
-                Edge { from_child: 0, from_port: 0, to_child: 1, to_port: 0 }, // ingress → path
-                Edge { from_child: 1, from_port: 0, to_child: BOUNDARY, to_port: 0 },
-            ],
-        },
-        params: vec![],
-        inputs: vec![],
-        outputs: vec![Port { name: "response".into(), ty: Type::Record }],
-    };
-    let flow_hash = stage(&state, &flow);
-    let deploy = |ack: serde_json::Value| {
-        let body = serde_json::json!({ "slug": "caller", "unit": to_hex(&flow_hash), "acknowledge": ack });
-        route(&state, &req("POST", "/deploy", serde_json::to_vec(&body).unwrap()))
-    };
-    let refused = deploy(serde_json::json!(["NetworkIngress", "NetworkEgress"]));
+    let unit = stage_text(&state, &caller_text("api.example.com"));
+    let deploy = |ack: serde_json::Value| deploy_json(&state, "caller", unit, serde_json::json!({ "acknowledge": ack }));
+    let refused = deploy(serde_json::json!(["Action(\"call\")", "NetworkEgress"]));
     assert_eq!(refused.status_code, 400);
     assert!(body_json(refused)["error"].as_str().unwrap().contains("HttpRequest(\"api.example.com\")"));
-    assert_eq!(deploy(serde_json::json!(["NetworkIngress", "HttpRequest(\"api.example.com\")"])).status_code, 200);
+    assert_eq!(deploy(serde_json::json!(["Action(\"call\")", "HttpRequest(\"api.example.com\")"])).status_code, 200);
 }
 
-/// A deployed flow's `http_request` goes through the round loop and the outbound rules: here the
+/// A deployed flow's outbound request goes through the round loop and the outbound rules: here the
 /// host is this machine (127.0.0.1), which no deployment may reach without an explicit grant, so
-/// the request is refused at perform time. The refusal is the node's response, flows on to the
-/// egress, and the flow log records the round: the request, the response, and its node.
+/// the request is refused at perform time. The refusal is the node's response, which the action
+/// answers with, and the flow log records the round: the request, the response, and its node.
 #[test]
 fn a_deployed_request_is_performed_between_rounds_and_logged() {
     let state = test_state();
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let host = listener.local_addr().unwrap().to_string();
-    let request = Unit {
-        params: vec![Param::frozen("method", "GET"), Param::frozen("host", &host)],
-        ..holon_core::interface_of("http_request").unwrap()
-    };
-    let flow = Unit {
-        body: UnitBody::Composite {
-            children: vec![stage(&state, &test_ingress()), stage(&state, &request), stage(&state, &test_sink())],
-            edges: vec![
-                Edge { from_child: 0, from_port: 0, to_child: 1, to_port: 0 }, // ingress → path
-                Edge { from_child: 1, from_port: 0, to_child: 2, to_port: 0 }, // response → egress
-                Edge { from_child: 2, from_port: 0, to_child: BOUNDARY, to_port: 0 },
-            ],
-        },
-        params: vec![],
-        inputs: vec![],
-        outputs: vec![Port { name: "out".into(), ty: Type::Effect }],
-    };
-    let flow_hash = stage(&state, &flow);
-    let body = serde_json::json!({
-        "slug": "caller", "unit": to_hex(&flow_hash),
-        "acknowledge": ["NetworkIngress", "NetworkEgress", format!("HttpRequest({host:?})")],
-    });
-    assert_eq!(route(&state, &req("POST", "/deploy", serde_json::to_vec(&body).unwrap())).status_code, 200);
-    let fired = route(&state, &req("POST", "/trigger/caller", b"/status".to_vec()));
-    assert_eq!(fired.status_code, 200);
+    let unit = stage_text(&state, &caller_text(&host));
+    let ack = serde_json::json!({ "acknowledge": ["Action(\"call\")", format!("HttpRequest({host:?})")] });
+    assert_eq!(deploy_json(&state, "caller", unit, ack).status_code, 200);
+    let answered = body_json(run_action_named(&state, "caller", "call", serde_json::json!("/status")));
+    assert_eq!(answered["answer"]["error"], "blocked_address", "this machine is a private address: {answered}");
 
-    let log = body_json(route(&state, &req("GET", "/deployments/caller/log", vec![])));
-    let entry = &log["entries"][0];
+    let entry = &log_entries(&state, "caller")[0];
     let exchange = &entry["rounds"][0]["exchanges"][0];
-    // The node's path is its index in the unit as stored: children in canonical (hash) order.
-    let stored = state.store.get(&flow_hash).unwrap().unwrap();
-    let UnitBody::Composite { children, .. } = &stored.body else { panic!() };
-    let index = children.iter().position(|h| *h == hash_unit(&request).unwrap()).unwrap();
-    assert_eq!(exchange["path"], serde_json::json!([index]), "the request node, by path");
+    // The node's path leads, through the units as stored, from the action's handler to the request.
+    let handler = state.deployments.lock().unwrap()["caller"].server.as_ref().unwrap().actions[0].handler;
+    let mut node = state.store.get(&handler).unwrap().unwrap();
+    for i in exchange["path"].as_array().unwrap() {
+        let UnitBody::Composite { children, .. } = &node.body else { panic!("{:?} leads past a leaf", exchange["path"]) };
+        node = state.store.get(&children[i.as_u64().unwrap() as usize]).unwrap().unwrap();
+    }
+    assert!(matches!(&node.body, UnitBody::Primitive { name } if name == "http_request"), "the request node, by path: {:?}", node.body);
     let url = |v: &serde_json::Value| v["value"].as_array().unwrap().iter().find(|kv| kv[0] == "url").unwrap()[1]["value"].clone();
     assert_eq!(url(&exchange["request"]), format!("https://{host}/status"));
     let error = exchange["response"]["value"].as_array().unwrap().iter().find(|kv| kv[0] == "error").unwrap()[1]["value"].clone();
-    assert_eq!(error, "blocked_address", "this machine is a private address");
-    assert_eq!(entry["performed"][0]["capability"], "NetworkEgress", "the refusal flowed on to the egress");
+    assert_eq!(error, "blocked_address");
     assert!(entry["error"].is_null(), "a refused request doesn't fail the run");
     assert!(entry["timeline"].as_array().unwrap().iter().any(|t| t["round"] == 1), "timings from both rounds");
     drop(listener);
@@ -844,13 +597,13 @@ fn deploy_json(state: &AppState, slug: &str, unit: Hash, extra: serde_json::Valu
 fn deploy_asks_for_what_policy_doesnt_grant_and_only_once() {
     let state = test_state();
     *state.policy.write().unwrap() = Arc::new(Policy::parse("[grants]\nauto = [\"StateWrite(*)\"]").unwrap());
-    let writer = stage_stateful_writer(&state, test_ingress(), "k");
-    // StateWrite is granted by policy; NetworkIngress isn't.
+    let writer = stage_writer(&state, "k");
+    // StateWrite is granted by policy; running its action isn't.
     let refused = deploy_json(&state, "w", writer, serde_json::json!({}));
     assert_eq!(refused.status_code, 400);
     let message = body_json(refused)["error"].as_str().unwrap().to_string();
-    assert!(message.contains("NetworkIngress") && !message.contains("StateWrite"), "{message}");
-    assert_eq!(deploy_json(&state, "w", writer, serde_json::json!({ "acknowledge": ["NetworkIngress"] })).status_code, 200);
+    assert!(message.contains("Action(\"put\")") && !message.contains("StateWrite"), "{message}");
+    assert_eq!(deploy_json(&state, "w", writer, serde_json::json!({ "acknowledge": ["Action(\"put\")"] })).status_code, 200);
     // Redeploying the same thing asks for nothing; raising a limit asks for that alone.
     assert_eq!(deploy_json(&state, "w", writer, serde_json::json!({})).status_code, 200);
     let raise = serde_json::json!({ "requirements": { "limits": { "request_timeout_ms": 60000 } } });
@@ -879,7 +632,7 @@ fn deploy_asks_for_what_policy_doesnt_grant_and_only_once() {
     };
     let p = preview(serde_json::json!({ "requirements": { "limits": { "max_requests": 80 } } }));
     assert_eq!(p["needs_approval"], serde_json::json!(["Limit(max_requests=80)"]), "the rest is already granted");
-    assert!(p["already_granted"].as_array().unwrap().contains(&serde_json::json!("NetworkIngress")));
+    assert!(p["already_granted"].as_array().unwrap().contains(&serde_json::json!("Action(\"put\")")));
     assert!(p["refused"].is_null());
     let p = preview(serde_json::json!({ "requirements": { "private_addresses": true } }));
     assert!(p["refused"].as_str().unwrap().contains("private addresses"));
@@ -1651,8 +1404,8 @@ fn an_in_memory_store_has_nothing_to_sweep() {
 fn a_deployment_keeps_as_many_runs_as_its_retention_says() {
     let state = test_state();
     *state.policy.write().unwrap() = Arc::new(Policy::parse("[limits]\nkeep_runs = 5\n[ceilings]\nkeep_runs = 50").unwrap());
-    let writer = stage_stateful_writer(&state, test_ingress(), "k");
-    let ack = serde_json::json!(["NetworkIngress", "StateWrite(\"k\")"]);
+    let writer = stage_writer(&state, "k");
+    let ack = serde_json::json!(["Action(\"put\")", "StateWrite(\"k\")"]);
     let keeping = |n: u64| serde_json::json!({ "acknowledge": ack, "requirements": { "limits": { "keep_runs": n } } });
     let seqs = || -> Vec<u64> {
         let log = body_json(route(&state, &req("GET", "/deployments/w/log", vec![])));
@@ -1660,7 +1413,7 @@ fn a_deployment_keeps_as_many_runs_as_its_retention_says() {
     };
     let run = |n: usize| {
         for _ in 0..n {
-            assert_eq!(route(&state, &req("POST", "/trigger/w", b"x".to_vec())).status_code, 200);
+            assert_eq!(put(&state, "w", "x").status_code, 200);
         }
     };
 
@@ -1704,35 +1457,13 @@ fn granted_exceptions_let_a_request_reach_a_local_server() {
     });
     let state = test_state();
     *state.policy.write().unwrap() = Arc::new(Policy::parse("[grants]\nallow_plain_http = true\nallow_private_addresses = true").unwrap());
-    let request = Unit {
-        params: vec![Param::frozen("method", "GET"), Param::frozen("host", &host)],
-        ..holon_core::interface_of("http_request").unwrap()
-    };
-    let field = Unit {
-        params: vec![Param::frozen("name", "body")],
-        ..holon_core::interface_of("field").unwrap()
-    };
-    let flow = Unit {
-        body: UnitBody::Composite {
-            children: vec![stage(&state, &test_ingress()), stage(&state, &request), stage(&state, &field), stage(&state, &test_sink())],
-            edges: vec![
-                Edge { from_child: 0, from_port: 0, to_child: 1, to_port: 0 },
-                Edge { from_child: 1, from_port: 0, to_child: 2, to_port: 0 },
-                Edge { from_child: 2, from_port: 0, to_child: 3, to_port: 0 },
-                Edge { from_child: 3, from_port: 0, to_child: BOUNDARY, to_port: 0 },
-            ],
-        },
-        params: vec![],
-        inputs: vec![],
-        outputs: vec![Port { name: "out".into(), ty: Type::Effect }],
-    };
-    let flow_hash = stage(&state, &flow);
-    let ack = serde_json::json!(["NetworkIngress", "NetworkEgress", format!("HttpRequest({host:?})"), format!("PlainHttp({host:?})"), "PrivateAddresses"]);
+    let unit = stage_text(&state, &caller_text(&host));
+    let ack = serde_json::json!(["Action(\"call\")", format!("HttpRequest({host:?})"), format!("PlainHttp({host:?})"), "PrivateAddresses"]);
     let requirements = serde_json::json!({ "plain_http": [host], "private_addresses": true });
-    let deployed = deploy_json(&state, "local", flow_hash, serde_json::json!({ "acknowledge": ack, "requirements": requirements }));
+    let deployed = deploy_json(&state, "local", unit, serde_json::json!({ "acknowledge": ack, "requirements": requirements }));
     assert_eq!(deployed.status_code, 200);
-    let fired = body_json(route(&state, &req("POST", "/trigger/local", b"/hi".to_vec())));
-    assert_eq!(fired["performed"][0]["payload"]["value"], "hello", "the answer's body reached the egress");
+    let answered = body_json(run_action_named(&state, "local", "call", serde_json::json!("/hi")));
+    assert_eq!(answered["answer"]["body"], "hello", "the answer's body is the action's: {answered}");
 
     // The run checks offline: its request is answered from its own record, not sent again.
     let export: verify::Export = serde_json::from_value(body_json(route(&state, &req("GET", "/deployments/local/export", vec![])))).unwrap();
@@ -1747,8 +1478,8 @@ fn granted_exceptions_let_a_request_reach_a_local_server() {
 #[test]
 fn an_effect_outside_the_grant_is_refused_at_perform_time() {
     let state = test_state();
-    let writer = stage_stateful_writer(&state, test_ingress(), "k");
-    let ack = serde_json::json!({ "acknowledge": ["NetworkIngress", "StateWrite(\"k\")"] });
+    let writer = stage_writer(&state, "k");
+    let ack = serde_json::json!({ "acknowledge": ["Action(\"put\")", "StateWrite(\"k\")"] });
     assert_eq!(deploy_json(&state, "w", writer, ack).status_code, 200);
     {
         let mut table = state.deployments.lock().unwrap();
@@ -1757,8 +1488,9 @@ fn an_effect_outside_the_grant_is_refused_at_perform_time() {
         narrowed.items.remove("StateWrite(\"k\")");
         dep.permit = Arc::new(Permit::new(dep.unit, &narrowed, &state.policy()));
     }
-    let fired = body_json(route(&state, &req("POST", "/trigger/w", b"value".to_vec())));
-    assert_eq!(fired["performed"], serde_json::json!([]), "the write was refused");
+    assert_eq!(put(&state, "w", "value").status_code, 200);
+    let entry = &log_entries(&state, "w")[0];
+    assert_eq!(entry["performed"].as_array().map_or(0, Vec::len), 0, "the write was refused: {entry}");
     let current = body_json(route(&state, &req("GET", "/deployments/w/state", vec![])));
     assert!(current["state"].get("k").is_none(), "and nothing was stored: {current}");
 }
@@ -1773,8 +1505,8 @@ fn change_grant(state: &AppState, slug: &str, change: serde_json::Value) -> Resp
 #[test]
 fn revoking_an_item_pauses_until_it_is_granted_back() {
     let state = test_state();
-    let writer = stage_stateful_writer(&state, test_ingress(), "k");
-    let ack = serde_json::json!({ "acknowledge": ["NetworkIngress", "StateWrite(\"k\")"] });
+    let writer = stage_writer(&state, "k");
+    let ack = serde_json::json!({ "acknowledge": ["Action(\"put\")", "StateWrite(\"k\")"] });
     assert_eq!(deploy_json(&state, "w", writer, ack).status_code, 200);
 
     let revoked = change_grant(&state, "w", serde_json::json!({ "revoke": ["StateWrite(\"k\")"] }));
@@ -1783,7 +1515,7 @@ fn revoking_an_item_pauses_until_it_is_granted_back() {
     assert_eq!(view["status"], "paused");
     assert!(view["attention"].as_str().unwrap().contains("StateWrite(\"k\")"), "{view}");
     assert_eq!(view["grant"]["revoked"], serde_json::json!(["StateWrite(\"k\")"]));
-    assert_eq!(route(&state, &req("POST", "/trigger/w", b"v".to_vec())).status_code, 409, "paused");
+    assert_eq!(put(&state, "w", "v").status_code, 409, "paused");
     assert_eq!(route(&state, &req("POST", "/deployments/w/run", vec![])).status_code, 409, "can't be run past it");
 
     // What can't apply is refused whole.
@@ -1803,7 +1535,7 @@ fn revoking_an_item_pauses_until_it_is_granted_back() {
     assert!(restored["attention"].is_null());
     let changes: Vec<&str> = restored["grant"]["changes"].as_array().unwrap().iter().map(|c| c["change"].as_str().unwrap()).collect();
     assert_eq!(changes, ["revoked StateWrite(\"k\")", "granted StateWrite(\"k\")"]);
-    assert_eq!(route(&state, &req("POST", "/trigger/w", b"v".to_vec())).status_code, 200);
+    assert_eq!(put(&state, "w", "v").status_code, 200);
     assert!(body_json(route(&state, &req("GET", "/deployments/w/state", vec![])))["state"].get("k").is_some());
 
     // A pause the person chose isn't the grant's to undo.
@@ -1819,26 +1551,9 @@ fn revoking_an_item_pauses_until_it_is_granted_back() {
 fn a_revocation_can_keep_the_deployment_running_with_the_revoked_calls_failing() {
     let state = test_state();
     let host = "api.example.com";
-    let request = Unit {
-        params: vec![Param::frozen("method", "GET"), Param::frozen("host", host)],
-        ..holon_core::interface_of("http_request").unwrap()
-    };
-    let flow = Unit {
-        body: UnitBody::Composite {
-            children: vec![stage(&state, &test_ingress()), stage(&state, &request), stage(&state, &test_sink())],
-            edges: vec![
-                Edge { from_child: 0, from_port: 0, to_child: 1, to_port: 0 },
-                Edge { from_child: 1, from_port: 0, to_child: 2, to_port: 0 },
-                Edge { from_child: 2, from_port: 0, to_child: BOUNDARY, to_port: 0 },
-            ],
-        },
-        params: vec![],
-        inputs: vec![],
-        outputs: vec![Port { name: "out".into(), ty: Type::Effect }],
-    };
-    let flow_hash = stage(&state, &flow);
-    let ack = serde_json::json!(["NetworkIngress", "NetworkEgress", format!("HttpRequest({host:?})")]);
-    assert_eq!(deploy_json(&state, "caller", flow_hash, serde_json::json!({ "acknowledge": ack })).status_code, 200);
+    let unit = stage_text(&state, &caller_text(host));
+    let ack = serde_json::json!(["Action(\"call\")", format!("HttpRequest({host:?})")]);
+    assert_eq!(deploy_json(&state, "caller", unit, serde_json::json!({ "acknowledge": ack })).status_code, 200);
 
     let change = serde_json::json!({ "revoke": [format!("HttpRequest({host:?})")], "keep_running": true });
     let view = body_json(change_grant(&state, "caller", change));
@@ -1846,7 +1561,7 @@ fn a_revocation_can_keep_the_deployment_running_with_the_revoked_calls_failing()
     assert!(view["attention"].is_null());
     assert_eq!(view["grant"]["keep_running"], true);
 
-    assert_eq!(route(&state, &req("POST", "/trigger/caller", b"/status".to_vec())).status_code, 200);
+    assert_eq!(run_action_named(&state, "caller", "call", serde_json::json!("/status")).status_code, 200);
     let log = body_json(route(&state, &req("GET", "/deployments/caller/log", vec![])));
     let exchange = &log["entries"][0]["rounds"][0]["exchanges"][0];
     let error = exchange["response"]["value"].as_array().unwrap().iter().find(|kv| kv[0] == "error").unwrap()[1]["value"].clone();
@@ -1863,9 +1578,9 @@ fn a_revocation_can_keep_the_deployment_running_with_the_revoked_calls_failing()
 #[test]
 fn a_limit_can_be_lowered_without_a_redeploy_but_not_raised() {
     let state = test_state();
-    let writer = stage_stateful_writer(&state, test_ingress(), "k");
+    let writer = stage_writer(&state, "k");
     let requirements = serde_json::json!({ "limits": { "request_timeout_ms": 60000 } });
-    let ack = serde_json::json!(["NetworkIngress", "StateWrite(\"k\")", "Limit(request_timeout_ms=60000)"]);
+    let ack = serde_json::json!(["Action(\"put\")", "StateWrite(\"k\")", "Limit(request_timeout_ms=60000)"]);
     let deployed = deploy_json(&state, "w", writer, serde_json::json!({ "acknowledge": ack, "requirements": requirements }));
     assert_eq!(deployed.status_code, 200);
     let limits = |state: &AppState| state.deployments.lock().unwrap()["w"].permit.request_limits.clone();
@@ -1904,9 +1619,9 @@ fn reloading_the_policy_holds_every_deployment_to_it() {
     let mut state = test_state();
     let path = unique_temp_path("policy");
     state.policy_path = path.clone().into();
-    let writer = stage_stateful_writer(&state, test_ingress(), "k");
+    let writer = stage_writer(&state, "k");
     let requirements = serde_json::json!({ "limits": { "request_timeout_ms": 60000 } });
-    let ack = serde_json::json!(["NetworkIngress", "StateWrite(\"k\")", "Limit(request_timeout_ms=60000)"]);
+    let ack = serde_json::json!(["Action(\"put\")", "StateWrite(\"k\")", "Limit(request_timeout_ms=60000)"]);
     assert_eq!(deploy_json(&state, "w", writer, serde_json::json!({ "acknowledge": ack, "requirements": requirements })).status_code, 200);
     let reload = |state: &AppState| route(state, &req("POST", "/permissions/reload", b"{}".to_vec()));
 
@@ -1936,13 +1651,13 @@ fn load_rechecks_each_grant_and_migrates_older_records() {
     let mut state = test_state();
     let path = unique_temp_path("grants");
     state.deployments_path = path.clone().into();
-    let writer = stage_stateful_writer(&state, test_ingress(), "k");
-    let ack = serde_json::json!({ "acknowledge": ["NetworkIngress", "StateWrite(\"k\")"] });
+    let writer = stage_writer(&state, "k");
+    let ack = serde_json::json!({ "acknowledge": ["Action(\"put\")", "StateWrite(\"k\")"] });
     assert_eq!(deploy_json(&state, "w", writer, ack.clone()).status_code, 200);
 
     // As if granted less than it needs: drop an item from the stored grant.
     let mut file: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-    file[0]["grant"]["items"] = serde_json::json!(["NetworkIngress"]);
+    file[0]["grant"]["items"] = serde_json::json!(["Action(\"put\")"]);
     std::fs::write(&path, serde_json::to_vec(&file).unwrap()).unwrap();
     let reloaded = load_deployments(&Place::parse(&path), &state.store, &state.policy()).unwrap();
     let w = &reloaded["w"];
@@ -1953,9 +1668,9 @@ fn load_rechecks_each_grant_and_migrates_older_records() {
     assert!(listed["deployments"][0]["attention"].is_string());
     assert_eq!(route(&state, &req("POST", "/deployments/w/run", vec![])).status_code, 409);
     // Deploying again asks for the missing item, and then it runs.
-    assert_eq!(deploy_json(&state, "w", writer, serde_json::json!({ "acknowledge": ["NetworkIngress"] })).status_code, 400);
+    assert_eq!(deploy_json(&state, "w", writer, serde_json::json!({ "acknowledge": ["Action(\"put\")"] })).status_code, 400);
     assert_eq!(deploy_json(&state, "w", writer, ack).status_code, 200);
-    assert_eq!(route(&state, &req("POST", "/trigger/w", b"ok".to_vec())).status_code, 200);
+    assert_eq!(put(&state, "w", "ok").status_code, 200);
 
     // A record without a grant: granted its derived capabilities, by migration.
     let mut file: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
@@ -1972,11 +1687,11 @@ fn load_rechecks_each_grant_and_migrates_older_records() {
 #[test]
 fn a_run_id_is_recomputable_from_its_log_entry() {
     let state = test_state();
-    let writer = stage_stateful_writer(&state, test_ingress(), "k");
-    let ack = serde_json::json!({ "acknowledge": ["NetworkIngress", "StateWrite(\"k\")"] });
+    let writer = stage_writer(&state, "k");
+    let ack = serde_json::json!({ "acknowledge": ["Action(\"put\")", "StateWrite(\"k\")"] });
     assert_eq!(deploy_json(&state, "w", writer, ack).status_code, 200);
-    route(&state, &req("POST", "/trigger/w", b"same".to_vec()));
-    route(&state, &req("POST", "/trigger/w", b"same".to_vec()));
+    put(&state, "w", "same");
+    put(&state, "w", "same");
     let log = body_json(route(&state, &req("GET", "/deployments/w/log", vec![])));
     let entries = log["entries"].as_array().unwrap();
     assert_ne!(entries[0]["run_id"], entries[1]["run_id"], "same input, different nonce");
@@ -1993,19 +1708,13 @@ fn a_run_id_is_recomputable_from_its_log_entry() {
         .as_array()
         .unwrap()
         .iter()
-        .map(|p| {
-            let cap = match p[0].as_str().unwrap() {
-                "Clock" => Capability::Clock,
-                "Random" => Capability::Random,
-                _ => Capability::NetworkIngress,
-            };
-            (cap, sv(&p[1]))
-        })
+        .map(|p| (crate::durable::capability_named(p[0].as_str().unwrap()).unwrap(), sv(&p[1])))
         .collect();
     let hex = e["nonce"].as_str().unwrap();
     let nonce: [u8; 16] = (0..16).map(|i| u8::from_str_radix(&hex[2 * i..2 * i + 2], 16).unwrap()).collect::<Vec<_>>().try_into().unwrap();
     assert_eq!(hex.len(), 32, "128 bits");
-    let recomputed = run_id_of(writer, &[], Some(&state_before), &sourced, &nonce);
+    // An action's run has one input: what it was sent.
+    let recomputed = run_id_of(writer, &[Some(sv(&e["request"]))], Some(&state_before), &sourced, &nonce);
     assert_eq!(e["run_id"], to_hex(&recomputed));
 }
 
@@ -2015,31 +1724,9 @@ fn a_run_id_is_recomputable_from_its_log_entry() {
 #[test]
 fn a_secret_reaches_its_runs_and_nothing_else() {
     let state = test_state();
-    let secret = Unit { params: vec![Param::frozen("name", "api_key")], ..holon_core::interface_of("secret").unwrap() };
-    let equals = holon_core::interface_of("equals").unwrap();
-    let flow = Unit {
-        body: UnitBody::Composite {
-            children: vec![
-                stage(&state, &secret),
-                stage(&state, &test_ingress()),
-                stage(&state, &equals),
-                stage(&state, &test_sink()),
-                stage(&state, &test_store_write("k")),
-            ],
-            edges: vec![
-                Edge { from_child: 0, from_port: 0, to_child: 2, to_port: 0 }, // secret → equals.a
-                Edge { from_child: 1, from_port: 0, to_child: 2, to_port: 1 }, // ingress → equals.b
-                Edge { from_child: 2, from_port: 0, to_child: 3, to_port: 0 }, // → egress
-                Edge { from_child: 0, from_port: 0, to_child: 4, to_port: 0 }, // secret → state k
-                Edge { from_child: 3, from_port: 0, to_child: BOUNDARY, to_port: 0 },
-                Edge { from_child: 4, from_port: 0, to_child: BOUNDARY, to_port: 1 },
-            ],
-        },
-        params: vec![],
-        inputs: vec![],
-        outputs: vec![Port { name: "said".into(), ty: Type::Effect }, Port { name: "kept".into(), ty: Type::Effect }],
-    };
-    let flow_hash = stage(&state, &flow);
+    // Its action checks what it is sent against the secret, and would keep the secret in state.
+    let text = "import { action, flow } from \"holon\"\nimport state from \"state\"\nimport api_key from \"secret:api_key\"\n\nflow(\"s\")\n\nexport const check = action((value) => {\n  state.k = api_key\n  return value === api_key\n})\n";
+    let flow_hash = stage_text(&state, text);
     let value = "sk_test_123456";
     let preview = body_json(route(&state, &req("POST", "/deploy/preview", serde_json::to_vec(&serde_json::json!({ "slug": "s", "unit": to_hex(&flow_hash) })).unwrap())));
     assert_eq!(preview["missing_secrets"], serde_json::json!(["api_key"]));
@@ -2084,12 +1771,12 @@ fn a_secret_reaches_its_runs_and_nothing_else() {
     assert_eq!(String::from_utf8(body_bytes(rollback(1))).unwrap(), r#"{"version":3}"#);
     assert_eq!(*state.secrets.vault("s").lock().unwrap().current["api_key"], value);
 
-    let ack = serde_json::json!(["NetworkIngress", "NetworkEgress", "SecretRead(\"api_key\")", "StateWrite(\"k\")"]);
+    let ack = serde_json::json!(["Action(\"check\")", "SecretRead(\"api_key\")", "StateWrite(\"k\")"]);
     assert_eq!(deploy_json(&state, "s", flow_hash, serde_json::json!({ "acknowledge": ack })).status_code, 200);
-    let fire = |body: &str| String::from_utf8(body_bytes(route(&state, &req("POST", "/trigger/s", body.as_bytes().to_vec())))).unwrap();
+    let fire = |body: &str| String::from_utf8(body_bytes(run_action_named(&state, "s", "check", serde_json::json!(body)))).unwrap();
     let matched = fire(value);
-    assert!(matched.contains(r#""value":true"#), "the run read the secret: {matched}");
-    assert!(fire("something else").contains(r#""value":false"#));
+    assert!(matched.contains(r#""answer":true"#), "the run read the secret: {matched}");
+    assert!(fire("something else").contains(r#""answer":false"#));
 
     // The log keeps what each node produced, so a replay can show a node it can't recompute:
     // `equals` said true, and the secret node's own output is its placeholder.
@@ -2111,7 +1798,7 @@ fn a_secret_reaches_its_runs_and_nothing_else() {
     }
     // Not in the value store on disk either: nothing that contains it was ever written.
     assert!(state.deployments.lock().unwrap()["s"].state.as_ref().unwrap().state.lock().unwrap().get("k").is_none());
-    assert!(!matched.contains(value), "the trigger's reply doesn't either");
+    assert!(!matched.contains(value), "the action's answer doesn't either");
 
     // Deleting the deployment forgets its secrets.
     route(&state, &req("POST", "/deployments/s/stop", vec![]));
@@ -2505,6 +2192,8 @@ fn waiting_is_held_to_the_granted_limits() {
 
 // ── persistence ──────────────────────────────────────────────────────────────────────
 
+/// A deployment survives a restart: a fresh load from the same file and store has it again, its
+/// triggers derived anew, and it runs.
 #[test]
 fn deployments_persist_across_a_simulated_restart() {
     let deployments_path = unique_temp_path("deployments");
@@ -2515,18 +2204,8 @@ fn deployments_persist_across_a_simulated_restart() {
     let backend: DynStore = Box::new(FileStore::new(&store_dir).unwrap());
     let store = SharedStore::new(backend);
 
-    let ingress = test_ingress();
-    let ingress_hash = hash_unit(&ingress).unwrap();
-    let mut writer = store.clone();
-    writer.put(&ingress).unwrap();
-    writer.put(&test_sink()).unwrap();
-    let egress_hash = hash_unit(&test_sink()).unwrap();
-    let flow = test_ingress_flow(ingress_hash, egress_hash);
-    let flow_hash = hash_unit(&flow).unwrap();
-    writer.put(&flow).unwrap();
-
     // "First run": nothing to load yet, deploy, which persists write-through.
-    {
+    let unit = {
         let deployments = Arc::new(Mutex::new(load_deployments(&Place::parse(&deployments_path), &store, &Policy::default()).unwrap()));
         assert_eq!(deployments.lock().unwrap().len(), 0);
 
@@ -2542,30 +2221,27 @@ fn deployments_persist_across_a_simulated_restart() {
             listeners: None,
             data_limits: dataplane::DataLimits::default(),
             policy: std::sync::RwLock::new(Arc::new(Policy::default())),
-        policy_path: Place::Nowhere,
+            policy_path: Place::Nowhere,
             secrets: Arc::new(SecretStore::memory()),
-        folders: Arc::new(folders::Folders::memory()),
-        access: access::Access::default(),
-        activity: activity::Activity::memory(),
-        editor: None,
-        sweeps: Default::default(),
+            folders: Arc::new(folders::Folders::memory()),
+            access: access::Access::default(),
+            activity: activity::Activity::memory(),
+            editor: None,
+            sweeps: Default::default(),
         };
-        let body = serde_json::to_vec(&serde_json::json!({
-            "slug": "echo",
-            "unit": to_hex(&flow_hash),
-            "acknowledge": ["NetworkIngress", "NetworkEgress"],
-        }))
-        .unwrap();
-        assert_eq!(route(&state, &req("POST", "/deploy", body)).status_code, 200);
-    }
+        let unit = stage_text(&state, ECHO);
+        let ack = serde_json::json!({ "acknowledge": ["Action(\"echo\")"] });
+        assert_eq!(deploy_json(&state, "echo", unit, ack).status_code, 200);
+        unit
+    };
 
     // "Restart": a fresh load from the same path/store reconstructs the deployment, with
     // triggers re-derived (not read back from disk), and it actually works.
     let reloaded = load_deployments(&Place::parse(&deployments_path), &store, &Policy::default()).unwrap();
     assert_eq!(reloaded.len(), 1);
     let dep = reloaded.get("echo").unwrap();
-    assert_eq!(dep.unit, flow_hash);
-    assert_eq!(dep.triggers, vec!["Ingress".to_string()]);
+    assert_eq!(dep.unit, unit);
+    assert_eq!(dep.triggers, vec!["action echo".to_string()]);
 
     let state2 = AppState {
         store: store.clone(),
@@ -2587,9 +2263,9 @@ fn deployments_persist_across_a_simulated_restart() {
         editor: None,
         sweeps: Default::default(),
     };
-    let triggered = route(&state2, &req("POST", "/trigger/echo", b"restarted".to_vec()));
-    assert_eq!(triggered.status_code, 200);
-    assert_eq!(body_json(triggered)["performed"][0]["payload"]["value"], "restarted");
+    let ran = run_action_named(&state2, "echo", "echo", serde_json::json!("restarted"));
+    assert_eq!(ran.status_code, 200);
+    assert_eq!(body_json(ran)["answer"], "restarted");
 
     let _ = std::fs::remove_file(&deployments_path);
     let _ = std::fs::remove_dir_all(&store_dir);
@@ -2597,29 +2273,17 @@ fn deployments_persist_across_a_simulated_restart() {
 
 // ── multi-flow overlap ───────────────────────────────────────────────────────────────
 
+/// Every clock due in a pass ticks in it: one unit deployed under two slugs, both due at once.
 #[test]
 fn multiple_due_clock_deployments_all_fire_in_one_pass() {
     let state = test_state();
-    let clock = test_clock();
-    let clock_hash = hash_unit(&clock).unwrap();
-    route(&state, &req("POST", "/unit", encode_preimage(&clock).unwrap()));
-    route(&state, &req("POST", "/unit", encode_preimage(&test_sink()).unwrap()));
-    let egress_hash = hash_unit(&test_sink()).unwrap();
-    let flow = test_clock_flow(clock_hash, egress_hash);
-    let flow_hash = hash_unit(&flow).unwrap();
-    route(&state, &req("POST", "/unit", encode_preimage(&flow).unwrap()));
+    let unit = stage_text(&state, TICKER);
 
-    // The same unit, deployed twice under different slugs — a legitimate real scenario,
-    // and enough to exercise the per-tick fan-out (two due deployments in one pass).
+    // The same unit, deployed twice under different slugs — a legitimate real scenario (a flow of
+    // clocks alone listens on no port), and enough to exercise the per-tick fan-out.
     for slug in ["tick-a", "tick-b"] {
-        let body = serde_json::to_vec(&serde_json::json!({
-            "slug": slug,
-            "unit": to_hex(&flow_hash),
-            "interval_seconds": 5,
-            "acknowledge": ["Clock", "NetworkEgress"],
-        }))
-        .unwrap();
-        assert_eq!(route(&state, &req("POST", "/deploy", body)).status_code, 200);
+        let ack = serde_json::json!({ "acknowledge": ["Clock", "StateWrite(\"last_tick\")"] });
+        assert_eq!(deploy_json(&state, slug, unit, ack).status_code, 200);
     }
 
     run_due_clock_ticks(&state.store, &state.deployments, &state.deployments_path, SystemTime::now());
@@ -2628,7 +2292,7 @@ fn multiple_due_clock_deployments_all_fire_in_one_pass() {
         let h = route(&state, &req("GET", &format!("/deployments/{slug}/history"), vec![]));
         let ticks = body_json(h)["ticks"].as_array().unwrap().clone();
         assert_eq!(ticks.len(), 1, "slug {slug} should have exactly one tick recorded");
-        assert_eq!(ticks[0]["performed"][0]["capability"], "NetworkEgress");
+        assert_eq!(ticks[0]["performed"][0]["capability"], "StateWrite(\"last_tick\")");
     }
 }
 
@@ -2750,11 +2414,11 @@ fn unloadable_records_are_an_error_and_state_always_survives_a_restart() {
             .unwrap();
         assert_eq!(route(&state, &req("POST", "/deploy", body)).status_code, 200);
     };
-    let writer = stage_stateful_writer(&state, test_ingress(), "k");
-    deploy(writer, serde_json::json!(["NetworkIngress", "StateWrite(\"k\")"]));
-    assert_eq!(route(&state, &req("POST", "/trigger/writer", b"kept".to_vec())).status_code, 200);
-    let stateless = stage_ingress_plus_driver(&state, test_random());
-    deploy(stateless, serde_json::json!(["NetworkIngress", "Random"]));
+    let writer = stage_writer(&state, "k");
+    deploy(writer, serde_json::json!(["Action(\"put\")", "StateWrite(\"k\")"]));
+    assert_eq!(put(&state, "writer", "kept").status_code, 200);
+    let stateless = stage_text(&state, ECHO);
+    deploy(stateless, serde_json::json!(["Action(\"echo\")"]));
 
     let reloaded = load_deployments(&Place::parse(&path), &state.store, &state.policy()).unwrap();
     let held = reloaded["writer"].state.as_ref().expect("state must survive the restart").state.lock().unwrap().clone();
@@ -2771,13 +2435,13 @@ fn state_is_kept_by_reference_and_its_root_survives_a_restart() {
     let mut state = test_state();
     let path = unique_temp_path("merkle");
     state.deployments_path = path.clone().into();
-    let writer = stage_stateful_writer(&state, test_ingress(), "k");
+    let writer = stage_writer(&state, "k");
     let body = serde_json::to_vec(&serde_json::json!({
-        "slug": "writer", "unit": to_hex(&writer), "acknowledge": ["NetworkIngress", "StateWrite(\"k\")"],
+        "slug": "writer", "unit": to_hex(&writer), "acknowledge": ["Action(\"put\")", "StateWrite(\"k\")"],
     }))
     .unwrap();
     assert_eq!(route(&state, &req("POST", "/deploy", body)).status_code, 200);
-    let write = |text: &str| assert_eq!(route(&state, &req("POST", "/trigger/writer", text.as_bytes().to_vec())).status_code, 200);
+    let write = |text: &str| assert_eq!(put(&state, "writer", text).status_code, 200);
     let current = || body_json(route(&state, &req("GET", "/deployments/writer/state", vec![])));
     let act = |action: &str, body: &str| {
         assert_eq!(route(&state, &req("POST", &format!("/deployments/writer/{action}"), body.as_bytes().to_vec())).status_code, 200)
@@ -2863,82 +2527,45 @@ fn persist_writes_whole_files_and_leaves_no_temp_files() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-// ── every honestly-answerable driver is actually sourced, regardless of which one
-// triggered this fire (the Random / Clock-via-/trigger gap) ────────────────────────────
+// ── every honestly-answerable source is supplied, whatever started the run ────────────────
 
+/// An action's run is given the clock and randomness, though a person started it, not a clock.
+/// Regression: `random` was once supplied by no run at all, and the clock only on a clock's tick,
+/// so a flow read nothing there, silently (an absent value is dropped before compute runs).
 #[test]
-fn trigger_sources_random_even_though_ingress_is_what_actually_fired_it() {
-    // Real bug, not a hypothetical: Random was never supplied by any fire path at all — a
-    // random leaf always evaluated to nothing, silently, with no error anywhere in the
-    // chain (an absent slot is dropped before compute runs, so a downstream primitive like
-    // concat just quietly produces shorter text, never a crash). This is the direct
-    // regression test for that.
+fn an_actions_run_is_given_the_clock_and_randomness() {
     let state = test_state();
-    let composite_hash = stage_ingress_plus_driver(&state, test_random());
-    let deploy_body = serde_json::to_vec(&serde_json::json!({
-        "slug": "rnd",
-        "unit": to_hex(&composite_hash),
-        "acknowledge": ["NetworkIngress", "Random"],
-    }))
-    .unwrap();
-    assert_eq!(route(&state, &req("POST", "/deploy", deploy_body)).status_code, 200);
-
-    let r = route(&state, &req("POST", "/trigger/rnd", b"x".to_vec()));
-    assert_eq!(r.status_code, 200);
-    let v = body_json(r);
-    assert_eq!(v["outputs"][0]["type"], "Number"); // a real number, not null
-}
-
-#[test]
-fn trigger_sources_clock_even_though_ingress_is_what_actually_fired_it() {
-    // The same gap, found by auditing rather than reported: Clock was only ever sourced on
-    // the scheduler's own tick path, never on a manual /trigger of an Ingress+Clock unit.
-    let state = test_state();
-    let composite_hash = stage_ingress_plus_driver(&state, test_clock());
-    let deploy_body = serde_json::to_vec(&serde_json::json!({
-        "slug": "clk",
-        "unit": to_hex(&composite_hash),
-        "acknowledge": ["NetworkIngress", "Clock"],
-        "interval_seconds": 60,
-    }))
-    .unwrap();
-    assert_eq!(route(&state, &req("POST", "/deploy", deploy_body)).status_code, 200);
-
-    let r = route(&state, &req("POST", "/trigger/clk", b"x".to_vec()));
-    assert_eq!(r.status_code, 200);
-    let v = body_json(r);
-    assert_eq!(v["outputs"][0]["type"], "Number");
+    let text = "import { action, flow } from \"holon\"\nimport { now } from \"holon:clock\"\nimport { random } from \"holon:random\"\n\nflow(\"sources\")\n\nexport const read = action(() => ({ at: now, r: random }))\n";
+    let unit = stage_text(&state, text);
+    let ack = serde_json::json!({ "acknowledge": ["Action(\"read\")", "Clock", "Random"] });
+    assert_eq!(deploy_json(&state, "sources", unit, ack).status_code, 200);
+    let answered = body_json(run_action_named(&state, "sources", "read", serde_json::json!({})));
+    assert!(answered["answer"]["at"].is_number() && answered["answer"]["r"].is_number(), "real numbers, not nothing: {answered}");
 }
 
 // ── per-deployment state ─────────────────────────────────────────────────────────────
 
+/// What one run writes is there for the next: the write is in the run's log entry and in the
+/// state, and a second run's write replaces it in the same slot.
 #[test]
 fn trigger_with_state_persists_across_calls() {
     let state = test_state();
-    let composite_hash = stage_stateful_writer(&state, test_ingress(), "counter");
-    let deploy_body = serde_json::to_vec(&serde_json::json!({
-        "slug": "writer",
-        "unit": to_hex(&composite_hash),
-        "acknowledge": ["NetworkIngress", "StateWrite(\"counter\")"],
-    }))
-    .unwrap();
-    assert_eq!(route(&state, &req("POST", "/deploy", deploy_body)).status_code, 200);
+    let writer = stage_writer(&state, "counter");
+    let ack = serde_json::json!({ "acknowledge": ["Action(\"put\")", "StateWrite(\"counter\")"] });
+    assert_eq!(deploy_json(&state, "writer", writer, ack).status_code, 200);
 
-    // First fire: writes "hello".
-    let r1 = route(&state, &req("POST", "/trigger/writer", b"hello".to_vec()));
-    assert_eq!(r1.status_code, 200);
-    let v1 = body_json(r1);
-    assert_eq!(v1["performed"][0]["capability"], "StateWrite(\"counter\")");
-    assert_eq!(v1["performed"][0]["payload"]["value"], "hello");
+    // First run: writes "hello".
+    assert_eq!(put(&state, "writer", "hello").status_code, 200);
+    let entry = &log_entries(&state, "writer")[0];
+    assert_eq!(entry["performed"][0]["capability"], "StateWrite(\"counter\")");
+    assert_eq!(entry["performed"][0]["payload"]["value"], "hello");
 
     let s1 = body_json(route(&state, &req("GET", "/deployments/writer/state", vec![])));
     assert_eq!(s1["state"]["counter"]["value"], "hello");
 
-    // Second fire, a real *different* call: overwrites — proving this is the same state
-    // slot persisting across two separate fires, not something reset or freshly allocated
-    // each time.
-    let r2 = route(&state, &req("POST", "/trigger/writer", b"world".to_vec()));
-    assert_eq!(r2.status_code, 200);
+    // Second run, a real *different* call: overwrites — proving this is the same state slot
+    // persisting across two separate runs, not something reset or freshly allocated each time.
+    assert_eq!(put(&state, "writer", "world").status_code, 200);
     let s2 = body_json(route(&state, &req("GET", "/deployments/writer/state", vec![])));
     assert_eq!(s2["state"]["counter"]["value"], "world");
 }
@@ -2960,29 +2587,29 @@ fn redeploy_keeps_state() {
     };
     let state_arc = || state.deployments.lock().unwrap()["writer"].state.clone().unwrap();
 
-    let v1 = stage_stateful_writer(&state, test_ingress(), "counter");
-    deploy(v1, serde_json::json!(["NetworkIngress", "StateWrite(\"counter\")"]));
-    assert_eq!(route(&state, &req("POST", "/trigger/writer", b"hello".to_vec())).status_code, 200);
+    let v1 = stage_writer(&state, "counter");
+    deploy(v1, serde_json::json!(["Action(\"put\")", "StateWrite(\"counter\")"]));
+    assert_eq!(put(&state, "writer", "hello").status_code, 200);
     let before = state_arc();
 
     // Same unit redeployed: state survives, and it is the very same map, not a copy.
-    deploy(v1, serde_json::json!(["NetworkIngress", "StateWrite(\"counter\")"]));
+    deploy(v1, serde_json::json!(["Action(\"put\")", "StateWrite(\"counter\")"]));
     assert!(Arc::ptr_eq(&before, &state_arc()));
     let s = body_json(route(&state, &req("GET", "/deployments/writer/state", vec![])));
     assert_eq!(s["state"]["counter"]["value"], "hello");
 
     // A different stateful version writing another key: the old key is still there.
-    let v2 = stage_stateful_writer(&state, test_ingress(), "other");
-    deploy(v2, serde_json::json!(["NetworkIngress", "StateWrite(\"other\")"]));
-    assert_eq!(route(&state, &req("POST", "/trigger/writer", b"world".to_vec())).status_code, 200);
+    let v2 = stage_writer(&state, "other");
+    deploy(v2, serde_json::json!(["Action(\"put\")", "StateWrite(\"other\")"]));
+    assert_eq!(put(&state, "writer", "world").status_code, 200);
     let s = body_json(route(&state, &req("GET", "/deployments/writer/state", vec![])));
     assert_eq!(s["state"]["counter"]["value"], "hello");
     assert_eq!(s["state"]["other"]["value"], "world");
 
     // A stateless version in between doesn't discard it either.
-    let stateless = stage_ingress_plus_driver(&state, test_random());
-    deploy(stateless, serde_json::json!(["NetworkIngress", "Random"]));
-    deploy(v1, serde_json::json!(["NetworkIngress", "StateWrite(\"counter\")"]));
+    let stateless = stage_text(&state, ECHO);
+    deploy(stateless, serde_json::json!(["Action(\"echo\")"]));
+    deploy(v1, serde_json::json!(["Action(\"put\")", "StateWrite(\"counter\")"]));
     let s = body_json(route(&state, &req("GET", "/deployments/writer/state", vec![])));
     assert_eq!(s["state"]["counter"]["value"], "hello");
     assert!(Arc::ptr_eq(&before, &state_arc()));
@@ -3249,44 +2876,17 @@ fn a_collection_keeps_items_by_key_across_runs_and_restarts() {
     let _ = std::fs::remove_file(&path);
 }
 
-/// `ingress → (ignored)`, and `store_read(count) → default 0 → +1 → store_write(count)`, with
-/// `extra` children wired after: a counter every trigger bumps.
-fn counter(state: &AppState, extra: Vec<Unit>, extra_edges: Vec<Edge>) -> Hash {
-    let iface = |name: &str, params: Vec<Param>| Unit { params, ..holon_core::interface_of(name).unwrap() };
-    let frozen = |k: &str, v: &str| Param::frozen(k, v);
-    let e = |fc, fp, tc, tp| Edge { from_child: fc, from_port: fp, to_child: tc, to_port: tp };
-    let mut children = vec![
-        test_ingress(),
-        iface("store_read", vec![frozen("key", "count")]),
-        iface("default", vec![frozen("value", "0"), frozen("type", "Number")]),
-        iface("const", vec![frozen("value", "1"), frozen("type", "Number")]),
-        iface("add", vec![]),
-        test_store_write("count"),
-    ];
-    let outputs = 1 + extra_edges.iter().filter(|x| x.to_child == BOUNDARY).count();
-    children.extend(extra);
-    let mut edges = vec![e(1, 0, 2, 0), e(2, 0, 4, 0), e(3, 0, 4, 1), e(4, 0, 5, 0), e(5, 0, BOUNDARY, 0)];
-    edges.extend(extra_edges);
-    let unit = Unit {
-        body: UnitBody::Composite { children: children.iter().map(|u| stage(state, u)).collect(), edges },
-        params: vec![],
-        inputs: vec![],
-        outputs: (0..outputs).map(|i| Port { name: format!("out{i}"), ty: Type::Effect }).collect(),
-    };
-    stage(state, &unit)
-}
-
 /// Runs of one deployment no longer queue on its state: they run side by side and commit only
 /// if what they read is unchanged, running again otherwise. Many at once lose no update.
 #[test]
 fn concurrent_runs_lose_no_update() {
     let state = test_state();
-    let unit = counter(&state, vec![], vec![]);
-    let ack = serde_json::json!(["NetworkIngress", "StateRead(\"count\")", "StateWrite(\"count\")"]);
+    let unit = stage_text(&state, COUNTER);
+    let ack = serde_json::json!(["Action(\"bump\")", "StateRead(\"count\")", "StateWrite(\"count\")"]);
     assert_eq!(deploy_json(&state, "c", unit, serde_json::json!({ "acknowledge": ack })).status_code, 200);
     std::thread::scope(|s| {
         for _ in 0..24 {
-            s.spawn(|| assert_eq!(route(&state, &req("POST", "/trigger/c", b"go".to_vec())).status_code, 200));
+            s.spawn(|| assert_eq!(run_action_named(&state, "c", "bump", serde_json::json!({})).status_code, 200));
         }
     });
     let shown = body_json(route(&state, &req("GET", "/deployments/c/state", vec![])));
@@ -3321,25 +2921,21 @@ fn a_slow_run_holds_up_no_other_and_retries_without_resending() {
     });
     let state = test_state();
     *state.policy.write().unwrap() = Arc::new(Policy::parse("[grants]\nallow_plain_http = true\nallow_private_addresses = true").unwrap());
-    let call = Unit {
-        params: vec![Param::frozen("method", "GET"), Param::frozen("host", &host)],
-        ..holon_core::interface_of("http_request").unwrap()
-    };
-    let e = |fc, fp, tc, tp| Edge { from_child: fc, from_port: fp, to_child: tc, to_port: tp };
-    // The ingress body is the path it calls; the call's answer is egressed.
-    let unit = counter(&state, vec![call, test_sink()], vec![e(0, 0, 6, 0), e(6, 0, 7, 0), e(7, 0, BOUNDARY, 1)]);
+    // Each run counts, and calls the path it was sent; the call's answer is its own.
+    let text = format!("import {{ action, flow }} from \"holon\"\nimport state from \"state\"\nimport api from \"host:{host}\"\n\nflow(\"slow\")\n\nexport const bump = action(async (path) => {{\n  state.count = (state.count ?? 0) + 1\n  const r = await api.get(path)\n  return r.body\n}})\n");
+    let unit = stage_text(&state, &text);
     let ack = serde_json::json!([
-        "NetworkIngress", "NetworkEgress", "StateRead(\"count\")", "StateWrite(\"count\")",
+        "Action(\"bump\")", "StateRead(\"count\")", "StateWrite(\"count\")",
         format!("HttpRequest({host:?})"), format!("PlainHttp({host:?})"), "PrivateAddresses",
     ]);
     let requirements = serde_json::json!({ "plain_http": [host], "private_addresses": true });
     assert_eq!(deploy_json(&state, "slow", unit, serde_json::json!({ "acknowledge": ack, "requirements": requirements })).status_code, 200);
 
     std::thread::scope(|s| {
-        let first = s.spawn(|| route(&state, &req("POST", "/trigger/slow", b"/slow".to_vec())).status_code);
+        let first = s.spawn(|| run_action_named(&state, "slow", "bump", serde_json::json!("/slow")).status_code);
         std::thread::sleep(Duration::from_millis(100));
         let started = std::time::Instant::now();
-        assert_eq!(route(&state, &req("POST", "/trigger/slow", b"/fast".to_vec())).status_code, 200);
+        assert_eq!(run_action_named(&state, "slow", "bump", serde_json::json!("/fast")).status_code, 200);
         assert!(started.elapsed() < Duration::from_millis(250), "held up {:?} by the slow run", started.elapsed());
         assert_eq!(first.join().unwrap(), 200);
     });
@@ -3605,11 +3201,12 @@ fn a_server_deployment_answers_requests_and_keeps_state() {
     assert_eq!(call("GET", "/nope", "").0, 404);
     assert_eq!(call("DELETE", "/todos", "").0, 405);
 
-    // The listing shows the port and the request count; /trigger is refused for a server.
+    // The listing shows the port and the request count; a server without actions runs nothing
+    // by name.
     let listed = body_json(route(&state, &req("GET", "/deployments", vec![])));
     assert_eq!(listed["deployments"][0]["port"], 18080);
     assert_eq!(listed["deployments"][0]["trigger_count"], 13);
-    assert_eq!(route(&state, &req("POST", "/trigger/todo-api", b"x".to_vec())).status_code, 400);
+    assert_eq!(route(&state, &req("POST", "/trigger/todo-api", b"x".to_vec())).status_code, 404);
 
     // A second server on the same port is refused; a broken declaration is a 400.
     let other = todo_server(&state, "18080");
@@ -3878,8 +3475,8 @@ fn a_fire_in_progress_does_not_stall_the_table() {
             .unwrap();
         route(state, &req("POST", "/deploy", body)).status_code
     };
-    let a = stage_stateful_writer(&state, test_ingress(), "k");
-    assert_eq!(deploy(&state, "a", a, serde_json::json!(["NetworkIngress", "StateWrite(\"k\")"])), 200);
+    let a = stage_writer(&state, "k");
+    assert_eq!(deploy(&state, "a", a, serde_json::json!(["Action(\"put\")", "StateWrite(\"k\")"])), 200);
 
     // Simulate "a" mid-fire: hold its state lock, as fire_with_state does for a whole round.
     let a_state = state.deployments.lock().unwrap()["a"].state.clone().unwrap();
@@ -3887,7 +3484,7 @@ fn a_fire_in_progress_does_not_stall_the_table() {
 
     std::thread::scope(|s| {
         // Deploying "b" persists, and persisting needs "a"'s state, so this waits for "a".
-        let deploying = s.spawn(|| deploy(&state, "b", a, serde_json::json!(["NetworkIngress", "StateWrite(\"k\")"])));
+        let deploying = s.spawn(|| deploy(&state, "b", a, serde_json::json!(["Action(\"put\")", "StateWrite(\"k\")"])));
         std::thread::sleep(Duration::from_millis(200));
 
         // ...but the table itself must stay usable meanwhile.
@@ -3907,70 +3504,56 @@ fn a_fire_in_progress_does_not_stall_the_table() {
     let _ = std::fs::remove_file(&path);
 }
 
-/// Regression: `ingress → egress → store_write` stored the `Effect` itself, the next fire
-/// panicked in holon-host's `constant_unit` while holding the state lock, and the poisoned
-/// mutex then took down every later `/deploy`, `/deployments` and `/trigger`.
+/// Regression: `egress → store_write` stored the `Effect` itself, the next run panicked in
+/// holon-host's `constant_unit` while holding the state lock, and the poisoned mutex then took
+/// down every later `/deploy`, `/deployments` and run. A route that writes an effect (built by
+/// hand: the language can't write one) and reads the key back.
 #[test]
 fn effect_written_to_state_does_not_take_the_server_down() {
     let state = test_state();
-    let ingress = test_ingress();
-    let sink = test_sink();
-    let write = test_store_write("cell");
-    let read = test_store_read("cell");
-    let hashes: Vec<Hash> = [&ingress, &sink, &write, &read]
-        .iter()
-        .map(|u| {
-            route(&state, &req("POST", "/unit", encode_preimage(u).unwrap()));
-            hash_unit(u).unwrap()
-        })
-        .collect();
-    let composite = Unit {
-        body: UnitBody::Composite {
-            children: hashes,
-            edges: vec![
-                Edge { from_child: 0, from_port: 0, to_child: 1, to_port: 0 }, // ingress → egress
-                Edge { from_child: 1, from_port: 0, to_child: 2, to_port: 0 }, // egress → store_write
-                Edge { from_child: 2, from_port: 0, to_child: BOUNDARY, to_port: 0 },
-                Edge { from_child: 3, from_port: 0, to_child: BOUNDARY, to_port: 1 }, // store_read
-            ],
-        },
-        params: vec![],
-        inputs: vec![],
-        outputs: vec![
-            Port { name: "write".into(), ty: Type::Effect },
-            Port { name: "read".into(), ty: Type::Any },
+    let e = |fc, fp, tc, tp| Edge { from_child: fc, from_port: fp, to_child: tc, to_port: tp };
+    let none = leaf("default", vec![Param::frozen("type", "Text"), Param::frozen("value", "none")], vec![("value", Type::Any)], Type::Any);
+    let write = endpoint(
+        &state,
+        "POST",
+        "/cell",
+        vec![leaf("field", vec![Param::frozen("name", "body")], vec![("record", Type::Record)], Type::Any), test_sink(), test_store_write("cell"), test_store_read("cell"), none],
+        vec![
+            e(BOUNDARY, 0, 0, 0), // request → field(body)
+            e(0, 0, 1, 0),        // body → egress
+            e(1, 0, 2, 0),        // egress → store_write
+            e(3, 0, 4, 0),        // store_read → default
+            e(4, 0, BOUNDARY, 0), // response: what the cell holds
+            e(2, 0, BOUNDARY, 1), // effect: the write
         ],
+        1,
+    );
+    let server = Unit {
+        body: UnitBody::Composite { children: vec![write], edges: vec![] },
+        params: vec![Param::frozen("declare", "server"), Param::frozen("port", "18133")],
+        inputs: vec![],
+        outputs: vec![],
     };
-    let composite_hash = hash_unit(&composite).unwrap();
-    route(&state, &req("POST", "/unit", encode_preimage(&composite).unwrap()));
-    let deploy_body = serde_json::to_vec(&serde_json::json!({
-        "slug": "bad-writer",
-        "unit": to_hex(&composite_hash),
-        "acknowledge": ["NetworkIngress", "NetworkEgress", "StateRead(\"cell\")", "StateWrite(\"cell\")"],
-    }))
-    .unwrap();
-    assert_eq!(route(&state, &req("POST", "/deploy", deploy_body)).status_code, 200);
+    let unit = stage(&state, &server);
+    let ack = serde_json::json!(["NetworkIngress", "NetworkEgress", "StateRead(\"cell\")", "StateWrite(\"cell\")"]);
+    assert_eq!(deploy_json(&state, "bad-writer", unit, serde_json::json!({ "acknowledge": ack })).status_code, 200);
 
     for _ in 0..2 {
-        assert_eq!(route(&state, &req("POST", "/trigger/bad-writer", b"x".to_vec())).status_code, 200);
+        let (status, body, _) = data_call(&state, "bad-writer", "POST", "/cell", "x");
+        assert_eq!((status, body.as_str()), (200, "none"), "nothing was kept");
     }
     let s = body_json(route(&state, &req("GET", "/deployments/bad-writer/state", vec![])));
     assert!(s["state"].get("cell").is_none(), "an effect request is not data: {s}");
     assert_eq!(route(&state, &req("GET", "/deployments", vec![])).status_code, 200);
 }
 
+/// What a clock's tick writes is kept for the next: each tick writes the time it ticked at.
 #[test]
 fn clock_tick_with_state_persists_across_ticks() {
     let state = test_state();
-    let composite_hash = stage_stateful_writer(&state, test_clock(), "last_tick");
-    let deploy_body = serde_json::to_vec(&serde_json::json!({
-        "slug": "clock-writer",
-        "unit": to_hex(&composite_hash),
-        "interval_seconds": 5,
-        "acknowledge": ["Clock", "StateWrite(\"last_tick\")"],
-    }))
-    .unwrap();
-    assert_eq!(route(&state, &req("POST", "/deploy", deploy_body)).status_code, 200);
+    let unit = stage_text(&state, TICKER);
+    let ack = serde_json::json!({ "acknowledge": ["Clock", "StateWrite(\"last_tick\")"] });
+    assert_eq!(deploy_json(&state, "clock-writer", unit, ack).status_code, 200);
 
     let t0 = SystemTime::now();
     run_due_clock_ticks(&state.store, &state.deployments, &state.deployments_path, t0);
@@ -3986,59 +3569,39 @@ fn clock_tick_with_state_persists_across_ticks() {
     assert_ne!(epoch0, epoch1); // genuinely a new value, not a stale re-read
 }
 
+/// The honest-absence side, end to end: a fresh deployment's key that's never been written
+/// evaluates to nothing, so what it feeds (here a copy into another key) isn't written, while the
+/// run still answers — the same rule `holon-core`'s own tests prove in isolation, confirmed
+/// through a real run.
 #[test]
 fn reading_a_never_written_key_evaluates_to_nothing() {
-    // The honest-absence side, proven end to end: a fresh deployment's key that's never
-    // been written makes the whole single-output settle fail — the same rule
-    // `holon-core`'s own tests already prove in isolation, now confirmed through the real
-    // trigger path.
     let state = test_state();
-    let composite_hash = stage_stateful_reader(&state, "never_written");
-    let deploy_body = serde_json::to_vec(&serde_json::json!({
-        "slug": "reader",
-        "unit": to_hex(&composite_hash),
-        "acknowledge": ["NetworkIngress", "StateRead(\"never_written\")", "NetworkEgress"],
-    }))
-    .unwrap();
-    assert_eq!(route(&state, &req("POST", "/deploy", deploy_body)).status_code, 200);
+    let text = "import { action, flow } from \"holon\"\nimport state from \"state\"\n\nflow(\"reader\")\n\nexport const copy = action(() => {\n  state.copy = state.never_written\n  return \"done\"\n})\n";
+    let unit = stage_text(&state, text);
+    let ack = serde_json::json!({ "acknowledge": ["Action(\"copy\")", "StateRead(\"never_written\")", "StateWrite(\"copy\")"] });
+    assert_eq!(deploy_json(&state, "reader", unit, ack).status_code, 200);
 
-    let r = route(&state, &req("POST", "/trigger/reader", b"x".to_vec()));
-    assert_eq!(r.status_code, 200);
-    let v = body_json(r);
-    assert_eq!(v["outputs"][0], serde_json::Value::Null);
-    assert_eq!(v["performed"].as_array().unwrap().len(), 0);
+    let ran = body_json(run_action_named(&state, "reader", "copy", serde_json::json!({})));
+    assert_eq!(ran["answer"], "done", "{ran}");
+    let entry = &log_entries(&state, "reader")[0];
+    assert_eq!(entry["performed"].as_array().map_or(0, Vec::len), 0, "{entry}");
+    let s = body_json(route(&state, &req("GET", "/deployments/reader/state", vec![])));
+    assert!(s["state"].get("copy").is_none(), "{s}");
 }
 
+/// The deployments listing says whether each has state, and how many runs it had and how many
+/// failed.
 #[test]
 fn deployments_listing_shows_state_and_counters() {
     let state = test_state();
-    let stateful_hash = stage_stateful_writer(&state, test_ingress(), "k");
-    let deploy_stateful = serde_json::to_vec(&serde_json::json!({
-        "slug": "stateful",
-        "unit": to_hex(&stateful_hash),
-        "acknowledge": ["NetworkIngress", "StateWrite(\"k\")"],
-    }))
-    .unwrap();
-    route(&state, &req("POST", "/deploy", deploy_stateful));
+    let writer = stage_writer(&state, "k");
+    let ack = serde_json::json!({ "acknowledge": ["Action(\"put\")", "StateWrite(\"k\")"] });
+    assert_eq!(deploy_json(&state, "stateful", writer, ack).status_code, 200);
+    let echo = stage_text(&state, ECHO);
+    assert_eq!(deploy_json(&state, "stateless", echo, serde_json::json!({ "acknowledge": ["Action(\"echo\")"] })).status_code, 200);
 
-    let ingress = test_ingress();
-    let ingress_hash = hash_unit(&ingress).unwrap();
-    route(&state, &req("POST", "/unit", encode_preimage(&ingress).unwrap()));
-    route(&state, &req("POST", "/unit", encode_preimage(&test_sink()).unwrap()));
-    let egress_hash = hash_unit(&test_sink()).unwrap();
-    let flow = test_ingress_flow(ingress_hash, egress_hash);
-    let flow_hash = hash_unit(&flow).unwrap();
-    route(&state, &req("POST", "/unit", encode_preimage(&flow).unwrap()));
-    let deploy_stateless = serde_json::to_vec(&serde_json::json!({
-        "slug": "stateless",
-        "unit": to_hex(&flow_hash),
-        "acknowledge": ["NetworkIngress", "NetworkEgress"],
-    }))
-    .unwrap();
-    route(&state, &req("POST", "/deploy", deploy_stateless));
-
-    route(&state, &req("POST", "/trigger/stateful", b"x".to_vec()));
-    route(&state, &req("POST", "/trigger/stateful", b"y".to_vec()));
+    put(&state, "stateful", "x");
+    put(&state, "stateful", "y");
 
     let list = body_json(route(&state, &req("GET", "/deployments", vec![])));
     let entries = list["deployments"].as_array().unwrap();
@@ -4051,30 +3614,21 @@ fn deployments_listing_shows_state_and_counters() {
     assert_eq!(stateless["trigger_count"], 0);
 }
 
+/// A state is read only from a deployment that has one: no such slug is a 404, one without state a
+/// 400.
 #[test]
 fn get_state_404s_for_unknown_slug_and_400s_for_stateless_deployment() {
     let state = test_state();
     assert_eq!(route(&state, &req("GET", "/deployments/nope/state", vec![])).status_code, 404);
 
-    let ingress = test_ingress();
-    let ingress_hash = hash_unit(&ingress).unwrap();
-    route(&state, &req("POST", "/unit", encode_preimage(&ingress).unwrap()));
-    route(&state, &req("POST", "/unit", encode_preimage(&test_sink()).unwrap()));
-    let egress_hash = hash_unit(&test_sink()).unwrap();
-    let flow = test_ingress_flow(ingress_hash, egress_hash);
-    let flow_hash = hash_unit(&flow).unwrap();
-    route(&state, &req("POST", "/unit", encode_preimage(&flow).unwrap()));
-    let deploy_body = serde_json::to_vec(&serde_json::json!({
-        "slug": "stateless",
-        "unit": to_hex(&flow_hash),
-        "acknowledge": ["NetworkIngress", "NetworkEgress"],
-    }))
-    .unwrap();
-    route(&state, &req("POST", "/deploy", deploy_body));
+    let echo = stage_text(&state, ECHO);
+    assert_eq!(deploy_json(&state, "stateless", echo, serde_json::json!({ "acknowledge": ["Action(\"echo\")"] })).status_code, 200);
 
     assert_eq!(route(&state, &req("GET", "/deployments/stateless/state", vec![])).status_code, 400);
 }
 
+/// A deployment's state survives a restart: a fresh load from the same file and store holds what
+/// the last run wrote, and the deployment runs on from it.
 #[test]
 fn state_persists_across_a_simulated_restart() {
     let deployments_path = unique_temp_path("state-deployments");
@@ -4082,18 +3636,7 @@ fn state_persists_across_a_simulated_restart() {
     let backend: DynStore = Box::new(FileStore::new(&store_dir).unwrap());
     let store = SharedStore::new(backend);
 
-    let ingress = test_ingress();
-    let ingress_hash = hash_unit(&ingress).unwrap();
-    let mut writer = store.clone();
-    writer.put(&ingress).unwrap();
-    let write_leaf = test_store_write("counter");
-    let write_hash = hash_unit(&write_leaf).unwrap();
-    writer.put(&write_leaf).unwrap();
-    let composite = test_stateful_writer(ingress_hash, write_hash);
-    let composite_hash = hash_unit(&composite).unwrap();
-    writer.put(&composite).unwrap();
-
-    // "First run": deploy and trigger once — writes "before-restart".
+    // "First run": deploy and run once — writes "before-restart".
     {
         let deployments = Arc::new(Mutex::new(load_deployments(&Place::parse(&deployments_path), &store, &Policy::default()).unwrap()));
         let state = AppState {
@@ -4108,27 +3651,22 @@ fn state_persists_across_a_simulated_restart() {
             listeners: None,
             data_limits: dataplane::DataLimits::default(),
             policy: std::sync::RwLock::new(Arc::new(Policy::default())),
-        policy_path: Place::Nowhere,
+            policy_path: Place::Nowhere,
             secrets: Arc::new(SecretStore::memory()),
-        folders: Arc::new(folders::Folders::memory()),
-        access: access::Access::default(),
-        activity: activity::Activity::memory(),
-        editor: None,
-        sweeps: Default::default(),
+            folders: Arc::new(folders::Folders::memory()),
+            access: access::Access::default(),
+            activity: activity::Activity::memory(),
+            editor: None,
+            sweeps: Default::default(),
         };
-        let deploy_body = serde_json::to_vec(&serde_json::json!({
-            "slug": "writer",
-            "unit": to_hex(&composite_hash),
-            "acknowledge": ["NetworkIngress", "StateWrite(\"counter\")"],
-        }))
-        .unwrap();
-        assert_eq!(route(&state, &req("POST", "/deploy", deploy_body)).status_code, 200);
-        let triggered = route(&state, &req("POST", "/trigger/writer", b"before-restart".to_vec()));
-        assert_eq!(triggered.status_code, 200);
+        let writer = stage_writer(&state, "counter");
+        let ack = serde_json::json!({ "acknowledge": ["Action(\"put\")", "StateWrite(\"counter\")"] });
+        assert_eq!(deploy_json(&state, "writer", writer, ack).status_code, 200);
+        assert_eq!(put(&state, "writer", "before-restart").status_code, 200);
     }
 
     // "Restart": a fresh load from the same path/store — the state survives, and the
-    // deployment can still be triggered again afterward.
+    // deployment can still be run again afterward.
     let reloaded = load_deployments(&Place::parse(&deployments_path), &store, &Policy::default()).unwrap();
     let dep = reloaded.get("writer").unwrap();
     let restored_state = dep.state.as_ref().unwrap().state.lock().unwrap();
@@ -4155,8 +3693,7 @@ fn state_persists_across_a_simulated_restart() {
         editor: None,
         sweeps: Default::default(),
     };
-    let triggered2 = route(&state2, &req("POST", "/trigger/writer", b"after-restart".to_vec()));
-    assert_eq!(triggered2.status_code, 200);
+    assert_eq!(put(&state2, "writer", "after-restart").status_code, 200);
     let s = body_json(route(&state2, &req("GET", "/deployments/writer/state", vec![])));
     assert_eq!(s["state"]["counter"]["value"], "after-restart");
 
@@ -4277,13 +3814,13 @@ fn oversized_body_is_refused() {
 #[test]
 fn each_run_names_its_version_and_each_version_keeps_its_canvas() {
     let state = test_state();
-    let v1 = stage_stateful_writer(&state, test_ingress(), "a");
-    let v2 = stage_stateful_writer(&state, test_ingress(), "b");
+    let v1 = stage_writer(&state, "a");
+    let v2 = stage_writer(&state, "b");
     let deploy = |unit: Hash, key: &str, rev: u32| {
-        let ack = serde_json::json!(["NetworkIngress", format!("StateWrite(\"{key}\")")]);
+        let ack = serde_json::json!(["Action(\"put\")", format!("StateWrite(\"{key}\")")]);
         deploy_json(&state, "v", unit, serde_json::json!({ "acknowledge": ack, "document": { "rev": rev } })).status_code
     };
-    let fire = || route(&state, &req("POST", "/trigger/v", b"hello".to_vec())).status_code;
+    let fire = || put(&state, "v", "hello").status_code;
     assert_eq!(deploy(v1, "a", 1), 200);
     assert_eq!(fire(), 200);
     assert_eq!(deploy(v2, "b", 2), 200);
@@ -4307,15 +3844,15 @@ fn each_run_names_its_version_and_each_version_keeps_its_canvas() {
 #[test]
 fn every_deploy_is_a_version_and_restoring_one_is_a_new_one() {
     let state = test_state();
-    let v1 = stage_stateful_writer(&state, test_ingress(), "a");
-    let v2 = stage_stateful_writer(&state, test_ingress(), "b");
+    let v1 = stage_writer(&state, "a");
+    let v2 = stage_writer(&state, "b");
     let deploy = |unit: Hash, key: &str, rev: u32| {
-        let ack = serde_json::json!(["NetworkIngress", format!("StateWrite(\"{key}\")")]);
+        let ack = serde_json::json!(["Action(\"put\")", format!("StateWrite(\"{key}\")")]);
         body_json(deploy_json(&state, "r", unit, serde_json::json!({ "acknowledge": ack, "document": { "rev": rev } })))
     };
     assert_eq!(deploy(v1, "a", 1)["version"], 1);
     assert_eq!(deploy(v2, "b", 2)["version"], 2);
-    assert_eq!(route(&state, &req("POST", "/trigger/r", b"hello".to_vec())).status_code, 200);
+    assert_eq!(put(&state, "r", "hello").status_code, 200);
     let versions = || body_json(route(&state, &req("GET", "/deployments/r/versions", vec![])))["versions"].clone();
     let listed = versions();
     assert_eq!(listed[0]["number"], 2, "newest first");
@@ -4342,7 +3879,7 @@ fn every_deploy_is_a_version_and_restoring_one_is_a_new_one() {
     assert_eq!(body_json(route(&state, &req("GET", "/deployments/r/document", vec![])))["rev"], 1, "its canvas came back with it");
     let st = body_json(route(&state, &req("GET", "/deployments/r/state", vec![])));
     assert!(st.to_string().contains("\"b\""), "the state is as v2 left it: {st}");
-    assert_eq!(route(&state, &req("POST", "/trigger/r", b"again".to_vec())).status_code, 200, "it runs as v1 again");
+    assert_eq!(put(&state, "r", "again").status_code, 200, "it runs as v1 again");
     let log = body_json(route(&state, &req("GET", "/deployments/r/log", vec![])));
     assert_eq!(log["entries"].as_array().unwrap().last().unwrap()["unit"], to_hex(&v1));
 
@@ -4364,10 +3901,10 @@ fn every_deploy_is_a_version_and_restoring_one_is_a_new_one() {
 #[test]
 fn a_runs_or_a_versions_state_is_put_back_in_a_new_session() {
     let state = test_state();
-    let writer = stage_stateful_writer(&state, test_ingress(), "a");
-    let ack = serde_json::json!({ "acknowledge": ["NetworkIngress", "StateWrite(\"a\")"] });
+    let writer = stage_writer(&state, "a");
+    let ack = serde_json::json!({ "acknowledge": ["Action(\"put\")", "StateWrite(\"a\")"] });
     assert_eq!(deploy_json(&state, "s", writer, ack.clone()).status_code, 200);
-    let fire = |text: &str| assert_eq!(route(&state, &req("POST", "/trigger/s", text.as_bytes().to_vec())).status_code, 200);
+    let fire = |text: &str| assert_eq!(put(&state, "s", text).status_code, 200);
     fire("one");
     fire("two");
     let log = body_json(route(&state, &req("GET", "/deployments/s/log", vec![])));
@@ -4428,13 +3965,13 @@ fn a_runs_or_a_versions_state_is_put_back_in_a_new_session() {
 #[test]
 fn a_runs_code_and_state_come_back_together() {
     let state = test_state();
-    let v1 = stage_stateful_writer(&state, test_ingress(), "a");
-    let v2 = stage_stateful_writer(&state, test_ingress(), "b");
+    let v1 = stage_writer(&state, "a");
+    let v2 = stage_writer(&state, "b");
     let deploy = |unit: Hash, key: &str| {
-        let ack = serde_json::json!(["NetworkIngress", format!("StateWrite(\"{key}\")")]);
+        let ack = serde_json::json!(["Action(\"put\")", format!("StateWrite(\"{key}\")")]);
         deploy_json(&state, "both", unit, serde_json::json!({ "acknowledge": ack })).status_code
     };
-    let fire = |text: &str| assert_eq!(route(&state, &req("POST", "/trigger/both", text.as_bytes().to_vec())).status_code, 200);
+    let fire = |text: &str| assert_eq!(put(&state, "both", text).status_code, 200);
     assert_eq!(deploy(v1, "a"), 200);
     fire("first");
     let seq = body_json(route(&state, &req("GET", "/deployments/both/log", vec![])))["entries"][0]["seq"].as_u64().unwrap();
@@ -4458,8 +3995,8 @@ fn a_runs_code_and_state_come_back_together() {
     let st = body_json(route(&state, &req("GET", "/deployments/both/state", vec![]))).to_string();
     assert!(st.contains("\"first\"") && !st.contains("\"second\""), "the state run {seq} left: {st}");
 
-    let plain = stage_ingress_plus_driver(&state, test_random());
-    assert_eq!(deploy_json(&state, "plain", plain, serde_json::json!({ "acknowledge": ["NetworkIngress", "Random"] })).status_code, 200);
+    let plain = stage_text(&state, ECHO);
+    assert_eq!(deploy_json(&state, "plain", plain, serde_json::json!({ "acknowledge": ["Action(\"echo\")"] })).status_code, 200);
     let none = route(&state, &req("POST", "/deployments/plain/restore", br#"{"version":1,"state":true}"#.to_vec()));
     assert_eq!(none.status_code, 409);
     assert!(String::from_utf8(body_bytes(none)).unwrap().contains("keeps no state"));
@@ -4474,10 +4011,10 @@ fn what_was_done_to_a_deployment_is_its_events() {
     let mut state = test_state();
     let path = unique_temp_path("events");
     state.deployments_path = path.clone().into();
-    let writer = stage_stateful_writer(&state, test_ingress(), "k");
-    let ack = serde_json::json!({ "acknowledge": ["NetworkIngress", "StateWrite(\"k\")"] });
+    let writer = stage_writer(&state, "k");
+    let ack = serde_json::json!({ "acknowledge": ["Action(\"put\")", "StateWrite(\"k\")"] });
     assert_eq!(deploy_json(&state, "ev", writer, ack).status_code, 200);
-    assert_eq!(route(&state, &req("POST", "/trigger/ev", b"one".to_vec())).status_code, 200);
+    assert_eq!(put(&state, "ev", "one").status_code, 200);
     let secret = serde_json::to_vec(&serde_json::json!({ "value": "a-value-never-shown" })).unwrap();
     assert_eq!(route(&state, &req("POST", "/deployments/ev/secrets/api_key", secret)).status_code, 200);
     assert!(change_grant(&state, "ev", serde_json::json!({ "revoke": ["StateWrite(\"k\")"] })).is_success());
@@ -4555,8 +4092,8 @@ fn versions_survive_a_restart() {
     let mut state = test_state();
     let path = unique_temp_path("kept-versions");
     state.deployments_path = path.clone().into();
-    let writer = stage_stateful_writer(&state, test_ingress(), "k");
-    let ack = serde_json::json!({ "acknowledge": ["NetworkIngress", "StateWrite(\"k\")"], "document": { "rev": 1 } });
+    let writer = stage_writer(&state, "k");
+    let ack = serde_json::json!({ "acknowledge": ["Action(\"put\")", "StateWrite(\"k\")"], "document": { "rev": 1 } });
     assert_eq!(deploy_json(&state, "kept", writer, ack.clone()).status_code, 200);
     assert_eq!(deploy_json(&state, "kept", writer, ack).status_code, 200);
     let text = std::fs::read_to_string(&path).unwrap();
@@ -4582,11 +4119,11 @@ fn a_flow_log_survives_a_restart_and_goes_with_its_deployment() {
     let mut state = test_state();
     let path = unique_temp_path("kept-log");
     state.deployments_path = path.clone().into();
-    let writer = stage_stateful_writer(&state, test_ingress(), "k");
-    let ack = serde_json::json!({ "acknowledge": ["NetworkIngress", "StateWrite(\"k\")"] });
+    let writer = stage_writer(&state, "k");
+    let ack = serde_json::json!({ "acknowledge": ["Action(\"put\")", "StateWrite(\"k\")"] });
     assert_eq!(deploy_json(&state, "kept", writer, ack).status_code, 200);
     for _ in 0..2 {
-        assert_eq!(route(&state, &req("POST", "/trigger/kept", b"hello".to_vec())).status_code, 200);
+        assert_eq!(put(&state, "kept", "hello").status_code, 200);
     }
     let file = recorder::file_for(&Place::parse(&path), "kept").unwrap();
     assert!(file.exists());
@@ -4610,11 +4147,11 @@ fn a_flow_log_is_a_chain_and_a_changed_run_shows_as_a_break() {
     let mut state = test_state();
     let path = unique_temp_path("chained-log");
     state.deployments_path = path.clone().into();
-    let writer = stage_stateful_writer(&state, test_ingress(), "k");
-    let ack = serde_json::json!({ "acknowledge": ["NetworkIngress", "StateWrite(\"k\")"] });
+    let writer = stage_writer(&state, "k");
+    let ack = serde_json::json!({ "acknowledge": ["Action(\"put\")", "StateWrite(\"k\")"] });
     assert_eq!(deploy_json(&state, "chained", writer, ack).status_code, 200);
     for _ in 0..3 {
-        assert_eq!(route(&state, &req("POST", "/trigger/chained", b"hello".to_vec())).status_code, 200);
+        assert_eq!(put(&state, "chained", "hello").status_code, 200);
     }
     let log = body_json(route(&state, &req("GET", "/deployments/chained/log", vec![])));
     let entries = log["entries"].as_array().unwrap();
@@ -4733,12 +4270,11 @@ fn what_is_done_names_who_did_it() {
     assert_eq!(body_json(saved)["saved_by"], "bob");
     assert_eq!(body_json(as_bob("GET", "/flows", vec![]))[0]["saved_by"], "bob");
 
-    let ingress = test_ingress();
-    as_bob("POST", "/unit", encode_preimage(&ingress).unwrap());
-    as_bob("POST", "/unit", encode_preimage(&test_sink()).unwrap());
-    let flow = test_ingress_flow(hash_unit(&ingress).unwrap(), hash_unit(&test_sink()).unwrap());
-    as_bob("POST", "/unit", encode_preimage(&flow).unwrap());
-    let body = serde_json::json!({ "slug": "echo", "unit": to_hex(&hash_unit(&flow).unwrap()), "acknowledge": ["NetworkIngress", "NetworkEgress"] });
+    let plan = holon_author::agent::plan(ECHO).unwrap();
+    for u in &plan.units {
+        as_bob("POST", "/unit", u.clone());
+    }
+    let body = serde_json::json!({ "slug": "echo", "unit": plan.unit, "acknowledge": ["Action(\"echo\")"] });
     assert_eq!(as_bob("POST", "/deploy", serde_json::to_vec(&body).unwrap()).status_code, 200);
     assert_eq!(body_json(as_bob("GET", "/deployments", vec![]))["deployments"][0]["deployed_by"], "bob");
 
@@ -4776,12 +4312,8 @@ fn saves_and_deploys_list_the_holons_they_place() {
     assert_eq!(uses_of("slugify"), serde_json::json!([]));
     assert_eq!(uses_of("old"), serde_json::Value::Null, "saved before uses were recorded: absent, not empty");
 
-    let ingress = test_ingress();
-    route(&state, &req("POST", "/unit", encode_preimage(&ingress).unwrap()));
-    route(&state, &req("POST", "/unit", encode_preimage(&test_sink()).unwrap()));
-    let flow = test_ingress_flow(hash_unit(&ingress).unwrap(), hash_unit(&test_sink()).unwrap());
-    route(&state, &req("POST", "/unit", encode_preimage(&flow).unwrap()));
-    let body = serde_json::json!({ "slug": "blog", "unit": to_hex(&hash_unit(&flow).unwrap()), "acknowledge": ["NetworkIngress", "NetworkEgress"], "uses": [{ "flow": "slugify", "saved_at": 7 }] });
+    let unit = stage_text(&state, ECHO);
+    let body = serde_json::json!({ "slug": "blog", "unit": to_hex(&unit), "acknowledge": ["Action(\"echo\")"], "uses": [{ "flow": "slugify", "saved_at": 7 }] });
     assert!(route(&state, &req("POST", "/deploy", serde_json::to_vec(&body).unwrap())).is_success());
     let deployed = body_json(route(&state, &req("GET", "/deployments", vec![])));
     assert_eq!(deployed["deployments"][0]["uses"], serde_json::json!([{ "flow": "slugify", "saved_at": 7 }]));
@@ -4869,11 +4401,11 @@ fn listening_beyond_loopback_warns_that_it_is_plain_http() {
 fn verify_checks_that_each_runs_state_follows_from_the_one_before() {
     let mut state = test_state();
     state.deployments_path = unique_temp_path("state-follows").into();
-    let writer = stage_stateful_writer(&state, test_ingress(), "k");
-    let ack = serde_json::json!({ "acknowledge": ["NetworkIngress", "StateWrite(\"k\")"] });
+    let writer = stage_writer(&state, "k");
+    let ack = serde_json::json!({ "acknowledge": ["Action(\"put\")", "StateWrite(\"k\")"] });
     assert_eq!(deploy_json(&state, "follows", writer, ack).status_code, 200);
     for body in ["hello", "there", "again"] {
-        assert_eq!(route(&state, &req("POST", "/trigger/follows", body.as_bytes().to_vec())).status_code, 200);
+        assert_eq!(put(&state, "follows", body).status_code, 200);
     }
     let export: verify::Export = serde_json::from_value(body_json(route(&state, &req("GET", "/deployments/follows/export", vec![])))).unwrap();
     // A copy with each line changed by `edit`, the runs a second apart, chained again.
@@ -4948,7 +4480,7 @@ fn verify_checks_that_each_runs_state_follows_from_the_one_before() {
     // Run 0's state put back, and a run after it: it began from the state the restore put back.
     let restore = serde_json::json!({ "run": 0, "state": true });
     assert_eq!(route(&state, &req("POST", "/deployments/follows/restore", restore.to_string().into_bytes())).status_code, 200);
-    assert_eq!(route(&state, &req("POST", "/trigger/follows", b"later".to_vec())).status_code, 200);
+    assert_eq!(put(&state, "follows", "later").status_code, 200);
     let export: verify::Export = serde_json::from_value(body_json(route(&state, &req("GET", "/deployments/follows/export", vec![])))).unwrap();
     let report = verify::check(&export, None, &BTreeMap::new());
     assert!(report.ok(), "{}", verify::describe(&report, None));
@@ -4971,11 +4503,11 @@ fn exported_runs_verify_and_a_rewritten_log_doesnt() {
     let mut state = test_state();
     let path = unique_temp_path("verified-log");
     state.deployments_path = path.clone().into();
-    let writer = stage_stateful_writer(&state, test_ingress(), "k");
-    let ack = serde_json::json!({ "acknowledge": ["NetworkIngress", "StateWrite(\"k\")"] });
+    let writer = stage_writer(&state, "k");
+    let ack = serde_json::json!({ "acknowledge": ["Action(\"put\")", "StateWrite(\"k\")"] });
     assert_eq!(deploy_json(&state, "verified", writer, ack).status_code, 200);
     for body in ["hello", "there", "again"] {
-        assert_eq!(route(&state, &req("POST", "/trigger/verified", body.as_bytes().to_vec())).status_code, 200);
+        assert_eq!(put(&state, "verified", body).status_code, 200);
     }
     let export: verify::Export = serde_json::from_value(body_json(route(&state, &req("GET", "/deployments/verified/export", vec![])))).unwrap();
     assert_eq!(export.lines.len(), 3);
@@ -5719,17 +5251,17 @@ fn different_keys_never_wait() {
     }
 }
 
-/// A run that sends nothing claims nothing: the counter under many triggers at once, as before,
+/// A run that sends nothing claims nothing: the counter under many runs at once, as before,
 /// and no entry has claims.
 #[test]
 fn a_run_that_sends_nothing_claims_nothing() {
     let state = test_state();
-    let unit = counter(&state, vec![], vec![]);
-    let ack = serde_json::json!(["NetworkIngress", "StateRead(\"count\")", "StateWrite(\"count\")"]);
+    let unit = stage_text(&state, COUNTER);
+    let ack = serde_json::json!(["Action(\"bump\")", "StateRead(\"count\")", "StateWrite(\"count\")"]);
     assert_eq!(deploy_json(&state, "c", unit, serde_json::json!({ "acknowledge": ack })).status_code, 200);
     std::thread::scope(|s| {
         for _ in 0..24 {
-            s.spawn(|| assert_eq!(route(&state, &req("POST", "/trigger/c", b"go".to_vec())).status_code, 200));
+            s.spawn(|| assert_eq!(run_action_named(&state, "c", "bump", serde_json::json!({})).status_code, 200));
         }
     });
     let shown = body_json(route(&state, &req("GET", "/deployments/c/state", vec![])));
@@ -9071,7 +8603,7 @@ fn a_servers_actions_run_by_name_with_what_was_sent_and_verify() {
 
 /// A flow's `every` block is a clock of its server: it ticks on its own period beside the routes,
 /// each run logged and kept in the history under its label, and its runs verify offline. A flow
-/// of clocks alone listens on no port; its clocks are in its text, so it takes no interval.
+/// of clocks alone listens on no port, and its manifest names the clock what starts its runs.
 #[test]
 fn a_servers_clock_ticks_on_its_period_beside_its_routes_and_verifies() {
     let mut state = claims_state("");
@@ -9109,18 +8641,17 @@ fn a_servers_clock_ticks_on_its_period_beside_its_routes_and_verifies() {
     assert!(report.ok(), "{}", verify::describe(&report, None));
     assert_eq!(report.reruns.iter().filter(|(_, r)| *r == verify::Rerun::Matched).count(), 7, "three ticks and four requests");
 
-    // Clocks alone: no port, and no interval besides the text's.
+    // Clocks alone: no port, and the clock its trigger, granted with the rest.
     let alone = deploy_text(&state, "import { every, flow } from \"holon\"\nimport state from \"state\"\n\nflow(\"beats\")\n\nevery(\"1h\", () => {\n  state.n = (state.n ?? 0) + 1\n})\n", "127.0.0.1:9");
-    let (triggers, unit, port) = {
+    let (triggers, port) = {
         let deployments = state.deployments.lock().unwrap();
         let d = &deployments[&alone];
-        (d.triggers.clone(), d.unit, d.server.as_ref().map(|s| s.port))
+        (d.triggers.clone(), d.server.as_ref().map(|s| s.port))
     };
     assert_eq!((triggers, port), (vec!["every 1h".to_string()], Some(None)));
-    let r = deploy_json(&state, &alone, unit, serde_json::json!({ "interval_seconds": 5 }));
-    assert_eq!(r.status_code, 400);
-    let why = String::from_utf8_lossy(&body_bytes(r)).to_string();
-    assert!(why.contains("clocks are in its text"), "{why}");
+    let manifest = body_json(route(&state, &req("GET", &format!("/deployments/{alone}/manifest"), vec![])));
+    assert_eq!(manifest["trigger"], "Clock");
+    assert_eq!(manifest["not_granted"], serde_json::json!([]));
     // What starts its clocks can't be optional, beside routes too.
     let ticks_unit = state.deployments.lock().unwrap()[&slug].unit;
     let r = deploy_json(&state, &slug, ticks_unit, serde_json::json!({ "requirements": { "optional": ["Clock"] } }));

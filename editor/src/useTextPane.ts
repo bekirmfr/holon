@@ -182,7 +182,7 @@ export function useTextPane({
       const optional = said.requirements?.optional;
       const limits = { ...Object.fromEntries(Object.entries(was ?? {}).filter(([name]) => !TEXT_LIMITS.includes(name))), ...said.requirements?.limits };
       const requirements = { ...unsaid, ...(Object.keys(limits).length > 0 ? { limits } : {}), ...(optional && optional.length > 0 ? { optional } : {}) };
-      const settings: FlowSettings = { port: said.port, interval: said.interval, ...(Object.keys(requirements).length > 0 ? { requirements } : {}), ...(said.browsers ? { browsers: said.browsers } : {}) };
+      const settings: FlowSettings = { port: said.port, ...(Object.keys(requirements).length > 0 ? { requirements } : {}), ...(said.browsers ? { browsers: said.browsers } : {}) };
       const k2 = syncKeyOf(ns, out.edges, settings, f.name);
       synced.current = { key: k2, synced: { ...next, toCanvas: out.toCanvas }, lines: compiled.lines, spans: compiled.spans };
       remember(k2, typed);
