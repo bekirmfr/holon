@@ -48,12 +48,14 @@ around line 2587), `method_call` (namespaces and methods, around line 2968), `st
 and `expr`. Each mistake quoted below is the reader's own text.
 
 **In numbers:** of JavaScript's library functions, these are read: `JSON.parse`,
-`JSON.stringify`, `Object.keys`, the methods `.map`, `.reduce`, `.split`, `.join`, `.indexOf`,
-`.toUpperCase`, `.toLowerCase`, every one of `Math`'s functions but `random` and its 8 constants
+`JSON.stringify`, `Object.keys`, the methods `.split`, `.join`, `.indexOf`, `.toUpperCase`,
+`.toLowerCase`, a list's methods but `forEach` and those that change the list and answer
+something else (`push` as a value, `pop`, `shift`, `unshift`, `splice`), as the list leaves (§7), `Array.isArray`,
+`Array.of` and `Array.from`, every one of `Math`'s functions but `random` and its 8 constants
 (§4), `Number` and its functions and constants (§5), `parseInt`, `parseFloat`, `isNaN` and
 `isFinite` (§3), and a number's `toFixed`, `toPrecision`, `toExponential` and `toString` (§5), as
 the eleven number leaves. The operators are mapped but for `typeof`, `void`, `in`, `instanceof` and
-the comma (§1), and the literals mostly (§2). Of the catalog's 67 computing leaves, 19 can only be called by name (§10).
+the comma (§1), and the literals mostly (§2). Of the catalog's 88 computing leaves, 17 can only be called by name (§10).
 
 ## 1. Operators
 
@@ -106,7 +108,7 @@ the comma (§1), and the literals mostly (§2). Of the catalog's 67 computing le
 | `/re/` | | js() | "a regular expression isn't something Holon computes" |
 | `new X(…)` | | js() | |
 | `class`, getters, setters, methods in a record | | refused | "a record holds values: no getters, setters or methods" |
-| `(x) => …` | `map`'s or `fold`'s function | mapped there only | elsewhere: "a function written in place goes to map or reduce" |
+| `(x) => …` | the function of `map`, `fold`, `filter`, `find`, `sort_by` and the other higher-order leaves | mapped there only | elsewhere: "a function written in place goes to a list's method: xs.map((x) => …)"; a parameter it doesn't use is fine (`_`, or any name) |
 
 ## 3. Global functions
 
@@ -160,12 +162,14 @@ the leaf whatever the flow defines.
 | `length` | `text_length` | by name | §2 |
 | `concat(t)` | `concat` | by name; compose | `` `${s}${t}` `` |
 | `substr(start, len)` | `slice` | by name | the leaf takes a length, as `substr` does: `slice(s, start, len)` |
-| `slice(start, end)`, `substring(start, end)` | `slice` | by name | `slice(s, start, end - start)`; negative positions: js() |
+| `slice(start, end)` | `slice {mode: end}` | differs | one leaf for a list and a text: on a text, nothing until the text leaves; `slice(s, start, end - start)` by name meanwhile |
+| `substring(start, end)` | `slice` | by name | `slice(s, start, end - start)`; negative positions: js() |
 | `charAt(i)` | `slice` | by name | `slice(s, i, 1)` |
-| `includes(t)` | `index_of` | compose | `s.indexOf(t) !== -1` |
+| `includes(t)` | `includes` | differs | one leaf for a list and a text: on a text, nothing until the text leaves; `s.indexOf(t) !== -1` meanwhile |
 | `startsWith(t)` | `index_of` | compose | `s.indexOf(t) === 0` (it searches the whole text) |
 | `replaceAll(a, b)` (texts) | `split`, `join` | compose | `s.split(a).join(b)` |
-| `at(i)`, `endsWith`, `lastIndexOf` | | js() | |
+| `at(i)`, `lastIndexOf(t)` | `at`, `last_index_of` | differs | one leaf each for a list and a text: on a text, nothing until the text leaves |
+| `endsWith` | | js() | |
 | `trim`, `trimStart`, `trimEnd` | | js() | |
 | `padStart`, `padEnd`, `repeat` | | js() | |
 | `replace`, `match`, `matchAll`, `search` | | js() | regular expressions |
@@ -175,31 +179,43 @@ the leaf whatever the flow defines.
 
 ## 7. Arrays
 
+Each method that takes a function takes a name or a function written in place, as `map` does;
+the leaf's function gets the item (and its captures), and the reader turns an index parameter into
+`indices`. A list never changes: the methods that change one in place are read as the list they
+give, or refused naming the form that gives it. Items compare by value (§9).
+
 | Method | Leaf | Status | Note |
 |---|---|---|---|
-| `map((x) => …)`, `map(f)` | `map` | mapped | the item only: "map's function takes the item: (x) => …; an index isn't passed" |
-| `reduce((acc, x) => …, init)` | `fold` | mapped | the start is needed; without it: "reduce takes a function and the start" |
-| `join(sep)` | `join` | mapped | texts; `join()` (JavaScript's `","`): refused |
-| `indexOf(x)` | `index_of` | differs | `index_of` searches texts: on a list, nothing |
+| `map((x) => …)`, `map(f)` | `map` | mapped | |
+| `map((x, i) => …)` | `indices`, `map`, `get` | mapped | `indices(xs).map((i) => …)`, `x` read as `get(xs, i)`; `xs` a name or a field of one, as it is read twice |
+| `reduce((acc, x) => …, init)` | `fold` | mapped | |
+| `reduce(f)` | `head`, `tail`, `fold` | mapped | `tail(xs).reduce(f, head(xs))`, `xs` a name or a field of one; an empty list: nothing, where JavaScript throws |
+| `reduceRight(f, init)` | `reverse`, `fold` | mapped | `xs.toReversed().reduce(f, init)`; without a start: refused |
+| `filter(f)` | `filter {fn}` | mapped | `f`'s answer read as JavaScript reads a condition |
+| `some(f)`, `every(f)` | `any {fn}`, `all {fn}` | mapped | apply `f` to nothing after the item that decides |
+| `find(f)`, `findIndex(f)`, `findLast(f)`, `findLastIndex(f)` | `find {fn}`, `find_index {fn}`, `find_last {fn}`, `find_last_index {fn}` | mapped | as `some`; `find` gives nothing when nothing matches |
+| `flatMap(f)`, `flat()`, `flat(d)`, `flat(Infinity)` | `map`, `flat {depth}` | mapped | `flat(xs.map(f))`; the depth a number written in place, `all` for `Infinity` |
+| `toSorted()`, `toSorted(cmp)` | `sort`, `sort_by {fn}` | mapped | stable; `sort` orders by `String(x)` in UTF-16 code units, as JavaScript's does |
+| `sort()`, `sort(cmp)`, `reverse()`, `fill(v, s, e)`, `copyWithin(t, s, e)` | `sort`, `sort_by`, `reverse`, `fill`, `copy_within` | mapped as a value | on a list made in place (`[...xs].sort()`) or a handler's own list not read after; as a statement, on a parameter, a part of one or a list another name holds: refused, naming the value form (`xs.toSorted()`) |
+| `toReversed()`, `toSpliced(s, n, ...items)`, `with(i, v)` | `reverse`, `to_spliced`, `with_item` | mapped | `with` out of range: nothing, where JavaScript throws |
+| `at(i)` | `at` | mapped | from the end when negative |
+| `includes(x)`, `indexOf(x)`, `lastIndexOf(x)` | `includes`, `index_of`, `last_index_of` | mapped | by value; a position to start from: refused |
+| `slice(s, e)`, `slice(s)`, `slice()` | `slice {mode: end}` | mapped | `slice()` is the list itself |
+| `join(sep)`, `join()` | `join` | mapped | texts; `join()` is `join(xs, ",")` |
+| `concat(ys, x)` | `extend`, `append` | mapped | `extend` for a list written as one, `append` for a literal that isn't one; a name, which could be either: refused, naming `[...xs, ...ys]` and `[...xs, y]` |
 | `length` | `length` | by name | §2 |
-| `xs[i]`, `at(i)` | `get` | by name | `xs[i]` lowers to `lookup` and answers nothing (§9); `at(-1)`: js() |
+| `xs[i]` | `get` | by name | `xs[i]` lowers to `lookup` and answers nothing (§9) |
 | `[x, ...xs]` (`unshift`) | `extend` (`cons`) | mapped | |
-| `[...xs, x]` (`push`), `concat(ys)` as `[...xs, ...ys]` | `append`, `extend` | mapped | the methods themselves (`push`, `concat`): js() |
-| `xs[0]` as `shift()`'s answer, `slice(1)` | `head`, `tail` | by name | |
+| `[...xs, x]`, `xs.push(x)` as a statement | `append` | mapped | `xs.push(x)` alone is `xs = [...xs, x]` |
+| `push` as a value, `pop`, `shift`, `unshift`, `splice` | | refused | naming the value form: `[...xs, x]`; `xs.at(-1)` and `xs.slice(0, -1)`; `xs.at(0)` and `xs.slice(1)`; `[x, ...xs]`; `xs.toSpliced(…)` and `xs.slice(s, s + n)` |
 | `xs.length === 0` | `is_empty` | by name | |
 | sum: `reduce((a, b) => a + b, 0)` | `fold` and `add`; `sum` | mapped; by name | |
-| `Array.from({ length: n }, (_, i) => i)`, `[...Array(n).keys()]` | `range` | by name | n up to 10000 |
-| `find((x) => x.id === v)` | `find {name}` | by name | equality on one field only: `find(xs, v, { name: "id" })` |
-| `filter(f)` | `fold` | compose | `xs.reduce((acc, x) => (f(x) ? [...acc, x] : acc), [])`; the method: "a function written in place goes to map or reduce" |
-| `some(f)`, `every(f)` | `fold` | compose | `xs.reduce((acc, x) => acc \|\| f(x), false)` (`some`, the leaf, is something else: an optional value) |
-| `includes(x)` | `fold`, `equals` | compose | `xs.reduce((acc, y) => acc \|\| y === x, false)` |
-| `flat()` | `fold`, `extend` | compose | `xs.reduce((acc, ys) => [...acc, ...ys], [])` |
-| `flatMap`, `findIndex`, `findLast`, `findLastIndex`, `lastIndexOf`, `reduceRight` | | js() | |
-| `sort`, `toSorted`, `reverse`, `toReversed` | | js() | |
-| `slice(a, b)`, `splice`, `toSpliced`, `with`, `fill`, `copyWithin` | | js() | |
 | `forEach` | | refused | a statement per item has no form yet; `map` computes |
-| `entries`, `keys`, `values` (iterators) | | js() | |
-| `Array.isArray`, `Array.of`, `Array.from` | | js() | `Array` is an unknown name |
+| `[...xs.keys()]`, `[...xs.entries()]`, `[...xs.values()]` | `indices`, `entries`, the list | mapped | spread, or `Array.from(…)`; the iterator itself: refused, naming the spread |
+| `[...new Set(xs)]`, `Array.from(new Set(xs))` | `unique` | mapped | by value: two equal records are one |
+| `Array.isArray(x)`, `Array.of(a, b)` | `is_list`, `list` | mapped | |
+| `Array.from(xs)`, `Array.from(xs, f)` | the list, `map` | mapped | |
+| `Array.from({ length: n }, (_, i) => …)`, `Array.from({ length: n })` | `range`, `map` | mapped; refused | `range(n).map((i) => …)`, n up to 10000; without a function the items are `undefined`, which a flow has none of |
 
 ## 8. `Object`, `JSON`, and what a flow imports
 
@@ -250,7 +266,8 @@ author sees no mistake; the run answers nothing where JavaScript answers somethi
 | `"a" < "b"` | `compare`: nothing | `compare` takes numbers (`bin_numbers`) |
 | `!x`, `x && y`, `x \|\| y` on a value that isn't true or false | `not`, `and`, `or`: nothing | they take booleans (`as_bool`); JavaScript's truthiness is `is_truthy` |
 | `a + b` on texts that aren't literals | `add`: nothing | `add` takes numbers; refused only when a side is a text literal |
-| `xs.indexOf(x)` on a list | `index_of`: nothing | `index_of` searches texts |
+| `s.at(i)`, `s.includes(t)`, `s.lastIndexOf(t)`, `s.slice(a, b)` on a text | nothing | one leaf each for a list and a text; the text side comes with the text leaves |
+| `[[1]].includes([1])`, `new Set([[1], [1]])` | `true`, one item | compared by value; JavaScript compares objects by identity |
 | `s.split("")` | nothing | an empty separator gives nothing (`Op::Split`) |
 | `a / 0`, and `+`, `-`, `*` or `/` past the largest number | nothing | JavaScript gives `Infinity` or `NaN`, which Holon has no value for |
 | `Math.log(0)`, `0 ** -1`, `(-8) ** (1/3)`, `a % 0`, `parseInt("x")`, `Number("abc")`, `(1e21).toFixed(101)` | nothing | the same: JavaScript gives `NaN`, an infinity, or throws a RangeError |
@@ -278,13 +295,11 @@ read; reading it is a line in `ts.rs` each, with a test of its meaning:
 | Leaf | Its JavaScript form | Note |
 |---|---|---|
 | `length`, `text_length` | `.length` | "comes in a later slice"; which one depends on the value's type |
-| `get` | `xs[i]`, `xs.at(i)` | §9: `xs[i]` lowers to `lookup` |
-| `slice` | `s.substr(start, len)`; `s.slice(a, b)` as `slice(s, a, b - a)` | |
-| `head`, `tail` | `xs[0]`, `xs.slice(1)` | |
+| `get` | `xs[i]` | §9: `xs[i]` lowers to `lookup`; `xs.at(i)` is `at` |
+| `slice` (`mode: length`) | `s.substr(start, len)` | `s.slice(a, b)` is `slice {mode: end}` |
+| `head`, `tail` | `xs[0]` | `xs.at(0)` is `at` and `xs.slice(1)` `slice`; `xs.reduce(f)` lowers to both |
 | `is_empty` | `xs.length === 0` | |
 | `sum` | `xs.reduce((a, b) => a + b, 0)`, which lowers to `fold` and `add` today | |
-| `range` | `Array.from({ length: n }, (_, i) => i)` | |
-| `find` | `xs.find((x) => x.id === v)` | only that shape |
 | `is_truthy` | `Boolean(x)`, `!!x`, and the truthiness of `!`, `&&`, `\|\|` | §9 |
 | `as_text` | `String(x)` | `` `${x}` `` already uses it |
 | `insert` | `{ ...r, [k]: v }` | a computed key |
@@ -344,13 +359,15 @@ pages share are made one (a leaf taking a list or a text, so the reader needn't 
   `pad {side}`, `repeat`, `replace {count}`, `normalize {form}`, `uri_encode`, `uri_decode`;
   regular expressions on `regress` (Boa's engine): `regex_test`, `regex_exec`,
   `regex_matches`, `regex_search`, `regex_replace`, `regex_split`.
-- **Lists:** `indices`, `entries`, `any`, `all`, `filter`, `find`, `find_index`, `find_last`,
-  `find_last_index` (each taking its function by a `fn` param, as `map` does), `reverse`,
-  `sublist`, `to_spliced`, `with_item`, `fill`, `copy_within`, `sort` and `sort_by` (a pinned
-  stable merge sort), `flat {depth}`, `unique`.
-- **Shared by lists and texts:** `at`, `index_of` and `includes` (taking either), `last_index_of`.
-- **Records and values:** `values`, `entries` (as for lists), `from_entries`, `merge`, `group_by {fn}`,
-  `type_of` (which also answers `Array.isArray` and `isWellFormed`), `same_value` (`Object.is`).
+- **Lists** (built, and read): `indices`, `entries`, `any`, `all`, `filter`, `find`, `find_index`,
+  `find_last`, `find_last_index` (each taking its function by a `fn` param, as `map` does),
+  `reverse`, `to_spliced`, `with_item`, `fill`, `copy_within`, `sort` and `sort_by` (a pinned
+  stable merge sort), `flat {depth}`, `unique`, `is_list`.
+- **Shared by lists and texts:** `at`, `index_of`, `includes`, `last_index_of` and `slice {mode:
+  end}`, each taking either; the list side is built, the text side gives nothing until the texts.
+- **Records and values:** `values`, `entries` (built with the lists: a record's pairs in key
+  order), `from_entries`, `merge`, `group_by {fn}`, `type_of` (which also answers `isWellFormed`),
+  `same_value` (`Object.is`).
 - **Dates**, a date being its time value in milliseconds: `date_part {part}`, `date_utc`,
   `date_set {part}`, `date_text {format}`, `date_parse`.
 - **Changes to leaves:** `text_length`, `slice {mode}`, `index_of` (a start), `split` (`""` and a
@@ -359,9 +376,9 @@ pages share are made one (a leaf taking a list or a text, so the reader needn't 
 
 **What only the reader needs to read**, over leaves that exist: the `Math` and `Number` constants
 (each bit-checked) and `-x` as `x * -1` (exact at `-0`), both read now, as are `++`, `--` and the
-compound assignments; `.length` and `xs[i]` by the value's type, `concat`,
-`Array.from(xs)`, `Array.of`, `{ [k]: v }`, `Object.freeze` and `structuredClone` as the value
-itself, a date's `getTime`.
+compound assignments, and `concat`, `Array.from(xs)` and `Array.of`; `.length` and `xs[i]` by
+the value's type, `{ [k]: v }`, `Object.freeze` and `structuredClone` as the value itself, a
+date's `getTime`.
 
 **What the races found wrong**, fixed since but for one: `add` gave `0` for `-0 + -0` (it summed
 from `+0`; it starts from `-0` now); `add`, `subtract`, `multiply` and `divide` could overflow to an

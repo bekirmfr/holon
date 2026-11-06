@@ -209,10 +209,10 @@ hmac_sha256(key, text, { encoding: "hex" })   // encoding: a parameter
 
 **Methods are leaves.** A text's or list's method is the leaf that does it: `t.toUpperCase()` is
 `uppercase`, `t.toLowerCase()` `lowercase`, `t.split(",")` `split`, `xs.join("-")` `join`,
-`t.indexOf(x)` `index_of`, `xs.map(f)` `map`, `xs.reduce(f, 0)` `fold`; `JSON.parse` and
-`JSON.stringify` are `json_parse` and `json_stringify`, `Object.keys` is `keys`. A list's length
-is `length(xs)`, a text's `text_length(t)`. A method no leaf does is refused, with "do it in a
-`js()` function".
+`t.indexOf(x)` `index_of`, `xs.map(f)` `map`, `xs.reduce(f, 0)` `fold`, and a list's other
+methods those under [Lists](#lists); `JSON.parse` and `JSON.stringify` are `json_parse` and
+`json_stringify`, `Object.keys` is `keys`. A list's length is `length(xs)`, a text's
+`text_length(t)`. A method no leaf does is refused, with "do it in a `js()` function".
 
 ### Numbers
 
@@ -235,6 +235,29 @@ it first, `Number(s)`.
 
 `Math.random()` is refused: a run's random number is `import { random } from "holon:random"`, one
 for the run, recorded.
+
+### Lists
+
+| Form | Meaning |
+|---|---|
+| `xs.filter(f)`, `xs.find(f)`, `xs.findIndex(f)`, `xs.findLast(f)`, `xs.findLastIndex(f)`, `xs.some(f)`, `xs.every(f)` | as JavaScript's: `f`'s answer is read as JavaScript reads a condition, and the ones that stop early apply `f` to nothing after the item that decides |
+| `xs.toSorted((a, b) => a - b)`, `xs.toSorted()` | sorted, stably; without a function, by each item as JavaScript writes it, as its `sort()` does |
+| `xs.map((x, i) => …)`, `xs.reduce(f)`, `xs.reduceRight(f, start)`, `xs.flatMap(f)` | with each item's index; the first item as the start; from the end; each result's list spread |
+| `xs.at(-1)`, `xs.includes(x)`, `xs.indexOf(x)`, `xs.lastIndexOf(x)` | an item, from the end when negative; whether `x` is there; where, or `-1` |
+| `xs.slice(1, -1)`, `xs.toSpliced(i, n, ...items)`, `xs.with(i, v)`, `xs.toReversed()` | a part; `n` items at `i` replaced by `items`; one item replaced (no value out of range); reversed |
+| `xs.flat()`, `xs.flat(2)`, `xs.flat(Infinity)` | nested lists spread, one level deep, two, all |
+| `[...new Set(xs)]` | each item once, in order |
+| `[...xs.keys()]`, `[...xs.entries()]` | the indices; the `[index, item]` pairs |
+| `Array.isArray(x)`, `Array.of(a, b)`, `Array.from(xs, f)`, `Array.from({ length: n }, (_, i) => …)` | whether `x` is a list; `[a, b]`; `xs.map(f)`; `range(n).map((i) => …)` |
+
+A list never changes. `xs.sort()`, `xs.reverse()`, `xs.fill(v)` and `xs.copyWithin(t, s)` are read
+as the list they give, on a list made where they are called (`[...xs].sort()`) or one of the
+handler's own that isn't read after; alone, or on a list something else holds, they are refused,
+naming the form to write (`xs.toSorted()`). `xs.push(x)` alone is `xs = [...xs, x]`; `pop`,
+`shift`, `unshift` and `splice` are refused, naming what to write (`xs.at(-1)` and
+`xs.slice(0, -1)`, `[x, ...xs]`, `xs.toSpliced(…)`). Items are compared by value, where
+JavaScript compares objects by identity: `[[1]].includes([1])` is `true`, and `new Set` keeps one
+of two equal records.
 
 ## The outside world
 
@@ -574,15 +597,18 @@ those fields (several).
 ```
 xs.map(f)                    // f(item) for each item: a list of the results
 xs.reduce(f, start)          // f(acc, item), carried through the list
+xs.filter(f)                 // the items f says yes to; find, some, every, toSorted, … likewise
 range(n)                     // [0, 1, …, n-1], at most 10000
 ```
 
 `f` is a function's name or a function written in place, its body one expression:
-`xs.map((x) => x * 2)`, `xs.reduce((acc, x) => acc + x, 0)`.
+`xs.map((x) => x * 2)`, `xs.reduce((acc, x) => acc + x, 0)`, `xs.filter((x) => x.open)`.
 
 - **Names from around** a function written in place are passed to it automatically: in
   `Object.keys(r).map((k) => r[k])`, `r` comes from the route.
-- `map`'s function takes the item and no index; `reduce`'s takes the result so far and the item.
+- A function takes the item; `reduce`'s takes the result so far and the item, `toSorted`'s the two
+  items it compares, and `map`'s may take the index after the item. A parameter it doesn't use is
+  fine, `_` or any name: `Array.from({ length: 3 }, () => 0)`.
 - A function may read from outside (a collection, a request): each item's read is made,
   recorded and replayed on its own.
 
@@ -612,8 +638,8 @@ misled, the compiler refuses instead.
   sets how long it waits.
 - **Sharing is explicit.** A binding is one value used many times. The same expression written
   twice is computed twice.
-- **Every run ends.** There are no loops and no recursion: `map` and `reduce` go over a list, and
-  `range` makes at most 10000 items.
+- **Every run ends.** There are no loops and no recursion: `map`, `reduce` and a list's other
+  methods that take a function go over a list, and `range` makes at most 10000 items.
 
 ## Types
 
@@ -662,6 +688,7 @@ broken.holon.ts:5:23: unknown name "nope"
 | a loop, `try` or `throw` | the statement |
 | a period, a file handler or an action name written twice | the second handler |
 | `map` gives its function `n` inputs; this one takes `m` | the function |
+| a list changed in place (`xs.sort()` alone, `xs.pop()`, a list read after it was sorted) | the call, or the read |
 | a function's input never used, or an output that is an input passed through | the parameter or the return |
 | two routes share a value | the shared binding |
 | two routes clash; not a method; not a route path | the route |

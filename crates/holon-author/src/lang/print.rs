@@ -22,7 +22,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
-use holon_core::{family_values, interface_of, MapResolver, Resolver, UnitBody, BOUNDARY, CALLS, PASSES_EXTRA, TRIGGER, VARIADIC};
+use holon_core::{family_values, function_takes, interface_of, MapResolver, Resolver, UnitBody, BOUNDARY, CALLS, PASSES_EXTRA, TRIGGER, VARIADIC};
 use oxc_allocator::Allocator;
 use oxc_ast::ast as js;
 use oxc_parser::Parser;
@@ -31,7 +31,7 @@ use oxc_span::{GetSpan, SourceType};
 use crate::builder::FlowDocument;
 use crate::canvas::{Node, PlacedBody};
 use crate::composites::{inner_canvas, resolve, Names};
-use crate::lang::lower::{alias, call_noun, is_optional, RESERVED};
+use crate::lang::lower::{alias, call_noun, is_optional, RESERVED, UNUSED};
 use crate::routes::{components, find_actions, find_clocks, find_files, find_routes};
 use crate::templates;
 use crate::text::restore;
@@ -114,6 +114,12 @@ fn param_name(port: &str) -> String {
         Some(word) if RESERVED.contains(&word) && word != "in" && word != "out" => word.to_string(),
         _ => port.to_string(),
     }
+}
+
+/// How many inputs a higher-order leaf takes before the values its function uses from around
+/// it: `fold` its start and the list, the others the list.
+fn leaf_inputs(leaf: &str) -> usize {
+    interface_of(leaf).map_or(1, |u| u.inputs.len())
 }
 
 /// The port ts.rs gives a parameter named `ts`.
@@ -1149,7 +1155,7 @@ impl<'s> Printer<'s> {
             && only.kids.is_empty()
             && only.after.is_none()
         {
-            let object = value.starts_with('{') && is_object_literal(value);
+            let object = value.starts_with('{') && is_one_group(value);
             if object || !value.starts_with('{') {
                 let value = if object { format!("({value})") } else { value.to_string() };
                 return Ok(Item { text: format!("{head}{asy}{params} => {value}{options})"), nodes: vec![trigger.id.clone()], body });
@@ -1311,8 +1317,9 @@ fn host_names(host: &str) -> (String, String) {
     (base, identifier(labels.last().copied().unwrap_or("host")))
 }
 
-/// Whether `text` is one object literal, `{ … }` with its braces matched only at its ends.
-fn is_object_literal(text: &str) -> bool {
+/// Whether `text` is one bracketed group, an object literal `{ … }` or a list's `[ … ]`, its
+/// brackets matched only at its ends.
+fn is_one_group(text: &str) -> bool {
     let mut depth = 0i32;
     let mut quote: Option<char> = None;
     let mut escaped = false;
@@ -1493,9 +1500,10 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
         self.tick.as_deref() == Some(id)
     }
 
-    /// Whether `node` keeps the name the text gave it.
+    /// Whether `node` keeps the name the text gave it. A function written in place gave none: its
+    /// nodes' ids are its own canvas's, which a top-level node's name may share.
     fn named(&self, node: &Node) -> bool {
-        self.p.bindings.get(&node.id).is_some_and(|b| !hidden(b)) && !self.ignored.contains(&node.id)
+        self.kind != Kind::Lambda && self.p.bindings.get(&node.id).is_some_and(|b| !hidden(b)) && !self.ignored.contains(&node.id)
     }
 
     /// Whether `node` may fold into an expression: no name of its own, and one output.
@@ -1815,18 +1823,18 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
         }
         // The values a function written in place uses from around it: each bound under the name
         // the function's input has, so the lowering passes the same.
-        let maps: Vec<&'g Node> = self.g.nodes.iter().copied().filter(|n| matches!(n.data.name.as_str(), "map" | "fold") && !n.param("fn").is_empty()).collect();
+        let maps: Vec<&'g Node> = self.g.nodes.iter().copied().filter(|n| PASSES_EXTRA.contains(&n.data.name.as_str()) && n.data.body == PlacedBody::Primitive && !n.param("fn").is_empty()).collect();
         for n in maps {
-            let own = if n.data.name == "fold" { 2 } else { 1 };
-            if n.data.inputs.len() <= own {
+            let (own, base) = (function_takes(&n.data.name), leaf_inputs(&n.data.name));
+            if n.data.inputs.len() <= base {
                 continue;
             }
             let (_, unit) = resolve(self.p.store, n.param("fn"))?;
             let ports: Vec<String> = unit.inputs.iter().skip(own).map(|p| p.name.clone()).collect();
-            if ports.windows(2).any(|w| w[0] >= w[1]) || ports.len() != n.data.inputs.len() - own {
+            if ports.windows(2).any(|w| w[0] >= w[1]) || ports.len() != n.data.inputs.len() - base {
                 return Err(format!("{}: the values its function uses from around it aren't in the order TypeScript passes them", n.data.name));
             }
-            for (port, input) in ports.iter().zip(&n.data.inputs[own..]) {
+            for (port, input) in ports.iter().zip(&n.data.inputs[base..]) {
                 match self.g.incoming.get(&(n.id.clone(), input.name.clone())) {
                     Some(Src::In(p)) if p == port => {}
                     Some(Src::Node { id, output }) if self.is_request(id) && (output == "request" || output == "file" || output == "input") && local_name(&self.request.as_ref().expect("checked").1) == *port => {}
@@ -2641,7 +2649,9 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
                 }
                 self.generic(node)
             }
-            "map" | "fold" => self.map(node),
+            "map" | "fold" | "any" | "all" | "filter" | "find" | "find_index" | "find_last" | "find_last_index" | "sort_by" => self.map(node, None),
+            "at" | "indices" | "entries" | "includes" | "last_index_of" | "reverse" | "sort" | "to_spliced" | "with_item" | "fill" | "copy_within" | "flat" | "is_list" | "unique" => self.list_form(node),
+            "slice" if node.param("mode") == "end" => self.list_form(node),
             "math" | "max" | "min" | "aggregate" | "atan2" | "power" | "remainder" | "bitwise" | "number_test" | "to_number" | "number_format" => self.number_form(node),
             "concat" => self.concat(node),
             "as_text" => atom(format!("`${{{}}}`", self.required(node, "value", 0)?)),
@@ -3104,7 +3114,7 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
             if let Some(last) = args.last_mut()
                 && last.starts_with('{')
                 && last != "{}"
-                && is_object_literal(last)
+                && is_one_group(last)
             {
                 *last = format!("({last})");
             }
@@ -3114,21 +3124,31 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
         Ok((format!("{local}({})", args.join(", ")), MEMBER))
     }
 
-    /// `xs.map(f)`, `xs.reduce(f, init)`: the function written in place when the text didn't
+    /// A higher-order leaf as its method: `xs.map(f)`, `xs.reduce(f, init)` (`xs.reduceRight(f,
+    /// init)` over the list reversed in place), `xs.filter(f)`, `xs.some(f)`, `xs.toSorted(f)`, …;
+    /// `method` names another (`flatMap`). The function is written in place when the text didn't
     /// name it, the values it uses from around it by their names.
-    fn map(&mut self, node: &Node) -> Result<(String, u8), String> {
+    fn map(&mut self, node: &Node, method: Option<&str>) -> Result<(String, u8), String> {
         let d = &node.data;
-        let own = if d.name == "fold" { 2 } else { 1 };
+        let (own, base) = (function_takes(&d.name), leaf_inputs(&d.name));
         let hash = node.param("fn").to_string();
         if hash.is_empty() {
             return Err(format!("{} without a function has no TypeScript form", d.name));
         }
-        let list = self.required(node, "list", MEMBER)?;
-        let init = if d.name == "fold" { Some(self.required(node, "init", COND)?) } else { None };
+        let fold = d.name == "fold";
+        let reversed = if fold { self.inline_source(node, "list", "reverse").filter(|r| self.arg_wired(r, "list")) } else { None };
+        let list = match reversed {
+            Some(r) => {
+                self.touch(r);
+                self.required(r, "list", MEMBER)?
+            }
+            None => self.required(node, "list", MEMBER)?,
+        };
+        let init = if fold { Some(self.required(node, "init", COND)?) } else { None };
         let (_, unit) = resolve(self.p.store, &hash)?;
         let ports: Vec<String> = unit.inputs.iter().skip(own).map(|p| p.name.clone()).collect();
         let mut captures = Vec::new();
-        for (port, input) in ports.iter().zip(d.inputs.iter().skip(own)) {
+        for (port, input) in ports.iter().zip(d.inputs.iter().skip(base)) {
             let text = self.required(node, &input.name, ATOM)?;
             captures.push((port.clone(), text));
         }
@@ -3137,10 +3157,101 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
             None if captures.is_empty() => self.p.function_for(&hash, "f")?,
             None => return Err(format!("{}'s function uses values from around it and is more than one expression, which TypeScript can't write in place: give the values to it some other way", d.name)),
         };
+        let method = method.unwrap_or(match d.name.as_str() {
+            "fold" if reversed.is_some() => "reduceRight",
+            "fold" => "reduce",
+            "any" => "some",
+            "all" => "every",
+            "find_index" => "findIndex",
+            "find_last" => "findLast",
+            "find_last_index" => "findLastIndex",
+            "sort_by" => "toSorted",
+            other => other,
+        });
         Ok(match init {
-            Some(init) => (format!("{list}.reduce({f}, {init})"), MEMBER),
-            None => (format!("{list}.map({f})"), MEMBER),
+            Some(init) => (format!("{list}.{method}({f}, {init})"), MEMBER),
+            None => (format!("{list}.{method}({f})"), MEMBER),
         })
+    }
+
+    /// A list leaf in its JavaScript form: `xs.at(i)`, `[...xs.keys()]`, `xs.toSorted()`,
+    /// `xs.slice(s, e)`, `[...xs].fill(v)`, `xs.flat(Infinity)`, `[...new Set(xs)]`, …; by name
+    /// where its inputs aren't wired as JavaScript passes them, in order with none left out
+    /// before one given.
+    fn list_form(&mut self, node: &Node) -> Result<(String, u8), String> {
+        let d = &node.data;
+        let wired: Vec<bool> = d.inputs.iter().map(|p| self.arg_wired(node, &p.name)).collect();
+        let given = wired.iter().take_while(|w| **w).count();
+        let complete = d.inputs.iter().skip(given).all(|p| is_optional(&d.name, &p.name)) && !wired[given..].iter().any(|w| *w);
+        if given == 0 || !complete || (d.name != "flat" && !self.p.changed_params(node).iter().all(|(k, _)| k == "mode")) {
+            return self.generic(node);
+        }
+        let ports: Vec<String> = d.inputs.iter().take(given).map(|p| p.name.clone()).collect();
+        let (atom, member) = (|s: String| Ok((s, ATOM)), |s: String| Ok((s, MEMBER)));
+        match d.name.as_str() {
+            "indices" | "entries" => {
+                let xs = self.required(node, &ports[0], MEMBER)?;
+                atom(format!("[...{xs}.{}()]", if d.name == "indices" { "keys" } else { "entries" }))
+            }
+            "unique" => atom(format!("[...new Set({})]", self.required(node, &ports[0], COND)?)),
+            "is_list" => member(format!("Array.isArray({})", self.required(node, &ports[0], COND)?)),
+            "flat" => {
+                let depth = match node.param("depth") {
+                    "1" => String::new(),
+                    "all" => "Infinity".into(),
+                    // A number as written, which reads back as written.
+                    d if d.strip_prefix('-').unwrap_or(d).starts_with(|c: char| c.is_ascii_digit()) && d.chars().all(|c| c.is_ascii_digit() || matches!(c, '.' | 'e' | 'E' | '+' | '-')) && d.parse::<f64>().is_ok_and(f64::is_finite) => d.to_string(),
+                    _ => return self.generic(node),
+                };
+                // `xs.flatMap(f)`: a map spread one level, written in place.
+                if depth.is_empty()
+                    && let Some(m) = self.inline_source(node, "list", "map").filter(|m| !m.param("fn").is_empty())
+                {
+                    self.touch(m);
+                    return self.map(m, Some("flatMap"));
+                }
+                let xs = self.required(node, &ports[0], MEMBER)?;
+                member(format!("{xs}.flat({depth})"))
+            }
+            // A change in place, of a copy: `[...xs]` is the list itself, read back.
+            "fill" | "copy_within" => {
+                let xs = self.required(node, &ports[0], COND)?;
+                let args = self.texts(node, &ports[1..])?;
+                member(format!("[...{xs}].{}({})", if d.name == "fill" { "fill" } else { "copyWithin" }, args.join(", ")))
+            }
+            "to_spliced" => {
+                let xs = self.required(node, &ports[0], MEMBER)?;
+                let mut args = self.texts(node, &ports[1..given.min(3)])?;
+                if given == 4 {
+                    // The items as written, `a, b`, from the list they make, else spread.
+                    let items = self.required(node, "items", COND)?;
+                    match items.strip_prefix('[').and_then(|t| t.strip_suffix(']')) {
+                        Some(inner) if !inner.trim().is_empty() && is_one_group(&items) => args.push(inner.to_string()),
+                        _ => args.push(format!("...{items}")),
+                    }
+                }
+                member(format!("{xs}.toSpliced({})", args.join(", ")))
+            }
+            other => {
+                let method = match other {
+                    "at" => "at",
+                    "includes" => "includes",
+                    "last_index_of" => "lastIndexOf",
+                    "reverse" => "toReversed",
+                    "sort" => "toSorted",
+                    "with_item" => "with",
+                    _ => "slice",
+                };
+                let xs = self.required(node, &ports[0], MEMBER)?;
+                let args = self.texts(node, &ports[1..])?;
+                member(format!("{xs}.{method}({})", args.join(", ")))
+            }
+        }
+    }
+
+    /// What feeds each of `node`'s `inputs`, as arguments.
+    fn texts(&mut self, node: &Node, inputs: &[String]) -> Result<Vec<String>, String> {
+        inputs.iter().map(|i| self.required(node, i, COND)).collect()
     }
 
     /// A `concat` of texts and values, each written in place, as a template: `` `${a}-${b}` ``.
@@ -3369,7 +3480,30 @@ impl<'s> Printer<'s> {
             return Ok(None);
         }
         let Ok(opened) = self.open(hash, "fn", &unit) else { return Ok(None) };
-        let group = Group::new(opened.children.iter().collect(), opened.wires.clone(), opened.outs.clone());
+        // A parameter the function doesn't use is held by a node nothing reads (lower.rs
+        // `UNUSED`, or a `list` holding two), which the body leaves out.
+        let own_param = |src: &Src| matches!(src, Src::In(p) if unit.inputs.iter().take(own).any(|q| q.name == *p));
+        let held: HashSet<&str> = opened
+            .children
+            .iter()
+            .filter(|c| {
+                let inside = |src: &Src| match src {
+                    Src::In(_) => true,
+                    Src::Node { id, .. } => opened.children.iter().any(|k| k.id == *id),
+                };
+                let fed: Vec<&Src> = opened.wires.iter().filter(|(src, to, _)| *to == c.id && inside(src)).map(|(src, _, _)| src).collect();
+                (c.data.name == UNUSED || c.data.name == "list" && fed.len() >= 2)
+                    && c.data.body == PlacedBody::Primitive
+                    && fed.len() == c.data.inputs.len()
+                    && fed.iter().all(|src| own_param(src))
+                    && !opened.wires.iter().any(|(src, _, _)| matches!(src, Src::Node { id, .. } if *id == c.id))
+                    && !opened.outs.iter().any(|(id, _, _)| *id == c.id)
+            })
+            .map(|c| c.id.as_str())
+            .collect();
+        let children = opened.children.iter().filter(|c| !held.contains(c.id.as_str())).collect();
+        let wires = opened.wires.iter().filter(|(_, to, _)| !held.contains(to.as_str())).cloned().collect();
+        let group = Group::new(children, wires, opened.outs.clone());
         if unwritable(&group.nodes, &group.incoming, None).is_some() {
             return Ok(None);
         }
@@ -3524,6 +3658,118 @@ mod tests {
     fn the_number_leaves_print_as_javascript_writes_them() {
         let src = "import { action, flow } from \"holon\"\n\nflow(\"f\")\n\nexport const t = action((input) => {\n  const a = parseFloat(input.a)\n  const b = parseInt(input.b, 16)\n  const n = Number(input.n)\n  return {\n    root: Math.sqrt(a),\n    big: Math.max(a, b, n),\n    most: Math.max(...input.xs),\n    h: Math.hypot(a, b),\n    sum: Math.sumPrecise(input.xs),\n    angle: Math.atan2(a, b),\n    p: a ** b ** 2,\n    q: (a ** b) ** 2,\n    m: a % b,\n    bits: (a & b | n ^ 3) << 2 >> 1 >>> 0,\n    neg: a * -1,\n    mul: Math.imul(a, b),\n    finite: Number.isFinite(a),\n    whole: Number.isInteger(a),\n    safe: Number.isSafeInteger(a),\n    nan: isNaN(input.s),\n    fin: isFinite(input.s),\n    fixed: a.toFixed(2),\n    prec: b.toPrecision(3),\n    exp: n.toExponential(),\n    text: a.toString(),\n    hex: b.toString(16),\n    lit: (5).toFixed(1),\n    pi: 3.141592653589793,\n  }\n})\n";
         prints_back(src);
+    }
+
+    /// Each list leaf in its JavaScript form prints back as written: the methods that take a
+    /// function, written in place with the values they use from around it, the value forms of
+    /// the methods that change a list in place, and a parameter a function doesn't use.
+    #[test]
+    fn the_list_leaves_print_as_javascript_writes_them() {
+        let src = r#"import { action, flow, range } from "holon"
+
+flow("f")
+
+export const t = action((input) => {
+  const xs = input.xs
+  const min = input.min
+  const who = input.who
+  const scores = xs.map((x) => x.score)
+  return {
+    kept: xs.filter((x) => x.score >= min),
+    sorted: xs.toSorted((a, b) => b.score - a.score),
+    names: [...new Set(xs.map((x) => x.name))],
+    top: xs.find((x) => x.score > 90),
+    at: xs.findIndex((x) => x.name === who),
+    any: xs.some((x) => x.score > 99),
+    all: xs.every((x) => x.score > 0),
+    fl: xs.findLast((x) => x.score > 1),
+    fli: xs.findLastIndex((x) => x.score > 1),
+    last: scores.at(-1),
+    has: scores.includes(50),
+    li: scores.lastIndexOf(50),
+    i: scores.indexOf(50),
+    rev: scores.toReversed(),
+    ordered: scores.toSorted(),
+    part: scores.slice(1, -1),
+    rest: scores.slice(1),
+    spl: scores.toSpliced(1, 1, 7, 8),
+    cut: scores.toSpliced(1),
+    put: scores.toSpliced(0, 0, ...input.more),
+    w: scores.with(0, 1),
+    filled: [...scores].fill(0, 1),
+    cw: [...scores].copyWithin(0, 1),
+    list: Array.isArray(xs),
+    keys: [...scores.keys()],
+    ent: [...scores.entries()],
+    fm: scores.flatMap((x) => [x, x]),
+    deep: input.nested.flat(Infinity),
+    two: input.nested.flat(2),
+    one: input.nested.flat(),
+    right: scores.reduceRight((acc, x) => acc + x, 0),
+    zeros: range(3).map((_) => 0),
+    pairs: scores.toSorted((_, b) => b - 1),
+    kept_order: scores.toSorted((_, __) => 0),
+  }
+})
+"#;
+        prints_back(src);
+    }
+
+    /// The forms the reader lowers to others print as what they lower to, and read back the
+    /// same: an index as `indices`, `reduce` without a start over `head` and `tail`,
+    /// `Array.from` and `Array.of` as the list, a change in place of a list of the handler's
+    /// own as its value form.
+    #[test]
+    fn the_list_forms_lowered_print_as_what_they_lower_to() {
+        let src = r#"import { action, flow } from "holon"
+
+flow("f")
+
+export const t = action((input) => {
+  const xs = input.xs
+  const own = [3, 1, 2]
+  const sorted = own.sort((a, b) => a - b)
+  return {
+    ranked: xs.map((x, i) => x + i),
+    places: xs.map((x, i) => i),
+    same: xs.map((x) => x),
+    total: xs.reduce((a, b) => a + b),
+    counted: Array.from({ length: 3 }, (_, i) => i * 2),
+    zeros: Array.from({ length: 2 }, () => 0),
+    upto: Array.from({ length: 4 }, (_, i) => i),
+    of: Array.of(1, 2),
+    doubled: Array.from(xs, (x) => x * 2),
+    once: Array.from(new Set(xs)),
+    copy: Array.from(xs),
+    values: [...xs.values()],
+    joined: xs.join(),
+    copied: [...xs].sort(),
+    sorted,
+    all: xs.slice(),
+  }
+})
+"#;
+        let text = reprinted(src);
+        for form in [
+            "ranked: [...xs.keys()].map((i) => get(xs, i) + i)",
+            "places: [...xs.keys()]",
+            "same: xs,",
+            "total: tail(xs).reduce((a, b) => a + b, head(xs))",
+            "counted: range(3).map((i) => i * 2)",
+            "zeros: range(2).map((_) => 0)",
+            "upto: range(4)",
+            "of: [1, 2]",
+            "doubled: xs.map((x) => x * 2)",
+            "once: [...new Set(xs)]",
+            "copy: xs,",
+            "values: xs,",
+            "joined: xs.join(\",\")",
+            "copied: xs.toSorted()",
+            "const sorted = own.toSorted((a, b) => a - b)",
+            "all: xs,",
+        ] {
+            assert!(text.contains(form), "{form}:\n{text}");
+        }
     }
 
     /// How long the log keeps runs, and the other limits, in `flow(…)`: in the order the limits

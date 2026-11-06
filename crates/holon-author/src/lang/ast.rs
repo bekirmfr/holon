@@ -294,7 +294,7 @@ pub enum ExprKind {
     Match { subject: Box<Expr>, arms: Vec<Arm>, els: Option<Box<Expr>>, open: Span },
     /// `await event("name", { expires: "1h" })`.
     Await { name: Name, expires: Option<Box<Expr>> },
-    /// `(params) => body`, written in place for `map` and `reduce`.
+    /// `(params) => body`, written in place for a higher-order leaf: `map`, `fold`, `filter`, …
     Lambda { params: Vec<Name>, body: Box<Expr> },
     /// `( expr )`, kept: parentheses are the author saying "two nodes" where an operator chain
     /// would otherwise flatten.

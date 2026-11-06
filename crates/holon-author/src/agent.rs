@@ -661,8 +661,13 @@ CALLS
   leaf(inputs…, { param: value })   positional arguments are inputs; a last record whose keys
                                     the leaf takes names inputs and params
   sha256(t), hmac_sha256(key, t), base64(t), t.toUpperCase(), t.split(","), list.join("-"),
-  xs.map((x) => x * 2), xs.reduce((acc, x) => acc + x, 0), …  (the leaves below; a string or
-  list method is the leaf that has it, and one without a leaf is refused)
+  xs.map((x) => x * 2), xs.map((x, i) => …), xs.reduce((acc, x) => acc + x, 0),
+  xs.filter((x) => …), xs.find(…), xs.some(…), xs.every(…), xs.toSorted((a, b) => a - b),
+  xs.at(-1), xs.slice(1, -1), xs.includes(x), xs.flat(), [...new Set(xs)], Array.from(…), …
+  (the leaves below; a string or list method is the leaf that has it, and one without a leaf
+  is refused. A list never changes: xs.sort() is read as the list it gives, xs.toSorted(),
+  where xs isn't read after; xs.push(x) alone is xs = [...xs, x]; pop, shift, unshift and
+  splice are refused, naming what to write)
 
 FUNCTIONS (a flow inside a flow, placed as one node)
   function slugify(text) {

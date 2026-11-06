@@ -12,7 +12,7 @@
 //! `"holon"`, the vocabulary and the leaves. A name reads as what it was imported as, so the text
 //! never declares what it uses twice, and the headers the lowering reads are made from the imports.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use holon_core::{family_values, interface_of, PASSES_EXTRA, TRIGGER, VARIADIC};
 use oxc_allocator::Allocator;
@@ -169,6 +169,9 @@ struct Frame {
     guarded_calls: Vec<(String, Expr)>,
     /// The bindings another name, a record or a write holds too.
     shared: BTreeSet<String>,
+    /// The bindings a method changed in place, read as the list it gave (`xs.sort()`), with
+    /// the method: read after, refused, as JavaScript's would be the list changed.
+    changed: BTreeMap<String, String>,
     /// Whether it is a route's: a route answers and is done, so it doesn't wait.
     route: bool,
 }
@@ -1648,11 +1651,15 @@ impl<'s, 't> Reader<'s, 't> {
         (MUTATORS.contains(&method) && matches!(self.lookup(i.name.as_str()), Some(Local::Bound(_) | Local::Var(_)))).then(|| (i.name.to_string(), method.to_string()))
     }
 
-    /// `xs.push(a, b)`: `xs` is now `append(append(xs, a), b)` (§5).
+    /// `xs.push(a, b)`: `xs` is now `append(append(xs, a), b)` (§5). The other methods that
+    /// change a list in place are refused as a statement, naming the list they would make.
     fn mutate(&mut self, c: &js::CallExpression, ts: &str, method: &str, stmts: &mut Vec<Stmt>) -> R<()> {
         let at = self.span(c.span);
+        if IN_PLACE.contains(&method) {
+            return fail(at, format!("{method} changes the list in place, which a flow's list doesn't: write the new list, {ts} = {}", value_form(ts, method)));
+        }
         if method != "push" {
-            return fail(at, format!("{method} changes the list in place, which comes in a later slice: write the new list, {ts} = …"));
+            return fail(at, moved(method, ts));
         }
         self.check_unshared(ts, at)?;
         let mut list = self.identifier(ts, at)?;
@@ -2636,35 +2643,15 @@ impl<'s, 't> Reader<'s, 't> {
             js::Expression::ObjectExpression(o) => self.record(o, span),
             js::Expression::ArrayExpression(a) => {
                 // `[...xs, y]` is `append(xs, y)`, `[...xs, ...ys]` `extend(xs, ys)`, `[...xs]` `xs`.
-                let mut list: Option<Expr> = None;
                 let mut items = Vec::new();
                 for item in &a.elements {
                     match item {
-                        js::ArrayExpressionElement::SpreadElement(s) => {
-                            let spread = self.expr(&s.argument)?;
-                            let before = match list.take() {
-                                None if items.is_empty() => None,
-                                None => Some(Expr { kind: ExprKind::List(std::mem::take(&mut items)), span }),
-                                l => l,
-                            };
-                            list = Some(match before {
-                                None => spread,
-                                Some(l) => call("extend", vec![arg(l), arg(spread)], span),
-                            });
-                        }
+                        js::ArrayExpressionElement::SpreadElement(s) => items.push((true, &s.argument)),
                         js::ArrayExpressionElement::Elision(s) => return fail(self.span(s.span), "a list has no holes"),
-                        _ => {
-                            let e = item.as_expression().expect("an item");
-                            let value = self.expr(e)?;
-                            self.share(e);
-                            match list.take() {
-                                Some(l) => list = Some(call("append", vec![arg(l), arg(value)], span)),
-                                None => items.push(value),
-                            }
-                        }
+                        _ => items.push((false, item.as_expression().expect("an item"))),
                     }
                 }
-                Ok(list.unwrap_or(Expr { kind: ExprKind::List(items), span }))
+                self.list_of(items, span)
             }
             js::Expression::UnaryExpression(u) => match u.operator {
                 js::UnaryOperator::LogicalNot => ok(ExprKind::Not(Box::new(self.expr(&u.argument)?))),
@@ -2742,7 +2729,7 @@ impl<'s, 't> Reader<'s, 't> {
                 };
                 ok(ExprKind::If { cond: Box::new(cond), then: Box::new(then), els })
             }
-            js::Expression::ArrowFunctionExpression(_) | js::Expression::FunctionExpression(_) => fail(span, "a function written in place goes to map or reduce: xs.map((x) => …); define the others at the top level"),
+            js::Expression::ArrowFunctionExpression(_) | js::Expression::FunctionExpression(_) => fail(span, "a function written in place goes to a list's method that takes one, xs.map((x) => …), xs.filter((x) => …); define the others at the top level"),
             js::Expression::AssignmentExpression(_) => fail(span, "a write is a statement of its own"),
             js::Expression::UpdateExpression(_) => fail(span, "++ and -- are a statement of their own: n++"),
             _ => fail(span, format!("{} isn't something Holon computes: do it in a js() function", expression_kind(e))),
@@ -2818,6 +2805,9 @@ impl<'s, 't> Reader<'s, 't> {
         let ok = |kind: ExprKind| Ok(Expr { kind, span });
         if let Some(local) = self.lookup(name) {
             return match local {
+                Local::Bound(n) | Local::Var(Some(n)) if let Some(method) = self.frame.changed.get(&n) => {
+                    fail(span, format!("\"{name}\" is read after {name}.{method}(…) changed it in place: use the list {method} gave, or write {} and keep \"{name}\" as it was", value_form(name, method)))
+                }
                 Local::Bound(n) | Local::Var(Some(n)) => ok(ExprKind::Name(n)),
                 Local::Var(None) => fail(span, format!("\"{name}\" has no value here: give it one first, let {name} = …")),
                 Local::Alias(e) => Ok(Expr { span, ..e }),
@@ -3052,31 +3042,159 @@ impl<'s, 't> Reader<'s, 't> {
                     return ok(ExprKind::Call { callee: Name { text: "keys".into(), span: method_name.span }, args });
                 }
                 (None, "Math") => return self.math_call(c, method, method_name.span, span),
+                (None, "Array") => return self.array_call(c, method, method_name.span, span),
                 (None, "Number") => return self.number_call(c, method, method_name.span, span),
                 (None, g) if GLOBALS.contains(&g) => return fail(self.span(r.span), format!("{g} isn't there: a flow has no globals; import what it uses")),
                 _ => {}
             }
         }
         // A method of a value: the library's, mapped to the leaves that have them.
+        if MUTATORS.contains(&method) && !IN_PLACE.contains(&method) {
+            return fail(span, moved(method, self.text(m.object.span())));
+        }
+        let changed = if IN_PLACE.contains(&method) { self.in_place(m, method)? } else { None };
         let subject = self.expr(&m.object)?;
-        let call = |leaf: &str, args: Vec<Arg>| Ok(Expr { kind: ExprKind::Call { callee: Name { text: leaf.into(), span: method_name.span }, args }, span });
+        let read = self.value_method(c, method, method_name.span, subject, span)?;
+        if let Some(name) = changed {
+            self.frame.changed.insert(name, method.to_string());
+        }
+        Ok(read)
+    }
+
+    /// `xs.sort()`, `reverse()`, `fill(…)` or `copyWithin(…)` as a value (IN_PLACE): read as the
+    /// list it answers when the list is made where it is called, or is a binding of the handler's
+    /// own, which is then read no more (its lowering name, to mark once the call is read). On a
+    /// list something else holds too, refused, naming the value form.
+    fn in_place(&self, m: &js::StaticMemberExpression, method: &str) -> R<Option<String>> {
+        let at = self.span(m.span);
+        let xs = self.text(m.object.span());
+        let form = value_form(xs, method);
+        match self.unwrap(&m.object) {
+            js::Expression::Identifier(i) => match self.lookup(i.name.as_str()) {
+                Some(Local::Bound(n) | Local::Var(Some(n))) => {
+                    if self.frame.params.contains(i.name.as_str()) {
+                        return fail(at, format!("\"{xs}\" is a parameter, which {method} would change in place for whoever passed it too: write {form}"));
+                    }
+                    if self.frame.shared.contains(&n) {
+                        return fail(at, format!("\"{xs}\" is held elsewhere too (by another name, a record or a write), which {method} would change in place behind it: write {form}"));
+                    }
+                    Ok(Some(n))
+                }
+                Some(Local::Alias(_)) => fail(at, format!("{method} would change {xs} in place, and what it is a part of with it: write {form}")),
+                None if self.consts.contains_key(i.name.as_str()) => fail(at, format!("{method} would change {xs}, the flow's own, in place for every run: write {form}")),
+                _ => Ok(None),
+            },
+            js::Expression::StaticMemberExpression(_) | js::Expression::ComputedMemberExpression(_) | js::Expression::ChainExpression(_) => {
+                fail(at, format!("{method} would change {xs} in place, and what holds it with it: write {form}"))
+            }
+            _ => Ok(None),
+        }
+    }
+
+    /// A text's, a list's or a number's method, on `subject`: the leaf that does it, or the
+    /// composite lists.md gives for it.
+    fn value_method(&mut self, c: &js::CallExpression, method: &str, at: Span, subject: Expr, span: Span) -> R<Expr> {
+        let call = |leaf: &str, args: Vec<Arg>| Ok(Expr { kind: ExprKind::Call { callee: Name { text: leaf.into(), span: at }, args }, span });
         let first = |subject: Expr| Arg { name: None, value: subject };
-        match (method, c.arguments.len()) {
-            ("map", 1) => {
-                let f = self.function_arg(&c.arguments[0], 1)?;
-                return call("map", vec![first(subject), f]);
-            }
-            ("reduce", 2) => {
-                let f = self.function_arg(&c.arguments[0], 2)?;
+        let n = c.arguments.len();
+        // Those that take a function.
+        match (method, n) {
+            ("map", 1) => return self.mapped(subject, &c.arguments[0], "map", span),
+            ("reduce" | "reduceRight", 2) => {
+                let f = self.function_arg(&c.arguments[0], method, 2)?;
                 let init = self.positional(&c.arguments[1..])?.remove(0);
-                return call("fold", vec![init, first(subject), f]);
+                let list = if method == "reduce" { subject } else { leaf("reverse", &[], vec![subject], span) };
+                return Ok(leaf_with("fold", &[], vec![init, first(list), f], span));
             }
-            ("map", _) | ("reduce", _) => {
-                return fail(span, format!("{method} takes {}: extras come in a later slice", if method == "map" { "one function, xs.map((x) => …)" } else { "a function and the start, xs.reduce((acc, x) => …, 0)" }));
+            // The first item is the start: `tail(xs).reduce(f, head(xs))`.
+            ("reduce", 1) => {
+                if !rereadable(&subject) {
+                    return fail(span, "reduce without a start reads the list twice, its first item and the rest: name it first, const xs = …, or give the start, xs.reduce(f, start)");
+                }
+                let f = self.function_arg(&c.arguments[0], method, 2)?;
+                let init = leaf("head", &[], vec![subject.clone()], span);
+                let rest = leaf("tail", &[], vec![subject], span);
+                return Ok(leaf_with("fold", &[], vec![first(init), first(rest), f], span));
+            }
+            ("flatMap", 1) => {
+                let f = self.function_arg(&c.arguments[0], method, 1)?;
+                let mapped = leaf_with("map", &[], vec![first(subject), f], span);
+                return Ok(leaf("flat", &[], vec![mapped], span));
+            }
+            ("toSorted" | "sort", 1) => {
+                let f = self.function_arg(&c.arguments[0], method, 2)?;
+                return Ok(leaf_with("sort_by", &[], vec![first(subject), f], span));
+            }
+            (m, 1) if let Some(test) = tester(m) => {
+                let f = self.function_arg(&c.arguments[0], m, 1)?;
+                return Ok(leaf_with(test, &[], vec![first(subject), f], span));
+            }
+            ("map" | "flatMap", _) => return fail(span, format!("{method} takes one function: xs.{method}((x) => …)")),
+            (m, _) if tester(m).is_some() => return fail(span, format!("{method} takes one function: xs.{method}((x) => …)")),
+            ("reduce", _) => return fail(span, "reduce takes a function and, if there is one, the start: xs.reduce((acc, x) => …, 0)"),
+            ("reduceRight", _) => return fail(span, "reduceRight takes a function and the start: xs.reduceRight((acc, x) => …, init)"),
+            _ => {}
+        }
+        // Those whose arguments aren't plain values.
+        match method {
+            "toSpliced" => {
+                let mut args = c.arguments.iter();
+                let shape = "toSpliced takes where to start, how many to take out and the items to put in: xs.toSpliced(start, count, ...items)";
+                let mut fixed = vec![first(subject)];
+                for a in args.by_ref().take(2) {
+                    let Some(e) = a.as_expression() else { return fail(self.span(a.span()), shape) };
+                    fixed.push(first(self.expr(e)?));
+                }
+                if fixed.len() < 2 {
+                    return fail(span, shape);
+                }
+                let items: Vec<(bool, &js::Expression)> = args.map(|a| match a {
+                    js::Argument::SpreadElement(s) => (true, &s.argument),
+                    a => (false, a.as_expression().expect("an argument that isn't a spread")),
+                }).collect();
+                if !items.is_empty() {
+                    fixed.push(first(self.list_of(items, span)?));
+                }
+                return Ok(leaf_with("to_spliced", &[], fixed, span));
+            }
+            "flat" => {
+                let depth = match c.arguments.as_slice() {
+                    [] => None,
+                    [a] => match a.as_expression().map(|e| self.unwrap(e)) {
+                        Some(js::Expression::Identifier(i)) if i.name == "Infinity" && self.lookup("Infinity").is_none() => Some("all".to_string()),
+                        Some(e) => match self.expr(e)?.kind {
+                            ExprKind::Number { text, .. } => Some(text),
+                            _ => return fail(self.span(a.span()), "flat's depth is a number written in place, or Infinity: xs.flat(2)"),
+                        },
+                        None => return fail(self.span(a.span()), "flat's depth is a number written in place, or Infinity: xs.flat(2)"),
+                    },
+                    _ => return fail(span, "flat takes how deep it spreads, if not one: xs.flat(2), xs.flat(Infinity)"),
+                };
+                let params: Vec<(&str, &str)> = depth.as_deref().map(|d| ("depth", d)).into_iter().collect();
+                return Ok(leaf("flat", &params, vec![subject], span));
+            }
+            // A list is spread into the list, anything else added to it: which is written decides.
+            "concat" => {
+                let mut list = subject;
+                for a in &c.arguments {
+                    let at = self.span(a.span());
+                    let Some(e) = a.as_expression() else { return fail(at, "a spread argument isn't passed: name each") };
+                    let item = self.expr(e)?;
+                    list = match self.unwrap(e) {
+                        js::Expression::ArrayExpression(_) => call("extend", vec![first(list), first(item)])?,
+                        js::Expression::NumericLiteral(_) | js::Expression::StringLiteral(_) | js::Expression::BooleanLiteral(_) | js::Expression::TemplateLiteral(_) | js::Expression::ObjectExpression(_) => {
+                            call("append", vec![first(list), first(item)])?
+                        }
+                        _ => return fail(at, "concat spreads a list and adds anything else, and this could be either: write [...xs, ...ys] for a list, [...xs, y] for an item"),
+                    };
+                }
+                return Ok(list);
             }
             _ => {}
         }
         let rest = self.positional(&c.arguments)?;
+        let values = |rest: Vec<Arg>| rest.into_iter().map(|a| a.value).collect::<Vec<_>>();
+        let with = |subject: Expr, rest: Vec<Arg>| [vec![subject], values(rest)].concat();
         match (method, rest.len()) {
             ("split", 1) | ("join", 1) | ("indexOf", 1) => {
                 let leaf = match method {
@@ -3088,8 +3206,35 @@ impl<'s, 't> Reader<'s, 't> {
                 args.extend(rest);
                 call(leaf, args)
             }
+            ("join", 0) => call("join", vec![first(subject), first(text_expr(",", span))]),
             ("toUpperCase", 0) => call("uppercase", vec![first(subject)]),
             ("toLowerCase", 0) => call("lowercase", vec![first(subject)]),
+            // A list's, and some a text's too: one leaf that takes either.
+            ("at", 1) => Ok(leaf("at", &[], with(subject, rest), span)),
+            ("includes", 1) => Ok(leaf("includes", &[], with(subject, rest), span)),
+            ("lastIndexOf", 1) => Ok(leaf("last_index_of", &[], with(subject, rest), span)),
+            ("toReversed" | "reverse", 0) => Ok(leaf("reverse", &[], vec![subject], span)),
+            ("toSorted" | "sort", 0) => Ok(leaf("sort", &[], vec![subject], span)),
+            ("slice", 0) => Ok(subject),
+            ("slice", 1 | 2) => Ok(leaf("slice", &[("mode", "end")], with(subject, rest), span)),
+            ("with", 2) => Ok(leaf("with_item", &[], with(subject, rest), span)),
+            ("fill", 1..=3) => Ok(leaf("fill", &[], with(subject, rest), span)),
+            ("copyWithin", 1..=3) => Ok(leaf("copy_within", &[], with(subject, rest), span)),
+            ("includes" | "indexOf" | "lastIndexOf", _) => fail(span, format!("{method} takes the item alone: a position to start from isn't passed, xs.{method}(x)")),
+            ("keys" | "entries" | "values", 0) => fail(at, format!("xs.{method}() is an iterator, which a flow has none of: [...xs.{method}()] is the list")),
+            ("at" | "with" | "toReversed" | "toSorted" | "reverse" | "sort" | "slice" | "fill" | "copyWithin" | "join", _) => {
+                let shape = match method {
+                    "at" => "xs.at(i)",
+                    "with" => "xs.with(i, value)",
+                    "toReversed" | "reverse" => "xs.toReversed()",
+                    "toSorted" | "sort" => "xs.toSorted(), or xs.toSorted((a, b) => …)",
+                    "slice" => "xs.slice(start, end), the end left out for the rest",
+                    "fill" => "xs.fill(value, start, end), the start and end left out for the whole list",
+                    "copyWithin" => "xs.copyWithin(target, start, end)",
+                    _ => "xs.join(sep), or xs.join() for \",\"",
+                };
+                fail(span, format!("{method} is written {shape}"))
+            }
             // A number's: only a number has these, so the subject is taken as one.
             ("toFixed" | "toPrecision" | "toExponential", 0 | 1) => {
                 let style = match method {
@@ -3115,8 +3260,146 @@ impl<'s, 't> Reader<'s, 't> {
                 Ok(e)
             }
             ("toFixed" | "toPrecision" | "toExponential" | "toString", _) => fail(span, format!(".{method}(…) takes one number at most")),
-            ("toLocaleString", _) => fail(method_name.span, "a flow has no locale: toFixed(d) writes a number with d decimals"),
-            _ => fail(method_name.span, format!("no leaf does .{method}(…): do it in a js() function")),
+            ("toLocaleString", _) => fail(at, "a flow has no locale: toFixed(d) writes a number with d decimals"),
+            _ => fail(at, format!("no leaf does .{method}(…): do it in a js() function")),
+        }
+    }
+
+    /// `xs.map(f)`, and `Array.from(xs, f)`: `map`, with `(x, i) => …` read as
+    /// `indices(xs).map((i) => …)`, `x` as `get(xs, i)` (lists.md, "Composites"). A function
+    /// that answers what it is given is the list itself: `(x) => x` is `xs`, `(x, i) => i`
+    /// `indices(xs)`.
+    fn mapped(&mut self, list: Expr, a: &js::Argument, method: &str, span: Span) -> R<Expr> {
+        let indexed = matches!(a.as_expression().map(|e| self.unwrap(e)), Some(js::Expression::ArrowFunctionExpression(f)) if f.params.items.len() == 2);
+        if indexed {
+            if !rereadable(&list) {
+                return fail(span, format!("{method} with an index, (x, i) => …, reads the list by index: name it first, const xs = …, and map that"));
+            }
+            let indices = leaf("indices", &[], vec![list.clone()], span);
+            let f = self.function_with(a, method, Hands::Indexed(list))?;
+            if answers_its_parameter(&f.value) {
+                return Ok(indices);
+            }
+            return Ok(leaf_with("map", &[], vec![arg(indices), f], span));
+        }
+        let f = self.function_arg(a, method, 1)?;
+        if answers_its_parameter(&f.value) {
+            return Ok(list);
+        }
+        Ok(leaf_with("map", &[], vec![arg(list), f], span))
+    }
+
+    /// What spreading `e` gives as a list: `new Set(xs)` its items once each (`unique`),
+    /// `xs.keys()` its indices, `xs.entries()` its pairs and `xs.values()` the list itself;
+    /// anything else, itself.
+    fn spread_list(&mut self, e: &js::Expression) -> R<Expr> {
+        let span = self.span(e.span());
+        match self.unwrap(e) {
+            js::Expression::NewExpression(n) if matches!(self.unwrap(&n.callee), js::Expression::Identifier(i) if i.name == "Set" && self.lookup("Set").is_none()) => match n.arguments.as_slice() {
+                [] => Ok(Expr { kind: ExprKind::List(vec![]), span }),
+                [js::Argument::SpreadElement(s)] => fail(self.span(s.span), "a Set is made of one list: [...new Set(xs)]"),
+                [a] => {
+                    let xs = self.expr(a.as_expression().expect("an argument that isn't a spread"))?;
+                    Ok(leaf("unique", &[], vec![xs], span))
+                }
+                _ => fail(span, "a Set is made of one list: [...new Set(xs)]"),
+            },
+            js::Expression::CallExpression(c)
+                if c.arguments.is_empty()
+                    && let js::Expression::StaticMemberExpression(m) = self.unwrap(&c.callee)
+                    && matches!(m.property.name.as_str(), "keys" | "entries" | "values")
+                    && !self.is_global(&m.object) =>
+            {
+                let xs = self.expr(&m.object)?;
+                Ok(match m.property.name.as_str() {
+                    "keys" => leaf("indices", &[], vec![xs], span),
+                    "entries" => leaf("entries", &[], vec![xs], span),
+                    _ => xs,
+                })
+            }
+            _ => self.expr(e),
+        }
+    }
+
+    /// Whether `e` is a name the file doesn't bind: an import, or one of JavaScript's (`Object`).
+    fn is_global(&self, e: &js::Expression) -> bool {
+        matches!(self.unwrap(e), js::Expression::Identifier(i) if self.lookup(i.name.as_str()).is_none() && !self.defs.contains_key(i.name.as_str()) && !self.consts.contains_key(i.name.as_str()))
+    }
+
+    /// A list written as items and spreads, `[a, ...xs, b]`: `append` for an item after a spread,
+    /// `extend` for a spread after anything, and a spread alone the list it spreads.
+    fn list_of(&mut self, items: Vec<(bool, &js::Expression)>, span: Span) -> R<Expr> {
+        let mut list: Option<Expr> = None;
+        let mut plain = Vec::new();
+        for (spread, e) in items {
+            if spread {
+                let spread = self.spread_list(e)?;
+                let before = match list.take() {
+                    None if plain.is_empty() => None,
+                    None => Some(Expr { kind: ExprKind::List(std::mem::take(&mut plain)), span }),
+                    l => l,
+                };
+                list = Some(match before {
+                    None => spread,
+                    Some(l) => call("extend", vec![arg(l), arg(spread)], span),
+                });
+            } else {
+                let value = self.expr(e)?;
+                self.share(e);
+                match list.take() {
+                    Some(l) => list = Some(call("append", vec![arg(l), arg(value)], span)),
+                    None => plain.push(value),
+                }
+            }
+        }
+        Ok(list.unwrap_or(Expr { kind: ExprKind::List(plain), span }))
+    }
+
+    /// `Array.isArray(x)`, `Array.of(a, b)` and `Array.from(…)`: `is_list`, the list written, and
+    /// the list given (`map`ped through a function when there is one), or `range(n)` for
+    /// `{ length: n }`.
+    fn array_call(&mut self, c: &js::CallExpression, method: &str, at: Span, span: Span) -> R<Expr> {
+        match method {
+            "isArray" => {
+                let x = self.counted(c, (1, 1), "Array.isArray takes one value, Array.isArray(x)", span)?;
+                Ok(leaf("is_list", &[], x, span))
+            }
+            "of" => {
+                let items = self.positional(&c.arguments)?;
+                Ok(Expr { kind: ExprKind::List(items.into_iter().map(|a| a.value).collect()), span })
+            }
+            "from" => {
+                let shape = "Array.from takes a list and, if there is one, a function: Array.from(xs, (x) => …), Array.from({ length: n }, (_, i) => …)";
+                let (source, f) = match c.arguments.as_slice() {
+                    [s] => (s, None),
+                    [s, f] => (s, Some(f)),
+                    _ => return fail(span, shape),
+                };
+                let Some(source) = source.as_expression() else { return fail(span, shape) };
+                // `{ length: n }`: n items, each undefined, so the function reads the index.
+                if let js::Expression::ObjectExpression(o) = self.unwrap(source)
+                    && let Ok(fields) = self.fields(o)
+                    && let [(key, n, _)] = fields.as_slice()
+                    && key == "length"
+                {
+                    let Some(f) = f else {
+                        return fail(span, "Array.from({ length: n }) has n items that are undefined, which a flow has none of: Array.from({ length: n }, (_, i) => …)");
+                    };
+                    let n = self.expr(n)?;
+                    let range = leaf("range", &[], vec![n], span);
+                    let f = self.function_with(f, "Array.from", Hands::Counted)?;
+                    if answers_its_parameter(&f.value) {
+                        return Ok(range);
+                    }
+                    return Ok(leaf_with("map", &[], vec![arg(range), f], span));
+                }
+                let xs = self.spread_list(source)?;
+                match f {
+                    None => Ok(xs),
+                    Some(f) => self.mapped(xs, f, "Array.from", span),
+                }
+            }
+            other => fail(at, format!("Array has isArray, of and from a flow can call, not \"{other}\"")),
         }
     }
 
@@ -3212,27 +3495,39 @@ impl<'s, 't> Reader<'s, 't> {
         Ok(leaf(leaf_name, params, args, span))
     }
 
-    /// The function `map` or `reduce` takes: a holon by name, or an arrow written in place, its
-    /// body one expression.
-    fn function_arg(&mut self, a: &js::Argument, takes: usize) -> R<Arg> {
+    /// The function a higher-order method takes, handing it `takes` values: a holon by name, or
+    /// an arrow written in place, its body one expression.
+    fn function_arg(&mut self, a: &js::Argument, method: &str, takes: usize) -> R<Arg> {
+        self.function_with(a, method, Hands::Plain(takes))
+    }
+
+    /// The function `method` takes, as its leaf hands it values (`hands`): a holon by name, or an
+    /// arrow written in place, its body one expression. A parameter the arrow doesn't use is left
+    /// unwired, and one it leaves out is one it doesn't use: `() => 0`.
+    fn function_with(&mut self, a: &js::Argument, method: &str, hands: Hands) -> R<Arg> {
         let e = a.as_expression().ok_or(()).or_else(|_| fail(self.span(a.span()), "a function, not a spread"))?;
         let span = self.span(e.span());
         let fn_name = Name { text: "fn".into(), span };
         let value = match self.unwrap(e) {
-            js::Expression::Identifier(i) if self.defs.contains_key(i.name.as_str()) => Expr { kind: ExprKind::Name(i.name.to_string()), span },
+            js::Expression::Identifier(i) if self.defs.contains_key(i.name.as_str()) && matches!(hands, Hands::Plain(_)) => Expr { kind: ExprKind::Name(i.name.to_string()), span },
             js::Expression::ArrowFunctionExpression(arrow) => {
                 if arrow.r#async {
                     return fail(span, "a function written in place computes: no async");
                 }
-                let mut params = Vec::new();
+                // Each parameter: its name in the text, and its port.
+                let mut names = Vec::new();
                 for p in &arrow.params.items {
                     let js::BindingPattern::BindingIdentifier(id) = &p.pattern else {
                         return fail(self.span(p.span), "a parameter is a name: (x) => { const { id } = x; … }, in a later slice");
                     };
-                    params.push(self.name(&self.port_name(id.name.as_str()), id.span));
+                    names.push((id.name.to_string(), self.name(&self.port_name(id.name.as_str()), id.span)));
                 }
-                if params.len() != takes || arrow.params.rest.is_some() {
-                    return fail(span, if takes == 1 { "map's function takes the item: (x) => …; an index isn't passed" } else { "reduce's function takes the result so far and the item: (acc, x) => …" });
+                let most = match hands {
+                    Hands::Plain(takes) => takes,
+                    Hands::Indexed(_) | Hands::Counted => 2,
+                };
+                if names.len() > most || arrow.params.rest.is_some() {
+                    return fail(span, takes_message(method));
                 }
                 let body = match &arrow.body {
                     js::ArrowFunctionBody::FunctionBody(b) => match b.statements.as_slice() {
@@ -3241,18 +3536,55 @@ impl<'s, 't> Reader<'s, 't> {
                     },
                     body => body.as_expression().expect("an expression body"),
                 };
+                // A name for a parameter left out: `_`, `__`, … one the arrow doesn't have.
+                let unused = |names: &[(String, Name)], params: &[Name]| {
+                    (1..).map(|k| "_".repeat(k)).find(|n| !names.iter().any(|(_, p)| p.text == *n) && !params.iter().any(|p| p.text == *n)).expect("a free name")
+                };
                 let mut scope = HashMap::new();
-                for (p, id) in params.iter().zip(&arrow.params.items) {
-                    if let js::BindingPattern::BindingIdentifier(id) = &id.pattern {
-                        scope.insert(id.name.to_string(), Local::Bound(p.text.clone()));
+                let mut params = Vec::new();
+                match &hands {
+                    Hands::Plain(takes) => {
+                        for (ts, p) in &names {
+                            scope.insert(ts.clone(), Local::Bound(p.text.clone()));
+                            params.push(p.clone());
+                        }
+                        while params.len() < *takes {
+                            let text = unused(&names, &params);
+                            params.push(Name { text, span });
+                        }
+                    }
+                    // The index is the one parameter; the item, before it, is read from it.
+                    Hands::Indexed(_) | Hands::Counted => {
+                        let index = match names.get(1) {
+                            Some((ts, p)) => {
+                                scope.insert(ts.clone(), Local::Bound(p.text.clone()));
+                                p.clone()
+                            }
+                            None => Name { text: unused(&names, &[]), span },
+                        };
+                        if let Some((x, _)) = names.first() {
+                            let item = match &hands {
+                                Hands::Indexed(list) => leaf("get", &[], vec![list.clone(), Expr { kind: ExprKind::Name(index.text.clone()), span: index.span }], span),
+                                _ => absent(span),
+                            };
+                            scope.insert(x.clone(), Local::Alias(item));
+                        }
+                        params.push(index);
                     }
                 }
+                // Its parameters are what it was handed: changed in place, they would change
+                // the list's items too.
+                let added: Vec<String> = names.iter().map(|(ts, _)| ts.clone()).filter(|ts| !self.frame.params.contains(ts)).collect();
+                self.frame.params.extend(added.iter().cloned());
                 self.scopes.push(scope);
                 let body = self.expr(body);
                 self.scopes.pop();
+                for ts in &added {
+                    self.frame.params.remove(ts);
+                }
                 Expr { kind: ExprKind::Lambda { params, body: Box::new(body?) }, span }
             }
-            _ => return fail(span, "map and reduce take a function: (x) => …, or a function's name"),
+            _ => return fail(span, format!("{method} takes a function: (x) => …, or a function's name")),
         };
         Ok(Arg { name: Some(fn_name), value })
     }
@@ -3714,9 +4046,58 @@ fn expression_kind(e: &js::Expression) -> &'static str {
     }
 }
 
-/// A list's methods that change it in place: `push` is a new list with the items after it; the
-/// rest come in a later slice.
+/// A list's methods that change it in place: as a statement, `push` is a new list with the items
+/// after it, and the rest are refused, each naming the value form.
 const MUTATORS: &[&str] = &["push", "pop", "shift", "unshift", "splice", "sort", "reverse", "fill", "copyWithin"];
+
+/// The ones that answer the list they changed: read as that list where it is used, on a list of
+/// the handler's own that isn't read after (lists.md, "Reader changes").
+const IN_PLACE: &[&str] = &["sort", "reverse", "fill", "copyWithin"];
+
+/// The list `xs.method(…)` changes in place, written as a value.
+fn value_form(xs: &str, method: &str) -> String {
+    match method {
+        "sort" => format!("{xs}.toSorted()"),
+        "reverse" => format!("{xs}.toReversed()"),
+        _ => format!("[...{xs}].{method}(…)"),
+    }
+}
+
+/// Why `xs.method(…)` is refused, for the ones that answer something else than the list: what to
+/// write instead.
+fn moved(method: &str, xs: &str) -> String {
+    let instead = match method {
+        "push" => format!("the new list is [...{xs}, x]"),
+        "pop" => format!("its last item is {xs}.at(-1), the rest {xs}.slice(0, -1)"),
+        "shift" => format!("its first item is {xs}.at(0), the rest {xs}.slice(1)"),
+        "unshift" => format!("the new list is [x, ...{xs}]"),
+        _ => format!("the new list is {xs}.toSpliced(…), the items it takes out {xs}.slice(start, start + count)"),
+    };
+    format!("{method} changes the list in place, which a flow's list doesn't: {instead}")
+}
+
+/// A JavaScript method that takes a function, and the higher-order leaf it is.
+fn tester(method: &str) -> Option<&'static str> {
+    Some(match method {
+        "filter" => "filter",
+        "some" => "any",
+        "every" => "all",
+        "find" => "find",
+        "findIndex" => "find_index",
+        "findLast" => "find_last",
+        "findLastIndex" => "find_last_index",
+        _ => return None,
+    })
+}
+
+/// Whether `e` can be read twice as written, giving the same: a name, or a field of one.
+fn rereadable(e: &Expr) -> bool {
+    match &e.kind {
+        ExprKind::Name(_) => true,
+        ExprKind::Field { base, .. } | ExprKind::Paren(base) => rereadable(base),
+        _ => false,
+    }
+}
 
 fn call(leaf: &str, args: Vec<Arg>, span: Span) -> Expr {
     Expr { kind: ExprKind::Call { callee: Name { text: leaf.into(), span }, args }, span }
@@ -3742,8 +4123,40 @@ fn absent(span: Span) -> Expr {
 
 /// A leaf placed for one of JavaScript's forms, with its params (`ExprKind::Leaf`).
 fn leaf(leaf: &str, params: &[(&str, &str)], args: Vec<Expr>, span: Span) -> Expr {
+    leaf_with(leaf, params, args.into_iter().map(arg).collect(), span)
+}
+
+/// The same, with arguments that may be named: a higher-order leaf's `fn`.
+fn leaf_with(leaf: &str, params: &[(&str, &str)], args: Vec<Arg>, span: Span) -> Expr {
     let params = params.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
-    Expr { kind: ExprKind::Leaf { leaf: Name { text: leaf.into(), span }, params, args: args.into_iter().map(arg).collect(), number: false }, span }
+    Expr { kind: ExprKind::Leaf { leaf: Name { text: leaf.into(), span }, params, args, number: false }, span }
+}
+
+/// How a higher-order method hands its function values.
+enum Hands {
+    /// As many as its leaf does: the item (and the result so far, or the other item compared).
+    Plain(usize),
+    /// `map((x, i) => …)` on this list: the index, the function's one parameter, and the item
+    /// read as `get(list, i)`.
+    Indexed(Expr),
+    /// `Array.from({ length: n }, (_, i) => …)`: the index; the item is JavaScript's undefined,
+    /// absent.
+    Counted,
+}
+
+/// What a function that takes another number of values than its method hands is told.
+fn takes_message(method: &str) -> String {
+    match method {
+        "map" | "Array.from" => format!("{method}'s function takes the item and its index: (x) => …, (x, i) => …; the list isn't passed, as it has a name"),
+        "reduce" | "reduceRight" => format!("{method}'s function takes the result so far and the item: (acc, x) => …; an index isn't passed"),
+        "toSorted" | "sort" => format!("{method}'s function takes the two items it compares: (a, b) => …"),
+        _ => format!("{method}'s function takes the item: (x) => …; an index isn't passed"),
+    }
+}
+
+/// Whether `f` is a function written in place that answers its one parameter: `(x) => x`.
+fn answers_its_parameter(f: &Expr) -> bool {
+    matches!(&f.kind, ExprKind::Lambda { params, body } if matches!(params.as_slice(), [p] if matches!(&body.kind, ExprKind::Name(n) if *n == p.text)))
 }
 
 /// `-1`, as `-x` and `~x` use it.
@@ -4646,7 +5059,23 @@ route.post("/t", (req) => price(req.json.amount))
             ("route.post(\"/\", (req) => {\n  const n = 1\n  n = 2\n  return n\n})\n", "7:3: \"n\" is a const: declare it with let to give it a new value"),
             ("route.post(\"/\", (req) => {\n  req = 2\n  return 1\n})\n", "6:3: \"req\" is a parameter, which stays what it was passed: give the new value a name of its own"),
             ("route.post(\"/\", (req) => {\n  if (req.json.a !== undefined) {\n    return 1\n  }\n  return 2\n})\n", "7:12: a return inside if (x !== undefined) comes in a later slice: return after it, with ?? for when x has no value"),
-            ("route.post(\"/\", (req) => {\n  const xs = [1]\n  xs.sort()\n  return xs\n})\n", "7:3: sort changes the list in place, which comes in a later slice: write the new list, xs = …"),
+            ("route.post(\"/\", (req) => {\n  const xs = [1]\n  xs.sort()\n  return xs\n})\n", "7:3: sort changes the list in place, which a flow's list doesn't: write the new list, xs = xs.toSorted()"),
+            ("route.post(\"/\", (req) => {\n  const xs = [1]\n  xs.fill(0)\n  return xs\n})\n", "7:3: fill changes the list in place, which a flow's list doesn't: write the new list, xs = [...xs].fill(…)"),
+            ("route.post(\"/\", (req) => {\n  const xs = [1]\n  xs.pop()\n  return xs\n})\n", "7:3: pop changes the list in place, which a flow's list doesn't: its last item is xs.at(-1), the rest xs.slice(0, -1)"),
+            ("route.post(\"/\", (req) => {\n  const xs = [1]\n  xs.shift()\n  return xs\n})\n", "7:3: shift changes the list in place, which a flow's list doesn't: its first item is xs.at(0), the rest xs.slice(1)"),
+            ("route.post(\"/\", (req) => {\n  const xs = [1]\n  xs.unshift(0)\n  return xs\n})\n", "7:3: unshift changes the list in place, which a flow's list doesn't: the new list is [x, ...xs]"),
+            ("route.post(\"/\", (req) => {\n  const xs = [1]\n  xs.splice(0, 1)\n  return xs\n})\n", "7:3: splice changes the list in place, which a flow's list doesn't: the new list is xs.toSpliced(…), the items it takes out xs.slice(start, start + count)"),
+            ("route.post(\"/\", (req) => {\n  const xs = [1]\n  return xs.push(2)\n})\n", "7:10: push changes the list in place, which a flow's list doesn't: the new list is [...xs, x]"),
+            ("route.post(\"/\", (req) => {\n  const xs = [3, 1]\n  const s = xs.sort()\n  return [s, xs]\n})\n", "8:14: \"xs\" is read after xs.sort(…) changed it in place: use the list sort gave, or write xs.toSorted() and keep \"xs\" as it was"),
+            ("route.post(\"/\", (req) => {\n  const xs = [3, 1]\n  const ys = xs\n  return ys.reverse()\n})\n", "8:10: \"ys\" is held elsewhere too (by another name, a record or a write), which reverse would change in place behind it: write ys.toReversed()"),
+            ("route.post(\"/\", (req) => req.json.xs.sort())\n", "5:26: sort would change req.json.xs in place, and what holds it with it: write req.json.xs.toSorted()"),
+            ("route.post(\"/\", (req) => req.json.rows.map((row) => row.sort()))\n", "5:53: \"row\" is a parameter, which sort would change in place for whoever passed it too: write row.toSorted()"),
+            ("route.post(\"/\", (req) => req.json.xs.concat(req.json.ys))\n", "5:45: concat spreads a list and adds anything else, and this could be either: write [...xs, ...ys] for a list, [...xs, y] for an item"),
+            ("route.post(\"/\", (req) => req.json.xs.keys())\n", "5:38: xs.keys() is an iterator, which a flow has none of: [...xs.keys()] is the list"),
+            ("route.post(\"/\", (req) => req.json.xs.flat(req.json.n))\n", "5:43: flat's depth is a number written in place, or Infinity: xs.flat(2)"),
+            ("route.post(\"/\", (req) => req.json.xs.includes(1, 2))\n", "5:26: includes takes the item alone: a position to start from isn't passed, xs.includes(x)"),
+            ("route.post(\"/\", (req) => req.json.xs.map((x) => x * 2).reduce((a, b) => a + b))\n", "5:26: reduce without a start reads the list twice, its first item and the rest: name it first, const xs = …, or give the start, xs.reduce(f, start)"),
+            ("route.post(\"/\", (req) => Array.from({ length: 3 }))\n", "5:26: Array.from({ length: n }) has n items that are undefined, which a flow has none of: Array.from({ length: n }, (_, i) => …)"),
             ("route.post(\"/\", (req) => {\n  switch (req.json.op) {\n    case req.json.other:\n      return 1\n  }\n  return 2\n})\n", "7:10: a case is a literal: a number, a text, true or false; to test a condition, use if"),
             ("route.post(\"/\", (req) => {\n  if (req.json.a) return status(200, 1)\n  return 2 ?? status(400)\n})\n", "7:10: this answer is 400 when its body is absent, and the one on line 6 is 404: say it the same for both"),
             ("route.post(\"/\", (req) => {\n  const n = req.json.n++\n  return n\n})\n", "6:13: ++ and -- are a statement of their own: n++"),

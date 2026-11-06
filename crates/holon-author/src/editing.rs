@@ -129,7 +129,37 @@ const INPUT: &str = "what the action was sent: a JSON value, `{}` for nothing.";
 const TICK: &str = "the time of the tick, in seconds since the epoch.";
 
 /// A value's methods that are leaves (docs/manual/language/reference.md, Calls).
-const METHOD_LEAVES: &[(&str, &str)] = &[("toUpperCase", "uppercase"), ("toLowerCase", "lowercase"), ("split", "split"), ("join", "join"), ("indexOf", "index_of"), ("map", "map"), ("reduce", "fold")];
+const METHOD_LEAVES: &[(&str, &str)] = &[
+    ("toUpperCase", "uppercase"),
+    ("toLowerCase", "lowercase"),
+    ("split", "split"),
+    ("join", "join"),
+    ("indexOf", "index_of"),
+    ("map", "map"),
+    ("reduce", "fold"),
+    ("reduceRight", "fold"),
+    ("filter", "filter"),
+    ("some", "any"),
+    ("every", "all"),
+    ("find", "find"),
+    ("findIndex", "find_index"),
+    ("findLast", "find_last"),
+    ("findLastIndex", "find_last_index"),
+    ("flatMap", "flat"),
+    ("toSorted", "sort_by"),
+    ("at", "at"),
+    ("includes", "includes"),
+    ("lastIndexOf", "last_index_of"),
+    ("toReversed", "reverse"),
+    ("slice", "slice"),
+    ("toSpliced", "to_spliced"),
+    ("with", "with_item"),
+    ("fill", "fill"),
+    ("copyWithin", "copy_within"),
+    ("flat", "flat"),
+    ("keys", "indices"),
+    ("entries", "entries"),
+];
 
 /// A flow's setting or a handler's option, by the call it is in (`flow`, `route`, …) and its key.
 fn option(call: &str, key: &str) -> Option<&'static str> {
@@ -1014,6 +1044,7 @@ fn member(o: &Outline, code: &[&Lexeme], k: usize) -> Option<String> {
                 ("JSON", "parse") => return leaf("json_parse"),
                 ("JSON", "stringify") => return leaf("json_stringify"),
                 ("Object", "keys") => return leaf("keys"),
+                ("Array", "isArray") => return leaf("is_list"),
                 _ => {}
             }
         }

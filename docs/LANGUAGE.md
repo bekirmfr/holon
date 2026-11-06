@@ -28,8 +28,8 @@ from JavaScript's (absence, writes at the end, logic on booleans) are Holon's, a
 JavaScript reader would be misled the compiler refuses, saying what to write instead (§1, §6).
 
 Total is the language's boundary, stated here so nobody finds it by surprise: every run ends.
-There is no recursion and no loop; `map` and `reduce` go over a list, and `range(n)` counts to at
-most 10000. Anything with nested or unbounded structure (a tree of any depth, a search that runs
+There is no recursion and no loop; `map`, `reduce` and a list's other methods that take a function
+go over a list, and `range(n)` counts to at most 10000. Anything with nested or unbounded structure (a tree of any depth, a search that runs
 until it finds something) is out of the graph's reach, by design; it goes in a `js()` function,
 under a fuel budget.
 
@@ -93,7 +93,7 @@ unit.
 | Literals | Numbers, texts, `true`, `false`; a template literal interpolates through `as_text`; `{…}` and `[…]` lower to `record`/`with_field` and `list`; a duration is a text, `"10s"`, where one is asked | §5.5 |
 | Operators | Arithmetic and comparison on numbers, logic on booleans, `??` (fallback), `===` (structural), `.` (field or output), `[ ]` (lookup), `c ? a : undefined` (guard), `c ? a : b` (guard plus fallback), `switch` (a choice by value) | §5.6, §6.4, §6.5 |
 | Multi-output values | `.name` selects an output when the name is one; otherwise it is a field. A bare multi-output value is its first output | §5.7 |
-| Functions | `function name(inputs) { …; return out }` is a holon, its outputs named by what it returns; an arrow written in place for `map` and `reduce`, a name it uses from around it an input of its own | §5.8, §5.9 |
+| Functions | `function name(inputs) { …; return out }` is a holon, its outputs named by what it returns; an arrow written in place for a list's methods that take one (`map`, `reduce`, `filter`, `toSorted`, …), a name it uses from around it an input of its own | §5.8, §5.9 |
 | js functions | `const name = js(function name(inputs) { JavaScript }, { fuel, memory, outputs })`: a function whose body runs as JavaScript, in an engine that is a WebAssembly module with no imports, under a budget | §5.8a |
 | Effects | An unused Effect is performed, an unused value is an error; no `perform` keyword | §5.10 |
 | Handlers | `route.get("/path", (req) => …)`, `every("10s", () => …)`, `on.file.created(folder, (f) => …)`, `export const name = action((input) => …)`, each with its options last (`{ resumes, matching, log }`); `return` is the answer | §5.1, §5.11 |
@@ -181,7 +181,7 @@ derived from the leaves, never from the words.
 
 | Refused | Why |
 |---|---|
-| `while`, `for`, recursion, unbounded iteration | Totality. `map` and `reduce` over a list are the only iteration, bounded by the list; `range(n)` makes a list to count over, of at most 10000. The L4's slice 6 lowers a computing loop to a fold over a bounded range, which keeps totality; until it is built, a loop is refused |
+| `while`, `for`, recursion, unbounded iteration | Totality. A list's methods that take a function (`map`, `reduce`, `filter`, `find`, …) are the only iteration, bounded by the list; `range(n)` makes a list to count over, of at most 10000. The L4's slice 6 lowers a computing loop to a fold over a bounded range, which keeps totality; until it is built, a loop is refused |
 | `class`, `this`, `new`, generators, `eval` | A flow is a module of functions and records; computing that needs all of JavaScript goes in a `js()` function |
 | Generics, type parameters, types beyond the nine | The checker is wire-time compatibility over nine types (§6.8). A type system is a different project |
 | Imports of code, packages | An import names something outside a run. Reuse across files is the marketplace's job (a published holon placed by hash), not an import of code (the `marketplace` sample). Revisit when people share holons across flows |
@@ -1230,6 +1230,7 @@ handler (§10, §12).
 | `let name = expr`, `name = expr`, `var name = expr` | a new name per assignment; where branches assign it, the value after them is the branch taken's, chosen as `?:` and `switch` choose (`guard`, `coalesce`). `var` reads as `let`, and `fmt` writes it as `const` or `let` |
 | `n++`, `n += 2`, `x ??= y` | an assignment of `n + 1`, `n + 2`, `x ?? y`; `%=`, `**=`, `&=`, `\|=`, `^=`, `<<=`, `>>=` and `>>>=` likewise, each its operator's leaf (§5.6) |
 | `xs.push(x)`, `order.total = t` (on a local) | a new value: `[...xs, x]` (`append`), `{ ...order, total: t }` (`with_field`) |
+| `xs.sort()`, `xs.reverse()`, `xs.fill(v)`, `xs.copyWithin(t, s)` alone; `xs.pop()`, `shift()`, `unshift(x)`, `splice(…)` | refused, naming what to write: `xs = xs.toSorted()`, `xs = xs.toReversed()`, `xs = [...xs].fill(…)`; `xs.at(-1)` and `xs.slice(0, -1)`, `xs.at(0)` and `xs.slice(1)`, `[x, ...xs]`, `xs.toSpliced(…)` (a flow's list doesn't change) |
 | `const { a, b = 1, ...rest } = r` | a `field` per name; `b = 1` is `r.b ?? 1` (`default`, or `coalesce` when the default is computed); `rest` is `without_field` per named key |
 | `const [x, y] = xs`, `const [first, ...rest] = xs` | `get` at each index; `head` and `tail` |
 | `state.key = expr` | `store_write{key}`, performed when the run finishes |
@@ -1309,6 +1310,19 @@ Every catalog leaf is callable by its own name with this rule (`concat(a, b)`, `
 | `t.indexOf(x)` | `index_of(t, x)` |
 | `xs.map(f)` | `map{fn: f}(xs)` (§5.9) |
 | `xs.reduce(f, start)` | `fold{fn: f}(start, xs)` (§5.9) |
+| `xs.map((x, i) => …)` | `indices(xs).map((i) => …)`, `x` read as `get(xs, i)`; `xs` is a name or a field of one, as it is read twice |
+| `xs.reduce(f)`, `xs.reduceRight(f, start)` | `fold{fn: f}(head(xs), tail(xs))`, `xs` a name or a field of one; `fold{fn: f}(start, reverse(xs))` |
+| `xs.filter(f)`, `xs.some(f)`, `xs.every(f)`, `xs.find(f)`, `xs.findIndex(f)`, `xs.findLast(f)`, `xs.findLastIndex(f)` | `filter`, `any`, `all`, `find`, `find_index`, `find_last`, `find_last_index`, each `{fn: f}(xs)`: `f`'s answer read as JavaScript's truthiness, and `some`, `every` and the finds apply `f` to nothing after the item that decides |
+| `xs.toSorted(f)`, `xs.toSorted()` | `sort_by{fn: f}(xs)`, a stable merge sort on the sign of `f(a, b)`; `sort(xs)`, by each item's `String(x)` in UTF-16 code units, as JavaScript sorts |
+| `xs.flatMap(f)`, `xs.flat()`, `xs.flat(2)`, `xs.flat(Infinity)` | `flat(map{fn: f}(xs))`; `flat{depth}(xs)`, `depth: all` for `Infinity` (a number written in place) |
+| `xs.at(i)`, `xs.includes(x)`, `xs.indexOf(x)`, `xs.lastIndexOf(x)` | `at`, `includes`, `index_of`, `last_index_of`: each one leaf for a list and a text (a text's `at`, `includes` and `lastIndexOf` give nothing until the text leaves take them); a position to start from isn't passed |
+| `xs.slice(s, e)`, `xs.slice(s)`, `xs.slice()` | `slice{mode: end}(xs, s, e)`, the end unwired when left out; `xs` itself |
+| `xs.toReversed()`, `xs.toSpliced(s, c, ...items)`, `xs.with(i, v)` | `reverse(xs)`, `to_spliced(xs, s, c, items)` with the rest as one list, `with_item(xs, i, v)` |
+| `xs.sort()`, `xs.sort(f)`, `xs.reverse()`, `xs.fill(v, s, e)`, `xs.copyWithin(t, s, e)` as a value | `sort`, `sort_by`, `reverse`, `fill`, `copy_within`: the list they give, on a list made where they are called (`[...xs].fill(0)`) or a binding of the handler's own that isn't read after; on a parameter, a part of one or a list another name holds, refused, naming the value form |
+| `[...xs.keys()]`, `[...xs.entries()]`, `[...xs.values()]`, each also as `Array.from(…)` | `indices(xs)`, `entries(xs)` (the `[index, item]` pairs), `xs` |
+| `[...new Set(xs)]`, `Array.from(new Set(xs))` | `unique(xs)`: each item's first occurrence, by value |
+| `xs.join()`, `xs.concat(ys, x)` | `join(xs, ",")`; `extend` for a list written as one, `append` for a literal that isn't one, and refused for anything else, which could be either |
+| `Array.isArray(x)`, `Array.of(a, b)`, `Array.from(xs)`, `Array.from(xs, f)`, `Array.from({ length: n }, (_, i) => …)` | `is_list(x)`, `[a, b]`, `xs`, `map{fn: f}(xs)`, `range(n).map((i) => …)` (the item, JavaScript's undefined, read as absent) |
 | `JSON.parse(t)`, `JSON.stringify(x)` | `json_parse(t)`, `json_stringify(x)` |
 | `Object.keys(r)` | `keys(r)` |
 | `Math.round(x)`, `Math.sqrt(x)`, … | `math{fn: round}(x)`: each of `Math`'s one-number functions, `f16round` and `clz32` among them, is `math` with its name |
@@ -1589,7 +1603,8 @@ exactly as the expand view would freeze it. Its outputs are named by what it ret
 - anything else, one output, `out` (the L4's fork 7), shown on the canvas as its type, as a leaf's
   single output is.
 
-An input never used is an error, and so is an output that is an input passed straight through. A
+An input never used is an error (a function written in place may leave one unused, §5.9), and so
+is an output that is an input passed straight through. A
 parameter is a name: a pattern is written on the body's first line (`const { price, qty } =
 order`), as a port is named by its parameter, and it takes no default (every input is wired).
 
@@ -1682,18 +1697,25 @@ absent, with that reason.
 The sample `nearest` shows a `js()` function doing the one computation the vocabulary can't spell,
 an edit-distance search, with the flow around it storing, routing and answering.
 
-### 5.9 Functions for `map` and `reduce`
+### 5.9 Functions for a list's methods
 
-`xs.map(f)` and `xs.reduce(f, start)` take, as `f`:
+`xs.map(f)`, `xs.reduce(f, start)` and a list's other methods that take a function (`filter`,
+`some`, `every`, `find`, `findIndex`, `findLast`, `findLastIndex`, `flatMap`, `toSorted`,
+`reduceRight`) take, as `f`:
 
 - a function's name: `titles.map(slugify)`, lowered to that holon's hash;
 - an arrow written in place, its body one expression (or `{ return … }` alone): `(acc, p) => acc +
   p`, lowered to an anonymous composite with the parameters as inputs in order and the body's
   value as its one output, `out`, then to its hash.
 
-`map`'s function takes the item and no index; `reduce`'s takes the result so far and the item. A
-function that takes another number is an error at the function: "map's function takes the item:
-(x) => …; an index isn't passed". The leaves pass a function the values given after the list,
+Each function takes what its leaf hands it: the item; `reduce`'s the result so far and the item;
+`toSorted`'s the two items it compares. `map`'s may take the index after the item: the reader
+writes it `indices(xs).map((i) => …)`, the item read as `get(xs, i)`. A function that takes more is
+an error at the function: "filter's function takes the item: (x) => …; an index isn't passed".
+One that takes fewer, or doesn't use a parameter (`() => 0`, `(_, i) => i`), leaves it unused: as
+a composite's input feeds one inner port, the lowering wires it into a node nothing reads
+(`is_list`, or one `list` for two), which never runs, and the printer writes it back as a
+parameter the body doesn't use. `_` is a name like any other. The leaves pass a function the values given after the list,
 after the item: `map{fn: f}(xs, a, b)` calls `f(item, a, b)`. They are ports of their own (`in2`,
 …, typed `Any`), and the call fires only when every one is present, as any node does. The text
 reaches them through captures; an explicit form for them comes in a later slice.
@@ -2078,7 +2100,8 @@ The error catalogue the reader and the lowering produce, each with the span it p
 | a case runs on into the next; a case is a literal | the case |
 | the top level holds imports, `flow(…)`, handlers, functions and `const`s of literals | the statement |
 | the top level binds only literals | the binding |
-| `map`'s function takes the item; `reduce`'s the result so far and the item | the function |
+| a method's function takes what its leaf hands it: the item (and `map`'s index), `reduce`'s the result so far and the item, `toSorted`'s the two items | the function |
+| a list changed in place: `push`'s answer, `pop`, `shift`, `unshift`, `splice`; `sort`, `reverse`, `fill` or `copyWithin` alone, on what another holds, or read after | the call, or the read |
 | a function's input never used; an output that is an input passed straight through | the parameter or the return |
 | two answers whose status for an absent body differs | the second `return` |
 | a period written twice: one clock per period | the second clock |

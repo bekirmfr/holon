@@ -64,7 +64,7 @@ raced.
 | `flatMap` | composite, once `flat` is a leaf | `flat(xs.map(f))` | as a fold: 64: 130, 512: 569; map: 8: 3.3–3.8, 64: 4.7–5.0, 512: 12 | the fold form loses to the copy; over the `flat` leaf it pays `map` plus one native pass (re-race then) |
 | `forEach` | refused | `xs.map(f)` | | a statement per item has no Holon meaning; `map` computes the values (§12) |
 | `includes` | leaf | `includes` | first: 64: 143, 4096: 11319; none: 64: 50, 4096: 85 | > 3 even when nothing matches (an equality per item through a function), and no early exit |
-| `indexOf` | leaf | `index_of` on lists | first: 64: 501, 4096: 30677; none: 64: 188 | > 3, and no early exit. The reader maps `.indexOf` to `index_of` today, which answers nothing on a list |
+| `indexOf` | leaf | `index_of` on lists | first: 64: 501, 4096: 30677; none: 64: 188 | > 3, and no early exit. One leaf with a text's `index_of`, which the reader already mapped `.indexOf` to |
 | `join(sep)` | reader | `join` | checked equal on texts | already there (mapped) for texts. Other items need `String(x)`, as `join()` says |
 | `join()` | reader | `join(xs, ",")`; non-texts: `xs.map((x) => String(x)).join(sep)` | of numbers: 64: 11.1 µs / 4.88 µs = 2.3 (2.2–2.3); 4096: 2.0 | `","` is a literal. Over non-texts the composite is the same class and ≤ 3, exact once `String(x)` is JavaScript's ToString (`as_text`, raced here, differs at `1e21`, on lists and records) |
 | `keys` | leaf | `indices` | 64: 791 ns / 171 ns = 4.6; 4096: 1.1 | not expressible exactly: `range(length(xs))` gives nothing past MAX_RANGE. In class otherwise, and > 3 at 64 only from the composite's fixed cost |
@@ -72,13 +72,13 @@ raced.
 | `map(f)` | reader | `map` | | already mapped |
 | `map((x, i) => …)` | composite | `indices(xs).map((i) => f(get(xs, i), i))` | map: 64: 1.60–1.66; 4096: 1.3–1.7 (native, `x + i`: 64: 20) | same class as `map`, ≤ 3: an index costs `get` and a capture per item |
 | `pop` | refused | `xs.at(-1)`, `xs.slice(0, -1)` | | mutation, answering the item: no in-place change (§12) |
-| `push` | refused | `[...xs, x]` (`append`) | | mutation, answering the new length: the value form is the new list |
+| `push` | refused | `[...xs, x]` (`append`) | | mutation, answering the new length: the value form is the new list. `xs.push(x)` alone stays `xs = [...xs, x]`, as before |
 | `reduce(f, init)` | reader | `fold` | | already mapped |
 | `reduce(f)` | composite | `tail(xs).reduce(f, head(xs))` | against `reduce` with a start: 64: 1.1–1.2 (one noisy run 0.64); 4096: 1.05–1.10 | same class, ≤ 3. An empty list throws in JavaScript; here `head` gives nothing |
 | `reduceRight` | composite | `xs.toReversed().reduce(f, init)` over `reverse`; raced over `indices` | over `indices`, against `reduce`: 64: 2.0–2.3 (one noisy run 3.1); 4096: 1.8–2.1 | same class, ≤ 3 over `indices`. Over the `reverse` leaf it pays one native pass more than `reduce` |
 | `reverse` | leaf | `reverse` | as `toReversed` | as `toReversed`; read as its value form (Reader changes) |
 | `shift` | refused | `head(xs)`, `tail(xs)` | | mutation, answering the item |
-| `slice` | leaf | `sublist` | `slice(1, -1)`: 64: 12.3 µs / 271 ns = 45; 4096: 29 | > 3: a function per item where the leaf copies once |
+| `slice` | leaf | `slice {mode: end}` on a list | `slice(1, -1)`: 64: 12.3 µs / 271 ns = 45; 4096: 29 | > 3: a function per item where the leaf copies once |
 | `some` | leaf, re-race once a fold can stop | `any {fn}` | first: 64: 250, 4096: 13975; none: 64: 142; map: 1.2–2.0 | no early exit: the ratio grows with n where JavaScript stops at the first true |
 | `sort()` | leaf | `sort` | | not expressible: no composite sorts in O(n log n) (`fold` inserts in O(n²)) |
 | `sort(cmp)` | leaf | `sort_by {fn}` | | not expressible, as `sort()` |
@@ -100,7 +100,7 @@ raced.
 `flatMap` over `flat`), 23 leaf (`filter` among them, re-raced after the evaluator change), 4 leaf
 pending a re-race (`some`, `every`, `findLast`, `findLastIndex` once a fold can stop), 6 refused.
 
-With `sublist` and `to_spliced` as leaves, `with`, `copyWithin` and `pop`'s rest could be
+With `slice` on lists and `to_spliced` as leaves, `with`, `copyWithin` and `pop`'s rest could be
 composites of one or two leaf calls (`xs.with(i, v)` as `to_spliced(xs, j, 1, [v])` behind a
 range check). That would be three fewer leaves, at one more copy each, and should be raced once
 those two exist.
@@ -246,6 +246,11 @@ worth knowing:
 
 ## Reader changes
 
+Read on the `library-leaves` branch, all but the first (L4 §7); the language's methods table
+(`docs/LANGUAGE.md` §5) says how each is lowered. A subject read twice (`reduce(f)`, `map((x, i)
+=> …)`) is a name or a field of one, or the form is refused naming the fix; `reduceRight` without a
+start and `concat` of a name are refused, naming what to write.
+
 - **By the value's type:** `.length` on a list as `length`, and `xs[i]` as `get`, where the reader
   knows the type (L4 §7). Elsewhere it refuses the form, naming the leaf, as it does today. The
   leaves that take a list or a text (`index_of`, `includes`, `at`, `last_index_of`) need no type.
@@ -264,10 +269,13 @@ worth knowing:
   theirs (`[...xs, x]`; `xs.at(-1)` and `xs.slice(0, -1)`; `head(xs)` and `tail(xs)`; `[x, ...xs]`;
   `toSpliced` and `slice`).
 - **A limitation that blocked composites:** a parameter a function written in place doesn't use
-  is refused ("the parameter "k" is never used"), and so is a body that passes a capture straight
-  through. So `Array.from({ length: n }, () => v)` (`range(n).map((k) => v)`) can't be written, and
+  was refused ("the parameter "k" is never used"), and so is a body that passes a capture straight
+  through. So `Array.from({ length: n }, () => v)` (`range(n).map((k) => v)`) couldn't be written, and
   `flat(depth)` had to guard its step on the unused index (`k >= 0 ? flat1(acc) : acc`). An unused
-  parameter should be allowed (left unwired), and `_` read as one.
+  parameter is allowed now, `_` or any name: a composite's input feeds one inner port, so the
+  lowering wires it into a node nothing reads (`is_list`, or one `list` for two), which never runs.
+  `Array.from({ length: n }, () => 0)` reads; a body that passes a value straight through, a
+  capture `() => v` among them, is still refused.
 
 ## Race output
 

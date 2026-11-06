@@ -60,6 +60,11 @@ pub fn lower(file: &File) -> R<Lowered> {
     Lowerer::new(file).run(file)
 }
 
+/// The leaf that holds a parameter a function written in place doesn't use (two are held by one
+/// `list`): its output goes nowhere, so it never runs, and the printer reads the parameter as
+/// unused.
+pub(crate) const UNUSED: &str = "is_list";
+
 /// Words the lowering keeps for itself: a TypeScript binding of one is renamed, `name_`.
 pub(crate) const RESERVED: &[&str] = &[
     "flow", "port", "every", "browsers", "optional", "collection", "folder", "database", "channel", "holon", "js", "route", "resumes", "respond", "delete", "await", "if", "then", "else",
@@ -1423,10 +1428,28 @@ impl<'a> Lowerer<'a> {
         }
         self.frames.push(frame);
         let result = self.expr(body);
-        let v = match result {
+        let mut v = match result {
             Ok(v) => self.whole(v, body.span),
             Err(e) => Err(e),
         };
+        // A parameter the body doesn't use (`(_, i) => i`) is held by a node nothing reads, as a
+        // composite's input feeds one inner port: the evaluator never runs it. Two are held by
+        // one `list`, as two holders alike couldn't be told apart.
+        if v.is_ok() {
+            let unused: Vec<Val> = params.iter().filter(|p| !self.cur().wiring_in.iter().any(|(port, _, _)| *port == p.text)).map(|p| Val::In(p.text.clone())).collect();
+            let held = match unused.as_slice() {
+                [] => Ok(()),
+                [one] => self.node_with(UNUSED, &[], &[("value", one.clone())], span).map(drop),
+                many => {
+                    let ports = Self::variadic_ports(&[WPort::new("a", WType::Any), WPort::new("b", WType::Any)], many.len());
+                    let inputs: Vec<(&str, Val)> = ports.iter().map(String::as_str).zip(many.iter().cloned()).collect();
+                    self.node_with("list", &[], &inputs, span).map(drop)
+                }
+            };
+            if let Err(e) = held {
+                v = Err(e);
+            }
+        }
         let frame = self.frames.pop().expect("the function's frame");
         let v = v?;
         let Val::Out { id, outputs, port, .. } = &v else {
@@ -1438,13 +1461,9 @@ impl<'a> Lowerer<'a> {
         // written, and `fmt` can print the captures back as the names they are.
         let mut captures = captures.clone();
         captures.sort_by(|a, b| a.0.cmp(&b.0));
+        // A parameter the body doesn't use is an input left unwired: `(_, i) => i`.
         let inputs: Vec<HolonPort> =
             params.iter().map(|p| p.text.clone()).chain(captures.iter().map(|(n, _)| n.clone())).map(|name| HolonPort { name, unit: None }).collect();
-        for p in params {
-            if !frame.wiring_in.iter().any(|(port, _, _)| *port == p.text) {
-                return err(p.span, format!("the parameter \"{}\" is never used", p.text));
-            }
-        }
         let mut wiring_in = frame.wiring_in;
         wiring_in.sort_by_key(|(port, _, _)| inputs.iter().position(|p| p.name == *port));
         let h = self.b.end_holon_exact(&name, &inputs, &[HolonPort { name: "out".into(), unit: None }], &wiring_in, &[(id.clone(), output, "out".into())]).or_else(|e| err(span, e))?;
@@ -1553,7 +1572,7 @@ impl<'a> Lowerer<'a> {
                 }
                 self.node("await", &params, e.span)
             }
-            ExprKind::Lambda { .. } => err(e.span, "an arrow function goes in map or reduce: xs.map((x) => …)"),
+            ExprKind::Lambda { .. } => err(e.span, "an arrow function goes to a list's method that takes one: xs.map((x) => …)"),
             ExprKind::Paren(inner) => self.expr(inner),
         }
     }
@@ -2249,7 +2268,7 @@ impl<'a> Lowerer<'a> {
         if let Some((takes, _, fn_span)) = &function
             && PASSES_EXTRA.contains(&leaf)
         {
-            let gives = inputs.len() + extra.len() + captured.len();
+            let gives = holon_core::function_takes(leaf) + extra.len() + captured.len();
             if *takes != gives {
                 let item = match leaf {
                     "fold" => "the result so far and the item",
@@ -2555,6 +2574,103 @@ every("10s", async () => {
         // `-(n * 2) * 3` keeps its negation one node, as written.
         let d = compiled(&number_flow("  return -(n * 2) * 3")).doc;
         assert_eq!(leaves(&d).iter().filter(|l| *l == "multiply").count(), 3);
+    }
+
+    fn list_flow(body: &str) -> String {
+        format!("import {{ action, flow, get, head, range, tail }} from \"holon\"\n\nflow(\"f\")\n\nexport const t = action((x) => {{\n  const xs = x.xs\n{body}\n}})\n")
+    }
+
+    /// JavaScript's list forms read as their leaves, each with its params: the methods that take
+    /// a function, the value forms, the spreads and `Array`'s.
+    #[test]
+    fn javascript_s_list_forms_read_as_their_leaves() {
+        let placed = |expr: &str, leaf: &str| {
+            let d = compiled(&list_flow(&format!("  return {expr}"))).doc;
+            let node = d.nodes.iter().rev().find(|n| n.data.name == leaf).unwrap_or_else(|| panic!("{expr}: no {leaf} in {:?}", leaves(&d)));
+            ["mode", "depth"].iter().filter(|k| interface_of(leaf).is_some_and(|u| u.params.iter().any(|p| p.name() == **k))).map(|k| format!("{k}={}", node.param(k))).collect::<Vec<_>>().join(",")
+        };
+        let cases = [
+            ("xs.at(-1)", "at", ""),
+            ("[...xs.keys()]", "indices", ""),
+            ("Array.from(xs.keys())", "indices", ""),
+            ("[...xs.entries()]", "entries", ""),
+            ("xs.some((v) => v > 1)", "any", ""),
+            ("xs.every((v) => v > 1)", "all", ""),
+            ("xs.filter((v) => v > 1)", "filter", ""),
+            ("xs.find((v) => v > 1)", "find", ""),
+            ("xs.findIndex((v) => v > 1)", "find_index", ""),
+            ("xs.findLast((v) => v > 1)", "find_last", ""),
+            ("xs.findLastIndex((v) => v > 1)", "find_last_index", ""),
+            ("xs.toSorted((a, b) => a - b)", "sort_by", ""),
+            ("[...xs].sort((a, b) => a - b)", "sort_by", ""),
+            ("xs.includes(1)", "includes", ""),
+            ("xs.indexOf(1)", "index_of", ""),
+            ("xs.lastIndexOf(1)", "last_index_of", ""),
+            ("xs.toReversed()", "reverse", ""),
+            ("[...xs].reverse()", "reverse", ""),
+            ("xs.slice(1, -1)", "slice", "mode=end"),
+            ("xs.slice(1)", "slice", "mode=end"),
+            ("xs.toSpliced(1, 1, 2)", "to_spliced", ""),
+            ("xs.with(0, 1)", "with_item", ""),
+            ("[...xs].fill(0)", "fill", ""),
+            ("[...xs].copyWithin(0, 1)", "copy_within", ""),
+            ("xs.toSorted()", "sort", ""),
+            ("[...xs].sort()", "sort", ""),
+            ("xs.flat()", "flat", "depth=1"),
+            ("xs.flat(2)", "flat", "depth=2"),
+            ("xs.flat(Infinity)", "flat", "depth=all"),
+            ("xs.flatMap((v) => [v, v])", "flat", "depth=1"),
+            ("Array.isArray(xs)", "is_list", ""),
+            ("[...new Set(xs)]", "unique", ""),
+            ("Array.from(new Set(xs))", "unique", ""),
+        ];
+        for (expr, leaf, params) in cases {
+            assert_eq!(placed(expr, leaf), params, "{expr}");
+        }
+        // A function's own named so isn't the method's leaf.
+        let own = "import { action, flow } from \"holon\"\n\nflow(\"f\")\n\nfunction filter(xs) {\n  return xs.toReversed()\n}\n\nexport const t = action((x) => filter(x.xs).filter((v) => v > 1))\n";
+        assert_eq!(leaves(&compiled(own).doc).iter().filter(|l| *l == "filter").count(), 2, "the function, and the leaf");
+    }
+
+    /// Each list form lowers to the unit its spelled-out form does (lists.md, "Reader changes"):
+    /// an index to `indices` and `get`, `reduce` without a start to `head` and `tail`, the value
+    /// form of a change in place, `Array.from` and the spreads to the list they give, and a
+    /// parameter a function leaves out or doesn't use to one it doesn't use.
+    #[test]
+    fn a_list_form_is_the_unit_of_what_it_stands_for() {
+        let same = [
+            ("return xs.map((v, i) => v + i)", "return [...xs.keys()].map((i) => get(xs, i) + i)"),
+            ("return xs.map((v, i) => i)", "return [...xs.keys()]"),
+            ("return xs.map((v) => v)", "return xs"),
+            ("return xs.reduce((a, b) => a + b)", "return tail(xs).reduce((a, b) => a + b, head(xs))"),
+            ("return xs.reduceRight((a, b) => a + b, 0)", "return xs.toReversed().reduce((a, b) => a + b, 0)"),
+            ("return xs.flatMap((v) => [v])", "return xs.map((v) => [v]).flat()"),
+            ("return Array.from({ length: 3 }, (_, i) => i * 2)", "return range(3).map((i) => i * 2)"),
+            ("return Array.from({ length: 3 }, () => 0)", "return range(3).map((_) => 0)"),
+            ("return Array.from({ length: 3 }, (v, i) => i)", "return range(3)"),
+            ("return Array.from(xs, (v) => v * 2)", "return xs.map((v) => v * 2)"),
+            ("return Array.from(xs)", "return xs"),
+            ("return Array.of(1, 2)", "return [1, 2]"),
+            ("return [...xs.values()]", "return xs"),
+            ("return xs.slice()", "return xs"),
+            ("return xs.join()", "return xs.join(\",\")"),
+            ("return xs.concat([1], 2, \"a\")", "return [...xs, ...[1], 2, \"a\"]"),
+            ("return xs.flat(1)", "return xs.flat()"),
+            ("return xs.toSorted(() => 0)", "return xs.toSorted((_, __) => 0)"),
+            ("return xs.filter(() => true)", "return xs.filter((_) => true)"),
+            ("const ys = [3, 1]\n  return ys.sort()", "const ys = [3, 1]\n  return ys.toSorted()"),
+            ("let ys = [3, 1]\n  ys = ys.reverse()\n  return ys", "let ys = [3, 1]\n  ys = ys.toReversed()\n  return ys"),
+            ("return xs.toSpliced(1, 0, ...x.ys, 2)", "return xs.toSpliced(1, 0, ...[...x.ys, 2])"),
+        ];
+        for (form, spelled) in same {
+            let (a, b) = (compiled(&list_flow(&format!("  {form}"))), compiled(&list_flow(&format!("  {spelled}"))));
+            assert_eq!(hash_of(&a.doc), hash_of(&b.doc), "{form} is {spelled}");
+        }
+        // A parameter the function doesn't use is held inside it by a node nothing reads.
+        let d = compiled(&list_flow("  return xs.map((_) => 1)")).doc;
+        let units: Vec<holon_core::Unit> = d.units.as_ref().unwrap().iter().map(|h| holon_core::decode_preimage(&(0..h.len()).step_by(2).map(|i| u8::from_str_radix(&h[i..i + 2], 16).unwrap()).collect::<Vec<u8>>()).unwrap()).collect();
+        let held = units.iter().any(|u| matches!(&u.body, holon_core::UnitBody::Composite { children, edges } if u.inputs.len() == 1 && u.inputs[0].name == "_" && children.len() == 2 && edges.iter().any(|e| e.from_child == holon_core::BOUNDARY && e.from_port == 0)));
+        assert!(held, "the function (_) => 1: a const, and the node holding _");
     }
 
     /// The forms a flow can't have are refused, each naming what it can write.
@@ -3119,16 +3235,20 @@ route.post("/v", (req) => {
     /// call gives it.
     #[test]
     fn a_function_of_the_wrong_arity_is_said() {
-        // One written in place: the reader says it, as map passes no index.
-        assert_eq!(
-            error("import { action, flow } from \"holon\"\n\nflow(\"h\")\n\nexport const t = action(() => [1].map((a, b) => a + b))\n"),
-            (5, 39, "map's function takes the item: (x) => …; an index isn't passed".into())
-        );
+        // One written in place: the reader says it. map takes an index after the item, read
+        // through the list's name; the others take none.
+        let in_place = |call: &str| error(&format!("import {{ action, flow }} from \"holon\"\n\nflow(\"h\")\n\nexport const t = action(() => {call})\n"));
+        assert_eq!(in_place("[1].map((a, b, c) => a + b + c)"), (5, 39, "map's function takes the item and its index: (x) => …, (x, i) => …; the list isn't passed, as it has a name".into()));
+        assert_eq!(in_place("[1].map((a, b) => a + b)"), (5, 31, "map with an index, (x, i) => …, reads the list by index: name it first, const xs = …, and map that".into()));
+        assert_eq!(in_place("[1].filter((a, b) => a)"), (5, 42, "filter's function takes the item: (x) => …; an index isn't passed".into()));
+        assert_eq!(in_place("[1].toSorted((a, b, c) => a)"), (5, 44, "toSorted's function takes the two items it compares: (a, b) => …".into()));
         let by_name = |call: &str| {
             error(&format!("import {{ action, flow }} from \"holon\"\n\nflow(\"h\")\n\nfunction h(a, b, c) {{\n  return a + b + c\n}}\n\nexport const t = action(() => {call})\n"))
         };
         assert_eq!(by_name("[1].map(h)"), (9, 39, "\"map\" gives its function 1 inputs (the item); this one takes 3".into()));
         assert_eq!(by_name("[1].reduce(h, 0)"), (9, 42, "\"fold\" gives its function 2 inputs (the result so far and the item); this one takes 3".into()));
+        assert_eq!(by_name("[1].toSorted(h)"), (9, 44, "\"sort_by\" gives its function 2 inputs (the two items it compares); this one takes 3".into()));
+        assert_eq!(by_name("[1].find(h)"), (9, 40, "\"find\" gives its function 1 inputs (the item); this one takes 3".into()));
     }
 
     #[test]
@@ -4064,7 +4184,7 @@ export const t = action(() => signed("a"))
         // A function written in place outside map and reduce: the reader says where it goes.
         assert_eq!(
             route("", "route.get(\"/a\", () => {\n  const x = (a) => a\n  return x\n})"),
-            (6, 13, "a function written in place goes to map or reduce: xs.map((x) => …); define the others at the top level".into())
+            (6, 13, "a function written in place goes to a list's method that takes one, xs.map((x) => …), xs.filter((x) => …); define the others at the top level".into())
         );
     }
 
