@@ -522,6 +522,34 @@ mod tests {
         assert!(fed.derives(&[]), "the root's first output is derived");
     }
 
+    /// A number computed from a secret (`to_number`, then `math {fn: "abs"}`, then written back
+    /// with `number_format`) is derived from it; whether the secret reads as a number
+    /// (`number_test`) is a Boolean, and cuts it.
+    #[test]
+    fn the_number_leaves_derive_and_a_number_test_cuts() {
+        let mut r = MapResolver::new();
+        let secret = leaf(&mut r, "secret", vec![Param::frozen("name", "pin")]);
+        let read = leaf(&mut r, "to_number", vec![Param::frozen("grammar", "int")]);
+        let abs = leaf(&mut r, "math", vec![Param::frozen("fn", "abs")]);
+        let written = leaf(&mut r, "number_format", vec![Param::frozen("style", "fixed")]);
+        let test = leaf(&mut r, "number_test", vec![Param::frozen("test", "finite"), Param::frozen("coerce", "number")]);
+        let e = |fc, fp, tc, tp| Edge { from_child: fc, from_port: fp, to_child: tc, to_port: tp };
+        let root = Unit {
+            body: UnitBody::Composite {
+                children: vec![secret, read, abs, written, test],
+                edges: vec![e(0, 0, 1, 0), e(1, 0, 2, 0), e(2, 0, 3, 0), e(0, 0, 4, 0), e(3, 0, BOUNDARY, 0), e(4, 0, BOUNDARY, 1)],
+            },
+            params: vec![],
+            inputs: vec![],
+            outputs: vec![Port { name: "text".into(), ty: Type::Text }, Port { name: "ok".into(), ty: Type::Boolean }],
+        };
+        let fed = SecretFed::of(&root, &r);
+        for (node, what) in [(1, "to_number"), (2, "math"), (3, "number_format")] {
+            assert!(fed.derives(&[node]), "{what} of a secret is derived");
+        }
+        assert!(!fed.derives(&[4]), "a number_test answers a Boolean");
+    }
+
     /// `secret → base64` into a state write and the answer, `secret → hmac` into another write: the
     /// first write and the answer carry what is computed from it, the second doesn't.
     #[test]

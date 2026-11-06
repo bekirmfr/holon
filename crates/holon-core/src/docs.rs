@@ -29,6 +29,19 @@ pub fn describe(name: &str) -> Option<&'static str> {
         "fold" => "Runs its function over a list, carrying a result along: starting from init, each item and the result so far give the next result.",
         "map" => "Runs its function on each item of a list: the list of results.",
 
+        // ── numbers ──
+        "math" => "One of JavaScript's Math functions of a number, chosen by fn: abs, sign, floor, ceil, trunc, round, sqrt, cbrt, exp, expm1, log, log2, log10, log1p, sin, cos, tan, their inverses and hyperbolic forms, fround, f16round, clz32. Produces nothing where JavaScript gives NaN or Infinity.",
+        "max" => "The largest of its numbers (0 over -0). Takes more inputs with +.",
+        "min" => "The smallest of its numbers (-0 under 0). Takes more inputs with +.",
+        "aggregate" => "One number from a list of numbers, chosen by fn: its max, its min, hypot (the square root of the sum of the squares) or sum_precise (the exact sum, rounded once). The max or min of an empty list produces nothing.",
+        "atan2" => "The angle from the x axis to the point (x, y), in radians: Math.atan2(y, x).",
+        "power" => "a to the power b, as Math.pow(a, b). Produces nothing where JavaScript gives NaN or Infinity (0 to a negative power, a negative number to a fraction).",
+        "remainder" => "What is left of a after dividing by b, with a's sign: a % b. Dividing by zero produces nothing.",
+        "bitwise" => "A 32-bit integer operation on two numbers, chosen by op: and, or, xor, shl, shr, ushr (JavaScript's &, |, ^, <<, >>, >>>) or imul (Math.imul).",
+        "number_test" => "Whether a value is a finite number, an integer, a safe integer or NaN, chosen by test. With coerce \"none\" only a number can pass (Number.isFinite); with \"number\" the value is read as a number first (isFinite, isNaN).",
+        "to_number" => "A value read as a number, by grammar: number (Number(x)), float (parseFloat) or int (parseInt, in radix when it is wired). Produces nothing when it doesn't read as a finite number.",
+        "number_format" => "A number written as text, by style: string (toString, in radix digits when wired), fixed (toFixed), precision (toPrecision) or exponential (toExponential), digits as each takes them. Digits out of range produce nothing.",
+
         // ── text ──
         "concat" => "Joins texts end to end. Takes more inputs with +.",
         "uppercase" => "The text in upper case.",

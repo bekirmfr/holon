@@ -296,6 +296,8 @@ pub(crate) fn is_optional_input(n: &Node, port: Option<&str>) -> bool {
         "flow_call" | "flow_start" => &["input"],
         "collection_list" | "file_list" => &["prefix", "after"],
         "file_lines" => &["from"],
+        "to_number" => &["radix"],
+        "number_format" => &["digits"],
         _ => &[],
     };
     n.data.body == PlacedBody::Primitive && port.is_some_and(|p| optional.contains(&p))

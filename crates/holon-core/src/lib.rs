@@ -43,6 +43,7 @@ mod inspect;
 mod json;
 mod manifest;
 mod module;
+mod numbers;
 mod resolve;
 mod simulate;
 pub mod taint;

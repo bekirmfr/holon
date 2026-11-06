@@ -36,6 +36,13 @@ const CATALOG_GROUPS: readonly { name: string; items: ReadonlySet<string> }[] = 
     ]),
   },
   {
+    name: "number",
+    items: new Set([
+      "math", "max", "min", "aggregate", "atan2", "power", "remainder",
+      "bitwise", "number_test", "to_number", "number_format",
+    ]),
+  },
+  {
     name: "text",
     items: new Set(["concat", "uppercase", "lowercase", "text_length", "slice", "index_of", "split"]),
   },

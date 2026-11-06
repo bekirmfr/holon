@@ -252,6 +252,18 @@ pub fn passes_extra_primitives() -> Vec<String> {
     holon_core::PASSES_EXTRA.iter().map(|s| s.to_string()).collect()
 }
 
+/// The values each family leaf's parameter may take (core's `catalog::FAMILIES`), by leaf, then
+/// parameter: `{math: {fn: ["abs", …]}, compare: {op: ["=", …]}, …}`. The editor offers them as a
+/// choice, so a node can't hold one core refuses.
+#[wasm_bindgen]
+pub fn family_params() -> Result<JsValue, JsError> {
+    let mut families: std::collections::BTreeMap<&str, std::collections::BTreeMap<&str, &[&str]>> = std::collections::BTreeMap::new();
+    for (leaf, param, values) in holon_core::FAMILIES {
+        families.entry(leaf).or_default().insert(param, values);
+    }
+    serde_wasm_bindgen::to_value(&families).map_err(|e| JsError::new(&format!("families: {e}")))
+}
+
 /// What each genesis primitive does, by name (core's `describe`): the editor shows it on each
 /// node and in the palette, read from core like the catalog, never a TS copy that could drift.
 #[wasm_bindgen]
@@ -1374,9 +1386,11 @@ fn check_eval_parity() {
 /// Arithmetic on fractions gives the same bits natively and in wasm. Random operands, everyday
 /// fractions and raw bit patterns across the whole finite range (subnormals included), go
 /// through the core's add, subtract, multiply, divide, sum and compare; each result must be
-/// exactly the IEEE operation on this target, or nothing where that is past the largest number,
-/// and the hash of all of them is pinned, so the native and wasm runs must agree with each other
-/// bit for bit.
+/// exactly the IEEE operation on this target, or nothing where that is past the largest number.
+/// Then through every number leaf: each of `math`'s functions (libm's), max, min, each
+/// `aggregate`, atan2, power, remainder, each `bitwise` op and `number_test`, and a number written
+/// as text (`number_format`, in each style) and read back (`to_number`). The hash of all of them
+/// is pinned, so the native and wasm runs must agree with each other bit for bit.
 #[cfg(test)]
 fn check_fraction_parity() {
     // splitmix64: a fixed seed, so both targets draw the same operands.
@@ -1432,12 +1446,64 @@ fn check_fraction_parity() {
         let list: Vec<f64> = (0..5).map(|_| operand(i)).collect();
         let total = one(&sum, &[Value::List(list.iter().copied().map(num).collect())]);
         same(&total, list.iter().fold(-0.0, |acc, x| acc + x));
-        let below = one(&less, &[va, vb]);
+        let below = one(&less, &[va.clone(), vb.clone()]);
         assert_eq!(below, Value::Boolean(a < b));
         results.extend([added, taken, times, over, total, below]);
+
+        // The number leaves (core's numbers.rs): libm's functions, the IEEE ones checked against
+        // this target's operations, and every result pinned with the rest.
+        for f in holon_core::family_values("math", "fn").unwrap() {
+            let y = one(&family("math", &[("fn", f)]), std::slice::from_ref(&va));
+            match *f {
+                "abs" => same(&y, a.abs()),
+                "floor" => same(&y, a.floor()),
+                "ceil" => same(&y, a.ceil()),
+                "trunc" => same(&y, a.trunc()),
+                "sqrt" => same(&y, a.sqrt()),
+                _ => {}
+            }
+            results.push(y);
+        }
+        results.push(one(&prim("max"), &[va.clone(), vb.clone()]));
+        results.push(one(&prim("min"), &[va.clone(), vb.clone()]));
+        let items = Value::List(list.iter().copied().map(num).collect());
+        for f in holon_core::family_values("aggregate", "fn").unwrap() {
+            results.push(one(&family("aggregate", &[("fn", f)]), std::slice::from_ref(&items)));
+        }
+        for leaf in ["atan2", "power", "remainder"] {
+            results.push(one(&prim(leaf), &[va.clone(), vb.clone()]));
+        }
+        for op in holon_core::family_values("bitwise", "op").unwrap() {
+            results.push(one(&family("bitwise", &[("op", op)]), &[va.clone(), vb.clone()]));
+        }
+        for test in holon_core::family_values("number_test", "test").unwrap() {
+            for coerce in ["none", "number"] {
+                results.push(one(&family("number_test", &[("test", test), ("coerce", coerce)]), std::slice::from_ref(&va)));
+            }
+        }
+        // A number written as text and read back is itself.
+        let written = one(&family("number_format", &[("style", "string")]), std::slice::from_ref(&va));
+        for grammar in ["number", "float", "int"] {
+            let read = one(&family("to_number", &[("grammar", grammar)]), std::slice::from_ref(&written));
+            if grammar != "int" {
+                same(&read, a);
+            }
+            results.push(read);
+        }
+        results.push(written);
+        for (style, digits) in [("string", 16.0), ("fixed", 2.0), ("precision", 6.0), ("exponential", 3.0)] {
+            results.push(one(&family("number_format", &[("style", style)]), &[va.clone(), num(digits)]));
+        }
+        results.push(one(&family("number_format", &[("style", "exponential")]), std::slice::from_ref(&va)));
     }
     let digest = to_hex(&holon_core::hash_value(&Value::List(results)).unwrap());
-    assert_eq!(digest, "ccc61ae7cb73774afb81afee82dfaa072fb7445e39ab34a6ab3be8bd25d789ab");
+    assert_eq!(digest, "6f852091e2fd30f2442b19df99f222a9d8a34a25088d7d64cc30692ba22b0326");
+}
+
+/// A family leaf with its params set (`fn: "sin"`), as `prim` builds a leaf.
+#[cfg(test)]
+fn family(name: &str, params: &[(&str, &str)]) -> Unit {
+    Unit { params: params.iter().map(|&(k, v)| Param::frozen(k, v)).collect(), ..prim(name) }
 }
 
 /// The signature kit computes the same digests natively and in wasm (sha2/hmac are pure Rust, so
@@ -1534,7 +1600,7 @@ fn check_variadic_primitives() {
     // The exact set — a tripwire against silent drift between core's list and what crosses.
     let mut sorted = names.clone();
     sorted.sort();
-    assert_eq!(sorted, vec!["add", "and", "concat", "fold", "list", "map", "multiply", "or"]);
+    assert_eq!(sorted, vec!["add", "and", "concat", "fold", "list", "map", "max", "min", "multiply", "or"]);
     // map's and fold's extra inputs are passed to their function: any type, not more of one port.
     let mut extra = passes_extra_primitives();
     extra.sort();
@@ -1948,6 +2014,16 @@ mod wasm_tests {
         assert!(cat
             .iter()
             .any(|w| matches!(&w.body, WBody::Primitive { name } if name == "add")));
+    }
+
+    // Each family's values cross as leaf → param → values, the editor's choice for that param.
+    #[wasm_bindgen_test]
+    fn family_params_cross_js_boundary() {
+        let js = family_params().unwrap();
+        let families: std::collections::BTreeMap<String, std::collections::BTreeMap<String, Vec<String>>> = serde_wasm_bindgen::from_value(js).unwrap();
+        assert_eq!(families["compare"]["op"], ["=", "!=", "<", "<=", ">", ">="]);
+        assert_eq!(families["math"]["fn"].len(), 29);
+        assert_eq!(families["number_test"].keys().collect::<Vec<_>>(), ["coerce", "test"]);
     }
 
     // The compatibility rule crosses as (type string, type string) → bool: the editor's wire-time

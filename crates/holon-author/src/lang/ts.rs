@@ -14,7 +14,7 @@
 
 use std::collections::{BTreeSet, HashMap};
 
-use holon_core::{interface_of, TRIGGER, VARIADIC};
+use holon_core::{interface_of, PASSES_EXTRA, TRIGGER, VARIADIC};
 use oxc_allocator::Allocator;
 use oxc_ast::ast as js;
 use oxc_ast_visit::Visit;
@@ -3354,7 +3354,8 @@ impl Takes {
         let needed: Vec<String> = inputs.iter().filter(|n| !is_optional(leaf, n)).cloned().collect();
         let required = needed.len();
         // A variadic leaf's inputs are more of the same: only its params are named.
-        let mut named = params.into_iter().filter(|p| p != "fn").collect::<Vec<_>>();
+        // A `map`'s or `fold`'s function is passed in order, not by name.
+        let mut named = params.into_iter().filter(|p| p != "fn" || !PASSES_EXTRA.contains(&leaf)).collect::<Vec<_>>();
         if !VARIADIC.contains(&leaf) {
             named.extend(inputs);
         }

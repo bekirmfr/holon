@@ -21,6 +21,10 @@ pub const GENESIS: &[&str] = &[
     // pure — language core (16)
     "const", "add", "multiply", "subtract", "divide", "compare", "and", "or", "not", "select",
     "cons", "head", "tail", "is_empty", "fold", "map",
+    // pure — numbers (11): JavaScript's Math, Number and numeric operators (numbers.rs), a family
+    // of functions told apart by a frozen param (`FAMILIES`)
+    "math", "max", "min", "aggregate", "atan2", "power", "remainder", "bitwise", "number_test", "to_number",
+    "number_format",
     // pure — text (7)
     "concat", "uppercase", "lowercase", "text_length", "slice", "index_of", "split",
     // pure — list convenience, demotion-deferred (7)
@@ -78,7 +82,8 @@ pub const GENESIS: &[&str] = &[
 /// `fold_bools` / an unbounded loop over `inputs` in `primitives.rs` — not the fixed-arity
 /// `let [a, b] = inputs else { return None }` pattern most leaves use. `add`/`multiply` fold with
 /// identity `0`/`1`; `and`/`or` fold with identity `true`/`false`; `concat`/`list` loop with no
-/// count check at all. Every one is well-defined at ANY count, including zero.
+/// count check at all. Every one is well-defined at ANY count, including zero (`max`/`min` keep
+/// the largest or smallest, and with none give nothing, as JavaScript gives ±Infinity).
 ///
 /// `subtract`/`divide`/`compare` are deliberately excluded even though they share `add`'s catalog
 /// line: subtraction and division aren't associative, so "variadic subtract" has no natural
@@ -97,7 +102,7 @@ pub const GENESIS: &[&str] = &[
 /// and `fold`) already handles whatever count of values it's actually given. This constant exists so the editor
 /// derives "which leaves may grow" from core, the same way it derives everything else, instead of
 /// hand-listing names in TypeScript that could silently drift from what `compute` actually does.
-pub const VARIADIC: &[&str] = &["add", "multiply", "and", "or", "concat", "list", "map", "fold"];
+pub const VARIADIC: &[&str] = &["add", "multiply", "max", "min", "and", "or", "concat", "list", "map", "fold"];
 
 /// The variadic leaves whose extra inputs are any type, passed to their function, rather than
 /// more of the same port.
@@ -108,7 +113,23 @@ pub const PASSES_EXTRA: &[&str] = &["map", "fold"];
 /// `compare {op: "<"}` and `compare {op: ">"}` never collide, and a value added later re-hashes
 /// nothing. Any other value is refused when the flow is wired (`validate`), where it would
 /// otherwise give nothing each time it runs.
-pub const FAMILIES: &[(&str, &str, &[&str])] = &[("compare", "op", &["=", "!=", "<", "<=", ">", ">="])];
+pub const FAMILIES: &[(&str, &str, &[&str])] = &[
+    ("compare", "op", &["=", "!=", "<", "<=", ">", ">="]),
+    (
+        "math",
+        "fn",
+        &[
+            "abs", "sign", "floor", "ceil", "trunc", "round", "sqrt", "cbrt", "exp", "expm1", "log", "log2", "log10", "log1p", "sin", "cos", "tan", "asin", "acos",
+            "atan", "sinh", "cosh", "tanh", "asinh", "acosh", "atanh", "fround", "f16round", "clz32",
+        ],
+    ),
+    ("aggregate", "fn", &["max", "min", "hypot", "sum_precise"]),
+    ("bitwise", "op", &["and", "or", "xor", "shl", "shr", "ushr", "imul"]),
+    ("number_test", "test", &["finite", "integer", "safe_integer", "nan"]),
+    ("number_test", "coerce", &["none", "number"]),
+    ("to_number", "grammar", &["number", "float", "int"]),
+    ("number_format", "style", &["string", "fixed", "precision", "exponential"]),
+];
 
 /// The values leaf `name`'s family parameter `param` may take, if it is one.
 pub fn family_values(name: &str, param: &str) -> Option<&'static [&'static str]> {
@@ -145,6 +166,18 @@ pub fn interface_of(name: &str) -> Option<Unit> {
         ),
         "and" | "or" => prim(vec![port("a", Boolean), port("b", Boolean)], vec![], Boolean),
         "not" => prim(vec![port("v", Boolean)], vec![], Boolean),
+
+        // ── pure — numbers ── a family's function is a frozen param, at its first value.
+        "math" => prim(vec![port("x", Number)], vec![Param::frozen("fn", "abs")], Number),
+        "max" | "min" | "power" | "remainder" => prim(vec![port("a", Number), port("b", Number)], vec![], Number),
+        "aggregate" => prim(vec![port("xs", Type::List(Box::new(Number)))], vec![Param::frozen("fn", "max")], Number),
+        "atan2" => prim(vec![port("y", Number), port("x", Number)], vec![], Number),
+        "bitwise" => prim(vec![port("a", Number), port("b", Number)], vec![Param::frozen("op", "and")], Number),
+        // Any value: `coerce: "number"` reads it as a number first, `"none"` takes numbers only.
+        "number_test" => prim(vec![port("x", Any)], vec![Param::frozen("test", "finite"), Param::frozen("coerce", "none")], Boolean),
+        // `radix` and `digits` are optional (core's `has_optional_ports`).
+        "to_number" => prim(vec![port("x", Any), port("radix", Number)], vec![Param::frozen("grammar", "number")], Number),
+        "number_format" => prim(vec![port("x", Number), port("digits", Number)], vec![Param::frozen("style", "string")], Text),
         "select" => prim(
             vec![port("cond", Boolean), port("if_true", Any), port("if_false", Any)],
             vec![],
@@ -483,7 +516,7 @@ mod tests {
     }
 
     #[test]
-    fn genesis_has_95_leaves() {
+    fn genesis_has_106_leaves() {
         // The §13a count — a tripwire if the frozen set is ever changed by accident.
         // 37 + to_text + is_truthy + guard + default + equals (the universal any-typed
         // primitives) + the record kit (record, field, with_field, without_field, keys), added
@@ -499,8 +532,9 @@ mod tests {
         // channel pair (channel_send, channel_subscribe), and http_stream, and the database kit
         // (db_query, db_one, db_exec), and the document kit (db_find, db_find_one, db_insert,
         // db_update, db_delete), and flow_call and flow_start; less ingress, which a flow without
-        // handlers read its trigger by.
-        assert_eq!(GENESIS.len(), 95);
+        // handlers read its trigger by; and the number leaves (math, max, min, aggregate, atan2,
+        // power, remainder, bitwise, number_test, to_number, number_format).
+        assert_eq!(GENESIS.len(), 106);
     }
 
     #[test]
@@ -623,6 +657,8 @@ mod tests {
         assert_eq!(compute("multiply", &[&n(2.0), &n(3.0), &n(4.0)], &[]), Some(n(24.0)));
         assert_eq!(compute("and", &[&b(true), &b(true), &b(false)], &[]), Some(b(false)));
         assert_eq!(compute("or", &[&b(false), &b(false), &b(true)], &[]), Some(b(true)));
+        assert_eq!(compute("max", &[&n(1.0), &n(7.0), &n(3.0)], &[]), Some(n(7.0)));
+        assert_eq!(compute("min", &[&n(1.0), &n(7.0), &n(-3.0)], &[]), Some(n(-3.0)));
         assert_eq!(
             compute("concat", &[&t("a"), &t("b"), &t("c")], &[]),
             Some(t("abc"))

@@ -1,6 +1,6 @@
 //! JSON ⇄ `Value` for `json_parse` / `json_stringify` (M1): request and response bodies.
 //!
-//! Hand-written rather than a dependency, so core keeps to the few it has (blake3, hmac, sha2, smallvec) and every byte of
+//! Hand-written rather than a dependency, so core keeps to the few it has (blake3, hmac, libm, sha2, smallvec) and every byte of
 //! the mapping is ours to keep deterministic. Strict RFC 8259, plus two refusals that keep a
 //! parsed value unambiguous: duplicate object keys, and lone UTF-16 surrogates. Input is
 //! untrusted (it arrives in request bodies), so nesting is capped at [`MAX_DEPTH`].

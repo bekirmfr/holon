@@ -96,7 +96,16 @@ fn piped(d: &crate::canvas::NodeData) -> bool {
 /// `has_optional_ports`).
 pub(crate) fn is_optional(leaf: &str, input: &str) -> bool {
     input == TRIGGER
-        || matches!((leaf, input), ("http_request" | "http_stream", "headers" | "body") | ("http_upload", "headers") | ("flow_call" | "flow_start", "input") | ("collection_list" | "file_list", "prefix" | "after") | ("file_lines", "from"))
+        || matches!(
+            (leaf, input),
+            ("http_request" | "http_stream", "headers" | "body")
+                | ("http_upload", "headers")
+                | ("flow_call" | "flow_start", "input")
+                | ("collection_list" | "file_list", "prefix" | "after")
+                | ("file_lines", "from")
+                | ("to_number", "radix")
+                | ("number_format", "digits")
+        )
 }
 
 /// Why a route can't wait: it answers and is done (docs/L4s/typescript-syntax-L4.md §9).
@@ -2186,7 +2195,8 @@ impl<'a> Lowerer<'a> {
                         if params.iter().any(|(k, _)| *k == n.text) {
                             return err(n.span, format!("\"{}\" is given twice", n.text));
                         }
-                        let value = if n.text == "fn" {
+                        // A `map`'s or `fold`'s `fn` is a function; a family's (`math`) is a name.
+                        let value = if n.text == "fn" && PASSES_EXTRA.contains(&leaf) {
                             let (hash, takes, captured) = self.fn_param(&a.value)?;
                             function = Some((takes, captured, a.value.span));
                             hash

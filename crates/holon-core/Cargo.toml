@@ -8,6 +8,9 @@ publish = false
 [dependencies]
 blake3   = "1"
 hmac = "0.12"
+# The number leaves' transcendental functions (numbers.rs): musl's port of fdlibm, the same bits
+# on every target. Pinned at 0.2.16 in Cargo.lock; a new version is a change to what they mean.
+libm = "0.2.16"
 sha2 = "0.10"
 smallvec = "1"
 
@@ -18,7 +21,7 @@ eager-oracle = []
 [dev-dependencies]
 criterion = "0.5"
 # Tests assemble tiny modules from text (docs/L4s/wasm-module-L4.md §7); never a dependency of
-# core itself, whose purity-by-dependency argument keeps it to its four.
+# core itself, whose purity-by-dependency argument keeps it to its five.
 wat = "1"
 
 [[bench]]

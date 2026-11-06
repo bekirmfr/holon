@@ -88,7 +88,7 @@ them. The samples: `samples`, `build_sample`. Templates and routes: `template_*`
   drift; a hash the editor computes would then not be the server's (JOURNAL P4.2c). So the editor
   builds bytes through `build_preimage` and the palette from `primitive_catalog`
   (primitive-catalog-bridge-L4: one whole-catalog call, reusing `WUnit::from_core`).
-- **serde stays out of core.** Core keeps its four dependencies and its purity argument; the mirror
+- **serde stays out of core.** Core keeps its five dependencies and its purity argument; the mirror
   types (`WValue`, `WCapability`, `WKind`, the error mirrors) live here.
 - **A stateful workspace**, so a live editor needn't send the whole closure on every keystroke.
 - **The real engine in the browser** (wasm-module-L4 §5): design mode runs a module under the

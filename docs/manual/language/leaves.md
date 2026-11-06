@@ -13,7 +13,7 @@ last record (see [Calls](reference.md#calls)). Many are written another way (`a 
 
 These touch nothing outside: given the same inputs, they always give the same output.
 
-[`const`](#const) · [`add`](#add) · [`multiply`](#multiply) · [`subtract`](#subtract) · [`divide`](#divide) · [`compare`](#compare) · [`and`](#and) · [`or`](#or) · [`not`](#not) · [`select`](#select) · [`cons`](#cons) · [`head`](#head) · [`tail`](#tail) · [`is_empty`](#is_empty) · [`fold`](#fold) · [`map`](#map) · [`concat`](#concat) · [`uppercase`](#uppercase) · [`lowercase`](#lowercase) · [`text_length`](#text_length) · [`slice`](#slice) · [`index_of`](#index_of) · [`split`](#split) · [`list`](#list) · [`get`](#get) · [`append`](#append) · [`extend`](#extend) · [`length`](#length) · [`sum`](#sum) · [`join`](#join) · [`range`](#range) · [`pair`](#pair) · [`some`](#some) · [`none`](#none) · [`record`](#record) · [`field`](#field) · [`with_field`](#with_field) · [`without_field`](#without_field) · [`keys`](#keys) · [`lookup`](#lookup) · [`insert`](#insert) · [`remove`](#remove) · [`find`](#find) · [`json_parse`](#json_parse) · [`json_stringify`](#json_stringify) · [`sha256`](#sha256) · [`hmac_sha256`](#hmac_sha256) · [`hex`](#hex) · [`base64`](#base64) · [`secure_equals`](#secure_equals) · [`to_text`](#to_text) · [`as_text`](#as_text) · [`is_truthy`](#is_truthy) · [`guard`](#guard) · [`default`](#default) · [`coalesce`](#coalesce) · [`equals`](#equals)
+[`const`](#const) · [`add`](#add) · [`multiply`](#multiply) · [`subtract`](#subtract) · [`divide`](#divide) · [`compare`](#compare) · [`and`](#and) · [`or`](#or) · [`not`](#not) · [`select`](#select) · [`cons`](#cons) · [`head`](#head) · [`tail`](#tail) · [`is_empty`](#is_empty) · [`fold`](#fold) · [`map`](#map) · [`math`](#math) · [`max`](#max) · [`min`](#min) · [`aggregate`](#aggregate) · [`atan2`](#atan2) · [`power`](#power) · [`remainder`](#remainder) · [`bitwise`](#bitwise) · [`number_test`](#number_test) · [`to_number`](#to_number) · [`number_format`](#number_format) · [`concat`](#concat) · [`uppercase`](#uppercase) · [`lowercase`](#lowercase) · [`text_length`](#text_length) · [`slice`](#slice) · [`index_of`](#index_of) · [`split`](#split) · [`list`](#list) · [`get`](#get) · [`append`](#append) · [`extend`](#extend) · [`length`](#length) · [`sum`](#sum) · [`join`](#join) · [`range`](#range) · [`pair`](#pair) · [`some`](#some) · [`none`](#none) · [`record`](#record) · [`field`](#field) · [`with_field`](#with_field) · [`without_field`](#without_field) · [`keys`](#keys) · [`lookup`](#lookup) · [`insert`](#insert) · [`remove`](#remove) · [`find`](#find) · [`json_parse`](#json_parse) · [`json_stringify`](#json_stringify) · [`sha256`](#sha256) · [`hmac_sha256`](#hmac_sha256) · [`hex`](#hex) · [`base64`](#base64) · [`secure_equals`](#secure_equals) · [`to_text`](#to_text) · [`as_text`](#as_text) · [`is_truthy`](#is_truthy) · [`guard`](#guard) · [`default`](#default) · [`coalesce`](#coalesce) · [`equals`](#equals)
 
 ### `const`
 
@@ -142,6 +142,94 @@ map(list: List<Any>) -> out: List<Any>  {fn}
 ```
 
 Runs its function on each item of a list: the list of results.
+
+### `math`
+
+```
+math(x: Number) -> out: Number  {fn: abs}
+```
+
+One of JavaScript's Math functions of a number, chosen by fn: abs, sign, floor, ceil, trunc, round, sqrt, cbrt, exp, expm1, log, log2, log10, log1p, sin, cos, tan, their inverses and hyperbolic forms, fround, f16round, clz32. Produces nothing where JavaScript gives NaN or Infinity.
+
+### `max`
+
+```
+max(a: Number, b: Number) -> out: Number
+```
+
+The largest of its numbers (0 over -0). Takes more inputs with +.
+
+### `min`
+
+```
+min(a: Number, b: Number) -> out: Number
+```
+
+The smallest of its numbers (-0 under 0). Takes more inputs with +.
+
+### `aggregate`
+
+```
+aggregate(xs: List<Number>) -> out: Number  {fn: max}
+```
+
+One number from a list of numbers, chosen by fn: its max, its min, hypot (the square root of the sum of the squares) or sum_precise (the exact sum, rounded once). The max or min of an empty list produces nothing.
+
+### `atan2`
+
+```
+atan2(y: Number, x: Number) -> out: Number
+```
+
+The angle from the x axis to the point (x, y), in radians: Math.atan2(y, x).
+
+### `power`
+
+```
+power(a: Number, b: Number) -> out: Number
+```
+
+a to the power b, as Math.pow(a, b). Produces nothing where JavaScript gives NaN or Infinity (0 to a negative power, a negative number to a fraction).
+
+### `remainder`
+
+```
+remainder(a: Number, b: Number) -> out: Number
+```
+
+What is left of a after dividing by b, with a's sign: a % b. Dividing by zero produces nothing.
+
+### `bitwise`
+
+```
+bitwise(a: Number, b: Number) -> out: Number  {op: and}
+```
+
+A 32-bit integer operation on two numbers, chosen by op: and, or, xor, shl, shr, ushr (JavaScript's &, |, ^, <<, >>, >>>) or imul (Math.imul).
+
+### `number_test`
+
+```
+number_test(x: Any) -> out: Boolean  {test: finite, coerce: none}
+```
+
+Whether a value is a finite number, an integer, a safe integer or NaN, chosen by test. With coerce "none" only a number can pass (Number.isFinite); with "number" the value is read as a number first (isFinite, isNaN).
+
+### `to_number`
+
+```
+to_number(x: Any, radix: Number) -> out: Number  {grammar: number}
+```
+
+A value read as a number, by grammar: number (Number(x)), float (parseFloat) or int (parseInt, in radix when it is wired). Produces nothing when it doesn't read as a finite number.
+
+### `number_format`
+
+```
+number_format(x: Number, digits: Number) -> out: Text  {style: string}
+```
+
+A number written as text, by style: string (toString, in radix digits when wired), fixed (toFixed), precision (toPrecision) or exponential (toExponential), digits as each takes them. Digits out of range produce nothing.
 
 ### `concat`
 

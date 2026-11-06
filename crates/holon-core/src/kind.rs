@@ -282,6 +282,7 @@ pub fn capabilities_of(name: &str, params: &[Param]) -> Option<Capabilities> {
         "const"
         | "add" | "multiply" | "subtract" | "divide"
         | "compare" | "and" | "or" | "not" | "select"
+        | "math" | "max" | "min" | "aggregate" | "atan2" | "power" | "remainder" | "bitwise" | "number_test" | "to_number" | "number_format"
         | "concat" | "uppercase" | "lowercase" | "text_length" | "slice" | "index_of" | "split"
         | "list" | "get" | "append" | "extend" | "length" | "sum" | "join" | "range"
         | "cons" | "head" | "tail" | "is_empty"
@@ -824,6 +825,7 @@ mod tests {
         const PURE: &[&str] = &[
             "const", "add", "multiply",
             "subtract", "divide", "compare", "and", "or", "not", "select",
+            "math", "max", "min", "aggregate", "atan2", "power", "remainder", "bitwise", "number_test", "to_number", "number_format",
             "concat", "uppercase", "lowercase", "text_length", "slice", "index_of",
             "list", "get", "append", "length", "sum",
             "join", "cons", "head", "tail", "is_empty", "pair", "some", "none", "to_text", "as_text", "is_truthy", "guard", "default", "coalesce", "equals", "fold", "map",

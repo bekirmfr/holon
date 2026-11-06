@@ -23,6 +23,7 @@ import init, {
   primitive_docs,
   variadic_primitives,
   passes_extra_primitives,
+  family_params,
   compatible as wasm_compatible,
 } from "../wasm/holon_wasm.js";
 
@@ -258,6 +259,22 @@ export function variadicPrimitives(): Set<string> {
  */
 export function passesExtraPrimitives(): Set<string> {
   return new Set(passes_extra_primitives() as string[]);
+}
+
+/**
+ * The values a family leaf's parameter may take (core's `catalog::FAMILIES`: `math`'s `fn`,
+ * `compare`'s `op`, …), or undefined for a param that isn't one. Read once from core. Call after
+ * {@link ensureReady}.
+ */
+export function familyValues(leaf: string, param: string): readonly string[] | undefined {
+  families ??= toFamilies(family_params());
+  return families.get(leaf)?.get(param);
+}
+let families: Map<string, Map<string, readonly string[]>> | undefined;
+/** The bridge hands a Rust map over as a JS Map (or, nested, as plain objects). */
+function toFamilies(raw: unknown): Map<string, Map<string, readonly string[]>> {
+  const entries = (m: unknown): [string, unknown][] => (m instanceof Map ? [...m.entries()] : Object.entries(m as Record<string, unknown>));
+  return new Map(entries(raw).map(([leaf, params]) => [leaf, new Map(entries(params).map(([p, v]) => [p, v as string[]]))]));
 }
 
 /**

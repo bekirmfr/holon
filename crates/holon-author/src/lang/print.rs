@@ -22,7 +22,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
-use holon_core::{interface_of, MapResolver, Resolver, UnitBody, BOUNDARY, CALLS, TRIGGER, VARIADIC};
+use holon_core::{interface_of, MapResolver, Resolver, UnitBody, BOUNDARY, CALLS, PASSES_EXTRA, TRIGGER, VARIADIC};
 use oxc_allocator::Allocator;
 use oxc_ast::ast as js;
 use oxc_parser::Parser;
@@ -2947,8 +2947,9 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
                 None => gap = true,
             }
         }
+        // A `map`'s or `fold`'s function is written in order; a family's `fn` (`math`) by name.
         for (k, v) in self.p.changed_params(node) {
-            if k != "fn" {
+            if k != "fn" || !PASSES_EXTRA.contains(&node.data.name.as_str()) {
                 named.push(format!("{}: {}", key(&k), param_value(&v)));
             }
         }
@@ -3352,6 +3353,20 @@ mod tests {
         assert!(text.contains("  likes[id] = n\n"), "{text}");
         assert!(text.contains("(req) => `${likes[req.params.id] ?? 0} likes`)"), "{text}");
         assert!(text.contains("route.get(\"/likes\", () => likes.list())"), "{text}");
+    }
+
+    /// The number leaves called by name: a family's `fn` is a name, written by name, where a
+    /// `map`'s is its function; an optional radix or digits left out is left unwired.
+    #[test]
+    fn the_number_leaves_called_by_name_round_trip() {
+        let src = "import { action, aggregate, flow, math, max, number_format, power, to_number } from \"holon\"\n\nflow(\"f\")\n\nexport const t = action((input) => {\n  const x = to_number(input.text, { grammar: \"int\" })\n  const y = to_number(input.text, 16, { grammar: \"int\" })\n  return { text: number_format(math(power(max(x, y, 3), 2), { fn: \"sqrt\" }), 2, { style: \"fixed\" }), h: aggregate([x, y], { fn: \"hypot\" }) }\n})\n";
+        let lowered = compile(src).unwrap_or_else(|e| panic!("{e}"));
+        let math = lowered.doc.nodes.iter().find(|n| n.data.name == "math").expect("a math");
+        assert_eq!(math.param("fn"), "sqrt");
+        let reads: Vec<usize> = lowered.doc.nodes.iter().filter(|n| n.data.name == "to_number").map(|n| lowered.doc.edges.iter().filter(|w| w.target == n.id).count()).collect();
+        assert_eq!(reads, [1, 2], "the radix wired only where it is given");
+        let text = reprinted(src);
+        assert!(text.contains("{ fn: \"sqrt\" }"), "{text}");
     }
 
     /// How long the log keeps runs, and the other limits, in `flow(…)`: in the order the limits

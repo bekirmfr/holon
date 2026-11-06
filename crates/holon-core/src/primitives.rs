@@ -59,6 +59,17 @@ ops! {
     "subtract" => Subtract,
     "divide" => Divide,
     "compare" => Compare,
+    "math" => Math,
+    "max" => Max,
+    "min" => Min,
+    "aggregate" => Aggregate,
+    "atan2" => Atan2,
+    "power" => Power,
+    "remainder" => Remainder,
+    "bitwise" => Bitwise,
+    "number_test" => NumberTest,
+    "to_number" => ToNumber,
+    "number_format" => NumberFormat,
     "and" => And,
     "or" => Or,
     "not" => Not,
@@ -185,6 +196,43 @@ pub(crate) fn compute_op(op: Op, name: &str, inputs: &[&Value], params: &[Param]
             let (a, b) = bin_numbers(inputs)?;
             compare(a, b, param(params, "op")?).map(Value::Boolean)
         }
+
+        // ── numbers (numbers.rs): JavaScript's Math, Number and numeric operators, each family's
+        // function a frozen param (catalog `FAMILIES`) ──
+        Op::Math => {
+            let [x] = inputs else { return None };
+            crate::numbers::math(param(params, "fn")?, as_number(x)?)
+        }
+        Op::Max => crate::numbers::extreme(inputs.iter().copied(), true),
+        Op::Min => crate::numbers::extreme(inputs.iter().copied(), false),
+        Op::Aggregate => {
+            let [xs] = inputs else { return None };
+            crate::numbers::aggregate(param(params, "fn")?, as_list(xs)?)
+        }
+        // libm's, pinned: `atan2(±0, -0)` is ±π; `pow` gives nothing for `0 ** -1` and
+        // `(-8) ** (1/3)`; fmod is exact, with a's sign, and nothing for b zero.
+        Op::Atan2 => bin_numbers(inputs).and_then(|(y, x)| crate::numbers::number(libm::atan2(y, x))),
+        Op::Power => bin_numbers(inputs).and_then(|(a, b)| crate::numbers::number(libm::pow(a, b))),
+        Op::Remainder => bin_numbers(inputs).and_then(|(a, b)| if b == 0.0 { None } else { crate::numbers::number(libm::fmod(a, b)) }),
+        Op::Bitwise => {
+            let (a, b) = bin_numbers(inputs)?;
+            crate::numbers::bitwise(param(params, "op")?, a, b)
+        }
+        Op::NumberTest => {
+            let [x] = inputs else { return None };
+            crate::numbers::number_test(param(params, "test")?, param(params, "coerce")?, x)
+        }
+        // A radix, and a number_format's digits, are optional inputs: absent, unwired.
+        Op::ToNumber => match inputs {
+            [x] => crate::numbers::to_number(param(params, "grammar")?, x, None),
+            [x, radix] => crate::numbers::to_number(param(params, "grammar")?, x, Some(radix)),
+            _ => None,
+        },
+        Op::NumberFormat => match inputs {
+            [x] => crate::numbers::number_format(param(params, "style")?, as_number(x)?, None),
+            [x, digits] => crate::numbers::number_format(param(params, "style")?, as_number(x)?, Some(digits)),
+            _ => None,
+        },
 
         // ── logic ──
         Op::And => fold_bools(inputs, true, |a, b| a && b),
@@ -1133,11 +1181,15 @@ pub(crate) fn resume_token_request(params: &[Param]) -> Option<Value> {
     Some(Value::Record(BTreeMap::from([("resume_token".to_string(), Value::Text(name))])))
 }
 
-/// Whether leaf `name` has optional input ports, read as "none" when left unwired: only
-/// `http_request` (headers, body). Inside a composite, such a port that *is* wired holds the
-/// node back while its value is absent (eval.rs), like any other leaf's input.
+/// Whether leaf `name` has optional input ports, read as "none" when left unwired: a request's
+/// headers and body, a listing's prefix and after, a `to_number`'s radix, a `number_format`'s
+/// digits. Inside a composite, such a port that *is* wired holds the node back while its value is
+/// absent (eval.rs), like any other leaf's input.
 pub(crate) fn has_optional_ports(name: &str) -> bool {
-    matches!(name, "http_request" | "http_upload" | "http_stream" | "flow_call" | "flow_start" | "collection_list" | "file_list" | "file_lines")
+    matches!(
+        name,
+        "http_request" | "http_upload" | "http_stream" | "flow_call" | "flow_start" | "collection_list" | "file_list" | "file_lines" | "to_number" | "number_format"
+    )
 }
 
 /// What a `flow_call` asks the host: `{flow, action, input}`, to run the action `action` of the
