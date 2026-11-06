@@ -219,7 +219,7 @@ The rules:
 
 | n8n | Holon | Notes |
 |---|---|---|
-| A node package | a `.holon` file, or a component's holons once [components](components-L4.md) are shared | the license and attribution in the header comment |
+| A node package | a `.holon` file, its holons copied into each flow that uses it; shared by hash once a [registry](P3.1.1-registry-L4.md) holds them ([translation at scale](translation-at-scale-L4.md) §7) | the license and attribution in the header comment |
 | A resource and operation | a `holon` per operation, `holon token(network, contractAddress) -> answer` | the parameters an operation shows (`displayOptions`) are its inputs |
 | A parameter and its `default` | a holon input; the default as `?? value` or a defaults record | `options` lists become documentation; a check can be a `when` |
 | `requestDefaults.baseURL` (a literal) | the host literal of every `http.*` in the file, its path prefix (`/v1`) put before each path | the host **is** the permission ([outbound requests](../engineering/capabilities/outbound-requests.md)) |
@@ -476,8 +476,10 @@ which 4 are JavaScript. Mechanically, the importer would need only:
 ## 13. Open forks
 
 1. **Where an imported node lives.** One `.holon` file per node, copied into each flow that uses
-   it, or a component flows share once [components](components-L4.md) allow it. Copying is what
-   works today. Sharing keeps one approval per node.
+   it, or a unit flows share by hash once a [registry](P3.1.1-registry-L4.md) holds them.
+   ([Components](components-L4.md) are editor panes, not shared code.) Copying is what works
+   today. Sharing keeps one approval per node. [Translation at scale](translation-at-scale-L4.md)
+   §7 takes this further.
 2. **The importer's reader of JavaScript.** Regular expressions were enough to survey, not to
    translate. A real JavaScript parser (in Rust, or the `js` engine's own Boa parser exposed as
    a pure call) is needed for tier 2 and 3 patterns, and must itself never run the code.
