@@ -113,11 +113,6 @@ impl Watch {
         !self.folders.is_empty()
     }
 
-    /// The trigger labels it adds (`Files inbox`).
-    pub(crate) fn labels(&self) -> impl Iterator<Item = String> + '_ {
-        self.folders.iter().map(|f| format!("Files {f}"))
-    }
-
     /// Forget what it saw (the deployment is deleted).
     pub(crate) fn forget(&self) {
         if let Some(f) = &self.file {
@@ -407,7 +402,7 @@ fn fire_one_arrival(
         Err(e) => entry.error = Some(e),
     }
     let parked_any = !entry.parked.is_empty();
-    if let Some(l) = log_run(deployments, slug, entry, Redactor::tokens(&waits.tokens), declared) {
+    if let Some(l) = log_run(deployments, slug, entry, Redactor::tokens(&waits.tokens).and(Redactor::handed(&calls::handed(&run.rounds))), declared) {
         l.said(slug);
     }
     let which = label.as_ref().map(|l| format!(" {l}")).unwrap_or_default();

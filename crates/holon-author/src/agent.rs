@@ -31,7 +31,6 @@ pub struct Plan {
     /// Its routes, `METHOD /path`; none for a flow without routes.
     pub routes: Vec<String>,
     pub port: Option<u16>,
-    pub interval_seconds: Option<u64>,
     pub requirements: Option<Value>,
     pub browsers: Option<String>,
     /// What it may do, as consent names (`NetworkIngress`, `StateWrite("beats")`), sorted.
@@ -62,7 +61,7 @@ pub fn plan(source: &str) -> Result<Plan, String> {
     } else {
         server.trace.clone()
     };
-    let mut may: Vec<String> = holon_core::deployed_capabilities(&root, &store, commands::scheduled(&c, &server)).iter().map(|c| consent_name(&c)).collect();
+    let mut may: Vec<String> = holon_core::deployed_capabilities(&root, &store).iter().map(|c| consent_name(&c)).collect();
     // A module (a js node) adds no capability; its budgets are limits the deploy asks for, and
     // the person approving sees them (the server merges them into the manifest the same way).
     may.extend(holon_core::module_limits_of(&root, &store).iter().map(|(name, n)| format!("Limit({name}={n})")));
@@ -81,7 +80,6 @@ pub fn plan(source: &str) -> Result<Plan, String> {
         document,
         routes: server.endpoints.iter().map(|e| format!("{} {}", e.method, e.path)).collect(),
         port: settings.port.trim().parse().ok(),
-        interval_seconds: settings.interval.trim().parse().ok(),
         requirements: settings.requirements.as_ref().and_then(|r| serde_json::to_value(r).ok()),
         browsers: settings.browsers.clone(),
         may,
@@ -93,18 +91,10 @@ pub fn plan(source: &str) -> Result<Plan, String> {
 /// and the agent tools keep it, comments and all) when that still compiles, else printed from the
 /// canvas, with the binding names an agent gave it.
 pub fn text_of(name: &str, document: &Value) -> Result<String, String> {
-    if let Some(source) = document.get("source").and_then(Value::as_str).filter(|s| !s.trim().is_empty()) {
-        if plan(source).is_ok() {
-            return Ok(source.to_string());
-        }
-        // A text saved before its header had to declare what it reads (`secret signing_key`):
-        // the same text, the lines added (docs/L4s/declared-names-L4.md §5).
-        if let Ok((fixed, _, declared)) = commands::with_declarations(source)
-            && !declared.is_empty()
-            && plan(&fixed).is_ok()
-        {
-            return Ok(fixed);
-        }
+    if let Some(source) = document.get("source").and_then(Value::as_str).filter(|s| !s.trim().is_empty())
+        && plan(source).is_ok()
+    {
+        return Ok(source.to_string());
     }
     let doc: FlowDocument = serde_json::from_value(document.clone()).map_err(|e| format!("the flow's document doesn't read: {e}"))?;
     let bindings: BTreeMap<String, String> = document.get("bindings").and_then(|b| serde_json::from_value(b.clone()).ok()).unwrap_or_default();
@@ -119,7 +109,7 @@ pub fn describe(item: &str) -> String {
 /// A consent name as a person reads it, and beside a secret it reads, where the flow sends it
 /// (`sent`, as [`Plan::sent`]): "read the secret "k", and send it to https://api.example.com".
 pub fn describe_sending(item: &str, sent: &BTreeMap<String, BTreeSet<String>>) -> String {
-    describe_item_sending(item, false, sent)
+    describe_item_sending(item, sent)
 }
 
 // ── values ──────────────────────────────────────────────────────────────────────────────────
@@ -582,109 +572,127 @@ fn steps_of(document: &Value, entry: &Value, line_of: &HashMap<&str, u32>) -> Ve
 
 // ── the reference ───────────────────────────────────────────────────────────────────────────
 
-const GUIDE: &str = r#"Holon: flows written as text. A flow is a small service (routes, clocks, actions), built from
-pure parts. Holon derives what it may do from the text itself, runs only what is granted, and
-keeps a record of every run that replays exactly.
+const GUIDE: &str = r#"Holon: flows written as text, in TypeScript's syntax. A flow is a small service (routes, clocks,
+actions), built from pure parts. Holon derives what it may do from the text itself, runs only what
+is granted, and keeps a record of every run that replays exactly.
 
-A FILE
-  flow notes-api            its name (what it deploys as)
-  port 8102                 the port its routes answer on
-  secret api_token          a secret it reads, as secret.api_token; set before it works
-  optional secret key       a secret it can run without
-  state count               a key of its state, used as state.count
-  collection notes          a named store of items, used as notes[key]
-  The header names everything that outlives a run or comes from outside it; the body uses only
-  names the header gave.
+A FILE (NAME.holon.ts: its imports, then flow(…), then its handlers)
+  import { flow, route, status } from "holon"   the vocabulary (flow, route, every, on, action, js,
+                                                respond, status, stripe, event) and the leaves
+  import api_token from "secret:api_token"      a secret it reads, as api_token; set before it works
+  import key from "secret:key" with { optional: "true" }   a secret it can run without
+  import state from "state"                     its state, its keys by use: state.count
+  import notes from "collection:notes"          a named store of items, used as notes[key]
+  import inbox from "folder:inbox"              also "database:NAME" and "channel:NAME"
+  import httpbin from "host:httpbin.org"        a host it calls, as httpbin.get("/uuid")
+  import { now } from "holon:clock"             the time; import { random } from "holon:random"
+  import { charge } from "flow:billing"         another deployed flow's action, by its slug
+  flow("notes-api", { port: 8102 })             its name (what it deploys as) and its settings:
+                                                port, keep: { runs, days }, browsers, limits
+  The imports name everything that outlives a run or comes from outside it; the body uses only
+  names they gave. An import names, it grants nothing: what the flow may do is worked out from
+  what it does with them.
 
-HANDLERS (each starts runs; a flow has one or more, each a block)
-  route GET /notes/:id (req) {
-    respond notes[req.params.id]
-  }
+HANDLERS (each starts runs; a flow has one or more)
+  route.get("/notes/:id", (req) => notes[req.params.id] ?? status(404))
+  route.post, .put, .patch, .delete, and route.get with a block: (req) => { …; return x }
   req.params.id, req.query.after, req.headers.authorization, req.body (text), req.json (parsed)
-  respond <body>, status: 201, missing: 400   (missing: the status when the body has no value)
-  respond 204                                  (a status alone, no body)
+  return x                                       answers 200 with x
+  return status(201, x) ?? status(400)           another status; ?? says what an absent x answers
+  return status(204)                             a status alone, no body
+  return respond(x, { headers: h })              x with headers; { stream: true } answers with a
+                                                 streamed call's body, as it arrives
 
-  every 10s { state.last = now }               a clock: now is the time of the tick
-  on file inbox (f) { … }                      each new file in the folder inbox, f its handle
-  action reset (input) {                       run by hand, by name: input is what was sent
-    state.count = input.to ?? 0                (JSON; {} for nothing), never from the network
-    respond { set: input.to ?? 0 }             its answer: a value alone, or none
-  }
+  every("10s", (now) => { state.last = now })    a clock: now is the time of the tick
+  on.file.created(inbox, (f) => { … }, { matching: "*.csv" })   each new file, f its handle;
+                                                 on.file.deleted(inbox, (f) => { … }) too
+  export const reset = action((input) => {       run by hand, by name: input is what was sent
+    state.count = input.to ?? 0                  (JSON; {} for nothing), never from the network
+    return { set: input.to ?? 0 }                its answer: a value alone, or none
+  })
+  route.get("/health", () => "ok", { log: "unrecorded" })   a handler's options come last: log
+                                                 ("lazy" or "unrecorded"), resumes, matching
 
-  A block is everything tied to its trigger. Its writes and calls are tied to it, though they
-  needn't read it; `state.seen = id after found` ties one to a value instead (it writes only when
-  found has a value). A statement tied to nothing is an error. At the top level, beside handlers,
-  only bindings of literals.
-  Without handlers, the top-level statements are the flow, one run of all of it: `every 10s` or
-  `on file inbox` in the header starts it. A flow nothing starts is a holon: to run it by hand,
-  put it in `action run (input) { … }`.
+  A handler is everything tied to its trigger. Its writes and calls are tied to it, though they
+  needn't read it; `if (found !== undefined) state.seen = id` ties one to a value instead (it
+  writes only when found has a value). At the top level, beside handlers and functions, only
+  consts of literals. A flow nothing starts has nothing to run: to run it by hand, put it in an
+  exported action.
 
 BINDINGS AND VALUES
-  name = expression          one form, everywhere; a binding used twice is one node
-  1, 2.5, 5m, 1d             numbers; a duration is seconds
-  "text", "Hello, {name}"    {…} interpolates any value (a record or list as JSON)
-  true, false
-  { title: t, "a key": v }   a record;  { ..base, extra: v } adds fields
+  const name = expression    a binding used twice is one node; let may be assigned again
+  1, 2.5                     numbers; a duration is a text where one is asked for: "10s", "1d"
+  "text", `Hello, ${name}`   ${…} interpolates any value (a record or list as JSON)
+  true, false, undefined     undefined is no value
+  { title: t, "a key": v }   a record;  { ...base, extra: v } adds fields
   [a, b, c]                  a list
   r.field, r["a key"]        a field; a missing field has no value (it is not an error)
+  const { a, b } = r         a field each; [x, y] = xs and [first, ...rest] = xs too
 
-OPERATORS
-  + - * / on numbers;  == != < <= > >=;  && || !
+OPERATORS AND CHOICES
+  + - * / on numbers;  === !== < <= > >=;  && || ! on booleans; texts join with `${a}${b}`
   a ?? b                     a, or b when a has no value
-  a when cond                a only when cond is true, else no value
-  if c then a else b
+  c ? a : b                  c ? a : undefined is a only when c is true
+  if, switch, return         chosen as JavaScript chooses; the writes of each branch merge
   A value that doesn't arrive makes everything built from it absent: that is how a flow says
-  "no" (respond … missing: 404 answers it).
+  "no" (?? status(404) answers it).
 
 THE OUTSIDE WORLD (each is one permission the flow asks for)
-  secret.api_token                         a secret, set by an admin (declared: secret api_token)
-  state.count                              read at the start of the run (declared: state count)
+  api_token                                a secret, set by an admin
+  state.count                              read at the start of the run
   state.count = (state.count ?? 0) + 1     written when the run finishes
-  notes[key]  notes[key] = v  delete notes[key]  notes.list(prefix: p, after: a, limit: 50)
+  notes[key]  notes[key] = v  delete notes[key]  notes.list({ prefix: p, after: a, limit: 50 })
   now, random                              the run's time (epoch seconds) and one random number
-  http.get(host, path, headers: h, body: b)   also post, put, patch, delete, head;
-                                           host is a text literal: it is the permission
-  stripe.verify(req, secret.whsec, now)    a verified Stripe event (.event)
-  calls billing                            (a header) another deployed flow, by its slug
-  r = billing.charge({ id: 1 })            runs its action charge with a value ({} if none):
-                                           r is {answer, run}, or {error, message} when it
+  await httpbin.get(path, { headers: h, body: b })   also post, put, patch, delete, head: the
+                                           host is its import, and the import is the permission
+  stripe.verify(req, whsec, now)           a verified Stripe event (.event)
+  const r = await charge({ id: 1 })        runs billing's action charge with a value ({} if
+                                           none): r is {answer, run}, or {error, message} when it
                                            didn't run; a permission, and never a loop
-  await paid, expires: 1d                  park the run until the event arrives
-  resume_token(paid)                       the token a resuming route takes
-  route GET /paid/:token (req) resumes paid { … }
-  json(x), parse_json(text)
+  const started = payment(req.json)        a route starts this flow's action payment, not
+                                           awaited: started is {run, waiting} once it waits,
+                                           started.waiting.paid the token for paid
+  const paid = await event("paid", { expires: "1d" })   in an action: park the run until the
+                                           event arrives; a route answers and is done
+  route.get("/paid/:token", () => "ok", { resumes: "paid" })   the route that delivers it
+  JSON.stringify(x), JSON.parse(text)
 
 CALLS
-  leaf(inputs…, param: value)    positional arguments are inputs; a named one is an input when
-                                 the leaf has that port, else a param
-  sha256(t), hmac_sha256(secret.k, t), uppercase(t), split(t, ","), join(list, "-"),
-  map(list, fn(x) -> x * 2), fold(list, 0, fn(acc, x) -> acc + x), …  (the leaves below)
+  leaf(inputs…, { param: value })   positional arguments are inputs; a last record whose keys
+                                    the leaf takes names inputs and params
+  sha256(t), hmac_sha256(key, t), base64(t), t.toUpperCase(), t.split(","), list.join("-"),
+  xs.map((x) => x * 2), xs.reduce((acc, x) => acc + x, 0), …  (the leaves below; a string or
+  list method is the leaf that has it, and one without a leaf is refused)
 
-HOLONS (a flow inside a flow: a function, placed as one node)
-  holon slugify(text) -> slug {
-    slug = join(split(lowercase(text), " "), "-")
+FUNCTIONS (a flow inside a flow, placed as one node)
+  function slugify(text) {
+    const slug = text.toLowerCase().split(" ").join("-")
+    return slug
   }
-  s = slugify(req.json.title)
-  A holon with several outputs is used as h(…).name.
+  const s = slugify(req.json.title)
+  Its output is named after what it returns (slug), out otherwise; one that returns { a, b } has
+  two, read as const { a, b } = f(x).
+  const page = js(function html(x) { … })   runs as JavaScript, in a sandbox, as written
 
 EFFECTS
-  Writes (state.x = …, notes[k] = …, delete …, http calls whose answer isn't used) happen when the
+  Writes (state.x = …, notes[k] = …, delete …, requests whose answer isn't used) happen when the
   run finishes, and only when granted. A value computed and never used is an error.
 
 COMMENTS
-  # to the end of the line
+  // to the end of the line
 
 An example, end to end:
 
-  flow likes
-  port 8104
-  collection likes
+  import { flow, route } from "holon"
+  import likes from "collection:likes"
 
-  route POST /posts/:id/like (req) {
-    count = (likes[req.params.id] ?? 0) + 1
+  flow("likes", { port: 8104 })
+
+  route.post("/posts/:id/like", (req) => {
+    const count = (likes[req.params.id] ?? 0) + 1
     likes[req.params.id] = count
-    respond { likes: count, says: "liked {count} times" }
-  }
+    return { likes: count, says: `liked ${count} times` }
+  })
 "#;
 
 /// A type as the reference writes it.
@@ -735,9 +743,9 @@ pub fn leaves_page() -> String {
         "     HOLON_BLESS=1 cargo test -p holon-author --test manual writes it again. -->".into(),
         String::new(),
         "Every building block a flow is made of. Each is shown as `name(inputs) -> outputs {params}`:".into(),
-        "call a leaf by its name, with its inputs in order and its parameters by name (see".into(),
-        "[Calls](reference.md#calls)). Many have a shorter written form (`a + b` is `add`, `x ?? y` is".into(),
-        "`coalesce`, `\"{x}\"` is `concat`), and `holon fmt` writes that form; the".into(),
+        "call a leaf by its name, imported from `\"holon\"`, with its inputs in order and its parameters in a".into(),
+        "last record (see [Calls](reference.md#calls)). Many are written another way (`a + b` is `add`,".into(),
+        "`x ?? y` is `coalesce`, `` `${x}` `` is `concat`, `t.toUpperCase()` is `uppercase`); the".into(),
         "[reference](reference.md) has them all.".into(),
     ];
     // A leaf with no capability computes; the rest are where a flow meets the outside world.
@@ -751,7 +759,7 @@ pub fn leaves_page() -> String {
         .collect();
     let sections = [
         ("Computing", "These touch nothing outside: given the same inputs, they always give the same output.", false),
-        ("The outside world", "Each of these is something a flow may do, and so a line of what it asks for when it is deployed. The language writes most of them as nouns (`req`, `now`, `secret.x`, `state.x`, `http.get`, a collection or a folder). The writes and the calls out take a `trigger` last: what starts them, the request of the route they are in, the trigger of the holon they are in, or what `after` names. The language ties it, so it is never an argument.", true),
+        ("The outside world", "Each of these is something a flow may do, and so a line of what it asks for when it is deployed. The language writes most of them as names it imports (`now`, a secret, `state.x`, a host's `get`, a collection or a folder) or a handler receives (`req`). The writes and the calls out take a `trigger` last: what starts them, the request of the route they are in, the trigger of the holon they are in, or the value an `if (x !== undefined)` around them waits for. The language ties it, so it is never an argument.", true),
     ];
     for (title, about, outside) in sections {
         let these: Vec<_> = all.iter().filter(|(name, ..)| reaches.contains(name) == outside).collect();
@@ -803,7 +811,7 @@ pub fn reference(topic: Option<&str>) -> Result<String, String> {
                 return Ok(format!("{t} (a template)\n\n{doc}"));
             }
             if let Some(s) = samples::sample(t) {
-                return Ok(format!("# {}: {}\n# try it: {}\n{}", s.title, s.description, s.try_it, s.text));
+                return Ok(format!("// {}: {}\n// try it: {}\n{}", s.title, s.description, s.try_it, s.text));
             }
             Err(format!("no leaf, template or sample is called \"{t}\"; reference with no topic lists them all"))
         }
@@ -825,36 +833,35 @@ mod tests {
         assert!(!p.units.is_empty());
         let trace = p.document["trace"]["GET /hello/:name"].as_array().unwrap();
         assert_eq!(trace.len(), p.document["nodes"].as_array().unwrap().len(), "every node of the route, in the handler's stored order");
-        // A clock flow is traced whole, and keeps its names.
+        // A clock is traced as its handler, and keeps its names.
         let beat = plan(samples::sample("heartbeat").unwrap().text).unwrap();
-        assert_eq!(beat.interval_seconds, Some(10));
-        assert!(beat.document["trace"]["*"].is_array());
+        assert!(beat.document["trace"]["every 10s"].is_array(), "{}", beat.document["trace"]);
         assert!(beat.document["bindings"].as_object().unwrap().values().any(|v| v == "t"));
     }
 
     #[test]
     fn a_plan_says_each_mistake_as_check_does() {
-        let e = plan("flow f\nport 8200\n\nroute GET /a (req) {\n  respond nope\n}\n").unwrap_err();
-        assert!(e.starts_with("text:5:11: unknown name \"nope\""), "{e}");
+        let e = plan("import { flow, route } from \"holon\"\n\nflow(\"f\", { port: 8200 })\n\nroute.get(\"/a\", () => nope)\n").unwrap_err();
+        assert!(e.starts_with("text:5:23: unknown name \"nope\""), "{e}");
         assert!(e.contains("^^^^"), "{e}");
-        assert!(plan("port 8200\n\nroute GET /a (req) {\n  respond 204\n}\n").unwrap_err().contains("flow <name>"));
+        assert!(plan("import { route, status } from \"holon\"\n\nroute.get(\"/a\", () => status(204))\n").unwrap_err().contains("a flow says what it is first"));
     }
 
     /// An action's run is placed by its label, one level inside its handler, as a route's is
     /// (a flow of actions alone too); a write is on its own line.
     #[test]
     fn an_actions_run_is_placed_by_its_label_and_a_write_is_on_its_line() {
-        let text = "flow two\nstate n\n\naction bump (input) {\n  n = (state.n ?? 0) + 1\n  state.n = n\n  respond n\n}\n\naction reset (input) {\n  state.n = 0\n  respond 0\n}\n";
+        let text = "import { action, flow } from \"holon\"\nimport state from \"state\"\n\nflow(\"two\")\n\nexport const bump = action(() => {\n  const n = (state.n ?? 0) + 1\n  state.n = n\n  return n\n})\n\nexport const reset = action(() => {\n  state.n = 0\n  return 0\n})\n";
         let p = plan(text).unwrap();
         let n = p.document["trace"]["action bump"].as_array().expect("its own trace").len();
         let timeline: Vec<Value> = (0..n).map(|i| json!({ "path": [0, i], "start_us": i as f64, "end_us": i as f64 + 1.0 })).collect();
         let entry = json!({ "kind": "trigger", "route": "action bump", "timeline": timeline });
         let v = run_view("two", &p.document, &entry).unwrap();
         let noted: Vec<u32> = v.notes.keys().copied().collect();
-        for line in [5, 6, 7] {
+        for line in [7, 8, 9] {
             assert!(noted.contains(&line), "line {line}, {:?}: {noted:?}", v.text[line as usize - 1]);
         }
-        assert!(!noted.iter().any(|l| *l >= 10), "the other action didn't run: {noted:?}");
+        assert!(!noted.iter().any(|l| *l >= 11), "the other action didn't run: {noted:?}");
     }
 
     /// A flow's text: as it was saved, comments and all, when that still compiles; else printed
@@ -864,17 +871,12 @@ mod tests {
         let text = samples::sample("slugs").unwrap().text;
         let mut document = plan(text).unwrap().document;
         let printed = text_of("slugs", &document).unwrap();
-        assert!(printed.starts_with("flow slugs\n") && printed.contains("author = slugify(req.json.author)"), "{printed}");
-        assert!(!printed.contains('#'), "printed from the canvas: no comments");
+        assert!(printed.contains("\nflow(\"slugs\", { port: 8110 })\n") && printed.contains("  const author = slugify(req.json.author)\n"), "{printed}");
+        assert!(!printed.contains("//"), "printed from the canvas: no comments");
         document["source"] = json!(text);
         assert_eq!(text_of("slugs", &document).unwrap(), text, "the text as saved");
-        document["source"] = json!("flow slugs\nroute GET /a (req) {\n  respond nope\n}\n");
+        document["source"] = json!("import { flow, route } from \"holon\"\n\nflow(\"slugs\")\n\nroute.get(\"/a\", () => nope)\n");
         assert_eq!(text_of("slugs", &document).unwrap(), printed, "a saved text that doesn't compile gives way to the canvas");
-        // A text saved before secrets were declared: the same text, its header line added.
-        let before = text.replace("optional secret receipt_key\n", "");
-        document["source"] = json!(before);
-        let shown = text_of("slugs", &document).unwrap();
-        assert!(shown.contains("collection posts\nsecret receipt_key\n") && shown.contains("# A flow inside a flow"), "{shown}");
     }
 
     /// A js node that gave nothing says why, in the engine's words, under the statement that
@@ -979,7 +981,7 @@ mod tests {
         assert!(all.contains("HANDLERS") && all.contains("  concat(") && all.contains("  hello-api: "), "{all}");
         assert!(reference(Some("coalesce")).unwrap().starts_with("coalesce("));
         assert!(reference(Some("respond")).unwrap().contains("(a template)"));
-        assert!(reference(Some("likes")).unwrap().contains("collection likes"));
+        assert!(reference(Some("likes")).unwrap().contains("\nimport likes from \"collection:likes\"\n"));
         assert!(reference(Some("nope")).is_err());
     }
 

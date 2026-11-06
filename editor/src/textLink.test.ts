@@ -16,7 +16,7 @@ import { dimmed, pickAt } from "./textLink";
 
 initSync({ module: readFileSync(join(process.cwd(), "wasm", "holon_wasm_bg.wasm")) });
 
-const SIGN = 'flow f\nport 8199\n\nroute POST /x (req) {\n  respond { said: "😀 hi", body_base64: base64(uppercase(req.body)) }\n}\n';
+const SIGN = 'import { base64, flow, route } from "holon"\n\nflow("f", { port: 8199 })\n\nroute.post("/x", (req) => ({ said: "😀 hi", body_base64: base64(req.body.toUpperCase()) }))\n';
 
 /** What each picked node is, by its primitive's name. */
 const named = (doc: { nodes: unknown[] }, ids: string[]) => ids.map((id) => (doc.nodes as PrimitiveNodeType[]).find((n) => n.id === id)?.data.name);
@@ -27,25 +27,26 @@ describe("the text and the graph, linked", () => {
     const { doc, spans } = compileHolon(SIGN, new Evaluator());
     const at = (s: string, k = 0) => SIGN.indexOf(s) + k;
     expect(named(doc, pickAt(spans, at("base64(")))).toEqual(["base64"]);
-    expect(named(doc, pickAt(spans, at("uppercase(", 3)))).toEqual(["uppercase"]);
-    // Inside the call's argument: still the call written over it (req.body is a port, no node).
+    expect(named(doc, pickAt(spans, at("toUpperCase(", 3)))).toEqual(["uppercase"]);
+    // Inside the call's receiver: still the call written over it (req.body is a port, no node).
     expect(named(doc, pickAt(spans, at("req.body", 2)))).toEqual(["uppercase"]);
     expect(named(doc, pickAt(spans, at("😀")))).toEqual(["const"]);
     expect(pickAt(spans, at("port"))).toEqual([]);
   });
 
   it("picks the nodes one expression lowers to together, and a choice by what is written of it alone", () => {
-    const text = readFileSync(join(process.cwd(), "..", "crates", "holon-author", "samples", "calc.holon"), "utf8");
+    const text = readFileSync(join(process.cwd(), "..", "crates", "holon-author", "samples", "calc.holon.ts"), "utf8");
     const { doc, spans } = compileHolon(text, new Evaluator());
     // Where each is written in the code, not in the comments above it.
-    const at = (s: string) => text.indexOf(s, text.indexOf("\nflow "));
+    const at = (s: string) => text.indexOf(s, text.indexOf("\nflow("));
     expect(named(doc, pickAt(spans, at('"add"') + 1))).toEqual(["const", "equals"]);
-    expect(named(doc, pickAt(spans, at("->")))).toEqual(["guard"]);
+    // Between a case's pattern and its value: the guard choosing it.
+    expect(named(doc, pickAt(spans, at("return a + b") - 1))).toEqual(["guard"]);
     expect(named(doc, pickAt(spans, at("a + b") + 2))).toEqual(["add"]);
   });
 
   it("dims what a run of calc didn't run: the values of the arms not chosen, not their patterns", () => {
-    const text = readFileSync(join(process.cwd(), "..", "crates", "holon-author", "samples", "calc.holon"), "utf8");
+    const text = readFileSync(join(process.cwd(), "..", "crates", "holon-author", "samples", "calc.holon.ts"), "utf8");
     const ev = new Evaluator();
     const { doc, spans } = compileHolon(text, ev);
     const evalNode = (node: ReplayNode, inputs: (WValue | null)[]) => {

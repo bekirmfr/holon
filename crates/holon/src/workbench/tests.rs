@@ -78,9 +78,10 @@ fn screen(app: &mut App, width: u16, height: u16) -> String {
     (0..height).map(|y| (0..width).map(|x| buffer[(x, y)].symbol().to_string()).collect::<String>().trim_end().to_string()).collect::<Vec<_>>().join("\n")
 }
 
-const BEATS: &str = "flow beats\nevery 5s\nstate beats\n\nstate.beats = (state.beats ?? 0) + 1\n";
-/// A flow run by hand.
-const BUMP: &str = "flow bump\nstate n\n\naction bump (input) {\n  n = (state.n ?? 0) + 1\n  state.n = n\n  respond n\n}\n";
+/// A clock flow: its beat in its state, every 5 seconds.
+const BEATS: &str = "import { every, flow } from \"holon\"\nimport state from \"state\"\n\nflow(\"beats\")\n\nevery(\"5s\", () => {\n  state.beats = (state.beats ?? 0) + 1\n})\n";
+/// A flow run by hand: its action on line 6, `const n` on 7, `state.n = n` on 8, `return n` on 9.
+const BUMP: &str = "import { action, flow } from \"holon\"\nimport state from \"state\"\n\nflow(\"bump\")\n\nexport const bump = action((input) => {\n  const n = (state.n ?? 0) + 1\n  state.n = n\n  return n\n})\n";
 
 /// Open a copy of `text` in a tab, as a sample opens.
 fn tab_with(app: &mut App, text: &str) {
@@ -122,7 +123,7 @@ fn a_flow_renamed_in_its_text_deploys_under_its_new_name() {
     ctrl(&mut app, 'd');
     press(&mut app, KeyCode::Enter);
     assert_eq!(app.tabs[0].slug.as_deref(), Some("beats"));
-    let renamed = BEATS.replace("flow beats", "flow pulse");
+    let renamed = BEATS.replace("flow(\"beats\")", "flow(\"pulse\")");
     app.tabs[0].buf.replace(&renamed);
     app.tabs[0].check = super::app::Check::of(&renamed);
     assert_eq!(app.tabs[0].target().as_deref(), Some("pulse"), "its runs, its grant: the new name's");
@@ -151,8 +152,9 @@ fn escape_cancels_a_deploy() {
 fn typing_edits_the_text_and_it_is_checked_once_typing_settles() {
     let (mut app, _) = app();
     tab_with(&mut app, BEATS);
-    app.tabs[0].buf.go(4, 99);
-    typed(&mut app, "\nx = 1 +");
+    // In the clock's body, after its write.
+    app.tabs[0].buf.go(7, 99);
+    typed(&mut app, "\nconst x = 1 +");
     assert!(app.tabs[0].dirty());
     assert!(app.tabs[0].check.mistakes.is_empty(), "not yet checked");
     app.tabs[0].edited = Some(std::time::Instant::now() - std::time::Duration::from_secs(1));
@@ -257,7 +259,7 @@ fn a_flows_page_is_a_dashboard_then_each_record_beside_its_tabs() {
 }
 
 /// Two actions: a run of one plays none of the other.
-const TWO: &str = "flow two\nstate n\n\naction bump (input) {\n  n = (state.n ?? 0) + 1\n  state.n = n\n  respond n\n}\n\naction reset (input) {\n  state.n = 0\n  respond 0\n}\n";
+const TWO: &str = "import { action, flow } from \"holon\"\nimport state from \"state\"\n\nflow(\"two\")\n\nexport const bump = action((input) => {\n  const n = (state.n ?? 0) + 1\n  state.n = n\n  return n\n})\n\nexport const reset = action((input) => {\n  state.n = 0\n  return 0\n})\n";
 
 #[test]
 fn a_run_lights_what_it_played_and_its_timeline_picks_the_step_in_the_code_and_the_graph() {
@@ -271,10 +273,12 @@ fn a_run_lights_what_it_played_and_its_timeline_picks_the_step_in_the_code_and_t
     app.refresh();
     ctrl(&mut app, 'r');
     let runs = app.tabs[0].runs.as_ref().expect("its runs");
+    // A run is shown over the text its view prints from the deployed document (agent::run_view),
+    // laid out as fmt writes it: the action's line, then its statements.
     let steps = runs.steps();
     let mut lines = steps.clone();
     lines.sort();
-    assert_eq!(lines, [4, 5, 6, 7], "a step for each statement it ran (the write after the answer, as it ran): {steps:?}");
+    assert_eq!(lines, [6, 7, 8, 9], "a step for each statement it ran (the write after the answer, as it ran): {steps:?}");
     let text = match &runs.view {
         Some(Ok(v)) => v.text.clone(),
         other => panic!("no run: {other:?}"),
@@ -301,7 +305,7 @@ fn a_run_lights_what_it_played_and_its_timeline_picks_the_step_in_the_code_and_t
     assert!(shown.contains("⇒ 1"), "{shown}");
     press(&mut app, KeyCode::Char('='));
     let shown = screen(&mut app, 140, 40);
-    assert!(!app.values && !shown.contains('⇒') && shown.contains("values hidden") && shown.contains("respond n"), "{shown}");
+    assert!(!app.values && !shown.contains('⇒') && shown.contains("values hidden") && shown.contains("return n"), "{shown}");
     click(&mut app, Click::Key(KeyCode::Char('='), KeyModifiers::NONE));
     assert!(app.values && screen(&mut app, 140, 40).contains("⇒ 1"));
 
@@ -312,7 +316,7 @@ fn a_run_lights_what_it_played_and_its_timeline_picks_the_step_in_the_code_and_t
     let g = app.tabs[0].graph.as_ref().expect("the graph of the text it ran on");
     assert!(g.view.dim);
     let lit = g.view.lit();
-    assert!(lit.contains(&line("state.n = n")) && lit.contains(&line("respond n")), "{lit:?}");
+    assert!(lit.contains(&line("state.n = n")) && lit.contains(&line("return n")), "{lit:?}");
     assert!(!lit.contains(&line("state.n = 0")), "the other action didn't run: {lit:?}");
 
     // A step picked on the timeline is the row picked on the graph, and the line marked in the code.
@@ -328,17 +332,17 @@ fn a_run_lights_what_it_played_and_its_timeline_picks_the_step_in_the_code_and_t
     press(&mut app, KeyCode::Right);
     assert_eq!(app.tabs[0].runs.as_ref().unwrap().step, 0, "round the end");
     // And a row clicked on the graph is that step.
-    let respond = (0..app.tabs[0].graph.as_ref().unwrap().view.rows.len()).find(|&i| app.tabs[0].graph.as_ref().unwrap().view.row(i).is_some_and(|r| r.line == line("respond n"))).unwrap();
+    let respond = (0..app.tabs[0].graph.as_ref().unwrap().view.rows.len()).find(|&i| app.tabs[0].graph.as_ref().unwrap().view.row(i).is_some_and(|r| r.line == line("return n"))).unwrap();
     click(&mut app, Click::Row(List::Graph, respond));
-    assert_eq!(app.tabs[0].runs.as_ref().and_then(|r| r.at()), Some(line("respond n")));
+    assert_eq!(app.tabs[0].runs.as_ref().and_then(|r| r.at()), Some(line("return n")));
     let shown = screen(&mut app, 140, 40);
-    assert!(shown.contains(&format!("{}▶", line("respond n"))), "the line marked: {shown}");
+    assert!(shown.contains(&format!("{}▶", line("return n"))), "the line marked: {shown}");
 
     // The graph alone: the row's own part of the run beside it.
     press(&mut app, KeyCode::Char('b'));
     assert_eq!(app.show, Show::Graph);
     let shown = screen(&mut app, 140, 40);
-    assert!(shown.contains("In this run") && shown.contains("respond n") && shown.contains("Ran"), "{shown}");
+    assert!(shown.contains("In this run") && shown.contains("return n") && shown.contains("Ran"), "{shown}");
     for (w, h) in [(80, 24), (40, 12)] {
         screen(&mut app, w, h);
     }
@@ -353,7 +357,7 @@ fn a_run_lights_what_it_played_and_its_timeline_picks_the_step_in_the_code_and_t
 fn going_back_offers_what_can_be_put_back_then_a_dry_run_then_restores() {
     let (mut app, _) = bumped(1);
     // A second version, which keeps one more key, run once: the state is 3 now.
-    tab_with(&mut app, &BUMP.replace("state n\n", "state n\nstate last\n").replace("+ 1", "+ 2").replace("  respond n", "  state.last = n\n  respond n"));
+    tab_with(&mut app, &BUMP.replace("+ 1", "+ 2").replace("  return n", "  state.last = n\n  return n"));
     ctrl(&mut app, 'd');
     // Its approval shows what it touches beside what it touches now.
     let shown = screen(&mut app, 120, 40);
@@ -395,7 +399,7 @@ fn going_back_offers_what_can_be_put_back_then_a_dry_run_then_restores() {
     let shown = screen(&mut app, 120, 40);
     assert!(shown.contains("Dry run") && shown.contains("Nothing has changed yet"), "{shown}");
     // Its code numbered, in a hunk that closes; what it keeps in another.
-    assert!(shown.contains("▾ Its code: deployed now → version 1's   +1 · −3") && shown.contains("−   state.last = n") && shown.contains("▾ What it keeps"), "{shown}");
+    assert!(shown.contains("▾ Its code: deployed now → version 1's   +1 · −2") && shown.contains("−   state.last = n") && shown.contains("▾ What it keeps"), "{shown}");
     assert_eq!(n(&app), Some(3.0), "a dry run changes nothing");
     press(&mut app, KeyCode::Char(' '));
     let shown = screen(&mut app, 120, 40);
@@ -463,15 +467,19 @@ fn a_flows_graph_is_its_statements_wired_and_what_its_newest_run_reached() {
     click(&mut app, Click::Every);
     let g = app.flow.graph.as_ref().unwrap();
     let names: Vec<String> = (0..g.rows.len()).filter_map(|i| g.row(i)).map(|r| r.name.clone()).collect();
-    assert_eq!(names, ["action bump (input)", "n", "state.n", "respond"]);
-    assert!(g.reached.contains(&4), "the newest run's values, by line: {:?}", g.reached);
+    assert_eq!(names, ["action bump", "n", "state.n", "return"], "its trigger named as its runs are");
+    // The newest run's values are by the lines of the text its view prints (agent::run_view), laid
+    // out as fmt writes it, as this text is: the write's line among them.
+    let write = (0..g.rows.len()).filter_map(|i| g.row(i)).find(|r| r.name == "state.n").unwrap().line;
+    assert!(g.reached.contains(&write), "the newest run's values, by line: {:?}", g.reached);
     let shown = screen(&mut app, 130, 40);
     assert!(shown.contains("Graph: 3 statements") && shown.contains("state.n = n") && shown.contains('●'), "{shown}");
 
-    // What the newest run gave, by the trigger (where this run records it).
+    // The newest run of the trigger, found by its name, beside the trigger's line.
     press(&mut app, KeyCode::Right);
     press(&mut app, KeyCode::Right);
-    assert!(pane(&app).iter().any(|r| matches!(r, Row::Code { n: 4, notes, .. } if notes.iter().any(|n| n.contains('⇒')))), "{:?}", pane(&app));
+    assert!(pane(&app).iter().any(|r| matches!(r, Row::Field(k, v, _) if k == "Newest run" && v.starts_with("#0"))), "{:?}", pane(&app));
+    assert!(pane(&app).iter().any(|r| matches!(r, Row::Code { n: 6, .. })), "{:?}", pane(&app));
     press(&mut app, KeyCode::Left);
     press(&mut app, KeyCode::Esc);
     // A statement: its text, what it takes from and feeds, its nodes.
@@ -483,33 +491,42 @@ fn a_flows_graph_is_its_statements_wired_and_what_its_newest_run_reached() {
     press(&mut app, KeyCode::Char('a'));
     let g = app.flow.graph.as_ref().unwrap();
     assert!(g.every && g.rows.len() > 4);
-    assert_eq!(g.row(app.flow.sel()).map(|r| r.line), Some(5));
+    assert_eq!(g.row(app.flow.sel()).map(|r| r.line), Some(7));
     screen(&mut app, 130, 40);
     press(&mut app, KeyCode::Enter);
     assert_eq!(app.page, Page::Editor);
-    assert_eq!(app.tabs[app.tab].buf.row, 4, "on line 5");
+    assert_eq!(app.tabs[app.tab].buf.row, 6, "on line 7");
 }
 
 #[test]
 fn the_inspector_reads_a_name_as_it_is_typed_with_its_grammar_and_an_example() {
     let (mut app, _) = app();
     tab_with(&mut app, BUMP);
-    assert!(screen(&mut app, 130, 40).contains("Inspector: flow"), "the cursor on flow, at the start");
-    // Typed, the name is read as it ends where the cursor is.
-    app.tabs[0].buf.go(1, 99);
-    typed(&mut app, "\ncollection");
+    let hover = |app: &App| app.tabs[0].inspected.as_ref().map(|i| (i.word.clone(), i.hover.clone())).unwrap_or_default();
+    assert!(screen(&mut app, 130, 40).contains("Inspector: import"), "the cursor on import, at the start");
+    assert!(hover(&app).1.contains("names something the flow uses from outside a run"), "{:?}", hover(&app));
+    // Typed, the name is read as it ends where the cursor is: what it is, and how it is written,
+    // as its hover gives it in TypeScript's syntax.
+    app.tabs[0].buf.go(4, 99);
+    typed(&mut app, "\nexport const reset = action");
     let shown = screen(&mut app, 130, 40);
-    assert!(shown.contains("Inspector: collection") && shown.contains("Grammar") && shown.contains("header = \"collection\" ident"), "{shown}");
-    let (sample, lines) = app.tabs[0].inspected.as_ref().and_then(|i| i.usage.as_ref()).and_then(|u| u.example.clone()).expect("a sample's lines");
-    assert!(lines.iter().any(|l| l.starts_with("collection ")), "{lines:?}");
-    assert!(shown.contains("Example") && shown.contains(&format!("from the sample {sample}")), "{shown}");
+    assert!(shown.contains("Inspector: action"), "{shown}");
+    let (word, said) = hover(&app);
+    assert_eq!(word, "action");
+    assert!(said.starts_with("`export const reset = action((input) => { … })`: a run by hand"), "{said}");
+    // Its form, and a sample's lines that write it.
+    let usage = app.tabs[0].inspected.as_ref().and_then(|i| i.usage.clone()).unwrap();
+    assert_eq!(usage.forms[0].0, "export const NAME = action((input) => { … })");
+    assert_eq!(usage.example.as_ref().map(|(s, l)| format!("{s}: {}", l[0])).as_deref(), Some("billing: export const refund = action((input) => {"));
+    assert!(shown.contains("from the sample billing"), "{shown}");
     // The cursor elsewhere, on no name: the inspector keeps it.
-    app.tabs[0].buf.go(4, 1);
-    assert!(screen(&mut app, 130, 40).contains("Inspector: collection"));
-    // On another name, that one.
-    app.tabs[0].buf.go(8, 4);
+    app.tabs[0].buf.go(6, 1);
+    assert!(screen(&mut app, 130, 40).contains("Inspector: action"));
+    // On another name, that one: `return`, on line 10 now.
+    app.tabs[0].buf.go(10, 4);
     let shown = screen(&mut app, 130, 40);
-    assert!(shown.contains("Inspector: respond") && shown.contains("respond_args ="), "{shown}");
+    assert!(shown.contains("Inspector: return"), "{shown}");
+    assert!(hover(&app).1.starts_with("`return value`: what a route or an action answers"), "{:?}", hover(&app));
 }
 
 #[test]
@@ -528,26 +545,26 @@ fn a_tab_shows_its_code_its_graph_beside_it_or_its_graph_alone() {
     click(&mut app, Click::Every);
     assert!(app.tabs[0].graph.as_ref().is_some_and(|g| !g.view.every), "its button: the statements");
     assert!(app.typing, "the text still has the keys");
-    app.tabs[0].buf.go(6, 1);
+    app.tabs[0].buf.go(8, 1);
     let shown = screen(&mut app, 130, 40);
     assert_eq!(picked(&app), "state.n", "the statement at the cursor");
-    assert!(shown.contains("at the cursor") && shown.contains("flow bump"), "{shown}");
+    assert!(shown.contains("at the cursor") && shown.contains("flow(\"bump\")"), "{shown}");
     // A row clicked: the graph has the keys, ↑↓ pick, the text marks it and the cursor stays.
     click(&mut app, Click::Row(List::Graph, 1));
     assert!(app.beside_has_keys() && !app.typing, "a row clicked: the graph has the keys");
-    assert_eq!((picked(&app), app.tabs[0].buf.row), ("n".to_string(), 5), "picked, the cursor where it was");
+    assert_eq!((picked(&app), app.tabs[0].buf.row), ("n".to_string(), 7), "picked, the cursor where it was");
     press(&mut app, KeyCode::Down);
     let shown = screen(&mut app, 130, 40);
     assert_eq!(picked(&app), "state.n");
     assert!(shown.contains("· picking") && shown.contains("back to the text") && shown.contains("its detail"), "its keys on its edge:\n{shown}");
     let g = app.tabs[0].graph.as_ref().unwrap();
     let m = g.view.row(g.sel).unwrap().mark;
-    assert_eq!((m.start.line, m.start.col, m.end.col), (6, 3, 10), "state.n, on line 6");
+    assert_eq!((m.start.line, m.start.col, m.end.col), (8, 3, 10), "state.n, on line 8");
     press(&mut app, KeyCode::Char('a'));
     assert!(app.tabs[0].graph.as_ref().is_some_and(|g| g.view.every) && app.beside_has_keys(), "a: every node, the graph keeping the keys");
     press(&mut app, KeyCode::Char('a'));
     press(&mut app, KeyCode::Esc);
-    assert!(app.typing && !app.beside_has_keys() && app.tabs[0].buf.row == 5, "esc: the text has the keys, the cursor where it was");
+    assert!(app.typing && !app.beside_has_keys() && app.tabs[0].buf.row == 7, "esc: the text has the keys, the cursor where it was");
     let shown = screen(&mut app, 130, 40);
     assert!(shown.contains("alt+g") && shown.contains("its keys"), "{shown}");
     // alt+g, even while typing: the graph's keys; enter edits the row picked there.
@@ -558,22 +575,22 @@ fn a_tab_shows_its_code_its_graph_beside_it_or_its_graph_alone() {
     assert_eq!(picked(&app), "n");
     press(&mut app, KeyCode::Enter);
     assert!(app.typing && !app.beside_has_keys());
-    assert_eq!((app.tabs[0].buf.row, app.tabs[0].buf.col), (4, 2), "at n, line 5");
+    assert_eq!((app.tabs[0].buf.row, app.tabs[0].buf.col), (6, 8), "at n, line 7");
     screen(&mut app, 130, 40);
     // A second click on a row edits it there.
     app.graph_beside();
     screen(&mut app, 130, 40);
     click(&mut app, Click::Row(List::Graph, 2));
     click(&mut app, Click::Row(List::Graph, 2));
-    assert!(app.typing && app.tabs[0].buf.row == 5, "state.n, line 6");
-    app.tabs[0].buf.go(5, 1);
-    // Typed, the graph is built again.
-    app.tabs[0].buf.go(7, 99);
-    typed(&mut app, "\nm = n + 1");
+    assert!(app.typing && app.tabs[0].buf.row == 7, "state.n, line 8");
+    // Typed, the graph is built again: a statement before the answer (none may come after it).
+    app.tabs[0].buf.go(8, 99);
+    typed(&mut app, "\nconst m = n + 1");
     screen(&mut app, 130, 40);
     assert!(app.tabs[0].graph.as_ref().unwrap().view.rows.len() == 5, "a statement more");
     assert_eq!(picked(&app), "m");
-    for _ in 0..11 {
+    // Its 15 characters, its indent and its line.
+    for _ in 0..17 {
         press(&mut app, KeyCode::Backspace);
     }
     assert_eq!(app.tabs[0].buf.text(), BUMP);
@@ -584,8 +601,10 @@ fn a_tab_shows_its_code_its_graph_beside_it_or_its_graph_alone() {
     assert!(!app.typing, "its keys are the graph's");
     let g = app.tabs[0].graph.as_ref().unwrap();
     let names: Vec<String> = (0..g.view.rows.len()).filter_map(|i| g.view.row(i)).map(|r| r.name.clone()).collect();
-    assert_eq!(names, ["action bump (input)", "n", "state.n", "respond"]);
-    assert_eq!(picked(&app), "respond");
+    assert_eq!(names, ["action bump", "n", "state.n", "return"]);
+    assert_eq!(picked(&app), "state.n");
+    press(&mut app, KeyCode::Down);
+    assert_eq!(picked(&app), "return");
     press(&mut app, KeyCode::Up);
     let shown = screen(&mut app, 130, 40);
     assert!(shown.contains("as typed") && shown.contains("state.n = n") && shown.contains("Takes from") && shown.contains('●'), "{shown}");
@@ -597,7 +616,7 @@ fn a_tab_shows_its_code_its_graph_beside_it_or_its_graph_alone() {
     // Enter: the text at the statement picked, the graph beside it.
     press(&mut app, KeyCode::Enter);
     assert!(app.show == Show::Both && app.typing);
-    assert_eq!(app.tabs[0].buf.row, 5, "state.n = n, line 6");
+    assert_eq!(app.tabs[0].buf.row, 7, "state.n = n, line 8");
 
     // The buttons on the tab bar pick one; esc leaves the graph for the code; a text that
     // doesn't compile says so.
@@ -606,7 +625,7 @@ fn a_tab_shows_its_code_its_graph_beside_it_or_its_graph_alone() {
     assert_eq!(app.show, Show::Graph);
     press(&mut app, KeyCode::Esc);
     assert!(app.show == Show::Code && app.typing);
-    tab_with(&mut app, "flow broken\n\nroute GET /x (req) {\n  respond nope(\n}\n");
+    tab_with(&mut app, "import { flow, route } from \"holon\"\n\nflow(\"broken\")\n\nroute.get(\"/x\", (req) => {\n  return nope(\n})\n");
     click(&mut app, Click::Show(Show::Both));
     let shown = screen(&mut app, 130, 40);
     assert!(shown.contains("doesn't compile"), "{shown}");
@@ -660,21 +679,22 @@ fn the_mouse_opens_pages_picks_rows_and_presses_buttons() {
 fn the_text_completes_undoes_selects_and_finds() {
     let (mut app, _) = app();
     tab_with(&mut app, BEATS);
-    app.tabs[0].buf.go(4, 99);
-    typed(&mut app, "\nx = sta");
+    // In the clock's body, after its write.
+    app.tabs[0].buf.go(7, 99);
+    typed(&mut app, "\nconst x = sta");
     let complete = app.complete.as_ref().expect("offered as a name is typed");
     assert!(complete.items.iter().any(|c| c.label == "state"), "{:?}", complete.items.iter().map(|c| &c.label).collect::<Vec<_>>());
     let at = complete.items.iter().position(|c| c.label == "state").unwrap();
     app.take_completion(Some(at));
-    assert_eq!(app.tabs[0].buf.lines[4], "x = state");
+    assert_eq!(app.tabs[0].buf.lines[7], "  const x = state");
     let shown = screen(&mut app, 120, 30);
-    assert!(shown.contains("x = state"), "{shown}");
+    assert!(shown.contains("const x = state"), "{shown}");
 
     ctrl(&mut app, 'z');
-    assert_eq!(app.tabs[0].buf.lines[4], "x = sta", "undo takes back the completion");
+    assert_eq!(app.tabs[0].buf.lines[7], "  const x = sta", "undo takes back the completion");
     ctrl(&mut app, 'z');
-    assert_eq!(app.tabs[0].buf.lines[4], "x =", "then a word at a time");
-    for _ in 0..3 {
+    assert_eq!(app.tabs[0].buf.lines[7], "  const x =", "then a word at a time");
+    for _ in 0..4 {
         ctrl(&mut app, 'z');
     }
     assert_eq!(app.tabs[0].buf.text(), BEATS, "and then the line");
@@ -682,15 +702,15 @@ fn the_text_completes_undoes_selects_and_finds() {
     assert_ne!(app.tabs[0].buf.text(), BEATS);
 
     // Shift+arrows select; ctrl+c copies; ctrl+f finds and selects.
-    app.tabs[0].buf.go(1, 1);
+    app.tabs[0].buf.go(4, 1);
     app.key(KeyEvent::new(KeyCode::End, KeyModifiers::SHIFT));
     ctrl(&mut app, 'c');
-    assert_eq!(app.clipboard, "flow beats");
-    assert_eq!(app.to_clipboard.as_deref(), Some("flow beats"), "for the terminal's clipboard too");
+    assert_eq!(app.clipboard, "flow(\"beats\")");
+    assert_eq!(app.to_clipboard.as_deref(), Some("flow(\"beats\")"), "for the terminal's clipboard too");
     ctrl(&mut app, 'f');
     typed(&mut app, "every");
     assert_eq!(app.tabs[0].buf.selected().as_deref(), Some("every"));
-    assert_eq!(app.tabs[0].buf.row, 1);
+    assert_eq!(app.tabs[0].buf.row, 5, "the next one after the cursor: the clock's, on line 6");
     press(&mut app, KeyCode::Esc);
     assert!(app.find.is_none());
 }
@@ -731,7 +751,7 @@ fn every_page_draws_narrow_and_wide_and_without_a_server() {
     assert!(shown.contains("No server reached") && shown.contains("no server: editing files only"), "{shown}");
     offline.open_sample("hello-api");
     let shown = screen(&mut offline, 120, 30);
-    assert!(shown.contains("hello-api (sample)") && shown.contains("route GET /hello/:name"), "{shown}");
+    assert!(shown.contains("hello-api (sample)") && shown.contains(r#"route.get("/hello/:name""#), "{shown}");
     ctrl(&mut offline, 'd');
     assert!(offline.note.as_ref().is_some_and(|n| n.error && n.text.contains("no server")));
 }
@@ -740,16 +760,17 @@ fn every_page_draws_narrow_and_wide_and_without_a_server() {
 fn commands_open_files_and_save_them() {
     let dir = std::env::temp_dir().join(format!("holon-editor-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
-    let file = dir.join("fresh.holon");
+    let file = dir.join("fresh.holon.ts");
     let _ = std::fs::remove_file(&file);
     let mut app = App::new(None);
     press(&mut app, KeyCode::Char(':'));
     typed(&mut app, &format!("open {}\n", file.display()));
     assert_eq!(app.tabs.len(), 1, "{:?}", app.note.as_ref().map(|n| &n.text));
-    assert_eq!(app.tabs[0].buf.text(), "flow fresh\n", "a new file starts as a flow named for it");
+    let starter = "import { flow } from \"holon\"\n\nflow(\"fresh\")\n";
+    assert_eq!(app.tabs[0].buf.text(), starter, "a new file starts as a flow named for it");
     assert!(app.tabs[0].dirty());
     ctrl(&mut app, 's');
-    assert_eq!(std::fs::read_to_string(&file).unwrap(), "flow fresh\n");
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), starter);
     assert!(!app.tabs[0].dirty());
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -777,29 +798,30 @@ fn a_draft_opens_in_a_new_tab_and_its_first_save_asks_for_a_file() {
 
     ctrl(&mut app, 's');
     let Some(Modal::Input { value, .. }) = &app.modal else { panic!("no dialog") };
-    assert_eq!(value, "my-flow.holon", "named for its flow");
+    assert_eq!(value, "my-flow.holon.ts", "named for its flow");
     let shown = screen(&mut app, 120, 30);
     assert!(shown.contains("Save draft 2 as"), "{shown}");
     // A file that is there already is never written over from here.
-    let there = dir.join("there.holon");
-    std::fs::write(&there, "flow there\n").unwrap();
+    let there = dir.join("there.holon.ts");
+    let kept = "import { flow } from \"holon\"\n\nflow(\"there\")\n";
+    std::fs::write(&there, kept).unwrap();
     answer(&mut app, &there.display().to_string());
     assert!(app.note.as_ref().is_some_and(|n| n.error && n.text.contains("there already")));
-    assert_eq!(std::fs::read_to_string(&there).unwrap(), "flow there\n");
+    assert_eq!(std::fs::read_to_string(&there).unwrap(), kept);
     assert!(app.tabs[1].draft);
 
-    let file = dir.join("mine.holon");
+    let file = dir.join("mine.holon.ts");
     let _ = std::fs::remove_file(&file);
     ctrl(&mut app, 's');
     answer(&mut app, &file.display().to_string());
     assert_eq!(std::fs::read_to_string(&file).unwrap(), holon_author::commands::STARTER);
     let tab = &app.tabs[1];
-    assert!(!tab.draft && !tab.dirty() && tab.name == "mine.holon" && tab.path.as_deref() == Some(file.as_path()));
+    assert!(!tab.draft && !tab.dirty() && tab.name == "mine.holon.ts" && tab.path.as_deref() == Some(file.as_path()));
     // Saved, it saves to its file without asking.
-    typed(&mut app, "# more\n");
+    typed(&mut app, "// more\n");
     ctrl(&mut app, 's');
     assert!(app.modal.is_none());
-    assert!(std::fs::read_to_string(&file).unwrap().starts_with("# more\n"));
+    assert!(std::fs::read_to_string(&file).unwrap().starts_with("// more\n"));
     // The next draft takes the first number free.
     ctrl(&mut app, 'n');
     assert_eq!(app.tabs[2].name, "draft 2");
@@ -820,20 +842,20 @@ fn a_run_that_failed_opens_on_why_and_on_which_line() {
     let view = holon_author::agent::RunView {
         head: "run 3: GET /nearest/kittne → 500".into(),
         no_steps: false,
-        text: vec!["flow nearest".into(), "".into(), "route GET /nearest/:word (req) {".into(), "  best = closest(req.params.word)".into(), "  respond best".into(), "}".into()],
-        notes: [(4, vec!["⇒ nothing: closest gave nothing: out of fuel".to_string()]), (5, vec!["⇒ nothing: closest gave nothing: out of fuel".to_string()])].into_iter().collect(),
+        text: ["import { flow, route } from \"holon\"", "", "flow(\"nearest\")", "", "route.get(\"/nearest/:word\", (req) => {", "  const best = closest(req.params.word)", "  return best", "})"].map(String::from).to_vec(),
+        notes: [(6, vec!["⇒ nothing: closest gave nothing: out of fuel".to_string()]), (7, vec!["⇒ nothing: closest gave nothing: out of fuel".to_string()])].into_iter().collect(),
         after: vec!["answered 500: ".into(), "failed: closest gave nothing".into()],
         steps: vec![],
     };
     let entry = serde_json::json!({ "seq": 3, "kind": "request", "method": "GET", "url": "/nearest/kittne", "status": 500, "duration_ms": 2.5, "error": "closest gave nothing" });
     let mut runs = Runs { slug: "nearest".into(), entries: vec![entry], sel: 0, view: Some(Ok(view)), step: 0, pane: RunPane::Details };
-    assert_eq!(runs.errors(), [(None, "closest gave nothing".to_string()), (Some(4), "closest gave nothing: out of fuel".to_string())]);
+    assert_eq!(runs.errors(), [(None, "closest gave nothing".to_string()), (Some(6), "closest gave nothing: out of fuel".to_string())]);
     assert_eq!(runs.panes(), [RunPane::Details, RunPane::Errors, RunPane::Timeline]);
     runs.pane = RunPane::Errors;
     app.tabs[0].runs = Some(runs);
     app.typing = false;
     let shown = screen(&mut app, 140, 40);
-    assert!(shown.contains(" Errors (2) ") && shown.contains("line 4") && shown.contains("best = closest(req.params.word)") && shown.contains("out of fuel"), "{shown}");
+    assert!(shown.contains(" Errors (2) ") && shown.contains("line 6") && shown.contains("const best = closest(req.params.word)") && shown.contains("out of fuel"), "{shown}");
     assert!(shown.contains("GET /nearest/kittne") && shown.contains("err"), "the run's row says it failed: {shown}");
     press(&mut app, KeyCode::Tab);
     assert_eq!(app.tabs[0].runs.as_ref().unwrap().pane, RunPane::Timeline);
@@ -936,7 +958,7 @@ fn a_secret_is_set_as_a_value_a_name_the_server_reads_or_a_vault_field() {
     let state: &'static AppState = Box::leak(Box::new(state));
     let mut app = App::new(None);
     app.attach(Client::new(Box::new(InProcess(state, None))));
-    tab_with(&mut app, include_str!("../../../holon-author/samples/sign-payload.holon"));
+    tab_with(&mut app, include_str!("../../../holon-author/samples/sign-payload.holon.ts"));
     ctrl(&mut app, 'd');
     press(&mut app, KeyCode::Enter);
     app.open_flow("sign-payload");
@@ -1008,7 +1030,7 @@ fn a_secret_is_set_as_a_value_a_name_the_server_reads_or_a_vault_field() {
 #[test]
 fn a_flows_unrecorded_handlers_show_counted_beside_its_runs() {
     let (mut app, _) = app();
-    let text = "flow peek\nstate n\n\naction peek (input) unrecorded {\n  respond state.n ?? 0\n}\n\naction bump (input) {\n  state.n = (state.n ?? 0) + 1\n  respond \"bumped\"\n}\n";
+    let text = "import { action, flow } from \"holon\"\nimport state from \"state\"\n\nflow(\"peek\")\n\nexport const peek = action((input) => state.n ?? 0, { log: \"unrecorded\" })\n\nexport const bump = action((input) => {\n  state.n = (state.n ?? 0) + 1\n  return \"bumped\"\n})\n";
     tab_with(&mut app, text);
     ctrl(&mut app, 'd');
     let Some(Modal::Approve { .. }) = &app.modal else { panic!("no dialog: {:?}", app.note.as_ref().map(|n| &n.text)) };

@@ -548,7 +548,7 @@ impl App {
     /// page, else a saved flow.
     pub(crate) fn open_arg(&mut self, arg: &str) {
         let path = PathBuf::from(arg);
-        if path.exists() || arg.ends_with(".holon") {
+        if path.exists() || arg.ends_with(".holon.ts") {
             return self.open_file(path);
         }
         if self.client.as_ref().is_some_and(|c| c.deployment(arg).is_some()) {
@@ -568,8 +568,9 @@ impl App {
             Ok(t) => t,
             // A new file: start it, and saving writes it.
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                let name = path.file_stem().and_then(|s| s.to_str()).unwrap_or("flow").to_string();
-                format!("flow {name}\n")
+                let file = path.file_name().and_then(|s| s.to_str()).unwrap_or("flow");
+                let name = file.strip_suffix(".holon.ts").or_else(|| file.strip_suffix(".ts")).unwrap_or(file);
+                format!("import {{ flow }} from \"holon\"\n\nflow(\"{name}\")\n")
             }
             Err(e) => return self.fail(format!("{}: {e}", path.display())),
         };
@@ -720,7 +721,7 @@ impl App {
             self.modal = Some(Modal::Input {
                 title: format!("Save {} as", tab.name),
                 lines: vec![format!("A file, from {here} (~ is your home folder):"), "Enter writes it there; esc leaves it a draft.".into()],
-                value: format!("{name}.holon"),
+                value: format!("{name}.holon.ts"),
                 masked: false,
                 then: Ask::SaveAs(i),
             });
@@ -811,7 +812,7 @@ impl App {
                 }
                 self.refresh();
                 let approved = if needs == 0 { String::new() } else { format!(", approving {needs} new permission{} as you", if needs == 1 { "" } else { "s" }) };
-                let reach = if plan.routes.is_empty() { plan.interval_seconds.map(|i| format!("; runs every {i} s")).unwrap_or_default() } else { format!("; {}", plan.routes.join(", ")) };
+                let reach = if plan.routes.is_empty() { started_by(&plan).map(|s| format!("; {s}")).unwrap_or_default() } else { format!("; {}", plan.routes.join(", ")) };
                 self.say(format!("deployed \"{slug}\" ({}){approved}{reach}", &plan.unit[..12]));
             }
             Err(e) => self.fail(e),
@@ -1782,6 +1783,13 @@ impl App {
 
 /// What a deploy changes, to look at before approving it: its code against the text deployed now
 /// (none for a first deploy), what it touches, its routes; and what deploying it approves.
+/// What starts a flow's runs besides requests and a person: its clocks and file handlers (`every
+/// 5s`, `on file inbox`), as its plan's handlers are labeled; none when it has neither.
+pub(crate) fn started_by(plan: &agent::Plan) -> Option<String> {
+    let labels: Vec<&str> = plan.document["trace"].as_object().into_iter().flat_map(|t| t.keys()).map(String::as_str).filter(|l| l.starts_with("every ") || l.starts_with("on file ")).collect();
+    (!labels.is_empty()).then(|| labels.join(", "))
+}
+
 fn deploy_review(slug: &str, plan: &agent::Plan, staged: &Staged, now: Option<&str>, text: &str, server: &str) -> Review {
     let mut review = Review { top: vec![(Tone::Dim, format!("Deploying \"{slug}\" ({}) to {server}.", &plan.unit[..12]))], ..Review::default() };
     if let Some(now) = now {
@@ -1808,9 +1816,11 @@ fn deploy_review(slug: &str, plan: &agent::Plan, staged: &Staged, now: Option<&s
     review
 }
 
-/// The flow a text names, on its `flow` line, without compiling it.
+/// The name a text gives its flow, `flow("name", …)`, as typed, whether or not it compiles.
 fn flow_name(text: &str) -> Option<&str> {
-    text.lines().find_map(|l| l.strip_prefix("flow ")).map(str::trim)
+    let rest = text.lines().find_map(|l| l.trim_start().strip_prefix("flow("))?.trim_start();
+    let quote = rest.chars().next().filter(|c| matches!(c, '"' | '\''))?;
+    rest[1..].split(quote).next()
 }
 
 fn load_run(c: &Client, runs: &mut Runs) {

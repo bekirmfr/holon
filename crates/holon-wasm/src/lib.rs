@@ -653,12 +653,11 @@ impl Evaluator {
         Ok(holon_core::capabilities(unit, &self.resolver).iter().map(|c| holon_core::consent_name(&c)).collect())
     }
 
-    /// The same, as a flow deploys: `scheduled` (an interval, and no routes) adds the clock it
-    /// runs on, whether or not it reads the time (core's `Capabilities::deployed`, the rule the
-    /// server deploys and grants by).
-    pub fn deployed_capability_names(&self, hash: &str, scheduled: bool) -> Result<Vec<String>, JsError> {
+    /// The same, as a flow deploys (core's `deployed_capabilities`, the rule the server deploys and
+    /// grants by): a secret its routes may answer with is one more.
+    pub fn deployed_capability_names(&self, hash: &str) -> Result<Vec<String>, JsError> {
         let unit = self.resolve_hash(hash)?;
-        Ok(holon_core::deployed_capabilities(unit, &self.resolver, scheduled).iter().map(|c| holon_core::consent_name(&c)).collect())
+        Ok(holon_core::deployed_capabilities(unit, &self.resolver).iter().map(|c| holon_core::consent_name(&c)).collect())
     }
 
     /// The coarse kind-set of a unit's whole closure, by hash — core's `effects_of`, the fixed
@@ -938,7 +937,7 @@ pub fn find_routes(nodes: JsValue, edges: JsValue) -> Result<JsValue, JsError> {
 
 // ── Composites, grouping and the text format (holon-author) ──────────────────────────────────
 // Grouping a selection, a holon's inside opened as a canvas, expanded, frozen back; a flow built
-// node by node (the samples) and the `.holon` text format. Each answers `{ok: true, …}` or
+// node by node (the samples) and a flow as text (`NAME.holon.ts`). Each answers `{ok: true, …}` or
 // `{ok: false, message, nodeIds}`, as the canvas operations do, so a failure points at nodes.
 
 fn from_js<T: serde::de::DeserializeOwned>(value: JsValue, what: &str) -> Result<T, JsError> {
@@ -1025,10 +1024,9 @@ impl Evaluator {
         }
     }
 
-    /// A flow document as `.holon` text in the language's expression form (holon-author's
-    /// lang/print.rs). Its units are inserted here; `names` names the composites the document
-    /// doesn't; `bindings` (optional) names top-level nodes, by id, so a text imported and
-    /// exported keeps its names.
+    /// A flow document as its TypeScript text (holon-author's lang/print.rs). Its units are
+    /// inserted here; `names` names the composites the document doesn't; `bindings` (optional)
+    /// names top-level nodes, by id, so a text imported and exported keeps its names.
     pub fn print_holon(&mut self, name: Option<String>, doc: JsValue, names: JsValue, bindings: JsValue) -> Result<String, JsError> {
         let doc: FlowDocument = from_js(doc, "document")?;
         let names: Names = from_js(names, "names")?;
@@ -1062,22 +1060,15 @@ pub fn describe_item(item: &str) -> String {
     holon_author::describe::describe_item(item)
 }
 
-/// `item` in words for a flow run by hand (no routes) when `by_hand`: its `NetworkIngress` is
-/// "can be run by hand".
-#[wasm_bindgen]
-pub fn describe_item_of(item: &str, by_hand: bool) -> String {
-    holon_author::describe::describe_item_of(item, by_hand)
-}
-
-/// `item` in words, as [`describe_item_of`], and beside a secret it reads, where the flow sends
+/// `item` in words, as [`describe_item`], and beside a secret it reads, where the flow sends
 /// it: `sent` is the deploy preview's `sent` (secret → hosts), none when JS passed nothing.
 #[wasm_bindgen]
-pub fn describe_item_sending(item: &str, by_hand: bool, sent: JsValue) -> Result<String, JsError> {
+pub fn describe_item_sending(item: &str, sent: JsValue) -> Result<String, JsError> {
     let sent: std::collections::BTreeMap<String, std::collections::BTreeSet<String>> = if sent.is_undefined() || sent.is_null() { Default::default() } else { from_js(sent, "sent")? };
-    Ok(holon_author::describe::describe_item_sending(item, by_hand, &sent))
+    Ok(holon_author::describe::describe_item_sending(item, &sent))
 }
 
-/// `.holon` text, in either form, as a flow document: `{name, doc, names, lines, spans}` (each
+/// A flow's TypeScript text (`NAME.holon.ts`) as a flow document: `{name, doc, names, lines, spans}` (each
 /// top-level node's name in the text, the line it is written on, and the range it is written
 /// over as `[from, to]` UTF-16 offsets, by id; docs/L4s/text-graph-link-L4.md). Throws the
 /// first mistake, as `line:col: message`.
@@ -1189,13 +1180,6 @@ pub fn holon_format(source: &str) -> Result<String, JsError> {
     holon_author::editing::format(source).map_err(|e| JsError::new(&e))
 }
 
-/// The quick fix **make it runnable by hand** for a flow nothing would start: its statements in
-/// `action run (input) { … }`, as `holon fmt` writes it. Throws why it doesn't apply.
-#[wasm_bindgen]
-pub fn holon_runnable_by_hand(source: &str) -> Result<String, JsError> {
-    holon_author::editing::runnable_by_hand(source).map_err(|e| JsError::new(&e))
-}
-
 /// The text's colours: `[{from, to, class}]`, in order, `class` the lowercase name of
 /// editing.rs's `Class` (keyword, noun, function, definition, …).
 #[wasm_bindgen]
@@ -1209,7 +1193,7 @@ pub fn holon_highlight(source: &str) -> Result<JsValue, JsError> {
 }
 
 /// The sample flows, one per capability, in the order the flows page lists them: `[{name, title,
-/// description, shows, port?, interval?, secrets?, optional?, browsers?, tryIt}]` (samples.rs).
+/// description, shows, port?, secrets?, optional?, browsers?, tryIt, text}]` (samples.rs).
 #[wasm_bindgen]
 pub fn samples() -> Result<JsValue, JsError> {
     to_js(&holon_author::samples::samples())
@@ -1660,16 +1644,16 @@ mod native_tests {
     #[test]
     fn text_offsets_are_utf16() {
         use lang::ast::Pos;
-        let text = "flow f\nx = \"😀→\" + y\r\nz";
+        let text = "flow(\"f\")\nconst x = \"😀→\" + y\r\nz";
         let at = Offsets::new(text);
         let p = |line, col| Pos { line, col };
         assert_eq!(at.offset(p(1, 1)), 0);
-        assert_eq!(at.offset(p(2, 1)), 7);
-        // `"` is col 5, the emoji col 6 (2 units), `→` col 7, the closing quote col 8.
-        assert_eq!(at.offset(p(2, 7)), 7 + 5 + 2);
-        assert_eq!(at.offset(p(2, 8)), 7 + 5 + 3);
-        assert_eq!(at.offset(p(2, 99)), 7 + "x = \"😀→\" + y\r".encode_utf16().count(), "past the end is the end");
-        for (line, col) in [(1, 1), (1, 4), (2, 6), (2, 7), (2, 8), (2, 12), (3, 1), (3, 2)] {
+        assert_eq!(at.offset(p(2, 1)), 10);
+        // `"` is col 11, the emoji col 12 (2 units), `→` col 13, the closing quote col 14.
+        assert_eq!(at.offset(p(2, 13)), 10 + 11 + 2);
+        assert_eq!(at.offset(p(2, 14)), 10 + 11 + 3);
+        assert_eq!(at.offset(p(2, 99)), 10 + "const x = \"😀→\" + y\r".encode_utf16().count(), "past the end is the end");
+        for (line, col) in [(1, 1), (1, 4), (2, 12), (2, 13), (2, 14), (2, 18), (3, 1), (3, 2)] {
             assert_eq!(at.pos(at.offset(p(line, col))), p(line, col), "{line}:{col}");
         }
     }
@@ -1678,7 +1662,7 @@ mod native_tests {
     /// argument's range is inside its call's; every range is inside the text.
     #[test]
     fn node_spans_are_utf16_ranges_that_nest() {
-        let text = "flow f\nport 8199\n\nroute POST /x (req) {\n  respond { said: \"😀 hi\", body_base64: base64(uppercase(req.body)) }\n}\n";
+        let text = "import { base64, flow, route } from \"holon\"\n\nflow(\"f\", { port: 8199 })\n\nroute.post(\"/x\", (req) => ({ said: \"😀 hi\", body_base64: base64(req.body.toUpperCase()) }))\n";
         let compiled = lang::compile(text).unwrap();
         let spans = spans_of(text, &compiled.spans);
         let units: Vec<u16> = text.encode_utf16().collect();
@@ -1687,8 +1671,8 @@ mod native_tests {
             assert!(r[0] <= r[1] && r[1] <= units.len(), "{id}: {r:?}");
         }
         let find = |s: &str| spans.values().find(|r| written(r) == s).copied().unwrap_or_else(|| panic!("no node written as {s:?}: {:?}", spans.values().map(written).collect::<Vec<_>>()));
-        let call = find("base64(uppercase(req.body))");
-        let arg = find("uppercase(req.body)");
+        let call = find("base64(req.body.toUpperCase())");
+        let arg = find("req.body.toUpperCase()");
         assert!(call[0] <= arg[0] && arg[1] <= call[1], "{call:?} holds {arg:?}");
         for node in &compiled.doc.nodes {
             assert!(spans.contains_key(&node.id), "{} has a range", node.id);
@@ -1758,15 +1742,13 @@ mod wasm_tests {
         );
     }
 
-    // A flow deployed on a schedule runs on the clock: the editor asks core, as the server does,
-    // so a clock flow that never reads the time still shows and asks for its trigger.
+    // What a flow asks for as it deploys: the editor asks core, as the server does.
     #[wasm_bindgen_test]
     fn deployed_capabilities_cross_js_boundary() {
         let mut ev = Evaluator::new();
         let hex = ev.insert(&encode_preimage(&binop("add")).unwrap()).unwrap();
         assert_eq!(ev.capability_names(&hex).unwrap(), Vec::<String>::new());
-        assert_eq!(ev.deployed_capability_names(&hex, false).unwrap(), Vec::<String>::new());
-        assert_eq!(ev.deployed_capability_names(&hex, true).unwrap(), vec!["Clock".to_string()]);
+        assert_eq!(ev.deployed_capability_names(&hex).unwrap(), Vec::<String>::new());
     }
 
     // get_unit (P4.3.1, expand-to-inspect's actual primitive): a hash already resolved in this

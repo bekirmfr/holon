@@ -1,0 +1,24 @@
+// Quote: functions that use what's around them.
+//
+// Prices a list of items with the request's tax. Each line's function uses tax from the route
+// around it, which reaches the function as an input of its own, and a reduce sums the lines.
+//
+// Try it: deploy it, then
+//   curl -X POST -H "Content-Type: application/json" \
+//     -d '{"tax":0.25,"items":[{"name":"tea","price":4,"qty":2},{"name":"cake","price":3,"qty":1}]}' \
+//     http://127.0.0.1:8112/quote
+// answers each line with its tax in (tea 10, cake 3.75) and the total, 13.75.
+import { flow, route } from "holon"
+
+flow("quote", { port: 8112 })
+
+// Prices each item with the tax (none if it isn't sent), and sums the lines.
+route.post("/quote", (req) => {
+  const tax = req.json.tax ?? 0
+  const lines = req.json.items.map((item) => ({
+    name: item.name,
+    total: item.price * item.qty * (1 + tax),
+  }))
+  const total = lines.reduce((acc, line) => acc + line.total, 0)
+  return { lines, total, tax }
+})

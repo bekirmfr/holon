@@ -1,7 +1,7 @@
-//! The flow commands of `holon`: flows as text files (the language, lang/, in either of its
-//! forms), checked and shown on any machine, a screen or not, through the same code as the
-//! editor. Each takes the file's name and text and
-//! answers what to print (and, for `fmt`, the file's new text); the binary reads and writes files.
+//! The flow commands of `holon`: flows as text files (the language, lang/, in TypeScript's
+//! syntax, `NAME.holon.ts`), checked and shown on any machine, a screen or not, through the same
+//! code as the editor. Each takes the file's name and text and answers what to print (and, for
+//! `fmt`, the file's new text); the binary reads and writes files.
 //!
 //!   holon new <file> [--sample <name>]   a starter flow (or a sample)
 //!   holon check <file>                   compile it: its routes, what it may do, or each mistake
@@ -15,7 +15,6 @@ use holon_core::{consent_name, MapResolver, Resolver};
 use crate::composites::Names;
 use crate::describe::{describe_item, describe_item_sending};
 use crate::flow::{derive_server, flow_unit, DerivedServer};
-use crate::lang::ast::Pos;
 use crate::lang::{self, Lowered};
 use crate::text;
 use crate::wire::WParam;
@@ -29,19 +28,12 @@ pub struct Report {
     pub code: i32,
 }
 
-impl Report {
-    fn failed(err: String) -> Report {
-        Report { err: vec![err], code: 1, ..Default::default() }
-    }
-}
+pub const STARTER: &str = r#"// A flow: a route, and what it answers. Run `holon check` on it as you go.
+import { flow, route } from "holon"
 
-pub const STARTER: &str = r#"# A flow: a route, and what it answers. Run `holon check` on it as you go.
-flow my-flow
-port 8200
+flow("my-flow", { port: 8200 })
 
-route GET /hello/:name (req) {
-  respond "Hello, {req.params.name}"
-}
+route.get("/hello/:name", (req) => `Hello, ${req.params.name}`)
 "#;
 
 /// A new flow's text: the starter, or the sample `sample` (its comments say what it is).
@@ -72,7 +64,7 @@ fn mistake(file: &str, source: &str, e: &lang::LowerError) -> Report {
 
 /// The file compiled, its units in `store`; or its mistake, said with its line and a caret.
 pub(crate) fn compile(file: &str, source: &str, store: &mut MapResolver) -> Result<Lowered, Report> {
-    let compiled = lang::compile(source).map_err(|e| mistake(file, source, &e))?;
+    let compiled = lang::ts::compile(source).map_err(|e| mistake(file, source, &e))?;
     text::restore(&compiled.doc, store, &Names::new());
     Ok(compiled)
 }
@@ -81,35 +73,21 @@ fn port_of(c: &Lowered) -> &str {
     c.doc.server.as_ref().map(|s| s.port.as_str()).unwrap_or_default()
 }
 
-/// Whether the flow deploys on a schedule: `every`, and no routes or handler blocks. It then runs on the clock, so
-/// what it may do includes the clock (core's `Capabilities::deployed`), as the deploy will ask.
-pub(crate) fn scheduled(c: &Lowered, server: &DerivedServer) -> bool {
-    server.endpoints.is_empty() && server.clocks.is_empty() && server.files.is_empty() && server.actions.is_empty() && c.doc.server.as_ref().is_some_and(|s| !s.interval.trim().is_empty())
-}
-
-/// Nothing would start a run of it: no route, clock, file handler or action, nor the old forms'
-/// `ingress`, `every` or `on file`. It is a holon, placed in other flows; deploy refuses it
-/// (docs/L4s/triggers-L4.md fork 14).
+/// Nothing would start a run of it: no route, clock, file handler or action. It is a holon, placed
+/// in other flows; deploy refuses it (docs/L4s/triggers-L4.md fork 14).
 pub fn starts_nothing(c: &Lowered, store: &mut MapResolver) -> bool {
-    let (server, unit) = derive(c, store);
-    let caps = unit.map(|(_, caps)| caps).unwrap_or_default();
-    server.endpoints.is_empty()
-        && server.clocks.is_empty()
-        && server.files.is_empty()
-        && server.actions.is_empty()
-        && !scheduled(c, &server)
-        && !caps.iter().any(|c| c == "NetworkIngress" || c.starts_with("FileArrival("))
+    let server = derive_server(&c.doc.nodes, &c.doc.edges, store, port_of(c));
+    server.endpoints.is_empty() && server.clocks.is_empty() && server.files.is_empty() && server.actions.is_empty()
 }
 
 /// What `check` says of a flow nothing would start.
-pub const STARTS_NOTHING: &str = "nothing would start a run: it is a holon, placed in other flows. To run it by hand, put it in an `action run (input) { … }`";
+pub const STARTS_NOTHING: &str = "nothing would start a run: add a route, a clock, a file handler or an action (an action runs by hand: `export const run = action((input) => { … })`)";
 
 /// What the flow derives to: its server's routes (or none), its unit, what it may do, sorted.
 fn derive(c: &Lowered, store: &mut MapResolver) -> (DerivedServer, Result<(String, Vec<String>), String>) {
     let server = derive_server(&c.doc.nodes, &c.doc.edges, store, port_of(c));
-    let scheduled = scheduled(c, &server);
     let unit = flow_unit(&c.doc.nodes, &c.doc.edges, store, port_of(c)).map(|hash| {
-        let mut caps: Vec<String> = store.resolve(&hash).map(|u| holon_core::deployed_capabilities(u, store, scheduled).iter().map(|c| consent_name(&c)).collect()).unwrap_or_default();
+        let mut caps: Vec<String> = store.resolve(&hash).map(|u| holon_core::deployed_capabilities(u, store).iter().map(|c| consent_name(&c)).collect()).unwrap_or_default();
         caps.sort();
         (to_hex(&hash), caps)
     });
@@ -212,9 +190,7 @@ pub fn check(file: &str, source: &str) -> Report {
         Err(e) => (vec![], Default::default(), Default::default(), vec![e]),
     };
     out.push(if caps.is_empty() && modules.is_empty() { "it only computes: it reads and changes nothing outside" } else { "it may:" }.into());
-    // A flow with no routes that reads `ingress` is run by hand: its NetworkIngress says so.
-    let by_hand = server.endpoints.is_empty();
-    out.extend(caps.iter().map(|c| format!("  {}", describe_item_sending(c, by_hand, &sent))));
+    out.extend(caps.iter().map(|c| format!("  {}", describe_item_sending(c, &sent))));
     if let (Some(fuel), Some(memory)) = (modules.get(holon_core::FUEL_LIMIT), modules.get(holon_core::MEMORY_LIMIT)) {
         out.push(format!("  run code it carries (a js node): up to {fuel} instructions and {} MiB per call, reaching nothing outside", memory / (1024 * 1024)));
     }
@@ -242,7 +218,7 @@ pub fn check(file: &str, source: &str) -> Report {
 /// engine counts lines in the source it was given, whose line 1 is the statement's header line
 /// (the body follows the `{` there), so a line of the body is that many lines down the file.
 fn js_mistakes(file: &str, source: &str) -> Vec<String> {
-    let Ok(parsed) = lang::parse(source) else { return vec![] };
+    let Ok(parsed) = lang::ts::parse(source) else { return vec![] };
     let mut err = Vec::new();
     for item in &parsed.items {
         let lang::ast::Item::Js(def) = item else { continue };
@@ -325,242 +301,44 @@ pub fn show(file: &str, source: &str) -> Report {
 
 /// `holon fmt`: the file's text in the canonical form, its comments kept, or its mistake.
 pub fn fmt(file: &str, source: &str) -> Result<String, Report> {
-    fmt_declaring(file, source).map(|(text, _)| text)
-}
-
-/// [`fmt`], and the header lines it added: a name the body uses that the header doesn't declare
-/// (`secret.signing_key` without `secret signing_key`) is declared for it, the one mistake fmt
-/// mends, since it prints from what the text compiles to (docs/L4s/declared-names-L4.md §5).
-pub fn fmt_declaring(file: &str, source: &str) -> Result<(String, Vec<String>), Report> {
-    let (fixed, c, declared) = with_declarations(source).map_err(|e| mistake(file, source, &e))?;
-    let mut store = MapResolver::new();
-    text::restore(&c.doc, &mut store, &Names::new());
-    let printed = lang::print(c.name.as_deref(), &c.doc, &mut store, &Names::new(), &c.names).map_err(|e| Report::failed(format!("{file}: {e}")))?;
-    Ok((with_comments(&fixed, &printed), declared))
-}
-
-/// `source` with a header line for each name its body uses undeclared, compiled, and the lines
-/// added; or its first other mistake, said at its place in `source`.
-pub fn with_declarations(source: &str) -> Result<(String, Lowered, Vec<String>), lang::LowerError> {
-    let mut fixed = source.to_string();
-    let mut declared = Vec::new();
-    // The added lines are together, from the first one's line on.
-    let at = header_end(source) as u32;
-    loop {
-        match lang::compile(&fixed) {
-            Ok(c) => return Ok((fixed, c, declared)),
-            Err(lang::LowerError { declare: Some(line), .. }) if !declared.contains(&line) => {
-                fixed = declare(&fixed, &line);
-                declared.push(line);
-            }
-            Err(mut e) => {
-                let added = declared.len() as u32;
-                for p in [&mut e.span.start, &mut e.span.end] {
-                    if p.line > at + added {
-                        p.line -= added;
-                    }
-                }
-                return Err(e);
-            }
-        }
-    }
-}
-
-/// The header lines `source` lacks for the names its body uses undeclared, in the order `fmt`
-/// would add them, whatever else is wrong with it: what an editor's quick fix adds.
-pub fn missing_declarations(source: &str) -> Vec<String> {
-    let mut fixed = source.to_string();
-    let mut lines: Vec<String> = Vec::new();
-    while let Err(lang::LowerError { declare: Some(line), .. }) = lang::compile(&fixed) {
-        if lines.contains(&line) {
-            break;
-        }
-        fixed = declare(&fixed, &line);
-        lines.push(line);
-    }
-    lines
-}
-
-/// `source` with the header line `line` added: after its last header, or, with none, above its
-/// first line of code. The rest of the text is as it was.
-pub fn declare(source: &str, line: &str) -> String {
-    let lines: Vec<&str> = source.lines().collect();
-    let at = header_end(source);
-    let mut out: Vec<&str> = lines[..at].to_vec();
-    out.push(line);
-    out.extend(&lines[at..]);
-    out.join("\n") + "\n"
-}
-
-/// How many of `source`'s lines come before a header line added to it: those up to its last
-/// header, or, with none, those before its first line of code.
-pub(crate) fn header_end(source: &str) -> usize {
-    let after = lang::parse(source).ok().and_then(|f| f.headers.iter().map(|h| h.span.end.line as usize).max());
-    after.unwrap_or_else(|| source.lines().position(|l| !l.trim().is_empty() && !l.trim_start().starts_with('#')).unwrap_or(source.lines().count()))
-}
-
-/// A line split at its `#` comment (one outside a string): the code, and the comment if any.
-fn split_comment(line: &str) -> (&str, Option<&str>) {
-    let mut quoted = false;
-    let mut escaped = false;
-    for (i, c) in line.char_indices() {
-        match c {
-            _ if escaped => escaped = false,
-            '\\' if quoted => escaped = true,
-            '"' => quoted = !quoted,
-            '#' if !quoted => return (&line[..i], Some(&line[i..])),
-            _ => {}
-        }
-    }
-    (line, None)
-}
-
-/// `line` cut before its 1-based character column `col`.
-fn split_at_col(line: &str, col: u32) -> (&str, &str) {
-    let at = line.char_indices().nth((col as usize).saturating_sub(1)).map(|(i, _)| i).unwrap_or(line.len());
-    line.split_at(at)
-}
-
-/// What a line of code says, whatever its spacing: how a statement is found again once printed.
-fn spoken(code: &str) -> String {
-    code.chars().filter(|c| !c.is_whitespace()).collect()
-}
-
-/// `printed` (the canonical form of `source`) with `source`'s comments put back: each comment
-/// line above the statement it was above (with a blank line between when it had one), each
-/// comment after code after that line. A statement is found again by what it says, whatever its
-/// spacing, in order; a comment whose statement printing wrote otherwise goes with the next one
-/// found, and any left over at the end.
-pub(crate) fn with_comments(source: &str, printed: &str) -> String {
-    struct Anchor {
-        spoken: String,
-        above: Vec<String>,
-        gap: bool,
-        after: Option<String>,
-    }
-    // A js body is JavaScript, where `#` is text (a colour in a style, a private field): no line
-    // of one holds a Holon comment. On its first line a comment may precede the `{`; on its last,
-    // follow the `}`.
-    let bodies: Vec<(Pos, Pos)> = lang::parse(source).map(|f| f.items.iter().filter_map(|i| if let lang::ast::Item::Js(j) = i { Some((j.body_span.start, j.body_span.end)) } else { None }).collect()).unwrap_or_default();
-    let split = |n: u32, line: &str| -> (String, Option<String>) {
-        for (start, end) in &bodies {
-            if n > start.line && n < end.line {
-                return (line.to_string(), None);
-            }
-            if n == start.line && n == end.line {
-                // The body on one line: a comment only after its `}`.
-                let (head, tail) = split_at_col(line, end.col);
-                let (code, comment) = split_comment(tail);
-                return (format!("{head}{code}"), comment.map(str::to_string));
-            }
-            if n == start.line {
-                let (head, tail) = split_at_col(line, start.col);
-                let (code, comment) = split_comment(head);
-                return if comment.is_some() { (code.to_string(), comment.map(str::to_string)) } else { (format!("{head}{tail}"), None) };
-            }
-            if n == end.line {
-                let (head, tail) = split_at_col(line, end.col);
-                let (code, comment) = split_comment(tail);
-                return (format!("{head}{code}"), comment.map(str::to_string));
-            }
-        }
-        let (code, comment) = split_comment(line);
-        (code.to_string(), comment.map(str::to_string))
-    };
-    let mut anchors: Vec<Anchor> = vec![];
-    let mut above: Vec<String> = vec![];
-    let mut gap = false;
-    for (k, line) in source.lines().enumerate() {
-        let (code, comment) = split(k as u32 + 1, line);
-        let (code, comment) = (code.as_str(), comment.as_deref());
-        if code.trim().is_empty() {
-            match comment {
-                Some(c) => {
-                    above.push(c.trim_end().to_string());
-                    gap = false;
-                }
-                None => gap = !above.is_empty(),
-            }
-            continue;
-        }
-        anchors.push(Anchor { spoken: spoken(code), above: std::mem::take(&mut above), gap, after: comment.map(|c| c.trim_end().to_string()) });
-        gap = false;
-    }
-    if anchors.iter().all(|a| a.above.is_empty() && a.after.is_none()) && above.is_empty() {
-        return printed.to_string();
-    }
-    let lines: Vec<&str> = printed.lines().collect();
-    let mut before: Vec<Vec<String>> = vec![vec![]; lines.len()];
-    let mut trailing: Vec<Option<String>> = vec![None; lines.len()];
-    let mut at = 0;
-    let mut carried: Vec<String> = vec![];
-    for a in anchors {
-        let found = (at..lines.len()).find(|&j| spoken(lines[j]) == a.spoken);
-        let Some(j) = found else {
-            carried.extend(a.above);
-            carried.extend(a.after);
-            continue;
-        };
-        let indent: String = lines[j].chars().take_while(|c| c.is_whitespace()).collect();
-        let mut put: Vec<String> = carried.drain(..).chain(a.above).map(|c| format!("{indent}{c}")).collect();
-        if a.gap && !put.is_empty() {
-            put.push(String::new());
-        }
-        before[j].extend(put);
-        if let Some(c) = a.after {
-            trailing[j] = Some(c);
-        }
-        at = j + 1;
-    }
-    carried.extend(above);
-    let mut out: Vec<String> = vec![];
-    for (j, line) in lines.iter().enumerate() {
-        out.append(&mut before[j]);
-        out.push(match &trailing[j] {
-            Some(c) => format!("{line} {c}"),
-            None => line.to_string(),
-        });
-    }
-    out.extend(carried);
-    format!("{}\n", out.join("\n").trim_end())
+    lang::format::format(source).map_err(|e| mistake(file, source, &e))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    const HELLO: &str = "flow hello-api\nport 8101\n\nnode req   = request { method: GET, path: \"/hello/:name\" }\nnode name  = field { name: name }\nnode hi    = const { value: \"Hello, \", type: Text }\nnode greet = concat\nnode res   = respond { status: \"200\", missing: \"404\" }\n\nreq.params  -> name.record\nhi.out      -> greet.a\nname.out    -> greet.b\nreq.request -> res.request\ngreet.out   -> res.body\n";
+    const HELLO: &str = "import { flow, route } from \"holon\"\n\nflow(\"hello-api\", { port: 8101 })\n\nroute.get(\"/hello/:name\", (req) => {\n  const name = req.params.name\n  const hi = \"Hello, \"\n  const greet = `${hi}${name}`\n  return greet\n})\n";
 
-    /// A `#` inside a js body is JavaScript (a colour, a private field), never a Holon comment:
-    /// fmt leaves the body whole, and still puts back the comments around the statement.
+    /// A js body is JavaScript, kept as written: fmt leaves a `#` in it (a colour, a private
+    /// field) and its comments alone, and keeps the comments around it.
     #[test]
     fn fmt_leaves_a_hash_inside_a_js_body_alone() {
-        let src = "flow f\nport 8203\n\n# the page\nholon page(x) -> html js {\n  return `<style>a{color:#777}</style>${x}`; // #not a holon comment\n}\n\nroute GET /p (req) {\n  respond page(req.query.x ?? \"y\") # answered\n}\n";
-        let out = fmt("f.holon", src).unwrap();
+        let src = "import { flow, js, route } from \"holon\"\n\nflow(\"f\", { port: 8203 })\n\n// the page\nconst page = js(function html(x) {\n  return `<style>a{color:#777}</style>${x}`; // #not a holon comment\n})\n\nroute.get(\"/p\", (req) => {\n  return page(req.query.x ?? \"y\")\n  // answered\n})\n";
+        let out = fmt("f.holon.ts", src).unwrap();
         assert_eq!(out, src, "{out}");
-        assert_eq!(fmt("f.holon", &out).unwrap(), out, "and again");
-        // A body on one line, with a comment after its brace.
-        let one = "flow f\nstate k\n\nholon tag(x) -> t js { return `#${x}` } # a tag\n\nstate.k = tag(1)\n";
-        assert_eq!(fmt("f.holon", one).unwrap(), one);
+        assert_eq!(fmt("f.holon.ts", &out).unwrap(), out, "and again");
     }
 
-    /// Each js body is compiled once by the engine: a syntax error is a mistake at its line in the
-    /// file, with the line and a caret like any other; a body that compiles passes, whatever it
-    /// would do at run time (that is the run's to say, and explain's).
+    /// Each js body is compiled once by the engine: a mistake TypeScript's syntax lets through
+    /// (`import.meta` outside a module) is a mistake at its line in the file, with the line and a caret like
+    /// any other; a body that compiles passes, whatever it would do at run time (that is the
+    /// run's to say, and explain's).
     #[test]
     fn check_compiles_each_js_body_and_says_a_mistake_at_its_line() {
-        let src = "flow f\nport 8202\n\nholon bad(a) -> b js {\n  const x = ;\n  return x\n}\n\nroute GET /x (req) {\n  respond bad(1)\n}\n";
-        let r = check("f.holon", src);
+        let src = "import { flow, js, route } from \"holon\"\n\nflow(\"f\", { port: 8202 })\n\nconst bad = js(function out(a) {\n  const x = a\n  return import.meta.url\n})\n\nroute.get(\"/x\", () => bad(1))\n";
+        let r = check("f.holon.ts", src);
         assert_eq!(r.code, 1);
-        assert_eq!(r.err[0], "f.holon:5:13: js \"bad\": SyntaxError: unexpected token ';', primary expression");
-        assert_eq!(r.err[1], "    const x = ;");
-        assert_eq!(r.err[2], format!("  {}^", " ".repeat(12)));
+        assert!(r.err[0].starts_with("f.holon.ts:7:"), "{:?}", r.err);
+        assert!(r.err[0].contains(": js \"bad\": SyntaxError: "), "{:?}", r.err);
+        assert_eq!(r.err[1], "    return import.meta.url");
+        assert_eq!(r.err[2], format!("  {}^", " ".repeat(9)));
         assert!(r.out.iter().any(|l| l.starts_with("unit ")), "it still compiles and derives: {:?}", r.out);
-        let fine = check("f.holon", &src.replace("const x = ;", "const x = a.b.c;"));
+        let fine = check("f.holon.ts", &src.replace("import.meta.url", "x"));
         assert_eq!((fine.code, fine.err), (0, vec![]));
-        // On the header line, the column is the file's.
-        let one_line = check("f.holon", "flow f\nstate k\n\nholon bad(a) -> b js { return a + }\nstate.k = bad(1)\n");
-        assert!(one_line.err[0].starts_with("f.holon:4:"), "{:?}", one_line.err);
+        // On the function's own line, the column is the file's.
+        let one_line = check("f.holon.ts", "import { flow, js, route } from \"holon\"\n\nflow(\"f\", { port: 8202 })\n\nconst bad = js(function out(a) { return import.meta })\n\nroute.get(\"/x\", () => bad(1))\n");
+        assert!(one_line.err[0].starts_with("f.holon.ts:5:"), "{:?}", one_line.err);
         assert_eq!(js_position("SyntaxError: x at line 2, col 13 (native)"), Some((2, 13)));
         assert_eq!(js_position("TypeError: y (unknown at :3:9)\n    at <main> (unknown at :3:9)"), Some((3, 9)));
         assert_eq!(js_position("the source isn't a function"), None);
@@ -570,19 +348,19 @@ mod tests {
     /// says it listens on no port; `show` lists them too.
     #[test]
     fn check_and_show_list_its_clocks() {
-        let r = check("t.holon", "flow t\nport 8080\nstate n\n\nevery 2s {\n  state.n = 1\n}\n\nroute GET / (req) {\n  respond 1\n}\n");
+        let r = check("t.holon.ts", "import { every, flow, route, status } from \"holon\"\nimport state from \"state\"\n\nflow(\"t\", { port: 8080 })\n\nevery(\"2s\", () => {\n  state.n = 1\n})\n\nroute.get(\"/\", () => status(1))\n");
         assert_eq!(r.code, 0, "{r:?}");
         assert_eq!(r.out[1..5], ["a server on :8080", "  GET /", "and its clocks", "  every 2s"]);
-        let r = check("b.holon", "flow b\nstate n\n\nevery 1h {\n  state.n = now\n}\n");
+        let r = check("b.holon.ts", "import { every, flow } from \"holon\"\nimport state from \"state\"\nimport { now } from \"holon:clock\"\n\nflow(\"b\")\n\nevery(\"1h\", () => {\n  state.n = now\n})\n");
         assert_eq!(r.out[1..3], ["a server of clocks, listening on no port", "  every 1h"]);
-        assert!(show("b.holon", "flow b\nstate n\n\nevery 1h {\n  state.n = now\n}\n").out[1..3] == ["  clocks", "    every 1h"]);
+        assert!(show("b.holon.ts", "import { every, flow } from \"holon\"\nimport state from \"state\"\nimport { now } from \"holon:clock\"\n\nflow(\"b\")\n\nevery(\"1h\", () => {\n  state.n = now\n})\n").out[1..3] == ["  clocks", "    every 1h"]);
     }
 
     #[test]
     fn check_says_routes_unit_and_what_it_may_do() {
-        let r = check("hello.holon", HELLO);
+        let r = check("hello.holon.ts", HELLO);
         assert_eq!(r.code, 0, "{r:?}");
-        assert_eq!(r.out[0], "hello-api: 5 nodes, 5 wires");
+        assert_eq!(r.out[0], "hello-api: 7 nodes, 7 wires");
         assert_eq!(r.out[1..3], ["a server on :8101", "  GET /hello/:name"]);
         assert!(r.out[3].starts_with("unit "));
         assert_eq!(r.out[4..], ["it may:", "  receive requests"]);
@@ -592,8 +370,8 @@ mod tests {
     /// signs with a secret doesn't answer with it.
     #[test]
     fn check_says_a_route_answers_with_a_secret() {
-        let text = "flow leaky\nport 8102\nsecret key\nsecret token\n\nroute GET /plain (req) {\n  respond base64(secret.token)\n}\n\nroute POST /sign (req) {\n  respond hmac_sha256(secret.key, req.body), missing: 400\n}\n";
-        let r = check("leaky.holon", text);
+        let text = "import { base64, flow, hmac_sha256, route, status } from \"holon\"\nimport key from \"secret:key\"\nimport token from \"secret:token\"\n\nflow(\"leaky\", { port: 8102 })\n\nroute.get(\"/plain\", () => base64(token))\n\nroute.post(\"/sign\", (req) => hmac_sha256(key, req.body) ?? status(400))\n";
+        let r = check("leaky.holon.ts", text);
         assert_eq!(r.code, 0, "{r:?}");
         let may = r.out.iter().position(|l| l == "it may:").unwrap_or_else(|| panic!("{:?}", r.out));
         assert_eq!(
@@ -607,10 +385,10 @@ mod tests {
     /// verify, an hmac inside) isn't marked.
     #[test]
     fn the_canvas_marks_each_sink_a_secret_reaches() {
-        let text = "flow marks\nport 8199\nsecret k\nstate kept\n\nroute GET /x (req) {\n  sent = http.get(\"api.example.com\", \"/v1\", headers: { authorization: \"Bearer {secret.k}\" })\n  state.kept = secret.k\n  respond { key: secret.k, status: sent.status }\n}\n";
+        let text = "import { flow, route } from \"holon\"\nimport state from \"state\"\nimport k from \"secret:k\"\nimport example from \"host:api.example.com\"\n\nflow(\"marks\", { port: 8199 })\n\nroute.get(\"/x\", async () => {\n  const sent = await example.get(\"/v1\", { headers: { authorization: `Bearer ${k}` } })\n  state.kept = k\n  return { key: k, status: sent.status }\n})\n";
         let marks_of = |text: &str| {
             let mut store = MapResolver::new();
-            let c = compile("t.holon", text, &mut store).unwrap_or_else(|r| panic!("{r:?}"));
+            let c = compile("t.holon.ts", text, &mut store).unwrap_or_else(|r| panic!("{r:?}"));
             let marks = crate::flow::secret_marks(&c.doc.nodes, &c.doc.edges, &mut store, port_of(&c));
             let kind = |id: &str| c.doc.nodes.iter().find(|n| n.id == id).map(|n| n.data.name.clone()).unwrap_or_default();
             marks.into_iter().map(|(id, lines)| (c.names.get(&id).cloned().unwrap_or_else(|| kind(&id)), lines)).collect::<std::collections::BTreeMap<String, Vec<String>>>()
@@ -621,20 +399,20 @@ mod tests {
         assert_eq!(marks.get("respond"), Some(&vec!["answers its caller with the secret \"k\" (approved apart, at deploy)".to_string()]), "{marks:?}");
         assert_eq!(marks.len(), 3, "nothing else: {marks:?}");
 
-        let stripe = marks_of(include_str!("../samples/stripe-to-slack.holon"));
+        let stripe = marks_of(include_str!("../samples/stripe-to-slack.holon.ts"));
         assert_eq!(stripe.get("sent"), Some(&vec!["sends the secret \"slack_webhook_path\" to https://hooks.slack.com".to_string()]), "{stripe:?}");
         assert_eq!(stripe.len(), 1, "verifying with the Stripe secret marks nothing: {stripe:?}");
 
         // A token exchange: the secret to the OAuth server, what is answered to it to the API.
-        let exchange = marks_of(include_str!("../samples/client-credentials.holon"));
+        let exchange = marks_of(include_str!("../samples/client-credentials.holon.ts"));
         assert_eq!(exchange.get("got"), Some(&vec!["sends the secret \"client_secret\" to https://demo.duendesoftware.com".to_string()]), "{exchange:?}");
         assert_eq!(exchange.get("called"), Some(&vec!["sends what is answered to the secret \"client_secret\" to https://httpbin.dev".to_string()]), "{exchange:?}");
         assert_eq!(exchange.len(), 2, "{exchange:?}");
-        let echoed = marks_of(include_str!("../samples/echoed-key.holon"));
+        let echoed = marks_of(include_str!("../samples/echoed-key.holon.ts"));
         assert_eq!(echoed.get("passed"), Some(&vec!["sends what is answered to the secret \"demo_key\" to https://postman-echo.com".to_string()]), "{echoed:?}");
 
         // A database read the key is a parameter of: the key goes to the database.
-        let license = marks_of(include_str!("../samples/license-check.holon"));
+        let license = marks_of(include_str!("../samples/license-check.holon.ts"));
         assert_eq!(license.into_values().collect::<Vec<_>>(), vec![vec!["sends the secret \"license_key\" to the database \"vendor\", reading its table \"licenses\"".to_string()]]);
     }
 
@@ -642,7 +420,7 @@ mod tests {
     /// and only verifies a signature with the Stripe secret, which sends it nowhere.
     #[test]
     fn check_says_where_each_secret_is_sent() {
-        let r = check("stripe-to-slack.holon", include_str!("../samples/stripe-to-slack.holon"));
+        let r = check("stripe-to-slack.holon.ts", include_str!("../samples/stripe-to-slack.holon.ts"));
         assert_eq!(r.code, 0, "{r:?}");
         assert!(r.out.iter().any(|l| l == "  read the secret \"slack_webhook_path\", and send it to https://hooks.slack.com"), "{:?}", r.out);
         assert!(r.out.iter().any(|l| l == "  read the secret \"stripe_webhook_secret\""), "{:?}", r.out);
@@ -654,25 +432,22 @@ mod tests {
     #[test]
     fn check_says_a_flow_on_a_schedule_runs_on_the_clock() {
         // `every` starts its runs, so it reads the clock as deployed, though nothing reads `now`.
-        let r = check("beats.holon", "flow beats\nevery 5s\nstate beats\n\nstate.beats = (state.beats ?? 0) + 1\n");
+        let r = check("beats.holon.ts", "import { every, flow } from \"holon\"\nimport state from \"state\"\n\nflow(\"beats\")\n\nevery(\"5s\", () => {\n  state.beats = (state.beats ?? 0) + 1\n})\n");
         assert_eq!(r.code, 0, "{r:?}");
         let may = r.out.iter().position(|l| l == "it may:").unwrap_or_else(|| panic!("{:?}", r.out));
         assert_eq!(r.out[may + 1..], ["  read the clock", "  read its state \"beats\"", "  write its state \"beats\""]);
-        // A server answers requests: an interval doesn't make it a clock flow.
-        let r = check("hello.holon", &HELLO.replace("port 8101\n", "port 8101\nevery 5s\n"));
-        assert!(!r.out.iter().any(|l| l == "  read the clock"), "{:?}", r.out);
     }
 
     #[test]
     fn check_names_the_held_keys() {
-        let r = check("cache-aside.holon", crate::samples::sample("cache-aside").unwrap().text);
+        let r = check("cache-aside.holon.ts", crate::samples::sample("cache-aside").unwrap().text);
         assert_eq!(r.code, 0, "{r:?}");
         let at = r.out.iter().position(|l| l == "while it runs:").unwrap_or_else(|| panic!("{:?}", r.out));
         assert_eq!(r.out[at + 1], "  holds the keys it reads in \"ids\" from its first outbound call until it commits, so two runs on one key call out once");
         assert!(r.out[..at].iter().any(|l| l.starts_with("  call https://")), "said after what it may do: {:?}", r.out);
-        let shown = show("cache-aside.holon", crate::samples::sample("cache-aside").unwrap().text);
+        let shown = show("cache-aside.holon.ts", crate::samples::sample("cache-aside").unwrap().text);
         assert!(shown.out.iter().any(|l| l == "  while it runs:"), "{:?}", shown.out);
-        let r = check("refund-once.holon", crate::samples::sample("refund-once").unwrap().text);
+        let r = check("refund-once.holon.ts", crate::samples::sample("refund-once").unwrap().text);
         let at = r.out.iter().position(|l| l == "while it runs:").unwrap_or_else(|| panic!("{:?}", r.out));
         assert_eq!(
             r.out[at + 1],
@@ -684,57 +459,56 @@ mod tests {
         }
     }
 
-    const BOARD: &str = "flow status-board\nport 8170\ncollection notes\n\n# Answers the load balancer.\nroute GET /health (req) unrecorded {\n  respond \"ok\"\n}\n\nroute GET /notes (req) lazy {\n  respond notes.list(limit: 50)\n}\n\nroute POST /notes (req) {\n  notes[req.json.id] = req.json.text\n  respond \"saved\"\n}\n\naction report (input) unrecorded {\n  respond notes.list(limit: 50)\n}\n";
+    const BOARD: &str = "import { action, flow, route } from \"holon\"\nimport notes from \"collection:notes\"\n\nflow(\"status-board\", { port: 8170 })\n\n// Answers the load balancer.\nroute.get(\"/health\", () => \"ok\", { log: \"unrecorded\" })\n\nroute.get(\"/notes\", () => notes.list({ limit: 50 }), { log: \"lazy\" })\n\nroute.post(\"/notes\", (req) => {\n  notes[req.json.id] = req.json.text\n  return \"saved\"\n})\n\nexport const report = action(() => notes.list({ limit: 50 }), { log: \"unrecorded\" })\n";
 
     /// `lazy` and `unrecorded` after a handler's head (docs/L4s/request-path-L4.md, C5): fmt
     /// writes them back where they were, they are names everywhere else, and any handler may have
     /// them, whatever it does: the level is what its author writes.
     #[test]
     fn a_handlers_log_word_is_kept_as_written() {
-        assert_eq!(fmt("b.holon", BOARD).unwrap(), BOARD);
-        let r = check("b.holon", BOARD);
+        assert_eq!(fmt("b.holon.ts", BOARD).unwrap(), BOARD);
+        let r = check("b.holon.ts", BOARD);
         assert_eq!((r.code, r.err.clone()), (0, vec![]), "{r:?}");
         // What the approval will ask, said as it says it.
         for label in ["GET /health", "action report"] {
             assert!(r.out.contains(&format!("  keep runs of {label} out of its log, failed or not (they are counted)")), "{:?}", r.out);
         }
         // A word that isn't before a block is a name.
-        let names = "flow n\nstate lazy\n\naction a (unrecorded) {\n  state.lazy = unrecorded\n  respond state.lazy\n}\n";
-        assert_eq!(fmt("n.holon", names).unwrap(), names);
-        assert_eq!(check("n.holon", names).code, 0);
+        let names = "import { action, flow } from \"holon\"\nimport state from \"state\"\n\nflow(\"n\")\n\nexport const a = action((unrecorded) => {\n  state.lazy = unrecorded\n  return state.lazy\n})\n";
+        assert_eq!(fmt("n.holon.ts", names).unwrap(), names);
+        assert_eq!(check("n.holon.ts", names).code, 0);
         // The word changes the handler's unit: each level is its own.
-        let unit = |text: &str| check("u.holon", text).out.into_iter().find(|l| l.starts_with("unit ")).unwrap();
-        let strict = "flow u\nport 8172\n\nroute GET /x (req) {\n  respond 1\n}\n";
-        let lazy = strict.replace("(req) {", "(req) lazy {");
+        let unit = |text: &str| check("u.holon.ts", text).out.into_iter().find(|l| l.starts_with("unit ")).unwrap();
+        let strict = "import { flow, route, status } from \"holon\"\n\nflow(\"u\", { port: 8172 })\n\nroute.get(\"/x\", () => status(1))\n";
+        let lazy = strict.replace("status(1))", "status(1), { log: \"lazy\" })");
         assert_ne!(unit(strict), unit(&lazy));
-        assert_ne!(unit(&lazy), unit(&strict.replace("(req) {", "(req) unrecorded {")));
+        assert_ne!(unit(&lazy), unit(&strict.replace("status(1))", "status(1), { log: \"unrecorded\" })")));
         // A handler is as its author writes it, whatever it does: a route that writes compiles
         // unrecorded, a clock that writes its state lazy, an action that calls out lazy, a file
         // handler that writes unrecorded; and fmt keeps the word on every kind of handler.
-        let r = check("b.holon", &BOARD.replace("route POST /notes (req) {", "route POST /notes (req) unrecorded {"));
+        let r = check("b.holon.ts", &BOARD.replace("  return \"saved\"
+})", "  return \"saved\"
+}, { log: \"unrecorded\" })"));
         assert_eq!((r.code, r.err.clone()), (0, vec![]), "{r:?}");
-        let r = check("t.holon", "flow t\nstate n\n\nevery 1m lazy {\n  state.n = (state.n ?? 0) + 1\n}\n");
+        let r = check("t.holon.ts", "import { every, flow } from \"holon\"\nimport state from \"state\"\n\nflow(\"t\")\n\nevery(\"1m\", () => {\n  state.n = (state.n ?? 0) + 1\n}, { log: \"lazy\" })\n");
         assert_eq!((r.code, r.err.clone()), (0, vec![]), "{r:?}");
-        let r = check("o.holon", "flow o\n\naction ping (input) lazy {\n  respond http.get(\"httpbin.org\", \"/uuid\").body\n}\n");
+        let r = check("o.holon.ts", "import { action, flow } from \"holon\"\nimport httpbin from \"host:httpbin.org\"\n\nflow(\"o\")\n\nexport const ping = action(async () => (await httpbin.get(\"/uuid\")).body, { log: \"lazy\" })\n");
         assert_eq!((r.code, r.err.clone()), (0, vec![]), "{r:?}");
-        let files = "flow f\ncollection seen\n\non file inbox (f) unrecorded {\n  seen[f.name] = f.size\n}\n\nevery 1m lazy {\n  seen[\"tick\"] = now\n}\n";
-        assert_eq!(fmt("f.holon", files).unwrap(), files);
-        let r = check("f.holon", files);
+        let files = "import { every, flow, on } from \"holon\"\nimport seen from \"collection:seen\"\nimport inbox from \"folder:inbox\"\nimport { now } from \"holon:clock\"\n\nflow(\"f\")\n\non.file.created(inbox, (f) => {\n  seen[f.name] = f.size\n}, { log: \"unrecorded\" })\n\nevery(\"1m\", () => {\n  seen[\"tick\"] = now\n}, { log: \"lazy\" })\n";
+        assert_eq!(fmt("f.holon.ts", files).unwrap(), files);
+        let r = check("f.holon.ts", files);
         assert_eq!((r.code, r.err.clone()), (0, vec![]), "{r:?}");
     }
 
     #[test]
     fn a_mistake_names_its_file_and_line() {
-        let r = check("bad.holon", "node a = field\nnode b = concat\na.nope -> b.a");
+        let r = check("bad.holon.ts", "import { concat, flow, route } from \"holon\"\n\nflow(\"bad\", { port: 8101 })\n\nroute.get(\"/a\", (req) => concat(req.body, nope))\n");
         assert_eq!(r.code, 1);
-        assert_eq!(r.err, [r#"bad.holon:3:1: field has no output "nope""#, "  a.nope -> b.a", "  ^^^^^^^^^^^^^"]);
-        // The caret sits under the column, in the expression form too.
-        let r = check("bad.holon", "route GET /a (req) {\n  respond concat(req.body, nope)\n}");
-        assert_eq!(r.err, [r#"bad.holon:2:28: unknown name "nope""#, "    respond concat(req.body, nope)", "                             ^^^^"]);
+        assert_eq!(r.err, [r#"bad.holon.ts:5:43: unknown name "nope""#, r#"  route.get("/a", (req) => concat(req.body, nope))"#, "                                            ^^^^"]);
         // A flow that compiles but can't be a server: its route says why.
-        let r = check("half.holon", "port 8101\nnode req = request { method: GET, path: \"/x\" }");
+        let r = check("half.holon.ts", "import { flow, route } from \"holon\"\n\nflow(\"half\", { port: 8101 })\n\nroute.get(\"/x/:a\", () => 1)\n\nroute.get(\"/x/:b\", () => 2)\n");
         assert_eq!(r.code, 1);
-        assert!(r.err[0].starts_with("half.holon: "), "{r:?}");
+        assert_eq!(r.err, ["half.holon.ts: GET /x/:b clashes with GET /x/:a"]);
     }
 
     /// Many strings in one route: each `{…}` is an `as_text`, all the same unit, told apart by
@@ -743,166 +517,114 @@ mod tests {
     fn a_route_of_many_interpolations_compiles_and_unused_twins_are_said() {
         let parts: Vec<String> = (0..12).map(|i| format!("{{req.json.f{i}}}")).collect();
         let text = format!(
-            "flow links
-port 8106
-
-route POST /links (req) {{
-  a = \"{}\"
-  b = \"{}/{}\"
-  respond {{ a: a, b: b }}
-}}
-",
+            "import {{ flow, route }} from \"holon\"\n\nflow(\"links\", {{ port: 8106 }})\n\nroute.post(\"/links\", () => {{\n  const a = \"{}\"\n  const b = \"{}/{}\"\n  return {{ a, b }}\n}})\n",
             parts.join("/"),
             parts[..6].join("/"),
             parts[6..].join("-")
         );
-        let r = check("links.holon", &text);
+        let r = check("links.holon.ts", &text);
         assert_eq!(r.code, 0, "{r:?}");
-        let r = check("twins.holon", "flow t
-port 8107
-
-route POST /t (req) {
-  x = lowercase(req.json.a)
-  y = lowercase(req.json.a)
-  respond \"ok\"
-}
-");
+        let r = check("twins.holon.ts", "import { flow, route } from \"holon\"\n\nflow(\"t\", { port: 8107 })\n\nroute.post(\"/t\", (req) => {\n  const x = req.json.a.toLowerCase()\n  const y = req.json.a.toLowerCase()\n  return \"ok\"\n})\n");
         assert_eq!(r.code, 1);
-        assert_eq!(r.err, ["twins.holon: POST /t: the same value is computed twice and never used, so nothing tells the two apart: remove one, or use it"]);
+        assert_eq!(r.err, ["twins.holon.ts: POST /t: the same value is computed twice and never used, so nothing tells the two apart: remove one, or use it"]);
     }
 
     #[test]
     fn show_outlines_each_node_and_what_feeds_it() {
-        let r = show("hello.holon", HELLO);
+        let r = show("hello.holon.ts", HELLO);
         assert_eq!(r.out[..4], ["hello-api  (a server on :8101)", "  routes", "    GET /hello/:name", "  nodes"]);
-        assert!(r.out.contains(&"    greet  concat".to_string()), "{:#?}", r.out);
-        assert!(r.out.contains(&"             b ← name.out".to_string()), "{:#?}", r.out);
-        assert!(r.out.iter().any(|l| l.contains(r#"hi     const  value="Hello, " type="Text""#)), "{:#?}", r.out);
-    }
-
-    #[test]
-    fn fmt_keeps_the_comments() {
-        let messy = "# says hello\n\nflow   hello-api # the flow\nport 8101\nroute GET /hello/:name (req) {\n      # the answer\n      respond   \"Hi, {req.params.name} # not a comment\"   # trailing\n}\n# the end\n";
-        let once = fmt("hello.holon", messy).unwrap();
-        assert_eq!(
-            once,
-            "# says hello\n\nflow hello-api # the flow\nport 8101\n\nroute GET /hello/:name (req) {\n  # the answer\n  respond \"Hi, {req.params.name} # not a comment\" # trailing\n}\n# the end\n"
-        );
-        assert_eq!(fmt("hello.holon", &once).unwrap(), once, "stable");
-        // A statement printing writes otherwise: its comment goes with the next one found.
-        let rewritten = fmt("hello.holon", "flow f\nport 8200\n\nroute GET /a (req) {\n  # the answer\n  respond concat(\"a\", \"b\")\n}\n").unwrap();
-        assert!(rewritten.contains("# the answer"), "{rewritten}");
+        assert!(r.out.iter().any(|l| l.split_whitespace().eq(["greet", "concat"])), "{:#?}", r.out);
+        assert!(r.out.iter().any(|l| l.trim() == "record ← req.params"), "{:#?}", r.out);
+        assert!(r.out.iter().any(|l| l.split_whitespace().eq(["hi", "const", r#"value="Hello,"#, r#"""#, r#"type="Text""#])), "{:#?}", r.out);
     }
 
     #[test]
     fn fmt_writes_folders_back_as_written() {
-        let text = "flow files\nport 8200\nfolder inbox\nfolder out\n\nroute POST /move (req) {\n  t = inbox[req.json.name]\n  out[\"{req.json.name}.md\"] = \"# {t}\"\n  delete out[\"{req.json.name}.old\"]\n  respond inbox.list(prefix: \"2026/\", limit: 5)\n}\n";
-        assert_eq!(check("files.holon", text).code, 0);
-        assert_eq!(fmt("files.holon", text).unwrap(), text);
+        let text = "import { flow, route } from \"holon\"\nimport inbox from \"folder:inbox\"\nimport out from \"folder:out\"\n\nflow(\"files\", { port: 8200 })\n\nroute.post(\"/move\", (req) => {\n  const t = inbox[req.json.name]\n  out[`${req.json.name}.md`] = `# ${t}`\n  delete out[`${req.json.name}.old`]\n  return inbox.list({ prefix: \"2026/\", limit: 5 })\n})\n";
+        assert_eq!(check("files.holon.ts", text).code, 0);
+        assert_eq!(fmt("files.holon.ts", text).unwrap(), text);
     }
 
     #[test]
     fn fmt_writes_channels_back_as_written() {
-        let text = "flow board\nport 8200\nchannel updates\n\nroute POST /t (req) {\n  updates.send({ new: req.json.title })\n  respond { ok: true }, status: 201\n}\n\nroute GET /live (req) {\n  respond updates.subscribe()\n}\n\nroute GET /all (req) {\n  respond updates.subscribe(from: \"kept\"), headers: { \"cache-control\": \"no-store\" }\n}\n";
-        assert_eq!(check("board.holon", text).code, 0, "{:?}", check("board.holon", text).err);
-        assert_eq!(fmt("board.holon", text).unwrap(), text);
+        let text = "import { flow, respond, route, status } from \"holon\"\nimport updates from \"channel:updates\"\n\nflow(\"board\", { port: 8200 })\n\nroute.post(\"/t\", (req) => {\n  updates.send({ new: req.json.title })\n  return status(201, { ok: true })\n})\n\nroute.get(\"/live\", () => updates.subscribe())\n\nroute.get(\"/all\", () =>\n  respond(updates.subscribe({ from: \"kept\" }), { headers: { \"cache-control\": \"no-store\" } }),\n)\n";
+        assert_eq!(check("board.holon.ts", text).code, 0, "{:?}", check("board.holon.ts", text).err);
+        assert_eq!(fmt("board.holon.ts", text).unwrap(), text);
     }
 
     #[test]
     fn fmt_writes_a_streamed_reply_back_as_written() {
-        let text = "flow chat\nport 8200\ncollection said\n\nroute POST /ask (req) {\n  sent = http.post(\"api.example.com\", \"/v1/chat\", body: req.json, stream: true)\n  said[as_text(now)] = sent.body\n  respond sent.body, stream: true\n}\n";
-        assert_eq!(check("chat.holon", text).code, 0, "{:?}", check("chat.holon", text).err);
-        assert_eq!(fmt("chat.holon", text).unwrap(), text);
+        let text = "import { as_text, flow, respond, route } from \"holon\"\nimport said from \"collection:said\"\nimport example from \"host:api.example.com\"\nimport { now } from \"holon:clock\"\n\nflow(\"chat\", { port: 8200 })\n\nroute.post(\"/ask\", async (req) => {\n  const sent = await example.post(\"/v1/chat\", { body: req.json, stream: true })\n  said[as_text(now)] = sent.body\n  return respond(sent.body, { stream: true })\n})\n";
+        assert_eq!(check("chat.holon.ts", text).code, 0, "{:?}", check("chat.holon.ts", text).err);
+        assert_eq!(fmt("chat.holon.ts", text).unwrap(), text);
         // A computed status, written as it was.
-        let computed = "flow codes\nport 8200\n\nroute POST /a (req) {\n  respond { ok: false }, status: req.json.code, missing: 400\n}\n";
-        assert_eq!(check("codes.holon", computed).code, 0, "{:?}", check("codes.holon", computed).err);
-        assert_eq!(fmt("codes.holon", computed).unwrap(), computed);
+        let computed = "import { flow, route, status } from \"holon\"\n\nflow(\"codes\", { port: 8200 })\n\nroute.post(\"/a\", (req) => status(req.json.code, { ok: false }) ?? status(400))\n";
+        assert_eq!(check("codes.holon.ts", computed).code, 0, "{:?}", check("codes.holon.ts", computed).err);
+        assert_eq!(fmt("codes.holon.ts", computed).unwrap(), computed);
     }
 
     #[test]
     fn a_streamed_call_is_forwarded_where_its_route_answers() {
-        let flow = |route: &str| format!("flow chat\nport 8200\n\nroute POST /ask (req) {{\n{route}\n}}\n");
-        let fails = |route: &str| check("chat.holon", &flow(route)).err.join("\n");
-        assert!(fails("  sent = http.post(\"a.com\", \"/x\", stream: true)\n  respond sent.status").contains("answer with it, respond sent.body, stream: true"));
-        assert!(fails("  sent = http.post(\"a.com\", \"/x\")\n  respond sent.body, stream: true").contains("only a streamed call's body can be streamed"));
-        assert!(fails("  sent = http.post(\"a.com\", \"/x\", stream: true)\n  respond sent.body, stream: true, status: 201").contains("takes no status"));
-        assert!(fails("  sent = http.post(\"a.com\", \"/x\", stream: true, body: 1)\n  respond sent.body, stream: true").contains("stream: comes last"));
-        assert!(fails("  a = http.post(\"a.com\", \"/x\", stream: true)\n  b = http.post(\"a.com\", \"/y\", stream: true)\n  respond { a: a.body, b: b.body }").contains("one streamed call"));
-        assert!(check("chat.holon", "flow chat\nevery 10s\nstate x\n\nstate.x = http.get(\"a.com\", \"/x\", stream: true).body\n").err.join("\n").contains("a streamed call is a route's"));
+        let flow = |body: &str| format!("import {{ flow, respond, route }} from \"holon\"\nimport a from \"host:a.com\"\n\nflow(\"chat\", {{ port: 8200 }})\n\nroute.post(\"/ask\", async (req) => {{\n{body}\n}})\n");
+        let fails = |body: &str| check("chat.holon.ts", &flow(body)).err.join("\n");
+        assert!(fails("  const sent = await a.post(\"/x\", { stream: true })\n  return sent.status").contains("answer with it"));
+        assert!(fails("  const sent = await a.post(\"/x\")\n  return respond(sent.body, { stream: true })").contains("only a streamed call's body can be streamed"));
+        assert!(fails("  const sent = await a.post(\"/x\", { stream: true })\n  return respond(sent.body, { stream: true, status: 201 })").contains("takes no status"));
+        assert!(fails("  const sent = await a.post(\"/x\", { stream: true, body: 1 })\n  return respond(sent.body, { stream: true })").contains("comes last"));
+        assert!(fails("  const x = await a.post(\"/x\", { stream: true })\n  const y = await a.post(\"/y\", { stream: true })\n  return { a: x.body, b: y.body }").contains("one streamed call"));
+        let clock = "import { every, flow } from \"holon\"\nimport state from \"state\"\nimport a from \"host:a.com\"\n\nflow(\"chat\")\n\nevery(\"10s\", async () => {\n  state.x = (await a.get(\"/x\", { stream: true })).body\n})\n";
+        assert!(check("chat.holon.ts", clock).err.join("\n").contains("a streamed call is a route's"));
         // stream: false is a plain call.
-        assert_eq!(check("chat.holon", &flow("  sent = http.post(\"a.com\", \"/x\", stream: false)\n  respond sent.body")).code, 0);
+        assert_eq!(check("chat.holon.ts", &flow("  const sent = await a.post(\"/x\", { stream: false })\n  return sent.body")).code, 0);
     }
 
     #[test]
     fn a_piped_call_goes_to_its_channel_as_it_arrives() {
-        let text = "flow room\nport 8200\ncollection said\nchannel room\n\nroute POST /ask (req) {\n  sent = room.pipe(http.post(\"api.example.com\", \"/v1/chat\", body: req.json))\n  said[as_text(now)] = sent.body\n  respond { ok: true }, status: 202\n}\n";
-        let checked = check("room.holon", text);
+        let text = "import { as_text, flow, route, status } from \"holon\"\nimport said from \"collection:said\"\nimport room from \"channel:room\"\nimport example from \"host:api.example.com\"\nimport { now } from \"holon:clock\"\n\nflow(\"room\", { port: 8200 })\n\nroute.post(\"/ask\", (req) => {\n  const sent = room.pipe(example.post(\"/v1/chat\", { body: req.json }))\n  said[as_text(now)] = sent.body\n  return status(202, { ok: true })\n})\n";
+        let checked = check("room.holon.ts", text);
         assert_eq!(checked.code, 0, "{:?}", checked.err);
-        assert_eq!(fmt("room.holon", text).unwrap(), text);
+        assert_eq!(fmt("room.holon.ts", text).unwrap(), text);
         // Not a route's: a clock flow may pipe too.
-        assert_eq!(check("room.holon", "flow room\nevery 10s\nchannel room\nstate x\n\nstate.x = room.pipe(http.get(\"a.com\", \"/x\")).body\n").code, 0);
-        let fails = |line: &str| check("room.holon", &format!("flow room\nport 8200\nchannel room\n\nroute POST /ask (req) {{\n{line}\n  respond {{ ok: true }}, status: 202\n}}\n")).err.join("\n");
-        assert!(fails("  s = room.pipe(http.post(\"a.com\", \"/x\", stream: true))").contains("without stream:"));
-        assert!(fails("  s = room.pipe(1)").contains("only a call's answer can be piped"));
-        assert!(fails("  s = room.pipe()").contains("room.pipe takes one call"));
+        assert_eq!(check("room.holon.ts", "import { every, flow } from \"holon\"\nimport state from \"state\"\nimport room from \"channel:room\"\nimport a from \"host:a.com\"\n\nflow(\"room\")\n\nevery(\"10s\", () => {\n  state.x = room.pipe(a.get(\"/x\")).body\n})\n").code, 0);
+        let room = |body: &str| format!("import {{ flow, respond, route, status }} from \"holon\"\nimport room from \"channel:room\"\nimport a from \"host:a.com\"\n\nflow(\"room\", {{ port: 8200 }})\n\nroute.post(\"/ask\", (req) => {{\n{body}\n}})\n");
+        let fails = |line: &str| check("room.holon.ts", &room(&format!("{line}\n  return status(202, {{ ok: true }})"))).err.join("\n");
+        assert!(fails("  const s = room.pipe(a.post(\"/x\", { stream: true }))").contains("without stream"));
+        assert!(fails("  const s = room.pipe(1)").contains("only a call's answer can be piped"));
+        assert!(fails("  const s = room.pipe()").contains("room.pipe takes one call"));
         // A piped call isn't the route's reply: it can't be streamed to the caller.
-        let streamed = "flow room\nport 8200\nchannel room\n\nroute POST /ask (req) {\n  sent = room.pipe(http.post(\"a.com\", \"/x\"))\n  respond sent.body, stream: true\n}\n";
-        assert!(check("room.holon", streamed).err.join("\n").contains("only a streamed call's body can be streamed"));
+        let streamed = room("  const sent = room.pipe(a.post(\"/x\"))\n  return respond(sent.body, { stream: true })");
+        assert!(check("room.holon.ts", &streamed).err.join("\n").contains("only a streamed call's body can be streamed"));
     }
 
     #[test]
     fn a_subscription_is_only_a_routes_answer() {
-        let flow = |route: &str| format!("flow board\nport 8200\nchannel updates\n\nroute GET /live (req) {{\n{route}\n}}\n");
-        let fails = |route: &str| check("board.holon", &flow(route)).err.join("\n");
-        assert!(fails("  s = updates.subscribe()\n  respond s").contains("a subscription is a route's answer: respond updates.subscribe()"));
-        assert!(fails("  respond updates.subscribe(), status: 201").contains("takes no status"));
-        assert!(fails("  respond updates.subscribe(from: \"old\")").contains("from: is \"new\""));
-        assert!(fails("  respond updates").contains("\"updates\" is a channel"));
-        assert!(fails("  respond updates.watch()").contains("a channel has no \"watch\""));
-        assert!(fails("  updates = 1\n  respond 1").contains("a binding may not shadow it"));
-        assert!(check("board.holon", "flow board\nport 8200\n\nroute GET /live (req) {\n  respond updates.subscribe()\n}\n").code != 0);
-    }
-
-    /// fmt declares a secret the body reads and the header doesn't name, and says so; the header
-    /// says what the flow needs first, by name (docs/L4s/declared-names-L4.md §4-5).
-    #[test]
-    fn fmt_declares_what_the_body_reads_and_says_so() {
-        let src = "# signs\nflow f\nport 8200\ncollection c\noptional HttpRequest(\"h\")\noptional secret.b\n\n# the route\nroute GET /a (req) {\n  respond { a: secret.a, b: secret.b, c: c[\"k\"] }\n}\n";
-        let (text, declared) = fmt_declaring("f.holon", src).unwrap();
-        assert_eq!(declared, ["secret a"]);
-        assert_eq!(text, "# signs\nflow f\nport 8200\nsecret a\noptional secret b\noptional HttpRequest(\"h\")\ncollection c\n\n# the route\nroute GET /a (req) {\n  respond { a: secret.a, b: secret.b, c: c[\"k\"] }\n}\n");
-        assert_eq!(fmt_declaring("f.holon", &text).unwrap(), (text.clone(), vec![]), "stable, and nothing more to declare");
-        // A declaration nothing reads is dropped, as a collection's is.
-        assert_eq!(fmt("f.holon", "flow f\nport 8200\nsecret unused\n\nroute GET /a (req) {\n  respond 204\n}\n").unwrap(), "flow f\nport 8200\n\nroute GET /a (req) {\n  respond 204\n}\n");
-        // A mistake past the added lines is said where it is in the file.
-        let r = fmt("f.holon", "flow f\nport 8200\n\nroute GET /a (req) {\n  respond secret.a\n  x = nope\n}\n").unwrap_err();
-        assert!(r.err[0].starts_with("f.holon:6:7: unknown name"), "{:?}", r.err);
-        assert_eq!(r.err[1], "    x = nope");
-        // State keys too: after what the flow needs provided, before the stores.
-        let (text, declared) = fmt_declaring("f.holon", "flow f\nport 8200\ncollection c\nsecret a\n\nroute GET /a (req) {\n  state.hits = (state.hits ?? 0) + 1\n  c[\"k\"] = state.set(last, secret.a)\n  respond 204\n}\n").unwrap();
-        assert_eq!(declared, ["state hits", "state last"]);
-        assert!(text.starts_with("flow f\nport 8200\nsecret a\nstate hits\nstate last\ncollection c\n\n"), "{text}");
+        let flow = |body: &str| format!("import {{ flow, route, status }} from \"holon\"\nimport updates from \"channel:updates\"\n\nflow(\"board\", {{ port: 8200 }})\n\nroute.get(\"/live\", (req) => {{\n{body}\n}})\n");
+        let fails = |body: &str| check("board.holon.ts", &flow(body)).err.join("\n");
+        assert!(fails("  const s = updates.subscribe()\n  return s").contains("a subscription is a route's answer"));
+        assert!(fails("  return status(201, updates.subscribe())").contains("takes no status"));
+        assert!(fails("  return updates.subscribe({ from: \"old\" })").contains("from: is \"new\""));
+        assert!(fails("  return updates").contains("\"updates\" is a channel"));
+        assert!(fails("  return updates.watch()").contains("a channel has no \"watch\""));
+        assert!(check("board.holon.ts", "import { flow, route } from \"holon\"\n\nflow(\"board\", { port: 8200 })\n\nroute.get(\"/live\", () => updates.subscribe())\n").code != 0);
     }
 
     #[test]
     fn fmt_is_stable_and_every_sample_round_trips_through_new() {
-        let once = fmt("hello.holon", HELLO).unwrap();
-        assert_eq!(fmt("hello.holon", &once).unwrap(), once);
+        let once = fmt("hello.holon.ts", HELLO).unwrap();
+        assert_eq!(fmt("hello.holon.ts", &once).unwrap(), once);
         for s in samples::samples() {
             let text = new_flow(Some(s.name)).unwrap();
-            assert_eq!(check(&format!("{}.holon", s.name), &text).code, 0, "{}", s.name);
+            assert_eq!(check(&format!("{}.holon.ts", s.name), &text).code, 0, "{}", s.name);
             // The sample's own text, its names and comments and all.
             assert_eq!(text, s.text, "{}", s.name);
         }
         assert_eq!(new_flow(None).unwrap(), STARTER);
-        assert_eq!(check("my-flow.holon", STARTER).code, 0);
+        assert_eq!(check("my-flow.holon.ts", STARTER).code, 0);
         // The starter is already canonical, its comment and all.
-        assert_eq!(fmt("my-flow.holon", STARTER).unwrap(), STARTER);
+        assert_eq!(fmt("my-flow.holon.ts", STARTER).unwrap(), STARTER);
         let likes = new_flow(Some("likes")).unwrap();
-        assert!(likes.contains("collection likes
-"), "{likes}");
-        assert!(likes.contains("route POST /posts/:id/like (req) {
-"), "{likes}");
+        assert!(likes.contains("\nimport likes from \"collection:likes\"\n"), "{likes}");
+        assert!(likes.contains("\nroute.post(\"/posts/:id/like\", (req) => {\n"), "{likes}");
         assert!(new_flow(Some("nope")).unwrap_err().starts_with("no sample \"nope\""));
     }
 }

@@ -45,10 +45,11 @@ pub const GENESIS: &[&str] = &[
     // request/response — performed by the host, answered in the next round (2): a request, and
     // one whose body is a file a handle names
     "http_request", "http_upload", "http_stream",
-    // and a call to another deployed flow's action, which the host runs in-process (1)
-    "flow_call",
-    // drivers — sourced, no compute (5): a new file in a folder starts a run, as a request does
-    "clock", "random", "ingress", "secret", "file_arrival",
+    // and a call to another deployed flow's action, which the host runs in-process, and a start
+    // of one, which doesn't wait for it to end (2)
+    "flow_call", "flow_start",
+    // drivers — sourced, no compute (4): a new file in a folder starts a run, as a request does
+    "clock", "random", "secret", "file_arrival",
     // durable runs — answered by the host when an event arrives (2)
     "await", "resume_token",
     // state cell (2)
@@ -241,7 +242,6 @@ pub fn interface_of(name: &str) -> Option<Unit> {
         //    the payload is genuinely polymorphic (the editor may specialize later). ──
         "clock" => prim(vec![], vec![], Number),
         "random" => prim(vec![], vec![], Number),
-        "ingress" => prim(vec![], vec![], Any),
         // The handle of the new file that started the run.
         // `on`: `new` (a file new or changed) or `deleted`; `matching`: a glob on its name, empty
         // for every file. The host reads both from the deployed graph.
@@ -378,6 +378,15 @@ pub fn interface_of(name: &str) -> Option<Unit> {
             vec![Param::frozen("flow", "billing"), Param::frozen("action", "charge")],
             Type::Record,
         ),
+        // A start of the action `action` of the deployed flow `flow`, its own flow's or another's:
+        // the host runs it in-process until it finishes or first waits, and answers then, never
+        // waiting for its end: `{answer, run}` when it finished, `{run, waiting}` when it waits
+        // (each waiting point with its token), `{error, message}` when it didn't run.
+        "flow_start" => prim(
+            vec![port("input", Any)],
+            vec![Param::frozen("flow", "billing"), Param::frozen("action", "charge")],
+            Type::Record,
+        ),
         // A request whose body is the file a handle names, its bytes streamed by the host.
         "http_upload" => prim(
             vec![port("path", Text), port("headers", Type::Record), port("file", Type::Record)],
@@ -421,7 +430,13 @@ pub const TRIGGERED: &[&str] = &[
     "http_upload",
     "http_stream",
     "flow_call",
+    "flow_start",
 ];
+
+/// The sinks that answer: each asks the far side to do something and gives back what it said.
+/// Once made, a call can't be taken back, so it is made for what it does: it is kept as an effect
+/// whether or not its answer is read, and its answer is never its caller's to give.
+pub const CALLS: &[&str] = &["http_request", "http_upload", "http_stream", "flow_call", "flow_start"];
 
 /// Whether `unit` is a sink leaf with its trigger: the last input, by name (a leaf placed before
 /// sinks had one has none, and is computed as it always was).
@@ -471,7 +486,8 @@ mod tests {
         // http_upload), and the create-only pair (file_create, file_create_copy), and the
         // channel pair (channel_send, channel_subscribe), and http_stream, and the database kit
         // (db_query, db_one, db_exec), and the document kit (db_find, db_find_one, db_insert,
-        // db_update, db_delete), and flow_call.
+        // db_update, db_delete), and flow_call and flow_start; less ingress, which a flow without
+        // handlers read its trigger by.
         assert_eq!(GENESIS.len(), 95);
     }
 

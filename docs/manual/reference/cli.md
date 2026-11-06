@@ -17,7 +17,7 @@ Everything is one program, `holon`. `holon help` lists the commands; `serve`, `e
 | [`holon call`](#holon-call) | send a deployed flow a request |
 | [`holon load`](#holon-load) | a deployed flow's routes under load: requests a second, latency, and what the server did with the runs |
 | [`holon action`](#holon-action) | run one of a deployment's actions |
-| [`holon trigger`, `holon tick`](#holon-trigger-holon-tick) | run a flow by hand, or fire one of its clocks now |
+| [`holon tick`](#holon-tick) | fire one of a flow's clocks now |
 | [`holon state`](#holon-state) | a deployment's state, collections and sessions |
 | [`holon grant`](#holon-grant) | what a deployment is granted; revoke, grant back, lower |
 | [`holon grants`](#holon-grants) | who holds what |
@@ -68,8 +68,8 @@ These work on any machine, with no server.
 holon new <file> [--sample <name>]
 ```
 
-Writes a starter flow to `<file>`, or the sample named, whose comments say what it does and how
-to try it. It never overwrites a file.
+Writes a starter flow to `<file>` (a `NAME.holon.ts`), or the sample named, whose comments say
+what it does and how to try it. It never overwrites a file.
 `holon new --help` lists the samples.
 
 ### `holon check`
@@ -107,8 +107,9 @@ An outline: the routes, the nodes, and what feeds each.
 holon fmt <file>
 ```
 
-Rewrites the file in the canonical form, keeping its comments. Two flows that are the same graph
-format the same.
+Lays the file out in the canonical form, as Prettier does, at 100 columns and without
+semicolons, keeping its comments and blank lines. It writes only a text that compiles to the same
+flow.
 
 ## `holon serve`
 
@@ -159,7 +160,7 @@ prints what it approved, in the deployment's timeline as yours. Agents' tools
 ## `holon editor`
 
 ```
-holon editor [file.holon | slug] [--server PORT|URL]
+holon editor [file.holon.ts | slug] [--server PORT|URL]
 ```
 
 The editor in this terminal, on one screen: a bar along the top with the server and what waits
@@ -278,7 +279,7 @@ Its routes are every GET route, strict first, then lazy, then unrecorded, a path
 parameter given or not), and a route other than GET is sent `--body` (`{}` without one). The flow's port is on the server's host, over
 plain HTTP; `--to` names where else it answers, such as a proxy's address. `--json` prints all of
 it as JSON, each second's numbers too (the live lines still go to stderr). Exits 1 when nothing
-answered a route. The [`stress-test`](../../../crates/holon-author/samples/stress-test.holon)
+answered a route. The [`stress-test`](../../../crates/holon-author/samples/stress-test.holon.ts)
 sample has one route of each log level. Load from the same machine shares its processors with the
 server, so read a route beside another rather than its numbers alone. Anyone signed in, a
 viewer too: it only reads the server, and sends the flow's port what anyone may.
@@ -297,20 +298,18 @@ holon load stress-test --json > load.json
 holon action <slug> <name> [--input JSON | --input - | --input-file FILE]
 ```
 
-Runs one of a deployment's actions (`action reset (input) { … }`), as the editor's ▶ does, with
+Runs one of a deployment's actions (`export const reset = action(…)`), as the editor's ▶ does, with
 that input (`{}` without one), and prints what it answered and the run's number. A run that waits
 for an approval or an event says so. Exits 1 when the action answers 400 or more.
 
-### `holon trigger`, `holon tick`
+### `holon tick`
 
 ```
-holon trigger <slug> [--body TEXT | --body - | --body-file FILE]
 holon tick <slug> <clock>
 ```
 
-`trigger` runs a flow with no route of its own once (a scheduled flow, say), with that body: what
-it produced, and what it did. `tick` fires one of a server flow's clocks now, by its label as
-`holon deployments` shows it (`"every 2s"`).
+Fires one of a flow's clocks now, by its label as `holon deployments` shows it (`"every 2s"`):
+what the run did, as a tick on its own would.
 
 ### `holon state`
 
@@ -572,7 +571,7 @@ holon folder remove NAME [--for SLUG]
 holon folder sweep
 ```
 
-Binds a name flows use (`folder inbox`) to a folder on the server's machine. Needs an admin; each
+Binds a name flows use (`"folder:inbox"`) to a folder on the server's machine. Needs an admin; each
 takes `--server PORT|URL`. See [Files on the host](../guides/files.md).
 
 | Option | |
@@ -614,7 +613,7 @@ holon database remove NAME [--for SLUG]
 holon database tables NAME [--for SLUG]
 ```
 
-Binds a name flows use (`database shop`) to a SQLite file on the server's machine (`PATH`), or
+Binds a name flows use (`"database:shop"`) to a SQLite file on the server's machine (`PATH`), or
 to a Postgres, MySQL or MongoDB database whose URL the server fetches from `SOURCE`
 (`env:HOLON_SECRET_…`, `vault:<mount>/<path>#<field>`), never storing or showing it. `tables`
 lists its tables, read now. Needs an admin; each takes `--server PORT|URL`. See [Databases on the
@@ -657,9 +656,9 @@ own. See [Working with agents](../guides/agents.md).
 holon lsp
 ```
 
-A language server on stdin and stdout, for an editor to start: each mistake `holon check` finds,
-as you type; hover; completion; formatting; and a quick fix that declares a secret or state key
-the body uses undeclared. It needs no server. The VS Code extension starts it.
+A language server on stdin and stdout, for an editor to start on `.holon.ts` files: each mistake
+`holon check` finds, as you type; hover; completion; and formatting. It needs no server. The VS
+Code extension starts it.
 
 ## Looking after the install
 

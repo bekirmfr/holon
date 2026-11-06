@@ -49,11 +49,12 @@ is skipped (`Log::cut`).
 ### Keeping and cutting back
 
 A log keeps the newest `keep_runs` runs (default `DEFAULT_KEEP`, 500, or the host's
-`--keep-runs`), none older than `keep_run_days` when set: the flow's `keep 5 runs for 1d` line or
-the deploy settings, approved past the host's default, up to 20,000 runs and 3,650 days
-(`LogLimits::ceilings`). Cutting back keeps the newest lines byte for byte, so the chain still
-checks from the oldest kept, whose `prev` names one no longer there; the newest line is always
-kept, carrying the numbering and the chain on. A cut-back is made outside the log's lock
+`--keep-runs`), none older than `keep_run_days` when set: the flow's `keep` setting
+(`flow("rolling-log", { keep: { runs: 5, days: 1 } })`) or the deploy settings, approved past the
+host's default, up to 20,000 runs and 3,650 days (`LogLimits::ceilings`). Cutting back keeps the
+newest lines byte for byte, so the chain still checks from the oldest kept, whose `prev` names one
+no longer there; the newest line is always kept, carrying the numbering and the chain on. A
+cut-back is made outside the log's lock
 ([G5](../themes/resilience.md#g5-no-run-waits-while-its-log-is-cut-back)); what it lets go of goes
 to the backup first when there is one.
 

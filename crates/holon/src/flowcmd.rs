@@ -15,9 +15,9 @@ const NEW_USAGE: &str = "usage: holon new <file> [--sample NAME]
   --sample NAME            write that sample instead of the starter (they are listed below)
 
 examples:
-  holon new hello.holon
-  holon new shop.holon --sample shop
-  holon new stress.holon --sample stress-test
+  holon new hello.holon.ts
+  holon new shop.holon.ts --sample shop
+  holon new stress.holon.ts --sample stress-test
 
 samples:";
 
@@ -28,8 +28,8 @@ const CHECK_USAGE: &str = "usage: holon check <file>
   instead, on stderr, with its line and column. Exits 1 when there is one. It needs no server.
 
 examples:
-  holon check shop.holon
-  holon check shop.holon && holon deploy shop.holon";
+  holon check shop.holon.ts
+  holon check shop.holon.ts && holon deploy shop.holon.ts";
 
 const SHOW_USAGE: &str = "usage: holon show <file>
 
@@ -37,18 +37,18 @@ const SHOW_USAGE: &str = "usage: holon show <file>
   params and what feeds it. It needs no server.
 
 examples:
-  holon show shop.holon";
+  holon show shop.holon.ts";
 
 const FMT_USAGE: &str = "usage: holon fmt <file>
 
-  Rewrites a flow in place in the canonical form, the one the samples and holon new are written
-  in. A name the body uses that the header doesn't declare (secret.api_key with no secret
-  api_key line) is declared for it, and it says so. A flow that doesn't compile is left as it
-  is, its mistakes printed. It needs no server.
+  Rewrites a flow in place as the samples and holon new are written: laid out as written,
+  Prettier's way, its comments kept, var and == made const or let and ===, a js() body never
+  touched. A flow that doesn't compile is left as it is, its mistakes printed. It needs no
+  server.
 
 examples:
-  holon fmt shop.holon
-  holon fmt shop.holon && git diff shop.holon";
+  holon fmt shop.holon.ts
+  holon fmt shop.holon.ts && git diff shop.holon.ts";
 
 /// The help of the flow command `cmd`.
 fn usage(cmd: &str) -> String {
@@ -104,9 +104,8 @@ pub(crate) fn run(cmd: &str, args: &[String]) -> i32 {
     match cmd {
         "check" => print(commands::check(file, &source)),
         "show" => print(commands::show(file, &source)),
-        _ => match commands::fmt_declaring(file, &source) {
-            Ok((text, declared)) if declared.is_empty() => write(file, &text, &format!("formatted {file}")),
-            Ok((text, declared)) => write(file, &text, &format!("formatted {file}: declared {}", declared.join(", "))),
+        _ => match commands::fmt(file, &source) {
+            Ok(text) => write(file, &text, &format!("formatted {file}")),
             Err(report) => print(report),
         },
     }

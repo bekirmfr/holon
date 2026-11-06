@@ -1,4 +1,4 @@
-//! Building a flow document node by node, as the samples and the `.holon` text format do: every
+//! Building a flow document node by node, as the samples and a flow's text (`.holon.ts`) do: every
 //! node from the live catalog (or a template), every name checked (an unknown leaf, param or port
 //! is refused), holons grouped exactly as the editor groups them. What it builds is what opening
 //! the flow on a canvas loads.
@@ -39,8 +39,6 @@ pub struct HolonPort {
 pub struct Settings {
     #[serde(default)]
     pub port: String,
-    #[serde(default)]
-    pub interval: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub requirements: Option<Requirements>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

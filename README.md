@@ -30,27 +30,34 @@ agents or by people. Before a flow runs, and every time it runs:
 
 A webhook that verifies Stripe's signature and posts the event to Slack:
 
-```
-flow stripe-to-slack
-port 8103
-secret slack_webhook_path
-secret stripe_webhook_secret
+```ts
+import { flow, route, status, stripe } from "holon"
+import slack_webhook_path from "secret:slack_webhook_path"
+import stripe_webhook_secret from "secret:stripe_webhook_secret"
+import hooks from "host:hooks.slack.com"
+import { now } from "holon:clock"
 
-route POST /stripe (req) {
-  verified = stripe.verify(req, secret.stripe_webhook_secret, now)
-  sent = http.post("hooks.slack.com", secret.slack_webhook_path, headers: { "content-type": "application/json" }, body: json({ text: "Stripe: {verified.event.type}" }))
-  respond sent.status, missing: 400
-}
+flow("stripe-to-slack", { port: 8103 })
+
+route.post("/stripe", async (req) => {
+  const verified = stripe.verify(req, stripe_webhook_secret, now)
+  const sent = await hooks.post(slack_webhook_path, {
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ text: `Stripe: ${verified.event.type}` }),
+  })
+  return sent.status ?? status(400)
+})
 ```
 
-`holon check` reads it and says what it is and what it may do:
+A flow is a TypeScript file, so any editor reads it. `holon check` reads it and says what it is
+and what it may do:
 
 ```
-$ holon check hook.holon
-stripe-to-slack: 18 nodes, 18 wires
+$ holon check hook.holon.ts
+stripe-to-slack: 18 nodes, 19 wires
 a server on :8103
   POST /stripe
-unit cf3e7839f760eba0…
+unit d20899a82d8d8870…
 it may:
   read the clock
   call https://hooks.slack.com
@@ -106,9 +113,9 @@ flow may do: a first deploy waits on the flows page for you to approve.
 **5. Or write flows as text,** on any machine:
 
 ```sh
-holon new my-flow.holon          # a starter flow (--sample NAME for a sample)
-holon check my-flow.holon        # its routes, what it may do, or each mistake by line
-holon fmt my-flow.holon          # rewrite it in the canonical form
+holon new my-flow.holon.ts       # a starter flow (--sample NAME for a sample)
+holon check my-flow.holon.ts     # its routes, what it may do, or each mistake by line
+holon fmt my-flow.holon.ts       # rewrite it in the canonical form
 ```
 
 ## How it works
@@ -116,7 +123,7 @@ holon fmt my-flow.holon          # rewrite it in the canonical form
 **Flows.** A flow is a graph of pure parts (a catalog of leaves for text, numbers, lists,
 records, JSON, hashing and signatures) with effects only at its edges: the requests it answers,
 the calls it makes, the state it reads and writes. Every run ends: there are no loops or
-recursion, only `map` and `fold` over lists. The language and the canvas are two views of the same
+recursion, only `map` and `reduce` over lists. The language and the canvas are two views of the same
 graph: text compiles to it, the canvas prints back to text, and both hash to the same unit.
 Language reference: [`docs/LANGUAGE.md`](docs/LANGUAGE.md).
 
@@ -140,25 +147,25 @@ grants, starts, stops, deletes or sets a secret.
 
 | | In the language | Sample |
 |---|---|---|
-| Answer HTTP requests | `route GET /notes/:id (req) { … respond … }` | `hello-api`, `guestbook` |
-| Call other services | `http.get(host, path)`, `http.post(…)`, …: each host is a permission | `fetch-json`, `stripe-to-slack` |
-| Keep state | `state.beats`, and collections keyed by id: `collection notes`, `notes[id]` | `notes-api`, `likes` |
-| Read secrets | `secret name` in the header, read as `secret.name`: sealed at rest, never in a log or replay | `guarded-api`, `sign-payload` |
-| Run on a clock | `every 10s` in place of a port: the flow runs on the clock | `heartbeat` |
-| Run on files | `on file drop`: a run per file dropped in a folder, its handle as `ingress`; `deleted` and `matching "*.csv"` for removals and some names, several lines for several folders | `drop-box`, `file-audit` |
+| Answer HTTP requests | `route.get("/notes/:id", (req) => …)` | `hello-api`, `guestbook` |
+| Call other services | `import api from "host:api.example.com"`, then `await api.get(path)`, `api.post(…)`, …: each host is a permission | `fetch-json`, `stripe-to-slack` |
+| Keep state | `state.beats`, and collections keyed by id: `import notes from "collection:notes"`, `notes[id]` | `notes-api`, `likes` |
+| Read secrets | `import name from "secret:name"`: sealed at rest, never in a log or replay | `guarded-api`, `sign-payload` |
+| Run on a clock | `every("10s", () => { … })`: a run each period | `heartbeat` |
+| Run on files | `on.file.created(drop, (f) => { … })`: a run per file dropped in a folder, its handle as `f`; `on.file.deleted` and `{ matching: "*.csv" }` for removals and some names, a handler per folder | `drop-box`, `file-audit` |
 | Wait for a person | `await`: a run parks, and a later request resumes it, days later if need be | `approval` |
 | Call out once per key | a collection key read before a call is held until the run commits | `idempotent` |
-| Choose | `if … then … else`, `match`, `??`: the branch not taken doesn't run | `calc`, `cache-aside` |
-| Repeat | `map` and `fold` over lists, `range` | `quote`, `tickets` |
-| Reuse | holons: a flow placed as one node | `slugs` |
-| Compute what the vocabulary can't | a `js` holon: JavaScript with no imports, under a fuel budget | `nearest`, `tally` |
-| Read and write files | named folders an admin binds (`folder inbox`) | `inbox-report`, `log-archive`, `journal` |
+| Choose | `if`, `switch`, `c ? a : b`, `??`: the branch not taken doesn't run | `calc`, `cache-aside` |
+| Repeat | `map` and `reduce` over lists, `range` | `quote`, `tickets` |
+| Reuse | functions: a piece of flow placed as one node | `slugs` |
+| Compute what the vocabulary can't | a `js()` function: JavaScript with no imports, under a fuel budget | `nearest`, `tally` |
+| Read and write files | named folders an admin binds (`import inbox from "folder:inbox"`) | `inbox-report`, `log-archive`, `journal` |
 
 ## Samples
 
-Every sample is a `.holon` file in [`crates/holon-author/samples/`](crates/holon-author/samples),
+Every sample is a `.holon.ts` file in [`crates/holon-author/samples/`](crates/holon-author/samples),
 opens from the editor's flows page, and is deployed by the end-to-end tests.
-`holon new file.holon --sample NAME` writes one.
+`holon new file.holon.ts --sample NAME` writes one.
 
 | Sample | Shows |
 |---|---|
@@ -166,19 +173,19 @@ opens from the editor's flows page, and is deployed by the end-to-end tests.
 | `notes-api` | create, read, list a page at a time, and delete, in a collection |
 | `stripe-to-slack` | a verified webhook posting to Slack; anything unsigned gets 400 |
 | `guarded-api` | answering only token holders, with a signed receipt; secrets kept elsewhere |
-| `slugs` | holons: a whole flow placed as one node, twice |
+| `slugs` | functions: a piece of flow placed as one node, twice |
 | `issue-links` | one route with many interpolated parts |
-| `quote`, `basket`, `tickets` | functions over lists: `map`, `fold`, `range`, reads inside a function |
+| `quote`, `basket`, `tickets` | functions over lists: `map`, `reduce`, `range`, reads inside a function |
 | `cache-aside` | a fallback that isn't fetched when it isn't needed |
-| `calc` | `match`: one arm runs, the others don't |
+| `calc` | `switch`: one case runs, the others don't |
 | `heartbeat` | a flow on a clock, counting in its state |
 | `approval` | a durable run: a pay link that finishes the order hours later |
 | `fetch-json` | calling an API and answering with one field |
 | `sign-payload` | HMAC-SHA256 signing with a secret |
 | `likes` | runs side by side on one collection, none lost |
 | `idempotent` | one charge per `Idempotency-Key`, even when two arrive at once |
-| `guestbook` | a web page served by the flow, rendered by a `js` holon |
-| `nearest`, `tally` | `js` holons: edit distance, parsing a CSV |
+| `guestbook` | a web page served by the flow, rendered by a `js()` function |
+| `nearest`, `tally` | `js()` functions: edit distance, parsing a CSV |
 | `inbox-report`, `log-archive` | files in named folders; big files by range, proved by hash |
 | `journal` | a folder whose reads are kept a week and whose size is capped |
 | `drop-box` | a run per new file in a folder, the file sent on by handle as a request's body |
@@ -205,9 +212,9 @@ expression. In **view** mode it replays any run of a deployment: what didn't run
 the value each node made is beside it. It also manages deployments, their permissions and
 secrets, accounts and API tokens, and the folders flows may use.
 
-The **VS Code extension** ([`editors/vscode`](editors/vscode)) highlights `.holon` files and
-starts `holon lsp`; each release carries it as `holon-vscode.vsix`. Any editor with a language
-client can start `holon lsp` itself.
+The **VS Code extension** ([`editors/vscode`](editors/vscode)) starts `holon lsp` for `.holon.ts`
+files, which VS Code highlights as TypeScript; each release carries it as `holon-vscode.vsix`. Any
+editor with a language client can start `holon lsp` itself.
 
 `holon mcp setup` knows Claude Code, Claude Desktop, Cursor, VS Code (Copilot), Visual Studio,
 GitHub Copilot CLI, Devin, Windsurf, Zed, Gemini CLI, Antigravity, OpenAI Codex, Cline, Junie,
@@ -319,9 +326,10 @@ can't be bound; a write lands whole when the run finishes, unless it would take 
 past its cap (the run then answers 500). A text a run reads past 4 KiB is kept beside the store
 by content, in chunks, so a file that grows adds its new chunks, not a copy; the server sweeps
 the texts no kept run refers to within their folder's `--keep` (`holon folder sweep` does it now).
-A flow `on file drop` runs once for each file that arrives in `drop` (once it stops changing),
-and `http.put(host, path, file: ingress)` sends a file's bytes without them passing through the
-flow; `on file drop deleted` runs on files removed, `matching "*.csv"` on some names only.
+`on.file.created(drop, (f) => { … })` runs once for each file that arrives in `drop` (once it
+stops changing), and `await api.put(path, { file: f })` sends a file's bytes without them passing
+through the flow; `on.file.deleted(drop, …)` runs on files removed, `{ matching: "*.csv" }` on
+some names only.
 `reports.create(name, text)` writes a file only if there is none by that name. What a run may
 read and write of its files (`inline_file_bytes`, `max_file_read_bytes`, `max_file_write_bytes`,
 `max_files_per_run`) is a deployment's limit, granted like the others.

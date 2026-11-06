@@ -13,8 +13,8 @@ named as it is in the code; search for the name.
 | Editor | `npx tsc --noEmit -p .`, `npx vitest run` (`npm test` in `editor/`) | job `editor`, against a freshly built wasm | 357 at `905e9fc`, every sample built in `samples.test.ts` |
 | Embedded editor | `cargo test -p holon --features embed-editor editor` | job `editor` | |
 | End to end | `npm run e2e` in `editor/` (Playwright, the real editor and server) | job `e2e`, two shards | 72 passing, `atlas-notes` skipped without `HOLON_TEST_MONGODB` (7.1 minutes at `9969f8b`) |
-| VS Code extension | `npm test`, `xvfb-run -a npm run test:vscode` | job `vscode` | |
-| Golden records | inside `cargo test`; `HOLON_GOLDEN=update` rewrites them | yes | `crates/holon-author/tests/golden/eval.txt` (355 cases), `crates/holon/tests/golden/server.txt` (342 runs) |
+| VS Code extension | `xvfb-run -a npm run test:vscode` (in `editors/vscode`: `holon lsp` in a real VS Code) | job `vscode` | |
+| Golden records | inside `cargo test`; `HOLON_GOLDEN=update` rewrites them | yes | `crates/holon-author/tests/golden/eval.txt` (379 cases), `crates/holon/tests/golden/server.txt` (342 runs) |
 
 Every Rust test runs as a debug build, so the debug-only checks (the redaction shortcut's, below)
 run in all of them.
@@ -191,7 +191,8 @@ Every sample is a test ([`CLAUDE.md`](../../../CLAUDE.md)):
   its names are unique, each is one of a server, a clock or a file handler, servers on ports of
   their own; its endpoints, clocks and file handlers are as many as its document's `request`,
   `every` and `on_file` templates; its capabilities ask for nothing unknown and no `Spawn`, and
-  for the secrets, optional permissions and `keep`/`limit` lines its entry names.
+  for the secrets and optional permissions its entry names, and its `flow(…)`'s `keep` and
+  `limits` are the limits the deploy asks for.
 - `editor/e2e/samples.e2e.ts`: the flows page lists every sample; each opens and deploys through
   the real editor and server, its consent screen included.
 

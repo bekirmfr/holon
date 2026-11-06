@@ -1,7 +1,8 @@
 # Databases on the host
 
 A flow can read and write a database, but only one an admin has bound to a name, and only by
-that name. The flow says `database shop`; the admin decides that `shop` is `/srv/shop.db`, or the
+that name. The flow says `import shop from "database:shop"`; the admin decides that `shop` is
+`/srv/shop.db`, or the
 shop's Postgres, and what its tables are. The flow never sees where it is, runs no DDL, and is
 granted each table its SQL touches (each collection its calls name), no more.
 
@@ -95,17 +96,27 @@ holon database add notes env:HOLON_SECRET_NOTES_URL
 
 ## Reading and writing
 
-```holon
-flow orders-api
-port 8150
-database shop
+```ts
+import { flow, route, status } from "holon"
+import shop from "database:shop"
 
-route POST /orders (req) {
-  shop.exec("insert into orders (customer, total) values ($1, $2)", req.json.customer, req.json.total)
-  respond { placed: req.json.customer }, status: 201
-}
+flow("orders-api", { port: 8150 })
 
-route GET /orders/:customer (req) { respond shop.query("select id, total, refunded from orders where customer = $1 order by id", req.params.customer) }
+route.post("/orders", (req) => {
+  shop.exec(
+    "insert into orders (customer, total) values ($1, $2)",
+    req.json.customer,
+    req.json.total,
+  )
+  return status(201, { placed: req.json.customer })
+})
+
+route.get("/orders/:customer", (req) =>
+  shop.query(
+    "select id, total, refunded from orders where customer = $1 order by id",
+    req.params.customer,
+  ),
+)
 ```
 
 | Written | Is |
@@ -113,7 +124,7 @@ route GET /orders/:customer (req) { respond shop.query("select id, total, refund
 | `db.query(sql, v1, v2, …)` | the rows, as a list of records, as the run began |
 | `db.one(sql, v1, …)` | the first row, or no value when there is none (a route answers 404) |
 | `db.exec(sql, v1, …)` | run the statement (`insert`, `update`, `delete`) when the run finishes |
-| `db.exec(sql, v1, …, expect: n)` | the same, only if it changes exactly `n` rows: else nothing the run wrote lands, and a route answers 409 |
+| `db.exec(sql, v1, …, { expect: n })` | the same, only if it changes exactly `n` rows: else nothing the run wrote lands, and a route answers 409 |
 
 - The SQL is written as text in the flow, because its tables are what the deployment is granted:
   `select … from orders` asks `DbRead("shop/orders")`, `update orders …` asks
@@ -137,28 +148,34 @@ route GET /orders/:customer (req) { respond shop.query("select id, total, refund
 
 ### Documents (MongoDB)
 
-```holon
-flow atlas-notes
-port 8154
-database notes
+```ts
+import { flow, route } from "holon"
+import notes from "database:notes"
 
-route GET /notes/:owner (req) {
-  respond notes.find("notes", { owner: req.params.owner, done: false }, sort: { _id: 1 }, limit: 50)
-}
+flow("atlas-notes", { port: 8154 })
 
-route PUT /notes/:owner/:id (req) {
-  notes.update("notes", { _id: req.params.id, owner: req.params.owner }, { "$set": { text: req.json.text }, "$inc": { edits: 1 } }, expect: 1)
-  respond { edited: req.params.id }
-}
+route.get("/notes/:owner", (req) =>
+  notes.find("notes", { owner: req.params.owner, done: false }, { sort: { _id: 1 }, limit: 50 }),
+)
+
+route.put("/notes/:owner/:id", (req) => {
+  notes.update(
+    "notes",
+    { _id: req.params.id, owner: req.params.owner },
+    { "$set": { text: req.json.text }, "$inc": { edits: 1 } },
+    { expect: 1 },
+  )
+  return { edited: req.params.id }
+})
 ```
 
 | Written | Is |
 |---|---|
-| `db.find("coll", { … }, sort: { … }, limit: n)` | the documents the filter selects, as a list of records, as the run began (no filter: all of them) |
-| `db.find_one("coll", { … }, sort: { … })` | the first, or no value when there is none (a route answers 404) |
+| `db.find("coll", { … }, { sort: { … }, limit: n })` | the documents the filter selects, as a list of records, as the run began (no filter: all of them) |
+| `db.find_one("coll", { … }, { sort: { … } })` | the first, or no value when there is none (a route answers 404) |
 | `db.insert("coll", { … })` | add the document when the run finishes |
-| `db.update("coll", { filter }, { "$set": { … } }, expect: n)` | apply the update (`$set`, `$inc`, `$push`, … ) to the documents the filter selects |
-| `db.delete("coll", { filter }, expect: n)` | delete the documents the filter selects |
+| `db.update("coll", { filter }, { "$set": { … } }, { expect: n })` | apply the update (`$set`, `$inc`, `$push`, … ) to the documents the filter selects |
+| `db.delete("coll", { filter }, { expect: n })` | delete the documents the filter selects |
 
 - The collection is written in quotes, as SQL is, because it is what the deployment is granted:
   `notes.find("notes", …)` asks `DbRead("notes/notes")`; an insert, `DbWrite`; an update or a
@@ -190,15 +207,18 @@ deployments counting in one row lose no count.
 
 `expect:` is for the change that must happen once: refund an order only if it isn't refunded yet.
 
-```holon
-flow refunds
-port 8151
-database shop
+```ts
+import { flow, route } from "holon"
+import shop from "database:shop"
 
-route POST /order/:id/refund (req) {
-  shop.exec("update orders set refunded = 1 where id = $1 and refunded = 0", req.params.id, expect: 1)
-  respond { refunded: req.params.id }
-}
+flow("refunds", { port: 8151 })
+
+route.post("/order/:id/refund", (req) => {
+  shop.exec("update orders set refunded = 1 where id = $1 and refunded = 0", req.params.id, {
+    expect: 1,
+  })
+  return { refunded: req.params.id }
+})
 ```
 
 The second refund changes no row: the run fails with `changed 0 rows, not 1 row`, writes
@@ -229,22 +249,37 @@ first outbound call until it commits. Another run that read the same row waits a
 call; when the row is let go, it reads it again, and runs again on what it finds, having sent
 nothing.
 
-```holon
-flow refund-once
-port 8151
-database shop
+```ts
+import { flow, route, status } from "holon"
+import shop from "database:shop"
+import httpbin from "host:httpbin.org"
 
-route POST /refund/:id (req) {
-  order = shop.one("select id, total from orders where id = $1 and refunded = 0", req.params.id)
-  paid = http.post("httpbin.org", "/anything/refunds", headers: { "content-type": "application/json" }, body: json({ order: order.id, amount: order.total }))
-  shop.exec("update orders set refunded = 1 where id = $1 and refunded = 0", order.id, expect: 1)
-  shop.exec("insert into refunds (order_id, amount, status) values ($1, $2, $3)", order.id, order.total, paid.status)
-  respond { refunded: order.total, payment: paid.status }, missing: 409
-}
+flow("refund-once", { port: 8151 })
 
-route GET /refunds/:id (req) {
-  respond shop.query("select amount, status from refunds where order_id = $1", req.params.id)
-}
+route.post("/refund/:id", async (req) => {
+  const order = shop.one(
+    "select id, total from orders where id = $1 and refunded = 0",
+    req.params.id,
+  )
+  const paid = await httpbin.post("/anything/refunds", {
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ order: order.id, amount: order.total }),
+  })
+  shop.exec("update orders set refunded = 1 where id = $1 and refunded = 0", order.id, {
+    expect: 1,
+  })
+  shop.exec(
+    "insert into refunds (order_id, amount, status) values ($1, $2, $3)",
+    order.id,
+    order.total,
+    paid.status,
+  )
+  return { refunded: order.total, payment: paid.status } ?? status(409)
+})
+
+route.get("/refunds/:id", (req) =>
+  shop.query("select amount, status from refunds where order_id = $1", req.params.id),
+)
 ```
 
 Two refunds of one order at once call the payment API once: the second finds the order refunded,
@@ -272,29 +307,52 @@ shows it beside `orders-api`, on the same database.
 ## Runs that wait
 
 A run that waits for an event (`await`) holds nothing while it waits: a row it read is anyone's
-to change until the event comes. When it does, the run goes on from where it waited, its own
+to change until the event comes. A route never waits: it starts the run that does, an action,
+and answers with its link. When the event comes, the run goes on from where it waited, its own
 state as it first found it, and its databases and files **as they are now**: it reads them again.
 Its commit checks those reads as any run's does, and holds what it reads before it calls out, so
 if a row changed again in between, it runs again from where it waited, its requests and the
 event answered from its record, not sent or asked again.
 
-```holon
-flow approved-payout
-port 8153
-database bank
+```ts
+import { action, event, flow, route, status } from "holon"
+import bank from "database:bank"
+import httpbin from "host:httpbin.org"
 
-route POST /payout/:account (req) {
-  account = bank.one("select id, balance from accounts where id = $1", req.params.account)
-  respond { approve: "/approve/{resume_token(approved)}", balance: account.balance }, status: 202
-  approved = await approved, expires: 1d
-  sent = http.post("httpbin.org", "/anything/payouts", headers: { "content-type": "application/json" }, body: json({ account: account.id, amount: req.json.amount, by: parse_json(approved.body).by }))
-  bank.exec("update accounts set balance = $1 where id = $2", account.balance - req.json.amount, account.id, expect: 1)
-  bank.exec("insert into payouts (account, amount, status) values ($1, $2, $3)", account.id, req.json.amount, sent.status)
-}
+flow("approved-payout", { port: 8153 })
 
-route POST /approve/:token (req) resumes approved {
-  respond "approved"
-}
+route.post("/payout/:account", (req) => {
+  const account = bank.one("select id, balance from accounts where id = $1", req.params.account)
+  const started = payout({ account: account.id, amount: req.json.amount })
+  return status(202, { approve: `/approve/${started.waiting.approved}`, balance: account.balance })
+})
+
+export const payout = action(async (asked) => {
+  const account = bank.one("select id, balance from accounts where id = $1", asked.account)
+  const approved = await event("approved", { expires: "1d" })
+  const sent = await httpbin.post("/anything/payouts", {
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      account: account.id,
+      amount: asked.amount,
+      by: JSON.parse(approved.body).by,
+    }),
+  })
+  bank.exec(
+    "update accounts set balance = $1 where id = $2",
+    account.balance - asked.amount,
+    account.id,
+    { expect: 1 },
+  )
+  bank.exec(
+    "insert into payouts (account, amount, status) values ($1, $2, $3)",
+    account.id,
+    asked.amount,
+    sent.status,
+  )
+})
+
+route.post("/approve/:token", () => "approved", { resumes: "approved" })
 ```
 
 - A deposit made while the payout waits for its approval is kept: the approved run reads the

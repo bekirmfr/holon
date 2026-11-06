@@ -243,10 +243,10 @@ test("shared-key reads the server's secret, which may go only where an admin sai
   await expect(settings).toContainText("the server's · may go only to https://httpbin.dev");
   // The text changed to send it elsewhere: the deploy is refused, saying why.
   await page.locator(".hl-canvas").getByRole("button", { name: "text off" }).dispatchEvent("click");
-  const text = readFileSync(new URL("../../crates/holon-author/samples/shared-key.holon", import.meta.url), "utf8");
+  const text = readFileSync(new URL("../../crates/holon-author/samples/shared-key.holon.ts", import.meta.url), "utf8");
   await page.getByRole("region", { name: "Text" }).locator(".cm-content").click();
   await page.keyboard.press("Control+A");
-  await page.keyboard.insertText(text.replace('"httpbin.dev", "/bearer"', '"postman-echo.com", "/get"'));
+  await page.keyboard.insertText(text.replace('"host:httpbin.dev"', '"host:postman-echo.com"').replace('"/bearer"', '"/get"'));
   await expect(page.locator(".hl-node__secret").filter({ hasText: "postman-echo.com" })).toHaveCount(1);
   await page.locator(".hl-canvas").getByRole("button", { name: /^(deploy|update)/ }).dispatchEvent("click");
   await expect(page.getByText(`the server's secret "ops_api_key" may go only to https://httpbin.dev, and this flow sends it to https://postman-echo.com`)).toBeVisible();
@@ -263,38 +263,37 @@ test("a sample deployed as it is keeps its text and the names it binds", async (
   // alone is a canvas change the text doesn't have, so the loop above deploys the canvas alone.
   await openSample(page, "Cache-aside (a branch not taken)");
   const port = 8115 + SAMPLE_SHIFT;
-  const text = readFileSync(new URL("../../crates/holon-author/samples/cache-aside.holon", import.meta.url), "utf8");
+  const text = readFileSync(new URL("../../crates/holon-author/samples/cache-aside.holon.ts", import.meta.url), "utf8");
   await page.locator(".hl-canvas").getByRole("button", { name: "text off" }).dispatchEvent("click");
   await page.getByRole("region", { name: "Text" }).locator(".cm-content").click();
   await page.keyboard.press("Control+A");
-  await page.keyboard.insertText(text.replace("port 8115", `port ${port}`));
+  await page.keyboard.insertText(text.replace("port: 8115", `port: ${port}`));
   await settingsSayPort(page, String(port));
   expect(await deploy(page, 0)).toBe(port);
   const deployed = await request.get(`${SERVER}/deployments/cache-aside/document`, { headers: { Authorization: `Bearer ${adminToken}` } });
   expect(deployed.status()).toBe(200);
   const document = (await deployed.json()) as { source?: string; bindings?: Record<string, string> };
-  expect(document.source).toContain("flow cache-aside");
+  expect(document.source).toContain('flow("cache-aside"');
   expect(Object.values(document.bindings ?? {})).toEqual(expect.arrayContaining(["name", "id"]));
 });
 
-test("a flow nothing would start can't deploy; made runnable by hand, it deploys and runs as an action", async ({ page }) => {
+test("a flow nothing would start can't deploy; given an action, it deploys and runs by hand", async ({ page }) => {
   await page.goto("/");
   await page.getByRole("button", { name: "new", exact: true }).click();
   const canvas = page.locator(".hl-canvas");
+  // A leaf under no handler: nothing would start a run of it.
+  await dropFromPalette(page, "uppercase");
+  await expect(canvas.getByText("nothing would start a run", { exact: true })).toBeVisible({ timeout: 15_000 });
+  await expect(canvas.getByRole("button", { name: /^deploy/ })).toBeDisabled();
+  // Written as an action, which a person runs by hand, it starts.
   await canvas.getByRole("button", { name: "text off" }).click();
   await page.getByRole("region", { name: "Text" }).locator(".cm-content").click();
   await page.keyboard.press("Control+A");
-  await page.keyboard.insertText("flow by-hand\n\ntotal = 1 + 2\n");
-  await expect(canvas.getByText("nothing would start a run", { exact: true })).toBeVisible({ timeout: 15_000 });
-  await expect(canvas.getByRole("button", { name: /^deploy/ })).toBeDisabled();
-  // The quick fix puts its statements in an action, answering the value it computes. With the
+  await page.keyboard.insertText('import { action, flow } from "holon"\n\nflow("by-hand")\n\nexport const run = action(() => 1 + 2)\n');
+  await expect(canvas.getByText("nothing would start a run", { exact: true })).toHaveCount(0, { timeout: 15_000 });
+  // Deployed under a name of its own (asked, as for any new flow), its action answers. With the
   // text open the canvas's toolbar runs under the text pane at 1280px: pressed as a button, not at
-  // a point another element covers (a pointer click there retried for 70 s, then missed).
-  await canvas.getByRole("button", { name: "make it runnable by hand" }).dispatchEvent("click");
-  await expect(page.getByRole("region", { name: "Text" })).toContainText("action run (input) {");
-  await expect(page.getByRole("region", { name: "Text" })).toContainText("respond total");
-  await expect(canvas.getByText("nothing would start a run", { exact: true })).toHaveCount(0);
-  // Deployed under a name of its own (asked, as for any new flow), its action answers.
+  // a point another element covers.
   await expect(canvas.getByRole("button", { name: /^deploy/ })).toBeEnabled();
   await canvas.getByRole("button", { name: /^deploy/ }).dispatchEvent("click");
   await page.locator('[aria-modal="true"]').locator("input").fill(`by-hand-${Date.now()}`);
@@ -360,10 +359,10 @@ test("the Inspector shows the selected node in edit mode: its ports, and its uni
   await page.locator(".react-flow__node", { hasText: "concat" }).dispatchEvent("click");
   await expect(inspector).toContainText("concat");
   await expect(inspector).toContainText("inputs");
-  // The node's line in the flow as text (docs/LANGUAGE.md): the whole respond, since concat is
-  // part of that expression.
+  // The node's line in the flow as text (docs/LANGUAGE.md): the whole route, since concat is
+  // part of the template literal it answers.
   await expect(inspector).toContainText("as text, line");
-  await expect(inspector.locator(".hl-inspector__source")).toHaveText('respond "Hello, {req.params.name}"');
+  await expect(inspector.locator(".hl-inspector__source")).toHaveText('route.get("/hello/:name", (req) => `Hello, ${req.params.name}`)');
   await expect(inspector).toContainText("Pure");
   // Folded to a strip, and opened again.
   await inspector.getByRole("button", { name: "fold the Inspector" }).click();
@@ -576,7 +575,7 @@ test("the marketplace, a Holon flow: publish a saved flow to it, place it from t
   expect(after.units.length).toBeGreaterThan(0);
 });
 
-test("a flow as text: exported as .holon, checked by the command line, imported back", async ({ page }) => {
+test("a flow as text: exported as .holon.ts, checked by the command line, imported back", async ({ page }) => {
   const { execFileSync } = await import("node:child_process");
   const { mkdtempSync, readFileSync } = await import("node:fs");
   const { tmpdir } = await import("node:os");
@@ -584,33 +583,38 @@ test("a flow as text: exported as .holon, checked by the command line, imported 
   const name = `texty-${Date.now().toString(36)}`;
   await page.goto("/");
   await page.getByRole("button", { name: "new", exact: true }).click();
-  await dropFromPalette(page, "uppercase");
-  await page.locator(".hl-canvas").getByRole("button", { name: "save", exact: true }).click();
+  const canvas = page.locator(".hl-canvas");
+  await canvas.getByRole("button", { name: "text off" }).click();
+  await page.getByRole("region", { name: "Text" }).locator(".cm-content").click();
+  await page.keyboard.press("Control+A");
+  await page.keyboard.insertText(`import { action, flow } from "holon"\n\nflow("${name}")\n\nexport const shout = action((input) => input.toUpperCase())\n`);
+  await expect(page.locator(".hl-canvas__flow > .react-flow .react-flow__node", { hasText: "uppercase" })).toHaveCount(1, { timeout: 15_000 });
+  await canvas.getByRole("button", { name: "save", exact: true }).dispatchEvent("click");
   await page.locator('[aria-modal="true"] input').fill(name);
   await page.keyboard.press("Enter");
-  await expect(page.locator(".hl-canvas")).toContainText("saved");
+  await expect(canvas).toContainText("saved");
   await expect(page.locator(".hl-tab--active")).toContainText(name);
 
-  // Exported from the flows page.
+  // Exported from the flows page: the canvas printed as TypeScript.
   await page.getByRole("button", { name: "flows", exact: true }).click();
   const row = page.getByText(name, { exact: true }).locator("xpath=..");
   const download = page.waitForEvent("download");
-  await row.getByRole("button", { name: ".holon" }).click();
-  const file = join(mkdtempSync(join(tmpdir(), "holon-text-")), `${name}.holon`);
+  await row.getByRole("button", { name: ".holon.ts" }).click();
+  const file = join(mkdtempSync(join(tmpdir(), "holon-text-")), `${name}.holon.ts`);
   await (await download).saveAs(file);
   const text = readFileSync(file, "utf8");
-  expect(text).toContain(`flow ${name}`);
-  expect(text).toMatch(/node uppercase = uppercase/);
+  expect(text).toContain(`flow("${name}")`);
+  expect(text).toContain(".toUpperCase()");
 
   // Checked on the command line, with no browser: the `holon` the e2e server was built as.
   const target = process.env.CARGO_TARGET_DIR ?? join(process.cwd(), "..", "target");
   const holon = join(target, "debug", process.platform === "win32" ? "holon.exe" : "holon");
   const checked = execFileSync(holon, ["check", file], { encoding: "utf8" });
-  expect(checked).toContain(`${name}: 1 nodes, 0 wires`);
-  expect(checked).toContain("it only computes");
+  expect(checked).toContain(`${name}: 3 nodes, 3 wires`);
+  expect(checked).toContain("  action shout");
 
   // Imported back: an unsaved tab of its own, with the same node.
-  await page.getByLabel("import a .holon file").setInputFiles(file);
+  await page.getByLabel("import a flow's text").setInputFiles(file);
   await expect(page.locator(".hl-tab--active")).toContainText(name);
   await expect(page.locator(".hl-canvas__flow > .react-flow .react-flow__node", { hasText: "uppercase" })).toHaveCount(1);
 });
@@ -737,11 +741,11 @@ test("price-rollback: an earlier version's code restored from view mode's histor
   const total = async () => ((await (await request.get(`http://127.0.0.1:${port}/quote/${tea}`)).json()) as { total: number }).total;
   expect(await total()).toBe(4.5);
   // Another version: its fee changed in the text, on the same port.
-  const text = readFileSync(new URL("../../crates/holon-author/samples/price-rollback.holon", import.meta.url), "utf8");
+  const text = readFileSync(new URL("../../crates/holon-author/samples/price-rollback.holon.ts", import.meta.url), "utf8");
   await page.locator(".hl-canvas").getByRole("button", { name: "text off" }).click();
   await page.getByRole("region", { name: "Text" }).locator(".cm-content").click();
   await page.keyboard.press("Control+A");
-  await page.keyboard.insertText(text.replace("port 8160", `port ${port}`).replace("fee = 0.5", "fee = 5"));
+  await page.keyboard.insertText(text.replace("port: 8160", `port: ${port}`).replace("const fee = 0.5", "const fee = 5"));
   // Compiled: the canvas is no longer what is deployed. (Its port already was: ⚙ saying so
   // doesn't show the new text has landed.)
   await expect(page.locator(".hl-canvas").getByTitle("the canvas has changed since it was deployed")).toBeVisible({ timeout: 15_000 });
@@ -774,8 +778,8 @@ test("price-rollback: an earlier version's code restored from view mode's histor
   await expect(dialog.locator(".hl-dryrun__changes")).toContainText(`code: version ${before}'s is deployed again, as version ${now + 1}, in place of version ${now}`);
   await dialog.getByRole("button", { name: "diff", exact: true }).click();
   const codeDiff = dialog.locator('.hl-dryrun__diffpart[data-title="code"]');
-  await expect(codeDiff.locator('.hl-dryrun__line[data-sign="-"]')).toHaveText(["-   c = 5"]);
-  await expect(codeDiff.locator('.hl-dryrun__line[data-sign="+"]')).toHaveText(["+   c = 0.5"]);
+  await expect(codeDiff.locator('.hl-dryrun__line[data-sign="-"]')).toHaveText(["-   const c = 5"]);
+  await expect(codeDiff.locator('.hl-dryrun__line[data-sign="+"]')).toHaveText(["+   const c = 0.5"]);
   await expect(codeDiff).toContainText(`version ${before} was deployed from the canvas, which keeps none`);
   await expect(dialog.locator('.hl-dryrun__diffpart[data-title="permissions"]')).toContainText('CollectionRead("prices")');
   await dialog.getByRole("button", { name: "Restore", exact: true }).click();
@@ -928,12 +932,12 @@ data: ${JSON.stringify(data)}
     await openSample(page, "Chat proxy (a streamed reply)");
     // The sample calls api.anthropic.com: here, the stand-in, over plain HTTP to this machine. The
     // text says the port (with the text open, it is the text's), moved up as deploy() moves it.
-    const text = readFileSync(new URL("../../crates/holon-author/samples/chat-proxy.holon", import.meta.url), "utf8");
+    const text = readFileSync(new URL("../../crates/holon-author/samples/chat-proxy.holon.ts", import.meta.url), "utf8");
     await page.locator(".hl-canvas").getByRole("button", { name: "text off" }).click();
     const editor = page.getByRole("region", { name: "Text" }).locator(".cm-content");
     await editor.click();
     await page.keyboard.press("Control+A");
-    await page.keyboard.insertText(text.replaceAll('"api.anthropic.com"', `"${host}"`).replace("port 8127", `port ${8127 + SAMPLE_SHIFT}`));
+    await page.keyboard.insertText(text.replaceAll('"host:api.anthropic.com"', `"host:${host}"`).replace("port: 8127", `port: ${8127 + SAMPLE_SHIFT}`));
     await settingsSayPort(page, String(8127 + SAMPLE_SHIFT));
     const port = await deploy(page, 0, async (settings) => {
       await settings.getByTitle("comma-separated host[:port]").fill(host);
@@ -1023,12 +1027,12 @@ test("gemini-chat forwards Gemini's streamed answer as it arrives, and says so w
     await openSample(page, "Gemini chat (a streamed reply, free tier)");
     // The sample calls generativelanguage.googleapis.com: here, the stand-in, over plain HTTP to
     // this machine, on a port the text says (the text's wins while it is open).
-    const text = readFileSync(new URL("../../crates/holon-author/samples/gemini-chat.holon", import.meta.url), "utf8");
+    const text = readFileSync(new URL("../../crates/holon-author/samples/gemini-chat.holon.ts", import.meta.url), "utf8");
     await page.locator(".hl-canvas").getByRole("button", { name: "text off" }).click();
     const editor = page.getByRole("region", { name: "Text" }).locator(".cm-content");
     await editor.click();
     await page.keyboard.press("Control+A");
-    await page.keyboard.insertText(text.replaceAll('"generativelanguage.googleapis.com"', `"${host}"`).replace("port 8128", `port ${8128 + SAMPLE_SHIFT}`));
+    await page.keyboard.insertText(text.replaceAll('"host:generativelanguage.googleapis.com"', `"host:${host}"`).replace("port: 8128", `port: ${8128 + SAMPLE_SHIFT}`));
     await settingsSayPort(page, String(8128 + SAMPLE_SHIFT));
     const port = await deploy(page, 0, async (settings) => {
       await settings.getByTitle("comma-separated host[:port]").fill(host);
@@ -1130,12 +1134,12 @@ test("chess holds its agent to the legal moves, streams its chat replies and kee
     await openSample(page, "Chess against an agent (held to its interface)");
     // The sample calls generativelanguage.googleapis.com: here, the stand-in, over plain HTTP to
     // this machine, on a port the text says (the text's wins while it is open).
-    const text = readFileSync(new URL("../../crates/holon-author/samples/chess.holon", import.meta.url), "utf8");
+    const text = readFileSync(new URL("../../crates/holon-author/samples/chess.holon.ts", import.meta.url), "utf8");
     await page.locator(".hl-canvas").getByRole("button", { name: "text off" }).click();
     const editor = page.getByRole("region", { name: "Text" }).locator(".cm-content");
     await editor.click();
     await page.keyboard.press("Control+A");
-    await page.keyboard.insertText(text.replaceAll('"generativelanguage.googleapis.com"', `"${host}"`).replace("port 8168", `port ${8168 + SAMPLE_SHIFT}`).replace("limit request_timeout_ms 50s", "limit request_timeout_ms 5s"));
+    await page.keyboard.insertText(text.replaceAll('"host:generativelanguage.googleapis.com"', `"host:${host}"`).replace("port: 8168", `port: ${8168 + SAMPLE_SHIFT}`).replace('request_timeout_ms: "50s"', 'request_timeout_ms: "5s"'));
     await settingsSayPort(page, String(8168 + SAMPLE_SHIFT));
     const port = await deploy(page, 0, async (settings) => {
       await settings.getByTitle("comma-separated host[:port]").fill(host);
@@ -1434,14 +1438,15 @@ test("rolling-log keeps only its newest 5 runs, as its deploy settings ask, whil
   // it; the settings changed, the line is written again.
   await page.locator(".hl-canvas").getByRole("button", { name: "text off" }).click();
   const text = page.getByRole("region", { name: "Text" }).locator(".cm-content");
-  await expect(text).toContainText("keep 5 runs for 1d");
-  const source = readFileSync(new URL("../../crates/holon-author/samples/rolling-log.holon", import.meta.url), "utf8");
+  await expect(text).toContainText("keep: { runs: 5, days: 1 }");
+  const source = readFileSync(new URL("../../crates/holon-author/samples/rolling-log.holon.ts", import.meta.url), "utf8");
   await text.click();
   await page.keyboard.press("Control+A");
-  await page.keyboard.insertText(source.replace("keep 5 runs for 1d", "keep 7 runs for 1d"));
+  await page.keyboard.insertText(source.replace("keep: { runs: 5, days: 1 }", "keep: { runs: 7, days: 1 }"));
   await expect(runs).toHaveValue("7", { timeout: 15_000 });
   await runs.fill("5");
-  await expect(text).toContainText("keep 5 runs for 1d");
+  // Written again from the canvas.
+  await expect(text).toContainText("keep: { runs: 5, days: 1 }");
   await deploy(page);
   const auth = { Authorization: `Bearer ${adminToken}` };
   const seqs = async () =>
@@ -1560,8 +1565,8 @@ test("guarded-api's token rolls back under ⚙ once a dry run has said what it w
   expect((await versions())[0]).toMatchObject({ version: now + 1, current: true });
 });
 
-test("calc's match answers the chosen arm or 400 when it has no value, and view mode shows the other arms as not run", async ({ page, request }) => {
-  await openSample(page, "Calculator (a match)");
+test("calc's switch answers the chosen arm or 400 when it has no value, and view mode shows the other arms as not run", async ({ page, request }) => {
+  await openSample(page, "Calculator (a switch)");
   const port = await deploy(page);
   // `a / b` has no value when b is 0; an arm not chosen doesn't matter.
   const add = await request.post(`http://127.0.0.1:${port}/calc`, { data: { op: "add", a: 1, b: 0 } });
@@ -1592,8 +1597,10 @@ test("calc's match answers the chosen arm or 400 when it has no value, and view 
   await page.locator(".hl-view__bottom").getByRole("button", { name: "Timeline" }).click();
   await page.getByTitle("step forward one node").click();
   await expect(text.locator(".hl-text__step")).toHaveCount(1);
-  await text.locator(".cm-line", { hasText: '"div" -> a / b' }).click();
+  // The cursor just after `a / b`, its case's answer before `?? status(400)`.
+  await text.locator(".cm-line", { hasText: "return a / b" }).click();
   await page.keyboard.press("End");
+  for (const _ of " ?? status(400)") await page.keyboard.press("ArrowLeft");
   await expect(text.locator(".hl-text__mark")).toHaveText("a / b");
   await expect(page.getByRole("complementary", { name: "Inspector" })).toContainText("divide");
   await page.screenshot({ path: "test-results/text-run.png" });
@@ -1715,11 +1722,11 @@ test("shared-ledger, deployed twice, loses no line when both append to one file 
   await openSample(page, "Shared ledger (one file, several deployments)");
   const first = await deploy(page);
   // A second deployment of the same text, under another name and port, imported as a file.
-  const text = readFileSync(join(process.cwd(), "..", "crates", "holon-author", "samples", "shared-ledger.holon"), "utf8");
-  const copy = join(mkdtempSync(join(tmpdir(), "holon-ledger-")), "shared-ledger-2.holon");
-  writeFileSync(copy, text.replace("flow shared-ledger", "flow shared-ledger-2").replace("port 8140", "port 8141"));
+  const text = readFileSync(join(process.cwd(), "..", "crates", "holon-author", "samples", "shared-ledger.holon.ts"), "utf8");
+  const copy = join(mkdtempSync(join(tmpdir(), "holon-ledger-")), "shared-ledger-2.holon.ts");
+  writeFileSync(copy, text.replace('flow("shared-ledger"', 'flow("shared-ledger-2"').replace("port: 8140", "port: 8141"));
   await page.getByRole("button", { name: "flows", exact: true }).click();
-  await page.getByLabel("import a .holon file").setInputFiles(copy);
+  await page.getByLabel("import a flow's text").setInputFiles(copy);
   await expect(page.locator(".hl-tab--active")).toContainText("shared-ledger-2");
   const second = await deploy(page);
   expect(second).not.toBe(first);

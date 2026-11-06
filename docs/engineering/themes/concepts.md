@@ -30,7 +30,7 @@ frozen, or an open hole that makes the unit a template until `instantiate` fills
 **Primitive (leaf).** A body named from the catalog (below). Most are pure: given the same inputs
 they give the same output. Some build a request the host answers (`http_request`,
 `collection_get`, `await`); some are **sourced**, their value supplied by the host before the run
-(`clock`, `random`, `ingress`, `secret`, `file_arrival`, `store_read`; `Capability::is_sourced`);
+(`clock`, `random`, `secret`, `file_arrival`, `store_read`; `Capability::is_sourced`);
 the **sinks** (`TRIGGERED`, `catalog.rs`) build an effect.
 
 **Holon (composite).** `UnitBody::Composite`: children referenced by hash only, never inlined

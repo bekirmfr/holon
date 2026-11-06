@@ -1,6 +1,6 @@
 // Replaying a logged run on the canvas, node by node. A flow log entry (holon-server's
 // recorder.rs) holds everything the run depended on: the request record, the state it read, and
-// the sourced values (clock, random, ingress). Evaluation is deterministic, so feeding those back
+// the sourced values (clock, random, the request, the new file). Evaluation is deterministic, so feeding those back
 // in and evaluating each node in dependency order reproduces exactly what every node computed.
 // Except where a secret or a token went in: the log never holds those (a placeholder stands in),
 // so a node fed one is shown with what the run recorded it produced, not recomputed. The same
@@ -291,7 +291,7 @@ export function nodeExchanges(
   );
 }
 
-/** What each `http_request` (or `http_upload`, `http_stream`, `flow_call`) node was answered, from the run's record: the last answer it got,
+/** What each `http_request` (or `http_upload`, `http_stream`, `flow_call`, `flow_start`) node was answered, from the run's record: the last answer it got,
  *  which is the one its final round used. Replay feeds these back instead of calling anything. */
 export function recordedResponses(exchanges: NodeExchange[]): Map<string, WValue> {
   const out = new Map<string, WValue>();
@@ -538,7 +538,6 @@ export function replay(
     // A clock's tick: the time it ticked.
     if (node.data.body.kind === "Template" && name === "every") return { inputs, outputs: [sourced.get("Clock") ?? null] };
     if (primitive && name === "random") return { inputs, outputs: [sourced.get("Random") ?? null] };
-    if (primitive && name === "ingress") return { inputs, outputs: [sourced.get("NetworkIngress") ?? null] };
     // The new file that started the run: its handle, as the log keeps it.
     if (primitive && name === "file_arrival") return { inputs, outputs: [sourced.get(`FileArrival(${JSON.stringify(param("folder"))})`) ?? null] };
     // A file handler's file: its handle, likewise.
@@ -553,7 +552,7 @@ export function replay(
       const shown = entry.secrets?.[secret];
       return { inputs, outputs: [{ type: "Text", value: `‹secret:${secret}${shown ? ` ${shown}` : ""}›` }] };
     }
-    if (primitive && ["http_request", "http_upload", "http_stream", "flow_call", "collection_get", "collection_list", "file_read", "file_list", "file_handle", "file_lines", "file_slice"].includes(name)) {
+    if (primitive && ["http_request", "http_upload", "http_stream", "flow_call", "flow_start", "collection_get", "collection_list", "file_read", "file_list", "file_handle", "file_lines", "file_slice"].includes(name)) {
       // Answered from the record, never the network, the store or the disk: a replay is offline
       // and exact, and shows the collection or folder as the run found it, whatever it holds now.
       return { inputs, outputs: [responses.get(id) ?? null] };
@@ -778,7 +777,7 @@ export function diagnose(
       issues.set(id, { role: "starved", reason: `${fellBack ? "fell back: " : "didn't run: "}${from} never arrived` });
       continue;
     }
-    if ((n.data.name === "http_request" || n.data.name === "http_upload" || n.data.name === "http_stream" || n.data.name === "flow_call") && n.data.body.kind === "Primitive") {
+    if ((n.data.name === "http_request" || n.data.name === "http_upload" || n.data.name === "http_stream" || n.data.name === "flow_call" || n.data.name === "flow_start") && n.data.body.kind === "Primitive") {
       const why = whyFailed(trace.outputs[0] ?? null);
       if (why) {
         issues.set(id, { role: "origin", reason: why });

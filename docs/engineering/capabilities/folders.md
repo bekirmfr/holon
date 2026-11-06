@@ -10,29 +10,29 @@ are. The design is the [named folders L4](../../L4s/named-folders-L4.md) (NF, wi
 
 ## 1. What it is
 
+```ts
+import { flow, route } from "holon"
+import archive from "folder:archive"
+import logs from "folder:logs"
+
+flow("log-archive", { port: 8124 })
+
+route.get("/logs/:name/tail", (req) => logs.lines(req.params.name, { from: -20, limit: 20 }))
+
+route.post("/archive", (req) => {
+  const log = logs.file(req.json.name)
+  archive[`${log.name}.${log.hash}`] = log
+  return { archived: `${log.name}.${log.hash}`, size: log.size }
+})
 ```
-flow log-archive
-folder archive
-folder logs
 
-route GET /logs/:name/tail (req) {
-  respond logs.lines(req.params.name, from: -20, limit: 20)
-}
-
-route POST /archive (req) {
-  log = logs.file(req.json.name)
-  archive["{log.name}.{log.hash}"] = log
-  respond { archived: "{log.name}.{log.hash}", size: log.size }
-}
-```
-
-`folder logs` names a folder; a folder reads and writes as a collection does, by file name
-([LANGUAGE.md](../../LANGUAGE.md) §5.4): `inbox[n]` is `file_read` (the text as the run began),
-`reports[n] = text` `file_write`, `delete reports[n]` `file_delete`, `.list` `file_list`, `.file`
-`file_handle` (`{folder, name, size, hash, modified}`, no bytes), `.lines` and `.slice` a range,
-`reports[n] = h` or `.copy` `file_copy`, `.create` and `.create_copy` the same only if no file
-has that name. Reads ask `FileRead("logs")`, writes `FileWrite("archive")`; `on file inbox`
-(a run per file, `FileArrival`, `arrivals.rs`) is in
+`import logs from "folder:logs"` names a folder; a folder reads and writes as a collection does,
+by file name ([LANGUAGE.md](../../LANGUAGE.md) §5.4): `inbox[n]` is `file_read` (the text as the
+run began), `reports[n] = text` `file_write`, `delete reports[n]` `file_delete`, `.list`
+`file_list`, `.file` `file_handle` (`{folder, name, size, hash, modified}`, no bytes), `.lines`
+and `.slice` a range, `reports[n] = h` or `.copy` `file_copy`, `.create` and `.create_copy` the
+same only if no file has that name. Reads ask `FileRead("logs")`, writes `FileWrite("archive")`;
+`on.file.created(inbox, …)` (a run per file, `FileArrival`, `arrivals.rs`) is in
 [triggers and clocks](triggers-and-clocks.md).
 
 - `crates/holon/src/folders.rs`: bindings (`Folders`, `Folder`, `Bound`, a deployment's view
@@ -151,7 +151,7 @@ has that name. Reads ask `FileRead("logs")`, writes `FileWrite("archive")`; `on 
 - **Samples**: `inbox-report` (reads and writes), `log-archive` (handles, copy between folders,
   ranges), `journal` (kept for a while, a cap), `shared-ledger` (commit locks across
   deployments), `stock-sheet` (a restore leaves files), `drop-box`, `file-audit`, `drop-board`
-  (`on file`). Each deploys in `samples.e2e.ts`, and each has a test of its own there:
+  (`on.file.*` handlers). Each deploys in `samples.e2e.ts`, and each has a test of its own there:
   `inbox-report`, `log-archive` and `journal` bind temporary folders and verify their runs.
 - **Gaps**: no test crashes between a file's rename and the run's record; the sweep's pace under
   a large blob store isn't measured.

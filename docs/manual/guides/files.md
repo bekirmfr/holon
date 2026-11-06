@@ -1,9 +1,9 @@
 # Files on the host
 
 A flow can read and write files on the server's machine, but only in folders an admin has bound
-to a name, and only by that name. The flow says `folder inbox`; the admin decides that `inbox` is
-`/srv/drop`, read only. The flow never sees a path, and can't reach anything outside the folders
-it names.
+to a name, and only by that name. The flow says `import inbox from "folder:inbox"`; the admin
+decides that `inbox` is `/srv/drop`, read only. The flow never sees a path, and can't reach
+anything outside the folders it names.
 
 ## Binding a folder
 
@@ -45,27 +45,26 @@ flow writes.
 
 A folder reads and writes like a collection, by file name:
 
-```holon
-flow inbox-report
-port 8112
-folder inbox
-folder reports
+```ts
+import { flow, length, route, status } from "holon"
+import inbox from "folder:inbox"
+import reports from "folder:reports"
 
-route POST /report (req) {
-  name = req.json.name
-  text = inbox[name]
-  reports["{name}.md"] = "# {name}\n\n{length(split(text, "\n"))} lines"
-  respond { report: "{name}.md" }
-}
+flow("inbox-report", { port: 8112 })
 
-route GET /reports (req) {
-  respond reports.list()
-}
+route.post("/report", (req) => {
+  const name = req.json.name
+  const text = inbox[name]
+  reports[`${name}.md`] = `# ${name}\n\n${length(text.split("\n"))} lines`
+  return { report: `${name}.md` }
+})
 
-route DELETE /reports/:name (req) {
+route.get("/reports", () => reports.list())
+
+route.delete("/reports/:name", (req) => {
   delete reports[req.params.name]
-  respond 204
-}
+  return status(204)
+})
 ```
 
 | Written | Does | Asks for |
@@ -73,7 +72,7 @@ route DELETE /reports/:name (req) {
 | `inbox[name]` | the file's text, as the run began; no value if there is none | read files in the folder "inbox" |
 | `reports[name] = text` | write the whole file when the run finishes | write, copy into and delete files in the folder "reports" |
 | `delete reports[name]` | delete it when the run finishes | the same |
-| `reports.list(prefix: p, after: a, limit: n)` | a page of files: name to `{size, hash, modified}`, in name order | read files |
+| `reports.list({ prefix: p, after: a, limit: n })` | a page of files: name to `{size, hash, modified}`, in name order | read files |
 
 - A name is a path inside the folder (`2026/10/a.csv`), and never leaves it.
 - A file read whole is text (UTF-8), up to 1 MiB; a run reads 64 MiB in all at most. Reading
@@ -101,32 +100,29 @@ route DELETE /reports/:name (req) {
 
 A file of any size is used without it entering the run whole:
 
-```holon
-flow log-archive
-port 8124
-folder archive
-folder logs
+```ts
+import { flow, route } from "holon"
+import archive from "folder:archive"
+import logs from "folder:logs"
 
-route GET /logs/:name/tail (req) {
-  respond logs.lines(req.params.name, from: -20, limit: 20)
-}
+flow("log-archive", { port: 8124 })
 
-route GET /logs/:name/head (req) {
-  respond logs.slice(req.params.name, offset: 0, length: 256)
-}
+route.get("/logs/:name/tail", (req) => logs.lines(req.params.name, { from: -20, limit: 20 }))
 
-route POST /archive (req) {
-  log = logs.file(req.json.name)
-  archive["{log.name}.{log.hash}"] = log
-  respond { archived: "{log.name}.{log.hash}", size: log.size }
-}
+route.get("/logs/:name/head", (req) => logs.slice(req.params.name, { offset: 0, length: 256 }))
+
+route.post("/archive", (req) => {
+  const log = logs.file(req.json.name)
+  archive[`${log.name}.${log.hash}`] = log
+  return { archived: `${log.name}.${log.hash}`, size: log.size }
+})
 ```
 
 | Written | Gives |
 |---|---|
 | `logs.file(name)` | a **handle**: `{folder, name, size, hash, modified}`, without the bytes |
-| `logs.lines(name, from: i, limit: n)` | `n` lines from line `i` (from the end when negative), without line endings |
-| `logs.slice(name, offset: o, length: n)` | `n` bytes from `o` (from the end when negative), as text |
+| `logs.lines(name, { from: i, limit: n })` | `n` lines from line `i` (from the end when negative), without line endings |
+| `logs.slice(name, { offset: o, length: n })` | `n` bytes from `o` (from the end when negative), as text |
 | `archive[n] = handle`, `archive.copy(n, handle)` | copy the file when the run finishes, on the host; it fails if the file no longer has the handle's hash |
 
 Only the lines or bytes read enter the run, and the log keeps with them the hashes that prove
@@ -134,19 +130,24 @@ them part of the file, so the run can still be checked offline.
 
 ## A run per new file
 
-`on file NAME`, in place of `port` or `every`, makes a flow run once for each new file in that
-folder. In each run, `ingress` is the file's handle (its `event` says `new`, `changed` or
-`deleted`):
+`on.file.created(NAME, (f) => { … })` runs once for each new file in the folder `NAME` imports,
+with the file's handle as `f` (its `event` says `new`, `changed` or `deleted`):
 
-```holon
-flow drop-box
-on file drop
-folder receipts
+```ts
+import { flow, on } from "holon"
+import receipts from "folder:receipts"
+import drop from "folder:drop"
+import httpbin from "host:httpbin.org"
 
-sent = http.put("httpbin.org", "/put",
-  headers: { "content-type": "application/octet-stream" },
-  file: ingress)
-receipts["{ingress.name}.json"] = json({ file: ingress.name, size: ingress.size, status: sent.status })
+flow("drop-box")
+
+on.file.created(drop, async (f) => {
+  const sent = await httpbin.put("/put", {
+    headers: { "content-type": "application/octet-stream" },
+    file: f,
+  })
+  receipts[`${f.name}.json`] = JSON.stringify({ file: f.name, size: f.size, status: sent.status })
+})
 ```
 
 It asks to "run on each file new, changed or removed in the folder "drop" (as its on file lines say), and pass it on": that is its trigger.
@@ -159,61 +160,54 @@ It asks to "run on each file new, changed or removed in the folder "drop" (as it
 - A file the flow's own runs wrote into the folder doesn't start it again, unless it changes.
 - A run on a file has the clock run's time budget.
 
-### As a block, beside routes
+### Beside routes
 
-That header is the form for a flow with nothing else. A flow with routes, a clock or actions
-writes the handler as a block, which names the file it receives:
+A file handler sits beside routes, a clock or actions, as any handler does:
 
-```holon
-flow drop-board
-port 8206
-channel files
+```ts
+import { flow, on, route } from "holon"
+import files from "channel:files"
+import drop from "folder:drop"
 
-on file drop (f) {
+flow("drop-board", { port: 8206 })
+
+on.file.created(drop, (f) => {
   files.send({ name: f.name, size: f.size })
-}
+})
 
-route GET /live (req) {
-  respond files.subscribe()
-}
+route.get("/live", () => files.subscribe())
 ```
 
-The line declares the folder, as the header does. `f` is the same handle `ingress` is; the block
-is everything tied to the file's arrival
-([What a block holds](../language/reference.md#what-a-block-holds)), and `ingress` isn't used in
-it (the mistake says to use `f`). Each line has its own block (one block per line), and
-`deleted` and `matching` go on the line, before the `(f)`: `on file inbox matching "*.csv" (f)
-{ … }`. The header and the block don't mix: beside any handler, an `on file`
-header line is a mistake that names the block to write.
+The handler is everything tied to the file's arrival
+([What a handler holds](../language/reference.md#what-a-handler-holds)).
 
-### Several lines, some names
+### Several handlers, some names
 
-A flow may have several `on file` lines, each a trigger of its own. `deleted` makes one for files
-removed from the folder, and `matching "*.csv"` one for the names that match (`*` and `?` within
+A flow may have several file handlers, each a trigger of its own. `on.file.deleted` runs for files
+removed from the folder, and `{ matching: "*.csv" }` for the names that match (`*` and `?` within
 a folder, `**/` any number of folders, letters either case):
 
 ```
-on file inbox matching "*.csv"
-on file inbox deleted
-on file outbox
+on.file.created(inbox, (f) => { … }, { matching: "*.csv" })
+on.file.deleted(inbox, (f) => { … })
+on.file.created(outbox, (f) => { … })
 ```
 
-With the header form, `ingress` is then the handle of whichever file started the run. A removed
-file's handle is as it was last seen, without a hash: its bytes are gone.
+A removed file's handle is as it was last seen, without a hash: its bytes are gone.
 
 ## Sending a file
 
-`file:` in place of `body:` sends a file as a request's body, by handle:
+`file` in place of `body` sends a file as a request's body, by handle:
 
 ```
-http.put("files.example.com", "/upload/{log.name}", file: log)
+await files.put(`/upload/${log.name}`, { file: log })
 ```
 
 The server streams the bytes from the folder; they never pass through the flow, so a file of any
 size can be sent. Before and as it sends, it checks they still have the handle's hash; if the file
 changed, the call answers `{status: 0, error: "changed"}`. The run log keeps the request with the
 handle, never the bytes. The file must be in a folder the flow reads, or be the new file that
-started the run. Any method works: `http.post(…, file: h)` too.
+started the run. Any method works: `await files.post(path, { file: h })` too.
 
 ## What the run log keeps
 

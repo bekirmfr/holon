@@ -108,12 +108,12 @@ export function anchorsOf(path: string): Set<string> {
   return out;
 }
 
-/** The flows on a page: its `holon` blocks, each whole (the manual's convention). */
+/** The flows on a page: its `ts` blocks, each a whole `.holon.ts` file (the manual's convention). */
 export function flowsOf(path: string): string[] {
   const out: string[] = [];
   const walk = (ts: Token[] | undefined) => {
     for (const t of ts ?? []) {
-      if (t.type === "code" && (t as Tokens.Code).lang === "holon") out.push(flowText(t as Tokens.Code));
+      if (t.type === "code" && (t as Tokens.Code).lang === "ts") out.push(flowText(t as Tokens.Code));
       if (t.type === "list") for (const item of (t as Tokens.List).items) walk(item.tokens);
       if (t.type === "blockquote") walk((t as Tokens.Blockquote).tokens);
     }
@@ -122,5 +122,5 @@ export function flowsOf(path: string): string[] {
   return out;
 }
 
-/** A `holon` block's text as a file holds it. */
+/** A `ts` block's text as a file holds it. */
 export const flowText = (t: Tokens.Code) => t.text + "\n";

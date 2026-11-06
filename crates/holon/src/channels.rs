@@ -1,5 +1,5 @@
 //! Channels (`docs/L4s/channels-L4.md`): packs a flow sends with `updates.send(v)`, to whoever
-//! subscribes on one of its routes (`respond updates.subscribe()`), as server-sent events.
+//! subscribes on one of its routes (`return updates.subscribe()`), as server-sent events.
 //!
 //! - **When a pack goes out:** once its run is over, its writes have landed and its record is on
 //!   disk (`hold`, then `release`): a strict run's before it answers, a lazy one's with the next
@@ -302,7 +302,7 @@ impl Channels {
     }
 }
 
-/// A piped call's answer, to its channel as it is read (`updates.pipe(http.post(…))`): each
+/// A piped call's answer, to its channel as it is read (`updates.pipe(api.post(…))`): each
 /// piece a text pack, cut where a character ends.
 pub(crate) struct Pipe<'a> {
     channels: &'a Channels,

@@ -13,12 +13,11 @@ use holon_core::Capabilities;
 use crate::permissions::ChangeRequest;
 use crate::*;
 
-/// What `unit` needs as its graph derives it, read from the store with no table lock held;
-/// `scheduled` (deployed with an interval: a clock flow), with the clock it runs on.
-pub(crate) fn derived_capabilities(store: &SharedStore, unit: Hash, scheduled: bool) -> Result<Capabilities, String> {
+/// What `unit` needs as its graph derives it, read from the store with no table lock held.
+pub(crate) fn derived_capabilities(store: &SharedStore, unit: Hash) -> Result<Capabilities, String> {
     let resolver = closure(store, unit).map_err(|e| format!("store error while materializing closure: {e:?}"))?;
     let root = resolver.resolve(&unit).ok_or("the deployed unit no longer resolves in the store")?;
-    Ok(holon_core::deployed_capabilities(root, &resolver, scheduled))
+    Ok(holon_core::deployed_capabilities(root, &resolver))
 }
 
 /// Re-check `dep` against its grant and `policy`: its attention, its status where the grant
@@ -92,10 +91,10 @@ pub(crate) fn handle_post_grant(state: &AppState, slug: &str, request: &Request,
         Ok(c) => c,
         Err(e) => return err(400, format!("not a valid grant change: {e}")),
     };
-    let Some((unit, scheduled)) = state.deployments.lock().unwrap().get(slug).map(|d| (d.unit, d.interval_seconds.is_some())) else {
+    let Some(unit) = state.deployments.lock().unwrap().get(slug).map(|d| d.unit) else {
         return err(404, format!("no deployment {slug:?}"));
     };
-    let caps = match derived_capabilities(&state.store, unit, scheduled) {
+    let caps = match derived_capabilities(&state.store, unit) {
         Ok(c) => c,
         Err(e) => return err(500, e),
     };
@@ -137,10 +136,10 @@ pub(crate) fn handle_post_permissions_reload(state: &AppState) -> Response {
         Ok(p) => Arc::new(p),
         Err(e) => return err(400, format!("the policy wasn't reloaded: {e}")),
     };
-    let units: Vec<(String, Hash, bool)> = state.deployments.lock().unwrap().iter().map(|(s, d)| (s.clone(), d.unit, d.interval_seconds.is_some())).collect();
+    let units: Vec<(String, Hash)> = state.deployments.lock().unwrap().iter().map(|(s, d)| (s.clone(), d.unit)).collect();
     let mut derived = BTreeMap::new();
-    for (slug, unit, scheduled) in units {
-        match derived_capabilities(&state.store, unit, scheduled) {
+    for (slug, unit) in units {
+        match derived_capabilities(&state.store, unit) {
             Ok(caps) => {
                 derived.insert(slug, (unit, caps));
             }

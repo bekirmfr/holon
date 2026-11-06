@@ -1,6 +1,6 @@
 # State and collections
 
-A flow's own data: the `state` cells it declares and the `collection`s it keeps, read as a run
+A flow's own data: the `state` cells it uses and the collections it imports, read as a run
 begins and written when it finishes. The design is in the
 [state cell L4](../../L4s/P2.6.1-state-cell-L4.md) (the two leaves), the
 [request path L4](../../L4s/request-path-L4.md) C3 (how a write is kept), the
@@ -21,31 +21,35 @@ its head) and `firing.rs` (the commit).
 
 In the language ([LANGUAGE.md](../../LANGUAGE.md) §5.1, §5.4, §6.6):
 
-```
-flow counter
-state hits
-state last
-collection visits
+```ts
+import { flow, route } from "holon"
+import state from "state"
+import visits from "collection:visits"
+import { now } from "holon:clock"
 
-route GET /hit (req) {
-  hits = (state.hits ?? 0) + 1
-  state.hits = hits                    # tied to req
-  respond "hit {hits}"
-}
+flow("counter", { port: 8155 })
 
-route POST /visits/:id (req) {
-  saved = visits.put(req.params.id, now)
-  state.last = req.params.id after saved
-  respond "visited {req.params.id}"
-}
+route.get("/hit", () => {
+  const hits = (state.hits ?? 0) + 1
+  state.hits = hits // tied to the request
+  return `hit ${hits}`
+})
+
+route.post("/visits/:id", (req) => {
+  const id = req.params.id
+  const saved = visits.put(id, now)
+  if (saved !== undefined) state.last = id
+  return `visited ${id}`
+})
 ```
 
 `state.k` reads `store_read{key: k}` (`StateRead(k)`), `state.k = e` is `store_write{key: k}`
 (`StateWrite(k)`); `notes[k]`, `notes[k] = v`, `delete notes[k]` and `notes.list(…)` are
 `collection_get`, `collection_put`, `collection_delete` and `collection_list`
-(`CollectionRead`/`CollectionWrite(name)`). The header names every key and collection; a use the
-header didn't declare is an error at the use, and `fmt` declares it. The capabilities are derived
-from the leaves, never from the header.
+(`CollectionRead`/`CollectionWrite(name)`). The state is imported once,
+`import state from "state"`, and each key the text uses is one of its state keys; a collection is
+imported by its name, and one not imported is refused at the use. The capabilities are derived
+from the leaves, never from the imports.
 
 ## 2. How it works
 
@@ -57,8 +61,8 @@ from the leaves, never from the header.
 - **Writes are effects.** `store_write` is an identity sink (Fork B,
   [sink-as-pure-request L4](../../L4s/sink-as-pure-request-L4.md)); every sink takes the block's
   trigger as its last input, so a write is its route's even when it reads nothing of the request,
-  and `after x` ties it to `x` instead (LANGUAGE.md §5.11). A key may be written once per run:
-  `state.k is written twice (first on line n)`.
+  and `if (x !== undefined)` ties it to `x` instead (LANGUAGE.md §5.11). A key may be written once
+  per run: `state.k is written twice (first on line n)`.
 - **The commit.** Optimistic: a run runs on its copy, then, holding the cell's lock, commits only
   if `still_as_read` holds: each granted cell by its hash, each collection read asked again
   (skipped when that collection's root hasn't moved). Otherwise it runs again from the live state,
@@ -139,12 +143,13 @@ from the leaves, never from the header.
   `listing_is_in_key_order_by_page_and_prefix`, `a_write_stores_only_the_nodes_on_its_path` (at
   most 8 new values for a write in 5,000 items), `the_root_follows_the_values_and_nothing_else`.
 - `a_cells_history_is_the_runs_that_changed_it_and_a_restore_between_them`;
-  `a_state_key_is_declared_in_the_header` and `sinks_are_tied_to_their_block_or_to_what_after_names` (lower.rs).
-- **Samples**: `counter` (a sink's trigger, `after`), `likes` (concurrent runs), `notes-api`,
-  `heartbeat`, `idempotent` (claims), `basket` (a read inside `map`), `balance-trail` (cell
-  history), `price-rollback` (state restore). Every sample opens and deploys in
-  `editor/e2e/samples.e2e.ts`; `balance-trail`, `price-rollback`, `basket` and `rolling-log` have
-  tests of their own there, `counter` and `likes` in `system.e2e.ts`.
+  `names_collections_and_state_errors` and
+  `sinks_are_tied_to_their_block_or_to_what_after_names` (lower.rs).
+- **Samples**: `counter` (a sink's trigger, `if (saved !== undefined)`), `likes` (concurrent
+  runs), `notes-api`, `heartbeat`, `idempotent` (claims), `basket` (a read inside `map`),
+  `balance-trail` (cell history), `price-rollback` (state restore). Every sample opens and
+  deploys in `editor/e2e/samples.e2e.ts`; `balance-trail`, `price-rollback`, `basket` and
+  `rolling-log` have tests of their own there, `counter` and `likes` in `system.e2e.ts`.
 - **Gaps**: nothing in CI measures a write's cost; the soak's disk floor is checked by hand.
 
 ## 6. History

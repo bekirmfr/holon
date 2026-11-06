@@ -151,7 +151,8 @@ pub enum Capability {
     /// Lets callers subscribe to the named channel: `channel_subscribe`, a route answering with
     /// the stream of its packs.
     ChannelRead(String),
-    /// Runs the action of another deployed flow and gets its answer: `flow_call`. Named by the
+    /// Runs the action of another deployed flow and gets its answer: `flow_call`, or starts it,
+    /// another's or its own, without waiting for its end: `flow_start`. Named by the
     /// flow and the action, `"billing/charge"`, so consent names which action a flow may run, not
     /// just "other flows" (`docs/L4s/triggers-L4.md` §9, slice 6).
     RunsAction(String),
@@ -243,16 +244,6 @@ impl Capabilities {
     /// `String`).
     pub fn iter(&self) -> impl Iterator<Item = Capability> + '_ {
         self.0.iter().cloned()
-    }
-    /// The manifest of a unit as deployed: on a schedule (a clock flow's `every`, with no
-    /// routes), what its graph derives and `Clock`, which starts its runs whether or not the flow
-    /// reads the time; otherwise what its graph derives. The one place that rule is kept: the
-    /// host deploys and grants by it, and `holon check` and the editor show it.
-    pub fn deployed(mut self, scheduled: bool) -> Self {
-        if scheduled {
-            self.0.insert(Capability::Clock);
-        }
-        self
     }
     pub(crate) fn insert(&mut self, cap: Capability) {
         self.0.insert(cap);
@@ -357,21 +348,13 @@ pub fn capabilities_of(name: &str, params: &[Param]) -> Option<Capabilities> {
         // A call to another flow's action: performed by the host between rounds, in-process, its
         // answer sourced back as an http response is. Both names are frozen params, so the
         // capability names the action exactly.
-        "flow_call" => vec![RunsAction(format!("{}/{}", ident(params, "flow")?, ident(params, "action")?))],
+        "flow_call" | "flow_start" => vec![RunsAction(format!("{}/{}", ident(params, "flow")?, ident(params, "action")?))],
         // A request whose answer the host forwards as it reads it: to the route's caller, or,
         // piped, to a channel's subscribers, which is sending on that channel too.
         "http_stream" => match params.iter().find(|p| p.name() == "pipe").and_then(|p| p.value()).filter(|v| !v.is_empty()) {
             None => vec![HttpRequest(http_host(params)?)],
             Some(_) => vec![HttpRequest(http_host(params)?), ChannelSend(ident(params, "pipe")?)],
         },
-        // Request/response (P2.5.1): `ingress` is the driver (a request arrives), `egress` carries
-        // the reply out. §13 merges the old `email`/`respond` into this one `egress` sink — both
-        // were NetworkEgress, and the host dispatches on the *capability*, not the sink name, so the
-        // destination (mailbox, connection token, …) belongs in the payload, not in a distinct
-        // primitive. The correlation token rides as ordinary data; isolation is purity's
-        // (independent pure paths can't cross), so the token is only a boundary label.
-        "ingress" => vec![NetworkIngress],
-
         // Unknown leaf ⇒ fail closed. The engine does not vouch for it.
         _ => return None,
     };
@@ -1049,28 +1032,6 @@ mod tests {
         let clock = capabilities_of("clock", &[]).unwrap();
         assert!(clock.contains(Capability::Clock));
         assert_eq!(clock.len(), 1);
-
-        // Request/response (P2.5.1): the in/out pair. `ingress` (a request arrives) is a driver —
-        // effect-bearing yet *replayable* (no State); `egress` carries the reply (checked above,
-        // since the merged sink is the same leaf). The correlating token is plain data, never a
-        // capability.
-        let ingress = capabilities_of("ingress", &[]).unwrap();
-        assert!(ingress.contains(Capability::NetworkIngress));
-        assert!(ingress.is_replayable()); // a driver, not state
-    }
-
-    #[test]
-    fn a_unit_deployed_on_a_schedule_runs_on_the_clock() {
-        // A clock flow that never reads the time still runs on the clock: deployed on a
-        // schedule, its manifest has `Clock`, its trigger; unscheduled, only what it derives.
-        let state = capabilities_of("store_write", &[Param::frozen("key", "beats")]).unwrap();
-        assert!(!state.clone().deployed(false).contains(Capability::Clock));
-        let scheduled = state.deployed(true);
-        assert!(scheduled.contains(Capability::Clock) && scheduled.contains(Capability::StateWrite("beats".into())));
-        assert_eq!(scheduled.len(), 2);
-        // One that reads it already is the same either way.
-        let clock = capabilities_of("clock", &[]).unwrap();
-        assert_eq!(clock.clone().deployed(true), clock);
     }
 
     #[test]

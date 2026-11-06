@@ -394,7 +394,7 @@ fn draw_side(f: &mut Frame, app: &App, area: Rect) {
             if tab.deployed.as_ref().is_some_and(|d| plan.may.iter().any(|i| !d.contains(i))) {
                 may.push(Line::from(coloured("+ new since deployed: deploying asks you", WARN)));
             }
-            let reach = if !plan.routes.is_empty() { plan.routes.join("  ") } else { plan.interval_seconds.map(|i| format!("every {i} s")).unwrap_or_else(|| "started by hand".into()) };
+            let reach = if !plan.routes.is_empty() { plan.routes.join("  ") } else { crate::workbench::app::started_by(plan).unwrap_or_else(|| "started by hand".into()) };
             may.push(Line::default());
             may.push(Line::from(dim(reach)));
         }
@@ -413,10 +413,16 @@ fn draw_side(f: &mut Frame, app: &App, area: Rect) {
     };
     let mut lines = plain(&it.hover);
     if let Some(u) = &it.usage {
-        // The grammar, as docs/LANGUAGE.md writes it; then a sample's lines that use it.
-        if !u.grammar.is_empty() {
-            lines.extend([Line::default(), Line::from(vec![bold("Grammar"), dim("  docs/LANGUAGE.md §5")])]);
-            lines.extend(u.grammar.iter().map(|g| Line::from(coloured(g.clone(), ACCENT))));
+        // The forms, as the manual's reference writes them, each with what it means; then a
+        // sample's lines that use it.
+        if !u.forms.is_empty() {
+            lines.extend([Line::default(), Line::from(vec![bold("Forms"), dim("  docs/manual/language/reference.md")])]);
+            for (form, meaning) in &u.forms {
+                lines.push(Line::from(coloured(form.clone(), ACCENT)));
+                if !meaning.is_empty() {
+                    lines.push(Line::from(dim(format!("  {meaning}"))));
+                }
+            }
         }
         if let Some((sample, example)) = &u.example {
             lines.extend([Line::default(), Line::from(vec![bold("Example"), dim(format!("  from the sample {sample}"))])]);

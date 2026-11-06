@@ -1,9 +1,9 @@
 // holon-server's live deployment table, and what the deployed page does with it.
 
 import { useCallback, useEffect, useState } from "react";
-import { deleteDeployment, listDeployments, ServerError, triggerDeployment, type DeploymentEntry } from "./server";
+import { deleteDeployment, listDeployments, ServerError, type DeploymentEntry } from "./server";
 import { useDialog } from "./Dialog";
-import type { AppPage, TriggerOutcome } from "./Pages";
+import type { AppPage } from "./Pages";
 
 // `deployments` is the server's own table, re-fetched after every mutation rather than guessed
 // at locally, so the editor can never drift from what the server actually has running. A failed
@@ -12,11 +12,6 @@ import type { AppPage, TriggerOutcome } from "./Pages";
 export function useDeployments(page: AppPage, setError: (message: string) => void) {
   const dialog = useDialog();
   const [deployments, setDeployments] = useState<DeploymentEntry[]>([]);
-  // Per-slug trigger body input and last result/error — a small map rather than one shared
-  // field, since more than one deployed flow can be sitting in the list at once, each with its
-  // own thing to try. Kept here, not in the page, so they survive leaving it.
-  const [triggerInputs, setTriggerInputs] = useState<Record<string, string>>({});
-  const [triggerResults, setTriggerResults] = useState<Record<string, TriggerOutcome>>({});
   const [listError, setListError] = useState("");
 
   const refresh = useCallback(() => {
@@ -55,26 +50,5 @@ export function useDeployments(page: AppPage, setError: (message: string) => voi
     [refresh, dialog, setError],
   );
 
-  const onTriggerInputChange = useCallback((slug: string, value: string) => {
-    setTriggerInputs((t) => ({ ...t, [slug]: value }));
-  }, []);
-
-  const onTrigger = useCallback(
-    (slug: string) => {
-      triggerDeployment(slug, triggerInputs[slug] ?? "")
-        .then((result) => setTriggerResults((r) => ({ ...r, [slug]: { ok: true, result } })))
-        .catch((e: unknown) =>
-          setTriggerResults((r) => ({
-            ...r,
-            [slug]: { ok: false, message: e instanceof ServerError ? e.message : String(e) },
-          })),
-        )
-        // The server bumps trigger_count/error_count on every attempt, success or failure
-        // alike, so the table is refreshed either way.
-        .finally(() => refresh());
-    },
-    [triggerInputs, refresh],
-  );
-
-  return { deployments, listError, refresh, triggerInputs, onTriggerInputChange, triggerResults, onTrigger, onDelete };
+  return { deployments, listError, refresh, onDelete };
 }

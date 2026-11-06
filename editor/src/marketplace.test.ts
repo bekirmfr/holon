@@ -14,19 +14,31 @@ beforeAll(() => {
   initSync({ module: readFileSync(join(process.cwd(), "wasm", "holon_wasm_bg.wasm")) });
 });
 
+/** What a TypeScript flow's action computes, its own nodes (its input, its answer) taken off: a
+ *  canvas nothing starts, as a person draws one, and as no text writes. */
+function handlerless(doc: ReturnType<typeof compileHolon>["doc"]) {
+  const own = new Set((doc.nodes as { id: string; data: { name: string } }[]).filter((n) => n.data.name === "action" || n.data.name === "respond").map((n) => n.id));
+  const edges = (doc.edges as { source: string; target: string }[]).filter((e) => !own.has(e.source) && !own.has(e.target));
+  return { ...doc, nodes: (doc.nodes as { id: string }[]).filter((n) => !own.has(n.id)), edges };
+}
+
 /** A saved flow without routes: upper-cases its text, through a holon of its own. */
 function shoutFlow(ev: Evaluator) {
-  return compileHolon(
-    `flow shout
-holon upper(text) -> (out) {
-  node up = uppercase
-  in.text -> up.s
-  up.out -> out.out
+  return handlerless(
+    compileHolon(
+      `import { action, flow } from "holon"
+
+flow("shout")
+
+function upper(text) {
+  return text.toUpperCase()
 }
-node shout = upper
+
+export const run = action((input) => upper(input))
 `,
-    ev,
-  ).doc;
+      ev,
+    ).doc,
+  );
 }
 
 const published = (l: Omit<Listing, "id" | "published_at">, at: number): Listing => ({ ...l, id: `${l.name}@${l.root}`, published_at: at });

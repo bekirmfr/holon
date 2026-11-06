@@ -1,11 +1,10 @@
-// A flow as text (`.holon`, docs/LANGUAGE.md): written and read in any editor, diffed, reviewed,
-// kept in git, and compiled through the same builder as the samples, against the live catalog, so
-// a flow written here and the same flow drawn on the canvas are the same unit. The language
-// (reading, lowering, printing) is holon-author's (crates/holon-author/src/lang/), through the
-// wasm bridge: the same code the command line runs. Both of its forms are read; the expression
-// form is written.
+// A flow as text (`NAME.holon.ts`, docs/LANGUAGE.md): written and read in any editor, diffed,
+// reviewed, kept in git, and compiled through the same builder as the samples, against the live
+// catalog, so a flow written here and the same flow drawn on the canvas are the same unit. The
+// language (reading, lowering, printing) is holon-author's (crates/holon-author/src/lang/),
+// through the wasm bridge: the same code the command line runs.
 
-import { compile_holon, holon_complete, holon_format, holon_highlight, holon_hover, holon_mistakes, holon_runnable_by_hand } from "../wasm/holon_wasm.js";
+import { compile_holon, holon_complete, holon_format, holon_highlight, holon_hover, holon_mistakes } from "../wasm/holon_wasm.js";
 import { knownNames, restoreDocument } from "./docUnits";
 import type { Evaluator } from "./holon";
 import type { FlowDocument } from "./server";
@@ -26,7 +25,7 @@ export class HolonTextError extends Error {
 /** Where a node is written in a text: UTF-16 offsets, as CodeMirror counts them. */
 export type TextRange = { from: number; to: number };
 
-/** `.holon` text as a flow document (and its name); its holons' units are put into `ev`. Errors
+/** A flow's text as a flow document (and its name); its holons' units are put into `ev`. Errors
  *  say the line and column. `names`: each top-level node's name in the text, by its id in the
  *  document (a binding's, or a `node` statement's); `lines`: the line (1-based) each is written
  *  on; `spans`: the range each is written over (docs/L4s/text-graph-link-L4.md). */
@@ -74,8 +73,8 @@ export function compileHolon(
 
 type Printable = Pick<FlowDocument, "nodes" | "edges"> & Partial<FlowDocument>;
 
-/** A flow document as `.holon` text in the expression form: its settings, its holons (each with
- *  its boundary given, so it compiles back to the same unit), its routes or statements. Positions
+/** A flow document as its text: its settings, its holons (each with its boundary given, so it
+ *  compiles back to the same unit), its handlers. Positions
  *  are not part of a program. `bindings` names top-level nodes (from `compileHolon`), so a text
  *  imported and exported keeps its names. */
 export function printHolon(name: string | null, doc: Printable, ev: Evaluator, bindings?: Map<string, string>): string {
@@ -125,9 +124,6 @@ export const textCompletions = (
 
 /** The text as `holon fmt` writes it; throws why it can't be. */
 export const textFormatted = (text: string): string => holon_format(text);
-/** The quick fix **make it runnable by hand**: a flow nothing would start, its statements put in
- *  `action run (input) { … }` (editing.rs). Throws why it doesn't apply. */
-export const runnableByHand = (text: string): string => holon_runnable_by_hand(text);
 
 /** The text's colours, in order: each stretch with what it is (editing.rs's `Class`, lowercase). */
 export const textColours = (text: string): (Stretch & { class: string })[] => holon_highlight(text);

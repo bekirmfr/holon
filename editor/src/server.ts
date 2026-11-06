@@ -333,19 +333,16 @@ export type DeployResult = {
   slug: string;
   unit: string;
   triggers: string[];
-  interval_seconds: number | null;
 };
 
 /** `POST /deploy` — register `slug -> unit`. `acknowledge` must name every capability the
  *  unit's closure actually derives (via `Evaluator.capability_names`, computed by
  *  the caller from `Evaluator.capabilities()`) — the server re-derives the real set independently
- *  and checks it, never trusts this list as the truth. `intervalSeconds` only matters — and is
- *  only required, server-side — when the derived capabilities include `Clock`. */
+ *  and checks it, never trusts this list as the truth. */
 export async function deployUnit(
   slug: string,
   unitHash: string,
   acknowledge: string[],
-  intervalSeconds?: number,
   /** The flow's canvas, kept with the deployment so view mode shows exactly what runs. */
   document?: FlowDocument,
   /** What it needs beyond its graph (limits, exceptions): part of its manifest. */
@@ -358,7 +355,6 @@ export async function deployUnit(
       slug,
       unit: unitHash,
       acknowledge,
-      ...(intervalSeconds !== undefined ? { interval_seconds: intervalSeconds } : {}),
       ...(document !== undefined ? { document } : {}),
       ...(requirements !== undefined ? { requirements } : {}),
       // What it places, beside the document (holonUsage.ts): who uses a holon, from listings.
@@ -524,17 +520,11 @@ export async function deleteSecret(slug: string, name: string): Promise<void> {
   if (!res.ok) await asJson(res);
 }
 
-export async function previewDeploy(slug: string, unitHash: string, requirements?: Requirements, intervalSeconds?: number): Promise<DeployPreview> {
+export async function previewDeploy(slug: string, unitHash: string, requirements?: Requirements): Promise<DeployPreview> {
   const res = await api(`${BASE}/deploy/preview`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    // With its schedule, as the deploy will send it: a clock flow runs on the clock.
-    body: JSON.stringify({
-      slug,
-      unit: unitHash,
-      ...(requirements !== undefined ? { requirements } : {}),
-      ...(intervalSeconds !== undefined ? { interval_seconds: intervalSeconds } : {}),
-    }),
+    body: JSON.stringify({ slug, unit: unitHash, ...(requirements !== undefined ? { requirements } : {}) }),
   });
   return asJson<DeployPreview>(res);
 }
@@ -567,7 +557,6 @@ export type DeploymentEntry = {
   slug: string;
   unit: string;
   triggers: string[];
-  interval_seconds: number | null;
   has_state: boolean;
   trigger_count: number;
   error_count: number;
@@ -1004,8 +993,8 @@ export async function listDeployments(): Promise<DeploymentEntry[]> {
 }
 
 /** `DELETE /deployments/<slug>` — stop a deployment. Sufficient on its own: the scheduler only
- *  ever acts on what's currently in the table, and an ingress-triggered slug starts 404ing on
- *  `/trigger` immediately afterward. */
+ *  ever acts on what's currently in the table, and its routes and actions start 404ing
+ *  immediately afterward. */
 export async function deleteDeployment(slug: string): Promise<DeploymentEntry> {
   const res = await api(`${BASE}/deployments/${encodeURIComponent(slug)}`, { method: "DELETE" });
   return asJson<DeploymentEntry>(res);
@@ -1013,32 +1002,6 @@ export async function deleteDeployment(slug: string): Promise<DeploymentEntry> {
 
 /** One `(capability, payload)` pair a trigger actually performed — mirrors `PerformedEntry`. */
 export type PerformedEntry = { capability: string; payload: WValue };
-
-/** `POST /trigger/<slug>`'s response — mirrors `FireResponseBody` exactly, `outputs` included:
- *  every settled slot the fired unit declared, not just one. A single-output unit (the common
- *  case) is still a one-element array; a flow that produces a genuine data response *and*
- *  performs a genuine side effect can now be left as two separate exposed outputs — no more
- *  forcing them into one artificial `list(...)` just to satisfy an old single-output rule.
- *  `SValue` (the server's own JSON mirror of `core::Value`) and `WValue` (the wasm bridge's)
- *  turned out to be the identical `{type,value}` shape, independently — so `WValue` is reused
- *  here rather than a second, parallel value type for this other boundary. */
-export type TriggerResult = {
-  outputs: (WValue | null)[];
-  performed: PerformedEntry[];
-};
-
-/** `POST /trigger/<slug>` — fire an ingress-triggered deployment with a real request body.
- *  Throws {@link ServerError} (404) if the slug isn't deployed. */
-export async function triggerDeployment(slug: string, body: string): Promise<TriggerResult> {
-  // A string body would default to text/plain, which the server refuses (a CORS-safelisted type
-  // any site could send without preflight); the ingress text goes as raw bytes instead.
-  const res = await api(`${BASE}/trigger/${encodeURIComponent(slug)}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/octet-stream" },
-    body,
-  });
-  return asJson<TriggerResult>(res);
-}
 
 /** One HTTP request for a deployed server, and its answer (`POST /deployments/<slug>/request`). */
 export type HttpRequest = { method: string; url: string; headers: [string, string][]; body: string };
@@ -1113,10 +1076,9 @@ export type FlowDocument = {
   /** What its composites are called, by hash (docUnits.ts): a unit keeps no name, so a holon
    *  inside another would otherwise show as its hash once reopened. Absent in older flows. */
   names?: Record<string, string>;
-  /** The flow's deploy settings (DeployBar): the port for a flow with routes, the interval for a
-   *  clock flow. Absent in older flows; `endpoints`, from flows saved before routes were
-   *  derived, is ignored. */
-  server?: { port: string; interval?: string; endpoints?: EndpointDraft[]; requirements?: Requirements; browsers?: string };
+  /** The flow's deploy settings (DeployBar): the port for a flow with routes. Absent in older
+   *  flows; `endpoints`, from flows saved before routes were derived, is ignored. */
+  server?: { port: string; endpoints?: EndpointDraft[]; requirements?: Requirements; browsers?: string };
   /** For a deployed flow: which canvas node each step of a run is, by route (`"*"` for a flow
    *  deployed whole), so the log's timings land on the canvas (replay.ts's `nodeTimings`). */
   trace?: Record<string, string[]>;

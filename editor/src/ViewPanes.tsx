@@ -1669,7 +1669,7 @@ function ComponentTab({ node, run, source }: { node: ViewNode | null; run: Inspe
           <div
             className="hl-inspector__source"
             style={{ color: "#cfe3ff", fontFamily: "ui-monospace, Menlo, Consolas, monospace", whiteSpace: "pre-wrap", wordBreak: "break-word" }}
-            title="the flow as the language writes it (.holon): this node is part of this line"
+            title="the flow as the language writes it (.holon.ts): this node is part of this line"
           >
             {source.text.trim()}
           </div>

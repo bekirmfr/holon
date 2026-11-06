@@ -105,7 +105,6 @@ export const TEXT_LIMITS = ["keep_runs", "keep_run_days"];
 export function settingsOf(server: FlowDocument["server"]): FlowSettings {
   return {
     port: server?.port ?? DEFAULT_SETTINGS.port,
-    interval: server?.interval ?? DEFAULT_SETTINGS.interval,
     ...(server?.requirements ? { requirements: server.requirements } : {}),
     ...(server?.browsers ? { browsers: server.browsers } : {}),
   };

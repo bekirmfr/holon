@@ -71,16 +71,6 @@ pub fn describe_item(item: &str) -> String {
     .to_string()
 }
 
-/// `item` in words, for a flow run by hand (one with no routes) when `by_hand`: its
-/// `NetworkIngress` is "can be run by hand", not "receive requests" (a label only, so no hash or
-/// grant changes; docs/L4s/triggers-L4.md §7).
-pub fn describe_item_of(item: &str, by_hand: bool) -> String {
-    if by_hand && item == "NetworkIngress" {
-        return "can be run by hand".into();
-    }
-    describe_item(item)
-}
-
 /// Where a secret is sent, as core's `sent_secrets` names it, in words: a host as its address
 /// (`https://api.example.com`), a database read's database as `the database "shop"`.
 pub fn describe_destination(destination: &str) -> String {
@@ -109,13 +99,13 @@ pub fn describe_sent_to(to: &BTreeSet<String>) -> (Option<String>, Option<String
     (listed(own.iter().map(|d| d.as_str()).collect()), listed(answers.iter().filter_map(|d| d.strip_prefix(holon_core::ANSWER)).collect()))
 }
 
-/// `item` in words (as [`describe_item_of`]), and beside a secret it reads, where the flow sends
+/// `item` in words (as [`describe_item`]), and beside a secret it reads, where the flow sends
 /// it, and where what is answered to it goes (core's `sent_secrets`, [`describe_sent_to`]): "read
 /// the secret "k", and send it to https://auth.example.com; what is answered to it goes to
 /// https://api.example.com". It isn't an item of its own; the approval says it here so a person
 /// sees where each secret goes.
-pub fn describe_item_sending(item: &str, by_hand: bool, sent: &BTreeMap<String, BTreeSet<String>>) -> String {
-    let said = describe_item_of(item, by_hand);
+pub fn describe_item_sending(item: &str, sent: &BTreeMap<String, BTreeSet<String>>) -> String {
+    let said = describe_item(item);
     let name = item.strip_prefix("SecretRead(\"").and_then(|i| i.strip_suffix("\")"));
     let Some(to) = name.and_then(|n| sent.get(n)) else {
         return said;
@@ -187,21 +177,20 @@ mod tests {
     #[test]
     fn says_where_a_secret_is_sent_beside_it() {
         let sent = BTreeMap::from([("k".to_string(), BTreeSet::from(["a.example.com".to_string(), "b.example.com".to_string()]))]);
-        assert_eq!(describe_item_sending(r#"SecretRead("k")"#, false, &sent), r#"read the secret "k", and send it to https://a.example.com and https://b.example.com"#);
-        assert_eq!(describe_item_sending(r#"SecretRead("j")"#, false, &sent), r#"read the secret "j""#, "a secret sent nowhere");
+        assert_eq!(describe_item_sending(r#"SecretRead("k")"#, &sent), r#"read the secret "k", and send it to https://a.example.com and https://b.example.com"#);
+        assert_eq!(describe_item_sending(r#"SecretRead("j")"#, &sent), r#"read the secret "j""#, "a secret sent nowhere");
         let exchanged = BTreeMap::from([("k".to_string(), BTreeSet::from(["auth.example.com".to_string(), "answer:api.example.com".to_string(), "answer:db:shop".to_string()]))]);
         assert_eq!(
-            describe_item_sending(r#"SecretRead("k")"#, false, &exchanged),
+            describe_item_sending(r#"SecretRead("k")"#, &exchanged),
             r#"read the secret "k", and send it to https://auth.example.com; what is answered to it goes to https://api.example.com and the database "shop""#,
             "a token exchange"
         );
         let api = holon_core::Capability::HttpRequest("api.example.com".into());
         assert_eq!(super::describe_answer_sink("k", &api), r#"sends what is answered to the secret "k" to https://api.example.com"#);
         let queried = BTreeMap::from([("k".to_string(), BTreeSet::from(["db:audit".to_string(), "hooks.example.com".to_string()]))]);
-        assert_eq!(describe_item_sending(r#"SecretRead("k")"#, false, &queried), r#"read the secret "k", and send it to https://hooks.example.com and the database "audit""#, "a database read's parameters");
+        assert_eq!(describe_item_sending(r#"SecretRead("k")"#, &queried), r#"read the secret "k", and send it to https://hooks.example.com and the database "audit""#, "a database read's parameters");
         let read = holon_core::Capability::DbRead("audit/log".into());
         assert_eq!(super::describe_secret_sink("k", &read), r#"sends the secret "k" to the database "audit", reading its table "log""#);
-        assert_eq!(describe_item_sending("NetworkIngress", true, &sent), "can be run by hand");
     }
 
     #[test]
@@ -218,9 +207,6 @@ mod tests {
         assert_eq!(describe_item("Limit(module_fuel=200000000)"), "run code it carries (a js node) for up to 200000000 instructions per call, reaching nothing outside");
         assert_eq!(describe_item("Limit(module_memory=16777216)"), "give that code up to 16 MiB of memory per call");
         assert_eq!(describe_item("NetworkIngress"), "receive requests");
-        assert_eq!(super::describe_item_of("NetworkIngress", true), "can be run by hand");
-        assert_eq!(super::describe_item_of("NetworkIngress", false), "receive requests");
-        assert_eq!(super::describe_item_of("Clock", true), "read the clock");
         assert_eq!(describe_item(r#"Action("reset")"#), "can be run by hand: reset");
         assert_eq!(describe_item(r#"AgentRuns("reset")"#), "let agents run its action reset");
         assert_eq!(describe_item(r#"Unrecorded("GET /health")"#), "keep runs of GET /health out of its log, failed or not (they are counted)");

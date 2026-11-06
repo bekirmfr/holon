@@ -30,7 +30,7 @@ async function cliDeploy(token: string, file: string, slug: string): Promise<num
 }
 
 test("likes answers a count in a sentence: the number as text (as_text), then the words", async ({ adminToken }) => {
-  const port = await cliDeploy(adminToken, "likes.holon", "likes");
+  const port = await cliDeploy(adminToken, "likes.holon.ts", "likes");
   expect(port).not.toBeNull();
   const base = `http://127.0.0.1:${port}`;
   const post = `e2e-${Date.now()}`;
@@ -42,7 +42,7 @@ test("likes answers a count in a sentence: the number as text (as_text), then th
 });
 
 test("counter counts its hits with no wire to the request, and records the last visit after it is put", async ({ adminToken }) => {
-  const port = await cliDeploy(adminToken, "counter.holon", "counter");
+  const port = await cliDeploy(adminToken, "counter.holon.ts", "counter");
   expect(port).not.toBeNull();
   const base = `http://127.0.0.1:${port}`;
   const hit = async () => Number((await (await fetch(`${base}/hit`)).text()).replace("hit ", ""));
@@ -54,8 +54,8 @@ test("counter counts its hits with no wire to the request, and records the last 
 });
 
 test("refund-once, beside orders-api on one database, calls the payment API once for two refunds of one order at once", async ({ adminToken }) => {
-  const orders = `http://127.0.0.1:${await cliDeploy(adminToken, "orders-api.holon", "orders-api")}`;
-  const refunds = `http://127.0.0.1:${await cliDeploy(adminToken, "refund-once.holon", "refund-once")}`;
+  const orders = `http://127.0.0.1:${await cliDeploy(adminToken, "orders-api.holon.ts", "orders-api")}`;
+  const refunds = `http://127.0.0.1:${await cliDeploy(adminToken, "refund-once.holon.ts", "refund-once")}`;
   const customer = `e2e-refund-${Date.now()}`;
   expect((await fetch(`${orders}/orders`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ customer, total: 5 }) })).status).toBe(201);
   const [order] = (await (await fetch(`${orders}/orders/${customer}`)).json()) as { id: string }[];
@@ -71,7 +71,7 @@ test("refund-once, beside orders-api on one database, calls the payment API once
 });
 
 test("approved-payout waits for its approval holding nothing, and pays from the balance as it is then: a deposit made meanwhile is kept", async ({ adminToken }) => {
-  const base = `http://127.0.0.1:${await cliDeploy(adminToken, "approved-payout.holon", "approved-payout")}`;
+  const base = `http://127.0.0.1:${await cliDeploy(adminToken, "approved-payout.holon.ts", "approved-payout")}`;
   const post = (path: string, data: unknown) =>
     fetch(`${base}${path}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(data) });
   const balance = async () => ((await (await fetch(`${base}/accounts/1`)).json()) as { balance: number }).balance;

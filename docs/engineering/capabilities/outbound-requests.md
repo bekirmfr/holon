@@ -1,7 +1,8 @@
 # Outbound requests
 
-Calls a run makes out to HTTP(S) APIs: `http.get("httpbin.org", "/json")` and its kin. The rules
-are in [PLATFORM_LAYOUT](../../PLATFORM_LAYOUT.md) §4.1–§4.2 (rounds, the rules, limits and
+Calls a run makes out to HTTP(S) APIs: `await httpbin.get("/json")`, the host imported as
+`import httpbin from "host:httpbin.org"`, and its kin. The rules are in
+[PLATFORM_LAYOUT](../../PLATFORM_LAYOUT.md) §4.1–§4.2 (rounds, the rules, limits and
 exceptions); where a secret may go is the [secret destinations L4](../../L4s/secret-destinations-L4.md);
 what earns a new kind of reach is the [host capabilities L4](../../L4s/host-capabilities-L4.md).
 
@@ -10,7 +11,7 @@ what earns a new kind of reach is the [host capabilities L4](../../L4s/host-capa
 A request is a leaf whose capability is `HttpRequest(host)`, the host a frozen param (a text
 literal, so it is known before the flow runs): `http_request{method, host}(path, headers, body)`,
 `http_upload` (a file sent by handle, `file: h`) and `http_stream` (an answer forwarded as it
-arrives, `stream: true`, or piped to a channel, `updates.pipe(http.post(…))`) (LANGUAGE.md
+arrives, `stream: true`, or piped to a channel, `updates.pipe(api.post(…))`) (LANGUAGE.md
 §5.4). Evaluation stays pure: a request is answered between rounds, by the host, and recorded.
 
 - `holon-host/src/rounds.rs`: the round loop, the `Performer` trait, `Limits`, `perform_all`.
@@ -73,7 +74,7 @@ arrives, `stream: true`, or piped to a channel, `updates.pipe(http.post(…))`) 
   were already left behind (rc.28); a resent body could carry a secret too, so it isn't resent
   (`f3b834d`, [secret destinations](../../L4s/secret-destinations-L4.md) §4).
 - **Errors as values**: a webhook that fails shouldn't fail the run that would have handled it;
-  `respond page.body, missing: 502` is the flow's choice.
+  `return page.body ?? status(502)` is the flow's choice.
 
 ## 4. Reach and limits
 

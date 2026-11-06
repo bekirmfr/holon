@@ -25,7 +25,7 @@ export const FLOW_PREFIX = "flow:";
 const CATALOG_GROUPS: readonly { name: string; items: ReadonlySet<string> }[] = [
   {
     name: "net",
-    items: new Set(["http_request", "http_upload", "http_stream", "flow_call"]),
+    items: new Set(["http_request", "http_upload", "http_stream", "flow_call", "flow_start"]),
   },
   {
     name: "core",
@@ -57,7 +57,7 @@ const CATALOG_GROUPS: readonly { name: string; items: ReadonlySet<string> }[] = 
   },
   {
     name: "drivers",
-    items: new Set(["clock", "random", "ingress", "secret", "file_arrival", "await", "resume_token"]),
+    items: new Set(["clock", "random", "secret", "file_arrival", "await", "resume_token"]),
   },
   {
     name: "state",

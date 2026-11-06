@@ -14,29 +14,33 @@ You need:
 
 ## The flow
 
-```holon
-flow stripe-to-slack
-port 8103
-secret slack_webhook_path
-secret stripe_webhook_secret
+```ts
+import { flow, route, status, stripe } from "holon"
+import slack_webhook_path from "secret:slack_webhook_path"
+import stripe_webhook_secret from "secret:stripe_webhook_secret"
+import hooks from "host:hooks.slack.com"
+import { now } from "holon:clock"
 
-route POST /stripe (req) {
-  verified = stripe.verify(req, secret.stripe_webhook_secret, now)
-  sent = http.post("hooks.slack.com", secret.slack_webhook_path,
+flow("stripe-to-slack", { port: 8103 })
+
+route.post("/stripe", async (req) => {
+  const verified = stripe.verify(req, stripe_webhook_secret, now)
+  const sent = await hooks.post(slack_webhook_path, {
     headers: { "content-type": "application/json" },
-    body: json({ text: "Stripe: {verified.event.type}" }))
-  respond sent.status, missing: 400
-}
+    body: JSON.stringify({ text: `Stripe: ${verified.event.type}` }),
+  })
+  return sent.status ?? status(400)
+})
 ```
 
 - `stripe.verify` checks the `Stripe-Signature` header the way Stripe's own libraries do: an
   HMAC-SHA256 of the timestamp and the raw body under the endpoint's signing secret, compared in
   constant time, with the timestamp no more than five minutes from `now`. Only then does it give
   the event.
-- `http.post` sends the message to Slack. The host is written in the text, so it is in the
+- `await hooks.post(…)` sends the message to Slack. The host is imported by name, so it is in the
   permissions; the path of the webhook URL is a secret, because anyone who has it can post to
   your channel.
-- `respond sent.status` answers Stripe with Slack's status. When the signature doesn't verify,
+- `return sent.status` answers Stripe with Slack's status. When the signature doesn't verify,
   `verified` has no value, so nothing is posted, and the route answers 400.
 
 ## 1. Make a Slack incoming webhook
@@ -53,7 +57,7 @@ The flow needs the path part: `/services/T0000/B0000/XXXXXXXXXXXXXXXX`.
 ## 2. Deploy the flow
 
 In the editor, on the **flows** page, open the **Stripe → Slack** sample (or import the flow above
-as a `.holon` file). Press **deploy**. It asks to:
+from a file). Press **deploy**. It asks to:
 
 - read the clock
 - call https://hooks.slack.com

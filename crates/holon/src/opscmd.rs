@@ -84,20 +84,15 @@ examples:
   holon action billing refund --input-file refund.json
 ";
 
-const TRIGGER_USAGE: &str = "usage: holon trigger <slug> [--body TEXT | --body-file FILE]
-       holon tick <slug> <clock>
-       (each with [--server PORT|URL])
+const TICK_USAGE: &str = "usage: holon tick <slug> <clock> [--server PORT|URL]
 
-  trigger runs a flow that has no route of its own, once, and prints what it produced and what
-  it did. tick fires one of a server flow's clocks now, by its label as holon deployments shows
-  it (\"every 2s\").
+  Fires one of a flow's clocks now, by its label as holon deployments shows it (\"every 2s\"),
+  and prints what it produced and what it did.
 
-  --body TEXT              the body trigger runs it with (none without one); - reads stdin
-  --body-file FILE         that body, read from FILE
   --server PORT|URL        which holon server to ask (see below)
 
 examples:
-  holon trigger heartbeat
+  holon tick heartbeat \"every 10s\"
   holon tick ticker \"every 2s\"
 ";
 
@@ -170,13 +165,10 @@ pub(crate) fn deployments(args: &[String]) -> i32 {
     0
 }
 
-/// How a deployment starts: its port, its schedule, or its triggers.
+/// How a deployment starts: its port, or its triggers.
 fn starts(d: &Value) -> String {
     if let Some(port) = d["port"].as_u64() {
         return format!(":{port}");
-    }
-    if let Some(s) = d["interval_seconds"].as_u64() {
-        return format!("every {s}s");
     }
     d["triggers"].as_array().map(|t| t.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(", ")).unwrap_or_default()
 }
@@ -393,39 +385,9 @@ pub(crate) fn action_lines(status: u16, body: &str) -> (Vec<(bool, String)>, i32
     }
 }
 
-pub(crate) fn trigger(args: &[String]) -> i32 {
-    const WHO: &str = "holon trigger";
-    let usage = usage(TRIGGER_USAGE);
-    let args = match cmdline::parse(WHO, &usage, args, &["--body", "--body-file"], &[]) {
-        Ok(a) => a,
-        Err(code) => return code,
-    };
-    let Some(slug) = args.word(0) else {
-        eprintln!("{usage}");
-        return 2;
-    };
-    let body = match cmdline::text_from(WHO, &args, "--body") {
-        Ok(b) => b.unwrap_or_default(),
-        Err(code) => return code,
-    };
-    let answer = match local::send(WHO, args.server(), "POST", &format!("/trigger/{}", seg(slug)), Some(("application/octet-stream", body.into_bytes()))) {
-        Ok(a) => a,
-        Err(code) => return code,
-    };
-    if !(200..300).contains(&answer.status) {
-        eprintln!("{WHO}: {} answered {}: {}", answer.server, answer.status, answer.why());
-        return 1;
-    }
-    let v: Value = serde_json::from_str(&answer.body).unwrap_or(Value::Null);
-    for line in produced_lines(&v) {
-        println!("{line}");
-    }
-    0
-}
-
 pub(crate) fn tick(args: &[String]) -> i32 {
     const WHO: &str = "holon tick";
-    let usage = usage(TRIGGER_USAGE);
+    let usage = usage(TICK_USAGE);
     let args = match cmdline::parse(WHO, &usage, args, &[], &[]) {
         Ok(a) => a,
         Err(code) => return code,
@@ -617,7 +579,7 @@ mod tests {
     fn deployments_list_as_columns_and_mark_what_needs_attention() {
         let all = [
             json!({ "slug": "shop", "status": "running", "port": 8101, "trigger_count": 12, "error_count": 1, "waiting": 0, "deployed_at_epoch_seconds": 0, "deployed_by": "maria" }),
-            json!({ "slug": "beats", "status": "paused", "port": null, "interval_seconds": 10, "trigger_count": 3, "error_count": 0, "waiting": 2, "deployed_at_epoch_seconds": 0, "attention": "it may no longer read the clock" }),
+            json!({ "slug": "beats", "status": "paused", "port": null, "triggers": ["every 10s"], "trigger_count": 3, "error_count": 0, "waiting": 2, "deployed_at_epoch_seconds": 0, "attention": "it may no longer read the clock" }),
         ];
         assert_eq!(
             list_lines(&all),

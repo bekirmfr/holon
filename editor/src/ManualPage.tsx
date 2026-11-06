@@ -1,6 +1,6 @@
 // The docs tab: the manual (manual.ts), its contents beside the page shown. Links between its
 // pages stay in the tab; links out (a site, a design document) open in a new browser tab. Each
-// flow in it (a `holon` block) opens in a tab of its own, as an unsaved copy, to try.
+// flow in it (a `ts` block) opens in a tab of its own, as an unsaved copy, to try.
 
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { marked, type Token, type Tokens } from "marked";
@@ -109,7 +109,7 @@ function block(t: Token, key: number, ctx: Ctx): ReactNode {
     }
     case "code": {
       const c = t as Tokens.Code;
-      if (c.lang === "holon") {
+      if (c.lang === "ts") {
         return (
           <div key={key} className="hl-manual__flow">
             <pre>

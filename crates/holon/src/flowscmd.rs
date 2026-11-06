@@ -30,8 +30,8 @@ const FLOWS_USAGE: &str = "usage: holon flows [list] [--json]
 
 examples:
   holon flows
-  holon flows save shop.holon
-  holon flows show shop --out shop.holon
+  holon flows save shop.holon.ts
+  holon flows show shop --out shop.holon.ts
   holon flows remove shop
 ";
 

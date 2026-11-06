@@ -6,7 +6,7 @@
 
 use std::collections::HashMap;
 
-use holon_core::{parse_path, Edge, EncapSpec, Hash, Param, Port, Segment, Type, Unit, UnitBody, BOUNDARY, METHODS};
+use holon_core::{parse_path, Edge, EncapSpec, Hash, Param, Port, Segment, Type, Unit, UnitBody, BOUNDARY, CALLS, METHODS};
 use serde::Serialize;
 
 use crate::canvas::{Node, PlacedBody, Wire};
@@ -293,7 +293,7 @@ pub(crate) fn is_optional_input(n: &Node, port: Option<&str>) -> bool {
         "http_request" => &["headers", "body"],
         "http_upload" => &["headers"],
         "http_stream" => &["headers", "body"],
-        "flow_call" => &["input"],
+        "flow_call" | "flow_start" => &["input"],
         "collection_list" | "file_list" => &["prefix", "after"],
         "file_lines" => &["from"],
         _ => &[],
@@ -309,6 +309,10 @@ pub(crate) fn is_optional_input(n: &Node, port: Option<&str>) -> bool {
 /// absent when the endpoint runs, rather than refusing the route.
 /// `group` is in the same order as the children the spec was proposed over.
 pub fn route_spec(spec: EncapSpec, group: &[&Node], label: &str) -> Result<EncapSpec, String> {
+    // A route answers and is done: what waits is an action it starts (docs/L4s/typescript-syntax-L4.md §9).
+    if let Some(n) = group.iter().find(|n| n.data.body == PlacedBody::Primitive && matches!(n.data.name.as_str(), "await" | "resume_token")) {
+        return Err(format!("{label}: a route answers and is done, so it doesn't wait ({}): start an action that waits with a flow_start, and answer with what it says", n.data.name));
+    }
     caller_spec(spec, group, label, "request")
 }
 
@@ -331,25 +335,34 @@ fn caller_spec(spec: EncapSpec, group: &[&Node], label: &str, trigger: &str) -> 
         }
     }
     let is_respond = |child: u32| group[child as usize].is_template("respond");
-    let is_effect =
-        |child: u32, port: u32| {
-            let n = group[child as usize];
-            // A call to another flow's action is made for what it does, whatever it answers.
-            n.data.name == "flow_call" || n.data.outputs.get(port as usize).is_some_and(|p| p.ty == WType::Effect)
-        };
-    let expose: Vec<_> = spec.expose.into_iter().filter(|x| is_respond(x.child) || is_effect(x.child, x.port)).collect();
+    let expose: Vec<_> = spec.expose.into_iter().filter(|x| is_respond(x.child) || is_effect(group, x.child, x.port)).collect();
     let (responses, effects): (Vec<_>, Vec<_>) = expose.into_iter().partition(|x| is_respond(x.child));
+    let (calls, writes): (Vec<_>, Vec<_>) = effects.into_iter().partition(|x| is_call(group, x.child));
     if responses.len() > 1 {
         return Err(format!("{label}: more than one respond node"));
     }
-    if responses.is_empty() && effects.is_empty() {
-        return Err(match trigger {
-            "action" => format!("{label}: it does nothing: respond with something, or write something (state, a collection, a channel)"),
-            _ => format!("{label}: add a respond node (or an effect, answered 204)"),
+    if responses.is_empty() && writes.is_empty() {
+        return Err(match (trigger, calls.is_empty()) {
+            ("action", true) => format!("{label}: it does nothing: respond with something, or write something (state, a collection, a channel)"),
+            ("action", false) => format!("{label}: a call's answer is the far side's, not the action's: respond with something"),
+            (_, true) => format!("{label}: add a respond node (or an effect, answered 204)"),
+            (_, false) => format!("{label}: a call's answer is the far side's, not the route's: add a respond node"),
         });
     }
-    // The response first: the endpoint takes the first non-effect output as output 0.
-    Ok(EncapSpec { promote, expose: responses.into_iter().chain(effects).collect() })
+    // Output 0 is the answer: the respond's, or without one a write's (answered 204), never a
+    // call's. The calls come last, as effects the endpoint keeps no answer of.
+    Ok(EncapSpec { promote, expose: responses.into_iter().chain(writes).chain(calls).collect() })
+}
+
+/// Whether node `child` makes a call ([`CALLS`]): made for what it does, whatever it answers.
+fn is_call(group: &[&Node], child: u32) -> bool {
+    CALLS.contains(&group[child as usize].data.name.as_str())
+}
+
+/// Whether output `port` of node `child` is an effect the host performs: an Effect value, or a
+/// call's answer, kept so the call is made whether or not anything reads it.
+fn is_effect(group: &[&Node], child: u32, port: u32) -> bool {
+    is_call(group, child) || group[child as usize].data.outputs.get(port as usize).is_some_and(|p| p.ty == WType::Effect)
 }
 
 /// Narrow core's proposed boundary for one clock's group to what a clock handler is: no inputs
@@ -377,13 +390,7 @@ fn handler_spec(spec: EncapSpec, group: &[&Node], label: &str, who: &str) -> Res
     if let Some(n) = group.iter().find(|n| n.is_template("respond") || n.is_template("request")) {
         return Err(format!("{label}: {} is a route's; {who} answers nobody", n.data.name));
     }
-    let is_effect =
-        |child: u32, port: u32| {
-            let n = group[child as usize];
-            // A call to another flow's action is made for what it does, whatever it answers.
-            n.data.name == "flow_call" || n.data.outputs.get(port as usize).is_some_and(|p| p.ty == WType::Effect)
-        };
-    let expose: Vec<_> = spec.expose.into_iter().filter(|x| is_effect(x.child, x.port)).collect();
+    let expose: Vec<_> = spec.expose.into_iter().filter(|x| is_effect(group, x.child, x.port)).collect();
     if expose.is_empty() {
         return Err(format!("{label}: it does nothing: write something (state, a collection, a channel)"));
     }
@@ -449,9 +456,9 @@ fn is_wait_name(s: &str) -> bool {
 
 /// Wrap a handler as an endpoint unit. The endpoint's one input is the request record, wired to
 /// the handler's input if it has one (a handler with no input, e.g. a plain listing, simply
-/// ignores the request). Output 0 is the response: the handler's first non-effect output, or, if
-/// it only has effects, its first effect (which the data plane answers with 204). Every other
-/// effect output follows, so the host performs it. An error message when the handler can't be an
+/// ignores the request). Output 0 is the response: the handler's first output, its respond's or,
+/// without one, its first write's (which the data plane answers with 204), as [`route_spec`]
+/// orders them. Every other effect output follows, so the host performs it. An error message when the handler can't be an
 /// endpoint.
 pub fn endpoint_unit(handler: Hash, inputs: &[Port], outputs: &[Port], method: &str, path: &str, resume: &str) -> Result<Unit, String> {
     if !resume.is_empty() && !is_wait_name(resume) {
@@ -491,12 +498,9 @@ pub fn action_unit(handler: Hash, inputs: &[Port], outputs: &[Port], name: &str)
 }
 
 /// A handler wrapped for its caller: `input` fed to the handler's input if it has one, output 0
-/// (named `first`) its first non-effect output (or its first effect), then every other effect.
+/// (named `first`) its first output (its answer), then every other effect.
 fn caller_unit(handler: Hash, inputs: &[Port], outputs: &[Port], params: Vec<Param>, input: Port, first: &str) -> Unit {
-    let is_effect = |p: &Port| p.ty == Type::Effect;
-    let response = outputs.iter().position(|p| !is_effect(p)).unwrap_or(0);
-    let order: Vec<usize> =
-        std::iter::once(response).chain((0..outputs.len()).filter(|&i| i != response && is_effect(&outputs[i]))).collect();
+    let order: Vec<usize> = std::iter::once(0).chain((1..outputs.len()).filter(|&i| outputs[i].ty == Type::Effect)).collect();
     let mut edges: Vec<Edge> = Vec::new();
     if inputs.len() == 1 {
         edges.push(Edge { from_child: BOUNDARY, from_port: 0, to_child: 0, to_port: 0 });
@@ -629,6 +633,49 @@ mod tests {
         );
     }
 
+    /// A route answers and is done: one with an `await` or a `resume_token` is refused, the
+    /// canvas's as the text's (docs/L4s/typescript-syntax-L4.md §9).
+    #[test]
+    fn a_route_doesnt_wait() {
+        for leaf in ["await", "resume_token"] {
+            let g = [req("r", "POST", "/a"), plain("w", leaf), res("s")];
+            let group: Vec<&Node> = g.iter().collect();
+            let spec = EncapSpec { promote: vec![promote(0, 0, "request")], expose: vec![expose(2, 0, "response")] };
+            let e = route_spec(spec, &group, "POST /a").unwrap_err();
+            assert!(e.starts_with("POST /a: a route answers and is done, so it doesn't wait"), "{e}");
+        }
+    }
+
+    #[test]
+    fn a_call_is_kept_as_an_effect_and_never_answers() {
+        let g = [req("r", "POST", "/hook"), plain("h", "http_request"), plain("w", "store_write"), res("s"), plain("c", "flow_call")];
+        let group: Vec<&Node> = g.iter().collect();
+        let spec = |expose: Vec<Expose>| EncapSpec { promote: vec![promote(0, 0, "request")], expose };
+        // Read by nothing, each call is kept: after the answer and the writes.
+        let all = vec![expose(1, 0, "sent"), expose(2, 0, "write"), expose(3, 0, "response"), expose(4, 0, "paid")];
+        let got = route_spec(spec(all), &group, "POST /hook").unwrap();
+        assert_eq!(got.expose, [expose(3, 0, "response"), expose(2, 0, "write"), expose(1, 0, "sent"), expose(4, 0, "paid")]);
+        // Without a respond a write answers (204), not the call before it.
+        let got = route_spec(spec(vec![expose(1, 0, "sent"), expose(2, 0, "write")]), &group, "POST /hook").unwrap();
+        assert_eq!(got.expose, [expose(2, 0, "write"), expose(1, 0, "sent")]);
+        // A call alone isn't the route's answer, nor an action's, but is a clock's work.
+        assert_eq!(
+            route_spec(spec(vec![expose(1, 0, "sent")]), &group, "POST /hook").unwrap_err(),
+            "POST /hook: a call's answer is the far side's, not the route's: add a respond node"
+        );
+        let mut act = g.clone();
+        act[0] = node("r", "action", vec![WParam::frozen("name", "notify")], true);
+        let group: Vec<&Node> = act.iter().collect();
+        assert_eq!(
+            action_spec(spec(vec![expose(1, 0, "sent")]), &group, "action notify").unwrap_err(),
+            "action notify: a call's answer is the far side's, not the action's: respond with something"
+        );
+        let tick = [plain("t", "every"), plain("h", "http_request")];
+        let group: Vec<&Node> = tick.iter().collect();
+        let clock = EncapSpec { promote: vec![], expose: vec![expose(1, 0, "sent")] };
+        assert_eq!(clock_spec(clock, &group, "every 1h").unwrap().expose, [expose(1, 0, "sent")]);
+    }
+
     #[test]
     fn an_http_requests_optional_inputs_stay_unbound_but_not_its_path() {
         let mut http = plain("h", "http_request");
@@ -653,14 +700,16 @@ mod tests {
     }
 
     #[test]
-    fn an_endpoint_puts_the_response_first_and_wires_the_request_in() {
+    fn an_endpoint_answers_with_the_first_output_and_wires_the_request_in() {
         let h = [7u8; 32];
-        let outputs = [port("write", Type::Effect), port("item", Type::Any), port("log", Type::Effect)];
+        // As route_spec orders them: the answer, the writes, then a call's answer, which the
+        // handler keeps and the endpoint doesn't answer with.
+        let outputs = [port("item", Type::Any), port("write", Type::Effect), port("log", Type::Effect), port("sent", Type::Record)];
         let u = endpoint_unit(h, &[port("record", Type::Record)], &outputs, "POST", "/todos", "").unwrap();
         let got: Vec<_> = u.outputs.iter().map(|p| (p.name.as_str(), p.ty.clone())).collect();
         assert_eq!(got, [("response", Type::Any), ("write", Type::Effect), ("log", Type::Effect)]);
         let b = BOUNDARY;
-        let edges = vec![edge(b, 0, 0, 0), edge(0, 1, b, 0), edge(0, 0, b, 1), edge(0, 2, b, 2)];
+        let edges = vec![edge(b, 0, 0, 0), edge(0, 0, b, 0), edge(0, 1, b, 1), edge(0, 2, b, 2)];
         assert_eq!(u.body, UnitBody::Composite { children: vec![h], edges });
         assert_eq!(u.inputs, [port("request", Type::Record)]);
         let values: Vec<_> = u

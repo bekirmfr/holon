@@ -896,8 +896,8 @@ fn rerun(
     };
 
     // What it ran: a request's endpoint, with the request; a clock's tick or a file's run, that
-    // handler alone (the file's handle among the sourced values); an action's, its handler with
-    // what was sent; anything else, the whole unit.
+    // handler alone (the file's handle among the sourced values); an action's, its first part or
+    // a resumed one, its handler with what was sent; anything else, the whole unit.
     let clock = match &entry.route {
         Some(label) if entry.kind == "tick" => {
             read_server(deployed, resolver).ok().and_then(|s| s.clocks.into_iter().find(|c| c.label == *label)).map(|c| (c.handler, false))
@@ -905,7 +905,7 @@ fn rerun(
         Some(label) if entry.kind == "file" => {
             read_server(deployed, resolver).ok().and_then(|s| s.files.into_iter().find(|f| f.label == *label)).map(|f| (f.handler, false))
         }
-        Some(label) if entry.kind == "trigger" => {
+        Some(label) if entry.kind == "trigger" || entry.kind == "resume" => {
             read_server(deployed, resolver).ok().and_then(|s| s.actions.into_iter().find(|a| a.label == *label)).map(|a| (a.handler, true))
         }
         _ => None,

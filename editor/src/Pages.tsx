@@ -4,7 +4,7 @@ import { useCallback, useEffect, useState, type CSSProperties } from "react";
 import { holonIndex, type HolonUse } from "./holonUsage";
 import { setMarketplaceUrl, type Listing } from "./marketplace";
 import { getActivity, type ActivityEntry, type Role } from "./server";
-import { deleteFlow, getFlow, listDeployments, listFlows, type DeploymentEntry, type FlowDocument, type FlowListEntry, type FlowRecord, type TriggerResult } from "./server";
+import { deleteFlow, getFlow, listDeployments, listFlows, type DeploymentEntry, type FlowDocument, type FlowListEntry, type FlowRecord } from "./server";
 import { ManifestSection, type ManifestView } from "./Manifest";
 import { openChoice } from "./tabs";
 import { useDialog } from "./Dialog";
@@ -54,8 +54,8 @@ export function FlowsPage({
   /** Sample flows (holon-author's samples.rs), one per capability: opening one starts an unsaved copy. */
   samples: Sample[];
   onOpenSample: (sample: Sample) => void;
-  /** Flows as text (holonText.ts): a `.holon` file opened as an unsaved flow (answers why not,
-   *  when it can't be), and a saved flow written as one. */
+  /** Flows as text (holonText.ts): a `.holon.ts` file opened as an unsaved flow
+   *  (answers why not, when it can't be), and a saved flow written as one. */
   holonText: { onImport: (text: string) => string | null; exportOf: (name: string) => Promise<string>; textOfSample: (sample: Sample) => string };
 }) {
   const dialog = useDialog();
@@ -111,12 +111,12 @@ export function FlowsPage({
     <div style={{ maxWidth: 560 }}>
       <div style={{ color: "#cfe3ff", fontSize: 14, letterSpacing: "0.04em", marginBottom: 12, display: "flex", alignItems: "center", gap: 10 }}>
         <span style={{ flex: 1 }}>flows</span>
-        <label style={{ ...smallBtn, fontSize: 11, letterSpacing: 0 }} title="open a flow written as text (.holon) as an unsaved flow, in a tab of its own">
-          import .holon
+        <label style={{ ...smallBtn, fontSize: 11, letterSpacing: 0 }} title="open a flow written as text (NAME.holon.ts) as an unsaved flow, in a tab of its own">
+          import text
           <input
             type="file"
-            accept=".holon,text/plain"
-            aria-label="import a .holon file"
+            accept=".ts,text/plain"
+            aria-label="import a flow's text"
             style={{ display: "none" }}
             onChange={async (e) => {
               const file = e.target.files?.[0];
@@ -167,7 +167,7 @@ export function FlowsPage({
             </button>
             <button
               style={smallBtn}
-              title="download it as text (.holon): edit it anywhere, keep it in git, check it with `holon check`"
+              title="download it as text (.holon.ts): edit it anywhere, keep it in git, check it with `holon check`"
               onClick={() =>
                 holonText
                   .exportOf(f.name)
@@ -175,14 +175,14 @@ export function FlowsPage({
                     const url = URL.createObjectURL(new Blob([text], { type: "text/plain" }));
                     const a = document.createElement("a");
                     a.href = url;
-                    a.download = `${f.name}.holon`;
+                    a.download = `${f.name}.holon.ts`;
                     a.click();
                     URL.revokeObjectURL(url);
                   })
                   .catch((e: unknown) => setMsg(e instanceof Error ? e.message : String(e)))
               }
             >
-              .holon
+              .holon.ts
             </button>
             <button style={smallBtn} onClick={() => remove(f.name)} title="delete this saved flow">
               ×
@@ -272,13 +272,13 @@ export function FlowsPage({
           </button>
           <button
             style={smallBtn}
-            title="download it as text (.holon), as the language writes it: read it, change it anywhere, check it with `holon check`"
+            title="download it as text (.holon.ts), as it is written: read it, change it anywhere, check it with `holon check`"
             onClick={() => {
               try {
                 const url = URL.createObjectURL(new Blob([holonText.textOfSample(s)], { type: "text/plain" }));
                 const a = document.createElement("a");
                 a.href = url;
-                a.download = `${s.name}.holon`;
+                a.download = `${s.name}.holon.ts`;
                 a.click();
                 URL.revokeObjectURL(url);
               } catch (e) {
@@ -286,7 +286,7 @@ export function FlowsPage({
               }
             }}
           >
-            .holon
+            .holon.ts
           </button>
         </div>
       ))}
@@ -312,17 +312,11 @@ function UsedBy({ uses, lead, title }: { uses: HolonUse[]; lead: string; title: 
   );
 }
 
-export type TriggerOutcome = { ok: true; result: TriggerResult } | { ok: false; message: string };
-
 /** The deployed page: the server's live table, one card per deployment. */
 export function DeployedPage({
   deployments,
   error,
   onAction,
-  triggerInputs,
-  onTriggerInputChange,
-  onTrigger,
-  triggerResults,
   onDelete,
   onView,
   onChanged,
@@ -332,10 +326,6 @@ export function DeployedPage({
   deployments: DeploymentEntry[];
   error: string;
   onAction: (slug: string, action: "run" | "pause" | "stop", from?: "latest" | "fresh" | number) => Promise<void>;
-  triggerInputs: Record<string, string>;
-  onTriggerInputChange: (slug: string, value: string) => void;
-  onTrigger: (slug: string) => void;
-  triggerResults: Record<string, TriggerOutcome>;
   onDelete: (slug: string) => void;
   /** Open a deployment in view mode, on one of its runs when `seq` is given. */
   onView: (slug: string, seq?: number) => void;
@@ -366,14 +356,10 @@ export function DeployedPage({
           key={entry.slug}
           entry={entry}
           onAction={(action, from) => onAction(entry.slug, action, from)}
-          triggerInput={triggerInputs[entry.slug] ?? ""}
-          onTriggerInputChange={(v) => onTriggerInputChange(entry.slug, v)}
-          onTrigger={() => onTrigger(entry.slug)}
           onDelete={() => onDelete(entry.slug)}
           onView={(seq) => onView(entry.slug, seq)}
           onChanged={onChanged}
           role={role}
-          result={triggerResults[entry.slug]}
           focus={focus?.slug === entry.slug ? focus.n : undefined}
         />
       ))}

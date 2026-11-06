@@ -3,7 +3,7 @@
 // server's lifecycle.rs.
 
 import { useEffect, useRef, useState, type CSSProperties } from "react";
-import { formatOutputs, summarizeState } from "./diagnostics";
+import { summarizeState } from "./diagnostics";
 import { describeItem, permissionKind } from "./holon";
 import { KindBadge, ManifestSection } from "./Manifest";
 import { ActionRows } from "./ActionRows";
@@ -22,7 +22,6 @@ import {
   type DeploymentStatus,
   type Role,
   type SessionEntry,
-  type TriggerResult,
 } from "./server";
 
 const small: CSSProperties = {
@@ -51,10 +50,6 @@ export function DeploymentCard({
   onDelete,
   onView,
   onChanged,
-  triggerInput,
-  onTriggerInputChange,
-  onTrigger,
-  result,
   focus,
   role,
 }: {
@@ -67,10 +62,6 @@ export function DeploymentCard({
   onView: (seq?: number) => void;
   /** It changed here (its grant): the table should be fetched again. */
   onChanged: () => void;
-  triggerInput: string;
-  onTriggerInputChange: (v: string) => void;
-  onTrigger: () => void;
-  result?: { ok: true; result: TriggerResult } | { ok: false; message: string };
   /** Asked for from elsewhere (the admin page's permissions): each new value brings the card into
    *  view with its permissions open. */
   focus?: number;
@@ -106,9 +97,6 @@ export function DeploymentCard({
   const look = STATUS_LOOK[entry.status];
   const stopped = entry.status === "stopped";
   const restorable = (sessions ?? []).filter((s) => s.state !== null);
-  const canTrigger = entry.triggers.includes("Ingress") && entry.status === "running" && role !== "viewer";
-  // The old form run by hand (no routes, `ingress`): its NetworkIngress says so.
-  const byHand = entry.triggers.includes("Ingress");
   // Its actions, by the labels its triggers list (`action reset`).
   const actions = entry.triggers.filter((t) => t.startsWith("action ")).map((t) => t.slice("action ".length));
 
@@ -199,10 +187,10 @@ export function DeploymentCard({
       <ManifestSection
         version={`${entry.unit} ${entry.status} ${entry.attention ?? ""}`}
         load={() =>
-          getManifest(entry.slug).then((m) => ({ items: m.items, optional: m.optional, trigger: m.trigger, notGranted: m.not_granted, hash: m.hash, byHand }))
+          getManifest(entry.slug).then((m) => ({ items: m.items, optional: m.optional, trigger: m.trigger, notGranted: m.not_granted, hash: m.hash }))
         }
       />
-      <Permissions slug={entry.slug} version={`${entry.unit} ${entry.status} ${entry.attention ?? ""}`} onChanged={onChanged} focus={focus} byHand={byHand} />
+      <Permissions slug={entry.slug} version={`${entry.unit} ${entry.status} ${entry.attention ?? ""}`} onChanged={onChanged} focus={focus} />
       <Holds slug={entry.slug} version={entry.trigger_count} />
 
       {open &&
@@ -229,26 +217,6 @@ export function DeploymentCard({
       {actions.length > 0 && (
         <div style={{ display: "flex", flexDirection: "column", gap: 6, maxWidth: 420, marginTop: 2 }}>
           <ActionRows names={actions} slug={entry.status === "running" ? entry.slug : ""} role={role} onViewRun={(seq) => onView(seq)} />
-        </div>
-      )}
-      {canTrigger && (
-        // The old form's one unnamed action: the whole flow, run once with what is sent.
-        <div style={{ display: "flex", gap: 4 }}>
-          <input
-            placeholder="what to send"
-            aria-label={`what to send ${entry.slug}`}
-            value={triggerInput}
-            onChange={(e) => onTriggerInputChange(e.target.value)}
-            style={{ ...field, width: 140 }}
-          />
-          <button style={{ ...small, color: "#0e1a2f", background: "#6fd3e0", border: "none" }} onClick={onTrigger} title="run the flow once, now, with what to send">
-            run
-          </button>
-        </div>
-      )}
-      {result && (
-        <div style={{ color: result.ok ? "#9ad29f" : "#e0916f", wordBreak: "break-word" }}>
-          {result.ok ? formatOutputs(result.result.outputs) : result.message}
         </div>
       )}
       {msg && <div style={{ color: "#e0916f" }}>{msg}</div>}
@@ -296,7 +264,7 @@ const sizeOf = holdsSize;
 /** What the deployment is granted, with the host's controls: revoke an item, grant back one it
  *  asks for, and whether an uncovered grant pauses it or keeps it running. `version` changes when
  *  the deployment might have (its status or attention), so an open list follows. */
-function Permissions({ slug, version, onChanged, focus, byHand = false }: { slug: string; version: string; onChanged: () => void; focus?: number; byHand?: boolean }) {
+function Permissions({ slug, version, onChanged, focus }: { slug: string; version: string; onChanged: () => void; focus?: number }) {
   const [open, setOpen] = useState(false);
   useEffect(() => {
     if (focus !== undefined) setOpen(true);
@@ -341,7 +309,7 @@ function Permissions({ slug, version, onChanged, focus, byHand = false }: { slug
         <>
           {grant.items.map((item) => (
             <div key={item} style={{ ...row, color: "#9fb4d4" }} title={item}>
-              <span style={{ flex: 1 }}>✓ {describeItem(item, byHand)}</span>
+              <span style={{ flex: 1 }}>✓ {describeItem(item)}</span>
               {!item.startsWith("Limit(") && <KindBadge item={item} optional={kinds.optional} trigger={kinds.trigger} />}
               <button style={small} onClick={() => change({ revoke: [item] })} title={revokeTitle(item)}>
                 revoke
@@ -350,7 +318,7 @@ function Permissions({ slug, version, onChanged, focus, byHand = false }: { slug
           ))}
           {(grant.revoked ?? []).map((item) => (
             <div key={item} style={{ ...row, color: "#e0916f" }} title={item}>
-              <span style={{ flex: 1, textDecoration: "line-through" }}>{describeItem(item, byHand)}</span>
+              <span style={{ flex: 1, textDecoration: "line-through" }}>{describeItem(item)}</span>
               {!item.startsWith("Limit(") && <KindBadge item={item} optional={kinds.optional} trigger={kinds.trigger} />}
               <button style={small} onClick={() => change({ grant: [item] })} title="grant it back">
                 grant back

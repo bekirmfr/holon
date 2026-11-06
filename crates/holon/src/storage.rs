@@ -247,8 +247,7 @@ pub(crate) const ROLL_FLOOR: usize = 20;
 fn records_runs(dep: &crate::Deployment) -> bool {
     let Some(server) = &dep.server else { return true };
     let recorded = |label: String, level| dep.permit.log_level(Some(&label), level) != holon_core::LogLevel::Unrecorded;
-    dep.interval_seconds.is_some()
-        || !server.clocks.is_empty()
+    !server.clocks.is_empty()
         || !server.files.is_empty()
         || server.routes.iter().any(|r| recorded(format!("{} {}", r.method, r.path), r.log))
         || server.actions.iter().any(|a| recorded(a.label.clone(), a.log))

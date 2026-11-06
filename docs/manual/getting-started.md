@@ -64,13 +64,12 @@ Find **Hello API** and press **open**. It opens in its own tab, as an unsaved co
 - the **text** pane shows the same flow in the language (press **text on** in the toolbar if
   your window is narrow):
 
-```holon
-flow hello-api
-port 8101
+```ts
+import { flow, route } from "holon"
 
-route GET /hello/:name (req) {
-  respond "Hello, {req.params.name}"
-}
+flow("hello-api", { port: 8101 })
+
+route.get("/hello/:name", (req) => `Hello, ${req.params.name}`)
 ```
 
 Press **deploy**. Holon works out what the flow may do and asks you to approve it:
@@ -117,13 +116,13 @@ exact, and what lets anyone check a deployment's runs later ([Checking runs](gui
 
 Switch back to **edit**. In the text pane, change the route to answer a record instead of text:
 
-```holon
-flow hello-api
-port 8101
+```ts
+import { flow, route } from "holon"
+import { now } from "holon:clock"
 
-route GET /hello/:name (req) {
-  respond { greeting: "Hello, {req.params.name}", at: now }
-}
+flow("hello-api", { port: 8101 })
+
+route.get("/hello/:name", (req) => ({ greeting: `Hello, ${req.params.name}`, at: now }))
 ```
 
 The canvas follows as you type. A mistake is underlined in the text, and the canvas keeps the
@@ -164,17 +163,16 @@ Flows are plain text files, and the `holon` command works with them on any machi
 server:
 
 ```sh
-holon new todo.holon
-holon check todo.holon
+holon new todo.holon.ts
+holon check todo.holon.ts
 ```
 
-`new` writes a starter flow; `holon new todo.holon --sample notes-api` writes a sample instead
+`new` writes a starter flow; `holon new todo.holon.ts --sample notes-api` writes a sample instead
 (`holon new --help` lists them). `check` compiles it and tells you what it is and what it may do,
-or each mistake with its line and column. Edit it in any editor (the
-[VS Code extension](guides/editor.md#other-editors) adds highlighting and checks as you type), then
-`holon fmt todo.holon` writes it in the canonical form.
+or each mistake with its line and column. A flow is TypeScript, so any editor reads it; then
+`holon fmt todo.holon.ts` writes it in the canonical form.
 
-To deploy a text file, press **import .holon** on the flows page: it opens as a tab, ready to
+To deploy a text file, press **import text** on the flows page: it opens as a tab, ready to
 deploy.
 
 ## 9. Let an agent write one

@@ -1,6 +1,6 @@
-//! The manual (docs/manual) stays true to the code: every `holon` block in it compiles, and the
-//! page of leaves is what the catalog says. The blocks are written to be read, so they needn't be
-//! as `holon fmt` writes them (it names what it binds its own way, and wraps no line).
+//! The manual (docs/manual) stays true to the code: every flow in it (a `ts` block) compiles, as
+//! TypeScript, and the page of leaves is what the catalog says. The blocks are written to be read,
+//! so they needn't be as `holon fmt` writes them.
 //!
 //! `HOLON_BLESS=1 cargo test -p holon-author --test manual` writes the page of leaves again.
 
@@ -24,13 +24,13 @@ fn pages(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
-/// The `holon` blocks of a page: the line each starts on, and its text.
-fn holon_blocks(text: &str) -> Vec<(usize, String)> {
+/// The blocks of a page fenced as `lang`: the line each starts on, and its text.
+fn blocks(text: &str, lang: &str) -> Vec<(usize, String)> {
     let mut blocks = vec![];
     let mut open: Option<(usize, String)> = None;
     for (i, line) in text.lines().enumerate() {
         match &mut open {
-            None if line.trim_end() == "```holon" => open = Some((i + 2, String::new())),
+            None if line.trim_end() == format!("```{lang}") => open = Some((i + 2, String::new())),
             Some(_) if line.trim_end() == "```" => blocks.push(open.take().unwrap()),
             Some((_, body)) => {
                 body.push_str(line);
@@ -39,7 +39,7 @@ fn holon_blocks(text: &str) -> Vec<(usize, String)> {
             None => {}
         }
     }
-    assert!(open.is_none(), "a holon block isn't closed");
+    assert!(open.is_none(), "a {lang} block isn't closed");
     blocks
 }
 
@@ -52,16 +52,19 @@ fn every_flow_in_the_manual_compiles() {
     for file in &files {
         let text = std::fs::read_to_string(file).unwrap().replace("\r\n", "\n");
         let name = file.strip_prefix(manual()).unwrap().display().to_string();
-        for (line, body) in holon_blocks(&text) {
+        for (line, _) in blocks(&text, "holon") {
+            wrong.push(format!("{name}:{line}: a flow is written in TypeScript now, in a ts block"));
+        }
+        for (line, body) in blocks(&text, "ts") {
             seen += 1;
-            let at = format!("{name}:{line}");
+            let at = format!("{name}:{line}.holon.ts");
             let report = commands::check(&at, &body);
             if report.code != 0 {
                 wrong.push(format!("{at}: doesn't compile:\n{}", report.err.join("\n")));
             }
         }
     }
-    assert!(seen > 0, "no holon blocks found under {}", manual().display());
+    assert!(seen > 0, "no ts blocks found under {}", manual().display());
     assert!(wrong.is_empty(), "{}", wrong.join("\n\n"));
 }
 

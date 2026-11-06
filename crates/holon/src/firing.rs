@@ -631,7 +631,7 @@ fn run_attempt(
     // A file as a request's body is sent from a folder the deployment reads.
     let forward = waits.forward.clone();
     let (slug, run, chain) = (waits.slug.clone().unwrap_or_default(), waits.run_id.clone().unwrap_or_default(), waits.chain.clone());
-    let caller = calls::Caller { store, fed: &secret_fed, permit, vault: secrets, slug: &slug, run: &run, chain: &chain, unrecorded: waits.unrecorded };
+    let caller = calls::Caller { store, fed: &secret_fed, permit, vault: secrets, slug: &slug, run: &run, chain: &chain, unrecorded: waits.unrecorded, #[cfg(test)] fixed: fixed::peek() };
     let sender = folders::Sender {
         outbound: &permit.outbound,
         folders: waits.folders.clone(),
@@ -783,6 +783,11 @@ pub(crate) mod fixed {
     /// Fix this thread's sources from `n` on; none, back to the system's.
     pub(crate) fn from(n: Option<u64>) {
         NEXT.with(|c| c.set(n));
+    }
+
+    /// This thread's next one, not taken: what a run's calls start from on their own threads.
+    pub(crate) fn peek() -> Option<u64> {
+        NEXT.with(|c| c.get())
     }
 
     pub(super) fn next() -> Option<u64> {

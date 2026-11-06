@@ -1,37 +1,39 @@
 # Actions: runs by hand
 
 Some runs aren't anyone's request: setting a counter back, sending a report again, clearing what
-a test left. An **action** is a block a person runs by its name, beside a flow's routes and
+a test left. An **action** is a handler a person runs by its name, beside a flow's routes and
 clocks. The network never reaches it, whatever the flow's port: it runs through Holon, from the
 editor, a script or an agent, as someone signed in, and its run is logged like any other.
 
 ## Writing one
 
-```holon
-flow counter
-port 8170
-state hits
+```ts
+import { action, flow, route } from "holon"
+import state from "state"
 
-route POST /hit (req) {
-  n = (state.hits ?? 0) + 1
+flow("counter", { port: 8170 })
+
+route.post("/hit", () => {
+  const n = (state.hits ?? 0) + 1
   state.hits = n
-  respond n
-}
+  return n
+})
 
-action reset (input) {
+export const reset = action((input) => {
   state.hits = input.to ?? 0
-  respond { was: state.hits ?? 0, set: input.to ?? 0 }
-}
+  return { was: state.hits ?? 0, set: input.to ?? 0 }
+})
 ```
 
-`action reset (input) { … }` names the action `reset`, and `input` what the person running it
-sent: a JSON value, `{}` when they sent nothing. So `{"to": 5}` sets the count to 5, and nothing
-sets it to 0.
+`export const reset = action((input) => { … })` names the action `reset`, and `input` what the
+person running it sent: a JSON value, `{}` when they sent nothing. So `{"to": 5}` sets the count
+to 5, and nothing sets it to 0.
 
-- **Its answer** is its `respond`, a value alone (a route's `status:`, `missing:`, `headers:` and
-  `stream:` aren't an action's), at most once. An action that only writes answers `null`.
-- **Its name** is letters, digits and `_`, one block per name. A flow may have several actions,
-  and actions alone: a flow of only actions listens on no port.
+- **Its answer** is what it returns, a value alone (a route's `status(…)` and `respond(…)` aren't
+  an action's). An action that only writes answers `null`.
+- **Its name** is the name it is exported as, one action per name. It is exported because it is
+  what reaches the flow from outside. A flow may have several actions, and actions alone: a flow
+  of only actions has no port and listens on none.
 - **What it reads** is the run's start, as in any run: `state.hits` on the right above is the count
   before the write, so `was` is the old count.
 - **Its writes** are tied to it, as a route's are to its request, and land when the run ends.
@@ -97,20 +99,21 @@ page (**permissions ▸**) refuses agents again at once. An agent runs an action
 
 ## Run by another flow
 
-A flow runs another's action in its own text. It names the other flow, by its slug, in its
-headers, and calls the action as a method:
+A flow runs another's action in its own text. It imports the action from the other flow, by its
+slug, and calls it:
 
-```holon
-flow shop
-port 8159
-collection orders
-calls billing
+```ts
+import { flow, route, status } from "holon"
+import orders from "collection:orders"
+import { charge } from "flow:billing"
 
-route POST /orders (req) {
-  paid = billing.charge({ id: req.json.id, amount: req.json.amount })
+flow("shop", { port: 8159 })
+
+route.post("/orders", async (req) => {
+  const paid = await charge({ id: req.json.id, amount: req.json.amount })
   orders[req.json.id] = { amount: req.json.amount, total: paid.answer.total }
-  respond paid.answer, status: 201, missing: 502
-}
+  return status(201, paid.answer) ?? status(502)
+})
 ```
 
 Deploying `shop` asks a person to approve "run the action charge of the flow billing", as it asks
@@ -133,8 +136,8 @@ writes; `run` is its number in billing's log), or `{error, message}` when nothin
 | `failed` | the action failed: its run in the other log says why |
 
 Handle them as a failed request is handled: by absence. `paid.answer` has no value when the call
-failed, so the order above isn't stored and `missing: 502` answers 502. To say why, bind the whole
-answer and read `error` and `message`.
+failed, so the order above isn't stored and `?? status(502)` answers 502. To say why, bind the
+whole answer and read `error` and `message`.
 
 A flow isn't called back: `shop` calls `billing`, which can't call `shop` (or `billing`) again,
 because the call would wait for the run that made it. Calls to one flow in a round go one at a
@@ -145,14 +148,9 @@ first.
 
 ## Flows nothing starts
 
-A flow with no route, clock, `on file` or action, that doesn't read `ingress`, starts nothing: it
-is a holon, to place in other flows. `holon check` says so, and deploying it is refused, naming
-the fix: put its statements in `action run (input) { … }`. In the editor, **make it runnable by
-hand** writes that block for you, ending it with `respond` of what it computes.
-
-A flow with no handlers that reads `ingress` is the older form of this: it runs by hand as a
-whole, by `POST /trigger/<slug>`, `ingress` the text it was sent. Agents can't run one; write an
-action to let them.
+A flow with no route, clock, file handler or action starts nothing, and deploying it is refused.
+To run its work by hand, put its statements in an action, `export const run = action((input) =>
+{ … })`, returning what it computes.
 
 See also: [Permissions](../reference/permissions.md#who-may-run-an-action) for the items an action
 asks for.

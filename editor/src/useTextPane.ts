@@ -182,7 +182,7 @@ export function useTextPane({
       const optional = said.requirements?.optional;
       const limits = { ...Object.fromEntries(Object.entries(was ?? {}).filter(([name]) => !TEXT_LIMITS.includes(name))), ...said.requirements?.limits };
       const requirements = { ...unsaid, ...(Object.keys(limits).length > 0 ? { limits } : {}), ...(optional && optional.length > 0 ? { optional } : {}) };
-      const settings: FlowSettings = { port: said.port, interval: said.interval, ...(Object.keys(requirements).length > 0 ? { requirements } : {}), ...(said.browsers ? { browsers: said.browsers } : {}) };
+      const settings: FlowSettings = { port: said.port, ...(Object.keys(requirements).length > 0 ? { requirements } : {}), ...(said.browsers ? { browsers: said.browsers } : {}) };
       const k2 = syncKeyOf(ns, out.edges, settings, f.name);
       synced.current = { key: k2, synced: { ...next, toCanvas: out.toCanvas }, lines: compiled.lines, spans: compiled.spans };
       remember(k2, typed);
@@ -212,26 +212,13 @@ export function useTextPane({
   );
   useEffect(() => () => void (timer.current && clearTimeout(timer.current)), []);
 
-  // A quick fix that rewrites the flow's text (make it runnable by hand): the text as typed, or
-  // the canvas written as text, rewritten and applied as a formatted edit is. Throws why the
-  // rewrite doesn't apply.
-  const rewrite = useCallback(
-    (f: (text: string) => string) => {
-      const current = text.open && text.typed && text.value !== null && text.key === key ? text.value : printHolon(flow.name, canvasDoc(), ev);
-      onEdit(f(current), true);
-    },
-    // canvasDoc reads live.current, as of the call.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [text.open, text.typed, text.value, text.key, key, flow.name, ev, onEdit],
-  );
-
   // In view mode: the deployed version's text, read only.
   const viewText = useMemo(() => {
     if (!viewing || !text.open) return null;
     try {
       return printHolon(flow.name, { nodes: nodes as unknown[], edges: edges as unknown[], server: flow.settings }, ev);
     } catch (e) {
-      return `# the deployed version can't be written as text: ${message(e)}\n`;
+      return `// the deployed version can't be written as text: ${message(e)}\n`;
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [viewing, text.open, canvasKey, flow.name, ev]);
@@ -318,7 +305,6 @@ export function useTextPane({
   return {
     open: text.open,
     toggle,
-    rewrite,
     revealNode,
     pane: {
       text: viewing ? (viewText ?? "") : (text.value ?? ""),

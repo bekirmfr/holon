@@ -7,8 +7,8 @@
 
 use std::collections::{BTreeMap, HashMap};
 
-use crate::lang::ast::{HeaderKind, Item, Pos, Span, Stmt, StmtKind};
-use crate::lang::{lower, parse};
+use crate::lang::ast::{Item, Pos, Span, Stmt, StmtKind};
+use crate::lang::{lower, ts};
 use crate::wire::WParam;
 
 /// A placed node, as a statement's detail.
@@ -70,20 +70,19 @@ fn inside(p: Pos, s: Span) -> bool {
     (p.line, p.col) >= (s.start.line, s.start.col) && (p.line, p.col) < (s.end.line, s.end.col)
 }
 
-/// A block's statements, with the trigger's title and span.
+/// A handler's statements, with the trigger's label and the handler's span.
 struct Block<'a> {
     title: String,
-    span: Option<Span>,
+    span: Span,
     body: Vec<&'a Stmt>,
 }
 
 /// The text's graph: by statement, or with `every` node a row of its own.
 pub fn graph(source: &str, every: bool) -> Result<Graph, String> {
-    let file = parse(source).map_err(|e| e.to_string())?;
+    let file = ts::parse(source).map_err(|e| e.to_string())?;
     let lowered = lower(&file).map_err(|e| e.to_string())?;
     let lines: Vec<&str> = source.lines().collect();
     let line_text = |n: u32| lines.get(n as usize - 1).map(|l| l.trim()).unwrap_or_default().to_string();
-    let head_of = |s: Span| line_text(s.start.line).trim_end_matches('{').trim_end().to_string();
     // `len` characters from `from` on its line.
     let run = |from: Pos, len: usize| Span { start: from, end: Pos { line: from.line, col: from.col + len as u32 } };
     // A line's text, its indent left out.
@@ -92,35 +91,17 @@ pub fn graph(source: &str, every: bool) -> Result<Graph, String> {
         let indent = l.chars().count() - l.trim_start().chars().count();
         run(Pos { line: n, col: indent as u32 + 1 }, l.trim().chars().count())
     };
-    let clock = file.headers.iter().find_map(|h| match &h.kind {
-        HeaderKind::Every { text, .. } => Some(format!("every {text}")),
-        _ => None,
-    });
-    let mut own = Block { title: clock.unwrap_or_else(|| "the flow's own statements".into()), span: None, body: vec![] };
-    let mut blocks: Vec<Block> = vec![];
+    // Each handler is titled as the server labels its trigger.
+    let mut all: Vec<Block> = vec![];
     for item in &file.items {
-        let (span, body) = match item {
-            Item::Route(r) => (r.span, &r.body),
-            Item::Every(e) => (e.span, &e.body),
-            Item::OnFile(o) => (o.span, &o.body),
-            Item::Action(a) => (a.span, &a.body),
-            Item::Stmt(s) => {
-                own.body.push(s);
-                continue;
-            }
-            Item::Holon(_) | Item::Js(_) => continue,
+        let (title, span, body) = match item {
+            Item::Route(r) => (format!("{} {}", r.method.text, r.path.text), r.span, &r.body),
+            Item::Every(e) => (holon_core::clock_label(e.seconds as u64), e.span, &e.body),
+            Item::OnFile(o) => (holon_core::FileTrigger { folder: o.on.folder.clone(), deleted: o.on.deleted, matching: o.on.matching.clone().unwrap_or_default() }.label(), o.span, &o.body),
+            Item::Action(a) => (format!("action {}", a.name.text), a.span, &a.body),
+            Item::Stmt(_) | Item::Holon(_) | Item::Js(_) => continue,
         };
-        blocks.push(Block { title: head_of(span), span: Some(span), body: body.iter().collect() });
-    }
-    // The flow's own statements first, where the text has them before its blocks.
-    let own_first = own.body.first().is_some_and(|s| blocks.first().and_then(|b| b.span).is_none_or(|b| s.span.start.line < b.start.line));
-    let mut all = vec![];
-    if own_first {
-        all.push(own);
-        all.extend(blocks);
-    } else {
-        all.extend(blocks);
-        all.push(own);
+        all.push(Block { title, span, body: body.iter().collect() });
     }
 
     // Each node to its block and statement (none: the block's trigger).
@@ -130,14 +111,15 @@ pub fn graph(source: &str, every: bool) -> Result<Graph, String> {
         let Some(span) = lowered.spans.get(&n.id) else { continue };
         let p = span.start;
         let found = all.iter().enumerate().find_map(|(b, block)| {
-            if let Some(s) = block.body.iter().position(|s| inside(p, s.span)) {
+            // A statement is its stretch of the text, up to the next one: a `const`'s span is
+            // its name alone.
+            let stretch = |s: usize| Span { start: block.body[s].span.start, end: block.body.get(s + 1).map_or(block.span.end, |n| n.span.start) };
+            if let Some(s) = (0..block.body.len()).find(|&s| inside(p, stretch(s))) {
                 return Some((b, Some(s)));
             }
-            block.span.filter(|s| inside(p, *s)).map(|_| (b, None))
+            inside(p, block.span).then_some((b, None))
         });
-        // Outside every block: a header's node (the flow's clock), the flow's own trigger.
-        let own = all.iter().position(|b| b.span.is_none());
-        if let Some(at) = found.or(own.map(|b| (b, None))) {
+        if let Some(at) = found {
             place.insert(n.id.as_str(), at);
         }
     }
@@ -159,14 +141,14 @@ pub fn graph(source: &str, every: bool) -> Result<Graph, String> {
         let mut rows: Vec<Row> = vec![];
         let mut row_of: HashMap<&str, usize> = HashMap::new();
         let trigger: Vec<&str> = doc.nodes.iter().map(|n| n.id.as_str()).filter(|id| place.get(id) == Some(&(b, None))).collect();
-        let head_line = block.span.map(|s| s.start.line).or_else(|| trigger.first().and_then(|id| lowered.spans.get(*id)).map(|s| s.start.line)).unwrap_or(1);
+        let head_line = block.span.start.line;
         rows.push(Row {
             line: head_line,
             last: head_line,
             name: block.title.clone(),
             does: trigger.iter().filter_map(|id| doc.nodes.iter().find(|n| n.id == *id)).map(|n| n.data.name.clone()).collect::<Vec<_>>().join(", "),
             text: block.title.clone(),
-            mark: block.span.map_or_else(|| whole(head_line), |s| run(s.start, block.title.chars().count())),
+            mark: whole(head_line),
             head: true,
             effect: false,
             from: vec![],
@@ -182,24 +164,31 @@ pub fn graph(source: &str, every: bool) -> Result<Graph, String> {
                 continue;
             }
             let text = line_text(stmt.span.start.line);
-            let last = if stmt.span.end.col == 1 && stmt.span.end.line > stmt.span.start.line { stmt.span.end.line - 1 } else { stmt.span.end.line };
+            let end = ids.iter().filter_map(|id| lowered.spans.get(*id)).map(|s| s.end).chain([stmt.span.end]).max_by_key(|p| (p.line, p.col)).unwrap_or(stmt.span.end);
+            let last = if end.col == 1 && end.line > stmt.span.start.line { end.line - 1 } else { end.line };
             let name = match &stmt.kind {
-                StmtKind::Bind { name, .. } | StmtKind::Node { name, .. } => name.text.clone(),
+                StmtKind::Bind { name, .. } => name.text.clone(),
                 StmtKind::StateWrite { key, .. } => format!("state.{}", key.text),
                 StmtKind::CollectionWrite { collection, .. } => format!("{}[…]", collection.text),
                 StmtKind::Delete { collection, .. } => format!("delete {}", collection.text),
-                StmtKind::Respond(_) => "respond".into(),
-                StmtKind::Expr(_) | StmtKind::Wire { .. } => text.split(['(', ' ']).next().unwrap_or_default().to_string(),
+                StmtKind::Respond(_) => "return".into(),
+                StmtKind::Expr(_) => text.trim_start_matches("await ").split(['(', ' ']).next().unwrap_or_default().to_string(),
             };
             let start = stmt.span.start;
+            // Where the statement's own words begin on its line: an arrow's answer has no
+            // `return`, and an effect may be awaited.
+            let said_at = |word: &str| lines.get(start.line as usize - 1).and_then(|l| l.find(word).map(|i| l[..i].chars().count() as u32));
             let mark = match &stmt.kind {
-                StmtKind::Bind { name, .. } | StmtKind::Node { name, .. } => name.span,
+                StmtKind::Bind { name, .. } => name.span,
                 StmtKind::StateWrite { key, .. } => Span { start, end: key.span.end },
                 StmtKind::CollectionWrite { collection, .. } => collection.span,
                 StmtKind::Delete { collection, .. } => Span { start, end: collection.span.end },
-                StmtKind::Respond(_) | StmtKind::Expr(_) | StmtKind::Wire { .. } => run(start, name.chars().count()),
+                StmtKind::Respond(_) | StmtKind::Expr(_) => match said_at(&name) {
+                    Some(i) => run(Pos { line: start.line, col: i + 1 }, name.chars().count()),
+                    None => whole(start.line),
+                },
             };
-            let bind = matches!(stmt.kind, StmtKind::Bind { .. } | StmtKind::Node { .. });
+            let bind = matches!(stmt.kind, StmtKind::Bind { .. });
             let leaves = |of: &[&str]| -> Vec<String> { of.iter().filter_map(|id| doc.nodes.iter().find(|n| n.id == *id)).map(|n| n.data.name.clone()).collect() };
             let effect = !bind || leaves(&ids).iter().any(|l| effectful(l));
             if every {
@@ -262,10 +251,6 @@ pub fn graph(source: &str, every: bool) -> Result<Graph, String> {
             o.sort();
             o.dedup();
             rows[t].outside = o;
-        }
-        // A trigger with nothing under it and no node of its own (a flow of blocks only) isn't a band.
-        if block.span.is_none() && rows.len() == 1 && rows[0].parts.is_empty() {
-            continue;
         }
         bands.push(Band { title: block.title.clone(), rows });
     }
@@ -349,31 +334,35 @@ pub fn lanes(rows: &[Row]) -> Vec<String> {
 mod tests {
     use super::{graph, lanes};
 
-    const PAYOUT: &str = include_str!("../samples/approved-payout.holon");
+    const PAYOUT: &str = include_str!("../samples/approved-payout.holon.ts");
 
     #[test]
     fn a_flow_is_its_statements_by_trigger_with_the_nodes_under_them() {
         let g = graph(PAYOUT, false).unwrap();
         let titles: Vec<&str> = g.bands.iter().map(|b| b.title.as_str()).collect();
-        assert_eq!(titles, ["route POST /payout/:account (req)", "route POST /approve/:token (req) resumes approved", "route POST /deposit/:account (req)", "route GET /accounts/:account (req)"]);
-        let payout = &g.bands[0];
+        assert_eq!(titles, ["POST /payout/:account", "action payout", "POST /approve/:token", "POST /deposit/:account", "GET /accounts/:account"]);
+        let route = &g.bands[0];
+        let names: Vec<&str> = route.rows.iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(names, ["POST /payout/:account", "account", "started", "return"]);
+        assert_eq!(route.rows[0].does, "request");
+        assert_eq!(route.rows[2].does, "flow_start");
+        let payout = &g.bands[1];
         let names: Vec<&str> = payout.rows.iter().map(|r| r.name.as_str()).collect();
-        assert_eq!(names, ["route POST /payout/:account (req)", "account", "respond", "approved", "sent", "bank.exec", "bank.exec"]);
-        assert_eq!(payout.rows[0].does, "request");
+        assert_eq!(names, ["action payout", "account", "approved", "sent", "bank.exec", "bank.exec"]);
         assert_eq!(payout.rows[1].does, "db_one");
-        // `sent` takes from the request, the account and the approval; not from the plumbing.
-        assert_eq!(payout.rows[4].from, [0, 1, 3]);
+        // `sent` takes from what was asked, the account and the approval; not from the plumbing.
+        assert_eq!(payout.rows[3].from, [0, 1, 2]);
         assert!(payout.rows[1].parts.iter().any(|p| p.leaf == "field"), "its plumbing is its detail");
         assert!(payout.rows.iter().all(|r| r.line > 0 && r.last >= r.line));
         assert!(g.nodes > payout.rows.len() * 3, "far fewer rows than nodes");
 
         let every = graph(PAYOUT, true).unwrap();
-        assert_eq!(every.bands[0].rows.len(), every.bands[0].rows.iter().skip(1).map(|r| r.parts.len()).sum::<usize>() + 1);
+        assert_eq!(every.bands[1].rows.len(), every.bands[1].rows.iter().skip(1).map(|r| r.parts.len()).sum::<usize>() + 1);
     }
 
     #[test]
     fn a_row_marks_where_the_text_says_it() {
-        let text = "flow bump\nstate n\n\naction bump (input) {\n  n = (state.n ?? 0) + 1\n  state.n = n\n  respond n\n}\n";
+        let text = "import { action, flow } from \"holon\"\nimport state from \"state\"\n\nflow(\"bump\")\n\nexport const bump = action(() => {\n  const n = (state.n ?? 0) + 1\n  state.n = n\n  return n\n})\n";
         let lines: Vec<&str> = text.lines().collect();
         let said = |s: crate::lang::ast::Span| -> String {
             assert_eq!(s.start.line, s.end.line, "{s:?}");
@@ -381,7 +370,7 @@ mod tests {
         };
         let g = graph(text, false).unwrap();
         let marks: Vec<String> = g.bands[0].rows.iter().map(|r| said(r.mark)).collect();
-        assert_eq!(marks, ["action bump (input)", "n", "state.n", "respond"]);
+        assert_eq!(marks, ["export const bump = action(() => {", "n", "state.n", "return"]);
         // Every node: each its own code, on its statement's line.
         let every = graph(text, true).unwrap();
         for r in every.bands[0].rows.iter().skip(1) {
@@ -404,11 +393,25 @@ mod tests {
     }
 
     #[test]
-    fn a_clock_flows_own_statements_are_one_band() {
-        let g = graph("flow beats\nevery 5s\nstate beats\n\nstate.beats = (state.beats ?? 0) + 1\n", false).unwrap();
+    fn a_clock_is_a_band() {
+        let g = graph("import { every, flow } from \"holon\"\nimport state from \"state\"\n\nflow(\"beats\")\n\nevery(\"5s\", () => {\n  state.beats = (state.beats ?? 0) + 1\n})\n", false).unwrap();
         assert_eq!(g.bands.len(), 1);
         assert_eq!(g.bands[0].title, "every 5s");
         assert_eq!(g.bands[0].rows[1].name, "state.beats");
         assert!(g.bands[0].rows[1].effect);
+    }
+
+    /// Every sample: its handlers named as the log names their runs, each trigger's row its
+    /// trigger alone, every other node under a statement.
+    #[test]
+    fn every_samples_handlers_are_named_as_their_runs_are() {
+        for s in crate::samples::samples() {
+            let g = graph(s.text, false).unwrap_or_else(|e| panic!("{}: {e}", s.name));
+            let heads: Vec<(&str, usize)> = g.bands.iter().map(|b| (b.title.as_str(), b.rows[0].parts.len())).collect();
+            assert!(heads.iter().all(|(title, parts)| *parts == 1 && !title.contains("=>")), "{}: {heads:?}", s.name);
+            assert!(g.bands.iter().flat_map(|b| &b.rows).all(|r| r.line > 0 && r.last >= r.line), "{}", s.name);
+        }
+        let titles: Vec<String> = graph(crate::samples::sample("file-audit").unwrap().text, false).unwrap().bands.into_iter().map(|b| b.title).collect();
+        assert_eq!(titles, ["on file inbox matching \"*.csv\"", "on file inbox deleted", "on file outbox"]);
     }
 }

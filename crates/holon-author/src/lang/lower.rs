@@ -1,9 +1,8 @@
 //! Lowering: the syntax tree of ast.rs onto the flow builder (docs/LANGUAGE.md §5). Every
 //! expression becomes nodes from the live catalog and wires between them; a binding is a named
-//! wire; a holon is a composite frozen with its declared boundary; a route is a `request` node
-//! and everything wired to it. The nouns and statements for the outside world are sugar over one
-//! leaf each (§5.4), and the wiring form's `node` and wire statements lower beside them, so one
-//! file may hold both.
+//! wire; a function is a composite frozen with its declared boundary; a route is a `request` node
+//! and everything wired to it. The imported names and statements for the outside world are sugar
+//! over one leaf each (§5.4).
 //!
 //! What comes out is a flow document, the same one the canvas saves, so `flow_unit` and
 //! `derive_server` apply unchanged and a text's hash is its graph's. Every error carries the span
@@ -12,11 +11,10 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
 
-use holon_core::{interface_of, PASSES_EXTRA, TRIGGER, VARIADIC};
+use holon_core::{interface_of, CALLS, PASSES_EXTRA, TRIGGER, VARIADIC};
 use serde_json::json;
 
 use super::ast::*;
-use super::parse::{parse, ParseError};
 use crate::builder::{FlowBuilder, FlowDocument, Holon, HolonPort, Requirements, Settings};
 use crate::canvas::next_port_name;
 use crate::templates;
@@ -26,9 +24,6 @@ use crate::wire::{WParam, WPort, WType};
 pub struct LowerError {
     pub span: Span,
     pub message: String,
-    /// The header line that fixes it, when the mistake is a name the header doesn't declare
-    /// (`secret signing_key`): what `holon fmt` adds, and the editor offers.
-    pub declare: Option<String>,
 }
 
 impl fmt::Display for LowerError {
@@ -37,21 +32,10 @@ impl fmt::Display for LowerError {
     }
 }
 
-impl From<ParseError> for LowerError {
-    fn from(e: ParseError) -> LowerError {
-        LowerError { span: Span { start: e.pos, end: e.pos }, message: e.message, declare: None }
-    }
-}
-
 type R<T> = Result<T, LowerError>;
 
 fn err<T>(span: Span, message: impl Into<String>) -> R<T> {
-    Err(LowerError { span, message: message.into(), declare: None })
-}
-
-/// A use of a name the header doesn't declare: the mistake, with the line that declares it.
-fn undeclared<T>(span: Span, name: &str, what: &str, line: String) -> R<T> {
-    Err(LowerError { span, message: format!("\"{name}\" is not {what} (add `{line}` to the header)"), declare: Some(line) })
+    Err(LowerError { span, message: message.into() })
 }
 
 /// A text lowered: the flow's name, its document, each top-level node's name in the text by its
@@ -71,31 +55,25 @@ pub fn js_source(def: &JsDef) -> String {
     format!("({}) => {{{}}}", params.join(", "), def.body)
 }
 
-/// Parse and lower a text.
-pub fn compile(src: &str) -> R<Lowered> {
-    lower(&parse(src)?)
-}
-
 /// Lower a parsed text.
 pub fn lower(file: &File) -> R<Lowered> {
     Lowerer::new(file).run(file)
 }
 
-/// Words a binding may not take: the keywords and nouns of the language, and the wiring form's.
-const RESERVED: &[&str] = &[
+/// Words the lowering keeps for itself: a TypeScript binding of one is renamed, `name_`.
+pub(crate) const RESERVED: &[&str] = &[
     "flow", "port", "every", "browsers", "optional", "collection", "folder", "database", "channel", "holon", "js", "route", "resumes", "respond", "delete", "await", "if", "then", "else",
-    "when", "match", "fn", "true", "false", "node", "at", "in", "out", "interval", "secret", "state", "now", "random", "ingress", "http", "stripe", "json",
-    "parse_json",
+    "when", "match", "fn", "true", "false", "secret", "state", "now", "random", "http", "stripe", "json", "parse_json",
 ];
 
-/// The name a flow's actions are called by (`calls billing-v2`, `billing_v2.charge(x)`): its slug
-/// with `-` as `_`.
+/// The noun the tree calls another flow's actions by (`import { charge } from "flow:billing-v2"`
+/// is `billing_v2.charge(x)` there): its slug with `-` as `_`.
 pub(crate) fn call_noun(flow: &str) -> String {
     flow.replace('-', "_")
 }
 
 /// Plain names for two leaves, read as English.
-fn alias(name: &str) -> &str {
+pub(crate) fn alias(name: &str) -> &str {
     match name {
         "json" => "json_stringify",
         "parse_json" => "json_parse",
@@ -103,7 +81,7 @@ fn alias(name: &str) -> &str {
     }
 }
 
-/// An `on file` line as the log names its handler: `on file inbox deleted`.
+/// A file handler as the log names it: `on file inbox deleted`.
 fn file_label(f: &FileOn) -> String {
     holon_core::FileTrigger { folder: f.folder.clone(), deleted: f.deleted, matching: f.matching.clone().unwrap_or_default() }.label()
 }
@@ -116,10 +94,13 @@ fn piped(d: &crate::canvas::NodeData) -> bool {
 
 /// Inputs a node works without, left unwired (routes.rs `is_optional_input`, core's
 /// `has_optional_ports`).
-fn is_optional(leaf: &str, input: &str) -> bool {
+pub(crate) fn is_optional(leaf: &str, input: &str) -> bool {
     input == TRIGGER
-        || matches!((leaf, input), ("http_request" | "http_stream", "headers" | "body") | ("http_upload", "headers") | ("flow_call", "input") | ("collection_list" | "file_list", "prefix" | "after") | ("file_lines", "from"))
+        || matches!((leaf, input), ("http_request" | "http_stream", "headers" | "body") | ("http_upload", "headers") | ("flow_call" | "flow_start", "input") | ("collection_list" | "file_list", "prefix" | "after") | ("file_lines", "from"))
 }
+
+/// Why a route can't wait: it answers and is done (docs/L4s/typescript-syntax-L4.md §9).
+pub(crate) const ROUTE_WAITS: &str = "a route answers and is done, so it doesn't wait: start an action that waits, const started = payment(req.json), and answer with its link, started.waiting.paid";
 
 /// A declared collection's or folder's leaves, and the names of what they take: `c[k]` reads with
 /// `get`, `c[k] = v` writes with `put`, `delete c[k]` with `delete`; `c.list(…)` with `list`.
@@ -186,16 +167,16 @@ impl Val {
 }
 
 enum FrameKind {
-    /// The flow's own frame.
-    Flow { has_routes: bool },
+    /// The flow's own frame: its constants.
+    Flow,
     /// A route's block: its request node, and where it responded.
     Route { request: String, responded: Option<Span> },
     /// An `every` block: its tick node, whose `now` is the time of the tick.
     Every { tick: String },
-    /// An `on file` block: the name of the file's handle, which `ingress` would be in the old form.
-    OnFile { file: String },
-    /// An action's block: its `action` node, the name of what was sent, and where it responded.
-    Action { node: String, input: String, responded: Option<Span> },
+    /// A file handler.
+    OnFile,
+    /// An action's block: its `action` node, and where it responded.
+    Action { node: String, responded: Option<Span> },
     /// A holon's block: its declared outputs, in order, and what each is bound to.
     Holon { declared: Vec<String>, bound: HashMap<String, (Val, Span)>, effects: Vec<(Val, Span)> },
     /// A function's body: the names it uses from around it, in first use, each with its value
@@ -217,14 +198,15 @@ struct Frame {
     shared: HashMap<String, Val>,
     /// The nodes placed in this block, in order.
     created: Vec<String>,
-    /// Whether any wiring-form statement appeared (a holon with none of its own boundary wires
-    /// then freezes with the proposed boundary, as the wiring form always did).
-    wiring_form: bool,
+    /// How deep in a choice's branches the expression being lowered is (`branch`).
+    branches: usize,
+    /// The calls placed in a branch: made only when the branch needs them, so left untied.
+    in_branches: HashSet<String>,
 }
 
 impl Frame {
     fn new(kind: FrameKind) -> Frame {
-        Frame { kind, env: HashMap::new(), wiring_in: vec![], wiring_out: vec![], written: HashMap::new(), shared: HashMap::new(), created: vec![], wiring_form: false }
+        Frame { kind, env: HashMap::new(), wiring_in: vec![], wiring_out: vec![], written: HashMap::new(), shared: HashMap::new(), created: vec![], branches: 0, in_branches: HashSet::new() }
     }
 }
 
@@ -245,37 +227,35 @@ struct Lowerer<'a> {
     /// The databases the header declares (`database shop`): `shop.query(…)`, `shop.one(…)`,
     /// `shop.exec(…)`.
     databases: HashSet<String>,
-    /// The channels the header declares (`channel updates`): sent on, and subscribed to as a
-    /// route's answer.
+    /// The channels the flow imports (`import updates from "channel:updates"`): sent on, and
+    /// subscribed to as a route's answer.
     channels: HashSet<String>,
-    /// The flows the header names (`calls billing`), by the noun that calls them (`billing`, or
-    /// `billing_v2` for `billing-v2`): their slugs.
+    /// The flows whose actions it imports (`import { charge } from "flow:billing"`), by the noun
+    /// that calls them (`billing`, or `billing_v2` for `billing-v2`): their slugs.
     calls: HashMap<String, String>,
-    /// The secrets the header declares (`secret signing_key`, `optional secret receipt_key`):
-    /// the only ones `secret.…` may read.
+    /// The flow's own name (`flow("approval")`), and its actions: what `payment(x)` starts.
+    flow: Option<String>,
+    actions: HashSet<String>,
+    /// The secrets the flow imports (`import key from "secret:signing_key"`), optional or not.
     secrets: HashSet<String>,
-    /// The state keys the header declares (`state beats`): the only ones `state.…` may read or
-    /// write.
+    /// The flow's state keys (`state.beats`): the only ones a read or write may name.
     state: HashSet<String>,
-    /// The streamed call (`http_stream`) the current route's `respond …, stream: true` forwards.
+    /// The streamed call (`http_stream`) the current route's `respond(…, { stream: true })` forwards.
     streamed: Option<String>,
-    /// The channel the http call being lowered pipes to (`updates.pipe(http.post(…))`).
+    /// The channel the http call being lowered pipes to (`updates.pipe(api.post(…))`).
     piping: Option<String>,
-    /// The `on file` lines: `ingress` is the handle of the file that started the run.
-    on_files: Vec<FileOn>,
-    /// The `ingress` chains of a flow with several `on file` lines (a `coalesce` of their
-    /// `file_arrival`s): a handle, as each `file_arrival` is.
+    /// The file handlers' `on_file` nodes: each a handle, as a `file_handle` is.
     arrivals: HashSet<String>,
-    /// Top-level bindings of literals in a flow with routes: lowered afresh in each route.
+    /// Top-level `const`s of literals: lowered afresh in each handler.
     consts: HashMap<String, &'a Expr>,
     frames: Vec<Frame>,
     names: BTreeMap<String, String>,
     spans: BTreeMap<String, Span>,
     lambdas: usize,
-    /// Each route's request node, the nodes its block placed, and its header's span: a route is
+    /// Each route's request node, the nodes its handler placed, and its head's span: a route is
     /// everything wired to its request, so a node left unwired to it would silently fall out.
     routes: Vec<(String, Vec<String>, Span)>,
-    /// Each `every` or `on file` block, likewise.
+    /// Each clock, file and action handler, likewise.
     ticks: Vec<Block>,
 }
 
@@ -284,7 +264,6 @@ impl<'a> Lowerer<'a> {
         let defs = file.items.iter().filter_map(|i| if let Item::Holon(h) = i { Some((h.name.text.clone(), h)) } else { None }).collect();
         let js_defs = file.items.iter().filter_map(|i| if let Item::Js(j) = i { Some((j.name.text.clone(), j)) } else { None }).collect();
         let collections = file.headers.iter().filter_map(|h| if let HeaderKind::Collection(c) = &h.kind { Some(c.clone()) } else { None }).collect();
-        let on_files = file.headers.iter().filter_map(|h| if let HeaderKind::OnFile(f) = &h.kind { Some(f.clone()) } else { None }).collect();
         let databases = file.headers.iter().filter_map(|h| if let HeaderKind::Database(d) = &h.kind { Some(d.clone()) } else { None }).collect();
         let channels = file.headers.iter().filter_map(|h| if let HeaderKind::Channel(c) = &h.kind { Some(c.clone()) } else { None }).collect();
         let calls = file.headers.iter().filter_map(|h| if let HeaderKind::Calls(f) = &h.kind { Some((call_noun(f), f.clone())) } else { None }).collect();
@@ -297,12 +276,13 @@ impl<'a> Lowerer<'a> {
             })
             .collect();
         let state = file.headers.iter().filter_map(|h| if let HeaderKind::State(k) = &h.kind { Some(k.clone()) } else { None }).collect();
+        let flow = file.headers.iter().find_map(|h| if let HeaderKind::Flow(n) = &h.kind { Some(n.clone()) } else { None });
+        let actions = file.items.iter().filter_map(|i| if let Item::Action(a) = i { Some(a.name.text.clone()) } else { None }).collect();
         let folders = file
             .headers
             .iter()
             .filter_map(|h| match &h.kind {
                 HeaderKind::Folder(f) => Some(f.clone()),
-                HeaderKind::OnFile(f) => Some(f.folder.clone()),
                 _ => None,
             })
             .chain(file.items.iter().filter_map(|i| if let Item::OnFile(o) = i { Some(o.on.folder.clone()) } else { None }))
@@ -318,11 +298,12 @@ impl<'a> Lowerer<'a> {
             databases,
             channels,
             calls,
+            flow,
+            actions,
             secrets,
             state,
             streamed: None,
             piping: None,
-            on_files,
             arrivals: HashSet::new(),
             consts: HashMap::new(),
             frames: vec![],
@@ -358,32 +339,20 @@ impl<'a> Lowerer<'a> {
                 _ => continue,
             };
             if !seen.insert(name.text.as_str()) {
-                return err(name.span, format!("there is a holon \"{}\" already", name.text));
+                return err(name.span, format!("there is a function \"{}\" already", name.text));
             }
         }
-        // A flow of handlers (routes, `every`, `on file` and `action` blocks) keeps its statements in them.
-        let has_routes = file.items.iter().any(|i| matches!(i, Item::Route(_) | Item::Every(_) | Item::OnFile(_) | Item::Action(_)));
         let actions: Vec<&ActionDef> = file.items.iter().filter_map(|i| if let Item::Action(a) = i { Some(a) } else { None }).collect();
         for (i, a) in actions.iter().enumerate() {
             if actions[..i].iter().any(|o| o.name.text == a.name.text) {
-                return err(a.head, format!("action {} is written twice: one block per name", a.name.text));
+                return err(a.head, format!("the action {} is written twice: one handler per name", a.name.text));
             }
         }
         let blocks: Vec<&EveryDef> = file.items.iter().filter_map(|i| if let Item::Every(e) = i { Some(e) } else { None }).collect();
         let file_blocks: Vec<&OnFileDef> = file.items.iter().filter_map(|i| if let Item::OnFile(o) = i { Some(o) } else { None }).collect();
-        if has_routes
-            && let Some(h) = file.headers.iter().find(|h| matches!(h.kind, HeaderKind::Every { .. } | HeaderKind::Interval(_)))
-        {
-            // The header is the one-handler form's clock: beside handlers it would start nothing.
-            if !(blocks.is_empty() && file_blocks.is_empty()) {
-                return err(h.span, "a flow with `every` or `on file` blocks has its clocks in them: put the clock's statements in an `every … { … }` block");
-            }
-            let beside = if file.items.iter().any(|i| matches!(i, Item::Route(_))) { "routes" } else { "actions" };
-            return err(h.span, format!("this `every` line is the clock of a flow without handlers: beside {beside}, put the clock's statements in an `every … {{ … }}` block"));
-        }
         for (i, b) in blocks.iter().enumerate() {
             if blocks[..i].iter().any(|o| o.seconds == b.seconds) {
-                return err(b.head, format!("{} is written twice: one block per period", b.text));
+                return err(b.head, format!("{} is written twice: one handler per period", b.text));
             }
         }
         for (i, b) in file_blocks.iter().enumerate() {
@@ -393,45 +362,19 @@ impl<'a> Lowerer<'a> {
                 return err(b.head, format!("{g:?} isn't a pattern of names: `*` and `?` within a folder, `**/` for any folders, `/` between them"));
             }
             if file_blocks[..i].iter().any(|o| o.on == b.on) {
-                return err(b.head, format!("{} is written twice: one block per line", file_label(&b.on)));
+                return err(b.head, format!("{} is written twice: one handler per folder, event and pattern", file_label(&b.on)));
             }
         }
-        // The header is the one-handler form's file line: beside handlers, the file's run is a block.
-        if let Some(h) = file.headers.iter().find(|h| matches!(h.kind, HeaderKind::OnFile(_)))
-            && has_routes
-        {
-            let HeaderKind::OnFile(f) = &h.kind else { unreachable!() };
-            return err(h.span, format!("a flow with handlers has its triggers in them: put the file's statements in an `{} (f) {{ … }}` block, reading the file as f", file_label(f)));
-        }
-        let on_file: Vec<&Header> = file.headers.iter().filter(|h| matches!(h.kind, HeaderKind::OnFile(_))).collect();
-        for (i, h) in on_file.iter().enumerate() {
-            let HeaderKind::OnFile(f) = &h.kind else { continue };
-            if let Some(g) = &f.matching
-                && !holon_core::is_glob(g)
-            {
-                return err(h.span, format!("{g:?} isn't a pattern of names: `*` and `?` within a folder, `**/` for any folders, `/` between them"));
-            }
-            if on_file[..i].iter().any(|o| o.kind == h.kind) {
-                return err(h.span, "this `on file` line is written twice");
-            }
-        }
-        self.frames.push(Frame::new(FrameKind::Flow { has_routes }));
-        // Top-level statements first (the wiring form's nodes, a flow's body, literal constants),
-        // then the routes.
+        self.frames.push(Frame::new(FrameKind::Flow));
+        // The top level's constants first, each lowered afresh where it is used, then the handlers.
         for i in &file.items {
             if let Item::Stmt(s) = i {
-                if has_routes {
-                    match &s.kind {
-                        StmtKind::Bind { name, value } if literal_param(value).is_some() => {
-                            self.check_bindable(name)?;
-                            self.consts.insert(name.text.clone(), value);
-                        }
-                        StmtKind::Bind { .. } => return err(s.span, "routes are separate units; put shared logic in a holon (only a literal may be bound at the top level)"),
-                        StmtKind::Node { .. } | StmtKind::Wire { .. } => self.stmt(s)?,
-                        _ => return err(s.span, "with routes, a statement goes inside a route"),
+                match &s.kind {
+                    StmtKind::Bind { name, value } if literal_param(value).is_some() => {
+                        self.check_bindable(name)?;
+                        self.consts.insert(name.text.clone(), value);
                     }
-                } else {
-                    self.stmt(s)?;
+                    _ => return err(s.span, "a statement goes in a handler; the top level holds functions and consts of literals"),
                 }
             }
         }
@@ -452,11 +395,6 @@ impl<'a> Lowerer<'a> {
             if !self.holons.contains_key(&name) {
                 self.holon(&name, span)?;
             }
-        }
-        if let Some(h) = on_file.first()
-            && !self.spans.keys().any(|id| self.b.data(id).is_some_and(|d| d.name == "file_arrival"))
-        {
-            return err(h.span, "`on file` starts a run for each new file, and the run reads it as `ingress`: use `ingress` (its .name, say)");
         }
         let settings = self.settings(file)?;
         let name = file.headers.iter().find_map(|h| if let HeaderKind::Flow(n) = &h.kind { Some(n.clone()) } else { None });
@@ -482,7 +420,7 @@ impl<'a> Lowerer<'a> {
             let Some(group) = groups.iter().find(|g| g.contains(tick)) else { continue };
             if let Some(stray) = created.iter().find(|id| !group.contains(id)) {
                 let span = self.spans.get(stray).copied().unwrap_or(*head);
-                return err(span, format!("this isn't wired to {what}, so it isn't part of the block (a block is everything wired to its trigger): write something with it, or use {use_} in it"));
+                return err(span, format!("this isn't wired to {what}, so it isn't part of the handler (a handler is everything wired to its trigger): write something with it, or use {use_} in it"));
             }
         }
         Ok(Lowered { name, doc, names: self.names, spans: self.spans })
@@ -509,15 +447,9 @@ impl<'a> Lowerer<'a> {
                     }
                 }
                 HeaderKind::Port(p) => s.port = p.clone(),
-                HeaderKind::Every { seconds, .. } => s.interval = number_text(*seconds),
-                HeaderKind::Interval(i) => s.interval = i.clone(),
                 HeaderKind::Browsers(o) => s.browsers = Some(o.join(" ")).filter(|b| !b.is_empty()),
-                HeaderKind::Optional(c) => optional.push(match c {
-                    Consent::Secret(n) => format!("SecretRead({n:?})"),
-                    Consent::Named { name, arg: Some(a) } => format!("{name}({a:?})"),
-                    Consent::Named { name, arg: None } => name.clone(),
-                }),
-                HeaderKind::Flow(_) | HeaderKind::Secret(_) | HeaderKind::State(_) | HeaderKind::Collection(_) | HeaderKind::Folder(_) | HeaderKind::Database(_) | HeaderKind::Channel(_) | HeaderKind::OnFile(_) => {}
+                HeaderKind::Optional(Consent::Secret(n)) => optional.push(format!("SecretRead({n:?})")),
+                HeaderKind::Flow(_) | HeaderKind::Secret(_) | HeaderKind::State(_) | HeaderKind::Collection(_) | HeaderKind::Folder(_) | HeaderKind::Database(_) | HeaderKind::Channel(_) => {}
                 HeaderKind::Calls(flow) => self.check_calls(flow, h.span, file)?,
             }
         }
@@ -531,7 +463,7 @@ impl<'a> Lowerer<'a> {
         Ok(s)
     }
 
-    /// Whether `calls flow` can be a name: a flow's name (letters, digits, `-` and `_`, as a
+    /// Whether a flow whose actions are imported can be a name: a flow's name (letters, digits, `-` and `_`, as a
     /// deployment's slug is), whose noun is a name of its own, which nothing else in the file has.
     fn check_calls(&self, flow: &str, span: Span, file: &File) -> R<()> {
         let noun = call_noun(flow);
@@ -547,7 +479,7 @@ impl<'a> Lowerer<'a> {
             || self.databases.contains(&noun)
             || self.channels.contains(&noun);
         if taken {
-            return err(span, format!("\"{noun}\" is already a name here (a keyword, a leaf, a holon or something declared): a flow called by it can't be named so"));
+            return err(span, format!("\"{noun}\" is already a name here (a keyword, a leaf, a function or something imported): a flow called by it can't be named so"));
         }
         let twice = file.headers.iter().filter(|h| matches!(&h.kind, HeaderKind::Calls(f) if call_noun(f) == noun)).count();
         if twice > 1 {
@@ -563,7 +495,20 @@ impl<'a> Lowerer<'a> {
         let id = self.b.node(leaf, params, None).or_else(|e| err(span, e))?;
         self.spans.insert(id.clone(), span);
         self.frame().created.push(id.clone());
+        if self.cur().branches > 0 && CALLS.contains(&leaf) {
+            self.frame().in_branches.insert(id.clone());
+        }
         Ok(self.out(&id))
+    }
+
+    /// `e` where a choice runs it only when it needs it: a branch of `if`, `when` or `match`, or
+    /// what `??` falls back to. A call made there is made only then, so it isn't tied to its
+    /// block; one made anywhere else in a statement is made when the run reaches the statement.
+    fn branch(&mut self, e: &'a Expr) -> R<Val> {
+        self.frame().branches += 1;
+        let v = self.expr(e);
+        self.frame().branches -= 1;
+        v
     }
 
     fn out(&self, id: &str) -> Val {
@@ -651,7 +596,7 @@ impl<'a> Lowerer<'a> {
             return err(name.span, format!("\"{n}\" is a flow; a binding may not shadow it"));
         }
         if self.is_def(n) {
-            return err(name.span, format!("\"{n}\" is a holon; a binding may not shadow it"));
+            return err(name.span, format!("\"{n}\" is a function; a binding may not shadow it"));
         }
         if self.cur().env.contains_key(n) {
             return err(name.span, format!("there is a \"{n}\" already"));
@@ -677,11 +622,13 @@ impl<'a> Lowerer<'a> {
         Ok(())
     }
 
-    /// Whether node `id` takes a trigger (a sink, or a holon with one) that nothing feeds yet.
+    /// Whether node `id` takes a trigger (a sink, or a holon with one) that nothing feeds yet,
+    /// and is no call made in a branch (`branch`).
     fn untied(&self, id: &str) -> bool {
         self.b.data(id).is_some_and(|d| d.inputs.iter().any(|p| p.name == TRIGGER))
             && !self.b.is_wired(id, TRIGGER)
             && !self.cur().wiring_in.iter().any(|(_, node, input)| node == id && input == TRIGGER)
+            && !self.cur().in_branches.contains(id)
     }
 
     /// Every sink placed in this block and not tied by `after`, tied to `v`: the block's trigger.
@@ -755,66 +702,14 @@ impl<'a> Lowerer<'a> {
             StmtKind::Respond(args) => self.respond(args, s.span),
             StmtKind::Expr(e) => {
                 let v = self.expr(e)?;
-                let top_without_routes = matches!(self.cur().kind, FrameKind::Flow { has_routes: false });
-                // A call to another flow's action is made for what it does, whatever it answers.
-                let a_call = matches!(&v, Val::Out { id, .. } if self.b.data(id).is_some_and(|d| d.name == "flow_call"));
-                if v.effectful() || a_call || top_without_routes {
+                // A call (a request, another flow's action) is made for what it does, whatever it
+                // answers.
+                let a_call = matches!(&v, Val::Out { id, .. } if self.b.data(id).is_some_and(|d| CALLS.contains(&d.name.as_str())));
+                if v.effectful() || a_call {
                     return self.effect(v, s.span);
                 }
                 err(s.span, "a value nobody uses: bind it, or remove it")
             }
-            StmtKind::Node { name, of, arity, params, at: _ } => {
-                self.frame().wiring_form = true;
-                if name.text == "in" || name.text == "out" {
-                    return err(name.span, format!("\"{}\" names a holon's boundary: call the node something else", name.text));
-                }
-                if self.cur().env.contains_key(&name.text) {
-                    return err(name.span, format!("there is a node \"{}\" already", name.text));
-                }
-                let id = if self.is_def(&of.text) {
-                    if !params.is_empty() {
-                        return err(of.span, format!("the holon \"{}\" takes no params", of.text));
-                    }
-                    let h = self.holon(&of.text, of.span)?;
-                    self.b.place(&h, None)
-                } else {
-                    let set: Vec<(String, String)> = params.iter().map(|(k, v)| (k.text.clone(), v.clone())).collect();
-                    self.b.node(&of.text, &set, None).or_else(|e| err(of.span, e))?
-                };
-                if let Some(n) = arity {
-                    self.b.arity(&id, *n).or_else(|e| err(name.span, e))?;
-                }
-                self.spans.insert(id.clone(), s.span);
-                self.names.insert(id.clone(), name.text.clone());
-                let v = self.out(&id);
-                self.frame().env.insert(name.text.clone(), v);
-                Ok(())
-            }
-            StmtKind::Wire { from, to } => {
-                self.frame().wiring_form = true;
-                let in_holon = matches!(self.cur().kind, FrameKind::Holon { .. });
-                if from.0.text == "in" && in_holon {
-                    let dst = self.node_id(&to.0)?;
-                    self.frame().wiring_in.push((from.1.text.clone(), dst, to.1.text.clone()));
-                    return Ok(());
-                }
-                if to.0.text == "out" && in_holon {
-                    let src = self.node_id(&from.0)?;
-                    self.frame().wiring_out.push((src, from.1.text.clone(), to.1.text.clone()));
-                    return Ok(());
-                }
-                let src = self.node_id(&from.0)?;
-                let dst = self.node_id(&to.0)?;
-                self.b.wire(&src, &from.1.text, &dst, &to.1.text).or_else(|e| err(s.span, e))
-            }
-        }
-    }
-
-    /// A wiring-form statement's node, by its name in the text.
-    fn node_id(&self, name: &Name) -> R<String> {
-        match self.cur().env.get(&name.text) {
-            Some(Val::Out { id, .. }) => Ok(id.clone()),
-            _ => err(name.span, format!("no node \"{}\" (nodes are declared before they're wired)", name.text)),
         }
     }
 
@@ -823,21 +718,20 @@ impl<'a> Lowerer<'a> {
         match self.store(&name.text) {
             Some(s) => Ok(s),
             None if self.channels.contains(&name.text) => {
-                err(name.span, format!("\"{0}\" is a channel: send on it with {0}.send(…); a route answers with respond {0}.subscribe()", name.text))
+                err(name.span, format!("\"{0}\" is a channel: send on it with {0}.send(…); a route answers with it, return {0}.subscribe()", name.text))
             }
-            None => err(name.span, format!("\"{}\" is not a declared collection (add `collection {}` to the header)", name.text, name.text)),
+            None => err(name.span, format!("\"{0}\" isn't a collection this flow imports: import {0} from \"collection:{0}\"", name.text)),
         }
     }
 
-    /// Whether `key` is a state key the header declares, or the mistake: a key is a name, and
-    /// the header names it (`state beats`).
+    /// Whether `key` is one of the flow's state keys, or the mistake: a key is a name.
     fn check_state(&self, key: &str, span: Span) -> R<()> {
         let name = key.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_') && key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
         if !name {
             return err(span, format!("{key:?} isn't a state key: a key is a name (letters, digits and _), as in state.set(last_post, …)"));
         }
         if !self.state.contains(key) {
-            return undeclared(span, key, "declared state", format!("state {key}"));
+            return err(span, format!("\"{key}\" isn't one of this flow's state keys"));
         }
         Ok(())
     }
@@ -926,7 +820,7 @@ impl<'a> Lowerer<'a> {
                 return err(a.value.span, "a streamed reply answers with its call's status and content type: it takes no status: or headers:");
             }
             let Some(id) = body.and_then(|b| self.streamed_call(b)) else {
-                return err(body.map_or(span, |b| b.span), "only a streamed call's body can be streamed: respond sent.body, stream: true, with sent = http.post(…, stream: true)");
+                return err(body.map_or(span, |b| b.span), "only a streamed call's body can be streamed: return respond(sent.body, { stream: true }), with const sent = api.post(…, { stream: true })");
             };
             streamed_status = Some(id.clone());
             self.streamed = Some(id);
@@ -992,7 +886,7 @@ impl<'a> Lowerer<'a> {
         Ok(())
     }
 
-    /// `respond v` in an action: its answer, the value alone. An action is run through Holon, not
+    /// An action's answer: the value alone. An action is run through Holon, not
     /// HTTP, so it has no status, headers or stream: the respond's envelope is a 200 whose body is
     /// the answer.
     fn answer(&mut self, action: &str, args: &'a [Arg], span: Span) -> R<()> {
@@ -1012,6 +906,28 @@ impl<'a> Lowerer<'a> {
         self.connect(&v, &id, "body", value.span)?;
         if let FrameKind::Action { responded, .. } = &mut self.frame().kind {
             *responded = Some(span);
+        }
+        Ok(())
+    }
+
+    /// Whether this block's only effects are calls: it makes one, and writes nothing.
+    fn calls_alone(&self) -> bool {
+        let f = self.cur();
+        let made = |is: &dyn Fn(&crate::canvas::NodeData) -> bool| f.created.iter().any(|id| self.b.data(id).is_some_and(is));
+        made(&|d| CALLS.contains(&d.name.as_str())) && !made(&|d| d.outputs.iter().any(|p| p.ty == WType::Effect))
+    }
+
+    /// The answer of a route or action whose only effects are calls: 204 with no body, as one
+    /// that writes is answered. A call's answer is the far side's, not the block's to give, so
+    /// `route_spec` never takes it for the block's answer.
+    fn answer_nothing(&mut self, from: &str, port: &str, span: Span) -> R<()> {
+        let node = self.node("respond", &[("status".to_string(), "204".to_string()), ("missing".to_string(), "404".to_string())], span)?;
+        let Val::Out { id, .. } = &node else { unreachable!() };
+        let id = id.clone();
+        self.b.wire(from, port, &id, "request").or_else(|e| err(span, e))?;
+        match &mut self.frame().kind {
+            FrameKind::Route { responded, .. } | FrameKind::Action { responded, .. } => *responded = Some(span),
+            _ => {}
         }
         Ok(())
     }
@@ -1084,6 +1000,12 @@ impl<'a> Lowerer<'a> {
             }),
         };
         self.tie_block(&request, r.method.span.to(r.path.span))?;
+        if let FrameKind::Route { request, responded: None } = &self.cur().kind
+            && self.calls_alone()
+        {
+            let request = request.clone();
+            self.answer_nothing(&request, "request", r.method.span.to(r.path.span))?;
+        }
         let frame = self.frames.pop().expect("the route's frame");
         // A streamed call is forwarded to the caller: the route says so where it answers.
         let streams: Vec<&String> = frame.created.iter().filter(|id| self.b.data(id).is_some_and(|d| d.name == "http_stream" && !piped(d))).collect();
@@ -1094,19 +1016,19 @@ impl<'a> Lowerer<'a> {
             && self.streamed.as_ref() != Some(*id)
         {
             let at = self.spans.get(*id).copied().unwrap_or(r.method.span);
-            return err(at, "a streamed call is forwarded to the caller: answer with it, respond sent.body, stream: true");
+            return err(at, "a streamed call is forwarded to the caller: answer with it, return respond(sent.body, { stream: true })");
         }
         // No respond and no effect: route_spec would refuse it too; say so here, at the route.
         let FrameKind::Route { responded, request } = frame.kind else { unreachable!() };
         self.routes.push((request, frame.created, r.method.span.to(r.path.span)));
-        let has_effect = r.body.iter().any(|s| !matches!(s.kind, StmtKind::Bind { .. } | StmtKind::Respond(_) | StmtKind::Node { .. } | StmtKind::Wire { .. }));
-        if responded.is_none() && !has_effect && !frame.wiring_form {
-            return err(r.method.span.to(r.path.span), "the route answers nothing: add a respond (or an effect, answered 204)");
+        let has_effect = r.body.iter().any(|s| !matches!(s.kind, StmtKind::Bind { .. } | StmtKind::Respond(_)));
+        if responded.is_none() && !has_effect {
+            return err(r.method.span.to(r.path.span), "the route answers nothing: return something (or write something, answered 204)");
         }
         Ok(())
     }
 
-    /// `every 2s { … }`: a clock handler. Its tick node is its trigger, `now` in it the tick's time,
+    /// `every("2s", () => …)`: a clock handler. Its tick node is its trigger, `now` in it the tick's time,
     /// and its sinks are tied to it (docs/L4s/triggers-L4.md §2, §3).
     fn every(&mut self, e: &'a EveryDef) -> R<()> {
         let seconds = if e.seconds.fract() == 0.0 && e.seconds >= 1.0 { number_text(e.seconds) } else { String::new() };
@@ -1128,13 +1050,13 @@ impl<'a> Lowerer<'a> {
         let tied = self.tie_block(&tick, e.head)?;
         let frame = self.frames.pop().expect("the block's frame");
         if !tied {
-            return err(e.head, "the block does nothing: write something in it (state, a collection, a channel)");
+            return err(e.head, "the handler does nothing: write something in it (state, a collection, a channel)");
         }
         self.ticks.push((id, frame.created, e.head, ("the tick", "now".into())));
         Ok(())
     }
 
-    /// `on file inbox (f) { … }`: a file handler. Its `on_file` node is its trigger, `f` in it the
+    /// `on.file.created(inbox, (f) => …)`: a file handler. Its `on_file` node is its trigger, `f` in it the
     /// file's handle, and its sinks are tied to it (docs/L4s/triggers-L4.md §2, §3).
     fn on_file(&mut self, o: &'a OnFileDef) -> R<()> {
         let mut params = vec![("folder".to_string(), o.on.folder.clone())];
@@ -1152,7 +1074,7 @@ impl<'a> Lowerer<'a> {
         self.arrivals.insert(id.clone());
         self.names.insert(id.clone(), o.file.text.clone());
         self.check_name_free(&o.file)?;
-        let mut frame = Frame::new(FrameKind::OnFile { file: o.file.text.clone() });
+        let mut frame = Frame::new(FrameKind::OnFile);
         frame.created.push(id.clone());
         frame.env.insert(o.file.text.clone(), file.clone());
         self.frames.push(frame);
@@ -1165,15 +1087,15 @@ impl<'a> Lowerer<'a> {
         let tied = self.tie_block(&file, o.head)?;
         let frame = self.frames.pop().expect("the block's frame");
         if !tied {
-            return err(o.head, "the block does nothing: write something in it (a folder, state, a channel)");
+            return err(o.head, "the handler does nothing: write something in it (a folder, state, a channel)");
         }
         self.ticks.push((id, frame.created, o.head, ("the file", o.file.text.clone())));
         Ok(())
     }
 
-    /// `action reset (input) { … }`: an action, run by hand by its name. Its `action` node is its
-    /// trigger, `input` in it what was sent, and its sinks are tied to it (docs/L4s/triggers-L4.md
-    /// §2, §3); `respond v` answers.
+    /// `export const reset = action((input) => …)`: an action, run by hand by its name. Its `action`
+    /// node is its trigger, `input` in it what was sent, and its sinks are tied to it
+    /// (docs/L4s/triggers-L4.md §2, §3); what it returns answers.
     fn action(&mut self, a: &'a ActionDef) -> R<()> {
         crate::templates::action_name(&[WParam::frozen("name", &a.name.text)]).or_else(|e| err(a.name.span, e))?;
         let mut params = vec![("name".to_string(), a.name.text.clone())];
@@ -1183,7 +1105,7 @@ impl<'a> Lowerer<'a> {
         let id = id.clone();
         self.names.insert(id.clone(), a.input.text.clone());
         self.check_name_free(&a.input)?;
-        let mut frame = Frame::new(FrameKind::Action { node: id.clone(), input: a.input.text.clone(), responded: None });
+        let mut frame = Frame::new(FrameKind::Action { node: id.clone(), responded: None });
         frame.created.push(id.clone());
         frame.env.insert(a.input.text.clone(), node.clone());
         self.frames.push(frame);
@@ -1191,10 +1113,15 @@ impl<'a> Lowerer<'a> {
             self.stmt(s)?;
         }
         let tied = self.tie_block(&node, a.head)?;
+        if let FrameKind::Action { responded: None, .. } = &self.cur().kind
+            && self.calls_alone()
+        {
+            self.answer_nothing(&id, "input", a.head)?;
+        }
         let frame = self.frames.pop().expect("the block's frame");
         let FrameKind::Action { responded, .. } = frame.kind else { unreachable!() };
         if responded.is_none() && !tied {
-            return err(a.head, "the action does nothing: respond with something, or write something (state, a collection, a channel)");
+            return err(a.head, "the action does nothing: return something, or write something (state, a collection, a channel)");
         }
         self.ticks.push((id, frame.created, a.head, ("what was sent", a.input.text.clone())));
         Ok(())
@@ -1208,12 +1135,11 @@ impl<'a> Lowerer<'a> {
         Ok(())
     }
 
-    /// A holon's or function's port may be called after a leaf (`sum`, `out`: the wiring form
-    /// names ports that way, and a name in scope wins over a leaf), but not after a keyword, a
-    /// collection or a holon.
+    /// A function's port may be called after a leaf (`sum`: a name in scope wins over a leaf), but
+    /// not after a keyword, a collection or a function.
     fn check_port_name(&self, name: &Name) -> R<()> {
         let n = name.text.as_str();
-        if (RESERVED.contains(&n) && n != "in" && n != "out") || self.store(n).is_some() || self.databases.contains(n) || self.channels.contains(n) || self.is_def(n) {
+        if RESERVED.contains(&n) || self.store(n).is_some() || self.databases.contains(n) || self.channels.contains(n) || self.is_def(n) {
             return err(name.span, format!("\"{n}\" is taken; pick another name for the port"));
         }
         Ok(())
@@ -1228,10 +1154,10 @@ impl<'a> Lowerer<'a> {
             if let Some(js) = self.js_defs.get(name).copied() {
                 return self.js_node(js);
             }
-            return err(at, format!("no holon \"{name}\""));
+            return err(at, format!("no function \"{name}\""));
         };
         if !self.in_progress.insert(name.to_string()) {
-            return err(at, format!("the holon \"{name}\" places itself: a holon can't contain itself"));
+            return err(at, format!("the function \"{name}\" calls itself: a function can't contain itself"));
         }
         self.b.begin_holon(name);
         let declared: Vec<String> = def.outputs.iter().map(|p| p.name.text.clone()).collect();
@@ -1251,10 +1177,9 @@ impl<'a> Lowerer<'a> {
         self.frames.push(frame);
         let mut result = self.holon_body(def);
         // Its sinks are tied to its trigger: the input named so when it declares one, else one it
-        // gets last, which a placement ties to the block it is placed in. (The wiring form is the
-        // graph as written: a tie there is a wire, `in.trigger -> w.trigger`, so nothing is added.)
+        // gets last, which a placement ties to the block it is placed in.
         let mut implicit_trigger = false;
-        if result.is_ok() && !self.cur().wiring_form {
+        if result.is_ok() {
             match self.tie_block(&Val::In(TRIGGER.into()), def.name.span) {
                 Ok(tied) => implicit_trigger = tied && !def.inputs.iter().any(|p| p.name.text == TRIGGER),
                 Err(e) => result = Err(e),
@@ -1266,11 +1191,7 @@ impl<'a> Lowerer<'a> {
         let FrameKind::Holon { bound, effects, .. } = frame.kind else { unreachable!() };
         let mut wiring_in = frame.wiring_in;
         let mut wiring_out = frame.wiring_out;
-        let holon = if frame.wiring_form && wiring_in.is_empty() && wiring_out.is_empty() && bound.is_empty() && effects.is_empty() {
-            // The wiring form without its own boundary wires: the proposed boundary, renamed.
-            let names = |ps: &[PortDecl]| ps.iter().map(|p| p.name.text.clone()).collect::<Vec<_>>();
-            self.b.end_holon(name, &names(&def.inputs), &names(&def.outputs)).or_else(|e| err(def.name.span, e))?
-        } else {
+        let holon = {
             // Every input used, every declared output bound.
             for p in &def.inputs {
                 if !wiring_in.iter().any(|(port, _, _)| *port == p.name.text) {
@@ -1422,7 +1343,7 @@ impl<'a> Lowerer<'a> {
                 Some(n) => match h.inputs.iter().position(|p| p.name == n.text) {
                     Some(k) if given[k].is_none() => given[k] = Some(&a.value),
                     Some(_) => return err(n.span, format!("\"{}\" is given twice", n.text)),
-                    None => return err(n.span, format!("\"{}\" has no input \"{}\" (a holon takes no params)", name.text, n.text)),
+                    None => return err(n.span, format!("\"{}\" has no input \"{}\" (a function takes no params)", name.text, n.text)),
                 },
             }
         }
@@ -1512,13 +1433,12 @@ impl<'a> Lowerer<'a> {
                 self.node_with("concat", &[], &inputs, e.span)
             }
             ExprKind::Name(n) => self.name(n, e.span),
-            ExprKind::Secret(n) if !self.secrets.contains(n) => undeclared(e.span, n, "a declared secret", format!("secret {n}")),
+            ExprKind::Secret(n) if !self.secrets.contains(n) => err(e.span, format!("\"{n}\" isn't a secret this flow imports: import key from \"secret:{n}\"")),
             ExprKind::Secret(n) => self.node("secret", &[("name".into(), n.clone())], e.span),
             ExprKind::State(k) => {
                 self.check_state(k, e.span)?;
                 self.node("store_read", &[("key".into(), k.clone())], e.span)
             }
-            ExprKind::Noun(Noun::Ingress) => self.ingress(e.span),
             // In an `every` block, `now` is the time of its tick.
             ExprKind::Noun(Noun::Now) if let FrameKind::Every { tick } = &self.cur().kind => Ok(self.out(&tick.clone())),
             ExprKind::Noun(n) => self.node(if *n == Noun::Now { "clock" } else { "random" }, &[], e.span),
@@ -1569,7 +1489,7 @@ impl<'a> Lowerer<'a> {
             ExprKind::Binary { op, lhs, rhs } => self.binary(*op, lhs, rhs, e.span),
             ExprKind::If { cond, then, els } => {
                 let c = self.expr(cond)?;
-                let t = self.expr(then)?;
+                let t = self.branch(then)?;
                 let guarded = self.node_with("guard", &[], &[("cond", c), ("value", t)], e.span)?;
                 match els {
                     None => Ok(guarded),
@@ -1578,13 +1498,16 @@ impl<'a> Lowerer<'a> {
             }
             ExprKind::Match { subject, arms, els, .. } => self.match_expr(subject, arms, els.as_deref(), e.span),
             ExprKind::Await { name, expires } => {
+                if matches!(self.cur().kind, FrameKind::Route { .. }) {
+                    return err(e.span, ROUTE_WAITS);
+                }
                 let mut params = vec![("name".to_string(), name.text.clone())];
                 if let Some(x) = expires {
                     params.push(("expires".into(), self.literal_text(x)?));
                 }
                 self.node("await", &params, e.span)
             }
-            ExprKind::Lambda { .. } => err(e.span, "a function goes in a fn: argument of map or fold"),
+            ExprKind::Lambda { .. } => err(e.span, "an arrow function goes in map or reduce: xs.map((x) => …)"),
             ExprKind::Paren(inner) => self.expr(inner),
         }
     }
@@ -1609,12 +1532,7 @@ impl<'a> Lowerer<'a> {
             return Ok(Val::In(n.to_string()));
         }
         if self.is_def(n) {
-            return err(span, format!("\"{n}\" is a holon: call it, {n}(…)"));
-        }
-        // `ingress.name`: a keyword before a dot reads as a name (a wiring form's node may be called
-        // so); with no node of that name, it is what arrived.
-        if n == "ingress" {
-            return self.ingress(span);
+            return err(span, format!("\"{n}\" is a function: call it, {n}(…)"));
         }
         if let Some(s) = self.store(n) {
             return err(span, format!("\"{n}\" is a {}: read it as {n}[{}] or {n}.list(…)", s.kind, s.key));
@@ -1623,10 +1541,10 @@ impl<'a> Lowerer<'a> {
             return err(span, format!("\"{n}\" is a database: read it as {n}.query(\"select …\") or {n}.one(…)"));
         }
         if self.channels.contains(n) {
-            return err(span, format!("\"{n}\" is a channel: send on it with {n}.send(…); a route answers with respond {n}.subscribe()"));
+            return err(span, format!("\"{n}\" is a channel: send on it with {n}.send(…); a route answers with it, return {n}.subscribe()"));
         }
         if self.calls.contains_key(n) {
-            return err(span, format!("\"{n}\" is a flow: run one of its actions, {n}.action(input)"));
+            return err(span, format!("\"{n}\" is a flow: import the action you call, import {{ charge }} from \"flow:{n}\""));
         }
         if interface_of(alias(n)).is_some() || templates::is_template(n) {
             return err(span, format!("\"{n}\" is a leaf: call it, {n}(…)"));
@@ -1634,44 +1552,8 @@ impl<'a> Lowerer<'a> {
         err(span, format!("unknown name \"{n}\""))
     }
 
-    /// What arrived at the deployment: a request's or a trigger's payload; in a flow that runs on
-    /// files, the file's handle: its `on file` line's `file_arrival`, or with several, whichever
-    /// started the run (a `coalesce` of them, in the order written: only that one has a value).
-    fn ingress(&mut self, span: Span) -> R<Val> {
-        // In an `on file` block the file has its own name, in an action what was sent.
-        let block = self.frames.iter().rev().take_while(|f| !matches!(f.kind, FrameKind::Holon { .. })).find_map(|f| match &f.kind {
-            FrameKind::OnFile { file } => Some(format!("in an `on file` block the file is {file}: use {file} in place of ingress")),
-            FrameKind::Every { .. } => Some("a clock's run receives nothing: `now` in it is the time of the tick (ingress is a flow's run by hand)".to_string()),
-            FrameKind::Action { input, .. } => Some(format!("in an action what was sent is {input}: use {input} in place of ingress")),
-            _ => None,
-        });
-        if let Some(message) = block {
-            return err(span, message);
-        }
-        let mut chain: Option<Val> = None;
-        for f in self.on_files.clone() {
-            let mut params = vec![("folder".to_string(), f.folder)];
-            if f.deleted {
-                params.push(("on".into(), "deleted".into()));
-            }
-            if let Some(m) = f.matching {
-                params.push(("matching".into(), m));
-            }
-            let arrival = self.node("file_arrival", &params, span)?;
-            chain = Some(match chain {
-                None => arrival,
-                Some(c) => self.node_with("coalesce", &[], &[("a", c), ("b", arrival)], span)?,
-            });
-        }
-        let Some(chain) = chain else { return self.node("ingress", &[], span) };
-        if let Val::Out { id, .. } = &chain {
-            self.arrivals.insert(id.clone());
-        }
-        Ok(chain)
-    }
-
-    /// Whether `v` is a file's handle: one read here (`file_handle`), or the file that started the
-    /// run (`ingress` with `on file`).
+    /// Whether `v` is a file's handle: one read here (`file_handle`), or a file handler's file (its
+    /// `on_file` node).
     fn is_handle(&self, v: &Val) -> bool {
         matches!(v, Val::Out { id, .. } if self.arrivals.contains(id) || self.b.data(id).is_some_and(|d| d.name == "file_handle" || d.name == "file_arrival"))
     }
@@ -1679,7 +1561,7 @@ impl<'a> Lowerer<'a> {
     fn binary(&mut self, op: BinOp, lhs: &'a Expr, rhs: &'a Expr, span: Span) -> R<Val> {
         match op {
             BinOp::When => {
-                let v = self.expr(lhs)?;
+                let v = self.branch(lhs)?;
                 let c = self.expr(rhs)?;
                 self.node_with("guard", &[], &[("cond", c), ("value", v)], span)
             }
@@ -1750,7 +1632,7 @@ impl<'a> Lowerer<'a> {
                 return err(p.span, "a pattern is a literal (a number, a text, true or false); to test a condition, use `if`");
             };
             if seen.contains(&key) {
-                return err(p.span, format!("{} is matched twice; the second arm could never be chosen", key.text()));
+                return err(p.span, format!("{} is a case twice; the second could never be chosen", key.text()));
             }
             seen.push(key);
         }
@@ -1764,7 +1646,7 @@ impl<'a> Lowerer<'a> {
                 eqs.push(self.node_with("equals", &[], &[("a", s.clone()), ("b", c)], p.span)?);
             }
             let m = self.any_of(eqs, span)?;
-            let v = self.expr(&arm.value)?;
+            let v = self.branch(&arm.value)?;
             let at = arm.patterns[0].span.to(arm.value.span);
             let guarded = self.node_with("guard", &[], &[("cond", m.clone()), ("value", v)], at)?;
             matched.push(m);
@@ -1777,7 +1659,7 @@ impl<'a> Lowerer<'a> {
         if let Some(e) = els {
             let any = self.any_of(matched, span)?;
             let none = self.node_with("not", &[], &[("v", any)], span)?;
-            let v = self.expr(e)?;
+            let v = self.branch(e)?;
             let guarded = self.node_with("guard", &[], &[("cond", none), ("value", v)], e.span)?;
             chain = self.node_with("coalesce", &[], &[("a", chain), ("b", guarded)], span)?;
         }
@@ -1799,7 +1681,7 @@ impl<'a> Lowerer<'a> {
         if let Some((ty, value)) = literal_param(b) {
             return self.node_with("default", &[("value".into(), value), ("type".into(), ty.into())], &[("value", a)], span);
         }
-        let v = self.expr(b)?;
+        let v = self.branch(b)?;
         self.node_with("coalesce", &[], &[("a", a), ("b", v)], span)
     }
 
@@ -1823,10 +1705,17 @@ impl<'a> Lowerer<'a> {
         if self.cur().env.contains_key(&callee.text) {
             return err(callee.span, format!("\"{}\" is a value, not something to call", callee.text));
         }
+        if name == "start" {
+            return self.start(args, span);
+        }
+        // A token resumes the run that hands it out where it waits, and a route never waits.
+        if name == "resume_token" && matches!(self.cur().kind, FrameKind::Route { .. }) {
+            return err(callee.span, ROUTE_WAITS);
+        }
         if templates::is_template(name) {
             return match name {
-                "request" => err(callee.span, "a route declares its request: route GET /path (req) { … }"),
-                "respond" => err(callee.span, "respond is a statement: respond body, missing: 404"),
+                "request" => err(callee.span, "a route's handler takes its request: route.get(\"/path\", (req) => …)"),
+                "respond" => err(callee.span, "respond is a route's answer: return respond(body, { headers })"),
                 _ => {
                     let params = templates::defaults(name).expect("a template");
                     let iface = templates::interface(name, &params).expect("a template");
@@ -1840,6 +1729,40 @@ impl<'a> Lowerer<'a> {
         let inputs: Vec<WPort> = unit.inputs.iter().map(WPort::from_core).collect();
         let params: Vec<WParam> = unit.params.iter().map(WParam::from_core).collect();
         self.unit_call(name, &inputs, &params, &[], args, span)
+    }
+
+    /// `payment(x)` without `await`, the tree's `start(payment, x)`: start this flow's action
+    /// `payment` with `x`, or another flow's (`start(billing.charge, x)`), and don't wait for it to
+    /// end (docs/L4s/typescript-syntax-L4.md §9). It answers once the run finishes or first waits:
+    /// `{answer, run}`, or `{run, waiting}` with each point it waits at and the token that resumes
+    /// it there.
+    fn start(&mut self, args: &'a [Arg], span: Span) -> R<Val> {
+        let shape = "an action is started with what to send it: const started = payment(req.json), or charge(x) imported from another flow";
+        let (Some(first), rest) = (args.first(), args.get(1..).unwrap_or_default()) else { return err(span, shape) };
+        if let Some(named) = args.iter().find_map(|a| a.name.as_ref()) {
+            return err(named.span, shape);
+        }
+        if rest.len() > 1 {
+            return err(rest[1].value.span, format!("an action takes one input: {shape}"));
+        }
+        let (flow, action) = match &first.value.kind {
+            ExprKind::Name(a) if self.actions.contains(a) => match &self.flow {
+                Some(flow) => (flow.clone(), a.clone()),
+                None => return err(first.value.span, "a flow that starts its own action says its name first: flow(\"approval\")"),
+            },
+            ExprKind::Field { base, name } => match &base.kind {
+                ExprKind::Name(c) if self.calls.contains_key(c) => (self.calls[c].clone(), name.text.clone()),
+                _ => return err(first.value.span, shape),
+            },
+            ExprKind::Name(a) => return err(first.value.span, format!("\"{a}\" isn't an action of this flow: export const {a} = action((input) => …), or import {{ {a} }} from \"flow:…\" for another flow's")),
+            _ => return err(first.value.span, shape),
+        };
+        if action.len() > 64 {
+            return err(first.value.span, "an action's name is at most 64 characters");
+        }
+        let u = interface_of("flow_start").expect("a genesis leaf");
+        let (inputs, params) = (u.inputs.iter().map(WPort::from_core).collect::<Vec<_>>(), u.params.iter().map(WParam::from_core).collect::<Vec<_>>());
+        self.unit_call("flow_start", &inputs, &params, &[("flow".to_string(), flow), ("action".to_string(), action)], rest, span)
     }
 
     fn method(&mut self, receiver: &Name, method: &Name, args: &'a [Arg], span: Span) -> R<Val> {
@@ -1867,7 +1790,7 @@ impl<'a> Lowerer<'a> {
                 let mut args = &args[1..];
                 let mut stream = false;
                 if let (Some(at), Some(c)) = (named("stream").or(named("file")), &pipe) {
-                    return err(at.span, format!("a piped call sends a body and goes to its channel as it arrives: {c}.pipe(http.{}(host, path, body: …)), without {}:", method.text, at.text));
+                    return err(at.span, format!("a piped call sends a body and goes to its channel as it arrives: {c}.pipe(api.{}(path, {{ body }})), without {}", method.text, at.text));
                 }
                 if let Some(at) = named("stream") {
                     let last = args.last().expect("named is one of them");
@@ -1949,22 +1872,22 @@ impl<'a> Lowerer<'a> {
                     let (inputs, params) = leaf("channel_send");
                     self.unit_call("channel_send", &inputs, &params, &[("channel".to_string(), c.to_string())], args, span)
                 }
-                "subscribe" => err(span, format!("a subscription is a route's answer: respond {c}.subscribe()")),
-                // `updates.pipe(http.post(…))`: the call's answer, to the channel as it arrives.
+                "subscribe" => err(span, format!("a subscription is a route's answer: return {c}.subscribe()")),
+                // `updates.pipe(api.post(…))`: the call's answer, to the channel as it arrives.
                 "pipe" => {
                     let call = match args {
                         [only] if only.name.is_none() => &only.value,
-                        _ => return err(span, format!("{c}.pipe takes one call, whose answer it sends as it arrives: {c}.pipe(http.post(…))")),
+                        _ => return err(span, format!("{c}.pipe takes one call, whose answer it sends as it arrives: {c}.pipe(api.post(…))")),
                     };
                     if !matches!(&call.kind, ExprKind::Method { receiver, .. } if receiver.text == "http") {
-                        return err(call.span, format!("only a call's answer can be piped: {c}.pipe(http.post(…))"));
+                        return err(call.span, format!("only a call's answer can be piped: {c}.pipe(api.post(…))"));
                     }
                     self.piping = Some(c.to_string());
                     let piped = self.expr(call);
                     self.piping = None;
                     piped
                 }
-                other => err(method.span, format!("a channel has no \"{other}\": send(…), pipe(http.post(…)), or respond {c}.subscribe() in a route")),
+                other => err(method.span, format!("a channel has no \"{other}\": send(…), pipe(api.post(…)), or return {c}.subscribe() in a route")),
             },
             // `billing.charge(x)`: run the action `charge` of the flow `billing`, sending x.
             c if self.calls.contains_key(c) => {
@@ -1972,14 +1895,14 @@ impl<'a> Lowerer<'a> {
                     return err(method.span, "an action's name is at most 64 characters");
                 }
                 if args.len() > 1 {
-                    return err(args[1].value.span, format!("an action takes one input: {c}.{}(x), with x a record to send more", method.text));
+                    return err(args[1].value.span, format!("an action takes one input: {}(x), with x a record to send more", method.text));
                 }
                 let flow = self.calls[c].clone();
                 let (inputs, params) = leaf("flow_call");
                 self.unit_call("flow_call", &inputs, &params, &[("flow".to_string(), flow), ("action".to_string(), method.text.clone())], args, span)
             }
             c if ["get", "put", "delete", "list"].contains(&method.text.as_str()) => {
-                err(receiver.span, format!("\"{c}\" is not a declared collection (add `collection {c}` to the header)"))
+                err(receiver.span, format!("\"{c}\" isn't a collection this flow imports: import {c} from \"collection:{c}\""))
             }
             other => err(receiver.span, format!("\"{other}\" has no methods; write {other}.{} as a field, or call a leaf", method.text)),
         }
@@ -2384,8 +2307,9 @@ pub(crate) mod tests {
     use super::*;
     use crate::composites::Names;
     use crate::flow::{derive_server, flow_unit};
-    use crate::{commands, samples, text, to_hex};
-    use holon_core::{MapResolver, Resolver};
+    use crate::lang::ts;
+    use crate::{samples, text, to_hex};
+    use holon_core::{parse_hash, MapResolver, Resolver, UnitBody};
 
     /// The unit a document deploys as, through the real core.
     fn hash_of(doc: &FlowDocument) -> String {
@@ -2395,38 +2319,19 @@ pub(crate) mod tests {
         to_hex(&flow_unit(&doc.nodes, &doc.edges, &mut store, port).unwrap_or_else(|e| panic!("{e}")))
     }
 
-    fn builders_hash(name: &str) -> String {
-        hash_of(&samples::build(samples::sample(name).unwrap()).unwrap())
-    }
-
-    /// A flow without routes is one composite. An input a leaf works without (an http_request's
-    /// headers and body, a listing's prefix and after) stays unbound in it, as in a route:
-    /// promoted to the boundary it would be wired but absent, and core would hold the leaf back
-    /// on every run (a clock flow that never called out, or never listed its collection).
-    #[test]
-    fn a_routeless_flow_leaves_optional_inputs_unbound() {
-        let got = compiled(
-            "flow poll\nevery 10s\ncollection items\nstate last\n\npage = http.get(\"h.example\", \"/\")\nrecent = items.list(limit: 5)\nstate.last = { status: page.status, n: length(keys(recent)) }\n",
-        );
-        let mut store = MapResolver::new();
-        text::restore(&got.doc, &mut store, &Names::new());
-        let hash = flow_unit(&got.doc.nodes, &got.doc.edges, &mut store, "").unwrap_or_else(|e| panic!("{e}"));
-        let unit = store.resolve(&hash).expect("the unit is stored");
-        let inputs: Vec<&str> = unit.inputs.iter().map(|p| p.name.as_str()).collect();
-        assert!(inputs.is_empty(), "headers, body, prefix and after stay unbound, not {inputs:?}");
-    }
-
-    /// Every sample's text (samples/*.holon): the natural form, as fmt writes it.
+    /// Every sample's text (samples/*.holon.ts): the natural form, as fmt writes it.
     pub(crate) fn sample_texts() -> Vec<(&'static str, &'static str)> {
         samples::samples().iter().map(|s| (s.name, s.text)).collect()
     }
 
+    /// A flow in TypeScript's syntax, read and lowered.
     fn compiled(src: &str) -> Lowered {
-        compile(src).unwrap_or_else(|e| panic!("{e}\n{src}"))
+        ts::compile(src).unwrap_or_else(|e| panic!("{e}\n{src}"))
     }
 
+    /// Where a text's mistake is said, and what it says.
     fn error(src: &str) -> (u32, u32, String) {
-        let e = compile(src).expect_err(src);
+        let e = ts::compile(src).expect_err(src);
         (e.span.start.line, e.span.start.col, e.message)
     }
 
@@ -2435,97 +2340,267 @@ pub(crate) mod tests {
         doc.nodes.iter().map(|n| n.data.name.clone()).collect()
     }
 
-    // ── the golden tests: a text lowers to the builder's unit ──
-
+    /// A handler is one composite. An input a leaf works without (an http_request's headers and
+    /// body, a listing's prefix and after) stays unbound in it, as in a route: promoted to the
+    /// boundary it would be wired but absent, and core would hold the leaf back on every run (a
+    /// clock that never called out, or never listed its collection).
     #[test]
-    fn every_sample_in_the_wiring_form_lowers_to_the_same_unit_as_its_text() {
-        for s in samples::samples() {
-            let doc = samples::build(s).unwrap();
-            let src = text::print(Some(s.name), &doc, &mut MapResolver::new(), &Names::new()).unwrap();
-            let got = compile(&src).unwrap_or_else(|e| panic!("{}: {e}\n{src}", s.name));
-            assert_eq!(hash_of(&got.doc), builders_hash(s.name), "{}", s.name);
-            assert_eq!(got.name.as_deref(), Some(s.name));
-        }
-        // And the starter, in the expression form.
-        assert!(compile(commands::STARTER).is_ok());
+    fn a_clock_leaves_optional_inputs_unbound() {
+        let got = compiled(
+            r#"import { every, flow, length } from "holon"
+import state from "state"
+import items from "collection:items"
+import h from "host:h.example"
+
+flow("poll")
+
+every("10s", async () => {
+  const page = await h.get("/")
+  const recent = items.list({ limit: 5 })
+  state.last = { status: page.status, n: length(Object.keys(recent)) }
+})
+"#,
+        );
+        let mut store = MapResolver::new();
+        let server = derive_server(&got.doc.nodes, &got.doc.edges, &mut store, "");
+        assert_eq!(server.errors, Vec::<String>::new());
+        let unit = store.resolve(&parse_hash(&server.clocks[0].hash).unwrap()).expect("the clock's unit is stored");
+        let inputs: Vec<&str> = unit.inputs.iter().map(|p| p.name.as_str()).collect();
+        assert!(inputs.is_empty(), "headers, body, prefix and after stay unbound, not {inputs:?}");
     }
 
     // ── each construct, by the nodes it places ──
 
     #[test]
     fn literals_and_interpolation() {
-        let d = compiled("x = 1\ny = 5m\nz = \"t\"\nw = true\ns = \"Hello, {z}!\"\n").doc;
-        assert_eq!(leaves(&d), ["const", "const", "const", "const", "const", "as_text", "const", "concat"]);
-        assert_eq!(d.nodes[1].param("value"), "300");
+        let d = compiled(
+            r#"import { action, flow } from "holon"
+
+flow("t")
+
+export const t = action(() => {
+  const x = 1
+  const z = "t"
+  const w = true
+  const s = `Hello, ${z}!`
+  return [x, z, w, s]
+})
+"#,
+        )
+        .doc;
+        assert_eq!(leaves(&d), ["action", "const", "const", "const", "const", "as_text", "const", "concat", "list", "respond"]);
         assert_eq!(d.nodes[3].param("type"), "Boolean");
-        assert_eq!(d.edges.len(), 4, "z into as_text, and the three pieces into concat");
+        let from = |i: usize| -> Vec<usize> { d.edges.iter().filter(|w| w.target == d.nodes[i].id).map(|w| d.nodes.iter().position(|n| n.id == w.source).unwrap()).collect() };
+        assert_eq!((from(5), from(7)), (vec![2], vec![4, 5, 6]), "z into as_text, and the three pieces into concat");
         // One part alone is just as_text; text alone is a const.
-        assert_eq!(leaves(&compiled("x = 1\ns = \"{x}\"").doc), ["const", "as_text"]);
-        assert_eq!(leaves(&compiled("s = \"{{plain}}\"").doc), ["const"]);
+        let one = compiled("import { action, flow } from \"holon\"\n\nflow(\"t\")\n\nexport const t = action(() => {\n  const x = 1\n  return `${x}`\n})\n").doc;
+        assert_eq!(leaves(&one), ["action", "const", "as_text", "respond"]);
+        let plain = compiled("import { action, flow } from \"holon\"\n\nflow(\"t\")\n\nexport const t = action(() => `plain`)\n").doc;
+        assert_eq!(leaves(&plain), ["action", "const", "respond"]);
+        // A duration, where one is asked for, is its seconds.
+        let waits = compiled(
+            r#"import { action, event, flow } from "holon"
+
+flow("t")
+
+export const t = action(async () => {
+  const paid = await event("paid", { expires: "5m" })
+  return paid
+})
+"#,
+        )
+        .doc;
+        assert_eq!((waits.nodes[1].data.name.as_str(), waits.nodes[1].param("expires")), ("await", "300"));
     }
 
     #[test]
     fn records_lists_and_fields() {
-        let d = compiled("r = { a: 1, \"b c\": 2 }\nq = { ..r, d: 3 }\nf = q.d\nl = [1, 2, 3]\ne = []\no = [1]\n").doc;
+        let d = compiled(
+            r#"import { action, flow } from "holon"
+
+flow("t")
+
+export const t = action(() => {
+  const r = { a: 1, "b c": 2 }
+  const q = { ...r, d: 3 }
+  const f = q.d
+  const l = [1, 2, 3]
+  const e = []
+  const o = [1]
+  return [f, l, e, o]
+})
+"#,
+        )
+        .doc;
         assert_eq!(
             leaves(&d),
-            ["record", "const", "with_field", "const", "with_field", "const", "with_field", "field", "const", "const", "const", "list", "const", "const", "const", "append"]
+            ["action", "record", "const", "with_field", "const", "with_field", "const", "with_field", "field", "const", "const", "const", "list", "const", "const", "const", "append", "list", "respond"]
         );
-        assert_eq!(d.nodes[4].param("name"), "b c");
-        assert_eq!(d.nodes[11].data.inputs.len(), 3);
-        assert_eq!(d.nodes[12].param("type"), "Json");
+        assert_eq!(d.nodes[5].param("name"), "b c");
+        assert_eq!(d.nodes[12].data.inputs.len(), 3);
+        assert_eq!(d.nodes[13].param("type"), "Json");
     }
 
     #[test]
     fn operators_lower_to_their_leaves_and_chains_flatten_unless_parenthesised() {
-        let d = compiled("a = 1\nb = 2\nc = 3\ns = a + b + c\nt = (a + b) + c\nu = a - b\nv = a < b\nw = a == b\nx = a != b\ny = !w\nz = a && b || c\n").doc;
+        let d = compiled(
+            r#"import { action, flow } from "holon"
+
+flow("t")
+
+export const ops = action(() => {
+  const a = 1
+  const b = 2
+  const c = 3
+  const s = a + b + c
+  const t = (a + b) + c
+  const u = a - b
+  const v = a < b
+  const w = a == b
+  const x = a != b
+  const y = !w
+  const z = a && b || c
+  return [s, t, u, v, x, y, z]
+})
+"#,
+        )
+        .doc;
         let names = leaves(&d);
-        assert_eq!(&names[3..], ["add", "add", "add", "subtract", "compare", "equals", "equals", "not", "not", "and", "or"]);
-        assert_eq!(d.nodes[3].data.inputs.len(), 3, "a + b + c is one add with three inputs");
-        assert_eq!(d.nodes[4].data.inputs.len(), 2, "(a + b) + c is two");
-        assert_eq!(d.nodes[7].param("op"), "<");
+        assert_eq!(&names[4..15], ["add", "add", "add", "subtract", "compare", "equals", "equals", "not", "not", "and", "or"]);
+        assert_eq!(d.nodes[4].data.inputs.len(), 3, "a + b + c is one add with three inputs");
+        assert_eq!(d.nodes[6].data.inputs.len(), 2, "(a + b) + c is two");
+        assert_eq!(d.nodes[8].param("op"), "<");
     }
 
     #[test]
     fn fallbacks_guards_and_if() {
-        let d = compiled("a = 1\nb = 2\nc = true\nx = a ?? 0\ny = a ?? b\nz = a when c\nw = if c then a\nv = if c then a else b\nu = if c then a else \"none\"\nj = a ?? { k: [1, \"x\"] }\n").doc;
+        let d = compiled(
+            r#"import { action, flow } from "holon"
+
+flow("t")
+
+export const t = action(() => {
+  const a = 1
+  const b = 2
+  const c = true
+  const x = a ?? 0
+  const y = a ?? b
+  const z = c ? a : undefined
+  const v = c ? a : b
+  const u = c ? a : "none"
+  const j = a ?? { k: [1, "x"] }
+  return [x, y, z, v, u, j]
+})
+"#,
+        )
+        .doc;
         let names = leaves(&d);
-        assert_eq!(&names[3..], ["default", "coalesce", "guard", "guard", "guard", "coalesce", "guard", "default", "default"]);
-        assert_eq!((d.nodes[3].param("type"), d.nodes[3].param("value")), ("Number", "0"));
+        assert_eq!(&names[4..12], ["default", "coalesce", "guard", "guard", "coalesce", "guard", "default", "default"]);
+        assert_eq!((d.nodes[4].param("type"), d.nodes[4].param("value")), ("Number", "0"));
         assert_eq!((d.nodes[10].param("type"), d.nodes[10].param("value")), ("Text", "none"));
         assert_eq!((d.nodes[11].param("type"), d.nodes[11].param("value")), ("Json", "{\"k\":[1,\"x\"]}"));
     }
 
     #[test]
     fn calls_with_named_inputs_params_and_variadics() {
-        let d = compiled("a = \"x\"\nb = \"y\"\nc = concat(a, b, a)\nh = hmac_sha256(a, b, encoding: base64)\n").doc;
-        assert_eq!(leaves(&d), ["const", "const", "concat", "hmac_sha256"]);
-        assert_eq!(d.nodes[2].data.inputs.len(), 3);
-        assert_eq!(d.nodes[3].param("encoding"), "base64");
+        let d = compiled(
+            r#"import { action, concat, flow, hmac_sha256 } from "holon"
+
+flow("t")
+
+export const t = action(() => {
+  const a = "x"
+  const b = "y"
+  const c = concat(a, b, a)
+  const h = hmac_sha256(a, b, { encoding: "base64" })
+  return [c, h]
+})
+"#,
+        )
+        .doc;
+        assert_eq!(leaves(&d), ["action", "const", "const", "concat", "hmac_sha256", "list", "respond"]);
+        assert_eq!(d.nodes[3].data.inputs.len(), 3);
+        assert_eq!(d.nodes[4].param("encoding"), "base64");
         // Named inputs, optional ones left out, a zero-input leaf's positional params.
-        let d = compiled("collection notes\nn = notes.list(after: \"a\", limit: 5)\nt = resume_token(paid)\nq = http.get(\"h.example\", \"/p\")\n").doc;
-        assert_eq!(leaves(&d), ["const", "collection_list", "resume_token", "const", "http_request"]);
-        assert_eq!(d.nodes[1].param("limit"), "5");
-        assert_eq!(d.nodes[2].param("await"), "paid");
-        assert_eq!((d.nodes[4].param("method"), d.nodes[4].param("host")), ("GET", "h.example"));
-        assert_eq!(d.edges.len(), 2);
+        let d = compiled(
+            r#"import { action, flow, resume_token } from "holon"
+import notes from "collection:notes"
+import h from "host:h.example"
+
+flow("t")
+
+export const calls = action(async () => {
+  const n = notes.list({ after: "a", limit: 5 })
+  const t = resume_token("paid")
+  const q = await h.get("/p")
+  return [n, t, q]
+})
+"#,
+        )
+        .doc;
+        assert_eq!(leaves(&d), ["action", "const", "collection_list", "resume_token", "const", "http_request", "list", "respond"]);
+        assert_eq!(d.nodes[2].param("limit"), "5");
+        assert_eq!(d.nodes[3].param("await"), "paid");
+        assert_eq!((d.nodes[5].param("method"), d.nodes[5].param("host")), ("GET", "h.example"));
+        let wired = |i: usize| -> Vec<&str> { d.edges.iter().filter(|w| w.target == d.nodes[i].id).map(|w| w.input()).collect() };
+        assert_eq!((wired(2), wired(5)), (vec!["after"], vec!["path", TRIGGER]), "the optional inputs are left out");
     }
 
     #[test]
     fn nouns_and_writes_are_one_leaf_each() {
-        let d = compiled("collection notes\nsecret tok\nstate beats\nstate other\nstate saved\nk = \"key\"\nx = secret.tok\ny = state.beats\nz = now\nr = random\ni = ingress\ng = notes[k]\nstate.saved = y\nnotes[k] = x\ndelete notes[k]\np = notes.put(k, x)\nw = state.set(other, x)\n").doc;
+        let d = compiled(
+            r#"import { action, flow } from "holon"
+import tok from "secret:tok"
+import state from "state"
+import notes from "collection:notes"
+import { now } from "holon:clock"
+import { random } from "holon:random"
+
+flow("t")
+
+export const t = action(() => {
+  const k = "key"
+  const x = tok
+  const y = state.beats
+  const z = now
+  const r = random
+  const g = notes[k]
+  state.saved = y
+  notes[k] = x
+  delete notes[k]
+  const p = notes.put(k, x)
+  state.other = x
+  return [z, r, g]
+})
+"#,
+        )
+        .doc;
         assert_eq!(
             leaves(&d),
-            ["const", "secret", "store_read", "clock", "random", "ingress", "collection_get", "store_write", "collection_put", "collection_delete", "collection_put", "store_write"]
+            ["action", "const", "secret", "store_read", "clock", "random", "collection_get", "store_write", "collection_put", "collection_delete", "collection_put", "store_write", "list", "respond"]
         );
-        assert_eq!(d.nodes[1].param("name"), "tok");
+        assert_eq!(d.nodes[2].param("name"), "tok");
         assert_eq!(d.nodes[7].param("key"), "saved");
         assert_eq!(d.nodes[11].param("key"), "other");
     }
 
     #[test]
     fn a_multi_output_value_selects_an_output_by_name_else_a_field() {
-        let d = compiled("route GET /x (req) {\n  a = req.params\n  b = req.params.id\n  c = req.path\n  d = req.request.body\n  respond d\n}\n").doc;
+        let d = compiled(
+            r#"import { flow, route } from "holon"
+
+flow("f", { port: 8000 })
+
+route.get("/x", (req) => {
+  const a = req.params
+  const b = req.params.id
+  const c = req.path
+  const d = req.request.body
+  return d
+})
+"#,
+        )
+        .doc;
         assert_eq!(leaves(&d), ["request", "field", "field", "field", "respond"]);
         let fields: Vec<&str> = d.nodes[1..4].iter().map(|n| n.param("name")).collect();
         assert_eq!(fields, ["id", "path", "body"]);
@@ -2535,8 +2610,30 @@ pub(crate) mod tests {
 
     #[test]
     fn holons_lambdas_and_their_errors() {
-        let d = compiled("holon twice(n) -> o {\n  o = n + n\n}\nholon total(xs) -> amount {\n  amount = fold(0, xs, fn: fn(acc, p) -> acc + p)\n}\nx = twice(1)\ny = map([1, 2], fn: twice)\n").doc;
-        assert_eq!(leaves(&d), ["const", "twice", "const", "const", "list", "map"]);
+        let d = compiled(
+            r#"import { action, flow } from "holon"
+
+flow("h")
+
+function twice(n) {
+  const o = n + n
+  return o
+}
+
+function total(xs) {
+  const amount = xs.reduce((acc, p) => acc + p, 0)
+  return amount
+}
+
+export const t = action(() => {
+  const x = twice(1)
+  const y = [1, 2].map(twice)
+  return [x, y]
+})
+"#,
+        )
+        .doc;
+        assert_eq!(leaves(&d), ["action", "const", "twice", "const", "const", "list", "map", "list", "respond"]);
         // The document's units are the closure: the composites and the leaves inside them.
         let unhex = |s: &str| (0..s.len()).step_by(2).map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap()).collect::<Vec<u8>>();
         let composites = d
@@ -2546,30 +2643,122 @@ pub(crate) mod tests {
             .iter()
             .filter(|h| matches!(holon_core::decode_preimage(&unhex(h)).unwrap().body, holon_core::UnitBody::Composite { .. }))
             .count();
-        assert_eq!(composites, 3, "twice, the fold's function, total");
+        assert_eq!(composites, 3, "twice, the reduce's function, total");
         // `n + n` uses the input twice: one add with its two inputs fed by one shared pass-through.
-        let twice = &d.nodes[1];
+        let twice = &d.nodes[2];
         assert_eq!(twice.data.inputs.len(), 1);
-        assert_eq!(error("holon h(a) -> o {\n  o = a + 1\n}\nx = h(1)\nout = 2"), (5, 1, "\"out\" is a keyword; a binding may not shadow it".into()));
-        // A port may be named after a leaf or `out` (the wiring form does), not after a keyword.
-        assert!(compile("holon h(text) -> (out, sum) {\n  out = uppercase(text)\n  sum = text_length(text)\n}\nx = h(\"a\")").is_ok());
-        assert_eq!(error("holon h(route) -> o {\n  o = route + 1\n}"), (1, 9, "\"route\" is taken; pick another name for the port".into()));
-        assert_eq!(d.nodes[5].param("fn").len(), 64);
-        assert_eq!(error("holon h(a) -> o {\n  o = a\n}"), (2, 7, "an output can't be an input passed straight through: put a node between".into()));
-        assert_eq!(error("holon h(a, b) -> o {\n  o = a + 1\n}"), (1, 12, "the input \"b\" is never used".into()));
-        assert_eq!(error("holon h(a) -> (o, p) {\n  o = a + 1\n}"), (1, 19, "the output \"p\" is never bound".into()));
-        // A function's body sees what its holon sees, and nothing beyond it.
-        assert_eq!(error("route GET /a (req) {\n  respond h([1])\n}\nholon h(a) -> o {\n  o = map(a, fn: fn(p) -> p + req)\n}"), (5, 31, "unknown name \"req\"".into()));
-        assert_eq!(error("holon h(a) -> o {\n  o = h(a)\n}"), (2, 7, "the holon \"h\" places itself: a holon can't contain itself".into()));
-        assert_eq!(error("holon h(a) -> o {\n  o = a + 1\n}\nx = h(1, 2)"), (4, 10, "\"h\" takes 1 inputs".into()));
-        assert_eq!(error("holon h(a) -> o {\n  o = a + 1\n}\nx = h(k: 1)"), (4, 7, "\"h\" has no input \"k\" (a holon takes no params)".into()));
+        assert_eq!(d.nodes[6].param("fn").len(), 64);
+        // A port may be named after a leaf or `out`.
+        let named = compiled(
+            r#"import { action, flow, text_length } from "holon"
+
+flow("h")
+
+function h(text) {
+  return { out: text.toUpperCase(), sum: text_length(text) }
+}
+
+export const t = action(() => h("a"))
+"#,
+        )
+        .doc;
+        let h = named.nodes.iter().find(|n| n.data.name == "h").unwrap();
+        let ports = |ps: &[crate::wire::WPort]| ps.iter().map(|p| p.name.clone()).collect::<Vec<_>>();
+        assert_eq!((ports(&h.data.inputs), ports(&h.data.outputs)), (vec!["text".to_string()], vec!["out".to_string(), "sum".to_string()]));
+        assert_eq!(
+            error(
+                r#"import { action, flow } from "holon"
+
+flow("h")
+
+function h(a) {
+  return a
+}
+
+export const t = action(() => h(1))
+"#
+            ),
+            (6, 10, "an output can't be an input passed straight through: put a node between".into())
+        );
+        assert_eq!(
+            error(
+                r#"import { action, flow } from "holon"
+
+flow("h")
+
+function h(a, b) {
+  return a + 1
+}
+
+export const t = action(() => h(1, 2))
+"#
+            ),
+            (5, 15, "the input \"b\" is never used".into())
+        );
+        // A function's body sees what its function sees, and nothing beyond it.
+        assert_eq!(
+            error(
+                r#"import { flow, route } from "holon"
+
+flow("h", { port: 8000 })
+
+route.get("/a", (req) => h([1]))
+
+function h(a) {
+  return a.map((p) => p + req)
+}
+"#
+            ),
+            (8, 27, "unknown name \"req\"".into())
+        );
+        assert_eq!(
+            error(
+                r#"import { action, flow } from "holon"
+
+flow("h")
+
+function h(a) {
+  return h(a)
+}
+
+export const t = action(() => h(1))
+"#
+            ),
+            (6, 10, "the function \"h\" calls itself: a function can't contain itself".into())
+        );
+        assert_eq!(
+            error(
+                r#"import { action, flow } from "holon"
+
+flow("h")
+
+function h(a) {
+  return a + 1
+}
+
+export const t = action(() => h(1, 2))
+"#
+            ),
+            (9, 36, "\"h\" takes 1 inputs".into())
+        );
     }
 
     /// A name a function uses from around it is an input of the function after its parameters,
-    /// and `map` (or `fold`) passes it after the item, wired from where the name is bound.
+    /// and `map` (or `reduce`) passes it after the item, wired from where the name is bound.
     #[test]
     fn a_function_takes_what_it_uses_from_around_it_as_inputs() {
-        let d = compiled("route POST /v (req) {\n  r = req.json\n  respond map(keys(r), fn: fn(k) -> r[k])\n}\n").doc;
+        let d = compiled(
+            r#"import { flow, route } from "holon"
+
+flow("f", { port: 8000 })
+
+route.post("/v", (req) => {
+  const r = req.json
+  return Object.keys(r).map((k) => r[k])
+})
+"#,
+        )
+        .doc;
         let map = d.nodes.iter().find(|n| n.data.name == "map").unwrap();
         assert_eq!(map.data.inputs.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(), ["list", "in2"]);
         assert_eq!(map.data.inputs[1].ty, WType::Any, "an extra input is whatever the function takes");
@@ -2578,42 +2767,118 @@ pub(crate) mod tests {
         assert!(into(&map.id, "in2").is_some());
         assert_eq!(into(&map.id, "in2"), into(&keys.id, "record"), "r, from where it is bound");
         // The function: (k, r) -> r[k], a unit of its own, the same however often it is written.
-        let same = compiled("route POST /v (req) {\n  r = req.json\n  a = map(keys(r), fn: fn(k) -> r[k])\n  b = map(keys(r), fn: fn(k) -> r[k])\n  respond [a, b]\n}\n").doc;
+        let same = compiled(
+            r#"import { flow, route } from "holon"
+
+flow("f", { port: 8000 })
+
+route.post("/v", (req) => {
+  const r = req.json
+  const a = Object.keys(r).map((k) => r[k])
+  const b = Object.keys(r).map((k) => r[k])
+  return [a, b]
+})
+"#,
+        )
+        .doc;
         let fns: Vec<&str> = same.nodes.iter().filter(|n| n.data.name == "map").map(|n| n.param("fn")).collect();
         assert_eq!(fns[0], fns[1]);
         assert_eq!(fns[0], map.param("fn"));
-        // Written out: the value passed after the list, to a function of two inputs.
-        let explicit = compiled("route POST /v (req) {\n  r = req.json\n  respond map(keys(r), r, fn: fn(k, r) -> r[k])\n}\n").doc;
-        assert_eq!(explicit.nodes.iter().find(|n| n.data.name == "map").unwrap().param("fn"), map.param("fn"), "one unit, captured or passed");
-        // fold passes them after the result so far and the item; a holon's input is captured too,
-        // and a top-level constant is lowered inside.
-        assert!(compile("rate = 3\nholon h(xs, k) -> o {\n  o = fold(0, xs, fn: fn(acc, p) -> acc + p * k * rate)\n}\nroute GET /a (req) {\n  respond h([1, 2], 2)\n}\n").is_ok());
+        // reduce passes them after the result so far and the item; a function's input is
+        // captured too, and a top-level constant is lowered inside.
+        compiled(
+            r#"import { flow, route } from "holon"
+
+flow("f", { port: 8000 })
+
+const rate = 3
+
+function h(xs, k) {
+  return xs.reduce((acc, p) => acc + p * k * rate, 0)
+}
+
+route.get("/a", () => h([1, 2], 2))
+"#,
+        );
         // Nested: the inner function's capture passes through the outer one.
-        assert!(compile("route POST /v (req) {\n  n = req.json.n\n  respond map(req.json.rows, fn: fn(row) -> map(row, fn: fn(x) -> x * n))\n}\n").is_ok());
+        compiled(
+            r#"import { flow, route } from "holon"
+
+flow("f", { port: 8000 })
+
+route.post("/v", (req) => {
+  const n = req.json.n
+  return req.json.rows.map((row) => row.map((x) => x * n))
+})
+"#,
+        );
     }
 
     /// A function given the wrong number of inputs is said at the function, counting what the
     /// call gives it.
     #[test]
     fn a_function_of_the_wrong_arity_is_said() {
-        assert_eq!(error("x = map([1], fn: fn(a, b) -> a + b)"), (1, 18, "\"map\" gives its function 1 inputs (the item); this one takes 2".into()));
-        assert_eq!(error("x = fold(0, [1], 5, fn: fn(acc, p) -> acc + p)"), (1, 25, "\"fold\" gives its function 3 inputs (the result so far and the item, then 1 more); this one takes 2".into()));
-        assert_eq!(error("holon h(a, b, c) -> o {\n  o = a + b + c\n}\nx = map([1], fn: h)"), (4, 18, "\"map\" gives its function 1 inputs (the item); this one takes 3".into()));
+        // One written in place: the reader says it, as map passes no index.
+        assert_eq!(
+            error("import { action, flow } from \"holon\"\n\nflow(\"h\")\n\nexport const t = action(() => [1].map((a, b) => a + b))\n"),
+            (5, 39, "map's function takes the item: (x) => …; an index isn't passed".into())
+        );
+        let by_name = |call: &str| {
+            error(&format!("import {{ action, flow }} from \"holon\"\n\nflow(\"h\")\n\nfunction h(a, b, c) {{\n  return a + b + c\n}}\n\nexport const t = action(() => {call})\n"))
+        };
+        assert_eq!(by_name("[1].map(h)"), (9, 39, "\"map\" gives its function 1 inputs (the item); this one takes 3".into()));
+        assert_eq!(by_name("[1].reduce(h, 0)"), (9, 42, "\"fold\" gives its function 2 inputs (the result so far and the item); this one takes 3".into()));
     }
 
     #[test]
     fn a_holons_effect_statements_leave_as_outputs() {
-        let d = compiled("collection posts\nstate last\nholon keep(k, v) -> receipt {\n  posts[k] = v\n  state.last = k\n  receipt = \"ok\"\n}\nx = keep(\"a\", 1)\n").doc;
-        let keep = &d.nodes[2];
+        let d = compiled(
+            r#"import { action, flow } from "holon"
+import state from "state"
+import posts from "collection:posts"
+
+flow("h")
+
+function keep(k, v) {
+  posts[k] = v
+  state.last = k
+  const receipt = "ok"
+  return receipt
+}
+
+export const t = action(() => keep("a", 1))
+"#,
+        )
+        .doc;
+        let keep = d.nodes.iter().find(|n| n.data.name == "keep").unwrap();
         let outs: Vec<&str> = keep.data.outputs.iter().map(|p| p.name.as_str()).collect();
         assert_eq!(outs, ["receipt", "put", "write"]);
     }
 
-    /// A route's sinks are tied to its request; `after x` ties a statement's to x instead; a
-    /// holon's to its own trigger, an input it gets last, which the block placing it ties.
+    /// A route's sinks are tied to its request; `if (x !== undefined)` ties a statement's to x
+    /// instead; a function's to its own trigger, an input it gets last, which the block placing
+    /// it ties.
     #[test]
     fn sinks_are_tied_to_their_block_or_to_what_after_names() {
-        let src = "collection c\nstate last\n\nholon keep(v) -> saved {\n  saved = state.set(last, v)\n}\n\nroute POST /v/:id (req) {\n  id = req.params.id\n  put = c.put(id, 1)\n  state.last = id after put\n  keep(id)\n  respond id\n}";
+        let src = r#"import { flow, route } from "holon"
+import state from "state"
+import c from "collection:c"
+
+flow("f", { port: 8000 })
+
+function keep(v) {
+  state.seen = v
+  return "ok"
+}
+
+route.post("/v/:id", (req) => {
+  const id = req.params.id
+  const put = c.put(id, 1)
+  if (put !== undefined) state.last = id
+  keep(id)
+  return id
+})
+"#;
         let d = compiled(src).doc;
         let node = |id: &str| d.nodes.iter().find(|n| n.id == id).unwrap();
         let tie = |leaf: &str| {
@@ -2623,66 +2888,350 @@ pub(crate) mod tests {
         };
         assert_eq!(tie("collection_put"), ("request".into(), "request".into()));
         assert_eq!(tie("store_write"), ("collection_put".into(), "out".into()), "after put");
-        assert_eq!(tie("keep"), ("request".into(), "request".into()), "the placed holon");
+        assert_eq!(tie("keep"), ("request".into(), "request".into()), "the placed function");
         let keep = d.nodes.iter().find(|n| n.data.name == "keep").unwrap();
         assert_eq!(keep.data.inputs.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(), ["v", TRIGGER]);
-        // One that declares its trigger uses it; a holon with no sink takes none.
-        let d = compiled("state last\nholon keep(v, trigger) -> saved {\n  saved = state.set(last, v)\n}\nholon twice(n) -> m {\n  m = n * 2\n}\nkeep(twice(1), trigger: 2)").doc;
+        // One that declares its trigger uses it; a function with no sink takes none.
+        let d = compiled(
+            r#"import { action, flow } from "holon"
+import state from "state"
+
+flow("f")
+
+function keep(v, trigger) {
+  state.last = v
+  return "ok"
+}
+
+function twice(n) {
+  return n * 2
+}
+
+export const t = action(() => {
+  keep(twice(1))
+})
+"#,
+        )
+        .doc;
         let ins = |name: &str| d.nodes.iter().find(|n| n.data.name == name).unwrap().data.inputs.iter().map(|p| p.name.clone()).collect::<Vec<_>>();
         assert_eq!(ins("keep"), ["v", TRIGGER]);
         assert_eq!(ins("twice"), ["n"]);
-        // `after` on a statement with nothing to tie is said.
-        assert!(error("route GET /a (req) {\n  n = 1 after req\n  respond n\n}").2.contains("this statement makes none"));
+        // A tie on a statement with nothing to tie is said.
+        let e = error(
+            r#"import { flow, route } from "holon"
+
+flow("f", { port: 8000 })
+
+route.get("/a", (req) => {
+  let n
+  if (req !== undefined) n = 1
+  return n
+})
+"#,
+        );
+        assert_eq!((e.0, e.1), (7, 7));
+        assert!(e.2.contains("this statement makes none"), "{}", e.2);
     }
 
-    /// `calls billing` names a flow whose actions this one runs: `billing.charge(x)` is a
-    /// `flow_call{flow, action}` tied to the block's trigger as any sink is, which asks for
-    /// `RunsAction("billing/charge")` (docs/L4s/triggers-L4.md §9, slice 6). A slug's `-` is `_`
-    /// in the call.
+    /// `import { charge } from "flow:billing"` names a flow whose actions this one runs:
+    /// `await charge(x)` is a `flow_call{flow, action}` tied to the block's trigger as any sink
+    /// is, which asks for `RunsAction("billing/charge")` (docs/L4s/triggers-L4.md §9, slice 6).
     #[test]
     fn calls_run_another_flows_action_tied_to_the_block() {
-        let d = compiled("calls billing-v2\nroute POST /p (req) {\n  r = billing_v2.charge({ amount: req.json.total })\n  respond r.answer\n}\n").doc;
+        let d = compiled(
+            r#"import { flow, route } from "holon"
+import { charge } from "flow:billing-v2"
+
+flow("f", { port: 8000 })
+
+route.post("/p", async (req) => {
+  const r = await charge({ amount: req.json.total })
+  return r.answer
+})
+"#,
+        )
+        .doc;
         let call = d.nodes.iter().find(|n| n.data.name == "flow_call").expect("the call");
         assert_eq!((call.param("flow"), call.param("action")), ("billing-v2", "charge"));
         let request = d.nodes.iter().find(|n| n.is_template("request")).unwrap();
         let tie = d.edges.iter().find(|w| w.target == call.id && w.input() == TRIGGER).map(|w| w.source.clone());
         assert_eq!(tie, Some(request.id.clone()), "tied to the request, though it reads none of it");
-        // Nothing sent is `{}`; `after` ties a call to a value, and a lone call is a statement.
-        let d = compiled("calls billing\ncollection c\nroute POST /p (req) {\n  found = c[req.body]\n  billing.reset() after found\n  respond 204\n}\n").doc;
+        // Nothing sent is `{}`; `if (x !== undefined)` ties a call to a value, and a lone call is
+        // a statement.
+        let d = compiled(
+            r#"import { flow, route, status } from "holon"
+import c from "collection:c"
+import { reset } from "flow:billing"
+
+flow("f", { port: 8000 })
+
+route.post("/p", async (req) => {
+  const found = c[req.body]
+  if (found !== undefined) await reset()
+  return status(204)
+})
+"#,
+        )
+        .doc;
         let call = d.nodes.iter().find(|n| n.data.name == "flow_call").unwrap();
         assert!(!d.edges.iter().any(|w| w.target == call.id && w.input() == "input"), "no input wired");
         let found = d.nodes.iter().find(|n| n.data.name == "collection_get").unwrap();
         assert!(d.edges.iter().any(|w| w.target == call.id && w.input() == TRIGGER && w.source == found.id), "after the lookup");
-        // A name that is already a name, a name twice, a bare noun, a binding on it.
-        assert_eq!(error("calls route\nroute GET /a (req) {\n  respond 1\n}").2, "\"route\" is already a name here (a keyword, a leaf, a holon or something declared): a flow called by it can't be named so");
-        assert_eq!(error("calls a\ncalls a\nroute GET /a (req) {\n  respond 1\n}").2, "`calls` names \"a\" twice");
-        assert_eq!(error("calls a\nroute GET /a (req) {\n  respond a\n}").2, "\"a\" is a flow: run one of its actions, a.action(input)");
-        assert_eq!(error("calls a\nroute GET /a (req) {\n  a = 1\n  respond a\n}").2, "\"a\" is a flow; a binding may not shadow it");
-        assert_eq!(error("calls a\nroute GET /a (req) {\n  respond a.go(1, 2)\n}").2, "an action takes one input: a.go(x), with x a record to send more");
-        // `calls` is a name anywhere else.
-        compiled("route GET /a (req) {\n  calls = 1\n  respond calls + req.query.n\n}");
+        // A flow whose slug is already a name, an action used bare, sent two values.
+        assert_eq!(
+            error("import { flow, route } from \"holon\"\nimport { charge } from \"flow:route\"\n\nflow(\"f\", { port: 8000 })\n\nroute.post(\"/a\", async (req) => await charge(req.json))\n"),
+            (2, 1, "\"route\" is already a name here (a keyword, a leaf, a function or something imported): a flow called by it can't be named so".into())
+        );
+        let called = |answer: &str| error(&format!("import {{ flow, route }} from \"holon\"\nimport {{ go }} from \"flow:a\"\n\nflow(\"f\", {{ port: 8000 }})\n\nroute.get(\"/a\", async () => {answer})\n"));
+        assert_eq!(called("go"), (6, 29, "an action is called: go(input) runs go".into()));
+        assert_eq!(called("await go(1, 2)"), (6, 29, "an action is sent one value: go({ … }), a record for more".into()));
+        // `calls` is a name like any.
+        compiled("import { flow, route } from \"holon\"\n\nflow(\"f\", { port: 8000 })\n\nroute.get(\"/a\", (req) => {\n  const calls = 1\n  return calls + req.query.n\n})\n");
     }
 
-    /// A clock, a file handler or an action whose only work is a call is a handler: the call is
-    /// made for what it does, whatever it answers.
+    /// A block whose only work is calls (a request, another flow's action) is a handler: a call is
+    /// made for what it does, whatever it answers, read or not, bound or a statement. A route or
+    /// action of calls alone answers 204, as one that writes does: never with a call's answer.
     #[test]
     fn a_block_of_calls_alone_is_a_handler() {
-        let d = compiled("calls billing\nevery 1h {\n  billing.reset()\n}\n").doc;
         let mut store = MapResolver::new();
-        let server = crate::flow::derive_server(&d.nodes, &d.edges, &mut store, "8080");
-        assert_eq!(server.errors, Vec::<String>::new());
-        assert_eq!(server.clocks.iter().map(|c| c.label.as_str()).collect::<Vec<_>>(), vec!["every 1h"]);
-        let d = compiled("calls billing\naction run (input) {\n  r = billing.charge(input)\n  respond r\n}\n").doc;
-        let server = crate::flow::derive_server(&d.nodes, &d.edges, &mut store, "8080");
-        assert_eq!(server.errors, Vec::<String>::new());
-        assert_eq!(server.actions.len(), 1);
+        let mut server = |src: &str| {
+            let d = compiled(src).doc;
+            let server = crate::flow::derive_server(&d.nodes, &d.edges, &mut store, "8080");
+            assert_eq!(server.errors, Vec::<String>::new(), "{src}");
+            let answers: Vec<String> = d.nodes.iter().filter(|n| n.is_template("respond")).map(|n| n.param("status").to_string()).collect();
+            (server, answers)
+        };
+        let (s, _) = server(
+            r#"import { every, flow } from "holon"
+import { reset } from "flow:billing"
+
+flow("f")
+
+every("1h", async () => {
+  await reset()
+})
+"#,
+        );
+        assert_eq!(s.clocks.iter().map(|c| c.label.as_str()).collect::<Vec<_>>(), vec!["every 1h"]);
+        let (s, answers) = server(
+            r#"import { action, flow } from "holon"
+import { charge } from "flow:billing"
+
+flow("f")
+
+export const run = action(async (input) => {
+  const r = await charge(input)
+  return r
+})
+"#,
+        );
+        assert_eq!((s.actions.len(), answers), (1, vec!["200".to_string()]));
+        // A heartbeat, a call as a statement or bound and read by nothing.
+        let (s, _) = server(
+            r#"import { every, flow } from "holon"
+import hooks from "host:hooks.example.com"
+
+flow("f")
+
+every("1h", async () => {
+  await hooks.post("/beat", { body: "alive" })
+})
+"#,
+        );
+        assert_eq!(s.clocks.len(), 1);
+        let (s, _) = server(
+            r#"import { every, flow } from "holon"
+import hooks from "host:hooks.example.com"
+
+flow("f")
+
+every("1h", async () => {
+  const sent = await hooks.post("/beat", { body: "alive" })
+})
+"#,
+        );
+        assert_eq!(s.clocks.len(), 1);
+        // A route or an action of calls alone answers 204; one that also writes answers by it.
+        let (s, answers) = server(
+            r#"import { flow, route } from "holon"
+import hooks from "host:hooks.example.com"
+
+flow("f", { port: 8000 })
+
+route.post("/hook", async (req) => {
+  await hooks.post("/a", { body: req.body })
+})
+"#,
+        );
+        assert_eq!((s.endpoints.len(), answers), (1, vec!["204".to_string()]));
+        let (s, answers) = server(
+            r#"import { action, flow } from "holon"
+import hooks from "host:hooks.example.com"
+import { reset } from "flow:billing"
+
+flow("f")
+
+export const notify = action(async (input) => {
+  const sent = await hooks.post("/a", { body: input })
+  await reset()
+})
+"#,
+        );
+        assert_eq!((s.actions.len(), answers), (1, vec!["204".to_string()]));
+        let (s, answers) = server(
+            r#"import { flow, route } from "holon"
+import c from "collection:c"
+import hooks from "host:hooks.example.com"
+
+flow("f", { port: 8000 })
+
+route.post("/hook", async (req) => {
+  await hooks.post("/a", { body: req.body })
+  c["last"] = req.body
+})
+"#,
+        );
+        assert_eq!((s.endpoints.len(), answers), (1, vec![]));
+        // The same request twice is two requests, each kept apart by where it goes.
+        let (s, _) = server(
+            r#"import { flow, route } from "holon"
+import hooks from "host:hooks.example.com"
+
+flow("f", { port: 8000 })
+
+route.post("/hook", async (req) => {
+  const a = await hooks.post("/a", { body: req.body })
+  const b = await hooks.post("/a", { body: req.body })
+  return "ok"
+})
+"#,
+        );
+        assert_eq!(s.endpoints.len(), 1);
     }
 
-    /// `every 2s { … }` is a clock handler: its tick node, everything wired to it, its sinks tied
-    /// to the tick, and `now` in it the tick's time (docs/L4s/triggers-L4.md §2, §3).
+    /// A route answers and is done: what waits is an action it starts, `pay(x)` without `await`,
+    /// which answers once the run finishes or first waits (docs/L4s/typescript-syntax-L4.md §9).
+    /// A route that waits, or hands out a token of its own, is refused, saying what to write
+    /// instead.
+    #[test]
+    fn a_route_starts_what_waits() {
+        let refused = |body: &str| {
+            let src = r#"import { event, flow, resume_token, route } from "holon"
+
+flow("f", { port: 8080 })
+
+route.post("/a", async (req) => {
+BODY
+})
+
+route.get("/paid/:t", () => "ok", { resumes: "paid" })
+"#;
+            ts::compile(&src.replace("BODY", body)).unwrap_err().message
+        };
+        for body in ["  const paid = await event(\"paid\", { expires: \"1h\" })\n  return paid.method", "  return `/paid/${resume_token(\"paid\")}`"] {
+            assert!(refused(body).starts_with("a route answers and is done, so it doesn't wait"), "{body}");
+        }
+        // In an action it waits, and a route starts it: this flow's own, or another flow's.
+        let own = compiled(
+            r#"import { action, event, flow, route } from "holon"
+
+flow("f", { port: 8080 })
+
+route.post("/a", (req) => {
+  const started = pay(req.json)
+  return started.waiting.paid
+})
+
+export const pay = action(async (order) => {
+  const paid = await event("paid", { expires: "1h" })
+  return paid.method
+})
+"#,
+        )
+        .doc;
+        let start = own.nodes.iter().find(|n| n.data.name == "flow_start").expect("a start");
+        assert_eq!((start.param("flow"), start.param("action")), ("f", "pay"));
+        let other = compiled(
+            r#"import { flow, route, status } from "holon"
+import { charge } from "flow:billing"
+
+flow("f", { port: 8080 })
+
+route.post("/a", (req) => {
+  charge()
+  return status(204)
+})
+"#,
+        )
+        .doc;
+        let start = other.nodes.iter().find(|n| n.data.name == "flow_start").expect("a start");
+        assert_eq!((start.param("flow"), start.param("action")), ("billing", "charge"));
+        // What isn't an action, or a start given more than its one value, is refused.
+        let error = |src: &str| ts::compile(src).unwrap_err().message;
+        assert!(error("import { flow, route } from \"holon\"\n\nflow(\"f\", { port: 8080 })\n\nroute.post(\"/a\", (req) => nope(1))\n").starts_with("unknown function \"nope\""));
+        assert!(
+            error("import { action, flow, route } from \"holon\"\n\nflow(\"f\", { port: 8080 })\n\nroute.post(\"/a\", (req) => pay(1, { now: true }))\n\nexport const pay = action((x) => x)\n")
+                .starts_with("an action is sent one value")
+        );
+    }
+
+    /// A call is made when the run reaches its statement, under its tie, whatever reads its
+    /// answer: tied to its block, the handler keeps it as an output, so a branch not taken doesn't
+    /// keep it from being made. One written in a branch (of `?:`, `switch`, or what `??` falls
+    /// back to) is made only when the branch needs it: it is left untied, and not kept.
+    #[test]
+    fn a_call_is_made_where_its_statement_is() {
+        let kept = |handler: &str| {
+            let src = format!("import {{ flow, route }} from \"holon\"\nimport a from \"host:a.example\"\n\nflow(\"f\", {{ port: 8080 }})\n\n{handler}");
+            let d = compiled(&src).doc;
+            let mut store = MapResolver::new();
+            let server = crate::flow::derive_server(&d.nodes, &d.edges, &mut store, "8080");
+            assert_eq!(server.errors, Vec::<String>::new(), "{src}");
+            let endpoint = store.resolve(&parse_hash(&server.endpoints[0].hash).unwrap()).unwrap().clone();
+            let UnitBody::Composite { children, .. } = &endpoint.body else { panic!("an endpoint wraps its handler") };
+            let handler = store.resolve(&children[0]).unwrap();
+            let call = d.nodes.iter().find(|n| n.data.name == "http_request").unwrap();
+            let tied = d.edges.iter().any(|w| w.target == call.id && w.input() == TRIGGER);
+            (tied, handler.outputs.iter().map(|p| p.name.clone()).collect::<Vec<_>>())
+        };
+        // The respond's answer first, then the call's.
+        let answer_and_call = vec!["response".to_string(), "out".to_string()];
+        let reached = kept("route.get(\"/a\", async (req) => {\n  const page = await a.get(\"/x\")\n  return req.json.go ? page.body : undefined\n})\n");
+        assert_eq!(reached, (true, answer_and_call.clone()));
+        let guarded = kept("route.get(\"/a\", async (req) => {\n  let page\n  if ((req.json.go ? true : undefined) !== undefined) page = await a.get(\"/x\")\n  return page.body ?? \"no\"\n})\n");
+        assert_eq!(guarded, (true, answer_and_call));
+        for in_branch in [
+            "route.get(\"/a\", async (req) => (req.json.go ? (await a.get(\"/x\")).body : undefined))\n",
+            "route.get(\"/a\", async (req) => (req.json.go ? (await a.get(\"/x\")).body : \"no\"))\n",
+            "route.get(\"/a\", async (req) => req.json.cached ?? (await a.get(\"/x\")).body)\n",
+            "route.get(\"/a\", async (req) => {\n  switch (req.json.op) {\n    case \"go\":\n      return (await a.get(\"/x\")).body\n    default:\n      return \"no\"\n  }\n})\n",
+        ] {
+            assert_eq!(kept(in_branch), (false, vec!["response".to_string()]), "{in_branch}");
+        }
+    }
+
+    /// `every("2s", () => { … })` is a clock handler: its tick node, everything wired to it, its
+    /// sinks tied to the tick, and `now` in it the tick's time (docs/L4s/triggers-L4.md §2, §3).
     #[test]
     fn every_blocks_are_clock_handlers_tied_to_their_tick() {
-        let d = compiled("channel ticks\nstate n\nevery 2s {\n  state.n = (state.n ?? 0) + 1\n  ticks.send(now)\n}\nroute GET /n (req) {\n  respond state.n ?? 0\n}\n").doc;
+        let d = compiled(
+            r#"import { every, flow, route } from "holon"
+import state from "state"
+import ticks from "channel:ticks"
+import { now } from "holon:clock"
+
+flow("f", { port: 8080 })
+
+every("2s", () => {
+  state.n = (state.n ?? 0) + 1
+  ticks.send(now)
+})
+
+route.get("/n", () => state.n ?? 0)
+"#,
+        )
+        .doc;
         let every = d.nodes.iter().find(|n| n.is_template("every")).expect("the tick");
         assert_eq!(every.param("seconds"), "2");
         assert!(!d.nodes.iter().any(|n| n.data.name == "clock"), "now in a block is the tick's");
@@ -2700,37 +3249,52 @@ pub(crate) mod tests {
         assert_eq!(server.errors, Vec::<String>::new());
         assert_eq!((server.endpoints.len(), server.clocks.iter().map(|c| c.label.as_str()).collect::<Vec<_>>()), (1, vec!["every 2s"]));
         // A flow of clocks alone is a server with no port.
-        let d = compiled("state n\nevery 1h {\n  state.n = (state.n ?? 0) + 1\n}\n").doc;
+        let d = compiled("import { every, flow } from \"holon\"\nimport state from \"state\"\n\nflow(\"f\")\n\nevery(\"1h\", () => {\n  state.n = (state.n ?? 0) + 1\n})\n").doc;
         let server = crate::flow::derive_server(&d.nodes, &d.edges, &mut store, "");
         let unit = server.server_hash.as_deref().and_then(holon_core::parse_hash).and_then(|h| store.resolve(&h)).expect("a server");
         let read = holon_core::read_server(unit, &store).unwrap();
         assert_eq!((read.port, read.routes.len(), read.clocks[0].seconds), (None, 0, 3600));
 
-        assert_eq!(error("every 2s {\n  respond 1\n}"), (2, 3, "respond belongs in a route: a clock answers nobody".into()));
-        assert_eq!(error("every 2s {\n  n = now\n}").2, "the block does nothing: write something in it (state, a collection, a channel)");
-        assert_eq!(error("state n\nevery 1.5s {\n  state.n = 1\n}").2, "every 1.5s: a clock runs every whole number of seconds, from 1s to 366d");
-        assert_eq!(error("state a\nstate b\nevery 2s {\n  state.a = now\n}\nevery 2s {\n  state.b = now\n}").2, "2s is written twice: one block per period");
-        assert!(error("every 10s\nstate n\nevery 2s {\n  state.n = now\n}").2.starts_with("a flow with `every` or `on file` blocks has its clocks in them"));
-        assert_eq!(error("state n\nevery 2s {\n  state.n = ingress\n}").2, "a clock's run receives nothing: `now` in it is the time of the tick (ingress is a flow's run by hand)");
-        // The header form's clock beside handlers would start nothing: refused, naming the block.
+        // A clock answers nobody: the reader says so at its return.
+        assert_eq!(error("import { every, flow } from \"holon\"\n\nflow(\"f\")\n\nevery(\"2s\", () => {\n  return 1\n})\n"), (6, 10, "a clock's run answers nobody: return alone ends it".into()));
         assert_eq!(
-            error("every 10s\nport 8080\n\nroute GET / (req) {\n  respond \"hi\"\n}").2,
-            "this `every` line is the clock of a flow without handlers: beside routes, put the clock's statements in an `every … { … }` block"
+            error("import { every, flow } from \"holon\"\n\nflow(\"f\")\n\nevery(\"2s\", (now) => {\n  const n = now\n})\n"),
+            (5, 1, "the handler does nothing: write something in it (state, a collection, a channel)".into())
         );
         assert_eq!(
-            error("every 10s\nstate n\n\naction reset (input) {\n  state.n = 0\n}").2,
-            "this `every` line is the clock of a flow without handlers: beside actions, put the clock's statements in an `every … { … }` block"
+            error("import { every, flow } from \"holon\"\nimport state from \"state\"\n\nflow(\"f\")\n\nevery(\"1.5s\", () => {\n  state.n = 1\n})\n").2,
+            "every 1.5s: a clock runs every whole number of seconds, from 1s to 366d"
+        );
+        assert_eq!(
+            error("import { every, flow } from \"holon\"\nimport state from \"state\"\n\nflow(\"f\")\n\nevery(\"2s\", (now) => {\n  state.a = now\n})\n\nevery(\"2s\", (now) => {\n  state.b = now\n})\n"),
+            (10, 1, "2s is written twice: one handler per period".into())
         );
         // A write that reads nothing of the tick is still the block's: tied to it.
-        let d = compiled("state n\nevery 2s {\n  state.n = 1\n}\n").doc;
+        let d = compiled("import { every, flow } from \"holon\"\nimport state from \"state\"\n\nflow(\"f\")\n\nevery(\"2s\", () => {\n  state.n = 1\n})\n").doc;
         assert!(d.edges.iter().any(|w| w.source.starts_with("every") && w.input() == TRIGGER));
     }
 
-    /// `action reset (input) { … }` is an action: its `action` node, everything wired to it, its
-    /// sinks tied to what was sent, `respond v` its answer (docs/L4s/triggers-L4.md §2, §3).
+    /// `export const reset = action((input) => { … })` is an action: its `action` node, everything
+    /// wired to it, its sinks tied to what was sent, what it returns its answer
+    /// (docs/L4s/triggers-L4.md §2, §3).
     #[test]
     fn action_blocks_are_actions_tied_to_what_was_sent() {
-        let src = "state note\nstate ticks\naction reset (input) {\n  state.ticks = input.to ?? 0\n  respond { was: state.ticks ?? 0 }\n}\naction note (n) {\n  state.note = n\n}\nroute GET /n (req) {\n  respond state.ticks ?? 0\n}\n";
+        let src = r#"import { action, flow, route } from "holon"
+import state from "state"
+
+flow("f", { port: 8080 })
+
+export const reset = action((input) => {
+  state.ticks = input.to ?? 0
+  return { was: state.ticks ?? 0 }
+})
+
+export const note = action((n) => {
+  state.note = n
+})
+
+route.get("/n", () => state.ticks ?? 0)
+"#;
         let d = compiled(src).doc;
         let actions: Vec<&crate::canvas::Node> = d.nodes.iter().filter(|n| n.is_template("action")).collect();
         assert_eq!(actions.iter().map(|n| n.param("name")).collect::<Vec<_>>(), ["reset", "note"]);
@@ -2749,28 +3313,57 @@ pub(crate) mod tests {
         let read = holon_core::read_server(unit, &store).unwrap();
         assert_eq!((read.port, read.routes.len(), read.actions.len()), (Some(8080), 1, 2));
         // A flow of actions alone listens on no port.
-        let d = compiled("state n\naction reset (input) {\n  state.n = 0\n}\n").doc;
+        let d = compiled("import { action, flow } from \"holon\"\nimport state from \"state\"\n\nflow(\"f\")\n\nexport const reset = action(() => {\n  state.n = 0\n})\n").doc;
         let server = crate::flow::derive_server(&d.nodes, &d.edges, &mut store, "");
         let unit = server.server_hash.as_deref().and_then(holon_core::parse_hash).and_then(|h| store.resolve(&h)).expect("a server");
         assert_eq!(holon_core::read_server(unit, &store).unwrap().port, None);
 
-        assert_eq!(error("action a (input) {\n  respond 1, status: 201\n}").2, "an action answers with a value alone: status:, missing:, headers: and stream: are a route's");
-        assert_eq!(error("action a (input) {\n  n = input\n}").2, "the action does nothing: respond with something, or write something (state, a collection, a channel)");
-        assert_eq!(error("state n\naction a (input) {\n  state.n = ingress\n}").2, "in an action what was sent is input: use input in place of ingress");
-        // An `on file` line beside actions: they are blocks, and the file's run goes in one too.
-        assert!(error("on file inbox\nstate n\n\naction a (input) {\n  state.n = 0\n}").2.starts_with("a flow with handlers has its triggers in them: put the file's statements in an `on file inbox (f) { … }` block"));
-        assert!(error("on file inbox\nport 8080\n\nroute GET / (req) {\n  respond \"hi\"\n}").2.starts_with("a flow with handlers has its triggers in them: put the file's statements in an `on file inbox (f) { … }` block"));
-        assert_eq!(error("state a\nstate b\naction a (x) {\n  state.a = x\n}\naction a (y) {\n  state.b = y\n}").2, "action a is written twice: one block per name");
-        assert_eq!(error("action a (input) {\n  respond 1\n  respond 2\n}").2, "more than one respond in the action (the first is on line 2)");
+        // An action answers with a value alone: the reader refuses a status.
+        assert_eq!(
+            error("import { action, flow, status } from \"holon\"\n\nflow(\"f\")\n\nexport const a = action(() => {\n  return status(201, 1)\n})\n").2,
+            "an action answers with a value alone: return it, without status or respond"
+        );
+        assert_eq!(
+            error("import { action, flow } from \"holon\"\n\nflow(\"f\")\n\nexport const a = action((input) => {\n  const n = input\n})\n").2,
+            "the action does nothing: return something, or write something (state, a collection, a channel)"
+        );
+        assert_eq!(
+            error("import { action, flow } from \"holon\"\nimport state from \"state\"\n\nflow(\"f\")\n\nexport const a = action((x) => {\n  state.a = x\n})\n\nexport const a = action((y) => {\n  state.b = y\n})\n").2,
+            "the action a is written twice: one handler per name"
+        );
+        // Answering twice: the reader refuses what follows the first return.
+        assert_eq!(
+            error("import { action, flow } from \"holon\"\n\nflow(\"f\")\n\nexport const a = action(() => {\n  return 1\n  return 2\n})\n"),
+            (7, 3, "nothing after a return runs: remove it".into())
+        );
         // An answer that reads nothing of what was sent is still the action's.
-        assert!(compile("action ping (input) {\n  respond \"pong\"\n}\n").is_ok());
+        compiled("import { action, flow } from \"holon\"\n\nflow(\"f\")\n\nexport const ping = action(() => \"pong\")\n");
     }
 
-    /// `on file drop (f) { … }` is a file handler: its `on_file` node, everything wired to it,
-    /// its sinks tied to the file, and `f` the file's handle (docs/L4s/triggers-L4.md §2, §3).
+    /// `on.file.created(drop, (f) => { … })` is a file handler: its `on_file` node, everything
+    /// wired to it, its sinks tied to the file, and `f` the file's handle (docs/L4s/triggers-L4.md
+    /// §2, §3).
     #[test]
     fn on_file_blocks_are_file_handlers_tied_to_their_file() {
-        let src = "folder done\nchannel drops\nstate last\non file drop (f) {\n  drops.send(f.name)\n  done[f.name] = f\n}\non file drop deleted matching \"*.csv\" (gone) {\n  state.last = gone.name\n}\nroute GET /n (req) {\n  respond state.last\n}\n";
+        let src = r#"import { flow, on, route } from "holon"
+import state from "state"
+import done from "folder:done"
+import drops from "channel:drops"
+import drop from "folder:drop"
+
+flow("f", { port: 8080 })
+
+on.file.created(drop, (f) => {
+  drops.send(f.name)
+  done[f.name] = f
+})
+
+on.file.deleted(drop, (gone) => {
+  state.last = gone.name
+}, { matching: "*.csv" })
+
+route.get("/n", () => state.last)
+"#;
         let d = compiled(src).doc;
         let on: Vec<&crate::canvas::Node> = d.nodes.iter().filter(|n| n.is_template("on_file")).collect();
         assert_eq!(on.iter().map(|n| (n.param("folder"), n.param("on"), n.param("matching"))).collect::<Vec<_>>(), [("drop", "new", ""), ("drop", "deleted", "*.csv")]);
@@ -2794,75 +3387,141 @@ pub(crate) mod tests {
         assert_eq!((read.port, read.files.len()), (Some(8080), 2));
         assert!(holon_core::capabilities(unit, &store).contains(holon_core::Capability::FileArrival("drop".into())));
         // A flow of file handlers alone listens on no port.
-        let d = compiled("state n\non file drop (f) {\n  state.n = f.size\n}\n").doc;
+        let d = compiled("import { flow, on } from \"holon\"\nimport state from \"state\"\nimport drop from \"folder:drop\"\n\nflow(\"f\")\n\non.file.created(drop, (f) => {\n  state.n = f.size\n})\n").doc;
         let server = crate::flow::derive_server(&d.nodes, &d.edges, &mut store, "");
         let unit = server.server_hash.as_deref().and_then(holon_core::parse_hash).and_then(|h| store.resolve(&h)).expect("a server");
         assert_eq!(holon_core::read_server(unit, &store).unwrap().port, None);
 
-        assert_eq!(error("on file a (f) {\n  respond 1\n}"), (2, 3, "respond belongs in a route: a file's run answers nobody".into()));
-        assert_eq!(error("on file a (f) {\n  n = f.name\n}").2, "the block does nothing: write something in it (a folder, state, a channel)");
-        assert_eq!(error("state n\non file a (f) {\n  state.n = ingress\n}").2, "in an `on file` block the file is f: use f in place of ingress");
-        assert_eq!(error("state a\nstate b\non file a (f) {\n  state.a = f\n}\non file a (g) {\n  state.b = g\n}").2, "on file a is written twice: one block per line");
-        assert!(error("state a\non file a matching \"a**\" (f) {\n  state.a = f\n}").2.contains("isn't a pattern of names"));
-        assert!(error("on file b\nstate a\non file a (f) {\n  state.a = f\n}").2.starts_with("a flow with handlers has its triggers in them: put the file's statements in an `on file b (f) { … }` block"));
-        assert!(error("every 10s\nstate a\non file a (f) {\n  state.a = f\n}").2.starts_with("a flow with `every` or `on file` blocks has its clocks in them"));
-        // The header form is unchanged: `ingress` is the file.
-        assert!(leaves(&compiled("on file inbox\nstate n\nstate.n = ingress.name\n").doc).contains(&"file_arrival".to_string()));
+        // A file's run answers nobody: the reader says so at its return.
+        assert_eq!(
+            error("import { flow, on } from \"holon\"\nimport a from \"folder:a\"\n\nflow(\"f\")\n\non.file.created(a, (f) => {\n  return 1\n})\n"),
+            (7, 10, "a file handler's run answers nobody: return alone ends it".into())
+        );
+        assert_eq!(
+            error("import { flow, on } from \"holon\"\nimport a from \"folder:a\"\n\nflow(\"f\")\n\non.file.created(a, (f) => {\n  const n = f.name\n})\n").2,
+            "the handler does nothing: write something in it (a folder, state, a channel)"
+        );
+        assert_eq!(
+            error("import { flow, on } from \"holon\"\nimport state from \"state\"\nimport a from \"folder:a\"\n\nflow(\"f\")\n\non.file.created(a, (f) => {\n  state.a = f\n})\n\non.file.created(a, (g) => {\n  state.b = g\n})\n").2,
+            "on file a is written twice: one handler per folder, event and pattern"
+        );
+        assert!(error("import { flow, on } from \"holon\"\nimport state from \"state\"\nimport a from \"folder:a\"\n\nflow(\"f\")\n\non.file.created(a, (f) => {\n  state.a = f\n}, { matching: \"a**\" })\n").2.contains("isn't a pattern of names"));
     }
 
     #[test]
     fn routes_respond_and_their_errors() {
-        let d = compiled("route GET /a (req) {\n  respond 204\n}\nroute POST /b (r) resumes paid {\n  respond r.json, status: 201, missing: 400\n}\n").doc;
+        let d = compiled(
+            r#"import { flow, route, status } from "holon"
+
+flow("f", { port: 8080 })
+
+route.get("/a", () => status(204))
+
+route.post("/b", (r) => status(201, r.json) ?? status(400), { resumes: "paid" })
+"#,
+        )
+        .doc;
         assert_eq!(leaves(&d), ["request", "respond", "request", "respond"]);
         assert_eq!((d.nodes[1].param("status"), d.nodes[1].data.inputs.len()), ("204", 1));
         assert_eq!((d.nodes[3].param("status"), d.nodes[3].param("missing"), d.nodes[2].param("resume")), ("201", "400", "paid"));
         assert_eq!(d.edges.iter().filter(|w| w.input() == "request").count(), 2, "respond is wired to its request");
-        assert_eq!(error("respond 1"), (1, 1, "respond belongs in a route".into()));
-        assert_eq!(error("route GET /a (req) {\n  respond 1\n  respond 2\n}"), (3, 3, "more than one respond in the route (the first is on line 2)".into()));
-        assert_eq!(error("route GET /a (req) {\n  x = 1\n}"), (1, 7, "the route answers nothing: add a respond (or an effect, answered 204)".into()));
-        assert_eq!(error("route GET /a (req) {\n  respond 1, 2\n}"), (2, 14, "respond takes one body; status: and missing: are named".into()));
-        assert_eq!(error("route GET /a (req) {\n  respond 1, status: 700\n}"), (2, 22, "a status is a number from 200 to 599".into()));
-        assert_eq!(error("route GET /a (req) {\n  respond 1, status: 101\n}"), (2, 22, "a status is a number from 200 to 599".into()), "not an interim one");
-        assert_eq!(error("route GET /a (req) {\n  respond \"x\", status: 204\n}"), (2, 11, "a 204 answers with no body".into()));
-        assert_eq!(error("route GET /a (req) {\n  1 + 1\n  respond 2\n}"), (2, 3, "a value nobody uses: bind it, or remove it".into()));
+        // An answer outside a route, or a second one: the reader says so.
+        assert_eq!(
+            error("import { flow, respond } from \"holon\"\n\nflow(\"f\", { port: 8080 })\n\nrespond(1)\n"),
+            (5, 1, "the top level holds imports, the flow(…) line, handlers, functions and consts of literals: move this into a handler".into())
+        );
+        let route = |handler: &str| error(&format!("import {{ flow, respond, route, status }} from \"holon\"\n\nflow(\"f\", {{ port: 8080 }})\n\n{handler}\n"));
+        assert_eq!(route("route.get(\"/a\", (req) => {\n  return 1\n  return 2\n})"), (7, 3, "nothing after a return runs: remove it".into()));
+        assert_eq!(route("route.get(\"/a\", (req) => {\n  const x = 1\n})"), (5, 7, "the route answers nothing: return something (or write something, answered 204)".into()));
+        assert_eq!(route("route.get(\"/a\", (req) => respond(1, 2))"), (5, 37, "respond's options are an object: { headers: { … } }".into()));
+        assert_eq!(route("route.get(\"/a\", (req) => status(700, 1))"), (5, 33, "a status is a number from 200 to 599".into()));
+        assert_eq!(route("route.get(\"/a\", (req) => status(101, 1))"), (5, 33, "a status is a number from 200 to 599".into()), "not an interim one");
+        assert_eq!(route("route.get(\"/a\", (req) => status(204, \"x\"))"), (5, 38, "a 204 answers with no body".into()));
+        assert_eq!(route("route.get(\"/a\", (req) => {\n  1 + 1\n  return 2\n})"), (6, 3, "a value nobody uses: bind it, or remove it".into()));
         // A write that reads nothing of the request is tied to it by its trigger: a route counts
         // its hits (docs/L4s/triggers-L4.md §3).
-        let d = compiled("state hits\nroute GET /a (req) {\n  state.hits = (state.hits ?? 0) + 1\n  respond 2\n}").doc;
+        let d = compiled("import { flow, route } from \"holon\"\nimport state from \"state\"\n\nflow(\"f\", { port: 8080 })\n\nroute.get(\"/a\", (req) => {\n  state.hits = (state.hits ?? 0) + 1\n  return 2\n})\n").doc;
         let tie = d.edges.iter().find(|w| w.target.starts_with("store_write") && w.input() == "trigger").expect("the write is tied");
         assert!(tie.source.starts_with("request") && tie.output() == "request", "{tie:?}");
         // A value that never touches the request isn't in the route's group: said, not dropped.
         assert_eq!(
-            error("route GET /a (req) {\n  n = length([1, 2])\n  respond 2\n}"),
-            (2, 15, "this isn't wired to the route's request, so it isn't part of the route (a route is everything wired to its request): use the request in it, or move it to a flow of its own".into())
+            error("import { flow, length, route } from \"holon\"\n\nflow(\"f\", { port: 8080 })\n\nroute.get(\"/a\", (req) => {\n  const n = length([1, 2])\n  return 2\n})\n"),
+            (6, 21, "this isn't wired to the route's request, so it isn't part of the route (a route is everything wired to its request): use the request in it, or move it to a flow of its own".into())
         );
-        assert_eq!(error("x = 1 + 1\nroute GET /a (req) {\n  respond x\n}"), (1, 1, "routes are separate units; put shared logic in a holon (only a literal may be bound at the top level)".into()));
+        // Shared logic at the top level: the reader keeps it to literals.
+        assert_eq!(
+            error("import { flow, route } from \"holon\"\n\nflow(\"f\", { port: 8080 })\n\nconst x = 1 + 1\n\nroute.get(\"/a\", () => x)\n"),
+            (5, 11, "the top level binds only literals (const limit = 50): put the rest in a handler, or in a function".into())
+        );
         // A literal at the top level is placed afresh in each route that uses it.
-        let d = compiled("greeting = \"hi\"\nroute GET /a (req) {\n  respond greeting\n}\nroute GET /b (req) {\n  respond greeting\n}\n").doc;
+        let d = compiled(
+            r#"import { flow, route } from "holon"
+
+flow("f", { port: 8080 })
+
+const greeting = "hi"
+
+route.get("/a", () => greeting)
+
+route.get("/b", () => greeting)
+"#,
+        )
+        .doc;
         assert_eq!(leaves(&d), ["request", "const", "respond", "request", "const", "respond"]);
     }
 
     #[test]
     fn folders_read_write_delete_and_list_files_by_name() {
-        let d = compiled("folder inbox\nfolder out\nt = inbox[\"a.csv\"]\nl = inbox.list(prefix: \"2026/\")\nout[\"b.md\"] = t\ndelete out[\"old.md\"]\n").doc;
+        let d = compiled(
+            r#"import { action, flow } from "holon"
+import inbox from "folder:inbox"
+import out from "folder:out"
+
+flow("f")
+
+export const t = action(() => {
+  const t = inbox["a.csv"]
+  const l = inbox.list({ prefix: "2026/" })
+  out["b.md"] = t
+  delete out["old.md"]
+  return l
+})
+"#,
+        )
+        .doc;
         let mut got = leaves(&d);
-        got.retain(|l| l != "const");
+        got.retain(|l| l.starts_with("file_"));
         assert_eq!(got, ["file_read", "file_list", "file_write", "file_delete"]);
         let folder = |leaf: &str| d.nodes.iter().find(|n| n.data.name == leaf).unwrap().param("folder").to_string();
         assert_eq!([folder("file_read"), folder("file_list"), folder("file_write"), folder("file_delete")], ["inbox", "inbox", "out", "out"]);
-        assert_eq!(error("folder inbox\nx = inbox"), (2, 5, "\"inbox\" is a folder: read it as inbox[name] or inbox.list(…)".into()));
-        assert_eq!(error("folder inbox\ninbox = 1"), (2, 1, "\"inbox\" is a folder; a binding may not shadow it".into()));
-        assert_eq!(error("folder inbox\nx = inbox.move(\"a\")"), (2, 11, "a folder has no \"move\": get, put, delete, list, file, lines, slice, copy, create or create_copy".into()));
-        assert_eq!(error("collection notes\nx = notes.file(\"a\")"), (2, 11, "a collection has no \"file\": get, put, delete or list".into()));
-        assert_eq!(error("folder = 1"), (1, 8, "expected the folder's name, found \"=\"".into()));
+        let route = |handler: &str| error(&format!("import {{ flow, route }} from \"holon\"\nimport inbox from \"folder:inbox\"\nimport notes from \"collection:notes\"\n\nflow(\"f\", {{ port: 8080 }})\n\n{handler}\n"));
+        assert_eq!(route("route.get(\"/a\", () => inbox)"), (7, 23, "\"inbox\" is a folder: read it as inbox[name] or inbox.list(…)".into()));
+        assert_eq!(route("route.get(\"/a\", () => {\n  inbox = 1\n  return 1\n})"), (8, 3, "\"inbox\" is imported, and stays what it is: give a value of its own a name of its own".into()));
+        assert_eq!(route("route.get(\"/a\", () => inbox.move(\"a\"))"), (7, 29, "a folder has no \"move\": get, put, delete, list, file, lines, slice, copy, create or create_copy".into()));
+        assert_eq!(route("route.get(\"/a\", () => notes.file(\"a\"))"), (7, 29, "a collection has no \"file\": get, put, delete or list".into()));
+        // A folder without its name.
+        let e = error("import { flow, route } from \"holon\"\nimport inbox from \"folder:\"\n\nflow(\"f\", { port: 8080 })\n\nroute.get(\"/a\", () => 1)\n");
+        assert_eq!((e.0, e.1), (2, 19));
+        assert!(e.2.starts_with("\"folder:\" isn't something a flow imports"), "{}", e.2);
     }
 
     #[test]
     fn databases_take_their_sql_in_quotes_and_its_values_after_it() {
-        let d = compiled("database shop
-rows = shop.query(\"select id from orders where customer = $1 and total > $2\", \"ada\", 10)
-first = shop.one(\"select id from orders\")
-shop.exec(\"update stock set n = n - 1 where sku = $1\", rows, expect: 1)
-").doc;
+        let d = compiled(
+            r#"import { action, flow } from "holon"
+import shop from "database:shop"
+
+flow("f")
+
+export const t = action(() => {
+  const rows = shop.query("select id from orders where customer = $1 and total > $2", "ada", 10)
+  const first = shop.one("select id from orders")
+  shop.exec("update stock set n = n - 1 where sku = $1", rows, { expect: 1 })
+  return first
+})
+"#,
+        )
+        .doc;
         let node = |leaf: &str| d.nodes.iter().find(|n| n.data.name == leaf).unwrap();
         assert_eq!((node("db_query").param("database"), node("db_exec").param("expect")), ("shop", "1"));
         assert_eq!(node("db_one").param("sql"), "select id from orders");
@@ -2872,32 +3531,54 @@ shop.exec(\"update stock set n = n - 1 where sku = $1\", rows, expect: 1)
             [Some("list".into()), Some("const".into()), Some("append".into())],
             "its values wired as a list"
         );
-        let error = |src: &str| error(&format!("database shop
-{src}")).2;
-        assert_eq!(error("x = shop.query(\"select id from t where a = $1 and b = $2\", 1)"), "the SQL takes 2 values, for $1 to $2; 1 given");
-        assert_eq!(error("x = shop.query(q)"), "the SQL is written in quotes, as it is: its tables are the permission, and values go after it as $1, $2, …, never into it");
-        assert!(error("x = shop.query(\"drop table t\")").starts_with("this SQL can't be sent: a read is a select"));
-        assert!(error("shop.exec(\"delete from t; delete from u\")").contains("more than one statement"));
-        assert_eq!(error("x = shop.query(\"select 1\")"), "this SQL reads no table: what it selects, the flow can compute itself");
-        assert_eq!(error("x = shop.query(\"select a from t\", expect: 1)"), "shop.query has no \"expect\": it takes the SQL, then its values");
-        assert_eq!(error("shop.exec(\"delete from t\", expect: -1)"), "expect: is how many rows it must change, a whole number");
-        assert_eq!(error("x = shop.pick(\"a\")"), "a database has no \"pick\": query, one or exec (SQL), or find, find_one, insert, update or delete (a document database)");
-        assert_eq!(error("x = shop"), "\"shop\" is a database: read it as shop.query(\"select …\") or shop.one(…)");
-        assert_eq!(error("shop = 1"), "\"shop\" is a database; a binding may not shadow it");
+        let error = |body: &str| {
+            let src = "import { action, flow } from \"holon\"\nimport shop from \"database:shop\"\n\nflow(\"f\")\n\nexport const t = action(() => {\nBODY\n})\n";
+            error(&src.replace("BODY", body)).2
+        };
+        assert_eq!(error("  return shop.query(\"select id from t where a = $1 and b = $2\", 1)"), "the SQL takes 2 values, for $1 to $2; 1 given");
+        assert_eq!(
+            error("  const q = \"select a from t\"\n  return shop.query(q)"),
+            "the SQL is written in quotes, as it is: its tables are the permission, and values go after it as $1, $2, …, never into it"
+        );
+        assert!(error("  return shop.query(\"drop table t\")").starts_with("this SQL can't be sent: a read is a select"));
+        assert!(error("  shop.exec(\"delete from t; delete from u\")").contains("more than one statement"));
+        assert_eq!(error("  return shop.query(\"select 1\")"), "this SQL reads no table: what it selects, the flow can compute itself");
+        // A query has no options: what follows its SQL are its values.
+        assert_eq!(error("  return shop.query(\"select a from t\", { expect: 1 })"), "the SQL takes no values; 1 given");
+        assert_eq!(error("  shop.exec(\"delete from t\", { expect: -1 })"), "expect: is how many rows it must change, a whole number");
+        assert_eq!(error("  return shop.pick(\"a\")"), "a database has no \"pick\": query, one or exec (SQL), or find, find_one, insert, update or delete (a document database)");
+        assert_eq!(error("  return shop"), "\"shop\" is a database: read it as shop.query(\"select …\") or shop.one(…)");
+        assert_eq!(error("  shop = 1"), "\"shop\" is imported, and stays what it is: give a value of its own a name of its own");
     }
 
     #[test]
     fn document_calls_freeze_their_records_and_wire_each_computed_value_as_a_hole() {
-        let d = compiled("database notes
-route POST /n/:who (req) {
-  mine = notes.find(\"notes\", { owner: req.params.who, state: { \"$in\": [\"open\", req.json.also] } }, sort: { at: -1 }, limit: 20)
-  one = notes.find_one(\"notes\")
-  notes.insert(\"notes\", { owner: req.params.who, text: req.json.text, tags: [\"new\"], pinned: false })
-  notes.update(\"notes\", { _id: { \"$oid\": req.json.id } }, { \"$set\": { text: req.json.text }, \"$inc\": { edits: 1 } }, expect: 1)
-  notes.delete(\"notes\", { owner: req.params.who, done: true })
-  respond { mine: mine, one: one }
-}
-").doc;
+        let d = compiled(
+            r#"import { flow, route } from "holon"
+import notes from "database:notes"
+
+flow("f", { port: 8080 })
+
+route.post("/n/:who", (req) => {
+  const mine = notes.find(
+    "notes",
+    { owner: req.params.who, state: { "$in": ["open", req.json.also] } },
+    { sort: { at: -1 }, limit: 20 },
+  )
+  const one = notes.find_one("notes")
+  notes.insert("notes", { owner: req.params.who, text: req.json.text, tags: ["new"], pinned: false })
+  notes.update(
+    "notes",
+    { _id: { "$oid": req.json.id } },
+    { "$set": { text: req.json.text }, "$inc": { edits: 1 } },
+    { expect: 1 },
+  )
+  notes.delete("notes", { owner: req.params.who, done: true })
+  return { mine, one }
+})
+"#,
+        )
+        .doc;
         let node = |leaf: &str| d.nodes.iter().find(|n| n.data.name == leaf).unwrap();
         let find = node("db_find");
         assert_eq!(
@@ -2911,152 +3592,209 @@ route POST /n/:who (req) {
         assert_eq!(node("db_delete").param("filter"), r#"{"owner":$1,"done":true}"#);
         let into = |id: &str| d.edges.iter().find(|w| w.target == id && w.target_handle.as_deref() == Some("params")).map(|w| d.nodes.iter().find(|n| n.id == w.source).unwrap().data.name.clone());
         assert_eq!([into(&find.id), into(&node("db_find_one").id), into(&node("db_delete").id)], [Some("list".into()), Some("const".into()), Some("append".into())]);
-        let error = |src: &str| error(&format!("database notes
-{src}")).2;
-        assert_eq!(error("x = notes.find(c)"), "the collection is written in quotes, as it is: it is the permission");
-        assert!(error("x = notes.find(\"holon_claims\")").starts_with("a collection is letters"));
-        assert!(error("x = notes.find(\"notes\", f)").starts_with("a document call's filter, update, document and sort are records written in the call"));
-        assert!(error("x = notes.find(\"notes\", { ..f, a: 1 })").contains("a spread would let the data choose its fields"));
-        assert!(error("x = notes.find(\"notes\", { \"$where\": \"1\" })").contains("runs code on the database's server"));
-        assert!(error("notes.update(\"notes\", { a: 1 }, { a: 2 })").contains("isn't an update operator"));
-        assert!(error("notes.insert(\"notes\", { \"$set\": 1 })").contains("is an operator"));
-        assert_eq!(error("x = notes.find(\"notes\", {}, sort: { at: 2 })"), "this sort can't be sent: a sort's fields are each 1 or -1, written as they are: \"at\" isn't");
-        assert_eq!(error("x = notes.find(\"notes\", {}, sort: { at: k })"), "a sort is the flow's: each field is 1 or -1, as written");
-        assert_eq!(error("x = notes.find(\"notes\", {}, limit: 0)"), "limit: is how many documents at most, a whole number from 1 to 100000");
-        assert_eq!(error("notes.delete(\"notes\")"), "notes.delete takes the collection, then its filter");
-        assert_eq!(error("notes.update(\"notes\", {})"), "notes.update takes the collection, then its filter, then its update");
-        assert_eq!(error("x = notes.find_one(\"notes\", {}, limit: 1)"), "notes.find_one has no \"limit\": it takes the collection, its records, then sort:");
-        assert_eq!(error("notes.insert(\"notes\", {}, expect: 1)"), "notes.insert has no \"expect\": it takes the collection, its records");
+        let error = |body: &str| {
+            let src = "import { action, flow } from \"holon\"\nimport notes from \"database:notes\"\n\nflow(\"f\")\n\nexport const t = action(() => {\nBODY\n})\n";
+            error(&src.replace("BODY", body)).2
+        };
+        assert_eq!(error("  const c = \"notes\"\n  return notes.find(c)"), "the collection is written in quotes, as it is: it is the permission");
+        assert!(error("  return notes.find(\"holon_claims\")").starts_with("a collection is letters"));
+        assert!(error("  const f = { a: 1 }\n  return notes.find(\"notes\", f)").starts_with("a document call's filter, update, document and sort are records written in the call"));
+        assert!(error("  const f = { a: 1 }\n  return notes.find(\"notes\", { ...f, a: 1 })").contains("a spread would let the data choose its fields"));
+        assert!(error("  return notes.find(\"notes\", { \"$where\": \"1\" })").contains("runs code on the database's server"));
+        assert!(error("  notes.update(\"notes\", { a: 1 }, { a: 2 })").contains("isn't an update operator"));
+        assert!(error("  notes.insert(\"notes\", { \"$set\": 1 })").contains("is an operator"));
+        assert_eq!(error("  return notes.find(\"notes\", {}, { sort: { at: 2 } })"), "this sort can't be sent: a sort's fields are each 1 or -1, written as they are: \"at\" isn't");
+        assert_eq!(error("  const k = 1\n  return notes.find(\"notes\", {}, { sort: { at: k } })"), "a sort is the flow's: each field is 1 or -1, as written");
+        assert_eq!(error("  return notes.find(\"notes\", {}, { limit: 0 })"), "limit: is how many documents at most, a whole number from 1 to 100000");
+        assert_eq!(error("  notes.delete(\"notes\")"), "notes.delete takes the collection, then its filter");
+        assert_eq!(error("  notes.update(\"notes\", {})"), "notes.update takes the collection, then its filter, then its update");
+        // Options a call doesn't take are read as one more record, which it doesn't take either.
+        assert_eq!(error("  return notes.find_one(\"notes\", {}, { limit: 1 })"), "notes.find_one takes the collection, then its filter");
+        assert_eq!(error("  notes.insert(\"notes\", {}, { expect: 1 })"), "notes.insert takes the collection, then its document");
     }
 
     #[test]
     fn folders_hand_out_handles_lines_and_slices_and_copy_by_handle() {
         let d = compiled(
-            "folder logs\nfolder archive\nh = logs.file(\"app.log\")\nlast = logs.lines(\"app.log\", from: -10, limit: 10)\nstart = logs.slice(\"app.log\", offset: 0, length: 64)\narchive[\"app.log\"] = h\narchive.copy(\"b.log\", h)\narchive[\"c.log\"] = start\n",
+            r#"import { action, flow } from "holon"
+import archive from "folder:archive"
+import logs from "folder:logs"
+
+flow("f")
+
+export const t = action(() => {
+  const h = logs.file("app.log")
+  const last = logs.lines("app.log", { from: -10, limit: 10 })
+  const start = logs.slice("app.log", { offset: 0, length: 64 })
+  archive["app.log"] = h
+  archive.copy("b.log", h)
+  archive["c.log"] = start
+  return last
+})
+"#,
         )
         .doc;
         let mut got = leaves(&d);
-        got.retain(|l| l != "const" && l != "neg" && l != "sub");
+        got.retain(|l| l.starts_with("file_"));
         assert_eq!(got, ["file_handle", "file_lines", "file_slice", "file_copy", "file_copy", "file_write"], "a handle written is a copy; a text, a write");
         let lines = d.nodes.iter().find(|n| n.data.name == "file_lines").unwrap();
         assert_eq!((lines.param("folder"), lines.param("limit")), ("logs", "10"));
-        let first = compiled("folder logs\nl = logs.lines(\"a\")\n").doc;
+        let first = compiled("import { action, flow } from \"holon\"\nimport logs from \"folder:logs\"\n\nflow(\"f\")\n\nexport const t = action(() => logs.lines(\"a\"))\n").doc;
         assert!(first.nodes.iter().any(|n| n.data.name == "file_lines"), "from the first line: from is optional");
-    }
-
-    #[test]
-    fn a_flow_on_new_files_reads_the_file_as_ingress_and_sends_one_by_handle() {
-        let d = compiled("on file inbox\nh = inbox.file(ingress.name)\nr = http.put(\"files.example.com\", \"/up\", file: h)\n").doc;
-        let mut got = leaves(&d);
-        got.retain(|l| l != "const" && l != "field");
-        assert_eq!(got, ["file_arrival", "file_handle", "http_upload"]);
-        let arrival = d.nodes.iter().find(|n| n.data.name == "file_arrival").unwrap();
-        assert_eq!(arrival.param("folder"), "inbox", "on file declares the folder, and names it");
-        let upload = d.nodes.iter().find(|n| n.data.name == "http_upload").unwrap();
-        assert_eq!((upload.param("method"), upload.param("host")), ("PUT", "files.example.com"));
-        assert!(leaves(&compiled("x = ingress\n").doc).contains(&"ingress".to_string()), "without on file, ingress is a request's");
-        assert_eq!(error("on file inbox\nx = 1\n").2, "`on file` starts a run for each new file, and the run reads it as `ingress`: use `ingress` (its .name, say)");
-        assert!(error("on file a\non file a\nx = ingress\n").2.contains("written twice"));
-        assert!(error("on file a matching \"a**\"\nx = ingress\n").2.contains("isn't a pattern of names"));
-        assert!(error("port 8000\non file a\nroute GET /x (req) {\n  respond 1\n}\n").2.contains("put the file's statements in an `on file a (f) { … }` block"));
-        assert_eq!(error("folder a\nh = a.file(\"x\")\nr = http.put(\"h.example.com\", \"/\", body: \"t\", file: h)\n").2, "a call sends a body or a file, not both");
-        assert!(leaves(&compiled("on = 1\nx = on + 1\n").doc).contains(&"add".to_string()), "on is still a name elsewhere");
-    }
-
-    #[test]
-    fn a_flow_on_several_folders_deletions_and_some_names_reads_whichever_file_started_it() {
-        let src = "on file drop matching \"*.csv\"\non file drop deleted\non file inbox\nfolder done\n\ndone[ingress.name] = ingress\n";
-        let d = compiled(src).doc;
-        let arrivals: Vec<(&str, &str, &str)> =
-            d.nodes.iter().filter(|n| n.data.name == "file_arrival").map(|n| (n.param("folder"), n.param("on"), n.param("matching"))).collect();
-        assert_eq!(arrivals.len(), 6, "a chain of the three lines for each use of ingress");
-        assert_eq!(&arrivals[..3], [("drop", "new", "*.csv"), ("drop", "deleted", ""), ("inbox", "new", "")]);
-        assert_eq!(d.nodes.iter().filter(|n| n.data.name == "coalesce").count(), 4, "two for each chain of three");
-        assert!(leaves(&d).contains(&"file_copy".to_string()), "ingress is a handle: written to a folder, it is copied");
         // Writes that never replace a file.
-        let d = compiled("folder out\nh = out.file(\"a\")\nout.create(\"b.txt\", \"text\")\nout.create_copy(\"c\", h)\n").doc;
+        let d = compiled(
+            r#"import { action, flow } from "holon"
+import out from "folder:out"
+
+flow("f")
+
+export const t = action(() => {
+  const h = out.file("a")
+  out.create("b.txt", "text")
+  out.create_copy("c", h)
+})
+"#,
+        )
+        .doc;
         let got = leaves(&d);
         assert!(got.contains(&"file_create".to_string()) && got.contains(&"file_create_copy".to_string()), "{got:?}");
     }
 
-    /// A secret is read only by a name the header declares (docs/L4s/declared-names-L4.md §4):
-    /// `secret tok`, or `optional secret tok` for one the flow can do without.
+    /// A file handler reads the file that started its run by its handle, and sends a file on by
+    /// handle: the server streams the bytes, which never pass through the flow.
     #[test]
-    fn a_secret_is_declared_in_the_header() {
-        assert_eq!(compiled("secret tok\nx = secret.tok\n").doc.nodes[0].param("name"), "tok");
-        // Either spelling of the optional line declares it, as the same deploy setting.
-        for header in ["optional secret tok", "optional secret.tok"] {
-            let s = compiled(&format!("{header}\nx = secret.tok\n")).doc.server.unwrap();
-            assert_eq!(s.requirements.unwrap().optional.unwrap(), ["SecretRead(\"tok\")"], "{header}");
-        }
-        let e = compile("flow f\nport 8200\n\nroute GET /a (req) {\n  respond secret.tok\n}\n").unwrap_err();
-        assert_eq!((e.span.start.line, e.span.start.col, e.message.as_str()), (5, 11, "\"tok\" is not a declared secret (add `secret tok` to the header)"));
-        assert_eq!(e.declare.as_deref(), Some("secret tok"), "the line that fixes it");
-        assert_eq!(error("secret tok\nx = secret.other"), (2, 5, "\"other\" is not a declared secret (add `secret other` to the header)".into()));
-        // A holon reads with the flow's declarations.
-        compiled("secret tok\n\nholon signed(t) -> s {\n  s = hmac_sha256(secret.tok, t)\n}\n\nx = signed(\"a\")\n");
-        // A declaration nothing reads compiles.
-        compiled("secret unused\nx = 1\n");
+    fn a_file_handler_sends_a_file_by_handle() {
+        let d = compiled(
+            r#"import { flow, on } from "holon"
+import inbox from "folder:inbox"
+import files from "host:files.example.com"
+
+flow("f")
+
+on.file.created(inbox, async (f) => {
+  const h = inbox.file(f.name)
+  const r = await files.put("/up", { file: h })
+})
+"#,
+        )
+        .doc;
+        let mut got = leaves(&d);
+        got.retain(|l| l != "const" && l != "field");
+        assert_eq!(got, ["on_file", "file_handle", "http_upload"]);
+        let on = d.nodes.iter().find(|n| n.data.name == "on_file").unwrap();
+        assert_eq!(on.param("folder"), "inbox", "the handler names the folder it watches");
+        let upload = d.nodes.iter().find(|n| n.data.name == "http_upload").unwrap();
+        assert_eq!((upload.param("method"), upload.param("host")), ("PUT", "files.example.com"));
+        assert_eq!(
+            error(
+                r#"import { flow, on } from "holon"
+import a from "folder:a"
+import h from "host:h.example.com"
+
+flow("f")
+
+on.file.created(a, async (f) => {
+  const x = a.file("x")
+  const r = await h.put("/", { body: "t", file: x })
+})
+"#
+            )
+            .2,
+            "a call sends a body or a file, not both"
+        );
     }
 
-    /// A state key is read and written only by a name the header declares (`state beats`),
-    /// reads and writes alike, in the flow and in its holons.
+    /// A secret is read only by its import (docs/L4s/declared-names-L4.md §4):
+    /// `import tok from "secret:tok"`, with `{ optional: "true" }` for one the flow can do without.
     #[test]
-    fn a_state_key_is_declared_in_the_header() {
-        let d = compiled("state beats\nstate.beats = (state.beats ?? 0) + 1\n").doc;
-        assert_eq!(leaves(&d).iter().filter(|l| l.starts_with("store_")).count(), 2);
-        let e = compile("flow f\nevery 1s\nstate beats\n\nstate.beat = 1\n").unwrap_err();
-        assert_eq!((e.span.start.line, e.span.start.col, e.message.as_str()), (5, 1, "\"beat\" is not declared state (add `state beat` to the header)"));
-        assert_eq!(e.declare.as_deref(), Some("state beat"));
-        assert_eq!(error("x = state.n"), (1, 5, "\"n\" is not declared state (add `state n` to the header)".into()));
-        assert_eq!(error("x = state.set(n, 1)"), (1, 15, "\"n\" is not declared state (add `state n` to the header)".into()));
-        assert!(error("state n\nx = state.set(\"a b\", 1)").2.starts_with("\"a b\" isn't a state key: a key is a name"));
-        // A holon writes with the flow's declarations.
-        compiled("state last\n\nholon keep(v) -> saved {\n  saved = state.set(last, v)\n}\n\nx = keep(1)\n");
-        assert_eq!(error("holon keep(v) -> saved {\n  saved = state.set(last, v)\n}\n\nx = keep(1)\n").2, "\"last\" is not declared state (add `state last` to the header)");
-        // `state.x = e` at the top level stays a statement beside the header.
-        compiled("state x\nstate.x = 1\n");
+    fn a_secret_is_read_by_its_import() {
+        let signs = |import: &str| {
+            compiled(&format!("import {{ flow, hmac_sha256, route }} from \"holon\"\n{import}\n\nflow(\"f\", {{ port: 8200 }})\n\nroute.post(\"/a\", (req) => hmac_sha256(tok, req.body))\n"))
+        };
+        let d = signs("import tok from \"secret:tok\"").doc;
+        assert_eq!(d.nodes.iter().find(|n| n.data.name == "secret").unwrap().param("name"), "tok");
+        // The optional one is the same deploy setting.
+        let s = signs("import tok from \"secret:tok\" with { optional: \"true\" }").doc.server.unwrap();
+        assert_eq!(s.requirements.unwrap().optional.unwrap(), ["SecretRead(\"tok\")"]);
+        // A secret not imported is a name like any other unknown one.
+        assert_eq!(error("import { flow, route } from \"holon\"\n\nflow(\"f\", { port: 8200 })\n\nroute.get(\"/a\", (req) => tok)\n"), (5, 26, "unknown name \"tok\"".into()));
+        // A function reads with the flow's imports.
+        compiled(
+            r#"import { action, flow, hmac_sha256 } from "holon"
+import tok from "secret:tok"
+
+flow("f")
+
+function signed(t) {
+  return hmac_sha256(tok, t)
+}
+
+export const t = action(() => signed("a"))
+"#,
+        );
+        // An import nothing reads compiles.
+        compiled("import { action, flow } from \"holon\"\nimport unused from \"secret:unused\"\n\nflow(\"f\")\n\nexport const t = action(() => 1)\n");
     }
 
     #[test]
     fn names_collections_and_state_errors() {
-        assert_eq!(error("x = y"), (1, 5, "unknown name \"y\"".into()));
-        assert_eq!(error("clock = 1"), (1, 1, "\"clock\" is a leaf; a binding may not shadow it".into()));
-        assert_eq!(error("now = 1"), (1, 1, "\"now\" is a keyword; a binding may not shadow it".into()));
-        assert_eq!(error("x = 1\nx = 2"), (2, 1, "there is a \"x\" already".into()));
-        assert_eq!(error("x = clock"), (1, 5, "\"clock\" is a leaf: call it, clock(…)".into()));
-        assert_eq!(error("x = notes[1]"), (1, 5, "unknown name \"notes\"".into()));
-        assert_eq!(error("notes[1] = 2"), (1, 1, "\"notes\" is not a declared collection (add `collection notes` to the header)".into()));
-        assert_eq!(error("x = notes.list()"), (1, 5, "\"notes\" is not a declared collection (add `collection notes` to the header)".into()));
-        assert_eq!(error("collection notes\nx = notes"), (2, 5, "\"notes\" is a collection: read it as notes[key] or notes.list(…)".into()));
-        assert_eq!(error("state a\nstate.a = 1\nstate.a = 2"), (3, 1, "state.a is written twice (first on line 2); a run writes a key once".into()));
-        assert_eq!(error("x = http.post(h, \"/p\")"), (1, 15, "the host is written as text in quotes: it is the permission the deployment asks for, so it can't come from a wire".into()));
-        assert_eq!(error("x = http.fetch(\"h\", \"/p\")"), (1, 10, "http has no \"fetch\": get, post, put, patch, delete or head".into()));
-        assert_eq!(error("x = concat(1, k: 2)"), (1, 15, "\"concat\" has no input or param \"k\"".into()));
-        assert_eq!(error("x = subtract(1)"), (1, 5, "\"subtract\": the input \"b\" can't be left out".into()));
-        assert_eq!(error("x = subtract(1, 2, 3)"), (1, 20, "\"subtract\" takes 2 inputs, 3 given".into()));
-        assert_eq!(error("x = hmac_sha256(\"k\", \"m\", encoding: 1 + 1)"), (1, 37, "a param is a fixed value: a number, a duration, text in quotes, true or false, or a word".into()));
-        assert_eq!(error("x = request()"), (1, 5, "a route declares its request: route GET /path (req) { … }".into()));
-        assert_eq!(error("x = fn(a) -> a"), (1, 5, "a function goes in a fn: argument of map or fold".into()));
+        let route = |head: &str, handler: &str| error(&format!("import {{ flow, route{head} }} from \"holon\"\n\nflow(\"f\", {{ port: 8000 }})\n\n{handler}\n"));
+        assert_eq!(route("", "route.get(\"/a\", () => y)"), (5, 23, "unknown name \"y\"".into()));
+        assert_eq!(route(", clock", "route.get(\"/a\", () => clock)"), (5, 23, "\"clock\" is a leaf: call it, clock(…)".into()));
+        // A collection not imported: unknown to read, refused to write.
+        assert_eq!(route("", "route.get(\"/a\", () => notes[1])"), (5, 23, "unknown name \"notes\"".into()));
+        assert_eq!(route("", "route.post(\"/a\", (req) => {\n  notes[1] = 2\n})"), (6, 3, "\"notes\" isn't a local of this handler: only state, a collection, a folder or a local is written".into()));
+        assert_eq!(route("", "route.get(\"/a\", () => notes.list())"), (5, 23, "unknown name \"notes\"".into()));
+        assert_eq!(
+            error("import { flow, route } from \"holon\"\nimport notes from \"collection:notes\"\n\nflow(\"f\", { port: 8000 })\n\nroute.get(\"/a\", () => notes)\n"),
+            (6, 23, "\"notes\" is a collection: read it as notes[key] or notes.list(…)".into())
+        );
+        assert_eq!(
+            error("import { flow, route } from \"holon\"\nimport api from \"host:h\"\n\nflow(\"f\", { port: 8000 })\n\nroute.get(\"/a\", async () => await api.fetch(\"/p\"))\n"),
+            (6, 39, "http has no \"fetch\": get, post, put, patch, delete or head".into())
+        );
+        assert_eq!(route(", subtract", "route.get(\"/a\", () => subtract(1))"), (5, 23, "\"subtract\": the input \"b\" can't be left out".into()));
+        assert_eq!(route(", subtract", "route.get(\"/a\", () => subtract(1, 2, 3))"), (5, 38, "\"subtract\" takes 2 inputs, 3 given".into()));
+        assert_eq!(
+            route(", hmac_sha256", "route.get(\"/a\", () => hmac_sha256(\"k\", \"m\", { encoding: 1 + 1 }))"),
+            (5, 57, "a param is a fixed value: a number, a duration, text in quotes, true or false, or a word".into())
+        );
+        assert_eq!(route(", request", "route.get(\"/a\", () => request())"), (5, 23, "a route's handler takes its request: route.get(\"/path\", (req) => …)".into()));
+        // A function written in place outside map and reduce: the reader says where it goes.
+        assert_eq!(
+            route("", "route.get(\"/a\", () => {\n  const x = (a) => a\n  return x\n})"),
+            (6, 13, "a function written in place goes to map or reduce: xs.map((x) => …); define the others at the top level".into())
+        );
     }
 
     #[test]
     fn settings_and_spans_come_through() {
-        let got = compiled("flow f\nport 8200\nevery 10s\nbrowsers https://a.example, *\noptional secret.k\noptional HttpRequest(\"h\")\ncollection c\n\nx = 1\n");
+        let got = compiled(
+            r#"import { flow, route } from "holon"
+import k from "secret:k" with { optional: "true" }
+import c from "collection:c"
+
+flow("f", { port: 8200, browsers: ["https://a.example", "*"] })
+
+route.get("/x", () => {
+  const x = 1
+  return x
+})
+"#,
+        );
         let s = got.doc.server.unwrap();
-        assert_eq!((s.port.as_str(), s.interval.as_str(), s.browsers.as_deref()), ("8200", "10", Some("https://a.example *")));
-        assert_eq!(s.requirements.unwrap().optional.unwrap(), ["SecretRead(\"k\")", "HttpRequest(\"h\")"]);
+        assert_eq!((s.port.as_str(), s.browsers.as_deref()), ("8200", Some("https://a.example *")));
+        assert_eq!(s.requirements.unwrap().optional.unwrap(), ["SecretRead(\"k\")"]);
         assert_eq!(got.name.as_deref(), Some("f"));
-        let node = &got.doc.nodes[0];
-        assert_eq!(node.extra["source"], json!({ "line": 9, "col": 5, "endLine": 9, "endCol": 6 }));
+        let node = got.doc.nodes.iter().find(|n| n.data.name == "const").unwrap();
+        assert_eq!(node.extra["source"], json!({ "line": 8, "col": 13, "endLine": 8, "endCol": 14 }));
         assert_eq!(got.names[&node.id], "x");
     }
 
     #[test]
     fn the_natural_samples_derive_the_same_routes_as_the_builders() {
-        // The tour's own spellings (interpolation, `now` twice): same routes and manifest shape,
-        // not the same hash.
-        let hello = compiled("flow hello-api\nport 8101\nroute GET /hello/:name (req) {\n  respond \"Hello, {req.params.name}\"\n}\n");
+        // The tour's own spellings (interpolation): same routes and manifest shape.
+        let hello = compiled("import { flow, route } from \"holon\"\n\nflow(\"hello-api\", { port: 8101 })\n\nroute.get(\"/hello/:name\", (req) => `Hello, ${req.params.name}`)\n");
         let mut store = MapResolver::new();
         let d = derive_server(&hello.doc.nodes, &hello.doc.edges, &mut store, "8101");
         assert!(d.errors.is_empty(), "{:?}", d.errors);
@@ -3064,7 +3802,7 @@ route POST /n/:who (req) {
         assert_eq!(leaves(&hello.doc), ["request", "const", "field", "as_text", "concat", "respond"]);
     }
 
-    /// The holon `pick` of a text, as core evaluates it, given `op` and `v`.
+    /// The function `pick` of a text, as core evaluates it, given `op` and `v`.
     fn picked(src: &str, op: Option<holon_core::Value>, v: Option<holon_core::Value>) -> Option<holon_core::Value> {
         let doc = compiled(src).doc;
         let mut store = MapResolver::new();
@@ -3078,78 +3816,124 @@ route POST /n/:who (req) {
         holon_core::eval(unit, &inputs, &store).into_vec().remove(0)
     }
 
-    const PICK: &str = "flow f\nstate x\n\nholon pick(op, v) -> r {\n  r = match op {\n    \"inv\" -> 1 / v\n    \"neg\", \"minus\" -> 0 - v\n    else -> 99\n  }\n}\n\nstate.x = pick(\"inv\", 1)\n";
+    /// A flow whose function `pick` is `body`.
+    fn with_pick(body: &str) -> String {
+        format!("import {{ action, flow }} from \"holon\"\nimport state from \"state\"\n\nflow(\"f\")\n\nfunction pick(op, v) {{\n{body}\n}}\n\nexport const t = action(() => {{\n  state.x = pick(\"inv\", 1)\n}})\n")
+    }
 
-    /// `match` is sugar (match-L4.md §4): the guards written out by hand are the same unit.
+    const PICK: &str = r#"  switch (op) {
+    case "inv":
+      return 1 / v
+    case "neg":
+    case "minus":
+      return 0 - v
+    default:
+      return 99
+  }"#;
+
+    /// A `switch` that returns is a `match` (match-L4.md §4): the guards written out by hand are
+    /// the same unit.
     #[test]
-    fn a_match_is_the_same_unit_as_its_guards_written_by_hand() {
-        let by_hand = "flow f\nstate x\n\nholon pick(op, v) -> r {\n  m1 = op == \"inv\"\n  m2 = op == \"neg\" || op == \"minus\"\n  r = (1 / v when m1) ?? (0 - v when m2) ?? (99 when !(m1 || m2))\n}\n\nstate.x = pick(\"inv\", 1)\n";
-        assert_eq!(hash_of(&compiled(PICK).doc), hash_of(&compiled(by_hand).doc));
-        // Without an else, the chain alone.
-        let no_else = "flow f\nstate x\n\nholon pick(op, v) -> r {\n  r = match op {\n    \"inv\" -> 1 / v\n    \"neg\" -> 0 - v\n  }\n}\n\nstate.x = pick(\"inv\", 1)\n";
-        let by_hand = "flow f\nstate x\n\nholon pick(op, v) -> r {\n  r = (1 / v when op == \"inv\") ?? (0 - v when op == \"neg\")\n}\n\nstate.x = pick(\"inv\", 1)\n";
-        assert_eq!(hash_of(&compiled(no_else).doc), hash_of(&compiled(by_hand).doc));
-        // One arm and an else: the else guarded by the arm's own comparison, negated.
-        let d = compiled("x = 1\ny = match x { 1 -> \"one\", else -> \"other\" }\n").doc;
-        assert_eq!(&leaves(&d)[1..], ["const", "equals", "const", "guard", "not", "const", "guard", "coalesce"]);
+    fn a_switch_is_the_same_unit_as_its_guards_written_by_hand() {
+        let by_hand = "  const m1 = op == \"inv\"\n  const m2 = op == \"neg\" || op == \"minus\"\n  return (m1 ? 1 / v : undefined) ?? (m2 ? 0 - v : undefined) ?? (!(m1 || m2) ? 99 : undefined)";
+        assert_eq!(hash_of(&compiled(&with_pick(PICK)).doc), hash_of(&compiled(&with_pick(by_hand)).doc));
+        // Without a default, the chain alone.
+        let no_default = PICK.replace("    case \"minus\":\n", "").replace("    default:\n      return 99\n", "");
+        let by_hand = "  return (op == \"inv\" ? 1 / v : undefined) ?? (op == \"neg\" ? 0 - v : undefined)";
+        assert_eq!(hash_of(&compiled(&with_pick(&no_default)).doc), hash_of(&compiled(&with_pick(by_hand)).doc));
+        // One case and a default: the default guarded by the case's own comparison, negated.
+        let d = compiled(
+            r#"import { flow, route } from "holon"
+
+flow("f", { port: 8000 })
+
+route.post("/t", (req) => {
+  switch (req.json.x) {
+    case 1:
+      return "one"
+    default:
+      return "other"
+  }
+})
+"#,
+        )
+        .doc;
+        assert_eq!(&leaves(&d)[2..10], ["const", "equals", "const", "guard", "not", "const", "guard", "coalesce"]);
     }
 
     /// Every row of match-L4.md §3, through the lowered unit.
     #[test]
-    fn a_match_chooses_one_arm_and_its_absence_is_the_matchs() {
+    fn a_switch_chooses_one_case_and_its_absence_is_the_switchs() {
         use holon_core::Value::{Boolean, Number, Text};
         let t = |s: &str| Some(Text(s.into()));
         let n = |x: f64| Some(Number(x));
-        assert_eq!(picked(PICK, None, n(2.0)), None, "the subject absent: absent, the else too");
-        assert_eq!(picked(PICK, t("inv"), n(2.0)), n(0.5), "the arm chosen, present");
-        assert_eq!(picked(PICK, t("inv"), n(0.0)), None, "the arm chosen, absent: absent, not the else");
-        assert_eq!(picked(PICK, t("neg"), n(0.0)), n(0.0), "another arm absent: no effect");
-        assert_eq!(picked(PICK, t("minus"), n(3.0)), n(-3.0), "a second pattern of an arm");
-        assert_eq!(picked(PICK, t("zzz"), None), n(99.0), "no pattern matched: the else, whatever the arms");
-        let no_else = PICK.replace("    else -> 99\n", "");
-        assert_eq!(picked(&no_else, t("zzz"), n(1.0)), None, "no pattern matched, no else: absent");
-        let absent_else = PICK.replace("else -> 99", "else -> 2 / v");
-        assert_eq!(picked(&absent_else, t("zzz"), n(0.0)), None, "the else chosen, absent: absent");
+        let pick = with_pick(PICK);
+        assert_eq!(picked(&pick, None, n(2.0)), None, "the subject absent: absent, the default too");
+        assert_eq!(picked(&pick, t("inv"), n(2.0)), n(0.5), "the case chosen, present");
+        assert_eq!(picked(&pick, t("inv"), n(0.0)), None, "the case chosen, absent: absent, not the default");
+        assert_eq!(picked(&pick, t("neg"), n(0.0)), n(0.0), "another case absent: no effect");
+        assert_eq!(picked(&pick, t("minus"), n(3.0)), n(-3.0), "a second label of a case");
+        assert_eq!(picked(&pick, t("zzz"), None), n(99.0), "no case matched: the default, whatever the cases");
+        let no_default = with_pick(&PICK.replace("    default:\n      return 99\n", ""));
+        assert_eq!(picked(&no_default, t("zzz"), n(1.0)), None, "no case matched, no default: absent");
+        let absent_default = with_pick(&PICK.replace("return 99", "return 2 / v"));
+        assert_eq!(picked(&absent_default, t("zzz"), n(0.0)), None, "the default chosen, absent: absent");
         // `equals` doesn't coerce: a number is never a text.
-        let kinds = "flow f\nstate x\n\nholon pick(op, v) -> r {\n  r = match op {\n    1 -> \"one\"\n    \"1\" -> \"text one\"\n    true -> \"yes\"\n    else -> v\n  }\n}\n\nstate.x = pick(1, 1)\n";
-        assert_eq!(picked(kinds, n(1.0), None), t("one"));
-        assert_eq!(picked(kinds, t("1"), None), t("text one"));
-        assert_eq!(picked(kinds, Some(Boolean(true)), None), t("yes"));
-        assert_eq!(picked(kinds, Some(Boolean(false)), None), None);
+        let kinds = with_pick("  switch (op) {\n    case 1:\n      return \"one\"\n    case \"1\":\n      return \"text one\"\n    case true:\n      return \"yes\"\n    default:\n      return v\n  }");
+        assert_eq!(picked(&kinds, n(1.0), None), t("one"));
+        assert_eq!(picked(&kinds, t("1"), None), t("text one"));
+        assert_eq!(picked(&kinds, Some(Boolean(true)), None), t("yes"));
+        assert_eq!(picked(&kinds, Some(Boolean(false)), None), None);
     }
 
     #[test]
-    fn a_match_pattern_is_a_literal_matched_once() {
-        let literal = "a pattern is a literal (a number, a text, true or false); to test a condition, use `if`";
-        assert_eq!(error("x = 1\ny = match x { x -> 1 }\n"), (2, 15, literal.into()));
-        assert_eq!(error("x = 1\ny = match x { 1 -> 1, x > 2 -> 2 }\n"), (2, 23, literal.into()));
-        assert_eq!(error("x = 1\ny = match x { \"{x}\" -> 1 }\n"), (2, 15, literal.into()));
-        assert_eq!(error("x = 1\ny = match x { [1] -> 1 }\n"), (2, 15, literal.into()));
-        assert_eq!(error("x = 1\ny = match x { \"add\" -> 1, \"add\" -> 2 }\n"), (2, 27, "\"add\" is matched twice; the second arm could never be chosen".into()));
-        assert_eq!(error("x = 1\ny = match x { 1, 2 -> 1, 1.0 -> 2 }\n"), (2, 26, "1.0 is matched twice; the second arm could never be chosen".into()));
-        assert_eq!(error("match = 1\n").2, "expected an expression, found \"=\"");
+    fn a_case_is_a_literal_matched_once() {
+        let switch = |cases: &str| {
+            let src = "import { flow, route } from \"holon\"\n\nflow(\"f\", { port: 8000 })\n\nroute.post(\"/t\", (req) => {\n  const x = req.json.x\n  switch (x) {\nCASES\n  }\n})\n";
+            error(&src.replace("CASES", cases))
+        };
+        // What isn't a literal, the reader refuses.
+        let literal = "a case is a literal: a number, a text, true or false; to test a condition, use if";
+        assert_eq!(switch("    case x:\n      return 1"), (8, 10, literal.into()));
+        assert_eq!(switch("    case 1:\n      return 1\n    case x > 2:\n      return 2"), (10, 10, literal.into()));
+        assert_eq!(switch("    case `${x}`:\n      return 1"), (8, 10, literal.into()));
+        assert_eq!(switch("    case [1]:\n      return 1"), (8, 10, literal.into()));
+        assert_eq!(switch("    case \"add\":\n      return 1\n    case \"add\":\n      return 2"), (10, 10, "\"add\" is a case twice; the second could never be chosen".into()));
+        assert_eq!(switch("    case 1:\n    case 2:\n      return 1\n    case 1.0:\n      return 2"), (11, 10, "1.0 is a case twice; the second could never be chosen".into()));
     }
 
     /// A streamed reply answers with its call's status: the respond's status input, wired from
-    /// the call's `status`. A computed `status:` is the same input, and a number written out the
+    /// the call's `status`. A computed status is the same input, and a number written out the
     /// param, as before.
     #[test]
     fn a_respond_takes_a_computed_status_on_its_status_input() {
         let into = |d: &FlowDocument, node: &str, port: &str| {
             d.edges.iter().find(|w| w.target == node && w.target_handle.as_deref() == Some(port)).map(|w| w.source.clone())
         };
-        let streamed = compiled("port 8200\nroute POST /ask (req) {\n  sent = http.post(\"a.com\", \"/x\", body: req.json, stream: true)\n  respond sent.body, stream: true\n}\n").doc;
+        let streamed = compiled(
+            r#"import { flow, respond, route } from "holon"
+import a from "host:a.com"
+
+flow("f", { port: 8200 })
+
+route.post("/ask", async (req) => {
+  const sent = await a.post("/x", { body: req.json, stream: true })
+  return respond(sent.body, { stream: true })
+})
+"#,
+        )
+        .doc;
         let respond = streamed.nodes.iter().find(|n| n.data.name == "respond").unwrap();
         assert_eq!((respond.param("status_input"), respond.param("status")), ("true", "200"));
         let field = streamed.nodes.iter().find(|n| Some(&n.id) == into(&streamed, &respond.id, "status").as_ref()).unwrap();
         let call = streamed.nodes.iter().find(|n| n.data.name == "http_stream").unwrap();
         assert_eq!((field.data.name.as_str(), field.param("name")), ("field", "status"));
         assert_eq!(into(&streamed, &field.id, "record"), Some(call.id.clone()));
-        let computed = compiled("port 8200\nroute POST /a (req) {\n  respond { ok: false }, status: req.json.code, missing: 400\n}\n").doc;
+        let computed = compiled("import { flow, route, status } from \"holon\"\n\nflow(\"f\", { port: 8200 })\n\nroute.post(\"/a\", (req) => status(req.json.code, { ok: false }) ?? status(400))\n").doc;
         let respond = computed.nodes.iter().find(|n| n.data.name == "respond").unwrap();
         assert_eq!((respond.param("status_input"), respond.param("missing")), ("true", "400"));
         assert!(into(&computed, &respond.id, "status").is_some());
-        let written = compiled("port 8200\nroute POST /a (req) {\n  respond { ok: true }, status: 201\n}\n").doc;
+        let written = compiled("import { flow, route, status } from \"holon\"\n\nflow(\"f\", { port: 8200 })\n\nroute.post(\"/a\", () => status(201, { ok: true }))\n").doc;
         let respond = written.nodes.iter().find(|n| n.data.name == "respond").unwrap();
         assert_eq!((respond.param("status_input"), respond.param("status")), ("false", "201"));
     }

@@ -321,10 +321,6 @@ fn deploy(api: &dyn Api, text: &str, slug: Option<&str>) -> Result<String, Strin
     if let Some(r) = &plan.requirements {
         body["requirements"] = r.clone();
     }
-    // With its schedule, so the preview asks what the deploy will: a clock flow runs on the clock.
-    if let Some(i) = plan.interval_seconds {
-        body["interval_seconds"] = json!(i);
-    }
     if let Some(b) = &plan.browsers {
         // The plan keeps the origins on one line (`https://a.example *`); the deploy request
         // takes them one by one, as the editor sends them. The preview gets them too: answering
@@ -367,8 +363,8 @@ fn deploy(api: &dyn Api, text: &str, slug: Option<&str>) -> Result<String, Strin
     if !plan.routes.is_empty() {
         let port = entry.get("port").and_then(Value::as_u64).map(|p| p.to_string()).or(plan.port.map(|p| p.to_string())).unwrap_or_else(|| "?".into());
         out.push(format!("Its routes, answering on port {port}:\n{}", plan.routes.iter().map(|r| format!("  {r}")).collect::<Vec<_>>().join("\n")));
-    } else if let Some(i) = plan.interval_seconds {
-        out.push(format!("It runs every {i} s."));
+    } else if let Some(t) = plan.document["trace"].as_object().filter(|t| !t.is_empty()) {
+        out.push(format!("What starts its runs: {}.", t.keys().cloned().collect::<Vec<_>>().join(", ")));
     }
     if let Some(e) = entry.get("listen_error").and_then(Value::as_str) {
         out.push(format!("But its port can't be opened: {e}"));
@@ -468,8 +464,8 @@ fn deployment_line(d: &Value) -> String {
     let mut line = format!("{}: {}, version {}", s("slug"), s("status"), &unit[..unit.len().min(12)]);
     if let Some(p) = d.get("port").and_then(Value::as_u64) {
         line.push_str(&format!(", port {p}"));
-    } else if let Some(i) = d.get("interval_seconds").and_then(Value::as_u64) {
-        line.push_str(&format!(", every {i} s"));
+    } else if let Some(t) = d.get("triggers").and_then(Value::as_array).filter(|t| !t.is_empty()) {
+        line.push_str(&format!(", {}", t.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(", ")));
     }
     let runs = n("trigger_count");
     line.push_str(&format!("; {runs} run{}, {} failed", if runs == 1 { "" } else { "s" }, n("error_count")));
@@ -1073,7 +1069,7 @@ mod tests {
         }
     }
 
-    const SLUGS_TEXT: &str = include_str!("../../holon-author/samples/slugs.holon");
+    const SLUGS_TEXT: &str = include_str!("../../holon-author/samples/slugs.holon.ts");
 
     #[test]
     fn a_flow_goes_from_text_to_an_explained_run_and_the_agent_never_approves() {
@@ -1133,7 +1129,7 @@ mod tests {
     #[test]
     fn a_flow_that_answers_browsers_deploys_with_them_as_a_list() {
         let state = test_state();
-        let text = "flow page-api\nport 8199\nbrowsers https://app.example, *\n\nroute GET /hi (req) {\n  name = req.query.name ?? \"you\"\n  respond \"hi {name}\"\n}\n";
+        let text = "import { flow, route } from \"holon\"\n\nflow(\"page-api\", { port: 8199, browsers: [\"https://app.example\", \"*\"] })\n\nroute.get(\"/hi\", (req) => {\n  const name = req.query.name ?? \"you\"\n  return `hi ${name}`\n})\n";
         let first = tool(&state, "deploy", json!({ "text": text })).unwrap();
         assert!(first.starts_with("Not deployed yet"), "{first}");
         let plan = agent::plan(text).unwrap();
@@ -1153,9 +1149,9 @@ mod tests {
     #[test]
     fn refusals_and_mistakes_come_back_as_failed_tools_in_sentences() {
         let state = test_state();
-        let e = tool(&state, "check", json!({ "text": "flow f\nport 8200\n\nroute GET /a (req) {\n  respond nope\n}\n" })).unwrap_err();
-        assert!(e.contains("text:5:11: unknown name \"nope\"") && e.contains('^'), "{e}");
-        assert!(tool(&state, "deploy", json!({ "text": "flow f\nport 8200\n\nroute GET /a (req) {\n  respond nope\n}\n" })).is_err());
+        let e = tool(&state, "check", json!({ "text": "import { flow, route } from \"holon\"\n\nflow(\"f\", { port: 8200 })\n\nroute.get(\"/a\", () => nope)\n" })).unwrap_err();
+        assert!(e.contains("text:5:23: unknown name \"nope\"") && e.contains('^'), "{e}");
+        assert!(tool(&state, "deploy", json!({ "text": "import { flow, route } from \"holon\"\n\nflow(\"f\", { port: 8200 })\n\nroute.get(\"/a\", () => nope)\n" })).is_err());
         assert!(tool(&state, "explain", json!({ "slug": "nobody" })).unwrap_err().contains("404"));
         assert!(tool(&state, "check", json!({})).unwrap_err().contains("`text` is missing"));
     }
@@ -1251,7 +1247,7 @@ mod tests {
         let (ada, _) = accounts.setup(&accounts.setup_code().unwrap(), "ada", "correct horse battery").unwrap();
         state.access = crate::access::Access::new(std::sync::Arc::clone(&accounts), vec![], vec![]);
         let (agent, person) = (Signed { state: &state, token: &ada, agent: true }, Signed { state: &state, token: &ada, agent: false });
-        let text = include_str!("../../holon-author/samples/price-rollback.holon").replace("port 8160", "port 18170");
+        let text = include_str!("../../holon-author/samples/price-rollback.holon.ts").replace("port: 8160", "port: 18170");
         // Proposed by the agent (its unit stored), approved by the person.
         assert!(deploy(&agent, &text, None).unwrap().starts_with("Not deployed yet"));
         let plan = agent::plan(&text).unwrap();
@@ -1280,7 +1276,7 @@ mod tests {
         let code = tool_as(&agent, "restore", json!({ "slug": "price-rollback", "version": 1, "code": true })).unwrap();
         assert!(code.starts_with("Dry run: nothing changed. Going back to version 1"), "{code}");
         assert!(code.contains("version 1's, would deploy again as a new version"), "{code}");
-        assert!(code.contains("-   fee = 5\n+   fee = 0.5"), "{code}");
+        assert!(code.contains("-   const fee = 5\n+   const fee = 0.5"), "{code}");
         assert!(code.contains("holon restore price-rollback --to 1 --code"), "{code}");
         // The first PUT's state: tea back to 4, and the run since, which did nothing outside.
         let put_back = tool_as(&agent, "restore", json!({ "slug": "price-rollback", "run": first, "state": true })).unwrap();
@@ -1311,7 +1307,7 @@ mod tests {
         let (ada, _) = accounts.setup(&accounts.setup_code().unwrap(), "ada", "correct horse battery").unwrap();
         state.access = crate::access::Access::new(std::sync::Arc::clone(&accounts), vec![], vec![]);
         let (agent, person) = (Signed { state: &state, token: &ada, agent: true }, Signed { state: &state, token: &ada, agent: false });
-        let text = include_str!("../../holon-author/samples/ticker.holon").replace("port 8156", "port 18259");
+        let text = include_str!("../../holon-author/samples/ticker.holon.ts").replace("port: 8156", "port: 18259");
         let plan = agent::plan(&text).unwrap();
         for unit in &plan.units {
             json_of(&person, "POST", "/unit", Some(Body::Bytes(unit.clone()))).unwrap();
@@ -1349,7 +1345,7 @@ mod tests {
     #[test]
     fn an_agents_deploy_asking_for_unrecorded_stops_for_approval() {
         let state = test_state();
-        let text = include_str!("../../holon-author/samples/hello-api.holon").replace("port 8101", "port 18260");
+        let text = include_str!("../../holon-author/samples/hello-api.holon.ts").replace("port: 8101", "port: 18260");
         let approve = |text: &str| {
             let plan = agent::plan(text).unwrap();
             let preview: Value = serde_json::from_slice(&body_bytes(route(&state, &req("POST", "/deploy/preview", serde_json::to_vec(&json!({ "slug": "hello-api", "unit": plan.unit })).unwrap())))).unwrap();
@@ -1358,7 +1354,7 @@ mod tests {
         };
         assert!(tool(&state, "deploy", json!({ "text": text })).unwrap().starts_with("Not deployed yet"));
         approve(&text);
-        let unrecorded = text.replace("route GET /hello/:name (req) {", "route GET /hello/:name (req) unrecorded {");
+        let unrecorded = text.replace("${req.params.name}`)", r#"${req.params.name}`, { log: "unrecorded" })"#);
         let asked = tool(&state, "deploy", json!({ "text": unrecorded })).unwrap();
         assert!(asked.starts_with("Not deployed yet") && asked.contains("keep runs of GET /hello/:name out of its log"), "{asked}");
         approve(&unrecorded);
@@ -1381,7 +1377,7 @@ mod tests {
         let (ada, _) = accounts.setup(&accounts.setup_code().unwrap(), "ada", "correct horse battery").unwrap();
         state.access = crate::access::Access::new(std::sync::Arc::clone(&accounts), vec![], vec![]);
         let (agent, person) = (Signed { state: &state, token: &ada, agent: true }, Signed { state: &state, token: &ada, agent: false });
-        let (text, slug) = ("flow quiet-api\nport 18261\n\nroute GET /health (req) unrecorded {\n  respond \"ok\"\n}\n\nroute GET /hi (req) {\n  respond \"hi\"\n}\n", Some("quiet-api"));
+        let (text, slug) = ("import { flow, route } from \"holon\"\n\nflow(\"quiet-api\", { port: 18261 })\n\nroute.get(\"/health\", () => \"ok\", { log: \"unrecorded\" })\n\nroute.get(\"/hi\", () => \"hi\")\n", Some("quiet-api"));
         assert!(deploy(&agent, text, slug).unwrap().starts_with("Not deployed yet"));
         let plan = agent::plan(text).unwrap();
         let preview = json_of(&person, "POST", "/deploy/preview", Some(Body::Json(json!({ "slug": "quiet-api", "unit": plan.unit })))).unwrap();
@@ -1396,20 +1392,20 @@ mod tests {
         let health = || call(&agent, &json!({ "slug": "quiet-api", "method": "GET", "path": "/health" })).unwrap();
         assert!(grant()["items"].as_array().unwrap().contains(&item), "{}", grant());
 
-        let other = text.replace("respond \"hi\"", "respond \"hello\"");
+        let other = text.replace("() => \"hi\"", "() => \"hello\"");
         deployed(&other);
         assert!(grant()["items"].as_array().unwrap().contains(&item), "{}", grant());
         let called = health();
         assert!(called.contains("Runs of GET /health aren't recorded"), "{called}");
 
-        let changed = other.replace("respond \"ok\"", "respond \"fine\"");
+        let changed = other.replace("() => \"ok\"", "() => \"fine\"");
         deployed(&changed);
         let withheld = grant();
         assert!(!withheld["items"].as_array().unwrap().contains(&item) && withheld["revoked"].as_array().unwrap().contains(&item), "{withheld}");
         let called = health();
         assert!(called.starts_with("GET /health → 200") && !called.contains("aren't recorded"), "{called}");
 
-        deployed(&changed.replace("respond \"hello\"", "respond \"hey\""));
+        deployed(&changed.replace("() => \"hello\"", "() => \"hey\""));
         assert!(grant()["revoked"].as_array().unwrap().contains(&item), "{}", grant());
         assert_eq!(person.send("POST", "/deployments/quiet-api/stop", None).unwrap().0, 200);
     }
@@ -1440,7 +1436,7 @@ mod tests {
         let (ada, _) = accounts.setup(&accounts.setup_code().unwrap(), "ada", "correct horse battery").unwrap();
         state.access = crate::access::Access::new(std::sync::Arc::clone(&accounts), vec![], vec![]);
         let (agent, person) = (Signed { state: &state, token: &ada, agent: true }, Signed { state: &state, token: &ada, agent: false });
-        let text = "flow sites\nport 8232\nbrowsers https://app.example\n\nroute GET /hi (req) {\n  respond \"hi\"\n}\n";
+        let text = "import { flow, route } from \"holon\"\n\nflow(\"sites\", { port: 8232, browsers: \"https://app.example\" })\n\nroute.get(\"/hi\", () => \"hi\")\n";
         let plan = agent::plan(text).unwrap();
         for unit in &plan.units {
             json_of(&person, "POST", "/unit", Some(Body::Bytes(unit.clone()))).unwrap();
@@ -1449,7 +1445,7 @@ mod tests {
         let preview = json_of(&person, "POST", "/deploy/preview", Some(Body::Json(json!({ "slug": "sites", "unit": plan.unit })))).unwrap();
         json_of(&person, "POST", "/deploy", ask(json!(["https://app.example"]), preview["needs_approval"].clone())).unwrap();
         assert!(deploy(&agent, &text.replace("\"hi\"", "\"hello\""), Some("sites")).unwrap().starts_with("Deployed \"sites\""), "the same sites");
-        let wider = deploy(&agent, &text.replace("browsers https://app.example", "browsers https://app.example, https://other.example"), Some("sites")).unwrap();
+        let wider = deploy(&agent, &text.replace(r#"browsers: "https://app.example""#, r#"browsers: ["https://app.example", "https://other.example"]"#), Some("sites")).unwrap();
         assert!(wider.starts_with("Not deployed yet") && wider.contains("answer web pages from https://other.example"), "{wider}");
         let any = json_of(&agent, "POST", "/deploy", ask(json!(["*"]), json!([]))).unwrap_err();
         assert!(any.contains("needs a person's approval") && any.contains("Browser(\"*\")"), "{any}");
@@ -1470,7 +1466,7 @@ mod tests {
         let (ada, _) = accounts.setup(&accounts.setup_code().unwrap(), "ada", "correct horse battery").unwrap();
         state.access = crate::access::Access::new(std::sync::Arc::clone(&accounts), vec![], vec![]);
         let (agent, person) = (Signed { state: &state, token: &ada, agent: true }, Signed { state: &state, token: &ada, agent: false });
-        let v1 = "flow peek\nport 8231\nsecret api_key\n\nroute GET /k (req) {\n  respond { k: sha256(secret.api_key) }, missing: 400\n}\n";
+        let v1 = "import { flow, route, sha256, status } from \"holon\"\nimport api_key from \"secret:api_key\"\n\nflow(\"peek\", { port: 8231 })\n\nroute.get(\"/k\", () => {\n  return { k: sha256(api_key) } ?? status(400)\n})\n";
         let v2 = v1.replace("sha256", "base64");
         // A person deploys the version that hashes the key, and sets the key.
         let plan = agent::plan(v1).unwrap();
@@ -1552,7 +1548,7 @@ mod tests {
         assert!(one.contains("Its routes: POST /slugs"), "{one}");
         assert!(one.contains("It may:") && one.contains("receive requests"), "{one}");
         assert!(one.contains("Nothing waits for a person."), "{one}");
-        assert!(one.contains("Its text, as deployed:") && one.contains("route POST /slugs"), "{one}");
+        assert!(one.contains("Its text, as deployed:") && one.contains("route.post("), "{one}");
         assert!(tool(&state, "flows", json!({})).unwrap().contains("deployed under that name"));
     }
 
@@ -1579,7 +1575,7 @@ mod tests {
             r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#,
             r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#,
             r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"reference","arguments":{"topic":"concat"}}}"#,
-            r#"{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"check","arguments":{"text":"flow f\nport 8200\n\nroute GET /a (req) {\n  respond nope\n}\n"}}}"#,
+            r#"{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"check","arguments":{"text":"import { flow, route } from \"holon\"\n\nflow(\"f\", { port: 8200 })\n\nroute.get(\"/a\", () => nope)\n"}}}"#,
             r#"{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"nope"}}"#,
             r#"{"jsonrpc":"2.0","id":6,"method":"resources/list"}"#,
             "not json",

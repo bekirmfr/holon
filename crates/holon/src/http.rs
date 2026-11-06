@@ -321,14 +321,15 @@ pub(crate) fn route(state: &AppState, request: &Request) -> Response {
         }
     }
 
-    if let Some(slug) = url.strip_prefix("/trigger/")
-        && method == "POST" {
-            // `/trigger/<slug>/<name>` runs one of its actions by hand.
-            if let Some((slug, name)) = slug.split_once('/') {
-                return handle_post_action(&state.store, &state.deployments, &state.deployments_path, slug, name, request, by, agent);
-            }
-            return handle_post_trigger(&state.store, &state.deployments, &state.deployments_path, slug, request);
-        }
+    // `/trigger/<slug>/<name>` runs one of its actions by hand.
+    if let Some(rest) = url.strip_prefix("/trigger/")
+        && method == "POST"
+    {
+        return match rest.split_once('/') {
+            Some((slug, name)) => handle_post_action(&state.store, &state.deployments, &state.deployments_path, slug, name, request, by, agent),
+            None => unnamed_action(&state.deployments, rest),
+        };
+    }
 
     Response::empty_404()
 }

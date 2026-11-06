@@ -1,7 +1,6 @@
 // The flow's deploy controls, in the canvas header next to save: one Deploy (or Update) for the
-// whole flow, its live status with pause / stop / run, and the flow's deploy settings (port,
-// clock interval, and what it needs beyond its graph: limits and exceptions, which become part
-// of its manifest). The deployment is named after the flow, so there is no separate slug.
+// whole flow, its live status with pause / stop / run, and the flow's deploy settings (port, and
+// what it needs beyond its graph: limits and exceptions, which become part of its manifest). The deployment is named after the flow, so there is no separate slug.
 
 import { useEffect, useState, type CSSProperties } from "react";
 import { describeItem, manifestTrigger } from "./holon";
@@ -23,12 +22,11 @@ import {
   type SecretRollbackPreview,
 } from "./server";
 
-/** A flow's deploy settings, saved with it. `port` is for a flow with routes (a server),
- *  `interval` (seconds) for a flow on a clock. Either may be unused. `requirements`:
- *  limits away from the host's defaults, and exceptions, which the host must grant. */
+/** A flow's deploy settings, saved with it. `port` is for a flow with routes (unused without
+ *  one). `requirements`: limits away from the host's defaults, and exceptions, which the host
+ *  must grant. */
 export type FlowSettings = {
   port: string;
-  interval: string;
   requirements?: Requirements;
   /** The web pages from other sites a flow with routes answers (CORS): `*`, or origins separated
    *  by spaces or commas; blank for none (a browser then refuses them). */
@@ -74,7 +72,7 @@ export function withLimit(requirements: Requirements | undefined, limit: string,
   else limits[limit] = n;
   return { ...requirements, limits };
 }
-export const DEFAULT_SETTINGS: FlowSettings = { port: "8080", interval: "" };
+export const DEFAULT_SETTINGS: FlowSettings = { port: "8080" };
 
 const base: CSSProperties = {
   font: "inherit",
@@ -102,7 +100,6 @@ export function DeployBar({
   onDeploy,
   onAction,
   startsNothing = false,
-  onMakeRunnable,
   onSettingsOpen,
 }: {
   /** This flow's deployment, if it has one. */
@@ -114,14 +111,12 @@ export function DeployBar({
   onAction: (action: "run" | "pause" | "stop") => void;
   /** Nothing would start a run (no route, clock, file handler or action): deploy is greyed. */
   startsNothing?: boolean;
-  /** The quick fix for that: its statements put in `action run (input) { … }`. */
-  onMakeRunnable?: () => void;
   onSettingsOpen?: () => void;
 }) {
   const look = entry ? LOOK[entry.status] : null;
   const label = busy ? "deploying…" : entry ? "update" : "deploy";
   const title = startsNothing
-    ? "nothing would start a run: it is a holon, placed in other flows. To run it by hand, put it in an action"
+    ? "nothing would start a run: add a route, a clock, a file handler or an action (an action runs by hand)"
     : entry
       ? "deploy the canvas as it is now; the deployment keeps its state and sessions"
       : "deploy this flow, named after it";
@@ -139,16 +134,9 @@ export function DeployBar({
         {outOfDate && <span title="the canvas has changed since it was deployed"> •</span>}
       </button>
       {startsNothing && (
-        <>
-          <span style={{ color: "#e0c36f", fontSize: 11 }} title={title}>
-            nothing would start a run
-          </span>
-          {onMakeRunnable && (
-            <button style={base} onClick={onMakeRunnable} title="put its statements in action run (input) { … }, which a person runs by hand; rename it before deploying">
-              make it runnable by hand
-            </button>
-          )}
-        </>
+        <span style={{ color: "#e0c36f", fontSize: 11 }} title={title}>
+          nothing would start a run
+        </span>
       )}
       {entry && look && (
         <>
@@ -187,7 +175,7 @@ export function DeployBar({
           )}
         </>
       )}
-      <button style={base} onClick={onSettingsOpen} title="deploy settings: port, clock interval, what it needs">
+      <button style={base} onClick={onSettingsOpen} title="deploy settings: port, what it needs">
         ⚙
       </button>
     </span>
@@ -559,7 +547,7 @@ function GroupHead({ label, open, onToggle, first = false }: {
 }
 
 /**
- * The deployment settings panel: port, interval, limits, permissions, and secrets, rendered as
+ * The deployment settings panel: port, limits, permissions, and secrets, rendered as
  * a persistent right-side panel. The ⚙ button in the canvas header opens it; the panel's own
  * header closes it. Open/closed state is owned by the parent (App.tsx).
  */
@@ -679,23 +667,12 @@ export function DeployPanel({
                 />
               </>
             )}
-            {clocks.length > 0 ? (
+            {clocks.length > 0 && (
               <>
                 <span title="its every nodes: each runs its group on its own period">clocks</span>
                 <span style={{ color: "#e6eefb" }}>{clocks.join(", ")}</span>
               </>
-            ) : (!hideDefaults || !!settings.interval) ? (
-              <>
-                <span title="how often a flow without routes runs on the clock, in seconds">interval (s)</span>
-                <input
-                  value={settings.interval}
-                  placeholder="clock flows"
-                  onChange={(e) => setSettings({ ...settings, interval: e.target.value })}
-                  disabled={readOnly}
-                  style={{ ...input, width: "100%" }}
-                />
-              </>
-            ) : null}
+            )}
           </>
         )}
         <GroupHead label="limits" open={openGroups.has("limits")} onToggle={() => toggleGroup("limits")} />

@@ -28,7 +28,7 @@ import type { PrimitiveNodeType } from "./PrimitiveNode";
 import type { Edge } from "@xyflow/react";
 import { buildSample, samples } from "./samples";
 import { settingsOf } from "./tabs";
-import { bindingsOf, compileHolon, runnableByHand } from "./holonText";
+import { bindingsOf, compileHolon } from "./holonText";
 import { templateDoc, templateNames } from "./templates";
 import { nodeDescriber } from "./NodeDocs";
 import { restoreUnits } from "./docUnits";
@@ -60,14 +60,22 @@ function derive(name: string): { caps: string[]; endpoints: number; clocks: numb
   return { caps, endpoints, clocks: server.clocks.length, files: server.files.length };
 }
 
+
+/** What a TypeScript flow's action computes, its own nodes (its input, its answer) taken off: a
+ *  canvas nothing starts, as a person draws one, and as no text writes. */
+function handlerless(doc: ReturnType<typeof compileHolon>["doc"]) {
+  const own = new Set((doc.nodes as { id: string; data: { name: string } }[]).filter((n) => n.data.name === "action" || n.data.name === "respond").map((n) => n.id));
+  const edges = (doc.edges as { source: string; target: string }[]).filter((e) => !own.has(e.source) && !own.has(e.target));
+  return { ...doc, nodes: (doc.nodes as { id: string }[]).filter((n) => !own.has(n.id)), edges };
+}
+
 describe("sample flows", () => {
-  it("have unique names, and a port, an interval or new files to start them", () => {
+  it("have unique names, and a port, a clock or new files to start them", () => {
     expect(new Set(samples().map((s) => s.name)).size).toBe(samples().length);
     for (const s of samples()) {
-      // New files start a flow of `on file` lines; a server's `on file` blocks are beside its port.
+      // Without a port, its every(…) or on.file handlers start it.
       const d = derive(s.name);
-      const onFile = d.caps.some((c) => c.startsWith("FileArrival(")) && d.files === 0;
-      expect([Boolean(s.port), Boolean(s.interval), onFile].filter(Boolean).length, s.name).toBe(1);
+      expect(Boolean(s.port) || d.clocks > 0 || d.files > 0, s.name).toBe(true);
     }
     const ports = samples().flatMap((s) => (s.port ? [s.port] : []));
     expect(new Set(ports).size, "each server its own port").toBe(ports.length);
@@ -88,11 +96,12 @@ describe("sample flows", () => {
         expect(caps).toContain(item);
         expect(item).not.toBe(manifestTrigger(caps));
       }
-      // Its `keep` and `limit` lines open as the limits the deploy asks for.
-      const keep = /^keep (?:(\d+) )?runs(?: for (\d+)d)?$/m.exec(s.text);
+      // Its flow(…)'s `keep` and `limits` open as the limits the deploy asks for.
+      const said = /^flow\(.*$/m.exec(s.text)?.[0] ?? "";
+      const keep = /keep: \{ (?:runs: (\d+))?(?:, )?(?:days: (\d+))? \}/.exec(said);
       const limits: Record<string, number> = keep ? { ...(keep[1] ? { keep_runs: Number(keep[1]) } : {}), ...(keep[2] ? { keep_run_days: Number(keep[2]) } : {}) } : {};
       const SECONDS: Record<string, number> = { s: 1, m: 60, h: 3600, d: 86400 };
-      for (const [, name, n, unit] of s.text.matchAll(/^limit (\w+) (\d+)([smhd])?$/gm)) {
+      for (const [, name, n, unit] of (/limits: \{ ([^}]*) \}/.exec(said)?.[1] ?? "").matchAll(/(\w+): "?(\d+)([smhd])?"?/g)) {
         limits[name] = unit ? Number(n) * SECONDS[unit] * (name.endsWith("_ms") ? 1000 : 1) : Number(n);
       }
       expect(settingsOf(doc.server).requirements?.limits ?? {}).toEqual(limits);
@@ -162,25 +171,12 @@ describe("sample flows", () => {
     expect(manifestTrigger(shop)).toBe("NetworkIngress");
     expect(describeItem('RunsAction("billing/charge")')).toBe("run the action charge of the flow billing");
     expect(derive("billing").caps).toContain('Action("charge")');
-    // An old flow run by hand (no routes, `ingress`) says so where a server receives requests.
-    expect(describeItem("NetworkIngress", true)).toBe("can be run by hand");
     expect(describeItem("NetworkIngress")).toBe("receive requests");
     // The approval says where each secret goes, beside it (the deploy preview's `sent`).
     const sent = { slack_webhook_path: ["hooks.slack.com"] };
-    expect(describeItemSending('SecretRead("slack_webhook_path")', false, sent)).toBe('read the secret "slack_webhook_path", and send it to https://hooks.slack.com');
-    expect(describeItemSending('SecretRead("stripe_webhook_secret")', false, sent)).toBe('read the secret "stripe_webhook_secret"');
-    expect(describeItemSending("NetworkIngress", false, undefined)).toBe("receive requests");
-  });
-
-  it("make a flow nothing would start runnable by hand: an action, run through the real core", () => {
-    const fixed = runnableByHand("flow sums\n\nstate.last = 3\n1 + 2\n");
-    expect(fixed).toContain("action run (input) {");
-    expect(fixed).toContain("respond 1 + 2");
-    const ev = new Evaluator();
-    const { doc } = compileHolon(fixed, ev);
-    const server = deriveServer(doc.nodes as PrimitiveNodeType[], doc.edges as Edge[], ev, "8080");
-    expect(server.actions.map((a) => a.name)).toEqual(["run"]);
-    expect(() => runnableByHand("flow f\nport 8080\n\nroute GET / (req) {\n  respond \"hi\"\n}\n")).toThrow(/trigger already/);
+    expect(describeItemSending('SecretRead("slack_webhook_path")', sent)).toBe('read the secret "slack_webhook_path", and send it to https://hooks.slack.com');
+    expect(describeItemSending('SecretRead("stripe_webhook_secret")', sent)).toBe('read the secret "stripe_webhook_secret"');
+    expect(describeItemSending("NetworkIngress", undefined)).toBe("receive requests");
   });
 
   it("tell required permissions from optional ones, the trigger always required", () => {
@@ -222,10 +218,10 @@ describe("sample flows", () => {
     expect(publish.data.inputs.map((p) => p.name)).toEqual(["slug", "author", "trigger"]);
     const out = ev.eval(buildPreimage(unit), [{ type: "Text", value: "hello-holon" }, { type: "Text", value: "ada" }, { type: "Boolean", value: true }]) as (WValue | null)[];
     const untriggered = ev.eval(buildPreimage(unit), [{ type: "Text", value: "hello-holon" }, { type: "Text", value: "ada" }, null]) as (WValue | null)[];
-    expect(untriggered[publish.data.outputs.findIndex((p) => p.name === "saved")] ?? null, "no trigger, no write").toBeNull();
+    expect(untriggered[publish.data.outputs.findIndex((p) => p.name === "write")] ?? null, "no trigger, no write").toBeNull();
     const at = (name: string) => out[publish.data.outputs.findIndex((p) => p.name === name)] ?? null;
     expect(at("receipt")).toEqual({ type: "Text", value: "unsigned" });
-    expect(at("saved")).toEqual({ type: "Effect", value: { sink: "store_write:last_post", payload: { type: "Text", value: "hello-holon" } } });
+    expect(at("write")).toEqual({ type: "Effect", value: { sink: "store_write:last_post", payload: { type: "Text", value: "hello-holon" } } });
     expect(at("put")).toBeNull();
     // Everything it reads and writes inside is in the flow's manifest; the receipt key optional.
     const { caps } = derive("slugs");
@@ -236,26 +232,20 @@ describe("sample flows", () => {
 
   it("place a saved flow as one node: grouped whole, holons inside it and all; never a server", () => {
     // A flow without routes that itself holds a holon: slugify, then uppercase.
-    const { doc: saved } = compileHolon(
-      `flow shout
-holon slugify(text) -> (slug) {
-  node lower = lowercase
-  node space = const { value: " ", type: Text }
-  node words = split
-  node dash = const { value: "-", type: Text }
-  node slug = join
-  in.text -> lower.s
-  lower.out -> words.text
-  space.out -> words.sep
-  words.out -> slug.list
-  dash.out -> slug.sep
-  slug.out -> out.slug
+    const saved = handlerless(
+      compileHolon(
+        `import { action, flow } from "holon"
+
+flow("shout")
+
+function slugify(text) {
+  return text.toLowerCase().split(" ").join("-")
 }
-node placed = slugify
-node upper = uppercase
-placed.slug -> upper.s
+
+export const run = action((input) => slugify(input).toUpperCase())
 `,
-      new Evaluator(),
+        new Evaluator(),
+      ).doc,
     );
     // Placed in another flow's workspace, from what the saved document carries.
     const ev = new Evaluator();
@@ -336,8 +326,8 @@ placed.slug -> upper.s
     ]);
     expect(boundary(BOUNDARY_OUT).ports.map((p) => [p.name, p.outside])).toEqual([
       ["put", []],
-      ["saved", []],
       ["receipt", ["with_field.value"]],
+      ["write", []],
     ]);
     // Every wire lands on a real port: inside, and through the boundary both ways.
     const ports = new Map(opened.nodes.map((n) => [n.id, n]));
@@ -389,7 +379,7 @@ placed.slug -> upper.s
     if (!other.ok) throw new Error(other.message);
     expect(other.hash).not.toBe(same.hash);
     const out = ev.eval(buildPreimage(ev.get_unit(other.hash) as WUnit), [{ type: "Text", value: "x" }, { type: "Text", value: "y" }, { type: "Boolean", value: true }]) as (WValue | null)[];
-    expect(out[2]).toEqual({ type: "Text", value: "not signed" });
+    expect(out[1]).toEqual({ type: "Text", value: "not signed" });
 
     // An input feeds one port; an output needs a source.
     const authorEdge = canvas.edges.find((e) => e.source === BOUNDARY_IN && e.sourceHandle === "author")!;
@@ -465,31 +455,32 @@ placed.slug -> upper.s
   it("carry the names of the holons in a flow, nested ones too, and teach them back on open", () => {
     const ev = new Evaluator();
     const { doc } = compileHolon(
-      `flow nested
-holon inner-holon(text) -> (out) {
-  node up = uppercase
-  in.text -> up.s
-  up.out -> out.out
+      `import { action, flow } from "holon"
+
+flow("nested")
+
+function innerHolon(text) {
+  return text.toUpperCase()
 }
-holon outer-holon(text) -> (out) {
-  node shout = inner-holon
-  in.text -> shout.text
-  shout.out -> out.out
+
+function outerHolon(text) {
+  return innerHolon(text)
 }
-node outer = outer-holon
+
+export const run = action((input) => outerHolon(input))
 `,
       ev,
     );
-    expect(Object.values(doc.names ?? {}).sort()).toEqual(["inner-holon", "outer-holon"]);
-    const innerHash = Object.entries(doc.names!).find(([, n]) => n === "inner-holon")![0];
+    expect(Object.values(doc.names ?? {}).sort()).toEqual(["innerHolon", "outerHolon"]);
+    const innerHash = Object.entries(doc.names!).find(([, n]) => n === "innerHolon")![0];
     expect(nameOf(innerHash), "not known before the flow is opened").toBeUndefined();
     expect(restoreDocument(doc, new Evaluator())).toBeNull();
-    const outer = (doc.nodes as PrimitiveNodeType[])[0];
+    const outer = (doc.nodes as PrimitiveNodeType[]).find((n) => n.data.body.kind === "Composite")!;
     const opened = innerCanvas(outer, doc.nodes as PrimitiveNodeType[], doc.edges as Edge[], ev, knownNames());
     if (!opened.ok) throw new Error(opened.message);
-    expect(opened.nodes.map((n) => (n.data as { name: string }).name)).toContain("inner-holon");
+    expect(opened.nodes.map((n) => (n.data as { name: string }).name)).toContain("innerHolon");
     // And saved again with the flow.
-    expect(documentUnits([innerHash], ev).names).toEqual({ [innerHash]: "inner-holon" });
+    expect(documentUnits([innerHash], ev).names).toEqual({ [innerHash]: "innerHolon" });
   });
 
   it("ask for what each one shows", () => {
@@ -510,7 +501,7 @@ node outer = outer-holon
       'StateWrite("first_beat")',
       'StateWrite("last_beat")',
     ]);
-    expect(derive("approval").caps).toEqual(['Await("paid")', 'ChannelRead("orders")', 'ChannelSend("orders")', "NetworkIngress", 'StateWrite("last_order")']);
+    expect(derive("approval").caps).toEqual(['Action("payment")', 'Await("paid")', 'ChannelRead("orders")', 'ChannelSend("orders")', "NetworkIngress", 'RunsAction("approval/payment")', 'StateWrite("last_order")']);
     expect(derive("fetch-json").caps).toEqual(['HttpRequest("httpbin.org")', "NetworkIngress"]);
     expect(derive("sign-payload").caps).toEqual(["NetworkIngress", 'SecretRead("signing_key")']);
     expect(derive("likes").caps).toEqual(['CollectionRead("likes")', 'CollectionWrite("likes")', "NetworkIngress"]);

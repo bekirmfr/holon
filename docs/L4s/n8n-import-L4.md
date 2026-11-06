@@ -414,7 +414,9 @@ should read both, and prefer the spec for the request and the node for its defau
 
 `n8n-nodes-dexpaprika` 0.5.2 (CoinPaprika, MIT) is a declarative node for DEX and on-chain market
 data, keyless on its free tier. It is small (587 lines), and its one function is a `preSend`
-check. It was translated whole into `crates/holon-author/samples/dexpaprika.holon`:
+check. It was translated whole into `crates/holon-author/samples/dexpaprika.holon.ts` (written in
+`.holon` text, whose forms the list below names, and converted to TypeScript's syntax when the
+switch landed, the same unit):
 
 - 13 operations, 13 holons, each with a route to try it;
 - `requestDefaults.baseURL` becomes `api.dexpaprika.com`. Two token operations set their own

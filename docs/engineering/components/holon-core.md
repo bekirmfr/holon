@@ -132,7 +132,7 @@ actions, each handler's `LogLevel`) and fails closed on anything malformed.
   search (CO §4). A new body tag is a compatible extension; a change to how a tag encodes bumps
   `ENCODING_VERSION` ([wasm-module-L4 §2](../../L4s/wasm-module-L4.md)).
 - **Lazy at its choices** (LC §1): the eager evaluator ran every child, so
-  `if go then http.get(…) else "skipped"` sent its request on every run. Values don't change (every
+  `go ? await api.get(…) : "skipped"` sent its request on every run. Values don't change (every
   leaf is pure and total); what is asked of the host does. `select` is not lazy: it is absent when
   either side is, and skipping one would change that.
 - **Pending is not absent** (LC §4): a `coalesce` treating "not yet" as absent would send its

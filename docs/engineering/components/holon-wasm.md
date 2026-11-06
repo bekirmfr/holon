@@ -76,10 +76,10 @@ What the editor shows and checks, read from core rather than copied into TypeScr
 `primitive_catalog` (every genesis interface, one call), `primitive_docs`, `variadic_primitives`,
 `passes_extra_primitives`, `compatible` (the canvas's connection check), `choice_next` (the
 replay walks a run by core's own choice rule), `manifest_items`, `manifest_trigger`,
-`permission_kind`, `reads_from_outside`, `describe_item*`. The language: `compile_holon`,
-`holon_mistakes`, `holon_hover`, `holon_complete`, `holon_format`, `holon_highlight`,
-`holon_runnable_by_hand`, with positions converted to UTF-16 offsets (`Offsets`), as the editor
-counts them. The samples: `samples`, `build_sample`. Templates and routes: `template_*`,
+`permission_kind`, `reads_from_outside`, `describe_item*`. The language, each over a `.holon.ts`
+text: `compile_holon`, `holon_mistakes`, `holon_hover`, `holon_complete`, `holon_format`,
+`holon_highlight`, with positions converted to UTF-16 offsets (`Offsets`), as the editor counts
+them. The samples: `samples`, `build_sample`. Templates and routes: `template_*`,
 `route_path`, `canvas_components`, `find_routes`.
 
 ## 3. Why it is this way
