@@ -24,6 +24,7 @@ fn primitive(name: &str, unit: &Unit, inputs: &[Option<Value>], resolver: &impl 
         "fold" => fold(inputs, &unit.params, resolver),
         "any" | "all" | "filter" | "find" | "find_index" | "find_last" | "find_last_index" => test(name, inputs, &unit.params, resolver),
         "sort_by" => sort_by(inputs, &unit.params, resolver),
+        "group_by" => group_by(inputs, &unit.params, resolver),
         // The leaves that ask the host: nobody answers here.
         "http_request" | "http_upload" | "http_stream" | "flow_call" | "flow_start" | "await" | "collection_get" | "collection_list" | "file_read" | "file_list" | "file_handle" | "file_lines" | "file_slice"
         | "db_query" | "db_one" | "db_find" | "db_find_one" | "resume_token" => None,
@@ -174,4 +175,21 @@ fn sort_by(inputs: &[Option<Value>], params: &[Param], resolver: &impl Resolver)
     })
     .ok()?;
     Some(Value::List(order.into_iter().map(|k| xs[k].clone()).collect()))
+}
+
+/// `group_by`: every item's key, then the groups.
+fn group_by(inputs: &[Option<Value>], params: &[Param], resolver: &impl Resolver) -> Option<Value> {
+    let Some(Some(Value::List(xs))) = inputs.first() else { return None };
+    let extra = &inputs[1..];
+    if extra.iter().any(Option::is_none) {
+        return None;
+    }
+    let unit = function(params, resolver)?;
+    let keys: Vec<Value> = xs.iter().map(|x| apply(unit, &[&[Some(x.clone())][..], extra].concat(), resolver)).collect::<Option<_>>()?;
+    let mut groups: BTreeMap<String, Vec<Value>> = BTreeMap::new();
+    for (x, key) in xs.iter().zip(keys) {
+        let Value::Text(key) = key else { return None };
+        groups.entry(key).or_default().push(x.clone());
+    }
+    Some(Value::Record(groups.into_iter().map(|(k, xs)| (k, Value::List(xs))).collect()))
 }

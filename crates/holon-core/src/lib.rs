@@ -39,6 +39,7 @@ mod kind;
 mod lists;
 mod memo;
 mod promote;
+mod records;
 mod hash;
 mod inspect;
 mod json;

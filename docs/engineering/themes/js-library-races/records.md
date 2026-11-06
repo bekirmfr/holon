@@ -4,18 +4,21 @@ As of 2026-11-06, on `c6d350e` (the races' harness). Raced by
 `cargo bench -p holon-author --bench races_records` (`crates/holon-author/benches/races_records.rs`),
 about 30 seconds, every check passing first. Other builds shared the machine while it ran: the
 same race differs by up to 2× between runs (`Object.values` at n = 64 gave 37.6× in one run and
-61.0× in the one below). No verdict is near a threshold. The smallest ratio measured anywhere is
-4.8×, and every verdict but that one rests on ratios of 5.9× or more.
+61.0× in the one below). No verdict is near a threshold. The four rows that grew with n were
+re-raced after the evaluator change (#43), on 2026-11-07 at `02032df`, with the same bench; their
+rows and race output below are that run's. The smallest ratio measured anywhere is 4.3×
+(`{ ...a, ...b }` at 512 keys), and every verdict rests on a ratio of 5.4× or more at n = 64.
 
 The decision rule is the [README](README.md)'s. **No composite in this domain comes within 3× of
 its candidate.** A composite pays about 130 ns a leaf (a scalar composite of 9 leaves costs
 1.1–1.4 µs); a candidate costs 45–60 ns with its dispatch. A `map` applying a function of a few
 leaves pays 1.2–2 µs an item. So every expressible gap below is a leaf, most by 15× or more. Four
-rows lose by more as n grows, because a `fold` copies the record it grows (`insert`, `append`):
-`Object.fromEntries`, `Object.assign`, `{ ...a, ...b }` and `Object.groupBy`. They are marked
-*re-race after the evaluator change*. **None loses only to the copy**: at n = 8, where the copy is
-eight keys, they are already 15×, 17×, 17× and 20×. So they stay leaves unless the per-leaf cost
-falls too.
+rows lost by more as n grew, because a `fold` copied the record it grows (`insert`, `append`):
+`Object.fromEntries`, `Object.assign`, `{ ...a, ...b }` and `Object.groupBy`. **None lost only to
+the copy**: at n = 8, where the copy is eight keys, they were already 15×, 17×, 17× and 20×. Since
+the evaluator change (#43) gives a `fold` its accumulator, the copy is gone: re-raced, each is in
+its candidate's class, the ratio falling as n grows (7.8×, 5.4× and 7.4× at 64; 4.8×, 4.3× and 5.1×
+at 512), and each is still above 3. They stay leaves.
 
 ## Key order
 
@@ -74,8 +77,8 @@ leaves.
 | `Object.keys(r)` | reader (exists) | `keys` | | already read; the order is sorted ([Key order](#key-order)) |
 | `Object.values(r)` | leaf | `values` | 61× (28× at 8, 43× at 512) | same class, above 3: a `map` pays ~300 ns an item to copy what the leaf copies in ~3 |
 | `Object.entries(r)` | leaf | `entries` | 5.9× (8.7× at 8, 6.1× at 512) | same class, above 3 |
-| `Object.fromEntries(es)` | leaf; re-race after the evaluator change | `from_entries` | 25× (15× at 8, 96× at 512) | copy: grows with n (each `insert` copies the record); above 3 even at 8 |
-| `Object.assign(t, ...s)` | leaf; re-race after the evaluator change | `merge` (variadic) | 29× (17× at 8, 156× at 512) | copy, as `{ ...a, ...b }` |
+| `Object.fromEntries(es)` | leaf (re-raced) | `from_entries` | 7.8× (15× at 8, 4.8× at 512) | same class since the evaluator change (it was 25× at 64, 96× at 512, each `insert` copying the record); above 3 |
+| `Object.assign(t, ...s)` | leaf (re-raced) | `merge` (variadic) | 5.4× (7.5× at 8, 4.3× at 512) | as `{ ...a, ...b }` |
 | `Object.freeze(v)` | reader | the value itself; the local marked frozen | | values never change in place; a later change to the local is refused where JavaScript throws |
 | `Object.isFrozen(v)` | refused | | | §12, change in place: no value is unfrozen, so the question has no Holon meaning |
 | `Object.seal(v)` | reader | as `freeze` | | as `freeze` (stricter: a change to an existing key is refused too) |
@@ -83,7 +86,7 @@ leaves.
 | `Object.preventExtensions(v)` (and `isExtensible`) | reader (`isExtensible` refused) | as `freeze` | | as `freeze`, `isFrozen` |
 | `Object.hasOwn(r, k)` | leaf | `has` | 19× scalar; 10× in a `map`, against a `lookup` there | above 3 |
 | `r.hasOwnProperty(k)` | leaf | `has` | as `hasOwn` | the same question; a record has no prototype |
-| `Object.groupBy(xs, f)` | leaf; re-race after the evaluator change | `group_by {fn}` | 62× (20× at 8, 431× at 512) | copy: `insert` copies the record and `append` the group each item |
+| `Object.groupBy(xs, f)` | leaf (re-raced) | `group_by {fn}` | 7.4× (9.2× at 8, 5.1× at 512) | same class since the evaluator change (it was 62× at 64, 431× at 512, `insert` copying the record and `append` the group each item); above 3 |
 | `Object.create(null)`; `Object.create(proto)` | reader; refused | `record` (`{}`) | | a record is an object with no prototype; a prototype is §12's behaviour on values |
 | `Object.defineProperty`, `defineProperties` | refused | | | §12: attributes (not enumerable, not writable) and accessors are behaviour on values; Holon's form is `{ ...r, [k]: v }` |
 | `Object.getOwnPropertyNames(r)` | reader | `keys` | | a record has no keys that aren't enumerable |
@@ -91,7 +94,7 @@ leaves.
 | `Object.is(a, b)` | leaf | `same_value` | | not expressible: no leaf tells `-0` from `0` (`divide` refuses a zero divisor, `to_text` and `json_stringify` write `0`) |
 | `k in r` | leaf | `has` | as `hasOwn` | above 3; own keys only, there being no prototype chain |
 | `delete r.k`, `delete r[k]` | reader (exists) | `without_field`, `remove` | | read as a statement on a local today; on a parameter, "copy it first"; in an expression, "delete is a statement" |
-| `{ ...a, ...b }` | leaf; re-race after the evaluator change | `merge`, and the reader | 29× (17× at 8, 156× at 512) | copy: a `fold` of `insert` over `b`'s keys |
+| `{ ...a, ...b }` | leaf (re-raced) | `merge`, and the reader | 5.4× (7.5× at 8, 4.3× at 512) | same class since the evaluator change (a `fold` of `insert` over `b`'s keys, 29× at 64 and 156× at 512 while it copied the record); above 3 |
 | `{ [k]: v }` | reader | `insert` | | exact, for a text key |
 | `a?.b?.c` | reader (exists) | `field`, `lookup` | | absence passes along, as `?.` gives undefined |
 | `===`, `==`, `!==` on records and lists | refused (stays by value) | `equals` | | §12, identity: by value where JavaScript compares identity |
@@ -140,7 +143,8 @@ In numbers: 64 rows. 31 are new leaves, 13 distinct (`values`, `entries`, `from_
 `has`, `group_by`, `type_of`, `same_value`, `date_part`, `date_utc`, `date_set`, `date_text`,
 `date_parse`). 5 are leaf changes (`json_stringify`'s `indent`, `keys` and `fn`, its numbers and
 escapes; `json_parse`'s `fn`). 12 are reader rows, 14 refused, 2 differ and stay, and none is a
-composite. 4 of the leaves are marked *re-race after the evaluator change*.
+composite. 4 of the leaves were re-raced after the evaluator change; each is in its candidate's
+class now and still above 3, so no verdict moved.
 
 ## Leaf specs
 
@@ -660,7 +664,8 @@ something Holon computes").
 
 ## Race output
 
-The run behind every number above, verbatim:
+The run behind every number above, verbatim; `Object.fromEntries`, `{ ...a, ...b }` and
+`Object.groupBy` are the re-race's (2026-11-07, `02032df`):
 
 ### Object.values
 
@@ -682,17 +687,17 @@ The run behind every number above, verbatim:
 
 | n | composite from_entries (9 leaves) | native candidate | ratio |
 |---:|---:|---:|---:|
-| 8 | 6.55 µs | 424 ns | 15.46 |
-| 64 | 110.18 µs | 4.44 µs | 24.80 |
-| 512 | 5.45 ms | 56.60 µs | 96.21 |
+| 8 | 6.84 µs | 451 ns | 15.16 |
+| 64 | 36.84 µs | 4.72 µs | 7.80 |
+| 512 | 286.57 µs | 59.73 µs | 4.80 |
 
 ### { ...a, ...b }
 
 | n | composite merge (8 leaves) | native candidate | ratio |
 |---:|---:|---:|---:|
-| 8 | 15.09 µs | 887 ns | 17.02 |
-| 64 | 200.95 µs | 6.88 µs | 29.19 |
-| 512 | 11.38 ms | 73.12 µs | 155.68 |
+| 8 | 6.41 µs | 852 ns | 7.53 |
+| 64 | 36.62 µs | 6.76 µs | 5.42 |
+| 512 | 323.13 µs | 74.68 µs | 4.33 |
 
 ### Object.hasOwn
 
@@ -714,9 +719,9 @@ The run behind every number above, verbatim:
 
 | n | composite group_by (11 leaves) | native candidate | ratio |
 |---:|---:|---:|---:|
-| 8 | 27.94 µs | 1.40 µs | 20.00 |
-| 64 | 830.39 µs | 13.48 µs | 61.58 |
-| 512 | 57.63 ms | 133.57 µs | 431.44 |
+| 8 | 14.81 µs | 1.60 µs | 9.23 |
+| 64 | 95.14 µs | 12.93 µs | 7.36 |
+| 512 | 888.80 µs | 173.97 µs | 5.11 |
 
 ### typeof, a number
 

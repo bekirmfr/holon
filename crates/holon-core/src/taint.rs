@@ -47,10 +47,12 @@ const ONE_WAY: &[&str] = &["sha256", "hmac_sha256", "secure_equals"];
 /// an input is in the output literally, where redaction finds it. (`json_stringify` escapes, but
 /// redaction matches a secret's JSON-escaped form too.) The list leaves that rearrange a list's
 /// items are here; those that take a text too (`at`, `slice`) are not, since a part of a text
-/// isn't the secret.
+/// isn't the secret. So are the record leaves that move values between records and lists
+/// (`values`, `from_entries`, `merge`); `has` and `same_value` answer a Boolean, which cuts it.
 const PASSES_LITERALLY: &[&str] = &[
     "const", "select", "cons", "head", "tail", "concat", "list", "get", "append", "extend", "join", "pair", "some",
     "entries", "reverse", "to_spliced", "with_item", "fill", "copy_within", "sort", "flat", "unique",
+    "values", "from_entries", "merge",
     "record", "field", "with_field", "without_field", "lookup", "insert", "remove", "as_text", "guard",
     "default", "coalesce", "json_stringify", "store_write", "collection_put", "file_write", "file_create",
     "channel_send", "egress",
@@ -551,6 +553,50 @@ mod tests {
             assert!(fed.derives(&[node]), "{what} of a secret is derived");
         }
         assert!(!fed.derives(&[4]), "a number_test answers a Boolean");
+    }
+
+    /// A record holding a secret, merged into another, still holds it as it is, and so do its
+    /// values; whether it has a key is a Boolean, which cuts it; and a `group_by` applies a
+    /// function, which isn't followed.
+    #[test]
+    fn the_record_leaves_keep_a_secret_literal_and_has_cuts_it() {
+        let mut r = MapResolver::new();
+        let secret = leaf(&mut r, "secret", vec![Param::frozen("name", "k")]);
+        let insert = leaf(&mut r, "insert", vec![]);
+        let merge = leaf(&mut r, "merge", vec![]);
+        let values = leaf(&mut r, "values", vec![]);
+        let has = leaf(&mut r, "has", vec![]);
+        let key = leaf(&mut r, "as_text", vec![]);
+        let group_by = leaf(&mut r, "group_by", vec![Param::frozen("fn", crate::hash::to_hex(&key))]);
+        let e = |fc, fp, tc, tp| Edge { from_child: fc, from_port: fp, to_child: tc, to_port: tp };
+        let root = Unit {
+            body: UnitBody::Composite {
+                children: vec![secret, insert, merge, values, has, group_by],
+                edges: vec![
+                    e(BOUNDARY, 0, 1, 0),
+                    e(BOUNDARY, 1, 1, 1),
+                    e(0, 0, 1, 2),
+                    e(BOUNDARY, 0, 2, 0),
+                    e(1, 0, 2, 1),
+                    e(2, 0, 3, 0),
+                    e(2, 0, 4, 0),
+                    e(BOUNDARY, 1, 4, 1),
+                    e(3, 0, 5, 0),
+                    e(2, 0, BOUNDARY, 0),
+                    e(3, 0, BOUNDARY, 1),
+                    e(4, 0, BOUNDARY, 2),
+                    e(5, 0, BOUNDARY, 3),
+                ],
+            },
+            params: vec![],
+            inputs: vec![Port { name: "r".into(), ty: Type::Record }, Port { name: "k".into(), ty: Type::Text }],
+            outputs: ["merged", "values", "has", "groups"].map(|n| Port { name: n.into(), ty: Type::Any }).to_vec(),
+        };
+        let fed = SecretFed::of(&root, &r);
+        assert_eq!(fed.output(&[2], 0), Taint::Literal, "the merged record holds it as it is");
+        assert_eq!(fed.output(&[3], 0), Taint::Literal, "and so do its values");
+        assert!(!fed.derives(&[4]), "has answers a Boolean");
+        assert!(fed.derives(&[5]), "a group_by's function isn't followed");
     }
 
     /// A list holding a secret, reversed, still holds it as it is; whether it holds an item is a

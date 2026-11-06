@@ -43,6 +43,9 @@ pub const GENESIS: &[&str] = &[
     // pure — record kit (8): field names frozen (field, with_field, without_field), or keys that
     // arrive on a wire (lookup, insert, remove), e.g. a route's path param
     "record", "field", "with_field", "without_field", "keys", "lookup", "insert", "remove",
+    // pure — records (7): JavaScript's Object functions, `in`, spread, `typeof` and `Object.is`
+    // (records.rs); `group_by` takes its function as `map` does
+    "values", "from_entries", "merge", "has", "group_by", "same_value", "type_of",
     // pure — JSON (2)
     "json_parse", "json_stringify",
     // pure — signatures and encodings (5): checking a webhook's signature
@@ -109,12 +112,12 @@ pub const GENESIS: &[&str] = &[
 /// hand-listing names in TypeScript that could silently drift from what `compute` actually does.
 pub const VARIADIC: &[&str] = &[
     "add", "multiply", "max", "min", "and", "or", "concat", "list", "map", "fold", "any", "all", "filter", "find", "find_index", "find_last",
-    "find_last_index", "sort_by",
+    "find_last_index", "sort_by", "merge", "group_by",
 ];
 
 /// The variadic leaves whose extra inputs are any type, passed to their function, rather than
 /// more of the same port: the higher-order leaves, whose function rides their `fn` param.
-pub const PASSES_EXTRA: &[&str] = &["map", "fold", "any", "all", "filter", "find", "find_index", "find_last", "find_last_index", "sort_by"];
+pub const PASSES_EXTRA: &[&str] = &["map", "fold", "any", "all", "filter", "find", "find_index", "find_last", "find_last_index", "sort_by", "group_by"];
 
 /// How many inputs a higher-order leaf ([`PASSES_EXTRA`]) hands its function before the extras:
 /// `fold` the result so far and the item, `sort_by` the two items it compares, the others the
@@ -299,6 +302,16 @@ pub fn interface_of(name: &str) -> Option<Unit> {
             Type::Record,
         ),
         "remove" => prim(vec![port("record", Type::Record), port("key", Text)], vec![], Type::Record),
+
+        // ── pure — records ── `merge` takes more records with +; `group_by` its function as
+        // `map` does, the key it answers for an item a text.
+        "values" => prim(vec![port("record", Type::Record)], vec![], Type::list_any()),
+        "from_entries" => prim(vec![port("entries", Type::list_any())], vec![], Type::Record),
+        "merge" => prim(vec![port("a", Type::Record), port("b", Type::Record)], vec![], Type::Record),
+        "has" => prim(vec![port("record", Type::Record), port("key", Text)], vec![], Boolean),
+        "group_by" => prim(vec![port("list", Type::list_any())], vec![Param::open("fn", "fn")], Type::Record),
+        "same_value" => prim(vec![port("a", Any), port("b", Any)], vec![], Boolean),
+        "type_of" => prim(vec![port("value", Any)], vec![], Text),
         "json_parse" => prim(vec![port("text", Text)], vec![], Any),
         "json_stringify" => prim(vec![port("value", Any)], vec![], Text),
         "pair" => prim(vec![port("a", Any), port("b", Any)], vec![], Product(vec![Any, Any])),
@@ -569,7 +582,7 @@ mod tests {
     }
 
     #[test]
-    fn genesis_has_127_leaves() {
+    fn genesis_has_134_leaves() {
         // The §13a count — a tripwire if the frozen set is ever changed by accident.
         // 37 + to_text + is_truthy + guard + default + equals (the universal any-typed
         // primitives) + the record kit (record, field, with_field, without_field, keys), added
@@ -589,8 +602,9 @@ mod tests {
         // power, remainder, bitwise, number_test, to_number, number_format); and the list leaves
         // (at, indices, entries, any, all, filter, find_index, find_last, find_last_index,
         // sort_by, includes, last_index_of, reverse, to_spliced, with_item, fill, copy_within,
-        // sort, flat, is_list, unique), find among them now.
-        assert_eq!(GENESIS.len(), 127);
+        // sort, flat, is_list, unique), find among them now; and the record leaves (values,
+        // from_entries, merge, has, group_by, same_value, type_of).
+        assert_eq!(GENESIS.len(), 134);
     }
 
     #[test]
@@ -723,6 +737,8 @@ mod tests {
             compute("list", &[&n(1.0), &n(2.0), &n(3.0)], &[]),
             Some(Value::List(vec![n(1.0), n(2.0), n(3.0)]))
         );
+        let r = |k: &str, x: f64| Value::Record([(k.to_string(), n(x))].into());
+        assert_eq!(compute("merge", &[&r("a", 1.0), &r("b", 2.0), &r("a", 3.0)], &[]), Some(Value::Record([("a".to_string(), n(3.0)), ("b".to_string(), n(2.0))].into())));
 
         // subtract shares add's catalog interface line but is NOT variadic — not associative, so
         // core gives it no N-ary meaning. Its own strict-binary destructure refuses 3 inputs.

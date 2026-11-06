@@ -30,7 +30,7 @@
 //! param holding the hex hash of the unit to apply.
 
 use crate::primitives::Op;
-use crate::{lists, primitives, Edge, Hash, Param, Resolver, Unit, UnitBody, Value, BOUNDARY, VARIADIC};
+use crate::{lists, primitives, records, Edge, Hash, Param, Resolver, Unit, UnitBody, Value, BOUNDARY, VARIADIC};
 use crate::hash::parse_hash;
 use smallvec::{smallvec, SmallVec};
 use std::borrow::Cow;
@@ -253,6 +253,8 @@ enum Body {
     Test(Test),
     /// `sort_by`, ordering the items by its function ([`eval_sort_by`]).
     SortBy,
+    /// `group_by`, putting the items in lists by the key its function answers ([`eval_group_by`]).
+    GroupBy,
     /// A request the host answers.
     Ask(Request),
     Coalesce,
@@ -390,6 +392,7 @@ impl NodeKind {
                     "map" => Body::Map,
                     "fold" => Body::Fold,
                     "sort_by" => Body::SortBy,
+                    "group_by" => Body::GroupBy,
                     "coalesce" => Body::Coalesce,
                     _ => match (Test::of(name), Request::of(name)) {
                         (Some(test), _) => Body::Test(test),
@@ -430,6 +433,7 @@ fn eval_as(
         (Body::Fold, _) => smallvec![eval_fold(&mut lent(inputs), &unit.params, resolver, observer, path)],
         (Body::Test(test), _) => smallvec![eval_test(test, &mut lent(inputs), &unit.params, resolver, observer, path)],
         (Body::SortBy, _) => smallvec![eval_sort_by(&mut lent(inputs), &unit.params, resolver, observer, path)],
+        (Body::GroupBy, _) => smallvec![eval_group_by(&mut lent(inputs), &unit.params, resolver, observer, path)],
         (Body::Ask(request), _) => ask(request.build(inputs, &unit.params), observer, path),
         // `coalesce` is the one leaf whose meaning is about absence: the first input that
         // arrived. The generic arm below would give the same answer today (it gathers present
@@ -488,6 +492,7 @@ fn eval_given<'r>(unit: &'r Unit, kind: &NodeKind, args: &mut Args<'_>, resolver
         (Body::Fold, _) => smallvec![eval_fold(&mut args[..n], &unit.params, resolver, observer, path)],
         (Body::Test(test), _) => smallvec![eval_test(test, &mut args[..n], &unit.params, resolver, observer, path)],
         (Body::SortBy, _) => smallvec![eval_sort_by(&mut args[..n], &unit.params, resolver, observer, path)],
+        (Body::GroupBy, _) => smallvec![eval_group_by(&mut args[..n], &unit.params, resolver, observer, path)],
         (_, UnitBody::Composite { children, edges }) => eval_composite(unit, children, edges, &mut args[..n], resolver, observer, path),
         (Body::Leaf { variadic, op: Some(op) }, UnitBody::Primitive { name }) if args.iter().any(|a| matches!(a, Some(Cow::Owned(v)) if heavy(v))) => {
             smallvec![leaf_given(op, name, variadic, &mut args[..n], &unit.params)]
@@ -983,7 +988,8 @@ struct Gives {
 /// Whether a node builds its output on what it reads at port `p`, so that giving it the value
 /// saves a copy: a choice's value, a leaf that keeps its input ([`primitives::keeps`]), what a
 /// composite is handed, a `map`'s list, a `fold`'s accumulator and list, and the list of a
-/// higher-order leaf that answers with its items (`filter`, `find`, `find_last`, `sort_by`).
+/// higher-order leaf that answers with its items (`filter`, `find`, `find_last`, `sort_by`,
+/// `group_by`).
 fn builds(kind: &NodeKind, p: usize) -> bool {
     match (kind.choice, kind.body) {
         (Some(Which::Guard), _) => p == 1,
@@ -993,7 +999,7 @@ fn builds(kind: &NodeKind, p: usize) -> bool {
         (None, Body::Map) => p == 0,
         (None, Body::Fold) => p < 2,
         (None, Body::Test(test)) => p == 0 && test.keeps_items(),
-        (None, Body::SortBy) => p == 0,
+        (None, Body::SortBy | Body::GroupBy) => p == 0,
         _ => false,
     }
 }
@@ -2204,6 +2210,47 @@ fn eval_sort_by(inputs: &mut [Option<Cow<'_, Value>>], params: &[Param], resolve
     }))
 }
 
+/// Higher-order `group_by`: the items of its list (input 0) in lists by the key the unit its `fn`
+/// param names answers for each, the inputs after the list passed after the item as `map` passes
+/// them (`fn(item, extra…)`). Each list keeps the items' order, and the groups come in key order
+/// ([`records::grouped`]).
+///
+/// Every item is applied, as `map` applies them, so each item's requests are asked in the same
+/// round. An answer that isn't a text (JavaScript converts a number) or none makes the leaf give
+/// nothing, and one that waits makes it wait, waiting winning. The items are lent to the function;
+/// a list given to the leaf moves its items into their groups rather than copying them.
+fn eval_group_by(inputs: &mut [Option<Cow<'_, Value>>], params: &[Param], resolver: &impl Resolver, observer: &mut impl Observer, path: &mut Vec<u32>) -> Slot {
+    if !matches!(inputs.first(), Some(Some(list)) if matches!(list.as_ref(), Value::List(_))) || !present(&inputs[1..]) {
+        return Slot::Absent;
+    }
+    let Some(unit) = function(params, resolver) else { return Slot::Absent };
+    let unit = Ready::of(unit, resolver);
+    let (list, extra) = inputs.split_at_mut(1);
+    let Some(items) = Items::of(take_given(&mut list[0])) else { return Slot::Absent };
+    let mut asks = Asks(observer);
+    let (mut groups, mut pending, mut absent) = (std::collections::BTreeMap::<String, Vec<Value>>::new(), false, false);
+    for (k, item) in items.enumerate() {
+        let key = {
+            let mut args: Args = SmallVec::with_capacity(1 + extra.len());
+            args.push(Some(Cow::Borrowed(&*item)));
+            args.extend(extra.iter().map(|v| v.as_deref().map(Cow::Borrowed)));
+            apply(&unit, &mut args, resolver, &mut asks, path, k)
+        };
+        match key {
+            Slot::Value(Value::Text(key)) => groups.entry(key).or_default().push(item.into_owned()),
+            Slot::Pending => pending = true,
+            _ => absent = true,
+        }
+    }
+    if pending {
+        Slot::Pending
+    } else if absent {
+        Slot::Absent
+    } else {
+        Slot::Value(records::grouped(groups))
+    }
+}
+
 /// The unit a `map`/`fold` applies, named by its `fn` param.
 fn function<'r>(params: &[Param], resolver: &'r impl Resolver) -> Option<&'r Unit> {
     let fn_hex = params.iter().find(|p| p.name() == "fn").and_then(|p| p.value())?;
@@ -3354,6 +3401,87 @@ mod tests {
         assert_eq!(paths.0, vec![vec![0, 0], vec![1, 0], vec![2, 0]], "[a] with [b], then [a b] with [c]: three comparisons, each read at child 0");
     }
 
+    /// `group_by` puts each item in the list of the text its function answers, the groups in key
+    /// order and each in the items' order, hands the function the inputs after the list, and gives
+    /// nothing for a key that isn't a text; as the eager oracle does, on its list lent and given.
+    /// Every item is applied, and waiting wins over nothing, as in `filter`.
+    #[test]
+    fn group_by_puts_each_item_in_the_list_of_its_key() {
+        use crate::eager::eval_eager;
+        let mut r = MapResolver::new();
+        let field = r.insert(Unit { params: vec![Param::frozen("name", "g")], ..prim("field", 1, Type::Any) }).unwrap();
+        let rec = |g: Value, v: f64| Value::Record(BTreeMap::from([("g".to_string(), g), ("v".to_string(), num(v))]));
+        let items = list(vec![rec(txt("x"), 1.0), rec(txt("y"), 2.0), rec(txt("x"), 3.0), rec(txt("10"), 4.0), rec(txt("2"), 5.0)]);
+        let want = Value::Record(BTreeMap::from([
+            ("10".to_string(), list(vec![rec(txt("10"), 4.0)])),
+            ("2".to_string(), list(vec![rec(txt("2"), 5.0)])),
+            ("x".to_string(), list(vec![rec(txt("x"), 1.0), rec(txt("x"), 3.0)])),
+            ("y".to_string(), list(vec![rec(txt("y"), 2.0)])),
+        ]));
+        let leaf = over("group_by", &field, 0);
+        let cases = [
+            (items.clone(), Some(want)),
+            (list(vec![]), Some(Value::Record(BTreeMap::new()))),
+            (list(vec![rec(txt("x"), 1.0)]), Some(Value::Record(BTreeMap::from([("x".to_string(), list(vec![rec(txt("x"), 1.0)]))])))),
+            // An item without the key, and one whose key is a number: nothing, both.
+            (list(vec![rec(txt("x"), 1.0), Value::Record(BTreeMap::from([("v".to_string(), num(2.0))]))]), None),
+            (list(vec![rec(num(1.0), 1.0)]), None),
+            (txt("ab"), None),
+        ];
+        for (xs, want) in cases {
+            assert_eq!(eval(&leaf, &[Some(xs.clone())], &r).into_vec(), vec![want.clone()], "{xs:?}");
+            assert_eq!(eval_eager(&leaf, &[Some(xs.clone())], &r), vec![want], "{xs:?}, eagerly");
+        }
+        // Inside a composite, the list is built there and given to the leaf.
+        let hlist = r.insert(prim("list", 2, Type::list_any())).unwrap();
+        let hleaf = r.insert(leaf.clone()).unwrap();
+        let built = composite(
+            vec![Port { name: "a".into(), ty: Type::Any }, Port { name: "b".into(), ty: Type::Any }],
+            Type::Any,
+            vec![hlist, hleaf],
+            vec![edge(BOUNDARY, 0, 0, 0), edge(BOUNDARY, 1, 0, 1), edge(0, 0, 1, 0), edge(1, 0, BOUNDARY, 0)],
+        );
+        let pair = [Some(rec(txt("b"), 1.0)), Some(rec(txt("a"), 2.0))];
+        assert_eq!(eval(&built, &pair, &r).into_vec(), eval_eager(&built, &pair, &r));
+        // by(x, k) = x[k]: the input after the list is the function's second.
+        let lookup = r.insert(prim("lookup", 2, Type::Any)).unwrap();
+        let by = over("group_by", &lookup, 1);
+        let xs = list(vec![Value::Record(BTreeMap::from([("k".to_string(), txt("p"))])), Value::Record(BTreeMap::from([("k".to_string(), txt("q"))]))]);
+        let want = Value::Record(BTreeMap::from([
+            ("p".to_string(), list(vec![Value::Record(BTreeMap::from([("k".to_string(), txt("p"))]))])),
+            ("q".to_string(), list(vec![Value::Record(BTreeMap::from([("k".to_string(), txt("q"))]))])),
+        ]));
+        assert_eq!(eval(&by, &[Some(xs.clone()), Some(txt("k"))], &r).into_vec(), vec![Some(want.clone())]);
+        assert_eq!(eval_eager(&by, &[Some(xs.clone()), Some(txt("k"))], &r), vec![Some(want)]);
+        assert_eq!(eval(&by, &[Some(xs), None], &r).into_vec(), vec![None], "its extra absent");
+        assert_eq!(eval(&over("group_by", &[9; 32], 0), &[Some(items)], &r).into_vec(), vec![None], "no function");
+        // Each item asks the host for its key: all of them, waiting winning over nothing.
+        struct Keys(Vec<Vec<u32>>);
+        impl Observer for Keys {
+            fn answer(&mut self, path: &[u32], request: &Value) -> Answer {
+                self.0.push(path.to_vec());
+                let Value::Record(r) = request else { return Answer::Absent };
+                match r.get("get") {
+                    Some(Value::Text(k)) if k == "wait" => Answer::NotYet,
+                    Some(Value::Text(k)) if k == "gone" => Answer::Absent,
+                    Some(Value::Text(k)) => Answer::Value(txt(&k.to_uppercase())),
+                    _ => Answer::Absent,
+                }
+            }
+        }
+        let get = r.insert(Unit { params: vec![Param::frozen("collection", "keys")], ..prim("collection_get", 1, Type::Any) }).unwrap();
+        let run = |keys: &[&str]| {
+            let xs = list(keys.iter().map(|k| txt(k)).collect());
+            let mut asked = Keys(Vec::new());
+            let out = eval_at(&over("group_by", &get, 0), &[Some(&xs)], &r, &mut asked, &mut Vec::new());
+            (out.into_vec(), asked.0)
+        };
+        let grouped = Value::Record(BTreeMap::from([("A".to_string(), list(vec![txt("a"), txt("a")])), ("B".to_string(), list(vec![txt("b")]))]));
+        assert_eq!(run(&["a", "b", "a"]), (vec![Slot::Value(grouped)], vec![vec![0], vec![1], vec![2]]));
+        assert_eq!(run(&["gone", "wait", "a"]), (vec![Slot::Pending], vec![vec![0], vec![1], vec![2]]));
+        assert_eq!(run(&["gone", "a"]), (vec![Slot::Absent], vec![vec![0], vec![1]]));
+    }
+
     /// times(x, k) = x * k: a function of the item and one value from around it.
     fn times(r: &mut MapResolver) -> Hash {
         let hmul = r.insert(prim("multiply", 2, Type::Number)).unwrap();
@@ -4012,6 +4140,9 @@ mod tests {
             ("copy_within", &[]),
             ("entries", &[]),
             ("includes", &[]),
+            ("values", &[]),
+            ("from_entries", &[]),
+            ("merge", &[]),
         ];
         let rec = |kv: &[(&str, Value)]| Value::Record(kv.iter().map(|(k, v)| (k.to_string(), v.clone())).collect());
         let values = [
@@ -4080,7 +4211,7 @@ mod tests {
             }
         }
         // The leaves that test each item, and `sort_by`, of a leaf: the list lent or given to them.
-        for (hof, name, extras) in [("filter", "equals", 1), ("find", "equals", 1), ("find_last", "is_truthy", 0), ("any", "is_truthy", 0), ("find_index", "equals", 1), ("sort_by", "subtract", 0)] {
+        for (hof, name, extras) in [("filter", "equals", 1), ("find", "equals", 1), ("find_last", "is_truthy", 0), ("any", "is_truthy", 0), ("find_index", "equals", 1), ("sort_by", "subtract", 0), ("group_by", "coalesce", 0)] {
             let leaf = pool[LEAVES.iter().position(|&(n, _)| n == name).unwrap()].0;
             pool.push((r.insert(over(hof, &leaf, extras)).unwrap(), 1 + extras));
         }

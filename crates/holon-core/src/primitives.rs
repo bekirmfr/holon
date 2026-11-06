@@ -13,7 +13,7 @@
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 
-use crate::lists;
+use crate::{lists, records};
 use crate::{Param, Value};
 
 /// Dispatch a primitive by name to its native computation. Evaluate primitive `name` on its present inputs: none for a name that isn't one, or a driver
@@ -121,6 +121,12 @@ ops! {
     "lookup" => Lookup,
     "insert" => Insert,
     "remove" => Remove,
+    "values" => Values,
+    "from_entries" => FromEntries,
+    "merge" => Merge,
+    "has" => Has,
+    "same_value" => SameValue,
+    "type_of" => TypeOf,
     "json_parse" => JsonParse,
     "json_stringify" => JsonStringify,
     "sha256" => Sha256,
@@ -656,6 +662,30 @@ pub(crate) fn compute_op(op: Op, name: &str, inputs: &[&Value], params: &[Param]
             Some(Value::Record(fields))
         }
 
+        // ── records (records.rs): JavaScript's Object functions, `in`, spread, `typeof` and
+        // `Object.is`. `group_by` applies its function in the evaluator. ──
+        Op::Values => {
+            let [Value::Record(fields)] = inputs else { return None };
+            Some(records::values(fields))
+        }
+        Op::FromEntries => {
+            let [Value::List(entries)] = inputs else { return None };
+            records::from_entries(entries)
+        }
+        Op::Merge => records::merge(inputs),
+        Op::Has => {
+            let [Value::Record(fields), Value::Text(key)] = inputs else { return None };
+            Some(records::has(fields, key))
+        }
+        Op::SameValue => {
+            let [a, b] = inputs else { return None };
+            Some(Value::Boolean(records::same_value(a, b)))
+        }
+        Op::TypeOf => {
+            let [x] = inputs else { return None };
+            records::type_of(x).map(|t| Value::Text(t.to_string()))
+        }
+
         // ── JSON (M1): request and response bodies. See json.rs for the mapping; malformed input,
         // or a value with no JSON form, is absent. ──
         Op::JsonParse => {
@@ -887,7 +917,8 @@ pub(crate) fn keeps(op: Op, port: usize) -> bool {
         Op::Insert => port < 3,
         Op::Select => port == 1 || port == 2,
         Op::Tail | Op::WithoutField | Op::Remove | Op::Concat | Op::Head | Op::Get | Op::Field | Op::Lookup | Op::Some | Op::Default => port == 0,
-        Op::List => true,
+        Op::List | Op::Merge => true,
+        Op::Values | Op::FromEntries => port == 0,
         Op::At | Op::Reverse | Op::Sort | Op::Unique | Op::Flat | Op::Fill | Op::CopyWithin | Op::Slice => port == 0,
         Op::WithItem => port == 0 || port == 2,
         Op::ToSpliced => port == 0 || port == 3,
@@ -1039,6 +1070,21 @@ pub(crate) fn compute_given<'v>(op: Op, name: &str, mut inputs: Given<'v>, param
             })
         }
         Op::List => Ok(Value::List(inputs.into_iter().map(own).collect())),
+        // The record leaves build on a given record: its values moved out, its fields grown by
+        // the next record's (moved too, when given), an entry's key and value moved out.
+        Op::Values if n == 1 && is(0, record) => Ok(Value::List(fields(inputs.pop().unwrap()).into_values().collect())),
+        Op::FromEntries if n == 1 && matches!(&*inputs[0], Value::List(es) if es.iter().all(records::is_entry)) => Ok(match inputs.pop().unwrap() {
+            Cow::Owned(Value::List(es)) => records::from_owned_entries(es),
+            es => records::from_entries(as_list(&es).expect("checked to be a list")).expect("checked to be entries"),
+        }),
+        Op::Merge if inputs.iter().all(|v| record(v)) => {
+            let mut parts = inputs.into_iter();
+            let mut fs = parts.next().map_or_else(BTreeMap::new, fields);
+            for more in parts {
+                fs.extend(fields(more));
+            }
+            Ok(Value::Record(fs))
+        }
         Op::Pair if n == 2 => {
             let b = own(inputs.pop().unwrap());
             Ok(Value::List(vec![own(inputs.pop().unwrap()), b]))

@@ -253,12 +253,16 @@ fn write(v: &Value, out: &mut String) -> Option<()> {
     Some(())
 }
 
+/// A text as JSON, escaped as JavaScript's QuoteJSONString escapes it: `\b`, `\f`, `\n`, `\r` and
+/// `\t` by name, any other code point below U+0020 as `\u00xx` in lowercase hex.
 fn write_string(s: &str, out: &mut String) {
     out.push('"');
     for c in s.chars() {
         match c {
             '"' => out.push_str("\\\""),
             '\\' => out.push_str("\\\\"),
+            '\u{8}' => out.push_str("\\b"),
+            '\u{c}' => out.push_str("\\f"),
             '\n' => out.push_str("\\n"),
             '\r' => out.push_str("\\r"),
             '\t' => out.push_str("\\t"),
@@ -281,6 +285,16 @@ mod tests {
     }
     fn t(s: &str) -> Value {
         Value::Text(s.into())
+    }
+
+    /// As JavaScript's JSON.stringify: the five named escapes, the other control characters in
+    /// lowercase hex, and the text read back as it was.
+    #[test]
+    fn a_control_character_is_escaped_as_javascript_escapes_it() {
+        let s = "\u{8}\u{c}\n\r\t\u{0}\u{1f}\u{b}\"\\\u{7f}";
+        let written = stringify(&t(s)).unwrap();
+        assert_eq!(written, "\"\\b\\f\\n\\r\\t\\u0000\\u001f\\u000b\\\"\\\\\u{7f}\"");
+        assert_eq!(parse(&written), Some(t(s)));
     }
 
     #[test]

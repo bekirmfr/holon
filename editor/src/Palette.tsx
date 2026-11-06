@@ -57,7 +57,10 @@ const CATALOG_GROUPS: readonly { name: string; items: ReadonlySet<string> }[] = 
   },
   {
     name: "record",
-    items: new Set(["record", "field", "with_field", "without_field", "keys", "lookup", "insert", "remove"]),
+    items: new Set([
+      "record", "field", "with_field", "without_field", "keys", "lookup", "insert", "remove",
+      "values", "from_entries", "merge", "has", "group_by", "same_value", "type_of",
+    ]),
   },
   {
     name: "encode",

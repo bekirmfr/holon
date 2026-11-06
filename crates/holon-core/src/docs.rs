@@ -95,6 +95,13 @@ pub fn describe(name: &str) -> Option<&'static str> {
         "lookup" => "One field of a record, by a key that arrives on a wire (a route's path param, say); nothing when it isn't there.",
         "insert" => "The record with key set to value, the key arriving on a wire.",
         "remove" => "The record without key, the key arriving on a wire.",
+        "values" => "A record's values, in key order: Object.values(r).",
+        "from_entries" => "A record made of [key, value] pairs, a later key replacing an earlier: Object.fromEntries(es). Nothing when a pair isn't a list of a text key and a value.",
+        "merge" => "Every field of its records, a later record's where two have one: { ...a, ...b }. Shallow: a record inside is replaced, not merged. Takes more records with +.",
+        "has" => "Whether a record has the key, with any value, null included: k in r, Object.hasOwn(r, k).",
+        "group_by" => "The items of a list in lists by the key its function answers for each, a text: Object.groupBy(xs, f). Each list keeps the items' order; the keys come sorted. A key that isn't a text produces nothing.",
+        "same_value" => "Whether two values are the same as JavaScript's Object.is says: -0 isn't 0. Lists and records compare by what they hold.",
+        "type_of" => "What JavaScript's typeof says of a value: \"number\", \"boolean\", \"string\" or \"object\" (a list, a record or null).",
         "json_parse" => "Reads JSON text into a value (records, lists, numbers, text…); nothing when it isn't valid JSON.",
         "json_stringify" => "Writes a value out as JSON text.",
 

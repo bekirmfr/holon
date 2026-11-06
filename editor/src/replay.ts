@@ -711,6 +711,10 @@ function whyNothing(node: ReplayNode, trace: NodeTrace): string {
       return "its condition was false";
     case "json_parse":
       return "its text isn't valid JSON";
+    case "from_entries":
+      return "an entry isn't a [key, value] pair with a text key";
+    case "group_by":
+      return "its function answered a key that isn't a text";
     case "divide":
       return "division by zero";
     case "stripe_verify":
