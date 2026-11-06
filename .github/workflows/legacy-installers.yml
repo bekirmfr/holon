@@ -1,8 +1,9 @@
 # A release's installers under the name releases up to 0.1.0-rc.3 used, `holon-server-installer`:
 # a `holon-server update` there looks for that name in the newest release and runs it, which then
 # installs holon (and its holon-server alias) in its place, reading that install's settings
-# under their old names (legacy-installers.sh). Run by release.yml (cargo-dist's
-# publish-jobs, dist-workspace.toml) once the release is up.
+# under their old names (legacy-installers.sh). Then it rewrites the notes' Windows install
+# command (release-notes-windows.py). Run by release.yml (cargo-dist's publish-jobs,
+# dist-workspace.toml) once the release is up.
 name: legacy installers
 
 on:
@@ -30,3 +31,11 @@ jobs:
           gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir installers -p holon-installer.sh -p holon-installer.ps1
           bash .github/legacy-installers.sh installers legacy
           gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" legacy/holon-server-installer.sh legacy/holon-server-installer.ps1
+      # The notes dist writes give Windows `powershell -ExecutionPolicy Bypass -c "irm … | iex"`,
+      # which Defender flags and Windows PowerShell can fail to run: they say to download the
+      # script, then run it, as the README does (release-notes-windows.py).
+      - name: Give the notes Windows' install command
+        run: |
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json body --jq .body > notes.md
+          python3 -I .github/release-notes-windows.py < notes.md > fixed.md
+          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --notes-file fixed.md

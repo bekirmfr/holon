@@ -10,13 +10,16 @@ You need a terminal and a browser. Nothing else: the editor is built into the se
 On macOS or Linux:
 
 ```sh
-curl --proto '=https' --tlsv1.2 -LsSf https://github.com/bekirmfr/holon/releases/latest/download/holon-installer.sh | sh
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/bekirmfr/holon/releases/download/v0.1.0-rc.33/holon-installer.sh | sh
 ```
 
-On Windows, in PowerShell:
+On Windows, in PowerShell, download the script and then run it (run straight from the
+download, `irm … | iex`, it can fail in Windows PowerShell):
 
 ```powershell
-irm https://github.com/bekirmfr/holon/releases/latest/download/holon-installer.ps1 | iex
+cd $env:TEMP
+irm https://github.com/bekirmfr/holon/releases/download/v0.1.0-rc.33/holon-installer.ps1 -OutFile holon-installer.ps1
+powershell -ExecutionPolicy Bypass -File .\holon-installer.ps1
 ```
 
 The script fetches the right build, checks it and puts `holon` in `~/.holon/bin`, on your PATH.
@@ -26,9 +29,10 @@ Open a new terminal and check it is there:
 holon version
 ```
 
-While Holon is in release candidates, `latest` may not have one yet: name the version instead
-(`…/releases/download/v0.1.0-rc.21/holon-installer.sh`). See
-[the command line reference](reference/cli.md#install) for the installer's options.
+The URLs name the version: while Holon is in release candidates, GitHub's `latest` has none.
+Each release's page has its own, and `holon update` keeps an install current. If an antivirus
+stops the script on Windows, see [the command line reference](reference/cli.md#install), which
+has the installer's options too.
 
 ## 2. Start a server
 

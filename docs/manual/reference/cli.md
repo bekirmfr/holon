@@ -43,16 +43,25 @@ Everything is one program, `holon`. `holon help` lists the commands; `serve`, `e
 The install scripts are on each [release](https://github.com/bekirmfr/holon/releases):
 
 ```sh
-curl --proto '=https' --tlsv1.2 -LsSf https://github.com/bekirmfr/holon/releases/latest/download/holon-installer.sh | sh
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/bekirmfr/holon/releases/download/v0.1.0-rc.33/holon-installer.sh | sh
 ```
 
 ```powershell
-irm https://github.com/bekirmfr/holon/releases/latest/download/holon-installer.ps1 | iex
+cd $env:TEMP
+irm https://github.com/bekirmfr/holon/releases/download/v0.1.0-rc.33/holon-installer.ps1 -OutFile holon-installer.ps1
+powershell -ExecutionPolicy Bypass -File .\holon-installer.ps1
 ```
 
 They put `holon` in `~/.holon/bin` and add it to your PATH. `HOLON_INSTALL_DIR` installs
-elsewhere; `HOLON_NO_MODIFY_PATH=1` leaves PATH alone. `latest` is the newest full release; for a
-pre-release, name it: `…/releases/download/v0.1.0-rc.21/holon-installer.sh`.
+elsewhere; `HOLON_NO_MODIFY_PATH=1` leaves PATH alone. The URLs name the version: GitHub's
+`latest` skips pre-releases, and every release is one until 0.1.0, so each release's page has
+its own.
+
+On Windows the script is downloaded, then run. Run straight from the download (`irm … | iex`),
+Windows PowerShell 5.1 can hand it over a line at a time and fail ("The terminator '#>' is
+missing"), and Microsoft Defender flags `powershell -ExecutionPolicy Bypass -c "irm … | iex"`.
+If an antivirus stops the script anyway, download `holon-x86_64-pc-windows-msvc.zip` from the
+release and put `holon.exe` on your PATH: everything works but `holon update`.
 
 Each release also has the program for each platform as an archive, with checksums. A download can
 be checked against this repository's release workflow with

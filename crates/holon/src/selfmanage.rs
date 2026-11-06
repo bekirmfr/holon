@@ -476,4 +476,32 @@ mod tests {
         assert!(!receipt(&dir.join("elsewhere")).covers(&exe));
         std::fs::remove_dir_all(&dir).ok();
     }
+
+    /// The install commands the docs give name this release, the one a person following them
+    /// gets: GitHub's `latest` skips pre-releases, so until 0.1.0 a `latest` URL finds nothing,
+    /// and a version left behind installs an old release. A release commit updates them with
+    /// the version (README.md, the manual's getting started and its command line reference).
+    #[test]
+    fn the_docs_install_this_release() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let tag = format!("v{VERSION}");
+        let prerelease = VERSION.contains('-');
+        for doc in ["README.md", "docs/manual/getting-started.md", "docs/manual/reference/cli.md"] {
+            let text = std::fs::read_to_string(root.join(doc)).unwrap();
+            for script in ["holon-installer.sh", "holon-installer.ps1"] {
+                let ours = format!("releases/download/{tag}/{script}");
+                assert!(text.contains(&ours), "{doc} doesn't install {tag} with {script}: update its install URLs to {ours}");
+                // Every installer URL in it names this release.
+                for (at, _) in text.match_indices(&format!("/{script}")) {
+                    let url = &text[text[..at].rfind("releases/").unwrap_or(0)..at];
+                    assert!(
+                        url == format!("releases/download/{tag}") || (!prerelease && url == "releases/latest/download"),
+                        "{doc} installs from {url}/{script}, not {tag}"
+                    );
+                }
+            }
+            // Windows: the script downloaded, then run, never piped into iex.
+            assert!(!text.contains("holon-installer.ps1 | iex"), "{doc} pipes the installer into iex");
+        }
+    }
 }

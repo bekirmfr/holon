@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **Installing works on the first try.** The install commands in the README and the manual named
+  `releases/latest/…`, which GitHub answers 404 while every release is a pre-release: they name
+  the release now, and a test holds them to the version, so each release commit updates them.
+  On Windows the script is downloaded, then run (`irm … -OutFile`, `powershell -ExecutionPolicy
+  Bypass -File`): run straight from the download (`irm … | iex`), Windows PowerShell 5.1 can
+  hand it over a line at a time and fail ("The terminator '#>' is missing"), and Microsoft
+  Defender flags the one-line `powershell -ExecutionPolicy Bypass -c "irm … | iex"` the release
+  page gave. The release workflow now rewrites that line in each release's notes.
 - **A handler's log level is its author's choice.** `lazy` and `unrecorded` may be written on any
   handler, one that writes, calls out, sends or waits too: `unrecorded` for runs whose record
   isn't worth keeping (a health check, a read, what would only fill the log), `lazy` for what must

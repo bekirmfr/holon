@@ -78,7 +78,7 @@ redeploying asks for whatever the old grant didn't cover, and every run names th
 **1. Install** (Linux, macOS; see [Installing](#installing) for Windows and details):
 
 ```sh
-curl --proto '=https' --tlsv1.2 -LsSf https://github.com/bekirmfr/holon/releases/latest/download/holon-installer.sh | sh
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/bekirmfr/holon/releases/download/v0.1.0-rc.33/holon-installer.sh | sh
 ```
 
 **2. Start the server and open the editor:**
@@ -231,17 +231,20 @@ checksums, and install scripts that fetch the right one, check it, and put it in
 macOS and Linux:
 
 ```sh
-curl --proto '=https' --tlsv1.2 -LsSf https://github.com/bekirmfr/holon/releases/latest/download/holon-installer.sh | sh
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/bekirmfr/holon/releases/download/v0.1.0-rc.33/holon-installer.sh | sh
 ```
 
-Windows, in PowerShell:
+Windows, in PowerShell (the script downloaded, then run):
 
 ```powershell
-irm https://github.com/bekirmfr/holon/releases/latest/download/holon-installer.ps1 | iex
+cd $env:TEMP
+irm https://github.com/bekirmfr/holon/releases/download/v0.1.0-rc.33/holon-installer.ps1 -OutFile holon-installer.ps1
+powershell -ExecutionPolicy Bypass -File .\holon-installer.ps1
 ```
 
-`latest` is the newest full release; GitHub skips pre-releases there. For a pre-release, name the
-version: `…/releases/download/v0.1.0-rc.21/holon-installer.sh`. The scripts' settings:
+The URLs name the version: until 0.1.0 every release is a pre-release, which GitHub's `latest`
+skips, so `…/releases/latest/…` finds none. Each release's page has its own; once one is
+installed, `holon update` keeps it current. The scripts' settings:
 `HOLON_INSTALL_DIR` (where), `HOLON_NO_MODIFY_PATH=1` (leave PATH alone).
 
 ```sh
@@ -258,10 +261,13 @@ asking (`--yes` skips that).
 <details>
 <summary>Windows antivirus, checking a download, and older releases</summary>
 
-- Use the `irm … | iex` form above, not `powershell -ExecutionPolicy Bypass -c "irm … | iex"`:
-  Microsoft Defender flags that command line as a trojan pattern. If an antivirus stops the
-  script anyway, download `holon-x86_64-pc-windows-msvc.zip` from the release and put `holon.exe`
-  on your PATH; `update` then can't replace it, but everything else works.
+- Download the script, then run it, as above. Run straight from the download (`irm … | iex`),
+  Windows PowerShell 5.1 can hand it over a line at a time, which fails with "The terminator '#>'
+  is missing from the multiline comment"; and Microsoft Defender flags the one-line form the
+  release page used to show, `powershell -ExecutionPolicy Bypass -c "irm … | iex"`, as a trojan
+  pattern. If an antivirus stops the script anyway, download `holon-x86_64-pc-windows-msvc.zip`
+  from the release and put `holon.exe` on your PATH; `update` then can't replace it, but
+  everything else works.
 - To check a download came from this repository's release workflow (from v0.1.0-rc.2 on):
   `gh attestation verify holon-x86_64-unknown-linux-gnu.tar.xz --repo bekirmfr/holon`.
 - Releases up to 0.1.0-rc.3 installed it as `holon-server`. `holon-server update` installs
