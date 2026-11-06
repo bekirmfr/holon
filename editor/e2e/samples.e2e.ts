@@ -778,8 +778,8 @@ test("price-rollback: an earlier version's code restored from view mode's histor
   await expect(dialog.locator(".hl-dryrun__changes")).toContainText(`code: version ${before}'s is deployed again, as version ${now + 1}, in place of version ${now}`);
   await dialog.getByRole("button", { name: "diff", exact: true }).click();
   const codeDiff = dialog.locator('.hl-dryrun__diffpart[data-title="code"]');
-  await expect(codeDiff.locator('.hl-dryrun__line[data-sign="-"]')).toHaveText(["-   c = 5"]);
-  await expect(codeDiff.locator('.hl-dryrun__line[data-sign="+"]')).toHaveText(["+   c = 0.5"]);
+  await expect(codeDiff.locator('.hl-dryrun__line[data-sign="-"]')).toHaveText(["-   const c = 5"]);
+  await expect(codeDiff.locator('.hl-dryrun__line[data-sign="+"]')).toHaveText(["+   const c = 0.5"]);
   await expect(codeDiff).toContainText(`version ${before} was deployed from the canvas, which keeps none`);
   await expect(dialog.locator('.hl-dryrun__diffpart[data-title="permissions"]')).toContainText('CollectionRead("prices")');
   await dialog.getByRole("button", { name: "Restore", exact: true }).click();
@@ -1597,8 +1597,10 @@ test("calc's switch answers the chosen arm or 400 when it has no value, and view
   await page.locator(".hl-view__bottom").getByRole("button", { name: "Timeline" }).click();
   await page.getByTitle("step forward one node").click();
   await expect(text.locator(".hl-text__step")).toHaveCount(1);
-  await text.locator(".cm-line", { hasText: '"div" -> a / b' }).click();
+  // The cursor just after `a / b`, its case's answer before `?? status(400)`.
+  await text.locator(".cm-line", { hasText: "return a / b" }).click();
   await page.keyboard.press("End");
+  for (const _ of " ?? status(400)") await page.keyboard.press("ArrowLeft");
   await expect(text.locator(".hl-text__mark")).toHaveText("a / b");
   await expect(page.getByRole("complementary", { name: "Inspector" })).toContainText("divide");
   await page.screenshot({ path: "test-results/text-run.png" });

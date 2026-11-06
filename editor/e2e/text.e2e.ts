@@ -112,9 +112,13 @@ test("the flow's text drives its canvas, and the canvas its text", async ({ page
   // version into the delete, whose undo then goes back to the sample: so the delete waits until
   // the text's version is a step of its own, which enables undo. Undo is pressed as such: a
   // dispatched click doesn't wait for it to be enabled as a pointer click does.
+  // `uppercase` alone: the cursor on its line picked the `return` with it, and a route that
+  // answers nothing has no TypeScript form.
   const undo = page.locator(".hl-canvas").getByRole("button", { name: "⟲" });
   await expect(undo).toBeEnabled();
+  await page.locator(".react-flow__pane").dispatchEvent("click");
   await pick(nodeNamed(page, "uppercase"));
+  await expect(page.locator(".react-flow__node.selected")).toHaveCount(1);
   await page.keyboard.press("Delete");
   await expect(pane.getByRole("status")).toContainText("a comment was dropped");
   await expect(editor).not.toContainText("// says hello");
