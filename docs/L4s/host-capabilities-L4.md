@@ -10,9 +10,12 @@ operations), with history as step 2.5 ([history](history-L4.md)). Revised 2026-1
 step 1.8) and inbound WebSockets (§5.12, step 1.9) designed here and put in Tier 1, inbound
 WebSockets having been "later" until then; what else a web app asks for, sorted (§5.13); and a
 flow as a command-line app (§5.14). Revised 2026-11-06 against af9de3a: what a trading bot
-adds to feeds (§5.9, forks 25–27), log levels having come in rc.32 since §5.9 was written. It
-sets rules and sorts candidates. Most capabilities it says to build get their own L4, as folders,
-databases and channels did; the web's are designed here, so the theme is in one place. Builds on
+adds to feeds (§5.9, forks 25–27), log levels having come in rc.32 since §5.9 was written; and
+from then on every host capability is designed here (§7, §10). It sets rules, sorts candidates,
+and holds each one's design: a capability's L4 is its section of §5, grown into numbered
+subsections when its step starts, as §5.11 and §5.12 were, so the theme is in one place, found
+and cited by section. Those designed before then (folders, databases, channels, triggers, host
+resources, secret destinations, storage, history) keep their own L4s, listed in §10. Builds on
 [host resources](host-resources-L4.md) (resources the host defines, their addresses),
 [named folders](named-folders-L4.md), [databases](databases-L4.md),
 [channels](channels-L4.md) and [triggers](triggers-L4.md) (a flow with several handlers).
@@ -1415,7 +1418,8 @@ by side; a tier starts when the one before it has landed.
 
 **How every step runs:**
 
-- **Its L4 first,** answering §4's checklist, reviewed before code. Then slices, each one commit.
+- **Its design first,** in its section here: §4's checklist answered in numbered subsections, as
+  §5.11 and §5.12 are, reviewed before code. Then slices, each one commit.
 - **Each slice ships whole** (CLAUDE.md): code and tests, a sample flow in
   `crates/holon-author/samples/` run live once, the manual's guide and permissions page, and an
   e2e test that deploys the sample against a local stand-in, so CI needs no outside account.
@@ -1430,15 +1434,15 @@ engine.
 
 ### Tier 1: essential host capabilities
 
-| Step | What | L4 | Needs | Size |
+| Step | What | Design | Needs | Size |
 |---|---|---|---|---|
-| 1.1 | **Value kinds:** `Bytes`, and `Decimal` as the L4 decides (§5.10) | value-kinds-L4 | — | M |
-| 1.2 | **Formats:** exact decimals, CSV, XML, dates (UTC and offsets), zip and gzip, JWT verify, PGP encrypt and verify with a public key (§5.1) | payment-formats-L4 | 1.1 | M |
-| 1.3 | **Email:** send, recipients in the grant; receive as `on mail`, with its sender's verdict and attachments (§5.2) | mail-L4 | 1.1 for attachments | L |
-| 1.4 | **Remote folders:** the backend seam in `folders.rs`, then SFTP and S3-compatible storage (§6) | folder-backends-L4 | 1.1 for binary files | L |
-| 1.5 | **Secure connectivity:** keys the host holds (PGP decrypt and sign) and client identities (mutual TLS, a private CA) (§5.3, §5.4) | bank-connectivity-L4 | 1.1, 1.2 | M |
-| 1.6 | **Messaging:** one subscription runtime (position, once per message, backpressure, reconnect), feeds (SSE, WebSocket, Postgres `LISTEN`) and one queue engine, publish and consume (§5.5, §5.9) | streams-L4 | 1.4's request signing, for SQS (fork 8) | L |
-| 1.7 | **Commands:** programs an admin binds, typed arguments, logged output, killed on timeout (§5.7) | commands-L4 | — | M |
+| 1.1 | **Value kinds:** `Bytes`, and `Decimal` as its design decides (§5.10) | §5.10 (here) | — | M |
+| 1.2 | **Formats:** exact decimals, CSV, XML, dates (UTC and offsets), zip and gzip, JWT verify, PGP encrypt and verify with a public key (§5.1) | §5.1 (here) | 1.1 | M |
+| 1.3 | **Email:** send, recipients in the grant; receive as `on mail`, with its sender's verdict and attachments (§5.2) | §5.2 (here) | 1.1 for attachments | L |
+| 1.4 | **Remote folders:** the backend seam in `folders.rs`, then SFTP and S3-compatible storage (§6) | §6 (here) | 1.1 for binary files | L |
+| 1.5 | **Secure connectivity:** keys the host holds (PGP decrypt and sign) and client identities (mutual TLS, a private CA) (§5.3, §5.4) | §5.3, §5.4 (here) | 1.1, 1.2 | M |
+| 1.6 | **Messaging:** one subscription runtime (position, once per message, backpressure, reconnect), feeds (SSE, WebSocket, Postgres `LISTEN`) and one queue engine, publish and consume (§5.5, §5.9) | §5.5, §5.9 (here) | 1.4's request signing, for SQS (fork 8) | L |
+| 1.7 | **Commands:** programs an admin binds, typed arguments, logged output, killed on timeout (§5.7) | §5.7 (here) | — | M |
 | 1.8 | **Static files:** a route's rest segment (`/*path`, routing, no item), and answering with a file from a folder (`site.serve(name)`, `FileServe`), streamed by the host and checked against the handle's hash | §5.11 (here) | — | M |
 | 1.9 | **Inbound WebSockets:** `websocket PATH { open … message … close … }`, a run per message, replies and channel packs out, a record per connection (§5.9) | §5.12 (here) | 1.1 for binary frames | M |
 
@@ -1460,7 +1464,7 @@ engine.
   server that requires a client certificate, an SSE and WebSocket stub, a test program; each
   started by the e2e setup. 1.8 and 1.9 need none: a fixture folder, and the browser as the
   client. A queue engine that can't be stubbed in-process (a real broker) is
-  settled in streams-L4.
+  settled in step 1.6's design (§5.5, §5.9).
 - **Alongside 1.7:** retire `egress` and `Spawn` from `Capability` and the catalog (§8, fork 7),
   `CommandRun` taking `Spawn`'s place. S.
 
@@ -1480,12 +1484,12 @@ Six tracks, so six worktrees at most; tracks that touch the same files (`kind.rs
 
 ### Tier 2: operationally essential
 
-| Step | What | L4 | Needs | Size |
+| Step | What | Design | Needs | Size |
 |---|---|---|---|---|
-| 2.1 | **Approvals by role:** `await approval(role: …)`, the editor's inbox, the approver in the log, four eyes, *n* of *m* (§5.6) | approvals-L4 | — | M |
-| 2.2 | **Telemetry and audit export:** OpenTelemetry over HTTP (a trace per run; metrics for runs, failures, latency, a feed's or queue's lag), the activity log and run heads to a SIEM, health and readiness endpoints (§2's server features) | telemetry-L4 | 1.6 for lag | M |
-| 2.3 | **Who touched what:** resources with ids, addresses and a timeline across deployments ([host resources](host-resources-L4.md), designed), and each connection's own record (§8, fork 20) | host-resources-L4, revised | 1.4, 1.6 | L |
-| 2.4 | **A sandbox for agents:** walls from the grant, the operator's container runtime first, then Linux's own; the outbound proxy; writes at commit; agents' shell through MCP (§5.8) | sandbox-L4 | 1.7 | L |
+| 2.1 | **Approvals by role:** `await approval(role: …)`, the editor's inbox, the approver in the log, four eyes, *n* of *m* (§5.6) | §5.6 (here) | — | M |
+| 2.2 | **Telemetry and audit export:** OpenTelemetry over HTTP (a trace per run; metrics for runs, failures, latency, a feed's or queue's lag), the activity log and run heads to a SIEM, health and readiness endpoints (§2's server features) | a new section of §5 (here) | 1.6 for lag | M |
+| 2.3 | **Who touched what:** resources with ids, addresses and a timeline across deployments ([host resources](host-resources-L4.md), designed), and each connection's own record (§8, fork 20) | host-resources-L4, revised there | 1.4, 1.6 | L |
+| 2.4 | **A sandbox for agents:** walls from the grant, the operator's container runtime first, then Linux's own; the outbound proxy; writes at commit; agents' shell through MCP (§5.8) | §5.8 (here) | 1.7 | L |
 | 2.5 | **History:** one timeline per deployment of its runs, deploys and grant changes, and restoring its code, its state or both to any earlier point, as a new entry ([history](history-L4.md), designed) | history-L4 | 2.1 for approved restores | M |
 
 Samples: 2.1 `four-eyes-payout`; 2.4 `agent-reconcile` (an agent's script in the sandbox,
@@ -1497,7 +1501,7 @@ from Tier 1, and it is the capability closest to the pitch.
 
 ### Tier 3: nice to have
 
-Taken when a job or a user asks, each with its L4 and its sample all the same:
+Taken when a job or a user asks, each with its design here and its sample all the same:
 
 - **Persistent terminals** (a pseudo-terminal, SSH) and WebSocket sessions (§5.7, §5.9).
 - **Sockets for payment networks:** ISO 8583, FIX, SMPP (§5.9). Promoted to Tier 1 if the first
@@ -1514,8 +1518,8 @@ Taken when a job or a user asks, each with its L4 and its sample all the same:
 1. **Decimals as text leaves or a value kind.** A `Decimal` value, like `Bytes`, takes a new tag
    (no existing hash moves) but needs its JSON form, its place in the log, the bridge, the editor
    and every leaf that takes a number; leaves over text need none of that. *Lean:* decided in
-   value-kinds-L4 with bytes, whose boundary answers make a `Decimal` value cheap; text leaves if
-   that L4 finds a reason against.
+   step 1.1's design (§5.10) with bytes, whose boundary answers make a `Decimal` value cheap;
+   text leaves if that design finds a reason against.
 2. **Mailboxes that need OAuth.** Microsoft 365 has turned passwords off for IMAP and SMTP, and
    Google steers to OAuth. Either the host does OAuth (a refresh token as the secret, the host
    refreshing it), or those mailboxes are reached through their HTTP APIs (Microsoft Graph, Gmail
@@ -1583,8 +1587,8 @@ Taken when a job or a user asks, each with its L4 and its sample all the same:
     into it.
 21. **Bytes: hex text, or a value kind.** Hex text needs nothing new but doubles every size and
     binds every leaf to one text form; a value kind changes no existing hash (tag 8) but needs
-    its boundaries settled (§5.10). *Lean:* a `Bytes` value, in value-kinds-L4, before the
-    capabilities that need it.
+    its boundaries settled (§5.10). *Lean:* a `Bytes` value, in step 1.1's design (§5.10),
+    before the capabilities that need it.
 22. **`FileServe` recording lightly** (§5.11.5). The request path's rule (C5, built) lets a
     handler be `lazy` or `unrecorded` only when every capability is sourced, so a file route
     would be `strict`, an fsync per asset. `FileServe` changes nothing, as an answer doesn't, so
@@ -1628,10 +1632,36 @@ Taken when a job or a user asks, each with its L4 and its sample all the same:
   server's reach, and no sandbox is offered where its walls can't be held.
 - Every capability ships with a sample deployed by the e2e tests against a local stand-in.
 
-## 10. The L4s that follow
+## 10. Where each design is
 
-One per step of §7, written when its step starts: value-kinds, payment-formats, mail,
-folder-backends, bank-connectivity, streams and commands for Tier 1; approvals, telemetry, a
-revision of host-resources, sandbox, and history (already written) for Tier 2; Tier 3's as they
-are asked for. Steps 1.8 and 1.9 have none: static files and inbound WebSockets are designed in
-this note (§5.11, §5.12), and what else the web asks for is sorted beside them (§5.13).
+**Here, from 2026-11-06.** Each step's design is its section of this note, written when the step
+starts: the section §7 names grows numbered subsections answering §4's checklist (what is
+already there, the record and its limits, the checklist, forks, samples and slices), as §5.11
+and §5.12 did. A capability no section covers yet gets the next one of §5. Its forks join §8, numbered on.
+A section is cited as `host-capabilities §5.9` or by its link, `host-capabilities-L4.md#59-…`.
+
+| Steps | Design |
+|---|---|
+| 1.1 value kinds | §5.10 |
+| 1.2 formats | §5.1 |
+| 1.3 email | §5.2 |
+| 1.4 remote folders | §6 |
+| 1.5 secure connectivity | §5.3, §5.4 |
+| 1.6 messaging (feeds, queues) | §5.9, §5.5 |
+| 1.7 commands | §5.7 |
+| 1.8 static files | §5.11 (designed) |
+| 1.9 inbound WebSockets | §5.12 (designed) |
+| 2.1 approvals by role | §5.6 |
+| 2.2 telemetry and audit export | a new section of §5 |
+| 2.3 who touched what | [host resources](host-resources-L4.md), revised there |
+| 2.4 a sandbox for agents | §5.8 |
+| 2.5 history | [history](history-L4.md) (designed) |
+| Tier 3 | §5.13, §5.14 and new sections, as they are asked for |
+
+**In L4s of their own, designed before then,** each a host capability this note builds on:
+[named folders](named-folders-L4.md), [databases](databases-L4.md),
+[channels](channels-L4.md), [triggers](triggers-L4.md),
+[host resources](host-resources-L4.md), [secret destinations](secret-destinations-L4.md),
+[storage](storage-L4.md) and [history](history-L4.md). They stay where they are: other docs and
+the code cite them by file, and each is the record of its own design. A change to one of those
+capabilities is designed in its own L4, as before.

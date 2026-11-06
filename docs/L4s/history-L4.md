@@ -131,11 +131,12 @@ holon restore <slug> --to <seq> --dry-run    what it would do, and change nothin
   (a cell it doesn't know, a shape it doesn't expect). `--dry-run` shows the cells that differ
   between the two points, so whoever restores sees it.
 - **Who may restore:** whoever may deploy to the deployment. Where the policy asks for an approval
-  of deploys (approvals-L4, step 2.1), a restore asks for one too. An agent sees a restore only as
-  its dry run, and tells the person, who restores it (built). Its restore itself is saved for a
-  person to approve (built): an `ask` event on the timeline, naming the point (`from`) and what of
-  it (`restores`: code, state or both), answered 202 with nothing changed; the editor's history
-  offers its row as that restore, which a person makes.
+  of deploys ([host capabilities §5.6](host-capabilities-L4.md#56-approvals), step 2.1), a restore
+  asks for one too. An agent sees a restore only as its dry run, and tells the person, who
+  restores it (built). Its restore itself is saved for a person to approve (built): an `ask` event
+  on the timeline, naming the point (`from`) and what of it (`restores`: code, state or both),
+  answered 202 with nothing changed; the editor's history offers its row as that restore, which a
+  person makes.
 
 ## 5. What a restore doesn't touch
 
@@ -211,8 +212,8 @@ decide:
   routes and actions.
 - **Before-images of external databases**, to put their rows back.
 - **Rewriting history**, to erase or shorten it: retention drops bodies (§7), never entries.
-- **A diff of a new version against recorded runs** before approval: a fit for approvals-L4, if
-  it is wanted.
+- **A diff of a new version against recorded runs** before approval: a fit for step 2.1's design
+  ([host capabilities §5.6](host-capabilities-L4.md#56-approvals)), if it is wanted.
 
 ## 9. Samples
 
