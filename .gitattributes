@@ -3,3 +3,5 @@
 *.holon text eol=lf
 # And so do flows in TypeScript's syntax: a js() body is its text, byte for byte.
 *.holon.ts text eol=lf
+# The golden records are compared byte for byte with what the tests write (LF).
+crates/*/tests/golden/*.txt text eol=lf
