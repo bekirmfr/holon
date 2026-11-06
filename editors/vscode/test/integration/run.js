@@ -14,10 +14,12 @@ async function main() {
   if (!fs.existsSync(holon)) throw new Error(`no holon at ${holon}: cargo build -p holon first, or set HOLON_PATH`);
 
   // A workspace of its own: one flow with a mistake, and holon.path set to the holon under test.
+  // VS Code's own TypeScript formatter is off, so formatting asks `holon lsp`, as a flow's author
+  // would set it.
   const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "holon-vscode-"));
   fs.mkdirSync(path.join(workspace, ".vscode"));
-  fs.writeFileSync(path.join(workspace, ".vscode", "settings.json"), JSON.stringify({ "holon.path": holon }));
-  fs.writeFileSync(path.join(workspace, "hello.holon"), "flow hello\nport 8200\nroute GET /hello/:name (req) {\n    respond   nope\n}\n");
+  fs.writeFileSync(path.join(workspace, ".vscode", "settings.json"), JSON.stringify({ "holon.path": holon, "typescript.format.enable": false }));
+  fs.writeFileSync(path.join(workspace, "hello.holon.ts"), "import { flow, route } from 'holon'\n\nflow(\"hello\", { port: 8200 })\n\nroute.get(\"/hello/:name\", (req) =>    nope)\n");
 
   const failure = path.join(workspace, "failure.txt");
   await runTests({

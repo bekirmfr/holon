@@ -8,13 +8,14 @@ waits for its payment, a payout that waits for its approval. The design is
 
 ## 1. What it is
 
-An action writes `paid = await paid, expires: 1d`; a route starts it, `started = start(payment,
-req.json)`, and answers with the token it is handed back, `started.waiting.paid` (a route answers
-and is done, so it never waits itself). A route declared `route GET /paid/:token (req) resumes paid
-{ … }` continues the run. A run that settles still waiting at an `await` performs nothing, its
-starter gets the tokens of the points it waits at, and the host keeps a parked run: what it needs
-to run again, with the event, from where it began. A resumed part's log entry keeps its tokens as
-`‹token:NAME›`, as the starter's does.
+An action writes `const paid = await event("paid", { expires: "1d" })`; a route starts it by
+calling it without `await`, `const started = payment(req.json)`, and answers with the token it is
+handed back, `started.waiting.paid` (a route answers and is done, so it never waits itself). A
+route with the option `{ resumes: "paid" }` continues the run:
+`route.get("/paid/:token", () => …, { resumes: "paid" })`. A run that settles still waiting at an
+`await` performs nothing, its starter gets the tokens of the points it waits at, and the host
+keeps a parked run: what it needs to run again, with the event, from where it began. A resumed
+part's log entry keeps its tokens as `‹token:NAME›`, as the starter's does.
 
 In the code:
 

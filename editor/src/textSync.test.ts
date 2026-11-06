@@ -17,19 +17,18 @@ const compiled = (text: string, ev: Evaluator) => {
   return { graph: { nodes: doc.nodes, edges: doc.edges } as Graph, names };
 };
 
-const TEXT = `flow notes
-port 8200
-collection notes
+const TEXT = `import { flow, route, status } from "holon"
+import notes from "collection:notes"
 
-route PUT /notes/:id (req) {
-  body = lowercase(req.body)
+flow("notes", { port: 8200 })
+
+route.put("/notes/:id", (req) => {
+  const body = req.body.toLowerCase()
   notes[req.params.id] = body
-  respond 204
-}
+  return status(204)
+})
 
-route GET /notes/:id (req) {
-  respond notes[req.params.id], missing: 404
-}
+route.get("/notes/:id", (req) => notes[req.params.id] ?? status(404))
 `;
 
 /** The canvas `text` stands for, spread out so places are told apart, and its sync. */
@@ -68,7 +67,7 @@ describe("the text and the canvas, one flow", () => {
   it("keeps every node where it was through an edit that changes none of them", () => {
     const ev = new Evaluator();
     const { canvas, synced } = start(TEXT, ev);
-    const next = compiled(TEXT.replace("collection notes", "collection notes # kept by id"), ev);
+    const next = compiled(TEXT.replace('from "collection:notes"', 'from "collection:notes" // kept by id'), ev);
     const out = carryOver(synced, next, canvas, freshId);
     expect(out.nodes.map((n) => [n.id, n.position])).toEqual(canvas.map((n) => [n.id, n.position]));
     expect(out.edges.every((e) => canvas.some((n) => n.id === e.source) && canvas.some((n) => n.id === e.target))).toBe(true);
@@ -77,7 +76,7 @@ describe("the text and the canvas, one flow", () => {
   it("keeps the others where they were when a line changes, and places a new node beside what it feeds", () => {
     const ev = new Evaluator();
     const { canvas, synced } = start(TEXT, ev);
-    const next = compiled(TEXT.replace("  respond 204", '  respond lowercase("saved"), status: 201'), ev);
+    const next = compiled(TEXT.replace("  return status(204)", '  return status(201, "SAVED".toLowerCase())'), ev);
     const out = carryOver(synced, next, canvas, freshId);
     const kept = out.nodes.filter((n) => canvas.some((c) => c.id === n.id && c.position === n.position));
     expect(kept.length).toBeGreaterThanOrEqual(canvas.length - 1);
@@ -92,21 +91,21 @@ describe("the text and the canvas, one flow", () => {
   it("removes the node of a deleted line, and a renamed binding is a new node", () => {
     const ev = new Evaluator();
     const { canvas, synced } = start(TEXT, ev);
-    const gone = carryOver(synced, compiled(TEXT.replace("  body = lowercase(req.body)\n  notes[req.params.id] = body\n", "  notes[req.params.id] = req.body\n"), ev), canvas, freshId);
+    const gone = carryOver(synced, compiled(TEXT.replace("  const body = req.body.toLowerCase()\n  notes[req.params.id] = body\n", "  notes[req.params.id] = req.body\n"), ev), canvas, freshId);
     expect(gone.nodes.length).toBe(canvas.length - 1);
     expect(gone.nodes.some((n) => n.data.name === "lowercase")).toBe(false);
-    const renamed = carryOver(synced, compiled(TEXT.replace("body = lowercase", "doc = lowercase").replace("= body", "= doc"), ev), canvas, freshId);
+    const renamed = carryOver(synced, compiled(TEXT.replace("const body =", "const doc =").replace("= body", "= doc"), ev), canvas, freshId);
     const bodyNode = canvas.find((n) => synced.names.get([...synced.toCanvas].find(([, c]) => c === n.id)![0]) === "body")!;
     expect(renamed.nodes.some((n) => n.id === bodyNode.id)).toBe(false);
   });
 
-  it("counts the comments a reprint would drop, not a # in a string", () => {
-    expect(commentCount('# one\nflow f\nx = "#no" # two\n')).toBe(2);
+  it("counts the comments a reprint would drop, not a // in a string", () => {
+    expect(commentCount('// one\nflow("f")\nconst x = "https://no" // two\nconst y = `//no` /* three\nlines */\n')).toBe(3);
   });
 
   it("matches nodes alike only by their wiring", () => {
     const ev = new Evaluator();
-    const c = compiled('flow f\nport 8200\n\nroute GET /a (req) {\n  respond concat(lowercase("A"), lowercase("B"))\n}\n', ev);
+    const c = compiled('import { concat, flow, lowercase, route } from "holon"\n\nflow("f", { port: 8200 })\n\nroute.get("/a", () => concat(lowercase("A"), lowercase("B")))\n', ev);
     const reversed = { nodes: [...c.graph.nodes].reverse(), edges: [...c.graph.edges].reverse() };
     const m = sameGraph(c.graph, reversed);
     for (const [a, b] of m) expect(a).toBe(b);

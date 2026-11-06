@@ -16,36 +16,36 @@ async function eventually(get, what) {
 }
 
 async function checks() {
-  const uri = vscode.Uri.joinPath(vscode.workspace.workspaceFolders[0].uri, "hello.holon");
+  const uri = vscode.Uri.joinPath(vscode.workspace.workspaceFolders[0].uri, "hello.holon.ts");
   const doc = await vscode.workspace.openTextDocument(uri);
   await vscode.window.showTextDocument(doc);
-  assert.equal(doc.languageId, "holon");
+  // A flow is TypeScript to VS Code; holon lsp adds what Holon says of it.
+  assert.equal(doc.languageId, "typescript");
+  const holonSays = () => vscode.languages.getDiagnostics(uri).filter((d) => d.source === "holon");
 
-  // The mistake, where holon check says it is: `nope`, line 4 (3 from 0), from column 15.
-  const [mistake] = await eventually(() => vscode.languages.getDiagnostics(uri).length > 0 && vscode.languages.getDiagnostics(uri), "the mistake");
+  // The mistake, where holon check says it is: `nope`, line 5 (4 from 0), from column 39.
+  const [mistake] = await eventually(() => holonSays().length > 0 && holonSays(), "the mistake");
   assert.equal(mistake.message, 'unknown name "nope"');
-  assert.equal(mistake.source, "holon");
-  assert.deepEqual([mistake.range.start.line, mistake.range.start.character, mistake.range.end.character], [3, 14, 18]);
+  assert.deepEqual([mistake.range.start.line, mistake.range.start.character, mistake.range.end.character], [4, 38, 42]);
 
-  // Completion: after `no`, the words that start so (`now` among them), each with its line.
-  const list = await vscode.commands.executeCommand("vscode.executeCompletionItemProvider", uri, new vscode.Position(3, 16));
-  const now = list.items.find((i) => i.label === "now");
-  assert.ok(now, `offered: ${list.items.map((i) => i.label).join(", ")}`);
-  assert.match(now.detail, /permission/);
+  // Completion: where a name starts, Holon's vocabulary among what may be written, each said.
+  const list = await vscode.commands.executeCommand("vscode.executeCompletionItemProvider", uri, new vscode.Position(4, 40));
+  const status = list.items.find((i) => i.label === "status" && /vocabulary/.test(i.detail ?? ""));
+  assert.ok(status, `offered: ${list.items.map((i) => i.label).join(", ")}`);
 
   // Fixed: the mistake goes.
   const fix = new vscode.WorkspaceEdit();
-  fix.replace(uri, mistake.range, '"Hello, {req.params.name}"');
+  fix.replace(uri, mistake.range, "`Hello, ${req.params.name}`");
   assert.ok(await vscode.workspace.applyEdit(fix));
-  await eventually(() => vscode.languages.getDiagnostics(uri).length === 0, "the mistake to go");
+  await eventually(() => holonSays().length === 0, "the mistake to go");
 
   // A hover on `req` says what a request holds; one on `flow`, what the flow may do.
   const hoverAt = async (line, character) => {
     const hovers = await vscode.commands.executeCommand("vscode.executeHoverProvider", uri, new vscode.Position(line, character));
     return hovers.flatMap((h) => h.contents.map((c) => (typeof c === "string" ? c : c.value))).join("\n");
   };
-  assert.match(await hoverAt(2, 25), /\.params/);
-  const flow = await hoverAt(0, 1);
+  assert.match(await hoverAt(4, 28), /\.params/);
+  const flow = await hoverAt(2, 1);
   assert.match(flow, /GET \/hello\/:name/);
   assert.match(flow, /receive requests/);
 
@@ -56,7 +56,7 @@ async function checks() {
   const formatting = new vscode.WorkspaceEdit();
   formatting.set(uri, edits);
   assert.ok(await vscode.workspace.applyEdit(formatting));
-  assert.equal(doc.getText(), 'flow hello\nport 8200\n\nroute GET /hello/:name (req) {\n  respond "Hello, {req.params.name}"\n}\n');
+  assert.equal(doc.getText(), 'import { flow, route } from "holon"\n\nflow("hello", { port: 8200 })\n\nroute.get("/hello/:name", (req) => `Hello, ${req.params.name}`)\n');
 }
 
 /** The checks; what failed is written to the workspace's failure.txt for run.js to print, since

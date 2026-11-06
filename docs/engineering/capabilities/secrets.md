@@ -9,22 +9,27 @@ secret is, where it is kept and how its value stays out of everything Holon writ
 
 ## 1. What it is
 
-A flow declares a secret in its header and reads it by name ([LANGUAGE.md](../../LANGUAGE.md) §5.1,
-§5.4):
+A flow imports a secret by its name and reads it as the name it imported it as
+([LANGUAGE.md](../../LANGUAGE.md) §5.1, §5.4):
 
+```ts
+import { base64, flow, hmac_sha256, route, status } from "holon"
+import signing_key from "secret:signing_key"
+
+flow("sign-payload", { port: 8107 })
+
+route.post("/sign", (req) => {
+  return (
+    { signature: hmac_sha256(signing_key, req.body), body_base64: base64(req.body) } ?? status(400)
+  )
+})
 ```
-flow sign-payload
-secret signing_key
 
-route POST /sign (req) {
-  respond { signature: hmac_sha256(secret.signing_key, req.body, encoding: hex) }, missing: 400
-}
-```
-
-`secret.signing_key` is the `secret{name: signing_key}` leaf, capability `SecretRead("signing_key")`,
-granted at deploy like any other; `optional secret receipt_key` lets the deploy leave it out, its
-reads then without a value. A use the header doesn't declare is an error, and `fmt` declares it.
-The value is set for the deployment (the editor's ⚙, `holon secret set`), or once for the server
+`signing_key` is the `secret{name: signing_key}` leaf, capability `SecretRead("signing_key")`,
+granted at deploy like any other;
+`import receipt_key from "secret:receipt_key" with { optional: "true" }` lets the deploy leave it
+out, its reads then without a value. A secret not imported is an unknown name, like any other. The
+value is set for the deployment (the editor's ⚙, `holon secret set`), or once for the server
 (`holon secret bind`), never in the flow.
 
 - `secrets.rs`: the store (`SecretStore`), a deployment's values in memory (`Vault`, `Resolved`),

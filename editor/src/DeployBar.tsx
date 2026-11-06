@@ -102,7 +102,6 @@ export function DeployBar({
   onDeploy,
   onAction,
   startsNothing = false,
-  onMakeRunnable,
   onSettingsOpen,
 }: {
   /** This flow's deployment, if it has one. */
@@ -114,14 +113,12 @@ export function DeployBar({
   onAction: (action: "run" | "pause" | "stop") => void;
   /** Nothing would start a run (no route, clock, file handler or action): deploy is greyed. */
   startsNothing?: boolean;
-  /** The quick fix for that: its statements put in `action run (input) { … }`. */
-  onMakeRunnable?: () => void;
   onSettingsOpen?: () => void;
 }) {
   const look = entry ? LOOK[entry.status] : null;
   const label = busy ? "deploying…" : entry ? "update" : "deploy";
   const title = startsNothing
-    ? "nothing would start a run: it is a holon, placed in other flows. To run it by hand, put it in an action"
+    ? "nothing would start a run: add a route, a clock, a file handler or an action (an action runs by hand)"
     : entry
       ? "deploy the canvas as it is now; the deployment keeps its state and sessions"
       : "deploy this flow, named after it";
@@ -139,16 +136,9 @@ export function DeployBar({
         {outOfDate && <span title="the canvas has changed since it was deployed"> •</span>}
       </button>
       {startsNothing && (
-        <>
-          <span style={{ color: "#e0c36f", fontSize: 11 }} title={title}>
-            nothing would start a run
-          </span>
-          {onMakeRunnable && (
-            <button style={base} onClick={onMakeRunnable} title="put its statements in action run (input) { … }, which a person runs by hand; rename it before deploying">
-              make it runnable by hand
-            </button>
-          )}
-        </>
+        <span style={{ color: "#e0c36f", fontSize: 11 }} title={title}>
+          nothing would start a run
+        </span>
       )}
       {entry && look && (
         <>

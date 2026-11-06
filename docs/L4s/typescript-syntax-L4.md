@@ -960,12 +960,14 @@ Holon is in development, so the new form replaces today's at once:
 - **No converter is shipped.** The samples, the manual's examples and the tests' flows are rewritten
   once, by hand or with a throwaway script, and checked as every sample is today: built by
   `editor/src/samples.test.ts`, deployed by the e2e tests, and run live once.
-- **Coverage.** Every construct the 54 samples use (`crates/holon-author/samples/`) has a form here:
-  `state` (9 samples), `after` (counter, `counter.holon:29`), `await` and its token, in an action a route starts (approval, approved-payout, §9), `match`
-  (calc), flows without handlers (4), `browsers` (marketplace, `marketplace.holon:16`), `stripe.verify`
-  (stripe-to-slack), a channel's `pipe` (chess, chat-proxy), a handler's log level (status-board, one of them `lazy` on a handler that writes,
-  `status-board.holon:43`, and stress-test; `lazy` also in notes-api and orders-api), multi-output holons (inbox-report,
-  nearest, slugs, tally). The samples are converted in one slice, with `samples.rs`,
+- **Coverage.** Every construct the samples used when this was written (54 of them, in
+  `crates/holon-author/samples/`) has a form here: `state` (9 samples), `after` (counter), `await`
+  and its token, in an action a route starts (approval, approved-payout, §9), `match` (calc), flows
+  without handlers (4, each written with one handler now: heartbeat and rolling-log a clock,
+  drop-box and file-audit a file handler), `browsers` (marketplace), `stripe.verify`
+  (stripe-to-slack), a channel's `pipe` (chess, chat-proxy), a handler's log level (status-board,
+  one of them `lazy` on a handler that writes, and stress-test; `lazy` also in notes-api and
+  orders-api), multi-output holons (inbox-report, nearest, slugs, tally). The samples are converted in one slice, with `samples.rs`,
   `editor/src/samples.test.ts` and the e2e tests reading `.holon.ts`, and the manual's language
   pages rewritten.
 
@@ -1018,6 +1020,20 @@ Holon is in development, so the new form replaces today's at once:
    one. What reads only `.holon` stays so until the parser goes: `docs/LANGUAGE.md` (whose §5
    `usage.rs` reads for the inspector), the editor guide's text pane, LSP and **import .holon**,
    the editor's test flows, the workbench's, and the handler-less server tests.
+   *The parser is removed* (2026-11-06): `lang/parse.rs`, `lex.rs`, the converter and the
+   `.holon` grammar are gone, and `compile` reads TypeScript alone. The lowering keeps as words
+   of its own only those it still means something by (a TypeScript binding of one is renamed
+   `name_`), and its messages say the TypeScript forms: `return respond(body, { headers })`,
+   `import key from "secret:key"`, `export const pay = action((input) => …)`. The printer
+   writes TypeScript: a canvas printed is a `.holon.ts` text that compiles back to the same
+   unit, and the editor's text pane, its export and a run's view print so. The LSP, the
+   workbench's graph and the inspector's examples read TypeScript, a handler's band titled as
+   the log names its runs (`action bump`, `every 5s`, `on file inbox`), so the fixtures in
+   `tests/holon/` are gone. `docs/LANGUAGE.md`, the editor guide, the engineering pages, the
+   editor's and the workbench's test flows, the server's tests and the VS Code extension's test
+   are TypeScript; to VS Code a flow is a TypeScript file, `holon lsp` beside its own server.
+   The server still runs a canvas without handlers (an interval, an `ingress` or `file_arrival`
+   node, `holon trigger`); taking that out is a step of its own.
 5. **`try`, `catch {}`, `throw`, `finally`,** and the `fail` leaf.
 6. **Computing loops.** `while` to `fold`, the loop's turns, nested folds past 10000, `fold`
    stopping when done, a step budget in core.

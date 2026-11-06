@@ -172,7 +172,7 @@ holon check todo.holon.ts
 or each mistake with its line and column. A flow is TypeScript, so any editor reads it; then
 `holon fmt todo.holon.ts` writes it in the canonical form.
 
-To deploy a text file, press **import .holon** on the flows page: it opens as a tab, ready to
+To deploy a text file, press **import text** on the flows page: it opens as a tab, ready to
 deploy.
 
 ## 9. Let an agent write one

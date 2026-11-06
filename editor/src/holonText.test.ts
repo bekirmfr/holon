@@ -16,20 +16,11 @@ import { buildSample, samples } from "./samples";
 // The sample list comes from the wasm module, and tests are made from it: loaded before they are.
 initSync({ module: readFileSync(join(process.cwd(), "wasm", "holon_wasm_bg.wasm")) });
 
-const HELLO = `flow hello-api
-port 8101
+const HELLO = `import { concat, flow, route } from "holon"
 
-node req   = request { method: GET, path: "/hello/:name" }
-node name  = field { name: name }
-node hi    = const { value: "Hello, ", type: Text }
-node greet = concat
-node res   = respond { status: "200", missing: "404" }
+flow("hello-api", { port: 8101 })
 
-req.params  -> name.record
-hi.out      -> greet.a
-name.out    -> greet.b
-req.request -> res.request
-greet.out   -> res.body
+route.get("/hello/:name", (req) => concat("Hello, ", req.params.name))
 `;
 
 const unitOf = (doc: { nodes: unknown[]; edges: unknown[]; server?: { port: string } }, ev: Evaluator) =>
@@ -38,20 +29,31 @@ const unitOf = (doc: { nodes: unknown[]; edges: unknown[]; server?: { port: stri
 describe("flows as text", () => {
   it("compiles a flow written by hand into a server with its route", () => {
     const ev = new Evaluator();
-    const { name, doc, names } = compileHolon(HELLO, ev);
+    const { name, doc } = compileHolon(HELLO, ev);
     expect(name).toBe("hello-api");
-    // Each node by its name in the text (what `holon show` prints).
-    expect((doc.nodes as PrimitiveNodeType[]).map((n) => `${names.get(n.id)}=${n.data.name}`)).toEqual(["req=request", "name=field", "hi=const", "greet=concat", "res=respond"]);
+    expect((doc.nodes as PrimitiveNodeType[]).map((n) => n.data.name).sort()).toEqual(["concat", "const", "field", "request", "respond"]);
     expect(doc.server?.port).toBe("8101");
     const server = deriveServer(doc.nodes as PrimitiveNodeType[], doc.edges as Edge[], ev, "8101");
     expect(server.errors).toEqual([]);
     expect(server.endpoints.map((e) => `${e.method} ${e.path}`)).toEqual(["GET /hello/:name"]);
   });
 
-  it("carries a handler's log word to its draft, whatever the handler does", () => {
+  it("carries a handler's log level to its draft, whatever the handler does", () => {
     const ev = new Evaluator();
-    const board =
-      'flow board\nport 8170\ncollection notes\n\nroute GET /health (req) unrecorded {\n  respond "ok"\n}\n\nroute GET /notes (req) lazy {\n  respond notes.list(limit: 50)\n}\n\nroute POST /notes (req) {\n  notes[req.json.id] = req.json.text\n  respond "saved"\n}\n';
+    const board = `import { flow, route } from "holon"
+import notes from "collection:notes"
+
+flow("board", { port: 8170 })
+
+route.get("/health", () => "ok", { log: "unrecorded" })
+
+route.get("/notes", () => notes.list({ limit: 50 }), { log: "lazy" })
+
+route.post("/notes", (req) => {
+  notes[req.json.id] = req.json.text
+  return "saved"
+})
+`;
     const { doc } = compileHolon(board, ev);
     const derive = (d: typeof doc) => deriveServer(d.nodes as PrimitiveNodeType[], d.edges as Edge[], ev, "8170");
     const fine = derive(doc);
@@ -61,20 +63,22 @@ describe("flows as text", () => {
     // An unrecorded handler is an item to approve, by its label, as the server asks for it.
     expect(manifestItems(["NetworkIngress"], { unrecorded: ["GET /health"] })).toEqual(["NetworkIngress", 'Unrecorded("GET /health")']);
     // A write is as its author writes it: unrecorded, it compiles, and the server has a unit.
-    const writes = compileHolon(board.replace("route POST /notes (req) {", "route POST /notes (req) unrecorded {"), ev);
-    const server = derive(writes.doc);
+    const unrecorded = board.replace('  return "saved"\n})', '  return "saved"\n}, { log: "unrecorded" })');
+    expect(unrecorded).not.toBe(board);
+    const server = derive(compileHolon(unrecorded, ev).doc);
     expect(server.errors).toEqual([]);
     expect(server.endpoints.map((e) => `${e.method} ${e.path} ${e.log}`)).toContain("POST /notes unrecorded");
     expect(server.serverHash).not.toBeNull();
   });
 
-  it("is the same unit written in either form: nodes and wires, or the expression form", () => {
+  it("a template literal is one as_text more than the concat written by hand", () => {
     const ev = new Evaluator();
-    const natural = 'flow hello-api\nport 8101\n\nroute GET /hello/:name (req) {\n  respond concat("Hello, ", req.params.name)\n}\n';
-    expect(unitOf(compileHolon(HELLO, ev).doc, ev)).toBe(unitOf(compileHolon(natural, ev).doc, ev));
-    // The sample itself interpolates, which is one as_text more: a different unit, the same answer.
+    const hand = compileHolon(HELLO, ev).doc;
+    // The sample interpolates, which is one as_text more: a different unit, the same answer.
     const sample = buildSample(samples().find((s) => s.name === "hello-api")!, ev);
-    expect((sample.nodes as PrimitiveNodeType[]).map((n) => n.data.name)).toEqual(["request", "const", "field", "as_text", "concat", "respond"]);
+    const leaves = (d: { nodes: unknown[] }) => (d.nodes as PrimitiveNodeType[]).map((n) => n.data.name).sort();
+    expect(leaves(sample)).toEqual([...leaves(hand), "as_text"].sort());
+    expect(unitOf(sample, ev)).not.toBe(unitOf(hand, ev));
   });
 
   it.each(samples().map((s) => [s.name]))("round-trips the %s sample: printed, compiled back, the identical unit", (sampleName) => {
@@ -88,25 +92,26 @@ describe("flows as text", () => {
     expect(printHolon(sampleName, back.doc, fresh)).toBe(text);
   });
 
-  it("variadic nodes keep their inputs, and holons their boundary as given", () => {
+  it("variadic nodes keep their inputs, and functions their boundary as written", () => {
     const ev = new Evaluator();
-    const text = `flow joined
-holon shout(words "join · list") -> (said) {
-  node j = join
-  node up = uppercase
-  j.out -> up.s
-  in.words -> j.list
-  up.out -> out.said
+    const text = `import { concat, flow, route } from "holon"
+
+flow("joined", { port: 8000 })
+
+function shout(words) {
+  const said = words.toUpperCase()
+  return said
 }
-node c = concat[3]
-node s = shout
+
+route.post("/j", (req) => concat(shout(req.json.words), "-", "!"))
 `;
     const { doc } = compileHolon(text, ev);
     const c = (doc.nodes as PrimitiveNodeType[]).find((n) => n.data.name === "concat")!;
     expect(c.data.inputs.map((p) => p.name)).toEqual(["a", "b", "c"]);
     const s = (doc.nodes as PrimitiveNodeType[]).find((n) => n.data.name === "shout")!;
     expect(s.data.inputs.map((p) => p.name)).toEqual(["words"]);
-    expect(printHolon("joined", doc, ev)).toContain(`holon shout(words "join · list") -> said`);
+    expect(s.data.outputs.map((p) => p.name)).toEqual(["said"]);
+    expect(printHolon("joined", doc, ev)).toContain("function shout(words) {");
   });
 
   it("names the line and column of each mistake", () => {
@@ -119,32 +124,25 @@ node s = shout
         return e instanceof Error ? e.message : String(e);
       }
     };
-    expect(fails("node a = fieldd")).toBe('line 1, column 10: no leaf "fieldd" in the catalog');
-    expect(fails("node a = field { nam: x }")).toBe('line 1, column 10: field has no param "nam"');
-    expect(fails("node a = field\nnode b = concat\na.nope -> b.a")).toBe('line 3, column 1: field has no output "nope"');
-    expect(fails("node a = field\nx.out -> a.record")).toContain('line 2, column 1: no node "x"');
-    expect(fails('node a = const { value: "oops }')).toBe("line 1, column 25: a quote isn't closed");
-    expect(fails("holon h() -> () {\nnode a = field")).toBe("line 1, column 17: the block isn't closed with }");
-    expect(fails("node a = field\nnode a = field")).toBe('line 2, column 6: there is a node "a" already');
-    expect(fails("node in = field")).toContain("names a holon's boundary");
-    // The expression form too, into the string.
-    expect(fails('route GET /a (req) {\n  respond "{nope} likes"\n}')).toBe('line 2, column 13: unknown name "nope"');
+    const flow = (body: string) => `import { flow, route } from "holon"\n\nflow("f", { port: 8200 })\n\n${body}\n`;
+    expect(fails(flow('route.get("/a", () => nope)'))).toBe('line 5, column 23: unknown name "nope"');
+    // Into a template literal too.
+    expect(fails(flow('route.get("/a", () => `${nope} likes`)'))).toBe('line 5, column 26: unknown name "nope"');
+    expect(fails('import { fieldd, flow } from "holon"\n\nflow("f")\n')).toMatch(/^line 1, column 10: "holon" has no "fieldd"/);
+    expect(fails(flow('route.get("/a", () => "oops)'))).toMatch(/^line 5, column \d+: /);
+    expect(fails('import { route } from "holon"\n\nroute.get("/a", () => 1)\n')).toContain("a flow says what it is first");
   });
 
-  it("writes the expression form, keeps a text's names through it, and knows each node's line", () => {
+  it("writes a canvas as text, keeps a text's names through it, and knows each node's line", () => {
     const ev = new Evaluator();
-    const src = "flow f\nport 8200\n\nroute GET /x (req) {\n  n = req.params.id\n  respond \"{n} likes\"\n}\n";
+    const src = 'import { flow, route } from "holon"\n\nflow("f", { port: 8200 })\n\nroute.get("/x", (req) => {\n  const n = req.params.id\n  return `${n} likes`\n})\n';
     const { name, doc, names } = compileHolon(src, ev);
     expect(printHolon(name, doc, ev, names)).toBe(src);
     const { text, lines } = printHolonLines(name, doc, ev, names);
     expect(text).toBe(src);
     const field = (doc.nodes as PrimitiveNodeType[]).find((n) => n.data.name === "field")!;
-    expect(lines.get(field.id)).toBe(5);
+    expect(lines.get(field.id)).toBe(6);
     // The Inspector's line is of the canvas as it prints without a text's names: inline.
-    expect(sourceLineOf(field.id, name, doc, ev)).toEqual({ line: 5, text: '  respond "{req.params.id} likes"' });
-    // A canvas the expression form can't spell (an unwired input) is written as nodes and wires.
-    const { doc: solo, names: soloNames } = compileHolon("flow solo\nnode up = uppercase\n", ev);
-    expect(printHolon("solo", solo, ev, soloNames)).toBe("flow solo\n\nnode up = uppercase\n");
-    expect(printHolon("solo", solo, ev)).toBe("flow solo\n\nnode uppercase = uppercase\n");
+    expect(sourceLineOf(field.id, name, doc, ev)).toEqual({ line: 5, text: 'route.get("/x", (req) => `${req.params.id} likes`)' });
   });
 });

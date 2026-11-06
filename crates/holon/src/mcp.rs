@@ -1280,7 +1280,7 @@ mod tests {
         let code = tool_as(&agent, "restore", json!({ "slug": "price-rollback", "version": 1, "code": true })).unwrap();
         assert!(code.starts_with("Dry run: nothing changed. Going back to version 1"), "{code}");
         assert!(code.contains("version 1's, would deploy again as a new version"), "{code}");
-        assert!(code.contains("-   fee = 5\n+   fee = 0.5"), "{code}");
+        assert!(code.contains("-   const fee = 5\n+   const fee = 0.5"), "{code}");
         assert!(code.contains("holon restore price-rollback --to 1 --code"), "{code}");
         // The first PUT's state: tea back to 4, and the run since, which did nothing outside.
         let put_back = tool_as(&agent, "restore", json!({ "slug": "price-rollback", "run": first, "state": true })).unwrap();
@@ -1552,7 +1552,7 @@ mod tests {
         assert!(one.contains("Its routes: POST /slugs"), "{one}");
         assert!(one.contains("It may:") && one.contains("receive requests"), "{one}");
         assert!(one.contains("Nothing waits for a person."), "{one}");
-        assert!(one.contains("Its text, as deployed:") && one.contains("route POST /slugs"), "{one}");
+        assert!(one.contains("Its text, as deployed:") && one.contains("route.post("), "{one}");
         assert!(tool(&state, "flows", json!({})).unwrap().contains("deployed under that name"));
     }
 

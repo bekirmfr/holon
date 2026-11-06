@@ -35,10 +35,10 @@ A flow tab shows the flow's name, **•** when it has unsaved changes, and wheth
 
 ## The flows page
 
-- **saved flows**: each with who saved it and when, and **open**, **publish**, **.holon**
-  (download) and **×** (delete). **manifest ▸** lists what the flow may do. A flow an agent saved
+- **saved flows**: each with who saved it and when, and **open**, **publish**, **.holon.ts**
+  (download its text) and **×** (delete). **manifest ▸** lists what the flow may do. A flow an agent saved
   says so: "saved … by *name* (agent)".
-- **import .holon** opens a text file as a new, unsaved tab.
+- **import text** opens a flow's text, `NAME.holon.ts`, as a new, unsaved tab.
 - **marketplace**: where flows are published to and placed from (see
   [The marketplace](#the-marketplace)).
 - **samples**: one flow for each thing Holon can do. **open** makes an unsaved copy in its own
@@ -124,9 +124,8 @@ canvas differs from what is deployed), the deployment's state and port, **pause*
 permissions and which actions agents may run. Deploying shows what the flow may do and asks you
 to approve what isn't granted yet. [Deploying and permissions](deploying.md) covers it in full.
 
-A flow with no route, clock, file handler or action, and no `ingress`, starts nothing, so
-**deploy** is greyed and says why. **make it runnable by hand** next to it puts the flow's
-statements in an `action run (input) { … }` block, answering what it computes.
+A flow with no route, clock, file handler or action starts nothing, so **deploy** is greyed and
+says why: add one. An action is the one a person runs by hand.
 
 ## View mode: replaying runs
 
@@ -219,10 +218,10 @@ entries appear in the palette to place. Placing one shows what it may do first. 
 
 ## Other editors
 
-The text is a plain `.holon` file, and `holon lsp` is a language server for any editor that can
-start one: mistakes as you type, hover, completion, formatting, and a quick fix that declares a
-secret or state key the body uses undeclared. The VS Code extension
-(`holon-vscode.vsix`, on each release) highlights the language and starts `holon lsp`.
+The text is a TypeScript file, `NAME.holon.ts`, so any editor highlights it, and `holon lsp` is a
+language server for any editor that can start one: mistakes as you type, hover, completion and
+formatting. The VS Code extension (`holon-vscode.vsix`, on each release) starts `holon lsp` for
+`.holon.ts` files.
 
 ## Shortcuts
 

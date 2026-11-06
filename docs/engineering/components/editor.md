@@ -29,15 +29,17 @@ the two relate. The language and compiler it calls are [holon-author](holon-auth
 - **Tabs and pages.** `tabs.ts` and `useTabs.ts` keep one tab per open flow, each in edit or view
   mode. `Pages.tsx`'s `AppPage` is `canvas`, `flows`, `deployed`, `admin`, `home`, `welcome` or
   `docs`; the canvas is never unmounted, the others are overlays on it. `FlowsPage` lists saved
-  flows and the samples; `DeployedPage` lists deployments as `DeploymentCard.tsx`s (status, run,
-  pause, stop, its run sessions, delete once stopped). `AdminPage.tsx` has three tabs (`people`,
-  `resources`, `permissions`), for admins. `HomePage.tsx` and `WelcomePage.tsx` keep their layout
-  with the account (`home.ts`, the server's `/auth/prefs`); `ManualPage.tsx` shows `docs/manual`,
-  read at build time (`manual.ts`), and is loaded lazily.
+  flows and the samples, each downloadable as `NAME.holon.ts`, and its **import text** opens a
+  `.holon.ts` file as an unsaved flow; `DeployedPage` lists deployments as `DeploymentCard.tsx`s
+  (status, run, pause, stop, its run sessions, delete once stopped). `AdminPage.tsx` has three
+  tabs (`people`, `resources`, `permissions`), for admins. `HomePage.tsx` and `WelcomePage.tsx`
+  keep their layout with the account (`home.ts`, the server's `/auth/prefs`); `ManualPage.tsx`
+  shows `docs/manual`, read at build time (`manual.ts`), and is loaded lazily.
 - **Deploying.** `DeployBar.tsx` and `useDeployFlow.ts`: the flow's unit (`flowUnitHash`), its
   closure staged (`stageClosure`, each unit by `POST /unit`), `previewDeploy`
   (`POST /deploy/preview`) for what it may touch, the consent dialog, then `deployUnit`. `touches.ts`, `Manifest.tsx` and
-  `DryRun.tsx` say what a deploy or a restore would change.
+  `DryRun.tsx` say what a deploy or a restore would change. A flow nothing would start has deploy
+  greyed, and the bar says what to add: a route, a clock, a file handler or an action.
 - **View mode.** `useViewMode.tsx`, `ViewPanes.tsx`, `HistoryPane.tsx`, `CellHistory.tsx`: a
   deployed flow, read only, with its runs. `replay.ts` replays a logged run on the canvas node by
   node from what the log recorded (the request, the state read, the clock, random numbers,
@@ -62,8 +64,8 @@ the two relate. The language and compiler it calls are [holon-author](holon-auth
   `print_holon_lines`);
 - the routes (`derive.ts` → `find_routes`, `canvas_components`) and templates (`templates.ts`);
 - the language (`holonText.ts` → `compile_holon`, `holon_mistakes`, `holon_hover`,
-  `holon_complete`, `holon_format`, `holon_highlight`, `holon_runnable_by_hand`), positions
-  crossing as UTF-16 offsets, converted in the bridge (`Offsets`);
+  `holon_complete`, `holon_format`, `holon_highlight`), positions crossing as UTF-16 offsets,
+  converted in the bridge (`Offsets`);
 - the samples (`samples.ts` → `samples`, `build_sample`).
 
 It is built with `wasm-pack build crates/holon-wasm --target web --out-dir ../../editor/wasm`
@@ -72,8 +74,10 @@ It is built with `wasm-pack build crates/holon-wasm --target web --out-dir ../..
 
 ### The text pane
 
-The pane shows the flow as `fmt` writes it or as it was typed. An edit is compiled after
-`PAUSE_MS` (300 ms); compiled, it replaces the canvas's document as one undo step, and
+The pane shows the flow's `NAME.holon.ts` text as it was typed, or, for a canvas drawn or
+changed, as the printer writes it; a canvas the text can't spell shows why instead. Format is
+`holon_format`, as `fmt` writes. An edit is compiled after `PAUSE_MS` (300 ms); compiled, it
+replaces the canvas's document as one undo step, and
 `carryOver` keeps each node it didn't touch where it was, with its id, matching nodes by their
 name in the text or where they are written; not compiled, the mistake is marked and the canvas
 keeps the last version that compiled. A canvas change prints the text again. The text as typed is
@@ -139,12 +143,13 @@ edits, checks and formats files.
 
 - **The bundle carries the js engine**: 6 MB, from 1.9 before
   ([js-node L4 §7](../../L4s/js-node-L4.md)).
-- **No declare quick fix.** The web editor's Format adds missing declarations as `fmt` does, but
-  it offers no button for them, which `holon lsp` does
-  ([declared-names L4 §10](../../L4s/declared-names-L4.md)).
+- **No quick fixes.** Neither the web editor nor `holon lsp` rewrites a flow for its author: a
+  TypeScript flow declares what it uses by importing it, so there is nothing to declare, and a
+  flow nothing would start is told what to add. The button that made such a flow runnable by hand
+  went with the switch to TypeScript.
 - **The text pane** edits no holon's inner text from its overlay; the cursor inside a holon's
   definition picks nothing (text-graph-link, decision 7); a layout lives only in the editor's
-  saved flow, so a `.holon` imported is laid out afresh; no two people on one flow
+  saved flow, so a `.holon.ts` imported is laid out afresh; no two people on one flow
   ([text-pane L4](../../L4s/text-pane-L4.md)). A canvas edit that reprints drops the text's
   comments; the pane says how many, and undo brings them back.
 - **A stale bridge.** `editor/wasm` is built by hand outside CI; one older than its crates lacks
@@ -178,11 +183,11 @@ tests when run at `f5f3b39`. Most run against the real wasm core, loaded from `e
 - `samples.test.ts`, `describe("sample flows")`: per sample, "`<name>` builds, derives, and asks
   for exactly what it uses" (one endpoint per `request` template, one clock per `every`, one file
   handler per `on_file`; no capability with `<unknown>` or `Spawn`, which would mean core failed
-  closed; each listed secret read; each optional permission used and never the trigger; its `keep`
-  and `limit` lines the limits the deploy asks for). Beside them: unique names and ports; a
-  manifest listed as the server lists it; a flow nothing starts made runnable by hand; a saved
-  flow placed as one node; a holon opened, frozen back unchanged to the same unit, and applied;
-  every node described; every sample's text names landing on its canvas.
+  closed; each listed secret read; each optional permission used and never the trigger; the `keep`
+  and `limits` of its `flow(…)` the limits the deploy asks for). Beside them: unique names and
+  ports; a manifest listed as the server lists it; a saved flow placed as one node; a holon
+  opened, frozen back unchanged to the same unit, and applied; every node described; every
+  sample's text names landing on its canvas.
 - `textSync.test.ts` ("the text and the canvas, one flow"): every sample's canvas matches its
   text compiled back; an edit that touches no node keeps every id and place; a changed line keeps
   the others; a deleted line removes its node.

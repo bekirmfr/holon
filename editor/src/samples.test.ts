@@ -28,7 +28,7 @@ import type { PrimitiveNodeType } from "./PrimitiveNode";
 import type { Edge } from "@xyflow/react";
 import { buildSample, samples } from "./samples";
 import { settingsOf } from "./tabs";
-import { bindingsOf, compileHolon, runnableByHand } from "./holonText";
+import { bindingsOf, compileHolon } from "./holonText";
 import { templateDoc, templateNames } from "./templates";
 import { nodeDescriber } from "./NodeDocs";
 import { restoreUnits } from "./docUnits";
@@ -58,6 +58,15 @@ function derive(name: string): { caps: string[]; endpoints: number; clocks: numb
   const endpoints = sample.port ? server.endpoints.length : 0;
   const caps = (ev.capability_names(hash) as string[]).sort();
   return { caps, endpoints, clocks: server.clocks.length, files: server.files.length };
+}
+
+
+/** What a TypeScript flow's action computes, its own nodes (its input, its answer) taken off: a
+ *  canvas nothing starts, as a person draws one, and as no text writes. */
+function handlerless(doc: ReturnType<typeof compileHolon>["doc"]) {
+  const own = new Set((doc.nodes as { id: string; data: { name: string } }[]).filter((n) => n.data.name === "action" || n.data.name === "respond").map((n) => n.id));
+  const edges = (doc.edges as { source: string; target: string }[]).filter((e) => !own.has(e.source) && !own.has(e.target));
+  return { ...doc, nodes: (doc.nodes as { id: string }[]).filter((n) => !own.has(n.id)), edges };
 }
 
 describe("sample flows", () => {
@@ -165,17 +174,6 @@ describe("sample flows", () => {
     expect(describeItemSending("NetworkIngress", false, undefined)).toBe("receive requests");
   });
 
-  it("make a flow nothing would start runnable by hand: an action, run through the real core", () => {
-    const fixed = runnableByHand("flow sums\n\nstate.last = 3\n1 + 2\n");
-    expect(fixed).toContain("action run (input) {");
-    expect(fixed).toContain("respond 1 + 2");
-    const ev = new Evaluator();
-    const { doc } = compileHolon(fixed, ev);
-    const server = deriveServer(doc.nodes as PrimitiveNodeType[], doc.edges as Edge[], ev, "8080");
-    expect(server.actions.map((a) => a.name)).toEqual(["run"]);
-    expect(() => runnableByHand("flow f\nport 8080\n\nroute GET / (req) {\n  respond \"hi\"\n}\n")).toThrow(/trigger already/);
-  });
-
   it("tell required permissions from optional ones, the trigger always required", () => {
     const { caps } = derive("guarded-api");
     const optional = samples().find((s) => s.name === "guarded-api")!.optional;
@@ -229,26 +227,20 @@ describe("sample flows", () => {
 
   it("place a saved flow as one node: grouped whole, holons inside it and all; never a server", () => {
     // A flow without routes that itself holds a holon: slugify, then uppercase.
-    const { doc: saved } = compileHolon(
-      `flow shout
-holon slugify(text) -> (slug) {
-  node lower = lowercase
-  node space = const { value: " ", type: Text }
-  node words = split
-  node dash = const { value: "-", type: Text }
-  node slug = join
-  in.text -> lower.s
-  lower.out -> words.text
-  space.out -> words.sep
-  words.out -> slug.list
-  dash.out -> slug.sep
-  slug.out -> out.slug
+    const saved = handlerless(
+      compileHolon(
+        `import { action, flow } from "holon"
+
+flow("shout")
+
+function slugify(text) {
+  return text.toLowerCase().split(" ").join("-")
 }
-node placed = slugify
-node upper = uppercase
-placed.slug -> upper.s
+
+export const run = action((input) => slugify(input).toUpperCase())
 `,
-      new Evaluator(),
+        new Evaluator(),
+      ).doc,
     );
     // Placed in another flow's workspace, from what the saved document carries.
     const ev = new Evaluator();
@@ -458,31 +450,32 @@ placed.slug -> upper.s
   it("carry the names of the holons in a flow, nested ones too, and teach them back on open", () => {
     const ev = new Evaluator();
     const { doc } = compileHolon(
-      `flow nested
-holon inner-holon(text) -> (out) {
-  node up = uppercase
-  in.text -> up.s
-  up.out -> out.out
+      `import { action, flow } from "holon"
+
+flow("nested")
+
+function innerHolon(text) {
+  return text.toUpperCase()
 }
-holon outer-holon(text) -> (out) {
-  node shout = inner-holon
-  in.text -> shout.text
-  shout.out -> out.out
+
+function outerHolon(text) {
+  return innerHolon(text)
 }
-node outer = outer-holon
+
+export const run = action((input) => outerHolon(input))
 `,
       ev,
     );
-    expect(Object.values(doc.names ?? {}).sort()).toEqual(["inner-holon", "outer-holon"]);
-    const innerHash = Object.entries(doc.names!).find(([, n]) => n === "inner-holon")![0];
+    expect(Object.values(doc.names ?? {}).sort()).toEqual(["innerHolon", "outerHolon"]);
+    const innerHash = Object.entries(doc.names!).find(([, n]) => n === "innerHolon")![0];
     expect(nameOf(innerHash), "not known before the flow is opened").toBeUndefined();
     expect(restoreDocument(doc, new Evaluator())).toBeNull();
-    const outer = (doc.nodes as PrimitiveNodeType[])[0];
+    const outer = (doc.nodes as PrimitiveNodeType[]).find((n) => n.data.body.kind === "Composite")!;
     const opened = innerCanvas(outer, doc.nodes as PrimitiveNodeType[], doc.edges as Edge[], ev, knownNames());
     if (!opened.ok) throw new Error(opened.message);
-    expect(opened.nodes.map((n) => (n.data as { name: string }).name)).toContain("inner-holon");
+    expect(opened.nodes.map((n) => (n.data as { name: string }).name)).toContain("innerHolon");
     // And saved again with the flow.
-    expect(documentUnits([innerHash], ev).names).toEqual({ [innerHash]: "inner-holon" });
+    expect(documentUnits([innerHash], ev).names).toEqual({ [innerHash]: "innerHolon" });
   });
 
   it("ask for what each one shows", () => {

@@ -71,7 +71,7 @@ fn unplaced(doc: &crate::builder::FlowDocument) -> serde_json::Value {
 
 fn mistake(message: String) -> LowerError {
     let at = Pos { line: 1, col: 1 };
-    LowerError { span: Span { start: at, end: at }, message, declare: None }
+    LowerError { span: Span { start: at, end: at }, message }
 }
 
 /// The layout, with no check that it is the same flow. A statement holding a comment no list

@@ -43,7 +43,7 @@ test("an agent proposes a flow through holon mcp, a person approves it in the ed
     // samples', in this slot's range (ports.mjs), so it meets no other run's.
     const name = `agent-${Date.now().toString(36)}`;
     const port = 8190 + SAMPLE_SHIFT;
-    const text = (greeting: string) => `flow ${name}\nport ${port}\n\nroute GET /hi/:name (req) {\n  respond "${greeting}, {req.params.name}"\n}\n`;
+    const text = (greeting: string) => `import { flow, route } from "holon"\n\nflow("${name}", { port: ${port} })\n\nroute.get("/hi/:name", (req) => \`${greeting}, \${req.params.name}\`)\n`;
 
     expect((await agent.tool("check", { text: text("Hi") })).text).toContain("GET /hi/:name");
     // The first deploy waits for a person.
@@ -72,7 +72,7 @@ test("an agent proposes a flow through holon mcp, a person approves it in the ed
     expect(called.text).toContain("GET /hi/Ada → 200");
     expect(called.text).toContain("Hello, Ada");
     const explained = await agent.tool("explain", { slug: name });
-    expect(explained.text).toContain('respond "Hello, {req.params.name}"');
+    expect(explained.text).toContain("`Hello, ${req.params.name}`");
     expect(explained.text).toContain('⇒ { body: "Hello, Ada", status: 200 }');
   } finally {
     agent.close();
@@ -85,7 +85,7 @@ test("an agent asks through holon mcp to put a run's state back, and a person re
     await agent.rpc("initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "e2e", version: "1" } });
     const name = `tally-${Date.now().toString(36)}`;
     const port = 8191 + SAMPLE_SHIFT;
-    const text = `flow ${name}\nport ${port}\nstate total\n\nroute POST /add (req) {\n  total = (state.total ?? 0) + req.json.n\n  state.total = total\n  respond total\n}\n\nroute GET /total (req) {\n  respond state.total\n}\n`;
+    const text = `import { flow, route } from "holon"\nimport state from "state"\n\nflow("${name}", { port: ${port} })\n\nroute.post("/add", (req) => {\n  const total = (state.total ?? 0) + req.json.n\n  state.total = total\n  return total\n})\n\nroute.get("/total", () => state.total)\n`;
     expect((await agent.tool("deploy", { text })).text).toContain("Not deployed yet");
     // A person deploys it, approving what it may do.
     await page.goto("/");

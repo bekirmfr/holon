@@ -43,9 +43,8 @@ const FMT_USAGE: &str = "usage: holon fmt <file>
 
   Rewrites a flow in place as the samples and holon new are written: laid out as written,
   Prettier's way, its comments kept, var and == made const or let and ===, a js() body never
-  touched. A flow that doesn't compile is left as it is, its mistakes printed. A flow in the
-  older .holon form is printed in that form's layout, a name its body uses that its header
-  doesn't declare declared for it. It needs no server.
+  touched. A flow that doesn't compile is left as it is, its mistakes printed. It needs no
+  server.
 
 examples:
   holon fmt shop.holon.ts
@@ -105,9 +104,8 @@ pub(crate) fn run(cmd: &str, args: &[String]) -> i32 {
     match cmd {
         "check" => print(commands::check(file, &source)),
         "show" => print(commands::show(file, &source)),
-        _ => match commands::fmt_declaring(file, &source) {
-            Ok((text, declared)) if declared.is_empty() => write(file, &text, &format!("formatted {file}")),
-            Ok((text, declared)) => write(file, &text, &format!("formatted {file}: declared {}", declared.join(", "))),
+        _ => match commands::fmt(file, &source) {
+            Ok(text) => write(file, &text, &format!("formatted {file}")),
             Err(report) => print(report),
         },
     }

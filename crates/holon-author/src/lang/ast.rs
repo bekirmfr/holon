@@ -1,8 +1,8 @@
-//! The syntax tree of a `.holon` text (docs/LANGUAGE.md): what the parser produces and the
-//! lowering reads. Every node carries its span, so an error, a check result or a replay can point
-//! at the expression that placed a node. Both forms of the text are here: the expression form
-//! (bindings, calls, nouns, routes) and the wiring form (`node`, `a.out -> b.in`), since one file
-//! may hold both and the lowering treats them alike.
+//! The syntax tree the lowering reads (docs/LANGUAGE.md): what the TypeScript reader, [`super::ts`],
+//! makes of a `.holon.ts` text. Every node carries its span, so an error, a check result or a replay
+//! can point at the expression that placed a node. The tree keeps a flow's meaning, not its
+//! spelling: the imports and the `flow(…)` settings are headers, a handler's `return`s are one
+//! `Respond`, a ternary and an `if` are both `If`, and a `let` given a new value is a new `Bind`.
 
 /// A place in the text: 1-based line and column, the column counted in characters.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -31,7 +31,7 @@ pub struct Name {
     pub span: Span,
 }
 
-/// A whole text: its headers (deploy settings and declarations), then its items.
+/// A whole text: its headers (the `flow(…)` settings and what it imports), then its items.
 #[derive(Clone, Debug, PartialEq, Default)]
 pub struct File {
     pub headers: Vec<Header>,
@@ -46,48 +46,45 @@ pub struct Header {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum HeaderKind {
+    /// `flow("name")`.
     Flow(String),
+    /// `flow("name", { port: 8080 })`.
     Port(String),
-    /// `every 10s`: the interval, in seconds, and as written.
-    Every { seconds: f64, text: String },
-    /// The wiring form's `interval 10`.
-    Interval(String),
-    /// `keep 500 runs for 30d`: how many runs the deployment's log keeps, and for how many days
+    /// `keep: { runs: 500, days: 30 }`: how many runs the deployment's log keeps, and for how many days
     /// (the limits `keep_runs` and `keep_run_days`); either may be left out, not both.
     Keep { runs: Option<u64>, days: Option<u64> },
-    /// `limit run_budget_ms 60s`: a limit of the deploy settings (one of [`crate::LIMIT_NAMES`]),
+    /// `limits: { run_budget_ms: "60s" }`: a limit of the deploy settings (one of [`crate::LIMIT_NAMES`]),
     /// in its unit (a `_ms` limit's duration in milliseconds, a `_seconds` one's in seconds).
     Limit { name: String, value: u64 },
+    /// `browsers: ["https://app.example"]`: the origins whose pages may call the flow.
     Browsers(Vec<String>),
+    /// An import the flow can do without, `with { optional: "true" }`.
     Optional(Consent),
-    /// `secret signing_key`: a secret the flow reads, as `secret.signing_key`; someone sets it
-    /// before the flow works (`optional secret …` declares one it can do without).
+    /// `import key from "secret:signing_key"`: a secret the flow reads; someone sets it before the
+    /// flow works (an optional import is one it can do without).
     Secret(String),
-    /// `state beats`: a key of the flow's state, read as `state.beats` and written as
-    /// `state.beats = …` or `state.set(beats, …)`.
+    /// A key of the flow's state (`import state from "state"`), read as `state.beats` and written
+    /// as `state.beats = …`: each key used is one header.
     State(String),
-    /// `collection notes`: a name the body may use as `notes[k]`.
+    /// `import notes from "collection:notes"`: used as `notes[k]`.
     Collection(String),
-    /// `folder inbox`: a folder an admin binds on the host, used as `inbox[name]`.
+    /// `import inbox from "folder:inbox"`: a folder an admin binds on the host, used as
+    /// `inbox[name]`.
     Folder(String),
-    /// `database shop`: a database an admin binds on the host, used as `shop.query("select …")`,
-    /// `shop.one(…)` and `shop.exec(…)`, or, a document database, `notes.find("notes", { … })`,
-    /// `find_one`, `insert`, `update` and `delete`.
+    /// `import shop from "database:shop"`: a database an admin binds on the host, used as
+    /// `shop.query("select …")`, `shop.one(…)` and `shop.exec(…)`, or, a document database,
+    /// `notes.find("notes", { … })`, `find_one`, `insert`, `update` and `delete`.
     Database(String),
-    /// `channel updates`: packs the flow sends (`updates.send(v)`) to whoever subscribes, a route
-    /// answering with `respond updates.subscribe()`.
+    /// `import updates from "channel:updates"`: packs the flow sends (`updates.send(v)`) to
+    /// whoever subscribes, a route answering with `return updates.subscribe()`.
     Channel(String),
-    /// `calls billing`: another deployed flow, by its slug, whose actions this flow runs:
-    /// `billing.charge(x)`, `RunsAction("billing/charge")`. A slug's `-` is `_` in the call
-    /// (`calls billing-v2` is called as `billing_v2.charge(x)`).
+    /// `import { charge } from "flow:billing"`: another deployed flow, by its slug, whose actions
+    /// this flow runs, `RunsAction("billing/charge")`. Its call noun is the slug with `-` as `_`.
     Calls(String),
-    /// `on file inbox`: a run for each file new or changed in the folder (or removed from it,
-    /// `deleted`; only names matching a glob, `matching "*.csv"`), which it declares too; the run
-    /// reads the file's handle as `ingress`. A flow may have several.
-    OnFile(FileOn),
 }
 
-/// One `on file` line.
+/// What a file handler runs on: `on.file.created(inbox, …)`, `on.file.deleted(…)`, and the names
+/// it takes, `{ matching: "*.csv" }`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct FileOn {
     pub folder: String,
@@ -97,11 +94,10 @@ pub struct FileOn {
     pub matching: Option<String>,
 }
 
-/// What `optional` names: a secret by its name, or a consent name as the server prints one.
+/// What a flow can do without: a secret by its name (`with { optional: "true" }`).
 #[derive(Clone, Debug, PartialEq)]
 pub enum Consent {
     Secret(String),
-    Named { name: String, arg: Option<String> },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -115,53 +111,54 @@ pub enum Item {
     Stmt(Stmt),
 }
 
-/// `action reset (input) { body }`: an action, a run by hand by its name (docs/L4s/triggers-L4.md
-/// §2). `input` in it is what the caller sent; `respond v` gives the answer.
+/// `export const reset = action((input) => …)`: an action, a run by hand by its name
+/// (docs/L4s/triggers-L4.md §2). `input` in it is what the caller sent; what it returns is the
+/// answer.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ActionDef {
     pub name: Name,
     /// The name of what was sent.
     pub input: Name,
-    /// `action reset (input)`.
+    /// `action((input) =>`.
     pub head: Span,
-    /// `lazy` or `unrecorded` before the block: how its runs are recorded (strict without one).
+    /// `{ log: "lazy" }` or `"unrecorded"`: how its runs are recorded (strict without one).
     pub log: Option<Name>,
     pub body: Vec<Stmt>,
     pub span: Span,
 }
 
-/// `on file inbox [deleted] [matching "…"] (f) { body }`: a file handler, a run for each file the
-/// line starts (docs/L4s/triggers-L4.md §2). `f` in it is the file's handle.
+/// `on.file.created(inbox, (f) => …, { matching: "…" })` (or `deleted`): a file handler, a run for
+/// each file (docs/L4s/triggers-L4.md §2). `f` in it is the file's handle.
 #[derive(Clone, Debug, PartialEq)]
 pub struct OnFileDef {
     pub on: FileOn,
     /// The name of the file's handle.
     pub file: Name,
-    /// `on file inbox … (f)`.
+    /// `on.file.created(inbox, (f) =>`.
     pub head: Span,
-    /// `lazy` or `unrecorded` before the block: how its runs are recorded (strict without one).
+    /// `{ log: "lazy" }` or `"unrecorded"`: how its runs are recorded (strict without one).
     pub log: Option<Name>,
     pub body: Vec<Stmt>,
     pub span: Span,
 }
 
-/// `every 2s { body }`: a clock handler, a run every period (docs/L4s/triggers-L4.md §2). `now`
-/// in it is the time of the tick.
+/// `every("2s", () => …)`: a clock handler, a run every period (docs/L4s/triggers-L4.md §2).
+/// `now` in it is the time of the tick.
 #[derive(Clone, Debug, PartialEq)]
 pub struct EveryDef {
     /// The period in seconds, and as written.
     pub seconds: f64,
     pub text: String,
-    /// `every 2s`.
+    /// `every("2s", () =>`.
     pub head: Span,
-    /// `lazy` or `unrecorded` before the block: how its runs are recorded (strict without one).
+    /// `{ log: "lazy" }` or `"unrecorded"`: how its runs are recorded (strict without one).
     pub log: Option<Name>,
     pub body: Vec<Stmt>,
     pub span: Span,
 }
 
-/// `holon name(inputs) -> outputs js [fuel N] [memory N] { body }`: a holon whose body is
-/// JavaScript, run by the engine module (docs/L4s/js-node-L4.md §2). Placed by name like any.
+/// `const name = js(function out(inputs) { body }, { fuel, memory })`: a function whose body is
+/// JavaScript, run by the engine module (docs/L4s/js-node-L4.md §2). Called by name like any.
 #[derive(Clone, Debug, PartialEq)]
 pub struct JsDef {
     pub name: Name,
@@ -169,14 +166,14 @@ pub struct JsDef {
     pub outputs: Vec<PortDecl>,
     pub fuel: Option<Budget>,
     pub memory: Option<Budget>,
-    /// The JavaScript between the braces, verbatim.
+    /// The JavaScript between the braces, its types blanked.
     pub body: String,
     /// The braces' span.
     pub body_span: Span,
     pub span: Span,
 }
 
-/// A budget as written: `50M`, `16MB`, `10000000`.
+/// A budget as written: `"50M"`, `"16MB"`, `10000000`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Budget {
     pub value: u64,
@@ -184,7 +181,7 @@ pub struct Budget {
     pub span: Span,
 }
 
-/// `holon name(inputs) -> outputs { body }`, in either form.
+/// `function name(inputs) { body }`: a holon, its outputs named by what it returns.
 #[derive(Clone, Debug, PartialEq)]
 pub struct HolonDef {
     pub name: Name,
@@ -194,8 +191,8 @@ pub struct HolonDef {
     pub span: Span,
 }
 
-/// A holon's port: its name, an optional type, and, in quotes, the unit's own name for it when
-/// that differs (how a canvas-grouped holon's proposed names round-trip).
+/// A function's port: its name, an optional type, and the unit's own name for it when that
+/// differs.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PortDecl {
     pub name: Name,
@@ -203,7 +200,7 @@ pub struct PortDecl {
     pub unit: Option<String>,
 }
 
-/// `Text`, `List<Text>`, `Record`, …
+/// A port's type, as the lowering names it: `Text`, `List<Text>`, `Record`, …
 #[derive(Clone, Debug, PartialEq)]
 pub struct TypeExpr {
     pub name: String,
@@ -211,14 +208,14 @@ pub struct TypeExpr {
     pub span: Span,
 }
 
-/// `route METHOD /path (req) [resumes name] { body }`.
+/// `route.get("/path", (req) => …, { resumes: "name" })`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct RouteDef {
     pub method: Name,
     pub path: Name,
     pub request: Name,
     pub resumes: Option<Name>,
-    /// `lazy` or `unrecorded` before the block: how its runs are recorded (strict without one).
+    /// `{ log: "lazy" }` or `"unrecorded"`: how its runs are recorded (strict without one).
     pub log: Option<Name>,
     pub body: Vec<Stmt>,
     pub span: Span,
@@ -228,13 +225,14 @@ pub struct RouteDef {
 pub struct Stmt {
     pub kind: StmtKind,
     pub span: Span,
-    /// `… after x`: what the statement's sinks are tied to, instead of the block's trigger.
+    /// What the statement's sinks are tied to, instead of the handler's trigger: the condition of
+    /// the `if` it was written in.
     pub after: Option<Expr>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum StmtKind {
-    /// `name = expr`.
+    /// `const name = expr`, or a `let` given a value.
     Bind { name: Name, value: Expr },
     /// `state.key = expr`.
     StateWrite { key: Name, value: Expr },
@@ -242,14 +240,11 @@ pub enum StmtKind {
     CollectionWrite { collection: Name, key: Expr, value: Expr },
     /// `delete notes[key]`.
     Delete { collection: Name, key: Expr },
-    /// `respond args…` (the args as a call's, without parentheses; may be empty).
+    /// A handler's answer: its `return`s folded into one, the value first, then `status`,
+    /// `missing`, `headers` and `stream` named.
     Respond(Vec<Arg>),
     /// An expression on its own: an effect, or a flow's output.
     Expr(Expr),
-    /// The wiring form's `node name = of[arity] { params } at x y`.
-    Node { name: Name, of: Name, arity: Option<usize>, params: Vec<(Name, String)>, at: Option<(f64, f64)> },
-    /// The wiring form's `a.out -> b.in`.
-    Wire { from: (Name, Name), to: (Name, Name) },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -261,39 +256,40 @@ pub struct Expr {
 #[derive(Clone, Debug, PartialEq)]
 pub enum ExprKind {
     Number { value: f64, text: String },
-    /// `10s`, `5m`, `2h`, `1d`: in seconds, and as written.
+    /// `"10s"`, `"5m"`, `"2h"`, `"1d"` where a duration is read: in seconds, and as written.
     Duration { seconds: f64, text: String },
     Text(String),
-    /// A string with `{expr}` parts.
+    /// A template literal, `` `a ${x}` ``.
     Interpolated(Vec<Part>),
     Bool(bool),
-    /// A bound name, a holon, a leaf, a declared collection, or a bare word in a param position.
+    /// A bound name, a function, a leaf, an imported collection, or a word in a param position.
     Name(String),
-    /// `secret.name`.
+    /// An imported secret, by the secret's name.
     Secret(String),
     /// `state.key`, read.
     State(String),
     Noun(Noun),
     /// `f(args)`.
     Call { callee: Name, args: Vec<Arg> },
-    /// `receiver.method(args)`: `notes.list(…)`, `http.post(…)`, `stripe.verify(…)`, `state.set(…)`.
+    /// `receiver.method(args)`: `notes.list(…)`, `api.post(…)`, `stripe.verify(…)`.
     Method { receiver: Name, method: Name, args: Vec<Arg> },
     /// `base.name`: an output or a field, decided by the lowering.
     Field { base: Box<Expr>, name: Name },
     /// `base[key]`: a collection read when `base` is a declared collection, else a lookup.
     Index { base: Box<Expr>, key: Box<Expr> },
-    /// `{ ..spread, key: value, … }`.
+    /// `{ ...spread, key: value, … }`.
     Record { spread: Option<Box<Expr>>, fields: Vec<(Key, Expr)> },
     List(Vec<Expr>),
     Not(Box<Expr>),
     Binary { op: BinOp, lhs: Box<Expr>, rhs: Box<Expr> },
-    /// `if cond then then [else els]`.
+    /// `cond ? then : els`, and an `if` joined; without `els`, absent when `cond` doesn't hold.
     If { cond: Box<Expr>, then: Box<Expr>, els: Option<Box<Expr>> },
-    /// `match subject { patterns -> value … [else -> els] }`. `open` is the brace's span.
+    /// `switch (subject) { case …: return value … default: return els }`. `open` is the brace's
+    /// span.
     Match { subject: Box<Expr>, arms: Vec<Arm>, els: Option<Box<Expr>>, open: Span },
-    /// `await name[, expires: expr]`.
+    /// `await event("name", { expires: "1h" })`.
     Await { name: Name, expires: Option<Box<Expr>> },
-    /// `fn(params) -> body`.
+    /// `(params) => body`, written in place for `map` and `reduce`.
     Lambda { params: Vec<Name>, body: Box<Expr> },
     /// `( expr )`, kept: parentheses are the author saying "two nodes" where an operator chain
     /// would otherwise flatten.
@@ -304,7 +300,6 @@ pub enum ExprKind {
 pub enum Noun {
     Now,
     Random,
-    Ingress,
 }
 
 /// A record literal's key, as written.
@@ -321,14 +316,14 @@ pub enum Part {
     Expr(Expr),
 }
 
-/// A call's argument: positional, or named (`after: x`, `encoding: hex`).
+/// A call's argument: positional, or named (an option's field, `{ encoding: "hex" }`).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Arg {
     pub name: Option<Name>,
     pub value: Expr,
 }
 
-/// A `match` arm: the patterns it is chosen by, and its value.
+/// A `switch`'s case: the values it is chosen by, and its answer.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Arm {
     pub patterns: Vec<Expr>,
@@ -337,6 +332,7 @@ pub struct Arm {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BinOp {
+    /// `value when cond`: the value, present only when `cond` holds (an `if` without an `else`).
     When,
     Coalesce,
     Or,
@@ -354,7 +350,7 @@ pub enum BinOp {
 }
 
 impl BinOp {
-    /// As written.
+    /// As the lowering names it.
     pub fn text(self) -> &'static str {
         match self {
             BinOp::When => "when",

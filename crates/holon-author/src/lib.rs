@@ -15,11 +15,11 @@
 //! - [`group`]: a selection grouped into one composite, a saved flow placed as one node.
 //! - [`composites`]: a composite's inside as a canvas, expanded in place, frozen back.
 //! - [`builder`]: a flow document built node by node, as the samples and the text format do.
-//! - [`text`]: the `.holon` text format's wiring form: parsed, compiled, printed.
-//! - [`lang`]: the language (docs/LANGUAGE.md): both forms of the text as one syntax tree, with
-//!   spans, lowered to a flow document (`lang::lower`) and printed back in the canonical form
-//!   `holon fmt` writes (`lang::print`).
-//! - [`samples`]: the sample flows, one per capability: `.holon` files in `samples/`, compiled
+//! - [`text`]: a flow document's own units and names put back where it is read.
+//! - [`lang`]: the language (docs/LANGUAGE.md): a flow in TypeScript's syntax, `NAME.holon.ts`,
+//!   read into a syntax tree with spans, lowered to a flow document (`lang::lower`), laid out as
+//!   `holon fmt` writes it (`lang::format`), and a canvas written as text (`lang::print`).
+//! - [`samples`]: the sample flows, one per capability: `.holon.ts` files in `samples/`, compiled
 //!   from their text through the same lowering as any flow.
 //! - [`describe`]: what a manifest item lets a flow do, in words.
 //! - [`commands`]: `holon new`, `check`, `show` and `fmt`, text in and text out.

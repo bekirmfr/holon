@@ -73,7 +73,7 @@ import { NodeActions, NodeDocs, nodeDescriber } from "./NodeDocs";
 import { AccountMenu, AuthGate, type Me } from "./AuthGate";
 import { AdminPage } from "./AdminPage";
 import { HomePage } from "./HomePage";
-import { compileHolon, printHolon, runnableByHand, sourceLineOf } from "./holonText";
+import { compileHolon, printHolon, sourceLineOf } from "./holonText";
 import { TextPane } from "./TextPane";
 import { useTextPane } from "./useTextPane";
 import { WelcomePage } from "./WelcomePage";
@@ -477,9 +477,9 @@ function Canvas({
     // live.current is read on purpose, as `derived` above.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [canvasKey, ev, byName, settings.port]);
-  // Nothing would start a run: no route, clock, file handler or action, nor the old forms'
-  // `ingress`, interval or `on file` (docs/L4s/triggers-L4.md fork 14). Deploy is greyed, with
-  // the quick fix. Not said of a canvas that doesn't derive: that has its own error.
+  // Nothing would start a run: no route, clock, file handler or action, nor, on a canvas, an
+  // `ingress` or `file_arrival` node or an interval (docs/L4s/triggers-L4.md fork 14). Deploy is greyed, saying
+  // what to add. Not said of a canvas that doesn't derive: that has its own error.
   const startsNothing =
     flowCaps !== null &&
     derived.endpoints.length + derived.clocks.length + derived.files.length + derived.actions.length === 0 &&
@@ -881,14 +881,6 @@ function Canvas({
                   onAction={onFlowAction}
                   startsNothing={startsNothing}
                   onSettingsOpen={() => onDeployPanelOpen(true)}
-                  onMakeRunnable={() => {
-                    try {
-                      textPane.rewrite(runnableByHand);
-                      setDeployError("");
-                    } catch (e) {
-                      setDeployError(`can't make it runnable by hand: ${e instanceof Error ? e.message : String(e)}`);
-                    }
-                  }}
                 />
               }
               saveMsg={saveMsg}

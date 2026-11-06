@@ -1,7 +1,7 @@
 {
   "name": "holon",
   "displayName": "Holon",
-  "description": "Holon flows (.holon): highlighting, each mistake holon check finds as you type, hover and formatting, through holon lsp.",
+  "description": "Holon flows (.holon.ts): each mistake holon check finds as you type, hover, completion and formatting, through holon lsp.",
   "version": "0.1.0",
   "publisher": "bekirmfr",
   "license": "SEE LICENSE IN LICENSE",
@@ -18,28 +18,11 @@
     "Formatters"
   ],
   "main": "./dist/extension.js",
-  "activationEvents": [],
+  "activationEvents": [
+    "workspaceContains:**/*.holon.ts",
+    "onLanguage:typescript"
+  ],
   "contributes": {
-    "languages": [
-      {
-        "id": "holon",
-        "aliases": [
-          "Holon",
-          "holon"
-        ],
-        "extensions": [
-          ".holon"
-        ],
-        "configuration": "./language-configuration.json"
-      }
-    ],
-    "grammars": [
-      {
-        "language": "holon",
-        "scopeName": "source.holon",
-        "path": "./syntaxes/holon.tmLanguage.json"
-      }
-    ],
     "configuration": {
       "title": "Holon",
       "properties": {
@@ -52,7 +35,6 @@
     }
   },
   "scripts": {
-    "test": "node --test test/grammar.test.js",
     "bundle": "esbuild extension.js --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node --target=node18 --minify --sourcemap",
     "pretest:vscode": "npm run bundle",
     "test:vscode": "node test/integration/run.js",
@@ -65,8 +47,6 @@
   "devDependencies": {
     "@vscode/test-electron": "2.4.1",
     "@vscode/vsce": "3.2.1",
-    "esbuild": "0.24.0",
-    "vscode-oniguruma": "2.0.1",
-    "vscode-textmate": "9.1.0"
+    "esbuild": "0.24.0"
   }
 }

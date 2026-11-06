@@ -1,7 +1,6 @@
 //! A flow written in TypeScript's syntax, `NAME.holon.ts` (docs/L4s/typescript-syntax-L4.md): read
-//! with a TypeScript parser, oxc's, into the same syntax tree as a `.holon` text ([`super::ast`]),
-//! so the lowering after it is the one both forms share and a flow written either way is the same
-//! unit. This is the note's first two slices: imports, the kind statement, the four handlers and
+//! with a TypeScript parser, oxc's, into the syntax tree the lowering reads ([`super::ast`]), so a
+//! flow written and the same flow drawn are the same unit. This is the note's first two slices: imports, the kind statement, the four handlers and
 //! their options, `const`, writes, `return`, `status` and `respond`, functions, in-place arrows,
 //! `js()`, the library's methods and types as port types; then the statements (§5): `let` and
 //! `var`, each new value a new name, destructuring, `if` and `switch` choosing names and writes
@@ -23,7 +22,7 @@ use oxc_parser::Parser;
 use oxc_span::{GetSpan, SourceType};
 
 use super::ast::*;
-use super::lower::{alias, is_optional, lower, LowerError, Lowered, RESERVED};
+use super::lower::{alias, is_optional, lower, LowerError, Lowered, RESERVED, ROUTE_WAITS};
 use crate::templates;
 
 type R<T> = Result<T, LowerError>;
@@ -33,7 +32,7 @@ pub fn compile(src: &str) -> R<Lowered> {
     lower(&parse(src)?)
 }
 
-/// Read a `.holon.ts` text into the syntax tree a `.holon` text parses to.
+/// Read a `.holon.ts` text into the syntax tree the lowering reads.
 pub fn parse(src: &str) -> R<File> {
     let allocator = Allocator::default();
     let parsed = Parser::new(&allocator, src, SourceType::ts()).parse();
@@ -41,7 +40,7 @@ pub fn parse(src: &str) -> R<File> {
     if let Some(e) = parsed.diagnostics.errors().next() {
         let at = e.labels.first().map(|l| l.offset()).unwrap_or(0);
         let pos = lines.pos(at);
-        return Err(LowerError { span: Span { start: pos, end: pos }, message: e.message.to_string(), declare: None });
+        return Err(LowerError { span: Span { start: pos, end: pos }, message: e.message.to_string() });
     }
     Reader::new(src, lines).program(&parsed.program)
 }
@@ -69,7 +68,7 @@ impl<'s> Lines<'s> {
 }
 
 fn fail<T>(span: Span, message: impl Into<String>) -> R<T> {
-    Err(LowerError { span, message: message.into(), declare: None })
+    Err(LowerError { span, message: message.into() })
 }
 
 /// What a name imported from `"holon"` is.
@@ -1028,7 +1027,7 @@ impl<'s, 't> Reader<'s, 't> {
     /// What a body still owes once read. A call bound under a condition that nothing reads is
     /// tied to the condition (`after`), as a call nothing reads is made whatever else holds; one
     /// read is asked for only where it is read. A hidden condition read once is written back
-    /// where it is read, as the `.holon` form writes it. `outputs` are a function's.
+    /// where it is read. `outputs` are a function's.
     fn settle(&mut self, stmts: &mut Vec<Stmt>, outputs: &[String]) {
         let live = live_bindings(stmts, outputs);
         for (name, trigger) in std::mem::take(&mut self.frame.guarded_calls) {
@@ -1837,8 +1836,8 @@ impl<'s, 't> Reader<'s, 't> {
                 if version(local) == now {
                     continue;
                 }
-                // A `let` with no value before, given one inside: its value is tied to x, as
-                // `.holon`'s `y = … after x` is, and absent when x is.
+                // A `let` with no value before, given one inside: its value is tied to x (the
+                // tree's `after`), and absent when x is.
                 if let (Local::Var(None), Some(Some(name))) = (local, &now)
                     && let Some(s) = stmts[from..].iter_mut().rev().find(|s| matches!(&s.kind, StmtKind::Bind { name: n, .. } if n.text == *name))
                 {
@@ -2564,7 +2563,7 @@ impl<'s, 't> Reader<'s, 't> {
         }
         let outputs = outputs.unwrap_or_else(|| vec![PortDecl { name: self.name(id.name.as_str(), id.span), ty: returns, unit: None }]);
         let inner = oxc_span::Span::new(body.span.start + 1, body.span.end - 1);
-        let text = blank_types(self.src, f, inner).map_err(|(s, why)| LowerError { span: self.span(s), message: why, declare: None })?;
+        let text = blank_types(self.src, f, inner).map_err(|(s, why)| LowerError { span: self.span(s), message: why })?;
         Ok(JsDef { name: self.name(name, name_span), inputs, outputs, fuel, memory, body: text, body_span: self.span(body.span), span: at })
     }
 
@@ -2574,15 +2573,7 @@ impl<'s, 't> Reader<'s, 't> {
         let span = self.span(value.span());
         let (value, text) = match self.unwrap(value) {
             js::Expression::NumericLiteral(n) => (Some(n.value), number_text(n)),
-            js::Expression::StringLiteral(s) => {
-                let toks = super::lex::lex(s.value.as_str()).ok();
-                let v = toks.as_ref().and_then(|t| t.first()).and_then(|t| match t.tok {
-                    super::lex::Tok::Number => t.text.parse::<f64>().ok(),
-                    super::lex::Tok::Scaled(n) => Some(n),
-                    _ => None,
-                });
-                (v, s.value.to_string())
-            }
+            js::Expression::StringLiteral(s) => (scaled(s.value.as_str()), s.value.to_string()),
             _ => (None, String::new()),
         };
         match value.filter(|v| *v >= 1.0 && v.fract() == 0.0) {
@@ -2901,7 +2892,7 @@ impl<'s, 't> Reader<'s, 't> {
     /// `payment(x)` without `await`: the action started and not waited for. It is answered once
     /// its run first waits, `{ run, waiting }` with the token for each point it waits at, or once
     /// it ends, as a JavaScript async function runs to its first `await` before it hands back its
-    /// promise. `.holon` writes it `start(payment, x)`, `start(billing.charge, x)` (the note's §9).
+    /// promise (the note's §9).
     fn start(&mut self, c: &js::CallExpression, flow: Option<String>, action: String, callee: Name, span: Span) -> R<Expr> {
         let at = callee.span;
         let target = match flow {
@@ -3206,8 +3197,8 @@ impl<'s, 't> Reader<'s, 't> {
         self.scopes.last_mut().expect("a scope").insert(name.to_string(), local);
     }
 
-    /// The name the lowering knows a TypeScript binding by: its own, unless the `.holon` form
-    /// keeps that word for itself (a leaf, a keyword, a noun), when an underscore follows it.
+    /// The name the lowering knows a TypeScript binding by: its own, unless the lowering keeps
+    /// that word for itself (a leaf, a keyword, a noun), when an underscore follows it.
     fn local_name(&self, name: &str) -> String {
         let taken = RESERVED.contains(&name) || interface_of(alias(name)).is_some() || templates::is_template(name);
         if taken { format!("{name}_") } else { name.to_string() }
@@ -3396,12 +3387,10 @@ impl Takes {
     }
 }
 
-/// `start` is `.holon`'s word: here an action called is started, and one awaited is called.
+/// There is no `start`: an action called is started, and one awaited is called.
 const START_IS_A_CALL: &str =
-    "start is .holon's word: in TypeScript an action called without await is started, const started = payment(req.json), and one awaited is called, await charge(x)";
+    "\"holon\" has no start: an action called without await is started, const started = payment(req.json), and one awaited is called, await charge(x)";
 
-/// A route that waits, refused as `.holon`'s is, in this form's words.
-const ROUTE_WAITS: &str = "a route answers and is done, so it doesn't wait: start an action that waits, const started = payment(req.json), and answer with its link, started.waiting.paid";
 
 /// A route's request's parts, each an output of its node: a name for one is the node itself.
 const REQUEST_PARTS: &[&str] = &["request", "params", "query", "headers", "body", "json"];
@@ -3421,7 +3410,7 @@ fn is_text(e: &js::Expression) -> bool {
     matches!(e, js::Expression::StringLiteral(_) | js::Expression::TemplateLiteral(_))
 }
 
-/// A number as the `.holon` form writes it: its digits as written, without `_` separators.
+/// A number as the lowering reads it: its digits as written, without `_` separators.
 fn number_text(n: &js::NumericLiteral) -> String {
     match &n.raw {
         Some(raw) if n.base == js::NumberBase::Decimal || n.base == js::NumberBase::Float => raw.as_str().replace('_', ""),
@@ -3432,16 +3421,37 @@ fn number_text(n: &js::NumericLiteral) -> String {
     }
 }
 
+/// A number as written, `2.5` or `1e3`: digits, a decimal part, an exponent.
+fn decimal(text: &str) -> Option<f64> {
+    let ok = !text.is_empty() && text.starts_with(|c: char| c.is_ascii_digit()) && text.chars().all(|c| c.is_ascii_digit() || matches!(c, '.' | 'e' | 'E' | '+' | '-'));
+    ok.then(|| text.parse().ok()).flatten()
+}
+
 /// `"10s"`, `"5m"`, `"2h"`, `"1d"` in seconds.
-fn duration(text: &str) -> Option<f64> {
-    let toks = super::lex::lex(text).ok()?;
-    match toks.as_slice() {
-        [t, ..] if t.text == text => match t.tok {
-            super::lex::Tok::Duration(s) => Some(s),
-            _ => None,
-        },
-        _ => None,
-    }
+pub(crate) fn duration(text: &str) -> Option<f64> {
+    let (n, unit) = text.split_at(text.len().checked_sub(1)?);
+    let per = match unit {
+        "s" => 1.0,
+        "m" => 60.0,
+        "h" => 3600.0,
+        "d" => 86400.0,
+        _ => return None,
+    };
+    decimal(n).map(|n| n * per)
+}
+
+/// A budget in quotes: a number, or one with its scale, `"50M"` (millions), `"2K"`, `"1G"`, or
+/// bytes, `"16MB"` (MiB), `"512KB"`, `"1GB"`.
+fn scaled(text: &str) -> Option<f64> {
+    let (n, bytes) = text.strip_suffix('B').map_or((text, false), |n| (n, true));
+    let (n, per) = match n.chars().last() {
+        Some('K') => (&n[..n.len() - 1], if bytes { 1024.0 } else { 1e3 }),
+        Some('M') => (&n[..n.len() - 1], if bytes { 1024.0 * 1024.0 } else { 1e6 }),
+        Some('G') => (&n[..n.len() - 1], if bytes { 1024.0 * 1024.0 * 1024.0 } else { 1e9 }),
+        _ if bytes => return None,
+        _ => (n, 1.0),
+    };
+    decimal(n).map(|n| n * per)
 }
 
 fn function_params<'a>(f: &'a js::Expression<'a>) -> &'a js::FormalParameters<'a> {
@@ -3764,7 +3774,6 @@ fn each_expr(stmts: &mut [Stmt], f: &mut dyn FnMut(&mut Expr) -> bool) {
                     walk(&mut a.value, f);
                 }
             }
-            StmtKind::Node { .. } | StmtKind::Wire { .. } => {}
         }
         if let Some(a) = &mut s.after {
             walk(a, f);
@@ -4005,67 +4014,153 @@ mod tests {
         (lowered.name, server.server_hash, lowered.doc.server)
     }
 
-    fn same_unit(what: &str, ts: &str, holon: &str) {
-        assert_eq!(deployed(&format!("{what}.holon.ts"), compile(ts)), deployed(&format!("{what}.holon"), super::super::compile(holon)), "{what}");
+    /// `ts` and `plain` deploy as the same flow, and fmt lays `ts` out as that flow.
+    fn same_unit(what: &str, ts: &str, plain: &str) {
+        assert_eq!(deployed(what, compile(ts)), deployed(&format!("{what}, plainly"), compile(plain)), "{what}");
         // And fmt lays it out, as the same flow (which it checks), once for good.
         let laid = super::super::format::format(ts).unwrap_or_else(|e| panic!("{what}: fmt: {e}\n{ts}"));
         assert_eq!(super::super::format::format(&laid).unwrap_or_else(|e| panic!("{what}: fmt again: {e}\n{laid}")), laid, "{what}: fmt again changed it");
     }
 
-    /// Each construct, beside the `.holon` text it is.
+    /// Each construct, beside the same flow written plainly: a `const` a node, a ternary for an
+    /// `if`, a leaf by its name. (The plain forms were `.holon`'s, written in TypeScript by the
+    /// converter that went with it.)
     #[test]
-    fn each_construct_lowers_as_its_holon_form() {
+    fn each_construct_lowers_as_its_plain_form() {
         let pairs = [
             (
                 "guarded write",
                 "import { flow, route } from \"holon\"\nimport notes from \"collection:notes\"\nflow(\"w\", { port: 8000 })\nroute.post(\"/n\", (req) => {\n  if (req.json.keep) notes[req.json.id] = req.json.text\n  return \"ok\"\n})\n",
-                "flow w\nport 8000\ncollection notes\n\nroute POST /n (req) {\n  notes[req.json.id] = req.json.text when req.json.keep\n  respond \"ok\"\n}\n",
+                r#"import { flow, route } from "holon"
+import notes from "collection:notes"
+
+flow("w", { port: 8000 })
+
+route.post("/n", (req) => {
+  notes[req.json.id] = req.json.keep ? req.json.text : undefined
+  return "ok"
+})
+"#,
             ),
             (
                 "function",
                 "import { flow, route } from \"holon\"\nflow(\"s\", { port: 8000 })\nfunction slugify(text) {\n  const slug = text.toLowerCase().split(\" \").join(\"-\")\n  return slug\n}\nroute.post(\"/s\", (req) => ({ slug: slugify(req.json.title) }))\n",
-                "flow s\nport 8000\n\nholon slugify(text) -> slug {\n  slug = join(split(lowercase(text), \" \"), \"-\")\n}\n\nroute POST /s (req) {\n  respond { slug: slugify(req.json.title) }\n}\n",
+                r#"import { flow, route } from "holon"
+
+flow("s", { port: 8000 })
+
+function slugify(text) {
+  const slug = text.toLowerCase().split(" ").join("-")
+  return slug
+}
+
+route.post("/s", (req) => ({ slug: slugify(req.json.title) }))
+"#,
             ),
             (
                 "function of several outputs",
                 "import { flow, route } from \"holon\"\nflow(\"m\", { port: 8000 })\nconst split_name = (full) => {\n  const first = full.first\n  return { first, last: full.last }\n}\nroute.post(\"/m\", (req) => {\n  const { first, last } = split_name(req.json)\n  return { first, last }\n})\n",
-                "flow m\nport 8000\n\nholon split_name(full) -> (first, last) {\n  first = full.first\n  last = full.last\n}\n\nroute POST /m (req) {\n  parts_1 = split_name(req.json)\n  first = parts_1.first\n  last = parts_1.last\n  respond { first: first, last: last }\n}\n",
+                r#"import { flow, route } from "holon"
+
+flow("m", { port: 8000 })
+
+function split_name(full) {
+  const first = full.first
+  const last = full.last
+  return { first, last }
+}
+
+route.post("/m", (req) => {
+  const parts_1 = split_name(req.json)
+  const first = parts_1.first
+  const last = parts_1.last
+  return { first, last }
+})
+"#,
             ),
             (
                 "settings",
                 "import { flow, every } from \"holon\"\nimport state from \"state\"\nflow(\"k\", { keep: { runs: 5, days: 1 }, limits: { run_budget_ms: \"1m\", max_waiting_runs: 10 } })\nevery(\"1m\", () => {\n  state.beats = (state.beats ?? 0) + 1\n})\n",
-                "flow k\nkeep 5 runs for 1d\nlimit run_budget_ms 1m\nlimit max_waiting_runs 10\nstate beats\n\nevery 1m {\n  state.beats = (state.beats ?? 0) + 1\n}\n",
+                r#"import { every, flow } from "holon"
+import state from "state"
+
+flow("k", { keep: { runs: 5, days: 1 }, limits: { run_budget_ms: "1m", max_waiting_runs: 10 } })
+
+every("1m", () => {
+  state.beats = (state.beats ?? 0) + 1
+})
+"#,
             ),
             (
                 "defaults and constants",
                 "import { flow, route } from \"holon\"\nflow(\"d\", { port: 8000 })\nconst limit = 50\nroute.get(\"/d\", ({ query }) => {\n  const { after = \"\", by } = query\n  return { after, by, limit }\n})\n",
-                "flow d\nport 8000\n\nlimit = 50\n\nroute GET /d (req) {\n  after = req.query.after ?? \"\"\n  by = req.query.by\n  respond { after: after, by: by, limit: limit }\n}\n",
+                r#"import { flow, route } from "holon"
+
+flow("d", { port: 8000 })
+
+const limit = 50
+
+route.get("/d", (req) => {
+  const after = req.query.after ?? ""
+  const by = req.query.by
+  return { after, by, limit }
+})
+"#,
             ),
             (
                 "a function returning an expression",
                 "import { flow, route } from \"holon\"\nflow(\"o\", { port: 8000 })\nfunction slugify(text) {\n  return text.toLowerCase().split(\" \").join(\"-\")\n}\nroute.post(\"/s\", (req) => slugify(req.json.title))\n",
-                "flow o\nport 8000\n\nholon slugify(text) -> out {\n  out = join(split(lowercase(text), \" \"), \"-\")\n}\n\nroute POST /s (req) {\n  respond slugify(req.json.title)\n}\n",
+                r#"import { flow, route } from "holon"
+
+flow("o", { port: 8000 })
+
+function slugify(text) {
+  const out = text.toLowerCase().split(" ").join("-")
+  return out
+}
+
+route.post("/s", (req) => slugify(req.json.title))
+"#,
             ),
             (
                 "ports named after a leaf and a keyword",
                 "import { flow, route } from \"holon\"\nflow(\"p\", { port: 8000 })\nconst total = (sum, json) => sum + json.extra\nroute.post(\"/t\", (req) => ({ total: total(req.json.sum, req.json), more: req.json.xs.map((sum) => sum + 1) }))\n",
-                "flow p\nport 8000\n\nholon total(sum, json_) -> out {\n  out = sum + json_.extra\n}\n\nroute POST /t (req) {\n  respond { total: total(req.json.sum, req.json), more: map(req.json.xs, fn: fn(sum) -> sum + 1) }\n}\n",
+                r#"import { flow, route } from "holon"
+
+flow("p", { port: 8000 })
+
+function total(sum, json) {
+  const out = sum + json.extra
+  return out
+}
+
+route.post("/t", (req) => ({
+  total: total(req.json.sum, req.json),
+  more: req.json.xs.map((sum) => sum + 1),
+}))
+"#,
             ),
             (
                 "a flow's action called",
                 "import { flow, route } from \"holon\"\nimport { charge } from \"flow:billing\"\nflow(\"c\", { port: 8000 })\nroute.post(\"/c\", async (req) => await charge(req.json))\n",
-                "flow c\nport 8000\ncalls billing\n\nroute POST /c (req) {\n  respond billing.charge(req.json)\n}\n",
+                r#"import { flow, route } from "holon"
+import { charge } from "flow:billing"
+
+flow("c", { port: 8000 })
+
+route.post("/c", async (req) => await charge(req.json))
+"#,
             ),
         ];
-        for (what, ts, holon) in pairs {
-            same_unit(what, ts, holon);
+        for (what, ts, plain) in pairs {
+            same_unit(what, ts, plain);
         }
     }
 
-    /// Slice 2's statements, each beside the `.holon` text it is: a `let` given a new value is a
-    /// new name, branches join with `if` and `match`, returns fold into one `respond`.
+    /// Slice 2's statements, each beside the same flow written plainly: a `let` given a new value
+    /// is a new name, branches join with ternaries, returns fold into one answer.
     #[test]
-    fn each_statement_lowers_as_its_holon_form() {
+    fn each_statement_lowers_as_its_plain_form() {
         let pairs = [
             (
                 "let, if and else if",
@@ -4081,7 +4176,19 @@ route.post("/fee", (req) => {
   return { fee }
 })
 "#,
-                "flow f\nport 8000\n\nroute POST /fee (req) {\n  fee = 0\n  fee_2 = 5\n  fee_3 = 2\n  fee_4 = if req.json.amount > 100 then fee_3 else fee\n  fee_5 = if req.json.express then fee_2 else fee_4\n  respond { fee: fee_5 }\n}\n",
+                r#"import { flow, route } from "holon"
+
+flow("f", { port: 8000 })
+
+route.post("/fee", (req) => {
+  const fee = 0
+  const fee_2 = 5
+  const fee_3 = 2
+  const fee_4 = req.json.amount > 100 ? fee_3 : fee
+  const fee_5 = req.json.express ? fee_2 : fee_4
+  return { fee: fee_5 }
+})
+"#,
             ),
             (
                 "an early return",
@@ -4095,31 +4202,18 @@ route.post("/pay", (req) => {
   return { paid: amount }
 })
 "#,
-                "flow p\nport 8000\nstate paid\n\nroute POST /pay (req) {\n  amount = req.json.amount\n  cond_1 = amount > 1000\n  state.paid = amount when !(cond_1 ?? false)\n  respond if cond_1 then \"too much\" else { paid: amount }, status: if cond_1 then 403 else 200\n}\n",
-            ),
-            (
-                "a switch's writes",
-                r#"import { flow, route } from "holon"
+                r#"import { flow, route, status } from "holon"
 import state from "state"
-import notes from "collection:notes"
-flow("l", { port: 8000 })
-route.post("/level", (req) => {
-  switch (req.json.level) {
-    case "high":
-    case "urgent":
-      state.alert = true
-      notes[req.json.id] = "urgent"
-      break
-    case "low":
-      state.alert = false
-      break
-    default:
-      notes[req.json.id] = "other"
-  }
-  return "ok"
+
+flow("p", { port: 8000 })
+
+route.post("/pay", (req) => {
+  const amount = req.json.amount
+  const cond_1 = amount > 1000
+  state.paid = !(cond_1 ?? false) ? amount : undefined
+  return status(cond_1 ? 403 : 200, cond_1 ? "too much" : { paid: amount })
 })
 "#,
-                "flow l\nport 8000\nstate alert\ncollection notes\n\nroute POST /level (req) {\n  subject_1 = req.json.level\n  notes[req.json.id] = \"urgent\" when subject_1 == \"high\" || subject_1 == \"urgent\"\n  notes[req.json.id] = \"other\" when !((subject_1 == \"high\" || subject_1 == \"urgent\" || subject_1 == \"low\") ?? false)\n  state.alert = match subject_1 {\n    \"high\", \"urgent\" -> true\n    \"low\" -> false\n  }\n  respond \"ok\"\n}\n",
             ),
             (
                 "the rest of destructuring, and changes in place",
@@ -4136,7 +4230,25 @@ route.post("/order", (req) => {
   return { order, tags, rest }
 })
 "#,
-                "flow o\nport 8000\n\nroute POST /order (req) {\n  parts_1 = req.json\n  id = parts_1.id\n  rest = without_field(parts_1, name: \"id\")\n  parts_2 = rest.items\n  first = head(parts_2)\n  others = tail(parts_2)\n  tags = append(others, \"new\")\n  order = { id: id, first: first }\n  order_2 = { ..order, count: 2 }\n  order_3 = without_field(order_2, name: \"first\")\n  tags_2 = append(tags, \"x\")\n  respond { order: order_3, tags: tags_2, rest: rest }\n}\n",
+                r#"import { append, flow, head, route, tail, without_field } from "holon"
+
+flow("o", { port: 8000 })
+
+route.post("/order", (req) => {
+  const parts_1 = req.json
+  const id = parts_1.id
+  const rest = without_field(parts_1, { name: "id" })
+  const parts_2 = rest.items
+  const first = head(parts_2)
+  const others = tail(parts_2)
+  const tags = append(others, "new")
+  const order = { id, first }
+  const order_2 = { ...order, count: 2 }
+  const order_3 = without_field(order_2, { name: "first" })
+  const tags_2 = append(tags, "x")
+  return { order: order_3, tags: tags_2, rest }
+})
+"#,
             ),
             (
                 "updates",
@@ -4150,7 +4262,18 @@ every("1m", () => {
   state.beats = n
 })
 "#,
-                "flow u\nport 8000\nstate beats\n\nevery 1m {\n  n = state.beats ?? 0\n  n_2 = n + 1\n  n_3 = n_2 + 2\n  state.beats = n_3\n}\n",
+                r#"import { every, flow } from "holon"
+import state from "state"
+
+flow("u", { port: 8000 })
+
+every("1m", () => {
+  const n = state.beats ?? 0
+  const n_2 = n + 1
+  const n_3 = n_2 + 2
+  state.beats = n_3
+})
+"#,
             ),
             (
                 "a swap, and var",
@@ -4163,7 +4286,18 @@ route.post("/s", (req) => {
   return { a, b }
 })
 "#,
-                "flow s\nport 8000\n\nroute POST /s (req) {\n  a = req.json.a\n  b = req.json.b\n  a_2 = b\n  b_2 = a\n  respond { a: a_2, b: b_2 }\n}\n",
+                r#"import { flow, route } from "holon"
+
+flow("s", { port: 8000 })
+
+route.post("/s", (req) => {
+  const a = req.json.a
+  const b = req.json.b
+  const a_2 = b
+  const b_2 = a
+  return { a: a_2, b: b_2 }
+})
+"#,
             ),
             (
                 "an action started, which awaits an event",
@@ -4180,7 +4314,23 @@ export const order = action(async (input) => {
 })
 route.get("/paid/:token", () => "thanks", { resumes: "paid" })
 "#,
-                "flow e\nport 8000\nstate last_order\n\nroute POST /orders (req) {\n  started = start(order, req.json)\n  respond \"/paid/{started.waiting.paid}\"\n}\n\naction order (input) {\n  paid = await paid, expires: 1d\n  state.last_order = { ..input, paid_via: paid.method }\n}\n\nroute GET /paid/:token (req) resumes paid {\n  respond \"thanks\"\n}\n",
+                r#"import { action, event, flow, route } from "holon"
+import state from "state"
+
+flow("e", { port: 8000 })
+
+route.post("/orders", (req) => {
+  const started = order(req.json)
+  return `/paid/${started.waiting.paid}`
+})
+
+export const order = action(async (input) => {
+  const paid = await event("paid", { expires: "1d" })
+  state.last_order = { ...input, paid_via: paid.method }
+})
+
+route.get("/paid/:token", () => "thanks", { resumes: "paid" })
+"#,
             ),
             (
                 "another flow's action started",
@@ -4192,7 +4342,16 @@ route.post("/s", (req) => {
   return started.run
 })
 "#,
-                "flow s\nport 8000\ncalls billing\n\nroute POST /s (req) {\n  started = start(billing.charge, req.json)\n  respond started.run\n}\n",
+                r#"import { flow, route } from "holon"
+import { charge } from "flow:billing"
+
+flow("s", { port: 8000 })
+
+route.post("/s", (req) => {
+  const started = charge(req.json)
+  return started.run
+})
+"#,
             ),
             (
                 "a call under an if, read by nothing",
@@ -4207,7 +4366,22 @@ route.post("/ping", async (req) => {
   return "ok"
 })
 "#,
-                "flow g\nport 8000\n\nroute POST /ping (req) {\n  sent = http.post(\"api.example.com\", \"/ping\", body: req.json) after true when req.json.loud\n  http.post(\"api.example.com\", \"/again\", body: req.json) after true when req.json.twice\n  respond \"ok\"\n}\n",
+                r#"import { flow, route } from "holon"
+import example from "host:api.example.com"
+
+flow("g", { port: 8000 })
+
+route.post("/ping", async (req) => {
+  let sent
+  if ((req.json.loud ? true : undefined) !== undefined) {
+    sent = await example.post("/ping", { body: req.json })
+  }
+  if ((req.json.twice ? true : undefined) !== undefined) {
+    await example.post("/again", { body: req.json })
+  }
+  return "ok"
+})
+"#,
             ),
             (
                 "a function's let, returned",
@@ -4220,11 +4394,23 @@ function price(amount) {
 }
 route.post("/t", (req) => price(req.json.amount))
 "#,
-                "flow t\nport 8000\n\nholon price(amount) -> fee {\n  fee_1 = 1\n  fee_2 = 2\n  fee = if amount > 100 then fee_2 else fee_1\n}\n\nroute POST /t (req) {\n  respond price(req.json.amount)\n}\n",
+                r#"import { flow, route } from "holon"
+
+flow("t", { port: 8000 })
+
+function price(amount) {
+  const fee_1 = 1
+  const fee_2 = 2
+  const fee = amount > 100 ? fee_2 : fee_1
+  return fee
+}
+
+route.post("/t", (req) => price(req.json.amount))
+"#,
             ),
         ];
-        for (what, ts, holon) in pairs {
-            same_unit(what, ts, holon);
+        for (what, ts, plain) in pairs {
+            same_unit(what, ts, plain);
         }
     }
 

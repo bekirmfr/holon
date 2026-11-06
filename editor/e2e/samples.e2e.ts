@@ -277,24 +277,23 @@ test("a sample deployed as it is keeps its text and the names it binds", async (
   expect(Object.values(document.bindings ?? {})).toEqual(expect.arrayContaining(["name", "id"]));
 });
 
-test("a flow nothing would start can't deploy; made runnable by hand, it deploys and runs as an action", async ({ page }) => {
+test("a flow nothing would start can't deploy; given an action, it deploys and runs by hand", async ({ page }) => {
   await page.goto("/");
   await page.getByRole("button", { name: "new", exact: true }).click();
   const canvas = page.locator(".hl-canvas");
+  // A leaf under no handler: nothing would start a run of it.
+  await dropFromPalette(page, "uppercase");
+  await expect(canvas.getByText("nothing would start a run", { exact: true })).toBeVisible({ timeout: 15_000 });
+  await expect(canvas.getByRole("button", { name: /^deploy/ })).toBeDisabled();
+  // Written as an action, which a person runs by hand, it starts.
   await canvas.getByRole("button", { name: "text off" }).click();
   await page.getByRole("region", { name: "Text" }).locator(".cm-content").click();
   await page.keyboard.press("Control+A");
-  await page.keyboard.insertText("flow by-hand\n\ntotal = 1 + 2\n");
-  await expect(canvas.getByText("nothing would start a run", { exact: true })).toBeVisible({ timeout: 15_000 });
-  await expect(canvas.getByRole("button", { name: /^deploy/ })).toBeDisabled();
-  // The quick fix puts its statements in an action, answering the value it computes. With the
+  await page.keyboard.insertText('import { action, flow } from "holon"\n\nflow("by-hand")\n\nexport const run = action(() => 1 + 2)\n');
+  await expect(canvas.getByText("nothing would start a run", { exact: true })).toHaveCount(0, { timeout: 15_000 });
+  // Deployed under a name of its own (asked, as for any new flow), its action answers. With the
   // text open the canvas's toolbar runs under the text pane at 1280px: pressed as a button, not at
-  // a point another element covers (a pointer click there retried for 70 s, then missed).
-  await canvas.getByRole("button", { name: "make it runnable by hand" }).dispatchEvent("click");
-  await expect(page.getByRole("region", { name: "Text" })).toContainText("action run (input) {");
-  await expect(page.getByRole("region", { name: "Text" })).toContainText("respond total");
-  await expect(canvas.getByText("nothing would start a run", { exact: true })).toHaveCount(0);
-  // Deployed under a name of its own (asked, as for any new flow), its action answers.
+  // a point another element covers.
   await expect(canvas.getByRole("button", { name: /^deploy/ })).toBeEnabled();
   await canvas.getByRole("button", { name: /^deploy/ }).dispatchEvent("click");
   await page.locator('[aria-modal="true"]').locator("input").fill(`by-hand-${Date.now()}`);
@@ -360,10 +359,10 @@ test("the Inspector shows the selected node in edit mode: its ports, and its uni
   await page.locator(".react-flow__node", { hasText: "concat" }).dispatchEvent("click");
   await expect(inspector).toContainText("concat");
   await expect(inspector).toContainText("inputs");
-  // The node's line in the flow as text (docs/LANGUAGE.md): the whole respond, since concat is
-  // part of that expression.
+  // The node's line in the flow as text (docs/LANGUAGE.md): the whole route, since concat is
+  // part of the template literal it answers.
   await expect(inspector).toContainText("as text, line");
-  await expect(inspector.locator(".hl-inspector__source")).toHaveText('respond "Hello, {req.params.name}"');
+  await expect(inspector.locator(".hl-inspector__source")).toHaveText('route.get("/hello/:name", (req) => `Hello, ${req.params.name}`)');
   await expect(inspector).toContainText("Pure");
   // Folded to a strip, and opened again.
   await inspector.getByRole("button", { name: "fold the Inspector" }).click();
@@ -576,7 +575,7 @@ test("the marketplace, a Holon flow: publish a saved flow to it, place it from t
   expect(after.units.length).toBeGreaterThan(0);
 });
 
-test("a flow as text: exported as .holon, checked by the command line, imported back", async ({ page }) => {
+test("a flow as text: exported as .holon.ts, checked by the command line, imported back", async ({ page }) => {
   const { execFileSync } = await import("node:child_process");
   const { mkdtempSync, readFileSync } = await import("node:fs");
   const { tmpdir } = await import("node:os");
@@ -584,30 +583,35 @@ test("a flow as text: exported as .holon, checked by the command line, imported 
   const name = `texty-${Date.now().toString(36)}`;
   await page.goto("/");
   await page.getByRole("button", { name: "new", exact: true }).click();
-  await dropFromPalette(page, "uppercase");
-  await page.locator(".hl-canvas").getByRole("button", { name: "save", exact: true }).click();
+  const canvas = page.locator(".hl-canvas");
+  await canvas.getByRole("button", { name: "text off" }).click();
+  await page.getByRole("region", { name: "Text" }).locator(".cm-content").click();
+  await page.keyboard.press("Control+A");
+  await page.keyboard.insertText(`import { action, flow } from "holon"\n\nflow("${name}")\n\nexport const shout = action((input) => input.toUpperCase())\n`);
+  await expect(page.locator(".hl-canvas__flow > .react-flow .react-flow__node", { hasText: "uppercase" })).toHaveCount(1, { timeout: 15_000 });
+  await canvas.getByRole("button", { name: "save", exact: true }).dispatchEvent("click");
   await page.locator('[aria-modal="true"] input').fill(name);
   await page.keyboard.press("Enter");
-  await expect(page.locator(".hl-canvas")).toContainText("saved");
+  await expect(canvas).toContainText("saved");
   await expect(page.locator(".hl-tab--active")).toContainText(name);
 
-  // Exported from the flows page.
+  // Exported from the flows page: the canvas printed as TypeScript.
   await page.getByRole("button", { name: "flows", exact: true }).click();
   const row = page.getByText(name, { exact: true }).locator("xpath=..");
   const download = page.waitForEvent("download");
-  await row.getByRole("button", { name: ".holon" }).click();
-  const file = join(mkdtempSync(join(tmpdir(), "holon-text-")), `${name}.holon`);
+  await row.getByRole("button", { name: ".holon.ts" }).click();
+  const file = join(mkdtempSync(join(tmpdir(), "holon-text-")), `${name}.holon.ts`);
   await (await download).saveAs(file);
   const text = readFileSync(file, "utf8");
-  expect(text).toContain(`flow ${name}`);
-  expect(text).toMatch(/node uppercase = uppercase/);
+  expect(text).toContain(`flow("${name}")`);
+  expect(text).toContain(".toUpperCase()");
 
   // Checked on the command line, with no browser: the `holon` the e2e server was built as.
   const target = process.env.CARGO_TARGET_DIR ?? join(process.cwd(), "..", "target");
   const holon = join(target, "debug", process.platform === "win32" ? "holon.exe" : "holon");
   const checked = execFileSync(holon, ["check", file], { encoding: "utf8" });
-  expect(checked).toContain(`${name}: 1 nodes, 0 wires`);
-  expect(checked).toContain("it only computes");
+  expect(checked).toContain(`${name}: 3 nodes, 3 wires`);
+  expect(checked).toContain("  action shout");
 
   // Imported back: an unsaved tab of its own, with the same node.
   await page.getByLabel("import a flow's text").setInputFiles(file);
@@ -1441,8 +1445,8 @@ test("rolling-log keeps only its newest 5 runs, as its deploy settings ask, whil
   await page.keyboard.insertText(source.replace("keep: { runs: 5, days: 1 }", "keep: { runs: 7, days: 1 }"));
   await expect(runs).toHaveValue("7", { timeout: 15_000 });
   await runs.fill("5");
-  // Written again from the canvas, in the .holon form the printer writes until it writes TypeScript.
-  await expect(text).toContainText("keep 5 runs for 1d");
+  // Written again from the canvas.
+  await expect(text).toContainText("keep: { runs: 5, days: 1 }");
   await deploy(page);
   const auth = { Authorization: `Bearer ${adminToken}` };
   const seqs = async () =>

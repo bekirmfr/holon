@@ -791,16 +791,11 @@ impl App {
                 }
             }
         }
-        for line in text.lines() {
-            if let Some(rest) = line.strip_prefix("action ") {
-                let name: String = rest.chars().take_while(|c| c.is_alphanumeric() || *c == '_' || *c == '-').collect();
-                if !name.is_empty() && !items.iter().any(|i| matches!(i, Callable::Action(n) if *n == name)) {
-                    items.push(Callable::Action(name));
-                }
-            }
-        }
-        for t in super::client::strings(entry, "triggers") {
-            if !(t == "Ingress" || t == "Clock" || t.starts_with("Http")) {
+        // Its actions, then its clocks, as its triggers name them (`action reset`, `every 5s`).
+        let triggers = super::client::strings(entry, "triggers");
+        items.extend(triggers.iter().filter_map(|t| t.strip_prefix("action ")).map(|name| Callable::Action(name.to_string())));
+        for t in triggers {
+            if !(t == "Ingress" || t == "Clock" || t.starts_with("Http") || t.starts_with("action ")) {
                 items.push(Callable::Clock(t));
             }
         }

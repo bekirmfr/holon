@@ -18,7 +18,29 @@ use crate::samples::samples;
 use holon_core::MapResolver;
 
 /// A compute-heavy flow besides the samples: statistics over a list, and a record per item.
-const CRUNCH: &str = "flow crunch\nport 8311\n\nroute POST /stats (req) {\n  xs = req.json.xs\n  count = fold(0, xs, fn: fn(acc, x) -> acc + 1 + x * 0)\n  total = fold(0, xs, fn: fn(acc, x) -> acc + x)\n  squares = map(xs, fn: fn(x) -> x * x)\n  sumsq = fold(0, squares, fn: fn(acc, x) -> acc + x)\n  mean = total / count\n  rows = map(xs, mean, fn: fn(x, mean) -> { v: x, dev: x - mean, sq: (x - mean) * (x - mean) })\n  spread = fold(0, rows, fn: fn(acc, r) -> acc + r.sq)\n  respond { n: count, sum: total, mean: mean, variance: sumsq / count - mean * mean, spread: spread / count, rows: rows }\n}\n";
+const CRUNCH: &str = r#"import { flow, route } from "holon"
+
+flow("crunch", { port: 8311 })
+
+route.post("/stats", (req) => {
+  const xs = req.json.xs
+  const count = xs.reduce((acc, x) => acc + 1 + x * 0, 0)
+  const total = xs.reduce((acc, x) => acc + x, 0)
+  const squares = xs.map((x) => x * x)
+  const sumsq = squares.reduce((acc, x) => acc + x, 0)
+  const mean = total / count
+  const rows = xs.map((x) => ({ v: x, dev: x - mean, sq: (x - mean) * (x - mean) }))
+  const spread = rows.reduce((acc, r) => acc + r.sq, 0)
+  return {
+    n: count,
+    sum: total,
+    mean,
+    variance: sumsq / count - mean * mean,
+    spread: spread / count,
+    rows,
+  }
+})
+"#;
 
 /// A value as the record shows it: its `Debug` form (deterministic: records are ordered), cut
 /// past 160 characters with the hash of the whole.
@@ -104,7 +126,7 @@ fn record(found: Option<&Cell<usize>>) -> String {
     flows.push(("crunch".into(), CRUNCH.into()));
     let mut out = String::new();
     for (name, source) in flows {
-        let lowered = lang::compile(&source).unwrap_or_else(|e| panic!("{name}: {e}"));
+        let lowered = lang::ts::compile(&source).unwrap_or_else(|e| panic!("{name}: {e}"));
         let mut store = MapResolver::new();
         crate::text::restore(&lowered.doc, &mut store, &Names::new());
         let port = lowered.doc.server.as_ref().map(|x| x.port.clone()).unwrap_or_default();
@@ -181,7 +203,7 @@ fn keeping_each_composites_shape_changes_nothing_the_evaluator_gives() {
 /// one would leave them walked, correct but slower, without this failing.
 #[test]
 fn the_compute_heavy_flows_functions_all_run_down_a_plan() {
-    let lowered = lang::compile(CRUNCH).unwrap();
+    let lowered = lang::ts::compile(CRUNCH).unwrap();
     let mut store = MapResolver::new();
     crate::text::restore(&lowered.doc, &mut store, &Names::new());
     let port = lowered.doc.server.as_ref().map(|x| x.port.clone()).unwrap_or_default();

@@ -54,7 +54,7 @@ jobs:
       # Lints as errors: the workspace is clean, and stays so.
       - run: cargo clippy --workspace --all-targets -- -D warnings
       # The `holon` command, as installed: it writes a sample as text and checks it on its own.
-      - run: cargo run -q -p holon -- new "$RUNNER_TEMP/slugs.holon" --sample slugs && cargo run -q -p holon -- check "$RUNNER_TEMP/slugs.holon"
+      - run: cargo run -q -p holon -- new "$RUNNER_TEMP/slugs.holon.ts" --sample slugs && cargo run -q -p holon -- check "$RUNNER_TEMP/slugs.holon.ts"
 
   # 2. The guardrail: run the parity body UNDER wasm and assert it matches the core. Together with
   #    the native run in job (1), this proves wasm-core hashes bit-identically to native-core. It
@@ -209,9 +209,8 @@ jobs:
           rm -rf /tmp/holon-e2e-* editor/test-results
           df -h "$GITHUB_WORKSPACE"
 
-  # 5. The VS Code extension (editors/vscode): its grammar on every sample, through VS Code's own
-  #    TextMate engine; then, in a real VS Code (downloaded, on a virtual display), a flow's
-  #    mistake, hover and formatting through `holon lsp`.
+  # 5. The VS Code extension (editors/vscode): in a real VS Code (downloaded, on a virtual
+  #    display), a flow's mistake, completion, hover and formatting through `holon lsp`.
   vscode:
     runs-on: ubuntu-latest
     steps:
@@ -227,8 +226,6 @@ jobs:
           cache: npm
           cache-dependency-path: editors/vscode/package-lock.json
       - run: npm ci
-        working-directory: editors/vscode
-      - run: npm test
         working-directory: editors/vscode
       - run: xvfb-run -a npm run test:vscode
         working-directory: editors/vscode

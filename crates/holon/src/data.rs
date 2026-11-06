@@ -13,7 +13,7 @@
 //! - a record with a numeric `status` is an envelope: `{status, headers?, body?}`;
 //! - any other value is the body, sent with status 200;
 //! - an effect (e.g. a lone `store_write`) is performed and answered 204;
-//! - a subscription (`respond updates.subscribe()`, a `channel_subscribe` as the body) is
+//! - a subscription (`return updates.subscribe()`, a `channel_subscribe` as the body) is
 //!   answered 200 with the channel's packs as server-sent events, streamed by the transport
 //!   (`subscribe`; channels.rs);
 //! - nothing at all (the handler didn't settle) is a 500.

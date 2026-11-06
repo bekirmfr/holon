@@ -8,28 +8,32 @@ by the tables its SQL names. The design, its slices and what each built differen
 
 ## 1. What it is
 
+```ts
+import { flow, route } from "holon"
+import shop from "database:shop"
+
+flow("orders-api", { port: 8150 })
+
+route.get("/order/:id", (req) =>
+  shop.one("select id, customer, total, refunded from orders where id = $1", req.params.id),
+)
+
+route.post("/order/:id/refund", (req) => {
+  shop.exec("update orders set refunded = 1 where id = $1 and refunded = 0", req.params.id, {
+    expect: 1,
+  })
+  return { refunded: req.params.id }
+})
 ```
-flow orders-api
-database shop
 
-route GET /order/:id (req) {
-  respond shop.one("select id, customer, total, refunded from orders where id = $1", req.params.id)
-}
-
-route POST /order/:id/refund (req) {
-  shop.exec("update orders set refunded = 1 where id = $1 and refunded = 0", req.params.id, expect: 1)
-  respond { refunded: req.params.id }
-}
-```
-
-`database shop` names the database; `shop.query(sql, v…)` is `db_query{database: shop, sql}`
-(the rows as the run began), `shop.one` `db_one` (the first row, or no value), `shop.exec`
-`db_exec` (run when the run finishes, and with `expect: n` only if it changes `n` rows). The SQL
-is a text literal: core parses it (`holon-core/src/sql.rs`) and derives `DbRead("shop/orders")`
-and `DbWrite("shop/orders")` from the tables it names; the values are `$1`, `$2`, … and never
-enter the text. A MongoDB is read and written with `notes.find(c, { … })`, `find_one`, `insert`,
-`update` and `delete`, its records frozen into templates at compile (`holon-core/src/documents.rs`)
-([LANGUAGE.md](../../LANGUAGE.md) §5.4).
+`import shop from "database:shop"` names the database; `shop.query(sql, v…)` is
+`db_query{database: shop, sql}` (the rows as the run began), `shop.one` `db_one` (the first row,
+or no value), `shop.exec` `db_exec` (run when the run finishes, and with `{ expect: n }` only if
+it changes `n` rows). The SQL is a text literal: core parses it (`holon-core/src/sql.rs`) and
+derives `DbRead("shop/orders")` and `DbWrite("shop/orders")` from the tables it names; the values
+are `$1`, `$2`, … and never enter the text. A MongoDB is read and written with
+`notes.find(c, { … })`, `find_one`, `insert`, `update` and `delete`, its records frozen into
+templates at compile (`holon-core/src/documents.rs`) ([LANGUAGE.md](../../LANGUAGE.md) §5.4).
 
 - `crates/holon/src/databases.rs`: bindings (`Databases`, `Database`), reads (`Readable`,
   `DbLimits`), the commit (`commit`, `Commit`), claims of reads and writes, `holon database`.

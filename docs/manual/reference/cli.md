@@ -658,9 +658,9 @@ own. See [Working with agents](../guides/agents.md).
 holon lsp
 ```
 
-A language server on stdin and stdout, for an editor to start: each mistake `holon check` finds,
-as you type; hover; completion; formatting; and a quick fix that declares a secret or state key
-the body uses undeclared. It needs no server. The VS Code extension starts it.
+A language server on stdin and stdout, for an editor to start on `.holon.ts` files: each mistake
+`holon check` finds, as you type; hover; completion; and formatting. It needs no server. The VS
+Code extension starts it.
 
 ## Looking after the install
 

@@ -54,7 +54,7 @@ export function FlowsPage({
   /** Sample flows (holon-author's samples.rs), one per capability: opening one starts an unsaved copy. */
   samples: Sample[];
   onOpenSample: (sample: Sample) => void;
-  /** Flows as text (holonText.ts): a `.holon.ts` (or `.holon`) file opened as an unsaved flow
+  /** Flows as text (holonText.ts): a `.holon.ts` file opened as an unsaved flow
    *  (answers why not, when it can't be), and a saved flow written as one. */
   holonText: { onImport: (text: string) => string | null; exportOf: (name: string) => Promise<string>; textOfSample: (sample: Sample) => string };
 }) {
@@ -111,11 +111,11 @@ export function FlowsPage({
     <div style={{ maxWidth: 560 }}>
       <div style={{ color: "#cfe3ff", fontSize: 14, letterSpacing: "0.04em", marginBottom: 12, display: "flex", alignItems: "center", gap: 10 }}>
         <span style={{ flex: 1 }}>flows</span>
-        <label style={{ ...smallBtn, fontSize: 11, letterSpacing: 0 }} title="open a flow written as text (.holon.ts, or .holon) as an unsaved flow, in a tab of its own">
+        <label style={{ ...smallBtn, fontSize: 11, letterSpacing: 0 }} title="open a flow written as text (NAME.holon.ts) as an unsaved flow, in a tab of its own">
           import text
           <input
             type="file"
-            accept=".ts,.holon,text/plain"
+            accept=".ts,text/plain"
             aria-label="import a flow's text"
             style={{ display: "none" }}
             onChange={async (e) => {
@@ -167,7 +167,7 @@ export function FlowsPage({
             </button>
             <button
               style={smallBtn}
-              title="download it as text (.holon): edit it anywhere, keep it in git, check it with `holon check`"
+              title="download it as text (.holon.ts): edit it anywhere, keep it in git, check it with `holon check`"
               onClick={() =>
                 holonText
                   .exportOf(f.name)
@@ -175,14 +175,14 @@ export function FlowsPage({
                     const url = URL.createObjectURL(new Blob([text], { type: "text/plain" }));
                     const a = document.createElement("a");
                     a.href = url;
-                    a.download = `${f.name}.holon`;
+                    a.download = `${f.name}.holon.ts`;
                     a.click();
                     URL.revokeObjectURL(url);
                   })
                   .catch((e: unknown) => setMsg(e instanceof Error ? e.message : String(e)))
               }
             >
-              .holon
+              .holon.ts
             </button>
             <button style={smallBtn} onClick={() => remove(f.name)} title="delete this saved flow">
               ×

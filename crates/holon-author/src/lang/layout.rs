@@ -79,7 +79,7 @@ pub fn lay_out(doc: &mut FlowDocument) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lang::compile;
+    use crate::lang::ts::compile;
 
     fn at(doc: &FlowDocument, leaf: &str) -> Vec<(f64, f64)> {
         doc.nodes.iter().filter(|n| n.data.name == leaf).map(|n| { let p = n.position(); (p.x, p.y) }).collect()
@@ -87,7 +87,7 @@ mod tests {
 
     #[test]
     fn a_route_reads_left_to_right_and_routes_stack() {
-        let doc = compile("flow f\nport 8200\n\nroute GET /a/:x (req) {\n  respond \"{req.params.x}!\"\n}\n\nroute GET /b (req) {\n  respond 204\n}\n").unwrap().doc;
+        let doc = compile("import { flow, route, status } from \"holon\"\n\nflow(\"f\", { port: 8200 })\n\nroute.get(\"/a/:x\", (req) => `${req.params.x}!`)\n\nroute.get(\"/b\", () => status(204))\n").unwrap().doc;
         // The first route: request, then the field, as_text, concat, respond, a column each.
         let (rx, ry) = at(&doc, "request")[0];
         let (fx, _) = at(&doc, "field")[0];

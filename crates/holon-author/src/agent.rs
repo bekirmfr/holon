@@ -93,18 +93,10 @@ pub fn plan(source: &str) -> Result<Plan, String> {
 /// and the agent tools keep it, comments and all) when that still compiles, else printed from the
 /// canvas, with the binding names an agent gave it.
 pub fn text_of(name: &str, document: &Value) -> Result<String, String> {
-    if let Some(source) = document.get("source").and_then(Value::as_str).filter(|s| !s.trim().is_empty()) {
-        if plan(source).is_ok() {
-            return Ok(source.to_string());
-        }
-        // A text saved before its header had to declare what it reads (`secret signing_key`):
-        // the same text, the lines added (docs/L4s/declared-names-L4.md §5).
-        if let Ok((fixed, _, declared)) = commands::with_declarations(source)
-            && !declared.is_empty()
-            && plan(&fixed).is_ok()
-        {
-            return Ok(fixed);
-        }
+    if let Some(source) = document.get("source").and_then(Value::as_str).filter(|s| !s.trim().is_empty())
+        && plan(source).is_ok()
+    {
+        return Ok(source.to_string());
     }
     let doc: FlowDocument = serde_json::from_value(document.clone()).map_err(|e| format!("the flow's document doesn't read: {e}"))?;
     let bindings: BTreeMap<String, String> = document.get("bindings").and_then(|b| serde_json::from_value(b.clone()).ok()).unwrap_or_default();
@@ -862,17 +854,17 @@ mod tests {
     /// (a flow of actions alone too); a write is on its own line.
     #[test]
     fn an_actions_run_is_placed_by_its_label_and_a_write_is_on_its_line() {
-        let text = "flow two\nstate n\n\naction bump (input) {\n  n = (state.n ?? 0) + 1\n  state.n = n\n  respond n\n}\n\naction reset (input) {\n  state.n = 0\n  respond 0\n}\n";
+        let text = "import { action, flow } from \"holon\"\nimport state from \"state\"\n\nflow(\"two\")\n\nexport const bump = action(() => {\n  const n = (state.n ?? 0) + 1\n  state.n = n\n  return n\n})\n\nexport const reset = action(() => {\n  state.n = 0\n  return 0\n})\n";
         let p = plan(text).unwrap();
         let n = p.document["trace"]["action bump"].as_array().expect("its own trace").len();
         let timeline: Vec<Value> = (0..n).map(|i| json!({ "path": [0, i], "start_us": i as f64, "end_us": i as f64 + 1.0 })).collect();
         let entry = json!({ "kind": "trigger", "route": "action bump", "timeline": timeline });
         let v = run_view("two", &p.document, &entry).unwrap();
         let noted: Vec<u32> = v.notes.keys().copied().collect();
-        for line in [5, 6, 7] {
+        for line in [7, 8, 9] {
             assert!(noted.contains(&line), "line {line}, {:?}: {noted:?}", v.text[line as usize - 1]);
         }
-        assert!(!noted.iter().any(|l| *l >= 10), "the other action didn't run: {noted:?}");
+        assert!(!noted.iter().any(|l| *l >= 11), "the other action didn't run: {noted:?}");
     }
 
     /// A flow's text: as it was saved, comments and all, when that still compiles; else printed
@@ -882,18 +874,12 @@ mod tests {
         let text = samples::sample("slugs").unwrap().text;
         let mut document = plan(text).unwrap().document;
         let printed = text_of("slugs", &document).unwrap();
-        assert!(printed.starts_with("flow slugs\n") && printed.contains("author = slugify(req.json.author)"), "{printed}");
-        assert!(!printed.contains('#'), "printed from the canvas: no comments");
+        assert!(printed.contains("\nflow(\"slugs\", { port: 8110 })\n") && printed.contains("  const author = slugify(req.json.author)\n"), "{printed}");
+        assert!(!printed.contains("//"), "printed from the canvas: no comments");
         document["source"] = json!(text);
         assert_eq!(text_of("slugs", &document).unwrap(), text, "the text as saved");
         document["source"] = json!("import { flow, route } from \"holon\"\n\nflow(\"slugs\")\n\nroute.get(\"/a\", () => nope)\n");
         assert_eq!(text_of("slugs", &document).unwrap(), printed, "a saved text that doesn't compile gives way to the canvas");
-        // A `.holon` text saved before secrets were declared: the same text, its header line added.
-        let text = include_str!("../tests/holon/slugs.holon");
-        let before = text.replace("optional secret receipt_key\n", "");
-        document["source"] = json!(before);
-        let shown = text_of("slugs", &document).unwrap();
-        assert!(shown.contains("collection posts\nsecret receipt_key\n") && shown.contains("# A flow inside a flow"), "{shown}");
     }
 
     /// A js node that gave nothing says why, in the engine's words, under the statement that

@@ -212,9 +212,9 @@ expression. In **view** mode it replays any run of a deployment: what didn't run
 the value each node made is beside it. It also manages deployments, their permissions and
 secrets, accounts and API tokens, and the folders flows may use.
 
-The **VS Code extension** ([`editors/vscode`](editors/vscode)) highlights `.holon` files and
-starts `holon lsp`; each release carries it as `holon-vscode.vsix`. Any editor with a language
-client can start `holon lsp` itself.
+The **VS Code extension** ([`editors/vscode`](editors/vscode)) starts `holon lsp` for `.holon.ts`
+files, which VS Code highlights as TypeScript; each release carries it as `holon-vscode.vsix`. Any
+editor with a language client can start `holon lsp` itself.
 
 `holon mcp setup` knows Claude Code, Claude Desktop, Cursor, VS Code (Copilot), Visual Studio,
 GitHub Copilot CLI, Devin, Windsurf, Zed, Gemini CLI, Antigravity, OpenAI Codex, Cline, Junie,

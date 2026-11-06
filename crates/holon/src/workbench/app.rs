@@ -548,7 +548,7 @@ impl App {
     /// page, else a saved flow.
     pub(crate) fn open_arg(&mut self, arg: &str) {
         let path = PathBuf::from(arg);
-        if path.exists() || arg.ends_with(".holon") || arg.ends_with(".holon.ts") {
+        if path.exists() || arg.ends_with(".holon.ts") {
             return self.open_file(path);
         }
         if self.client.as_ref().is_some_and(|c| c.deployment(arg).is_some()) {
@@ -568,8 +568,9 @@ impl App {
             Ok(t) => t,
             // A new file: start it, and saving writes it.
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                let name = path.file_stem().and_then(|s| s.to_str()).unwrap_or("flow").to_string();
-                format!("flow {name}\n")
+                let file = path.file_name().and_then(|s| s.to_str()).unwrap_or("flow");
+                let name = file.strip_suffix(".holon.ts").or_else(|| file.strip_suffix(".ts")).unwrap_or(file);
+                format!("import {{ flow }} from \"holon\"\n\nflow(\"{name}\")\n")
             }
             Err(e) => return self.fail(format!("{}: {e}", path.display())),
         };
@@ -1808,9 +1809,11 @@ fn deploy_review(slug: &str, plan: &agent::Plan, staged: &Staged, now: Option<&s
     review
 }
 
-/// The flow a text names, on its `flow` line, without compiling it.
+/// The name a text gives its flow, `flow("name", …)`, as typed, whether or not it compiles.
 fn flow_name(text: &str) -> Option<&str> {
-    text.lines().find_map(|l| l.strip_prefix("flow ")).map(str::trim)
+    let rest = text.lines().find_map(|l| l.trim_start().strip_prefix("flow("))?.trim_start();
+    let quote = rest.chars().next().filter(|c| matches!(c, '"' | '\''))?;
+    rest[1..].split(quote).next()
 }
 
 fn load_run(c: &Client, runs: &mut Runs) {

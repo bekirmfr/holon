@@ -174,19 +174,25 @@ export function carryOver(prev: Synced, next: { graph: Graph; names: Map<string,
   return { nodes: out, edges, toCanvas };
 }
 
-/** How many `#` comments a text has (outside strings): what a reprint would drop. */
+/** How many comments a text has (line and block comments, outside strings): what a reprint would drop. */
 export function commentCount(text: string): number {
   let count = 0;
-  for (const line of text.split("\n")) {
-    let quoted = false;
-    for (let i = 0; i < line.length; i++) {
-      const c = line[i];
-      if (c === "\\" && quoted) i++;
-      else if (c === '"') quoted = !quoted;
-      else if (c === "#" && !quoted) {
-        count++;
-        break;
-      }
+  // The quote a string or template is in: a `//` there is text.
+  let quote: string | null = null;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (quote) {
+      if (c === "\\") i++;
+      else if (c === quote || (c === "\n" && quote !== "`")) quote = null;
+    } else if (c === '"' || c === "'" || c === "`") quote = c;
+    else if (c === "/" && text[i + 1] === "/") {
+      count++;
+      const end = text.indexOf("\n", i);
+      i = end < 0 ? text.length : end;
+    } else if (c === "/" && text[i + 1] === "*") {
+      count++;
+      const end = text.indexOf("*/", i + 2);
+      i = end < 0 ? text.length : end + 1;
     }
   }
   return count;

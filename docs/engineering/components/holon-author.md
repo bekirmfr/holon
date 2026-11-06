@@ -6,41 +6,51 @@ change it.
 
 ## 1. What it is
 
-`crates/holon-author` turns a flow, written as `.holon` text or drawn on the editor's canvas, into
-the units core runs, and back. It is pure like core (no I/O, its `Cargo.toml` says so), so it is
-the one implementation everywhere: the editor runs it compiled to wasm through `holon-wasm`, and
-`holon` runs it natively for `new`, `check`, `show`, `fmt`, `lsp`, `mcp`, `deploy` and the
-terminal editor. Its dependencies are `holon-core`, `holon-module` (the js engine's bytes, which
-lowering a `js` statement needs) and serde.
+`crates/holon-author` turns a flow, written as a `NAME.holon.ts` text in TypeScript's syntax or
+drawn on the editor's canvas, into the units core runs, and back. It is pure like core (no I/O,
+its `Cargo.toml` says so), so it is the one implementation everywhere: the editor runs it compiled
+to wasm through `holon-wasm`, and `holon` runs it natively for `new`, `check`, `show`, `fmt`,
+`lsp`, `mcp`, `deploy` and the terminal editor. Its dependencies are `holon-core`, `holon-module`
+(the js engine's bytes, which lowering a `js()` function needs), oxc's TypeScript parser
+(`oxc_parser`, `oxc_ast`, `oxc_ast_visit`, `oxc_span`, `oxc_allocator`, pinned at 0.152.0, which
+builds for wasm) and serde.
 
 The language's reference is [`docs/LANGUAGE.md`](../../LANGUAGE.md); this doc is about the code.
-In `src/`: `lang/` is the language (`lex.rs`, `ast.rs`, `parse.rs`, `lower.rs`, `print.rs`,
-`layout.rs`); `text.rs` the first wiring-form parser and printer, and `restore`, which puts a
-document's units in a store and which everything uses; `builder.rs`, `canvas.rs`, `templates.rs`,
-`group.rs`, `composites.rs`, `modules.rs` and `wire.rs` build flow documents from the live
-catalog and give the JSON forms the editor reads; `routes.rs` and `flow.rs` derive servers;
-`commands.rs`, `editing.rs`, `agent.rs`, `describe.rs`, `usage.rs` and `graph.rs` say what the
-command line, an editor, an agent and the terminal editor show. The samples are `samples/*.holon`
-with their entries in `src/samples.rs`; the golden harness is `src/golden.rs` and
-`tests/golden/eval.txt`; `tests/manual.rs` compiles every flow in `docs/manual`.
+In `src/`: `lang/` is the language (`ts.rs`, `ast.rs`, `lower.rs`, `format.rs`, `print.rs`,
+`layout.rs`); `text.rs` holds `restore`, which puts a document's units in a store and which
+everything uses; `builder.rs`, `canvas.rs`, `templates.rs`, `group.rs`, `composites.rs`,
+`modules.rs` and `wire.rs` build flow documents from the live catalog and give the JSON forms the
+editor reads; `routes.rs` and `flow.rs` derive servers; `commands.rs`, `editing.rs`, `agent.rs`,
+`describe.rs`, `usage.rs` and `graph.rs` say what the command line, an editor, an agent and the
+terminal editor show. The samples are `samples/*.holon.ts` with their entries in
+`src/samples.rs`; the golden harness is `src/golden.rs` and `tests/golden/eval.txt`;
+`tests/fmt/` holds a text written any which way and its layout, for the formatter;
+`tests/manual.rs` compiles every flow in `docs/manual`.
 
 ## 2. How it works
 
 ### Text to units
 
-`lang::compile(src)` is `lower(&parse(src)?)`. `lex` makes tokens (durations, interpolated strings
-with the columns of each `{…}` part, a `js` body read as JavaScript); `parse` builds a `File` of
-headers and items, both forms of the text into one tree, every node with its `Span`; `lower` walks
-the tree onto `FlowBuilder`, each expression becoming nodes from the live catalog and wires, and
-answers a `Lowered`: the flow's `name`, its `doc` (a `FlowDocument`, the same one the canvas
-saves), `names` (each top-level node's name in the text, by id) and `spans` (each node's span).
-`lay_out` places the nodes on a canvas: a band per connected group, a column per depth. A mistake
-is a `LowerError` with its span, its message, and, for a name the header doesn't declare,
-`declare`: the header line that fixes it.
+`lang::compile(src)` is `ts::compile`, `lower(&ts::parse(src)?)`. `ts::parse` reads the text with
+oxc's parser as TypeScript; a syntax error is the parser's first, in its words, at its line and
+column. Its `Reader` then walks oxc's tree into a `File` of headers and items, every node with its
+`Span` (oxc's byte offsets turned into lines and columns in characters, `Lines`): the imports and
+the `flow(…)` settings become headers (the state one header for each key the text uses), and the
+handlers (`route.get(…)`, `every(…)`, `on.file.created(…)`, `export const … = action(…)`),
+functions and `js()` functions become items. The tree keeps meaning, not spelling: a handler's
+`return`s are one `Respond`, a ternary and an `if` are both `If`, a `let` given a new value is a
+new `Bind`. A `js()` body is passed as written, its types blanked to spaces (`blank_types`) so its
+lines and columns stay. What TypeScript can write but a flow can't say is refused there, at its
+span, saying what to write instead. `lower` walks the tree onto `FlowBuilder`, each expression
+becoming nodes from the live catalog and wires, and answers a `Lowered`: the flow's `name`, its
+`doc` (a `FlowDocument`, the same one the canvas saves), `names` (each top-level node's name in
+the text, by id) and `spans` (each node's span). `lay_out` places the nodes on a canvas: a band per
+connected group, a column per depth. A mistake is a `LowerError`: its span and its message.
 
 Lowering is sugar over leaves (LANGUAGE.md §5.4): `state.k` is one `store_read`, `notes[k] = v` one
-`collection_put`, a `match` is `equals`, `guard`, `or`, `not` and a `coalesce` chain
-([match L4 §4](../../L4s/match-L4.md)). A holon is a composite frozen with its declared boundary.
+`collection_put`, a `switch` is `equals`, `guard`, `or`, `not` and a `coalesce` chain
+([match L4 §4](../../L4s/match-L4.md), where it is called `match`). A function is a composite
+frozen with its declared boundary.
 
 ### Units to a server
 
@@ -58,17 +68,27 @@ trigger's input in; the response and every effect out; an optional input such as
 puts the handlers in one `server_unit` with the port. `flow_unit` is the unit a flow deploys as:
 its server when it has handlers, else the whole canvas frozen as one composite.
 
-### Units to text: `holon fmt`
+### The text laid out: `holon fmt`
 
-`lang::print` writes a document as canonical text (LANGUAGE.md §11): headers, holons inner before
-outer, routes in the order `find_routes` finds them, nodes inline where they have one consumer,
-names from the text where it gave one. What the expression form can't spell prints in the wiring
-form. `print_lines` also says the line each top-level node is printed on.
+`lang::format::format` is a source formatter (LANGUAGE.md §7): it works on the text and oxc's tree
+of it, not on the graph, and lays the TypeScript out as written, Prettier's way (two spaces, double
+quotes, no semicolons, 100 columns, a list that doesn't fit broken one item to a line with a
+trailing comma, an object the text broke kept broken). It keeps every comment and a blank line
+where the text had one, writes `var` as `const` (or `let` where it is assigned again) and `==` as
+`===`, never touches a `js()` body, and keeps a handler's options beside its function's closing
+brace. It compiles the text first, so a text with a mistake is not formatted, and compiles what it
+wrote: a layout that would change the flow (its name, or its document with the spans left out) or
+lose a comment is refused as a mistake in fmt, and the text is left as it is. `commands::fmt`
+(`holon fmt`) and `editing::format` call it.
 
-`commands::fmt` is `fmt_declaring` without its list: `with_declarations` compiles the text,
-adding the header line any `LowerError` carries in `declare` until it compiles; the result is
-printed, and `with_comments` puts the source's comments back above the statement each was above,
-found by what that statement says. A text with any other mistake is not formatted.
+### Units to text: the printer
+
+`lang::print` writes a document as TypeScript (LANGUAGE.md §11), the same unit again, for a canvas
+drawn rather than written: imports and `flow(…)`, every holon the flow places as a function (inner
+before outer), then the handlers in the order `find_routes` and its kin find them, nodes inline
+where they have one consumer, names from the text where it gave one. A canvas the text can't spell
+(LANGUAGE.md §10: nodes under no handler, a request node that isn't a route's) is printed as best
+it can be or refused. `print_lines` also says the line each top-level node is printed on.
 
 ### The commands
 
@@ -76,19 +96,26 @@ found by what that statement says. A text with any other mistake is not formatte
 `crates/holon/src/flowcmd.rs` reads and writes the files. `new_flow` is `STARTER` or a sample's
 text as it is. `check` says the routes, clocks, file handlers and actions, the unit's hash, what
 the flow may do (core's `deployed_capabilities`, each said by `describe_item_sending` with where
-each secret is sent), its module budgets and unrecorded handlers, or `STARTS_NOTHING`; a mistake
-is `file:line:col: message`, the line and a caret, and each js body is compiled by the engine
-without running (`js_mistakes`). `show` outlines each node by its text name, with what feeds it.
+each secret is sent), its module budgets and unrecorded handlers, or `STARTS_NOTHING` (what to
+add: a route, a clock, a file handler or an action); a mistake is `file:line:col: message`, the
+line and a caret, and each js body is compiled by the engine without running (`js_mistakes`).
+`show` outlines each node by its text name, with what feeds it.
 
 ### The language server
 
 `holon lsp` is `crates/holon/src/lsp.rs`, which frames JSON-RPC and converts positions to UTF-16;
 what it says is `editing.rs`'s: `mistakes` (the first mistake; or, compiled, the flow's problems,
-each at its node when it is one node's, else at the `flow` header), `hover`, `complete`, `format`
-(`fmt`), and `declare_missing` as a quick fix. The web editor calls the same functions through the
-bridge (`holon_mistakes`, `holon_hover`, `holon_complete`, `holon_format`), and two more:
-`highlight` (`holon_highlight`) and `runnable_by_hand` (`holon_runnable_by_hand`, the quick fix
-for a flow nothing starts). `editors/vscode` starts `holon lsp`, with a TextMate grammar for colours.
+at its `flow(…)` call), `hover`, `complete` and `format` (`fmt`). It offers no code actions: a
+TypeScript flow declares what it uses by importing it, so there is no missing declaration to add.
+`editing.rs` reads a text with a scanner of its own that never stops (a string not closed or a
+line half typed is read as far as it goes) and takes what the text imports, binds and hands its
+handlers from its words (`Outline`), so a text that doesn't compile yet is still coloured, said
+and completed; what only a compiled text knows (a binding's node, a function's outputs, where a
+secret is sent) comes from the TypeScript reader. The web editor calls the same functions through
+the bridge (`holon_mistakes`, `holon_hover`, `holon_complete`, `holon_format`), and one more,
+`highlight` (`holon_highlight`), which the terminal editor colours with too. `editors/vscode`
+starts `holon lsp` for `**/*.holon.ts` files, which VS Code colours as TypeScript; the server adds
+the flow's mistakes, hovers, completion and formatting.
 
 ### The agent plan
 
@@ -99,20 +126,22 @@ text's `bindings`), `routes`, `port`, `interval_seconds`, `requirements`, `brows
 (consent names, with each module's budget as a `Limit(...)` item) and `sent` (core's
 `sent_secrets`). `holon mcp`, `holon deploy` and `holon editor` deploy from it, and `holon flows
 save` saves from it.
-`text_of` reads a document back as text (its saved `source` when that still plans, with any
-missing declarations added, else the canvas printed); `explain` and `run_view` show a recorded run
+`text_of` reads a document back as text (its saved `source` when that still plans, else the canvas
+printed, with the binding names an agent gave it); `explain` and `run_view` show a recorded run
 as the program with each statement's value; `reference` is the language reference an agent reads.
 
 ### Samples
 
-Each sample is a `.holon` file in `samples/`, embedded by `include_str!` in an entry of `SAMPLES`
-(`Sample`: `name`, `title`, `description`, `shows`, `port` or `interval`, `secrets`, `optional`,
+Each sample is a `.holon.ts` file in `samples/`, embedded by `include_str!` in an entry of
+`SAMPLES` (`Sample`: `name`, `title`, `description`, `shows`, `port`, `secrets`, `optional`,
 `browsers`, `try_it`, `text`). `samples::build` compiles the text and carries it as the document's
 `source`, so the text pane opens on it and a deploy keeps its names. The editor reads them through
-the bridge (`samples`, `build_sample`); `holon new --sample` writes the text. There are 53, counted
-as the files in `samples/` and the `include_str!` lines in `samples.rs`, one each.
+the bridge (`samples`, `build_sample`); `holon new --sample` and the flows page's download write
+the text as it is. A sample without a port is started by its clock or its files, an `every(…)` or
+`on.file.*` handler: no sample has an interval. There are 55, counted as the files in `samples/`
+and the `include_str!` lines in `samples.rs`, one each.
 
-[`CLAUDE.md`](../../../CLAUDE.md) makes a sample part of every feature: a `.holon` file in the
+[`CLAUDE.md`](../../../CLAUDE.md) makes a sample part of every feature: a `.holon.ts` file in the
 canonical form with its entry, built by `samples.test.ts`, run live once before the commit (the
 commit says so, as `5877fa0` does), and deployed by the end-to-end tests.
 
@@ -122,36 +151,46 @@ commit says so, as `5877fa0` does), and deployed by the end-to-end tests.
 `fold`s), derives each, and evaluates every endpoint and action with three bodies (none, a record
 with the fields samples read, a list of 60 numbers) and every clock once, through
 `eval_observed`, writing every node's outputs in order (a value past 160 characters cut, with its
-hash). The result is compared with `tests/golden/eval.txt`, 355 cases (counted as its `== `
+hash). The result is compared with `tests/golden/eval.txt`, 379 cases (counted as its `== `
 lines); the first line that differs is named with its case. `HOLON_GOLDEN=update cargo test -p
 holon-author golden` writes it afresh.
 
 ## 3. Why it is this way
 
-- **One implementation, pure.** Lexer, parser, lowering and printer live here and nowhere else;
-  no TypeScript copy (LANGUAGE.md §2, P5). The editor, the command line, the language server and
-  an agent read a flow alike, because they call the same functions
+- **One implementation, pure.** The reader, lowering, formatter and printer live here and nowhere
+  else; the editor has no copy in its own code (LANGUAGE.md §2, P5). The editor, the command line,
+  the language server and an agent read a flow alike, because they call the same functions
   ([language-server L4](../../L4s/language-server-L4.md), decision 1).
+- **TypeScript's syntax, read by a real parser.** A flow is a valid TypeScript module with
+  Holon's meaning: one language for the whole file, `js()` bodies included, where the first syntax
+  gave each handler its own shape. Valid TypeScript needs a real parser; oxc's builds for wasm, so
+  the editor reads a flow through the bridge as the command line does
+  ([typescript-syntax L4](../../L4s/typescript-syntax-L4.md), §13).
 - **Text lowers onto the builder, against the live catalog.** The canvas and the text produce the
   same document, so `flow_unit` and `derive_server` apply unchanged and a text's hash is its
   graph's; names, comments, positions and statement order are in no unit (LANGUAGE.md §2 P3, §7).
-  Each noun lowers to one leaf, so the manifest is still derived from leaves (P6); `match` is the
-  same unit as its guards written by hand ([match L4 §4](../../L4s/match-L4.md)).
-- **The wiring form stays.** A canvas can make port names the expression form can't spell; the
-  printer falls back to `node`/wire statements there, and old files keep working (LANGUAGE.md
-  §10).
-- **Positions are not part of the program.** A `.holon` file outside the editor carries no
+  Each noun lowers to one leaf, so the manifest is still derived from leaves (P6); a `switch` is
+  the same unit as its guards written by hand ([match L4 §4](../../L4s/match-L4.md)).
+- **One form, and every flow has handlers.** The wiring form (`node` and wire statements), which
+  let the printer write any canvas, went with the switch to TypeScript, as did flows without
+  handlers, so a canvas the text can't spell has no form of its own to fall back to. Holon keeps
+  nothing compatible while in development (LANGUAGE.md §10).
+- **Positions are not part of the program.** A `.holon.ts` file outside the editor carries no
   layout and is laid out on import; the editor keeps positions in its saved document, matched by
   name. Coordinates in the text were refused: a program would carry its picture and every diff
   would show drags ([text-pane L4](../../L4s/text-pane-L4.md), decision 8).
 - **One mistake at a time, as `check` says it.** The compiler stops at the first; recovering
   would make the words differ from `check`'s, and the second mistake is often the first's
   ([language-server L4](../../L4s/language-server-L4.md), decision 3).
-- **fmt mends one mistake.** It prints from the compiled document, so a text must compile; the
-  one fix-it is a header line for a name the body uses undeclared, so files written before
-  declared names migrate with one `fmt`
-  ([declared-names L4 §5](../../L4s/declared-names-L4.md)). It keeps comments, which it once
-  dropped against §4 of the language ([text-pane L4](../../L4s/text-pane-L4.md), decision 6).
+- **fmt lays out the text, not the graph.** Printing the compiled document, as it once did, would
+  turn an author's `let` or `if` into the printer's `const` form; working on the source, it keeps
+  each text as its author wrote it, every comment where it was (it once dropped them against §4
+  of the language, [text-pane L4](../../L4s/text-pane-L4.md), decision 6), and two texts of one
+  document stay two texts ([typescript-syntax L4 §13](../../L4s/typescript-syntax-L4.md)). It
+  checks that what it wrote is the same flow, so its own mistake can't change one. It mends
+  nothing: the header line it once added for a name used undeclared
+  ([declared-names L4 §5](../../L4s/declared-names-L4.md)) has no counterpart, since a TypeScript
+  flow declares by importing.
 - **Samples are text, compiled.** A sample written as a hand-copied node shape would drift from
   core; compiled against the catalog, one that stops compiling fails the tests. Kept as `fmt`
   writes it, it is readable documentation of the feature.
@@ -171,19 +210,15 @@ holon-author golden` writes it afresh.
 - **One diagnostic, whole text.** `mistakes` answers the first compile error only, and every
   change compiles the whole text: no incremental parsing ("a flow is small", the language server
   note, decision 2).
-- **The language server** has no go-to-definition or rename; completion offers words, not
-  snippets; each file is a flow on its own. Its note says "no code actions yet"; `declare_missing`
-  is one now. The quick fixes are split: `holon lsp` declares names, the web editor makes a flow
-  runnable by hand, and neither offers the other's.
-- **fmt** formats only a text that compiles, and mends only undeclared secrets and state keys.
-  Comments are re-anchored by the statement they sat above; a canvas edit reprints from the canvas
-  and drops them (the text pane says how many).
-- **Two wiring-form parsers.** `text.rs` keeps the first one and its printer; only parity tests
-  reach them now (`every_sample_in_the_wiring_form_parses_as_the_old_parser_reads_it`,
-  `every_sample_in_the_wiring_form_lowers_to_the_same_unit_as_its_text`), and the first skips
-  samples with a `js` statement, which the old parser predates.
-- **Leaves called by name** (`store_read(key: …)`, a wiring-form `node … = secret {…}`) are not
-  checked against the header ([declared-names L4 §10](../../L4s/declared-names-L4.md)).
+- **The language server** has no go-to-definition, rename or code actions; completion offers
+  words, not snippets; each file is a flow on its own. No `holon.d.ts` gives TypeScript's own
+  tools the types of `"holon"` and the import prefixes yet
+  ([typescript-syntax L4 §13](../../L4s/typescript-syntax-L4.md)).
+- **fmt** formats only a text that compiles. A comment inside an expression keeps its statement
+  as written. A canvas edit reprints the text through the printer and drops its comments (the text
+  pane says how many).
+- **Leaves called by name** (a `store_read` imported from `"holon"`, its key a param) are not
+  checked against what the flow imports ([declared-names L4 §10](../../L4s/declared-names-L4.md)).
 - **A canvas group with no request** is left out of the server without a word from `find_routes`.
 - **Pure means blind to the host.** `check` can't know whether a secret is set, a folder bound or
   a port free; the server says so at deploy.
@@ -196,25 +231,34 @@ holon-author golden` writes it afresh.
 ## 5. What the tests hold
 
 - **Samples** (`samples.rs`): `every_sample_builds_with_a_unique_name_and_port`;
-  `a_samples_text_says_what_its_entry_says` (name, port, interval, browsers, optional permissions
-  and secrets agree between the text and the entry, both ways for secrets);
-  `every_sample_is_as_fmt_writes_it` (`commands::fmt` leaves each file as it is; each opens with a
-  comment); `every_samples_routes_give_what_the_eager_evaluator_gives` (every route, with a body
-  and without, against core's eager evaluator, at least 40 cases).
-- **Round trips** (`lang/`): `every_sample_round_trips_from_its_text` and
+  `a_samples_text_says_what_its_entry_says` (name, port, browsers, optional permissions and
+  secrets agree between the text and the entry, both ways for secrets; no interval, a clock being
+  an `every(…)` handler); `every_sample_is_as_fmt_writes_it` (`commands::fmt` leaves each file as
+  it is; each opens with a comment); `every_samples_routes_give_what_the_eager_evaluator_gives`
+  (every route, with a body and without, against core's eager evaluator, at least 40 cases).
+- **Reading** (`ts.rs`): `each_construct_lowers_as_its_plain_form` and
+  `each_statement_lowers_as_its_plain_form` (each construct, beside the same flow written plainly,
+  is the same unit); `a_refusal_says_what_to_write`; `a_mistake_names_its_line_and_column`;
+  `a_js_bodys_types_are_blanked_in_place`.
+- **Lowering** (`lower.rs`): a test per construct,
+  `a_switch_is_the_same_unit_as_its_guards_written_by_hand` among them.
+- **Formatting** (`format.rs`): `a_text_as_fmt_writes_it_is_kept`, `comments_stay_where_they_were`,
+  `a_js_body_is_never_touched`, `a_flow_written_any_which_way` (`tests/fmt/messy.holon.ts` laid out
+  as `messy.laid.holon.ts`).
+- **Round trips** (`print.rs`): `every_sample_round_trips_from_its_text` and
   `every_sample_round_trips_from_its_builder` (the printed text lowers to the same unit hash, and
-  printing again changes nothing); `the_canonical_form_of_two_samples`;
-  `a_match_is_the_same_unit_as_its_guards_written_by_hand`; a test per construct in `lex.rs`,
-  `parse.rs`, `lower.rs` and `print.rs`, `errors_say_the_line_and_column_and_what_was_expected`
-  among them.
+  printing again changes nothing); `the_canonical_form_of_two_samples`.
 - **Commands** (`commands.rs`): `fmt_is_stable_and_every_sample_round_trips_through_new`,
-  `fmt_keeps_the_comments`, `fmt_declares_what_the_body_reads_and_says_so`,
+  `fmt_leaves_a_hash_inside_a_js_body_alone`, `a_mistake_names_its_file_and_line`,
   `check_says_where_each_secret_is_sent`, `check_compiles_each_js_body_and_says_a_mistake_at_its_line`.
 - **Routes** (`routes.rs`): `one_route_per_group_with_a_request_node`,
   `every_group_that_cant_be_a_route_says_why`, `a_route_keeps_the_response_first_and_every_effect`.
-- **Editors and agents**: `editing.rs`'s `every_sample_has_no_mistakes`, `format_is_fmt`,
-  `the_quick_fix_declares_what_the_body_uses`; `lsp.rs` on framed messages; `agent.rs`'s
-  `a_plan_carries_the_unit_its_units_its_trace_and_its_names`, `a_plan_says_each_mistake_as_check_does`.
+- **Editors and agents**: `editing.rs`'s `every_sample_has_no_mistakes`,
+  `a_mistake_has_its_span_and_the_words_check_uses`, `the_word_under_the_cursor_is_said`,
+  `a_text_is_coloured_as_the_language_reads_it`, `completion_offers_what_may_be_written_there`,
+  `format_is_fmt`; `lsp.rs` on framed messages; `agent.rs`'s
+  `a_plan_carries_the_unit_its_units_its_trace_and_its_names`,
+  `a_plan_says_each_mistake_as_check_does`, `a_flows_text_is_the_saved_text_or_its_canvas_printed`.
 - **Golden** (`golden.rs`): `the_evaluator_gives_what_its_golden_record_holds`;
   `keeping_each_composites_shape_changes_nothing_the_evaluator_gives`; the tripwire
   `the_compute_heavy_flows_functions_all_run_down_a_plan` (at least 5 of `CRUNCH`'s functions pass

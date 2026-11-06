@@ -560,27 +560,27 @@ fn clock_ticks_fire_when_due_and_not_before() {
 
 /// A clock flow that never reads the time (`every`, and a counter) deploys: its schedule starts
 /// its runs, so the preview and the deploy ask for the clock, its manifest names the clock its
-/// trigger, and it runs on it. Without the schedule nothing would start it, and it is refused.
+/// trigger, and it runs on it. Its schedule is in its text, so an interval besides it is refused.
 #[test]
 fn a_flow_on_a_schedule_deploys_without_reading_the_clock() {
     let state = test_state();
-    let plan = holon_author::agent::plan("flow beats\nevery 5s\nstate beats\n\nstate.beats = (state.beats ?? 0) + 1\n").unwrap();
+    let plan = holon_author::agent::plan("import { every, flow } from \"holon\"\nimport state from \"state\"\n\nflow(\"beats\")\n\nevery(\"5s\", () => {\n  state.beats = (state.beats ?? 0) + 1\n})\n").unwrap();
     assert!(plan.may.contains(&"Clock".to_string()), "{:?}", plan.may);
     for u in &plan.units {
         assert_eq!(route(&state, &req("POST", "/unit", u.clone())).status_code, 200);
     }
     let unit = parse_hash(&plan.unit).unwrap();
 
-    let unscheduled = deploy_json(&state, "beats", unit, serde_json::json!({}));
-    assert_eq!(unscheduled.status_code, 400);
-    let said = String::from_utf8_lossy(&body_bytes(unscheduled)).into_owned();
-    assert!(said.contains("nothing would start a run") && said.contains("action run (input)"), "{said}");
+    let interval = deploy_json(&state, "beats", unit, serde_json::json!({ "interval_seconds": 5 }));
+    assert_eq!(interval.status_code, 400);
+    let said = String::from_utf8_lossy(&body_bytes(interval)).into_owned();
+    assert!(said.contains("clocks are in its text"), "{said}");
 
-    let body = serde_json::json!({ "slug": "beats", "unit": plan.unit, "interval_seconds": 5 });
+    let body = serde_json::json!({ "slug": "beats", "unit": plan.unit });
     let preview = body_json(route(&state, &req("POST", "/deploy/preview", serde_json::to_vec(&body).unwrap())));
     let asked: Vec<String> = serde_json::from_value(preview["needs_approval"].clone()).unwrap();
     assert!(asked.contains(&"Clock".to_string()), "{asked:?}");
-    let r = deploy_json(&state, "beats", unit, serde_json::json!({ "interval_seconds": 5, "acknowledge": asked }));
+    let r = deploy_json(&state, "beats", unit, serde_json::json!({ "acknowledge": asked }));
     let status = r.status_code;
     assert_eq!(status, 200, "{}", String::from_utf8_lossy(&body_bytes(r)));
 
@@ -598,15 +598,15 @@ fn a_flow_on_a_schedule_deploys_without_reading_the_clock() {
 #[test]
 fn a_clock_runs_history_never_shows_a_secret() {
     let state = test_state();
-    let plan = holon_author::agent::plan("flow leak\nevery 5s\nsecret api_key\nstate encoded\nstate k\n\nstate.k = secret.api_key\nstate.encoded = base64(secret.api_key)\n").unwrap();
+    let plan = holon_author::agent::plan("import { base64, every, flow } from \"holon\"\nimport state from \"state\"\nimport api_key from \"secret:api_key\"\n\nflow(\"leak\")\n\nevery(\"5s\", () => {\n  state.k = api_key\n  state.encoded = base64(api_key)\n})\n").unwrap();
     for u in &plan.units {
         assert_eq!(route(&state, &req("POST", "/unit", u.clone())).status_code, 200);
     }
     let unit = parse_hash(&plan.unit).unwrap();
-    let body = serde_json::json!({ "slug": "leak", "unit": plan.unit, "interval_seconds": 5 });
+    let body = serde_json::json!({ "slug": "leak", "unit": plan.unit });
     let preview = body_json(route(&state, &req("POST", "/deploy/preview", serde_json::to_vec(&body).unwrap())));
     let asked: Vec<String> = serde_json::from_value(preview["needs_approval"].clone()).unwrap();
-    assert_eq!(deploy_json(&state, "leak", unit, serde_json::json!({ "interval_seconds": 5, "acknowledge": asked })).status_code, 200);
+    assert_eq!(deploy_json(&state, "leak", unit, serde_json::json!({ "acknowledge": asked })).status_code, 200);
     let value = "sk_live_kept_off_the_history";
     let set = serde_json::to_vec(&serde_json::json!({ "value": value })).unwrap();
     assert_eq!(route(&state, &req("POST", "/deployments/leak/secrets/api_key", set)).status_code, 200);
@@ -5296,7 +5296,17 @@ fn the_servers_secret_goes_only_where_an_admin_said_it_may() {
     assert_eq!(status, 200, "{}", String::from_utf8_lossy(&body_bytes(r)));
     let flow = |name: &str, port: u16, host: &str| {
         format!(
-            "flow {name}\nport {port}\nsecret api_key\n\nroute GET /go (req) {{\n  called = http.get(\"{host}\", \"/api\", headers: {{ authorization: \"Bearer {{secret.api_key}}\" }})\n  respond {{ status: called.error ?? called.status, message: called.message ?? \"\" }}\n}}\n"
+            r#"import {{ flow, route }} from "holon"
+import api_key from "secret:api_key"
+import api from "host:{host}"
+
+flow("{name}", {{ port: {port} }})
+
+route.get("/go", async () => {{
+  const called = await api.get("/api", {{ headers: {{ authorization: `Bearer ${{api_key}}` }} }})
+  return {{ status: called.error ?? called.status, message: called.message ?? "" }}
+}})
+"#
         )
     };
 
@@ -6304,14 +6314,14 @@ fn a_row_another_program_changed_sends_the_run_round_again() {
 /// set to `run` (Â§7.3 of the databases L4): each flow's text the same as without it.
 fn numbering_text(host: &str, flow: &str, port: u16) -> String {
     format!(
-        "flow {flow}\nport {port}\ndatabase shop\n\nroute POST /next (req) {{\n  row = shop.one(\"select n from seq where id = $1\", 1)\n  sent = http.get(\"{host}\", \"/slow\").body\n  shop.exec(\"update seq set n = $1 where id = $2\", row.n + 1, 1, expect: 1)\n  respond {{ n: row.n + 1, sent: sent }}\n}}\n"
+        "import {{ flow, route }} from \"holon\"\nimport shop from \"database:shop\"\nimport host from \"host:{host}\"\n\nflow(\"{flow}\", {{ port: {port} }})\n\nroute.post(\"/next\", async () => {{\n  const row = shop.one(\"select n from seq where id = $1\", 1)\n  const sent = (await host.get(\"/slow\")).body\n  shop.exec(\"update seq set n = $1 where id = $2\", row.n + 1, 1, {{ expect: 1 }})\n  return {{ n: row.n + 1, sent }}\n}})\n"
     )
 }
 
 /// Reads the sequence and calls out, writing nothing.
 fn peeking_text(host: &str, flow: &str, port: u16) -> String {
     format!(
-        "flow {flow}\nport {port}\ndatabase shop\n\nroute GET /peek (req) {{\n  row = shop.one(\"select n from seq where id = $1\", 1)\n  sent = http.get(\"{host}\", \"/slow\").body\n  respond {{ n: row.n, sent: sent }}\n}}\n"
+        "import {{ flow, route }} from \"holon\"\nimport shop from \"database:shop\"\nimport host from \"host:{host}\"\n\nflow(\"{flow}\", {{ port: {port} }})\n\nroute.get(\"/peek\", async () => {{\n  const row = shop.one(\"select n from seq where id = $1\", 1)\n  const sent = (await host.get(\"/slow\")).body\n  return {{ n: row.n, sent }}\n}})\n"
     )
 }
 
@@ -7114,8 +7124,9 @@ fn hashing_server() -> String {
     host
 }
 
-/// `on file inbox`: the files there at the deploy are seen, not run on; a new one starts one run
-/// once it stops changing, whose `ingress` is its handle, and the run sends its bytes by handle.
+/// `on.file.created(inbox, …)`: the files there at the deploy are seen, not run on; a new one
+/// starts one run once it stops changing, whose handler is given its handle, and the run sends
+/// its bytes by handle.
 /// What the run writes into the folder it watches doesn't start a run; a file that changes runs
 /// again; and the runs verify.
 #[test]
@@ -7131,11 +7142,23 @@ fn new_files_start_runs_that_send_them_on_by_handle() {
     std::fs::write(inbox.join("old.csv"), "there before").unwrap();
     let host = hashing_server();
     let text = format!(
-        "flow drop\non file inbox\nfolder receipts\n\nsent = http.put(\"{host}\", \"/up\", file: ingress)\nreceipts[\"{{ingress.name}}.txt\"] = sent.body\ninbox[\"done/{{ingress.name}}\"] = \"sent\"\n"
+        r#"import {{ flow, on }} from "holon"
+import inbox from "folder:inbox"
+import receipts from "folder:receipts"
+import host from "host:{host}"
+
+flow("drop")
+
+on.file.created(inbox, async (f) => {{
+  const sent = await host.put("/up", {{ file: f }})
+  receipts[`${{f.name}}.txt`] = sent.body
+  inbox[`done/${{f.name}}`] = "sent"
+}})
+"#
     );
     let slug = deploy_text(&state, &text, &host);
     let triggers = body_json(route(&state, &req("GET", "/deployments", vec![])))["deployments"][0]["triggers"].clone();
-    assert_eq!(triggers, serde_json::json!(["Files inbox"]), "the trigger is derived from the unit");
+    assert_eq!(triggers, serde_json::json!(["on file inbox"]), "the trigger is derived from the unit: its handler's label");
     let look = || arrivals::run_arrivals(&state.store, &state.deployments, &state.deployments_path);
 
     // Dropped the moment it's deployed, before the watcher has looked: still new (old.csv was
@@ -7248,7 +7271,7 @@ fn a_file_a_run_deletes_starts_no_run() {
     std::fs::create_dir_all(&dir).unwrap();
     assert_eq!(route_status(&state, &serde_json::json!({ "name": "inbox", "path": dir.display().to_string(), "access": "read-write" })), 200);
     std::fs::write(dir.join("keep.txt"), "there before").unwrap();
-    let slug = deploy_text(&state, "flow tidy\non file inbox matching \"*.tmp\"\non file inbox deleted\n\ninbox.delete(ingress.name)\n", "");
+    let slug = deploy_text(&state, "import { flow, on } from \"holon\"\nimport inbox from \"folder:inbox\"\n\nflow(\"tidy\")\n\non.file.created(inbox, (f) => {\n  inbox.delete(f.name)\n}, { matching: \"*.tmp\" })\n\non.file.deleted(inbox, (f) => {\n  inbox.delete(f.name)\n})\n", "");
     let look = || {
         arrivals::run_arrivals(&state.store, &state.deployments, &state.deployments_path);
         arrivals::run_arrivals(&state.store, &state.deployments, &state.deployments_path);
@@ -8285,7 +8308,25 @@ fn a_run_that_waits_parks_and_resumes_at_its_handlers_level() {
     let state = test_state_at(unique_temp_path("waits-light").into());
     let text = |level: &str, port: u16| {
         format!(
-            "flow hold-{level}\nport {port}\ncollection seen\n\nroute POST /hold (req) {level} {{\n  started = start(hold, req.method)\n  respond {{ token: started.waiting.paid }}\n}}\n\naction hold (asked) {level} {{\n  paid = await paid, expires: 1h\n  seen[\"last\"] = paid.method\n}}\n\nroute GET /paid/:token (req) resumes paid {{\n  respond \"thanks\"\n}}\n\nroute GET /seen (req) {{\n  respond {{ last: seen[\"last\"] }}\n}}\n"
+            r#"import {{ action, event, flow, route }} from "holon"
+import seen from "collection:seen"
+
+flow("hold-{level}", {{ port: {port} }})
+
+route.post("/hold", (req) => {{
+  const started = hold(req.method)
+  return {{ token: started.waiting.paid }}
+}}, {{ log: "{level}" }})
+
+export const hold = action(async (asked) => {{
+  const paid = await event("paid", {{ expires: "1h" }})
+  seen["last"] = paid.method
+}}, {{ log: "{level}" }})
+
+route.get("/paid/:token", () => "thanks", {{ resumes: "paid" }})
+
+route.get("/seen", () => ({{ last: seen["last"] }}))
+"#
         )
     };
     for (level, port) in [("unrecorded", 18201), ("lazy", 18202)] {
@@ -9198,9 +9239,12 @@ fn a_call_that_cant_be_made_says_why() {
 #[test]
 fn a_chain_of_calls_is_never_a_loop_and_is_only_so_long() {
     let state = claims_state("");
+    // Each flow's action is `go`, and so is the next one's: it is imported under another name.
     let relay = |name: &str, next: Option<&str>| match next {
-        Some(next) => format!("flow {name}\ncalls {next}\n\naction go (input) {{\n  r = {next}.go(input)\n  respond r\n}}\n"),
-        None => format!("flow {name}\n\naction go (input) {{\n  respond \"{name}\"\n}}\n"),
+        Some(next) => format!(
+            "import {{ action, flow }} from \"holon\"\nimport {{ go as next_go }} from \"flow:{next}\"\n\nflow(\"{name}\")\n\nexport const go = action(async (input) => {{\n  const r = await next_go(input)\n  return r\n}})\n"
+        ),
+        None => format!("import {{ action, flow }} from \"holon\"\n\nflow(\"{name}\")\n\nexport const go = action((input) => \"{name}\")\n"),
     };
     // ping and pong call each other: the second call back is refused, and says why.
     deploy_text(&state, &relay("ping", Some("pong")), "127.0.0.1:9");
@@ -9284,22 +9328,35 @@ fn request_throughput() {
     for text in [hello, calc, counter] {
         deploy_plain_text(&state, text);
     }
-    // Their reads again, lazy (C5): the same runs, recorded without a sync before the answer.
-    let lazy = |text: &str, name: &str, port: &str, route: &str| {
-        let text = text.replace(&format!("route GET {route} (req) {{"), &format!("route GET {route} (req) lazy {{"));
-        text.replacen(&format!("flow {name}\n"), &format!("flow {name}-lazy\n"), 1).replacen(&format!("port {port}"), &format!("port {}", port.parse::<u16>().unwrap() + 1000), 1)
+    // One rewrite of a sample's text, which must find what it replaces.
+    let swap = |text: &str, from: &str, to: &str| {
+        assert!(text.contains(from), "{from:?} isn't in the text it rewrites:\n{text}");
+        text.replacen(from, to, 1)
     };
-    deploy_plain_text(&state, &lazy(hello, "hello-api", "8101", "/hello/:name"));
+    // Their reads again, lazy (C5): the same runs, recorded without a sync before the answer.
+    let lazy = |text: &str, name: &str, port: u16, route: &str| {
+        let opens = format!("route.get(\"{route}\", ");
+        let line = text.lines().find(|l| l.starts_with(&opens) && l.ends_with(')')).unwrap_or_else(|| panic!("no one-line GET {route} in:\n{text}"));
+        let text = swap(text, line, &format!("{}, {{ log: \"lazy\" }})", &line[..line.len() - 1]));
+        let text = swap(&text, &format!("flow(\"{name}\""), &format!("flow(\"{name}-lazy\""));
+        swap(&text, &format!("port: {port}"), &format!("port: {}", port + 1000))
+    };
+    deploy_plain_text(&state, &lazy(hello, "hello-api", 8101, "/hello/:name"));
     // Its write route goes: a lazy /last beside a strict /hit would be the same deployment's log.
-    let last_only = counter.split("route GET /hit").next().unwrap().to_string() + "route GET /last" + counter.split("route GET /last").nth(1).unwrap();
-    deploy_plain_text(&state, &lazy(&last_only, "counter", "8155", "/last"));
+    let last_only = counter.split("route.get(\"/hit\"").next().unwrap().to_string() + "route.get(\"/last\"" + counter.split("route.get(\"/last\"").nth(1).unwrap();
+    assert!(!last_only.contains("route.get(\"/hit\"") && !last_only.contains("route.post(") && last_only.contains("route.get(\"/last\""), "{last_only}");
+    deploy_plain_text(&state, &lazy(&last_only, "counter", 8155, "/last"));
     // And unrecorded (granted, as a person approves it): counted, no entry.
-    let unrecorded = |text: &str, name: &str, port: &str, route: &str| lazy(text, name, port, route).replace(" lazy {", " unrecorded {").replacen(&format!("flow {name}-lazy\n"), &format!("flow {name}-unrecorded\n"), 1).replacen(&format!("port {}", port.parse::<u16>().unwrap() + 1000), &format!("port {}", port.parse::<u16>().unwrap() + 2000), 1);
-    deploy_plain_text(&state, &unrecorded(hello, "hello-api", "8101", "/hello/:name"));
-    deploy_plain_text(&state, &unrecorded(&last_only, "counter", "8155", "/last"));
+    let unrecorded = |text: &str, name: &str, port: u16, route: &str| {
+        let text = swap(&lazy(text, name, port, route), "{ log: \"lazy\" }", "{ log: \"unrecorded\" }");
+        let text = swap(&text, &format!("flow(\"{name}-lazy\""), &format!("flow(\"{name}-unrecorded\""));
+        swap(&text, &format!("port: {}", port + 1000), &format!("port: {}", port + 2000))
+    };
+    deploy_plain_text(&state, &unrecorded(hello, "hello-api", 8101, "/hello/:name"));
+    deploy_plain_text(&state, &unrecorded(&last_only, "counter", 8155, "/last"));
     // Deployments the measured ones share the server with, as a server with others would.
     for i in 1..=30 {
-        let text = calc.replacen("flow calc", &format!("flow calc{i}"), 1).replacen("port 8116", &format!("port {}", 8200 + i), 1);
+        let text = swap(&swap(calc, "flow(\"calc\"", &format!("flow(\"calc{i}\"")), "port: 8116", &format!("port: {}", 8200 + i));
         deploy_plain_text(&state, &text);
     }
     let deployments = state.deployments.lock().unwrap().len();
@@ -9395,8 +9452,24 @@ fn request_throughput() {
 }
 
 /// A compute-heavy route: statistics over a list of numbers and a record per item, all with `map`
-/// and `fold` in the graph (docs/L4s/request-path-L4.md §4.5, measured).
-const CRUNCH: &str = "flow crunch\nport 8311\n\nroute POST /stats (req) unrecorded {\n  xs = req.json.xs\n  count = fold(0, xs, fn: fn(acc, x) -> acc + 1 + x * 0)\n  total = fold(0, xs, fn: fn(acc, x) -> acc + x)\n  squares = map(xs, fn: fn(x) -> x * x)\n  sumsq = fold(0, squares, fn: fn(acc, x) -> acc + x)\n  mean = total / count\n  rows = map(xs, mean, fn: fn(x, mean) -> { v: x, dev: x - mean, sq: (x - mean) * (x - mean) })\n  spread = fold(0, rows, fn: fn(acc, r) -> acc + r.sq)\n  respond { n: count, sum: total, mean: mean, variance: sumsq / count - mean * mean, spread: spread / count }\n}\n";
+/// and `fold` in the graph (`map` and `reduce` in the text; docs/L4s/request-path-L4.md §4.5,
+/// measured).
+const CRUNCH: &str = r#"import { flow, route } from "holon"
+
+flow("crunch", { port: 8311 })
+
+route.post("/stats", (req) => {
+  const xs = req.json.xs
+  const count = xs.reduce((acc, x) => acc + 1 + x * 0, 0)
+  const total = xs.reduce((acc, x) => acc + x, 0)
+  const squares = xs.map((x) => x * x)
+  const sumsq = squares.reduce((acc, x) => acc + x, 0)
+  const mean = total / count
+  const rows = xs.map((x) => ({ v: x, dev: x - mean, sq: (x - mean) * (x - mean) }))
+  const spread = rows.reduce((acc, r) => acc + r.sq, 0)
+  return { n: count, sum: total, mean, variance: sumsq / count - mean * mean, spread: spread / count }
+}, { log: "unrecorded" })
+"#;
 
 /// One route run many times through serve_data on an on-disk store, for a profiler: what the
 /// request-path plan's 12.4 was found with. `HOLON_PROFILE` picks it (`hello`, an unrecorded

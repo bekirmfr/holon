@@ -26,21 +26,21 @@ use ratatui::crossterm::execute;
 
 use app::App;
 
-const USAGE: &str = "usage: holon editor [file.holon | slug] [--server PORT|URL]
+const USAGE: &str = "usage: holon editor [file.holon.ts | slug] [--server PORT|URL]
 
   The editor in this terminal: the flows on a server and what waits for you, each flow's
   status, runs and history, and flows' text in tabs, checked as you type. Deploying from here
   asks you to approve what a flow may do, as the browser's editor does. ? in the editor lists
   its keys.
 
-  file.holon               open that file in a tab (started afresh if it isn't there)
+  file.holon.ts            open that file in a tab (started afresh if it isn't there)
   slug                     open that deployment's page
   --server PORT|URL        which holon server to ask (see below); without a server, files still
                            open, check and format
 
 examples:
   holon editor
-  holon editor shop.holon
+  holon editor shop.holon.ts
   holon editor shop --server 7421
 
   From the holon serve you run on this machine, signed in as you; with several running,

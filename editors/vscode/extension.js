@@ -1,6 +1,7 @@
-// Holon for VS Code (docs/L4s/language-server-L4.md): the language and its grammar are declared in
-// package.json; this starts `holon lsp`, which says each mistake as you type, what a word is on
-// hover, and formats as `holon fmt` writes. It is started again when `holon.path` changes.
+// Holon for VS Code (docs/L4s/language-server-L4.md): a flow is a TypeScript file, `NAME.holon.ts`,
+// which VS Code highlights as TypeScript; this starts `holon lsp` for those files, which says each
+// mistake as you type, what a word is on hover, and formats as `holon fmt` writes. It is started
+// again when `holon.path` changes.
 
 const vscode = require("vscode");
 const { LanguageClient } = require("vscode-languageclient/node");
@@ -10,7 +11,7 @@ let client;
 
 async function start() {
   const command = vscode.workspace.getConfiguration("holon").get("path") || "holon";
-  client = new LanguageClient("holon", "Holon", { command, args: ["lsp"] }, { documentSelector: [{ language: "holon" }] });
+  client = new LanguageClient("holon", "Holon", { command, args: ["lsp"] }, { documentSelector: [{ scheme: "file", pattern: "**/*.holon.ts" }] });
   try {
     await client.start();
   } catch (e) {

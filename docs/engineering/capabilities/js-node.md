@@ -1,9 +1,11 @@
 # The js node
 
-JavaScript as one node: `holon closest(word, candidates) -> (match, distance) js { … }` puts a
-computation the vocabulary can't spell (an edit-distance table, a game's rules) in a flow, with
-every guarantee a leaf has. The design is the [js node L4](../../L4s/js-node-L4.md) (JL4), over the
-[module unit](../../L4s/wasm-module-L4.md); the language is [`LANGUAGE.md`](../../LANGUAGE.md) §5.8a.
+JavaScript as one node:
+`const closest = js(function closest(word, candidates) { … }, { outputs: ["best", "distance"] })`
+puts a computation the vocabulary can't spell (an edit-distance table, a game's rules) in a flow,
+with every guarantee a leaf has. The design is the
+[js node L4](../../L4s/js-node-L4.md) (JL4), over the [module unit](../../L4s/wasm-module-L4.md);
+the language is [`LANGUAGE.md`](../../LANGUAGE.md) §5.8a.
 The sample is `nearest`; `inbox-report`, `guestbook`, `tally`, `chess` and others use one.
 
 ## 1. What it is
@@ -15,9 +17,10 @@ clock, no randomness and no I/O.
 
 In the code:
 
-- `crates/holon-author/src/lang/`: the lexer reads the body as JavaScript (`lex.rs`, `js_body`),
-  the parser makes a `JsDef` (`parse.rs`), the lowering builds the composite (`lower.rs`,
-  `js_node`, `js_source`), the printer reads it back (`print.rs`, `is_js_node`, `js_statement`).
+- `crates/holon-author/src/lang/`: the TypeScript reader makes a `JsDef` of the `js()` call, its
+  body as written with its types blanked (`ts.rs`, `js_holon`, `blank_types`), the lowering builds
+  the composite (`lower.rs`, `js_node`, `js_source`), the printer reads it back (`print.rs`,
+  `is_js_node`, `js_statement`).
 - `crates/holon-author/src/modules.rs`: the engine unit under a budget (`js_engine_unit`), and a
   document's modules by engine and params (`entry_of`, `restore_modules`).
 - `crates/holon-module/src/lib.rs`: the engine bytes (`JS_ENGINE`, from
@@ -32,12 +35,17 @@ In the code:
 
 ## 2. How it works
 
-### The statement and its lowering
+### The `js()` function and its lowering
 
-`holon f(a, b) -> (total, weight) js fuel 50M memory 16MB { body }`: ports as any holon's; `fuel`
-and `memory` optional. The lexer finds the body's closing brace by counting braces outside strings,
-template literals (their `${…}` read as code), comments and regex literals; nothing inside is
-parsed as Holon, and `fmt` never touches it (only line endings become `\n`). It lowers to:
+```ts
+const f = js(function f(a, b) { body }, { outputs: ["total", "weight"], fuel: "50M", memory: "16MB" })
+```
+
+The function's parameters are its input ports; its output is named after the function,
+or `outputs` names two or more; `fuel` and `memory` are optional. oxc's parser reads the body as
+part of the function, so nothing inside is read as Holon; its TypeScript types are blanked to
+spaces before the engine sees it, so its lines and columns stay where they were, and `fmt` never
+touches it. It lowers to:
 
 ```
 const{value: "(a, b) => { body }"}       the source, js_source: the declared names and the body
@@ -78,8 +86,8 @@ in a fresh `wasmi` `Store` with fuel metering and a memory limiter (`Budget`). R
 either, a trap or an answer that doesn't decode is a `RunError`; `WithEngine` keeps it
 (`take_failure`), core tells the observer at the module's path, and the server's timer keeps it as
 `NodeTiming::reason`, so `explain` says "closest gave nothing: out of fuel (200000000
-instructions)" or the body's `TypeError`. From the flow's side the node is absent, and `respond …,
-missing:` answers it.
+instructions)" or the body's `TypeError`. From the flow's side the node is absent, and a route
+answers it with the status it gives an absent body (`return found ?? status(502)`; 404 unsaid).
 
 ### Budgets and the manifest
 
@@ -89,8 +97,8 @@ module asks for `Limit(module_fuel=N)` and `Limit(module_memory=N)` at the large
 declares (`Requirements::with_module_limits`); the approval says "run code it carries (a js node)
 for up to N instructions per call, reaching nothing outside" (`describe_item`). The host's ceilings are `MODULE_FUEL_CEILING` (1,000,000,000) and
 `MODULE_MEMORY_CEILING` (256 MiB), raised under `[ceilings]`; a `[limits]` default for a module
-budget is refused, since a module's budget is its own. `chess`'s `rules` asks `fuel 1000000000`,
-the ceiling.
+budget is refused, since a module's budget is its own. `chess`'s `rules` asks
+`{ fuel: 1000000000 }`, the ceiling.
 
 ### `check` and the editor
 
@@ -164,8 +172,9 @@ In `holon-module`'s `lib.rs`, the runner: `a_module_with_imports_never_runs`,
 `the_observer_hears_why_a_module_gave_nothing`.
 
 In `holon-author`: `a_js_node_prints_back_verbatim_lowers_to_the_same_units_and_runs`,
-`a_js_node_s_mistakes_are_named_at_their_place` (`print.rs`); `a_js_body_is_read_as_javascript`,
-`js_marks_a_body_only_after_the_outputs` (`lex.rs`); `fmt_leaves_a_hash_inside_a_js_body_alone`,
+`a_js_node_s_mistakes_are_named_at_their_place` (`print.rs`);
+`a_js_bodys_types_are_blanked_in_place` (`ts.rs`); `a_js_body_is_never_touched` (`format.rs`);
+`fmt_leaves_a_hash_inside_a_js_body_alone`,
 `check_compiles_each_js_body_and_says_a_mistake_at_its_line` (`commands.rs`);
 `explain_says_why_a_js_node_gave_nothing` (`agent.rs`). In the server's `permissions.rs`,
 `a_module_s_budgets_are_limits_with_ceilings_and_no_defaults`.

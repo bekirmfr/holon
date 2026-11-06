@@ -51,14 +51,18 @@ test("the flow's text drives its canvas, and the canvas its text", async ({ page
   const requestAt = await nodeNamed(page, "request").getAttribute("style");
 
   // A mistake: marked where `holon check` says, and the canvas keeps the last version that compiled.
-  await typeText(editor, page, 'flow hello-api\nport 8101\n\nroute GET /hello/:name (req) {\n  respond nope\n}\n');
+  await typeText(editor, page, 'import { flow, route } from "holon"\n\nflow("hello-api", { port: 8101 })\n\nroute.get("/hello/:name", (req) => nope)\n');
   await expect(pane.getByRole("status")).toContainText('unknown name "nope"');
   await expect(pane.getByRole("status")).toContainText("the last version that compiled");
   await expect(pane.locator(".cm-lintRange-error")).toHaveText("nope");
   await expect(nodes).toHaveCount(before);
 
   // Fixed, with one call more and a comment: the canvas follows, the request where it was.
-  await typeText(editor, page, '# says hello, loudly\nflow hello-api\nport 8101\n\nroute GET /hello/:name (req) {\n  respond uppercase("Hello, {req.params.name}")\n}\n');
+  await typeText(
+    editor,
+    page,
+    '// says hello, loudly\nimport { flow, route, uppercase } from "holon"\n\nflow("hello-api", { port: 8101 })\n\nroute.get("/hello/:name", (req) => {\n  return uppercase(`Hello, ${req.params.name}`)\n})\n',
+  );
   await expect(pane.getByRole("status")).toHaveCount(0);
   await expect(nodeNamed(page, "uppercase")).toHaveCount(1);
   await expect(nodes).toHaveCount(before + 1);
@@ -67,7 +71,7 @@ test("the flow's text drives its canvas, and the canvas its text", async ({ page
   // A node selected on the canvas marks its line, and the range it is written over.
   await pick(nodeNamed(page, "uppercase"));
   await expect(pane.locator(".hl-text__picked")).toContainText("uppercase(");
-  await expect(pane.locator(".hl-text__mark")).toHaveText('uppercase("Hello, {req.params.name}")');
+  await expect(pane.locator(".hl-text__mark")).toHaveText("uppercase(`Hello, ${req.params.name}`)");
 
   // Completion: after `req.`, the request's parts.
   await editor.click();
@@ -75,16 +79,21 @@ test("the flow's text drives its canvas, and the canvas its text", async ({ page
   await page.keyboard.press("ArrowUp");
   await page.keyboard.press("ArrowUp");
   await page.keyboard.press("End");
-  await page.keyboard.insertText("\n  x = req.");
+  await page.keyboard.insertText("\n  const x = req.");
   await page.keyboard.type("p");
   await expect(page.locator(".cm-tooltip-autocomplete")).toContainText("params");
   await page.keyboard.press("Escape");
 
   // Format: as `holon fmt` writes it (the half-typed line is a mistake, so first take it out).
-  await typeText(editor, page, '# says hello, loudly\nflow   hello-api\nport 8101\nroute GET /hello/:name (req) {\n      respond uppercase("Hello, {req.params.name}")\n}\n');
+  await typeText(
+    editor,
+    page,
+    "// says hello, loudly\nimport { flow, route, uppercase } from 'holon'\n\nflow(  'hello-api', { port: 8101 });\n\nroute.get(\"/hello/:name\", (req) => {\n      return uppercase(`Hello, ${req.params.name}`);\n})\n",
+  );
   await pane.getByRole("button", { name: "Format" }).click();
-  await expect(editor).toContainText('route GET /hello/:name (req) {  respond uppercase("Hello, {req.params.name}")}');
-  await expect(editor).toContainText("flow hello-apiport 8101");
+  await expect(editor).toContainText('route.get("/hello/:name", (req) => {  return uppercase(`Hello, ${req.params.name}`)})');
+  await expect(editor).toContainText('flow("hello-api", { port: 8101 })');
+  await expect(editor).not.toContainText(";");
   await page.screenshot({ path: "test-results/text-pane.png" });
 
   // Saved with the text as typed. At 1280px with the text, the inspector and the tools open, the
@@ -94,7 +103,7 @@ test("the flow's text drives its canvas, and the canvas its text", async ({ page
   await expect(page.locator(".hl-canvas")).toContainText("saved");
   const saved = await request.get(`${SERVER}/flows/hello-api`, { headers: { Authorization: `Bearer ${adminToken}` } });
   const doc = ((await saved.json()) as { document: { source?: string } }).document;
-  expect(doc.source).toContain("# says hello, loudly");
+  expect(doc.source).toContain("// says hello, loudly");
   expect(doc.source).toContain("uppercase(");
 
   // A canvas change writes the text again: the comment goes, and says so; undo brings it back.
@@ -108,7 +117,7 @@ test("the flow's text drives its canvas, and the canvas its text", async ({ page
   await pick(nodeNamed(page, "uppercase"));
   await page.keyboard.press("Delete");
   await expect(pane.getByRole("status")).toContainText("a comment was dropped");
-  await expect(editor).not.toContainText("# says hello");
+  await expect(editor).not.toContainText("// says hello");
   await undo.dispatchEvent("click");
-  await expect(editor).toContainText("# says hello, loudly");
+  await expect(editor).toContainText("// says hello, loudly");
 });

@@ -1,9 +1,9 @@
-//! `holon lsp`: a `.holon` file read by an editor as it is typed (docs/L4s/language-server-L4.md),
-//! as a Language Server Protocol server on stdin and stdout. What it says is holon-author's
-//! (`editing.rs`): each mistake `holon check` finds, what the word under the cursor is, what may
-//! be written there, the text as `holon fmt` writes it, and the quick fix that declares a name the
-//! body uses undeclared. This file frames the messages and converts positions: the
-//! language counts columns in characters, the protocol in UTF-16 code units.
+//! `holon lsp`: a `NAME.holon.ts` file read by an editor as it is typed
+//! (docs/L4s/language-server-L4.md), as a Language Server Protocol server on stdin and stdout.
+//! What it says is holon-author's (`editing.rs`): each mistake `holon check` finds, what the word
+//! under the cursor is, what may be written there, and the text as `holon fmt` writes it. This
+//! file frames the messages and converts positions: the language counts columns in characters,
+//! the protocol in UTF-16 code units.
 
 use std::collections::HashMap;
 use std::io::{BufRead, Write};
@@ -14,11 +14,10 @@ use serde_json::{json, Value};
 
 const USAGE: &str = "usage: holon lsp
 
-  A language server on stdin and stdout, for an editor to start (the VS Code extension in
-  editors/vscode does): each mistake holon check finds, as you type; what a word is, on hover;
-  what may be written, as completions; formatting, as holon fmt writes it; and a quick fix that
-  declares a secret or state key the body uses undeclared. It needs no server, and takes no
-  options.
+  A language server on stdin and stdout for a flow's .holon.ts file, for an editor to start (the
+  VS Code extension in editors/vscode does): each mistake holon check finds, as you type; what a
+  word is, on hover; what may be written, as completions; and formatting, as holon fmt writes it.
+  It needs no server, and takes no options.
 
 examples:
   holon lsp        (started by an editor, not by hand)";
@@ -137,7 +136,6 @@ impl Server {
                     "hoverProvider": true,
                     "completionProvider": { "triggerCharacters": ["."] },
                     "documentFormattingProvider": true,
-                    "codeActionProvider": { "codeActionKinds": ["quickfix"] },
                 },
                 "serverInfo": { "name": "holon", "version": env!("CARGO_PKG_VERSION") },
             }))],
@@ -185,26 +183,6 @@ impl Server {
                     _ => json!([]),
                 };
                 vec![answer(edits)]
-            }
-            "textDocument/codeAction" => {
-                let text = self.texts.get(&uri).map(String::as_str).unwrap_or("");
-                // A name used undeclared: its mistake says the line to add, and the fix adds it, with
-                // any other the body lacks, as `holon fmt` would.
-                let undeclared: Vec<&Value> = params["context"]["diagnostics"].as_array().into_iter().flatten().filter(|d| d["message"].as_str().is_some_and(|m| m.contains("to the header)"))).collect();
-                let actions = match editing::declare_missing(text) {
-                    Some(fix) if !undeclared.is_empty() => {
-                        let at = to_lsp(text, fix.at);
-                        json!([{
-                            "title": fix.title,
-                            "kind": "quickfix",
-                            "isPreferred": true,
-                            "diagnostics": undeclared,
-                            "edit": { "changes": { uri: [{ "range": { "start": at, "end": at }, "newText": fix.text }] } },
-                        }])
-                    }
-                    _ => json!([]),
-                };
-                vec![answer(actions)]
             }
             "shutdown" => {
                 self.shut_down = true;
@@ -259,8 +237,7 @@ pub(crate) fn run(args: &[String]) -> i32 {
 mod tests {
     use super::*;
 
-    /// A `.holon` text: the language server reads that form until it reads TypeScript's syntax.
-    const SLUGS: &str = include_str!("../../holon-author/tests/holon/slugs.holon");
+    const SLUGS: &str = include_str!("../../holon-author/samples/slugs.holon.ts");
 
     fn framed(messages: &[Value]) -> Vec<u8> {
         let mut bytes = vec![];
@@ -292,18 +269,18 @@ mod tests {
 
     #[test]
     fn an_editor_opens_changes_hovers_formats_and_shuts_down() {
-        let uri = "file:///slugs.holon";
-        let bad = "flow f\nport 8200\n\nroute GET /a (req) {\n  respond { a: \"😀\", b: nope }\n}\n";
-        let messy = "flow f\nport 8200\nroute GET /a (req) {\n    respond   204\n}";
+        let uri = "file:///slugs.holon.ts";
+        let bad = "import { flow, route } from \"holon\"\n\nflow(\"f\", { port: 8200 })\n\nroute.get(\"/a\", () => ({ a: \"😀\", b: nope }))\n";
+        let messy = "import { flow, route } from \"holon\"\nflow(\"f\", { port: 8200 })\nroute.get(\"/a\",   ()   =>   \"ok\")";
         // Where `needle` is written in the sample's code (0-based line and character), not in its
         // comments.
-        let at = |needle: &str| SLUGS.lines().enumerate().find(|(_, l)| !l.trim_start().starts_with('#') && l.contains(needle)).map(|(n, l)| (n, l.find(needle).unwrap())).unwrap();
-        let (word, from) = at("lowercase(");
+        let at = |needle: &str| SLUGS.lines().enumerate().find(|(_, l)| !l.trim_start().starts_with("//") && l.contains(needle)).map(|(n, l)| (n, l.find(needle).unwrap())).unwrap();
+        let (word, from) = at("hmac_sha256(");
         let (list, posts) = at("posts.list()");
         let (sent, code) = session(&[
             request(1, "initialize", json!({ "capabilities": {} })),
             notify("initialized", json!({})),
-            notify("textDocument/didOpen", json!({ "textDocument": { "uri": uri, "languageId": "holon", "version": 1, "text": SLUGS } })),
+            notify("textDocument/didOpen", json!({ "textDocument": { "uri": uri, "languageId": "typescript", "version": 1, "text": SLUGS } })),
             request(2, "textDocument/hover", json!({ "textDocument": { "uri": uri }, "position": { "line": word, "character": from + 2 } })),
             request(20, "textDocument/completion", json!({ "textDocument": { "uri": uri }, "position": { "line": list, "character": posts + 6 } })),
             notify("textDocument/didChange", json!({ "textDocument": { "uri": uri, "version": 2 }, "contentChanges": [{ "text": bad }] })),
@@ -317,51 +294,29 @@ mod tests {
         ]);
         assert_eq!(code, 0);
         assert_eq!(sent[0]["result"]["capabilities"]["hoverProvider"], true);
+        assert_eq!(sent[0]["result"]["capabilities"].get("codeActionProvider"), None, "no quick fixes");
         assert_eq!(sent[1]["params"]["diagnostics"], json!([]), "the sample has no mistakes");
-        // `lowercase`, from inside it: the word's whole range.
+        // `hmac_sha256`, from inside it: the word's whole range.
         let hover = &sent[2]["result"];
-        assert!(hover["contents"]["value"].as_str().unwrap().contains("lowercase("), "{hover}");
-        assert_eq!(hover["range"], json!({ "start": { "line": word, "character": from }, "end": { "line": word, "character": from + 9 } }));
+        assert!(hover["contents"]["value"].as_str().unwrap().contains("hmac_sha256("), "{hover}");
+        assert_eq!(hover["range"], json!({ "start": { "line": word, "character": from }, "end": { "line": word, "character": from + 11 } }));
         // After `posts.`: the collection's methods, as members.
         let offered = sent[3]["result"].as_array().unwrap();
         assert_eq!(offered.iter().map(|c| c["label"].as_str().unwrap()).collect::<Vec<_>>(), ["get", "put", "delete", "list"]);
         assert_eq!(offered[0]["kind"], 2);
         let sent = [&sent[..3], &sent[4..]].concat();
-        // The mistake: `nope`, the 24th character, after an emoji that is one character and two
+        // The mistake: `nope`, the 37th character, after an emoji that is one character and two
         // UTF-16 units.
         let d = &sent[3]["params"]["diagnostics"][0];
         assert_eq!(d["message"], "unknown name \"nope\"");
-        assert_eq!(d["range"], json!({ "start": { "line": 4, "character": 24 }, "end": { "line": 4, "character": 28 } }));
+        assert_eq!(d["range"], json!({ "start": { "line": 4, "character": 37 }, "end": { "line": 4, "character": 41 } }));
         assert_eq!(sent[4]["result"], json!([]), "a text with a mistake isn't formatted");
-        assert_eq!(sent[6]["result"], json!([{ "range": { "start": { "line": 0, "character": 0 }, "end": { "line": 4, "character": 1 } }, "newText": "flow f\nport 8200\n\nroute GET /a (req) {\n  respond 204\n}\n" }]));
+        let tidy = "import { flow, route } from \"holon\"\nflow(\"f\", { port: 8200 })\nroute.get(\"/a\", () => \"ok\")\n";
+        assert_eq!(sent[6]["result"], json!([{ "range": { "start": { "line": 0, "character": 0 }, "end": { "line": 2, "character": 33 } }, "newText": tidy }]));
         assert_eq!(sent[7]["error"]["code"], -32601);
         assert_eq!(sent[8]["params"]["diagnostics"], json!([]), "closed: its diagnostics cleared");
         assert_eq!(sent[9]["result"], Value::Null);
         assert_eq!(sent.len(), 10);
-    }
-
-    /// A secret used undeclared: its mistake says the line, and the quick fix adds it, with the
-    /// state key the body also lacks, after the last header.
-    #[test]
-    fn the_quick_fix_declares_a_name_used_undeclared() {
-        let uri = "file:///f.holon";
-        let text = "flow f\nport 8200\n\nroute GET /a (req) {\n  state.hits = 1\n  respond secret.token\n}\n";
-        let (sent, _) = session(&[
-            request(1, "initialize", json!({ "capabilities": {} })),
-            notify("textDocument/didOpen", json!({ "textDocument": { "uri": uri, "languageId": "holon", "version": 1, "text": text } })),
-        ]);
-        assert_eq!(sent[0]["result"]["capabilities"]["codeActionProvider"]["codeActionKinds"], json!(["quickfix"]));
-        let d = sent[1]["params"]["diagnostics"][0].clone();
-        assert_eq!(d["message"], "\"hits\" is not declared state (add `state hits` to the header)");
-        let ask = |id: u64, diagnostics: Value| request(id, "textDocument/codeAction", json!({ "textDocument": { "uri": uri }, "range": d["range"], "context": { "diagnostics": diagnostics } }));
-        let (sent, _) = session(&[notify("textDocument/didOpen", json!({ "textDocument": { "uri": uri, "languageId": "holon", "version": 1, "text": text } })), ask(2, json!([d])), ask(3, json!([]))]);
-        let fix = &sent[1]["result"][0];
-        assert_eq!(fix["title"], "declare state hits, secret token in the header");
-        assert_eq!(fix["kind"], "quickfix");
-        assert_eq!(fix["diagnostics"], json!([d]));
-        let at = json!({ "line": 2, "character": 0 });
-        assert_eq!(fix["edit"]["changes"][uri], json!([{ "range": { "start": at, "end": at }, "newText": "state hits\nsecret token\n" }]));
-        assert_eq!(sent[2]["result"], json!([]), "no fix where no such mistake is");
     }
 
     #[test]

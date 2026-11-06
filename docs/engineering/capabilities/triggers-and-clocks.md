@@ -1,10 +1,10 @@
 # Triggers and clocks
 
 What starts a run: a request on the flow's port, a clock, a file settling in a folder, an action
-someone runs, another flow's call, and a resume. A flow is its headers, its holons and its
-**handlers**, each a trigger and the block it runs; they share everything the flow owns. The design
-is the [triggers L4](../../L4s/triggers-L4.md) (TL4); the language is
-[`LANGUAGE.md`](../../LANGUAGE.md) §5.1, §5.11 and §5.12; how each kind of run is recorded and synced
+someone runs, another flow's call, and a resume. A flow is its imports and settings, its functions
+and its **handlers**, each a trigger and the function it runs; they share everything the flow owns.
+The design is the [triggers L4](../../L4s/triggers-L4.md) (TL4); the language is
+[`LANGUAGE.md`](../../LANGUAGE.md) §5.1 and §5.11; how each kind of run is recorded and synced
 is [Performance](../themes/performance.md#three-levels-of-record) and
 [Resilience](../themes/resilience.md) G1, G2 and G8.
 
@@ -12,20 +12,21 @@ is [Performance](../themes/performance.md#three-levels-of-record) and
 
 | Handler | Trigger | Its runs | Capability | Code |
 |---|---|---|---|---|
-| `route GET /notes (req) { … }` | a request on the flow's port | one a request, `req` the request | `NetworkIngress` | `listeners.rs`, `dataplane.rs` |
-| `every 2s { … }` | the clock | one a period | `Clock` | `scheduler.rs` |
-| `on file inbox [deleted] [matching "…"] (f) { … }` | a file settling in, or leaving, a named folder | one a file, `f` its handle | `FileArrival("inbox")` | `arrivals.rs` |
-| `action reset (input) { … }` | a person, an agent or another flow, through Holon | one a call, `input` what was sent | `Action("reset")` | `deploy.rs` |
+| `route.get("/notes", (req) => …)` | a request on the flow's port | one a request, `req` the request | `NetworkIngress` | `listeners.rs`, `dataplane.rs` |
+| `every("2s", () => { … })` | the clock | one a period | `Clock` | `scheduler.rs` |
+| `on.file.created(inbox, (f) => { … }, { matching: "…" })`, `on.file.deleted(…)` | a file settling in, or leaving, a named folder | one a file, `f` its handle | `FileArrival("inbox")` | `arrivals.rs` |
+| `export const reset = action((input) => { … })` | a person, an agent or another flow, through Holon | one a call, `input` what was sent | `Action("reset")` | `deploy.rs` |
 
-The forms without handlers stay, as the one-handler case (§5.12): `every 10s` as a header is a flow
-on an interval, the whole flow its unit; `on file inbox` as a header likewise; a flow that reads
-`ingress` and nothing else is run by hand through `/trigger/<slug>`. A **resume** route (`resumes
-paid`) continues a waiting run ([Durable runs](durable-runs.md)). A **channel** starts nothing: a
-send is a sink, and a subscription is a route's run.
+Every flow written has handlers. The forms without them (`every 10s` or `on file inbox` as a
+header, the whole flow its unit; a flow reading `ingress` and nothing else) went with the switch to
+TypeScript (LANGUAGE.md §10). The server still runs such a unit, as a canvas can still make one: on
+an interval, on files, or by hand through `/trigger/<slug>`. A **resume** route
+(`{ resumes: "paid" }`) continues a waiting run ([Durable runs](durable-runs.md)). A **channel**
+starts nothing: a send is a sink, and a subscription is a route's run.
 
-Samples: `hello-api` (routes), `heartbeat` (a flow on an interval), `rolling-log` (a clock that
-keeps 5 runs), `ticker` (a clock beside routes, and an action), `drop-box` (`on file` as a header),
-`file-audit` (several `on file` lines, removals, `matching`), `drop-board` (file handlers beside
+Samples: `hello-api` (routes), `heartbeat` (a clock alone), `rolling-log` (a clock that keeps 5
+runs), `ticker` (a clock beside routes, and an action), `drop-box` (a file handler alone),
+`file-audit` (several file handlers, removals, `matching`), `drop-board` (file handlers beside
 routes), `billing` and `shop` (actions, and a flow calling another's), `approval` (a resume route),
 `status-board` (each handler's log level).
 
@@ -34,13 +35,13 @@ routes), `billing` and `shop` (actions, and a flow calling another's), `approval
 ### What deploy reads
 
 Deploy derives the triggers from the unit: a server's `routes`, `clocks`, `files` and `actions`
-(`read_server`, `declare.rs`: a `Server`), or, for a flow without handlers, its capabilities. A flow
-whose capabilities include `Clock` and has no handlers needs `interval_seconds` (at least 1) as a
-deploy setting; a flow with `every` blocks refuses one ("this flow's clocks are in its text"). A flow
-nothing would start is refused with what to write. Each handler is labelled as the text writes it
-(`GET /notes`, `every 2s`, `on file inbox`, `action reset`), the label is the log entry's `route`,
-and a trigger is never an optional permission (`permission_kind`). A clock's period is at most
-`MAX_PERIOD` (366 days).
+(`read_server`, `declare.rs`: a `Server`), or, for a unit without handlers (a canvas frozen
+whole), its capabilities. A unit whose capabilities include `Clock` and has no handlers needs
+`interval_seconds` (at least 1) as a deploy setting; a flow with `every` handlers refuses one
+("this flow's clocks are in its text"). A flow nothing would start is refused with what to write.
+Each handler has a label core gives it (`GET /notes`, `every 2s`, `on file inbox`,
+`action reset`), the label is the log entry's `route`, and a trigger is never an optional
+permission (`permission_kind`). A clock's period is at most `MAX_PERIOD` (366 days).
 
 ### Routes: a port per deployment
 
@@ -58,7 +59,7 @@ over the control plane.
 
 `spawn_clock_scheduler` starts one thread that, every second, calls `run_due_clock_ticks` and then
 `expire_waiting`. A running deployment is due when its `next_due` (a flow on an interval) or one
-of its `clock_due` (one per `every` block, `server.clocks`) has passed; every due tick of the pass
+of its `clock_due` (one per `every` handler, `server.clocks`) has passed; every due tick of the pass
 fires on its own scoped thread, and the pass ends when all have. `fire_one_clock_tick` fires the
 handler (or the whole unit) with no inputs, `Clock` (the tick's epoch seconds) and `Random`
 sourced and the clock budget, logs a `tick` under the handler's label, keeps the last 20 ticks
@@ -72,12 +73,12 @@ due at once: at deploy, at load, and when a deployment runs again. **Tick now** 
 the OS says changed or that hold files still settling, and at all of them every `WALK` (30 s). A
 file new or changed since the deployment saw it starts a run once it stops changing (the same size
 and modified time at two looks in a row), its handle (`folder`, `name`, `size`, `hash`, `modified`,
-`event`) the run's input; a removed file starts a `deleted` line's run with its handle as last
-seen. What a deployment has seen is kept beside its log, so files that arrive while the server is
-down or the deployment paused start their runs when it is back; files there at deploy are seen,
-not run on; a file the flow's own runs wrote, copied or deleted starts nothing. A look starts at
-most `MAX_RUNS_PER_LOOK` (100) runs a deployment. A server's file handlers each run alone, a file
-two lines are for starting a run of each, logged as `file` under the label.
+`event`) the run's input; a removed file starts an `on.file.deleted` handler's run with its handle
+as last seen. What a deployment has seen is kept beside its log, so files that arrive while the
+server is down or the deployment paused start their runs when it is back; files there at deploy
+are seen, not run on; a file the flow's own runs wrote, copied or deleted starts nothing. A look
+starts at most `MAX_RUNS_PER_LOOK` (100) runs a deployment. A server's file handlers each run
+alone, a file two handlers are for starting a run of each, logged as `file` under the label.
 
 ### Actions, `/trigger` and flow calls
 
@@ -85,7 +86,7 @@ two lines are for starting a run of each, logged as `file` under the label.
 `{}`), logged as a `trigger` under `action <name>` with `by` saying who ran it; it answers
 `{answer, seq}`. An editor or admin may run it; an agent only with `AgentRuns("<name>")` in the
 grant (403 otherwise); the network never. `POST /trigger/<slug>` (`handle_post_trigger`) runs a
-flow without handlers once, its body the `ingress` value; on a server it answers 400 naming the
+unit without handlers once, its body the `ingress` value; on a server it answers 400 naming the
 way in. Another flow runs an action through its own grant (`RunsAction("billing/charge")`) with
 `flow_call`, performed between rounds like an outbound call, its answer kept in the caller's record
 so a retry and `holon verify` never call again; a chain is at most `max_call_depth` deep (3 by
@@ -93,13 +94,14 @@ default, 8 at most) and answers `too_deep` past it.
 
 ### How each run is recorded
 
-A handler's line may say `lazy` or `unrecorded` (the frozen `log` param; strict when absent):
+A handler's options may say `{ log: "lazy" }` or `{ log: "unrecorded" }` (the frozen `log` param;
+strict when absent):
 
 | Run | Level |
 |---|---|
-| a route, an `every` block, an `on file` block, an action | as its line says (`Permit::log_level`) |
+| a route, an `every` handler, a file handler, an action | as its `log` option says (`Permit::log_level`) |
 | a request no route took | `lazy` (Q12) |
-| a flow without handlers (on an interval, on files, by hand), a resumed part | strict |
+| a unit without handlers (on an interval, on files, by hand), a resumed part | strict |
 
 Any handler may be `lazy` or `unrecorded`, as its author writes it, whatever it does. `unrecorded` holds only where
 granted (`Unrecorded("GET /health")`, and `[grants] allow_unrecorded`); ungranted, the run is
@@ -111,8 +113,9 @@ syncs the same way but has no one to answer.
 
 - **Handlers, not one trigger a flow.** The trigger shouldn't decide what a flow can be: a clock
   beside routes shares the routes' state, channels and grant, one deployment, one log, one chain,
-  one approval (TL4 §2). The old forms lower as before, so no old flow hashes differently, except
-  that every sink gained a `trigger` input once (rc.29).
+  one approval (TL4 §2). At rc.29 the forms without handlers lowered as before, every sink gaining
+  a `trigger` input; with the switch to TypeScript every flow written has handlers, and units got
+  new hashes (Holon keeps nothing compatible while in development).
 - **A port per deployment.** A deployment is a server of its own; one slow or busy deployment's
   listener is not another's, and stopping it releases its port (lifecycle).
 - **Actions never from the network.** A route is the network's way in; an action is Holon's, so who
@@ -183,7 +186,7 @@ End to end (`editor/e2e/samples.e2e.ts`): every sample deploys; `ticker's clock 
 routes…` (tick now, the action from the editor and the deployed page, each run replayed);
 `shop runs billing's actions…`; `drop-board's file handlers run beside its routes…`; `drop-box
 runs once for a file dropped in its folder…`; `file-audit runs on a csv dropped in the inbox…`;
-`a flow nothing would start can't deploy; made runnable by hand, it deploys and runs as an action`.
+`a flow nothing would start can't deploy; given an action, it deploys and runs by hand`.
 
 **Gaps.** Nothing tests a slow tick holding up other deployments' ticks, a burst of more than 100
 files, or a folder whose OS notices are dropped.
