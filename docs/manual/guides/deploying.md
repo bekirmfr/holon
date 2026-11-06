@@ -18,8 +18,8 @@ Pressing **deploy** in the editor (or an agent's `deploy`):
 4. shows you both, and deploys when you approve.
 
 The deployment takes the flow's name (its slug). A server flow's routes answer on its `port` at
-once; a clock (an `every` block, or a clock flow's `every` header) first runs at once, then every
-period; a file handler (`on file`) runs for each file that arrives from then on; an action runs
+once; a clock (`every`) first runs at once, then every period; a file handler
+(`on.file.created`) runs for each file that arrives from then on; an action runs
 when someone runs it ([Actions](actions.md)). A flow with none of these, and no route, is refused:
 it would start nothing.
 
@@ -88,9 +88,9 @@ A limit above the host's default needs approval; one above the host's ceiling ca
 
 ## Secrets
 
-A flow declares the secrets it reads in its header (`secret stripe_webhook_secret`, read as
-`secret.stripe_webhook_secret`); their values are set per deployment, by an admin, under **⚙ → secrets**. The flow must have a name first. Each secret
-has a source:
+A flow imports the secrets it reads (`import stripe_webhook_secret from
+"secret:stripe_webhook_secret"`); their values are set per deployment, by an admin, under **⚙ →
+secrets**. The flow must have a name first. Each secret has a source:
 
 - **value**: typed in, sealed on the server (AES-256-GCM, its key in the OS key store by default).
   It is never shown again.
@@ -114,7 +114,7 @@ That tells which value a run had (the key you set an hour ago or the one before,
 two runs) without the log holding it. A token an API answers a request that held a secret with
 (an OAuth exchange's `access_token`) is kept out of the log the same way, and a write of it is
 refused too. A state write that contains a secret is refused. A route whose answer carries a
-secret, as it is or computed from it (`respond secret.token`, `respond base64(secret.token)`),
+secret, as it is or computed from it (`return token`, `return base64(token)`),
 asks for a permission of its own, `SecretAnswer("token")`: "answer its callers with the secret
 "token"", which a person approves at deploy, apart from reading it. A hash or HMAC of a secret
 isn't one. A deployment without that grant answers such a request 500, and its log says why; so
@@ -123,7 +123,7 @@ does one whose answer holds a secret's value it didn't compute (a service echoin
 The approval also says where each secret goes. A secret that reaches a request's path, headers or
 body, as it is or computed from it, is listed with the hosts it is sent to: "read the secret
 "slack_webhook_path", and send it to https://hooks.slack.com". A secret passed as a database
-read's value (`vendor.one("… where license_key = $1", secret.license_key)`) goes to the
+read's value (`vendor.one("… where license_key = $1", license_key)`) goes to the
 database's server with the query: "…, and send it to the database "vendor"". The rows a read
 answers are what the database said, as a request's response is what the far side said, so
 answering with them isn't answering with the secret. What a call answers to a request that
@@ -133,7 +133,7 @@ https://demo.duendesoftware.com; what is answered to it goes to https://httpbin.
 **client-credentials** sample). That isn't a permission of its own
 (the hosts are, and the graph fixes which secret goes to which before the flow runs); it is said
 there so you see it when you approve, and when you update a flow whose version moves a key to
-another host. `holon check`, `holon deploy` and the editor's hover on `secret.name` say the same.
+another host. `holon check`, `holon deploy` and the editor's hover on a secret say the same.
 The host holds a run to it: a request that holds a secret's value bound for a host the secret
 isn't shown going to (a key a service echoed back, passed on elsewhere) isn't sent, and answers
 `{status: 0, error: "blocked_secret", message}` naming the secret. `holon verify` checks it from
@@ -197,7 +197,7 @@ as empty, so you can name it before you create it.
 **Pointing a secret at it.** Under **⚙ → secrets**, choose **env** for the secret, then the
 variable from the list: every `HOLON_SECRET_…` name in the file and in the server's environment,
 never their values. The one the secret's name suggests is chosen for you
-(`HOLON_SECRET_GEMINI_API_KEY` for `secret.gemini_api_key`: the name in capitals, after
+(`HOLON_SECRET_GEMINI_API_KEY` for `secret:gemini_api_key`: the name in capitals, after
 `HOLON_SECRET_`). Opening ⚙ reads the file again, so a line you just added is in the list. Choose
 **another name…** to type one the list doesn't have. The list is shown to admins only, as only an
 admin sets secrets.
@@ -236,21 +236,23 @@ server) or **vault**.
 
 ## Optional permissions
 
-A flow can mark a need as optional in its headers, so it runs without it:
+A flow can mark a secret as optional in its import, so it runs without it:
 
-```holon
-flow digest
-port 8130
-optional secret slack_webhook_path
+```ts
+import { flow, route } from "holon"
+import slack_webhook_path from "secret:slack_webhook_path" with { optional: "true" }
+import hooks from "host:hooks.slack.com"
 
-route POST /digest (req) {
-  sent = http.post("hooks.slack.com", secret.slack_webhook_path, body: json({ text: req.body }))
-  respond { posted: sent.status ?? "not configured" }
-}
+flow("digest", { port: 8130 })
+
+route.post("/digest", async (req) => {
+  const sent = await hooks.post(slack_webhook_path, { body: JSON.stringify({ text: req.body }) })
+  return { posted: sent.status ?? "not configured" }
+})
 ```
 
 The approval dialog marks it optional, and **⚙ → permissions** grants it or not. Without it,
-`secret.slack_webhook_path` has no value, the post isn't sent, and the route still answers.
+`slack_webhook_path` has no value, the post isn't sent, and the route still answers.
 
 ## New versions
 

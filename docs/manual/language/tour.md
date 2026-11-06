@@ -1,28 +1,28 @@
 # A tour of the language
 
 This tour builds up the language one idea at a time. Every example is a whole flow: save it as a
-`.holon` file and run `holon check` on it to see what it is and what it may do. The full rules are
-in the [reference](reference.md).
+`.holon.ts` file and run `holon check` on it to see what it is and what it may do. The syntax is
+TypeScript's, so any editor reads it. The full rules are in the [reference](reference.md).
 
 ## The smallest server
 
-```holon
-flow hello
-port 8101
+```ts
+import { flow, route } from "holon"
 
-route GET /hello/:name (req) {
-  respond "Hello, {req.params.name}"
-}
+flow("hello", { port: 8101 })
+
+route.get("/hello/:name", (req) => `Hello, ${req.params.name}`)
 ```
 
-- `flow hello` names the flow; it deploys under that name.
-- `port 8101` is the port its server answers on.
-- `route GET /hello/:name (req) { … }` answers `GET` requests to that path. `(req)` names the
+- `import { flow, route } from "holon"` names the parts of the language the file uses.
+- `flow("hello", { port: 8101 })` names the flow, which deploys under that name, and the port its
+  server answers on.
+- `route.get("/hello/:name", (req) => …)` answers `GET` requests to that path. `req` is the
   request; `req.params.name` is the `:name` part of the path.
-- `respond` says what the route answers. `"Hello, {…}"` puts a value into text.
+- What the function returns is what the route answers. `` `Hello, ${…}` `` puts a value into text.
 
 ```
-$ holon check hello.holon
+$ holon check hello.holon.ts
 hello: 6 nodes, 6 wires
 a server on :8101
   GET /hello/:name
@@ -40,156 +40,169 @@ one can only receive requests.
 A request has its parts: `req.params`, `req.query`, `req.headers`, `req.body` (the body as text)
 and `req.json` (the body parsed as JSON). A missing part has no value, which isn't an error:
 
-```holon
-flow greet
-port 8102
+```ts
+import { flow, route, status } from "holon"
+import { now } from "holon:clock"
 
-route POST /greet (req) {
-  name = req.json.name ?? "stranger"
-  respond { greeting: "Hello, {name}", at: now }, status: 201
-}
+flow("greet", { port: 8102 })
+
+route.post("/greet", (req) => {
+  const name = req.json.name ?? "stranger"
+  return status(201, { greeting: `Hello, ${name}`, at: now })
+})
 ```
 
-- `name = …` binds a name to a value. A binding is one value, used as often as you like.
+- `const name = …` binds a name to a value. A binding is one value, used as often as you like.
 - `a ?? b` is `a`, or `b` when `a` has no value.
-- `{ greeting: …, at: … }` is a record; it goes out as JSON. A text body goes out as plain text.
-- `now` is the time the run started, in seconds since the epoch.
-- `status: 201` sets the status. Without it, a route answers 200.
+- `{ greeting: …, at: … }` is a record; it goes out as JSON. A text goes out as plain text.
+- `now` is the time the run started, in seconds since the epoch. It is imported from
+  `"holon:clock"`, so the top of the file says the flow reads the clock.
+- `status(201, …)` sets the status. Without it, a route answers 200.
 
 ## Absence: how a flow says no
 
 A value that doesn't arrive makes everything built from it absent too. That is how a flow says
 "not found", "not allowed" or "not verified", with no exceptions:
 
-```holon
-flow notes
-port 8103
-collection notes
+```ts
+import { flow, route, status } from "holon"
+import notes from "collection:notes"
 
-route GET /notes/:id (req) {
-  respond notes[req.params.id], missing: 404
-}
+flow("notes", { port: 8103 })
 
-route PUT /notes/:id (req) {
+route.get("/notes/:id", (req) => notes[req.params.id] ?? status(404))
+
+route.put("/notes/:id", (req) => {
   notes[req.params.id] = req.json
-  respond req.json, missing: 400
-}
+  return req.json ?? status(400)
+})
 ```
 
-`collection notes` declares a store of items by key. `notes[key]` reads one; a key with nothing
-under it has no value, so `respond` answers its `missing` status, 404. In the `PUT` route, a body
-that isn't JSON has no `req.json`, so the route answers 400, and the write, which needs that value
-too, never happens.
+`import notes from "collection:notes"` names a store of items by key. `notes[key]` reads one; a
+key with nothing under it has no value, so the route answers `status(404)`. In the `PUT` route, a
+body that isn't JSON has no `req.json`, so the route answers 400, and the write, which needs that
+value too, never happens.
 
 `notes[key] = value` writes, and `delete notes[key]` deletes. Writes happen when the run finishes,
 and only if the deployment was granted them.
 
 ## Choosing
 
-```holon
-flow calc
-port 8104
+```ts
+import { flow, route, status } from "holon"
 
-route POST /calc (req) {
-  a = req.json.a
-  b = req.json.b
-  respond match req.json.op {
-    "add" -> a + b
-    "sub" -> a - b
-    "mul" -> a * b
-    "div" -> a / b
-  }, missing: 400
-}
+flow("calc", { port: 8104 })
+
+route.post("/calc", (req) => {
+  const a = req.json.a
+  const b = req.json.b
+  switch (req.json.op) {
+    case "add":
+      return a + b ?? status(400)
+    case "sub":
+      return a - b ?? status(400)
+    case "mul":
+      return a * b ?? status(400)
+    case "div":
+      return a / b ?? status(400)
+  }
+  return status(400)
+})
 ```
 
-`match` picks the arm whose pattern equals the value. Only the chosen arm runs. If it has no value
-(dividing by zero has none), neither does the `match`, and the route answers 400; it never falls
-through to another arm.
+`switch` picks the case equal to the value. Only the chosen case runs. If it has no value
+(dividing by zero has none), the route answers 400; it never falls through into another case. An
+op no case names reaches the last `return`, and answers 400 too.
 
 Three smaller forms:
 
-- `x when ok` is `x` only when `ok` is `true`, and no value otherwise.
-- `if ok then a else b` is `a` when `ok` is `true` (and `a` arrived), otherwise `b`.
+- `c ? a : undefined` is `a` only when `c` is `true`, and no value otherwise.
+- `c ? a : b` is `a` when `c` is `true` (and `a` arrived), otherwise `b`. `if (c) … else …` chooses
+  between statements the same way.
 - `a ?? b`, from before.
 
-Like `match`, they only run what they need: the branch not taken isn't computed, so its requests
+Like `switch`, they only run what they need: the branch not taken isn't computed, so its requests
 aren't sent and its reads aren't made.
 
 ## State and the clock
 
-A flow with `every` instead of `port` runs on a clock:
+A flow with no port and an `every` runs on a clock:
 
-```holon
-flow heartbeat
-every 10s
-state beats
-state first_beat
-state last_beat
+```ts
+import { every, flow } from "holon"
+import state from "state"
+import { now } from "holon:clock"
 
-t = now
-state.last_beat = t
-state.beats = (state.beats ?? 0) + 1
-state.first_beat = state.first_beat ?? t
+flow("heartbeat")
+
+every("10s", () => {
+  const t = now
+  state.last_beat = t
+  state.beats = (state.beats ?? 0) + 1
+  state.first_beat = state.first_beat ?? t
+})
 ```
 
 `state.beats` on the right is the value as the run began; `state.beats = …` writes it when the
 run finishes. So the line means exactly what it says, and a run never sees its own writes. A run
-writes a key once. Each key is declared in the header (`state beats`), as a collection is: the top
-of the file lists what the flow keeps, and a misspelt key is a mistake rather than a new one.
+writes a key once.
 
-Durations are numbers of seconds: `10s`, `5m`, `2h`, `1d`.
+Durations are texts: `"10s"`, `"5m"`, `"2h"`, `"1d"`.
 
-A flow with routes keeps its clock in a block of its own, and may have actions beside it:
+A flow with routes may have a clock beside them, and actions too:
 
-```holon
-flow visits
-port 8207
-state last_hour
-state visits
+```ts
+import { action, every, flow, route } from "holon"
+import state from "state"
+import { now } from "holon:clock"
 
-every 1h {
+flow("visits", { port: 8207 })
+
+every("1h", () => {
   state.last_hour = now
-}
+})
 
-action reset (input) {
+export const reset = action(() => {
   state.visits = 0
-}
+})
 
-route POST /visit (req) {
+route.post("/visit", () => {
   state.visits = (state.visits ?? 0) + 1
-  respond state.visits ?? 0
-}
+  return state.visits ?? 0
+})
 
-route GET /status (req) {
-  respond { visits: state.visits ?? 0, last_hour: state.last_hour }
-}
+route.get("/status", () => ({ visits: state.visits ?? 0, last_hour: state.last_hour }))
 ```
 
-`every 1h { … }` runs on its own every hour, with no request, and `now` in it is the time of the
-tick. Each block is a run of its own, and the state is the flow's, shared by all of them: `/status`
-reads what the clock wrote. `state.visits = …` in the route never looks at the request, and is still
-the route's: a block is everything tied to its trigger.
+`every("1h", …)` runs on its own every hour, with no request, and `now` in it is the time of the
+tick. Each handler is a run of its own, and the state is the flow's, shared by all of them:
+`/status` reads what the clock wrote. `state.visits = …` in the route never looks at the request,
+and is still the route's: a handler is everything tied to its trigger.
 
-`action reset (input) { … }` is run by hand, by its name, from the editor or a script, never from
-the network: it zeroes the count when a person runs it. See [Actions](../guides/actions.md) and
-the [reference](reference.md#clocks-files-and-actions).
+`export const reset = action(…)` is run by hand, by its name, from the editor or a script, never
+from the network: it zeroes the count when a person runs it. See [Actions](../guides/actions.md)
+and the [reference](reference.md#clocks-files-and-actions).
 
 ## Calling other services
 
-```holon
-flow slideshow
-port 8105
+```ts
+import { flow, route } from "holon"
+import httpbin from "host:httpbin.org"
 
-route GET /slideshow (req) {
-  page = http.get("httpbin.org", "/json")
-  respond parse_json(page.body).slideshow.title
-}
+flow("slideshow", { port: 8105 })
+
+route.get("/slideshow", async () => {
+  const page = await httpbin.get("/json")
+  return JSON.parse(page.body).slideshow.title
+})
 ```
 
-`http.get(host, path)` calls another service; `post`, `put`, `patch`, `delete` and `head` work the
-same way, with `headers:` and `body:`. The answer is a record of `status`, `headers` and `body`.
+`import httpbin from "host:httpbin.org"` names a host, and `await httpbin.get(path)` calls it;
+`post`, `put`, `patch`, `delete` and `head` work the same way, with `{ headers, body }` after the
+path. The answer is a record of `status`, `headers` and `body`. A handler that waits for a call is
+`async`, as TypeScript has it.
 
-The host must be written in the text, because the host is the permission:
+The host is written in the import, never computed, because the host is the permission:
 
 ```
 it may:
@@ -199,43 +212,47 @@ it may:
 
 ## Secrets
 
-```holon
-flow guarded
-port 8106
-secret api_token
+```ts
+import { flow, route, secure_equals, status } from "holon"
+import api_token from "secret:api_token"
 
-route GET /me (req) {
-  ok = secure_equals(req.headers.authorization, "Bearer {secret.api_token}")
-  respond { you: "in" } when ok, missing: 401
-}
+flow("guarded", { port: 8106 })
+
+route.get("/me", (req) => {
+  const ok = secure_equals(req.headers.authorization, `Bearer ${api_token}`)
+  return (ok ? { you: "in" } : undefined) ?? status(401)
+})
 ```
 
-`secret api_token` in the header declares a secret an admin sets for the deployment, and
-`secret.api_token` reads it. The header names everything a flow needs from outside it, so the top
-of the file says what to set before it works; reading one it doesn't name is a mistake, which
-`holon fmt` mends by adding the line. Its value never appears in a log, a replay or the editor. `secure_equals` compares in constant time. A caller without the token
-gets 401.
+`import api_token from "secret:api_token"` names a secret an admin sets for the deployment, and
+`api_token` reads it. The imports name everything a flow needs from outside it, so the top of the
+file says what to set before it works. Its value never appears in a log, a replay or the editor.
+`secure_equals` compares in constant time. A caller without the token gets 401.
 
-`optional secret name` in the headers declares a secret the flow can run without: the deploy can
-leave it out, and `secret.name` then has no value.
+`import name from "secret:name" with { optional: "true" }` names a secret the flow can run
+without: the deploy can leave it out, and `name` then has no value.
 
 ## A webhook
 
 Putting it together: a Stripe webhook, verified, posted to Slack.
 
-```holon
-flow stripe-to-slack
-port 8107
-secret slack_webhook_path
-secret stripe_webhook_secret
+```ts
+import { flow, route, status, stripe } from "holon"
+import slack_webhook_path from "secret:slack_webhook_path"
+import stripe_webhook_secret from "secret:stripe_webhook_secret"
+import hooks from "host:hooks.slack.com"
+import { now } from "holon:clock"
 
-route POST /stripe (req) {
-  event = stripe.verify(req, secret.stripe_webhook_secret, now).event
-  sent = http.post("hooks.slack.com", secret.slack_webhook_path,
+flow("stripe-to-slack", { port: 8107 })
+
+route.post("/stripe", async (req) => {
+  const event = stripe.verify(req, stripe_webhook_secret, now).event
+  const sent = await hooks.post(slack_webhook_path, {
     headers: { "content-type": "application/json" },
-    body: json({ text: "Stripe: {event.type}" }))
-  respond sent.status, missing: 400
-}
+    body: JSON.stringify({ text: `Stripe: ${event.type}` }),
+  })
+  return sent.status ?? status(400)
+})
 ```
 
 When the signature doesn't verify, `event` has no value, nothing after it runs, nothing is posted,
@@ -244,66 +261,74 @@ against the real services.
 
 ## Lists
 
-There are no loops. `map` and `fold` go over a list, and `range(n)` makes a list to count over:
+There are no loops. `map` and `reduce` go over a list, and `range(n)` makes a list to count over:
 
-```holon
-flow quote
-port 8108
+```ts
+import { flow, route } from "holon"
 
-route POST /quote (req) {
-  tax = req.json.tax ?? 0
-  lines = map(req.json.items, fn: fn(item) -> { name: item.name, total: item.price * item.qty * (1 + tax) })
-  total = fold(0, lines, fn: fn(acc, line) -> acc + line.total)
-  respond { lines: lines, total: total }
-}
+flow("quote", { port: 8108 })
+
+route.post("/quote", (req) => {
+  const tax = req.json.tax ?? 0
+  const lines = req.json.items.map((item) => ({
+    name: item.name,
+    total: item.price * item.qty * (1 + tax),
+  }))
+  const total = lines.reduce((acc, line) => acc + line.total, 0)
+  return { lines, total }
+})
 ```
 
-`fn(item) -> …` is a function written in place. It can use names from around it (`tax` here).
-`fold(start, list, fn: …)` carries a value through the list.
+`(item) => …` is a function written in place. It can use names from around it (`tax` here).
+`reduce(f, start)` carries a value through the list.
 
 Because there are no loops and no recursion, every run ends.
 
-## Holons: flows inside flows
+## Functions: flows inside flows
 
-A holon is a function: a piece of flow with named inputs and outputs, placed as one node.
+A function is a piece of flow with named inputs and outputs, placed as one node.
 
-```holon
-flow slugs
-port 8109
-collection posts
+```ts
+import { flow, route, status } from "holon"
+import posts from "collection:posts"
 
-holon slugify(text) -> slug {
-  slug = join(split(lowercase(text), " "), "-")
+flow("slugs", { port: 8109 })
+
+function slugify(text) {
+  const slug = text.toLowerCase().split(" ").join("-")
+  return slug
 }
 
-route POST /posts (req) {
-  slug = slugify(req.json.title)
+route.post("/posts", (req) => {
+  const slug = slugify(req.json.title)
   posts[slug] = req.json
-  respond { slug: slug }, missing: 400
-}
+  return { slug } ?? status(400)
+})
 ```
 
-A holon with several outputs is used as `h(…).name`. A holon is one unit, with one hash, wherever
-it is placed, and it can be passed to `map` and `fold` by name: `map(titles, fn: slugify)`.
+A function that returns a record has an output for each of its keys, used as `f(…).name`. A
+function is one unit, with one hash, wherever it is placed, and it can be passed to `map` and
+`reduce` by name: `titles.map(slugify)`.
 
 ## JavaScript, for what the vocabulary can't say
 
-When a computation is too awkward to write with the building blocks, a holon can be written in
-JavaScript:
+When a computation is too awkward to write with the building blocks, a function can run as
+JavaScript, as written:
 
-```holon
-flow stats
-port 8110
+```ts
+import { flow, js, route, status } from "holon"
 
-holon summarize(numbers) -> (total, mean) js {
+flow("stats", { port: 8110 })
+
+const summarize = js(function summarize(numbers) {
   const total = numbers.reduce((a, b) => a + b, 0);
   return { total, mean: numbers.length ? total / numbers.length : 0 };
-}
+}, { outputs: ["total", "mean"] })
 
-route POST /stats (req) {
-  s = summarize(req.json.numbers)
-  respond { total: s.total, mean: s.mean }, missing: 400
-}
+route.post("/stats", (req) => {
+  const s = summarize(req.json.numbers)
+  return { total: s.total, mean: s.mean } ?? status(400)
+})
 ```
 
 The body runs in a sandbox with no clock, no randomness, no network and no storage: it can reach
@@ -315,77 +340,80 @@ it may:
   run code it carries (a js node): up to 200000000 instructions and 16 MiB per call, reaching nothing outside
 ```
 
-A call that runs past its budget runs out of fuel and has no value; `fuel 50M` (instructions) or
-`memory 32MB` (32 MiB) after `js` change the budget. Each call starts fresh, so the same call always gives the same
-answer, and a run still replays exactly.
+A call that runs past its budget runs out of fuel and has no value; `{ fuel: "50M" }`
+(instructions) or `{ memory: "32MB" }` (32 MiB) in its options change the budget. Each call starts
+fresh, so the same call always gives the same answer, and a run still replays exactly.
 
 ## Waiting for a person
 
 A run can park and finish later, when someone follows a link:
 
-```holon
-flow approval
-port 8111
-state last_order
+```ts
+import { action, event, flow, route } from "holon"
+import state from "state"
 
-route POST /orders (req) {
-  started = start(payment, req.json)
-  respond "/paid/{started.waiting.paid}"
-}
+flow("approval", { port: 8111 })
 
-action payment (order) {
-  paid = await paid, expires: 1d
-  state.last_order = { ..order, paid_via: paid.method }
-}
+route.post("/orders", (req) => {
+  const started = payment(req.json)
+  return `/paid/${started.waiting.paid}`
+})
 
-route GET /paid/:token (req) resumes paid {
-  respond "thanks, the order is paid"
-}
+export const payment = action(async (order) => {
+  const paid = await event("paid", { expires: "1d" })
+  state.last_order = { ...order, paid_via: paid.method }
+})
+
+route.get("/paid/:token", () => "thanks, the order is paid", { resumes: "paid" })
 ```
 
-A route answers and is done, so what waits is a run it starts: `start(payment, req.json)` starts
-the action `payment` and answers once that run waits, with the token that resumes it, and the
-route answers at once with the link. When the link is opened, the third route delivers the event,
-and the order's run finishes: it writes the order. If nobody opens the link within a day, the run
-expires. Order in the text doesn't matter: a value is computed when what it needs has arrived.
+A route answers and is done, so what waits is a run it starts: `payment(req.json)`, not awaited,
+starts the action `payment` and answers once that run waits, with the token that resumes it, and
+the route answers at once with the link. When the link is opened, the third route delivers the
+event, and the order's run finishes: it writes the order. If nobody opens the link within a day,
+the run expires. Order in the text doesn't matter: a value is computed when what it needs has
+arrived.
 
 ## Files
 
 A flow can read and write files in folders an admin has bound to a name on the host:
 
-```holon
-flow inbox-report
-port 8112
-folder inbox
-folder reports
+```ts
+import { flow, length, route, status } from "holon"
+import inbox from "folder:inbox"
+import reports from "folder:reports"
 
-route POST /report (req) {
-  name = req.json.name
-  text = inbox[name]
-  reports["{name}.md"] = "# {name}\n\n{length(split(text, "\n"))} lines"
-  respond { report: "{name}.md" }, missing: 404
-}
+flow("inbox-report", { port: 8112 })
+
+route.post("/report", (req) => {
+  const name = req.json.name
+  const text = inbox[name]
+  reports[`${name}.md`] = `# ${name}\n\n${length(text.split("\n"))} lines`
+  return { report: `${name}.md` } ?? status(404)
+})
 ```
 
 The flow names the folders, never a path. A flow can also run on files instead of requests:
-`on file drop` in place of `port` runs it once for each new file in the folder `drop`, with the
-file's handle as `ingress`; beside routes, it is a block, `on file drop (f) { … }`, with the handle
-as `f`. See [Files on the host](../guides/files.md).
+`on.file.created(drop, (f) => { … })` runs once for each new file in the folder `drop`, with the
+file's handle as `f`. See [Files on the host](../guides/files.md).
 
 ## Databases
 
 A flow can query and change a SQL database an admin has bound to a name, with the SQL in quotes
 and its values after it:
 
-```holon
-flow orders-api
-port 8150
-database shop
+```ts
+import { flow, route } from "holon"
+import shop from "database:shop"
 
-route POST /order/:id/refund (req) {
-  shop.exec("update orders set refunded = 1 where id = $1 and refunded = 0", req.params.id, expect: 1)
-  respond { refunded: req.params.id }
-}
+flow("orders-api", { port: 8150 })
+
+route.post("/order/:id/refund", (req) => {
+  shop.exec("update orders set refunded = 1 where id = $1 and refunded = 0", req.params.id, {
+    expect: 1,
+  })
+  return { refunded: req.params.id }
+})
 ```
 
 The tables its SQL names are what it asks for (`DbWrite("shop/orders")`); `expect: 1` makes the
@@ -398,5 +426,5 @@ fields and operators written in the call and each value passed in as data:
 
 - The [reference](reference.md) has every construct and rule.
 - The [leaves](leaves.md) are every building block you can call.
-- Every sample is a complete flow: `holon new my.holon --sample NAME` writes one, and `holon new
-  --help` lists them.
+- Every sample is a complete flow: `holon new my.holon.ts --sample NAME` writes one, and `holon
+  new --help` lists them.

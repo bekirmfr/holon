@@ -138,6 +138,6 @@ the editor's history or with `holon restore`.
 
 ## Without MCP
 
-An agent that can only write files can still write flows: `holon check file.holon` gives it the
+An agent that can only write files can still write flows: `holon check file.holon.ts` gives it the
 same answers as the `check` tool, and you deploy the file with **import .holon** on the flows
 page.

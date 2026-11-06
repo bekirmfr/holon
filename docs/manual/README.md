@@ -19,8 +19,8 @@ propose, and find out what happened. For how Holon is built, see the design docu
 
 - **[A tour](language/tour.md):** the language by example, from a one-line server to webhooks,
   state, durable runs and JavaScript.
-- **[Reference](language/reference.md):** every construct: files and headers, statements,
-  expressions, the outside world, routes, holons, effects, types and errors.
+- **[Reference](language/reference.md):** every construct: files and imports, statements,
+  expressions, the outside world, routes and handlers, functions, types and mistakes.
 - **[Leaves](language/leaves.md):** every building block in the catalog, with its inputs,
   outputs and what it does. Generated from the code.
 
@@ -30,7 +30,7 @@ propose, and find out what happened. For how Holon is built, see the design docu
   run.
 - **[Deploying and permissions](guides/deploying.md):** deploy settings, approving what a flow
   may do, secrets, changing a grant, new versions.
-- **[Actions: runs by hand](guides/actions.md):** an `action` block, running it from the editor,
+- **[Actions: runs by hand](guides/actions.md):** an `action`, running it from the editor,
   a script or an agent, and who may.
 - **[Working with agents](guides/agents.md):** connecting an agent to Holon, what it can and
   can't do, and approving what it proposes.
@@ -55,6 +55,6 @@ propose, and find out what happened. For how Holon is built, see the design docu
 
 ## Conventions
 
-Code blocks marked `holon` are whole flows: a test compiles every one of them, so they work as
-written. Blocks of output (from `holon check` and the like) are real output, with long hashes
+Code blocks marked `ts` are whole flows, in TypeScript: a test compiles every one of them, so
+they work as written. Blocks of output (from `holon check` and the like) are real output, with long hashes
 shortened.

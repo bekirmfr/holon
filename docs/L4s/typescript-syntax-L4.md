@@ -1009,6 +1009,15 @@ Holon is in development, so the new form replaces today's at once:
    format; the workbench graph; the inspector's examples, which now come from no sample; the
    editor's canvas printer and a saved flow's export) keep their fixtures in
    `crates/holon-author/tests/holon/` until they move to TypeScript with the parser's removal.
+   *The manual is switched* (2026-11-06): its flows are `ts` blocks, checked as `.holon.ts` (a
+   `holon` block is now a mistake in `tests/manual.rs`), the reference and the tour are rewritten
+   for the TypeScript forms, and the guides, the CLI page and the README say imports, `return`,
+   `status(…)`, handlers and options where they said headers, `respond`, blocks and lines. The
+   test flows in `tests.rs`, `commands.rs` and `mcp.rs` and the agent's guide (`agent.rs`) are
+   TypeScript too. Flows without handlers are gone from the manual, as TypeScript can't write
+   one. What reads only `.holon` stays so until the parser goes: `docs/LANGUAGE.md` (whose §5
+   `usage.rs` reads for the inspector), the editor guide's text pane, LSP and **import .holon**,
+   the editor's test flows, the workbench's, and the handler-less server tests.
 5. **`try`, `catch {}`, `throw`, `finally`,** and the `fail` leaf.
 6. **Computing loops.** `while` to `fold`, the loop's turns, nested folds past 10000, `fold`
    stopping when done, a step budget in core.

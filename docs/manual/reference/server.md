@@ -259,7 +259,7 @@ server or these ports listen beyond loopback. It has no sign-in: a flow guards i
 | paused or stopped | 503 |
 | more runs waiting at `await` than allowed | 503 |
 | a resume token that isn't valid | 404 |
-| the route's answer has no value | its `missing` status (404 unless set) |
+| the route's answer has no value | 404, or the status its `?? status(…)` says |
 
 A browser page from another site may call the routes only if the flow lists its origin in
 `browsers` (or the deploy settings' **web pages from**).

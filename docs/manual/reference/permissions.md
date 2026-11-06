@@ -12,13 +12,13 @@ the editor show).
 
 | Name | Shown as | From |
 |---|---|---|
-| `NetworkIngress` | receive requests | a `route`; in a flow without handlers that reads `ingress`, shown as "can be run by hand" |
+| `NetworkIngress` | receive requests | a `route` |
 | `Clock` | read the clock | `now`, or `every` (a clock starts runs) |
-| `Action("name")` | can be run by hand: name | `action name (input) { … }` |
+| `Action("name")` | can be run by hand: name | `export const name = action(…)` |
 | `Random` | use randomness | `random` |
-| `HttpRequest("host")` | call https://host | `http.get("host", …)`, `http.post(…)`, …; the host is written in the text |
-| `SecretRead("name")` | read the secret "name"; when the flow sends it in a request, "…, and send it to https://host"; in a database read's values, "…, and send it to the database "shop""; where what a call answers to it goes (a token), "…; what is answered to it goes to https://api" | `secret.name`; it is sent to a host when it, or something computed from it, reaches a request's path, headers or body (an `hmac_sha256`, `sha256` or `secure_equals` of it isn't), and to a database when it is one of a read's `$1`, `$2`, … |
-| `SecretAnswer("name")` | answer its callers with the secret "name", or with what is computed from it | a route whose `respond` the secret reaches: `respond secret.name`, `respond { k: base64(secret.name) }`; an `hmac_sha256`, `sha256` or `secure_equals` of it, or a call's answer, isn't one |
+| `HttpRequest("host")` | call https://host | `await api.get(…)`, `api.post(…)`, … with `import api from "host:host"`; the host is its import |
+| `SecretRead("name")` | read the secret "name"; when the flow sends it in a request, "…, and send it to https://host"; in a database read's values, "…, and send it to the database "shop""; where what a call answers to it goes (a token), "…; what is answered to it goes to https://api" | a secret's import, `import name from "secret:name"`, read; it is sent to a host when it, or something computed from it, reaches a request's path, headers or body (an `hmac_sha256`, `sha256` or `secure_equals` of it isn't), and to a database when it is one of a read's `$1`, `$2`, … |
+| `SecretAnswer("name")` | answer its callers with the secret "name", or with what is computed from it | a route whose answer the secret reaches: `return name`, `return { k: base64(name) }`; an `hmac_sha256`, `sha256` or `secure_equals` of it, or a call's answer, isn't one |
 | `StateRead("key")` | read its state "key" | `state.key` read |
 | `StateWrite("key")` | write its state "key" | `state.key = …` |
 | `CollectionRead("c")` | read items of its collection "c" | `c[k]`, `c.list(…)` |
@@ -27,14 +27,13 @@ the editor show).
 | `FileWrite("f")` | write, copy into and delete files in the folder "f" | `f[name] = …`, `delete f[name]`, `f.copy(…)` |
 | `DbRead("d/t")` | read the table "t" of the database "d" | `d.query("select … from t …")`, `d.one(…)` |
 | `DbWrite("d/t")` | insert, update and delete rows of the table "t" of the database "d" | `d.exec("update t …")` |
-| `FileArrival("f")` | run on each file new, changed or removed in the folder "f" (as its on file lines say), and pass it on | `on file f` |
-| `RunsAction("billing/charge")` | run the action charge of the flow billing | `billing.charge(x)`, with `calls billing` |
-| `Await("e")` | wait for an event "e" and continue later | `await e` |
+| `FileArrival("f")` | run on each file new, changed or removed in the folder "f" (as its on file lines say), and pass it on | `on.file.created(f, …)`, `on.file.deleted(f, …)` |
+| `RunsAction("billing/charge")` | run the action charge of the flow billing | `charge(x)`, with `import { charge } from "flow:billing"` |
+| `Await("e")` | wait for an event "e" and continue later | `await event("e")` |
 
 A flow's triggers, what start its runs, are among them: `NetworkIngress` for its routes, `Clock`
-for an `every` block (or an `every` header), `FileArrival` for each folder an `on file` watches,
-`Action("name")` for each action, and `NetworkIngress` for a flow without handlers that reads
-`ingress`, run by hand. A flow with a clock asks for `Clock` even if it never reads `now`, because
+for an `every`, `FileArrival` for each folder a file handler watches, and `Action("name")` for
+each action. A flow with a clock asks for `Clock` even if it never reads `now`, because
 the clock starts its runs. A deploy with no trigger is refused, saying how to run it by hand, and
 none of a flow's triggers can be optional.
 
@@ -50,9 +49,9 @@ server's policy allows them at all.
 |---|---|---|
 | `PlainHttp("host")` | call host over plain HTTP (not encrypted) | the deploy settings' **plain HTTP to**; needs `allow_plain_http = true` |
 | `PrivateAddresses` | reach private addresses (this machine and its network) | the deploy settings' **private addresses**; needs `allow_private_addresses = true` |
-| `Unrecorded("GET /health")` | keep runs of GET /health out of its log, failed or not (they are counted) | a handler whose line says `unrecorded`; allowed unless `allow_unrecorded = false` |
+| `Unrecorded("GET /health")` | keep runs of GET /health out of its log, failed or not (they are counted) | a handler whose options say `log: "unrecorded"`; allowed unless `allow_unrecorded = false` |
 
-`Unrecorded` is asked for by the flow itself, one item per handler whose line says `unrecorded`
+`Unrecorded` is asked for by the flow itself, one item per handler whose options say `log: "unrecorded"`
 ([Language reference](../language/reference.md#clocks-files-and-actions)), whatever the handler
 does. It is optional: without it, or once it is taken
 back, the handler's runs are recorded again, from the next one, and the deployment runs on. Its
@@ -73,8 +72,9 @@ headers (`authorization`, an API key) stay with the host they were meant for.
 A deployment runs within limits. Each has a default, which is granted without asking, and a
 ceiling, which can't be passed. A deployment that needs more than the default asks for
 `Limit(name=n)`, shown as "raise *name* to *n*", from the deploy settings' **needs**, or from the
-flow's own text: a `limit` line (`limit run_budget_ms 1m`), or for the log's two, the `keep` line
-([the language](../language/reference.md)). The policy can change both columns
+flow's own text: its `limits` (`flow("x", { limits: { run_budget_ms: "1m" } })`), or for the
+log's two, its `keep` ([the language](../language/reference.md#imports-and-settings)). The policy
+can change both columns
 ([Server configuration](server.md#the-policy)).
 
 | Name | Is | Default | Ceiling |
@@ -94,8 +94,8 @@ flow's own text: a `limit` line (`limit run_budget_ms 1m`), or for the log's two
 | `max_await_seconds` | the longest a run may wait at `await` | 2592000 (30 days) | 7776000 (90 days) |
 | `max_waiting_runs` | runs waiting at once | 10000 | 100000 |
 | `max_call_depth` | flows a chain of calls may go through, one calling another's action | 3 | 8 |
-| `module_fuel` | instructions a js holon may run per call | 200000000 per holon, unless it says | 1000000000 |
-| `module_memory` | memory a js holon may use per call | 16 MiB per holon, unless it says | 256 MiB |
+| `module_fuel` | instructions a `js()` function may run per call | 200000000 per function, unless it says | 1000000000 |
+| `module_memory` | memory a `js()` function may use per call | 16 MiB per function, unless it says | 256 MiB |
 | `max_db_rows` | rows a run reads from databases | 10000 | 1000000 |
 | `max_db_read_bytes` | bytes a run reads from databases | 16777216 (16 MiB) | 268435456 |
 | `db_statement_ms` | time one SQL statement may take | 5000 | 60000 |
@@ -108,7 +108,7 @@ fail the run: it answers `{status: 0, error, message}`, with `error` one of `tim
 `dns`, `too_large`, `too_many_redirects`, `blocked_host`, `blocked_secret` (it holds a secret's value bound for a
 host the flow's approval doesn't show it going to), `blocked_redirect` (a redirect to
 another host that would resend the body), `blocked_address`, `blocked_scheme`,
-`revoked`, and a few more. A js holon's budget is part of its manifest:
+`revoked`, and a few more. A `js()` function's budget is part of its manifest:
 
 ```
 run code it carries (a js node): up to 200000000 instructions and 16 MiB per call, reaching nothing outside
@@ -116,10 +116,10 @@ run code it carries (a js node): up to 200000000 instructions and 16 MiB per cal
 
 ## Optional items
 
-`optional` in a flow's headers marks an item it can run without:
+`with { optional: "true" }` on a secret's import marks it as one the flow can run without:
 
 ```
-optional secret slack_webhook_path
+import slack_webhook_path from "secret:slack_webhook_path" with { optional: "true" }
 ```
 
 The deploy dialog marks it optional, and a deployment may be granted it or not. Without it, the
@@ -132,9 +132,10 @@ when someone runs it by its name, from the editor's [server panel](../guides/edi
 [deployed page](../guides/editor.md#the-deployed-page), or
 `POST /trigger/<slug>/<name>` on the holon server, its body the JSON the action receives
 (nothing is `{}`). On a server with accounts, an editor or an admin may run one, and a viewer may
-not. A flow without handlers that reads `ingress` runs the same way, by `POST /trigger/<slug>`.
+not.
 
-Another flow runs an action only through its own grant: a flow that says `billing.charge(x)` asks
+Another flow runs an action only through its own grant: a flow that says `charge(x)`, imported
+from `"flow:billing"`, asks
 for `RunsAction("billing/charge")`, and a person approves it with the rest of the flow, as one who
 could run that action themselves (an editor or an admin). Revoking it pauses the calling flow like
 any required item, or, with **keep running** ticked, makes its next call answer `refused`. The

@@ -11,14 +11,15 @@ Holon language, or drawn on the editor's canvas. The two are
 the same thing: the text compiles to a graph of **nodes** joined by **wires**, the canvas draws
 that graph, and a change in either one is a change to the graph.
 
-```holon
-flow greet
-port 8102
+```ts
+import { flow, route } from "holon"
 
-route POST /greet (req) {
-  name = req.json.name ?? "stranger"
-  respond { greeting: "Hello, {name}" }
-}
+flow("greet", { port: 8102 })
+
+route.post("/greet", (req) => {
+  const name = req.json.name ?? "stranger"
+  return { greeting: `Hello, ${name}` }
+})
 ```
 
 Most nodes are **leaves** from a fixed catalog: text, numbers, lists, records, JSON, hashing,
@@ -27,14 +28,16 @@ they always give the same output, and they touch nothing outside. The few nodes 
 outside world (the request, the clock, a secret, state, an HTTP call, a file) sit at the edges of
 the graph, and each of them is a **capability** the flow uses.
 
-A **holon** is a piece of flow with named inputs and outputs, used as one node. A whole flow can
+A **holon** is a piece of flow with named inputs and outputs, used as one node: in the text, a
+function. A whole flow can
 be placed inside another as a holon, and the name "Holon" comes from that: every part is itself
 a whole.
 
 ### Every run ends
 
-There are no loops and no recursion. Lists are handled with `map` and `fold`, and `range` makes a
-list of at most 10,000 numbers. A JavaScript holon runs under a fuel budget. So every run ends,
+There are no loops and no recursion. Lists are handled with `map` and `reduce`, and `range` makes
+a list of at most 10,000 numbers. A JavaScript function (`js()`) runs under a fuel budget. So
+every run ends,
 and a deployment's limits (how long a run may take, how many calls it may make) are the only
 thing that can stop one early.
 
@@ -42,8 +45,8 @@ thing that can stop one early.
 
 A value that doesn't arrive (a missing query parameter, a key that isn't stored, a signature that
 doesn't verify) is **absent**, and everything computed from it is absent too. Nothing throws.
-A route then answers its `missing` status (404 unless it says otherwise), a write that needed the
-value doesn't happen, and a call whose body needed it isn't sent. Choosing a fallback is explicit:
+A route then answers 404, or the status its `?? status(…)` says, a write that needed the value
+doesn't happen, and a call whose body needed it isn't sent. Choosing a fallback is explicit:
 `a ?? b`.
 
 ## Units: what a flow is
@@ -69,13 +72,12 @@ it may:
   read the secret "stripe_webhook_secret"
 ```
 
-Nobody writes the manifest, so nobody can understate it. A flow can't call a host without the host
-being written in its text; it can't read a secret without naming it; it can't write a state key it
-didn't name. Whatever a flow places inside it (a holon, a marketplace listing) adds its own needs
-to the list.
+Nobody writes the manifest, so nobody can understate it. A flow can't call a host without
+importing the host by name; it can't read a secret without importing it. Whatever a flow places
+inside it (a function, a marketplace listing) adds its own needs to the list.
 
-A flow can mark some needs **optional** (`optional secret x`): it runs without them, and the parts
-that need them stay absent.
+A flow can mark a secret **optional** (`import x from "secret:x" with { optional: "true" }`): it
+runs without it, and the parts that need it stay absent.
 
 ## Policy, grants and enforcement
 
@@ -117,7 +119,7 @@ A **run** is one evaluation of the flow: one request answered, one clock tick, o
 
 - **reads** everything from outside at its start: the request, the clock, randomness, the state
   it uses. A run never sees its own writes.
-- **evaluates** the graph. Only what is needed is computed: the branch of an `if` or `match` not
+- **evaluates** the graph. Only what is needed is computed: the branch of an `if` or `switch` not
   taken is never evaluated, so its calls aren't sent.
 - makes its **outbound calls** between rounds of evaluation, and records each response.
 - **writes** at its end: state, collections and files are committed together, or not at all.
