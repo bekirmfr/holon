@@ -369,13 +369,18 @@ pub(crate) fn check(export: &Export, witnessed: Option<&str>, files: &BTreeMap<S
     report.first = entries.first().map(|(e, _)| e.seq);
     report.last = entries.last().map(|(e, _)| e.seq);
 
-    // The units, each checked against its name.
+    // The units, each checked against its name, and what each references, for the bounds a
+    // rerun is held to.
     let mut resolver = MapResolver::new();
+    let mut refs: std::collections::BTreeMap<Hash, Vec<Hash>> = std::collections::BTreeMap::new();
     for (name, hex) in &export.units {
         let unit = bytes_of(hex).and_then(|b| decode_preimage(&b).ok());
         match unit.map(|u| (hash_unit(&u).map(|h| to_hex(&h)), u)) {
             Some((Ok(h), unit)) if &h == name => {
-                let _ = resolver.insert(unit);
+                let children = child_refs(&unit);
+                if let Ok(hash) = resolver.insert(unit) {
+                    refs.insert(hash, children);
+                }
             }
             _ => report.bad_units.push(name.clone()),
         }
@@ -389,7 +394,10 @@ pub(crate) fn check(export: &Export, witnessed: Option<&str>, files: &BTreeMap<S
             entries[..i].iter().map(|(e, _)| e).filter(|e| !entry.run_id.is_empty() && e.run_id == entry.run_id).collect();
         let mut given = Given::default();
         let mut left = None;
-        let came_to = rerun(entry, &earlier, &texts, &holon_module::WithEngine::new(&resolver, holon_module::shared()), &marks, &mut given, &mut left);
+        let came_to = match past_bounds(&entry.unit, &refs) {
+            Some(why) => Rerun::Differs(why),
+            None => rerun(entry, &earlier, &texts, &holon_module::WithEngine::new(&resolver, holon_module::shared()), &marks, &mut given, &mut left),
+        };
         lefts.push(left);
         if given.nodes > 0 {
             report.given.insert(entry.seq, given.nodes);
@@ -403,6 +411,30 @@ pub(crate) fn check(export: &Export, witnessed: Option<&str>, files: &BTreeMap<S
     report.states = check_states(&entries, &lefts, &events, &marks, &resolver);
     check_sends(&entries, &resolver, &marks, &mut report);
     report
+}
+
+/// Why the server could not have run `unit` (an entry's, hex), when it could not: it holds a
+/// deployment's closure to the bounds `units::closure` checks before it runs one, so a unit past
+/// them never ran there, and isn't evaluated here either. The evaluator recurses once or more for
+/// each level a closure nests, so a record of units nested deeper than any the server runs could
+/// otherwise exhaust this process's stack.
+fn past_bounds(unit: &str, refs: &std::collections::BTreeMap<Hash, Vec<Hash>>) -> Option<String> {
+    use crate::units::{closure_depth, MAX_CLOSURE_DEPTH, MAX_CLOSURE_UNITS};
+    let root = parse_hash(unit)?;
+    // Counted as the server counts them: each unit present once; one missing is no unit.
+    let mut seen = BTreeSet::new();
+    let mut queue = vec![root];
+    while let Some(h) = queue.pop() {
+        let Some(children) = refs.get(&h) else { continue };
+        if !seen.insert(h) {
+            continue;
+        }
+        if seen.len() > MAX_CLOSURE_UNITS {
+            return Some(format!("its unit's closure has more than {MAX_CLOSURE_UNITS} units, more than the server runs"));
+        }
+        queue.extend(children.iter().copied());
+    }
+    (closure_depth(root, refs) > MAX_CLOSURE_DEPTH).then(|| format!("its unit nests more than {MAX_CLOSURE_DEPTH} units deep, deeper than the server runs"))
 }
 
 /// What a request failed with before it left the host: it went nowhere.
@@ -1687,5 +1719,35 @@ mod tests {
     fn a_files_budget_is_bytes_or_k_m_g() {
         assert_eq!([budget_of("1048576"), budget_of("64K"), budget_of("10m"), budget_of("2GB"), budget_of("0")], [Some(1 << 20), Some(64 << 10), Some(10 << 20), Some(2 << 30), Some(0)]);
         assert_eq!([budget_of("lots"), budget_of("-1"), budget_of("K"), budget_of("99999999999G")], [None; 4]);
+    }
+
+    /// A record's unit nested deeper than the server runs is refused before it is run again, as
+    /// the server refuses it before it runs: the bound `units::closure` holds, counted the same.
+    #[test]
+    fn a_unit_nested_past_the_servers_bound_is_not_run_again() {
+        use crate::units::MAX_CLOSURE_DEPTH;
+        let mut refs = std::collections::BTreeMap::new();
+        let leaf = [7u8; 32];
+        refs.insert(leaf, vec![]);
+        // A chain of `levels` units over the leaf, the leaf counted: its root's hash (made up; the
+        // bound reads only the references).
+        let chain = |refs: &mut std::collections::BTreeMap<Hash, Vec<Hash>>, levels: usize| {
+            let mut below = leaf;
+            for k in 1..levels {
+                let mut h = [0u8; 32];
+                h[..8].copy_from_slice(&(levels as u64).to_le_bytes());
+                h[8..16].copy_from_slice(&(k as u64).to_le_bytes());
+                refs.insert(h, vec![below]);
+                below = h;
+            }
+            to_hex(&below)
+        };
+        let at = chain(&mut refs, MAX_CLOSURE_DEPTH);
+        let past = chain(&mut refs, MAX_CLOSURE_DEPTH + 1);
+        assert_eq!(past_bounds(&at, &refs), None);
+        assert_eq!(past_bounds(&past, &refs), Some(format!("its unit nests more than {MAX_CLOSURE_DEPTH} units deep, deeper than the server runs")));
+        // A unit the export doesn't hold, or a name that isn't a hash, is left to the rerun to say.
+        assert_eq!(past_bounds(&to_hex(&[9u8; 32]), &refs), None);
+        assert_eq!(past_bounds("nope", &refs), None);
     }
 }
