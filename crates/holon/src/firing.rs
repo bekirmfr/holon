@@ -514,7 +514,7 @@ fn commit(live: &mut State, store: &SharedStore, staged: folders::Staged, perfor
             match live.insert(key.clone(), payload.clone()) {
                 Ok(()) => {}
                 Err(InsertError::NotData) => eprintln!("holon: refused to store an effect request in state key {key:?}"),
-                Err(InsertError::TooLarge(e)) => eprintln!("holon: state key {key:?} not written (too large to encode): {e:?}"),
+                Err(InsertError::Unencodable(e)) => eprintln!("holon: state key {key:?} not written: {e}"),
             }
         }
     }

@@ -84,9 +84,12 @@ written, so its `root` (core's `state_root`) and a comparison of two states cost
 not per byte. Each value is shared (an `Arc`): a copy of the state, which every run takes as it
 starts, is its keys and hashes, and the run is lent the values it reads (`run_rounds` takes them
 borrowed). Each value is data: `insert` refuses one that isn't (`InsertError::NotData`), so a
-run's reads are handed the state's values without a look. `State::save` puts each value into the
-store and returns the `key → hash` map a deployment's snapshots keep; `State::load` rebuilds one,
-each value checked against its hash and refused unless it is data (`LoadError::NotData`).
+run's reads are handed the state's values without a look; and each loads again: `insert` refuses
+one nested deeper than a load reads (`InsertError::Unencodable`, core's `EncodeError::TooDeep`),
+which would otherwise keep the state, and the server, from starting. `State::save` puts each
+value into the store and returns the `key → hash` map a deployment's snapshots keep;
+`State::load` rebuilds one, each value checked against its hash and refused unless it is data
+(`LoadError::NotData`).
 
 A collection (collection.rs) is a radix trie stored as values (`{p, v?, c?}` nodes), canonical (the
 shape follows from which keys exist, so equal contents have equal roots) and persistent (a write

@@ -38,8 +38,9 @@ pub struct State {
 pub enum InsertError {
     /// It isn't data: an effect request, which no run could read back.
     NotData,
-    /// It is too large to encode (a text, list or record over the `u32` length budget).
-    TooLarge(EncodeError),
+    /// It doesn't encode: a text, list or record over the `u32` length budget, or a value nested
+    /// deeper than a load reads back.
+    Unencodable(EncodeError),
 }
 
 /// Why a state couldn't be rebuilt from its references.
@@ -82,7 +83,7 @@ impl State {
         if !is_storable(&value) {
             return Err(InsertError::NotData);
         }
-        let hash = hash_value(&value).map_err(InsertError::TooLarge)?;
+        let hash = hash_value(&value).map_err(InsertError::Unencodable)?;
         self.cells.insert(key, Cell { value: Arc::new(value), hash });
         Ok(())
     }
@@ -215,6 +216,22 @@ mod tests {
         let mut refs = s.save(&mut store).unwrap();
         refs.insert("sneaked".into(), store.put_value(&effect).unwrap());
         assert!(matches!(State::load(&refs, &store), Err(LoadError::NotData { key }) if key == "sneaked"));
+    }
+
+    /// A value nested deeper than a load reads back (a flow can build one, a `reduce` wrapping
+    /// what it has) is refused when written, the state as it was: kept, it would have made the
+    /// state fail to load at the next start, and the server with it.
+    #[test]
+    fn a_cell_never_holds_what_it_couldnt_load() {
+        let nested = |depth: usize| (0..depth).fold(Value::Number(1.0), |v, _| Value::List(vec![v]));
+        let mut s = State::new();
+        s.insert("tree".into(), nested(256)).unwrap();
+        let root = s.root();
+        assert!(matches!(s.insert("tree".into(), nested(300)), Err(InsertError::Unencodable(holon_core::EncodeError::TooDeep))));
+        assert_eq!(s.root(), root, "refused, the state is as it was");
+        let mut store = MemStore::new();
+        let refs = s.save(&mut store).unwrap();
+        assert_eq!(State::load(&refs, &store).unwrap().get("tree"), Some(&nested(256)));
     }
 
     #[test]
