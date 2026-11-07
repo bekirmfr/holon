@@ -19,11 +19,10 @@ route.get("/payment", (req) => {
   const amount = parseFloat(req.query.amount)
   const monthly = parseFloat(req.query.rate) / 100 / 12
   const months = parseInt(req.query.months)
-  const payment = monthly === 0
-    ? amount / months
-    : amount * monthly / (1 - 1 / (1 + monthly) ** months)
+  const payment =
+    monthly === 0 ? amount / months : (amount * monthly) / (1 - 1 / (1 + monthly) ** months)
   const cents = Math.round(payment * 100)
-  const total = cents * months / 100
+  const total = (cents * months) / 100
   const loan = {
     payment: (cents / 100).toFixed(2),
     total: total.toFixed(2),
