@@ -3200,12 +3200,12 @@
   [0, 1] Text("tea")
   [0, 2] ·
   [0, 3] ·
-  [0, 4, 5] Text("(word, candidates) => {\n  const dist = (a, b) => {\n    const d = Array.from({ length: a.length + 1 }, (_, i) => [i]);\n    for (let j = 1; j <= b.length… #312903f9e37c82fa
+  [0, 4, 4] Text("(word, candidates) => {\n    const dist = (a, b) => {\n      const d = Array.from({ length: a.length + 1 }, (_, i) => [i])\n      for (let j = 1; j <= b.l… #b4ec6a0d62e5243d
   [0, 4, 2] ·
   [0, 4, 1] ·
   [0, 4, 3] ·
   [0, 4, 0] ·
-  [0, 4, 4] ·
+  [0, 4, 5] ·
   [0, 4] · | ·
   [0, 8] ·
   [0, 9] ·
@@ -3230,12 +3230,12 @@
   [0, 1] Text("tea")
   [0, 2] ·
   [0, 3] ·
-  [0, 4, 5] Text("(word, candidates) => {\n  const dist = (a, b) => {\n    const d = Array.from({ length: a.length + 1 }, (_, i) => [i]);\n    for (let j = 1; j <= b.length… #312903f9e37c82fa
+  [0, 4, 4] Text("(word, candidates) => {\n    const dist = (a, b) => {\n      const d = Array.from({ length: a.length + 1 }, (_, i) => [i])\n      for (let j = 1; j <= b.l… #b4ec6a0d62e5243d
   [0, 4, 2] ·
   [0, 4, 1] ·
   [0, 4, 3] ·
   [0, 4, 0] ·
-  [0, 4, 4] ·
+  [0, 4, 5] ·
   [0, 4] · | ·
   [0, 8] ·
   [0, 9] ·
@@ -3260,12 +3260,12 @@
   [0, 1] Text("tea")
   [0, 2] ·
   [0, 3] ·
-  [0, 4, 5] Text("(word, candidates) => {\n  const dist = (a, b) => {\n    const d = Array.from({ length: a.length + 1 }, (_, i) => [i]);\n    for (let j = 1; j <= b.length… #312903f9e37c82fa
+  [0, 4, 4] Text("(word, candidates) => {\n    const dist = (a, b) => {\n      const d = Array.from({ length: a.length + 1 }, (_, i) => [i])\n      for (let j = 1; j <= b.l… #b4ec6a0d62e5243d
   [0, 4, 2] ·
   [0, 4, 1] ·
   [0, 4, 3] ·
   [0, 4, 0] ·
-  [0, 4, 4] ·
+  [0, 4, 5] ·
   [0, 4] · | ·
   [0, 8] ·
   [0, 9] ·
@@ -3285,7 +3285,7 @@
   [0, 0, 3] Text("")
   [0, 0, 4] ·
   [0, 0] Record({"body": Text(""), "headers": Record({"content-type": Text("application/json")}), "method": Text("POST"), "params": Record({}), "path": Text("/tally"), "… #3af1e27e0e1b5011 | Record({}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("") | ·
-  [0, 1, 0] Text("(csv) => {\n  const lines = csv.split(/\\r?\\n/).filter((line) => line.trim() !== \"\");\n  if (lines.length === 0) throw new Error(\"the CSV has no heade… #6f12bcfc84f92a1d
+  [0, 1, 0] Text("(csv) => {\n    const lines = csv.split(/\\r?\\n/).filter((line) => line.trim() !== \"\")\n    if (lines.length === 0) throw new Error(\"the CSV has no he… #c43f7492ab9051dd
   [0, 1, 2] List([])
   [0, 1, 4] List([Text("")])
   [0, 1, 1] ·
@@ -3317,7 +3317,7 @@
   [0, 0, 3] Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\"event\":\"gig\"… #7441bf0c70954823
   [0, 0, 4] Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
   [0, 0] Record({"body": Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\… #fd9ff71e45a4aaaf | Record({}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\"event\":\"gig\"… #7441bf0c70954823 | Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
-  [0, 1, 0] Text("(csv) => {\n  const lines = csv.split(/\\r?\\n/).filter((line) => line.trim() !== \"\");\n  if (lines.length === 0) throw new Error(\"the CSV has no heade… #6f12bcfc84f92a1d
+  [0, 1, 0] Text("(csv) => {\n    const lines = csv.split(/\\r?\\n/).filter((line) => line.trim() !== \"\")\n    if (lines.length === 0) throw new Error(\"the CSV has no he… #c43f7492ab9051dd
   [0, 1, 2] List([])
   [0, 1, 4] List([Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\"event\":\… #c34376986bf382ad
   [0, 1, 1] ·
@@ -3349,7 +3349,7 @@
   [0, 0, 3] Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,14.25,51.25,88.2… #30defbf00c11dd9c
   [0, 0, 4] Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
   [0, 0] Record({"body": Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,… #cf67895b0b65937e | Record({}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,14.25,51.25,88.2… #30defbf00c11dd9c | Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
-  [0, 1, 0] Text("(csv) => {\n  const lines = csv.split(/\\r?\\n/).filter((line) => line.trim() !== \"\");\n  if (lines.length === 0) throw new Error(\"the CSV has no heade… #6f12bcfc84f92a1d
+  [0, 1, 0] Text("(csv) => {\n    const lines = csv.split(/\\r?\\n/).filter((line) => line.trim() !== \"\")\n    if (lines.length === 0) throw new Error(\"the CSV has no he… #c43f7492ab9051dd
   [0, 1, 2] List([])
   [0, 1, 4] List([Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,14.25,51.2… #2e9c7e950053888e
   [0, 1, 1] ·
@@ -3706,7 +3706,7 @@
   [0, 0] Record({"body": Text(""), "headers": Record({"content-type": Text("application/json")}), "method": Text("GET"), "params": Record({}), "path": Text("/"), "query"… #71e5cca4e8b1caa9 | Record({}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("") | ·
   [0, 1] ·
   [0, 2] ·
-  [0, 3, 2] Text("(book, clock) => {\n  const esc = (s) => String(s).replace(/[&<>\"']/g, (c) => ({ \"&\": \"&amp;\", \"<\": \"&lt;\", \">\": \"&gt;\", '\"': \"&quot;\", \"… #ce0722180f21fbc5
+  [0, 3, 2] Text("(book, clock) => {\n  const esc = (s) =>\n    String(s).replace(\n      /[&<>\"']/g,\n      (c) => ({ \"&\": \"&amp;\", \"<\": \"&lt;\", \">\": \"&gt;\", … #0d3cfb0ec1fcbfe6
   [0, 3, 1] ·
   [0, 3, 0] ·
   [0, 3, 3] ·
@@ -3732,7 +3732,7 @@
   [0, 0] Record({"body": Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\… #53c22645695c90e5 | Record({}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\"event\":\"gig\"… #7441bf0c70954823 | Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
   [0, 1] ·
   [0, 2] ·
-  [0, 3, 2] Text("(book, clock) => {\n  const esc = (s) => String(s).replace(/[&<>\"']/g, (c) => ({ \"&\": \"&amp;\", \"<\": \"&lt;\", \">\": \"&gt;\", '\"': \"&quot;\", \"… #ce0722180f21fbc5
+  [0, 3, 2] Text("(book, clock) => {\n  const esc = (s) =>\n    String(s).replace(\n      /[&<>\"']/g,\n      (c) => ({ \"&\": \"&amp;\", \"<\": \"&lt;\", \">\": \"&gt;\", … #0d3cfb0ec1fcbfe6
   [0, 3, 1] ·
   [0, 3, 0] ·
   [0, 3, 3] ·
@@ -3758,7 +3758,7 @@
   [0, 0] Record({"body": Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,… #1719c1c5a6f2d8af | Record({}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,14.25,51.25,88.2… #30defbf00c11dd9c | Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
   [0, 1] ·
   [0, 2] ·
-  [0, 3, 2] Text("(book, clock) => {\n  const esc = (s) => String(s).replace(/[&<>\"']/g, (c) => ({ \"&\": \"&amp;\", \"<\": \"&lt;\", \">\": \"&gt;\", '\"': \"&quot;\", \"… #ce0722180f21fbc5
+  [0, 3, 2] Text("(book, clock) => {\n  const esc = (s) =>\n    String(s).replace(\n      /[&<>\"']/g,\n      (c) => ({ \"&\": \"&amp;\", \"<\": \"&lt;\", \">\": \"&gt;\", … #0d3cfb0ec1fcbfe6
   [0, 3, 1] ·
   [0, 3, 0] ·
   [0, 3, 3] ·
@@ -3794,11 +3794,11 @@
   [0, 0, 3] Text("")
   [0, 0, 4] ·
   [0, 0] Record({"body": Text(""), "headers": Record({"content-type": Text("application/json")}), "method": Text("POST"), "params": Record({}), "path": Text("/sign"), "q… #addbfebf55fcce7b | Record({}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("") | ·
-  [0, 1, 2] Text("(body) => {\n  const decode = (s) => decodeURIComponent(s.replace(/\\+/g, \" \"));\n  const fields = {};\n  for (const part of body.split(\"&\")) {\n    i… #41ae610c04f3ffba
+  [0, 1, 4] Text("(body) => {\n  const decode = (s) => decodeURIComponent(s.replace(/\\+/g, \" \"))\n  const fields = {}\n  for (const part of body.split(\"&\")) {\n    if … #36fae07ba9773cc4
   [0, 1, 1] List([])
-  [0, 1, 3] List([Text("")])
+  [0, 1, 2] List([Text("")])
   [0, 1, 0] ·
-  [0, 1, 4] ·
+  [0, 1, 3] ·
   [0, 1] ·
   [0, 14] ·
   [0, 15] ·
@@ -3843,11 +3843,11 @@
   [0, 0, 3] Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\"event\":\"gig\"… #7441bf0c70954823
   [0, 0, 4] Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
   [0, 0] Record({"body": Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\… #035e72da7b5eaeec | Record({}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\"event\":\"gig\"… #7441bf0c70954823 | Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
-  [0, 1, 2] Text("(body) => {\n  const decode = (s) => decodeURIComponent(s.replace(/\\+/g, \" \"));\n  const fields = {};\n  for (const part of body.split(\"&\")) {\n    i… #41ae610c04f3ffba
+  [0, 1, 4] Text("(body) => {\n  const decode = (s) => decodeURIComponent(s.replace(/\\+/g, \" \"))\n  const fields = {}\n  for (const part of body.split(\"&\")) {\n    if … #36fae07ba9773cc4
   [0, 1, 1] List([])
-  [0, 1, 3] List([Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\"event\":\… #c34376986bf382ad
+  [0, 1, 2] List([Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\"event\":\… #c34376986bf382ad
   [0, 1, 0] ·
-  [0, 1, 4] ·
+  [0, 1, 3] ·
   [0, 1] ·
   [0, 14] ·
   [0, 15] ·
@@ -3892,11 +3892,11 @@
   [0, 0, 3] Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,14.25,51.25,88.2… #30defbf00c11dd9c
   [0, 0, 4] Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
   [0, 0] Record({"body": Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,… #1cd252709beaf530 | Record({}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,14.25,51.25,88.2… #30defbf00c11dd9c | Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
-  [0, 1, 2] Text("(body) => {\n  const decode = (s) => decodeURIComponent(s.replace(/\\+/g, \" \"));\n  const fields = {};\n  for (const part of body.split(\"&\")) {\n    i… #41ae610c04f3ffba
+  [0, 1, 4] Text("(body) => {\n  const decode = (s) => decodeURIComponent(s.replace(/\\+/g, \" \"))\n  const fields = {}\n  for (const part of body.split(\"&\")) {\n    if … #36fae07ba9773cc4
   [0, 1, 1] List([])
-  [0, 1, 3] List([Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,14.25,51.2… #2e9c7e950053888e
+  [0, 1, 2] List([Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,14.25,51.2… #2e9c7e950053888e
   [0, 1, 0] ·
-  [0, 1, 4] ·
+  [0, 1, 3] ·
   [0, 1] ·
   [0, 14] ·
   [0, 15] ·
@@ -3934,12 +3934,12 @@
   [0, 5] Text(".md")
   [0, 6] ·
   [0, 2] ·
-  [0, 3, 5] Text("(name, csv) => {\n  const lines = csv.split(\"\\n\").filter((line) => line.trim() !== \"\");\n  if (lines.length === 0) throw new Error(\"the CSV has no h… #177d55465f036e0d
-  [0, 3, 2] ·
-  [0, 3, 1] ·
-  [0, 3, 4] ·
-  [0, 3, 0] ·
+  [0, 3, 1] Text("(name, csv) => {\n    const lines = csv.split(\"\\n\").filter((line) => line.trim() !== \"\")\n    if (lines.length === 0) throw new Error(\"the CSV has n… #84bc82ab1b197efc
   [0, 3, 3] ·
+  [0, 3, 2] ·
+  [0, 3, 5] ·
+  [0, 3, 0] ·
+  [0, 3, 4] ·
   [0, 3] · | ·
   [0, 7] ·
   [0, 8] Record({})
@@ -3968,12 +3968,12 @@
   [0, 5] Text(".md")
   [0, 6] Text("tea.md")
   [0, 2] ·
-  [0, 3, 5] Text("(name, csv) => {\n  const lines = csv.split(\"\\n\").filter((line) => line.trim() !== \"\");\n  if (lines.length === 0) throw new Error(\"the CSV has no h… #177d55465f036e0d
-  [0, 3, 2] ·
-  [0, 3, 1] ·
-  [0, 3, 4] ·
-  [0, 3, 0] ·
+  [0, 3, 1] Text("(name, csv) => {\n    const lines = csv.split(\"\\n\").filter((line) => line.trim() !== \"\")\n    if (lines.length === 0) throw new Error(\"the CSV has n… #84bc82ab1b197efc
   [0, 3, 3] ·
+  [0, 3, 2] ·
+  [0, 3, 5] ·
+  [0, 3, 0] ·
+  [0, 3, 4] ·
   [0, 3] · | ·
   [0, 7] ·
   [0, 8] Record({})
@@ -4002,12 +4002,12 @@
   [0, 5] Text(".md")
   [0, 6] ·
   [0, 2] ·
-  [0, 3, 5] Text("(name, csv) => {\n  const lines = csv.split(\"\\n\").filter((line) => line.trim() !== \"\");\n  if (lines.length === 0) throw new Error(\"the CSV has no h… #177d55465f036e0d
-  [0, 3, 2] ·
-  [0, 3, 1] ·
-  [0, 3, 4] ·
-  [0, 3, 0] ·
+  [0, 3, 1] Text("(name, csv) => {\n    const lines = csv.split(\"\\n\").filter((line) => line.trim() !== \"\")\n    if (lines.length === 0) throw new Error(\"the CSV has n… #84bc82ab1b197efc
   [0, 3, 3] ·
+  [0, 3, 2] ·
+  [0, 3, 5] ·
+  [0, 3, 0] ·
+  [0, 3, 4] ·
   [0, 3] · | ·
   [0, 7] ·
   [0, 8] Record({})
@@ -4611,7 +4611,7 @@
   [0, 0, 4] ·
   [0, 0] Record({"body": Text(""), "headers": Record({"content-type": Text("application/json")}), "method": Text("GET"), "params": Record({}), "path": Text("/"), "query"… #71e5cca4e8b1caa9 | Record({}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("") | ·
   [0, 1] ·
-  [0, 2, 3] Text("(board) => {\n  const esc = (s) => String(s).replace(/[&<>\"']/g, (c) => ({ \"&\": \"&amp;\", \"<\": \"&lt;\", \">\": \"&gt;\", '\"': \"&quot;\", \"'\": \… #646d190e28fa2e11
+  [0, 2, 3] Text("(board) => {\n  const esc = (s) =>\n    String(s).replace(\n      /[&<>\"']/g,\n      (c) => ({ \"&\": \"&amp;\", \"<\": \"&lt;\", \">\": \"&gt;\", '\"': … #ac524c53b2fc0e5d
   [0, 2, 1] List([])
   [0, 2, 2] ·
   [0, 2, 0] ·
@@ -4637,7 +4637,7 @@
   [0, 0, 4] Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
   [0, 0] Record({"body": Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\… #53c22645695c90e5 | Record({}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\"event\":\"gig\"… #7441bf0c70954823 | Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
   [0, 1] ·
-  [0, 2, 3] Text("(board) => {\n  const esc = (s) => String(s).replace(/[&<>\"']/g, (c) => ({ \"&\": \"&amp;\", \"<\": \"&lt;\", \">\": \"&gt;\", '\"': \"&quot;\", \"'\": \… #646d190e28fa2e11
+  [0, 2, 3] Text("(board) => {\n  const esc = (s) =>\n    String(s).replace(\n      /[&<>\"']/g,\n      (c) => ({ \"&\": \"&amp;\", \"<\": \"&lt;\", \">\": \"&gt;\", '\"': … #ac524c53b2fc0e5d
   [0, 2, 1] List([])
   [0, 2, 2] ·
   [0, 2, 0] ·
@@ -4663,7 +4663,7 @@
   [0, 0, 4] Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
   [0, 0] Record({"body": Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,… #1719c1c5a6f2d8af | Record({}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,14.25,51.25,88.2… #30defbf00c11dd9c | Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
   [0, 1] ·
-  [0, 2, 3] Text("(board) => {\n  const esc = (s) => String(s).replace(/[&<>\"']/g, (c) => ({ \"&\": \"&amp;\", \"<\": \"&lt;\", \">\": \"&gt;\", '\"': \"&quot;\", \"'\": \… #646d190e28fa2e11
+  [0, 2, 3] Text("(board) => {\n  const esc = (s) =>\n    String(s).replace(\n      /[&<>\"']/g,\n      (c) => ({ \"&\": \"&amp;\", \"<\": \"&lt;\", \">\": \"&gt;\", '\"': … #ac524c53b2fc0e5d
   [0, 2, 1] List([])
   [0, 2, 2] ·
   [0, 2, 0] ·
@@ -4860,10 +4860,10 @@
   [0, 0, 4] ·
   [0, 0] Record({"body": Text(""), "headers": Record({"content-type": Text("application/json")}), "method": Text("GET"), "params": Record({}), "path": Text("/"), "query"… #71e5cca4e8b1caa9 | Record({}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("") | ·
   [0, 1] ·
-  [0, 2, 3] Text("(past) => {\n  const esc = (s) => String(s).replace(/[&<>\"']/g, (c) => ({ \"&\": \"&amp;\", \"<\": \"&lt;\", \">\": \"&gt;\", '\"': \"&quot;\", \"'\": \"… #fa2716ea6b189dc7
-  [0, 2, 1] List([])
-  [0, 2, 2] ·
-  [0, 2, 0] ·
+  [0, 2, 0] Text("(past) => {\n  const esc = (s) =>\n    String(s).replace(\n      /[&<>\"']/g,\n      (c) => ({ \"&\": \"&amp;\", \"<\": \"&lt;\", \">\": \"&gt;\", '\"': \… #170f2d9dc538c2b0
+  [0, 2, 2] List([])
+  [0, 2, 3] ·
+  [0, 2, 1] ·
   [0, 2, 4] ·
   [0, 2] ·
   [0, 3] Record({})
@@ -4886,10 +4886,10 @@
   [0, 0, 4] Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
   [0, 0] Record({"body": Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\… #53c22645695c90e5 | Record({}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\"event\":\"gig\"… #7441bf0c70954823 | Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
   [0, 1] ·
-  [0, 2, 3] Text("(past) => {\n  const esc = (s) => String(s).replace(/[&<>\"']/g, (c) => ({ \"&\": \"&amp;\", \"<\": \"&lt;\", \">\": \"&gt;\", '\"': \"&quot;\", \"'\": \"… #fa2716ea6b189dc7
-  [0, 2, 1] List([])
-  [0, 2, 2] ·
-  [0, 2, 0] ·
+  [0, 2, 0] Text("(past) => {\n  const esc = (s) =>\n    String(s).replace(\n      /[&<>\"']/g,\n      (c) => ({ \"&\": \"&amp;\", \"<\": \"&lt;\", \">\": \"&gt;\", '\"': \… #170f2d9dc538c2b0
+  [0, 2, 2] List([])
+  [0, 2, 3] ·
+  [0, 2, 1] ·
   [0, 2, 4] ·
   [0, 2] ·
   [0, 3] Record({})
@@ -4912,10 +4912,10 @@
   [0, 0, 4] Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
   [0, 0] Record({"body": Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,… #1719c1c5a6f2d8af | Record({}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,14.25,51.25,88.2… #30defbf00c11dd9c | Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
   [0, 1] ·
-  [0, 2, 3] Text("(past) => {\n  const esc = (s) => String(s).replace(/[&<>\"']/g, (c) => ({ \"&\": \"&amp;\", \"<\": \"&lt;\", \">\": \"&gt;\", '\"': \"&quot;\", \"'\": \"… #fa2716ea6b189dc7
-  [0, 2, 1] List([])
-  [0, 2, 2] ·
-  [0, 2, 0] ·
+  [0, 2, 0] Text("(past) => {\n  const esc = (s) =>\n    String(s).replace(\n      /[&<>\"']/g,\n      (c) => ({ \"&\": \"&amp;\", \"<\": \"&lt;\", \">\": \"&gt;\", '\"': \… #170f2d9dc538c2b0
+  [0, 2, 2] List([])
+  [0, 2, 3] ·
+  [0, 2, 1] ·
   [0, 2, 4] ·
   [0, 2] ·
   [0, 3] Record({})
@@ -4975,10 +4975,10 @@
   [0, 36] Record({})
   [0, 37] ·
   [0, 38] ·
-  [0, 39, 3] Text("(events) => {\n  let said = \"\";\n  for (const line of String(events).split(\"\\n\")) {\n    if (!line.startsWith(\"data:\")) continue;\n    let e;\n    … #4cf7e53b1751d952
-  [0, 39, 1] List([])
-  [0, 39, 2] ·
-  [0, 39, 0] ·
+  [0, 39, 0] Text("(events) => {\n  let said = \"\"\n  for (const line of String(events).split(\"\\n\")) {\n    if (!line.startsWith(\"data:\")) continue\n    let e\n    try… #596b71c17131325d
+  [0, 39, 2] List([])
+  [0, 39, 3] ·
+  [0, 39, 1] ·
   [0, 39, 4] ·
   [0, 39] ·
   [0, 40] ·
@@ -5037,10 +5037,10 @@
   [0, 36] Record({})
   [0, 37] ·
   [0, 38] ·
-  [0, 39, 3] Text("(events) => {\n  let said = \"\";\n  for (const line of String(events).split(\"\\n\")) {\n    if (!line.startsWith(\"data:\")) continue;\n    let e;\n    … #4cf7e53b1751d952
-  [0, 39, 1] List([])
-  [0, 39, 2] ·
-  [0, 39, 0] ·
+  [0, 39, 0] Text("(events) => {\n  let said = \"\"\n  for (const line of String(events).split(\"\\n\")) {\n    if (!line.startsWith(\"data:\")) continue\n    let e\n    try… #596b71c17131325d
+  [0, 39, 2] List([])
+  [0, 39, 3] ·
+  [0, 39, 1] ·
   [0, 39, 4] ·
   [0, 39] ·
   [0, 40] ·
@@ -5099,10 +5099,10 @@
   [0, 36] Record({})
   [0, 37] ·
   [0, 38] ·
-  [0, 39, 3] Text("(events) => {\n  let said = \"\";\n  for (const line of String(events).split(\"\\n\")) {\n    if (!line.startsWith(\"data:\")) continue;\n    let e;\n    … #4cf7e53b1751d952
-  [0, 39, 1] List([])
-  [0, 39, 2] ·
-  [0, 39, 0] ·
+  [0, 39, 0] Text("(events) => {\n  let said = \"\"\n  for (const line of String(events).split(\"\\n\")) {\n    if (!line.startsWith(\"data:\")) continue\n    let e\n    try… #596b71c17131325d
+  [0, 39, 2] List([])
+  [0, 39, 3] ·
+  [0, 39, 1] ·
   [0, 39, 4] ·
   [0, 39] ·
   [0, 40] ·
@@ -5159,10 +5159,10 @@
   [0, 36] Record({})
   [0, 37] ·
   [0, 34] ·
-  [0, 35, 3] Text("(events) => {\n  let said = \"\";\n  for (const line of String(events).split(\"\\n\")) {\n    if (!line.startsWith(\"data:\")) continue;\n    let e;\n    … #4cf7e53b1751d952
-  [0, 35, 1] List([])
-  [0, 35, 2] ·
-  [0, 35, 0] ·
+  [0, 35, 0] Text("(events) => {\n  let said = \"\"\n  for (const line of String(events).split(\"\\n\")) {\n    if (!line.startsWith(\"data:\")) continue\n    let e\n    try… #596b71c17131325d
+  [0, 35, 2] List([])
+  [0, 35, 3] ·
+  [0, 35, 1] ·
   [0, 35, 4] ·
   [0, 35] ·
   [0, 38] ·
@@ -5221,10 +5221,10 @@
   [0, 36] Record({})
   [0, 37] ·
   [0, 34] ·
-  [0, 35, 3] Text("(events) => {\n  let said = \"\";\n  for (const line of String(events).split(\"\\n\")) {\n    if (!line.startsWith(\"data:\")) continue;\n    let e;\n    … #4cf7e53b1751d952
-  [0, 35, 1] List([])
-  [0, 35, 2] ·
-  [0, 35, 0] ·
+  [0, 35, 0] Text("(events) => {\n  let said = \"\"\n  for (const line of String(events).split(\"\\n\")) {\n    if (!line.startsWith(\"data:\")) continue\n    let e\n    try… #596b71c17131325d
+  [0, 35, 2] List([])
+  [0, 35, 3] ·
+  [0, 35, 1] ·
   [0, 35, 4] ·
   [0, 35] ·
   [0, 38] ·
@@ -5283,10 +5283,10 @@
   [0, 36] Record({})
   [0, 37] ·
   [0, 34] ·
-  [0, 35, 3] Text("(events) => {\n  let said = \"\";\n  for (const line of String(events).split(\"\\n\")) {\n    if (!line.startsWith(\"data:\")) continue;\n    let e;\n    … #4cf7e53b1751d952
-  [0, 35, 1] List([])
-  [0, 35, 2] ·
-  [0, 35, 0] ·
+  [0, 35, 0] Text("(events) => {\n  let said = \"\"\n  for (const line of String(events).split(\"\\n\")) {\n    if (!line.startsWith(\"data:\")) continue\n    let e\n    try… #596b71c17131325d
+  [0, 35, 2] List([])
+  [0, 35, 3] ·
+  [0, 35, 1] ·
   [0, 35, 4] ·
   [0, 35] ·
   [0, 38] ·
@@ -5358,9 +5358,9 @@
   [0, 0, 4] ·
   [0, 0] Record({"body": Text(""), "headers": Record({"content-type": Text("application/json")}), "method": Text("GET"), "params": Record({}), "path": Text("/"), "query"… #71e5cca4e8b1caa9 | Record({}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("") | ·
   [0, 1] ·
-  [0, 2, 2] Text("(past) => {\n  const esc = (s) => String(s).replace(/[&<>\"']/g, (c) => ({ \"&\": \"&amp;\", \"<\": \"&lt;\", \">\": \"&gt;\", '\"': \"&quot;\", \"'\": \"… #0a83476e51e56162
+  [0, 2, 3] Text("(past) => {\n  const esc = (s) =>\n    String(s).replace(\n      /[&<>\"']/g,\n      (c) => ({ \"&\": \"&amp;\", \"<\": \"&lt;\", \">\": \"&gt;\", '\"': \… #b850c17c64f13aed
   [0, 2, 1] List([])
-  [0, 2, 3] ·
+  [0, 2, 2] ·
   [0, 2, 0] ·
   [0, 2, 4] ·
   [0, 2] ·
@@ -5384,9 +5384,9 @@
   [0, 0, 4] Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
   [0, 0] Record({"body": Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\… #53c22645695c90e5 | Record({}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\"event\":\"gig\"… #7441bf0c70954823 | Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
   [0, 1] ·
-  [0, 2, 2] Text("(past) => {\n  const esc = (s) => String(s).replace(/[&<>\"']/g, (c) => ({ \"&\": \"&amp;\", \"<\": \"&lt;\", \">\": \"&gt;\", '\"': \"&quot;\", \"'\": \"… #0a83476e51e56162
+  [0, 2, 3] Text("(past) => {\n  const esc = (s) =>\n    String(s).replace(\n      /[&<>\"']/g,\n      (c) => ({ \"&\": \"&amp;\", \"<\": \"&lt;\", \">\": \"&gt;\", '\"': \… #b850c17c64f13aed
   [0, 2, 1] List([])
-  [0, 2, 3] ·
+  [0, 2, 2] ·
   [0, 2, 0] ·
   [0, 2, 4] ·
   [0, 2] ·
@@ -5410,9 +5410,9 @@
   [0, 0, 4] Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
   [0, 0] Record({"body": Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,… #1719c1c5a6f2d8af | Record({}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,14.25,51.25,88.2… #30defbf00c11dd9c | Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
   [0, 1] ·
-  [0, 2, 2] Text("(past) => {\n  const esc = (s) => String(s).replace(/[&<>\"']/g, (c) => ({ \"&\": \"&amp;\", \"<\": \"&lt;\", \">\": \"&gt;\", '\"': \"&quot;\", \"'\": \"… #0a83476e51e56162
+  [0, 2, 3] Text("(past) => {\n  const esc = (s) =>\n    String(s).replace(\n      /[&<>\"']/g,\n      (c) => ({ \"&\": \"&amp;\", \"<\": \"&lt;\", \">\": \"&gt;\", '\"': \… #b850c17c64f13aed
   [0, 2, 1] List([])
-  [0, 2, 3] ·
+  [0, 2, 2] ·
   [0, 2, 0] ·
   [0, 2, 4] ·
   [0, 2] ·
@@ -5455,9 +5455,9 @@
   [0, 18] Record({})
   [0, 19] ·
   [0, 20] ·
-  [0, 21, 3] Text("(events) => {\n  let said = \"\";\n  for (const line of String(events).split(\"\\n\")) {\n    if (!line.startsWith(\"data:\")) continue;\n    let e;\n    … #0842444a25f743a6
-  [0, 21, 1] List([])
-  [0, 21, 2] ·
+  [0, 21, 1] Text("(events) => {\n  let said = \"\"\n  for (const line of String(events).split(\"\\n\")) {\n    if (!line.startsWith(\"data:\")) continue\n    let e\n    try… #dd1d881e6c3a30c5
+  [0, 21, 2] List([])
+  [0, 21, 3] ·
   [0, 21, 0] ·
   [0, 21, 4] ·
   [0, 21] ·
@@ -5499,9 +5499,9 @@
   [0, 18] Record({})
   [0, 19] ·
   [0, 20] ·
-  [0, 21, 3] Text("(events) => {\n  let said = \"\";\n  for (const line of String(events).split(\"\\n\")) {\n    if (!line.startsWith(\"data:\")) continue;\n    let e;\n    … #0842444a25f743a6
-  [0, 21, 1] List([])
-  [0, 21, 2] ·
+  [0, 21, 1] Text("(events) => {\n  let said = \"\"\n  for (const line of String(events).split(\"\\n\")) {\n    if (!line.startsWith(\"data:\")) continue\n    let e\n    try… #dd1d881e6c3a30c5
+  [0, 21, 2] List([])
+  [0, 21, 3] ·
   [0, 21, 0] ·
   [0, 21, 4] ·
   [0, 21] ·
@@ -5543,9 +5543,9 @@
   [0, 18] Record({})
   [0, 19] ·
   [0, 20] ·
-  [0, 21, 3] Text("(events) => {\n  let said = \"\";\n  for (const line of String(events).split(\"\\n\")) {\n    if (!line.startsWith(\"data:\")) continue;\n    let e;\n    … #0842444a25f743a6
-  [0, 21, 1] List([])
-  [0, 21, 2] ·
+  [0, 21, 1] Text("(events) => {\n  let said = \"\"\n  for (const line of String(events).split(\"\\n\")) {\n    if (!line.startsWith(\"data:\")) continue\n    let e\n    try… #dd1d881e6c3a30c5
+  [0, 21, 2] List([])
+  [0, 21, 3] ·
   [0, 21, 0] ·
   [0, 21, 4] ·
   [0, 21] ·
@@ -5570,24 +5570,24 @@
   [0, 1] Text("current")
   [0, 2] ·
   [0, 3] Text("")
-  [0, 4, 4] Text("(model) => {\n  const MODELS = [\n    { id: \"gemini-3.5-flash-lite\", note: \"the fastest, the most free calls\", thinking: \"minimal\" },\n    { id: \"g… #a1cfb40bea50da2e
-  [0, 4, 1] List([])
-  [0, 4, 2] List([Text("")])
-  [0, 4, 0] ·
-  [0, 4, 3] ·
+  [0, 4, 0] Text("(model) => {\n  const MODELS = [\n    { id: \"gemini-3.5-flash-lite\", note: \"the fastest, the most free calls\", thinking: \"minimal\" },\n    { id: \"g… #91eafa44020094c2
+  [0, 4, 2] List([])
+  [0, 4, 3] List([Text("")])
+  [0, 4, 1] ·
+  [0, 4, 4] ·
   [0, 4] ·
   [0, 5] Text("")
-  [0, 6, 0] Text("(board, move) => {\n  const START = \"rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1\";\n  // A 10x12 board: a1 is 21, h8 is 98, \"x\" is off th… #610b24694c60ed57
-  [0, 6, 1] ·
-  [0, 6, 3] ·
+  [0, 6, 3] Text("(board, move) => {\n    const START = \"rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1\"\n    // A 10x12 board: a1 is 21, h8 is 98, \"x\" is off… #84b4346fc7d998f7
+  [0, 6, 0] ·
   [0, 6, 2] ·
+  [0, 6, 1] ·
   [0, 6] ·
   [0, 7] ·
   [0, 8] Text("chat")
   [0, 9] ·
   [0, 10] List([])
-  [0, 11, 1] Text("(board, talk) => {\n  const data = JSON.stringify({ board, talk }).replace(/</g, \"\\\\u003c\");\n  return `<!doctype html>\n<meta charset=\"utf-8\">\n<me… #19a990c696e8f441
-  [0, 11, 2] ·
+  [0, 11, 2] Text("(board, talk) => {\n  const data = JSON.stringify({ board, talk }).replace(/</g, \"\\\\u003c\")\n  return `<!doctype html>\n<meta charset=\"utf-8\">\n<met… #22c3ca5d335b5efd
+  [0, 11, 1] ·
   [0, 11, 0] ·
   [0, 11, 3] ·
   [0, 11] ·
@@ -5613,24 +5613,24 @@
   [0, 1] Text("current")
   [0, 2] ·
   [0, 3] Text("")
-  [0, 4, 4] Text("(model) => {\n  const MODELS = [\n    { id: \"gemini-3.5-flash-lite\", note: \"the fastest, the most free calls\", thinking: \"minimal\" },\n    { id: \"g… #a1cfb40bea50da2e
-  [0, 4, 1] List([])
-  [0, 4, 2] List([Text("")])
-  [0, 4, 0] ·
-  [0, 4, 3] ·
+  [0, 4, 0] Text("(model) => {\n  const MODELS = [\n    { id: \"gemini-3.5-flash-lite\", note: \"the fastest, the most free calls\", thinking: \"minimal\" },\n    { id: \"g… #91eafa44020094c2
+  [0, 4, 2] List([])
+  [0, 4, 3] List([Text("")])
+  [0, 4, 1] ·
+  [0, 4, 4] ·
   [0, 4] ·
   [0, 5] Text("")
-  [0, 6, 0] Text("(board, move) => {\n  const START = \"rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1\";\n  // A 10x12 board: a1 is 21, h8 is 98, \"x\" is off th… #610b24694c60ed57
-  [0, 6, 1] ·
-  [0, 6, 3] ·
+  [0, 6, 3] Text("(board, move) => {\n    const START = \"rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1\"\n    // A 10x12 board: a1 is 21, h8 is 98, \"x\" is off… #84b4346fc7d998f7
+  [0, 6, 0] ·
   [0, 6, 2] ·
+  [0, 6, 1] ·
   [0, 6] ·
   [0, 7] ·
   [0, 8] Text("chat")
   [0, 9] ·
   [0, 10] List([])
-  [0, 11, 1] Text("(board, talk) => {\n  const data = JSON.stringify({ board, talk }).replace(/</g, \"\\\\u003c\");\n  return `<!doctype html>\n<meta charset=\"utf-8\">\n<me… #19a990c696e8f441
-  [0, 11, 2] ·
+  [0, 11, 2] Text("(board, talk) => {\n  const data = JSON.stringify({ board, talk }).replace(/</g, \"\\\\u003c\")\n  return `<!doctype html>\n<meta charset=\"utf-8\">\n<met… #22c3ca5d335b5efd
+  [0, 11, 1] ·
   [0, 11, 0] ·
   [0, 11, 3] ·
   [0, 11] ·
@@ -5656,24 +5656,24 @@
   [0, 1] Text("current")
   [0, 2] ·
   [0, 3] Text("")
-  [0, 4, 4] Text("(model) => {\n  const MODELS = [\n    { id: \"gemini-3.5-flash-lite\", note: \"the fastest, the most free calls\", thinking: \"minimal\" },\n    { id: \"g… #a1cfb40bea50da2e
-  [0, 4, 1] List([])
-  [0, 4, 2] List([Text("")])
-  [0, 4, 0] ·
-  [0, 4, 3] ·
+  [0, 4, 0] Text("(model) => {\n  const MODELS = [\n    { id: \"gemini-3.5-flash-lite\", note: \"the fastest, the most free calls\", thinking: \"minimal\" },\n    { id: \"g… #91eafa44020094c2
+  [0, 4, 2] List([])
+  [0, 4, 3] List([Text("")])
+  [0, 4, 1] ·
+  [0, 4, 4] ·
   [0, 4] ·
   [0, 5] Text("")
-  [0, 6, 0] Text("(board, move) => {\n  const START = \"rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1\";\n  // A 10x12 board: a1 is 21, h8 is 98, \"x\" is off th… #610b24694c60ed57
-  [0, 6, 1] ·
-  [0, 6, 3] ·
+  [0, 6, 3] Text("(board, move) => {\n    const START = \"rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1\"\n    // A 10x12 board: a1 is 21, h8 is 98, \"x\" is off… #84b4346fc7d998f7
+  [0, 6, 0] ·
   [0, 6, 2] ·
+  [0, 6, 1] ·
   [0, 6] ·
   [0, 7] ·
   [0, 8] Text("chat")
   [0, 9] ·
   [0, 10] List([])
-  [0, 11, 1] Text("(board, talk) => {\n  const data = JSON.stringify({ board, talk }).replace(/</g, \"\\\\u003c\");\n  return `<!doctype html>\n<meta charset=\"utf-8\">\n<me… #19a990c696e8f441
-  [0, 11, 2] ·
+  [0, 11, 2] Text("(board, talk) => {\n  const data = JSON.stringify({ board, talk }).replace(/</g, \"\\\\u003c\")\n  return `<!doctype html>\n<meta charset=\"utf-8\">\n<met… #22c3ca5d335b5efd
+  [0, 11, 1] ·
   [0, 11, 0] ·
   [0, 11, 3] ·
   [0, 11] ·
@@ -5699,17 +5699,17 @@
   [0, 1] Text("current")
   [0, 2] ·
   [0, 3] Text("")
-  [0, 4, 4] Text("(model) => {\n  const MODELS = [\n    { id: \"gemini-3.5-flash-lite\", note: \"the fastest, the most free calls\", thinking: \"minimal\" },\n    { id: \"g… #a1cfb40bea50da2e
-  [0, 4, 1] List([])
-  [0, 4, 2] List([Text("")])
-  [0, 4, 0] ·
-  [0, 4, 3] ·
+  [0, 4, 0] Text("(model) => {\n  const MODELS = [\n    { id: \"gemini-3.5-flash-lite\", note: \"the fastest, the most free calls\", thinking: \"minimal\" },\n    { id: \"g… #91eafa44020094c2
+  [0, 4, 2] List([])
+  [0, 4, 3] List([Text("")])
+  [0, 4, 1] ·
+  [0, 4, 4] ·
   [0, 4] ·
   [0, 5] Text("")
-  [0, 6, 0] Text("(board, move) => {\n  const START = \"rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1\";\n  // A 10x12 board: a1 is 21, h8 is 98, \"x\" is off th… #610b24694c60ed57
-  [0, 6, 1] ·
-  [0, 6, 3] ·
+  [0, 6, 3] Text("(board, move) => {\n    const START = \"rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1\"\n    // A 10x12 board: a1 is 21, h8 is 98, \"x\" is off… #84b4346fc7d998f7
+  [0, 6, 0] ·
   [0, 6, 2] ·
+  [0, 6, 1] ·
   [0, 6] ·
   [0, 7] ·
   [0, 8, 0] Record({})
@@ -5730,17 +5730,17 @@
   [0, 1] Text("current")
   [0, 2] ·
   [0, 3] Text("")
-  [0, 4, 4] Text("(model) => {\n  const MODELS = [\n    { id: \"gemini-3.5-flash-lite\", note: \"the fastest, the most free calls\", thinking: \"minimal\" },\n    { id: \"g… #a1cfb40bea50da2e
-  [0, 4, 1] List([])
-  [0, 4, 2] List([Text("")])
-  [0, 4, 0] ·
-  [0, 4, 3] ·
+  [0, 4, 0] Text("(model) => {\n  const MODELS = [\n    { id: \"gemini-3.5-flash-lite\", note: \"the fastest, the most free calls\", thinking: \"minimal\" },\n    { id: \"g… #91eafa44020094c2
+  [0, 4, 2] List([])
+  [0, 4, 3] List([Text("")])
+  [0, 4, 1] ·
+  [0, 4, 4] ·
   [0, 4] ·
   [0, 5] Text("")
-  [0, 6, 0] Text("(board, move) => {\n  const START = \"rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1\";\n  // A 10x12 board: a1 is 21, h8 is 98, \"x\" is off th… #610b24694c60ed57
-  [0, 6, 1] ·
-  [0, 6, 3] ·
+  [0, 6, 3] Text("(board, move) => {\n    const START = \"rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1\"\n    // A 10x12 board: a1 is 21, h8 is 98, \"x\" is off… #84b4346fc7d998f7
+  [0, 6, 0] ·
   [0, 6, 2] ·
+  [0, 6, 1] ·
   [0, 6] ·
   [0, 7] ·
   [0, 8, 0] Record({})
@@ -5761,17 +5761,17 @@
   [0, 1] Text("current")
   [0, 2] ·
   [0, 3] Text("")
-  [0, 4, 4] Text("(model) => {\n  const MODELS = [\n    { id: \"gemini-3.5-flash-lite\", note: \"the fastest, the most free calls\", thinking: \"minimal\" },\n    { id: \"g… #a1cfb40bea50da2e
-  [0, 4, 1] List([])
-  [0, 4, 2] List([Text("")])
-  [0, 4, 0] ·
-  [0, 4, 3] ·
+  [0, 4, 0] Text("(model) => {\n  const MODELS = [\n    { id: \"gemini-3.5-flash-lite\", note: \"the fastest, the most free calls\", thinking: \"minimal\" },\n    { id: \"g… #91eafa44020094c2
+  [0, 4, 2] List([])
+  [0, 4, 3] List([Text("")])
+  [0, 4, 1] ·
+  [0, 4, 4] ·
   [0, 4] ·
   [0, 5] Text("")
-  [0, 6, 0] Text("(board, move) => {\n  const START = \"rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1\";\n  // A 10x12 board: a1 is 21, h8 is 98, \"x\" is off th… #610b24694c60ed57
-  [0, 6, 1] ·
-  [0, 6, 3] ·
+  [0, 6, 3] Text("(board, move) => {\n    const START = \"rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1\"\n    // A 10x12 board: a1 is 21, h8 is 98, \"x\" is off… #84b4346fc7d998f7
+  [0, 6, 0] ·
   [0, 6, 2] ·
+  [0, 6, 1] ·
   [0, 6] ·
   [0, 7] ·
   [0, 8, 0] Record({})
@@ -5792,17 +5792,17 @@
   [0, 1] Text("current")
   [0, 2] ·
   [0, 3] Text("")
-  [0, 4, 4] Text("(model) => {\n  const MODELS = [\n    { id: \"gemini-3.5-flash-lite\", note: \"the fastest, the most free calls\", thinking: \"minimal\" },\n    { id: \"g… #a1cfb40bea50da2e
-  [0, 4, 1] List([])
-  [0, 4, 2] List([Text("")])
-  [0, 4, 0] ·
-  [0, 4, 3] ·
+  [0, 4, 0] Text("(model) => {\n  const MODELS = [\n    { id: \"gemini-3.5-flash-lite\", note: \"the fastest, the most free calls\", thinking: \"minimal\" },\n    { id: \"g… #91eafa44020094c2
+  [0, 4, 2] List([])
+  [0, 4, 3] List([Text("")])
+  [0, 4, 1] ·
+  [0, 4, 4] ·
   [0, 4] ·
   [0, 5] Text("")
-  [0, 6, 0] Text("(board, move) => {\n  const START = \"rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1\";\n  // A 10x12 board: a1 is 21, h8 is 98, \"x\" is off th… #610b24694c60ed57
-  [0, 6, 1] ·
-  [0, 6, 3] ·
+  [0, 6, 3] Text("(board, move) => {\n    const START = \"rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1\"\n    // A 10x12 board: a1 is 21, h8 is 98, \"x\" is off… #84b4346fc7d998f7
+  [0, 6, 0] ·
   [0, 6, 2] ·
+  [0, 6, 1] ·
   [0, 6] ·
   [0, 7] ·
   [0, 0, 0] Record({})
@@ -5812,37 +5812,37 @@
   [0, 0, 4] ·
   [0, 0] Record({"body": Text(""), "headers": Record({"content-type": Text("application/json")}), "method": Text("POST"), "params": Record({}), "path": Text("/move"), "q… #c2aa4c2032f28c21 | Record({}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("") | ·
   [0, 8] ·
-  [0, 9, 0] Text("(board, move) => {\n  if (typeof move !== \"string\") throw new Error(\"a move is a text: e2e4, or Nf3\");\n  const waits = !!board.waiting && board.statu… #79d29c2280c3b935
-  [0, 9, 2] ·
+  [0, 9, 3] Text("(board, move) => {\n  if (typeof move !== \"string\") throw new Error(\"a move is a text: e2e4, or Nf3\")\n  const waits = !!board.waiting && board.status… #e32fd49fe88da64d
   [0, 9, 1] ·
-  [0, 9, 3] ·
+  [0, 9, 0] ·
+  [0, 9, 2] ·
   [0, 9] ·
-  [0, 10, 0] Text("(board, move) => {\n  const START = \"rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1\";\n  // A 10x12 board: a1 is 21, h8 is 98, \"x\" is off th… #610b24694c60ed57
-  [0, 10, 1] ·
-  [0, 10, 3] ·
+  [0, 10, 3] Text("(board, move) => {\n    const START = \"rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1\"\n    // A 10x12 board: a1 is 21, h8 is 98, \"x\" is off… #84b4346fc7d998f7
+  [0, 10, 0] ·
   [0, 10, 2] ·
+  [0, 10, 1] ·
   [0, 10] ·
   [0, 17] ·
-  [0, 18, 0] Text("(board, move) => {\n  const legal = (board.legal || []).map((l) => l.san);\n  const over = board.status !== \"playing\";\n  if (!over && (board.turn !== \… #f34fb09669ec86d1
-  [0, 18, 2] ·
+  [0, 18, 3] Text("(board, move) => {\n  const legal = (board.legal || []).map((l) => l.san)\n  const over = board.status !== \"playing\"\n  if (!over && (board.turn !== \"b… #b1c846438bb6688d
   [0, 18, 1] ·
-  [0, 18, 3] ·
+  [0, 18, 0] ·
+  [0, 18, 2] ·
   [0, 18] ·
   [0, 19] ·
   [0, 32] Text("current")
   [0, 20] Record({"status": Number(0.0)})
   [0, 21] ·
-  [0, 22, 0] Text("(board, asked, move) => {\n  const legal = board.legal || [];\n  const over = board.status !== \"playing\";\n  if (!over && (board.turn !== \"b\" || legal… #b476b38155e5856a
-  [0, 22, 2] ·
+  [0, 22, 3] Text("(board, asked, move) => {\n  const legal = board.legal || []\n  const over = board.status !== \"playing\"\n  if (!over && (board.turn !== \"b\" || legal.l… #d8ef4d85fb76ea00
   [0, 22, 1] ·
-  [0, 22, 3] ·
+  [0, 22, 0] ·
+  [0, 22, 2] ·
   [0, 22] ·
   [0, 23] ·
   [0, 24] ·
-  [0, 25, 0] Text("(board, move) => {\n  const START = \"rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1\";\n  // A 10x12 board: a1 is 21, h8 is 98, \"x\" is off th… #610b24694c60ed57
-  [0, 25, 1] ·
-  [0, 25, 3] ·
+  [0, 25, 3] Text("(board, move) => {\n    const START = \"rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1\"\n    // A 10x12 board: a1 is 21, h8 is 98, \"x\" is off… #84b4346fc7d998f7
+  [0, 25, 0] ·
   [0, 25, 2] ·
+  [0, 25, 1] ·
   [0, 25] ·
   [0, 33] ·
   [0, 34] Text("chat")
@@ -5851,9 +5851,9 @@
   [0, 28] List([])
   [0, 29] ·
   [0, 30] ·
-  [0, 31, 2] Text("(talk, said, time) => {\n  const entry = { at: time, ...said };\n  return { talk: [...(Array.isArray(talk) ? talk : []), entry].slice(-50), last: entry };… #973a41806b429f72
+  [0, 31, 0] Text("(talk, said, time) => {\n  const entry = { at: time, ...said }\n  return { talk: [...(Array.isArray(talk) ? talk : []), entry].slice(-50), last: entry }\n… #755c4cc6a57c3a5f
+  [0, 31, 2] ·
   [0, 31, 1] ·
-  [0, 31, 0] ·
   [0, 31, 3] ·
   [0, 31] ·
   [0, 35] ·
@@ -5879,17 +5879,17 @@
   [0, 1] Text("current")
   [0, 2] ·
   [0, 3] Text("")
-  [0, 4, 4] Text("(model) => {\n  const MODELS = [\n    { id: \"gemini-3.5-flash-lite\", note: \"the fastest, the most free calls\", thinking: \"minimal\" },\n    { id: \"g… #a1cfb40bea50da2e
-  [0, 4, 1] List([])
-  [0, 4, 2] List([Text("")])
-  [0, 4, 0] ·
-  [0, 4, 3] ·
+  [0, 4, 0] Text("(model) => {\n  const MODELS = [\n    { id: \"gemini-3.5-flash-lite\", note: \"the fastest, the most free calls\", thinking: \"minimal\" },\n    { id: \"g… #91eafa44020094c2
+  [0, 4, 2] List([])
+  [0, 4, 3] List([Text("")])
+  [0, 4, 1] ·
+  [0, 4, 4] ·
   [0, 4] ·
   [0, 5] Text("")
-  [0, 6, 0] Text("(board, move) => {\n  const START = \"rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1\";\n  // A 10x12 board: a1 is 21, h8 is 98, \"x\" is off th… #610b24694c60ed57
-  [0, 6, 1] ·
-  [0, 6, 3] ·
+  [0, 6, 3] Text("(board, move) => {\n    const START = \"rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1\"\n    // A 10x12 board: a1 is 21, h8 is 98, \"x\" is off… #84b4346fc7d998f7
+  [0, 6, 0] ·
   [0, 6, 2] ·
+  [0, 6, 1] ·
   [0, 6] ·
   [0, 7] ·
   [0, 0, 0] Record({})
@@ -5899,37 +5899,37 @@
   [0, 0, 4] Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
   [0, 0] Record({"body": Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\… #0738da5e21167ef8 | Record({}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\"event\":\"gig\"… #7441bf0c70954823 | Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
   [0, 8] ·
-  [0, 9, 0] Text("(board, move) => {\n  if (typeof move !== \"string\") throw new Error(\"a move is a text: e2e4, or Nf3\");\n  const waits = !!board.waiting && board.statu… #79d29c2280c3b935
-  [0, 9, 2] ·
+  [0, 9, 3] Text("(board, move) => {\n  if (typeof move !== \"string\") throw new Error(\"a move is a text: e2e4, or Nf3\")\n  const waits = !!board.waiting && board.status… #e32fd49fe88da64d
   [0, 9, 1] ·
-  [0, 9, 3] ·
+  [0, 9, 0] ·
+  [0, 9, 2] ·
   [0, 9] ·
-  [0, 10, 0] Text("(board, move) => {\n  const START = \"rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1\";\n  // A 10x12 board: a1 is 21, h8 is 98, \"x\" is off th… #610b24694c60ed57
-  [0, 10, 1] ·
-  [0, 10, 3] ·
+  [0, 10, 3] Text("(board, move) => {\n    const START = \"rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1\"\n    // A 10x12 board: a1 is 21, h8 is 98, \"x\" is off… #84b4346fc7d998f7
+  [0, 10, 0] ·
   [0, 10, 2] ·
+  [0, 10, 1] ·
   [0, 10] ·
   [0, 17] ·
-  [0, 18, 0] Text("(board, move) => {\n  const legal = (board.legal || []).map((l) => l.san);\n  const over = board.status !== \"playing\";\n  if (!over && (board.turn !== \… #f34fb09669ec86d1
-  [0, 18, 2] ·
+  [0, 18, 3] Text("(board, move) => {\n  const legal = (board.legal || []).map((l) => l.san)\n  const over = board.status !== \"playing\"\n  if (!over && (board.turn !== \"b… #b1c846438bb6688d
   [0, 18, 1] ·
-  [0, 18, 3] ·
+  [0, 18, 0] ·
+  [0, 18, 2] ·
   [0, 18] ·
   [0, 19] ·
   [0, 32] Text("current")
   [0, 20] Record({"status": Number(0.0)})
   [0, 21] ·
-  [0, 22, 0] Text("(board, asked, move) => {\n  const legal = board.legal || [];\n  const over = board.status !== \"playing\";\n  if (!over && (board.turn !== \"b\" || legal… #b476b38155e5856a
-  [0, 22, 2] ·
+  [0, 22, 3] Text("(board, asked, move) => {\n  const legal = board.legal || []\n  const over = board.status !== \"playing\"\n  if (!over && (board.turn !== \"b\" || legal.l… #d8ef4d85fb76ea00
   [0, 22, 1] ·
-  [0, 22, 3] ·
+  [0, 22, 0] ·
+  [0, 22, 2] ·
   [0, 22] ·
   [0, 23] ·
   [0, 24] ·
-  [0, 25, 0] Text("(board, move) => {\n  const START = \"rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1\";\n  // A 10x12 board: a1 is 21, h8 is 98, \"x\" is off th… #610b24694c60ed57
-  [0, 25, 1] ·
-  [0, 25, 3] ·
+  [0, 25, 3] Text("(board, move) => {\n    const START = \"rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1\"\n    // A 10x12 board: a1 is 21, h8 is 98, \"x\" is off… #84b4346fc7d998f7
+  [0, 25, 0] ·
   [0, 25, 2] ·
+  [0, 25, 1] ·
   [0, 25] ·
   [0, 33] ·
   [0, 34] Text("chat")
@@ -5938,9 +5938,9 @@
   [0, 28] List([])
   [0, 29] ·
   [0, 30] ·
-  [0, 31, 2] Text("(talk, said, time) => {\n  const entry = { at: time, ...said };\n  return { talk: [...(Array.isArray(talk) ? talk : []), entry].slice(-50), last: entry };… #973a41806b429f72
+  [0, 31, 0] Text("(talk, said, time) => {\n  const entry = { at: time, ...said }\n  return { talk: [...(Array.isArray(talk) ? talk : []), entry].slice(-50), last: entry }\n… #755c4cc6a57c3a5f
+  [0, 31, 2] ·
   [0, 31, 1] ·
-  [0, 31, 0] ·
   [0, 31, 3] ·
   [0, 31] ·
   [0, 35] ·
@@ -5966,17 +5966,17 @@
   [0, 1] Text("current")
   [0, 2] ·
   [0, 3] Text("")
-  [0, 4, 4] Text("(model) => {\n  const MODELS = [\n    { id: \"gemini-3.5-flash-lite\", note: \"the fastest, the most free calls\", thinking: \"minimal\" },\n    { id: \"g… #a1cfb40bea50da2e
-  [0, 4, 1] List([])
-  [0, 4, 2] List([Text("")])
-  [0, 4, 0] ·
-  [0, 4, 3] ·
+  [0, 4, 0] Text("(model) => {\n  const MODELS = [\n    { id: \"gemini-3.5-flash-lite\", note: \"the fastest, the most free calls\", thinking: \"minimal\" },\n    { id: \"g… #91eafa44020094c2
+  [0, 4, 2] List([])
+  [0, 4, 3] List([Text("")])
+  [0, 4, 1] ·
+  [0, 4, 4] ·
   [0, 4] ·
   [0, 5] Text("")
-  [0, 6, 0] Text("(board, move) => {\n  const START = \"rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1\";\n  // A 10x12 board: a1 is 21, h8 is 98, \"x\" is off th… #610b24694c60ed57
-  [0, 6, 1] ·
-  [0, 6, 3] ·
+  [0, 6, 3] Text("(board, move) => {\n    const START = \"rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1\"\n    // A 10x12 board: a1 is 21, h8 is 98, \"x\" is off… #84b4346fc7d998f7
+  [0, 6, 0] ·
   [0, 6, 2] ·
+  [0, 6, 1] ·
   [0, 6] ·
   [0, 7] ·
   [0, 0, 0] Record({})
@@ -5986,37 +5986,37 @@
   [0, 0, 4] Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
   [0, 0] Record({"body": Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,… #4345a1767a195bb7 | Record({}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,14.25,51.25,88.2… #30defbf00c11dd9c | Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
   [0, 8] ·
-  [0, 9, 0] Text("(board, move) => {\n  if (typeof move !== \"string\") throw new Error(\"a move is a text: e2e4, or Nf3\");\n  const waits = !!board.waiting && board.statu… #79d29c2280c3b935
-  [0, 9, 2] ·
+  [0, 9, 3] Text("(board, move) => {\n  if (typeof move !== \"string\") throw new Error(\"a move is a text: e2e4, or Nf3\")\n  const waits = !!board.waiting && board.status… #e32fd49fe88da64d
   [0, 9, 1] ·
-  [0, 9, 3] ·
+  [0, 9, 0] ·
+  [0, 9, 2] ·
   [0, 9] ·
-  [0, 10, 0] Text("(board, move) => {\n  const START = \"rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1\";\n  // A 10x12 board: a1 is 21, h8 is 98, \"x\" is off th… #610b24694c60ed57
-  [0, 10, 1] ·
-  [0, 10, 3] ·
+  [0, 10, 3] Text("(board, move) => {\n    const START = \"rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1\"\n    // A 10x12 board: a1 is 21, h8 is 98, \"x\" is off… #84b4346fc7d998f7
+  [0, 10, 0] ·
   [0, 10, 2] ·
+  [0, 10, 1] ·
   [0, 10] ·
   [0, 17] ·
-  [0, 18, 0] Text("(board, move) => {\n  const legal = (board.legal || []).map((l) => l.san);\n  const over = board.status !== \"playing\";\n  if (!over && (board.turn !== \… #f34fb09669ec86d1
-  [0, 18, 2] ·
+  [0, 18, 3] Text("(board, move) => {\n  const legal = (board.legal || []).map((l) => l.san)\n  const over = board.status !== \"playing\"\n  if (!over && (board.turn !== \"b… #b1c846438bb6688d
   [0, 18, 1] ·
-  [0, 18, 3] ·
+  [0, 18, 0] ·
+  [0, 18, 2] ·
   [0, 18] ·
   [0, 19] ·
   [0, 32] Text("current")
   [0, 20] Record({"status": Number(0.0)})
   [0, 21] ·
-  [0, 22, 0] Text("(board, asked, move) => {\n  const legal = board.legal || [];\n  const over = board.status !== \"playing\";\n  if (!over && (board.turn !== \"b\" || legal… #b476b38155e5856a
-  [0, 22, 2] ·
+  [0, 22, 3] Text("(board, asked, move) => {\n  const legal = board.legal || []\n  const over = board.status !== \"playing\"\n  if (!over && (board.turn !== \"b\" || legal.l… #d8ef4d85fb76ea00
   [0, 22, 1] ·
-  [0, 22, 3] ·
+  [0, 22, 0] ·
+  [0, 22, 2] ·
   [0, 22] ·
   [0, 23] ·
   [0, 24] ·
-  [0, 25, 0] Text("(board, move) => {\n  const START = \"rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1\";\n  // A 10x12 board: a1 is 21, h8 is 98, \"x\" is off th… #610b24694c60ed57
-  [0, 25, 1] ·
-  [0, 25, 3] ·
+  [0, 25, 3] Text("(board, move) => {\n    const START = \"rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1\"\n    // A 10x12 board: a1 is 21, h8 is 98, \"x\" is off… #84b4346fc7d998f7
+  [0, 25, 0] ·
   [0, 25, 2] ·
+  [0, 25, 1] ·
   [0, 25] ·
   [0, 33] ·
   [0, 34] Text("chat")
@@ -6025,9 +6025,9 @@
   [0, 28] List([])
   [0, 29] ·
   [0, 30] ·
-  [0, 31, 2] Text("(talk, said, time) => {\n  const entry = { at: time, ...said };\n  return { talk: [...(Array.isArray(talk) ? talk : []), entry].slice(-50), last: entry };… #973a41806b429f72
+  [0, 31, 0] Text("(talk, said, time) => {\n  const entry = { at: time, ...said }\n  return { talk: [...(Array.isArray(talk) ? talk : []), entry].slice(-50), last: entry }\n… #755c4cc6a57c3a5f
+  [0, 31, 2] ·
   [0, 31, 1] ·
-  [0, 31, 0] ·
   [0, 31, 3] ·
   [0, 31] ·
   [0, 35] ·
@@ -6053,17 +6053,17 @@
   [0, 10] Text("current")
   [0, 11] ·
   [0, 12] Text("")
-  [0, 13, 4] Text("(model) => {\n  const MODELS = [\n    { id: \"gemini-3.5-flash-lite\", note: \"the fastest, the most free calls\", thinking: \"minimal\" },\n    { id: \"g… #a1cfb40bea50da2e
-  [0, 13, 1] List([])
-  [0, 13, 2] List([Text("")])
-  [0, 13, 0] ·
-  [0, 13, 3] ·
+  [0, 13, 0] Text("(model) => {\n  const MODELS = [\n    { id: \"gemini-3.5-flash-lite\", note: \"the fastest, the most free calls\", thinking: \"minimal\" },\n    { id: \"g… #91eafa44020094c2
+  [0, 13, 2] List([])
+  [0, 13, 3] List([Text("")])
+  [0, 13, 1] ·
+  [0, 13, 4] ·
   [0, 13] ·
   [0, 14] Text("")
-  [0, 15, 0] Text("(board, move) => {\n  const START = \"rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1\";\n  // A 10x12 board: a1 is 21, h8 is 98, \"x\" is off th… #610b24694c60ed57
-  [0, 15, 1] ·
-  [0, 15, 3] ·
+  [0, 15, 3] Text("(board, move) => {\n    const START = \"rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1\"\n    // A 10x12 board: a1 is 21, h8 is 98, \"x\" is off… #84b4346fc7d998f7
+  [0, 15, 0] ·
   [0, 15, 2] ·
+  [0, 15, 1] ·
   [0, 15] ·
   [0, 16] ·
   [0, 1] Text("chat")
@@ -6076,24 +6076,24 @@
   [0, 0, 4] ·
   [0, 0] Record({"body": Text(""), "headers": Record({"content-type": Text("application/json")}), "method": Text("POST"), "params": Record({}), "path": Text("/chat"), "q… #d29807a1b3b82166 | Record({}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("") | ·
   [0, 17] ·
-  [0, 18, 0] Text("(board, talk, line) => {\n  const said = typeof line === \"string\" ? line.trim().slice(0, 500) : \"\";\n  if (!said) return undefined;\n  const recent = … #c7b89e6bf149f8e6
+  [0, 18, 1] Text("(board, talk, line) => {\n  const said = typeof line === \"string\" ? line.trim().slice(0, 500) : \"\"\n  if (!said) return undefined\n  const recent = (A… #06d45fcbc647adef
   [0, 18, 2] ·
-  [0, 18, 1] ·
+  [0, 18, 0] ·
   [0, 18, 3] ·
   [0, 18] ·
   [0, 19] ·
   [0, 25] Text("chat")
   [0, 20] Record({"status": Number(0.0)})
   [0, 21] ·
-  [0, 22, 3] Text("(sent, line) => {\n  const said = typeof line === \"string\" ? line.trim().slice(0, 500) : \"\";\n  if (!said) throw new Error(\"the chat line is empty\")… #8cbddb9f65db6cee
+  [0, 22, 2] Text("(sent, line) => {\n  const said = typeof line === \"string\" ? line.trim().slice(0, 500) : \"\"\n  if (!said) throw new Error(\"the chat line is empty\")\… #e8476dd15483c964
   [0, 22, 1] ·
   [0, 22, 0] ·
-  [0, 22, 2] ·
+  [0, 22, 3] ·
   [0, 22] ·
   [0, 23] ·
-  [0, 24, 2] Text("(talk, said, time) => {\n  const entry = { at: time, ...said };\n  return { talk: [...(Array.isArray(talk) ? talk : []), entry].slice(-50), last: entry };… #973a41806b429f72
+  [0, 24, 0] Text("(talk, said, time) => {\n  const entry = { at: time, ...said }\n  return { talk: [...(Array.isArray(talk) ? talk : []), entry].slice(-50), last: entry }\n… #755c4cc6a57c3a5f
+  [0, 24, 2] ·
   [0, 24, 1] ·
-  [0, 24, 0] ·
   [0, 24, 3] ·
   [0, 24] ·
   [0, 26] ·
@@ -6120,17 +6120,17 @@
   [0, 10] Text("current")
   [0, 11] ·
   [0, 12] Text("")
-  [0, 13, 4] Text("(model) => {\n  const MODELS = [\n    { id: \"gemini-3.5-flash-lite\", note: \"the fastest, the most free calls\", thinking: \"minimal\" },\n    { id: \"g… #a1cfb40bea50da2e
-  [0, 13, 1] List([])
-  [0, 13, 2] List([Text("")])
-  [0, 13, 0] ·
-  [0, 13, 3] ·
+  [0, 13, 0] Text("(model) => {\n  const MODELS = [\n    { id: \"gemini-3.5-flash-lite\", note: \"the fastest, the most free calls\", thinking: \"minimal\" },\n    { id: \"g… #91eafa44020094c2
+  [0, 13, 2] List([])
+  [0, 13, 3] List([Text("")])
+  [0, 13, 1] ·
+  [0, 13, 4] ·
   [0, 13] ·
   [0, 14] Text("")
-  [0, 15, 0] Text("(board, move) => {\n  const START = \"rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1\";\n  // A 10x12 board: a1 is 21, h8 is 98, \"x\" is off th… #610b24694c60ed57
-  [0, 15, 1] ·
-  [0, 15, 3] ·
+  [0, 15, 3] Text("(board, move) => {\n    const START = \"rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1\"\n    // A 10x12 board: a1 is 21, h8 is 98, \"x\" is off… #84b4346fc7d998f7
+  [0, 15, 0] ·
   [0, 15, 2] ·
+  [0, 15, 1] ·
   [0, 15] ·
   [0, 16] ·
   [0, 1] Text("chat")
@@ -6143,24 +6143,24 @@
   [0, 0, 4] Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
   [0, 0] Record({"body": Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\… #63e45b0dd88fd2c7 | Record({}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\"event\":\"gig\"… #7441bf0c70954823 | Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
   [0, 17] ·
-  [0, 18, 0] Text("(board, talk, line) => {\n  const said = typeof line === \"string\" ? line.trim().slice(0, 500) : \"\";\n  if (!said) return undefined;\n  const recent = … #c7b89e6bf149f8e6
+  [0, 18, 1] Text("(board, talk, line) => {\n  const said = typeof line === \"string\" ? line.trim().slice(0, 500) : \"\"\n  if (!said) return undefined\n  const recent = (A… #06d45fcbc647adef
   [0, 18, 2] ·
-  [0, 18, 1] ·
+  [0, 18, 0] ·
   [0, 18, 3] ·
   [0, 18] ·
   [0, 19] ·
   [0, 25] Text("chat")
   [0, 20] Record({"status": Number(0.0)})
   [0, 21] ·
-  [0, 22, 3] Text("(sent, line) => {\n  const said = typeof line === \"string\" ? line.trim().slice(0, 500) : \"\";\n  if (!said) throw new Error(\"the chat line is empty\")… #8cbddb9f65db6cee
+  [0, 22, 2] Text("(sent, line) => {\n  const said = typeof line === \"string\" ? line.trim().slice(0, 500) : \"\"\n  if (!said) throw new Error(\"the chat line is empty\")\… #e8476dd15483c964
   [0, 22, 1] ·
   [0, 22, 0] ·
-  [0, 22, 2] ·
+  [0, 22, 3] ·
   [0, 22] ·
   [0, 23] ·
-  [0, 24, 2] Text("(talk, said, time) => {\n  const entry = { at: time, ...said };\n  return { talk: [...(Array.isArray(talk) ? talk : []), entry].slice(-50), last: entry };… #973a41806b429f72
+  [0, 24, 0] Text("(talk, said, time) => {\n  const entry = { at: time, ...said }\n  return { talk: [...(Array.isArray(talk) ? talk : []), entry].slice(-50), last: entry }\n… #755c4cc6a57c3a5f
+  [0, 24, 2] ·
   [0, 24, 1] ·
-  [0, 24, 0] ·
   [0, 24, 3] ·
   [0, 24] ·
   [0, 26] ·
@@ -6187,17 +6187,17 @@
   [0, 10] Text("current")
   [0, 11] ·
   [0, 12] Text("")
-  [0, 13, 4] Text("(model) => {\n  const MODELS = [\n    { id: \"gemini-3.5-flash-lite\", note: \"the fastest, the most free calls\", thinking: \"minimal\" },\n    { id: \"g… #a1cfb40bea50da2e
-  [0, 13, 1] List([])
-  [0, 13, 2] List([Text("")])
-  [0, 13, 0] ·
-  [0, 13, 3] ·
+  [0, 13, 0] Text("(model) => {\n  const MODELS = [\n    { id: \"gemini-3.5-flash-lite\", note: \"the fastest, the most free calls\", thinking: \"minimal\" },\n    { id: \"g… #91eafa44020094c2
+  [0, 13, 2] List([])
+  [0, 13, 3] List([Text("")])
+  [0, 13, 1] ·
+  [0, 13, 4] ·
   [0, 13] ·
   [0, 14] Text("")
-  [0, 15, 0] Text("(board, move) => {\n  const START = \"rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1\";\n  // A 10x12 board: a1 is 21, h8 is 98, \"x\" is off th… #610b24694c60ed57
-  [0, 15, 1] ·
-  [0, 15, 3] ·
+  [0, 15, 3] Text("(board, move) => {\n    const START = \"rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1\"\n    // A 10x12 board: a1 is 21, h8 is 98, \"x\" is off… #84b4346fc7d998f7
+  [0, 15, 0] ·
   [0, 15, 2] ·
+  [0, 15, 1] ·
   [0, 15] ·
   [0, 16] ·
   [0, 1] Text("chat")
@@ -6210,24 +6210,24 @@
   [0, 0, 4] Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
   [0, 0] Record({"body": Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,… #4f19f40018eebc15 | Record({}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,14.25,51.25,88.2… #30defbf00c11dd9c | Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
   [0, 17] ·
-  [0, 18, 0] Text("(board, talk, line) => {\n  const said = typeof line === \"string\" ? line.trim().slice(0, 500) : \"\";\n  if (!said) return undefined;\n  const recent = … #c7b89e6bf149f8e6
+  [0, 18, 1] Text("(board, talk, line) => {\n  const said = typeof line === \"string\" ? line.trim().slice(0, 500) : \"\"\n  if (!said) return undefined\n  const recent = (A… #06d45fcbc647adef
   [0, 18, 2] ·
-  [0, 18, 1] ·
+  [0, 18, 0] ·
   [0, 18, 3] ·
   [0, 18] ·
   [0, 19] ·
   [0, 25] Text("chat")
   [0, 20] Record({"status": Number(0.0)})
   [0, 21] ·
-  [0, 22, 3] Text("(sent, line) => {\n  const said = typeof line === \"string\" ? line.trim().slice(0, 500) : \"\";\n  if (!said) throw new Error(\"the chat line is empty\")… #8cbddb9f65db6cee
+  [0, 22, 2] Text("(sent, line) => {\n  const said = typeof line === \"string\" ? line.trim().slice(0, 500) : \"\"\n  if (!said) throw new Error(\"the chat line is empty\")\… #e8476dd15483c964
   [0, 22, 1] ·
   [0, 22, 0] ·
-  [0, 22, 2] ·
+  [0, 22, 3] ·
   [0, 22] ·
   [0, 23] ·
-  [0, 24, 2] Text("(talk, said, time) => {\n  const entry = { at: time, ...said };\n  return { talk: [...(Array.isArray(talk) ? talk : []), entry].slice(-50), last: entry };… #973a41806b429f72
+  [0, 24, 0] Text("(talk, said, time) => {\n  const entry = { at: time, ...said }\n  return { talk: [...(Array.isArray(talk) ? talk : []), entry].slice(-50), last: entry }\n… #755c4cc6a57c3a5f
+  [0, 24, 2] ·
   [0, 24, 1] ·
-  [0, 24, 0] ·
   [0, 24, 3] ·
   [0, 24] ·
   [0, 26] ·
@@ -6302,17 +6302,17 @@
   [0, 0] Record({"body": Text(""), "headers": Record({"content-type": Text("application/json")}), "method": Text("POST"), "params": Record({}), "path": Text("/new"), "qu… #0492ac585969fb86 | Record({}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("") | ·
   [0, 1] ·
   [0, 2] Text("")
-  [0, 3, 4] Text("(model) => {\n  const MODELS = [\n    { id: \"gemini-3.5-flash-lite\", note: \"the fastest, the most free calls\", thinking: \"minimal\" },\n    { id: \"g… #a1cfb40bea50da2e
-  [0, 3, 1] List([])
-  [0, 3, 2] List([Text("")])
-  [0, 3, 0] ·
-  [0, 3, 3] ·
+  [0, 3, 0] Text("(model) => {\n  const MODELS = [\n    { id: \"gemini-3.5-flash-lite\", note: \"the fastest, the most free calls\", thinking: \"minimal\" },\n    { id: \"g… #91eafa44020094c2
+  [0, 3, 2] List([])
+  [0, 3, 3] List([Text("")])
+  [0, 3, 1] ·
+  [0, 3, 4] ·
   [0, 3] ·
   [0, 4] Text("")
-  [0, 5, 0] Text("(board, move) => {\n  const START = \"rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1\";\n  // A 10x12 board: a1 is 21, h8 is 98, \"x\" is off th… #610b24694c60ed57
-  [0, 5, 1] ·
-  [0, 5, 3] ·
+  [0, 5, 3] Text("(board, move) => {\n    const START = \"rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1\"\n    // A 10x12 board: a1 is 21, h8 is 98, \"x\" is off… #84b4346fc7d998f7
+  [0, 5, 0] ·
   [0, 5, 2] ·
+  [0, 5, 1] ·
   [0, 5] ·
   [0, 7] ·
   [0, 8] Text("chat")
@@ -6339,17 +6339,17 @@
   [0, 0] Record({"body": Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\… #33a0a745a836685e | Record({}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\"event\":\"gig\"… #7441bf0c70954823 | Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
   [0, 1] ·
   [0, 2] Text("")
-  [0, 3, 4] Text("(model) => {\n  const MODELS = [\n    { id: \"gemini-3.5-flash-lite\", note: \"the fastest, the most free calls\", thinking: \"minimal\" },\n    { id: \"g… #a1cfb40bea50da2e
-  [0, 3, 1] List([])
-  [0, 3, 2] List([Text("")])
-  [0, 3, 0] ·
-  [0, 3, 3] ·
+  [0, 3, 0] Text("(model) => {\n  const MODELS = [\n    { id: \"gemini-3.5-flash-lite\", note: \"the fastest, the most free calls\", thinking: \"minimal\" },\n    { id: \"g… #91eafa44020094c2
+  [0, 3, 2] List([])
+  [0, 3, 3] List([Text("")])
+  [0, 3, 1] ·
+  [0, 3, 4] ·
   [0, 3] ·
   [0, 4] Text("")
-  [0, 5, 0] Text("(board, move) => {\n  const START = \"rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1\";\n  // A 10x12 board: a1 is 21, h8 is 98, \"x\" is off th… #610b24694c60ed57
-  [0, 5, 1] ·
-  [0, 5, 3] ·
+  [0, 5, 3] Text("(board, move) => {\n    const START = \"rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1\"\n    // A 10x12 board: a1 is 21, h8 is 98, \"x\" is off… #84b4346fc7d998f7
+  [0, 5, 0] ·
   [0, 5, 2] ·
+  [0, 5, 1] ·
   [0, 5] ·
   [0, 7] ·
   [0, 8] Text("chat")
@@ -6376,17 +6376,17 @@
   [0, 0] Record({"body": Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,… #5a825a86d121a51b | Record({}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,14.25,51.25,88.2… #30defbf00c11dd9c | Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
   [0, 1] ·
   [0, 2] Text("")
-  [0, 3, 4] Text("(model) => {\n  const MODELS = [\n    { id: \"gemini-3.5-flash-lite\", note: \"the fastest, the most free calls\", thinking: \"minimal\" },\n    { id: \"g… #a1cfb40bea50da2e
-  [0, 3, 1] List([])
-  [0, 3, 2] List([Text("")])
-  [0, 3, 0] ·
-  [0, 3, 3] ·
+  [0, 3, 0] Text("(model) => {\n  const MODELS = [\n    { id: \"gemini-3.5-flash-lite\", note: \"the fastest, the most free calls\", thinking: \"minimal\" },\n    { id: \"g… #91eafa44020094c2
+  [0, 3, 2] List([])
+  [0, 3, 3] List([Text("")])
+  [0, 3, 1] ·
+  [0, 3, 4] ·
   [0, 3] ·
   [0, 4] Text("")
-  [0, 5, 0] Text("(board, move) => {\n  const START = \"rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1\";\n  // A 10x12 board: a1 is 21, h8 is 98, \"x\" is off th… #610b24694c60ed57
-  [0, 5, 1] ·
-  [0, 5, 3] ·
+  [0, 5, 3] Text("(board, move) => {\n    const START = \"rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1\"\n    // A 10x12 board: a1 is 21, h8 is 98, \"x\" is off… #84b4346fc7d998f7
+  [0, 5, 0] ·
   [0, 5, 2] ·
+  [0, 5, 1] ·
   [0, 5] ·
   [0, 7] ·
   [0, 8] Text("chat")
@@ -7942,9 +7942,9 @@
   [0, 0] Record({"body": Text(""), "headers": Record({"content-type": Text("application/json")}), "method": Text("GET"), "params": Record({}), "path": Text("/"), "query"… #71e5cca4e8b1caa9 | Record({}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("") | ·
   [0, 1] ·
   [0, 2] Number(0.0)
-  [0, 3, 2] Text("(count) => {\n  return `<!doctype html>\n<meta charset=\"utf-8\">\n<title>Ticker</title>\n<style>body{font:16px/1.5 system-ui;max-width:40em;margin:3em au… #9f94afb3a4088eb1
+  [0, 3, 3] Text("(count) => {\n  return `<!doctype html>\n<meta charset=\"utf-8\">\n<title>Ticker</title>\n<style>body{font:16px/1.5 system-ui;max-width:40em;margin:3em au… #ad01d54acdbf943b
   [0, 3, 1] List([])
-  [0, 3, 3] List([Number(0.0)])
+  [0, 3, 2] List([Number(0.0)])
   [0, 3, 0] ·
   [0, 3, 4] ·
   [0, 3] ·
@@ -7969,9 +7969,9 @@
   [0, 0] Record({"body": Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\… #53c22645695c90e5 | Record({}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\"event\":\"gig\"… #7441bf0c70954823 | Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
   [0, 1] ·
   [0, 2] Number(0.0)
-  [0, 3, 2] Text("(count) => {\n  return `<!doctype html>\n<meta charset=\"utf-8\">\n<title>Ticker</title>\n<style>body{font:16px/1.5 system-ui;max-width:40em;margin:3em au… #9f94afb3a4088eb1
+  [0, 3, 3] Text("(count) => {\n  return `<!doctype html>\n<meta charset=\"utf-8\">\n<title>Ticker</title>\n<style>body{font:16px/1.5 system-ui;max-width:40em;margin:3em au… #ad01d54acdbf943b
   [0, 3, 1] List([])
-  [0, 3, 3] List([Number(0.0)])
+  [0, 3, 2] List([Number(0.0)])
   [0, 3, 0] ·
   [0, 3, 4] ·
   [0, 3] ·
@@ -7996,9 +7996,9 @@
   [0, 0] Record({"body": Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,… #1719c1c5a6f2d8af | Record({}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,14.25,51.25,88.2… #30defbf00c11dd9c | Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
   [0, 1] ·
   [0, 2] Number(0.0)
-  [0, 3, 2] Text("(count) => {\n  return `<!doctype html>\n<meta charset=\"utf-8\">\n<title>Ticker</title>\n<style>body{font:16px/1.5 system-ui;max-width:40em;margin:3em au… #9f94afb3a4088eb1
+  [0, 3, 3] Text("(count) => {\n  return `<!doctype html>\n<meta charset=\"utf-8\">\n<title>Ticker</title>\n<style>body{font:16px/1.5 system-ui;max-width:40em;margin:3em au… #ad01d54acdbf943b
   [0, 3, 1] List([])
-  [0, 3, 3] List([Number(0.0)])
+  [0, 3, 2] List([Number(0.0)])
   [0, 3, 0] ·
   [0, 3, 4] ·
   [0, 3] ·
@@ -8196,11 +8196,11 @@
   [0, 0] Record({"body": Text(""), "headers": Record({"content-type": Text("application/json")}), "method": Text("GET"), "params": Record({}), "path": Text("/"), "query"… #71e5cca4e8b1caa9 | Record({}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("") | ·
   [0, 1] ·
   [0, 2] Number(0.0)
-  [0, 3, 4] Text("(count) => {\n  return `<!doctype html>\n<meta charset=\"utf-8\">\n<title>Drop board</title>\n<style>body{font:16px/1.5 system-ui;max-width:40em;margin:3e… #0fa9780d99903e65
-  [0, 3, 1] List([])
-  [0, 3, 2] List([Number(0.0)])
-  [0, 3, 0] ·
-  [0, 3, 3] ·
+  [0, 3, 0] Text("(count) => {\n  return `<!doctype html>\n<meta charset=\"utf-8\">\n<title>Drop board</title>\n<style>body{font:16px/1.5 system-ui;max-width:40em;margin:3e… #eec54c7f64314678
+  [0, 3, 2] List([])
+  [0, 3, 3] List([Number(0.0)])
+  [0, 3, 1] ·
+  [0, 3, 4] ·
   [0, 3] ·
   [0, 4] Record({})
   [0, 5] Text("text/html; charset=utf-8")
@@ -8223,11 +8223,11 @@
   [0, 0] Record({"body": Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\… #53c22645695c90e5 | Record({}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\"event\":\"gig\"… #7441bf0c70954823 | Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
   [0, 1] ·
   [0, 2] Number(0.0)
-  [0, 3, 4] Text("(count) => {\n  return `<!doctype html>\n<meta charset=\"utf-8\">\n<title>Drop board</title>\n<style>body{font:16px/1.5 system-ui;max-width:40em;margin:3e… #0fa9780d99903e65
-  [0, 3, 1] List([])
-  [0, 3, 2] List([Number(0.0)])
-  [0, 3, 0] ·
-  [0, 3, 3] ·
+  [0, 3, 0] Text("(count) => {\n  return `<!doctype html>\n<meta charset=\"utf-8\">\n<title>Drop board</title>\n<style>body{font:16px/1.5 system-ui;max-width:40em;margin:3e… #eec54c7f64314678
+  [0, 3, 2] List([])
+  [0, 3, 3] List([Number(0.0)])
+  [0, 3, 1] ·
+  [0, 3, 4] ·
   [0, 3] ·
   [0, 4] Record({})
   [0, 5] Text("text/html; charset=utf-8")
@@ -8250,11 +8250,11 @@
   [0, 0] Record({"body": Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,… #1719c1c5a6f2d8af | Record({}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,14.25,51.25,88.2… #30defbf00c11dd9c | Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
   [0, 1] ·
   [0, 2] Number(0.0)
-  [0, 3, 4] Text("(count) => {\n  return `<!doctype html>\n<meta charset=\"utf-8\">\n<title>Drop board</title>\n<style>body{font:16px/1.5 system-ui;max-width:40em;margin:3e… #0fa9780d99903e65
-  [0, 3, 1] List([])
-  [0, 3, 2] List([Number(0.0)])
-  [0, 3, 0] ·
-  [0, 3, 3] ·
+  [0, 3, 0] Text("(count) => {\n  return `<!doctype html>\n<meta charset=\"utf-8\">\n<title>Drop board</title>\n<style>body{font:16px/1.5 system-ui;max-width:40em;margin:3e… #eec54c7f64314678
+  [0, 3, 2] List([])
+  [0, 3, 3] List([Number(0.0)])
+  [0, 3, 1] ·
+  [0, 3, 4] ·
   [0, 3] ·
   [0, 4] Record({})
   [0, 5] Text("text/html; charset=utf-8")
@@ -10111,17 +10111,17 @@
   [0, 0, 3] Text("")
   [0, 0, 4] ·
   [0, 0] Record({"body": Text(""), "headers": Record({"content-type": Text("application/json")}), "method": Text("GET"), "params": Record({}), "path": Text("/search"), "… #5b4fcb0c7fb315f4 | Record({}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("") | ·
-  [0, 1, 6] Text("/search?")
-  [0, 1, 5] Record({})
-  [0, 1, 3] Text("")
-  [0, 1, 2] Record({"query": Text("")})
-  [0, 1, 1, 0] Text("(given, defaults) => {\n  const q = { ...defaults };\n  for (const k of Object.keys(defaults)) if (given[k] !== undefined && given[k] !== \"\") q[k] = giv… #c5c798e2de1bd398
-  [0, 1, 1, 2] List([Record({"after": Text("a")}), Record({"query": Text("")})])
-  [0, 1, 1, 1] ·
-  [0, 1, 1, 3] ·
-  [0, 1, 1] ·
-  [0, 1, 4] ·
+  [0, 1, 5] Text("/search?")
+  [0, 1, 4] Record({})
+  [0, 1, 2] Text("")
+  [0, 1, 1] Record({"query": Text("")})
+  [0, 1, 7, 0] Text("(given, defaults) => {\n  const q = { ...defaults }\n  for (const k of Object.keys(defaults))\n    if (given[k] !== undefined && given[k] !== \"\") q[k] =… #be82135abf5b6dd6
+  [0, 1, 7, 2] List([Record({"after": Text("a")}), Record({"query": Text("")})])
+  [0, 1, 7, 1] ·
+  [0, 1, 7, 3] ·
   [0, 1, 7] ·
+  [0, 1, 3] ·
+  [0, 1, 6] ·
   [0, 1, 0, 18] Record({})
   [0, 1, 0, 17] Record({})
   [0, 1, 0, 22] Text("application/json")
@@ -10166,17 +10166,17 @@
   [0, 0, 3] Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\"event\":\"gig\"… #7441bf0c70954823
   [0, 0, 4] Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
   [0, 0] Record({"body": Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\… #ef6f910ebca0e813 | Record({}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\"event\":\"gig\"… #7441bf0c70954823 | Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
-  [0, 1, 6] Text("/search?")
-  [0, 1, 5] Record({})
-  [0, 1, 3] Text("")
-  [0, 1, 2] Record({"query": Text("")})
-  [0, 1, 1, 0] Text("(given, defaults) => {\n  const q = { ...defaults };\n  for (const k of Object.keys(defaults)) if (given[k] !== undefined && given[k] !== \"\") q[k] = giv… #c5c798e2de1bd398
-  [0, 1, 1, 2] List([Record({"after": Text("a")}), Record({"query": Text("")})])
-  [0, 1, 1, 1] ·
-  [0, 1, 1, 3] ·
-  [0, 1, 1] ·
-  [0, 1, 4] ·
+  [0, 1, 5] Text("/search?")
+  [0, 1, 4] Record({})
+  [0, 1, 2] Text("")
+  [0, 1, 1] Record({"query": Text("")})
+  [0, 1, 7, 0] Text("(given, defaults) => {\n  const q = { ...defaults }\n  for (const k of Object.keys(defaults))\n    if (given[k] !== undefined && given[k] !== \"\") q[k] =… #be82135abf5b6dd6
+  [0, 1, 7, 2] List([Record({"after": Text("a")}), Record({"query": Text("")})])
+  [0, 1, 7, 1] ·
+  [0, 1, 7, 3] ·
   [0, 1, 7] ·
+  [0, 1, 3] ·
+  [0, 1, 6] ·
   [0, 1, 0, 18] Record({})
   [0, 1, 0, 17] Record({})
   [0, 1, 0, 22] Text("application/json")
@@ -10221,17 +10221,17 @@
   [0, 0, 3] Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,14.25,51.25,88.2… #30defbf00c11dd9c
   [0, 0, 4] Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
   [0, 0] Record({"body": Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,… #6d10b8fe055b8e39 | Record({}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,14.25,51.25,88.2… #30defbf00c11dd9c | Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
-  [0, 1, 6] Text("/search?")
-  [0, 1, 5] Record({})
-  [0, 1, 3] Text("")
-  [0, 1, 2] Record({"query": Text("")})
-  [0, 1, 1, 0] Text("(given, defaults) => {\n  const q = { ...defaults };\n  for (const k of Object.keys(defaults)) if (given[k] !== undefined && given[k] !== \"\") q[k] = giv… #c5c798e2de1bd398
-  [0, 1, 1, 2] List([Record({"after": Text("a")}), Record({"query": Text("")})])
-  [0, 1, 1, 1] ·
-  [0, 1, 1, 3] ·
-  [0, 1, 1] ·
-  [0, 1, 4] ·
+  [0, 1, 5] Text("/search?")
+  [0, 1, 4] Record({})
+  [0, 1, 2] Text("")
+  [0, 1, 1] Record({"query": Text("")})
+  [0, 1, 7, 0] Text("(given, defaults) => {\n  const q = { ...defaults }\n  for (const k of Object.keys(defaults))\n    if (given[k] !== undefined && given[k] !== \"\") q[k] =… #be82135abf5b6dd6
+  [0, 1, 7, 2] List([Record({"after": Text("a")}), Record({"query": Text("")})])
+  [0, 1, 7, 1] ·
+  [0, 1, 7, 3] ·
   [0, 1, 7] ·
+  [0, 1, 3] ·
+  [0, 1, 6] ·
   [0, 1, 0, 18] Record({})
   [0, 1, 0, 17] Record({})
   [0, 1, 0, 22] Text("application/json")
@@ -10277,7 +10277,7 @@
   [0, 0, 4] ·
   [0, 0] Record({"body": Text(""), "headers": Record({"content-type": Text("application/json")}), "method": Text("GET"), "params": Record({"network": Text("tea")}), "pat… #bbfc1eb62fd93294 | Record({"network": Text("tea")}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("") | ·
   [0, 1] Text("tea")
-  [0, 2, 6] Text("/networks/")
+  [0, 2, 5] Text("/networks/")
   [0, 2, 1, 11] Boolean(true)
   [0, 2, 1, 23] Text("tea")
   [0, 2, 1, 18] Text("")
@@ -10312,17 +10312,17 @@
   [0, 2, 1, 20] Boolean(true)
   [0, 2, 1, 22] Text("tea")
   [0, 2, 1] Text("tea")
-  [0, 2, 8] Text("tea")
-  [0, 2, 10] Text("/tokens/search?")
-  [0, 2, 9] Record({})
+  [0, 2, 7] Text("tea")
+  [0, 2, 9] Text("/tokens/search?")
+  [0, 2, 8] Record({})
   [0, 2, 0] Number(50.0)
   [0, 2, 4] Record({"limit": Number(50.0)})
-  [0, 2, 5, 0] Text("(given, defaults) => {\n  const q = { ...defaults };\n  for (const k of Object.keys(defaults)) if (given[k] !== undefined && given[k] !== \"\") q[k] = giv… #c5c798e2de1bd398
-  [0, 2, 5, 2] List([Record({"after": Text("a")}), Record({"limit": Number(50.0)})])
-  [0, 2, 5, 1] ·
-  [0, 2, 5, 3] ·
-  [0, 2, 5] ·
-  [0, 2, 7] ·
+  [0, 2, 10, 0] Text("(given, defaults) => {\n  const q = { ...defaults }\n  for (const k of Object.keys(defaults))\n    if (given[k] !== undefined && given[k] !== \"\") q[k] =… #be82135abf5b6dd6
+  [0, 2, 10, 2] List([Record({"after": Text("a")}), Record({"limit": Number(50.0)})])
+  [0, 2, 10, 1] ·
+  [0, 2, 10, 3] ·
+  [0, 2, 10] ·
+  [0, 2, 6] ·
   [0, 2, 2] ·
   [0, 2, 3, 18] Record({})
   [0, 2, 3, 17] Record({})
@@ -10369,7 +10369,7 @@
   [0, 0, 4] Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
   [0, 0] Record({"body": Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\… #eade417a39178019 | Record({"network": Text("tea")}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\"event\":\"gig\"… #7441bf0c70954823 | Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
   [0, 1] Text("tea")
-  [0, 2, 6] Text("/networks/")
+  [0, 2, 5] Text("/networks/")
   [0, 2, 1, 11] Boolean(true)
   [0, 2, 1, 23] Text("tea")
   [0, 2, 1, 18] Text("")
@@ -10404,17 +10404,17 @@
   [0, 2, 1, 20] Boolean(true)
   [0, 2, 1, 22] Text("tea")
   [0, 2, 1] Text("tea")
-  [0, 2, 8] Text("tea")
-  [0, 2, 10] Text("/tokens/search?")
-  [0, 2, 9] Record({})
+  [0, 2, 7] Text("tea")
+  [0, 2, 9] Text("/tokens/search?")
+  [0, 2, 8] Record({})
   [0, 2, 0] Number(50.0)
   [0, 2, 4] Record({"limit": Number(50.0)})
-  [0, 2, 5, 0] Text("(given, defaults) => {\n  const q = { ...defaults };\n  for (const k of Object.keys(defaults)) if (given[k] !== undefined && given[k] !== \"\") q[k] = giv… #c5c798e2de1bd398
-  [0, 2, 5, 2] List([Record({"after": Text("a")}), Record({"limit": Number(50.0)})])
-  [0, 2, 5, 1] ·
-  [0, 2, 5, 3] ·
-  [0, 2, 5] ·
-  [0, 2, 7] ·
+  [0, 2, 10, 0] Text("(given, defaults) => {\n  const q = { ...defaults }\n  for (const k of Object.keys(defaults))\n    if (given[k] !== undefined && given[k] !== \"\") q[k] =… #be82135abf5b6dd6
+  [0, 2, 10, 2] List([Record({"after": Text("a")}), Record({"limit": Number(50.0)})])
+  [0, 2, 10, 1] ·
+  [0, 2, 10, 3] ·
+  [0, 2, 10] ·
+  [0, 2, 6] ·
   [0, 2, 2] ·
   [0, 2, 3, 18] Record({})
   [0, 2, 3, 17] Record({})
@@ -10461,7 +10461,7 @@
   [0, 0, 4] Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
   [0, 0] Record({"body": Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,… #d5000e29552f1170 | Record({"network": Text("tea")}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,14.25,51.25,88.2… #30defbf00c11dd9c | Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
   [0, 1] Text("tea")
-  [0, 2, 6] Text("/networks/")
+  [0, 2, 5] Text("/networks/")
   [0, 2, 1, 11] Boolean(true)
   [0, 2, 1, 23] Text("tea")
   [0, 2, 1, 18] Text("")
@@ -10496,17 +10496,17 @@
   [0, 2, 1, 20] Boolean(true)
   [0, 2, 1, 22] Text("tea")
   [0, 2, 1] Text("tea")
-  [0, 2, 8] Text("tea")
-  [0, 2, 10] Text("/tokens/search?")
-  [0, 2, 9] Record({})
+  [0, 2, 7] Text("tea")
+  [0, 2, 9] Text("/tokens/search?")
+  [0, 2, 8] Record({})
   [0, 2, 0] Number(50.0)
   [0, 2, 4] Record({"limit": Number(50.0)})
-  [0, 2, 5, 0] Text("(given, defaults) => {\n  const q = { ...defaults };\n  for (const k of Object.keys(defaults)) if (given[k] !== undefined && given[k] !== \"\") q[k] = giv… #c5c798e2de1bd398
-  [0, 2, 5, 2] List([Record({"after": Text("a")}), Record({"limit": Number(50.0)})])
-  [0, 2, 5, 1] ·
-  [0, 2, 5, 3] ·
-  [0, 2, 5] ·
-  [0, 2, 7] ·
+  [0, 2, 10, 0] Text("(given, defaults) => {\n  const q = { ...defaults }\n  for (const k of Object.keys(defaults))\n    if (given[k] !== undefined && given[k] !== \"\") q[k] =… #be82135abf5b6dd6
+  [0, 2, 10, 2] List([Record({"after": Text("a")}), Record({"limit": Number(50.0)})])
+  [0, 2, 10, 1] ·
+  [0, 2, 10, 3] ·
+  [0, 2, 10] ·
+  [0, 2, 6] ·
   [0, 2, 2] ·
   [0, 2, 3, 18] Record({})
   [0, 2, 3, 17] Record({})
@@ -10910,7 +10910,7 @@
   [0, 0, 4] ·
   [0, 0] Record({"body": Text(""), "headers": Record({"content-type": Text("application/json")}), "method": Text("GET"), "params": Record({"network": Text("tea")}), "pat… #4594b2383af7a234 | Record({"network": Text("tea")}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("") | ·
   [0, 1] Text("tea")
-  [0, 2, 6] Text("/networks/")
+  [0, 2, 5] Text("/networks/")
   [0, 2, 1, 11] Boolean(true)
   [0, 2, 1, 23] Text("tea")
   [0, 2, 1, 18] Text("")
@@ -10945,17 +10945,17 @@
   [0, 2, 1, 20] Boolean(true)
   [0, 2, 1, 22] Text("tea")
   [0, 2, 1] Text("tea")
-  [0, 2, 8] Text("tea")
-  [0, 2, 10] Text("/multi/prices?")
-  [0, 2, 9] Record({})
-  [0, 2, 5] Text("")
+  [0, 2, 7] Text("tea")
+  [0, 2, 9] Text("/multi/prices?")
+  [0, 2, 8] Record({})
+  [0, 2, 4] Text("")
   [0, 2, 0] Record({"tokens": Text("")})
-  [0, 2, 4, 0] Text("(given, defaults) => {\n  const q = { ...defaults };\n  for (const k of Object.keys(defaults)) if (given[k] !== undefined && given[k] !== \"\") q[k] = giv… #c5c798e2de1bd398
-  [0, 2, 4, 2] List([Record({"after": Text("a")}), Record({"tokens": Text("")})])
-  [0, 2, 4, 1] ·
-  [0, 2, 4, 3] ·
-  [0, 2, 4] ·
-  [0, 2, 7] ·
+  [0, 2, 10, 0] Text("(given, defaults) => {\n  const q = { ...defaults }\n  for (const k of Object.keys(defaults))\n    if (given[k] !== undefined && given[k] !== \"\") q[k] =… #be82135abf5b6dd6
+  [0, 2, 10, 2] List([Record({"after": Text("a")}), Record({"tokens": Text("")})])
+  [0, 2, 10, 1] ·
+  [0, 2, 10, 3] ·
+  [0, 2, 10] ·
+  [0, 2, 6] ·
   [0, 2, 2] ·
   [0, 2, 3, 18] Record({})
   [0, 2, 3, 17] Record({})
@@ -11002,7 +11002,7 @@
   [0, 0, 4] Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
   [0, 0] Record({"body": Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\… #cc60cb4c14bc7d02 | Record({"network": Text("tea")}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\"event\":\"gig\"… #7441bf0c70954823 | Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
   [0, 1] Text("tea")
-  [0, 2, 6] Text("/networks/")
+  [0, 2, 5] Text("/networks/")
   [0, 2, 1, 11] Boolean(true)
   [0, 2, 1, 23] Text("tea")
   [0, 2, 1, 18] Text("")
@@ -11037,17 +11037,17 @@
   [0, 2, 1, 20] Boolean(true)
   [0, 2, 1, 22] Text("tea")
   [0, 2, 1] Text("tea")
-  [0, 2, 8] Text("tea")
-  [0, 2, 10] Text("/multi/prices?")
-  [0, 2, 9] Record({})
-  [0, 2, 5] Text("")
+  [0, 2, 7] Text("tea")
+  [0, 2, 9] Text("/multi/prices?")
+  [0, 2, 8] Record({})
+  [0, 2, 4] Text("")
   [0, 2, 0] Record({"tokens": Text("")})
-  [0, 2, 4, 0] Text("(given, defaults) => {\n  const q = { ...defaults };\n  for (const k of Object.keys(defaults)) if (given[k] !== undefined && given[k] !== \"\") q[k] = giv… #c5c798e2de1bd398
-  [0, 2, 4, 2] List([Record({"after": Text("a")}), Record({"tokens": Text("")})])
-  [0, 2, 4, 1] ·
-  [0, 2, 4, 3] ·
-  [0, 2, 4] ·
-  [0, 2, 7] ·
+  [0, 2, 10, 0] Text("(given, defaults) => {\n  const q = { ...defaults }\n  for (const k of Object.keys(defaults))\n    if (given[k] !== undefined && given[k] !== \"\") q[k] =… #be82135abf5b6dd6
+  [0, 2, 10, 2] List([Record({"after": Text("a")}), Record({"tokens": Text("")})])
+  [0, 2, 10, 1] ·
+  [0, 2, 10, 3] ·
+  [0, 2, 10] ·
+  [0, 2, 6] ·
   [0, 2, 2] ·
   [0, 2, 3, 18] Record({})
   [0, 2, 3, 17] Record({})
@@ -11094,7 +11094,7 @@
   [0, 0, 4] Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
   [0, 0] Record({"body": Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,… #5acf9b3465706c92 | Record({"network": Text("tea")}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,14.25,51.25,88.2… #30defbf00c11dd9c | Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
   [0, 1] Text("tea")
-  [0, 2, 6] Text("/networks/")
+  [0, 2, 5] Text("/networks/")
   [0, 2, 1, 11] Boolean(true)
   [0, 2, 1, 23] Text("tea")
   [0, 2, 1, 18] Text("")
@@ -11129,17 +11129,17 @@
   [0, 2, 1, 20] Boolean(true)
   [0, 2, 1, 22] Text("tea")
   [0, 2, 1] Text("tea")
-  [0, 2, 8] Text("tea")
-  [0, 2, 10] Text("/multi/prices?")
-  [0, 2, 9] Record({})
-  [0, 2, 5] Text("")
+  [0, 2, 7] Text("tea")
+  [0, 2, 9] Text("/multi/prices?")
+  [0, 2, 8] Record({})
+  [0, 2, 4] Text("")
   [0, 2, 0] Record({"tokens": Text("")})
-  [0, 2, 4, 0] Text("(given, defaults) => {\n  const q = { ...defaults };\n  for (const k of Object.keys(defaults)) if (given[k] !== undefined && given[k] !== \"\") q[k] = giv… #c5c798e2de1bd398
-  [0, 2, 4, 2] List([Record({"after": Text("a")}), Record({"tokens": Text("")})])
-  [0, 2, 4, 1] ·
-  [0, 2, 4, 3] ·
-  [0, 2, 4] ·
-  [0, 2, 7] ·
+  [0, 2, 10, 0] Text("(given, defaults) => {\n  const q = { ...defaults }\n  for (const k of Object.keys(defaults))\n    if (given[k] !== undefined && given[k] !== \"\") q[k] =… #be82135abf5b6dd6
+  [0, 2, 10, 2] List([Record({"after": Text("a")}), Record({"tokens": Text("")})])
+  [0, 2, 10, 1] ·
+  [0, 2, 10, 3] ·
+  [0, 2, 10] ·
+  [0, 2, 6] ·
   [0, 2, 2] ·
   [0, 2, 3, 18] Record({})
   [0, 2, 3, 17] Record({})
@@ -11187,7 +11187,7 @@
   [0, 0] Record({"body": Text(""), "headers": Record({"content-type": Text("application/json")}), "method": Text("GET"), "params": Record({"address": Text("tea"), "netwo… #0f75441b83bf4eec | Record({"address": Text("tea"), "network": Text("tea")}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("") | ·
   [0, 1] Text("tea")
   [0, 2] Text("tea")
-  [0, 3, 9] Text("/networks/")
+  [0, 3, 8] Text("/networks/")
   [0, 3, 2, 11] Boolean(true)
   [0, 3, 2, 23] Text("tea")
   [0, 3, 2, 18] Text("")
@@ -11222,8 +11222,8 @@
   [0, 3, 2, 20] Boolean(true)
   [0, 3, 2, 22] Text("tea")
   [0, 3, 2] Text("tea")
-  [0, 3, 13] Text("tea")
-  [0, 3, 18] Text("/tokens/")
+  [0, 3, 12] Text("tea")
+  [0, 3, 17] Text("/tokens/")
   [0, 3, 1, 11] Boolean(true)
   [0, 3, 1, 23] Text("tea")
   [0, 3, 1, 18] Text("")
@@ -11258,51 +11258,51 @@
   [0, 3, 1, 20] Boolean(true)
   [0, 3, 1, 22] Text("tea")
   [0, 3, 1] Text("tea")
-  [0, 3, 14] Text("tea")
-  [0, 3, 11] Text("/ohlcv?")
-  [0, 3, 16] Record({})
+  [0, 3, 13] Text("tea")
+  [0, 3, 10] Text("/ohlcv?")
+  [0, 3, 15] Record({})
   [0, 3, 3] Text("-24h")
-  [0, 3, 7] Record({"start": Text("-24h")})
-  [0, 3, 8] Text("")
+  [0, 3, 6] Record({"start": Text("-24h")})
+  [0, 3, 7] Text("")
   [0, 3, 19] Record({"end": Text(""), "start": Text("-24h")})
-  [0, 3, 15] Text("24h")
+  [0, 3, 14] Text("24h")
   [0, 3, 4] Record({"end": Text(""), "interval": Text("24h"), "start": Text("-24h")})
   [0, 3, 0] Number(50.0)
   [0, 3, 5] Record({"end": Text(""), "interval": Text("24h"), "limit": Number(50.0), "start": Text("-24h")})
-  [0, 3, 6, 0] Text("(given, defaults) => {\n  const q = { ...defaults };\n  for (const k of Object.keys(defaults)) if (given[k] !== undefined && given[k] !== \"\") q[k] = giv… #c5c798e2de1bd398
-  [0, 3, 6, 2] List([Record({"after": Text("a")}), Record({"end": Text(""), "interval": Text("24h"), "limit": Number(50.0), "start": Text("-24h")})])
-  [0, 3, 6, 1] ·
-  [0, 3, 6, 3] ·
-  [0, 3, 6] ·
-  [0, 3, 12] ·
-  [0, 3, 10] ·
-  [0, 3, 17, 18] Record({})
-  [0, 3, 17, 20] Record({})
-  [0, 3, 17, 23] Text("application/json")
-  [0, 3, 17, 17] Record({"accept": Text("application/json")})
-  [0, 3, 17, 6] ·
-  [0, 3, 17, 25] ·
-  [0, 3, 17, 0] Record({"accept": Text("application/json")})
-  [0, 3, 17, 11] ·
-  [0, 3, 17, 12] ·
-  [0, 3, 17, 7] Number(0.0)
-  [0, 3, 17, 22] ·
-  [0, 3, 17, 21] ·
-  [0, 3, 17, 13] ·
-  [0, 3, 17, 8] ·
-  [0, 3, 17, 3] ·
-  [0, 3, 17, 4] ·
-  [0, 3, 17, 16] ·
-  [0, 3, 17, 5] ·
-  [0, 3, 17, 10] ·
-  [0, 3, 17, 19] Record({})
-  [0, 3, 17, 2] ·
-  [0, 3, 17, 1] ·
-  [0, 3, 17, 24] ·
-  [0, 3, 17, 15] ·
-  [0, 3, 17, 9] ·
-  [0, 3, 17, 26] ·
-  [0, 3, 17] ·
+  [0, 3, 18, 0] Text("(given, defaults) => {\n  const q = { ...defaults }\n  for (const k of Object.keys(defaults))\n    if (given[k] !== undefined && given[k] !== \"\") q[k] =… #be82135abf5b6dd6
+  [0, 3, 18, 2] List([Record({"after": Text("a")}), Record({"end": Text(""), "interval": Text("24h"), "limit": Number(50.0), "start": Text("-24h")})])
+  [0, 3, 18, 1] ·
+  [0, 3, 18, 3] ·
+  [0, 3, 18] ·
+  [0, 3, 11] ·
+  [0, 3, 9] ·
+  [0, 3, 16, 18] Record({})
+  [0, 3, 16, 20] Record({})
+  [0, 3, 16, 23] Text("application/json")
+  [0, 3, 16, 17] Record({"accept": Text("application/json")})
+  [0, 3, 16, 6] ·
+  [0, 3, 16, 25] ·
+  [0, 3, 16, 0] Record({"accept": Text("application/json")})
+  [0, 3, 16, 11] ·
+  [0, 3, 16, 12] ·
+  [0, 3, 16, 7] Number(0.0)
+  [0, 3, 16, 22] ·
+  [0, 3, 16, 21] ·
+  [0, 3, 16, 13] ·
+  [0, 3, 16, 8] ·
+  [0, 3, 16, 3] ·
+  [0, 3, 16, 4] ·
+  [0, 3, 16, 16] ·
+  [0, 3, 16, 5] ·
+  [0, 3, 16, 10] ·
+  [0, 3, 16, 19] Record({})
+  [0, 3, 16, 2] ·
+  [0, 3, 16, 1] ·
+  [0, 3, 16, 24] ·
+  [0, 3, 16, 15] ·
+  [0, 3, 16, 9] ·
+  [0, 3, 16, 26] ·
+  [0, 3, 16] ·
   [0, 3] ·
   [0, 4] ·
   [0, 5] ·
@@ -11322,7 +11322,7 @@
   [0, 0] Record({"body": Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\… #17d38cbb155af7ee | Record({"address": Text("tea"), "network": Text("tea")}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\"event\":\"gig\"… #7441bf0c70954823 | Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
   [0, 1] Text("tea")
   [0, 2] Text("tea")
-  [0, 3, 9] Text("/networks/")
+  [0, 3, 8] Text("/networks/")
   [0, 3, 2, 11] Boolean(true)
   [0, 3, 2, 23] Text("tea")
   [0, 3, 2, 18] Text("")
@@ -11357,8 +11357,8 @@
   [0, 3, 2, 20] Boolean(true)
   [0, 3, 2, 22] Text("tea")
   [0, 3, 2] Text("tea")
-  [0, 3, 13] Text("tea")
-  [0, 3, 18] Text("/tokens/")
+  [0, 3, 12] Text("tea")
+  [0, 3, 17] Text("/tokens/")
   [0, 3, 1, 11] Boolean(true)
   [0, 3, 1, 23] Text("tea")
   [0, 3, 1, 18] Text("")
@@ -11393,51 +11393,51 @@
   [0, 3, 1, 20] Boolean(true)
   [0, 3, 1, 22] Text("tea")
   [0, 3, 1] Text("tea")
-  [0, 3, 14] Text("tea")
-  [0, 3, 11] Text("/ohlcv?")
-  [0, 3, 16] Record({})
+  [0, 3, 13] Text("tea")
+  [0, 3, 10] Text("/ohlcv?")
+  [0, 3, 15] Record({})
   [0, 3, 3] Text("-24h")
-  [0, 3, 7] Record({"start": Text("-24h")})
-  [0, 3, 8] Text("")
+  [0, 3, 6] Record({"start": Text("-24h")})
+  [0, 3, 7] Text("")
   [0, 3, 19] Record({"end": Text(""), "start": Text("-24h")})
-  [0, 3, 15] Text("24h")
+  [0, 3, 14] Text("24h")
   [0, 3, 4] Record({"end": Text(""), "interval": Text("24h"), "start": Text("-24h")})
   [0, 3, 0] Number(50.0)
   [0, 3, 5] Record({"end": Text(""), "interval": Text("24h"), "limit": Number(50.0), "start": Text("-24h")})
-  [0, 3, 6, 0] Text("(given, defaults) => {\n  const q = { ...defaults };\n  for (const k of Object.keys(defaults)) if (given[k] !== undefined && given[k] !== \"\") q[k] = giv… #c5c798e2de1bd398
-  [0, 3, 6, 2] List([Record({"after": Text("a")}), Record({"end": Text(""), "interval": Text("24h"), "limit": Number(50.0), "start": Text("-24h")})])
-  [0, 3, 6, 1] ·
-  [0, 3, 6, 3] ·
-  [0, 3, 6] ·
-  [0, 3, 12] ·
-  [0, 3, 10] ·
-  [0, 3, 17, 18] Record({})
-  [0, 3, 17, 20] Record({})
-  [0, 3, 17, 23] Text("application/json")
-  [0, 3, 17, 17] Record({"accept": Text("application/json")})
-  [0, 3, 17, 6] ·
-  [0, 3, 17, 25] ·
-  [0, 3, 17, 0] Record({"accept": Text("application/json")})
-  [0, 3, 17, 11] ·
-  [0, 3, 17, 12] ·
-  [0, 3, 17, 7] Number(0.0)
-  [0, 3, 17, 22] ·
-  [0, 3, 17, 21] ·
-  [0, 3, 17, 13] ·
-  [0, 3, 17, 8] ·
-  [0, 3, 17, 3] ·
-  [0, 3, 17, 4] ·
-  [0, 3, 17, 16] ·
-  [0, 3, 17, 5] ·
-  [0, 3, 17, 10] ·
-  [0, 3, 17, 19] Record({})
-  [0, 3, 17, 2] ·
-  [0, 3, 17, 1] ·
-  [0, 3, 17, 24] ·
-  [0, 3, 17, 15] ·
-  [0, 3, 17, 9] ·
-  [0, 3, 17, 26] ·
-  [0, 3, 17] ·
+  [0, 3, 18, 0] Text("(given, defaults) => {\n  const q = { ...defaults }\n  for (const k of Object.keys(defaults))\n    if (given[k] !== undefined && given[k] !== \"\") q[k] =… #be82135abf5b6dd6
+  [0, 3, 18, 2] List([Record({"after": Text("a")}), Record({"end": Text(""), "interval": Text("24h"), "limit": Number(50.0), "start": Text("-24h")})])
+  [0, 3, 18, 1] ·
+  [0, 3, 18, 3] ·
+  [0, 3, 18] ·
+  [0, 3, 11] ·
+  [0, 3, 9] ·
+  [0, 3, 16, 18] Record({})
+  [0, 3, 16, 20] Record({})
+  [0, 3, 16, 23] Text("application/json")
+  [0, 3, 16, 17] Record({"accept": Text("application/json")})
+  [0, 3, 16, 6] ·
+  [0, 3, 16, 25] ·
+  [0, 3, 16, 0] Record({"accept": Text("application/json")})
+  [0, 3, 16, 11] ·
+  [0, 3, 16, 12] ·
+  [0, 3, 16, 7] Number(0.0)
+  [0, 3, 16, 22] ·
+  [0, 3, 16, 21] ·
+  [0, 3, 16, 13] ·
+  [0, 3, 16, 8] ·
+  [0, 3, 16, 3] ·
+  [0, 3, 16, 4] ·
+  [0, 3, 16, 16] ·
+  [0, 3, 16, 5] ·
+  [0, 3, 16, 10] ·
+  [0, 3, 16, 19] Record({})
+  [0, 3, 16, 2] ·
+  [0, 3, 16, 1] ·
+  [0, 3, 16, 24] ·
+  [0, 3, 16, 15] ·
+  [0, 3, 16, 9] ·
+  [0, 3, 16, 26] ·
+  [0, 3, 16] ·
   [0, 3] ·
   [0, 4] ·
   [0, 5] ·
@@ -11457,7 +11457,7 @@
   [0, 0] Record({"body": Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,… #5a71c8a316dc73d2 | Record({"address": Text("tea"), "network": Text("tea")}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,14.25,51.25,88.2… #30defbf00c11dd9c | Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
   [0, 1] Text("tea")
   [0, 2] Text("tea")
-  [0, 3, 9] Text("/networks/")
+  [0, 3, 8] Text("/networks/")
   [0, 3, 2, 11] Boolean(true)
   [0, 3, 2, 23] Text("tea")
   [0, 3, 2, 18] Text("")
@@ -11492,8 +11492,8 @@
   [0, 3, 2, 20] Boolean(true)
   [0, 3, 2, 22] Text("tea")
   [0, 3, 2] Text("tea")
-  [0, 3, 13] Text("tea")
-  [0, 3, 18] Text("/tokens/")
+  [0, 3, 12] Text("tea")
+  [0, 3, 17] Text("/tokens/")
   [0, 3, 1, 11] Boolean(true)
   [0, 3, 1, 23] Text("tea")
   [0, 3, 1, 18] Text("")
@@ -11528,51 +11528,51 @@
   [0, 3, 1, 20] Boolean(true)
   [0, 3, 1, 22] Text("tea")
   [0, 3, 1] Text("tea")
-  [0, 3, 14] Text("tea")
-  [0, 3, 11] Text("/ohlcv?")
-  [0, 3, 16] Record({})
+  [0, 3, 13] Text("tea")
+  [0, 3, 10] Text("/ohlcv?")
+  [0, 3, 15] Record({})
   [0, 3, 3] Text("-24h")
-  [0, 3, 7] Record({"start": Text("-24h")})
-  [0, 3, 8] Text("")
+  [0, 3, 6] Record({"start": Text("-24h")})
+  [0, 3, 7] Text("")
   [0, 3, 19] Record({"end": Text(""), "start": Text("-24h")})
-  [0, 3, 15] Text("24h")
+  [0, 3, 14] Text("24h")
   [0, 3, 4] Record({"end": Text(""), "interval": Text("24h"), "start": Text("-24h")})
   [0, 3, 0] Number(50.0)
   [0, 3, 5] Record({"end": Text(""), "interval": Text("24h"), "limit": Number(50.0), "start": Text("-24h")})
-  [0, 3, 6, 0] Text("(given, defaults) => {\n  const q = { ...defaults };\n  for (const k of Object.keys(defaults)) if (given[k] !== undefined && given[k] !== \"\") q[k] = giv… #c5c798e2de1bd398
-  [0, 3, 6, 2] List([Record({"after": Text("a")}), Record({"end": Text(""), "interval": Text("24h"), "limit": Number(50.0), "start": Text("-24h")})])
-  [0, 3, 6, 1] ·
-  [0, 3, 6, 3] ·
-  [0, 3, 6] ·
-  [0, 3, 12] ·
-  [0, 3, 10] ·
-  [0, 3, 17, 18] Record({})
-  [0, 3, 17, 20] Record({})
-  [0, 3, 17, 23] Text("application/json")
-  [0, 3, 17, 17] Record({"accept": Text("application/json")})
-  [0, 3, 17, 6] ·
-  [0, 3, 17, 25] ·
-  [0, 3, 17, 0] Record({"accept": Text("application/json")})
-  [0, 3, 17, 11] ·
-  [0, 3, 17, 12] ·
-  [0, 3, 17, 7] Number(0.0)
-  [0, 3, 17, 22] ·
-  [0, 3, 17, 21] ·
-  [0, 3, 17, 13] ·
-  [0, 3, 17, 8] ·
-  [0, 3, 17, 3] ·
-  [0, 3, 17, 4] ·
-  [0, 3, 17, 16] ·
-  [0, 3, 17, 5] ·
-  [0, 3, 17, 10] ·
-  [0, 3, 17, 19] Record({})
-  [0, 3, 17, 2] ·
-  [0, 3, 17, 1] ·
-  [0, 3, 17, 24] ·
-  [0, 3, 17, 15] ·
-  [0, 3, 17, 9] ·
-  [0, 3, 17, 26] ·
-  [0, 3, 17] ·
+  [0, 3, 18, 0] Text("(given, defaults) => {\n  const q = { ...defaults }\n  for (const k of Object.keys(defaults))\n    if (given[k] !== undefined && given[k] !== \"\") q[k] =… #be82135abf5b6dd6
+  [0, 3, 18, 2] List([Record({"after": Text("a")}), Record({"end": Text(""), "interval": Text("24h"), "limit": Number(50.0), "start": Text("-24h")})])
+  [0, 3, 18, 1] ·
+  [0, 3, 18, 3] ·
+  [0, 3, 18] ·
+  [0, 3, 11] ·
+  [0, 3, 9] ·
+  [0, 3, 16, 18] Record({})
+  [0, 3, 16, 20] Record({})
+  [0, 3, 16, 23] Text("application/json")
+  [0, 3, 16, 17] Record({"accept": Text("application/json")})
+  [0, 3, 16, 6] ·
+  [0, 3, 16, 25] ·
+  [0, 3, 16, 0] Record({"accept": Text("application/json")})
+  [0, 3, 16, 11] ·
+  [0, 3, 16, 12] ·
+  [0, 3, 16, 7] Number(0.0)
+  [0, 3, 16, 22] ·
+  [0, 3, 16, 21] ·
+  [0, 3, 16, 13] ·
+  [0, 3, 16, 8] ·
+  [0, 3, 16, 3] ·
+  [0, 3, 16, 4] ·
+  [0, 3, 16, 16] ·
+  [0, 3, 16, 5] ·
+  [0, 3, 16, 10] ·
+  [0, 3, 16, 19] Record({})
+  [0, 3, 16, 2] ·
+  [0, 3, 16, 1] ·
+  [0, 3, 16, 24] ·
+  [0, 3, 16, 15] ·
+  [0, 3, 16, 9] ·
+  [0, 3, 16, 26] ·
+  [0, 3, 16] ·
   [0, 3] ·
   [0, 4] ·
   [0, 5] ·
@@ -11592,7 +11592,7 @@
   [0, 0] Record({"body": Text(""), "headers": Record({"content-type": Text("application/json")}), "method": Text("GET"), "params": Record({"address": Text("tea"), "netwo… #f1f32366dd186625 | Record({"address": Text("tea"), "network": Text("tea")}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("") | ·
   [0, 1] Text("tea")
   [0, 2] Text("tea")
-  [0, 3, 23] Text("/networks/")
+  [0, 3, 22] Text("/networks/")
   [0, 3, 6, 11] Boolean(true)
   [0, 3, 6, 23] Text("tea")
   [0, 3, 6, 18] Text("")
@@ -11627,8 +11627,8 @@
   [0, 3, 6, 20] Boolean(true)
   [0, 3, 6, 22] Text("tea")
   [0, 3, 6] Text("tea")
-  [0, 3, 27] Text("tea")
-  [0, 3, 31] Text("/tokens/")
+  [0, 3, 26] Text("tea")
+  [0, 3, 30] Text("/tokens/")
   [0, 3, 5, 11] Boolean(true)
   [0, 3, 5, 23] Text("tea")
   [0, 3, 5, 18] Text("")
@@ -11663,65 +11663,65 @@
   [0, 3, 5, 20] Boolean(true)
   [0, 3, 5, 22] Text("tea")
   [0, 3, 5] Text("tea")
-  [0, 3, 28] Text("tea")
-  [0, 3, 12] Text("/indicators?")
-  [0, 3, 29] Record({})
+  [0, 3, 27] Text("tea")
+  [0, 3, 11] Text("/indicators?")
+  [0, 3, 28] Record({})
   [0, 3, 0] Text("rsi")
   [0, 3, 1] Record({"indicator": Text("rsi")})
-  [0, 3, 20] Text("")
-  [0, 3, 7] Record({"indicator": Text("rsi"), "interval": Text("")})
-  [0, 3, 15] Text("")
-  [0, 3, 8] Record({"cursor": Text(""), "indicator": Text("rsi"), "interval": Text("")})
-  [0, 3, 16] Text("")
-  [0, 3, 32] Record({"cursor": Text(""), "end": Text(""), "indicator": Text("rsi"), "interval": Text("")})
-  [0, 3, 22] Text("")
-  [0, 3, 3] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text("")})
-  [0, 3, 18] Text("")
-  [0, 3, 9] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit": Text("")})
-  [0, 3, 17] Text("")
-  [0, 3, 2] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit": Text(""), "period": Text("")})
-  [0, 3, 13] Text("")
-  [0, 3, 24] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit": Text(""), "period": Text(""), "si… #3dc072769738021d
-  [0, 3, 14] Text("")
-  [0, 3, 4] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit": Text(""), "period": Text(""), "si… #ab9f63705983ae66
-  [0, 3, 21] Text("")
-  [0, 3, 33] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit": Text(""), "period": Text(""), "si… #e202bd6dd7b6ff98
   [0, 3, 19] Text("")
-  [0, 3, 11] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit": Text(""), "period": Text(""), "si… #323f7accc437ee9f
-  [0, 3, 10, 0] Text("(given, defaults) => {\n  const q = { ...defaults };\n  for (const k of Object.keys(defaults)) if (given[k] !== undefined && given[k] !== \"\") q[k] = giv… #c5c798e2de1bd398
-  [0, 3, 10, 2] List([Record({"after": Text("a")}), Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit… #5ee946dc69fd1db6
-  [0, 3, 10, 1] ·
-  [0, 3, 10, 3] ·
-  [0, 3, 10] ·
-  [0, 3, 26] ·
+  [0, 3, 7] Record({"indicator": Text("rsi"), "interval": Text("")})
+  [0, 3, 16] Text("")
+  [0, 3, 8] Record({"cursor": Text(""), "indicator": Text("rsi"), "interval": Text("")})
+  [0, 3, 20] Text("")
+  [0, 3, 32] Record({"cursor": Text(""), "end": Text(""), "indicator": Text("rsi"), "interval": Text("")})
+  [0, 3, 21] Text("")
+  [0, 3, 3] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text("")})
+  [0, 3, 17] Text("")
+  [0, 3, 9] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit": Text("")})
+  [0, 3, 15] Text("")
+  [0, 3, 2] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit": Text(""), "period": Text("")})
+  [0, 3, 12] Text("")
+  [0, 3, 23] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit": Text(""), "period": Text(""), "si… #3dc072769738021d
+  [0, 3, 18] Text("")
+  [0, 3, 4] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit": Text(""), "period": Text(""), "si… #ab9f63705983ae66
+  [0, 3, 13] Text("")
+  [0, 3, 33] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit": Text(""), "period": Text(""), "si… #e202bd6dd7b6ff98
+  [0, 3, 14] Text("")
+  [0, 3, 10] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit": Text(""), "period": Text(""), "si… #323f7accc437ee9f
+  [0, 3, 31, 0] Text("(given, defaults) => {\n  const q = { ...defaults }\n  for (const k of Object.keys(defaults))\n    if (given[k] !== undefined && given[k] !== \"\") q[k] =… #be82135abf5b6dd6
+  [0, 3, 31, 2] List([Record({"after": Text("a")}), Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit… #5ee946dc69fd1db6
+  [0, 3, 31, 1] ·
+  [0, 3, 31, 3] ·
+  [0, 3, 31] ·
   [0, 3, 25] ·
-  [0, 3, 30, 18] Record({})
-  [0, 3, 30, 20] Record({})
-  [0, 3, 30, 23] Text("application/json")
-  [0, 3, 30, 17] Record({"accept": Text("application/json")})
-  [0, 3, 30, 6] ·
-  [0, 3, 30, 25] ·
-  [0, 3, 30, 0] Record({"accept": Text("application/json")})
-  [0, 3, 30, 11] ·
-  [0, 3, 30, 12] ·
-  [0, 3, 30, 7] Number(0.0)
-  [0, 3, 30, 22] ·
-  [0, 3, 30, 21] ·
-  [0, 3, 30, 13] ·
-  [0, 3, 30, 8] ·
-  [0, 3, 30, 3] ·
-  [0, 3, 30, 4] ·
-  [0, 3, 30, 16] ·
-  [0, 3, 30, 5] ·
-  [0, 3, 30, 10] ·
-  [0, 3, 30, 19] Record({})
-  [0, 3, 30, 2] ·
-  [0, 3, 30, 1] ·
-  [0, 3, 30, 24] ·
-  [0, 3, 30, 15] ·
-  [0, 3, 30, 9] ·
-  [0, 3, 30, 26] ·
-  [0, 3, 30] ·
+  [0, 3, 24] ·
+  [0, 3, 29, 18] Record({})
+  [0, 3, 29, 20] Record({})
+  [0, 3, 29, 23] Text("application/json")
+  [0, 3, 29, 17] Record({"accept": Text("application/json")})
+  [0, 3, 29, 6] ·
+  [0, 3, 29, 25] ·
+  [0, 3, 29, 0] Record({"accept": Text("application/json")})
+  [0, 3, 29, 11] ·
+  [0, 3, 29, 12] ·
+  [0, 3, 29, 7] Number(0.0)
+  [0, 3, 29, 22] ·
+  [0, 3, 29, 21] ·
+  [0, 3, 29, 13] ·
+  [0, 3, 29, 8] ·
+  [0, 3, 29, 3] ·
+  [0, 3, 29, 4] ·
+  [0, 3, 29, 16] ·
+  [0, 3, 29, 5] ·
+  [0, 3, 29, 10] ·
+  [0, 3, 29, 19] Record({})
+  [0, 3, 29, 2] ·
+  [0, 3, 29, 1] ·
+  [0, 3, 29, 24] ·
+  [0, 3, 29, 15] ·
+  [0, 3, 29, 9] ·
+  [0, 3, 29, 26] ·
+  [0, 3, 29] ·
   [0, 3] ·
   [0, 4] ·
   [0, 5] ·
@@ -11741,7 +11741,7 @@
   [0, 0] Record({"body": Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\… #2530531ff0255644 | Record({"address": Text("tea"), "network": Text("tea")}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\"event\":\"gig\"… #7441bf0c70954823 | Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
   [0, 1] Text("tea")
   [0, 2] Text("tea")
-  [0, 3, 23] Text("/networks/")
+  [0, 3, 22] Text("/networks/")
   [0, 3, 6, 11] Boolean(true)
   [0, 3, 6, 23] Text("tea")
   [0, 3, 6, 18] Text("")
@@ -11776,8 +11776,8 @@
   [0, 3, 6, 20] Boolean(true)
   [0, 3, 6, 22] Text("tea")
   [0, 3, 6] Text("tea")
-  [0, 3, 27] Text("tea")
-  [0, 3, 31] Text("/tokens/")
+  [0, 3, 26] Text("tea")
+  [0, 3, 30] Text("/tokens/")
   [0, 3, 5, 11] Boolean(true)
   [0, 3, 5, 23] Text("tea")
   [0, 3, 5, 18] Text("")
@@ -11812,65 +11812,65 @@
   [0, 3, 5, 20] Boolean(true)
   [0, 3, 5, 22] Text("tea")
   [0, 3, 5] Text("tea")
-  [0, 3, 28] Text("tea")
-  [0, 3, 12] Text("/indicators?")
-  [0, 3, 29] Record({})
+  [0, 3, 27] Text("tea")
+  [0, 3, 11] Text("/indicators?")
+  [0, 3, 28] Record({})
   [0, 3, 0] Text("rsi")
   [0, 3, 1] Record({"indicator": Text("rsi")})
-  [0, 3, 20] Text("")
-  [0, 3, 7] Record({"indicator": Text("rsi"), "interval": Text("")})
-  [0, 3, 15] Text("")
-  [0, 3, 8] Record({"cursor": Text(""), "indicator": Text("rsi"), "interval": Text("")})
-  [0, 3, 16] Text("")
-  [0, 3, 32] Record({"cursor": Text(""), "end": Text(""), "indicator": Text("rsi"), "interval": Text("")})
-  [0, 3, 22] Text("")
-  [0, 3, 3] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text("")})
-  [0, 3, 18] Text("")
-  [0, 3, 9] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit": Text("")})
-  [0, 3, 17] Text("")
-  [0, 3, 2] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit": Text(""), "period": Text("")})
-  [0, 3, 13] Text("")
-  [0, 3, 24] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit": Text(""), "period": Text(""), "si… #3dc072769738021d
-  [0, 3, 14] Text("")
-  [0, 3, 4] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit": Text(""), "period": Text(""), "si… #ab9f63705983ae66
-  [0, 3, 21] Text("")
-  [0, 3, 33] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit": Text(""), "period": Text(""), "si… #e202bd6dd7b6ff98
   [0, 3, 19] Text("")
-  [0, 3, 11] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit": Text(""), "period": Text(""), "si… #323f7accc437ee9f
-  [0, 3, 10, 0] Text("(given, defaults) => {\n  const q = { ...defaults };\n  for (const k of Object.keys(defaults)) if (given[k] !== undefined && given[k] !== \"\") q[k] = giv… #c5c798e2de1bd398
-  [0, 3, 10, 2] List([Record({"after": Text("a")}), Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit… #5ee946dc69fd1db6
-  [0, 3, 10, 1] ·
-  [0, 3, 10, 3] ·
-  [0, 3, 10] ·
-  [0, 3, 26] ·
+  [0, 3, 7] Record({"indicator": Text("rsi"), "interval": Text("")})
+  [0, 3, 16] Text("")
+  [0, 3, 8] Record({"cursor": Text(""), "indicator": Text("rsi"), "interval": Text("")})
+  [0, 3, 20] Text("")
+  [0, 3, 32] Record({"cursor": Text(""), "end": Text(""), "indicator": Text("rsi"), "interval": Text("")})
+  [0, 3, 21] Text("")
+  [0, 3, 3] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text("")})
+  [0, 3, 17] Text("")
+  [0, 3, 9] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit": Text("")})
+  [0, 3, 15] Text("")
+  [0, 3, 2] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit": Text(""), "period": Text("")})
+  [0, 3, 12] Text("")
+  [0, 3, 23] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit": Text(""), "period": Text(""), "si… #3dc072769738021d
+  [0, 3, 18] Text("")
+  [0, 3, 4] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit": Text(""), "period": Text(""), "si… #ab9f63705983ae66
+  [0, 3, 13] Text("")
+  [0, 3, 33] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit": Text(""), "period": Text(""), "si… #e202bd6dd7b6ff98
+  [0, 3, 14] Text("")
+  [0, 3, 10] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit": Text(""), "period": Text(""), "si… #323f7accc437ee9f
+  [0, 3, 31, 0] Text("(given, defaults) => {\n  const q = { ...defaults }\n  for (const k of Object.keys(defaults))\n    if (given[k] !== undefined && given[k] !== \"\") q[k] =… #be82135abf5b6dd6
+  [0, 3, 31, 2] List([Record({"after": Text("a")}), Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit… #5ee946dc69fd1db6
+  [0, 3, 31, 1] ·
+  [0, 3, 31, 3] ·
+  [0, 3, 31] ·
   [0, 3, 25] ·
-  [0, 3, 30, 18] Record({})
-  [0, 3, 30, 20] Record({})
-  [0, 3, 30, 23] Text("application/json")
-  [0, 3, 30, 17] Record({"accept": Text("application/json")})
-  [0, 3, 30, 6] ·
-  [0, 3, 30, 25] ·
-  [0, 3, 30, 0] Record({"accept": Text("application/json")})
-  [0, 3, 30, 11] ·
-  [0, 3, 30, 12] ·
-  [0, 3, 30, 7] Number(0.0)
-  [0, 3, 30, 22] ·
-  [0, 3, 30, 21] ·
-  [0, 3, 30, 13] ·
-  [0, 3, 30, 8] ·
-  [0, 3, 30, 3] ·
-  [0, 3, 30, 4] ·
-  [0, 3, 30, 16] ·
-  [0, 3, 30, 5] ·
-  [0, 3, 30, 10] ·
-  [0, 3, 30, 19] Record({})
-  [0, 3, 30, 2] ·
-  [0, 3, 30, 1] ·
-  [0, 3, 30, 24] ·
-  [0, 3, 30, 15] ·
-  [0, 3, 30, 9] ·
-  [0, 3, 30, 26] ·
-  [0, 3, 30] ·
+  [0, 3, 24] ·
+  [0, 3, 29, 18] Record({})
+  [0, 3, 29, 20] Record({})
+  [0, 3, 29, 23] Text("application/json")
+  [0, 3, 29, 17] Record({"accept": Text("application/json")})
+  [0, 3, 29, 6] ·
+  [0, 3, 29, 25] ·
+  [0, 3, 29, 0] Record({"accept": Text("application/json")})
+  [0, 3, 29, 11] ·
+  [0, 3, 29, 12] ·
+  [0, 3, 29, 7] Number(0.0)
+  [0, 3, 29, 22] ·
+  [0, 3, 29, 21] ·
+  [0, 3, 29, 13] ·
+  [0, 3, 29, 8] ·
+  [0, 3, 29, 3] ·
+  [0, 3, 29, 4] ·
+  [0, 3, 29, 16] ·
+  [0, 3, 29, 5] ·
+  [0, 3, 29, 10] ·
+  [0, 3, 29, 19] Record({})
+  [0, 3, 29, 2] ·
+  [0, 3, 29, 1] ·
+  [0, 3, 29, 24] ·
+  [0, 3, 29, 15] ·
+  [0, 3, 29, 9] ·
+  [0, 3, 29, 26] ·
+  [0, 3, 29] ·
   [0, 3] ·
   [0, 4] ·
   [0, 5] ·
@@ -11890,7 +11890,7 @@
   [0, 0] Record({"body": Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,… #b605cd259d4b2f91 | Record({"address": Text("tea"), "network": Text("tea")}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,14.25,51.25,88.2… #30defbf00c11dd9c | Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
   [0, 1] Text("tea")
   [0, 2] Text("tea")
-  [0, 3, 23] Text("/networks/")
+  [0, 3, 22] Text("/networks/")
   [0, 3, 6, 11] Boolean(true)
   [0, 3, 6, 23] Text("tea")
   [0, 3, 6, 18] Text("")
@@ -11925,8 +11925,8 @@
   [0, 3, 6, 20] Boolean(true)
   [0, 3, 6, 22] Text("tea")
   [0, 3, 6] Text("tea")
-  [0, 3, 27] Text("tea")
-  [0, 3, 31] Text("/tokens/")
+  [0, 3, 26] Text("tea")
+  [0, 3, 30] Text("/tokens/")
   [0, 3, 5, 11] Boolean(true)
   [0, 3, 5, 23] Text("tea")
   [0, 3, 5, 18] Text("")
@@ -11961,65 +11961,65 @@
   [0, 3, 5, 20] Boolean(true)
   [0, 3, 5, 22] Text("tea")
   [0, 3, 5] Text("tea")
-  [0, 3, 28] Text("tea")
-  [0, 3, 12] Text("/indicators?")
-  [0, 3, 29] Record({})
+  [0, 3, 27] Text("tea")
+  [0, 3, 11] Text("/indicators?")
+  [0, 3, 28] Record({})
   [0, 3, 0] Text("rsi")
   [0, 3, 1] Record({"indicator": Text("rsi")})
-  [0, 3, 20] Text("")
-  [0, 3, 7] Record({"indicator": Text("rsi"), "interval": Text("")})
-  [0, 3, 15] Text("")
-  [0, 3, 8] Record({"cursor": Text(""), "indicator": Text("rsi"), "interval": Text("")})
-  [0, 3, 16] Text("")
-  [0, 3, 32] Record({"cursor": Text(""), "end": Text(""), "indicator": Text("rsi"), "interval": Text("")})
-  [0, 3, 22] Text("")
-  [0, 3, 3] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text("")})
-  [0, 3, 18] Text("")
-  [0, 3, 9] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit": Text("")})
-  [0, 3, 17] Text("")
-  [0, 3, 2] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit": Text(""), "period": Text("")})
-  [0, 3, 13] Text("")
-  [0, 3, 24] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit": Text(""), "period": Text(""), "si… #3dc072769738021d
-  [0, 3, 14] Text("")
-  [0, 3, 4] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit": Text(""), "period": Text(""), "si… #ab9f63705983ae66
-  [0, 3, 21] Text("")
-  [0, 3, 33] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit": Text(""), "period": Text(""), "si… #e202bd6dd7b6ff98
   [0, 3, 19] Text("")
-  [0, 3, 11] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit": Text(""), "period": Text(""), "si… #323f7accc437ee9f
-  [0, 3, 10, 0] Text("(given, defaults) => {\n  const q = { ...defaults };\n  for (const k of Object.keys(defaults)) if (given[k] !== undefined && given[k] !== \"\") q[k] = giv… #c5c798e2de1bd398
-  [0, 3, 10, 2] List([Record({"after": Text("a")}), Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit… #5ee946dc69fd1db6
-  [0, 3, 10, 1] ·
-  [0, 3, 10, 3] ·
-  [0, 3, 10] ·
-  [0, 3, 26] ·
+  [0, 3, 7] Record({"indicator": Text("rsi"), "interval": Text("")})
+  [0, 3, 16] Text("")
+  [0, 3, 8] Record({"cursor": Text(""), "indicator": Text("rsi"), "interval": Text("")})
+  [0, 3, 20] Text("")
+  [0, 3, 32] Record({"cursor": Text(""), "end": Text(""), "indicator": Text("rsi"), "interval": Text("")})
+  [0, 3, 21] Text("")
+  [0, 3, 3] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text("")})
+  [0, 3, 17] Text("")
+  [0, 3, 9] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit": Text("")})
+  [0, 3, 15] Text("")
+  [0, 3, 2] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit": Text(""), "period": Text("")})
+  [0, 3, 12] Text("")
+  [0, 3, 23] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit": Text(""), "period": Text(""), "si… #3dc072769738021d
+  [0, 3, 18] Text("")
+  [0, 3, 4] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit": Text(""), "period": Text(""), "si… #ab9f63705983ae66
+  [0, 3, 13] Text("")
+  [0, 3, 33] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit": Text(""), "period": Text(""), "si… #e202bd6dd7b6ff98
+  [0, 3, 14] Text("")
+  [0, 3, 10] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit": Text(""), "period": Text(""), "si… #323f7accc437ee9f
+  [0, 3, 31, 0] Text("(given, defaults) => {\n  const q = { ...defaults }\n  for (const k of Object.keys(defaults))\n    if (given[k] !== undefined && given[k] !== \"\") q[k] =… #be82135abf5b6dd6
+  [0, 3, 31, 2] List([Record({"after": Text("a")}), Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit… #5ee946dc69fd1db6
+  [0, 3, 31, 1] ·
+  [0, 3, 31, 3] ·
+  [0, 3, 31] ·
   [0, 3, 25] ·
-  [0, 3, 30, 18] Record({})
-  [0, 3, 30, 20] Record({})
-  [0, 3, 30, 23] Text("application/json")
-  [0, 3, 30, 17] Record({"accept": Text("application/json")})
-  [0, 3, 30, 6] ·
-  [0, 3, 30, 25] ·
-  [0, 3, 30, 0] Record({"accept": Text("application/json")})
-  [0, 3, 30, 11] ·
-  [0, 3, 30, 12] ·
-  [0, 3, 30, 7] Number(0.0)
-  [0, 3, 30, 22] ·
-  [0, 3, 30, 21] ·
-  [0, 3, 30, 13] ·
-  [0, 3, 30, 8] ·
-  [0, 3, 30, 3] ·
-  [0, 3, 30, 4] ·
-  [0, 3, 30, 16] ·
-  [0, 3, 30, 5] ·
-  [0, 3, 30, 10] ·
-  [0, 3, 30, 19] Record({})
-  [0, 3, 30, 2] ·
-  [0, 3, 30, 1] ·
-  [0, 3, 30, 24] ·
-  [0, 3, 30, 15] ·
-  [0, 3, 30, 9] ·
-  [0, 3, 30, 26] ·
-  [0, 3, 30] ·
+  [0, 3, 24] ·
+  [0, 3, 29, 18] Record({})
+  [0, 3, 29, 20] Record({})
+  [0, 3, 29, 23] Text("application/json")
+  [0, 3, 29, 17] Record({"accept": Text("application/json")})
+  [0, 3, 29, 6] ·
+  [0, 3, 29, 25] ·
+  [0, 3, 29, 0] Record({"accept": Text("application/json")})
+  [0, 3, 29, 11] ·
+  [0, 3, 29, 12] ·
+  [0, 3, 29, 7] Number(0.0)
+  [0, 3, 29, 22] ·
+  [0, 3, 29, 21] ·
+  [0, 3, 29, 13] ·
+  [0, 3, 29, 8] ·
+  [0, 3, 29, 3] ·
+  [0, 3, 29, 4] ·
+  [0, 3, 29, 16] ·
+  [0, 3, 29, 5] ·
+  [0, 3, 29, 10] ·
+  [0, 3, 29, 19] Record({})
+  [0, 3, 29, 2] ·
+  [0, 3, 29, 1] ·
+  [0, 3, 29, 24] ·
+  [0, 3, 29, 15] ·
+  [0, 3, 29, 9] ·
+  [0, 3, 29, 26] ·
+  [0, 3, 29] ·
   [0, 3] ·
   [0, 4] ·
   [0, 5] ·
@@ -12038,7 +12038,7 @@
   [0, 0, 4] ·
   [0, 0] Record({"body": Text(""), "headers": Record({"content-type": Text("application/json")}), "method": Text("GET"), "params": Record({"network": Text("tea")}), "pat… #e86959e330e65838 | Record({"network": Text("tea")}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("") | ·
   [0, 1] Text("tea")
-  [0, 2, 6] Text("/networks/")
+  [0, 2, 5] Text("/networks/")
   [0, 2, 1, 11] Boolean(true)
   [0, 2, 1, 23] Text("tea")
   [0, 2, 1, 18] Text("")
@@ -12073,17 +12073,17 @@
   [0, 2, 1, 20] Boolean(true)
   [0, 2, 1, 22] Text("tea")
   [0, 2, 1] Text("tea")
-  [0, 2, 9] Text("tea")
-  [0, 2, 7] Text("/pools/search?")
-  [0, 2, 10] Record({})
+  [0, 2, 8] Text("tea")
+  [0, 2, 6] Text("/pools/search?")
+  [0, 2, 9] Record({})
   [0, 2, 0] Number(50.0)
   [0, 2, 4] Record({"limit": Number(50.0)})
-  [0, 2, 5, 0] Text("(given, defaults) => {\n  const q = { ...defaults };\n  for (const k of Object.keys(defaults)) if (given[k] !== undefined && given[k] !== \"\") q[k] = giv… #c5c798e2de1bd398
-  [0, 2, 5, 2] List([Record({"after": Text("a")}), Record({"limit": Number(50.0)})])
-  [0, 2, 5, 1] ·
-  [0, 2, 5, 3] ·
-  [0, 2, 5] ·
-  [0, 2, 8] ·
+  [0, 2, 10, 0] Text("(given, defaults) => {\n  const q = { ...defaults }\n  for (const k of Object.keys(defaults))\n    if (given[k] !== undefined && given[k] !== \"\") q[k] =… #be82135abf5b6dd6
+  [0, 2, 10, 2] List([Record({"after": Text("a")}), Record({"limit": Number(50.0)})])
+  [0, 2, 10, 1] ·
+  [0, 2, 10, 3] ·
+  [0, 2, 10] ·
+  [0, 2, 7] ·
   [0, 2, 2] ·
   [0, 2, 3, 18] Record({})
   [0, 2, 3, 17] Record({})
@@ -12130,7 +12130,7 @@
   [0, 0, 4] Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
   [0, 0] Record({"body": Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\… #31b023b415a5a204 | Record({"network": Text("tea")}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\"event\":\"gig\"… #7441bf0c70954823 | Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
   [0, 1] Text("tea")
-  [0, 2, 6] Text("/networks/")
+  [0, 2, 5] Text("/networks/")
   [0, 2, 1, 11] Boolean(true)
   [0, 2, 1, 23] Text("tea")
   [0, 2, 1, 18] Text("")
@@ -12165,17 +12165,17 @@
   [0, 2, 1, 20] Boolean(true)
   [0, 2, 1, 22] Text("tea")
   [0, 2, 1] Text("tea")
-  [0, 2, 9] Text("tea")
-  [0, 2, 7] Text("/pools/search?")
-  [0, 2, 10] Record({})
+  [0, 2, 8] Text("tea")
+  [0, 2, 6] Text("/pools/search?")
+  [0, 2, 9] Record({})
   [0, 2, 0] Number(50.0)
   [0, 2, 4] Record({"limit": Number(50.0)})
-  [0, 2, 5, 0] Text("(given, defaults) => {\n  const q = { ...defaults };\n  for (const k of Object.keys(defaults)) if (given[k] !== undefined && given[k] !== \"\") q[k] = giv… #c5c798e2de1bd398
-  [0, 2, 5, 2] List([Record({"after": Text("a")}), Record({"limit": Number(50.0)})])
-  [0, 2, 5, 1] ·
-  [0, 2, 5, 3] ·
-  [0, 2, 5] ·
-  [0, 2, 8] ·
+  [0, 2, 10, 0] Text("(given, defaults) => {\n  const q = { ...defaults }\n  for (const k of Object.keys(defaults))\n    if (given[k] !== undefined && given[k] !== \"\") q[k] =… #be82135abf5b6dd6
+  [0, 2, 10, 2] List([Record({"after": Text("a")}), Record({"limit": Number(50.0)})])
+  [0, 2, 10, 1] ·
+  [0, 2, 10, 3] ·
+  [0, 2, 10] ·
+  [0, 2, 7] ·
   [0, 2, 2] ·
   [0, 2, 3, 18] Record({})
   [0, 2, 3, 17] Record({})
@@ -12222,7 +12222,7 @@
   [0, 0, 4] Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
   [0, 0] Record({"body": Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,… #783ff1ba20075342 | Record({"network": Text("tea")}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,14.25,51.25,88.2… #30defbf00c11dd9c | Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
   [0, 1] Text("tea")
-  [0, 2, 6] Text("/networks/")
+  [0, 2, 5] Text("/networks/")
   [0, 2, 1, 11] Boolean(true)
   [0, 2, 1, 23] Text("tea")
   [0, 2, 1, 18] Text("")
@@ -12257,17 +12257,17 @@
   [0, 2, 1, 20] Boolean(true)
   [0, 2, 1, 22] Text("tea")
   [0, 2, 1] Text("tea")
-  [0, 2, 9] Text("tea")
-  [0, 2, 7] Text("/pools/search?")
-  [0, 2, 10] Record({})
+  [0, 2, 8] Text("tea")
+  [0, 2, 6] Text("/pools/search?")
+  [0, 2, 9] Record({})
   [0, 2, 0] Number(50.0)
   [0, 2, 4] Record({"limit": Number(50.0)})
-  [0, 2, 5, 0] Text("(given, defaults) => {\n  const q = { ...defaults };\n  for (const k of Object.keys(defaults)) if (given[k] !== undefined && given[k] !== \"\") q[k] = giv… #c5c798e2de1bd398
-  [0, 2, 5, 2] List([Record({"after": Text("a")}), Record({"limit": Number(50.0)})])
-  [0, 2, 5, 1] ·
-  [0, 2, 5, 3] ·
-  [0, 2, 5] ·
-  [0, 2, 8] ·
+  [0, 2, 10, 0] Text("(given, defaults) => {\n  const q = { ...defaults }\n  for (const k of Object.keys(defaults))\n    if (given[k] !== undefined && given[k] !== \"\") q[k] =… #be82135abf5b6dd6
+  [0, 2, 10, 2] List([Record({"after": Text("a")}), Record({"limit": Number(50.0)})])
+  [0, 2, 10, 1] ·
+  [0, 2, 10, 3] ·
+  [0, 2, 10] ·
+  [0, 2, 7] ·
   [0, 2, 2] ·
   [0, 2, 3, 18] Record({})
   [0, 2, 3, 17] Record({})
@@ -12672,7 +12672,7 @@
   [0, 0] Record({"body": Text(""), "headers": Record({"content-type": Text("application/json")}), "method": Text("GET"), "params": Record({"address": Text("tea"), "netwo… #d6135ff574f366a3 | Record({"address": Text("tea"), "network": Text("tea")}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("") | ·
   [0, 1] Text("tea")
   [0, 2] Text("tea")
-  [0, 3, 10] Text("/networks/")
+  [0, 3, 9] Text("/networks/")
   [0, 3, 3, 11] Boolean(true)
   [0, 3, 3, 23] Text("tea")
   [0, 3, 3, 18] Text("")
@@ -12707,7 +12707,7 @@
   [0, 3, 3, 20] Boolean(true)
   [0, 3, 3, 22] Text("tea")
   [0, 3, 3] Text("tea")
-  [0, 3, 13] Text("tea")
+  [0, 3, 12] Text("tea")
   [0, 3, 0] Text("/pools/")
   [0, 3, 2, 11] Boolean(true)
   [0, 3, 2, 23] Text("tea")
@@ -12743,22 +12743,22 @@
   [0, 3, 2, 20] Boolean(true)
   [0, 3, 2, 22] Text("tea")
   [0, 3, 2] Text("tea")
-  [0, 3, 14] Text("tea")
-  [0, 3, 12] Text("/ohlcv?")
-  [0, 3, 17] Record({})
+  [0, 3, 13] Text("tea")
+  [0, 3, 11] Text("/ohlcv?")
+  [0, 3, 16] Record({})
   [0, 3, 4] Text("-24h")
-  [0, 3, 9] Record({"start": Text("-24h")})
-  [0, 3, 16] Text("24h")
+  [0, 3, 8] Record({"start": Text("-24h")})
+  [0, 3, 15] Text("24h")
   [0, 3, 5] Record({"interval": Text("24h"), "start": Text("-24h")})
   [0, 3, 1] Number(50.0)
   [0, 3, 7] Record({"interval": Text("24h"), "limit": Number(50.0), "start": Text("-24h")})
-  [0, 3, 8, 0] Text("(given, defaults) => {\n  const q = { ...defaults };\n  for (const k of Object.keys(defaults)) if (given[k] !== undefined && given[k] !== \"\") q[k] = giv… #c5c798e2de1bd398
-  [0, 3, 8, 2] List([Record({"after": Text("a")}), Record({"interval": Text("24h"), "limit": Number(50.0), "start": Text("-24h")})])
-  [0, 3, 8, 1] ·
-  [0, 3, 8, 3] ·
-  [0, 3, 8] ·
-  [0, 3, 15] ·
-  [0, 3, 11] ·
+  [0, 3, 17, 0] Text("(given, defaults) => {\n  const q = { ...defaults }\n  for (const k of Object.keys(defaults))\n    if (given[k] !== undefined && given[k] !== \"\") q[k] =… #be82135abf5b6dd6
+  [0, 3, 17, 2] List([Record({"after": Text("a")}), Record({"interval": Text("24h"), "limit": Number(50.0), "start": Text("-24h")})])
+  [0, 3, 17, 1] ·
+  [0, 3, 17, 3] ·
+  [0, 3, 17] ·
+  [0, 3, 14] ·
+  [0, 3, 10] ·
   [0, 3, 6, 18] Record({})
   [0, 3, 6, 17] Record({})
   [0, 3, 6, 22] Text("application/json")
@@ -12805,7 +12805,7 @@
   [0, 0] Record({"body": Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\… #6f2e8ac627e0d384 | Record({"address": Text("tea"), "network": Text("tea")}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\"event\":\"gig\"… #7441bf0c70954823 | Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
   [0, 1] Text("tea")
   [0, 2] Text("tea")
-  [0, 3, 10] Text("/networks/")
+  [0, 3, 9] Text("/networks/")
   [0, 3, 3, 11] Boolean(true)
   [0, 3, 3, 23] Text("tea")
   [0, 3, 3, 18] Text("")
@@ -12840,7 +12840,7 @@
   [0, 3, 3, 20] Boolean(true)
   [0, 3, 3, 22] Text("tea")
   [0, 3, 3] Text("tea")
-  [0, 3, 13] Text("tea")
+  [0, 3, 12] Text("tea")
   [0, 3, 0] Text("/pools/")
   [0, 3, 2, 11] Boolean(true)
   [0, 3, 2, 23] Text("tea")
@@ -12876,22 +12876,22 @@
   [0, 3, 2, 20] Boolean(true)
   [0, 3, 2, 22] Text("tea")
   [0, 3, 2] Text("tea")
-  [0, 3, 14] Text("tea")
-  [0, 3, 12] Text("/ohlcv?")
-  [0, 3, 17] Record({})
+  [0, 3, 13] Text("tea")
+  [0, 3, 11] Text("/ohlcv?")
+  [0, 3, 16] Record({})
   [0, 3, 4] Text("-24h")
-  [0, 3, 9] Record({"start": Text("-24h")})
-  [0, 3, 16] Text("24h")
+  [0, 3, 8] Record({"start": Text("-24h")})
+  [0, 3, 15] Text("24h")
   [0, 3, 5] Record({"interval": Text("24h"), "start": Text("-24h")})
   [0, 3, 1] Number(50.0)
   [0, 3, 7] Record({"interval": Text("24h"), "limit": Number(50.0), "start": Text("-24h")})
-  [0, 3, 8, 0] Text("(given, defaults) => {\n  const q = { ...defaults };\n  for (const k of Object.keys(defaults)) if (given[k] !== undefined && given[k] !== \"\") q[k] = giv… #c5c798e2de1bd398
-  [0, 3, 8, 2] List([Record({"after": Text("a")}), Record({"interval": Text("24h"), "limit": Number(50.0), "start": Text("-24h")})])
-  [0, 3, 8, 1] ·
-  [0, 3, 8, 3] ·
-  [0, 3, 8] ·
-  [0, 3, 15] ·
-  [0, 3, 11] ·
+  [0, 3, 17, 0] Text("(given, defaults) => {\n  const q = { ...defaults }\n  for (const k of Object.keys(defaults))\n    if (given[k] !== undefined && given[k] !== \"\") q[k] =… #be82135abf5b6dd6
+  [0, 3, 17, 2] List([Record({"after": Text("a")}), Record({"interval": Text("24h"), "limit": Number(50.0), "start": Text("-24h")})])
+  [0, 3, 17, 1] ·
+  [0, 3, 17, 3] ·
+  [0, 3, 17] ·
+  [0, 3, 14] ·
+  [0, 3, 10] ·
   [0, 3, 6, 18] Record({})
   [0, 3, 6, 17] Record({})
   [0, 3, 6, 22] Text("application/json")
@@ -12938,7 +12938,7 @@
   [0, 0] Record({"body": Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,… #15fda95337cf7aab | Record({"address": Text("tea"), "network": Text("tea")}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,14.25,51.25,88.2… #30defbf00c11dd9c | Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
   [0, 1] Text("tea")
   [0, 2] Text("tea")
-  [0, 3, 10] Text("/networks/")
+  [0, 3, 9] Text("/networks/")
   [0, 3, 3, 11] Boolean(true)
   [0, 3, 3, 23] Text("tea")
   [0, 3, 3, 18] Text("")
@@ -12973,7 +12973,7 @@
   [0, 3, 3, 20] Boolean(true)
   [0, 3, 3, 22] Text("tea")
   [0, 3, 3] Text("tea")
-  [0, 3, 13] Text("tea")
+  [0, 3, 12] Text("tea")
   [0, 3, 0] Text("/pools/")
   [0, 3, 2, 11] Boolean(true)
   [0, 3, 2, 23] Text("tea")
@@ -13009,22 +13009,22 @@
   [0, 3, 2, 20] Boolean(true)
   [0, 3, 2, 22] Text("tea")
   [0, 3, 2] Text("tea")
-  [0, 3, 14] Text("tea")
-  [0, 3, 12] Text("/ohlcv?")
-  [0, 3, 17] Record({})
+  [0, 3, 13] Text("tea")
+  [0, 3, 11] Text("/ohlcv?")
+  [0, 3, 16] Record({})
   [0, 3, 4] Text("-24h")
-  [0, 3, 9] Record({"start": Text("-24h")})
-  [0, 3, 16] Text("24h")
+  [0, 3, 8] Record({"start": Text("-24h")})
+  [0, 3, 15] Text("24h")
   [0, 3, 5] Record({"interval": Text("24h"), "start": Text("-24h")})
   [0, 3, 1] Number(50.0)
   [0, 3, 7] Record({"interval": Text("24h"), "limit": Number(50.0), "start": Text("-24h")})
-  [0, 3, 8, 0] Text("(given, defaults) => {\n  const q = { ...defaults };\n  for (const k of Object.keys(defaults)) if (given[k] !== undefined && given[k] !== \"\") q[k] = giv… #c5c798e2de1bd398
-  [0, 3, 8, 2] List([Record({"after": Text("a")}), Record({"interval": Text("24h"), "limit": Number(50.0), "start": Text("-24h")})])
-  [0, 3, 8, 1] ·
-  [0, 3, 8, 3] ·
-  [0, 3, 8] ·
-  [0, 3, 15] ·
-  [0, 3, 11] ·
+  [0, 3, 17, 0] Text("(given, defaults) => {\n  const q = { ...defaults }\n  for (const k of Object.keys(defaults))\n    if (given[k] !== undefined && given[k] !== \"\") q[k] =… #be82135abf5b6dd6
+  [0, 3, 17, 2] List([Record({"after": Text("a")}), Record({"interval": Text("24h"), "limit": Number(50.0), "start": Text("-24h")})])
+  [0, 3, 17, 1] ·
+  [0, 3, 17, 3] ·
+  [0, 3, 17] ·
+  [0, 3, 14] ·
+  [0, 3, 10] ·
   [0, 3, 6, 18] Record({})
   [0, 3, 6, 17] Record({})
   [0, 3, 6, 22] Text("application/json")
@@ -13071,7 +13071,7 @@
   [0, 0] Record({"body": Text(""), "headers": Record({"content-type": Text("application/json")}), "method": Text("GET"), "params": Record({"address": Text("tea"), "netwo… #6e7bcb5106b38899 | Record({"address": Text("tea"), "network": Text("tea")}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("") | ·
   [0, 1] Text("tea")
   [0, 2] Text("tea")
-  [0, 3, 25] Text("/networks/")
+  [0, 3, 24] Text("/networks/")
   [0, 3, 7, 11] Boolean(true)
   [0, 3, 7, 23] Text("tea")
   [0, 3, 7, 18] Text("")
@@ -13106,7 +13106,7 @@
   [0, 3, 7, 20] Boolean(true)
   [0, 3, 7, 22] Text("tea")
   [0, 3, 7] Text("tea")
-  [0, 3, 28] Text("tea")
+  [0, 3, 27] Text("tea")
   [0, 3, 1] Text("/pools/")
   [0, 3, 6, 11] Boolean(true)
   [0, 3, 6, 23] Text("tea")
@@ -13142,38 +13142,38 @@
   [0, 3, 6, 20] Boolean(true)
   [0, 3, 6, 22] Text("tea")
   [0, 3, 6] Text("tea")
-  [0, 3, 29] Text("tea")
-  [0, 3, 14] Text("/indicators?")
-  [0, 3, 31] Record({})
+  [0, 3, 28] Text("tea")
+  [0, 3, 13] Text("/indicators?")
+  [0, 3, 30] Record({})
   [0, 3, 0] Text("rsi")
   [0, 3, 2] Record({"indicator": Text("rsi")})
-  [0, 3, 15] Text("")
+  [0, 3, 18] Text("")
   [0, 3, 8] Record({"indicator": Text("rsi"), "interval": Text("")})
-  [0, 3, 17] Text("")
+  [0, 3, 23] Text("")
   [0, 3, 10] Record({"cursor": Text(""), "indicator": Text("rsi"), "interval": Text("")})
   [0, 3, 19] Text("")
   [0, 3, 32] Record({"cursor": Text(""), "end": Text(""), "indicator": Text("rsi"), "interval": Text("")})
-  [0, 3, 24] Text("")
-  [0, 3, 4] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text("")})
   [0, 3, 16] Text("")
+  [0, 3, 4] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text("")})
+  [0, 3, 15] Text("")
   [0, 3, 11] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit": Text("")})
-  [0, 3, 21] Text("")
+  [0, 3, 14] Text("")
   [0, 3, 3] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit": Text(""), "period": Text("")})
-  [0, 3, 22] Text("")
-  [0, 3, 26] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit": Text(""), "period": Text(""), "si… #3dc072769738021d
-  [0, 3, 18] Text("")
-  [0, 3, 5] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit": Text(""), "period": Text(""), "si… #ab9f63705983ae66
   [0, 3, 20] Text("")
+  [0, 3, 25] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit": Text(""), "period": Text(""), "si… #3dc072769738021d
+  [0, 3, 21] Text("")
+  [0, 3, 5] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit": Text(""), "period": Text(""), "si… #ab9f63705983ae66
+  [0, 3, 17] Text("")
   [0, 3, 33] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit": Text(""), "period": Text(""), "si… #e202bd6dd7b6ff98
-  [0, 3, 23] Text("")
-  [0, 3, 13] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit": Text(""), "period": Text(""), "si… #323f7accc437ee9f
-  [0, 3, 12, 0] Text("(given, defaults) => {\n  const q = { ...defaults };\n  for (const k of Object.keys(defaults)) if (given[k] !== undefined && given[k] !== \"\") q[k] = giv… #c5c798e2de1bd398
-  [0, 3, 12, 2] List([Record({"after": Text("a")}), Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit… #5ee946dc69fd1db6
-  [0, 3, 12, 1] ·
-  [0, 3, 12, 3] ·
-  [0, 3, 12] ·
-  [0, 3, 30] ·
-  [0, 3, 27] ·
+  [0, 3, 22] Text("")
+  [0, 3, 12] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit": Text(""), "period": Text(""), "si… #323f7accc437ee9f
+  [0, 3, 31, 0] Text("(given, defaults) => {\n  const q = { ...defaults }\n  for (const k of Object.keys(defaults))\n    if (given[k] !== undefined && given[k] !== \"\") q[k] =… #be82135abf5b6dd6
+  [0, 3, 31, 2] List([Record({"after": Text("a")}), Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit… #5ee946dc69fd1db6
+  [0, 3, 31, 1] ·
+  [0, 3, 31, 3] ·
+  [0, 3, 31] ·
+  [0, 3, 29] ·
+  [0, 3, 26] ·
   [0, 3, 9, 18] Record({})
   [0, 3, 9, 17] Record({})
   [0, 3, 9, 22] Text("application/json")
@@ -13220,7 +13220,7 @@
   [0, 0] Record({"body": Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\… #f4adab0ec82eff24 | Record({"address": Text("tea"), "network": Text("tea")}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\"event\":\"gig\"… #7441bf0c70954823 | Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
   [0, 1] Text("tea")
   [0, 2] Text("tea")
-  [0, 3, 25] Text("/networks/")
+  [0, 3, 24] Text("/networks/")
   [0, 3, 7, 11] Boolean(true)
   [0, 3, 7, 23] Text("tea")
   [0, 3, 7, 18] Text("")
@@ -13255,7 +13255,7 @@
   [0, 3, 7, 20] Boolean(true)
   [0, 3, 7, 22] Text("tea")
   [0, 3, 7] Text("tea")
-  [0, 3, 28] Text("tea")
+  [0, 3, 27] Text("tea")
   [0, 3, 1] Text("/pools/")
   [0, 3, 6, 11] Boolean(true)
   [0, 3, 6, 23] Text("tea")
@@ -13291,38 +13291,38 @@
   [0, 3, 6, 20] Boolean(true)
   [0, 3, 6, 22] Text("tea")
   [0, 3, 6] Text("tea")
-  [0, 3, 29] Text("tea")
-  [0, 3, 14] Text("/indicators?")
-  [0, 3, 31] Record({})
+  [0, 3, 28] Text("tea")
+  [0, 3, 13] Text("/indicators?")
+  [0, 3, 30] Record({})
   [0, 3, 0] Text("rsi")
   [0, 3, 2] Record({"indicator": Text("rsi")})
-  [0, 3, 15] Text("")
+  [0, 3, 18] Text("")
   [0, 3, 8] Record({"indicator": Text("rsi"), "interval": Text("")})
-  [0, 3, 17] Text("")
+  [0, 3, 23] Text("")
   [0, 3, 10] Record({"cursor": Text(""), "indicator": Text("rsi"), "interval": Text("")})
   [0, 3, 19] Text("")
   [0, 3, 32] Record({"cursor": Text(""), "end": Text(""), "indicator": Text("rsi"), "interval": Text("")})
-  [0, 3, 24] Text("")
-  [0, 3, 4] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text("")})
   [0, 3, 16] Text("")
+  [0, 3, 4] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text("")})
+  [0, 3, 15] Text("")
   [0, 3, 11] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit": Text("")})
-  [0, 3, 21] Text("")
+  [0, 3, 14] Text("")
   [0, 3, 3] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit": Text(""), "period": Text("")})
-  [0, 3, 22] Text("")
-  [0, 3, 26] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit": Text(""), "period": Text(""), "si… #3dc072769738021d
-  [0, 3, 18] Text("")
-  [0, 3, 5] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit": Text(""), "period": Text(""), "si… #ab9f63705983ae66
   [0, 3, 20] Text("")
+  [0, 3, 25] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit": Text(""), "period": Text(""), "si… #3dc072769738021d
+  [0, 3, 21] Text("")
+  [0, 3, 5] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit": Text(""), "period": Text(""), "si… #ab9f63705983ae66
+  [0, 3, 17] Text("")
   [0, 3, 33] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit": Text(""), "period": Text(""), "si… #e202bd6dd7b6ff98
-  [0, 3, 23] Text("")
-  [0, 3, 13] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit": Text(""), "period": Text(""), "si… #323f7accc437ee9f
-  [0, 3, 12, 0] Text("(given, defaults) => {\n  const q = { ...defaults };\n  for (const k of Object.keys(defaults)) if (given[k] !== undefined && given[k] !== \"\") q[k] = giv… #c5c798e2de1bd398
-  [0, 3, 12, 2] List([Record({"after": Text("a")}), Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit… #5ee946dc69fd1db6
-  [0, 3, 12, 1] ·
-  [0, 3, 12, 3] ·
-  [0, 3, 12] ·
-  [0, 3, 30] ·
-  [0, 3, 27] ·
+  [0, 3, 22] Text("")
+  [0, 3, 12] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit": Text(""), "period": Text(""), "si… #323f7accc437ee9f
+  [0, 3, 31, 0] Text("(given, defaults) => {\n  const q = { ...defaults }\n  for (const k of Object.keys(defaults))\n    if (given[k] !== undefined && given[k] !== \"\") q[k] =… #be82135abf5b6dd6
+  [0, 3, 31, 2] List([Record({"after": Text("a")}), Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit… #5ee946dc69fd1db6
+  [0, 3, 31, 1] ·
+  [0, 3, 31, 3] ·
+  [0, 3, 31] ·
+  [0, 3, 29] ·
+  [0, 3, 26] ·
   [0, 3, 9, 18] Record({})
   [0, 3, 9, 17] Record({})
   [0, 3, 9, 22] Text("application/json")
@@ -13369,7 +13369,7 @@
   [0, 0] Record({"body": Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,… #2dcd1b55424b667b | Record({"address": Text("tea"), "network": Text("tea")}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,14.25,51.25,88.2… #30defbf00c11dd9c | Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
   [0, 1] Text("tea")
   [0, 2] Text("tea")
-  [0, 3, 25] Text("/networks/")
+  [0, 3, 24] Text("/networks/")
   [0, 3, 7, 11] Boolean(true)
   [0, 3, 7, 23] Text("tea")
   [0, 3, 7, 18] Text("")
@@ -13404,7 +13404,7 @@
   [0, 3, 7, 20] Boolean(true)
   [0, 3, 7, 22] Text("tea")
   [0, 3, 7] Text("tea")
-  [0, 3, 28] Text("tea")
+  [0, 3, 27] Text("tea")
   [0, 3, 1] Text("/pools/")
   [0, 3, 6, 11] Boolean(true)
   [0, 3, 6, 23] Text("tea")
@@ -13440,38 +13440,38 @@
   [0, 3, 6, 20] Boolean(true)
   [0, 3, 6, 22] Text("tea")
   [0, 3, 6] Text("tea")
-  [0, 3, 29] Text("tea")
-  [0, 3, 14] Text("/indicators?")
-  [0, 3, 31] Record({})
+  [0, 3, 28] Text("tea")
+  [0, 3, 13] Text("/indicators?")
+  [0, 3, 30] Record({})
   [0, 3, 0] Text("rsi")
   [0, 3, 2] Record({"indicator": Text("rsi")})
-  [0, 3, 15] Text("")
+  [0, 3, 18] Text("")
   [0, 3, 8] Record({"indicator": Text("rsi"), "interval": Text("")})
-  [0, 3, 17] Text("")
+  [0, 3, 23] Text("")
   [0, 3, 10] Record({"cursor": Text(""), "indicator": Text("rsi"), "interval": Text("")})
   [0, 3, 19] Text("")
   [0, 3, 32] Record({"cursor": Text(""), "end": Text(""), "indicator": Text("rsi"), "interval": Text("")})
-  [0, 3, 24] Text("")
-  [0, 3, 4] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text("")})
   [0, 3, 16] Text("")
+  [0, 3, 4] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text("")})
+  [0, 3, 15] Text("")
   [0, 3, 11] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit": Text("")})
-  [0, 3, 21] Text("")
+  [0, 3, 14] Text("")
   [0, 3, 3] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit": Text(""), "period": Text("")})
-  [0, 3, 22] Text("")
-  [0, 3, 26] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit": Text(""), "period": Text(""), "si… #3dc072769738021d
-  [0, 3, 18] Text("")
-  [0, 3, 5] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit": Text(""), "period": Text(""), "si… #ab9f63705983ae66
   [0, 3, 20] Text("")
+  [0, 3, 25] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit": Text(""), "period": Text(""), "si… #3dc072769738021d
+  [0, 3, 21] Text("")
+  [0, 3, 5] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit": Text(""), "period": Text(""), "si… #ab9f63705983ae66
+  [0, 3, 17] Text("")
   [0, 3, 33] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit": Text(""), "period": Text(""), "si… #e202bd6dd7b6ff98
-  [0, 3, 23] Text("")
-  [0, 3, 13] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit": Text(""), "period": Text(""), "si… #323f7accc437ee9f
-  [0, 3, 12, 0] Text("(given, defaults) => {\n  const q = { ...defaults };\n  for (const k of Object.keys(defaults)) if (given[k] !== undefined && given[k] !== \"\") q[k] = giv… #c5c798e2de1bd398
-  [0, 3, 12, 2] List([Record({"after": Text("a")}), Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit… #5ee946dc69fd1db6
-  [0, 3, 12, 1] ·
-  [0, 3, 12, 3] ·
-  [0, 3, 12] ·
-  [0, 3, 30] ·
-  [0, 3, 27] ·
+  [0, 3, 22] Text("")
+  [0, 3, 12] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit": Text(""), "period": Text(""), "si… #323f7accc437ee9f
+  [0, 3, 31, 0] Text("(given, defaults) => {\n  const q = { ...defaults }\n  for (const k of Object.keys(defaults))\n    if (given[k] !== undefined && given[k] !== \"\") q[k] =… #be82135abf5b6dd6
+  [0, 3, 31, 2] List([Record({"after": Text("a")}), Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit… #5ee946dc69fd1db6
+  [0, 3, 31, 1] ·
+  [0, 3, 31, 3] ·
+  [0, 3, 31] ·
+  [0, 3, 29] ·
+  [0, 3, 26] ·
   [0, 3, 9, 18] Record({})
   [0, 3, 9, 17] Record({})
   [0, 3, 9, 22] Text("application/json")

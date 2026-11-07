@@ -1645,8 +1645,9 @@ limits, its `fuel` (instructions per call, 200M when not written) and `memory` (
 deploy asks for and the host's policy caps. `"50M"`, `"2K"`, `"16MB"` are numbers with a scale.
 
 The body is read by the same TypeScript parser, as a function, and is never Holon: nothing in it is
-interpolated or renamed, and `fmt` never touches it, so the source is part of the unit's identity,
-verbatim (P3 stops at the brace). Types in it are blanked to spaces before Boa sees it (Boa runs
+interpolated or renamed, so the source is part of the unit's identity, verbatim (P3 stops at the
+brace). `fmt` lays a body out as it does the rest, so a body laid out anew is a new unit that does
+the same. Types in it are blanked to spaces before Boa sees it (Boa runs
 JavaScript), so its lines and columns stay where they were and a change to a type alone is not a
 new version. It is never `async` or a generator. A body sees only its arguments: `undefined` for an
 absent value inside a list, every core value as its JavaScript counterpart
@@ -1992,14 +1993,15 @@ decides.
   builder; a function to the hash frozen for it in this file. Every hash the flow depends on is in
   the document's `units` closure, which is its lockfile.
 - **Canonical text.** `holon fmt` is a source formatter (`lang/format.rs`): it lays the TypeScript
-  out as written, Prettier's way: two spaces, double quotes, no semicolons, 100 columns, a list that
-  doesn't fit broken one item to a line with a trailing comma, an object the text broke kept
-  broken, a function passed last hugged by its call. It keeps every comment and a blank line where
-  the text had one; a comment inside an expression keeps its statement as written. It rewrites
-  `var` to `const` (or `let` where it is assigned again) and `==` to `===`, and never touches a
-  `js()` body, whose text is its identity. One rule is Holon's own: a handler's options after its
-  function stay beside the function's closing brace, `}, { log: "lazy" })`. It writes a text only
-  once that text compiles to the same flow, its comments all there. `fmt(fmt(t)) = fmt(t)`. Two
+  out as Prettier does, through Oxfmt's formatter (`oxc_formatter`): two spaces, double quotes, no
+  semicolons, 100 columns, a list that doesn't fit broken one item to a line with a trailing comma,
+  an object the text broke kept broken, a function passed last hugged by its call, a chain of
+  calls that doesn't fit broken one call to a line. It keeps every comment and a blank line where
+  the text had one, and an object's key quoted or not as written. It rewrites `var` to `const` (or
+  `let` where it is assigned again) and `==` to `===`, outside a `js()` body, which it lays out as
+  JavaScript. It writes a text only once that text is the same program but for its layout and
+  compiles to the same flow but for its `js()` bodies' text, its comments all there.
+  `fmt(fmt(t)) = fmt(t)`. Two
   texts that lower to the same document stay two texts under `fmt`, each as its author wrote it;
   the printer (§11) writes one text for one document. The samples are kept as `fmt` writes them,
   and a test says so.

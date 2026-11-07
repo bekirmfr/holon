@@ -13,37 +13,41 @@ function fee(total: number, vip) {
     return 5
   }
 }
-route.post("/order", async (req) => {
-  const { items, who } = req.json
-  let total = req.json.base
-  switch (who) {
-    case "vip":
-      total = total * 2
-      break
-    // the rest
-    default:
-      total = total + 2
-  }
-  if (
-    req.json.coupon === "X-COUPON-ONE" ||
-    req.json.coupon === "X-COUPON-TWO" ||
-    req.json.coupon === "X-THREE"
-  )
-    total = total - 1
-  const paid = await charge({
-    total: total + fee(total, who === "vip"),
-    items: items,
-    who: who,
-    note: "a long enough note to break",
-  })
-  return (
-    (paid.answer ?? 0) > 0 &&
-    paid.run > 0 &&
-    paid.message === "none" &&
-    total > 0 &&
-    who !== "nobody"
-  )
-}, { log: "lazy" })
+route.post(
+  "/order",
+  async (req) => {
+    const { items, who } = req.json
+    let total = req.json.base
+    switch (who) {
+      case "vip":
+        total = total * 2
+        break
+      // the rest
+      default:
+        total = total + 2
+    }
+    if (
+      req.json.coupon === "X-COUPON-ONE" ||
+      req.json.coupon === "X-COUPON-TWO" ||
+      req.json.coupon === "X-THREE"
+    )
+      total = total - 1
+    const paid = await charge({
+      total: total + fee(total, who === "vip"),
+      items: items,
+      who: who,
+      note: "a long enough note to break",
+    })
+    return (
+      (paid.answer ?? 0) > 0 &&
+      paid.run > 0 &&
+      paid.message === "none" &&
+      total > 0 &&
+      who !== "nobody"
+    )
+  },
+  { log: "lazy" },
+)
 export const pay = action(async (order) => {
   const paid = await event("paid", { expires: "1d" })
   return paid.method

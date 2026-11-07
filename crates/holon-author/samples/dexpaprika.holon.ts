@@ -34,13 +34,14 @@ flow("dexpaprika", { port: 8172 })
 // isn't JSON; 502 and why when the call got no answer).
 function dexpaprika(path) {
   const response = dexpaprika_com.get(path, {
-    headers: { accept: "application/json", authorization: dexpaprika_key } ??
-      { accept: "application/json" },
+    headers: { accept: "application/json", authorization: dexpaprika_key } ?? {
+      accept: "application/json",
+    },
   })
   const answer = {
     status: response.status === 0 ? 502 : response.status,
-    body: (JSON.parse(response.body) ?? response.body) ??
-      { error: response.error, message: response.message },
+    body: JSON.parse(response.body) ??
+      response.body ?? { error: response.error, message: response.message },
   }
   return answer
 }
@@ -55,7 +56,8 @@ function networks() {
 // so one that would add a segment, a query or a fragment is absent, and nothing is sent. Holon
 // refuses a path with whitespace or a control character itself.
 function segment(value) {
-  const ok = value !== "" &&
+  const ok =
+    value !== "" &&
     value !== "." &&
     value !== ".." &&
     value.indexOf("/") < 0 &&
@@ -63,8 +65,8 @@ function segment(value) {
     value.indexOf("?") < 0 &&
     value.indexOf("#") < 0 &&
     value.indexOf("%") < 0
-    ? value
-    : undefined
+      ? value
+      : undefined
   return ok
 }
 
@@ -83,9 +85,13 @@ function stats() {
 // send: { type: 'query' }: each parameter the caller gave, else the node's default for it, escaped
 // as axios would, the empty ones left out.
 const query = js(function text(given, defaults) {
-  const q = { ...defaults };
-  for (const k of Object.keys(defaults)) if (given[k] !== undefined && given[k] !== "") q[k] = given[k];
-  return Object.entries(q).filter(([, v]) => v !== "").map(([k, v]) => `${k}=${encodeURIComponent(v)}`).join("&");
+  const q = { ...defaults }
+  for (const k of Object.keys(defaults))
+    if (given[k] !== undefined && given[k] !== "") q[k] = given[k]
+  return Object.entries(q)
+    .filter(([, v]) => v !== "")
+    .map(([k, v]) => `${k}=${encodeURIComponent(v)}`)
+    .join("&")
 })
 
 // Token: Search, across every network.
@@ -119,13 +125,14 @@ function prices(network, given) {
 // The same on the pro host, which two token operations name as their own baseURL.
 function dexpaprika_pro(path) {
   const response = api_pro.get(path, {
-    headers: { accept: "application/json", authorization: dexpaprika_key } ??
-      { accept: "application/json" },
+    headers: { accept: "application/json", authorization: dexpaprika_key } ?? {
+      accept: "application/json",
+    },
   })
   const answer = {
     status: response.status === 0 ? 502 : response.status,
-    body: (JSON.parse(response.body) ?? response.body) ??
-      { error: response.error, message: response.message },
+    body: JSON.parse(response.body) ??
+      response.body ?? { error: response.error, message: response.message },
   }
   return answer
 }

@@ -17,9 +17,24 @@ flow("guestbook", { port: 8122 })
 
 // Renders the page: the form to sign, then each entry with how long ago it was signed.
 const page = js(function html(book, clock) {
-  const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
-  const ago = (t) => { const s = clock - t; return s < 60 ? "just now" : s < 3600 ? `${Math.floor(s / 60)} min ago` : s < 86400 ? `${Math.floor(s / 3600)} h ago` : `${Math.floor(s / 86400)} days ago`; };
-  const items = Object.values(book).map((e) => `<li><b>${esc(e.name)}</b> ${esc(e.note)} <small>${ago(e.at)}</small></li>`);
+  const esc = (s) =>
+    String(s).replace(
+      /[&<>"']/g,
+      (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c],
+    )
+  const ago = (t) => {
+    const s = clock - t
+    return s < 60
+      ? "just now"
+      : s < 3600
+        ? `${Math.floor(s / 60)} min ago`
+        : s < 86400
+          ? `${Math.floor(s / 3600)} h ago`
+          : `${Math.floor(s / 86400)} days ago`
+  }
+  const items = Object.values(book).map(
+    (e) => `<li><b>${esc(e.name)}</b> ${esc(e.note)} <small>${ago(e.at)}</small></li>`,
+  )
   return `<!doctype html>
 <meta charset="utf-8">
 <title>Guestbook</title>
@@ -30,20 +45,20 @@ const page = js(function html(book, clock) {
   <p><textarea name="note" rows="3" placeholder="Leave a note" required maxlength="280"></textarea></p>
   <p><button>Sign</button></p>
 </form>
-<ul>${items.length ? items.join("\n") : "<li><i>Nobody has signed yet.</i></li>"}</ul>`;
+<ul>${items.length ? items.join("\n") : "<li><i>Nobody has signed yet.</i></li>"}</ul>`
 })
 
 // Parses a posted form into its fields, and fails when the name or the note is empty.
 const form = js(function fields(body) {
-  const decode = (s) => decodeURIComponent(s.replace(/\+/g, " "));
-  const fields = {};
+  const decode = (s) => decodeURIComponent(s.replace(/\+/g, " "))
+  const fields = {}
   for (const part of body.split("&")) {
-    if (part === "") continue;
-    const i = part.indexOf("=");
-    fields[decode(i < 0 ? part : part.slice(0, i))] = i < 0 ? "" : decode(part.slice(i + 1));
+    if (part === "") continue
+    const i = part.indexOf("=")
+    fields[decode(i < 0 ? part : part.slice(0, i))] = i < 0 ? "" : decode(part.slice(i + 1))
   }
-  if (!fields.name || !fields.note) throw new Error("a signature needs a name and a note");
-  return fields;
+  if (!fields.name || !fields.note) throw new Error("a signature needs a name and a note")
+  return fields
 })
 
 // The guestbook page, as HTML.

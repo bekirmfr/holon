@@ -133,7 +133,9 @@ outputs:  total, weight
 - **Shape is identity.** Two `js` nodes with the same ports, source and budgets are one unit, in
   any flow. A change to a character of the body is a new unit. Binding and node names are not in
   it (P3); the body's text is, verbatim, including whitespace and comments, because the engine
-  sees it. `fmt` therefore never touches a body. The one normalization is the line ending: a
+  sees it. `fmt` once never touched a body for this; it lays bodies out now (2026-11-07,
+  typescript-syntax-L4.md §13), each laid out anew a new unit that does the same, and checks it
+  is the same JavaScript but for layout. The one normalization is the line ending: a
   body is stored with `\n`.
 - **The printer** recognises the shape (a composite whose children are exactly one `const`, one
   `list`, one engine instance and zero or more `field` nodes wired as above) and prints the

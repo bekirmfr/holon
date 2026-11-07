@@ -17,11 +17,9 @@ flow("notes-api", { port: 8102 })
 
 // A page of notes, in key order, after the id given (from the start without one). It only reads,
 // so it is lazy: recorded, on disk within a second of its answer.
-route.get(
-  "/notes",
-  (req) => notes.list({ after: req.query.after ?? "", limit: 50 }),
-  { log: "lazy" },
-)
+route.get("/notes", (req) => notes.list({ after: req.query.after ?? "", limit: 50 }), {
+  log: "lazy",
+})
 
 // Keeps the posted JSON as the note with this id, replacing any before it.
 route.put("/notes/:id", (req) => {

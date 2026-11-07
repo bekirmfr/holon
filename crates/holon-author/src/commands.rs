@@ -310,11 +310,11 @@ mod tests {
 
     const HELLO: &str = "import { flow, route } from \"holon\"\n\nflow(\"hello-api\", { port: 8101 })\n\nroute.get(\"/hello/:name\", (req) => {\n  const name = req.params.name\n  const hi = \"Hello, \"\n  const greet = `${hi}${name}`\n  return greet\n})\n";
 
-    /// A js body is JavaScript, kept as written: fmt leaves a `#` in it (a colour, a private
-    /// field) and its comments alone, and keeps the comments around it.
+    /// A js body is JavaScript, laid out as such: fmt keeps a `#` in it (a colour, a private
+    /// field) and its comments, and the comments around it.
     #[test]
-    fn fmt_leaves_a_hash_inside_a_js_body_alone() {
-        let src = "import { flow, js, route } from \"holon\"\n\nflow(\"f\", { port: 8203 })\n\n// the page\nconst page = js(function html(x) {\n  return `<style>a{color:#777}</style>${x}`; // #not a holon comment\n})\n\nroute.get(\"/p\", (req) => {\n  return page(req.query.x ?? \"y\")\n  // answered\n})\n";
+    fn fmt_keeps_a_hash_inside_a_js_body() {
+        let src = "import { flow, js, route } from \"holon\"\n\nflow(\"f\", { port: 8203 })\n\n// the page\nconst page = js(function html(x) {\n  return `<style>a{color:#777}</style>${x}` // #not a holon comment\n})\n\nroute.get(\"/p\", (req) => {\n  return page(req.query.x ?? \"y\")\n  // answered\n})\n";
         let out = fmt("f.holon.ts", src).unwrap();
         assert_eq!(out, src, "{out}");
         assert_eq!(fmt("f.holon.ts", &out).unwrap(), out, "and again");
@@ -494,7 +494,7 @@ mod tests {
         assert_eq!((r.code, r.err.clone()), (0, vec![]), "{r:?}");
         let r = check("o.holon.ts", "import { action, flow } from \"holon\"\nimport httpbin from \"host:httpbin.org\"\n\nflow(\"o\")\n\nexport const ping = action(async () => (await httpbin.get(\"/uuid\")).body, { log: \"lazy\" })\n");
         assert_eq!((r.code, r.err.clone()), (0, vec![]), "{r:?}");
-        let files = "import { every, flow, on } from \"holon\"\nimport seen from \"collection:seen\"\nimport inbox from \"folder:inbox\"\nimport { now } from \"holon:clock\"\n\nflow(\"f\")\n\non.file.created(inbox, (f) => {\n  seen[f.name] = f.size\n}, { log: \"unrecorded\" })\n\nevery(\"1m\", () => {\n  seen[\"tick\"] = now\n}, { log: \"lazy\" })\n";
+        let files = "import { every, flow, on } from \"holon\"\nimport seen from \"collection:seen\"\nimport inbox from \"folder:inbox\"\nimport { now } from \"holon:clock\"\n\nflow(\"f\")\n\non.file.created(\n  inbox,\n  (f) => {\n    seen[f.name] = f.size\n  },\n  { log: \"unrecorded\" },\n)\n\nevery(\n  \"1m\",\n  () => {\n    seen[\"tick\"] = now\n  },\n  { log: \"lazy\" },\n)\n";
         assert_eq!(fmt("f.holon.ts", files).unwrap(), files);
         let r = check("f.holon.ts", files);
         assert_eq!((r.code, r.err.clone()), (0, vec![]), "{r:?}");

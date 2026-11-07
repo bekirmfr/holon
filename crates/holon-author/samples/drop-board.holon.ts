@@ -34,7 +34,7 @@ new EventSource("/live").onmessage = (e) => {
   li.textContent = file.event + " " + file.name + (file.event === "deleted" ? "" : " (" + file.size + " bytes)");
   list.prepend(li);
 };
-</script>`;
+</script>`
 })
 
 // A file new or changed in the folder: count it, and send it to the page.

@@ -21,19 +21,31 @@ import reports from "folder:reports"
 flow("inbox-report", { port: 8123 })
 
 // Summarizes a CSV: how many rows, and a Markdown table of each number column's total.
-const summarize = js(function summarize(name, csv) {
-  const lines = csv.split("\n").filter((line) => line.trim() !== "");
-  if (lines.length === 0) throw new Error("the CSV has no header line");
-  const header = lines[0].split(",").map((cell) => cell.trim());
-  const records = lines.slice(1).map((line) => line.split(",").map((cell) => cell.trim()));
-  const totals = header.flatMap((column, i) => {
-    const numbers = records.map((record) => Number(record[i] ?? ""));
-    const all = numbers.length > 0 && numbers.every((n) => !Number.isNaN(n));
-    return all ? [`| ${column} | ${numbers.reduce((a, b) => a + b, 0)} |`] : [];
-  });
-  const report = [`# ${name}`, "", `${records.length} rows.`, "", "| column | total |", "|---|---|", ...totals, ""].join("\n");
-  return { rows: records.length, report };
-}, { outputs: ["rows", "report"] })
+const summarize = js(
+  function summarize(name, csv) {
+    const lines = csv.split("\n").filter((line) => line.trim() !== "")
+    if (lines.length === 0) throw new Error("the CSV has no header line")
+    const header = lines[0].split(",").map((cell) => cell.trim())
+    const records = lines.slice(1).map((line) => line.split(",").map((cell) => cell.trim()))
+    const totals = header.flatMap((column, i) => {
+      const numbers = records.map((record) => Number(record[i] ?? ""))
+      const all = numbers.length > 0 && numbers.every((n) => !Number.isNaN(n))
+      return all ? [`| ${column} | ${numbers.reduce((a, b) => a + b, 0)} |`] : []
+    })
+    const report = [
+      `# ${name}`,
+      "",
+      `${records.length} rows.`,
+      "",
+      "| column | total |",
+      "|---|---|",
+      ...totals,
+      "",
+    ].join("\n")
+    return { rows: records.length, report }
+  },
+  { outputs: ["rows", "report"] },
+)
 
 // Reads the named CSV from the inbox, writes its report to reports, and answers the report's name.
 route.post("/report", (req) => {

@@ -937,6 +937,10 @@ Each refusal says what to write instead.
   - **`holon fmt` becomes a source formatter**: it lays out the TypeScript as written (Prettier's
     layout), rewrites `var` (§5) and `==`, and never touches a `js()` body, whose text is its
     identity (reference.md:540-541). CLAUDE.md's "kept as `fmt` writes it" then means this.
+    *Since 2026-11-07* the layout is Oxfmt's formatter (`oxc_formatter`, which shares the
+    parser's tree), so it is Prettier's in full, method chains included, and `js()` bodies are
+    laid out too: a body laid out anew is a new unit that does the same, as fmt checks it is the
+    same JavaScript but for layout.
   - **The graph printer stays** for exporting a canvas as text, printing the `const` form.
 - **Types, checked.** A `holon.d.ts` for `"holon"` and the import prefixes, so any TypeScript
   language server completes `route.post` and `on.file.created` and checks what they take and give:

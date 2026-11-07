@@ -35,7 +35,7 @@ new EventSource("/live").onmessage = (e) => {
   li.textContent = "tick " + tick.n + " at " + new Date(tick.at * 1000).toLocaleTimeString();
   list.prepend(li);
 };
-</script>`;
+</script>`
 })
 
 // Every 2 seconds: one more tick in the count, and sent on the channel with its time.
