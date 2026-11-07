@@ -1,7 +1,7 @@
 //! A deployed flow's request, in-process, the way the server runs it: the sample compiled from its
 //! text, its server unit read, the route's endpoint run through `holon_host::run_rounds` with the
 //! request record a listener makes (crates/holon/src/data.rs `request_record`), under a resolver
-//! that keeps every unit's shape (crates/holon/src/units.rs `Loaded`) and an observer that times
+//! that keeps every unit's shape and children (crates/holon/src/units.rs `Loaded`) and an observer that times
 //! each node down to three levels and keeps what it produced (crates/holon/src/recorder.rs
 //! `Timer`). Outbound requests answer from a stub, collection reads with a number, effects are
 //! only recorded: what is timed is the evaluator and the host's rounds around it.
@@ -12,25 +12,29 @@
 
 use std::collections::BTreeMap;
 use std::hint::black_box;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use holon_author::composites::Names;
 use holon_author::flow::flow_unit;
-use holon_core::{read_server, Capability, Hash, MapResolver, Observer, Resolver, Shape, Shapes, Slot, Unit, Value};
+use holon_core::{hash_unit, read_server, Capability, Hash, MapResolver, Observer, Resolved, Resolver, Shape, Shapes, Slot, Unit, Value};
 use holon_host::{run_rounds, Host, Limits, Performer, Waits};
 
-/// The server's resolver: every unit's shape kept.
+/// The server's resolver: every unit shared, and its shape and children kept.
 struct Keeping {
-    store: MapResolver,
+    units: BTreeMap<Hash, Arc<Unit>>,
     shapes: Shapes,
 }
 
 impl Resolver for Keeping {
     fn resolve(&self, hash: &Hash) -> Option<&Unit> {
-        self.store.resolve(hash)
+        self.units.get(hash).map(|u| u.as_ref())
     }
     fn shape(&self, unit: &Unit) -> Option<&Shape> {
         self.shapes.get(unit)
+    }
+    fn resolved(&self, unit: &Unit) -> Option<&Resolved> {
+        self.shapes.resolved(unit)
     }
 }
 
@@ -128,8 +132,9 @@ fn route(text: &str, method: &str, path: &str) -> Route {
     let server = flow_unit(&lowered.doc.nodes, &lowered.doc.edges, &mut store, &port).unwrap_or_else(|e| panic!("{e}"));
     let server = read_server(store.resolve(&server).expect("stored"), &store).unwrap_or_else(|e| panic!("{e:?}"));
     let endpoint = server.routes.iter().find(|r| r.method == method && r.path == path).unwrap_or_else(|| panic!("no route {method} {path}")).endpoint;
-    let shapes = Shapes::of(store.units());
-    Route { resolver: Keeping { store, shapes }, endpoint }
+    let units: BTreeMap<Hash, Arc<Unit>> = store.units().map(|u| (hash_unit(u).expect("hashed"), Arc::new(u.clone()))).collect();
+    let shapes = Shapes::kept(units.values(), |h| units.get(h));
+    Route { resolver: Keeping { units, shapes }, endpoint }
 }
 
 /// The record a listener makes of a request (data.rs `request_record`).

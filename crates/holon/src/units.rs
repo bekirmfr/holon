@@ -2,7 +2,7 @@
 
 use crate::*;
 use std::collections::HashMap;
-use holon_core::{Shape, Shapes};
+use holon_core::{Resolved, Shape, Shapes};
 
 pub(crate) fn handle_get_unit(store: &SharedStore, hash_hex: &str) -> Response {
     let Some(key) = parse_hash(hash_hex) else {
@@ -155,8 +155,9 @@ pub(crate) fn handle_post_fork(registry: &Mutex<Registry<SharedStore>>, request:
 /// it, so a closure promises no more than the store has. Such a closure isn't kept (`closure`).
 ///
 /// It keeps each composite's shape beside its units (docs/L4s/interpreter-path-L4.md, step 1b),
-/// found by the unit itself: the units are `Arc`s the closure holds, so each stays where the
-/// shapes found it for as long as the closure lives.
+/// and its children resolved (js-library-races/leaves.md §8.1), found by the unit itself: the
+/// units are `Arc`s the closure holds, so each stays where the shapes found it for as long as the
+/// closure lives, and a hash resolves to one unit for ever.
 #[derive(Clone, Default)]
 pub(crate) struct Loaded(Arc<Held>);
 
@@ -169,7 +170,7 @@ pub(crate) struct Held {
 
 impl Loaded {
     fn of(units: BTreeMap<Hash, Arc<Unit>>) -> Loaded {
-        let shapes = Shapes::of(units.values().map(|u| u.as_ref()));
+        let shapes = Shapes::kept(units.values(), |h| units.get(h));
         Loaded(Arc::new(Held { units, shapes }))
     }
 }
@@ -181,6 +182,10 @@ impl Resolver for Loaded {
 
     fn shape(&self, unit: &Unit) -> Option<&Shape> {
         self.0.shapes.get(unit)
+    }
+
+    fn resolved(&self, unit: &Unit) -> Option<&Resolved> {
+        self.0.shapes.resolved(unit)
     }
 }
 
@@ -319,7 +324,7 @@ pub(crate) fn counted_for_tests(unit: &Unit) -> u64 {
 }
 
 /// About what a closure takes beside its units: its tree of them (nodes of 11 hashes and `Arc`s,
-/// about two thirds full) and its shapes (`Shapes::footprint`).
+/// about two thirds full) and its shapes and kept children (`Shapes::footprint`).
 fn closure_footprint(loaded: &Loaded) -> u64 {
     let n = loaded.0.units.len() as u64;
     let node = 11 * (32 + 8) + 24 + 16;

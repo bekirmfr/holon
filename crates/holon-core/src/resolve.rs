@@ -34,6 +34,15 @@ pub trait Resolver {
     fn shape(&self, _unit: &Unit) -> Option<&crate::Shape> {
         None
     }
+
+    /// The children kept for `unit` (a composite this resolver handed out, found by the unit
+    /// itself, see [`crate::Shapes::kept`]), resolved as this resolver resolves them, so a run
+    /// needn't resolve them again. The default keeps none. A wrapper that resolves as the resolver
+    /// it wraps forwards; one that stands a unit of its own in for a hash (a sourced value's
+    /// constant, a design mode's mock) forwards only where it never does, or not at all.
+    fn resolved(&self, _unit: &Unit) -> Option<&crate::Resolved> {
+        None
+    }
 }
 
 /// In-memory resolver (Phase A): a deterministic map, populated as units are built.

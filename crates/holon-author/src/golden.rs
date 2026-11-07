@@ -9,8 +9,9 @@ use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
 use std::cell::Cell;
+use std::sync::Arc;
 
-use holon_core::{eval_observed, parse_hash, Observer, Resolver, Shape, Shapes, Slot, Unit, Value};
+use holon_core::{eval_observed, hash_unit, parse_hash, Hash, Observer, Resolved, Resolver, Shape, Shapes, Slot, Unit, Value};
 
 use crate::composites::Names;
 use crate::lang;
@@ -100,22 +101,35 @@ fn bodies() -> Vec<String> {
 /// A handler to evaluate: its label, its unit's hash, and each input it is given.
 type Case = (String, String, Vec<Vec<Option<Value>>>);
 
-/// A store with each composite's shape kept, as the server keeps them (holon/src/units.rs), counting
-/// the runs that found one.
+/// A store with each composite's shape and children kept, as the server keeps them
+/// (holon/src/units.rs), counting the runs that found them.
 struct Kept<'a> {
-    real: &'a MapResolver,
+    units: BTreeMap<Hash, Arc<Unit>>,
     shapes: Shapes,
     found: &'a Cell<usize>,
 }
 
+impl<'a> Kept<'a> {
+    fn over(store: &MapResolver, found: &'a Cell<usize>) -> Kept<'a> {
+        let units: BTreeMap<Hash, Arc<Unit>> = store.units().map(|u| (hash_unit(u).expect("hashed"), Arc::new(u.clone()))).collect();
+        let shapes = Shapes::kept(units.values(), |h| units.get(h));
+        Kept { units, shapes, found }
+    }
+}
+
 impl Resolver for Kept<'_> {
-    fn resolve(&self, hash: &holon_core::Hash) -> Option<&Unit> {
-        self.real.resolve(hash)
+    fn resolve(&self, hash: &Hash) -> Option<&Unit> {
+        self.units.get(hash).map(|u| u.as_ref())
     }
     fn shape(&self, unit: &Unit) -> Option<&Shape> {
         let shape = self.shapes.get(unit);
         self.found.set(self.found.get() + shape.is_some() as usize);
         shape
+    }
+    fn resolved(&self, unit: &Unit) -> Option<&Resolved> {
+        let resolved = self.shapes.resolved(unit);
+        self.found.set(self.found.get() + resolved.is_some() as usize);
+        resolved
     }
 }
 
@@ -143,12 +157,15 @@ fn record(found: Option<&Cell<usize>>) -> String {
         for c in &server.clocks {
             cases.push((c.label.clone(), c.hash.clone(), vec![vec![]]));
         }
+        let kept = found.map(|found| Kept::over(&store, found));
         for (label, hash, inputs) in cases {
-            let unit = store.resolve(&parse_hash(&hash).unwrap()).unwrap_or_else(|| panic!("{name} {label}: unit"));
+            let hash = parse_hash(&hash).unwrap();
+            let unit = store.resolve(&hash).unwrap_or_else(|| panic!("{name} {label}: unit"));
             for (i, input) in inputs.iter().enumerate() {
                 let mut steps = Steps(String::new());
-                let outputs = match found {
-                    Some(found) => eval_observed(unit, input, &Kept { real: &store, shapes: Shapes::of(store.units()), found }, &mut steps),
+                let outputs = match &kept {
+                    // The handler as the kept store holds it, so its own children are found too.
+                    Some(kept) => eval_observed(kept.resolve(&hash).expect("kept"), input, kept, &mut steps),
                     None => eval_observed(unit, input, &store, &mut steps),
                 };
                 let shown_out: Vec<String> = outputs.iter().map(|o| o.as_ref().map_or("·".into(), shown)).collect();
@@ -188,13 +205,13 @@ fn the_evaluator_gives_what_its_golden_record_holds() {
     panic!("the record has {} lines, the evaluator now {} (last case: {case}, line {line})", kept.lines().count(), now.lines().count());
 }
 
-/// Keeping each composite's shape across runs (docs/L4s/interpreter-path-L4.md, step 1b) gives the
-/// very record working it out for each run gives.
+/// Keeping each composite's shape and children across runs (docs/L4s/interpreter-path-L4.md, step
+/// 1b; js-library-races/leaves.md §8.1) gives the very record working them out for each run gives.
 #[test]
 fn keeping_each_composites_shape_changes_nothing_the_evaluator_gives() {
     let found = Cell::new(0);
     let kept = record(Some(&found));
-    assert!(found.get() > 1000, "the kept shapes were found {} times", found.get());
+    assert!(found.get() > 1000, "the kept shapes and children were found {} times", found.get());
     assert!(kept == record(None), "a run with the shapes kept gives something else");
 }
 

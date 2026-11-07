@@ -7,35 +7,49 @@
 //! fill about 20 ms, after one to warm up, as the races time. A filter argument
 //! (`cargo bench -p holon-author --bench perf_audit -- fold`) runs the cases whose name has it.
 //! Written against the public API alone, so the same file builds against the evaluator before
-//! the change and after it, and the two binaries can be raced in turn.
+//! a change and after it, and the two binaries can be raced in turn (from the kept children on,
+//! `Shapes::kept`; before them, a race drops the "children kept" rows).
 
 mod race;
 
+use std::collections::BTreeMap;
 use std::hint::black_box;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use holon_core::{eval, eval_observed, hash_unit, interface_of, MapResolver, Observer, Param, Port, Resolver, Shape, Shapes, Slot, Type, Unit, Value};
+use holon_core::{eval, eval_observed, hash_unit, interface_of, Hash, MapResolver, Observer, Param, Port, Resolved, Resolver, Shape, Shapes, Slot, Type, Unit, Value};
 use race::{function, leaf, num, numbers, text, v, Composite};
 
-/// A resolver that keeps every unit's shape, as the server's does (crates/holon/src/units.rs,
-/// `Loaded::shape`), over a store nothing is added to while it is used.
-struct Keeping<'a> {
-    store: &'a MapResolver,
+/// A resolver that keeps every unit shared and its shape, as the server's does
+/// (crates/holon/src/units.rs, `Loaded`), and with `children` each composite's children resolved,
+/// as the server's now does too.
+struct Keeping {
+    units: BTreeMap<Hash, Arc<Unit>>,
     shapes: Shapes,
 }
 
-impl<'a> Keeping<'a> {
-    fn over(store: &'a MapResolver) -> Keeping<'a> {
-        Keeping { store, shapes: Shapes::of(store.units()) }
+impl Keeping {
+    fn over(store: &MapResolver, children: bool) -> Keeping {
+        let units: BTreeMap<Hash, Arc<Unit>> = store.units().map(|u| (hash_unit(u).expect("hashed"), Arc::new(u.clone()))).collect();
+        let shapes = if children { Shapes::kept(units.values(), |h| units.get(h)) } else { Shapes::of(units.values().map(|u| u.as_ref())) };
+        Keeping { units, shapes }
+    }
+
+    /// `c`'s own unit as this resolver holds it, so its shape is found by where it lives.
+    fn top(&self, c: &Composite) -> &Unit {
+        &self.units[&hash_unit(&c.unit).expect("hashed")]
     }
 }
 
-impl Resolver for Keeping<'_> {
-    fn resolve(&self, hash: &holon_core::Hash) -> Option<&Unit> {
-        self.store.resolve(hash)
+impl Resolver for Keeping {
+    fn resolve(&self, hash: &Hash) -> Option<&Unit> {
+        self.units.get(hash).map(|u| u.as_ref())
     }
     fn shape(&self, unit: &Unit) -> Option<&Shape> {
         self.shapes.get(unit)
+    }
+    fn resolved(&self, unit: &Unit) -> Option<&Resolved> {
+        self.shapes.resolved(unit)
     }
 }
 
@@ -84,39 +98,46 @@ fn row(case: &str, n: usize, ns: f64) {
     println!("| {case} | {n} | {ns:.1} |");
 }
 
-/// A compiled function's own unit as the store holds it (the harness keeps a copy outside it),
-/// so a resolver keeping shapes by address finds the top unit's too.
+/// A compiled function's own unit as the store holds it (the harness keeps a copy outside it).
 fn stored(c: &Composite) -> &Unit {
     c.store.resolve(&hash_unit(&c.unit).expect("hashed")).expect("stored")
 }
 
-/// One call at the top level of `c` on `inputs`, four ways: plain `eval` and under a reading
-/// observer, each with a resolver that keeps no shapes (the races', the tests') and one that
-/// keeps them (the server's).
+/// One call at the top level of `c` on `inputs`, six ways: plain `eval` and under a reading
+/// observer, each with a resolver that keeps nothing (the races', the tests'), one that keeps
+/// shapes (the server's before the kept children) and one that keeps children too (the server's).
 fn top_level(name: &str, c: &Composite, n: usize, inputs: &[Value]) {
     let ins: Vec<Option<Value>> = inputs.iter().cloned().map(Some).collect();
     let unit = stored(c);
-    let keeping = Keeping::over(&c.store);
+    let (shapes, children) = (Keeping::over(&c.store, false), Keeping::over(&c.store, true));
     let want = eval(unit, &ins, &c.store).into_vec();
-    assert_eq!(eval_observed(unit, &ins, &keeping, &mut Reading::default()).into_vec(), want, "{name}");
+    for keeping in [&shapes, &children] {
+        assert_eq!(eval_observed(keeping.top(c), &ins, keeping, &mut Reading::default()).into_vec(), want, "{name}");
+    }
     let case = |how: &str| format!("top {name}, {how}");
     if race::wanted(&case("")) {
         row(&case("eval, map resolver"), n, time(|| {
             black_box(eval(unit, black_box(&ins), &c.store));
         }));
-        row(&case("eval, shapes kept"), n, time(|| {
-            black_box(eval(unit, black_box(&ins), &keeping));
-        }));
+        for (how, keeping) in [("shapes kept", &shapes), ("children kept", &children)] {
+            let top = keeping.top(c);
+            row(&case(&format!("eval, {how}")), n, time(|| {
+                black_box(eval(top, black_box(&ins), keeping));
+            }));
+        }
         row(&case("reading observer, map resolver"), n, time(|| {
             let mut seen = Reading::default();
             black_box(eval_observed(unit, black_box(&ins), &c.store, &mut seen));
             black_box(seen);
         }));
-        row(&case("reading observer, shapes kept"), n, time(|| {
-            let mut seen = Reading::default();
-            black_box(eval_observed(unit, black_box(&ins), &keeping, &mut seen));
-            black_box(seen);
-        }));
+        for (how, keeping) in [("shapes kept", &shapes), ("children kept", &children)] {
+            let top = keeping.top(c);
+            row(&case(&format!("reading observer, {how}")), n, time(|| {
+                let mut seen = Reading::default();
+                black_box(eval_observed(top, black_box(&ins), keeping, &mut seen));
+                black_box(seen);
+            }));
+        }
     }
 }
 

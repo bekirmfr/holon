@@ -38,6 +38,7 @@ use std::cell::{OnceCell, RefCell};
 use std::collections::HashMap;
 use std::hash::{BuildHasherDefault, Hasher};
 use std::rc::Rc;
+use std::sync::Arc;
 
 /// The evaluator's own output shape (P4.7 + the SmallVec perf inch, 2026-07-02).
 /// Inline storage for 0 or 1 outputs — every genesis primitive declares exactly one, forever,
@@ -232,8 +233,8 @@ fn eval_at(
 
 /// What a node is, as evaluating it needs to know: decided from its unit once, where a composite
 /// prepares its children (docs/L4s/interpreter-path-L4.md, step 5's first level), instead of by
-/// its name at every evaluation. Per run, not kept: a resolver may hand a run its own unit for a
-/// hash (a sourced value's constant).
+/// its name at every evaluation. Per run, unless the resolver keeps the children it resolves
+/// ([`Resolved`]): another may hand a run its own unit for a hash (a sourced value's constant).
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct NodeKind {
     body: Body,
@@ -846,15 +847,55 @@ impl Shape {
     }
 }
 
+/// A composite's children as a host's resolver resolves them, what each is, and the composite's
+/// [`Shape`]: what preparing it for a run works out, kept beside the units ([`Shapes::kept`],
+/// [`Resolver::resolved`]) so that one call of it pays its run and not its preparation
+/// (js-library-races/leaves.md §8.1). The children are the very units the resolver holds, shared.
+#[derive(Clone, Debug)]
+pub struct Resolved {
+    shape: Shape,
+    units: Box<[Arc<Unit>]>,
+    /// What each child is ([`NodeKind`]): a function of the child alone.
+    kinds: Box<[NodeKind]>,
+    /// Some child is a leaf that reads a capability ([`Resolved::reads_capability`]).
+    reads_capability: bool,
+}
+
+impl Resolved {
+    fn of(shape: Shape, units: Box<[Arc<Unit>]>) -> Resolved {
+        let kinds = units.iter().map(|u| NodeKind::of(u)).collect();
+        let reads_capability = units.iter().any(|u| match &u.body {
+            UnitBody::Primitive { name } => crate::capabilities_of(name, &u.params).is_some_and(|caps| !caps.is_empty()),
+            _ => false,
+        });
+        Resolved { shape, units, kinds, reads_capability }
+    }
+
+    /// Whether some child is a leaf that reads a capability (`capabilities_of`): a host that
+    /// sources the capability's value stands a constant of its own in for that child, so a
+    /// resolver doing so forwards these children only when none is.
+    pub fn reads_capability(&self) -> bool {
+        self.reads_capability
+    }
+}
+
+/// What a host keeps of one composite: its shape, and its children when they all resolved.
+#[derive(Clone, Debug)]
+enum Kept {
+    Shape(Shape),
+    Resolved(Resolved),
+}
+
 /// The shapes of a set of units a host keeps, each found by the unit itself: by where it lives,
 /// not by its hash, so finding one costs no hashing and a unit a resolver makes up for one run (a
-/// sourced constant) never meets a shape that isn't its own.
+/// sourced constant) never meets a shape that isn't its own. Built with [`Shapes::kept`], it keeps
+/// each composite's children resolved beside its shape ([`Resolved`]).
 ///
 /// Sound as long as the units outlive the table and don't move: an address the table holds is
 /// then the address of that very unit, and no other unit can live there. A host builds it over
 /// units it holds behind a pointer (an `Arc`, a `Box`) and keeps the two together.
 #[derive(Clone, Debug, Default)]
-pub struct Shapes(HashMap<usize, Shape, BuildHasherDefault<AddressHasher>>);
+pub struct Shapes(HashMap<usize, Kept, BuildHasherDefault<AddressHasher>>);
 
 impl Shapes {
     /// The shape of each composite among `units`.
@@ -862,32 +903,71 @@ impl Shapes {
         let mut shapes = HashMap::default();
         for unit in units {
             if let Some(shape) = Shape::of_unit(unit) {
-                shapes.insert(unit as *const Unit as usize, shape);
+                shapes.insert(unit as *const Unit as usize, Kept::Shape(shape));
             }
         }
         Shapes(shapes)
     }
 
-    /// `unit`'s shape, when it is one of the units the table was built over.
-    pub fn get(&self, unit: &Unit) -> Option<&Shape> {
+    /// [`Shapes::of`], with each composite's children resolved by `resolve` and kept beside its
+    /// shape ([`Resolved`]): for a host whose resolver hands out, for each hash, the unit `resolve`
+    /// gives and no other (the server's, holon's `units.rs`). A composite one of whose children
+    /// doesn't resolve keeps its shape alone.
+    pub fn kept<'u>(units: impl IntoIterator<Item = &'u Arc<Unit>>, resolve: impl Fn(&Hash) -> Option<&'u Arc<Unit>>) -> Shapes {
+        let mut kept = HashMap::default();
+        for unit in units {
+            let UnitBody::Composite { children, edges } = &unit.body else { continue };
+            let shape = Shape::of(children.len(), edges);
+            let entry = match children.iter().map(|h| resolve(h).cloned()).collect::<Option<Box<[Arc<Unit>]>>>() {
+                Some(units) => Kept::Resolved(Resolved::of(shape, units)),
+                None => Kept::Shape(shape),
+            };
+            kept.insert(&**unit as *const Unit as usize, entry);
+        }
+        Shapes(kept)
+    }
+
+    fn find(&self, unit: &Unit) -> Option<&Kept> {
         if self.0.is_empty() {
             return None;
         }
         self.0.get(&(unit as *const Unit as usize))
     }
 
+    /// `unit`'s shape, when it is one of the units the table was built over.
+    pub fn get(&self, unit: &Unit) -> Option<&Shape> {
+        match self.find(unit)? {
+            Kept::Shape(shape) => Some(shape),
+            Kept::Resolved(resolved) => Some(&resolved.shape),
+        }
+    }
+
+    /// `unit`'s children, when it is one of the units the table was built over and they were kept
+    /// ([`Shapes::kept`]).
+    pub fn resolved(&self, unit: &Unit) -> Option<&Resolved> {
+        match self.find(unit)? {
+            Kept::Resolved(resolved) => Some(resolved),
+            Kept::Shape(_) => None,
+        }
+    }
+
     pub fn len(&self) -> usize {
         self.0.len()
     }
 
-    /// About what the table takes in memory: its map (a bucket and a half a shape) and each
-    /// shape's lists. For a cache that counts what it keeps (holon's flow cache).
+    /// About what the table takes in memory: its map (a bucket and a half an entry), each shape's
+    /// lists, and each kept child's pointer and kind. For a cache that counts what it keeps
+    /// (holon's flow cache).
     pub fn footprint(&self) -> u64 {
         const ALLOC: u64 = 16;
-        let bucket = (std::mem::size_of::<usize>() + std::mem::size_of::<Shape>()) as u64 + 1;
+        let bucket = (std::mem::size_of::<usize>() + std::mem::size_of::<Kept>()) as u64 + 1;
         self.0
             .values()
-            .map(|shape| {
+            .map(|kept| {
+                let (shape, children) = match kept {
+                    Kept::Shape(shape) => (shape, 0),
+                    Kept::Resolved(r) => (&r.shape, (r.units.len() * 8 + r.kinds.len() * std::mem::size_of::<NodeKind>()) as u64 + 2 * ALLOC),
+                };
                 let i = &shape.incoming;
                 bucket * 3 / 2
                     + (i.starts.capacity() * 4) as u64
@@ -895,6 +975,7 @@ impl Shapes {
                     + (i.outputs.capacity() * std::mem::size_of::<Option<(u32, u32)>>()) as u64
                     + (shape.roots.capacity() * 8) as u64
                     + 4 * ALLOC
+                    + children
             })
             .sum()
     }
@@ -926,8 +1007,9 @@ impl Hasher for AddressHasher {
 /// What evaluating a composite needs of its unit alone, whatever its inputs: its children
 /// resolved, and its [`Shape`]. Made once for a `map`'s or `fold`'s function and run for every
 /// item, instead of made again for each (docs/L4s/request-path-L4.md §4.5): it depends on
-/// nothing an application changes. Its children are resolved for each run, never kept: a
-/// resolver may hand a run its own unit under a hash (a sourced value's constant).
+/// nothing an application changes. Its children are taken from the resolver when it keeps them
+/// ([`Resolved`]), and otherwise resolved for each run: a resolver may hand a run its own unit
+/// under a hash (a sourced value's constant).
 struct Prepared<'r> {
     unit: &'r Unit,
     resolved: Vec<&'r Unit>,
@@ -1093,6 +1175,15 @@ impl<'r> Prepared<'r> {
     /// None when a child doesn't resolve or the edges hold a cycle: then nothing is evaluable,
     /// and every declared output slot is absent.
     fn of(unit: &'r Unit, children: &[Hash], edges: &[Edge], resolver: &'r impl Resolver) -> Option<Prepared<'r>> {
+        // Kept by the resolver, resolved once: the same children, kinds and shape as below.
+        if let Some(kept) = resolver.resolved(unit) {
+            if kept.shape.cyclic {
+                return None;
+            }
+            let resolved = kept.units.iter().map(|u| &**u).collect();
+            let shape = ShapeOf::Resolver(&kept.shape);
+            return Some(Prepared { unit, resolved, kinds: kept.kinds.to_vec(), shape, scratch: RefCell::new(Vec::new()), plan: None, many: None });
+        }
         // Resolve children (by hash). Any unresolved ⇒ nothing evaluable — every declared output
         // slot is absent (the vec's *length* is still the declared contract; only the values are
         // absent, mirroring how `inputs` already has a fixed length with individually-absent slots).
@@ -2757,6 +2848,74 @@ mod tests {
             walk_and_plan_agree(unit, children, edges, *n_out, &r, Events::default);
         }
         assert!(guarded > 1000, "pass-throughs tried: {guarded}");
+    }
+
+    /// A resolver that keeps each composite's children resolved, as the server's does (holon's
+    /// `units.rs`): every unit `r` holds, shared.
+    struct Keeping {
+        units: BTreeMap<Hash, Arc<Unit>>,
+        shapes: Shapes,
+    }
+
+    impl Keeping {
+        fn over(r: &MapResolver) -> Keeping {
+            let units: BTreeMap<Hash, Arc<Unit>> = r.units().map(|u| (crate::hash_unit(u).unwrap(), Arc::new(u.clone()))).collect();
+            let shapes = Shapes::kept(units.values(), |h| units.get(h));
+            Keeping { units, shapes }
+        }
+    }
+
+    impl Resolver for Keeping {
+        fn resolve(&self, hash: &Hash) -> Option<&Unit> {
+            self.units.get(hash).map(|u| u.as_ref())
+        }
+        fn shape(&self, unit: &Unit) -> Option<&Shape> {
+            self.shapes.get(unit)
+        }
+        fn resolved(&self, unit: &Unit) -> Option<&Resolved> {
+            self.shapes.resolved(unit)
+        }
+    }
+
+    /// Children the resolver keeps ([`Shapes::kept`]) give what resolving them for each run gives,
+    /// on 3,000 random composites, each run at the top, and inside another composite beside a
+    /// `map` it is the function of: the same events in the same order, and the same outputs. A
+    /// composite one of whose children doesn't resolve keeps its shape alone.
+    #[test]
+    fn children_the_resolver_keeps_give_what_resolving_them_gives() {
+        let mut r = MapResolver::new();
+        let mut units = Vec::new();
+        random_composites(&mut r, 3000, |u, _, _, _, _| units.push(u.clone()));
+        let mut roots = Vec::new();
+        for unit in units {
+            // Twin children no edge tells apart don't hash: such a unit is never stored.
+            let Ok(inner) = r.insert(unit) else { continue };
+            let map = r.insert(over("map", &inner, 1)).unwrap();
+            let outer = multi_composite(
+                vec![Port { name: "xs".into(), ty: Type::list_any() }, nport("b")],
+                vec![Type::Any, Type::Number],
+                vec![map, inner],
+                vec![edge(BOUNDARY, 0, 0, 0), edge(BOUNDARY, 1, 0, 1), edge(BOUNDARY, 1, 1, 0), edge(BOUNDARY, 1, 1, 1), edge(0, 0, BOUNDARY, 0), edge(1, 0, BOUNDARY, 1)],
+            );
+            roots.push((inner, r.insert(outer).unwrap()));
+        }
+        let keeping = Keeping::over(&r);
+        let mut kept = 0;
+        for (inner, outer) in &roots {
+            for (h, inputs) in [(inner, vec![Some(num(3.0)), Some(num(0.0))]), (outer, vec![Some(list(vec![num(1.0), num(-2.0), num(0.0)])), Some(num(4.0))])] {
+                let unit = keeping.resolve(h).unwrap();
+                kept += keeping.resolved(unit).is_some() as usize;
+                let (mut want, mut got) = (Events::default(), Events::default());
+                let want_out = eval_observed(r.resolve(h).unwrap(), &inputs, &r, &mut want);
+                assert_eq!(eval_observed(unit, &inputs, &keeping, &mut got), want_out);
+                assert_eq!(got.0, want.0);
+            }
+        }
+        assert!(roots.len() > 2000, "composites stored: {}", roots.len());
+        assert_eq!(kept, 2 * roots.len(), "every composite's children kept");
+        let lost = Arc::new(composite(vec![], Type::Number, vec![[7; 32]], vec![edge(0, 0, BOUNDARY, 0)]));
+        let shapes = Shapes::kept([&lost], |_| None);
+        assert!(shapes.get(&lost).is_some() && shapes.resolved(&lost).is_none(), "a child that doesn't resolve: its shape alone");
     }
 
     /// A pass-through whose condition an observer stands in `false` for: the plan's check finds

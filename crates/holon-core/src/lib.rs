@@ -66,7 +66,7 @@ pub use primitives::{MAX_AWAIT_SECONDS, MAX_RANGE};
 pub use determinism::is_finite_number;
 pub use encapsulate::{default_spec, derive_and_freeze, EncapError, EncapSpec, Expose, Promote};
 pub use promote::{instantiate, open_param, open_params, ParamError};
-pub use eval::{choice_next, eval, eval_observed, eval_one, would_plan, Answer, Choice, NoObserver, Observer, Shape, Shapes, Slot};
+pub use eval::{choice_next, eval, eval_observed, eval_one, would_plan, Answer, Choice, NoObserver, Observer, Resolved, Shape, Shapes, Slot};
 pub use fork::{refork, Refork};
 pub use advisory::{advise, Advisory};
 pub use catalog::{family_values, function_takes, genesis_units, interface_of, open_trigger, takes_trigger, CALLS, FAMILIES, GENESIS, PASSES_EXTRA, TRIGGER, TRIGGERED, VARIADIC};

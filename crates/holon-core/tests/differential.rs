@@ -1,5 +1,6 @@
 //! A differential harness for the evaluator (`eval.rs`, `primitives.rs`), through the public API
-//! only, so it compiles against any version of those two files and can compare them case by case.
+//! only, so it compiles against any version of those two files from the kept children on
+//! (`Shapes::kept`) and can compare them case by case.
 //!
 //! A deterministic generator builds "worlds" (a resolver holding leaves, composites nested up to
 //! four levels, and `map`s and `fold`s of them, bare ones included) and, in each, cases: a unit and
@@ -11,7 +12,8 @@
 //! oracle (`eval_eager`, with `--features eager-oracle`) and against itself (plain `eval` against
 //! the observed run, a repeat against the first run).
 //!
-//! Worlds differ by seed: odd seeds give the resolver `Shapes`; seed % 4 == 3 adds edges
+//! Worlds differ by seed: odd seeds give the resolver `Shapes`, which keep each composite's
+//! children too when seed % 4 == 1 (`Shapes::kept`); seed % 4 == 3 adds edges
 //! `validate` refuses (ports out of range, missing children, duplicates, cycles, leaves fed at a
 //! port they don't declare); seed % 4 == 1 adds leaves declaring a port more than they use, which
 //! `validate` takes; seeds 0 and 2 (mod 4) hold catalog interfaces and valid edges only.
@@ -39,10 +41,11 @@
 #![allow(clippy::collapsible_if, clippy::manual_is_multiple_of)]
 
 use holon_core::{
-    eval, eval_observed, eval_one, hash_unit, hex, interface_of, Answer, Edge, Hash, ModuleLimits, Observer, Param, Port, Resolver, Shape, Shapes, Slot,
-    Type, Unit, UnitBody, Value, BOUNDARY,
+    eval, eval_observed, eval_one, hash_unit, hex, interface_of, Answer, Edge, Hash, ModuleLimits, Observer, Param, Port, Resolved, Resolver, Shape,
+    Shapes, Slot, Type, Unit, UnitBody, Value, BOUNDARY,
 };
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::sync::Arc;
 use std::fmt::Write as _;
 
 // ───────────────────────────── randomness ─────────────────────────────
@@ -163,17 +166,17 @@ fn items(rng: &mut Rng) -> Option<Value> {
 
 // ───────────────────────────── the resolver ─────────────────────────────
 
-/// Units by hash, each boxed so it never moves (a `Shapes` table may hold their addresses), with
-/// a fake module engine.
+/// Units by hash, each shared so it never moves (a `Shapes` table may hold their addresses, and
+/// keep them as children), with a fake module engine.
 struct Res {
-    units: HashMap<Hash, Box<Unit>>,
+    units: HashMap<Hash, Arc<Unit>>,
     shapes: Option<Shapes>,
 }
 
 impl Res {
     fn insert(&mut self, unit: Unit) -> Option<Hash> {
         let h = hash_unit(&unit).ok()?;
-        self.units.entry(h).or_insert_with(|| Box::new(unit));
+        self.units.entry(h).or_insert_with(|| Arc::new(unit));
         Some(h)
     }
 }
@@ -184,6 +187,9 @@ impl Resolver for Res {
     }
     fn shape(&self, unit: &Unit) -> Option<&Shape> {
         self.shapes.as_ref()?.get(unit)
+    }
+    fn resolved(&self, unit: &Unit) -> Option<&Resolved> {
+        self.shapes.as_ref()?.resolved(unit)
     }
     fn run_module(&self, bytes: &[u8], _limits: &ModuleLimits, inputs: &[Option<Value>]) -> Result<Vec<Option<Value>>, String> {
         match bytes.first() {
@@ -660,7 +666,9 @@ impl World {
                 }
             }
         }
-        if seed % 2 == 1 {
+        if seed % 4 == 1 {
+            w.res.shapes = Some(Shapes::kept(w.res.units.values(), |h| w.res.units.get(h)));
+        } else if seed % 2 == 1 {
             w.res.shapes = Some(Shapes::of(w.res.units.values().map(|b| &**b)));
         }
         w

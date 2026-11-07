@@ -372,6 +372,12 @@ impl<R: Resolver> Resolver for SourcedResolver<'_, R> {
         self.real.shape(unit)
     }
 
+    /// The children the real resolver keeps, where none is a leaf this resolver may stand a
+    /// constant in for: with nothing sourced, or no child reading a capability.
+    fn resolved(&self, unit: &holon_core::Unit) -> Option<&holon_core::Resolved> {
+        self.real.resolved(unit).filter(|kept| self.sourced.is_empty() || !kept.reads_capability())
+    }
+
     fn run_module(&self, bytes: &[u8], limits: &holon_core::ModuleLimits, inputs: &[Option<Value>]) -> Result<Vec<Option<Value>>, String> {
         self.real.run_module(bytes, limits, inputs)
     }
@@ -1253,6 +1259,74 @@ mod sourced_tests {
         // Pieces of the two lists are kept apart: none of one's keys is the other's.
         let keys = |i: usize| resolver.sourced[i].2.get().unwrap().as_ref().unwrap().1.units.keys().copied().collect::<BTreeSet<_>>();
         assert!(!keys(1).is_empty() && !keys(2).is_empty() && keys(1).is_disjoint(&keys(2)));
+    }
+
+    /// A resolver that keeps each composite's children resolved, as the server's does (holon's
+    /// `units.rs`, `Loaded`).
+    struct Keeping {
+        units: BTreeMap<Hash, std::sync::Arc<Unit>>,
+        shapes: holon_core::Shapes,
+    }
+
+    impl Keeping {
+        fn of(units: Vec<Unit>) -> Keeping {
+            let units: BTreeMap<Hash, std::sync::Arc<Unit>> = units.into_iter().map(|u| (hash_unit(&u).unwrap(), std::sync::Arc::new(u))).collect();
+            let shapes = holon_core::Shapes::kept(units.values(), |h| units.get(h));
+            Keeping { units, shapes }
+        }
+    }
+
+    impl Resolver for Keeping {
+        fn resolve(&self, hash: &Hash) -> Option<&Unit> {
+            self.units.get(hash).map(|u| u.as_ref())
+        }
+        fn shape(&self, unit: &Unit) -> Option<&holon_core::Shape> {
+            self.shapes.get(unit)
+        }
+        fn resolved(&self, unit: &Unit) -> Option<&holon_core::Resolved> {
+            self.shapes.resolved(unit)
+        }
+    }
+
+    /// The real resolver keeps a composite's children, one of them a read the run sources: the
+    /// wrapper doesn't hand those on, so the read is the sourced value's constant; a composite of
+    /// pure leaves keeps its children through it, and with nothing sourced every one does.
+    #[test]
+    fn a_sourced_value_reaches_a_composite_whose_children_are_kept() {
+        let one = Unit {
+            body: UnitBody::Primitive { name: "const".into() },
+            params: vec![Param::frozen("type", "Number"), Param::frozen("value", "1")],
+            inputs: vec![],
+            outputs: vec![Port { name: "out".into(), ty: Type::Number }],
+        };
+        let inner = Unit {
+            body: UnitBody::Composite { children: vec![hash_unit(&one).unwrap()], edges: vec![Edge { from_child: 0, from_port: 0, to_child: BOUNDARY, to_port: 0 }] },
+            params: vec![],
+            inputs: vec![],
+            outputs: vec![Port { name: "out".into(), ty: Type::Number }],
+        };
+        let root = Unit {
+            body: UnitBody::Composite {
+                children: vec![hash_unit(&read("a")).unwrap(), hash_unit(&inner).unwrap()],
+                edges: (0..2).map(|i| Edge { from_child: i, from_port: 0, to_child: BOUNDARY, to_port: i }).collect(),
+            },
+            params: vec![],
+            inputs: vec![],
+            outputs: vec![Port { name: "read".into(), ty: Type::Any }, Port { name: "one".into(), ty: Type::Number }],
+        };
+        let (root_hash, inner_hash) = (hash_unit(&root).unwrap(), hash_unit(&inner).unwrap());
+        let keeping = Keeping::of(vec![read("a"), one, inner, root]);
+        let (root, inner) = (keeping.resolve(&root_hash).unwrap(), keeping.resolve(&inner_hash).unwrap());
+        let held = Value::Text("held".into());
+        let sourced = vec![(Capability::StateRead("a".into()), held.clone())];
+        let resolver = SourcedResolver::new(&sourced, &keeping);
+        assert!(keeping.resolved(root).is_some(), "the real resolver keeps the root's children");
+        assert!(resolver.resolved(root).is_none(), "not handed on: one is a read the run sources");
+        assert!(resolver.resolved(inner).is_some(), "a composite of pure leaves keeps its children");
+        assert_eq!(eval(root, &[], &resolver).into_vec(), vec![Some(held), Some(Value::Number(1.0))]);
+        let nothing = SourcedResolver::new(&[], &keeping);
+        assert!(nothing.resolved(root).is_some(), "with nothing sourced, every composite keeps them");
+        assert_eq!(eval(root, &[], &nothing).into_vec(), eval(root, &[], &keeping).into_vec());
     }
 }
 

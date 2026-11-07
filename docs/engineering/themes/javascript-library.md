@@ -436,8 +436,9 @@ as `1000000000000000000000` (they write JavaScript's `1e+21` and `1e-7` now, `pr
    given twice (refused by design, JavaScript keeps the last); whether `==` is refused rather than
    read as `===`.
 7. **The evaluator's next steps** ([leaves.md](js-library-races/leaves.md) §8): a composite's
-   preparation kept in the resolver (one call of a 25-node function from 1.6 to about 0.9 µs),
-   and the fifth more a function written in place pays per item since the change.
+   preparation is kept in the server's resolver now (one call of a 25-node function from 1.61 to
+   0.93 µs, §10); left, the 10 to 15 ns a node one call pays since the change, which needs a
+   profiler to place.
 
 ## 12. What stays refused
 
