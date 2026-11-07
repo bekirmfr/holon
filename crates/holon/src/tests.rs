@@ -7570,6 +7570,50 @@ fn a_closure_too_big_to_run_is_refused_and_every_sample_is_well_inside() {
     closure(&state.store, inside).unwrap();
 }
 
+/// A route nested as deep as a server runs (`MAX_CLOSURE_DEPTH`, the server and the leaf
+/// counted) answers on a thread a runtime's size, 2 MiB, through the server's own resolver (its
+/// kept children, its sourced values) and in a debug build, whose frames are larger than a
+/// release's: composites in composites, and maps whose function maps again.
+#[test]
+fn the_deepest_route_a_server_runs_fits_a_runtimes_thread() {
+    let run = |maps: bool| {
+        let state = test_state();
+        let e = |fc, fp, tc, tp| Edge { from_child: fc, from_port: fp, to_child: tc, to_port: tp };
+        let any = |n: &str| Port { name: n.into(), ty: Type::Any };
+        let mut below = stage(&state, &Unit { params: vec![], ..holon_core::interface_of("to_text").unwrap() });
+        // The server, the endpoint and the leaf, and the levels between them up to the bound: a
+        // composite each, or a composite and its map each.
+        let levels = if maps { (crate::units::MAX_CLOSURE_DEPTH - 3) / 2 } else { crate::units::MAX_CLOSURE_DEPTH - 3 };
+        for _ in 0..levels {
+            below = if maps {
+                let one = stage(&state, &Unit { inputs: vec![any("a")], ..holon_core::interface_of("list").unwrap() });
+                let map = stage(&state, &Unit { params: vec![Param::frozen("fn", to_hex(&below))], ..holon_core::interface_of("map").unwrap() });
+                stage(&state, &Unit { body: UnitBody::Composite { children: vec![one, map], edges: vec![e(BOUNDARY, 0, 0, 0), e(0, 0, 1, 0), e(1, 0, BOUNDARY, 0)] }, params: vec![], inputs: vec![any("x")], outputs: vec![any("out")] })
+            } else {
+                stage(&state, &Unit { body: UnitBody::Composite { children: vec![below], edges: vec![e(BOUNDARY, 0, 0, 0), e(0, 0, BOUNDARY, 0)] }, params: vec![], inputs: vec![any("x")], outputs: vec![any("out")] })
+            };
+        }
+        let top = state.store.clone().get(&below).unwrap().unwrap();
+        let method = Unit { params: vec![Param::frozen("name", "method")], ..holon_core::interface_of("field").unwrap() };
+        let route_unit = endpoint(&state, "GET", "/deep", vec![method, top], vec![e(BOUNDARY, 0, 0, 0), e(0, 0, 1, 0), e(1, 0, BOUNDARY, 0)], 0);
+        let server = stage(&state, &Unit { body: UnitBody::Composite { children: vec![route_unit], edges: vec![] }, params: vec![Param::frozen("declare", "server"), Param::frozen("port", "18144")], inputs: vec![], outputs: vec![] });
+        let deployed = deploy_json(&state, "deep", server, serde_json::json!({ "acknowledge": ["NetworkIngress"] }));
+        let status = deployed.status_code;
+        assert_eq!(status, 200, "{}", String::from_utf8_lossy(&body_bytes(deployed)));
+        let (status, body, _) = data_call(&state, "deep", "GET", "/deep", "");
+        assert_eq!(status, 200, "{body}");
+        // `to_text` of the method is `"GET"`, quotes and all: the body as it is, or in JSON lists.
+        let want = match maps {
+            true => (0..levels).fold(r#""\"GET\"""#.to_string(), |v, _| format!("[{v}]")),
+            false => r#""GET""#.to_string(),
+        };
+        assert_eq!(body.replace([' ', '\n'], ""), want);
+    };
+    for maps in [false, true] {
+        std::thread::Builder::new().stack_size(2 * 1024 * 1024).spawn(move || run(maps)).unwrap().join().unwrap();
+    }
+}
+
 /// `POST /unit` only decodes what it stores, so a unit whose wiring `validate` refuses can be
 /// staged; the closure it is in is refused before anything runs it, and a deploy of it is a 400.
 /// Every sample's closure loads (the test above), so every sample validates.
@@ -8852,6 +8896,56 @@ fn a_secret_is_never_sent_to_another_flow() {
         assert!(r.contains("refused") && r.contains("can't be sent to another flow"), "{action}: {r}");
     }
     assert!(!log_entries(&state, "billing").iter().any(|e| e["route"] == "action charge"), "billing never ran");
+}
+
+/// What a flow sends another, and what it is answered, is data, as a request's body is: an
+/// effect request sent would be performed by the other flow under its grants (an action
+/// answering what it is given does), and one answered by the caller under its own. Core makes no
+/// call whose input holds one (`flow_call_request`); an answer holding one has no JSON form, so
+/// the call fails (`run_action`).
+#[test]
+fn a_flow_call_sends_and_hands_back_data_only() {
+    let state = claims_state("");
+    let e = |fc, fp, tc, tp| Edge { from_child: fc, from_port: fp, to_child: tc, to_port: tp };
+    let iface = |name: &str, params: Vec<Param>| Unit { params, ..holon_core::interface_of(name).unwrap() };
+    let frozen = |k: &str, v: &str| Param::frozen(k, v);
+    // `range(1).map(store_write k)`: a list of one effect request, built as a value.
+    let write = stage(&state, &test_store_write("k"));
+    let effects = || vec![iface("const", vec![frozen("value", "1"), frozen("type", "Number")]), iface("range", vec![]), iface("map", vec![frozen("fn", &to_hex(&write))])];
+    let deploy = |slug: &str, unit: Hash| {
+        let preview = body_json(route(&state, &req("POST", "/deploy/preview", serde_json::to_vec(&serde_json::json!({ "slug": slug, "unit": to_hex(&unit) })).unwrap())));
+        let asked: Vec<String> = serde_json::from_value(preview["needs_approval"].clone()).unwrap_or_default();
+        let r = deploy_json(&state, slug, unit, serde_json::json!({ "acknowledge": asked }));
+        let status = r.status_code;
+        assert_eq!(status, 200, "{}", String::from_utf8_lossy(&body_bytes(r)));
+    };
+    // A flow of actions only listens on no port.
+    let server = |children: Vec<Hash>, port: Option<&str>| {
+        let params = std::iter::once(frozen("declare", "server")).chain(port.map(|p| frozen("port", p))).collect();
+        stage(&state, &Unit { body: UnitBody::Composite { children, edges: vec![] }, params, inputs: vec![], outputs: vec![] })
+    };
+
+    // Sent to an action that answers what it is given.
+    deploy_text(&state, "import { action, flow } from \"holon\"\n\nflow(\"relay\")\n\nexport const go = action((input) => input)\n", "127.0.0.1:9");
+    let mut children = effects();
+    children.push(iface("flow_call", vec![frozen("flow", "relay"), frozen("action", "go")]));
+    let send = endpoint(&state, "POST", "/send", children, vec![e(0, 0, 1, 0), e(1, 0, 2, 0), e(2, 0, 3, 0), e(3, 0, BOUNDARY, 0)], 0);
+    deploy("sender", server(vec![send], Some("18341")));
+    let (status, body, _) = data_call(&state, "sender", "POST", "/send", "{}");
+    assert_eq!(status, 500, "the call isn't made, so the route has no answer: {body}");
+    assert!(log_entries(&state, "sender")[0]["rounds"].as_array().is_none_or(|r| r.is_empty()), "nothing was asked");
+    assert!(!log_entries(&state, "relay").iter().any(|x| x["route"] == "action go"), "relay never ran");
+
+    // Answered by an action that makes one.
+    let made = effects().iter().map(|u| stage(&state, u)).collect();
+    let handler = Unit { body: UnitBody::Composite { children: made, edges: vec![e(0, 0, 1, 0), e(1, 0, 2, 0), e(2, 0, BOUNDARY, 0)] }, params: vec![], inputs: vec![], outputs: vec![Port { name: "out".into(), ty: Type::Any }] };
+    let make = holon_author::routes::action_unit(stage(&state, &handler), &handler.inputs, &handler.outputs, "make").unwrap();
+    deploy("maker", server(vec![stage(&state, &make)], None));
+    let pull = endpoint(&state, "POST", "/pull", vec![iface("flow_call", vec![frozen("flow", "maker"), frozen("action", "make")])], vec![e(0, 0, BOUNDARY, 0)], 0);
+    deploy("puller", server(vec![pull], Some("18343")));
+    let (_, body, _) = data_call(&state, "puller", "POST", "/pull", "{}");
+    assert!(body.contains("\"error\":\"failed\"") && body.contains("has no JSON form"), "{body}");
+    assert!(!body.contains("store_write"), "nothing of the effect is handed back: {body}");
 }
 
 // ── The throughput check (docs/L4s/request-path-plan.md, step 1) ─────────────────────────────
