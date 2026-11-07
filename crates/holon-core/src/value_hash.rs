@@ -91,9 +91,33 @@ fn with_buffer<T>(f: impl FnOnce(&mut Vec<u8>) -> T) -> T {
 /// Domain tag of a state root's preimage (see [`state_root`]).
 const DOMAIN_STATE: u8 = 0x21;
 
-/// How deep a decoded value may nest. Far beyond anything `json_parse` (depth 64) or a flow
-/// builds, and a hard stop for a hostile stream.
-pub(crate) const MAX_VALUE_DEPTH: usize = 256;
+/// How deep a value may nest: decoded, encoded, or built by a run (the leaves that put a value a
+/// level down refuse one already this deep, primitives.rs `fits`). Far beyond anything
+/// `json_parse` (depth 64) or a flow needs, and a hard stop for a hostile stream. Everything that
+/// walks a value recurses a level per nesting, on a thread of 2 MiB: a value built without this
+/// bound (a fold wrapping its accumulator 10,000 times) overflowed it and aborted the server.
+pub const MAX_VALUE_DEPTH: usize = 256;
+
+/// Whether no part of `v` is more than `room` levels below it, as [`encode_value`] counts levels
+/// (a list's items, a record's values and a sum's or effect's payload each one down): what may be
+/// put `MAX_VALUE_DEPTH - room` levels down and still nest within the bound. It looks no deeper
+/// than `room`, and stops at the first part past it.
+pub(crate) fn nests_within(v: &Value, room: usize) -> bool {
+    // Each part one level down; a number, a boolean or a text has nothing below it.
+    let within = |x: &Value| {
+        room > 0
+            && match x {
+                Value::Number(_) | Value::Boolean(_) | Value::Text(_) => true,
+                x => nests_within(x, room - 1),
+            }
+    };
+    match v {
+        Value::Number(_) | Value::Boolean(_) | Value::Text(_) => true,
+        Value::List(xs) => xs.iter().all(within),
+        Value::Record(fields) => fields.values().all(within),
+        Value::Sum { payload, .. } | Value::Effect { payload, .. } => within(payload),
+    }
+}
 
 /// The value [`encode_value`] encoded. Every read is bounds-checked and nothing is
 /// pre-allocated from a length the stream claims, so a malformed or hostile blob is an error,
@@ -430,6 +454,33 @@ mod tests {
         }
         deep.extend([TAG_BOOLEAN, 1]);
         assert_eq!(decode_value(&deep), Err(DecodeError::TypeTooDeep));
+    }
+
+    /// `nests_within(v, MAX_VALUE_DEPTH)` is exactly whether `v` encodes, which is what a run's
+    /// leaves keep to: every shape a level can take, at the bound and one past it, an empty one
+    /// innermost and a scalar.
+    #[test]
+    fn nesting_within_the_bound_is_what_encodes() {
+        let shapes: [fn(Value) -> Value; 4] = [
+            |v| Value::List(vec![num(1.0), v]),
+            |v| Value::Record(BTreeMap::from([("a".to_string(), txt("x")), ("b".to_string(), v)])),
+            |v| Value::Sum { arm: 0, payload: Box::new(v) },
+            |v| Value::Effect { sink: "store_write:k".into(), payload: Box::new(v) },
+        ];
+        let inner = [num(1.0), txt("t"), Value::Boolean(true), Value::List(vec![]), Value::Record(BTreeMap::new())];
+        for depth in [0, 1, 2, MAX_VALUE_DEPTH - 1, MAX_VALUE_DEPTH, MAX_VALUE_DEPTH + 1, MAX_VALUE_DEPTH + 2] {
+            for s in 0..shapes.len() {
+                for x in &inner {
+                    let v = (0..depth).fold(x.clone(), |v, i| shapes[(s + i) % shapes.len()](v));
+                    assert_eq!(nests_within(&v, MAX_VALUE_DEPTH), encode_value(&v).is_ok(), "{depth} levels from shape {s} around {x:?}");
+                }
+            }
+        }
+        // It looks no deeper than its room: a value nested far past it (which a thread's stack
+        // couldn't even drop, so it is leaked) is refused after `room` levels.
+        let far = (0..100_000).fold(num(1.0), |v, _| Value::List(vec![v]));
+        assert!(!nests_within(&far, MAX_VALUE_DEPTH));
+        std::mem::forget(far);
     }
 
     #[test]

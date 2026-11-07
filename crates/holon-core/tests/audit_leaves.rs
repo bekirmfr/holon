@@ -1,16 +1,17 @@
 // Every pure leaf over values a request or a flow can hand it, from the security pass of the
 // JavaScript library's leaves: no panic, the same answer twice, every number it answers finite,
-// and a count past what a leaf may make refused at once, on a thread a host's size. Each family
-// value is a leaf of its own; each higher-order leaf is given functions of every arity, an
-// inconsistent comparator among them. The values: numbers at the edges of JavaScript's (huge
-// counts, -0, 2^53, the smallest denormal), texts with combining marks, astral characters and
-// broken escapes, and lists and records, nested and not.
+// a count past what a leaf may make refused at once, and nothing nested past the bound a value may
+// nest to, on a thread a host's size. Each family value is a leaf of its own; each higher-order
+// leaf is given functions of every arity, an inconsistent comparator among them. The values:
+// numbers at the edges of JavaScript's (huge counts, -0, 2^53, the smallest denormal), texts with
+// combining marks, astral characters and broken escapes, and lists and records, nested and not,
+// as deep as a value may be among them.
 //
 // Run: cargo test -p holon-core --test audit_leaves -- --nocapture (prints the slowest leaves);
 //      HOLON_AUDIT_TRACE=1 names each evaluation before it runs, so the last one named is the one
 //      that overflowed the stack (which aborts the process before any report).
 
-use holon_core::{capabilities_of, eval, hash_unit, hex, interface_of, Edge, MapResolver, Param, Port, Type, Unit, UnitBody, Value, BOUNDARY, FAMILIES, GENESIS, PASSES_EXTRA};
+use holon_core::{capabilities_of, encode_value, eval, hash_unit, hex, interface_of, Edge, EncodeError, MapResolver, Param, Port, Type, Unit, UnitBody, Value, BOUNDARY, FAMILIES, GENESIS, MAX_VALUE_DEPTH, PASSES_EXTRA};
 use std::collections::BTreeMap;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::time::{Duration, Instant};
@@ -83,6 +84,9 @@ fn pool() -> Vec<Value> {
         Value::List(numbers),
         Value::List(mixed),
         nested(70),
+        // As deep as a value may be: a leaf putting it a level further down gives nothing.
+        nested(MAX_VALUE_DEPTH),
+        (0..MAX_VALUE_DEPTH).fold(num(1.0), |v, _| rec(&[("a", v), ("b", num(2.0))])),
         rec(&[]),
         rec(&[("a", num(1.0)), ("b", txt("x")), ("c", Value::List(vec![num(1.0)]))]),
         rec(&[("a", rec(&[("a", rec(&[("a", num(0.0))]))]))]),
@@ -238,6 +242,7 @@ fn sweep() -> Vec<String> {
             let fault = match first {
                 Err(_) => Some("panics"),
                 Ok(out) if !out.iter().flatten().all(finite) => Some("answers a number that isn't finite"),
+                Ok(out) if out.iter().flatten().any(|v| encode_value(v) == Err(EncodeError::TooDeep)) => Some("answers a value nested past the bound"),
                 Ok(out) => match catch_unwind(AssertUnwindSafe(|| eval(unit, &inputs, &r).into_vec())) {
                     Ok(again) if again == out => None,
                     _ => Some("answers differently the second time"),

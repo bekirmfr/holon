@@ -7614,6 +7614,56 @@ fn the_deepest_route_a_server_runs_fits_a_runtimes_thread() {
     }
 }
 
+/// A flow nesting a list a level for each step of a range its request sizes took a release server
+/// down at 10,000 steps: the recorder, keeping the fold's output, walked it a frame a level, past
+/// the end of its thread's stack, and every deployment went with it. The fold now stops at the
+/// bound (core's `MAX_VALUE_DEPTH`): a value as deep as that, a list or a record, is answered,
+/// written out and recorded on a thread a runtime's size, in a debug build; one level past it, or
+/// 10,000, is nothing, and the server answers its next request.
+#[test]
+fn a_value_nested_a_level_a_step_stops_at_the_bound_and_the_server_answers_on() {
+    let text = r#"import { flow, range, route, status } from "holon"
+
+flow("deep", { port: 18145 })
+
+route.get("/deep/:n", (req) => range(Number(req.params.n)).reduce((acc, i) => [acc], 0) ?? status(422))
+
+route.get("/text/:n", (req) => JSON.stringify(range(Number(req.params.n)).reduce((acc, i) => [acc], 0)) ?? status(422))
+
+route.get("/record/:n", (req) => range(Number(req.params.n)).reduce((acc, i) => ({ a: acc }), 0) ?? status(422))
+"#;
+    std::thread::Builder::new()
+        .stack_size(2 * 1024 * 1024)
+        .spawn(move || {
+            let state = test_state();
+            let plan = holon_author::agent::plan(text).unwrap();
+            for u in &plan.units {
+                assert_eq!(route(&state, &req("POST", "/unit", u.clone())).status_code, 200);
+            }
+            let preview = body_json(route(&state, &req("POST", "/deploy/preview", serde_json::to_vec(&serde_json::json!({ "slug": plan.name, "unit": plan.unit })).unwrap())));
+            let deployed = deploy_json(&state, &plan.name, parse_hash(&plan.unit).unwrap(), serde_json::json!({ "acknowledge": preview["needs_approval"] }));
+            assert_eq!(deployed.status_code, 200);
+            let slug = plan.name;
+            // A route's answer goes a level down itself, into its response (`{status, body}`): the
+            // deepest it answers is one less than the bound; written out as a text, the bound.
+            let max = holon_core::MAX_VALUE_DEPTH;
+            for (route, at, open, close) in [("deep", max - 1, "[", "]"), ("text", max, "[", "]"), ("record", max - 1, "{\"a\":", "}")] {
+                let want = format!("{}0{}", open.repeat(at), close.repeat(at));
+                let (status, body, _) = data_call(&state, &slug, "GET", &format!("/{route}/{at}"), "");
+                assert_eq!(status, 200, "/{route}/{at}: {body}");
+                // A list or a record is answered as its JSON; a text as it is.
+                assert_eq!(body.replace([' ', '\n'], ""), want, "/{route}/{at}");
+                for n in [at + 1, 10_000] {
+                    let (status, body, _) = data_call(&state, &slug, "GET", &format!("/{route}/{n}"), "");
+                    assert_eq!(status, 422, "/{route}/{n}: {body}");
+                }
+            }
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
 /// `POST /unit` only decodes what it stores, so a unit whose wiring `validate` refuses can be
 /// staged; the closure it is in is refused before anything runs it, and a deploy of it is a 400.
 /// Every sample's closure loads (the test above), so every sample validates.

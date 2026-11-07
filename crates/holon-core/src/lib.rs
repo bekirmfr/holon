@@ -74,7 +74,7 @@ pub use docs::describe;
 pub use manifest::{consent_name, manifest_items, permission_kind, reads_from_outside, trigger, PermissionKind};
 pub use inspect::{adoption_counts, child_refs, dependencies};
 pub use memo::{entry_key, memo_key, verify_entry, CacheEntry};
-pub use value_hash::{decode_value, encode_value, hash_value, run_id, state_root};
+pub use value_hash::{decode_value, encode_value, hash_value, run_id, state_root, MAX_VALUE_DEPTH};
 pub use hash::{
     canonical_child_order,
     decode_preimage, encode_preimage, hash_unit, hex, parse_hash, DecodeError, Edge, EncodeError, Hash,

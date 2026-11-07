@@ -13,6 +13,7 @@
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 
+use crate::value_hash::{nests_within, MAX_VALUE_DEPTH};
 use crate::{dates, lists, records, texts};
 use crate::{Param, Value};
 
@@ -171,8 +172,71 @@ ops! {
     "channel_subscribe" => ChannelSubscribe,
 }
 
-/// [`compute`], the primitive's [`Op`] already found (`name` is its name, which a few read).
+/// Where leaf `op` puts what it is handed a level further down than it was ([`fits`]).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Down {
+    /// Nowhere: what it gives nests no deeper than what it was handed.
+    No,
+    /// Every input (`list`'s, `pair`'s).
+    All,
+    /// The present input at this place (`append`'s item, `some`'s value, every part of what
+    /// `entries` is handed).
+    Input(usize),
+    /// An effect: its payload, a record of its inputs, is checked as it was built.
+    Built,
+}
+
+fn down(op: Op) -> Down {
+    match op {
+        Op::List | Op::Pair => Down::All,
+        Op::Cons | Op::Some | Op::Entries => Down::Input(0),
+        Op::Append | Op::WithField | Op::Fill => Down::Input(1),
+        Op::Insert | Op::WithItem => Down::Input(2),
+        Op::Egress
+        | Op::StoreWrite
+        | Op::CollectionPut
+        | Op::CollectionDelete
+        | Op::FileWrite
+        | Op::FileDelete
+        | Op::FileCopy
+        | Op::FileCreate
+        | Op::FileCreateCopy
+        | Op::DbExec
+        | Op::DbInsert
+        | Op::DbUpdate
+        | Op::DbDelete
+        | Op::ChannelSend
+        | Op::ChannelSubscribe => Down::Built,
+        _ => Down::No,
+    }
+}
+
+/// Whether what leaf `op` builds of `inputs` (present, in port order) still nests within
+/// [`MAX_VALUE_DEPTH`]: each input it puts a level down must nest one less. Every value a run
+/// holds nests within it (a value read back is bounded by its decoding, a request's by `json`'s),
+/// so only these leaves (and `map`'s results, `group_by`'s list and a reviver's answers, eval.rs)
+/// could take one past it, and each refuses to: one more level a step, a fold wrapping its
+/// accumulator, would otherwise nest without end. Only the input put down is looked at, so
+/// `append` to a long list costs what its item does.
+fn fits<'a>(op: Op, mut inputs: impl Iterator<Item = &'a Value>) -> bool {
+    match down(op) {
+        Down::All => inputs.all(|v| nests_within(v, MAX_VALUE_DEPTH - 1)),
+        Down::Input(i) => inputs.nth(i).is_none_or(|v| nests_within(v, MAX_VALUE_DEPTH - 1)),
+        Down::No | Down::Built => true,
+    }
+}
+
+/// [`compute`], the primitive's [`Op`] already found (`name` is its name, which a few read):
+/// nothing where what it would build nests past [`MAX_VALUE_DEPTH`] ([`fits`]).
 pub(crate) fn compute_op(op: Op, name: &str, inputs: &[&Value], params: &[Param]) -> Option<Value> {
+    if !fits(op, inputs.iter().copied()) {
+        return None;
+    }
+    let out = compute_unchecked(op, name, inputs, params)?;
+    (down(op) != Down::Built || nests_within(&out, MAX_VALUE_DEPTH)).then_some(out)
+}
+
+fn compute_unchecked(op: Op, name: &str, inputs: &[&Value], params: &[Param]) -> Option<Value> {
     match op {
         // ── const (§13): the one literal constructor. `value` is the literal as text; `type`
         // (Number/Boolean/Text) declares how to read it — no inference, so the unit is
@@ -1069,6 +1133,10 @@ pub(crate) fn compute_given<'v>(op: Op, name: &str, mut inputs: Given<'v>, param
             Cow::Borrowed(Value::Text(s)) => s.clone(),
             _ => unreachable!("checked to be a text"),
         }
+    }
+    // What it would build nests within the bound, before anything is taken ([`fits`]).
+    if !fits(op, inputs.iter().map(|v| v.as_ref())) {
+        return Err(inputs);
     }
     let is = |i: usize, f: fn(&Value) -> bool| inputs.get(i).is_some_and(|v| f(v));
     let list = |v: &Value| matches!(v, Value::List(_));
@@ -2830,6 +2898,8 @@ mod tests {
             record(&[]),
             record(&[("a", num(1.0)), ("b", txt("x"))]),
             Value::Sum { arm: 0, payload: Box::new(num(1.0)) },
+            // As deep as a value may nest: a leaf that would put it down refuses it, given or lent.
+            (0..MAX_VALUE_DEPTH).fold(num(1.0), |v, _| list(vec![v])),
         ];
         let params = [p("name", "a"), p("type", "Number"), p("value", "5"), p("mode", "end"), p("depth", "1")];
         let mut checked = 0;
@@ -2858,5 +2928,102 @@ mod tests {
             }
         }
         assert!(checked > 100_000, "{checked}");
+    }
+
+    /// Each leaf that puts a value a level down builds nothing of one already as deep as a value
+    /// may nest, lent or given (handing it back as it was), and builds one a level less as it
+    /// always did, to exactly the bound: a fold that wraps its accumulator stops there.
+    #[test]
+    fn a_leaf_puts_nothing_past_the_depth_a_value_may_nest() {
+        let nested = |depth: usize| (0..depth).fold(num(1.0), |v, _| list(vec![v]));
+        let (at, below) = (nested(MAX_VALUE_DEPTH), nested(MAX_VALUE_DEPTH - 1));
+        let record = Value::Record(BTreeMap::new());
+        let one = || list(vec![num(0.0)]);
+        // Each leaf, its inputs, its params, and the port of the value it puts down (an effect's
+        // payload included).
+        let cases: Vec<(&str, Vec<Value>, Vec<Param>, usize)> = vec![
+            ("list", vec![num(0.0), num(0.0)], vec![], 1),
+            ("pair", vec![num(0.0), num(0.0)], vec![], 0),
+            ("some", vec![num(0.0)], vec![], 0),
+            ("append", vec![one(), num(0.0)], vec![], 1),
+            ("cons", vec![num(0.0), one()], vec![], 0),
+            ("insert", vec![record.clone(), txt("k"), num(0.0)], vec![], 2),
+            ("with_field", vec![record.clone(), num(0.0)], vec![p("name", "k")], 1),
+            ("with_item", vec![one(), num(0.0), num(0.0)], vec![], 2),
+            ("fill", vec![one(), num(0.0)], vec![], 1),
+            ("store_write", vec![num(0.0)], vec![p("key", "k")], 0),
+            ("channel_send", vec![num(0.0)], vec![p("channel", "c")], 0),
+        ];
+        for (name, inputs, params, port) in cases {
+            let op = Op::of(name).unwrap();
+            for (v, builds) in [(&at, false), (&below, true)] {
+                let mut inputs = inputs.clone();
+                inputs[port] = v.clone();
+                let refs: Vec<&Value> = inputs.iter().collect();
+                let lent = compute_op(op, name, &refs, &params);
+                assert_eq!(lent.is_some(), builds, "{name}, {} levels put down", if builds { "255" } else { "256" });
+                if let Some(out) = &lent {
+                    assert!(nests_within(out, MAX_VALUE_DEPTH) && !nests_within(out, MAX_VALUE_DEPTH - 1), "{name} builds to the bound");
+                }
+                let given: Given = inputs.iter().map(|v| Cow::Owned(v.clone())).collect();
+                match compute_given(op, name, given, &params) {
+                    Ok(out) => assert_eq!(Some(out), lent, "{name} given"),
+                    Err(back) => {
+                        assert!(!builds, "{name} given builds nothing");
+                        assert_eq!(back.iter().map(|v| v.as_ref()).collect::<Vec<_>>(), refs, "{name} hands back what it was given");
+                    }
+                }
+            }
+        }
+        // `entries` puts every part of what it is handed a level down (`[["a", v]]`).
+        let holding = |v: Value| Value::Record(BTreeMap::from([("a".to_string(), v)]));
+        assert_eq!(compute("entries", &[&holding(below)], &[]), None);
+        assert!(compute("entries", &[&holding(nested(MAX_VALUE_DEPTH - 2))], &[]).is_some_and(|out| nests_within(&out, MAX_VALUE_DEPTH)));
+    }
+
+    /// Every leaf, handed a value at the bound, or one level short of it, in one input and plain
+    /// ones in the others (as many as the catalog gives it, its params as given there, an unset one
+    /// set), builds nothing nested past the bound: a leaf that puts what it is handed a level down
+    /// without `down` saying so, or two levels down, fails here.
+    #[test]
+    fn no_leaf_builds_a_value_nested_past_the_bound() {
+        let nested = |depth: usize| (0..depth).fold(num(1.0), |v, _| list(vec![v]));
+        let deep = [nested(MAX_VALUE_DEPTH), nested(MAX_VALUE_DEPTH - 1)];
+        let plains = [txt("k"), num(0.0), num(1.0), list(vec![num(1.0)]), Value::Record(BTreeMap::from([("k".to_string(), num(1.0))]))];
+        let mut built = std::collections::BTreeSet::new();
+        for &(name, op) in Op::ALL {
+            let Some(interface) = crate::interface_of(name) else { continue };
+            let params: Vec<Param> = interface
+                .params
+                .iter()
+                .map(|q| match q {
+                    Param::Frozen { value, .. } if !value.is_empty() => q.clone(),
+                    _ => p(q.name(), "k"),
+                })
+                .collect();
+            let ports = interface.inputs.len();
+            for (at, v) in (0..ports).flat_map(|at| deep.iter().map(move |v| (at, v))) {
+                // Each of the other inputs each plain value in turn.
+                for mut pick in 0..plains.len().pow(ports as u32 - 1) {
+                    let inputs: Vec<&Value> = (0..ports)
+                        .map(|i| {
+                            if i == at {
+                                return v;
+                            }
+                            let plain = &plains[pick % plains.len()];
+                            pick /= plains.len();
+                            plain
+                        })
+                        .collect();
+                    if let Some(out) = compute_op(op, name, &inputs, &params) {
+                        built.insert(name);
+                        assert!(nests_within(&out, MAX_VALUE_DEPTH), "{name} builds past the bound from its input {at}");
+                    }
+                }
+            }
+        }
+        // The leaves that put a value down are among those it reached.
+        let down = ["list", "pair", "some", "cons", "append", "insert", "with_field", "with_item", "fill", "entries", "store_write", "channel_send", "egress"];
+        assert!(down.iter().all(|n| built.contains(n)), "{:?} built nothing", down.iter().filter(|n| !built.contains(*n)).collect::<Vec<_>>());
     }
 }

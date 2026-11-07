@@ -32,6 +32,7 @@
 use crate::primitives::Op;
 use crate::{lists, primitives, records, Edge, Hash, Param, Resolver, Unit, UnitBody, Value, BOUNDARY, VARIADIC};
 use crate::hash::parse_hash;
+use crate::value_hash::{nests_within, MAX_VALUE_DEPTH};
 use smallvec::{smallvec, SmallVec};
 use std::borrow::Cow;
 use std::cell::{OnceCell, RefCell};
@@ -2152,10 +2153,12 @@ fn eval_map(inputs: &mut [Option<Cow<'_, Value>>], params: &[Param], resolver: &
     let (mut pending, mut absent) = (false, false);
     let mut asks = Asks(observer);
     // Every item is applied, even after one comes out absent, so each item's requests are asked
-    // in the same round rather than one round per item.
+    // in the same round rather than one round per item. A result goes a level down, into the
+    // list: one already as deep as a value may nest makes the map give nothing
+    // (`value_hash::MAX_VALUE_DEPTH`), as a leaf that would put it there does.
     let mut tally = |slot: Slot| match slot {
-        Slot::Value(v) => out.push(v),
-        Slot::Absent => absent = true,
+        Slot::Value(v) if nests_within(&v, MAX_VALUE_DEPTH - 1) => out.push(v),
+        Slot::Value(_) | Slot::Absent => absent = true,
         Slot::Pending => pending = true,
     };
     // The item and the extras, lent: an application copies only what it keeps. Made once, the
@@ -2343,7 +2346,8 @@ fn eval_sort_by(inputs: &mut [Option<Cow<'_, Value>>], params: &[Param], resolve
 /// nothing, and one that waits makes it wait, waiting winning. The items are lent to the function;
 /// a list given to the leaf moves its items into their groups rather than copying them.
 fn eval_group_by(inputs: &mut [Option<Cow<'_, Value>>], params: &[Param], resolver: &impl Resolver, observer: &mut impl Observer, path: &mut Vec<u32>) -> Slot {
-    if !matches!(inputs.first(), Some(Some(list)) if matches!(list.as_ref(), Value::List(_))) || !present(&inputs[1..]) {
+    // The items go a level down, each into its group's list.
+    if !matches!(inputs.first(), Some(Some(list)) if matches!(list.as_ref(), Value::List(_)) && nests_within(list, MAX_VALUE_DEPTH - 1)) || !present(&inputs[1..]) {
         return Slot::Absent;
     }
     let Some(unit) = function(params, resolver) else { return Slot::Absent };
@@ -2417,7 +2421,9 @@ fn eval_json(json: Json, inputs: &mut [Option<Cow<'_, Value>>], params: &[Param]
         Json::Parse => {
             let Value::Text(text) = first else { return Slot::Absent };
             let Some(parsed) = crate::json::parse(text) else { return Slot::Absent };
-            crate::json::revive(parsed, &mut answer)
+            // Each answer stands where its value was, as deep as 64: what it built nests within
+            // the bound, or nothing.
+            crate::json::revive(parsed, &mut answer).map(|v| v.filter(|v| nests_within(v, MAX_VALUE_DEPTH)))
         }
         Json::Stringify => crate::json::replace(first, &mut answer).map(|replaced| {
             replaced.and_then(|v| crate::json::stringify_laid_out(&v, &crate::json::Layout { gap: crate::json::gap(param("indent")), keys: None })).map(Value::Text)
@@ -4724,5 +4730,70 @@ mod tests {
         outer.inputs[0].ty = Type::Any;
         assert_eq!(eval_eager(&outer, &inputs, &r), want);
         assert_eq!(eval(&outer, &inputs, &r).into_vec(), want);
+    }
+
+    /// A fold that wraps its accumulator a level each step (`range(n).reduce((acc) => [acc], 0)`)
+    /// builds to exactly the bound and no further: 256 steps nest 256 deep, the 257th gives
+    /// nothing, and 10,000 give nothing at once on a thread a host's size, where they once nested
+    /// 10,000 deep and overflowed whatever walked the value next. A `map` whose results are as deep
+    /// as a value may nest, a `group_by` of a list that deep, and a reviver whose answers take the
+    /// parsed value past it give nothing as well; the eager oracle agrees on each.
+    #[test]
+    fn a_value_built_a_level_at_a_time_stops_at_the_bound() {
+        std::thread::Builder::new()
+            .stack_size(2 * 1024 * 1024)
+            .spawn(|| {
+                let mut r = MapResolver::new();
+                let one = r.insert(prim("list", 1, Type::list_any())).unwrap();
+                let wrap = r.insert(composite(vec![nport("acc"), nport("item")], Type::Any, vec![one], vec![edge(BOUNDARY, 0, 0, 0), edge(0, 0, BOUNDARY, 0)])).unwrap();
+                let fold = fold_unit(&wrap);
+                let range = |n: usize| Value::List((0..n).map(|i| num(i as f64)).collect());
+                let nested = |depth: usize| (0..depth).fold(num(0.0), |v, _| Value::List(vec![v]));
+                let folded = |n: usize| {
+                    let inputs = [Some(num(0.0)), Some(range(n))];
+                    let lazy = eval(&fold, &inputs, &r).into_vec();
+                    assert_eq!(lazy, crate::eager::eval_eager(&fold, &inputs, &r), "eager agrees at {n}");
+                    lazy.into_iter().next().flatten()
+                };
+                assert_eq!(folded(MAX_VALUE_DEPTH), Some(nested(MAX_VALUE_DEPTH)));
+                assert_eq!(folded(MAX_VALUE_DEPTH + 1), None);
+                assert_eq!(folded(10_000), None);
+
+                // map's results go a level down: as deep as a value may nest, nothing.
+                let map = map_unit(&one);
+                let items = |depth: usize| [Some(Value::List(vec![nested(depth)]))];
+                for (depth, builds) in [(MAX_VALUE_DEPTH - 2, true), (MAX_VALUE_DEPTH - 1, false)] {
+                    let lazy = eval(&map, &items(depth), &r).into_vec();
+                    assert_eq!(lazy, crate::eager::eval_eager(&map, &items(depth), &r));
+                    assert_eq!(lazy[0].is_some(), builds, "map over items {depth} deep");
+                }
+
+                // group_by's items go a level down, into their group's list.
+                let key = r.insert(prim("type_of", 1, Type::Text)).unwrap();
+                let group = over("group_by", &key, 0);
+                for (depth, builds) in [(MAX_VALUE_DEPTH - 1, true), (MAX_VALUE_DEPTH, false)] {
+                    let inputs = [Some(nested(depth))];
+                    let lazy = eval(&group, &inputs, &r).into_vec();
+                    assert_eq!(lazy, crate::eager::eval_eager(&group, &inputs, &r));
+                    assert_eq!(lazy[0].is_some(), builds, "group_by of a list {depth} deep");
+                }
+
+                // A reviver answering `[value, extra]` puts `extra` three levels down: under its
+                // pair, under the root's member, under the root's own pair.
+                let pair = r.insert(prim("pair", 2, Type::list_any())).unwrap();
+                let reviver = r
+                    .insert(composite(vec![nport("key"), nport("value"), nport("extra")], Type::Any, vec![pair], vec![edge(BOUNDARY, 1, 0, 0), edge(BOUNDARY, 2, 0, 1), edge(0, 0, BOUNDARY, 0)]))
+                    .unwrap();
+                let parse = json_leaf("json_parse", &reviver, 1, &[]);
+                for (depth, builds) in [(MAX_VALUE_DEPTH - 3, true), (MAX_VALUE_DEPTH - 2, false)] {
+                    let inputs = [Some(Value::Text("{\"a\": 1}".into())), Some(nested(depth))];
+                    let lazy = eval(&parse, &inputs, &r).into_vec();
+                    assert_eq!(lazy, crate::eager::eval_eager(&parse, &inputs, &r));
+                    assert_eq!(lazy[0].is_some(), builds, "a reviver's answers {depth} deep");
+                }
+            })
+            .unwrap()
+            .join()
+            .unwrap();
     }
 }

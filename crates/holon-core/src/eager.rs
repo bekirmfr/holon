@@ -5,6 +5,7 @@
 
 use crate::eval::topo_order;
 use crate::hash::parse_hash;
+use crate::value_hash::{nests_within, MAX_VALUE_DEPTH};
 use crate::{primitives, Edge, Hash, Param, Resolver, Unit, UnitBody, Value, BOUNDARY, VARIADIC};
 use std::collections::BTreeMap;
 
@@ -101,7 +102,9 @@ fn map(inputs: &[Option<Value>], params: &[Param], resolver: &impl Resolver) -> 
     }
     let unit = function(params, resolver)?;
     let out: Vec<Option<Value>> = xs.iter().map(|x| apply(unit, &[&[Some(x.clone())][..], extra].concat(), resolver)).collect();
-    out.into_iter().collect::<Option<Vec<Value>>>().map(Value::List)
+    // Each result a level down, as eval.rs's `map` puts it.
+    let out = out.into_iter().map(|v| v.filter(|v| nests_within(v, MAX_VALUE_DEPTH - 1)));
+    out.collect::<Option<Vec<Value>>>().map(Value::List)
 }
 
 fn fold(inputs: &[Option<Value>], params: &[Param], resolver: &impl Resolver) -> Option<Value> {
@@ -179,9 +182,12 @@ fn sort_by(inputs: &[Option<Value>], params: &[Param], resolver: &impl Resolver)
     Some(Value::List(order.into_iter().map(|k| xs[k].clone()).collect()))
 }
 
-/// `group_by`: every item's key, then the groups.
+/// `group_by`: every item's key, then the groups, each item a level down.
 fn group_by(inputs: &[Option<Value>], params: &[Param], resolver: &impl Resolver) -> Option<Value> {
-    let Some(Some(Value::List(xs))) = inputs.first() else { return None };
+    let Some(Some(list @ Value::List(xs))) = inputs.first() else { return None };
+    if !nests_within(list, MAX_VALUE_DEPTH - 1) {
+        return None;
+    }
     let extra = &inputs[1..];
     if extra.iter().any(Option::is_none) {
         return None;
@@ -209,7 +215,7 @@ fn json(name: &str, inputs: &[Option<Value>], params: &[Param], resolver: &impl 
     let mut answer = |key: &str, value: &Value| Ok::<_, ()>(apply(unit, &[&[Some(Value::Text(key.to_string())), Some(value.clone())][..], extra].concat(), resolver));
     if name == "json_parse" {
         let Value::Text(text) = first else { return None };
-        return crate::json::revive(crate::json::parse(text)?, &mut answer).ok()?;
+        return crate::json::revive(crate::json::parse(text)?, &mut answer).ok()?.filter(|v| nests_within(v, MAX_VALUE_DEPTH));
     }
     if !param("keys").is_empty() {
         return None;
