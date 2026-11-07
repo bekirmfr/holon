@@ -37,10 +37,14 @@ route.post("/notes", (req) => {
 
 // Marks a note seen, on every view: it writes, and is lazy all the same, as a lost second of
 // these is fine.
-route.post("/notes/:id/seen", (req) => {
-  seen[req.params.id] = req.json.by
-  return "ok"
-}, { log: "lazy" })
+route.post(
+  "/notes/:id/seen",
+  (req) => {
+    seen[req.params.id] = req.json.by
+    return "ok"
+  },
+  { log: "lazy" },
+)
 
 // The notes, for whoever asks by hand. Not recorded.
 export const report = action(() => notes.list({ limit: 50 }), { log: "unrecorded" })

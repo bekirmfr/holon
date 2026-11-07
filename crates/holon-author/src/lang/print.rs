@@ -11,7 +11,8 @@
 //! `notes[k] = v`, `delete notes[k]`); a write or a call tied to a value (`after`) goes in
 //! `if (x !== undefined) { … }`; the answer is the handler's `return`, last. Each leaf prints in
 //! its natural form when it has one (`a + b`, `xs.map(f)`, `JSON.parse(s)`, `notes[k]`), else as a
-//! call by its catalog name, imported from "holon". The text is laid out by [`format`].
+//! call by its catalog name, imported from "holon". The text is laid out by [`format`], each `js()`
+//! body as the document has it.
 //!
 //! What TypeScript can't write is refused, with what to change: nodes under no handler, a group
 //! whose request isn't a route's, a bound `state.set` outside a function, a match the reader
@@ -596,7 +597,7 @@ pub fn print_lines(name: Option<&str>, doc: &FlowDocument, store: &mut MapResolv
         raw.push(item.text.clone());
     }
     let raw = raw.join("\n") + "\n";
-    let text = crate::lang::format::format(&raw).map_err(|e| format!("the TypeScript written for this flow doesn't read back ({e}), which is the printer's mistake:\n{raw}"))?;
+    let text = crate::lang::format::format_keeping_bodies(&raw).map_err(|e| format!("the TypeScript written for this flow doesn't read back ({e}), which is the printer's mistake:\n{raw}"))?;
     let lines = lines_of(&text, &defs, &items);
     Ok((text, lines))
 }
@@ -3416,7 +3417,7 @@ mod tests {
     fn a_call_stays_where_it_was_written_beside_a_branch() {
         let head = "import { flow, route } from \"holon\"\nimport a from \"host:a.example\"\n\nflow(\"f\", { port: 8080 })\n\n";
         let reached = format!("{head}route.get(\"/a\", async (req) => {{\n  const page = await a.get(\"/x\")\n  return req.json.go ? page.body : undefined\n}})\n");
-        let in_branch = format!("{head}route.get(\"/a\", async (req) => req.json.go ? (await a.get(\"/x\")).body : undefined)\n");
+        let in_branch = format!("{head}route.get(\"/a\", async (req) => (req.json.go ? (await a.get(\"/x\")).body : undefined))\n");
         let mut hashes = Vec::new();
         for src in [&reached, &in_branch] {
             prints_back(src);
@@ -3458,7 +3459,7 @@ mod tests {
     #[test]
     fn file_handlers_print_back_as_written() {
         prints_back(
-            "import { flow, on, route } from \"holon\"\nimport state from \"state\"\nimport done from \"folder:done\"\nimport drop from \"folder:drop\"\n\nflow(\"sort\", { port: 8080 })\n\non.file.created(drop, (sheet) => {\n  done[sheet.name] = sheet\n  drop[`seen/${sheet.name}`] = \"seen\"\n}, { matching: \"*.csv\" })\n\non.file.deleted(drop, (f) => {\n  state.last = f.name\n})\n\nroute.get(\"/last\", () => state.last)\n",
+            "import { flow, on, route } from \"holon\"\nimport state from \"state\"\nimport done from \"folder:done\"\nimport drop from \"folder:drop\"\n\nflow(\"sort\", { port: 8080 })\n\non.file.created(\n  drop,\n  (sheet) => {\n    done[sheet.name] = sheet\n    drop[`seen/${sheet.name}`] = \"seen\"\n  },\n  { matching: \"*.csv\" },\n)\n\non.file.deleted(drop, (f) => {\n  state.last = f.name\n})\n\nroute.get(\"/last\", () => state.last)\n",
         );
     }
 

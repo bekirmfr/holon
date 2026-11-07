@@ -21,9 +21,13 @@ flow("file-audit")
 
 // Each writes the file's handle and its event (new, changed or deleted) as a new audit entry:
 // a CSV new or changed in the inbox,
-on.file.created(inbox, (f) => {
-  audit.create(`${f.folder}/${f.modified}-${f.event}-${f.name}.json`, JSON.stringify(f))
-}, { matching: "*.csv" })
+on.file.created(
+  inbox,
+  (f) => {
+    audit.create(`${f.folder}/${f.modified}-${f.event}-${f.name}.json`, JSON.stringify(f))
+  },
+  { matching: "*.csv" },
+)
 
 // any file removed from the inbox,
 on.file.deleted(inbox, (f) => {

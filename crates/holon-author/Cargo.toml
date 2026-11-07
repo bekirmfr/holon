@@ -15,13 +15,18 @@ holon-module = { path = "../holon-module" }
 serde = { version = "1", features = ["derive"] }
 # The TypeScript parser a `.holon.ts` flow is read with (docs/L4s/typescript-syntax-L4.md §13):
 # pure, and builds for wasm. Pinned together, and at 0.152 as later ones need a newer Rust than
-# rust-toolchain.toml's. Regular expressions aren't parsed: Holon has no leaf for one.
-oxc_allocator = "=0.152.0"
-oxc_ast = "=0.152.0"
+# rust-toolchain.toml's. Regular expressions aren't parsed: Holon has no leaf for one. Taken from
+# oxc's repository at the 0.152.0 release, not crates.io, as its formatter is published only there
+# and must share their AST.
+oxc_allocator = { git = "https://github.com/oxc-project/oxc", tag = "crates_v0.152.0" }
+oxc_ast = { git = "https://github.com/oxc-project/oxc", tag = "crates_v0.152.0" }
 # Walks a `js()` body for the types to blank before Boa runs it (§7).
-oxc_ast_visit = "=0.152.0"
-oxc_parser = { version = "=0.152.0", default-features = false }
-oxc_span = "=0.152.0"
+oxc_ast_visit = { git = "https://github.com/oxc-project/oxc", tag = "crates_v0.152.0" }
+# `holon fmt`'s layout (lang/format.rs): Prettier's, as Oxfmt writes it.
+oxc_formatter = { git = "https://github.com/oxc-project/oxc", tag = "crates_v0.152.0" }
+oxc_formatter_core = { git = "https://github.com/oxc-project/oxc", tag = "crates_v0.152.0" }
+oxc_parser = { git = "https://github.com/oxc-project/oxc", tag = "crates_v0.152.0", default-features = false }
+oxc_span = { git = "https://github.com/oxc-project/oxc", tag = "crates_v0.152.0" }
 # A flow document's fields that only the editor reads pass through as JSON, and the text
 # format quotes as JSON.
 serde_json = "1"
