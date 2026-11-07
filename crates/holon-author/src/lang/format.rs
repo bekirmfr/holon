@@ -28,6 +28,12 @@ use super::ts;
 /// The width a line is laid out to.
 const WIDTH: u16 = 100;
 
+/// The stack the layout runs on. Oxfmt's formatter recurses once for each level of the text's
+/// nesting, and in a debug build a level takes tens of KiB: chess, the largest sample, needs about
+/// 1.2 MiB, more than the 1 MiB a Windows program's main thread has (a release build needs a
+/// fiftieth of that). oxc's own tests give it 16 MiB.
+const LAYOUT_STACK: usize = 16 << 20;
+
 /// `src` laid out as `holon fmt` writes it, or why it can't be: the mistake that keeps it from
 /// compiling, said at its place.
 pub fn format(src: &str) -> Result<String, LowerError> {
@@ -58,8 +64,20 @@ pub fn format_keeping_bodies(src: &str) -> Result<String, LowerError> {
     format(&src).map(|out| with_bodies(&out, &src))
 }
 
-/// The layout, with no check that it is the same flow.
+/// The layout, with no check that it is the same flow, on a thread of its own with the stack it
+/// needs, whatever thread fmt is called on (the CLI's main thread, the language server's). wasm has
+/// no threads: there it runs on the module's stack, in a release build.
 fn lay_out(src: &str) -> Result<String, LowerError> {
+    if cfg!(target_arch = "wasm32") {
+        return laid_out(src);
+    }
+    std::thread::scope(|s| match std::thread::Builder::new().name("fmt layout".into()).stack_size(LAYOUT_STACK).spawn_scoped(s, || laid_out(src)) {
+        Ok(layout) => layout.join().unwrap_or_else(|panic| std::panic::resume_unwind(panic)),
+        Err(e) => Err(mistake(format!("fmt can't start a thread to lay the text out on ({e})"))),
+    })
+}
+
+fn laid_out(src: &str) -> Result<String, LowerError> {
     let allocator = Allocator::default();
     let options = JsFormatOptions {
         line_width: LineWidth::try_from(WIDTH).expect("a width oxc takes"),
