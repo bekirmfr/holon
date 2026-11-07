@@ -78,7 +78,7 @@ flow("chess", { port: 8168, limits: { request_timeout_ms: "50s", run_budget_ms: 
 // streamed in as it writes them and its other new lines typed in, and the model to play the next
 // game against.
 const page = js(function html(board, talk) {
-  const data = JSON.stringify({ board, talk }).replace(/</g, "\\u003c");
+  const data = JSON.stringify({ board, talk }).replace(/</g, "\\u003c")
   return `<!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -466,7 +466,7 @@ for (let r = 8; r >= 1; r--) $("ranks").append(Object.assign(document.createElem
 for (const f of "abcdefgh") $("files").append(Object.assign(document.createElement("span"), { textContent: f }));
 start.talk.forEach((t) => exchange(t, false));
 draw();
-</script>`;
+</script>`
 })
 
 // The rules: the board after a move (a coordinate move as the page sends it, e2e4 or e7e8q, or
@@ -475,250 +475,359 @@ draw();
 // coordinates), last, seen (each position's key, the start's first: the repetitions, and the
 // page's history)}, and when Black is to move its fallback, the move the rules choose for it.
 // A move that isn't legal, or any move once the game is over, throws, so the board is absent.
-const rules = js(function next(board, move) {
-  const START = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
-  // A 10x12 board: a1 is 21, h8 is 98, "x" is off the board, "." an empty square.
-  const KNIGHT = [-21, -19, -12, -8, 8, 12, 19, 21], KING = [-11, -10, -9, -1, 1, 9, 10, 11];
-  const DIAG = [-11, -9, 9, 11], ORTH = [-10, -1, 1, 10];
-  const VALUE = { P: 1, N: 3, B: 3, R: 5, Q: 9, K: 0 };
-  const name = (s) => "abcdefgh"[(s % 10) - 1] + (Math.floor(s / 10) - 1);
-  const at = (n) => (Number(n[1]) + 1) * 10 + "abcdefgh".indexOf(n[0]) + 1;
-  const mine = (c, w) => c !== "." && c !== "x" && (c < "a") === w;
-  const theirs = (c, w) => c !== "." && c !== "x" && (c < "a") !== w;
+const rules = js(
+  function next(board, move) {
+    const START = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
+    // A 10x12 board: a1 is 21, h8 is 98, "x" is off the board, "." an empty square.
+    const KNIGHT = [-21, -19, -12, -8, 8, 12, 19, 21],
+      KING = [-11, -10, -9, -1, 1, 9, 10, 11]
+    const DIAG = [-11, -9, 9, 11],
+      ORTH = [-10, -1, 1, 10]
+    const VALUE = { P: 1, N: 3, B: 3, R: 5, Q: 9, K: 0 }
+    const name = (s) => "abcdefgh"[(s % 10) - 1] + (Math.floor(s / 10) - 1)
+    const at = (n) => (Number(n[1]) + 1) * 10 + "abcdefgh".indexOf(n[0]) + 1
+    const mine = (c, w) => c !== "." && c !== "x" && c < "a" === w
+    const theirs = (c, w) => c !== "." && c !== "x" && c < "a" !== w
 
-  const parse = (fen) => {
-    const [placement, turn, castling, ep, half, full] = fen.split(" ");
-    const b = new Array(120).fill("x");
-    const p = { b, w: turn === "w", c: castling === "-" ? "" : castling, ep: ep === "-" ? 0 : at(ep), half: Number(half), full: Number(full), kw: 0, kb: 0 };
-    placement.split("/").forEach((row, r) => {
-      let s = (9 - r) * 10 + 1;
-      for (const c of row) {
-        if (c >= "1" && c <= "8") for (let k = 0; k < Number(c); k++) b[s++] = ".";
-        else {
-          if (c === "K") p.kw = s;
-          if (c === "k") p.kb = s;
-          b[s++] = c;
+    const parse = (fen) => {
+      const [placement, turn, castling, ep, half, full] = fen.split(" ")
+      const b = new Array(120).fill("x")
+      const p = {
+        b,
+        w: turn === "w",
+        c: castling === "-" ? "" : castling,
+        ep: ep === "-" ? 0 : at(ep),
+        half: Number(half),
+        full: Number(full),
+        kw: 0,
+        kb: 0,
+      }
+      placement.split("/").forEach((row, r) => {
+        let s = (9 - r) * 10 + 1
+        for (const c of row) {
+          if (c >= "1" && c <= "8") for (let k = 0; k < Number(c); k++) b[s++] = "."
+          else {
+            if (c === "K") p.kw = s
+            if (c === "k") p.kb = s
+            b[s++] = c
+          }
+        }
+      })
+      return p
+    }
+    const placementOf = (b) => {
+      const rows = []
+      for (let r = 9; r >= 2; r--) {
+        let row = "",
+          empty = 0
+        for (let s = r * 10 + 1; s <= r * 10 + 8; s++) {
+          if (b[s] === ".") empty++
+          else {
+            row += (empty || "") + b[s]
+            empty = 0
+          }
+        }
+        rows.push(row + (empty || ""))
+      }
+      return rows.join("/")
+    }
+    const fenOf = (p) =>
+      `${placementOf(p.b)} ${p.w ? "w" : "b"} ${p.c || "-"} ${p.ep ? name(p.ep) : "-"} ${p.half} ${p.full}`
+
+    // Whether square s is attacked by white (byW) or black.
+    const attacked = (b, s, byW) => {
+      const [P, N, B, R, Q, K] = byW
+        ? ["P", "N", "B", "R", "Q", "K"]
+        : ["p", "n", "b", "r", "q", "k"]
+      if (byW ? b[s - 9] === P || b[s - 11] === P : b[s + 9] === P || b[s + 11] === P) return true
+      for (const d of KNIGHT) if (b[s + d] === N) return true
+      for (const d of KING) if (b[s + d] === K) return true
+      for (const d of DIAG) {
+        let t = s + d
+        while (b[t] === ".") t += d
+        if (b[t] === B || b[t] === Q) return true
+      }
+      for (const d of ORTH) {
+        let t = s + d
+        while (b[t] === ".") t += d
+        if (b[t] === R || b[t] === Q) return true
+      }
+      return false
+    }
+
+    // The moves of the side to move, before asking whether they leave its king attacked.
+    const pseudo = (p) => {
+      const { b, w } = p,
+        out = []
+      const add = (f, t, x) => out.push({ f, t, pr: "", x: x || "" })
+      for (let s = 21; s <= 98; s++) {
+        const c = b[s]
+        if (!mine(c, w)) continue
+        const kind = c.toUpperCase()
+        if (kind === "P") {
+          const up = w ? 10 : -10,
+            row = Math.floor(s / 10),
+            last = w ? 9 : 2
+          const push = (t) => {
+            if (Math.floor(t / 10) === last)
+              for (const pr of ["Q", "R", "B", "N"]) out.push({ f: s, t, pr, x: "" })
+            else add(s, t)
+          }
+          if (b[s + up] === ".") {
+            push(s + up)
+            if (row === (w ? 3 : 8) && b[s + 2 * up] === ".") add(s, s + 2 * up)
+          }
+          for (const t of [s + up - 1, s + up + 1]) {
+            if (theirs(b[t], w)) push(t)
+            else if (t === p.ep) add(s, t, "ep")
+          }
+        } else if (kind === "N" || kind === "K") {
+          for (const d of kind === "N" ? KNIGHT : KING)
+            if (b[s + d] === "." || theirs(b[s + d], w)) add(s, s + d)
+        } else {
+          for (const d of kind === "B" ? DIAG : kind === "R" ? ORTH : KING) {
+            let t = s + d
+            while (b[t] === ".") {
+              add(s, t)
+              t += d
+            }
+            if (theirs(b[t], w)) add(s, t)
+          }
         }
       }
-    });
-    return p;
-  };
-  const placementOf = (b) => {
-    const rows = [];
-    for (let r = 9; r >= 2; r--) {
-      let row = "", empty = 0;
-      for (let s = r * 10 + 1; s <= r * 10 + 8; s++) {
-        if (b[s] === ".") empty++;
-        else { row += (empty || "") + b[s]; empty = 0; }
+      // Castling: the king and rook unmoved (the FEN's rights), the squares between empty, and the
+      // king never on an attacked square.
+      const k = w ? 25 : 95,
+        rook = w ? "R" : "r"
+      if (b[k] === (w ? "K" : "k") && !attacked(b, k, !w)) {
+        if (
+          p.c.includes(w ? "K" : "k") &&
+          b[k + 1] === "." &&
+          b[k + 2] === "." &&
+          b[k + 3] === rook &&
+          !attacked(b, k + 1, !w) &&
+          !attacked(b, k + 2, !w)
+        )
+          add(k, k + 2, "ck")
+        if (
+          p.c.includes(w ? "Q" : "q") &&
+          b[k - 1] === "." &&
+          b[k - 2] === "." &&
+          b[k - 3] === "." &&
+          b[k - 4] === rook &&
+          !attacked(b, k - 1, !w) &&
+          !attacked(b, k - 2, !w)
+        )
+          add(k, k - 2, "cq")
       }
-      rows.push(row + (empty || ""));
+      return out
     }
-    return rows.join("/");
-  };
-  const fenOf = (p) => `${placementOf(p.b)} ${p.w ? "w" : "b"} ${p.c || "-"} ${p.ep ? name(p.ep) : "-"} ${p.half} ${p.full}`;
 
-  // Whether square s is attacked by white (byW) or black.
-  const attacked = (b, s, byW) => {
-    const [P, N, B, R, Q, K] = byW ? ["P", "N", "B", "R", "Q", "K"] : ["p", "n", "b", "r", "q", "k"];
-    if (byW ? b[s - 9] === P || b[s - 11] === P : b[s + 9] === P || b[s + 11] === P) return true;
-    for (const d of KNIGHT) if (b[s + d] === N) return true;
-    for (const d of KING) if (b[s + d] === K) return true;
-    for (const d of DIAG) {
-      let t = s + d;
-      while (b[t] === ".") t += d;
-      if (b[t] === B || b[t] === Q) return true;
+    const make = (p, m) => {
+      const b = p.b.slice(),
+        c = b[m.f],
+        taken = b[m.t]
+      b[m.t] = m.pr ? (p.w ? m.pr : m.pr.toLowerCase()) : c
+      b[m.f] = "."
+      if (m.x === "ep") b[m.t + (p.w ? -10 : 10)] = "."
+      if (m.x === "ck") {
+        b[m.f + 1] = b[m.f + 3]
+        b[m.f + 3] = "."
+      }
+      if (m.x === "cq") {
+        b[m.f - 1] = b[m.f - 4]
+        b[m.f - 4] = "."
+      }
+      let rights = p.c
+      if (c === "K") rights = rights.replace("K", "").replace("Q", "")
+      if (c === "k") rights = rights.replace("k", "").replace("q", "")
+      for (const [s, r] of [
+        [28, "K"],
+        [21, "Q"],
+        [98, "k"],
+        [91, "q"],
+      ])
+        if (m.f === s || m.t === s) rights = rights.replace(r, "")
+      const pawn = c === "P" || c === "p"
+      return {
+        b,
+        w: !p.w,
+        c: rights,
+        ep: pawn && Math.abs(m.t - m.f) === 20 ? (m.f + m.t) / 2 : 0,
+        half: pawn || taken !== "." ? 0 : p.half + 1,
+        full: p.w ? p.full : p.full + 1,
+        kw: c === "K" ? m.t : p.kw,
+        kb: c === "k" ? m.t : p.kb,
+      }
     }
-    for (const d of ORTH) {
-      let t = s + d;
-      while (b[t] === ".") t += d;
-      if (b[t] === R || b[t] === Q) return true;
+    // A move is legal when it leaves its own king unattacked.
+    const safe = (p, m) => {
+      const n = make(p, m)
+      return attacked(n.b, p.w ? n.kw : n.kb, !p.w) ? null : n
     }
-    return false;
-  };
+    const uci = (m) => name(m.f) + name(m.t) + m.pr.toLowerCase()
+    // Standard algebraic notation, without the check sign; rivals: the other legal moves of the
+    // same kind of piece to the same square.
+    const san = (p, m, rivals) => {
+      if (m.x === "ck") return "O-O"
+      if (m.x === "cq") return "O-O-O"
+      const kind = p.b[m.f].toUpperCase(),
+        takes = p.b[m.t] !== "." || m.x === "ep"
+      if (kind === "P")
+        return (takes ? name(m.f)[0] + "x" : "") + name(m.t) + (m.pr ? "=" + m.pr : "")
+      let from = ""
+      if (rivals.length) {
+        const file = name(m.f)[0],
+          rank = name(m.f)[1]
+        from = !rivals.some((o) => name(o.f)[0] === file)
+          ? file
+          : !rivals.some((o) => name(o.f)[1] === rank)
+            ? rank
+            : file + rank
+      }
+      return kind + from + (takes ? "x" : "") + name(m.t)
+    }
+    // Every legal move of the side to move, each with its SAN and the position it leads to.
+    const legal = (p) => {
+      const moves = []
+      for (const m of pseudo(p)) {
+        const n = safe(p, m)
+        if (n) moves.push({ m, n })
+      }
+      const by = {}
+      for (const x of moves) {
+        const key = p.b[x.m.f] + x.m.t
+        ;(by[key] = by[key] || []).push(x.m)
+      }
+      for (const x of moves) {
+        const same = by[p.b[x.m.f] + x.m.t]
+        x.san = san(p, x.m, same.length > 1 ? same.filter((o) => o !== x.m && !o.pr) : [])
+        x.uci = uci(x.m)
+      }
+      return moves
+    }
+    const inCheck = (p) => attacked(p.b, p.w ? p.kw : p.kb, !p.w)
+    const keyOf = (fen) => fen.split(" ").slice(0, 4).join(" ")
 
-  // The moves of the side to move, before asking whether they leave its king attacked.
-  const pseudo = (p) => {
-    const { b, w } = p, out = [];
-    const add = (f, t, x) => out.push({ f, t, pr: "", x: x || "" });
-    for (let s = 21; s <= 98; s++) {
-      const c = b[s];
-      if (!mine(c, w)) continue;
-      const kind = c.toUpperCase();
-      if (kind === "P") {
-        const up = w ? 10 : -10, row = Math.floor(s / 10), last = w ? 9 : 2;
-        const push = (t) => {
-          if (Math.floor(t / 10) === last) for (const pr of ["Q", "R", "B", "N"]) out.push({ f: s, t, pr, x: "" });
-          else add(s, t);
-        };
-        if (b[s + up] === ".") {
-          push(s + up);
-          if (row === (w ? 3 : 8) && b[s + 2 * up] === ".") add(s, s + 2 * up);
+    const g = board && typeof board === "object" && !Array.isArray(board) ? board : {}
+    const before = parse(typeof g.fen === "string" ? g.fen : START)
+    let moves = Array.isArray(g.moves) ? g.moves : []
+    let seen = Array.isArray(g.seen) ? g.seen : [keyOf(fenOf(before))]
+    let pos = before,
+      last = typeof g.last === "string" ? g.last : ""
+    if (typeof move !== "string") throw new Error("a move is a text: e2e4, or Nf3")
+    const wanted = move.trim()
+    if (wanted !== "" && g.status && g.status !== "playing")
+      throw new Error(`the game is over (${g.status})`)
+    if (wanted !== "" && wanted !== "resign") {
+      // A move by its coordinates (e2e4, e7e8q), as the page sends it, or in SAN (Nf3, O-O).
+      const all = pseudo(pos)
+      const coords = wanted.toLowerCase()
+      let found = null
+      if (/^[a-h][1-8][a-h][1-8][qrbn]?$/.test(coords)) {
+        const full =
+          coords.length === 4 && all.some((m) => uci(m) === coords + "q") ? coords + "q" : coords
+        const m = all.find((x) => uci(x) === full)
+        const n = m && safe(pos, m)
+        if (n) {
+          const same = all.filter(
+            (o) => o !== m && !o.pr && o.t === m.t && pos.b[o.f] === pos.b[m.f] && safe(pos, o),
+          )
+          found = { m, n, san: san(pos, m, same) }
         }
-        for (const t of [s + up - 1, s + up + 1]) {
-          if (theirs(b[t], w)) push(t);
-          else if (t === p.ep) add(s, t, "ep");
-        }
-      } else if (kind === "N" || kind === "K") {
-        for (const d of kind === "N" ? KNIGHT : KING) if (b[s + d] === "." || theirs(b[s + d], w)) add(s, s + d);
       } else {
-        for (const d of kind === "B" ? DIAG : kind === "R" ? ORTH : KING) {
-          let t = s + d;
-          while (b[t] === ".") { add(s, t); t += d; }
-          if (theirs(b[t], w)) add(s, t);
+        const plain = wanted.replace(/[+#!?]+$/, "").replace(/0/g, "O")
+        found = legal(pos).find((x) => x.san === plain) || null
+      }
+      if (!found) throw new Error(`${wanted} is not a legal move here`)
+      pos = found.n
+      last = uci(found.m)
+      const key = keyOf(fenOf(pos))
+      seen = [...seen, key]
+      moves = [...moves, found.san]
+    }
+    const next = legal(pos)
+    const check = inCheck(pos)
+    if (wanted !== "" && check) moves[moves.length - 1] += next.length ? "+" : "#"
+    const fen = fenOf(pos)
+    const men = fen
+      .split(" ")[0]
+      .replace(/[^A-Za-z]/g, "")
+      .replace(/[Kk]/g, "")
+    // Resigning is the side to move's, and stays so; else the position says.
+    const status =
+      g.status === "resigned" || wanted === "resign"
+        ? "resigned"
+        : next.length === 0
+          ? check
+            ? "checkmate"
+            : "stalemate"
+          : pos.half >= 100
+            ? "fifty-move rule"
+            : men === "" || /^[NBnb]$/.test(men)
+              ? "insufficient material"
+              : seen.filter((k) => k === keyOf(fen)).length >= 3
+                ? "threefold repetition"
+                : "playing"
+    const winner =
+      status === "checkmate" || status === "resigned"
+        ? pos.w
+          ? "black"
+          : "white"
+        : status === "playing"
+          ? ""
+          : "draw"
+    const result = { white: "1-0", black: "0-1", draw: "1/2-1/2" }[winner] || "*"
+    const material = { white: 0, black: 0 }
+    for (const c of fen.split(" ")[0]) {
+      const v = VALUE[c.toUpperCase()]
+      if (v !== undefined) material[c < "a" ? "white" : "black"] += v
+    }
+    const numbered = moves.map((s, i) => (i % 2 ? s : `${i / 2 + 1}. ${s}`)).join(" ")
+    const game = {
+      ...g,
+      fen,
+      moves,
+      seen,
+      last,
+      status,
+      winner,
+      result,
+      material,
+      pgn: (numbered ? numbered + " " : "") + result,
+      turn: pos.w ? "w" : "b",
+      legal: status === "playing" ? next.map((x) => ({ san: x.san, uci: x.uci })) : [],
+    }
+    // Black is the agent. The rules' own choice for it, played when it breaks the contract or
+    // can't answer: the capture of the most valuable piece, never a piece left where it can be
+    // taken, a promotion, a check, the king kept home, the centre; the first such move in the list.
+    delete game.fallback
+    if (!pos.w && status === "playing") {
+      let best = null,
+        score = -Infinity
+      for (const x of next) {
+        const kind = pos.b[x.m.f].toUpperCase(),
+          victim = pos.b[x.m.t]
+        let s = victim === "." ? 0 : 10 * VALUE[victim.toUpperCase()]
+        if (x.m.x === "ep") s += 10
+        if (attacked(x.n.b, x.m.t, true)) s -= 10 * VALUE[kind]
+        if (x.m.pr === "Q") s += 80
+        if (inCheck(x.n)) s += 3
+        if (kind === "K" && !x.m.x) s -= 5
+        s +=
+          3 -
+          Math.floor(Math.max(Math.abs((x.m.t % 10) - 4.5), Math.abs(Math.floor(x.m.t / 10) - 5.5)))
+        if (s > score) {
+          best = x
+          score = s
         }
       }
+      game.fallback = { san: best.san, uci: best.uci }
     }
-    // Castling: the king and rook unmoved (the FEN's rights), the squares between empty, and the
-    // king never on an attacked square.
-    const k = w ? 25 : 95, rook = w ? "R" : "r";
-    if (b[k] === (w ? "K" : "k") && !attacked(b, k, !w)) {
-      if (p.c.includes(w ? "K" : "k") && b[k + 1] === "." && b[k + 2] === "." && b[k + 3] === rook && !attacked(b, k + 1, !w) && !attacked(b, k + 2, !w)) add(k, k + 2, "ck");
-      if (p.c.includes(w ? "Q" : "q") && b[k - 1] === "." && b[k - 2] === "." && b[k - 3] === "." && b[k - 4] === rook && !attacked(b, k - 1, !w) && !attacked(b, k - 2, !w)) add(k, k - 2, "cq");
-    }
-    return out;
-  };
-
-  const make = (p, m) => {
-    const b = p.b.slice(), c = b[m.f], taken = b[m.t];
-    b[m.t] = m.pr ? (p.w ? m.pr : m.pr.toLowerCase()) : c;
-    b[m.f] = ".";
-    if (m.x === "ep") b[m.t + (p.w ? -10 : 10)] = ".";
-    if (m.x === "ck") { b[m.f + 1] = b[m.f + 3]; b[m.f + 3] = "."; }
-    if (m.x === "cq") { b[m.f - 1] = b[m.f - 4]; b[m.f - 4] = "."; }
-    let rights = p.c;
-    if (c === "K") rights = rights.replace("K", "").replace("Q", "");
-    if (c === "k") rights = rights.replace("k", "").replace("q", "");
-    for (const [s, r] of [[28, "K"], [21, "Q"], [98, "k"], [91, "q"]]) if (m.f === s || m.t === s) rights = rights.replace(r, "");
-    const pawn = c === "P" || c === "p";
-    return {
-      b, w: !p.w, c: rights,
-      ep: pawn && Math.abs(m.t - m.f) === 20 ? (m.f + m.t) / 2 : 0,
-      half: pawn || taken !== "." ? 0 : p.half + 1,
-      full: p.w ? p.full : p.full + 1,
-      kw: c === "K" ? m.t : p.kw, kb: c === "k" ? m.t : p.kb,
-    };
-  };
-  // A move is legal when it leaves its own king unattacked.
-  const safe = (p, m) => {
-    const n = make(p, m);
-    return attacked(n.b, p.w ? n.kw : n.kb, !p.w) ? null : n;
-  };
-  const uci = (m) => name(m.f) + name(m.t) + m.pr.toLowerCase();
-  // Standard algebraic notation, without the check sign; rivals: the other legal moves of the
-  // same kind of piece to the same square.
-  const san = (p, m, rivals) => {
-    if (m.x === "ck") return "O-O";
-    if (m.x === "cq") return "O-O-O";
-    const kind = p.b[m.f].toUpperCase(), takes = p.b[m.t] !== "." || m.x === "ep";
-    if (kind === "P") return (takes ? name(m.f)[0] + "x" : "") + name(m.t) + (m.pr ? "=" + m.pr : "");
-    let from = "";
-    if (rivals.length) {
-      const file = name(m.f)[0], rank = name(m.f)[1];
-      from = !rivals.some((o) => name(o.f)[0] === file) ? file : !rivals.some((o) => name(o.f)[1] === rank) ? rank : file + rank;
-    }
-    return kind + from + (takes ? "x" : "") + name(m.t);
-  };
-  // Every legal move of the side to move, each with its SAN and the position it leads to.
-  const legal = (p) => {
-    const moves = [];
-    for (const m of pseudo(p)) {
-      const n = safe(p, m);
-      if (n) moves.push({ m, n });
-    }
-    const by = {};
-    for (const x of moves) {
-      const key = p.b[x.m.f] + x.m.t;
-      (by[key] = by[key] || []).push(x.m);
-    }
-    for (const x of moves) {
-      const same = by[p.b[x.m.f] + x.m.t];
-      x.san = san(p, x.m, same.length > 1 ? same.filter((o) => o !== x.m && !o.pr) : []);
-      x.uci = uci(x.m);
-    }
-    return moves;
-  };
-  const inCheck = (p) => attacked(p.b, p.w ? p.kw : p.kb, !p.w);
-  const keyOf = (fen) => fen.split(" ").slice(0, 4).join(" ");
-
-  const g = board && typeof board === "object" && !Array.isArray(board) ? board : {};
-  const before = parse(typeof g.fen === "string" ? g.fen : START);
-  let moves = Array.isArray(g.moves) ? g.moves : [];
-  let seen = Array.isArray(g.seen) ? g.seen : [keyOf(fenOf(before))];
-  let pos = before, last = typeof g.last === "string" ? g.last : "";
-  if (typeof move !== "string") throw new Error("a move is a text: e2e4, or Nf3");
-  const wanted = move.trim();
-  if (wanted !== "" && g.status && g.status !== "playing") throw new Error(`the game is over (${g.status})`);
-  if (wanted !== "" && wanted !== "resign") {
-    // A move by its coordinates (e2e4, e7e8q), as the page sends it, or in SAN (Nf3, O-O).
-    const all = pseudo(pos);
-    const coords = wanted.toLowerCase();
-    let found = null;
-    if (/^[a-h][1-8][a-h][1-8][qrbn]?$/.test(coords)) {
-      const full = coords.length === 4 && all.some((m) => uci(m) === coords + "q") ? coords + "q" : coords;
-      const m = all.find((x) => uci(x) === full);
-      const n = m && safe(pos, m);
-      if (n) {
-        const same = all.filter((o) => o !== m && !o.pr && o.t === m.t && pos.b[o.f] === pos.b[m.f] && safe(pos, o));
-        found = { m, n, san: san(pos, m, same) };
-      }
-    } else {
-      const plain = wanted.replace(/[+#!?]+$/, "").replace(/0/g, "O");
-      found = legal(pos).find((x) => x.san === plain) || null;
-    }
-    if (!found) throw new Error(`${wanted} is not a legal move here`);
-    pos = found.n;
-    last = uci(found.m);
-    const key = keyOf(fenOf(pos));
-    seen = [...seen, key];
-    moves = [...moves, found.san];
-  }
-  const next = legal(pos);
-  const check = inCheck(pos);
-  if (wanted !== "" && check) moves[moves.length - 1] += next.length ? "+" : "#";
-  const fen = fenOf(pos);
-  const men = fen.split(" ")[0].replace(/[^A-Za-z]/g, "").replace(/[Kk]/g, "");
-  // Resigning is the side to move's, and stays so; else the position says.
-  const status = g.status === "resigned" || wanted === "resign" ? "resigned"
-    : next.length === 0 ? (check ? "checkmate" : "stalemate")
-    : pos.half >= 100 ? "fifty-move rule"
-    : men === "" || /^[NBnb]$/.test(men) ? "insufficient material"
-    : seen.filter((k) => k === keyOf(fen)).length >= 3 ? "threefold repetition"
-    : "playing";
-  const winner = status === "checkmate" || status === "resigned" ? (pos.w ? "black" : "white") : status === "playing" ? "" : "draw";
-  const result = { white: "1-0", black: "0-1", draw: "1/2-1/2" }[winner] || "*";
-  const material = { white: 0, black: 0 };
-  for (const c of fen.split(" ")[0]) {
-    const v = VALUE[c.toUpperCase()];
-    if (v !== undefined) material[c < "a" ? "white" : "black"] += v;
-  }
-  const numbered = moves.map((s, i) => (i % 2 ? s : `${i / 2 + 1}. ${s}`)).join(" ");
-  const game = {
-    ...g, fen, moves, seen, last, status, winner, result, material,
-    pgn: (numbered ? numbered + " " : "") + result,
-    turn: pos.w ? "w" : "b",
-    legal: status === "playing" ? next.map((x) => ({ san: x.san, uci: x.uci })) : [],
-  };
-  // Black is the agent. The rules' own choice for it, played when it breaks the contract or
-  // can't answer: the capture of the most valuable piece, never a piece left where it can be
-  // taken, a promotion, a check, the king kept home, the centre; the first such move in the list.
-  delete game.fallback;
-  if (!pos.w && status === "playing") {
-    let best = null, score = -Infinity;
-    for (const x of next) {
-      const kind = pos.b[x.m.f].toUpperCase(), victim = pos.b[x.m.t];
-      let s = victim === "." ? 0 : 10 * VALUE[victim.toUpperCase()];
-      if (x.m.x === "ep") s += 10;
-      if (attacked(x.n.b, x.m.t, true)) s -= 10 * VALUE[kind];
-      if (x.m.pr === "Q") s += 80;
-      if (inCheck(x.n)) s += 3;
-      if (kind === "K" && !x.m.x) s -= 5;
-      s += 3 - Math.floor(Math.max(Math.abs((x.m.t % 10) - 4.5), Math.abs(Math.floor(x.m.t / 10) - 5.5)));
-      if (s > score) { best = x; score = s; }
-    }
-    game.fallback = { san: best.san, uci: best.uci };
-  }
-  return game;
-}, { fuel: 1000000000 })
+    return game
+  },
+  { fuel: 1000000000 },
+)
 
 // The models the Sphinx may be played with (Gemini's newest text models, as of November 2026),
 // each thinking a little (low, or minimal where the model has it) to answer within the call's 50
@@ -730,24 +839,25 @@ const opponent = js(function board(model) {
     { id: "gemini-3.6-flash", note: "free tier", thinking: "low" },
     { id: "gemini-3.8-flash", note: "the newest Flash, free tier; slower", thinking: "low" },
     { id: "gemini-4-argon", note: "the strongest, paid plans only", thinking: "low" },
-  ];
-  const name = typeof model === "string" && model.trim() !== "" ? model.trim() : MODELS[0].id;
-  if (!MODELS.some((m) => m.id === name)) throw new Error(`${name} isn't one of the models this game offers`);
-  return { model: name, thinking: MODELS.find((m) => m.id === name).thinking, models: MODELS };
+  ]
+  const name = typeof model === "string" && model.trim() !== "" ? model.trim() : MODELS[0].id
+  if (!MODELS.some((m) => m.id === name))
+    throw new Error(`${name} isn't one of the models this game offers`)
+  return { model: name, thinking: MODELS.find((m) => m.id === name).thinking, models: MODELS }
 })
 
 // What the player's request plays, for the rules: on their turn a move (or "resign"); while the
 // Sphinx's turn waits, "again" (ask it again) or "rules" (let the rules play for it), which play
 // nothing for the player. Anything else throws, so the run answers 400 and nothing changes.
 const player = js(function wanted(board, move) {
-  if (typeof move !== "string") throw new Error("a move is a text: e2e4, or Nf3");
-  const waits = !!board.waiting && board.status === "playing" && board.turn === "b";
+  if (typeof move !== "string") throw new Error("a move is a text: e2e4, or Nf3")
+  const waits = !!board.waiting && board.status === "playing" && board.turn === "b"
   if (waits) {
-    if (move === "again" || move === "rules") return "";
-    throw new Error("the Sphinx's turn waits: ask it again, or let the rules play");
+    if (move === "again" || move === "rules") return ""
+    throw new Error("the Sphinx's turn waits: ask it again, or let the rules play")
   }
-  if (move === "again" || move === "rules") throw new Error("the Sphinx isn't waiting");
-  return move;
+  if (move === "again" || move === "rules") throw new Error("the Sphinx isn't waiting")
+  return move
 })
 
 // What the Sphinx is asked on its turn: the whole game, the position, the material and the legal
@@ -756,29 +866,67 @@ const player = js(function wanted(board, move) {
 // the game is over (the player's move ended it, or they resigned), a parting line and its mood.
 // Nothing when it isn't Black's move, or the player let the rules play.
 const move_prompt = js(function body(board, move) {
-  const legal = (board.legal || []).map((l) => l.san);
-  const over = board.status !== "playing";
-  if (!over && (board.turn !== "b" || legal.length === 0 || move === "rules")) return undefined;
-  const MOODS = ["confident", "delighted", "amused", "curious", "puzzled", "uneasy", "struggling", "desperate"];
-  const VERDICTS = ["brilliant", "good", "solid", "unclear", "risky", "dubious", "bad", "blunder", "insane"];
-  const voice = "You are the Sphinx, a playful, proud chess player with Black against a human, who speaks in riddles and teasing.";
+  const legal = (board.legal || []).map((l) => l.san)
+  const over = board.status !== "playing"
+  if (!over && (board.turn !== "b" || legal.length === 0 || move === "rules")) return undefined
+  const MOODS = [
+    "confident",
+    "delighted",
+    "amused",
+    "curious",
+    "puzzled",
+    "uneasy",
+    "struggling",
+    "desperate",
+  ]
+  const VERDICTS = [
+    "brilliant",
+    "good",
+    "solid",
+    "unclear",
+    "risky",
+    "dubious",
+    "bad",
+    "blunder",
+    "insane",
+  ]
+  const voice =
+    "You are the Sphinx, a playful, proud chess player with Black against a human, who speaks in riddles and teasing."
   const facts = [
     `The game so far (PGN): ${board.pgn}`,
     `The position (FEN): ${board.fen}`,
     `Material (pawn 1, knight and bishop 3, rook 5, queen 9): you ${board.material.black}, the player ${board.material.white}.`,
-  ];
-  const lastMove = board.moves[board.moves.length - 1];
+  ]
+  const lastMove = board.moves[board.moves.length - 1]
   if (over) {
-    const how = board.winner === "black" ? (board.status === "resigned" ? "the player resigned: you won" : "you checkmated the player: you won")
-      : board.winner === "white" ? "the player checkmated you: you lost" : `it is a draw (${board.status})`;
+    const how =
+      board.winner === "black"
+        ? board.status === "resigned"
+          ? "the player resigned: you won"
+          : "you checkmated the player: you won"
+        : board.winner === "white"
+          ? "the player checkmated you: you lost"
+          : `it is a draw (${board.status})`
     return JSON.stringify({
       model: board.model,
       generation_config: { thinking_level: board.thinking },
       system_instruction: `${voice} The game is over. Say goodbye to the player in say: one or two sentences, gracious or sore, as you feel, in your voice. Give your mood. Never name a square or a move. Answer only with the JSON asked for.`,
-      input: [...facts, `The game is over: ${how}.`, 'Answer with JSON: {"mood": "<one of the moods>", "say": "<your parting words>"}'].join("\n"),
-      response_format: { type: "text", mime_type: "application/json", schema: { type: "object", properties: { mood: { type: "string", enum: MOODS }, say: { type: "string" } }, required: ["mood", "say"] } },
+      input: [
+        ...facts,
+        `The game is over: ${how}.`,
+        'Answer with JSON: {"mood": "<one of the moods>", "say": "<your parting words>"}',
+      ].join("\n"),
+      response_format: {
+        type: "text",
+        mime_type: "application/json",
+        schema: {
+          type: "object",
+          properties: { mood: { type: "string", enum: MOODS }, say: { type: "string" } },
+          required: ["mood", "say"],
+        },
+      },
       store: false,
-    });
+    })
   }
   return JSON.stringify({
     model: board.model,
@@ -804,12 +952,18 @@ const move_prompt = js(function body(board, move) {
       mime_type: "application/json",
       schema: {
         type: "object",
-        properties: { move: { type: "string", enum: legal }, comment: { type: "string" }, verdict: { type: "string", enum: VERDICTS }, mood: { type: "string", enum: MOODS }, say: { type: "string" } },
+        properties: {
+          move: { type: "string", enum: legal },
+          comment: { type: "string" },
+          verdict: { type: "string", enum: VERDICTS },
+          mood: { type: "string", enum: MOODS },
+          say: { type: "string" },
+        },
         required: ["move", "comment", "verdict", "mood", "say"],
       },
     },
     store: false,
-  });
+  })
 })
 
 // The contract, checked: the Sphinx's move if it is one of the legal moves, else the rules'
@@ -819,65 +973,137 @@ const move_prompt = js(function body(board, move) {
 // coordinates ("" when there is none to play), and what it said to the player, if anything (left
 // out when it broke the contract), for the chat.
 const choose = js(function pick(board, asked, move) {
-  const legal = board.legal || [];
-  const over = board.status !== "playing";
-  if (!over && (board.turn !== "b" || legal.length === 0)) return { game: board, move: "" };
-  const MOODS = ["confident", "delighted", "amused", "curious", "puzzled", "uneasy", "struggling", "desperate"];
-  const VERDICTS = ["brilliant", "good", "solid", "unclear", "risky", "dubious", "bad", "blunder", "insane"];
+  const legal = board.legal || []
+  const over = board.status !== "playing"
+  if (!over && (board.turn !== "b" || legal.length === 0)) return { game: board, move: "" }
+  const MOODS = [
+    "confident",
+    "delighted",
+    "amused",
+    "curious",
+    "puzzled",
+    "uneasy",
+    "struggling",
+    "desperate",
+  ]
+  const VERDICTS = [
+    "brilliant",
+    "good",
+    "solid",
+    "unclear",
+    "risky",
+    "dubious",
+    "bad",
+    "blunder",
+    "insane",
+  ]
   // The text of the interaction's model output, in the steps the API answers.
   const text = (body) => {
-    const r = typeof body === "string" ? JSON.parse(body) : body;
-    const steps = (r.steps || []).filter((s) => s.type === "model_output");
-    return steps.flatMap((s) => s.content || []).filter((c) => c.type === "text").map((c) => c.text).join("") || r.output_text || "";
-  };
-  let answer;
+    const r = typeof body === "string" ? JSON.parse(body) : body
+    const steps = (r.steps || []).filter((s) => s.type === "model_output")
+    return (
+      steps
+        .flatMap((s) => s.content || [])
+        .filter((c) => c.type === "text")
+        .map((c) => c.text)
+        .join("") ||
+      r.output_text ||
+      ""
+    )
+  }
+  let answer
   if (asked.status === 200) {
-    try { answer = JSON.parse(text(asked.body)); } catch (_) {}
+    try {
+      answer = JSON.parse(text(asked.body))
+    } catch (_) {}
   }
-  const mood = answer && MOODS.includes(answer.mood) ? answer.mood : undefined;
-  const say = answer && typeof answer.say === "string" ? answer.say.trim().slice(0, 400) : "";
-  if (over) return { game: { ...board, mood: mood ?? board.mood }, move: "", aside: say ? { agent: say, mood } : undefined };
-  if (move !== "rules" && !asked.status && asked.error === "timeout") return { game: { ...board, waiting: { note: "its call timed out" } }, move: "" };
-  const turn = { ply: (board.moves || []).length + 1 };
+  const mood = answer && MOODS.includes(answer.mood) ? answer.mood : undefined
+  const say = answer && typeof answer.say === "string" ? answer.say.trim().slice(0, 400) : ""
+  if (over)
+    return {
+      game: { ...board, mood: mood ?? board.mood },
+      move: "",
+      aside: say ? { agent: say, mood } : undefined,
+    }
+  if (move !== "rules" && !asked.status && asked.error === "timeout")
+    return { game: { ...board, waiting: { note: "its call timed out" } }, move: "" }
+  const turn = { ply: (board.moves || []).length + 1 }
   if (move === "rules") {
-    Object.assign(turn, { kept: "refused", note: "its call timed out, and you let the rules play" });
+    Object.assign(turn, { kept: "refused", note: "its call timed out, and you let the rules play" })
   } else if (!asked.status) {
-    Object.assign(turn, { kept: "refused", note: asked.error ? `the call failed: ${asked.error}` : "no call was made: is the key set?" });
+    Object.assign(turn, {
+      kept: "refused",
+      note: asked.error ? `the call failed: ${asked.error}` : "no call was made: is the key set?",
+    })
   } else if (asked.status !== 200) {
-    let why = "";
-    try { why = [].concat(typeof asked.body === "string" ? JSON.parse(asked.body) : asked.body)[0].error.message.replace(/\.$/, ""); } catch (_) {}
-    Object.assign(turn, { kept: "refused", note: `Gemini answered ${asked.status}${why ? ": " + why : ""}` });
+    let why = ""
+    try {
+      why = []
+        .concat(typeof asked.body === "string" ? JSON.parse(asked.body) : asked.body)[0]
+        .error.message.replace(/\.$/, "")
+    } catch (_) {}
+    Object.assign(turn, {
+      kept: "refused",
+      note: `Gemini answered ${asked.status}${why ? ": " + why : ""}`,
+    })
   } else {
-    const proposed = answer && typeof answer.move === "string" ? answer.move.trim().slice(0, 40) : undefined;
-    const hit = proposed !== undefined && legal.find((l) => l.san === proposed.replace(/[+#!?]+$/, ""));
-    if (hit) Object.assign(turn, { kept: "kept", proposed, played: hit.san, comment: String(answer.comment ?? "").slice(0, 280), verdict: VERDICTS.includes(answer.verdict) ? answer.verdict : undefined, mood });
-    else if (proposed === undefined) Object.assign(turn, { kept: "broken", note: "its answer wasn't the JSON asked for" });
-    else Object.assign(turn, { kept: "broken", proposed, note: `${proposed} isn't one of the legal moves` });
+    const proposed =
+      answer && typeof answer.move === "string" ? answer.move.trim().slice(0, 40) : undefined
+    const hit =
+      proposed !== undefined && legal.find((l) => l.san === proposed.replace(/[+#!?]+$/, ""))
+    if (hit)
+      Object.assign(turn, {
+        kept: "kept",
+        proposed,
+        played: hit.san,
+        comment: String(answer.comment ?? "").slice(0, 280),
+        verdict: VERDICTS.includes(answer.verdict) ? answer.verdict : undefined,
+        mood,
+      })
+    else if (proposed === undefined)
+      Object.assign(turn, { kept: "broken", note: "its answer wasn't the JSON asked for" })
+    else
+      Object.assign(turn, {
+        kept: "broken",
+        proposed,
+        note: `${proposed} isn't one of the legal moves`,
+      })
   }
-  const kept = turn.kept === "kept";
-  const played = kept ? legal.find((l) => l.san === turn.played) : board.fallback;
-  turn.played = played.san;
-  const { waiting, ...rest } = board;
+  const kept = turn.kept === "kept"
+  const played = kept ? legal.find((l) => l.san === turn.played) : board.fallback
+  turn.played = played.san
+  const { waiting, ...rest } = board
   return {
-    game: { ...rest, mood: kept ? mood ?? board.mood : board.mood, turns: [...(board.turns || []), turn] },
+    game: {
+      ...rest,
+      mood: kept ? (mood ?? board.mood) : board.mood,
+      turns: [...(board.turns || []), turn],
+    },
     move: played.uci,
     aside: kept && say ? { agent: say, mood } : undefined,
-  };
+  }
 })
 
 // The chat kept: the last 50 lines, the player's with the Sphinx's replies, and its asides.
 const remember = js(function kept(talk, said, time) {
-  const entry = { at: time, ...said };
-  return { talk: [...(Array.isArray(talk) ? talk : []), entry].slice(-50), last: entry };
+  const entry = { at: time, ...said }
+  return { talk: [...(Array.isArray(talk) ? talk : []), entry].slice(-50), last: entry }
 })
 
 // What the Sphinx is asked in the chat: the game, the position, the last few lines and the
 // player's, with its persona; its answer streamed, in plain words. Never the legal moves, and it
 // has no move chosen to give away.
 const chat_prompt = js(function body(board, talk, line) {
-  const said = typeof line === "string" ? line.trim().slice(0, 500) : "";
-  if (!said) return undefined;
-  const recent = (Array.isArray(talk) ? talk : []).filter((t) => !t.resting).slice(-8).map((t) => (t.player === undefined ? `Sphinx (unprompted): ${t.agent}` : `Player: ${t.player}\nSphinx: ${t.agent}`));
+  const said = typeof line === "string" ? line.trim().slice(0, 500) : ""
+  if (!said) return undefined
+  const recent = (Array.isArray(talk) ? talk : [])
+    .filter((t) => !t.resting)
+    .slice(-8)
+    .map((t) =>
+      t.player === undefined
+        ? `Sphinx (unprompted): ${t.agent}`
+        : `Player: ${t.player}\nSphinx: ${t.agent}`,
+    )
   return JSON.stringify({
     model: board.model,
     generation_config: { thinking_level: board.thinking },
@@ -892,46 +1118,63 @@ const chat_prompt = js(function body(board, talk, line) {
     input: [
       `The game so far (PGN): ${board.pgn}`,
       `The position (FEN): ${board.fen}`,
-      board.status === "playing" ? `It is ${board.turn === "w" ? "the player's" : "your"} move.` : `The game is over: ${board.status}, ${board.result}.`,
+      board.status === "playing"
+        ? `It is ${board.turn === "w" ? "the player's" : "your"} move.`
+        : `The game is over: ${board.status}, ${board.result}.`,
       `The chat so far:\n${recent.join("\n") || "(nothing yet)"}`,
       `The player says: ${said}`,
       "Answer with only what you say to the player.",
     ].join("\n"),
     stream: true,
     store: false,
-  });
+  })
 })
 
 // The Sphinx's reply to a chat line, or a resting line when Gemini didn't answer.
 const hear = js(function heard(sent, line) {
-  const said = typeof line === "string" ? line.trim().slice(0, 500) : "";
-  if (!said) throw new Error("the chat line is empty");
+  const said = typeof line === "string" ? line.trim().slice(0, 500) : ""
+  if (!said) throw new Error("the chat line is empty")
   // The reply's words, from the stream's step.delta events.
   const text = (body) => {
-    let out = "";
+    let out = ""
     for (const line of String(body).split("\n")) {
-      if (!line.startsWith("data:")) continue;
-      let e;
-      try { e = JSON.parse(line.slice(5)); } catch (_) { continue; }
-      if (e && e.event_type === "step.delta" && e.delta && e.delta.type === "text") out += e.delta.text;
+      if (!line.startsWith("data:")) continue
+      let e
+      try {
+        e = JSON.parse(line.slice(5))
+      } catch (_) {
+        continue
+      }
+      if (e && e.event_type === "step.delta" && e.delta && e.delta.type === "text")
+        out += e.delta.text
     }
-    return out;
-  };
-  let reply = "", why = "";
-  if (sent.status === 200) reply = text(sent.body).trim().slice(0, 600);
-  else {
-    try { why = [].concat(typeof sent.body === "string" ? JSON.parse(sent.body) : sent.body)[0].error.message.replace(/\.$/, ""); } catch (_) {}
+    return out
   }
-  if (reply) return { player: said, agent: reply };
+  let reply = "",
+    why = ""
+  if (sent.status === 200) reply = text(sent.body).trim().slice(0, 600)
+  else {
+    try {
+      why = []
+        .concat(typeof sent.body === "string" ? JSON.parse(sent.body) : sent.body)[0]
+        .error.message.replace(/\.$/, "")
+    } catch (_) {}
+  }
+  if (reply) return { player: said, agent: reply }
   return {
     player: said,
     resting: true,
-    agent: !sent.status && sent.error ? `The Sphinx didn't answer in time (the call failed: ${sent.error}).`
-      : !sent.status ? "The Sphinx is asleep: no call was made (is the key set?)."
-      : sent.status === 429 ? "The Sphinx is resting its eyes (Gemini answered 429: the free tier's limit). Try again in a minute."
-      : sent.status !== 200 ? `The Sphinx can't hear you (Gemini answered ${sent.status}${why ? ": " + why : ""}).`
-      : "The Sphinx mumbled something nobody could make out.",
-  };
+    agent:
+      !sent.status && sent.error
+        ? `The Sphinx didn't answer in time (the call failed: ${sent.error}).`
+        : !sent.status
+          ? "The Sphinx is asleep: no call was made (is the key set?)."
+          : sent.status === 429
+            ? "The Sphinx is resting its eyes (Gemini answered 429: the free tier's limit). Try again in a minute."
+            : sent.status !== 200
+              ? `The Sphinx can't hear you (Gemini answered ${sent.status}${why ? ": " + why : ""}).`
+              : "The Sphinx mumbled something nobody could make out.",
+  }
 })
 
 // The page, with the game as it stands and the chat.

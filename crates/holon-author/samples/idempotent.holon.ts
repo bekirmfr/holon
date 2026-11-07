@@ -47,7 +47,7 @@ route.post("/charges", async (req) => {
     charged_at: now,
     expires_at: now + 86400,
   }
-  const result = !mismatch ? prior ?? fresh : undefined
+  const result = !mismatch ? (prior ?? fresh) : undefined
   charges[key] = result
   return { ...result, replayed } ?? status(409)
 })

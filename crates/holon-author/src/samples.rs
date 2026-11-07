@@ -861,12 +861,17 @@ mod tests {
     }
 
     /// Each file is in the canonical form: `holon fmt` would leave it as it is, its comments and
-    /// all. Each says, in them, what it does and how to try it.
+    /// all. Each says, in them, what it does and how to try it. `HOLON_BLESS=1` writes each as fmt
+    /// does, for a change to fmt's layout.
     #[test]
     fn every_sample_is_as_fmt_writes_it() {
         for s in samples() {
             let file = format!("{}.holon.ts", s.name);
             let printed = crate::commands::fmt(&file, s.text).unwrap_or_else(|r| panic!("{}: {r:?}", s.name));
+            if std::env::var_os("HOLON_BLESS").is_some() && printed != s.text {
+                std::fs::write(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("samples").join(&file), &printed).unwrap();
+                continue;
+            }
             assert_eq!(printed, s.text, "{}: samples/{file} isn't as fmt writes it", s.name);
             assert!(s.text.starts_with("// "), "{}: samples/{file} opens with a comment saying what it is", s.name);
         }

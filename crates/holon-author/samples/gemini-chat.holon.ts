@@ -25,8 +25,15 @@ flow("gemini-chat", { port: 8128 })
 
 // The page: a form whose answer streams in, and the last ten exchanges.
 const page = js(function html(past) {
-  const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
-  const items = Object.values(past).reverse().slice(0, 10).map((c) => `<li><b>${esc(c.prompt)}</b><br>${esc(c.said)}</li>`);
+  const esc = (s) =>
+    String(s).replace(
+      /[&<>"']/g,
+      (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c],
+    )
+  const items = Object.values(past)
+    .reverse()
+    .slice(0, 10)
+    .map((c) => `<li><b>${esc(c.prompt)}</b><br>${esc(c.said)}</li>`)
   return `<!doctype html>
 <meta charset="utf-8">
 <title>Gemini chat</title>
@@ -69,19 +76,23 @@ document.getElementById("ask").onsubmit = async (e) => {
   li.append(asked, document.createElement("br"), out.textContent);
   document.getElementById("past").prepend(li);
 };
-</script>`;
+</script>`
 })
 
 // Reads the answer's text out of the stream's step.delta events.
 const answer = js(function said(events) {
-  let said = "";
+  let said = ""
   for (const line of String(events).split("\n")) {
-    if (!line.startsWith("data:")) continue;
-    let e;
-    try { e = JSON.parse(line.slice(5)); } catch (_) { continue; }
-    if (e.event_type === "step.delta" && e.delta && e.delta.type === "text") said += e.delta.text;
+    if (!line.startsWith("data:")) continue
+    let e
+    try {
+      e = JSON.parse(line.slice(5))
+    } catch (_) {
+      continue
+    }
+    if (e.event_type === "step.delta" && e.delta && e.delta.type === "text") said += e.delta.text
   }
-  return said;
+  return said
 })
 
 // Serves the page with what was asked before.

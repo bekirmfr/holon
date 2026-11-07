@@ -71,14 +71,15 @@ its server when it has handlers, else the whole canvas frozen as one composite.
 ### The text laid out: `holon fmt`
 
 `lang::format::format` is a source formatter (LANGUAGE.md §7): it works on the text and oxc's tree
-of it, not on the graph, and lays the TypeScript out as written, Prettier's way (two spaces, double
-quotes, no semicolons, 100 columns, a list that doesn't fit broken one item to a line with a
-trailing comma, an object the text broke kept broken). It keeps every comment and a blank line
-where the text had one, writes `var` as `const` (or `let` where it is assigned again) and `==` as
-`===`, never touches a `js()` body, and keeps a handler's options beside its function's closing
-brace. It compiles the text first, so a text with a mistake is not formatted, and compiles what it
-wrote: a layout that would change the flow (its name, or its document with the spans left out) or
-lose a comment is refused as a mistake in fmt, and the text is left as it is. `commands::fmt`
+of it, not on the graph. It writes `var` as `const` (or `let` where it is assigned again) and `==`
+as `===` by editing the text, outside `js()` bodies, then lays it out with Oxfmt's formatter
+(`oxc_formatter`, from oxc's repository at the tag of the parser's release): Prettier's layout,
+without semicolons, at 100 columns, an object's key quoted as written. It compiles the text first,
+so a text with a mistake is not formatted, and checks what it wrote: a layout that is not the same
+program (oxc's tree, without spans, comments or parentheses), that would change the flow (its
+name, or its document with the spans left out, each `js()` body put back as written, since a
+body's text is its node's identity) or that would lose a comment is refused as a mistake in fmt,
+and the text is left as it is. `commands::fmt`
 (`holon fmt`) and `editing::format` call it.
 
 ### Units to text: the printer

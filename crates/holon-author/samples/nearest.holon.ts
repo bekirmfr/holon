@@ -15,19 +15,29 @@ import { now } from "holon:clock"
 flow("nearest", { port: 8117 })
 
 // Finds the candidate closest to a word, and how many edits away it is.
-const closest = js(function closest(word, candidates) {
-  const dist = (a, b) => {
-    const d = Array.from({ length: a.length + 1 }, (_, i) => [i]);
-    for (let j = 1; j <= b.length; j++) d[0][j] = j;
-    for (let i = 1; i <= a.length; i++)
-      for (let j = 1; j <= b.length; j++)
-        d[i][j] = Math.min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
-    return d[a.length][b.length];
-  };
-  let found = { best: undefined, distance: Infinity };
-  for (const c of candidates) { const k = dist(word, c); if (k < found.distance) found = { best: c, distance: k }; }
-  return found;
-}, { outputs: ["best", "distance"] })
+const closest = js(
+  function closest(word, candidates) {
+    const dist = (a, b) => {
+      const d = Array.from({ length: a.length + 1 }, (_, i) => [i])
+      for (let j = 1; j <= b.length; j++) d[0][j] = j
+      for (let i = 1; i <= a.length; i++)
+        for (let j = 1; j <= b.length; j++)
+          d[i][j] = Math.min(
+            d[i - 1][j] + 1,
+            d[i][j - 1] + 1,
+            d[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1),
+          )
+      return d[a.length][b.length]
+    }
+    let found = { best: undefined, distance: Infinity }
+    for (const c of candidates) {
+      const k = dist(word, c)
+      if (k < found.distance) found = { best: c, distance: k }
+    }
+    return found
+  },
+  { outputs: ["best", "distance"] },
+)
 
 // Adds the posted text to the dictionary.
 route.post("/words", (req) => {

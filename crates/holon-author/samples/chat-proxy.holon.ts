@@ -30,8 +30,15 @@ flow("chat-proxy", { port: 8127 })
 
 // The page: a box to ask in, the answer as it streams, and the last 10 exchanges.
 const page = js(function html(past) {
-  const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
-  const items = Object.values(past).reverse().slice(0, 10).map((c) => `<li><b>${esc(c.prompt)}</b><br>${esc(c.said)}</li>`);
+  const esc = (s) =>
+    String(s).replace(
+      /[&<>"']/g,
+      (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c],
+    )
+  const items = Object.values(past)
+    .reverse()
+    .slice(0, 10)
+    .map((c) => `<li><b>${esc(c.prompt)}</b><br>${esc(c.said)}</li>`)
   return `<!doctype html>
 <meta charset="utf-8">
 <title>Chat proxy</title>
@@ -73,19 +80,24 @@ document.getElementById("ask").onsubmit = async (e) => {
   li.append(asked, document.createElement("br"), out.textContent);
   document.getElementById("past").prepend(li);
 };
-</script>`;
+</script>`
 })
 
 // Reads the answer's text out of the stream's events.
 const answer = js(function said(events) {
-  let said = "";
+  let said = ""
   for (const line of String(events).split("\n")) {
-    if (!line.startsWith("data:")) continue;
-    let e;
-    try { e = JSON.parse(line.slice(5)); } catch (_) { continue; }
-    if (e.type === "content_block_delta" && e.delta && e.delta.type === "text_delta") said += e.delta.text;
+    if (!line.startsWith("data:")) continue
+    let e
+    try {
+      e = JSON.parse(line.slice(5))
+    } catch (_) {
+      continue
+    }
+    if (e.type === "content_block_delta" && e.delta && e.delta.type === "text_delta")
+      said += e.delta.text
   }
-  return said;
+  return said
 })
 
 // The page, with what was asked before.

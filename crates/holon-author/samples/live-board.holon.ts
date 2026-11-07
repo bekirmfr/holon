@@ -23,8 +23,14 @@ flow("live-board", { port: 8126 })
 
 // The board's page: the tickets so far, a form to add one, and new ones as they arrive.
 const page = js(function html(board) {
-  const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
-  const items = Object.values(board).reverse().map((t) => `<li>${esc(t.title)}</li>`);
+  const esc = (s) =>
+    String(s).replace(
+      /[&<>"']/g,
+      (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c],
+    )
+  const items = Object.values(board)
+    .reverse()
+    .map((t) => `<li>${esc(t.title)}</li>`)
   return `<!doctype html>
 <meta charset="utf-8">
 <title>Live board</title>
@@ -46,7 +52,7 @@ document.getElementById("add").onsubmit = (e) => {
   e.target.reset();
   fetch("/tickets", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ title }) });
 };
-</script>`;
+</script>`
 })
 
 // The board, with every ticket stored.

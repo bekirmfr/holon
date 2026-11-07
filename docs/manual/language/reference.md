@@ -43,8 +43,8 @@ Every editor, GitHub and Prettier read it as TypeScript. It doesn't run as a Nod
 [How a flow runs](#how-a-flow-runs).
 
 `holon fmt` lays a file out as Prettier does, at 100 columns and without semicolons, keeping its
-comments and blank lines; a handler's options stay after its function's closing brace
-(`}, { log: "lazy" })`). It writes a text only once that text compiles to the same flow.
+comments and blank lines, `js()` bodies included. It writes a text only once that text compiles to
+the same flow.
 
 ## Imports and settings
 
@@ -665,7 +665,8 @@ those fields (several).
   (default 16 MiB). The deploy asks for the budgets, and the server's policy caps them.
 - **Failures:** an exception, or a call that runs out of fuel, gives no value, and the run
   records why: `explain` shows it under the statement. A syntax error is found by `holon check`.
-- **Its text is its identity,** exactly as written: `holon fmt` leaves the body alone.
+- **Its text is its identity,** exactly as written: `holon fmt` lays the body out with the rest, so
+  a body it lays out anew is a new version that does the same.
 
 ## map and reduce
 

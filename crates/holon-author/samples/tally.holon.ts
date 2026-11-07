@@ -17,26 +17,38 @@ import { now } from "holon:clock"
 flow("tally", { port: 8119 })
 
 // Sums up each column of a CSV: its kind, then min, max and mean, or distinct values and top three.
-const summarize = js(function summarize(csv) {
-  const lines = csv.split(/\r?\n/).filter((line) => line.trim() !== "");
-  if (lines.length === 0) throw new Error("the CSV has no header line");
-  const cells = (line) => line.split(",").map((cell) => cell.trim());
-  const header = cells(lines[0]);
-  const records = lines.slice(1).map(cells);
-  const columns = header.map((name, i) => {
-    const values = records.map((record) => record[i] ?? "");
-    const numbers = values.map(Number);
-    if (values.length > 0 && values.every((v, k) => v !== "" && !Number.isNaN(numbers[k]))) {
-      const sum = numbers.reduce((a, b) => a + b, 0);
-      return { name, kind: "number", min: Math.min(...numbers), max: Math.max(...numbers), mean: sum / numbers.length };
-    }
-    const counts = new Map();
-    for (const v of values) counts.set(v, (counts.get(v) ?? 0) + 1);
-    const top = [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 3).map(([value, n]) => ({ value, n }));
-    return { name, kind: "text", distinct: counts.size, top };
-  });
-  return { rows: records.length, columns };
-}, { outputs: ["rows", "columns"] })
+const summarize = js(
+  function summarize(csv) {
+    const lines = csv.split(/\r?\n/).filter((line) => line.trim() !== "")
+    if (lines.length === 0) throw new Error("the CSV has no header line")
+    const cells = (line) => line.split(",").map((cell) => cell.trim())
+    const header = cells(lines[0])
+    const records = lines.slice(1).map(cells)
+    const columns = header.map((name, i) => {
+      const values = records.map((record) => record[i] ?? "")
+      const numbers = values.map(Number)
+      if (values.length > 0 && values.every((v, k) => v !== "" && !Number.isNaN(numbers[k]))) {
+        const sum = numbers.reduce((a, b) => a + b, 0)
+        return {
+          name,
+          kind: "number",
+          min: Math.min(...numbers),
+          max: Math.max(...numbers),
+          mean: sum / numbers.length,
+        }
+      }
+      const counts = new Map()
+      for (const v of values) counts.set(v, (counts.get(v) ?? 0) + 1)
+      const top = [...counts.entries()]
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 3)
+        .map(([value, n]) => ({ value, n }))
+      return { name, kind: "text", distinct: counts.size, top }
+    })
+    return { rows: records.length, columns }
+  },
+  { outputs: ["rows", "columns"] },
+)
 
 // Summarizes the posted CSV, keeps the summary with when, and answers it; an empty CSV gets a 400.
 route.post("/tally", (req) => {
