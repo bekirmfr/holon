@@ -142,6 +142,46 @@ Against a C# middleware keeping the same record (4.6–4.8 KB, SHA-256 chain, fd
 commit), Holon strict reaches 77–96% of it; at one connection the two are alike (419–427 against
 427–437 µs). The gap to plain .NET is the record, not the language.
 
+### The evaluator's change through a server (#43, 2026-11-06)
+
+The evaluator's audit ([leaves](js-library-races/leaves.md)) measured #43 through `eval` and an
+in-process bench. Raced through release servers on the machine above: `f4f269f` (before #43),
+`e988258` (after it) and `main` at `78f8f81` (after the TypeScript switch, #40, and #44). One flow,
+written in `.holon` for the first two and `.holon.ts` for `main`, compiles to the same unit in all
+three (`70a3d6c0…`), every route `unrecorded`, so what is raced is the evaluator and the host:
+
+```ts
+route.get("/hello", () => "ok", { log: "unrecorded" })
+route.post("/calc", …)                          // the calc sample's switch
+route.post("/crunch", …)                        // golden.rs's crunch, its rows not answered
+route.post("/filter", (req) => {
+  const kept = req.json.xs.reduce((acc, x) => x > 10 ? [...acc, x] : acc, [])
+  return length(kept)
+}, { log: "unrecorded" })
+```
+
+`holon load` (one client binary, `main`'s) at 16 connections, 5 s a workload, three rounds, each
+build started fresh in a turning order; `xs` is `i % 20` for `i` below n. Medians of the rounds,
+requests a second, with the server's CPU a request from `/proc/<pid>/stat`; no errors:
+
+| Workload | before | after | main | after ÷ before | main ÷ before | CPU a request (before / after / main) |
+|---|---:|---:|---:|---:|---:|---|
+| `hello` | 59,632 | 58,422 | 58,993 | 0.98 | 0.99 | 46 / 48 / 47 µs |
+| `calc` | 49,106 | 47,271 | 49,436 | 0.96 | 1.01 | 59 / 62 / 59 µs |
+| `crunch`, 100 | 12,536 | 10,840 | 11,517 | 0.86 | 0.92 | 294 / 340 / 321 µs |
+| `crunch`, 1,000 | 1,718 | 1,493 | 1,604 | 0.87 | 0.93 | 2.28 / 2.62 / 2.44 ms |
+| `crunch`, 5,000 | 361 | 306 | 326 | 0.85 | 0.90 | 11.0 / 13.0 / 12.2 ms |
+| `filter`, 1,000 | 1,045 | 5,225 | 5,070 | 5.00 | 4.85 | 3.75 / 0.74 / 0.76 ms |
+| `filter`, 5,000 | 53 | 1,132 | 1,131 | 21.3 | 21.3 | 78.3 / 3.46 / 3.47 ms |
+
+A fold that builds a list is linear now, where it was quadratic: its accumulator is given to each
+step, not copied (the audit's "giving"). Folds and maps of numbers over small composites are about
+14% slower after #43 at every size, the rounds' ranges apart (12,383–12,800 before, 10,768–10,907
+after, at 100): the audit's "folds of a number over a composite ×1.09 to ×1.20" and its 10 to 15
+ns a node it couldn't place, here end to end. `main` takes back about half (×0.92), and `calc` all
+of it, its rounds apart from `e988258`'s too; what between them did it isn't found. `hello` is the
+same in all three.
+
 ### Limits
 
 - **Strict is the disk's pace.** About 60% of a strict request is the fsync; any service keeping
@@ -166,6 +206,9 @@ commit), Holon strict reaches 77–96% of it; at one connection the two are alik
   (most server SSDs) answers a flush in microseconds, on any system.
 - **Writes sync three times** (value, snapshot, head) under the cell's lock. A group commit across
   writes (C4, Q4) is not done; the store's global lock is still taken on a miss and every put.
+- **Numeric folds and maps are slower than before #43**: `crunch` about ×0.92 in `main`
+  (×0.86 right after #43), the cost a node the audit couldn't place ([above](#the-evaluators-change-through-a-server-43-2026-11-06),
+  leaves §6). Folds that build a list gained ×5 to ×21.
 - **Compute-heavy flows** are 3–14 times slower than C#. What is left is allocating and freeing
   values (about 26%), copying fields (6.7%) and firing each node (about 20%). Shared values (step
   4) were deferred: copying is 5–10% after step 3, for a change touching about 850 places. Typed
