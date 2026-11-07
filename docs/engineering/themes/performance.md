@@ -249,6 +249,33 @@ neither (664 K). Handing a sourced value to the run as it is, not built, would r
   save, and where (`Record` first), is estimated in [leaves §7](js-library-races/leaves.md#7-arc-an-estimate).
   Typed slots or native code (level 3) would reverse the core's dependency limit and the no-JIT
   choice.
+- **A run's sourced values are built as units, every run** (profiled 2026-11-07, before changing
+  it). For each leaf that reads state, the clock, a random number or a secret, the host stands a
+  constant unit in under that leaf's hash (`SourcedResolver`, holon-host): a record becomes
+  `record()` and a `with_field` a field, a list a `list` of constants, all made, prepared and
+  evaluated in the run. Instructions a run, callgrind as [above](#small-values-are-copied-2026-11-07),
+  each route a `GET`, unrecorded, its state seeded before:
+
+  | Route | a run | more than its constant form | one clone of the value |
+  |---|---:|---:|---:|
+  | answers `1` | 104.6 K | | |
+  | reads a state number | 112.0 K | 7.4 K | 69 |
+  | reads a field of a 20-field state record | 655 K | 543 K | 8.4 K |
+  | the length of a 100-record state list | 10.80 M | 10.69 M | 261 K |
+  | 80 operations from a constant | 278.5 K | | |
+  | the same 80 from a state number | 458.0 K | 179.5 K | 69 |
+
+  Two costs, both the substitution's (`SourcedResolver::resolve`, `constant_unit`,
+  `Prepared::of`). The value: building the 20-field record costs 65 times copying it. The route's
+  children: since a hash names another unit in each run, the host lets no composite with such a
+  leaf keep its children (`resolved`'s filter), and each run resolves them again, about 1,100
+  instructions a node; the filter counts any capability, so a route that only writes or calls out
+  pays it too. Handing a run each value as it is (one clone at most) and keeping every
+  composite's children would take each route to about its constant form: the record's to about
+  115 K (×0.18), the list's to about 0.37 M (×0.03), the long route to about 280 K (×0.61), the
+  short ones a few percent. A run also clones every state value it was granted, read or not
+  (`firing.rs`), which values lent instead would save. The samples keep small values in state and
+  big ones in collections, which are read another way: what they would gain is mostly the children.
 - **A lazy route on a busy log** keeps a one-connection p99 of about 30 ms, likely the per-second
   sync holding up the next append (RA §2.6); left as it is.
 - **The log's lock** still covers the append (about 17 µs) and the line's hash (about 12 µs): a
