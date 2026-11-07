@@ -104,6 +104,7 @@ the rows that say otherwise.
 | small values | A number, a boolean, a text up to 32 bytes, and a list or record of up to 8 of those copied, not given (`heavy`); arithmetic's finite check on the `f64` in place | #43 gave every record: about 1,770 instructions a step, where copying `{ v, dev, sq }` costs less; the check was a call a node | `crunch` 25.76 → 23.37 M at 1,000 items (×0.907), its records part ×0.873; a filter by fold +1.0% ([below](#small-values-are-copied-2026-11-07)) |
 | values as they are | A leaf that reads state, the clock, a random number, a secret or the file that started the run asks the resolver for its value (`Resolver::sourced`), which it produces as it is; every composite keeps its children whatever the run reads | The host built each value as constant units in the run, and let no composite with a capability leaf keep its children, the clock being sourced in every run | a field of a 20-field state record ×0.25, the length of a 100-record state list ×0.16, 80 operations from a state number ×0.61; `notes` −0.8% ([below](#a-runs-values-handed-as-they-are-2026-11-07)) |
 | `48eb0fe` | A state cell's value held in an `Arc`; a run lent the values it was granted; its entry made from the state it started from | The host copied the deployment's whole state four times a run, read or not | the length of a 100-record state list ×0.26, a field of a 20-field state record ×0.73; `notes` −0.6% ([below](#a-runs-state-shared-2026-11-07)) |
+| `241b594` | A state holds data only: a write and a load refuse an effect, so a run is lent its values unchecked | Each run checked each state value it read was data, though a write refused an effect already | the length of a 100-record state list ×0.95 (−21.8 K); the rest within 0.4% ([below](#a-state-holds-data-only-2026-11-07)) |
 
 The plan is an optimisation the walk stands behind: whenever the plan meets a case it was not
 built for (an input not yet evaluated, a guard whose condition is missing), it hands the run to
@@ -284,8 +285,39 @@ this one (`48eb0fe`), the state routes as in the last section. Instructions a ru
 | a filter by fold, 1,000 / 4,000 | 9.87 / 39.13 M | 9.88 / 39.08 M | 1.00 |
 
 The estimate was about 0.4 M for the list. What it pays over a route that answers `1` (343 K) is
-now the run's own copy of the list, where it is read, its free, and the check that it is data
-([Limits](#limits)).
+now the run's own copy of the list, where it is read, its free, and the check that it is data,
+which the next change moves to where a value is written ([below](#a-state-holds-data-only-2026-11-07)).
+
+### A state holds data only (2026-11-07)
+
+A run checked each state value it read was data (`is_storable`), every run, though a write refused
+an effect already: the check stood for storage older than that rule. `State` now holds the rule,
+as it holds each value's hash: `insert` refuses a value that isn't data, and `load` a store holding
+one, so `run_rounds` is lent values it never looks at. One read back from storage outside a state
+(a resumed run's clock, verify's from the log) is checked by what reads it.
+
+Callgrind as [above](#small-values-are-copied-2026-11-07), `48eb0fe` against this change
+(`241b594`). Instructions a run:
+
+| Route | before | after | ratio |
+|---|---:|---:|---:|
+| answers `1` | 102.9 K | 102.2 K | 0.99 |
+| reads a state number | 104.8 K | 104.7 K | 1.00 |
+| reads a field of a 20-field state record | 117.3 K | 116.7 K | 1.00 |
+| the length of a 100-record state list | 445.4 K | 423.6 K | 0.95 |
+| 80 operations from a constant | 276.6 K | 276.3 K | 1.00 |
+| the same 80 from a state number | 278.4 K | 279.5 K | 1.00 |
+| `hello` | 88.6 K | 88.5 K | 1.00 |
+| `notes` (its listing, a collection read) | 349.0 K | 348.8 K | 1.00 |
+| `crunch`, 1,000 items | 23.36 M | 23.39 M | 1.00 |
+| a filter by fold, 1,000 / 4,000 | 9.88 / 39.08 M | 9.87 / 39.07 M | 1.00 |
+
+The list gained 21.8 K, the check's own instructions (`is_storable`, 21.5 K), not the 45 K the last
+section's profile gave: that was callgrind's inclusive cost, which counts a recursive function's
+inner calls again in the outer one's. The rest moved by 0.4% at most. What the list pays over the
+route that answers `1` is now 321 K, its copy and the copy's free: `malloc`, `free` and the C
+library's functions under them (unnamed in this profile) about 235 K, the copy's own code about
+41 K and the free's about 40 K ([Limits](#limits)).
 
 ### Limits
 
@@ -321,12 +353,10 @@ now the run's own copy of the list, where it is read, its free, and the check th
   Typed slots or native code (level 3) would reverse the core's dependency limit and the no-JIT
   choice.
 - **A run that reads a big state value copies it.** The leaf that reads it produces a copy
-  (`Body::Sourced`), and the host checks the value is data (`is_storable`, holon-host) the first
-  time a run reads it. With a 100-record list in state, the copy is about 200 K instructions, its
-  free about 110 K and the check about 45 K, of the 343 K a run that reads the list's length pays
-  over one that answers `1`. A cell could know it holds data from when it was written, as it knows
-  its hash (writes refuse an effect already; the check stands for storage older than that rule);
-  the copy goes only with values shared inside the core ([leaves §7](js-library-races/leaves.md#7-arc-an-estimate)).
+  (`Body::Sourced`), and frees it. With a 100-record list in state, the copy and its free are the
+  321 K instructions a run that reads the list's length pays over one that answers `1`, about
+  three quarters of them in the allocator; they go only with values shared inside the core
+  ([leaves §7](js-library-races/leaves.md#7-arc-an-estimate)).
   The samples keep small values in state and big ones in collections, which are read another way.
 - **A lazy route on a busy log** keeps a one-connection p99 of about 30 ms, likely the per-second
   sync holding up the next append (RA §2.6); left as it is.
