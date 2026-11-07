@@ -28,13 +28,15 @@ In `crates/holon/src` (IP §2 lists all 27 steps with lines):
    (`FlowCache::holds`). Everything else runs on the blocking pool (`spawn_blocking`, up to 512
    threads). See [Resilience](resilience.md#g2-a-deployment-cant-slow-another) for why the rule is this narrow.
 3. **A snapshot of the deployment** under the table lock (taken about 5 times a request).
-4. **The closure** (the flow's units) from the flow cache, keyed by the root's hash; the
-   composites' shapes are kept beside them (`Shapes`). Values read come from the value cache.
+4. **The closure** (the flow's units) from the flow cache, keyed by the root's hash; each
+   composite's shape and its children, resolved, are kept beside them (`Shapes::kept`). Values read
+   come from the value cache.
 5. **Firing** (`firing.rs`, `fire_with_state`): the nonce, run locks, the run id, sourced
    constants (made only when read), rounds of outbound calls.
-6. **Evaluation** (`holon-core/src/eval.rs`): a walk of the graph with inputs lent, not copied;
-   each node's kind decided once; a function given to `map`/`fold` run down a compiled `Plan` of
-   opcodes.
+6. **Evaluation** (`holon-core/src/eval.rs`): a walk of the graph with inputs lent, not copied,
+   and a value given to the node that builds on it once nothing else will read it; each node's
+   kind decided once, kept with the closure; a function given to `map`/`fold` run down a compiled
+   `Plan` of opcodes.
 7. **The state's commit**: values, snapshot and head written and synced under the cell's lock; a
    head only when the state changed.
 8. **The entry**: redaction skipped when nothing could need it; the log line made outside the
@@ -81,9 +83,10 @@ numbers from PL, IP and RA.
 | 12.4b `0fdf913` | A value cache (64 MiB, values up to 1 MiB) | The store's lock and a file read per collection node: 15% | live `/notes` 6,976–7,250 → 10,489–10,936 |
 | 12.4c `0e482b4` | The line made before the lock; an entry let go of freed after it | 10–14 µs of the 40 held under the lock was freeing | check lazy `hello` 14,015 → 20,652 |
 
-### The evaluator: steps 1 to 6
+### The evaluator: steps 1 to 6, and after
 
-Counted in instructions per run under callgrind ([Measuring](measuring.md#instructions)).
+Counted in instructions per run under callgrind ([Measuring](measuring.md#instructions)), but for
+the rows that say otherwise.
 
 | Step | What | Why | Gain |
 |---|---|---|---|
@@ -95,6 +98,8 @@ Counted in instructions per run under callgrind ([Measuring](measuring.md#instru
 | 5, level 1 `7c31de1` | Each node's kind decided once; inputs gathered in one pass; the scratch reused | Dispatch and allocation per node | `crunch` −11.0% |
 | 5, level 2 `abc4b11` | A compiled `Plan` for a `map`/`fold` function, primitives by opcode | Walking and dispatching by name per item | `crunch` −15.1% |
 | 6 `f47c854` | Per-request bookkeeping: no entry made for an unrecorded run, one copy of the request, a kept hash buffer, sourced constants made only when read | Costs of the request around the run | `hello` −28.9%, `notes` −20.7% |
+| #43 `e988258` | Giving and lending: a value moved to the node that builds on it once nothing else reads it, a function's composite children prepared once | A `fold` copied what it grew at every step, O(n²) | through release servers, a filter by fold ×5.0 at 1,000 items, ×21 at 5,000; numeric folds and maps ×0.86 ([below](#the-evaluators-change-through-a-server-43-2026-11-06)) |
+| `5f29d1d` | Each composite's children resolved once and kept with the closure, with their kinds | Every call resolved each child by hash and decided its kind | in-process, one call of a 25-node function 1.61 → 0.93 µs, `hello` ×0.86, `calc` ×0.82 ([leaves §10](js-library-races/leaves.md#10-a-composites-preparation-kept-81)) |
 
 The plan is an optimisation the walk stands behind: whenever the plan meets a case it was not
 built for (an input not yet evaluated, a guard whose condition is missing), it hands the run to
@@ -208,11 +213,15 @@ same in all three.
   writes (C4, Q4) is not done; the store's global lock is still taken on a miss and every put.
 - **Numeric folds and maps are slower than before #43**: `crunch` about ×0.92 in `main`
   (×0.86 right after #43), the cost a node the audit couldn't place ([above](#the-evaluators-change-through-a-server-43-2026-11-06),
-  leaves §6). Folds that build a list gained ×5 to ×21.
-- **Compute-heavy flows** are 3–14 times slower than C#. What is left is allocating and freeing
-  values (about 26%), copying fields (6.7%) and firing each node (about 20%). Shared values (step
-  4) were deferred: copying is 5–10% after step 3, for a change touching about 850 places. Typed
-  slots or native code (level 3) would reverse the core's dependency limit and the no-JIT choice.
+  leaves §6). Folds that build a list gained ×5 to ×21. Keeping each composite's children doesn't
+  touch it: a fold's function was already prepared once. Placing it needs a profiler (leaves §8).
+- **Compute-heavy flows** are 3–14 times slower than C#, measured before #43 (numeric folds are
+  about ×0.92 of that since). What is left is allocating and freeing values (about 26%), copying
+  fields (6.7%) and firing each node (about 20%). Shared values (step 4) are still deferred: after
+  #43's giving and lending no race copies anything large in its inner loop, and what an `Arc` would
+  save, and where (`Record` first), is estimated in [leaves §7](js-library-races/leaves.md#7-arc-an-estimate).
+  Typed slots or native code (level 3) would reverse the core's dependency limit and the no-JIT
+  choice.
 - **A lazy route on a busy log** keeps a one-connection p99 of about 30 ms, likely the per-second
   sync holding up the next append (RA §2.6); left as it is.
 - **The log's lock** still covers the append (about 17 µs) and the line's hash (about 12 µs): a
@@ -255,7 +264,10 @@ See [Testing](testing.md). For speed in particular:
 
 - the golden records (`the_evaluator_gives_what_its_golden_record_holds`,
   `the_server_records_what_its_golden_record_holds`) hold every answer, record and hash, so a
-  faster path that changes one fails;
+  faster path that changes one fails, and the evaluator's is run again with every shape and child
+  kept (`keeping_each_composites_shape_changes_nothing_the_evaluator_gives`);
+- the differential harness (`holon-core/tests/differential.rs`, `differential.sh`) compares the
+  evaluator with an earlier version of itself case by case, outputs and every observer call;
 - the plan against the walk on 3,000 random graphs, and the compute-heavy samples' functions all
   run down a plan (`the_compute_heavy_flows_functions_all_run_down_a_plan`: a change that makes
   them fall back fails, though the answers would still be right);
