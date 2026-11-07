@@ -80,7 +80,9 @@ read is said (`unreadable`) and the store opens without its values.
 
 `State` (state.rs) is a key → value map that knows each value's hash, computed once when it is
 written, so its `root` (core's `state_root`) and a comparison of two states cost a hash per key,
-not per byte. `State::save` puts each value into the store and returns the `key → hash` map a
+not per byte. Each value is shared (an `Arc`): a copy of the state, which every run takes as it
+starts, is its keys and hashes, and the run is lent the values it reads (`run_rounds` takes them
+borrowed). `State::save` puts each value into the store and returns the `key → hash` map a
 deployment's snapshots keep; `State::load` rebuilds one, each value checked.
 
 A collection (collection.rs) is a radix trie stored as values (`{p, v?, c?}` nodes), canonical (the

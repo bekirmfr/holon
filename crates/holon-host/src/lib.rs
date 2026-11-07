@@ -326,7 +326,12 @@ struct SourcedResolver<'a, R: Resolver> {
 
 impl<'a, R: Resolver> SourcedResolver<'a, R> {
     fn new(sourced: &'a [(Capability, Value)], real: &'a R) -> Self {
-        SourcedResolver { sourced: sourced.iter().map(|(cap, value)| (cap, value, OnceCell::new())).collect(), real }
+        SourcedResolver::lent(sourced.iter().map(|(cap, value)| (cap, value)), real)
+    }
+
+    /// Values held elsewhere (a run's state), lent as they are rather than copied into a list.
+    fn lent(sourced: impl IntoIterator<Item = (&'a Capability, &'a Value)>, real: &'a R) -> Self {
+        SourcedResolver { sourced: sourced.into_iter().map(|(cap, value)| (cap, value, OnceCell::new())).collect(), real }
     }
 }
 

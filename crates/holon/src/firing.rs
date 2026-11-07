@@ -67,7 +67,6 @@ impl Host for RecordingHost {
 pub(crate) struct FiredRun {
     pub(crate) outputs: Vec<Option<Value>>,
     pub(crate) performed: Vec<(Capability, Value)>,
-    pub(crate) state_before: BTreeMap<String, Value>,
     pub(crate) timeline: Vec<recorder::NodeTiming>,
     /// The outbound requests it made, round by round.
     pub(crate) rounds: Vec<Round>,
@@ -85,7 +84,8 @@ pub(crate) struct FiredRun {
     pub(crate) waiting: Vec<Waiting>,
     /// For a run that settled waiting: the packs that didn't wait, sent as it parks.
     pub(crate) progress: Vec<(Capability, Value)>,
-    /// The state it started from (the live state, or a resumed run's recorded one).
+    /// The state it started from (the live state, or a resumed run's recorded one): what its log
+    /// entry says it found.
     pub(crate) start_state: Option<State>,
     /// The collection reads it made, and what each answered.
     pub(crate) reads: Vec<collections::Read>,
@@ -551,7 +551,6 @@ fn run_attempt(
     prior: Vec<Round>,
     claim: Option<(&Arc<claims::StateCell>, Vec<claims::ClaimRecord>, bool)>,
 ) -> Attempt {
-    let state_before = start.as_ref().map(State::values).unwrap_or_default();
     let run_id = run_id_of(permit.deployment, inputs, start.as_ref(), extra_sourced, nonce);
     // Its resume tokens are derived from its id (durable.rs).
     // Hex once: its resume tokens, its claims and its entry all name it so.
@@ -569,28 +568,27 @@ fn run_attempt(
     waits.files = waits.folders.as_ref().map(|f| folders::Readable::new(Arc::clone(f), permit));
     waits.databases = waits.folders.as_ref().map(|f| databases::Readable::new(Arc::clone(f), permit));
 
-    // Only the state keys the deployment was granted are read.
-    let mut sourced: Vec<(Capability, Value)> = match start.as_ref() {
-        Some(storage) => storage
-            .iter()
-            .map(|(key, value)| (Capability::StateRead(key.clone()), value.clone()))
-            .filter(|(cap, _)| permit.allows(cap))
-            .collect(),
-        None => Vec::new(),
-    };
-    sourced.extend_from_slice(extra_sourced);
     // The secrets it was granted. Not part of the run's input record (nor its id): a log never
     // holds them, and a replay stands a placeholder in.
     let mut given = BTreeMap::new();
+    let mut granted = Vec::new();
     let vault = secrets.lock().unwrap();
     for (name, value) in vault.current.iter() {
         let cap = Capability::SecretRead(name.clone());
         if permit.allows(&cap) {
-            sourced.push((cap, Value::Text(value.to_string())));
+            granted.push((cap, Value::Text(value.to_string())));
             given.extend(vault.shown.get(name).map(|shown| (name.clone(), shown.clone())));
         }
     }
     drop(vault);
+    // Only the state keys the deployment was granted are read, each lent as the state holds it.
+    let sourced: Vec<(Capability, &Value)> = start
+        .iter()
+        .flat_map(State::iter)
+        .map(|(key, value)| (Capability::StateRead(key.clone()), value))
+        .filter(|(cap, _)| permit.allows(cap))
+        .chain(extra_sourced.iter().chain(&granted).map(|(cap, value)| (cap.clone(), value)))
+        .collect();
 
     // Which nodes compute with a secret it was granted, for its log entry.
     let secret_fed = if sourced.iter().any(|(c, _)| matches!(c, Capability::SecretRead(_))) {
@@ -715,7 +713,6 @@ fn run_attempt(
     let run = FiredRun {
         outputs: outcome.outputs,
         performed: host.performed,
-        state_before,
         timeline: timer.timeline,
         rounds: outcome.rounds,
         error: failed_read
@@ -1215,7 +1212,7 @@ fn entry_with(
         status: None,
         request: None,
         sourced: sourced.iter().map(|(c, v)| (format!("{c:?}"), SValue::from_core(v))).collect(),
-        state_before: run.state_before.iter().map(|(k, v)| (k.clone(), SValue::from_core(v))).collect(),
+        state_before: run.start_state.iter().flat_map(State::iter).map(|(k, v)| (k.clone(), SValue::from_core(v))).collect(),
         state_after: run.state_after.clone(),
         outputs: logged_outputs(run, folders::loggable_output),
         performed: logged_performed(run, folders::loggable),
@@ -1282,7 +1279,6 @@ impl FiredRun {
         FiredRun {
             outputs: vec![],
             performed: vec![],
-            state_before: BTreeMap::new(),
             timeline: vec![],
             rounds: vec![],
             error: None,

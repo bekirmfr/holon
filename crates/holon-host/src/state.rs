@@ -6,8 +6,12 @@
 //! the `key → value hash` map, which is all a deployment record or a session snapshot keeps. A
 //! value shared by several snapshots is stored once; [`State::load`] rebuilds a state from such
 //! a map, verifying every value against its hash.
+//!
+//! Each value is shared, not owned: a copy of the state, which every run takes as it starts, is
+//! its keys and hashes, and copies no value.
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use holon_core::{hash_value, state_root, EncodeError, Hash, Value};
 
@@ -16,7 +20,7 @@ use crate::{Store, StoreError};
 /// One key's value and its content hash.
 #[derive(Clone, Debug, PartialEq)]
 struct Cell {
-    value: Value,
+    value: Arc<Value>,
     hash: Hash,
 }
 
@@ -50,7 +54,7 @@ impl State {
     }
 
     pub fn get(&self, key: &str) -> Option<&Value> {
-        self.cells.get(key).map(|c| &c.value)
+        self.cells.get(key).map(|c| &*c.value)
     }
 
     /// The content hash of `key`'s value.
@@ -62,16 +66,16 @@ impl State {
     /// list or record over the `u32` length budget), leaving the state unchanged.
     pub fn insert(&mut self, key: String, value: Value) -> Result<(), EncodeError> {
         let hash = hash_value(&value)?;
-        self.cells.insert(key, Cell { value, hash });
+        self.cells.insert(key, Cell { value: Arc::new(value), hash });
         Ok(())
     }
 
     pub fn remove(&mut self, key: &str) -> Option<Value> {
-        self.cells.remove(key).map(|c| c.value)
+        self.cells.remove(key).map(|c| Arc::unwrap_or_clone(c.value))
     }
 
     pub fn iter(&self) -> impl Iterator<Item = (&String, &Value)> {
-        self.cells.iter().map(|(k, c)| (k, &c.value))
+        self.cells.iter().map(|(k, c)| (k, &*c.value))
     }
 
     pub fn len(&self) -> usize {
@@ -84,7 +88,7 @@ impl State {
 
     /// A plain copy of the values, e.g. what a run read, for its log entry.
     pub fn values(&self) -> BTreeMap<String, Value> {
-        self.cells.iter().map(|(k, c)| (k.clone(), c.value.clone())).collect()
+        self.cells.iter().map(|(k, c)| (k.clone(), Value::clone(&c.value))).collect()
     }
 
     /// The `key → value hash` map: what persisting or snapshotting this state keeps.
@@ -115,7 +119,7 @@ impl State {
                 .get_value(hash)
                 .map_err(LoadError::Store)?
                 .ok_or_else(|| LoadError::Missing { key: key.clone(), hash: *hash })?;
-            cells.insert(key.clone(), Cell { value, hash: *hash });
+            cells.insert(key.clone(), Cell { value: Arc::new(value), hash: *hash });
         }
         Ok(State { cells })
     }

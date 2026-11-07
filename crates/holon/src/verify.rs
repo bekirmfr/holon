@@ -953,16 +953,19 @@ fn rerun(
     // wrote do (`Marks`). A node that only passes one along computes the same; one that computes
     // with it can't be computed again, and what the log kept for it stands in (`Asserting`).
     let caps = capabilities(root, resolver);
-    let mut sourced: Vec<(Capability, Value)> =
-        state.iter().map(|(k, v)| (Capability::StateRead(k.clone()), v.clone())).collect();
-    sourced.extend(extra.iter().cloned());
     // With the version and fingerprint the run was given (an entry from before names none).
+    let mut placeholders = Vec::new();
     for cap in caps.iter() {
         if let Capability::SecretRead(name) = cap {
             let shown = entry.secrets.get(&name).map_or(name.clone(), |shown| format!("{name} {shown}"));
-            sourced.push((Capability::SecretRead(name.clone()), Value::Text(marks.of("secret", &shown))));
+            placeholders.push((Capability::SecretRead(name.clone()), Value::Text(marks.of("secret", &shown))));
         }
     }
+    let sourced: Vec<(Capability, &Value)> = state
+        .iter()
+        .map(|(k, v)| (Capability::StateRead(k.clone()), v))
+        .chain(extra.iter().chain(&placeholders).map(|(cap, value)| (cap.clone(), value)))
+        .collect();
 
     let mut differs = Vec::new();
     let nonce = bytes_of(&entry.nonce).and_then(|b| <[u8; 16]>::try_from(b).ok());

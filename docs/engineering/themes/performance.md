@@ -31,8 +31,9 @@ In `crates/holon/src` (IP §2 lists all 27 steps with lines):
 4. **The closure** (the flow's units) from the flow cache, keyed by the root's hash; each
    composite's shape and its children, resolved, are kept beside them (`Shapes::kept`). Values read
    come from the value cache.
-5. **Firing** (`firing.rs`, `fire_with_state`): the nonce, run locks, the run id, sourced
-   constants (made only when read), rounds of outbound calls.
+5. **Firing** (`firing.rs`, `fire_with_state`): the nonce, run locks, the run id, the state it
+   starts from (a copy of the keys, the values shared), its sourced values lent to the leaves that
+   read them, rounds of outbound calls.
 6. **Evaluation** (`holon-core/src/eval.rs`): a walk of the graph with inputs lent, not copied,
    and a value given to the node that builds on it once nothing else will read it; each node's
    kind decided once, kept with the closure; a function given to `map`/`fold` run down a compiled
