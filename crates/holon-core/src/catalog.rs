@@ -606,6 +606,11 @@ pub const TRIGGERED: &[&str] = &[
 /// whether or not its answer is read, and its answer is never its caller's to give.
 pub const CALLS: &[&str] = &["http_request", "http_upload", "http_stream", "flow_call", "flow_start"];
 
+/// The leaves whose value the host supplies as the run starts (`Resolver::sourced`): the clock, a
+/// random number, a secret, the file that started the run, a state key. Each computes nothing; the
+/// other reads (a collection's, a folder's, a database's, a waiting point) ask as the run goes.
+pub const SOURCED: &[&str] = &["clock", "random", "secret", "file_arrival", "store_read"];
+
 /// Whether `unit` is a sink leaf with its trigger: the last input, by name (a leaf placed before
 /// sinks had one has none, and is computed as it always was).
 pub fn takes_trigger(unit: &Unit) -> bool {

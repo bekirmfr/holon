@@ -3505,11 +3505,11 @@ fn a_fire_in_progress_does_not_stall_the_table() {
 }
 
 /// Regression: `egress → store_write` stored the `Effect` itself, the next run panicked in
-/// holon-host's `constant_unit` while holding the state lock, and the poisoned mutex then took
-/// down every later `/deploy`, `/deployments` and run. A route that writes an effect (built by
-/// hand: the language can't write one) and reads the key back. The sink's own check refuses the
-/// effect at run time (primitives.rs `sink_effect`); before that, `validate` refuses its wiring, so
-/// the server never deploys it.
+/// holon-host rebuilding it as a constant while holding the state lock, and the poisoned mutex
+/// then took down every later `/deploy`, `/deployments` and run. A route that writes an effect
+/// (built by hand: the language can't write one) and reads the key back. The sink's own check
+/// refuses the effect at run time (primitives.rs `sink_effect`); before that, `validate` refuses its
+/// wiring, so the server never deploys it.
 #[test]
 fn effect_written_to_state_does_not_take_the_server_down() {
     let state = test_state();

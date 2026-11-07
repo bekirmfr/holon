@@ -251,7 +251,7 @@ fn eval_at(
 /// What a node is, as evaluating it needs to know: decided from its unit once, where a composite
 /// prepares its children (docs/L4s/interpreter-path-L4.md, step 5's first level), instead of by
 /// its name at every evaluation. Per run, unless the resolver keeps the children it resolves
-/// ([`Resolved`]): another may hand a run its own unit for a hash (a sourced value's constant).
+/// ([`Resolved`]): another may hand a run its own unit for a hash (a design mode's mock).
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct NodeKind {
     body: Body,
@@ -278,6 +278,8 @@ enum Body {
     Json(Json),
     /// A request the host answers.
     Ask(Request),
+    /// A leaf whose value the host supplies ([`crate::SOURCED`], [`Resolver::sourced`]).
+    Sourced,
     Coalesce,
     /// Any other leaf, computed by `compute` (its [`Op`], none for a name that isn't one); a
     /// variadic one fires only with every input present.
@@ -433,6 +435,7 @@ impl NodeKind {
                     "sort_by" => Body::SortBy,
                     "group_by" => Body::GroupBy,
                     "coalesce" => Body::Coalesce,
+                    _ if crate::SOURCED.contains(&name) => Body::Sourced,
                     _ => match (Test::of(name), Request::of(name), Json::of(name, &unit.params)) {
                         (Some(test), _, _) => Body::Test(test),
                         (None, Some(request), _) => Body::Ask(request),
@@ -476,6 +479,7 @@ fn eval_as(
         (Body::GroupBy, _) => smallvec![eval_group_by(&mut lent(inputs), &unit.params, resolver, observer, path)],
         (Body::Json(json), _) => smallvec![eval_json(json, &mut lent(inputs), &unit.params, resolver, observer, path)],
         (Body::Ask(request), _) => ask(request.build(inputs, &unit.params), observer, path),
+        (Body::Sourced, _) => smallvec![Slot::of(resolver.sourced(unit).cloned())],
         // `coalesce` is the one leaf whose meaning is about absence: the first input that
         // arrived. The generic arm below would give the same answer today (it gathers present
         // inputs in port order), but that is a property of its implementation, not its
@@ -874,25 +878,12 @@ pub struct Resolved {
     units: Box<[Arc<Unit>]>,
     /// What each child is ([`NodeKind`]): a function of the child alone.
     kinds: Box<[NodeKind]>,
-    /// Some child is a leaf that reads a capability ([`Resolved::reads_capability`]).
-    reads_capability: bool,
 }
 
 impl Resolved {
     fn of(shape: Shape, units: Box<[Arc<Unit>]>) -> Resolved {
         let kinds = units.iter().map(|u| NodeKind::of(u)).collect();
-        let reads_capability = units.iter().any(|u| match &u.body {
-            UnitBody::Primitive { name } => crate::capabilities_of(name, &u.params).is_some_and(|caps| !caps.is_empty()),
-            _ => false,
-        });
-        Resolved { shape, units, kinds, reads_capability }
-    }
-
-    /// Whether some child is a leaf that reads a capability (`capabilities_of`): a host that
-    /// sources the capability's value stands a constant of its own in for that child, so a
-    /// resolver doing so forwards these children only when none is.
-    pub fn reads_capability(&self) -> bool {
-        self.reads_capability
+        Resolved { shape, units, kinds }
     }
 }
 
@@ -905,7 +896,7 @@ enum Kept {
 
 /// The shapes of a set of units a host keeps, each found by the unit itself: by where it lives,
 /// not by its hash, so finding one costs no hashing and a unit a resolver makes up for one run (a
-/// sourced constant) never meets a shape that isn't its own. Built with [`Shapes::kept`], it keeps
+/// design mode's mock) never meets a shape that isn't its own. Built with [`Shapes::kept`], it keeps
 /// each composite's children resolved beside its shape ([`Resolved`]).
 ///
 /// Sound as long as the units outlive the table and don't move: an address the table holds is
@@ -1026,7 +1017,7 @@ impl Hasher for AddressHasher {
 /// item, instead of made again for each (docs/L4s/request-path-L4.md §4.5): it depends on
 /// nothing an application changes. Its children are taken from the resolver when it keeps them
 /// ([`Resolved`]), and otherwise resolved for each run: a resolver may hand a run its own unit
-/// under a hash (a sourced value's constant).
+/// under a hash (a design mode's mock).
 struct Prepared<'r> {
     unit: &'r Unit,
     resolved: Vec<&'r Unit>,
@@ -2935,6 +2926,60 @@ mod tests {
         assert!(shapes.get(&lost).is_some() && shapes.resolved(&lost).is_none(), "a child that doesn't resolve: its shape alone");
     }
 
+    /// A leaf the host sources ([`crate::SOURCED`]) produces what the resolver supplies for it, as
+    /// it is: at the top of a composite whose children are kept and inside a `map`'s function, a
+    /// different value each run over the same kept children; with nothing supplied, nothing. The
+    /// eager oracle agrees.
+    #[test]
+    fn a_sourced_leaf_produces_what_the_resolver_supplies() {
+        struct Supplying<'a> {
+            keeping: &'a Keeping,
+            value: Option<Value>,
+        }
+        impl Resolver for Supplying<'_> {
+            fn resolve(&self, hash: &Hash) -> Option<&Unit> {
+                self.keeping.resolve(hash)
+            }
+            fn shape(&self, unit: &Unit) -> Option<&Shape> {
+                self.keeping.shape(unit)
+            }
+            fn resolved(&self, unit: &Unit) -> Option<&Resolved> {
+                self.keeping.resolved(unit)
+            }
+            fn sourced(&self, unit: &Unit) -> Option<&Value> {
+                self.value.as_ref().filter(|_| matches!(&unit.body, UnitBody::Primitive { name } if name == "store_read"))
+            }
+        }
+        let mut r = MapResolver::new();
+        let read = r.insert(Unit { params: vec![Param::frozen("key", "k")], ..crate::interface_of("store_read").unwrap() }).unwrap();
+        let pair = r.insert(prim("list", 2, Type::list_any())).unwrap();
+        // f(x) = [x, read]; root(xs) = (map(f, xs), read)
+        let f = r.insert(composite(vec![nport("x")], Type::list_any(), vec![read, pair], vec![edge(BOUNDARY, 0, 1, 0), edge(0, 0, 1, 1), edge(1, 0, BOUNDARY, 0)])).unwrap();
+        let map = r.insert(over("map", &f, 0)).unwrap();
+        let root = r
+            .insert(multi_composite(
+                vec![Port { name: "xs".into(), ty: Type::list_any() }],
+                vec![Type::Any, Type::Any],
+                vec![map, read],
+                vec![edge(BOUNDARY, 0, 0, 0), edge(0, 0, BOUNDARY, 0), edge(1, 0, BOUNDARY, 1)],
+            ))
+            .unwrap();
+        let keeping = Keeping::over(&r);
+        let root = keeping.resolve(&root).unwrap();
+        let inputs = [Some(list(vec![num(1.0), num(2.0)]))];
+        let held = Value::Record(BTreeMap::from([("n".to_string(), num(5.0)), ("tags".to_string(), list(vec![txt("a")]))]));
+        for value in [held, num(3.0), list(vec![])] {
+            let supplying = Supplying { keeping: &keeping, value: Some(value.clone()) };
+            assert!(supplying.resolved(root).is_some(), "kept");
+            let want = vec![Some(list(vec![list(vec![num(1.0), value.clone()]), list(vec![num(2.0), value.clone()])])), Some(value)];
+            assert_eq!(eval(root, &inputs, &supplying).into_vec(), want);
+            assert_eq!(crate::eager::eval_eager(root, &inputs, &supplying), want, "eager agrees");
+        }
+        let nothing = Supplying { keeping: &keeping, value: None };
+        assert_eq!(eval(root, &inputs, &nothing)[1], None);
+        assert_eq!(eval(root, &inputs, &nothing).into_vec(), crate::eager::eval_eager(root, &inputs, &nothing));
+    }
+
     /// A pass-through whose condition an observer stands in `false` for: the plan's check finds
     /// it isn't `true`, the walk carries on from there, and the run is the walk's, event for event.
     #[test]
@@ -3009,10 +3054,10 @@ mod tests {
     }
 
     /// Every genesis primitive is computed somewhere (D1): `compute` has an opcode for it, or it is
-    /// a request the host answers, a higher-order leaf, or a source the host stands a constant in for
-    /// (every capability it has is sourced). And every opcode is a genesis primitive's, its name
-    /// finding it. A primitive added without its computation would otherwise read as one that is
-    /// always absent.
+    /// a request the host answers, a higher-order leaf, or a source whose value the host supplies
+    /// ([`crate::SOURCED`]: every capability it has is sourced, and it asks nothing). And every
+    /// opcode is a genesis primitive's, its name finding it. A primitive added without its
+    /// computation would otherwise read as one that is always absent.
     #[test]
     fn every_genesis_primitive_is_computed_somewhere_and_every_opcode_is_one() {
         let mut names = std::collections::BTreeSet::new();
@@ -3024,9 +3069,10 @@ mod tests {
         for name in crate::GENESIS {
             let unit = crate::interface_of(name).unwrap_or_else(|| panic!("{name}: no interface"));
             let sourced = crate::capabilities_of(name, &unit.params).is_some_and(|caps| caps.iter().all(|c| c.is_sourced()) && caps.iter().next().is_some());
+            assert_eq!(crate::SOURCED.contains(name), sourced && Request::of(name).is_none(), "{name}: SOURCED is the sources the host supplies");
             assert!(
-                Op::of(name).is_some() || Request::of(name).is_some() || crate::PASSES_EXTRA.contains(name) || sourced,
-                "{name} is computed nowhere: no opcode, no request, and not a source the host stands in for"
+                Op::of(name).is_some() || Request::of(name).is_some() || crate::PASSES_EXTRA.contains(name) || crate::SOURCED.contains(name),
+                "{name} is computed nowhere: no opcode, no request, and not a source the host supplies"
             );
         }
     }

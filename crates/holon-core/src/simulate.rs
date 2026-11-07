@@ -116,6 +116,10 @@ impl<R: Resolver> Resolver for Simulated<'_, R> {
     fn shape(&self, unit: &crate::Unit) -> Option<&crate::Shape> {
         self.real.shape(unit)
     }
+
+    fn sourced(&self, unit: &Unit) -> Option<&Value> {
+        self.real.sourced(unit)
+    }
 }
 
 /// Walk a root's closure via the shared [`crate::child_refs`] (children ∪ the `fn` param)

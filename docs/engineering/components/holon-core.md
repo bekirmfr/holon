@@ -160,8 +160,9 @@ actions, each handler's `LogLevel`) and fails closed on anything malformed.
   values and firing each node ([Performance](../themes/performance.md#limits)).
 - **`Value` deep-copies on clone.** `with_field` copies its record to add a field.
 - **Only a `map`'s or `fold`'s function runs down a plan.** A route's handler, and any function
-  with a real choice, is walked. A composite's children are resolved again on every run: a
-  resolver may hand a run its own unit for a hash (a sourced constant).
+  with a real choice, is walked. A composite's children are resolved once where the resolver keeps
+  them (the server's does, whatever a run reads: a sourced leaf asks `Resolver::sourced` for its
+  value); design mode, which hands a run a mock for a hash, keeps none.
 - **Laziness stops at a holon's boundary.** A holon's inputs are evaluated before it is entered, so
   a choice inside it can't spare its caller's request (LC §3). `map` applies every item even after
   one is absent, so a round's requests go out together.
