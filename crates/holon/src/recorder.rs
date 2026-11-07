@@ -802,7 +802,7 @@ fn lines_of(text: &str) -> impl Iterator<Item = (&str, Option<LogEntry>, u64)> {
         let at = offset;
         offset += raw.len() as u64;
         let line = raw.strip_suffix('\n').map_or(raw, |l| l.strip_suffix('\r').unwrap_or(l));
-        (line, serde_json::from_str::<LogEntry>(line).ok(), at)
+        (line, crate::wire::read_json::<LogEntry>(line.as_bytes()).ok(), at)
     })
 }
 
@@ -935,7 +935,7 @@ impl Wanted {
                 if !keep(line) {
                     continue;
                 }
-                if let Ok(entry) = serde_json::from_str::<LogEntry>(line)
+                if let Ok(entry) = crate::wire::read_json::<LogEntry>(line.as_bytes())
                     && entry.seq == seq
                 {
                     out.push(entry);
@@ -953,7 +953,7 @@ impl Wanted {
                 if !keep(line) {
                     continue;
                 }
-                if let Ok(entry) = serde_json::from_str::<LogEntry>(line)
+                if let Ok(entry) = crate::wire::read_json::<LogEntry>(line.as_bytes())
                     && entry.seq == seq
                 {
                     out.push(entry);
@@ -1995,6 +1995,27 @@ mod tests {
         assert!(back.breaks().is_empty(), "{:?}", back.breaks());
         assert_eq!(back.head(), log.head());
         assert_eq!(back.after(None, 10).iter().map(|e| e.seq).collect::<Vec<_>>(), [4, 5, 6]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A run's entry holds the state it began with, so a value stored nested deep is in every line
+    /// after it. Past 41 records deep (serde_json's own stop) those lines didn't read back, and a
+    /// reopened log skipped them as cut short: their runs gone, the line after them a break. They
+    /// read back up to a value as deep as one may be.
+    #[test]
+    fn a_log_holding_a_value_as_deep_as_one_may_be_reopens_whole() {
+        let dir = temp_dir("deep");
+        let path = dir.join("slug.jsonl");
+        let mut log = Log::open_keeping(Some(path.clone()), 10);
+        for depth in [41, 42, 100, holon_core::MAX_VALUE_DEPTH] {
+            let stored = (0..depth).fold(holon_core::Value::Number(1.0), |v, _| holon_core::Value::Record([("k".to_string(), v)].into_iter().collect()));
+            log.push(LogEntry { state_before: [("notes".to_string(), SValue::from_core(&stored))].into_iter().collect(), ..entry() });
+        }
+        log.push(entry());
+        let back = Log::open_keeping(Some(path.clone()), 10);
+        assert!(back.breaks().is_empty(), "{:?}", back.breaks());
+        assert_eq!(back.head(), log.head());
+        assert_eq!(back.after(None, 10).iter().map(|e| e.seq).collect::<Vec<_>>(), [0, 1, 2, 3, 4]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -83,7 +83,7 @@ pub(crate) fn body_bytes(response: Response) -> Vec<u8> {
 }
 
 fn body_json(response: Response) -> serde_json::Value {
-    serde_json::from_slice(&body_bytes(response)).expect("response body was not valid JSON")
+    crate::wire::read_json(&body_bytes(response)).expect("response body was not valid JSON")
 }
 
 /// A unique path in the OS temp dir, for the one test that needs real disk IO
@@ -1877,6 +1877,16 @@ fn a_durable_run_waits_resumes_by_token_and_expires() {
     assert_eq!(load_deployments(&Place::parse(&path), &state.store, &state.policy()).unwrap()["shop"].parked.len(), 1);
     let on_disk = std::fs::read_to_string(&path).unwrap();
     assert!(!on_disk.contains(&token) && !on_disk.contains("\"tokens\""), "a run record holds no token");
+    // Holding a value as deep as one may be (an event delivered to it), it survives a restart too:
+    // past serde_json's own stop, the deployments file didn't read back, and the server didn't start.
+    let deep = (0..holon_core::MAX_VALUE_DEPTH).fold(Value::Number(1.0), |v, _| Value::Record([("k".to_string(), v)].into_iter().collect()));
+    let mut records: serde_json::Value = crate::wire::read_json(on_disk.as_bytes()).unwrap();
+    let shop = records.as_array_mut().unwrap().iter_mut().find(|r| r["slug"] == "shop").unwrap();
+    shop["parked"][0]["events"]["earlier"] = serde_json::to_value(SValue::from_core(&deep)).unwrap();
+    let deep_path = unique_temp_path("durable-deep");
+    std::fs::write(&deep_path, serde_json::to_vec(&records).unwrap()).unwrap();
+    let reloaded = load_deployments(&Place::parse(&deep_path), &state.store, &state.policy()).unwrap();
+    assert_eq!(reloaded["shop"].parked.values().next().unwrap().events["earlier"].clone().into_core(), deep);
 
     // A wrong token: refused before the route's handler runs.
     assert_eq!(call("GET", "/paid/rt_nope").0, 404);
@@ -7618,8 +7628,8 @@ fn the_deepest_route_a_server_runs_fits_a_runtimes_thread() {
 /// down at 10,000 steps: the recorder, keeping the fold's output, walked it a frame a level, past
 /// the end of its thread's stack, and every deployment went with it. The fold now stops at the
 /// bound (core's `MAX_VALUE_DEPTH`): a value as deep as that, a list or a record, is answered,
-/// written out and recorded on a thread a runtime's size, in a debug build; one level past it, or
-/// 10,000, is nothing, and the server answers its next request.
+/// written out, recorded and read back from the log on a thread a runtime's size, in a debug
+/// build; one level past it, or 10,000, is nothing, and the server answers its next request.
 #[test]
 fn a_value_nested_a_level_a_step_stops_at_the_bound_and_the_server_answers_on() {
     let text = r#"import { flow, range, route, status } from "holon"
@@ -7658,6 +7668,8 @@ route.get("/record/:n", (req) => range(Number(req.params.n)).reduce((acc, i) => 
                     assert_eq!(status, 422, "/{route}/{n}: {body}");
                 }
             }
+            let entries = log_entries(&state, &slug);
+            assert!(entries.len() >= 9, "{} runs logged", entries.len());
         })
         .unwrap()
         .join()

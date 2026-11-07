@@ -102,7 +102,7 @@ impl Api for Http {
 /// The JSON a request answered, or why not, in the server's own words.
 fn json_of(api: &dyn Api, method: &str, path: &str, body: Option<Body>) -> Result<Value, String> {
     let (status, bytes) = api.send(method, path, body)?;
-    let value: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+    let value: Value = crate::wire::read_json(&bytes).unwrap_or(Value::Null);
     if (200..300).contains(&status) {
         return Ok(value);
     }

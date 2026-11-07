@@ -76,6 +76,72 @@ impl SValue {
     }
 }
 
+/// How deep JSON holding values may nest: a value as deep as one may be
+/// ([`holon_core::MAX_VALUE_DEPTH`]) takes up to three levels for each of its own as an [`SValue`]
+/// (a record's `{"type": "Record", "value": [[key, value]]}`), inside the few of what holds it.
+pub(crate) const MAX_NESTING: usize = 3 * holon_core::MAX_VALUE_DEPTH + 16;
+
+/// The stack JSON nested past serde_json's own stop is read on: a level of an `SValue` takes about
+/// 2 KB of it in a debug build (600 bytes in release), so [`MAX_NESTING`] fits five times over.
+const DEEP_READ_STACK: usize = 8 << 20;
+
+/// JSON holding values, read back: a log line, a waiting run's part, the deployments file, an
+/// answer listing runs. serde_json stops at 128 levels of nesting, which a value 42 records deep
+/// passes as an [`SValue`]: what Holon wrote, it couldn't read (a log line, and every line after it
+/// holding the state the value was stored in). JSON past that stop is read without it once its
+/// brackets are counted and found no deeper than [`MAX_NESTING`], on a thread of its own with room
+/// for that much, whatever thread asked; deeper JSON isn't read.
+pub(crate) fn read_json<T: serde::de::DeserializeOwned + Send>(text: &[u8]) -> serde_json::Result<T> {
+    use serde::de::Error;
+    let nesting = nesting(text);
+    // serde_json reads up to 127 levels itself.
+    if nesting < 128 {
+        return serde_json::from_slice(text);
+    }
+    if nesting > MAX_NESTING {
+        return Err(serde_json::Error::custom(format!("it nests {nesting} levels deep, past the {MAX_NESTING} a value as deep as one may be takes")));
+    }
+    std::thread::scope(|s| {
+        let read = std::thread::Builder::new().stack_size(DEEP_READ_STACK).spawn_scoped(s, || {
+            let mut de = serde_json::Deserializer::from_slice(text);
+            de.disable_recursion_limit();
+            let read = T::deserialize(&mut de)?;
+            de.end()?;
+            Ok(read)
+        });
+        match read {
+            Ok(reading) => reading.join().unwrap_or_else(|_| Err(serde_json::Error::custom("reading it panicked"))),
+            Err(e) => Err(serde_json::Error::custom(format!("no thread to read it on: {e}"))),
+        }
+    })
+}
+
+/// How deep `text`'s brackets nest, those in strings aside (JSON or not: reading it says).
+fn nesting(text: &[u8]) -> usize {
+    let (mut depth, mut deepest, mut in_string, mut escaped) = (0usize, 0, false, false);
+    for &b in text {
+        if in_string {
+            match b {
+                _ if escaped => escaped = false,
+                b'\\' => escaped = true,
+                b'"' => in_string = false,
+                _ => {}
+            }
+        } else {
+            match b {
+                b'"' => in_string = true,
+                b'[' | b'{' => {
+                    depth += 1;
+                    deepest = deepest.max(depth);
+                }
+                b']' | b'}' => depth = depth.saturating_sub(1),
+                _ => {}
+            }
+        }
+    }
+    deepest
+}
+
 /// Wire shape of a `CacheEntry` for `POST /cache/ingest` — `unit_hash` as hex (the one
 /// convention every hash already crosses this boundary as), `inputs`/`outputs` as `SValue`.
 #[derive(Deserialize)]
@@ -483,4 +549,33 @@ pub(crate) struct RestoreRequestBody {
     /// What it would ask, without deploying anything.
     #[serde(default)]
     pub(crate) dry_run: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A value as deep as one may be, as an `SValue` (a record three levels of JSON for each of
+    /// its own), reads back past serde_json's own stop. JSON nested deeper isn't read: its brackets
+    /// are counted before anything recurses (100,000 deep would overflow the reader's stack).
+    /// Brackets in a string don't count.
+    #[test]
+    fn json_holding_a_value_as_deep_as_one_may_be_reads_back() {
+        let nested = |depth: usize, record: bool| {
+            (0..depth).fold(Value::Number(1.0), |v, _| if record { Value::Record([("k".to_string(), v)].into_iter().collect()) } else { Value::List(vec![v]) })
+        };
+        for record in [false, true] {
+            for depth in [0, 41, 42, 64, holon_core::MAX_VALUE_DEPTH] {
+                let v = nested(depth, record);
+                let text = serde_json::to_vec(&vec![SValue::from_core(&v)]).unwrap();
+                let back: Vec<SValue> = read_json(&text).unwrap_or_else(|e| panic!("{depth} deep: {e}"));
+                assert_eq!(back.into_iter().next().map(SValue::into_core), Some(v), "{depth} deep");
+            }
+        }
+        let deep = format!("{}{}", "[".repeat(100_000), "]".repeat(100_000));
+        let e = read_json::<serde_json::Value>(deep.as_bytes()).unwrap_err();
+        assert!(e.to_string().contains("100000 levels deep"), "{e}");
+        let quoted = format!("[\"\\\"{}\"]", "[".repeat(1000));
+        assert_eq!(read_json::<serde_json::Value>(quoted.as_bytes()).unwrap()[0].as_str().map(str::len), Some(1001));
+    }
 }

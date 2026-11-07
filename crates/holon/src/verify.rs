@@ -127,7 +127,7 @@ pub(crate) fn export_of(
 ) -> Result<Export, String> {
     let budget = if redactor.is_some() { budget } else { 0 };
     let mut units = BTreeMap::new();
-    let entries: Vec<LogEntry> = lines.iter().filter_map(|l| serde_json::from_str::<LogEntry>(l).ok()).collect();
+    let entries: Vec<LogEntry> = lines.iter().filter_map(|l| crate::wire::read_json::<LogEntry>(l.as_bytes()).ok()).collect();
     let mut blobs = BTreeMap::new();
     let (mut held, mut left_out, mut not_kept) = (0u64, LeftOut { files: 0, bytes: 0 }, 0u64);
     let mut seen = BTreeSet::new();
@@ -343,7 +343,7 @@ pub(crate) fn check(export: &Export, witnessed: Option<&str>, files: &BTreeMap<S
     let mut head = String::new();
     let mut chained = false;
     for (i, line) in export.lines.iter().enumerate() {
-        let Ok(entry) = serde_json::from_str::<LogEntry>(line) else {
+        let Ok(entry) = crate::wire::read_json::<LogEntry>(line.as_bytes()) else {
             report.bad_lines.push(i + 1);
             continue;
         };

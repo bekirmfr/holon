@@ -69,7 +69,7 @@ pub(crate) fn cli(args: &[String]) -> i32 {
     };
     let get = |path: String| -> Result<serde_json::Value, i32> {
         let (_, answer) = admin_call(WHO, server.as_deref(), "GET", &path, None)?;
-        serde_json::from_str(&answer).map_err(|e| {
+        crate::wire::read_json(answer.as_bytes()).map_err(|e| {
             eprintln!("{WHO}: the server's answer isn't JSON: {e}");
             1
         })

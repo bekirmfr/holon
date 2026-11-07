@@ -511,7 +511,7 @@ impl ParkedRun {
         let Some(sealed) = &self.sealed else { return Ok(()) };
         let sealer = sealer.ok_or("it was sealed under a key this server doesn't have")?;
         let plain = sealer.open(&parked_context(slug, &self.run_id), &sealed.nonce, &sealed.data)?;
-        let part: Sealable = serde_json::from_str(&plain).map_err(|e| format!("its sealed part doesn't read: {e}"))?;
+        let part: Sealable = crate::wire::read_json(plain.as_bytes()).map_err(|e| format!("its sealed part doesn't read: {e}"))?;
         self.inputs = part.inputs;
         self.sourced = part.sourced;
         self.rounds = part.rounds;

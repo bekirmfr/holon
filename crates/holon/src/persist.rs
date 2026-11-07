@@ -107,7 +107,7 @@ pub(crate) fn load_deployments(
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(loaded),
         Err(e) => return Err(format!("could not read {file:?}: {e}")),
     };
-    let records: Vec<DeploymentRecord> = serde_json::from_slice(&bytes)
+    let records: Vec<DeploymentRecord> = crate::wire::read_json(&bytes)
         .map_err(|e| format!("{file:?} is not valid deployment JSON: {e}"))?;
 
     for record in records {

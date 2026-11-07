@@ -87,7 +87,7 @@ pub(crate) fn json(who: &str, args: &Args, method: &str, path: &str, body: Optio
     if answer.trim().is_empty() {
         return Ok(Value::Null);
     }
-    serde_json::from_str(&answer).map_err(|e| {
+    crate::wire::read_json(answer.as_bytes()).map_err(|e| {
         eprintln!("{who}: the server's answer isn't JSON: {e}");
         1
     })

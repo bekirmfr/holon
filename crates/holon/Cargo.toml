@@ -65,7 +65,9 @@ mongodb = { version = "3.9", default-features = false, features = ["compat-3-3-0
 # `holon uninstall` removes its own executable, which Windows won't do directly.
 self-replace = "1"
 serde = { version = "1", features = ["derive"] }
-serde_json = { version = "1", features = ["float_roundtrip"] }
+# `unbounded_depth`: JSON holding a value as deep as one may be nests past serde_json's own stop
+# (wire.rs's `read_json`, which bounds it instead).
+serde_json = { version = "1", features = ["float_roundtrip", "unbounded_depth"] }
 tokio = { version = "1", features = ["rt-multi-thread", "net", "time", "sync", "macros"] }
 toml = "0.8"
 # `holon mcp setup` (mcphosts.rs) edits Codex's config.toml with its comments kept.
