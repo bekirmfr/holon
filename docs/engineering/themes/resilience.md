@@ -209,9 +209,25 @@ host can refuse them all).
    threads, open files, logs and latency stayed flat; memory rose from 311 to 660 MB, mostly the
    allocator's (flat with its adaptive thresholds pinned), and two steps that were R5. It found
    R5 and R6. See [Measuring](measuring.md#soaks).
+5. **The pass over the JavaScript library's leaves** (`c865f3a..` on `library-leaves`): two readers
+   given the code, a sweep of every pure leaf over hostile values on a host's 2 MiB thread
+   (`audit_leaves`), the differential harness against `5f29d1d` (300,000 cases, none diverging),
+   the workspace, wasm, editor and end-to-end suites, and a release server sent the requests that
+   found each fix. What a few bytes of a request could make much more of is bounded where it was
+   found: a replacer that wraps without end, a pad, repeat or replace past 2^24 units, a laid-out
+   text, and a state write too deep to load at the next start, which would have kept the server
+   from starting.
 
 ## 5. Open
 
+- **A value nested deeper than a run thread's stack can walk aborts the server**, every
+  deployment with it, where a panic is answered 500 (G3). A flow nesting a list a level per step of
+  a range its request sized did, at 10,000 deep, on a release server: `Timer::produced` turns a
+  node's outputs into the log's form, recursively, to see if they fit (the same route unrecorded,
+  keeping no outputs, answered), and core's own walkers recurse the same way (`add` of such a list
+  overflows by itself). Found by the leaves' pass (§4),
+  on main as well; the fix is a bound where core builds values
+  ([Security §4](security.md#4-reach-and-limits)).
 - R8, fixed (RA §2.12): a log kept every run it keeps in memory, whole (1.1 to 3.6 times its
   lines), bounded by no cache's size; now a log on file keeps its newest 32 there and reads the
   rest from its file with its lock released: a server on the soaks' data folder starts at 39 MB
@@ -243,3 +259,4 @@ host can refuse them all).
 | `824db82` | R8: a log keeps only its newest runs in memory |
 | `5b921ed`…`09f0bdc` | Storage steps 1–6, 8–10: the sweep a setting, the host's view and each flow's, warnings, `when_full`, the backup, packs, sealed segments ([Storage](../capabilities/storage.md)) |
 | `7c0b545`…`9b4bd37` | The review's ten fixes, and the backup's files named `holon-archive-` |
+| `1c1d2ee`…`aca0f08` | The pass over the library leaves (§4.5): what a few bytes make bounded (a text, a replacer, a laid-out text, a state write), `unique`'s hashing, a reader panic, the leaves' sweep; a value nested past a thread's stack found, and open (§5) |

@@ -186,9 +186,20 @@ What a flow is made of is checked before it runs, since its units are anyone's w
 them and `POST /unit` only decodes what it stores: a closure nested past 64 units or holding more
 than 20,000 is refused, and so is one with a unit core's `validate` refuses (an edge outside its
 children's ports, two sources for one port, a cycle, types that don't fit, a module that isn't
-one), each unit validated once, the first time a closure reads it from the store (units.rs
-`load_closure`). A deploy of one is a 400 saying which unit and why; `holon verify` doesn't run
-one again (verify.rs `past_bounds`).
+one, a family leaf's parameter outside its values), each unit validated as a closure reads it from
+the store, not again while the closure cache keeps it (units.rs `load_closure`). A deploy of one is
+a 400 saying which unit and why; `holon verify` doesn't run one again (verify.rs `past_bounds`).
+The bound is one a run's thread holds: a route nested to it, composites in composites or maps
+whose function maps again, answers on a thread of 2 MiB, a runtime's, in a debug build.
+
+What a run computes is bounded where a request's few bytes could make much more, since every
+deployment on the server shares its memory and an overflowed stack aborts them all (a panic is
+answered 500): a text past 2^24 code units (`texts::MAX_TEXT`: a pad, a repeat, a replace, a
+laid-out `json_stringify`) is nothing; JSON is parsed 64 deep; a replacer's output stops at 256
+deep; a range is 10,000 long. A value written to state is one a load reads back, so one nested
+past 256 isn't written (`EncodeError::TooDeep`), where it would have failed the server's next
+start. A flow call sends data and is answered data: core makes no call whose input holds an
+effect, and an answer with no JSON form fails the call (`a_flow_call_sends_and_hands_back_data_only`).
 
 ### 2.8 Files on disk (sealing.rs)
 
@@ -254,6 +265,18 @@ What is not defended, or only partly:
 - **Redaction catches a secret's literal value**, as written or JSON-escaped, and what the graph
   shows computed from it; a value transformed where the graph can't see (a far side echoing it
   encoded) isn't recognised (secrets.rs's notes).
+- **A Boolean computed from a secret is clean** (taint.rs: any Boolean output), so a guard on a
+  secret's presence doesn't taint all that follows it. A flow can therefore learn a secret a bit
+  at a time: `startsWith`, `includes`, `has`, a comparison of texts, each answer acted on where
+  the log shows it. The approval shows where the secret's value goes, not what its Booleans
+  choose.
+- **How deep a value a run builds may nest** has no bound of its own: a fold that wraps its
+  accumulator nests as deep as its range, a chain of list nodes as deep as it is long. What walks
+  a value recurses (the recorder keeping a node's outputs, `add` making text of a list, JSON
+  written out), so the bound is a run thread's stack, and an overflow aborts the server with
+  every deployment on it: `range(n).reduce((acc, i) => [acc], 0)`, n from the request, did at
+  10,000 on a release server, on main as on this branch. The paths found before it are bounded (a
+  replacer, a state write, a parse); a bound where core builds values is open.
 - **The data plane has no sign-in**: a flow guards its own routes. A flow on a loopback port is
   reachable by any local program; a web page reaches it only by an address (a cross-origin
   request, which `browsers` decides whose pages may read), never under a name of its own (§2.2).
@@ -317,7 +340,14 @@ What is not defended, or only partly:
   (every sample's closure loads, so every sample validates; holon-author's
   `every_samples_units_pass_validation` says so before the server), `effect_written_to_state_does_not_take_the_server_down`
   (an effect wired into a write is refused at deploy), and `holon verify`'s
-  `a_unit_that_doesnt_validate_is_not_run_again` and `a_unit_nested_past_the_servers_bound_is_not_run_again`.
+  `a_unit_that_doesnt_validate_is_not_run_again` and `a_unit_nested_past_the_servers_bound_is_not_run_again`;
+  `the_deepest_route_a_server_runs_fits_a_runtimes_thread` (a route nested to the bound answers on
+  a 2 MiB thread through the server's own resolver).
+- **What a run computes**: holon-core's `audit_leaves` (every pure leaf over hostile values on a
+  2 MiB thread: no panic, finite numbers, the same answer twice, none taking 2 s),
+  `a_text_padded_or_repeated_stops_at_the_bound`, `a_laid_out_text_stops_at_the_bound`,
+  `a_replacer_nesting_without_end_gives_nothing`, `a_cell_never_holds_what_it_couldnt_load`,
+  `a_flow_call_sends_and_hands_back_data_only`.
 - **The record**: `a_flow_log_is_a_chain_and_a_changed_run_shows_as_a_break`,
   `exported_runs_verify_and_a_rewritten_log_doesnt`, `a_batch_goes_only_after_its_hook_has_run`,
   `a_witness_is_reached_over_https_or_on_this_machine`.
@@ -351,3 +381,10 @@ Since then:
 | `3edb446` | A flow's port answers only its address, localhost, or a name given with `--allow-host` |
 | `c0a3913` | Passwords checked a few at once on kept threads; a name locked per address; 512 requests at once |
 | `a86994a` | The server's notes say who signs in |
+| `6470bd0` | The server validates every unit of a closure before it runs one |
+| `faf3ef7` | A family leaf's parameter outside its values is refused when the flow is wired |
+| `1c1d2ee` | A value is encoded only as deep as it is read back: a state write too deep to load is refused |
+| `76558df` | A text a leaf makes stops at 2^24 units; a replace's work is bounded by what it writes |
+| `4c88fbf` | A replacer nesting without end, and a laid-out text past 2^24, give nothing |
+| `f4f2df7` | `unique` hashes an option by what it holds, so distinct ones don't share a bucket |
+| `428c4f5` | A duration ending in a character of more than one byte is refused, not a panic |
