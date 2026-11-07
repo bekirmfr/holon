@@ -178,8 +178,9 @@ Common to every text leaf:
   isn't a number gives nothing: JavaScript would convert it, Holon doesn't
   ([Differences](#differences-from-javascript-that-stay)). An optional position the form leaves out
   is an input left unwired.
-- **Length.** A result longer than 2^29 − 24 code units (V8's maximum, past which Node throws a
-  `RangeError`) gives nothing.
+- **Length.** A result longer than 2^24 code units (16 Mi, `texts::MAX_TEXT`) gives nothing. That
+  is lower than V8's maximum, 2^29 − 24, past which Node throws a `RangeError`: one server runs
+  many flows' requests at once, and 2^24 is twice the longest body a request brings.
 - **Bits.** Texts and integers only, apart from `trunc`, which is exact in IEEE: the same result
   natively and in wasm. `normalize` and the regex leaves use pinned pure-Rust tables.
 
@@ -555,6 +556,9 @@ texts through each leaf and through `js()`'s Boa, compared value for value.
 - **`NaN`, `undefined`, `null` and a throw** give nothing. Examples: `charCodeAt` past the end,
   `at` outside the text, `repeat(-1)`, `fromCodePoint(1.5)`, `decodeURIComponent("%")`,
   `btoa("😀")`, `"abc".match(/z/)`, and a text longer than 2^29 − 24 units.
+- **A text longer than 2^24 units** gives nothing where JavaScript still makes it, up to
+  2^29 − 24 ([Leaf specs](#leaf-specs)): `"x".repeat(2 ** 25)`, `"".padEnd(2 ** 25)`, a
+  `JSON.stringify` whose laid-out text grows past it.
 - **No conversion of arguments.** JavaScript converts an argument to the kind it wants:
   `s.slice("1")` slices from 1, `"10" < 9` compares numbers, `true + 1` is 2. A Holon leaf given
   the wrong kind gives nothing; the oracle keeps `true + 1` as the one such case it asserts. A

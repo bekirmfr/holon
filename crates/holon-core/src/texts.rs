@@ -8,7 +8,8 @@
 //! U+FFFF (an emoji, say) is two, a surrogate pair. A Holon text is UTF-8 and can't hold a lone
 //! surrogate, so a result that would begin or end inside a pair gives nothing, where JavaScript
 //! gives a text holding half of it. A position is truncated toward zero (ToIntegerOrInfinity); a
-//! text longer than [`MAX_TEXT`] units gives nothing, where Node throws. None computes a float
+//! text padded, repeated or replaced past [`MAX_TEXT`] units gives nothing, where Node makes it up
+//! to 32 times longer, then throws. None computes a float
 //! beyond truncating and counting, so each gives the same natively and in wasm. `normalize` reads
 //! `unicode-normalization`'s tables, pinned.
 
@@ -21,8 +22,11 @@ use unicode_normalization::UnicodeNormalization;
 use crate::lists::relative;
 use crate::Value;
 
-/// The longest text a leaf makes, in code units: V8's bound, past which Node throws a RangeError.
-pub(crate) const MAX_TEXT: usize = (1 << 29) - 24;
+/// The longest text `pad`, `repeat`, `replace` and a laid-out `json_stringify` make, in code
+/// units: 16 Mi, twice the longest body a request brings, so a width or a count from a request
+/// makes a leaf allocate tens of megabytes at most, not gigabytes. V8's bound, past which Node
+/// throws a RangeError, is 32 times this (2^29 − 24); one server holds many flows' runs at once.
+pub(crate) const MAX_TEXT: usize = 1 << 24;
 
 // ── units and positions ──────────────────────────────────────────────────────────────────────
 
@@ -381,7 +385,9 @@ fn parts(rep: &str) -> Vec<Part<'_>> {
         };
         match part {
             Some(part) => {
-                out.push(Part::Literal(&rest[..i]));
+                if i > 0 {
+                    out.push(Part::Literal(&rest[..i]));
+                }
                 out.push(part);
                 rest = &rest[i + 2..];
             }
@@ -391,7 +397,9 @@ fn parts(rep: &str) -> Vec<Part<'_>> {
             }
         }
     }
-    out.push(Part::Literal(rest));
+    if !rest.is_empty() {
+        out.push(Part::Literal(rest));
+    }
     out
 }
 
@@ -405,13 +413,20 @@ pub(crate) fn replace(count: &str, s: &str, a: &str, b: &str) -> Option<Value> {
         "all" => true,
         _ => return None,
     };
-    let rep = parts(b);
+    // No part writes nothing (`parts` keeps no empty literal, and the match of `""` is left out),
+    // but `` $` `` at the first match and `$'` at the last: what is written grows with every part
+    // at every match, so the bound on it bounds the work as well, however many parts there are.
+    let rep: Vec<Part<'_>> = parts(b).into_iter().filter(|part| !(a.is_empty() && matches!(part, Part::Matched))).collect();
     // Every unit boundary, the halves of a pair among them: the pieces are units, not characters.
     if all && a.is_empty() && s.chars().any(|c| c.len_utf16() == 2) {
         let su: Vec<u16> = s.encode_utf16().collect();
         let n = su.len();
-        if (0..=n).map(|p| substituted_units(&rep, p, n, 0)).fold(n, usize::saturating_add) > MAX_TEXT {
-            return None;
+        let mut total = n;
+        for p in 0..=n {
+            total = total.saturating_add(substituted_units(&rep, p, n, 0));
+            if total > MAX_TEXT {
+                return None;
+            }
         }
         let mut out = Vec::new();
         for p in 0..=su.len() {
@@ -854,6 +869,24 @@ mod tests {
         gives("repeat", &[], &[("[\"ab\", 3]", Some("\"ababab\"")), ("[\"ab\", 0]", Some("\"\"")), ("[\"\", 1e300]", Some("\"\"")), ("[\"ab\", -1]", None), ("[\"ab\", 2.9]", Some("\"abab\"")), ("[\"ab\", 1e9]", None)]);
     }
 
+    /// A width or a count from a request makes at most `MAX_TEXT` units: up to it, the text; one
+    /// past, nothing, before any of it is made.
+    #[test]
+    fn a_text_padded_or_repeated_stops_at_the_bound() {
+        let a = Value::Text("a".into());
+        let at = Value::Number(MAX_TEXT as f64);
+        let past = Value::Number(MAX_TEXT as f64 + 1.0);
+        let made = |v: Option<Value>| match v {
+            Some(Value::Text(s)) => Some(s.len()),
+            _ => None,
+        };
+        assert_eq!(made(compute("repeat", &[&a, &at], &[])), Some(MAX_TEXT));
+        assert_eq!(made(compute("repeat", &[&a, &past], &[])), None);
+        assert_eq!(made(compute("repeat", &[&Value::Text("ab".into()), &Value::Number((MAX_TEXT / 2 + 1) as f64)], &[])), None);
+        assert_eq!(made(compute("pad", &[&a, &at, &a], &[p("side", "start")])), Some(MAX_TEXT));
+        assert_eq!(made(compute("pad", &[&a, &past, &a], &[p("side", "end")])), None);
+    }
+
     #[test]
     fn replace_substitutes_as_javascript_does() {
         let first = [p("count", "first")];
@@ -876,6 +909,16 @@ mod tests {
         // any of it is made.
         let long = Value::Text("x".repeat(40_000));
         assert_eq!(compute("replace", &[&long, &Value::Text(String::new()), &Value::Text("$'".into())], &all), None);
+        // The match of `""` written at every unit, many times over, writes nothing: the text as
+        // it was, at once, where each part was once visited at each match (4 * 10^9 visits here).
+        let many = Value::Text("$&".repeat(100_000));
+        assert_eq!(compute("replace", &[&long, &Value::Text(String::new()), &many], &all), Some(long.clone()));
+        let astral = Value::Text("x😀".repeat(20_000));
+        assert_eq!(compute("replace", &[&astral, &Value::Text(String::new()), &many], &all), Some(astral.clone()));
+        // A replacement of many parts each writing something, at every unit: past the bound by
+        // what it writes, so nothing, the parts visited only until then.
+        let parts = Value::Text("$$".repeat(100_000));
+        assert_eq!(compute("replace", &[&long, &Value::Text(String::new()), &parts], &all), None);
     }
 
     #[test]
