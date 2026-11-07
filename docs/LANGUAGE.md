@@ -1455,8 +1455,9 @@ Rules the table implies:
   anywhere. A database's SQL is a text literal for the same reason: its tables are
   `DbRead("shop/orders")` and `DbWrite("shop/orders")`, a statement that names no table is an
   error, and so is a count of values that isn't the SQL's `$n`s.
-- A request is written `await api.get(…)`, as TypeScript reads one, in an `async` handler. Today
-  `await` there changes nothing: a request is answered between rounds whether it is awaited or not.
+- A request is written `await api.get(…)`, as TypeScript reads one, in an `async` handler or
+  function (§5.8). Today `await` there changes nothing: a request is answered between rounds
+  whether it is awaited or not.
   The L4's slice 7 gives it JavaScript's order (two `await`s in a row run in order, `Promise.all`
   sends several together) and makes it required.
 - A call, a request or another flow's action (`CALLS`, `catalog.rs`), is an effect: the host makes
@@ -1661,8 +1662,15 @@ Types are optional annotations: `function slugify(text: string): string`. When g
 ports' types, checked against what the wires carry (§6.8); when absent, a port takes its first
 wire's type, as the canvas does. A return type names one output's type. A function takes no params
 (in the catalog's sense); it is placed by calling it, `slugify(x)`, and the unit's hash is the same
-wherever it is placed. A function computes: it is never `async`, and a request in it is made as a
-leaf's is (§6.4).
+wherever it is placed. A function computes. It may be `async` and await what it sends, `const sent
+= await hooks.post(…)`, as a handler writes a request, and its caller may await it, `await
+toSlack(event)`: the `await` adds nothing yet (§5.4), so an `async` function is the same unit as
+the function without it, and a request in it is made as a leaf's is (§6.4). It never waits: `await
+event(…)` in a function is refused, as a wait is an action's, and so is another flow's action
+awaited, as a call is a handler's. A method given a function (`map`, `filter`, `sort`, a
+reviver…) takes no `async` one, by name or written in place, as it would be handed a promise for
+each value, which `Promise.all` gathers (the L4's slice 7). The `stripe-to-slack` sample shows it:
+`fromStripe`, and `async toSlack`, which posts to Slack.
 
 A function that writes names its writes as outputs, because a holon's effects leave it through its
 boundary and a boundary port has a name: a collection's write in the method form, bound and
@@ -2153,6 +2161,8 @@ The error catalogue the reader and the lowering produce, each with the span it p
 | `status(…)` and `respond(…)` are a route's answer: return them | the expression |
 | an action answers with a value alone | the `status(…)` or `respond(…)` |
 | a route answers and is done, so it doesn't wait | the `await` |
+| a function computes and never waits; calling another flow's action is a handler's | the `await` |
+| a method's function (`map`'s, `filter`'s…) isn't async | the function |
 | no leaf does `.m(…)`: do it in a `js()` function | the method |
 | a loop, `try` or `throw` | the statement |
 | a case runs on into the next; a case is a literal | the case |
@@ -2378,6 +2388,12 @@ the syntax to TypeScript's, keeping the lowering.
      removes the `.holon` parser and grammar, and with them the wiring form and flows without
      handlers (§10); the printer writes TypeScript (§11). Then the server stopped running a unit
      without handlers: no interval setting, no `ingress` leaf, no `holon trigger`.
+   - *Async functions, early from slice 7* (2026-11-07): a function or a top-level arrow may be
+     `async` and await a request, as a handler does, and is the same unit as without (§5.8); a
+     wait in one stays refused (`await event(…)`, another flow's action awaited), and a method
+     given a function (`map`, `filter`…) takes no `async` one until `Promise.all`. stripe-to-slack
+     groups its two halves as `fromStripe` and `async toSlack`, run live. The printer still writes
+     a function's request without `await`, which compiles to the same unit.
 
    Next are the L4's slices 5 to 11: `try`, `catch {}`, `throw` and `finally`, over a `fail` leaf;
    computing loops, as folds over a bounded range; requests and calls that wait (`await` with

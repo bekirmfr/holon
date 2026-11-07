@@ -126,10 +126,11 @@ enum Block {
     Function,
 }
 
-/// The function `const`s and declarations at the top level, by name: graph holons and js ones.
+/// The function `const`s and declarations at the top level, by name: graph holons, written
+/// `async` or not, and js ones.
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Def {
-    Holon,
+    Holon { r#async: bool },
     Js,
 }
 
@@ -180,6 +181,8 @@ struct Frame {
     frozen: BTreeSet<String>,
     /// Whether it is a route's: a route answers and is done, so it doesn't wait.
     route: bool,
+    /// Whether it is a function's: a function computes, so it never waits.
+    function: bool,
 }
 
 /// A `return`, under the branches it is in.
@@ -549,14 +552,15 @@ impl<'s, 't> Reader<'s, 't> {
         match s {
             js::Statement::FunctionDeclaration(f) => {
                 if let Some(id) = &f.id {
-                    self.define(id.name.as_str(), Def::Holon, id.span)?;
+                    self.define(id.name.as_str(), Def::Holon { r#async: f.r#async }, id.span)?;
                 }
             }
             js::Statement::VariableDeclaration(v) => {
                 for d in &v.declarations {
                     let (js::BindingPattern::BindingIdentifier(id), Some(init)) = (&d.id, &d.init) else { continue };
                     match self.unwrap(init) {
-                        js::Expression::ArrowFunctionExpression(_) | js::Expression::FunctionExpression(_) => self.define(id.name.as_str(), Def::Holon, id.span)?,
+                        js::Expression::ArrowFunctionExpression(a) => self.define(id.name.as_str(), Def::Holon { r#async: a.r#async }, id.span)?,
+                        js::Expression::FunctionExpression(f) => self.define(id.name.as_str(), Def::Holon { r#async: f.r#async }, id.span)?,
                         js::Expression::CallExpression(c) if self.vocab_of(&c.callee) == Some(Vocab::Js) => self.define(id.name.as_str(), Def::Js, id.span)?,
                         _ => {}
                     }
@@ -2395,11 +2399,12 @@ impl<'s, 't> Reader<'s, 't> {
     // ── functions ────────────────────────────────────────────────────────────────────────────
 
     /// `function name(params) { …; return slug }`: a graph holon, its output named after what it
-    /// returns (a name, or each key of a returned object), else `out`.
+    /// returns (a name, or each key of a returned object), else `out`. One that awaits a request
+    /// is `async`, as a handler is, and the `await` adds nothing yet (the L4's slice 7).
     fn function(&mut self, name: &str, name_span: oxc_span::Span, f: &js::Function) -> R<HolonDef> {
         let at = self.span(f.span);
-        if f.generator || f.r#async {
-            return fail(at, "a function computes: no async, no generator");
+        if f.generator {
+            return fail(at, "a function computes: no generator");
         }
         if f.type_parameters.is_some() {
             return fail(at, "a type parameter is refused for now: a port has one type");
@@ -2413,9 +2418,6 @@ impl<'s, 't> Reader<'s, 't> {
     /// `const name = (params) => …` at the top level: a graph holon, as a function is.
     fn arrow_holon(&mut self, name: &str, name_span: oxc_span::Span, a: &js::ArrowFunctionExpression) -> R<HolonDef> {
         let at = self.span(a.span);
-        if a.r#async {
-            return fail(at, "a function computes: no async");
-        }
         if a.type_parameters.is_some() {
             return fail(at, "a type parameter is refused for now: a port has one type");
         }
@@ -2443,6 +2445,7 @@ impl<'s, 't> Reader<'s, 't> {
         body: impl FnOnce(&mut Self, &mut Vec<Stmt>) -> R<Vec<String>>,
     ) -> R<HolonDef> {
         let saved = std::mem::take(&mut self.frame);
+        self.frame.function = true;
         self.frame.used.extend(inputs.iter().map(|(_, port)| port.name.text.clone()));
         self.frame.params.extend(inputs.iter().map(|(param, _)| param.clone()));
         // Each parameter reads, in the body, as the port it is.
@@ -2681,6 +2684,10 @@ impl<'s, 't> Reader<'s, 't> {
                     && let js::Expression::Identifier(i) = self.unwrap(&c.callee)
                     && let Some((flow, action)) = self.action_named(i.name.as_str())
                 {
+                    if self.frame.function {
+                        let name = i.name.as_str();
+                        return fail(span, format!("a function computes: calling another flow's action is a handler's, so await {name}(…) in the route or action, and pass its answer in"));
+                    }
                     let callee = self.name(i.name.as_str(), i.span);
                     return self.called(c, flow, action, callee, span);
                 }
@@ -2974,6 +2981,7 @@ impl<'s, 't> Reader<'s, 't> {
                         ok(ExprKind::Call { callee: Name { text: leaf, span: callee.span }, args })
                     }
                     Some(Noun::Vocab(Vocab::Status | Vocab::Respond)) => fail(span, "status(…) and respond(…) are a route's answer: return them"),
+                    Some(Noun::Vocab(Vocab::Event)) if self.frame.function => fail(span, FUNCTION_WAITS),
                     Some(Noun::Vocab(Vocab::Event)) => fail(span, "an event is waited for: await event(\"paid\")"),
                     Some(Noun::Vocab(v)) => fail(span, format!("{} is a statement of the top level", vocab_word(&v))),
                     Some(_) => fail(callee.span, format!("\"{name}\" isn't something to call")),
@@ -3061,6 +3069,9 @@ impl<'s, 't> Reader<'s, 't> {
     /// expires: 1d` does.
     fn event(&mut self, c: &js::CallExpression, span: Span) -> R<Expr> {
         let shape = "await event(\"paid\", { expires: \"1d\" })";
+        if self.frame.function {
+            return fail(span, FUNCTION_WAITS);
+        }
         if self.frame.route {
             return fail(span, ROUTE_WAITS);
         }
@@ -4037,10 +4048,11 @@ impl<'s, 't> Reader<'s, 't> {
         let span = self.span(e.span());
         let fn_name = Name { text: "fn".into(), span };
         let value = match self.unwrap(e) {
+            js::Expression::Identifier(i) if self.defs.get(i.name.as_str()) == Some(&Def::Holon { r#async: true }) => return fail(span, given_async(method)),
             js::Expression::Identifier(i) if self.defs.contains_key(i.name.as_str()) && matches!(hands, Hands::Plain(_)) => Expr { kind: ExprKind::Name(i.name.to_string()), span },
             js::Expression::ArrowFunctionExpression(arrow) => {
                 if arrow.r#async {
-                    return fail(span, "a function written in place computes: no async");
+                    return fail(span, given_async(method));
                 }
                 // Each parameter: its name in the text, and its port.
                 let mut names = Vec::new();
@@ -4412,6 +4424,15 @@ impl Takes {
 const START_IS_A_CALL: &str =
     "\"holon\" has no start: an action called without await is started, const started = payment(req.json), and one awaited is called, await charge(x)";
 
+/// A function may be `async` and await a request, but it never waits: a wait is an action's.
+const FUNCTION_WAITS: &str = "a function computes and never waits: await event(…) goes in an action's own body";
+
+/// A method given a function (`map`, `filter`, `sort`, a reviver…) is handed what it returns: an
+/// `async` one would hand it promises, which `Promise.all` gathers, and that comes with the L4's
+/// slice 7.
+fn given_async(method: &str) -> String {
+    format!("{method}'s function isn't async: it would give a promise for each value, and Promise.all comes later")
+}
 
 /// A route's request's parts, each an output of its node: a name for one is the node itself.
 const REQUEST_PARTS: &[&str] = &["request", "params", "query", "headers", "body", "json"];
@@ -5750,6 +5771,35 @@ route.post("/t", (req) => price(req.json.amount))
     fn holon_of(ts: &str) -> HolonDef {
         let file = parse(ts).unwrap_or_else(|e| panic!("{e}"));
         file.items.into_iter().find_map(|i| if let Item::Holon(h) = i { Some(h) } else { None }).expect("a function")
+    }
+
+    /// A function may be `async` and await what it sends, as a handler does, and it is the same
+    /// unit as without: the `await` adds nothing yet (the L4's slice 7). It never waits, and `map`
+    /// and `reduce` take no `async` function.
+    #[test]
+    fn an_async_function_is_the_function_without_it() {
+        let head = "import { flow, route } from \"holon\"\nimport hooks from \"host:hooks.example\"\nflow(\"a\", { port: 8000 })\n";
+        let written = |asy: &str, aw: &str| {
+            format!(
+                "{head}{asy}function send(text) {{\n  const sent = {aw}hooks.post(\"/x\", {{ body: text }})\n  return sent.status\n}}\nconst ping = {asy}(path) => {aw}hooks.get(path)\nroute.post(\"/a\", {asy}(req) => {{\n  const s = {aw}send(req.body)\n  return {{ s, p: ({aw}ping(\"/ping\")).status }}\n}})\n"
+            )
+        };
+        same_unit("async function", &written("async ", "await "), &written("", ""));
+
+        let head = "import { flow, route, event } from \"holon\"\nimport { charge } from \"flow:billing\"\nflow(\"f\", { port: 8000 })\n";
+        let refused = [
+            ("async function w(x) {\n  const paid = await event(\"paid\", { expires: \"1h\" })\n  return paid.method ?? x\n}\nroute.post(\"/\", async (req) => await w(req.json))\n", FUNCTION_WAITS),
+            ("function w(x) {\n  return event(\"paid\") ?? x\n}\nroute.post(\"/\", (req) => w(req.json))\n", FUNCTION_WAITS),
+            ("async function c(x) {\n  const r = await charge(x)\n  return r.answer\n}\nroute.post(\"/\", async (req) => await c(req.json))\n", "calling another flow's action is a handler's, so await charge(…) in the route or action"),
+            ("route.post(\"/\", (req) => req.json.xs.map(async (x) => x + 1))\n", "map's function isn't async"),
+            ("route.post(\"/\", (req) => req.json.xs.filter(async (x) => x > 1))\n", "filter's function isn't async"),
+            ("async function inc(x) {\n  return x + 1\n}\nroute.post(\"/\", (req) => req.json.xs.map(inc))\n", "map's function isn't async"),
+            ("function* g(x) {\n  return x + 1\n}\nroute.post(\"/\", (req) => g(req.json))\n", "a function computes: no generator"),
+        ];
+        for (body, expected) in refused {
+            let e = parse(&format!("{head}{body}")).map(|_| ()).unwrap_err().to_string();
+            assert!(e.contains(expected), "{body}\n  => {e}");
+        }
     }
 
     fn written(t: &TypeExpr) -> String {

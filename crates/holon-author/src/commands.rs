@@ -399,8 +399,9 @@ mod tests {
         assert_eq!(marks.get("respond"), Some(&vec!["answers its caller with the secret \"k\" (approved apart, at deploy)".to_string()]), "{marks:?}");
         assert_eq!(marks.len(), 3, "nothing else: {marks:?}");
 
+        // Its request is inside toSlack, so the mark is on the function's node (`posted`).
         let stripe = marks_of(include_str!("../samples/stripe-to-slack.holon.ts"));
-        assert_eq!(stripe.get("sent"), Some(&vec!["sends the secret \"slack_webhook_path\" to https://hooks.slack.com".to_string()]), "{stripe:?}");
+        assert_eq!(stripe.get("posted"), Some(&vec!["sends the secret \"slack_webhook_path\" to https://hooks.slack.com".to_string()]), "{stripe:?}");
         assert_eq!(stripe.len(), 1, "verifying with the Stripe secret marks nothing: {stripe:?}");
 
         // A token exchange: the secret to the OAuth server, what is answered to it to the API.

@@ -23,25 +23,36 @@ import { now } from "holon:clock"
 
 flow("stripe-to-slack", { port: 8103 })
 
-route.post("/stripe", async (req) => {
+function fromStripe(req) {
   const verified = stripe.verify(req, stripe_webhook_secret, now)
+  return verified.event
+}
+
+async function toSlack(event) {
   const sent = await hooks.post(slack_webhook_path, {
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ text: `Stripe: ${verified.event.type}` }),
+    body: JSON.stringify({ text: `Stripe: ${event.type}` }),
   })
-  return sent.status ?? status(400)
+  return sent.status
+}
+
+route.post("/stripe", async (req) => {
+  const event = fromStripe(req)
+  const posted = await toSlack(event)
+  return posted ?? status(400)
 })
 ```
 
-- `stripe.verify` checks the `Stripe-Signature` header the way Stripe's own libraries do: an
-  HMAC-SHA256 of the timestamp and the raw body under the endpoint's signing secret, compared in
-  constant time, with the timestamp no more than five minutes from `now`. Only then does it give
-  the event.
-- `await hooks.post(…)` sends the message to Slack. The host is imported by name, so it is in the
-  permissions; the path of the webhook URL is a secret, because anyone who has it can post to
-  your channel.
-- `return sent.status` answers Stripe with Slack's status. When the signature doesn't verify,
-  `verified` has no value, so nothing is posted, and the route answers 400.
+- Each half is a function, drawn on the canvas as one node that opens to its steps.
+- `stripe.verify`, in `fromStripe`, checks the `Stripe-Signature` header the way Stripe's own
+  libraries do: an HMAC-SHA256 of the timestamp and the raw body under the endpoint's signing
+  secret, compared in constant time, with the timestamp no more than five minutes from `now`.
+  Only then does it give the event.
+- `await hooks.post(…)`, in `toSlack`, sends the message to Slack; a function that sends a request
+  is `async`, as a route is. The host is imported by name, so it is in the permissions; the path
+  of the webhook URL is a secret, because anyone who has it can post to your channel.
+- `return posted` answers Stripe with Slack's status. When the signature doesn't verify, `event`
+  has no value, so nothing is posted, and the route answers 400.
 
 ## 1. Make a Slack incoming webhook
 
@@ -62,7 +73,7 @@ from a file). Press **deploy**. It asks to:
 - read the clock
 - call https://hooks.slack.com
 - receive requests
-- read the secret "slack_webhook_path"
+- read the secret "slack_webhook_path", and send it to https://hooks.slack.com
 - read the secret "stripe_webhook_secret"
 
 and says neither secret is set yet. Press **Approve and deploy**.

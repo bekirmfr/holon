@@ -4,6 +4,10 @@
 // event's type to a Slack channel through an incoming webhook. A request that isn't signed by
 // Stripe (or is too old) gets nothing sent, and a 400.
 //
+// Each half is a function, one node on the canvas that opens to its steps: fromStripe checks the
+// signature, and toSlack posts the line. toSlack sends a request, so it is async and awaits it, as
+// a route does.
+//
 // Its approval says where each secret goes: "read the secret slack_webhook_path, and send it to
 // https://hooks.slack.com". The Stripe secret only checks a signature, so it is sent nowhere.
 //
@@ -23,12 +27,24 @@ import { now } from "holon:clock"
 
 flow("stripe-to-slack", { port: 8103 })
 
-// Verify, post to Slack, and answer with Slack's status (400 when the signature fails).
-route.post("/stripe", async (req) => {
+// Stripe: the event in the request, if Stripe signed it.
+function fromStripe(req) {
   const verified = stripe.verify(req, stripe_webhook_secret, now)
+  return verified.event
+}
+
+// Slack: post the event's type to the channel's incoming webhook, and give back Slack's status.
+async function toSlack(event) {
   const sent = await hooks.post(slack_webhook_path, {
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ text: `Stripe: ${verified.event.type}` }),
+    body: JSON.stringify({ text: `Stripe: ${event.type}` }),
   })
-  return sent.status ?? status(400)
+  return sent.status
+}
+
+// Verify, post to Slack, and answer with Slack's status (400 when the signature fails).
+route.post("/stripe", async (req) => {
+  const event = fromStripe(req)
+  const posted = await toSlack(event)
+  return posted ?? status(400)
 })

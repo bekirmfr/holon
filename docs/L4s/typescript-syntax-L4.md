@@ -916,6 +916,8 @@ Each refusal says what to write instead.
 | `await event(…)` or `sleep(…)` in a route | an action that waits, which the route starts by calling it without `await`: `const started = payment(req.json)` (§9); a wait the caller outlasts comes with slice 8 |
 | `start(…)`, `.holon`'s word | the action called without `await`: `payment(x)` |
 | `await payment(x)`, the flow's own action | `payment(x)`, started, until a call waits for its run's end (slice 7) |
+| `await event(…)`, or another flow's action awaited, in a function | the action's or handler's own body; the function takes what it needs as an input |
+| An `async` function given to a method (`map`, `filter`, `sort`, a reviver…) | a function that isn't `async`, until `Promise.all` (slice 7) |
 | A pattern that writes (`({ a: state.x } = r)`, `[coll[k]] = xs`) | bind the name, then write it |
 | An `action(…)` that isn't exported; `export function` | `export const name = action(…)` |
 | A pattern as a function's parameter, an arrow's, a `js()` function's or a `for … of` binding | a name, destructured on the first line: `(order) => { const { price, qty } = order; … }` |
@@ -1050,7 +1052,12 @@ Holon is in development, so the new form replaces today's at once:
 7. **Calls and requests that wait.** §9's seven pieces, `timeout`, `await` required on requests and
    calls, the sample that calls. A started run's handle awaited later, or passed to
    `Promise.all`, waits for its run's end; an `event(…)` not awaited is a wait point with its
-   `.token`, and `resume_token` goes.
+   `.token`, and `resume_token` goes. *Async functions landed early* (2026-11-07), as `await`
+   required on requests needs them: a function or a top-level arrow may be `async` and await a
+   request, the same unit as without; a wait in one is refused (`await event(…)`, another flow's
+   action awaited), as parking from inside a composite is this slice's to design (§9), and a
+   method given a function (`map`, `filter`…) takes no `async` one until `Promise.all`.
+   stripe-to-slack groups its two halves as `fromStripe` and `async toSlack`.
 8. **Waits a route's caller outlasts.** A route's `await` held in memory, within the request's
    limit, the event delivered to a run that isn't on disk, and a wait that could outlast the limit
    refused, saying to start an action. And, as Durable Functions'
