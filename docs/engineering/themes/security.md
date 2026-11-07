@@ -196,9 +196,21 @@ What a run computes is bounded where a request's few bytes could make much more,
 deployment on the server shares its memory and an overflowed stack aborts them all (a panic is
 answered 500): a text past 2^24 code units (`texts::MAX_TEXT`: a pad, a repeat, a replace, a
 laid-out `json_stringify`) is nothing; JSON is parsed 64 deep; a replacer's output stops at 256
-deep; a range is 10,000 long. A value written to state is one a load reads back, so one nested
+deep; a range is 10,000 long. A value nests at most 256 deep (`MAX_VALUE_DEPTH`), however it is
+built: each leaf that puts what it is handed a level down (`list`, `pair`, `cons`, `some`,
+`append`, `insert`, `with_field`, `with_item`, `fill`, `entries`) refuses a value already at the
+bound, an effect's payload is checked as it is built, and a map's results, a group's lists and a
+reviver's answer fit it, so no value a run holds is deeper (primitives.rs `fits`). Only what is
+put down is looked at, so a compute flow runs under 2% more instructions for it. What walks a
+value recurses on a run thread's 2 MiB: a release server walks about 6,000 levels end to end, a
+debug one about 470. A fold that wraps its accumulator gives nothing past 256 steps, where at
+10,000 it aborted a release server. A value written to state is one a load reads back, so one nested
 past 256 isn't written (`EncodeError::TooDeep`), where it would have failed the server's next
-start. A flow call sends data and is answered data: core makes no call whose input holds an
+start. What Holon writes as JSON holding values (a log line, a waiting run's part, the deployments
+file) it reads back to that depth: serde_json stops at 127 levels, which a value 42 records deep
+passes as the log writes it, so `wire::read_json` reads past it once a count of the brackets finds
+none deeper than a value at the bound makes (3 × 256 + 16), on a thread of its own with room for
+that. A flow call sends data and is answered data: core makes no call whose input holds an
 effect, and an answer with no JSON form fails the call (`a_flow_call_sends_and_hands_back_data_only`).
 
 ### 2.8 Files on disk (sealing.rs)
@@ -270,13 +282,12 @@ What is not defended, or only partly:
   at a time: `startsWith`, `includes`, `has`, a comparison of texts, each answer acted on where
   the log shows it. The approval shows where the secret's value goes, not what its Booleans
   choose.
-- **How deep a value a run builds may nest** has no bound of its own: a fold that wraps its
-  accumulator nests as deep as its range, a chain of list nodes as deep as it is long. What walks
-  a value recurses (the recorder keeping a node's outputs, `add` making text of a list, JSON
-  written out), so the bound is a run thread's stack, and an overflow aborts the server with
-  every deployment on it: `range(n).reduce((acc, i) => [acc], 0)`, n from the request, did at
-  10,000 on a release server, on main as on this branch. The paths found before it are bounded (a
-  replacer, a state write, a parse); a bound where core builds values is open.
+- **A value at the bound leaves a debug build's run thread under twice the room it takes**: a
+  route walks a list about 6,000 levels deep end to end on 2 MiB in release, 23 times the bound,
+  and about 470 in a debug build. Reading a log line back has a thread of its own (8 MiB): about
+  18 times what a record at the bound takes in release, 5 in debug. A walker added later that
+  takes more stack per level lowers these; the tests below walk lists and records at the bound on
+  2 MiB threads in a debug build, so one that takes much more fails them.
 - **The data plane has no sign-in**: a flow guards its own routes. A flow on a loopback port is
   reachable by any local program; a web page reaches it only by an address (a cross-origin
   request, which `browsers` decides whose pages may read), never under a name of its own (§2.2).
@@ -348,6 +359,18 @@ What is not defended, or only partly:
   `a_text_padded_or_repeated_stops_at_the_bound`, `a_laid_out_text_stops_at_the_bound`,
   `a_replacer_nesting_without_end_gives_nothing`, `a_cell_never_holds_what_it_couldnt_load`,
   `a_flow_call_sends_and_hands_back_data_only`.
+- **How deep a value nests**: `a_leaf_puts_nothing_past_the_depth_a_value_may_nest` (each leaf
+  that puts a value down, at the bound and one short of it, lent and given),
+  `no_leaf_builds_a_value_nested_past_the_bound` (every leaf, a value at the bound or one short of
+  it in each input), `a_value_built_a_level_at_a_time_stops_at_the_bound` (a fold, a map, a group,
+  a reviver), `audit_leaves` (values at the bound in its pool, nothing answered deeper), and
+  `a_value_nested_a_level_a_step_stops_at_the_bound_and_the_server_answers_on` (a list and a
+  record answered 255 deep, a level down in the response, and the text of one 256 deep; a level
+  more, or 10,000, a 422; on a 2 MiB thread through the server).
+- **Reading it back**: `json_holding_a_value_as_deep_as_one_may_be_reads_back` (and JSON 100,000
+  deep refused before anything recurses), `a_log_holding_a_value_as_deep_as_one_may_be_reopens_whole`,
+  and `a_durable_run_waits_resumes_by_token_and_expires` (a waiting run holding one survives a
+  restart).
 - **The record**: `a_flow_log_is_a_chain_and_a_changed_run_shows_as_a_break`,
   `exported_runs_verify_and_a_rewritten_log_doesnt`, `a_batch_goes_only_after_its_hook_has_run`,
   `a_witness_is_reached_over_https_or_on_this_machine`.
@@ -388,3 +411,6 @@ Since then:
 | `4c88fbf` | A replacer nesting without end, and a laid-out text past 2^24, give nothing |
 | `f4f2df7` | `unique` hashes an option by what it holds, so distinct ones don't share a bucket |
 | `428c4f5` | A duration ending in a character of more than one byte is refused, not a panic |
+| `bd0fa4c` | A value nests at most 256 deep: a leaf that would build one deeper gives nothing, where a fold nesting 10,000 deep aborted the server |
+| `eeaab65` | JSON holding a value as deep as one may be reads back: a log line, a waiting run's part, the deployments file |
+| `157c1f6` | The depth bound's check costs a compute flow under 2% of its instructions, where it cost about 5% |

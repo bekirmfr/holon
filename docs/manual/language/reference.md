@@ -715,6 +715,10 @@ misled, the compiler refuses instead.
   twice is computed twice.
 - **Every run ends.** There are no loops and no recursion: `map`, `reduce` and a list's other
   methods that take a function go over a list, and `range` makes at most 10000 items.
+- **A value nests at most 256 deep.** Each list in a list, record in a record, or field's value
+  is a level. Something built a level deeper is no value: `reduce((acc, i) => [acc], 0)` gives
+  nothing past 256 steps, so `?? status(422)` answers it. JavaScript nests until its stack runs
+  out. JSON is read 64 deep.
 
 ## Types
 

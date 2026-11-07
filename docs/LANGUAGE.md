@@ -2040,7 +2040,11 @@ answers the count before its write).
 Every program terminates: iteration is `map` and `reduce` over a list, bounded by the list (the one
 leaf that makes a list from a number, `range(n)`, makes at most 10000 items), there is no loop
 statement, and there is no recursion (a function cannot place itself, since its hash does not exist
-until it is frozen). No construct performs an effect during evaluation; effects are values that the
+until it is frozen). Nor does a value nest without end: at most 256 levels (`MAX_VALUE_DEPTH`; a
+list's item, a record's field and an option's value are each a level down), and a leaf that would
+build one deeper gives nothing, so a fold wrapping its accumulator (`[acc]`) stops at 256 steps.
+What walks a value recurses on a thread of a few megabytes, and an overflowed stack would end
+every run on the server, not this one. No construct performs an effect during evaluation; effects are values that the
 host performs after the run settles. A request is answered between rounds (§4.1 of
 `PLATFORM_LAYOUT.md`); `await event(…)` parks the run. None of that is visible in the language
 beyond the nodes' names.
