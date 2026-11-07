@@ -2399,8 +2399,8 @@ the syntax to TypeScript's, keeping the lowering.
    computing loops, as folds over a bounded range; requests and calls that wait (`await` with
    JavaScript's order and required, `Promise.all`, a call that parks its caller, a request recorded
    before it is sent); waits a route's caller outlasts; waiting loops; failures with a reason
-   (`catch (e)`); and the type package `holon.d.ts`, with the language server and both editors
-   over it.
+   (`catch (e)`); and the language server and both editors over the type package `holon.d.ts`,
+   which `holon new` and `holon types` write beside a flow (2026-11-07, ahead of slices 5 to 10).
 
 Dependencies: 3 needs 1 and 2; 4 needs 3 (the golden test is what makes the printer checkable);
 5 and 6 need 4; 7 and 8 need 5; 9 needs 3 (its lowering is 3's) and 6 (the samples it converted).

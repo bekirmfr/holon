@@ -10,6 +10,7 @@ Everything is one program, `holon`. `holon help` lists the commands; `serve`, `e
 | [`holon check`](#holon-check) | compile a flow: its routes, what it may do, or each mistake |
 | [`holon show`](#holon-show) | an outline of a flow |
 | [`holon fmt`](#holon-fmt) | rewrite a flow in the canonical form |
+| [`holon types`](#holon-types) | write `holon.d.ts`, so an editor's TypeScript completes and checks flows |
 | [`holon deploy`](#holon-deploy) | compile a flow and deploy it to a running server |
 | [`holon editor`](#holon-editor) | the editor in a terminal: flows, runs, approvals, and text in tabs |
 | [`holon deployments`](#holon-deployments) | what is deployed, and each one's waiting runs |
@@ -79,7 +80,8 @@ holon new <file> [--sample <name>]
 
 Writes a starter flow to `<file>` (a `NAME.holon.ts`), or the sample named, whose comments say
 what it does and how to try it. It never overwrites a file.
-`holon new --help` lists the samples.
+`holon new --help` lists the samples. Beside it, it writes what [`holon types`](#holon-types)
+does.
 
 ### `holon check`
 
@@ -119,6 +121,21 @@ holon fmt <file>
 Lays the file out in the canonical form, as Prettier does, at 100 columns and without
 semicolons, keeping its comments and blank lines. It writes only a text that compiles to the same
 flow.
+
+### `holon types`
+
+```
+holon types [dir]
+```
+
+Writes `holon.d.ts` into `dir`, the current folder when left out: the types of `"holon"` and of
+every import source (`secret:`, `host:`, `collection:`, …), so an editor's TypeScript completes
+`route.post`, shows each leaf's signature on hover, and marks a misspelled method, option or
+import as you type. A `tsconfig.json` is written beside it when there is none: no DOM and no
+Node, so `fetch` and `console` are unknown there, as they are to Holon. A `holon.d.ts` that holon
+didn't write is left as it is. The leaves it lists are this `holon`'s, so run it again after an
+upgrade. Holon's compiler decides what a flow means; one difference TypeScript can't be told is in
+[the reference](../language/reference.md#files).
 
 ## `holon serve`
 

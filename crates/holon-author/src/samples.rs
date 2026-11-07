@@ -793,7 +793,7 @@ static SAMPLES: &[Sample] = &[
     Sample {
         name: "dexpaprika",
         title: "An n8n node, translated (DexPaprika)",
-        description: "The n8n community node n8n-nodes-dexpaprika (MIT), translated by hand into Holon text, none of its JavaScript run: each operation a function calling .get on an imported host (the permission), the optional credential an optional secret import the approval says goes to those hosts only, parameters as arguments, the node's path check in Holon, and its query string escaped by one js() function. docs/L4s/n8n-import-L4.md has the mapping.",
+        description: "The n8n community node n8n-nodes-dexpaprika (MIT), translated by hand into Holon text, none of its JavaScript run: each operation an async function awaiting .get on an imported host (the permission), the optional credential an optional secret import the approval says goes to those hosts only, parameters as arguments, the node's path check in Holon, and its query string escaped by one js() function. docs/L4s/n8n-import-L4.md has the mapping.",
         shows: &["n8n import", "http_request", "holons", "optional secrets", "where secrets go", "js node", "host permissions"],
         port: Some("8172"),
         secrets: &[SampleSecret { name: "dexpaprika_key", what: "optional: a DexPaprika key (console.dexpaprika.com), sent as the whole Authorization header for a higher rate limit and the pro operations; without it the free tier answers", from: None }],

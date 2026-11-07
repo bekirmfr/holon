@@ -51,7 +51,7 @@ const page = js(function html(book, clock) {
 // Parses a posted form into its fields, and fails when the name or the note is empty.
 const form = js(function fields(body) {
   const decode = (s) => decodeURIComponent(s.replace(/\+/g, " "))
-  const fields = {}
+  const fields: Record<string, string> = {}
   for (const part of body.split("&")) {
     if (part === "") continue
     const i = part.indexOf("=")

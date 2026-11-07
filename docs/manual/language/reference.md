@@ -42,6 +42,17 @@ Every editor, GitHub and Prettier read it as TypeScript. It doesn't run as a Nod
 `"holon"` import is Holon's, and the meanings that differ from JavaScript's are listed under
 [How a flow runs](#how-a-flow-runs).
 
+**Types for the editor.** `holon new` writes `holon.d.ts` and a `tsconfig.json` beside the flow
+(`holon types` writes them into a folder), and TypeScript's own checker, the one in every editor,
+then reads the flow: it completes `route.post` and a host's `get`, shows a leaf's signature on
+hover, and marks a misspelled method or option, a path without its `/`, a duration without its
+unit, an import source Holon hasn't, and a request read before it is awaited. A value is `any` to
+it, as Holon's absence goes through `.`. Where the two disagree, Holon's compiler decides. One
+place they always do: TypeScript calls the right side of `{ total } ?? status(400)` or
+`a / b ?? status(400)` unreachable ("the left operand is never nullish"), as in JavaScript a record
+or a quotient is never `undefined`. In Holon a record with a field that has no value has none, and
+so does a division by zero, so that `??` is reached; no setting tells TypeScript so.
+
 `holon fmt` lays a file out as Prettier does, at 100 columns and without semicolons, keeping its
 comments and blank lines, `js()` bodies included. It writes a text only once that text compiles to
 the same flow.

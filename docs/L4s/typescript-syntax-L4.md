@@ -951,7 +951,62 @@ Each refusal says what to write instead.
   `{ run?, answer?, waiting?, error?, message? }`, as the start has answered by the time the call
   returns,
   `event(…)` a `Promise` of what is delivered. `holon lsp` (`docs/L4s/language-server-L4.md`) adds
-  Holon's checks over it.
+  Holon's checks over it. *Designed 2026-11-07*, the first half of slice 11, taken ahead of
+  slices 5 to 10: until it lands, TypeScript's checker answers every import of every sample with
+  "Cannot find module 'holon'", so the switch's point, a file every tool already reads (fork 1),
+  doesn't hold yet.
+  - **One file, written by the compiler's crate.** `holon_author::types()` writes it: the
+    vocabulary and the import sources by hand (`crates/holon-author/src/lang/holon.d.ts`), then
+    the leaves from the live catalog, each with its signature and description as the manual's page
+    of leaves gives them, in a comment the editor shows on hover and completion. A leaf is
+    `(...args: any[]) => any`: it takes its inputs in order or by name in a last record
+    (`ts.rs` `args`), which one signature can't say without refusing a form the compiler takes.
+    The templates and the leaves named by a reserved word (`const`, `default`, `await`) aren't in
+    it, as neither is imported by name; nor are the old names `json` and `parse_json`.
+  - **The vocabulary is typed; values are `any`.** What a flow writes is typed: `flow`'s options,
+    a route's methods and its path (`/…`), every handler's parameter and options (`resumes`,
+    `matching`, `log`'s three words), durations (`"10s"`), what each import source gives and its
+    methods (a host's, a collection's, a folder's, a database's, a channel's, `stripe.verify`),
+    `respond` and `status`. A misspelled method or option, a path without its `/`, a duration
+    without its unit and an import source Holon doesn't have are errors as they are typed. What
+    flows through is `any`: in Holon absence goes through plain `.` (fork 5), and a collection's
+    import carries no type for its items, so §7's `Board | undefined` waits for typed imports.
+  - **What is outside, as above:** a request is `Promise<Response>`, `{ status, headers, body }`;
+    an action of another flow, imported from `"flow:SLUG"`, is `any`, as a wildcard module can't
+    name its exports; the flow's own action, called, is the start's answer,
+    `{ run?, waiting?, answer?, error?, message? }`; `await event(…)` is `Promise<any>`.
+  - **No DOM, no Node.** The `tsconfig.json` beside it says `lib: ["esnext"]` and `types: []`, so
+    `fetch`, `console`, `setTimeout`, `window` and `process` are unknown names to TypeScript, as
+    to Holon. It is `strict` but for `noImplicitAny`, as a function's parameters needn't have
+    types. What the ES library has and Holon refuses (`Promise`, `Date.now()`,
+    `Math.random()`) is left to `holon check` and `holon lsp`.
+  - **How a person gets it.** `holon new` writes `holon.d.ts` and `tsconfig.json` beside the new
+    flow: a `tsconfig.json` already there is kept, and a `holon.d.ts` Holon wrote is written
+    again, so it follows the catalog of the `holon` that wrote it. `holon types [DIR]` does the
+    same for a folder of flows, after an upgrade or for flows written before. The VS Code
+    extension doing it unasked is the rest of slice 11.
+  - **Kept true by tests.** The samples' folder has both, equal to what `types()` writes
+    (`HOLON_BLESS=1` writes them again). The editor's tests run TypeScript's checker over every
+    sample and every flow of the manual, with that `tsconfig.json`: a flow Holon compiles and the
+    checker refuses fails them, and so does a mistake it should catch (a misspelled method, an
+    unknown import source, a duration without its unit) that it lets through. Where the checkers
+    disagree, Holon's compiler decides and `holon.d.ts` is fixed (§7).
+  - *As built* (2026-11-07): `types.rs` and `src/holon.d.ts`, `holon types`, and `holon new`
+    writing both. Three things the checker taught it:
+    - **`strictNullChecks` is off** too: with it, `[]` is `never[]` and every optional field
+      "possibly undefined", neither of which Holon's absence needs.
+    - **`Object.values`, `entries` and `groupBy` give `any`** on a flow's values, through
+      overloads in `holon.d.ts`: from an `any` record TypeScript infers `unknown` items.
+    - **One difference it can't be told:** TypeScript 5.6 calls the right operand of `??`
+      unreachable when the left is a record, a list, a sum or another expression it reads as
+      never nullish (TS2869), and no setting turns that off. In Holon `{ total } ?? status(400)`
+      and `a / b ?? status(400)` are reached: a record with a field that has no value has none,
+      and so does a division by zero. The tests let TS2869 through and nothing else; the
+      reference says so. The VS Code extension can drop it from a `.holon.ts` file's
+      diagnostics, with a TypeScript server plugin, in the rest of slice 11.
+    Two samples' `js()` bodies were written as TypeScript reads them (chess: a parameter with a
+    default, a turn typed `Record<string, any>`; guestbook: its form's fields typed), and
+    dexpaprika's functions await their requests, as functions may since async functions landed.
 - **The VS Code extension** uses TypeScript's grammar for `.holon.ts`; its `.holon` grammar
   (`editors/vscode/syntaxes/holon.tmLanguage.json`) goes.
 - **Both editors** compile and highlight the new form through the same bridge.
@@ -1000,7 +1055,8 @@ Holon is in development, so the new form replaces today's at once:
    lone `out` as its type (§7). *The formatter is built* (`lang/format.rs`, 2026-11-05): Prettier's
    layout at 100 columns without semicolons, its comments and blank lines kept, a comment inside an
    expression keeping its statement as written, and one rule of Holon's own, a handler's options
-   kept after its function's closing brace (`}, { log: "lazy" })`). It answers only once the text
+   kept after its function's closing brace (`}, { log: "lazy" })`, gone with Oxfmt's formatter
+   on 2026-11-07, §13). It answers only once the text
    it wrote compiles to the same flow, its comments all there; the twins are kept as it writes
    them. *The converter is built* (`lang/to_ts.rs`, 2026-11-06): a `.holon` tree written in
    TypeScript's syntax, its comments carried over by line, laid out by `fmt`. 54 of the 55 samples
@@ -1067,7 +1123,10 @@ Holon is in development, so the new form replaces today's at once:
    and `sleep`.
 10. **Failures with a reason.** A failed slot state, `catch (e)`, `catch` catching failures only.
 11. **Editors and tools.** `holon.d.ts`, the LSP over it, both editors, the VS Code extension. Tours
-    and components are built in this form from their first slice.
+    and components are built in this form from their first slice. *`holon.d.ts` is built*
+    (2026-11-07, ahead of slices 5 to 10, §13): `holon new` and `holon types` write it and a
+    `tsconfig.json` beside a flow, and TypeScript's checker passes on every sample and every flow
+    of the manual but for the one difference §13 names.
 
 ## 16. Forks, surfaced
 

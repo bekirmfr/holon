@@ -41,6 +41,7 @@ pub mod routes;
 pub mod samples;
 pub mod templates;
 pub mod text;
+pub mod types;
 pub mod usage;
 pub mod wire;
 #[cfg(test)]

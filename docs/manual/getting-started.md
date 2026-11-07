@@ -173,8 +173,9 @@ holon check todo.holon.ts
 
 `new` writes a starter flow; `holon new todo.holon.ts --sample notes-api` writes a sample instead
 (`holon new --help` lists them). `check` compiles it and tells you what it is and what it may do,
-or each mistake with its line and column. A flow is TypeScript, so any editor reads it; then
-`holon fmt todo.holon.ts` writes it in the canonical form.
+or each mistake with its line and column. A flow is TypeScript, so any editor reads it: beside it,
+`new` writes `holon.d.ts` and a `tsconfig.json`, and an editor's TypeScript then completes and
+checks the flow as you type. `holon fmt todo.holon.ts` writes it in the canonical form.
 
 To deploy a text file, press **import text** on the flows page: it opens as a tab, ready to
 deploy.

@@ -139,8 +139,10 @@ Each sample is a `.holon.ts` file in `samples/`, embedded by `include_str!` in a
 `source`, so the text pane opens on it and a deploy keeps its names. The editor reads them through
 the bridge (`samples`, `build_sample`); `holon new --sample` and the flows page's download write
 the text as it is. A sample without a port is started by its clock, its files or its actions, an `every(…)`,
-`on.file.*` or `action(…)` handler. There are 55, counted as the files in `samples/`
-and the `include_str!` lines in `samples.rs`, one each.
+`on.file.*` or `action(…)` handler. There are 56, counted as the `.holon.ts` files in `samples/`
+and the `include_str!` lines in `samples.rs`, one each. Beside them, `holon.d.ts` and
+`tsconfig.json` are as `types::types()` and `types::TSCONFIG` write them (`HOLON_BLESS=1` writes
+them again), and `editor/src/types.test.ts` runs TypeScript's checker over every sample with them.
 
 [`CLAUDE.md`](../../../CLAUDE.md) makes a sample part of every feature: a `.holon.ts` file in the
 canonical form with its entry, built by `samples.test.ts`, run live once before the commit (the
@@ -212,9 +214,11 @@ holon-author golden` writes it afresh.
   change compiles the whole text: no incremental parsing ("a flow is small", the language server
   note, decision 2).
 - **The language server** has no go-to-definition, rename or code actions; completion offers
-  words, not snippets; each file is a flow on its own. No `holon.d.ts` gives TypeScript's own
-  tools the types of `"holon"` and the import prefixes yet
-  ([typescript-syntax L4 §13](../../L4s/typescript-syntax-L4.md)).
+  words, not snippets; each file is a flow on its own. Beside it, TypeScript's own tools read
+  `holon.d.ts` (`types.rs`, [typescript-syntax L4 §13](../../L4s/typescript-syntax-L4.md)):
+  the vocabulary is typed and values are `any`, a leaf is `(...args: any[]) => any` with its
+  signature in a comment, and TypeScript calls a `??` after a record or a sum unreachable where
+  Holon reaches it.
 - **fmt** formats only a text that compiles. A comment inside an expression keeps its statement
   as written. A canvas edit reprints the text through the printer and drops its comments (the text
   pane says how many).
