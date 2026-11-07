@@ -1690,6 +1690,20 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
         Some(MatchShape { subject: subject?, arms, els, parts })
     }
 
+    /// The `c ? a : b` that `node` is the top of, if it is one (lower.rs `ExprKind::If`): `guard(c,
+    /// a) ?? guard(!(c ?? false), b)`, one `c` on both sides. Its guards, the `not` and the `default`.
+    fn ternary(&self, node: &Node) -> Option<[&'g Node; 4]> {
+        if node.data.name != "coalesce" || node.data.body != PlacedBody::Primitive {
+            return None;
+        }
+        let then = self.part(node, "a", "guard", 1)?;
+        let taken = self.part(node, "b", "guard", 1)?;
+        let not = self.part(taken, "cond", "not", 1)?;
+        let held = self.part(not, "v", "default", 1).filter(|d| d.param("type") == "Boolean" && d.param("value") == "false")?;
+        let c = self.g.incoming.get(&(then.id.clone(), "cond".to_string()))?;
+        (self.g.incoming.get(&(held.id.clone(), "value".to_string())) == Some(c)).then_some([then, taken, not, held])
+    }
+
     /// Whether a `switch` reads `m` back as the same values: ts.rs drops an arm whose value is the
     /// default's (the same name, or the same literal), so such a match stays the expressions it is.
     fn switch_reads_back(&self, m: &MatchShape) -> bool {
@@ -1771,6 +1785,17 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
                 self.matches.insert(n.id.clone(), m);
             }
         }
+        // A ternary's condition, read by both its sides, is written once, in place.
+        let g = self.g;
+        for n in &g.nodes {
+            let Some([then, ..]) = self.ternary(n) else { continue };
+            if let Some(Src::Node { id, .. }) = g.incoming.get(&(then.id.clone(), "cond".to_string())) {
+                let c = g.node(id);
+                if self.pass_through(c).is_none() && self.free(c) && g.consumed_total(c) == 2 {
+                    self.absorbed.insert(id.clone());
+                }
+            }
+        }
         // A route answering a match: a `switch` whose cases return.
         if self.kind == Kind::Route
             && let Some(respond) = self.g.nodes.iter().find(|n| n.is_template("respond"))
@@ -1790,7 +1815,6 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
         }
         // What a `coalesce` falls back to, written as a literal, would read as a `default`
         // (`x ?? 0`), parentheses or not: it gets a name.
-        let g = self.g;
         for n in &g.nodes {
             if n.data.name != "coalesce" || self.matches.contains_key(&n.id) || self.absorbed.contains(&n.id) {
                 continue;
@@ -2739,23 +2763,20 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
             }
             "default" => match literal(node.param("type"), node.param("value")) {
                 Some((l, _)) => {
-                    if let Some(g) = self.inline_source(node, "value", "guard") {
-                        self.touch(g);
-                        let c = self.required(g, "cond", COALESCE)?;
-                        let t = self.required(g, "value", COND)?;
-                        return Ok((format!("{c} ? {t} : {l}"), COND));
-                    }
                     let v = self.coalesce_left(node, "value")?;
                     Ok((format!("{v} ?? {l}"), COALESCE))
                 }
                 None => self.generic(node),
             },
             "coalesce" => {
-                if let Some(g) = self.inline_source(node, "a", "guard") {
-                    self.touch(g);
-                    let c = self.required(g, "cond", COALESCE)?;
-                    let t = self.required(g, "value", COND)?;
-                    let e = self.required(node, "b", COND)?;
+                if let Some(parts) = self.ternary(node) {
+                    for p in parts {
+                        self.touch(p);
+                    }
+                    let [then, taken, ..] = parts;
+                    let c = self.required(then, "cond", COALESCE)?;
+                    let t = self.required(then, "value", COND)?;
+                    let e = self.required(taken, "value", COND)?;
                     return Ok((format!("{c} ? {t} : {e}"), COND));
                 }
                 let a = self.coalesce_left(node, "a")?;
@@ -4445,17 +4466,21 @@ export const t = action((input) => {
     /// What isn't the exact shape prints as the expressions it is, never as a `switch`.
     #[test]
     fn near_misses_of_a_match_print_as_what_they_are() {
+        // A guard that falls back to another isn't a ternary either (its else isn't guarded by the
+        // first's condition failing): it stays the `??` it is.
         for (body, want) in [
             // Two subjects.
-            ("(op === \"a\" ? 1 : undefined) ?? (v === \"b\" ? 2 : undefined)", "op === \"a\" ? 1 : v === \"b\" ? 2 : undefined"),
+            ("(op === \"a\" ? 1 : undefined) ?? (v === \"b\" ? 2 : undefined)", "(op === \"a\" ? 1 : undefined) ?? (v === \"b\" ? 2 : undefined)"),
             // The pattern on the left.
-            ("(\"a\" === op ? v : undefined) ?? (op === \"b\" ? 2 : undefined)", "\"a\" === op ? v : op === \"b\" ? 2 : undefined"),
-            // A fallback that isn't guarded.
+            ("(\"a\" === op ? v : undefined) ?? (op === \"b\" ? 2 : undefined)", "(\"a\" === op ? v : undefined) ?? (op === \"b\" ? 2 : undefined)"),
+            // A ternary, its else not guarded by a pattern.
             ("op === \"a\" ? 1 : v", "op === \"a\" ? 1 : v"),
             // One arm alone.
             ("op === \"a\" ? v : undefined", "op === \"a\" ? v : undefined"),
             // A pattern that isn't a literal.
-            ("(op === v ? 1 : undefined) ?? (op === \"b\" ? 2 : undefined)", "op === v ? 1 : op === \"b\" ? 2 : undefined"),
+            ("(op === v ? 1 : undefined) ?? (op === \"b\" ? 2 : undefined)", "(op === v ? 1 : undefined) ?? (op === \"b\" ? 2 : undefined)"),
+            // Ternaries chained.
+            ("op === \"a\" ? 1 : op === \"b\" ? v : 3", "op === \"a\" ? 1 : op === \"b\" ? v : 3"),
         ] {
             let src = format!("import {{ flow, route }} from \"holon\"\n\nflow(\"f\", {{ port: 8200 }})\n\nfunction pick(op, v) {{\n  return {body}\n}}\n\nroute.post(\"/x\", (req) => pick(req.json.op, req.json.v))\n");
             let text = reprinted(&src);

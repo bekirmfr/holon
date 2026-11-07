@@ -603,16 +603,17 @@ Built on 2026-11-07, as this section says, but where it says otherwise below.
   (`match`, `matchAll`, `search`, a pattern in `replace` or `split`), it is refused, naming
   `js()`.
 
-Four things the reader does today constrain what a composite can say. The first changes meaning;
-it should be fixed whatever the verdicts:
+Four things the reader did when these races ran constrain what a composite can say. The first
+changed meaning, and is fixed:
 
-- **`c ? a : b` falls through to `b` when `a` is absent.** It lowers to `guard(c, a) ?? b`
-  (`lower.rs`), so with `c` true and `a` absent it gives `b`, where JavaScript gives `undefined`.
+- **`c ? a : b` fell through to `b` when `a` was absent.** It lowered to `guard(c, a) ?? b`
+  (`lower.rs`), so with `c` true and `a` absent it gave `b`, where JavaScript gives `undefined`.
   The natural `slice` and `at` composites were wrong in code units because of it (their absent
   `strict_slice` fell through to the other branch); the composites above keep a call that can be
-  absent out of a branch. `reader_facts()` in the bench asserts the behaviour and fails once it
-  is fixed. The fix: `guard(c, a) ?? guard(!c, b)`, one `not` and one `guard` more, or the
-  lowering `match` already uses. `undefined` is also accepted only as the else branch.
+  absent out of a branch. Fixed 2026-11-07: it lowers to `guard(c, a) ?? guard(!(c ?? false),
+  b)`, a `default`, a `not` and a `guard` more, the way `match` guards its `else`; `c` absent
+  still takes `b`, as `if` does. `reader_facts()` in the bench asserts the fix and fails if the
+  fall-through comes back. `undefined` is also accepted only as the else branch.
 - **A function can't hand back a parameter untouched, and every parameter must be used.**
   `(i) => s` had to be `(i) => s ?? i` in `js_repeat`, and `return s` couldn't be written.
 - **A leaf called by name needs every input.** `concat(s)` is refused ("the input b can't be
@@ -623,7 +624,9 @@ it should be fixed whatever the verdicts:
 
 ## Race output
 
-The bench's output, verbatim (`cargo bench -p holon-author --bench races_texts`, 53 s, exit 0):
+The bench's output, verbatim (`cargo bench -p holon-author --bench races_texts`, 53 s, exit 0).
+Its `reader:` line is from before the ternary's fix; the bench now prints that a chosen `a` that
+is absent makes the choice absent.
 
 ```text
 oracle: every candidate gives JavaScript's answer, in code units, on 1525 cases (Node 22.21.1)

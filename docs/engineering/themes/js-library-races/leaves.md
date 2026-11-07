@@ -261,13 +261,13 @@ races here.
 | `subtract`, `divide` | O(1) | none | `abs`, `score` | |
 | `compare` | O(1) | none | `abs`, filter's `x > 10`, `score` | |
 | `and`, `or`, `not` | O(inputs) | none | `some`, `every` by `fold`; `!==` | |
-| `select` | O(1) | lent: the value chosen; given: none | by name only (the ternary lowers to `guard` and a fallback) | given: moved |
+| `select` | O(1) | lent: the value chosen; given: none | by name only (the ternary lowers to a `guard` on each side) | given: moved |
 | `concat` | O(total length) | one text | template texts; the `replace`, `padStart` composites | sized once; given: the first grows |
 | `uppercase`, `lowercase` | O(n) | one text | | |
 | `text_length` | O(n): counts characters | none | `s.slice(a, b)`, `charAt`, `at`, `padStart` | |
 | `to_text` | O(size) | one text | | |
 | `as_text` | O(size) | a text input copied | `` `${x}` `` | |
-| `coalesce` | O(1) | inside a composite, a choice: before, its value copied; now given to its last reader or lent | `??`, the ternary's fallback | giving, lending |
+| `coalesce` | O(1) | inside a composite, a choice: before, its value copied; now given to its last reader or lent | `??`, the ternary's two sides | giving, lending |
 | `is_truthy` | O(1) | none | `Boolean(x)` | |
 | `guard` | O(1) | a choice: before, its value copied, at every pass-through `guard(true, x)` too; now given or lent | the ternary; every value used twice | giving, lending |
 | `slice` | O(start + len) characters | the piece | `substring`, `charAt`, `at` on texts | byte offsets, one copy |

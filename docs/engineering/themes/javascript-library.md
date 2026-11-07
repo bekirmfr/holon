@@ -82,7 +82,7 @@ the eleven number leaves. The operators are mapped but for `void`, `instanceof` 
 | `a && b`, `a \|\| b` | `and`, `or` | mapped for booleans | a literal on the right is refused: "takes booleans: a value for where one is absent is ??"; other values: differs |
 | `!x` | `not` | mapped for booleans | other values: differs, nothing (JavaScript's truthiness is `is_truthy`, by name) |
 | `a ?? b` | `default` (b a literal), `coalesce` | mapped | `b` is computed only when `a` is absent |
-| `c ? a : b` | `guard`, then `default` or `coalesce` | mapped | only the branch taken runs; `c ? a : undefined` is the `guard` alone |
+| `c ? a : b` | a `guard` on each side of `c`, then `coalesce` | mapped | only the branch taken runs, and it is the answer; `c ? a : undefined` is the first `guard` alone |
 | `x?.k`, `x?.[k]` | `field`, `lookup` | mapped | absence passes along anyway, so `?.` and `.` lower alike |
 | `k in r` | `has` | mapped | a record has no prototype: its own keys |
 | `instanceof` | | refused | "a flow's values have no classes: Array.isArray(x) tells a list, typeof x the rest" |
@@ -301,7 +301,6 @@ author sees no mistake; the run answers nothing where JavaScript answers somethi
 | `{ a: 1 } === { a: 1 }` | `true` | compared by value; JavaScript compares objects by identity |
 | `1 == "1"` | `false` | `==` is `===` |
 | `JSON.parse("bad")` | nothing | JavaScript throws; Holon has no `catch` until slice 5 |
-| `c ? a : b` with `c` true and `a` absent | `b` | it lowers to `guard(c, a) ?? b`; JavaScript gives `a`'s nothing |
 | `"a😀b".slice(1, 2)`, `"😀".charAt(0)` | nothing | half a surrogate pair, which a flow's text can't hold; JavaScript gives a text holding a lone surrogate |
 | `Object.keys(r)`, `JSON.stringify(r)` | keys sorted | JavaScript keeps insertion order, integer keys first; §11, open 2 |
 | `JSON.parse` of a key given twice | nothing | `json.rs` refuses it; JavaScript keeps the last |
@@ -327,7 +326,7 @@ read; reading it is a line in `ts.rs` each, with a test of its meaning:
 | `insert` | `{ ...r, [k]: v }` | a computed key |
 | `remove`, `without_field` | `delete r[k]`, `const { k, ...rest } = r` | on a record value |
 | `cons` | `[x, ...xs]` | lowers to `extend` today, the same list |
-| `select` | `c ? a : b` | the ternary lowers to `guard` and a fallback instead, so only the branch taken runs |
+| `select` | `c ? a : b` | the ternary lowers to a `guard` on each side instead, so only the branch taken runs |
 | `sha256`, `hmac_sha256`, `secure_equals`, `hex`, `base64` | none in the language standard (Node's `crypto` and `Buffer`) | by name is their form; `btoa` and `atob` are `base64 {bytes: latin1}` (§3) |
 | `to_text` | none (`JSON.stringify` of a text is near it) | |
 | `pair`, `some`, `none` | none | the lowering's own: two values together, an optional value |
@@ -402,14 +401,14 @@ compound assignments, and `concat`, `Array.from(xs)` and `Array.of`; `.length` a
 the value's type, `{ [k]: v }` (read now), `Object.freeze` and `structuredClone` as the value
 itself (read now), a date's `getTime` (read now).
 
-**What the races found wrong**, fixed since but for one: `add` gave `0` for `-0 + -0` (it summed
+**What the races found wrong**, all fixed since: `add` gave `0` for `-0 + -0` (it summed
 from `+0`; it starts from `-0` now); `add`, `subtract`, `multiply` and `divide` could overflow to an
 infinity Holon has no value for (they give nothing now); `as_text` and `json_stringify` wrote `1e21`
 as `1000000000000000000000` (they write JavaScript's `1e+21` and `1e-7` now, `primitives.rs`
 `number_text`); and a function returning a record literal gave only its first field when read whole
-(it is the record now: answered, passed on, mapped or folded, `lower.rs` `whole`). Left as it is:
-`c ? a : b` gives `b` when `c` is true and `a` is absent, which [LANGUAGE.md](../../LANGUAGE.md)
-§6.4 chose (a fallback, not a branch) and §9 lists.
+(it is the record now: answered, passed on, mapped or folded, `lower.rs` `whole`); and `c ? a : b`
+gave `b` when `c` was true and `a` absent, which [LANGUAGE.md](../../LANGUAGE.md) §6.4 had chosen
+(a fallback, not a branch): a guard on each side now, it is absent there, as in JavaScript.
 
 **Decided, and what is open:**
 

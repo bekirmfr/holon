@@ -162,7 +162,7 @@ From lowest to highest precedence; binary operators group left to right.
 
 | Form | Meaning |
 |---|---|
-| `c ? a : b` | `a` when `c` is `true` and `a` has a value; otherwise `b` |
+| `c ? a : b` | `a` when `c` is `true`, otherwise `b` (`c` with no value too); if the side chosen has no value, neither has the whole |
 | `c ? a : undefined` | `a` when `c` is `true`; otherwise no value |
 | `a ?? b` | `a`, or `b` when `a` has no value |
 | `a \|\| b`, `a && b`, `!a` | logic, on booleans; a text or number after `\|\|` is refused, with "use `??`" |

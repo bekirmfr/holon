@@ -1426,7 +1426,7 @@
   [0, 0, 3] Text("")
   [0, 0, 4] ·
   [0, 0] Record({"body": Text(""), "headers": Record({"content-type": Text("application/json")}), "method": Text("GET"), "params": Record({}), "path": Text("/payment"), … #a1dd843c3497c98f | Record({}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("") | ·
-  [0, 31] Record({})
+  [0, 34] Record({})
   [0, 3] ·
   [0, 4] ·
   [0, 5] Number(100.0)
@@ -1436,55 +1436,58 @@
   [0, 11] Number(0.0)
   [0, 12] ·
   [0, 14] ·
+  [0, 15] Boolean(false)
+  [0, 16] Boolean(true)
   [0, 1] ·
   [0, 2] ·
-  [0, 15] ·
-  [0, 16] Number(1.0)
-  [0, 17] Number(1.0)
+  [0, 17] ·
   [0, 18] Number(1.0)
-  [0, 19] ·
+  [0, 19] Number(1.0)
+  [0, 20] Number(1.0)
+  [0, 21] ·
   [0, 9] ·
   [0, 10] ·
-  [0, 20] ·
-  [0, 21] ·
   [0, 22] ·
   [0, 23] ·
   [0, 24] ·
-  [0, 25] Number(100.0)
+  [0, 25] ·
   [0, 26] ·
   [0, 27] ·
-  [0, 32] Number(100.0)
-  [0, 33] ·
-  [0, 34] Number(2.0)
-  [0, 35] ·
-  [0, 36] ·
-  [0, 28] ·
-  [0, 29] Number(100.0)
+  [0, 28] Number(100.0)
+  [0, 29] ·
   [0, 30] ·
+  [0, 35] Number(100.0)
+  [0, 36] ·
   [0, 37] Number(2.0)
   [0, 38] ·
   [0, 39] ·
-  [0, 40] ·
-  [0, 41] Number(2.0)
+  [0, 31] ·
+  [0, 32] Number(100.0)
+  [0, 33] ·
+  [0, 40] Number(2.0)
+  [0, 41] ·
   [0, 42] ·
   [0, 43] ·
-  [0, 44] Number(12.0)
+  [0, 44] Number(2.0)
   [0, 45] ·
   [0, 46] ·
-  [0, 47] ·
-  [0, 48] Text("y ")
-  [0, 49] Number(12.0)
+  [0, 47] Number(12.0)
+  [0, 48] ·
+  [0, 49] ·
   [0, 50] ·
-  [0, 51] ·
-  [0, 52] Text("m")
+  [0, 51] Text("y ")
+  [0, 52] Number(12.0)
   [0, 53] ·
   [0, 54] ·
-  [0, 55, 0] Record({})
-  [0, 55, 1] Number(200.0)
-  [0, 55, 2] Record({"status": Number(200.0)})
-  [0, 55, 3] ·
-  [0, 55, 4] Record({"body": Record({"error": Text("no value to answer with")}), "status": Number(400.0)})
-  [0, 55] Record({"body": Record({"error": Text("no value to answer with")}), "status": Number(400.0)})
+  [0, 55] Text("m")
+  [0, 56] ·
+  [0, 57] ·
+  [0, 58, 0] Record({})
+  [0, 58, 1] Number(200.0)
+  [0, 58, 2] Record({"status": Number(200.0)})
+  [0, 58, 3] ·
+  [0, 58, 4] Record({"body": Record({"error": Text("no value to answer with")}), "status": Number(400.0)})
+  [0, 58] Record({"body": Record({"error": Text("no value to answer with")}), "status": Number(400.0)})
   [0] Record({"body": Record({"error": Text("no value to answer with")}), "status": Number(400.0)})
   => Record({"body": Record({"error": Text("no value to answer with")}), "status": Number(400.0)})
 == loan · GET /payment · input 1
@@ -1494,7 +1497,7 @@
   [0, 0, 3] Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\"event\":\"gig\"… #7441bf0c70954823
   [0, 0, 4] Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
   [0, 0] Record({"body": Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\… #131161b9ebbe7759 | Record({}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\"event\":\"gig\"… #7441bf0c70954823 | Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
-  [0, 31] Record({})
+  [0, 34] Record({})
   [0, 3] ·
   [0, 4] ·
   [0, 5] Number(100.0)
@@ -1504,55 +1507,58 @@
   [0, 11] Number(0.0)
   [0, 12] ·
   [0, 14] ·
+  [0, 15] Boolean(false)
+  [0, 16] Boolean(true)
   [0, 1] ·
   [0, 2] ·
-  [0, 15] ·
-  [0, 16] Number(1.0)
-  [0, 17] Number(1.0)
+  [0, 17] ·
   [0, 18] Number(1.0)
-  [0, 19] ·
+  [0, 19] Number(1.0)
+  [0, 20] Number(1.0)
+  [0, 21] ·
   [0, 9] ·
   [0, 10] ·
-  [0, 20] ·
-  [0, 21] ·
   [0, 22] ·
   [0, 23] ·
   [0, 24] ·
-  [0, 25] Number(100.0)
+  [0, 25] ·
   [0, 26] ·
   [0, 27] ·
-  [0, 32] Number(100.0)
-  [0, 33] ·
-  [0, 34] Number(2.0)
-  [0, 35] ·
-  [0, 36] ·
-  [0, 28] ·
-  [0, 29] Number(100.0)
+  [0, 28] Number(100.0)
+  [0, 29] ·
   [0, 30] ·
+  [0, 35] Number(100.0)
+  [0, 36] ·
   [0, 37] Number(2.0)
   [0, 38] ·
   [0, 39] ·
-  [0, 40] ·
-  [0, 41] Number(2.0)
+  [0, 31] ·
+  [0, 32] Number(100.0)
+  [0, 33] ·
+  [0, 40] Number(2.0)
+  [0, 41] ·
   [0, 42] ·
   [0, 43] ·
-  [0, 44] Number(12.0)
+  [0, 44] Number(2.0)
   [0, 45] ·
   [0, 46] ·
-  [0, 47] ·
-  [0, 48] Text("y ")
-  [0, 49] Number(12.0)
+  [0, 47] Number(12.0)
+  [0, 48] ·
+  [0, 49] ·
   [0, 50] ·
-  [0, 51] ·
-  [0, 52] Text("m")
+  [0, 51] Text("y ")
+  [0, 52] Number(12.0)
   [0, 53] ·
   [0, 54] ·
-  [0, 55, 0] Record({})
-  [0, 55, 1] Number(200.0)
-  [0, 55, 2] Record({"status": Number(200.0)})
-  [0, 55, 3] ·
-  [0, 55, 4] Record({"body": Record({"error": Text("no value to answer with")}), "status": Number(400.0)})
-  [0, 55] Record({"body": Record({"error": Text("no value to answer with")}), "status": Number(400.0)})
+  [0, 55] Text("m")
+  [0, 56] ·
+  [0, 57] ·
+  [0, 58, 0] Record({})
+  [0, 58, 1] Number(200.0)
+  [0, 58, 2] Record({"status": Number(200.0)})
+  [0, 58, 3] ·
+  [0, 58, 4] Record({"body": Record({"error": Text("no value to answer with")}), "status": Number(400.0)})
+  [0, 58] Record({"body": Record({"error": Text("no value to answer with")}), "status": Number(400.0)})
   [0] Record({"body": Record({"error": Text("no value to answer with")}), "status": Number(400.0)})
   => Record({"body": Record({"error": Text("no value to answer with")}), "status": Number(400.0)})
 == loan · GET /payment · input 2
@@ -1562,7 +1568,7 @@
   [0, 0, 3] Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,14.25,51.25,88.2… #30defbf00c11dd9c
   [0, 0, 4] Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
   [0, 0] Record({"body": Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,… #2b30b6c2bc926ec2 | Record({}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,14.25,51.25,88.2… #30defbf00c11dd9c | Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
-  [0, 31] Record({})
+  [0, 34] Record({})
   [0, 3] ·
   [0, 4] ·
   [0, 5] Number(100.0)
@@ -1572,55 +1578,58 @@
   [0, 11] Number(0.0)
   [0, 12] ·
   [0, 14] ·
+  [0, 15] Boolean(false)
+  [0, 16] Boolean(true)
   [0, 1] ·
   [0, 2] ·
-  [0, 15] ·
-  [0, 16] Number(1.0)
-  [0, 17] Number(1.0)
+  [0, 17] ·
   [0, 18] Number(1.0)
-  [0, 19] ·
+  [0, 19] Number(1.0)
+  [0, 20] Number(1.0)
+  [0, 21] ·
   [0, 9] ·
   [0, 10] ·
-  [0, 20] ·
-  [0, 21] ·
   [0, 22] ·
   [0, 23] ·
   [0, 24] ·
-  [0, 25] Number(100.0)
+  [0, 25] ·
   [0, 26] ·
   [0, 27] ·
-  [0, 32] Number(100.0)
-  [0, 33] ·
-  [0, 34] Number(2.0)
-  [0, 35] ·
-  [0, 36] ·
-  [0, 28] ·
-  [0, 29] Number(100.0)
+  [0, 28] Number(100.0)
+  [0, 29] ·
   [0, 30] ·
+  [0, 35] Number(100.0)
+  [0, 36] ·
   [0, 37] Number(2.0)
   [0, 38] ·
   [0, 39] ·
-  [0, 40] ·
-  [0, 41] Number(2.0)
+  [0, 31] ·
+  [0, 32] Number(100.0)
+  [0, 33] ·
+  [0, 40] Number(2.0)
+  [0, 41] ·
   [0, 42] ·
   [0, 43] ·
-  [0, 44] Number(12.0)
+  [0, 44] Number(2.0)
   [0, 45] ·
   [0, 46] ·
-  [0, 47] ·
-  [0, 48] Text("y ")
-  [0, 49] Number(12.0)
+  [0, 47] Number(12.0)
+  [0, 48] ·
+  [0, 49] ·
   [0, 50] ·
-  [0, 51] ·
-  [0, 52] Text("m")
+  [0, 51] Text("y ")
+  [0, 52] Number(12.0)
   [0, 53] ·
   [0, 54] ·
-  [0, 55, 0] Record({})
-  [0, 55, 1] Number(200.0)
-  [0, 55, 2] Record({"status": Number(200.0)})
-  [0, 55, 3] ·
-  [0, 55, 4] Record({"body": Record({"error": Text("no value to answer with")}), "status": Number(400.0)})
-  [0, 55] Record({"body": Record({"error": Text("no value to answer with")}), "status": Number(400.0)})
+  [0, 55] Text("m")
+  [0, 56] ·
+  [0, 57] ·
+  [0, 58, 0] Record({})
+  [0, 58, 1] Number(200.0)
+  [0, 58, 2] Record({"status": Number(200.0)})
+  [0, 58, 3] ·
+  [0, 58, 4] Record({"body": Record({"error": Text("no value to answer with")}), "status": Number(400.0)})
+  [0, 58] Record({"body": Record({"error": Text("no value to answer with")}), "status": Number(400.0)})
   [0] Record({"body": Record({"error": Text("no value to answer with")}), "status": Number(400.0)})
   => Record({"body": Record({"error": Text("no value to answer with")}), "status": Number(400.0)})
 == leaderboard · POST /board · input 0
@@ -10396,34 +10405,37 @@
   [0, 0, 3] Text("")
   [0, 0, 4] ·
   [0, 0] Record({"body": Text(""), "headers": Record({"content-type": Text("application/json")}), "method": Text("GET"), "params": Record({}), "path": Text("/networks"),… #6956f8f9cc7be105 | Record({}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("") | ·
-  [0, 1, 1] Text("/networks")
-  [0, 1, 0, 17] Record({})
-  [0, 1, 0, 16] Record({})
-  [0, 1, 0, 21] Text("application/json")
-  [0, 1, 0, 15] Record({"accept": Text("application/json")})
-  [0, 1, 0, 6] ·
-  [0, 1, 0, 25] ·
-  [0, 1, 0, 0] Record({"accept": Text("application/json")})
-  [0, 1, 0, 24] ·
-  [0, 1, 0, 11] ·
-  [0, 1, 0, 7] Number(0.0)
-  [0, 1, 0, 20] ·
-  [0, 1, 0, 19] ·
-  [0, 1, 0, 12] ·
-  [0, 1, 0, 8] ·
-  [0, 1, 0, 3] ·
-  [0, 1, 0, 4] ·
-  [0, 1, 0, 23] ·
-  [0, 1, 0, 5] ·
-  [0, 1, 0, 10] ·
-  [0, 1, 0, 18] Record({})
-  [0, 1, 0, 2] ·
-  [0, 1, 0, 1] ·
-  [0, 1, 0, 22] ·
-  [0, 1, 0, 14] ·
-  [0, 1, 0, 9] ·
-  [0, 1, 0, 26] ·
-  [0, 1, 0] ·
+  [0, 1, 0] Text("/networks")
+  [0, 1, 1, 18] Record({})
+  [0, 1, 1, 17] Record({})
+  [0, 1, 1, 23] Text("application/json")
+  [0, 1, 1, 16] Record({"accept": Text("application/json")})
+  [0, 1, 1, 6] ·
+  [0, 1, 1, 28] ·
+  [0, 1, 1, 0] Record({"accept": Text("application/json")})
+  [0, 1, 1, 27] ·
+  [0, 1, 1, 12] ·
+  [0, 1, 1, 7] Number(0.0)
+  [0, 1, 1, 22] ·
+  [0, 1, 1, 21] ·
+  [0, 1, 1, 13] Boolean(false)
+  [0, 1, 1, 25] Boolean(true)
+  [0, 1, 1, 11] ·
+  [0, 1, 1, 20] ·
+  [0, 1, 1, 8] ·
+  [0, 1, 1, 3] ·
+  [0, 1, 1, 4] ·
+  [0, 1, 1, 26] ·
+  [0, 1, 1, 5] ·
+  [0, 1, 1, 10] ·
+  [0, 1, 1, 19] Record({})
+  [0, 1, 1, 2] ·
+  [0, 1, 1, 1] ·
+  [0, 1, 1, 24] ·
+  [0, 1, 1, 15] ·
+  [0, 1, 1, 9] ·
+  [0, 1, 1, 29] ·
+  [0, 1, 1] ·
   [0, 1] ·
   [0, 2] ·
   [0, 3] ·
@@ -10441,34 +10453,37 @@
   [0, 0, 3] Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\"event\":\"gig\"… #7441bf0c70954823
   [0, 0, 4] Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
   [0, 0] Record({"body": Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\… #3bd53b50a07f4673 | Record({}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\"event\":\"gig\"… #7441bf0c70954823 | Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
-  [0, 1, 1] Text("/networks")
-  [0, 1, 0, 17] Record({})
-  [0, 1, 0, 16] Record({})
-  [0, 1, 0, 21] Text("application/json")
-  [0, 1, 0, 15] Record({"accept": Text("application/json")})
-  [0, 1, 0, 6] ·
-  [0, 1, 0, 25] ·
-  [0, 1, 0, 0] Record({"accept": Text("application/json")})
-  [0, 1, 0, 24] ·
-  [0, 1, 0, 11] ·
-  [0, 1, 0, 7] Number(0.0)
-  [0, 1, 0, 20] ·
-  [0, 1, 0, 19] ·
-  [0, 1, 0, 12] ·
-  [0, 1, 0, 8] ·
-  [0, 1, 0, 3] ·
-  [0, 1, 0, 4] ·
-  [0, 1, 0, 23] ·
-  [0, 1, 0, 5] ·
-  [0, 1, 0, 10] ·
-  [0, 1, 0, 18] Record({})
-  [0, 1, 0, 2] ·
-  [0, 1, 0, 1] ·
-  [0, 1, 0, 22] ·
-  [0, 1, 0, 14] ·
-  [0, 1, 0, 9] ·
-  [0, 1, 0, 26] ·
-  [0, 1, 0] ·
+  [0, 1, 0] Text("/networks")
+  [0, 1, 1, 18] Record({})
+  [0, 1, 1, 17] Record({})
+  [0, 1, 1, 23] Text("application/json")
+  [0, 1, 1, 16] Record({"accept": Text("application/json")})
+  [0, 1, 1, 6] ·
+  [0, 1, 1, 28] ·
+  [0, 1, 1, 0] Record({"accept": Text("application/json")})
+  [0, 1, 1, 27] ·
+  [0, 1, 1, 12] ·
+  [0, 1, 1, 7] Number(0.0)
+  [0, 1, 1, 22] ·
+  [0, 1, 1, 21] ·
+  [0, 1, 1, 13] Boolean(false)
+  [0, 1, 1, 25] Boolean(true)
+  [0, 1, 1, 11] ·
+  [0, 1, 1, 20] ·
+  [0, 1, 1, 8] ·
+  [0, 1, 1, 3] ·
+  [0, 1, 1, 4] ·
+  [0, 1, 1, 26] ·
+  [0, 1, 1, 5] ·
+  [0, 1, 1, 10] ·
+  [0, 1, 1, 19] Record({})
+  [0, 1, 1, 2] ·
+  [0, 1, 1, 1] ·
+  [0, 1, 1, 24] ·
+  [0, 1, 1, 15] ·
+  [0, 1, 1, 9] ·
+  [0, 1, 1, 29] ·
+  [0, 1, 1] ·
   [0, 1] ·
   [0, 2] ·
   [0, 3] ·
@@ -10486,34 +10501,37 @@
   [0, 0, 3] Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,14.25,51.25,88.2… #30defbf00c11dd9c
   [0, 0, 4] Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
   [0, 0] Record({"body": Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,… #3b75e8617856d9bc | Record({}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,14.25,51.25,88.2… #30defbf00c11dd9c | Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
-  [0, 1, 1] Text("/networks")
-  [0, 1, 0, 17] Record({})
-  [0, 1, 0, 16] Record({})
-  [0, 1, 0, 21] Text("application/json")
-  [0, 1, 0, 15] Record({"accept": Text("application/json")})
-  [0, 1, 0, 6] ·
-  [0, 1, 0, 25] ·
-  [0, 1, 0, 0] Record({"accept": Text("application/json")})
-  [0, 1, 0, 24] ·
-  [0, 1, 0, 11] ·
-  [0, 1, 0, 7] Number(0.0)
-  [0, 1, 0, 20] ·
-  [0, 1, 0, 19] ·
-  [0, 1, 0, 12] ·
-  [0, 1, 0, 8] ·
-  [0, 1, 0, 3] ·
-  [0, 1, 0, 4] ·
-  [0, 1, 0, 23] ·
-  [0, 1, 0, 5] ·
-  [0, 1, 0, 10] ·
-  [0, 1, 0, 18] Record({})
-  [0, 1, 0, 2] ·
-  [0, 1, 0, 1] ·
-  [0, 1, 0, 22] ·
-  [0, 1, 0, 14] ·
-  [0, 1, 0, 9] ·
-  [0, 1, 0, 26] ·
-  [0, 1, 0] ·
+  [0, 1, 0] Text("/networks")
+  [0, 1, 1, 18] Record({})
+  [0, 1, 1, 17] Record({})
+  [0, 1, 1, 23] Text("application/json")
+  [0, 1, 1, 16] Record({"accept": Text("application/json")})
+  [0, 1, 1, 6] ·
+  [0, 1, 1, 28] ·
+  [0, 1, 1, 0] Record({"accept": Text("application/json")})
+  [0, 1, 1, 27] ·
+  [0, 1, 1, 12] ·
+  [0, 1, 1, 7] Number(0.0)
+  [0, 1, 1, 22] ·
+  [0, 1, 1, 21] ·
+  [0, 1, 1, 13] Boolean(false)
+  [0, 1, 1, 25] Boolean(true)
+  [0, 1, 1, 11] ·
+  [0, 1, 1, 20] ·
+  [0, 1, 1, 8] ·
+  [0, 1, 1, 3] ·
+  [0, 1, 1, 4] ·
+  [0, 1, 1, 26] ·
+  [0, 1, 1, 5] ·
+  [0, 1, 1, 10] ·
+  [0, 1, 1, 19] Record({})
+  [0, 1, 1, 2] ·
+  [0, 1, 1, 1] ·
+  [0, 1, 1, 24] ·
+  [0, 1, 1, 15] ·
+  [0, 1, 1, 9] ·
+  [0, 1, 1, 29] ·
+  [0, 1, 1] ·
   [0, 1] ·
   [0, 2] ·
   [0, 3] ·
@@ -10532,7 +10550,7 @@
   [0, 0, 4] ·
   [0, 0] Record({"body": Text(""), "headers": Record({"content-type": Text("application/json")}), "method": Text("GET"), "params": Record({"network": Text("tea")}), "pat… #c515402939f5203a | Record({"network": Text("tea")}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("") | ·
   [0, 1] Text("tea")
-  [0, 2, 2] Text("/networks/")
+  [0, 2, 1] Text("/networks/")
   [0, 2, 0, 11] Boolean(true)
   [0, 2, 0, 22] Text("tea")
   [0, 2, 0, 18] Text("")
@@ -10567,36 +10585,39 @@
   [0, 2, 0, 20] Boolean(true)
   [0, 2, 0, 23] Text("tea")
   [0, 2, 0] Text("tea")
-  [0, 2, 5] Text("tea")
-  [0, 2, 3] Text("/dexes")
-  [0, 2, 4] Text("/networks/tea/dexes")
-  [0, 2, 1, 17] Record({})
-  [0, 2, 1, 16] Record({})
-  [0, 2, 1, 21] Text("application/json")
-  [0, 2, 1, 15] Record({"accept": Text("application/json")})
-  [0, 2, 1, 6] ·
-  [0, 2, 1, 25] ·
-  [0, 2, 1, 0] Record({"accept": Text("application/json")})
-  [0, 2, 1, 24] ·
-  [0, 2, 1, 11] ·
-  [0, 2, 1, 7] Number(0.0)
-  [0, 2, 1, 20] ·
-  [0, 2, 1, 19] ·
-  [0, 2, 1, 12] ·
-  [0, 2, 1, 8] ·
-  [0, 2, 1, 3] ·
-  [0, 2, 1, 4] ·
-  [0, 2, 1, 23] ·
-  [0, 2, 1, 5] ·
-  [0, 2, 1, 10] ·
-  [0, 2, 1, 18] Record({})
-  [0, 2, 1, 2] ·
-  [0, 2, 1, 1] ·
-  [0, 2, 1, 22] ·
-  [0, 2, 1, 14] ·
-  [0, 2, 1, 9] ·
-  [0, 2, 1, 26] ·
-  [0, 2, 1] ·
+  [0, 2, 4] Text("tea")
+  [0, 2, 2] Text("/dexes")
+  [0, 2, 3] Text("/networks/tea/dexes")
+  [0, 2, 5, 18] Record({})
+  [0, 2, 5, 17] Record({})
+  [0, 2, 5, 23] Text("application/json")
+  [0, 2, 5, 16] Record({"accept": Text("application/json")})
+  [0, 2, 5, 6] ·
+  [0, 2, 5, 28] ·
+  [0, 2, 5, 0] Record({"accept": Text("application/json")})
+  [0, 2, 5, 27] ·
+  [0, 2, 5, 12] ·
+  [0, 2, 5, 7] Number(0.0)
+  [0, 2, 5, 22] ·
+  [0, 2, 5, 21] ·
+  [0, 2, 5, 13] Boolean(false)
+  [0, 2, 5, 25] Boolean(true)
+  [0, 2, 5, 11] ·
+  [0, 2, 5, 20] ·
+  [0, 2, 5, 8] ·
+  [0, 2, 5, 3] ·
+  [0, 2, 5, 4] ·
+  [0, 2, 5, 26] ·
+  [0, 2, 5, 5] ·
+  [0, 2, 5, 10] ·
+  [0, 2, 5, 19] Record({})
+  [0, 2, 5, 2] ·
+  [0, 2, 5, 1] ·
+  [0, 2, 5, 24] ·
+  [0, 2, 5, 15] ·
+  [0, 2, 5, 9] ·
+  [0, 2, 5, 29] ·
+  [0, 2, 5] ·
   [0, 2] ·
   [0, 3] ·
   [0, 4] ·
@@ -10615,7 +10636,7 @@
   [0, 0, 4] Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
   [0, 0] Record({"body": Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\… #3ea179d3e2cd38f6 | Record({"network": Text("tea")}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\"event\":\"gig\"… #7441bf0c70954823 | Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
   [0, 1] Text("tea")
-  [0, 2, 2] Text("/networks/")
+  [0, 2, 1] Text("/networks/")
   [0, 2, 0, 11] Boolean(true)
   [0, 2, 0, 22] Text("tea")
   [0, 2, 0, 18] Text("")
@@ -10650,36 +10671,39 @@
   [0, 2, 0, 20] Boolean(true)
   [0, 2, 0, 23] Text("tea")
   [0, 2, 0] Text("tea")
-  [0, 2, 5] Text("tea")
-  [0, 2, 3] Text("/dexes")
-  [0, 2, 4] Text("/networks/tea/dexes")
-  [0, 2, 1, 17] Record({})
-  [0, 2, 1, 16] Record({})
-  [0, 2, 1, 21] Text("application/json")
-  [0, 2, 1, 15] Record({"accept": Text("application/json")})
-  [0, 2, 1, 6] ·
-  [0, 2, 1, 25] ·
-  [0, 2, 1, 0] Record({"accept": Text("application/json")})
-  [0, 2, 1, 24] ·
-  [0, 2, 1, 11] ·
-  [0, 2, 1, 7] Number(0.0)
-  [0, 2, 1, 20] ·
-  [0, 2, 1, 19] ·
-  [0, 2, 1, 12] ·
-  [0, 2, 1, 8] ·
-  [0, 2, 1, 3] ·
-  [0, 2, 1, 4] ·
-  [0, 2, 1, 23] ·
-  [0, 2, 1, 5] ·
-  [0, 2, 1, 10] ·
-  [0, 2, 1, 18] Record({})
-  [0, 2, 1, 2] ·
-  [0, 2, 1, 1] ·
-  [0, 2, 1, 22] ·
-  [0, 2, 1, 14] ·
-  [0, 2, 1, 9] ·
-  [0, 2, 1, 26] ·
-  [0, 2, 1] ·
+  [0, 2, 4] Text("tea")
+  [0, 2, 2] Text("/dexes")
+  [0, 2, 3] Text("/networks/tea/dexes")
+  [0, 2, 5, 18] Record({})
+  [0, 2, 5, 17] Record({})
+  [0, 2, 5, 23] Text("application/json")
+  [0, 2, 5, 16] Record({"accept": Text("application/json")})
+  [0, 2, 5, 6] ·
+  [0, 2, 5, 28] ·
+  [0, 2, 5, 0] Record({"accept": Text("application/json")})
+  [0, 2, 5, 27] ·
+  [0, 2, 5, 12] ·
+  [0, 2, 5, 7] Number(0.0)
+  [0, 2, 5, 22] ·
+  [0, 2, 5, 21] ·
+  [0, 2, 5, 13] Boolean(false)
+  [0, 2, 5, 25] Boolean(true)
+  [0, 2, 5, 11] ·
+  [0, 2, 5, 20] ·
+  [0, 2, 5, 8] ·
+  [0, 2, 5, 3] ·
+  [0, 2, 5, 4] ·
+  [0, 2, 5, 26] ·
+  [0, 2, 5, 5] ·
+  [0, 2, 5, 10] ·
+  [0, 2, 5, 19] Record({})
+  [0, 2, 5, 2] ·
+  [0, 2, 5, 1] ·
+  [0, 2, 5, 24] ·
+  [0, 2, 5, 15] ·
+  [0, 2, 5, 9] ·
+  [0, 2, 5, 29] ·
+  [0, 2, 5] ·
   [0, 2] ·
   [0, 3] ·
   [0, 4] ·
@@ -10698,7 +10722,7 @@
   [0, 0, 4] Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
   [0, 0] Record({"body": Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,… #e78d4ab0bfc29d8c | Record({"network": Text("tea")}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,14.25,51.25,88.2… #30defbf00c11dd9c | Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
   [0, 1] Text("tea")
-  [0, 2, 2] Text("/networks/")
+  [0, 2, 1] Text("/networks/")
   [0, 2, 0, 11] Boolean(true)
   [0, 2, 0, 22] Text("tea")
   [0, 2, 0, 18] Text("")
@@ -10733,36 +10757,39 @@
   [0, 2, 0, 20] Boolean(true)
   [0, 2, 0, 23] Text("tea")
   [0, 2, 0] Text("tea")
-  [0, 2, 5] Text("tea")
-  [0, 2, 3] Text("/dexes")
-  [0, 2, 4] Text("/networks/tea/dexes")
-  [0, 2, 1, 17] Record({})
-  [0, 2, 1, 16] Record({})
-  [0, 2, 1, 21] Text("application/json")
-  [0, 2, 1, 15] Record({"accept": Text("application/json")})
-  [0, 2, 1, 6] ·
-  [0, 2, 1, 25] ·
-  [0, 2, 1, 0] Record({"accept": Text("application/json")})
-  [0, 2, 1, 24] ·
-  [0, 2, 1, 11] ·
-  [0, 2, 1, 7] Number(0.0)
-  [0, 2, 1, 20] ·
-  [0, 2, 1, 19] ·
-  [0, 2, 1, 12] ·
-  [0, 2, 1, 8] ·
-  [0, 2, 1, 3] ·
-  [0, 2, 1, 4] ·
-  [0, 2, 1, 23] ·
-  [0, 2, 1, 5] ·
-  [0, 2, 1, 10] ·
-  [0, 2, 1, 18] Record({})
-  [0, 2, 1, 2] ·
-  [0, 2, 1, 1] ·
-  [0, 2, 1, 22] ·
-  [0, 2, 1, 14] ·
-  [0, 2, 1, 9] ·
-  [0, 2, 1, 26] ·
-  [0, 2, 1] ·
+  [0, 2, 4] Text("tea")
+  [0, 2, 2] Text("/dexes")
+  [0, 2, 3] Text("/networks/tea/dexes")
+  [0, 2, 5, 18] Record({})
+  [0, 2, 5, 17] Record({})
+  [0, 2, 5, 23] Text("application/json")
+  [0, 2, 5, 16] Record({"accept": Text("application/json")})
+  [0, 2, 5, 6] ·
+  [0, 2, 5, 28] ·
+  [0, 2, 5, 0] Record({"accept": Text("application/json")})
+  [0, 2, 5, 27] ·
+  [0, 2, 5, 12] ·
+  [0, 2, 5, 7] Number(0.0)
+  [0, 2, 5, 22] ·
+  [0, 2, 5, 21] ·
+  [0, 2, 5, 13] Boolean(false)
+  [0, 2, 5, 25] Boolean(true)
+  [0, 2, 5, 11] ·
+  [0, 2, 5, 20] ·
+  [0, 2, 5, 8] ·
+  [0, 2, 5, 3] ·
+  [0, 2, 5, 4] ·
+  [0, 2, 5, 26] ·
+  [0, 2, 5, 5] ·
+  [0, 2, 5, 10] ·
+  [0, 2, 5, 19] Record({})
+  [0, 2, 5, 2] ·
+  [0, 2, 5, 1] ·
+  [0, 2, 5, 24] ·
+  [0, 2, 5, 15] ·
+  [0, 2, 5, 9] ·
+  [0, 2, 5, 29] ·
+  [0, 2, 5] ·
   [0, 2] ·
   [0, 3] ·
   [0, 4] ·
@@ -10780,34 +10807,37 @@
   [0, 0, 3] Text("")
   [0, 0, 4] ·
   [0, 0] Record({"body": Text(""), "headers": Record({"content-type": Text("application/json")}), "method": Text("GET"), "params": Record({}), "path": Text("/stats"), "q… #75f920070e3a41a5 | Record({}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("") | ·
-  [0, 1, 1] Text("/stats")
-  [0, 1, 0, 17] Record({})
-  [0, 1, 0, 16] Record({})
-  [0, 1, 0, 21] Text("application/json")
-  [0, 1, 0, 15] Record({"accept": Text("application/json")})
-  [0, 1, 0, 6] ·
-  [0, 1, 0, 25] ·
-  [0, 1, 0, 0] Record({"accept": Text("application/json")})
-  [0, 1, 0, 24] ·
-  [0, 1, 0, 11] ·
-  [0, 1, 0, 7] Number(0.0)
-  [0, 1, 0, 20] ·
-  [0, 1, 0, 19] ·
-  [0, 1, 0, 12] ·
-  [0, 1, 0, 8] ·
-  [0, 1, 0, 3] ·
-  [0, 1, 0, 4] ·
-  [0, 1, 0, 23] ·
-  [0, 1, 0, 5] ·
-  [0, 1, 0, 10] ·
-  [0, 1, 0, 18] Record({})
-  [0, 1, 0, 2] ·
-  [0, 1, 0, 1] ·
-  [0, 1, 0, 22] ·
-  [0, 1, 0, 14] ·
-  [0, 1, 0, 9] ·
-  [0, 1, 0, 26] ·
-  [0, 1, 0] ·
+  [0, 1, 0] Text("/stats")
+  [0, 1, 1, 18] Record({})
+  [0, 1, 1, 17] Record({})
+  [0, 1, 1, 23] Text("application/json")
+  [0, 1, 1, 16] Record({"accept": Text("application/json")})
+  [0, 1, 1, 6] ·
+  [0, 1, 1, 28] ·
+  [0, 1, 1, 0] Record({"accept": Text("application/json")})
+  [0, 1, 1, 27] ·
+  [0, 1, 1, 12] ·
+  [0, 1, 1, 7] Number(0.0)
+  [0, 1, 1, 22] ·
+  [0, 1, 1, 21] ·
+  [0, 1, 1, 13] Boolean(false)
+  [0, 1, 1, 25] Boolean(true)
+  [0, 1, 1, 11] ·
+  [0, 1, 1, 20] ·
+  [0, 1, 1, 8] ·
+  [0, 1, 1, 3] ·
+  [0, 1, 1, 4] ·
+  [0, 1, 1, 26] ·
+  [0, 1, 1, 5] ·
+  [0, 1, 1, 10] ·
+  [0, 1, 1, 19] Record({})
+  [0, 1, 1, 2] ·
+  [0, 1, 1, 1] ·
+  [0, 1, 1, 24] ·
+  [0, 1, 1, 15] ·
+  [0, 1, 1, 9] ·
+  [0, 1, 1, 29] ·
+  [0, 1, 1] ·
   [0, 1] ·
   [0, 2] ·
   [0, 3] ·
@@ -10825,34 +10855,37 @@
   [0, 0, 3] Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\"event\":\"gig\"… #7441bf0c70954823
   [0, 0, 4] Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
   [0, 0] Record({"body": Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\… #215ff180d4426edf | Record({}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\"event\":\"gig\"… #7441bf0c70954823 | Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
-  [0, 1, 1] Text("/stats")
-  [0, 1, 0, 17] Record({})
-  [0, 1, 0, 16] Record({})
-  [0, 1, 0, 21] Text("application/json")
-  [0, 1, 0, 15] Record({"accept": Text("application/json")})
-  [0, 1, 0, 6] ·
-  [0, 1, 0, 25] ·
-  [0, 1, 0, 0] Record({"accept": Text("application/json")})
-  [0, 1, 0, 24] ·
-  [0, 1, 0, 11] ·
-  [0, 1, 0, 7] Number(0.0)
-  [0, 1, 0, 20] ·
-  [0, 1, 0, 19] ·
-  [0, 1, 0, 12] ·
-  [0, 1, 0, 8] ·
-  [0, 1, 0, 3] ·
-  [0, 1, 0, 4] ·
-  [0, 1, 0, 23] ·
-  [0, 1, 0, 5] ·
-  [0, 1, 0, 10] ·
-  [0, 1, 0, 18] Record({})
-  [0, 1, 0, 2] ·
-  [0, 1, 0, 1] ·
-  [0, 1, 0, 22] ·
-  [0, 1, 0, 14] ·
-  [0, 1, 0, 9] ·
-  [0, 1, 0, 26] ·
-  [0, 1, 0] ·
+  [0, 1, 0] Text("/stats")
+  [0, 1, 1, 18] Record({})
+  [0, 1, 1, 17] Record({})
+  [0, 1, 1, 23] Text("application/json")
+  [0, 1, 1, 16] Record({"accept": Text("application/json")})
+  [0, 1, 1, 6] ·
+  [0, 1, 1, 28] ·
+  [0, 1, 1, 0] Record({"accept": Text("application/json")})
+  [0, 1, 1, 27] ·
+  [0, 1, 1, 12] ·
+  [0, 1, 1, 7] Number(0.0)
+  [0, 1, 1, 22] ·
+  [0, 1, 1, 21] ·
+  [0, 1, 1, 13] Boolean(false)
+  [0, 1, 1, 25] Boolean(true)
+  [0, 1, 1, 11] ·
+  [0, 1, 1, 20] ·
+  [0, 1, 1, 8] ·
+  [0, 1, 1, 3] ·
+  [0, 1, 1, 4] ·
+  [0, 1, 1, 26] ·
+  [0, 1, 1, 5] ·
+  [0, 1, 1, 10] ·
+  [0, 1, 1, 19] Record({})
+  [0, 1, 1, 2] ·
+  [0, 1, 1, 1] ·
+  [0, 1, 1, 24] ·
+  [0, 1, 1, 15] ·
+  [0, 1, 1, 9] ·
+  [0, 1, 1, 29] ·
+  [0, 1, 1] ·
   [0, 1] ·
   [0, 2] ·
   [0, 3] ·
@@ -10870,34 +10903,37 @@
   [0, 0, 3] Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,14.25,51.25,88.2… #30defbf00c11dd9c
   [0, 0, 4] Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
   [0, 0] Record({"body": Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,… #96ff405c2c4407b1 | Record({}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,14.25,51.25,88.2… #30defbf00c11dd9c | Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
-  [0, 1, 1] Text("/stats")
-  [0, 1, 0, 17] Record({})
-  [0, 1, 0, 16] Record({})
-  [0, 1, 0, 21] Text("application/json")
-  [0, 1, 0, 15] Record({"accept": Text("application/json")})
-  [0, 1, 0, 6] ·
-  [0, 1, 0, 25] ·
-  [0, 1, 0, 0] Record({"accept": Text("application/json")})
-  [0, 1, 0, 24] ·
-  [0, 1, 0, 11] ·
-  [0, 1, 0, 7] Number(0.0)
-  [0, 1, 0, 20] ·
-  [0, 1, 0, 19] ·
-  [0, 1, 0, 12] ·
-  [0, 1, 0, 8] ·
-  [0, 1, 0, 3] ·
-  [0, 1, 0, 4] ·
-  [0, 1, 0, 23] ·
-  [0, 1, 0, 5] ·
-  [0, 1, 0, 10] ·
-  [0, 1, 0, 18] Record({})
-  [0, 1, 0, 2] ·
-  [0, 1, 0, 1] ·
-  [0, 1, 0, 22] ·
-  [0, 1, 0, 14] ·
-  [0, 1, 0, 9] ·
-  [0, 1, 0, 26] ·
-  [0, 1, 0] ·
+  [0, 1, 0] Text("/stats")
+  [0, 1, 1, 18] Record({})
+  [0, 1, 1, 17] Record({})
+  [0, 1, 1, 23] Text("application/json")
+  [0, 1, 1, 16] Record({"accept": Text("application/json")})
+  [0, 1, 1, 6] ·
+  [0, 1, 1, 28] ·
+  [0, 1, 1, 0] Record({"accept": Text("application/json")})
+  [0, 1, 1, 27] ·
+  [0, 1, 1, 12] ·
+  [0, 1, 1, 7] Number(0.0)
+  [0, 1, 1, 22] ·
+  [0, 1, 1, 21] ·
+  [0, 1, 1, 13] Boolean(false)
+  [0, 1, 1, 25] Boolean(true)
+  [0, 1, 1, 11] ·
+  [0, 1, 1, 20] ·
+  [0, 1, 1, 8] ·
+  [0, 1, 1, 3] ·
+  [0, 1, 1, 4] ·
+  [0, 1, 1, 26] ·
+  [0, 1, 1, 5] ·
+  [0, 1, 1, 10] ·
+  [0, 1, 1, 19] Record({})
+  [0, 1, 1, 2] ·
+  [0, 1, 1, 1] ·
+  [0, 1, 1, 24] ·
+  [0, 1, 1, 15] ·
+  [0, 1, 1, 9] ·
+  [0, 1, 1, 29] ·
+  [0, 1, 1] ·
   [0, 1] ·
   [0, 2] ·
   [0, 3] ·
@@ -10915,44 +10951,47 @@
   [0, 0, 3] Text("")
   [0, 0, 4] ·
   [0, 0] Record({"body": Text(""), "headers": Record({"content-type": Text("application/json")}), "method": Text("GET"), "params": Record({}), "path": Text("/search"), "… #5b4fcb0c7fb315f4 | Record({}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("") | ·
-  [0, 1, 6] Text("/search?")
-  [0, 1, 5] Record({})
-  [0, 1, 3] Text("")
-  [0, 1, 2] Record({"query": Text("")})
-  [0, 1, 1, 0] Text("(given, defaults) => {\n  const q = { ...defaults };\n  for (const k of Object.keys(defaults)) if (given[k] !== undefined && given[k] !== \"\") q[k] = giv… #c5c798e2de1bd398
-  [0, 1, 1, 2] List([Record({"after": Text("a")}), Record({"query": Text("")})])
-  [0, 1, 1, 1] ·
-  [0, 1, 1, 3] ·
-  [0, 1, 1] ·
-  [0, 1, 4] ·
-  [0, 1, 7] ·
-  [0, 1, 0, 17] Record({})
-  [0, 1, 0, 16] Record({})
-  [0, 1, 0, 21] Text("application/json")
-  [0, 1, 0, 15] Record({"accept": Text("application/json")})
-  [0, 1, 0, 6] ·
-  [0, 1, 0, 25] ·
-  [0, 1, 0, 0] Record({"accept": Text("application/json")})
-  [0, 1, 0, 24] ·
-  [0, 1, 0, 11] ·
-  [0, 1, 0, 7] Number(0.0)
-  [0, 1, 0, 20] ·
-  [0, 1, 0, 19] ·
-  [0, 1, 0, 12] ·
-  [0, 1, 0, 8] ·
-  [0, 1, 0, 3] ·
-  [0, 1, 0, 4] ·
-  [0, 1, 0, 23] ·
-  [0, 1, 0, 5] ·
-  [0, 1, 0, 10] ·
-  [0, 1, 0, 18] Record({})
-  [0, 1, 0, 2] ·
+  [0, 1, 5] Text("/search?")
+  [0, 1, 4] Record({})
+  [0, 1, 2] Text("")
+  [0, 1, 1] Record({"query": Text("")})
+  [0, 1, 0, 0] Text("(given, defaults) => {\n  const q = { ...defaults };\n  for (const k of Object.keys(defaults)) if (given[k] !== undefined && given[k] !== \"\") q[k] = giv… #c5c798e2de1bd398
+  [0, 1, 0, 2] List([Record({"after": Text("a")}), Record({"query": Text("")})])
   [0, 1, 0, 1] ·
-  [0, 1, 0, 22] ·
-  [0, 1, 0, 14] ·
-  [0, 1, 0, 9] ·
-  [0, 1, 0, 26] ·
+  [0, 1, 0, 3] ·
   [0, 1, 0] ·
+  [0, 1, 3] ·
+  [0, 1, 6] ·
+  [0, 1, 7, 18] Record({})
+  [0, 1, 7, 17] Record({})
+  [0, 1, 7, 23] Text("application/json")
+  [0, 1, 7, 16] Record({"accept": Text("application/json")})
+  [0, 1, 7, 6] ·
+  [0, 1, 7, 28] ·
+  [0, 1, 7, 0] Record({"accept": Text("application/json")})
+  [0, 1, 7, 27] ·
+  [0, 1, 7, 12] ·
+  [0, 1, 7, 7] Number(0.0)
+  [0, 1, 7, 22] ·
+  [0, 1, 7, 21] ·
+  [0, 1, 7, 13] Boolean(false)
+  [0, 1, 7, 25] Boolean(true)
+  [0, 1, 7, 11] ·
+  [0, 1, 7, 20] ·
+  [0, 1, 7, 8] ·
+  [0, 1, 7, 3] ·
+  [0, 1, 7, 4] ·
+  [0, 1, 7, 26] ·
+  [0, 1, 7, 5] ·
+  [0, 1, 7, 10] ·
+  [0, 1, 7, 19] Record({})
+  [0, 1, 7, 2] ·
+  [0, 1, 7, 1] ·
+  [0, 1, 7, 24] ·
+  [0, 1, 7, 15] ·
+  [0, 1, 7, 9] ·
+  [0, 1, 7, 29] ·
+  [0, 1, 7] ·
   [0, 1] ·
   [0, 2] ·
   [0, 3] ·
@@ -10970,44 +11009,47 @@
   [0, 0, 3] Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\"event\":\"gig\"… #7441bf0c70954823
   [0, 0, 4] Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
   [0, 0] Record({"body": Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\… #ef6f910ebca0e813 | Record({}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\"event\":\"gig\"… #7441bf0c70954823 | Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
-  [0, 1, 6] Text("/search?")
-  [0, 1, 5] Record({})
-  [0, 1, 3] Text("")
-  [0, 1, 2] Record({"query": Text("")})
-  [0, 1, 1, 0] Text("(given, defaults) => {\n  const q = { ...defaults };\n  for (const k of Object.keys(defaults)) if (given[k] !== undefined && given[k] !== \"\") q[k] = giv… #c5c798e2de1bd398
-  [0, 1, 1, 2] List([Record({"after": Text("a")}), Record({"query": Text("")})])
-  [0, 1, 1, 1] ·
-  [0, 1, 1, 3] ·
-  [0, 1, 1] ·
-  [0, 1, 4] ·
-  [0, 1, 7] ·
-  [0, 1, 0, 17] Record({})
-  [0, 1, 0, 16] Record({})
-  [0, 1, 0, 21] Text("application/json")
-  [0, 1, 0, 15] Record({"accept": Text("application/json")})
-  [0, 1, 0, 6] ·
-  [0, 1, 0, 25] ·
-  [0, 1, 0, 0] Record({"accept": Text("application/json")})
-  [0, 1, 0, 24] ·
-  [0, 1, 0, 11] ·
-  [0, 1, 0, 7] Number(0.0)
-  [0, 1, 0, 20] ·
-  [0, 1, 0, 19] ·
-  [0, 1, 0, 12] ·
-  [0, 1, 0, 8] ·
-  [0, 1, 0, 3] ·
-  [0, 1, 0, 4] ·
-  [0, 1, 0, 23] ·
-  [0, 1, 0, 5] ·
-  [0, 1, 0, 10] ·
-  [0, 1, 0, 18] Record({})
-  [0, 1, 0, 2] ·
+  [0, 1, 5] Text("/search?")
+  [0, 1, 4] Record({})
+  [0, 1, 2] Text("")
+  [0, 1, 1] Record({"query": Text("")})
+  [0, 1, 0, 0] Text("(given, defaults) => {\n  const q = { ...defaults };\n  for (const k of Object.keys(defaults)) if (given[k] !== undefined && given[k] !== \"\") q[k] = giv… #c5c798e2de1bd398
+  [0, 1, 0, 2] List([Record({"after": Text("a")}), Record({"query": Text("")})])
   [0, 1, 0, 1] ·
-  [0, 1, 0, 22] ·
-  [0, 1, 0, 14] ·
-  [0, 1, 0, 9] ·
-  [0, 1, 0, 26] ·
+  [0, 1, 0, 3] ·
   [0, 1, 0] ·
+  [0, 1, 3] ·
+  [0, 1, 6] ·
+  [0, 1, 7, 18] Record({})
+  [0, 1, 7, 17] Record({})
+  [0, 1, 7, 23] Text("application/json")
+  [0, 1, 7, 16] Record({"accept": Text("application/json")})
+  [0, 1, 7, 6] ·
+  [0, 1, 7, 28] ·
+  [0, 1, 7, 0] Record({"accept": Text("application/json")})
+  [0, 1, 7, 27] ·
+  [0, 1, 7, 12] ·
+  [0, 1, 7, 7] Number(0.0)
+  [0, 1, 7, 22] ·
+  [0, 1, 7, 21] ·
+  [0, 1, 7, 13] Boolean(false)
+  [0, 1, 7, 25] Boolean(true)
+  [0, 1, 7, 11] ·
+  [0, 1, 7, 20] ·
+  [0, 1, 7, 8] ·
+  [0, 1, 7, 3] ·
+  [0, 1, 7, 4] ·
+  [0, 1, 7, 26] ·
+  [0, 1, 7, 5] ·
+  [0, 1, 7, 10] ·
+  [0, 1, 7, 19] Record({})
+  [0, 1, 7, 2] ·
+  [0, 1, 7, 1] ·
+  [0, 1, 7, 24] ·
+  [0, 1, 7, 15] ·
+  [0, 1, 7, 9] ·
+  [0, 1, 7, 29] ·
+  [0, 1, 7] ·
   [0, 1] ·
   [0, 2] ·
   [0, 3] ·
@@ -11025,44 +11067,47 @@
   [0, 0, 3] Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,14.25,51.25,88.2… #30defbf00c11dd9c
   [0, 0, 4] Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
   [0, 0] Record({"body": Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,… #6d10b8fe055b8e39 | Record({}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,14.25,51.25,88.2… #30defbf00c11dd9c | Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
-  [0, 1, 6] Text("/search?")
-  [0, 1, 5] Record({})
-  [0, 1, 3] Text("")
-  [0, 1, 2] Record({"query": Text("")})
-  [0, 1, 1, 0] Text("(given, defaults) => {\n  const q = { ...defaults };\n  for (const k of Object.keys(defaults)) if (given[k] !== undefined && given[k] !== \"\") q[k] = giv… #c5c798e2de1bd398
-  [0, 1, 1, 2] List([Record({"after": Text("a")}), Record({"query": Text("")})])
-  [0, 1, 1, 1] ·
-  [0, 1, 1, 3] ·
-  [0, 1, 1] ·
-  [0, 1, 4] ·
-  [0, 1, 7] ·
-  [0, 1, 0, 17] Record({})
-  [0, 1, 0, 16] Record({})
-  [0, 1, 0, 21] Text("application/json")
-  [0, 1, 0, 15] Record({"accept": Text("application/json")})
-  [0, 1, 0, 6] ·
-  [0, 1, 0, 25] ·
-  [0, 1, 0, 0] Record({"accept": Text("application/json")})
-  [0, 1, 0, 24] ·
-  [0, 1, 0, 11] ·
-  [0, 1, 0, 7] Number(0.0)
-  [0, 1, 0, 20] ·
-  [0, 1, 0, 19] ·
-  [0, 1, 0, 12] ·
-  [0, 1, 0, 8] ·
-  [0, 1, 0, 3] ·
-  [0, 1, 0, 4] ·
-  [0, 1, 0, 23] ·
-  [0, 1, 0, 5] ·
-  [0, 1, 0, 10] ·
-  [0, 1, 0, 18] Record({})
-  [0, 1, 0, 2] ·
+  [0, 1, 5] Text("/search?")
+  [0, 1, 4] Record({})
+  [0, 1, 2] Text("")
+  [0, 1, 1] Record({"query": Text("")})
+  [0, 1, 0, 0] Text("(given, defaults) => {\n  const q = { ...defaults };\n  for (const k of Object.keys(defaults)) if (given[k] !== undefined && given[k] !== \"\") q[k] = giv… #c5c798e2de1bd398
+  [0, 1, 0, 2] List([Record({"after": Text("a")}), Record({"query": Text("")})])
   [0, 1, 0, 1] ·
-  [0, 1, 0, 22] ·
-  [0, 1, 0, 14] ·
-  [0, 1, 0, 9] ·
-  [0, 1, 0, 26] ·
+  [0, 1, 0, 3] ·
   [0, 1, 0] ·
+  [0, 1, 3] ·
+  [0, 1, 6] ·
+  [0, 1, 7, 18] Record({})
+  [0, 1, 7, 17] Record({})
+  [0, 1, 7, 23] Text("application/json")
+  [0, 1, 7, 16] Record({"accept": Text("application/json")})
+  [0, 1, 7, 6] ·
+  [0, 1, 7, 28] ·
+  [0, 1, 7, 0] Record({"accept": Text("application/json")})
+  [0, 1, 7, 27] ·
+  [0, 1, 7, 12] ·
+  [0, 1, 7, 7] Number(0.0)
+  [0, 1, 7, 22] ·
+  [0, 1, 7, 21] ·
+  [0, 1, 7, 13] Boolean(false)
+  [0, 1, 7, 25] Boolean(true)
+  [0, 1, 7, 11] ·
+  [0, 1, 7, 20] ·
+  [0, 1, 7, 8] ·
+  [0, 1, 7, 3] ·
+  [0, 1, 7, 4] ·
+  [0, 1, 7, 26] ·
+  [0, 1, 7, 5] ·
+  [0, 1, 7, 10] ·
+  [0, 1, 7, 19] Record({})
+  [0, 1, 7, 2] ·
+  [0, 1, 7, 1] ·
+  [0, 1, 7, 24] ·
+  [0, 1, 7, 15] ·
+  [0, 1, 7, 9] ·
+  [0, 1, 7, 29] ·
+  [0, 1, 7] ·
   [0, 1] ·
   [0, 2] ·
   [0, 3] ·
@@ -11081,7 +11126,7 @@
   [0, 0, 4] ·
   [0, 0] Record({"body": Text(""), "headers": Record({"content-type": Text("application/json")}), "method": Text("GET"), "params": Record({"network": Text("tea")}), "pat… #bbfc1eb62fd93294 | Record({"network": Text("tea")}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("") | ·
   [0, 1] Text("tea")
-  [0, 2, 6] Text("/networks/")
+  [0, 2, 5] Text("/networks/")
   [0, 2, 0, 11] Boolean(true)
   [0, 2, 0, 22] Text("tea")
   [0, 2, 0, 18] Text("")
@@ -11116,45 +11161,48 @@
   [0, 2, 0, 20] Boolean(true)
   [0, 2, 0, 23] Text("tea")
   [0, 2, 0] Text("tea")
-  [0, 2, 8] Text("tea")
-  [0, 2, 10] Text("/tokens/search?")
-  [0, 2, 9] Record({})
+  [0, 2, 7] Text("tea")
+  [0, 2, 9] Text("/tokens/search?")
+  [0, 2, 8] Record({})
   [0, 2, 1] Number(50.0)
-  [0, 2, 4] Record({"limit": Number(50.0)})
-  [0, 2, 5, 0] Text("(given, defaults) => {\n  const q = { ...defaults };\n  for (const k of Object.keys(defaults)) if (given[k] !== undefined && given[k] !== \"\") q[k] = giv… #c5c798e2de1bd398
-  [0, 2, 5, 2] List([Record({"after": Text("a")}), Record({"limit": Number(50.0)})])
-  [0, 2, 5, 1] ·
-  [0, 2, 5, 3] ·
-  [0, 2, 5] ·
-  [0, 2, 7] ·
-  [0, 2, 3] ·
-  [0, 2, 2, 17] Record({})
-  [0, 2, 2, 16] Record({})
-  [0, 2, 2, 21] Text("application/json")
-  [0, 2, 2, 15] Record({"accept": Text("application/json")})
-  [0, 2, 2, 6] ·
-  [0, 2, 2, 25] ·
-  [0, 2, 2, 0] Record({"accept": Text("application/json")})
-  [0, 2, 2, 24] ·
-  [0, 2, 2, 11] ·
-  [0, 2, 2, 7] Number(0.0)
-  [0, 2, 2, 20] ·
-  [0, 2, 2, 19] ·
-  [0, 2, 2, 12] ·
-  [0, 2, 2, 8] ·
-  [0, 2, 2, 3] ·
-  [0, 2, 2, 4] ·
-  [0, 2, 2, 23] ·
-  [0, 2, 2, 5] ·
-  [0, 2, 2, 10] ·
-  [0, 2, 2, 18] Record({})
-  [0, 2, 2, 2] ·
-  [0, 2, 2, 1] ·
-  [0, 2, 2, 22] ·
-  [0, 2, 2, 14] ·
-  [0, 2, 2, 9] ·
-  [0, 2, 2, 26] ·
+  [0, 2, 3] Record({"limit": Number(50.0)})
+  [0, 2, 4, 0] Text("(given, defaults) => {\n  const q = { ...defaults };\n  for (const k of Object.keys(defaults)) if (given[k] !== undefined && given[k] !== \"\") q[k] = giv… #c5c798e2de1bd398
+  [0, 2, 4, 2] List([Record({"after": Text("a")}), Record({"limit": Number(50.0)})])
+  [0, 2, 4, 1] ·
+  [0, 2, 4, 3] ·
+  [0, 2, 4] ·
+  [0, 2, 6] ·
   [0, 2, 2] ·
+  [0, 2, 10, 18] Record({})
+  [0, 2, 10, 17] Record({})
+  [0, 2, 10, 23] Text("application/json")
+  [0, 2, 10, 16] Record({"accept": Text("application/json")})
+  [0, 2, 10, 6] ·
+  [0, 2, 10, 28] ·
+  [0, 2, 10, 0] Record({"accept": Text("application/json")})
+  [0, 2, 10, 27] ·
+  [0, 2, 10, 12] ·
+  [0, 2, 10, 7] Number(0.0)
+  [0, 2, 10, 22] ·
+  [0, 2, 10, 21] ·
+  [0, 2, 10, 13] Boolean(false)
+  [0, 2, 10, 25] Boolean(true)
+  [0, 2, 10, 11] ·
+  [0, 2, 10, 20] ·
+  [0, 2, 10, 8] ·
+  [0, 2, 10, 3] ·
+  [0, 2, 10, 4] ·
+  [0, 2, 10, 26] ·
+  [0, 2, 10, 5] ·
+  [0, 2, 10, 10] ·
+  [0, 2, 10, 19] Record({})
+  [0, 2, 10, 2] ·
+  [0, 2, 10, 1] ·
+  [0, 2, 10, 24] ·
+  [0, 2, 10, 15] ·
+  [0, 2, 10, 9] ·
+  [0, 2, 10, 29] ·
+  [0, 2, 10] ·
   [0, 2] ·
   [0, 3] ·
   [0, 4] ·
@@ -11173,7 +11221,7 @@
   [0, 0, 4] Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
   [0, 0] Record({"body": Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\… #eade417a39178019 | Record({"network": Text("tea")}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\"event\":\"gig\"… #7441bf0c70954823 | Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
   [0, 1] Text("tea")
-  [0, 2, 6] Text("/networks/")
+  [0, 2, 5] Text("/networks/")
   [0, 2, 0, 11] Boolean(true)
   [0, 2, 0, 22] Text("tea")
   [0, 2, 0, 18] Text("")
@@ -11208,45 +11256,48 @@
   [0, 2, 0, 20] Boolean(true)
   [0, 2, 0, 23] Text("tea")
   [0, 2, 0] Text("tea")
-  [0, 2, 8] Text("tea")
-  [0, 2, 10] Text("/tokens/search?")
-  [0, 2, 9] Record({})
+  [0, 2, 7] Text("tea")
+  [0, 2, 9] Text("/tokens/search?")
+  [0, 2, 8] Record({})
   [0, 2, 1] Number(50.0)
-  [0, 2, 4] Record({"limit": Number(50.0)})
-  [0, 2, 5, 0] Text("(given, defaults) => {\n  const q = { ...defaults };\n  for (const k of Object.keys(defaults)) if (given[k] !== undefined && given[k] !== \"\") q[k] = giv… #c5c798e2de1bd398
-  [0, 2, 5, 2] List([Record({"after": Text("a")}), Record({"limit": Number(50.0)})])
-  [0, 2, 5, 1] ·
-  [0, 2, 5, 3] ·
-  [0, 2, 5] ·
-  [0, 2, 7] ·
-  [0, 2, 3] ·
-  [0, 2, 2, 17] Record({})
-  [0, 2, 2, 16] Record({})
-  [0, 2, 2, 21] Text("application/json")
-  [0, 2, 2, 15] Record({"accept": Text("application/json")})
-  [0, 2, 2, 6] ·
-  [0, 2, 2, 25] ·
-  [0, 2, 2, 0] Record({"accept": Text("application/json")})
-  [0, 2, 2, 24] ·
-  [0, 2, 2, 11] ·
-  [0, 2, 2, 7] Number(0.0)
-  [0, 2, 2, 20] ·
-  [0, 2, 2, 19] ·
-  [0, 2, 2, 12] ·
-  [0, 2, 2, 8] ·
-  [0, 2, 2, 3] ·
-  [0, 2, 2, 4] ·
-  [0, 2, 2, 23] ·
-  [0, 2, 2, 5] ·
-  [0, 2, 2, 10] ·
-  [0, 2, 2, 18] Record({})
-  [0, 2, 2, 2] ·
-  [0, 2, 2, 1] ·
-  [0, 2, 2, 22] ·
-  [0, 2, 2, 14] ·
-  [0, 2, 2, 9] ·
-  [0, 2, 2, 26] ·
+  [0, 2, 3] Record({"limit": Number(50.0)})
+  [0, 2, 4, 0] Text("(given, defaults) => {\n  const q = { ...defaults };\n  for (const k of Object.keys(defaults)) if (given[k] !== undefined && given[k] !== \"\") q[k] = giv… #c5c798e2de1bd398
+  [0, 2, 4, 2] List([Record({"after": Text("a")}), Record({"limit": Number(50.0)})])
+  [0, 2, 4, 1] ·
+  [0, 2, 4, 3] ·
+  [0, 2, 4] ·
+  [0, 2, 6] ·
   [0, 2, 2] ·
+  [0, 2, 10, 18] Record({})
+  [0, 2, 10, 17] Record({})
+  [0, 2, 10, 23] Text("application/json")
+  [0, 2, 10, 16] Record({"accept": Text("application/json")})
+  [0, 2, 10, 6] ·
+  [0, 2, 10, 28] ·
+  [0, 2, 10, 0] Record({"accept": Text("application/json")})
+  [0, 2, 10, 27] ·
+  [0, 2, 10, 12] ·
+  [0, 2, 10, 7] Number(0.0)
+  [0, 2, 10, 22] ·
+  [0, 2, 10, 21] ·
+  [0, 2, 10, 13] Boolean(false)
+  [0, 2, 10, 25] Boolean(true)
+  [0, 2, 10, 11] ·
+  [0, 2, 10, 20] ·
+  [0, 2, 10, 8] ·
+  [0, 2, 10, 3] ·
+  [0, 2, 10, 4] ·
+  [0, 2, 10, 26] ·
+  [0, 2, 10, 5] ·
+  [0, 2, 10, 10] ·
+  [0, 2, 10, 19] Record({})
+  [0, 2, 10, 2] ·
+  [0, 2, 10, 1] ·
+  [0, 2, 10, 24] ·
+  [0, 2, 10, 15] ·
+  [0, 2, 10, 9] ·
+  [0, 2, 10, 29] ·
+  [0, 2, 10] ·
   [0, 2] ·
   [0, 3] ·
   [0, 4] ·
@@ -11265,7 +11316,7 @@
   [0, 0, 4] Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
   [0, 0] Record({"body": Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,… #d5000e29552f1170 | Record({"network": Text("tea")}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,14.25,51.25,88.2… #30defbf00c11dd9c | Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
   [0, 1] Text("tea")
-  [0, 2, 6] Text("/networks/")
+  [0, 2, 5] Text("/networks/")
   [0, 2, 0, 11] Boolean(true)
   [0, 2, 0, 22] Text("tea")
   [0, 2, 0, 18] Text("")
@@ -11300,45 +11351,48 @@
   [0, 2, 0, 20] Boolean(true)
   [0, 2, 0, 23] Text("tea")
   [0, 2, 0] Text("tea")
-  [0, 2, 8] Text("tea")
-  [0, 2, 10] Text("/tokens/search?")
-  [0, 2, 9] Record({})
+  [0, 2, 7] Text("tea")
+  [0, 2, 9] Text("/tokens/search?")
+  [0, 2, 8] Record({})
   [0, 2, 1] Number(50.0)
-  [0, 2, 4] Record({"limit": Number(50.0)})
-  [0, 2, 5, 0] Text("(given, defaults) => {\n  const q = { ...defaults };\n  for (const k of Object.keys(defaults)) if (given[k] !== undefined && given[k] !== \"\") q[k] = giv… #c5c798e2de1bd398
-  [0, 2, 5, 2] List([Record({"after": Text("a")}), Record({"limit": Number(50.0)})])
-  [0, 2, 5, 1] ·
-  [0, 2, 5, 3] ·
-  [0, 2, 5] ·
-  [0, 2, 7] ·
-  [0, 2, 3] ·
-  [0, 2, 2, 17] Record({})
-  [0, 2, 2, 16] Record({})
-  [0, 2, 2, 21] Text("application/json")
-  [0, 2, 2, 15] Record({"accept": Text("application/json")})
-  [0, 2, 2, 6] ·
-  [0, 2, 2, 25] ·
-  [0, 2, 2, 0] Record({"accept": Text("application/json")})
-  [0, 2, 2, 24] ·
-  [0, 2, 2, 11] ·
-  [0, 2, 2, 7] Number(0.0)
-  [0, 2, 2, 20] ·
-  [0, 2, 2, 19] ·
-  [0, 2, 2, 12] ·
-  [0, 2, 2, 8] ·
-  [0, 2, 2, 3] ·
-  [0, 2, 2, 4] ·
-  [0, 2, 2, 23] ·
-  [0, 2, 2, 5] ·
-  [0, 2, 2, 10] ·
-  [0, 2, 2, 18] Record({})
-  [0, 2, 2, 2] ·
-  [0, 2, 2, 1] ·
-  [0, 2, 2, 22] ·
-  [0, 2, 2, 14] ·
-  [0, 2, 2, 9] ·
-  [0, 2, 2, 26] ·
+  [0, 2, 3] Record({"limit": Number(50.0)})
+  [0, 2, 4, 0] Text("(given, defaults) => {\n  const q = { ...defaults };\n  for (const k of Object.keys(defaults)) if (given[k] !== undefined && given[k] !== \"\") q[k] = giv… #c5c798e2de1bd398
+  [0, 2, 4, 2] List([Record({"after": Text("a")}), Record({"limit": Number(50.0)})])
+  [0, 2, 4, 1] ·
+  [0, 2, 4, 3] ·
+  [0, 2, 4] ·
+  [0, 2, 6] ·
   [0, 2, 2] ·
+  [0, 2, 10, 18] Record({})
+  [0, 2, 10, 17] Record({})
+  [0, 2, 10, 23] Text("application/json")
+  [0, 2, 10, 16] Record({"accept": Text("application/json")})
+  [0, 2, 10, 6] ·
+  [0, 2, 10, 28] ·
+  [0, 2, 10, 0] Record({"accept": Text("application/json")})
+  [0, 2, 10, 27] ·
+  [0, 2, 10, 12] ·
+  [0, 2, 10, 7] Number(0.0)
+  [0, 2, 10, 22] ·
+  [0, 2, 10, 21] ·
+  [0, 2, 10, 13] Boolean(false)
+  [0, 2, 10, 25] Boolean(true)
+  [0, 2, 10, 11] ·
+  [0, 2, 10, 20] ·
+  [0, 2, 10, 8] ·
+  [0, 2, 10, 3] ·
+  [0, 2, 10, 4] ·
+  [0, 2, 10, 26] ·
+  [0, 2, 10, 5] ·
+  [0, 2, 10, 10] ·
+  [0, 2, 10, 19] Record({})
+  [0, 2, 10, 2] ·
+  [0, 2, 10, 1] ·
+  [0, 2, 10, 24] ·
+  [0, 2, 10, 15] ·
+  [0, 2, 10, 9] ·
+  [0, 2, 10, 29] ·
+  [0, 2, 10] ·
   [0, 2] ·
   [0, 3] ·
   [0, 4] ·
@@ -11358,43 +11412,7 @@
   [0, 0] Record({"body": Text(""), "headers": Record({"content-type": Text("application/json")}), "method": Text("GET"), "params": Record({"address": Text("tea"), "netwo… #c9cac28cb673f662 | Record({"address": Text("tea"), "network": Text("tea")}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("") | ·
   [0, 1] Text("tea")
   [0, 2] Text("tea")
-  [0, 3, 4] Text("/networks/")
-  [0, 3, 0, 11] Boolean(true)
-  [0, 3, 0, 22] Text("tea")
-  [0, 3, 0, 18] Text("")
-  [0, 3, 0, 25] Boolean(false)
-  [0, 3, 0, 28] Boolean(true)
-  [0, 3, 0, 31] Text(".")
-  [0, 3, 0, 26] Boolean(false)
-  [0, 3, 0, 29] Boolean(true)
-  [0, 3, 0, 21] Text("..")
-  [0, 3, 0, 24] Boolean(false)
-  [0, 3, 0, 27] Boolean(true)
-  [0, 3, 0, 10] Text("/")
-  [0, 3, 0, 9] Number(-1.0)
-  [0, 3, 0, 13] Number(0.0)
-  [0, 3, 0, 0] Boolean(true)
-  [0, 3, 0, 32] Text("\\")
-  [0, 3, 0, 7] Number(-1.0)
-  [0, 3, 0, 15] Number(0.0)
-  [0, 3, 0, 3] Boolean(true)
-  [0, 3, 0, 19] Text("?")
-  [0, 3, 0, 8] Number(-1.0)
-  [0, 3, 0, 16] Number(0.0)
-  [0, 3, 0, 4] Boolean(true)
-  [0, 3, 0, 30] Text("#")
-  [0, 3, 0, 5] Number(-1.0)
-  [0, 3, 0, 12] Number(0.0)
-  [0, 3, 0, 2] Boolean(true)
-  [0, 3, 0, 17] Text("%")
-  [0, 3, 0, 6] Number(-1.0)
-  [0, 3, 0, 14] Number(0.0)
-  [0, 3, 0, 1] Boolean(true)
-  [0, 3, 0, 20] Boolean(true)
-  [0, 3, 0, 23] Text("tea")
-  [0, 3, 0] Text("tea")
-  [0, 3, 6] Text("tea")
-  [0, 3, 7] Text("/tokens/")
+  [0, 3, 3] Text("/networks/")
   [0, 3, 1, 11] Boolean(true)
   [0, 3, 1, 22] Text("tea")
   [0, 3, 1, 18] Text("")
@@ -11430,34 +11448,73 @@
   [0, 3, 1, 23] Text("tea")
   [0, 3, 1] Text("tea")
   [0, 3, 5] Text("tea")
-  [0, 3, 3] Text("/networks/tea/tokens/tea")
-  [0, 3, 2, 17] Record({})
-  [0, 3, 2, 16] Record({})
-  [0, 3, 2, 21] Text("application/json")
-  [0, 3, 2, 15] Record({"accept": Text("application/json")})
-  [0, 3, 2, 6] ·
-  [0, 3, 2, 25] ·
-  [0, 3, 2, 0] Record({"accept": Text("application/json")})
-  [0, 3, 2, 24] ·
-  [0, 3, 2, 11] ·
-  [0, 3, 2, 7] Number(0.0)
-  [0, 3, 2, 20] ·
-  [0, 3, 2, 19] ·
-  [0, 3, 2, 12] ·
-  [0, 3, 2, 8] ·
-  [0, 3, 2, 3] ·
-  [0, 3, 2, 4] ·
-  [0, 3, 2, 23] ·
-  [0, 3, 2, 5] ·
-  [0, 3, 2, 10] ·
-  [0, 3, 2, 18] Record({})
-  [0, 3, 2, 2] ·
-  [0, 3, 2, 1] ·
-  [0, 3, 2, 22] ·
-  [0, 3, 2, 14] ·
-  [0, 3, 2, 9] ·
-  [0, 3, 2, 26] ·
-  [0, 3, 2] ·
+  [0, 3, 6] Text("/tokens/")
+  [0, 3, 0, 11] Boolean(true)
+  [0, 3, 0, 22] Text("tea")
+  [0, 3, 0, 18] Text("")
+  [0, 3, 0, 25] Boolean(false)
+  [0, 3, 0, 28] Boolean(true)
+  [0, 3, 0, 31] Text(".")
+  [0, 3, 0, 26] Boolean(false)
+  [0, 3, 0, 29] Boolean(true)
+  [0, 3, 0, 21] Text("..")
+  [0, 3, 0, 24] Boolean(false)
+  [0, 3, 0, 27] Boolean(true)
+  [0, 3, 0, 10] Text("/")
+  [0, 3, 0, 9] Number(-1.0)
+  [0, 3, 0, 13] Number(0.0)
+  [0, 3, 0, 0] Boolean(true)
+  [0, 3, 0, 32] Text("\\")
+  [0, 3, 0, 7] Number(-1.0)
+  [0, 3, 0, 15] Number(0.0)
+  [0, 3, 0, 3] Boolean(true)
+  [0, 3, 0, 19] Text("?")
+  [0, 3, 0, 8] Number(-1.0)
+  [0, 3, 0, 16] Number(0.0)
+  [0, 3, 0, 4] Boolean(true)
+  [0, 3, 0, 30] Text("#")
+  [0, 3, 0, 5] Number(-1.0)
+  [0, 3, 0, 12] Number(0.0)
+  [0, 3, 0, 2] Boolean(true)
+  [0, 3, 0, 17] Text("%")
+  [0, 3, 0, 6] Number(-1.0)
+  [0, 3, 0, 14] Number(0.0)
+  [0, 3, 0, 1] Boolean(true)
+  [0, 3, 0, 20] Boolean(true)
+  [0, 3, 0, 23] Text("tea")
+  [0, 3, 0] Text("tea")
+  [0, 3, 4] Text("tea")
+  [0, 3, 2] Text("/networks/tea/tokens/tea")
+  [0, 3, 7, 18] Record({})
+  [0, 3, 7, 17] Record({})
+  [0, 3, 7, 23] Text("application/json")
+  [0, 3, 7, 16] Record({"accept": Text("application/json")})
+  [0, 3, 7, 6] ·
+  [0, 3, 7, 28] ·
+  [0, 3, 7, 0] Record({"accept": Text("application/json")})
+  [0, 3, 7, 27] ·
+  [0, 3, 7, 12] ·
+  [0, 3, 7, 7] Number(0.0)
+  [0, 3, 7, 22] ·
+  [0, 3, 7, 21] ·
+  [0, 3, 7, 13] Boolean(false)
+  [0, 3, 7, 25] Boolean(true)
+  [0, 3, 7, 11] ·
+  [0, 3, 7, 20] ·
+  [0, 3, 7, 8] ·
+  [0, 3, 7, 3] ·
+  [0, 3, 7, 4] ·
+  [0, 3, 7, 26] ·
+  [0, 3, 7, 5] ·
+  [0, 3, 7, 10] ·
+  [0, 3, 7, 19] Record({})
+  [0, 3, 7, 2] ·
+  [0, 3, 7, 1] ·
+  [0, 3, 7, 24] ·
+  [0, 3, 7, 15] ·
+  [0, 3, 7, 9] ·
+  [0, 3, 7, 29] ·
+  [0, 3, 7] ·
   [0, 3] ·
   [0, 4] ·
   [0, 5] ·
@@ -11477,43 +11534,7 @@
   [0, 0] Record({"body": Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\… #762d20734bf24e11 | Record({"address": Text("tea"), "network": Text("tea")}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\"event\":\"gig\"… #7441bf0c70954823 | Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
   [0, 1] Text("tea")
   [0, 2] Text("tea")
-  [0, 3, 4] Text("/networks/")
-  [0, 3, 0, 11] Boolean(true)
-  [0, 3, 0, 22] Text("tea")
-  [0, 3, 0, 18] Text("")
-  [0, 3, 0, 25] Boolean(false)
-  [0, 3, 0, 28] Boolean(true)
-  [0, 3, 0, 31] Text(".")
-  [0, 3, 0, 26] Boolean(false)
-  [0, 3, 0, 29] Boolean(true)
-  [0, 3, 0, 21] Text("..")
-  [0, 3, 0, 24] Boolean(false)
-  [0, 3, 0, 27] Boolean(true)
-  [0, 3, 0, 10] Text("/")
-  [0, 3, 0, 9] Number(-1.0)
-  [0, 3, 0, 13] Number(0.0)
-  [0, 3, 0, 0] Boolean(true)
-  [0, 3, 0, 32] Text("\\")
-  [0, 3, 0, 7] Number(-1.0)
-  [0, 3, 0, 15] Number(0.0)
-  [0, 3, 0, 3] Boolean(true)
-  [0, 3, 0, 19] Text("?")
-  [0, 3, 0, 8] Number(-1.0)
-  [0, 3, 0, 16] Number(0.0)
-  [0, 3, 0, 4] Boolean(true)
-  [0, 3, 0, 30] Text("#")
-  [0, 3, 0, 5] Number(-1.0)
-  [0, 3, 0, 12] Number(0.0)
-  [0, 3, 0, 2] Boolean(true)
-  [0, 3, 0, 17] Text("%")
-  [0, 3, 0, 6] Number(-1.0)
-  [0, 3, 0, 14] Number(0.0)
-  [0, 3, 0, 1] Boolean(true)
-  [0, 3, 0, 20] Boolean(true)
-  [0, 3, 0, 23] Text("tea")
-  [0, 3, 0] Text("tea")
-  [0, 3, 6] Text("tea")
-  [0, 3, 7] Text("/tokens/")
+  [0, 3, 3] Text("/networks/")
   [0, 3, 1, 11] Boolean(true)
   [0, 3, 1, 22] Text("tea")
   [0, 3, 1, 18] Text("")
@@ -11549,34 +11570,73 @@
   [0, 3, 1, 23] Text("tea")
   [0, 3, 1] Text("tea")
   [0, 3, 5] Text("tea")
-  [0, 3, 3] Text("/networks/tea/tokens/tea")
-  [0, 3, 2, 17] Record({})
-  [0, 3, 2, 16] Record({})
-  [0, 3, 2, 21] Text("application/json")
-  [0, 3, 2, 15] Record({"accept": Text("application/json")})
-  [0, 3, 2, 6] ·
-  [0, 3, 2, 25] ·
-  [0, 3, 2, 0] Record({"accept": Text("application/json")})
-  [0, 3, 2, 24] ·
-  [0, 3, 2, 11] ·
-  [0, 3, 2, 7] Number(0.0)
-  [0, 3, 2, 20] ·
-  [0, 3, 2, 19] ·
-  [0, 3, 2, 12] ·
-  [0, 3, 2, 8] ·
-  [0, 3, 2, 3] ·
-  [0, 3, 2, 4] ·
-  [0, 3, 2, 23] ·
-  [0, 3, 2, 5] ·
-  [0, 3, 2, 10] ·
-  [0, 3, 2, 18] Record({})
-  [0, 3, 2, 2] ·
-  [0, 3, 2, 1] ·
-  [0, 3, 2, 22] ·
-  [0, 3, 2, 14] ·
-  [0, 3, 2, 9] ·
-  [0, 3, 2, 26] ·
-  [0, 3, 2] ·
+  [0, 3, 6] Text("/tokens/")
+  [0, 3, 0, 11] Boolean(true)
+  [0, 3, 0, 22] Text("tea")
+  [0, 3, 0, 18] Text("")
+  [0, 3, 0, 25] Boolean(false)
+  [0, 3, 0, 28] Boolean(true)
+  [0, 3, 0, 31] Text(".")
+  [0, 3, 0, 26] Boolean(false)
+  [0, 3, 0, 29] Boolean(true)
+  [0, 3, 0, 21] Text("..")
+  [0, 3, 0, 24] Boolean(false)
+  [0, 3, 0, 27] Boolean(true)
+  [0, 3, 0, 10] Text("/")
+  [0, 3, 0, 9] Number(-1.0)
+  [0, 3, 0, 13] Number(0.0)
+  [0, 3, 0, 0] Boolean(true)
+  [0, 3, 0, 32] Text("\\")
+  [0, 3, 0, 7] Number(-1.0)
+  [0, 3, 0, 15] Number(0.0)
+  [0, 3, 0, 3] Boolean(true)
+  [0, 3, 0, 19] Text("?")
+  [0, 3, 0, 8] Number(-1.0)
+  [0, 3, 0, 16] Number(0.0)
+  [0, 3, 0, 4] Boolean(true)
+  [0, 3, 0, 30] Text("#")
+  [0, 3, 0, 5] Number(-1.0)
+  [0, 3, 0, 12] Number(0.0)
+  [0, 3, 0, 2] Boolean(true)
+  [0, 3, 0, 17] Text("%")
+  [0, 3, 0, 6] Number(-1.0)
+  [0, 3, 0, 14] Number(0.0)
+  [0, 3, 0, 1] Boolean(true)
+  [0, 3, 0, 20] Boolean(true)
+  [0, 3, 0, 23] Text("tea")
+  [0, 3, 0] Text("tea")
+  [0, 3, 4] Text("tea")
+  [0, 3, 2] Text("/networks/tea/tokens/tea")
+  [0, 3, 7, 18] Record({})
+  [0, 3, 7, 17] Record({})
+  [0, 3, 7, 23] Text("application/json")
+  [0, 3, 7, 16] Record({"accept": Text("application/json")})
+  [0, 3, 7, 6] ·
+  [0, 3, 7, 28] ·
+  [0, 3, 7, 0] Record({"accept": Text("application/json")})
+  [0, 3, 7, 27] ·
+  [0, 3, 7, 12] ·
+  [0, 3, 7, 7] Number(0.0)
+  [0, 3, 7, 22] ·
+  [0, 3, 7, 21] ·
+  [0, 3, 7, 13] Boolean(false)
+  [0, 3, 7, 25] Boolean(true)
+  [0, 3, 7, 11] ·
+  [0, 3, 7, 20] ·
+  [0, 3, 7, 8] ·
+  [0, 3, 7, 3] ·
+  [0, 3, 7, 4] ·
+  [0, 3, 7, 26] ·
+  [0, 3, 7, 5] ·
+  [0, 3, 7, 10] ·
+  [0, 3, 7, 19] Record({})
+  [0, 3, 7, 2] ·
+  [0, 3, 7, 1] ·
+  [0, 3, 7, 24] ·
+  [0, 3, 7, 15] ·
+  [0, 3, 7, 9] ·
+  [0, 3, 7, 29] ·
+  [0, 3, 7] ·
   [0, 3] ·
   [0, 4] ·
   [0, 5] ·
@@ -11596,43 +11656,7 @@
   [0, 0] Record({"body": Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,… #6b71ddb9bff2c15b | Record({"address": Text("tea"), "network": Text("tea")}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,14.25,51.25,88.2… #30defbf00c11dd9c | Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
   [0, 1] Text("tea")
   [0, 2] Text("tea")
-  [0, 3, 4] Text("/networks/")
-  [0, 3, 0, 11] Boolean(true)
-  [0, 3, 0, 22] Text("tea")
-  [0, 3, 0, 18] Text("")
-  [0, 3, 0, 25] Boolean(false)
-  [0, 3, 0, 28] Boolean(true)
-  [0, 3, 0, 31] Text(".")
-  [0, 3, 0, 26] Boolean(false)
-  [0, 3, 0, 29] Boolean(true)
-  [0, 3, 0, 21] Text("..")
-  [0, 3, 0, 24] Boolean(false)
-  [0, 3, 0, 27] Boolean(true)
-  [0, 3, 0, 10] Text("/")
-  [0, 3, 0, 9] Number(-1.0)
-  [0, 3, 0, 13] Number(0.0)
-  [0, 3, 0, 0] Boolean(true)
-  [0, 3, 0, 32] Text("\\")
-  [0, 3, 0, 7] Number(-1.0)
-  [0, 3, 0, 15] Number(0.0)
-  [0, 3, 0, 3] Boolean(true)
-  [0, 3, 0, 19] Text("?")
-  [0, 3, 0, 8] Number(-1.0)
-  [0, 3, 0, 16] Number(0.0)
-  [0, 3, 0, 4] Boolean(true)
-  [0, 3, 0, 30] Text("#")
-  [0, 3, 0, 5] Number(-1.0)
-  [0, 3, 0, 12] Number(0.0)
-  [0, 3, 0, 2] Boolean(true)
-  [0, 3, 0, 17] Text("%")
-  [0, 3, 0, 6] Number(-1.0)
-  [0, 3, 0, 14] Number(0.0)
-  [0, 3, 0, 1] Boolean(true)
-  [0, 3, 0, 20] Boolean(true)
-  [0, 3, 0, 23] Text("tea")
-  [0, 3, 0] Text("tea")
-  [0, 3, 6] Text("tea")
-  [0, 3, 7] Text("/tokens/")
+  [0, 3, 3] Text("/networks/")
   [0, 3, 1, 11] Boolean(true)
   [0, 3, 1, 22] Text("tea")
   [0, 3, 1, 18] Text("")
@@ -11668,34 +11692,73 @@
   [0, 3, 1, 23] Text("tea")
   [0, 3, 1] Text("tea")
   [0, 3, 5] Text("tea")
-  [0, 3, 3] Text("/networks/tea/tokens/tea")
-  [0, 3, 2, 17] Record({})
-  [0, 3, 2, 16] Record({})
-  [0, 3, 2, 21] Text("application/json")
-  [0, 3, 2, 15] Record({"accept": Text("application/json")})
-  [0, 3, 2, 6] ·
-  [0, 3, 2, 25] ·
-  [0, 3, 2, 0] Record({"accept": Text("application/json")})
-  [0, 3, 2, 24] ·
-  [0, 3, 2, 11] ·
-  [0, 3, 2, 7] Number(0.0)
-  [0, 3, 2, 20] ·
-  [0, 3, 2, 19] ·
-  [0, 3, 2, 12] ·
-  [0, 3, 2, 8] ·
-  [0, 3, 2, 3] ·
-  [0, 3, 2, 4] ·
-  [0, 3, 2, 23] ·
-  [0, 3, 2, 5] ·
-  [0, 3, 2, 10] ·
-  [0, 3, 2, 18] Record({})
-  [0, 3, 2, 2] ·
-  [0, 3, 2, 1] ·
-  [0, 3, 2, 22] ·
-  [0, 3, 2, 14] ·
-  [0, 3, 2, 9] ·
-  [0, 3, 2, 26] ·
-  [0, 3, 2] ·
+  [0, 3, 6] Text("/tokens/")
+  [0, 3, 0, 11] Boolean(true)
+  [0, 3, 0, 22] Text("tea")
+  [0, 3, 0, 18] Text("")
+  [0, 3, 0, 25] Boolean(false)
+  [0, 3, 0, 28] Boolean(true)
+  [0, 3, 0, 31] Text(".")
+  [0, 3, 0, 26] Boolean(false)
+  [0, 3, 0, 29] Boolean(true)
+  [0, 3, 0, 21] Text("..")
+  [0, 3, 0, 24] Boolean(false)
+  [0, 3, 0, 27] Boolean(true)
+  [0, 3, 0, 10] Text("/")
+  [0, 3, 0, 9] Number(-1.0)
+  [0, 3, 0, 13] Number(0.0)
+  [0, 3, 0, 0] Boolean(true)
+  [0, 3, 0, 32] Text("\\")
+  [0, 3, 0, 7] Number(-1.0)
+  [0, 3, 0, 15] Number(0.0)
+  [0, 3, 0, 3] Boolean(true)
+  [0, 3, 0, 19] Text("?")
+  [0, 3, 0, 8] Number(-1.0)
+  [0, 3, 0, 16] Number(0.0)
+  [0, 3, 0, 4] Boolean(true)
+  [0, 3, 0, 30] Text("#")
+  [0, 3, 0, 5] Number(-1.0)
+  [0, 3, 0, 12] Number(0.0)
+  [0, 3, 0, 2] Boolean(true)
+  [0, 3, 0, 17] Text("%")
+  [0, 3, 0, 6] Number(-1.0)
+  [0, 3, 0, 14] Number(0.0)
+  [0, 3, 0, 1] Boolean(true)
+  [0, 3, 0, 20] Boolean(true)
+  [0, 3, 0, 23] Text("tea")
+  [0, 3, 0] Text("tea")
+  [0, 3, 4] Text("tea")
+  [0, 3, 2] Text("/networks/tea/tokens/tea")
+  [0, 3, 7, 18] Record({})
+  [0, 3, 7, 17] Record({})
+  [0, 3, 7, 23] Text("application/json")
+  [0, 3, 7, 16] Record({"accept": Text("application/json")})
+  [0, 3, 7, 6] ·
+  [0, 3, 7, 28] ·
+  [0, 3, 7, 0] Record({"accept": Text("application/json")})
+  [0, 3, 7, 27] ·
+  [0, 3, 7, 12] ·
+  [0, 3, 7, 7] Number(0.0)
+  [0, 3, 7, 22] ·
+  [0, 3, 7, 21] ·
+  [0, 3, 7, 13] Boolean(false)
+  [0, 3, 7, 25] Boolean(true)
+  [0, 3, 7, 11] ·
+  [0, 3, 7, 20] ·
+  [0, 3, 7, 8] ·
+  [0, 3, 7, 3] ·
+  [0, 3, 7, 4] ·
+  [0, 3, 7, 26] ·
+  [0, 3, 7, 5] ·
+  [0, 3, 7, 10] ·
+  [0, 3, 7, 19] Record({})
+  [0, 3, 7, 2] ·
+  [0, 3, 7, 1] ·
+  [0, 3, 7, 24] ·
+  [0, 3, 7, 15] ·
+  [0, 3, 7, 9] ·
+  [0, 3, 7, 29] ·
+  [0, 3, 7] ·
   [0, 3] ·
   [0, 4] ·
   [0, 5] ·
@@ -11714,7 +11777,7 @@
   [0, 0, 4] ·
   [0, 0] Record({"body": Text(""), "headers": Record({"content-type": Text("application/json")}), "method": Text("GET"), "params": Record({"network": Text("tea")}), "pat… #4594b2383af7a234 | Record({"network": Text("tea")}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("") | ·
   [0, 1] Text("tea")
-  [0, 2, 6] Text("/networks/")
+  [0, 2, 5] Text("/networks/")
   [0, 2, 0, 11] Boolean(true)
   [0, 2, 0, 22] Text("tea")
   [0, 2, 0, 18] Text("")
@@ -11749,45 +11812,48 @@
   [0, 2, 0, 20] Boolean(true)
   [0, 2, 0, 23] Text("tea")
   [0, 2, 0] Text("tea")
-  [0, 2, 8] Text("tea")
+  [0, 2, 7] Text("tea")
   [0, 2, 10] Text("/multi/prices?")
-  [0, 2, 9] Record({})
-  [0, 2, 5] Text("")
+  [0, 2, 8] Record({})
+  [0, 2, 4] Text("")
   [0, 2, 1] Record({"tokens": Text("")})
-  [0, 2, 4, 0] Text("(given, defaults) => {\n  const q = { ...defaults };\n  for (const k of Object.keys(defaults)) if (given[k] !== undefined && given[k] !== \"\") q[k] = giv… #c5c798e2de1bd398
-  [0, 2, 4, 2] List([Record({"after": Text("a")}), Record({"tokens": Text("")})])
-  [0, 2, 4, 1] ·
-  [0, 2, 4, 3] ·
-  [0, 2, 4] ·
-  [0, 2, 7] ·
+  [0, 2, 3, 0] Text("(given, defaults) => {\n  const q = { ...defaults };\n  for (const k of Object.keys(defaults)) if (given[k] !== undefined && given[k] !== \"\") q[k] = giv… #c5c798e2de1bd398
+  [0, 2, 3, 2] List([Record({"after": Text("a")}), Record({"tokens": Text("")})])
+  [0, 2, 3, 1] ·
+  [0, 2, 3, 3] ·
   [0, 2, 3] ·
-  [0, 2, 2, 17] Record({})
-  [0, 2, 2, 16] Record({})
-  [0, 2, 2, 21] Text("application/json")
-  [0, 2, 2, 15] Record({"accept": Text("application/json")})
-  [0, 2, 2, 6] ·
-  [0, 2, 2, 25] ·
-  [0, 2, 2, 0] Record({"accept": Text("application/json")})
-  [0, 2, 2, 24] ·
-  [0, 2, 2, 11] ·
-  [0, 2, 2, 7] Number(0.0)
-  [0, 2, 2, 20] ·
-  [0, 2, 2, 19] ·
-  [0, 2, 2, 12] ·
-  [0, 2, 2, 8] ·
-  [0, 2, 2, 3] ·
-  [0, 2, 2, 4] ·
-  [0, 2, 2, 23] ·
-  [0, 2, 2, 5] ·
-  [0, 2, 2, 10] ·
-  [0, 2, 2, 18] Record({})
-  [0, 2, 2, 2] ·
-  [0, 2, 2, 1] ·
-  [0, 2, 2, 22] ·
-  [0, 2, 2, 14] ·
-  [0, 2, 2, 9] ·
-  [0, 2, 2, 26] ·
+  [0, 2, 6] ·
   [0, 2, 2] ·
+  [0, 2, 9, 18] Record({})
+  [0, 2, 9, 17] Record({})
+  [0, 2, 9, 23] Text("application/json")
+  [0, 2, 9, 16] Record({"accept": Text("application/json")})
+  [0, 2, 9, 6] ·
+  [0, 2, 9, 28] ·
+  [0, 2, 9, 0] Record({"accept": Text("application/json")})
+  [0, 2, 9, 27] ·
+  [0, 2, 9, 12] ·
+  [0, 2, 9, 7] Number(0.0)
+  [0, 2, 9, 22] ·
+  [0, 2, 9, 21] ·
+  [0, 2, 9, 13] Boolean(false)
+  [0, 2, 9, 25] Boolean(true)
+  [0, 2, 9, 11] ·
+  [0, 2, 9, 20] ·
+  [0, 2, 9, 8] ·
+  [0, 2, 9, 3] ·
+  [0, 2, 9, 4] ·
+  [0, 2, 9, 26] ·
+  [0, 2, 9, 5] ·
+  [0, 2, 9, 10] ·
+  [0, 2, 9, 19] Record({})
+  [0, 2, 9, 2] ·
+  [0, 2, 9, 1] ·
+  [0, 2, 9, 24] ·
+  [0, 2, 9, 15] ·
+  [0, 2, 9, 9] ·
+  [0, 2, 9, 29] ·
+  [0, 2, 9] ·
   [0, 2] ·
   [0, 3] ·
   [0, 4] ·
@@ -11806,7 +11872,7 @@
   [0, 0, 4] Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
   [0, 0] Record({"body": Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\… #cc60cb4c14bc7d02 | Record({"network": Text("tea")}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\"event\":\"gig\"… #7441bf0c70954823 | Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
   [0, 1] Text("tea")
-  [0, 2, 6] Text("/networks/")
+  [0, 2, 5] Text("/networks/")
   [0, 2, 0, 11] Boolean(true)
   [0, 2, 0, 22] Text("tea")
   [0, 2, 0, 18] Text("")
@@ -11841,45 +11907,48 @@
   [0, 2, 0, 20] Boolean(true)
   [0, 2, 0, 23] Text("tea")
   [0, 2, 0] Text("tea")
-  [0, 2, 8] Text("tea")
+  [0, 2, 7] Text("tea")
   [0, 2, 10] Text("/multi/prices?")
-  [0, 2, 9] Record({})
-  [0, 2, 5] Text("")
+  [0, 2, 8] Record({})
+  [0, 2, 4] Text("")
   [0, 2, 1] Record({"tokens": Text("")})
-  [0, 2, 4, 0] Text("(given, defaults) => {\n  const q = { ...defaults };\n  for (const k of Object.keys(defaults)) if (given[k] !== undefined && given[k] !== \"\") q[k] = giv… #c5c798e2de1bd398
-  [0, 2, 4, 2] List([Record({"after": Text("a")}), Record({"tokens": Text("")})])
-  [0, 2, 4, 1] ·
-  [0, 2, 4, 3] ·
-  [0, 2, 4] ·
-  [0, 2, 7] ·
+  [0, 2, 3, 0] Text("(given, defaults) => {\n  const q = { ...defaults };\n  for (const k of Object.keys(defaults)) if (given[k] !== undefined && given[k] !== \"\") q[k] = giv… #c5c798e2de1bd398
+  [0, 2, 3, 2] List([Record({"after": Text("a")}), Record({"tokens": Text("")})])
+  [0, 2, 3, 1] ·
+  [0, 2, 3, 3] ·
   [0, 2, 3] ·
-  [0, 2, 2, 17] Record({})
-  [0, 2, 2, 16] Record({})
-  [0, 2, 2, 21] Text("application/json")
-  [0, 2, 2, 15] Record({"accept": Text("application/json")})
-  [0, 2, 2, 6] ·
-  [0, 2, 2, 25] ·
-  [0, 2, 2, 0] Record({"accept": Text("application/json")})
-  [0, 2, 2, 24] ·
-  [0, 2, 2, 11] ·
-  [0, 2, 2, 7] Number(0.0)
-  [0, 2, 2, 20] ·
-  [0, 2, 2, 19] ·
-  [0, 2, 2, 12] ·
-  [0, 2, 2, 8] ·
-  [0, 2, 2, 3] ·
-  [0, 2, 2, 4] ·
-  [0, 2, 2, 23] ·
-  [0, 2, 2, 5] ·
-  [0, 2, 2, 10] ·
-  [0, 2, 2, 18] Record({})
-  [0, 2, 2, 2] ·
-  [0, 2, 2, 1] ·
-  [0, 2, 2, 22] ·
-  [0, 2, 2, 14] ·
-  [0, 2, 2, 9] ·
-  [0, 2, 2, 26] ·
+  [0, 2, 6] ·
   [0, 2, 2] ·
+  [0, 2, 9, 18] Record({})
+  [0, 2, 9, 17] Record({})
+  [0, 2, 9, 23] Text("application/json")
+  [0, 2, 9, 16] Record({"accept": Text("application/json")})
+  [0, 2, 9, 6] ·
+  [0, 2, 9, 28] ·
+  [0, 2, 9, 0] Record({"accept": Text("application/json")})
+  [0, 2, 9, 27] ·
+  [0, 2, 9, 12] ·
+  [0, 2, 9, 7] Number(0.0)
+  [0, 2, 9, 22] ·
+  [0, 2, 9, 21] ·
+  [0, 2, 9, 13] Boolean(false)
+  [0, 2, 9, 25] Boolean(true)
+  [0, 2, 9, 11] ·
+  [0, 2, 9, 20] ·
+  [0, 2, 9, 8] ·
+  [0, 2, 9, 3] ·
+  [0, 2, 9, 4] ·
+  [0, 2, 9, 26] ·
+  [0, 2, 9, 5] ·
+  [0, 2, 9, 10] ·
+  [0, 2, 9, 19] Record({})
+  [0, 2, 9, 2] ·
+  [0, 2, 9, 1] ·
+  [0, 2, 9, 24] ·
+  [0, 2, 9, 15] ·
+  [0, 2, 9, 9] ·
+  [0, 2, 9, 29] ·
+  [0, 2, 9] ·
   [0, 2] ·
   [0, 3] ·
   [0, 4] ·
@@ -11898,7 +11967,7 @@
   [0, 0, 4] Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
   [0, 0] Record({"body": Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,… #5acf9b3465706c92 | Record({"network": Text("tea")}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,14.25,51.25,88.2… #30defbf00c11dd9c | Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
   [0, 1] Text("tea")
-  [0, 2, 6] Text("/networks/")
+  [0, 2, 5] Text("/networks/")
   [0, 2, 0, 11] Boolean(true)
   [0, 2, 0, 22] Text("tea")
   [0, 2, 0, 18] Text("")
@@ -11933,45 +12002,48 @@
   [0, 2, 0, 20] Boolean(true)
   [0, 2, 0, 23] Text("tea")
   [0, 2, 0] Text("tea")
-  [0, 2, 8] Text("tea")
+  [0, 2, 7] Text("tea")
   [0, 2, 10] Text("/multi/prices?")
-  [0, 2, 9] Record({})
-  [0, 2, 5] Text("")
+  [0, 2, 8] Record({})
+  [0, 2, 4] Text("")
   [0, 2, 1] Record({"tokens": Text("")})
-  [0, 2, 4, 0] Text("(given, defaults) => {\n  const q = { ...defaults };\n  for (const k of Object.keys(defaults)) if (given[k] !== undefined && given[k] !== \"\") q[k] = giv… #c5c798e2de1bd398
-  [0, 2, 4, 2] List([Record({"after": Text("a")}), Record({"tokens": Text("")})])
-  [0, 2, 4, 1] ·
-  [0, 2, 4, 3] ·
-  [0, 2, 4] ·
-  [0, 2, 7] ·
+  [0, 2, 3, 0] Text("(given, defaults) => {\n  const q = { ...defaults };\n  for (const k of Object.keys(defaults)) if (given[k] !== undefined && given[k] !== \"\") q[k] = giv… #c5c798e2de1bd398
+  [0, 2, 3, 2] List([Record({"after": Text("a")}), Record({"tokens": Text("")})])
+  [0, 2, 3, 1] ·
+  [0, 2, 3, 3] ·
   [0, 2, 3] ·
-  [0, 2, 2, 17] Record({})
-  [0, 2, 2, 16] Record({})
-  [0, 2, 2, 21] Text("application/json")
-  [0, 2, 2, 15] Record({"accept": Text("application/json")})
-  [0, 2, 2, 6] ·
-  [0, 2, 2, 25] ·
-  [0, 2, 2, 0] Record({"accept": Text("application/json")})
-  [0, 2, 2, 24] ·
-  [0, 2, 2, 11] ·
-  [0, 2, 2, 7] Number(0.0)
-  [0, 2, 2, 20] ·
-  [0, 2, 2, 19] ·
-  [0, 2, 2, 12] ·
-  [0, 2, 2, 8] ·
-  [0, 2, 2, 3] ·
-  [0, 2, 2, 4] ·
-  [0, 2, 2, 23] ·
-  [0, 2, 2, 5] ·
-  [0, 2, 2, 10] ·
-  [0, 2, 2, 18] Record({})
-  [0, 2, 2, 2] ·
-  [0, 2, 2, 1] ·
-  [0, 2, 2, 22] ·
-  [0, 2, 2, 14] ·
-  [0, 2, 2, 9] ·
-  [0, 2, 2, 26] ·
+  [0, 2, 6] ·
   [0, 2, 2] ·
+  [0, 2, 9, 18] Record({})
+  [0, 2, 9, 17] Record({})
+  [0, 2, 9, 23] Text("application/json")
+  [0, 2, 9, 16] Record({"accept": Text("application/json")})
+  [0, 2, 9, 6] ·
+  [0, 2, 9, 28] ·
+  [0, 2, 9, 0] Record({"accept": Text("application/json")})
+  [0, 2, 9, 27] ·
+  [0, 2, 9, 12] ·
+  [0, 2, 9, 7] Number(0.0)
+  [0, 2, 9, 22] ·
+  [0, 2, 9, 21] ·
+  [0, 2, 9, 13] Boolean(false)
+  [0, 2, 9, 25] Boolean(true)
+  [0, 2, 9, 11] ·
+  [0, 2, 9, 20] ·
+  [0, 2, 9, 8] ·
+  [0, 2, 9, 3] ·
+  [0, 2, 9, 4] ·
+  [0, 2, 9, 26] ·
+  [0, 2, 9, 5] ·
+  [0, 2, 9, 10] ·
+  [0, 2, 9, 19] Record({})
+  [0, 2, 9, 2] ·
+  [0, 2, 9, 1] ·
+  [0, 2, 9, 24] ·
+  [0, 2, 9, 15] ·
+  [0, 2, 9, 9] ·
+  [0, 2, 9, 29] ·
+  [0, 2, 9] ·
   [0, 2] ·
   [0, 3] ·
   [0, 4] ·
@@ -11991,43 +12063,7 @@
   [0, 0] Record({"body": Text(""), "headers": Record({"content-type": Text("application/json")}), "method": Text("GET"), "params": Record({"address": Text("tea"), "netwo… #0f75441b83bf4eec | Record({"address": Text("tea"), "network": Text("tea")}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("") | ·
   [0, 1] Text("tea")
   [0, 2] Text("tea")
-  [0, 3, 9] Text("/networks/")
-  [0, 3, 1, 11] Boolean(true)
-  [0, 3, 1, 22] Text("tea")
-  [0, 3, 1, 18] Text("")
-  [0, 3, 1, 25] Boolean(false)
-  [0, 3, 1, 28] Boolean(true)
-  [0, 3, 1, 31] Text(".")
-  [0, 3, 1, 26] Boolean(false)
-  [0, 3, 1, 29] Boolean(true)
-  [0, 3, 1, 21] Text("..")
-  [0, 3, 1, 24] Boolean(false)
-  [0, 3, 1, 27] Boolean(true)
-  [0, 3, 1, 10] Text("/")
-  [0, 3, 1, 9] Number(-1.0)
-  [0, 3, 1, 13] Number(0.0)
-  [0, 3, 1, 0] Boolean(true)
-  [0, 3, 1, 32] Text("\\")
-  [0, 3, 1, 7] Number(-1.0)
-  [0, 3, 1, 15] Number(0.0)
-  [0, 3, 1, 3] Boolean(true)
-  [0, 3, 1, 19] Text("?")
-  [0, 3, 1, 8] Number(-1.0)
-  [0, 3, 1, 16] Number(0.0)
-  [0, 3, 1, 4] Boolean(true)
-  [0, 3, 1, 30] Text("#")
-  [0, 3, 1, 5] Number(-1.0)
-  [0, 3, 1, 12] Number(0.0)
-  [0, 3, 1, 2] Boolean(true)
-  [0, 3, 1, 17] Text("%")
-  [0, 3, 1, 6] Number(-1.0)
-  [0, 3, 1, 14] Number(0.0)
-  [0, 3, 1, 1] Boolean(true)
-  [0, 3, 1, 20] Boolean(true)
-  [0, 3, 1, 23] Text("tea")
-  [0, 3, 1] Text("tea")
-  [0, 3, 13] Text("tea")
-  [0, 3, 18] Text("/tokens/")
+  [0, 3, 10] Text("/networks/")
   [0, 3, 0, 11] Boolean(true)
   [0, 3, 0, 22] Text("tea")
   [0, 3, 0, 18] Text("")
@@ -12062,51 +12098,90 @@
   [0, 3, 0, 20] Boolean(true)
   [0, 3, 0, 23] Text("tea")
   [0, 3, 0] Text("tea")
-  [0, 3, 15] Text("tea")
+  [0, 3, 13] Text("tea")
+  [0, 3, 18] Text("/tokens/")
+  [0, 3, 1, 11] Boolean(true)
+  [0, 3, 1, 22] Text("tea")
+  [0, 3, 1, 18] Text("")
+  [0, 3, 1, 25] Boolean(false)
+  [0, 3, 1, 28] Boolean(true)
+  [0, 3, 1, 31] Text(".")
+  [0, 3, 1, 26] Boolean(false)
+  [0, 3, 1, 29] Boolean(true)
+  [0, 3, 1, 21] Text("..")
+  [0, 3, 1, 24] Boolean(false)
+  [0, 3, 1, 27] Boolean(true)
+  [0, 3, 1, 10] Text("/")
+  [0, 3, 1, 9] Number(-1.0)
+  [0, 3, 1, 13] Number(0.0)
+  [0, 3, 1, 0] Boolean(true)
+  [0, 3, 1, 32] Text("\\")
+  [0, 3, 1, 7] Number(-1.0)
+  [0, 3, 1, 15] Number(0.0)
+  [0, 3, 1, 3] Boolean(true)
+  [0, 3, 1, 19] Text("?")
+  [0, 3, 1, 8] Number(-1.0)
+  [0, 3, 1, 16] Number(0.0)
+  [0, 3, 1, 4] Boolean(true)
+  [0, 3, 1, 30] Text("#")
+  [0, 3, 1, 5] Number(-1.0)
+  [0, 3, 1, 12] Number(0.0)
+  [0, 3, 1, 2] Boolean(true)
+  [0, 3, 1, 17] Text("%")
+  [0, 3, 1, 6] Number(-1.0)
+  [0, 3, 1, 14] Number(0.0)
+  [0, 3, 1, 1] Boolean(true)
+  [0, 3, 1, 20] Boolean(true)
+  [0, 3, 1, 23] Text("tea")
+  [0, 3, 1] Text("tea")
+  [0, 3, 14] Text("tea")
   [0, 3, 12] Text("/ohlcv?")
   [0, 3, 17] Record({})
-  [0, 3, 3] Text("-24h")
-  [0, 3, 7] Record({"start": Text("-24h")})
-  [0, 3, 8] Text("")
+  [0, 3, 4] Text("-24h")
+  [0, 3, 8] Record({"start": Text("-24h")})
+  [0, 3, 9] Text("")
   [0, 3, 19] Record({"end": Text(""), "start": Text("-24h")})
   [0, 3, 16] Text("24h")
-  [0, 3, 4] Record({"end": Text(""), "interval": Text("24h"), "start": Text("-24h")})
-  [0, 3, 2] Number(50.0)
-  [0, 3, 5] Record({"end": Text(""), "interval": Text("24h"), "limit": Number(50.0), "start": Text("-24h")})
-  [0, 3, 6, 0] Text("(given, defaults) => {\n  const q = { ...defaults };\n  for (const k of Object.keys(defaults)) if (given[k] !== undefined && given[k] !== \"\") q[k] = giv… #c5c798e2de1bd398
-  [0, 3, 6, 2] List([Record({"after": Text("a")}), Record({"end": Text(""), "interval": Text("24h"), "limit": Number(50.0), "start": Text("-24h")})])
-  [0, 3, 6, 1] ·
-  [0, 3, 6, 3] ·
-  [0, 3, 6] ·
-  [0, 3, 14] ·
+  [0, 3, 5] Record({"end": Text(""), "interval": Text("24h"), "start": Text("-24h")})
+  [0, 3, 3] Number(50.0)
+  [0, 3, 6] Record({"end": Text(""), "interval": Text("24h"), "limit": Number(50.0), "start": Text("-24h")})
+  [0, 3, 7, 0] Text("(given, defaults) => {\n  const q = { ...defaults };\n  for (const k of Object.keys(defaults)) if (given[k] !== undefined && given[k] !== \"\") q[k] = giv… #c5c798e2de1bd398
+  [0, 3, 7, 2] List([Record({"after": Text("a")}), Record({"end": Text(""), "interval": Text("24h"), "limit": Number(50.0), "start": Text("-24h")})])
+  [0, 3, 7, 1] ·
+  [0, 3, 7, 3] ·
+  [0, 3, 7] ·
+  [0, 3, 15] ·
   [0, 3, 11] ·
-  [0, 3, 10, 18] Record({})
-  [0, 3, 10, 17] Record({})
-  [0, 3, 10, 22] Text("application/json")
-  [0, 3, 10, 16] Record({"accept": Text("application/json")})
-  [0, 3, 10, 6] ·
-  [0, 3, 10, 25] ·
-  [0, 3, 10, 0] Record({"accept": Text("application/json")})
-  [0, 3, 10, 11] ·
-  [0, 3, 10, 12] ·
-  [0, 3, 10, 7] Number(0.0)
-  [0, 3, 10, 21] ·
-  [0, 3, 10, 20] ·
-  [0, 3, 10, 13] ·
-  [0, 3, 10, 8] ·
-  [0, 3, 10, 3] ·
-  [0, 3, 10, 4] ·
-  [0, 3, 10, 24] ·
-  [0, 3, 10, 5] ·
-  [0, 3, 10, 10] ·
-  [0, 3, 10, 19] Record({})
-  [0, 3, 10, 2] ·
-  [0, 3, 10, 1] ·
-  [0, 3, 10, 23] ·
-  [0, 3, 10, 15] ·
-  [0, 3, 10, 9] ·
-  [0, 3, 10, 26] ·
-  [0, 3, 10] ·
+  [0, 3, 2, 19] Record({})
+  [0, 3, 2, 18] Record({})
+  [0, 3, 2, 24] Text("application/json")
+  [0, 3, 2, 17] Record({"accept": Text("application/json")})
+  [0, 3, 2, 6] ·
+  [0, 3, 2, 28] ·
+  [0, 3, 2, 0] Record({"accept": Text("application/json")})
+  [0, 3, 2, 11] ·
+  [0, 3, 2, 13] ·
+  [0, 3, 2, 7] Number(0.0)
+  [0, 3, 2, 23] ·
+  [0, 3, 2, 22] ·
+  [0, 3, 2, 14] Boolean(false)
+  [0, 3, 2, 26] Boolean(true)
+  [0, 3, 2, 12] ·
+  [0, 3, 2, 21] ·
+  [0, 3, 2, 8] ·
+  [0, 3, 2, 3] ·
+  [0, 3, 2, 4] ·
+  [0, 3, 2, 27] ·
+  [0, 3, 2, 5] ·
+  [0, 3, 2, 10] ·
+  [0, 3, 2, 20] Record({})
+  [0, 3, 2, 2] ·
+  [0, 3, 2, 1] ·
+  [0, 3, 2, 25] ·
+  [0, 3, 2, 16] ·
+  [0, 3, 2, 9] ·
+  [0, 3, 2, 29] ·
+  [0, 3, 2] ·
   [0, 3] ·
   [0, 4] ·
   [0, 5] ·
@@ -12126,43 +12201,7 @@
   [0, 0] Record({"body": Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\… #17d38cbb155af7ee | Record({"address": Text("tea"), "network": Text("tea")}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\"event\":\"gig\"… #7441bf0c70954823 | Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
   [0, 1] Text("tea")
   [0, 2] Text("tea")
-  [0, 3, 9] Text("/networks/")
-  [0, 3, 1, 11] Boolean(true)
-  [0, 3, 1, 22] Text("tea")
-  [0, 3, 1, 18] Text("")
-  [0, 3, 1, 25] Boolean(false)
-  [0, 3, 1, 28] Boolean(true)
-  [0, 3, 1, 31] Text(".")
-  [0, 3, 1, 26] Boolean(false)
-  [0, 3, 1, 29] Boolean(true)
-  [0, 3, 1, 21] Text("..")
-  [0, 3, 1, 24] Boolean(false)
-  [0, 3, 1, 27] Boolean(true)
-  [0, 3, 1, 10] Text("/")
-  [0, 3, 1, 9] Number(-1.0)
-  [0, 3, 1, 13] Number(0.0)
-  [0, 3, 1, 0] Boolean(true)
-  [0, 3, 1, 32] Text("\\")
-  [0, 3, 1, 7] Number(-1.0)
-  [0, 3, 1, 15] Number(0.0)
-  [0, 3, 1, 3] Boolean(true)
-  [0, 3, 1, 19] Text("?")
-  [0, 3, 1, 8] Number(-1.0)
-  [0, 3, 1, 16] Number(0.0)
-  [0, 3, 1, 4] Boolean(true)
-  [0, 3, 1, 30] Text("#")
-  [0, 3, 1, 5] Number(-1.0)
-  [0, 3, 1, 12] Number(0.0)
-  [0, 3, 1, 2] Boolean(true)
-  [0, 3, 1, 17] Text("%")
-  [0, 3, 1, 6] Number(-1.0)
-  [0, 3, 1, 14] Number(0.0)
-  [0, 3, 1, 1] Boolean(true)
-  [0, 3, 1, 20] Boolean(true)
-  [0, 3, 1, 23] Text("tea")
-  [0, 3, 1] Text("tea")
-  [0, 3, 13] Text("tea")
-  [0, 3, 18] Text("/tokens/")
+  [0, 3, 10] Text("/networks/")
   [0, 3, 0, 11] Boolean(true)
   [0, 3, 0, 22] Text("tea")
   [0, 3, 0, 18] Text("")
@@ -12197,51 +12236,90 @@
   [0, 3, 0, 20] Boolean(true)
   [0, 3, 0, 23] Text("tea")
   [0, 3, 0] Text("tea")
-  [0, 3, 15] Text("tea")
+  [0, 3, 13] Text("tea")
+  [0, 3, 18] Text("/tokens/")
+  [0, 3, 1, 11] Boolean(true)
+  [0, 3, 1, 22] Text("tea")
+  [0, 3, 1, 18] Text("")
+  [0, 3, 1, 25] Boolean(false)
+  [0, 3, 1, 28] Boolean(true)
+  [0, 3, 1, 31] Text(".")
+  [0, 3, 1, 26] Boolean(false)
+  [0, 3, 1, 29] Boolean(true)
+  [0, 3, 1, 21] Text("..")
+  [0, 3, 1, 24] Boolean(false)
+  [0, 3, 1, 27] Boolean(true)
+  [0, 3, 1, 10] Text("/")
+  [0, 3, 1, 9] Number(-1.0)
+  [0, 3, 1, 13] Number(0.0)
+  [0, 3, 1, 0] Boolean(true)
+  [0, 3, 1, 32] Text("\\")
+  [0, 3, 1, 7] Number(-1.0)
+  [0, 3, 1, 15] Number(0.0)
+  [0, 3, 1, 3] Boolean(true)
+  [0, 3, 1, 19] Text("?")
+  [0, 3, 1, 8] Number(-1.0)
+  [0, 3, 1, 16] Number(0.0)
+  [0, 3, 1, 4] Boolean(true)
+  [0, 3, 1, 30] Text("#")
+  [0, 3, 1, 5] Number(-1.0)
+  [0, 3, 1, 12] Number(0.0)
+  [0, 3, 1, 2] Boolean(true)
+  [0, 3, 1, 17] Text("%")
+  [0, 3, 1, 6] Number(-1.0)
+  [0, 3, 1, 14] Number(0.0)
+  [0, 3, 1, 1] Boolean(true)
+  [0, 3, 1, 20] Boolean(true)
+  [0, 3, 1, 23] Text("tea")
+  [0, 3, 1] Text("tea")
+  [0, 3, 14] Text("tea")
   [0, 3, 12] Text("/ohlcv?")
   [0, 3, 17] Record({})
-  [0, 3, 3] Text("-24h")
-  [0, 3, 7] Record({"start": Text("-24h")})
-  [0, 3, 8] Text("")
+  [0, 3, 4] Text("-24h")
+  [0, 3, 8] Record({"start": Text("-24h")})
+  [0, 3, 9] Text("")
   [0, 3, 19] Record({"end": Text(""), "start": Text("-24h")})
   [0, 3, 16] Text("24h")
-  [0, 3, 4] Record({"end": Text(""), "interval": Text("24h"), "start": Text("-24h")})
-  [0, 3, 2] Number(50.0)
-  [0, 3, 5] Record({"end": Text(""), "interval": Text("24h"), "limit": Number(50.0), "start": Text("-24h")})
-  [0, 3, 6, 0] Text("(given, defaults) => {\n  const q = { ...defaults };\n  for (const k of Object.keys(defaults)) if (given[k] !== undefined && given[k] !== \"\") q[k] = giv… #c5c798e2de1bd398
-  [0, 3, 6, 2] List([Record({"after": Text("a")}), Record({"end": Text(""), "interval": Text("24h"), "limit": Number(50.0), "start": Text("-24h")})])
-  [0, 3, 6, 1] ·
-  [0, 3, 6, 3] ·
-  [0, 3, 6] ·
-  [0, 3, 14] ·
+  [0, 3, 5] Record({"end": Text(""), "interval": Text("24h"), "start": Text("-24h")})
+  [0, 3, 3] Number(50.0)
+  [0, 3, 6] Record({"end": Text(""), "interval": Text("24h"), "limit": Number(50.0), "start": Text("-24h")})
+  [0, 3, 7, 0] Text("(given, defaults) => {\n  const q = { ...defaults };\n  for (const k of Object.keys(defaults)) if (given[k] !== undefined && given[k] !== \"\") q[k] = giv… #c5c798e2de1bd398
+  [0, 3, 7, 2] List([Record({"after": Text("a")}), Record({"end": Text(""), "interval": Text("24h"), "limit": Number(50.0), "start": Text("-24h")})])
+  [0, 3, 7, 1] ·
+  [0, 3, 7, 3] ·
+  [0, 3, 7] ·
+  [0, 3, 15] ·
   [0, 3, 11] ·
-  [0, 3, 10, 18] Record({})
-  [0, 3, 10, 17] Record({})
-  [0, 3, 10, 22] Text("application/json")
-  [0, 3, 10, 16] Record({"accept": Text("application/json")})
-  [0, 3, 10, 6] ·
-  [0, 3, 10, 25] ·
-  [0, 3, 10, 0] Record({"accept": Text("application/json")})
-  [0, 3, 10, 11] ·
-  [0, 3, 10, 12] ·
-  [0, 3, 10, 7] Number(0.0)
-  [0, 3, 10, 21] ·
-  [0, 3, 10, 20] ·
-  [0, 3, 10, 13] ·
-  [0, 3, 10, 8] ·
-  [0, 3, 10, 3] ·
-  [0, 3, 10, 4] ·
-  [0, 3, 10, 24] ·
-  [0, 3, 10, 5] ·
-  [0, 3, 10, 10] ·
-  [0, 3, 10, 19] Record({})
-  [0, 3, 10, 2] ·
-  [0, 3, 10, 1] ·
-  [0, 3, 10, 23] ·
-  [0, 3, 10, 15] ·
-  [0, 3, 10, 9] ·
-  [0, 3, 10, 26] ·
-  [0, 3, 10] ·
+  [0, 3, 2, 19] Record({})
+  [0, 3, 2, 18] Record({})
+  [0, 3, 2, 24] Text("application/json")
+  [0, 3, 2, 17] Record({"accept": Text("application/json")})
+  [0, 3, 2, 6] ·
+  [0, 3, 2, 28] ·
+  [0, 3, 2, 0] Record({"accept": Text("application/json")})
+  [0, 3, 2, 11] ·
+  [0, 3, 2, 13] ·
+  [0, 3, 2, 7] Number(0.0)
+  [0, 3, 2, 23] ·
+  [0, 3, 2, 22] ·
+  [0, 3, 2, 14] Boolean(false)
+  [0, 3, 2, 26] Boolean(true)
+  [0, 3, 2, 12] ·
+  [0, 3, 2, 21] ·
+  [0, 3, 2, 8] ·
+  [0, 3, 2, 3] ·
+  [0, 3, 2, 4] ·
+  [0, 3, 2, 27] ·
+  [0, 3, 2, 5] ·
+  [0, 3, 2, 10] ·
+  [0, 3, 2, 20] Record({})
+  [0, 3, 2, 2] ·
+  [0, 3, 2, 1] ·
+  [0, 3, 2, 25] ·
+  [0, 3, 2, 16] ·
+  [0, 3, 2, 9] ·
+  [0, 3, 2, 29] ·
+  [0, 3, 2] ·
   [0, 3] ·
   [0, 4] ·
   [0, 5] ·
@@ -12261,43 +12339,7 @@
   [0, 0] Record({"body": Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,… #5a71c8a316dc73d2 | Record({"address": Text("tea"), "network": Text("tea")}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,14.25,51.25,88.2… #30defbf00c11dd9c | Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
   [0, 1] Text("tea")
   [0, 2] Text("tea")
-  [0, 3, 9] Text("/networks/")
-  [0, 3, 1, 11] Boolean(true)
-  [0, 3, 1, 22] Text("tea")
-  [0, 3, 1, 18] Text("")
-  [0, 3, 1, 25] Boolean(false)
-  [0, 3, 1, 28] Boolean(true)
-  [0, 3, 1, 31] Text(".")
-  [0, 3, 1, 26] Boolean(false)
-  [0, 3, 1, 29] Boolean(true)
-  [0, 3, 1, 21] Text("..")
-  [0, 3, 1, 24] Boolean(false)
-  [0, 3, 1, 27] Boolean(true)
-  [0, 3, 1, 10] Text("/")
-  [0, 3, 1, 9] Number(-1.0)
-  [0, 3, 1, 13] Number(0.0)
-  [0, 3, 1, 0] Boolean(true)
-  [0, 3, 1, 32] Text("\\")
-  [0, 3, 1, 7] Number(-1.0)
-  [0, 3, 1, 15] Number(0.0)
-  [0, 3, 1, 3] Boolean(true)
-  [0, 3, 1, 19] Text("?")
-  [0, 3, 1, 8] Number(-1.0)
-  [0, 3, 1, 16] Number(0.0)
-  [0, 3, 1, 4] Boolean(true)
-  [0, 3, 1, 30] Text("#")
-  [0, 3, 1, 5] Number(-1.0)
-  [0, 3, 1, 12] Number(0.0)
-  [0, 3, 1, 2] Boolean(true)
-  [0, 3, 1, 17] Text("%")
-  [0, 3, 1, 6] Number(-1.0)
-  [0, 3, 1, 14] Number(0.0)
-  [0, 3, 1, 1] Boolean(true)
-  [0, 3, 1, 20] Boolean(true)
-  [0, 3, 1, 23] Text("tea")
-  [0, 3, 1] Text("tea")
-  [0, 3, 13] Text("tea")
-  [0, 3, 18] Text("/tokens/")
+  [0, 3, 10] Text("/networks/")
   [0, 3, 0, 11] Boolean(true)
   [0, 3, 0, 22] Text("tea")
   [0, 3, 0, 18] Text("")
@@ -12332,51 +12374,90 @@
   [0, 3, 0, 20] Boolean(true)
   [0, 3, 0, 23] Text("tea")
   [0, 3, 0] Text("tea")
-  [0, 3, 15] Text("tea")
+  [0, 3, 13] Text("tea")
+  [0, 3, 18] Text("/tokens/")
+  [0, 3, 1, 11] Boolean(true)
+  [0, 3, 1, 22] Text("tea")
+  [0, 3, 1, 18] Text("")
+  [0, 3, 1, 25] Boolean(false)
+  [0, 3, 1, 28] Boolean(true)
+  [0, 3, 1, 31] Text(".")
+  [0, 3, 1, 26] Boolean(false)
+  [0, 3, 1, 29] Boolean(true)
+  [0, 3, 1, 21] Text("..")
+  [0, 3, 1, 24] Boolean(false)
+  [0, 3, 1, 27] Boolean(true)
+  [0, 3, 1, 10] Text("/")
+  [0, 3, 1, 9] Number(-1.0)
+  [0, 3, 1, 13] Number(0.0)
+  [0, 3, 1, 0] Boolean(true)
+  [0, 3, 1, 32] Text("\\")
+  [0, 3, 1, 7] Number(-1.0)
+  [0, 3, 1, 15] Number(0.0)
+  [0, 3, 1, 3] Boolean(true)
+  [0, 3, 1, 19] Text("?")
+  [0, 3, 1, 8] Number(-1.0)
+  [0, 3, 1, 16] Number(0.0)
+  [0, 3, 1, 4] Boolean(true)
+  [0, 3, 1, 30] Text("#")
+  [0, 3, 1, 5] Number(-1.0)
+  [0, 3, 1, 12] Number(0.0)
+  [0, 3, 1, 2] Boolean(true)
+  [0, 3, 1, 17] Text("%")
+  [0, 3, 1, 6] Number(-1.0)
+  [0, 3, 1, 14] Number(0.0)
+  [0, 3, 1, 1] Boolean(true)
+  [0, 3, 1, 20] Boolean(true)
+  [0, 3, 1, 23] Text("tea")
+  [0, 3, 1] Text("tea")
+  [0, 3, 14] Text("tea")
   [0, 3, 12] Text("/ohlcv?")
   [0, 3, 17] Record({})
-  [0, 3, 3] Text("-24h")
-  [0, 3, 7] Record({"start": Text("-24h")})
-  [0, 3, 8] Text("")
+  [0, 3, 4] Text("-24h")
+  [0, 3, 8] Record({"start": Text("-24h")})
+  [0, 3, 9] Text("")
   [0, 3, 19] Record({"end": Text(""), "start": Text("-24h")})
   [0, 3, 16] Text("24h")
-  [0, 3, 4] Record({"end": Text(""), "interval": Text("24h"), "start": Text("-24h")})
-  [0, 3, 2] Number(50.0)
-  [0, 3, 5] Record({"end": Text(""), "interval": Text("24h"), "limit": Number(50.0), "start": Text("-24h")})
-  [0, 3, 6, 0] Text("(given, defaults) => {\n  const q = { ...defaults };\n  for (const k of Object.keys(defaults)) if (given[k] !== undefined && given[k] !== \"\") q[k] = giv… #c5c798e2de1bd398
-  [0, 3, 6, 2] List([Record({"after": Text("a")}), Record({"end": Text(""), "interval": Text("24h"), "limit": Number(50.0), "start": Text("-24h")})])
-  [0, 3, 6, 1] ·
-  [0, 3, 6, 3] ·
-  [0, 3, 6] ·
-  [0, 3, 14] ·
+  [0, 3, 5] Record({"end": Text(""), "interval": Text("24h"), "start": Text("-24h")})
+  [0, 3, 3] Number(50.0)
+  [0, 3, 6] Record({"end": Text(""), "interval": Text("24h"), "limit": Number(50.0), "start": Text("-24h")})
+  [0, 3, 7, 0] Text("(given, defaults) => {\n  const q = { ...defaults };\n  for (const k of Object.keys(defaults)) if (given[k] !== undefined && given[k] !== \"\") q[k] = giv… #c5c798e2de1bd398
+  [0, 3, 7, 2] List([Record({"after": Text("a")}), Record({"end": Text(""), "interval": Text("24h"), "limit": Number(50.0), "start": Text("-24h")})])
+  [0, 3, 7, 1] ·
+  [0, 3, 7, 3] ·
+  [0, 3, 7] ·
+  [0, 3, 15] ·
   [0, 3, 11] ·
-  [0, 3, 10, 18] Record({})
-  [0, 3, 10, 17] Record({})
-  [0, 3, 10, 22] Text("application/json")
-  [0, 3, 10, 16] Record({"accept": Text("application/json")})
-  [0, 3, 10, 6] ·
-  [0, 3, 10, 25] ·
-  [0, 3, 10, 0] Record({"accept": Text("application/json")})
-  [0, 3, 10, 11] ·
-  [0, 3, 10, 12] ·
-  [0, 3, 10, 7] Number(0.0)
-  [0, 3, 10, 21] ·
-  [0, 3, 10, 20] ·
-  [0, 3, 10, 13] ·
-  [0, 3, 10, 8] ·
-  [0, 3, 10, 3] ·
-  [0, 3, 10, 4] ·
-  [0, 3, 10, 24] ·
-  [0, 3, 10, 5] ·
-  [0, 3, 10, 10] ·
-  [0, 3, 10, 19] Record({})
-  [0, 3, 10, 2] ·
-  [0, 3, 10, 1] ·
-  [0, 3, 10, 23] ·
-  [0, 3, 10, 15] ·
-  [0, 3, 10, 9] ·
-  [0, 3, 10, 26] ·
-  [0, 3, 10] ·
+  [0, 3, 2, 19] Record({})
+  [0, 3, 2, 18] Record({})
+  [0, 3, 2, 24] Text("application/json")
+  [0, 3, 2, 17] Record({"accept": Text("application/json")})
+  [0, 3, 2, 6] ·
+  [0, 3, 2, 28] ·
+  [0, 3, 2, 0] Record({"accept": Text("application/json")})
+  [0, 3, 2, 11] ·
+  [0, 3, 2, 13] ·
+  [0, 3, 2, 7] Number(0.0)
+  [0, 3, 2, 23] ·
+  [0, 3, 2, 22] ·
+  [0, 3, 2, 14] Boolean(false)
+  [0, 3, 2, 26] Boolean(true)
+  [0, 3, 2, 12] ·
+  [0, 3, 2, 21] ·
+  [0, 3, 2, 8] ·
+  [0, 3, 2, 3] ·
+  [0, 3, 2, 4] ·
+  [0, 3, 2, 27] ·
+  [0, 3, 2, 5] ·
+  [0, 3, 2, 10] ·
+  [0, 3, 2, 20] Record({})
+  [0, 3, 2, 2] ·
+  [0, 3, 2, 1] ·
+  [0, 3, 2, 25] ·
+  [0, 3, 2, 16] ·
+  [0, 3, 2, 9] ·
+  [0, 3, 2, 29] ·
+  [0, 3, 2] ·
   [0, 3] ·
   [0, 4] ·
   [0, 5] ·
@@ -12396,43 +12477,7 @@
   [0, 0] Record({"body": Text(""), "headers": Record({"content-type": Text("application/json")}), "method": Text("GET"), "params": Record({"address": Text("tea"), "netwo… #f1f32366dd186625 | Record({"address": Text("tea"), "network": Text("tea")}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("") | ·
   [0, 1] Text("tea")
   [0, 2] Text("tea")
-  [0, 3, 23] Text("/networks/")
-  [0, 3, 2, 11] Boolean(true)
-  [0, 3, 2, 22] Text("tea")
-  [0, 3, 2, 18] Text("")
-  [0, 3, 2, 25] Boolean(false)
-  [0, 3, 2, 28] Boolean(true)
-  [0, 3, 2, 31] Text(".")
-  [0, 3, 2, 26] Boolean(false)
-  [0, 3, 2, 29] Boolean(true)
-  [0, 3, 2, 21] Text("..")
-  [0, 3, 2, 24] Boolean(false)
-  [0, 3, 2, 27] Boolean(true)
-  [0, 3, 2, 10] Text("/")
-  [0, 3, 2, 9] Number(-1.0)
-  [0, 3, 2, 13] Number(0.0)
-  [0, 3, 2, 0] Boolean(true)
-  [0, 3, 2, 32] Text("\\")
-  [0, 3, 2, 7] Number(-1.0)
-  [0, 3, 2, 15] Number(0.0)
-  [0, 3, 2, 3] Boolean(true)
-  [0, 3, 2, 19] Text("?")
-  [0, 3, 2, 8] Number(-1.0)
-  [0, 3, 2, 16] Number(0.0)
-  [0, 3, 2, 4] Boolean(true)
-  [0, 3, 2, 30] Text("#")
-  [0, 3, 2, 5] Number(-1.0)
-  [0, 3, 2, 12] Number(0.0)
-  [0, 3, 2, 2] Boolean(true)
-  [0, 3, 2, 17] Text("%")
-  [0, 3, 2, 6] Number(-1.0)
-  [0, 3, 2, 14] Number(0.0)
-  [0, 3, 2, 1] Boolean(true)
-  [0, 3, 2, 20] Boolean(true)
-  [0, 3, 2, 23] Text("tea")
-  [0, 3, 2] Text("tea")
-  [0, 3, 27] Text("tea")
-  [0, 3, 31] Text("/tokens/")
+  [0, 3, 24] Text("/networks/")
   [0, 3, 1, 11] Boolean(true)
   [0, 3, 1, 22] Text("tea")
   [0, 3, 1, 18] Text("")
@@ -12467,65 +12512,104 @@
   [0, 3, 1, 20] Boolean(true)
   [0, 3, 1, 23] Text("tea")
   [0, 3, 1] Text("tea")
-  [0, 3, 29] Text("tea")
-  [0, 3, 12] Text("/indicators?")
+  [0, 3, 27] Text("tea")
+  [0, 3, 31] Text("/tokens/")
+  [0, 3, 2, 11] Boolean(true)
+  [0, 3, 2, 22] Text("tea")
+  [0, 3, 2, 18] Text("")
+  [0, 3, 2, 25] Boolean(false)
+  [0, 3, 2, 28] Boolean(true)
+  [0, 3, 2, 31] Text(".")
+  [0, 3, 2, 26] Boolean(false)
+  [0, 3, 2, 29] Boolean(true)
+  [0, 3, 2, 21] Text("..")
+  [0, 3, 2, 24] Boolean(false)
+  [0, 3, 2, 27] Boolean(true)
+  [0, 3, 2, 10] Text("/")
+  [0, 3, 2, 9] Number(-1.0)
+  [0, 3, 2, 13] Number(0.0)
+  [0, 3, 2, 0] Boolean(true)
+  [0, 3, 2, 32] Text("\\")
+  [0, 3, 2, 7] Number(-1.0)
+  [0, 3, 2, 15] Number(0.0)
+  [0, 3, 2, 3] Boolean(true)
+  [0, 3, 2, 19] Text("?")
+  [0, 3, 2, 8] Number(-1.0)
+  [0, 3, 2, 16] Number(0.0)
+  [0, 3, 2, 4] Boolean(true)
+  [0, 3, 2, 30] Text("#")
+  [0, 3, 2, 5] Number(-1.0)
+  [0, 3, 2, 12] Number(0.0)
+  [0, 3, 2, 2] Boolean(true)
+  [0, 3, 2, 17] Text("%")
+  [0, 3, 2, 6] Number(-1.0)
+  [0, 3, 2, 14] Number(0.0)
+  [0, 3, 2, 1] Boolean(true)
+  [0, 3, 2, 20] Boolean(true)
+  [0, 3, 2, 23] Text("tea")
+  [0, 3, 2] Text("tea")
+  [0, 3, 28] Text("tea")
+  [0, 3, 13] Text("/indicators?")
   [0, 3, 30] Record({})
   [0, 3, 0] Text("rsi")
   [0, 3, 3] Record({"indicator": Text("rsi")})
-  [0, 3, 16] Text("")
-  [0, 3, 7] Record({"indicator": Text("rsi"), "interval": Text("")})
-  [0, 3, 19] Text("")
-  [0, 3, 8] Record({"cursor": Text(""), "indicator": Text("rsi"), "interval": Text("")})
-  [0, 3, 14] Text("")
-  [0, 3, 32] Record({"cursor": Text(""), "end": Text(""), "indicator": Text("rsi"), "interval": Text("")})
   [0, 3, 22] Text("")
-  [0, 3, 5] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text("")})
-  [0, 3, 21] Text("")
-  [0, 3, 9] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit": Text("")})
-  [0, 3, 20] Text("")
-  [0, 3, 4] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit": Text(""), "period": Text("")})
-  [0, 3, 17] Text("")
-  [0, 3, 25] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit": Text(""), "period": Text(""), "si… #3dc072769738021d
+  [0, 3, 8] Record({"indicator": Text("rsi"), "interval": Text("")})
   [0, 3, 18] Text("")
-  [0, 3, 6] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit": Text(""), "period": Text(""), "si… #ab9f63705983ae66
-  [0, 3, 13] Text("")
-  [0, 3, 33] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit": Text(""), "period": Text(""), "si… #e202bd6dd7b6ff98
+  [0, 3, 9] Record({"cursor": Text(""), "indicator": Text("rsi"), "interval": Text("")})
+  [0, 3, 21] Text("")
+  [0, 3, 32] Record({"cursor": Text(""), "end": Text(""), "indicator": Text("rsi"), "interval": Text("")})
+  [0, 3, 16] Text("")
+  [0, 3, 6] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text("")})
+  [0, 3, 19] Text("")
+  [0, 3, 10] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit": Text("")})
+  [0, 3, 20] Text("")
+  [0, 3, 5] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit": Text(""), "period": Text("")})
+  [0, 3, 23] Text("")
+  [0, 3, 25] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit": Text(""), "period": Text(""), "si… #3dc072769738021d
+  [0, 3, 17] Text("")
+  [0, 3, 7] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit": Text(""), "period": Text(""), "si… #ab9f63705983ae66
   [0, 3, 15] Text("")
-  [0, 3, 11] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit": Text(""), "period": Text(""), "si… #323f7accc437ee9f
-  [0, 3, 10, 0] Text("(given, defaults) => {\n  const q = { ...defaults };\n  for (const k of Object.keys(defaults)) if (given[k] !== undefined && given[k] !== \"\") q[k] = giv… #c5c798e2de1bd398
-  [0, 3, 10, 2] List([Record({"after": Text("a")}), Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit… #5ee946dc69fd1db6
-  [0, 3, 10, 1] ·
-  [0, 3, 10, 3] ·
-  [0, 3, 10] ·
-  [0, 3, 28] ·
+  [0, 3, 33] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit": Text(""), "period": Text(""), "si… #e202bd6dd7b6ff98
+  [0, 3, 14] Text("")
+  [0, 3, 12] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit": Text(""), "period": Text(""), "si… #323f7accc437ee9f
+  [0, 3, 11, 0] Text("(given, defaults) => {\n  const q = { ...defaults };\n  for (const k of Object.keys(defaults)) if (given[k] !== undefined && given[k] !== \"\") q[k] = giv… #c5c798e2de1bd398
+  [0, 3, 11, 2] List([Record({"after": Text("a")}), Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit… #5ee946dc69fd1db6
+  [0, 3, 11, 1] ·
+  [0, 3, 11, 3] ·
+  [0, 3, 11] ·
+  [0, 3, 29] ·
   [0, 3, 26] ·
-  [0, 3, 24, 18] Record({})
-  [0, 3, 24, 17] Record({})
-  [0, 3, 24, 22] Text("application/json")
-  [0, 3, 24, 16] Record({"accept": Text("application/json")})
-  [0, 3, 24, 6] ·
-  [0, 3, 24, 25] ·
-  [0, 3, 24, 0] Record({"accept": Text("application/json")})
-  [0, 3, 24, 11] ·
-  [0, 3, 24, 12] ·
-  [0, 3, 24, 7] Number(0.0)
-  [0, 3, 24, 21] ·
-  [0, 3, 24, 20] ·
-  [0, 3, 24, 13] ·
-  [0, 3, 24, 8] ·
-  [0, 3, 24, 3] ·
-  [0, 3, 24, 4] ·
-  [0, 3, 24, 24] ·
-  [0, 3, 24, 5] ·
-  [0, 3, 24, 10] ·
-  [0, 3, 24, 19] Record({})
-  [0, 3, 24, 2] ·
-  [0, 3, 24, 1] ·
-  [0, 3, 24, 23] ·
-  [0, 3, 24, 15] ·
-  [0, 3, 24, 9] ·
-  [0, 3, 24, 26] ·
-  [0, 3, 24] ·
+  [0, 3, 4, 19] Record({})
+  [0, 3, 4, 18] Record({})
+  [0, 3, 4, 24] Text("application/json")
+  [0, 3, 4, 17] Record({"accept": Text("application/json")})
+  [0, 3, 4, 6] ·
+  [0, 3, 4, 28] ·
+  [0, 3, 4, 0] Record({"accept": Text("application/json")})
+  [0, 3, 4, 11] ·
+  [0, 3, 4, 13] ·
+  [0, 3, 4, 7] Number(0.0)
+  [0, 3, 4, 23] ·
+  [0, 3, 4, 22] ·
+  [0, 3, 4, 14] Boolean(false)
+  [0, 3, 4, 26] Boolean(true)
+  [0, 3, 4, 12] ·
+  [0, 3, 4, 21] ·
+  [0, 3, 4, 8] ·
+  [0, 3, 4, 3] ·
+  [0, 3, 4, 4] ·
+  [0, 3, 4, 27] ·
+  [0, 3, 4, 5] ·
+  [0, 3, 4, 10] ·
+  [0, 3, 4, 20] Record({})
+  [0, 3, 4, 2] ·
+  [0, 3, 4, 1] ·
+  [0, 3, 4, 25] ·
+  [0, 3, 4, 16] ·
+  [0, 3, 4, 9] ·
+  [0, 3, 4, 29] ·
+  [0, 3, 4] ·
   [0, 3] ·
   [0, 4] ·
   [0, 5] ·
@@ -12545,43 +12629,7 @@
   [0, 0] Record({"body": Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\… #2530531ff0255644 | Record({"address": Text("tea"), "network": Text("tea")}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\"event\":\"gig\"… #7441bf0c70954823 | Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
   [0, 1] Text("tea")
   [0, 2] Text("tea")
-  [0, 3, 23] Text("/networks/")
-  [0, 3, 2, 11] Boolean(true)
-  [0, 3, 2, 22] Text("tea")
-  [0, 3, 2, 18] Text("")
-  [0, 3, 2, 25] Boolean(false)
-  [0, 3, 2, 28] Boolean(true)
-  [0, 3, 2, 31] Text(".")
-  [0, 3, 2, 26] Boolean(false)
-  [0, 3, 2, 29] Boolean(true)
-  [0, 3, 2, 21] Text("..")
-  [0, 3, 2, 24] Boolean(false)
-  [0, 3, 2, 27] Boolean(true)
-  [0, 3, 2, 10] Text("/")
-  [0, 3, 2, 9] Number(-1.0)
-  [0, 3, 2, 13] Number(0.0)
-  [0, 3, 2, 0] Boolean(true)
-  [0, 3, 2, 32] Text("\\")
-  [0, 3, 2, 7] Number(-1.0)
-  [0, 3, 2, 15] Number(0.0)
-  [0, 3, 2, 3] Boolean(true)
-  [0, 3, 2, 19] Text("?")
-  [0, 3, 2, 8] Number(-1.0)
-  [0, 3, 2, 16] Number(0.0)
-  [0, 3, 2, 4] Boolean(true)
-  [0, 3, 2, 30] Text("#")
-  [0, 3, 2, 5] Number(-1.0)
-  [0, 3, 2, 12] Number(0.0)
-  [0, 3, 2, 2] Boolean(true)
-  [0, 3, 2, 17] Text("%")
-  [0, 3, 2, 6] Number(-1.0)
-  [0, 3, 2, 14] Number(0.0)
-  [0, 3, 2, 1] Boolean(true)
-  [0, 3, 2, 20] Boolean(true)
-  [0, 3, 2, 23] Text("tea")
-  [0, 3, 2] Text("tea")
-  [0, 3, 27] Text("tea")
-  [0, 3, 31] Text("/tokens/")
+  [0, 3, 24] Text("/networks/")
   [0, 3, 1, 11] Boolean(true)
   [0, 3, 1, 22] Text("tea")
   [0, 3, 1, 18] Text("")
@@ -12616,65 +12664,104 @@
   [0, 3, 1, 20] Boolean(true)
   [0, 3, 1, 23] Text("tea")
   [0, 3, 1] Text("tea")
-  [0, 3, 29] Text("tea")
-  [0, 3, 12] Text("/indicators?")
+  [0, 3, 27] Text("tea")
+  [0, 3, 31] Text("/tokens/")
+  [0, 3, 2, 11] Boolean(true)
+  [0, 3, 2, 22] Text("tea")
+  [0, 3, 2, 18] Text("")
+  [0, 3, 2, 25] Boolean(false)
+  [0, 3, 2, 28] Boolean(true)
+  [0, 3, 2, 31] Text(".")
+  [0, 3, 2, 26] Boolean(false)
+  [0, 3, 2, 29] Boolean(true)
+  [0, 3, 2, 21] Text("..")
+  [0, 3, 2, 24] Boolean(false)
+  [0, 3, 2, 27] Boolean(true)
+  [0, 3, 2, 10] Text("/")
+  [0, 3, 2, 9] Number(-1.0)
+  [0, 3, 2, 13] Number(0.0)
+  [0, 3, 2, 0] Boolean(true)
+  [0, 3, 2, 32] Text("\\")
+  [0, 3, 2, 7] Number(-1.0)
+  [0, 3, 2, 15] Number(0.0)
+  [0, 3, 2, 3] Boolean(true)
+  [0, 3, 2, 19] Text("?")
+  [0, 3, 2, 8] Number(-1.0)
+  [0, 3, 2, 16] Number(0.0)
+  [0, 3, 2, 4] Boolean(true)
+  [0, 3, 2, 30] Text("#")
+  [0, 3, 2, 5] Number(-1.0)
+  [0, 3, 2, 12] Number(0.0)
+  [0, 3, 2, 2] Boolean(true)
+  [0, 3, 2, 17] Text("%")
+  [0, 3, 2, 6] Number(-1.0)
+  [0, 3, 2, 14] Number(0.0)
+  [0, 3, 2, 1] Boolean(true)
+  [0, 3, 2, 20] Boolean(true)
+  [0, 3, 2, 23] Text("tea")
+  [0, 3, 2] Text("tea")
+  [0, 3, 28] Text("tea")
+  [0, 3, 13] Text("/indicators?")
   [0, 3, 30] Record({})
   [0, 3, 0] Text("rsi")
   [0, 3, 3] Record({"indicator": Text("rsi")})
-  [0, 3, 16] Text("")
-  [0, 3, 7] Record({"indicator": Text("rsi"), "interval": Text("")})
-  [0, 3, 19] Text("")
-  [0, 3, 8] Record({"cursor": Text(""), "indicator": Text("rsi"), "interval": Text("")})
-  [0, 3, 14] Text("")
-  [0, 3, 32] Record({"cursor": Text(""), "end": Text(""), "indicator": Text("rsi"), "interval": Text("")})
   [0, 3, 22] Text("")
-  [0, 3, 5] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text("")})
-  [0, 3, 21] Text("")
-  [0, 3, 9] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit": Text("")})
-  [0, 3, 20] Text("")
-  [0, 3, 4] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit": Text(""), "period": Text("")})
-  [0, 3, 17] Text("")
-  [0, 3, 25] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit": Text(""), "period": Text(""), "si… #3dc072769738021d
+  [0, 3, 8] Record({"indicator": Text("rsi"), "interval": Text("")})
   [0, 3, 18] Text("")
-  [0, 3, 6] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit": Text(""), "period": Text(""), "si… #ab9f63705983ae66
-  [0, 3, 13] Text("")
-  [0, 3, 33] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit": Text(""), "period": Text(""), "si… #e202bd6dd7b6ff98
+  [0, 3, 9] Record({"cursor": Text(""), "indicator": Text("rsi"), "interval": Text("")})
+  [0, 3, 21] Text("")
+  [0, 3, 32] Record({"cursor": Text(""), "end": Text(""), "indicator": Text("rsi"), "interval": Text("")})
+  [0, 3, 16] Text("")
+  [0, 3, 6] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text("")})
+  [0, 3, 19] Text("")
+  [0, 3, 10] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit": Text("")})
+  [0, 3, 20] Text("")
+  [0, 3, 5] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit": Text(""), "period": Text("")})
+  [0, 3, 23] Text("")
+  [0, 3, 25] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit": Text(""), "period": Text(""), "si… #3dc072769738021d
+  [0, 3, 17] Text("")
+  [0, 3, 7] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit": Text(""), "period": Text(""), "si… #ab9f63705983ae66
   [0, 3, 15] Text("")
-  [0, 3, 11] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit": Text(""), "period": Text(""), "si… #323f7accc437ee9f
-  [0, 3, 10, 0] Text("(given, defaults) => {\n  const q = { ...defaults };\n  for (const k of Object.keys(defaults)) if (given[k] !== undefined && given[k] !== \"\") q[k] = giv… #c5c798e2de1bd398
-  [0, 3, 10, 2] List([Record({"after": Text("a")}), Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit… #5ee946dc69fd1db6
-  [0, 3, 10, 1] ·
-  [0, 3, 10, 3] ·
-  [0, 3, 10] ·
-  [0, 3, 28] ·
+  [0, 3, 33] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit": Text(""), "period": Text(""), "si… #e202bd6dd7b6ff98
+  [0, 3, 14] Text("")
+  [0, 3, 12] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit": Text(""), "period": Text(""), "si… #323f7accc437ee9f
+  [0, 3, 11, 0] Text("(given, defaults) => {\n  const q = { ...defaults };\n  for (const k of Object.keys(defaults)) if (given[k] !== undefined && given[k] !== \"\") q[k] = giv… #c5c798e2de1bd398
+  [0, 3, 11, 2] List([Record({"after": Text("a")}), Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit… #5ee946dc69fd1db6
+  [0, 3, 11, 1] ·
+  [0, 3, 11, 3] ·
+  [0, 3, 11] ·
+  [0, 3, 29] ·
   [0, 3, 26] ·
-  [0, 3, 24, 18] Record({})
-  [0, 3, 24, 17] Record({})
-  [0, 3, 24, 22] Text("application/json")
-  [0, 3, 24, 16] Record({"accept": Text("application/json")})
-  [0, 3, 24, 6] ·
-  [0, 3, 24, 25] ·
-  [0, 3, 24, 0] Record({"accept": Text("application/json")})
-  [0, 3, 24, 11] ·
-  [0, 3, 24, 12] ·
-  [0, 3, 24, 7] Number(0.0)
-  [0, 3, 24, 21] ·
-  [0, 3, 24, 20] ·
-  [0, 3, 24, 13] ·
-  [0, 3, 24, 8] ·
-  [0, 3, 24, 3] ·
-  [0, 3, 24, 4] ·
-  [0, 3, 24, 24] ·
-  [0, 3, 24, 5] ·
-  [0, 3, 24, 10] ·
-  [0, 3, 24, 19] Record({})
-  [0, 3, 24, 2] ·
-  [0, 3, 24, 1] ·
-  [0, 3, 24, 23] ·
-  [0, 3, 24, 15] ·
-  [0, 3, 24, 9] ·
-  [0, 3, 24, 26] ·
-  [0, 3, 24] ·
+  [0, 3, 4, 19] Record({})
+  [0, 3, 4, 18] Record({})
+  [0, 3, 4, 24] Text("application/json")
+  [0, 3, 4, 17] Record({"accept": Text("application/json")})
+  [0, 3, 4, 6] ·
+  [0, 3, 4, 28] ·
+  [0, 3, 4, 0] Record({"accept": Text("application/json")})
+  [0, 3, 4, 11] ·
+  [0, 3, 4, 13] ·
+  [0, 3, 4, 7] Number(0.0)
+  [0, 3, 4, 23] ·
+  [0, 3, 4, 22] ·
+  [0, 3, 4, 14] Boolean(false)
+  [0, 3, 4, 26] Boolean(true)
+  [0, 3, 4, 12] ·
+  [0, 3, 4, 21] ·
+  [0, 3, 4, 8] ·
+  [0, 3, 4, 3] ·
+  [0, 3, 4, 4] ·
+  [0, 3, 4, 27] ·
+  [0, 3, 4, 5] ·
+  [0, 3, 4, 10] ·
+  [0, 3, 4, 20] Record({})
+  [0, 3, 4, 2] ·
+  [0, 3, 4, 1] ·
+  [0, 3, 4, 25] ·
+  [0, 3, 4, 16] ·
+  [0, 3, 4, 9] ·
+  [0, 3, 4, 29] ·
+  [0, 3, 4] ·
   [0, 3] ·
   [0, 4] ·
   [0, 5] ·
@@ -12694,43 +12781,7 @@
   [0, 0] Record({"body": Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,… #b605cd259d4b2f91 | Record({"address": Text("tea"), "network": Text("tea")}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,14.25,51.25,88.2… #30defbf00c11dd9c | Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
   [0, 1] Text("tea")
   [0, 2] Text("tea")
-  [0, 3, 23] Text("/networks/")
-  [0, 3, 2, 11] Boolean(true)
-  [0, 3, 2, 22] Text("tea")
-  [0, 3, 2, 18] Text("")
-  [0, 3, 2, 25] Boolean(false)
-  [0, 3, 2, 28] Boolean(true)
-  [0, 3, 2, 31] Text(".")
-  [0, 3, 2, 26] Boolean(false)
-  [0, 3, 2, 29] Boolean(true)
-  [0, 3, 2, 21] Text("..")
-  [0, 3, 2, 24] Boolean(false)
-  [0, 3, 2, 27] Boolean(true)
-  [0, 3, 2, 10] Text("/")
-  [0, 3, 2, 9] Number(-1.0)
-  [0, 3, 2, 13] Number(0.0)
-  [0, 3, 2, 0] Boolean(true)
-  [0, 3, 2, 32] Text("\\")
-  [0, 3, 2, 7] Number(-1.0)
-  [0, 3, 2, 15] Number(0.0)
-  [0, 3, 2, 3] Boolean(true)
-  [0, 3, 2, 19] Text("?")
-  [0, 3, 2, 8] Number(-1.0)
-  [0, 3, 2, 16] Number(0.0)
-  [0, 3, 2, 4] Boolean(true)
-  [0, 3, 2, 30] Text("#")
-  [0, 3, 2, 5] Number(-1.0)
-  [0, 3, 2, 12] Number(0.0)
-  [0, 3, 2, 2] Boolean(true)
-  [0, 3, 2, 17] Text("%")
-  [0, 3, 2, 6] Number(-1.0)
-  [0, 3, 2, 14] Number(0.0)
-  [0, 3, 2, 1] Boolean(true)
-  [0, 3, 2, 20] Boolean(true)
-  [0, 3, 2, 23] Text("tea")
-  [0, 3, 2] Text("tea")
-  [0, 3, 27] Text("tea")
-  [0, 3, 31] Text("/tokens/")
+  [0, 3, 24] Text("/networks/")
   [0, 3, 1, 11] Boolean(true)
   [0, 3, 1, 22] Text("tea")
   [0, 3, 1, 18] Text("")
@@ -12765,65 +12816,104 @@
   [0, 3, 1, 20] Boolean(true)
   [0, 3, 1, 23] Text("tea")
   [0, 3, 1] Text("tea")
-  [0, 3, 29] Text("tea")
-  [0, 3, 12] Text("/indicators?")
+  [0, 3, 27] Text("tea")
+  [0, 3, 31] Text("/tokens/")
+  [0, 3, 2, 11] Boolean(true)
+  [0, 3, 2, 22] Text("tea")
+  [0, 3, 2, 18] Text("")
+  [0, 3, 2, 25] Boolean(false)
+  [0, 3, 2, 28] Boolean(true)
+  [0, 3, 2, 31] Text(".")
+  [0, 3, 2, 26] Boolean(false)
+  [0, 3, 2, 29] Boolean(true)
+  [0, 3, 2, 21] Text("..")
+  [0, 3, 2, 24] Boolean(false)
+  [0, 3, 2, 27] Boolean(true)
+  [0, 3, 2, 10] Text("/")
+  [0, 3, 2, 9] Number(-1.0)
+  [0, 3, 2, 13] Number(0.0)
+  [0, 3, 2, 0] Boolean(true)
+  [0, 3, 2, 32] Text("\\")
+  [0, 3, 2, 7] Number(-1.0)
+  [0, 3, 2, 15] Number(0.0)
+  [0, 3, 2, 3] Boolean(true)
+  [0, 3, 2, 19] Text("?")
+  [0, 3, 2, 8] Number(-1.0)
+  [0, 3, 2, 16] Number(0.0)
+  [0, 3, 2, 4] Boolean(true)
+  [0, 3, 2, 30] Text("#")
+  [0, 3, 2, 5] Number(-1.0)
+  [0, 3, 2, 12] Number(0.0)
+  [0, 3, 2, 2] Boolean(true)
+  [0, 3, 2, 17] Text("%")
+  [0, 3, 2, 6] Number(-1.0)
+  [0, 3, 2, 14] Number(0.0)
+  [0, 3, 2, 1] Boolean(true)
+  [0, 3, 2, 20] Boolean(true)
+  [0, 3, 2, 23] Text("tea")
+  [0, 3, 2] Text("tea")
+  [0, 3, 28] Text("tea")
+  [0, 3, 13] Text("/indicators?")
   [0, 3, 30] Record({})
   [0, 3, 0] Text("rsi")
   [0, 3, 3] Record({"indicator": Text("rsi")})
-  [0, 3, 16] Text("")
-  [0, 3, 7] Record({"indicator": Text("rsi"), "interval": Text("")})
-  [0, 3, 19] Text("")
-  [0, 3, 8] Record({"cursor": Text(""), "indicator": Text("rsi"), "interval": Text("")})
-  [0, 3, 14] Text("")
-  [0, 3, 32] Record({"cursor": Text(""), "end": Text(""), "indicator": Text("rsi"), "interval": Text("")})
   [0, 3, 22] Text("")
-  [0, 3, 5] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text("")})
-  [0, 3, 21] Text("")
-  [0, 3, 9] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit": Text("")})
-  [0, 3, 20] Text("")
-  [0, 3, 4] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit": Text(""), "period": Text("")})
-  [0, 3, 17] Text("")
-  [0, 3, 25] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit": Text(""), "period": Text(""), "si… #3dc072769738021d
+  [0, 3, 8] Record({"indicator": Text("rsi"), "interval": Text("")})
   [0, 3, 18] Text("")
-  [0, 3, 6] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit": Text(""), "period": Text(""), "si… #ab9f63705983ae66
-  [0, 3, 13] Text("")
-  [0, 3, 33] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit": Text(""), "period": Text(""), "si… #e202bd6dd7b6ff98
+  [0, 3, 9] Record({"cursor": Text(""), "indicator": Text("rsi"), "interval": Text("")})
+  [0, 3, 21] Text("")
+  [0, 3, 32] Record({"cursor": Text(""), "end": Text(""), "indicator": Text("rsi"), "interval": Text("")})
+  [0, 3, 16] Text("")
+  [0, 3, 6] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text("")})
+  [0, 3, 19] Text("")
+  [0, 3, 10] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit": Text("")})
+  [0, 3, 20] Text("")
+  [0, 3, 5] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit": Text(""), "period": Text("")})
+  [0, 3, 23] Text("")
+  [0, 3, 25] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit": Text(""), "period": Text(""), "si… #3dc072769738021d
+  [0, 3, 17] Text("")
+  [0, 3, 7] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit": Text(""), "period": Text(""), "si… #ab9f63705983ae66
   [0, 3, 15] Text("")
-  [0, 3, 11] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit": Text(""), "period": Text(""), "si… #323f7accc437ee9f
-  [0, 3, 10, 0] Text("(given, defaults) => {\n  const q = { ...defaults };\n  for (const k of Object.keys(defaults)) if (given[k] !== undefined && given[k] !== \"\") q[k] = giv… #c5c798e2de1bd398
-  [0, 3, 10, 2] List([Record({"after": Text("a")}), Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit… #5ee946dc69fd1db6
-  [0, 3, 10, 1] ·
-  [0, 3, 10, 3] ·
-  [0, 3, 10] ·
-  [0, 3, 28] ·
+  [0, 3, 33] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit": Text(""), "period": Text(""), "si… #e202bd6dd7b6ff98
+  [0, 3, 14] Text("")
+  [0, 3, 12] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit": Text(""), "period": Text(""), "si… #323f7accc437ee9f
+  [0, 3, 11, 0] Text("(given, defaults) => {\n  const q = { ...defaults };\n  for (const k of Object.keys(defaults)) if (given[k] !== undefined && given[k] !== \"\") q[k] = giv… #c5c798e2de1bd398
+  [0, 3, 11, 2] List([Record({"after": Text("a")}), Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit… #5ee946dc69fd1db6
+  [0, 3, 11, 1] ·
+  [0, 3, 11, 3] ·
+  [0, 3, 11] ·
+  [0, 3, 29] ·
   [0, 3, 26] ·
-  [0, 3, 24, 18] Record({})
-  [0, 3, 24, 17] Record({})
-  [0, 3, 24, 22] Text("application/json")
-  [0, 3, 24, 16] Record({"accept": Text("application/json")})
-  [0, 3, 24, 6] ·
-  [0, 3, 24, 25] ·
-  [0, 3, 24, 0] Record({"accept": Text("application/json")})
-  [0, 3, 24, 11] ·
-  [0, 3, 24, 12] ·
-  [0, 3, 24, 7] Number(0.0)
-  [0, 3, 24, 21] ·
-  [0, 3, 24, 20] ·
-  [0, 3, 24, 13] ·
-  [0, 3, 24, 8] ·
-  [0, 3, 24, 3] ·
-  [0, 3, 24, 4] ·
-  [0, 3, 24, 24] ·
-  [0, 3, 24, 5] ·
-  [0, 3, 24, 10] ·
-  [0, 3, 24, 19] Record({})
-  [0, 3, 24, 2] ·
-  [0, 3, 24, 1] ·
-  [0, 3, 24, 23] ·
-  [0, 3, 24, 15] ·
-  [0, 3, 24, 9] ·
-  [0, 3, 24, 26] ·
-  [0, 3, 24] ·
+  [0, 3, 4, 19] Record({})
+  [0, 3, 4, 18] Record({})
+  [0, 3, 4, 24] Text("application/json")
+  [0, 3, 4, 17] Record({"accept": Text("application/json")})
+  [0, 3, 4, 6] ·
+  [0, 3, 4, 28] ·
+  [0, 3, 4, 0] Record({"accept": Text("application/json")})
+  [0, 3, 4, 11] ·
+  [0, 3, 4, 13] ·
+  [0, 3, 4, 7] Number(0.0)
+  [0, 3, 4, 23] ·
+  [0, 3, 4, 22] ·
+  [0, 3, 4, 14] Boolean(false)
+  [0, 3, 4, 26] Boolean(true)
+  [0, 3, 4, 12] ·
+  [0, 3, 4, 21] ·
+  [0, 3, 4, 8] ·
+  [0, 3, 4, 3] ·
+  [0, 3, 4, 4] ·
+  [0, 3, 4, 27] ·
+  [0, 3, 4, 5] ·
+  [0, 3, 4, 10] ·
+  [0, 3, 4, 20] Record({})
+  [0, 3, 4, 2] ·
+  [0, 3, 4, 1] ·
+  [0, 3, 4, 25] ·
+  [0, 3, 4, 16] ·
+  [0, 3, 4, 9] ·
+  [0, 3, 4, 29] ·
+  [0, 3, 4] ·
   [0, 3] ·
   [0, 4] ·
   [0, 5] ·
@@ -12842,7 +12932,7 @@
   [0, 0, 4] ·
   [0, 0] Record({"body": Text(""), "headers": Record({"content-type": Text("application/json")}), "method": Text("GET"), "params": Record({"network": Text("tea")}), "pat… #e86959e330e65838 | Record({"network": Text("tea")}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("") | ·
   [0, 1] Text("tea")
-  [0, 2, 6] Text("/networks/")
+  [0, 2, 5] Text("/networks/")
   [0, 2, 0, 11] Boolean(true)
   [0, 2, 0, 22] Text("tea")
   [0, 2, 0, 18] Text("")
@@ -12877,45 +12967,48 @@
   [0, 2, 0, 20] Boolean(true)
   [0, 2, 0, 23] Text("tea")
   [0, 2, 0] Text("tea")
-  [0, 2, 9] Text("tea")
-  [0, 2, 7] Text("/pools/search?")
-  [0, 2, 10] Record({})
+  [0, 2, 8] Text("tea")
+  [0, 2, 6] Text("/pools/search?")
+  [0, 2, 9] Record({})
   [0, 2, 1] Number(50.0)
-  [0, 2, 4] Record({"limit": Number(50.0)})
-  [0, 2, 5, 0] Text("(given, defaults) => {\n  const q = { ...defaults };\n  for (const k of Object.keys(defaults)) if (given[k] !== undefined && given[k] !== \"\") q[k] = giv… #c5c798e2de1bd398
-  [0, 2, 5, 2] List([Record({"after": Text("a")}), Record({"limit": Number(50.0)})])
-  [0, 2, 5, 1] ·
-  [0, 2, 5, 3] ·
-  [0, 2, 5] ·
-  [0, 2, 8] ·
-  [0, 2, 3] ·
-  [0, 2, 2, 17] Record({})
-  [0, 2, 2, 16] Record({})
-  [0, 2, 2, 21] Text("application/json")
-  [0, 2, 2, 15] Record({"accept": Text("application/json")})
-  [0, 2, 2, 6] ·
-  [0, 2, 2, 25] ·
-  [0, 2, 2, 0] Record({"accept": Text("application/json")})
-  [0, 2, 2, 24] ·
-  [0, 2, 2, 11] ·
-  [0, 2, 2, 7] Number(0.0)
-  [0, 2, 2, 20] ·
-  [0, 2, 2, 19] ·
-  [0, 2, 2, 12] ·
-  [0, 2, 2, 8] ·
-  [0, 2, 2, 3] ·
-  [0, 2, 2, 4] ·
-  [0, 2, 2, 23] ·
-  [0, 2, 2, 5] ·
-  [0, 2, 2, 10] ·
-  [0, 2, 2, 18] Record({})
-  [0, 2, 2, 2] ·
-  [0, 2, 2, 1] ·
-  [0, 2, 2, 22] ·
-  [0, 2, 2, 14] ·
-  [0, 2, 2, 9] ·
-  [0, 2, 2, 26] ·
+  [0, 2, 3] Record({"limit": Number(50.0)})
+  [0, 2, 4, 0] Text("(given, defaults) => {\n  const q = { ...defaults };\n  for (const k of Object.keys(defaults)) if (given[k] !== undefined && given[k] !== \"\") q[k] = giv… #c5c798e2de1bd398
+  [0, 2, 4, 2] List([Record({"after": Text("a")}), Record({"limit": Number(50.0)})])
+  [0, 2, 4, 1] ·
+  [0, 2, 4, 3] ·
+  [0, 2, 4] ·
+  [0, 2, 7] ·
   [0, 2, 2] ·
+  [0, 2, 10, 18] Record({})
+  [0, 2, 10, 17] Record({})
+  [0, 2, 10, 23] Text("application/json")
+  [0, 2, 10, 16] Record({"accept": Text("application/json")})
+  [0, 2, 10, 6] ·
+  [0, 2, 10, 28] ·
+  [0, 2, 10, 0] Record({"accept": Text("application/json")})
+  [0, 2, 10, 27] ·
+  [0, 2, 10, 12] ·
+  [0, 2, 10, 7] Number(0.0)
+  [0, 2, 10, 22] ·
+  [0, 2, 10, 21] ·
+  [0, 2, 10, 13] Boolean(false)
+  [0, 2, 10, 25] Boolean(true)
+  [0, 2, 10, 11] ·
+  [0, 2, 10, 20] ·
+  [0, 2, 10, 8] ·
+  [0, 2, 10, 3] ·
+  [0, 2, 10, 4] ·
+  [0, 2, 10, 26] ·
+  [0, 2, 10, 5] ·
+  [0, 2, 10, 10] ·
+  [0, 2, 10, 19] Record({})
+  [0, 2, 10, 2] ·
+  [0, 2, 10, 1] ·
+  [0, 2, 10, 24] ·
+  [0, 2, 10, 15] ·
+  [0, 2, 10, 9] ·
+  [0, 2, 10, 29] ·
+  [0, 2, 10] ·
   [0, 2] ·
   [0, 3] ·
   [0, 4] ·
@@ -12934,7 +13027,7 @@
   [0, 0, 4] Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
   [0, 0] Record({"body": Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\… #31b023b415a5a204 | Record({"network": Text("tea")}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\"event\":\"gig\"… #7441bf0c70954823 | Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
   [0, 1] Text("tea")
-  [0, 2, 6] Text("/networks/")
+  [0, 2, 5] Text("/networks/")
   [0, 2, 0, 11] Boolean(true)
   [0, 2, 0, 22] Text("tea")
   [0, 2, 0, 18] Text("")
@@ -12969,45 +13062,48 @@
   [0, 2, 0, 20] Boolean(true)
   [0, 2, 0, 23] Text("tea")
   [0, 2, 0] Text("tea")
-  [0, 2, 9] Text("tea")
-  [0, 2, 7] Text("/pools/search?")
-  [0, 2, 10] Record({})
+  [0, 2, 8] Text("tea")
+  [0, 2, 6] Text("/pools/search?")
+  [0, 2, 9] Record({})
   [0, 2, 1] Number(50.0)
-  [0, 2, 4] Record({"limit": Number(50.0)})
-  [0, 2, 5, 0] Text("(given, defaults) => {\n  const q = { ...defaults };\n  for (const k of Object.keys(defaults)) if (given[k] !== undefined && given[k] !== \"\") q[k] = giv… #c5c798e2de1bd398
-  [0, 2, 5, 2] List([Record({"after": Text("a")}), Record({"limit": Number(50.0)})])
-  [0, 2, 5, 1] ·
-  [0, 2, 5, 3] ·
-  [0, 2, 5] ·
-  [0, 2, 8] ·
-  [0, 2, 3] ·
-  [0, 2, 2, 17] Record({})
-  [0, 2, 2, 16] Record({})
-  [0, 2, 2, 21] Text("application/json")
-  [0, 2, 2, 15] Record({"accept": Text("application/json")})
-  [0, 2, 2, 6] ·
-  [0, 2, 2, 25] ·
-  [0, 2, 2, 0] Record({"accept": Text("application/json")})
-  [0, 2, 2, 24] ·
-  [0, 2, 2, 11] ·
-  [0, 2, 2, 7] Number(0.0)
-  [0, 2, 2, 20] ·
-  [0, 2, 2, 19] ·
-  [0, 2, 2, 12] ·
-  [0, 2, 2, 8] ·
-  [0, 2, 2, 3] ·
-  [0, 2, 2, 4] ·
-  [0, 2, 2, 23] ·
-  [0, 2, 2, 5] ·
-  [0, 2, 2, 10] ·
-  [0, 2, 2, 18] Record({})
-  [0, 2, 2, 2] ·
-  [0, 2, 2, 1] ·
-  [0, 2, 2, 22] ·
-  [0, 2, 2, 14] ·
-  [0, 2, 2, 9] ·
-  [0, 2, 2, 26] ·
+  [0, 2, 3] Record({"limit": Number(50.0)})
+  [0, 2, 4, 0] Text("(given, defaults) => {\n  const q = { ...defaults };\n  for (const k of Object.keys(defaults)) if (given[k] !== undefined && given[k] !== \"\") q[k] = giv… #c5c798e2de1bd398
+  [0, 2, 4, 2] List([Record({"after": Text("a")}), Record({"limit": Number(50.0)})])
+  [0, 2, 4, 1] ·
+  [0, 2, 4, 3] ·
+  [0, 2, 4] ·
+  [0, 2, 7] ·
   [0, 2, 2] ·
+  [0, 2, 10, 18] Record({})
+  [0, 2, 10, 17] Record({})
+  [0, 2, 10, 23] Text("application/json")
+  [0, 2, 10, 16] Record({"accept": Text("application/json")})
+  [0, 2, 10, 6] ·
+  [0, 2, 10, 28] ·
+  [0, 2, 10, 0] Record({"accept": Text("application/json")})
+  [0, 2, 10, 27] ·
+  [0, 2, 10, 12] ·
+  [0, 2, 10, 7] Number(0.0)
+  [0, 2, 10, 22] ·
+  [0, 2, 10, 21] ·
+  [0, 2, 10, 13] Boolean(false)
+  [0, 2, 10, 25] Boolean(true)
+  [0, 2, 10, 11] ·
+  [0, 2, 10, 20] ·
+  [0, 2, 10, 8] ·
+  [0, 2, 10, 3] ·
+  [0, 2, 10, 4] ·
+  [0, 2, 10, 26] ·
+  [0, 2, 10, 5] ·
+  [0, 2, 10, 10] ·
+  [0, 2, 10, 19] Record({})
+  [0, 2, 10, 2] ·
+  [0, 2, 10, 1] ·
+  [0, 2, 10, 24] ·
+  [0, 2, 10, 15] ·
+  [0, 2, 10, 9] ·
+  [0, 2, 10, 29] ·
+  [0, 2, 10] ·
   [0, 2] ·
   [0, 3] ·
   [0, 4] ·
@@ -13026,7 +13122,7 @@
   [0, 0, 4] Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
   [0, 0] Record({"body": Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,… #783ff1ba20075342 | Record({"network": Text("tea")}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,14.25,51.25,88.2… #30defbf00c11dd9c | Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
   [0, 1] Text("tea")
-  [0, 2, 6] Text("/networks/")
+  [0, 2, 5] Text("/networks/")
   [0, 2, 0, 11] Boolean(true)
   [0, 2, 0, 22] Text("tea")
   [0, 2, 0, 18] Text("")
@@ -13061,45 +13157,48 @@
   [0, 2, 0, 20] Boolean(true)
   [0, 2, 0, 23] Text("tea")
   [0, 2, 0] Text("tea")
-  [0, 2, 9] Text("tea")
-  [0, 2, 7] Text("/pools/search?")
-  [0, 2, 10] Record({})
+  [0, 2, 8] Text("tea")
+  [0, 2, 6] Text("/pools/search?")
+  [0, 2, 9] Record({})
   [0, 2, 1] Number(50.0)
-  [0, 2, 4] Record({"limit": Number(50.0)})
-  [0, 2, 5, 0] Text("(given, defaults) => {\n  const q = { ...defaults };\n  for (const k of Object.keys(defaults)) if (given[k] !== undefined && given[k] !== \"\") q[k] = giv… #c5c798e2de1bd398
-  [0, 2, 5, 2] List([Record({"after": Text("a")}), Record({"limit": Number(50.0)})])
-  [0, 2, 5, 1] ·
-  [0, 2, 5, 3] ·
-  [0, 2, 5] ·
-  [0, 2, 8] ·
-  [0, 2, 3] ·
-  [0, 2, 2, 17] Record({})
-  [0, 2, 2, 16] Record({})
-  [0, 2, 2, 21] Text("application/json")
-  [0, 2, 2, 15] Record({"accept": Text("application/json")})
-  [0, 2, 2, 6] ·
-  [0, 2, 2, 25] ·
-  [0, 2, 2, 0] Record({"accept": Text("application/json")})
-  [0, 2, 2, 24] ·
-  [0, 2, 2, 11] ·
-  [0, 2, 2, 7] Number(0.0)
-  [0, 2, 2, 20] ·
-  [0, 2, 2, 19] ·
-  [0, 2, 2, 12] ·
-  [0, 2, 2, 8] ·
-  [0, 2, 2, 3] ·
-  [0, 2, 2, 4] ·
-  [0, 2, 2, 23] ·
-  [0, 2, 2, 5] ·
-  [0, 2, 2, 10] ·
-  [0, 2, 2, 18] Record({})
-  [0, 2, 2, 2] ·
-  [0, 2, 2, 1] ·
-  [0, 2, 2, 22] ·
-  [0, 2, 2, 14] ·
-  [0, 2, 2, 9] ·
-  [0, 2, 2, 26] ·
+  [0, 2, 3] Record({"limit": Number(50.0)})
+  [0, 2, 4, 0] Text("(given, defaults) => {\n  const q = { ...defaults };\n  for (const k of Object.keys(defaults)) if (given[k] !== undefined && given[k] !== \"\") q[k] = giv… #c5c798e2de1bd398
+  [0, 2, 4, 2] List([Record({"after": Text("a")}), Record({"limit": Number(50.0)})])
+  [0, 2, 4, 1] ·
+  [0, 2, 4, 3] ·
+  [0, 2, 4] ·
+  [0, 2, 7] ·
   [0, 2, 2] ·
+  [0, 2, 10, 18] Record({})
+  [0, 2, 10, 17] Record({})
+  [0, 2, 10, 23] Text("application/json")
+  [0, 2, 10, 16] Record({"accept": Text("application/json")})
+  [0, 2, 10, 6] ·
+  [0, 2, 10, 28] ·
+  [0, 2, 10, 0] Record({"accept": Text("application/json")})
+  [0, 2, 10, 27] ·
+  [0, 2, 10, 12] ·
+  [0, 2, 10, 7] Number(0.0)
+  [0, 2, 10, 22] ·
+  [0, 2, 10, 21] ·
+  [0, 2, 10, 13] Boolean(false)
+  [0, 2, 10, 25] Boolean(true)
+  [0, 2, 10, 11] ·
+  [0, 2, 10, 20] ·
+  [0, 2, 10, 8] ·
+  [0, 2, 10, 3] ·
+  [0, 2, 10, 4] ·
+  [0, 2, 10, 26] ·
+  [0, 2, 10, 5] ·
+  [0, 2, 10, 10] ·
+  [0, 2, 10, 19] Record({})
+  [0, 2, 10, 2] ·
+  [0, 2, 10, 1] ·
+  [0, 2, 10, 24] ·
+  [0, 2, 10, 15] ·
+  [0, 2, 10, 9] ·
+  [0, 2, 10, 29] ·
+  [0, 2, 10] ·
   [0, 2] ·
   [0, 3] ·
   [0, 4] ·
@@ -13119,43 +13218,7 @@
   [0, 0] Record({"body": Text(""), "headers": Record({"content-type": Text("application/json")}), "method": Text("GET"), "params": Record({"address": Text("tea"), "netwo… #b3bb47886a07f961 | Record({"address": Text("tea"), "network": Text("tea")}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("") | ·
   [0, 1] Text("tea")
   [0, 2] Text("tea")
-  [0, 3, 5] Text("/networks/")
-  [0, 3, 0, 11] Boolean(true)
-  [0, 3, 0, 22] Text("tea")
-  [0, 3, 0, 18] Text("")
-  [0, 3, 0, 25] Boolean(false)
-  [0, 3, 0, 28] Boolean(true)
-  [0, 3, 0, 31] Text(".")
-  [0, 3, 0, 26] Boolean(false)
-  [0, 3, 0, 29] Boolean(true)
-  [0, 3, 0, 21] Text("..")
-  [0, 3, 0, 24] Boolean(false)
-  [0, 3, 0, 27] Boolean(true)
-  [0, 3, 0, 10] Text("/")
-  [0, 3, 0, 9] Number(-1.0)
-  [0, 3, 0, 13] Number(0.0)
-  [0, 3, 0, 0] Boolean(true)
-  [0, 3, 0, 32] Text("\\")
-  [0, 3, 0, 7] Number(-1.0)
-  [0, 3, 0, 15] Number(0.0)
-  [0, 3, 0, 3] Boolean(true)
-  [0, 3, 0, 19] Text("?")
-  [0, 3, 0, 8] Number(-1.0)
-  [0, 3, 0, 16] Number(0.0)
-  [0, 3, 0, 4] Boolean(true)
-  [0, 3, 0, 30] Text("#")
-  [0, 3, 0, 5] Number(-1.0)
-  [0, 3, 0, 12] Number(0.0)
-  [0, 3, 0, 2] Boolean(true)
-  [0, 3, 0, 17] Text("%")
-  [0, 3, 0, 6] Number(-1.0)
-  [0, 3, 0, 14] Number(0.0)
-  [0, 3, 0, 1] Boolean(true)
-  [0, 3, 0, 20] Boolean(true)
-  [0, 3, 0, 23] Text("tea")
-  [0, 3, 0] Text("tea")
-  [0, 3, 7] Text("tea")
-  [0, 3, 2] Text("/pools/")
+  [0, 3, 4] Text("/networks/")
   [0, 3, 1, 11] Boolean(true)
   [0, 3, 1, 22] Text("tea")
   [0, 3, 1, 18] Text("")
@@ -13191,34 +13254,73 @@
   [0, 3, 1, 23] Text("tea")
   [0, 3, 1] Text("tea")
   [0, 3, 6] Text("tea")
-  [0, 3, 4] Text("/networks/tea/pools/tea")
-  [0, 3, 3, 17] Record({})
-  [0, 3, 3, 16] Record({})
-  [0, 3, 3, 21] Text("application/json")
-  [0, 3, 3, 15] Record({"accept": Text("application/json")})
-  [0, 3, 3, 6] ·
-  [0, 3, 3, 25] ·
-  [0, 3, 3, 0] Record({"accept": Text("application/json")})
-  [0, 3, 3, 24] ·
-  [0, 3, 3, 11] ·
-  [0, 3, 3, 7] Number(0.0)
-  [0, 3, 3, 20] ·
-  [0, 3, 3, 19] ·
-  [0, 3, 3, 12] ·
-  [0, 3, 3, 8] ·
-  [0, 3, 3, 3] ·
-  [0, 3, 3, 4] ·
-  [0, 3, 3, 23] ·
-  [0, 3, 3, 5] ·
-  [0, 3, 3, 10] ·
-  [0, 3, 3, 18] Record({})
-  [0, 3, 3, 2] ·
-  [0, 3, 3, 1] ·
-  [0, 3, 3, 22] ·
-  [0, 3, 3, 14] ·
-  [0, 3, 3, 9] ·
-  [0, 3, 3, 26] ·
-  [0, 3, 3] ·
+  [0, 3, 2] Text("/pools/")
+  [0, 3, 0, 11] Boolean(true)
+  [0, 3, 0, 22] Text("tea")
+  [0, 3, 0, 18] Text("")
+  [0, 3, 0, 25] Boolean(false)
+  [0, 3, 0, 28] Boolean(true)
+  [0, 3, 0, 31] Text(".")
+  [0, 3, 0, 26] Boolean(false)
+  [0, 3, 0, 29] Boolean(true)
+  [0, 3, 0, 21] Text("..")
+  [0, 3, 0, 24] Boolean(false)
+  [0, 3, 0, 27] Boolean(true)
+  [0, 3, 0, 10] Text("/")
+  [0, 3, 0, 9] Number(-1.0)
+  [0, 3, 0, 13] Number(0.0)
+  [0, 3, 0, 0] Boolean(true)
+  [0, 3, 0, 32] Text("\\")
+  [0, 3, 0, 7] Number(-1.0)
+  [0, 3, 0, 15] Number(0.0)
+  [0, 3, 0, 3] Boolean(true)
+  [0, 3, 0, 19] Text("?")
+  [0, 3, 0, 8] Number(-1.0)
+  [0, 3, 0, 16] Number(0.0)
+  [0, 3, 0, 4] Boolean(true)
+  [0, 3, 0, 30] Text("#")
+  [0, 3, 0, 5] Number(-1.0)
+  [0, 3, 0, 12] Number(0.0)
+  [0, 3, 0, 2] Boolean(true)
+  [0, 3, 0, 17] Text("%")
+  [0, 3, 0, 6] Number(-1.0)
+  [0, 3, 0, 14] Number(0.0)
+  [0, 3, 0, 1] Boolean(true)
+  [0, 3, 0, 20] Boolean(true)
+  [0, 3, 0, 23] Text("tea")
+  [0, 3, 0] Text("tea")
+  [0, 3, 5] Text("tea")
+  [0, 3, 3] Text("/networks/tea/pools/tea")
+  [0, 3, 7, 18] Record({})
+  [0, 3, 7, 17] Record({})
+  [0, 3, 7, 23] Text("application/json")
+  [0, 3, 7, 16] Record({"accept": Text("application/json")})
+  [0, 3, 7, 6] ·
+  [0, 3, 7, 28] ·
+  [0, 3, 7, 0] Record({"accept": Text("application/json")})
+  [0, 3, 7, 27] ·
+  [0, 3, 7, 12] ·
+  [0, 3, 7, 7] Number(0.0)
+  [0, 3, 7, 22] ·
+  [0, 3, 7, 21] ·
+  [0, 3, 7, 13] Boolean(false)
+  [0, 3, 7, 25] Boolean(true)
+  [0, 3, 7, 11] ·
+  [0, 3, 7, 20] ·
+  [0, 3, 7, 8] ·
+  [0, 3, 7, 3] ·
+  [0, 3, 7, 4] ·
+  [0, 3, 7, 26] ·
+  [0, 3, 7, 5] ·
+  [0, 3, 7, 10] ·
+  [0, 3, 7, 19] Record({})
+  [0, 3, 7, 2] ·
+  [0, 3, 7, 1] ·
+  [0, 3, 7, 24] ·
+  [0, 3, 7, 15] ·
+  [0, 3, 7, 9] ·
+  [0, 3, 7, 29] ·
+  [0, 3, 7] ·
   [0, 3] ·
   [0, 4] ·
   [0, 5] ·
@@ -13238,43 +13340,7 @@
   [0, 0] Record({"body": Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\… #e5e9c6b674538d94 | Record({"address": Text("tea"), "network": Text("tea")}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\"event\":\"gig\"… #7441bf0c70954823 | Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
   [0, 1] Text("tea")
   [0, 2] Text("tea")
-  [0, 3, 5] Text("/networks/")
-  [0, 3, 0, 11] Boolean(true)
-  [0, 3, 0, 22] Text("tea")
-  [0, 3, 0, 18] Text("")
-  [0, 3, 0, 25] Boolean(false)
-  [0, 3, 0, 28] Boolean(true)
-  [0, 3, 0, 31] Text(".")
-  [0, 3, 0, 26] Boolean(false)
-  [0, 3, 0, 29] Boolean(true)
-  [0, 3, 0, 21] Text("..")
-  [0, 3, 0, 24] Boolean(false)
-  [0, 3, 0, 27] Boolean(true)
-  [0, 3, 0, 10] Text("/")
-  [0, 3, 0, 9] Number(-1.0)
-  [0, 3, 0, 13] Number(0.0)
-  [0, 3, 0, 0] Boolean(true)
-  [0, 3, 0, 32] Text("\\")
-  [0, 3, 0, 7] Number(-1.0)
-  [0, 3, 0, 15] Number(0.0)
-  [0, 3, 0, 3] Boolean(true)
-  [0, 3, 0, 19] Text("?")
-  [0, 3, 0, 8] Number(-1.0)
-  [0, 3, 0, 16] Number(0.0)
-  [0, 3, 0, 4] Boolean(true)
-  [0, 3, 0, 30] Text("#")
-  [0, 3, 0, 5] Number(-1.0)
-  [0, 3, 0, 12] Number(0.0)
-  [0, 3, 0, 2] Boolean(true)
-  [0, 3, 0, 17] Text("%")
-  [0, 3, 0, 6] Number(-1.0)
-  [0, 3, 0, 14] Number(0.0)
-  [0, 3, 0, 1] Boolean(true)
-  [0, 3, 0, 20] Boolean(true)
-  [0, 3, 0, 23] Text("tea")
-  [0, 3, 0] Text("tea")
-  [0, 3, 7] Text("tea")
-  [0, 3, 2] Text("/pools/")
+  [0, 3, 4] Text("/networks/")
   [0, 3, 1, 11] Boolean(true)
   [0, 3, 1, 22] Text("tea")
   [0, 3, 1, 18] Text("")
@@ -13310,34 +13376,73 @@
   [0, 3, 1, 23] Text("tea")
   [0, 3, 1] Text("tea")
   [0, 3, 6] Text("tea")
-  [0, 3, 4] Text("/networks/tea/pools/tea")
-  [0, 3, 3, 17] Record({})
-  [0, 3, 3, 16] Record({})
-  [0, 3, 3, 21] Text("application/json")
-  [0, 3, 3, 15] Record({"accept": Text("application/json")})
-  [0, 3, 3, 6] ·
-  [0, 3, 3, 25] ·
-  [0, 3, 3, 0] Record({"accept": Text("application/json")})
-  [0, 3, 3, 24] ·
-  [0, 3, 3, 11] ·
-  [0, 3, 3, 7] Number(0.0)
-  [0, 3, 3, 20] ·
-  [0, 3, 3, 19] ·
-  [0, 3, 3, 12] ·
-  [0, 3, 3, 8] ·
-  [0, 3, 3, 3] ·
-  [0, 3, 3, 4] ·
-  [0, 3, 3, 23] ·
-  [0, 3, 3, 5] ·
-  [0, 3, 3, 10] ·
-  [0, 3, 3, 18] Record({})
-  [0, 3, 3, 2] ·
-  [0, 3, 3, 1] ·
-  [0, 3, 3, 22] ·
-  [0, 3, 3, 14] ·
-  [0, 3, 3, 9] ·
-  [0, 3, 3, 26] ·
-  [0, 3, 3] ·
+  [0, 3, 2] Text("/pools/")
+  [0, 3, 0, 11] Boolean(true)
+  [0, 3, 0, 22] Text("tea")
+  [0, 3, 0, 18] Text("")
+  [0, 3, 0, 25] Boolean(false)
+  [0, 3, 0, 28] Boolean(true)
+  [0, 3, 0, 31] Text(".")
+  [0, 3, 0, 26] Boolean(false)
+  [0, 3, 0, 29] Boolean(true)
+  [0, 3, 0, 21] Text("..")
+  [0, 3, 0, 24] Boolean(false)
+  [0, 3, 0, 27] Boolean(true)
+  [0, 3, 0, 10] Text("/")
+  [0, 3, 0, 9] Number(-1.0)
+  [0, 3, 0, 13] Number(0.0)
+  [0, 3, 0, 0] Boolean(true)
+  [0, 3, 0, 32] Text("\\")
+  [0, 3, 0, 7] Number(-1.0)
+  [0, 3, 0, 15] Number(0.0)
+  [0, 3, 0, 3] Boolean(true)
+  [0, 3, 0, 19] Text("?")
+  [0, 3, 0, 8] Number(-1.0)
+  [0, 3, 0, 16] Number(0.0)
+  [0, 3, 0, 4] Boolean(true)
+  [0, 3, 0, 30] Text("#")
+  [0, 3, 0, 5] Number(-1.0)
+  [0, 3, 0, 12] Number(0.0)
+  [0, 3, 0, 2] Boolean(true)
+  [0, 3, 0, 17] Text("%")
+  [0, 3, 0, 6] Number(-1.0)
+  [0, 3, 0, 14] Number(0.0)
+  [0, 3, 0, 1] Boolean(true)
+  [0, 3, 0, 20] Boolean(true)
+  [0, 3, 0, 23] Text("tea")
+  [0, 3, 0] Text("tea")
+  [0, 3, 5] Text("tea")
+  [0, 3, 3] Text("/networks/tea/pools/tea")
+  [0, 3, 7, 18] Record({})
+  [0, 3, 7, 17] Record({})
+  [0, 3, 7, 23] Text("application/json")
+  [0, 3, 7, 16] Record({"accept": Text("application/json")})
+  [0, 3, 7, 6] ·
+  [0, 3, 7, 28] ·
+  [0, 3, 7, 0] Record({"accept": Text("application/json")})
+  [0, 3, 7, 27] ·
+  [0, 3, 7, 12] ·
+  [0, 3, 7, 7] Number(0.0)
+  [0, 3, 7, 22] ·
+  [0, 3, 7, 21] ·
+  [0, 3, 7, 13] Boolean(false)
+  [0, 3, 7, 25] Boolean(true)
+  [0, 3, 7, 11] ·
+  [0, 3, 7, 20] ·
+  [0, 3, 7, 8] ·
+  [0, 3, 7, 3] ·
+  [0, 3, 7, 4] ·
+  [0, 3, 7, 26] ·
+  [0, 3, 7, 5] ·
+  [0, 3, 7, 10] ·
+  [0, 3, 7, 19] Record({})
+  [0, 3, 7, 2] ·
+  [0, 3, 7, 1] ·
+  [0, 3, 7, 24] ·
+  [0, 3, 7, 15] ·
+  [0, 3, 7, 9] ·
+  [0, 3, 7, 29] ·
+  [0, 3, 7] ·
   [0, 3] ·
   [0, 4] ·
   [0, 5] ·
@@ -13357,43 +13462,7 @@
   [0, 0] Record({"body": Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,… #0cdbaf458828175f | Record({"address": Text("tea"), "network": Text("tea")}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,14.25,51.25,88.2… #30defbf00c11dd9c | Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
   [0, 1] Text("tea")
   [0, 2] Text("tea")
-  [0, 3, 5] Text("/networks/")
-  [0, 3, 0, 11] Boolean(true)
-  [0, 3, 0, 22] Text("tea")
-  [0, 3, 0, 18] Text("")
-  [0, 3, 0, 25] Boolean(false)
-  [0, 3, 0, 28] Boolean(true)
-  [0, 3, 0, 31] Text(".")
-  [0, 3, 0, 26] Boolean(false)
-  [0, 3, 0, 29] Boolean(true)
-  [0, 3, 0, 21] Text("..")
-  [0, 3, 0, 24] Boolean(false)
-  [0, 3, 0, 27] Boolean(true)
-  [0, 3, 0, 10] Text("/")
-  [0, 3, 0, 9] Number(-1.0)
-  [0, 3, 0, 13] Number(0.0)
-  [0, 3, 0, 0] Boolean(true)
-  [0, 3, 0, 32] Text("\\")
-  [0, 3, 0, 7] Number(-1.0)
-  [0, 3, 0, 15] Number(0.0)
-  [0, 3, 0, 3] Boolean(true)
-  [0, 3, 0, 19] Text("?")
-  [0, 3, 0, 8] Number(-1.0)
-  [0, 3, 0, 16] Number(0.0)
-  [0, 3, 0, 4] Boolean(true)
-  [0, 3, 0, 30] Text("#")
-  [0, 3, 0, 5] Number(-1.0)
-  [0, 3, 0, 12] Number(0.0)
-  [0, 3, 0, 2] Boolean(true)
-  [0, 3, 0, 17] Text("%")
-  [0, 3, 0, 6] Number(-1.0)
-  [0, 3, 0, 14] Number(0.0)
-  [0, 3, 0, 1] Boolean(true)
-  [0, 3, 0, 20] Boolean(true)
-  [0, 3, 0, 23] Text("tea")
-  [0, 3, 0] Text("tea")
-  [0, 3, 7] Text("tea")
-  [0, 3, 2] Text("/pools/")
+  [0, 3, 4] Text("/networks/")
   [0, 3, 1, 11] Boolean(true)
   [0, 3, 1, 22] Text("tea")
   [0, 3, 1, 18] Text("")
@@ -13429,34 +13498,73 @@
   [0, 3, 1, 23] Text("tea")
   [0, 3, 1] Text("tea")
   [0, 3, 6] Text("tea")
-  [0, 3, 4] Text("/networks/tea/pools/tea")
-  [0, 3, 3, 17] Record({})
-  [0, 3, 3, 16] Record({})
-  [0, 3, 3, 21] Text("application/json")
-  [0, 3, 3, 15] Record({"accept": Text("application/json")})
-  [0, 3, 3, 6] ·
-  [0, 3, 3, 25] ·
-  [0, 3, 3, 0] Record({"accept": Text("application/json")})
-  [0, 3, 3, 24] ·
-  [0, 3, 3, 11] ·
-  [0, 3, 3, 7] Number(0.0)
-  [0, 3, 3, 20] ·
-  [0, 3, 3, 19] ·
-  [0, 3, 3, 12] ·
-  [0, 3, 3, 8] ·
-  [0, 3, 3, 3] ·
-  [0, 3, 3, 4] ·
-  [0, 3, 3, 23] ·
-  [0, 3, 3, 5] ·
-  [0, 3, 3, 10] ·
-  [0, 3, 3, 18] Record({})
-  [0, 3, 3, 2] ·
-  [0, 3, 3, 1] ·
-  [0, 3, 3, 22] ·
-  [0, 3, 3, 14] ·
-  [0, 3, 3, 9] ·
-  [0, 3, 3, 26] ·
-  [0, 3, 3] ·
+  [0, 3, 2] Text("/pools/")
+  [0, 3, 0, 11] Boolean(true)
+  [0, 3, 0, 22] Text("tea")
+  [0, 3, 0, 18] Text("")
+  [0, 3, 0, 25] Boolean(false)
+  [0, 3, 0, 28] Boolean(true)
+  [0, 3, 0, 31] Text(".")
+  [0, 3, 0, 26] Boolean(false)
+  [0, 3, 0, 29] Boolean(true)
+  [0, 3, 0, 21] Text("..")
+  [0, 3, 0, 24] Boolean(false)
+  [0, 3, 0, 27] Boolean(true)
+  [0, 3, 0, 10] Text("/")
+  [0, 3, 0, 9] Number(-1.0)
+  [0, 3, 0, 13] Number(0.0)
+  [0, 3, 0, 0] Boolean(true)
+  [0, 3, 0, 32] Text("\\")
+  [0, 3, 0, 7] Number(-1.0)
+  [0, 3, 0, 15] Number(0.0)
+  [0, 3, 0, 3] Boolean(true)
+  [0, 3, 0, 19] Text("?")
+  [0, 3, 0, 8] Number(-1.0)
+  [0, 3, 0, 16] Number(0.0)
+  [0, 3, 0, 4] Boolean(true)
+  [0, 3, 0, 30] Text("#")
+  [0, 3, 0, 5] Number(-1.0)
+  [0, 3, 0, 12] Number(0.0)
+  [0, 3, 0, 2] Boolean(true)
+  [0, 3, 0, 17] Text("%")
+  [0, 3, 0, 6] Number(-1.0)
+  [0, 3, 0, 14] Number(0.0)
+  [0, 3, 0, 1] Boolean(true)
+  [0, 3, 0, 20] Boolean(true)
+  [0, 3, 0, 23] Text("tea")
+  [0, 3, 0] Text("tea")
+  [0, 3, 5] Text("tea")
+  [0, 3, 3] Text("/networks/tea/pools/tea")
+  [0, 3, 7, 18] Record({})
+  [0, 3, 7, 17] Record({})
+  [0, 3, 7, 23] Text("application/json")
+  [0, 3, 7, 16] Record({"accept": Text("application/json")})
+  [0, 3, 7, 6] ·
+  [0, 3, 7, 28] ·
+  [0, 3, 7, 0] Record({"accept": Text("application/json")})
+  [0, 3, 7, 27] ·
+  [0, 3, 7, 12] ·
+  [0, 3, 7, 7] Number(0.0)
+  [0, 3, 7, 22] ·
+  [0, 3, 7, 21] ·
+  [0, 3, 7, 13] Boolean(false)
+  [0, 3, 7, 25] Boolean(true)
+  [0, 3, 7, 11] ·
+  [0, 3, 7, 20] ·
+  [0, 3, 7, 8] ·
+  [0, 3, 7, 3] ·
+  [0, 3, 7, 4] ·
+  [0, 3, 7, 26] ·
+  [0, 3, 7, 5] ·
+  [0, 3, 7, 10] ·
+  [0, 3, 7, 19] Record({})
+  [0, 3, 7, 2] ·
+  [0, 3, 7, 1] ·
+  [0, 3, 7, 24] ·
+  [0, 3, 7, 15] ·
+  [0, 3, 7, 9] ·
+  [0, 3, 7, 29] ·
+  [0, 3, 7] ·
   [0, 3] ·
   [0, 4] ·
   [0, 5] ·
@@ -13476,7 +13584,7 @@
   [0, 0] Record({"body": Text(""), "headers": Record({"content-type": Text("application/json")}), "method": Text("GET"), "params": Record({"address": Text("tea"), "netwo… #d6135ff574f366a3 | Record({"address": Text("tea"), "network": Text("tea")}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("") | ·
   [0, 1] Text("tea")
   [0, 2] Text("tea")
-  [0, 3, 10] Text("/networks/")
+  [0, 3, 9] Text("/networks/")
   [0, 3, 0, 11] Boolean(true)
   [0, 3, 0, 22] Text("tea")
   [0, 3, 0, 18] Text("")
@@ -13511,7 +13619,7 @@
   [0, 3, 0, 20] Boolean(true)
   [0, 3, 0, 23] Text("tea")
   [0, 3, 0] Text("tea")
-  [0, 3, 14] Text("tea")
+  [0, 3, 13] Text("tea")
   [0, 3, 2] Text("/pools/")
   [0, 3, 1, 11] Boolean(true)
   [0, 3, 1, 22] Text("tea")
@@ -13547,49 +13655,52 @@
   [0, 3, 1, 20] Boolean(true)
   [0, 3, 1, 23] Text("tea")
   [0, 3, 1] Text("tea")
-  [0, 3, 13] Text("tea")
-  [0, 3, 12] Text("/ohlcv?")
-  [0, 3, 17] Record({})
-  [0, 3, 5] Text("-24h")
-  [0, 3, 9] Record({"start": Text("-24h")})
-  [0, 3, 16] Text("24h")
-  [0, 3, 6] Record({"interval": Text("24h"), "start": Text("-24h")})
+  [0, 3, 14] Text("tea")
+  [0, 3, 11] Text("/ohlcv?")
+  [0, 3, 16] Record({})
+  [0, 3, 4] Text("-24h")
+  [0, 3, 8] Record({"start": Text("-24h")})
+  [0, 3, 15] Text("24h")
+  [0, 3, 5] Record({"interval": Text("24h"), "start": Text("-24h")})
   [0, 3, 3] Number(50.0)
-  [0, 3, 7] Record({"interval": Text("24h"), "limit": Number(50.0), "start": Text("-24h")})
-  [0, 3, 8, 0] Text("(given, defaults) => {\n  const q = { ...defaults };\n  for (const k of Object.keys(defaults)) if (given[k] !== undefined && given[k] !== \"\") q[k] = giv… #c5c798e2de1bd398
-  [0, 3, 8, 2] List([Record({"after": Text("a")}), Record({"interval": Text("24h"), "limit": Number(50.0), "start": Text("-24h")})])
-  [0, 3, 8, 1] ·
-  [0, 3, 8, 3] ·
-  [0, 3, 8] ·
-  [0, 3, 15] ·
-  [0, 3, 11] ·
-  [0, 3, 4, 17] Record({})
-  [0, 3, 4, 16] Record({})
-  [0, 3, 4, 21] Text("application/json")
-  [0, 3, 4, 15] Record({"accept": Text("application/json")})
-  [0, 3, 4, 6] ·
-  [0, 3, 4, 25] ·
-  [0, 3, 4, 0] Record({"accept": Text("application/json")})
-  [0, 3, 4, 24] ·
-  [0, 3, 4, 11] ·
-  [0, 3, 4, 7] Number(0.0)
-  [0, 3, 4, 20] ·
-  [0, 3, 4, 19] ·
-  [0, 3, 4, 12] ·
-  [0, 3, 4, 8] ·
-  [0, 3, 4, 3] ·
-  [0, 3, 4, 4] ·
-  [0, 3, 4, 23] ·
-  [0, 3, 4, 5] ·
-  [0, 3, 4, 10] ·
-  [0, 3, 4, 18] Record({})
-  [0, 3, 4, 2] ·
-  [0, 3, 4, 1] ·
-  [0, 3, 4, 22] ·
-  [0, 3, 4, 14] ·
-  [0, 3, 4, 9] ·
-  [0, 3, 4, 26] ·
-  [0, 3, 4] ·
+  [0, 3, 6] Record({"interval": Text("24h"), "limit": Number(50.0), "start": Text("-24h")})
+  [0, 3, 7, 0] Text("(given, defaults) => {\n  const q = { ...defaults };\n  for (const k of Object.keys(defaults)) if (given[k] !== undefined && given[k] !== \"\") q[k] = giv… #c5c798e2de1bd398
+  [0, 3, 7, 2] List([Record({"after": Text("a")}), Record({"interval": Text("24h"), "limit": Number(50.0), "start": Text("-24h")})])
+  [0, 3, 7, 1] ·
+  [0, 3, 7, 3] ·
+  [0, 3, 7] ·
+  [0, 3, 12] ·
+  [0, 3, 10] ·
+  [0, 3, 17, 18] Record({})
+  [0, 3, 17, 17] Record({})
+  [0, 3, 17, 23] Text("application/json")
+  [0, 3, 17, 16] Record({"accept": Text("application/json")})
+  [0, 3, 17, 6] ·
+  [0, 3, 17, 28] ·
+  [0, 3, 17, 0] Record({"accept": Text("application/json")})
+  [0, 3, 17, 27] ·
+  [0, 3, 17, 12] ·
+  [0, 3, 17, 7] Number(0.0)
+  [0, 3, 17, 22] ·
+  [0, 3, 17, 21] ·
+  [0, 3, 17, 13] Boolean(false)
+  [0, 3, 17, 25] Boolean(true)
+  [0, 3, 17, 11] ·
+  [0, 3, 17, 20] ·
+  [0, 3, 17, 8] ·
+  [0, 3, 17, 3] ·
+  [0, 3, 17, 4] ·
+  [0, 3, 17, 26] ·
+  [0, 3, 17, 5] ·
+  [0, 3, 17, 10] ·
+  [0, 3, 17, 19] Record({})
+  [0, 3, 17, 2] ·
+  [0, 3, 17, 1] ·
+  [0, 3, 17, 24] ·
+  [0, 3, 17, 15] ·
+  [0, 3, 17, 9] ·
+  [0, 3, 17, 29] ·
+  [0, 3, 17] ·
   [0, 3] ·
   [0, 4] ·
   [0, 5] ·
@@ -13609,7 +13720,7 @@
   [0, 0] Record({"body": Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\… #6f2e8ac627e0d384 | Record({"address": Text("tea"), "network": Text("tea")}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\"event\":\"gig\"… #7441bf0c70954823 | Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
   [0, 1] Text("tea")
   [0, 2] Text("tea")
-  [0, 3, 10] Text("/networks/")
+  [0, 3, 9] Text("/networks/")
   [0, 3, 0, 11] Boolean(true)
   [0, 3, 0, 22] Text("tea")
   [0, 3, 0, 18] Text("")
@@ -13644,7 +13755,7 @@
   [0, 3, 0, 20] Boolean(true)
   [0, 3, 0, 23] Text("tea")
   [0, 3, 0] Text("tea")
-  [0, 3, 14] Text("tea")
+  [0, 3, 13] Text("tea")
   [0, 3, 2] Text("/pools/")
   [0, 3, 1, 11] Boolean(true)
   [0, 3, 1, 22] Text("tea")
@@ -13680,49 +13791,52 @@
   [0, 3, 1, 20] Boolean(true)
   [0, 3, 1, 23] Text("tea")
   [0, 3, 1] Text("tea")
-  [0, 3, 13] Text("tea")
-  [0, 3, 12] Text("/ohlcv?")
-  [0, 3, 17] Record({})
-  [0, 3, 5] Text("-24h")
-  [0, 3, 9] Record({"start": Text("-24h")})
-  [0, 3, 16] Text("24h")
-  [0, 3, 6] Record({"interval": Text("24h"), "start": Text("-24h")})
+  [0, 3, 14] Text("tea")
+  [0, 3, 11] Text("/ohlcv?")
+  [0, 3, 16] Record({})
+  [0, 3, 4] Text("-24h")
+  [0, 3, 8] Record({"start": Text("-24h")})
+  [0, 3, 15] Text("24h")
+  [0, 3, 5] Record({"interval": Text("24h"), "start": Text("-24h")})
   [0, 3, 3] Number(50.0)
-  [0, 3, 7] Record({"interval": Text("24h"), "limit": Number(50.0), "start": Text("-24h")})
-  [0, 3, 8, 0] Text("(given, defaults) => {\n  const q = { ...defaults };\n  for (const k of Object.keys(defaults)) if (given[k] !== undefined && given[k] !== \"\") q[k] = giv… #c5c798e2de1bd398
-  [0, 3, 8, 2] List([Record({"after": Text("a")}), Record({"interval": Text("24h"), "limit": Number(50.0), "start": Text("-24h")})])
-  [0, 3, 8, 1] ·
-  [0, 3, 8, 3] ·
-  [0, 3, 8] ·
-  [0, 3, 15] ·
-  [0, 3, 11] ·
-  [0, 3, 4, 17] Record({})
-  [0, 3, 4, 16] Record({})
-  [0, 3, 4, 21] Text("application/json")
-  [0, 3, 4, 15] Record({"accept": Text("application/json")})
-  [0, 3, 4, 6] ·
-  [0, 3, 4, 25] ·
-  [0, 3, 4, 0] Record({"accept": Text("application/json")})
-  [0, 3, 4, 24] ·
-  [0, 3, 4, 11] ·
-  [0, 3, 4, 7] Number(0.0)
-  [0, 3, 4, 20] ·
-  [0, 3, 4, 19] ·
-  [0, 3, 4, 12] ·
-  [0, 3, 4, 8] ·
-  [0, 3, 4, 3] ·
-  [0, 3, 4, 4] ·
-  [0, 3, 4, 23] ·
-  [0, 3, 4, 5] ·
-  [0, 3, 4, 10] ·
-  [0, 3, 4, 18] Record({})
-  [0, 3, 4, 2] ·
-  [0, 3, 4, 1] ·
-  [0, 3, 4, 22] ·
-  [0, 3, 4, 14] ·
-  [0, 3, 4, 9] ·
-  [0, 3, 4, 26] ·
-  [0, 3, 4] ·
+  [0, 3, 6] Record({"interval": Text("24h"), "limit": Number(50.0), "start": Text("-24h")})
+  [0, 3, 7, 0] Text("(given, defaults) => {\n  const q = { ...defaults };\n  for (const k of Object.keys(defaults)) if (given[k] !== undefined && given[k] !== \"\") q[k] = giv… #c5c798e2de1bd398
+  [0, 3, 7, 2] List([Record({"after": Text("a")}), Record({"interval": Text("24h"), "limit": Number(50.0), "start": Text("-24h")})])
+  [0, 3, 7, 1] ·
+  [0, 3, 7, 3] ·
+  [0, 3, 7] ·
+  [0, 3, 12] ·
+  [0, 3, 10] ·
+  [0, 3, 17, 18] Record({})
+  [0, 3, 17, 17] Record({})
+  [0, 3, 17, 23] Text("application/json")
+  [0, 3, 17, 16] Record({"accept": Text("application/json")})
+  [0, 3, 17, 6] ·
+  [0, 3, 17, 28] ·
+  [0, 3, 17, 0] Record({"accept": Text("application/json")})
+  [0, 3, 17, 27] ·
+  [0, 3, 17, 12] ·
+  [0, 3, 17, 7] Number(0.0)
+  [0, 3, 17, 22] ·
+  [0, 3, 17, 21] ·
+  [0, 3, 17, 13] Boolean(false)
+  [0, 3, 17, 25] Boolean(true)
+  [0, 3, 17, 11] ·
+  [0, 3, 17, 20] ·
+  [0, 3, 17, 8] ·
+  [0, 3, 17, 3] ·
+  [0, 3, 17, 4] ·
+  [0, 3, 17, 26] ·
+  [0, 3, 17, 5] ·
+  [0, 3, 17, 10] ·
+  [0, 3, 17, 19] Record({})
+  [0, 3, 17, 2] ·
+  [0, 3, 17, 1] ·
+  [0, 3, 17, 24] ·
+  [0, 3, 17, 15] ·
+  [0, 3, 17, 9] ·
+  [0, 3, 17, 29] ·
+  [0, 3, 17] ·
   [0, 3] ·
   [0, 4] ·
   [0, 5] ·
@@ -13742,7 +13856,7 @@
   [0, 0] Record({"body": Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,… #15fda95337cf7aab | Record({"address": Text("tea"), "network": Text("tea")}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,14.25,51.25,88.2… #30defbf00c11dd9c | Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
   [0, 1] Text("tea")
   [0, 2] Text("tea")
-  [0, 3, 10] Text("/networks/")
+  [0, 3, 9] Text("/networks/")
   [0, 3, 0, 11] Boolean(true)
   [0, 3, 0, 22] Text("tea")
   [0, 3, 0, 18] Text("")
@@ -13777,7 +13891,7 @@
   [0, 3, 0, 20] Boolean(true)
   [0, 3, 0, 23] Text("tea")
   [0, 3, 0] Text("tea")
-  [0, 3, 14] Text("tea")
+  [0, 3, 13] Text("tea")
   [0, 3, 2] Text("/pools/")
   [0, 3, 1, 11] Boolean(true)
   [0, 3, 1, 22] Text("tea")
@@ -13813,49 +13927,52 @@
   [0, 3, 1, 20] Boolean(true)
   [0, 3, 1, 23] Text("tea")
   [0, 3, 1] Text("tea")
-  [0, 3, 13] Text("tea")
-  [0, 3, 12] Text("/ohlcv?")
-  [0, 3, 17] Record({})
-  [0, 3, 5] Text("-24h")
-  [0, 3, 9] Record({"start": Text("-24h")})
-  [0, 3, 16] Text("24h")
-  [0, 3, 6] Record({"interval": Text("24h"), "start": Text("-24h")})
+  [0, 3, 14] Text("tea")
+  [0, 3, 11] Text("/ohlcv?")
+  [0, 3, 16] Record({})
+  [0, 3, 4] Text("-24h")
+  [0, 3, 8] Record({"start": Text("-24h")})
+  [0, 3, 15] Text("24h")
+  [0, 3, 5] Record({"interval": Text("24h"), "start": Text("-24h")})
   [0, 3, 3] Number(50.0)
-  [0, 3, 7] Record({"interval": Text("24h"), "limit": Number(50.0), "start": Text("-24h")})
-  [0, 3, 8, 0] Text("(given, defaults) => {\n  const q = { ...defaults };\n  for (const k of Object.keys(defaults)) if (given[k] !== undefined && given[k] !== \"\") q[k] = giv… #c5c798e2de1bd398
-  [0, 3, 8, 2] List([Record({"after": Text("a")}), Record({"interval": Text("24h"), "limit": Number(50.0), "start": Text("-24h")})])
-  [0, 3, 8, 1] ·
-  [0, 3, 8, 3] ·
-  [0, 3, 8] ·
-  [0, 3, 15] ·
-  [0, 3, 11] ·
-  [0, 3, 4, 17] Record({})
-  [0, 3, 4, 16] Record({})
-  [0, 3, 4, 21] Text("application/json")
-  [0, 3, 4, 15] Record({"accept": Text("application/json")})
-  [0, 3, 4, 6] ·
-  [0, 3, 4, 25] ·
-  [0, 3, 4, 0] Record({"accept": Text("application/json")})
-  [0, 3, 4, 24] ·
-  [0, 3, 4, 11] ·
-  [0, 3, 4, 7] Number(0.0)
-  [0, 3, 4, 20] ·
-  [0, 3, 4, 19] ·
-  [0, 3, 4, 12] ·
-  [0, 3, 4, 8] ·
-  [0, 3, 4, 3] ·
-  [0, 3, 4, 4] ·
-  [0, 3, 4, 23] ·
-  [0, 3, 4, 5] ·
-  [0, 3, 4, 10] ·
-  [0, 3, 4, 18] Record({})
-  [0, 3, 4, 2] ·
-  [0, 3, 4, 1] ·
-  [0, 3, 4, 22] ·
-  [0, 3, 4, 14] ·
-  [0, 3, 4, 9] ·
-  [0, 3, 4, 26] ·
-  [0, 3, 4] ·
+  [0, 3, 6] Record({"interval": Text("24h"), "limit": Number(50.0), "start": Text("-24h")})
+  [0, 3, 7, 0] Text("(given, defaults) => {\n  const q = { ...defaults };\n  for (const k of Object.keys(defaults)) if (given[k] !== undefined && given[k] !== \"\") q[k] = giv… #c5c798e2de1bd398
+  [0, 3, 7, 2] List([Record({"after": Text("a")}), Record({"interval": Text("24h"), "limit": Number(50.0), "start": Text("-24h")})])
+  [0, 3, 7, 1] ·
+  [0, 3, 7, 3] ·
+  [0, 3, 7] ·
+  [0, 3, 12] ·
+  [0, 3, 10] ·
+  [0, 3, 17, 18] Record({})
+  [0, 3, 17, 17] Record({})
+  [0, 3, 17, 23] Text("application/json")
+  [0, 3, 17, 16] Record({"accept": Text("application/json")})
+  [0, 3, 17, 6] ·
+  [0, 3, 17, 28] ·
+  [0, 3, 17, 0] Record({"accept": Text("application/json")})
+  [0, 3, 17, 27] ·
+  [0, 3, 17, 12] ·
+  [0, 3, 17, 7] Number(0.0)
+  [0, 3, 17, 22] ·
+  [0, 3, 17, 21] ·
+  [0, 3, 17, 13] Boolean(false)
+  [0, 3, 17, 25] Boolean(true)
+  [0, 3, 17, 11] ·
+  [0, 3, 17, 20] ·
+  [0, 3, 17, 8] ·
+  [0, 3, 17, 3] ·
+  [0, 3, 17, 4] ·
+  [0, 3, 17, 26] ·
+  [0, 3, 17, 5] ·
+  [0, 3, 17, 10] ·
+  [0, 3, 17, 19] Record({})
+  [0, 3, 17, 2] ·
+  [0, 3, 17, 1] ·
+  [0, 3, 17, 24] ·
+  [0, 3, 17, 15] ·
+  [0, 3, 17, 9] ·
+  [0, 3, 17, 29] ·
+  [0, 3, 17] ·
   [0, 3] ·
   [0, 4] ·
   [0, 5] ·
@@ -13875,7 +13992,7 @@
   [0, 0] Record({"body": Text(""), "headers": Record({"content-type": Text("application/json")}), "method": Text("GET"), "params": Record({"address": Text("tea"), "netwo… #6e7bcb5106b38899 | Record({"address": Text("tea"), "network": Text("tea")}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("") | ·
   [0, 1] Text("tea")
   [0, 2] Text("tea")
-  [0, 3, 25] Text("/networks/")
+  [0, 3, 24] Text("/networks/")
   [0, 3, 1, 11] Boolean(true)
   [0, 3, 1, 22] Text("tea")
   [0, 3, 1, 18] Text("")
@@ -13910,7 +14027,7 @@
   [0, 3, 1, 20] Boolean(true)
   [0, 3, 1, 23] Text("tea")
   [0, 3, 1] Text("tea")
-  [0, 3, 29] Text("tea")
+  [0, 3, 28] Text("tea")
   [0, 3, 3] Text("/pools/")
   [0, 3, 2, 11] Boolean(true)
   [0, 3, 2, 22] Text("tea")
@@ -13946,65 +14063,68 @@
   [0, 3, 2, 20] Boolean(true)
   [0, 3, 2, 23] Text("tea")
   [0, 3, 2] Text("tea")
-  [0, 3, 28] Text("tea")
-  [0, 3, 14] Text("/indicators?")
-  [0, 3, 31] Record({})
+  [0, 3, 29] Text("tea")
+  [0, 3, 13] Text("/indicators?")
+  [0, 3, 30] Record({})
   [0, 3, 0] Text("rsi")
   [0, 3, 4] Record({"indicator": Text("rsi")})
-  [0, 3, 19] Text("")
-  [0, 3, 9] Record({"indicator": Text("rsi"), "interval": Text("")})
-  [0, 3, 24] Text("")
-  [0, 3, 10] Record({"cursor": Text(""), "indicator": Text("rsi"), "interval": Text("")})
-  [0, 3, 23] Text("")
-  [0, 3, 32] Record({"cursor": Text(""), "end": Text(""), "indicator": Text("rsi"), "interval": Text("")})
   [0, 3, 21] Text("")
-  [0, 3, 6] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text("")})
+  [0, 3, 8] Record({"indicator": Text("rsi"), "interval": Text("")})
+  [0, 3, 23] Text("")
+  [0, 3, 9] Record({"cursor": Text(""), "indicator": Text("rsi"), "interval": Text("")})
+  [0, 3, 14] Text("")
+  [0, 3, 32] Record({"cursor": Text(""), "end": Text(""), "indicator": Text("rsi"), "interval": Text("")})
   [0, 3, 22] Text("")
-  [0, 3, 11] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit": Text("")})
-  [0, 3, 20] Text("")
-  [0, 3, 5] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit": Text(""), "period": Text("")})
+  [0, 3, 6] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text("")})
   [0, 3, 15] Text("")
-  [0, 3, 26] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit": Text(""), "period": Text(""), "si… #3dc072769738021d
-  [0, 3, 18] Text("")
-  [0, 3, 7] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit": Text(""), "period": Text(""), "si… #ab9f63705983ae66
-  [0, 3, 16] Text("")
-  [0, 3, 33] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit": Text(""), "period": Text(""), "si… #e202bd6dd7b6ff98
+  [0, 3, 10] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit": Text("")})
   [0, 3, 17] Text("")
-  [0, 3, 13] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit": Text(""), "period": Text(""), "si… #323f7accc437ee9f
-  [0, 3, 12, 0] Text("(given, defaults) => {\n  const q = { ...defaults };\n  for (const k of Object.keys(defaults)) if (given[k] !== undefined && given[k] !== \"\") q[k] = giv… #c5c798e2de1bd398
-  [0, 3, 12, 2] List([Record({"after": Text("a")}), Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit… #5ee946dc69fd1db6
-  [0, 3, 12, 1] ·
-  [0, 3, 12, 3] ·
-  [0, 3, 12] ·
-  [0, 3, 30] ·
+  [0, 3, 5] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit": Text(""), "period": Text("")})
+  [0, 3, 16] Text("")
+  [0, 3, 25] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit": Text(""), "period": Text(""), "si… #3dc072769738021d
+  [0, 3, 20] Text("")
+  [0, 3, 7] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit": Text(""), "period": Text(""), "si… #ab9f63705983ae66
+  [0, 3, 19] Text("")
+  [0, 3, 33] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit": Text(""), "period": Text(""), "si… #e202bd6dd7b6ff98
+  [0, 3, 18] Text("")
+  [0, 3, 12] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit": Text(""), "period": Text(""), "si… #323f7accc437ee9f
+  [0, 3, 11, 0] Text("(given, defaults) => {\n  const q = { ...defaults };\n  for (const k of Object.keys(defaults)) if (given[k] !== undefined && given[k] !== \"\") q[k] = giv… #c5c798e2de1bd398
+  [0, 3, 11, 2] List([Record({"after": Text("a")}), Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit… #5ee946dc69fd1db6
+  [0, 3, 11, 1] ·
+  [0, 3, 11, 3] ·
+  [0, 3, 11] ·
   [0, 3, 27] ·
-  [0, 3, 8, 17] Record({})
-  [0, 3, 8, 16] Record({})
-  [0, 3, 8, 21] Text("application/json")
-  [0, 3, 8, 15] Record({"accept": Text("application/json")})
-  [0, 3, 8, 6] ·
-  [0, 3, 8, 25] ·
-  [0, 3, 8, 0] Record({"accept": Text("application/json")})
-  [0, 3, 8, 24] ·
-  [0, 3, 8, 11] ·
-  [0, 3, 8, 7] Number(0.0)
-  [0, 3, 8, 20] ·
-  [0, 3, 8, 19] ·
-  [0, 3, 8, 12] ·
-  [0, 3, 8, 8] ·
-  [0, 3, 8, 3] ·
-  [0, 3, 8, 4] ·
-  [0, 3, 8, 23] ·
-  [0, 3, 8, 5] ·
-  [0, 3, 8, 10] ·
-  [0, 3, 8, 18] Record({})
-  [0, 3, 8, 2] ·
-  [0, 3, 8, 1] ·
-  [0, 3, 8, 22] ·
-  [0, 3, 8, 14] ·
-  [0, 3, 8, 9] ·
-  [0, 3, 8, 26] ·
-  [0, 3, 8] ·
+  [0, 3, 26] ·
+  [0, 3, 31, 18] Record({})
+  [0, 3, 31, 17] Record({})
+  [0, 3, 31, 23] Text("application/json")
+  [0, 3, 31, 16] Record({"accept": Text("application/json")})
+  [0, 3, 31, 6] ·
+  [0, 3, 31, 28] ·
+  [0, 3, 31, 0] Record({"accept": Text("application/json")})
+  [0, 3, 31, 27] ·
+  [0, 3, 31, 12] ·
+  [0, 3, 31, 7] Number(0.0)
+  [0, 3, 31, 22] ·
+  [0, 3, 31, 21] ·
+  [0, 3, 31, 13] Boolean(false)
+  [0, 3, 31, 25] Boolean(true)
+  [0, 3, 31, 11] ·
+  [0, 3, 31, 20] ·
+  [0, 3, 31, 8] ·
+  [0, 3, 31, 3] ·
+  [0, 3, 31, 4] ·
+  [0, 3, 31, 26] ·
+  [0, 3, 31, 5] ·
+  [0, 3, 31, 10] ·
+  [0, 3, 31, 19] Record({})
+  [0, 3, 31, 2] ·
+  [0, 3, 31, 1] ·
+  [0, 3, 31, 24] ·
+  [0, 3, 31, 15] ·
+  [0, 3, 31, 9] ·
+  [0, 3, 31, 29] ·
+  [0, 3, 31] ·
   [0, 3] ·
   [0, 4] ·
   [0, 5] ·
@@ -14024,7 +14144,7 @@
   [0, 0] Record({"body": Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\… #f4adab0ec82eff24 | Record({"address": Text("tea"), "network": Text("tea")}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\"event\":\"gig\"… #7441bf0c70954823 | Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
   [0, 1] Text("tea")
   [0, 2] Text("tea")
-  [0, 3, 25] Text("/networks/")
+  [0, 3, 24] Text("/networks/")
   [0, 3, 1, 11] Boolean(true)
   [0, 3, 1, 22] Text("tea")
   [0, 3, 1, 18] Text("")
@@ -14059,7 +14179,7 @@
   [0, 3, 1, 20] Boolean(true)
   [0, 3, 1, 23] Text("tea")
   [0, 3, 1] Text("tea")
-  [0, 3, 29] Text("tea")
+  [0, 3, 28] Text("tea")
   [0, 3, 3] Text("/pools/")
   [0, 3, 2, 11] Boolean(true)
   [0, 3, 2, 22] Text("tea")
@@ -14095,65 +14215,68 @@
   [0, 3, 2, 20] Boolean(true)
   [0, 3, 2, 23] Text("tea")
   [0, 3, 2] Text("tea")
-  [0, 3, 28] Text("tea")
-  [0, 3, 14] Text("/indicators?")
-  [0, 3, 31] Record({})
+  [0, 3, 29] Text("tea")
+  [0, 3, 13] Text("/indicators?")
+  [0, 3, 30] Record({})
   [0, 3, 0] Text("rsi")
   [0, 3, 4] Record({"indicator": Text("rsi")})
-  [0, 3, 19] Text("")
-  [0, 3, 9] Record({"indicator": Text("rsi"), "interval": Text("")})
-  [0, 3, 24] Text("")
-  [0, 3, 10] Record({"cursor": Text(""), "indicator": Text("rsi"), "interval": Text("")})
-  [0, 3, 23] Text("")
-  [0, 3, 32] Record({"cursor": Text(""), "end": Text(""), "indicator": Text("rsi"), "interval": Text("")})
   [0, 3, 21] Text("")
-  [0, 3, 6] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text("")})
+  [0, 3, 8] Record({"indicator": Text("rsi"), "interval": Text("")})
+  [0, 3, 23] Text("")
+  [0, 3, 9] Record({"cursor": Text(""), "indicator": Text("rsi"), "interval": Text("")})
+  [0, 3, 14] Text("")
+  [0, 3, 32] Record({"cursor": Text(""), "end": Text(""), "indicator": Text("rsi"), "interval": Text("")})
   [0, 3, 22] Text("")
-  [0, 3, 11] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit": Text("")})
-  [0, 3, 20] Text("")
-  [0, 3, 5] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit": Text(""), "period": Text("")})
+  [0, 3, 6] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text("")})
   [0, 3, 15] Text("")
-  [0, 3, 26] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit": Text(""), "period": Text(""), "si… #3dc072769738021d
-  [0, 3, 18] Text("")
-  [0, 3, 7] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit": Text(""), "period": Text(""), "si… #ab9f63705983ae66
-  [0, 3, 16] Text("")
-  [0, 3, 33] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit": Text(""), "period": Text(""), "si… #e202bd6dd7b6ff98
+  [0, 3, 10] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit": Text("")})
   [0, 3, 17] Text("")
-  [0, 3, 13] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit": Text(""), "period": Text(""), "si… #323f7accc437ee9f
-  [0, 3, 12, 0] Text("(given, defaults) => {\n  const q = { ...defaults };\n  for (const k of Object.keys(defaults)) if (given[k] !== undefined && given[k] !== \"\") q[k] = giv… #c5c798e2de1bd398
-  [0, 3, 12, 2] List([Record({"after": Text("a")}), Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit… #5ee946dc69fd1db6
-  [0, 3, 12, 1] ·
-  [0, 3, 12, 3] ·
-  [0, 3, 12] ·
-  [0, 3, 30] ·
+  [0, 3, 5] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit": Text(""), "period": Text("")})
+  [0, 3, 16] Text("")
+  [0, 3, 25] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit": Text(""), "period": Text(""), "si… #3dc072769738021d
+  [0, 3, 20] Text("")
+  [0, 3, 7] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit": Text(""), "period": Text(""), "si… #ab9f63705983ae66
+  [0, 3, 19] Text("")
+  [0, 3, 33] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit": Text(""), "period": Text(""), "si… #e202bd6dd7b6ff98
+  [0, 3, 18] Text("")
+  [0, 3, 12] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit": Text(""), "period": Text(""), "si… #323f7accc437ee9f
+  [0, 3, 11, 0] Text("(given, defaults) => {\n  const q = { ...defaults };\n  for (const k of Object.keys(defaults)) if (given[k] !== undefined && given[k] !== \"\") q[k] = giv… #c5c798e2de1bd398
+  [0, 3, 11, 2] List([Record({"after": Text("a")}), Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit… #5ee946dc69fd1db6
+  [0, 3, 11, 1] ·
+  [0, 3, 11, 3] ·
+  [0, 3, 11] ·
   [0, 3, 27] ·
-  [0, 3, 8, 17] Record({})
-  [0, 3, 8, 16] Record({})
-  [0, 3, 8, 21] Text("application/json")
-  [0, 3, 8, 15] Record({"accept": Text("application/json")})
-  [0, 3, 8, 6] ·
-  [0, 3, 8, 25] ·
-  [0, 3, 8, 0] Record({"accept": Text("application/json")})
-  [0, 3, 8, 24] ·
-  [0, 3, 8, 11] ·
-  [0, 3, 8, 7] Number(0.0)
-  [0, 3, 8, 20] ·
-  [0, 3, 8, 19] ·
-  [0, 3, 8, 12] ·
-  [0, 3, 8, 8] ·
-  [0, 3, 8, 3] ·
-  [0, 3, 8, 4] ·
-  [0, 3, 8, 23] ·
-  [0, 3, 8, 5] ·
-  [0, 3, 8, 10] ·
-  [0, 3, 8, 18] Record({})
-  [0, 3, 8, 2] ·
-  [0, 3, 8, 1] ·
-  [0, 3, 8, 22] ·
-  [0, 3, 8, 14] ·
-  [0, 3, 8, 9] ·
-  [0, 3, 8, 26] ·
-  [0, 3, 8] ·
+  [0, 3, 26] ·
+  [0, 3, 31, 18] Record({})
+  [0, 3, 31, 17] Record({})
+  [0, 3, 31, 23] Text("application/json")
+  [0, 3, 31, 16] Record({"accept": Text("application/json")})
+  [0, 3, 31, 6] ·
+  [0, 3, 31, 28] ·
+  [0, 3, 31, 0] Record({"accept": Text("application/json")})
+  [0, 3, 31, 27] ·
+  [0, 3, 31, 12] ·
+  [0, 3, 31, 7] Number(0.0)
+  [0, 3, 31, 22] ·
+  [0, 3, 31, 21] ·
+  [0, 3, 31, 13] Boolean(false)
+  [0, 3, 31, 25] Boolean(true)
+  [0, 3, 31, 11] ·
+  [0, 3, 31, 20] ·
+  [0, 3, 31, 8] ·
+  [0, 3, 31, 3] ·
+  [0, 3, 31, 4] ·
+  [0, 3, 31, 26] ·
+  [0, 3, 31, 5] ·
+  [0, 3, 31, 10] ·
+  [0, 3, 31, 19] Record({})
+  [0, 3, 31, 2] ·
+  [0, 3, 31, 1] ·
+  [0, 3, 31, 24] ·
+  [0, 3, 31, 15] ·
+  [0, 3, 31, 9] ·
+  [0, 3, 31, 29] ·
+  [0, 3, 31] ·
   [0, 3] ·
   [0, 4] ·
   [0, 5] ·
@@ -14173,7 +14296,7 @@
   [0, 0] Record({"body": Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,… #2dcd1b55424b667b | Record({"address": Text("tea"), "network": Text("tea")}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,14.25,51.25,88.2… #30defbf00c11dd9c | Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
   [0, 1] Text("tea")
   [0, 2] Text("tea")
-  [0, 3, 25] Text("/networks/")
+  [0, 3, 24] Text("/networks/")
   [0, 3, 1, 11] Boolean(true)
   [0, 3, 1, 22] Text("tea")
   [0, 3, 1, 18] Text("")
@@ -14208,7 +14331,7 @@
   [0, 3, 1, 20] Boolean(true)
   [0, 3, 1, 23] Text("tea")
   [0, 3, 1] Text("tea")
-  [0, 3, 29] Text("tea")
+  [0, 3, 28] Text("tea")
   [0, 3, 3] Text("/pools/")
   [0, 3, 2, 11] Boolean(true)
   [0, 3, 2, 22] Text("tea")
@@ -14244,65 +14367,68 @@
   [0, 3, 2, 20] Boolean(true)
   [0, 3, 2, 23] Text("tea")
   [0, 3, 2] Text("tea")
-  [0, 3, 28] Text("tea")
-  [0, 3, 14] Text("/indicators?")
-  [0, 3, 31] Record({})
+  [0, 3, 29] Text("tea")
+  [0, 3, 13] Text("/indicators?")
+  [0, 3, 30] Record({})
   [0, 3, 0] Text("rsi")
   [0, 3, 4] Record({"indicator": Text("rsi")})
-  [0, 3, 19] Text("")
-  [0, 3, 9] Record({"indicator": Text("rsi"), "interval": Text("")})
-  [0, 3, 24] Text("")
-  [0, 3, 10] Record({"cursor": Text(""), "indicator": Text("rsi"), "interval": Text("")})
-  [0, 3, 23] Text("")
-  [0, 3, 32] Record({"cursor": Text(""), "end": Text(""), "indicator": Text("rsi"), "interval": Text("")})
   [0, 3, 21] Text("")
-  [0, 3, 6] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text("")})
+  [0, 3, 8] Record({"indicator": Text("rsi"), "interval": Text("")})
+  [0, 3, 23] Text("")
+  [0, 3, 9] Record({"cursor": Text(""), "indicator": Text("rsi"), "interval": Text("")})
+  [0, 3, 14] Text("")
+  [0, 3, 32] Record({"cursor": Text(""), "end": Text(""), "indicator": Text("rsi"), "interval": Text("")})
   [0, 3, 22] Text("")
-  [0, 3, 11] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit": Text("")})
-  [0, 3, 20] Text("")
-  [0, 3, 5] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit": Text(""), "period": Text("")})
+  [0, 3, 6] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text("")})
   [0, 3, 15] Text("")
-  [0, 3, 26] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit": Text(""), "period": Text(""), "si… #3dc072769738021d
-  [0, 3, 18] Text("")
-  [0, 3, 7] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit": Text(""), "period": Text(""), "si… #ab9f63705983ae66
-  [0, 3, 16] Text("")
-  [0, 3, 33] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit": Text(""), "period": Text(""), "si… #e202bd6dd7b6ff98
+  [0, 3, 10] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit": Text("")})
   [0, 3, 17] Text("")
-  [0, 3, 13] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit": Text(""), "period": Text(""), "si… #323f7accc437ee9f
-  [0, 3, 12, 0] Text("(given, defaults) => {\n  const q = { ...defaults };\n  for (const k of Object.keys(defaults)) if (given[k] !== undefined && given[k] !== \"\") q[k] = giv… #c5c798e2de1bd398
-  [0, 3, 12, 2] List([Record({"after": Text("a")}), Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit… #5ee946dc69fd1db6
-  [0, 3, 12, 1] ·
-  [0, 3, 12, 3] ·
-  [0, 3, 12] ·
-  [0, 3, 30] ·
+  [0, 3, 5] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit": Text(""), "period": Text("")})
+  [0, 3, 16] Text("")
+  [0, 3, 25] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit": Text(""), "period": Text(""), "si… #3dc072769738021d
+  [0, 3, 20] Text("")
+  [0, 3, 7] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit": Text(""), "period": Text(""), "si… #ab9f63705983ae66
+  [0, 3, 19] Text("")
+  [0, 3, 33] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit": Text(""), "period": Text(""), "si… #e202bd6dd7b6ff98
+  [0, 3, 18] Text("")
+  [0, 3, 12] Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit": Text(""), "period": Text(""), "si… #323f7accc437ee9f
+  [0, 3, 11, 0] Text("(given, defaults) => {\n  const q = { ...defaults };\n  for (const k of Object.keys(defaults)) if (given[k] !== undefined && given[k] !== \"\") q[k] = giv… #c5c798e2de1bd398
+  [0, 3, 11, 2] List([Record({"after": Text("a")}), Record({"cursor": Text(""), "end": Text(""), "fast_period": Text(""), "indicator": Text("rsi"), "interval": Text(""), "limit… #5ee946dc69fd1db6
+  [0, 3, 11, 1] ·
+  [0, 3, 11, 3] ·
+  [0, 3, 11] ·
   [0, 3, 27] ·
-  [0, 3, 8, 17] Record({})
-  [0, 3, 8, 16] Record({})
-  [0, 3, 8, 21] Text("application/json")
-  [0, 3, 8, 15] Record({"accept": Text("application/json")})
-  [0, 3, 8, 6] ·
-  [0, 3, 8, 25] ·
-  [0, 3, 8, 0] Record({"accept": Text("application/json")})
-  [0, 3, 8, 24] ·
-  [0, 3, 8, 11] ·
-  [0, 3, 8, 7] Number(0.0)
-  [0, 3, 8, 20] ·
-  [0, 3, 8, 19] ·
-  [0, 3, 8, 12] ·
-  [0, 3, 8, 8] ·
-  [0, 3, 8, 3] ·
-  [0, 3, 8, 4] ·
-  [0, 3, 8, 23] ·
-  [0, 3, 8, 5] ·
-  [0, 3, 8, 10] ·
-  [0, 3, 8, 18] Record({})
-  [0, 3, 8, 2] ·
-  [0, 3, 8, 1] ·
-  [0, 3, 8, 22] ·
-  [0, 3, 8, 14] ·
-  [0, 3, 8, 9] ·
-  [0, 3, 8, 26] ·
-  [0, 3, 8] ·
+  [0, 3, 26] ·
+  [0, 3, 31, 18] Record({})
+  [0, 3, 31, 17] Record({})
+  [0, 3, 31, 23] Text("application/json")
+  [0, 3, 31, 16] Record({"accept": Text("application/json")})
+  [0, 3, 31, 6] ·
+  [0, 3, 31, 28] ·
+  [0, 3, 31, 0] Record({"accept": Text("application/json")})
+  [0, 3, 31, 27] ·
+  [0, 3, 31, 12] ·
+  [0, 3, 31, 7] Number(0.0)
+  [0, 3, 31, 22] ·
+  [0, 3, 31, 21] ·
+  [0, 3, 31, 13] Boolean(false)
+  [0, 3, 31, 25] Boolean(true)
+  [0, 3, 31, 11] ·
+  [0, 3, 31, 20] ·
+  [0, 3, 31, 8] ·
+  [0, 3, 31, 3] ·
+  [0, 3, 31, 4] ·
+  [0, 3, 31, 26] ·
+  [0, 3, 31, 5] ·
+  [0, 3, 31, 10] ·
+  [0, 3, 31, 19] Record({})
+  [0, 3, 31, 2] ·
+  [0, 3, 31, 1] ·
+  [0, 3, 31, 24] ·
+  [0, 3, 31, 15] ·
+  [0, 3, 31, 9] ·
+  [0, 3, 31, 29] ·
+  [0, 3, 31] ·
   [0, 3] ·
   [0, 4] ·
   [0, 5] ·

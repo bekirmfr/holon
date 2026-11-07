@@ -1056,13 +1056,14 @@ const NUMBER_TEXT_FLOOR: &str = r#"function js_number_text(x) {
   return a >= 1e21 || (a < 0.000001 && a !== 0) ? `${x}e` : `${x}`
 }"#;
 
-/// What the reader does today that a composite has to write around: `c ? a : b` lowers to
-/// `guard(c, a) ?? b`, so a chosen `a` that is absent gives `b`, where JavaScript gives
-/// `undefined` (texts.md, "Reader changes").
+/// What the reader does that a composite relies on: `c ? a : b` lowers to `guard(c, a) ??
+/// guard(!(c ?? false), b)`, so a chosen `a` that is absent makes the choice absent, as
+/// JavaScript's `undefined`, and doesn't fall to `b` (texts.md, "Reader changes").
 fn reader_facts() {
     let c = function("function pick(c, r) {\n  return c ? r.missing : \"other\"\n}", "pick", 2);
-    assert_eq!(c.call(&[truth(true), v("{}")]), Some(text("other")), "the ternary's fall-through is fixed: update texts.md");
-    println!("reader: `c ? a : b` with c true and a absent gives b (JavaScript gives undefined)");
+    assert_eq!(c.call(&[truth(true), v("{}")]), None, "the ternary falls to its else again: update texts.md");
+    assert_eq!(c.call(&[truth(false), v("{}")]), Some(text("other")));
+    println!("reader: `c ? a : b` with c true and a absent is absent (JavaScript gives undefined)");
 }
 
 fn main() {

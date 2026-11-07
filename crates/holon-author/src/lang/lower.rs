@@ -1565,14 +1565,19 @@ impl<'a> Lowerer<'a> {
                 self.node_with("not", &[], &[("v", v)], e.span)
             }
             ExprKind::Binary { op, lhs, rhs } => self.binary(*op, lhs, rhs, e.span),
+            // `c ? a : b` is `guard(c, a) ?? guard(!(c ?? false), b)`: each branch guarded by its
+            // side of `c`, so a chosen `a` that is absent makes the choice absent, as JavaScript's
+            // `undefined`, instead of falling to `b`; and `c` absent takes the else, as `if` does.
             ExprKind::If { cond, then, els } => {
                 let c = self.expr(cond)?;
                 let t = self.branch(then)?;
-                let guarded = self.node_with("guard", &[], &[("cond", c), ("value", t)], e.span)?;
-                match els {
-                    None => Ok(guarded),
-                    Some(b) => self.fallback(guarded, b, e.span),
-                }
+                let guarded = self.node_with("guard", &[], &[("cond", c.clone()), ("value", t)], e.span)?;
+                let Some(b) = els else { return Ok(guarded) };
+                let held = self.node_with("default", &[("value".into(), "false".into()), ("type".into(), "Boolean".into())], &[("value", c)], cond.span)?;
+                let otherwise = self.node_with("not", &[], &[("v", held)], cond.span)?;
+                let v = self.branch(b)?;
+                let taken = self.node_with("guard", &[], &[("cond", otherwise), ("value", v)], b.span)?;
+                self.node_with("coalesce", &[], &[("a", guarded), ("b", taken)], e.span)
             }
             ExprKind::Match { subject, arms, els, .. } => self.match_expr(subject, arms, els.as_deref(), e.span),
             ExprKind::Await { name, expires } => {
@@ -3131,10 +3136,16 @@ export const t = action(() => {
         )
         .doc;
         let names = leaves(&d);
-        assert_eq!(&names[4..12], ["default", "coalesce", "guard", "guard", "coalesce", "guard", "default", "default"]);
+        // `c ? a : b` is `guard(c, a) ?? guard(!(c ?? false), b)`, a literal `b` too.
+        let ternary = ["guard", "default", "not", "guard", "coalesce"];
+        assert_eq!(&names[4..7], ["default", "coalesce", "guard"]);
+        assert_eq!(&names[7..12], ternary);
+        assert_eq!(&names[12..18], ["guard", "default", "not", "const", "guard", "coalesce"]);
+        assert_eq!(names[18], "default");
         assert_eq!((d.nodes[4].param("type"), d.nodes[4].param("value")), ("Number", "0"));
-        assert_eq!((d.nodes[10].param("type"), d.nodes[10].param("value")), ("Text", "none"));
-        assert_eq!((d.nodes[11].param("type"), d.nodes[11].param("value")), ("Json", "{\"k\":[1,\"x\"]}"));
+        assert_eq!((d.nodes[8].param("type"), d.nodes[8].param("value")), ("Boolean", "false"));
+        assert_eq!((d.nodes[15].param("type"), d.nodes[15].param("value")), ("Text", "none"));
+        assert_eq!((d.nodes[18].param("type"), d.nodes[18].param("value")), ("Json", "{\"k\":[1,\"x\"]}"));
     }
 
     #[test]
@@ -4594,6 +4605,26 @@ route.post("/t", (req) => {
         assert_eq!(picked(&kinds, t("1"), None), t("text one"));
         assert_eq!(picked(&kinds, Some(Boolean(true)), None), t("yes"));
         assert_eq!(picked(&kinds, Some(Boolean(false)), None), None);
+    }
+
+    /// `c ? a : b` chooses as JavaScript does: the side chosen is the answer, absent if it is, and
+    /// `c` absent takes the else. The `if`, its early-return form and the ternary are one unit.
+    #[test]
+    fn a_ternary_chooses_and_its_chosen_sides_absence_is_its() {
+        use holon_core::Value::{Boolean, Number, Text};
+        let ternary = with_pick("  return op ? v : \"other\"");
+        let other = Some(Text("other".into()));
+        assert_eq!(picked(&ternary, Some(Boolean(true)), Some(Number(1.0))), Some(Number(1.0)));
+        assert_eq!(picked(&ternary, Some(Boolean(true)), None), None, "the then chosen, absent: absent, not the else");
+        assert_eq!(picked(&ternary, Some(Boolean(false)), None), other, "the else chosen");
+        assert_eq!(picked(&ternary, None, Some(Number(1.0))), other, "the condition absent: the else, as an if takes undefined");
+        let hash = hash_of(&compiled(&ternary).doc);
+        for body in ["  if (op) {\n    return v\n  } else {\n    return \"other\"\n  }", "  if (op) {\n    return v\n  }\n  return \"other\""] {
+            assert_eq!(hash_of(&compiled(&with_pick(body)).doc), hash, "{body}");
+        }
+        // The fallback written as one still falls.
+        let fallback = with_pick("  return (op ? v : undefined) ?? \"other\"");
+        assert_eq!(picked(&fallback, Some(Boolean(true)), None), other);
     }
 
     #[test]

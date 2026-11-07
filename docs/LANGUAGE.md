@@ -91,7 +91,7 @@ unit.
 | Bindings | `const name = expr`; a `let` given a new value is a new name; destructuring is a `field` per name | §5.2 |
 | Calls | `leaf(inputs…, { named… })`: positional arguments are inputs; a last record whose keys the unit takes names inputs and params. A method of a text or list is the leaf that does it | §5.3 |
 | Literals | Numbers, texts, `true`, `false`; a template literal interpolates through `as_text`; `{…}` and `[…]` lower to `record`/`with_field` (`merge` for a spread after anything, `insert` for a computed key) and `list`; a duration is a text, `"10s"`, where one is asked | §5.5 |
-| Operators | Arithmetic and comparison on numbers, logic on booleans, `??` (fallback), `===` (structural), `.` (field or output), `[ ]` (lookup), `c ? a : undefined` (guard), `c ? a : b` (guard plus fallback), `switch` (a choice by value) | §5.6, §6.4, §6.5 |
+| Operators | Arithmetic and comparison on numbers, logic on booleans, `??` (fallback), `===` (structural), `.` (field or output), `[ ]` (lookup), `c ? a : undefined` (guard), `c ? a : b` (a guard on each side of `c`), `switch` (a choice by value) | §5.6, §6.4, §6.5 |
 | Multi-output values | `.name` selects an output when the name is one; otherwise it is a field. A bare multi-output value is its first output | §5.7 |
 | Functions | `function name(inputs) { …; return out }` is a holon, its outputs named by what it returns; an arrow written in place for a list's methods that take one (`map`, `reduce`, `filter`, `toSorted`, …), a name it uses from around it an input of its own | §5.8, §5.9 |
 | js functions | `const name = js(function name(inputs) { JavaScript }, { fuel, memory, outputs })`: a function whose body runs as JavaScript, in an engine that is a WebAssembly module with no imports, under a budget | §5.8a |
@@ -1577,7 +1577,7 @@ Lowest to highest precedence, as TypeScript has them; binary operators are left-
 
 | Operator | Lowers to | Note |
 |---|---|---|
-| `c ? a : b` | `coalesce(guard(cond: c, value: a), b)` | `a` if `c` held and `a` arrived, else `b` (§6.4) |
+| `c ? a : b` | `coalesce(guard(cond: c, value: a), guard(cond: not(default{false}(c)), value: b))` | `a` if `c` is `true`, else `b`; the side chosen is the answer, absent if it is (§6.4) |
 | `c ? a : undefined` | `guard(cond: c, value: a)` | absent unless `c` is `true` |
 | `a ?? b` | `coalesce(a, b)`; with a literal `b`, `default{type, value}(a)` | `a` when present, else `b`. The two leaves have one meaning; `default` is the one-node form for a literal (a number, text, boolean, or a record/list literal with only literals inside, frozen as `Json`) |
 | `a \|\| b` | `or(a, b)` | variadic: `a \|\| b \|\| c` is one node; booleans only |
@@ -1944,15 +1944,17 @@ Absence is not a value: it cannot be stored, compared or passed to a function. `
 text's word for it, written only as a branch and in `x !== undefined`; `null` is refused. `none()`
 is a value (the optional's empty arm) and is unrelated.
 
-### 6.4 `?:` is a fallback, not a branch
+### 6.4 `?:` is a choice
 
-`c ? a : b` is `coalesce(guard(c, a), b)`: `a` when `c` is `true` and `a` arrived, otherwise `b`.
-So `c` absent gives `b`, and `c` true with `a` absent gives `b` too, where JavaScript would give
-`undefined`. This is the meaning that fits a dataflow of absences, and it is one meaning: `c ? a :
-undefined` is the same `guard`, and `if (c) …` chooses between statements the same way.
+`c ? a : b` is `guard(c, a) ?? guard(!(c ?? false), b)`: `a` when `c` is `true`, otherwise `b`. So
+`c` absent gives `b`, as JavaScript's `if` takes `undefined` as false, and the side chosen is the
+answer: `c` true with `a` absent is absent, as JavaScript gives `undefined`, and doesn't fall to
+`b`. `c ? a : undefined` is the first `guard` alone, and `if (c) …` chooses between statements the
+same way. A fallback is written as one: `(c ? a : undefined) ?? b` is `b` when the chosen `a` is
+absent too.
 
 Only what the choice needs is run (lazy choices, `docs/L4s/lazy-choices-L4.md`): `a` only when `c`
-is `true`, and `b` only when `guard(c, a)` came out absent. So a branch not taken asks the host
+is `true`, and `b` only when it isn't. So a branch not taken asks the host
 nothing: its requests aren't sent, its `await`s don't park the run, its reads aren't made, and a
 function in it isn't entered. `x ?? y` is the same rule: `y` only when `x` is absent. This changes
 no value, only what runs. While `c` (or `x`) waits on an answer from the host, the choice waits
@@ -2009,12 +2011,13 @@ to test a condition, use `?:` or `if`. Several cases may share a body (`case "s"
 is no fall-through into another body. A case that breaks, like a subject no case equals, goes on
 after the `switch`.
 
-What makes it a choice and not a chain of `?:`: **the chosen case's absence is the switch's.** With
-`b = 0`, `a / b` has no value, and the `"div"` case has none either, so the route answers 400. A
-chain, `op === "div" ? a / b : 0`, falls through and answers `0`, silently. The cases not chosen
+What makes it a choice: **the chosen case's absence is the switch's.** With `b = 0`, `a / b` has no
+value, and the `"div"` case has none either, so the route answers 400. A chain of `?:` chooses so
+too (§6.4); it differs from the switch where the subject is absent. The cases not chosen
 don't matter at all, and don't run (§6.4): `"add"` answers `a + b` whatever `a / b` would be. So a
 case may send a request or `await`; only the chosen case's are asked. With the subject absent, the
-switch is absent, and the `default` with it. With no case equal and no `default`, it is absent too.
+switch is absent, and the `default` with it, where a chain's conditions are absent and each takes
+its else, down to the last. With no case equal and no `default`, it is absent too.
 
 It is sugar: it lowers to `guard(equals(s, p), a)` for each case, chained by `??`, and the
 `default` guarded by none of the cases matching, so a failed case can't fall through to it
@@ -2207,8 +2210,8 @@ lowering. The algorithm:
    `new Date(t)` (`new Date(t).getTime()` for the time value), `Date.UTC(…)` and `Date.parse(t)`;
    `list` as an array literal; `type_of` under a `default` of `"undefined"` as `typeof x`;
    `default` with a literal param and `coalesce` as `??`; `guard` as `c ? a : undefined`, and
-   `coalesce` over a
-   `guard` as `c ? a : b`; binary leaves as operators; `field` chains as `.name`; `respond` as the
+   `coalesce` over a `guard` and a `guard` on `!(c ?? false)` of the same `c` as `c ? a : b`;
+   binary leaves as operators; `field` chains as `.name`; `respond` as the
    handler's `return`; MongoDB templates as the records they were frozen from.
 5. Names: a binding takes the node's name from the text it came from when it has one (the
    lowering's names, handed to the printer), else one from what the node is (a `field`'s field, a
@@ -2401,7 +2404,10 @@ is `status(204)`).
   since the switch):* `c ? a : undefined` is the guard, and `c ? a : b` is the same guard with a
   `coalesce` fallback, so a choice has one meaning, fallback, which differs from JavaScript's where `a` has no
   value (§6.4), and `select` is a plain call for the strict choice. The `coalesce` leaf it needs is
-  built (§5.6).
+  built (§5.6). *Reversed (2026-11-07):* `c ? a : b` is a guard on each side, `guard(c, a) ??
+  guard(!(c ?? false), b)`, so a chosen `a` that is absent makes it absent, as JavaScript gives
+  `undefined`; the fallback is written `(c ? a : undefined) ?? b`. The fall-through had made the
+  natural text composites wrong (js-library-races/texts.md).
 - **F6. Named inputs.** *Decided (2026-10-24):* a named argument is an input when the unit has that
   port, else a param. Since the switch the names are a last record, `{ headers: h, limit: 50 }`,
   read so when the unit takes each of its keys; otherwise the record is a value, passed in order.
@@ -2422,11 +2428,11 @@ is `status(204)`).
   Alternative: names derived from their keys (`put_posts`, `write_last_post`). Decide when the
   first function with several writes exists.
 - **F11. A choice by value, `switch`.** A record used as a table is spoiled by one absent entry,
-  and a chain of `?:` falls through when the chosen arm fails. A `switch` chooses one case by the
-  subject, so cases not chosen don't matter and a chosen case's failure is the result's. It lowers
-  to `equals`, `guard` and `coalesce`, with the `default` guarded by "no case matched". Decided and
-  built as `match` (§6.5), and written as `switch` since the switch, fall-through refused; the
-  `calc` sample shows it. `docs/L4s/match-L4.md`.
+  and a chain of `?:` fell through when the chosen arm failed (until F5's reversal). A `switch`
+  chooses one case by the subject, so cases not chosen don't matter and a chosen case's failure is
+  the result's. It lowers to `equals`, `guard` and `coalesce`, with the `default` guarded by "no
+  case matched". Decided and built as `match` (§6.5), and written as `switch` since the switch,
+  fall-through refused; the `calc` sample shows it. `docs/L4s/match-L4.md`.
 - **F12. Lazy choices.** Every node was evaluated, so a request inside a branch not taken was sent
   anyway, and an `await` there parked the run. Decided and built: `guard` and `coalesce` evaluate
   only the inputs they need, with "not yet answered" kept apart from absent so a choice waits
