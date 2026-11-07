@@ -946,7 +946,7 @@ fn rerun(
     }
     let values: BTreeMap<String, Value> = entry.state_before.iter().map(|(k, v)| (k.clone(), marks.read(v, entry.escaped))).collect();
     let Ok(state) = State::from_values(values) else {
-        return Rerun::Differs("its state doesn't encode".into());
+        return Rerun::Differs("its state isn't data a state holds, or doesn't encode".into());
     };
 
     // A secret stands in as its placeholder (a token too: `Logged::token`), as the marks the log
@@ -961,10 +961,12 @@ fn rerun(
             placeholders.push((Capability::SecretRead(name.clone()), Value::Text(marks.of("secret", &shown))));
         }
     }
+    // Lent to its reads as they are (`run_rounds`): what it read from the world, read back from
+    // the log, must be data, as its state is (`State` holds nothing else).
     let sourced: Vec<(Capability, &Value)> = state
         .iter()
         .map(|(k, v)| (Capability::StateRead(k.clone()), v))
-        .chain(extra.iter().chain(&placeholders).map(|(cap, value)| (cap.clone(), value)))
+        .chain(extra.iter().filter(|(_, v)| holon_host::is_storable(v)).chain(&placeholders).map(|(cap, value)| (cap.clone(), value)))
         .collect();
 
     let mut differs = Vec::new();
@@ -1058,7 +1060,7 @@ fn rerun(
         for (cap, payload) in &host.performed {
             match cap {
                 // As the commit writes them (firing.rs).
-                Capability::StateWrite(key) if holon_host::is_storable(payload) && after.insert(key.clone(), payload.clone()).is_ok() => {
+                Capability::StateWrite(key) if after.insert(key.clone(), payload.clone()).is_ok() => {
                     wrote.insert(key.clone());
                 }
                 Capability::CollectionWrite(name) => {

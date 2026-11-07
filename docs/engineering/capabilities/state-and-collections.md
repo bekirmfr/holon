@@ -67,8 +67,8 @@ from the leaves, never from the imports.
   if `still_as_read` holds: each granted cell by its hash, each collection read asked again
   (skipped when that collection's root hasn't moved). Otherwise it runs again from the live state,
   its outbound requests answered from its own record; after `OPTIMISTIC_ATTEMPTS` (4) it runs
-  once more holding the lock. `commit` applies each `StateWrite` (refusing a value carrying an
-  effect, `is_storable`), then each collection put or delete (`collections::apply`, which stores
+  once more holding the lock. `commit` applies each `StateWrite` (`State::insert` refuses a value
+  carrying an effect, `is_storable`, as `State::load` does), then each collection put or delete (`collections::apply`, which stores
   only the changed trie nodes), then the run's files.
 - **What is kept.** `snapshot_after` saves the changed values and a snapshot record (key → value
   hash) in the content store (`restore::save_snapshot`); its hash is the entry's `state_after`.

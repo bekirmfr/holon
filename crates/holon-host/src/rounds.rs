@@ -214,8 +214,10 @@ impl Waits for NoWaits {
 }
 
 /// Run `root` on `inputs`, in rounds, sourcing `sourced` (clock, state, …) as `fire_sourced`
-/// does, each value lent from wherever the caller holds it (a run's state), performing outbound requests with `performer` within `limits`, and the final round's
-/// effects with `host`, unless the run waits. `observer` sees every round's steps (after a
+/// does, each value lent from wherever the caller holds it (a run's state) and handed to a read
+/// as it is: data (`is_storable`), as a state's cells and the drivers the host makes are, and as
+/// the caller checks one it reads back from storage. Outbound requests are performed with
+/// `performer` within `limits`, and the final round's effects with `host`, unless the run waits. `observer` sees every round's steps (after a
 /// `round(n)` call) as in a single evaluation. `waits` answers waiting points and tokens;
 /// `prior` holds the rounds of an earlier part of the same run (a resumed one), whose requests
 /// are answered from it, not sent again. The outcome's rounds are the new ones.

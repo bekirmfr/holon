@@ -30,8 +30,9 @@ walks it for `Effect` values (a list of them is a fan-out, performed in order) a
 the boundary, so a graph performs only what a leaf it holds could build. `SourcedResolver`
 injects a host-supplied value at every sourced leaf (the clock, the request, `StateRead(key)`),
 matched by the full `Capability`; a leaf with nothing supplied evaluates to nothing.
-`is_storable` refuses an `Effect` as a state value, nested or not: the one rule both write paths
-apply (`StateHost::round` here, firing.rs's `commit` in the server).
+`is_storable` refuses an `Effect` as a state value, nested or not: the one rule both stores apply
+(`StateHost::round` here, and `State`, §2.4). A value sourced from a list it is given is checked
+the first time a leaf reads it; one `run_rounds` is lent is data already, and never looked at.
 
 ### 2.2 Rounds (rounds.rs)
 
@@ -82,8 +83,10 @@ read is said (`unreadable`) and the store opens without its values.
 written, so its `root` (core's `state_root`) and a comparison of two states cost a hash per key,
 not per byte. Each value is shared (an `Arc`): a copy of the state, which every run takes as it
 starts, is its keys and hashes, and the run is lent the values it reads (`run_rounds` takes them
-borrowed). `State::save` puts each value into the store and returns the `key → hash` map a
-deployment's snapshots keep; `State::load` rebuilds one, each value checked.
+borrowed). Each value is data: `insert` refuses one that isn't (`InsertError::NotData`), so a
+run's reads are handed the state's values without a look. `State::save` puts each value into the
+store and returns the `key → hash` map a deployment's snapshots keep; `State::load` rebuilds one,
+each value checked against its hash and refused unless it is data (`LoadError::NotData`).
 
 A collection (collection.rs) is a radix trie stored as values (`{p, v?, c?}` nodes), canonical (the
 shape follows from which keys exist, so equal contents have equal roots) and persistent (a write

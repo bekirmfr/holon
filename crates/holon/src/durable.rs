@@ -438,10 +438,12 @@ impl ParkedRun {
     ) -> Result<Resumption, String> {
         let unit = parse_hash(&self.unit).ok_or("the run's unit isn't a hash")?;
         let inputs = self.inputs.iter().map(|i| i.clone().map(SValue::into_core)).collect();
+        // Lent to its reads as they are (`run_rounds`): read back from storage, each must be data.
         let sourced = self
             .sourced
             .iter()
             .filter_map(|(c, v)| Some((capability_named(c)?, v.clone().into_core())))
+            .filter(|(_, v)| is_storable(v))
             .collect();
         let mut events: BTreeMap<String, Value> = self.events.iter().map(|(k, v)| (k.clone(), v.clone().into_core())).collect();
         events.insert(name.to_string(), event);

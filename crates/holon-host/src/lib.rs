@@ -30,7 +30,7 @@ pub mod packs;
 mod rounds;
 mod state;
 pub use rounds::{run_rounds, Claim, Exchange, Limits, NoWaits, Performer, Recorded, Round, RunError, RunOutcome, Waiting, Waits};
-pub use state::{LoadError, State};
+pub use state::{InsertError, LoadError, State};
 
 use holon_core::{
     capabilities, capabilities_of, child_refs, decode_preimage, decode_value, design_eval, encode_preimage, encode_value,
@@ -292,7 +292,8 @@ impl StateHost {
 /// *request*: `store_write` is `Any`-typed, so `store_write(egress(x))` reaches the host with an
 /// `Effect` as its payload, and committing it would put a request into storage that no later
 /// round can source back. Recursive — an effect nested in a list or sum is no more data. The one
-/// rule both write paths (`StateHost::round` here, holon-server's `fire_with_state`) apply.
+/// rule both stores apply: `StateHost::round` here, and [`State`], whose every write and load
+/// refuses what isn't data.
 pub fn is_storable(value: &Value) -> bool {
     match value {
         Value::Effect { .. } => false,
@@ -319,19 +320,20 @@ impl Host for StateHost {
 /// (sinks, `store_write`) are never sourced, so the effect manifest is intact.
 struct SourcedResolver<'a, R: Resolver> {
     /// Each sourced value, and whether it is data ([`is_storable`]), found the first time a leaf
-    /// reads it.
+    /// reads it, or known from the start.
     sourced: Vec<(&'a Capability, &'a Value, OnceCell<bool>)>,
     real: &'a R,
 }
 
 impl<'a, R: Resolver> SourcedResolver<'a, R> {
     fn new(sourced: &'a [(Capability, Value)], real: &'a R) -> Self {
-        SourcedResolver::lent(sourced.iter().map(|(cap, value)| (cap, value)), real)
+        SourcedResolver { sourced: sourced.iter().map(|(cap, value)| (cap, value, OnceCell::new())).collect(), real }
     }
 
-    /// Values held elsewhere (a run's state), lent as they are rather than copied into a list.
+    /// Values held elsewhere and known to be data (a run's: a [`State`] holds nothing else), lent
+    /// as they are, and never looked at.
     fn lent(sourced: impl IntoIterator<Item = (&'a Capability, &'a Value)>, real: &'a R) -> Self {
-        SourcedResolver { sourced: sourced.into_iter().map(|(cap, value)| (cap, value, OnceCell::new())).collect(), real }
+        SourcedResolver { sourced: sourced.into_iter().map(|(cap, value)| (cap, value, OnceCell::from(true))).collect(), real }
     }
 }
 
@@ -348,10 +350,10 @@ impl<R: Resolver> Resolver for SourcedResolver<'_, R> {
         self.real.resolved(unit)
     }
 
-    /// The value for `unit`'s capability. One that isn't data (an `Effect`: writes refuse them,
-    /// see `is_storable`, but storage loaded from disk predates that rule) isn't handed out, which
-    /// is the seam `fire_sourced`'s doc already names for an unsupplied capability: "evaluates to
-    /// nothing", never a request a read could carry to the output and have performed.
+    /// The value for `unit`'s capability. One that isn't data (an `Effect`, which a caller's
+    /// storage may hold: see `is_storable`) isn't handed out, which is the seam `fire_sourced`'s
+    /// doc already names for an unsupplied capability: "evaluates to nothing", never a request a
+    /// read could carry to the output and have performed.
     fn sourced(&self, unit: &Unit) -> Option<&Value> {
         let UnitBody::Primitive { name } = &unit.body else { return None };
         let caps: Vec<Capability> = capabilities_of(name, &unit.params)?.iter().collect();

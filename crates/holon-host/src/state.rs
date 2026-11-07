@@ -9,13 +9,16 @@
 //!
 //! Each value is shared, not owned: a copy of the state, which every run takes as it starts, is
 //! its keys and hashes, and copies no value.
+//!
+//! Each value is data ([`is_storable`]), never an effect request: a write refuses one, as a load
+//! refuses a store holding one, so a run is handed the values it reads without looking at them.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use holon_core::{hash_value, state_root, EncodeError, Hash, Value};
 
-use crate::{Store, StoreError};
+use crate::{is_storable, Store, StoreError};
 
 /// One key's value and its content hash.
 #[derive(Clone, Debug, PartialEq)]
@@ -30,11 +33,22 @@ pub struct State {
     cells: BTreeMap<String, Cell>,
 }
 
+/// Why a value wasn't written to a cell; the state is as it was.
+#[derive(Debug)]
+pub enum InsertError {
+    /// It isn't data: an effect request, which no run could read back.
+    NotData,
+    /// It is too large to encode (a text, list or record over the `u32` length budget).
+    TooLarge(EncodeError),
+}
+
 /// Why a state couldn't be rebuilt from its references.
 #[derive(Debug)]
 pub enum LoadError {
     /// A referenced value isn't in the store.
     Missing { key: String, hash: Hash },
+    /// A referenced value isn't data, which no write puts in a cell.
+    NotData { key: String },
     /// The store failed, or holds bytes that don't match the hash.
     Store(StoreError),
 }
@@ -45,7 +59,7 @@ impl State {
     }
 
     /// A state holding `values`, each hashed now.
-    pub fn from_values(values: BTreeMap<String, Value>) -> Result<State, EncodeError> {
+    pub fn from_values(values: BTreeMap<String, Value>) -> Result<State, InsertError> {
         let mut state = State::new();
         for (key, value) in values {
             state.insert(key, value)?;
@@ -62,10 +76,13 @@ impl State {
         self.cells.get(key).map(|c| &c.hash)
     }
 
-    /// Set `key` to `value`, hashing it. Fails only for a value too large to encode (a text,
-    /// list or record over the `u32` length budget), leaving the state unchanged.
-    pub fn insert(&mut self, key: String, value: Value) -> Result<(), EncodeError> {
-        let hash = hash_value(&value)?;
+    /// Set `key` to `value`, hashing it. Refused for a value that isn't data or is too large to
+    /// encode, leaving the state unchanged.
+    pub fn insert(&mut self, key: String, value: Value) -> Result<(), InsertError> {
+        if !is_storable(&value) {
+            return Err(InsertError::NotData);
+        }
+        let hash = hash_value(&value).map_err(InsertError::TooLarge)?;
         self.cells.insert(key, Cell { value: Arc::new(value), hash });
         Ok(())
     }
@@ -111,7 +128,8 @@ impl State {
         Ok(self.refs())
     }
 
-    /// The state `refs` names, each value fetched from `store` and verified against its hash.
+    /// The state `refs` names, each value fetched from `store`, verified against its hash, and
+    /// refused unless it is data.
     pub fn load(refs: &BTreeMap<String, Hash>, store: &impl Store) -> Result<State, LoadError> {
         let mut cells = BTreeMap::new();
         for (key, hash) in refs {
@@ -119,6 +137,9 @@ impl State {
                 .get_value(hash)
                 .map_err(LoadError::Store)?
                 .ok_or_else(|| LoadError::Missing { key: key.clone(), hash: *hash })?;
+            if !is_storable(&value) {
+                return Err(LoadError::NotData { key: key.clone() });
+            }
             cells.insert(key.clone(), Cell { value: Arc::new(value), hash: *hash });
         }
         Ok(State { cells })
@@ -178,6 +199,22 @@ mod tests {
         let mut dangling = first.clone();
         dangling.insert("gone".into(), [9u8; 32]);
         assert!(matches!(State::load(&dangling, &store), Err(LoadError::Missing { .. })));
+    }
+
+    #[test]
+    fn a_cell_holds_data_and_never_an_effect_request() {
+        let effect = Value::Effect { sink: "egress".into(), payload: Box::new(txt("no")) };
+        let mut s = State::new();
+        s.insert("todos".into(), todos(&["milk"])).unwrap();
+        let root = s.root();
+        assert!(matches!(s.insert("todos".into(), Value::List(vec![txt("milk"), effect.clone()])), Err(InsertError::NotData)));
+        assert_eq!(s.root(), root, "refused, the state is as it was");
+
+        // A store holding one (put there by hand: no write does) doesn't load.
+        let mut store = MemStore::new();
+        let mut refs = s.save(&mut store).unwrap();
+        refs.insert("sneaked".into(), store.put_value(&effect).unwrap());
+        assert!(matches!(State::load(&refs, &store), Err(LoadError::NotData { key }) if key == "sneaked"));
     }
 
     #[test]

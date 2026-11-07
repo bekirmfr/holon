@@ -60,6 +60,7 @@ pub(crate) fn snapshot_refs(hex: &str, store: &SharedStore) -> Result<BTreeMap<S
 pub(crate) fn load_snapshot(hex: &str, store: &SharedStore) -> Result<State, String> {
     State::load(&snapshot_refs(hex, store)?, store).map_err(|e| match e {
         holon_host::LoadError::Missing { key, .. } => format!("{key:?}'s value isn't in the store"),
+        holon_host::LoadError::NotData { key } => format!("{key:?}'s value is an effect request, not data"),
         holon_host::LoadError::Store(e) => format!("{e:?}"),
     })
 }

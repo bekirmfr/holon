@@ -229,7 +229,7 @@ use holon_core::{
     Value, BOUNDARY,
 };
 use holon_host::{
-    fire, is_storable, write_atomically, CacheIngestError, FileStore, ForkError, Host, MemStore,
+    fire, is_storable, write_atomically, CacheIngestError, FileStore, ForkError, Host, InsertError, MemStore,
     run_rounds, PublishError, Waiting, Registry, Round, SharedCache, State, Store, StoreError,
 };
 use lifecycle::{Lifecycle, RunFrom, Session, Status};

@@ -511,10 +511,10 @@ fn snapshot_after(live: &State, start: Option<&State>, store: &SharedStore, run_
 fn commit(live: &mut State, store: &SharedStore, staged: folders::Staged, performed: &[(Capability, Value)]) -> Vec<String> {
     for (cap, payload) in performed {
         if let Capability::StateWrite(key) = cap {
-            if !is_storable(payload) {
-                eprintln!("holon: refused to store an effect request in state key {key:?}");
-            } else if let Err(e) = live.insert(key.clone(), payload.clone()) {
-                eprintln!("holon: state key {key:?} not written (too large to encode): {e:?}");
+            match live.insert(key.clone(), payload.clone()) {
+                Ok(()) => {}
+                Err(InsertError::NotData) => eprintln!("holon: refused to store an effect request in state key {key:?}"),
+                Err(InsertError::TooLarge(e)) => eprintln!("holon: state key {key:?} not written (too large to encode): {e:?}"),
             }
         }
     }
