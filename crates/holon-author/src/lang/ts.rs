@@ -4505,7 +4505,8 @@ fn decimal(text: &str) -> Option<f64> {
 
 /// `"10s"`, `"5m"`, `"2h"`, `"1d"` in seconds.
 pub(crate) fn duration(text: &str) -> Option<f64> {
-    let (n, unit) = text.split_at(text.len().checked_sub(1)?);
+    // At the last character's start: a byte before it may be inside one (`"5ü"`).
+    let (n, unit) = text.split_at(text.char_indices().last()?.0);
     let per = match unit {
         "s" => 1.0,
         "m" => 60.0,
@@ -5784,6 +5785,17 @@ route.post("/t", (req) => price(req.json.amount))
         assert_eq!(j.inputs[0].ty.as_ref().map(written).as_deref(), Some("Number"));
         let e = parse("import { flow, js } from \"holon\"\nflow(\"j\", { port: 8000 })\nconst f = js(function out(a) {\n  enum E { A }\n  return a\n})\n").unwrap_err();
         assert_eq!(e.to_string(), "4:3: an enum compiles to code, which a js() body can't hold: use a record of constants");
+    }
+
+    /// A duration ending in a character of more than one byte is refused, where it once panicked
+    /// between that character's bytes (in the editor's wasm, the whole editor).
+    #[test]
+    fn a_duration_ending_in_any_character_is_read_or_refused() {
+        assert_eq!(duration("5m"), Some(300.0));
+        for text in ["1é", "é", "5😀", ""] {
+            assert_eq!(duration(text), None, "{text}");
+        }
+        assert!(parse("import { flow, every } from \"holon\"\nflow(\"k\")\nevery(\"1é\", () => 1)\n").is_err());
     }
 
     fn mistake(body: &str) -> String {
