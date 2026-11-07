@@ -1022,7 +1022,8 @@ pub(crate) struct Placed {
     _dir: Option<std::fs::File>,
 }
 
-/// Why a link on the way to `name` is refused.
+/// Why a link on the way to `name` is refused (on Linux, where no link is followed).
+#[cfg(target_os = "linux")]
 fn link_refused(name: &str) -> String {
     format!("{name:?} leads outside its folder: a link on its way isn't followed")
 }
