@@ -2656,7 +2656,7 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
             }
             "field" if is_identifier(node.param("name")) && node.param("name") != "length" => {
                 let name = node.param("name").to_string();
-                let base = self.required(node, "record", MEMBER)?;
+                let base = self.receiver(node, "record")?;
                 // A field of the request record named as one of the request's parts.
                 let clash = matches!(self.g.incoming.get(&(node.id.clone(), "record".into())), Some(Src::Node { id, output }) if self.is_request(id) && output == "request") && REQUEST_PARTS.contains(&name.as_str());
                 member(if clash { format!("{base}.request.{name}") } else { format!("{base}.{name}") })
@@ -2698,7 +2698,7 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
             }
             "date_parse" => member(format!("Date.parse({})", self.required(node, "text", COND)?)),
             "uppercase" | "lowercase" => {
-                let s = self.required(node, "s", MEMBER)?;
+                let s = self.receiver(node, "s")?;
                 member(format!("{s}.{}()", if d.name == "uppercase" { "toUpperCase" } else { "toLowerCase" }))
             }
             "split" | "join" | "index_of" if self.p.changed_params(node).is_empty() => {
@@ -2720,8 +2720,8 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
             }
             // `.length`, where what it is read on is known to be a text or a list, as the lowering
             // picks the leaf by it.
-            "text_length" if self.known(node, "s", WType::Text) => member(format!("{}.length", self.required(node, "s", MEMBER)?)),
-            "length" if self.known_by(node, "list", |t| matches!(t, WType::List(_))) => member(format!("{}.length", self.required(node, "list", MEMBER)?)),
+            "text_length" if self.known(node, "s", WType::Text) => member(format!("{}.length", self.receiver(node, "s")?)),
+            "length" if self.known_by(node, "list", |t| matches!(t, WType::List(_))) => member(format!("{}.length", self.receiver(node, "list")?)),
             "text_at" | "code_at" | "from_codes" | "text_contains" | "trim" | "pad" | "repeat" | "replace" | "normalize" | "uri_encode" | "uri_decode" | "is_well_formed" => self.text_form(node),
             "base64" if node.param("bytes") == "latin1" && node.param("alphabet") == "standard" && self.arg_wired(node, "text") => {
                 let f = if node.param("mode") == "decode" { "atob" } else { "btoa" };
@@ -3280,9 +3280,9 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
         let list = match reversed {
             Some(r) => {
                 self.touch(r);
-                self.required(r, "list", MEMBER)?
+                self.receiver(r, "list")?
             }
-            None => self.required(node, "list", MEMBER)?,
+            None => self.receiver(node, "list")?,
         };
         let init = if fold { Some(self.required(node, "init", COND)?) } else { None };
         let f = self.function_text(node)?;
@@ -3321,7 +3321,7 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
             // A record's pairs where it is known to be one, `Object.entries(r)`; else a list's.
             "entries" if self.known(node, &ports[0], WType::Record) => member(format!("Object.entries({})", self.required(node, &ports[0], COND)?)),
             "indices" | "entries" => {
-                let xs = self.required(node, &ports[0], MEMBER)?;
+                let xs = self.receiver(node, &ports[0])?;
                 atom(format!("[...{xs}.{}()]", if d.name == "indices" { "keys" } else { "entries" }))
             }
             "unique" => atom(format!("[...new Set({})]", self.required(node, &ports[0], COND)?)),
@@ -3341,7 +3341,7 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
                     self.touch(m);
                     return self.map(m, Some("flatMap"));
                 }
-                let xs = self.required(node, &ports[0], MEMBER)?;
+                let xs = self.receiver(node, &ports[0])?;
                 member(format!("{xs}.flat({depth})"))
             }
             // A change in place, of a copy: `[...xs]` is the list itself, read back.
@@ -3351,7 +3351,7 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
                 member(format!("[...{xs}].{}({})", if d.name == "fill" { "fill" } else { "copyWithin" }, args.join(", ")))
             }
             "to_spliced" => {
-                let xs = self.required(node, &ports[0], MEMBER)?;
+                let xs = self.receiver(node, &ports[0])?;
                 let mut args = self.texts(node, &ports[1..given.min(3)])?;
                 if given == 4 {
                     // The items as written, `a, b`, from the list they make, else spread.
@@ -3374,7 +3374,7 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
                     _ if node.param("mode") == "substring" => "substring",
                     _ => "slice",
                 };
-                let xs = self.required(node, &ports[0], MEMBER)?;
+                let xs = self.receiver(node, &ports[0])?;
                 let args = self.texts(node, &ports[1..])?;
                 member(format!("{xs}.{method}({})", args.join(", ")))
             }
@@ -3413,7 +3413,7 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
             && !self.text_written(node, &ins[0])
             && ins[1..].iter().all(|i| self.inline_source(node, i, "const").is_some_and(|c| c.param("type") == "Text") || self.inline_source(node, i, "as_text").is_some_and(|a| !self.text_written(a, "value")))
         {
-            let s = self.required(node, &ins[0], MEMBER)?;
+            let s = self.receiver(node, &ins[0])?;
             let mut args = Vec::new();
             for i in &ins[1..] {
                 if let Some(a) = self.inline_source(node, i, "as_text") {
@@ -3970,6 +3970,17 @@ mod tests {
     fn the_number_leaves_print_as_javascript_writes_them() {
         let src = "import { action, flow } from \"holon\"\n\nflow(\"f\")\n\nexport const t = action((input) => {\n  const a = parseFloat(input.a)\n  const b = parseInt(input.b, 16)\n  const n = Number(input.n)\n  return {\n    root: Math.sqrt(a),\n    big: Math.max(a, b, n),\n    most: Math.max(...input.xs),\n    h: Math.hypot(a, b),\n    sum: Math.sumPrecise(input.xs),\n    angle: Math.atan2(a, b),\n    p: a ** b ** 2,\n    q: (a ** b) ** 2,\n    m: a % b,\n    bits: (a & b | n ^ 3) << 2 >> 1 >>> 0,\n    neg: a * -1,\n    mul: Math.imul(a, b),\n    finite: Number.isFinite(a),\n    whole: Number.isInteger(a),\n    safe: Number.isSafeInteger(a),\n    nan: isNaN(input.s),\n    fin: isFinite(input.s),\n    fixed: a.toFixed(2),\n    prec: b.toPrecision(3),\n    exp: n.toExponential(),\n    text: a.toString(),\n    hex: b.toString(16),\n    lit: (5).toFixed(1),\n    pi: 3.141592653589793,\n  }\n})\n";
         prints_back(src);
+    }
+
+    /// A number written as a method's receiver keeps its parentheses, as `(5).toFixed(1)` does:
+    /// printed `5.at(0)`, it read as `5.` and then a name, which doesn't parse.
+    #[test]
+    fn a_number_receiver_keeps_its_parentheses() {
+        let src = "import { action, flow } from \"holon\"\n\nflow(\"f\")\n\nexport const t = action((input) => {\n  return { a: (5).at(0), s: (5).slice(1), i: (5).includes(5) }\n})\n";
+        let text = reprinted(src);
+        for form in ["(5).at(0)", "(5).slice(1)", "(5).includes(5)"] {
+            assert!(text.contains(form), "{form}: {text}");
+        }
     }
 
     /// Each text leaf in its JavaScript form prints back as written: `fmt` keeps the forms,
