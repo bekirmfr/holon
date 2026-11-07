@@ -223,14 +223,12 @@ pub(crate) fn compute_op(op: Op, name: &str, inputs: &[&Value], params: &[Param]
         // number Holon has (`const` refuses one, as `json_parse` does `1e999`): nothing. `add` is
         // JavaScript's `+`: with a text among its operands, it joins them (texts.rs).
         Op::Add => match fold_numbers(inputs, -0.0, |a, b| a + b) {
-            Some(sum) => Some(sum).filter(finite),
+            Some(sum) => finite(sum),
             None => texts::plus(inputs),
         },
-        Op::Multiply => fold_numbers(inputs, 1.0, |a, b| a * b).filter(finite),
-        Op::Subtract => bin_numbers(inputs).map(|(a, b)| Value::Number(a - b)).filter(finite),
-        Op::Divide => bin_numbers(inputs)
-            .and_then(|(a, b)| if b == 0.0 { None } else { Some(Value::Number(a / b)) })
-            .filter(finite),
+        Op::Multiply => fold_numbers(inputs, 1.0, |a, b| a * b).and_then(finite),
+        Op::Subtract => bin_numbers(inputs).and_then(|(a, b)| finite(a - b)),
+        Op::Divide => bin_numbers(inputs).and_then(|(a, b)| if b == 0.0 { None } else { finite(a / b) }),
 
         // ── comparison (op param): two numbers, or two texts in code-unit order ──
         Op::Compare => match inputs {
@@ -556,7 +554,7 @@ pub(crate) fn compute_op(op: Op, name: &str, inputs: &[&Value], params: &[Param]
             for v in as_list(l)? {
                 acc += as_number(v)?;
             }
-            Some(Value::Number(acc)).filter(finite)
+            finite(acc)
         }
         Op::Join => {
             let [l, sep] = inputs else { return None };
@@ -1753,17 +1751,19 @@ pub(crate) fn number_text(n: f64) -> String {
     if n < 0.0 { format!("-{body}") } else { body }
 }
 
-/// Whether `v` is a finite number: what arithmetic gives, else nothing.
-fn finite(v: &Value) -> bool {
-    matches!(v, Value::Number(n) if n.is_finite())
+/// `n` as a number when it is finite: what arithmetic gives, else nothing. Tested on the `f64`
+/// itself, in place: an `Option` filter here was a call a node (performance.md).
+#[inline]
+fn finite(n: f64) -> Option<Value> {
+    n.is_finite().then_some(Value::Number(n))
 }
 
-fn fold_numbers(inputs: &[&Value], init: f64, f: fn(f64, f64) -> f64) -> Option<Value> {
+fn fold_numbers(inputs: &[&Value], init: f64, f: fn(f64, f64) -> f64) -> Option<f64> {
     let mut acc = init;
     for v in inputs {
         acc = f(acc, as_number(v)?);
     }
-    Some(Value::Number(acc))
+    Some(acc)
 }
 fn fold_bools(inputs: &[&Value], init: bool, f: fn(bool, bool) -> bool) -> Option<Value> {
     let mut acc = init;

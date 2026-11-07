@@ -98,8 +98,9 @@ the rows that say otherwise.
 | 5, level 1 `7c31de1` | Each node's kind decided once; inputs gathered in one pass; the scratch reused | Dispatch and allocation per node | `crunch` −11.0% |
 | 5, level 2 `abc4b11` | A compiled `Plan` for a `map`/`fold` function, primitives by opcode | Walking and dispatching by name per item | `crunch` −15.1% |
 | 6 `f47c854` | Per-request bookkeeping: no entry made for an unrecorded run, one copy of the request, a kept hash buffer, sourced constants made only when read | Costs of the request around the run | `hello` −28.9%, `notes` −20.7% |
-| #43 `e988258` | Giving and lending: a value moved to the node that builds on it once nothing else reads it, a function's composite children prepared once | A `fold` copied what it grew at every step, O(n²) | through release servers, a filter by fold ×5.0 at 1,000 items, ×21 at 5,000; numeric folds and maps ×0.86 ([below](#the-evaluators-change-through-a-server-43-2026-11-06)) |
+| #43 `e988258` | Giving and lending: a value moved to the node that builds on it once nothing else reads it, a function's composite children prepared once | A `fold` copied what it grew at every step, O(n²) | through release servers, a filter by fold ×5.0 at 1,000 items, ×21 at 5,000; `crunch` ×0.86, from its small records, not its numbers ([below](#small-values-are-copied-2026-11-07)) |
 | `5f29d1d` | Each composite's children resolved once and kept with the closure, with their kinds | Every call resolved each child by hash and decided its kind | in-process, one call of a 25-node function 1.61 → 0.93 µs, `hello` ×0.86, `calc` ×0.82 ([leaves §10](js-library-races/leaves.md#10-a-composites-preparation-kept-81)) |
+| small values | A number, a boolean, a text up to 32 bytes, and a list or record of up to 8 of those copied, not given (`heavy`); arithmetic's finite check on the `f64` in place | #43 gave every record: about 1,770 instructions a step, where copying `{ v, dev, sq }` costs less; the check was a call a node | `crunch` 25.76 → 23.37 M at 1,000 items (×0.907), its records part ×0.873; a filter by fold +1.0% ([below](#small-values-are-copied-2026-11-07)) |
 
 The plan is an optimisation the walk stands behind: whenever the plan meets a case it was not
 built for (an input not yet evaluated, a guard whose condition is missing), it hands the run to
@@ -180,12 +181,40 @@ requests a second, with the server's CPU a request from `/proc/<pid>/stat`; no e
 | `filter`, 5,000 | 53 | 1,132 | 1,131 | 21.3 | 21.3 | 78.3 / 3.46 / 3.47 ms |
 
 A fold that builds a list is linear now, where it was quadratic: its accumulator is given to each
-step, not copied (the audit's "giving"). Folds and maps of numbers over small composites are about
-14% slower after #43 at every size, the rounds' ranges apart (12,383–12,800 before, 10,768–10,907
-after, at 100): the audit's "folds of a number over a composite ×1.09 to ×1.20" and its 10 to 15
-ns a node it couldn't place, here end to end. `main` takes back about half (×0.92), and `calc` all
-of it, its rounds apart from `e988258`'s too; what between them did it isn't found. `hello` is the
-same in all three.
+step, not copied (the audit's "giving"). `crunch` is about 14% slower after #43 at every size, the
+rounds' ranges apart (12,383–12,800 before, 10,768–10,907 after, at 100). `main`'s ×0.92 and
+`calc`'s recovery were the rounds' spread: counted in instructions, `main` is 0.5% above #43
+([below](#small-values-are-copied-2026-11-07), which places the 14%). `hello` is the same in all
+three.
+
+### Small values are copied (2026-11-07)
+
+Profiled under callgrind ([Measuring](measuring.md#instructions)) in WSL's Ubuntu on a Windows
+desktop, Rust 1.96.0, every build alike; `crunch` split in two: its three folds and one map of
+numbers, and its map to a record of three numbers (`{ v, dev, sq }`) with the fold over it, each
+written in its build's language. Instructions a run, 1,000 items:
+
+| | before #43 `f4f269f` | #43 `e988258` | `main` `c865f3a` | small values, before | after |
+|---|---:|---:|---:|---:|---:|
+| `crunch` | 22.73 M | 25.21 M | 25.34 M | 25.76 M | **23.37 M** |
+| its numbers | 8.65 M | 7.76 M | | 8.08 M | 8.03 M |
+| its records | 15.99 M | 18.25 M | | 18.49 M | 16.14 M |
+| a filter by fold, 1,000 / 4,000 | | | | 9.77 / 38.77 M | 9.87 / 39.08 M |
+
+#43 made the numbers ×0.90, not slower; the records ×1.14 were the 14%. Its test of what is worth
+giving, `heavy`, said yes to every record and list, and giving pays about 1,770 instructions a step
+(`fire_giving`, `may_give`, `movable`, `take`, `give_to_leaf`, `compute_given`): more than copying
+a record of three numbers, whose fields cost about 420 each (each key a text of its own). `heavy`
+looks one level down now: a list or record of up to 8 numbers, booleans or texts up to 32 bytes is
+copied like a number, anything longer given, so a list of 1,000 still is and the filter stays
+linear (×3.96 for four times the items). Looking costs the filter 1%. The finite check arithmetic
+gained (`8bf01b6`, no infinity) went through a call a node, about 25 instructions; on the `f64` in
+place it takes 0.18 M off `crunch`. `crunch` is 2.8% above where it was before #43.
+
+A record of 5 to 8 fields built a field at a time is about even (each copy grows with it); a state
+value of 20 fields read into a run, which the host builds as constant units a field at a time
+(`constant_unit`), costs 4% more (628 → 655 K a run). Copying records only up to 4 fields changed
+neither (664 K). Handing a sourced value to the run as it is, not built, would remove that path.
 
 ### Limits
 
@@ -211,12 +240,10 @@ same in all three.
   (most server SSDs) answers a flush in microseconds, on any system.
 - **Writes sync three times** (value, snapshot, head) under the cell's lock. A group commit across
   writes (C4, Q4) is not done; the store's global lock is still taken on a miss and every put.
-- **Numeric folds and maps are slower than before #43**: `crunch` about ×0.92 in `main`
-  (×0.86 right after #43), the cost a node the audit couldn't place ([above](#the-evaluators-change-through-a-server-43-2026-11-06),
-  leaves §6). Folds that build a list gained ×5 to ×21. Keeping each composite's children doesn't
-  touch it: a fold's function was already prepared once. Placing it needs a profiler (leaves §8).
-- **Compute-heavy flows** are 3–14 times slower than C#, measured before #43 (numeric folds are
-  about ×0.92 of that since). What is left is allocating and freeing values (about 26%), copying
+- **`crunch` is 2.8% above where it was before #43** in instructions, after small values are
+  copied ([above](#small-values-are-copied-2026-11-07)); folds that build a list gained ×5 to ×21.
+- **Compute-heavy flows** are 3–14 times slower than C#, measured before #43 (`crunch` about 3%
+  more since). What is left is allocating and freeing values (about 26%), copying
   fields (6.7%) and firing each node (about 20%). Shared values (step 4) are still deferred: after
   #43's giving and lending no race copies anything large in its inner loop, and what an `Arc` would
   save, and where (`Record` first), is estimated in [leaves §7](js-library-races/leaves.md#7-arc-an-estimate).

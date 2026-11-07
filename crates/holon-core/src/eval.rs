@@ -205,10 +205,27 @@ fn refs<'a>(args: &'a [Option<Cow<'_, Value>>]) -> Refs<'a> {
     args.iter().map(|v| v.as_deref()).collect()
 }
 
-/// Whether copying `v` copies anything more than its few bytes: what makes giving it, rather
-/// than lending it to be copied, worth the evaluator's while.
+/// Whether copying `v` costs more than giving it, rather than lending it to be copied, costs the
+/// evaluator: a number or a boolean never does; a text past 32 bytes does; a list or a record does
+/// past 8 entries, or with an entry that isn't a number, a boolean or a short text. Looking one
+/// level down, at 8 entries at most, keeps the question cheap. Giving pays about 1,770
+/// instructions a step (performance.md, "Small values are copied"), more than copying `{ v, dev,
+/// sq }`; a list of 1,000 is given, so a fold that builds one stays linear.
 fn heavy(v: &Value) -> bool {
-    !matches!(v, Value::Number(_) | Value::Boolean(_))
+    fn small(v: &Value) -> bool {
+        match v {
+            Value::Number(_) | Value::Boolean(_) => true,
+            Value::Text(t) => t.len() <= 32,
+            _ => false,
+        }
+    }
+    match v {
+        Value::Number(_) | Value::Boolean(_) => false,
+        Value::Text(t) => t.len() > 32,
+        Value::List(xs) => xs.len() > 8 || !xs.iter().all(small),
+        Value::Record(fields) => fields.len() > 8 || !fields.values().all(small),
+        Value::Sum { .. } | Value::Effect { .. } => true,
+    }
 }
 
 /// `inputs` owned, for the few nodes whose builders take them so (a request, a module).
@@ -4384,6 +4401,22 @@ mod tests {
         assert_eq!(checked, 8000);
     }
 
+    /// Which values are given and which copied (`heavy`): a scalar, a short text, and a list or
+    /// record of up to 8 of those are copied; anything longer, or holding more, is given.
+    #[test]
+    fn small_values_are_copied_and_large_ones_given() {
+        let rec = |n: usize, v: Value| Value::Record((0..n).map(|k| (format!("f{k}"), v.clone())).collect());
+        let nums = |n: usize| list((0..n).map(|k| num(k as f64)).collect());
+        for small in [num(1.0), Value::Boolean(true), text(""), text(&"x".repeat(32)), nums(0), nums(8), rec(3, num(1.0)), rec(8, text("ok")), list(vec![Value::Boolean(false), text("a")])] {
+            assert!(!heavy(&small), "{small:?} is copied");
+        }
+        let nested = list(vec![nums(1)]);
+        let option = Value::Sum { arm: 0, payload: Box::new(num(1.0)) };
+        for large in [text(&"x".repeat(33)), nums(9), rec(9, num(1.0)), rec(1, text(&"x".repeat(33))), nested, rec(1, nums(0)), option] {
+            assert!(heavy(&large), "{large:?} is given");
+        }
+    }
+
     /// Giving and lending (a value moved to the node that builds on it, a choice reading through
     /// to where its value is kept) change no value. On generated functions over lists, texts and
     /// records, of the leaves that build on what they read, choices, composites, and `map`s and
@@ -4481,6 +4514,9 @@ mod tests {
             Some(list(vec![list(vec![num(2.0)])])),
             Some(rec(&[])),
             Some(rec(&[("a", num(1.0)), ("x", list(vec![]))])),
+            // Heavy by size alone (`heavy`): the small ones above are copied, these given.
+            Some(text("a text longer than the thirty-two bytes")),
+            Some(list((0..9).map(|k| num(k as f64)).collect())),
         ];
 
         fn graph(rng: &mut Rng, pool: &[(Hash, usize)]) -> Unit {
