@@ -464,12 +464,14 @@ once, the very units it holds (`Arc`s, shared), with what each is (`Shapes::kept
 child and deciding its kind. The server's resolver (holon's `units.rs`, `Loaded`) keeps them, and
 nothing a run gives changes: the same outputs and the same observer calls, in the same order.
 
-Keeping them is sound only where a hash resolves to one unit for ever. Two resolvers stand a unit
+Keeping them is sound only where a hash resolves to one unit for ever. Two resolvers stood a unit
 of their own in for a hash: the host's for sourced values (a constant for the leaf that reads a
-capability) and design mode's (`Simulated`, a mock for an effect). The host's wrapper hands the
-kept children on only when nothing is sourced or no child reads a capability
-(`Resolved::reads_capability`); design mode never does. Every other wrapper (the module engine's)
-forwards them as it forwards shapes.
+capability) and design mode's (`Simulated`, a mock for an effect). The host's wrapper handed the
+kept children on only when nothing was sourced or no child read a capability; design mode never
+does. Every other wrapper (the module engine's) forwards them as it forwards shapes. *Since
+2026-11-07 the host's stands nothing in: a sourced leaf asks the resolver for its value
+(`Resolver::sourced`), and the kept children are handed on whatever a run reads
+([performance.md](../performance.md), "A run's values handed as they are").*
 
 What one call pays, as the server makes it (`perf_audit`, the base binary against this one,
 medians of seven interleaved rounds; "before" is the base's resolver keeping shapes, "after" this

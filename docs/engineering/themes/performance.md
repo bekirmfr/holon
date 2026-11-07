@@ -101,6 +101,7 @@ the rows that say otherwise.
 | #43 `e988258` | Giving and lending: a value moved to the node that builds on it once nothing else reads it, a function's composite children prepared once | A `fold` copied what it grew at every step, O(n²) | through release servers, a filter by fold ×5.0 at 1,000 items, ×21 at 5,000; `crunch` ×0.86, from its small records, not its numbers ([below](#small-values-are-copied-2026-11-07)) |
 | `5f29d1d` | Each composite's children resolved once and kept with the closure, with their kinds | Every call resolved each child by hash and decided its kind | in-process, one call of a 25-node function 1.61 → 0.93 µs, `hello` ×0.86, `calc` ×0.82 ([leaves §10](js-library-races/leaves.md#10-a-composites-preparation-kept-81)) |
 | small values | A number, a boolean, a text up to 32 bytes, and a list or record of up to 8 of those copied, not given (`heavy`); arithmetic's finite check on the `f64` in place | #43 gave every record: about 1,770 instructions a step, where copying `{ v, dev, sq }` costs less; the check was a call a node | `crunch` 25.76 → 23.37 M at 1,000 items (×0.907), its records part ×0.873; a filter by fold +1.0% ([below](#small-values-are-copied-2026-11-07)) |
+| values as they are | A leaf that reads state, the clock, a random number, a secret or the file that started the run asks the resolver for its value (`Resolver::sourced`), which it produces as it is; every composite keeps its children whatever the run reads | The host built each value as constant units in the run, and let no composite with a capability leaf keep its children, the clock being sourced in every run | a field of a 20-field state record ×0.25, the length of a 100-record state list ×0.16, 80 operations from a state number ×0.61; `notes` −0.8% ([below](#a-runs-values-handed-as-they-are-2026-11-07)) |
 
 The plan is an optimisation the walk stands behind: whenever the plan meets a case it was not
 built for (an input not yet evaluated, a guard whose condition is missing), it hands the run to
@@ -212,9 +213,47 @@ gained (`8bf01b6`, no infinity) went through a call a node, about 25 instruction
 place it takes 0.18 M off `crunch`. `crunch` is 2.8% above where it was before #43.
 
 A record of 5 to 8 fields built a field at a time is about even (each copy grows with it); a state
-value of 20 fields read into a run, which the host builds as constant units a field at a time
-(`constant_unit`), costs 4% more (628 → 655 K a run). Copying records only up to 4 fields changed
-neither (664 K). Handing a sourced value to the run as it is, not built, would remove that path.
+value of 20 fields read into a run, which the host then built as constant units a field at a time,
+cost 4% more (628 → 655 K a run). Copying records only up to 4 fields changed neither (664 K). The
+value is handed to the run as it is now, not built ([below](#a-runs-values-handed-as-they-are-2026-11-07)).
+
+### A run's values handed as they are (2026-11-07)
+
+Profiled first, then built. For each leaf that reads state, the clock, a random number or a
+secret, the host stood a constant unit in under that leaf's hash (`SourcedResolver`, holon-host):
+a record became `record()` and a `with_field` a field, a list a `list` of constants, all made,
+prepared and evaluated in the run. Since a hash named another unit in each run, it let no
+composite with a leaf that has any capability keep its children (§8.1 of
+[leaves](js-library-races/leaves.md#10-a-composites-preparation-kept-81)), and the clock and a
+random number are sourced in every run: each run of a route with a read, a write or a call resolved
+its composites' children again, about 1,100 instructions a node.
+
+Now such a leaf ([`SOURCED`](../../../crates/holon-core/src/catalog.rs): `clock`, `random`,
+`secret`, `file_arrival`, `store_read`) asks the resolver for its value (`Resolver::sourced`) and
+produces a copy of it; the host's resolver hands every unit on as the real one has it, kept
+children included. A value that isn't data (an effect left in old storage) still reads as nothing.
+
+Callgrind as [above](#small-values-are-copied-2026-11-07), `79c9c8f` against this change; the state
+routes are `GET`s, unrecorded, their state seeded before. Instructions a run:
+
+| Route | before | after | ratio |
+|---|---:|---:|---:|
+| answers `1` | 103.7 K | 104.0 K | 1.00 |
+| reads a state number | 112.0 K | 106.2 K | 0.95 |
+| reads a field of a 20-field state record | 648.5 K | 159.8 K | 0.25 |
+| the length of a 100-record state list | 10.79 M | 1.74 M | 0.16 |
+| 80 operations from a constant | 279.1 K | 277.3 K | 0.99 |
+| the same 80 from a state number | 458.8 K | 281.0 K | 0.61 |
+| `hello` | 88.7 K | 88.6 K | 1.00 |
+| `notes` (its listing, a collection read) | 354.0 K | 351.2 K | 0.99 |
+| `crunch`, 1,000 items | 23.38 M | 23.36 M | 1.00 |
+| a filter by fold, 1,000 / 4,000 | 9.87 / 39.03 M | 9.87 / 39.13 M | 1.00 |
+
+The 80 operations from a state number now cost 3.7 K more than from a constant; `notes` gained from
+its composites' children, kept now that a write beside a read no longer stops them. The two values
+gained less than the profile's estimate (×0.18 and ×0.03): the run's own copy of the list is 171 K,
+and most of the rest is the host's copies of the whole state around the run
+([Limits](#limits)).
 
 ### Limits
 
@@ -249,33 +288,14 @@ neither (664 K). Handing a sourced value to the run as it is, not built, would r
   save, and where (`Record` first), is estimated in [leaves §7](js-library-races/leaves.md#7-arc-an-estimate).
   Typed slots or native code (level 3) would reverse the core's dependency limit and the no-JIT
   choice.
-- **A run's sourced values are built as units, every run** (profiled 2026-11-07, before changing
-  it). For each leaf that reads state, the clock, a random number or a secret, the host stands a
-  constant unit in under that leaf's hash (`SourcedResolver`, holon-host): a record becomes
-  `record()` and a `with_field` a field, a list a `list` of constants, all made, prepared and
-  evaluated in the run. Instructions a run, callgrind as [above](#small-values-are-copied-2026-11-07),
-  each route a `GET`, unrecorded, its state seeded before:
-
-  | Route | a run | more than its constant form | one clone of the value |
-  |---|---:|---:|---:|
-  | answers `1` | 104.6 K | | |
-  | reads a state number | 112.0 K | 7.4 K | 69 |
-  | reads a field of a 20-field state record | 655 K | 543 K | 8.4 K |
-  | the length of a 100-record state list | 10.80 M | 10.69 M | 261 K |
-  | 80 operations from a constant | 278.5 K | | |
-  | the same 80 from a state number | 458.0 K | 179.5 K | 69 |
-
-  Two costs, both the substitution's (`SourcedResolver::resolve`, `constant_unit`,
-  `Prepared::of`). The value: building the 20-field record costs 65 times copying it. The route's
-  children: since a hash names another unit in each run, the host lets no composite with such a
-  leaf keep its children (`resolved`'s filter), and each run resolves them again, about 1,100
-  instructions a node; the filter counts any capability, so a route that only writes or calls out
-  pays it too. Handing a run each value as it is (one clone at most) and keeping every
-  composite's children would take each route to about its constant form: the record's to about
-  115 K (×0.18), the list's to about 0.37 M (×0.03), the long route to about 280 K (×0.61), the
-  short ones a few percent. A run also clones every state value it was granted, read or not
-  (`firing.rs`), which values lent instead would save. The samples keep small values in state and
-  big ones in collections, which are read another way: what they would gain is mostly the children.
+- **A run copies its deployment's whole state four times**, whether its route reads it or not
+  (`firing.rs`): the state it starts from, under the lock (`:186`); its values for the run's record
+  (`State::values`, `:554`); each value it was granted, for the run (`:573`); and the start again,
+  kept on the run for the commit's check (`:731`). With a 100-record list in state, those copies
+  and their frees are about 1.3 M of the 1.63 M a run that reads its length pays over one that
+  answers `1`; the run's own copy of the list, made where it is read, is 171 K and its free 116 K.
+  Values shared rather than copied (an `Arc` per cell) would take that route to about 0.4 M a run.
+  The samples keep small values in state and big ones in collections, which are read another way.
 - **A lazy route on a busy log** keeps a one-connection p99 of about 30 ms, likely the per-second
   sync holding up the next append (RA §2.6); left as it is.
 - **The log's lock** still covers the append (about 17 µs) and the line's hash (about 12 µs): a
