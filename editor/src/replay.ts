@@ -697,7 +697,32 @@ function whyNothing(node: ReplayNode, trace: NodeTrace): string {
     case "file_slice":
       return `no file "${textOf(a) ?? "?"}" in the folder "${p("folder")}"`;
     case "find":
-      return `no item whose "${p("name")}" matches`;
+    case "find_last":
+      return "its function answered true for no item";
+    case "at":
+      return "no item at that index, or half of an emoji in a text";
+    case "with_item":
+      return "no item at that index";
+    case "slice":
+      return "a position it can't use, or the piece would cut an emoji in half";
+    case "text_at":
+      return "that index is half of an emoji";
+    case "code_at":
+      return "no character at that index";
+    case "from_codes":
+      return "a number isn't a character's, or half of an emoji is left alone";
+    case "split":
+      return "an empty separator can't cut a text with an emoji";
+    case "pad":
+      return "the fill would be cut through an emoji, or the text would be too long";
+    case "repeat":
+      return "the count is negative, or the text would be too long";
+    case "replace":
+      return "the result would cut an emoji in half, or be too long";
+    case "uri_decode":
+      return "an escape isn't %XX, or isn't valid UTF-8";
+    case "base64":
+      return "its text isn't base64, or a character is past U+00FF (latin1)";
     case "get":
       return "no item at that index";
     case "head":
@@ -707,6 +732,17 @@ function whyNothing(node: ReplayNode, trace: NodeTrace): string {
       return "its condition was false";
     case "json_parse":
       return "its text isn't valid JSON";
+    case "date_part":
+    case "date_set":
+    case "date_text":
+    case "date_utc":
+      return "the date is out of range (±8.64e15 ms), or isn't one";
+    case "date_parse":
+      return "its text isn't a date in JavaScript's format, with Z or an offset after a time";
+    case "from_entries":
+      return "an entry isn't a [key, value] pair with a text key";
+    case "group_by":
+      return "its function answered a key that isn't a text";
     case "divide":
       return "division by zero";
     case "stripe_verify":

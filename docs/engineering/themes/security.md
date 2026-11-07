@@ -182,6 +182,37 @@ given, what it keeps beside the deployments file (`BESIDE_DEPLOYMENTS`: the logs
 the arrivals, the heads, the activity log), the secrets' audit, the `.env`, the key's file, and
 `~/.holon`.
 
+What a flow is made of is checked before it runs, since its units are anyone's who can stage
+them and `POST /unit` only decodes what it stores: a closure nested past 64 units or holding more
+than 20,000 is refused, and so is one with a unit core's `validate` refuses (an edge outside its
+children's ports, two sources for one port, a cycle, types that don't fit, a module that isn't
+one, a family leaf's parameter outside its values), each unit validated as a closure reads it from
+the store, not again while the closure cache keeps it (units.rs `load_closure`). A deploy of one is
+a 400 saying which unit and why; `holon verify` doesn't run one again (verify.rs `past_bounds`).
+The bound is one a run's thread holds: a route nested to it, composites in composites or maps
+whose function maps again, answers on a thread of 2 MiB, a runtime's, in a debug build.
+
+What a run computes is bounded where a request's few bytes could make much more, since every
+deployment on the server shares its memory and an overflowed stack aborts them all (a panic is
+answered 500): a text past 2^24 code units (`texts::MAX_TEXT`: a pad, a repeat, a replace, a
+laid-out `json_stringify`) is nothing; JSON is parsed 64 deep; a replacer's output stops at 256
+deep; a range is 10,000 long. A value nests at most 256 deep (`MAX_VALUE_DEPTH`), however it is
+built: each leaf that puts what it is handed a level down (`list`, `pair`, `cons`, `some`,
+`append`, `insert`, `with_field`, `with_item`, `fill`, `entries`) refuses a value already at the
+bound, an effect's payload is checked as it is built, and a map's results, a group's lists and a
+reviver's answer fit it, so no value a run holds is deeper (primitives.rs `fits`). Only what is
+put down is looked at, so a compute flow runs under 2% more instructions for it. What walks a
+value recurses on a run thread's 2 MiB: a release server walks about 6,000 levels end to end, a
+debug one about 470. A fold that wraps its accumulator gives nothing past 256 steps, where at
+10,000 it aborted a release server. A value written to state is one a load reads back, so one nested
+past 256 isn't written (`EncodeError::TooDeep`), where it would have failed the server's next
+start. What Holon writes as JSON holding values (a log line, a waiting run's part, the deployments
+file) it reads back to that depth: serde_json stops at 127 levels, which a value 42 records deep
+passes as the log writes it, so `wire::read_json` reads past it once a count of the brackets finds
+none deeper than a value at the bound makes (3 × 256 + 16), on a thread of its own with room for
+that. A flow call sends data and is answered data: core makes no call whose input holds an
+effect, and an answer with no JSON form fails the call (`a_flow_call_sends_and_hands_back_data_only`).
+
 ### 2.8 Files on disk (sealing.rs)
 
 `write_private` writes a file aside created with mode `0o600` (a protected owner-and-SYSTEM DACL on
@@ -246,6 +277,17 @@ What is not defended, or only partly:
 - **Redaction catches a secret's literal value**, as written or JSON-escaped, and what the graph
   shows computed from it; a value transformed where the graph can't see (a far side echoing it
   encoded) isn't recognised (secrets.rs's notes).
+- **A Boolean computed from a secret is clean** (taint.rs: any Boolean output), so a guard on a
+  secret's presence doesn't taint all that follows it. A flow can therefore learn a secret a bit
+  at a time: `startsWith`, `includes`, `has`, a comparison of texts, each answer acted on where
+  the log shows it. The approval shows where the secret's value goes, not what its Booleans
+  choose.
+- **A value at the bound leaves a debug build's run thread under twice the room it takes**: a
+  route walks a list about 6,000 levels deep end to end on 2 MiB in release, 23 times the bound,
+  and about 470 in a debug build. Reading a log line back has a thread of its own (8 MiB): about
+  18 times what a record at the bound takes in release, 5 in debug. A walker added later that
+  takes more stack per level lowers these; the tests below walk lists and records at the bound on
+  2 MiB threads in a debug build, so one that takes much more fails them.
 - **The data plane has no sign-in**: a flow guards its own routes. A flow on a loopback port is
   reachable by any local program; a web page reaches it only by an address (a cross-origin
   request, which `browsers` decides whose pages may read), never under a name of its own (§2.2).
@@ -304,6 +346,31 @@ What is not defended, or only partly:
   `a_folder_swapped_for_a_link_after_the_check_leads_nowhere` (a write and a read checked, the
   folder on their way then swapped for a link out: each lands, or reads, where it was checked),
   `no_folder_is_or_holds_what_the_server_keeps_beside_its_files`.
+- **Units**: `a_closure_with_a_unit_that_doesnt_validate_is_refused` (a port a child doesn't have,
+  two sources for one, a cycle; the unit as the root and nested), `a_closure_too_big_to_run_is_refused_and_every_sample_is_well_inside`
+  (every sample's closure loads, so every sample validates; holon-author's
+  `every_samples_units_pass_validation` says so before the server), `effect_written_to_state_does_not_take_the_server_down`
+  (an effect wired into a write is refused at deploy), and `holon verify`'s
+  `a_unit_that_doesnt_validate_is_not_run_again` and `a_unit_nested_past_the_servers_bound_is_not_run_again`;
+  `the_deepest_route_a_server_runs_fits_a_runtimes_thread` (a route nested to the bound answers on
+  a 2 MiB thread through the server's own resolver).
+- **What a run computes**: holon-core's `audit_leaves` (every pure leaf over hostile values on a
+  2 MiB thread: no panic, finite numbers, the same answer twice, none taking 2 s),
+  `a_text_padded_or_repeated_stops_at_the_bound`, `a_laid_out_text_stops_at_the_bound`,
+  `a_replacer_nesting_without_end_gives_nothing`, `a_cell_never_holds_what_it_couldnt_load`,
+  `a_flow_call_sends_and_hands_back_data_only`.
+- **How deep a value nests**: `a_leaf_puts_nothing_past_the_depth_a_value_may_nest` (each leaf
+  that puts a value down, at the bound and one short of it, lent and given),
+  `no_leaf_builds_a_value_nested_past_the_bound` (every leaf, a value at the bound or one short of
+  it in each input), `a_value_built_a_level_at_a_time_stops_at_the_bound` (a fold, a map, a group,
+  a reviver), `audit_leaves` (values at the bound in its pool, nothing answered deeper), and
+  `a_value_nested_a_level_a_step_stops_at_the_bound_and_the_server_answers_on` (a list and a
+  record answered 255 deep, a level down in the response, and the text of one 256 deep; a level
+  more, or 10,000, a 422; on a 2 MiB thread through the server).
+- **Reading it back**: `json_holding_a_value_as_deep_as_one_may_be_reads_back` (and JSON 100,000
+  deep refused before anything recurses), `a_log_holding_a_value_as_deep_as_one_may_be_reopens_whole`,
+  and `a_durable_run_waits_resumes_by_token_and_expires` (a waiting run holding one survives a
+  restart).
 - **The record**: `a_flow_log_is_a_chain_and_a_changed_run_shows_as_a_break`,
   `exported_runs_verify_and_a_rewritten_log_doesnt`, `a_batch_goes_only_after_its_hook_has_run`,
   `a_witness_is_reached_over_https_or_on_this_machine`.
@@ -337,3 +404,13 @@ Since then:
 | `3edb446` | A flow's port answers only its address, localhost, or a name given with `--allow-host` |
 | `c0a3913` | Passwords checked a few at once on kept threads; a name locked per address; 512 requests at once |
 | `a86994a` | The server's notes say who signs in |
+| `6470bd0` | The server validates every unit of a closure before it runs one |
+| `faf3ef7` | A family leaf's parameter outside its values is refused when the flow is wired |
+| `1c1d2ee` | A value is encoded only as deep as it is read back: a state write too deep to load is refused |
+| `76558df` | A text a leaf makes stops at 2^24 units; a replace's work is bounded by what it writes |
+| `4c88fbf` | A replacer nesting without end, and a laid-out text past 2^24, give nothing |
+| `f4f2df7` | `unique` hashes an option by what it holds, so distinct ones don't share a bucket |
+| `428c4f5` | A duration ending in a character of more than one byte is refused, not a panic |
+| `bd0fa4c` | A value nests at most 256 deep: a leaf that would build one deeper gives nothing, where a fold nesting 10,000 deep aborted the server |
+| `eeaab65` | JSON holding a value as deep as one may be reads back: a log line, a waiting run's part, the deployments file |
+| `157c1f6` | The depth bound's check costs a compute flow under 2% of its instructions, where it cost about 5% |

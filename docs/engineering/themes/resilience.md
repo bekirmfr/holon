@@ -209,9 +209,36 @@ host can refuse them all).
    threads, open files, logs and latency stayed flat; memory rose from 311 to 660 MB, mostly the
    allocator's (flat with its adaptive thresholds pinned), and two steps that were R5. It found
    R5 and R6. See [Measuring](measuring.md#soaks).
+5. **The pass over the JavaScript library's leaves** (`c865f3a..` on `library-leaves`): two readers
+   given the code, a sweep of every pure leaf over hostile values on a host's 2 MiB thread
+   (`audit_leaves`), the differential harness against `5f29d1d` (300,000 cases, none diverging),
+   the workspace, wasm, editor and end-to-end suites, and a release server sent the requests that
+   found each fix. What a few bytes of a request could make much more of is bounded where it was
+   found: a replacer that wraps without end, a pad, repeat or replace past 2^24 units, a laid-out
+   text, and a state write too deep to load at the next start, which would have kept the server
+   from starting.
 
 ## 5. Open
 
+- Fixed: **a value nested deeper than a run thread's stack can walk aborted the server**, every
+  deployment with it, where a panic is answered 500 (G3). A flow nesting a list a level per step of
+  a range its request sized did, at 10,000 deep, on a release server: `Timer::produced` turns a
+  node's outputs into the log's form, recursively, to see if they fit (the same route unrecorded,
+  keeping no outputs, answered), and core's own walkers recurse the same way (`add` of such a list
+  overflows by itself). Found by the leaves' pass (§4), on main as well. A value now nests at most
+  256 deep, however a run builds it ([Security §2.7](security.md#27-what-a-flow-can-reach)): the
+  fold gives nothing past 256 steps, and the server answers on. Measured on 2 MiB, a route walks a
+  list about 6,000 levels deep end to end in release and about 470 in a debug build, so 1,024
+  would not have fit a debug build, nor a log line of records read back in release.
+- Fixed: **a log line holding a value past 41 records deep didn't read back** (serde_json stops at
+  127 levels; a record takes three in the log's form). A run's entry holds the state it began
+  with, so one deep value stored made every later line unreadable, and a reopened log skipped them
+  as cut short: their runs gone from reads, the line after them a break, and a rewrite after an
+  interrupted cut-back dropped them. Nor did the deployments file holding a waiting run's event
+  (on a server without a secrets key: it kept the server from starting), nor a waiting run's sealed
+  part (the run wasn't opened). On main as well.
+  They are read past serde_json's stop, bounded by a count of the brackets
+  (`wire::read_json`).
 - R8, fixed (RA §2.12): a log kept every run it keeps in memory, whole (1.1 to 3.6 times its
   lines), bounded by no cache's size; now a log on file keeps its newest 32 there and reads the
   rest from its file with its lock released: a server on the soaks' data folder starts at 39 MB
@@ -243,3 +270,5 @@ host can refuse them all).
 | `824db82` | R8: a log keeps only its newest runs in memory |
 | `5b921ed`…`09f0bdc` | Storage steps 1–6, 8–10: the sweep a setting, the host's view and each flow's, warnings, `when_full`, the backup, packs, sealed segments ([Storage](../capabilities/storage.md)) |
 | `7c0b545`…`9b4bd37` | The review's ten fixes, and the backup's files named `holon-archive-` |
+| `1c1d2ee`…`aca0f08` | The pass over the library leaves (§4.5): what a few bytes make bounded (a text, a replacer, a laid-out text, a state write), `unique`'s hashing, a reader panic, the leaves' sweep; a value nested past a thread's stack found, and open (§5) |
+| `bd0fa4c`, `eeaab65` | A value nests at most 256 deep, and the JSON Holon writes holding one reads back: the abort and the unreadable log lines fixed (§5) |

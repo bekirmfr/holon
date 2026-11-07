@@ -7,7 +7,7 @@ named as it is in the code; search for the name.
 
 | Suite | Run with | In CI (`.github/workflows/ci.yml`) | Size |
 |---|---|---|---|
-| Rust workspace | `cargo test --workspace`, then `cargo clippy --workspace --all-targets -- -D warnings` | job `native`, with Postgres 17, MySQL 8.4 and a MongoDB replica set beside it (`HOLON_TEST_POSTGRES`, `HOLON_TEST_MYSQL`, `HOLON_TEST_MONGODB`) | about 1,030 tests, 4 ignored (measurements) |
+| Rust workspace | `cargo test --workspace`, then `cargo clippy --workspace --all-targets -- -D warnings` | job `native`, with Postgres 17, MySQL 8.4 and a MongoDB replica set beside it (`HOLON_TEST_POSTGRES`, `HOLON_TEST_MYSQL`, `HOLON_TEST_MONGODB`) | about 1,180 tests, 5 ignored (measurements) |
 | A sample from the CLI | `cargo run -p holon -- new … --sample slugs`, then `check` | job `native` | 1 |
 | wasm parity | `wasm-pack test --node crates/holon-wasm` | job `wasm-parity` | 23 under wasm, 15 native |
 | Editor | `npx tsc --noEmit -p .`, `npx vitest run` (`npm test` in `editor/`) | job `editor`, against a freshly built wasm | 357 at `905e9fc`, every sample built in `samples.test.ts` |
@@ -174,6 +174,38 @@ A slower path that is still right would pass every test above; these fail instea
   `the_value_caches_size_is_a_setting_it_keeps_to` (S5). They read the sizes they expect from the
   cache, so a change to the footprint estimates doesn't break them.
 
+### Hostile values
+
+What a request or a flow can hand a leaf, and how deep a flow can nest, are held on a thread a
+host's size (2 MiB), since an overflowed stack aborts every deployment on the server:
+
+- `every_pure_leaf_over_hostile_values_answers_finitely_and_the_same_twice`
+  (`holon-core/tests/audit_leaves.rs`): every pure leaf, each family value a leaf of its own and the
+  higher-order ones given ten functions (an inconsistent comparator among them), over a pool of
+  edge numbers, awkward texts and nested values, a list and a record as deep as a value may be
+  among them: about 480 variants, 222,000 evaluations, none panicking, answering a number that
+  isn't finite or a value nested past the bound, answering differently twice, or taking 2 s. It
+  prints the slowest; `HOLON_AUDIT_TRACE=1` names each evaluation, for when one overflows.
+- How deep a value nests (256, `MAX_VALUE_DEPTH`): `a_leaf_puts_nothing_past_the_depth_a_value_may_nest`
+  (each leaf that puts a value down, at the bound and one short of it, lent and given),
+  `no_leaf_builds_a_value_nested_past_the_bound` (every leaf, a value at the bound or one short of
+  it in each input: one that nests what it is handed without saying so fails),
+  `a_value_built_a_level_at_a_time_stops_at_the_bound` (a fold, a map, a group, a reviver), and
+  `a_value_nested_a_level_a_step_stops_at_the_bound_and_the_server_answers_on` (a list and a record
+  at the bound answered, recorded and read back from the log; one past it, or 10,000, a 422).
+- Reading back JSON holding such a value: `json_holding_a_value_as_deep_as_one_may_be_reads_back`
+  (and JSON 100,000 deep refused before anything recurses),
+  `a_log_holding_a_value_as_deep_as_one_may_be_reopens_whole` (every run, no break), and
+  `a_durable_run_waits_resumes_by_token_and_expires` (a waiting run holding one survives a restart).
+- `the_deepest_route_a_server_runs_fits_a_runtimes_thread` (`tests.rs`): a route nested to
+  `MAX_CLOSURE_DEPTH`, composites in composites and maps in maps, through the server's own
+  resolver, in a debug build.
+- The bounds where a few bytes make much more: `a_text_padded_or_repeated_stops_at_the_bound`,
+  `a_laid_out_text_stops_at_the_bound`, `a_replacer_nesting_without_end_gives_nothing`, and
+  `a_cell_never_holds_what_it_couldnt_load` (a value too deep to read back isn't written to state).
+- `a_flow_call_sends_and_hands_back_data_only`: an effect is neither sent to another flow nor
+  handed back by one.
+
 ### Secrets
 
 Redaction is held by many tests in `secrets.rs` and `tests.rs`: a secret reaches its runs and
@@ -225,3 +257,7 @@ Known, and not yet covered:
 7. Tallies written by the syncer when only they changed, across a real restart.
 8. No end-to-end latency or isolation check: the cross-deployment figures come from `wrk` runs by
    hand.
+9. The differential harness predates most of the library's leaves (its `LEAVES` list has the
+   older ones the library changed, `slice`, `index_of`, `json_stringify`, but not `sort`, `flat`,
+   `merge` or the date and math leaves) and runs no case through holon-host's sourced resolver;
+   `differential.sh` builds only from `5f29d1d` on.

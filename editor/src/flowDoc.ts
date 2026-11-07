@@ -15,8 +15,9 @@ export function closureOf(roots: string[], getUnit: (hash: string) => WUnit): st
     seen.add(hash);
     const unit = getUnit(hash);
     if (unit.body.kind === "Composite") unit.body.children.forEach(visit);
+    // A `map`'s function is its hash; a family's `fn` (`math`'s "sin") is a name.
     const fn = (unit.params ?? []).find((p) => p.kind === "Frozen" && p.name === "fn");
-    if (fn && fn.kind === "Frozen") visit(fn.value);
+    if (fn && fn.kind === "Frozen" && /^[0-9a-f]{64}$/.test(fn.value)) visit(fn.value);
     order.push(hash);
   };
   roots.forEach(visit);

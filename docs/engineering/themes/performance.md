@@ -28,13 +28,16 @@ In `crates/holon/src` (IP §2 lists all 27 steps with lines):
    (`FlowCache::holds`). Everything else runs on the blocking pool (`spawn_blocking`, up to 512
    threads). See [Resilience](resilience.md#g2-a-deployment-cant-slow-another) for why the rule is this narrow.
 3. **A snapshot of the deployment** under the table lock (taken about 5 times a request).
-4. **The closure** (the flow's units) from the flow cache, keyed by the root's hash; the
-   composites' shapes are kept beside them (`Shapes`). Values read come from the value cache.
-5. **Firing** (`firing.rs`, `fire_with_state`): the nonce, run locks, the run id, sourced
-   constants (made only when read), rounds of outbound calls.
-6. **Evaluation** (`holon-core/src/eval.rs`): a walk of the graph with inputs lent, not copied;
-   each node's kind decided once; a function given to `map`/`fold` run down a compiled `Plan` of
-   opcodes.
+4. **The closure** (the flow's units) from the flow cache, keyed by the root's hash; each
+   composite's shape and its children, resolved, are kept beside them (`Shapes::kept`). Values read
+   come from the value cache.
+5. **Firing** (`firing.rs`, `fire_with_state`): the nonce, run locks, the run id, the state it
+   starts from (a copy of the keys, the values shared), its sourced values lent to the leaves that
+   read them, rounds of outbound calls.
+6. **Evaluation** (`holon-core/src/eval.rs`): a walk of the graph with inputs lent, not copied,
+   and a value given to the node that builds on it once nothing else will read it; each node's
+   kind decided once, kept with the closure; a function given to `map`/`fold` run down a compiled
+   `Plan` of opcodes.
 7. **The state's commit**: values, snapshot and head written and synced under the cell's lock; a
    head only when the state changed.
 8. **The entry**: redaction skipped when nothing could need it; the log line made outside the
@@ -81,9 +84,10 @@ numbers from PL, IP and RA.
 | 12.4b `0fdf913` | A value cache (64 MiB, values up to 1 MiB) | The store's lock and a file read per collection node: 15% | live `/notes` 6,976–7,250 → 10,489–10,936 |
 | 12.4c `0e482b4` | The line made before the lock; an entry let go of freed after it | 10–14 µs of the 40 held under the lock was freeing | check lazy `hello` 14,015 → 20,652 |
 
-### The evaluator: steps 1 to 6
+### The evaluator: steps 1 to 6, and after
 
-Counted in instructions per run under callgrind ([Measuring](measuring.md#instructions)).
+Counted in instructions per run under callgrind ([Measuring](measuring.md#instructions)), but for
+the rows that say otherwise.
 
 | Step | What | Why | Gain |
 |---|---|---|---|
@@ -95,6 +99,12 @@ Counted in instructions per run under callgrind ([Measuring](measuring.md#instru
 | 5, level 1 `7c31de1` | Each node's kind decided once; inputs gathered in one pass; the scratch reused | Dispatch and allocation per node | `crunch` −11.0% |
 | 5, level 2 `abc4b11` | A compiled `Plan` for a `map`/`fold` function, primitives by opcode | Walking and dispatching by name per item | `crunch` −15.1% |
 | 6 `f47c854` | Per-request bookkeeping: no entry made for an unrecorded run, one copy of the request, a kept hash buffer, sourced constants made only when read | Costs of the request around the run | `hello` −28.9%, `notes` −20.7% |
+| #43 `e988258` | Giving and lending: a value moved to the node that builds on it once nothing else reads it, a function's composite children prepared once | A `fold` copied what it grew at every step, O(n²) | through release servers, a filter by fold ×5.0 at 1,000 items, ×21 at 5,000; `crunch` ×0.86, from its small records, not its numbers ([below](#small-values-are-copied-2026-11-07)) |
+| `5f29d1d` | Each composite's children resolved once and kept with the closure, with their kinds | Every call resolved each child by hash and decided its kind | in-process, one call of a 25-node function 1.61 → 0.93 µs, `hello` ×0.86, `calc` ×0.82 ([leaves §10](js-library-races/leaves.md#10-a-composites-preparation-kept-81)) |
+| small values | A number, a boolean, a text up to 32 bytes, and a list or record of up to 8 of those copied, not given (`heavy`); arithmetic's finite check on the `f64` in place | #43 gave every record: about 1,770 instructions a step, where copying `{ v, dev, sq }` costs less; the check was a call a node | `crunch` 25.76 → 23.37 M at 1,000 items (×0.907), its records part ×0.873; a filter by fold +1.0% ([below](#small-values-are-copied-2026-11-07)) |
+| values as they are | A leaf that reads state, the clock, a random number, a secret or the file that started the run asks the resolver for its value (`Resolver::sourced`), which it produces as it is; every composite keeps its children whatever the run reads | The host built each value as constant units in the run, and let no composite with a capability leaf keep its children, the clock being sourced in every run | a field of a 20-field state record ×0.25, the length of a 100-record state list ×0.16, 80 operations from a state number ×0.61; `notes` −0.8% ([below](#a-runs-values-handed-as-they-are-2026-11-07)) |
+| `48eb0fe` | A state cell's value held in an `Arc`; a run lent the values it was granted; its entry made from the state it started from | The host copied the deployment's whole state four times a run, read or not | the length of a 100-record state list ×0.26, a field of a 20-field state record ×0.73; `notes` −0.6% ([below](#a-runs-state-shared-2026-11-07)) |
+| `241b594` | A state holds data only: a write and a load refuse an effect, so a run is lent its values unchecked | Each run checked each state value it read was data, though a write refused an effect already | the length of a 100-record state list ×0.95 (−21.8 K); the rest within 0.4% ([below](#a-state-holds-data-only-2026-11-07)) |
 
 The plan is an optimisation the walk stands behind: whenever the plan meets a case it was not
 built for (an input not yet evaluated, a guard whose condition is missing), it hands the run to
@@ -175,12 +185,139 @@ requests a second, with the server's CPU a request from `/proc/<pid>/stat`; no e
 | `filter`, 5,000 | 53 | 1,132 | 1,131 | 21.3 | 21.3 | 78.3 / 3.46 / 3.47 ms |
 
 A fold that builds a list is linear now, where it was quadratic: its accumulator is given to each
-step, not copied (the audit's "giving"). Folds and maps of numbers over small composites are about
-14% slower after #43 at every size, the rounds' ranges apart (12,383–12,800 before, 10,768–10,907
-after, at 100): the audit's "folds of a number over a composite ×1.09 to ×1.20" and its 10 to 15
-ns a node it couldn't place, here end to end. `main` takes back about half (×0.92), and `calc` all
-of it, its rounds apart from `e988258`'s too; what between them did it isn't found. `hello` is the
-same in all three.
+step, not copied (the audit's "giving"). `crunch` is about 14% slower after #43 at every size, the
+rounds' ranges apart (12,383–12,800 before, 10,768–10,907 after, at 100). `main`'s ×0.92 and
+`calc`'s recovery were the rounds' spread: counted in instructions, `main` is 0.5% above #43
+([below](#small-values-are-copied-2026-11-07), which places the 14%). `hello` is the same in all
+three.
+
+### Small values are copied (2026-11-07)
+
+Profiled under callgrind ([Measuring](measuring.md#instructions)) in WSL's Ubuntu on a Windows
+desktop, Rust 1.96.0, every build alike; `crunch` split in two: its three folds and one map of
+numbers, and its map to a record of three numbers (`{ v, dev, sq }`) with the fold over it, each
+written in its build's language. Instructions a run, 1,000 items:
+
+| | before #43 `f4f269f` | #43 `e988258` | `main` `c865f3a` | small values, before | after |
+|---|---:|---:|---:|---:|---:|
+| `crunch` | 22.73 M | 25.21 M | 25.34 M | 25.76 M | **23.37 M** |
+| its numbers | 8.65 M | 7.76 M | | 8.08 M | 8.03 M |
+| its records | 15.99 M | 18.25 M | | 18.49 M | 16.14 M |
+| a filter by fold, 1,000 / 4,000 | | | | 9.77 / 38.77 M | 9.87 / 39.08 M |
+
+#43 made the numbers ×0.90, not slower; the records ×1.14 were the 14%. Its test of what is worth
+giving, `heavy`, said yes to every record and list, and giving pays about 1,770 instructions a step
+(`fire_giving`, `may_give`, `movable`, `take`, `give_to_leaf`, `compute_given`): more than copying
+a record of three numbers, whose fields cost about 420 each (each key a text of its own). `heavy`
+looks one level down now: a list or record of up to 8 numbers, booleans or texts up to 32 bytes is
+copied like a number, anything longer given, so a list of 1,000 still is and the filter stays
+linear (×3.96 for four times the items). Looking costs the filter 1%. The finite check arithmetic
+gained (`8bf01b6`, no infinity) went through a call a node, about 25 instructions; on the `f64` in
+place it takes 0.18 M off `crunch`. `crunch` is 2.8% above where it was before #43.
+
+A record of 5 to 8 fields built a field at a time is about even (each copy grows with it); a state
+value of 20 fields read into a run, which the host then built as constant units a field at a time,
+cost 4% more (628 → 655 K a run). Copying records only up to 4 fields changed neither (664 K). The
+value is handed to the run as it is now, not built ([below](#a-runs-values-handed-as-they-are-2026-11-07)).
+
+### A run's values handed as they are (2026-11-07)
+
+Profiled first, then built. For each leaf that reads state, the clock, a random number or a
+secret, the host stood a constant unit in under that leaf's hash (`SourcedResolver`, holon-host):
+a record became `record()` and a `with_field` a field, a list a `list` of constants, all made,
+prepared and evaluated in the run. Since a hash named another unit in each run, it let no
+composite with a leaf that has any capability keep its children (§8.1 of
+[leaves](js-library-races/leaves.md#10-a-composites-preparation-kept-81)), and the clock and a
+random number are sourced in every run: each run of a route with a read, a write or a call resolved
+its composites' children again, about 1,100 instructions a node.
+
+Now such a leaf ([`SOURCED`](../../../crates/holon-core/src/catalog.rs): `clock`, `random`,
+`secret`, `file_arrival`, `store_read`) asks the resolver for its value (`Resolver::sourced`) and
+produces a copy of it; the host's resolver hands every unit on as the real one has it, kept
+children included. A value that isn't data (an effect left in old storage) still reads as nothing.
+
+Callgrind as [above](#small-values-are-copied-2026-11-07), `79c9c8f` against this change; the state
+routes are `GET`s, unrecorded, their state seeded before. Instructions a run:
+
+| Route | before | after | ratio |
+|---|---:|---:|---:|
+| answers `1` | 103.7 K | 104.0 K | 1.00 |
+| reads a state number | 112.0 K | 106.2 K | 0.95 |
+| reads a field of a 20-field state record | 648.5 K | 159.8 K | 0.25 |
+| the length of a 100-record state list | 10.79 M | 1.74 M | 0.16 |
+| 80 operations from a constant | 279.1 K | 277.3 K | 0.99 |
+| the same 80 from a state number | 458.8 K | 281.0 K | 0.61 |
+| `hello` | 88.7 K | 88.6 K | 1.00 |
+| `notes` (its listing, a collection read) | 354.0 K | 351.2 K | 0.99 |
+| `crunch`, 1,000 items | 23.38 M | 23.36 M | 1.00 |
+| a filter by fold, 1,000 / 4,000 | 9.87 / 39.03 M | 9.87 / 39.13 M | 1.00 |
+
+The 80 operations from a state number now cost 3.7 K more than from a constant; `notes` gained from
+its composites' children, kept now that a write beside a read no longer stops them. The two values
+gained less than the profile's estimate (×0.18 and ×0.03): the run's own copy of the list is 171 K,
+and most of the rest was the host's copies of the whole state around the run, which the next
+change shares ([below](#a-runs-state-shared-2026-11-07)).
+
+### A run's state shared (2026-11-07)
+
+The host copied a deployment's whole state four times a run, whether its route read it or not
+(`firing.rs`): the state it starts from, under the lock; its values again, for its log entry; each
+value it was granted, for the run; and the start once more, kept on the run for the commit's check.
+A state cell now holds its value in an `Arc` (`State`, holon-host), so a copy of the state is its
+keys and hashes; `run_rounds` is lent the values the run was granted (`&[(Capability, &Value)]`);
+and the entry is made from the state the run started from, which it keeps anyway. The entry is the
+same, key for key.
+
+Callgrind as [above](#small-values-are-copied-2026-11-07), the change before (`2c0f4d8`) against
+this one (`48eb0fe`), the state routes as in the last section. Instructions a run:
+
+| Route | before | after | ratio |
+|---|---:|---:|---:|
+| answers `1` | 104.0 K | 102.9 K | 0.99 |
+| reads a state number | 106.2 K | 104.8 K | 0.99 |
+| reads a field of a 20-field state record | 159.8 K | 117.3 K | 0.73 |
+| the length of a 100-record state list | 1.74 M | 445.4 K | 0.26 |
+| 80 operations from a constant | 277.3 K | 276.6 K | 1.00 |
+| the same 80 from a state number | 281.0 K | 278.4 K | 0.99 |
+| `hello` | 88.6 K | 88.6 K | 1.00 |
+| `notes` (its listing, a collection read) | 351.2 K | 349.0 K | 0.99 |
+| `crunch`, 1,000 items | 23.36 M | 23.36 M | 1.00 |
+| a filter by fold, 1,000 / 4,000 | 9.87 / 39.13 M | 9.88 / 39.08 M | 1.00 |
+
+The estimate was about 0.4 M for the list. What it pays over a route that answers `1` (343 K) is
+now the run's own copy of the list, where it is read, its free, and the check that it is data,
+which the next change moves to where a value is written ([below](#a-state-holds-data-only-2026-11-07)).
+
+### A state holds data only (2026-11-07)
+
+A run checked each state value it read was data (`is_storable`), every run, though a write refused
+an effect already: the check stood for storage older than that rule. `State` now holds the rule,
+as it holds each value's hash: `insert` refuses a value that isn't data, and `load` a store holding
+one, so `run_rounds` is lent values it never looks at. One read back from storage outside a state
+(a resumed run's clock, verify's from the log) is checked by what reads it.
+
+Callgrind as [above](#small-values-are-copied-2026-11-07), `48eb0fe` against this change
+(`241b594`). Instructions a run:
+
+| Route | before | after | ratio |
+|---|---:|---:|---:|
+| answers `1` | 102.9 K | 102.2 K | 0.99 |
+| reads a state number | 104.8 K | 104.7 K | 1.00 |
+| reads a field of a 20-field state record | 117.3 K | 116.7 K | 1.00 |
+| the length of a 100-record state list | 445.4 K | 423.6 K | 0.95 |
+| 80 operations from a constant | 276.6 K | 276.3 K | 1.00 |
+| the same 80 from a state number | 278.4 K | 279.5 K | 1.00 |
+| `hello` | 88.6 K | 88.5 K | 1.00 |
+| `notes` (its listing, a collection read) | 349.0 K | 348.8 K | 1.00 |
+| `crunch`, 1,000 items | 23.36 M | 23.39 M | 1.00 |
+| a filter by fold, 1,000 / 4,000 | 9.88 / 39.08 M | 9.87 / 39.07 M | 1.00 |
+
+The list gained 21.8 K, the check's own instructions (`is_storable`, 21.5 K), not the 45 K the last
+section's profile gave: that was callgrind's inclusive cost, which counts a recursive function's
+inner calls again in the outer one's. The rest moved by 0.4% at most. What the list pays over the
+route that answers `1` is now 321 K, its copy and the copy's free: `malloc`, `free` and the C
+library's functions under them (unnamed in this profile) about 235 K, the copy's own code about
+41 K and the free's about 40 K ([Limits](#limits)).
 
 ### Limits
 
@@ -206,13 +343,21 @@ same in all three.
   (most server SSDs) answers a flush in microseconds, on any system.
 - **Writes sync three times** (value, snapshot, head) under the cell's lock. A group commit across
   writes (C4, Q4) is not done; the store's global lock is still taken on a miss and every put.
-- **Numeric folds and maps are slower than before #43**: `crunch` about ×0.92 in `main`
-  (×0.86 right after #43), the cost a node the audit couldn't place ([above](#the-evaluators-change-through-a-server-43-2026-11-06),
-  leaves §6). Folds that build a list gained ×5 to ×21.
-- **Compute-heavy flows** are 3–14 times slower than C#. What is left is allocating and freeing
-  values (about 26%), copying fields (6.7%) and firing each node (about 20%). Shared values (step
-  4) were deferred: copying is 5–10% after step 3, for a change touching about 850 places. Typed
-  slots or native code (level 3) would reverse the core's dependency limit and the no-JIT choice.
+- **`crunch` is 2.8% above where it was before #43** in instructions, after small values are
+  copied ([above](#small-values-are-copied-2026-11-07)); folds that build a list gained ×5 to ×21.
+- **Compute-heavy flows** are 3–14 times slower than C#, measured before #43 (`crunch` about 3%
+  more since). What is left is allocating and freeing values (about 26%), copying
+  fields (6.7%) and firing each node (about 20%). Shared values (step 4) are still deferred: after
+  #43's giving and lending no race copies anything large in its inner loop, and what an `Arc` would
+  save, and where (`Record` first), is estimated in [leaves §7](js-library-races/leaves.md#7-arc-an-estimate).
+  Typed slots or native code (level 3) would reverse the core's dependency limit and the no-JIT
+  choice.
+- **A run that reads a big state value copies it.** The leaf that reads it produces a copy
+  (`Body::Sourced`), and frees it. With a 100-record list in state, the copy and its free are the
+  321 K instructions a run that reads the list's length pays over one that answers `1`, about
+  three quarters of them in the allocator; they go only with values shared inside the core
+  ([leaves §7](js-library-races/leaves.md#7-arc-an-estimate)).
+  The samples keep small values in state and big ones in collections, which are read another way.
 - **A lazy route on a busy log** keeps a one-connection p99 of about 30 ms, likely the per-second
   sync holding up the next append (RA §2.6); left as it is.
 - **The log's lock** still covers the append (about 17 µs) and the line's hash (about 12 µs): a
@@ -255,7 +400,10 @@ See [Testing](testing.md). For speed in particular:
 
 - the golden records (`the_evaluator_gives_what_its_golden_record_holds`,
   `the_server_records_what_its_golden_record_holds`) hold every answer, record and hash, so a
-  faster path that changes one fails;
+  faster path that changes one fails, and the evaluator's is run again with every shape and child
+  kept (`keeping_each_composites_shape_changes_nothing_the_evaluator_gives`);
+- the differential harness (`holon-core/tests/differential.rs`, `differential.sh`) compares the
+  evaluator with an earlier version of itself case by case, outputs and every observer call;
 - the plan against the walk on 3,000 random graphs, and the compute-heavy samples' functions all
   run down a plan (`the_compute_heavy_flows_functions_all_run_down_a_plan`: a change that makes
   them fall back fails, though the answers would still be right);

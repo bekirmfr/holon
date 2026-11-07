@@ -1602,8 +1602,10 @@ dependencies = [
  "blake3",
  "criterion",
  "hmac 0.12.1",
+ "libm",
  "sha2 0.10.9",
  "smallvec",
+ "unicode-normalization",
  "wat",
 ]
 

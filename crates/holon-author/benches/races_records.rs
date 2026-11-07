@@ -585,8 +585,10 @@ function type_of(x) {
 /// fractions between `-1` and `0` keep their sign through `x * 0`.
 const FLOOR: &str = "import { as_text, split, head, json_parse } from \"holon\"
 function trunc(x) {
+  const small = x < 1 && x > -1
+  const whole = x >= 1e21 || x <= -1e21
   const t = json_parse(head(split(as_text(x), \".\")))
-  return t === 0 ? x * 0 : t
+  return small ? x * 0 : whole ? x : t
 }
 function floor(x) {
   const t = trunc(x)

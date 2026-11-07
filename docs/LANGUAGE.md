@@ -28,8 +28,8 @@ from JavaScript's (absence, writes at the end, logic on booleans) are Holon's, a
 JavaScript reader would be misled the compiler refuses, saying what to write instead (§1, §6).
 
 Total is the language's boundary, stated here so nobody finds it by surprise: every run ends.
-There is no recursion and no loop; `map` and `reduce` go over a list, and `range(n)` counts to at
-most 10000. Anything with nested or unbounded structure (a tree of any depth, a search that runs
+There is no recursion and no loop; `map`, `reduce` and a list's other methods that take a function
+go over a list, and `range(n)` counts to at most 10000. Anything with nested or unbounded structure (a tree of any depth, a search that runs
 until it finds something) is out of the graph's reach, by design; it goes in a `js()` function,
 under a fuel budget.
 
@@ -90,10 +90,10 @@ unit.
 | Writes | Assignment: `state.key = v`, `notes[key] = v`, `delete notes[key]`, `reports[name] = text`. Method forms (`notes.put(k, v)`) when the write is a value to name | §5.4, §5.10 |
 | Bindings | `const name = expr`; a `let` given a new value is a new name; destructuring is a `field` per name | §5.2 |
 | Calls | `leaf(inputs…, { named… })`: positional arguments are inputs; a last record whose keys the unit takes names inputs and params. A method of a text or list is the leaf that does it | §5.3 |
-| Literals | Numbers, texts, `true`, `false`; a template literal interpolates through `as_text`; `{…}` and `[…]` lower to `record`/`with_field` and `list`; a duration is a text, `"10s"`, where one is asked | §5.5 |
-| Operators | Arithmetic and comparison on numbers, logic on booleans, `??` (fallback), `===` (structural), `.` (field or output), `[ ]` (lookup), `c ? a : undefined` (guard), `c ? a : b` (guard plus fallback), `switch` (a choice by value) | §5.6, §6.4, §6.5 |
+| Literals | Numbers, texts, `true`, `false`; a template literal interpolates through `as_text`; `{…}` and `[…]` lower to `record`/`with_field` (`merge` for a spread after anything, `insert` for a computed key) and `list`; a duration is a text, `"10s"`, where one is asked | §5.5 |
+| Operators | Arithmetic and comparison on numbers, logic on booleans, `??` (fallback), `===` (structural), `.` (field or output), `[ ]` (lookup), `c ? a : undefined` (guard), `c ? a : b` (a guard on each side of `c`), `switch` (a choice by value) | §5.6, §6.4, §6.5 |
 | Multi-output values | `.name` selects an output when the name is one; otherwise it is a field. A bare multi-output value is its first output | §5.7 |
-| Functions | `function name(inputs) { …; return out }` is a holon, its outputs named by what it returns; an arrow written in place for `map` and `reduce`, a name it uses from around it an input of its own | §5.8, §5.9 |
+| Functions | `function name(inputs) { …; return out }` is a holon, its outputs named by what it returns; an arrow written in place for a list's methods that take one (`map`, `reduce`, `filter`, `toSorted`, …), a name it uses from around it an input of its own | §5.8, §5.9 |
 | js functions | `const name = js(function name(inputs) { JavaScript }, { fuel, memory, outputs })`: a function whose body runs as JavaScript, in an engine that is a WebAssembly module with no imports, under a budget | §5.8a |
 | Effects | An unused Effect is performed, an unused value is an error; no `perform` keyword | §5.10 |
 | Handlers | `route.get("/path", (req) => …)`, `every("10s", () => …)`, `on.file.created(folder, (f) => …)`, `export const name = action((input) => …)`, each with its options last (`{ resumes, matching, log }`); `return` is the answer | §5.1, §5.11 |
@@ -181,12 +181,11 @@ derived from the leaves, never from the words.
 
 | Refused | Why |
 |---|---|
-| `while`, `for`, recursion, unbounded iteration | Totality. `map` and `reduce` over a list are the only iteration, bounded by the list; `range(n)` makes a list to count over, of at most 10000. The L4's slice 6 lowers a computing loop to a fold over a bounded range, which keeps totality; until it is built, a loop is refused |
+| `while`, `for`, recursion, unbounded iteration | Totality. A list's methods that take a function (`map`, `reduce`, `filter`, `find`, …) are the only iteration, bounded by the list; `range(n)` makes a list to count over, of at most 10000. The L4's slice 6 lowers a computing loop to a fold over a bounded range, which keeps totality; until it is built, a loop is refused |
 | `class`, `this`, `new`, generators, `eval` | A flow is a module of functions and records; computing that needs all of JavaScript goes in a `js()` function |
 | Generics, type parameters, types beyond the nine | The checker is wire-time compatibility over nine types (§6.8). A type system is a different project |
 | Imports of code, packages | An import names something outside a run. Reuse across files is the marketplace's job (a published holon placed by hash), not an import of code (the `marketplace` sample). Revisit when people share holons across flows |
-| Globals: `fetch`, `Date`, `Math`, `setTimeout`, `process` | A flow uses only what it imports, so the top of the file is the whole of what it touches. `JSON.parse`, `JSON.stringify` and `Object.keys` are there, as the leaves that do them |
-| `+` on texts | An operator lowers to one node, and most values are `Any`, so `+` could not choose between `add` and `concat`. A template literal is the natural spelling; `concat(a, b)` the explicit one |
+| Globals: `fetch`, `Date`, `setTimeout`, `process` | A flow uses only what it imports, so the top of the file is the whole of what it touches. `JSON`, `Object`'s record functions, `Math`, `Number`, `parseInt`, `parseFloat`, `isNaN`, `isFinite`, `String`, the URI functions, `btoa`, `atob`, `structuredClone`, and `Date` in UTC (`new Date(t)` read by its methods, `Date.UTC`, `Date.parse`) are there, as the leaves that do them (§5.3, §5.6). `new Date()` and `Date.now()` are the time now, which is the clock's: `now * 1000`, `now` imported from `"holon:clock"`. `NaN` and `Infinity` aren't values: a leaf gives nothing where JavaScript gives one |
 | `\|\|` and `&&` on anything but booleans | `a \|\| "none"` is JavaScript's fallback, and Holon's logic is on booleans: the fallback is `??` |
 | Common-subexpression elimination | The text's structure is the graph's. Sharing is explicit (a binding), so the canvas shows what was written |
 | `null` | Absence is not a value. `undefined` is written only for "no value": as a branch, `c ? a : undefined`, and in `x !== undefined`. `none()` is the optional's empty arm (§6.3) |
@@ -1048,8 +1047,8 @@ it reaches it as an input after the item (§5.9): `tax` here.
 - **Identifiers** are TypeScript's. Any name may be bound; names aren't in the hash (§7), except a
   function's parameters, which are its ports.
 - **Numbers:** a finite decimal: `0`, `86400`, `2.5`, `1e3`, `1_000_000` (the separators are left
-  out of the value). A minus is written before a number (`-1`); to negate a value, `0 - x`. No
-  infinity, no NaN, since `const` refuses them.
+  out of the value). A minus before a number is part of it (`-1`); before any other value it is
+  `x * -1` (§5.6). No infinity, no NaN, since `const` refuses them.
 - **Texts:** `"…"` or `'…'` with JavaScript's escapes, and template literals, `` `Hello, ${name}` ``,
   whose `${…}` parts are any expression (§5.5).
 - **Durations** are texts where one is asked: `every("10s", …)`, `event("paid", { expires: "1d" })`,
@@ -1228,8 +1227,12 @@ handler (§10, §12).
 |---|---|
 | `const name = expr` | a binding: a name for the node `expr` places, no node of its own |
 | `let name = expr`, `name = expr`, `var name = expr` | a new name per assignment; where branches assign it, the value after them is the branch taken's, chosen as `?:` and `switch` choose (`guard`, `coalesce`). `var` reads as `let`, and `fmt` writes it as `const` or `let` |
-| `n++`, `n += 2`, `x ??= y` | an assignment of `n + 1`, `n + 2`, `x ?? y` |
+| `n++`, `n += 2`, `x ??= y` | an assignment of `n + 1`, `n + 2`, `x ?? y`; `%=`, `**=`, `&=`, `\|=`, `^=`, `<<=`, `>>=` and `>>>=` likewise, each its operator's leaf (§5.6) |
 | `xs.push(x)`, `order.total = t` (on a local) | a new value: `[...xs, x]` (`append`), `{ ...order, total: t }` (`with_field`) |
+| `Object.assign(t, a, b)` alone, on a local | a new value, `{ ...t, ...a, ...b }` (`merge`); on a parameter or a record another name holds, refused, as for `push` |
+| `const d = new Date(t)`; `d.setUTCHours(h, m)` alone; `d = new Date(t2)` | `d` is a Date, held as its time value (`date_part{part: time}(t)`) and read only by a Date's methods (§5.3); a setter alone gives `d` a new value, `date_set{part: hours}(d, h, m)`, and `const ms = d.setUTCHours(h)` gives it that and `ms` the time value; a setter elsewhere in an expression is the time value, and `d`, changed in place, is read no more; `d` read any other way is refused, naming `d.getTime()` and `d.toISOString()` |
+| `Object.freeze(r)` alone, `const r = Object.freeze(x)` (`seal`, `preventExtensions`) | `r` itself, marked frozen: a later change in place (`r.k = v`, `delete r.k`, `Object.assign(r, …)`), which would throw in JavaScript, is refused, naming a new record |
+| `xs.sort()`, `xs.reverse()`, `xs.fill(v)`, `xs.copyWithin(t, s)` alone; `xs.pop()`, `shift()`, `unshift(x)`, `splice(…)` | refused, naming what to write: `xs = xs.toSorted()`, `xs = xs.toReversed()`, `xs = [...xs].fill(…)`; `xs.at(-1)` and `xs.slice(0, -1)`, `xs.at(0)` and `xs.slice(1)`, `[x, ...xs]`, `xs.toSpliced(…)` (a flow's list doesn't change) |
 | `const { a, b = 1, ...rest } = r` | a `field` per name; `b = 1` is `r.b ?? 1` (`default`, or `coalesce` when the default is computed); `rest` is `without_field` per named key |
 | `const [x, y] = xs`, `const [first, ...rest] = xs` | `get` at each index; `head` and `tail` |
 | `state.key = expr` | `store_write{key}`, performed when the run finishes |
@@ -1287,7 +1290,7 @@ otherwise a param, frozen into the node (`{ encoding: "hex" }`, `{ limit: 50 }`)
 - The one unit with an input and a param of the same name is `default`, and it is never written:
   `??` is its spelling.
 - Too many positional arguments is an error, except on a variadic leaf (`add`, `multiply`, `and`,
-  `or`, `concat`, `list`), where each extra argument grows the node by one input, named as the
+  `or`, `concat`, `list`, `from_codes`), where each extra argument grows the node by one input, named as the
   canvas names them (`c`, `d`, … then `in<n>`), through `FlowBuilder::arity`; a variadic leaf's
   inputs aren't named.
 - An optional input (`http_request`'s `headers` and `body`, `collection_list`'s `prefix` and
@@ -1304,16 +1307,87 @@ Every catalog leaf is callable by its own name with this rule (`concat(a, b)`, `
 
 | Written | Lowers to |
 |---|---|
-| `t.toLowerCase()`, `t.toUpperCase()` | `lowercase(t)`, `uppercase(t)` |
-| `t.split(sep)`, `xs.join(sep)` | `split(t, sep)`, `join(xs, sep)` |
-| `t.indexOf(x)` | `index_of(t, x)` |
+| `t.toLowerCase()`, `t.toUpperCase()` | `lowercase(t)`, `uppercase(t)`; `toLocaleLowerCase()` and `toLocaleUpperCase()` the same, without a locale (one given is refused, as a flow has none) |
+| `t.split(sep)`, `t.split(sep, n)`, `xs.join(sep)` | `split(t, sep)`, the limit wired when given (`""` cuts every code unit); `join(xs, sep)` |
+| `t.length`, `xs.length` | `text_length(t)` where `t` is known to be a text, `length(xs)` where `xs` is known to be a list: a node whose output is a `Text`, or a `List`. On anything else (a request's field, a function's parameter), refused, naming both, to call by name |
+| `t.charAt(i)`, `t.charCodeAt(i)`, `t.codePointAt(i)` | `text_at(t, i)`, `code_at{mode: unit, point}(t, i)`; the index left out is 0 |
+| `t.startsWith(s, p)`, `t.endsWith(s, e)` | `text_contains{at: start, end}(t, s, p)`, the position unwired when left out |
+| `t.substring(a, b)` | `slice{mode: substring}(t, a, b)`, the end unwired when left out |
+| `t.trim()`, `t.trimStart()`, `t.trimEnd()` | `trim{side: both, start, end}(t)` |
+| `t.padStart(n, f)`, `t.padEnd(n, f)`, `t.repeat(n)` | `pad{side: start, end}(t, n, f)`, the fill unwired when left out (a space); `repeat(t, n)` |
+| `t.replace(a, b)`, `t.replaceAll(a, b)` | `replace{count: first, all}(t, a, b)`: `a` a text, `b` JavaScript's replacement (`$&` the match, `$$`, `` $` ``, `$'`); a regular expression or a function in their place is refused, naming `js()` |
+| `t.normalize()`, `t.normalize("NFD")` | `normalize{form}(t)`, the form one of `"NFC"`, `"NFD"`, `"NFKC"`, `"NFKD"` written in place |
+| `t.isWellFormed()`, `t.toWellFormed()` | `is_well_formed(t)`; `concat(t, "")`: a flow's text is always well formed |
+| `t.concat(a, b)` | `concat(t, a, b)` where `t` is a text written in place or known to be one, each argument as `String(x)` writes it (`as_text`), a text as itself; on anything else, a list's (below) |
+| `String(x)`, `x.valueOf()` | `as_text(x)`, as a template writes `x`; `x` itself |
+| `String.fromCharCode(a, b)`, `String.fromCodePoint(a, b)` | `from_codes{mode: unit, point}(a, b)`, variadic; with none, `""` |
+| `` String.raw`a\n${x}` `` | the template of its text as written, escapes kept |
+| `encodeURIComponent(t)`, `encodeURI(t)`, `decodeURIComponent(t)`, `decodeURI(t)` | `uri_encode{set: component, uri}(t)`, `uri_decode{set: component, uri}(t)` |
+| `btoa(t)`, `atob(t)` | `base64{bytes: latin1}(t)`, `base64{bytes: latin1, mode: decode}(t)` |
 | `xs.map(f)` | `map{fn: f}(xs)` (§5.9) |
 | `xs.reduce(f, start)` | `fold{fn: f}(start, xs)` (§5.9) |
+| `xs.map((x, i) => …)` | `indices(xs).map((i) => …)`, `x` read as `get(xs, i)`; `xs` is a name or a field of one, as it is read twice |
+| `xs.reduce(f)`, `xs.reduceRight(f, start)` | `fold{fn: f}(head(xs), tail(xs))`, `xs` a name or a field of one; `fold{fn: f}(start, reverse(xs))` |
+| `xs.filter(f)`, `xs.some(f)`, `xs.every(f)`, `xs.find(f)`, `xs.findIndex(f)`, `xs.findLast(f)`, `xs.findLastIndex(f)` | `filter`, `any`, `all`, `find`, `find_index`, `find_last`, `find_last_index`, each `{fn: f}(xs)`: `f`'s answer read as JavaScript's truthiness, and `some`, `every` and the finds apply `f` to nothing after the item that decides |
+| `xs.toSorted(f)`, `xs.toSorted()` | `sort_by{fn: f}(xs)`, a stable merge sort on the sign of `f(a, b)`; `sort(xs)`, by each item's `String(x)` in UTF-16 code units, as JavaScript sorts |
+| `xs.flatMap(f)`, `xs.flat()`, `xs.flat(2)`, `xs.flat(Infinity)` | `flat(map{fn: f}(xs))`; `flat{depth}(xs)`, `depth: all` for `Infinity` (a number written in place) |
+| `xs.at(i)`, `xs.includes(x, i)`, `xs.indexOf(x, i)`, `xs.lastIndexOf(x, i)` | `at`, `includes`, `index_of`, `last_index_of`: each one leaf for a list and a text; the position to start from, when given, wired to `from` |
+| `xs.slice(s, e)`, `xs.slice(s)`, `xs.slice()` | `slice{mode: end}(xs, s, e)`, the end unwired when left out, on a list or a text; `xs` itself |
+| `xs.toReversed()`, `xs.toSpliced(s, c, ...items)`, `xs.with(i, v)` | `reverse(xs)`, `to_spliced(xs, s, c, items)` with the rest as one list, `with_item(xs, i, v)` |
+| `xs.sort()`, `xs.sort(f)`, `xs.reverse()`, `xs.fill(v, s, e)`, `xs.copyWithin(t, s, e)` as a value | `sort`, `sort_by`, `reverse`, `fill`, `copy_within`: the list they give, on a list made where they are called (`[...xs].fill(0)`) or a binding of the handler's own that isn't read after; on a parameter, a part of one or a list another name holds, refused, naming the value form |
+| `[...xs.keys()]`, `[...xs.entries()]`, `[...xs.values()]`, each also as `Array.from(…)` | `indices(xs)`, `entries(xs)` (the `[index, item]` pairs), `xs` |
+| `[...new Set(xs)]`, `Array.from(new Set(xs))` | `unique(xs)`: each item's first occurrence, by value |
+| `xs.join()`, `xs.concat(ys, x)` | `join(xs, ",")`; on a value not known to be a text, `extend` for a list written as one, `append` for a literal that isn't one, and refused for anything else, which could be either |
+| `Array.isArray(x)`, `Array.of(a, b)`, `Array.from(xs)`, `Array.from(xs, f)`, `Array.from({ length: n }, (_, i) => …)` | `is_list(x)`, `[a, b]`, `xs`, `map{fn: f}(xs)`, `range(n).map((i) => …)` (the item, JavaScript's undefined, read as absent) |
 | `JSON.parse(t)`, `JSON.stringify(x)` | `json_parse(t)`, `json_stringify(x)` |
-| `Object.keys(r)` | `keys(r)` |
+| `JSON.parse(t, (k, v) => …)`, `JSON.stringify(x, (k, v) => …)` | `json_parse{fn}(t)`, `json_stringify{fn}(x)`: the reviver applied bottom-up, the replacer top-down, as JavaScript's; what the function gives nothing for is left out of a record and `null` in a list |
+| `JSON.stringify(x, ["id", "name"], 2)`, `JSON.stringify(x, null, "\t")` | `json_stringify{keys: "[\"id\",\"name\"]", indent: "  "}(x)`: the keys a list of texts written in place, the indent a number written in place (that many spaces, ten at most) or a text; `null` and `undefined` leave either out |
+| `Object.keys(r)`, `Object.getOwnPropertyNames(r)` | `keys(r)` |
+| `Object.values(r)`, `Object.entries(r)`, `Object.fromEntries(pairs)` | `values(r)`, `entries(r)` (the `[key, value]` pairs, in key order), `from_entries(pairs)` (a later pair for a key replacing the earlier, a key a text) |
+| `Object.groupBy(xs, (x) => …)` | `group_by{fn}(xs)`: a record of lists, each item under the text its function answers (an item it answers nothing or no text for is left out); `Map.groupBy` is refused, as a flow has no Map |
+| `Object.assign({}, a, b)`, `Object.assign({ k: v }, a)` | `merge(a, b)`, `merge({ k: v }, a)`: into a record written in place; into anything else a change in place, refused, naming `{ ...a, ...b }` |
+| `Object.hasOwn(r, k)`, `r.hasOwnProperty(k)`, `k in r` | `has(r, k)`: a record has no prototype, so `in` is its own keys |
+| `Object.is(a, b)` | `same_value(a, b)`: `===` but for `NaN` and `-0`, by value |
+| `typeof x` | `type_of(x) ?? "undefined"`: `"number"`, `"string"`, `"boolean"`, `"object"` (a record, a list or `null`), and `"undefined"` where nothing arrives |
+| `structuredClone(x)`, `Object.freeze(x)`, `Object.seal(x)`, `Object.create(null)` | `x`, `x`, `x`, `{}`: a flow's values never change in place, so a copy is the value and each is frozen already |
+| `new Date(t).getTime()`, `.getUTCFullYear()`, `.getUTCMonth()`, `.getUTCDate()`, `.getUTCDay()`, `.getUTCHours()`, … | `date_part{part: time, year, month, date, day, hours, minutes, seconds, milliseconds}(t)`, `t` a time value in milliseconds or a text `Date.parse` reads; on a Date bound to a name, the same of its time value |
+| `new Date(t).toISOString()`, `.toUTCString()` | `date_text{format: iso, utc}(t)` (`toJSON` and `toGMTString` the same) |
+| `new Date(t).setUTCHours(h, m)`, `.setUTCFullYear(y)`, … as a value | `date_set{part: hours, year, …}(t, h, m)`: the time value the setter gives, as many numbers as it takes |
+| `Date.UTC(y, m, d, …)`, `Date.parse(text)` | `date_utc(y, m, d, …)` (variadic, 1 to 7 numbers), `date_parse(text)` |
+| `Math.round(x)`, `Math.sqrt(x)`, … | `math{fn: round}(x)`: each of `Math`'s one-number functions, `f16round` and `clz32` among them, is `math` with its name |
+| `Math.max(a, b, …)`, `Math.min(a, b, …)` | `max(a, b, …)`, `min(a, b, …)`, variadic |
+| `Math.max(...xs)`, `Math.min(...xs)`, `Math.hypot(a, b, …)`, `Math.hypot(...xs)`, `Math.sumPrecise(xs)` | `aggregate{fn}(xs)`, the list built in place for `hypot`'s numbers |
+| `Math.atan2(y, x)`, `Math.pow(a, b)`, `Math.imul(a, b)` | `atan2(y, x)`, `power(a, b)`, `bitwise{op: imul}(a, b)` |
+| `Math.PI`, `Math.E`, `Number.EPSILON`, `Number.MAX_SAFE_INTEGER`, … | the constant's literal: `3.141592653589793` |
+| `Number(x)`, `parseFloat(s)`, `parseInt(s)`, `parseInt(s, r)` | `to_number{grammar: number, float or int}(x)`, the radix wired when given; `Number.parseFloat` and `Number.parseInt` the same |
+| `Number.isFinite(x)`, `Number.isInteger(x)`, `Number.isSafeInteger(x)`, `isNaN(x)`, `isFinite(x)` | `number_test{test, coerce}(x)`: `coerce: none` for `Number.`'s, `number` for the globals |
+| `Number.isNaN(x)` | `false`: a flow has no NaN |
+| `x.toFixed(d)`, `x.toPrecision(p)`, `x.toExponential(d)`, `x.toString(r)` | `number_format{style}(x, d)`, `d` wired when given |
+| `x.toString()` | `number_format{style: string}(x)` when `x` is known to be a number (a node whose output is a `Number`); otherwise `as_text(x)`, as `String(x)` |
 
-A list's length is `length(xs)` and a text's `text_length(t)`, called as leaves: `.length` comes in
-a later slice. A method no leaf does is refused, with "do it in a `js()` function".
+A Date is JavaScript's in UTC: a flow has no time zone, so a local-time method (`getHours`,
+`setDate`, `toString`, …) is refused, naming its UTC one, and `new Date(y, m, …)` names
+`new Date(Date.UTC(y, m, …))`. A Date is an object in JavaScript and a time value in a flow, so it
+is read only by its methods: `new Date(t)` alone, or a Date's name, returned, compared or put in a
+record, is refused, naming `getTime()` and `toISOString()`. `new Date()` and `Date.now()` are
+refused, naming the clock. `Object`'s functions that describe properties or prototypes
+(`defineProperty`, `getPrototypeOf`, `isFrozen`, …) are refused, as is `instanceof`, `new Map()`
+and `new Set()` outside a spread.
+
+`Math` and `Number` are namespaces the reader knows, as it knows `JSON`, `Object` and `Date`; a
+flow's own function named `parseInt` is the one `parseInt(s)` calls, as in JavaScript, and
+`Math.max` is the leaf whatever the flow defines. `Math.random()` is refused, with `import { random
+} from "holon:random"`, a run's one recorded number. `.length` is a text's `text_length` or a
+list's `length`, by the type of the node that made the value. A method no leaf does is
+refused, with "do it in a `js()` function". `fmt` writes `entries` as `Object.entries(r)` where
+`r` is known to be a record (a node whose output is a `Record`), else as `[...xs.entries()]`.
+
+A text's positions and lengths count UTF-16 code units, as JavaScript's do; a result that would
+begin or end inside a surrogate pair (half an emoji) gives no value, as a flow's text can't hold
+half of one. `s.localeCompare(t)` is refused, as a flow has no locale (`a < b` compares texts in
+code units), and so are the regular expressions (`s.match(re)`, `s.search(re)`, a pattern in
+`replace` or `split`): they are done in a `js()` function. `escape` and `unescape` are refused,
+naming the URI functions.
 
 ### 5.4 The outside world, as imported names
 
@@ -1473,7 +1547,8 @@ Rules the table implies:
 | `true`, `false` | `const{type: Boolean, value: …}` |
 | `` `Hello, ${name}!` `` | one `concat` over the pieces: `const` for each literal piece, `as_text(expr)` for each `${…}`; a template that is one `${expr}` with no literal text is `as_text(expr)` alone, and one with no `${…}` is a text |
 | `{ k: e, "k 2": e2 }`, `{ k }` | `record()` then one `with_field{name: k}(record, e)` per field, in written order; `{ k }` is `{ k: k }` |
-| `{ ...base, k: e }` | `with_field{name: k}` chained onto `base`'s value; one base, first; fields in written order |
+| `{ ...base, k: e }` | `with_field{name: k}` chained onto `base`'s value, fields in written order |
+| `{ a: 1, ...r, ...s, [k]: v, b: 2 }` | read left to right, as JavaScript builds it: a spread after anything `merge` (one for several in a row, `merge(with_field{name: a}(record(), 1), r, s)`), a computed key `insert(…, k, v)`, and the fields after either `with_field` on what is before them |
 | `[e1, e2, e3]` | `list(e1, e2, e3)`, variadic |
 | `[]` | `const{type: Json, value: "[]"}`: a placed `list` has at least its two declared inputs, so the empty list is the one literal that is a `const` |
 | `[e]` | `append(list: const "[]", item: e)`, for the same reason |
@@ -1490,27 +1565,36 @@ of that rule; the alternative, skipping it when the part is statically `Text`, w
 depend on type annotations elsewhere in the file.
 
 Record keys are names or texts; a key that is not a plain word must be quoted (`"content-type"`),
-and a computed key, `{ [k]: v }`, comes in a later slice (`insert(record, key, value)` until then).
+and a computed key, `{ [k]: v }`, is `insert`, its key a text.
 Record and list literals always lower structurally, never to a `const` of type `Json`, so the
 lowering is one-to-one and the canvas shows the fields. A single-node JSON constant is the right
 side of `??` (§5.6).
 
 ### 5.6 Operators
 
-Lowest to highest precedence, as TypeScript has them; binary operators are left-associative.
+Lowest to highest precedence, as TypeScript has them; binary operators are left-associative, but
+`**`.
 
 | Operator | Lowers to | Note |
 |---|---|---|
-| `c ? a : b` | `coalesce(guard(cond: c, value: a), b)` | `a` if `c` held and `a` arrived, else `b` (§6.4) |
+| `c ? a : b` | `coalesce(guard(cond: c, value: a), guard(cond: not(default{false}(c)), value: b))` | `a` if `c` is `true`, else `b`; the side chosen is the answer, absent if it is (§6.4) |
 | `c ? a : undefined` | `guard(cond: c, value: a)` | absent unless `c` is `true` |
 | `a ?? b` | `coalesce(a, b)`; with a literal `b`, `default{type, value}(a)` | `a` when present, else `b`. The two leaves have one meaning; `default` is the one-node form for a literal (a number, text, boolean, or a record/list literal with only literals inside, frozen as `Json`) |
 | `a \|\| b` | `or(a, b)` | variadic: `a \|\| b \|\| c` is one node; booleans only |
 | `a && b` | `and(a, b)` | variadic; booleans only |
+| `a \| b`, `a ^ b`, `a & b` | `bitwise{op: or, xor, and}(a, b)` | on int32s; each its own level, in that order, below `===` |
 | `a === b`, `a !== b` | `equals(a, b)`, `not(equals(a, b))` | structural, any two values, never coerced; `==` and `!=` mean the same, and `fmt` writes `===` |
-| `a < b`, `<=`, `>`, `>=` | `compare{op}(a, b)` | numbers only, as `compare` is |
-| `a + b`, `a - b` | `add(a, b)`, `subtract(a, b)` | numbers only; `add` variadic |
-| `a * b`, `a / b` | `multiply(a, b)`, `divide(a, b)` | `multiply` variadic |
+| `a < b`, `<=`, `>`, `>=` | `compare{op}(a, b)` | two numbers, or two texts in UTF-16 code-unit order; a number and a text give nothing |
+| `a << b`, `a >> b`, `a >>> b` | `bitwise{op: shl, shr, ushr}(a, b)` | `>>>` gives a uint32 |
+| `a + b`, `a - b` | `add(a, b)`, `subtract(a, b)` | `+` adds numbers, and with a text on either side joins both as `String(x)` writes them, left to right (`1 + 2 + "a"` is `"3a"`); `-` on numbers only; `add` variadic |
+| `a * b`, `a / b`, `a % b` | `multiply(a, b)`, `divide(a, b)`, `remainder(a, b)` | `multiply` variadic; `%` is fmod, with `a`'s sign |
+| `a ** b` | `power(a, b)` | right-associative; its left is never a unary expression, so `(-2) ** b` |
 | `!a` | `not(a)` | |
+| `-a` | `multiply(a, -1)` | in parentheses, one node; exact at `-0`, where `0 - a` isn't. A minus before a number literal is the literal (`-1`) |
+| `+a` | `to_number(a)` | `Number(a)` |
+| `~a` | `bitwise{op: xor}(a, -1)` | |
+| `typeof a` | `default{type: Text, value: undefined}(type_of(a))` | §5.3; `fmt` writes it back as `typeof a` |
+| `k in r` | `has(r, k)` | on the level of `<`; `instanceof` is refused, naming `Array.isArray` and `typeof` |
 | `a.name`, `a?.name` | an output, or `field{name}(a)` | §5.7; `?.` means what `.` does |
 | `a[e]` | `lookup(record: a, key: e)` when `a` is not an imported collection or folder | the key arrives on a wire |
 
@@ -1526,10 +1610,10 @@ sample uses it to keep the time of its first beat: `state.first_beat = state.fir
 
 Variadic flattening applies only to a chain of the *same* operator: `a && b && c` is one `and`
 with three inputs; `(a && b) && c`, with explicit parentheses, is two nodes, and `fmt` keeps the
-parentheses. They are the author saying "two". There is no text operator: a template literal is
-the spelling, `concat(a, b)` the explicit call. `||` or `&&` with a text, number, record or list
-literal on its right (`a || "none"`) is refused with "use `??`", as that is JavaScript's fallback
-and not logic.
+parentheses. They are the author saying "two". `+` joins texts as JavaScript's does; a template
+literal is the other spelling, `concat(a, b)` the explicit call. `||` or `&&` with a text,
+number, record or list literal on its right (`a || "none"`) is refused with "use `??`", as that
+is JavaScript's fallback and not logic.
 
 ### 5.7 Multi-output values: `.name`
 
@@ -1568,7 +1652,8 @@ exactly as the expand view would freeze it. Its outputs are named by what it ret
 - anything else, one output, `out` (the L4's fork 7), shown on the canvas as its type, as a leaf's
   single output is.
 
-An input never used is an error, and so is an output that is an input passed straight through. A
+An input never used is an error (a function written in place may leave one unused, §5.9), and so
+is an output that is an input passed straight through. A
 parameter is a name: a pattern is written on the body's first line (`const { price, qty } =
 order`), as a port is named by its parameter, and it takes no default (every input is wired).
 
@@ -1662,18 +1747,25 @@ absent, with that reason.
 The sample `nearest` shows a `js()` function doing the one computation the vocabulary can't spell,
 an edit-distance search, with the flow around it storing, routing and answering.
 
-### 5.9 Functions for `map` and `reduce`
+### 5.9 Functions for a list's methods
 
-`xs.map(f)` and `xs.reduce(f, start)` take, as `f`:
+`xs.map(f)`, `xs.reduce(f, start)` and a list's other methods that take a function (`filter`,
+`some`, `every`, `find`, `findIndex`, `findLast`, `findLastIndex`, `flatMap`, `toSorted`,
+`reduceRight`) take, as `f`:
 
 - a function's name: `titles.map(slugify)`, lowered to that holon's hash;
 - an arrow written in place, its body one expression (or `{ return … }` alone): `(acc, p) => acc +
   p`, lowered to an anonymous composite with the parameters as inputs in order and the body's
   value as its one output, `out`, then to its hash.
 
-`map`'s function takes the item and no index; `reduce`'s takes the result so far and the item. A
-function that takes another number is an error at the function: "map's function takes the item:
-(x) => …; an index isn't passed". The leaves pass a function the values given after the list,
+Each function takes what its leaf hands it: the item; `reduce`'s the result so far and the item;
+`toSorted`'s the two items it compares. `map`'s may take the index after the item: the reader
+writes it `indices(xs).map((i) => …)`, the item read as `get(xs, i)`. A function that takes more is
+an error at the function: "filter's function takes the item: (x) => …; an index isn't passed".
+One that takes fewer, or doesn't use a parameter (`() => 0`, `(_, i) => i`), leaves it unused: as
+a composite's input feeds one inner port, the lowering wires it into a node nothing reads
+(`is_list`, or one `list` for two), which never runs, and the printer writes it back as a
+parameter the body doesn't use. `_` is a name like any other. The leaves pass a function the values given after the list,
 after the item: `map{fn: f}(xs, a, b)` calls `f(item, a, b)`. They are ports of their own (`in2`,
 …, typed `Any`), and the call fires only when every one is present, as any node does. The text
 reaches them through captures; an explicit form for them comes in a later slice.
@@ -1853,15 +1945,17 @@ Absence is not a value: it cannot be stored, compared or passed to a function. `
 text's word for it, written only as a branch and in `x !== undefined`; `null` is refused. `none()`
 is a value (the optional's empty arm) and is unrelated.
 
-### 6.4 `?:` is a fallback, not a branch
+### 6.4 `?:` is a choice
 
-`c ? a : b` is `coalesce(guard(c, a), b)`: `a` when `c` is `true` and `a` arrived, otherwise `b`.
-So `c` absent gives `b`, and `c` true with `a` absent gives `b` too, where JavaScript would give
-`undefined`. This is the meaning that fits a dataflow of absences, and it is one meaning: `c ? a :
-undefined` is the same `guard`, and `if (c) …` chooses between statements the same way.
+`c ? a : b` is `guard(c, a) ?? guard(!(c ?? false), b)`: `a` when `c` is `true`, otherwise `b`. So
+`c` absent gives `b`, as JavaScript's `if` takes `undefined` as false, and the side chosen is the
+answer: `c` true with `a` absent is absent, as JavaScript gives `undefined`, and doesn't fall to
+`b`. `c ? a : undefined` is the first `guard` alone, and `if (c) …` chooses between statements the
+same way. A fallback is written as one: `(c ? a : undefined) ?? b` is `b` when the chosen `a` is
+absent too.
 
 Only what the choice needs is run (lazy choices, `docs/L4s/lazy-choices-L4.md`): `a` only when `c`
-is `true`, and `b` only when `guard(c, a)` came out absent. So a branch not taken asks the host
+is `true`, and `b` only when it isn't. So a branch not taken asks the host
 nothing: its requests aren't sent, its `await`s don't park the run, its reads aren't made, and a
 function in it isn't entered. `x ?? y` is the same rule: `y` only when `x` is absent. This changes
 no value, only what runs. While `c` (or `x`) waits on an answer from the host, the choice waits
@@ -1918,12 +2012,13 @@ to test a condition, use `?:` or `if`. Several cases may share a body (`case "s"
 is no fall-through into another body. A case that breaks, like a subject no case equals, goes on
 after the `switch`.
 
-What makes it a choice and not a chain of `?:`: **the chosen case's absence is the switch's.** With
-`b = 0`, `a / b` has no value, and the `"div"` case has none either, so the route answers 400. A
-chain, `op === "div" ? a / b : 0`, falls through and answers `0`, silently. The cases not chosen
+What makes it a choice: **the chosen case's absence is the switch's.** With `b = 0`, `a / b` has no
+value, and the `"div"` case has none either, so the route answers 400. A chain of `?:` chooses so
+too (§6.4); it differs from the switch where the subject is absent. The cases not chosen
 don't matter at all, and don't run (§6.4): `"add"` answers `a + b` whatever `a / b` would be. So a
 case may send a request or `await`; only the chosen case's are asked. With the subject absent, the
-switch is absent, and the `default` with it. With no case equal and no `default`, it is absent too.
+switch is absent, and the `default` with it, where a chain's conditions are absent and each takes
+its else, down to the last. With no case equal and no `default`, it is absent too.
 
 It is sugar: it lowers to `guard(equals(s, p), a)` for each case, chained by `??`, and the
 `default` guarded by none of the cases matching, so a failed case can't fall through to it
@@ -1946,7 +2041,11 @@ answers the count before its write).
 Every program terminates: iteration is `map` and `reduce` over a list, bounded by the list (the one
 leaf that makes a list from a number, `range(n)`, makes at most 10000 items), there is no loop
 statement, and there is no recursion (a function cannot place itself, since its hash does not exist
-until it is frozen). No construct performs an effect during evaluation; effects are values that the
+until it is frozen). Nor does a value nest without end: at most 256 levels (`MAX_VALUE_DEPTH`; a
+list's item, a record's field and an option's value are each a level down), and a leaf that would
+build one deeper gives nothing, so a fold wrapping its accumulator (`[acc]`) stops at 256 steps.
+What walks a value recurses on a thread of a few megabytes, and an overflowed stack would end
+every run on the server, not this one. No construct performs an effect during evaluation; effects are values that the
 host performs after the run settles. A request is answered between rounds (§4.1 of
 `PLATFORM_LAYOUT.md`); `await event(…)` parks the run. None of that is visible in the language
 beyond the nodes' names.
@@ -2048,7 +2147,7 @@ The error catalogue the reader and the lowering produce, each with the span it p
 | `f` has no input or param `p` / `p` given twice | the name |
 | input `p` can't be left out | the call |
 | a value nobody uses: bind it, or remove it | the statement |
-| there is no `+` on texts; `\|\|` takes booleans | the expression |
+| `\|\|` takes booleans | the expression |
 | `notes` is read after this run writes to it | the read |
 | `state.k` written twice, in an `if (… !== undefined)` and elsewhere | the second write |
 | `status(…)` and `respond(…)` are a route's answer: return them | the expression |
@@ -2059,7 +2158,8 @@ The error catalogue the reader and the lowering produce, each with the span it p
 | a case runs on into the next; a case is a literal | the case |
 | the top level holds imports, `flow(…)`, handlers, functions and `const`s of literals | the statement |
 | the top level binds only literals | the binding |
-| `map`'s function takes the item; `reduce`'s the result so far and the item | the function |
+| a method's function takes what its leaf hands it: the item (and `map`'s index), `reduce`'s the result so far and the item, `toSorted`'s the two items | the function |
+| a list changed in place: `push`'s answer, `pop`, `shift`, `unshift`, `splice`; `sort`, `reverse`, `fill` or `copyWithin` alone, on what another holds, or read after | the call, or the read |
 | a function's input never used; an output that is an input passed straight through | the parameter or the return |
 | two answers whose status for an absent body differs | the second `return` |
 | a period written twice: one clock per period | the second clock |
@@ -2110,9 +2210,14 @@ lowering. The algorithm:
    `stripe.verify(…)`, `await event(…)`); consts print as literals, a duration-shaped period or
    `expires` as a duration text; `concat` over `as_text` parts and consts prints as a template
    literal; `record`/`with_field` chains print as object literals when the chain starts at
-   `record()` or as `{ ...base, … }` when it does not; `list` as an array literal; `default` with a
-   literal param and `coalesce` as `??`; `guard` as `c ? a : undefined`, and `coalesce` over a
-   `guard` as `c ? a : b`; binary leaves as operators; `field` chains as `.name`; `respond` as the
+   `record()` or as `{ ...base, … }` when it does not, a `merge` as its spreads and an `insert` as
+   `[k]: v`, a record built in place under them written in the same literal where ts.rs reads it
+   back as the same nodes (`{ a: 1, ...r, ...s, [k]: v }`); each date leaf as a method of
+   `new Date(t)` (`new Date(t).getTime()` for the time value), `Date.UTC(…)` and `Date.parse(t)`;
+   `list` as an array literal; `type_of` under a `default` of `"undefined"` as `typeof x`;
+   `default` with a literal param and `coalesce` as `??`; `guard` as `c ? a : undefined`, and
+   `coalesce` over a `guard` and a `guard` on `!(c ?? false)` of the same `c` as `c ? a : b`;
+   binary leaves as operators; `field` chains as `.name`; `respond` as the
    handler's `return`; MongoDB templates as the records they were frozen from.
 5. Names: a binding takes the node's name from the text it came from when it has one (the
    lowering's names, handed to the printer), else one from what the node is (a `field`'s field, a
@@ -2294,7 +2399,9 @@ is `status(204)`).
 
 - **F3. String interpolation.** *Decided (2026-10-24), and kept by the switch:* a template literal,
   `` `Hello, ${name}` ``, lowers to one `concat` over its pieces, each `${…}` part wrapped in
-  `as_text`, the leaf added for this. `+` stays numeric, and is refused beside a text.
+  `as_text`, the leaf added for this. `+` stayed numeric, refused beside a text, until
+  *2026-11-07:* `add` takes any values and joins texts as JavaScript's `+` does, so `+` beside a
+  text is read (js-library-races/texts.md).
 - **F4. Top-level bindings beyond literals.** The restriction exists because handlers must be
   separate groups. An alternative is duplicating the whole subexpression per handler, which keeps
   them separate at the cost of hidden node copies. Refused for now: the error message points at
@@ -2303,7 +2410,10 @@ is `status(204)`).
   since the switch):* `c ? a : undefined` is the guard, and `c ? a : b` is the same guard with a
   `coalesce` fallback, so a choice has one meaning, fallback, which differs from JavaScript's where `a` has no
   value (§6.4), and `select` is a plain call for the strict choice. The `coalesce` leaf it needs is
-  built (§5.6).
+  built (§5.6). *Reversed (2026-11-07):* `c ? a : b` is a guard on each side, `guard(c, a) ??
+  guard(!(c ?? false), b)`, so a chosen `a` that is absent makes it absent, as JavaScript gives
+  `undefined`; the fallback is written `(c ? a : undefined) ?? b`. The fall-through had made the
+  natural text composites wrong (js-library-races/texts.md).
 - **F6. Named inputs.** *Decided (2026-10-24):* a named argument is an input when the unit has that
   port, else a param. Since the switch the names are a last record, `{ headers: h, limit: 50 }`,
   read so when the unit takes each of its keys; otherwise the record is a value, passed in order.
@@ -2324,11 +2434,11 @@ is `status(204)`).
   Alternative: names derived from their keys (`put_posts`, `write_last_post`). Decide when the
   first function with several writes exists.
 - **F11. A choice by value, `switch`.** A record used as a table is spoiled by one absent entry,
-  and a chain of `?:` falls through when the chosen arm fails. A `switch` chooses one case by the
-  subject, so cases not chosen don't matter and a chosen case's failure is the result's. It lowers
-  to `equals`, `guard` and `coalesce`, with the `default` guarded by "no case matched". Decided and
-  built as `match` (§6.5), and written as `switch` since the switch, fall-through refused; the
-  `calc` sample shows it. `docs/L4s/match-L4.md`.
+  and a chain of `?:` fell through when the chosen arm failed (until F5's reversal). A `switch`
+  chooses one case by the subject, so cases not chosen don't matter and a chosen case's failure is
+  the result's. It lowers to `equals`, `guard` and `coalesce`, with the `default` guarded by "no
+  case matched". Decided and built as `match` (§6.5), and written as `switch` since the switch,
+  fall-through refused; the `calc` sample shows it. `docs/L4s/match-L4.md`.
 - **F12. Lazy choices.** Every node was evaluated, so a request inside a branch not taken was sent
   anyway, and an `await` there parked the run. Decided and built: `guard` and `coalesce` evaluate
   only the inputs they need, with "not yet answered" kept apart from absent so a choice waits

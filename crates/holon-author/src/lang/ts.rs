@@ -12,9 +12,9 @@
 //! `"holon"`, the vocabulary and the leaves. A name reads as what it was imported as, so the text
 //! never declares what it uses twice, and the headers the lowering reads are made from the imports.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
-use holon_core::{interface_of, TRIGGER, VARIADIC};
+use holon_core::{family_values, interface_of, PASSES_EXTRA, TRIGGER, VARIADIC};
 use oxc_allocator::Allocator;
 use oxc_ast::ast as js;
 use oxc_ast_visit::Visit;
@@ -169,6 +169,15 @@ struct Frame {
     guarded_calls: Vec<(String, Expr)>,
     /// The bindings another name, a record or a write holds too.
     shared: BTreeSet<String>,
+    /// The bindings a method changed in place, read as the list it gave (`xs.sort()`), with
+    /// the method: read after, refused, as JavaScript's would be the list changed.
+    changed: BTreeMap<String, String>,
+    /// The bindings that are a Date (`const d = new Date(x)`), each holding its time value: read
+    /// only by a Date's methods, as JavaScript's is an object.
+    dates: BTreeSet<String>,
+    /// The bindings `Object.freeze`, `seal` or `preventExtensions` was given: a change in place,
+    /// which would throw in JavaScript, is refused.
+    frozen: BTreeSet<String>,
     /// Whether it is a route's: a route answers and is done, so it doesn't wait.
     route: bool,
 }
@@ -1144,9 +1153,33 @@ impl<'s, 't> Reader<'s, 't> {
                 }
                 continue;
             };
+            // `const t = d.setUTCHours(h)`: `d` is the new date, and `t` its time value.
+            if let js::Expression::CallExpression(c) = self.unwrap(init)
+                && let Some((ts, name, method)) = self.date_mutation(c)
+            {
+                self.set_date(c, &ts, name, &method, stmts)?;
+                let Some(Local::Bound(n) | Local::Var(Some(n))) = self.lookup(&ts) else { unreachable!("a Date just given its value") };
+                let value = Expr { kind: ExprKind::Name(n), span: self.span(c.span) };
+                self.destructure(&d.id, value, decl, stmts)?;
+                continue;
+            }
+            // `const d = new Date(x)`: a Date, held as its time value, read by its methods.
+            if let js::BindingPattern::BindingIdentifier(id) = &d.id
+                && let Some(n) = self.new_date(init)
+            {
+                let value = self.date_value(n)?;
+                let span = self.span(id.span);
+                self.bind_name(id.name.as_str(), span, value, decl, stmts)?;
+                self.mark_date(id.name.as_str());
+                continue;
+            }
             let value = self.expr(init)?;
             let from_local = self.share(init);
+            let frozen = self.frozen_call(init).is_some();
             self.destructure(&d.id, value, decl, stmts)?;
+            if frozen && let js::BindingPattern::BindingIdentifier(id) = &d.id {
+                self.mark_frozen(id.name.as_str());
+            }
             if from_local {
                 // `const b = a`, `const { items } = order`: what they bind holds what `a` does.
                 let mut names = Vec::new();
@@ -1340,6 +1373,12 @@ impl<'s, 't> Reader<'s, 't> {
             }
             js::Expression::UnaryExpression(u) if u.operator == js::UnaryOperator::Delete => self.delete(u, stmts),
             js::Expression::CallExpression(c) if let Some((ts, method)) = self.local_method(c) => self.mutate(c, &ts, &method, stmts),
+            js::Expression::CallExpression(c) if let Some((ts, name, method)) = self.date_mutation(c) => self.set_date(c, &ts, name, &method, stmts),
+            js::Expression::CallExpression(c) if let Some(ts) = self.assigned_local(c) => self.assign_into(c, &ts, stmts),
+            js::Expression::CallExpression(_) if let Some(js::Expression::Identifier(t)) = self.frozen_call(e).and_then(|a| a.as_expression()).map(|x| self.unwrap(x)) && self.lookup(t.name.as_str()).is_some() => {
+                self.mark_frozen(t.name.as_str());
+                Ok(())
+            }
             other => {
                 let value = self.expr(other)?;
                 let after = if self.contains_sink(&value) { self.trigger(at) } else { None };
@@ -1353,6 +1392,8 @@ impl<'s, 't> Reader<'s, 't> {
     fn assignment(&mut self, a: &js::AssignmentExpression, stmts: &mut Vec<Stmt>, start: usize) -> R<()> {
         use js::AssignmentOperator as A;
         let at = self.span(a.span);
+        // `%=`, `**=` and the bitwise ones: their operator's leaf.
+        let number = a.operator.to_binary_operator().and_then(number_operator);
         let op = match a.operator {
             A::Assign => None,
             A::Addition => Some(BinOp::Add),
@@ -1362,17 +1403,31 @@ impl<'s, 't> Reader<'s, 't> {
             A::LogicalNullish => Some(BinOp::Coalesce),
             A::LogicalOr => Some(BinOp::Or),
             A::LogicalAnd => Some(BinOp::And),
+            _ if number.is_some() => None,
             op => return fail(at, format!("{} isn't an operator Holon has", op.as_str())),
         };
-        if op == Some(BinOp::Add) && is_text(self.unwrap(&a.right)) {
-            return fail(at, "there is no + on texts: use a template literal, `${a}${b}`");
-        }
         let Some(target) = a.left.as_simple_assignment_target() else {
             return self.assign_pattern(&a.left, &a.right, stmts);
         };
         let place = self.place(target)?;
+        // `d = new Date(x)`: `d` is a Date again.
+        if op.is_none()
+            && number.is_none()
+            && let Place::Local(ts, _) = &place
+            && let Some(n) = self.new_date(&a.right)
+        {
+            let ts = ts.clone();
+            let value = self.date_value(n)?;
+            self.write_place(place, value, at, stmts, start)?;
+            self.mark_date(&ts);
+            return Ok(());
+        }
         let rhs = self.expr(&a.right)?;
         let value = match op {
+            None if let Some((name, params)) = number => {
+                let old = self.read_place(&place, at)?;
+                leaf(name, params, vec![old, rhs], at)
+            }
             None => {
                 if self.share(&a.right)
                     && let Place::Local(ts, _) = &place
@@ -1641,11 +1696,15 @@ impl<'s, 't> Reader<'s, 't> {
         (MUTATORS.contains(&method) && matches!(self.lookup(i.name.as_str()), Some(Local::Bound(_) | Local::Var(_)))).then(|| (i.name.to_string(), method.to_string()))
     }
 
-    /// `xs.push(a, b)`: `xs` is now `append(append(xs, a), b)` (§5).
+    /// `xs.push(a, b)`: `xs` is now `append(append(xs, a), b)` (§5). The other methods that
+    /// change a list in place are refused as a statement, naming the list they would make.
     fn mutate(&mut self, c: &js::CallExpression, ts: &str, method: &str, stmts: &mut Vec<Stmt>) -> R<()> {
         let at = self.span(c.span);
+        if IN_PLACE.contains(&method) {
+            return fail(at, format!("{method} changes the list in place, which a flow's list doesn't: write the new list, {ts} = {}", value_form(ts, method)));
+        }
         if method != "push" {
-            return fail(at, format!("{method} changes the list in place, which comes in a later slice: write the new list, {ts} = …"));
+            return fail(at, moved(method, ts));
         }
         self.check_unshared(ts, at)?;
         let mut list = self.identifier(ts, at)?;
@@ -1674,6 +1733,9 @@ impl<'s, 't> Reader<'s, 't> {
     fn check_unshared(&self, ts: &str, at: Span) -> R<()> {
         if self.frame.params.contains(ts) {
             return fail(at, format!("\"{ts}\" is a parameter, which a change in place would change for whoever passed it too: copy it first, const copy = {{ ...{ts} }}"));
+        }
+        if matches!(self.lookup(ts), Some(Local::Bound(n) | Local::Var(Some(n))) if self.frame.frozen.contains(&n)) {
+            return fail(at, format!("\"{ts}\" is frozen, and a change in place would throw in JavaScript: write a new record, const copy = {{ ...{ts}, k: v }}"));
         }
         let held = match self.lookup(ts) {
             Some(Local::Bound(n) | Local::Var(Some(n))) => self.frame.shared.contains(&n),
@@ -2629,47 +2691,51 @@ impl<'s, 't> Reader<'s, 't> {
             js::Expression::ObjectExpression(o) => self.record(o, span),
             js::Expression::ArrayExpression(a) => {
                 // `[...xs, y]` is `append(xs, y)`, `[...xs, ...ys]` `extend(xs, ys)`, `[...xs]` `xs`.
-                let mut list: Option<Expr> = None;
                 let mut items = Vec::new();
                 for item in &a.elements {
                     match item {
-                        js::ArrayExpressionElement::SpreadElement(s) => {
-                            let spread = self.expr(&s.argument)?;
-                            let before = match list.take() {
-                                None if items.is_empty() => None,
-                                None => Some(Expr { kind: ExprKind::List(std::mem::take(&mut items)), span }),
-                                l => l,
-                            };
-                            list = Some(match before {
-                                None => spread,
-                                Some(l) => call("extend", vec![arg(l), arg(spread)], span),
-                            });
-                        }
+                        js::ArrayExpressionElement::SpreadElement(s) => items.push((true, &s.argument)),
                         js::ArrayExpressionElement::Elision(s) => return fail(self.span(s.span), "a list has no holes"),
-                        _ => {
-                            let e = item.as_expression().expect("an item");
-                            let value = self.expr(e)?;
-                            self.share(e);
-                            match list.take() {
-                                Some(l) => list = Some(call("append", vec![arg(l), arg(value)], span)),
-                                None => items.push(value),
-                            }
-                        }
+                        _ => items.push((false, item.as_expression().expect("an item"))),
                     }
                 }
-                Ok(list.unwrap_or(Expr { kind: ExprKind::List(items), span }))
+                self.list_of(items, span)
             }
             js::Expression::UnaryExpression(u) => match u.operator {
                 js::UnaryOperator::LogicalNot => ok(ExprKind::Not(Box::new(self.expr(&u.argument)?))),
                 js::UnaryOperator::UnaryNegation => match self.unwrap(&u.argument) {
                     js::Expression::NumericLiteral(n) => ok(ExprKind::Number { value: -n.value, text: format!("-{}", number_text(n)) }),
-                    _ => fail(span, "a minus needs a number after it (to negate a value, write 0 - x)"),
+                    // `x * -1`, exact at `-0` where `0 - x` isn't; in parentheses, one node.
+                    _ => {
+                        let x = self.expr(&u.argument)?;
+                        ok(ExprKind::Paren(Box::new(binary_at(BinOp::Mul, x, minus_one(span), span))))
+                    }
                 },
+                js::UnaryOperator::UnaryPlus => match self.unwrap(&u.argument) {
+                    js::Expression::NumericLiteral(n) => ok(ExprKind::Number { value: n.value, text: number_text(n) }),
+                    _ => {
+                        let x = self.expr(&u.argument)?;
+                        Ok(leaf("to_number", &[], vec![x], span))
+                    }
+                },
+                js::UnaryOperator::BitwiseNot => {
+                    let x = self.expr(&u.argument)?;
+                    Ok(leaf("bitwise", &[("op", "xor")], vec![x, minus_one(span)], span))
+                }
                 js::UnaryOperator::Delete => fail(span, "delete is a statement: delete notes[k]"),
+                // What JavaScript's would say, and "undefined" where nothing arrives.
+                js::UnaryOperator::Typeof => {
+                    let x = self.expr(&u.argument)?;
+                    Ok(binary_at(BinOp::Coalesce, leaf("type_of", &[], vec![x], span), text_expr("undefined", span), span))
+                }
                 op => fail(span, format!("{} isn't an operator Holon has", op.as_str())),
             },
             js::Expression::BinaryExpression(b) => {
                 use js::BinaryOperator as B;
+                if let Some((name, params)) = number_operator(b.operator) {
+                    let (lhs, rhs) = (self.expr(&b.left)?, self.expr(&b.right)?);
+                    return Ok(leaf(name, params, vec![lhs, rhs], span));
+                }
                 let op = match b.operator {
                     B::Equality | B::StrictEquality => BinOp::Eq,
                     B::Inequality | B::StrictInequality => BinOp::Ne,
@@ -2677,15 +2743,16 @@ impl<'s, 't> Reader<'s, 't> {
                     B::LessEqualThan => BinOp::Le,
                     B::GreaterThan => BinOp::Gt,
                     B::GreaterEqualThan => BinOp::Ge,
-                    B::Addition => {
-                        if is_text(self.unwrap(&b.left)) || is_text(self.unwrap(&b.right)) {
-                            return fail(span, "there is no + on texts: use a template literal, `${a}${b}`");
-                        }
-                        BinOp::Add
-                    }
+                    B::Addition => BinOp::Add,
                     B::Subtraction => BinOp::Sub,
                     B::Multiplication => BinOp::Mul,
                     B::Division => BinOp::Div,
+                    // A record has no prototype: `in` is its own keys.
+                    B::In => {
+                        let (k, r) = (self.expr(&b.left)?, self.expr(&b.right)?);
+                        return Ok(leaf("has", &[], vec![r, k], span));
+                    }
+                    B::Instanceof => return fail(span, "a flow's values have no classes: Array.isArray(x) tells a list, typeof x the rest"),
                     op => return fail(span, format!("{} isn't an operator Holon has", op.as_str())),
                 };
                 let (lhs, rhs) = (self.expr(&b.left)?, self.expr(&b.right)?);
@@ -2716,7 +2783,9 @@ impl<'s, 't> Reader<'s, 't> {
                 };
                 ok(ExprKind::If { cond: Box::new(cond), then: Box::new(then), els })
             }
-            js::Expression::ArrowFunctionExpression(_) | js::Expression::FunctionExpression(_) => fail(span, "a function written in place goes to map or reduce: xs.map((x) => …); define the others at the top level"),
+            js::Expression::ArrowFunctionExpression(_) | js::Expression::FunctionExpression(_) => fail(span, "a function written in place goes to a list's method that takes one, xs.map((x) => …), xs.filter((x) => …); define the others at the top level"),
+            js::Expression::NewExpression(n) => self.new_expr(n, span),
+            js::Expression::TaggedTemplateExpression(t) => self.tagged(t, span),
             js::Expression::AssignmentExpression(_) => fail(span, "a write is a statement of its own"),
             js::Expression::UpdateExpression(_) => fail(span, "++ and -- are a statement of their own: n++"),
             _ => fail(span, format!("{} isn't something Holon computes: do it in a js() function", expression_kind(e))),
@@ -2741,16 +2810,37 @@ impl<'s, 't> Reader<'s, 't> {
         })
     }
 
+    /// `{ k: v, ...r, [key]: x }`, read left to right as JavaScript builds it: the fields after a
+    /// spread or a computed key on what is before them (`with_field`), a spread after anything
+    /// `merge` (one for several in a row), a computed key `insert`.
     fn record(&mut self, o: &js::ObjectExpression, span: Span) -> R<Expr> {
-        let mut spread = None;
+        let mut base: Option<Expr> = None;
         let mut fields = Vec::new();
-        for (i, p) in o.properties.iter().enumerate() {
+        for p in &o.properties {
             match p {
-                js::ObjectPropertyKind::SpreadProperty(s) if i == 0 => spread = Some(Box::new(self.expr(&s.argument)?)),
-                js::ObjectPropertyKind::SpreadProperty(s) => return fail(self.span(s.span), "a record spreads one base, first: { ...base, k: v }"),
+                js::ObjectPropertyKind::SpreadProperty(s) => {
+                    let at = self.span(s.span);
+                    let x = self.expr(&s.argument)?;
+                    base = Some(match settled(base.take(), std::mem::take(&mut fields), span) {
+                        None => x,
+                        Some(Expr { kind: ExprKind::Leaf { leaf, params, mut args, number }, span: from }) if leaf.text == "merge" => {
+                            args.push(arg(x));
+                            Expr { kind: ExprKind::Leaf { leaf, params, args, number }, span: from.to(at) }
+                        }
+                        Some(before) => leaf("merge", &[], vec![before, x], span),
+                    });
+                }
                 js::ObjectPropertyKind::ObjectProperty(p) => {
                     if p.kind != js::PropertyKind::Init || p.method {
                         return fail(self.span(p.span), "a record holds values: no getters, setters or methods");
+                    }
+                    if p.computed {
+                        let key = self.expr(p.key.as_expression().expect("a computed key is an expression"))?;
+                        let value = self.expr(&p.value)?;
+                        self.share(&p.value);
+                        let before = settled(base.take(), std::mem::take(&mut fields), span).unwrap_or(Expr { kind: ExprKind::Record { spread: None, fields: vec![] }, span });
+                        base = Some(leaf("insert", &[], vec![before, key, value], self.span(p.span)));
+                        continue;
                     }
                     let quoted = matches!(&p.key, js::PropertyKey::StringLiteral(_));
                     let text = self.property_key(&p.key, p.computed)?;
@@ -2760,7 +2850,7 @@ impl<'s, 't> Reader<'s, 't> {
                 }
             }
         }
-        Ok(Expr { kind: ExprKind::Record { spread, fields }, span })
+        Ok(Expr { kind: ExprKind::Record { spread: base.map(Box::new), fields }, span })
     }
 
     fn property_key(&self, key: &js::PropertyKey, computed: bool) -> R<String> {
@@ -2792,6 +2882,12 @@ impl<'s, 't> Reader<'s, 't> {
         let ok = |kind: ExprKind| Ok(Expr { kind, span });
         if let Some(local) = self.lookup(name) {
             return match local {
+                Local::Bound(n) | Local::Var(Some(n)) if self.frame.dates.contains(&n) => {
+                    fail(span, format!("\"{name}\" is a Date, which a flow holds as its time value and reads by its methods: {name}.getTime() is the number, {name}.toISOString() the text"))
+                }
+                Local::Bound(n) | Local::Var(Some(n)) if let Some(method) = self.frame.changed.get(&n) => {
+                    fail(span, format!("\"{name}\" is read after {name}.{method}(…) changed it in place: use the list {method} gave, or write {} and keep \"{name}\" as it was", value_form(name, method)))
+                }
                 Local::Bound(n) | Local::Var(Some(n)) => ok(ExprKind::Name(n)),
                 Local::Var(None) => fail(span, format!("\"{name}\" has no value here: give it one first, let {name} = …")),
                 Local::Alias(e) => Ok(Expr { span, ..e }),
@@ -2811,6 +2907,8 @@ impl<'s, 't> Reader<'s, 't> {
             Some(Noun::Vocab(Vocab::Leaf(l))) => ok(ExprKind::Name(l)),
             Some(Noun::Vocab(_)) => fail(span, format!("{name} is a handler or an answer, not a value")),
             None if name == "undefined" => fail(span, "undefined is written as a branch: c ? a : undefined"),
+            None if name == "Math" || name == "Number" => fail(span, format!("{name} is a namespace: call its functions, {}", if name == "Math" { "Math.round(x)" } else { "Number.isInteger(x)" })),
+            None if name == "NaN" || name == "Infinity" => fail(span, format!("{name} isn't a value a flow has: a leaf gives nothing where JavaScript gives {name}, so test for presence, x !== undefined, or give a fallback, x ?? 0")),
             None => fail(span, format!("unknown name \"{name}\"{}", if GLOBALS.contains(&name) { ": a flow has no globals; import what it uses" } else { "" })),
         }
     }
@@ -2821,10 +2919,22 @@ impl<'s, 't> Reader<'s, 't> {
         if self.is_state(&m.object) {
             return self.state_read(prop, span);
         }
-        if prop == "length" {
-            return fail(span, "a list's length is length(xs), a text's text_length(s), imported from \"holon\": .length comes in a later slice");
+        if let Some(ns) = self.namespace(&m.object) {
+            let constants = if ns == "Math" { MATH_CONSTANTS } else { NUMBER_CONSTANTS };
+            if let Some((_, text)) = constants.iter().find(|(k, _)| *k == prop) {
+                return Ok(Expr { kind: ExprKind::Number { value: text.parse().expect("a double's literal"), text: text.to_string() }, span });
+            }
+            if ns == "Number" && ["NaN", "POSITIVE_INFINITY", "NEGATIVE_INFINITY"].contains(&prop) {
+                return fail(span, "a flow has no NaN or Infinity: a leaf gives nothing where JavaScript gives one");
+            }
+            let names = constants.iter().map(|(k, _)| format!("{ns}.{k}")).collect::<Vec<_>>().join(", ");
+            return fail(span, format!("{ns}.{prop} isn't a value: {ns}'s constants are {names}, and its functions are called, {ns}.{prop}(…)"));
         }
         let base = self.expr(&m.object)?;
+        if prop == "length" {
+            let method = self.name(prop, m.property.span);
+            return Ok(Expr { kind: ExprKind::TextOrList { subject: Box::new(base), method, args: vec![] }, span });
+        }
         Ok(Expr { kind: ExprKind::Field { base: Box::new(base), name: self.name(prop, m.property.span) }, span })
     }
 
@@ -2868,6 +2978,24 @@ impl<'s, 't> Reader<'s, 't> {
                     Some(Noun::Vocab(v)) => fail(span, format!("{} is a statement of the top level", vocab_word(&v))),
                     Some(_) => fail(callee.span, format!("\"{name}\" isn't something to call")),
                     None if self.consts.contains_key(name) => fail(callee.span, format!("\"{name}\" is a value, not something to call")),
+                    None if NUMBER_GLOBALS.contains(&name) => self.number_global(c, name, span),
+                    // `String(x)` as a template writes `x`; `String()` the empty text.
+                    None if name == "String" => {
+                        let mut args = self.counted(c, (0, 1), "String takes one value: String(x)", span)?;
+                        Ok(match args.pop() {
+                            Some(x) => leaf("as_text", &[], vec![x], span),
+                            None => text_expr("", span),
+                        })
+                    }
+                    None if let Some((leaf_name, params)) = text_global(name) => {
+                        let args = self.counted(c, (1, 1), &format!("{name} takes one text: {name}(s)"), span)?;
+                        Ok(leaf(leaf_name, params, args, span))
+                    }
+                    None if name == "escape" || name == "unescape" => {
+                        fail(callee.span, format!("{name} is JavaScript's legacy form, which a flow doesn't read: {}(s)", if name == "escape" { "encodeURIComponent" } else { "decodeURIComponent" }))
+                    }
+                    // A flow's values never change in place: a copy is the value.
+                    None if name == "structuredClone" => Ok(self.counted(c, (1, 1), "structuredClone takes one value: structuredClone(x)", span)?.remove(0)),
                     None => fail(callee.span, format!("unknown function \"{name}\": define it at the top level, or import the leaf from \"holon\"")),
                 }
             }
@@ -2995,46 +3123,184 @@ impl<'s, 't> Reader<'s, 't> {
                     return ok(ExprKind::Method { receiver: Name { text: "stripe".into(), span: self.span(r.span) }, method: method_name, args });
                 }
                 (Some(Noun::State), _) => return fail(span, format!("the state is read and written by key: {receiver}.k, {receiver}.k = v")),
-                (None, "JSON") => {
-                    let leaf = match method {
-                        "parse" => "json_parse",
-                        "stringify" => "json_stringify",
-                        other => return fail(method_name.span, format!("JSON has parse and stringify, not \"{other}\"")),
-                    };
-                    let args = self.positional(&c.arguments)?;
-                    return ok(ExprKind::Call { callee: Name { text: leaf.into(), span: method_name.span }, args });
-                }
-                (None, "Object") => {
-                    if method != "keys" {
-                        return fail(method_name.span, format!("Object has keys, not \"{method}\": do the rest in a js() function"));
-                    }
-                    let args = self.positional(&c.arguments)?;
-                    return ok(ExprKind::Call { callee: Name { text: "keys".into(), span: method_name.span }, args });
-                }
+                (None, "JSON") => return self.json_call(c, method, method_name.span, span),
+                (None, "Object") => return self.object_call(c, method, method_name.span, span),
+                (None, "Date") => return self.date_call(c, method, method_name.span, span),
+                (None, "Math") => return self.math_call(c, method, method_name.span, span),
+                (None, "Array") => return self.array_call(c, method, method_name.span, span),
+                (None, "Number") => return self.number_call(c, method, method_name.span, span),
+                (None, "String") => return self.string_call(c, method, method_name.span, span),
                 (None, g) if GLOBALS.contains(&g) => return fail(self.span(r.span), format!("{g} isn't there: a flow has no globals; import what it uses")),
                 _ => {}
             }
         }
+        // A Date's: on `new Date(x)`, or a Date the handler bound.
+        if let Some(n) = self.new_date(&m.object) {
+            let x = self.date_arg(n)?;
+            let subject = self.text(m.object.span()).to_string();
+            return self.date_method(c, method, method_name.span, x, true, &subject, span);
+        }
+        if let Some(name) = self.date_local(&m.object) {
+            let subject = self.text(m.object.span()).to_string();
+            if let Some(setter) = self.frame.changed.get(&name) {
+                return fail(span, format!("\"{subject}\" is read after {subject}.{setter}(…) changed it in place: give the change a statement of its own, {subject}.{setter}(…), and read {subject} after it"));
+            }
+            let x = Expr { kind: ExprKind::Name(name), span: self.span(m.object.span()) };
+            return self.date_method(c, method, method_name.span, x, false, &subject, span);
+        }
         // A method of a value: the library's, mapped to the leaves that have them.
+        if MUTATORS.contains(&method) && !IN_PLACE.contains(&method) {
+            return fail(span, moved(method, self.text(m.object.span())));
+        }
+        let changed = if IN_PLACE.contains(&method) { self.in_place(m, method)? } else { None };
         let subject = self.expr(&m.object)?;
-        let call = |leaf: &str, args: Vec<Arg>| Ok(Expr { kind: ExprKind::Call { callee: Name { text: leaf.into(), span: method_name.span }, args }, span });
+        let read = self.value_method(c, method, method_name.span, subject, span)?;
+        if let Some(name) = changed {
+            self.frame.changed.insert(name, method.to_string());
+        }
+        Ok(read)
+    }
+
+    /// `xs.sort()`, `reverse()`, `fill(…)` or `copyWithin(…)` as a value (IN_PLACE): read as the
+    /// list it answers when the list is made where it is called, or is a binding of the handler's
+    /// own, which is then read no more (its lowering name, to mark once the call is read). On a
+    /// list something else holds too, refused, naming the value form.
+    fn in_place(&self, m: &js::StaticMemberExpression, method: &str) -> R<Option<String>> {
+        let at = self.span(m.span);
+        let xs = self.text(m.object.span());
+        let form = value_form(xs, method);
+        match self.unwrap(&m.object) {
+            js::Expression::Identifier(i) => match self.lookup(i.name.as_str()) {
+                Some(Local::Bound(n) | Local::Var(Some(n))) => {
+                    if self.frame.params.contains(i.name.as_str()) {
+                        return fail(at, format!("\"{xs}\" is a parameter, which {method} would change in place for whoever passed it too: write {form}"));
+                    }
+                    if self.frame.shared.contains(&n) {
+                        return fail(at, format!("\"{xs}\" is held elsewhere too (by another name, a record or a write), which {method} would change in place behind it: write {form}"));
+                    }
+                    Ok(Some(n))
+                }
+                Some(Local::Alias(_)) => fail(at, format!("{method} would change {xs} in place, and what it is a part of with it: write {form}")),
+                None if self.consts.contains_key(i.name.as_str()) => fail(at, format!("{method} would change {xs}, the flow's own, in place for every run: write {form}")),
+                _ => Ok(None),
+            },
+            js::Expression::StaticMemberExpression(_) | js::Expression::ComputedMemberExpression(_) | js::Expression::ChainExpression(_) => {
+                fail(at, format!("{method} would change {xs} in place, and what holds it with it: write {form}"))
+            }
+            _ => Ok(None),
+        }
+    }
+
+    /// A text's, a list's or a number's method, on `subject`: the leaf that does it, or the
+    /// composite lists.md gives for it.
+    fn value_method(&mut self, c: &js::CallExpression, method: &str, at: Span, subject: Expr, span: Span) -> R<Expr> {
+        let call = |leaf: &str, args: Vec<Arg>| Ok(Expr { kind: ExprKind::Call { callee: Name { text: leaf.into(), span: at }, args }, span });
         let first = |subject: Expr| Arg { name: None, value: subject };
-        match (method, c.arguments.len()) {
-            ("map", 1) => {
-                let f = self.function_arg(&c.arguments[0], 1)?;
-                return call("map", vec![first(subject), f]);
-            }
-            ("reduce", 2) => {
-                let f = self.function_arg(&c.arguments[0], 2)?;
+        let n = c.arguments.len();
+        // Those that take a function.
+        match (method, n) {
+            ("map", 1) => return self.mapped(subject, &c.arguments[0], "map", span),
+            ("reduce" | "reduceRight", 2) => {
+                let f = self.function_arg(&c.arguments[0], method, 2)?;
                 let init = self.positional(&c.arguments[1..])?.remove(0);
-                return call("fold", vec![init, first(subject), f]);
+                let list = if method == "reduce" { subject } else { leaf("reverse", &[], vec![subject], span) };
+                return Ok(leaf_with("fold", &[], vec![init, first(list), f], span));
             }
-            ("map", _) | ("reduce", _) => {
-                return fail(span, format!("{method} takes {}: extras come in a later slice", if method == "map" { "one function, xs.map((x) => …)" } else { "a function and the start, xs.reduce((acc, x) => …, 0)" }));
+            // The first item is the start: `tail(xs).reduce(f, head(xs))`.
+            ("reduce", 1) => {
+                if !rereadable(&subject) {
+                    return fail(span, "reduce without a start reads the list twice, its first item and the rest: name it first, const xs = …, or give the start, xs.reduce(f, start)");
+                }
+                let f = self.function_arg(&c.arguments[0], method, 2)?;
+                let init = leaf("head", &[], vec![subject.clone()], span);
+                let rest = leaf("tail", &[], vec![subject], span);
+                return Ok(leaf_with("fold", &[], vec![first(init), first(rest), f], span));
+            }
+            ("flatMap", 1) => {
+                let f = self.function_arg(&c.arguments[0], method, 1)?;
+                let mapped = leaf_with("map", &[], vec![first(subject), f], span);
+                return Ok(leaf("flat", &[], vec![mapped], span));
+            }
+            ("toSorted" | "sort", 1) => {
+                let f = self.function_arg(&c.arguments[0], method, 2)?;
+                return Ok(leaf_with("sort_by", &[], vec![first(subject), f], span));
+            }
+            (m, 1) if let Some(test) = tester(m) => {
+                let f = self.function_arg(&c.arguments[0], m, 1)?;
+                return Ok(leaf_with(test, &[], vec![first(subject), f], span));
+            }
+            ("map" | "flatMap", _) => return fail(span, format!("{method} takes one function: xs.{method}((x) => …)")),
+            (m, _) if tester(m).is_some() => return fail(span, format!("{method} takes one function: xs.{method}((x) => …)")),
+            ("reduce", _) => return fail(span, "reduce takes a function and, if there is one, the start: xs.reduce((acc, x) => …, 0)"),
+            ("reduceRight", _) => return fail(span, "reduceRight takes a function and the start: xs.reduceRight((acc, x) => …, init)"),
+            _ => {}
+        }
+        // Those whose arguments aren't plain values.
+        match method {
+            "toSpliced" => {
+                let mut args = c.arguments.iter();
+                let shape = "toSpliced takes where to start, how many to take out and the items to put in: xs.toSpliced(start, count, ...items)";
+                let mut fixed = vec![first(subject)];
+                for a in args.by_ref().take(2) {
+                    let Some(e) = a.as_expression() else { return fail(self.span(a.span()), shape) };
+                    fixed.push(first(self.expr(e)?));
+                }
+                if fixed.len() < 2 {
+                    return fail(span, shape);
+                }
+                let items: Vec<(bool, &js::Expression)> = args.map(|a| match a {
+                    js::Argument::SpreadElement(s) => (true, &s.argument),
+                    a => (false, a.as_expression().expect("an argument that isn't a spread")),
+                }).collect();
+                if !items.is_empty() {
+                    fixed.push(first(self.list_of(items, span)?));
+                }
+                return Ok(leaf_with("to_spliced", &[], fixed, span));
+            }
+            "flat" => {
+                let depth = match c.arguments.as_slice() {
+                    [] => None,
+                    [a] => match a.as_expression().map(|e| self.unwrap(e)) {
+                        Some(js::Expression::Identifier(i)) if i.name == "Infinity" && self.lookup("Infinity").is_none() => Some("all".to_string()),
+                        Some(e) => match self.expr(e)?.kind {
+                            ExprKind::Number { text, .. } => Some(text),
+                            _ => return fail(self.span(a.span()), "flat's depth is a number written in place, or Infinity: xs.flat(2)"),
+                        },
+                        None => return fail(self.span(a.span()), "flat's depth is a number written in place, or Infinity: xs.flat(2)"),
+                    },
+                    _ => return fail(span, "flat takes how deep it spreads, if not one: xs.flat(2), xs.flat(Infinity)"),
+                };
+                let params: Vec<(&str, &str)> = depth.as_deref().map(|d| ("depth", d)).into_iter().collect();
+                return Ok(leaf("flat", &params, vec![subject], span));
+            }
+            // A text's joins each argument as `String(x)` writes it; a list's spreads a list into
+            // it and adds anything else. On a text written in place, the text's; otherwise the
+            // lowering decides by the type of the node that made the subject.
+            "concat" => {
+                let args = self.positional(&c.arguments)?;
+                if args.is_empty() {
+                    return Ok(subject);
+                }
+                if matches!(subject.kind, ExprKind::Text(_) | ExprKind::Interpolated(_)) {
+                    let mut parts = vec![subject];
+                    parts.extend(args.into_iter().map(|a| joined(a.value)));
+                    return Ok(leaf("concat", &[], parts, span));
+                }
+                return Ok(Expr { kind: ExprKind::TextOrList { subject: Box::new(subject), method: Name { text: method.into(), span: at }, args }, span });
+            }
+            // Regular expressions wait (texts.md, "Regular expressions").
+            "match" | "matchAll" | "search" => return fail(at, format!("{method} takes a regular expression, which a flow has none of yet: do it in a js() function")),
+            "replace" | "replaceAll" | "split" if c.arguments.first().and_then(|a| a.as_expression()).is_some_and(|e| matches!(self.unwrap(e), js::Expression::RegExpLiteral(_))) => {
+                return fail(self.span(c.arguments[0].span()), format!("a regular expression, which a flow has none of yet: {method} takes a text, or do it in a js() function"));
+            }
+            "replace" | "replaceAll" if c.arguments.get(1).and_then(|a| a.as_expression()).is_some_and(|e| matches!(self.unwrap(e), js::Expression::ArrowFunctionExpression(_) | js::Expression::FunctionExpression(_))) => {
+                return fail(self.span(c.arguments[1].span()), format!("{method} takes the replacement as a text, where $& is the match: a function in its place is done in a js() function"));
             }
             _ => {}
         }
         let rest = self.positional(&c.arguments)?;
+        let values = |rest: Vec<Arg>| rest.into_iter().map(|a| a.value).collect::<Vec<_>>();
+        let with = |subject: Expr, rest: Vec<Arg>| [vec![subject], values(rest)].concat();
         match (method, rest.len()) {
             ("split", 1) | ("join", 1) | ("indexOf", 1) => {
                 let leaf = match method {
@@ -3046,33 +3312,750 @@ impl<'s, 't> Reader<'s, 't> {
                 args.extend(rest);
                 call(leaf, args)
             }
-            ("toUpperCase", 0) => call("uppercase", vec![first(subject)]),
-            ("toLowerCase", 0) => call("lowercase", vec![first(subject)]),
-            _ => fail(method_name.span, format!("no leaf does .{method}(…): do it in a js() function")),
+            ("join", 0) => call("join", vec![first(subject), first(text_expr(",", span))]),
+            ("toUpperCase" | "toLocaleUpperCase", 0) => call("uppercase", vec![first(subject)]),
+            ("toLowerCase" | "toLocaleLowerCase", 0) => call("lowercase", vec![first(subject)]),
+            ("toLocaleUpperCase" | "toLocaleLowerCase" | "localeCompare", _) => {
+                let instead = if method == "localeCompare" { "a < b ? -1 : a > b ? 1 : 0 compares in code units" } else { "toUpperCase() and toLowerCase() use Unicode's own mappings" };
+                fail(at, format!("a flow has no locale: {instead}"))
+            }
+            // A list's, and some a text's too: one leaf that takes either; the position to start
+            // from, when given, its `from`.
+            ("at", 1) => Ok(leaf("at", &[], with(subject, rest), span)),
+            ("indexOf", 2) => Ok(leaf("index_of", &[], with(subject, rest), span)),
+            ("includes", 1 | 2) => Ok(leaf("includes", &[], with(subject, rest), span)),
+            ("lastIndexOf", 1 | 2) => Ok(leaf("last_index_of", &[], with(subject, rest), span)),
+            ("split", 2) => Ok(leaf("split", &[], with(subject, rest), span)),
+            // A text's: the subject is taken as one, and the leaf gives nothing for anything else.
+            // `charAt()` and `charCodeAt()` read 0, as JavaScript reads the index left out.
+            ("charAt", 0 | 1) => Ok(leaf("text_at", &[], with(subject, or_zero(rest, span)), span)),
+            ("charCodeAt" | "codePointAt", 0 | 1) => {
+                let mode = if method == "charCodeAt" { "unit" } else { "point" };
+                Ok(leaf("code_at", &[("mode", mode)], with(subject, or_zero(rest, span)), span))
+            }
+            ("startsWith" | "endsWith", 1 | 2) => Ok(leaf("text_contains", &[("at", if method == "startsWith" { "start" } else { "end" })], with(subject, rest), span)),
+            ("trim" | "trimStart" | "trimEnd", 0) => {
+                let side = match method {
+                    "trim" => "both",
+                    "trimStart" => "start",
+                    _ => "end",
+                };
+                Ok(leaf("trim", &[("side", side)], vec![subject], span))
+            }
+            ("padStart" | "padEnd", 1 | 2) => Ok(leaf("pad", &[("side", if method == "padStart" { "start" } else { "end" })], with(subject, rest), span)),
+            ("repeat", 1) => Ok(leaf("repeat", &[], with(subject, rest), span)),
+            ("replace" | "replaceAll", 2) => Ok(leaf("replace", &[("count", if method == "replace" { "first" } else { "all" })], with(subject, rest), span)),
+            ("normalize", 0) => Ok(leaf("normalize", &[], vec![subject], span)),
+            ("normalize", 1) => match &rest[0].value.kind {
+                ExprKind::Text(form) if ["NFC", "NFD", "NFKC", "NFKD"].contains(&form.as_str()) => {
+                    let form = form.clone();
+                    Ok(leaf("normalize", &[("form", &form)], vec![subject], span))
+                }
+                _ => fail(rest[0].value.span, "normalize's form is \"NFC\", \"NFD\", \"NFKC\" or \"NFKD\", written in place"),
+            },
+            ("isWellFormed", 0) => Ok(leaf("is_well_formed", &[], vec![subject], span)),
+            // A text is always well formed in a flow: the text itself, and nothing for anything
+            // else, as `concat` gives.
+            ("toWellFormed", 0) => Ok(leaf("concat", &[], vec![subject, text_expr("", span)], span)),
+            ("valueOf", 0) => Ok(subject),
+            ("toReversed" | "reverse", 0) => Ok(leaf("reverse", &[], vec![subject], span)),
+            ("toSorted" | "sort", 0) => Ok(leaf("sort", &[], vec![subject], span)),
+            ("slice", 0) => Ok(subject),
+            ("slice", 1 | 2) => Ok(leaf("slice", &[("mode", "end")], with(subject, rest), span)),
+            ("substring", 1 | 2) => Ok(leaf("slice", &[("mode", "substring")], with(subject, rest), span)),
+            ("with", 2) => Ok(leaf("with_item", &[], with(subject, rest), span)),
+            ("fill", 1..=3) => Ok(leaf("fill", &[], with(subject, rest), span)),
+            ("copyWithin", 1..=3) => Ok(leaf("copy_within", &[], with(subject, rest), span)),
+            ("includes" | "indexOf" | "lastIndexOf", _) => fail(span, format!("{method} takes the item and where to start from, if not the {}: xs.{method}(x, i)", if method == "lastIndexOf" { "end" } else { "start" })),
+            ("split", _) => fail(span, "split takes the separator and, if there is one, how many pieces to keep: s.split(\",\", 2)"),
+            ("charAt" | "charCodeAt" | "codePointAt" | "substring" | "startsWith" | "endsWith" | "trim" | "trimStart" | "trimEnd" | "padStart" | "padEnd" | "repeat" | "replace" | "replaceAll" | "normalize" | "isWellFormed" | "toWellFormed" | "valueOf", _) => {
+                let shape = match method {
+                    "substring" => "s.substring(start, end), the end left out for the rest".into(),
+                    "charAt" | "charCodeAt" | "codePointAt" => format!("s.{method}(i)"),
+                    "startsWith" => "s.startsWith(t), or s.startsWith(t, i) from i".into(),
+                    "endsWith" => "s.endsWith(t), or s.endsWith(t, i) ending at i".into(),
+                    "padStart" | "padEnd" => format!("s.{method}(n), or s.{method}(n, fill)"),
+                    "repeat" => "s.repeat(n)".into(),
+                    "replace" | "replaceAll" => format!("s.{method}(t, replacement)"),
+                    "normalize" => "s.normalize(), or s.normalize(\"NFD\")".into(),
+                    _ => format!("s.{method}()"),
+                };
+                fail(span, format!("{method} is written {shape}"))
+            }
+            ("keys" | "entries" | "values", 0) => fail(at, format!("xs.{method}() is an iterator, which a flow has none of: [...xs.{method}()] is the list")),
+            ("at" | "with" | "toReversed" | "toSorted" | "reverse" | "sort" | "slice" | "fill" | "copyWithin" | "join", _) => {
+                let shape = match method {
+                    "at" => "xs.at(i)",
+                    "with" => "xs.with(i, value)",
+                    "toReversed" | "reverse" => "xs.toReversed()",
+                    "toSorted" | "sort" => "xs.toSorted(), or xs.toSorted((a, b) => …)",
+                    "slice" => "xs.slice(start, end), the end left out for the rest",
+                    "fill" => "xs.fill(value, start, end), the start and end left out for the whole list",
+                    "copyWithin" => "xs.copyWithin(target, start, end)",
+                    _ => "xs.join(sep), or xs.join() for \",\"",
+                };
+                fail(span, format!("{method} is written {shape}"))
+            }
+            // A number's: only a number has these, so the subject is taken as one.
+            ("toFixed" | "toPrecision" | "toExponential", 0 | 1) => {
+                let style = match method {
+                    "toFixed" => "fixed",
+                    "toPrecision" => "precision",
+                    _ => "exponential",
+                };
+                let mut args = vec![subject];
+                args.extend(rest.into_iter().map(|a| a.value));
+                Ok(leaf("number_format", &[("style", style)], args, span))
+            }
+            // With a radix, only a number's; without one, a text's and a list's too, so the
+            // lowering takes it on a value it knows is a number.
+            ("toString", 1) => {
+                let radix = rest.into_iter().map(|a| a.value).collect::<Vec<_>>();
+                Ok(leaf("number_format", &[("style", "string")], [vec![subject], radix].concat(), span))
+            }
+            ("toString", 0) => {
+                let mut e = leaf("number_format", &[("style", "string")], vec![subject], span);
+                if let ExprKind::Leaf { number, .. } = &mut e.kind {
+                    *number = true;
+                }
+                Ok(e)
+            }
+            ("toFixed" | "toPrecision" | "toExponential" | "toString", _) => fail(span, format!(".{method}(…) takes one number at most")),
+            ("toLocaleString", _) => fail(at, "a flow has no locale: toFixed(d) writes a number with d decimals"),
+            ("hasOwnProperty", 1) => Ok(leaf("has", &[], with(subject, rest), span)),
+            ("hasOwnProperty", _) => fail(span, "hasOwnProperty takes the key: r.hasOwnProperty(k)"),
+            _ if is_date_method(method) => fail(at, format!("{method} is a Date's: new Date(x).{method}(…), x a time value or a text, or a Date bound with const d = new Date(x)")),
+            _ => fail(at, format!("no leaf does .{method}(…): do it in a js() function")),
         }
     }
 
-    /// The function `map` or `reduce` takes: a holon by name, or an arrow written in place, its
-    /// body one expression.
-    fn function_arg(&mut self, a: &js::Argument, takes: usize) -> R<Arg> {
+    /// `xs.map(f)`, and `Array.from(xs, f)`: `map`, with `(x, i) => …` read as
+    /// `indices(xs).map((i) => …)`, `x` as `get(xs, i)` (lists.md, "Composites"). A function
+    /// that answers what it is given is the list itself: `(x) => x` is `xs`, `(x, i) => i`
+    /// `indices(xs)`.
+    fn mapped(&mut self, list: Expr, a: &js::Argument, method: &str, span: Span) -> R<Expr> {
+        let indexed = matches!(a.as_expression().map(|e| self.unwrap(e)), Some(js::Expression::ArrowFunctionExpression(f)) if f.params.items.len() == 2);
+        if indexed {
+            if !rereadable(&list) {
+                return fail(span, format!("{method} with an index, (x, i) => …, reads the list by index: name it first, const xs = …, and map that"));
+            }
+            let indices = leaf("indices", &[], vec![list.clone()], span);
+            let f = self.function_with(a, method, Hands::Indexed(list))?;
+            if answers_its_parameter(&f.value) {
+                return Ok(indices);
+            }
+            return Ok(leaf_with("map", &[], vec![arg(indices), f], span));
+        }
+        let f = self.function_arg(a, method, 1)?;
+        if answers_its_parameter(&f.value) {
+            return Ok(list);
+        }
+        Ok(leaf_with("map", &[], vec![arg(list), f], span))
+    }
+
+    /// What spreading `e` gives as a list: `new Set(xs)` its items once each (`unique`),
+    /// `xs.keys()` its indices, `xs.entries()` its pairs and `xs.values()` the list itself;
+    /// anything else, itself.
+    fn spread_list(&mut self, e: &js::Expression) -> R<Expr> {
+        let span = self.span(e.span());
+        match self.unwrap(e) {
+            js::Expression::NewExpression(n) if matches!(self.unwrap(&n.callee), js::Expression::Identifier(i) if i.name == "Set" && self.lookup("Set").is_none()) => match n.arguments.as_slice() {
+                [] => Ok(Expr { kind: ExprKind::List(vec![]), span }),
+                [js::Argument::SpreadElement(s)] => fail(self.span(s.span), "a Set is made of one list: [...new Set(xs)]"),
+                [a] => {
+                    let xs = self.expr(a.as_expression().expect("an argument that isn't a spread"))?;
+                    Ok(leaf("unique", &[], vec![xs], span))
+                }
+                _ => fail(span, "a Set is made of one list: [...new Set(xs)]"),
+            },
+            js::Expression::CallExpression(c)
+                if c.arguments.is_empty()
+                    && let js::Expression::StaticMemberExpression(m) = self.unwrap(&c.callee)
+                    && matches!(m.property.name.as_str(), "keys" | "entries" | "values")
+                    && !self.is_global(&m.object) =>
+            {
+                let xs = self.expr(&m.object)?;
+                Ok(match m.property.name.as_str() {
+                    "keys" => leaf("indices", &[], vec![xs], span),
+                    "entries" => leaf("entries", &[], vec![xs], span),
+                    _ => xs,
+                })
+            }
+            _ => self.expr(e),
+        }
+    }
+
+    /// Whether `e` is a name the file doesn't bind: an import, or one of JavaScript's (`Object`).
+    fn is_global(&self, e: &js::Expression) -> bool {
+        matches!(self.unwrap(e), js::Expression::Identifier(i) if self.lookup(i.name.as_str()).is_none() && !self.defs.contains_key(i.name.as_str()) && !self.consts.contains_key(i.name.as_str()))
+    }
+
+    /// A list written as items and spreads, `[a, ...xs, b]`: `append` for an item after a spread,
+    /// `extend` for a spread after anything, and a spread alone the list it spreads.
+    fn list_of(&mut self, items: Vec<(bool, &js::Expression)>, span: Span) -> R<Expr> {
+        let mut list: Option<Expr> = None;
+        let mut plain = Vec::new();
+        for (spread, e) in items {
+            if spread {
+                let spread = self.spread_list(e)?;
+                let before = match list.take() {
+                    None if plain.is_empty() => None,
+                    None => Some(Expr { kind: ExprKind::List(std::mem::take(&mut plain)), span }),
+                    l => l,
+                };
+                list = Some(match before {
+                    None => spread,
+                    Some(l) => call("extend", vec![arg(l), arg(spread)], span),
+                });
+            } else {
+                let value = self.expr(e)?;
+                self.share(e);
+                match list.take() {
+                    Some(l) => list = Some(call("append", vec![arg(l), arg(value)], span)),
+                    None => plain.push(value),
+                }
+            }
+        }
+        Ok(list.unwrap_or(Expr { kind: ExprKind::List(plain), span }))
+    }
+
+    /// `Array.isArray(x)`, `Array.of(a, b)` and `Array.from(…)`: `is_list`, the list written, and
+    /// the list given (`map`ped through a function when there is one), or `range(n)` for
+    /// `{ length: n }`.
+    fn array_call(&mut self, c: &js::CallExpression, method: &str, at: Span, span: Span) -> R<Expr> {
+        match method {
+            "isArray" => {
+                let x = self.counted(c, (1, 1), "Array.isArray takes one value, Array.isArray(x)", span)?;
+                Ok(leaf("is_list", &[], x, span))
+            }
+            "of" => {
+                let items = self.positional(&c.arguments)?;
+                Ok(Expr { kind: ExprKind::List(items.into_iter().map(|a| a.value).collect()), span })
+            }
+            "from" => {
+                let shape = "Array.from takes a list and, if there is one, a function: Array.from(xs, (x) => …), Array.from({ length: n }, (_, i) => …)";
+                let (source, f) = match c.arguments.as_slice() {
+                    [s] => (s, None),
+                    [s, f] => (s, Some(f)),
+                    _ => return fail(span, shape),
+                };
+                let Some(source) = source.as_expression() else { return fail(span, shape) };
+                // `{ length: n }`: n items, each undefined, so the function reads the index.
+                if let js::Expression::ObjectExpression(o) = self.unwrap(source)
+                    && let Ok(fields) = self.fields(o)
+                    && let [(key, n, _)] = fields.as_slice()
+                    && key == "length"
+                {
+                    let Some(f) = f else {
+                        return fail(span, "Array.from({ length: n }) has n items that are undefined, which a flow has none of: Array.from({ length: n }, (_, i) => …)");
+                    };
+                    let n = self.expr(n)?;
+                    let range = leaf("range", &[], vec![n], span);
+                    let f = self.function_with(f, "Array.from", Hands::Counted)?;
+                    if answers_its_parameter(&f.value) {
+                        return Ok(range);
+                    }
+                    return Ok(leaf_with("map", &[], vec![arg(range), f], span));
+                }
+                let xs = self.spread_list(source)?;
+                match f {
+                    None => Ok(xs),
+                    Some(f) => self.mapped(xs, f, "Array.from", span),
+                }
+            }
+            other => fail(at, format!("Array has isArray, of and from a flow can call, not \"{other}\"")),
+        }
+    }
+
+    /// `Object.<method>(…)`: the record leaves (records.md, "Reader changes"). A flow's record
+    /// never changes in place, so `assign` makes a new one and `freeze` is the record itself.
+    fn object_call(&mut self, c: &js::CallExpression, method: &str, at: Span, span: Span) -> R<Expr> {
+        match method {
+            "keys" | "getOwnPropertyNames" | "values" | "entries" | "fromEntries" | "freeze" | "seal" | "preventExtensions" => {
+                let shape = if method == "fromEntries" { "Object.fromEntries takes one list of [key, value] pairs: Object.fromEntries(pairs)".to_string() } else { format!("Object.{method} takes one record: Object.{method}(r)") };
+                let x = self.counted(c, (1, 1), &shape, span)?;
+                Ok(match method {
+                    "keys" | "getOwnPropertyNames" => leaf("keys", &[], x, span),
+                    "values" => leaf("values", &[], x, span),
+                    "entries" => leaf("entries", &[], x, span),
+                    "fromEntries" => leaf("from_entries", &[], x, span),
+                    // Frozen already.
+                    _ => x.into_iter().next().expect("one"),
+                })
+            }
+            "groupBy" => {
+                let shape = "Object.groupBy takes a list and a function of an item that answers its group's key: Object.groupBy(xs, (x) => x.kind)";
+                let [xs, f] = c.arguments.as_slice() else { return fail(span, shape) };
+                let Some(xs) = xs.as_expression() else { return fail(span, shape) };
+                let xs = self.expr(xs)?;
+                let f = self.function_arg(f, "groupBy", 1)?;
+                Ok(leaf_with("group_by", &[], vec![arg(xs), f], span))
+            }
+            // Into a record written in place, the record they make; into anything else, a change
+            // in place, refused (as a statement on a local, `assign_into`).
+            "assign" => {
+                let shape = "Object.assign changes its first record in place, which a flow's record doesn't: { ...a, ...b } is the record they make together";
+                let Some(target) = c.arguments.first().and_then(|a| a.as_expression()) else { return fail(span, shape) };
+                let js::Expression::ObjectExpression(o) = self.unwrap(target) else { return fail(span, shape) };
+                let mut parts = Vec::new();
+                if !o.properties.is_empty() {
+                    parts.push(self.expr(target)?);
+                }
+                parts.extend(self.positional(&c.arguments[1..])?.into_iter().map(|a| a.value));
+                Ok(match parts.len() {
+                    0 => Expr { kind: ExprKind::Record { spread: None, fields: vec![] }, span },
+                    1 => parts.remove(0),
+                    _ => leaf("merge", &[], parts, span),
+                })
+            }
+            "hasOwn" => Ok(leaf("has", &[], self.counted(c, (2, 2), "Object.hasOwn takes a record and a key: Object.hasOwn(r, k)", span)?, span)),
+            "is" => Ok(leaf("same_value", &[], self.counted(c, (2, 2), "Object.is takes two values: Object.is(a, b)", span)?, span)),
+            "create" => match c.arguments.as_slice() {
+                [a] if matches!(a.as_expression().map(|e| self.unwrap(e)), Some(js::Expression::NullLiteral(_))) => Ok(Expr { kind: ExprKind::Record { spread: None, fields: vec![] }, span }),
+                _ => fail(span, "a record has no prototype: Object.create(null) is {}, and nothing else is made this way"),
+            },
+            "isFrozen" | "isSealed" | "isExtensible" => fail(at, format!("a flow's values never change in place, so each is frozen already: Object.{method} has nothing to tell")),
+            "defineProperty" | "defineProperties" | "getOwnPropertyDescriptor" | "getOwnPropertyDescriptors" | "getOwnPropertySymbols" | "getPrototypeOf" | "setPrototypeOf" => {
+                fail(at, "a record holds values by key, with no descriptors and no prototype: { ...r, k: v } is r with k")
+            }
+            other => fail(at, format!("Object has keys, values, entries, fromEntries, groupBy, assign, hasOwn, is, create(null) and freeze a flow can call, not \"{other}\": do the rest in a js() function")),
+        }
+    }
+
+    /// `Object.assign(t, …)` alone, on a local of the handler's own: `t` is now `merge(t, …)`.
+    fn assigned_local(&self, c: &js::CallExpression) -> Option<String> {
+        let js::Expression::StaticMemberExpression(m) = self.unwrap(&c.callee) else { return None };
+        if m.property.name != "assign" || !matches!(self.unwrap(&m.object), js::Expression::Identifier(i) if i.name == "Object") || !self.is_global(&m.object) {
+            return None;
+        }
+        let js::Expression::Identifier(t) = self.unwrap(c.arguments.first()?.as_expression()?) else { return None };
+        matches!(self.lookup(t.name.as_str()), Some(Local::Bound(_) | Local::Var(Some(_)))).then(|| t.name.to_string())
+    }
+
+    fn assign_into(&mut self, c: &js::CallExpression, ts: &str, stmts: &mut Vec<Stmt>) -> R<()> {
+        let at = self.span(c.span);
+        self.check_unshared(ts, at)?;
+        let mut parts = vec![self.identifier(ts, at)?];
+        parts.extend(self.positional(&c.arguments[1..])?.into_iter().map(|a| a.value));
+        if parts.len() == 1 {
+            return Ok(());
+        }
+        self.new_version(ts, at, leaf("merge", &[], parts, at), stmts, true)
+    }
+
+    /// `JSON.parse(t, reviver)` and `JSON.stringify(x, replacer, space)`: the JSON leaves, a
+    /// function by its `fn`, a replacer's keys and the indent written in place as their params.
+    fn json_call(&mut self, c: &js::CallExpression, method: &str, at: Span, span: Span) -> R<Expr> {
+        match method {
+            "parse" => {
+                let shape = "JSON.parse takes the text and, if there is one, a function of each key and value: JSON.parse(t, (k, v) => …)";
+                if c.arguments.is_empty() || c.arguments.len() > 2 {
+                    return fail(span, shape);
+                }
+                let mut args = self.positional(&c.arguments[..1])?;
+                if let Some(f) = c.arguments.get(1) {
+                    args.push(self.function_arg(f, "JSON.parse", 2)?);
+                }
+                Ok(leaf_with("json_parse", &[], args, span))
+            }
+            "stringify" => {
+                if c.arguments.is_empty() || c.arguments.len() > 3 {
+                    return fail(span, "JSON.stringify takes the value and, if there are, a replacer and an indent: JSON.stringify(x, null, 2)");
+                }
+                let mut args = self.positional(&c.arguments[..1])?;
+                let mut keys = String::new();
+                if let Some(r) = c.arguments.get(1) {
+                    let shape = "JSON.stringify's replacer is written in place: null, a list of keys, [\"id\", \"name\"], or a function of each key and value, (k, v) => …";
+                    match r.as_expression().map(|e| self.unwrap(e)) {
+                        Some(e) if self.is_nothing(e) => {}
+                        Some(js::Expression::ArrayExpression(a)) => {
+                            let mut list = Vec::new();
+                            for item in &a.elements {
+                                match item.as_expression().map(|e| self.unwrap(e)) {
+                                    Some(js::Expression::StringLiteral(s)) => list.push(s.value.to_string()),
+                                    _ => return fail(self.span(item.span()), "a replacer's keys are texts written in place: [\"id\", \"name\"]"),
+                                }
+                            }
+                            keys = serde_json::to_string(&list).expect("texts");
+                        }
+                        Some(js::Expression::ArrowFunctionExpression(_)) => args.push(self.function_arg(r, "JSON.stringify", 2)?),
+                        Some(js::Expression::Identifier(i)) if self.defs.contains_key(i.name.as_str()) => args.push(self.function_arg(r, "JSON.stringify", 2)?),
+                        _ => return fail(self.span(r.span()), shape),
+                    }
+                }
+                let mut indent = String::new();
+                if let Some(s) = c.arguments.get(2) {
+                    match s.as_expression().map(|e| self.unwrap(e)) {
+                        Some(e) if self.is_nothing(e) => {}
+                        // As many spaces, 10 at most (ToIntegerOrInfinity, then min).
+                        Some(js::Expression::NumericLiteral(n)) => indent = " ".repeat(n.value.clamp(0.0, 10.0) as usize),
+                        Some(js::Expression::StringLiteral(t)) => indent = t.value.to_string(),
+                        _ => return fail(self.span(s.span()), "JSON.stringify's indent is written in place: a number of spaces, 2, or a text, \"\\t\""),
+                    }
+                }
+                let mut params = Vec::new();
+                if !keys.is_empty() {
+                    params.push(("keys", keys.as_str()));
+                }
+                if !indent.is_empty() {
+                    params.push(("indent", indent.as_str()));
+                }
+                Ok(leaf_with("json_stringify", &params, args, span))
+            }
+            other => fail(at, format!("JSON has parse and stringify, not \"{other}\"")),
+        }
+    }
+
+    /// `null` or `undefined` written in place: an argument left as JavaScript's default.
+    fn is_nothing(&self, e: &js::Expression) -> bool {
+        match self.unwrap(e) {
+            js::Expression::NullLiteral(_) => true,
+            js::Expression::Identifier(i) => i.name == "undefined" && self.lookup("undefined").is_none(),
+            _ => false,
+        }
+    }
+
+    /// `Date.UTC(…)` and `Date.parse(t)`: the date leaves. `Date.now()` is the clock's.
+    fn date_call(&mut self, c: &js::CallExpression, method: &str, at: Span, span: Span) -> R<Expr> {
+        match method {
+            "UTC" => Ok(leaf("date_utc", &[], self.counted(c, (1, 7), "Date.UTC takes a year and, if there are, a month (from 0), date, hours, minutes, seconds and milliseconds: Date.UTC(2000, 1, 29)", span)?, span)),
+            "parse" => Ok(leaf("date_parse", &[], self.counted(c, (1, 1), "Date.parse takes one text: Date.parse(t)", span)?, span)),
+            "now" => fail(span, "Date.now() is the time now, which a flow reads from its clock: import { now } from \"holon:clock\", in seconds, so now * 1000"),
+            other => fail(at, format!("Date has UTC and parse a flow can call, not \"{other}\"")),
+        }
+    }
+
+    /// `new Date(…)`, when `e` is one and `Date` is JavaScript's.
+    fn new_date<'a>(&self, e: &'a js::Expression<'a>) -> Option<&'a js::NewExpression<'a>> {
+        match self.unwrap(e) {
+            js::Expression::NewExpression(n) if matches!(self.unwrap(&n.callee), js::Expression::Identifier(i) if i.name == "Date") && self.is_global(&n.callee) => Some(&**n),
+            _ => None,
+        }
+    }
+
+    /// `new Date(x)`'s argument, as the date leaves take it: a time value or a text (a Date the
+    /// handler bound, its time value). Local time and the time now are refused, naming what to
+    /// write.
+    fn date_arg(&mut self, n: &js::NewExpression) -> R<Expr> {
+        let span = self.span(n.span);
+        match n.arguments.as_slice() {
+            [] => fail(span, "new Date() is the time now, which a flow reads from its clock: import { now } from \"holon:clock\", in seconds, and new Date(now * 1000) is its date"),
+            [js::Argument::SpreadElement(s)] => fail(self.span(s.span), "a Date is made of one value: new Date(x), a time value or a text"),
+            [a] => {
+                let e = a.as_expression().expect("an argument that isn't a spread");
+                match self.date_local(e) {
+                    Some(name) => Ok(Expr { kind: ExprKind::Name(name), span: self.span(e.span()) }),
+                    None => self.expr(e),
+                }
+            }
+            _ => fail(span, "new Date(y, m, …) is local time, which a flow has none of: new Date(Date.UTC(y, m, …)) is the date in UTC"),
+        }
+    }
+
+    /// `new Date(x)` held by a name: its time value, `date_part {part: time}`; another Date's is
+    /// its own.
+    fn date_value(&mut self, n: &js::NewExpression) -> R<Expr> {
+        let span = self.span(n.span);
+        let x = self.date_arg(n)?;
+        if matches!(&x.kind, ExprKind::Name(name) if self.frame.dates.contains(name)) {
+            return Ok(x);
+        }
+        Ok(leaf("date_part", &[("part", "time")], vec![x], span))
+    }
+
+    /// The name a Date the handler bound has, when `e` is one.
+    fn date_local(&self, e: &js::Expression) -> Option<String> {
+        let js::Expression::Identifier(i) = self.unwrap(e) else { return None };
+        match self.lookup(i.name.as_str()) {
+            Some(Local::Bound(n) | Local::Var(Some(n))) if self.frame.dates.contains(&n) => Some(n),
+            _ => None,
+        }
+    }
+
+    /// `Object.freeze(x)`, `seal(x)` or `preventExtensions(x)`, when `e` is one: its argument.
+    fn frozen_call<'a>(&self, e: &'a js::Expression<'a>) -> Option<&'a js::Argument<'a>> {
+        let js::Expression::CallExpression(c) = self.unwrap(e) else { return None };
+        let js::Expression::StaticMemberExpression(m) = self.unwrap(&c.callee) else { return None };
+        let freezes = matches!(m.property.name.as_str(), "freeze" | "seal" | "preventExtensions");
+        let object = matches!(self.unwrap(&m.object), js::Expression::Identifier(i) if i.name == "Object") && self.is_global(&m.object);
+        match c.arguments.as_slice() {
+            [a] if freezes && object => Some(a),
+            _ => None,
+        }
+    }
+
+    fn mark_frozen(&mut self, ts: &str) {
+        if let Some(Local::Bound(n) | Local::Var(Some(n))) = self.lookup(ts) {
+            self.frame.frozen.insert(n);
+        }
+    }
+
+    fn mark_date(&mut self, ts: &str) {
+        if let Some(Local::Bound(n) | Local::Var(Some(n))) = self.lookup(ts) {
+            self.frame.dates.insert(n);
+        }
+    }
+
+    /// A Date's method, on `new Date(x)` (`fresh`, `x` its argument) or on a Date the handler
+    /// bound (`x` its time value): getTime and each getUTC… `date_part`, toISOString and
+    /// toUTCString `date_text`, a setUTC… on `new Date(x)` `date_set`. Local time is refused,
+    /// naming UTC's.
+    #[allow(clippy::too_many_arguments)]
+    fn date_method(&mut self, c: &js::CallExpression, method: &str, at: Span, x: Expr, fresh: bool, subject: &str, span: Span) -> R<Expr> {
+        let bare = |what: &str| if c.arguments.is_empty() { Ok(()) } else { fail(span, format!("{method} takes nothing: {subject}.{method}(){what}")) };
+        if let Some(&(_, part)) = DATE_GETTERS.iter().find(|(m, _)| *m == method).or(if method == "valueOf" { Some(&("getTime", "time")) } else { None }) {
+            bare("")?;
+            return Ok(if part == "time" && !fresh { x } else { leaf("date_part", &[("part", part)], vec![x], span) });
+        }
+        if let Some(format) = date_format(method) {
+            bare("")?;
+            return Ok(leaf("date_text", &[("format", format)], vec![x], span));
+        }
+        if let Some(&(_, part, takes)) = DATE_SETTERS.iter().find(|(m, ..)| *m == method) {
+            if c.arguments.is_empty() || c.arguments.len() > takes {
+                return fail(span, setter_shape(method, takes));
+            }
+            // On a Date bound to a name, as a value: the time value it gives, and the Date,
+            // changed in place, read no more (`const t = d.setUTCHours(h)` and a statement of its
+            // own give it the new value).
+            let changed = match (&x.kind, fresh) {
+                (ExprKind::Name(n), false) => Some(n.clone()),
+                _ => None,
+            };
+            let mut args = vec![arg(x)];
+            args.extend(self.positional(&c.arguments)?);
+            if let Some(n) = changed {
+                self.frame.changed.insert(n, method.to_string());
+            }
+            return Ok(leaf_with("date_set", &[("part", part)], args, span));
+        }
+        match method {
+            "setTime" => fail(span, "setTime changes the date in place: new Date(t) is the date at t"),
+            "getTimezoneOffset" => fail(at, "a flow has no local time, only UTC, whose offset is 0"),
+            "getYear" => fail(at, format!("a flow has no local time, only UTC: {subject}.getUTCFullYear()")),
+            "toString" | "toDateString" | "toTimeString" | "toLocaleString" | "toLocaleDateString" | "toLocaleTimeString" => {
+                fail(at, format!("a flow has no local time, only UTC: {subject}.toISOString(), or {subject}.toUTCString()"))
+            }
+            m if let Some(utc) = utc_of(m) => fail(at, format!("a flow has no local time, only UTC: {subject}.{utc}(…)")),
+            _ => fail(at, format!("a Date has getTime, the getUTC… and setUTC… methods, toISOString and toUTCString, not .{method}(…)")),
+        }
+    }
+
+    /// `d.setUTCHours(h)` alone, on a Date the handler bound: `d` is now
+    /// `date_set {part: hours}(d, h)`; `d.setTime(t)`, the date at `t`.
+    fn date_mutation(&self, c: &js::CallExpression) -> Option<(String, String, String)> {
+        let js::Expression::StaticMemberExpression(m) = self.unwrap(&c.callee) else { return None };
+        let method = m.property.name.as_str();
+        if method != "setTime" && !DATE_SETTERS.iter().any(|(s, ..)| *s == method) {
+            return None;
+        }
+        let name = self.date_local(&m.object)?;
+        let js::Expression::Identifier(i) = self.unwrap(&m.object) else { return None };
+        Some((i.name.to_string(), name, method.to_string()))
+    }
+
+    fn set_date(&mut self, c: &js::CallExpression, ts: &str, name: String, method: &str, stmts: &mut Vec<Stmt>) -> R<()> {
+        let at = self.span(c.span);
+        let d = Expr { kind: ExprKind::Name(name), span: at };
+        let value = match DATE_SETTERS.iter().find(|(m, ..)| *m == method) {
+            Some(&(_, part, takes)) => {
+                if c.arguments.is_empty() || c.arguments.len() > takes {
+                    return fail(at, setter_shape(method, takes));
+                }
+                let mut args = vec![arg(d)];
+                args.extend(self.positional(&c.arguments)?);
+                leaf_with("date_set", &[("part", part)], args, at)
+            }
+            None => leaf("date_part", &[("part", "time")], self.counted(c, (1, 1), &format!("setTime takes one time value: {ts}.setTime(t)"), at)?, at),
+        };
+        self.new_version(ts, at, value, stmts, true)?;
+        self.mark_date(ts);
+        Ok(())
+    }
+
+    /// `new X(…)` where a flow has no place for it: a Date is read by its methods, a Map is a
+    /// record and a Set a list of items once each.
+    fn new_expr(&mut self, n: &js::NewExpression, span: Span) -> R<Expr> {
+        let name = match self.unwrap(&n.callee) {
+            js::Expression::Identifier(i) if self.is_global(&n.callee) => i.name.as_str(),
+            _ => "",
+        };
+        match name {
+            "Date" => {
+                self.date_arg(n)?;
+                let t = self.text(n.span);
+                fail(span, format!("{t} is a Date, which a flow holds as its time value and reads by its methods: {t}.getTime() is the number, {t}.toISOString() the text; or name it, const d = {t}"))
+            }
+            "Map" | "WeakMap" => fail(span, "a flow's map is a record, by text key: {} to start, r[k] to read, { ...r, [k]: v } to add"),
+            "Set" | "WeakSet" => fail(span, "a flow's set is a list, each item once: [...new Set(xs)]"),
+            _ => fail(span, "new isn't something Holon computes: do it in a js() function"),
+        }
+    }
+
+    /// `Math` or `Number`, when `e` names one and nothing of the file's has the name.
+    fn namespace(&self, e: &js::Expression) -> Option<&'static str> {
+        let js::Expression::Identifier(i) = self.unwrap(e) else { return None };
+        let name = i.name.as_str();
+        let own = self.lookup(name).is_some() || self.defs.contains_key(name) || self.consts.contains_key(name) || self.imports.contains_key(name);
+        match name {
+            "Math" if !own => Some("Math"),
+            "Number" if !own => Some("Number"),
+            _ => None,
+        }
+    }
+
+    /// A call's arguments, `n` of them (`min` to `max`), each a value: none spread.
+    fn counted(&mut self, c: &js::CallExpression, (min, max): (usize, usize), shape: &str, span: Span) -> R<Vec<Expr>> {
+        if c.arguments.len() < min || c.arguments.len() > max {
+            return fail(span, shape.to_string());
+        }
+        Ok(self.positional(&c.arguments)?.into_iter().map(|a| a.value).collect())
+    }
+
+    /// `Math.<method>(…)`: each its leaf (numbers.md, "Reader changes").
+    fn math_call(&mut self, c: &js::CallExpression, method: &str, at: Span, span: Span) -> R<Expr> {
+        match method {
+            "max" | "min" | "hypot" => {
+                // A list spread is the list's: `aggregate`.
+                if let [js::Argument::SpreadElement(s)] = c.arguments.as_slice() {
+                    let xs = self.expr(&s.argument)?;
+                    return Ok(leaf("aggregate", &[("fn", method)], vec![xs], span));
+                }
+                let shape = format!("Math.{method} takes two numbers or more, Math.{method}(a, b), or one list spread, Math.{method}(...xs)");
+                let args = self.counted(c, (2, usize::MAX), &shape, span)?;
+                if method == "hypot" {
+                    let list = Expr { kind: ExprKind::List(args), span };
+                    return Ok(leaf("aggregate", &[("fn", "hypot")], vec![list], span));
+                }
+                Ok(leaf(method, &[], args, span))
+            }
+            "sumPrecise" => {
+                let xs = self.counted(c, (1, 1), "Math.sumPrecise takes a list of numbers, Math.sumPrecise(xs)", span)?;
+                Ok(leaf("aggregate", &[("fn", "sum_precise")], xs, span))
+            }
+            "atan2" | "pow" | "imul" => {
+                let (name, params, shape): (&str, &[(&str, &str)], &str) = match method {
+                    "atan2" => ("atan2", &[], "Math.atan2 takes two numbers, Math.atan2(y, x)"),
+                    "pow" => ("power", &[], "Math.pow takes two numbers, Math.pow(a, b), or write a ** b"),
+                    _ => ("bitwise", &[("op", "imul")], "Math.imul takes two numbers, Math.imul(a, b)"),
+                };
+                let args = self.counted(c, (2, 2), shape, span)?;
+                Ok(leaf(name, params, args, span))
+            }
+            "random" => fail(span, "a run has one random number, recorded: import { random } from \"holon:random\""),
+            m if is_math_fn(m) => {
+                let x = self.counted(c, (1, 1), &format!("Math.{m} takes one number, Math.{m}(x)"), span)?;
+                Ok(leaf("math", &[("fn", m)], x, span))
+            }
+            other => fail(at, format!("Math has no \"{other}\" a flow can call: do it in a js() function")),
+        }
+    }
+
+    /// `Number.<method>(…)`: each its leaf; `Number.isNaN(x)` is `false`, as a flow has no NaN.
+    /// `String.fromCharCode(…)` and `String.fromCodePoint(…)`: `from_codes` of the numbers, and
+    /// the empty text for none.
+    fn string_call(&mut self, c: &js::CallExpression, method: &str, at: Span, span: Span) -> R<Expr> {
+        let mode = match method {
+            "fromCharCode" => "unit",
+            "fromCodePoint" => "point",
+            "raw" => return fail(at, "String.raw is a tag, written before a template: String.raw`a\\n${x}`"),
+            _ => return fail(at, format!("String.{method} isn't one a flow has: String.fromCharCode(…), String.fromCodePoint(…) and String.raw`…` are")),
+        };
+        let codes: Vec<Expr> = self.positional(&c.arguments)?.into_iter().map(|a| a.value).collect();
+        if codes.is_empty() {
+            return Ok(text_expr("", span));
+        }
+        Ok(leaf("from_codes", &[("mode", mode)], codes, span))
+    }
+
+    /// `` String.raw`…` ``: the template with its text as written, escapes kept (`raw`, not
+    /// `cooked`). No other tag is read.
+    fn tagged(&mut self, t: &js::TaggedTemplateExpression, span: Span) -> R<Expr> {
+        let raw = matches!(self.unwrap(&t.tag), js::Expression::StaticMemberExpression(m) if m.property.name == "raw" && matches!(self.unwrap(&m.object), js::Expression::Identifier(i) if i.name == "String" && self.lookup("String").is_none() && !self.imports.contains_key("String")));
+        if !raw || t.type_arguments.is_some() {
+            return fail(self.span(t.tag.span()), "a tag before a template calls a function, which a flow does only for String.raw`…`: write the call, f(`…`)");
+        }
+        let mut parts = Vec::new();
+        for (i, q) in t.quasi.quasis.iter().enumerate() {
+            if !q.value.raw.is_empty() {
+                parts.push(Part::Text(q.value.raw.to_string()));
+            }
+            if let Some(e) = t.quasi.expressions.get(i) {
+                parts.push(Part::Expr(self.expr(e)?));
+            }
+        }
+        Ok(match parts.as_slice() {
+            [] => text_expr("", span),
+            [Part::Text(only)] => text_expr(only, span),
+            _ => Expr { kind: ExprKind::Interpolated(parts), span },
+        })
+    }
+
+    fn number_call(&mut self, c: &js::CallExpression, method: &str, at: Span, span: Span) -> R<Expr> {
+        let (name, params, most): (&str, &[(&str, &str)], usize) = match method {
+            "isFinite" => ("number_test", &[("test", "finite"), ("coerce", "none")], 1),
+            "isInteger" => ("number_test", &[("test", "integer"), ("coerce", "none")], 1),
+            "isSafeInteger" => ("number_test", &[("test", "safe_integer"), ("coerce", "none")], 1),
+            "parseFloat" => ("to_number", &[("grammar", "float")], 1),
+            "parseInt" => ("to_number", &[("grammar", "int")], 2),
+            "isNaN" => {
+                self.counted(c, (1, 1), "Number.isNaN takes one value", span)?;
+                return Ok(Expr { kind: ExprKind::Bool(false), span });
+            }
+            other => return fail(at, format!("Number has no \"{other}\" a flow can call: Number(x), Number.isFinite, isInteger, isSafeInteger, isNaN, parseFloat and parseInt are there")),
+        };
+        let shape = if most == 2 { "Number.parseInt takes a text and a radix, Number.parseInt(s, 16)".to_string() } else { format!("Number.{method} takes one value") };
+        let args = self.counted(c, (1, most), &shape, span)?;
+        Ok(leaf(name, params, args, span))
+    }
+
+    /// `Number(x)`, `parseInt(s, r)`, `parseFloat(s)`, `isNaN(x)`, `isFinite(x)`: each its leaf.
+    fn number_global(&mut self, c: &js::CallExpression, name: &str, span: Span) -> R<Expr> {
+        let (leaf_name, params, most): (&str, &[(&str, &str)], usize) = match name {
+            "Number" => ("to_number", &[], 1),
+            "parseInt" => ("to_number", &[("grammar", "int")], 2),
+            "parseFloat" => ("to_number", &[("grammar", "float")], 1),
+            "isNaN" => ("number_test", &[("test", "nan"), ("coerce", "number")], 1),
+            _ => ("number_test", &[("test", "finite"), ("coerce", "number")], 1),
+        };
+        let shape = if most == 2 { "parseInt takes a text and a radix, parseInt(s, 16)".to_string() } else { format!("{name} takes one value, {name}(x)") };
+        let args = self.counted(c, (1, most), &shape, span)?;
+        Ok(leaf(leaf_name, params, args, span))
+    }
+
+    /// The function a higher-order method takes, handing it `takes` values: a holon by name, or
+    /// an arrow written in place, its body one expression.
+    fn function_arg(&mut self, a: &js::Argument, method: &str, takes: usize) -> R<Arg> {
+        self.function_with(a, method, Hands::Plain(takes))
+    }
+
+    /// The function `method` takes, as its leaf hands it values (`hands`): a holon by name, or an
+    /// arrow written in place, its body one expression. A parameter the arrow doesn't use is left
+    /// unwired, and one it leaves out is one it doesn't use: `() => 0`.
+    fn function_with(&mut self, a: &js::Argument, method: &str, hands: Hands) -> R<Arg> {
         let e = a.as_expression().ok_or(()).or_else(|_| fail(self.span(a.span()), "a function, not a spread"))?;
         let span = self.span(e.span());
         let fn_name = Name { text: "fn".into(), span };
         let value = match self.unwrap(e) {
-            js::Expression::Identifier(i) if self.defs.contains_key(i.name.as_str()) => Expr { kind: ExprKind::Name(i.name.to_string()), span },
+            js::Expression::Identifier(i) if self.defs.contains_key(i.name.as_str()) && matches!(hands, Hands::Plain(_)) => Expr { kind: ExprKind::Name(i.name.to_string()), span },
             js::Expression::ArrowFunctionExpression(arrow) => {
                 if arrow.r#async {
                     return fail(span, "a function written in place computes: no async");
                 }
-                let mut params = Vec::new();
+                // Each parameter: its name in the text, and its port.
+                let mut names = Vec::new();
                 for p in &arrow.params.items {
                     let js::BindingPattern::BindingIdentifier(id) = &p.pattern else {
                         return fail(self.span(p.span), "a parameter is a name: (x) => { const { id } = x; … }, in a later slice");
                     };
-                    params.push(self.name(&self.port_name(id.name.as_str()), id.span));
+                    names.push((id.name.to_string(), self.name(&self.port_name(id.name.as_str()), id.span)));
                 }
-                if params.len() != takes || arrow.params.rest.is_some() {
-                    return fail(span, if takes == 1 { "map's function takes the item: (x) => …; an index isn't passed" } else { "reduce's function takes the result so far and the item: (acc, x) => …" });
+                let most = match hands {
+                    Hands::Plain(takes) => takes,
+                    Hands::Indexed(_) | Hands::Counted => 2,
+                };
+                if names.len() > most || arrow.params.rest.is_some() {
+                    return fail(span, takes_message(method));
                 }
                 let body = match &arrow.body {
                     js::ArrowFunctionBody::FunctionBody(b) => match b.statements.as_slice() {
@@ -3081,18 +4064,55 @@ impl<'s, 't> Reader<'s, 't> {
                     },
                     body => body.as_expression().expect("an expression body"),
                 };
+                // A name for a parameter left out: `_`, `__`, … one the arrow doesn't have.
+                let unused = |names: &[(String, Name)], params: &[Name]| {
+                    (1..).map(|k| "_".repeat(k)).find(|n| !names.iter().any(|(_, p)| p.text == *n) && !params.iter().any(|p| p.text == *n)).expect("a free name")
+                };
                 let mut scope = HashMap::new();
-                for (p, id) in params.iter().zip(&arrow.params.items) {
-                    if let js::BindingPattern::BindingIdentifier(id) = &id.pattern {
-                        scope.insert(id.name.to_string(), Local::Bound(p.text.clone()));
+                let mut params = Vec::new();
+                match &hands {
+                    Hands::Plain(takes) => {
+                        for (ts, p) in &names {
+                            scope.insert(ts.clone(), Local::Bound(p.text.clone()));
+                            params.push(p.clone());
+                        }
+                        while params.len() < *takes {
+                            let text = unused(&names, &params);
+                            params.push(Name { text, span });
+                        }
+                    }
+                    // The index is the one parameter; the item, before it, is read from it.
+                    Hands::Indexed(_) | Hands::Counted => {
+                        let index = match names.get(1) {
+                            Some((ts, p)) => {
+                                scope.insert(ts.clone(), Local::Bound(p.text.clone()));
+                                p.clone()
+                            }
+                            None => Name { text: unused(&names, &[]), span },
+                        };
+                        if let Some((x, _)) = names.first() {
+                            let item = match &hands {
+                                Hands::Indexed(list) => leaf("get", &[], vec![list.clone(), Expr { kind: ExprKind::Name(index.text.clone()), span: index.span }], span),
+                                _ => absent(span),
+                            };
+                            scope.insert(x.clone(), Local::Alias(item));
+                        }
+                        params.push(index);
                     }
                 }
+                // Its parameters are what it was handed: changed in place, they would change
+                // the list's items too.
+                let added: Vec<String> = names.iter().map(|(ts, _)| ts.clone()).filter(|ts| !self.frame.params.contains(ts)).collect();
+                self.frame.params.extend(added.iter().cloned());
                 self.scopes.push(scope);
                 let body = self.expr(body);
                 self.scopes.pop();
+                for ts in &added {
+                    self.frame.params.remove(ts);
+                }
                 Expr { kind: ExprKind::Lambda { params, body: Box::new(body?) }, span }
             }
-            _ => return fail(span, "map and reduce take a function: (x) => …, or a function's name"),
+            _ => return fail(span, format!("{method} takes a function: (x) => …, or a function's name")),
         };
         Ok(Arg { name: Some(fn_name), value })
     }
@@ -3354,7 +4374,8 @@ impl Takes {
         let needed: Vec<String> = inputs.iter().filter(|n| !is_optional(leaf, n)).cloned().collect();
         let required = needed.len();
         // A variadic leaf's inputs are more of the same: only its params are named.
-        let mut named = params.into_iter().filter(|p| p != "fn").collect::<Vec<_>>();
+        // A `map`'s or `fold`'s function is passed in order, not by name.
+        let mut named = params.into_iter().filter(|p| p != "fn" || !PASSES_EXTRA.contains(&leaf)).collect::<Vec<_>>();
         if !VARIADIC.contains(&leaf) {
             named.extend(inputs);
         }
@@ -3396,7 +4417,66 @@ const START_IS_A_CALL: &str =
 const REQUEST_PARTS: &[&str] = &["request", "params", "query", "headers", "body", "json"];
 
 /// JavaScript's globals a flow doesn't have, named in the mistake.
-const GLOBALS: &[&str] = &["fetch", "Date", "Math", "setTimeout", "setInterval", "process", "globalThis", "window", "console", "Promise", "require"];
+const GLOBALS: &[&str] = &["fetch", "Date", "setTimeout", "setInterval", "process", "globalThis", "window", "console", "Promise", "require"];
+
+/// `Math`'s constants, each the literal of its double (numbers.md, "Race output").
+pub(crate) const MATH_CONSTANTS: &[(&str, &str)] = &[
+    ("E", "2.718281828459045"),
+    ("LN10", "2.302585092994046"),
+    ("LN2", "0.6931471805599453"),
+    ("LOG10E", "0.4342944819032518"),
+    ("LOG2E", "1.4426950408889634"),
+    ("PI", "3.141592653589793"),
+    ("SQRT1_2", "0.7071067811865476"),
+    ("SQRT2", "1.4142135623730951"),
+];
+
+/// `Number`'s constants. `NaN` and the infinities aren't values a flow has.
+pub(crate) const NUMBER_CONSTANTS: &[(&str, &str)] = &[
+    ("EPSILON", "2.220446049250313e-16"),
+    ("MAX_SAFE_INTEGER", "9007199254740991"),
+    ("MIN_SAFE_INTEGER", "-9007199254740991"),
+    ("MAX_VALUE", "1.7976931348623157e308"),
+    ("MIN_VALUE", "5e-324"),
+];
+
+/// JavaScript's number functions called by name, each a leaf: `parseInt(s, 16)`, `isNaN(x)`.
+const NUMBER_GLOBALS: &[&str] = &["Number", "parseInt", "parseFloat", "isNaN", "isFinite"];
+
+/// A global function of one text and the leaf that is it: the URI functions, `btoa` and `atob`.
+fn text_global(name: &str) -> Option<(&'static str, &'static [(&'static str, &'static str)])> {
+    Some(match name {
+        "encodeURIComponent" => ("uri_encode", &[]),
+        "encodeURI" => ("uri_encode", &[("set", "uri")]),
+        "decodeURIComponent" => ("uri_decode", &[]),
+        "decodeURI" => ("uri_decode", &[("set", "uri")]),
+        "btoa" => ("base64", &[("bytes", "latin1")]),
+        "atob" => ("base64", &[("bytes", "latin1"), ("mode", "decode")]),
+        _ => return None,
+    })
+}
+
+/// Whether `Math.<name>` is a one-number function, `math` with that `fn`.
+fn is_math_fn(name: &str) -> bool {
+    family_values("math", "fn").is_some_and(|values| values.contains(&name))
+}
+
+/// A number operator the language writes as a leaf, `%`, `**` and the bitwise ones: the leaf and
+/// its params.
+fn number_operator(op: js::BinaryOperator) -> Option<(&'static str, &'static [(&'static str, &'static str)])> {
+    use js::BinaryOperator as B;
+    Some(match op {
+        B::Remainder => ("remainder", &[]),
+        B::Exponential => ("power", &[]),
+        B::BitwiseAnd => ("bitwise", &[("op", "and")]),
+        B::BitwiseOR => ("bitwise", &[("op", "or")]),
+        B::BitwiseXOR => ("bitwise", &[("op", "xor")]),
+        B::ShiftLeft => ("bitwise", &[("op", "shl")]),
+        B::ShiftRight => ("bitwise", &[("op", "shr")]),
+        B::ShiftRightZeroFill => ("bitwise", &[("op", "ushr")]),
+        _ => return None,
+    })
+}
 
 fn is_word(s: &str) -> bool {
     !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') && !s.starts_with(|c: char| c.is_ascii_digit())
@@ -3404,10 +4484,6 @@ fn is_word(s: &str) -> bool {
 
 fn declares_method(m: &str) -> bool {
     holon_core::METHODS.contains(&m)
-}
-
-fn is_text(e: &js::Expression) -> bool {
-    matches!(e, js::Expression::StringLiteral(_) | js::Expression::TemplateLiteral(_))
 }
 
 /// A number as the lowering reads it: its digits as written, without `_` separators.
@@ -3429,7 +4505,8 @@ fn decimal(text: &str) -> Option<f64> {
 
 /// `"10s"`, `"5m"`, `"2h"`, `"1d"` in seconds.
 pub(crate) fn duration(text: &str) -> Option<f64> {
-    let (n, unit) = text.split_at(text.len().checked_sub(1)?);
+    // At the last character's start: a byte before it may be inside one (`"5ü"`).
+    let (n, unit) = text.split_at(text.char_indices().last()?.0);
     let per = match unit {
         "s" => 1.0,
         "m" => 60.0,
@@ -3507,9 +4584,58 @@ fn expression_kind(e: &js::Expression) -> &'static str {
     }
 }
 
-/// A list's methods that change it in place: `push` is a new list with the items after it; the
-/// rest come in a later slice.
+/// A list's methods that change it in place: as a statement, `push` is a new list with the items
+/// after it, and the rest are refused, each naming the value form.
 const MUTATORS: &[&str] = &["push", "pop", "shift", "unshift", "splice", "sort", "reverse", "fill", "copyWithin"];
+
+/// The ones that answer the list they changed: read as that list where it is used, on a list of
+/// the handler's own that isn't read after (lists.md, "Reader changes").
+const IN_PLACE: &[&str] = &["sort", "reverse", "fill", "copyWithin"];
+
+/// The list `xs.method(…)` changes in place, written as a value.
+fn value_form(xs: &str, method: &str) -> String {
+    match method {
+        "sort" => format!("{xs}.toSorted()"),
+        "reverse" => format!("{xs}.toReversed()"),
+        _ => format!("[...{xs}].{method}(…)"),
+    }
+}
+
+/// Why `xs.method(…)` is refused, for the ones that answer something else than the list: what to
+/// write instead.
+fn moved(method: &str, xs: &str) -> String {
+    let instead = match method {
+        "push" => format!("the new list is [...{xs}, x]"),
+        "pop" => format!("its last item is {xs}.at(-1), the rest {xs}.slice(0, -1)"),
+        "shift" => format!("its first item is {xs}.at(0), the rest {xs}.slice(1)"),
+        "unshift" => format!("the new list is [x, ...{xs}]"),
+        _ => format!("the new list is {xs}.toSpliced(…), the items it takes out {xs}.slice(start, start + count)"),
+    };
+    format!("{method} changes the list in place, which a flow's list doesn't: {instead}")
+}
+
+/// A JavaScript method that takes a function, and the higher-order leaf it is.
+fn tester(method: &str) -> Option<&'static str> {
+    Some(match method {
+        "filter" => "filter",
+        "some" => "any",
+        "every" => "all",
+        "find" => "find",
+        "findIndex" => "find_index",
+        "findLast" => "find_last",
+        "findLastIndex" => "find_last_index",
+        _ => return None,
+    })
+}
+
+/// Whether `e` can be read twice as written, giving the same: a name, or a field of one.
+fn rereadable(e: &Expr) -> bool {
+    match &e.kind {
+        ExprKind::Name(_) => true,
+        ExprKind::Field { base, .. } | ExprKind::Paren(base) => rereadable(base),
+        _ => false,
+    }
+}
 
 fn call(leaf: &str, args: Vec<Arg>, span: Span) -> Expr {
     Expr { kind: ExprKind::Call { callee: Name { text: leaf.into(), span }, args }, span }
@@ -3531,6 +4657,125 @@ fn text_expr(text: &str, span: Span) -> Expr {
 fn absent(span: Span) -> Expr {
     let no = Expr { kind: ExprKind::Bool(false), span };
     Expr { kind: ExprKind::If { cond: Box::new(no.clone()), then: Box::new(no), els: None }, span }
+}
+
+/// A leaf placed for one of JavaScript's forms, with its params (`ExprKind::Leaf`).
+fn leaf(leaf: &str, params: &[(&str, &str)], args: Vec<Expr>, span: Span) -> Expr {
+    leaf_with(leaf, params, args.into_iter().map(arg).collect(), span)
+}
+
+/// The same, with arguments that may be named: a higher-order leaf's `fn`.
+fn leaf_with(leaf: &str, params: &[(&str, &str)], args: Vec<Arg>, span: Span) -> Expr {
+    let params = params.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+    Expr { kind: ExprKind::Leaf { leaf: Name { text: leaf.into(), span }, params, args, number: false }, span }
+}
+
+/// How a higher-order method hands its function values.
+enum Hands {
+    /// As many as its leaf does: the item (and the result so far, or the other item compared).
+    Plain(usize),
+    /// `map((x, i) => …)` on this list: the index, the function's one parameter, and the item
+    /// read as `get(list, i)`.
+    Indexed(Expr),
+    /// `Array.from({ length: n }, (_, i) => …)`: the index; the item is JavaScript's undefined,
+    /// absent.
+    Counted,
+}
+
+/// What a record literal has built so far, if anything: its base with the fields after it.
+fn settled(base: Option<Expr>, fields: Vec<(Key, Expr)>, span: Span) -> Option<Expr> {
+    match (base, fields.is_empty()) {
+        (None, true) => None,
+        (Some(b), true) => Some(b),
+        (b, false) => Some(Expr { kind: ExprKind::Record { spread: b.map(Box::new), fields }, span }),
+    }
+}
+
+/// A Date's getters, each with the `date_part` part it reads (the printer writes them back).
+pub(crate) const DATE_GETTERS: &[(&str, &str)] = &[
+    ("getTime", "time"),
+    ("getUTCFullYear", "year"),
+    ("getUTCMonth", "month"),
+    ("getUTCDate", "date"),
+    ("getUTCDay", "day"),
+    ("getUTCHours", "hours"),
+    ("getUTCMinutes", "minutes"),
+    ("getUTCSeconds", "seconds"),
+    ("getUTCMilliseconds", "milliseconds"),
+];
+
+/// A Date's setUTC…, each with the `date_set` part it starts at and how many numbers it takes.
+pub(crate) const DATE_SETTERS: &[(&str, &str, usize)] = &[
+    ("setUTCFullYear", "year", 3),
+    ("setUTCMonth", "month", 2),
+    ("setUTCDate", "date", 1),
+    ("setUTCHours", "hours", 4),
+    ("setUTCMinutes", "minutes", 3),
+    ("setUTCSeconds", "seconds", 2),
+    ("setUTCMilliseconds", "milliseconds", 1),
+];
+
+/// A Date's text, as `date_text`'s format.
+fn date_format(method: &str) -> Option<&'static str> {
+    match method {
+        "toISOString" | "toJSON" => Some("iso"),
+        "toUTCString" | "toGMTString" => Some("utc"),
+        _ => None,
+    }
+}
+
+/// The UTC method a local-time one is written as: `getHours` is `getUTCHours`.
+fn utc_of(method: &str) -> Option<String> {
+    let (verb, rest) = (method.get(..3)?, method.get(3..)?);
+    let utc = format!("{verb}UTC{rest}");
+    (matches!(verb, "get" | "set") && (DATE_GETTERS.iter().any(|(m, _)| *m == utc) || DATE_SETTERS.iter().any(|(m, ..)| *m == utc))).then_some(utc)
+}
+
+/// Whether only a Date has `method`: refused on anything else, naming `new Date(x)`.
+fn is_date_method(method: &str) -> bool {
+    DATE_GETTERS.iter().any(|(m, _)| *m == method) || DATE_SETTERS.iter().any(|(m, ..)| *m == method) || matches!(method, "toISOString" | "toUTCString" | "toGMTString")
+}
+
+fn setter_shape(method: &str, takes: usize) -> String {
+    if takes == 1 { format!("{method} takes one number: d.{method}(n)") } else { format!("{method} takes 1 to {takes} numbers, from its own part on") }
+}
+
+/// What a function that takes another number of values than its method hands is told.
+fn takes_message(method: &str) -> String {
+    match method {
+        "map" | "Array.from" => format!("{method}'s function takes the item and its index: (x) => …, (x, i) => …; the list isn't passed, as it has a name"),
+        "reduce" | "reduceRight" => format!("{method}'s function takes the result so far and the item: (acc, x) => …; an index isn't passed"),
+        "toSorted" | "sort" => format!("{method}'s function takes the two items it compares: (a, b) => …"),
+        "JSON.parse" | "JSON.stringify" => format!("{method}'s function takes the key and the value: (k, v) => …"),
+        _ => format!("{method}'s function takes the item: (x) => …; an index isn't passed"),
+    }
+}
+
+/// Whether `f` is a function written in place that answers its one parameter: `(x) => x`.
+fn answers_its_parameter(f: &Expr) -> bool {
+    matches!(&f.kind, ExprKind::Lambda { params, body } if matches!(params.as_slice(), [p] if matches!(&body.kind, ExprKind::Name(n) if *n == p.text)))
+}
+
+/// `-1`, as `-x` and `~x` use it.
+fn minus_one(span: Span) -> Expr {
+    Expr { kind: ExprKind::Number { value: -1.0, text: "-1".into() }, span }
+}
+
+/// An index's arguments, 0 where it is left out (`s.charAt()`).
+fn or_zero(args: Vec<Arg>, span: Span) -> Vec<Arg> {
+    if args.is_empty() { vec![arg(Expr { kind: ExprKind::Number { value: 0.0, text: "0".into() }, span })] } else { args }
+}
+
+/// What a text's `concat` joins for `x`: a text written in place as itself, anything else as
+/// `String(x)` writes it (`as_text`).
+fn joined(x: Expr) -> Expr {
+    match x.kind {
+        ExprKind::Text(_) | ExprKind::Interpolated(_) => x,
+        _ => {
+            let span = x.span;
+            leaf("as_text", &[], vec![x], span)
+        }
+    }
 }
 
 fn binary(op: BinOp, lhs: Expr, rhs: Expr) -> Expr {
@@ -3794,7 +5039,13 @@ fn walk(e: &mut Expr, f: &mut dyn FnMut(&mut Expr) -> bool) {
                 }
             }
         }
-        ExprKind::Call { args, .. } | ExprKind::Method { args, .. } => {
+        ExprKind::Call { args, .. } | ExprKind::Method { args, .. } | ExprKind::Leaf { args, .. } => {
+            for a in args {
+                walk(&mut a.value, f);
+            }
+        }
+        ExprKind::TextOrList { subject, args, .. } => {
+            walk(subject, f);
             for a in args {
                 walk(&mut a.value, f);
             }
@@ -4428,7 +5679,33 @@ route.post("/t", (req) => price(req.json.amount))
             ("route.post(\"/\", (req) => {\n  const n = 1\n  n = 2\n  return n\n})\n", "7:3: \"n\" is a const: declare it with let to give it a new value"),
             ("route.post(\"/\", (req) => {\n  req = 2\n  return 1\n})\n", "6:3: \"req\" is a parameter, which stays what it was passed: give the new value a name of its own"),
             ("route.post(\"/\", (req) => {\n  if (req.json.a !== undefined) {\n    return 1\n  }\n  return 2\n})\n", "7:12: a return inside if (x !== undefined) comes in a later slice: return after it, with ?? for when x has no value"),
-            ("route.post(\"/\", (req) => {\n  const xs = [1]\n  xs.sort()\n  return xs\n})\n", "7:3: sort changes the list in place, which comes in a later slice: write the new list, xs = …"),
+            ("route.post(\"/\", (req) => {\n  const xs = [1]\n  xs.sort()\n  return xs\n})\n", "7:3: sort changes the list in place, which a flow's list doesn't: write the new list, xs = xs.toSorted()"),
+            ("route.post(\"/\", (req) => {\n  const xs = [1]\n  xs.fill(0)\n  return xs\n})\n", "7:3: fill changes the list in place, which a flow's list doesn't: write the new list, xs = [...xs].fill(…)"),
+            ("route.post(\"/\", (req) => {\n  const xs = [1]\n  xs.pop()\n  return xs\n})\n", "7:3: pop changes the list in place, which a flow's list doesn't: its last item is xs.at(-1), the rest xs.slice(0, -1)"),
+            ("route.post(\"/\", (req) => {\n  const xs = [1]\n  xs.shift()\n  return xs\n})\n", "7:3: shift changes the list in place, which a flow's list doesn't: its first item is xs.at(0), the rest xs.slice(1)"),
+            ("route.post(\"/\", (req) => {\n  const xs = [1]\n  xs.unshift(0)\n  return xs\n})\n", "7:3: unshift changes the list in place, which a flow's list doesn't: the new list is [x, ...xs]"),
+            ("route.post(\"/\", (req) => {\n  const xs = [1]\n  xs.splice(0, 1)\n  return xs\n})\n", "7:3: splice changes the list in place, which a flow's list doesn't: the new list is xs.toSpliced(…), the items it takes out xs.slice(start, start + count)"),
+            ("route.post(\"/\", (req) => {\n  const xs = [1]\n  return xs.push(2)\n})\n", "7:10: push changes the list in place, which a flow's list doesn't: the new list is [...xs, x]"),
+            ("route.post(\"/\", (req) => {\n  const xs = [3, 1]\n  const s = xs.sort()\n  return [s, xs]\n})\n", "8:14: \"xs\" is read after xs.sort(…) changed it in place: use the list sort gave, or write xs.toSorted() and keep \"xs\" as it was"),
+            ("route.post(\"/\", (req) => {\n  const xs = [3, 1]\n  const ys = xs\n  return ys.reverse()\n})\n", "8:10: \"ys\" is held elsewhere too (by another name, a record or a write), which reverse would change in place behind it: write ys.toReversed()"),
+            ("route.post(\"/\", (req) => req.json.xs.sort())\n", "5:26: sort would change req.json.xs in place, and what holds it with it: write req.json.xs.toSorted()"),
+            ("route.post(\"/\", (req) => req.json.rows.map((row) => row.sort()))\n", "5:53: \"row\" is a parameter, which sort would change in place for whoever passed it too: write row.toSorted()"),
+            ("route.post(\"/\", (req) => req.json.xs.keys())\n", "5:38: xs.keys() is an iterator, which a flow has none of: [...xs.keys()] is the list"),
+            ("route.post(\"/\", (req) => req.json.xs.flat(req.json.n))\n", "5:43: flat's depth is a number written in place, or Infinity: xs.flat(2)"),
+            ("route.post(\"/\", (req) => req.json.xs.includes(1, 2, 3))\n", "5:26: includes takes the item and where to start from, if not the start: xs.includes(x, i)"),
+            ("route.post(\"/\", (req) => req.json.s.match(\"a\"))\n", "5:37: match takes a regular expression, which a flow has none of yet: do it in a js() function"),
+            ("route.post(\"/\", (req) => req.json.s.replace(/a/g, \"b\"))\n", "5:45: a regular expression, which a flow has none of yet: replace takes a text, or do it in a js() function"),
+            ("route.post(\"/\", (req) => req.json.s.replaceAll(\"a\", (m) => m))\n", "5:53: replaceAll takes the replacement as a text, where $& is the match: a function in its place is done in a js() function"),
+            ("route.post(\"/\", (req) => req.json.s.normalize(req.json.f))\n", "5:47: normalize's form is \"NFC\", \"NFD\", \"NFKC\" or \"NFKD\", written in place"),
+            ("route.post(\"/\", (req) => req.json.s.localeCompare(req.json.t))\n", "5:37: a flow has no locale: a < b ? -1 : a > b ? 1 : 0 compares in code units"),
+            ("route.post(\"/\", (req) => req.json.s.toLocaleUpperCase(\"tr\"))\n", "5:37: a flow has no locale: toUpperCase() and toLowerCase() use Unicode's own mappings"),
+            ("route.post(\"/\", (req) => req.json.s.padStart())\n", "5:26: padStart is written s.padStart(n), or s.padStart(n, fill)"),
+            ("route.post(\"/\", (req) => escape(req.json.s))\n", "5:26: escape is JavaScript's legacy form, which a flow doesn't read: encodeURIComponent(s)"),
+            ("route.post(\"/\", (req) => String.raw(req.json.s))\n", "5:33: String.raw is a tag, written before a template: String.raw`a\\n${x}`"),
+            ("route.post(\"/\", (req) => String.trim(req.json.s))\n", "5:33: String.trim isn't one a flow has: String.fromCharCode(…), String.fromCodePoint(…) and String.raw`…` are"),
+            ("route.post(\"/\", (req) => tag`a${req.json.s}`)\n", "5:26: a tag before a template calls a function, which a flow does only for String.raw`…`: write the call, f(`…`)"),
+            ("route.post(\"/\", (req) => req.json.xs.map((x) => x * 2).reduce((a, b) => a + b))\n", "5:26: reduce without a start reads the list twice, its first item and the rest: name it first, const xs = …, or give the start, xs.reduce(f, start)"),
+            ("route.post(\"/\", (req) => Array.from({ length: 3 }))\n", "5:26: Array.from({ length: n }) has n items that are undefined, which a flow has none of: Array.from({ length: n }, (_, i) => …)"),
             ("route.post(\"/\", (req) => {\n  switch (req.json.op) {\n    case req.json.other:\n      return 1\n  }\n  return 2\n})\n", "7:10: a case is a literal: a number, a text, true or false; to test a condition, use if"),
             ("route.post(\"/\", (req) => {\n  if (req.json.a) return status(200, 1)\n  return 2 ?? status(400)\n})\n", "7:10: this answer is 400 when its body is absent, and the one on line 6 is 404: say it the same for both"),
             ("route.post(\"/\", (req) => {\n  const n = req.json.n++\n  return n\n})\n", "6:13: ++ and -- are a statement of their own: n++"),
@@ -4510,6 +5787,17 @@ route.post("/t", (req) => price(req.json.amount))
         assert_eq!(e.to_string(), "4:3: an enum compiles to code, which a js() body can't hold: use a record of constants");
     }
 
+    /// A duration ending in a character of more than one byte is refused, where it once panicked
+    /// between that character's bytes (in the editor's wasm, the whole editor).
+    #[test]
+    fn a_duration_ending_in_any_character_is_read_or_refused() {
+        assert_eq!(duration("5m"), Some(300.0));
+        for text in ["1é", "é", "5😀", ""] {
+            assert_eq!(duration(text), None, "{text}");
+        }
+        assert!(parse("import { flow, every } from \"holon\"\nflow(\"k\")\nevery(\"1é\", () => 1)\n").is_err());
+    }
+
     fn mistake(body: &str) -> String {
         let head = "import { flow, route } from \"holon\"\nimport notes from \"collection:notes\"\nflow(\"f\", { port: 8000 })\n";
         parse(&format!("{head}{body}")).map(|_| ()).unwrap_err().to_string()
@@ -4519,9 +5807,7 @@ route.post("/t", (req) => price(req.json.amount))
     #[test]
     fn a_mistake_names_its_line_and_column() {
         assert_eq!(mistake("route.get(\"/\", () => {\n  let n\n  return n\n})\n"), "6:10: \"n\" has no value here: give it one first, let n = …");
-        assert_eq!(mistake("route.get(\"/\", (req) => \"a\" + req.query.b)\n"), "4:25: there is no + on texts: use a template literal, `${a}${b}`");
         assert_eq!(mistake("route.get(\"/\", (req) => fetch(req.query.u))\n"), "4:25: unknown function \"fetch\": define it at the top level, or import the leaf from \"holon\"");
-        assert_eq!(mistake("route.get(\"/\", (req) => req.query.xs.length)\n"), "4:25: a list's length is length(xs), a text's text_length(s), imported from \"holon\": .length comes in a later slice");
         assert_eq!(mistake("route.fetch(\"/\", () => 1)\n"), "4:7: route has no \"fetch\": get, post, put, patch or delete");
         assert_eq!(mistake("route.get(\"/\", () => 1, { log: \"loud\" })\n"), "4:32: log is \"strict\", \"lazy\" or \"unrecorded\"");
         assert_eq!(mistake("route.get(\"/\", () => {\n  notes = 1\n  return 1\n})\n"), "5:3: \"notes\" is imported, and stays what it is: give a value of its own a name of its own");

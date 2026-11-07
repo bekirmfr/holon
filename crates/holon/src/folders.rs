@@ -1022,7 +1022,8 @@ pub(crate) struct Placed {
     _dir: Option<std::fs::File>,
 }
 
-/// Why a link on the way to `name` is refused.
+/// Why a link on the way to `name` is refused (on Linux, where no link is followed).
+#[cfg(target_os = "linux")]
 fn link_refused(name: &str) -> String {
     format!("{name:?} leads outside its folder: a link on its way isn't followed")
 }
@@ -1839,7 +1840,7 @@ pub(crate) fn sweep(folders: &Folders, deployments: &Mutex<BTreeMap<String, Depl
     let mut live = BTreeSet::new();
     for (slug, log) in &cells {
         // A line naming a kept text holds its key, as written: one that doesn't names none.
-        for entry in log.lines_holding(BLOB_KEY).iter().filter_map(|l| serde_json::from_str::<LogEntry>(l).ok()) {
+        for entry in log.lines_holding(BLOB_KEY).iter().filter_map(|l| crate::wire::read_json::<LogEntry>(l.as_bytes()).ok()) {
             for read in &entry.reads {
                 let Some(blob) = read.file.as_ref().and_then(|f| f.blob.as_ref()) else { continue };
                 let folder = match &read.request {

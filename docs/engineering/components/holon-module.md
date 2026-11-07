@@ -63,7 +63,7 @@ It is used by the server (`crates/holon`: `deploy.rs`, `listeners.rs`, `schedule
 - **No imports, read from the bytes** (WM §3): an empty import section is what makes the module
   pure as a fact. A WASI build run under stubs the host provides is refused for the same reason
   (JS §4).
-- **The engine out of core** (WM §5): core keeps its four dependencies and its purity argument.
+- **The engine out of core** (WM §5): core keeps its five dependencies and its purity argument.
   The default `run_module` answers "this host runs no code", so a host without an engine gives
   nothing for a module, never a wrong answer.
 - **`wasmi`**: pure Rust, interpreted (no JIT, no platform code path), fuel metered natively, and

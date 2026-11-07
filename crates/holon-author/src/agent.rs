@@ -661,8 +661,25 @@ CALLS
   leaf(inputs…, { param: value })   positional arguments are inputs; a last record whose keys
                                     the leaf takes names inputs and params
   sha256(t), hmac_sha256(key, t), base64(t), t.toUpperCase(), t.split(","), list.join("-"),
-  xs.map((x) => x * 2), xs.reduce((acc, x) => acc + x, 0), …  (the leaves below; a string or
-  list method is the leaf that has it, and one without a leaf is refused)
+  xs.map((x) => x * 2), xs.map((x, i) => …), xs.reduce((acc, x) => acc + x, 0),
+  xs.filter((x) => …), xs.find(…), xs.some(…), xs.every(…), xs.toSorted((a, b) => a - b),
+  xs.at(-1), xs.slice(1, -1), xs.includes(x), xs.flat(), [...new Set(xs)], Array.from(…), …
+  (the leaves below; a string or list method is the leaf that has it, and one without a leaf
+  is refused. A list never changes: xs.sort() is read as the list it gives, xs.toSorted(),
+  where xs isn't read after; xs.push(x) alone is xs = [...xs, x]; pop, shift, unshift and
+  splice are refused, naming what to write)
+  { ...a, k: v, ...b, [key]: x }, Object.values(r), Object.entries(r), Object.fromEntries(ps),
+  Object.groupBy(xs, (x) => x.kind), Object.hasOwn(r, k), k in r, typeof x, Object.is(a, b),
+  JSON.stringify(x, ["id"], 2), JSON.parse(t, (k, v) => …)   (a record never changes:
+  Object.assign(t, a) alone on a local is t = { ...t, ...a })
+  const d = new Date(t); d.getUTCHours(), d.toISOString(), d.setUTCHours(0, 0, 0, 0);
+  Date.UTC(y, m, d), Date.parse(t)   (UTC only: no local time, and new Date() is refused,
+  as the time is now * 1000 from "holon:clock"; a Date is read by its methods, d.getTime())
+  s.trim(), s.padStart(4, "0"), s.replaceAll("a", "b"), s.startsWith(t), s.slice(1, -1),
+  s.charCodeAt(0), s.normalize(), String.fromCharCode(97), encodeURIComponent(s), btoa(s),
+  "n=" + n, String(x), s.length   (positions count UTF-16 code units, as JavaScript's do;
+  .length where s is known to be a text or a list, as a method's result is: else text_length(s)
+  or length(xs); no regular expressions: s.match(re) and friends are done in js())
 
 FUNCTIONS (a flow inside a flow, placed as one node)
   function slugify(text) {

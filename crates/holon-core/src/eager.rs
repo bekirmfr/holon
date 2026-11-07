@@ -5,6 +5,7 @@
 
 use crate::eval::topo_order;
 use crate::hash::parse_hash;
+use crate::value_hash::{nests_within, MAX_VALUE_DEPTH};
 use crate::{primitives, Edge, Hash, Param, Resolver, Unit, UnitBody, Value, BOUNDARY, VARIADIC};
 use std::collections::BTreeMap;
 
@@ -22,9 +23,14 @@ fn primitive(name: &str, unit: &Unit, inputs: &[Option<Value>], resolver: &impl 
     match name {
         "map" => map(inputs, &unit.params, resolver),
         "fold" => fold(inputs, &unit.params, resolver),
+        "any" | "all" | "filter" | "find" | "find_index" | "find_last" | "find_last_index" => test(name, inputs, &unit.params, resolver),
+        "sort_by" => sort_by(inputs, &unit.params, resolver),
+        "group_by" => group_by(inputs, &unit.params, resolver),
+        "json_parse" | "json_stringify" if unit.params.iter().any(|p| p.name() == "fn" && p.value().is_some_and(|f| !f.is_empty())) => json(name, inputs, &unit.params, resolver),
         // The leaves that ask the host: nobody answers here.
         "http_request" | "http_upload" | "http_stream" | "flow_call" | "flow_start" | "await" | "collection_get" | "collection_list" | "file_read" | "file_list" | "file_handle" | "file_lines" | "file_slice"
         | "db_query" | "db_one" | "db_find" | "db_find_one" | "resume_token" => None,
+        _ if crate::SOURCED.contains(&name) => resolver.sourced(unit).cloned(),
         "coalesce" => inputs.iter().flatten().next().cloned(),
         _ => {
             if VARIADIC.contains(&name) && inputs.iter().any(Option::is_none) {
@@ -96,7 +102,9 @@ fn map(inputs: &[Option<Value>], params: &[Param], resolver: &impl Resolver) -> 
     }
     let unit = function(params, resolver)?;
     let out: Vec<Option<Value>> = xs.iter().map(|x| apply(unit, &[&[Some(x.clone())][..], extra].concat(), resolver)).collect();
-    out.into_iter().collect::<Option<Vec<Value>>>().map(Value::List)
+    // Each result a level down, as eval.rs's `map` puts it.
+    let out = out.into_iter().map(|v| v.filter(|v| nests_within(v, MAX_VALUE_DEPTH - 1)));
+    out.collect::<Option<Vec<Value>>>().map(Value::List)
 }
 
 fn fold(inputs: &[Option<Value>], params: &[Param], resolver: &impl Resolver) -> Option<Value> {
@@ -112,4 +120,106 @@ fn fold(inputs: &[Option<Value>], params: &[Param], resolver: &impl Resolver) ->
         acc = apply(unit, &[&[Some(acc), Some(x.clone())][..], extra].concat(), resolver)?;
     }
     Some(acc)
+}
+
+/// The function's answer for one item, read as JavaScript's ToBoolean; none when it gives none.
+fn passes(unit: &Unit, x: &Value, extra: &[Option<Value>], resolver: &impl Resolver) -> Option<bool> {
+    apply(unit, &[&[Some(x.clone())][..], extra].concat(), resolver).map(|v| crate::lists::truthy(&v))
+}
+
+/// `any`, `all`, `filter` and the `find` family, each stopping where it decides.
+fn test(name: &str, inputs: &[Option<Value>], params: &[Param], resolver: &impl Resolver) -> Option<Value> {
+    let Some(Some(Value::List(xs))) = inputs.first() else { return None };
+    let extra = &inputs[1..];
+    if extra.iter().any(Option::is_none) {
+        return None;
+    }
+    let unit = function(params, resolver)?;
+    let pass = |x: &Value| passes(unit, x, extra, resolver);
+    Some(match name {
+        "filter" => {
+            let answers: Vec<bool> = xs.iter().map(pass).collect::<Option<_>>()?;
+            Value::List(xs.iter().zip(answers).filter(|(_, keep)| *keep).map(|(x, _)| x.clone()).collect())
+        }
+        "any" | "all" => {
+            let decides = name == "any";
+            for x in xs {
+                if pass(x)? == decides {
+                    return Some(Value::Boolean(decides));
+                }
+            }
+            Value::Boolean(!decides)
+        }
+        _ => {
+            let backward = matches!(name, "find_last" | "find_last_index");
+            let positions: Vec<usize> = if backward { (0..xs.len()).rev().collect() } else { (0..xs.len()).collect() };
+            for k in positions {
+                if pass(&xs[k])? {
+                    return Some(if matches!(name, "find" | "find_last") { xs[k].clone() } else { Value::Number(k as f64) });
+                }
+            }
+            if matches!(name, "find" | "find_last") {
+                return None;
+            }
+            Value::Number(-1.0)
+        }
+    })
+}
+
+/// `sort_by`, through the same pinned merge sort.
+fn sort_by(inputs: &[Option<Value>], params: &[Param], resolver: &impl Resolver) -> Option<Value> {
+    let Some(Some(Value::List(xs))) = inputs.first() else { return None };
+    let extra = &inputs[1..];
+    if extra.iter().any(Option::is_none) {
+        return None;
+    }
+    let unit = function(params, resolver)?;
+    let order = crate::lists::merge_sort(xs.len(), |a, b| match apply(unit, &[&[Some(xs[a].clone()), Some(xs[b].clone())][..], extra].concat(), resolver) {
+        Some(Value::Number(n)) => Ok(n > 0.0),
+        _ => Err(()),
+    })
+    .ok()?;
+    Some(Value::List(order.into_iter().map(|k| xs[k].clone()).collect()))
+}
+
+/// `group_by`: every item's key, then the groups, each item a level down.
+fn group_by(inputs: &[Option<Value>], params: &[Param], resolver: &impl Resolver) -> Option<Value> {
+    let Some(Some(list @ Value::List(xs))) = inputs.first() else { return None };
+    if !nests_within(list, MAX_VALUE_DEPTH - 1) {
+        return None;
+    }
+    let extra = &inputs[1..];
+    if extra.iter().any(Option::is_none) {
+        return None;
+    }
+    let unit = function(params, resolver)?;
+    let keys: Vec<Value> = xs.iter().map(|x| apply(unit, &[&[Some(x.clone())][..], extra].concat(), resolver)).collect::<Option<_>>()?;
+    let mut groups: BTreeMap<String, Vec<Value>> = BTreeMap::new();
+    for (x, key) in xs.iter().zip(keys) {
+        let Value::Text(key) = key else { return None };
+        groups.entry(key).or_default().push(x.clone());
+    }
+    Some(Value::Record(groups.into_iter().map(|(k, xs)| (k, Value::List(xs))).collect()))
+}
+
+/// `json_parse` with a reviver, `json_stringify` with a replacer: the same walks, each application
+/// the function of the key and the value.
+fn json(name: &str, inputs: &[Option<Value>], params: &[Param], resolver: &impl Resolver) -> Option<Value> {
+    let Some(Some(first)) = inputs.first() else { return None };
+    let extra = &inputs[1..];
+    if extra.iter().any(Option::is_none) {
+        return None;
+    }
+    let param = |k: &str| params.iter().find(|p| p.name() == k).and_then(|p| p.value()).unwrap_or("");
+    let unit = function(params, resolver)?;
+    let mut answer = |key: &str, value: &Value| Ok::<_, ()>(apply(unit, &[&[Some(Value::Text(key.to_string())), Some(value.clone())][..], extra].concat(), resolver));
+    if name == "json_parse" {
+        let Value::Text(text) = first else { return None };
+        return crate::json::revive(crate::json::parse(text)?, &mut answer).ok()?.filter(|v| nests_within(v, MAX_VALUE_DEPTH));
+    }
+    if !param("keys").is_empty() {
+        return None;
+    }
+    let replaced = crate::json::replace(first, &mut answer).ok()??;
+    crate::json::stringify_laid_out(&replaced, &crate::json::Layout { gap: crate::json::gap(param("indent")), keys: None }).map(Value::Text)
 }

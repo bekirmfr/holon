@@ -6,17 +6,18 @@
 
 import { memo, useState, type CSSProperties } from "react";
 import { Handle, NodeToolbar, Position, useReactFlow, useUpdateNodeInternals, type NodeProps, type Node } from "@xyflow/react";
-import { compatible, passesExtraPrimitives, type WParam, type WPort, type WType, type WValue } from "./holon";
+import { compatible, familyValues, passesExtraPrimitives, type WParam, type WPort, type WType, type WValue } from "./holon";
 import { formatValue, valueChip } from "./diagnostics";
 import { METHODS } from "./endpoint";
 
 /** Params with a fixed set of values (crypto.rs in core): picked, never typed, so a node can't
- *  hold a value its primitive would refuse. Keyed by primitive, then param. */
+ *  hold a value its primitive would refuse. Keyed by primitive, then param. A family leaf's
+ *  parameter (`math`'s `fn`) is one too, its values read from core (`familyValues`). */
 const PARAM_CHOICES: Record<string, Record<string, readonly string[]>> = {
   sha256: { encoding: ["hex", "base64"] },
   hmac_sha256: { encoding: ["hex", "base64"] },
   hex: { mode: ["encode", "decode"] },
-  base64: { mode: ["encode", "decode"], alphabet: ["standard", "url"] },
+  base64: { mode: ["encode", "decode"], alphabet: ["standard", "url"], bytes: ["utf8", "latin1"] },
 };
 import { templateInterface } from "./templates";
 import { typeColor, typeLabel, outputColor, TYPE_COLOR } from "./theme";
@@ -477,7 +478,7 @@ function PrimitiveNodeImpl({ id, data, selected }: NodeProps<PrimitiveNodeType>)
             // `default`), so there's no longer a reason to route them differently here.
             const isLiteralTypeParam =
               (name === "const" || name === "default") && p.name === "type";
-            const choices = body.kind === "Primitive" ? PARAM_CHOICES[name]?.[p.name] : undefined;
+            const choices = body.kind === "Primitive" ? (PARAM_CHOICES[name]?.[p.name] ?? familyValues(name, p.name)) : undefined;
             return (
               <label className="hl-node__param" key={p.name}>
                 {p.name}{" "}

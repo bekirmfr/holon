@@ -25,6 +25,7 @@
 mod determinism;
 mod advisory;
 mod catalog;
+mod dates;
 mod declare;
 mod docs;
 mod encapsulate;
@@ -36,16 +37,20 @@ pub mod eager;
 mod crypto;
 mod fork;
 mod kind;
+mod lists;
 mod memo;
 mod promote;
+mod records;
 mod hash;
 mod inspect;
 mod json;
 mod manifest;
 mod module;
+mod numbers;
 mod resolve;
 mod simulate;
 pub mod taint;
+mod texts;
 mod triggers;
 mod validate;
 mod value;
@@ -61,15 +66,15 @@ pub use primitives::{MAX_AWAIT_SECONDS, MAX_RANGE};
 pub use determinism::is_finite_number;
 pub use encapsulate::{default_spec, derive_and_freeze, EncapError, EncapSpec, Expose, Promote};
 pub use promote::{instantiate, open_param, open_params, ParamError};
-pub use eval::{choice_next, eval, eval_observed, eval_one, would_plan, Answer, Choice, NoObserver, Observer, Shape, Shapes, Slot};
+pub use eval::{choice_next, eval, eval_observed, eval_one, would_plan, Answer, Choice, NoObserver, Observer, Resolved, Shape, Shapes, Slot};
 pub use fork::{refork, Refork};
 pub use advisory::{advise, Advisory};
-pub use catalog::{genesis_units, interface_of, open_trigger, takes_trigger, CALLS, GENESIS, PASSES_EXTRA, TRIGGER, TRIGGERED, VARIADIC};
+pub use catalog::{family_values, function_takes, genesis_units, interface_of, open_trigger, takes_trigger, CALLS, FAMILIES, GENESIS, PASSES_EXTRA, SOURCED, TRIGGER, TRIGGERED, VARIADIC};
 pub use docs::describe;
 pub use manifest::{consent_name, manifest_items, permission_kind, reads_from_outside, trigger, PermissionKind};
 pub use inspect::{adoption_counts, child_refs, dependencies};
 pub use memo::{entry_key, memo_key, verify_entry, CacheEntry};
-pub use value_hash::{decode_value, encode_value, hash_value, run_id, state_root};
+pub use value_hash::{decode_value, encode_value, hash_value, run_id, state_root, MAX_VALUE_DEPTH};
 pub use hash::{
     canonical_child_order,
     decode_preimage, encode_preimage, hash_unit, hex, parse_hash, DecodeError, Edge, EncodeError, Hash,

@@ -261,13 +261,13 @@ races here.
 | `subtract`, `divide` | O(1) | none | `abs`, `score` | |
 | `compare` | O(1) | none | `abs`, filter's `x > 10`, `score` | |
 | `and`, `or`, `not` | O(inputs) | none | `some`, `every` by `fold`; `!==` | |
-| `select` | O(1) | lent: the value chosen; given: none | by name only (the ternary lowers to `guard` and a fallback) | given: moved |
+| `select` | O(1) | lent: the value chosen; given: none | by name only (the ternary lowers to a `guard` on each side) | given: moved |
 | `concat` | O(total length) | one text | template texts; the `replace`, `padStart` composites | sized once; given: the first grows |
 | `uppercase`, `lowercase` | O(n) | one text | | |
 | `text_length` | O(n): counts characters | none | `s.slice(a, b)`, `charAt`, `at`, `padStart` | |
 | `to_text` | O(size) | one text | | |
 | `as_text` | O(size) | a text input copied | `` `${x}` `` | |
-| `coalesce` | O(1) | inside a composite, a choice: before, its value copied; now given to its last reader or lent | `??`, the ternary's fallback | giving, lending |
+| `coalesce` | O(1) | inside a composite, a choice: before, its value copied; now given to its last reader or lent | `??`, the ternary's two sides | giving, lending |
 | `is_truthy` | O(1) | none | `Boolean(x)` | |
 | `guard` | O(1) | a choice: before, its value copied, at every pass-through `guard(true, x)` too; now given or lent | the ternary; every value used twice | giving, lending |
 | `slice` | O(start + len) characters | the piece | `substring`, `charAt`, `at` on texts | byte offsets, one copy |
@@ -330,15 +330,11 @@ loops, and nothing changed there.
   `holon load`, three rounds; [performance](../performance.md#the-evaluators-change-through-a-server-43-2026-11-06)):
   `crunch`'s folds and maps of numbers ×0.85 to ×0.87 at 100 to 5,000 items, `main` ×0.90 to
   ×0.93; a filter by fold ×5.0 at 1,000 and ×21 at 5,000; `hello` and `calc` within noise.
-- **One call of `score` is ×0.71, not halved** (×0.70 to 0.80 by round). What it pays now is
-  mostly its preparation (about 616 ns of 1.6 µs): resolving 25 children through the resolver
-  (437 ns on a `MapResolver`), deciding each child's kind, and the lists that hold them. Keeping
-  the whole preparation across calls is what would halve it (its run alone is about 0.9 µs), and
-  the evaluator can't keep it alone: a preparation borrows the units the resolver holds, so it can
-  live only as long as the resolver, and `eval` gets the resolver by reference for one call. It
-  needs the resolver to keep it (`Resolver` in `resolve.rs` gaining a place for it, as it has one
-  for shapes), which each resolver that forwards shapes today (five) would forward too. Mapped,
-  `score` is ×0.36, where the preparation is paid once.
+- **One call of `score` is ×0.71, not halved** (×0.70 to 0.80 by round), through a resolver
+  that keeps nothing. What it pays is mostly its preparation (about 616 ns of 1.6 µs): resolving
+  25 children through the resolver (437 ns on a `MapResolver`), deciding each child's kind, and
+  the lists that hold them. Through the server's resolver it is now 0.93 µs, its children kept
+  (§10). Mapped, `score` is ×0.36, where the preparation is paid once.
 - **reverse by `fold` is still O(n²).** `[x, ...acc]` is `extend` of a one-item list with the
   accumulator. With the accumulator given, the item now goes in front of it where it is (§2),
   allocating only when the list outgrows its room, but that still moves its n items a step (t(4096)/t(512) about 19). A `Vec` can't
@@ -384,16 +380,18 @@ copy is one `memcpy` (8 times an `Arc`'s at 10 KB), not worth its 327 sites.
 ## 8. Proposals
 
 1. **Keep a composite's preparation in the resolver**, as its shape is kept, so one call pays its
-   run and not its preparation: one call of `score` from 1.6 to about 0.9 µs.
+   run and not its preparation: one call of `score` from 1.6 to about 0.9 µs. Done (§10): 1.61
+   to 0.93 µs.
 2. **Place what one call pays with kept shapes** (§6, 10 to 15 ns a node), and `${s}!`, with a
    profiler, on a machine with one.
 3. **`reverse` as a leaf**, as §11 says; `cons` and `[x, ...acc]` stay O(n) a step whatever the
-   evaluator does.
+   evaluator does. Done: `reverse` and `toReversed` read as the `reverse` leaf.
 4. **The host's observers that only record say so**, if a recorded run's outputs can be read where
    they are kept rather than copied for the record: then the top-level pass-through lends in a
    deployed flow too.
 5. **A faster child lookup for `MapResolver`** (a hash map, or children resolved once per unit),
-   which is most of a preparation once its shape is kept.
+   which is most of a preparation once its shape is kept. Since §10, only for a resolver that
+   keeps nothing: the races', the tests', the editor's.
 6. **`Record` behind an `Arc`**, only when a race shows a part copied out of a lent container
    dominating (§7).
 
@@ -424,9 +422,10 @@ Three audits ran before the change went to main (#43), for correctness, security
 `differential.sh` to run it against any earlier commit) generates worlds of leaves, composites
 nested four deep and maps and folds of them, with valid edges and with edges only decoding would
 take, and runs every case under each observer a host uses, comparing outputs and every observer
-call between two versions. It mattered that the unvalidated edges were in: a host never calls
-`validate` on a unit it stores (the server's `POST /unit` only decodes), so those edges can reach
-the evaluator. It found, besides the bare `fold` above, the two the review noted:
+call between two versions. It mattered that the unvalidated edges were in: a host called
+`validate` on no unit it stored (the server's `POST /unit` only decodes), so those edges could
+reach the evaluator. Since, the server refuses a closure with a unit `validate` refuses before it
+runs one (holon's `units.rs`, `load_closure`), and `holon verify` doesn't run one again. It found, besides the bare `fold` above, the two the review noted:
 
 - a choice that lends was read as its value at an output port it doesn't have (a choice unit
   declaring a second output passes `validate`): it now reads through only at port 0;
@@ -454,3 +453,46 @@ looks at each child once a question, so its work is the composite's size whateve
 slower at 4096. The in-place regression was placed and fixed (§6). The never-read check's cap of 8
 kept a fold's accumulator from being given behind four or more untaken branches (4096 items: 44
 ms); with the memo the cap is 64 (3.5 to 3.8 ms). What is slower as merged is in §6.
+
+## 10. A composite's preparation kept (§8.1)
+
+Measured on 2026-11-07, the same machine, the base being `e07c83d`.
+
+A resolver that keeps its units now keeps each composite's children beside its shape: resolved
+once, the very units it holds (`Arc`s, shared), with what each is (`Shapes::kept`,
+`Resolver::resolved`, core's `Resolved`). A run takes them from there instead of resolving each
+child and deciding its kind. The server's resolver (holon's `units.rs`, `Loaded`) keeps them, and
+nothing a run gives changes: the same outputs and the same observer calls, in the same order.
+
+Keeping them is sound only where a hash resolves to one unit for ever. Two resolvers stood a unit
+of their own in for a hash: the host's for sourced values (a constant for the leaf that reads a
+capability) and design mode's (`Simulated`, a mock for an effect). The host's wrapper handed the
+kept children on only when nothing was sourced or no child read a capability; design mode never
+does. Every other wrapper (the module engine's) forwards them as it forwards shapes. *Since
+2026-11-07 the host's stands nothing in: a sourced leaf asks the resolver for its value
+(`Resolver::sourced`), and the kept children are handed on whatever a run reads
+([performance.md](../performance.md), "A run's values handed as they are").*
+
+What one call pays, as the server makes it (`perf_audit`, the base binary against this one,
+medians of seven interleaved rounds; "before" is the base's resolver keeping shapes, "after" this
+one's keeping children):
+
+| One call | Before | After | Ratio |
+|---|---:|---:|---:|
+| lin (5 leaves) | 477 ns | 380 ns | 0.80 |
+| abs (9 leaves, a choice) | 744 ns | 552 ns | 0.74 |
+| score (25 nodes) | 1607 ns | 931 ns | 0.58 |
+| big (4 nested score) | 7.59 µs | 4.47 µs | 0.59 |
+| shape (a record read and made) | 2.23 µs | 1.61 µs | 0.72 |
+| score, under an observer that reads outputs | 3.06 µs | 2.25 µs | 0.73 |
+
+Whole requests (`host_request`, seven rounds): hello ×0.86, calc ×0.82, quote ×0.96, basket ×0.97,
+slugs ×0.94, fetch-json ×1.02 (its time is the host's, the stub's page parsed). A resolver that
+keeps nothing or shapes alone, and every `map` and `fold`, whose preparation was already paid once
+(five rounds): ×0.96 to ×1.06, noise, the widest on the longest runs (folds of 4096 items).
+
+Checked: the differential harness against the base (300,000 cases, 76,000 of them in worlds whose
+resolver keeps children, none diverging); 3,000 random composites run at the top and inside
+another beside a `map` (`children_the_resolver_keeps_give_what_resolving_them_gives`); the golden
+record run with every sample's shapes and children kept; a sourced value reaching a composite whose
+other children are kept (holon-host, `a_sourced_value_reaches_a_composite_whose_children_are_kept`).

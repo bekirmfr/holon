@@ -233,12 +233,16 @@ pub enum EncodeError {
     /// Rejected — fail-closed — rather than hashed in an order that depends on how the composite
     /// was written. See [`canonical_child_order`].
     UnusedTwins,
+    /// A value nests deeper than a decode reads back (`value_hash`'s bound, 256): stored, it
+    /// could never be loaded again.
+    TooDeep,
 }
 
 impl std::fmt::Display for EncodeError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             EncodeError::FieldTooLong => write!(f, "a name or value is too long to encode (over 4 GiB)"),
+            EncodeError::TooDeep => write!(f, "a value nests more than 256 deep, deeper than it could be read back"),
             EncodeError::UnusedTwins => {
                 write!(f, "the same value is computed twice and never used, so nothing tells the two apart: remove one, or use it")
             }

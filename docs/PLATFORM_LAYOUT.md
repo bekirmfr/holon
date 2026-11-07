@@ -84,7 +84,7 @@ Kept as the record. The "Target" column was the plan at the time; §2 is what wa
 | Today (`holon-host/src/lib.rs`) | Target |
 |---|---|
 | `Host`, `fire`, `fire_sourced`, `SourcedResolver`, `Mode`, `run` | stay in **host** |
-| `StateHost`, `constant_unit` | stay in **host**. Fix: List/Sum/Record read-back, and never panic on an Effect (M0). |
+| `StateHost` | stays in **host**. Fix: List/Sum/Record read-back, and never panic on an Effect (M0). |
 | `Store`, `MemStore`, `FileStore` | stay in **host**. `FileStore::put` becomes atomic. |
 | `Registry`, `Memo`, `SharedCache`, `CacheIngestError`, `PublishError`, `ForkError` | move to **`holon-market`** (parked) |
 | (new) | **effect loop**: multi-round request handling (§4) |

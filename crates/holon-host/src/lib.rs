@@ -30,14 +30,14 @@ pub mod packs;
 mod rounds;
 mod state;
 pub use rounds::{run_rounds, Claim, Exchange, Limits, NoWaits, Performer, Recorded, Round, RunError, RunOutcome, Waiting, Waits};
-pub use state::{LoadError, State};
+pub use state::{InsertError, LoadError, State};
 
 use holon_core::{
     capabilities, capabilities_of, child_refs, decode_preimage, decode_value, design_eval, encode_preimage, encode_value,
     eval, eval_observed, hash_value,
     entry_key, hash_unit, memo_key, refork, verify_entry, adoption_counts, CacheEntry,
-    MapResolver, NoObserver, Observer, Refork, Capability, DecodeError, Edge, EncodeError, Hash, Param, Port, Resolver,
-    Type, Unit, UnitBody, Value, BOUNDARY,
+    MapResolver, NoObserver, Observer, Refork, Capability, DecodeError, EncodeError, Hash, Param, Resolver,
+    Unit, UnitBody, Value,
 };
 
 /// The platform: the one place IO happens. A real host sends the mail / writes the file
@@ -244,8 +244,8 @@ pub fn run(
 /// cmds)`, atomically, now per-key rather than for one anonymous cell.
 ///
 /// Every round snapshots **every** key currently in storage into the sourced set, whether or
-/// not the fired graph actually reads all of them — harmless (`SourcedResolver` only
-/// substitutes a leaf whose own key matches), and far simpler than pre-deriving which keys a
+/// not the fired graph actually reads all of them — harmless (`SourcedResolver` only hands a
+/// leaf the value of its own key), and far simpler than pre-deriving which keys a
 /// given graph touches before firing it.
 pub struct StateHost {
     storage: BTreeMap<String, Value>,
@@ -292,7 +292,8 @@ impl StateHost {
 /// *request*: `store_write` is `Any`-typed, so `store_write(egress(x))` reaches the host with an
 /// `Effect` as its payload, and committing it would put a request into storage that no later
 /// round can source back. Recursive — an effect nested in a list or sum is no more data. The one
-/// rule both write paths (`StateHost::round` here, holon-server's `fire_with_state`) apply.
+/// rule both stores apply: `StateHost::round` here, and [`State`], whose every write and load
+/// refuses what isn't data.
 pub fn is_storable(value: &Value) -> bool {
     match value {
         Value::Effect { .. } => false,
@@ -309,195 +310,62 @@ impl Host for StateHost {
     }
 }
 
-/// A resolver that injects a host-supplied constant at every **sourced** leaf — `StateRead`,
-/// `Clock`, ingress, … Matching is by full `Capability` equality, which — now that
-/// `StateRead`/`StateWrite` carry a key — already does correct per-key routing with no new
-/// logic: two leaves reading different keys derive different `Capability` values (via
-/// `capabilities_of` reading each leaf's own `params`), so the loop below only ever matches a
-/// leaf against a sourced entry for its *own* key. It **owns** the constants it hands out,
-/// since `resolve` returns `&Unit`. Performed leaves (sinks, `store_write`) are never
-/// substituted, so the effect manifest is intact.
-/// A sourced value's constant, made the first time a leaf asks for it: its unit and the pieces
-/// it is built from, or none for a value a constant can't rebuild.
-type Constant = OnceCell<Option<(Unit, Parts)>>;
-
+/// A resolver that supplies a host's value at every **sourced** leaf (`holon_core::SOURCED`:
+/// `store_read`, `clock`, `secret`, …), which the leaf produces as it is (`Resolver::sourced`);
+/// every unit it hands out is the real resolver's, so a composite keeps its children whatever the
+/// run reads. Matching is by full `Capability` equality, which — now that `StateRead`/`StateWrite`
+/// carry a key — already does correct per-key routing with no new logic: two leaves reading
+/// different keys derive different `Capability` values (via `capabilities_of` reading each leaf's
+/// own `params`), so a leaf only ever matches a sourced entry for its *own* key. Performed leaves
+/// (sinks, `store_write`) are never sourced, so the effect manifest is intact.
 struct SourcedResolver<'a, R: Resolver> {
-    /// Each sourced value, and its constant once a leaf has asked for it: made then, not before,
-    /// so a run pays only for what its graph reads (docs/L4s/interpreter-path-L4.md, the
-    /// per-request bookkeeping). None inside: a value that can't be rebuilt (see `new`).
-    sourced: Vec<(&'a Capability, &'a Value, Constant)>,
+    /// Each sourced value, and whether it is data ([`is_storable`]), found the first time a leaf
+    /// reads it, or known from the start.
+    sourced: Vec<(&'a Capability, &'a Value, OnceCell<bool>)>,
     real: &'a R,
 }
 
 impl<'a, R: Resolver> SourcedResolver<'a, R> {
     fn new(sourced: &'a [(Capability, Value)], real: &'a R) -> Self {
-        // A value that can't be faithfully reconstructed (`constant_unit` → `None`: an
-        // `Effect`, or a sum that isn't an Option) is dropped rather than substituted —
-        // which routes it through the SAME seam `fire_sourced`'s doc comment already names for
-        // an unsupplied capability: "evaluates to nothing." No new failure mode.
         SourcedResolver { sourced: sourced.iter().map(|(cap, value)| (cap, value, OnceCell::new())).collect(), real }
+    }
+
+    /// Values held elsewhere and known to be data (a run's: a [`State`] holds nothing else), lent
+    /// as they are, and never looked at.
+    fn lent(sourced: impl IntoIterator<Item = (&'a Capability, &'a Value)>, real: &'a R) -> Self {
+        SourcedResolver { sourced: sourced.into_iter().map(|(cap, value)| (cap, value, OnceCell::from(true))).collect(), real }
     }
 }
 
 impl<R: Resolver> Resolver for SourcedResolver<'_, R> {
     fn resolve(&self, hash: &Hash) -> Option<&Unit> {
-        // The pieces a non-scalar constant made so far is built from (see `constant_unit`).
-        for (_, _, made) in &self.sourced {
-            if let Some(Some((_, parts))) = made.get()
-                && let Some(part) = parts.units.get(hash)
-            {
-                return Some(part);
-            }
-        }
-        let u = self.real.resolve(hash)?;
-        if let UnitBody::Primitive { name } = &u.body
-            && let Some(caps) = capabilities_of(name, &u.params) {
-                for (i, (cap, value, made)) in self.sourced.iter().enumerate() {
-                    if caps.contains((*cap).clone()) {
-                        // Each value's pieces under keys of their own (`Parts::within`).
-                        let made = made.get_or_init(|| {
-                            let mut parts = Parts::within(i as u64);
-                            constant_unit(value, &mut parts).map(|unit| (unit, parts))
-                        });
-                        if let Some((constant, _)) = made {
-                            return Some(constant);
-                        }
-                    }
-                }
-            }
-        Some(u)
+        self.real.resolve(hash)
     }
 
     fn shape(&self, unit: &holon_core::Unit) -> Option<&holon_core::Shape> {
         self.real.shape(unit)
     }
 
+    fn resolved(&self, unit: &holon_core::Unit) -> Option<&holon_core::Resolved> {
+        self.real.resolved(unit)
+    }
+
+    /// The value for `unit`'s capability. One that isn't data (an `Effect`, which a caller's
+    /// storage may hold: see `is_storable`) isn't handed out, which is the seam `fire_sourced`'s
+    /// doc already names for an unsupplied capability: "evaluates to nothing", never a request a
+    /// read could carry to the output and have performed.
+    fn sourced(&self, unit: &Unit) -> Option<&Value> {
+        let UnitBody::Primitive { name } = &unit.body else { return None };
+        let caps: Vec<Capability> = capabilities_of(name, &unit.params)?.iter().collect();
+        self.sourced
+            .iter()
+            .filter(|(cap, ..)| caps.contains(cap))
+            .find(|(_, value, data)| *data.get_or_init(|| is_storable(value)))
+            .map(|(_, value, _)| *value)
+    }
+
     fn run_module(&self, bytes: &[u8], limits: &holon_core::ModuleLimits, inputs: &[Option<Value>]) -> Result<Vec<Option<Value>>, String> {
         self.real.run_module(bytes, limits, inputs)
-    }
-}
-
-/// A niladic unit that evaluates to `value` — used to inject a sourced value (a held state
-/// value, the clock, an ingress body) at its leaf. A scalar is one `const`. A list or an Option
-/// is a small composite: one constant per element (built the same way, recursively) wired into
-/// `list` or `some`, whose pieces go into `parts` so the resolver can hand them out. A record
-/// starts from `record()` and adds one `with_field` per field. `none()`, the empty `list()` and
-/// `record()` are niladic already.
-///
-/// `None` where `value` can't be **faithfully** rebuilt: an `Effect` (writes refuse them, see
-/// `is_storable`, but storage loaded from disk predates that rule), or a sum that isn't an
-/// Option, since genesis has no constructor for an arbitrary arm. The caller then drops the
-/// capability rather than inject a fabricated value. Before this, a stored list read back as
-/// `[]` and a stored Option read as absent.
-fn constant_unit(value: &Value, parts: &mut Parts) -> Option<Unit> {
-    let option = || Type::Sum(vec![Type::Any, Type::Product(vec![])]);
-    Some(match value {
-        Value::Number(n) => scalar("Number", n.to_string(), Type::Number),
-        Value::Boolean(b) => scalar("Boolean", b.to_string(), Type::Boolean),
-        Value::Text(s) => scalar("Text", s.clone(), Type::Text),
-        Value::List(xs) => {
-            let elements = xs.iter().map(|x| constant_unit(x, parts)).collect::<Option<Vec<_>>>()?;
-            built_from(parts, elements, "list", Type::list_any())
-        }
-        Value::Sum { arm: 0, payload } => {
-            let inner = constant_unit(payload, parts)?;
-            built_from(parts, vec![inner], "some", option())
-        }
-        Value::Sum { arm: 1, payload } if **payload == Value::List(vec![]) => built_from(parts, vec![], "none", option()),
-        Value::Record(fields) => {
-            let mut acc = built_from(parts, vec![], "record", Type::Record);
-            for (name, v) in fields {
-                let value = constant_unit(v, parts)?;
-                acc = with_field(parts, acc, value, name);
-            }
-            acc
-        }
-        Value::Sum { .. } | Value::Effect { .. } => return None,
-    })
-}
-
-/// `with_field(record, value)` at `name`, as a composite over the two given units.
-fn with_field(parts: &mut Parts, record: Unit, value: Unit, name: &str) -> Unit {
-    let setter = Unit {
-        body: UnitBody::Primitive { name: "with_field".into() },
-        params: vec![Param::frozen("name", name)],
-        inputs: vec![
-            Port { name: "record".into(), ty: Type::Record },
-            Port { name: "value".into(), ty: Type::Any },
-        ],
-        outputs: vec![Port { name: "out".into(), ty: Type::Record }],
-    };
-    let children = vec![parts.add(record), parts.add(value), parts.add(setter)];
-    let edges = vec![
-        Edge { from_child: 0, from_port: 0, to_child: 2, to_port: 0 },
-        Edge { from_child: 1, from_port: 0, to_child: 2, to_port: 1 },
-        Edge { from_child: 2, from_port: 0, to_child: BOUNDARY, to_port: 0 },
-    ];
-    Unit {
-        body: UnitBody::Composite { children, edges },
-        params: vec![],
-        inputs: vec![],
-        outputs: vec![Port { name: "out".into(), ty: Type::Record }],
-    }
-}
-
-/// `ctor(e0, e1, …)` as a unit: the constructor primitive itself when there are no elements,
-/// otherwise a composite feeding each element unit into the constructor's inputs in order.
-fn built_from(parts: &mut Parts, elements: Vec<Unit>, ctor: &str, out: Type) -> Unit {
-    let ctor_unit = Unit {
-        body: UnitBody::Primitive { name: ctor.into() },
-        params: vec![],
-        inputs: (0..elements.len()).map(|i| Port { name: format!("e{i}"), ty: Type::Any }).collect(),
-        outputs: vec![Port { name: "out".into(), ty: out.clone() }],
-    };
-    if elements.is_empty() {
-        return ctor_unit;
-    }
-    let k = elements.len() as u32;
-    let mut children: Vec<Hash> = elements.into_iter().map(|e| parts.add(e)).collect();
-    children.push(parts.add(ctor_unit));
-    let mut edges: Vec<Edge> =
-        (0..k).map(|i| Edge { from_child: i, from_port: 0, to_child: k, to_port: i }).collect();
-    edges.push(Edge { from_child: k, from_port: 0, to_child: BOUNDARY, to_port: 0 });
-    Unit {
-        body: UnitBody::Composite { children, edges },
-        params: vec![],
-        inputs: vec![],
-        outputs: vec![Port { name: "out".into(), ty: out }],
-    }
-}
-
-/// Units built by `constant_unit`, under private keys. They are never hashed (a value is not a
-/// unit: hashing each part would only cost) and never leave the resolver. Keys are 16 bytes of
-/// 0xFF, the space of the value they are part of, and a counter, which no blake3 output will
-/// realistically equal.
-#[derive(Default)]
-struct Parts {
-    units: BTreeMap<Hash, Unit>,
-    /// Which sourced value's pieces these are: each value's keys apart from every other's.
-    space: u64,
-}
-
-impl Parts {
-    fn within(space: u64) -> Parts {
-        Parts { units: BTreeMap::new(), space }
-    }
-
-    fn add(&mut self, unit: Unit) -> Hash {
-        let mut key = [0xFF; 32];
-        key[16..24].copy_from_slice(&self.space.to_be_bytes());
-        key[24..].copy_from_slice(&(self.units.len() as u64).to_be_bytes());
-        self.units.insert(key, unit);
-        key
-    }
-}
-
-fn scalar(ty_name: &str, value: String, ty: Type) -> Unit {
-    Unit {
-        body: UnitBody::Primitive { name: "const".into() },
-        params: vec![Param::frozen("type", ty_name), Param::frozen("value", value)],
-        inputs: vec![],
-        outputs: vec![Port { name: "out".into(), ty }],
     }
 }
 
@@ -1075,7 +943,7 @@ pub enum CacheIngestError {
 #[cfg(test)]
 mod memo_tests {
     use super::*;
-    use holon_core::{MapResolver, Port};
+    use holon_core::{MapResolver, Port, Type};
 
     fn prim(name: &str, n_in: usize, out: Type) -> Unit {
         Unit {
@@ -1127,7 +995,7 @@ mod memo_tests {
 #[cfg(test)]
 mod shared_cache_tests {
     use super::*;
-    use holon_core::{MapResolver, Param, Type};
+    use holon_core::{MapResolver, Param, Port, Type};
 
     fn const_num(n: &str) -> Unit {
         Unit {
@@ -1211,13 +1079,13 @@ mod shared_cache_tests {
     }
 }
 
-/// Sourced values made into constants only when a leaf asks (`SourcedResolver`): two of them that
-/// are lists and records, read in one run, each come back whole, their pieces under keys of their
-/// own; one no leaf reads is never made; one a constant can't rebuild still reads as nothing.
+/// Sourced values handed to the leaves that read them (`SourcedResolver`): two of them that are
+/// lists and records, read in one run, each come back whole; one no leaf reads is never looked
+/// at; one that isn't data reads as nothing; and a composite keeps its children whatever it reads.
 #[cfg(test)]
 mod sourced_tests {
     use super::*;
-    use holon_core::{Edge, Port, BOUNDARY};
+    use holon_core::{Edge, Port, Type, BOUNDARY};
 
     fn read(key: &str) -> Unit {
         Unit { params: vec![Param::frozen("key", key)], ..holon_core::interface_of("store_read").unwrap() }
@@ -1248,18 +1116,84 @@ mod sourced_tests {
         ];
         let resolver = SourcedResolver::new(&sourced, &real);
         let outputs = holon_core::eval(&root, &[], &resolver).into_vec();
-        assert_eq!(outputs, vec![Some(list_a), Some(list_b), None], "each whole; one that can't be rebuilt reads as nothing");
-        assert!(resolver.sourced[0].2.get().is_none(), "one no leaf reads is never made");
-        // Pieces of the two lists are kept apart: none of one's keys is the other's.
-        let keys = |i: usize| resolver.sourced[i].2.get().unwrap().as_ref().unwrap().1.units.keys().copied().collect::<BTreeSet<_>>();
-        assert!(!keys(1).is_empty() && !keys(2).is_empty() && keys(1).is_disjoint(&keys(2)));
+        assert_eq!(outputs, vec![Some(list_a), Some(list_b), None], "each whole; one that isn't data reads as nothing");
+        assert!(resolver.sourced[0].2.get().is_none(), "one no leaf reads is never looked at");
+    }
+
+    /// A resolver that keeps each composite's children resolved, as the server's does (holon's
+    /// `units.rs`, `Loaded`).
+    struct Keeping {
+        units: BTreeMap<Hash, std::sync::Arc<Unit>>,
+        shapes: holon_core::Shapes,
+    }
+
+    impl Keeping {
+        fn of(units: Vec<Unit>) -> Keeping {
+            let units: BTreeMap<Hash, std::sync::Arc<Unit>> = units.into_iter().map(|u| (hash_unit(&u).unwrap(), std::sync::Arc::new(u))).collect();
+            let shapes = holon_core::Shapes::kept(units.values(), |h| units.get(h));
+            Keeping { units, shapes }
+        }
+    }
+
+    impl Resolver for Keeping {
+        fn resolve(&self, hash: &Hash) -> Option<&Unit> {
+            self.units.get(hash).map(|u| u.as_ref())
+        }
+        fn shape(&self, unit: &Unit) -> Option<&holon_core::Shape> {
+            self.shapes.get(unit)
+        }
+        fn resolved(&self, unit: &Unit) -> Option<&holon_core::Resolved> {
+            self.shapes.resolved(unit)
+        }
+    }
+
+    /// The real resolver keeps a composite's children, one of them a read the run sources: the
+    /// wrapper hands them on, and each run's read is that run's value, never one an earlier run
+    /// read; with nothing sourced, the read is nothing.
+    #[test]
+    fn a_sourced_value_reaches_a_composite_whose_children_are_kept() {
+        let one = Unit {
+            body: UnitBody::Primitive { name: "const".into() },
+            params: vec![Param::frozen("type", "Number"), Param::frozen("value", "1")],
+            inputs: vec![],
+            outputs: vec![Port { name: "out".into(), ty: Type::Number }],
+        };
+        let inner = Unit {
+            body: UnitBody::Composite { children: vec![hash_unit(&one).unwrap()], edges: vec![Edge { from_child: 0, from_port: 0, to_child: BOUNDARY, to_port: 0 }] },
+            params: vec![],
+            inputs: vec![],
+            outputs: vec![Port { name: "out".into(), ty: Type::Number }],
+        };
+        let root = Unit {
+            body: UnitBody::Composite {
+                children: vec![hash_unit(&read("a")).unwrap(), hash_unit(&inner).unwrap()],
+                edges: (0..2).map(|i| Edge { from_child: i, from_port: 0, to_child: BOUNDARY, to_port: i }).collect(),
+            },
+            params: vec![],
+            inputs: vec![],
+            outputs: vec![Port { name: "read".into(), ty: Type::Any }, Port { name: "one".into(), ty: Type::Number }],
+        };
+        let (root_hash, inner_hash) = (hash_unit(&root).unwrap(), hash_unit(&inner).unwrap());
+        let keeping = Keeping::of(vec![read("a"), one, inner, root]);
+        let (root, inner) = (keeping.resolve(&root_hash).unwrap(), keeping.resolve(&inner_hash).unwrap());
+        assert!(keeping.resolved(root).is_some(), "the real resolver keeps the root's children");
+        for held in [Value::Text("held".into()), Value::Record(BTreeMap::from([("n".to_string(), Value::Number(2.0))])), Value::Number(3.0)] {
+            let sourced = vec![(Capability::StateRead("a".into()), held.clone())];
+            let resolver = SourcedResolver::new(&sourced, &keeping);
+            assert!(std::ptr::eq(resolver.resolved(root).unwrap(), keeping.resolved(root).unwrap()), "handed on as kept");
+            assert!(resolver.resolved(inner).is_some());
+            assert_eq!(eval(root, &[], &resolver).into_vec(), vec![Some(held), Some(Value::Number(1.0))], "this run's value");
+        }
+        let nothing = SourcedResolver::new(&[], &keeping);
+        assert_eq!(eval(root, &[], &nothing).into_vec(), vec![None, Some(Value::Number(1.0))]);
+        assert_eq!(eval(root, &[], &nothing).into_vec(), eval(root, &[], &keeping).into_vec());
     }
 }
 
 #[cfg(test)]
 mod registry_tests {
     use super::*;
-    use holon_core::{Edge, Port, BOUNDARY};
+    use holon_core::{Edge, Port, Type, BOUNDARY};
 
     fn num_const(v: &str) -> Unit {
         Unit {
@@ -1451,7 +1385,7 @@ mod registry_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use holon_core::{Edge, MapResolver, Port, BOUNDARY};
+    use holon_core::{Edge, MapResolver, Port, Type, BOUNDARY};
 
     /// A recording host: captures what *would* be performed, so the loop is testable
     /// without touching the world.
@@ -1610,9 +1544,10 @@ mod tests {
         assert_eq!(host.storage().get("counter"), Some(&num(3.0)));
     }
 
-    /// Regression: a stored List read back as `[]` (`constant_unit` injected an empty `list`) and a
-    /// stored Option read as absent. Every storable shape now reads back exactly as stored, and a
-    /// sum that isn't an Option still reads as absent rather than a fabricated arm.
+    /// Regression: a stored List read back as `[]` (a constant rebuilt from it was an empty `list`)
+    /// and a stored Option read as absent. Every storable shape reads back exactly as stored, a
+    /// sum that isn't an Option too, now that a read is handed the value itself; one holding an
+    /// effect reads as absent.
     #[test]
     fn stored_values_read_back_exactly() {
         let mut r = MapResolver::new();
@@ -1652,19 +1587,20 @@ mod tests {
                     .into(),
             ),
             list(vec![Value::Record([("n".to_string(), some(num(2.0)))].into())]),
+            Value::Sum { arm: 2, payload: Box::new(num(1.0)) },
+            Value::Sum { arm: 1, payload: Box::new(num(1.0)) },
         ] {
             assert_eq!(read_back(held.clone()), vec![Some(held.clone())], "{held:?}");
         }
 
-        // Not reconstructible: absent, never a different value.
-        assert_eq!(read_back(Value::Sum { arm: 2, payload: Box::new(num(1.0)) }), vec![None]);
-        assert_eq!(read_back(Value::Sum { arm: 1, payload: Box::new(num(1.0)) }), vec![None]);
+        // Not data: absent, never a request a read could carry to the output.
         assert_eq!(read_back(list(vec![num(1.0), Value::Effect { sink: "egress".into(), payload: Box::new(num(2.0)) }])), vec![None]);
     }
 
     /// Regression: `store_write(egress(x))` used to commit the `Effect` itself to the cell, and
-    /// the next round's `constant_unit` hit `unreachable!` — a panic while the caller held the
-    /// state lock. Writes now refuse effects, and an effect already in storage reads as absent.
+    /// the next round, rebuilding the value as a constant, hit `unreachable!` — a panic while the
+    /// caller held the state lock. Writes now refuse effects, and an effect already in storage
+    /// reads as absent.
     #[test]
     fn effect_is_never_stored_and_never_panics() {
         let mut r = MapResolver::new();
@@ -1700,7 +1636,8 @@ mod tests {
 
         // Storage that already holds an effect (persisted before the write gate existed).
         let held = Value::Effect { sink: "egress".into(), payload: Box::new(num(1.0)) };
-        assert_eq!(constant_unit(&held, &mut Parts::default()), None);
+        let read = fire_sourced(&graph, &[(Capability::StateRead("cell".into()), held.clone())], &r, &mut Recorder::default());
+        assert_eq!(read[1], None);
         let mut host = StateHost::new(BTreeMap::from([("cell".to_string(), held)]));
         host.round(&graph, &[], &r);
 

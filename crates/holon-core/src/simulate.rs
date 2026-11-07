@@ -85,7 +85,8 @@ fn constant(name: &str, params: Vec<Param>, outputs: Vec<Port>) -> Unit {
 /// A design-mode resolver: wraps the real resolver and, for every effect leaf in a
 /// root's closure, returns that leaf's pure [`mock_of`] instead. The mocks are
 /// **owned** here (the [`Resolver`] API hands out `&Unit`), keyed by the real leaf's
-/// hash, built by one closure pre-pass at construction.
+/// hash, built by one closure pre-pass at construction. It forwards the real resolver's
+/// shapes but not the children it keeps ([`Resolver::resolved`]): those are the real leaves.
 pub struct Simulated<'a, R: Resolver> {
     real: &'a R,
     mocks: BTreeMap<Hash, Unit>,
@@ -114,6 +115,10 @@ impl<R: Resolver> Resolver for Simulated<'_, R> {
 
     fn shape(&self, unit: &crate::Unit) -> Option<&crate::Shape> {
         self.real.shape(unit)
+    }
+
+    fn sourced(&self, unit: &Unit) -> Option<&Value> {
+        self.real.sourced(unit)
     }
 }
 

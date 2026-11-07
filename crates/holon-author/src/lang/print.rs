@@ -23,7 +23,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
-use holon_core::{interface_of, MapResolver, Resolver, UnitBody, BOUNDARY, CALLS, TRIGGER, VARIADIC};
+use holon_core::{family_values, function_takes, interface_of, MapResolver, Resolver, UnitBody, BOUNDARY, CALLS, PASSES_EXTRA, TRIGGER, VARIADIC};
 use oxc_allocator::Allocator;
 use oxc_ast::ast as js;
 use oxc_parser::Parser;
@@ -32,7 +32,8 @@ use oxc_span::{GetSpan, SourceType};
 use crate::builder::FlowDocument;
 use crate::canvas::{Node, PlacedBody};
 use crate::composites::{inner_canvas, resolve, Names};
-use crate::lang::lower::{alias, call_noun, is_optional, RESERVED};
+use crate::lang::lower::{alias, call_noun, is_optional, RESERVED, UNUSED};
+use crate::lang::ts::{DATE_GETTERS, DATE_SETTERS};
 use crate::routes::{components, find_actions, find_clocks, find_files, find_routes};
 use crate::templates;
 use crate::text::restore;
@@ -46,8 +47,12 @@ const JS_RESERVED: &[&str] = &[
     "protected", "public", "static", "yield", "await", "async", "undefined", "arguments", "eval", "NaN", "Infinity", "JSON", "Object",
 ];
 
-/// JavaScript's globals a flow doesn't have (ts.rs names them in a mistake): never a name here.
-const GLOBALS: &[&str] = &["fetch", "Date", "Math", "setTimeout", "setInterval", "process", "globalThis", "window", "console", "Promise", "require"];
+/// JavaScript's globals a flow doesn't have (ts.rs names them in a mistake), and the number ones
+/// it reads as leaves (`Math.round`, `parseInt`): never a name here.
+const GLOBALS: &[&str] = &[
+    "fetch", "Date", "Math", "setTimeout", "setInterval", "process", "globalThis", "window", "console", "Promise", "require", "Number", "parseInt", "parseFloat", "isNaN", "isFinite",
+    "String", "encodeURIComponent", "encodeURI", "decodeURIComponent", "decodeURI", "btoa", "atob",
+];
 
 /// `"holon"`'s own words: the top level's, the answers', and the waits'.
 const VOCAB: &[&str] = &["flow", "route", "every", "on", "action", "js", "respond", "status", "stripe", "event"];
@@ -57,13 +62,29 @@ const COND: u8 = 1;
 const COALESCE: u8 = 2;
 const OR: u8 = 3;
 const AND: u8 = 4;
-const EQ: u8 = 5;
-const REL: u8 = 6;
-const ADD: u8 = 7;
-const MUL: u8 = 8;
-const UNARY: u8 = 9;
-const MEMBER: u8 = 10;
-const ATOM: u8 = 11;
+const BITOR: u8 = 5;
+const BITXOR: u8 = 6;
+const BITAND: u8 = 7;
+const EQ: u8 = 8;
+const REL: u8 = 9;
+const SHIFT: u8 = 10;
+const ADD: u8 = 11;
+const MUL: u8 = 12;
+const POW: u8 = 13;
+const UNARY: u8 = 14;
+const MEMBER: u8 = 15;
+const ATOM: u8 = 16;
+
+/// The frozen param that picks a text leaf's JavaScript method, where one does.
+fn family_param(leaf: &str) -> &'static str {
+    match leaf {
+        "code_at" => "mode",
+        "text_contains" => "at",
+        "trim" | "pad" => "side",
+        "replace" => "count",
+        _ => "",
+    }
+}
 
 /// `text` in parentheses when it binds less tightly than `min`.
 fn wrap((text, power): (String, u8), min: u8) -> String {
@@ -107,6 +128,12 @@ fn param_name(port: &str) -> String {
         Some(word) if RESERVED.contains(&word) && word != "in" && word != "out" => word.to_string(),
         _ => port.to_string(),
     }
+}
+
+/// How many inputs a higher-order leaf takes before the values its function uses from around
+/// it: `fold` its start and the list, the others the list.
+fn leaf_inputs(leaf: &str) -> usize {
+    interface_of(leaf).map_or(1, |u| u.inputs.len())
 }
 
 /// The port ts.rs gives a parameter named `ts`.
@@ -1142,7 +1169,7 @@ impl<'s> Printer<'s> {
             && only.kids.is_empty()
             && only.after.is_none()
         {
-            let object = value.starts_with('{') && is_object_literal(value);
+            let object = value.starts_with('{') && is_one_group(value);
             if object || !value.starts_with('{') {
                 let value = if object { format!("({value})") } else { value.to_string() };
                 return Ok(Item { text: format!("{head}{asy}{params} => {value}{options})"), nodes: vec![trigger.id.clone()], body });
@@ -1304,8 +1331,9 @@ fn host_names(host: &str) -> (String, String) {
     (base, identifier(labels.last().copied().unwrap_or("host")))
 }
 
-/// Whether `text` is one object literal, `{ … }` with its braces matched only at its ends.
-fn is_object_literal(text: &str) -> bool {
+/// Whether `text` is one bracketed group, an object literal `{ … }` or a list's `[ … ]`, its
+/// brackets matched only at its ends.
+fn is_one_group(text: &str) -> bool {
     let mut depth = 0i32;
     let mut quote: Option<char> = None;
     let mut escaped = false;
@@ -1486,9 +1514,10 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
         self.tick.as_deref() == Some(id)
     }
 
-    /// Whether `node` keeps the name the text gave it.
+    /// Whether `node` keeps the name the text gave it. A function written in place gave none: its
+    /// nodes' ids are its own canvas's, which a top-level node's name may share.
     fn named(&self, node: &Node) -> bool {
-        self.p.bindings.get(&node.id).is_some_and(|b| !hidden(b)) && !self.ignored.contains(&node.id)
+        self.kind != Kind::Lambda && self.p.bindings.get(&node.id).is_some_and(|b| !hidden(b)) && !self.ignored.contains(&node.id)
     }
 
     /// Whether `node` may fold into an expression: no name of its own, and one output.
@@ -1662,6 +1691,20 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
         Some(MatchShape { subject: subject?, arms, els, parts })
     }
 
+    /// The `c ? a : b` that `node` is the top of, if it is one (lower.rs `ExprKind::If`): `guard(c,
+    /// a) ?? guard(!(c ?? false), b)`, one `c` on both sides. Its guards, the `not` and the `default`.
+    fn ternary(&self, node: &Node) -> Option<[&'g Node; 4]> {
+        if node.data.name != "coalesce" || node.data.body != PlacedBody::Primitive {
+            return None;
+        }
+        let then = self.part(node, "a", "guard", 1)?;
+        let taken = self.part(node, "b", "guard", 1)?;
+        let not = self.part(taken, "cond", "not", 1)?;
+        let held = self.part(not, "v", "default", 1).filter(|d| d.param("type") == "Boolean" && d.param("value") == "false")?;
+        let c = self.g.incoming.get(&(then.id.clone(), "cond".to_string()))?;
+        (self.g.incoming.get(&(held.id.clone(), "value".to_string())) == Some(c)).then_some([then, taken, not, held])
+    }
+
     /// Whether a `switch` reads `m` back as the same values: ts.rs drops an arm whose value is the
     /// default's (the same name, or the same literal), so such a match stays the expressions it is.
     fn switch_reads_back(&self, m: &MatchShape) -> bool {
@@ -1743,6 +1786,17 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
                 self.matches.insert(n.id.clone(), m);
             }
         }
+        // A ternary's condition, read by both its sides, is written once, in place.
+        let g = self.g;
+        for n in &g.nodes {
+            let Some([then, ..]) = self.ternary(n) else { continue };
+            if let Some(Src::Node { id, .. }) = g.incoming.get(&(then.id.clone(), "cond".to_string())) {
+                let c = g.node(id);
+                if self.pass_through(c).is_none() && self.free(c) && g.consumed_total(c) == 2 {
+                    self.absorbed.insert(id.clone());
+                }
+            }
+        }
         // A route answering a match: a `switch` whose cases return.
         if self.kind == Kind::Route
             && let Some(respond) = self.g.nodes.iter().find(|n| n.is_template("respond"))
@@ -1762,7 +1816,6 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
         }
         // What a `coalesce` falls back to, written as a literal, would read as a `default`
         // (`x ?? 0`), parentheses or not: it gets a name.
-        let g = self.g;
         for n in &g.nodes {
             if n.data.name != "coalesce" || self.matches.contains_key(&n.id) || self.absorbed.contains(&n.id) {
                 continue;
@@ -1808,18 +1861,18 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
         }
         // The values a function written in place uses from around it: each bound under the name
         // the function's input has, so the lowering passes the same.
-        let maps: Vec<&'g Node> = self.g.nodes.iter().copied().filter(|n| matches!(n.data.name.as_str(), "map" | "fold") && !n.param("fn").is_empty()).collect();
+        let maps: Vec<&'g Node> = self.g.nodes.iter().copied().filter(|n| PASSES_EXTRA.contains(&n.data.name.as_str()) && n.data.body == PlacedBody::Primitive && !n.param("fn").is_empty()).collect();
         for n in maps {
-            let own = if n.data.name == "fold" { 2 } else { 1 };
-            if n.data.inputs.len() <= own {
+            let (own, base) = (function_takes(&n.data.name), leaf_inputs(&n.data.name));
+            if n.data.inputs.len() <= base {
                 continue;
             }
             let (_, unit) = resolve(self.p.store, n.param("fn"))?;
             let ports: Vec<String> = unit.inputs.iter().skip(own).map(|p| p.name.clone()).collect();
-            if ports.windows(2).any(|w| w[0] >= w[1]) || ports.len() != n.data.inputs.len() - own {
+            if ports.windows(2).any(|w| w[0] >= w[1]) || ports.len() != n.data.inputs.len() - base {
                 return Err(format!("{}: the values its function uses from around it aren't in the order TypeScript passes them", n.data.name));
             }
-            for (port, input) in ports.iter().zip(&n.data.inputs[own..]) {
+            for (port, input) in ports.iter().zip(&n.data.inputs[base..]) {
                 match self.g.incoming.get(&(n.id.clone(), input.name.clone())) {
                     Some(Src::In(p)) if p == port => {}
                     Some(Src::Node { id, output }) if self.is_request(id) && (output == "request" || output == "file" || output == "input") && local_name(&self.request.as_ref().expect("checked").1) == *port => {}
@@ -2349,7 +2402,7 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
     /// `value ?? status(missing)`: the answer when the value is absent.
     fn missing(&mut self, value: (String, u8), missing: &str) -> String {
         self.p.vocab.insert("status".into());
-        let left = if value.1 == COALESCE || value.1 >= EQ { value.0 } else { format!("({})", value.0) };
+        let left = if value.1 == COALESCE || value.1 >= BITOR { value.0 } else { format!("({})", value.0) };
         format!("{left} ?? status({missing})")
     }
 
@@ -2604,7 +2657,7 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
             }
             "field" if is_identifier(node.param("name")) && node.param("name") != "length" => {
                 let name = node.param("name").to_string();
-                let base = self.required(node, "record", MEMBER)?;
+                let base = self.receiver(node, "record")?;
                 // A field of the request record named as one of the request's parts.
                 let clash = matches!(self.g.incoming.get(&(node.id.clone(), "record".into())), Some(Src::Node { id, output }) if self.is_request(id) && output == "request") && REQUEST_PARTS.contains(&name.as_str());
                 member(if clash { format!("{base}.request.{name}") } else { format!("{base}.{name}") })
@@ -2614,31 +2667,76 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
                 let key = self.required(node, "key", COND)?;
                 member(format!("{base}[{key}]"))
             }
-            "json_parse" => member(format!("JSON.parse({})", self.required(node, "text", COND)?)),
-            "json_stringify" => member(format!("JSON.stringify({})", self.required(node, "value", COND)?)),
+            "json_parse" if node.param("fn").is_empty() => member(format!("JSON.parse({})", self.required(node, "text", COND)?)),
+            "json_parse" => {
+                let t = self.required(node, "text", COND)?;
+                let f = self.function_text(node)?;
+                member(format!("JSON.parse({t}, {f})"))
+            }
+            "json_stringify" => self.json_stringify(node),
             "keys" => member(format!("Object.keys({})", self.required(node, "record", COND)?)),
+            "values" => member(format!("Object.values({})", self.required(node, "record", COND)?)),
+            "from_entries" => member(format!("Object.fromEntries({})", self.required(node, "entries", COND)?)),
+            "has" => {
+                let r = self.required(node, "record", COND)?;
+                let k = self.required(node, "key", COND)?;
+                member(format!("Object.hasOwn({r}, {k})"))
+            }
+            "same_value" => {
+                let a = self.required(node, "a", COND)?;
+                let b = self.required(node, "b", COND)?;
+                member(format!("Object.is({a}, {b})"))
+            }
+            "group_by" => {
+                let xs = self.required(node, "list", COND)?;
+                let f = self.function_text(node)?;
+                member(format!("Object.groupBy({xs}, {f})"))
+            }
+            "date_part" | "date_text" | "date_set" => self.date_form(node),
+            "date_utc" if self.every_wired(node) => {
+                let ports: Vec<String> = d.inputs.iter().map(|p| p.name.clone()).collect();
+                member(format!("Date.UTC({})", self.texts(node, &ports)?.join(", ")))
+            }
+            "date_parse" => member(format!("Date.parse({})", self.required(node, "text", COND)?)),
             "uppercase" | "lowercase" => {
-                let s = self.required(node, "s", MEMBER)?;
+                let s = self.receiver(node, "s")?;
                 member(format!("{s}.{}()", if d.name == "uppercase" { "toUpperCase" } else { "toLowerCase" }))
             }
             "split" | "join" | "index_of" if self.p.changed_params(node).is_empty() => {
-                let (subject, arg, method) = match d.name.as_str() {
-                    "split" => ("text", "sep", "split"),
-                    "join" => ("list", "sep", "join"),
-                    _ => ("haystack", "needle", "indexOf"),
+                let (subject, arg, method, then) = match d.name.as_str() {
+                    "split" => ("text", "sep", "split", Some("limit")),
+                    "join" => ("list", "sep", "join", None),
+                    _ => ("haystack", "needle", "indexOf", Some("from")),
                 };
                 if self.arg_wired(node, subject) && self.arg_wired(node, arg) {
-                    let s = self.required(node, subject, MEMBER)?;
+                    let s = self.receiver(node, subject)?;
                     let a = self.required(node, arg, COND)?;
-                    return member(format!("{s}.{method}({a})"));
+                    let more = match then.filter(|t| self.arg_wired(node, t)) {
+                        Some(t) => format!(", {}", self.required(node, t, COND)?),
+                        None => String::new(),
+                    };
+                    return member(format!("{s}.{method}({a}{more})"));
                 }
                 self.generic(node)
             }
-            "map" | "fold" => self.map(node),
+            // `.length`, where what it is read on is known to be a text or a list, as the lowering
+            // picks the leaf by it.
+            "text_length" if self.known(node, "s", WType::Text) => member(format!("{}.length", self.receiver(node, "s")?)),
+            "length" if self.known_by(node, "list", |t| matches!(t, WType::List(_))) => member(format!("{}.length", self.receiver(node, "list")?)),
+            "text_at" | "code_at" | "from_codes" | "text_contains" | "trim" | "pad" | "repeat" | "replace" | "normalize" | "uri_encode" | "uri_decode" | "is_well_formed" => self.text_form(node),
+            "base64" if node.param("bytes") == "latin1" && node.param("alphabet") == "standard" && self.arg_wired(node, "text") => {
+                let f = if node.param("mode") == "decode" { "atob" } else { "btoa" };
+                member(format!("{f}({})", self.required(node, "text", COND)?))
+            }
+            "map" | "fold" | "any" | "all" | "filter" | "find" | "find_index" | "find_last" | "find_last_index" | "sort_by" => self.map(node, None),
+            "at" | "indices" | "entries" | "includes" | "last_index_of" | "reverse" | "sort" | "to_spliced" | "with_item" | "fill" | "copy_within" | "flat" | "is_list" | "unique" => self.list_form(node),
+            "slice" if matches!(node.param("mode"), "end" | "substring") => self.list_form(node),
+            "math" | "max" | "min" | "aggregate" | "atan2" | "power" | "remainder" | "bitwise" | "number_test" | "to_number" | "number_format" => self.number_form(node),
             "concat" => self.concat(node),
             "as_text" => atom(format!("`${{{}}}`", self.required(node, "value", 0)?)),
             "record" => atom("{}".into()),
             "with_field" => self.record(node),
+            "merge" | "insert" if self.every_wired(node) => self.record(node),
             "list" if d.inputs.len() >= 2 => {
                 let mut items = Vec::new();
                 for p in &d.inputs {
@@ -2655,29 +2753,35 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
                 let list = self.required(node, "list", COND)?;
                 atom(format!("[...{list}, {item}]"))
             }
+            // `typeof x`: what `type_of` says, "undefined" where nothing arrives.
+            "default"
+                if node.param("type") == "Text"
+                    && node.param("value") == "undefined"
+                    && let Some(t) = self.inline_source(node, "value", "type_of").filter(|t| self.arg_wired(t, "value")) =>
+            {
+                self.touch(t);
+                Ok((format!("typeof {}", self.required(t, "value", UNARY)?), UNARY))
+            }
             "default" => match literal(node.param("type"), node.param("value")) {
                 Some((l, _)) => {
-                    if let Some(g) = self.inline_source(node, "value", "guard") {
-                        self.touch(g);
-                        let c = self.required(g, "cond", COALESCE)?;
-                        let t = self.required(g, "value", COND)?;
-                        return Ok((format!("{c} ? {t} : {l}"), COND));
-                    }
                     let v = self.coalesce_left(node, "value")?;
                     Ok((format!("{v} ?? {l}"), COALESCE))
                 }
                 None => self.generic(node),
             },
             "coalesce" => {
-                if let Some(g) = self.inline_source(node, "a", "guard") {
-                    self.touch(g);
-                    let c = self.required(g, "cond", COALESCE)?;
-                    let t = self.required(g, "value", COND)?;
-                    let e = self.required(node, "b", COND)?;
+                if let Some(parts) = self.ternary(node) {
+                    for p in parts {
+                        self.touch(p);
+                    }
+                    let [then, taken, ..] = parts;
+                    let c = self.required(then, "cond", COALESCE)?;
+                    let t = self.required(then, "value", COND)?;
+                    let e = self.required(taken, "value", COND)?;
                     return Ok((format!("{c} ? {t} : {e}"), COND));
                 }
                 let a = self.coalesce_left(node, "a")?;
-                let b = self.required(node, "b", EQ)?;
+                let b = self.required(node, "b", BITOR)?;
                 Ok((format!("{a} ?? {b}"), COALESCE))
             }
             "guard" => {
@@ -2698,13 +2802,8 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
                     let v = self.arg(node, &p.name)?.ok_or_else(|| format!("{}: its {} isn't wired", d.name, p.name))?;
                     let min = if i == 0 && !same { prec } else { prec + 1 };
                     let mut text = wrap(v, min);
-                    // ts.rs refuses a text after `+` and a literal after `||` or `&&`: in parentheses,
-                    // they are read the same.
-                    let refused = match d.name.as_str() {
-                        "add" => text.starts_with(['"', '`']),
-                        "and" | "or" => i > 0 && (text.starts_with(['"', '`', '{', '[']) || text.starts_with(|c: char| c.is_ascii_digit())),
-                        _ => false,
-                    };
+                    // ts.rs refuses a literal after `||` or `&&`: in parentheses, it is read the same.
+                    let refused = matches!(d.name.as_str(), "and" | "or") && i > 0 && (text.starts_with(['"', '`', '{', '[']) || text.starts_with(|c: char| c.is_ascii_digit()));
                     if refused {
                         text = format!("({text})");
                     }
@@ -2909,11 +3008,210 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
         self.g.incoming.contains_key(&(node.id.clone(), input.to_string()))
     }
 
-    /// The left of `??`, in parentheses unless it is a `??` itself or binds tighter than `||`,
+    /// The left of `??`, in parentheses unless it is a `??` itself or binds tighter than `&&`,
     /// which TypeScript refuses beside it.
     fn coalesce_left(&mut self, node: &Node, input: &str) -> Result<String, String> {
         let (text, prec) = self.arg(node, input)?.ok_or_else(|| format!("{}: its {input} isn't wired", node.data.name))?;
-        Ok(if prec == COALESCE || prec >= EQ { text } else { format!("({text})") })
+        Ok(if prec == COALESCE || prec >= BITOR { text } else { format!("({text})") })
+    }
+
+    /// Whether every input `node` names is wired.
+    fn all_wired(&self, node: &Node, inputs: &[&str]) -> bool {
+        inputs.iter().all(|i| self.arg_wired(node, i))
+    }
+
+    /// Whether what feeds `node`'s `input` reads back as a value the lowering knows is a number
+    /// (lower.rs `leaf_form`): a node's `Number` output, by its name or written in place.
+    fn known_number(&self, node: &Node, input: &str) -> bool {
+        self.known(node, input, WType::Number)
+    }
+
+    /// Whether what feeds `node`'s `input` is a node's output of type `ty`, by its name or
+    /// written in place.
+    fn known(&self, node: &Node, input: &str, ty: WType) -> bool {
+        self.known_by(node, input, |t| *t == ty)
+    }
+
+    /// Whether what feeds `node`'s `input` is a node's output whose type `is` takes, by its name
+    /// or written in place.
+    fn known_by(&self, node: &Node, input: &str, is: impl Fn(&WType) -> bool) -> bool {
+        let Some(Src::Node { id, output }) = self.g.incoming.get(&(node.id.clone(), input.to_string())) else { return false };
+        if self.captured.contains_key(&(id.clone(), output.clone())) || self.request.as_ref().is_some_and(|(r, _)| r == id) || self.is_tick(id) {
+            return false;
+        }
+        let src = self.g.node(id);
+        let port = src.data.outputs.iter().find(|p| p.name == *output).or_else(|| if src.data.outputs.len() == 1 { src.data.outputs.first() } else { None });
+        self.pass_through(src).is_none() && port.is_some_and(|p| is(&p.ty))
+    }
+
+    /// A number method's receiver: a number literal in parentheses, as `5.toFixed()` doesn't
+    /// parse.
+    fn receiver(&mut self, node: &Node, input: &str) -> Result<String, String> {
+        let x = self.required(node, input, MEMBER)?;
+        Ok(if x.starts_with(|c: char| c.is_ascii_digit() || c == '.') { format!("({x})") } else { x })
+    }
+
+    /// A number leaf in its JavaScript form (ts.rs reads each back to its leaf), or by its name
+    /// where it has none: a family value with no form, an input left out.
+    fn number_form(&mut self, node: &Node) -> Result<(String, u8), String> {
+        let d = &node.data;
+        let member = |s: String| Ok((s, MEMBER));
+        match d.name.as_str() {
+            "math" if self.arg_wired(node, "x") && family_values("math", "fn").is_some_and(|v| v.contains(&node.param("fn"))) => {
+                let x = self.required(node, "x", COND)?;
+                member(format!("Math.{}({x})", node.param("fn")))
+            }
+            "max" | "min" if d.inputs.iter().all(|p| self.arg_wired(node, &p.name)) => {
+                let mut args = Vec::new();
+                for p in &d.inputs {
+                    args.push(self.required(node, &p.name, COND)?);
+                }
+                member(format!("Math.{}({})", d.name, args.join(", ")))
+            }
+            "aggregate" if self.arg_wired(node, "xs") => {
+                let f = node.param("fn");
+                match f {
+                    "sum_precise" => member(format!("Math.sumPrecise({})", self.required(node, "xs", COND)?)),
+                    "max" | "min" | "hypot" => {
+                        // `Math.hypot(a, b)` built its list in place.
+                        if f == "hypot"
+                            && let Some(list) = self.inline_source(node, "xs", "list").filter(|l| l.data.inputs.len() >= 2 && l.data.inputs.iter().all(|p| self.arg_wired(l, &p.name)))
+                        {
+                            self.touch(list);
+                            let mut items = Vec::new();
+                            for p in &list.data.inputs {
+                                items.push(self.required(list, &p.name, COND)?);
+                            }
+                            return member(format!("Math.hypot({})", items.join(", ")));
+                        }
+                        member(format!("Math.{f}(...{})", self.required(node, "xs", COND)?))
+                    }
+                    _ => self.generic(node),
+                }
+            }
+            "atan2" if self.all_wired(node, &["y", "x"]) => {
+                let y = self.required(node, "y", COND)?;
+                let x = self.required(node, "x", COND)?;
+                member(format!("Math.atan2({y}, {x})"))
+            }
+            "power" if self.all_wired(node, &["a", "b"]) => {
+                // Right-associative, and its left can't be a unary expression (`(-2) ** x`).
+                let a = self.required(node, "a", MEMBER)?;
+                let b = self.required(node, "b", POW)?;
+                Ok((format!("{a} ** {b}"), POW))
+            }
+            "remainder" if self.all_wired(node, &["a", "b"]) => {
+                let a = self.required(node, "a", MUL)?;
+                let b = self.required(node, "b", MUL + 1)?;
+                Ok((format!("{a} % {b}"), MUL))
+            }
+            "bitwise" if self.all_wired(node, &["a", "b"]) => {
+                let (op, prec) = match node.param("op") {
+                    "and" => ("&", BITAND),
+                    "or" => ("|", BITOR),
+                    "xor" => ("^", BITXOR),
+                    "shl" => ("<<", SHIFT),
+                    "shr" => (">>", SHIFT),
+                    "ushr" => (">>>", SHIFT),
+                    "imul" => {
+                        let a = self.required(node, "a", COND)?;
+                        let b = self.required(node, "b", COND)?;
+                        return member(format!("Math.imul({a}, {b})"));
+                    }
+                    _ => return self.generic(node),
+                };
+                let a = self.required(node, "a", prec)?;
+                let b = self.required(node, "b", prec + 1)?;
+                Ok((format!("{a} {op} {b}"), prec))
+            }
+            "number_test" if self.arg_wired(node, "x") => {
+                let call = match (node.param("test"), node.param("coerce")) {
+                    ("finite", "none") => "Number.isFinite",
+                    ("integer", "none") => "Number.isInteger",
+                    ("safe_integer", "none") => "Number.isSafeInteger",
+                    ("nan", "number") => "isNaN",
+                    ("finite", "number") => "isFinite",
+                    _ => return self.generic(node),
+                };
+                member(format!("{call}({})", self.required(node, "x", COND)?))
+            }
+            "to_number" if self.arg_wired(node, "x") => {
+                let radix = self.arg_wired(node, "radix");
+                let call = match (node.param("grammar"), radix) {
+                    ("number", false) => "Number",
+                    ("float", false) => "parseFloat",
+                    ("int", _) => "parseInt",
+                    _ => return self.generic(node),
+                };
+                let x = self.required(node, "x", COND)?;
+                let r = if radix { format!(", {}", self.required(node, "radix", COND)?) } else { String::new() };
+                member(format!("{call}({x}{r})"))
+            }
+            "number_format" if self.arg_wired(node, "x") => {
+                let digits = self.arg_wired(node, "digits");
+                let method = match node.param("style") {
+                    "fixed" => "toFixed",
+                    "precision" => "toPrecision",
+                    "exponential" => "toExponential",
+                    "string" if digits || self.known_number(node, "x") => "toString",
+                    _ => return self.generic(node),
+                };
+                let x = self.receiver(node, "x")?;
+                let d = if digits { self.required(node, "digits", COND)? } else { String::new() };
+                member(format!("{x}.{method}({d})"))
+            }
+            _ => self.generic(node),
+        }
+    }
+
+    /// A text leaf in its JavaScript form (ts.rs reads each back to its leaf): `s.charAt(i)`,
+    /// `s.startsWith(t, p)`, `s.trim()`, `s.padStart(n, f)`, `s.replaceAll(a, b)`,
+    /// `s.normalize("NFD")`, `encodeURIComponent(s)`, `String.fromCharCode(a, b)`, …; by name
+    /// where its inputs aren't wired as JavaScript passes them, in order with none left out
+    /// before one given.
+    fn text_form(&mut self, node: &Node) -> Result<(String, u8), String> {
+        let d = &node.data;
+        let wired: Vec<bool> = d.inputs.iter().map(|p| self.arg_wired(node, &p.name)).collect();
+        let given = wired.iter().take_while(|w| **w).count();
+        let complete = d.inputs.iter().skip(given).all(|p| is_optional(&d.name, &p.name)) && !wired[given..].iter().any(|w| *w);
+        if given == 0 || !complete {
+            return self.generic(node);
+        }
+        let ports: Vec<String> = d.inputs.iter().take(given).map(|p| p.name.clone()).collect();
+        let call = |f: &str, args: Vec<String>| Ok((format!("{f}({})", args.join(", ")), MEMBER));
+        match (d.name.as_str(), node.param("mode"), node.param("set")) {
+            ("from_codes", "unit", _) => return call("String.fromCharCode", self.texts(node, &ports)?),
+            ("from_codes", "point", _) => return call("String.fromCodePoint", self.texts(node, &ports)?),
+            ("uri_encode", _, "component") => return call("encodeURIComponent", self.texts(node, &ports)?),
+            ("uri_encode", _, "uri") => return call("encodeURI", self.texts(node, &ports)?),
+            ("uri_decode", _, "component") => return call("decodeURIComponent", self.texts(node, &ports)?),
+            ("uri_decode", _, "uri") => return call("decodeURI", self.texts(node, &ports)?),
+            _ => {}
+        }
+        let method = match (d.name.as_str(), node.param(family_param(&d.name))) {
+            ("text_at", _) => "charAt",
+            ("code_at", "unit") => "charCodeAt",
+            ("code_at", "point") => "codePointAt",
+            ("text_contains", "start") => "startsWith",
+            ("text_contains", "end") => "endsWith",
+            ("trim", "both") => "trim",
+            ("trim", "start") => "trimStart",
+            ("trim", "end") => "trimEnd",
+            ("pad", "start") => "padStart",
+            ("pad", "end") => "padEnd",
+            ("repeat", _) => "repeat",
+            ("replace", "first") => "replace",
+            ("replace", "all") => "replaceAll",
+            ("normalize", _) => "normalize",
+            ("is_well_formed", _) => "isWellFormed",
+            _ => return self.generic(node),
+        };
+        let s = self.receiver(node, &ports[0])?;
+        let mut args = self.texts(node, &ports[1..])?;
+        if d.name == "normalize" && node.param("form") != "NFC" {
+            args.push(quote(node.param("form")));
+        }
+        Ok((format!("{s}.{method}({})", args.join(", ")), MEMBER))
     }
 
     /// The collection, folder or database a store's leaf names.
@@ -2948,8 +3246,9 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
                 None => gap = true,
             }
         }
+        // A `map`'s or `fold`'s function is written in order; a family's `fn` (`math`) by name.
         for (k, v) in self.p.changed_params(node) {
-            if k != "fn" {
+            if k != "fn" || !PASSES_EXTRA.contains(&node.data.name.as_str()) {
                 named.push(format!("{}: {}", key(&k), param_value(&v)));
             }
         }
@@ -2958,7 +3257,7 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
             if let Some(last) = args.last_mut()
                 && last.starts_with('{')
                 && last != "{}"
-                && is_object_literal(last)
+                && is_one_group(last)
             {
                 *last = format!("({last})");
             }
@@ -2968,39 +3267,165 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
         Ok((format!("{local}({})", args.join(", ")), MEMBER))
     }
 
-    /// `xs.map(f)`, `xs.reduce(f, init)`: the function written in place when the text didn't
+    /// A higher-order leaf as its method: `xs.map(f)`, `xs.reduce(f, init)` (`xs.reduceRight(f,
+    /// init)` over the list reversed in place), `xs.filter(f)`, `xs.some(f)`, `xs.toSorted(f)`, …;
+    /// `method` names another (`flatMap`). The function is written in place when the text didn't
     /// name it, the values it uses from around it by their names.
-    fn map(&mut self, node: &Node) -> Result<(String, u8), String> {
+    fn map(&mut self, node: &Node, method: Option<&str>) -> Result<(String, u8), String> {
         let d = &node.data;
-        let own = if d.name == "fold" { 2 } else { 1 };
-        let hash = node.param("fn").to_string();
-        if hash.is_empty() {
+        if node.param("fn").is_empty() {
             return Err(format!("{} without a function has no TypeScript form", d.name));
         }
-        let list = self.required(node, "list", MEMBER)?;
-        let init = if d.name == "fold" { Some(self.required(node, "init", COND)?) } else { None };
-        let (_, unit) = resolve(self.p.store, &hash)?;
-        let ports: Vec<String> = unit.inputs.iter().skip(own).map(|p| p.name.clone()).collect();
-        let mut captures = Vec::new();
-        for (port, input) in ports.iter().zip(d.inputs.iter().skip(own)) {
-            let text = self.required(node, &input.name, ATOM)?;
-            captures.push((port.clone(), text));
-        }
-        let f = match self.p.lambda_text(&hash, &captures, own)? {
-            Some(f) => f,
-            None if captures.is_empty() => self.p.function_for(&hash, "f")?,
-            None => return Err(format!("{}'s function uses values from around it and is more than one expression, which TypeScript can't write in place: give the values to it some other way", d.name)),
+        let fold = d.name == "fold";
+        let reversed = if fold { self.inline_source(node, "list", "reverse").filter(|r| self.arg_wired(r, "list")) } else { None };
+        let list = match reversed {
+            Some(r) => {
+                self.touch(r);
+                self.receiver(r, "list")?
+            }
+            None => self.receiver(node, "list")?,
         };
+        let init = if fold { Some(self.required(node, "init", COND)?) } else { None };
+        let f = self.function_text(node)?;
+        let method = method.unwrap_or(match d.name.as_str() {
+            "fold" if reversed.is_some() => "reduceRight",
+            "fold" => "reduce",
+            "any" => "some",
+            "all" => "every",
+            "find_index" => "findIndex",
+            "find_last" => "findLast",
+            "find_last_index" => "findLastIndex",
+            "sort_by" => "toSorted",
+            other => other,
+        });
         Ok(match init {
-            Some(init) => (format!("{list}.reduce({f}, {init})"), MEMBER),
-            None => (format!("{list}.map({f})"), MEMBER),
+            Some(init) => (format!("{list}.{method}({f}, {init})"), MEMBER),
+            None => (format!("{list}.{method}({f})"), MEMBER),
         })
+    }
+
+    /// A list leaf in its JavaScript form: `xs.at(i)`, `[...xs.keys()]`, `xs.toSorted()`,
+    /// `xs.slice(s, e)`, `[...xs].fill(v)`, `xs.flat(Infinity)`, `[...new Set(xs)]`, …; by name
+    /// where its inputs aren't wired as JavaScript passes them, in order with none left out
+    /// before one given.
+    fn list_form(&mut self, node: &Node) -> Result<(String, u8), String> {
+        let d = &node.data;
+        let wired: Vec<bool> = d.inputs.iter().map(|p| self.arg_wired(node, &p.name)).collect();
+        let given = wired.iter().take_while(|w| **w).count();
+        let complete = d.inputs.iter().skip(given).all(|p| is_optional(&d.name, &p.name)) && !wired[given..].iter().any(|w| *w);
+        if given == 0 || !complete || (d.name != "flat" && !self.p.changed_params(node).iter().all(|(k, _)| k == "mode")) {
+            return self.generic(node);
+        }
+        let ports: Vec<String> = d.inputs.iter().take(given).map(|p| p.name.clone()).collect();
+        let (atom, member) = (|s: String| Ok((s, ATOM)), |s: String| Ok((s, MEMBER)));
+        match d.name.as_str() {
+            // A record's pairs where it is known to be one, `Object.entries(r)`; else a list's.
+            "entries" if self.known(node, &ports[0], WType::Record) => member(format!("Object.entries({})", self.required(node, &ports[0], COND)?)),
+            "indices" | "entries" => {
+                let xs = self.receiver(node, &ports[0])?;
+                atom(format!("[...{xs}.{}()]", if d.name == "indices" { "keys" } else { "entries" }))
+            }
+            "unique" => atom(format!("[...new Set({})]", self.required(node, &ports[0], COND)?)),
+            "is_list" => member(format!("Array.isArray({})", self.required(node, &ports[0], COND)?)),
+            "flat" => {
+                let depth = match node.param("depth") {
+                    "1" => String::new(),
+                    "all" => "Infinity".into(),
+                    // A number as written, which reads back as written.
+                    d if d.strip_prefix('-').unwrap_or(d).starts_with(|c: char| c.is_ascii_digit()) && d.chars().all(|c| c.is_ascii_digit() || matches!(c, '.' | 'e' | 'E' | '+' | '-')) && d.parse::<f64>().is_ok_and(f64::is_finite) => d.to_string(),
+                    _ => return self.generic(node),
+                };
+                // `xs.flatMap(f)`: a map spread one level, written in place.
+                if depth.is_empty()
+                    && let Some(m) = self.inline_source(node, "list", "map").filter(|m| !m.param("fn").is_empty())
+                {
+                    self.touch(m);
+                    return self.map(m, Some("flatMap"));
+                }
+                let xs = self.receiver(node, &ports[0])?;
+                member(format!("{xs}.flat({depth})"))
+            }
+            // A change in place, of a copy: `[...xs]` is the list itself, read back.
+            "fill" | "copy_within" => {
+                let xs = self.required(node, &ports[0], COND)?;
+                let args = self.texts(node, &ports[1..])?;
+                member(format!("[...{xs}].{}({})", if d.name == "fill" { "fill" } else { "copyWithin" }, args.join(", ")))
+            }
+            "to_spliced" => {
+                let xs = self.receiver(node, &ports[0])?;
+                let mut args = self.texts(node, &ports[1..given.min(3)])?;
+                if given == 4 {
+                    // The items as written, `a, b`, from the list they make, else spread.
+                    let items = self.required(node, "items", COND)?;
+                    match items.strip_prefix('[').and_then(|t| t.strip_suffix(']')) {
+                        Some(inner) if !inner.trim().is_empty() && is_one_group(&items) => args.push(inner.to_string()),
+                        _ => args.push(format!("...{items}")),
+                    }
+                }
+                member(format!("{xs}.toSpliced({})", args.join(", ")))
+            }
+            other => {
+                let method = match other {
+                    "at" => "at",
+                    "includes" => "includes",
+                    "last_index_of" => "lastIndexOf",
+                    "reverse" => "toReversed",
+                    "sort" => "toSorted",
+                    "with_item" => "with",
+                    _ if node.param("mode") == "substring" => "substring",
+                    _ => "slice",
+                };
+                let xs = self.receiver(node, &ports[0])?;
+                let args = self.texts(node, &ports[1..])?;
+                member(format!("{xs}.{method}({})", args.join(", ")))
+            }
+        }
+    }
+
+    /// Whether what feeds `node`'s `input` is written as a text in quotes or a template, as a
+    /// literal, a `concat` or an `as_text` in place can be: a text's `concat` reads such an
+    /// argument as itself, where it reads anything else as `String(x)` writes it.
+    fn text_written(&self, node: &Node, input: &str) -> bool {
+        self.inline_source(node, input, "const").is_some_and(|c| c.param("type") == "Text") || self.inline_source(node, input, "concat").is_some() || self.inline_source(node, input, "as_text").is_some()
+    }
+
+    /// What feeds each of `node`'s `inputs`, as arguments.
+    fn texts(&mut self, node: &Node, inputs: &[String]) -> Result<Vec<String>, String> {
+        inputs.iter().map(|i| self.required(node, i, COND)).collect()
     }
 
     /// A `concat` of texts and values, each written in place, as a template: `` `${a}-${b}` ``.
     /// One of values only, or with two texts side by side, is a call, as a template would read
     /// otherwise.
     fn concat(&mut self, node: &Node) -> Result<(String, u8), String> {
+        let ins: Vec<String> = node.data.inputs.iter().map(|p| p.name.clone()).collect();
+        // `s.toWellFormed()`: the text and "", which is the text for a text and nothing else.
+        if let [s, e] = ins.as_slice()
+            && self.arg_wired(node, s)
+            && let Some(c) = self.inline_source(node, e, "const").filter(|c| c.param("type") == "Text" && c.param("value").is_empty())
+        {
+            self.touch(c);
+            return Ok((format!("{}.toWellFormed()", self.receiver(node, s)?), MEMBER));
+        }
+        // `s.concat(a, …)` on a text known to be one, each argument as `String(x)` writes it or a
+        // text in quotes: what the lowering reads back as these nodes.
+        if ins.len() >= 2
+            && self.known(node, &ins[0], WType::Text)
+            && !self.text_written(node, &ins[0])
+            && ins[1..].iter().all(|i| self.inline_source(node, i, "const").is_some_and(|c| c.param("type") == "Text") || self.inline_source(node, i, "as_text").is_some_and(|a| !self.text_written(a, "value")))
+        {
+            let s = self.receiver(node, &ins[0])?;
+            let mut args = Vec::new();
+            for i in &ins[1..] {
+                if let Some(a) = self.inline_source(node, i, "as_text") {
+                    self.touch(a);
+                    args.push(self.required(a, "value", COND)?);
+                } else {
+                    args.push(self.required(node, i, COND)?);
+                }
+            }
+            return Ok((format!("{s}.concat({})", args.join(", ")), MEMBER));
+        }
         let mut pieces = Vec::new();
         let mut touched = Vec::new();
         let mut values = 0;
@@ -3040,9 +3465,138 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
         Ok((out, ATOM))
     }
 
-    /// A chain of `with_field`s as a record literal: `{ k: v, … }` from a `record()`, or
-    /// `{ ...base, k: v, … }` from anything else.
+    /// A higher-order leaf's function as its method takes it: written in place when the text
+    /// didn't name it, the values it uses from around it by their names; else by its name.
+    fn function_text(&mut self, node: &Node) -> Result<String, String> {
+        let d = &node.data;
+        let (own, base) = (function_takes(&d.name), leaf_inputs(&d.name));
+        let hash = node.param("fn").to_string();
+        if hash.is_empty() {
+            return Err(format!("{} without a function has no TypeScript form", d.name));
+        }
+        let (_, unit) = resolve(self.p.store, &hash)?;
+        let ports: Vec<String> = unit.inputs.iter().skip(own).map(|p| p.name.clone()).collect();
+        let mut captures = Vec::new();
+        for (port, input) in ports.iter().zip(d.inputs.iter().skip(base)) {
+            let text = self.required(node, &input.name, ATOM)?;
+            captures.push((port.clone(), text));
+        }
+        match self.p.lambda_text(&hash, &captures, own)? {
+            Some(f) => Ok(f),
+            None if captures.is_empty() => self.p.function_for(&hash, "f"),
+            None => Err(format!("{}'s function uses values from around it and is more than one expression, which TypeScript can't write in place: give the values to it some other way", d.name)),
+        }
+    }
+
+    /// `JSON.stringify(x)`, with the replacer and the indent where they are set: the function,
+    /// the keys as a list, or `null`; the indent as a number of spaces, or a text.
+    fn json_stringify(&mut self, node: &Node) -> Result<(String, u8), String> {
+        let (keys, f, indent) = (node.param("keys"), node.param("fn"), node.param("indent"));
+        if !keys.is_empty() && !f.is_empty() {
+            return Err("json_stringify with both keys and a function has no TypeScript form: JavaScript's replacer is one or the other".into());
+        }
+        // The keys as ts.rs writes them, a list of texts, read back the same.
+        let listed = match keys {
+            "" => None,
+            k => match serde_json::from_str::<Vec<String>>(k) {
+                Ok(list) if serde_json::to_string(&list).is_ok_and(|s| s == k) => Some(format!("[{}]", list.iter().map(|k| quote(k)).collect::<Vec<_>>().join(", "))),
+                _ => return self.generic(node),
+            },
+        };
+        let mut args = vec![self.required(node, "value", COND)?];
+        let replacer = if f.is_empty() { listed } else { Some(self.function_text(node)?) };
+        let space = match indent {
+            "" => None,
+            s if s.len() <= 10 && s.bytes().all(|b| b == b' ') => Some(s.len().to_string()),
+            s => Some(quote(s)),
+        };
+        if replacer.is_some() || space.is_some() {
+            args.push(replacer.unwrap_or_else(|| "null".into()));
+        }
+        args.extend(space);
+        Ok((format!("JSON.stringify({})", args.join(", ")), MEMBER))
+    }
+
+    /// A date leaf as a method of `new Date(t)`: `new Date(t).getUTCHours()`,
+    /// `new Date(t).toISOString()`, `new Date(t).setUTCHours(h, m)`, and `new Date(t).getTime()`
+    /// for the time value; by name where JavaScript has no such method or call.
+    fn date_form(&mut self, node: &Node) -> Result<(String, u8), String> {
+        let d = &node.data;
+        let given = d.inputs.len() - 1;
+        let method = match (d.name.as_str(), node.param("part"), node.param("format")) {
+            ("date_part", part, _) => DATE_GETTERS.iter().find(|(_, p)| *p == part).map(|(m, _)| *m),
+            ("date_text", _, "iso") => Some("toISOString"),
+            ("date_text", _, "utc") => Some("toUTCString"),
+            ("date_set", part, _) => DATE_SETTERS.iter().find(|(_, p, takes)| *p == part && given <= *takes).map(|(m, ..)| *m),
+            _ => None,
+        };
+        let Some(method) = method.filter(|_| self.every_wired(node)) else { return self.generic(node) };
+        let t = self.required(node, "time", COND)?;
+        let ports: Vec<String> = d.inputs.iter().skip(1).map(|p| p.name.clone()).collect();
+        let args = self.texts(node, &ports)?;
+        Ok((format!("new Date({t}).{method}({})", args.join(", ")), MEMBER))
+    }
+
+
+    /// A record built in place as the items of the literal ts.rs reads back as it: a chain of
+    /// `with_field`s its fields, an `insert` its `[k]: v`, a `merge` its spreads, each on what it
+    /// builds on when that is built in place too (`{ ...a, ...b, k: v }`), else spread.
+    fn built(&mut self, node: &Node) -> Result<Vec<String>, String> {
+        match node.data.name.as_str() {
+            "record" => Ok(Vec::new()),
+            "merge" => {
+                let mut items = Vec::new();
+                for (i, p) in node.data.inputs.iter().enumerate() {
+                    // The first, built in place with something in it, is read back as its items.
+                    match self.builder_source(node, &p.name, &["with_field", "insert"]) {
+                        Some(b) if i == 0 => {
+                            self.touch(b);
+                            items.extend(self.built(b)?);
+                        }
+                        _ => items.push(format!("...{}", self.required(node, &p.name, COND)?)),
+                    }
+                }
+                Ok(items)
+            }
+            "insert" => {
+                let mut items = self.base_items(node)?;
+                let k = self.required(node, "key", COND)?;
+                let v = self.required(node, "value", COND)?;
+                items.push(format!("[{k}]: {v}"));
+                Ok(items)
+            }
+            _ => self.fields_of(node),
+        }
+    }
+
+    /// What a `with_field` or an `insert` builds on, as items: none for `{}`, a `merge`'s or an
+    /// `insert`'s own, else the record spread.
+    fn base_items(&mut self, node: &Node) -> Result<Vec<String>, String> {
+        if let Some(b) = self.builder_source(node, "record", &["record", "merge", "insert"]) {
+            self.touch(b);
+            return self.built(b);
+        }
+        Ok(vec![format!("...{}", self.required(node, "record", COND)?)])
+    }
+
+    /// The node feeding `input`, written in place, when it is one of `leaves` with every input
+    /// wired.
+    fn builder_source(&self, node: &Node, input: &str, leaves: &[&str]) -> Option<&'g Node> {
+        leaves.iter().find_map(|l| self.inline_source(node, input, l)).filter(|b| self.every_wired(b))
+    }
+
+    fn every_wired(&self, node: &Node) -> bool {
+        node.data.inputs.iter().all(|p| self.arg_wired(node, &p.name))
+    }
+
+    /// A record built in place as a record literal: `{ k: v, … }` from a `record()`, `{ ...base,
+    /// k: v, … }` from anything else.
     fn record(&mut self, node: &Node) -> Result<(String, u8), String> {
+        Ok((object(&self.built(node)?), ATOM))
+    }
+
+    /// A chain of `with_field`s as items: what it builds on, then its fields.
+    fn fields_of(&mut self, node: &Node) -> Result<Vec<String>, String> {
         let mut chain: Vec<&Node> = vec![self.g.node(&node.id)];
         let mut keys: Vec<String> = vec![node.param("name").to_string()];
         let base = loop {
@@ -3060,16 +3614,12 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
         for c in &chain[1..] {
             self.touch(c);
         }
-        let mut items = Vec::new();
-        match self.inline_source(base, "record", "record") {
-            Some(empty) => self.touch(empty),
-            None => items.push(format!("...{}", self.required(base, "record", COND)?)),
-        }
+        let mut items = self.base_items(base)?;
         for c in &chain {
             let value = self.required(c, "value", COND)?;
             items.push(field(c.param("name"), &value));
         }
-        Ok((object(&items), ATOM))
+        Ok(items)
     }
 
     /// A database call's values, one for each `$n` of its SQL, when they are a list written in
@@ -3223,7 +3773,30 @@ impl<'s> Printer<'s> {
             return Ok(None);
         }
         let Ok(opened) = self.open(hash, "fn", &unit) else { return Ok(None) };
-        let group = Group::new(opened.children.iter().collect(), opened.wires.clone(), opened.outs.clone());
+        // A parameter the function doesn't use is held by a node nothing reads (lower.rs
+        // `UNUSED`, or a `list` holding two), which the body leaves out.
+        let own_param = |src: &Src| matches!(src, Src::In(p) if unit.inputs.iter().take(own).any(|q| q.name == *p));
+        let held: HashSet<&str> = opened
+            .children
+            .iter()
+            .filter(|c| {
+                let inside = |src: &Src| match src {
+                    Src::In(_) => true,
+                    Src::Node { id, .. } => opened.children.iter().any(|k| k.id == *id),
+                };
+                let fed: Vec<&Src> = opened.wires.iter().filter(|(src, to, _)| *to == c.id && inside(src)).map(|(src, _, _)| src).collect();
+                (c.data.name == UNUSED || c.data.name == "list" && fed.len() >= 2)
+                    && c.data.body == PlacedBody::Primitive
+                    && fed.len() == c.data.inputs.len()
+                    && fed.iter().all(|src| own_param(src))
+                    && !opened.wires.iter().any(|(src, _, _)| matches!(src, Src::Node { id, .. } if *id == c.id))
+                    && !opened.outs.iter().any(|(id, _, _)| *id == c.id)
+            })
+            .map(|c| c.id.as_str())
+            .collect();
+        let children = opened.children.iter().filter(|c| !held.contains(c.id.as_str())).collect();
+        let wires = opened.wires.iter().filter(|(_, to, _)| !held.contains(to.as_str())).cloned().collect();
+        let group = Group::new(children, wires, opened.outs.clone());
         if unwritable(&group.nodes, &group.incoming, None).is_some() {
             return Ok(None);
         }
@@ -3353,6 +3926,238 @@ mod tests {
         assert!(text.contains("  likes[id] = n\n"), "{text}");
         assert!(text.contains("(req) => `${likes[req.params.id] ?? 0} likes`)"), "{text}");
         assert!(text.contains("route.get(\"/likes\", () => likes.list())"), "{text}");
+    }
+
+    /// The number leaves called by name: a family's `fn` is a name, where a `map`'s is its
+    /// function; an optional radix or digits left out is left unwired. Printed, each is written
+    /// in its JavaScript form.
+    #[test]
+    fn the_number_leaves_called_by_name_round_trip() {
+        let src = "import { action, aggregate, flow, math, max, number_format, power, to_number } from \"holon\"\n\nflow(\"f\")\n\nexport const t = action((input) => {\n  const x = to_number(input.text, { grammar: \"int\" })\n  const y = to_number(input.text, 16, { grammar: \"int\" })\n  return { text: number_format(math(power(max(x, y, 3), 2), { fn: \"sqrt\" }), 2, { style: \"fixed\" }), h: aggregate([x, y], { fn: \"hypot\" }) }\n})\n";
+        let lowered = compile(src).unwrap_or_else(|e| panic!("{e}"));
+        let math = lowered.doc.nodes.iter().find(|n| n.data.name == "math").expect("a math");
+        assert_eq!(math.param("fn"), "sqrt");
+        let reads: Vec<usize> = lowered.doc.nodes.iter().filter(|n| n.data.name == "to_number").map(|n| lowered.doc.edges.iter().filter(|w| w.target == n.id).count()).collect();
+        assert_eq!(reads, [1, 2], "the radix wired only where it is given");
+        let text = reprinted(src);
+        assert!(text.contains("Math.sqrt(Math.max(x, y, 3) ** 2).toFixed(2)"), "{text}");
+        assert!(text.contains("parseInt(input.text, 16)"), "{text}");
+        assert!(text.contains("Math.hypot(x, y)"), "{text}");
+        assert!(!text.contains("from \"holon\"\nimport") && text.starts_with("import { action, flow } from \"holon\"\n"), "no leaf is imported:\n{text}");
+    }
+
+    /// Each record, JSON and date form prints back as written: `fmt` keeps the forms.
+    #[test]
+    fn the_record_and_date_leaves_print_as_javascript_writes_them() {
+        let src = "import { action, flow } from \"holon\"\n\nflow(\"f\")\n\nexport const t = action((input) => {\n  const r = input.r\n  const made = { ...r, k: 1 }\n  return {\n    values: Object.values(r),\n    entries: Object.entries(made),\n    pairs: Object.fromEntries(input.pairs),\n    groups: Object.groupBy(input.xs, (x) => x.kind),\n    merged: { ...r, ...input.s, k: 1 },\n    first: { a: 1, ...r, ...input.s },\n    keyed: { ...made, [input.k]: 2, b: 3 },\n    has: Object.hasOwn(r, input.k),\n    same: Object.is(r, input.s),\n    kind: typeof r,\n    parsed: JSON.parse(input.t, (k, v) => [k, v]),\n    text: JSON.stringify(r, [\"id\", \"name\"], 2),\n    tabbed: JSON.stringify(r, null, \"\\t\"),\n    replaced: JSON.stringify(r, (k, v) => [k, v]),\n    time: new Date(input.t).getTime(),\n    hours: new Date(input.t).getUTCHours(),\n    iso: new Date(input.t).toISOString(),\n    utc: new Date(input.t).toUTCString(),\n    midnight: new Date(input.t).setUTCHours(0, 0, 0, 0),\n    built: Date.UTC(2000, 1, 29),\n    read: Date.parse(input.t),\n  }\n})\n";
+        prints_back(src);
+    }
+
+    /// Records built by name in shapes a literal reads otherwise print as literals that read back
+    /// as the same nodes: a merge of a merge spreads it whole, an empty first record is spread.
+    #[test]
+    fn the_record_leaves_called_by_name_round_trip() {
+        let src = "import { action, flow, insert, merge, type_of } from \"holon\"\n\nflow(\"f\")\n\nexport const t = action((input) => {\n  const r = input.r\n  return { a: merge(merge(r, input.s), input.u), b: merge({}, r), c: insert(insert(r, input.k, 1), input.j, 2), d: type_of(r), e: { ...merge(r, input.s), k: 1 } }\n})\n";
+        let text = reprinted(src);
+        assert!(text.contains("a: { ...{ ...r, ...input.s }, ...input.u }"), "{text}");
+        assert!(text.contains("b: { ...{}, ...r }"), "{text}");
+        assert!(text.contains("c: { ...r, [input.k]: 1, [input.j]: 2 }"), "{text}");
+        assert!(text.contains("d: type_of(r)"), "{text}");
+        assert!(text.contains("e: { ...r, ...input.s, k: 1 }"), "{text}");
+    }
+
+    /// Each number leaf in its JavaScript form prints back as written: `fmt` keeps the forms.
+    #[test]
+    fn the_number_leaves_print_as_javascript_writes_them() {
+        let src = "import { action, flow } from \"holon\"\n\nflow(\"f\")\n\nexport const t = action((input) => {\n  const a = parseFloat(input.a)\n  const b = parseInt(input.b, 16)\n  const n = Number(input.n)\n  return {\n    root: Math.sqrt(a),\n    big: Math.max(a, b, n),\n    most: Math.max(...input.xs),\n    h: Math.hypot(a, b),\n    sum: Math.sumPrecise(input.xs),\n    angle: Math.atan2(a, b),\n    p: a ** (b ** 2),\n    q: (a ** b) ** 2,\n    m: a % b,\n    bits: ((((a & b) | (n ^ 3)) << 2) >> 1) >>> 0,\n    neg: a * -1,\n    mul: Math.imul(a, b),\n    finite: Number.isFinite(a),\n    whole: Number.isInteger(a),\n    safe: Number.isSafeInteger(a),\n    nan: isNaN(input.s),\n    fin: isFinite(input.s),\n    fixed: a.toFixed(2),\n    prec: b.toPrecision(3),\n    exp: n.toExponential(),\n    text: a.toString(),\n    hex: b.toString(16),\n    lit: (5).toFixed(1),\n    pi: 3.141592653589793,\n  }\n})\n";
+        prints_back(src);
+    }
+
+    /// A number written as a method's receiver keeps its parentheses, as `(5).toFixed(1)` does:
+    /// printed `5.at(0)`, it read as `5.` and then a name, which doesn't parse.
+    #[test]
+    fn a_number_receiver_keeps_its_parentheses() {
+        let src = "import { action, flow } from \"holon\"\n\nflow(\"f\")\n\nexport const t = action((input) => {\n  return { a: (5).at(0), s: (5).slice(1), i: (5).includes(5) }\n})\n";
+        let text = reprinted(src);
+        for form in ["(5).at(0)", "(5).slice(1)", "(5).includes(5)"] {
+            assert!(text.contains(form), "{form}: {text}");
+        }
+    }
+
+    /// Each text leaf in its JavaScript form prints back as written: `fmt` keeps the forms,
+    /// `.length` where the value is known to be a text or a list, and `+` beside a text.
+    #[test]
+    fn the_text_leaves_print_as_javascript_writes_them() {
+        let src = r#"import { action, flow } from "holon"
+
+flow("f")
+
+export const t = action((input) => {
+  const s = input.s.trim()
+  const n = parseFloat(input.n)
+  return {
+    len: s.length,
+    pieces: s.split(",", 2).length,
+    c: s.charAt(1),
+    code: s.charCodeAt(0),
+    point: s.codePointAt(2),
+    made: String.fromCharCode(97, n),
+    emoji: String.fromCodePoint(128512),
+    starts: s.startsWith("a"),
+    ends: s.endsWith("z", 3),
+    has: s.includes("b", 1),
+    at: s.indexOf("b", 2),
+    last: s.lastIndexOf("b", 4),
+    mid: s.slice(1, -1),
+    sub: s.substring(1, 3),
+    left: s.trimStart(),
+    right: s.trimEnd(),
+    padded: s.padStart(5, "0"),
+    wide: s.padEnd(8),
+    again: s.repeat(3),
+    once: s.replace("a", "b"),
+    all: s.replaceAll("a", "$&$&"),
+    nfc: s.normalize(),
+    nfd: s.normalize("NFD"),
+    ok: s.isWellFormed(),
+    whole: s.toWellFormed(),
+    joined: s.concat("-", n),
+    enc: encodeURIComponent(s),
+    uri: encodeURI(s),
+    dec: decodeURIComponent(s),
+    full: decodeURI(s),
+    b64: btoa(s),
+    text: atob(s),
+    label: "n=" + n + s,
+    first: s < input.t,
+  }
+})
+"#;
+        prints_back(src);
+    }
+
+    /// The text leaves called by name print in their JavaScript forms where they have one, and
+    /// by name where the form would read back otherwise: `text_length` of a value not known to be
+    /// a text, `slice`'s `length` mode.
+    #[test]
+    fn the_text_leaves_called_by_name_round_trip() {
+        let src = "import { action, code_at, flow, pad, replace, slice, text_contains, text_length, trim, uri_encode } from \"holon\"\n\nflow(\"f\")\n\nexport const t = action((input) => {\n  return { a: trim(input.s, { side: \"start\" }), b: pad(input.s, 4), c: text_contains(input.s, \"x\", { at: \"end\" }), d: replace(input.s, \"a\", \"b\", { count: \"all\" }), e: text_length(input.s), f: slice(input.s, 1, 2, { mode: \"length\" }), g: uri_encode(input.s, { set: \"uri\" }), h: code_at(input.s, 1, { mode: \"point\" }) }\n})\n";
+        let text = reprinted(src);
+        for form in ["a: input.s.trimStart()", "b: input.s.padStart(4)", "c: input.s.endsWith(\"x\")", "d: input.s.replaceAll(\"a\", \"b\")", "e: text_length(input.s)", "f: slice(input.s, 1, 2)", "g: encodeURI(input.s)", "h: input.s.codePointAt(1)"] {
+            assert!(text.contains(form), "{form}: {text}");
+        }
+    }
+
+    /// Each list leaf in its JavaScript form prints back as written: the methods that take a
+    /// function, written in place with the values they use from around it, the value forms of
+    /// the methods that change a list in place, and a parameter a function doesn't use.
+    #[test]
+    fn the_list_leaves_print_as_javascript_writes_them() {
+        let src = r#"import { action, flow, range } from "holon"
+
+flow("f")
+
+export const t = action((input) => {
+  const xs = input.xs
+  const min = input.min
+  const who = input.who
+  const scores = xs.map((x) => x.score)
+  return {
+    kept: xs.filter((x) => x.score >= min),
+    sorted: xs.toSorted((a, b) => b.score - a.score),
+    names: [...new Set(xs.map((x) => x.name))],
+    top: xs.find((x) => x.score > 90),
+    at: xs.findIndex((x) => x.name === who),
+    any: xs.some((x) => x.score > 99),
+    all: xs.every((x) => x.score > 0),
+    fl: xs.findLast((x) => x.score > 1),
+    fli: xs.findLastIndex((x) => x.score > 1),
+    last: scores.at(-1),
+    has: scores.includes(50),
+    li: scores.lastIndexOf(50),
+    i: scores.indexOf(50),
+    rev: scores.toReversed(),
+    ordered: scores.toSorted(),
+    part: scores.slice(1, -1),
+    rest: scores.slice(1),
+    spl: scores.toSpliced(1, 1, 7, 8),
+    cut: scores.toSpliced(1),
+    put: scores.toSpliced(0, 0, ...input.more),
+    w: scores.with(0, 1),
+    filled: [...scores].fill(0, 1),
+    cw: [...scores].copyWithin(0, 1),
+    list: Array.isArray(xs),
+    keys: [...scores.keys()],
+    ent: [...scores.entries()],
+    fm: scores.flatMap((x) => [x, x]),
+    deep: input.nested.flat(Infinity),
+    two: input.nested.flat(2),
+    one: input.nested.flat(),
+    right: scores.reduceRight((acc, x) => acc + x, 0),
+    zeros: range(3).map((_) => 0),
+    pairs: scores.toSorted((_, b) => b - 1),
+    kept_order: scores.toSorted((_, __) => 0),
+  }
+})
+"#;
+        prints_back(src);
+    }
+
+    /// The forms the reader lowers to others print as what they lower to, and read back the
+    /// same: an index as `indices`, `reduce` without a start over `head` and `tail`,
+    /// `Array.from` and `Array.of` as the list, a change in place of a list of the handler's
+    /// own as its value form.
+    #[test]
+    fn the_list_forms_lowered_print_as_what_they_lower_to() {
+        let src = r#"import { action, flow } from "holon"
+
+flow("f")
+
+export const t = action((input) => {
+  const xs = input.xs
+  const own = [3, 1, 2]
+  const sorted = own.sort((a, b) => a - b)
+  return {
+    ranked: xs.map((x, i) => x + i),
+    places: xs.map((x, i) => i),
+    same: xs.map((x) => x),
+    total: xs.reduce((a, b) => a + b),
+    counted: Array.from({ length: 3 }, (_, i) => i * 2),
+    zeros: Array.from({ length: 2 }, () => 0),
+    upto: Array.from({ length: 4 }, (_, i) => i),
+    of: Array.of(1, 2),
+    doubled: Array.from(xs, (x) => x * 2),
+    once: Array.from(new Set(xs)),
+    copy: Array.from(xs),
+    values: [...xs.values()],
+    joined: xs.join(),
+    copied: [...xs].sort(),
+    sorted,
+    all: xs.slice(),
+  }
+})
+"#;
+        let text = reprinted(src);
+        for form in [
+            "ranked: [...xs.keys()].map((i) => get(xs, i) + i)",
+            "places: [...xs.keys()]",
+            "same: xs,",
+            "total: tail(xs).reduce((a, b) => a + b, head(xs))",
+            "counted: range(3).map((i) => i * 2)",
+            "zeros: range(2).map((_) => 0)",
+            "upto: range(4)",
+            "of: [1, 2]",
+            "doubled: xs.map((x) => x * 2)",
+            "once: [...new Set(xs)]",
+            "copy: xs,",
+            "values: xs,",
+            "joined: xs.join(\",\")",
+            "copied: xs.toSorted()",
+            "const sorted = own.toSorted((a, b) => a - b)",
+            "all: xs,",
+        ] {
+            assert!(text.contains(form), "{form}:\n{text}");
+        }
     }
 
     /// How long the log keeps runs, and the other limits, in `flow(…)`: in the order the limits
@@ -3569,7 +4374,7 @@ mod tests {
         b.wire(&look, "out", &respond, "body").unwrap();
         let doc = b.finish(crate::builder::Settings { port: "8080".into(), ..Default::default() });
         let text = round_trips("canvas", &doc, &BTreeMap::new());
-        assert!(text.contains("function shout(s) {\n  return concat(s.toUpperCase(), \"!\")\n}"), "its input as core proposed it: {text}");
+        assert!(text.contains("function shout(s) {\n  return s.toUpperCase().concat(\"!\")\n}"), "its input as core proposed it: {text}");
         assert!(text.contains("concat(shout(req.body), shout(req.body), req.body)"), "{text}");
         assert!(text.contains("req.json[concat("), "{text}");
     }
@@ -3673,17 +4478,21 @@ mod tests {
     /// What isn't the exact shape prints as the expressions it is, never as a `switch`.
     #[test]
     fn near_misses_of_a_match_print_as_what_they_are() {
+        // A guard that falls back to another isn't a ternary either (its else isn't guarded by the
+        // first's condition failing): it stays the `??` it is.
         for (body, want) in [
             // Two subjects.
-            ("(op === \"a\" ? 1 : undefined) ?? (v === \"b\" ? 2 : undefined)", "op === \"a\" ? 1 : v === \"b\" ? 2 : undefined"),
+            ("(op === \"a\" ? 1 : undefined) ?? (v === \"b\" ? 2 : undefined)", "(op === \"a\" ? 1 : undefined) ?? (v === \"b\" ? 2 : undefined)"),
             // The pattern on the left.
-            ("(\"a\" === op ? v : undefined) ?? (op === \"b\" ? 2 : undefined)", "\"a\" === op ? v : op === \"b\" ? 2 : undefined"),
-            // A fallback that isn't guarded.
+            ("(\"a\" === op ? v : undefined) ?? (op === \"b\" ? 2 : undefined)", "(\"a\" === op ? v : undefined) ?? (op === \"b\" ? 2 : undefined)"),
+            // A ternary, its else not guarded by a pattern.
             ("op === \"a\" ? 1 : v", "op === \"a\" ? 1 : v"),
             // One arm alone.
             ("op === \"a\" ? v : undefined", "op === \"a\" ? v : undefined"),
             // A pattern that isn't a literal.
-            ("(op === v ? 1 : undefined) ?? (op === \"b\" ? 2 : undefined)", "op === v ? 1 : op === \"b\" ? 2 : undefined"),
+            ("(op === v ? 1 : undefined) ?? (op === \"b\" ? 2 : undefined)", "(op === v ? 1 : undefined) ?? (op === \"b\" ? 2 : undefined)"),
+            // Ternaries chained.
+            ("op === \"a\" ? 1 : op === \"b\" ? v : 3", "op === \"a\" ? 1 : op === \"b\" ? v : 3"),
         ] {
             let src = format!("import {{ flow, route }} from \"holon\"\n\nflow(\"f\", {{ port: 8200 }})\n\nfunction pick(op, v) {{\n  return {body}\n}}\n\nroute.post(\"/x\", (req) => pick(req.json.op, req.json.v))\n");
             let text = reprinted(&src);

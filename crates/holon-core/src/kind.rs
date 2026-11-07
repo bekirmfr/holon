@@ -277,18 +277,25 @@ impl Capabilities {
 pub fn capabilities_of(name: &str, params: &[Param]) -> Option<Capabilities> {
     use Capability::*;
     let caps: Vec<Capability> = match name {
-        // Pure leaves: the first-order vocabulary `compute` implements, plus
-        // higher-order `map` (effect-free). A positive empty manifest.
+        // Pure leaves: the first-order vocabulary `compute` implements, plus the
+        // higher-order ones (effect-free themselves). A positive empty manifest.
         "const"
         | "add" | "multiply" | "subtract" | "divide"
         | "compare" | "and" | "or" | "not" | "select"
+        | "math" | "max" | "min" | "aggregate" | "atan2" | "power" | "remainder" | "bitwise" | "number_test" | "to_number" | "number_format"
         | "concat" | "uppercase" | "lowercase" | "text_length" | "slice" | "index_of" | "split"
+        | "text_at" | "code_at" | "from_codes" | "text_contains" | "trim" | "pad" | "repeat" | "replace" | "normalize"
+        | "uri_encode" | "uri_decode" | "is_well_formed"
         | "list" | "get" | "append" | "extend" | "length" | "sum" | "join" | "range"
+        | "at" | "indices" | "entries" | "includes" | "last_index_of" | "reverse" | "to_spliced" | "with_item" | "fill" | "copy_within" | "sort" | "flat" | "is_list" | "unique"
+        | "any" | "all" | "filter" | "find" | "find_index" | "find_last" | "find_last_index" | "sort_by"
         | "cons" | "head" | "tail" | "is_empty"
         | "pair"
         | "some" | "none"
         | "record" | "field" | "with_field" | "without_field" | "keys"
-        | "lookup" | "insert" | "remove" | "find"
+        | "lookup" | "insert" | "remove"
+        | "values" | "from_entries" | "merge" | "has" | "group_by" | "same_value" | "type_of"
+        | "date_part" | "date_utc" | "date_set" | "date_text" | "date_parse"
         | "json_parse" | "json_stringify"
         | "sha256" | "hmac_sha256" | "hex" | "base64" | "secure_equals"
         | "to_text" | "as_text" | "is_truthy" | "guard" | "default" | "coalesce" | "equals"
@@ -824,8 +831,14 @@ mod tests {
         const PURE: &[&str] = &[
             "const", "add", "multiply",
             "subtract", "divide", "compare", "and", "or", "not", "select",
-            "concat", "uppercase", "lowercase", "text_length", "slice", "index_of",
+            "math", "max", "min", "aggregate", "atan2", "power", "remainder", "bitwise", "number_test", "to_number", "number_format",
+            "concat", "uppercase", "lowercase", "text_length", "slice", "index_of", "split",
+            "text_at", "code_at", "from_codes", "text_contains", "trim", "pad", "repeat", "replace", "normalize", "uri_encode", "uri_decode", "is_well_formed",
             "list", "get", "append", "length", "sum",
+            "at", "indices", "entries", "includes", "last_index_of", "reverse", "to_spliced", "with_item", "fill", "copy_within", "sort", "flat", "is_list", "unique",
+            "any", "all", "filter", "find", "find_index", "find_last", "find_last_index", "sort_by",
+            "values", "from_entries", "merge", "has", "group_by", "same_value", "type_of",
+            "date_part", "date_utc", "date_set", "date_text", "date_parse",
             "join", "cons", "head", "tail", "is_empty", "pair", "some", "none", "to_text", "as_text", "is_truthy", "guard", "default", "coalesce", "equals", "fold", "map",
         ];
         for name in PURE {

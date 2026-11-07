@@ -45,10 +45,17 @@ const ONE_WAY: &[&str] = &["sha256", "hmac_sha256", "secure_equals"];
 
 /// Leaves whose output holds their inputs as they are, or a part of them unchanged: a secret in
 /// an input is in the output literally, where redaction finds it. (`json_stringify` escapes, but
-/// redaction matches a secret's JSON-escaped form too.)
+/// redaction matches a secret's JSON-escaped form too.) The list leaves that rearrange a list's
+/// items are here; those that take a text too (`at`, `slice`) are not, since a part of a text
+/// isn't the secret. So are the record leaves that move values between records and lists
+/// (`values`, `from_entries`, `merge`); `has` and `same_value` answer a Boolean, which cuts it.
+/// `add` joins texts as `concat` does (a number it adds is no secret's text); the other text
+/// leaves (`trim`, `replace`, `pad`, …) make a text from part of theirs, which is derived.
 const PASSES_LITERALLY: &[&str] = &[
-    "const", "select", "cons", "head", "tail", "concat", "list", "get", "append", "extend", "join", "pair", "some",
-    "record", "field", "with_field", "without_field", "lookup", "insert", "remove", "find", "as_text", "guard",
+    "const", "select", "cons", "head", "tail", "concat", "add", "list", "get", "append", "extend", "join", "pair", "some",
+    "entries", "reverse", "to_spliced", "with_item", "fill", "copy_within", "sort", "flat", "unique",
+    "values", "from_entries", "merge",
+    "record", "field", "with_field", "without_field", "lookup", "insert", "remove", "as_text", "guard",
     "default", "coalesce", "json_stringify", "store_write", "collection_put", "file_write", "file_create",
     "channel_send", "egress",
 ];
@@ -520,6 +527,157 @@ mod tests {
         assert_eq!(fed.input(&[3], 1), Taint::Derived);
         assert_eq!(fed.input(&[3], 0), Taint::Clean);
         assert!(fed.derives(&[]), "the root's first output is derived");
+    }
+
+    /// A number computed from a secret (`to_number`, then `math {fn: "abs"}`, then written back
+    /// with `number_format`) is derived from it; whether the secret reads as a number
+    /// (`number_test`) is a Boolean, and cuts it.
+    #[test]
+    fn the_number_leaves_derive_and_a_number_test_cuts() {
+        let mut r = MapResolver::new();
+        let secret = leaf(&mut r, "secret", vec![Param::frozen("name", "pin")]);
+        let read = leaf(&mut r, "to_number", vec![Param::frozen("grammar", "int")]);
+        let abs = leaf(&mut r, "math", vec![Param::frozen("fn", "abs")]);
+        let written = leaf(&mut r, "number_format", vec![Param::frozen("style", "fixed")]);
+        let test = leaf(&mut r, "number_test", vec![Param::frozen("test", "finite"), Param::frozen("coerce", "number")]);
+        let e = |fc, fp, tc, tp| Edge { from_child: fc, from_port: fp, to_child: tc, to_port: tp };
+        let root = Unit {
+            body: UnitBody::Composite {
+                children: vec![secret, read, abs, written, test],
+                edges: vec![e(0, 0, 1, 0), e(1, 0, 2, 0), e(2, 0, 3, 0), e(0, 0, 4, 0), e(3, 0, BOUNDARY, 0), e(4, 0, BOUNDARY, 1)],
+            },
+            params: vec![],
+            inputs: vec![],
+            outputs: vec![Port { name: "text".into(), ty: Type::Text }, Port { name: "ok".into(), ty: Type::Boolean }],
+        };
+        let fed = SecretFed::of(&root, &r);
+        for (node, what) in [(1, "to_number"), (2, "math"), (3, "number_format")] {
+            assert!(fed.derives(&[node]), "{what} of a secret is derived");
+        }
+        assert!(!fed.derives(&[4]), "a number_test answers a Boolean");
+    }
+
+    /// `"Bearer " + secret` holds it as it is, as a template literal's `concat` does; a trimmed
+    /// secret is derived from it; whether it begins with a text is a Boolean, which cuts it.
+    #[test]
+    fn a_secret_joined_by_add_stays_literal_and_a_trimmed_one_is_derived() {
+        let mut r = MapResolver::new();
+        let secret = leaf(&mut r, "secret", vec![Param::frozen("name", "k")]);
+        let bearer = leaf(&mut r, "const", vec![Param::frozen("value", "Bearer "), Param::frozen("type", "Text")]);
+        let add = leaf(&mut r, "add", vec![]);
+        let trim = leaf(&mut r, "trim", vec![]);
+        let starts = leaf(&mut r, "text_contains", vec![]);
+        let e = |fc, fp, tc, tp| Edge { from_child: fc, from_port: fp, to_child: tc, to_port: tp };
+        let root = Unit {
+            body: UnitBody::Composite {
+                children: vec![secret, bearer, add, trim, starts],
+                edges: vec![
+                    e(1, 0, 2, 0),
+                    e(0, 0, 2, 1),
+                    e(0, 0, 3, 0),
+                    e(0, 0, 4, 0),
+                    e(BOUNDARY, 0, 4, 1),
+                    e(2, 0, BOUNDARY, 0),
+                    e(3, 0, BOUNDARY, 1),
+                    e(4, 0, BOUNDARY, 2),
+                ],
+            },
+            params: vec![],
+            inputs: vec![Port { name: "prefix".into(), ty: Type::Text }],
+            outputs: ["header", "trimmed", "starts"].map(|n| Port { name: n.into(), ty: Type::Any }).to_vec(),
+        };
+        let fed = SecretFed::of(&root, &r);
+        assert_eq!(fed.output(&[2], 0), Taint::Literal, "the header holds it as it is");
+        assert!(fed.derives(&[3]), "a trimmed secret is derived");
+        assert!(!fed.derives(&[4]), "startsWith answers a Boolean");
+    }
+
+    /// A record holding a secret, merged into another, still holds it as it is, and so do its
+    /// values; whether it has a key is a Boolean, which cuts it; and a `group_by` applies a
+    /// function, which isn't followed.
+    #[test]
+    fn the_record_leaves_keep_a_secret_literal_and_has_cuts_it() {
+        let mut r = MapResolver::new();
+        let secret = leaf(&mut r, "secret", vec![Param::frozen("name", "k")]);
+        let insert = leaf(&mut r, "insert", vec![]);
+        let merge = leaf(&mut r, "merge", vec![]);
+        let values = leaf(&mut r, "values", vec![]);
+        let has = leaf(&mut r, "has", vec![]);
+        let key = leaf(&mut r, "as_text", vec![]);
+        let group_by = leaf(&mut r, "group_by", vec![Param::frozen("fn", crate::hash::to_hex(&key))]);
+        let e = |fc, fp, tc, tp| Edge { from_child: fc, from_port: fp, to_child: tc, to_port: tp };
+        let root = Unit {
+            body: UnitBody::Composite {
+                children: vec![secret, insert, merge, values, has, group_by],
+                edges: vec![
+                    e(BOUNDARY, 0, 1, 0),
+                    e(BOUNDARY, 1, 1, 1),
+                    e(0, 0, 1, 2),
+                    e(BOUNDARY, 0, 2, 0),
+                    e(1, 0, 2, 1),
+                    e(2, 0, 3, 0),
+                    e(2, 0, 4, 0),
+                    e(BOUNDARY, 1, 4, 1),
+                    e(3, 0, 5, 0),
+                    e(2, 0, BOUNDARY, 0),
+                    e(3, 0, BOUNDARY, 1),
+                    e(4, 0, BOUNDARY, 2),
+                    e(5, 0, BOUNDARY, 3),
+                ],
+            },
+            params: vec![],
+            inputs: vec![Port { name: "r".into(), ty: Type::Record }, Port { name: "k".into(), ty: Type::Text }],
+            outputs: ["merged", "values", "has", "groups"].map(|n| Port { name: n.into(), ty: Type::Any }).to_vec(),
+        };
+        let fed = SecretFed::of(&root, &r);
+        assert_eq!(fed.output(&[2], 0), Taint::Literal, "the merged record holds it as it is");
+        assert_eq!(fed.output(&[3], 0), Taint::Literal, "and so do its values");
+        assert!(!fed.derives(&[4]), "has answers a Boolean");
+        assert!(fed.derives(&[5]), "a group_by's function isn't followed");
+    }
+
+    /// A list holding a secret, reversed, still holds it as it is; whether it holds an item is a
+    /// Boolean, which cuts it; a position in it is derived from it; and a `filter` over it applies
+    /// a function, which isn't followed.
+    #[test]
+    fn the_list_leaves_keep_a_secret_literal_and_a_search_cuts_it() {
+        let mut r = MapResolver::new();
+        let secret = leaf(&mut r, "secret", vec![Param::frozen("name", "k")]);
+        let list = leaf(&mut r, "list", vec![]);
+        let reverse = leaf(&mut r, "reverse", vec![]);
+        let includes = leaf(&mut r, "includes", vec![]);
+        let index_of = leaf(&mut r, "index_of", vec![]);
+        let truthy = leaf(&mut r, "is_truthy", vec![]);
+        let filter = leaf(&mut r, "filter", vec![Param::frozen("fn", crate::hash::to_hex(&truthy))]);
+        let e = |fc, fp, tc, tp| Edge { from_child: fc, from_port: fp, to_child: tc, to_port: tp };
+        let root = Unit {
+            body: UnitBody::Composite {
+                children: vec![secret, list, reverse, includes, index_of, filter],
+                edges: vec![
+                    e(0, 0, 1, 0),
+                    e(BOUNDARY, 0, 1, 1),
+                    e(1, 0, 2, 0),
+                    e(1, 0, 3, 0),
+                    e(BOUNDARY, 0, 3, 1),
+                    e(1, 0, 4, 0),
+                    e(BOUNDARY, 0, 4, 1),
+                    e(1, 0, 5, 0),
+                    e(2, 0, BOUNDARY, 0),
+                    e(3, 0, BOUNDARY, 1),
+                    e(4, 0, BOUNDARY, 2),
+                    e(5, 0, BOUNDARY, 3),
+                ],
+            },
+            params: vec![],
+            inputs: vec![Port { name: "x".into(), ty: Type::Any }],
+            outputs: ["reversed", "has", "at", "kept"].map(|n| Port { name: n.into(), ty: Type::Any }).to_vec(),
+        };
+        let fed = SecretFed::of(&root, &r);
+        assert_eq!(fed.output(&[1], 0), Taint::Literal, "the list holds it as it is");
+        assert_eq!(fed.output(&[2], 0), Taint::Literal, "and so does the list reversed");
+        assert!(!fed.derives(&[3]), "includes answers a Boolean");
+        assert!(fed.derives(&[4]), "a position in it is derived");
+        assert!(fed.derives(&[5]), "a filter's function isn't followed");
     }
 
     /// `secret → base64` into a state write and the answer, `secret → hmac` into another write: the

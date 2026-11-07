@@ -14,8 +14,9 @@ history is in the [JOURNAL](../../JOURNAL.md), by date.
 
 `crates/holon-core`, compiled native for the server and the command line, and to wasm32 for the
 editor ([holon-wasm](holon-wasm.md)): one evaluator, one encoder. It performs no effect and has
-no IO, async or network dependency; its four dependencies are `blake3`, `hmac`, `sha2` and
-`smallvec` (`Cargo.toml`), and the purity boundary is that dependency graph (`lib.rs`). An
+no IO, async or network dependency; its five dependencies are `blake3`, `hmac`, `libm` (the
+number leaves' transcendental functions, the same bits on every target), `sha2` and `smallvec`
+(`Cargo.toml`), and the purity boundary is that dependency graph (`lib.rs`). An
 effect is a value core builds and the host performs ([holon-host](holon-host.md)).
 
 | File | Holds |
@@ -23,7 +24,7 @@ effect is a value core builds and the host performs ([holon-host](holon-host.md)
 | `hash.rs` | `Unit`, `UnitBody`, `Param`, `Port`, `Edge`, `Type`; `encode_preimage`, `decode_preimage`, `hash_unit`, `canonical_child_order` |
 | `value.rs`, `value_hash.rs`, `json.rs` | `Value`; `encode_value`, `decode_value`, `hash_value`, `state_root`, `run_id`; JSON both ways |
 | `validate.rs`, `resolve.rs` | `validate`, `compatible`; the `Resolver` trait and `MapResolver` |
-| `catalog.rs`, `primitives.rs`, `docs.rs`, `crypto.rs` | `GENESIS`, `interface_of`, `VARIADIC`, `PASSES_EXTRA`, `TRIGGERED`; `compute`, the `ops!` list; `describe` |
+| `catalog.rs`, `primitives.rs`, `numbers.rs`, `lists.rs`, `records.rs`, `dates.rs`, `texts.rs`, `docs.rs`, `crypto.rs` | `GENESIS`, `interface_of`, `VARIADIC`, `PASSES_EXTRA`, `function_takes`, `FAMILIES`, `TRIGGERED`; `compute`, the `ops!` list, the number leaves, the list leaves and `sort_by`'s merge sort, the record, date and text leaves; `describe` |
 | `eval.rs`, `eager.rs` | `eval`, `eval_observed`, `Observer`, `Slot`, `Answer`, `choice_next`, `Shape`, `Shapes`; the eager oracle |
 | `kind.rs`, `manifest.rs`, `taint.rs`, `sql.rs`, `documents.rs` | `Capability`, `Kind`, `capabilities`; `manifest_items`, `consent_name`; secret flow; what a database leaf touches |
 | `declare.rs`, `triggers.rs` | `read_server`, `match_route`, `LogLevel`, `Server::handlers`; file triggers |
@@ -63,11 +64,12 @@ collected, for the editor.
 
 ### The catalog
 
-`GENESIS` names the 95 primitives. Each name has its facts in one place each: its interface
+`GENESIS` names the 151 primitives. Each name has its facts in one place each: its interface
 (`interface_of`), its capabilities (`capabilities_of`, `kind.rs`), what it does in words
-(`describe`), whether it grows inputs (`VARIADIC`) and its computation. `compute` covers 70 of them,
+(`describe`), whether it grows inputs (`VARIADIC`) and its computation. `compute` covers 117 of them,
 by an `Op` that one list (`ops!`) makes along with `Op::of`, so a name can't be in one and not the
-other (RA D1). The rest are not computed here: `map` and `fold` are the evaluator's; 17 build a
+other (RA D1). The rest are not computed here: `map`, `fold` and the other higher-order leaves
+(`PASSES_EXTRA`: `filter`, `any`, the `find` family, `sort_by`, `group_by`, …) are the evaluator's; 18 build a
 request the host answers (`Request::of`: `http_request`, `collection_get`, `await`, …); the
 drivers and `store_read` are sourced, their value put in by the host's resolver as a constant.
 `MAX_RANGE` (10,000) bounds `range`, and there is no loop or recursion, so every run ends.
@@ -158,8 +160,9 @@ actions, each handler's `LogLevel`) and fails closed on anything malformed.
   values and firing each node ([Performance](../themes/performance.md#limits)).
 - **`Value` deep-copies on clone.** `with_field` copies its record to add a field.
 - **Only a `map`'s or `fold`'s function runs down a plan.** A route's handler, and any function
-  with a real choice, is walked. A composite's children are resolved again on every run: a
-  resolver may hand a run its own unit for a hash (a sourced constant).
+  with a real choice, is walked. A composite's children are resolved once where the resolver keeps
+  them (the server's does, whatever a run reads: a sourced leaf asks `Resolver::sourced` for its
+  value); design mode, which hands a run a mock for a hash, keeps none.
 - **Laziness stops at a holon's boundary.** A holon's inputs are evaluated before it is entered, so
   a choice inside it can't spare its caller's request (LC §3). `map` applies every item even after
   one is absent, so a round's requests go out together.
@@ -170,7 +173,8 @@ actions, each handler's `LogLevel`) and fails closed on anything malformed.
 - **One number type** (`f64`), **no bytes value**, and an open `Record` type (any fields). A `Sum`
   value's `ty()` is `Sum([Any, Any])` whatever its true arity, honest only while `some` and `none`
   are the only constructors (`value.rs`).
-- **`validate` checks one level**: a composite's own wiring, its children by their interfaces.
+- **`validate` checks one level**: a composite's own wiring, its children by their interfaces. A
+  host validates every unit of a closure (holon's `units.rs`, `load_closure`).
 - **The SQL scan refuses what it doesn't understand** (`sql.rs`), on purpose: a statement outside its
   small part of SQL can't be deployed until the scan grows.
 - **A state key named `<unknown>`** reads as the saturation marker (`SATURATED_STATE_KEY`); nothing

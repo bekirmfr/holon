@@ -214,8 +214,10 @@ impl Waits for NoWaits {
 }
 
 /// Run `root` on `inputs`, in rounds, sourcing `sourced` (clock, state, …) as `fire_sourced`
-/// does, performing outbound requests with `performer` within `limits`, and the final round's
-/// effects with `host`, unless the run waits. `observer` sees every round's steps (after a
+/// does, each value lent from wherever the caller holds it (a run's state) and handed to a read
+/// as it is: data (`is_storable`), as a state's cells and the drivers the host makes are, and as
+/// the caller checks one it reads back from storage. Outbound requests are performed with
+/// `performer` within `limits`, and the final round's effects with `host`, unless the run waits. `observer` sees every round's steps (after a
 /// `round(n)` call) as in a single evaluation. `waits` answers waiting points and tokens;
 /// `prior` holds the rounds of an earlier part of the same run (a resumed one), whose requests
 /// are answered from it, not sent again. The outcome's rounds are the new ones.
@@ -223,7 +225,7 @@ impl Waits for NoWaits {
 pub fn run_rounds(
     root: &Unit,
     inputs: &[Option<Value>],
-    sourced: &[(Capability, Value)],
+    sourced: &[(Capability, &Value)],
     real: &impl Resolver,
     host: &mut impl Host,
     performer: &impl Performer,
@@ -233,7 +235,7 @@ pub fn run_rounds(
     prior: &[Round],
 ) -> RunOutcome {
     let started = Instant::now();
-    let resolver = SourcedResolver::new(sourced, real);
+    let resolver = SourcedResolver::lent(sourced.iter().map(|(cap, value)| (cap, *value)), real);
     let mut answers: BTreeMap<(Vec<u32>, Hash), Value> = prior
         .iter()
         .flat_map(|r| &r.exchanges)

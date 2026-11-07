@@ -5,7 +5,7 @@
 
 use std::collections::BTreeMap;
 
-use holon_core::{encode_preimage, interface_of, parse_hash, Hash, MapResolver, Resolver, UnitBody, PASSES_EXTRA, VARIADIC};
+use holon_core::{encode_preimage, interface_of, parse_hash, validate, Hash, MapResolver, Resolver, Unit, UnitBody, PASSES_EXTRA, VARIADIC};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 
@@ -200,6 +200,12 @@ impl FlowBuilder {
                 return Err(e);
             }
             let params: Vec<WParam> = defaults.iter().map(given).collect();
+            // A family parameter outside its values is refused here, where it is written, in
+            // core's words.
+            let core_params = params.iter().cloned().map(WParam::into_core).collect();
+            if let Err(errors) = validate(&Unit { params: core_params, ..unit.clone() }, &MapResolver::new()) {
+                return Err(errors.iter().map(|e| e.to_string()).collect::<Vec<_>>().join("; "));
+            }
             let mut inputs: Vec<WPort> = unit.inputs.iter().map(WPort::from_core).collect();
             let mut outputs: Vec<WPort> = unit.outputs.iter().map(WPort::from_core).collect();
             if name == "const" || name == "default" {

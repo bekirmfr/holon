@@ -37,8 +37,9 @@ export async function stageClosure(ev: Evaluator, hash: string, staged: Set<stri
       await stageClosure(ev, child, staged);
     }
   }
+  // A `map`'s function is its hash; a family's `fn` (`math`'s "sin") is a name, as core reads it.
   const fnParam = (unit.params ?? []).find((p) => p.kind === "Frozen" && p.name === "fn");
-  if (fnParam && fnParam.kind === "Frozen") {
+  if (fnParam && fnParam.kind === "Frozen" && /^[0-9a-f]{64}$/.test(fnParam.value)) {
     await stageClosure(ev, fnParam.value, staged);
   }
   await stageUnit(buildPreimage(unit));

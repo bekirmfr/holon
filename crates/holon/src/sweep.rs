@@ -213,7 +213,7 @@ fn named(deployments: &Mutex<BTreeMap<String, Deployment>>) -> Result<Vec<Names>
         log.each_line(|line| {
             named_in(line, &mut hashes);
             if line.contains("\"blob\":")
-                && let Ok(entry) = serde_json::from_str::<crate::recorder::LogEntry>(line)
+                && let Ok(entry) = crate::wire::read_json::<crate::recorder::LogEntry>(line.as_bytes())
             {
                 for file in entry.reads.iter().filter_map(|r| r.file.as_ref()) {
                     if let Some(blob) = &file.blob {

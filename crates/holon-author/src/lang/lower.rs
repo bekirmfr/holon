@@ -60,6 +60,11 @@ pub fn lower(file: &File) -> R<Lowered> {
     Lowerer::new(file).run(file)
 }
 
+/// The leaf that holds a parameter a function written in place doesn't use (two are held by one
+/// `list`): its output goes nowhere, so it never runs, and the printer reads the parameter as
+/// unused.
+pub(crate) const UNUSED: &str = "is_list";
+
 /// Words the lowering keeps for itself: a TypeScript binding of one is renamed, `name_`.
 pub(crate) const RESERVED: &[&str] = &[
     "flow", "port", "every", "browsers", "optional", "collection", "folder", "database", "channel", "holon", "js", "route", "resumes", "respond", "delete", "await", "if", "then", "else",
@@ -96,7 +101,23 @@ fn piped(d: &crate::canvas::NodeData) -> bool {
 /// `has_optional_ports`).
 pub(crate) fn is_optional(leaf: &str, input: &str) -> bool {
     input == TRIGGER
-        || matches!((leaf, input), ("http_request" | "http_stream", "headers" | "body") | ("http_upload", "headers") | ("flow_call" | "flow_start", "input") | ("collection_list" | "file_list", "prefix" | "after") | ("file_lines", "from"))
+        || matches!(
+            (leaf, input),
+            ("http_request" | "http_stream", "headers" | "body")
+                | ("http_upload", "headers")
+                | ("flow_call" | "flow_start", "input")
+                | ("collection_list" | "file_list", "prefix" | "after")
+                | ("file_lines", "from")
+                | ("to_number", "radix")
+                | ("number_format", "digits")
+                | ("slice", "end")
+                | ("to_spliced", "count" | "items")
+                | ("fill" | "copy_within", "start" | "end")
+                | ("index_of" | "includes" | "last_index_of", "from")
+                | ("text_contains", "position")
+                | ("split", "limit")
+                | ("pad", "fill")
+        )
 }
 
 /// Why a route can't wait: it answers and is done (docs/L4s/typescript-syntax-L4.md §9).
@@ -163,6 +184,14 @@ impl Val {
             Val::Out { outputs, port, .. } => outputs.get(*port).is_some_and(|p| p.ty == WType::Effect) || (outputs.len() > 1 && outputs.iter().any(|p| p.ty == WType::Effect)),
             Val::In(_) => false,
         }
+    }
+}
+
+/// The type of the output `v` is, as the node that gives it says; a function's input has none.
+fn typed(v: &Val) -> Option<&WType> {
+    match v {
+        Val::Out { outputs, port, .. } => outputs.get(*port).map(|p| &p.ty),
+        Val::In(_) => None,
     }
 }
 
@@ -516,12 +545,40 @@ impl<'a> Lowerer<'a> {
         Val::Out { id: id.into(), outputs, port: 0, explicit: false }
     }
 
+    /// `v` read whole. A function placed with several value outputs (one returning `{ a, b }`,
+    /// which lowers to one output per key) is the record of them, as JavaScript reads what such a
+    /// function gives; its effects stay outputs of their own. One output, one picked by `.name`,
+    /// or a template's first (a route's request) is itself.
+    fn whole(&mut self, v: Val, span: Span) -> R<Val> {
+        let Val::Out { id, outputs, explicit: false, .. } = &v else { return Ok(v) };
+        let placed = self.b.data(id).is_some_and(|d| matches!(d.body, crate::canvas::PlacedBody::Composite { .. }));
+        let values: Vec<usize> = (0..outputs.len()).filter(|&k| outputs[k].ty != WType::Effect).collect();
+        if !placed || values.len() < 2 {
+            return Ok(v);
+        }
+        let (id, outputs) = (id.clone(), outputs.clone());
+        let mut acc = self.node("record", &[], span)?;
+        for k in values {
+            let value = Val::Out { id: id.clone(), outputs: outputs.clone(), port: k, explicit: true };
+            acc = self.node_with("with_field", &[("name".into(), outputs[k].name.clone())], &[("record", acc), ("value", value)], span)?;
+        }
+        Ok(acc)
+    }
+
     /// Wire `v` into `to`'s `input`; a holon's or function's input is recorded for its boundary.
     ///
     /// A boundary input feeds exactly one inner port (core promotes one edge per input), so an
     /// input used twice passes through one node the uses share: `guard(true, input)`, the
     /// identity on presence. It is placed on the second use, and the first use is moved onto it.
     fn connect(&mut self, v: &Val, to: &str, input: &str, span: Span) -> R<()> {
+        if let Val::Out { explicit: false, outputs, .. } = v
+            && outputs.len() > 1
+        {
+            let whole = self.whole(v.clone(), span)?;
+            if !matches!((&whole, v), (Val::Out { id: a, .. }, Val::Out { id: b, .. }) if a == b) {
+                return self.connect(&whole, to, input, span);
+            }
+        }
         match v {
             Val::Out { id, outputs, port, .. } => {
                 let output = outputs.get(*port).map(|p| p.name.clone()).unwrap_or_else(|| "out".into());
@@ -656,6 +713,7 @@ impl<'a> Lowerer<'a> {
                     if let Val::In(_) = v {
                         return err(value.span, "an output can't be an input passed straight through: put a node between");
                     }
+                    let v = self.whole(v, value.span)?;
                     if let FrameKind::Holon { bound, .. } = &mut self.frame().kind {
                         bound.insert(name.text.clone(), (v, s.span));
                     }
@@ -1382,8 +1440,30 @@ impl<'a> Lowerer<'a> {
         }
         self.frames.push(frame);
         let result = self.expr(body);
+        let mut v = match result {
+            Ok(v) => self.whole(v, body.span),
+            Err(e) => Err(e),
+        };
+        // A parameter the body doesn't use (`(_, i) => i`) is held by a node nothing reads, as a
+        // composite's input feeds one inner port: the evaluator never runs it. Two are held by
+        // one `list`, as two holders alike couldn't be told apart.
+        if v.is_ok() {
+            let unused: Vec<Val> = params.iter().filter(|p| !self.cur().wiring_in.iter().any(|(port, _, _)| *port == p.text)).map(|p| Val::In(p.text.clone())).collect();
+            let held = match unused.as_slice() {
+                [] => Ok(()),
+                [one] => self.node_with(UNUSED, &[], &[("value", one.clone())], span).map(drop),
+                many => {
+                    let ports = Self::variadic_ports(&[WPort::new("a", WType::Any), WPort::new("b", WType::Any)], many.len());
+                    let inputs: Vec<(&str, Val)> = ports.iter().map(String::as_str).zip(many.iter().cloned()).collect();
+                    self.node_with("list", &[], &inputs, span).map(drop)
+                }
+            };
+            if let Err(e) = held {
+                v = Err(e);
+            }
+        }
         let frame = self.frames.pop().expect("the function's frame");
-        let v = result?;
+        let v = v?;
         let Val::Out { id, outputs, port, .. } = &v else {
             return err(body.span, "a function's body can't be a parameter passed straight through: put a node between");
         };
@@ -1393,13 +1473,9 @@ impl<'a> Lowerer<'a> {
         // written, and `fmt` can print the captures back as the names they are.
         let mut captures = captures.clone();
         captures.sort_by(|a, b| a.0.cmp(&b.0));
+        // A parameter the body doesn't use is an input left unwired: `(_, i) => i`.
         let inputs: Vec<HolonPort> =
             params.iter().map(|p| p.text.clone()).chain(captures.iter().map(|(n, _)| n.clone())).map(|name| HolonPort { name, unit: None }).collect();
-        for p in params {
-            if !frame.wiring_in.iter().any(|(port, _, _)| *port == p.text) {
-                return err(p.span, format!("the parameter \"{}\" is never used", p.text));
-            }
-        }
         let mut wiring_in = frame.wiring_in;
         wiring_in.sort_by_key(|(port, _, _)| inputs.iter().position(|p| p.name == *port));
         let h = self.b.end_holon_exact(&name, &inputs, &[HolonPort { name: "out".into(), unit: None }], &wiring_in, &[(id.clone(), output, "out".into())]).or_else(|e| err(span, e))?;
@@ -1443,6 +1519,8 @@ impl<'a> Lowerer<'a> {
             ExprKind::Noun(Noun::Now) if let FrameKind::Every { tick } = &self.cur().kind => Ok(self.out(&tick.clone())),
             ExprKind::Noun(n) => self.node(if *n == Noun::Now { "clock" } else { "random" }, &[], e.span),
             ExprKind::Call { callee, args } => self.call(callee, args, e.span),
+            ExprKind::Leaf { leaf, params, args, number } => self.leaf_form(leaf, params, args, *number, e.span),
+            ExprKind::TextOrList { subject, method, args } => self.text_or_list(subject, method, args, e.span),
             ExprKind::Method { receiver, method, args } => self.method(receiver, method, args, e.span),
             ExprKind::Field { base, name } => {
                 let v = self.expr(base)?;
@@ -1487,14 +1565,19 @@ impl<'a> Lowerer<'a> {
                 self.node_with("not", &[], &[("v", v)], e.span)
             }
             ExprKind::Binary { op, lhs, rhs } => self.binary(*op, lhs, rhs, e.span),
+            // `c ? a : b` is `guard(c, a) ?? guard(!(c ?? false), b)`: each branch guarded by its
+            // side of `c`, so a chosen `a` that is absent makes the choice absent, as JavaScript's
+            // `undefined`, instead of falling to `b`; and `c` absent takes the else, as `if` does.
             ExprKind::If { cond, then, els } => {
                 let c = self.expr(cond)?;
                 let t = self.branch(then)?;
-                let guarded = self.node_with("guard", &[], &[("cond", c), ("value", t)], e.span)?;
-                match els {
-                    None => Ok(guarded),
-                    Some(b) => self.fallback(guarded, b, e.span),
-                }
+                let guarded = self.node_with("guard", &[], &[("cond", c.clone()), ("value", t)], e.span)?;
+                let Some(b) = els else { return Ok(guarded) };
+                let held = self.node_with("default", &[("value".into(), "false".into()), ("type".into(), "Boolean".into())], &[("value", c)], cond.span)?;
+                let otherwise = self.node_with("not", &[], &[("v", held)], cond.span)?;
+                let v = self.branch(b)?;
+                let taken = self.node_with("guard", &[], &[("cond", otherwise), ("value", v)], b.span)?;
+                self.node_with("coalesce", &[], &[("a", guarded), ("b", taken)], e.span)
             }
             ExprKind::Match { subject, arms, els, .. } => self.match_expr(subject, arms, els.as_deref(), e.span),
             ExprKind::Await { name, expires } => {
@@ -1507,7 +1590,7 @@ impl<'a> Lowerer<'a> {
                 }
                 self.node("await", &params, e.span)
             }
-            ExprKind::Lambda { .. } => err(e.span, "an arrow function goes in map or reduce: xs.map((x) => …)"),
+            ExprKind::Lambda { .. } => err(e.span, "an arrow function goes to a list's method that takes one: xs.map((x) => …)"),
             ExprKind::Paren(inner) => self.expr(inner),
         }
     }
@@ -1729,6 +1812,76 @@ impl<'a> Lowerer<'a> {
         let inputs: Vec<WPort> = unit.inputs.iter().map(WPort::from_core).collect();
         let params: Vec<WParam> = unit.params.iter().map(WParam::from_core).collect();
         self.unit_call(name, &inputs, &params, &[], args, span)
+    }
+
+    /// A leaf the reader placed for a JavaScript form, with its params. `toString()` is a text's
+    /// and a list's method as well as a number's, so it is `number_format` on a value known to be
+    /// a number (one from a node whose output is a `Number`), and `as_text`, as `String(x)`
+    /// writes it, on anything else.
+    fn leaf_form(&mut self, leaf: &Name, params: &[(String, String)], args: &'a [Arg], number: bool, span: Span) -> R<Val> {
+        let unit = interface_of(&leaf.text).expect("a genesis leaf");
+        let inputs: Vec<WPort> = unit.inputs.iter().map(WPort::from_core).collect();
+        if number && let [subject] = args {
+            let v = self.expr(&subject.value)?;
+            if typed(&v).is_some_and(|t| *t == WType::Number) {
+                return self.node_with(&leaf.text, params, &[(inputs[0].name.as_str(), v)], span);
+            }
+            return self.node_with("as_text", &[], &[("value", v)], span);
+        }
+        let defaults: Vec<WParam> = unit.params.iter().map(WParam::from_core).collect();
+        self.unit_call(&leaf.text, &inputs, &defaults, params, args, span)
+    }
+
+    /// `x.length` and `x.concat(…)`, which a text and a list both have and different leaves do,
+    /// picked by the type of the node that made `x`. On a `Text`: `text_length`, and `concat` of
+    /// it and each argument as `String(x)` writes it. On a `List`: `length`. A `concat` on
+    /// anything but a text is a list's: `extend` for a list written as one, `append` for a literal
+    /// that isn't one, and refused for anything else, which could be either. A `.length` on a
+    /// value of no known type is refused, naming the two leaves.
+    fn text_or_list(&mut self, subject: &'a Expr, method: &Name, args: &'a [Arg], span: Span) -> R<Val> {
+        let v = self.expr(subject)?;
+        let ty = typed(&v).cloned();
+        if method.text == "length" {
+            // One output of several, named `length`, as `.name` picks one.
+            if let Val::Out { id, outputs, explicit: false, .. } = &v
+                && outputs.len() > 1
+                && let Some(k) = outputs.iter().position(|p| p.name == "length")
+            {
+                return Ok(Val::Out { id: id.clone(), outputs: outputs.clone(), port: k, explicit: true });
+            }
+            return match ty {
+                Some(WType::Text) => self.node_with("text_length", &[], &[("s", v)], span),
+                Some(WType::List(_)) => self.node_with("length", &[], &[("list", v)], span),
+                Some(WType::Record) => err(span, "a record's field named length is read r[\"length\"]"),
+                _ => err(span, ".length is a text's text_length or a list's length, and this value isn't known to be either: import the one it is from \"holon\" and call it, text_length(s) or length(xs)"),
+            };
+        }
+        if ty == Some(WType::Text) {
+            let mut vals = vec![v];
+            for a in args {
+                let x = self.expr(&a.value)?;
+                vals.push(match a.value.kind {
+                    ExprKind::Text(_) | ExprKind::Interpolated(_) => x,
+                    _ => self.node_with("as_text", &[], &[("value", x)], a.value.span)?,
+                });
+            }
+            let first: Vec<WPort> = interface_of("concat").expect("a genesis leaf").inputs.iter().map(WPort::from_core).collect();
+            let ports = Self::variadic_ports(&first, vals.len());
+            let inputs: Vec<(&str, Val)> = ports.iter().map(String::as_str).zip(vals).collect();
+            return self.node_with("concat", &[], &inputs, span);
+        }
+        let mut list = v;
+        for a in args {
+            let at = a.value.span;
+            let spread = match &a.value.kind {
+                ExprKind::List(_) => true,
+                ExprKind::Number { .. } | ExprKind::Text(_) | ExprKind::Bool(_) | ExprKind::Interpolated(_) | ExprKind::Record { .. } => false,
+                _ => return err(at, "concat spreads a list and adds anything else, and this could be either: write [...xs, ...ys] for a list, [...xs, y] for an item"),
+            };
+            let item = self.expr(&a.value)?;
+            list = if spread { self.node_with("extend", &[], &[("list", list), ("items", item)], at)? } else { self.node_with("append", &[], &[("list", list), ("item", item)], at)? };
+        }
+        Ok(list)
     }
 
     /// `payment(x)` without `await`, the tree's `start(payment, x)`: start this flow's action
@@ -2153,7 +2306,8 @@ impl<'a> Lowerer<'a> {
                         if params.iter().any(|(k, _)| *k == n.text) {
                             return err(n.span, format!("\"{}\" is given twice", n.text));
                         }
-                        let value = if n.text == "fn" {
+                        // A higher-order leaf's `fn` is a function; a family's (`math`) is a name.
+                        let value = if n.text == "fn" && PASSES_EXTRA.contains(&leaf) {
                             let (hash, takes, captured) = self.fn_param(&a.value)?;
                             function = Some((takes, captured, a.value.span));
                             hash
@@ -2183,9 +2337,14 @@ impl<'a> Lowerer<'a> {
         if let Some((takes, _, fn_span)) = &function
             && PASSES_EXTRA.contains(&leaf)
         {
-            let gives = inputs.len() + extra.len() + captured.len();
+            let gives = holon_core::function_takes(leaf) + extra.len() + captured.len();
             if *takes != gives {
-                let item = if leaf == "fold" { "the result so far and the item" } else { "the item" };
+                let item = match leaf {
+                    "fold" => "the result so far and the item",
+                    "sort_by" => "the two items it compares",
+                    "json_parse" | "json_stringify" => "the key and the value",
+                    _ => "the item",
+                };
                 let more = extra.len() + captured.len();
                 let after = if more == 0 { String::new() } else { format!(", then {more} more") };
                 return err(*fn_span, format!("\"{leaf}\" gives its function {gives} inputs ({item}{after}); this one takes {takes}"));
@@ -2217,7 +2376,29 @@ impl<'a> Lowerer<'a> {
         match &e.kind {
             ExprKind::Name(n) if self.is_def(n) => {
                 let h = self.holon(n, e.span)?;
-                Ok((h.hash, h.inputs.len(), vec![]))
+                if h.outputs.iter().filter(|p| p.ty != WType::Effect).count() < 2 {
+                    return Ok((h.hash, h.inputs.len(), vec![]));
+                }
+                // `map` and `fold` read a function's one answer: one returning `{ a, b }` is
+                // placed in a function of the same inputs that answers the record of them.
+                self.lambdas += 1;
+                let name = format!("fn_{}", self.lambdas);
+                self.b.begin_holon(&name);
+                self.frames.push(Frame::new(FrameKind::Lambda { captures: vec![] }));
+                let id = self.b.place(&h, None);
+                let placed = (|| {
+                    for p in &h.inputs {
+                        self.connect(&Val::In(p.name.clone()), &id, &p.name, e.span)?;
+                    }
+                    let out = self.out(&id);
+                    self.whole(out, e.span)
+                })();
+                let frame = self.frames.pop().expect("the function's frame");
+                let Val::Out { id: rec, outputs, port, .. } = placed? else { unreachable!("a record") };
+                let output = outputs.get(port).map(|o| o.name.clone()).unwrap_or_else(|| "out".into());
+                let inputs: Vec<HolonPort> = h.inputs.iter().map(|p| HolonPort { name: p.name.clone(), unit: None }).collect();
+                let wrapped = self.b.end_holon_exact(&name, &inputs, &[HolonPort { name: "out".into(), unit: None }], &frame.wiring_in, &[(rec, output, "out".into())]).or_else(|err_| err(e.span, err_))?;
+                Ok((wrapped.hash, inputs.len(), vec![]))
             }
             ExprKind::Name(n) => err(e.span, format!("\"{n}\" is not a holon: fn: takes a holon's name or fn(…) -> …")),
             ExprKind::Lambda { params, body } => self.lambda(params, body, e.span),
@@ -2369,6 +2550,466 @@ every("10s", async () => {
         assert!(inputs.is_empty(), "headers, body, prefix and after stay unbound, not {inputs:?}");
     }
 
+    /// A family leaf's parameter outside its values is refused where it is written, in core's
+    /// words; one of its values is placed.
+    #[test]
+    fn a_family_parameter_outside_its_values_is_refused_where_it_is_written() {
+        let src = |op: &str| format!("import {{ action, compare, flow }} from \"holon\"\n\nflow(\"f\")\n\nexport const t = action((a) => {{\n  return compare(a, 1, {{ op: \"{op}\" }})\n}})\n");
+        assert_eq!(error(&src("~")), (6, 10, "compare's op is one of =, !=, <, <=, >, >=: \"~\" isn't one".into()));
+        let d = compiled(&src("<=")).doc;
+        let compare = d.nodes.iter().find(|n| n.data.name == "compare").expect("a compare");
+        assert_eq!(compare.param("op"), "<=");
+    }
+
+    /// An action returning `body`, its input `x` and a number `n` bound first.
+    fn number_flow(body: &str) -> String {
+        format!("import {{ action, flow }} from \"holon\"\n\nflow(\"f\")\n\nexport const t = action((x) => {{\n  let n = parseFloat(x.n)\n{body}\n}})\n")
+    }
+
+    /// JavaScript's number forms read as their leaves, each with its params: the operators, the
+    /// unary ones, `Math`, `Number`, the globals and a number's methods.
+    #[test]
+    fn javascript_s_number_forms_read_as_their_leaves() {
+        let placed = |expr: &str, leaf: &str| {
+            let d = compiled(&number_flow(&format!("  return {expr}"))).doc;
+            let node = d.nodes.iter().rev().find(|n| n.data.name == leaf).unwrap_or_else(|| panic!("{expr}: no {leaf} in {:?}", leaves(&d)));
+            ["fn", "op", "test", "coerce", "grammar", "style"].iter().filter(|k| interface_of(leaf).is_some_and(|u| u.params.iter().any(|p| p.name() == **k))).map(|k| format!("{k}={}", node.param(k))).collect::<Vec<_>>().join(",")
+        };
+        let cases: &[(&str, &str, &str)] = &[
+            ("n % 3", "remainder", ""),
+            ("n ** 2", "power", ""),
+            ("Math.pow(n, 2)", "power", ""),
+            ("n & 3", "bitwise", "op=and"),
+            ("n | 3", "bitwise", "op=or"),
+            ("n ^ 3", "bitwise", "op=xor"),
+            ("n << 3", "bitwise", "op=shl"),
+            ("n >> 3", "bitwise", "op=shr"),
+            ("n >>> 3", "bitwise", "op=ushr"),
+            ("~n", "bitwise", "op=xor"),
+            ("Math.imul(n, 3)", "bitwise", "op=imul"),
+            ("Math.round(n)", "math", "fn=round"),
+            ("Math.f16round(n)", "math", "fn=f16round"),
+            ("Math.max(n, 1, 2)", "max", ""),
+            ("Math.min(n, 1)", "min", ""),
+            ("Math.max(...x.xs)", "aggregate", "fn=max"),
+            ("Math.hypot(n, 1)", "aggregate", "fn=hypot"),
+            ("Math.sumPrecise(x.xs)", "aggregate", "fn=sum_precise"),
+            ("Math.atan2(n, 1)", "atan2", ""),
+            ("Number.isFinite(n)", "number_test", "test=finite,coerce=none"),
+            ("Number.isInteger(n)", "number_test", "test=integer,coerce=none"),
+            ("Number.isSafeInteger(n)", "number_test", "test=safe_integer,coerce=none"),
+            ("isNaN(x.s)", "number_test", "test=nan,coerce=number"),
+            ("isFinite(x.s)", "number_test", "test=finite,coerce=number"),
+            ("+x.s", "to_number", "grammar=number"),
+            ("Number(x.s)", "to_number", "grammar=number"),
+            ("parseFloat(x.s)", "to_number", "grammar=float"),
+            ("Number.parseInt(x.s, 16)", "to_number", "grammar=int"),
+            ("n.toFixed(2)", "number_format", "style=fixed"),
+            ("n.toPrecision(3)", "number_format", "style=precision"),
+            ("n.toExponential()", "number_format", "style=exponential"),
+            ("n.toString(16)", "number_format", "style=string"),
+            ("n.toString()", "number_format", "style=string"),
+            ("x.s.toString(2)", "number_format", "style=string"),
+        ];
+        for (expr, leaf, params) in cases {
+            assert_eq!(placed(expr, leaf), *params, "{expr}");
+        }
+        // `-x` is `x * -1`; the constants are their literals; `Number.isNaN` is false.
+        for (expr, value) in [("Math.PI", "3.141592653589793"), ("Number.MAX_SAFE_INTEGER", "9007199254740991"), ("Number.MIN_VALUE", "5e-324"), ("Number.isNaN(n)", "false")] {
+            let d = compiled(&number_flow(&format!("  return {{ v: {expr}, n }}"))).doc;
+            assert!(d.nodes.iter().any(|c| c.data.name == "const" && c.param("value") == value), "{expr}: {:?}", leaves(&d));
+        }
+    }
+
+    /// Each form lowers to the unit its spelled-out form does: `-x` to `x * -1`, `~x` to
+    /// `x ^ -1`, a compound assignment to its operator.
+    #[test]
+    fn a_number_form_is_the_unit_of_what_it_stands_for() {
+        let same = [
+            ("return -n", "return n * -1"),
+            ("return ~n", "return n ^ -1"),
+            ("return +x.s", "return Number(x.s)"),
+            ("return Math.pow(n, 2)", "return n ** 2"),
+            ("return Number.parseFloat(x.s)", "return parseFloat(x.s)"),
+            ("return -(n * 2) * 3", "return ((n * 2) * -1) * 3"),
+            ("n %= 3\n  return n", "n = n % 3\n  return n"),
+            ("n **= 2\n  return n", "n = n ** 2\n  return n"),
+            ("n &= 3\n  n |= 4\n  n ^= 5\n  return n", "n = n & 3\n  n = n | 4\n  n = n ^ 5\n  return n"),
+            ("n <<= 1\n  n >>= 2\n  n >>>= 3\n  return n", "n = n << 1\n  n = n >> 2\n  n = n >>> 3\n  return n"),
+        ];
+        for (form, spelled) in same {
+            let (a, b) = (compiled(&number_flow(&format!("  {form}"))), compiled(&number_flow(&format!("  {spelled}"))));
+            assert_eq!(hash_of(&a.doc), hash_of(&b.doc), "{form} is {spelled}");
+        }
+        // `-(n * 2) * 3` keeps its negation one node, as written.
+        let d = compiled(&number_flow("  return -(n * 2) * 3")).doc;
+        assert_eq!(leaves(&d).iter().filter(|l| *l == "multiply").count(), 3);
+    }
+
+    fn list_flow(body: &str) -> String {
+        format!("import {{ action, flow, get, head, range, tail }} from \"holon\"\n\nflow(\"f\")\n\nexport const t = action((x) => {{\n  const xs = x.xs\n{body}\n}})\n")
+    }
+
+    /// JavaScript's list forms read as their leaves, each with its params: the methods that take
+    /// a function, the value forms, the spreads and `Array`'s.
+    #[test]
+    fn javascript_s_list_forms_read_as_their_leaves() {
+        let placed = |expr: &str, leaf: &str| {
+            let d = compiled(&list_flow(&format!("  return {expr}"))).doc;
+            let node = d.nodes.iter().rev().find(|n| n.data.name == leaf).unwrap_or_else(|| panic!("{expr}: no {leaf} in {:?}", leaves(&d)));
+            ["mode", "depth"].iter().filter(|k| interface_of(leaf).is_some_and(|u| u.params.iter().any(|p| p.name() == **k))).map(|k| format!("{k}={}", node.param(k))).collect::<Vec<_>>().join(",")
+        };
+        let cases = [
+            ("xs.at(-1)", "at", ""),
+            ("[...xs.keys()]", "indices", ""),
+            ("Array.from(xs.keys())", "indices", ""),
+            ("[...xs.entries()]", "entries", ""),
+            ("xs.some((v) => v > 1)", "any", ""),
+            ("xs.every((v) => v > 1)", "all", ""),
+            ("xs.filter((v) => v > 1)", "filter", ""),
+            ("xs.find((v) => v > 1)", "find", ""),
+            ("xs.findIndex((v) => v > 1)", "find_index", ""),
+            ("xs.findLast((v) => v > 1)", "find_last", ""),
+            ("xs.findLastIndex((v) => v > 1)", "find_last_index", ""),
+            ("xs.toSorted((a, b) => a - b)", "sort_by", ""),
+            ("[...xs].sort((a, b) => a - b)", "sort_by", ""),
+            ("xs.includes(1)", "includes", ""),
+            ("xs.indexOf(1)", "index_of", ""),
+            ("xs.lastIndexOf(1)", "last_index_of", ""),
+            ("xs.toReversed()", "reverse", ""),
+            ("[...xs].reverse()", "reverse", ""),
+            ("xs.slice(1, -1)", "slice", "mode=end"),
+            ("xs.slice(1)", "slice", "mode=end"),
+            ("xs.toSpliced(1, 1, 2)", "to_spliced", ""),
+            ("xs.with(0, 1)", "with_item", ""),
+            ("[...xs].fill(0)", "fill", ""),
+            ("[...xs].copyWithin(0, 1)", "copy_within", ""),
+            ("xs.toSorted()", "sort", ""),
+            ("[...xs].sort()", "sort", ""),
+            ("xs.flat()", "flat", "depth=1"),
+            ("xs.flat(2)", "flat", "depth=2"),
+            ("xs.flat(Infinity)", "flat", "depth=all"),
+            ("xs.flatMap((v) => [v, v])", "flat", "depth=1"),
+            ("Array.isArray(xs)", "is_list", ""),
+            ("[...new Set(xs)]", "unique", ""),
+            ("Array.from(new Set(xs))", "unique", ""),
+        ];
+        for (expr, leaf, params) in cases {
+            assert_eq!(placed(expr, leaf), params, "{expr}");
+        }
+        // A function's own named so isn't the method's leaf.
+        let own = "import { action, flow } from \"holon\"\n\nflow(\"f\")\n\nfunction filter(xs) {\n  return xs.toReversed()\n}\n\nexport const t = action((x) => filter(x.xs).filter((v) => v > 1))\n";
+        assert_eq!(leaves(&compiled(own).doc).iter().filter(|l| *l == "filter").count(), 2, "the function, and the leaf");
+    }
+
+    /// Each list form lowers to the unit its spelled-out form does (lists.md, "Reader changes"):
+    /// an index to `indices` and `get`, `reduce` without a start to `head` and `tail`, the value
+    /// form of a change in place, `Array.from` and the spreads to the list they give, and a
+    /// parameter a function leaves out or doesn't use to one it doesn't use.
+    #[test]
+    fn a_list_form_is_the_unit_of_what_it_stands_for() {
+        let same = [
+            ("return xs.map((v, i) => v + i)", "return [...xs.keys()].map((i) => get(xs, i) + i)"),
+            ("return xs.map((v, i) => i)", "return [...xs.keys()]"),
+            ("return xs.map((v) => v)", "return xs"),
+            ("return xs.reduce((a, b) => a + b)", "return tail(xs).reduce((a, b) => a + b, head(xs))"),
+            ("return xs.reduceRight((a, b) => a + b, 0)", "return xs.toReversed().reduce((a, b) => a + b, 0)"),
+            ("return xs.flatMap((v) => [v])", "return xs.map((v) => [v]).flat()"),
+            ("return Array.from({ length: 3 }, (_, i) => i * 2)", "return range(3).map((i) => i * 2)"),
+            ("return Array.from({ length: 3 }, () => 0)", "return range(3).map((_) => 0)"),
+            ("return Array.from({ length: 3 }, (v, i) => i)", "return range(3)"),
+            ("return Array.from(xs, (v) => v * 2)", "return xs.map((v) => v * 2)"),
+            ("return Array.from(xs)", "return xs"),
+            ("return Array.of(1, 2)", "return [1, 2]"),
+            ("return [...xs.values()]", "return xs"),
+            ("return xs.slice()", "return xs"),
+            ("return xs.join()", "return xs.join(\",\")"),
+            ("return xs.concat([1], 2, \"a\")", "return [...xs, ...[1], 2, \"a\"]"),
+            ("return xs.flat(1)", "return xs.flat()"),
+            ("return xs.toSorted(() => 0)", "return xs.toSorted((_, __) => 0)"),
+            ("return xs.filter(() => true)", "return xs.filter((_) => true)"),
+            ("const ys = [3, 1]\n  return ys.sort()", "const ys = [3, 1]\n  return ys.toSorted()"),
+            ("let ys = [3, 1]\n  ys = ys.reverse()\n  return ys", "let ys = [3, 1]\n  ys = ys.toReversed()\n  return ys"),
+            ("return xs.toSpliced(1, 0, ...x.ys, 2)", "return xs.toSpliced(1, 0, ...[...x.ys, 2])"),
+        ];
+        for (form, spelled) in same {
+            let (a, b) = (compiled(&list_flow(&format!("  {form}"))), compiled(&list_flow(&format!("  {spelled}"))));
+            assert_eq!(hash_of(&a.doc), hash_of(&b.doc), "{form} is {spelled}");
+        }
+        // A parameter the function doesn't use is held inside it by a node nothing reads.
+        let d = compiled(&list_flow("  return xs.map((_) => 1)")).doc;
+        let units: Vec<holon_core::Unit> = d.units.as_ref().unwrap().iter().map(|h| holon_core::decode_preimage(&(0..h.len()).step_by(2).map(|i| u8::from_str_radix(&h[i..i + 2], 16).unwrap()).collect::<Vec<u8>>()).unwrap()).collect();
+        let held = units.iter().any(|u| matches!(&u.body, holon_core::UnitBody::Composite { children, edges } if u.inputs.len() == 1 && u.inputs[0].name == "_" && children.len() == 2 && edges.iter().any(|e| e.from_child == holon_core::BOUNDARY && e.from_port == 0)));
+        assert!(held, "the function (_) => 1: a const, and the node holding _");
+    }
+
+    fn record_flow(body: &str) -> String {
+        format!("import {{ action, flow, insert, merge, type_of }} from \"holon\"\n\nflow(\"f\")\n\nexport const t = action((x) => {{\n  const r = x.r\n{body}\n}})\n")
+    }
+
+    /// JavaScript's record, JSON and date forms read as their leaves, each with the params it
+    /// sets (`fn` where a function is given).
+    #[test]
+    fn javascript_s_record_and_date_forms_read_as_their_leaves() {
+        let placed = |expr: &str, leaf: &str| {
+            let d = compiled(&record_flow(&format!("  return {expr}"))).doc;
+            let node = d.nodes.iter().rev().find(|n| n.data.name == leaf).unwrap_or_else(|| panic!("{expr}: no {leaf} in {:?}", leaves(&d)));
+            let params = interface_of(leaf).map(|u| u.params.iter().map(|p| p.name().to_string()).collect::<Vec<_>>()).unwrap_or_default();
+            params.iter().filter(|k| !node.param(k).is_empty()).map(|k| if k == "fn" { k.clone() } else { format!("{k}={}", node.param(k)) }).collect::<Vec<_>>().join(",")
+        };
+        let cases = [
+            ("Object.values(r)", "values", ""),
+            ("Object.entries(r)", "entries", ""),
+            ("Object.fromEntries(x.pairs)", "from_entries", ""),
+            ("Object.getOwnPropertyNames(r)", "keys", ""),
+            ("Object.groupBy(x.xs, (v) => v.kind)", "group_by", "fn"),
+            ("Object.hasOwn(r, \"k\")", "has", ""),
+            ("r.hasOwnProperty(\"k\")", "has", ""),
+            ("\"k\" in r", "has", ""),
+            ("Object.is(r, x.s)", "same_value", ""),
+            ("typeof r", "type_of", ""),
+            ("{ ...r, ...x.s }", "merge", ""),
+            ("Object.assign({}, r, x.s)", "merge", ""),
+            ("{ [x.k]: 1 }", "insert", ""),
+            ("JSON.parse(x.t, (k, v) => [k, v])", "json_parse", "fn"),
+            ("JSON.stringify(r, null, 2)", "json_stringify", "indent=  "),
+            ("JSON.stringify(r, undefined, 20)", "json_stringify", "indent=          "),
+            ("JSON.stringify(r, [\"id\", \"name\"])", "json_stringify", "keys=[\"id\",\"name\"]"),
+            ("JSON.stringify(r, (k, v) => [k, v], \"\\t\")", "json_stringify", "indent=\t,fn"),
+            ("new Date(x.t).getTime()", "date_part", "part=time"),
+            ("new Date(x.t).valueOf()", "date_part", "part=time"),
+            ("new Date(x.t).getUTCFullYear()", "date_part", "part=year"),
+            ("new Date(x.t).getUTCHours()", "date_part", "part=hours"),
+            ("new Date(x.t).toISOString()", "date_text", "format=iso"),
+            ("new Date(x.t).toJSON()", "date_text", "format=iso"),
+            ("new Date(x.t).toUTCString()", "date_text", "format=utc"),
+            ("new Date(x.t).setUTCHours(1, 2)", "date_set", "part=hours"),
+            ("new Date(x.t).setUTCFullYear(2001)", "date_set", "part=year"),
+            ("Date.UTC(2000, 1, 29)", "date_utc", ""),
+            ("Date.parse(x.t)", "date_parse", ""),
+        ];
+        for (expr, leaf, params) in cases {
+            assert_eq!(placed(expr, leaf), params, "{expr}");
+        }
+    }
+
+    /// Each record and date form lowers to the unit its spelled-out form does: a literal read
+    /// left to right, a Date bound to a name its time value, and the copies the value itself.
+    #[test]
+    fn a_record_or_date_form_is_the_unit_of_what_it_stands_for() {
+        let same = [
+            ("return { ...r, ...x.s, ...x.u }", "return merge(r, x.s, x.u)"),
+            ("return { a: 1, ...r }", "return merge({ a: 1 }, r)"),
+            ("return { ...r, a: 1, ...x.s }", "return merge({ ...r, a: 1 }, x.s)"),
+            ("return { ...r, [x.k]: 1 }", "return insert(r, x.k, 1)"),
+            ("return { [x.k]: 1, b: 2 }", "return { ...insert({}, x.k, 1), b: 2 }"),
+            ("return Object.assign({}, r)", "return r"),
+            ("return Object.assign({ a: 1 }, r)", "return { a: 1, ...r }"),
+            ("return Object.freeze(r)", "return r"),
+            ("return structuredClone(r)", "return r"),
+            ("return Object.create(null)", "return {}"),
+            ("const s = { ...r }\n  Object.assign(s, x.u)\n  return s", "return { ...r, ...x.u }"),
+            ("return typeof r === \"object\"", "return (type_of(r) ?? \"undefined\") === \"object\""),
+            ("return \"k\" in r", "return Object.hasOwn(r, \"k\")"),
+            ("return JSON.stringify(r, null, \"  \")", "return JSON.stringify(r, undefined, 2)"),
+            ("return JSON.stringify(r, null)", "return JSON.stringify(r)"),
+            ("const d = new Date(x.t)\n  return d.getUTCFullYear()", "return new Date(new Date(x.t).getTime()).getUTCFullYear()"),
+            ("const d = new Date(x.t)\n  return d.getTime()", "return new Date(x.t).getTime()"),
+            ("const d = new Date(x.t)\n  d.setUTCHours(0, 0, 0, 0)\n  return d.toISOString()", "return new Date(new Date(new Date(x.t).getTime()).setUTCHours(0, 0, 0, 0)).toISOString()"),
+            ("const d = new Date(x.t)\n  const e = new Date(d)\n  return e.getUTCDate()", "return new Date(new Date(x.t).getTime()).getUTCDate()"),
+            ("const d = new Date(x.t)\n  const ms = d.setUTCHours(0)\n  return [ms, d.toISOString()]", "const s = new Date(new Date(x.t).getTime()).setUTCHours(0)\n  return [s, new Date(s).toISOString()]"),
+            ("const d = new Date(x.t)\n  return d.setUTCDate(1)", "return new Date(new Date(x.t).getTime()).setUTCDate(1)"),
+            ("const f = { a: 1 }\n  Object.freeze(f)\n  return f", "return { a: 1 }"),
+            ("const d = new Date(x.t)\n  d.setTime(d.getTime() + 5)\n  return d.getUTCDay()", "return new Date(new Date(new Date(x.t).getTime() + 5).getTime()).getUTCDay()"),
+        ];
+        for (form, spelled) in same {
+            let (a, b) = (compiled(&record_flow(&format!("  {form}"))), compiled(&record_flow(&format!("  {spelled}"))));
+            assert_eq!(hash_of(&a.doc), hash_of(&b.doc), "{form} is {spelled}");
+        }
+    }
+
+    /// The record and date forms a flow can't have are refused, each naming what it can write.
+    #[test]
+    fn the_record_and_date_forms_a_flow_lacks_are_refused() {
+        let refused = |body: &str| error(&record_flow(&format!("  {body}"))).2;
+        let cases = [
+            ("return new Date()", "new Date() is the time now, which a flow reads from its clock: import { now } from \"holon:clock\", in seconds, and new Date(now * 1000) is its date"),
+            ("return Date.now()", "Date.now() is the time now, which a flow reads from its clock: import { now } from \"holon:clock\", in seconds, so now * 1000"),
+            ("return new Date(2000, 1)", "new Date(y, m, …) is local time, which a flow has none of: new Date(Date.UTC(y, m, …)) is the date in UTC"),
+            ("return new Date(x.t)", "new Date(x.t) is a Date, which a flow holds as its time value and reads by its methods: new Date(x.t).getTime() is the number, new Date(x.t).toISOString() the text; or name it, const d = new Date(x.t)"),
+            ("const d = new Date(x.t)\n  return d", "\"d\" is a Date, which a flow holds as its time value and reads by its methods: d.getTime() is the number, d.toISOString() the text"),
+            ("return new Date(x.t).getHours()", "a flow has no local time, only UTC: new Date(x.t).getUTCHours(…)"),
+            ("return new Date(x.t).toString()", "a flow has no local time, only UTC: new Date(x.t).toISOString(), or new Date(x.t).toUTCString()"),
+            ("const d = new Date(x.t)\n  const t = [d.setUTCHours(1)]\n  return d.getTime()", "\"d\" is read after d.setUTCHours(…) changed it in place: give the change a statement of its own, d.setUTCHours(…), and read d after it"),
+            ("const d = new Date(x.t)\n  const t = [d.setUTCHours(1)]\n  return [t, d]", "\"d\" is a Date, which a flow holds as its time value and reads by its methods: d.getTime() is the number, d.toISOString() the text"),
+            ("const f = Object.freeze({ a: 1 })\n  f.a = 2\n  return f", "\"f\" is frozen, and a change in place would throw in JavaScript: write a new record, const copy = { ...f, k: v }"),
+            ("const f = { a: 1 }\n  Object.seal(f)\n  delete f.a\n  return f", "\"f\" is frozen, and a change in place would throw in JavaScript: write a new record, const copy = { ...f, k: v }"),
+            ("const f = Object.freeze({ a: 1 })\n  Object.assign(f, x.s)\n  return f", "\"f\" is frozen, and a change in place would throw in JavaScript: write a new record, const copy = { ...f, k: v }"),
+            ("return new Date(x.t).setUTCDate(1, 2)", "setUTCDate takes one number: d.setUTCDate(n)"),
+            ("return new Date(x.t).setUTCHours()", "setUTCHours takes 1 to 4 numbers, from its own part on"),
+            ("return x.t.getUTCHours()", "getUTCHours is a Date's: new Date(x).getUTCHours(…), x a time value or a text, or a Date bound with const d = new Date(x)"),
+            ("return Date.UTC()", "Date.UTC takes a year and, if there are, a month (from 0), date, hours, minutes, seconds and milliseconds: Date.UTC(2000, 1, 29)"),
+            ("return new Map()", "a flow's map is a record, by text key: {} to start, r[k] to read, { ...r, [k]: v } to add"),
+            ("return r instanceof Array", "a flow's values have no classes: Array.isArray(x) tells a list, typeof x the rest"),
+            ("return Object.assign(r, x.s)", "Object.assign changes its first record in place, which a flow's record doesn't: { ...a, ...b } is the record they make together"),
+            ("Object.assign(x.r, x.s)\n  return 1", "Object.assign changes its first record in place, which a flow's record doesn't: { ...a, ...b } is the record they make together"),
+            ("return Object.defineProperty(r, \"k\", {})", "a record holds values by key, with no descriptors and no prototype: { ...r, k: v } is r with k"),
+            ("return Object.isFrozen(r)", "a flow's values never change in place, so each is frozen already: Object.isFrozen has nothing to tell"),
+            ("return Object.create(r)", "a record has no prototype: Object.create(null) is {}, and nothing else is made this way"),
+            ("return Object.values(r, 1)", "Object.values takes one record: Object.values(r)"),
+            ("return JSON.stringify(r, x.keys)", "JSON.stringify's replacer is written in place: null, a list of keys, [\"id\", \"name\"], or a function of each key and value, (k, v) => …"),
+            ("return JSON.stringify(r, null, x.n)", "JSON.stringify's indent is written in place: a number of spaces, 2, or a text, \"\\t\""),
+            ("return JSON.stringify(r, [1])", "a replacer's keys are texts written in place: [\"id\", \"name\"]"),
+            ("return JSON.parse(x.t, (k, v, w) => v)", "JSON.parse's function takes the key and the value: (k, v) => …"),
+            ("return Object.groupBy(x.xs, (v, i) => i)", "groupBy's function takes the item: (x) => …; an index isn't passed"),
+        ];
+        for (body, want) in cases {
+            assert_eq!(refused(body), want, "{body}");
+        }
+    }
+
+    /// The forms a flow can't have are refused, each naming what it can write.
+    #[test]
+    fn the_number_forms_a_flow_lacks_are_refused() {
+        let refused = |body: &str| error(&number_flow(&format!("  return {body}"))).2;
+        assert!(refused("Math.random()").contains("import { random } from \"holon:random\""));
+        assert!(refused("Math.max(n)").starts_with("Math.max takes two numbers or more"));
+        assert!(refused("Math.sqrt(n, 2)").starts_with("Math.sqrt takes one number"));
+        assert!(refused("Math.clamp(n)").starts_with("Math has no \"clamp\""));
+        assert!(refused("Math.TAU").starts_with("Math.TAU isn't a value: Math's constants are Math.E"));
+        assert!(refused("Number.NaN").starts_with("a flow has no NaN or Infinity"));
+        assert!(refused("NaN").starts_with("NaN isn't a value a flow has"));
+        assert!(refused("Infinity").starts_with("Infinity isn't a value a flow has"));
+        assert!(refused("Math").starts_with("Math is a namespace"));
+        assert!(refused("parseInt(x.s, 16, 2)").starts_with("parseInt takes a text and a radix"));
+        assert!(refused("n.toLocaleString()").starts_with("a flow has no locale"));
+    }
+
+    /// An action returning `body`, its input `x`, a text `s` and a number `n` bound first.
+    fn text_flow(body: &str) -> String {
+        format!("import {{ action, append, concat, extend, flow, length, text_length }} from \"holon\"\n\nflow(\"f\")\n\nexport const t = action((x) => {{\n  const s = x.s.trim()\n  const n = parseFloat(x.n)\n{body}\n}})\n")
+    }
+
+    /// JavaScript's text forms read as their leaves, each with its params: a text's methods,
+    /// `String`'s, the URI functions, `btoa` and `atob`, and `.length` on a known text or list.
+    #[test]
+    fn javascript_s_text_forms_read_as_their_leaves() {
+        let placed = |expr: &str, leaf: &str| {
+            let d = compiled(&text_flow(&format!("  return {expr}"))).doc;
+            let node = d.nodes.iter().rev().find(|n| n.data.name == leaf).unwrap_or_else(|| panic!("{expr}: no {leaf} in {:?}", leaves(&d)));
+            ["mode", "at", "side", "count", "form", "set", "bytes", "op"].iter().filter(|k| interface_of(leaf).is_some_and(|u| u.params.iter().any(|p| p.name() == **k))).map(|k| format!("{k}={}", node.param(k))).collect::<Vec<_>>().join(",")
+        };
+        let cases = [
+            ("s.length", "text_length", ""),
+            ("s.split(\",\").length", "length", ""),
+            ("s.charAt(1)", "text_at", ""),
+            ("s.charCodeAt(0)", "code_at", "mode=unit"),
+            ("s.codePointAt(0)", "code_at", "mode=point"),
+            ("String.fromCharCode(97, 98)", "from_codes", "mode=unit"),
+            ("String.fromCodePoint(128512)", "from_codes", "mode=point"),
+            ("s.startsWith(\"a\")", "text_contains", "at=start"),
+            ("s.endsWith(\"a\", 3)", "text_contains", "at=end"),
+            ("s.includes(\"a\", 1)", "includes", ""),
+            ("s.indexOf(\"a\", 1)", "index_of", ""),
+            ("s.lastIndexOf(\"a\", 1)", "last_index_of", ""),
+            ("s.slice(1, -1)", "slice", "mode=end"),
+            ("s.substring(1, 3)", "slice", "mode=substring"),
+            ("s.split(\",\", 2)", "split", ""),
+            ("s.trim()", "trim", "side=both"),
+            ("s.trimStart()", "trim", "side=start"),
+            ("s.trimEnd()", "trim", "side=end"),
+            ("s.padStart(5, \"0\")", "pad", "side=start"),
+            ("s.padEnd(5)", "pad", "side=end"),
+            ("s.repeat(3)", "repeat", ""),
+            ("s.replace(\"a\", \"b\")", "replace", "count=first"),
+            ("s.replaceAll(\"a\", \"b\")", "replace", "count=all"),
+            ("s.normalize()", "normalize", "form=NFC"),
+            ("s.normalize(\"NFKD\")", "normalize", "form=NFKD"),
+            ("s.isWellFormed()", "is_well_formed", ""),
+            ("s.toWellFormed()", "concat", ""),
+            ("s.concat(\"-\", n)", "concat", ""),
+            ("s.toLocaleUpperCase()", "uppercase", ""),
+            ("encodeURIComponent(s)", "uri_encode", "set=component"),
+            ("encodeURI(s)", "uri_encode", "set=uri"),
+            ("decodeURIComponent(s)", "uri_decode", "set=component"),
+            ("decodeURI(s)", "uri_decode", "set=uri"),
+            ("btoa(s)", "base64", "mode=encode,bytes=latin1"),
+            ("atob(s)", "base64", "mode=decode,bytes=latin1"),
+            ("String(n)", "as_text", ""),
+            ("x.s.toString()", "as_text", ""),
+            ("\"n=\" + n", "add", ""),
+            ("s < x.t", "compare", "op=<"),
+        ];
+        for (expr, leaf, params) in cases {
+            assert_eq!(placed(expr, leaf), params, "{expr}");
+        }
+    }
+
+    /// Each text form lowers to the unit its spelled-out form does: an index left out to 0, a
+    /// text's `concat` to `concat` of `String(x)` of each argument, `String(x)` and `toString()`
+    /// on what isn't known to be a number to a template, `.length` to the leaf of the value's
+    /// type, `+` with a text to `add`, `String.raw` to the template of its text as written.
+    #[test]
+    fn a_text_form_is_the_unit_of_what_it_stands_for() {
+        let same = [
+            ("return s.charAt()", "return s.charAt(0)"),
+            ("return s.charCodeAt()", "return s.charCodeAt(0)"),
+            ("return s.concat(\"-\", n)", "return concat(s, \"-\", `${n}`)"),
+            ("return \"a\".concat(n, \"b\")", "return `a${n}b`"),
+            ("return s.toWellFormed()", "return concat(s, \"\")"),
+            ("return s.valueOf()", "return s"),
+            ("return String(n)", "return `${n}`"),
+            ("return x.s.toString()", "return `${x.s}`"),
+            ("return String.fromCharCode()", "return \"\""),
+            ("return String.raw`a\\n${n}`", "return `a\\\\n${n}`"),
+            ("return s.length", "return text_length(s)"),
+            ("return s.split(\",\").length", "return length(s.split(\",\"))"),
+            ("return x.xs.concat([1], 2)", "return append(extend(x.xs, [1]), 2)"),
+            ("let u = s\n  u += \"!\"\n  return u", "let u = s\n  u = u + \"!\"\n  return u"),
+        ];
+        for (form, spelled) in same {
+            let (a, b) = (compiled(&text_flow(&format!("  {form}"))), compiled(&text_flow(&format!("  {spelled}"))));
+            assert_eq!(hash_of(&a.doc), hash_of(&b.doc), "{form} is {spelled}");
+        }
+        // `+` beside a text is one `add`, its operands in order.
+        let d = compiled(&text_flow("  return \"a\" + n + s")).doc;
+        assert_eq!(leaves(&d).iter().filter(|l| *l == "add").count(), 1);
+    }
+
+    /// What a text form can't be read as is refused, saying what to write instead.
+    #[test]
+    fn the_text_forms_a_flow_lacks_are_refused() {
+        let refused = |body: &str| error(&text_flow(&format!("  return {body}"))).2;
+        assert!(refused("x.s.length").starts_with(".length is a text's text_length or a list's length, and this value isn't known to be either"), "{}", refused("x.s.length"));
+        assert!(refused("({ a: 1 }).length").starts_with("a record's field named length is read r[\"length\"]"));
+        assert!(refused("x.xs.concat(x.ys)").starts_with("concat spreads a list and adds anything else, and this could be either"));
+    }
+
+    /// A flow's own function keeps its name's calls, as JavaScript's would shadow the global;
+    /// `Math.max` is the leaf whatever the flow defines.
+    #[test]
+    fn a_flow_s_function_shadows_a_global_and_never_math_s() {
+        let src = "import { action, flow } from \"holon\"\n\nfunction max(a) {\n  return a * 2\n}\n\nfunction parseFloat(s) {\n  return s ?? 1\n}\n\nflow(\"f\")\n\nexport const t = action((x) => {\n  return { m: Math.max(x.a, 1), own: max(x.a), p: parseFloat(x.s) }\n})\n";
+        let d = compiled(src).doc;
+        let placed = |name: &str, composite: bool| d.nodes.iter().filter(|n| n.data.name == name && matches!(n.data.body, crate::canvas::PlacedBody::Composite { .. }) == composite).count();
+        assert_eq!((placed("max", false), placed("max", true)), (1, 1), "Math.max is the leaf, max(…) the flow's function: {:?}", leaves(&d));
+        assert_eq!((placed("to_number", false), placed("parseFloat", true)), (0, 1), "parseFloat is the flow's own: {:?}", leaves(&d));
+    }
+
+    /// `Math`'s and `Number`'s constants are the doubles JavaScript has.
+    #[test]
+    fn the_constants_are_javascript_s_doubles() {
+        use std::f64::consts;
+        let math = [consts::E, consts::LN_10, consts::LN_2, consts::LOG10_E, consts::LOG2_E, consts::PI, consts::FRAC_1_SQRT_2, consts::SQRT_2];
+        for ((name, text), want) in ts::MATH_CONSTANTS.iter().zip(math) {
+            assert_eq!(text.parse::<f64>().unwrap().to_bits(), want.to_bits(), "Math.{name}");
+        }
+        let number = [f64::EPSILON, 9007199254740991.0, -9007199254740991.0, f64::MAX, f64::from_bits(1)];
+        for ((name, text), want) in ts::NUMBER_CONSTANTS.iter().zip(number) {
+            assert_eq!(text.parse::<f64>().unwrap().to_bits(), want.to_bits(), "Number.{name}");
+        }
+    }
+
     // ── each construct, by the nodes it places ──
 
     #[test]
@@ -2495,10 +3136,16 @@ export const t = action(() => {
         )
         .doc;
         let names = leaves(&d);
-        assert_eq!(&names[4..12], ["default", "coalesce", "guard", "guard", "coalesce", "guard", "default", "default"]);
+        // `c ? a : b` is `guard(c, a) ?? guard(!(c ?? false), b)`, a literal `b` too.
+        let ternary = ["guard", "default", "not", "guard", "coalesce"];
+        assert_eq!(&names[4..7], ["default", "coalesce", "guard"]);
+        assert_eq!(&names[7..12], ternary);
+        assert_eq!(&names[12..18], ["guard", "default", "not", "const", "guard", "coalesce"]);
+        assert_eq!(names[18], "default");
         assert_eq!((d.nodes[4].param("type"), d.nodes[4].param("value")), ("Number", "0"));
-        assert_eq!((d.nodes[10].param("type"), d.nodes[10].param("value")), ("Text", "none"));
-        assert_eq!((d.nodes[11].param("type"), d.nodes[11].param("value")), ("Json", "{\"k\":[1,\"x\"]}"));
+        assert_eq!((d.nodes[8].param("type"), d.nodes[8].param("value")), ("Boolean", "false"));
+        assert_eq!((d.nodes[15].param("type"), d.nodes[15].param("value")), ("Text", "none"));
+        assert_eq!((d.nodes[18].param("type"), d.nodes[18].param("value")), ("Json", "{\"k\":[1,\"x\"]}"));
     }
 
     #[test]
@@ -2606,6 +3253,76 @@ route.get("/x", (req) => {
         assert_eq!(fields, ["id", "path", "body"]);
         let from_params = d.edges.iter().filter(|w| w.output() == "params").count();
         assert_eq!(from_params, 1);
+    }
+
+    /// Each route's answer, its body as text, for a GET of its path: the flow compiled from its
+    /// text and its endpoints run through core's `eval`.
+    pub(crate) fn bodies(src: &str) -> Vec<(String, String)> {
+        use holon_core::{eval, Value};
+        use std::collections::BTreeMap;
+        let lowered = ts::compile(src).unwrap_or_else(|e| panic!("{e}"));
+        let mut store = MapResolver::new();
+        text::restore(&lowered.doc, &mut store, &Names::new());
+        let port = lowered.doc.server.as_ref().map(|x| x.port.clone()).unwrap_or_default();
+        let server = derive_server(&lowered.doc.nodes, &lowered.doc.edges, &mut store, &port);
+        let text = |s: &str| Value::Text(s.into());
+        server
+            .endpoints
+            .iter()
+            .map(|e| {
+                let unit = store.resolve(&parse_hash(&e.hash).unwrap()).unwrap();
+                let request = Value::Record(BTreeMap::from([
+                    ("method".to_string(), text(&e.method)),
+                    ("path".to_string(), text(&e.path)),
+                    ("params".to_string(), Value::Record(BTreeMap::new())),
+                    ("query".to_string(), Value::Record(BTreeMap::new())),
+                    ("headers".to_string(), Value::Record(BTreeMap::new())),
+                    ("body".to_string(), text("")),
+                ]));
+                let out = eval(unit, &[Some(request)], &store).into_vec();
+                // The answer's body, as the server writes it: a text as itself, a value as JSON.
+                let body = match out.first() {
+                    Some(Some(Value::Record(r))) if !r.contains_key("error") => match r.get("body") {
+                        Some(Value::Text(t)) => t.clone(),
+                        Some(v) => holon_core::stringify_json(v).unwrap_or_default(),
+                        None => String::new(),
+                    },
+                    other => format!("{other:?}"),
+                };
+                (e.path.clone(), body)
+            })
+            .collect()
+    }
+
+    /// A function returning `{ a, b }` lowers to one output per key; read whole, it is the
+    /// record, as JavaScript reads it: answered, passed on, mapped and folded. Picked by key, it
+    /// is that output.
+    #[test]
+    fn a_function_returning_a_record_is_the_record_when_read_whole() {
+        let src = r#"import { flow, route } from "holon"
+
+flow("f", { port: 8000 })
+
+function pair(p) {
+  return { a: `<${p}>`, b: 1 }
+}
+
+function step(acc, x) {
+  return { n: acc.n + 1, sum: acc.sum + x }
+}
+
+route.get("/whole", (req) => pair("w"))
+route.get("/passed", (req) => JSON.stringify(pair("p")))
+route.get("/mapped", (req) => ["x", "y"].map(pair))
+route.get("/folded", (req) => [1, 2, 3].reduce(step, { n: 0, sum: 0 }))
+route.get("/picked", (req) => `${pair("k").a}!`)
+"#;
+        let got: BTreeMap<String, String> = bodies(src).into_iter().collect();
+        assert_eq!(got["/whole"], r#"{"a":"<w>","b":1}"#);
+        assert_eq!(got["/passed"], r#"{"a":"<p>","b":1}"#);
+        assert_eq!(got["/mapped"], r#"[{"a":"<x>","b":1},{"a":"<y>","b":1}]"#);
+        assert_eq!(got["/folded"], r#"{"n":3,"sum":6}"#);
+        assert_eq!(got["/picked"], "<k>!");
     }
 
     #[test]
@@ -2818,16 +3535,20 @@ route.post("/v", (req) => {
     /// call gives it.
     #[test]
     fn a_function_of_the_wrong_arity_is_said() {
-        // One written in place: the reader says it, as map passes no index.
-        assert_eq!(
-            error("import { action, flow } from \"holon\"\n\nflow(\"h\")\n\nexport const t = action(() => [1].map((a, b) => a + b))\n"),
-            (5, 39, "map's function takes the item: (x) => …; an index isn't passed".into())
-        );
+        // One written in place: the reader says it. map takes an index after the item, read
+        // through the list's name; the others take none.
+        let in_place = |call: &str| error(&format!("import {{ action, flow }} from \"holon\"\n\nflow(\"h\")\n\nexport const t = action(() => {call})\n"));
+        assert_eq!(in_place("[1].map((a, b, c) => a + b + c)"), (5, 39, "map's function takes the item and its index: (x) => …, (x, i) => …; the list isn't passed, as it has a name".into()));
+        assert_eq!(in_place("[1].map((a, b) => a + b)"), (5, 31, "map with an index, (x, i) => …, reads the list by index: name it first, const xs = …, and map that".into()));
+        assert_eq!(in_place("[1].filter((a, b) => a)"), (5, 42, "filter's function takes the item: (x) => …; an index isn't passed".into()));
+        assert_eq!(in_place("[1].toSorted((a, b, c) => a)"), (5, 44, "toSorted's function takes the two items it compares: (a, b) => …".into()));
         let by_name = |call: &str| {
             error(&format!("import {{ action, flow }} from \"holon\"\n\nflow(\"h\")\n\nfunction h(a, b, c) {{\n  return a + b + c\n}}\n\nexport const t = action(() => {call})\n"))
         };
         assert_eq!(by_name("[1].map(h)"), (9, 39, "\"map\" gives its function 1 inputs (the item); this one takes 3".into()));
         assert_eq!(by_name("[1].reduce(h, 0)"), (9, 42, "\"fold\" gives its function 2 inputs (the result so far and the item); this one takes 3".into()));
+        assert_eq!(by_name("[1].toSorted(h)"), (9, 44, "\"sort_by\" gives its function 2 inputs (the two items it compares); this one takes 3".into()));
+        assert_eq!(by_name("[1].find(h)"), (9, 40, "\"find\" gives its function 1 inputs (the item); this one takes 3".into()));
     }
 
     #[test]
@@ -3763,7 +4484,7 @@ export const t = action(() => signed("a"))
         // A function written in place outside map and reduce: the reader says where it goes.
         assert_eq!(
             route("", "route.get(\"/a\", () => {\n  const x = (a) => a\n  return x\n})"),
-            (6, 13, "a function written in place goes to map or reduce: xs.map((x) => …); define the others at the top level".into())
+            (6, 13, "a function written in place goes to a list's method that takes one, xs.map((x) => …), xs.filter((x) => …); define the others at the top level".into())
         );
     }
 
@@ -3884,6 +4605,26 @@ route.post("/t", (req) => {
         assert_eq!(picked(&kinds, t("1"), None), t("text one"));
         assert_eq!(picked(&kinds, Some(Boolean(true)), None), t("yes"));
         assert_eq!(picked(&kinds, Some(Boolean(false)), None), None);
+    }
+
+    /// `c ? a : b` chooses as JavaScript does: the side chosen is the answer, absent if it is, and
+    /// `c` absent takes the else. The `if`, its early-return form and the ternary are one unit.
+    #[test]
+    fn a_ternary_chooses_and_its_chosen_sides_absence_is_its() {
+        use holon_core::Value::{Boolean, Number, Text};
+        let ternary = with_pick("  return op ? v : \"other\"");
+        let other = Some(Text("other".into()));
+        assert_eq!(picked(&ternary, Some(Boolean(true)), Some(Number(1.0))), Some(Number(1.0)));
+        assert_eq!(picked(&ternary, Some(Boolean(true)), None), None, "the then chosen, absent: absent, not the else");
+        assert_eq!(picked(&ternary, Some(Boolean(false)), None), other, "the else chosen");
+        assert_eq!(picked(&ternary, None, Some(Number(1.0))), other, "the condition absent: the else, as an if takes undefined");
+        let hash = hash_of(&compiled(&ternary).doc);
+        for body in ["  if (op) {\n    return v\n  } else {\n    return \"other\"\n  }", "  if (op) {\n    return v\n  }\n  return \"other\""] {
+            assert_eq!(hash_of(&compiled(&with_pick(body)).doc), hash, "{body}");
+        }
+        // The fallback written as one still falls.
+        let fallback = with_pick("  return (op ? v : undefined) ?? \"other\"");
+        assert_eq!(picked(&fallback, Some(Boolean(true)), None), other);
     }
 
     #[test]

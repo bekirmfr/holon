@@ -9,13 +9,15 @@
 //!    computed; where JavaScript's answer has no Holon value (a lone surrogate, `NaN`, `undefined`,
 //!    `null`, a throw) the candidate gives nothing.
 //! 2. **The checks.** Each composite, written in TypeScript and compiled by the reader, gives what
-//!    its candidate gives, twice: through today's leaves, which count Unicode scalar values, against
-//!    the candidate counting scalars; and in code units, simulated (each UTF-16 code unit of the
-//!    inputs made one scalar, a surrogate a private-use stand-in, and every `slice` made to give
-//!    nothing when it would cut a surrogate pair, as a code-unit `slice` would), against the
-//!    candidate counting code units.
-//! 3. **The races.** Each composite against its candidate (counting scalars, as the composite's
-//!    leaves do today), through the real `eval`.
+//!    its candidate gives, through the leaves, which count UTF-16 code units as the candidates do.
+//!    (Until the leaves counted code units, the checks ran twice: through the leaves, counting
+//!    scalars, and in code units simulated; texts.md's race output is from then.)
+//! 3. **The races.** Each composite against its candidate, both counting code units, through the
+//!    real `eval`.
+//!
+//! The candidates are core's text leaves now (`holon-core/src/texts.rs`, ported from here), which
+//! core's tests check against the oracle too. They stay here as the races' native side: a
+//! candidate generic over its unit races code units against scalars.
 
 mod race;
 
@@ -755,93 +757,11 @@ fn oracle() {
     println!("oracle: every candidate gives JavaScript's answer, in code units, on {n} cases (Node 22.21.1)");
 }
 
-// ── code units, simulated ────────────────────────────────────────────────────────────────────
-
-/// Each UTF-16 code unit of `s` as one scalar, a surrogate as a private-use stand-in (U+F0000 plus
-/// its offset from U+D800), so leaves that count scalars count code units.
-fn widen(s: &str) -> String {
-    s.encode_utf16()
-        .map(|u| char::from_u32(if (0xD800..0xE000).contains(&u) { 0xF0000 + (u32::from(u) - 0xD800) } else { u32::from(u) }).expect("a scalar"))
-        .collect()
-}
-
-/// `widen` undone; nothing when a stand-in has lost its other half.
-fn narrow(s: &str) -> Option<String> {
-    let mut units = Vec::new();
-    for c in s.chars() {
-        let x = c as u32;
-        if (0xF0000..0xF0800).contains(&x) {
-            units.push((x - 0xF0000 + 0xD800) as u16);
-        } else {
-            let mut b = [0u16; 2];
-            units.extend_from_slice(c.encode_utf16(&mut b));
-        }
-    }
-    String::from_utf16(&units).ok()
-}
-
-fn widen_value(x: &Value) -> Value {
-    match x {
-        Value::Text(s) => Value::Text(widen(s)),
-        Value::List(xs) => Value::List(xs.iter().map(widen_value).collect()),
-        x => x.clone(),
-    }
-}
-
-fn narrow_value(x: Value) -> Option<Value> {
-    match x {
-        Value::Text(s) => narrow(&s).map(Value::Text),
-        Value::List(xs) => xs.into_iter().map(narrow_value).collect::<Option<Vec<_>>>().map(Value::List),
-        x => Some(x),
-    }
-}
-
-/// A composite's text with each call of `slice` made strict: nothing when the piece would begin on
-/// a pair's second half or end on its first, as a `slice` counting code units gives. A stand-in
-/// for a first half is U+F0000–U+F03FF, UTF-8 `f3b08…`; for a second half U+F0400–U+F07FF,
-/// `f3b09…`.
-fn strictly(src: &str) -> String {
-    let imported = |leaf: &str| src.lines().any(|l| l.starts_with("import ") && l.contains(leaf));
-    let missing: Vec<&str> = ["slice", "text_length", "hex"].into_iter().filter(|l| !imported(l)).collect();
-    let mut out = if missing.is_empty() { String::new() } else { format!("import {{ {} }} from \"holon\"\n", missing.join(", ")) };
-    let mut rest = src;
-    while let Some(i) = rest.find("slice(") {
-        let named = rest[..i].chars().next_back().is_some_and(|c| c.is_alphanumeric() || c == '_');
-        out.push_str(&rest[..i]);
-        out.push_str(if named { "slice(" } else { "strict_slice(" });
-        rest = &rest[i + "slice(".len()..];
-    }
-    out.push_str(rest);
-    out.push_str(
-        r#"
-
-function strict_slice(s, a, l) {
-  const r = slice(s, a, l)
-  const n = text_length(r)
-  const whole = n === 0 ? true : (slice(hex(slice(r, 0, 1)), 0, 5) !== "f3b09" && slice(hex(slice(r, n - 1, 1)), 0, 5) !== "f3b08")
-  return whole ? r : undefined
-}"#,
-    );
-    out
-}
-
-/// The composite `name` of `src` gives what `native` (counting code units) gives on every case, in
-/// simulated code units.
-fn check_units(name: &str, src: &str, function_name: &str, arity: usize, native: Native, cases: &[Vec<Value>]) {
-    let c = function(&strictly(src), function_name, arity);
-    for case in cases {
-        let want = native(&case.iter().collect::<Vec<_>>());
-        let wide: Vec<Value> = case.iter().map(widen_value).collect();
-        let got = c.call(&wide).and_then(narrow_value);
-        assert!(alike(&got, &want), "{name}, in code units: the composite gives {got:?} and the candidate {want:?} on {case:?}");
-    }
-}
-
 /// Where a composite is not exact: it and the candidate differ on `case` (a claim of texts.md, kept
-/// true). `units` runs it in simulated code units.
-fn differs(name: &str, c: &Composite, native: Native, case: &[Value], units: bool) {
+/// true).
+fn differs(name: &str, c: &Composite, native: Native, case: &[Value]) {
     let want = native(&case.iter().collect::<Vec<_>>());
-    let got = if units { c.call(&case.iter().map(widen_value).collect::<Vec<_>>()).and_then(narrow_value) } else { c.call(case) };
+    let got = c.call(case);
     assert!(!alike(&got, &want), "{name}: said to differ on {case:?}, but both give {got:?}");
     println!("{name}: inexact, as texts.md says: on {case:?} the composite gives {got:?}, JavaScript {want:?}");
 }
@@ -967,6 +887,19 @@ function js_is_well_formed(s) {
   return slice(s, 0, 0) === ""
 }"#;
 
+// `type_of(s) === "string"`: `isWellFormed` as a type test (records.md's `type_of`), false where
+// the leaf gives nothing.
+const IS_STRING: &str = r#"import { type_of } from "holon"
+function js_is_string(s) {
+  return type_of(s) === "string"
+}"#;
+
+// The same made exact: nothing for anything but a text, as `isWellFormed` gives.
+const IS_STRING_EXACT: &str = r#"import { type_of } from "holon"
+function js_is_string_exact(s) {
+  return type_of(s) === "string" ? true : undefined
+}"#;
+
 // `concat` of the text and "": the text for a text, nothing for anything else (JavaScript's
 // TypeError), as the reader would lower `s.toWellFormed()`.
 const TO_WELL_FORMED: &str = r#"import { concat } from "holon"
@@ -1045,11 +978,10 @@ fn sized(n: usize) -> Vec<Value> {
     vec![text(&sample(n))]
 }
 
-/// Check a composite both ways (today's leaves; simulated code units), and return it for its race.
-fn checked(name: &str, src: &str, f: &str, arity: usize, scalars: Native, units: Native, cases: &[Vec<Value>]) -> Composite {
+/// Check a composite against its candidate, and return it for its race.
+fn checked(name: &str, src: &str, f: &str, arity: usize, native: Native, cases: &[Vec<Value>]) -> Composite {
     let c = function(src, f, arity);
-    check(name, &Side::Composite(&c), &Side::Native(scalars), cases);
-    check_units(name, src, f, arity, units, cases);
+    check(name, &Side::Composite(&c), &Side::Native(native), cases);
     c
 }
 
@@ -1082,23 +1014,23 @@ fn the() -> &'static Value {
 }
 
 fn at_3(xs: &[&Value]) -> Option<Value> {
-    at::<false>(&[xs[0], &num(3.0)])
+    at::<true>(&[xs[0], &num(3.0)])
 }
 
 fn char_at_3(xs: &[&Value]) -> Option<Value> {
-    char_at::<false>(&[xs[0], &num(3.0)])
+    char_at::<true>(&[xs[0], &num(3.0)])
 }
 
 fn slice_1(xs: &[&Value]) -> Option<Value> {
-    js_slice::<false>(&[xs[0], &num(1.0), &num(-1.0)])
+    js_slice::<true>(&[xs[0], &num(1.0), &num(-1.0)])
 }
 
 fn includes_zq(xs: &[&Value]) -> Option<Value> {
-    includes::<false>(&[xs[0], zq()])
+    includes::<true>(&[xs[0], zq()])
 }
 
 fn starts_the(xs: &[&Value]) -> Option<Value> {
-    starts_with::<false>(&[xs[0], the()])
+    starts_with::<true>(&[xs[0], the()])
 }
 
 fn is_well_formed_2(xs: &[&Value]) -> Option<Value> {
@@ -1124,13 +1056,14 @@ const NUMBER_TEXT_FLOOR: &str = r#"function js_number_text(x) {
   return a >= 1e21 || (a < 0.000001 && a !== 0) ? `${x}e` : `${x}`
 }"#;
 
-/// What the reader does today that a composite has to write around: `c ? a : b` lowers to
-/// `guard(c, a) ?? b`, so a chosen `a` that is absent gives `b`, where JavaScript gives
-/// `undefined` (texts.md, "Reader changes").
+/// What the reader does that a composite relies on: `c ? a : b` lowers to `guard(c, a) ??
+/// guard(!(c ?? false), b)`, so a chosen `a` that is absent makes the choice absent, as
+/// JavaScript's `undefined`, and doesn't fall to `b` (texts.md, "Reader changes").
 fn reader_facts() {
     let c = function("function pick(c, r) {\n  return c ? r.missing : \"other\"\n}", "pick", 2);
-    assert_eq!(c.call(&[truth(true), v("{}")]), Some(text("other")), "the ternary's fall-through is fixed: update texts.md");
-    println!("reader: `c ? a : b` with c true and a absent gives b (JavaScript gives undefined)");
+    assert_eq!(c.call(&[truth(true), v("{}")]), None, "the ternary falls to its else again: update texts.md");
+    assert_eq!(c.call(&[truth(false), v("{}")]), Some(text("other")));
+    println!("reader: `c ? a : b` with c true and a absent is absent (JavaScript gives undefined)");
 }
 
 fn main() {
@@ -1145,77 +1078,74 @@ fn main() {
     race("s.indexOf(t), t absent, code units (left) against scalars (right)", &Side::Native(index_of::<true>), &Side::Native(index_of::<false>), SIZES, |n| vec![text(&astral(n)), text("zq")]);
 
     // s.at(i), s.charAt(i): a slice of one unit, around a comparison or two.
-    let c = checked("at", AT, "js_at", 2, at::<false>, at::<true>, &cases_at(TEXTS, POSITIONS));
-    race("s.at(i)", &Side::Composite(&c), &Side::Native(at::<false>), SIZES, |n| vec![text(&sample(n)), count(n / 2)]);
+    let c = checked("at", AT, "js_at", 2, at::<true>, &cases_at(TEXTS, POSITIONS));
+    race("s.at(i)", &Side::Composite(&c), &Side::Native(at::<true>), SIZES, |n| vec![text(&sample(n)), count(n / 2)]);
     mapped_race("s.at(3), mapped over 16 texts", AT, "function js_at(s, i) {", "at_3", "\n  const i = 3", at_3);
-    let c = checked("charAt", CHAR_AT, "js_char_at", 2, char_at::<false>, char_at::<true>, &cases_at(TEXTS, POSITIONS));
-    race("s.charAt(i)", &Side::Composite(&c), &Side::Native(char_at::<false>), SIZES, |n| vec![text(&sample(n)), count(n / 2)]);
+    let c = checked("charAt", CHAR_AT, "js_char_at", 2, char_at::<true>, &cases_at(TEXTS, POSITIONS));
+    race("s.charAt(i)", &Side::Composite(&c), &Side::Native(char_at::<true>), SIZES, |n| vec![text(&sample(n)), count(n / 2)]);
     mapped_race("s.charAt(3), mapped over 16 texts", CHAR_AT, "function js_char_at(s, i) {", "char_at_3", "\n  const i = 3", char_at_3);
 
     // s.slice(a, b), s.substring(a, b).
-    let c = checked("slice", SLICE, "js_slice", 3, js_slice::<false>, js_slice::<true>, &cases_range(TEXTS));
-    race("s.slice(a, b)", &Side::Composite(&c), &Side::Native(js_slice::<false>), SIZES, |n| vec![text(&sample(n)), num(1.0), num(-1.0)]);
+    let c = checked("slice", SLICE, "js_slice", 3, js_slice::<true>, &cases_range(TEXTS));
+    race("s.slice(a, b)", &Side::Composite(&c), &Side::Native(js_slice::<true>), SIZES, |n| vec![text(&sample(n)), num(1.0), num(-1.0)]);
     mapped_race("s.slice(1, -1), mapped over 16 texts", SLICE, "function js_slice(s, a, b) {", "slice_1", "\n  const a = 1\n  const b = -1", slice_1);
-    let c = checked("substring", SUBSTRING, "js_substring", 3, substring::<false>, substring::<true>, &cases_range(TEXTS));
-    race("s.substring(a, b)", &Side::Composite(&c), &Side::Native(substring::<false>), SIZES, |n| vec![text(&sample(n)), count(n / 4), count(3 * n / 4)]);
+    let c = checked("substring", SUBSTRING, "js_substring", 3, substring::<true>, &cases_range(TEXTS));
+    race("s.substring(a, b)", &Side::Composite(&c), &Side::Native(substring::<true>), SIZES, |n| vec![text(&sample(n)), count(n / 4), count(3 * n / 4)]);
 
     // Searches: includes, startsWith, endsWith, indexOf from a position, lastIndexOf.
-    let c = checked("includes", INCLUDES, "js_includes", 2, includes::<false>, includes::<true>, &cases_search());
-    race("s.includes(t), t absent", &Side::Composite(&c), &Side::Native(includes::<false>), SIZES, |n| vec![text(&sample(n)), text("zq")]);
+    let c = checked("includes", INCLUDES, "js_includes", 2, includes::<true>, &cases_search());
+    race("s.includes(t), t absent", &Side::Composite(&c), &Side::Native(includes::<true>), SIZES, |n| vec![text(&sample(n)), text("zq")]);
     mapped_race("s.includes(\"zq\"), mapped over 16 texts", INCLUDES, "function js_includes(s, t) {", "includes_zq", "\n  const t = \"zq\"", includes_zq);
-    let c = checked("startsWith", STARTS_WITH, "js_starts_with", 2, starts_with::<false>, starts_with::<true>, &cases_search());
-    race("s.startsWith(t)", &Side::Composite(&c), &Side::Native(starts_with::<false>), &[8, 64, 4096, 65536], |n| vec![text(&sample(n)), text("The ")]);
+    let c = checked("startsWith", STARTS_WITH, "js_starts_with", 2, starts_with::<true>, &cases_search());
+    race("s.startsWith(t)", &Side::Composite(&c), &Side::Native(starts_with::<true>), &[8, 64, 4096, 65536], |n| vec![text(&sample(n)), text("The ")]);
     mapped_race("s.startsWith(\"The \"), mapped over 16 texts", STARTS_WITH, "function js_starts_with(s, t) {", "starts_the", "\n  const t = \"The \"", starts_the);
-    checked("startsWith at", STARTS_WITH_AT, "js_starts_with_at", 3, starts_with::<false>, starts_with::<true>, &cases_search_at());
-    let c = checked("endsWith", ENDS_WITH, "js_ends_with", 2, ends_with::<false>, ends_with::<true>, &cases_search());
-    race("s.endsWith(t), t of 4", &Side::Composite(&c), &Side::Native(ends_with::<false>), &[8, 64, 4096, 65536], |n| {
+    checked("startsWith at", STARTS_WITH_AT, "js_starts_with_at", 3, starts_with::<true>, &cases_search_at());
+    let c = checked("endsWith", ENDS_WITH, "js_ends_with", 2, ends_with::<true>, &cases_search());
+    race("s.endsWith(t), t of 4", &Side::Composite(&c), &Side::Native(ends_with::<true>), &[8, 64, 4096, 65536], |n| {
         let s = sample(n);
         let t: String = s.chars().skip(n - 4).collect();
         vec![text(&s), text(&t)]
     });
-    let c = checked("indexOf at", INDEX_FROM, "js_index_from", 3, index_of::<false>, index_of::<true>, &cases_search_at());
-    race("s.indexOf(t, p), t absent", &Side::Composite(&c), &Side::Native(index_of::<false>), SIZES, |n| vec![text(&sample(n)), text("zq"), count(n / 2)]);
-    let c = checked("lastIndexOf", LAST_INDEX_OF, "js_last_index_of", 2, last_index_of::<false>, last_index_of::<true>, &cases_search());
-    race("s.lastIndexOf(t)", &Side::Composite(&c), &Side::Native(last_index_of::<false>), SMALL, |n| vec![text(&sample(n)), text("The")]);
+    let c = checked("indexOf at", INDEX_FROM, "js_index_from", 3, index_of::<true>, &cases_search_at());
+    race("s.indexOf(t, p), t absent", &Side::Composite(&c), &Side::Native(index_of::<true>), SIZES, |n| vec![text(&sample(n)), text("zq"), count(n / 2)]);
+    let c = checked("lastIndexOf", LAST_INDEX_OF, "js_last_index_of", 2, last_index_of::<true>, &cases_search());
+    race("s.lastIndexOf(t)", &Side::Composite(&c), &Side::Native(last_index_of::<true>), SMALL, |n| vec![text(&sample(n)), text("The")]);
 
     // trimStart, for the trim family: a fold over the characters.
     let spaces = ["", "a", " a ", " \t\n\u{B}\u{C}\r\u{A0}\u{1680}\u{2000}\u{200A}\u{2028}\u{2029}\u{202F}\u{205F}\u{3000}\u{FEFF}x y ", "\u{85}x", "\u{FEFF}\u{FEFF}", "\u{1F600} ", "   "];
-    let c = checked("trimStart", TRIM_START, "js_trim_start", 1, trim_start, trim_start, &cases1(&spaces));
+    let c = checked("trimStart", TRIM_START, "js_trim_start", 1, trim_start, &cases1(&spaces));
     race("s.trimStart(), 4 spaces first", &Side::Composite(&c), &Side::Native(trim_start), SMALL, |n| vec![text(&format!("    {}", sample(n - 4)))]);
 
     // repeat, then padStart over it.
     let reps: Vec<Vec<Value>> = ["", "ab", "\u{1F600}"].iter().flat_map(|s| [0.0, 1.0, 3.0].map(|k| vec![text(s), num(k)])).collect();
-    let c = checked("repeat", REPEAT, "js_repeat", 2, repeat, repeat, &reps);
+    let c = checked("repeat", REPEAT, "js_repeat", 2, repeat, &reps);
     race("s.repeat(k), s of 2", &Side::Composite(&c), &Side::Native(repeat), SIZES, |n| vec![text("ab"), count(n)]);
     let pads: Vec<Vec<Value>> = ["", "abc", "\u{1F600}"]
         .iter()
         .flat_map(|s| [0.0, 2.0, 5.0, -1.0].into_iter().flat_map(move |l| ["", "0", "ab", "\u{1F600}"].map(|f| vec![text(s), num(l), text(f)])))
         .collect();
-    let c = checked("padStart", PAD_START, "js_pad_start", 3, pad::<false, false>, pad::<true, false>, &pads);
-    race("s.padStart(len, \"0\"), half filled", &Side::Composite(&c), &Side::Native(pad::<false, false>), SIZES, |n| vec![text(&sample(n / 2)), count(n), text("0")]);
+    let c = checked("padStart", PAD_START, "js_pad_start", 3, pad::<true, false>, &pads);
+    race("s.padStart(len, \"0\"), half filled", &Side::Composite(&c), &Side::Native(pad::<true, false>), SIZES, |n| vec![text(&sample(n / 2)), count(n), text("0")]);
     let fills: Vec<Vec<Value>> = ["", "abc", "\u{1F600}"]
         .iter()
         .flat_map(|s| [0.0, 2.0, 5.0, -1.0].into_iter().flat_map(move |l| ["", "0000000", "ababab", "\u{1F600}\u{1F600}\u{1F600}\u{1F600}\u{1F600}\u{1F600}"].map(|f| vec![text(s), num(l), text(f)])))
         .collect();
-    let c = checked("padStart, repeat a leaf", PAD_START_PROXY, "js_pad_start_proxy", 3, pad::<false, false>, pad::<true, false>, &fills);
-    race("s.padStart(len, \"0\"), repeat as a leaf (stand-in)", &Side::Composite(&c), &Side::Native(pad::<false, false>), SIZES, |n| vec![text(&sample(n / 2)), count(n), text(&"0".repeat(n))]);
+    let c = checked("padStart, repeat a leaf", PAD_START_PROXY, "js_pad_start_proxy", 3, pad::<true, false>, &fills);
+    race("s.padStart(len, \"0\"), repeat as a leaf (stand-in)", &Side::Composite(&c), &Side::Native(pad::<true, false>), SIZES, |n| vec![text(&sample(n / 2)), count(n), text(&"0".repeat(n))]);
 
     // split: "" and a limit.
     let c = function(SPLIT_UNITS, "js_split_units", 1);
-    let split_all = |xs: &[&Value]| -> Option<Value> { split::<false>(&[xs[0], &text("")]) };
     let split_units = |xs: &[&Value]| -> Option<Value> { split::<true>(&[xs[0], &text("")]) };
-    check("split(\"\")", &Side::Composite(&c), &Side::Native(split_all), &cases1(TEXTS));
-    check_units("split(\"\")", SPLIT_UNITS, "js_split_units", 1, split_units, &cases1(TEXTS));
-    race("s.split(\"\")", &Side::Composite(&c), &Side::Native(split_all), SMALL, sized);
+    check("split(\"\")", &Side::Composite(&c), &Side::Native(split_units), &cases1(TEXTS));
+    race("s.split(\"\")", &Side::Composite(&c), &Side::Native(split_units), SMALL, sized);
     let limits: Vec<Vec<Value>> = ["", "a,b,,c,", "abc", "a\u{1F600}b"]
         .iter()
         .flat_map(|s| [",", "b"].into_iter().flat_map(move |p| [0.0, 1.0, 2.0, 10.0].map(|l| vec![text(s), text(p), num(l)])))
         .collect();
     let c = function(SPLIT_LIMIT, "js_split_limit", 3);
-    check("split limit", &Side::Composite(&c), &Side::Native(split::<false>), &limits);
-    check_units("split limit", SPLIT_LIMIT, "js_split_limit", 3, split::<true>, &limits);
-    differs("split limit", &c, split::<false>, &[text("a,b"), text(","), num(-1.0)], false);
-    race("s.split(\" \", 2)", &Side::Composite(&c), &Side::Native(split::<false>), SIZES, |n| vec![text(&sample(n)), text(" "), num(2.0)]);
+    check("split limit", &Side::Composite(&c), &Side::Native(split::<true>), &limits);
+    differs("split limit", &c, split::<true>, &[text("a,b"), text(","), num(-1.0)]);
+    race("s.split(\" \", 2)", &Side::Composite(&c), &Side::Native(split::<true>), SIZES, |n| vec![text(&sample(n)), text(" "), num(2.0)]);
 
     // replaceAll and replace with texts: exact while the replacement has no `$`.
     let swaps: Vec<Vec<Value>> = ["", "abc", "abcabc", "aaa", "a\u{1F600}b"]
@@ -1223,25 +1153,32 @@ fn main() {
         .flat_map(|s| ["a", "aa", "b", "z", "\u{1F600}"].into_iter().flat_map(move |a| ["", "-", "xy"].map(|b| vec![text(s), text(a), text(b)])))
         .collect();
     let c = function(REPLACE_ALL, "js_replace_all", 3);
-    check("replaceAll", &Side::Composite(&c), &Side::Native(replace::<false, true>), &swaps);
-    check_units("replaceAll", REPLACE_ALL, "js_replace_all", 3, replace::<true, true>, &swaps);
-    differs("replaceAll", &c, replace::<false, true>, &[text("abc"), text("b"), text("$&$&")], false);
-    differs("replaceAll", &c, replace::<false, true>, &[text("abc"), text(""), text("-")], false);
-    race("s.replaceAll(\" \", \"_\")", &Side::Composite(&c), &Side::Native(replace::<false, true>), SIZES, |n| vec![text(&sample(n)), text(" "), text("_")]);
+    check("replaceAll", &Side::Composite(&c), &Side::Native(replace::<true, true>), &swaps);
+    differs("replaceAll", &c, replace::<true, true>, &[text("abc"), text("b"), text("$&$&")]);
+    differs("replaceAll", &c, replace::<true, true>, &[text("abc"), text(""), text("-")]);
+    race("s.replaceAll(\" \", \"_\")", &Side::Composite(&c), &Side::Native(replace::<true, true>), SIZES, |n| vec![text(&sample(n)), text(" "), text("_")]);
     let mut firsts = swaps.clone();
     firsts.extend(["", "abc", "a\u{1F600}b"].map(|s| vec![text(s), text(""), text("-")]));
-    let c = checked("replace", REPLACE, "js_replace", 3, replace::<false, false>, replace::<true, false>, &firsts);
-    differs("replace", &c, replace::<false, false>, &[text("abc"), text("b"), text("[$`]")], false);
-    race("s.replace(\"e\", \"E\")", &Side::Composite(&c), &Side::Native(replace::<false, false>), SIZES, |n| vec![text(&sample(n)), text("e"), text("E")]);
+    let c = checked("replace", REPLACE, "js_replace", 3, replace::<true, false>, &firsts);
+    differs("replace", &c, replace::<true, false>, &[text("abc"), text("b"), text("[$`]")]);
+    race("s.replace(\"e\", \"E\")", &Side::Composite(&c), &Side::Native(replace::<true, false>), SIZES, |n| vec![text(&sample(n)), text("e"), text("E")]);
 
     // isWellFormed, toWellFormed: true, and the text itself.
-    let c = checked("isWellFormed", IS_WELL_FORMED, "js_is_well_formed", 1, is_well_formed, is_well_formed, &cases1(TEXTS));
-    check("isWellFormed, not a text", &Side::Composite(&c), &Side::Native(is_well_formed), &[vec![num(1.0)], vec![v("[1]")]]);
+    let c = checked("isWellFormed", IS_WELL_FORMED, "js_is_well_formed", 1, is_well_formed, &cases1(TEXTS));
+    check("isWellFormed, a number", &Side::Composite(&c), &Side::Native(is_well_formed), &[vec![num(1.0)]]);
+    // `slice` takes a list too now, and `[] === ""` is false where the leaf gives nothing.
+    differs("isWellFormed, a list", &c, is_well_formed, &[v("[1]")]);
     race("s.isWellFormed()", &Side::Composite(&c), &Side::Native(is_well_formed), SIZES, sized);
     mapped_race("s.isWellFormed(), mapped over 16 texts", IS_WELL_FORMED, "function js_is_well_formed(s) {", "well_formed", "", is_well_formed);
     let equals = race::leaf("equals", &[]);
     check("isWellFormed as s === s", &Side::Leaf(&equals), &Side::Native(is_well_formed_2), &cases1(TEXTS).into_iter().map(|c| vec![c[0].clone(), c[0].clone()]).collect::<Vec<_>>());
     race("s.isWellFormed() as s === s, the leaf equals", &Side::Leaf(&equals), &Side::Native(is_well_formed_2), SIZES, |n| vec![text(&sample(n)), text(&sample(n))]);
+    // As a type test, now `type_of` is a leaf: inexact as it stands, exact with a guard.
+    differs("isWellFormed as type_of(s) === \"string\"", &function(IS_STRING, "js_is_string", 1), is_well_formed, &[num(1.0)]);
+    let not_texts = vec![vec![num(1.0)], vec![v("[1]")], vec![truth(true)], vec![v("{\"a\":1}")]];
+    let c = checked("isWellFormed as type_of", IS_STRING_EXACT, "js_is_string_exact", 1, is_well_formed, &[cases1(TEXTS), not_texts].concat());
+    race("s.isWellFormed() as type_of(s) === \"string\" ? true : undefined", &Side::Composite(&c), &Side::Native(is_well_formed), SIZES, sized);
+    mapped_race("s.isWellFormed() as type_of(s) === \"string\" ? true : undefined, mapped over 16 texts", IS_STRING_EXACT, "function js_is_string_exact(s) {", "is_string", "", is_well_formed);
     let c = function(TO_WELL_FORMED, "js_to_well_formed", 1);
     check("toWellFormed", &Side::Composite(&c), &Side::Native(to_well_formed), &cases1(TEXTS));
     check("toWellFormed, not a text", &Side::Composite(&c), &Side::Native(to_well_formed), &[vec![num(1.0)], vec![v("[\"a\"]")], vec![truth(true)]]);
@@ -1265,23 +1202,24 @@ fn main() {
         vec![v("[1,2]"), text("a")],
         vec![text("a"), v("{\"a\":1}")],
         vec![text("\u{1F600}"), text("e\u{301}")],
+        // `as_text` writes a number as JavaScript does, and `add` sums from -0.
+        vec![num(1e21), text("")],
+        vec![num(-0.0), num(-0.0)],
     ];
-    let c = checked("+", PLUS, "js_plus", 2, plus, plus, &pairs);
-    differs("+", &c, plus, &[num(1e21), text("")], false);
-    // Not a text's: `add` folds from 0, so -0 + -0 gives 0 (numbers.md's to settle).
-    differs("+", &c, plus, &[num(-0.0), num(-0.0)], false);
+    let c = checked("+", PLUS, "js_plus", 2, plus, &pairs);
     race("a + b, two texts of n/2", &Side::Composite(&c), &Side::Native(plus), SIZES, |n| vec![text(&sample(n / 2)), text(&sample(n / 2))]);
 
-    // encodeURIComponent: a character at a time; decodeURIComponent: one hex decode.
-    let uris = ["", "abc", "a b&c=d/e?f#g", "\u{E9}", "\u{1F600}", "-_.!~*'()", "100%"];
+    // encodeURIComponent: a character at a time, which cuts an astral character's pair;
+    // decodeURIComponent: one hex decode.
+    let uris = ["", "abc", "a b&c=d/e?f#g", "\u{E9}", "-_.!~*'()", "100%"];
     let c = function(ENCODE_COMPONENT, "js_encode_component", 1);
     check("encodeURIComponent", &Side::Composite(&c), &Side::Native(encode_uri::<true>), &cases1(&uris));
-    differs("encodeURIComponent", &function(&strictly(ENCODE_COMPONENT), "js_encode_component", 1), encode_uri::<true>, &[text("a\u{1F600}")], true);
+    differs("encodeURIComponent", &c, encode_uri::<true>, &[text("a\u{1F600}")]);
     race("encodeURIComponent(s)", &Side::Composite(&c), &Side::Native(encode_uri::<true>), SMALL, sized);
     let escapes = [
         "", "abc", "a%20b", "%C3%A9%F0%9F%98%80", "%c3%a9", "%2F%3f%23%25", "%", "%4", "%4g", "%C3", "%C3%28", "%C0%80", "%ED%A0%80", "%F4%90%80%80", "%E2%82", "\u{E9}%41", "%4%1", "\u{1F600}%41", "%4\u{1F600}",
     ];
-    let c = checked("decodeURIComponent", DECODE_COMPONENT, "js_decode_component", 1, decode_uri::<true>, decode_uri::<true>, &cases1(&escapes));
+    let c = checked("decodeURIComponent", DECODE_COMPONENT, "js_decode_component", 1, decode_uri::<true>, &cases1(&escapes));
     race("decodeURIComponent(s), n characters encoded", &Side::Composite(&c), &Side::Native(decode_uri::<true>), SIZES, |n| {
         vec![encode_uri::<true>(&[&text(&sample(n))]).expect("encoded")]
     });

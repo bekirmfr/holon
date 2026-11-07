@@ -438,10 +438,12 @@ impl ParkedRun {
     ) -> Result<Resumption, String> {
         let unit = parse_hash(&self.unit).ok_or("the run's unit isn't a hash")?;
         let inputs = self.inputs.iter().map(|i| i.clone().map(SValue::into_core)).collect();
+        // Lent to its reads as they are (`run_rounds`): read back from storage, each must be data.
         let sourced = self
             .sourced
             .iter()
             .filter_map(|(c, v)| Some((capability_named(c)?, v.clone().into_core())))
+            .filter(|(_, v)| is_storable(v))
             .collect();
         let mut events: BTreeMap<String, Value> = self.events.iter().map(|(k, v)| (k.clone(), v.clone().into_core())).collect();
         events.insert(name.to_string(), event);
@@ -509,7 +511,7 @@ impl ParkedRun {
         let Some(sealed) = &self.sealed else { return Ok(()) };
         let sealer = sealer.ok_or("it was sealed under a key this server doesn't have")?;
         let plain = sealer.open(&parked_context(slug, &self.run_id), &sealed.nonce, &sealed.data)?;
-        let part: Sealable = serde_json::from_str(&plain).map_err(|e| format!("its sealed part doesn't read: {e}"))?;
+        let part: Sealable = crate::wire::read_json(plain.as_bytes()).map_err(|e| format!("its sealed part doesn't read: {e}"))?;
         self.inputs = part.inputs;
         self.sourced = part.sourced;
         self.rounds = part.rounds;

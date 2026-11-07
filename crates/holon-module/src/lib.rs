@@ -285,6 +285,14 @@ impl<R: Resolver> Resolver for WithEngine<'_, R> {
         self.real.shape(unit)
     }
 
+    fn resolved(&self, unit: &Unit) -> Option<&holon_core::Resolved> {
+        self.real.resolved(unit)
+    }
+
+    fn sourced(&self, unit: &Unit) -> Option<&Value> {
+        self.real.sourced(unit)
+    }
+
     fn run_module(&self, bytes: &[u8], limits: &ModuleLimits, inputs: &[Option<Value>]) -> Result<Vec<Option<Value>>, String> {
         match self.engine.run(bytes, limits, inputs) {
             Ok(outs) => Ok(outs),

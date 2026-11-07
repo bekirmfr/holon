@@ -886,9 +886,10 @@ composite, but each changed how one had to be written:
   limitation of numbers. Built inside the lambda itself, the record works.
 - **An input used twice passes through a `guard(true, x)` node** (`lower.rs`, `connect`), one more
   node and a `const` for each composite that reads its argument twice: most of them.
-- **`c ? a : b` falls to `b` when `a` is absent**, since it is `coalesce(guard(c, a), b)`. No
-  composite here has a branch that can be absent, so none relied on it. A composite whose branch
-  can be absent can't be written as a ternary.
+- **`c ? a : b` fell to `b` when `a` was absent**, since it was `coalesce(guard(c, a), b)`. No
+  composite here has a branch that can be absent, so none relied on it. Fixed 2026-11-07: it is
+  `guard(c, a) ?? guard(!(c ?? false), b)`, so a chosen `a` that is absent makes it absent, as in
+  JavaScript (texts.md, "Reader changes").
 
 ## Race output
 

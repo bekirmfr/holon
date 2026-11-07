@@ -127,7 +127,7 @@ pub(crate) fn export_of(
 ) -> Result<Export, String> {
     let budget = if redactor.is_some() { budget } else { 0 };
     let mut units = BTreeMap::new();
-    let entries: Vec<LogEntry> = lines.iter().filter_map(|l| serde_json::from_str::<LogEntry>(l).ok()).collect();
+    let entries: Vec<LogEntry> = lines.iter().filter_map(|l| crate::wire::read_json::<LogEntry>(l.as_bytes()).ok()).collect();
     let mut blobs = BTreeMap::new();
     let (mut held, mut left_out, mut not_kept) = (0u64, LeftOut { files: 0, bytes: 0 }, 0u64);
     let mut seen = BTreeSet::new();
@@ -343,7 +343,7 @@ pub(crate) fn check(export: &Export, witnessed: Option<&str>, files: &BTreeMap<S
     let mut head = String::new();
     let mut chained = false;
     for (i, line) in export.lines.iter().enumerate() {
-        let Ok(entry) = serde_json::from_str::<LogEntry>(line) else {
+        let Ok(entry) = crate::wire::read_json::<LogEntry>(line.as_bytes()) else {
             report.bad_lines.push(i + 1);
             continue;
         };
@@ -394,7 +394,7 @@ pub(crate) fn check(export: &Export, witnessed: Option<&str>, files: &BTreeMap<S
             entries[..i].iter().map(|(e, _)| e).filter(|e| !entry.run_id.is_empty() && e.run_id == entry.run_id).collect();
         let mut given = Given::default();
         let mut left = None;
-        let came_to = match past_bounds(&entry.unit, &refs) {
+        let came_to = match past_bounds(&entry.unit, &refs, &resolver) {
             Some(why) => Rerun::Differs(why),
             None => rerun(entry, &earlier, &texts, &holon_module::WithEngine::new(&resolver, holon_module::shared()), &marks, &mut given, &mut left),
         };
@@ -417,9 +417,10 @@ pub(crate) fn check(export: &Export, witnessed: Option<&str>, files: &BTreeMap<S
 /// deployment's closure to the bounds `units::closure` checks before it runs one, so a unit past
 /// them never ran there, and isn't evaluated here either. The evaluator recurses once or more for
 /// each level a closure nests, so a record of units nested deeper than any the server runs could
-/// otherwise exhaust this process's stack.
-fn past_bounds(unit: &str, refs: &std::collections::BTreeMap<Hash, Vec<Hash>>) -> Option<String> {
-    use crate::units::{closure_depth, MAX_CLOSURE_DEPTH, MAX_CLOSURE_UNITS};
+/// otherwise exhaust this process's stack. Nor does it run a closure with a unit that doesn't
+/// validate.
+fn past_bounds(unit: &str, refs: &std::collections::BTreeMap<Hash, Vec<Hash>>, resolver: &MapResolver) -> Option<String> {
+    use crate::units::{closure_depth, invalid, MAX_CLOSURE_DEPTH, MAX_CLOSURE_UNITS};
     let root = parse_hash(unit)?;
     // Counted as the server counts them: each unit present once; one missing is no unit.
     let mut seen = BTreeSet::new();
@@ -434,7 +435,10 @@ fn past_bounds(unit: &str, refs: &std::collections::BTreeMap<Hash, Vec<Hash>>) -
         }
         queue.extend(children.iter().copied());
     }
-    (closure_depth(root, refs) > MAX_CLOSURE_DEPTH).then(|| format!("its unit nests more than {MAX_CLOSURE_DEPTH} units deep, deeper than the server runs"))
+    if closure_depth(root, refs) > MAX_CLOSURE_DEPTH {
+        return Some(format!("its unit nests more than {MAX_CLOSURE_DEPTH} units deep, deeper than the server runs"));
+    }
+    seen.iter().find_map(|h| Some(format!("its closure's unit {} {}, and the server doesn't run it", to_hex(h), invalid(resolver.resolve(h)?, resolver)?)))
 }
 
 /// What a request failed with before it left the host: it went nowhere.
@@ -942,23 +946,28 @@ fn rerun(
     }
     let values: BTreeMap<String, Value> = entry.state_before.iter().map(|(k, v)| (k.clone(), marks.read(v, entry.escaped))).collect();
     let Ok(state) = State::from_values(values) else {
-        return Rerun::Differs("its state doesn't encode".into());
+        return Rerun::Differs("its state isn't data a state holds, or doesn't encode".into());
     };
 
     // A secret stands in as its placeholder (a token too: `Logged::token`), as the marks the log
     // wrote do (`Marks`). A node that only passes one along computes the same; one that computes
     // with it can't be computed again, and what the log kept for it stands in (`Asserting`).
     let caps = capabilities(root, resolver);
-    let mut sourced: Vec<(Capability, Value)> =
-        state.iter().map(|(k, v)| (Capability::StateRead(k.clone()), v.clone())).collect();
-    sourced.extend(extra.iter().cloned());
     // With the version and fingerprint the run was given (an entry from before names none).
+    let mut placeholders = Vec::new();
     for cap in caps.iter() {
         if let Capability::SecretRead(name) = cap {
             let shown = entry.secrets.get(&name).map_or(name.clone(), |shown| format!("{name} {shown}"));
-            sourced.push((Capability::SecretRead(name.clone()), Value::Text(marks.of("secret", &shown))));
+            placeholders.push((Capability::SecretRead(name.clone()), Value::Text(marks.of("secret", &shown))));
         }
     }
+    // Lent to its reads as they are (`run_rounds`): what it read from the world, read back from
+    // the log, must be data, as its state is (`State` holds nothing else).
+    let sourced: Vec<(Capability, &Value)> = state
+        .iter()
+        .map(|(k, v)| (Capability::StateRead(k.clone()), v))
+        .chain(extra.iter().filter(|(_, v)| holon_host::is_storable(v)).chain(&placeholders).map(|(cap, value)| (cap.clone(), value)))
+        .collect();
 
     let mut differs = Vec::new();
     let nonce = bytes_of(&entry.nonce).and_then(|b| <[u8; 16]>::try_from(b).ok());
@@ -1051,7 +1060,7 @@ fn rerun(
         for (cap, payload) in &host.performed {
             match cap {
                 // As the commit writes them (firing.rs).
-                Capability::StateWrite(key) if holon_host::is_storable(payload) && after.insert(key.clone(), payload.clone()).is_ok() => {
+                Capability::StateWrite(key) if after.insert(key.clone(), payload.clone()).is_ok() => {
                     wrote.insert(key.clone());
                 }
                 Capability::CollectionWrite(name) => {
@@ -1744,10 +1753,30 @@ mod tests {
         };
         let at = chain(&mut refs, MAX_CLOSURE_DEPTH);
         let past = chain(&mut refs, MAX_CLOSURE_DEPTH + 1);
-        assert_eq!(past_bounds(&at, &refs), None);
-        assert_eq!(past_bounds(&past, &refs), Some(format!("its unit nests more than {MAX_CLOSURE_DEPTH} units deep, deeper than the server runs")));
+        assert_eq!(past_bounds(&at, &refs, &MapResolver::new()), None);
+        assert_eq!(past_bounds(&past, &refs, &MapResolver::new()), Some(format!("its unit nests more than {MAX_CLOSURE_DEPTH} units deep, deeper than the server runs")));
         // A unit the export doesn't hold, or a name that isn't a hash, is left to the rerun to say.
-        assert_eq!(past_bounds(&to_hex(&[9u8; 32]), &refs), None);
-        assert_eq!(past_bounds("nope", &refs), None);
+        assert_eq!(past_bounds(&to_hex(&[9u8; 32]), &refs, &MapResolver::new()), None);
+        assert_eq!(past_bounds("nope", &refs, &MapResolver::new()), None);
+    }
+
+    /// Nor is one whose closure holds a unit `validate` refuses, which the server doesn't run.
+    #[test]
+    fn a_unit_that_doesnt_validate_is_not_run_again() {
+        use holon_core::{Edge, Port, Type, Unit, UnitBody, BOUNDARY};
+        let mut resolver = MapResolver::new();
+        let clock = resolver.insert(Unit { params: vec![], ..holon_core::interface_of("clock").unwrap() }).unwrap();
+        let out = vec![Port { name: "out".into(), ty: Type::Number }];
+        let bad = Unit { body: UnitBody::Composite { children: vec![clock], edges: vec![Edge { from_child: 0, from_port: 3, to_child: BOUNDARY, to_port: 0 }] }, params: vec![], inputs: vec![], outputs: out.clone() };
+        let bad = resolver.insert(bad).unwrap();
+        let good = Unit { body: UnitBody::Composite { children: vec![clock], edges: vec![Edge { from_child: 0, from_port: 0, to_child: BOUNDARY, to_port: 0 }] }, params: vec![], inputs: vec![], outputs: out };
+        let good = resolver.insert(good).unwrap();
+        let wrapper = resolver.insert(Unit { body: UnitBody::Composite { children: vec![bad], edges: vec![] }, params: vec![], inputs: vec![], outputs: vec![] }).unwrap();
+        let refs = std::collections::BTreeMap::from([(clock, vec![]), (bad, vec![clock]), (good, vec![clock]), (wrapper, vec![bad])]);
+        for root in [bad, wrapper] {
+            let why = past_bounds(&to_hex(&root), &refs, &resolver).expect("refused");
+            assert!(why.contains(&to_hex(&bad)) && why.contains("has no such output") && why.ends_with("the server doesn't run it"), "{why}");
+        }
+        assert_eq!(past_bounds(&to_hex(&good), &refs, &resolver), None);
     }
 }

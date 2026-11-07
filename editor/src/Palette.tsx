@@ -36,16 +36,38 @@ const CATALOG_GROUPS: readonly { name: string; items: ReadonlySet<string> }[] = 
     ]),
   },
   {
+    name: "number",
+    items: new Set([
+      "math", "max", "min", "aggregate", "atan2", "power", "remainder",
+      "bitwise", "number_test", "to_number", "number_format",
+    ]),
+  },
+  {
+    name: "date",
+    items: new Set(["date_part", "date_utc", "date_set", "date_text", "date_parse"]),
+  },
+  {
     name: "text",
-    items: new Set(["concat", "uppercase", "lowercase", "text_length", "slice", "index_of", "split"]),
+    items: new Set([
+      "concat", "uppercase", "lowercase", "text_length", "slice", "index_of", "split",
+      "text_at", "code_at", "from_codes", "text_contains", "trim", "pad", "repeat", "replace", "normalize", "uri_encode", "uri_decode", "is_well_formed",
+    ]),
   },
   {
     name: "list",
-    items: new Set(["list", "get", "append", "extend", "length", "sum", "join", "range", "pair", "some", "none"]),
+    items: new Set([
+      "list", "get", "append", "extend", "length", "sum", "join", "range", "pair", "some", "none",
+      "at", "indices", "entries", "any", "all", "filter", "find", "find_index", "find_last", "find_last_index",
+      "sort_by", "includes", "last_index_of", "reverse", "to_spliced", "with_item", "fill", "copy_within",
+      "sort", "flat", "is_list", "unique",
+    ]),
   },
   {
     name: "record",
-    items: new Set(["record", "field", "with_field", "without_field", "keys", "lookup", "insert", "remove", "find"]),
+    items: new Set([
+      "record", "field", "with_field", "without_field", "keys", "lookup", "insert", "remove",
+      "values", "from_entries", "merge", "has", "group_by", "same_value", "type_of",
+    ]),
   },
   {
     name: "encode",

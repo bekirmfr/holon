@@ -2,7 +2,7 @@
 //!
 //! A database leaf's statement is a frozen param, written as text in the flow, so the tables it
 //! touches are known before it runs and its manifest names them: `DbRead("shop/orders")`,
-//! `DbWrite("shop/refunds")`. This module finds them, with no dependency (core keeps to its four):
+//! `DbWrite("shop/refunds")`. This module finds them, with no dependency (core keeps to its five):
 //! a tokenizer and a scan of a deliberately small part of SQL, which **refuses** what it doesn't
 //! understand rather than guess. Over-reporting a table only asks for more; missing one would let a
 //! flow touch what it wasn't granted, so every doubt is a refusal, with its reason.

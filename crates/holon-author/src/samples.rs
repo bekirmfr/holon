@@ -227,6 +227,54 @@ static SAMPLES: &[Sample] = &[
         text: include_str!("../samples/calc.holon.ts"),
     },
     Sample {
+        name: "loan",
+        title: "Loan payments (JavaScript's numbers)",
+        description: "The monthly payment on a loan, computed as JavaScript computes it: parseFloat and parseInt read the query, ** compounds the rate, Math.round rounds to the cent, toFixed writes the cents, and Math.floor and % split the term. A part that isn't a number has no value, where JavaScript gives NaN, so the route answers 400.",
+        shows: &["number leaves", "Math", "parseFloat", "parseInt", "**", "%", "toFixed", "missing"],
+        port: Some("8173"),
+        secrets: &[],
+        optional: &[],
+        browsers: None,
+        try_it: r#"curl "http://127.0.0.1:8173/payment?amount=250000&rate=6.5&months=360" answers {"interest":"318861.20","payment":"1580.17","term":"30y 0m","total":"568861.20"}; with amount=lots it answers 400"#,
+        text: include_str!("../samples/loan.holon.ts"),
+    },
+    Sample {
+        name: "leaderboard",
+        title: "Leaderboard (a list's methods)",
+        description: "Post a round's scores and get the board JavaScript's list methods make of it: toSorted ranks by points (a tie keeps its order), slice and map's index give the top three their places, new Set names each player once, find the first to reach 100, some whether anyone scored nothing, and reduce the total. POST /board/:player filters one player's points, takes their best with reduce and no start, and finds where it ranks with findIndex. No list changes in place.",
+        shows: &["list leaves", "toSorted", "filter", "find", "findIndex", "some", "new Set", "map with an index", "reduce without a start"],
+        port: Some("8174"),
+        secrets: &[],
+        optional: &[],
+        browsers: None,
+        try_it: r#"curl -d '{"scores":[{"player":"ada","points":90},{"player":"bo","points":120},{"player":"cy","points":0},{"player":"ada","points":130}]}' http://127.0.0.1:8174/board answers {"any_zero":true,"first_to_100":"bo","players":["ada","bo","cy"],"top":["1. ada 130","2. bo 120","3. ada 90"],"total":340}; the same body to /board/ada answers {"best":130,"place":1,"player":"ada","points":[90,130],"rounds":2}, to /board/dee 404; a body without scores 400"#,
+        text: include_str!("../samples/leaderboard.holon.ts"),
+    },
+    Sample {
+        name: "invoice",
+        title: "Invoice (records and dates)",
+        description: "Post an order and get its invoice, made with JavaScript's record and date functions: a spread puts the order's defaults under what was posted, Object.groupBy groups its priced lines by category and Object.fromEntries gives each group's subtotal, in says whether it is a rush order, and new Date gives the dates: the day it was issued, the day it is due (setUTCDate past the month's end carries into the next) and the month's last day (Date.UTC with day 0), as ISO and UTC text. POST /invoice/lines writes the order as JSON text with only the listed keys, indented: JSON.stringify with a key list and an indent.",
+        shows: &["record leaves", "spread", "Object.groupBy", "Object.fromEntries", "in", "new Date", "setUTCDate", "Date.UTC", "toISOString", "JSON.stringify with keys and an indent"],
+        port: Some("8175"),
+        secrets: &[],
+        optional: &[],
+        browsers: None,
+        try_it: r#"curl -d '{"customer":"ada","date":"2026-11-07","lines":[{"sku":"b1","category":"books","price":12,"qty":2},{"sku":"p1","category":"pens","price":3,"qty":5},{"sku":"b2","category":"books","price":30,"qty":1}]}' http://127.0.0.1:8175/invoice answers {"categories":["books","pens"],"currency":"EUR","customer":"ada","due":"2026-12-07T00:00:00.000Z","due_text":"Mon, 07 Dec 2026 00:00:00 GMT","issued":"2026-11-07T00:00:00.000Z","month_end":"2026-11-30T00:00:00.000Z","rush":false,"subtotals":{"books":54,"pens":15},"total":69}; the same body to /invoice/lines answers the customer and each line's sku and qty, two spaces in; a body without lines 400"#,
+        text: include_str!("../samples/invoice.holon.ts"),
+    },
+    Sample {
+        name: "share-link",
+        title: "Share link (a text's methods)",
+        description: "An article's share link, built from the query with JavaScript's text methods: trim cuts the spaces around the title, toLowerCase and replaceAll make it a slug (an & reads \"and\"), split, filter and join drop the doubled spaces between its words, padStart writes the id in six digits, and encodeURIComponent escapes the tag for the link's query. + and a template literal join the parts, .length counts the title as JavaScript does, in UTF-16 code units, and startsWith says whether the link is secure. A query without a title or an id answers 400.",
+        shows: &["text leaves", "trim", "replaceAll", "split", "padStart", "encodeURIComponent", "+ on texts", ".length", "startsWith"],
+        port: Some("8177"),
+        secrets: &[],
+        optional: &[],
+        browsers: None,
+        try_it: r#"curl "http://127.0.0.1:8177/link?title=%20Rust%20%26%20WebAssembly%20%20Tips%20&id=42&tag=c%2B%2B%20%26%20wasm" answers {"length":24,"secure":true,"slug":"rust-and-webassembly-tips","title":"Rust & WebAssembly  Tips","url":"https://example.com/a/000042/rust-and-webassembly-tips?tag=c%2B%2B%20%26%20wasm"}; with only id=42 it answers 400"#,
+        text: include_str!("../samples/share-link.holon.ts"),
+    },
+    Sample {
         name: "heartbeat",
         title: "Heartbeat",
         description: "A clock flow: every 10 seconds it records the time, counts the beats in its state, and keeps the time of the first beat (a fallback that is itself a value: coalesce).",
@@ -869,6 +917,27 @@ mod tests {
             }
         }
         assert!(checked > 40, "{checked}");
+    }
+
+    /// The server validates every unit of a closure before it runs one (crates/holon/src/units.rs
+    /// `load_closure`): a sample with a unit `validate` refuses would never deploy.
+    #[test]
+    fn every_samples_units_pass_validation() {
+        let mut checked = 0;
+        for s in samples() {
+            let lowered = lang::compile(s.text).unwrap_or_else(|e| panic!("{}: {e}", s.name));
+            let mut store = MapResolver::new();
+            crate::text::restore(&lowered.doc, &mut store, &Names::new());
+            let port = lowered.doc.server.as_ref().map(|x| x.port.clone()).unwrap_or_default();
+            crate::flow::flow_unit(&lowered.doc.nodes, &lowered.doc.edges, &mut store, &port).unwrap_or_else(|e| panic!("{}: {e}", s.name));
+            for unit in store.units() {
+                if let Err(errors) = holon_core::validate(unit, &store) {
+                    panic!("{}: {:?} refused: {errors:?}", s.name, holon_core::hash_unit(unit).map(holon_core::hex));
+                }
+                checked += 1;
+            }
+        }
+        assert!(checked > 100, "{checked}");
     }
 
     #[test]
