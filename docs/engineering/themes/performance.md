@@ -319,6 +319,43 @@ route that answers `1` is now 321 K, its copy and the copy's free: `malloc`, `fr
 library's functions under them (unnamed in this profile) about 235 K, the copy's own code about
 41 K and the free's about 40 K ([Limits](#limits)).
 
+### Through a server again, after the kept children and small values (`490d03e`, 2026-11-07)
+
+The race [above](#the-evaluators-change-through-a-server-43-2026-11-06) run again on `main` at
+`490d03e` (#48 and #49: kept children, small values copied, values handed as they are, a run's
+state shared, the new leaves and their bounds), against `f4f269f` (before #43) and `78f8f81` (the
+last race's `main`), the same three rounds of `holon load`, 16 connections, 5 s a workload, the
+same client binary (`78f8f81`'s). The container was a faster one than the first race's (`hello`
+about 67 K against 59 K), so only ratios within a race compare. The flow's text is the same, its
+unit is not (`ae89406c…`): the number leaves changed (`8bf01b6`, no infinity), so every unit
+holding one hashes anew, and the ternary lowers differently (`befee65`, below). Medians of the
+rounds, requests a second, with the server's CPU a request; no errors:
+
+| Workload | before #43 | `78f8f81` | `490d03e` | ÷ before | ÷ `78f8f81` | CPU a request (before / `78f8f81` / `490d03e`) |
+|---|---:|---:|---:|---:|---:|---|
+| `hello` | 67,039 | 64,479 | 65,305 | 0.97 | 1.01 | 42 / 43 / 42 µs |
+| `calc` | 57,243 | 55,972 | 57,454 | 1.00 | 1.03 | 51 / 52 / 50 µs |
+| `crunch`, 100 | 14,120 | 13,135 | 15,052 | 1.07 | 1.15 | 261 / 282 / 244 µs |
+| `crunch`, 1,000 | 1,999 | 1,815 | 2,128 | 1.06 | 1.17 | 1.97 / 2.17 / 1.84 ms |
+| `crunch`, 5,000 | 401 | 388 | 439 | 1.09 | 1.13 | 9.9 / 10.3 / 9.1 ms |
+| a filter by fold, 1,000 | 1,207 | 6,045 | 5,167 | 4.28 | 0.85 | 3.26 / 0.64 / 0.75 ms |
+| a filter by fold, 5,000 | 60 | 1,280 | 1,096 | 18.3 | 0.86 | 69.3 / 3.09 / 3.62 ms |
+
+- **`crunch` is faster than before #43 now**, ×1.06 to ×1.09, the rounds' ranges apart
+  (13,862–14,445 before, 15,011–15,254 now, at 100): the small records copied, not given
+  ([above](#small-values-are-copied-2026-11-07)). Counted in instructions it is 2.8% above
+  `f4f269f`; in time it is ahead, so its instructions likely cost fewer cycles (fewer
+  allocations), not measured. `78f8f81` ran at ×0.93 of `f4f269f` again, as in the first race.
+- **A filter by fold lost ×0.85 to `78f8f81`**, the ranges apart (5,815–6,127 against 4,983–5,514
+  at 1,000), and is still ×18 the filter before #43. The cost is the ternary's: `befee65` lowers
+  `c ? a : b` with a guard on each side, so a chosen side that is absent is the answer, as in
+  JavaScript; it is 14 nodes where it was 11 (`default`, `not` and the second `guard` added), in
+  every step of the fold. The CPU it adds, about 110 µs a request at 1,000 items, is about 110 ns
+  a step, three nodes at 30 to 40 ns. The price of the answer being right; a lowering that skips
+  the second guard where the false side can't be absent might take it back (not tried).
+- **`hello` and `calc` within noise.** The kept children made one call of a 25-node function ×0.58
+  in process (`5f29d1d`); whole requests at this load are bound by the HTTP and the host.
+
 ### Limits
 
 - **Strict is the disk's pace.** About 60% of a strict request is the fsync; any service keeping
@@ -344,14 +381,18 @@ library's functions under them (unnamed in this profile) about 235 K, the copy's
 - **Writes sync three times** (value, snapshot, head) under the cell's lock. A group commit across
   writes (C4, Q4) is not done; the store's global lock is still taken on a miss and every put.
 - **`crunch` is 2.8% above where it was before #43** in instructions, after small values are
-  copied ([above](#small-values-are-copied-2026-11-07)); folds that build a list gained ×5 to ×21.
+  copied ([above](#small-values-are-copied-2026-11-07)), and ×1.06 to ×1.09 ahead of it in time
+  through a server; folds that build a list gained ×5 to ×21.
+- **A ternary costs three nodes more since `befee65`** (a guard on each side, as JavaScript
+  chooses): a filter by fold ×0.85 through a server against `78f8f81`, still ×18 the filter before
+  #43 ([above](#through-a-server-again-after-the-kept-children-and-small-values-490d03e-2026-11-07)).
 - **Compute-heavy flows** are 3–14 times slower than C#, measured before #43 (`crunch` about 3%
-  more since). What is left is allocating and freeing values (about 26%), copying
-  fields (6.7%) and firing each node (about 20%). Shared values (step 4) are still deferred: after
-  #43's giving and lending no race copies anything large in its inner loop, and what an `Arc` would
-  save, and where (`Record` first), is estimated in [leaves §7](js-library-races/leaves.md#7-arc-an-estimate).
-  Typed slots or native code (level 3) would reverse the core's dependency limit and the no-JIT
-  choice.
+  more instructions since, though faster in time). What is left is allocating and freeing values
+  (about 26%), copying fields (6.7%) and firing each node (about 20%). Shared values (step 4) are
+  still deferred: after #43's giving and lending no race copies anything large in its inner loop,
+  and what an `Arc` would save, and where (`Record` first), is estimated in [leaves
+  §7](js-library-races/leaves.md#7-arc-an-estimate). Typed slots or native code (level 3) would
+  reverse the core's dependency limit and the no-JIT choice.
 - **A run that reads a big state value copies it.** The leaf that reads it produces a copy
   (`Body::Sourced`), and frees it. With a 100-record list in state, the copy and its free are the
   321 K instructions a run that reads the list's length pays over one that answers `1`, about
