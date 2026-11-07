@@ -11,7 +11,8 @@ step 1.8) and inbound WebSockets (§5.12, step 1.9) designed here and put in Tie
 WebSockets having been "later" until then; what else a web app asks for, sorted (§5.13); and a
 flow as a command-line app (§5.14). Revised 2026-11-06 against af9de3a: what a trading bot
 adds to feeds (§5.9, forks 25–27), log levels having come in rc.32 since §5.9 was written; and
-from then on every host capability is designed here (§7, §10). It sets rules, sorts candidates,
+from then on every host capability is designed here (§7, §10). Revised 2026-11-07 against
+490d03e: a flow as one executable, `holon build` (§5.15, forks 28–35), resolving fork 24. It sets rules, sorts candidates,
 and holds each one's design: a capability's L4 is its section of §5, grown into numbered
 subsections when its step starts, as §5.11 and §5.12 were, so the theme is in one place, found
 and cited by section. Those designed before then (folders, databases, channels, triggers, host
@@ -216,6 +217,7 @@ Each one's L4 has a section for each of these. A capability that can't answer on
 | a flow's own files, bundled with its version | later: a unit feature, no item | — | §5.13 |
 | React rendered on the server | later: a library module for `js` holons | R1 | §5.13; no streaming render, no fetching in a render |
 | a flow as a command-line app (`todo add "buy milk"`) | server feature: `holon do` and `holon command` over actions; actions that resume; a REPL over §5.12 | — | §5.14; no new item, and no raw terminal piped into a run |
+| a flow as one executable, run with no server (`holon build`) | server feature: a runtime with one flow inside, approved at build and accepted on first run | — | §5.15; resolves fork 24; no new item |
 | ISO 8583, FIX, SMPP, a bank's own socket | host capability: a **socket** | R3a, R3c, R3d | §5.9; when a job brings one |
 | inbound WebSockets | host capability: a trigger on the flow's port, `WebSocket(path)` | R3a, R3d | §5.12, step 1.9 |
 | a shell or `Spawn` with the server's reach | never | R5 | for flows and for agents |
@@ -1375,13 +1377,547 @@ direction to §5.7's terminals, where a flow drives an interactive program.
 **What stays true.** Every command is an action's run or a websocket's message run: approved,
 recorded at its handler's level, replayable. The client's reading and writing of the person's
 files happens outside every run, by their own hand, and what a run was given is in its record.
-Running a flow with no server at all is fork 24.
+Running a flow with no server at all is §5.15, `holon build`, which resolves fork 24.
 
 **Slices.** (1) `holon do`, its argument mapping, output, exit codes and `--help`; `holon command`;
 `@file` and `-o`; a sample, `todo-cli`, deployed by the e2e tests and driven by `holon do` in a
 test. (2) Actions that resume, and `holon do` answering a question. (3) Progress, once actions'
 replies stream. (4) `holon attach`, after step 1.9. Not scheduled in §7: a step when it is asked
 for.
+
+### 5.15 A flow as one executable: `holon build`
+
+Designed 2026-11-07 against `490d03e` (`main`, rc.33), cited by file and line there. Asked the same
+day: a command that turns any flow into a program a person runs alone, with no `holon serve`. It
+resolves fork 24, "a flow run with no server", and takes the shape that fork leaned to: a
+single-user host inside the binary. It builds on §5.14 (the command line an action reads), the
+request path's log levels (C5), the run log and its witness (`recorder.rs`, `heads.rs`) and
+exports (`verify.rs`).
+
+`holon build todo-cli.holon.ts -o todo` writes one file: a copy of a holon runtime with the
+flow's closure inside it (its units by hash, the text they came from, and the grant a person
+approved), framed by a trailer. When `todo` starts and finds that payload, it is that flow and
+nothing else: no editor, no control plane, no accounts, no other flows. `deno compile` and
+`bun build --compile` work this way; what Holon adds is that the file carries what the flow may
+do, who approved it, and a record of every run that `holon verify` checks anywhere.
+
+```
+$ holon build todo-cli.holon.ts -o todo
+todo-cli: 9 nodes, 11 wires
+a server of actions, run by hand, listening on no port
+  add
+  list
+  done
+unit 4be1…
+it may:
+  read the clock
+  read items of its collection "todos"
+  put and delete items of its collection "todos"
+approve what it may do, as ada? [y/N] y
+wrote todo: holon 0.1.0-rc.34 for x86_64-unknown-linux-gnu, and todo-cli (23 units)
+
+$ ./todo add "buy milk" --due fri
+todo-cli, built with holon 0.1.0-rc.34, approved by ada on 2026-11-07 (grant 3f9a1c…)
+it may:
+  read the clock
+  read items of its collection "todos"
+  put and delete items of its collection "todos"
+its runs and data: /home/ada/.holon/apps/todo-cli
+run it? [y/N] y
+added buy milk
+
+$ ./todo list
+{"buy milk": {"due": "fri", "since": 1794067200}}
+```
+
+The person who runs it is asked once, on its first run (§5.15.4). Every run after that is an
+action's run, approved, recorded and replayable, as on a server.
+
+#### 5.15.1 What is already there
+
+- **One binary, one dispatch.** `main` (`holon/src/main.rs` 648) matches its first word against
+  holon's commands; nothing looks at the file it was started from.
+- **A host is assembled from parts.** `serve` (`main.rs` 704–1202) opens the store, the policy,
+  the secrets, the folders and databases, loads the deployments into one map, then starts the
+  clock (`spawn_clock_scheduler`, 1111), the file watcher (`arrivals::spawn_watcher`, 1112), the
+  thread that syncs the logs every second (1120–1146), the witness (`heads::start`, 1002), the
+  listeners (`sync_listeners`, 1182) and the control plane (rouille, 1014).
+- **What runs a flow takes the map, not the server.** `run_action` (`deploy.rs` 940),
+  `serve_data` (`listeners.rs` 15), `fire_one_clock_tick` and `spawn_clock_scheduler`
+  (`scheduler.rs` 101, 211), `spawn_watcher` (`arrivals.rs` 419), `expire_waiting`
+  (`durable.rs` 727), `log_run` (`firing.rs` 894) and `sync_logs` (`recorder.rs` 704) each take
+  the store, the deployments map and the deployments file's place. Only `start_listener`
+  (`dataplane.rs` 117) takes the whole `AppState`, and reads those three and `data_limits` from it.
+  So a host of one flow is the same functions over a map of one.
+- **Deploying derives and checks.** `deploy` (`deploy.rs` 148): the unit's closure, `read_server`,
+  `deployed_capabilities`, a `Manifest` of those and the requirements the unit itself declares
+  (`Requirements::of_unit`, `permissions.rs` 323), the policy's refusals, what needs approval
+  against the previous grant (`approval_needed`, 229), then `Grant::for_manifest(…, "deploy")`
+  (252) and its `Permit` (269). A `Grant` (`permissions.rs` 803) holds the manifest's hash, the
+  items, the requirements, when and how it was granted; its hash (991) covers the manifest, the
+  items and lowered limits, and every log entry names it. `Grant::attention` (970) is the check,
+  at every load, that a grant still covers what its unit derives.
+- **A redeploy keeps what the flow had** (`deploy.rs` 295–366): its state, its log, its waiting
+  runs, its channels, and a new `Version` with who deployed it.
+- **Text to units.** `agent::plan` (`holon-author/src/agent.rs` 44) compiles a text into its root,
+  every unit as a preimage (children first), its requirements, routes and `may`;
+  `holon deploy` stages those units on a server (`deploycmd.rs` 150) and `holon check`
+  (`holon-author/src/commands.rs` 152) prints what the flow may do.
+- **Exports carry a closure.** An export (`verify.rs` 39, format `holon-runs/1`) holds the log's
+  lines as written, its head, and every unit the runs ran as canonical bytes by hash;
+  `verify::check` (338) runs each run again offline. Both are in the same binary as the server.
+- **The record.** A deployment's log is `<deployments>.logs/<slug>.jsonl`, a hash chain
+  (`recorder.rs` 1–24). Each handler has a level (C5): a `strict` run's line is synced before it
+  answers, a `lazy` or `unrecorded` one returns at once (`firing.rs` 900) and the sync thread
+  writes it within `SYNC_EVERY` (`recorder.rs` 671). Heads go to a witness after a sync, and wait
+  in `pending.jsonl` across restarts (`heads.rs` 1–25).
+- **Secrets** live in a vault per deployment, sealed under a key in the OS key store
+  (`sealing.rs`), or as references the host resolves: `env:HOLON_SECRET_<NAME>`, a `--dotenv`
+  file, `vault:` (`secret_sources.rs`). Every value is redacted from what is logged
+  (`secrets.rs`), and `taint.rs` follows what is computed from one.
+- **Folders and databases** are bound by an admin, kept in `folders.json` and `databases.json`;
+  the server's own files can never be bound (`main.rs` 1081–1089).
+- **The same user's commands find a running server** through a run file holding its address and a
+  token made for that run, readable only by that user (`local.rs`, `publish` 104).
+- **Releases** are built by cargo-dist for five targets (`dist-workspace.toml`: Apple silicon and
+  Intel macOS, arm64 and x86-64 Linux, x86-64 Windows), as archives with checksums and GitHub
+  build attestations, the editor built in (`embed-editor`, `holon/Cargo.toml` 100–109). Nothing
+  is Authenticode-signed or notarized. An installed release (Windows, 2026-11-05) is 56.7 MB; a
+  local `cargo build --release` without the editor is 40.2 MB.
+- **§5.14 is designed, not built:** there is no `holon do` yet. `holon action` (`opscmd.rs` 333)
+  posts an action to a server and prints its answer as JSON (`action_lines`, 368).
+
+#### 5.15.2 The file
+
+**The payload** is one record, `holon-app/1`, in the canonical encoding Holon hashes values with
+(so it has one byte form, and its hash is `hash_value`'s):
+
+| Field | What |
+|---|---|
+| `name` | the flow's name, its slug in the app (`Plan.name`) |
+| `text`, `file` | the `.holon.ts` text as given, and its file name |
+| `root` | the root unit's hash |
+| `units` | every unit the root's closure holds, hash → canonical preimage (`Plan.units`) |
+| `requirements` | what the unit asks beyond its graph (`Requirements::of_unit`) |
+| `grant` | the builder's approval: the manifest's hash, its items, the approver, when (§5.15.4) |
+| `witness` | a witness URL the builder chose, or none (§5.15.5) |
+| `runtime` | the holon version, target and flavor (`slim` or `full`) it was built for |
+
+No field holds a secret, a binding or a path: a payload can't carry one (§5.15.6).
+
+**The frame.** The payload is followed by a 64-byte trailer: `HOLONAPP`, a frame version, the
+payload's length, its BLAKE3 hash, and `HOLONAPP` reversed. The runtime finds the frame, checks
+the hash, then reads the record.
+
+**Where the frame sits depends on the format**, because appending to a signed executable breaks
+its signature (§5.15.8):
+
+- **ELF (Linux):** appended to the runtime. The loader ignores bytes past the segments it maps.
+- **PE (Windows):** a resource, `RT_RCDATA` named `HOLONAPP`, so it is inside the image a
+  signature covers.
+- **Mach-O (macOS):** a section `__HOLON,__app` in a segment of its own, then the file is
+  ad-hoc signed again, as Apple silicon runs nothing unsigned.
+
+The frame is the same bytes in all three, so one reader finds it in any of them on any OS: the
+runtime reading itself, and `holon inspect` reading a file it doesn't run (§5.15.7).
+
+**At start.** Before `main`'s dispatch, the runtime reads its own file (`current_exe`) for a
+frame. None: it is holon, as today. One: it checks, in order, the frame's hash; every unit
+against its hash; that the root resolves and is a server (`read_server`); that the manifest the
+units derive is covered by the payload's grant; and that its own version and target are the
+payload's `runtime`. Any failure exits 70 with what failed. **A damaged app never falls back to
+being holon**: a file named `todo` that quietly became a server, an MCP host or an updater would
+be worse than one that refuses.
+
+An app's words are its flow's. Holon's commands (`serve`, `deploy`, `mcp`, `update`…) aren't
+there; `--holon` is the only word an app reserves (§5.15.7), with `--help`.
+
+#### 5.15.3 What it runs as
+
+What the file does follows the flow's handlers (`read_server`'s `Server`):
+
+| The flow has | `app` alone | `app <action> …` | `app serve` |
+|---|---|---|---|
+| actions only | lists its actions (`--help`) | runs that action once, and exits | refused: nothing to serve |
+| routes, clocks or file handlers, no actions | serves | — | serves |
+| both | lists its actions | runs that action once (or in the serving app, below) | serves |
+
+`serve` and `help` are refused as action names at build in a flow that has anything to serve.
+
+**Actions are a command line,** by §5.14's mapping, the same code as `holon do`:
+`todo add "buy milk" --due fri` is `{args: ["buy milk"], due: "fri"}`, a bare `--force` is
+`{force: true}`, `-` reads stdin into `stdin`, `@notes.txt` sends that file's text as the field,
+`-o out.csv` writes the answer to a file. A text answer prints as it is, anything else as JSON
+(`--json` for the whole envelope). The exit code is 0 below 400 and 1 at or above it, unless the
+answer is an envelope with a whole-number `exit`. `--help` lists the actions and the input
+fields each reads. The run is `run_action`'s (`deploy.rs` 940) on the map of one, with `by` the
+OS user (`local::user`, `local.rs` 86), so it is recorded as a server's action is.
+
+**Routes, clocks and file handlers are a daemon.** `app serve` starts what `holon serve` starts
+for one deployment and nothing else: its listener on the flow's port (bound to loopback unless
+`--host IP` opens it, with `plain_http_warning`'s warning), the clock (which also expires waiting
+runs, `scheduler.rs` 215), the file watcher, the sync thread and the witness. It runs in the
+foreground until stopped (Ctrl-C, SIGTERM, a service manager's stop), then syncs its logs and
+exits. Making it a service (systemd, launchd, a Windows service) is the runner's, with the
+service manager they use.
+
+**One process writes a data folder.** The app holds an exclusive lock on `<data>/lock`
+(`File::try_lock`, std since Rust 1.89) while it runs. While `app serve` holds it, `app add …`
+doesn't run the action itself: it finds the serving process through a run file in the data
+folder, an address on loopback and a token made for that run, readable only by the user, as
+`local.rs` publishes a server's (104), and sends the action there. So an action from the command
+line and a request on the port are runs of one host, ordered by its claims. With no serving
+process, `app add …` takes the lock, runs, syncs and exits; a second one waits for the lock
+(up to `--wait`, 10 s by default).
+
+**Runs that wait.** An action that parks at an `await` is kept as on a server (its `ParkedRun` in
+the deployments file); `app add …` says it is waiting, prints where it waits, and exits 0. It
+continues when its resume route is called while the app serves, or through an action that
+resumes (§5.14, slice 2). A one-shot start calls `expire_waiting` before its run, so a deadline
+that passed while nothing ran is delivered then.
+
+**One flow, one app.** A flow that runs another flow's action (`RunsAction("billing/charge")`) is
+refused at build: the app has no other flow to run it (§8, fork 32).
+
+#### 5.15.4 Who approves, and when
+
+**Both: the builder at build time, and the person who runs it on its first run, the build's grant
+a ceiling the first run can narrow and never widen.**
+
+1. **At build, the builder approves.** `holon build` derives what `deploy` derives, by the same
+   calls (`closure`, `read_server`, `deployed_capabilities`, `Manifest::new` over
+   `Requirements::of_unit`), refuses what the default policy never grants, prints `check`'s
+   words, and asks to approve every item (`--approve` answers yes, as `holon deploy --approve`
+   does, `deploycmd.rs` 43). The approval goes into the payload: the manifest's hash, the items,
+   the approver and when. The approver is `--approver "Ada Lovelace <ada@example.com>"`, or the
+   OS user. That is a name the builder states, not a proof; the proof of who made the file is its
+   signature (§5.15.8). There is no build without an approval, and the runtime refuses a payload
+   without one.
+2. **On first run, the runner accepts.** Before its first run on a data folder, the app shows who
+   built and approved it, what it may do (the same words), any witness, its data folder and where
+   its unbound folders will be, and asks. A yes writes the grant to the data folder's deployments
+   file as its deployment's `Grant`, `by: "accepted"`, and the runner as the version's `by`. A
+   script or a service manager accepts ahead with `--accept 3f9a1c` (a prefix of the grant's
+   hash, so it accepts that grant and no other) or `HOLON_APP_ACCEPT`; with neither and no
+   terminal, the app exits 77: "not accepted: run it once by hand, or pass --accept 3f9a1c". The
+   runner may narrow it later (`app --holon revoke ITEM`, an optional item, or `--holon lower`, a
+   limit), through `Grant::change` (`permissions.rs` 888), which records each change. Never wider:
+   `Grant::change` grants only what the manifest asks for, and the app checks the result against
+   the payload's items.
+3. **Every start checks the ceiling.** The app derives the manifest from its units again (never
+   from the payload's list), and refuses to run when the payload's grant doesn't cover it (the
+   payload was changed), when the kept grant holds an item the payload's doesn't (the data folder
+   was changed), or when `Grant::attention` says the kept grant doesn't cover the manifest under
+   the runner's policy. Then `Permit::new`, as a deploy builds one.
+4. **A new build on the same data folder is a redeploy.** Its payload's grant is the new ceiling.
+   The runner is asked only for what the kept grant didn't already cover (`approval_needed`
+   against the previous grant, `deploy.rs` 229); items the new build no longer asks for are dropped
+   from the kept grant.
+
+**The runner's policy.** A `holon.toml` in the data folder, if there is one, is the policy, as a
+server's is: its ceilings and refusals hold. Without one, the defaults. A ceiling lower than what
+the build approved stops the app as it pauses a deployment.
+
+**Why both.** The build's approval is the promise as it stands: a person reads what the flow may
+do before it runs, once, someone the team can name, and it travels with every copy unchanged. The
+runner's is there because the runs happen on their machine, with their data, their folders and
+their network: they can see the same list before anything runs, and they can narrow it. One
+without the other fails someone: a build-only approval runs on a stranger's machine unread by
+them; a first-run-only approval lets a file change what it asks for between copies.
+
+**Unrecorded handlers** (`Unrecorded("…")`) are items like any other, so both people approve
+them.
+
+#### 5.15.5 Records
+
+**The data folder** is `--data DIR`, else `HOLON_APP_DATA`, else `~/.holon/apps/<name>/` (beside
+`local::holon_home`'s other folders), made owner-only as `serve` makes its own
+(`create_private_dir`, `main.rs` 987). It is named by the flow's name, not its hash, so the next
+build of the flow finds its state. Its layout is `holon serve --data`'s, with one deployment in
+it: the store, `deployments.json`, `deployments.logs/<name>.jsonl`, its events, `secrets.json`,
+`folders.json`, `databases.json`, and `holon.toml` if the runner writes one. It records the flow's
+name and refuses another's; a second copy of an app takes a second `--data`.
+
+**The store is seeded from the payload** at every start: each unit put by its hash, so a unit
+already there is the same bytes. Exports then find every unit a run ran, old builds' included.
+
+**Levels are the request path's.** Each handler's level comes from its unit (C5), and `log_run`
+writes as it does on a server: a `strict` action's line is synced before its answer is printed;
+a `lazy` one's is synced as the one-shot app exits (one `sync_logs`), so a clean exit loses
+nothing and a crash loses what a crash loses on a server; an `unrecorded` one is counted in the
+deployment's tally. A one-shot run costs a process start, the units' checks and at most one sync.
+
+**Verify.** `app --holon export [-o FILE]` writes a `holon-runs/1` export of its log
+(`verify::export_of`, `verify.rs` 117), and `holon verify FILE` checks it on any machine, as for
+a server's. `app --holon verify` runs the same check (`verify::check`, 338) on its own log in
+place.
+
+**A witness.** Two ways, the same mechanism (`heads.rs`):
+
+- **The builder's,** `holon build --witness URL`: in the payload, shown in both approvals, and
+  the runner can't remove it (fork 31). It is for a team that wants every copy's runs witnessed.
+- **The runner's,** `--export-heads URL` or `HOLON_EXPORT_HEADS`, as `serve` takes it.
+
+The token is `HOLON_EXPORT_HEADS_TOKEN` only, never in the file. A one-shot app sends the heads
+queued after its exit's sync, waiting up to 2 s; what isn't taken waits in `pending.jsonl` for
+the next start, as a server's do across a restart.
+
+#### 5.15.6 Secrets and bindings
+
+**Secrets never go inside the binary.** The payload has no field for one, `holon build` reads no
+secret store and no environment, and the text names secrets, never holds them. At run time a
+secret the grant names (`SecretRead("name")`) comes from, first found first:
+
+1. `HOLON_SECRET_<NAME>` in the environment, or a line of `--dotenv FILE`
+   (`secret_sources.rs`'s `env:` reference);
+2. a reference the runner set: `app --holon secret set NAME --from vault:kv/app#token`;
+3. a value sealed in the data folder's `secrets.json` under the OS key store (`sealing.rs`;
+   `--secrets-key` as `serve` takes it), set by `app --holon secret set NAME` or by the prompt.
+
+**The prompt.** On a terminal, a run whose grant names a secret with no value asks for it before
+the run starts, without echo, saying where it is sent ("slack_webhook_path, sent to
+https://hooks.slack.com"), and seals it. With no terminal, the app exits 78, naming the secret
+and its variable. Redaction (`secrets.rs`) and taint (`taint.rs`) are unchanged, so the app's log
+never holds the value either.
+
+**Folders and databases are bound at run time,** because a flow names things and the host
+decides where they are, and here the host is the runner's machine:
+
+- `--folder notes=./data` and `--database ledger=…` (what `holon database add` takes). A path is
+  read against the folder the command runs in, then kept whole (`paths::normalize`), in the data
+  folder's `folders.json` or `databases.json`, so the next run needs no flag. A flag naming
+  another place later replaces it, and says so.
+- **An unbound folder** is `<data>/folders/<name>/`, made when first needed and shown at first
+  run. Never the folder the command runs in: a flow doesn't reach where the person stands except
+  through `@file` and `-o`, which the client side reads and writes (§5.14).
+- **An unbound database** has no default: a run that needs it fails, naming the flag.
+- **What can't be bound** is the server's rule (`main.rs` 1081–1089): the data folder, its key
+  file and `~/.holon`.
+
+#### 5.15.7 What the binary says of itself, and why to ask holon instead
+
+`app --holon` prints, from its payload and its data folder:
+
+```
+todo-cli, built with holon 0.1.0-rc.34 (slim, x86_64-unknown-linux-gnu)
+unit 4be1…: 23 units, each matching its hash
+approved by Ada Lovelace <ada@example.com> on 2026-11-07, grant 3f9a1c…
+accepted by ada on 2026-11-07
+it may:
+  read the clock
+  read items of its collection "todos"
+  put and delete items of its collection "todos"
+its runs and data: /home/ada/.holon/apps/todo-cli (12 runs, the chain unbroken, head 9b2e…)
+```
+
+`app --holon text` prints the text it was built from; `app --holon extract DIR` writes it and the
+units (as an export's `units` map), so `holon check DIR/todo-cli.holon.ts` shows the same unit
+under the same holon version, and anyone can read and check the flow without running it.
+
+**A binary's word about itself is only as good as the binary**: a changed runtime can print any
+of that. So the check to trust is the person's own holon reading the file without running it:
+
+```
+$ holon inspect ./todo
+todo: holon 0.1.0-rc.34 for x86_64-unknown-linux-gnu, slim, and the flow todo-cli
+  the frame: whole (BLAKE3 c41d…)
+  units: 23, each matching its hash; its text compiles to the same unit
+  approved by Ada Lovelace <ada@example.com> on 2026-11-07, grant 3f9a1c…
+  it may: …
+  the rest of the file: holon's released runtime, byte for byte
+```
+
+The last line comes from rebuilding: the released runtime for that version and target, with this
+payload placed in it, compared with the file (§5.15.9). A file that matches runs holon's code and
+this flow, and nothing else. "Compiles to the same unit" needs the same holon version as the
+build; another version says it can't tell.
+
+#### 5.15.8 Platforms
+
+**Targets.** `holon build --target TRIPLE`, any of the five a release builds. The runtime for the
+builder's own target is its own file (`current_exe`, the full flavor) or the slim asset; another
+target's comes from the GitHub release of the builder's version, `holon-runtime-<target>`,
+downloaded over HTTPS (`ureq`, already a dependency), checked against the release's
+checksum, and cached in `~/.holon/runtimes/<version>/<target>/`. `--runtime FILE` takes one
+already downloaded, for a builder offline. A build that isn't a release (a developer's
+`cargo build`) has no assets of its version, so it builds for its own target only, and says so.
+
+**A slim runtime.** An app needs the core, the author crate (for `--holon`'s words and the first
+run's), the host, the module engines, the data plane, folders and SQLite. It doesn't need the
+editor (`embed-editor`), the terminal editor (ratatui), the LSP and MCP servers, the control
+plane (rouille), accounts and sign-in (argon2, OIDC), the updater (axoupdater, self-replace) or
+the folder picker (rfd). A feature, `app-runtime`, builds holon without them, and each release
+publishes it per target beside the archives. The editor is most of the gap between an installed
+release (56.7 MB) and a build without it (40.2 MB); how small the rest gets is measured in the
+slice that builds it. The Postgres, MySQL and MongoDB engines stay in the full flavor only;
+`--runtime full` builds on it (fork 30).
+
+**Signatures.** Appending to a signed executable breaks the signature, so where a platform checks
+one the payload goes inside the image and the file is signed after:
+
+- **Linux** checks no signature. The payload is appended; provenance is the release's
+  attestation of the runtime plus `holon inspect`'s comparison.
+- **Windows:** an appended payload would sit after a signature's certificate table, which
+  `WinVerifyTrust` rejects, and scanners treat appended data as suspect. As a resource it is part
+  of the image `signtool sign` covers, so the builder signs the app after building, with their
+  own certificate. The release runtimes aren't Authenticode-signed today; if they become so,
+  inserting the resource invalidates that signature, and the builder's replaces it.
+- **macOS:** the linker ad-hoc signs arm64 binaries, Apple silicon kills code whose signature
+  doesn't verify, and appended bytes make it not verify. So the payload is a section, and the
+  build signs the file ad hoc again, which is enough to run it on the machine that built it. To
+  hand it to others the builder signs it with a Developer ID (`codesign --options runtime`) and
+  notarizes it (`notarytool`); unsigned, Gatekeeper quarantines a downloaded app.
+
+`holon build` doesn't sign with a builder's key: keys and tools are the platform's, and the
+manual's guide gives the commands. **The engine** that places the payload and re-signs ad hoc in
+pure Rust is `libsui`, the one `deno compile` uses (MIT; ELF, PE resources and Mach-O sections),
+or holon's own code for the three if `libsui` doesn't hold up in slice 1 (fork 28).
+
+#### 5.15.9 Updates and reproducibility
+
+**The same inputs give the same bytes.** A build is a function of the runtime's bytes and the
+payload: the name, text, units, requirements, grant (items, approver, when) and witness. The
+payload's encoding is canonical; the grant's time is `--at`, else `SOURCE_DATE_EPOCH`, else now,
+so a pipeline that sets it builds byte for byte again; placing a resource or a section writes no
+time and orders what it writes; an ad-hoc signature is a hash of the pages. A test builds twice
+and compares, and CI builds the same app for Linux on Linux and on Windows and compares.
+
+**Checking a file by rebuilding.** `holon inspect` reads the payload, takes the released runtime
+it names, places the payload, and compares with the file (a signature stripped first: PE's
+certificate table, Mach-O's code signature). Equal means the file is that release's runtime and
+this payload. This is how anyone checks an app from someone else without trusting its own words
+(§5.15.7).
+
+**Updates.** A new version of an app is a new file. Run on the same data folder, it is a redeploy
+(§5.15.4, point 4): state kept, the log going on, a version recorded, the runner asked only for
+what is new. A new holon release changes nothing in apps already built; rebuilding with it gives
+a new runtime and, where the catalog changed, a new root, as redeploying under a new server does.
+**An app never updates itself** (§5.15.12). The data folder records the runtime version that last
+wrote it; an older runtime than that refuses it, naming the version it needs, rather than read a
+format it may not know.
+
+#### 5.15.10 The checklist (§4)
+
+1. **The item and its words:** none new. Every item is the flow's own, approved as a deploy's
+   are; the build's witness is shown in both approvals as "sends each run's head (a hash, no run
+   data) to https://…".
+2. **The resource:** folders and databases bound by the runner at run time (§5.15.6), the port
+   the flow's. Credentials from a secret source, never the file.
+3. **Reads are the run's input:** unchanged; the same recorder.
+4. **Effects land when the run finishes, at most once:** unchanged; a one-shot app exits only
+   after its run's effects and record have landed.
+5. **Sharing:** one process per data folder (the lock); claims within it. Two apps bound to one
+   folder share it as two servers would: locks hold within a process only (§6's words).
+6. **Triggers:** unchanged, but clocks and file handlers run only while `app serve` runs. A file
+   that arrived meanwhile starts its run at the next serve (the watcher keeps what it has seen,
+   `arrivals.rs`); a clock fires once as serving starts, as a server's do at load (`arm_clocks`,
+   `main.rs` 408), and doesn't catch up on the ticks it missed.
+7. **Secrets:** unchanged taint and redaction; values from the environment, a vault or the
+   prompt, sealed in the data folder, never in the file (§5.15.6).
+8. **Limits:** the build's grant holds the limits asked for; the runner's `holon.toml` can lower
+   ceilings; nothing raises one past the build's approval.
+9. **Verify:** `app --holon export` and `holon verify`, as a server's; `holon inspect` checks the
+   file itself (§5.15.7, §5.15.9).
+10. **Seeing it:** `holon build`'s and the first run's approval, `app --holon`, `holon inspect`,
+    the manual's guide to building apps (signing included) and its permissions page.
+11. **The sample:** `todo-cli` (§5.15.11). No outside service, so no stand-in.
+12. **The engine:** `libsui` or holon's own placement code (fork 28); `ureq` for runtimes,
+    already a dependency; the slim runtime is a feature of the holon crate.
+
+#### 5.15.11 Samples and slices
+
+**`todo-cli`**, the sample §5.14 named, in the language, as `fmt` writes it:
+
+```ts
+// Todo list: a flow as a command-line app.
+//
+// Its actions are its commands. Try it: holon build todo-cli.holon.ts -o todo --approve, then
+//   ./todo add "buy milk" --due fri     "added buy milk"
+//   ./todo list                          the todos, by title
+//   ./todo done "buy milk"               "done buy milk"
+// Deployed on a server, holon do todo-cli add "buy milk" does the same.
+import { action, flow } from "holon"
+import todos from "collection:todos"
+import { now } from "holon:clock"
+
+flow("todo-cli")
+
+// Adds a todo under its title, with when it is due.
+export const add = action((input) => {
+  const title = input.args[0]
+  todos[title] = { due: input.due ?? "", since: now }
+  return `added ${title}`
+})
+
+// The todos, by title. It only reads, so it is lazy.
+export const list = action(() => todos.list({ limit: 100 }), { log: "lazy" })
+
+// Marks one done by removing it.
+export const done = action((input) => {
+  delete todos[input.args[0]]
+  return `done ${input.args[0]}`
+})
+```
+
+It is an ordinary flow too: `editor/src/samples.test.ts` builds it, the e2e tests deploy it, and
+on a server `holon do` drives it. A Rust test builds it with the holon under test
+(`holon build … --approve --at 0`), runs `todo add`, `list` and `done` with `--accept`, checks
+their output and exit codes, then `todo --holon export` and `holon verify` on the export, and
+`holon inspect` on the file. It is run live once by hand before its commit.
+
+**Slices:**
+
+1. **One target, actions:** the payload, the frame and its placement in all three formats; the
+   start's checks; one-shot actions in-process with §5.14's mapping (built here if `holon do`
+   isn't yet, shared with it); approval at build and on first run; the data folder and the
+   lock; records, `--holon`, `--holon export` and `verify`; secrets from the environment, the
+   prompt and the sealed file; folder and database bindings; `holon inspect` without the
+   runtime comparison; `todo-cli` and its test.
+2. **Serving:** `app serve` (listeners, clocks, file handlers, expiry), actions sent to the
+   serving process, witnesses (the builder's and the runner's), stopping cleanly. A test builds
+   `notes-api` and `heartbeat` and drives them.
+3. **Every target:** the slim runtime and its release assets (a publish job beside
+   `legacy-installers`), downloading and caching runtimes, `--runtime FILE`, the reproducibility
+   tests, `holon inspect`'s rebuild and comparison, the ad-hoc re-signature checked on CI's macOS
+   runner, the manual's signing guide.
+4. **Later:** a question mid-run (§5.14, slice 2), progress, a `--holon service` that prints a
+   unit file for systemd or launchd.
+
+Not scheduled in §7: Tier 3, a step when it is asked for.
+
+#### 5.15.12 Refused, with the reason
+
+| Refused | Why |
+|---|---|
+| A secret inside the binary, encrypted or not | Anyone with the file has it, and a file is copied. Values come from the runner's environment, vault or prompt. |
+| A build or a run without approval (`--no-approve`, a payload without a grant) | The promise is that a person read what a flow may do before it runs. Both approvals are cheap: one answer at build, one at first run. |
+| A switch to run without recording (`--no-log`) | Every run is recorded at its handler's level; `unrecorded` is a handler's level a person approves, not a switch the runner flips. |
+| An app that updates itself | What runs must be the bytes that were inspected and accepted. A new version is a new file, and its new items are asked for. |
+| An app falling back to holon's commands when its payload is damaged | A file named `todo` must not become a server, an MCP host or an updater. It exits 70. |
+| The folder the command runs in as a default binding | A flow names things and the host decides where they are; a command's working folder is wherever the person happened to be. `@file` and `-o` reach it, by the person's hand. |
+| A payload that is obfuscated or compressed past reading | It is meant to be extracted and checked with `holon check` and `holon inspect`. |
+| Several flows in one app, or an app calling another flow | One flow, one data folder, one grant. Fork 32. |
+| Cross-building from a build that isn't a release | No released runtime of its version exists for another target to compare with. |
+
+#### 5.15.13 Forks
+
+§8, forks 28 to 35, each with its lean: the engine (28), overriding the port (29), which runtime
+by default (30), a builder's witness the runner can't remove (31), several flows in one app (32),
+two apps under one name (33), the approver's identity (34), exit codes (35).
+
+#### 5.15.14 What stays true
+
+- **Approval before a run:** a person approved what the flow may do at build, and the person
+  running it accepted it on their machine; neither can be widened by the other or by the file.
+- **The record:** every run is recorded at its handler's level in a hash-chained log, exported as
+  a server's is, and checked offline by `holon verify`.
+- **Secrets:** never in the file, never in the log; taint as on a server.
+- **A flow names things; the host decides where they are:** the runner binds folders and
+  databases; the flow never sees the folder the command runs in.
+- **No code outside a boundary the manifest describes:** an app is holon's released runtime and
+  one flow, and `holon inspect` shows it byte for byte.
+- **Content addressing:** the units in the file are checked against their hashes at every start;
+  the same inputs build the same bytes.
 
 ## 6. One pattern for remote files: folder backends
 
@@ -1510,6 +2046,8 @@ Taken when a job or a user asks, each with its design here and its sample all th
 - **Mailboxes through OAuth:** Microsoft Graph, the Gmail API (§8, fork 2).
 - **Stronger or wider sandboxes:** a micro-VM, TLS inspection at the proxy, a WASI backend
   (§8, forks 15 and 16).
+- **A flow as one executable,** `holon build` (§5.15, designed), after §5.14's `holon do`, whose
+  argument mapping it shares.
 - **The rest:** time zones (fork 3), PDF output, SMB and Azure Blob folder backends, keys in a
   KMS or an HSM, a model resource with a budget.
 
@@ -1604,7 +2142,9 @@ Taken when a job or a user asks, each with its design here and its sample all th
     promise, or the binary carries a single-user host: a grant asked for on first run and kept in
     `~/.holon`, and a log beside it, as `holon serve` keeps one. *Lean:* not until a job asks;
     `holon do` against a local `holon serve` covers it, and the single-user host is the shape to
-    take if one does.
+    take if one does. *Resolved 2026-11-07* (§5.15): `holon build` writes the flow into a copy of
+    the runtime, a single-user host; the builder approves at build, the runner accepts on first
+    run within that grant, and the log is kept beside the app's data, as a server keeps one.
 
 25. **A feed's position under `lazy` and `unrecorded`** (§5.9, what a trading bot adds). *Lean:*
     the position follows the record: strict at the run's end, lazy at the next sync, unrecorded
@@ -1618,6 +2158,35 @@ Taken when a job or a user asks, each with its design here and its sample all th
 27. **Clock periods under a second.** *Lean:* milliseconds down to 100, the scheduler waking for
     the next due tick rather than once a second; a later change to the triggers, its own test,
     not step 1.6.
+28. **What places an app's payload** (§5.15.8): `libsui` (`deno compile`'s; pure Rust, MIT;
+    ELF, PE resources, Mach-O sections and an ad-hoc signature), or holon's own code for the three
+    formats. *Lean:* `libsui`, if its size, its maintenance and its output's determinism (§5.15.9)
+    hold up in slice 1; otherwise holon's own, a few hundred lines a format.
+29. **The port of a built app.** The port is in the text, so in the unit's hash, and a server
+    refuses two deployments on one port. Two copies of a serving app on one machine need two
+    ports. *Lean:* `--port N` as a binding, like a folder's: the text's port the default, the
+    runner's choice kept in the data folder and shown by `--holon`; nothing about the unit changes.
+30. **Which runtime by default.** Slim is smaller and has less in it; full has the server
+    database engines, which a runner may want to bind. *Lean:* slim; full with `--runtime full`,
+    and `holon build` suggests it when the flow uses a database.
+31. **A builder's witness the runner can't remove.** A team auditing every copy needs it to stay;
+    a runner may not want their run times known. *Lean:* it stays: it is part of the grant both
+    people approve, shown as such, and a runner who refuses it doesn't run the app. The runner
+    may add a witness of their own.
+32. **Several flows in one app,** or an app whose flow runs another's action
+    (`RunsAction("billing/charge")`). *Lean:* refused until a job asks; then the payload holds
+    several roots, each a deployment in the data folder, each approved on its own.
+33. **Two apps under one name.** Data folders are named by flow name, so two different apps
+    called `todo-cli` would share one. *Lean:* the folder records the name and the first build's
+    approver, and a build approved by someone else asks before taking it over; `--data` keeps
+    them apart.
+34. **The approver's identity.** A name the builder states, or a signature in the payload with a
+    key `holon inspect` checks against one the runner trusts. *Lean:* a name, with the file's
+    platform signature as the proof of who built it; a holon signature only if teams need one
+    that doesn't depend on platforms (Linux has none).
+35. **Exit codes of an app.** *Lean:* 0 and 1 by the answer's status, an envelope's `exit` when
+    it gives one, 2 for a command line that doesn't parse, and the BSD sysexits for the app's own
+    refusals: 70 a damaged payload, 77 not accepted, 78 a secret or binding missing.
 
 ## 9. What stays true
 
@@ -1656,7 +2225,7 @@ A section is cited as `host-capabilities §5.9` or by its link, `host-capabiliti
 | 2.3 who touched what | [host resources](host-resources-L4.md), revised there |
 | 2.4 a sandbox for agents | §5.8 |
 | 2.5 history | [history](history-L4.md) (designed) |
-| Tier 3 | §5.13, §5.14 and new sections, as they are asked for |
+| Tier 3 | §5.13, §5.14, §5.15 (`holon build`, designed) and new sections, as they are asked for |
 
 **In L4s of their own, designed before then,** each a host capability this note builds on:
 [named folders](named-folders-L4.md), [databases](databases-L4.md),
