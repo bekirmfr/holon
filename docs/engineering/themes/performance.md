@@ -103,6 +103,7 @@ the rows that say otherwise.
 | `5f29d1d` | Each composite's children resolved once and kept with the closure, with their kinds | Every call resolved each child by hash and decided its kind | in-process, one call of a 25-node function 1.61 → 0.93 µs, `hello` ×0.86, `calc` ×0.82 ([leaves §10](js-library-races/leaves.md#10-a-composites-preparation-kept-81)) |
 | small values | A number, a boolean, a text up to 32 bytes, and a list or record of up to 8 of those copied, not given (`heavy`); arithmetic's finite check on the `f64` in place | #43 gave every record: about 1,770 instructions a step, where copying `{ v, dev, sq }` costs less; the check was a call a node | `crunch` 25.76 → 23.37 M at 1,000 items (×0.907), its records part ×0.873; a filter by fold +1.0% ([below](#small-values-are-copied-2026-11-07)) |
 | values as they are | A leaf that reads state, the clock, a random number, a secret or the file that started the run asks the resolver for its value (`Resolver::sourced`), which it produces as it is; every composite keeps its children whatever the run reads | The host built each value as constant units in the run, and let no composite with a capability leaf keep its children, the clock being sourced in every run | a field of a 20-field state record ×0.25, the length of a 100-record state list ×0.16, 80 operations from a state number ×0.61; `notes` −0.8% ([below](#a-runs-values-handed-as-they-are-2026-11-07)) |
+| `48eb0fe` | A state cell's value held in an `Arc`; a run lent the values it was granted; its entry made from the state it started from | The host copied the deployment's whole state four times a run, read or not | the length of a 100-record state list ×0.26, a field of a 20-field state record ×0.73; `notes` −0.6% ([below](#a-runs-state-shared-2026-11-07)) |
 
 The plan is an optimisation the walk stands behind: whenever the plan meets a case it was not
 built for (an input not yet evaluated, a guard whose condition is missing), it hands the run to
@@ -253,7 +254,37 @@ routes are `GET`s, unrecorded, their state seeded before. Instructions a run:
 The 80 operations from a state number now cost 3.7 K more than from a constant; `notes` gained from
 its composites' children, kept now that a write beside a read no longer stops them. The two values
 gained less than the profile's estimate (×0.18 and ×0.03): the run's own copy of the list is 171 K,
-and most of the rest is the host's copies of the whole state around the run
+and most of the rest was the host's copies of the whole state around the run, which the next
+change shares ([below](#a-runs-state-shared-2026-11-07)).
+
+### A run's state shared (2026-11-07)
+
+The host copied a deployment's whole state four times a run, whether its route read it or not
+(`firing.rs`): the state it starts from, under the lock; its values again, for its log entry; each
+value it was granted, for the run; and the start once more, kept on the run for the commit's check.
+A state cell now holds its value in an `Arc` (`State`, holon-host), so a copy of the state is its
+keys and hashes; `run_rounds` is lent the values the run was granted (`&[(Capability, &Value)]`);
+and the entry is made from the state the run started from, which it keeps anyway. The entry is the
+same, key for key.
+
+Callgrind as [above](#small-values-are-copied-2026-11-07), the change before (`2c0f4d8`) against
+this one (`48eb0fe`), the state routes as in the last section. Instructions a run:
+
+| Route | before | after | ratio |
+|---|---:|---:|---:|
+| answers `1` | 104.0 K | 102.9 K | 0.99 |
+| reads a state number | 106.2 K | 104.8 K | 0.99 |
+| reads a field of a 20-field state record | 159.8 K | 117.3 K | 0.73 |
+| the length of a 100-record state list | 1.74 M | 445.4 K | 0.26 |
+| 80 operations from a constant | 277.3 K | 276.6 K | 1.00 |
+| the same 80 from a state number | 281.0 K | 278.4 K | 0.99 |
+| `hello` | 88.6 K | 88.6 K | 1.00 |
+| `notes` (its listing, a collection read) | 351.2 K | 349.0 K | 0.99 |
+| `crunch`, 1,000 items | 23.36 M | 23.36 M | 1.00 |
+| a filter by fold, 1,000 / 4,000 | 9.87 / 39.13 M | 9.88 / 39.08 M | 1.00 |
+
+The estimate was about 0.4 M for the list. What it pays over a route that answers `1` (343 K) is
+now the run's own copy of the list, where it is read, its free, and the check that it is data
 ([Limits](#limits)).
 
 ### Limits
@@ -289,13 +320,13 @@ and most of the rest is the host's copies of the whole state around the run
   save, and where (`Record` first), is estimated in [leaves §7](js-library-races/leaves.md#7-arc-an-estimate).
   Typed slots or native code (level 3) would reverse the core's dependency limit and the no-JIT
   choice.
-- **A run copies its deployment's whole state four times**, whether its route reads it or not
-  (`firing.rs`): the state it starts from, under the lock (`:186`); its values for the run's record
-  (`State::values`, `:554`); each value it was granted, for the run (`:573`); and the start again,
-  kept on the run for the commit's check (`:731`). With a 100-record list in state, those copies
-  and their frees are about 1.3 M of the 1.63 M a run that reads its length pays over one that
-  answers `1`; the run's own copy of the list, made where it is read, is 171 K and its free 116 K.
-  Values shared rather than copied (an `Arc` per cell) would take that route to about 0.4 M a run.
+- **A run that reads a big state value copies it.** The leaf that reads it produces a copy
+  (`Body::Sourced`), and the host checks the value is data (`is_storable`, holon-host) the first
+  time a run reads it. With a 100-record list in state, the copy is about 200 K instructions, its
+  free about 110 K and the check about 45 K, of the 343 K a run that reads the list's length pays
+  over one that answers `1`. A cell could know it holds data from when it was written, as it knows
+  its hash (writes refuse an effect already; the check stands for storage older than that rule);
+  the copy goes only with values shared inside the core ([leaves §7](js-library-races/leaves.md#7-arc-an-estimate)).
   The samples keep small values in state and big ones in collections, which are read another way.
 - **A lazy route on a busy log** keeps a one-connection p99 of about 30 ms, likely the per-second
   sync holding up the next append (RA §2.6); left as it is.
