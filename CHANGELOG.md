@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **Flows that compute run faster, and a fold that builds a list no longer slows with its square.**
+  A fold that grows what it carries (`xs.reduce((acc, x) => [...acc, x], [])`, a record built key
+  by key) moves it into each step instead of copying it: a filter by fold over 5,000 items answers
+  18 times as many requests a second as before, and its time grows with its length, not its
+  length squared. Folds and maps of numbers and small records are 6 to 9% faster than before
+  (small values copied, not moved; each composite's children kept with the flow). A ternary now
+  answers as JavaScript does when its chosen side has no value; its extra check takes about 15%
+  off a filter by fold, already counted in the 18 times. Measured through release servers ([performance](docs/engineering/themes/performance.md#through-a-server-again-after-the-kept-children-and-small-values-490d03e-2026-11-07)).
+
 - **Installing works on the first try.** The install commands in the README and the manual named
   `releases/latest/…`, which GitHub answers 404 while every release is a pre-release: they name
   the release now, and a test holds them to the version, so each release commit updates them.
