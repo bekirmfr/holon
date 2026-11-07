@@ -619,6 +619,11 @@ function NAME(input, input: Type, …) {
   visible to the whole file, in any order. One function may place another.
 - A function is one unit with one hash wherever it is placed, and can be given to `map` and
   `reduce` by name.
+- **A function may be `async`** and await a request, as a route does: `async function
+  toSlack(event) { const sent = await hooks.post(…); return sent.status }`, placed with `await
+  toSlack(event)`. It is the same unit as without `async`. It never waits for an event (an action
+  does), it doesn't call another flow's action (its handler does), and a method that takes a
+  function (`map`, `filter`, `sort`…) takes no `async` one.
 - **Writes inside a function** leave through its boundary as outputs: a collection's write in the
   method form, bound and returned, and a state write as the output `write`. Writes the caller
   doesn't use are performed:

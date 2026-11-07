@@ -45,7 +45,7 @@
 //! A template's units are part of every flow's identity that uses it: a change here changes the
 //! hash of each such flow.
 
-use holon_core::{interface_of, Edge, Hash, MapResolver, Param, Port, Type, Unit, UnitBody, BOUNDARY};
+use holon_core::{interface_of, Edge, Hash, MapResolver, Param, Port, Resolver, Type, Unit, UnitBody, BOUNDARY};
 use serde::Serialize;
 
 use crate::wire::{frozen_value, WParam, WPort, WType};
@@ -91,6 +91,44 @@ pub fn action_name(params: &[WParam]) -> Result<String, String> {
 
 pub fn is_template(name: &str) -> bool {
     TEMPLATES.contains(&name)
+}
+
+/// The template the composite `unit` (whose hash is `hash`) was built from, with its params, when
+/// it is one. A function keeps a template's unit, not its node, so the function opened (its
+/// canvas, its text) finds the template again by hash. Each param is tried at its default, then
+/// at each number among the composite's leaves, as a stripe_verify's own tolerance is one.
+pub fn instance_of(hash: &Hash, unit: &Unit, store: &MapResolver) -> Option<(&'static str, Vec<WParam>)> {
+    let UnitBody::Composite { children, .. } = &unit.body else { return None };
+    let numbers: Vec<&str> = children
+        .iter()
+        .filter_map(|c| store.resolve(c))
+        .filter(|u| matches!(&u.body, UnitBody::Primitive { name } if name == "const") && u.params.iter().any(|p| p.name() == "type" && p.value() == Some("Number")))
+        .filter_map(|u| u.params.iter().find(|p| p.name() == "value").and_then(|p| p.value()))
+        .collect();
+    let names = |ports: &[Port]| ports.iter().map(|p| p.name.clone()).collect::<Vec<_>>();
+    let wnames = |ports: &[WPort]| ports.iter().map(|p| p.name.clone()).collect::<Vec<_>>();
+    TEMPLATES.iter().find_map(|&name| {
+        let defaults = defaults(name)?;
+        let iface = interface(name, &defaults)?;
+        if wnames(&iface.inputs) != names(&unit.inputs) || wnames(&iface.outputs) != names(&unit.outputs) {
+            return None;
+        }
+        let mut tries = vec![defaults.clone()];
+        for (i, p) in defaults.iter().enumerate() {
+            tries.extend(numbers.iter().map(|n| {
+                let mut params = defaults.clone();
+                params[i] = WParam::frozen(p.name(), n);
+                params
+            }));
+        }
+        tries
+            .into_iter()
+            .find(|params| {
+                let mut scratch = MapResolver::new();
+                build(name, params, &mut scratch).ok().and_then(|u| scratch.insert(u).ok()).as_ref() == Some(hash)
+            })
+            .map(|params| (name, params))
+    })
 }
 
 /// What each template does, for the person placing it (core describes the primitives).
@@ -576,6 +614,25 @@ mod tests {
             assert!(build("stripe_verify", &[WParam::frozen("tolerance", bad)], &mut store).is_err(), "{bad}");
         }
         assert!(build("stripe_verify", &defaults("stripe_verify").unwrap(), &mut store).is_ok());
+    }
+
+    /// A stripe_verify a function placed is found again by its unit's hash, at its own tolerance
+    /// as at the default; a composite that isn't a template is nothing.
+    #[test]
+    fn a_templates_unit_is_found_again() {
+        for tolerance in ["300", "60"] {
+            let mut store = MapResolver::new();
+            let params = vec![WParam::frozen("tolerance", tolerance)];
+            let unit = build("stripe_verify", &params, &mut store).unwrap();
+            let hash = store.insert(unit.clone()).unwrap();
+            assert_eq!(instance_of(&hash, &unit, &store), Some(("stripe_verify", params)), "{tolerance}");
+        }
+        let mut store = MapResolver::new();
+        let unit = build("stripe_verify", &defaults("stripe_verify").unwrap(), &mut store).unwrap();
+        let UnitBody::Composite { children, edges } = &unit.body else { panic!("a composite") };
+        let other = Unit { body: UnitBody::Composite { children: children[1..].to_vec(), edges: edges.clone() }, ..unit.clone() };
+        let hash = store.insert(other.clone()).unwrap();
+        assert_eq!(instance_of(&hash, &other, &store), None);
     }
 
     #[test]
