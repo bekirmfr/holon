@@ -82,6 +82,13 @@ pub fn child_nodes(children: &[Hash], store: &MapResolver, mut next_id: impl FnM
         .map(|h| {
             let hex = to_hex(h);
             let unit = store.resolve(h).ok_or_else(|| format!("unresolved: {hex}"))?;
+            // A template a function placed (stripe_verify), as the template it is.
+            if let Some((name, params)) = crate::templates::instance_of(h, unit, store) {
+                let iface = crate::templates::interface(name, &params).expect("a template has an interface");
+                let mut data = NodeData::new(name, PlacedBody::Template, iface.inputs, iface.outputs, params);
+                data.hidden_inputs = Some(iface.hidden_inputs);
+                return Ok(Node::placed(&format!("{name}-{}", next_id()), Position::default(), data));
+            }
             let ports = |ps: &[holon_core::Port]| ps.iter().map(WPort::from_core).collect::<Vec<_>>();
             let (id, data) = match &unit.body {
                 UnitBody::Primitive { name } => {

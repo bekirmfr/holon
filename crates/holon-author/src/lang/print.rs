@@ -3908,6 +3908,20 @@ mod tests {
         }
     }
 
+    /// A function that places `stripe.verify` keeps the template's unit, and prints it back as
+    /// `stripe.verify(…)`, at its own tolerance too, never as a function of its own.
+    #[test]
+    fn a_function_placing_a_template_prints_it_back() {
+        for opts in ["", ", { tolerance: 60 }"] {
+            let src = format!(
+                "import {{ flow, route, status, stripe }} from \"holon\"\nimport key from \"secret:key\"\nimport {{ now }} from \"holon:clock\"\n\nflow(\"v\", {{ port: 8000 }})\n\nfunction check(req) {{\n  const verified = stripe.verify(req, key, now{opts})\n  return verified.event\n}}\n\nroute.post(\"/v\", (req) => check(req) ?? status(400))\n"
+            );
+            let text = reprinted(&src);
+            assert!(text.contains("stripe.verify(") && text.contains(opts), "{text}");
+            assert_eq!(text.matches("function ").count(), 1, "{text}");
+        }
+    }
+
     #[test]
     fn the_canonical_form_of_two_samples() {
         let hello = samples::build(samples::sample("hello-api").unwrap()).unwrap();
