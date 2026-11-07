@@ -2284,6 +2284,17 @@ mod tests {
         );
         let zeros = list(vec![num(0.0), num(-0.0), num(-0.0)]);
         assert_eq!(compute("unique", &[&zeros], &[]), Some(list(vec![num(0.0)])), "-0 is 0, hashed alike");
+        // An option is hashed by what it holds, or distinct `some(x)` share one bucket and every
+        // pair of them is compared.
+        let some = |v: Value| Value::Sum { arm: 0, payload: Box::new(v) };
+        let options = list(vec![some(num(1.0)), some(num(2.0)), some(num(1.0)), some(num(2.0))]);
+        assert_eq!(compute("unique", &[&options], &[]), Some(list(vec![some(num(1.0)), some(num(2.0))])));
+        let hash = |v: &Value| {
+            let mut h = std::hash::DefaultHasher::new();
+            lists::hash_item(v, &mut h);
+            std::hash::Hasher::finish(&h)
+        };
+        assert_ne!(hash(&some(num(1.0))), hash(&some(num(2.0))));
     }
 
     #[test]

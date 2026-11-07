@@ -182,7 +182,7 @@ pub(crate) fn unique(xs: Vec<Value>) -> Vec<Value> {
 
 /// A hash of an item that agrees with `==`: `-0` hashes as `0`. Only which items share a bucket
 /// depends on it, never the answer, so the hasher may differ between builds.
-fn hash_item(x: &Value, h: &mut impl Hasher) {
+pub(crate) fn hash_item(x: &Value, h: &mut impl Hasher) {
     match x {
         Value::Number(n) => (0u8, if *n == 0.0 { 0 } else { n.to_bits() }).hash(h),
         Value::Text(s) => (1u8, s).hash(h),
@@ -198,8 +198,16 @@ fn hash_item(x: &Value, h: &mut impl Hasher) {
                 hash_item(x, h);
             }
         }
-        Value::Sum { arm, .. } => (5u8, arm).hash(h),
-        Value::Effect { sink, .. } => (6u8, sink).hash(h),
+        // The payload too, or a list of distinct `some(x)` shares one bucket and is compared item
+        // by item, every pair.
+        Value::Sum { arm, payload } => {
+            (5u8, arm).hash(h);
+            hash_item(payload, h);
+        }
+        Value::Effect { sink, payload } => {
+            (6u8, sink).hash(h);
+            hash_item(payload, h);
+        }
     }
 }
 
