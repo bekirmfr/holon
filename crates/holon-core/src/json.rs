@@ -292,7 +292,9 @@ pub(crate) fn key_list(items: &[Value]) -> Vec<String> {
 /// With a gap, each member on a line of its own indented by one more gap, `": "` after a key, the
 /// closing bracket at the outer indent, and an empty list or record `[]` or `{}`. With keys, every
 /// record at every depth written with only the listed keys it has, in the list's order; lists
-/// whole. With neither, [`stringify`].
+/// whole. With neither, [`stringify`]. Nothing once the text passes `MAX_TEXT` bytes: each member
+/// is written after its depth's gap, so a body of many items nested deep would lay out to
+/// gigabytes.
 pub(crate) fn stringify_laid_out(value: &Value, layout: &Layout) -> Option<String> {
     if layout.gap.is_empty() && layout.keys.is_none() {
         return stringify(value);
@@ -326,6 +328,9 @@ fn write_members<'v>(members: impl Iterator<Item = (Option<&'v str>, &'v Value)>
         }
         any = true;
         if laid {
+            if out.len() > crate::texts::MAX_TEXT {
+                return None;
+            }
             out.push('\n');
             out.push_str(&inner);
         }
@@ -378,37 +383,57 @@ fn internalize<E>(key: &str, value: Value, revive: &mut impl FnMut(&str, &Value)
     revive(key, &value)
 }
 
+/// How deep the lists and records a replacer answers may nest: as deep as a value read back may
+/// (`value_hash`). One that wraps what it is given (`(k, v) => [k, v]`) would otherwise nest
+/// without end, where JavaScript runs out of stack and throws.
+pub(crate) const MAX_REPLACED_DEPTH: usize = crate::value_hash::MAX_VALUE_DEPTH;
+
+/// Why a replacer's walk stopped: `replace` answered `Err`, or what it answered nested past
+/// [`MAX_REPLACED_DEPTH`].
+enum Stop<E> {
+    Replacer(E),
+    TooDeep,
+}
+
 /// `JSON.stringify(value, replacer)`'s value once replaced: ECMA-262's SerializeJSONProperty with a
 /// replacer function, top-down. `replace` is applied first to the whole value with key `""`, then
 /// to each member of what it answered (a list item's key its index as text). A record member it
 /// answers nothing for is left out, and a list item it answers nothing for is `none()` (written
-/// `null`); nothing for the whole value is nothing (JavaScript's `undefined`). `some(x)` has `x`'s
-/// members, as it is written as `x`. An `Err` from `replace` stops the walk there.
+/// `null`); nothing for the whole value is nothing (JavaScript's `undefined`), as is an answer
+/// nesting past [`MAX_REPLACED_DEPTH`] (JavaScript's RangeError). `some(x)` has `x`'s members, as
+/// it is written as `x`. An `Err` from `replace` stops the walk there.
 pub(crate) fn replace<E>(value: &Value, replace: &mut impl FnMut(&str, &Value) -> Result<Option<Value>, E>) -> Result<Option<Value>, E> {
-    serialize_property("", value, replace)
+    match serialize_property("", value, 0, replace) {
+        Ok(v) => Ok(v),
+        Err(Stop::Replacer(e)) => Err(e),
+        Err(Stop::TooDeep) => Ok(None),
+    }
 }
 
-fn serialize_property<E>(key: &str, value: &Value, replace: &mut impl FnMut(&str, &Value) -> Result<Option<Value>, E>) -> Result<Option<Value>, E> {
-    match replace(key, value)? {
-        Some(v) => replaced_members(v, replace).map(Some),
+fn serialize_property<E>(key: &str, value: &Value, depth: usize, replace: &mut impl FnMut(&str, &Value) -> Result<Option<Value>, E>) -> Result<Option<Value>, Stop<E>> {
+    match replace(key, value).map_err(Stop::Replacer)? {
+        Some(v) => replaced_members(v, depth, replace).map(Some),
         None => Ok(None),
     }
 }
 
-fn replaced_members<E>(value: Value, replace: &mut impl FnMut(&str, &Value) -> Result<Option<Value>, E>) -> Result<Value, E> {
+fn replaced_members<E>(value: Value, depth: usize, replace: &mut impl FnMut(&str, &Value) -> Result<Option<Value>, E>) -> Result<Value, Stop<E>> {
+    if matches!(value, Value::List(_) | Value::Record(_)) && depth >= MAX_REPLACED_DEPTH {
+        return Err(Stop::TooDeep);
+    }
     Ok(match value {
-        Value::Sum { arm: 0, payload } => replaced_members(*payload, replace)?,
+        Value::Sum { arm: 0, payload } => replaced_members(*payload, depth, replace)?,
         Value::List(xs) => {
             let mut items = Vec::with_capacity(xs.len());
             for (i, x) in xs.iter().enumerate() {
-                items.push(serialize_property(&i.to_string(), x, replace)?.unwrap_or_else(null));
+                items.push(serialize_property(&i.to_string(), x, depth + 1, replace)?.unwrap_or_else(null));
             }
             Value::List(items)
         }
         Value::Record(fields) => {
             let mut kept = BTreeMap::new();
             for (k, x) in &fields {
-                if let Some(x) = serialize_property(k, x, replace)? {
+                if let Some(x) = serialize_property(k, x, depth + 1, replace)? {
                     kept.insert(k.clone(), x);
                 }
             }
@@ -588,6 +613,33 @@ mod tests {
         assert_eq!(replaced, Ok(Some(parse(r#"{"a": [1, null], "s": {"t": 5}}"#).unwrap())));
         assert_eq!(replace(&doc, &mut |_: &str, _: &Value| Ok::<_, ()>(None)), Ok(None));
         assert_eq!(replace(&doc, &mut |k: &str, v: &Value| if k == "a" { Err("stop") } else { Ok(Some(v.clone())) }), Err("stop"));
+    }
+
+    /// Many items nested deep, laid out with a wide gap, grow by the gap at every depth for each
+    /// item: past `MAX_TEXT` bytes the text is nothing, where a 4 MB body of them made 1.3 GB.
+    #[test]
+    fn a_laid_out_text_stops_at_the_bound() {
+        let wide = (0..60).fold(Value::List(vec![n(0.0); 30_000]), |v, _| Value::List(vec![v]));
+        assert_eq!(stringify_laid_out(&wide, &Layout { gap: "          ", keys: None }), None);
+        assert!(stringify_laid_out(&wide, &Layout { gap: " ", keys: None }).is_some());
+    }
+
+    /// A replacer that wraps what it is given nests its answer without end: past
+    /// `MAX_REPLACED_DEPTH` the whole value is nothing, on a thread a host's size, where it once
+    /// ran out of stack. One that keeps what it is given still walks a value as deep as that.
+    #[test]
+    fn a_replacer_nesting_without_end_gives_nothing() {
+        let wrapped = std::thread::Builder::new()
+            .stack_size(2 * 1024 * 1024)
+            .spawn(|| replace(&n(0.0), &mut |k: &str, v: &Value| Ok::<_, ()>(Some(Value::List(vec![Value::Text(k.into()), v.clone()])))))
+            .unwrap()
+            .join()
+            .unwrap();
+        assert_eq!(wrapped, Ok(None));
+        let deep = (0..MAX_REPLACED_DEPTH).fold(n(1.0), |v, _| Value::List(vec![v]));
+        assert_eq!(replace(&deep, &mut |_: &str, v: &Value| Ok::<_, ()>(Some(v.clone()))), Ok(Some(deep.clone())));
+        let deeper = Value::List(vec![deep]);
+        assert_eq!(replace(&deeper, &mut |_: &str, v: &Value| Ok::<_, ()>(Some(v.clone()))), Ok(None));
     }
 
     #[test]
