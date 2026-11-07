@@ -101,16 +101,19 @@ pub const MAX_VALUE_DEPTH: usize = 256;
 /// Whether no part of `v` is more than `room` levels below it, as [`encode_value`] counts levels
 /// (a list's items, a record's values and a sum's or effect's payload each one down): what may be
 /// put `MAX_VALUE_DEPTH - room` levels down and still nest within the bound. It looks no deeper
-/// than `room`, and stops at the first part past it.
+/// than `room`, and stops at the first part past it. A number, a boolean or a text has nothing
+/// below it, answered where it is asked (most values a leaf puts down are one).
+#[inline]
 pub(crate) fn nests_within(v: &Value, room: usize) -> bool {
-    // Each part one level down; a number, a boolean or a text has nothing below it.
-    let within = |x: &Value| {
-        room > 0
-            && match x {
-                Value::Number(_) | Value::Boolean(_) | Value::Text(_) => true,
-                x => nests_within(x, room - 1),
-            }
-    };
+    match v {
+        Value::Number(_) | Value::Boolean(_) | Value::Text(_) => true,
+        v => parts_nest_within(v, room),
+    }
+}
+
+/// [`nests_within`] for a list, a record, a sum or an effect: each part one level down.
+fn parts_nest_within(v: &Value, room: usize) -> bool {
+    let within = |x: &Value| room > 0 && nests_within(x, room - 1);
     match v {
         Value::Number(_) | Value::Boolean(_) | Value::Text(_) => true,
         Value::List(xs) => xs.iter().all(within),

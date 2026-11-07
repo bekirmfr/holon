@@ -182,31 +182,16 @@ enum Down {
     /// The present input at this place (`append`'s item, `some`'s value, every part of what
     /// `entries` is handed).
     Input(usize),
-    /// An effect: its payload, a record of its inputs, is checked as it was built.
-    Built,
 }
 
+/// An effect's payload goes a level down too, checked as the effect is built ([`effect`],
+/// [`sink_effect`]).
 fn down(op: Op) -> Down {
     match op {
         Op::List | Op::Pair => Down::All,
         Op::Cons | Op::Some | Op::Entries => Down::Input(0),
         Op::Append | Op::WithField | Op::Fill => Down::Input(1),
         Op::Insert | Op::WithItem => Down::Input(2),
-        Op::Egress
-        | Op::StoreWrite
-        | Op::CollectionPut
-        | Op::CollectionDelete
-        | Op::FileWrite
-        | Op::FileDelete
-        | Op::FileCopy
-        | Op::FileCreate
-        | Op::FileCreateCopy
-        | Op::DbExec
-        | Op::DbInsert
-        | Op::DbUpdate
-        | Op::DbDelete
-        | Op::ChannelSend
-        | Op::ChannelSubscribe => Down::Built,
         _ => Down::No,
     }
 }
@@ -218,12 +203,19 @@ fn down(op: Op) -> Down {
 /// could take one past it, and each refuses to: one more level a step, a fold wrapping its
 /// accumulator, would otherwise nest without end. Only the input put down is looked at, so
 /// `append` to a long list costs what its item does.
+#[inline]
 fn fits<'a>(op: Op, mut inputs: impl Iterator<Item = &'a Value>) -> bool {
     match down(op) {
+        Down::No => true,
         Down::All => inputs.all(|v| nests_within(v, MAX_VALUE_DEPTH - 1)),
         Down::Input(i) => inputs.nth(i).is_none_or(|v| nests_within(v, MAX_VALUE_DEPTH - 1)),
-        Down::No | Down::Built => true,
     }
+}
+
+/// The effect for `sink` of `payload`: nothing when the payload, a level down in it, nests past
+/// [`MAX_VALUE_DEPTH`].
+fn effect(sink: String, payload: Value) -> Option<Value> {
+    nests_within(&payload, MAX_VALUE_DEPTH - 1).then(|| Value::Effect { sink, payload: Box::new(payload) })
 }
 
 /// [`compute`], the primitive's [`Op`] already found (`name` is its name, which a few read):
@@ -232,11 +224,6 @@ pub(crate) fn compute_op(op: Op, name: &str, inputs: &[&Value], params: &[Param]
     if !fits(op, inputs.iter().copied()) {
         return None;
     }
-    let out = compute_unchecked(op, name, inputs, params)?;
-    (down(op) != Down::Built || nests_within(&out, MAX_VALUE_DEPTH)).then_some(out)
-}
-
-fn compute_unchecked(op: Op, name: &str, inputs: &[&Value], params: &[Param]) -> Option<Value> {
     match op {
         // ── const (§13): the one literal constructor. `value` is the literal as text; `type`
         // (Number/Boolean/Text) declares how to read it — no inference, so the unit is
@@ -961,12 +948,12 @@ fn compute_unchecked(op: Op, name: &str, inputs: &[&Value], params: &[Param]) ->
                 return None;
             }
             let item = Value::Record(BTreeMap::from([("key".to_string(), Value::Text(key.clone())), ("value".to_string(), (*v).clone())]));
-            Some(Value::Effect { sink: format!("collection_put:{name}"), payload: Box::new(item) })
+            effect(format!("collection_put:{name}"), item)
         }
         Op::CollectionDelete => {
             let name = crate::kind::ident(params, "collection")?;
             let [Value::Text(key)] = inputs else { return None };
-            Some(Value::Effect { sink: format!("collection_delete:{name}"), payload: Box::new(Value::Text(key.clone())) })
+            effect(format!("collection_delete:{name}"), Value::Text(key.clone()))
         }
 
         // A named folder's writes: `{name, text}` to write the file, the name to delete it, each an
@@ -976,12 +963,12 @@ fn compute_unchecked(op: Op, name: &str, inputs: &[&Value], params: &[Param]) ->
             let folder = crate::kind::ident(params, "folder")?;
             let [Value::Text(name), Value::Text(text)] = inputs else { return None };
             let file = Value::Record(BTreeMap::from([("name".to_string(), Value::Text(name.clone())), ("text".to_string(), Value::Text(text.clone()))]));
-            Some(Value::Effect { sink: format!("file_write:{folder}"), payload: Box::new(file) })
+            effect(format!("file_write:{folder}"), file)
         }
         Op::FileDelete => {
             let folder = crate::kind::ident(params, "folder")?;
             let [Value::Text(name)] = inputs else { return None };
-            Some(Value::Effect { sink: format!("file_delete:{folder}"), payload: Box::new(Value::Text(name.clone())) })
+            effect(format!("file_delete:{folder}"), Value::Text(name.clone()))
         }
         // A copy by handle: `{name, from: <handle>}`, the bytes copied host to host when the run
         // finishes. A handle is what `file_handle` answered; the host checks the file it names is
@@ -993,7 +980,7 @@ fn compute_unchecked(op: Op, name: &str, inputs: &[&Value], params: &[Param]) ->
                 return None;
             }
             let copy = Value::Record(BTreeMap::from([("name".to_string(), Value::Text(name.clone())), ("from".to_string(), (*from).clone())]));
-            Some(Value::Effect { sink: format!("file_copy:{folder}"), payload: Box::new(copy) })
+            effect(format!("file_copy:{folder}"), copy)
         }
         // Create-only: a write's or a copy's payload with `create: true`. The host lands it only
         // where no file has the name when the run commits, never replacing one.
@@ -1003,7 +990,7 @@ fn compute_unchecked(op: Op, name: &str, inputs: &[&Value], params: &[Param]) ->
             let Some(Value::Effect { payload, .. }) = compute(like, inputs, params) else { return None };
             let Value::Record(mut file) = *payload else { return None };
             file.insert("create".to_string(), Value::Boolean(true));
-            Some(Value::Effect { sink: format!("{name}:{folder}"), payload: Box::new(Value::Record(file)) })
+            effect(format!("{name}:{folder}"), Value::Record(file))
         }
 
         // A statement to run when the run finishes: `{sql, params, expect}`, `expect` the rows it
@@ -1019,7 +1006,7 @@ fn compute_unchecked(op: Op, name: &str, inputs: &[&Value], params: &[Param]) ->
             if let Some(n) = crate::kind::expect_of(params)? {
                 exec.insert("expect".to_string(), Value::Number(n as f64));
             }
-            Some(Value::Effect { sink: format!("db_exec:{database}"), payload: Box::new(Value::Record(exec)) })
+            effect(format!("db_exec:{database}"), Value::Record(exec))
         }
         // A document database's writes when the run finishes: `{insert: <collection>, document,
         // params}`, `{update: …, filter, change, params, expect}`, `{delete: …, filter, params,
@@ -1048,7 +1035,7 @@ fn compute_unchecked(op: Op, name: &str, inputs: &[&Value], params: &[Param]) ->
                     }
                 }
             }
-            Some(Value::Effect { sink: format!("{name}:{database}"), payload: Box::new(Value::Record(write)) })
+            effect(format!("{name}:{database}"), Value::Record(write))
         }
         // A channel's pack: any value but an effect, sent to its subscribers once the run is over.
         // The channel rides in the sink name, as a collection's does.
@@ -1065,7 +1052,7 @@ fn compute_unchecked(op: Op, name: &str, inputs: &[&Value], params: &[Param]) ->
                 return None;
             }
             let ask = Value::Record(BTreeMap::from([("channel".to_string(), Value::Text(channel.clone())), ("from".to_string(), Value::Text(from.to_string()))]));
-            Some(Value::Effect { sink: format!("channel_subscribe:{channel}"), payload: Box::new(ask) })
+            effect(format!("channel_subscribe:{channel}"), ask)
         }
 
         // An unknown name has no Op: `compute` gives none for it, a driver or state boundary unit
@@ -1367,7 +1354,8 @@ fn field_of(r: &Value, k: &str) -> Value {
 /// through an `Any`-typed port.
 fn sink_effect(sink: &str, inputs: &[&Value]) -> Option<Value> {
     let p = inputs.first()?;
-    if contains_effect(p) {
+    // Nor one nested past the bound, a level down in the effect.
+    if contains_effect(p) || !nests_within(p, MAX_VALUE_DEPTH - 1) {
         return None;
     }
     Some(Value::Effect { sink: sink.into(), payload: Box::new((*p).clone()) })
