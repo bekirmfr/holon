@@ -329,7 +329,10 @@ loops, and nothing changed there.
   basket, fetch-json, slugs) all within noise, ×0.87 to ×1.05. Through release servers (Linux,
   `holon load`, three rounds; [performance](../performance.md#the-evaluators-change-through-a-server-43-2026-11-06)):
   `crunch`'s folds and maps of numbers ×0.85 to ×0.87 at 100 to 5,000 items, `main` ×0.90 to
-  ×0.93; a filter by fold ×5.0 at 1,000 and ×21 at 5,000; `hello` and `calc` within noise.
+  ×0.93; a filter by fold ×5.0 at 1,000 and ×21 at 5,000; `hello` and `calc` within noise. Raced
+  again after #48 (`490d03e`, [performance](../performance.md#through-a-server-again-after-the-kept-children-and-small-values-490d03e-2026-11-07)):
+  `crunch` ×1.06 to ×1.09 the build before #43, small values copied; the filter ×0.85 the build
+  before, the ternary's guard on each side (`befee65`).
 - **One call of `score` is ×0.71, not halved** (×0.70 to 0.80 by round), through a resolver
   that keeps nothing. What it pays is mostly its preparation (about 616 ns of 1.6 µs): resolving
   25 children through the resolver (437 ns on a `MapResolver`), deciding each child's kind, and
