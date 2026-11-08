@@ -173,6 +173,14 @@ fn health_check() {
     assert_eq!(body_bytes(r), b"ok");
 }
 
+#[test]
+fn version_says_the_hosts() {
+    let state = test_state();
+    let r = route(&state, &req("GET", "/version", vec![]));
+    assert_eq!(r.status_code, 200);
+    assert_eq!(body_bytes(r), env!("CARGO_PKG_VERSION").as_bytes());
+}
+
 // ── /unit ────────────────────────────────────────────────────────────────────────────
 
 #[test]

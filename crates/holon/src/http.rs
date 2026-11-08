@@ -137,6 +137,11 @@ pub(crate) fn route(state: &AppState, request: &Request) -> Response {
         return Response::text("ok");
     }
 
+    // The version this host runs, for the console's host card.
+    if method == "GET" && url == "/version" {
+        return Response::text(env!("CARGO_PKG_VERSION"));
+    }
+
     if let Some(hash_hex) = url.strip_prefix("/unit/")
         && method == "GET" {
             return handle_get_unit(&state.store, hash_hex);

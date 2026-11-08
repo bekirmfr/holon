@@ -5,12 +5,20 @@
 import type { Locator, Page } from "@playwright/test";
 import { expect, SAMPLE_SHIFT } from "./fixtures";
 
-/** The pages the editor's menu goes to. */
+/** The pages the side nav goes to (ui/Shell.tsx), and "new" for its new flow. */
 export type MenuPage = "flows" | "deployed" | "docs" | "admin" | "new";
 
-/** Go to `name` from the editor's menu, as a person would. */
+/** The nav's entry for `name`: admin's pages are under Resources until they have their own. */
+export function menuEntry(page: Page, name: MenuPage): Locator {
+  const nav = page.getByRole("navigation", { name: "main" });
+  if (name === "new") return nav.getByRole("button", { name: "new flow" });
+  const label = { flows: "Flows", deployed: "Deployed", docs: "Docs", admin: "Resources" }[name];
+  return nav.getByRole("link", { name: label, exact: true });
+}
+
+/** Go to `name` from the side nav, as a person would. */
 export async function gotoPage(page: Page, name: MenuPage) {
-  await page.getByRole("button", { name, exact: true }).click();
+  await menuEntry(page, name).click();
 }
 
 /** Open the sample titled `title` from the flows page: an unsaved copy in a tab of its own. From

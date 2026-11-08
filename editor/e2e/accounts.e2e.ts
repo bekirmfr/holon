@@ -6,7 +6,7 @@
 
 import { expect, test, type Browser, type Page } from "@playwright/test";
 import { FRESH as SERVER, FRESH_EDITOR as EDITOR, ISSUER } from "./fixtures";
-import { gotoPage } from "./helpers";
+import { gotoPage, menuEntry } from "./helpers";
 
 const PASSWORD = "a long enough password";
 
@@ -59,7 +59,7 @@ test("joining by the link, a viewer reads and can't change anything", async ({ b
   await fill(cy, "the password again", PASSWORD);
   await join.getByRole("button", { name: "join" }).click();
   await expect(cy.getByRole("button", { name: "account: cy" })).toBeVisible();
-  await expect(cy.getByRole("button", { name: "admin", exact: true })).toHaveCount(0);
+  await expect(menuEntry(cy, "admin")).toHaveCount(0);
   await gotoPage(cy, "new");
   await cy.locator(".hl-canvas").getByRole("button", { name: "save", exact: true }).click();
   await cy.locator('[aria-modal="true"] input').fill("cys-flow");
@@ -118,7 +118,7 @@ test("an admin's API token acts with its role, until revoked; a disabled account
   const cyRow = ada.locator("div", { has: ada.getByLabel("cy's role") }).last();
   await cyRow.getByRole("button", { name: "disable" }).click();
   await expect(cyRow).toContainText("· disabled");
-  await cy.getByRole("button", { name: "deployed", exact: true }).click({ timeout: 5_000 }).catch(() => {});
+  await menuEntry(cy, "deployed").click({ timeout: 5_000 }).catch(() => {});
   await expect(cy.getByRole("form", { name: "sign in" })).toBeVisible();
   await fill(cy, "name", "cy");
   await fill(cy, "password", PASSWORD);

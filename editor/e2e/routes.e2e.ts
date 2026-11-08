@@ -83,6 +83,23 @@ test("keys: a page by its number, Esc up, ? for them all, and j steps through a 
   await expect(page.getByRole("slider", { name: "step" })).toBeVisible();
 });
 
+test("the side nav says the page, the crumbs the way up, the host card the host", async ({ page }) => {
+  await page.goto("/#docs.language/tour.md");
+  const nav = page.getByRole("navigation", { name: "main" });
+  await expect(nav.getByRole("link", { name: "Docs", exact: true })).toHaveAttribute("aria-current", "page");
+  const crumbs = page.getByRole("navigation", { name: "crumbs" });
+  await expect(crumbs.getByRole("listitem")).toHaveText(["Overview", "Docs", "tour"]);
+  await crumbs.getByRole("link", { name: "Docs" }).click();
+  await expect(page).toHaveURL(/#docs$/);
+  await expect(crumbs.getByRole("listitem")).toHaveText(["Overview", "Docs"]);
+  // An admin has the host's pages; the host card says the version it runs.
+  await expect(nav.getByRole("link", { name: "People and access" })).toBeVisible();
+  await expect(nav.getByRole("region", { name: "host" })).toContainText(/holon \d+\.\d+\.\d+/);
+  // The top bar opens the palette.
+  await page.getByRole("button", { name: /Find or run/ }).click();
+  await expect(page.getByRole("dialog", { name: "command palette" })).toBeVisible();
+});
+
 test("the command palette finds a page and a sample, and takes : commands", async ({ page }) => {
   await page.goto("/#deployed");
   await expect(page.getByRole("tablist", { name: "open tabs" }).getByRole("tab", { name: "deployed" })).toHaveAttribute("aria-selected", "true");

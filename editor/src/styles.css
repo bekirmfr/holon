@@ -186,22 +186,66 @@ body {
 ::-webkit-scrollbar-thumb:hover { background: var(--faint); }
 * { scrollbar-width: thin; scrollbar-color: var(--border-strong) transparent; }
 
-.hl-app { display: flex; flex-direction: column; height: 100%; }
-
-/* ── Header ─────────────────────────────────────────────────────────────── */
-.hl-header {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-  padding: 10px 16px;
+/* ── Shell: the side nav, the host card, the top bar (ui/Shell.tsx) ─────── */
+.hl-shell { display: flex; height: 100%; }
+.hl-nav {
+  flex: 0 0 196px;
+  display: flex; flex-direction: column; gap: 4px;
+  padding: 12px 10px;
+  border-right: 1px solid var(--border-strong);
+  background: var(--surface-2);
+  overflow-y: auto;
+}
+.hl-nav__brand { font-weight: 600; letter-spacing: 0.04em; color: var(--ink); padding: 0 8px 8px; }
+.hl-nav__mode { font-weight: 400; color: var(--faint); }
+.hl-nav__new {
+  font: inherit; font-size: 12px; margin: 0 4px 6px; padding: 5px 10px;
+  color: var(--accent-ink); background: var(--accent); border: 0; border-radius: 4px; cursor: pointer;
+}
+.hl-nav__group { list-style: none; margin: 0; padding: 6px 0; border-top: 1px solid var(--border); }
+.hl-nav__group:first-of-type { border-top: 0; }
+.hl-nav__link {
+  display: flex; align-items: center; gap: 8px;
+  padding: 5px 8px; border-radius: 4px;
+  color: var(--muted); text-decoration: none; font-size: 13px;
+}
+.hl-nav__link:hover { color: var(--ink); background: var(--row); }
+.hl-nav__link[aria-current="page"] { color: var(--ink); background: var(--sel); }
+.hl-nav__label { flex: 1; }
+.hl-nav__key { font: inherit; font-size: 10px; color: var(--faintest); border: 1px solid var(--border); border-radius: 3px; padding: 0 4px; }
+.hl-host {
+  margin-top: auto;
+  display: grid; grid-template-columns: auto 1fr; column-gap: 7px; align-items: center;
+  padding: 8px; border: 1px solid var(--border); border-radius: 5px; font-size: 11px;
+}
+.hl-host__dot { width: 7px; height: 7px; border-radius: 50%; background: var(--faint); grid-row: span 2; }
+.hl-host__dot--ok { background: var(--ok); }
+.hl-host__dot--bad { background: var(--bad); }
+.hl-host__address { color: var(--body); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hl-host__version { color: var(--faint); }
+.hl-shell__main { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; }
+.hl-top {
+  display: flex; align-items: center; gap: 8px;
+  padding: 7px 14px;
   border-bottom: 1px solid var(--border-strong);
   background: var(--surface-2);
   flex: 0 0 auto;
 }
-.hl-header__brand { font-weight: 600; letter-spacing: 0.04em; color: var(--ink); }
-.hl-header__sep { color: var(--faint); }
-.hl-header__mode { color: var(--faint); }
-/* The account pill, at the header's right: an icon, the name, the role. */
+.hl-crumbs { flex: 1; min-width: 0; }
+.hl-crumbs ol { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 4px; font-size: 12px; }
+.hl-crumbs li + li::before { content: "›"; color: var(--faintest); margin-right: 4px; }
+.hl-crumbs a { color: var(--muted); text-decoration: none; }
+.hl-crumbs a:hover { color: var(--ink); text-decoration: underline; }
+.hl-crumbs [aria-current] { color: var(--ink); }
+.hl-top__find, .hl-top__theme {
+  font: inherit; font-size: 12px; display: inline-flex; align-items: center; gap: 10px;
+  padding: 3px 8px; color: var(--muted); background: var(--bg);
+  border: 1px solid var(--border); border-radius: 4px; cursor: pointer;
+}
+.hl-top__find { min-width: 200px; justify-content: space-between; }
+.hl-top__find kbd { font: inherit; font-size: 10px; color: var(--faint); }
+.hl-top__find:hover, .hl-top__theme:hover { border-color: var(--border-strong); color: var(--ink); }
+/* The account pill, at the top bar's right: an icon, the name, the role. */
 .hl-user {
   display: inline-flex; align-items: center; gap: 7px;
   font: inherit; font-size: 12px; color: var(--body);
@@ -650,7 +694,7 @@ body {
 .hl-keys__row dd { margin: 0; }
 .hl-keys .hl-kbd { opacity: 0.8; }
 /* A pane moved to by F6 (App.tsx's movePane) says it has the focus. */
-.hl-header nav:focus-visible, .hl-canvas__flow:focus-visible, [role="complementary"]:focus-visible, [role="region"]:focus-visible, main:focus-visible {
+.hl-nav:focus-visible, .hl-top:focus-visible, .hl-canvas__flow:focus-visible, [role="complementary"]:focus-visible, [role="region"]:focus-visible, main:focus-visible {
   outline: 1px solid var(--accent); outline-offset: -1px;
 }
 

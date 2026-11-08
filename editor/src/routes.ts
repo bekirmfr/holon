@@ -198,6 +198,57 @@ export function parentOf(r: Route): Route | null {
   }
 }
 
+/** What a place is called in the crumbs: a page by its name, a flow by its own, a tab by its. */
+export function labelOf(r: Route): string {
+  switch (r.kind) {
+    case "overview":
+      return "Overview";
+    case "approvals":
+      return r.tab === "runs" ? "Runs" : "Approvals";
+    case "review":
+      return `${r.slug} v${r.version}`;
+    case "flows":
+      return "Flows";
+    case "flow":
+      return r.tab === "status" ? r.slug : r.tab;
+    case "run":
+      return `run ${r.seq}`;
+    case "editor-home":
+      return "home";
+    case "editor":
+      if (r.slug === null) return "Editor";
+      if (r.view && r.seq !== null) return `run ${r.seq}`;
+      return r.view ? "deployed" : r.slug;
+    case "library":
+      return r.tab === "samples" ? "Library" : r.tab;
+    case "resources":
+      return r.tab ?? "Resources";
+    case "people":
+      return r.tab ?? "People and access";
+    case "admin":
+      return r.tab ?? "Admin";
+    case "policy":
+      return "Policy";
+    case "start":
+      return "Getting started";
+    case "docs":
+      return r.page === null ? "Docs" : (r.page.split("/").pop() ?? r.page).replace(/\.md$/, "");
+    case "signin":
+      return "Sign in";
+    case "deployed":
+      return "Deployed";
+    case "notfound":
+      return `#${r.hash}`;
+  }
+}
+
+/** The places above `r` and `r` itself, from the overview down: the top bar's crumbs. */
+export function crumbs(r: Route): Route[] {
+  const chain: Route[] = [];
+  for (let at: Route | null = r; at; at = parentOf(at)) chain.unshift(at);
+  return chain;
+}
+
 /** Whether `name` can be a flow's own page address (it is not a page's name). */
 export function flowAddressable(name: string): boolean {
   return SLUG.test(name) && !isPage(name);

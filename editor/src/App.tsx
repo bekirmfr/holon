@@ -80,7 +80,8 @@ import { useDeployments } from "./useDeployments";
 import { buildSample, samples, type Sample } from "./samples";
 import { blankTab, freshTab, metaSetter, savedKeyOf, sourceToSave, syncKeyOf, tabFromDocument as tabFromDoc, tabKind, type FlowMeta, type Mode, type TabState } from "./tabs";
 import { NodeActions, NodeDocs, nodeDescriber } from "./NodeDocs";
-import { AccountMenu, AuthGate, type Me } from "./AuthGate";
+import { AuthGate, type Me } from "./AuthGate";
+import { Shell } from "./ui/Shell";
 import { AdminPage } from "./AdminPage";
 import { HomePage } from "./HomePage";
 import { compileHolon, printHolon, sourceLineOf } from "./holonText";
@@ -131,6 +132,9 @@ function Canvas({
     onNew: () => void;
     /** Show every key (the ? dialog). */
     showKeys: () => void;
+    /** Whether the command palette is open (the top bar opens it too), and opening or closing it. */
+    finding: boolean;
+    onFinding: (open: boolean) => void;
   };
   page: AppPage;
   setPage: (p: AppPage) => void;
@@ -718,10 +722,9 @@ function Canvas({
   // ── The command palette (ui/CommandPalette.tsx): Ctrl+K or / ─────────────────────────────
   // Its entries are what there is now: the pages, every deployed or saved flow and its tabs, the
   // flow edited's actions, the samples, the looks.
-  const [finding, setFinding] = useState(false);
+  const { finding, onFinding: setFinding } = start;
   // The name at the text's cursor, for the Inspector (TextPane's onInspect).
   const [word, setWord] = useState<Inspected | null>(null);
-  useKeys({ "ctrl+k": () => setFinding(true), "/": () => setFinding(true) }, { whileTyping: ["ctrl+k"] });
   const editing = shown === "canvas" && !viewing;
   const commands = useMemo<Command[]>(() => {
     if (!finding) return [];
@@ -1306,6 +1309,9 @@ function Editor({ me }: { me: Me }) {
     F6: () => movePane(1),
     "shift+F6": () => movePane(-1),
   });
+  // The command palette (ui/CommandPalette.tsx, its entries the canvas's): Ctrl+K, /, or the top bar.
+  const [finding, setFinding] = useState(false);
+  useKeys({ "ctrl+k": () => setFinding(true), "/": () => setFinding(true) }, { whileTyping: ["ctrl+k"] });
   // What the editor keeps for this person (home.ts): read once, saved as it changes. The welcome
   // opens on start unless they said not to; otherwise the editor starts at home.
   const [prefs, setPrefsState] = useState<Prefs>({});
@@ -1372,53 +1378,18 @@ function Editor({ me }: { me: Me }) {
   // address would name the tab before it, and be put back there.
   const onNew = () => setPendingNew((p) => ({ nonce: (p?.nonce ?? 0) + 1 }));
 
-  const menuBtn = (active: boolean, enabled = true): CSSProperties => ({
-    font: "inherit",
-    fontSize: 12,
-    letterSpacing: "0.04em",
-    padding: "3px 10px",
-    color: active ? "var(--accent-ink)" : "var(--muted)",
-    background: active ? "var(--accent)" : "transparent",
-    border: "1px solid var(--border)",
-    borderRadius: 3,
-    cursor: enabled ? "pointer" : "default",
-    opacity: enabled ? 1 : 0.4,
-  });
-
   return (
-    <div className="hl-app">
-      <header className="hl-header">
-        <span className="hl-header__brand">holon</span>
-        <span className="hl-header__sep">·</span>
-        <span className="hl-header__mode">authoring</span>
-        <nav style={{ display: "flex", gap: 6, marginLeft: 18 }}>
-          <button style={menuBtn(false)} onClick={onNew}>
-            new
-          </button>
-          <button style={menuBtn(page === "flows")} onClick={() => openPage("flows")}>
-            flows
-          </button>
-          <button style={menuBtn(page === "deployed")} onClick={() => openPage("deployed")}>
-            deployed
-          </button>
-          <button style={menuBtn(page === "docs")} onClick={() => openPage("docs")}>
-            docs
-          </button>
-          {me.role === "admin" && (
-            <button style={menuBtn(page === "admin")} onClick={() => openPage("admin")}>
-              admin
-            </button>
-          )}
-        </nav>
-        <AccountMenu
-          me={me}
-          style={menuBtn(false)}
-          onWelcome={() => openPage("welcome")}
-          theme={prefs.theme ?? storedTheme()}
-          onTheme={(theme) => onPrefs({ ...prefs, theme })}
-        />
-      </header>
-
+    <Shell
+      route={route}
+      page={page}
+      navigate={navigate}
+      me={me}
+      onNew={onNew}
+      onFind={() => setFinding(true)}
+      onWelcome={() => openPage("welcome")}
+      theme={prefs.theme ?? storedTheme()}
+      onTheme={(theme) => onPrefs({ ...prefs, theme })}
+    >
       {keysShown && <KeysDialog onClose={() => setKeysShown(false)} />}
       {error ? (
         <pre className="hl-error">{error}</pre>
@@ -1436,19 +1407,19 @@ function Editor({ me }: { me: Me }) {
                 pendingNew={pendingNew}
                 docs={docs}
                 me={me}
-                start={{ prefs, onPrefs, pages, openPage, closePage, onNew, showKeys: () => setKeysShown(true) }}
+                start={{ prefs, onPrefs, pages, openPage, closePage, onNew, showKeys: () => setKeysShown(true), finding, onFinding: setFinding }}
               />
             )}
           </ReactFlowProvider>
         </div>
       )}
-    </div>
+    </Shell>
   );
 }
 
-/** The panes F6 moves between, in the page's order: the header, the canvas, its side panes and
- *  the labelled regions of the page shown. */
-const PANES = '.hl-header nav, .hl-canvas__flow, [role="complementary"], [role="region"][aria-label]:not(.hl-toasts), main';
+/** The panes F6 moves between, in the page's order: the side nav, the top bar, the canvas, its
+ *  side panes and the labelled regions of the page shown. */
+const PANES = '.hl-nav, .hl-top, .hl-canvas__flow, [role="complementary"], [role="region"][aria-label]:not(.hl-toasts), main';
 
 function movePane(by: -1 | 1) {
   const panes = [...document.querySelectorAll<HTMLElement>(PANES)].filter((p) => p.offsetParent !== null || p.getClientRects().length > 0);

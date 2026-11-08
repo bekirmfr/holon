@@ -1,7 +1,7 @@
 // The address names every place, reads back as the same place, and says what is above it.
 
 import { describe, expect, it } from "vitest";
-import { flowAddressable, format, parentOf, parse, type Route } from "./routes";
+import { crumbs, flowAddressable, format, labelOf, parentOf, parse, type Route } from "./routes";
 
 /** Every place the console's design walks through, by its address. */
 const PLACES = [
@@ -89,6 +89,14 @@ describe("routes", () => {
     expect(up("#approvals.refunds.v4")).toEqual(["#approvals.refunds.v4", "#approvals", "#overview"]);
     expect(up("#docs.language/tour.md")).toEqual(["#docs.language/tour.md", "#docs", "#overview"]);
     expect(up("#people.tokens")).toEqual(["#people.tokens", "#people", "#overview"]);
+  });
+
+  it("says the crumbs from the overview down, each by its name", () => {
+    const said = (h: string) => crumbs(parse(h)).map(labelOf);
+    expect(said("#refunds.run-4812")).toEqual(["Overview", "Flows", "refunds", "runs", "run 4812"]);
+    expect(said("#editor.refunds.view")).toEqual(["Overview", "Editor", "refunds", "deployed"]);
+    expect(said("#docs.language/tour.md")).toEqual(["Overview", "Docs", "tour"]);
+    expect(said("#overview")).toEqual(["Overview"]);
   });
 
   it("can't address a flow named like a page by its name alone", () => {

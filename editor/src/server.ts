@@ -64,6 +64,16 @@ async function api(url: string, init: RequestInit = {}): Promise<Response> {
 const post = (url: string, body?: unknown) =>
   api(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) });
 
+/** `GET /version`: the version the host runs, for the host card. */
+export async function getVersion(): Promise<string> {
+  const res = await api(`${BASE}/version`);
+  if (!res.ok) throw new Error(`${res.status}`);
+  return (await res.text()).trim();
+}
+
+/** Where the editor's server is, as the host card says it: its address, or this page's. */
+export const hostAddress = (): string => (BASE ? new URL(BASE).host : window.location.host);
+
 /** `GET /auth/state`: whether the server waits for its first admin, and where to sign in
  *  through a provider, when it has one. */
 export async function getAuthState(): Promise<{ setup: boolean; oidc: AuthConfig | null }> {
