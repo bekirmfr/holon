@@ -4,20 +4,23 @@
 // exactly what it may touch (the server's consent gate checks the same list), in the dialog.
 // And running, pausing or stopping it once deployed.
 
-import { useCallback, useMemo, useState, type MutableRefObject } from "react";
+import { createElement, useCallback, useMemo, useState, type MutableRefObject } from "react";
 import type { Edge, Viewport } from "@xyflow/react";
 import type { DerivedServer } from "./canvasOps";
 import { documentUnits } from "./docUnits";
-import { bindingsOf } from "./holonText";
+import { bindingsOf, printHolon } from "./holonText";
 import { isWEncapError } from "./diagnostics";
 import { describeItemSending, type Evaluator } from "./holon";
 import { stageClosure } from "./canvasUnits";
-import { changeDeployment, deployUnit, previewDeploy, type DeploymentEntry, type FlowDocument } from "./server";
+import { changeDeployment, deployUnit, getDeployedDocument, previewDeploy, type DeploymentEntry, type FlowDocument } from "./server";
 import { browsersOf, type FlowSettings } from "./DeployBar";
-import { touchLines, touchText } from "./touches";
+import { touchLines } from "./touches";
+import type { useDialog } from "./Dialog";
+import { codeHunk, touchHunks, type Hunk } from "./hunks";
+import { Review } from "./Review";
 import type { PrimitiveNodeType } from "./PrimitiveNode";
 
-type Dialogs = { confirm: (message: string, action?: string) => Promise<boolean>; prompt: (message: string, initial?: string) => Promise<string | null> };
+type Dialogs = Pick<ReturnType<typeof useDialog>, "confirm" | "prompt">;
 
 export function useDeployFlow({
   flowName,
@@ -121,11 +124,17 @@ export function useDeployFlow({
       const said = (i: string) => `• ${describeItemSending(i, preview.sent)}${optional.includes(i) ? " (optional: it runs without it)" : ""}`;
       const lines = [`${existing ? "Update" : "Deploy"} "${name}"?`];
       if (ask.length > 0) lines.push("", "It needs your approval to:", ...ask.map(said));
-      // Everything it touches, beside what it touches now, and whether this server is ready for
-      // each (a secret not set yet, a folder not bound).
-      const touches = touchText(touchLines(preview.touches, preview.settings));
-      if (touches.length > 0) lines.push("", "What it touches (+ new, - no longer, ~ changed, ! not ready on this server):", ...touches);
-      else if (preview.already_granted.length > 0) lines.push("", "Already granted:", ...preview.already_granted.map(said));
+      // An agent's deploy leaves its secrets out: a person grants them back.
+      if (preview.withheld?.length) lines.push("", `Left out, for a person to grant back: ${preview.withheld.join(", ")}`);
+      // The review (Review.tsx): its text beside the version deployed, then everything it touches
+      // beside what it touches now, and whether this server is ready for each (a secret not set
+      // yet, a folder not bound).
+      const hunks: Hunk[] = [];
+      const code = await codeNow(name, existing);
+      if (code) hunks.push(code);
+      const touches = touchHunks(touchLines(preview.touches, preview.settings));
+      hunks.push(...touches);
+      if (touches.length === 0 && preview.already_granted.length > 0) lines.push("", "Already granted:", ...preview.already_granted.map(said));
       if (touches.length === 0 && preview.missing_secrets.length > 0) {
         lines.push("", `Not set yet: ${preview.missing_secrets.join(", ")} (set under ⚙ → secrets; until then those nodes stay empty)`);
       }
@@ -133,7 +142,7 @@ export function useDeployFlow({
       if (pages.length > 0) lines.push("", `Web pages from ${pages.includes("*") ? "any site" : pages.join(", ")} may call its routes.`);
       if (existing) lines.push("", "Its state and sessions are kept.");
       const action = ask.length > 0 ? "Approve and deploy" : existing ? "Update" : "Deploy";
-      if (!(await dialog.confirm(lines.join("\n"), action))) return;
+      if (!(await dialog.confirm(lines.join("\n"), action, hunks.length > 0 ? createElement(Review, { hunks }) : undefined))) return;
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
       return;
@@ -164,6 +173,20 @@ export function useDeployFlow({
       setDeployBusy(false);
     }
   }, [flowName, setFlowName, dialog, derived, settings, source, live, ev, deployments, refreshDeployments, getViewport, setError, onDeployed]);
+
+  /** The code's hunk: the flow's text beside the deployed version's (none on a first deploy);
+   *  null when either can't be written as text. */
+  async function codeNow(name: string, existing: boolean): Promise<Hunk | null> {
+    try {
+      const { nodes: ns, edges: es } = live.current;
+      const now = source ?? printHolon(name, { nodes: ns, edges: es, server: settings }, ev);
+      if (!existing) return codeHunk(null, now);
+      const doc = await getDeployedDocument(name);
+      return codeHunk(doc.source ?? printHolon(name, doc, ev), now);
+    } catch {
+      return null;
+    }
+  }
 
   const onFlowAction = useCallback(
     (action: "run" | "pause" | "stop") => {

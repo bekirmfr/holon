@@ -670,3 +670,32 @@ body {
 .hl-cmd__kind { flex: 0 0 auto; color: var(--faint); font-size: 11px; }
 .hl-cmd__none { padding: 8px 12px; color: var(--faint); }
 .hl-keys__to { margin-right: 6px; color: var(--faint); }
+
+/* ── A review in hunks (Review.tsx): a header each, rows numbered with a sign, grounds by tone ── */
+.hl-review { display: flex; flex-direction: column; gap: 6px; font-family: var(--mono); font-size: 12px; outline: none; }
+.hl-review:focus-visible { box-shadow: 0 0 0 1px var(--accent); border-radius: var(--r); }
+.hl-review__hunk { border: 1px solid var(--border); border-radius: var(--r); overflow: hidden; }
+.hl-review__head {
+  display: flex; align-items: baseline; gap: 8px; width: 100%; padding: 5px 8px;
+  font: inherit; color: var(--ink); text-align: left; cursor: pointer;
+  background: var(--surface); border: 0; border-bottom: 1px solid var(--border);
+}
+.hl-review__head--at { background: var(--row); }
+.hl-review__title { flex: 1 1 auto; }
+.hl-review__summary { color: var(--muted); font-size: 11px; }
+.hl-review__rows { display: flex; flex-direction: column; background: var(--bg); }
+.hl-review__row { display: flex; gap: 8px; padding: 0 8px; line-height: 1.6; white-space: pre-wrap; }
+.hl-review__n { flex: 0 0 3ch; text-align: right; color: var(--faint); }
+.hl-review__sign { flex: 0 0 1ch; color: var(--muted); }
+.hl-review__text { flex: 1 1 auto; min-width: 0; color: var(--body); }
+.hl-review__note { flex: 0 1 auto; color: var(--muted); font-size: 11px; }
+.hl-review__row--add { background: var(--add-bg); }
+.hl-review__row--add .hl-review__sign { color: var(--ok); }
+.hl-review__row--del, .hl-review__row--unready { background: var(--del-bg); }
+.hl-review__row--del .hl-review__sign, .hl-review__row--unready .hl-review__sign { color: var(--bad); }
+.hl-review__row--approve, .hl-review__row--changed { background: var(--warn-bg); }
+.hl-review__row--approve .hl-review__sign, .hl-review__row--changed .hl-review__sign { color: var(--warn); }
+.hl-review__fold {
+  font: inherit; font-size: 11px; color: var(--faint); text-align: left; padding: 1px 8px 1px calc(3ch + 24px);
+  background: var(--surface-2); border: 0; cursor: pointer;
+}

@@ -68,6 +68,11 @@ test("browser-key's approval asks to answer with its secret, and once approved i
   const dialog = page.getByRole("dialog");
   // What it touches says it, on a first deploy and on an update alike.
   await expect(dialog).toContainText("secret maps_browser_key: read, answer its callers with it");
+  // A review in hunks (Review.tsx): its text, new, and a hunk for each group of what it touches.
+  await expect(dialog.getByRole("region", { name: "code" }).getByRole("button").first()).toContainText(/new · [0-9]+ lines/);
+  const secrets = dialog.getByRole("region", { name: "Folders, databases and secrets" });
+  await expect(secrets).toContainText("secret maps_browser_key");
+  await expect(secrets.getByRole("button").first()).toHaveAttribute("aria-expanded", "true");
   const deployed = page.waitForResponse((r) => r.request().method() === "POST" && new URL(r.url()).pathname === "/deploy");
   await dialog.getByRole("button", { name: /^(Approve and deploy|Deploy|Update)$/ }).click();
   expect((await deployed).status()).toBe(200);

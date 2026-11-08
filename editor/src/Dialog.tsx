@@ -10,12 +10,13 @@ import { Kbd } from "./ui/Kbd";
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 
 type Ask =
-  | { kind: "confirm"; message: string; action: string; resolve: (ok: boolean) => void }
+  | { kind: "confirm"; message: string; action: string; body?: ReactNode; resolve: (ok: boolean) => void }
   | { kind: "prompt"; message: string; initial: string; resolve: (value: string | null) => void };
 
 type Dialogs = {
-  /** Ask a yes/no question; resolves true only if confirmed. `action` labels the confirm button. */
-  confirm: (message: string, action?: string) => Promise<boolean>;
+  /** Ask a yes/no question; resolves true only if confirmed. `action` labels the confirm button;
+   *  `body`, shown under the question, is what it is about (a deploy's review, say). */
+  confirm: (message: string, action?: string, body?: ReactNode) => Promise<boolean>;
   /** Ask for a line of text; resolves the trimmed text, or null if cancelled or left empty. */
   prompt: (message: string, initial?: string) => Promise<string | null>;
 };
@@ -40,7 +41,7 @@ export function DialogProvider({ children }: { children: ReactNode }) {
   const ok = useRef<HTMLButtonElement>(null);
 
   const confirm = useCallback(
-    (message: string, action = "OK") => new Promise<boolean>((resolve) => setAsk({ kind: "confirm", message, action, resolve })),
+    (message: string, action = "OK", body?: ReactNode) => new Promise<boolean>((resolve) => setAsk({ kind: "confirm", message, action, body, resolve })),
     [],
   );
   const prompt = useCallback((message: string, initial = "") => {
@@ -79,8 +80,14 @@ export function DialogProvider({ children }: { children: ReactNode }) {
       }
     };
     // Capturing, and kept from the page: a key that answers the question is not also one of the
-    // page's keys beneath it. Typing in the prompt's own field still reaches the field.
+    // page's keys beneath it. Typing in the prompt's own field still reaches the field, and a part
+    // with keys of its own (a review's n, space…) has them while it has the focus: there only Esc
+    // answers.
     const guard = (e: KeyboardEvent) => {
+      if (e.target instanceof Element && e.target.closest("[data-own-keys]")) {
+        if (e.key === "Escape") onKey(e);
+        return;
+      }
       onKey(e);
       if (e.target !== input.current) e.stopPropagation();
     };
@@ -120,8 +127,10 @@ export function DialogProvider({ children }: { children: ReactNode }) {
               border: "1px solid var(--border)",
               borderRadius: 6,
               padding: 16,
-              width: 420,
+              width: ask.kind === "confirm" && ask.body ? 760 : 420,
               maxWidth: "calc(100vw - 32px)",
+              // As tall as the window at most: the buttons stay in it, and what is above scrolls.
+              maxHeight: "calc(100vh - 32px)",
               color: "var(--ink)",
               fontSize: 13,
               display: "flex",
@@ -129,7 +138,8 @@ export function DialogProvider({ children }: { children: ReactNode }) {
               gap: 12,
             }}
           >
-            <div style={{ whiteSpace: "pre-line", maxHeight: "60vh", overflowY: "auto" }}>{ask.message}</div>
+            <div style={{ whiteSpace: "pre-line", maxHeight: ask.kind === "confirm" && ask.body ? "30vh" : "60vh", overflowY: "auto", flexShrink: 0 }}>{ask.message}</div>
+            {ask.kind === "confirm" && ask.body && <div style={{ flex: "1 1 auto", minHeight: 0, overflowY: "auto" }}>{ask.body}</div>}
             {ask.kind === "prompt" && (
               <input
                 ref={input}
