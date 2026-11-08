@@ -30,7 +30,7 @@ fn primitive(name: &str, unit: &Unit, inputs: &[Option<Value>], resolver: &impl 
         // The leaves that ask the host: nobody answers here.
         "http_request" | "http_upload" | "http_stream" | "flow_call" | "flow_start" | "await" | "collection_get" | "collection_list" | "file_read" | "file_read_bytes" | "file_list" | "file_handle" | "file_lines" | "file_slice"
         | "db_query" | "db_one" | "db_find" | "db_find_one" | "resume_token" => None,
-        _ if crate::SOURCED.contains(&name) => resolver.sourced(unit).cloned(),
+        _ if crate::SOURCED.contains(&name) => crate::sourced_value(unit, resolver.sourced(unit)),
         "coalesce" => inputs.iter().flatten().next().cloned(),
         _ => {
             if VARIADIC.contains(&name) && inputs.iter().any(Option::is_none) {

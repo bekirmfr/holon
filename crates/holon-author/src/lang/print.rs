@@ -520,6 +520,7 @@ pub struct Printer<'s> {
     uses_state: bool,
     uses_now: bool,
     uses_random: bool,
+    uses_random_bytes: bool,
     /// Hosts requested, in the order first met.
     hosts: Vec<String>,
     /// Each flow's actions called or started, by slug.
@@ -570,6 +571,7 @@ pub fn print_lines(name: Option<&str>, doc: &FlowDocument, store: &mut MapResolv
         uses_state: false,
         uses_now: false,
         uses_random: false,
+        uses_random_bytes: false,
         hosts: Vec::new(),
         flow_actions: BTreeMap::new(),
         leaf_local: HashMap::new(),
@@ -606,7 +608,7 @@ pub fn print_lines(name: Option<&str>, doc: &FlowDocument, store: &mut MapResolv
     p.leaves.clear();
     p.hosts.clear();
     p.flow_actions.clear();
-    (p.uses_state, p.uses_now, p.uses_random) = (false, false, false);
+    (p.uses_state, p.uses_now, p.uses_random, p.uses_random_bytes) = (false, false, false, false);
     p.avoid = p.fixed_names();
     p.avoid.extend(p.seeded.values().cloned());
     p.avoid.extend(p.leaf_local.values().cloned());
@@ -869,7 +871,7 @@ impl<'s> Printer<'s> {
         let stores = [("collection", &self.collections), ("folder", &self.folders), ("database", &self.databases), ("channel", &self.channels)];
         for (kind, names) in stores {
             for n in names.iter().chain(if kind == "folder" { self.watched.iter().collect::<Vec<_>>() } else { vec![] }) {
-                if !is_identifier(n) || JS_RESERVED.contains(&n.as_str()) || VOCAB.contains(&n.as_str()) || ["state", "now", "random"].contains(&n.as_str()) {
+                if !is_identifier(n) || JS_RESERVED.contains(&n.as_str()) || VOCAB.contains(&n.as_str()) || ["state", "now", "random", "random_bytes"].contains(&n.as_str()) {
                     return Err(format!("the {kind} \"{n}\" has no TypeScript form: TypeScript imports it by its name, so name it as a word (letters, digits, _)"));
                 }
             }
@@ -898,7 +900,7 @@ impl<'s> Printer<'s> {
         // `"holon"`'s words the file imports, once the first pass has found which (a function
         // never takes one, whichever).
         let vocab = VOCAB.iter().filter(|w| **w == "flow" || self.vocab_used.as_ref().is_some_and(|used| used.contains(**w)));
-        let mut out: HashSet<String> = JS_RESERVED.iter().chain(GLOBALS).chain(vocab).chain(&["state", "now", "random"]).map(|s| s.to_string()).collect();
+        let mut out: HashSet<String> = JS_RESERVED.iter().chain(GLOBALS).chain(vocab).chain(&["state", "now", "random", "random_bytes"]).map(|s| s.to_string()).collect();
         out.extend(self.collections.iter().chain(&self.folders).chain(&self.databases).chain(&self.channels).chain(&self.watched).cloned());
         out.extend(self.actions.iter().cloned());
         out.extend(self.calls.iter().map(|f| call_noun(f)));
@@ -1007,8 +1009,11 @@ impl<'s> Printer<'s> {
         if self.uses_now {
             out.push("import { now } from \"holon:clock\"".into());
         }
-        if self.uses_random {
-            out.push("import { random } from \"holon:random\"".into());
+        match (self.uses_random, self.uses_random_bytes) {
+            (true, true) => out.push("import { random, random_bytes } from \"holon:random\"".into()),
+            (true, false) => out.push("import { random } from \"holon:random\"".into()),
+            (false, true) => out.push("import { random_bytes } from \"holon:random\"".into()),
+            (false, false) => {}
         }
         for (slug, actions) in &self.flow_actions {
             let named: Vec<String> = actions
@@ -2705,6 +2710,10 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
             "clock" => {
                 self.p.uses_now = true;
                 atom("now".into())
+            }
+            "random_bytes" => {
+                self.p.uses_random_bytes = true;
+                atom("random_bytes".into())
             }
             "random" => {
                 self.p.uses_random = true;

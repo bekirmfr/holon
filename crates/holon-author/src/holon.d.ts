@@ -278,6 +278,8 @@ declare module "holon:clock" {
 declare module "holon:random" {
   /** One random number for the run, recorded. */
   export const random: number
+  /** The run's 32 random bytes, recorded: what `pgp_encrypt` draws a message's randomness from. */
+  export const random_bytes: Uint8Array
 }
 /** Another deployed flow's actions, by its slug: `await charge(x)` runs one, `charge(x)` starts it. */
 declare module "flow:*"

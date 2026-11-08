@@ -311,6 +311,7 @@ pub enum ExprKind {
 pub enum Noun {
     Now,
     Random,
+    RandomBytes,
 }
 
 /// A record literal's key, as written.

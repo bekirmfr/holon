@@ -283,6 +283,8 @@ declare module "holon:clock" {
 declare module "holon:random" {
   /** One random number for the run, recorded. */
   export const random: number
+  /** The run's 32 random bytes, recorded: what `pgp_encrypt` draws a message's randomness from. */
+  export const random_bytes: Uint8Array
 }
 /** Another deployed flow's actions, by its slug: `await charge(x)` runs one, `charge(x)` starts it. */
 declare module "flow:*"
@@ -1266,6 +1268,27 @@ declare module "holon" {
   export function jwt_decode(...args: any[]): any
 
   /**
+   * `pgp_encrypt(data: Any, keys: Any, random: Bytes, now: Number) -> out: Bytes  {armor: binary}`
+   *
+   * An OpenPGP message: data (a text's UTF-8, or bytes) encrypted to each of keys, to its newest encryption key valid at now, as GnuPG reads it: a session key for each, then AES-256 with the modification detection code over the data, dated now. random is the run's random bytes (random_bytes), from which every random byte is drawn, so a rerun writes the same message. A key is a public key, armored or bytes: version 4, RSA (2,048 to 4,096 bits) or Curve25519, valid by its own signatures (not expired, not revoked). armor ascii gives the armored text, as bytes. Nothing for a key without an encryption key valid at now, or fewer than 32 random bytes.
+   */
+  export function pgp_encrypt(...args: any[]): any
+
+  /**
+   * `pgp_verify(data: Any, signature: Any, keys: Any, now: Number) -> out: Record`
+   *
+   * {signer, key, created} when one of signature's signatures (detached, armored or bytes) over data verifies with one of keys: the primary key's fingerprint, the signing key's, and when it signed. The key must be able to sign and be valid when it signed (not expired, not revoked; a subkey bound by its primary and its own back-signature), the signature made no later than now and not expired at it, over SHA-224 to SHA-512. A text signature is over the data with CR LF line endings. Nothing otherwise, SHA-1 signatures included.
+   */
+  export function pgp_verify(...args: any[]): any
+
+  /**
+   * `pgp_key(key: Any) -> out: Record`
+   *
+   * What one public key says, as its own signatures bear out: {fingerprint, user_ids, created, expires, revoked}, its fingerprint as GnuPG writes it (40 hex digits, upper case), expires absent when it never does. What a person compares before trusting a key. Nothing for several keys at once, a secret key, or a key no self-signature holds for.
+   */
+  export function pgp_key(...args: any[]): any
+
+  /**
    * `to_text(value: Any) -> out: Text`
    *
    * Any value written out as text, as a literal: a text comes out in quotes.
@@ -1359,9 +1382,16 @@ declare module "holon" {
   /**
    * `random() -> out: Number`
    *
-   * A random number from 0 up to 1, the same everywhere in one run, and recorded.
+   * A random number from 0 up to 1, the same everywhere in one run, and recorded: read from the run's random bytes.
    */
   export function random(...args: any[]): any
+
+  /**
+   * `random_bytes() -> out: Bytes`
+   *
+   * The run's 32 random bytes, the same everywhere in one run, and recorded: what pgp_encrypt draws a message's randomness from.
+   */
+  export function random_bytes(...args: any[]): any
 
   /**
    * `secret() -> out: Text  {name: api_key}`

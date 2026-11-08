@@ -755,6 +755,18 @@ static SAMPLES: &[Sample] = &[
         text: include_str!("../samples/jwt-api.holon.ts"),
     },
     Sample {
+        name: "pgp-outbox",
+        title: "PGP outbox (payment files encrypted to the bank's key, its reports verified)",
+        description: "A treasury team's files to and from its bank over SFTP. Each payment file dropped in the folder payments is encrypted to the bank's OpenPGP key valid now (pgp_encrypt: a session key for the key, AES-256 with the modification detection code, as GnuPG reads it) and written armored to upload, its every random byte drawn from the run's (random_bytes), so a replay writes the same file; it is kept with its SHA-256, the encrypted file's and the key it went to. Each status report the bank delivers to download with a detached signature beside it (on.file.created with matching *.sig) is verified with the bank's key at the time of the run (pgp_verify: the key's own signatures decide whether it may sign and was valid when it did), and kept as verified, with the signing key and when, or as refused (try and catch). A person trusts the bank's key by running the trust action, which answers the key's fingerprint (pgp_key) to compare with the one the bank gave.",
+        shows: &["pgp_encrypt", "pgp_verify", "pgp_key", "random_bytes", "keys a person trusts", "on.file.created", "matching", "folders", "try and catch", "actions run by hand", "state across runs"],
+        port: Some("8185"),
+        secrets: &[],
+        optional: &[],
+        browsers: None,
+        try_it: "bind the folders (holon folder add payments ~/holon-payments --read-only; holon folder add upload ~/holon-upload; holon folder add download ~/holon-download --read-only), deploy, then run trust from the editor's server panel with {\"key\": the bank's armored public key (gpg --armor --export bank@example.com)} and compare the fingerprint it answers; copy a payment file into ~/holon-payments and ~/holon-upload has it encrypted (gpg --decrypt ~/holon-upload/<file>.asc with the bank's secret key reads it back); copy a report and its signature (gpg --detach-sign) into ~/holon-download; curl http://127.0.0.1:8185/sent and http://127.0.0.1:8185/received list what was sent and what verified",
+        text: include_str!("../samples/pgp-outbox.holon.ts"),
+    },
+    Sample {
         name: "ticker",
         title: "Ticker (a clock beside routes)",
         description: "A flow with a clock of its own beside its routes: every 2 seconds (every(\"2s\", …)) it counts a tick in its state and sends it on the channel ticks, with the time of the tick (now, in the handler). Its page lists each tick as it arrives; GET /count answers the count. An action, run by hand by its name, sets the count back (export const reset = action((input) => …), input what was sent); a person runs it, and an agent only once a person lets agents run it.",

@@ -305,6 +305,7 @@ pub fn capabilities_of(name: &str, params: &[Param]) -> Option<Capabilities> {
         | "xml_parse" | "xml_format" | "xml_find" | "xml_text" | "xml_attribute"
         | "gzip" | "gunzip" | "zip" | "unzip"
         | "jwt_verify" | "jwt_decode"
+        | "pgp_encrypt" | "pgp_verify" | "pgp_key"
         | "to_text" | "as_text" | "is_truthy" | "guard" | "default" | "coalesce" | "equals" | "fail"
         | "fold" | "map" => vec![],
 
@@ -351,6 +352,7 @@ pub fn capabilities_of(name: &str, params: &[Param]) -> Option<Capabilities> {
         "await" => vec![Await(ident(params, "name")?)],
         "resume_token" => vec![Await(ident(params, "await")?)],
         "random" => vec![Random],
+        "random_bytes" => vec![Random],
         "egress" => vec![NetworkEgress],
         // An outbound HTTP request: performed by the host between rounds, its response sourced
         // back into the next one (the run observer's `answer`). The host is a frozen param, so
@@ -853,6 +855,7 @@ mod tests {
             "xml_parse", "xml_format", "xml_find", "xml_text", "xml_attribute",
             "gzip", "gunzip", "zip", "unzip",
             "jwt_verify", "jwt_decode",
+            "pgp_encrypt", "pgp_verify", "pgp_key",
             "join", "cons", "head", "tail", "is_empty", "pair", "some", "none", "to_text", "as_text", "is_truthy", "guard", "default", "coalesce", "equals", "fail", "fold", "map",
         ];
         for name in PURE {

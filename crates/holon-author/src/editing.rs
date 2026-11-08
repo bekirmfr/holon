@@ -108,6 +108,7 @@ const NOUNS: &[(&str, &str)] = &[
     ("state", "`state.key`: the flow's own value under `key` (`import state from \"state\"`), as the run began; `state.key = v` writes it when the run finishes. Each key read or written is one permission."),
     ("now", "`now` (`import { now } from \"holon:clock\"`): the time the run started, in seconds since the epoch, recorded with the run so a replay sees the same; in a clock, the tick's. A permission: reading the clock."),
     ("random", "`random` (`import { random } from \"holon:random\"`): one random number for the run, recorded so a replay sees the same. A permission: randomness."),
+    ("random_bytes", "`random_bytes` (`import { random_bytes } from \"holon:random\"`): the run's 32 random bytes, recorded so a replay sees the same: what `pgp_encrypt` draws a message's randomness from. A permission: randomness."),
     ("collection", "A named store of items, `import notes from \"collection:notes\"`: `notes[key]`, `notes[key] = v` and `delete notes[key]` (or `notes.get(k)`, `notes.put(k, v)`, `notes.delete(k)`), and `notes.list({ prefix: p, after: a, limit: 50 })`, a page of items in key order. One permission for each use."),
     ("folder", "Files on the host, in a folder an admin binds to the name, `import inbox from \"folder:inbox\"`: `inbox[file]` reads a file's text, `inbox[file] = text` writes it when the run finishes (`inbox.create(file, text)` only if no file has that name), `delete inbox[file]` deletes it, `inbox.list({ prefix: p, after: a, limit: 50 })` lists files; `inbox.file(name)` is a handle to a file of any size, and `inbox.lines(…)` and `inbox.slice(…)` read part of one. One permission to read, one to write."),
     ("database", "A database an admin binds on the host, `import shop from \"database:shop\"`. `shop.query(\"select … where id = $1\", id)` reads rows (a list of records by column name), `shop.one(…)` the first row or nothing, `shop.exec(\"update … where id = $1\", id, { expect: 1 })` changes rows when the run finishes, in one transaction with its other writes there (`expect`: exactly that many, or nothing lands). The SQL is written in quotes; its tables are the permission, one to read each, one to write each. Values go after it as $1, $2, …, never into it. A document database (MongoDB) takes records instead: `notes.find(\"notes\", { owner: who }, { sort: { at: -1 }, limit: 20 })` reads documents, `notes.find_one(…)` the first, and `notes.insert(\"notes\", { … })`, `notes.update(\"notes\", { _id: id }, { \"$set\": { text: t } }, { expect: 1 })` and `notes.delete(\"notes\", { … })` write when the run finishes. The collection is the permission; each computed value goes in as a value, never as an operator."),
@@ -582,6 +583,7 @@ enum Imported {
     Host(String),
     Now,
     Random,
+    RandomBytes,
     /// Another flow's action: `flow:billing`'s `charge`.
     Action { flow: String, action: String },
 }
@@ -820,6 +822,7 @@ impl Outline {
             "state" => Some(Imported::State),
             "now" => Some(Imported::Now),
             "random" => Some(Imported::Random),
+            "random_bytes" => Some(Imported::RandomBytes),
             w => VOCABULARY.iter().find(|v| **v == w).map(|v| Imported::Vocab(v)),
         }
     }
@@ -885,7 +888,11 @@ fn classify(source: &str, imported: &str, optional: bool) -> Option<Imported> {
             None => Imported::Leaf(imported.to_string()),
         }),
         ("holon", "clock") => (imported == "now").then_some(Imported::Now),
-        ("holon", "random") => (imported == "random").then_some(Imported::Random),
+        ("holon", "random") => match imported {
+            "random" => Some(Imported::Random),
+            "random_bytes" => Some(Imported::RandomBytes),
+            _ => None,
+        },
         ("state", "") => Some(Imported::State),
         (_, "") => None,
         ("secret", name) => Some(Imported::Secret { name: name.to_string(), optional }),
@@ -1001,6 +1008,7 @@ pub fn hover(source: &str, at: Pos) -> Option<Hover> {
         Some(Imported::Host(host)) => return said(format!("`{word}`: the host {host}, called over HTTPS. {}", noun("host"))),
         Some(Imported::Now) => return said(noun("now").into()),
         Some(Imported::Random) => return said(noun("random").into()),
+        Some(Imported::RandomBytes) => return said(noun("random_bytes").into()),
         Some(Imported::Action { flow, action }) => return said(format!("`{word}`: the action `{action}` of the deployed flow `{flow}`. {}", noun("flow"))),
         Some(Imported::Vocab("stripe")) => return said(noun("stripe").into()),
         Some(Imported::Vocab(v)) => return said(keyword(v).unwrap_or_default().into()),
@@ -1135,7 +1143,7 @@ pub struct Completion {
 /// `notes[k]`, `shop.query(…)`, `now`, a secret, an action called), as `await event(…)`,
 /// `stripe.verify`, `JSON.parse`, or literals (`1`, `{ … }`).
 const SPOKEN_OTHERWISE: &[&str] = &[
-    "http_request", "http_upload", "http_stream", "clock", "random", "file_arrival", "secret", "await", "store_read", "store_write", "collection_get", "collection_list", "collection_put",
+    "http_request", "http_upload", "http_stream", "clock", "random", "random_bytes", "file_arrival", "secret", "await", "store_read", "store_write", "collection_get", "collection_list", "collection_put",
     "collection_delete", "file_read", "file_list", "file_write", "file_delete", "file_handle", "file_lines", "file_slice", "file_copy", "file_create", "file_create_copy", "db_query", "db_one",
     "db_exec", "db_find", "db_find_one", "db_insert", "db_update", "db_delete", "egress", "channel_send", "channel_subscribe", "record", "json_parse", "json_stringify", "flow_start", "flow_call",
     "stripe_verify",
@@ -1286,6 +1294,7 @@ fn everything(o: &Outline) -> Vec<Completion> {
             Imported::Host(host) => (Kind::Module, format!("the host {host}"), noun("host")),
             Imported::Now => (Kind::Module, "the clock: one permission".into(), noun("now")),
             Imported::Random => (Kind::Module, "randomness: one permission".into(), noun("random")),
+            Imported::RandomBytes => (Kind::Module, "the run's random bytes: one permission".into(), noun("random_bytes")),
             Imported::Action { flow, action } => (Kind::Function, format!("the action {action} of the flow {flow}"), noun("flow")),
             // Offered as the vocabulary and the leaves are, below.
             Imported::Vocab(_) | Imported::Leaf(_) => continue,

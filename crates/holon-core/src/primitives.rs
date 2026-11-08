@@ -183,6 +183,9 @@ ops! {
     "unzip" => Unzip,
     "jwt_verify" => JwtVerify,
     "jwt_decode" => JwtDecode,
+    "pgp_encrypt" => PgpEncrypt,
+    "pgp_verify" => PgpVerify,
+    "pgp_key" => PgpKey,
     "pair" => Pair,
     "some" => Some,
     "none" => None,
@@ -1060,6 +1063,21 @@ pub(crate) fn compute_op(op: Op, name: &str, inputs: &[&Value], params: &[Param]
         Op::JwtDecode => {
             let [Value::Text(token)] = inputs else { return None };
             crate::jwt::decode(token)
+        }
+
+        // ── OpenPGP (pgp.rs, host-capabilities L4 §5.1.11): a key's own signatures decide what it
+        // may do; nothing for a key or signature that doesn't bear out. ──
+        Op::PgpEncrypt => {
+            let [data, keys, Value::Bytes(random), Value::Number(now)] = inputs else { return None };
+            crate::pgp::encrypt(data, keys, random, *now, param(params, "armor")? == "ascii").map(Value::Bytes)
+        }
+        Op::PgpVerify => {
+            let [data, signature, keys, Value::Number(now)] = inputs else { return None };
+            crate::pgp::verify(data, signature, keys, *now)
+        }
+        Op::PgpKey => {
+            let [key] = inputs else { return None };
+            crate::pgp::key_info(key)
         }
 
         Op::Pair => {

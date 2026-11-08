@@ -586,6 +586,7 @@ A FILE (NAME.holon.ts: its imports, then flow(…), then its handlers)
   import inbox from "folder:inbox"              also "database:NAME" and "channel:NAME"
   import httpbin from "host:httpbin.org"        a host it calls, as httpbin.get("/uuid")
   import { now } from "holon:clock"             the time; import { random } from "holon:random"
+                                                (and random_bytes, the run's 32, for pgp_encrypt)
   import { charge } from "flow:billing"         another deployed flow's action, by its slug
   flow("notes-api", { port: 8102 })             its name (what it deploys as) and its settings:
                                                 port, keep: { runs, days }, browsers, limits

@@ -2545,12 +2545,18 @@ fn persist_writes_whole_files_and_leaves_no_temp_files() {
 #[test]
 fn an_actions_run_is_given_the_clock_and_randomness() {
     let state = test_state();
-    let text = "import { action, flow } from \"holon\"\nimport { now } from \"holon:clock\"\nimport { random } from \"holon:random\"\n\nflow(\"sources\")\n\nexport const read = action(() => ({ at: now, r: random }))\n";
+    let text = "import { action, bytes_to_text, flow } from \"holon\"\nimport { now } from \"holon:clock\"\nimport { random, random_bytes } from \"holon:random\"\n\nflow(\"sources\")\n\nexport const read = action(() => ({ at: now, r: random, bytes: bytes_to_text(random_bytes, { encoding: \"base64\" }) }))\n";
     let unit = stage_text(&state, text);
     let ack = serde_json::json!({ "acknowledge": ["Action(\"read\")", "Clock", "Random"] });
     assert_eq!(deploy_json(&state, "sources", unit, ack).status_code, 200);
     let answered = body_json(run_action_named(&state, "sources", "read", serde_json::json!({})));
     assert!(answered["answer"]["at"].is_number() && answered["answer"]["r"].is_number(), "real numbers, not nothing: {answered}");
+    let r = answered["answer"]["r"].as_f64().unwrap();
+    assert!((0.0..1.0).contains(&r), "from 0 up to 1: {r}");
+    // The run's random bytes, 32, the number read from their first 53 bits.
+    let bytes = holon_core::text_bytes(answered["answer"]["bytes"].as_str().unwrap(), "base64").unwrap();
+    assert_eq!(bytes.len(), 32, "{answered}");
+    assert_eq!(r, (u64::from_be_bytes(bytes[..8].try_into().unwrap()) >> 11) as f64 / (1u64 << 53) as f64);
 }
 
 // ── per-deployment state ─────────────────────────────────────────────────────────────
@@ -7155,6 +7161,95 @@ fn a_partners_token_is_verified_with_the_key_a_person_trusted_for_it() {
     let export: verify::Export = serde_json::from_value(body_json(route(&state, &req("GET", &format!("/deployments/{slug}/export"), vec![])))).unwrap();
     let report = verify::check(&export, None, &BTreeMap::new());
     assert!(report.ok() && report.reruns.iter().all(|(_, r)| *r == verify::Rerun::Matched), "{}", verify::describe(&report, None));
+}
+
+/// A bank's files (the pgp-outbox sample), with keys, signatures and a message GnuPG made
+/// (holon-core's testdata/pgp-vectors.mjs): a person trusts the bank's Curve25519 key, its
+/// fingerprint answered as GnuPG lists it, and nothing kept for what isn't a key; a payment file is
+/// encrypted to the key's encryption subkey, armored, its SHA-256 and the encrypted file's kept,
+/// and refused before a key is trusted; a report signed by the bank's signing subkey verifies,
+/// one another key signed or with no report beside it is refused; and the runs verify, the
+/// encryption done again from the random bytes the log keeps.
+#[test]
+fn a_payment_file_is_encrypted_to_the_banks_key_and_its_signed_reports_verified() {
+    let state = claims_state("");
+    let vectors: serde_json::Value = serde_json::from_str(include_str!("../../holon-core/src/testdata/pgp-vectors.json")).unwrap();
+    let dir = std::env::temp_dir().join(format!("holon-pgp-{}-{}", std::process::id(), rand::random::<u32>()));
+    let (payments, upload, download) = (dir.join("payments"), dir.join("upload"), dir.join("download"));
+    for (name, path, access) in [("payments", &payments, "read"), ("upload", &upload, "read-write"), ("download", &download, "read")] {
+        std::fs::create_dir_all(path).unwrap();
+        assert_eq!(route_status(&state, &serde_json::json!({ "name": name, "path": path.display().to_string(), "access": access })), 200);
+    }
+    let slug = deploy_text(&state, include_str!("../../holon-author/samples/pgp-outbox.holon.ts"), "");
+    let look = || {
+        arrivals::run_arrivals(&state.store, &state.deployments, &state.deployments_path);
+        arrivals::run_arrivals(&state.store, &state.deployments, &state.deployments_path);
+    };
+    look();
+    let trust = |key: &serde_json::Value| body_json(run_action_named(&state, &slug, "trust", serde_json::json!({ "key": key })));
+    let kept = || body_json(route(&state, &req("GET", &format!("/deployments/{slug}/state"), vec![])))["state"]["bank"].clone();
+    let sha = |b: &[u8]| match holon_core::primitives::compute("sha256", &[&Value::Bytes(b.to_vec())], &[holon_core::Param::frozen("encoding", "hex")]) {
+        Some(Value::Text(t)) => t,
+        other => panic!("{other:?}"),
+    };
+
+    // What isn't a key is refused and kept as nothing, so a payment file is refused.
+    assert_eq!(trust(&serde_json::json!("not a key"))["answer"], serde_json::json!({ "refused": "not one OpenPGP public key its own signatures hold for" }));
+    assert!(kept().is_null(), "nothing kept: {}", kept());
+    std::fs::write(payments.join("early.xml"), "<Document/>").unwrap();
+    look();
+
+    // The bank's key: its fingerprint, user ID and no expiry, as GnuPG lists them.
+    let fingerprints = &vectors["fingerprints"]["c25519"];
+    let answered = trust(&vectors["keys"]["c25519"]);
+    assert_eq!(answered["answer"]["fingerprint"], fingerprints[0], "{answered}");
+    assert_eq!(answered["answer"]["user_ids"], serde_json::json!(["Bank 25519 <c25519@bank.example>"]), "{answered}");
+    assert_eq!((&answered["answer"]["expires"], &answered["answer"]["revoked"]), (&serde_json::json!("never"), &serde_json::json!(false)), "{answered}");
+    let pain = "<Document><CstmrCdtTrfInitn><GrpHdr><MsgId>B-1</MsgId></GrpHdr></CstmrCdtTrfInitn></Document>\n";
+    std::fs::write(payments.join("pain.001.xml"), pain).unwrap();
+    look();
+
+    // Armored, a session key for the encryption subkey first: past its packet's header (gpg writes
+    // the old form, 0x84, Holon the new, 0xC1), its version, key ID and algorithm are those of the
+    // message gpg encrypted to the same key, bytes 3 to 12.
+    let encrypted = std::fs::read(upload.join("pain.001.xml.asc")).unwrap();
+    let armored = String::from_utf8(encrypted.clone()).unwrap();
+    assert!(armored.starts_with("-----BEGIN PGP MESSAGE-----\n") && armored.trim_end().ends_with("-----END PGP MESSAGE-----"), "{armored}");
+    let opening = |armored: &str| armored.lines().skip_while(|l| !l.is_empty()).nth(1).unwrap()[4..16].to_string();
+    assert_eq!(opening(&armored), opening(vectors["messages"]["to_c25519_armored"].as_str().unwrap()));
+    let (status, answer, _) = data_call(&state, &slug, "GET", "/sent", "");
+    let sent: serde_json::Value = serde_json::from_str(&answer).unwrap();
+    assert_eq!(status, 200);
+    assert_eq!(sent["early.xml"], serde_json::json!({ "refused": "no bank key is trusted, or none of its keys encrypts now" }));
+    let one = &sent["pain.001.xml"];
+    assert_eq!((&one["to"], one["sha256"].as_str(), one["encrypted"].as_str()), (&fingerprints[0], Some(sha(pain.as_bytes()).as_str()), Some(sha(&encrypted).as_str())), "{sent}");
+
+    // The bank's reports: signed by its signing subkey (armored); by another key (bytes); a
+    // signature with no report beside it.
+    let data = vectors["data"].as_str().unwrap();
+    let signature = |name: &str| vectors["signatures"][name].as_str().unwrap().to_string();
+    std::fs::write(download.join("pain.002.xml"), data).unwrap();
+    std::fs::write(download.join("pain.002.xml.sig"), signature("ed_subkey_armored")).unwrap();
+    std::fs::write(download.join("forged.xml"), data).unwrap();
+    std::fs::write(download.join("forged.xml.sig"), holon_core::text_bytes(&signature("other"), "base64").unwrap()).unwrap();
+    std::fs::write(download.join("missing.xml.sig"), signature("ed_subkey_armored")).unwrap();
+    look();
+    let (_, answer, _) = data_call(&state, &slug, "GET", "/received", "");
+    let refused = serde_json::json!({ "refused": "not signed by the bank's trusted key, or not there" });
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&answer).unwrap(),
+        serde_json::json!({
+            "pain.002.xml": { "verified": fingerprints[2], "signed": 1780272000, "sha256": sha(data.as_bytes()) },
+            "forged.xml": refused,
+            "missing.xml": refused,
+        })
+    );
+
+    // Its runs check offline: the message encrypted again from the random bytes its run saw.
+    let export: verify::Export = serde_json::from_value(body_json(route(&state, &req("GET", &format!("/deployments/{slug}/export"), vec![])))).unwrap();
+    let report = verify::check(&export, None, &BTreeMap::new());
+    assert!(report.ok() && report.reruns.iter().all(|(_, r)| *r == verify::Rerun::Matched), "{}", verify::describe(&report, None));
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// `on file` lines (the file-audit sample): several folders, files removed, and only some names.

@@ -641,6 +641,17 @@ token's `kid`) its own signatures, so `alg: none`, or HMAC signed over a public 
 checks it. The jwt-api sample keeps each partner's public key, added by a person running an action,
 and verifies each request's bearer token with the key of the partner it names.
 
+A bank takes payment files encrypted to its OpenPGP key, and signs what it sends back.
+`pgp_encrypt(data, key, random_bytes, now, { armor: "ascii" })` writes what GnuPG decrypts: a
+session key for the key's encryption key valid at `now`, then AES-256 with its modification
+detection code, every random byte drawn from the run's recorded `random_bytes`, so a replay writes
+the same file. `pgp_verify(data, signature, key, now)` gives who signed and when, when a detached
+signature verifies with a key that could sign then; `pgp_key(key)` gives its fingerprint, user IDs,
+expiry and revocation as its own signatures say, what a person compares before trusting it. The
+pgp-outbox sample encrypts each payment file dropped in a folder to the bank's key, which a person
+trusts by running an action, and verifies each report the bank delivers with its signature beside
+it.
+
 ### drop-box: a run per new file
 
 ```ts
@@ -1222,6 +1233,7 @@ An import names something the flow uses from outside a run; its source says what
 | `import api from "host:api.example.com"` | a host the flow calls | `http_request{host}` and its kin |
 | `import { now } from "holon:clock"` | the time the run started | `clock()`; in a clock, the tick |
 | `import { random } from "holon:random"` | one random number for the run | `random()` |
+| `import { random_bytes } from "holon:random"` | the run's 32 random bytes | `random_bytes()` |
 | `import { charge } from "flow:billing"` | an action of another deployed flow | `flow_call{flow: billing, action: charge}`, or `flow_start` when not awaited |
 
 **The imports name everything that comes from outside a run or outlives it; the handlers use only
@@ -1514,6 +1526,7 @@ Each form is exactly one leaf. This table is exhaustive; nothing else is sugared
 | `state.beats = e` | `store_write{key: beats}(e)` | set the state when the run finishes |
 | `now` (`import { now } from "holon:clock"`) | `clock()`; in a clock, its tick's `now` output | the time the run started; in a clock, the tick's |
 | `random` (`import { random } from "holon:random"`) | `random()` | one random number for the run |
+| `random_bytes` (`import { random_bytes } from "holon:random"`) | `random_bytes()` | the run's 32 random bytes, the ones `random` is read from |
 | `f` (`on.file.created(inbox, (f) => …)`) | the handler's `on_file{folder: inbox}` node, its `file` output | the handle of the file that started the run, with its `event` |
 | `input` (`action((input) => …)`) | the handler's `action{name}` node, its `input` output | what whoever ran it sent |
 | `notes[k]` (`import notes from "collection:notes"`) | `collection_get{collection: notes}(k)` | the item under `k` |
@@ -2619,6 +2632,11 @@ the syntax to TypeScript's, keeping the lowering.
    - *JWT* (2026-11-08, host-capabilities L4 §5.1.9, slice 1.2e): `jwt_verify`, the key deciding
      the algorithm (HS, RS, PS, ES256, EdDSA; PEM, JWK, a JWKS by `kid`), `exp` required and
      checked at `now`, and `jwt_decode`. The jwt-api sample, run live.
+   - *OpenPGP* (2026-11-08, host-capabilities L4 §5.1.11, slice 1.2f): `pgp_encrypt`,
+     `pgp_verify` and `pgp_key` for version 4 RSA and Curve25519 keys, written by hand over
+     RustCrypto's primitives. A run's randomness is 32 recorded bytes, `random` read from them and
+     `random_bytes` them, so an encrypted message replays byte for byte. The pgp-outbox sample,
+     run live against GnuPG.
 
    Next are the L4's slices 6 to 11: computing loops, as folds over a bounded range; requests and calls that wait (`await` with
    JavaScript's order and required, `Promise.all`, a call that parks its caller, a request recorded

@@ -758,16 +758,17 @@ pub(crate) fn clock_seconds() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs()
 }
 
-/// The random number a run is sourced with, in [0, 1).
-pub(crate) fn random_number() -> f64 {
+/// The random bytes a run is sourced with: 32 of them, from which `random` reads its number and
+/// `pgp_encrypt` a message's randomness (host-capabilities L4 §5.1.11).
+pub(crate) fn random_bytes() -> Value {
     #[cfg(test)]
     if let Some(n) = fixed::next() {
-        return ((n * 7919) % 1000) as f64 / 1000.0;
+        return Value::Bytes(blake3::hash(&n.to_le_bytes()).as_bytes().to_vec());
     }
-    rand::random::<f64>()
+    Value::Bytes(rand::random::<[u8; 32]>().to_vec())
 }
 
-/// In a test, the sources made fixed: a counter, from which each run's clock, random number and
+/// In a test, the sources made fixed: a counter, from which each run's clock, random bytes and
 /// nonce follow (the server's golden runs, tests.rs). Unset, they are the system's.
 #[cfg(test)]
 pub(crate) mod fixed {

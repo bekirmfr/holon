@@ -111,7 +111,7 @@ if (!fresh) {
     body: JSON.stringify({ code: SETUP_CODE, name: "e2e", password: "e2e-password-0123" }),
   });
   if (!res.ok) console.error(`e2e server: setting up its admin failed: ${await res.text()}`);
-  // The inbox-report, log-archive, journal, shared-ledger, drop-box, file-audit, file-checksums, payout-totals, drop-board, stock-sheet and statement-archive samples' folders, bound as an admin binds
+  // The inbox-report, log-archive, journal, shared-ledger, drop-box, file-audit, file-checksums, payout-totals, drop-board, stock-sheet, statement-archive and pgp-outbox samples' folders, bound as an admin binds
   // them: the ones they only read, read-only; the journal's texts kept a week, the folder capped at
   // 64 KiB.
   const { token } = res.ok ? await res.json() : {};
@@ -130,6 +130,9 @@ if (!fresh) {
     { name: "board", access: "read" },
     { name: "sheets", access: "read-write" },
     { name: "payouts", access: "read" },
+    { name: "payments", access: "read" },
+    { name: "upload", access: "read-write" },
+    { name: "download", access: "read" },
   ];
   for (const { name, ...binding } of bindings) {
     mkdirSync(join(folders, name), { recursive: true });

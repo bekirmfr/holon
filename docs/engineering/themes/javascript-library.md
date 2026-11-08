@@ -132,6 +132,7 @@ the eleven number leaves. The operators are mapped but for `void`, `instanceof` 
 | `fetch` | refused, import | `import api from "host:api.example.com"`, `await api.get("/p")` (§8) |
 | `console.log` | refused | not needed: each node's value is in the run's record (`holon explain`) |
 | `globalThis`, `window`, `process`, `require`, `Promise` | refused | "a flow has no globals; import what it uses" |
+| `crypto.getRandomValues(new Uint8Array(32))` | refused, import | a flow has no globals: the run's 32 random bytes are `import { random_bytes } from "holon:random"`, recorded so they replay |
 
 ## 4. `Math`
 
@@ -290,6 +291,9 @@ asks for:
 | fflate, JSZip, adm-zip: `zipSync(files)`, `unzipSync(b)` | `zip(files)`, `unzip(b)`: a record of texts or bytes by name, deflated; nothing past 64 MiB inflated or 10,000 files, or for a name outside its folder | by name |
 | jose: `jwtVerify(token, key, { issuer, audience, clockTolerance })` with `importSPKI`, `importJWK` or `createLocalJWKSet`; jsonwebtoken: `jwt.verify(token, key, options)` | `jwt_verify(token, key, now, { issuer, audience, leeway })`: the key a PEM text, a JWK or a JWKS as it is, the algorithm the key's, `exp` required, `now` given | by name |
 | jose: `decodeJwt(token)`, `decodeProtectedHeader(token)`; jsonwebtoken: `jwt.decode(token, { complete: true })` | `jwt_decode(token)`: `{header, payload}`, nothing verified | by name |
+| OpenPGP.js: `encrypt({ message: await createMessage({ binary }), encryptionKeys: await readKey({ armoredKey }), date, format: "armored" })` | `pgp_encrypt(data, keys, random_bytes, now, { armor: "ascii" })`: the key as it is, armored or bytes; the randomness the run's, given, so a rerun writes the same message; AES-256, uncompressed | by name |
+| OpenPGP.js: `verify({ message, signature: await readSignature({ armoredSignature }), verificationKeys, date })`; `gpg --verify file.sig file` | `pgp_verify(data, signature, keys, now)`: `{signer, key, created}`, or nothing; a detached signature | by name |
+| OpenPGP.js: `readKey({ armoredKey })`, then `getFingerprint()`, `getUserIDs()`, `getExpirationTime()`, `isRevoked()` | `pgp_key(key)`: `{fingerprint, user_ids, created, expires, revoked}` | by name |
 | the DOM: `doc.querySelectorAll("Rpt > Tx")`, `el.textContent`, `el.getAttribute("Ccy")` | `xml_find(e, "Rpt/Tx")`, `xml_text(e)` or `xml_text(e, path)`, `xml_attribute(e, "Ccy")`: a path of names, as ElementTree's `findall` | by name |
 | `btoa`, `atob` | `btoa(t)`, `atob(t)` (§3) | `base64 {bytes: latin1}` |
 | `Buffer…toString("base64")` | `base64(t)`, `base64(t, { mode: "decode" })`, `{ alphabet: "url" }` | `base64` (by name) |

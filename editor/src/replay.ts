@@ -528,6 +528,16 @@ export function replay(
       return traces.has(wire.source) ? carried(wire) : undefined;
     });
 
+  // `random`'s number from the run's 32 random bytes: their first 53 bits over 2^53, as core's
+  // `sourced_value` reads them.
+  const randomNumber = (v: WValue | null): WValue | null => {
+    if (v?.type !== "Bytes") return null;
+    const b = typeof v.value === "string" ? Uint8Array.from(atob(v.value), (c) => c.charCodeAt(0)) : v.value;
+    if (b.length < 8) return null;
+    const word = (i: number) => ((b[i] << 24) | (b[i + 1] << 16) | (b[i + 2] << 8) | b[i + 3]) >>> 0;
+    return { type: "Number", value: (word(0) * 2 ** 21 + (word(4) >>> 11)) / 2 ** 53 };
+  };
+
   // What one node computes once everything it needs has arrived.
   const run = (id: string, node: ReplayNode, inputs: (WValue | null)[]): NodeTrace => {
     const name = node.data.name;
@@ -537,7 +547,9 @@ export function replay(
     if (primitive && name === "clock") return { inputs, outputs: [sourced.get("Clock") ?? null] };
     // A clock's tick: the time it ticked.
     if (node.data.body.kind === "Template" && name === "every") return { inputs, outputs: [sourced.get("Clock") ?? null] };
-    if (primitive && name === "random") return { inputs, outputs: [sourced.get("Random") ?? null] };
+    // The run's random bytes, as they are, and the number read from them, as core reads it.
+    if (primitive && name === "random_bytes") return { inputs, outputs: [sourced.get("Random") ?? null] };
+    if (primitive && name === "random") return { inputs, outputs: [randomNumber(sourced.get("Random") ?? null)] };
     // The new file that started the run: its handle, as the log keeps it.
     if (primitive && name === "file_arrival") return { inputs, outputs: [sourced.get(`FileArrival(${JSON.stringify(param("folder"))})`) ?? null] };
     // A file handler's file: its handle, likewise.
@@ -780,6 +792,12 @@ function whyNothing(node: ReplayNode, trace: NodeTrace): string {
       return "the token didn't verify with its key (a signature, an algorithm the key doesn't allow, alg none, crit), or its claims don't hold at now: exp passed or missing, nbf ahead, another issuer or audience";
     case "jwt_decode":
       return "its token isn't three base64url parts whose header and payload are JSON objects";
+    case "pgp_encrypt":
+      return "no key has an encryption key valid at now (not a version 4 RSA or Curve25519 public key, expired, revoked, a subkey its primary didn't bind), or random has fewer than 32 bytes";
+    case "pgp_verify":
+      return "no signature verified with a key that could sign when it was made (another key, expired or revoked, a signing subkey without its back-signature), it was made after now or has expired, or it is over SHA-1";
+    case "pgp_key":
+      return "its input isn't one public key (several, a secret key, not OpenPGP), or no self-signature holds for it";
     case "group_by":
       return "its function answered a key that isn't a text";
     case "divide":

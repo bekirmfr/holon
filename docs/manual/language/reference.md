@@ -74,6 +74,7 @@ An import names something the flow uses from outside a run. Its source says what
 | `import api from "host:HOST"` | a host the flow calls over HTTPS, as `await api.get("/path")` |
 | `import { now } from "holon:clock"` | the time the run started |
 | `import { random } from "holon:random"` | one random number for the run |
+| `import { random_bytes } from "holon:random"` | the run's 32 random bytes |
 | `import { charge } from "flow:SLUG"` | an action of another deployed flow, by its slug (see [The outside world](#the-outside-world)) |
 
 An import names; it grants nothing. What the flow may do is always worked out from what it does
@@ -477,6 +478,30 @@ checks the token at the time its run saw. A token with `crit`, padding or a payl
 object is nothing too. The key's taint stops at `jwt_verify`, as at `hmac_sha256`. The jwt-api
 sample verifies partners' tokens with keys a person trusts.
 
+### OpenPGP
+
+| Call | Gives |
+|---|---|
+| `pgp_encrypt(data, keys, random_bytes, now)` | an OpenPGP message, as bytes: `data` (a text's UTF-8, or bytes) encrypted to each of `keys`, to its newest encryption key valid at `now`, as GnuPG reads it |
+| `pgp_encrypt(data, keys, random_bytes, now, { armor: "ascii" })` | the same, armored (`-----BEGIN PGP MESSAGE-----`), as bytes to write to a file |
+| `pgp_verify(data, signature, keys, now)` | `{signer, key, created}` when one of the detached `signature`'s signatures over `data` verifies with one of `keys`: the primary key's fingerprint, the signing key's, and when it signed; nothing else |
+| `pgp_key(key)` | `{fingerprint, user_ids, created, expires, revoked}`, as the key's own signatures bear them out (`expires` absent when it doesn't): what a person compares before trusting it |
+
+A key is a public key as `gpg --export` writes it, armored or bytes; `keys` is one or a list, and a
+signature is armored or bytes too. Version 4 keys of the two kinds GnuPG makes are understood: RSA
+of 2,048 to 4,096 bits, and Curve25519 (EdDSA to sign, ECDH to encrypt). A key's own signatures
+decide what it does: a subkey counts only when its primary binds it, a signing subkey only with its
+own back-signature too, and a key or subkey only while it is valid: created, not expired, not
+revoked. The message is a session key for each key, then AES-256 with the modification detection
+code, uncompressed, its data dated `now` and given no file name. Its every random byte is drawn
+from `random_bytes` (`import { random_bytes } from "holon:random"`, the run's 32 recorded bytes),
+so `holon verify` writes the same message again from the log; fewer than 32 give nothing. A
+signature must be over SHA-224 to SHA-512 (SHA-1 gives nothing), made no later than `now` by a key
+that could sign then, and not expired at `now`; a text signature (`gpg --textmode`) is over the
+data with CR LF line endings. Other keys (NIST and Brainpool curves, DSA, ElGamal, version 6) and
+messages that carry their own signature give nothing. The pgp-outbox sample encrypts payment files
+to a bank's key and verifies the bank's signed reports.
+
 ## The outside world
 
 Each of these is one building block, and each is one thing the flow may do.
@@ -490,6 +515,7 @@ Each of these is one building block, and each is one thing the flow may do.
 | `state.key = e` | write it when the run finishes |
 | `now` | the time the run started, in seconds since the epoch; in a clock, the tick's |
 | `random` | one random number for the run |
+| `random_bytes` | the run's 32 random bytes, the ones `random` is read from |
 | `coll[k]`, `coll.get(k)` | the item under `k` in a collection |
 | `coll[k] = e`, `coll.put(k, e)` | put it when the run finishes |
 | `delete coll[k]`, `coll.delete(k)` | delete it when the run finishes |

@@ -99,6 +99,7 @@ enum Noun {
     Host(String),
     Now,
     Random,
+    RandomBytes,
     /// Another flow's action: `flow:billing`'s `charge`.
     Action { flow: String, action: String },
     Vocab(Vocab),
@@ -532,7 +533,8 @@ impl<'s, 't> Reader<'s, 't> {
                     let noun = match (rest, imported(n).as_str()) {
                         ("clock", "now") => Noun::Now,
                         ("random", "random") => Noun::Random,
-                        (_, other) => return fail(self.span(n.span), format!("\"holon:{rest}\" has no \"{other}\": import {{ {} }} from \"holon:{rest}\"", if rest == "clock" { "now" } else { "random" })),
+                        ("random", "random_bytes") => Noun::RandomBytes,
+                        (_, other) => return fail(self.span(n.span), format!("\"holon:{rest}\" has no \"{other}\": import {{ {} }} from \"holon:{rest}\"", if rest == "clock" { "now" } else { "random, random_bytes" })),
                     };
                     self.bind_import(&n.local, noun)?;
                 }
@@ -3236,6 +3238,7 @@ impl<'s, 't> Reader<'s, 't> {
             Some(Noun::Declared(_, n)) => ok(ExprKind::Name(n)),
             Some(Noun::Now) => ok(ExprKind::Noun(Noun::Now.into())),
             Some(Noun::Random) => ok(ExprKind::Noun(Noun::Random.into())),
+            Some(Noun::RandomBytes) => ok(ExprKind::Noun(Noun::RandomBytes.into())),
             Some(Noun::State) => fail(span, format!("the state is read by key: {name}.hits")),
             Some(Noun::Host(h)) => fail(span, format!("a host is called: {name}.get(\"/path\"), a request to {h}")),
             Some(Noun::Action { action, .. }) => fail(span, format!("an action is called: {name}(input) runs {action}")),
@@ -4688,6 +4691,7 @@ impl From<Noun> for super::ast::Noun {
         match n {
             Noun::Now => super::ast::Noun::Now,
             Noun::Random => super::ast::Noun::Random,
+            Noun::RandomBytes => super::ast::Noun::RandomBytes,
             _ => unreachable!("only the clock and randomness are nouns of the tree"),
         }
     }

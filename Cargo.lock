@@ -1731,14 +1731,17 @@ dependencies = [
 name = "holon-core"
 version = "0.1.0"
 dependencies = [
+ "aes",
  "blake3",
  "criterion",
+ "curve25519-dalek",
  "ed25519-dalek",
  "hmac 0.12.1",
  "libm",
  "miniz_oxide",
  "p256",
  "rsa",
+ "sha1 0.10.7",
  "sha2 0.10.9",
  "smallvec",
  "unicode-normalization",

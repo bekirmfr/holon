@@ -74,6 +74,9 @@ pub const GENESIS: &[&str] = &[
     // pure — JWT (2): a token verified with the key that decides its algorithm, or read without
     // trusting it (jwt.rs, host-capabilities L4 §5.1.9)
     "jwt_verify", "jwt_decode",
+    // pure — OpenPGP (3): a message encrypted to a public key, a detached signature checked with
+    // one, and what a key says (pgp.rs, host-capabilities L4 §5.1.11)
+    "pgp_encrypt", "pgp_verify", "pgp_key",
     // pure — universal, any-typed (8): as_text is to_text's message form, the identity on text;
     // coalesce is the first input that arrived, `default` with its fallback on a wire; fail is
     // nothing, its message the run log's reason (the language's `throw`)
@@ -84,8 +87,8 @@ pub const GENESIS: &[&str] = &[
     // and a call to another deployed flow's action, which the host runs in-process, and a start
     // of one, which doesn't wait for it to end (2)
     "flow_call", "flow_start",
-    // drivers — sourced, no compute (4): a new file in a folder starts a run, as a request does
-    "clock", "random", "secret", "file_arrival",
+    // drivers — sourced, no compute (5): a new file in a folder starts a run, as a request does
+    "clock", "random", "random_bytes", "secret", "file_arrival",
     // durable runs — answered by the host when an event arrives (2)
     "await", "resume_token",
     // state cell (2)
@@ -200,6 +203,7 @@ pub const FAMILIES: &[(&str, &str, &[&str])] = &[
     ("decimal_div", "rounding", crate::decimals::ROUNDINGS),
     ("decimal_round", "rounding", crate::decimals::ROUNDINGS),
     ("jwt_verify", "leeway", crate::jwt::LEEWAYS),
+    ("pgp_encrypt", "armor", crate::pgp::ARMORS),
     ("csv_parse", "header", crate::csv::HEADERS),
     ("csv_parse", "separator", crate::csv::SEPARATORS),
     ("csv_format", "header", crate::csv::HEADERS),
@@ -485,6 +489,18 @@ pub fn interface_of(name: &str) -> Option<Unit> {
         ),
         "jwt_decode" => prim(vec![port("token", Text)], vec![], Type::Record),
 
+        // ── pure — OpenPGP (pgp.rs) ── A key is armored text or bytes; `keys` one or a list.
+        // `random` is the run's random bytes (`random_bytes`), from which every random byte of the
+        // message is drawn, so a rerun writes the same message; `now`, as jwt_verify's, decides
+        // which keys are valid.
+        "pgp_encrypt" => prim(
+            vec![port("data", Any), port("keys", Any), port("random", Bytes), port("now", Number)],
+            vec![Param::frozen("armor", "binary")],
+            Type::Bytes,
+        ),
+        "pgp_verify" => prim(vec![port("data", Any), port("signature", Any), port("keys", Any), port("now", Number)], vec![], Type::Record),
+        "pgp_key" => prim(vec![port("key", Any)], vec![], Type::Record),
+
         // ── pure — sum (Option) ──
         // Option<T> = Sum([T, Unit]) — arm 0 is "some", arm 1 ("none") is Unit (Product([])),
         // already expressible with no new value kind for THAT half; the new kind is the tag itself
@@ -513,6 +529,7 @@ pub fn interface_of(name: &str) -> Option<Unit> {
         //    the payload is genuinely polymorphic (the editor may specialize later). ──
         "clock" => prim(vec![], vec![], Number),
         "random" => prim(vec![], vec![], Number),
+        "random_bytes" => prim(vec![], vec![], Bytes),
         // The handle of the new file that started the run.
         // `on`: `new` (a file new or changed) or `deleted`; `matching`: a glob on its name, empty
         // for every file. The host reads both from the deployed graph.
@@ -710,10 +727,29 @@ pub const TRIGGERED: &[&str] = &[
 /// whether or not its answer is read, and its answer is never its caller's to give.
 pub const CALLS: &[&str] = &["http_request", "http_upload", "http_stream", "flow_call", "flow_start"];
 
-/// The leaves whose value the host supplies as the run starts (`Resolver::sourced`): the clock, a
-/// random number, a secret, the file that started the run, a state key. Each computes nothing; the
-/// other reads (a collection's, a folder's, a database's, a waiting point) ask as the run goes.
-pub const SOURCED: &[&str] = &["clock", "random", "secret", "file_arrival", "store_read"];
+/// The leaves whose value the host supplies as the run starts (`Resolver::sourced`): the clock, the
+/// run's random bytes (as a number, or as they are), a secret, the file that started the run, a
+/// state key. Each computes nothing; the other reads (a collection's, a folder's, a database's, a
+/// waiting point) ask as the run goes.
+pub const SOURCED: &[&str] = &["clock", "random", "random_bytes", "secret", "file_arrival", "store_read"];
+
+/// What a sourced leaf gives of the value the host supplied for it. The host draws 32 random
+/// bytes for a run (`Random`, host-capabilities L4 §5.1.11): `random_bytes` gives them as they
+/// are, and `random` a number from 0 up to 1 read from their first 53 bits, as many as a double
+/// holds. The others give what was supplied.
+pub fn sourced_value(unit: &Unit, supplied: Option<&crate::Value>) -> Option<crate::Value> {
+    use crate::Value;
+    let name = match &unit.body {
+        UnitBody::Primitive { name } => name.as_str(),
+        _ => "",
+    };
+    match (name, supplied?) {
+        ("random", Value::Bytes(b)) => Some(Value::Number((u64::from_be_bytes(b.get(..8)?.try_into().ok()?) >> 11) as f64 / (1u64 << 53) as f64)),
+        ("random_bytes", v @ Value::Bytes(_)) => Some(v.clone()),
+        ("random" | "random_bytes", _) => None,
+        (_, v) => Some(v.clone()),
+    }
+}
 
 /// Whether `unit` is a sink leaf with its trigger: the last input, by name (a leaf placed before
 /// sinks had one has none, and is computed as it always was).
@@ -778,8 +814,9 @@ mod tests {
         // decimal_round, decimal_sum, decimal_compare) and CSV's (csv_parse, csv_format); and the
         // calendar leaves (date_add, business_day_add, business_days_between, is_business_day);
         // and XML's (xml_parse, xml_format, xml_find, xml_text, xml_attribute); and compression's
-        // (gzip, gunzip, zip, unzip); and JWT's (jwt_verify, jwt_decode).
-        assert_eq!(GENESIS.len(), 183);
+        // (gzip, gunzip, zip, unzip); and JWT's (jwt_verify, jwt_decode); and OpenPGP's
+        // (pgp_encrypt, pgp_verify, pgp_key) and the run's random bytes (random_bytes).
+        assert_eq!(GENESIS.len(), 187);
     }
 
     #[test]

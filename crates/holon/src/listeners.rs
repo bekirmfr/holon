@@ -128,7 +128,7 @@ fn serve_flow(
     let epoch_seconds = clock_seconds();
     let sourced = [
         (Capability::Clock, Value::Number(epoch_seconds as f64)),
-        (Capability::Random, Value::Number(random_number())),
+        (Capability::Random, random_bytes()),
     ];
     let started = started_now();
     let http = data::HttpRequest { method, url: raw_url, headers, body };

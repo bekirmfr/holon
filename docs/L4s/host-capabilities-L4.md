@@ -682,6 +682,118 @@ As designed, with what building it found:
   padding, `crit`, five parts, and the 16-byte secret. A payout was 403 without `payouts:write`,
   202 and then 409 for the same token, and 202 with no body. The export's 98 runs verified.
 
+#### 5.1.11 Slice 1.2f as designed (2026-11-08, against `336a26b`): PGP encrypt and verify
+
+A bank takes payment files encrypted to its public key, and signs what it sends back. Both halves
+need only the bank's public key, which is data: encrypting to it and checking its signature are
+leaves (R1). Decrypting with the company's own key, and signing with it, are the host's keys
+(§5.3, step 1.5). Three leaves, after OpenPGP.js's `encrypt`, `verify` and `readKey`:
+
+| Leaf | Gives | JavaScript |
+|---|---|---|
+| `pgp_encrypt(data, keys, random, now) {armor}` | the OpenPGP message: `data` (a text's UTF-8, or bytes) encrypted to each key's encryption key valid at `now`, as bytes, armored when `armor` is `"ascii"` (else `"binary"`, the default) | OpenPGP.js's `encrypt({ message, encryptionKeys, date, format })` |
+| `pgp_verify(data, signature, keys, now)` | `{signer, key, created}` when one of `signature`'s signatures over `data` verifies with one of `keys`, valid when it was made and not after `now`: the primary key's fingerprint, the signing key's, and when it signed; else nothing | OpenPGP.js's `verify({ message, signature, verificationKeys, date })`, `gpg --verify file.sig file` |
+| `pgp_key(key)` | `{fingerprint, user_ids, created, expires, revoked}`: what a person compares before trusting a key (`expires` absent when it doesn't) | `readKey` and its `getFingerprint()`, `gpg --show-keys` |
+
+A key is a transferable public key, armored (`-----BEGIN PGP PUBLIC KEY BLOCK-----`, what
+`gpg --export --armor` writes) or as bytes; `keys` is one or a list. A signature is a detached
+one, armored or bytes, holding one or more signature packets.
+
+**What is understood.** Version 4 keys of the two kinds GnuPG makes: RSA of 2,048 to 4,096 bits,
+and Curve25519 (EdDSA to sign, ECDH over X25519 to encrypt, the "legacy" forms every OpenPGP
+implementation reads). A key's subkeys count only with a binding signature from the primary that
+verifies; a signing subkey only with its own back-signature too, so a subkey can't be claimed by
+another key. A key, or a subkey, is used only while it is valid: created, not past the expiry its
+newest self-signature gives, and not revoked by its primary. Its key flags decide what it does.
+Other kinds (P-256 to P-521, Brainpool, DSA and ElGamal, version 6 keys) give nothing (forks 44,
+45).
+
+**Encrypting** writes what GnuPG reads everywhere: for each key, a public-key encrypted session
+key packet to its newest valid encryption key (RSA with PKCS #1 v1.5; ECDH with the KDF and key
+wrap its key packet names), then a symmetrically encrypted integrity protected data packet,
+version 1: AES-256 in OpenPGP's CFB, holding a literal data packet (binary, no file name, dated
+`now`) and the modification detection code (SHA-1) that refuses a changed message. AES-256
+whatever the key prefers, since every implementation since 2005 reads it. No compression before
+encryption (fork 47). Version 2 of that packet (AEAD, RFC 9580) waits for GnuPG to read it (fork
+44).
+
+**Randomness** (fork 29, decided): a message needs a fresh session key, a random prefix, and an
+ephemeral X25519 key or PKCS #1 padding. A run's `random` is one number, 53 bits: too few. The
+host now draws 32 random bytes for each run instead, recorded as `Random` is; `random` is a number
+read from them, and `random_bytes` (`import { random_bytes } from "holon:random"`) is the bytes,
+JavaScript's `crypto.getRandomValues(new Uint8Array(32))`. `pgp_encrypt` takes them as an input
+and draws every random byte from BLAKE3 keyed with them over all its inputs, so two messages in
+one run never share a session key, and the leaf stays pure: `holon verify` recomputes the
+ciphertext byte for byte from the logged bytes. The export then proves what each encrypted file
+held. Fewer than 32 bytes give nothing. Whoever reads the log can decrypt what the run encrypted,
+and could already read it: its plaintext came into the run and is logged. A text computed from a
+secret stays tainted through `pgp_encrypt`, as through any leaf, so it can't be written anywhere.
+
+**Verifying** checks a version 4 signature of a binary document (type 0x00) or a text (0x01, its
+line endings made CRLF), over SHA-256, SHA-384, SHA-512 or SHA-224; SHA-1 and MD5 signatures give
+nothing (fork 48). The signature's issuer fingerprint, or key ID, names the key among `keys`; it
+must be able to sign, valid at the signature's creation time, which must not be after `now`, and
+the signature must not have expired at `now`.
+
+**Dependencies** (fork 28, decided for OpenPGP): no `pgp` crate. rPGP brings some forty crates,
+ciphers this refuses among them, and draws its own randomness, so its ciphertext couldn't be
+recomputed. OpenPGP's packets, armor (with its CRC-24), key flags, the KDF and AES key wrap are
+written here by hand, over primitives core already has or the workspace already builds: `rsa`,
+`ed25519-dalek` and `sha2` from 1.2e; `curve25519-dalek` (X25519, already under `ed25519-dalek`);
+`aes` 0.8 and `sha1` 0.10 (fingerprints, the modification detection code and older
+self-signatures), each without default features. PKCS #1 v1.5's padding is written here too, over
+`rsa`'s numbers, so every random byte is this code's. GnuPG checks it: its keys, signatures and
+messages are the test vectors, and a test decrypts what `pgp_encrypt` writes with a decryptor the
+GnuPG messages prove.
+
+**The sample, `pgp-outbox`:** a payment file dropped in an outbox folder is encrypted to the
+bank's key and written, armored, to the folder the bank collects from, standing for its SFTP
+drop. A person trusts the bank's key by running an action (`trust`) that keeps it and answers its
+fingerprint, to compare with the one the bank gave. The bank's signed answers (a file and its
+`.sig`) land in a third folder; each is verified with the bank's key and kept as verified, with
+when and by which key it was signed, or refused. What was sent is kept with the plaintext's
+SHA-256 and the key it went to.
+
+#### 5.1.12 Slice 1.2f as built (2026-11-08)
+
+As designed, with what building it found:
+
+- **Core:** `pgp.rs`, by hand as designed; 187 primitives (the three leaves, and `random_bytes`, a
+  driver). GnuPG 2.2 wrote the test vectors, with the script that writes them kept beside them: an
+  RSA-3072 key; a Curve25519 key with a signing subkey; one that expired, one revoked and another
+  party's; signatures over SHA-1 to SHA-512, binary, text and armored, one made after `now`; and
+  messages to each key and to both. A decryptor written for the tests reads GnuPG's messages, then
+  reads what `pgp_encrypt` writes, and a test pins the bytes one set of inputs writes. A signing
+  subkey whose back-signature is taken away signs nothing. `pgp_key` answers `revoked` too, beside
+  what was designed, so a person trusting a revoked key sees it. The packets are written in the
+  new format; GnuPG writes the old, and reads both.
+- **Randomness:** the host draws 32 bytes for each run (`Random`), and core's `sourced_value`
+  reads `random` from their first 53 bits, as the editor's replay does. Every run's sourced value
+  changed with it, and so did the server's golden record.
+- **The language:** `import { random_bytes } from "holon:random"`, printed back and described on
+  hover as `random` is. Writing the sample met one thing: a record with a field that is nothing is
+  nothing as a whole, so `trust` answers `key.expires ?? "never"` for a key that never expires. A
+  trusted key is kept in the state with its fingerprint, and what isn't a key is refused inside
+  `try`, nothing kept. The sample is 125 nodes; its folders are `payments` (read only), `upload`
+  and `download` (read only).
+- **Taint** is unchanged: what `pgp_encrypt` writes from a secret is derived from it, as any
+  leaf's output is, since whoever holds the key reads it.
+- **The tests:** the server test and the e2e test use the GnuPG vectors, so neither needs gpg on
+  the runners. The bank's Curve25519 key is trusted; a payment file is encrypted to its encryption
+  subkey, the message's key ID and algorithm those of GnuPG's message to it; its report verifies
+  with the signing subkey; one another key signed is refused; and the runs verify.
+- **The sample, run live,** against GnuPG 2.2.41 with keys made for it, a Curve25519 bank key and
+  an RSA-4096 one, each trusted with `holon action`. gpg decrypted each file the flow encrypted to
+  the same bytes: a pain.001 with CR LF lines, 300 KB of random bytes and an empty file to the
+  Curve25519 key's ECDH subkey, and a pain.001 to the RSA key's subkey. The bank's binary, armored
+  and text-mode EdDSA signatures verified, and, with the RSA key trusted, an RSA SHA-512 one.
+  Refused: another key's signature, a report changed under its signature, a SHA-1 signature, a
+  signature with no report beside it, and the Curve25519 key's signature once the RSA key was
+  trusted. A junk key was refused, nothing kept. The bank's key, revoked by the certificate gpg
+  stored when it made it, answered `revoked: true`, and a key made in January 2025 to expire 30
+  days later answered its expiry; neither encrypted. The export's 29 runs verified, each message
+  encrypted again byte for byte from its logged random bytes.
+
 ### 5.2 Email
 
 **Sending.** `mail ops` names a mail resource an admin binds: SMTP (host, port, sender, login
@@ -2513,7 +2625,7 @@ engine.
 | Step | What | Design | Needs | Size |
 |---|---|---|---|---|
 | 1.1 | **Value kinds:** `Bytes`, built (§5.10.2); `Decimal` decided as text leaves, built in 1.2 (§5.10.1) | §5.10 (here) | — | M |
-| 1.2 | **Formats:** exact decimals, CSV, XML, dates (UTC and offsets), zip and gzip, JWT verify, PGP encrypt and verify with a public key, in six slices (§5.1.1); 1.2a, decimals and CSV, built (§5.1.2); 1.2b, offsets and business days, built (§5.1.4); 1.2c, XML, built (§5.1.6); 1.2d, zip and gzip and bytes written to a file, built (§5.1.8); 1.2e, JWT verify, built (§5.1.10) | §5.1 (here) | 1.1 | M |
+| 1.2 | **Formats:** exact decimals, CSV, XML, dates (UTC and offsets), zip and gzip, JWT verify, PGP encrypt and verify with a public key, in six slices (§5.1.1); 1.2a, decimals and CSV, built (§5.1.2); 1.2b, offsets and business days, built (§5.1.4); 1.2c, XML, built (§5.1.6); 1.2d, zip and gzip and bytes written to a file, built (§5.1.8); 1.2e, JWT verify, built (§5.1.10); 1.2f, PGP encrypt and verify, built (§5.1.12) | §5.1 (here) | 1.1 | M |
 | 1.3 | **Email:** send, recipients in the grant; receive as `on mail`, with its sender's verdict and attachments (§5.2) | §5.2 (here) | 1.1 for attachments | L |
 | 1.4 | **Remote folders:** the backend seam in `folders.rs`, then SFTP and S3-compatible storage (§6) | §6 (here) | 1.1 for binary files | L |
 | 1.5 | **Secure connectivity:** keys the host holds (PGP decrypt and sign) and client identities (mutual TLS, a private CA) (§5.3, §5.4) | §5.3, §5.4 (here) | 1.1, 1.2 | M |
@@ -2717,12 +2829,15 @@ Taken when a job or a user asks, each with its design here and its sample all th
     feature alone, pinned with its comment and a test that pins the bytes it writes; core has
     seven. *Decided for signatures* (§5.1.10): `rsa` 0.9.10, `p256` 0.13.2 and `ed25519-dalek`
     2.2.0, without their default features, so none reads the operating system's randomness, each
-    pinned with its comment; core has ten. OpenPGP is decided in 1.2f.
+    pinned with its comment; core has ten. *Decided for OpenPGP* (§5.1.12): no `pgp` crate;
+    `curve25519-dalek` 4.1.3, `aes` 0.8.4 and `sha1` 0.10.7, without their default features,
+    each pinned with its comment; core has thirteen.
 29. **PGP encryption is random.** A message is encrypted with a fresh session key, and a leaf
     must give the same answer on every replay (R1). Either the host answers it as a request, its
     ciphertext kept in the log as an answer is, or the randomness comes into the run from a
     driver, as `random` does, made bytes. *Lean:* the driver: the leaf stays pure over its inputs,
-    and verify recomputes the ciphertext from the logged randomness. Decided in 1.2f.
+    and verify recomputes the ciphertext from the logged randomness. *Decided so* (§5.1.12): a
+    run's randomness is 32 bytes, `random` read from them and `random_bytes` them.
 30. **XML's shape in a flow** (§5.1.5). JsonML's lists, one form both ways, or records as
     fast-xml-parser makes them, easier to read (`doc.Document.GrpHdr.MsgId`) but losing a
     schema's order when written, and changing shape between one child and several. *Lean:* lists,
@@ -2777,6 +2892,24 @@ Taken when a job or a user asks, each with its design here and its sample all th
     header included, so whoever reads the deployment's log can read a token while it is still
     valid. *Lean:* as today, the log's readers are the deployment's and `exp` bounds the token's
     use; a header kept by its hash alone is a log setting of its own, later.
+44. **OpenPGP's version 6** (§5.1.11). RFC 9580's keys (X25519 and Ed25519 as their own
+    algorithms, SHA-256 fingerprints) and its AEAD packet (SEIPD version 2). GnuPG reads neither
+    yet; Sequoia and OpenPGP.js write both. *Lean:* when a bank's key is one, beside version 4.
+45. **Other curves and old algorithms** (§5.1.11). P-256 to P-521, Brainpool, DSA and ElGamal.
+    *Lean:* NIST curves when a bank brings one (`p256` is already in core; `p384` and `p521`
+    aren't); DSA and ElGamal never: 1,024-bit DSA is what they mostly are.
+46. **Signed messages** (§5.1.11). A message that carries its own signature (`gpg --sign`, a
+    cleartext signature) rather than one beside it. *Lean:* with decrypting (step 1.5), since a
+    bank's signed file is usually encrypted too and its signature is inside.
+47. **Compressing before encrypting** (§5.1.11). GnuPG compresses by default. *Lean:* never:
+    compression before encryption leaks lengths, and a flow that wants it zips first.
+48. **SHA-1 in self-signatures** (§5.1.11). Keys made before about 2012 bind their subkeys with
+    SHA-1. *Lean:* accepted in a key's own self-signatures and bindings, as GnuPG does, since a
+    forged one needs the key's owner; refused in a document's signature, where a collision is the
+    attack.
+49. **The literal packet's file name** (§5.1.11). GnuPG writes the file's name, and some bank
+    systems name what they decrypt by it. *Lean:* none, until one asks; it is advisory, and a
+    leaf of its own would carry it.
 
 ## 9. What stays true
 

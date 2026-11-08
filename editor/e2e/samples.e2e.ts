@@ -2092,6 +2092,65 @@ test("jwt-api verifies a partner's token with the key a person trusted for it, r
   expect(verified.trim().endsWith("ok")).toBe(true);
 });
 
+test("pgp-outbox encrypts a payment file to the bank's key a person trusted, verifies the bank's signed report, refuses another key's, and its runs verify", async ({ page, request, adminToken }) => {
+  const { execFileSync } = await import("node:child_process");
+  const { createHash } = await import("node:crypto");
+  const { existsSync, mkdtempSync, readFileSync, writeFileSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  // The bank's key, its signatures and a message to it, made by GnuPG (holon-core's testdata/pgp-vectors.mjs),
+  // so the runners need no gpg.
+  const vectors = JSON.parse(readFileSync(join(process.cwd(), "..", "crates", "holon-core", "src", "testdata", "pgp-vectors.json"), "utf8"));
+  const [primary, , signing] = vectors.fingerprints.c25519;
+  const sha = (data: Buffer | string) => createHash("sha256").update(data).digest("hex");
+
+  await openSample(page, "PGP outbox (payment files encrypted to the bank's key, its reports verified)");
+  const port = await deploy(page);
+  // A person trusts the bank's key from the server panel; it answers the key's fingerprint.
+  await page.getByLabel("what to send trust").fill(JSON.stringify({ key: vectors.keys.c25519 }));
+  await page.getByRole("button", { name: "run", exact: true }).click();
+  await expect(page.getByText(new RegExp(`^trust: .*"fingerprint":"${primary}"`))).toBeVisible();
+
+  // A payment file: encrypted to the bank's key, armored, and kept with its SHA-256 and the encrypted file's.
+  const stamp = Date.now();
+  const [pain, asc] = [`pain-${stamp}.xml`, join(FOLDERS, "upload", `pain-${stamp}.xml.asc`)];
+  const payment = `<Document><CstmrCdtTrfInitn><GrpHdr><MsgId>B-${stamp}</MsgId></GrpHdr></CstmrCdtTrfInitn></Document>\n`;
+  writeFileSync(join(FOLDERS, "payments", pain), payment);
+  const sent = async () => (await request.get(`http://127.0.0.1:${port}/sent`)).json();
+  await expect.poll(async () => existsSync(asc) && pain in (await sent()), { timeout: 15_000 }).toBe(true);
+  const encrypted = readFileSync(asc);
+  expect((await sent())[pain]).toEqual({ to: primary, sha256: sha(payment), encrypted: sha(encrypted), at: expect.any(Number) });
+  // Past its first packet's header, the key ID and algorithm gpg wrote in its message to the same key.
+  const opening = (armored: string) => {
+    const lines = armored.split(/\r?\n/);
+    return lines[lines.indexOf("") + 1].slice(4, 16);
+  };
+  const armored = encrypted.toString("utf8");
+  expect(armored.startsWith("-----BEGIN PGP MESSAGE-----\n")).toBe(true);
+  expect(opening(armored)).toBe(opening(vectors.messages.to_c25519_armored));
+
+  // The bank's report with its signing subkey's signature beside it, and one another key signed.
+  const [report, forged] = [`pain.002-${stamp}.xml`, `forged-${stamp}.xml`];
+  writeFileSync(join(FOLDERS, "download", report), vectors.data);
+  writeFileSync(join(FOLDERS, "download", forged), vectors.data);
+  writeFileSync(join(FOLDERS, "download", `${report}.sig`), vectors.signatures.ed_subkey_armored);
+  writeFileSync(join(FOLDERS, "download", `${forged}.sig`), Buffer.from(vectors.signatures.other, "base64"));
+  const received = async () => (await request.get(`http://127.0.0.1:${port}/received`)).json();
+  await expect.poll(async () => Object.keys(await received()), { timeout: 15_000 }).toEqual(expect.arrayContaining([report, forged]));
+  const all = await received();
+  expect(all[report]).toEqual({ verified: signing, signed: 1780272000, sha256: sha(vectors.data) });
+  expect(all[forged]).toEqual({ refused: "not signed by the bank's trusted key, or not there" });
+
+  // Its runs check offline: the message encrypted again from the random bytes its run saw.
+  const target = process.env.CARGO_TARGET_DIR ?? join(process.cwd(), "..", "target");
+  const holon = join(target, "debug", process.platform === "win32" ? "holon.exe" : "holon");
+  const out = join(mkdtempSync(join(tmpdir(), "holon-runs-")), "pgp-outbox.json");
+  execFileSync(holon, ["export", "pgp-outbox", "--server", SERVER, "-o", out], { encoding: "utf8", env: { ...process.env, HOLON_TOKEN: adminToken } });
+  const verified = execFileSync(holon, ["verify", out], { encoding: "utf8" });
+  expect(verified).toContain("each produced what its log entry says");
+  expect(verified.trim().endsWith("ok")).toBe(true);
+});
+
 test("due-dates schedules a payout past Easter's closing days and an invoice past a weekend", async ({ page, request }) => {
   await openSample(page, "Due dates (business days at a fixed offset)");
   const port = await deploy(page);

@@ -60,6 +60,7 @@ mod value_hash;
 mod xml;
 mod compress;
 mod jwt;
+mod pgp;
 
 pub mod primitives;
 /// What a database leaf's SQL reads and writes (docs/L4s/databases-L4.md §4).
@@ -74,7 +75,7 @@ pub use promote::{instantiate, open_param, open_params, ParamError};
 pub use eval::{choice_next, eval, eval_observed, eval_one, would_plan, Answer, Choice, NoObserver, Observer, Resolved, Shape, Shapes, Slot};
 pub use fork::{refork, Refork};
 pub use advisory::{advise, Advisory};
-pub use catalog::{family_values, function_takes, genesis_units, interface_of, open_trigger, takes_trigger, CALLS, FAMILIES, GENESIS, PASSES_EXTRA, SOURCED, TRIGGER, TRIGGERED, VARIADIC};
+pub use catalog::{family_values, function_takes, genesis_units, interface_of, open_trigger, sourced_value, takes_trigger, CALLS, FAMILIES, GENESIS, PASSES_EXTRA, SOURCED, TRIGGER, TRIGGERED, VARIADIC};
 pub use docs::describe;
 pub use manifest::{consent_name, manifest_items, permission_kind, reads_from_outside, trigger, PermissionKind};
 pub use inspect::{adoption_counts, child_refs, dependencies};

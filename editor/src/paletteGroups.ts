@@ -58,6 +58,7 @@ export const CATALOG_GROUPS: readonly { name: string; items: ReadonlySet<string>
       "json_parse", "json_stringify", "csv_parse", "csv_format",
       "xml_parse", "xml_format", "xml_find", "xml_text", "xml_attribute",
       "sha256", "hmac_sha256", "hex", "base64", "secure_equals", "jwt_verify", "jwt_decode",
+      "pgp_encrypt", "pgp_verify", "pgp_key",
     ]),
   },
   {
@@ -74,7 +75,7 @@ export const CATALOG_GROUPS: readonly { name: string; items: ReadonlySet<string>
   },
   {
     name: "drivers",
-    items: new Set(["clock", "random", "secret", "file_arrival", "await", "resume_token"]),
+    items: new Set(["clock", "random", "random_bytes", "secret", "file_arrival", "await", "resume_token"]),
   },
   {
     name: "state",

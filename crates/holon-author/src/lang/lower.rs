@@ -68,7 +68,7 @@ pub(crate) const UNUSED: &str = "is_list";
 /// Words the lowering keeps for itself: a TypeScript binding of one is renamed, `name_`.
 pub(crate) const RESERVED: &[&str] = &[
     "flow", "port", "every", "browsers", "optional", "collection", "folder", "database", "channel", "holon", "js", "route", "resumes", "respond", "delete", "await", "if", "then", "else",
-    "when", "match", "fn", "true", "false", "secret", "state", "now", "random", "http", "stripe", "json", "parse_json",
+    "when", "match", "fn", "true", "false", "secret", "state", "now", "random", "random_bytes", "http", "stripe", "json", "parse_json",
 ];
 
 /// The noun the tree calls another flow's actions by (`import { charge } from "flow:billing-v2"`
@@ -1589,7 +1589,15 @@ impl<'a> Lowerer<'a> {
             }
             // In an `every` block, `now` is the time of its tick.
             ExprKind::Noun(Noun::Now) if let FrameKind::Every { tick } = &self.cur().kind => Ok(self.out(&tick.clone())),
-            ExprKind::Noun(n) => self.node(if *n == Noun::Now { "clock" } else { "random" }, &[], e.span),
+            ExprKind::Noun(n) => self.node(
+                match n {
+                    Noun::Now => "clock",
+                    Noun::Random => "random",
+                    Noun::RandomBytes => "random_bytes",
+                },
+                &[],
+                e.span,
+            ),
             ExprKind::Call { callee, args } => self.call(callee, args, e.span),
             ExprKind::Leaf { leaf, params, args, number } => self.leaf_form(leaf, params, args, *number, e.span),
             ExprKind::TextOrList { subject, method, args } => self.text_or_list(subject, method, args, e.span),
