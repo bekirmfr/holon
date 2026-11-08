@@ -384,6 +384,24 @@ rounds, requests a second, with the server's CPU a request; no errors:
   WSL2's sync passes through Hyper-V to a `.vhdx` on NTFS and, on ext4, likely commits the new
   size through the journal as well: about twice Windows'. A drive with power-loss protection
   (most server SSDs) answers a flush in microseconds, on any system.
+
+  The same test on the same machine on 2026-11-08, with a build after #48 (kept children, values
+  handed as they are, a run's state shared), one run of each route:
+
+  | | strict | lazy | unrecorded |
+  |---|---|---|---|
+  | rc.33, 2026-11-05 | 1,649, p50 4.64 ms | 22,388, p50 0.29 ms | 65,467, p50 0.12 ms |
+  | after #48, 2026-11-08 | 1,688, p50 4.38 ms | 30,790, p50 0.23 ms | 79,999, p50 0.09 ms |
+  | change | +2% | +38% | +22% |
+
+  Strict didn't move: 16,883 runs in 4,220 syncs, 4.0 a sync, about 2.4 ms each, the drive's
+  flush as before. The routes that don't wait for it gained what the host no longer does a
+  request; the race through a server on Linux showed `hello` within noise at 16 connections
+  ([above](#through-a-server-again-after-the-kept-children-and-small-values-490d03e-2026-11-07)),
+  so this machine shows the request's own costs more. One run, not alternating rounds. Lazy's
+  last second fell to 17,678 requests, its slowest 493 ms (59.7 ms on 2026-11-05), once its log
+  held about 300,000 runs: the log's cut and seal, or the antivirus reading a growing file, not
+  told apart; its p99 stayed 0.49 ms.
 - **Writes sync three times** (value, snapshot, head) under the cell's lock. A group commit across
   writes (C4, Q4) is not done; the store's global lock is still taken on a miss and every put.
 - **`crunch` is 2.8% above where it was before #43** in instructions, after small values are
