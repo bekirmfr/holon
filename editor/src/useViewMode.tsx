@@ -32,7 +32,7 @@ import {
 } from "./replay";
 import { stable } from "./textSync";
 import { printHolon } from "./holonText";
-import { getDeployedDocument, getLog, type DeploymentEntry, type FlowDocument, type LogEntry, type VersionEntry } from "./server";
+import { getDeployedDocument, getLog, type DeploymentEntry, type FlowDocument, type LogEntry } from "./server";
 import { BottomPane, type InsideStep, type InspectorRun } from "./ViewPanes";
 import type { FlowMeta } from "./tabs";
 
@@ -102,28 +102,6 @@ export function useViewMode(input: ViewModeInput) {
       stale = true;
     };
   }, [viewing, runUnit, viewUnit, ev, restoring, setNodes, setEdges, viewDoc, setViewTrace, setViewUnit]);
-  // A version picked in the history, its canvas shown with no run selected: which, or why not.
-  const [shownVersion, setShownVersion] = useState<string | null>(null);
-  const showVersion = useCallback(
-    (v: VersionEntry) => {
-      if (!viewing) return;
-      setSelectedRun(null);
-      setStep(null);
-      getDeployedDocument(viewing, v.unit)
-        .then((doc) => {
-          restoreDocument(doc, ev);
-          restoring.current = true;
-          setNodes(doc.nodes as PrimitiveNodeType[]);
-          setEdges(doc.edges as Edge[]);
-          viewDoc.current = doc;
-          setViewTrace(doc.trace);
-          setViewUnit(v.unit);
-          setShownVersion(`version ${v.number}'s canvas${v.current ? ", deployed now" : ""}`);
-        })
-        .catch(() => setShownVersion(`version ${v.number}'s canvas isn't kept`));
-    },
-    [viewing, ev, restoring, setNodes, setEdges, viewDoc, setViewTrace, setViewUnit, setSelectedRun, setStep],
-  );
   // A version's flow as text, for the diff of a restore's dry run: printed, and with the names
   // its text gave its nodes when it was deployed from text, so two versions compare as they read.
   const codeText = useCallback(
@@ -136,9 +114,7 @@ export function useViewMode(input: ViewModeInput) {
   );
   const note = onOtherVersion
     ? versionNote || "loading the version it ran on…"
-    : !selectedRun && shownVersion
-      ? shownVersion
-      : viewUnit && currentUnit && viewUnit !== currentUnit
+    : viewUnit && currentUnit && viewUnit !== currentUnit
         ? `shown on the version it ran on (${viewUnit.slice(0, 8)}…), an earlier deploy`
         : "";
 
@@ -381,7 +357,6 @@ export function useViewMode(input: ViewModeInput) {
     openRun,
     onStep,
     onNodeClick,
-    showVersion,
   };
 }
 
@@ -435,7 +410,6 @@ export function ViewModePanes({ view, flow, nodes, onRestored }: { view: ViewMod
         diagnosis={replayed?.diagnosis ?? null}
         onShowNode={view.showNode}
         onFitToNodes={view.fitToNodes}
-        onShowVersion={view.showVersion}
         onRestored={onRestored}
         codeText={view.codeText}
       />

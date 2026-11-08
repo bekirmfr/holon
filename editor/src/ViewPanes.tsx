@@ -1,19 +1,18 @@
 // View mode's panes around the canvas of a deployed flow. The bottom pane shows the flow log
 // live (every request, trigger and tick). Left side: a sortable, filterable run list with copy
-// and export buttons, a capability-badge column and ↺ (go back to the run), or (its history
-// button) the deployment's history, what was done to it, any row of which is picked into the
-// details and gone back to (HistoryPane.tsx). Right side: two tabs — Details (what the run
+// and export buttons, a capability-badge column and ↺ (go back to the run; the rest of its
+// history is its page's, FlowPage.tsx). Right side: two tabs — Details (what the run
 // read and produced) and Timeline (one row per node, timed by the server). The width of the
 // split is draggable and remembered. The side pane shows the selected run's flow state as of the
 // current step, and the selected node: its params, and the inputs and outputs it had in that run
 // (replayed, replay.ts).
 
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
-import { downloadRuns, getCollectionItems, type LogEntry, type Tally, type VersionEntry } from "./server";
+import { downloadRuns, getCollectionItems, type LogEntry, type Tally } from "./server";
 import { field, runActions, runLabel, text } from "./runs";
 import { useFlowLog } from "./useFlowLog";
 import { tallyRows } from "./tallies";
-import { BackButton, everything, HistoryList, itemDetails, useHistory, useRestore } from "./HistoryPane";
+import { BackButton, everything, useHistory, useRestore } from "./HistoryPane";
 import { CellHistoryButton } from "./CellHistory";
 import { buildTimeline, targetOf, type CodeText, type TimelineItem } from "./timeline";
 import { formatValue, detectRenderer, availableRenderers, type RendererKind } from "./diagnostics";
@@ -199,7 +198,6 @@ export function BottomPane({
   diagnosis,
   onShowNode,
   onFitToNodes,
-  onShowVersion,
   onRestored,
   codeText,
 }: {
@@ -208,9 +206,7 @@ export function BottomPane({
   onSelect: (e: LogEntry | null) => void;
   /** A version's flow as text (its unit's), for a restore's diff. */
   codeText?: CodeText;
-  /** Show a version's canvas (the history's). */
-  onShowVersion?: (v: VersionEntry) => void;
-  /** After a restore from the history: the deployment changed. */
+  /** After a restore (↺ on a run): the deployment changed. */
   onRestored?: () => void;
   /** The step shown (index into `order`), or null for the whole run. */
   step: number | null;
@@ -313,11 +309,6 @@ export function BottomPane({
     ",": () => runBeside(-1),
     ".": () => runBeside(1),
   });
-  // A history row that isn't a run: no run shown, and live stops so none comes back.
-  const unpick = () => {
-    setLive(false);
-    onSelect(null);
-  };
 
   const [chainNote, setChainNote] = useState("");
   const copyHead = () =>
@@ -382,7 +373,6 @@ export function BottomPane({
         tallies={tallies}
         selected={selected}
         pick={pick}
-        unpick={unpick}
         slug={slug}
         order={order}
         nodes={nodes}
@@ -395,13 +385,6 @@ export function BottomPane({
         diagnosis={diagnosis ?? null}
         onShowNode={onShowNode}
         onFitToNodes={onFitToNodes}
-        onShowVersion={
-          onShowVersion &&
-          ((v) => {
-            setLive(false);
-            onShowVersion(v);
-          })
-        }
         onRestored={onRestored}
         codeText={codeText}
       />
@@ -417,7 +400,6 @@ function LogTab({
   tallies,
   selected,
   pick,
-  unpick,
   slug,
   order,
   nodes,
@@ -430,11 +412,9 @@ function LogTab({
   diagnosis,
   onShowNode,
   onFitToNodes,
-  onShowVersion,
   onRestored,
   codeText,
 }: {
-  onShowVersion?: (v: VersionEntry) => void;
   onRestored?: () => void;
   codeText?: CodeText;
   entries: LogEntry[];
@@ -442,8 +422,6 @@ function LogTab({
   tallies: Record<string, Tally>;
   selected: LogEntry | null;
   pick: (e: LogEntry) => void;
-  /** Show no run: a history row that isn't one is picked. */
-  unpick: () => void;
   slug: string;
   order: string[];
   nodes: ViewNode[];
@@ -461,13 +439,11 @@ function LogTab({
   const [sortBy, setSortBy] = useState<SortKey>("seq");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
   const [rightTab, setRightTab] = useState<"details" | "errors" | "timeline">("details");
-  const [leftView, setLeftView] = useState<"runs" | "history">("runs");
   const [rightWidth, setRightWidth] = useState<number | null>(rememberedSplit);
   const [selectedSeqs, setSelectedSeqs] = useState<Set<number>>(new Set());
   const [compareRuns, setCompareRuns] = useState<[LogEntry, LogEntry] | null>(null);
 
-  // The history: the timeline of its runs, versions and events, a row of it picked (a run picked
-  // in the list is its row too), and going back to one.
+  // The history, for what ↺ on a run goes back to: the timeline of its runs, versions and events.
   const history = useHistory(slug);
   const currentUnit = history.versions.find((v) => v.current)?.unit;
   const timeline = useMemo(() => buildTimeline(entries, history.events, history.versions), [entries, history.events, history.versions]);
@@ -479,19 +455,6 @@ function LogTab({
     onRestored?.();
   }, [refreshHistory, onRestored]);
   const restorer = useRestore(slug, restoreDone, history.versions, codeText);
-  const [pickedKey, setPickedKey] = useState<string | null>(null);
-  const pickedIndex = pickedKey === null ? undefined : byKey.get(pickedKey);
-  const pickedItem = leftView === "history" && pickedIndex !== undefined ? timeline[pickedIndex] : undefined;
-  const pickRun = (e: LogEntry) => {
-    setPickedKey(`r${e.seq}`);
-    pick(e);
-  };
-  const pickItem = (item: TimelineItem) => {
-    restorer.setNote(null);
-    setPickedKey(item.key);
-    if (item.kind === "run") pick(item.run);
-    else unpick();
-  };
 
   useEffect(() => {
     if (diagnosis) setRightTab("errors");
@@ -692,27 +655,16 @@ function LogTab({
   return (
     <>
     <div ref={container} style={{ display: "flex", flex: 1, minHeight: 0 }}>
-      {/* Left column: filter bar + history or runs */}
+      {/* Left column: filter bar + runs */}
       <div style={{ display: "flex", flexDirection: "column", flex: rightWidth !== null ? "1 1 0" : "1 1 55%", minWidth: 0, borderRight: "1px solid var(--border)" }}>
         <div style={{ display: "flex", gap: 6, alignItems: "center", padding: "3px 8px", borderBottom: "1px solid var(--border)", flexShrink: 0 }}>
           <input
-            placeholder={leftView === "runs" ? "filter runs…" : "filter history…"}
+            placeholder="filter runs…"
             value={filter}
             onChange={(e) => setFilter(e.target.value)}
             style={{ ...small, background: "var(--surface-2)", color: ink, width: 160 }}
           />
-          <button
-            onClick={() => {
-              setLeftView(leftView === "runs" ? "history" : "runs");
-              setFilter("");
-            }}
-            aria-pressed={leftView === "history"}
-            title={leftView === "runs" ? "what was done to it: deploys, restores, grants, pauses; going back to one" : "back to the runs"}
-            style={{ ...small, color: leftView === "history" ? "var(--accent-ink)" : "var(--muted)", background: leftView === "history" ? "var(--accent)" : "transparent" }}
-          >
-            history
-          </button>
-          {filter && leftView === "runs" && <span style={{ color: dim }}>{filtered.length} of {entries.length}</span>}
+          {filter && <span style={{ color: dim }}>{filtered.length} of {entries.length}</span>}
           <span style={{ flex: 1 }} />
           {selectedSeqs.size > 0 && (
             <>
@@ -732,20 +684,7 @@ function LogTab({
             {restorer.note.text}
           </div>
         )}
-        {leftView === "history" && (
-          <HistoryList
-            timeline={timeline}
-            query={filter}
-            pickedKey={pickedKey}
-            onPick={pickItem}
-            targetFor={targetFor}
-            busy={restorer.busy}
-            onRestore={restorer.restore}
-            onShowVersion={onShowVersion}
-            error={history.error}
-          />
-        )}
-        <div style={{ display: leftView === "runs" ? "flex" : "none", flexDirection: "column", flex: 1, minHeight: 0 }}>
+        <div style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0 }}>
           <div style={{ display: "flex", gap: 10, padding: "2px 6px", borderBottom: "1px solid var(--border)", fontSize: 10, flexShrink: 0 }}>
             <input type="checkbox" checked={allVisibleSelected} onChange={toggleAllVisible} style={{ width: 12, cursor: "pointer", accentColor: "var(--accent)", flexShrink: 0 }} title={allVisibleSelected ? "deselect all visible" : "select all visible"} />
             <SortHeader k="seq" label="#" w={30} />
@@ -780,7 +719,7 @@ function LogTab({
               return (
                 <div
                   key={e.seq}
-                  onClick={() => pickRun(e)}
+                  onClick={() => pick(e)}
                   onDoubleClick={() => {
                     if (order.length > 0 && selected?.seq === e.seq) onFitToNodes(order);
                     else fitPendingSeq.current = e.seq;
@@ -856,13 +795,7 @@ function LogTab({
           </Tabs>
           {rightTab === "details" ? (
             <div style={{ ...scroll, display: "flex", flexDirection: "column", gap: 4 }}>
-              {pickedItem && pickedItem.kind !== "run" ? (
-                <div className="hl-history__details" style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-                  {itemDetails(pickedItem, targetFor(pickedItem)).map(([name, value]) => (
-                    <Field key={name} name={name} value={value} color={value.startsWith("no: ") ? dim : undefined} />
-                  ))}
-                </div>
-              ) : selected ? (
+              {selected ? (
                 <>
                   {selected.url && (
                     <div style={{ color: ink }}>{selected.method} {selected.url}</div>

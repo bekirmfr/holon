@@ -4,6 +4,8 @@
 
 import { useMemo, useState, type MouseEvent, type ReactNode } from "react";
 import { DeploymentCard } from "./DeploymentCard";
+import { HistoryTab } from "./HistoryPane";
+import type { CodeText } from "./timeline";
 import { outside, runLabel, runOutcome, type Outcome } from "./runs";
 import { format, type FlowTab, type Route } from "./routes";
 import { downloadRuns, getLog, type DeploymentEntry, type LogEntry, type Role } from "./server";
@@ -14,6 +16,7 @@ import { useFlowLog } from "./useFlowLog";
 const TABS: [FlowTab, string][] = [
   ["status", "Status"],
   ["runs", "Runs"],
+  ["history", "History"],
 ];
 
 const STATUS_MARK: Record<DeploymentEntry["status"], string> = { running: "●", paused: "❚❚", stopped: "■" };
@@ -32,6 +35,8 @@ export function FlowPage({
   navigate,
   role,
   card,
+  codeText,
+  onRestored,
 }: {
   slug: string;
   tab: FlowTab;
@@ -39,6 +44,10 @@ export function FlowPage({
   entry: DeploymentEntry | undefined;
   navigate: (r: Route) => void;
   role: Role;
+  /** Its versions printed as text, for a restore's diff. */
+  codeText: CodeText;
+  /** A restore from its history changed it: the table should be fetched again. */
+  onRestored: () => void;
   /** What its card does (DeploymentCard.tsx), shown on Status until that tab is its own. */
   card: {
     onAction: (action: "run" | "pause" | "stop", from?: "latest" | "fresh" | number) => Promise<void>;
@@ -80,6 +89,8 @@ export function FlowPage({
           </nav>
           {tab === "runs" ? (
             <RunsTab slug={slug} navigate={navigate} />
+          ) : tab === "history" ? (
+            <HistoryTab slug={slug} codeText={codeText} onRestored={onRestored} onOpenRun={(seq) => navigate({ kind: "run", slug, seq })} />
           ) : (
             <DeploymentCard
               entry={entry}

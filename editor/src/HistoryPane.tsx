@@ -1,5 +1,5 @@
-// View mode's history: the deployment's timeline (timeline.ts), what was done to it and the
-// versions it was deployed with, newest first (its runs too, when asked: they are the run list's);
+// A flow's history, its page's History tab: the deployment's timeline (timeline.ts), what was
+// done to it and the versions it was deployed with, newest first (its runs too, when asked);
 // and going back to any point in it (docs/L4s/history-L4.md §4). Each row is picked (its details
 // show beside it) and goes back: a run or a version to itself, anything else to how it was right
 // after. A row picked shows what can be restored to it: its code, its state, or both; ↺ on a row
@@ -9,7 +9,10 @@
 
 import { useCallback, useEffect, useMemo, useState, type CSSProperties, type ReactNode } from "react";
 import { getEvents, getVersions, restoreDeployment, type DeploymentEvent, type RestoreDone, type RestorePoint, type RestorePreview, type VersionEntry } from "./server";
+import { runLabel } from "./runs";
+import { useFlowLog } from "./useFlowLog";
 import {
+  buildTimeline,
   filterOf,
   itemText,
   pointLabel,
@@ -17,6 +20,7 @@ import {
   restoredLine,
   restoreReport,
   restoreParts,
+  targetOf,
   TIMELINE_FILTERS,
   versionWhat,
   type CodeText,
@@ -44,6 +48,78 @@ const small: CSSProperties = {
 };
 const time = (ms: number) => new Date(ms).toLocaleTimeString();
 const KIND_COLOR: Record<string, string> = { deploy: "var(--accent)", restore: "var(--warn)", grant: "var(--db)", secret: "var(--warn)", binding: "var(--muted)", lifecycle: dim };
+
+/** The History tab: the timeline, filtered by its kinds and by words; a row picked shows its
+ *  details beside it and the Go back card above, and ↺ on a row goes back to it. `codeText`
+ *  prints a version, for a restore's diff; `onRestored`: a restore changed the deployment. */
+export function HistoryTab({ slug, codeText, onRestored, onOpenRun }: { slug: string; codeText: CodeText; onRestored: () => void; onOpenRun: (seq: number) => void }) {
+  const history = useHistory(slug);
+  const { entries } = useFlowLog(slug);
+  const currentUnit = history.versions.find((v) => v.current)?.unit;
+  const timeline = useMemo(() => buildTimeline(entries, history.events, history.versions), [entries, history.events, history.versions]);
+  const byKey = useMemo(() => new Map(timeline.map((item, i) => [item.key, i])), [timeline]);
+  const targetFor = useCallback((item: TimelineItem) => targetOf(timeline, byKey.get(item.key) ?? 0, currentUnit), [timeline, byKey, currentUnit]);
+  const refresh = history.refresh;
+  const done = useCallback(() => {
+    refresh();
+    onRestored();
+  }, [refresh, onRestored]);
+  const restorer = useRestore(slug, done, history.versions, codeText);
+  const [query, setQuery] = useState("");
+  const [pickedKey, setPickedKey] = useState<string | null>(null);
+  const picked = pickedKey === null ? undefined : timeline.find((i) => i.key === pickedKey);
+  return (
+    <section className="hl-flow__history" aria-label="history">
+      <div className="hl-flow__bar">
+        <input className="hl-flow__filter" aria-label="filter history" placeholder="filter history…" value={query} onChange={(e) => setQuery(e.target.value)} />
+      </div>
+      {restorer.modal}
+      {restorer.note && (
+        <div className="hl-history__note" style={{ color: restorer.note.ok ? good : bad }}>
+          {restorer.note.text}
+        </div>
+      )}
+      <div className="hl-flow__split">
+        <HistoryList
+          timeline={timeline}
+          query={query}
+          pickedKey={pickedKey}
+          onPick={(item) => {
+            restorer.setNote(null);
+            setPickedKey(item.key);
+          }}
+          targetFor={targetFor}
+          busy={restorer.busy}
+          onRestore={restorer.restore}
+          error={history.error}
+        />
+        <div className="hl-history__details">
+          {!picked ? (
+            <span style={{ color: dim }}>Pick a row: what happened, and what going back to it would do.</span>
+          ) : picked.kind === "run" ? (
+            <>
+              <span style={{ color: ink }}>
+                run #{picked.run.seq} · {runLabel(picked.run)}
+              </span>
+              <button className="hl-flow__button" onClick={() => onOpenRun(picked.run.seq)}>
+                Open run #{picked.run.seq}
+              </button>
+            </>
+          ) : (
+            <dl>
+              {itemDetails(picked, targetFor(picked)).map(([name, value]) => (
+                <div key={name}>
+                  <dt>{name}</dt>
+                  <dd style={value.startsWith("no: ") ? { color: dim } : undefined}>{value}</dd>
+                </div>
+              ))}
+            </dl>
+          )}
+        </div>
+      </div>
+    </section>
+  );
+}
 
 /** The deployment's events and versions, polled. */
 export function useHistory(slug: string) {
@@ -159,7 +235,6 @@ export function HistoryList({
   targetFor,
   busy,
   onRestore,
-  onShowVersion,
   error,
 }: {
   /** All of it, newest first, its runs too. */
@@ -171,8 +246,6 @@ export function HistoryList({
   targetFor: (item: TimelineItem) => Target;
   busy: boolean;
   onRestore: (target: Target, what: { code: boolean; state: boolean }) => void;
-  /** Show a version's canvas. */
-  onShowVersion?: (v: VersionEntry) => void;
   error: string;
 }) {
   const [shown, setShown] = useState<Set<TimelineFilter>>(() => new Set(TIMELINE_FILTERS.map(([f]) => f).filter((f) => f !== "runs")));
@@ -182,7 +255,6 @@ export function HistoryList({
   }, [timeline, shown, query]);
   const picked = pickedKey === null ? undefined : timeline.find((i) => i.key === pickedKey);
   const pickedTarget = picked && targetFor(picked);
-  const pickedVersion = picked && picked.kind !== "run" ? picked.version : undefined;
 
   const toggle = (f: TimelineFilter) =>
     setShown((old) => {
@@ -212,7 +284,6 @@ export function HistoryList({
           target={pickedTarget}
           busy={busy}
           onRestore={(what) => onRestore(pickedTarget, what)}
-          onShowVersion={pickedVersion?.canvas && onShowVersion ? () => onShowVersion(pickedVersion) : undefined}
         />
       )}
       {error && <div style={{ color: bad, padding: "3px 8px" }}>{error}</div>}
@@ -246,7 +317,7 @@ function HistoryRow({ item, active, onClick, back }: { item: TimelineItem; activ
     background: active ? "var(--surface)" : "transparent",
   };
   const badge = (text: string, color: string) => <span style={{ color, width: 58, flexShrink: 0, fontSize: 10 }}>{text}</span>;
-  const when = <span style={{ color: dim, width: 76, flexShrink: 0, whiteSpace: "nowrap" }}>{time(item.at_ms)}</span>;
+  const when = <span style={{ color: dim, width: 90, flexShrink: 0, whiteSpace: "nowrap" }}>{time(item.at_ms)}</span>;
   const by = (who: string | null | undefined) => <span style={{ color: dim, flexShrink: 0 }}>{who ? `by ${who}` : "by the host"}</span>;
   const end = <span style={{ flexShrink: 0 }}>{back}</span>;
   if (item.kind === "run") {
@@ -298,12 +369,10 @@ function RestoreBar({
   target,
   busy,
   onRestore,
-  onShowVersion,
 }: {
   target: Target;
   busy: boolean;
   onRestore: (what: { code: boolean; state: boolean }) => void;
-  onShowVersion?: () => void;
 }) {
   const { code, state } = target.why;
   const codeFrom = target.code ? `${pointLabel(target.code)}'s code` : "its code";
@@ -322,12 +391,6 @@ function RestoreBar({
     <section className="hl-history__restore" aria-label={`go back to ${target.label}`}>
       <div className="hl-history__restore-head">
         <span>Go back to {target.label}</span>
-        <span style={{ flex: 1 }} />
-        {onShowVersion && (
-          <button style={small} onClick={onShowVersion} title="show its canvas">
-            canvas
-          </button>
-        )}
       </div>
       <div className="hl-seg" role="radiogroup" aria-label="what goes back">
         {options.map((o) => (

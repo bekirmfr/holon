@@ -648,7 +648,7 @@ test("basket reads a price inside a mapped function, per item, and its run repla
   expect((await request.post(`http://127.0.0.1:${port}/basket`, { data: { items: [{ name: `scone-${Date.now()}`, qty: 1 }] } })).status()).toBe(404);
 });
 
-test("price-rollback: an earlier version's code restored from view mode's history answers as it did, its prices kept, then its prices restored", async ({ page, request, adminToken }) => {
+test("price-rollback: an earlier version's code restored from its page's history answers as it did, its prices kept, then its prices restored", async ({ page, request, adminToken }) => {
   await openSample(page, "Price rollback (an earlier version's code, or its prices, back)");
   const port = await deploy(page);
   const tea = `tea-${Date.now()}`;
@@ -672,11 +672,10 @@ test("price-rollback: an earlier version's code restored from view mode's histor
   const versions = ((await listed.json()) as { versions: { number: number; current: boolean }[] }).versions;
   expect(versions[0].current).toBe(true);
   const [now, before] = [versions[0].number, versions[1].number];
-  // The one before it, picked in view mode's history, its code restored with the button: a dry
+  // The one before it, picked in its page's history, its code restored with the button: a dry
   // run first, confirmed in a dialog; then a new version naming it.
-  await viewNewestRun(page);
-  const bottom = page.locator(".hl-view__bottom");
-  await bottom.getByRole("button", { name: "history", exact: true }).click();
+  await page.goto("/#price-rollback.history");
+  const bottom = page.getByRole("region", { name: "history" });
   const pickBefore = () => bottom.locator(".hl-history__row").filter({ hasText: new RegExp(`deployed version ${before}(?!\\d)`) }).first().click();
   await pickBefore();
   const goBack = bottom.getByRole("region", { name: `go back to version ${before}` });

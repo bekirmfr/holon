@@ -116,9 +116,8 @@ test("an agent asks through holon mcp to put a run's state back, and a person re
     expect(await total()).toBe(105);
 
     // The person finds it in the history, its details saying who asked, and restores it.
-    await page.locator(".hl-canvas").getByRole("button", { name: "view", exact: true }).dispatchEvent("click");
-    const bottom = page.locator(".hl-view__bottom");
-    await bottom.getByRole("button", { name: "history", exact: true }).click();
+    await page.goto(`/#${name}.history`);
+    const bottom = page.getByRole("region", { name: "history" });
     await bottom.locator(".hl-history__row").filter({ hasText: `asks to put back the state run ${first} left` }).first().click();
     await expect(bottom.locator(".hl-history__details")).toContainText(`run ${first}'s state, for a person to restore`);
     await expect(bottom.locator(".hl-history__details")).toContainText("(agent)");

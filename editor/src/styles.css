@@ -216,6 +216,14 @@ body {
 .hl-flow__waiting { color: var(--warn); }
 .hl-flow__tally { font-size: 11px; color: var(--faint); }
 .hl-flow__what { color: var(--ink); }
+.hl-flow__filter { font: inherit; font-size: 12px; padding: 3px 8px; color: var(--ink); background: var(--surface-2); border: 1px solid var(--border); border-radius: 4px; width: 220px; }
+.hl-flow__split { display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: 16px; align-items: start; }
+.hl-flow__history .hl-history { border: 1px solid var(--border); border-radius: 5px; }
+.hl-history__details { display: flex; flex-direction: column; gap: 8px; font-size: 12px; border: 1px solid var(--border); border-radius: 5px; padding: 10px; position: sticky; top: 0; }
+.hl-history__details dl { margin: 0; display: grid; gap: 4px; }
+.hl-history__details dl > div { display: grid; grid-template-columns: 110px minmax(0, 1fr); gap: 8px; }
+.hl-history__details dt { color: var(--faint); }
+.hl-history__details dd { margin: 0; color: var(--body); overflow-wrap: anywhere; }
 .hl-table { width: 100%; border-collapse: collapse; font-size: 12px; }
 .hl-table th { text-align: left; font-weight: 400; color: var(--faint); padding: 4px 8px; border-bottom: 1px solid var(--border-strong); }
 .hl-table td { padding: 4px 8px; border-bottom: 1px solid var(--border); color: var(--body); }
