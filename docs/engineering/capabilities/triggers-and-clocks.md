@@ -26,8 +26,8 @@ starts nothing: a send is a sink, and a subscription is a route's run.
 Samples: `hello-api` (routes), `heartbeat` (a clock alone), `rolling-log` (a clock that keeps 5
 runs), `ticker` (a clock beside routes, and an action), `drop-box` (a file handler alone),
 `file-audit` (several file handlers, removals, `matching`), `drop-board` (file handlers beside
-routes), `billing` and `shop` (actions, and a flow calling another's), `approval` (a resume route),
-`status-board` (each handler's log level).
+routes), `remittance-mail` (a mail handler beside routes), `billing` and `shop` (actions, and a
+flow calling another's), `approval` (a resume route), `status-board` (each handler's log level).
 
 ## 2. How it works
 
@@ -77,6 +77,19 @@ are seen, not run on; a file the flow's own runs wrote, copied or deleted starts
 starts at most `MAX_RUNS_PER_LOOK` (100) runs a deployment. A server's file handlers each run
 alone, a file two handlers are for starting a run of each, logged as `file` under the label.
 
+### Mail
+
+`inbox.rs` is the same for a mail handler (`on.mail(remit, (m) => …)`, host-capabilities L4
+§5.2.4): a thread looks every second for the mailboxes running deployments listen to whose
+binding's `--every` has come round, logs in over IMAP (`imap.rs`), and starts one run for each
+message that came since, 20 a look at most, its message read by core (`mail::received`) the run's
+input as `MailArrival("remit")`. Once the run is over the message is moved to the binding's
+`--done`; its UID is noted first, so a move a crash cut off is made at the next look. What the
+folder holds at the first look is seen, not run on, and a second copy of a message is moved without
+a run. What each deployment has seen is in `mail-seen/<slug>/<mail>.json` beside its log; a look
+that fails is on the timeline once, and again when the mailbox reads again. Logged as `mail` under
+the label.
+
 ### Actions and flow calls
 
 `POST /trigger/<slug>/<name>` (`handle_post_action`) runs one action with a JSON body (nothing is
@@ -95,7 +108,7 @@ strict when absent):
 
 | Run | Level |
 |---|---|
-| a route, an `every` handler, a file handler, an action | as its `log` option says (`Permit::log_level`) |
+| a route, an `every` handler, a file or mail handler, an action | as its `log` option says (`Permit::log_level`) |
 | a request no route took | `lazy` (Q12) |
 | a resumed part | strict |
 

@@ -71,7 +71,7 @@ An import names something the flow uses from outside a run. Its source says what
 | `import inbox from "folder:NAME"` | a named folder on the host, used as `inbox[file]` |
 | `import shop from "database:NAME"` | a named database on the host, used as `shop.query(sql, …)` |
 | `import updates from "channel:NAME"` | a channel: `updates.send(x)`, `updates.subscribe()`, `updates.pipe(…)` |
-| `import ops from "mail:NAME"` | a mail the server sends through, bound by an admin: `ops.send({ to, subject, text })` |
+| `import ops from "mail:NAME"` | a mail the server sends through, bound by an admin: `ops.send({ to, subject, text })`; bound to a mailbox, `on.mail(ops, (m) => …)` runs on what comes to it |
 | `import api from "host:HOST"` | a host the flow calls over HTTPS, as `await api.get("/path")` |
 | `import { now } from "holon:clock"` | the time the run started |
 | `import { random } from "holon:random"` | one random number for the run |
@@ -533,6 +533,7 @@ Each of these is one building block, and each is one thing the flow may do.
 | `dir[name] = handle`, `dir.copy(name, handle)` | copy a file by handle when the run finishes |
 | `dir.create(name, text)`, `dir.create_copy(name, handle)` | the same write (a text or bytes) or copy, only if there is no such file yet: else the run fails, and nothing it did lands |
 | `f` in `on.file.created(dir, (f) => …)` | the handle of the file that started the run: `{folder, name, size, hash, modified, event}` |
+| `m` in `on.mail(ops, (m) => …)` | the message that started the run: `{from, name, to, cc, subject, date, message_id, text, html, attachments, authenticated, verdict}`; `authenticated` is the mailbox's own server's word that the domain in `from` sent it |
 | `db.query(sql, v1, v2, …)` | the rows of a database, a list of records, as the run began; `$1`, `$2`, … in the SQL are the values after it |
 | `db.one(sql, v1, …)` | the first row, or no value when there is none |
 | `db.exec(sql, v1, …)`, `db.exec(sql, …, { expect: n })` | run an `insert`, `update` or `delete` when the run finishes; with `expect`, only if it changes exactly `n` rows, else nothing the run wrote lands and a route answers 409 |
@@ -556,8 +557,8 @@ Rules:
   deployment asks for. The path, headers and body can come from anywhere.
 - **A mail's recipients are part of its grant.** Each one written as text in quotes is granted by
   name; one computed from a value is granted as "an address it computes", which the binding's
-  list of addresses holds. The sender is the binding's, never the flow's. See [Sending
-  mail](../guides/mail.md).
+  list of addresses holds. The sender is the binding's, never the flow's. See
+  [Mail](../guides/mail.md).
 - **`now` and a secret are the same within a run,** however often they are written.
 - **A file sent with `file:`** must be in a folder the flow reads, or be the new file that
   started the run. The server checks, before and as it sends, that the bytes still have the
@@ -664,6 +665,11 @@ route.get("/seen/:name", (req) => seen[req.params.name])
   from the folder, and `{ matching: "*.csv" }` for the names that match (`*` and `?` within a
   folder, `**/` any number of folders, letters either case). Several handlers may watch one
   folder, each with its own pattern.
+- **`on.mail(ops, (m) => { … })`** runs for each message that comes to the mailbox an admin bound
+  `ops` to (`holon mail add ops --imap …`); `m` is the message, read, and it is moved to the
+  binding's done folder once the run is over. One handler a mail; what the mailbox held when the
+  flow was deployed isn't run on. `From` proves nothing: check `m.authenticated`
+  ([Receiving mail](../guides/mail.md#receiving-mail)).
 - **`export const NAME = action((input) => { … })`** runs when someone runs it by its name,
   `input` what they sent (a JSON value; `{}` for nothing). It answers with what it returns, a
   value alone (no `status(…)` or `respond(…)`); one that only writes answers nothing. It is

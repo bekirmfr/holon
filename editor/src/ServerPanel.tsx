@@ -17,7 +17,7 @@ import {
   type Method,
 } from "./endpoint";
 import { sendRequest, ServerError, tickNow, type HttpResponse, type Role } from "./server";
-import type { ActionDraft, ClockDraft, FileDraft } from "./canvasOps";
+import type { ActionDraft, ClockDraft, FileDraft, MailDraft } from "./canvasOps";
 import { ActionRows } from "./ActionRows";
 
 const field: CSSProperties = {
@@ -100,6 +100,8 @@ type ToolsPanelProps = {
   clocks?: ClockDraft[];
   /** The file handlers the canvas declares (its `on_file` nodes' groups). */
   files?: FileDraft[];
+  /** The mail handlers the canvas declares (its `on_mail` nodes' groups). */
+  mails?: MailDraft[];
   /** The actions the canvas declares (its `action` nodes' groups). */
   actions?: ActionDraft[];
   /** The flow's running deployment, for "tick now" and "run"; empty when it isn't running. */
@@ -123,6 +125,7 @@ export function ToolsPanel({
   endpoints,
   clocks = [],
   files = [],
+  mails = [],
   actions = [],
   errors,
   liveSlug,
@@ -216,7 +219,7 @@ export function ToolsPanel({
         </button>
         {serverOpen && (
           <>
-            {endpoints.length === 0 && clocks.length === 0 && files.length === 0 && actions.length === 0 && errors.length === 0 && (
+            {endpoints.length === 0 && clocks.length === 0 && files.length === 0 && mails.length === 0 && actions.length === 0 && errors.length === 0 && (
               <div style={{ color: "#3d4f66", fontStyle: "italic" }}>drop a request node (palette, http) and wire it to a respond node to add a route</div>
             )}
             {clocks.map((c) => (
@@ -238,6 +241,12 @@ export function ToolsPanel({
               <div key={f.label} style={{ display: "flex", gap: 6, alignItems: "center" }} title={`runs its group for each file its line is for, in the folder ${f.folder} on the host`}>
                 <span style={{ color: "#6fd3e0", ...lbl }}>on file</span>
                 <span style={{ flex: 1, color: "#e6eefb" }}>{f.label.slice("on file ".length)}</span>
+              </div>
+            ))}
+            {mails.map((m) => (
+              <div key={m.label} style={{ display: "flex", gap: 6, alignItems: "center" }} title={`runs its group for each message that comes to the mailbox of ${m.mail}, then moves it`}>
+                <span style={{ color: "#6fd3e0", ...lbl }}>on mail</span>
+                <span style={{ flex: 1, color: "#e6eefb" }}>{m.mail}</span>
               </div>
             ))}
             <ActionRows names={actions.map((a) => a.name)} slug={tickSlug} role={role} outOfDate={outOfDate} onViewRun={onViewRun} />
@@ -343,6 +352,7 @@ export function ServerPanel({
   endpoints,
   clocks = [],
   files = [],
+  mails = [],
   actions = [],
   errors,
   liveSlug,
@@ -352,5 +362,5 @@ export function ServerPanel({
   onViewRun,
 }: Omit<ToolsPanelProps, "open" | "onOpen">) {
   const [open, setOpen] = useState(true);
-  return <ToolsPanel open={open} onOpen={setOpen} ev={ev} endpoints={endpoints} clocks={clocks} files={files} actions={actions} errors={errors} liveSlug={liveSlug} tickSlug={tickSlug} role={role} outOfDate={outOfDate} onViewRun={onViewRun} />;
+  return <ToolsPanel open={open} onOpen={setOpen} ev={ev} endpoints={endpoints} clocks={clocks} files={files} mails={mails} actions={actions} errors={errors} liveSlug={liveSlug} tickSlug={tickSlug} role={role} outOfDate={outOfDate} onViewRun={onViewRun} />;
 }

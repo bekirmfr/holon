@@ -401,12 +401,19 @@ export function fileLabel(params: ReplayNode["data"]["params"]): string {
   return `on file ${frozen(params, "folder") ?? ""}${frozen(params, "on") === "deleted" ? " deleted" : ""}${matching ? ` matching ${JSON.stringify(matching)}` : ""}`;
 }
 
+/** An `on_mail` node's label, as the log names its handler's runs: `on mail remit` (core's
+ *  `mail_label`). */
+export function mailLabel(params: ReplayNode["data"]["params"]): string {
+  return `on mail ${frozen(params, "mail") ?? ""}`;
+}
+
 /**
  * Which nodes a run touched: for a request, the group holding the request node of its route
  * (`"GET /todos/:id"`); for a clock's tick, the group holding its `every` node (`"every 2s"`);
- * for a file handler's run, the group holding its `on_file` node (`"on file inbox"`); for an
- * action's, the group holding its `action` node (`"action reset"`); for anything else (a flow's
- * tick, a trigger, a flow of `on file` lines), the whole canvas.
+ * for a file handler's run, the group holding its `on_file` node (`"on file inbox"`), a mail
+ * handler's its `on_mail` node (`"on mail remit"`); for an action's, the group holding its
+ * `action` node (`"action reset"`); for anything else (a flow's tick, a trigger, a flow of
+ * `on file` lines), the whole canvas.
  */
 export function runGroup(nodes: ReplayNode[], edges: ReplayEdge[], entry: ReplayInput): string[] {
   if (entry.kind === "trigger" && entry.route) {
@@ -418,6 +425,11 @@ export function runGroup(nodes: ReplayNode[], edges: ReplayEdge[], entry: Replay
     const onFile = nodes.find((n) => n.data.name === "on_file" && n.data.body.kind === "Template" && fileLabel(n.data.params) === entry.route);
     if (!onFile) return [];
     return components(nodes, edges).find((ids) => ids.includes(onFile.id)) ?? [];
+  }
+  if (entry.kind === "mail" && entry.route) {
+    const onMail = nodes.find((n) => n.data.name === "on_mail" && n.data.body.kind === "Template" && mailLabel(n.data.params) === entry.route);
+    if (!onMail) return [];
+    return components(nodes, edges).find((ids) => ids.includes(onMail.id)) ?? [];
   }
   if (entry.kind === "tick" && entry.route) {
     const every = nodes.find(
@@ -554,6 +566,9 @@ export function replay(
     if (primitive && name === "file_arrival") return { inputs, outputs: [sourced.get(`FileArrival(${JSON.stringify(param("folder"))})`) ?? null] };
     // A file handler's file: its handle, likewise.
     if (node.data.body.kind === "Template" && name === "on_file") return { inputs, outputs: [sourced.get(`FileArrival(${JSON.stringify(param("folder"))})`) ?? null] };
+    // The message that started a mail handler's run, as the log keeps it, whole.
+    if ((primitive && name === "mail_arrival") || (node.data.body.kind === "Template" && name === "on_mail"))
+      return { inputs, outputs: [sourced.get(`MailArrival(${JSON.stringify(param("mail"))})`) ?? null] };
     // A waiting point answers with the event the log says was delivered, if any.
     if (primitive && name === "await") return { inputs, outputs: [entry.events?.[param("name")] ?? null] };
     // A token is a credential: the log has it redacted, and so does the replay.

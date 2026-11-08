@@ -35,7 +35,7 @@ Everything is one program, `holon`. `holon help` lists the commands; `serve`, `e
 | [`holon folder`](#holon-folder) | bind the folders flows use |
 | [`holon store`](#holon-store) | sweep what nothing kept names from the content store |
 | [`holon database`](#holon-database) | bind the databases flows use, and list their tables |
-| [`holon mail`](#holon-mail) | bind the mail flows send through |
+| [`holon mail`](#holon-mail) | bind the mail flows send through and receive |
 | [`holon mcp`](#holon-mcp) | the tools for agents, and adding them to an agent's host |
 | [`holon lsp`](#holon-lsp) | a language server for editors |
 | [`holon version`, `update`, `uninstall`, `migrate`](#looking-after-the-install) | the install itself |
@@ -656,23 +656,33 @@ host](../guides/databases.md).
 ## `holon mail`
 
 ```
-holon mail add NAME --smtp SOURCE --from SENDER --to LIST [--for SLUG]
+holon mail add NAME [--smtp SOURCE --from SENDER --to LIST]
+                     [--imap SOURCE [--folder F] [--done F] [--verdict-from SERVER] [--every T]]
+                     [--for SLUG]
 holon mail list
 holon mail remove NAME [--for SLUG]
 ```
 
-Binds a name flows send mail through (`"mail:ops"`) to an SMTP server whose URL, with its login,
-the server fetches from `SOURCE` (`env:HOLON_SECRET_…`, `vault:<mount>/<path>#<field>`), never
-storing or showing it: `smtps://user:password@host` (TLS, port 465), or
-`smtp://user:password@host:587` (STARTTLS, required); plain `smtp://` only to a relay on the same
-machine. It logs in when it is bound. Removing it gives up the mail on its way through it. Needs an
-admin; each takes `--server PORT|URL`. See [Sending mail](../guides/mail.md).
+Binds a name flows import (`"mail:ops"`) to an SMTP server they send through (`--smtp`), a mailbox
+whose messages start their runs (`--imap`, `on.mail(ops, …)`), or both. Each server's URL, with its
+login, the server fetches from `SOURCE` (`env:HOLON_SECRET_…`, `vault:<mount>/<path>#<field>`),
+never storing or showing it: `smtps://user:password@host` (TLS, port 465), or
+`smtp://user:password@host:587` (STARTTLS, required); `imaps://user:password@host` (TLS, port
+993), or `imap://user:password@host:143` (STARTTLS, required); plain `smtp://` and `imap://` only
+to a server on the same machine. It logs in to each when it is bound, and makes the mailbox's
+`--done` folder. Removing it gives up the mail on its way through it. Needs an admin; each takes
+`--server PORT|URL`. See [Mail](../guides/mail.md).
 
 | Option | |
 |---|---|
 | `--smtp SOURCE` | where the server reads the SMTP server's URL |
 | `--from SENDER` | who the mail is from: `"Treasury <treasury@acme.com>"`; never the flow's choice |
 | `--to LIST` | every address it may ever send to, with commas: addresses, `*@domain`, or `*` for anyone |
+| `--imap SOURCE` | where the server reads the mailbox's URL |
+| `--folder F` | the folder read: `INBOX` unless given |
+| `--done F` | where each message is moved once its run is over: `Processed` unless given |
+| `--verdict-from SERVER` | whose `Authentication-Results` verdict on a sender counts: the name the mailbox's own server writes there; without it, no message is authenticated |
+| `--every T` | how often the folder is looked at: `1m` unless given, `10s` at least |
 | `--for SLUG` | for that deployment only |
 
 ## `holon mcp`

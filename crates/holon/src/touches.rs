@@ -39,6 +39,7 @@ pub(crate) fn part(item: &str) -> (&'static str, &'static str, String, String) {
         "Unrecorded" => ("other", "log", arg, s("not recorded")),
         "Await" => ("triggers", "wait", arg, s("wait for it")),
         "FileArrival" => ("resources", "folder", arg, s("watch")),
+        "MailArrival" => ("resources", "mail", arg, s("receive")),
         "FileRead" => ("resources", "folder", arg, s("read")),
         "FileWrite" => ("resources", "folder", arg, s("write")),
         "DbRead" | "DbWrite" => {

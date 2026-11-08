@@ -1195,7 +1195,7 @@ Nothing, with message given to the run's log as the reason: JavaScript's throw n
 
 Each of these is something a flow may do, and so a line of what it asks for when it is deployed. The language writes most of them as names it imports (`now`, a secret, `state.x`, a host's `get`, a collection or a folder) or a handler receives (`req`). The writes and the calls out take a `trigger` last: what starts them, the request of the route they are in, the trigger of the holon they are in, or the value an `if (x !== undefined)` around them waits for. The language ties it, so it is never an argument.
 
-[`http_request`](#http_request) · [`http_upload`](#http_upload) · [`http_stream`](#http_stream) · [`flow_call`](#flow_call) · [`flow_start`](#flow_start) · [`clock`](#clock) · [`random`](#random) · [`random_bytes`](#random_bytes) · [`secret`](#secret) · [`file_arrival`](#file_arrival) · [`await`](#await) · [`resume_token`](#resume_token) · [`store_read`](#store_read) · [`store_write`](#store_write) · [`collection_get`](#collection_get) · [`collection_list`](#collection_list) · [`collection_put`](#collection_put) · [`collection_delete`](#collection_delete) · [`file_read`](#file_read) · [`file_list`](#file_list) · [`file_write`](#file_write) · [`file_delete`](#file_delete) · [`file_handle`](#file_handle) · [`file_lines`](#file_lines) · [`file_slice`](#file_slice) · [`file_copy`](#file_copy) · [`file_read_bytes`](#file_read_bytes) · [`file_create`](#file_create) · [`file_create_copy`](#file_create_copy) · [`db_query`](#db_query) · [`db_one`](#db_one) · [`db_exec`](#db_exec) · [`db_find`](#db_find) · [`db_find_one`](#db_find_one) · [`db_insert`](#db_insert) · [`db_update`](#db_update) · [`db_delete`](#db_delete) · [`channel_send`](#channel_send) · [`channel_subscribe`](#channel_subscribe) · [`mail_send`](#mail_send) · [`egress`](#egress)
+[`http_request`](#http_request) · [`http_upload`](#http_upload) · [`http_stream`](#http_stream) · [`flow_call`](#flow_call) · [`flow_start`](#flow_start) · [`clock`](#clock) · [`random`](#random) · [`random_bytes`](#random_bytes) · [`secret`](#secret) · [`file_arrival`](#file_arrival) · [`mail_arrival`](#mail_arrival) · [`await`](#await) · [`resume_token`](#resume_token) · [`store_read`](#store_read) · [`store_write`](#store_write) · [`collection_get`](#collection_get) · [`collection_list`](#collection_list) · [`collection_put`](#collection_put) · [`collection_delete`](#collection_delete) · [`file_read`](#file_read) · [`file_list`](#file_list) · [`file_write`](#file_write) · [`file_delete`](#file_delete) · [`file_handle`](#file_handle) · [`file_lines`](#file_lines) · [`file_slice`](#file_slice) · [`file_copy`](#file_copy) · [`file_read_bytes`](#file_read_bytes) · [`file_create`](#file_create) · [`file_create_copy`](#file_create_copy) · [`db_query`](#db_query) · [`db_one`](#db_one) · [`db_exec`](#db_exec) · [`db_find`](#db_find) · [`db_find_one`](#db_find_one) · [`db_insert`](#db_insert) · [`db_update`](#db_update) · [`db_delete`](#db_delete) · [`channel_send`](#channel_send) · [`channel_subscribe`](#channel_subscribe) · [`mail_send`](#mail_send) · [`egress`](#egress)
 
 ### `http_request`
 
@@ -1276,6 +1276,14 @@ file_arrival() -> out: Record  {folder: files, on: new, matching}
 ```
 
 The file in a folder that started the run: its handle {folder, name, size, hash, modified, event}, event new or changed; for a file deleted (on: deleted), as last seen, without a hash. A flow with one runs once for each file that arrives there and settles (or, on: deleted, is removed), its name matching the glob matching if set, not on requests.
+
+### `mail_arrival`
+
+```
+mail_arrival() -> out: Record  {mail: ops}
+```
+
+The message that came to the mailbox of the mail resource an admin bound to the name set on the node (mail), which started the run: {from, name, to, cc, subject, date, message_id, text, html, attachments, authenticated, verdict}. authenticated is the mailbox's own server's word that the domain in From sent it (DMARC passed); From alone proves nothing. attachments is a record of each file's name to its text (a text, JSON, XML or CSV type) or bytes. A server's on.mail handler runs once for each message, which is moved to the binding's done folder once the run is over.
 
 ### `await`
 
@@ -1549,6 +1557,10 @@ A clock: a run every seconds set on the node, with now, the time of the tick. Ev
 ### `on_file`
 
 A file handler: a run for each file that settles in the folder set on the node (or, on: deleted, is removed from it), its name matching the glob matching if set, with file, its handle {folder, name, size, hash, modified, event}. Everything wired to it is that run: its writes and calls out are tied to it. Beside a flow's routes, it shares their state.
+
+### `on_mail`
+
+A mail handler: a run for each message that comes to the mailbox an admin bound to the mail set on the node, with message, the message read {from, name, to, cc, subject, date, message_id, text, html, attachments, authenticated, verdict}. authenticated is the mailbox's own server's word that the domain in From sent it; From alone proves nothing. The message is moved to the binding's done folder once the run is over. Everything wired to it is that run: its writes and calls out are tied to it. Beside a flow's routes, it shares their state.
 
 ### `action`
 

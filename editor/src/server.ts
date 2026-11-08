@@ -185,10 +185,16 @@ export async function listTables(name: string, deployment: string | null): Promi
   return (await asJson<{ tables: string[] }>(await api(`${BASE}/admin/databases/${encodeURIComponent(name)}/tables${only}`))).tables;
 }
 /** A mail resource bound (mails.rs): where its SMTP server's URL is read from (env:…, vault:…) and
- *  where it points, without the login; its sender; and every address it may send to. */
-export type MailEntry = { name: string; deployment: string | null; smtp: string; address: string; from: string; to: string[] };
-/** A mail to bind: `to` as addresses, `*@domain` or `*`, with commas. */
-export type MailBinding = Pick<MailEntry, "name" | "deployment" | "smtp" | "from"> & { to: string };
+ *  where it points, without the login; its sender; and every address it may send to (empty when
+ *  it only receives); and the mailbox it receives in, if it does. */
+export type MailEntry = { name: string; deployment: string | null; smtp: string; address: string; from: string; to: string[]; mailbox: Mailbox | null };
+/** A mailbox a mail receives in: where its IMAP server's URL is read from, where it points, the
+ *  folder read, where each message is moved after its run, whose verdict counts, and how often
+ *  (seconds) it is looked at. */
+export type Mailbox = { imap: string; address: string; folder: string; done: string; verdict_from?: string; every: number };
+/** A mail to bind: `to` as addresses, `*@domain` or `*`, with commas; `imap` (with its folder,
+ *  done and verdict_from, empty for the defaults) to receive. */
+export type MailBinding = Pick<MailEntry, "name" | "deployment" | "smtp" | "from"> & { to: string; imap?: string; folder?: string; done?: string; verdict_from?: string };
 export const listMails = async () => asJson<MailEntry[]>(await api(`${BASE}/admin/mails`));
 export const bindMail = async (m: MailBinding) => asJson<MailEntry>(await post(`${BASE}/admin/mails`, m));
 export async function unbindMail(name: string, deployment: string | null): Promise<void> {
@@ -725,7 +731,7 @@ export type LogEntry = {
   session: number;
   at_ms: number;
   duration_ms: number;
-  kind: "request" | "trigger" | "tick" | "resume" | "file";
+  kind: "request" | "trigger" | "tick" | "resume" | "file" | "mail";
   /** The matched route, e.g. "GET /todos/:id". */
   route: string | null;
   method: string | null;

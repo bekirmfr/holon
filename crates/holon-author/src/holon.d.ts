@@ -96,6 +96,29 @@ declare module "holon" {
     log?: Log
   }
   export type FileHandler = (file: FileEvent) => any
+  /** A message that came to a mail's mailbox, read. */
+  export interface MailMessage {
+    /** The sender's address, as From writes it: proves nothing alone. Absent unless one. */
+    from?: string
+    /** The sender's display name, "" when none. */
+    name: string
+    to: string[]
+    cc: string[]
+    subject: string
+    /** Its Date, in seconds since the epoch, when it is one. */
+    date?: number
+    /** Its Message-ID without the brackets, or `sha256:` and its hash when it has none. */
+    message_id: string
+    /** Its plain text, "" when none. */
+    text: string
+    html?: string
+    /** Each attachment's file name to its text (a text, JSON, XML or CSV type) or bytes. */
+    attachments: Record<string, string | Uint8Array>
+    /** The mailbox's own server's word that the domain in From sent it (DMARC passed). */
+    authenticated: boolean
+    /** What that server said: pass, fail, none... */
+    verdict: { spf: string; dkim: string; dmarc: string }
+  }
   export const on: {
     file: {
       /** Runs for each file new or changed in the folder, once it stops changing. */
@@ -103,6 +126,8 @@ declare module "holon" {
       /** Runs for each file removed from the folder. */
       deleted(folder: Folder, handler: FileHandler, options?: FileOptions): void
     }
+    /** Runs for each message that comes to the mail's mailbox, moved once its run is over. */
+    mail(mail: Mail, handler: (message: MailMessage) => any, options?: { log?: Log }): void
   }
 
   /** A start's answer: `{run, waiting}` once the run waits, `{answer, run}` if it finished first. */
@@ -234,7 +259,8 @@ declare module "holon" {
     /** A call's answer, to the channel as it arrives: `updates.pipe(api.post(…))`. */
     pipe(call: Promise<Response>): any
   }
-  /** A mail resource: what is sent goes out once the run is over, from the binding's address. */
+  /** A mail resource: what is sent goes out once the run is over, from the binding's address; a
+   *  mailbox it names is read by `on.mail`. */
   export interface Mail {
     send(message: {
       to: string | string[]

@@ -2214,6 +2214,83 @@ test("approval-mail mails a payout's approval link, its page's button approves i
   await expect(page.getByLabel("mail ops")).toContainText("mails approvals@acme.com, addresses it computes");
 });
 
+test("remittance-mail settles an invoice from an authenticated mail, refuses one that isn't, and moves both", async ({ page, request, adminToken }) => {
+  const { execFileSync } = await import("node:child_process");
+  const { existsSync, mkdtempSync, writeFileSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  // The e2e server's mailbox (imap-server.mjs): a message is an .eml file in its folder.
+  const mailbox = join(FOLDERS, "mailbox");
+  const id = `r${Date.now()}`;
+  const invoice = `INV-${id}`;
+  const remittance = (n: string, verdictBy: string, lines: string) =>
+    [
+      `Authentication-Results: ${verdictBy}; spf=pass smtp.mailfrom=customer.example; dkim=pass header.d=customer.example; dmarc=pass header.from=customer.example`,
+      "From: Billing <billing@customer.example>",
+      "To: remittances@acme.com",
+      `Subject: Remittance ${n}`,
+      "Date: Fri, 06 Nov 2026 10:00:00 +0000",
+      `Message-ID: <${n}@customer.example>`,
+      "MIME-Version: 1.0",
+      'Content-Type: multipart/mixed; boundary="b1"',
+      "",
+      "--b1",
+      "Content-Type: text/plain; charset=utf-8",
+      "",
+      "Paid, see attached.",
+      "--b1",
+      'Content-Type: text/csv; name="remit.csv"',
+      'Content-Disposition: attachment; filename="remit.csv"',
+      "",
+      "invoice,amount",
+      lines,
+      "--b1--",
+      "",
+    ].join("\r\n");
+  const said = async () => {
+    const events = await request.get(`${SERVER}/deployments/remittance-mail/events`, { headers: { Authorization: `Bearer ${adminToken}` } });
+    return ((await events.json()) as { events: { kind: string; what: string }[] }).events.map((e) => e.what);
+  };
+
+  await openSample(page, "Remittance mail (invoices settled from customers' mail)");
+  const port = await deploy(page);
+  expect((await request.post(`http://127.0.0.1:${port}/invoices`, { data: { id: invoice, amount: "100.00", customer: "customer.example" } })).status()).toBe(201);
+  // Once it listens, what the mailbox held then isn't run on; what comes after is.
+  await expect.poll(async () => (await said()).some((w) => w.startsWith("listens to the mailbox of remit (imap://127.0.0.1:")), { timeout: 15_000 }).toBe(true);
+  writeFileSync(join(mailbox, "INBOX", `${id}.eml`), remittance(id, "mx.acme.com", `${invoice},100.00`));
+  writeFileSync(join(mailbox, "INBOX", `${id}-forged.eml`), remittance(`${id}-forged`, "evil.example", `${invoice},100.00`));
+
+  // Within a look (every 10s): paid by the authenticated one, the other kept with its verdict.
+  const paid = async () => ((await (await request.get(`http://127.0.0.1:${port}/invoices`)).json()) as { paid: Record<string, { by: string }> }).paid[invoice];
+  await expect.poll(paid, { timeout: 30_000 }).toEqual(expect.objectContaining({ by: "billing@customer.example", message: `${id}@customer.example` }));
+  const remittances = await (await request.get(`http://127.0.0.1:${port}/remittances`)).json();
+  expect(remittances[`${id}@customer.example`]).toEqual(expect.objectContaining({ settled: [invoice], unmatched: [] }));
+  expect(remittances[`${id}-forged@customer.example`]).toEqual(expect.objectContaining({ refused: "not authenticated", verdict: { spf: "none", dkim: "none", dmarc: "none" } }));
+  // Each moved to Processed once its run was over.
+  await expect.poll(() => [`${id}.eml`, `${id}-forged.eml`].map((f) => [existsSync(join(mailbox, "INBOX", f)), existsSync(join(mailbox, "Processed", f))]), { timeout: 15_000 }).toEqual([
+    [false, true],
+    [false, true],
+  ]);
+
+  // Its runs check offline: each message is what its log entry says came.
+  const target = process.env.CARGO_TARGET_DIR ?? join(process.cwd(), "..", "target");
+  const holon = join(target, "debug", process.platform === "win32" ? "holon.exe" : "holon");
+  const out = join(mkdtempSync(join(tmpdir(), "holon-runs-")), "remittance-mail.json");
+  execFileSync(holon, ["export", "remittance-mail", "--server", SERVER, "-o", out], { encoding: "utf8", env: { ...process.env, HOLON_TOKEN: adminToken } });
+  const verified = execFileSync(holon, ["verify", out], { encoding: "utf8" });
+  expect(verified).toContain("each produced what its log entry says");
+  expect(verified.trim().endsWith("ok")).toBe(true);
+
+  // The admin's resources show the mailbox, its server without a login, and whose verdict counts.
+  await page.goto("/");
+  await page.getByRole("button", { name: "admin", exact: true }).click();
+  const sections = page.getByRole("tablist", { name: "admin sections" });
+  await sections.getByRole("tab", { name: "resources" }).click();
+  await expect(page.getByText(/^receives in imap:\/\/127\.0\.0\.1:\d+ INBOX \(from env:HOLON_SECRET_REMIT_IMAP\), moved to Processed · mx\.acme\.com's verdict$/)).toBeVisible();
+  await sections.getByRole("tab", { name: "permissions" }).click();
+  await expect(page.getByLabel("mail remit")).toContainText("starts on mail it receives");
+});
+
 test("due-dates schedules a payout past Easter's closing days and an invoice past a weekend", async ({ page, request }) => {
   await openSample(page, "Due dates (business days at a fixed offset)");
   const port = await deploy(page);

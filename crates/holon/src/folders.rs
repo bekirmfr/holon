@@ -102,7 +102,7 @@ impl From<Keep> for String {
 }
 
 /// A while, as `30d`, `12h`, `90m` or `45s`: in seconds (at least one, at most a hundred years).
-fn seconds_of(span: &str) -> Option<u64> {
+pub(crate) fn seconds_of(span: &str) -> Option<u64> {
     let unit = match span.chars().last()? {
         's' => 1,
         'm' => 60,
@@ -115,7 +115,7 @@ fn seconds_of(span: &str) -> Option<u64> {
 }
 
 /// A while in seconds, in the largest unit that says it exactly.
-fn span_text(secs: u64) -> String {
+pub(crate) fn span_text(secs: u64) -> String {
     match secs {
         s if s % 86_400 == 0 => format!("{}d", s / 86_400),
         s if s % 3600 == 0 => format!("{}h", s / 3600),

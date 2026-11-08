@@ -73,15 +73,15 @@ fn port_of(c: &Lowered) -> &str {
     c.doc.server.as_ref().map(|s| s.port.as_str()).unwrap_or_default()
 }
 
-/// Nothing would start a run of it: no route, clock, file handler or action. It is a holon, placed
+/// Nothing would start a run of it: no route, clock, file or mail handler or action. It is a holon, placed
 /// in other flows; deploy refuses it (docs/L4s/triggers-L4.md fork 14).
 pub fn starts_nothing(c: &Lowered, store: &mut MapResolver) -> bool {
     let server = derive_server(&c.doc.nodes, &c.doc.edges, store, port_of(c));
-    server.endpoints.is_empty() && server.clocks.is_empty() && server.files.is_empty() && server.actions.is_empty()
+    server.endpoints.is_empty() && server.clocks.is_empty() && server.files.is_empty() && server.mails.is_empty() && server.actions.is_empty()
 }
 
 /// What `check` says of a flow nothing would start.
-pub const STARTS_NOTHING: &str = "nothing would start a run: add a route, a clock, a file handler or an action (an action runs by hand: `export const run = action((input) => { … })`)";
+pub const STARTS_NOTHING: &str = "nothing would start a run: add a route, a clock, a file or mail handler or an action (an action runs by hand: `export const run = action((input) => { … })`)";
 
 /// What the flow derives to: its server's routes (or none), its unit, what it may do, sorted.
 fn derive(c: &Lowered, store: &mut MapResolver) -> (DerivedServer, Result<(String, Vec<String>), String>) {
@@ -171,8 +171,13 @@ pub fn check(file: &str, source: &str) -> Report {
         out.push(if alone { "a server of file handlers, listening on no port" } else { "and its file handlers" }.into());
         out.extend(server.files.iter().map(|f| format!("  {}", f.label)));
     }
-    if !server.actions.is_empty() {
+    if !server.mails.is_empty() {
         let alone = server.endpoints.is_empty() && server.clocks.is_empty() && server.files.is_empty();
+        out.push(if alone { "a server of mail handlers, listening on no port" } else { "and its mail handlers" }.into());
+        out.extend(server.mails.iter().map(|m| format!("  {}", m.label)));
+    }
+    if !server.actions.is_empty() {
+        let alone = server.endpoints.is_empty() && server.clocks.is_empty() && server.files.is_empty() && server.mails.is_empty();
         out.push(if alone { "a server of actions, run by hand, listening on no port" } else { "and its actions, run by hand" }.into());
         out.extend(server.actions.iter().map(|a| format!("  {}", a.label)));
     }
@@ -269,6 +274,10 @@ pub fn show(file: &str, source: &str) -> Report {
     if !server.files.is_empty() {
         out.push("  files".into());
         out.extend(server.files.iter().map(|f| format!("    {}", f.label)));
+    }
+    if !server.mails.is_empty() {
+        out.push("  mails".into());
+        out.extend(server.mails.iter().map(|m| format!("    {}", m.label)));
     }
     if !server.actions.is_empty() {
         out.push("  actions".into());

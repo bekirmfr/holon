@@ -779,6 +779,18 @@ static SAMPLES: &[Sample] = &[
         text: include_str!("../samples/approval-mail.holon.ts"),
     },
     Sample {
+        name: "remittance-mail",
+        title: "Remittance mail (invoices settled from customers' mail)",
+        description: "Customers mail their remittance advice, a CSV of the invoices they paid, to a mailbox the flow listens to (on.mail(remit, (m) => …), the mail an admin bound with --imap). Each message that comes starts one run, m the message as the host read it (from, subject, text, attachments), and is moved to the binding's --done folder once its run is over, so it is never run on twice. A From line proves nothing, so the run first asks m.authenticated: the mailbox's own server's word (its Authentication-Results verdict, from the server the binding names) that the domain in From sent it. An authenticated message's lines settle the open invoices sent to that domain and paid in full; any other line is kept to look at; a message that isn't authenticated changes nothing and is kept with its verdict. What the folder held when the flow was deployed isn't run on; a second copy of a message is moved without a run.",
+        shows: &["on.mail", "mail received", "the sender authenticated", "attachments", "csv_parse", "decimal_compare", "collections", "state across runs"],
+        port: Some("8188"),
+        secrets: &[],
+        optional: &[],
+        browsers: None,
+        try_it: "put the mailbox's URL with its login in the server's environment (HOLON_SECRET_REMIT_IMAP=imaps://user:password@imap.example.com) and bind it (holon mail add remit --imap env:HOLON_SECRET_REMIT_IMAP --done Processed --verdict-from <the name its server writes in Authentication-Results>), deploy, then curl -X POST -d '{\"id\":\"INV-1\",\"amount\":\"100.00\",\"customer\":\"customer.example\"}' http://127.0.0.1:8188/invoices; mail the mailbox a CSV (invoice,amount, then INV-1,100.00) from an address at customer.example; within a minute curl http://127.0.0.1:8188/invoices shows INV-1 paid, and http://127.0.0.1:8188/remittances the message and what it settled",
+        text: include_str!("../samples/remittance-mail.holon.ts"),
+    },
+    Sample {
         name: "ticker",
         title: "Ticker (a clock beside routes)",
         description: "A flow with a clock of its own beside its routes: every 2 seconds (every(\"2s\", …)) it counts a tick in its state and sends it on the channel ticks, with the time of the tick (now, in the handler). Its page lists each tick as it arrives; GET /count answers the count. An action, run by hand by its name, sets the count back (export const reset = action((input) => …), input what was sent); a person runs it, and an agent only once a person lets agents run it.",

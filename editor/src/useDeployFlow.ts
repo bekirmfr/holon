@@ -94,8 +94,8 @@ export function useDeployFlow({
     const trace = derived.trace;
     try {
       if (derived.errors.length > 0) throw new Error(derived.errors.join("; "));
-      if (derived.endpoints.length + derived.clocks.length + derived.files.length + derived.actions.length === 0) {
-        throw new Error(live.current.nodes.length === 0 ? "nothing to deploy: the canvas is empty" : "nothing would start a run: add a route, a clock, a file handler or an action");
+      if (derived.endpoints.length + derived.clocks.length + derived.files.length + derived.mails.length + derived.actions.length === 0) {
+        throw new Error(live.current.nodes.length === 0 ? "nothing to deploy: the canvas is empty" : "nothing would start a run: add a route, a clock, a file or mail handler or an action");
       }
       if (!derived.serverHash) throw new Error(`"${settings.port}" is not a port (set it under ⚙)`);
       hash = derived.serverHash;

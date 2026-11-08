@@ -101,6 +101,29 @@ declare module "holon" {
     log?: Log
   }
   export type FileHandler = (file: FileEvent) => any
+  /** A message that came to a mail's mailbox, read. */
+  export interface MailMessage {
+    /** The sender's address, as From writes it: proves nothing alone. Absent unless one. */
+    from?: string
+    /** The sender's display name, "" when none. */
+    name: string
+    to: string[]
+    cc: string[]
+    subject: string
+    /** Its Date, in seconds since the epoch, when it is one. */
+    date?: number
+    /** Its Message-ID without the brackets, or `sha256:` and its hash when it has none. */
+    message_id: string
+    /** Its plain text, "" when none. */
+    text: string
+    html?: string
+    /** Each attachment's file name to its text (a text, JSON, XML or CSV type) or bytes. */
+    attachments: Record<string, string | Uint8Array>
+    /** The mailbox's own server's word that the domain in From sent it (DMARC passed). */
+    authenticated: boolean
+    /** What that server said: pass, fail, none... */
+    verdict: { spf: string; dkim: string; dmarc: string }
+  }
   export const on: {
     file: {
       /** Runs for each file new or changed in the folder, once it stops changing. */
@@ -108,6 +131,8 @@ declare module "holon" {
       /** Runs for each file removed from the folder. */
       deleted(folder: Folder, handler: FileHandler, options?: FileOptions): void
     }
+    /** Runs for each message that comes to the mail's mailbox, moved once its run is over. */
+    mail(mail: Mail, handler: (message: MailMessage) => any, options?: { log?: Log }): void
   }
 
   /** A start's answer: `{run, waiting}` once the run waits, `{answer, run}` if it finished first. */
@@ -239,7 +264,8 @@ declare module "holon" {
     /** A call's answer, to the channel as it arrives: `updates.pipe(api.post(…))`. */
     pipe(call: Promise<Response>): any
   }
-  /** A mail resource: what is sent goes out once the run is over, from the binding's address. */
+  /** A mail resource: what is sent goes out once the run is over, from the binding's address; a
+   *  mailbox it names is read by `on.mail`. */
   export interface Mail {
     send(message: {
       to: string | string[]
@@ -1423,6 +1449,13 @@ declare module "holon" {
    * The file in a folder that started the run: its handle {folder, name, size, hash, modified, event}, event new or changed; for a file deleted (on: deleted), as last seen, without a hash. A flow with one runs once for each file that arrives there and settles (or, on: deleted, is removed), its name matching the glob matching if set, not on requests.
    */
   export function file_arrival(...args: any[]): any
+
+  /**
+   * `mail_arrival() -> out: Record  {mail: ops}`
+   *
+   * The message that came to the mailbox of the mail resource an admin bound to the name set on the node (mail), which started the run: {from, name, to, cc, subject, date, message_id, text, html, attachments, authenticated, verdict}. authenticated is the mailbox's own server's word that the domain in From sent it (DMARC passed); From alone proves nothing. attachments is a record of each file's name to its text (a text, JSON, XML or CSV type) or bytes. A server's on.mail handler runs once for each message, which is moved to the binding's done folder once the run is over.
+   */
+  export function mail_arrival(...args: any[]): any
 
   /**
    * `resume_token() -> out: Text  {await: event}`

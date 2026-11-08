@@ -937,8 +937,8 @@ fn rerun(
         return Rerun::Differs(format!("its unit {} isn't in the export", &entry.unit[..12.min(entry.unit.len())]));
     };
 
-    // What it ran: a request's endpoint, with the request; a clock's tick or a file's run, that
-    // handler alone (the file's handle among the sourced values); an action's, its first part or
+    // What it ran: a request's endpoint, with the request; a clock's tick, a file's or a mail's
+    // run, that handler alone (the file's handle, or the message, among the sourced values); an action's, its first part or
     // a resumed one, its handler with what was sent; anything else, the whole unit.
     let clock = match &entry.route {
         Some(label) if entry.kind == "tick" => {
@@ -946,6 +946,9 @@ fn rerun(
         }
         Some(label) if entry.kind == "file" => {
             read_server(deployed, resolver).ok().and_then(|s| s.files.into_iter().find(|f| f.label == *label)).map(|f| (f.handler, false))
+        }
+        Some(label) if entry.kind == "mail" => {
+            read_server(deployed, resolver).ok().and_then(|s| s.mails.into_iter().find(|m| m.label == *label)).map(|m| (m.handler, false))
         }
         Some(label) if entry.kind == "trigger" || entry.kind == "resume" => {
             read_server(deployed, resolver).ok().and_then(|s| s.actions.into_iter().find(|a| a.label == *label)).map(|a| (a.handler, true))

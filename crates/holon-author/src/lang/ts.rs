@@ -124,6 +124,7 @@ enum Block {
     Action,
     Every,
     File,
+    Mail,
     Function,
 }
 
@@ -718,7 +719,8 @@ impl<'s, 't> Reader<'s, 't> {
                 (js::Expression::StaticMemberExpression(f), on) if f.property.name == "file" && matches!(&f.object, js::Expression::Identifier(o) if self.vocab(o.name.as_str()) == Some(Vocab::On)) => {
                     self.on_file(c, on, m.property.span).map(|o| Some(Item::OnFile(o)))
                 }
-                _ => fail(at, "a handler is route.get(…), every(…), on.file.created(…) or an exported action(…)"),
+                (js::Expression::Identifier(o), "mail") if self.vocab(o.name.as_str()) == Some(Vocab::On) => self.on_mail(c).map(|o| Some(Item::OnMail(o))),
+                _ => fail(at, "a handler is route.get(…), every(…), on.file.created(…), on.mail(…) or an exported action(…)"),
             },
             js::Expression::Identifier(i) if self.vocab(i.name.as_str()) == Some(Vocab::Action) => fail(at, "an action is exported, as nothing else could reach it: export const approve = action(…)"),
             _ => fail(at, "the top level holds imports, the flow(…) line, handlers, functions and consts of literals: move this into a handler"),
@@ -937,6 +939,24 @@ impl<'s, 't> Reader<'s, 't> {
         Ok(OnFileDef { on: FileOn { folder, deleted, matching }, file: self.name(&file, handler.span()), head: self.span(c.span), log, body, span: self.span(c.span) })
     }
 
+    /// `on.mail(remit, (m) => …, { log })`: a run for each message that comes to the mailbox of the
+    /// mail `remit`, imported from `"mail:remit"`.
+    fn on_mail(&mut self, c: &js::CallExpression) -> R<OnMailDef> {
+        let shape = "on.mail(mail, (m) => …)";
+        let mail = match c.arguments.first().and_then(|a| a.as_expression()).map(|e| self.unwrap(e)) {
+            Some(js::Expression::Identifier(i)) => match self.imports.get(i.name.as_str()) {
+                Some(Noun::Declared("mail", name)) => name.clone(),
+                _ => return fail(self.span(i.span), format!("\"{}\" isn't an imported mail: import {} from \"mail:{}\"", i.name, i.name, i.name)),
+            },
+            _ => return fail(self.span(c.span), format!("a mail handler takes its mail first: {shape}")),
+        };
+        let (handler, options) = self.handler_args(c, 1, shape)?;
+        let log = self.options(options, &["log"])?.remove("log").map(|(v, s)| self.name(&v, s));
+        let message = self.handler_param(handler, Block::Mail, "m")?;
+        let body = self.handler_body(handler, Block::Mail, &message)?;
+        Ok(OnMailDef { mail, message: self.name(&message, handler.span()), head: self.span(c.span), log, body, span: self.span(c.span) })
+    }
+
     /// The name a handler's run knows what it received by: its parameter's, `fallback` when it has
     /// none or destructures it. A clock's tick has no name (`now` is it).
     fn handler_param(&mut self, handler: &js::Expression, block: Block, fallback: &str) -> R<String> {
@@ -998,7 +1018,7 @@ impl<'s, 't> Reader<'s, 't> {
                         return fail(self.span(rest.span), "the request's parts are named one by one: params, query, headers, body, json, method, path");
                     }
                 }
-                (pattern, Block::Action | Block::File) => {
+                (pattern, Block::Action | Block::File | Block::Mail) => {
                     let whole = Expr { kind: ExprKind::Name(received.to_string()), span: self.span(pattern.span()) };
                     self.destructure(pattern, whole, Decl::Const, stmts)?;
                 }
@@ -1045,7 +1065,7 @@ impl<'s, 't> Reader<'s, 't> {
     /// or what a clock's or a file's run does.
     fn arrow_answer(&mut self, e: &js::Expression, block: Block, stmts: &mut Vec<Stmt>) -> R<Ret> {
         let mark = stmts.len();
-        if matches!(block, Block::Every | Block::File) {
+        if matches!(block, Block::Every | Block::File | Block::Mail) {
             if matches!(self.unwrap(e), js::Expression::AssignmentExpression(_) | js::Expression::UnaryExpression(_) | js::Expression::CallExpression(_) | js::Expression::UpdateExpression(_)) {
                 self.effect(e, stmts, 0)?;
                 self.flush_updates(stmts, mark, 0)?;
@@ -2186,7 +2206,7 @@ impl<'s, 't> Reader<'s, 't> {
             return Ok(Ret::Always);
         }
         let answer = match block {
-            Block::Every | Block::File => {
+            Block::Every | Block::File | Block::Mail => {
                 // Its message only where the throw is reached, as nothing reads it to choose.
                 let ExprKind::Leaf { args, .. } = &mut failed.kind else { unreachable!("a leaf") };
                 args[0].value = self.guarded(args[0].value.clone());
@@ -2481,7 +2501,7 @@ impl<'s, 't> Reader<'s, 't> {
                 Answer::Value { value: self.expr(e)?, name: None, fields: None }
             }
             Block::Function => self.returned(e)?,
-            Block::Every | Block::File => return fail(at, format!("a {}'s run answers nobody: return alone ends it", block_word(block))),
+            Block::Every | Block::File | Block::Mail => return fail(at, format!("a {}'s run answers nobody: return alone ends it", block_word(block))),
         };
         self.push_exit(ExitKind::One(answer), at)
     }
@@ -4996,6 +5016,7 @@ fn block_word(b: Block) -> &'static str {
         Block::Action => "action",
         Block::Every => "clock",
         Block::File => "file handler",
+        Block::Mail => "mail handler",
         Block::Function => "function",
     }
 }

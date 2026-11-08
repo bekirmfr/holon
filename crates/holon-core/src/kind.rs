@@ -113,6 +113,10 @@ pub enum Capability {
     /// Starts a run for each new file in the named folder: `file_arrival`, whose value is the
     /// file's handle. The host watches the folder an admin bound to that name.
     FileArrival(String),
+    /// Starts a run for each message that comes to the mailbox of the named mail resource:
+    /// `mail_arrival`, whose value is the message, read. The host reads the mailbox an admin bound
+    /// to that name, and moves each message once its run is over (host-capabilities L4 §5.2.4).
+    MailArrival(String),
     /// Runs the named action, by hand: a person (or, as its grant says, an agent) sends it
     /// something through Holon, never the network. A server's `declare=action` child gives it.
     Action(String),
@@ -198,7 +202,7 @@ impl Capability {
     pub fn kind(&self) -> Kind {
         use Capability::*;
         match self {
-            Clock | NetworkIngress | FileRead(_) | FileArrival(_) | Action(_) | SecretAccess | SecretRead(_) | Await(_) | Random => Kind::Driver,
+            Clock | NetworkIngress | FileRead(_) | FileArrival(_) | MailArrival(_) | Action(_) | SecretAccess | SecretRead(_) | Await(_) | Random => Kind::Driver,
             StateRead(_) | StateWrite(_) | CollectionRead(_) | CollectionWrite(_) | DbRead(_) | DbWrite(_) => Kind::State,
             NetworkEgress | HttpRequest(_) | RunsAction(_) | FileWrite(_) | ChannelSend(_) | ChannelRead(_) | MailSend(_) | SecretAnswer(_) | Spawn => Kind::Sink,
         }
@@ -215,7 +219,7 @@ impl Capability {
         use Capability::*;
         matches!(
             self,
-            Clock | NetworkIngress | FileRead(_) | FileArrival(_) | Action(_) | SecretAccess | SecretRead(_) | Await(_) | Random | StateRead(_) | CollectionRead(_) | DbRead(_)
+            Clock | NetworkIngress | FileRead(_) | FileArrival(_) | MailArrival(_) | Action(_) | SecretAccess | SecretRead(_) | Await(_) | Random | StateRead(_) | CollectionRead(_) | DbRead(_)
         )
     }
 }
@@ -334,6 +338,10 @@ pub fn capabilities_of(name: &str, params: &[Param]) -> Option<Capabilities> {
         // A new file in a named folder starts a run: the host watches the folder, and the file's
         // handle is the leaf's value. The folder is a frozen param, so the trigger names it.
         "file_arrival" => vec![FileArrival(ident(params, "folder")?)],
+        // A message that comes to a mail resource's mailbox starts a run: the host reads the
+        // mailbox, and the message is the leaf's value. The mail is a frozen param, so the trigger
+        // names it.
+        "mail_arrival" => vec![MailArrival(ident(params, "mail")?)],
         // A database's tables, from the statement the leaf sends: its SQL is a frozen param, so
         // what it reads and writes is known before it runs (sql.rs). A statement that can't be
         // followed classifies as nothing, and fails closed.

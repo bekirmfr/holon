@@ -122,8 +122,8 @@ or a cycle makes every output absent; an edge from a child that doesn't exist re
 `Kind` (`Pure`, `Driver`, `State`, `Sink`) is a projection of the capabilities, never stored.
 `manifest_items`, `consent_name` and `trigger` are the rules the server grants by and the editor
 shows. `taint.rs` follows each secret through the graph (literal or derived) to the effects and
-answers it reaches. `read_server` reads a flow's declaration (routes, clocks, file handlers,
-actions, each handler's `LogLevel`) and fails closed on anything malformed.
+answers it reaches. `read_server` reads a flow's declaration (routes, clocks, file and mail
+handlers, actions, each handler's `LogLevel`) and fails closed on anything malformed.
 
 ## 3. Why it is this way
 

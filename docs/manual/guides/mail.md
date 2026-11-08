@@ -1,10 +1,13 @@
-# Sending mail
+# Mail
 
 A flow can send mail, but only through a mail an admin has bound to a name, from the sender the
 admin chose, and to addresses the admin allows. The flow says `import ops from "mail:ops"` and
 `ops.send({ … })`; the admin decides that `ops` is the company's SMTP server, logged in as whom,
 sending as `Treasury <treasury@acme.com>`, to anyone at acme.com. The flow never sees the server
 or its login, and can't send as anyone else.
+
+A flow can receive mail too: a mail bound to a mailbox starts a run of `on.mail(ops, (m) => …)`
+for each message that comes to it ([Receiving mail](#receiving-mail)).
 
 ## Binding a mail
 
@@ -138,3 +141,89 @@ more fails, and none of its mail goes.
 
 Each message as the flow wrote it: its recipients, subject, text and HTML, and its attachments by
 size and hash, as a written file is kept.
+
+## Receiving mail
+
+The same name, bound to a mailbox, starts a run for each message that comes to it. The admin
+binds it with `--imap` beside `--smtp` (one name does both) or instead of it:
+
+```sh
+export HOLON_SECRET_REMIT_IMAP='imaps://remittances%40acme.com:…@imap.example.com'
+holon mail add remit --imap env:HOLON_SECRET_REMIT_IMAP --done Processed --verdict-from mx.acme.com
+```
+
+| Option | |
+|---|---|
+| `--imap SOURCE` | where the server reads the mailbox's URL, as `--smtp`: `env:HOLON_SECRET_…` or `vault:…` |
+| `--folder F` | the folder read: `INBOX` unless given |
+| `--done F` | the folder each message is moved to once its run is over: `Processed` unless given, made when the mail is bound if it isn't there |
+| `--verdict-from SERVER` | whose verdict on a sender counts (below); without it, no message is authenticated |
+| `--every T` | how often the folder is looked at: `1m` unless given, `10s` at least |
+
+- The URL is `imaps://user:password@host` (TLS from the first byte, port 993 unless given) or
+  `imap://user:password@host:143` (STARTTLS, which the server must offer). Plain `imap://` only to
+  a server on the same machine. The server logs in when the mail is bound, reads the folder and
+  makes `--done`, so a binding that can't says why then. Folder names are ASCII.
+- The URL is never stored, shown or logged, as `--smtp`'s isn't.
+- One deployment listens to a mailbox: a message is moved once, so a second flow that receives
+  from the same folder of the same server is refused at its deploy, under whatever name.
+
+```ts
+import { flow, on } from "holon"
+import tickets from "collection:tickets"
+import support from "mail:support"
+
+flow("helpdesk")
+
+// Each mail to support opens a ticket, kept by its message id.
+on.mail(support, (m) => {
+  tickets[m.message_id] = { from: m.from, subject: m.subject, text: m.text, trusted: m.authenticated }
+})
+```
+
+`m` is the message, read:
+
+| Field | |
+|---|---|
+| `from` | the sender's address, as `From:` writes it |
+| `name` | the sender's name, `""` when it gives none |
+| `to`, `cc` | lists of addresses |
+| `subject` | a text |
+| `date` | `Date:` in seconds since 1970, as `now` is; nothing when it isn't a date |
+| `message_id` | its `Message-ID` without the `<>`; for a message with none, `sha256:` and the hash of its bytes |
+| `text` | its text, `""` when it has none |
+| `html` | its HTML, when it has some |
+| `attachments` | a record of each attachment's file name to its content: a text for text, JSON, XML and CSV, bytes for anything else |
+| `authenticated` | `true` when the mailbox's own server says the domain in `From:` sent it |
+| `verdict` | `{ spf, dkim, dmarc }` as that server wrote them, `"none"` for each it didn't |
+
+### Who sent it
+
+`From:` proves nothing: anyone can write `billing@customer.example` in it. What a flow can
+believe is the mailbox's own server's verdict, the `Authentication-Results` header it writes when
+a message arrives: `authenticated` is `true` when it says `dmarc=pass` for the domain in `From:`
+(DMARC passes only when SPF or DKIM passed for that same domain). A flow that acts on a message
+checks `m.authenticated` first, as the remittance-mail sample does.
+
+`--verdict-from` is the name the mailbox's server writes first in that header (`mx.google.com`
+for Gmail; for another provider, look at the headers of a message it received). Only the first header with that name is read, the one the server wrote on
+arrival: one a sender wrote further down, or under another name, is never believed.
+
+### When it runs
+
+- The folder is looked at every `--every`. Each message that came since is fetched (nothing is
+  marked read), oldest first, 20 a look at most, and starts one run; once its run is over, it is
+  moved to `--done`. A run that failed is moved too: its record says why.
+- What the folder holds when the flow is deployed isn't run on: the deployment's timeline says
+  `listens to the mailbox of remit (…): what it holds now (3 messages) isn't run on`.
+- Never twice: a message is noted before it is moved, so one whose move a crash cut off is moved
+  at the next look, not run on again; and a second copy of one (its `message_id` among the last
+  1,000 run on) is moved without a run, on the timeline.
+- A message over 10 MiB is moved without a run, on the timeline.
+- A look that can't log in, or loses the connection, is tried at the next; the timeline says so
+  once, and again when the mailbox is read again.
+
+### What the run log keeps
+
+The message whole, attachments included, as a request's body is: `holon verify` and the editor's
+replay read it from there.

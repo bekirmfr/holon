@@ -990,6 +990,163 @@ As designed, with what building it found:
   it takes as a file; the test approves through the mailed link in the browser, then reads the
   binding and its holder on the admin page.
 
+#### 5.2.4 Slice 1.3b as designed (2026-11-08, against `c9f4017`): receiving
+
+**The binding.** The same mail resource receives when it names a mailbox: `--imap` beside or
+instead of `--smtp`, so one name can do both (`ops.send(…)` and `on.mail(ops, …)`):
+
+```
+holon mail add remit --imap env:HOLON_SECRET_REMIT_IMAP --folder INBOX --done Processed --verdict-from mx.acme.com
+```
+
+- `--imap` names a source holding the mailbox's URL with its login, as `--smtp` does:
+  `imaps://user:password@imap.example.com` (TLS from the first byte, port 993 unless given) or
+  `imap://…:143` (STARTTLS, required; plain only to a loopback address). Never stored, shown or
+  logged; the host keeps the address without the login.
+- `--folder` is the folder read (`INBOX` unless given); `--done` the one each message is moved to
+  once its run is over (`Processed` unless given), made when the mail is bound if it isn't there.
+  ASCII names (IMAP writes others in its own UTF-7).
+- `--verdict-from` names whose verdict on the sender counts: the `authserv-id` the mailbox's own
+  server writes first in its `Authentication-Results` header (`mx.google.com`,
+  `mx3.messagingengine.com`). Without it nothing is authenticated: a header anyone can write
+  isn't believed by default.
+- `--every` is how often the folder is looked at, `1m` unless given, `10s` at least.
+- `--from` and `--to` stay `--smtp`'s; a binding with only `--imap` sends nothing.
+
+The server logs in when the mail is bound, selects the folder and makes `--done`.
+
+**The flow.** `on.mail(remit, (m) => { … }, { log })`, `remit` imported from `"mail:remit"`: a
+run for each message that comes to the folder, one handler a mail in a flow. It lowers to an
+`on_mail{mail}` node, a template as `on_file` is, whose `message` output is a `mail_arrival{mail}`
+leaf, sourced; the server declaration's child carries `declare = "on_mail"` and `mail`, and
+the host reads it as it reads a file handler (`MailHandler`, labelled `on mail remit`).
+
+**The message,** `m`, made in core from the message's bytes (`mail::received`), a pure function
+of them and the binding's `--verdict-from`:
+
+| Field | What |
+|---|---|
+| `from` | the sender's address, as `From:` writes it (one address, else nothing) |
+| `name` | the sender's display name, `""` when none |
+| `to`, `cc` | lists of addresses |
+| `subject` | RFC 2047 words decoded |
+| `date` | `Date:` in seconds since the epoch, as `now` is; nothing when it isn't a date |
+| `message_id` | without its `<>`; for a message with none, `sha256:` and the hash of its bytes |
+| `text` | the first `text/plain` part that isn't an attachment, decoded; `""` when none |
+| `html` | the first `text/html` part, when there is one |
+| `attachments` | a record of each attachment's file name to its content: text for `text/*`, `application/json`, `application/xml` and `application/csv` in a charset core reads, bytes otherwise |
+| `authenticated` | `true` when the verdict says `dmarc=pass` for the `From:` domain |
+| `verdict` | `{ spf, dkim, dmarc }` as that verdict writes them, `"none"` for each it doesn't |
+
+`From:` proves nothing; `authenticated` is the mailbox server's word that the domain in `From:`
+sent it (DMARC passes only when SPF or DKIM passed for that same domain). A flow that acts on
+mail checks it first, and the sample does. Only the first `Authentication-Results` header whose
+`authserv-id` is the binding's is read, the one the mailbox's server wrote on arrival: one a
+sender wrote further down, or under another name, is never believed. Charsets: UTF-8, US-ASCII,
+ISO-8859-1 and Windows-1252; another is read as UTF-8, what isn't kept as U+FFFD. Transfer
+encodings: 7bit, 8bit, binary, quoted-printable, base64. Two attachments of one name: the second
+`name (2).ext`.
+
+**The grant.** `MailArrival("remit")`: "is run by each mail that comes to remit, read and moved
+there". A deploy is refused while `remit` isn't bound with `--imap`, and while another deployment
+listens to the same mailbox (a message is moved once, so one listener a mailbox).
+
+**Watching.** A thread looks at each running deployment's mailboxes when due (`--every`): it logs
+in, selects the folder, lists its UIDs (`UID SEARCH ALL`), and for each it hasn't seen, oldest
+first, at most 20 a look, fetches the message (`UID FETCH … BODY.PEEK[]`, nothing marked read) and
+starts one run. What it has seen is kept beside its log (`mail-seen/<slug>.json`), with the
+folder's `UIDVALIDITY`:
+
+- **New since the deploy.** What the folder holds when the deployment first looks is seen, not
+  run on and not moved, as a folder's files are: a mailbox that already holds a thousand messages
+  isn't worked through by a flow deployed to it.
+- **Moved after the run.** Once the run's record is on disk (or it is over, for an unrecorded
+  handler), the message is moved to `--done` (`UID MOVE`; without `MOVE`, `UID COPY`, `\Deleted`
+  and `UID EXPUNGE`; without `UIDPLUS` as well, left marked `\Deleted`). A run that failed is
+  moved too: its record says why, as a file's failed run doesn't run again.
+- **Never twice.** A message whose run is over is noted with its UID before it is moved, so one
+  whose move failed, or a crash cut off, is moved at the next look, not run again. A message
+  whose `message_id` is one of the last 1,000 run on (a second copy) is moved without a run, on
+  the timeline.
+- **Too large:** a message past the deployment's `max_body_bytes` (10 MiB) is moved without a
+  run, on the timeline, as a request past it is refused.
+- **Unreachable:** a look that can't log in, or loses the connection, is tried at the next one;
+  the timeline says so once, and again when it reads the mailbox again. A changed `UIDVALIDITY`
+  (the server numbered the folder again) sees the folder anew: what it holds then isn't run on.
+
+**The run** is the handler's alone, logged under its label with `kind: "mail"`, its message
+sourced as `MailArrival("remit")`. **Logged** whole, attachments included, as a request's body is
+(under the same 10 MiB); `holon verify` and the editor's replay read it from there. A secret in a
+message isn't possible: it comes from outside, as a request does.
+
+**Dependencies:** none new. IMAP's commands by hand (`imap.rs`), over `rustls` and `webpki-roots`
+as SMTP is; MIME read in core beside where it is written (fork 54).
+
+**Tests:** an IMAP server in the server test, keeping its folders in memory; the e2e server starts
+one of its own (`editor/e2e/imap-server.mjs`) serving a folder of `.eml` files, `INBOX` and the
+others as folders beside it.
+
+**The sample, `remittance-mail`:** customers mail remittance advice to remittances@acme.com, each
+a CSV of `invoice,amount` attached. Each authenticated mail's lines are matched against the open
+invoices (put by `POST /invoices`): an invoice paid in full is closed, with who paid it and the
+message it came in; a line that matches nothing, or not the amount, is kept to look at. A mail
+that isn't authenticated changes nothing and is kept with its verdict.
+
+#### 5.2.5 Slice 1.3b as built (2026-11-09)
+
+As designed, with what building it found:
+
+- **Core:** `mail::received` (`mail/received.rs`), MIME read by hand (fork 54): headers unfolded,
+  parts to a depth of 20, RFC 2047 words and RFC 2231 parameters (continuations and charsets),
+  quoted-printable and base64 read leniently, UTF-8, ISO-8859-1 and Windows-1252 (a BOM dropped),
+  `Date:` with the obsolete zones. Whatever the bytes, it gives a message: a part it can't read is
+  kept as bytes or left out, never a failed run. The `mail_arrival{mail}` leaf, sourced; 189
+  primitives. `MailArrival` is a driver, and a server's `mails` are read from its `on_mail`
+  children, one a mail (`DuplicateMailHandler`).
+- **The language:** `on.mail(remit, (m) => …, { log })` as designed; refused when its first
+  argument isn't an imported mail, when a mail has two handlers, and at a `return` with a value (a
+  message's run answers nobody). The printer writes it back, the mail imported as one sent
+  through is. `holon.d.ts` gives `m` a `MailMessage` type, so the editor checks what a handler
+  reads.
+- **The binding:** one binding holds both halves: `smtp`, `from` and `to` empty when it only
+  receives, `mailbox` absent when it only sends. A flow that sends through a mail bound only with
+  `--imap` is refused ("isn't bound to send"). One listener a mailbox is checked against the
+  mailbox itself (the source its URL is read from, and the folder), so a second name bound to the
+  same folder is refused too. The admin page binds a mailbox beside the SMTP fields and lists it;
+  permissions say "starts on mail it receives".
+- **Watching** (`inbox.rs`): a thread looks every second for the mailboxes due, each on its own
+  thread, the timing in memory and what each deployment has seen in
+  `mail-seen/<slug>/<mail>.json` (one file a mail, so two handlers of one deployment never write
+  one file). What the folder holds is seen at the watcher's first look, not at the deploy, which
+  doesn't log in to the mailbox: a message that comes in the second between them is seen, not run
+  on. That first look is on the timeline, `listens to the mailbox of remit (imaps://… INBOX), what
+  it holds now (3 messages) isn't run on`, which says why those aren't, and which the e2e test
+  waits for. "Too large" is the data plane's 10 MiB, a server's limit rather than a deployment's.
+  A server without `MOVE` and `UIDPLUS` has the message copied and marked `\Deleted`, and it isn't
+  copied again.
+- **The run** is the handler's alone, as a file handler's: `kind: "mail"`, its label the route,
+  the message sourced as `MailArrival("remit")` with the clock and the random bytes. A parked one
+  keeps the message among its sourced values (`durable.rs`), and `holon verify` reruns it as that
+  handler alone.
+- **IMAP** by hand as designed (`imap.rs`): `AUTHENTICATE PLAIN` (with the initial response when
+  `SASL-IR` is offered), else `LOGIN`; the capabilities read again after STARTTLS and after the
+  login; a literal read whole wherever a response holds one, so a message whose bytes look like
+  one (`{5}`) reads as it is. smtp.rs's TLS, URL and base64 helpers are shared.
+- **The sample** found that `{ ...state.open, [id]: … }` keeps nothing while `state.open` isn't
+  set (a spread of nothing is nothing, §5.5 of the language): it writes `...(state.open ?? {})`.
+- **The editor:** the server panel lists mail handlers; a mail run is titled `mail from
+  billing@customer.example: Remittance May (on mail remit)`; replay shows the message on the
+  `on_mail` node; the palette has `mail_arrival`.
+- **The tests:** an IMAP stand-in in memory (`imap::stand_in`, with `MOVE` and without); the
+  binding refused for a bad source, login, folder, `--done`, `--every` and `--verdict-from`, and a
+  second listener refused under either name; the server test deploys the sample, refused until
+  `remit` is bound, sees the message there before it, then runs an authenticated message (an
+  invoice settled), one whose verdict another server wrote (refused), and a second copy (moved
+  without a run), all three moved to `Processed`, and verifies the runs. The e2e server starts an
+  IMAP server of its own (`editor/e2e/imap-server.mjs`) whose folders are folders of `.eml` files;
+  the test drops two messages in, waits for the invoice to be paid and both files to move, verifies
+  the export, and reads the mailbox on the admin page.
+
 ### 5.3 Keys
 
 A **key** is a resource an admin binds: a PGP private key, later a key in a cloud KMS or an HSM,
@@ -2795,7 +2952,7 @@ settles the queue engine with 1.4 deferred.
 |---|---|---|---|---|
 | 1.1 | **Value kinds:** `Bytes`, built (§5.10.2); `Decimal` decided as text leaves, built in 1.2 (§5.10.1) | §5.10 (here) | — | M |
 | 1.2 | **Formats:** exact decimals, CSV, XML, dates (UTC and offsets), zip and gzip, JWT verify, PGP encrypt and verify with a public key, in six slices (§5.1.1); 1.2a, decimals and CSV, built (§5.1.2); 1.2b, offsets and business days, built (§5.1.4); 1.2c, XML, built (§5.1.6); 1.2d, zip and gzip and bytes written to a file, built (§5.1.8); 1.2e, JWT verify, built (§5.1.10); 1.2f, PGP encrypt and verify, built (§5.1.12) | §5.1 (here) | 1.1 | M |
-| 1.3 | **Email:** send, recipients in the grant; receive as `on mail`, with its sender's verdict and attachments, in three slices (§5.2); 1.3a, sending through SMTP, built (§5.2.3) | §5.2 (here) | 1.1 for attachments | L |
+| 1.3 | **Email:** send, recipients in the grant; receive as `on mail`, with its sender's verdict and attachments, in three slices (§5.2); 1.3a, sending through SMTP, built (§5.2.3); 1.3b, receiving through IMAP, built (§5.2.5) | §5.2 (here) | 1.1 for attachments | L |
 | 1.4 | *Deferred.* **Remote folders:** the backend seam in `folders.rs`, then SFTP and S3-compatible storage (§6) | §6 (here) | 1.1 for binary files | L |
 | 1.5 | *Deferred.* **Secure connectivity:** keys the host holds (PGP decrypt and sign) and client identities (mutual TLS, a private CA) (§5.3, §5.4) | §5.3, §5.4 (here) | 1.1, 1.2 | M |
 | 1.6 | **Messaging:** one subscription runtime (position, once per message, backpressure, reconnect), feeds (SSE, WebSocket, Postgres `LISTEN`) and one queue engine, publish and consume (§5.5, §5.9) | §5.5, §5.9 (here) | 1.4's request signing, for SQS (fork 8) | L |
@@ -3102,6 +3259,20 @@ Taken when a job or a user asks, each with its design here and its sample all th
     mail could too, so the run that waits mails its own link (`resume_token`). *Lean:* when a
     sample needs it; the route that starts the run knows its token today. *Decided so for now*
     (§5.2.3): the sample's route mails the link.
+54. **MIME read by hand** (§5.2.4). `mail-parser` reads more of what is out there: every charset
+    `encoding_rs` knows, and the malformed mail a mail server has met. Reading MIME is a few
+    hundred lines beside where core writes it, and in core the editor's replay reads a message as
+    the host does. *Lean:* by hand, four charsets; a crate when mail in another one turns up.
+55. **Whose verdict** (§5.2.4). The host could check DKIM itself, but the key is a DNS lookup
+    outside the run, and SPF needs the address that connected, which IMAP never sees; the
+    mailbox's own server decided both as the mail came in. *Lean:* that server's verdict, named
+    by its `authserv-id`, none believed by default.
+56. **IDLE** (§5.2.4). IMAP's `IDLE` says at once that a message came; a look every minute is
+    simpler, and works with every server. *Lean:* looking, `--every`; `IDLE` when a flow needs
+    seconds.
+57. **A failed run's message** (§5.2.4). Moved as any other, left in the folder for another try,
+    or moved to a folder of its own. *Lean:* moved, as a file whose run failed isn't run again:
+    its record says why; a `--failed` folder when someone needs to tell them apart in the mailbox.
 
 ## 9. What stays true
 

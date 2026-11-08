@@ -14,6 +14,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { PORTS, RUN_DIR } from "./ports.mjs";
+import { imapServer } from "./imap-server.mjs";
 import { smtpSink } from "./smtp-sink.mjs";
 
 const fresh = process.argv.includes("--fresh");
@@ -65,9 +66,15 @@ const folders = join(tmpdir(), `holon-e2e-folders-${port}`);
 // The approval-mail sample's SMTP server (smtp-sink.mjs), its URL in the dotenv as an admin's
 // would be: each mail it takes lands in the folders' mail/, where the tests read it.
 const smtp = fresh ? null : await smtpSink(join(folders, "mail"));
+// The remittance-mail sample's mailbox (imap-server.mjs): its folders in the folders' mailbox/, a
+// message an .eml file in one, where the tests drop them and read where they were moved.
+const imap = fresh ? null : await imapServer(join(folders, "mailbox"));
 // Its dotenv file (secret_sources.rs): the variables ⚙ offers an env secret; the tests add lines.
 const dotenv = join(dir, "secrets.env");
-writeFileSync(dotenv, `HOLON_SECRET_GEMINI_API_KEY=e2e-not-a-key\nVAULT_TOKEN=e2e-not-offered\n${smtp ? `HOLON_SECRET_OPS_SMTP=smtp://127.0.0.1:${smtp}\n` : ""}`);
+writeFileSync(
+  dotenv,
+  `HOLON_SECRET_GEMINI_API_KEY=e2e-not-a-key\nVAULT_TOKEN=e2e-not-offered\n${smtp ? `HOLON_SECRET_OPS_SMTP=smtp://127.0.0.1:${smtp}\n` : ""}${imap ? `HOLON_SECRET_REMIT_IMAP=imap://remit:e2e-not-a-password@127.0.0.1:${imap}\n` : ""}`,
+);
 const server = spawn(
   binary,
   [
@@ -215,4 +222,13 @@ if (!fresh) {
     body: JSON.stringify({ name: "ops", smtp: "env:HOLON_SECRET_OPS_SMTP", from: "Treasury <treasury@acme.com>", to: "*@acme.com" }),
   });
   if (!ops.ok) console.error(`e2e server: binding the mail ops failed: ${await ops.text()}`);
+  // The remittance-mail sample's mailbox, looked at every 10s, believing mx.acme.com's verdict. Its
+  // INBOX made again: the folders were emptied above, after imapServer made it.
+  if (imap) mkdirSync(join(folders, "mailbox", "INBOX"), { recursive: true });
+  const remit = await fetch(`${base}/admin/mails`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ name: "remit", imap: "env:HOLON_SECRET_REMIT_IMAP", done: "Processed", verdict_from: "mx.acme.com", every: "10s" }),
+  });
+  if (!remit.ok) console.error(`e2e server: binding the mail remit failed: ${await remit.text()}`);
 }

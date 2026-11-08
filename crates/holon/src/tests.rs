@@ -7593,7 +7593,7 @@ fn approval_mail_mails_the_link_then_the_approval_through_its_binding() {
     let preview = body_json(route(&state, &req("POST", "/deploy/preview", serde_json::to_vec(&serde_json::json!({ "slug": plan.name, "unit": plan.unit })).unwrap())));
     let refused = deploy_json(&state, &plan.name, parse_hash(&plan.unit).unwrap(), serde_json::json!({ "acknowledge": preview["needs_approval"] }));
     let said = body_json(refused)["error"].as_str().unwrap_or_default().to_string();
-    assert!(said.contains("the mail \"ops\" isn't bound on this server"), "{said}");
+    assert!(said.contains("the mail \"ops\" isn't bound to send on this server"), "{said}");
     // Bound to every address at acme.com.
     let bind = serde_json::json!({ "name": "ops", "smtp": "env:HOLON_SECRET_OPS_SMTP", "from": "Treasury <treasury@acme.com>", "to": "*@acme.com" });
     let bound = route(&state, &req("POST", "/admin/mails", serde_json::to_vec(&bind).unwrap()));
@@ -7673,6 +7673,120 @@ fn smtp_base64(bytes: &[u8]) -> String {
         }
     }
     out
+}
+
+/// A remittance mail: from `from`, its verdict written by `verdict_by`, with a CSV of `lines`.
+fn remittance(id: &str, from: &str, verdict_by: &str, lines: &str) -> Vec<u8> {
+    let domain = from.rsplit('@').next().unwrap();
+    format!(
+        "Authentication-Results: {verdict_by}; spf=pass smtp.mailfrom={domain}; dkim=pass header.d={domain}; dmarc=pass header.from={domain}\r\n\
+         From: Billing <{from}>\r\nTo: remittances@acme.com\r\nSubject: Remittance {id}\r\nDate: Fri, 06 Nov 2026 10:00:00 +0000\r\n\
+         Message-ID: <{id}@{domain}>\r\nMIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary=\"b1\"\r\n\r\n\
+         --b1\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nPaid, see attached.\r\n\
+         --b1\r\nContent-Type: text/csv; name=\"remit.csv\"\r\nContent-Disposition: attachment; filename=\"remit.csv\"\r\n\r\n\
+         invoice,amount\r\n{lines}\r\n--b1--\r\n"
+    )
+    .into_bytes()
+}
+
+// ── Mail received (host-capabilities 1.3b) ──
+
+/// The remittance-mail sample (host-capabilities L4 §5.2.4): refused until its mail is bound with
+/// --imap; what the mailbox holds at the first look is seen, not run on; then each new message
+/// starts one run and is moved to --done: an authenticated one settles the invoices its CSV pays in
+/// full, one whose verdict isn't the mailbox server's changes nothing, and a second copy is moved
+/// without a run. The log keeps each message whole, and the runs verify.
+#[test]
+fn remittance_mail_settles_invoices_from_authenticated_mail_and_moves_each_message() {
+    let imap = imap::stand_in::start("remit", "s3cret", true);
+    let dir = std::env::temp_dir().join(format!("holon-imap-{}-{}", std::process::id(), rand::random::<u32>()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let env = dir.join(".env");
+    std::fs::write(&env, format!("HOLON_SECRET_REMIT_IMAP=imap://remit:s3cret@127.0.0.1:{}\n", imap.port)).unwrap();
+    let mut state = claims_state("");
+    let mails = mails::Mails::memory().with_sources(secret_sources::Sources::new(Some(env)).unwrap());
+    state.folders = Arc::new(folders::Folders::memory().with_mails(mails));
+    state.folders.mails.serve(Arc::clone(&state.deployments));
+    let text = include_str!("../../holon-author/samples/remittance-mail.holon.ts");
+
+    // Not bound: refused at deploy.
+    let plan = holon_author::agent::plan(text).unwrap();
+    for u in &plan.units {
+        assert_eq!(route(&state, &req("POST", "/unit", u.clone())).status_code, 200);
+    }
+    let preview = body_json(route(&state, &req("POST", "/deploy/preview", serde_json::to_vec(&serde_json::json!({ "slug": plan.name, "unit": plan.unit })).unwrap())));
+    assert!(preview["needs_approval"].to_string().contains(r#"MailArrival(\"remit\")"#), "{preview}");
+    let refused = deploy_json(&state, &plan.name, parse_hash(&plan.unit).unwrap(), serde_json::json!({ "acknowledge": preview["needs_approval"] }));
+    let said = body_json(refused)["error"].as_str().unwrap_or_default().to_string();
+    assert!(said.contains("the mail \"remit\" isn't bound to receive on this server"), "{said}");
+    // Bound, believing mx.acme.com's verdict.
+    let bind = serde_json::json!({ "name": "remit", "imap": "env:HOLON_SECRET_REMIT_IMAP", "verdict_from": "mx.acme.com" });
+    let bound = route(&state, &req("POST", "/admin/mails", serde_json::to_vec(&bind).unwrap()));
+    assert_eq!(bound.status_code, 200);
+    let shown = String::from_utf8_lossy(&body_bytes(bound)).into_owned();
+    assert!(!shown.contains("s3cret") && shown.contains("\"done\":\"Processed\""), "{shown}");
+    imap.folders.lock().unwrap().put("INBOX", &remittance("old", "billing@customer.example", "mx.acme.com", "INV-1,100.00"));
+    let slug = deploy_text(&state, text, "");
+    let triggers = body_json(route(&state, &req("GET", "/deployments", vec![])))["deployments"][0]["triggers"].clone();
+    assert_eq!(triggers, serde_json::json!(["Http :8188", "on mail remit"]));
+    for invoice in [r#"{"id":"INV-1","amount":"100.00","customer":"customer.example"}"#, r#"{"id":"INV-2","amount":"50.00","customer":"customer.example"}"#] {
+        assert_eq!(data_call(&state, &slug, "POST", "/invoices", invoice).0, 201);
+    }
+    let mut looks = inbox::Looks::default();
+    let look = |looks: &mut inbox::Looks| inbox::run_mail(&state.store, &state.deployments, &state.deployments_path, looks);
+    look(&mut looks);
+    assert_eq!(log_entries(&state, &slug).iter().filter(|e| e["kind"] == "mail").count(), 0, "what was there at the first look isn't new");
+    assert_eq!(imap.folders.lock().unwrap().of("INBOX").len(), 1, "nor moved");
+    let events = body_json(route(&state, &req("GET", &format!("/deployments/{slug}/events"), vec![])))["events"].to_string();
+    assert!(events.contains(&format!("listens to the mailbox of remit (imap://127.0.0.1:{} INBOX), what it holds now (1 message) isn't run on", imap.port)), "{events}");
+
+    // INV-1 paid in full, INV-2 short; the same from someone the mailbox's server didn't vouch
+    // for; and the first again.
+    for m in [
+        remittance("r1", "billing@customer.example", "mx.acme.com", "INV-1,100.00\r\nINV-2,40.00"),
+        remittance("r2", "billing@customer.example", "evil.example", "INV-2,50.00"),
+        remittance("r1", "billing@customer.example", "mx.acme.com", "INV-1,100.00\r\nINV-2,40.00"),
+    ] {
+        imap.folders.lock().unwrap().put("INBOX", &m);
+    }
+    look(&mut looks);
+    let runs: Vec<serde_json::Value> = log_entries(&state, &slug).into_iter().filter(|e| e["kind"] == "mail").collect();
+    assert_eq!(runs.len(), 2, "{runs:#?}");
+    assert!(runs.iter().all(|r| r["route"] == "on mail remit" && r["error"].is_null()), "{runs:#?}");
+    let sourced = runs[0]["sourced"].to_string();
+    assert!(sourced.contains(r#"MailArrival(\"remit\")"#) && sourced.contains("INV-2,40.00") && sourced.contains("r1@customer.example"), "logged whole: {sourced}");
+    let (_, invoices, _) = data_call(&state, &slug, "GET", "/invoices", "");
+    let invoices: serde_json::Value = serde_json::from_str(&invoices).unwrap();
+    assert_eq!(invoices["open"], serde_json::json!({ "INV-2": { "amount": "50.00", "customer": "customer.example" } }), "{invoices}");
+    assert_eq!(invoices["paid"]["INV-1"]["by"], "billing@customer.example", "{invoices}");
+    let (_, remittances, _) = data_call(&state, &slug, "GET", "/remittances", "");
+    assert!(remittances.contains(r#""settled":["INV-1"]"#) && remittances.contains(r#""refused":"not authenticated""#), "{remittances}");
+    let folders = imap.folders.lock().unwrap();
+    assert_eq!((folders.of("INBOX").len(), folders.of("Processed").len()), (1, 3), "each new one moved, the old one left");
+    drop(folders);
+    let events = body_json(route(&state, &req("GET", &format!("/deployments/{slug}/events"), vec![])))["events"].to_string();
+    assert!(events.contains("moved a second copy of <r1@customer.example> to Processed without a run"), "{events}");
+
+    // Nothing new: nothing runs.
+    look(&mut looks);
+    assert_eq!(log_entries(&state, &slug).iter().filter(|e| e["kind"] == "mail").count(), 2);
+
+    // Its runs check offline: the message is what the log says came.
+    let export: verify::Export = serde_json::from_value(body_json(route(&state, &req("GET", &format!("/deployments/{slug}/export"), vec![])))).unwrap();
+    let report = verify::check(&export, None, &BTreeMap::new());
+    assert!(report.ok() && report.reruns.iter().all(|(_, r)| *r == verify::Rerun::Matched), "{}", verify::describe(&report, None));
+
+    // Another deployment can't listen to that mailbox.
+    let other = text.replace("flow(\"remittance-mail\", { port: 8188 })", "flow(\"remittance-copy\", { port: 8189 })");
+    let plan = holon_author::agent::plan(&other).unwrap();
+    for u in &plan.units {
+        assert_eq!(route(&state, &req("POST", "/unit", u.clone())).status_code, 200);
+    }
+    let preview = body_json(route(&state, &req("POST", "/deploy/preview", serde_json::to_vec(&serde_json::json!({ "slug": plan.name, "unit": plan.unit })).unwrap())));
+    let refused = deploy_json(&state, &plan.name, parse_hash(&plan.unit).unwrap(), serde_json::json!({ "acknowledge": preview["needs_approval"] }));
+    let said = body_json(refused)["error"].as_str().unwrap_or_default().to_string();
+    assert!(said.contains("is listened to by remittance-mail already"), "{said}");
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 // ── MongoDB (slice 7) ──
@@ -10005,7 +10119,7 @@ fn the_server_records_what_its_golden_record_holds() {
         let slug = plan.name.clone();
         let (routes, actions) = {
             let table = state.deployments.lock().unwrap();
-            let server = table[&slug].server.clone().unwrap_or_else(|| holon_core::Server { port: None, routes: vec![], clocks: vec![], files: vec![], actions: vec![] });
+            let server = table[&slug].server.clone().unwrap_or_else(|| holon_core::Server { port: None, routes: vec![], clocks: vec![], files: vec![], mails: vec![], actions: vec![] });
             (server.routes.iter().map(|r| (r.method.clone(), r.path.clone())).collect::<Vec<_>>(), server.actions.iter().map(|a| a.name.clone()).collect::<Vec<_>>())
         };
         let log = Arc::clone(&state.deployments.lock().unwrap()[&slug].log);

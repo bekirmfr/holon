@@ -431,7 +431,7 @@ function Canvas({
       const server = deriveServer(doc.nodes as PrimitiveNodeType[], doc.edges as Edge[], ev, port);
       const caps = ev.deployed_capability_names(hash) as string[];
       // Its unrecorded handlers, each an item to approve (the server reads them from the unit).
-      const unrecorded = [...server.endpoints.map((e) => ({ label: `${e.method} ${e.path}`, log: e.log })), ...server.clocks, ...server.files, ...server.actions]
+      const unrecorded = [...server.endpoints.map((e) => ({ label: `${e.method} ${e.path}`, log: e.log })), ...server.clocks, ...server.files, ...server.mails, ...server.actions]
         .filter((h) => h.log === "unrecorded")
         .map((h) => h.label);
       return { items: manifestItems(caps, { ...doc.server?.requirements, unrecorded }), optional: doc.server?.requirements?.optional ?? [], trigger: manifestTrigger(caps) };
@@ -478,7 +478,7 @@ function Canvas({
   // Nothing would start a run: no route, clock, file handler or action (docs/L4s/triggers-L4.md
   // fork 14). Deploy is greyed, saying what to add. Not said of a canvas that doesn't derive: that
   // has its own error.
-  const startsNothing = flowCaps !== null && derived.endpoints.length + derived.clocks.length + derived.files.length + derived.actions.length === 0;
+  const startsNothing = flowCaps !== null && derived.endpoints.length + derived.clocks.length + derived.files.length + derived.mails.length + derived.actions.length === 0;
 
   // A wire is legal iff the upstream output type and the downstream input type are core-compatible,
   // and the input isn't already fed. The type rule is core's — `compatible` bridges to
@@ -1011,6 +1011,7 @@ function Canvas({
         endpoints={derived.endpoints}
         clocks={derived.clocks}
         files={derived.files}
+        mails={derived.mails}
         actions={derived.actions}
         errors={derived.errors}
         liveSlug={deployedEntry && deployedEntry.port !== null ? (flowName ?? "") : ""}

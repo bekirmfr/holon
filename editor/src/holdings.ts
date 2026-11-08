@@ -31,6 +31,7 @@ export function reaches(item: string): { kind: Kind; name: string; use: Use["use
     const [name, table] = slash < 0 ? [arg, null] : [arg.slice(0, slash), arg.slice(slash + 1)];
     return { kind: "database", name, use: kind === "DbRead" ? "read" : "write", table };
   }
+  if (kind === "MailArrival") return { kind: "mail", name: arg, use: "receive", table: null };
   if (kind === "MailSend") {
     const slash = arg.indexOf("/");
     return slash < 0 ? { kind: "mail", name: arg, use: "send", table: null } : { kind: "mail", name: arg.slice(0, slash), use: "send", table: arg.slice(slash + 1) };
@@ -46,7 +47,7 @@ export function seenBy<B extends Binding>(bindings: B[], name: string, slug: str
 /** One way a deployment reaches a resource: reads it, writes it, starts on its new files, mails
  *  through it; a database's by table, a mail's by recipient. `revoked`: the host took it back
  *  since. */
-export type Use = { use: "read" | "write" | "arrival" | "send"; table: string | null; revoked: boolean; item: string };
+export type Use = { use: "read" | "write" | "arrival" | "send" | "receive"; table: string | null; revoked: boolean; item: string };
 export type Holder = Pick<HeldGrant, "slug" | "status" | "attention"> & { uses: Use[] };
 
 const same = (a: Binding, b: Binding) => a.name === b.name && a.deployment === b.deployment;
@@ -110,13 +111,13 @@ export function kindsHeld(held: HeldGrant[]): string[] {
 }
 
 /** How a holder reaches it, as the page says it: `reads orders, refunds`, `writes orders`,
- *  `starts on new files`, `mails approvals@acme.com, addresses it computes`; a folder's without
- *  tables. Each with whether it was revoked. */
+ *  `starts on new files`, `mails approvals@acme.com, addresses it computes`, `starts on mail it
+ *  receives`; a folder's without tables. Each with whether it was revoked. */
 export function usesText(uses: Use[]): { text: string; revoked: boolean }[] {
-  const verb = { read: "reads", write: "writes", arrival: "starts on new files", send: "mails" } as const;
+  const verb = { read: "reads", write: "writes", arrival: "starts on new files", send: "mails", receive: "starts on mail it receives" } as const;
   const out: { text: string; revoked: boolean }[] = [];
   for (const revoked of [false, true]) {
-    for (const use of ["read", "write", "arrival", "send"] as const) {
+    for (const use of ["read", "write", "arrival", "send", "receive"] as const) {
       const these = uses.filter((u) => u.use === use && u.revoked === revoked);
       if (these.length === 0) continue;
       const named = [...new Set(these.map((u) => u.table).filter((t): t is string => t !== null))].sort();

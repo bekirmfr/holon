@@ -90,6 +90,20 @@ pub struct FileGroup {
     pub node_ids: Vec<String>,
 }
 
+/// One mail handler of the server: its `on_mail` node, its mail, and every node wired to it.
+#[derive(Serialize, Clone, Debug, PartialEq)]
+pub struct MailGroup {
+    pub mail: String,
+    /// `on mail remit`: how the log names its runs.
+    pub label: String,
+    #[serde(rename = "onMailId")]
+    pub on_mail_id: String,
+    /// How its runs are recorded: its trigger node's `log`, `lazy` or `unrecorded`, or "" (strict).
+    pub log: String,
+    #[serde(rename = "nodeIds")]
+    pub node_ids: Vec<String>,
+}
+
 /// One action of the server: its `action` node, its name, and every node wired to it.
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct ActionGroup {
@@ -110,8 +124,8 @@ impl FileGroup {
     }
 }
 
-/// What a node is the trigger of, when it is one: a route's request, a clock's tick, a file, an
-/// action.
+/// What a node is the trigger of, when it is one: a route's request, a clock's tick, a file, a
+/// message, an action.
 fn trigger_label(n: &Node) -> Option<String> {
     if n.is_template("request") {
         Some(format!("{} {}", n.param("method"), n.param("path")))
@@ -125,6 +139,8 @@ fn trigger_label(n: &Node) -> Option<String> {
             Ok(t) => t.label(),
             Err(_) => format!("on file {}", n.param("folder")),
         })
+    } else if n.is_template("on_mail") {
+        Some(holon_core::mail_label(n.param("mail")))
     } else if n.is_template("action") {
         Some(format!("action {}", n.param("name")))
     } else {
@@ -190,6 +206,37 @@ pub fn find_files(nodes: &[Node], wires: &[Wire]) -> (Vec<FileGroup>, Vec<String
     // In the order they are written.
     files.sort_by_key(|f| node_ids.iter().position(|id| *id == f.on_file_id));
     (files, errors)
+}
+
+/// The mail handlers the flow declares (each connected group holding an `on_mail` node and no
+/// other trigger), and why any can't be one.
+pub fn find_mails(nodes: &[Node], wires: &[Wire]) -> (Vec<MailGroup>, Vec<String>) {
+    let by_id: HashMap<&str, &Node> = nodes.iter().map(|n| (n.id.as_str(), n)).collect();
+    let node_ids: Vec<&str> = nodes.iter().map(|n| n.id.as_str()).collect();
+    let (mut mails, mut errors): (Vec<MailGroup>, Vec<String>) = (Vec::new(), Vec::new());
+    for ids in components(&node_ids, wires) {
+        let triggers: Vec<&Node> = ids.iter().map(|id| by_id[id.as_str()]).filter(|n| trigger_label(n).is_some()).collect();
+        let [on_mail] = triggers.as_slice() else { continue };
+        if !on_mail.is_template("on_mail") {
+            continue;
+        }
+        let mail = match crate::templates::mail_name(&on_mail.data.params) {
+            Ok(m) => m,
+            Err(e) => {
+                errors.push(e);
+                continue;
+            }
+        };
+        let label = holon_core::mail_label(&mail);
+        if mails.iter().any(|m| m.mail == mail) {
+            errors.push(format!("{label} is written twice: one handler per mail"));
+            continue;
+        }
+        mails.push(MailGroup { mail, label, on_mail_id: on_mail.id.clone(), log: on_mail.param("log").into(), node_ids: ids });
+    }
+    // In the order they are written.
+    mails.sort_by_key(|m| node_ids.iter().position(|id| *id == m.on_mail_id));
+    (mails, errors)
 }
 
 /// The actions the flow declares (each connected group holding an `action` node and no other
@@ -390,6 +437,12 @@ pub fn file_spec(spec: EncapSpec, group: &[&Node], label: &str) -> Result<EncapS
     handler_spec(spec, group, label, "a file's run")
 }
 
+/// A mail handler's boundary, as a file's: no inputs (the message is its `on_mail` node's) and its
+/// effects as outputs.
+pub fn mail_spec(spec: EncapSpec, group: &[&Node], label: &str) -> Result<EncapSpec, String> {
+    handler_spec(spec, group, label, "a message's run")
+}
+
 /// A handler with no caller to answer: no inputs, its effects as outputs. `who` says which kind.
 fn handler_spec(spec: EncapSpec, group: &[&Node], label: &str, who: &str) -> Result<EncapSpec, String> {
     let input_name = |child: u32, port: u32| group[child as usize].data.inputs.get(port as usize).map(|p| p.name.as_str());
@@ -448,7 +501,22 @@ pub fn file_unit(handler: Hash, outputs: &[Port], trigger: &holon_core::FileTrig
     }
 }
 
-/// `unit` (a handler unit: an endpoint, a clock's, a file's or an action's) with its log level
+/// Wrap a mail handler's handler as a mail handler unit (core's `read_mail_handler`): no inputs,
+/// each of its effects an output, `declare = "on_mail"` and `mail`.
+pub fn mail_unit(handler: Hash, outputs: &[Port], mail: &str) -> Unit {
+    let frozen = |name: &str, value: &str| Param::Frozen { name: name.into(), value: value.into() };
+    Unit {
+        body: UnitBody::Composite {
+            children: vec![handler],
+            edges: (0..outputs.len() as u32).map(|k| Edge { from_child: 0, from_port: k, to_child: BOUNDARY, to_port: k }).collect(),
+        },
+        params: vec![frozen("declare", "on_mail"), frozen("mail", mail)],
+        inputs: vec![],
+        outputs: outputs.to_vec(),
+    }
+}
+
+/// `unit` (a handler unit: an endpoint, a clock's, a file's, a message's or an action's) with its log level
 /// (docs/L4s/request-path-L4.md, C5): its frozen `log` param, set only when it isn't strict, so a
 /// handler written without one hashes as it always did. An error for a word that isn't a level.
 pub fn with_log(mut unit: Unit, log: &str) -> Result<Unit, String> {

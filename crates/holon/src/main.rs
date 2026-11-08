@@ -165,6 +165,8 @@ mod databases;
 mod dataplane;
 mod mails;
 mod smtp;
+mod imap;
+mod inbox;
 mod deploy;
 mod editor;
 mod durable;
@@ -258,7 +260,7 @@ use wire::*;
 
 /// What the server keeps beside its deployments file: the flow logs (and their sealed segments
 /// inside), the state heads, the arrivals it noted, the heads it published, its activity log.
-const BESIDE_DEPLOYMENTS: [&str; 5] = ["logs", "state", "arrivals", "heads", "activity.jsonl"];
+const BESIDE_DEPLOYMENTS: [&str; 6] = ["logs", "state", "arrivals", "mail-seen", "heads", "activity.jsonl"];
 
 /// The server's own files, which no folder may be or hold: those it was given (`files`), what it
 /// keeps beside its deployments file (`BESIDE_DEPLOYMENTS`) and beside its secrets file (their
@@ -1130,6 +1132,7 @@ fn serve(args: Vec<String>) {
     folders.mails.serve(Arc::clone(&deployments));
     spawn_clock_scheduler(store.clone(), Arc::clone(&deployments), deployments_at.clone());
     arrivals::spawn_watcher(store.clone(), Arc::clone(&deployments), deployments_at.clone());
+    inbox::spawn_watcher(store.clone(), Arc::clone(&deployments), deployments_at.clone());
     {
         // The run logs and event logs are synced to disk every second, so a power loss loses at most
         // the last second of them (recorder.rs's `sync_logs`); and before each batch of heads goes

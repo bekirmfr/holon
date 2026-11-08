@@ -54,7 +54,7 @@ pub fn plan(source: &str) -> Result<Plan, String> {
     let root = store.resolve(&hash).ok_or("the flow's unit wasn't stored")?.clone();
     // A server's handlers each have their own (a route's, a clock's, an action's…); a flow with
     // none runs whole.
-    let handlers = !(server.endpoints.is_empty() && server.clocks.is_empty() && server.files.is_empty() && server.actions.is_empty());
+    let handlers = !(server.endpoints.is_empty() && server.clocks.is_empty() && server.files.is_empty() && server.mails.is_empty() && server.actions.is_empty());
     let trace = if !handlers {
         let all: Vec<_> = c.doc.nodes.iter().collect();
         BTreeMap::from([("*".to_string(), trace_of(&root, &all))])

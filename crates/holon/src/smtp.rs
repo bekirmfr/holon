@@ -285,7 +285,7 @@ impl Session {
 }
 
 /// A client TLS session to `host` over `tcp`, its certificate checked against the web's roots.
-fn tls(host: &str, tcp: TcpStream) -> Result<rustls::StreamOwned<rustls::ClientConnection, TcpStream>, Failure> {
+pub(crate) fn tls(host: &str, tcp: TcpStream) -> Result<rustls::StreamOwned<rustls::ClientConnection, TcpStream>, Failure> {
     static CONFIG: OnceLock<Arc<rustls::ClientConfig>> = OnceLock::new();
     let config = CONFIG.get_or_init(|| {
         let roots = rustls::RootCertStore { roots: webpki_roots::TLS_SERVER_ROOTS.to_vec() };
@@ -326,7 +326,7 @@ fn dot_stuffed(message: &[u8]) -> Vec<u8> {
 }
 
 /// A login's part as its URL writes it, `%XX` decoded (a `+` is a `+`).
-fn unpercent(s: &str) -> Result<Zeroizing<String>, String> {
+pub(crate) fn unpercent(s: &str) -> Result<Zeroizing<String>, String> {
     let b = s.as_bytes();
     let mut out = Zeroizing::new(Vec::with_capacity(b.len()));
     let mut i = 0;
@@ -343,7 +343,7 @@ fn unpercent(s: &str) -> Result<Zeroizing<String>, String> {
     String::from_utf8(out.to_vec()).map(Zeroizing::new).map_err(|_| "the URL's login isn't UTF-8".into())
 }
 
-fn base64(bytes: &[u8]) -> String {
+pub(crate) fn base64(bytes: &[u8]) -> String {
     const ABC: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
     for chunk in bytes.chunks(3) {

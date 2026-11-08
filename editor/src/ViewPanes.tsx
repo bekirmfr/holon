@@ -50,9 +50,13 @@ const runLabel = (e: LogEntry) =>
         ? (e.route ?? "clock tick")
         : e.kind === "file"
           ? `${fileRun(e.sourced.find(([cap]) => cap.startsWith("FileArrival("))?.[1])}${e.route ? ` (${e.route})` : ""}`
-          : (e.route ?? "trigger");
+          : e.kind === "mail"
+            ? `${mailRun(e.sourced.find(([cap]) => cap.startsWith("MailArrival("))?.[1])}${e.route ? ` (${e.route})` : ""}`
+            : (e.route ?? "trigger");
 /** A file run's label: what happened to which file (`deleted file a.csv`). */
 const fileRun = (handle: WValue | undefined) => `${text(field(handle, "event")) || "new"} file ${text(field(handle, "name")) || ""}`.trim();
+/** A mail run's label: who it came from, and its subject (`mail from billing@customer.example: Remittance May`). */
+const mailRun = (message: WValue | undefined) => `mail from ${text(field(message, "from")) || text(field(message, "name")) || "?"}${text(field(message, "subject")) ? `: ${text(field(message, "subject"))}` : ""}`;
 const show = (v: WValue | null | undefined) => (v === null || v === undefined ? "—" : formatValue(v));
 const us = (t: number) => (t >= 1000 ? `${(t / 1000).toFixed(2)}ms` : `${t.toFixed(0)}µs`);
 

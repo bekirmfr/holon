@@ -110,6 +110,7 @@ pub enum Item {
     Route(RouteDef),
     Every(EveryDef),
     OnFile(OnFileDef),
+    OnMail(OnMailDef),
     Action(ActionDef),
     Stmt(Stmt),
 }
@@ -138,6 +139,22 @@ pub struct OnFileDef {
     /// The name of the file's handle.
     pub file: Name,
     /// `on.file.created(inbox, (f) =>`.
+    pub head: Span,
+    /// `{ log: "lazy" }` or `"unrecorded"`: how its runs are recorded (strict without one).
+    pub log: Option<Name>,
+    pub body: Vec<Stmt>,
+    pub span: Span,
+}
+
+/// `on.mail(remit, (m) => …)`: a mail handler, a run for each message that comes to the mailbox
+/// of the mail `remit` (host-capabilities L4 §5.2.4). `m` in it is the message, read.
+#[derive(Clone, Debug, PartialEq)]
+pub struct OnMailDef {
+    /// The mail whose mailbox it reads, as it is imported: `remit`.
+    pub mail: String,
+    /// The name of the message.
+    pub message: Name,
+    /// `on.mail(remit, (m) =>`.
     pub head: Span,
     /// `{ log: "lazy" }` or `"unrecorded"`: how its runs are recorded (strict without one).
     pub log: Option<Name>,

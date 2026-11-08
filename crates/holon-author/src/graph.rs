@@ -98,6 +98,7 @@ pub fn graph(source: &str, every: bool) -> Result<Graph, String> {
             Item::Route(r) => (format!("{} {}", r.method.text, r.path.text), r.span, &r.body),
             Item::Every(e) => (holon_core::clock_label(e.seconds as u64), e.span, &e.body),
             Item::OnFile(o) => (holon_core::FileTrigger { folder: o.on.folder.clone(), deleted: o.on.deleted, matching: o.on.matching.clone().unwrap_or_default() }.label(), o.span, &o.body),
+            Item::OnMail(o) => (holon_core::mail_label(&o.mail), o.span, &o.body),
             Item::Action(a) => (format!("action {}", a.name.text), a.span, &a.body),
             Item::Stmt(_) | Item::Holon(_) | Item::Js(_) => continue,
         };

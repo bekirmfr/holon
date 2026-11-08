@@ -26,7 +26,7 @@ pub fn describe_item(item: &str) -> String {
         return format!("keep its runs in its log for up to {n} days");
     }
     type Say = fn(&str) -> String;
-    let named: [(&str, Say); 23] = [
+    let named: [(&str, Say); 24] = [
         ("HttpRequest", |a| format!("call https://{a}")),
         ("StateRead", |a| format!("read its state \"{a}\"")),
         ("StateWrite", |a| format!("write its state \"{a}\"")),
@@ -51,6 +51,7 @@ pub fn describe_item(item: &str) -> String {
             Some((mail, to)) => format!("send mail through \"{mail}\" to {to}"),
             None => format!("send mail through \"{a}\""),
         }),
+        ("MailArrival", |a| format!("run on each mail that comes to \"{a}\", read it, and move it once its run is over")),
         ("PlainHttp", |a| format!("call {a} over plain HTTP (not encrypted)")),
         ("SecretRead", |a| format!("read the secret \"{a}\"")),
         ("SecretAnswer", |a| format!("answer its callers with the secret \"{a}\", or with what is computed from it")),
@@ -212,6 +213,7 @@ mod tests {
         assert_eq!(describe_item(r#"DbWrite("shop/public.orders")"#), r#"insert, update and delete rows of the table "public.orders" of the database "shop""#);
         assert_eq!(describe_item(r#"MailSend("ops/approvals@acme.com")"#), r#"send mail through "ops" to approvals@acme.com"#);
         assert_eq!(describe_item(r#"MailSend("ops/*")"#), r#"send mail through "ops" to an address it computes, within its binding's"#);
+        assert_eq!(describe_item(r#"MailArrival("remit")"#), r#"run on each mail that comes to "remit", read it, and move it once its run is over"#);
         // A module's budgets read as what the code may consume, not as a limit raised.
         assert_eq!(describe_item("Limit(module_fuel=200000000)"), "run code it carries (a js node) for up to 200000000 instructions per call, reaching nothing outside");
         assert_eq!(describe_item("Limit(module_memory=16777216)"), "give that code up to 16 MiB of memory per call");

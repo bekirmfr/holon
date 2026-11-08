@@ -220,6 +220,8 @@ enum FrameKind {
     Every { tick: String },
     /// A file handler.
     OnFile,
+    /// A mail handler.
+    OnMail,
     /// An action's block: its `action` node, and where it responded.
     Action { node: String, responded: Option<Span> },
     /// A holon's block: its declared outputs, in order, and what each is bound to.
@@ -413,6 +415,12 @@ impl<'a> Lowerer<'a> {
         }
         let blocks: Vec<&EveryDef> = file.items.iter().filter_map(|i| if let Item::Every(e) = i { Some(e) } else { None }).collect();
         let file_blocks: Vec<&OnFileDef> = file.items.iter().filter_map(|i| if let Item::OnFile(o) = i { Some(o) } else { None }).collect();
+        let mail_blocks: Vec<&OnMailDef> = file.items.iter().filter_map(|i| if let Item::OnMail(o) = i { Some(o) } else { None }).collect();
+        for (i, b) in mail_blocks.iter().enumerate() {
+            if mail_blocks[..i].iter().any(|o| o.mail == b.mail) {
+                return err(b.head, format!("{} is written twice: one handler per mail", holon_core::mail_label(&b.mail)));
+            }
+        }
         for (i, b) in blocks.iter().enumerate() {
             if blocks[..i].iter().any(|o| o.seconds == b.seconds) {
                 return err(b.head, format!("{} is written twice: one handler per period", b.text));
@@ -446,6 +454,7 @@ impl<'a> Lowerer<'a> {
                 Item::Route(r) => self.route(r)?,
                 Item::Every(e) => self.every(e)?,
                 Item::OnFile(o) => self.on_file(o)?,
+                Item::OnMail(o) => self.on_mail(o)?,
                 Item::Action(a) => self.action(a)?,
                 _ => {}
             }
@@ -1247,6 +1256,35 @@ impl<'a> Lowerer<'a> {
             return err(o.head, "the handler does nothing: write something in it (a folder, state, a channel)");
         }
         self.ticks.push((id, frame.created, o.head, ("the file", o.file.text.clone())));
+        Ok(())
+    }
+
+    /// `on.mail(remit, (m) => …)`: a mail handler. Its `on_mail` node is its trigger, `m` in it the
+    /// message, and its sinks are tied to it (host-capabilities L4 §5.2.4).
+    fn on_mail(&mut self, o: &'a OnMailDef) -> R<()> {
+        let mut params = vec![("mail".to_string(), o.mail.clone())];
+        params.extend(o.log.iter().map(|w| ("log".to_string(), w.text.clone())));
+        let message = self.node("on_mail", &params, o.head)?;
+        let Val::Out { id, .. } = &message else { unreachable!() };
+        let id = id.clone();
+        self.names.insert(id.clone(), o.message.text.clone());
+        self.check_name_free(&o.message)?;
+        let mut frame = Frame::new(FrameKind::OnMail);
+        frame.created.push(id.clone());
+        frame.env.insert(o.message.text.clone(), message.clone());
+        self.frames.push(frame);
+        for s in &o.body {
+            if let StmtKind::Respond(_) = s.kind {
+                return err(s.span, "respond belongs in a route: a message's run answers nobody");
+            }
+            self.stmt(s)?;
+        }
+        let tied = self.tie_block(&message, o.head)?;
+        let frame = self.frames.pop().expect("the block's frame");
+        if !tied {
+            return err(o.head, "the handler does nothing: write something in it (state, a collection, a channel)");
+        }
+        self.ticks.push((id, frame.created, o.head, ("the message", o.message.text.clone())));
         Ok(())
     }
 
@@ -4377,6 +4415,51 @@ route.get("/n", () => state.ticks ?? 0)
     /// `on.file.created(drop, (f) => { … })` is a file handler: its `on_file` node, everything
     /// wired to it, its sinks tied to the file, and `f` the file's handle (docs/L4s/triggers-L4.md
     /// §2, §3).
+    #[test]
+    fn on_mail_blocks_are_mail_handlers_tied_to_their_message() {
+        let src = r#"import { flow, on, route } from "holon"
+import state from "state"
+import remit from "mail:remit"
+
+flow("f", { port: 8080 })
+
+on.mail(remit, (m) => {
+  state.last = m.subject
+}, { log: "lazy" })
+
+route.get("/last", () => state.last)
+"#;
+        let d = compiled(src).doc;
+        let on: Vec<&crate::canvas::Node> = d.nodes.iter().filter(|n| n.is_template("on_mail")).collect();
+        assert_eq!(on.iter().map(|n| (n.param("mail"), n.param("log"))).collect::<Vec<_>>(), [("remit", "lazy")]);
+        assert!(!d.nodes.iter().any(|n| n.data.name == "mail_arrival"), "m in a block is its on_mail node's");
+        let write = d.nodes.iter().find(|n| n.data.name == "store_write").unwrap();
+        let tied = d.edges.iter().find(|w| w.target == write.id && w.input() == TRIGGER).map(|w| (w.source.clone(), w.output().to_string()));
+        assert_eq!(tied, Some((on[0].id.clone(), "message".to_string())), "the write is tied to the message");
+
+        let mut store = MapResolver::new();
+        let server = crate::flow::derive_server(&d.nodes, &d.edges, &mut store, "8080");
+        assert_eq!(server.errors, Vec::<String>::new());
+        assert_eq!(server.mails.iter().map(|m| (m.mail.as_str(), m.label.as_str())).collect::<Vec<_>>(), [("remit", "on mail remit")]);
+        let unit = server.server_hash.as_deref().and_then(holon_core::parse_hash).and_then(|h| store.resolve(&h)).expect("a server");
+        let read = holon_core::read_server(unit, &store).unwrap();
+        assert_eq!((read.port, read.mails.len(), read.mails[0].log), (Some(8080), 1, holon_core::LogLevel::Lazy));
+        assert!(holon_core::capabilities(unit, &store).contains(holon_core::Capability::MailArrival("remit".into())));
+
+        // A mail is an imported one; one handler a mail; a message's run answers nobody.
+        let head = "import { flow, on } from \"holon\"\nimport state from \"state\"\nimport remit from \"mail:remit\"\nimport inbox from \"folder:inbox\"\n\nflow(\"f\")\n\n";
+        for (body, said) in [
+            ("on.mail(inbox, (m) => {\n  state.a = m.text\n})\n", "\"inbox\" isn't an imported mail: import inbox from \"mail:inbox\""),
+            ("on.mail((m) => {\n  state.a = m.text\n})\n", "a mail handler takes its mail first"),
+            ("on.mail(remit, (m) => {\n  state.a = m.text\n})\non.mail(remit, (n) => {\n  state.b = n.text\n})\n", "on mail remit is written twice: one handler per mail"),
+            ("on.mail(remit, (m) => {\n  return 1\n})\n", "a mail handler's run answers nobody: return alone ends it"),
+            ("on.mail(remit, (m) => {\n  state.a = m.text\n}, { matching: \"*\" })\n", "matching"),
+        ] {
+            let (_, _, e) = error(&format!("{head}{body}"));
+            assert!(e.contains(said), "{said}: {e}");
+        }
+    }
+
     #[test]
     fn on_file_blocks_are_file_handlers_tied_to_their_file() {
         let src = r#"import { flow, on, route } from "holon"

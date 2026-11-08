@@ -10,6 +10,9 @@
 
 use crate::{Capability, Param, Value};
 
+mod received;
+pub use received::received;
+
 /// The most recipients one mail has, `to` and `cc` together.
 pub const MAX_RECIPIENTS: usize = 50;
 /// The most one mail's subject, texts and attachments come to, before the host encodes it.

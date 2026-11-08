@@ -132,7 +132,8 @@ export function AdminPage({ me, onOpenDeployment }: { me: string; onOpenDeployme
   // Each database's tables as last read, by binding: the tables, or why they couldn't be read.
   const [tables, setTables] = useState<Record<string, string[] | { error: string }>>({});
   const [mails, setMails] = useState<MailEntry[]>([]);
-  const [mailDraft, setMailDraft] = useState<MailBinding>({ name: "", smtp: "", from: "", to: "", deployment: null });
+  const noMail: MailBinding = { name: "", smtp: "", from: "", to: "", imap: "", folder: "", done: "", verdict_from: "", deployment: null };
+  const [mailDraft, setMailDraft] = useState<MailBinding>(noMail);
   const [serverSecrets, setServerSecrets] = useState<SecretInfo[]>([]);
   const [secretDraft, setSecretDraft] = useState({ name: "", value: "", to: "" });
   const [grants, setGrants] = useState<HeldGrant[]>([]);
@@ -685,7 +686,10 @@ export function AdminPage({ me, onOpenDeployment }: { me: string; onOpenDeployme
             (<code>env:HOLON_SECRET_OPS_SMTP</code>, <code>vault:…</code>), never typed in here, stored or shown; it logs in when it is bound. A flow names
             the mail (<code>import ops from &quot;mail:ops&quot;</code>), never the server, and never chooses the sender: from is the binding&apos;s. To is
             every address it may ever send to (addresses, *@domain, or * for anyone): a flow is granted each recipient its text writes, or any address it
-            computes within these. Mail goes once its run is over, and is tried again for a day while the server can&apos;t take it.
+            computes within these. Mail goes once its run is over, and is tried again for a day while the server can&apos;t take it. A mail bound to a
+            mailbox as well (or instead: an IMAP server&apos;s URL kept the same way) starts a run of <code>on.mail(…)</code> for each message that comes to
+            its folder, then moves it to done; whose verdict counts is the name the mailbox&apos;s own server writes in its Authentication-Results header
+            (without one, no message is authenticated).
           </div>
           {mails.length === 0 && <div style={{ color: "#7e8ea8", fontSize: 11, marginBottom: 6 }}>no mail bound</div>}
           {mails.map((m) => (
@@ -693,7 +697,10 @@ export function AdminPage({ me, onOpenDeployment }: { me: string; onOpenDeployme
               <div style={row}>
                 <span style={{ color: "#6fd3e0", minWidth: 90 }}>mail {m.name}</span>
                 <span style={{ color: "#e6eefb", flex: 1, overflowWrap: "anywhere" }}>
-                  {m.address} (from {m.smtp}) · as {m.from} · to {m.to.join(", ")}
+                  {m.smtp && `${m.address} (from ${m.smtp}) · as ${m.from} · to ${m.to.join(", ")}`}
+                  {m.smtp && m.mailbox && " · "}
+                  {m.mailbox &&
+                    `receives in ${m.mailbox.address} ${m.mailbox.folder} (from ${m.mailbox.imap}), moved to ${m.mailbox.done} · ${m.mailbox.verdict_from ? `${m.mailbox.verdict_from}'s verdict` : "no verdict believed"}`}
                 </span>
                 {m.deployment && <span style={{ color: "#7e8ea8", fontSize: 11 }}>for {m.deployment} only</span>}
                 <button
@@ -721,8 +728,9 @@ export function AdminPage({ me, onOpenDeployment }: { me: string; onOpenDeployme
               if (there && !(await dialog.confirm(`Bind "${name}" again? It replaces its binding. ${unbindingSays(mailHolders(there)).replace(/: they keep running.*/, ": their next mail goes through the new one.")}`, "Bind again")))
                 return;
               act(async () => {
-                await bindMail({ name, smtp: mailDraft.smtp.trim(), from: mailDraft.from.trim(), to: mailDraft.to.trim(), deployment });
-                setMailDraft({ name: "", smtp: "", from: "", to: "", deployment: null });
+                const t = (s: string | undefined) => (s ?? "").trim();
+                await bindMail({ name, smtp: t(mailDraft.smtp), from: t(mailDraft.from), to: t(mailDraft.to), imap: t(mailDraft.imap), folder: t(mailDraft.folder), done: t(mailDraft.done), verdict_from: t(mailDraft.verdict_from), deployment });
+                setMailDraft(noMail);
               });
             }}
           >
@@ -743,13 +751,29 @@ export function AdminPage({ me, onOpenDeployment }: { me: string; onOpenDeployme
               style={{ ...input, flex: 1, minWidth: 220 }}
             />
             <input
+              aria-label="mailbox"
+              placeholder="to receive: where the IMAP server's URL is kept (env:HOLON_SECRET_REMIT_IMAP)"
+              value={mailDraft.imap ?? ""}
+              onChange={(e) => setMailDraft({ ...mailDraft, imap: e.target.value })}
+              style={{ ...input, flex: 1, minWidth: 220 }}
+            />
+            <input aria-label="mailbox folder" placeholder="folder (INBOX)" value={mailDraft.folder ?? ""} onChange={(e) => setMailDraft({ ...mailDraft, folder: e.target.value })} style={input} />
+            <input aria-label="mailbox done" placeholder="moved to (Processed)" value={mailDraft.done ?? ""} onChange={(e) => setMailDraft({ ...mailDraft, done: e.target.value })} style={input} />
+            <input
+              aria-label="mailbox verdict from"
+              placeholder="whose verdict counts (mx.acme.com)"
+              value={mailDraft.verdict_from ?? ""}
+              onChange={(e) => setMailDraft({ ...mailDraft, verdict_from: e.target.value })}
+              style={input}
+            />
+            <input
               aria-label="mail for one deployment"
               placeholder="for one deployment (empty: all)"
               value={mailDraft.deployment ?? ""}
               onChange={(e) => setMailDraft({ ...mailDraft, deployment: e.target.value })}
               style={input}
             />
-            {isUrl(mailDraft.smtp) && (
+            {(isUrl(mailDraft.smtp) || isUrl(mailDraft.imap ?? "")) && (
               <div role="alert" style={{ ...quiet, color: "#e0916f", flexBasis: "100%" }}>
                 That is a URL: give where it is kept instead (env:HOLON_SECRET_OPS_SMTP, vault:…). It isn&apos;t sent.
               </div>
@@ -757,7 +781,13 @@ export function AdminPage({ me, onOpenDeployment }: { me: string; onOpenDeployme
             <button
               type="submit"
               style={primary}
-              disabled={!mailDraft.name.trim() || !mailDraft.smtp.trim() || !mailDraft.from.trim() || !mailDraft.to.trim() || isUrl(mailDraft.smtp)}
+              disabled={
+                !mailDraft.name.trim() ||
+                (!mailDraft.smtp.trim() && !(mailDraft.imap ?? "").trim()) ||
+                (!!mailDraft.smtp.trim() && (!mailDraft.from.trim() || !mailDraft.to.trim())) ||
+                isUrl(mailDraft.smtp) ||
+                isUrl(mailDraft.imap ?? "")
+              }
             >
               bind mail
             </button>
@@ -1164,7 +1194,13 @@ export function AdminPage({ me, onOpenDeployment }: { me: string; onOpenDeployme
             ))}
           {(kind === "everything" || kind === "mail") &&
             mails.map((m) => (
-              <Resource key={`mail:${keyOf(m)}`} title={`mail ${m.name}`} detail={`to ${m.to.join(", ")}${m.deployment ? ` · for ${m.deployment} only` : ""}`} holders={mailHolders(m)} onOpen={onOpenDeployment} />
+              <Resource
+                key={`mail:${keyOf(m)}`}
+                title={`mail ${m.name}`}
+                detail={`${[m.smtp ? `to ${m.to.join(", ")}` : "", m.mailbox ? `receives in ${m.mailbox.folder}` : ""].filter(Boolean).join(" · ")}${m.deployment ? ` · for ${m.deployment} only` : ""}`}
+                holders={mailHolders(m)}
+                onOpen={onOpenDeployment}
+              />
             ))}
           {othersHeld(grants, folders, databases, mails)
             .filter((o) => kind === "everything" || o.kind === kind)

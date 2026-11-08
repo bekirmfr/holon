@@ -20,6 +20,12 @@
 //!   its log holds: a run whose record a crash lost sent nothing.
 //! - **An unrecorded run's mail** is spooled and sent all the same, though its log doesn't hold it.
 //! - **The log** keeps each message whole but its attachments, kept by size and hash ([`loggable`]).
+//! - **Receiving** (§5.2.4): the same name, bound with `--imap` (beside `--smtp` or instead), names
+//!   a mailbox: its URL with its login read from a source as the SMTP one is (imap.rs), the folder
+//!   read, the one each message is moved to after its run, and whose `Authentication-Results`
+//!   verdict on a sender counts. `on.mail(remit, …)` runs on each message that comes there
+//!   (inbox.rs); a deploy is refused while the mail isn't bound with `--imap`, or another
+//!   deployment listens to that mailbox.
 
 use std::collections::VecDeque;
 use std::sync::{Condvar, OnceLock, RwLock};
@@ -31,24 +37,107 @@ use crate::http::{err, read_body};
 use crate::permissions::Manifest;
 use crate::secret_sources::{Reference, Sources};
 use crate::smtp::{self, Failure};
+use crate::imap;
 
 use crate::*;
 
 /// What the error of a run that sent more mails than a run may starts with.
 pub(crate) const SEND_FAILED: &str = "mail not sent: ";
 
-/// One bound mail resource.
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+/// One bound mail resource: what it sends through (empty when it only receives), and the mailbox
+/// it receives in (none when it only sends).
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
 pub(crate) struct Binding {
     /// Where the host reads the server's URL with its login from (`env:…`, `vault:…`), never the
     /// URL itself.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub(crate) smtp: String,
     /// Where that URL points, without its login (`smtps://smtp.example.com:465`).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub(crate) address: String,
     /// The sender: `Treasury <treasury@acme.com>`.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub(crate) from: String,
     /// Every address it may send to: addresses, `*@domain`, or `*`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(crate) to: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) mailbox: Option<Mailbox>,
+}
+
+/// The mailbox a mail receives in (`--imap`).
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub(crate) struct Mailbox {
+    /// Where the host reads the IMAP server's URL with its login from, never the URL itself.
+    pub(crate) imap: String,
+    /// Where that URL points, without its login (`imaps://imap.example.com:993`).
+    pub(crate) address: String,
+    /// The folder read.
+    pub(crate) folder: String,
+    /// The folder each message is moved to once its run is over.
+    pub(crate) done: String,
+    /// Whose verdict on a sender counts: the `authserv-id` the mailbox's server writes in its
+    /// `Authentication-Results` header. Empty: nobody's, so nothing is authenticated.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub(crate) verdict_from: String,
+    /// How often the folder is looked at, in seconds.
+    pub(crate) every: u64,
+}
+
+impl Mailbox {
+    /// Which mailbox it is: two bindings reading the same folder of the same server's login are
+    /// one, which one deployment listens to.
+    pub(crate) fn identity(&self) -> (String, String) {
+        (self.imap.clone(), self.folder.clone())
+    }
+}
+
+/// The least time between two looks at a mailbox.
+pub(crate) const EVERY_LEAST: u64 = 10;
+
+/// What binding a mail asks for, as `/admin/mails` takes it: `smtp` with `from` and `to` to send,
+/// `imap` (with `folder`, `done`, `verdict_from` and `every` when not the defaults) to receive.
+#[derive(Deserialize, Default, Debug)]
+pub(crate) struct Asked {
+    #[serde(default)]
+    pub(crate) smtp: Option<String>,
+    #[serde(default)]
+    pub(crate) from: Option<String>,
+    /// Addresses, `*@domain` or `*`: a list, or one text with commas.
+    #[serde(default)]
+    pub(crate) to: Option<To>,
+    #[serde(default)]
+    pub(crate) imap: Option<String>,
+    #[serde(default)]
+    pub(crate) folder: Option<String>,
+    #[serde(default)]
+    pub(crate) done: Option<String>,
+    #[serde(default)]
+    pub(crate) verdict_from: Option<String>,
+    /// `30s`, `1m`, `2h`.
+    #[serde(default)]
+    pub(crate) every: Option<String>,
+}
+
+#[derive(Deserialize, Debug)]
+#[serde(untagged)]
+pub(crate) enum To {
+    One(String),
+    Many(Vec<String>),
+}
+
+impl To {
+    fn list(&self) -> Vec<String> {
+        match self {
+            To::One(s) => s.split(',').map(str::to_string).collect(),
+            To::Many(v) => v.clone(),
+        }
+    }
+}
+
+/// Text with what's around it trimmed, none when that leaves nothing.
+fn given(s: &Option<String>) -> Option<&str> {
+    s.as_deref().map(str::trim).filter(|s| !s.is_empty())
 }
 
 impl Binding {
@@ -210,32 +299,52 @@ impl Mails {
     }
 
     /// Bind `name`, for the whole server or one deployment, replacing any binding of it there
-    /// before: `smtp` is where its URL is read from, and the server it names is logged in to now.
-    pub(crate) fn bind(&self, name: &str, smtp: &str, from: &str, to: &[String], for_deployment: Option<&str>) -> Result<Binding, String> {
+    /// before, as `asked` says: to send (`smtp`, where its server's URL is read from, logged in to
+    /// now), to receive (`imap`: logged in to now, its folder selected and `done` made), or both.
+    pub(crate) fn bind(&self, name: &str, asked: &Asked, for_deployment: Option<&str>) -> Result<Binding, String> {
         if !folders::is_folder_name(name) || name.contains('-') {
             return Err(format!("{name:?} isn't a mail's name: letters, digits and _, up to 64, as a flow imports it"));
         }
         if let Some(slug) = for_deployment.filter(|s| !folders::is_folder_name(s)) {
             return Err(format!("{slug:?} isn't a deployment's name"));
         }
-        let smtp = smtp.trim();
-        if !smtp.starts_with("env:") && !smtp.starts_with("vault:") {
-            return Err("a mail's server is read from a source, env:HOLON_SECRET_… or vault:…, holding smtps://user:password@host".into());
+        let (smtp, imap) = (given(&asked.smtp), given(&asked.imap));
+        if smtp.is_none() && imap.is_none() {
+            return Err("a mail sends (--smtp) or receives (--imap), or both: it says neither".into());
         }
-        if holon_core::mail::sender(from).is_none() {
-            return Err(format!("{from:?} isn't a sender: Treasury <treasury@acme.com>, or an address"));
+        if imap.is_none() && [&asked.folder, &asked.done, &asked.verdict_from, &asked.every].iter().any(|o| given(o).is_some()) {
+            return Err("--folder, --done, --verdict-from and --every say how a mail receives: they go with --imap".into());
         }
-        let to: Vec<String> = to.iter().map(|t| t.trim().to_string()).filter(|t| !t.is_empty()).collect();
-        if to.is_empty() {
-            return Err("a mail sends to the addresses --to says (addresses, *@domain, or * for anyone): it says none".into());
+        let mut binding = Binding::default();
+        match smtp {
+            Some(smtp) => {
+                if !smtp.starts_with("env:") && !smtp.starts_with("vault:") {
+                    return Err("a mail's server is read from a source, env:HOLON_SECRET_… or vault:…, holding smtps://user:password@host".into());
+                }
+                let from = given(&asked.from).unwrap_or_default();
+                if holon_core::mail::sender(from).is_none() {
+                    return Err(format!("{from:?} isn't a sender: Treasury <treasury@acme.com>, or an address"));
+                }
+                let to: Vec<String> = asked.to.as_ref().map(To::list).unwrap_or_default().iter().map(|t| t.trim().to_string()).filter(|t| !t.is_empty()).collect();
+                if to.is_empty() {
+                    return Err("a mail sends to the addresses --to says (addresses, *@domain, or * for anyone): it says none".into());
+                }
+                if let Some(bad) = to.iter().find(|t| !holon_core::mail::is_pattern(t)) {
+                    return Err(format!("{bad:?} isn't an address, *@domain or *"));
+                }
+                let url = self.0.sources.fetch(&Reference::parse(smtp)?)?;
+                let server = smtp::Server::parse(&url)?;
+                server.check().map_err(|f| format!("{} wasn't logged in to: {}", server.address(), f.why()))?;
+                binding = Binding { smtp: smtp.to_string(), address: server.address(), from: from.to_string(), to, mailbox: None };
+            }
+            None if given(&asked.from).is_some() || asked.to.as_ref().is_some_and(|t| !t.list().iter().all(|a| a.trim().is_empty())) => {
+                return Err("--from and --to say how a mail sends: they go with --smtp".into());
+            }
+            None => {}
         }
-        if let Some(bad) = to.iter().find(|t| !holon_core::mail::is_pattern(t)) {
-            return Err(format!("{bad:?} isn't an address, *@domain or *"));
+        if let Some(imap) = imap {
+            binding.mailbox = Some(self.mailbox(imap, asked)?);
         }
-        let url = self.0.sources.fetch(&Reference::parse(smtp)?)?;
-        let server = smtp::Server::parse(&url)?;
-        server.check().map_err(|f| format!("{} wasn't logged in to: {}", server.address(), f.why()))?;
-        let binding = Binding { smtp: smtp.to_string(), address: server.address(), from: from.trim().to_string(), to };
         let mut bound = self.0.bound.write().unwrap();
         let mut next = bound.clone();
         match for_deployment {
@@ -245,6 +354,43 @@ impl Mails {
         self.save(&next)?;
         *bound = next;
         Ok(binding)
+    }
+
+    /// The mailbox `asked` names, its server logged in to now, its folder selected and the one
+    /// messages are moved to made.
+    fn mailbox(&self, imap: &str, asked: &Asked) -> Result<Mailbox, String> {
+        if !imap.starts_with("env:") && !imap.starts_with("vault:") {
+            return Err("a mailbox is read from a source, env:HOLON_SECRET_… or vault:…, holding imaps://user:password@host".into());
+        }
+        let folder = given(&asked.folder).unwrap_or("INBOX").to_string();
+        let done = given(&asked.done).unwrap_or("Processed").to_string();
+        for f in [&folder, &done] {
+            if !imap::is_folder_name(f) {
+                return Err(format!("{f:?} isn't a folder this host reads: ASCII, without \" \\ & % *"));
+            }
+        }
+        if folder.eq_ignore_ascii_case(&done) {
+            return Err(format!("each message is moved out of {folder} once its run is over: --done names another folder"));
+        }
+        let verdict_from = given(&asked.verdict_from).unwrap_or_default().to_ascii_lowercase();
+        if !verdict_from.bytes().all(|b| b.is_ascii_alphanumeric() || b"-._".contains(&b)) {
+            return Err(format!("{verdict_from:?} isn't a server's name (the authserv-id its Authentication-Results header writes, mx.example.com)"));
+        }
+        let every = match given(&asked.every) {
+            None => 60,
+            Some(e) => folders::seconds_of(e).ok_or_else(|| format!("{e:?} isn't how often: 30s, 1m, 2h"))?,
+        };
+        if every < EVERY_LEAST {
+            return Err(format!("a mailbox is looked at every {EVERY_LEAST}s at most often"));
+        }
+        let url = self.0.sources.fetch(&Reference::parse(imap)?)?;
+        let server = imap::Server::parse(&url)?;
+        let refused = |f: Failure| format!("{} wasn't logged in to: {}", server.address(), f.why());
+        let mut session = server.open().map_err(refused)?;
+        session.select(&folder).map_err(|f| format!("{folder} wasn't read at {}: {}", server.address(), f.why()))?;
+        session.create(&done).map_err(|f| format!("{done} wasn't made at {}: {}", server.address(), f.why()))?;
+        session.logout();
+        Ok(Mailbox { imap: imap.to_string(), address: server.address(), folder, done, verdict_from, every })
     }
 
     /// Unbind `name`, the server's or one deployment's: whether it was bound. Its mail on the way
@@ -277,27 +423,61 @@ impl Mails {
     }
 
     /// Why a deployment asking for `manifest` can't run here, if it can't: a mail it sends through
-    /// that isn't bound, or a recipient its text names that the binding doesn't allow.
+    /// that isn't bound to send, a recipient its text names that the binding doesn't allow, a mail
+    /// it receives that isn't bound to receive, or whose mailbox another deployment listens to.
     pub(crate) fn refuses(&self, deployment: &str, manifest: &Manifest) -> Option<String> {
         for item in &manifest.capabilities {
             if manifest.requirements.optional.contains(item) {
                 continue;
             }
+            if let Some(name) = item.strip_prefix("MailArrival(\"").and_then(|r| r.strip_suffix("\")")) {
+                if let Some(why) = self.refuses_listening(deployment, name) {
+                    return Some(why);
+                }
+                continue;
+            }
             let Some(named) = item.strip_prefix("MailSend(\"").and_then(|r| r.strip_suffix("\")")) else { continue };
             let (name, to) = named.split_once('/').unwrap_or((named, "*"));
             match self.resolve(deployment, name) {
-                None => {
-                    return Some(format!(
-                        "the mail {name:?} isn't bound on this server: an admin binds it (holon mail add {name} --smtp env:… --from … --to …, or --for {deployment} for this deployment only)"
-                    ));
-                }
-                Some(b) if to != "*" && !b.allows(to) => {
+                Some(b) if !b.smtp.is_empty() && to != "*" && !b.allows(to) => {
                     return Some(format!("the mail {name:?} sends only to {} on this server, and this flow sends to {to}", b.to.join(", ")));
                 }
-                Some(_) => {}
+                Some(b) if !b.smtp.is_empty() => {}
+                _ => {
+                    return Some(format!(
+                        "the mail {name:?} isn't bound to send on this server: an admin binds it (holon mail add {name} --smtp env:… --from … --to …, or --for {deployment} for this deployment only)"
+                    ));
+                }
             }
         }
         None
+    }
+
+    /// Why `deployment` can't receive the mail `name`: it isn't bound with `--imap`, or another
+    /// deployment listens to its mailbox (a message is moved once: one listener a mailbox).
+    fn refuses_listening(&self, deployment: &str, name: &str) -> Option<String> {
+        let Some(mailbox) = self.resolve(deployment, name).and_then(|b| b.mailbox) else {
+            return Some(format!(
+                "the mail {name:?} isn't bound to receive on this server: an admin binds it (holon mail add {name} --imap env:… --verdict-from …, or --for {deployment} for this deployment only)"
+            ));
+        };
+        let deployments = self.0.deployments.get()?;
+        let listeners: Vec<(String, Vec<String>)> = deployments
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(slug, d)| (slug.clone(), d.server.as_ref().map(|s| s.mails.iter().map(|m| m.mail.clone()).collect()).unwrap_or_default()))
+            .collect();
+        self.listened(deployment, &mailbox, &listeners)
+    }
+
+    /// Why `deployment` can't listen to `mailbox`: another of `listeners` (each deployment, and
+    /// the mails it receives) listens to it, under whatever name.
+    fn listened(&self, deployment: &str, mailbox: &Mailbox, listeners: &[(String, Vec<String>)]) -> Option<String> {
+        let (slug, _) = listeners.iter().filter(|(slug, _)| slug != deployment).find(|(slug, mails)| {
+            mails.iter().any(|m| self.resolve(slug, m).and_then(|b| b.mailbox).is_some_and(|other| other.identity() == mailbox.identity()))
+        })?;
+        Some(format!("its mailbox ({} {}) is listened to by {slug} already: a message is moved once, so one deployment listens to a mailbox", mailbox.address, mailbox.folder))
     }
 
     // ── on its way ──
@@ -309,8 +489,8 @@ impl Mails {
     fn spool(&self, slug: &str, run: &str, at_ms: u64, mails: Vec<(String, Value)>, unlogged: bool) -> Vec<Queued> {
         let mut out = Vec::new();
         for (n, (mail, message)) in mails.into_iter().enumerate() {
-            let Some((key, binding)) = self.resolve_keyed(slug, &mail) else {
-                self.note(slug, &mail, format!("didn't mail through {mail}: it isn't bound now"));
+            let Some((key, binding)) = self.resolve_keyed(slug, &mail).filter(|(_, b)| !b.smtp.is_empty()) else {
+                self.note(slug, &mail, format!("didn't mail through {mail}: it isn't bound to send now"));
                 continue;
             };
             let domain = binding.sender_address().rsplit_once('@').map(|(_, d)| d.to_string()).unwrap_or_default();
@@ -472,7 +652,8 @@ impl Mails {
     /// a temporary failure within the day, given back to try again later.
     fn deliver(&self, mut item: Queued) -> Option<Queued> {
         let s = &item.spooled;
-        let outcome = self.resolve(&s.slug, &s.mail).ok_or_else(|| Failure::Permanent(format!("the mail {:?} isn't bound now", s.mail))).and_then(|binding| {
+        let sends = self.resolve(&s.slug, &s.mail).filter(|b| !b.smtp.is_empty());
+        let outcome = sends.ok_or_else(|| Failure::Permanent(format!("the mail {:?} isn't bound to send now", s.mail))).and_then(|binding| {
             if let Some(r) = s.to.iter().find(|r| !binding.allows(r)) {
                 return Err(Failure::Permanent(format!("{r} isn't an address the binding allows now")));
             }
@@ -503,7 +684,12 @@ impl Mails {
         None
     }
 
-    fn note(&self, slug: &str, mail: &str, what: String) {
+    /// Where a binding's URL is read from: the server's environment and dotenv file, Vault.
+    pub(crate) fn sources(&self) -> &Sources {
+        &self.0.sources
+    }
+
+    pub(crate) fn note(&self, slug: &str, mail: &str, what: String) {
         if let Some(deployments) = self.0.deployments.get() {
             let detail = crate::events::Detail { name: Some(mail.rsplit('/').next().unwrap_or(mail).to_string()), ..Default::default() };
             crate::events::note(deployments, slug, "mail", what, None, detail);
@@ -564,7 +750,7 @@ pub(crate) fn loggable(payload: &Value) -> Value {
 // ── admin ──
 
 fn shown(name: &str, deployment: Option<&str>, b: &Binding) -> serde_json::Value {
-    serde_json::json!({ "name": name, "deployment": deployment, "smtp": b.smtp, "address": b.address, "from": b.from, "to": b.to })
+    serde_json::json!({ "name": name, "deployment": deployment, "smtp": b.smtp, "address": b.address, "from": b.from, "to": b.to, "mailbox": b.mailbox })
 }
 
 fn labelled(name: &str, deployment: Option<&str>) -> String {
@@ -588,19 +774,10 @@ pub(crate) fn route(state: &AppState, request: &Request, by: &str) -> Option<Res
             }
             "POST" => {
                 #[derive(Deserialize)]
-                #[serde(untagged)]
-                enum To {
-                    One(String),
-                    Many(Vec<String>),
-                }
-                #[derive(Deserialize)]
                 struct Bind {
                     name: String,
-                    /// Where the server's URL is read from.
-                    smtp: String,
-                    from: String,
-                    /// Addresses, `*@domain` or `*`: a list, or one text with commas.
-                    to: To,
+                    #[serde(flatten)]
+                    asked: Asked,
                     #[serde(default)]
                     deployment: Option<String>,
                 }
@@ -608,11 +785,7 @@ pub(crate) fn route(state: &AppState, request: &Request, by: &str) -> Option<Res
                     .and_then(|b| serde_json::from_slice::<Bind>(&b).map_err(|e| err(400, format!("invalid body: {e}"))))
                     .map(|b| Bind { deployment: b.deployment.filter(|d| !d.trim().is_empty()), ..b })
                     .and_then(|b| {
-                        let to: Vec<String> = match &b.to {
-                            To::One(s) => s.split(',').map(str::to_string).collect(),
-                            To::Many(v) => v.clone(),
-                        };
-                        let m = all.bind(&b.name, &b.smtp, &b.from, &to, b.deployment.as_deref()).map_err(|e| err(400, e))?;
+                        let m = all.bind(&b.name, &b.asked, b.deployment.as_deref()).map_err(|e| err(400, e))?;
                         Ok((b, m))
                     });
                 match bound {
@@ -649,22 +822,26 @@ pub(crate) fn route(state: &AppState, request: &Request, by: &str) -> Option<Res
     })
 }
 
-/// `holon mail add NAME --smtp SOURCE --from SENDER --to LIST [--for SLUG] | list | remove NAME`:
-/// bind, show and unbind the mail resources of the server this user runs here (or `--server`), as
-/// an admin.
+/// `holon mail add NAME [--smtp SOURCE --from SENDER --to LIST] [--imap SOURCE …] [--for SLUG] |
+/// list | remove NAME`: bind, show and unbind the mail resources of the server this user runs here
+/// (or `--server`), as an admin.
 pub(crate) fn cli(args: &[String]) -> i32 {
     let mut server = None;
     let mut for_deployment: Option<String> = None;
-    let (mut smtp, mut from, mut to): (Option<String>, Option<String>, Option<String>) = (None, None, None);
+    let mut asked = serde_json::Map::new();
     let mut words = Vec::new();
     let mut args = args.iter();
     while let Some(a) = args.next() {
         match a.as_str() {
             "--server" => server = args.next().cloned(),
             "--for" => for_deployment = args.next().cloned(),
-            "--smtp" => smtp = args.next().cloned(),
-            "--from" => from = args.next().cloned(),
-            "--to" => to = args.next().cloned(),
+            "--smtp" | "--from" | "--to" | "--imap" | "--folder" | "--done" | "--verdict-from" | "--every" => {
+                let Some(v) = args.next() else {
+                    eprintln!("holon mail: {a} takes a value\n\n{MAIL_USAGE}");
+                    return 2;
+                };
+                asked.insert(a[2..].replace('-', "_"), serde_json::Value::String(v.clone()));
+            }
             "--help" | "-h" => {
                 println!("{MAIL_USAGE}");
                 return 0;
@@ -679,11 +856,13 @@ pub(crate) fn cli(args: &[String]) -> i32 {
     let (method, path, body) = match words.as_slice() {
         ["list"] => ("GET", "/admin/mails".to_string(), None),
         ["add", name] => {
-            let (Some(smtp), Some(from), Some(to)) = (&smtp, &from, &to) else {
-                eprintln!("holon mail add: it takes --smtp SOURCE, --from SENDER and --to LIST\n\n{MAIL_USAGE}");
+            if !asked.contains_key("smtp") && !asked.contains_key("imap") {
+                eprintln!("holon mail add: it takes --smtp SOURCE (with --from SENDER and --to LIST) to send, --imap SOURCE to receive, or both\n\n{MAIL_USAGE}");
                 return 2;
-            };
-            ("POST", "/admin/mails".to_string(), Some(serde_json::json!({ "name": name, "smtp": smtp, "from": from, "to": to, "deployment": for_deployment })))
+            }
+            asked.insert("name".into(), serde_json::Value::String(name.to_string()));
+            asked.insert("deployment".into(), serde_json::json!(for_deployment));
+            ("POST", "/admin/mails".to_string(), Some(serde_json::Value::Object(asked)))
         }
         ["remove", name] => {
             let only = for_deployment.as_ref().map_or(String::new(), |d| format!("?deployment={}", crate::mcp::seg(d)));
@@ -701,20 +880,23 @@ pub(crate) fn cli(args: &[String]) -> i32 {
     let line = |m: &serde_json::Value| {
         let only = m["deployment"].as_str().map_or(String::new(), |s| format!(", for {s} only"));
         let to: Vec<&str> = m["to"].as_array().into_iter().flatten().filter_map(|t| t.as_str()).collect();
-        format!(
-            "{}  {} (from {})  as {}  to {}{only}",
-            m["name"].as_str().unwrap_or(""),
-            m["address"].as_str().unwrap_or(""),
-            m["smtp"].as_str().unwrap_or(""),
-            m["from"].as_str().unwrap_or(""),
-            to.join(", ")
-        )
+        let mut said = vec![m["name"].as_str().unwrap_or("").to_string()];
+        if m["smtp"].as_str().is_some_and(|s| !s.is_empty()) {
+            said.push(format!("sends through {} (from {})  as {}  to {}", m["address"].as_str().unwrap_or(""), m["smtp"].as_str().unwrap_or(""), m["from"].as_str().unwrap_or(""), to.join(", ")));
+        }
+        let b = &m["mailbox"];
+        if let Some(imap) = b["imap"].as_str() {
+            let verdict = b["verdict_from"].as_str().map_or("nobody's verdict".to_string(), |v| format!("{v}'s verdict"));
+            let every = folders::span_text(b["every"].as_u64().unwrap_or(60));
+            said.push(format!("receives in {} {} (from {imap}), moved to {}  {verdict}  every {every}", b["address"].as_str().unwrap_or(""), b["folder"].as_str().unwrap_or(""), b["done"].as_str().unwrap_or("")));
+        }
+        format!("{}{only}", said.join("  "))
     };
     match words[0] {
         "list" => {
             let all: Vec<serde_json::Value> = serde_json::from_str(&answer).unwrap_or_default();
             if all.is_empty() {
-                println!("no mails are bound on {server}: holon mail add NAME --smtp env:… --from … --to … binds one");
+                println!("no mails are bound on {server}: holon mail add NAME --smtp env:… --from … --to … (or --imap env:…) binds one");
             }
             for m in &all {
                 println!("{}", line(m));
@@ -726,16 +908,19 @@ pub(crate) fn cli(args: &[String]) -> i32 {
     0
 }
 
-const MAIL_USAGE: &str = "usage: holon mail add NAME --smtp SOURCE --from SENDER --to LIST [--for SLUG]
+const MAIL_USAGE: &str = "usage: holon mail add NAME [--smtp SOURCE --from SENDER --to LIST]
+                             [--imap SOURCE [--folder F] [--done F] [--verdict-from SERVER] [--every T]]
+                             [--for SLUG]
        holon mail list
        holon mail remove NAME [--for SLUG]
        (each with [--server PORT|URL])
 
-  Binds a name a flow sends mail through (import ops from \"mail:ops\") to an SMTP server. A
-  flow sends only to the recipients it was granted, within the binding's; it never sees the
-  server or its login, and never chooses the sender. Admins.
+  Binds a name a flow imports (import ops from \"mail:ops\") to an SMTP server it sends
+  through, a mailbox whose messages start its runs (on.mail(ops, …)), or both. A flow sends only
+  to the recipients it was granted, within the binding's; it never sees a server or its login,
+  and never chooses the sender. Admins.
 
-  add NAME                 bind NAME, logging in to the server now
+  add NAME                 bind NAME, logging in to each server now
     --smtp SOURCE          where the server reads its URL, as it reads a secret:
                            env:HOLON_SECRET_OPS_SMTP (its environment or --dotenv file) or
                            vault:<mount>/<path>#<field>. The URL is never stored, shown or
@@ -745,6 +930,16 @@ const MAIL_USAGE: &str = "usage: holon mail add NAME --smtp SOURCE --from SENDER
     --from SENDER          who the mail is from: \"Treasury <treasury@acme.com>\"
     --to LIST              every address it may send to, with commas: addresses, *@domain,
                            or * for anyone
+    --imap SOURCE          where the server reads the mailbox's URL, as --smtp:
+                           imaps://user:password@imap.example.com (TLS, port 993), or
+                           imap://user:password@imap.example.com:143 (STARTTLS, required)
+    --folder F             the folder read (INBOX)
+    --done F               where each message is moved once its run is over (Processed),
+                           made now if it isn't there
+    --verdict-from SERVER  whose Authentication-Results verdict counts: the name the
+                           mailbox's own server writes there (mx.google.com). Without it, no
+                           message is authenticated
+    --every T              how often the folder is looked at: 1m, 30s (10s at least)
     --for SLUG             bind it for that deployment only
   list                     the names bound, and where each sends
   remove NAME              unbind it (--for SLUG: that deployment's). The mail on its way is
@@ -753,6 +948,7 @@ const MAIL_USAGE: &str = "usage: holon mail add NAME --smtp SOURCE --from SENDER
 
 examples:
   holon mail add ops --smtp env:HOLON_SECRET_OPS_SMTP --from \"Treasury <treasury@acme.com>\" --to \"*@acme.com,treasury@bank.example\"
+  holon mail add remit --imap env:HOLON_SECRET_REMIT_IMAP --done Processed --verdict-from mx.acme.com
   holon mail list
 
   From the holon serve you run on this machine, signed in as you; with several running,
@@ -771,10 +967,19 @@ mod tests {
     }
 
     fn sources(url: &str) -> Sources {
+        sources_of(&[("HOLON_SECRET_OPS_SMTP", url)])
+    }
+
+    fn sources_of(vars: &[(&str, &str)]) -> Sources {
         let dir = temp("env");
         let env = dir.join(".env");
-        std::fs::write(&env, format!("HOLON_SECRET_OPS_SMTP={url}\n")).unwrap();
+        std::fs::write(&env, vars.iter().map(|(k, v)| format!("{k}={v}\n")).collect::<String>()).unwrap();
         Sources::new(Some(env)).unwrap()
+    }
+
+    /// A binding that sends through `smtp`, as `--smtp`, `--from` and `--to` ask.
+    fn send(smtp: &str, from: &str, to: &str) -> Asked {
+        Asked { smtp: Some(smtp.into()), from: Some(from.into()), to: Some(To::One(to.into())), ..Default::default() }
     }
 
     fn message(to: &[&str], subject: &str) -> Value {
@@ -788,13 +993,14 @@ mod tests {
         let dir = temp("bind");
         let file = dir.join("mails.json");
         let mails = Mails::open(file.to_str().unwrap()).unwrap().with_sources(sources(&format!("smtp://ops:pw@127.0.0.1:{}", s.port)));
-        let to = |s: &str| s.split(',').map(str::to_string).collect::<Vec<_>>();
-        assert!(mails.bind("ops", "smtp://u:p@x", "t@acme.com", &to("*"), None).unwrap_err().contains("read from a source"));
-        assert!(mails.bind("ops", "env:HOLON_SECRET_OPS_SMTP", "Treasury", &to("*"), None).unwrap_err().contains("isn't a sender"));
-        assert!(mails.bind("ops", "env:HOLON_SECRET_OPS_SMTP", "t@acme.com", &to(""), None).unwrap_err().contains("says none"));
-        assert!(mails.bind("ops", "env:HOLON_SECRET_OPS_SMTP", "t@acme.com", &to("acme.com"), None).unwrap_err().contains("isn't an address"));
-        assert!(mails.bind("ops", "env:HOLON_SECRET_MISSING", "t@acme.com", &to("*"), None).unwrap_err().contains("isn't set"));
-        let b = mails.bind("ops", "env:HOLON_SECRET_OPS_SMTP", "Treasury <treasury@acme.com>", &to("*@acme.com, treasury@bank.example"), None).unwrap();
+        assert!(mails.bind("ops", &send("smtp://u:p@x", "t@acme.com", "*"), None).unwrap_err().contains("read from a source"));
+        assert!(mails.bind("ops", &send("env:HOLON_SECRET_OPS_SMTP", "Treasury", "*"), None).unwrap_err().contains("isn't a sender"));
+        assert!(mails.bind("ops", &send("env:HOLON_SECRET_OPS_SMTP", "t@acme.com", ""), None).unwrap_err().contains("says none"));
+        assert!(mails.bind("ops", &send("env:HOLON_SECRET_OPS_SMTP", "t@acme.com", "acme.com"), None).unwrap_err().contains("isn't an address"));
+        assert!(mails.bind("ops", &send("env:HOLON_SECRET_MISSING", "t@acme.com", "*"), None).unwrap_err().contains("isn't set"));
+        assert!(mails.bind("ops", &Asked::default(), None).unwrap_err().contains("says neither"));
+        assert!(mails.bind("ops", &Asked { from: Some("t@acme.com".into()), imap: Some("env:X".into()), ..Default::default() }, None).unwrap_err().contains("go with --smtp"));
+        let b = mails.bind("ops", &send("env:HOLON_SECRET_OPS_SMTP", "Treasury <treasury@acme.com>", "*@acme.com, treasury@bank.example"), None).unwrap();
         assert_eq!(b.address, format!("smtp://127.0.0.1:{}", s.port));
         // Kept without the URL or its login, and read back.
         let kept = std::fs::read_to_string(&file).unwrap();
@@ -803,9 +1009,55 @@ mod tests {
         let manifest = |caps: &[&str]| Manifest { capabilities: caps.iter().map(|c| c.to_string()).collect(), requirements: Default::default() };
         assert_eq!(mails.refuses("app", &manifest(&[r#"MailSend("ops/approvals@acme.com")"#, r#"MailSend("ops/*")"#])), None);
         assert!(mails.refuses("app", &manifest(&[r#"MailSend("ops/someone@gmail.com")"#])).unwrap().contains("sends only to *@acme.com, treasury@bank.example"));
-        assert!(mails.refuses("app", &manifest(&[r#"MailSend("alerts/*")"#])).unwrap().contains("the mail \"alerts\" isn't bound"));
+        assert!(mails.refuses("app", &manifest(&[r#"MailSend("alerts/*")"#])).unwrap().contains("the mail \"alerts\" isn't bound to send"));
+        assert!(mails.refuses("app", &manifest(&[r#"MailArrival("ops")"#])).unwrap().contains("the mail \"ops\" isn't bound to receive"));
         assert!(mails.unbind("ops", None).unwrap());
         assert!(!mails.unbind("ops", None).unwrap());
+    }
+
+    /// Bound to receive: the mailbox logged in to, its folder read and `--done` made; kept without
+    /// its URL; a flow that receives through it deploys, one that sends through it doesn't; and a
+    /// mailbox one deployment listens to is refused to another, under any name.
+    #[test]
+    fn a_mail_bound_with_imap_receives_and_one_deployment_listens_to_a_mailbox() {
+        let imap = crate::imap::stand_in::start("remit", "s3cret", true);
+        let dir = temp("imap");
+        let file = dir.join("mails.json");
+        let url = format!("imap://remit:s3cret@127.0.0.1:{}", imap.port);
+        let wrong = format!("imap://remit:nope@127.0.0.1:{}", imap.port);
+        let mails = Mails::open(file.to_str().unwrap()).unwrap().with_sources(sources_of(&[("HOLON_SECRET_REMIT_IMAP", &url), ("HOLON_SECRET_WRONG_IMAP", &wrong)]));
+        let receive = |imap: &str, more: fn(Asked) -> Asked| more(Asked { imap: Some(imap.into()), ..Default::default() });
+        for (asked, said) in [
+            (receive("imaps://u:p@x", |a| a), "read from a source"),
+            (receive("env:HOLON_SECRET_WRONG_IMAP", |a| a), "refused the login"),
+            (receive("env:HOLON_SECRET_REMIT_IMAP", |a| Asked { folder: Some("Elsewhere".into()), ..a }), "Elsewhere wasn't read"),
+            (receive("env:HOLON_SECRET_REMIT_IMAP", |a| Asked { done: Some("INBOX".into()), ..a }), "names another folder"),
+            (receive("env:HOLON_SECRET_REMIT_IMAP", |a| Asked { done: Some("Réglé".into()), ..a }), "isn't a folder"),
+            (receive("env:HOLON_SECRET_REMIT_IMAP", |a| Asked { every: Some("5s".into()), ..a }), "10s at most often"),
+            (receive("env:HOLON_SECRET_REMIT_IMAP", |a| Asked { verdict_from: Some("mx acme".into()), ..a }), "isn't a server's name"),
+            (Asked { folder: Some("INBOX".into()), ..send("env:HOLON_SECRET_OPS_SMTP", "t@acme.com", "*") }, "go with --imap"),
+        ] {
+            let e = mails.bind("remit", &asked, None).unwrap_err();
+            assert!(e.contains(said) && !e.contains("s3cret") && !e.contains("nope"), "{said}: {e}");
+        }
+        let b = mails.bind("remit", &receive("env:HOLON_SECRET_REMIT_IMAP", |a| Asked { verdict_from: Some("MX.acme.com".into()), every: Some("30s".into()), ..a }), None).unwrap();
+        let mailbox = b.mailbox.clone().unwrap();
+        assert_eq!((b.smtp.as_str(), mailbox.folder.as_str(), mailbox.done.as_str(), mailbox.verdict_from.as_str(), mailbox.every), ("", "INBOX", "Processed", "mx.acme.com", 30));
+        assert_eq!(mailbox.address, format!("imap://127.0.0.1:{}", imap.port));
+        assert!(imap.folders.lock().unwrap().folders.contains_key("Processed"), "--done made");
+        let kept = std::fs::read_to_string(&file).unwrap();
+        assert!(!kept.contains("s3cret") && kept.contains("env:HOLON_SECRET_REMIT_IMAP"), "{kept}");
+        assert_eq!(Mails::open(file.to_str().unwrap()).unwrap().resolve("app", "remit"), Some(b.clone()));
+        let manifest = |caps: &[&str]| Manifest { capabilities: caps.iter().map(|c| c.to_string()).collect(), requirements: Default::default() };
+        assert_eq!(mails.refuses("app", &manifest(&[r#"MailArrival("remit")"#])), None);
+        assert!(mails.refuses("app", &manifest(&[r#"MailSend("remit/*")"#])).unwrap().contains("isn't bound to send"));
+        // Listened to by `app`: another deployment, under the same name or another, is refused.
+        mails.bind("payments", &receive("env:HOLON_SECRET_REMIT_IMAP", |a| a), Some("other")).unwrap();
+        let listening = [("app".to_string(), vec!["remit".to_string()])];
+        assert_eq!(mails.listened("app", &mailbox, &listening), None, "its own redeploy");
+        assert!(mails.listened("next", &mailbox, &listening).unwrap().contains("listened to by app already"));
+        let theirs = mails.resolve("other", "payments").unwrap().mailbox.unwrap();
+        assert!(mails.listened("other", &theirs, &listening).unwrap().contains("listened to by app already"));
     }
 
     #[test]
@@ -850,7 +1102,7 @@ mod tests {
             .unwrap()
             .with_sources(sources(&format!("smtp://127.0.0.1:{}", s.port)))
             .with_retry([Duration::from_millis(50); 4], Duration::from_secs(5));
-        mails.bind("ops", "env:HOLON_SECRET_OPS_SMTP", "Treasury <treasury@acme.com>", &["*@acme.com".into()], None).unwrap();
+        mails.bind("ops", &send("env:HOLON_SECRET_OPS_SMTP", "Treasury <treasury@acme.com>", "*@acme.com"), None).unwrap();
         mails.serve(Arc::new(Mutex::new(BTreeMap::new())));
         mails.hold("app", 7, mails.spool_logged("app", &entry("r1"), vec![("ops".into(), message(&["a@acme.com"], "first")), ("ops".into(), message(&["b@acme.com"], "second"))]));
         // Spooled, not sent: its record isn't on disk.
@@ -882,7 +1134,7 @@ mod tests {
         let spool = dir.join("mail-spool");
         let mails = Mails::open(dir.join("mails.json").to_str().unwrap()).unwrap().with_sources(sources("smtp://127.0.0.1:1"));
         // Bound to a server that isn't there: spooled, and kept.
-        mails.0.bound.write().unwrap().server.insert("ops".into(), Binding { smtp: "env:HOLON_SECRET_OPS_SMTP".into(), address: String::new(), from: "t@acme.com".into(), to: vec!["*".into()] });
+        mails.0.bound.write().unwrap().server.insert("ops".into(), Binding { smtp: "env:HOLON_SECRET_OPS_SMTP".into(), from: "t@acme.com".into(), to: vec!["*".into()], ..Default::default() });
         mails.hold("app", 1, mails.spool_logged("app", &entry("landed"), vec![("ops".into(), message(&["a@acme.com"], "landed"))]));
         mails.hold("app", 2, mails.spool_logged("app", &entry("lost"), vec![("ops".into(), message(&["a@acme.com"], "lost"))]));
         mails.send_unlogged("app", &entry("unlogged"), vec![("ops".into(), message(&["a@acme.com"], "unlogged"))]);

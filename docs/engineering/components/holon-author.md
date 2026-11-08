@@ -59,8 +59,8 @@ wires in either direction (a union-find over ids only, so a replay's nodes group
 `find_routes` makes each group holding one `request` template a `RouteGroup`, refusing two
 requests or two triggers wired together, a method not in core's `METHODS`, a path `parse_path`
 can't read, and two routes that would match the same requests; a group with no request is not
-part of the server and is skipped silently. `find_clocks`, `find_files` and `find_actions` do the
-same for `every`, `on_file` and `action`. `flow::derive_server` groups each through core like a
+part of the server and is skipped silently. `find_clocks`, `find_files`, `find_mails` and
+`find_actions` do the same for `every`, `on_file`, `on_mail` and `action`. `flow::derive_server` groups each through core like a
 selection, narrows the boundary (`route_spec`, `action_spec`, `clock_spec`, `file_spec`: the
 trigger's input in; the response and every effect out; an optional input such as an
 `http_request`'s `headers`, by `is_optional_input`, left unbound), wraps it (`endpoint_unit`,
@@ -95,10 +95,10 @@ it can be or refused. `print_lines` also says the line each top-level node is pr
 
 `commands.rs` takes a file's name and text and answers a `Report` (`out`, `err`, `code`);
 `crates/holon/src/flowcmd.rs` reads and writes the files. `new_flow` is `STARTER` or a sample's
-text as it is. `check` says the routes, clocks, file handlers and actions, the unit's hash, what
+text as it is. `check` says the routes, clocks, file and mail handlers and actions, the unit's hash, what
 the flow may do (core's `deployed_capabilities`, each said by `describe_item_sending` with where
 each secret is sent), its module budgets and unrecorded handlers, or `STARTS_NOTHING` (what to
-add: a route, a clock, a file handler or an action); a mistake is `file:line:col: message`, the
+add: a route, a clock, a file or mail handler or an action); a mistake is `file:line:col: message`, the
 line and a caret, and each js body is compiled by the engine without running (`js_mistakes`).
 `show` outlines each node by its text name, with what feeds it.
 

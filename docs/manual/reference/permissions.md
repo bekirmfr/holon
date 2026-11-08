@@ -29,6 +29,7 @@ the editor show).
 | `DbWrite("d/t")` | insert, update and delete rows of the table "t" of the database "d" | `d.exec("update t …")` |
 | `MailSend("m/a@acme.com")`, `MailSend("m/*")` | send mail through the mail "m" to a@acme.com; with `*`, "to an address it computes, within its binding's" | `m.send({ to: "a@acme.com", … })`; `*` where a recipient is computed, `m.send({ to: req.json.by, … })` |
 | `FileArrival("f")` | run on each file new, changed or removed in the folder "f" (as its on file lines say), and pass it on | `on.file.created(f, …)`, `on.file.deleted(f, …)` |
+| `MailArrival("m")` | run on each mail that comes to "m", read it, and move it once its run is over | `on.mail(m, …)` |
 | `RunsAction("billing/charge")` | run the action charge of the flow billing | `charge(x)`, with `import { charge } from "flow:billing"` |
 | `Await("e")` | wait for an event "e" and continue later | `await event("e")` |
 

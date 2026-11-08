@@ -34,7 +34,7 @@ use crate::canvas::{Node, PlacedBody};
 use crate::composites::{inner_canvas, resolve, Names};
 use crate::lang::lower::{alias, call_noun, is_optional, RESERVED, UNUSED};
 use crate::lang::ts::{DATE_GETTERS, DATE_SETTERS};
-use crate::routes::{components, find_actions, find_clocks, find_files, find_routes};
+use crate::routes::{components, find_actions, find_clocks, find_files, find_mails, find_routes};
 use crate::templates;
 use crate::text::restore;
 use crate::wire::{WParam, WPort, WType};
@@ -423,7 +423,7 @@ fn without_block_ties(nodes: Vec<&Node>, wires: Vec<BlockWire>) -> (Vec<&Node>, 
     let tie = |src: &Src, input: &str| {
         input == TRIGGER
             && (own_trigger(src)
-                || matches!(src, Src::Node { id, output } if (output == "request" && by_id.get(id.as_str()).is_some_and(|n| n.is_template("request"))) || (output == "now" && by_id.get(id.as_str()).is_some_and(|n| n.is_template("every"))) || (output == "file" && by_id.get(id.as_str()).is_some_and(|n| n.is_template("on_file"))) || (output == "input" && by_id.get(id.as_str()).is_some_and(|n| n.is_template("action"))) || passes_trigger(id)))
+                || matches!(src, Src::Node { id, output } if (output == "request" && by_id.get(id.as_str()).is_some_and(|n| n.is_template("request"))) || (output == "now" && by_id.get(id.as_str()).is_some_and(|n| n.is_template("every"))) || (output == "file" && by_id.get(id.as_str()).is_some_and(|n| n.is_template("on_file"))) || (output == "message" && by_id.get(id.as_str()).is_some_and(|n| n.is_template("on_mail"))) || (output == "input" && by_id.get(id.as_str()).is_some_and(|n| n.is_template("action"))) || passes_trigger(id)))
     };
     // A pass-through that feeds only ties goes, with the `true` it holds.
     let mut gone: HashSet<String> = HashSet::new();
@@ -584,6 +584,8 @@ pub fn print_lines(name: Option<&str>, doc: &FlowDocument, store: &mut MapResolv
         vocab_used: None,
     };
     p.collect_collections(&doc.nodes)?;
+    // A mail a handler reads is imported as one it sends through is.
+    p.mails.extend(doc.nodes.iter().filter(|n| n.is_template("on_mail")).map(|n| n.param("mail").to_string()));
     for n in doc.nodes.iter().filter(|n| n.is_template("on_file")) {
         let folder = n.param("folder").to_string();
         if !p.watched.contains(&folder) {
@@ -1072,7 +1074,7 @@ impl<'s> Printer<'s> {
         Ok(if fields.is_empty() { format!("flow({})", quote(&name)) } else { format!("flow({}, {{ {} }})", quote(&name), fields.join(", ")) })
     }
 
-    /// The handlers (routes, clocks, file handlers, actions) in the order of their nodes; the
+    /// The handlers (routes, clocks, file and mail handlers, actions) in the order of their nodes; the
     /// functions they place go to `defs` as they are met.
     fn items(&mut self, doc: &FlowDocument) -> Result<Vec<Item>, String> {
         let (routes, mut errors) = find_routes(&doc.nodes, &doc.edges);
@@ -1080,6 +1082,8 @@ impl<'s> Printer<'s> {
         errors.extend(clock_errors);
         let (files, file_errors) = find_files(&doc.nodes, &doc.edges);
         errors.extend(file_errors);
+        let (mails, mail_errors) = find_mails(&doc.nodes, &doc.edges);
+        errors.extend(mail_errors);
         let (actions, action_errors) = find_actions(&doc.nodes, &doc.edges);
         errors.extend(action_errors);
         if !errors.is_empty() {
@@ -1093,6 +1097,7 @@ impl<'s> Printer<'s> {
             Route(&'r crate::routes::RouteGroup),
             Clock(&'r crate::routes::ClockGroup),
             File(&'r crate::routes::FileGroup),
+            Mail(&'r crate::routes::MailGroup),
             Action(&'r crate::routes::ActionGroup),
         }
         let mut handlers: Vec<(usize, Handler)> = routes
@@ -1100,10 +1105,11 @@ impl<'s> Printer<'s> {
             .map(|r| (first(&r.node_ids), Handler::Route(r)))
             .chain(clocks.iter().map(|c| (first(&c.node_ids), Handler::Clock(c))))
             .chain(files.iter().map(|f| (first(&f.node_ids), Handler::File(f))))
+            .chain(mails.iter().map(|m| (first(&m.node_ids), Handler::Mail(m))))
             .chain(actions.iter().map(|a| (first(&a.node_ids), Handler::Action(a))))
             .collect();
         handlers.sort_by_key(|(at, _)| *at);
-        let handled: HashSet<&String> = routes.iter().flat_map(|r| &r.node_ids).chain(clocks.iter().flat_map(|c| &c.node_ids)).chain(files.iter().flat_map(|f| &f.node_ids)).chain(actions.iter().flat_map(|a| &a.node_ids)).collect();
+        let handled: HashSet<&String> = routes.iter().flat_map(|r| &r.node_ids).chain(clocks.iter().flat_map(|c| &c.node_ids)).chain(files.iter().flat_map(|f| &f.node_ids)).chain(mails.iter().flat_map(|m| &m.node_ids)).chain(actions.iter().flat_map(|a| &a.node_ids)).collect();
         let stray: Vec<Vec<String>> = components(&ids, &doc.edges).into_iter().filter(|g| !g.iter().any(|id| handled.contains(id))).collect();
         if !stray.is_empty() {
             let what = if doc.nodes.iter().any(|n| n.data.name == "file_arrival") {
@@ -1111,7 +1117,7 @@ impl<'s> Printer<'s> {
             } else {
                 ""
             };
-            return Err(format!("nothing starts this flow: add a route, a clock, a file handler or an action{what}"));
+            return Err(format!("nothing starts this flow: add a route, a clock, a file or mail handler or an action{what}"));
         }
         let mut items = Vec::new();
         for (_, handler) in handlers {
@@ -1137,6 +1143,12 @@ impl<'s> Printer<'s> {
                     self.vocab.insert("on".into());
                     let head = format!("on.file.{}({}, ", if f.deleted { "deleted" } else { "created" }, f.folder);
                     self.handler(doc, &f.node_ids, on, Kind::File, head, options(&[("matching", f.matching.as_str()), ("log", log_option(&f.log))]), &f.label)?
+                }
+                Handler::Mail(m) => {
+                    let on = by_id[m.on_mail_id.as_str()];
+                    self.vocab.insert("on".into());
+                    let head = format!("on.mail({}, ", m.mail);
+                    self.handler(doc, &m.node_ids, on, Kind::Mail, head, options(&[("log", log_option(&m.log))]), &m.label)?
                 }
                 Handler::Action(a) => {
                     let input = by_id[a.action_id.as_str()];
@@ -1164,6 +1176,7 @@ impl<'s> Printer<'s> {
             Kind::Route => "req",
             Kind::Action => "input",
             Kind::File => "f",
+            Kind::Mail => "m",
             _ => "",
         };
         let param = if kind == Kind::Every { String::new() } else { self.handle_name(&trigger.id, fallback) };
@@ -1412,6 +1425,7 @@ enum Kind {
     Action,
     Every,
     File,
+    Mail,
     Function,
     /// A function written in place, `(x) => …`: one expression, no statements.
     Lambda,
@@ -1519,7 +1533,7 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
     }
 
     fn handler(&self) -> bool {
-        matches!(self.kind, Kind::Route | Kind::Action | Kind::Every | Kind::File)
+        matches!(self.kind, Kind::Route | Kind::Action | Kind::Every | Kind::File | Kind::Mail)
     }
 
     // ── what each node is ────────────────────────────────────────────────────────────────────
@@ -1945,7 +1959,7 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
             for (port, input) in ports.iter().zip(&n.data.inputs[base..]) {
                 match self.g.incoming.get(&(n.id.clone(), input.name.clone())) {
                     Some(Src::In(p)) if p == port => {}
-                    Some(Src::Node { id, output }) if self.is_request(id) && (output == "request" || output == "file" || output == "input") && local_name(&self.request.as_ref().expect("checked").1) == *port => {}
+                    Some(Src::Node { id, output }) if self.is_request(id) && (output == "request" || output == "file" || output == "message" || output == "input") && local_name(&self.request.as_ref().expect("checked").1) == *port => {}
                     // A part of what the handler received, or a clock's tick: no node, so a name
                     // for it is a `const` of its own, `const r = req.json`.
                     Some(Src::Node { id, output }) if self.is_request(id) || self.is_tick(id) => {
@@ -2146,7 +2160,7 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
                 }
             }
             Kind::Function | Kind::Lambda => answer = self.returns()?,
-            Kind::Every | Kind::File => {}
+            Kind::Every | Kind::File | Kind::Mail => {}
         }
         if self.handler() {
             reads_first(&mut stmts);
@@ -2651,7 +2665,7 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
                 {
                     let name = name.clone();
                     self.param_read = true;
-                    return Ok(if ["request", "file", "input"].contains(&output.as_str()) { (name, ATOM) } else { (format!("{name}.{output}"), MEMBER) });
+                    return Ok(if ["request", "file", "message", "input"].contains(&output.as_str()) { (name, ATOM) } else { (format!("{name}.{output}"), MEMBER) });
                 }
                 if self.is_tick(id) {
                     self.p.uses_now = true;
@@ -4487,6 +4501,15 @@ export const t = action((input) => {
         );
     }
 
+    /// Mail handlers print back as written, the mail imported as one sent through is.
+    #[test]
+    fn mail_handlers_print_back_as_written() {
+        prints_back(
+            "import { flow, on, route } from \"holon\"\nimport state from \"state\"\nimport remit from \"mail:remit\"\n\nflow(\"remit\", { port: 8080 })\n\non.mail(remit, (message) => {\n  state.last = message.subject\n})\n\nroute.get(\"/last\", () => state.last)\n",
+        );
+        prints_back("import { flow, on } from \"holon\"\nimport state from \"state\"\nimport remit from \"mail:remit\"\n\nflow(\"remit\")\n\non.mail(\n  remit,\n  (m) => {\n    state.from = m.from\n  },\n  { log: \"lazy\" },\n)\n");
+    }
+
     /// Actions print back as written, each with the name of what was sent.
     #[test]
     fn actions_print_back_as_written() {
@@ -4613,7 +4636,7 @@ export const t = action((input) => {
         // Nodes under no handler.
         let mut b = FlowBuilder::new();
         b.node("uppercase", &[], None).unwrap();
-        assert_eq!(refused(&b.finish(Default::default())), "nothing starts this flow: add a route, a clock, a file handler or an action");
+        assert_eq!(refused(&b.finish(Default::default())), "nothing starts this flow: add a route, a clock, a file or mail handler or an action");
         // A state write whose answer is used, in a route.
         let mut b = FlowBuilder::new();
         let req = b.node("request", &[("method".into(), "POST".into()), ("path".into(), "/k".into())], None).unwrap();
