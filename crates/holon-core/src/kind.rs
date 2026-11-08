@@ -296,6 +296,7 @@ pub fn capabilities_of(name: &str, params: &[Param]) -> Option<Capabilities> {
         | "lookup" | "insert" | "remove"
         | "values" | "from_entries" | "merge" | "has" | "group_by" | "same_value" | "type_of"
         | "date_part" | "date_utc" | "date_set" | "date_text" | "date_parse"
+        | "date_add" | "business_day_add" | "business_days_between" | "is_business_day"
         | "json_parse" | "json_stringify"
         | "sha256" | "hmac_sha256" | "hex" | "base64" | "secure_equals"
         | "text_to_bytes" | "bytes_to_text" | "bytes_length" | "bytes_concat" | "bytes_to_list" | "list_to_bytes"
@@ -843,6 +844,7 @@ mod tests {
             "any", "all", "filter", "find", "find_index", "find_last", "find_last_index", "sort_by",
             "values", "from_entries", "merge", "has", "group_by", "same_value", "type_of",
             "date_part", "date_utc", "date_set", "date_text", "date_parse",
+            "date_add", "business_day_add", "business_days_between", "is_business_day",
             "decimal_add", "decimal_sub", "decimal_mul", "decimal_div", "decimal_round", "decimal_sum", "decimal_compare",
             "csv_parse", "csv_format",
             "join", "cons", "head", "tail", "is_empty", "pair", "some", "none", "to_text", "as_text", "is_truthy", "guard", "default", "coalesce", "equals", "fail", "fold", "map",

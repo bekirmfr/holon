@@ -24,7 +24,10 @@ export const CATALOG_GROUPS: readonly { name: string; items: ReadonlySet<string>
   },
   {
     name: "date",
-    items: new Set(["date_part", "date_utc", "date_set", "date_text", "date_parse"]),
+    items: new Set([
+      "date_part", "date_utc", "date_set", "date_text", "date_parse",
+      "date_add", "business_day_add", "business_days_between", "is_business_day",
+    ]),
   },
   {
     name: "text",

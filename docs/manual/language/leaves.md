@@ -13,7 +13,7 @@ last record (see [Calls](reference.md#calls)). Many are written another way (`a 
 
 These touch nothing outside: given the same inputs, they always give the same output.
 
-[`const`](#const) · [`add`](#add) · [`multiply`](#multiply) · [`subtract`](#subtract) · [`divide`](#divide) · [`compare`](#compare) · [`and`](#and) · [`or`](#or) · [`not`](#not) · [`select`](#select) · [`cons`](#cons) · [`head`](#head) · [`tail`](#tail) · [`is_empty`](#is_empty) · [`fold`](#fold) · [`map`](#map) · [`math`](#math) · [`max`](#max) · [`min`](#min) · [`aggregate`](#aggregate) · [`atan2`](#atan2) · [`power`](#power) · [`remainder`](#remainder) · [`bitwise`](#bitwise) · [`number_test`](#number_test) · [`to_number`](#to_number) · [`number_format`](#number_format) · [`concat`](#concat) · [`uppercase`](#uppercase) · [`lowercase`](#lowercase) · [`text_length`](#text_length) · [`slice`](#slice) · [`index_of`](#index_of) · [`split`](#split) · [`text_at`](#text_at) · [`code_at`](#code_at) · [`from_codes`](#from_codes) · [`text_contains`](#text_contains) · [`trim`](#trim) · [`pad`](#pad) · [`repeat`](#repeat) · [`replace`](#replace) · [`normalize`](#normalize) · [`uri_encode`](#uri_encode) · [`uri_decode`](#uri_decode) · [`is_well_formed`](#is_well_formed) · [`list`](#list) · [`get`](#get) · [`append`](#append) · [`extend`](#extend) · [`length`](#length) · [`sum`](#sum) · [`join`](#join) · [`at`](#at) · [`indices`](#indices) · [`entries`](#entries) · [`any`](#any) · [`all`](#all) · [`filter`](#filter) · [`find`](#find) · [`find_index`](#find_index) · [`find_last`](#find_last) · [`find_last_index`](#find_last_index) · [`sort_by`](#sort_by) · [`includes`](#includes) · [`last_index_of`](#last_index_of) · [`reverse`](#reverse) · [`to_spliced`](#to_spliced) · [`with_item`](#with_item) · [`fill`](#fill) · [`copy_within`](#copy_within) · [`sort`](#sort) · [`flat`](#flat) · [`is_list`](#is_list) · [`unique`](#unique) · [`range`](#range) · [`pair`](#pair) · [`some`](#some) · [`none`](#none) · [`record`](#record) · [`field`](#field) · [`with_field`](#with_field) · [`without_field`](#without_field) · [`keys`](#keys) · [`lookup`](#lookup) · [`insert`](#insert) · [`remove`](#remove) · [`values`](#values) · [`from_entries`](#from_entries) · [`merge`](#merge) · [`has`](#has) · [`group_by`](#group_by) · [`same_value`](#same_value) · [`type_of`](#type_of) · [`json_parse`](#json_parse) · [`json_stringify`](#json_stringify) · [`date_part`](#date_part) · [`date_utc`](#date_utc) · [`date_set`](#date_set) · [`date_text`](#date_text) · [`date_parse`](#date_parse) · [`sha256`](#sha256) · [`hmac_sha256`](#hmac_sha256) · [`hex`](#hex) · [`base64`](#base64) · [`secure_equals`](#secure_equals) · [`text_to_bytes`](#text_to_bytes) · [`bytes_to_text`](#bytes_to_text) · [`bytes_length`](#bytes_length) · [`bytes_concat`](#bytes_concat) · [`bytes_to_list`](#bytes_to_list) · [`list_to_bytes`](#list_to_bytes) · [`decimal_add`](#decimal_add) · [`decimal_sub`](#decimal_sub) · [`decimal_mul`](#decimal_mul) · [`decimal_div`](#decimal_div) · [`decimal_round`](#decimal_round) · [`decimal_sum`](#decimal_sum) · [`decimal_compare`](#decimal_compare) · [`csv_parse`](#csv_parse) · [`csv_format`](#csv_format) · [`to_text`](#to_text) · [`as_text`](#as_text) · [`is_truthy`](#is_truthy) · [`guard`](#guard) · [`default`](#default) · [`coalesce`](#coalesce) · [`equals`](#equals) · [`fail`](#fail)
+[`const`](#const) · [`add`](#add) · [`multiply`](#multiply) · [`subtract`](#subtract) · [`divide`](#divide) · [`compare`](#compare) · [`and`](#and) · [`or`](#or) · [`not`](#not) · [`select`](#select) · [`cons`](#cons) · [`head`](#head) · [`tail`](#tail) · [`is_empty`](#is_empty) · [`fold`](#fold) · [`map`](#map) · [`math`](#math) · [`max`](#max) · [`min`](#min) · [`aggregate`](#aggregate) · [`atan2`](#atan2) · [`power`](#power) · [`remainder`](#remainder) · [`bitwise`](#bitwise) · [`number_test`](#number_test) · [`to_number`](#to_number) · [`number_format`](#number_format) · [`concat`](#concat) · [`uppercase`](#uppercase) · [`lowercase`](#lowercase) · [`text_length`](#text_length) · [`slice`](#slice) · [`index_of`](#index_of) · [`split`](#split) · [`text_at`](#text_at) · [`code_at`](#code_at) · [`from_codes`](#from_codes) · [`text_contains`](#text_contains) · [`trim`](#trim) · [`pad`](#pad) · [`repeat`](#repeat) · [`replace`](#replace) · [`normalize`](#normalize) · [`uri_encode`](#uri_encode) · [`uri_decode`](#uri_decode) · [`is_well_formed`](#is_well_formed) · [`list`](#list) · [`get`](#get) · [`append`](#append) · [`extend`](#extend) · [`length`](#length) · [`sum`](#sum) · [`join`](#join) · [`at`](#at) · [`indices`](#indices) · [`entries`](#entries) · [`any`](#any) · [`all`](#all) · [`filter`](#filter) · [`find`](#find) · [`find_index`](#find_index) · [`find_last`](#find_last) · [`find_last_index`](#find_last_index) · [`sort_by`](#sort_by) · [`includes`](#includes) · [`last_index_of`](#last_index_of) · [`reverse`](#reverse) · [`to_spliced`](#to_spliced) · [`with_item`](#with_item) · [`fill`](#fill) · [`copy_within`](#copy_within) · [`sort`](#sort) · [`flat`](#flat) · [`is_list`](#is_list) · [`unique`](#unique) · [`range`](#range) · [`pair`](#pair) · [`some`](#some) · [`none`](#none) · [`record`](#record) · [`field`](#field) · [`with_field`](#with_field) · [`without_field`](#without_field) · [`keys`](#keys) · [`lookup`](#lookup) · [`insert`](#insert) · [`remove`](#remove) · [`values`](#values) · [`from_entries`](#from_entries) · [`merge`](#merge) · [`has`](#has) · [`group_by`](#group_by) · [`same_value`](#same_value) · [`type_of`](#type_of) · [`json_parse`](#json_parse) · [`json_stringify`](#json_stringify) · [`date_part`](#date_part) · [`date_utc`](#date_utc) · [`date_set`](#date_set) · [`date_text`](#date_text) · [`date_parse`](#date_parse) · [`date_add`](#date_add) · [`business_day_add`](#business_day_add) · [`business_days_between`](#business_days_between) · [`is_business_day`](#is_business_day) · [`sha256`](#sha256) · [`hmac_sha256`](#hmac_sha256) · [`hex`](#hex) · [`base64`](#base64) · [`secure_equals`](#secure_equals) · [`text_to_bytes`](#text_to_bytes) · [`bytes_to_text`](#bytes_to_text) · [`bytes_length`](#bytes_length) · [`bytes_concat`](#bytes_concat) · [`bytes_to_list`](#bytes_to_list) · [`list_to_bytes`](#list_to_bytes) · [`decimal_add`](#decimal_add) · [`decimal_sub`](#decimal_sub) · [`decimal_mul`](#decimal_mul) · [`decimal_div`](#decimal_div) · [`decimal_round`](#decimal_round) · [`decimal_sum`](#decimal_sum) · [`decimal_compare`](#decimal_compare) · [`csv_parse`](#csv_parse) · [`csv_format`](#csv_format) · [`to_text`](#to_text) · [`as_text`](#as_text) · [`is_truthy`](#is_truthy) · [`guard`](#guard) · [`default`](#default) · [`coalesce`](#coalesce) · [`equals`](#equals) · [`fail`](#fail)
 
 ### `const`
 
@@ -786,10 +786,10 @@ Writes a value out as JSON text, as JavaScript's JSON.stringify: indent lays it 
 ### `date_part`
 
 ```
-date_part(time: Any) -> out: Number  {part: time}
+date_part(time: Any, offset: Any) -> out: Number  {part: time}
 ```
 
-A date's time value, or one of its parts in UTC, chosen by part: time (new Date(x): a number of milliseconds since 1970, or a text as date_parse reads it), year, month (0 to 11), date, day (0 is Sunday), hours, minutes, seconds, milliseconds (getUTCFullYear() and the rest). Nothing for a date out of range.
+A date's time value, or one of its parts in UTC, chosen by part: time (new Date(x): a number of milliseconds since 1970, or a text as date_parse reads it), year, month (0 to 11), date, day (0 is Sunday), hours, minutes, seconds, milliseconds (getUTCFullYear() and the rest). Given an offset (+01:00, or minutes east of UTC), the part there: its hours, its date. Nothing for a date out of range.
 
 ### `date_utc`
 
@@ -810,10 +810,10 @@ A date with parts replaced, from part on, the rest its own: new Date(t).setUTCHo
 ### `date_text`
 
 ```
-date_text(time: Any) -> out: Text  {format: iso}
+date_text(time: Any, offset: Any) -> out: Text  {format: iso}
 ```
 
-A date as text, by format: iso (new Date(t).toISOString(): 2000-02-29T12:00:00.000Z) or utc (toUTCString(): Tue, 29 Feb 2000 12:00:00 GMT). The date is a time value or a text, as for new Date(t).
+A date as text, by format: iso (new Date(t).toISOString(): 2000-02-29T12:00:00.000Z), date (2000-02-29) or utc (toUTCString(): Tue, 29 Feb 2000 12:00:00 GMT). Given an offset (+01:00, or minutes east of UTC), iso and date are the time there, iso written with it: 2000-02-29T13:00:00.000+01:00. The date is a time value or a text, as for new Date(t).
 
 ### `date_parse`
 
@@ -822,6 +822,38 @@ date_parse(text: Text) -> out: Number
 ```
 
 The time value a date's text gives: Date.parse(t), in JavaScript's date format (2000-02-29, 2000-02-29T12:00:00Z, …). A time without Z or an offset produces nothing: Holon has no local time.
+
+### `date_add`
+
+```
+date_add(time: Any, amount: Number, offset: Any) -> out: Number  {unit: days}
+```
+
+A date amount days, months or years later (earlier when negative), by unit, as a time value. A month keeps the day of the month, or is the month's last day when it has fewer: January 31 and a month is February 28. Given an offset, its calendar's months.
+
+### `business_day_add`
+
+```
+business_day_add(date: Any, days: Number, holidays: List<Any>) -> out: Text  {weekend: sat_sun}
+```
+
+The date days business days after date (before it when negative), as YYYY-MM-DD; with 0, date itself when it is a business day, else the next. A business day is in neither the weekend (sat_sun by default, fri_sat or none) nor holidays, a list of dates such as 2026-12-25.
+
+### `business_days_between`
+
+```
+business_days_between(from: Any, to: Any, holidays: List<Any>) -> out: Number  {weekend: sat_sun}
+```
+
+How many business days come after from up to to, to included; negative when to is before from. Dates are YYYY-MM-DD texts or time values; holidays, a list of dates, and the weekend as for business_day_add.
+
+### `is_business_day`
+
+```
+is_business_day(date: Any, holidays: List<Any>) -> out: Boolean  {weekend: sat_sun}
+```
+
+Whether a date (YYYY-MM-DD, or a time value's date in UTC) is in neither the weekend (sat_sun by default, fri_sat or none) nor holidays, a list of dates.
 
 ### `sha256`
 

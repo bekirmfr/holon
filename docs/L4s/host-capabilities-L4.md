@@ -342,6 +342,83 @@ As designed, with what building it found:
   as the call. The sample uses a named function and `e[0]`. The printer still leaves a
   parameter's annotation out, as the graph doesn't hold it.
 
+#### 5.1.3 Slice 1.2b as designed (2026-11-08, against `51dc858`)
+
+Five date leaves exist (`dates.rs`): JavaScript's `Date` in UTC, a date its time value in
+milliseconds, a leaf taking a time value or a text as `new Date(x)` does. `date_parse` already
+reads an offset (`2026-11-06T16:30:00+01:00`). What a payment file still needs is the calendar at
+an offset (a bank's cut-off, its local date), adding days and months, and business days over a
+calendar of closing days given as data. All of it is written in `dates.rs` by hand, in `i64` on
+the proleptic Gregorian calendar as the rest is, and fetches nothing.
+
+**An offset** is `"Z"` or `"±HH:mm"` (`HH` up to 23, `mm` up to 59), as ISO 8601 and `Date.parse`
+write one, or a whole number of minutes east of UTC from −1439 to 1439. Anything else, and the
+leaf gives nothing. It is fixed: Frankfurt is `+01:00` in winter and `+02:00` in summer, and
+which applies is the flow's data or its caller's; zones and their rules stay fork 3.
+
+**Two leaves take an offset**, an optional input, so the forms that lower to them now leave it
+unwired and mean what they meant:
+
+| Leaf | With an offset |
+|---|---|
+| `date_part(time, offset?) {part}` | the part at that offset (its hours, its date, its weekday); `time` is the instant, the same at any offset |
+| `date_text(time, offset?) {format}` | `iso` writes the time at the offset, with it (`2026-11-06T16:30:00.000+01:00`; `Z` for a zero offset, as without one); a new format, `date`, the date alone (`2026-11-06`, `toISOString`'s first ten); `utc` is GMT's, so nothing for an offset other than zero |
+
+**Four new leaves:**
+
+| Leaf | Gives |
+|---|---|
+| `date_add(time, amount, offset?) {unit}` | the time value `amount` days, months or years later (earlier when negative), at the offset's calendar; `unit` a family, `days` (the default), `months`, `years`. A month keeps the day of the month, or is the month's last day when it has fewer (January 31 and a month is February 28, as date-fns's `addMonths`); a year is twelve months. The time of day is kept |
+| `business_day_add(date, days, holidays?) {weekend}` | the calendar date, as `YYYY-MM-DD`, `days` business days after `date` (before it when negative); with 0, `date` when it is a business day, else the next one |
+| `business_days_between(from, to, holidays?) {weekend}` | how many business days come after `from` up to `to`, `to` included; negative when `to` is before `from`. So `business_days_between(d, business_day_add(d, n))` is `n` for any `n` but 0 |
+| `is_business_day(date, holidays?) {weekend}` | whether `date` is one |
+
+A business day is a day that is neither in the weekend nor a holiday. `weekend` is a family:
+`sat_sun` (the default), `fri_sat`, `none`. A calendar date (`date`, `from`, `to`, a holiday) is a
+`YYYY-MM-DD` text, or a time value, read as its date in UTC; a text with a time of day is
+refused, since its date depends on an offset the leaf can't know: `date_text(t, offset, { format:
+"date" })` says which date is meant. `holidays` is a list of calendar dates, a bank's closing days:
+the list is data the flow holds or reads, not built in; an item that isn't a date gives nothing,
+as a malformed CSV does. A business-day leaf gives a date as text because a date has no time and
+no offset: it goes into an XML file or a holiday list as it is, and `Date.parse` reads it as the
+day's start in UTC. `days` is a whole number up to 100,000 either way; `business_day_add` steps
+day by day, at most `|days| × 7 / 5` steps plus the holidays and a week, and
+`business_days_between` counts whole weeks and then the holidays in the range, so neither depends
+on the range's length.
+
+**JavaScript's forms.** JavaScript has no business days, no clamping month, and a `Date` that
+writes no offset, so the four new leaves and the offsets are called by name; `d.setUTCMonth(m +
+1)` still lowers to `date_set` and overflows as JavaScript's does (January 31 and a month is March
+3). The library table (javascript-library.md §8) maps date-fns's `addDays`, `addMonths`,
+`addYears`, `addBusinessDays` (no holidays there), `differenceInBusinessDays` and `isWeekend`.
+The printer writes `date_part` and `date_text` as `new Date(t)`'s methods when the offset is
+unwired, and by name when it is wired or the format is `date`.
+
+**The checklist (§4)** is short, since every leaf is pure: no permission, no host, nothing logged
+beyond a run's values, the same answer natively and in wasm (integers throughout), and limits in
+the leaves themselves. `date_part` and `date_text` change interface, so their hashes move, with
+those of the samples using them.
+
+**The sample, `due-dates`:** a route that says when a payout received now (or at a time the
+request gives, at the offset it gives) is executed and credited, against a 16:00 cut-off and
+TARGET2's closing days in 2026 held as a list; and one that says when an invoice is due, some
+months after it was issued, moved to the next business day.
+
+#### 5.1.4 Slice 1.2b as built (2026-11-08)
+
+As designed, with what building it found:
+
+- **Core:** `dates.rs` gains the offsets, `date_add` and a `Calendar` (a weekend by weekday and
+  the holidays as a set of days); 172 primitives. `business_days_between` counts the whole range
+  representable at once, from −271821 to +275760.
+- **The sample's calendar is a function**, `closed()`, returning the list: the top level binds
+  only literals, and a list of texts isn't one yet.
+- **An answer with a part missing is none:** an invoice issued `2026-01-31T10:00:00Z` (a time of
+  day) gives no business-day count, so the route's record isn't built and it answers 404, as a
+  bad offset does. Strict, as a malformed CSV is.
+- **The printer** writes `date_part` and `date_text` as `new Date(t)`'s methods only while the
+  offset is unwired; `date_set` keeps its rule (every value wired).
+
 ### 5.2 Email
 
 **Sending.** `mail ops` names a mail resource an admin binds: SMTP (host, port, sender, login
@@ -1639,7 +1716,7 @@ engine.
 | Step | What | Design | Needs | Size |
 |---|---|---|---|---|
 | 1.1 | **Value kinds:** `Bytes`, built (§5.10.2); `Decimal` decided as text leaves, built in 1.2 (§5.10.1) | §5.10 (here) | — | M |
-| 1.2 | **Formats:** exact decimals, CSV, XML, dates (UTC and offsets), zip and gzip, JWT verify, PGP encrypt and verify with a public key, in six slices (§5.1.1); 1.2a, decimals and CSV, built (§5.1.2) | §5.1 (here) | 1.1 | M |
+| 1.2 | **Formats:** exact decimals, CSV, XML, dates (UTC and offsets), zip and gzip, JWT verify, PGP encrypt and verify with a public key, in six slices (§5.1.1); 1.2a, decimals and CSV, built (§5.1.2); 1.2b, offsets and business days, built (§5.1.4) | §5.1 (here) | 1.1 | M |
 | 1.3 | **Email:** send, recipients in the grant; receive as `on mail`, with its sender's verdict and attachments (§5.2) | §5.2 (here) | 1.1 for attachments | L |
 | 1.4 | **Remote folders:** the backend seam in `folders.rs`, then SFTP and S3-compatible storage (§6) | §6 (here) | 1.1 for binary files | L |
 | 1.5 | **Secure connectivity:** keys the host holds (PGP decrypt and sign) and client identities (mutual TLS, a private CA) (§5.3, §5.4) | §5.3, §5.4 (here) | 1.1, 1.2 | M |

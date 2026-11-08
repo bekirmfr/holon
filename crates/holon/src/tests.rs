@@ -6801,6 +6801,32 @@ fn a_csv_of_payouts_is_totalled_exactly() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// Business days at a fixed offset (the due-dates sample): a payout received after the cut-off on
+/// the Thursday before Easter is executed the Tuesday after, one received before it that day; an
+/// invoice due on a Saturday moves to the Monday; one received now is written at the offset; and
+/// the runs verify.
+#[test]
+fn a_payout_is_scheduled_past_the_closing_days() {
+    let state = claims_state("");
+    let slug = deploy_text(&state, include_str!("../../holon-author/samples/due-dates.holon.ts"), "");
+    let call = |path: &str, body: serde_json::Value| {
+        let (status, answer, _) = data_call(&state, &slug, "POST", path, &body.to_string());
+        assert_eq!(status, 200, "{path}: {answer}");
+        serde_json::from_str::<serde_json::Value>(&answer).unwrap()
+    };
+    let schedule = |received: &str| call("/schedule", serde_json::json!({ "received": received, "offset": "+02:00" }));
+    assert_eq!(schedule("2026-04-02T16:30:00+02:00"), serde_json::json!({ "received": "2026-04-02T16:30:00.000+02:00", "executed": "2026-04-07", "credited": "2026-04-08" }));
+    assert_eq!(schedule("2026-04-02T13:59:00Z"), serde_json::json!({ "received": "2026-04-02T15:59:00.000+02:00", "executed": "2026-04-02", "credited": "2026-04-07" }));
+    assert_eq!(call("/due", serde_json::json!({ "issued": "2026-01-31", "months": 1 })), serde_json::json!({ "due": "2026-03-02", "business_days": 21 }));
+    let now = call("/schedule", serde_json::json!({}));
+    let received = now["received"].as_str().unwrap();
+    assert!(received.len() == 29 && received.ends_with("+01:00"), "now, at Frankfurt's winter offset: {received}");
+
+    let export: verify::Export = serde_json::from_value(body_json(route(&state, &req("GET", &format!("/deployments/{slug}/export"), vec![])))).unwrap();
+    let report = verify::check(&export, None, &BTreeMap::new());
+    assert!(report.ok() && report.reruns.iter().all(|(_, r)| *r == verify::Rerun::Matched), "{}", verify::describe(&report, None));
+}
+
 /// A file's bytes (the file-checksums sample): any file, read whole, hashed as sha256sum does; a
 /// small one's bytes kept in its log entry as base64, a big one's in the blob store and nowhere in
 /// the log, its timeline included; bytes a route answers sent as they are; and the runs verify.

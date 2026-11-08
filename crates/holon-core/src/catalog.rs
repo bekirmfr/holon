@@ -53,6 +53,9 @@ pub const GENESIS: &[&str] = &[
     "json_parse", "json_stringify",
     // pure — dates (5): JavaScript's Date in UTC, a date its time value in milliseconds (dates.rs)
     "date_part", "date_utc", "date_set", "date_text", "date_parse",
+    // pure — calendars (4): months and days added at a fixed offset, and business days over closing
+    // days given as data (dates.rs, host-capabilities L4 §5.1.3)
+    "date_add", "business_day_add", "business_days_between", "is_business_day",
     // pure — signatures and encodings (5): checking a webhook's signature, over a text or bytes
     "sha256", "hmac_sha256", "hex", "base64", "secure_equals",
     // pure — bytes (6): a text's encodings, a length, a join, and the numbers 0 to 255 they are;
@@ -180,6 +183,10 @@ pub const FAMILIES: &[(&str, &str, &[&str])] = &[
     ("date_part", "part", crate::dates::PARTS),
     ("date_set", "part", crate::dates::SET_PARTS),
     ("date_text", "format", crate::dates::FORMATS),
+    ("date_add", "unit", crate::dates::UNITS),
+    ("business_day_add", "weekend", crate::dates::WEEKENDS),
+    ("business_days_between", "weekend", crate::dates::WEEKENDS),
+    ("is_business_day", "weekend", crate::dates::WEEKENDS),
     ("text_to_bytes", "encoding", &["utf8", "hex", "base64", "base64url"]),
     ("bytes_to_text", "encoding", &["utf8", "hex", "base64", "base64url"]),
     ("decimal_div", "rounding", crate::decimals::ROUNDINGS),
@@ -385,12 +392,21 @@ pub fn interface_of(name: &str) -> Option<Unit> {
         // ── pure — dates ── a date is its time value, milliseconds since 1970 in UTC; a leaf takes
         // a text for it too, as `new Date(t)` does. `date_utc` takes 1 to 7 numbers with + (the
         // year, then month, date, hours, minutes, seconds, milliseconds), `date_set` the date and
-        // 1 to 4 numbers, from its `part` on.
-        "date_part" => prim(vec![port("time", Any)], vec![Param::frozen("part", "time")], Number),
+        // 1 to 4 numbers, from its `part` on. An `offset` (`"+01:00"`, or minutes east of UTC) is
+        // optional (core's `has_optional_ports`): a date's parts read at it.
+        "date_part" => prim(vec![port("time", Any), port("offset", Any)], vec![Param::frozen("part", "time")], Number),
         "date_utc" => prim(vec![port("year", Number)], vec![], Number),
         "date_set" => prim(vec![port("time", Any), port("value", Number)], vec![Param::frozen("part", "year")], Number),
-        "date_text" => prim(vec![port("time", Any)], vec![Param::frozen("format", "iso")], Text),
+        "date_text" => prim(vec![port("time", Any), port("offset", Any)], vec![Param::frozen("format", "iso")], Text),
         "date_parse" => prim(vec![port("text", Text)], vec![], Number),
+
+        // ── pure — calendars (dates.rs, host-capabilities L4 §5.1.3) ── a calendar date is a
+        // `YYYY-MM-DD` text or a time value's date in UTC; `holidays`, a list of them, is optional,
+        // as `offset` is.
+        "date_add" => prim(vec![port("time", Any), port("amount", Number), port("offset", Any)], vec![Param::frozen("unit", "days")], Number),
+        "business_day_add" => prim(vec![port("date", Any), port("days", Number), port("holidays", Type::list_any())], vec![Param::frozen("weekend", "sat_sun")], Text),
+        "business_days_between" => prim(vec![port("from", Any), port("to", Any), port("holidays", Type::list_any())], vec![Param::frozen("weekend", "sat_sun")], Number),
+        "is_business_day" => prim(vec![port("date", Any), port("holidays", Type::list_any())], vec![Param::frozen("weekend", "sat_sun")], Boolean),
 
         // ── pure — signatures and encodings (crypto.rs) ── digests as lowercase `hex` or `base64`.
         // A text's UTF-8 or bytes, hashed: their ports are `Any` for either.
@@ -720,8 +736,9 @@ mod tests {
         // is_well_formed); and fail (the language's throw); and the bytes leaves (text_to_bytes,
         // bytes_to_text, bytes_length, bytes_concat, bytes_to_list, list_to_bytes, file_read_bytes);
         // and the decimal leaves (decimal_add, decimal_sub, decimal_mul, decimal_div,
-        // decimal_round, decimal_sum, decimal_compare) and CSV's (csv_parse, csv_format).
-        assert_eq!(GENESIS.len(), 168);
+        // decimal_round, decimal_sum, decimal_compare) and CSV's (csv_parse, csv_format); and the
+        // calendar leaves (date_add, business_day_add, business_days_between, is_business_day).
+        assert_eq!(GENESIS.len(), 172);
     }
 
     #[test]

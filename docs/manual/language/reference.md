@@ -389,6 +389,27 @@ flow has no time zone, so only the UTC methods are there.
 | `Date.UTC(2000, 1, 29)`, `Date.parse("2000-02-29T12:00:00Z")` | the time value of a date's parts; of a date's text, in JavaScript's format, with `Z` or an offset after a time |
 | `const d = new Date(t)`, then `d.getUTCDay()`, `d.setUTCDate(1)` | a Date held by a name, read by its methods; a setter alone, or `const ms = d.setUTCDate(1)`, changes `d` |
 
+**At an offset, and business days.** A flow has no time zones, but it has fixed offsets, `"+01:00"`
+or a number of minutes east of UTC, and calendars given as data. These are called by name,
+imported from `"holon"`, since JavaScript has none of them:
+
+| Call | Gives |
+|---|---|
+| `date_part(t, "+01:00", { part: "hours" })` | a part at that offset: its hours, its date (`part: "date"`), its weekday (`"day"`) |
+| `date_text(t, "+01:00")`, `date_text(t, offset, { format: "date" })` | `2026-11-06T16:30:00.000+01:00`; the date alone there, `2026-11-06`. `date_text(t, { format: "date" })` is the date in UTC |
+| `date_add(t, 1, { unit: "months" })` | the time value a month later (`days`, the default, `months`, `years`), at an offset when given one after the amount: January 31 and a month is February 28 |
+| `business_day_add(d, n, holidays)` | the date, `YYYY-MM-DD`, `n` business days after `d` (before it when `n` is negative); with 0, `d` itself when it is a business day, else the next |
+| `business_days_between(from, to, holidays)` | the business days after `from` up to `to`, `to` included; negative when `to` is earlier |
+| `is_business_day(d, holidays)` | whether `d` is one |
+
+A business day is in neither the weekend, `{ weekend: "sat_sun" }` (the default), `"fri_sat"` or
+`"none"`, nor `holidays`, an optional list of dates such as `"2026-12-25"`: a bank's closing days
+are the flow's data, not built in. A calendar date is a `YYYY-MM-DD` text or a time value, read as
+its date in UTC; a text with a time of day is refused, since its date depends on an offset: write
+`date_text(t, offset, { format: "date" })` first. An offset doesn't follow summer time: Frankfurt
+is `+01:00` in winter and `+02:00` in summer, so which applies is the flow's to say. The due-dates
+sample schedules payouts against a cut-off and TARGET2's closing days.
+
 A date out of range (±8.64e15 ms) or a text that isn't one gives no value. A Date is read only by
 its methods: `new Date(t)` alone, or `d` returned or put in a record, is refused, naming
 `d.getTime()` and `d.toISOString()`. Local time is refused, naming the UTC method (`getHours`

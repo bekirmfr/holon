@@ -1910,6 +1910,22 @@ test("file-checksums hashes a binary file's bytes as sha256sum does, reads its k
   expect(verified.trim().endsWith("ok")).toBe(true);
 });
 
+test("due-dates schedules a payout past Easter's closing days and an invoice past a weekend", async ({ page, request }) => {
+  await openSample(page, "Due dates (business days at a fixed offset)");
+  const port = await deploy(page);
+  const post = async (path: string, data: object) => (await request.post(`http://127.0.0.1:${port}${path}`, { data })).json();
+  // After the 16:00 cut-off at +02:00 on the Thursday before Easter: Good Friday and Easter Monday are closed.
+  expect(await post("/schedule", { received: "2026-04-02T16:30:00+02:00", offset: "+02:00" })).toEqual({
+    received: "2026-04-02T16:30:00.000+02:00",
+    executed: "2026-04-07",
+    credited: "2026-04-08",
+  });
+  // January 31 and a month is February 28, a Saturday.
+  expect(await post("/due", { issued: "2026-01-31", months: 1 })).toEqual({ due: "2026-03-02", business_days: 21 });
+  // Received now, at Frankfurt's winter offset.
+  expect((await post("/schedule", {})).received).toMatch(/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}\+01:00$/);
+});
+
 test("payout-totals sums a CSV's amounts by currency exactly, rounds half to even, and its runs verify", async ({ page, request, adminToken }) => {
   const { execFileSync } = await import("node:child_process");
   const { mkdtempSync, writeFileSync } = await import("node:fs");

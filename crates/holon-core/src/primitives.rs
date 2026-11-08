@@ -146,6 +146,10 @@ ops! {
     "date_set" => DateSet,
     "date_text" => DateText,
     "date_parse" => DateParse,
+    "date_add" => DateAdd,
+    "business_day_add" => BusinessDayAdd,
+    "business_days_between" => BusinessDaysBetween,
+    "is_business_day" => IsBusinessDay,
     "json_parse" => JsonParse,
     "json_stringify" => JsonStringify,
     "sha256" => Sha256,
@@ -806,10 +810,11 @@ pub(crate) fn compute_op(op: Op, name: &str, inputs: &[&Value], params: &[Param]
             records::type_of(x).map(|t| Value::Text(t.to_string()))
         }
 
-        // ── dates (dates.rs): JavaScript's Date in UTC, a date its time value. ──
+        // ── dates (dates.rs): JavaScript's Date in UTC, a date its time value; an offset, when
+        // given, the calendar a date is read at. ──
         Op::DatePart => {
-            let [x] = inputs else { return None };
-            dates::part(x, param(params, "part")?).map(Value::Number)
+            let (x, offset) = last_optional(inputs, 1)?;
+            dates::part(x[0], offset, param(params, "part")?).map(Value::Number)
         }
         Op::DateUtc => dates::utc(inputs).map(Value::Number),
         Op::DateSet => {
@@ -817,12 +822,30 @@ pub(crate) fn compute_op(op: Op, name: &str, inputs: &[&Value], params: &[Param]
             dates::set(t, given, param(params, "part")?).map(Value::Number)
         }
         Op::DateText => {
-            let [t] = inputs else { return None };
-            dates::text(t, param(params, "format")?).map(Value::Text)
+            let (t, offset) = last_optional(inputs, 1)?;
+            dates::text(t[0], offset, param(params, "format")?).map(Value::Text)
         }
         Op::DateParse => {
             let [Value::Text(s)] = inputs else { return None };
             dates::parse(s).map(Value::Number)
+        }
+        Op::DateAdd => {
+            let (x, offset) = last_optional(inputs, 2)?;
+            dates::add(x[0], x[1], offset, param(params, "unit")?).map(Value::Number)
+        }
+        // ── calendars (dates.rs, host-capabilities L4 §5.1.3): business days over a weekend and
+        // the holidays given, a list of calendar dates. ──
+        Op::BusinessDayAdd => {
+            let (x, holidays) = last_optional(inputs, 2)?;
+            dates::business_day_add(x[0], x[1], holidays, param(params, "weekend")?).map(Value::Text)
+        }
+        Op::BusinessDaysBetween => {
+            let (x, holidays) = last_optional(inputs, 2)?;
+            dates::business_days_between(x[0], x[1], holidays, param(params, "weekend")?).map(Value::Number)
+        }
+        Op::IsBusinessDay => {
+            let (x, holidays) = last_optional(inputs, 1)?;
+            dates::is_business_day(x[0], holidays, param(params, "weekend")?).map(Value::Boolean)
         }
 
         // ── JSON (M1): request and response bodies. See json.rs for the mapping; malformed input,
@@ -1635,8 +1658,8 @@ pub(crate) fn resume_token_request(params: &[Param]) -> Option<Value> {
 /// Whether leaf `name` has optional input ports, read as "none" when left unwired: a request's
 /// headers and body, a listing's prefix and after, a `to_number`'s radix, a `number_format`'s
 /// digits, a `slice`'s end, `to_spliced`'s count and items, `fill`'s and `copy_within`'s start and
-/// end, the position a search starts from, a `split`'s limit, a `pad`'s fill and a `csv_format`'s
-/// columns. Inside a composite, such a port that *is* wired holds the node back while its value is
+/// end, the position a search starts from, a `split`'s limit, a `pad`'s fill, a `csv_format`'s
+/// columns, a date leaf's offset and a business-day leaf's holidays. Inside a composite, such a port that *is* wired holds the node back while its value is
 /// absent (eval.rs), like any other leaf's input.
 pub(crate) fn has_optional_ports(name: &str) -> bool {
     matches!(
@@ -1662,6 +1685,12 @@ pub(crate) fn has_optional_ports(name: &str) -> bool {
             | "split"
             | "pad"
             | "csv_format"
+            | "date_part"
+            | "date_text"
+            | "date_add"
+            | "business_day_add"
+            | "business_days_between"
+            | "is_business_day"
     )
 }
 
@@ -1843,6 +1872,15 @@ fn as_index(v: &Value) -> Option<usize> {
 }
 
 // ── helpers ─────────────────────────────────────────────────────────────────
+/// A leaf's `n` inputs and its optional last one, when it arrived: nothing for another count.
+fn last_optional<'a, 'v>(inputs: &'a [&'v Value], n: usize) -> Option<(&'a [&'v Value], Option<&'v Value>)> {
+    match inputs.len() {
+        k if k == n => Some((inputs, None)),
+        k if k == n + 1 => Some((&inputs[..n], Some(inputs[n]))),
+        _ => None,
+    }
+}
+
 fn param<'a>(params: &'a [Param], name: &str) -> Option<&'a str> {
     params.iter().find(|p| p.name() == name).and_then(|p| p.value())
 }

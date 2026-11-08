@@ -736,7 +736,12 @@ function whyNothing(node: ReplayNode, trace: NodeTrace): string {
     case "date_set":
     case "date_text":
     case "date_utc":
-      return "the date is out of range (±8.64e15 ms), or isn't one";
+    case "date_add":
+      return "the date is out of range (±8.64e15 ms), or isn't one, or its offset isn't +HH:mm, Z or minutes";
+    case "business_day_add":
+    case "business_days_between":
+    case "is_business_day":
+      return "a date isn't YYYY-MM-DD or a time value, a holiday isn't a date, or the count is past 100,000";
     case "date_parse":
       return "its text isn't a date in JavaScript's format, with Z or an offset after a time";
     case "from_entries":

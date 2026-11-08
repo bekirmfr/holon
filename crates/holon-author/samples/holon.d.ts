@@ -986,9 +986,9 @@ declare module "holon" {
   export function json_stringify(...args: any[]): any
 
   /**
-   * `date_part(time: Any) -> out: Number  {part: time}`
+   * `date_part(time: Any, offset: Any) -> out: Number  {part: time}`
    *
-   * A date's time value, or one of its parts in UTC, chosen by part: time (new Date(x): a number of milliseconds since 1970, or a text as date_parse reads it), year, month (0 to 11), date, day (0 is Sunday), hours, minutes, seconds, milliseconds (getUTCFullYear() and the rest). Nothing for a date out of range.
+   * A date's time value, or one of its parts in UTC, chosen by part: time (new Date(x): a number of milliseconds since 1970, or a text as date_parse reads it), year, month (0 to 11), date, day (0 is Sunday), hours, minutes, seconds, milliseconds (getUTCFullYear() and the rest). Given an offset (+01:00, or minutes east of UTC), the part there: its hours, its date. Nothing for a date out of range.
    */
   export function date_part(...args: any[]): any
 
@@ -1007,9 +1007,9 @@ declare module "holon" {
   export function date_set(...args: any[]): any
 
   /**
-   * `date_text(time: Any) -> out: Text  {format: iso}`
+   * `date_text(time: Any, offset: Any) -> out: Text  {format: iso}`
    *
-   * A date as text, by format: iso (new Date(t).toISOString(): 2000-02-29T12:00:00.000Z) or utc (toUTCString(): Tue, 29 Feb 2000 12:00:00 GMT). The date is a time value or a text, as for new Date(t).
+   * A date as text, by format: iso (new Date(t).toISOString(): 2000-02-29T12:00:00.000Z), date (2000-02-29) or utc (toUTCString(): Tue, 29 Feb 2000 12:00:00 GMT). Given an offset (+01:00, or minutes east of UTC), iso and date are the time there, iso written with it: 2000-02-29T13:00:00.000+01:00. The date is a time value or a text, as for new Date(t).
    */
   export function date_text(...args: any[]): any
 
@@ -1019,6 +1019,34 @@ declare module "holon" {
    * The time value a date's text gives: Date.parse(t), in JavaScript's date format (2000-02-29, 2000-02-29T12:00:00Z, …). A time without Z or an offset produces nothing: Holon has no local time.
    */
   export function date_parse(...args: any[]): any
+
+  /**
+   * `date_add(time: Any, amount: Number, offset: Any) -> out: Number  {unit: days}`
+   *
+   * A date amount days, months or years later (earlier when negative), by unit, as a time value. A month keeps the day of the month, or is the month's last day when it has fewer: January 31 and a month is February 28. Given an offset, its calendar's months.
+   */
+  export function date_add(...args: any[]): any
+
+  /**
+   * `business_day_add(date: Any, days: Number, holidays: List<Any>) -> out: Text  {weekend: sat_sun}`
+   *
+   * The date days business days after date (before it when negative), as YYYY-MM-DD; with 0, date itself when it is a business day, else the next. A business day is in neither the weekend (sat_sun by default, fri_sat or none) nor holidays, a list of dates such as 2026-12-25.
+   */
+  export function business_day_add(...args: any[]): any
+
+  /**
+   * `business_days_between(from: Any, to: Any, holidays: List<Any>) -> out: Number  {weekend: sat_sun}`
+   *
+   * How many business days come after from up to to, to included; negative when to is before from. Dates are YYYY-MM-DD texts or time values; holidays, a list of dates, and the weekend as for business_day_add.
+   */
+  export function business_days_between(...args: any[]): any
+
+  /**
+   * `is_business_day(date: Any, holidays: List<Any>) -> out: Boolean  {weekend: sat_sun}`
+   *
+   * Whether a date (YYYY-MM-DD, or a time value's date in UTC) is in neither the weekend (sat_sun by default, fri_sat or none) nor holidays, a list of dates.
+   */
+  export function is_business_day(...args: any[]): any
 
   /**
    * `sha256(text: Any) -> out: Text  {encoding: hex}`

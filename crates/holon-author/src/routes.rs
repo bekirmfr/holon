@@ -306,6 +306,8 @@ pub(crate) fn is_optional_input(n: &Node, port: Option<&str>) -> bool {
         "split" => &["limit"],
         "pad" => &["fill"],
         "csv_format" => &["columns"],
+        "date_part" | "date_text" | "date_add" => &["offset"],
+        "business_day_add" | "business_days_between" | "is_business_day" => &["holidays"],
         _ => &[],
     };
     n.data.body == PlacedBody::Primitive && port.is_some_and(|p| optional.contains(&p))

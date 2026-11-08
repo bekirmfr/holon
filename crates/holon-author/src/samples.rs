@@ -707,6 +707,18 @@ static SAMPLES: &[Sample] = &[
         text: include_str!("../samples/payout-totals.holon.ts"),
     },
     Sample {
+        name: "due-dates",
+        title: "Due dates (business days at a fixed offset)",
+        description: "Says when a payout is executed and credited: received before the 16:00 cut-off at the bank's offset (date_part with an offset reads its hours there), it is executed that business day, else the next (business_day_add over the closing days), and credited one business day later; the time received is written back at the offset (date_text). And when an invoice is due: some months after it was issued (date_add keeps the day of the month, or the month's last), moved to the next business day, with how many business days that is (business_days_between). The closing days are TARGET2's in 2026, a list the flow holds: a bank's calendar is data. The offset is fixed (Frankfurt is +01:00 in winter, +02:00 in summer), so a request may say which.",
+        shows: &["business days", "holidays as data", "fixed offsets", "business_day_add", "business_days_between", "date_add", "date_part", "date_text", "now in a handler"],
+        port: Some("8181"),
+        secrets: &[],
+        optional: &[],
+        browsers: None,
+        try_it: "deploy, then curl -d '{\"received\":\"2026-04-02T16:30:00+02:00\",\"offset\":\"+02:00\"}' http://127.0.0.1:8181/schedule answers {\"credited\":\"2026-04-08\",\"executed\":\"2026-04-07\",\"received\":\"2026-04-02T16:30:00.000+02:00\"} (Good Friday and Easter Monday are closed); curl -d '{\"issued\":\"2026-01-31\",\"months\":1}' http://127.0.0.1:8181/due answers {\"business_days\":21,\"due\":\"2026-03-02\"}; leave received out for now",
+        text: include_str!("../samples/due-dates.holon.ts"),
+    },
+    Sample {
         name: "ticker",
         title: "Ticker (a clock beside routes)",
         description: "A flow with a clock of its own beside its routes: every 2 seconds (every(\"2s\", …)) it counts a tick in its state and sends it on the channel ticks, with the time of the tick (now, in the handler). Its page lists each tick as it arrives; GET /count answers the count. An action, run by hand by its name, sets the count back (export const reset = action((input) => …), input what was sent); a person runs it, and an agent only once a person lets agents run it.",

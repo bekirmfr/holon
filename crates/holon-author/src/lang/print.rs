@@ -3628,7 +3628,8 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
 
     /// A date leaf as a method of `new Date(t)`: `new Date(t).getUTCHours()`,
     /// `new Date(t).toISOString()`, `new Date(t).setUTCHours(h, m)`, and `new Date(t).getTime()`
-    /// for the time value; by name where JavaScript has no such method or call.
+    /// for the time value; by name where JavaScript has no such method or call, a date read at an
+    /// offset among them.
     fn date_form(&mut self, node: &Node) -> Result<(String, u8), String> {
         let d = &node.data;
         let given = d.inputs.len() - 1;
@@ -3639,9 +3640,10 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
             ("date_set", part, _) => DATE_SETTERS.iter().find(|(_, p, takes)| *p == part && given <= *takes).map(|(m, ..)| *m),
             _ => None,
         };
-        let Some(method) = method.filter(|_| self.every_wired(node)) else { return self.generic(node) };
+        let utc = d.name == "date_set" || !self.arg_wired(node, "offset");
+        let Some(method) = method.filter(|_| utc && self.arg_wired(node, "time") && (d.name != "date_set" || self.every_wired(node))) else { return self.generic(node) };
         let t = self.required(node, "time", COND)?;
-        let ports: Vec<String> = d.inputs.iter().skip(1).map(|p| p.name.clone()).collect();
+        let ports: Vec<String> = if d.name == "date_set" { d.inputs.iter().skip(1).map(|p| p.name.clone()).collect() } else { Vec::new() };
         let args = self.texts(node, &ports)?;
         Ok((format!("new Date({t}).{method}({})", args.join(", ")), MEMBER))
     }
@@ -4038,6 +4040,25 @@ export const t = action((x) => {
   state.y = both(x.k)
   const p = both(x.j)
   state.z = { a: p.a, b: p.b }
+})
+");
+    }
+
+    /// A date read in UTC prints as `new Date(t)`'s method; read at an offset, or as its date
+    /// alone, it prints by name, its offset after the date.
+    #[test]
+    fn a_date_at_an_offset_prints_by_name() {
+        prints_back("import { action, date_part, date_text, flow } from \"holon\"
+import state from \"state\"
+
+flow(\"f\")
+
+export const t = action((x) => {
+  state.a = new Date(x.t).getUTCHours()
+  state.b = new Date(x.t).toISOString()
+  state.c = date_part(x.t, \"+01:00\", { part: \"hours\" })
+  state.d = date_text(x.t, x.offset)
+  state.e = date_text(x.t, { format: \"date\" })
 })
 ");
     }

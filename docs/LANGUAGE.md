@@ -602,6 +602,16 @@ compiler refuses `+` on one (it would join them) and `<` (it would compare lette
 `decimal_add` and `decimal_compare` say what is meant. The payout-totals sample totals a CSV of
 payouts by currency.
 
+Its dates are business days, at a bank's offset. `date_part` and `date_text` take an offset after
+the date (`"+01:00"`, or minutes east of UTC), the date's parts and text there, and `date_text`
+writes the date alone with `{ format: "date" }`; `date_add(t, n, { unit: "months" })` keeps the
+day of the month or clamps it to the month's last. `business_day_add(d, n, holidays)`,
+`business_days_between(from, to, holidays)` and `is_business_day(d, holidays)` count days in
+neither the weekend (`{ weekend: "sat_sun" }`, `"fri_sat"`, `"none"`) nor `holidays`, a list of
+dates the flow holds: a calendar is data. A calendar date is a `YYYY-MM-DD` text or a time value's
+date in UTC, and a business-day leaf gives one as text. There are no time zones (host-capabilities
+L4, fork 3): an offset is fixed. The due-dates sample schedules payouts past TARGET2's closing days.
+
 ### drop-box: a run per new file
 
 ```ts
@@ -2560,6 +2570,10 @@ the syntax to TypeScript's, keeping the lowering.
    - *Decimals and CSV* (2026-11-08, host-capabilities L4 §5.1.1, slice 1.2a): seven decimal
      leaves over amounts written as text, `+` and `<` refused on their results; `csv_parse` and
      `csv_format`. The payout-totals sample, run live.
+   - *Dates and business days* (2026-11-08, host-capabilities L4 §5.1.3, slice 1.2b): `date_part`
+     and `date_text` at a fixed offset, `date_text`'s `date` format, `date_add` by days, months or
+     years, and three business-day leaves over a weekend and holidays given as data. The
+     due-dates sample, run live.
    - *Types in the lowering* (2026-11-08): `a[i]` with a number is a list's item (`get`), on a
      value of no known type too, as an entry's `e[0]`; a parameter written with its type
      (`xs: string[]`) makes `.length` known, in the function and in one written in it. The

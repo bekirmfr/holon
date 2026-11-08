@@ -1556,7 +1556,7 @@ fn check_fraction_parity() {
         results.push(one(&prim("date_parse"), &[iso]));
     }
     let digest = to_hex(&holon_core::hash_value(&Value::List(results)).unwrap());
-    assert_eq!(digest, "a67e5e95e3a16b6bfb256e77484abf204fbe80589934cb5fea8e7bb6f545762e");
+    assert_eq!(digest, "72c12e9c04d5a1f1aa935a5f5a458564aabe002d76e7e698e2b15ad874ac64cc");
 }
 
 /// A family leaf with its params set (`fn: "sin"`), as `prim` builds a leaf.

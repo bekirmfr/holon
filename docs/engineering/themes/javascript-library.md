@@ -280,6 +280,9 @@ asks for:
 | `Array.from(b)`, `new Uint8Array(xs)`, `Buffer.concat([a, b])` | `bytes_to_list(b)`, `list_to_bytes(xs)` (nothing for an item that isn't 0 to 255), `bytes_concat(a, b)` | by name |
 | `fs.readFile(name)` (a `Buffer`) | `folder.bytes(name)` | `file_read_bytes` |
 | decimal.js, big.js: `a.plus(b)`, `a.minus(b)`, `a.times(b)`, `a.div(b)`, `a.toDecimalPlaces(n)`, `a.cmp(b)` | `decimal_add(a, b)`, `decimal_sub`, `decimal_mul`, `decimal_div(a, b, scale)`, `decimal_round(a, scale)`, `decimal_compare`, over decimals written as text; `decimal_sum(xs)` | by name; `+` and `<` refused on their results |
+| date-fns: `addDays(d, n)`, `addMonths(d, n)`, `addYears(d, n)` | `date_add(d, n)`, `{ unit: "months" }`, `{ unit: "years" }`: a month clamped to its last day, as date-fns's | by name |
+| date-fns: `addBusinessDays(d, n)`, `differenceInBusinessDays(a, b)`, `isWeekend(d)` | `business_day_add(d, n, holidays)`, `business_days_between(b, a, holidays)`, `!is_business_day(d)`: holidays given, which date-fns has none of, and a date as `YYYY-MM-DD` | by name |
+| date-fns-tz, Luxon, Temporal at an offset: `formatInTimeZone(d, "+01:00", …)`, `toISOString` with the offset | `date_text(d, "+01:00")`, `date_text(d, offset, { format: "date" })`, `date_part(d, offset, { part })` | by name; fixed offsets, no zones |
 | Papa Parse, csv-parse, csv-stringify | `csv_parse(t)`, `{ header: "none" }`, `{ separator: ";" }`; `csv_format(rows, columns)` | by name |
 | `btoa`, `atob` | `btoa(t)`, `atob(t)` (§3) | `base64 {bytes: latin1}` |
 | `Buffer…toString("base64")` | `base64(t)`, `base64(t, { mode: "decode" })`, `{ alphabet: "url" }` | `base64` (by name) |
