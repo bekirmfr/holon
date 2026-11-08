@@ -192,8 +192,9 @@ holon editor [file.holon.ts | slug] [--server PORT|URL]
 The editor in this terminal, on one screen: a bar along the top with the server and what waits
 for you, the pages down the side (folded away below 110 columns), and the keys that work at the
 bottom. It reaches the server as `holon deploy` does, signed in as you. The sidebar ends with the
-server's health: what runs, what is paused, and whether the run logs' chains hold. When nothing
-else is said, the line above the keys says where you are (`server › Flows › refunds › Runs`).
+server's health: what runs, what is paused, and whether the run logs' chains hold. The top bar
+says where you are after the server's name (`server › Flows › refunds › Runs`), a click on a
+crumb going back to it; the line above the keys says what just happened.
 
 | Page | |
 |---|---|

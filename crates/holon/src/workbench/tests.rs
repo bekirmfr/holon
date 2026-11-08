@@ -1470,7 +1470,7 @@ fn dump_every_page() {
 }
 
 /// Every page draws at a narrow, a middling and a wide terminal (and a cramped one), the
-/// server's name whole on top and where you are on the line above the keys.
+/// server's name whole on top and where you are after it, the page you are on at least.
 #[test]
 fn every_page_draws_at_every_width() {
     for (name, mut app) in every_page() {
@@ -1478,10 +1478,29 @@ fn every_page_draws_at_every_width() {
             let shown = screen(&mut app, w, h);
             let lines: Vec<&str> = shown.lines().collect();
             assert!(lines[0].contains("the test server"), "{name} at {w}x{h}: the server's name, whole:\n{shown}");
-            if app.modal.is_none() {
-                assert!(lines[h as usize - 2].contains("the test server ›"), "{name} at {w}x{h}: where you are:\n{shown}");
-            }
+            let page = super::ui::crumb_last(&app);
+            assert!(lines[0].contains("the test server ›") && lines[0].contains(&format!("› {page}")), "{name} at {w}x{h}: where you are, on top:\n{shown}");
         }
     }
 }
 
+
+/// Where you are is said on top, after the server's name, and a crumb before the last goes
+/// back to it: the flow's name to its status, Flows to the list.
+#[test]
+fn the_crumbs_on_top_go_back() {
+    let (mut app, _) = bumped(1);
+    app.open_flow("bump");
+    app.flow_section(Section::Runs);
+    let shown = screen(&mut app, 140, 40);
+    assert!(shown.lines().next().unwrap().contains("the test server › Flows › bump › Runs"), "{shown}");
+    let on_top = |app: &App, what: Click| app.hits.borrow().iter().find(|(r, c)| r.y == 0 && *c == what).map(|(r, _)| *r).unwrap_or_else(|| panic!("{what:?} isn't on top"));
+    let down = |app: &mut App, r: ratatui::layout::Rect| app.mouse(MouseEvent { kind: MouseEventKind::Down(MouseButton::Left), column: r.x, row: r.y, modifiers: KeyModifiers::NONE });
+    let r = on_top(&app, Click::Section(Section::Status));
+    down(&mut app, r);
+    assert_eq!((app.page, app.flow.section), (Page::Flow, Section::Status));
+    screen(&mut app, 140, 40);
+    let r = on_top(&app, Click::Page(Page::Flows));
+    down(&mut app, r);
+    assert_eq!(app.page, Page::Flows);
+}

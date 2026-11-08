@@ -267,13 +267,13 @@ fn light_fg(c: Color, bg: Color) -> Color {
 
 fn draw_top(f: &mut Frame, app: &App, area: Rect) {
     let mut left = vec![Span::styled(" holon ", Style::new().fg(Color::Black).bg(ACCENT).add_modifier(Modifier::BOLD)), Span::raw(" ")];
+    let mut role = None;
     match (&app.client, &app.offline) {
         (Some(c), None) => {
             left.push(coloured("● ", GOOD));
             left.push(Span::raw(c.server()));
             if let Some(me) = &c.me {
-                let role = c.role.as_ref().map(|r| format!(" ({r})")).unwrap_or_default();
-                left.push(dim(format!("  as {me}{role}")));
+                role = Some(format!("{me}{}", c.role.as_ref().map(|r| format!(" ({r})")).unwrap_or_default()));
             }
         }
         (Some(c), Some(_)) => {
@@ -285,6 +285,11 @@ fn draw_top(f: &mut Frame, app: &App, area: Rect) {
     }
     // Each count on the right goes to the page that holds what it counts.
     let mut right: Vec<(Span<'static>, Option<Page>)> = vec![];
+    let has_role = role.is_some();
+    if let Some(who) = role {
+        right.push((dim(who), None));
+        right.push((dim(" · "), None));
+    }
     if let Some(c) = &app.client {
         right.push((Span::raw(format!("{} deployed", c.deployments.len())), Some(Page::Flows)));
         let waiting = app.waiting().len();
@@ -302,27 +307,59 @@ fn draw_top(f: &mut Frame, app: &App, area: Rect) {
         }
     }
     right.push((Span::raw(format!("{} tab{} ", app.tabs.len(), if app.tabs.len() == 1 { "" } else { "s" })), Some(Page::Editor)));
-    let chip = right.len();
     right.push((Span::styled(" ctrl+p ", Style::new().fg(Color::Black).bg(Color::Gray)), None));
     right.push((dim(" find anything "), None));
     right.push((dim(format!("· {} ", clock())), None));
-    // Narrow, the right side gives way, so the server's name stays whole: first what ctrl+p
-    // does, then the clock, then the tabs.
+    // Narrow, the bar gives way, so the server's name stays whole and where you are shows:
+    // first what ctrl+p does, then the clock, who you are, the tabs, the deployed count and the
+    // chip; only then the crumbs, the first going before the flow or tab they lead to.
+    let parts = crumbs(app);
     let width = |r: &[(Span, Option<Page>)]| r.iter().map(|(s, _)| s.content.chars().count()).sum::<usize>();
-    let left_width: usize = left.iter().map(|s| s.content.chars().count()).sum::<usize>() + 2;
-    for gone in [chip + 1, chip + 1, chip - 1] {
-        if left_width + width(&right) <= area.width as usize || gone >= right.len() {
-            break;
+    let base: usize = left.iter().map(|s| s.content.chars().count()).sum::<usize>() + 2;
+    let fits = |shown: &[(Span, Option<Click>)], right: &[(Span, Option<Page>)]| base + shown.iter().map(|(s, _)| s.content.chars().count()).sum::<usize>() + width(right) <= area.width as usize;
+    let full = crumb_spans(&parts, 0);
+    let at = |right: &[(Span, Option<Page>)], text: &str| right.iter().position(|(s, _)| s.content.contains(text));
+    for gone in [" find anything ", "· "] {
+        if !fits(&full, &right) && let Some(i) = right.iter().position(|(s, _)| s.content.starts_with(gone) && (gone != "· " || s.content.ends_with("Z "))) {
+            right.remove(i);
         }
-        right.remove(gone);
-        // The tabs gone, the dot before them goes too, a space keeping ctrl+p apart.
-        if let Some(dot) = gone.checked_sub(1).filter(|&d| gone == chip - 1 && right[d].0.content == " · ") {
+    }
+    // Who you are, and the dot after it.
+    if has_role && !fits(&full, &right) {
+        right.drain(..2);
+    }
+    // The tabs, the dot before them a space keeping ctrl+p apart.
+    if !fits(&full, &right) && let Some(i) = at(&right, " tab") {
+        right.remove(i);
+        if let Some(dot) = i.checked_sub(1).filter(|&d| right[d].0.content == " · ") {
             right[dot].0 = Span::raw(" ");
         }
     }
+    // Then the deployed count (the flows page has them), and its dot.
+    if !fits(&full, &right) && let Some(i) = at(&right, " deployed") {
+        right.drain(i..(i + 2).min(right.len()));
+    }
+    // Then the ctrl+p chip (ctrl+p works all the same), and the space before it.
+    if !fits(&full, &right) && let Some(i) = at(&right, " ctrl+p ") {
+        right.remove(i);
+        if i > 0 && right[i - 1].0.content == " " {
+            right.remove(i - 1);
+        }
+    }
+    let shown = (0..3).map(|cut| crumb_spans(&parts, cut)).find(|c| fits(c, &right)).unwrap_or_else(|| crumb_spans(&parts, 2));
     let chip = right.iter().position(|(s, _)| s.content == " ctrl+p ");
-    let right_width = width(&right).min(area.width.saturating_sub(left_width as u16) as usize);
+    let right_width = width(&right).min(area.width.saturating_sub(base as u16) as usize);
     let [l, r] = Layout::horizontal([Constraint::Min(0), Constraint::Length(right_width as u16)]).areas(area);
+    // A crumb before the last goes back to it.
+    let mut x = l.x + base as u16 - 2;
+    for (span, click) in &shown {
+        let w = span.content.chars().count() as u16;
+        if let Some(click) = click {
+            app.hit(Rect { x, width: w.min(l.right().saturating_sub(x)), ..l }, *click);
+        }
+        x += w;
+    }
+    left.extend(shown.into_iter().map(|(s, _)| s));
     f.render_widget(Paragraph::new(Line::from(left)), l);
     let mut x = r.x;
     for (i, (span, to)) in right.iter().enumerate() {
@@ -336,6 +373,32 @@ fn draw_top(f: &mut Frame, app: &App, area: Rect) {
         x += w;
     }
     f.render_widget(Paragraph::new(Line::from(right.into_iter().map(|(s, _)| s).collect::<Vec<_>>())), r);
+}
+
+/// The crumbs after the server's name, each with what a click on it does: all of them
+/// (`cut` 0), the first given up for `…` (1: `… › refunds › Runs`), or the last alone (2).
+fn crumb_spans(parts: &[(String, Option<Click>)], cut: usize) -> Vec<(Span<'static>, Option<Click>)> {
+    let sep = || (Span::styled(" › ", Style::new().fg(DARK)), None);
+    let n = parts.len();
+    let kept: Vec<usize> = match cut {
+        _ if n <= 1 => (0..n).collect(),
+        0 => (0..n).collect(),
+        1 if n > 2 => vec![usize::MAX, n - 2, n - 1],
+        1 => (0..n).collect(),
+        _ => vec![n - 1],
+    };
+    let mut out = vec![];
+    for i in kept {
+        out.push(sep());
+        if i == usize::MAX {
+            out.push((dim("…"), None));
+        } else if i == n - 1 {
+            out.push((bold(parts[i].0.clone()), None));
+        } else {
+            out.push((dim(parts[i].0.clone()), parts[i].1));
+        }
+    }
+    out
 }
 
 /// The time now, as the server's records write it: `09:44Z`.
@@ -453,7 +516,7 @@ fn draw_note(f: &mut Frame, app: &App, area: Rect) {
     } else if let Some(why) = &app.offline {
         Line::from(coloured(format!(" {}", why.lines().next().unwrap_or("")), WARN))
     } else {
-        crumbs(app)
+        Line::default()
     };
     f.render_widget(Paragraph::new(line), area);
 }
@@ -500,39 +563,34 @@ fn suggest(f: &mut Frame, app: &App, body: Rect) {
     f.render_widget(Paragraph::new(lines).style(Style::new().bg(Color::Indexed(236))), rect);
 }
 
-/// Where you are, when nothing else is said: `server › Flows › refunds › Runs`.
-fn crumbs(app: &App) -> Line<'static> {
-    let sep = || Span::styled(" › ", Style::new().fg(DARK));
-    let mut out = vec![Span::raw(" "), dim(app.client.as_ref().map(|c| c.server()).unwrap_or_else(|| "no server".into()))];
-    let mut push = |s: String, last: bool| {
-        out.push(sep());
-        out.push(if last { bold(s) } else { dim(s) });
-    };
+/// The page you are on, as the crumbs end.
+#[cfg(test)]
+pub(crate) fn crumb_last(app: &App) -> String {
+    crumbs(app).pop().map(|(s, _)| s).unwrap_or_default()
+}
+
+/// Where you are, after the server's name on top: `Flows › refunds › Runs`, each but the
+/// last with where a click on it goes.
+fn crumbs(app: &App) -> Vec<(String, Option<Click>)> {
     match app.page {
         Page::Flow => {
             let slug = app.detail.as_ref().map(|d| d.slug.clone()).unwrap_or_default();
             let section = super::flow::SECTIONS.iter().find(|(s, _)| *s == app.flow.section).map(|(_, n)| n.to_string()).unwrap_or_default();
-            push("Flows".into(), false);
-            push(slug, false);
-            push(section, true);
+            vec![("Flows".into(), Some(Click::Page(Page::Flows))), (slug, Some(Click::Section(Section::Status))), (section, None)]
         }
         Page::Editor => match app.tabs.get(app.tab).filter(|_| !app.home) {
             Some(t) => {
-                push("Editor".into(), false);
                 let mode = if t.runs.is_some() { "Runs" } else if app.typing { "Typing" } else { "Page keys" };
-                push(t.name.clone(), false);
-                push(mode.into(), true);
+                vec![("Editor".into(), Some(Click::Home)), (t.name.clone(), Some(Click::Tab(app.tab))), (mode.into(), None)]
             }
-            None => push("Editor".into(), true),
+            None => vec![("Editor".into(), None)],
         },
         Page::Admin => {
-            push("Admin".into(), false);
             let part = crate::workbench::admin::PARTS.iter().find(|(p, _)| *p == app.admin.part).map(|(_, n)| n.to_string()).unwrap_or_default();
-            push(part, true);
+            vec![("Admin".into(), None), (part, None)]
         }
-        page => push(PAGES.iter().find(|(p, _)| *p == page).map(|(_, n)| n.to_string()).unwrap_or_default(), true),
+        page => vec![(PAGES.iter().find(|(p, _)| *p == page).map(|(_, n)| n.to_string()).unwrap_or_default(), None)],
     }
-    Line::from(out)
 }
 
 const NONE: KeyModifiers = KeyModifiers::NONE;
