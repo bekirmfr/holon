@@ -2,7 +2,7 @@
 // and n / N going between the hunks that change something.
 
 import { describe, expect, it } from "vitest";
-import { codeHunk, isFold, nextHunk, touchHunks, type Row } from "./hunks";
+import { codeHunk, diffHunk, isFold, nextHunk, touchHunks, type Row } from "./hunks";
 import type { TouchLine } from "./touches";
 
 const lines = (n: number, from = 1) => Array.from({ length: n }, (_, i) => `line ${i + from}`);
@@ -34,6 +34,21 @@ describe("codeHunk", () => {
     const same = codeHunk("a\nb", "a\nb");
     expect(same.summary).toBe("the same");
     expect(same.changes).toBe(false);
+  });
+});
+
+describe("diffHunk", () => {
+  it("numbers the code as the restored text, says which side is which, and keeps a grant whole", () => {
+    const code = diffHunk({ title: "code", legend: "− now   + then", lines: [{ sign: " ", text: "a" }, { sign: "-", text: "b" }, { sign: "+", text: "c" }], note: "names left out" });
+    expect(code.summary).toBe("+1 · −1");
+    expect(code.note).toBe("− now   + then · names left out");
+    expect((code.rows as Row[]).map((r) => r.n)).toEqual([1, 2, 2]);
+    const grant = diffHunk({ title: "permissions", legend: "", lines: lines(12).map((text) => ({ sign: " " as const, text })), whole: true });
+    expect(grant.rows.filter(isFold)).toEqual([]);
+    expect(grant.summary).toBe("the same");
+    expect(grant.opens).toBe(false);
+    const none = diffHunk({ title: "code", legend: "", lines: [], note: "The text can't be compared" });
+    expect([none.summary, none.opens]).toEqual(["", true]);
   });
 });
 

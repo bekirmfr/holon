@@ -48,6 +48,11 @@ export function Review({ hunks, label = "what changes" }: { hunks: Hunk[]; label
             <span className="hl-review__title">{h.title}</span>
             <span className="hl-review__summary">{h.summary}</span>
           </button>
+          {h.note && (
+            <div className="hl-review__note-line" hidden={!open[i]}>
+              {h.note}
+            </div>
+          )}
           {/* Closed, its rows stay in the page, hidden: what it says is still found. */}
           <div className="hl-review__rows" hidden={!open[i]}>
             {h.rows.map((r, k) =>

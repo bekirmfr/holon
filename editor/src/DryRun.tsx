@@ -1,12 +1,14 @@
 // A dry run's result, before anything changes: what an action on a deployment's history (a
 // restore, a secret rolled back) would do, as the server's dry run says it, and the approval it
 // asks for. Nothing happens until it is approved; cancelling leaves everything as it was. Its diff
-// shows each change beside what is there now: the flow's text, the grant, the state's values, a
-// secret's version and fingerprint.
+// shows each change beside what is there now, as a review in hunks (Review.tsx): the flow's text,
+// the grant, the state's values, a file, a secret's version and fingerprint.
 
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import { collapse, type DiffLine } from "./diff";
+import type { DiffLine } from "./diff";
+import { diffHunk } from "./hunks";
+import { Review } from "./Review";
 
 /** One part of a dry run's diff: `lines` from what is there now ("-") to what it would be ("+"),
  *  `legend` saying which is which; `whole` shows every line (a grant's few items), else unchanged
@@ -14,7 +16,7 @@ import { collapse, type DiffLine } from "./diff";
 export type Diff = { title: string; legend: string; lines: DiffLine[]; whole?: boolean; note?: string };
 
 /** What a dry run found: a question, what it changes (a line each), what each part would do, and
- *  the button that does it. `diffs` works out the diff when it is asked for. */
+ *  the button that does it. `diffs` works out the diff, shown as soon as it is there. */
 export type DryRunReport = {
   title: string;
   changes?: string[];
@@ -44,7 +46,17 @@ const heading = { color: "var(--accent)", fontSize: 11, textTransform: "uppercas
 
 function DryRunModal({ report, onClose }: { report: DryRunReport; onClose: (ok: boolean) => void }) {
   const ok = useRef<HTMLButtonElement>(null);
-  const [diff, setDiff] = useState<{ open: boolean; diffs?: Diff[]; error?: string }>({ open: false });
+  const [diff, setDiff] = useState<{ diffs?: Diff[]; error?: string }>({});
+  useEffect(() => {
+    let live = true;
+    report.diffs?.().then(
+      (diffs) => live && setDiff({ diffs }),
+      (e) => live && setDiff({ error: e instanceof Error ? e.message : String(e) }),
+    );
+    return () => {
+      live = false;
+    };
+  }, [report]);
   useEffect(() => {
     ok.current?.focus();
     const onKey = (e: KeyboardEvent) => {
@@ -53,16 +65,6 @@ function DryRunModal({ report, onClose }: { report: DryRunReport; onClose: (ok: 
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
-  const toggleDiff = () => {
-    const open = !diff.open;
-    setDiff((d) => ({ ...d, open }));
-    if (open && !diff.diffs && report.diffs) {
-      report.diffs().then(
-        (diffs) => setDiff((d) => ({ ...d, diffs, error: undefined })),
-        (e) => setDiff((d) => ({ ...d, error: e instanceof Error ? e.message : String(e) })),
-      );
-    }
-  };
   const button = { font: "inherit", fontSize: 12, padding: "4px 12px", borderRadius: 3, cursor: "pointer" } as const;
   const approvals = report.approvals ?? [];
   const changes = report.changes ?? [];
@@ -81,7 +83,8 @@ function DryRunModal({ report, onClose }: { report: DryRunReport; onClose: (ok: 
           border: "1px solid var(--border)",
           borderRadius: 6,
           padding: 16,
-          width: diff.open ? 920 : 560,
+          width: report.diffs ? 920 : 560,
+          maxHeight: "calc(100vh - 32px)",
           maxWidth: "calc(100vw - 32px)",
           color: "var(--ink)",
           fontSize: 13,
@@ -124,8 +127,8 @@ function DryRunModal({ report, onClose }: { report: DryRunReport; onClose: (ok: 
               ))}
             </div>
           )}
-          {diff.open && (
-            <div className="hl-dryrun__diff" style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          {report.diffs && (
+            <div className="hl-dryrun__diff">
               {diff.error ? (
                 <span style={{ color: "var(--bad)" }}>The diff can't be worked out: {diff.error}</span>
               ) : !diff.diffs ? (
@@ -133,22 +136,12 @@ function DryRunModal({ report, onClose }: { report: DryRunReport; onClose: (ok: 
               ) : diff.diffs.length === 0 ? (
                 <span style={{ color: "var(--faint)" }}>Nothing to compare.</span>
               ) : (
-                diff.diffs.map((d) => <DiffView key={d.title} diff={d} />)
+                <Review hunks={diff.diffs.map(diffHunk)} label="what it changes, beside what is there now" />
               )}
             </div>
           )}
         </div>
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-          {report.diffs && (
-            <button
-              onClick={toggleDiff}
-              aria-pressed={diff.open}
-              title={diff.open ? "hide the diff" : "compare what it would change with what is there now"}
-              style={{ ...button, color: diff.open ? "var(--accent-ink)" : "var(--accent)", background: diff.open ? "var(--accent)" : "transparent", border: "1px solid var(--accent)" }}
-            >
-              diff
-            </button>
-          )}
           <span style={{ flex: 1 }} />
           <button onClick={() => onClose(false)} style={{ ...button, color: "var(--muted)", background: "transparent", border: "1px solid var(--border)" }}>
             Cancel
@@ -158,35 +151,6 @@ function DryRunModal({ report, onClose }: { report: DryRunReport; onClose: (ok: 
           </button>
         </div>
       </div>
-    </div>
-  );
-}
-
-const lineStyle: Record<string, { color: string; background?: string }> = {
-  "+": { color: "var(--ok)", background: "var(--add-bg)" },
-  "-": { color: "var(--bad)", background: "var(--del-bg)" },
-  " ": { color: "var(--body)" },
-  "…": { color: "var(--faintest)" },
-};
-
-function DiffView({ diff }: { diff: Diff }) {
-  const lines = diff.whole ? diff.lines : collapse(diff.lines);
-  return (
-    <div className="hl-dryrun__diffpart" data-title={diff.title} style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-      <div style={{ display: "flex", gap: 10, alignItems: "baseline" }}>
-        <span style={heading}>{diff.title}</span>
-        <span style={{ color: "var(--faint)", fontSize: 11 }}>{diff.legend}</span>
-      </div>
-      {diff.note && <span style={{ color: "var(--faint)", fontSize: 12 }}>{diff.note}</span>}
-      {lines.length > 0 && (
-        <pre style={{ margin: 0, padding: "4px 0", background: "var(--bg)", border: "1px solid var(--border)", borderRadius: 3, fontSize: 12, lineHeight: 1.45, overflowX: "auto" }}>
-          {lines.map((l, i) => (
-            <div key={i} className="hl-dryrun__line" data-sign={l.sign} style={{ ...lineStyle[l.sign], padding: "0 8px", whiteSpace: "pre", fontStyle: l.sign === "…" ? "italic" : undefined }}>
-              {l.sign === "…" ? `  ⋯ ${l.text}` : `${l.sign} ${l.text}`}
-            </div>
-          ))}
-        </pre>
-      )}
     </div>
   );
 }

@@ -5,6 +5,7 @@
 
 import { collapse, lineDiff, type DiffLine } from "./diff";
 import type { Mark, TouchLine } from "./touches";
+import type { Diff } from "./DryRun";
 
 /** A row's tone: its ground and its sign. */
 export type Tone = "add" | "del" | "approve" | "changed" | "unready" | "same";
@@ -26,6 +27,8 @@ export type Hunk = {
   /** Whether it starts open: one that changes something does, apart from a first deploy's text,
    *  all new, which would hide what it touches below it. */
   opens: boolean;
+  /** Said under its header: which side is which, why there is no diff, what it leaves out. */
+  note?: string;
 };
 
 export const isFold = (s: Shown): s is Fold => "fold" in s;
@@ -48,6 +51,32 @@ export function codeHunk(before: string | null, after: string, title = "code"): 
   const removed = lines.filter((l) => l.sign === "-").length;
   const summary = before === null ? `new · ${is.length} line${is.length === 1 ? "" : "s"}` : added + removed === 0 ? "the same" : `+${added} · −${removed}`;
   return { title, summary, rows: folded(lines, rows), changes: before === null || added + removed > 0, opens: before !== null && added + removed > 0 };
+}
+
+/** A dry run's diff part (DryRun.tsx: the code, the grant, the state, a file) as a hunk: the
+ *  code's rows numbered as the restored text is, a grant's whole, others folded like the code. */
+export function diffHunk(d: Diff): Hunk {
+  let a = 0;
+  let b = 0;
+  const numbered = d.title === "code";
+  const rows: Row[] = d.lines.map((l) => {
+    if (l.sign === "-") return { n: numbered ? ++b : null, sign: "−", text: l.text, note: "", tone: "del" };
+    if (l.sign === " ") b++;
+    a++;
+    return { n: numbered ? a : null, sign: l.sign === "+" ? "+" : " ", text: l.text, note: "", tone: l.sign === "+" ? "add" : "same" };
+  });
+  const added = d.lines.filter((l) => l.sign === "+").length;
+  const removed = d.lines.filter((l) => l.sign === "-").length;
+  const changes = added + removed > 0;
+  const note = [d.legend, d.note].filter(Boolean).join(" · ");
+  return {
+    title: d.title,
+    summary: d.lines.length === 0 ? "" : changes ? `+${added} · −${removed}` : "the same",
+    rows: d.whole ? rows : folded(d.lines, rows),
+    changes,
+    opens: changes || d.lines.length === 0,
+    note,
+  };
 }
 
 const TONE: Record<Exclude<Mark, "head">, Tone> = { new: "add", approve: "approve", gone: "del", same: "same", changed: "changed", unready: "unready" };

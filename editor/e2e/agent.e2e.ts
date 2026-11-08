@@ -122,9 +122,10 @@ test("an agent asks through holon mcp to put a run's state back, and a person re
     await bottom.locator(".hl-history__row").filter({ hasText: `asks to put back the state run ${first} left` }).first().click();
     await expect(bottom.locator(".hl-history__details")).toContainText(`run ${first}'s state, for a person to restore`);
     await expect(bottom.locator(".hl-history__details")).toContainText("(agent)");
-    const restoreBar = bottom.locator(".hl-history__restore");
-    await expect(restoreBar.getByRole("button", { name: "code", exact: true })).toBeDisabled();
-    await restoreBar.getByRole("button", { name: "state", exact: true }).click();
+    const goBack = bottom.getByRole("region", { name: /^go back to / });
+    await expect(goBack.getByRole("radio", { name: "Code only" })).toBeDisabled();
+    await goBack.getByRole("radio", { name: "State only" }).click();
+    await goBack.getByRole("button", { name: "Go back…" }).click();
     const dialog = page.getByRole("dialog", { name: "dry run" });
     await expect(dialog).toContainText(`The state run ${first} left is put back`);
     await dialog.getByRole("button", { name: "Restore", exact: true }).click();

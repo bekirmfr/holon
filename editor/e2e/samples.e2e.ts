@@ -678,24 +678,26 @@ test("price-rollback: an earlier version's code restored from view mode's histor
   await bottom.getByRole("button", { name: "history", exact: true }).click();
   const pickBefore = () => bottom.locator(".hl-history__row").filter({ hasText: new RegExp(`deployed version ${before}(?!\\d)`) }).first().click();
   await pickBefore();
-  const restoreBar = bottom.locator(".hl-history__restore");
-  await expect(restoreBar).toContainText(`version ${before}`);
+  const goBack = bottom.getByRole("region", { name: `go back to version ${before}` });
+  await expect(goBack).toContainText(`Go back to version ${before}`);
   // Its details beside it, no run shown.
   await expect(bottom.locator(".hl-history__details")).toContainText(`deployed version ${before}`);
-  await restoreBar.getByRole("button", { name: "code", exact: true }).click();
+  await goBack.getByRole("radio", { name: "Code only" }).click();
+  await expect(goBack).toContainText(`It deploys version ${before}'s code again, as a new version; the state stays as it is.`);
+  await goBack.getByRole("button", { name: "Go back…" }).click();
   const dialog = page.getByRole("dialog", { name: "dry run" });
   await expect(dialog).toContainText("Nothing has changed yet: this is what it would do.");
   await expect(dialog).toContainText(`Version ${before}'s code is deployed again, as a new version`);
-  // What it changes, a line each; its diff: the text deployed now beside version before's (both
-  // printed plainly: the version before was deployed from the canvas, which keeps no names), and
-  // the grant.
+  // What it changes, a line each; its diff, a review in hunks: the text deployed now beside
+  // version before's (both printed plainly: the version before was deployed from the canvas, which
+  // keeps no names), and the grant.
   await expect(dialog.locator(".hl-dryrun__changes")).toContainText(`code: version ${before}'s is deployed again, as version ${now + 1}, in place of version ${now}`);
-  await dialog.getByRole("button", { name: "diff", exact: true }).click();
-  const codeDiff = dialog.locator('.hl-dryrun__diffpart[data-title="code"]');
-  await expect(codeDiff.locator('.hl-dryrun__line[data-sign="-"]')).toHaveText(["-   const c = 5"]);
-  await expect(codeDiff.locator('.hl-dryrun__line[data-sign="+"]')).toHaveText(["+   const c = 0.5"]);
+  const codeDiff = dialog.getByRole("region", { name: "code" });
+  await expect(codeDiff.getByRole("button").first()).toContainText("+1 · −1");
+  await expect(codeDiff.locator(".hl-review__row--del .hl-review__text")).toHaveText(["  const c = 5"]);
+  await expect(codeDiff.locator(".hl-review__row--add .hl-review__text")).toHaveText(["  const c = 0.5"]);
   await expect(codeDiff).toContainText(`version ${before} was deployed from the canvas, which keeps none`);
-  await expect(dialog.locator('.hl-dryrun__diffpart[data-title="permissions"]')).toContainText('CollectionRead("prices")');
+  await expect(dialog.getByRole("region", { name: "permissions" })).toContainText('CollectionRead("prices")');
   await dialog.getByRole("button", { name: "Restore", exact: true }).click();
   await expect(bottom.locator(".hl-history__note")).toHaveText(`restored: version ${before}'s code is deployed again, as version ${now + 1}`);
   expect(await total()).toBe(4.5);
@@ -704,13 +706,14 @@ test("price-rollback: an earlier version's code restored from view mode's histor
   expect((await request.put(`http://127.0.0.1:${port}/prices/${tea}`, { data: { price: 40 } })).status()).toBe(200);
   expect(await total()).toBe(40.5);
   await pickBefore();
-  await restoreBar.getByRole("button", { name: "state", exact: true }).click();
+  await goBack.getByRole("radio", { name: "State only" }).click();
+  await goBack.getByRole("button", { name: "Go back…" }).click();
   await expect(dialog).toContainText(`The state version ${before} left is put back: it changes the collection prices.`);
   // Its diff: the collection's items that differ, as the flow reads them, not its root.
   await expect(dialog.locator(".hl-dryrun__changes")).toContainText(`state: as version ${before} left it, 1 key changed (prices: 1 item)`);
-  await dialog.getByRole("button", { name: "diff", exact: true }).click();
-  const stateDiff = dialog.locator('.hl-dryrun__diffpart[data-title="state"] .hl-dryrun__line');
-  await expect(stateDiff).toHaveText([`- prices["${tea}"]: 40`, `+ prices["${tea}"]: 4`]);
+  const stateDiff = dialog.getByRole("region", { name: "state" });
+  await expect(stateDiff.locator(".hl-review__row--del .hl-review__text")).toHaveText([`prices["${tea}"]: 40`]);
+  await expect(stateDiff.locator(".hl-review__row--add .hl-review__text")).toHaveText([`prices["${tea}"]: 4`]);
   expect(await total()).toBe(40.5);
   await dialog.getByRole("button", { name: "Restore", exact: true }).click();
   await expect(bottom.locator(".hl-history__note")).toContainText(`the state version ${before} left is live again, in session`);
@@ -1289,11 +1292,13 @@ test("stock-sheet: a state restore's dry run names the file the runs since wrote
   const files = dialog.locator(".hl-dryrun__section").filter({ hasText: "files, not put back" });
   await expect(files).toContainText(`sheets/changes.txt: 1 write since, by run ${second} (the last written); changed outside a run since run ${second}`);
   // Its diff: the file then (a later run read it) beside now, the edit by hand and all.
-  await dialog.getByRole("button", { name: "diff", exact: true }).click();
-  const fileDiff = dialog.locator('.hl-dryrun__diffpart[data-title="file sheets/changes.txt"]');
-  await expect(fileDiff.locator(".hl-dryrun__line")).toHaveText([`  ${item}: 4`, `+ ${item}: 40`, "+ checked by hand"]);
+  const fileDiff = dialog.getByRole("region", { name: "file sheets/changes.txt" });
+  await expect(fileDiff.locator(".hl-review__text")).toHaveText([`${item}: 4`, `${item}: 40`, "checked by hand"]);
+  await expect(fileDiff.locator(".hl-review__row--add .hl-review__text")).toHaveText([`${item}: 40`, "checked by hand"]);
   await expect(fileDiff).toContainText(`A restore leaves it as it is now. Changed outside a run since run ${second}.`);
-  await expect(dialog.locator('.hl-dryrun__diffpart[data-title="state"] .hl-dryrun__line')).toHaveText([`- stock["${item}"]: 40`, `+ stock["${item}"]: 4`]);
+  const stateDiff = dialog.getByRole("region", { name: "state" });
+  await expect(stateDiff.locator(".hl-review__row--del .hl-review__text")).toHaveText([`stock["${item}"]: 40`]);
+  await expect(stateDiff.locator(".hl-review__row--add .hl-review__text")).toHaveText([`stock["${item}"]: 4`]);
 
   // Restored: the count back, the file as it was left.
   await dialog.getByRole("button", { name: "Restore", exact: true }).click();
@@ -1467,8 +1472,8 @@ test("guarded-api's token rolls back under ⚙ once a dry run has said what it w
   await expect(dryRun).toContainText(`Version ${now}, current now, is kept`);
   // What it changes, and its diff: each version by its fingerprint, as the log marks it.
   await expect(dryRun.locator(".hl-dryrun__changes")).toContainText(new RegExp(`secret api_token: v${now} #[0-9a-f]{8} → v${now + 1} #[0-9a-f]{8}, version ${before}'s value`));
-  await dryRun.getByRole("button", { name: "diff", exact: true }).click();
-  await expect(dryRun.locator(".hl-dryrun__line")).toHaveText([new RegExp(`^- v${now} #[0-9a-f]{8}  current now`), new RegExp(`^\\+ v${now + 1} #[0-9a-f]{8}  version ${before}'s value`)]);
+  await expect(dryRun.locator(".hl-review__row--del .hl-review__text")).toHaveText([new RegExp(`^v${now} #[0-9a-f]{8}  current now`)]);
+  await expect(dryRun.locator(".hl-review__row--add .hl-review__text")).toHaveText([new RegExp(`^v${now + 1} #[0-9a-f]{8}  version ${before}'s value`)]);
   await dryRun.getByRole("button", { name: "Cancel", exact: true }).click();
   await expect(dryRun).toHaveCount(0);
   expect((await versions())[0]).toEqual({ version: now, current: true, source: "local", set_at: expect.any(Number) });

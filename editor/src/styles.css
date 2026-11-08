@@ -699,3 +699,25 @@ body {
   font: inherit; font-size: 11px; color: var(--faint); text-align: left; padding: 1px 8px 1px calc(3ch + 24px);
   background: var(--surface-2); border: 0; cursor: pointer;
 }
+.hl-review__note-line { padding: 3px 8px; color: var(--muted); font-size: 11px; border-bottom: 1px solid var(--border); background: var(--surface); }
+
+/* ── A segmented control: one of a few, side by side ── */
+.hl-seg { display: inline-flex; border: 1px solid var(--border); border-radius: var(--r); overflow: hidden; align-self: flex-start; }
+.hl-seg__opt { font: inherit; font-size: 11px; padding: 2px 10px; color: var(--muted); background: transparent; border: 0; border-left: 1px solid var(--border); cursor: pointer; }
+.hl-seg__opt:first-child { border-left: 0; }
+.hl-seg__opt[aria-checked="true"] { color: var(--accent-ink); background: var(--accent); }
+.hl-seg__opt:disabled { opacity: 0.4; cursor: default; }
+
+/* ── The Go back card over a history (HistoryPane.tsx) ── */
+.hl-history__restore {
+  display: flex; flex-direction: column; gap: 6px; margin: 6px 8px; padding: 8px 10px;
+  background: var(--surface); border: 1px solid var(--border-strong); border-radius: var(--r); font-size: 12px;
+}
+.hl-history__restore-head { display: flex; align-items: center; gap: 6px; color: var(--ink); font-weight: 500; }
+.hl-history__restore-does { color: var(--body); }
+.hl-history__restore-why { margin: 0; padding-left: 16px; color: var(--faint); font-size: 11px; }
+.hl-history__restore-go {
+  align-self: flex-start; font: inherit; font-size: 12px; padding: 3px 12px; border-radius: 3px; cursor: pointer;
+  color: var(--accent-ink); background: var(--accent); border: 0;
+}
+.hl-history__restore-go:disabled { opacity: 0.4; cursor: default; }

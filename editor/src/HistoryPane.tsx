@@ -306,34 +306,64 @@ function RestoreBar({
   onShowVersion?: () => void;
 }) {
   const { code, state } = target.why;
-  const button = (label: string, what: { code: boolean; state: boolean }, why: string | null, title: string) => (
-    <button
-      style={{ ...small, opacity: why || busy ? 0.45 : 1, cursor: why || busy ? "default" : "pointer" }}
-      disabled={!!why || busy}
-      title={why ?? title}
-      onClick={() => onRestore(what)}
-    >
-      {label}
-    </button>
-  );
   const codeFrom = target.code ? `${pointLabel(target.code)}'s code` : "its code";
   const stateFrom = target.state ? `the state ${pointLabel(target.state)} left` : "its state";
+  // What going back can take: each with what it does, or why it can't.
+  const options: { key: Choice; label: string; what: { code: boolean; state: boolean }; why: string | null; does: string }[] = [
+    { key: "both", label: "Code and state", what: { code: true, state: true }, why: code ?? state, does: `deploys ${codeFrom} again, then puts back ${stateFrom}` },
+    { key: "code", label: "Code only", what: { code: true, state: false }, why: code, does: `deploys ${codeFrom} again, as a new version; the state stays as it is` },
+    { key: "state", label: "State only", what: { code: false, state: true }, why: state, does: `puts back ${stateFrom}, in a new session; the code stays as it is` },
+  ];
+  const first = options.find((o) => o.why === null)?.key ?? "both";
+  const [choice, setChoice] = useState<Choice>(first);
+  useEffect(() => setChoice(first), [target.label, first]);
+  const chosen = options.find((o) => o.key === choice)!;
   return (
-    <div className="hl-history__restore" style={{ display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center", padding: "3px 8px", borderBottom: "1px solid var(--border)" }}>
-      <span style={{ color: ink }}>{target.label}</span>
-      {onShowVersion && (
-        <button style={small} onClick={onShowVersion} title="show its canvas">
-          canvas
-        </button>
+    <section className="hl-history__restore" aria-label={`go back to ${target.label}`}>
+      <div className="hl-history__restore-head">
+        <span>Go back to {target.label}</span>
+        <span style={{ flex: 1 }} />
+        {onShowVersion && (
+          <button style={small} onClick={onShowVersion} title="show its canvas">
+            canvas
+          </button>
+        )}
+      </div>
+      <div className="hl-seg" role="radiogroup" aria-label="what goes back">
+        {options.map((o) => (
+          <button
+            key={o.key}
+            role="radio"
+            aria-checked={choice === o.key}
+            disabled={o.why !== null}
+            className="hl-seg__opt"
+            onClick={() => setChoice(o.key)}
+            title={o.why ?? o.does}
+          >
+            {o.label}
+          </button>
+        ))}
+      </div>
+      <div className="hl-history__restore-does">{chosen.why === null ? `It ${chosen.does}. You see what changes before anything does.` : `Can't: ${chosen.why}`}</div>
+      {options.some((o) => o.why !== null && o.key !== "both") && (
+        <ul className="hl-history__restore-why">
+          {options
+            .filter((o) => o.why !== null && o.key !== "both")
+            .map((o) => (
+              <li key={o.key}>
+                {o.label}: {o.why}
+              </li>
+            ))}
+        </ul>
       )}
-      <span style={{ flex: 1 }} />
-      <span style={{ color: dim }}>restore</span>
-      {button("code", { code: true, state: false }, code, `deploy ${codeFrom} again, as a new version`)}
-      {button("state", { code: false, state: true }, state, `put back ${stateFrom}, in a new session`)}
-      {button("both", { code: true, state: true }, code ?? state, `${codeFrom}, then ${stateFrom}`)}
-    </div>
+      <button className="hl-history__restore-go" disabled={chosen.why !== null || busy} onClick={() => onRestore(chosen.what)}>
+        Go back…
+      </button>
+    </section>
   );
 }
+
+type Choice = "both" | "code" | "state";
 
 /** What a history row is, for the details pane: what happened, and where going back to it goes. */
 export function itemDetails(item: TimelineItem, target: Target): [string, string][] {
