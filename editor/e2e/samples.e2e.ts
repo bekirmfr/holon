@@ -9,101 +9,10 @@
 // `holon deploy` (no browser), so pointer-event layout changes can't break them.
 
 import { appendFileSync, readFileSync } from "node:fs";
-import type { Locator, Page } from "@playwright/test";
 import { expect, FOLDERS, PORTS, RUN_DIR, SAMPLE_SHIFT, SERVER, test } from "./fixtures";
+import { gotoPage, openSample, still, openDeployPanel, deploy, settingsSayPort, dropFromPalette, viewNewestRun } from "./helpers";
 
 const ATLAS_NOTES = "Atlas notes (a MongoDB database)";
-
-/** Open the sample titled `title` from the flows page: an unsaved copy in a tab of its own. From
- *  a fresh load of the editor unless `reload` is false: then from the flows page of the editor
- *  as it is (faster, and its other tabs stay open). */
-async function openSample(page: Page, title: string, reload = true) {
-  if (reload) await page.goto("/");
-  await page.getByRole("button", { name: "flows", exact: true }).click();
-  const card = page.getByText(title, { exact: true }).locator("xpath=../..");
-  await card.getByRole("button", { name: "open" }).click();
-  await expect(page.locator(".hl-tab--active")).toBeVisible();
-}
-
-/** Wait until `locator` stops moving: its box the same over two reads 100 ms apart. An overlay
- *  fits its view again a moment after it opens (CompositeOverlay.tsx, 240 ms then 200 ms of
- *  animation), and a drag begun meanwhile aims at where a handle a few pixels wide was, and
- *  misses it. */
-async function still(locator: Locator) {
-  let last = "";
-  await expect
-    .poll(
-      async () => {
-        const now = JSON.stringify(await locator.boundingBox());
-        const same = now === last;
-        last = now;
-        return same;
-      },
-      { intervals: [100], timeout: 5_000 },
-    )
-    .toBe(true);
-}
-
-/** Open the deployment settings panel if it is closed. */
-async function openDeployPanel(page: Page) {
-  const panel = page.getByRole("complementary", { name: "Deployment settings" });
-  if (!(await panel.isVisible())) {
-    await page.getByRole("button", { name: "open deployment settings" }).click();
-    await panel.waitFor({ state: "visible", timeout: 5_000 });
-  }
-}
-
-/** Deploy the open flow through the deployment settings panel and the consent screen; its port
- *  moved up by `by` (the slot's SAMPLE_SHIFT, ports.mjs), and whatever else `set` sets in the
- *  panel. Answers the port it serves on (null for a flow without routes). */
-async function deploy(page: Page, by = SAMPLE_SHIFT, set?: (settings: Locator) => Promise<void>): Promise<number | null> {
-  await openDeployPanel(page);
-  const settings = page.getByRole("complementary", { name: "Deployment settings" });
-  const portField = settings.getByRole("textbox").first();
-  const given = Number(await portField.inputValue());
-  const port = Number.isInteger(given) && given > 0 ? given + by : null;
-  if (port) await portField.fill(String(port));
-  if (set) await set(settings);
-  const deployBtn = page.locator(".hl-canvas").getByRole("button", { name: /^(deploy|update)/ });
-  await expect(deployBtn).toBeEnabled();
-  await deployBtn.dispatchEvent("click");
-  // Wait for the server's answer to the deploy, which comes once the flow listens on its port
-  // (http.rs syncs the listeners first). The tab's "deployed" can't say so: it shows as soon as a
-  // deployment of that name exists, so on a redeploy that moves the port it is there at once.
-  const deployed = page.waitForResponse((r) => r.request().method() === "POST" && new URL(r.url()).pathname === "/deploy");
-  await page.getByRole("dialog").getByRole("button", { name: /^(Approve and deploy|Deploy|Update)$/ }).click();
-  expect((await deployed).status()).toBe(200);
-  await expect(page.locator(".hl-tab--active")).toContainText("deployed", { timeout: 30_000 });
-  return port;
-}
-
-/** Wait until text typed into the Text pane has compiled: the deployment settings panel then says
- *  its port. */
-async function settingsSayPort(page: Page, port: string) {
-  await openDeployPanel(page);
-  const settings = page.getByRole("complementary", { name: "Deployment settings" });
-  await expect(settings.getByRole("textbox").first()).toHaveValue(port, { timeout: 15_000 });
-}
-
-/** Drop the palette entry `entry` (a primitive's name, or `flow:<name>` for a saved flow) on the
- *  canvas, as dragging it from the palette does: with the palette's own drag data, so it can't
- *  pick up a neighbouring row. */
-async function dropFromPalette(page: Page, entry: string) {
-  const flow = page.locator(".hl-canvas__flow > .react-flow");
-  const box = (await flow.boundingBox())!;
-  const dataTransfer = await page.evaluateHandle((name) => {
-    const d = new DataTransfer();
-    d.setData("application/holon-primitive", name);
-    return d;
-  }, entry);
-  await flow.dispatchEvent("drop", { dataTransfer, clientX: box.x + 300, clientY: box.y + 200 });
-}
-
-/** View mode on the active tab, with the newest run selected (the log follows it live). */
-async function viewNewestRun(page: Page) {
-  await page.locator(".hl-canvas").getByRole("button", { name: "view", exact: true }).dispatchEvent("click");
-  await expect(page.locator(".hl-view__bottom")).toContainText("replay reproduces the run");
-}
 
 /** The samples' titles, as holon-author lists them (samples.rs), read as the tests are collected:
  *  a test for each group of SAMPLES_PER_TEST below, so they spread over shards (ci.yml) rather
@@ -117,7 +26,7 @@ const TITLE_TO_SLUG = new Map([...samplesRs.matchAll(/^\s*name: "([^"]+)",\s*\n\
 
 test("the flows page lists every sample", async ({ page }) => {
   await page.goto("/");
-  await page.getByRole("button", { name: "flows", exact: true }).click();
+  await gotoPage(page, "flows");
   const titles = await page.locator("text=samples").locator("xpath=following-sibling::div").locator("div > div:first-child").allInnerTexts();
   const listed = titles.filter((t) => t.trim().length > 0);
   // Every sample samples.rs has, so none is left out of the tests below, and nothing else.
@@ -251,7 +160,7 @@ test("shared-key reads the server's secret, which may go only where an admin sai
   await page.locator(".hl-canvas").getByRole("button", { name: /^(deploy|update)/ }).dispatchEvent("click");
   await expect(page.getByText(`the server's secret "ops_api_key" may go only to https://httpbin.dev, and this flow sends it to https://postman-echo.com`)).toBeVisible();
   // The admin's list says where it may go.
-  await page.getByRole("button", { name: "admin", exact: true }).click();
+  await gotoPage(page, "admin");
   await page.getByRole("tablist", { name: "admin sections" }).getByRole("tab", { name: "resources" }).click();
   await expect(page.getByLabel("server secret ops_api_key")).toContainText("may go only to https://httpbin.dev");
 });
@@ -279,7 +188,7 @@ test("a sample deployed as it is keeps its text and the names it binds", async (
 
 test("a flow nothing would start can't deploy; given an action, it deploys and runs by hand", async ({ page }) => {
   await page.goto("/");
-  await page.getByRole("button", { name: "new", exact: true }).click();
+  await gotoPage(page, "new");
   const canvas = page.locator(".hl-canvas");
   // A leaf under no handler: nothing would start a run of it.
   await dropFromPalette(page, "uppercase");
@@ -478,7 +387,7 @@ test("the flows page says which saved flows place a flow as a node", async ({ pa
   const ask = page.locator('[aria-modal="true"]');
   /** A new flow, `entry` dropped from the palette onto it, saved as `name` (asked on save). */
   const saveWith = async (name: string, entry: string) => {
-    await page.getByRole("button", { name: "new", exact: true }).click();
+    await gotoPage(page, "new");
     await expect(page.locator(".hl-tab--active")).toContainText("untitled");
     await dropFromPalette(page, entry);
     await expect(flow.locator(".react-flow__node")).toHaveCount(1);
@@ -491,7 +400,7 @@ test("the flows page says which saved flows place a flow as a node", async ({ pa
   await saveWith(shout, "uppercase");
   await saveWith(user, `flow:${shout}`);
   // A draft named on save as a flow saved already asks before replacing it; cancelled, it stays untitled.
-  await page.getByRole("button", { name: "new", exact: true }).click();
+  await gotoPage(page, "new");
   await dropFromPalette(page, "concat");
   await page.locator(".hl-canvas").getByRole("button", { name: "save", exact: true }).click();
   await ask.locator("input").fill(shout);
@@ -499,7 +408,7 @@ test("the flows page says which saved flows place a flow as a node", async ({ pa
   await expect(ask).toContainText(`A flow named "${shout}" is saved already`);
   await ask.getByRole("button", { name: "Cancel" }).click();
   await expect(page.locator(".hl-tab--active")).toContainText("untitled");
-  await page.getByRole("button", { name: "flows", exact: true }).click();
+  await gotoPage(page, "flows");
   await expect(page.getByText(`placed in ${user}`, { exact: true })).toBeVisible();
   // A save of "shout" that takes its input away asks first, naming who places it.
   await page.locator(".hl-tab", { hasText: shout }).click();
@@ -514,7 +423,7 @@ test("the flows page says which saved flows place a flow as a node", async ({ pa
   await expect(ask).toContainText(`"${shout}" is placed as a node in ${user}`);
   await expect(ask).toContainText('input "uppercase · s" removed');
   await ask.getByRole("button", { name: "Save" }).click();
-  await page.getByRole("button", { name: "flows", exact: true }).click();
+  await gotoPage(page, "flows");
   await expect(page.getByText(`placed in ${user} (an older save)`, { exact: true })).toBeVisible();
 });
 
@@ -536,7 +445,7 @@ test("the marketplace, a Holon flow: publish a saved flow to it, place it from t
     await ask.locator("input").fill(text);
     await page.keyboard.press("Enter");
   };
-  await page.getByRole("button", { name: "new", exact: true }).click();
+  await gotoPage(page, "new");
   await dropFromPalette(page, "uppercase");
   await expect(flow.locator(".react-flow__node")).toHaveCount(1);
   await page.locator(".hl-canvas").getByRole("button", { name: "save", exact: true }).click();
@@ -544,7 +453,7 @@ test("the marketplace, a Holon flow: publish a saved flow to it, place it from t
   await expect(page.getByRole("region", { name: "notices" })).toContainText("saved");
 
   // Set the marketplace, and publish from the flows page.
-  await page.getByRole("button", { name: "flows", exact: true }).click();
+  await gotoPage(page, "flows");
   await page.getByRole("button", { name: /^(set|change)$/ }).click();
   await answer(market);
   await expect(page.getByText(`publishing to and placing from ${market}`)).toBeVisible();
@@ -557,7 +466,7 @@ test("the marketplace, a Holon flow: publish a saved flow to it, place it from t
   const listed = Object.values(listings).find((l) => l.name === shout)!;
 
   // In another flow, from the palette's marketplace: seen what it may do, placed.
-  await page.getByRole("button", { name: "new", exact: true }).click();
+  await gotoPage(page, "new");
   await expect(page.locator(".hl-palette")).toContainText(shout);
   await dropFromPalette(page, `market:${listed.id}`);
   await expect(ask).toContainText("It only computes");
@@ -565,7 +474,7 @@ test("the marketplace, a Holon flow: publish a saved flow to it, place it from t
   await expect(flow.locator(".react-flow__node", { hasText: shout })).toHaveCount(1);
 
   // Yanked from the flows page: flagged, never edited, and the palette says so.
-  await page.getByRole("button", { name: "flows", exact: true }).click();
+  await gotoPage(page, "flows");
   const row = page.locator("div", { has: page.getByText(shout, { exact: true }) }).filter({ hasText: "by e2e" }).last();
   await row.getByRole("button", { name: "yank" }).click();
   await ask.getByRole("button", { name: "Yank" }).click();
@@ -582,7 +491,7 @@ test("a flow as text: exported as .holon.ts, checked by the command line, import
   const { join } = await import("node:path");
   const name = `texty-${Date.now().toString(36)}`;
   await page.goto("/");
-  await page.getByRole("button", { name: "new", exact: true }).click();
+  await gotoPage(page, "new");
   const canvas = page.locator(".hl-canvas");
   await canvas.getByRole("button", { name: "text off" }).click();
   await page.getByRole("region", { name: "Text" }).locator(".cm-content").click();
@@ -596,7 +505,7 @@ test("a flow as text: exported as .holon.ts, checked by the command line, import
   await expect(page.locator(".hl-tab--active")).toContainText(name);
 
   // Exported from the flows page: the canvas printed as TypeScript.
-  await page.getByRole("button", { name: "flows", exact: true }).click();
+  await gotoPage(page, "flows");
   const row = page.getByText(name, { exact: true }).locator("xpath=..");
   const download = page.waitForEvent("download");
   await row.getByRole("button", { name: ".holon.ts" }).click();
@@ -649,7 +558,7 @@ test("ticker's clock ticks beside its routes: its count grows on its own, tick n
   await expect(page.locator(".hl-view__bottom")).toContainText(/· action reset · session/);
   await expect(page.locator(".hl-view__bottom")).toContainText("replay reproduces the run");
   // The deployed page runs it too, without opening the flow; its grant lets agents run it.
-  await page.getByRole("button", { name: "deployed", exact: true }).click();
+  await gotoPage(page, "deployed");
   const card = page.getByLabel("deployment ticker");
   await card.getByLabel("what to send reset").fill('{"to": 5}');
   await card.getByRole("button", { name: "run", exact: true }).click();
@@ -683,7 +592,7 @@ test("shop runs billing's actions: an order calls billing and stores what it ans
   await expect(page.locator(".hl-view__bottom")).toContainText("replay reproduces the run");
   await page.locator(".hl-canvas").getByRole("button", { name: "edit", exact: true }).click();
   // Its manifest names what it may run.
-  await page.getByRole("button", { name: "deployed", exact: true }).click();
+  await gotoPage(page, "deployed");
   const shopCard = page.getByLabel("deployment shop");
   await shopCard.getByText(/^manifest ▸/).click();
   await expect(shopCard).toContainText("run the action charge of the flow billing");
@@ -1470,7 +1379,7 @@ test("rolling-log keeps only its newest 5 runs, as its deploy settings ask, whil
   expect((await seqs()).length).toBe(5);
   // The admin page's storage counts first, and asks before it sweeps anything: cancelled, or
   // with nothing old enough to sweep, it removes nothing.
-  await page.getByRole("button", { name: "admin", exact: true }).click();
+  await gotoPage(page, "admin");
   await page.getByRole("tablist", { name: "admin sections" }).getByRole("tab", { name: "resources" }).click();
   const store = page.getByText("the store: states and values").locator("..");
   await store.getByRole("button", { name: "sweep…" }).click();
@@ -1725,7 +1634,7 @@ test("shared-ledger, deployed twice, loses no line when both append to one file 
   const text = readFileSync(join(process.cwd(), "..", "crates", "holon-author", "samples", "shared-ledger.holon.ts"), "utf8");
   const copy = join(mkdtempSync(join(tmpdir(), "holon-ledger-")), "shared-ledger-2.holon.ts");
   writeFileSync(copy, text.replace('flow("shared-ledger"', 'flow("shared-ledger-2"').replace("port: 8140", "port: 8141"));
-  await page.getByRole("button", { name: "flows", exact: true }).click();
+  await gotoPage(page, "flows");
   await page.getByLabel("import a flow's text").setInputFiles(copy);
   await expect(page.locator(".hl-tab--active")).toContainText("shared-ledger-2");
   const second = await deploy(page);
@@ -1760,7 +1669,7 @@ test("orders-api places, lists and refunds orders in the database an admin bound
 
   // The admin page's resources list the database, its tables and who uses it, and bind another,
   // made by its schema.
-  await page.getByRole("button", { name: "admin", exact: true }).click();
+  await gotoPage(page, "admin");
   const sections = page.getByRole("tablist", { name: "admin sections" });
   await sections.getByRole("tab", { name: "resources" }).click();
   await expect(page.getByText(join(FOLDERS, "shop.db"), { exact: true })).toBeVisible();
@@ -1821,7 +1730,7 @@ test("ticket-numbers, on a database held for whole runs, hands out twenty number
   expect(posts.filter((r) => (r.retries ?? 0) > 0)).toEqual([]);
 
   // The admin page says the database is held for whole runs.
-  await page.getByRole("button", { name: "admin", exact: true }).click();
+  await gotoPage(page, "admin");
   await page.getByRole("tablist", { name: "admin sections" }).getByRole("tab", { name: "resources" }).click();
   await expect(page.getByText(join(FOLDERS, "tickets.db"), { exact: true }).locator("..")).toContainText("held for whole runs");
 });
@@ -2010,7 +1919,7 @@ test("the admin page's browse… lists the server's folders, and the one chosen 
   const { realpathSync } = await import("node:fs");
   const { join } = await import("node:path");
   await page.goto("/");
-  await page.getByRole("button", { name: "admin", exact: true }).click();
+  await gotoPage(page, "admin");
   await page.getByRole("tablist", { name: "admin sections" }).getByRole("tab", { name: "resources" }).click();
   // The first listing (the home folder) answers only once a path is typed, as on a slow machine:
   // it mustn't replace what was typed.

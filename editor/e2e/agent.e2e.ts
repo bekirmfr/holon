@@ -8,6 +8,7 @@ import { spawn } from "node:child_process";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { expect, PORTS, RUN_DIR, SAMPLE_SHIFT, SERVER, test } from "./fixtures";
+import { gotoPage } from "./helpers";
 
 /** `holon mcp` against the test server, as an agent's host runs it: one JSON-RPC line each way. */
 function mcp() {
@@ -54,7 +55,7 @@ test("an agent proposes a flow through holon mcp, a person approves it in the ed
 
     // The person: the flows page lists it, saved by the agent under their sign-in; they open it and deploy it, approving.
     await page.goto("/");
-    await page.getByRole("button", { name: "flows", exact: true }).click();
+    await gotoPage(page, "flows");
     const row = page.getByText(name, { exact: true }).locator("xpath=..");
     await expect(row).toContainText(/by local:.+ \(agent\)/);
     await row.getByRole("button", { name: "open", exact: true }).click();
@@ -89,7 +90,7 @@ test("an agent asks through holon mcp to put a run's state back, and a person re
     expect((await agent.tool("deploy", { text })).text).toContain("Not deployed yet");
     // A person deploys it, approving what it may do.
     await page.goto("/");
-    await page.getByRole("button", { name: "flows", exact: true }).click();
+    await gotoPage(page, "flows");
     await page.getByText(name, { exact: true }).locator("xpath=..").getByRole("button", { name: "open", exact: true }).click();
     // Opened once its tab says so: deploy pressed before that deploys the untitled draft, and asks
     // for a name instead of what the flow may do.

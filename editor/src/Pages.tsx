@@ -10,6 +10,7 @@ import { openChoice } from "./tabs";
 import { useDialog } from "./Dialog";
 import { DeploymentCard } from "./DeploymentCard";
 import type { Sample } from "./samples";
+import { flowAddressable, type Route } from "./routes";
 
 /** Which top-level view is showing. The canvas is never unmounted (React Flow's own state —
  *  nodes mid-edit, viewport — lives there and must survive navigation); the other pages render
@@ -18,6 +19,77 @@ import type { Sample } from "./samples";
 export type AppPage = "canvas" | "flows" | "deployed" | "admin" | "home" | "welcome" | "docs";
 /** A page shown in a tab of its own: every page but the canvas (whose tabs are the flows'). */
 export type PageTab = Exclude<AppPage, "canvas">;
+
+/** The page that shows the place `r` names (routes.ts). A place the editor has no page of its
+ *  own for yet is shown by the page that has what it names: the library's samples are on the
+ *  flows page, a flow's page is its deployment's card, the host's pages are admin's. */
+export function pageOf(r: Route): AppPage {
+  switch (r.kind) {
+    case "editor":
+    case "editor-home":
+    case "run":
+      return "canvas";
+    case "flows":
+    case "library":
+      return "flows";
+    case "deployed":
+    case "flow":
+      return "deployed";
+    case "docs":
+      return "docs";
+    case "start":
+      return "welcome";
+    case "admin":
+    case "resources":
+    case "people":
+    case "policy":
+      return "admin";
+    default:
+      return "home";
+  }
+}
+
+/** The place page `p` is at, when it is asked for by itself. */
+export function routeOfPage(p: AppPage): Route {
+  switch (p) {
+    case "canvas":
+      return { kind: "editor", slug: null, view: false, seq: null };
+    case "home":
+      return { kind: "overview" };
+    case "welcome":
+      return { kind: "start" };
+    case "docs":
+      return { kind: "docs", page: null, anchor: null };
+    case "admin":
+      return { kind: "admin", tab: null };
+    default:
+      return { kind: p };
+  }
+}
+
+/** Where the address should say the editor is, when it names a place shown by another's page:
+ *  that page's own place (a run is viewed in the editor). Null when `r` is shown as it is. */
+export function shownAt(r: Route): Route | null {
+  switch (r.kind) {
+    case "run":
+      return { kind: "editor", slug: r.slug, view: true, seq: r.seq };
+    case "editor-home":
+      return { kind: "editor", slug: null, view: false, seq: null };
+    case "flow":
+      return r.tab === "status" && flowAddressable(r.slug) ? null : { kind: "flow", slug: r.slug, tab: "status" };
+    case "library":
+    case "resources":
+    case "people":
+    case "policy":
+    case "approvals":
+    case "review":
+    case "signin":
+    case "notfound":
+      return routeOfPage(pageOf(r));
+    default:
+      return null;
+  }
+}
 
 /** The saved-flows page: list, open, delete, and publish to the marketplace this browser uses
  *  (set here: a deployment of the "marketplace" sample, marketplace.ts). "open" on a flow open in a tab goes to that tab, unsaved changes and all; only "reload saved"

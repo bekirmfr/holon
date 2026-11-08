@@ -6,6 +6,7 @@
 
 import { expect, test, type Browser, type Page } from "@playwright/test";
 import { FRESH as SERVER, FRESH_EDITOR as EDITOR, ISSUER } from "./fixtures";
+import { gotoPage } from "./helpers";
 
 const PASSWORD = "a long enough password";
 
@@ -40,7 +41,7 @@ test("installing: the server answers nothing until its admin is set up with the 
   expect((await request.get(`${SERVER}/flows`)).status()).toBe(401);
 
   // The admin panel: add cy as a viewer, with the email she signs in with at the provider.
-  await page.getByRole("button", { name: "admin", exact: true }).click();
+  await gotoPage(page, "admin");
   await page.getByLabel("new person's name").fill("cy");
   await page.getByLabel("new person's role").selectOption("viewer");
   await page.getByLabel("new person's email").fill("cy@example.com");
@@ -59,7 +60,7 @@ test("joining by the link, a viewer reads and can't change anything", async ({ b
   await join.getByRole("button", { name: "join" }).click();
   await expect(cy.getByRole("button", { name: "account: cy" })).toBeVisible();
   await expect(cy.getByRole("button", { name: "admin", exact: true })).toHaveCount(0);
-  await cy.getByRole("button", { name: "new", exact: true }).click();
+  await gotoPage(cy, "new");
   await cy.locator(".hl-canvas").getByRole("button", { name: "save", exact: true }).click();
   await cy.locator('[aria-modal="true"] input').fill("cys-flow");
   await cy.keyboard.press("Enter");
@@ -77,7 +78,7 @@ test("an admin's API token acts with its role, until revoked; a disabled account
   await fill(ada, "name", "ada");
   await fill(ada, "password", PASSWORD);
   await signIn.getByRole("button", { name: "sign in" }).click();
-  await ada.getByRole("button", { name: "admin", exact: true }).click();
+  await gotoPage(ada, "admin");
   await ada.getByLabel("new token's label").fill("ci");
   await ada.getByLabel("new token's role").selectOption("editor");
   await ada.getByRole("button", { name: "make token" }).click();
@@ -133,7 +134,7 @@ test("signing in through the identity provider an admin set, matched by email", 
   await fill(ada, "name", "ada");
   await fill(ada, "password", PASSWORD);
   await ada.getByRole("form", { name: "sign in" }).getByRole("button", { name: "sign in" }).click();
-  await ada.getByRole("button", { name: "admin", exact: true }).click();
+  await gotoPage(ada, "admin");
   // The page reads the settings it has when it opens and puts them in these fields (AdminPage.tsx's
   // refresh): a read answering after the fill empties them, and "turn on" stays disabled. So fill
   // and click again until the click lands, which it does only with both fields filled.

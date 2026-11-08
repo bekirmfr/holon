@@ -3,10 +3,11 @@
 // opens in a tab of its own.
 
 import { expect, test } from "./fixtures";
+import { gotoPage } from "./helpers";
 
 test("the docs tab shows the manual, follows its links and opens its flows", async ({ page }) => {
   await page.goto("/");
-  await page.getByRole("button", { name: "docs", exact: true }).click();
+  await gotoPage(page, "docs");
   await expect(page.getByRole("tablist", { name: "open tabs" }).getByRole("tab", { name: "docs" })).toHaveAttribute("aria-selected", "true");
   await expect(page.getByRole("heading", { level: 1, name: "The Holon manual" })).toBeVisible();
 

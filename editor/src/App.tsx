@@ -65,7 +65,9 @@ import {
 } from "./canvasOps";
 import { expandComposite } from "./composites";
 import { FlowTabs, FlowToolbar, ProjectionPanel } from "./CanvasPanels";
-import { DeployedPage, FlowsPage, type AppPage, type PageTab } from "./Pages";
+import { DeployedPage, FlowsPage, pageOf, routeOfPage, shownAt, type AppPage, type PageTab } from "./Pages";
+import { format, same, type Route } from "./routes";
+import { useHashRoute, type Navigate } from "./useHashRoute";
 import { useCanvasHistory } from "./useCanvasHistory";
 import { useDeployments } from "./useDeployments";
 import { buildSample, samples, type Sample } from "./samples";
@@ -99,6 +101,8 @@ function Canvas({
   variadic,
   page,
   setPage,
+  route,
+  navigate,
   pendingNew,
   docs,
   me,
@@ -120,6 +124,9 @@ function Canvas({
   };
   page: AppPage;
   setPage: (p: AppPage) => void;
+  /** Where the address says the editor is (routes.ts), and going somewhere. */
+  route: Route;
+  navigate: Navigate;
   pendingNew: { nonce: number } | null;
   docs: Map<string, string>;
 }) {
@@ -189,9 +196,15 @@ function Canvas({
   const [deployError, setDeployError] = useState("");
   // The deployment card asked for from the admin page's permissions, at its `n`th asking.
   const [focus, setFocus] = useState<{ slug: string; n: number } | null>(null);
+  const focusSlug = route.kind === "flow" ? route.slug : null;
+  useEffect(() => {
+    if (focusSlug !== null) setFocus((f) => ({ slug: focusSlug, n: (f?.n ?? 0) + 1 }));
+  }, [focusSlug]);
   // Where the docs tab is in the manual (null: its index): kept here, so it is where it was when
   // the tab shows again.
-  const [manualAt, setManualAt] = useState<ManualAt | null>(null);
+  // The manual's page is the address's (#docs.<page>@<heading>): a link in it is a navigation.
+  const manualAt: ManualAt | null = route.kind === "docs" && route.page !== null ? { page: route.page, anchor: route.anchor } : null;
+  const setManualAt = useCallback((at: ManualAt) => navigate({ kind: "docs", page: at.page, anchor: at.anchor }), [navigate]);
 
   // New and Open start from a clean slate: no projection, error highlight or inspect panel
   // carried over from the previous flow.
@@ -583,6 +596,54 @@ function Canvas({
     setError: setDeployError,
   });
 
+  // ── The address and the editor's flow (routes.ts) ─────────────────────────────────────────
+  // `#editor.<slug>[.view[.run-<seq>]]` says which flow the editor shows, and how. Asked for (a
+  // link, Back, a reload), the editor goes there: to its tab, else its saved copy, else its
+  // deployment. Changed here (a tab picked, view mode, a run), the address follows, replaced
+  // rather than added to, so Back leaves the editor rather than stepping through its clicks.
+  // While a place asked for is being reached, the address waits for it.
+  const here = useMemo<Extract<Route, { kind: "editor" }>>(
+    () => ({ kind: "editor", slug: flow.viewing ?? flow.name, view: flow.viewing !== null, seq: flow.viewing !== null ? (flow.selectedRun?.seq ?? null) : null }),
+    [flow.viewing, flow.name, flow.selectedRun],
+  );
+  const hereNow = useRef(here);
+  hereNow.current = here;
+  const reaching = useRef(false);
+  const [reached, setReached] = useState(0);
+  const routeKey = format(route);
+  useEffect(() => {
+    if (route.kind !== "editor" || route.slug === null || same(route, hereNow.current)) return;
+    const want = route;
+    const slug = want.slug!;
+    const at = hereNow.current;
+    reaching.current = true;
+    (async () => {
+      if (want.view) return onView(slug, want.seq ?? undefined);
+      if (at.slug === slug && at.view) return onMode("edit");
+      const open = tabOf(slug);
+      if (open !== null) return switchTab(open);
+      const rec = await getFlow(slug).catch(() => null);
+      if (rec) return void (await onOpenFlow(rec));
+      if (deployments.some((d) => d.slug === slug)) return onView(slug);
+      toast(`There is no flow named "${slug}" to open.`, "bad");
+    })()
+      .catch((e: unknown) => toast(e instanceof Error ? e.message : String(e), "bad"))
+      .finally(() => {
+        reaching.current = false;
+        setReached((n) => n + 1);
+      });
+    // Only a new address is gone to: the callbacks change with every tab.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [routeKey]);
+  const hereKey = format(here);
+  useEffect(() => {
+    if (shown !== "canvas" || reaching.current) return;
+    if (route.kind === "editor" && same(route, here)) return;
+    navigate(here, { replace: true });
+    // The address is written from where the editor is, not from what it is told.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hereKey, routeKey, shown, reached]);
+
   // View mode: the run replayed on its version's canvas, stepping, flow state, and the panes
   // (useViewMode.tsx).
   const view = useViewMode({
@@ -956,10 +1017,7 @@ function Canvas({
           {shown === "admin" && me.role === "admin" && (
             <AdminPage
               me={me.name}
-              onOpenDeployment={(slug) => {
-                setFocus((f) => ({ slug, n: (f?.n ?? 0) + 1 }));
-                start.openPage("deployed");
-              }}
+              onOpenDeployment={(slug) => navigate({ kind: "flow", slug, tab: "status" })}
             />
           )}
           {shown === "docs" && (
@@ -1049,14 +1107,32 @@ function Canvas({
 }
 
 function Editor({ me }: { me: Me }) {
-  // What the work area shows: a page, or the canvas (the active flow's tab).
-  const [page, setPage] = useState<AppPage>("home");
+  // What the work area shows: a page, or the canvas (the active flow's tab), as the address
+  // says (routes.ts). A place shown by another page's is written as that page's.
+  const { route, navigate, arrivedAt } = useHashRoute();
+  const page = pageOf(route);
+  const setPage = useCallback((p: AppPage) => navigate(routeOfPage(p)), [navigate]);
+  const toast = useToast();
+  const routeKey = format(route);
+  useEffect(() => {
+    const as = shownAt(route);
+    if (as === null) return;
+    if (route.kind === "notfound") toast(`Nothing is at #${route.hash}.`, "bad");
+    navigate(as, { replace: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [routeKey]);
+  const routeNow = useRef(route);
+  routeNow.current = route;
   // What the editor keeps for this person (home.ts): read once, saved as it changes. The welcome
   // opens on start unless they said not to; otherwise the editor starts at home.
   const [prefs, setPrefsState] = useState<Prefs>({});
   // The pages open in tabs of their own, in the order opened; home to begin with, and the
   // welcome unless they said not to.
   const [pages, setPages] = useState<PageTab[]>(["home"]);
+  // A page gone to by its address has its tab, as one opened from the menu does.
+  useEffect(() => {
+    if (page !== "canvas") setPages((ps) => (ps.includes(page) ? ps : [...ps, page]));
+  }, [page]);
   useEffect(() => {
     getPrefs()
       .then((raw) => {
@@ -1064,18 +1140,16 @@ function Editor({ me }: { me: Me }) {
         setPrefsState(p);
         if (p.welcome !== false) {
           setPages((ps) => (ps.includes("welcome") ? ps : [...ps, "welcome"]));
-          // Shown only if they are still where the editor started: prefs that arrive after
-          // they opened something else don't take them away from it.
-          setPage((shown) => (shown === "home" ? "welcome" : shown));
+          // Shown only if they are still where the editor started, at no address of their
+          // own: prefs that arrive after they opened something else don't take them away from
+          // it, and a place they asked for is kept.
+          if (arrivedAt === "" && routeNow.current.kind === "overview") navigate({ kind: "start" }, { replace: true });
         }
       })
       .catch(() => undefined);
   }, []);
   /** Show page `p`, in its tab (opened if it isn't). */
-  const openPage = useCallback((p: PageTab) => {
-    setPages((ps) => (ps.includes(p) ? ps : [...ps, p]));
-    setPage(p);
-  }, []);
+  const openPage = useCallback((p: PageTab) => setPage(p), [setPage]);
   /** Close page `p`'s tab; if it was showing, the tab beside it shows, else the open flow (or,
    *  with none, home as the default page). */
   const closePage = useCallback(
@@ -1085,7 +1159,7 @@ function Editor({ me }: { me: Me }) {
       setPages(left);
       if (page === p) setPage(left[i] ?? left[i - 1] ?? "canvas");
     },
-    [pages, page],
+    [pages, page, setPage],
   );
   const onPrefs = useCallback((p: Prefs) => {
     setPrefsState(p);
@@ -1108,10 +1182,9 @@ function Editor({ me }: { me: Me }) {
     })().catch((e: unknown) => setError(String(e)));
   }, []);
 
-  const onNew = () => {
-    setPendingNew((p) => ({ nonce: (p?.nonce ?? 0) + 1 }));
-    setPage("canvas");
-  };
+  // The canvas is shown by the new tab itself (useTabs's showTab), with it: shown first, the
+  // address would name the tab before it, and be put back there.
+  const onNew = () => setPendingNew((p) => ({ nonce: (p?.nonce ?? 0) + 1 }));
 
   const menuBtn = (active: boolean, enabled = true): CSSProperties => ({
     font: "inherit",
@@ -1165,6 +1238,8 @@ function Editor({ me }: { me: Me }) {
                 variadic={variadic}
                 page={page}
                 setPage={setPage}
+                route={route}
+                navigate={navigate}
                 pendingNew={pendingNew}
                 docs={docs}
                 me={me}

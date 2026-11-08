@@ -4,6 +4,7 @@
 
 import type { APIRequestContext } from "@playwright/test";
 import { expect, SERVER, test } from "./fixtures";
+import { gotoPage } from "./helpers";
 
 /** Wait until the server holds what was just changed (the editor saves as it changes), so a
  *  reload reads it back rather than racing the last save. */
@@ -23,7 +24,8 @@ test("the welcome opens on start until told not to; home keeps its panes", async
   // Not on start any more: the next start is at home, without the welcome tab.
   await page.getByLabel("show this on start").uncheck();
   await saved(request, adminToken, (p) => p.includes('"welcome":false'));
-  await page.reload();
+  // A start, not a reload: a reload keeps the place the address names (the welcome, #start).
+  await page.goto("/");
   await expect(tabs.getByRole("tab", { name: "home" })).toHaveAttribute("aria-selected", "true");
   await expect(tabs.getByRole("tab", { name: "welcome" })).toHaveCount(0);
 
@@ -61,7 +63,7 @@ test("a welcome that loads late doesn't take you from a page you opened", async 
   });
   await page.goto("/");
   const tabs = page.getByRole("tablist", { name: "open tabs" });
-  await page.getByRole("button", { name: "flows", exact: true }).click();
+  await gotoPage(page, "flows");
   await expect(tabs.getByRole("tab", { name: "flows" })).toHaveAttribute("aria-selected", "true");
   release();
   // The welcome opens beside it, and the flows page stays shown.
@@ -74,13 +76,13 @@ test("pages open in tabs of their own; every tab closes; with none open, home sh
   const tabs = page.getByRole("tablist", { name: "open tabs" });
   // No flow tab to begin with: home (and the welcome) only.
   await expect(tabs.getByRole("tab")).toHaveText([/^home/, /^welcome/]);
-  await page.getByRole("button", { name: "admin", exact: true }).click();
+  await gotoPage(page, "admin");
   await expect(tabs.getByRole("tab", { name: "admin" })).toHaveAttribute("aria-selected", "true");
   await expect(page.getByLabel("new person's name")).toBeVisible();
-  await page.getByRole("button", { name: "deployed", exact: true }).click();
+  await gotoPage(page, "deployed");
   await expect(tabs.getByRole("tab", { name: "deployed" })).toHaveAttribute("aria-selected", "true");
   // A flow's tab has the palette; a page's doesn't. New asks nothing: an untitled draft, named on save.
-  await page.getByRole("button", { name: "new", exact: true }).click();
+  await gotoPage(page, "new");
   await expect(page.locator('[aria-modal="true"]')).toHaveCount(0);
   await expect(page.locator(".hl-tab--active")).toContainText("untitled");
   await expect(page.locator(".hl-work .hl-palette")).toBeVisible();

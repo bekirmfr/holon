@@ -6,14 +6,7 @@
 
 import type { Locator, Page } from "@playwright/test";
 import { expect, SERVER, test } from "./fixtures";
-
-async function openSample(page: Page, title: string) {
-  await page.goto("/");
-  await page.getByRole("button", { name: "flows", exact: true }).click();
-  const card = page.getByText(title, { exact: true }).locator("xpath=../..");
-  await card.getByRole("button", { name: "open" }).click();
-  await expect(page.locator(".hl-tab--active")).toBeVisible();
-}
+import { openSample } from "./helpers";
 
 /** Replace the whole text, as typing it would. */
 async function typeText(editor: Locator, page: Page, text: string) {
