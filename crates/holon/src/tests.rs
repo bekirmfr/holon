@@ -4609,6 +4609,33 @@ fn a_run_that_computes_with_a_secret_is_checked_given_what_that_node_produced() 
     assert_eq!(report.given, BTreeMap::from([(0, 1)]));
 }
 
+/// A condition reads a value that isn't a Boolean as JavaScript does (`!""` is true, `[]` is
+/// true), an absent one as `if` reads it, and a status alone answers it with an empty body, a 204
+/// with none.
+#[test]
+fn a_condition_reads_javascripts_truthiness_and_a_status_alone_answers() {
+    let state = claims_state("");
+    let text = "import { flow, route, status } from \"holon\"\nimport state from \"state\"\n\nflow(\"truthy\", { port: 18302 })\n\nroute.post(\"/not\", (req) => {\n  if (!req.json.s) {\n    return status(422, \"empty\")\n  }\n  return status(200, \"full\")\n})\n\nroute.post(\"/if\", (req) => {\n  if (req.json.s) {\n    state.yes = (state.yes ?? 0) + 1\n  } else {\n    state.no = (state.no ?? 0) + 1\n  }\n  return \"counted\"\n})\n\nroute.get(\"/stats\", () => ({ yes: state.yes ?? 0, no: state.no ?? 0 }))\n\nroute.post(\"/bare\", () => status(400))\n\nroute.post(\"/pick\", (req) => {\n  if (req.json.x === 1) {\n    return status(204)\n  }\n  if (req.json.x === 2) {\n    return status(409)\n  }\n  return status(200, { x: req.json.x })\n})\n";
+    let slug = deploy_text(&state, text, "127.0.0.1:9");
+    let call = |method: &str, path: &str, body: &str| {
+        let (status, answer, _) = data_call(&state, &slug, method, path, body);
+        (status, answer)
+    };
+    for (body, answer) in [(r#"{"s":""}"#, (422, "empty")), (r#"{"s":0}"#, (422, "empty")), (r#"{"s":false}"#, (422, "empty")), (r#"{"s":"a"}"#, (200, "full")), (r#"{"s":[]}"#, (200, "full")), (r#"{"s":{}}"#, (200, "full"))] {
+        assert_eq!(call("POST", "/not", body), (answer.0, answer.1.to_string()), "{body}");
+    }
+    // Absent is still absent: `!` of it has no value, and the `if` takes its else.
+    assert_eq!(call("POST", "/not", "{}"), (200, "full".to_string()));
+    for body in [r#"{"s":"x"}"#, r#"{"s":""}"#, r#"{"s":{}}"#, r#"{"s":0}"#, "{}"] {
+        assert_eq!(call("POST", "/if", body), (200, "counted".to_string()), "{body}");
+    }
+    assert_eq!(call("GET", "/stats", ""), (200, r#"{"no":3,"yes":2}"#.to_string()), "each request counted once, on its side");
+    assert_eq!(call("POST", "/bare", ""), (400, String::new()));
+    assert_eq!(call("POST", "/pick", r#"{"x":1}"#), (204, String::new()));
+    assert_eq!(call("POST", "/pick", r#"{"x":2}"#), (409, String::new()));
+    assert_eq!(call("POST", "/pick", r#"{"x":3}"#), (200, r#"{"x":3}"#.to_string()));
+}
+
 /// A caller who sends text that looks like a placeholder (`‹token:paid›`) gets nothing taken as
 /// given: the log escapes it (only a mark the log wrote reads as one), and verify computes the
 /// run's id and every node from it again. The caller's answer, and the request as the run saw it,

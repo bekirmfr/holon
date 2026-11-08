@@ -555,9 +555,14 @@ route.post("/orders", (req) => {
   - **Refused, each for a later slice:** `catch (e)`; a `return` or a `throw` in `finally`; a
     `switch` that returns inside a try block. A try block nothing in which can fail is refused,
     as its catch never runs.
-  - Two things the slice met that it didn't change: `!x` on a text is absent (`not` takes a
-    Boolean), so `if (!s) throw …` doesn't throw for `""`; and two answers that are each a
-    `status(…)` alone, joined by an `if`, leave `respond`'s body unwired.
+  - Two things the slice met, fixed after it (2026-11-08): `!x` on a text was absent (`not` takes
+    a Boolean), so `if (!s) throw …` didn't throw for `""`, and `if (s)` took neither branch's
+    writes; and a `status(…)` alone, other than a 204, left `respond`'s body unwired, alone or
+    chosen by an `if`. Now a condition (`if`, `?:`, `!`, and `&&` and `||` inside one) reads a
+    value that isn't a Boolean as JavaScript does, through `is_truthy`, which is JavaScript's
+    `Boolean(x)` (an empty list or record true, `NaN` false); a Boolean is read as it is. A status
+    alone answers it with an empty body, as one among answers with bodies already did, and a 204
+    sends none. An absent value is still absent: `!x` has none, and the `if` takes its else.
 
 ## 9. Calling out: requests and other flows
 

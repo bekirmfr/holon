@@ -904,6 +904,9 @@ impl<'a> Lowerer<'a> {
         let body_val = match (subscribing, body) {
             (Some((channel, sub_args, at)), _) => Some((self.subscribe(channel, sub_args, at)?, at)),
             (None, Some(b)) => Some((self.expr(b)?, b.span)),
+            // A status alone answers it with an empty body, as one among answers with bodies does
+            // (ts.rs's `merge_responses`); a 204 has none to give.
+            (None, None) if status != "204" => Some((self.node("const", &[("value".into(), String::new()), ("type".into(), "Text".into())], span)?, span)),
             (None, None) => None,
         };
         let headers_val = match headers {
@@ -1564,6 +1567,13 @@ impl<'a> Lowerer<'a> {
                 let v = self.expr(x)?;
                 self.node_with("not", &[], &[("v", v)], e.span)
             }
+            ExprKind::Truthy(x) => {
+                let v = self.expr(x)?;
+                if self.boolean(&v) {
+                    return Ok(v);
+                }
+                self.node_with("is_truthy", &[], &[("value", v)], e.span)
+            }
             ExprKind::Binary { op, lhs, rhs } => self.binary(*op, lhs, rhs, e.span),
             // `c ? a : b` is `guard(c, a) ?? guard(!(c ?? false), b)`: each branch guarded by its
             // side of `c`, so a chosen `a` that is absent makes the choice absent, as JavaScript's
@@ -1830,6 +1840,29 @@ impl<'a> Lowerer<'a> {
         }
         let defaults: Vec<WParam> = unit.params.iter().map(WParam::from_core).collect();
         self.unit_call(&leaf.text, &inputs, &defaults, params, args, span)
+    }
+
+    /// Whether `v` is known to be a Boolean: its node gives one, or chooses among Booleans (`a ??
+    /// b`, `c ? a : b`), so a condition reads it as it is, without `is_truthy`.
+    fn boolean(&self, v: &Val) -> bool {
+        if typed(v) == Some(&WType::Boolean) {
+            return true;
+        }
+        let Val::Out { id, .. } = v else { return false };
+        let Some(d) = self.b.data(id) else { return false };
+        let chosen: &[&str] = match d.name.as_str() {
+            "coalesce" => &["a", "b"],
+            "guard" => &["value"],
+            "select" => &["if_true", "if_false"],
+            _ => return false,
+        };
+        chosen.iter().all(|port| {
+            self.b.source(id, port).is_some_and(|(from, output)| {
+                let outputs = self.b.data(from).map(|d| d.outputs.clone()).unwrap_or_default();
+                let port = outputs.iter().position(|p| p.name == output).unwrap_or(0);
+                self.boolean(&Val::Out { id: from.to_string(), outputs, port, explicit: false })
+            })
+        })
     }
 
     /// `x.length` and `x.concat(…)`, which a text and a list both have and different leaves do,
@@ -2519,6 +2552,36 @@ pub(crate) mod tests {
     /// The leaves placed, by name, in order.
     fn leaves(doc: &FlowDocument) -> Vec<String> {
         doc.nodes.iter().map(|n| n.data.name.clone()).collect()
+    }
+
+    /// A condition that is a Boolean (a comparison, a `!`, `&&` and `||` of them, a choice among
+    /// them) is read as it is: only a value that isn't one is read through `is_truthy`.
+    #[test]
+    fn a_boolean_condition_is_read_as_it_is() {
+        let d = compiled(
+            r#"import { flow, route } from "holon"
+
+flow("t", { port: 8000 })
+
+route.post("/n", (req) => {
+  const big = req.json.n > 1
+  const on = (req.json.m === 2 ?? false) || !big
+  return big && !(req.json.n === 3) ? (on ? "on" : "off") : "small"
+})
+"#,
+        )
+        .doc;
+        assert!(!leaves(&d).iter().any(|l| l == "is_truthy"), "{:?}", leaves(&d));
+        let d = compiled(
+            r#"import { flow, route } from "holon"
+
+flow("t", { port: 8000 })
+
+route.post("/n", (req) => (req.json.s ? "some" : "none"))
+"#,
+        )
+        .doc;
+        assert_eq!(leaves(&d).iter().filter(|l| *l == "is_truthy").count(), 1, "{:?}", leaves(&d));
     }
 
     /// A handler is one composite. An input a leaf works without (an http_request's headers and

@@ -2775,7 +2775,7 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
                         self.touch(p);
                     }
                     let [then, taken, ..] = parts;
-                    let c = self.required(then, "cond", COALESCE)?;
+                    let c = self.condition(then, "cond", COALESCE)?;
                     let t = self.required(then, "value", COND)?;
                     let e = self.required(taken, "value", COND)?;
                     return Ok((format!("{c} ? {t} : {e}"), COND));
@@ -2785,7 +2785,7 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
                 Ok((format!("{a} ?? {b}"), COALESCE))
             }
             "guard" => {
-                let c = self.required(node, "cond", COALESCE)?;
+                let c = self.condition(node, "cond", COALESCE)?;
                 let v = self.required(node, "value", COND)?;
                 Ok((format!("{c} ? {v} : undefined"), COND))
             }
@@ -2834,7 +2834,7 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
                     let b = self.required(eq, "b", EQ + 1)?;
                     return Ok((format!("{a} !== {b}"), EQ));
                 }
-                let v = self.required(node, "v", UNARY)?;
+                let v = self.condition(node, "v", UNARY)?;
                 Ok((format!("!{v}"), UNARY))
             }
             // The stores, by their names: `notes[k]`, `notes.list({ limit: 50 })`, `files.put(n, t)`.
@@ -3028,6 +3028,34 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
 
     /// Whether what feeds `node`'s `input` is a node's output of type `ty`, by its name or
     /// written in place.
+    /// What feeds `node`'s `input`, as a condition reads it: an `is_truthy` written in place is
+    /// the value it reads (`!x` for `!is_truthy(x)`), as ts.rs reads a condition that isn't a
+    /// Boolean; one around a Boolean, which the reading wouldn't add, is written.
+    fn condition(&mut self, node: &Node, input: &str, prec: u8) -> Result<String, String> {
+        if let Some(t) = self.inline_source(node, input, "is_truthy").filter(|t| self.arg_wired(t, "value") && !self.boolean(t, "value")) {
+            self.touch(t);
+            return self.required(t, "value", prec);
+        }
+        self.required(node, input, prec)
+    }
+
+    /// Whether what feeds `node`'s `input` is a Boolean as the lowering knows one: a node's output
+    /// of that type, or a choice among Booleans (`a ?? b`, `c ? a : b`).
+    fn boolean(&self, node: &Node, input: &str) -> bool {
+        if self.known(node, input, WType::Boolean) {
+            return true;
+        }
+        let Some(Src::Node { id, .. }) = self.g.incoming.get(&(node.id.clone(), input.to_string())) else { return false };
+        let src = self.g.node(id);
+        let chosen: &[&str] = match src.data.name.as_str() {
+            "coalesce" => &["a", "b"],
+            "guard" => &["value"],
+            "select" => &["if_true", "if_false"],
+            _ => return false,
+        };
+        chosen.iter().all(|p| self.boolean(src, p))
+    }
+
     fn known(&self, node: &Node, input: &str, ty: WType) -> bool {
         self.known_by(node, input, |t| *t == ty)
     }

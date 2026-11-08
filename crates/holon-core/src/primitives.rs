@@ -437,38 +437,14 @@ pub(crate) fn compute_op(op: Op, name: &str, inputs: &[&Value], params: &[Param]
 
         // The other universal any-typed primitive alongside `to_text`, same reasoning: one
         // uniform check that works before you know a value's runtime type — reading
-        // `store_read(key)` (declared `Any`), say, where you often genuinely don't. Total over
-        // every `Value` shape:
-        //   Number   → nonzero is true (n != 0.0; NaN, being != everything including itself
-        //              under IEEE 754, is therefore true here — a real, deliberate choice, not
-        //              an oversight: "not equal to zero" is exactly what this rule says, and
-        //              different languages disagree on NaN's truthiness anyway, so there is no
-        //              single "obviously correct" convention to defer to instead)
-        //   Boolean  → itself (the identity case)
-        //   Text     → non-empty is true
-        //   List     → non-empty is true (covers Product too — a product's value already rides
-        //              List, nothing special-cased for it)
-        //   Effect   → always true. An Effect can structurally never be "empty" — `payload:
-        //              Box<Value>` is never null in safe Rust, and `sink` is always a real,
-        //              non-empty name built from a primitive's own identity. There is no
-        //              falsy Effect to detect, so it isn't invented; this just falls into
-        //              "true by default", the same as any value with no established falsy form.
-        //   Sum      → arm 0 (`some`) is true, arm 1 (`none`) is false. This system's Option —
-        //              "is a real value present" is exactly what a truthiness check on an
-        //              Option should answer, and it's the same "empty container is falsy"
-        //              theme List/Text already carry, not a new idea.
+        // `store_read(key)` (declared `Any`), say, where you often genuinely don't. It is
+        // JavaScript's ToBoolean, `Boolean(x)` ([`lists::truthy`]), as the language reads a
+        // condition that isn't a Boolean (`if (s)`, `!s`): `false`, `0`, `NaN` and `""` are
+        // false, and a `Sum`'s `none`, its absence, as `undefined` is; anything else is true,
+        // an empty list or record included, and an Effect, which can't be empty.
         Op::IsTruthy => {
             let [v] = inputs else { return None };
-            let truthy = match v {
-                Value::Number(n) => *n != 0.0,
-                Value::Boolean(b) => *b,
-                Value::Text(s) => !s.is_empty(),
-                Value::List(xs) => !xs.is_empty(),
-                Value::Effect { .. } => true,
-                Value::Sum { arm, .. } => *arm == 0,
-                Value::Record(fields) => !fields.is_empty(),
-            };
-            Some(Value::Boolean(truthy))
+            Some(Value::Boolean(lists::truthy(v)))
         }
 
         // A conditional sink-gate, not a branch: `value` passes through only if `cond` is
@@ -1886,7 +1862,7 @@ mod tests {
         let r3 = compute("without_field", &[&r2], &[p("name", "id")]).unwrap();
         assert_eq!(compute("keys", &[&r3], &[]), Some(Value::List(vec![txt("title")])));
         assert_eq!(compute("field", &[&num(1.0)], &[p("name", "id")]), None);
-        assert_eq!(compute("is_truthy", &[&empty], &[]), Some(boo(false)));
+        assert_eq!(compute("is_truthy", &[&empty], &[]), Some(boo(true)), "an empty record is true, as in JavaScript");
         assert_eq!(compute("equals", &[&r, &r2], &[]), Some(boo(false)));
     }
 
@@ -2361,7 +2337,7 @@ mod tests {
 
     #[test]
     fn javascripts_to_boolean_counts_an_empty_list_true() {
-        let falsy = [boo(false), num(0.0), num(-0.0), txt("")];
+        let falsy = [boo(false), num(0.0), num(-0.0), num(f64::NAN), txt("")];
         let truthy = [boo(true), num(1.0), num(-0.5), txt("0"), txt("false"), list(vec![]), Value::Record(BTreeMap::new())];
         assert!(falsy.iter().all(|v| !lists::truthy(v)));
         assert!(truthy.iter().all(lists::truthy));
@@ -2581,7 +2557,8 @@ mod tests {
         assert_eq!(compute("is_truthy", &[&boo(false)], &[]), Some(boo(false)));
         assert_eq!(compute("is_truthy", &[&txt("")], &[]), Some(boo(false)));
         assert_eq!(compute("is_truthy", &[&txt("hi")], &[]), Some(boo(true)));
-        assert_eq!(compute("is_truthy", &[&list(vec![])], &[]), Some(boo(false)));
+        // An empty list is true, as JavaScript's `Boolean([])` is.
+        assert_eq!(compute("is_truthy", &[&list(vec![])], &[]), Some(boo(true)));
         assert_eq!(compute("is_truthy", &[&list(vec![num(1.0)])], &[]), Some(boo(true)));
         // An Effect can never structurally be empty — always true, not a special case.
         let effect = Value::Effect { sink: "egress".into(), payload: Box::new(txt("")) };
@@ -2593,10 +2570,9 @@ mod tests {
         assert_eq!(compute("is_truthy", &[&none], &[]), Some(boo(false)));
     }
     #[test]
-    fn is_truthy_treats_nan_as_truthy_deliberately() {
-        // NaN != 0.0 under IEEE 754 (NaN is != everything, including itself), so this rule's
-        // own logic makes it true — a real, considered choice, not an overlooked edge case.
-        assert_eq!(compute("is_truthy", &[&num(f64::NAN)], &[]), Some(boo(true)));
+    fn is_truthy_treats_nan_as_javascript_does() {
+        assert_eq!(compute("is_truthy", &[&num(f64::NAN)], &[]), Some(boo(false)));
+        assert_eq!(compute("is_truthy", &[&num(-0.0)], &[]), Some(boo(false)));
     }
     #[test]
     fn guard_passes_the_value_through_only_when_true() {

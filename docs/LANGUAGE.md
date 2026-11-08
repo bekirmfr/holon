@@ -1668,6 +1668,14 @@ literal is the other spelling, `concat(a, b)` the explicit call. `||` or `&&` wi
 number, record or list literal on its right (`a || "none"`) is refused with "use `??`", as that
 is JavaScript's fallback and not logic.
 
+A condition reads a value that isn't a Boolean as JavaScript does. `if (c)`, `c ? a : b` and `!c`
+read `c` through `is_truthy`, JavaScript's `Boolean(c)`: `false`, `0`, `NaN` and `""` don't hold,
+anything else does, an empty list or record included. So `if (!s) throw …` throws for an empty
+text. `&&` and `||` inside a condition read their operands so too, as JavaScript's do there;
+elsewhere they take Booleans and give one. A condition that is a Boolean already (a comparison, a
+`!`, `&&` of them) is read as it is, with no `is_truthy`. An absent `c` is still absent: `!c` has
+no value, and an `if` on it takes its else (JavaScript's `!undefined` is `true`).
+
 ### 5.7 Multi-output values: `.name`
 
 A call to a function with several outputs, or to the `request` or `stripe_verify` template,
@@ -2521,6 +2529,9 @@ the syntax to TypeScript's, keeping the lowering.
      block's values having arrived, its writes and returns tied to that and the catch's to its
      negation, `finally` tied to neither; `throw new Error(m)` the `fail` leaf, nothing, its
      message the run log's (§6.5a). The intake sample, run live.
+   - *After slice 5* (2026-11-08): a condition on a value that isn't a Boolean reads it as
+     JavaScript does, through `is_truthy`, now JavaScript's `Boolean(x)` (§5.6); a `status(…)`
+     alone answers it with an empty body, a 204 with none (reference.md's answers).
 
    Next are the L4's slices 6 to 11: computing loops, as folds over a bounded range; requests and calls that wait (`await` with
    JavaScript's order and required, `Promise.all`, a call that parks its caller, a request recorded

@@ -204,6 +204,11 @@ pub fn respond(output: Option<&Value>) -> DataResponse {
         }
         other => (200, vec![], Some(other)),
     };
+    // A 204 or a 304 has no body (RFC 9110 §15.3.5, §15.4.5): one a computed status chose, as a
+    // status alone's empty text, isn't sent, nor its content type.
+    if matches!(status, 204 | 304) {
+        return DataResponse { status, headers, body: vec![], subscribe: None };
+    }
     let (content_type, bytes) = match body {
         None => (None, vec![]),
         Some(Value::Text(s)) => (Some("text/plain; charset=utf-8"), s.clone().into_bytes()),
@@ -304,6 +309,12 @@ mod tests {
 
         let no_body = respond(Some(&rec(&[("status", Value::Number(404.0))])));
         assert_eq!((no_body.status, no_body.body.len()), (404, 0));
+
+        // A 204 a computed status chose sends no body and no content type, whatever the body.
+        for body in [txt(""), txt("x")] {
+            let none = respond(Some(&rec(&[("status", Value::Number(204.0)), ("body", body)])));
+            assert_eq!((none.status, none.body.len(), none.headers.len()), (204, 0, 0));
+        }
 
         let effect = Value::Effect { sink: "store_write:todos".into(), payload: Box::new(Value::List(vec![])) };
         assert_eq!(respond(Some(&effect)).status, 204);

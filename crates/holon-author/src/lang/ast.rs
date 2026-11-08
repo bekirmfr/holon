@@ -289,6 +289,9 @@ pub enum ExprKind {
     Record { spread: Option<Box<Expr>>, fields: Vec<(Key, Expr)> },
     List(Vec<Expr>),
     Not(Box<Expr>),
+    /// A value read as a condition, as `if`, `?:` and `!` read one: JavaScript's ToBoolean of it,
+    /// `is_truthy`, unless the lowering knows it for a Boolean already.
+    Truthy(Box<Expr>),
     Binary { op: BinOp, lhs: Box<Expr>, rhs: Box<Expr> },
     /// `cond ? then : els`, and an `if` joined; without `els`, absent when `cond` doesn't hold.
     If { cond: Box<Expr>, then: Box<Expr>, els: Option<Box<Expr>> },

@@ -79,8 +79,8 @@ the eleven number leaves. The operators are mapped but for `void`, `instanceof` 
 | `a === b`, `a == b` | `equals` | mapped; differs on records and lists | `==` is `===` (no coercion); records and lists compare by value |
 | `a !== b`, `a != b` | `equals`, `not` | mapped | |
 | `a < b`, `<=`, `>`, `>=` | `compare {op}` | mapped | two numbers, or two texts in UTF-16 code-unit order; a number and a text: nothing (JavaScript converts) |
-| `a && b`, `a \|\| b` | `and`, `or` | mapped for booleans | a literal on the right is refused: "takes booleans: a value for where one is absent is ??"; other values: differs |
-| `!x` | `not` | mapped for booleans | other values: differs, nothing (JavaScript's truthiness is `is_truthy`, by name) |
+| `a && b`, `a \|\| b` | `and`, `or` | mapped for booleans, and in a condition | a literal on the right is refused: "takes booleans: a value for where one is absent is ??"; in a condition (`if`, `?:`, `!`) each operand is read through `is_truthy`; other values elsewhere: differs |
+| `!x` | `not`, of `is_truthy(x)` where `x` isn't known to be a Boolean | mapped | an absent `x` gives nothing, where JavaScript gives `true` |
 | `a ?? b` | `default` (b a literal), `coalesce` | mapped | `b` is computed only when `a` is absent |
 | `c ? a : b` | a `guard` on each side of `c`, then `coalesce` | mapped | only the branch taken runs, and it is the answer; `c ? a : undefined` is the first `guard` alone |
 | `x?.k`, `x?.[k]` | `field`, `lookup` | mapped | absence passes along anyway, so `?.` and `.` lower alike |
@@ -122,7 +122,7 @@ the eleven number leaves. The operators are mapped but for `void`, `instanceof` 
 |---|---|---|
 | `String(x)` | mapped | `as_text(x)`, as `` `${x}` `` writes it; `String()` is `""` |
 | `Number(s)`, `parseFloat(s)`, `parseInt(s)`, `parseInt(s, r)` | mapped | `to_number {grammar: number, float, int}`, the radix wired when given; a flow's own function of the name is the one called |
-| `Boolean(x)`, `!!x` | by name | `is_truthy(x)` |
+| `Boolean(x)` | by name | `is_truthy(x)`; `!!x` is read, as two `not`s of it |
 | `isNaN(x)`, `isFinite(x)` | mapped | `number_test {test, coerce: number}`: `isNaN("abc")` is true |
 | `encodeURIComponent`, `decodeURIComponent`, `encodeURI`, `decodeURI` | mapped | `uri_encode {set: component, uri}`, `uri_decode {set}`; a malformed escape: nothing (JavaScript's `URIError`). A route's `req.params` and `req.query` come decoded |
 | `btoa(s)`, `atob(s)` | mapped | `base64 {bytes: latin1}`, with `mode: decode` for `atob` (WHATWG's forgiving decode); a character past U+00FF: nothing |
@@ -288,7 +288,7 @@ author sees no mistake; the run answers nothing where JavaScript answers somethi
 | JavaScript | What happens | Why |
 |---|---|---|
 | `xs[0]` on a list | `lookup`: nothing | `lookup` reads a record by a text key (`primitives.rs`, `Op::Lookup`); a list's item is `get` |
-| `!x`, `x && y`, `x \|\| y` on a value that isn't true or false | `not`, `and`, `or`: nothing | they take booleans (`as_bool`); JavaScript's truthiness is `is_truthy` |
+| `x && y`, `x \|\| y` on values that aren't true or false, outside a condition | `and`, `or`: nothing | they take booleans and give one (`as_bool`), where JavaScript gives an operand; in a condition each operand is read through `is_truthy` |
 | `a + b` with a list or a record and no text, or `true + 1` | `add`: nothing | `add` joins texts and adds numbers; JavaScript converts the others first |
 | `"a" + [1, 2]`, `` `${{ a: 1 }}` `` | `"a[1,2]"`, `{"a":1}` | `as_text` writes a list or a record as JSON; JavaScript writes `"a1,2"` and `[object Object]` |
 | `[[1]].includes([1])`, `new Set([[1], [1]])` | `true`, one item | compared by value; JavaScript compares objects by identity |
@@ -306,7 +306,7 @@ author sees no mistake; the run answers nothing where JavaScript answers somethi
 | `JSON.parse` of a key given twice | nothing | `json.rs` refuses it; JavaScript keeps the last |
 
 Each is a candidate for the reader to refuse with the right form, or to lower by the value's type
-(`xs[i]` to `get`, `!x` to `not(is_truthy(x))`), as `.length` is, once the reader knows the
+(`xs[i]` to `get`), as `.length` and `!x` (`not(is_truthy(x))`) are, once the reader knows the
 types it reads.
 
 ## 10. Leaves with no JavaScript form
@@ -322,7 +322,7 @@ read; reading it is a line in `ts.rs` each, with a test of its meaning:
 | `head`, `tail` | `xs[0]` | `xs.at(0)` is `at` and `xs.slice(1)` `slice`; `xs.reduce(f)` lowers to both |
 | `is_empty` | `xs.length === 0` | |
 | `sum` | `xs.reduce((a, b) => a + b, 0)`, which lowers to `fold` and `add` today | |
-| `is_truthy` | `Boolean(x)`, `!!x`, and the truthiness of `!`, `&&`, `\|\|` | §9 |
+| `is_truthy` | `Boolean(x)` | `!x`, `!!x` and a condition read it already (§9) |
 | `insert` | `{ ...r, [k]: v }` | a computed key |
 | `remove`, `without_field` | `delete r[k]`, `const { k, ...rest } = r` | on a record value |
 | `cons` | `[x, ...xs]` | lowers to `extend` today, the same list |

@@ -885,7 +885,7 @@ Any value as it reads in a message: a text is itself, a number or true/false as 
 is_truthy(value: Any) -> out: Boolean
 ```
 
-Whether a value counts as true: not 0, false, empty text, an empty list or record, or none.
+Whether a value counts as true, as JavaScript's Boolean(x) says: false for false, 0, NaN, empty text and none; true for anything else, an empty list or record included. How if (x) and !x read a value that isn't true or false.
 
 ### `guard`
 

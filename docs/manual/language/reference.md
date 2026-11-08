@@ -217,14 +217,16 @@ this differs from JavaScript:
 
 ## Expressions
 
-From lowest to highest precedence; binary operators group left to right.
+From lowest to highest precedence; binary operators group left to right. A condition (`if (c)`,
+`c ? a : b`, `!c`) holds as it would in JavaScript: `false`, `0`, `NaN` and `""` don't, anything
+else does, an empty list or record included. A `c` with no value doesn't hold, and `!c` has none.
 
 | Form | Meaning |
 |---|---|
-| `c ? a : b` | `a` when `c` is `true`, otherwise `b` (`c` with no value too); if the side chosen has no value, neither has the whole |
-| `c ? a : undefined` | `a` when `c` is `true`; otherwise no value |
+| `c ? a : b` | `a` when `c` holds, otherwise `b` (`c` with no value too); if the side chosen has no value, neither has the whole |
+| `c ? a : undefined` | `a` when `c` holds; otherwise no value |
 | `a ?? b` | `a`, or `b` when `a` has no value |
-| `a \|\| b`, `a && b`, `!a` | logic, on booleans; a text or number after `\|\|` is refused, with "use `??`" |
+| `a \|\| b`, `a && b`, `!a` | logic: `!a` is `true` where `a` doesn't hold; `&&` and `\|\|` take booleans, but in a condition read their operands as a condition does; a text or number after `\|\|` is refused, with "use `??`" |
 | `a \| b`, `a ^ b`, `a & b` | bitwise or, xor and and, on 32-bit integers |
 | `a === b`, `a !== b` | structural equality of any two values, never converted: `1` is not `"1"`. `==` and `!=` mean the same, and `fmt` writes `===` |
 | `a < b`, `<=`, `>`, `>=` | comparison, of two numbers or of two texts (in UTF-16 code units, as JavaScript compares them) |
@@ -493,6 +495,7 @@ only effects are calls answers 204 too.
 | `return body ?? status(404)` | 404 when `body` has no value (an absent answer is 404 anyway) |
 | `return status(201, body) ?? status(502)` | 201 with `body`, or 502 when it has no value |
 | `return respond(body, { headers: { "content-type": "text/html; charset=utf-8" } })` | with those headers (a record of texts); how the reply is framed (`content-length`, `transfer-encoding`, `connection`, …) is the host's, and those are dropped. `status` goes there too, `respond(body, { status: 201, headers })` |
+| `return status(400)` | the status alone, with an empty body |
 | `return status(204)` | the status alone, no body |
 
 A redirect: `return respond("", { status: 303, headers: { location: "/" } })`. A streamed reply,

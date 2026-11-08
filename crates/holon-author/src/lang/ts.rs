@@ -1875,7 +1875,7 @@ impl<'s, 't> Reader<'s, 't> {
         if let Some(x) = self.present(&f.test)? {
             return self.after_block(f, x, block, stmts, at);
         }
-        let cond = self.expr(&f.test)?;
+        let cond = self.cond(&f.test)?;
         let cond = self.hide(cond, "cond", stmts);
         let branches = vec![(Guard::Branch(cond.clone()), Some(statements_of(&f.consequent))), (Guard::Branch(otherwise(&cond)), f.alternate.as_ref().map(statements_of))];
         let mut paths = self.branches(branches, block, stmts)?;
@@ -2606,6 +2606,41 @@ impl<'s, 't> Reader<'s, 't> {
         Ok(Some(Response { body, status, missing: (missing != "404").then(|| number(&missing)), headers, stream: None, span }))
     }
 
+    /// `a && b`, `a || b` or `a ?? b`, its operands each read by `operand`: as values, or as
+    /// conditions where the whole is one ([`Self::cond`]).
+    fn logical(&mut self, e: &js::Expression, l: &js::LogicalExpression, span: Span, operand: fn(&mut Self, &js::Expression) -> R<Expr>) -> R<Expr> {
+        if self.answers_with(e).is_some() {
+            return fail(span, "status(…) and respond(…) are a route's answer: return them");
+        }
+        let literal = matches!(self.unwrap(&l.right), js::Expression::StringLiteral(_) | js::Expression::NumericLiteral(_) | js::Expression::TemplateLiteral(_) | js::Expression::ObjectExpression(_) | js::Expression::ArrayExpression(_));
+        if l.operator != js::LogicalOperator::Coalesce && literal {
+            return fail(span, format!("{} takes booleans: a value for where one is absent is ??, x ?? \"none\"", l.operator.as_str()));
+        }
+        let op = match l.operator {
+            js::LogicalOperator::Or => BinOp::Or,
+            js::LogicalOperator::And => BinOp::And,
+            js::LogicalOperator::Coalesce => BinOp::Coalesce,
+        };
+        let (lhs, rhs) = (operand(self, &l.left)?, operand(self, &l.right)?);
+        Ok(Expr { kind: ExprKind::Binary { op, lhs: Box::new(lhs), rhs: Box::new(rhs) }, span })
+    }
+
+    /// `e` read as a condition, as `if`, `?:` and `!` read one: JavaScript's ToBoolean of its
+    /// value, which the lowering makes `is_truthy(e)` unless it knows `e` for a Boolean already,
+    /// so `if (s)` and `!s` on a text read it as JavaScript does. `&&` and `||` read their operands
+    /// so too, as JavaScript's do where the whole is a condition. An absent value is still absent.
+    fn cond(&mut self, e: &js::Expression) -> R<Expr> {
+        let span = self.span(e.span());
+        match self.unwrap(e) {
+            js::Expression::ParenthesizedExpression(p) => Ok(Expr { kind: ExprKind::Paren(Box::new(self.cond(&p.expression)?)), span }),
+            js::Expression::LogicalExpression(l) if l.operator != js::LogicalOperator::Coalesce => self.logical(e, l, span, Self::cond),
+            _ => {
+                let x = self.expr(e)?;
+                Ok(if boolean_as_written(&x) { x } else { Expr { kind: ExprKind::Truthy(Box::new(x)), span } })
+            }
+        }
+    }
+
     /// `status(…)` or `respond(…)`, if `e` is one, and its call.
     fn answers_with<'a>(&self, e: &'a js::Expression<'a>) -> Option<(Vocab, &'a js::CallExpression<'a>)> {
         match self.unwrap(e) {
@@ -3006,7 +3041,7 @@ impl<'s, 't> Reader<'s, 't> {
                 self.list_of(items, span)
             }
             js::Expression::UnaryExpression(u) => match u.operator {
-                js::UnaryOperator::LogicalNot => ok(ExprKind::Not(Box::new(self.expr(&u.argument)?))),
+                js::UnaryOperator::LogicalNot => ok(ExprKind::Not(Box::new(self.cond(&u.argument)?))),
                 js::UnaryOperator::UnaryNegation => match self.unwrap(&u.argument) {
                     js::Expression::NumericLiteral(n) => ok(ExprKind::Number { value: -n.value, text: format!("-{}", number_text(n)) }),
                     // `x * -1`, exact at `-0` where `0 - x` isn't; in parentheses, one node.
@@ -3062,24 +3097,9 @@ impl<'s, 't> Reader<'s, 't> {
                 let (lhs, rhs) = (self.expr(&b.left)?, self.expr(&b.right)?);
                 ok(ExprKind::Binary { op, lhs: Box::new(lhs), rhs: Box::new(rhs) })
             }
-            js::Expression::LogicalExpression(l) => {
-                if self.answers_with(e).is_some() {
-                    return fail(span, "status(…) and respond(…) are a route's answer: return them");
-                }
-                let literal = matches!(self.unwrap(&l.right), js::Expression::StringLiteral(_) | js::Expression::NumericLiteral(_) | js::Expression::TemplateLiteral(_) | js::Expression::ObjectExpression(_) | js::Expression::ArrayExpression(_));
-                if l.operator != js::LogicalOperator::Coalesce && literal {
-                    return fail(span, format!("{} takes booleans: a value for where one is absent is ??, x ?? \"none\"", l.operator.as_str()));
-                }
-                let op = match l.operator {
-                    js::LogicalOperator::Or => BinOp::Or,
-                    js::LogicalOperator::And => BinOp::And,
-                    js::LogicalOperator::Coalesce => BinOp::Coalesce,
-                };
-                let (lhs, rhs) = (self.expr(&l.left)?, self.expr(&l.right)?);
-                ok(ExprKind::Binary { op, lhs: Box::new(lhs), rhs: Box::new(rhs) })
-            }
+            js::Expression::LogicalExpression(l) => self.logical(e, l, span, Self::expr),
             js::Expression::ConditionalExpression(c) => {
-                let cond = self.expr(&c.test)?;
+                let cond = self.cond(&c.test)?;
                 let then = self.expr(&c.consequent)?;
                 let els = match self.unwrap(&c.alternate) {
                     js::Expression::Identifier(i) if i.name == "undefined" && self.lookup("undefined").is_none() => None,
@@ -5137,6 +5157,17 @@ fn never_fails(v: &Expr) -> bool {
     }
 }
 
+/// Whether `x` is a Boolean as written: `true` or `false`, a `!`, a comparison, or `&&` and `||`,
+/// which take Booleans and give one.
+fn boolean_as_written(x: &Expr) -> bool {
+    match &x.kind {
+        ExprKind::Bool(_) | ExprKind::Not(_) | ExprKind::Truthy(_) => true,
+        ExprKind::Binary { op, .. } => matches!(op, BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge | BinOp::And | BinOp::Or),
+        ExprKind::Paren(inner) => boolean_as_written(inner),
+        _ => false,
+    }
+}
+
 /// The binding `v` names, if it names one.
 fn name_of(v: &Expr) -> String {
     if let ExprKind::Name(n) = &v.kind { n.clone() } else { String::new() }
@@ -5418,7 +5449,7 @@ fn walk(e: &mut Expr, f: &mut dyn FnMut(&mut Expr) -> bool) {
                 walk(i, f);
             }
         }
-        ExprKind::Not(x) | ExprKind::Paren(x) | ExprKind::Lambda { body: x, .. } => walk(x, f),
+        ExprKind::Not(x) | ExprKind::Truthy(x) | ExprKind::Paren(x) | ExprKind::Lambda { body: x, .. } => walk(x, f),
         ExprKind::Binary { lhs, rhs, .. } => {
             walk(lhs, f);
             walk(rhs, f);
@@ -6081,6 +6112,98 @@ route.post("/t", (req) => price(req.json.amount))
     /// `try` and `throw` (§8), beside the same flow written plainly: the try block's values each
     /// tested by `same_value(x, x) ?? false`, its writes tied to all of them having arrived, the
     /// catch's answer where they didn't; a throw a `fail`, nothing, where it is reached.
+    #[test]
+    fn a_condition_and_a_status_alone_lower_as_their_plain_form() {
+        let pairs = [
+            (
+                "a value that isn't a Boolean, read as a condition",
+                r#"import { flow, route, status } from "holon"
+import state from "state"
+flow("t", { port: 8000 })
+route.post("/n", (req) => {
+  if (req.json.s) {
+    state.seen = req.json.s
+  }
+  const empty = !req.json.t
+  return status(req.json.n > 1 ? 201 : 200, req.json.u ? { empty } : "none")
+})
+"#,
+                r#"import { flow, is_truthy, route, status } from "holon"
+import state from "state"
+
+flow("t", { port: 8000 })
+
+route.post("/n", (req) => {
+  if (is_truthy(req.json.s)) {
+    state.seen = req.json.s
+  }
+  const empty = !is_truthy(req.json.t)
+  return status(req.json.n > 1 ? 201 : 200, is_truthy(req.json.u) ? { empty } : "none")
+})
+"#,
+            ),
+            (
+                "&& and || in a condition",
+                r#"import { flow, route } from "holon"
+import state from "state"
+flow("t", { port: 8000 })
+route.post("/n", (req) => {
+  if (req.json.a && (req.json.b || !req.json.c)) {
+    state.seen = true
+  }
+  return "ok"
+})
+"#,
+                r#"import { flow, is_truthy, route } from "holon"
+import state from "state"
+
+flow("t", { port: 8000 })
+
+route.post("/n", (req) => {
+  if (is_truthy(req.json.a) && (is_truthy(req.json.b) || !is_truthy(req.json.c))) {
+    state.seen = true
+  }
+  return "ok"
+})
+"#,
+            ),
+            (
+                "a status alone",
+                r#"import { flow, route, status } from "holon"
+flow("t", { port: 8000 })
+route.post("/n", () => status(400))
+"#,
+                r#"import { flow, route, status } from "holon"
+
+flow("t", { port: 8000 })
+
+route.post("/n", () => status(400, ""))
+"#,
+            ),
+            (
+                "statuses alone, chosen by an if",
+                r#"import { flow, route, status } from "holon"
+flow("t", { port: 8000 })
+route.post("/n", (req) => {
+  if (req.json.x === 1) {
+    return status(400)
+  }
+  return status(201)
+})
+"#,
+                r#"import { flow, route, status } from "holon"
+
+flow("t", { port: 8000 })
+
+route.post("/n", (req) => status(req.json.x === 1 ? 400 : 201, ""))
+"#,
+            ),
+        ];
+        for (what, ts, plain) in pairs {
+            same_unit(what, ts, plain);
+        }
+    }
+
     #[test]
     fn try_and_throw_lower_as_their_plain_form() {
         let pairs = [

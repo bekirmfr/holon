@@ -113,8 +113,8 @@ index is expected. Indices are truncated toward zero (JavaScript's ToIntegerOrIn
 None computes a float beyond comparing and counting, so each gives the same bits natively and in
 wasm. A higher-order leaf takes its function as `map` and `fold` do, by a `fn` param, with the
 inputs after the list passed after the item as captures. Its function's answer is read as
-JavaScript's ToBoolean (`false`, `0`, `-0` and `""` are false; anything else is true, an empty list
-or record included, unlike `is_truthy`). An application that gives nothing, or waits, makes the
+JavaScript's ToBoolean (`false`, `0`, `-0`, `NaN` and `""` are false; anything else is true, an
+empty list or record included, as `is_truthy` computes since 2026-11-08). An application that gives nothing, or waits, makes the
 leaf give nothing, or wait, as `map`'s do. A leaf that stops early applies nothing after the item
 it stops at.
 
