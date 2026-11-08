@@ -2029,6 +2029,69 @@ test("statement-archive unzips and gunzips deliveries, archives each as a zip it
   expect(verified.trim().endsWith("ok")).toBe(true);
 });
 
+test("jwt-api verifies a partner's token with the key a person trusted for it, refuses alg none and HMAC over the public key, pays a token once, and its runs verify", async ({ page, request, adminToken }) => {
+  const { execFileSync } = await import("node:child_process");
+  const { createHmac, generateKeyPairSync, sign } = await import("node:crypto");
+  const { mkdtempSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  // Two partners' keys, made by Node (OpenSSL): one trusted as a JWK, one as a PEM text.
+  const [acme, globex] = [generateKeyPairSync("ec", { namedCurve: "P-256" }), generateKeyPairSync("ed25519")];
+  const globexPem = globex.publicKey.export({ type: "spki", format: "pem" }).toString();
+  const b64u = (b: Buffer | string) => Buffer.from(b).toString("base64url");
+  const now = Math.floor(Date.now() / 1000);
+  const claims = (iss: string, jti: string, more: object = {}) => ({ iss, sub: "svc-1", aud: "payouts-api", scope: "payouts:write", jti, iat: now, exp: now + 600, ...more });
+  const jws = (alg: string, payload: object, signer: (data: Buffer) => Buffer) => {
+    const signed = `${b64u(JSON.stringify({ alg, typ: "JWT" }))}.${b64u(JSON.stringify(payload))}`;
+    return `${signed}.${b64u(signer(Buffer.from(signed)))}`;
+  };
+  const es256 = (payload: object) => jws("ES256", payload, (d) => sign("sha256", d, { key: acme.privateKey, dsaEncoding: "ieee-p1363" }));
+  const eddsa = (payload: object) => jws("EdDSA", payload, (d) => sign(null, d, globex.privateKey));
+
+  await openSample(page, "JWT API (partners' signed tokens, verified with keys a person trusts)");
+  const port = await deploy(page);
+  // A person trusts each partner's key, running the action from the server panel.
+  for (const [partner, key] of [["acme", acme.publicKey.export({ format: "jwk" })], ["globex", globexPem]] as const) {
+    await page.getByLabel("what to send trust").fill(JSON.stringify({ partner, key }));
+    await page.getByRole("button", { name: "run", exact: true }).click();
+    await expect(page.getByText(/^trust: null \(run \d+\)/)).toBeVisible();
+  }
+  const call = (method: "get" | "post", path: string, token: string, data?: object) =>
+    request[method](`http://127.0.0.1:${port}${path}`, { headers: token ? { authorization: `Bearer ${token}` } : {}, data });
+
+  // Who called, as each partner's key says.
+  const who = await call("get", "/whoami", es256(claims("acme", "j1")));
+  expect([who.status(), await who.json()]).toEqual([200, { partner: "acme", subject: "svc-1", scope: "payouts:write", expires: now + 600 }]);
+  expect((await (await call("get", "/whoami", eddsa(claims("globex", "g1")))).json()).partner).toBe("globex");
+
+  // What doesn't verify answers 401: no token, another partner's signature, alg none, HMAC with
+  // globex's public key as the secret, expired, for another API.
+  const refused = await call("get", "/whoami", "");
+  expect([refused.status(), refused.headers()["www-authenticate"]]).toEqual([401, "Bearer"]);
+  const none = `${b64u(JSON.stringify({ alg: "none" }))}.${b64u(JSON.stringify(claims("globex", "n1")))}.`;
+  const confused = jws("HS256", claims("globex", "h1"), (d) => createHmac("sha256", globexPem).update(d).digest());
+  for (const token of [es256(claims("globex", "x1")), none, confused, eddsa(claims("globex", "e1", { exp: now - 60 })), eddsa(claims("globex", "a1", { aud: "billing-api" }))]) {
+    expect((await call("get", "/whoami", token)).status()).toBe(401);
+  }
+
+  // A payout needs payouts:write, and a token pays once.
+  const read = await call("post", "/payouts", es256(claims("acme", "j2", { scope: "payouts:read" })), { amount: "5.00" });
+  expect([read.status(), await read.json()]).toEqual([403, { error: "the token's scope has no payouts:write" }]);
+  const token = es256(claims("acme", `j-${now}`));
+  const paid = await call("post", "/payouts", token, { amount: "120.00" });
+  expect([paid.status(), await paid.json()]).toEqual([202, { accepted: `acme/j-${now}` }]);
+  expect((await call("post", "/payouts", token, { amount: "120.00" })).status()).toBe(409);
+
+  // Its runs check offline: each token verified again at the time its run saw.
+  const target = process.env.CARGO_TARGET_DIR ?? join(process.cwd(), "..", "target");
+  const holon = join(target, "debug", process.platform === "win32" ? "holon.exe" : "holon");
+  const out = join(mkdtempSync(join(tmpdir(), "holon-runs-")), "jwt-api.json");
+  execFileSync(holon, ["export", "jwt-api", "--server", SERVER, "-o", out], { encoding: "utf8", env: { ...process.env, HOLON_TOKEN: adminToken } });
+  const verified = execFileSync(holon, ["verify", out], { encoding: "utf8" });
+  expect(verified).toContain("each produced what its log entry says");
+  expect(verified.trim().endsWith("ok")).toBe(true);
+});
+
 test("due-dates schedules a payout past Easter's closing days and an invoice past a weekend", async ({ page, request }) => {
   await openSample(page, "Due dates (business days at a fixed offset)");
   const port = await deploy(page);

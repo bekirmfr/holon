@@ -776,6 +776,10 @@ function whyNothing(node: ReplayNode, trace: NodeTrace): string {
       return "a file isn't a text or bytes, a name is empty, ends with / or would land outside its folder (a leading /, a \\, a .. part), or there are more than 10,000";
     case "unzip":
       return "its bytes aren't a whole zip, a file is encrypted, zip64 or compressed other than by deflate, a name is given twice or lands outside its folder, or it inflates past 64 MiB or 10,000 files";
+    case "jwt_verify":
+      return "the token didn't verify with its key (a signature, an algorithm the key doesn't allow, alg none, crit), or its claims don't hold at now: exp passed or missing, nbf ahead, another issuer or audience";
+    case "jwt_decode":
+      return "its token isn't three base64url parts whose header and payload are JSON objects";
     case "group_by":
       return "its function answered a key that isn't a text";
     case "divide":

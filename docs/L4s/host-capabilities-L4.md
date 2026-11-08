@@ -590,6 +590,98 @@ As designed, with what building it found:
   17 runs verified. In the e2e test, Node reads the archive and the flow reads a zip Node wrote
   with its files stored.
 
+#### 5.1.9 Slice 1.2e as designed (2026-11-08, against `3370c81`): JWT verify
+
+An API that payment partners call checks who is calling: a bearer token, a JWT. An identity
+provider signs it (RS256 from Auth0, Okta, Entra ID and Cognito; ES256 from Apple; PS256 and
+ES256 under open banking's FAPI), or the partner itself does, with its own key or a secret it
+shares with the API (HS256). Two leaves, after jose's `jwtVerify` and `decodeJwt`:
+
+| Leaf | Gives | JavaScript |
+|---|---|---|
+| `jwt_verify(token, key, now) {issuer, audience, leeway}` | the token's claims, its payload as a record, when its signature verifies with `key` and they hold at `now`; else nothing | jose's `jwtVerify(token, key, { issuer, audience, clockTolerance, currentDate })`, jsonwebtoken's `verify` |
+| `jwt_decode(token)` | `{header, payload}`, verifying nothing: what a token says before it is trusted, to pick the key that checks it | jose's `decodeJwt` and `decodeProtectedHeader`, jsonwebtoken's `decode(t, { complete: true })` |
+
+**The key decides the algorithm.** The attack JWT libraries are known for is a token that names
+its own: `none`, or HS256 with the issuer's RSA public key taken for the HMAC secret. Here a
+token's `alg` only has to be one its key allows:
+
+| `key` | Its algorithms |
+|---|---|
+| a text that isn't PEM, or bytes: a shared secret, at least the hash's length (32 bytes for HS256, 48 for HS384, 64 for HS512, as RFC 7518 requires) | HS256, HS384, HS512 |
+| an RSA public key, 2,048 to 4,096 bits | RS256, RS384, RS512, PS256, PS384, PS512 |
+| a P-256 public key | ES256 |
+| an Ed25519 public key | `EdDSA`, and `Ed25519`, RFC 9864's name for it |
+
+A public key is a PEM text (`-----BEGIN PUBLIC KEY-----`, or `RSA PUBLIC KEY`) or a JWK record. A
+JWK's `alg`, when it has one, is the one algorithm it allows, and a JWK whose `use` isn't `sig`
+or whose `key_ops` lacks `verify` allows none. A JWKS (`{keys: […]}`, what an issuer publishes at
+its `jwks_uri`) gives the key whose `kid` is the token's; a token without a `kid` takes the set's
+one key for its algorithm, and nothing when there are several, as jose does. `none` is no key's
+algorithm. Any other key (a certificate, P-384, Ed448) gives nothing (fork 41).
+
+**What else must hold.** The token is three base64url parts without padding: its header a JSON
+object naming `alg`, without `crit` (no extension is understood, so none may be required), its
+payload a JSON object. `exp` is required (fork 40) and `now` must be before it; `nbf`, when
+present, not after `now`; each of `exp`, `nbf` and `iat` a number when present. `leeway` widens
+both, in seconds: `0` (the default, as jose's), `30`, `60`, `120` or `300`, a family as
+`rounding` is, so another value is refused when the flow compiles. Given `issuer`, `iss` must be
+it; given `audience`, `aud` must be it or a list holding it. A JWE (five parts) gives nothing.
+
+**`now` is an input**, as `stripe.verify` takes it: the leaf stays pure, so a rerun checks the
+token at the time the run saw, and a token that has expired since still verifies in `holon
+verify`. A flow passes `now` from `holon:clock`, in seconds as `exp` is.
+
+**Taint.** A shared secret's taint stops at `jwt_verify`, as at `hmac_sha256`: what comes out is
+the token's payload, nothing of the key (fork 42). The token's own taint goes on, derived, as
+through any decoding.
+
+**Dependencies** (fork 28): RustCrypto's `rsa` 0.9, `p256` 0.13 and `ed25519-dalek` 2.2, the
+generation core's `sha2` 0.10 and `hmac` 0.12 belong to, each without its default features
+(their `std` turns on `getrandom`, which doesn't build for the editor's wasm) and pinned with a
+comment. HMAC is core's own, compared in constant time.
+
+**The sample, `jwt-api`:** partners' services call a payouts API with tokens each signs with its
+own key, as OAuth's `private_key_jwt` does. A person trusts a partner's public key by running an
+action (`trust`), which keeps it under the partner's id: an agent can't add a partner unless a
+person lets agents run it. A route reads the token's `iss` with `jwt_decode`, verifies the token
+with that partner's key for the API's audience, and answers 401 with `www-authenticate: Bearer`
+otherwise; a payout needs the `payouts:write` scope, else 403.
+
+#### 5.1.10 Slice 1.2e as built (2026-11-08)
+
+As designed, with what building it found:
+
+- **Core:** `jwt.rs`; 183 primitives. Node's crypto (OpenSSL) wrote the test vectors, with the
+  script that writes them kept beside them: each algorithm with its key as PEM and as JWK, a JWKS
+  by `kid`, and the tokens that must give nothing (`none`, HS256 over the RSA public key, a
+  1,024-bit RSA key, `crit`, no `exp`, an `exp` written as text, padding, a payload that is a
+  list). RFC 7515's own HS256 example verifies at its time. An ES256 signature is JWS's 64 bytes,
+  r then s, so a DER one gives nothing; Ed25519 verifies strictly, refusing a small-order key and
+  a signature that isn't canonical. `rsa`, `p256` and `ed25519-dalek` build without `std`, and
+  the editor's wasm builds without `getrandom`.
+- **The language** needed no fix. A function of its own may read a collection, so the sample
+  writes the token check once, as `caller`, for both routes (236 nodes, 256 with it written in
+  each). Writing it met three things the language doesn't do yet, each written around: a
+  top-level `const` binds only literals (the 401's message is a text, its record built where it
+  is answered), `respond` isn't a branch of `?:` (its body and status are), and a `return` inside
+  `if (x !== undefined)` isn't lowered.
+- **The tests:** the server test trusts the OIDC tests' RSA key as a JWKS and a throwaway Ed25519
+  key as a PEM, and mints tokens with `jsonwebtoken`, the crate the server already signs in with;
+  the e2e test makes its keys and signs with Node, and trusts them from the editor's server panel.
+- **A shared secret through `trust`** is kept in the collection and in the run's log, as any
+  action's input is. The sample is written for public keys; a partner that shares a secret is
+  given one as a deployment secret (`import key from "secret:…"`).
+- **The sample, run live:** openssl made the partners' keys (an Ed25519 PEM; a P-256 key trusted
+  as a JWK; RSA keys of 3,072 and 2,048 bits trusted as one JWKS; a secret of 64 characters and
+  one of 16), each trusted with `holon action`, and Node signed the tokens. EdDSA, ES256, RS256,
+  RS512, PS256, PS384, HS256 and HS512 verified, and so did an `aud` list holding the audience.
+  401 for no token, `none`, HS256 over a partner's PEM or over its modulus, a token one partner
+  signed naming another, a `kid` not in the set, no `kid` with two keys in it, ES256 against RSA
+  keys, expired, `nbf` ahead, no `exp`, another audience, a payload changed under its signature,
+  padding, `crit`, five parts, and the 16-byte secret. A payout was 403 without `payouts:write`,
+  202 and then 409 for the same token, and 202 with no body. The export's 98 runs verified.
+
 ### 5.2 Email
 
 **Sending.** `mail ops` names a mail resource an admin binds: SMTP (host, port, sender, login
@@ -2421,7 +2513,7 @@ engine.
 | Step | What | Design | Needs | Size |
 |---|---|---|---|---|
 | 1.1 | **Value kinds:** `Bytes`, built (§5.10.2); `Decimal` decided as text leaves, built in 1.2 (§5.10.1) | §5.10 (here) | — | M |
-| 1.2 | **Formats:** exact decimals, CSV, XML, dates (UTC and offsets), zip and gzip, JWT verify, PGP encrypt and verify with a public key, in six slices (§5.1.1); 1.2a, decimals and CSV, built (§5.1.2); 1.2b, offsets and business days, built (§5.1.4); 1.2c, XML, built (§5.1.6); 1.2d, zip and gzip and bytes written to a file, built (§5.1.8) | §5.1 (here) | 1.1 | M |
+| 1.2 | **Formats:** exact decimals, CSV, XML, dates (UTC and offsets), zip and gzip, JWT verify, PGP encrypt and verify with a public key, in six slices (§5.1.1); 1.2a, decimals and CSV, built (§5.1.2); 1.2b, offsets and business days, built (§5.1.4); 1.2c, XML, built (§5.1.6); 1.2d, zip and gzip and bytes written to a file, built (§5.1.8); 1.2e, JWT verify, built (§5.1.10) | §5.1 (here) | 1.1 | M |
 | 1.3 | **Email:** send, recipients in the grant; receive as `on mail`, with its sender's verdict and attachments (§5.2) | §5.2 (here) | 1.1 for attachments | L |
 | 1.4 | **Remote folders:** the backend seam in `folders.rs`, then SFTP and S3-compatible storage (§6) | §6 (here) | 1.1 for binary files | L |
 | 1.5 | **Secure connectivity:** keys the host holds (PGP decrypt and sign) and client identities (mutual TLS, a private CA) (§5.3, §5.4) | §5.3, §5.4 (here) | 1.1, 1.2 | M |
@@ -2623,7 +2715,9 @@ Taken when a job or a user asks, each with its design here and its sample all th
     feature that reads the clock or the operating system's randomness; decimals, CSV, dates and
     XML by hand. *Decided for compression* (§5.1.8): `miniz_oxide` 0.9.1, its `with-alloc`
     feature alone, pinned with its comment and a test that pins the bytes it writes; core has
-    seven. RSA, the curves and OpenPGP are decided in 1.2e and 1.2f.
+    seven. *Decided for signatures* (§5.1.10): `rsa` 0.9.10, `p256` 0.13.2 and `ed25519-dalek`
+    2.2.0, without their default features, so none reads the operating system's randomness, each
+    pinned with its comment; core has ten. OpenPGP is decided in 1.2f.
 29. **PGP encryption is random.** A message is encrypted with a fresh session key, and a leaf
     must give the same answer on every replay (R1). Either the host answers it as a request, its
     ciphertext kept in the log as an answer is, or the randomness comes into the run from a
@@ -2669,6 +2763,20 @@ Taken when a job or a user asks, each with its design here and its sample all th
 39. **Exit codes of an app.** *Lean:* 0 and 1 by the answer's status, an envelope's `exit` when
     it gives one, 2 for a command line that doesn't parse, and the BSD sysexits for the app's own
     refusals: 70 a damaged payload, 77 not accepted, 78 a secret or binding missing.
+40. **A token without `exp`** (§5.1.9). jose and jsonwebtoken accept one, valid forever. *Lean:*
+    refused: a bearer token that never expires is a credential nobody can take back; a flow that
+    means to trust one checks its signature with `hmac_sha256` itself. *Built so* (§5.1.10).
+41. **Keys beyond these** (§5.1.9). X.509 certificates (a JWK's `x5c`, a PEM `CERTIFICATE`), P-384
+    and P-521 (ES384, ES512), Ed448. *Lean:* when an issuer brings one; each is another crate
+    (`p384`, `x509-cert`), and the algorithms here are what the major issuers sign with.
+42. **A verify that says whether a secret matched** (§5.1.9). With a shared secret, `jwt_verify`
+    tells whether a guessed token's signature matches, as `secure_equals` tells whether two texts
+    do. *Lean:* the taint stops, as at `hmac_sha256`: what comes out is the token's own payload.
+    *Built so* (§5.1.10).
+43. **A bearer token in the log** (§5.1.9). A run's log keeps its request, its `authorization`
+    header included, so whoever reads the deployment's log can read a token while it is still
+    valid. *Lean:* as today, the log's readers are the deployment's and `exp` bounds the token's
+    use; a header kept by its hash alone is a log setting of its own, later.
 
 ## 9. What stays true
 

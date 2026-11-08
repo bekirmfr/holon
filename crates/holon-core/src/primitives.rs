@@ -181,6 +181,8 @@ ops! {
     "gunzip" => Gunzip,
     "zip" => Zip,
     "unzip" => Unzip,
+    "jwt_verify" => JwtVerify,
+    "jwt_decode" => JwtDecode,
     "pair" => Pair,
     "some" => Some,
     "none" => None,
@@ -1046,6 +1048,18 @@ pub(crate) fn compute_op(op: Op, name: &str, inputs: &[&Value], params: &[Param]
             let [Value::Bytes(b)] = inputs else { return None };
             let files = crate::compress::unzip(b)?;
             Some(Value::Record(files.into_iter().map(|(name, data)| (name, Value::Bytes(data))).collect()))
+        }
+
+        // ── JWT (jwt.rs, host-capabilities L4 §5.1.9): the key decides the algorithm, and the
+        // claims hold at `now`. Nothing for a token that doesn't verify. ──
+        Op::JwtVerify => {
+            let [Value::Text(token), key, Value::Number(now)] = inputs else { return None };
+            let leeway = param(params, "leeway")?.parse::<f64>().ok()?;
+            crate::jwt::verify(token, key, *now, param(params, "issuer")?, param(params, "audience")?, leeway)
+        }
+        Op::JwtDecode => {
+            let [Value::Text(token)] = inputs else { return None };
+            crate::jwt::decode(token)
         }
 
         Op::Pair => {

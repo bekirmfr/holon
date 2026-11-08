@@ -71,6 +71,9 @@ pub const GENESIS: &[&str] = &[
     // pure — compression (4): gzip and zip, both ways, the same bytes everywhere (compress.rs,
     // host-capabilities L4 §5.1.7)
     "gzip", "gunzip", "zip", "unzip",
+    // pure — JWT (2): a token verified with the key that decides its algorithm, or read without
+    // trusting it (jwt.rs, host-capabilities L4 §5.1.9)
+    "jwt_verify", "jwt_decode",
     // pure — universal, any-typed (8): as_text is to_text's message form, the identity on text;
     // coalesce is the first input that arrived, `default` with its fallback on a wire; fail is
     // nothing, its message the run log's reason (the language's `throw`)
@@ -196,6 +199,7 @@ pub const FAMILIES: &[(&str, &str, &[&str])] = &[
     ("bytes_to_text", "encoding", &["utf8", "hex", "base64", "base64url"]),
     ("decimal_div", "rounding", crate::decimals::ROUNDINGS),
     ("decimal_round", "rounding", crate::decimals::ROUNDINGS),
+    ("jwt_verify", "leeway", crate::jwt::LEEWAYS),
     ("csv_parse", "header", crate::csv::HEADERS),
     ("csv_parse", "separator", crate::csv::SEPARATORS),
     ("csv_format", "header", crate::csv::HEADERS),
@@ -471,6 +475,15 @@ pub fn interface_of(name: &str) -> Option<Unit> {
         "gunzip" => prim(vec![port("bytes", Bytes)], vec![], Bytes),
         "zip" => prim(vec![port("files", Type::Record)], vec![], Bytes),
         "unzip" => prim(vec![port("bytes", Bytes)], vec![], Type::Record),
+
+        // ── pure — JWT (jwt.rs) ── `now` is an input, as stripe_verify's is: a rerun checks the
+        // token at the time the run saw. An issuer or audience left empty isn't checked.
+        "jwt_verify" => prim(
+            vec![port("token", Text), port("key", Any), port("now", Number)],
+            vec![Param::frozen("issuer", ""), Param::frozen("audience", ""), Param::frozen("leeway", "0")],
+            Type::Record,
+        ),
+        "jwt_decode" => prim(vec![port("token", Text)], vec![], Type::Record),
 
         // ── pure — sum (Option) ──
         // Option<T> = Sum([T, Unit]) — arm 0 is "some", arm 1 ("none") is Unit (Product([])),
@@ -765,8 +778,8 @@ mod tests {
         // decimal_round, decimal_sum, decimal_compare) and CSV's (csv_parse, csv_format); and the
         // calendar leaves (date_add, business_day_add, business_days_between, is_business_day);
         // and XML's (xml_parse, xml_format, xml_find, xml_text, xml_attribute); and compression's
-        // (gzip, gunzip, zip, unzip).
-        assert_eq!(GENESIS.len(), 181);
+        // (gzip, gunzip, zip, unzip); and JWT's (jwt_verify, jwt_decode).
+        assert_eq!(GENESIS.len(), 183);
     }
 
     #[test]

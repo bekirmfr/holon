@@ -517,8 +517,8 @@ fn the_inspector_reads_a_name_as_it_is_typed_with_its_grammar_and_an_example() {
     // Its form, and a sample's lines that write it.
     let usage = app.tabs[0].inspected.as_ref().and_then(|i| i.usage.clone()).unwrap();
     assert_eq!(usage.forms[0].0, "export const NAME = action((input) => { … })");
-    assert_eq!(usage.example.as_ref().map(|(s, l)| format!("{s}: {}", l[0])).as_deref(), Some("billing: export const refund = action((input) => {"));
-    assert!(shown.contains("from the sample billing"), "{shown}");
+    assert_eq!(usage.example.as_ref().map(|(s, l)| format!("{s}: {}", l[0])).as_deref(), Some("jwt-api: export const trust = action((input) => {"));
+    assert!(shown.contains("from the sample jwt-api"), "{shown}");
     // The cursor elsewhere, on no name: the inspector keeps it.
     app.tabs[0].buf.go(6, 1);
     assert!(screen(&mut app, 130, 40).contains("Inspector: action"));

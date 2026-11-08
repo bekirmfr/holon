@@ -7079,6 +7079,84 @@ fn a_delivery_is_unzipped_read_and_archived_as_a_zip_written_as_bytes() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// Partners' tokens (the jwt-api sample): a person trusts each partner's public key, a JWKS or a
+/// PEM text, by running trust; a bearer token is verified with the key of the partner it names,
+/// for payouts-api, at the time of the run. A token another partner signed, alg none, HMAC over
+/// the public key, or one expired or for another audience answers 401; a payout needs
+/// payouts:write (403), and a token pays once (409); and the runs verify.
+#[test]
+fn a_partners_token_is_verified_with_the_key_a_person_trusted_for_it() {
+    use jsonwebtoken::{Algorithm, EncodingKey, Header};
+    let state = claims_state("");
+    let slug = deploy_text(&state, include_str!("../../holon-author/samples/jwt-api.holon.ts"), "");
+    let trust = |partner: &str, key: serde_json::Value| run_action_named(&state, &slug, "trust", serde_json::json!({ "partner": partner, "key": key })).status_code;
+    assert_eq!(trust("acme", serde_json::from_str(include_str!("testdata/oidc-test-jwks.json")).unwrap()), 200, "a JWKS");
+    assert_eq!(trust("globex", serde_json::json!(include_str!("testdata/jwt-test-ed25519.pub.pem"))), 200, "a PEM text");
+
+    let now = crate::deploy::epoch_now();
+    let claims = |iss: &str, jti: &str, more: serde_json::Value| {
+        let mut all = serde_json::json!({ "iss": iss, "sub": "svc-1", "aud": "payouts-api", "scope": "payouts:write", "jti": jti, "iat": now, "exp": now + 600 });
+        for (k, v) in more.as_object().unwrap() {
+            all[k] = v.clone();
+        }
+        all
+    };
+    let acme = |c: serde_json::Value| {
+        let mut header = Header::new(Algorithm::RS256);
+        header.kid = Some("test-key".into());
+        jsonwebtoken::encode(&header, &c, &EncodingKey::from_rsa_pem(include_bytes!("testdata/oidc-test-key.pem")).unwrap()).unwrap()
+    };
+    let globex = |c: serde_json::Value| jsonwebtoken::encode(&Header::new(Algorithm::EdDSA), &c, &EncodingKey::from_ed_pem(include_bytes!("testdata/jwt-test-ed25519.pem")).unwrap()).unwrap();
+    let call = |method: &str, url: &str, token: &str, body: &str| {
+        let headers = if token.is_empty() { vec![] } else { vec![("authorization".to_string(), format!("Bearer {token}"))] };
+        let asked = data::DataRequest { method: method.into(), url: url.into(), headers, body: body.as_bytes().to_vec(), by: None };
+        let r = serve_data(&state.store, &state.deployments, &state.deployments_path, &slug, &asked);
+        (r.status, serde_json::from_slice::<serde_json::Value>(&r.body).unwrap_or_default(), r.headers)
+    };
+
+    // Who called, as each partner's key says.
+    let (status, answer, _) = call("GET", "/whoami", &acme(claims("acme", "j1", serde_json::json!({}))), "");
+    assert_eq!((status, &answer["partner"], &answer["subject"], &answer["scope"]), (200, &serde_json::json!("acme"), &serde_json::json!("svc-1"), &serde_json::json!("payouts:write")), "{answer}");
+    assert_eq!(answer["expires"].as_f64(), Some((now + 600) as f64));
+    let (status, answer, _) = call("GET", "/whoami", &globex(claims("globex", "g1", serde_json::json!({}))), "");
+    assert_eq!((status, &answer["partner"]), (200, &serde_json::json!("globex")), "{answer}");
+
+    // What doesn't verify: no token; one acme signed naming globex; alg none; HMAC with globex's
+    // public key as its secret; one expired; one for another API.
+    let (status, answer, headers) = call("GET", "/whoami", "", "");
+    assert_eq!((status, answer["error"].as_str()), (401, Some("a token a trusted partner signed for payouts-api is needed")));
+    assert!(headers.iter().any(|(k, v)| k == "www-authenticate" && v == "Bearer"), "{headers:?}");
+    let b64u = |s: String| holon_core::bytes_text(s.as_bytes(), "base64url").unwrap();
+    let none = format!("{}.{}.", b64u(r#"{"alg":"none"}"#.into()), b64u(claims("globex", "n1", serde_json::json!({})).to_string()));
+    let confused = jsonwebtoken::encode(&Header::new(Algorithm::HS256), &claims("globex", "h1", serde_json::json!({})), &EncodingKey::from_secret(include_bytes!("testdata/jwt-test-ed25519.pub.pem"))).unwrap();
+    for (what, token) in [
+        ("signed by another partner", acme(claims("globex", "x1", serde_json::json!({})))),
+        ("alg none", none),
+        ("HMAC over the public key", confused),
+        ("expired", globex(claims("globex", "e1", serde_json::json!({ "exp": now - 60 })))),
+        ("for another API", globex(claims("globex", "a1", serde_json::json!({ "aud": "billing-api" })))),
+    ] {
+        assert_eq!(call("GET", "/whoami", &token, "").0, 401, "{what}");
+        assert_eq!(call("POST", "/payouts", &token, r#"{"amount": "1.00"}"#).0, 401, "{what}");
+    }
+
+    // A payout: the scope it needs, then once per token.
+    let (status, answer, _) = call("POST", "/payouts", &acme(claims("acme", "j2", serde_json::json!({ "scope": "payouts:read" }))), r#"{"amount": "5.00"}"#);
+    assert_eq!((status, answer), (403, serde_json::json!({ "error": "the token's scope has no payouts:write" })));
+    let token = acme(claims("acme", "j1", serde_json::json!({})));
+    let (status, answer, _) = call("POST", "/payouts", &token, r#"{"amount": "120.00"}"#);
+    assert_eq!((status, answer), (202, serde_json::json!({ "accepted": "acme/j1" })));
+    let (status, answer, _) = call("POST", "/payouts", &token, r#"{"amount": "120.00"}"#);
+    assert_eq!((status, answer), (409, serde_json::json!({ "error": "this token has asked for a payout already", "payout": "acme/j1" })));
+    let (status, answer, _) = call("POST", "/payouts", &globex(claims("globex", "g1", serde_json::json!({ "scope": "payouts:read payouts:write" }))), r#"{"amount": "7.50"}"#);
+    assert_eq!((status, answer), (202, serde_json::json!({ "accepted": "globex/g1" })));
+
+    // Its runs check offline: each token verified again at the time its run saw.
+    let export: verify::Export = serde_json::from_value(body_json(route(&state, &req("GET", &format!("/deployments/{slug}/export"), vec![])))).unwrap();
+    let report = verify::check(&export, None, &BTreeMap::new());
+    assert!(report.ok() && report.reruns.iter().all(|(_, r)| *r == verify::Rerun::Matched), "{}", verify::describe(&report, None));
+}
+
 /// `on file` lines (the file-audit sample): several folders, files removed, and only some names.
 /// Each run's `ingress` says what happened; a name no line is for starts nothing; an entry is
 /// created, never replaced; and the runs verify.

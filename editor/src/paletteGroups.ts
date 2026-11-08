@@ -57,7 +57,7 @@ export const CATALOG_GROUPS: readonly { name: string; items: ReadonlySet<string>
     items: new Set([
       "json_parse", "json_stringify", "csv_parse", "csv_format",
       "xml_parse", "xml_format", "xml_find", "xml_text", "xml_attribute",
-      "sha256", "hmac_sha256", "hex", "base64", "secure_equals",
+      "sha256", "hmac_sha256", "hex", "base64", "secure_equals", "jwt_verify", "jwt_decode",
     ]),
   },
   {

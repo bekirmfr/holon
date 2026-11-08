@@ -13,8 +13,8 @@
 //!   effect it reaches is refused if it would keep it (a state, collection or channel write, as a
 //!   secret's value is), else logged withheld; so are the run's outputs and its answer.
 //!
-//! What cuts the chain: a one-way leaf (`sha256`, `hmac_sha256`, `secure_equals`), a Boolean
-//! answer, and an outbound request's response or a database read's rows (what the far side said,
+//! What cuts the chain: a one-way leaf (`sha256`, `hmac_sha256`, `secure_equals`), `jwt_verify`
+//! for its key (the token's payload comes out, nothing of the key), a Boolean answer, and an outbound request's response or a database read's rows (what the far side said,
 //! not what was sent). A
 //! leaf that isn't known to pass its inputs through as they are makes anything tainted derived.
 //!
@@ -262,6 +262,10 @@ impl<R: Resolver> Walk<'_, R> {
                         _ if port.ty == Type::Boolean => Taint::Clean,
                         n if ANSWERED.contains(&n) && answering => Taint::Literal,
                         n if ONE_WAY.contains(&n) || ANSWERED.contains(&n) => Taint::Clean,
+                        // The token's payload comes out, nothing of the key: a shared secret's
+                        // taint stops here, as at hmac_sha256; the token's goes on, decoded.
+                        "jwt_verify" if inputs.first().is_some_and(|t| *t > Taint::Clean) => Taint::Derived,
+                        "jwt_verify" => Taint::Clean,
                         n if PASSES_LITERALLY.contains(&n) => most,
                         _ if most == Taint::Clean => Taint::Clean,
                         _ => Taint::Derived,
@@ -527,6 +531,31 @@ mod tests {
         assert_eq!(fed.input(&[3], 1), Taint::Derived);
         assert_eq!(fed.input(&[3], 0), Taint::Clean);
         assert!(fed.derives(&[]), "the root's first output is derived");
+    }
+
+    /// `jwt_verify` keyed with a secret gives the token's payload, nothing of the key: the
+    /// secret's taint stops there. A token that is itself a secret goes on, decoded.
+    #[test]
+    fn a_jwt_verifys_key_is_cut_and_its_token_goes_on() {
+        let mut r = MapResolver::new();
+        let key = leaf(&mut r, "secret", vec![Param::frozen("name", "jwt_key")]);
+        let token = leaf(&mut r, "secret", vec![Param::frozen("name", "kept_token")]);
+        let verify = leaf(&mut r, "jwt_verify", vec![Param::frozen("issuer", ""), Param::frozen("audience", ""), Param::frozen("leeway", "0")]);
+        let e = |fc, fp, tc, tp| Edge { from_child: fc, from_port: fp, to_child: tc, to_port: tp };
+        let keyed = |token_from: u32| Unit {
+            body: UnitBody::Composite {
+                children: vec![key, verify, token],
+                edges: vec![e(token_from, 0, 1, 0), e(0, 0, 1, 1), e(BOUNDARY, 1, 1, 2), e(1, 0, BOUNDARY, 0)],
+            },
+            params: vec![],
+            inputs: vec![Port { name: "token".into(), ty: Type::Text }, Port { name: "now".into(), ty: Type::Number }],
+            outputs: vec![Port { name: "claims".into(), ty: Type::Any }],
+        };
+        let fed = SecretFed::of(&keyed(BOUNDARY), &r);
+        assert_eq!(fed.input(&[1], 1), Taint::Literal, "the key is the secret");
+        assert!(!fed.derives(&[1]) && !fed.derives(&[]), "the claims carry nothing of it");
+        let fed = SecretFed::of(&keyed(2), &r);
+        assert!(fed.derives(&[1]), "a secret token's claims are derived from it");
     }
 
     /// A number computed from a secret (`to_number`, then `math {fn: "abs"}`, then written back

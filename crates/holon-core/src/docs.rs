@@ -165,6 +165,10 @@ pub fn describe(name: &str) -> Option<&'static str> {
         "zip" => "Zips a record of files, name to a text (its UTF-8) or bytes: each deflated, in name order, dated 1980-01-01. Nothing for a name that would land outside the folder it is unzipped into (empty, a directory's, starting with /, holding a .. part or a backslash), a value that isn't a text or bytes, or more than 10,000 files.",
         "unzip" => "A zip's files, a record of name to bytes, its directories left out. Nothing for what isn't a zip, an entry encrypted or compressed other than stored or deflated, a checksum or size that doesn't match, two entries of one name, the 64-bit form, more than 10,000 files or past 64 MiB inflated.",
 
+        // ── JWT ──
+        "jwt_verify" => "A JWT's claims, its payload as a record, when its signature verifies with key and they hold at now (seconds, as exp is): exp required and after now, nbf not after it, each widened by leeway; iss equal to issuer and aud holding audience, each when given. The key decides the algorithm, never the token: a shared secret (a text that isn't PEM, or bytes, at least the hash's length) allows HS256, HS384 and HS512; an RSA key (2,048 to 4,096 bits) RS256 to PS512; a P-256 key ES256; an Ed25519 key EdDSA. A public key is a PEM text or a JWK record, and a JWKS gives the key the token's kid names. Nothing for a token that doesn't verify, alg none, or crit.",
+        "jwt_decode" => "A JWT's header and payload, {header, payload}, verifying nothing: what it says before it is trusted, to pick the key that checks it. Nothing for what isn't three base64url parts whose header and payload are JSON objects.",
+
         // ── any value ──
         "to_text" => "Any value written out as text, as a literal: a text comes out in quotes.",
         "as_text" => "Any value as it reads in a message: a text is itself, a number or true/false as written, a record or list as JSON. For putting a value into a text.",

@@ -15,6 +15,13 @@ miniz_oxide = { version = "0.9.1", default-features = false, features = ["with-a
 # on every target. Pinned at 0.2.16 in Cargo.lock; a new version is a change to what they mean.
 libm = "0.2.16"
 sha2 = "0.10"
+# `jwt_verify`'s signatures (jwt.rs): RSA (RS256, PS256 and their kin), P-256 (ES256) and Ed25519
+# (EdDSA), RustCrypto's, of the generation `sha2` and `hmac` are. Pinned in Cargo.lock; no default
+# features, since their `std` turns on `getrandom`, which doesn't build for the editor's wasm, and
+# verifying needs no randomness.
+rsa = { version = "0.9.10", default-features = false, features = ["pem", "u64_digit", "sha2"] }
+p256 = { version = "0.13.2", default-features = false, features = ["ecdsa", "pem"] }
+ed25519-dalek = { version = "2.2.0", default-features = false, features = ["alloc", "pem"] }
 smallvec = "1"
 # `normalize`'s tables (texts.rs). Pinned at 0.1.26 in Cargo.lock; a new version can treat a
 # character assigned in a later Unicode version differently.

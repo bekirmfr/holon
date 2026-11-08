@@ -304,6 +304,7 @@ pub fn capabilities_of(name: &str, params: &[Param]) -> Option<Capabilities> {
         | "csv_parse" | "csv_format"
         | "xml_parse" | "xml_format" | "xml_find" | "xml_text" | "xml_attribute"
         | "gzip" | "gunzip" | "zip" | "unzip"
+        | "jwt_verify" | "jwt_decode"
         | "to_text" | "as_text" | "is_truthy" | "guard" | "default" | "coalesce" | "equals" | "fail"
         | "fold" | "map" => vec![],
 
@@ -851,6 +852,7 @@ mod tests {
             "csv_parse", "csv_format",
             "xml_parse", "xml_format", "xml_find", "xml_text", "xml_attribute",
             "gzip", "gunzip", "zip", "unzip",
+            "jwt_verify", "jwt_decode",
             "join", "cons", "head", "tail", "is_empty", "pair", "some", "none", "to_text", "as_text", "is_truthy", "guard", "default", "coalesce", "equals", "fail", "fold", "map",
         ];
         for name in PURE {

@@ -1252,6 +1252,20 @@ declare module "holon" {
   export function unzip(...args: any[]): any
 
   /**
+   * `jwt_verify(token: Text, key: Any, now: Number) -> out: Record  {issuer, audience, leeway: 0}`
+   *
+   * A JWT's claims, its payload as a record, when its signature verifies with key and they hold at now (seconds, as exp is): exp required and after now, nbf not after it, each widened by leeway; iss equal to issuer and aud holding audience, each when given. The key decides the algorithm, never the token: a shared secret (a text that isn't PEM, or bytes, at least the hash's length) allows HS256, HS384 and HS512; an RSA key (2,048 to 4,096 bits) RS256 to PS512; a P-256 key ES256; an Ed25519 key EdDSA. A public key is a PEM text or a JWK record, and a JWKS gives the key the token's kid names. Nothing for a token that doesn't verify, alg none, or crit.
+   */
+  export function jwt_verify(...args: any[]): any
+
+  /**
+   * `jwt_decode(token: Text) -> out: Record`
+   *
+   * A JWT's header and payload, {header, payload}, verifying nothing: what it says before it is trusted, to pick the key that checks it. Nothing for what isn't three base64url parts whose header and payload are JSON objects.
+   */
+  export function jwt_decode(...args: any[]): any
+
+  /**
    * `to_text(value: Any) -> out: Text`
    *
    * Any value written out as text, as a literal: a text comes out in quotes.

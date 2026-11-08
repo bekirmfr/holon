@@ -632,6 +632,15 @@ sample unzips each delivery of camt.053 statements dropped in a folder, reads ea
 closing balance, archives the delivery as one zip with a manifest beside its statements, and
 serves a statement back gzipped when the client takes it.
 
+A partner's service calls with a token it signed itself. `jwt_verify(token, key, now, { audience })`
+gives the token's claims when its signature verifies with `key` and they hold at `now`: `exp` after
+it, `nbf` not, the issuer and audience given. The key decides the algorithm, never the token: a
+shared secret allows HMAC, an RSA, P-256 or Ed25519 public key (a PEM text or a JWK; a JWKS by the
+token's `kid`) its own signatures, so `alg: none`, or HMAC signed over a public key, gives nothing.
+`jwt_decode(token)` reads a token's header and payload without trusting them, to find the key that
+checks it. The jwt-api sample keeps each partner's public key, added by a person running an action,
+and verifies each request's bearer token with the key of the partner it names.
+
 ### drop-box: a run per new file
 
 ```ts
@@ -2607,6 +2616,9 @@ the syntax to TypeScript's, keeping the lowering.
      its folder refused; a folder's file written as bytes. A key a function returns named like a
      binding of its body no longer hides that binding from the other keys (`{ total: total * 2,
      again: total }`, `{ again: total, total }`). The statement-archive sample, run live.
+   - *JWT* (2026-11-08, host-capabilities L4 §5.1.9, slice 1.2e): `jwt_verify`, the key deciding
+     the algorithm (HS, RS, PS, ES256, EdDSA; PEM, JWK, a JWKS by `kid`), `exp` required and
+     checked at `now`, and `jwt_decode`. The jwt-api sample, run live.
 
    Next are the L4's slices 6 to 11: computing loops, as folds over a bounded range; requests and calls that wait (`await` with
    JavaScript's order and required, `Promise.all`, a call that parks its caller, a request recorded

@@ -743,6 +743,18 @@ static SAMPLES: &[Sample] = &[
         text: include_str!("../samples/statement-archive.holon.ts"),
     },
     Sample {
+        name: "jwt-api",
+        title: "JWT API (partners' signed tokens, verified with keys a person trusts)",
+        description: "A payouts API for partners' services, each calling with a token (a JWT) it signs itself with a key only it holds. A person adds a partner's public key, a JWK or a PEM text, by running the trust action, so an agent can't add a partner on its own. A function of its own reads the bearer token for the partner it names (jwt_decode, nothing trusted yet) and verifies it with that partner's key, for this API, at the time of the run (jwt_verify): the signature, exp and nbf, the audience. The key decides the algorithm (RS256 to PS512, ES256, EdDSA), never the token, so alg none, or HMAC signed over the public key, is refused; a token that doesn't verify answers 401 (try and catch). A payout needs payouts:write in the token's scope (403 without), and is kept under the token's iss and jti, so a token sent twice pays once (409).",
+        shows: &["jwt_verify", "jwt_decode", "keys a person trusts", "the key decides the algorithm", "a function of its own", "try and catch", "actions run by hand", "a collection"],
+        port: Some("8184"),
+        secrets: &[],
+        optional: &[],
+        browsers: None,
+        try_it: "deploy, then make a partner a key pair (openssl genpkey -algorithm ed25519 -out acme.pem; openssl pkey -in acme.pem -pubout -out acme.pub) and run trust from the editor's server panel with {\"partner\": \"acme\", \"key\": the text of acme.pub}; sign a token with acme.pem (iss acme, aud payouts-api, an exp, a jti, scope payouts:write: jose, PyJWT or jwt.io), then curl -H \"authorization: Bearer $TOKEN\" http://127.0.0.1:8184/whoami answers its claims, and curl -H \"authorization: Bearer $TOKEN\" -d '{\"amount\": \"120.00\"}' http://127.0.0.1:8184/payouts accepts a payout once (202, then 409)",
+        text: include_str!("../samples/jwt-api.holon.ts"),
+    },
+    Sample {
         name: "ticker",
         title: "Ticker (a clock beside routes)",
         description: "A flow with a clock of its own beside its routes: every 2 seconds (every(\"2s\", …)) it counts a tick in its state and sends it on the channel ticks, with the time of the tick (now, in the handler). Its page lists each tick as it arrives; GET /count answers the count. An action, run by hand by its name, sets the count back (export const reset = action((input) => …), input what was sent); a person runs it, and an agent only once a person lets agents run it.",

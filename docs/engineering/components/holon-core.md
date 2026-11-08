@@ -14,11 +14,12 @@ history is in the [JOURNAL](../../JOURNAL.md), by date.
 
 `crates/holon-core`, compiled native for the server and the command line, and to wasm32 for the
 editor ([holon-wasm](holon-wasm.md)): one evaluator, one encoder. It performs no effect and has
-no IO, async or network dependency; its seven dependencies are `blake3`, `hmac`, `libm` (the
-number leaves' transcendental functions, the same bits on every target), `miniz_oxide` (`zip`'s
-and `gzip`'s deflate, pinned so the same data deflates to the same bytes), `sha2`, `smallvec` and
-`unicode-normalization` (`normalize`'s tables) (`Cargo.toml`), and the purity boundary is that
-dependency graph (`lib.rs`). An
+no IO, async or network dependency; its ten dependencies are `blake3`, `ed25519-dalek`, `p256`
+and `rsa` (`jwt_verify`'s signatures, RustCrypto's, without `std` or randomness), `hmac`, `libm`
+(the number leaves' transcendental functions, the same bits on every target), `miniz_oxide`
+(`zip`'s and `gzip`'s deflate, pinned so the same data deflates to the same bytes), `sha2`,
+`smallvec` and `unicode-normalization` (`normalize`'s tables) (`Cargo.toml`), and the purity
+boundary is that dependency graph (`lib.rs`). An
 effect is a value core builds and the host performs ([holon-host](holon-host.md)).
 
 | File | Holds |
@@ -66,9 +67,9 @@ collected, for the editor.
 
 ### The catalog
 
-`GENESIS` names the 181 primitives. Each name has its facts in one place each: its interface
+`GENESIS` names the 183 primitives. Each name has its facts in one place each: its interface
 (`interface_of`), its capabilities (`capabilities_of`, `kind.rs`), what it does in words
-(`describe`), whether it grows inputs (`VARIADIC`) and its computation. `compute` covers 145 of them,
+(`describe`), whether it grows inputs (`VARIADIC`) and its computation. `compute` covers 147 of them,
 by an `Op` that one list (`ops!`) makes along with `Op::of`, so a name can't be in one and not the
 other (RA D1). The rest are not computed here: `map`, `fold` and the other higher-order leaves
 (`PASSES_EXTRA`: `filter`, `any`, the `find` family, `sort_by`, `group_by`, …) are the evaluator's; 19 build a

@@ -288,6 +288,8 @@ asks for:
 | fast-xml-parser: `new XMLParser().parse(t)`, `new XMLBuilder().build(o)`; `DOMParser`, `XMLSerializer` | `xml_parse(t)`, `xml_format(e)`, `{ layout: "indented" }`: an element as JsonML's list, not a record, so a schema's order is kept | by name |
 | Node's zlib: `gzipSync(b)`, `gunzipSync(b)`; `new CompressionStream("gzip")` | `gzip(b)`, `gunzip(b)`: `b` a text or bytes; nothing past 64 MiB inflated | by name |
 | fflate, JSZip, adm-zip: `zipSync(files)`, `unzipSync(b)` | `zip(files)`, `unzip(b)`: a record of texts or bytes by name, deflated; nothing past 64 MiB inflated or 10,000 files, or for a name outside its folder | by name |
+| jose: `jwtVerify(token, key, { issuer, audience, clockTolerance })` with `importSPKI`, `importJWK` or `createLocalJWKSet`; jsonwebtoken: `jwt.verify(token, key, options)` | `jwt_verify(token, key, now, { issuer, audience, leeway })`: the key a PEM text, a JWK or a JWKS as it is, the algorithm the key's, `exp` required, `now` given | by name |
+| jose: `decodeJwt(token)`, `decodeProtectedHeader(token)`; jsonwebtoken: `jwt.decode(token, { complete: true })` | `jwt_decode(token)`: `{header, payload}`, nothing verified | by name |
 | the DOM: `doc.querySelectorAll("Rpt > Tx")`, `el.textContent`, `el.getAttribute("Ccy")` | `xml_find(e, "Rpt/Tx")`, `xml_text(e)` or `xml_text(e, path)`, `xml_attribute(e, "Ccy")`: a path of names, as ElementTree's `findall` | by name |
 | `btoa`, `atob` | `btoa(t)`, `atob(t)` (§3) | `base64 {bytes: latin1}` |
 | `Buffer…toString("base64")` | `base64(t)`, `base64(t, { mode: "decode" })`, `{ alphabet: "url" }` | `base64` (by name) |
