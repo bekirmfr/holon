@@ -159,6 +159,12 @@ pub fn describe(name: &str) -> Option<&'static str> {
         "xml_text" => "An element's text, every text in it at any depth joined, as the DOM's textContent; given a path, the first match's. Nothing when none matches.",
         "xml_attribute" => "An element's attribute, by name; nothing when it has none so named.",
 
+        // ── compression ──
+        "gzip" => "Gzips a text (its UTF-8) or bytes: deflated at level 6, with no file name and time 0, so the same data gives the same bytes everywhere.",
+        "gunzip" => "The bytes inside a gzip, each member's joined. Nothing for a header, checksum or length that is wrong, bytes after the last member that aren't another, or past 64 MiB inflated.",
+        "zip" => "Zips a record of files, name to a text (its UTF-8) or bytes: each deflated, in name order, dated 1980-01-01. Nothing for a name that would land outside the folder it is unzipped into (empty, a directory's, starting with /, holding a .. part or a backslash), a value that isn't a text or bytes, or more than 10,000 files.",
+        "unzip" => "A zip's files, a record of name to bytes, its directories left out. Nothing for what isn't a zip, an entry encrypted or compressed other than stored or deflated, a checksum or size that doesn't match, two entries of one name, the 64-bit form, more than 10,000 files or past 64 MiB inflated.",
+
         // ── any value ──
         "to_text" => "Any value written out as text, as a literal: a text comes out in quotes.",
         "as_text" => "Any value as it reads in a message: a text is itself, a number or true/false as written, a record or list as JSON. For putting a value into a text.",
@@ -190,13 +196,13 @@ pub fn describe(name: &str) -> Option<&'static str> {
         "file_read" => "The text of the file name in a folder, as the run found it; nothing when there is none. The folder is a name an admin binds to a real folder. Reading it is a permission.",
         "file_read_bytes" => "The bytes of the file name in a folder, any file, as the run found it; nothing when there is none. folder.bytes(name). Reading it is a permission.",
         "file_list" => "A record of a folder's files (name, size, hash, modified) in name order, up to limit: those whose name starts with prefix, after the name after (both optional, for paging).",
-        "file_write" => "Writes text to the file name in a folder when the run finishes (created, or replaced whole). Writing it is a permission.",
+        "file_write" => "Writes a text, or bytes as they are, to the file name in a folder when the run finishes (created, or replaced whole). Writing it is a permission.",
         "file_delete" => "Deletes the file name in a folder when the run finishes.",
         "file_handle" => "A handle to the file name in a folder, of any size, without its bytes: {folder, name, size, hash, modified}; nothing when there is none. Copy it to another folder, or pass it on.",
         "file_lines" => "Up to limit lines of the file name in a folder, from line from (0 is the first; -100 is the 100th from the end), without their line endings. Only those lines are read into the flow; the log proves them part of the file.",
         "file_slice" => "length bytes of the file name in a folder from byte offset (from the end when negative), as text. Only those bytes are read into the flow; the log proves them part of the file.",
         "file_copy" => "Copies the file a handle names into this folder as name when the run finishes, host to host: its bytes never pass through the flow. Fails if the file changed since the run read it.",
-        "file_create" => "Writes text to the file name in a folder when the run finishes, only if no file has that name then: it never replaces one (the run answers 500 if one is there).",
+        "file_create" => "Writes a text, or bytes as they are, to the file name in a folder when the run finishes, only if no file has that name then: it never replaces one (the run answers 500 if one is there).",
         "file_create_copy" => "Copies the file a handle names into this folder as name when the run finishes, only if no file has that name then: it never replaces one.",
         "db_query" => "The rows sql selects from a database, as records by column name, as the run found them; params are its $1, $2, …. The database is a name an admin binds. Reading each table it names is a permission.",
         "db_one" => "The first row sql selects from a database, as a record by column name; nothing when there is none. params are its $1, $2, ….",

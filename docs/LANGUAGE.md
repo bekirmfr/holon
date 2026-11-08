@@ -621,6 +621,17 @@ back into the same form, refusing a DOCTYPE, so no entity is ever defined or fet
 Python's ElementTree does. The payment-batch sample writes a pain.001 from a CSV of payouts and
 reads the bank's pain.002 back.
 
+A bank's statements come zipped, or gzipped. `unzip(b)` reads a zip into a record of each file's
+bytes under its name, and `zip(files)` writes a record of texts or bytes as one, deflated; `gzip`
+and `gunzip` do the same for one stream. A logged run gives the same bytes again, so the deflate
+is pinned, and what isn't a whole zip or gzip gives nothing: a checksum that doesn't match, an
+encrypted or zip64 file, a name that would land outside its folder (`../x`, `/x`), more than
+64 MiB inflated or 10,000 files, so a zip bomb stops early. A folder's file is written as bytes as
+it is as text, `dir[name] = zipped`, and the log keeps its size and hash. The statement-archive
+sample unzips each delivery of camt.053 statements dropped in a folder, reads each statement's
+closing balance, archives the delivery as one zip with a manifest beside its statements, and
+serves a statement back gzipped when the client takes it.
+
 ### drop-box: a run per new file
 
 ```ts
@@ -2591,6 +2602,11 @@ the syntax to TypeScript's, keeping the lowering.
    - *XML* (2026-11-08, host-capabilities L4 §5.1.5, slice 1.2c): an element as JsonML's list,
      `xml_parse` without a DTD and `xml_format`, compact or indented, and `xml_find`, `xml_text`
      and `xml_attribute` along paths. The payment-batch sample, run live.
+   - *Zip and gzip* (2026-11-08, host-capabilities L4 §5.1.7, slice 1.2d): `zip`, `unzip`,
+     `gzip` and `gunzip` on a pinned deflate, bounded at 64 MiB and 10,000 files, a name outside
+     its folder refused; a folder's file written as bytes. A key a function returns named like a
+     binding of its body no longer hides that binding from the other keys (`{ total: total * 2,
+     again: total }`, `{ again: total, total }`). The statement-archive sample, run live.
 
    Next are the L4's slices 6 to 11: computing loops, as folds over a bounded range; requests and calls that wait (`await` with
    JavaScript's order and required, `Promise.all`, a call that parks its caller, a request recorded

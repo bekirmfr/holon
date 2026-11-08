@@ -514,6 +514,82 @@ As designed, with what building it found:
   so the sample now answers 400 for them, and for a control sum past the schema's 18 digits and a
   date that isn't a calendar day as written; a file at every limit validates.
 
+#### 5.1.7 Slice 1.2d as designed (2026-11-08): zip, gzip, and bytes written to a file
+
+Banks deliver statements as a zip of camt.053 files or one gzipped, and an archive or an auditor
+takes them back zipped. Four leaves, the names of Node's `zlib` and fflate's `zipSync` and
+`unzipSync` (the zip library JavaScript reaches for now):
+
+| Leaf | Gives | JavaScript |
+|---|---|---|
+| `gzip(data)` | a text's UTF-8 or bytes, gzipped: deflate at level 6, no file name, time 0 | `zlib.gzipSync(data)`, fflate's `gzipSync` |
+| `gunzip(bytes)` | the bytes inside, each member's joined as `gunzip` does | `zlib.gunzipSync(b)` |
+| `zip(files)` | a zip of a record of files, name to a text (its UTF-8) or bytes, each deflated, in name order | fflate's `zipSync(files)` |
+| `unzip(bytes)` | a record of a zip's files, name to bytes, its directories left out | fflate's `unzipSync(b)` |
+
+**The same bytes everywhere** (R1). A gzip's header holds a time and the system that wrote it,
+and a zip's entries a date: `gzip` writes time 0 and system 255 (unknown), `zip` dates every entry
+1980-01-01 at midnight, the first date a zip can hold, and neither reads the clock. Deflate is
+`miniz_oxide`'s (fork 28, decided for compression), pinned in `Cargo.lock` as `libm` is, since a
+new version may compress differently and a logged run must give the same bytes when verify runs
+it again. CRC-32, which both formats carry, is twenty lines and written by hand.
+
+**Bounded** (R1). Core can't see the run's limits, so the leaves have their own, the same on every
+platform as `MAX_TEXT` is: `gunzip` and `unzip` give nothing past 64 MiB inflated, counted as
+they inflate, so a 10 MiB file that would inflate to 10 GiB stops at 64 MiB; and `unzip` nothing
+past 10,000 files.
+
+**Nothing for what isn't one**, as the other leaves: a gzip whose header, checksum or length is
+wrong, or with bytes after its last member that aren't another; a zip without its end record, an
+entry encrypted or compressed other than stored or deflated, a checksum or size that doesn't
+match, two entries of one name, or the 64-bit form (it holds more than 64 MiB anyway). A name
+without the zip's UTF-8 flag that isn't UTF-8 is read as Latin-1, as fflate reads one. `zip`
+gives nothing for a name that would land outside the folder it is unzipped into (empty, starting
+with `/`, holding a `..` part or a `\`), or a value that isn't a text or bytes.
+
+**Bytes written to a file.** `file_write` and `file_create` take a text or bytes, as Node's
+`fs.writeFile` does: `archive[name] = zip(files)`. Their port stays `text`, typed `Any` as
+`sha256`'s is. The host writes the bytes as they are; the log keeps a write by its size and hash,
+as for a text, so the bytes never enter it; the run's `max_file_write_bytes` counts them.
+
+**The sample, `statement-archive`:** a bank's delivery dropped in a folder, a zip of camt.053
+statements or one gzipped, is unzipped or gunzipped; each statement's account, date and closing
+balance are kept (1.2c's XML), and the delivery is archived as one zip with a manifest (CSV, each
+file's SHA-256) beside its statements, written as bytes. A route answers a statement from the
+archive, gzipped when the client takes it. One write a run: a loop that writes a file per item
+waits for the TypeScript slices.
+
+#### 5.1.8 Slice 1.2d as built (2026-11-08)
+
+As designed, with what building it found:
+
+- **Core:** `compress.rs`, with CRC-32 by hand and `miniz_oxide`'s deflate and inflate; 181
+  primitives. Inflating goes through its streaming state 64 KiB at a time, so the 64 MiB budget is
+  spent as the bytes come out, never after. Python's `gzip` and `zipfile` wrote the test vectors
+  (a file name and two members in a gzip, a folder entry in a zip), and a test pins the SHA-256 of
+  the bytes `gzip` and `zip` write for a fixed text: a `miniz_oxide` that deflates differently
+  fails it before it changes what a logged run gives.
+- **The host:** a write's payload holds a text or bytes. The log keeps `{name, size, hash}` over
+  the bytes, and a run's timeline leaves out a node's output that carries bytes written past the
+  inline size, as it does for a text, so an archive is in the log by its hash alone.
+- **The language** needed one fix, found writing the sample's `summary`: a key a function returns
+  named like a binding of its body. `{ total: total * 2, again: total }` read the output in
+  `again`, and `{ again: total, total }` failed with "unknown name total", since the binding had
+  become the output. The binding is now renamed first, in the body and in every key's value, and a
+  declared output once bound is a name the rest of the block reads.
+- **Order:** a flow deployed as units alone, with no text, has its file handlers in its
+  composite's order, which follows hashes. `file_create`'s port becoming `Any` changed the order
+  file-audit's test saw, so that test compares them as a set.
+- **The sample, run live:** Python's `zipfile` and `gzip` made the deliveries (a deflated zip with
+  a folder entry, a gzip with its file name and time). Each statement's account, closing balance
+  and SHA-256 came back as `sha256sum` and the XML say, and `zipfile` read the archive
+  (`testzip` clean, deflated, dated 1980-01-01, the statements byte for byte, the manifest). A
+  route answered a statement with `content-encoding: gzip` to `curl --compressed` and plain
+  without it. Not a zip, a zip bomb (200 MiB of zeros in 200 KiB), a gzip bomb (100 MiB) and a
+  zip whose entry was `../evil.xml` were each kept as refused, with nothing archived. The export's
+  17 runs verified. In the e2e test, Node reads the archive and the flow reads a zip Node wrote
+  with its files stored.
+
 ### 5.2 Email
 
 **Sending.** `mail ops` names a mail resource an admin binds: SMTP (host, port, sender, login
@@ -2345,7 +2421,7 @@ engine.
 | Step | What | Design | Needs | Size |
 |---|---|---|---|---|
 | 1.1 | **Value kinds:** `Bytes`, built (§5.10.2); `Decimal` decided as text leaves, built in 1.2 (§5.10.1) | §5.10 (here) | — | M |
-| 1.2 | **Formats:** exact decimals, CSV, XML, dates (UTC and offsets), zip and gzip, JWT verify, PGP encrypt and verify with a public key, in six slices (§5.1.1); 1.2a, decimals and CSV, built (§5.1.2); 1.2b, offsets and business days, built (§5.1.4); 1.2c, XML, built (§5.1.6) | §5.1 (here) | 1.1 | M |
+| 1.2 | **Formats:** exact decimals, CSV, XML, dates (UTC and offsets), zip and gzip, JWT verify, PGP encrypt and verify with a public key, in six slices (§5.1.1); 1.2a, decimals and CSV, built (§5.1.2); 1.2b, offsets and business days, built (§5.1.4); 1.2c, XML, built (§5.1.6); 1.2d, zip and gzip and bytes written to a file, built (§5.1.8) | §5.1 (here) | 1.1 | M |
 | 1.3 | **Email:** send, recipients in the grant; receive as `on mail`, with its sender's verdict and attachments (§5.2) | §5.2 (here) | 1.1 for attachments | L |
 | 1.4 | **Remote folders:** the backend seam in `folders.rs`, then SFTP and S3-compatible storage (§6) | §6 (here) | 1.1 for binary files | L |
 | 1.5 | **Secure connectivity:** keys the host holds (PGP decrypt and sign) and client identities (mutual TLS, a private CA) (§5.3, §5.4) | §5.3, §5.4 (here) | 1.1, 1.2 | M |
@@ -2545,7 +2621,9 @@ Taken when a job or a user asks, each with its design here and its sample all th
     *Lean:* pure-Rust crates that build for wasm (`miniz_oxide`; RustCrypto's `rsa`, `p256`,
     `ed25519-dalek`; `pgp`), each pinned in `Cargo.lock` with a comment as `libm` is, with no
     feature that reads the clock or the operating system's randomness; decimals, CSV, dates and
-    XML by hand.
+    XML by hand. *Decided for compression* (§5.1.8): `miniz_oxide` 0.9.1, its `with-alloc`
+    feature alone, pinned with its comment and a test that pins the bytes it writes; core has
+    seven. RSA, the curves and OpenPGP are decided in 1.2e and 1.2f.
 29. **PGP encryption is random.** A message is encrypted with a fresh session key, and a leaf
     must give the same answer on every replay (R1). Either the host answers it as a request, its
     ciphertext kept in the log as an answer is, or the randomness comes into the run from a

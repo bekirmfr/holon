@@ -768,6 +768,14 @@ function whyNothing(node: ReplayNode, trace: NodeTrace): string {
     case "xml_text":
     case "xml_attribute":
       return "its input isn't an element (a list starting with a name), a path step isn't a name or *, or nothing matched";
+    case "gzip":
+      return "its input isn't a text or bytes";
+    case "gunzip":
+      return "its bytes aren't a whole gzip (a checksum or a length that doesn't match, bytes after it), or they inflate past 64 MiB";
+    case "zip":
+      return "a file isn't a text or bytes, a name is empty, ends with / or would land outside its folder (a leading /, a \\, a .. part), or there are more than 10,000";
+    case "unzip":
+      return "its bytes aren't a whole zip, a file is encrypted, zip64 or compressed other than by deflate, a name is given twice or lands outside its folder, or it inflates past 64 MiB or 10,000 files";
     case "group_by":
       return "its function answered a key that isn't a text";
     case "divide":

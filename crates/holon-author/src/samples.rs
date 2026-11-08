@@ -731,6 +731,18 @@ static SAMPLES: &[Sample] = &[
         text: include_str!("../samples/payment-batch.holon.ts"),
     },
     Sample {
+        name: "statement-archive",
+        title: "Statement archive (zip and gzip, bytes written to a file)",
+        description: "Runs once for each delivery a bank drops in a folder on the host: a zip of camt.053 statements (unzip, each file's bytes under its name) or one statement gzipped (gunzip). A function of its own reads each statement's XML for its account, the date and amount of its closing balance (negative when a debit) and its SHA-256. The delivery is archived as one zip (zip, the files in the order given): its statements as they came, and beside them a manifest.csv of what was read, written to a second folder as bytes. What each delivery held is kept in a collection; a delivery that isn't a zip of statements, or one gzipped, is kept as refused (try and catch). A route serves a statement back from its archive, gzipped when the client takes gzip (accept-encoding, content-encoding: gzip). Unzipping stops past 64 MiB inflated or 10,000 files, so a zip bomb is refused, and a name that would land outside its folder (../, a leading /) is neither zipped nor unzipped.",
+        shows: &["zip", "unzip", "gzip", "gunzip", "bytes written to a file", "gzipped answers", "camt.053 read", "a function of its own", "try and catch", "on.file.created", "named folders"],
+        port: Some("8183"),
+        secrets: &[],
+        optional: &[],
+        browsers: None,
+        try_it: "first bind the folders (an admin): holon folder add inbox ~/holon-statements --read-only and holon folder add archive ~/holon-archive; deploy, zip a day's camt.053 statements and copy the zip into ~/holon-statements, then curl http://127.0.0.1:8183/deliveries for each statement's account and closing balance; curl --compressed http://127.0.0.1:8183/deliveries/<the zip>/<a statement> serves one back gzipped, and unzip -l ~/holon-archive/<the zip> shows the archive with its manifest.csv",
+        text: include_str!("../samples/statement-archive.holon.ts"),
+    },
+    Sample {
         name: "ticker",
         title: "Ticker (a clock beside routes)",
         description: "A flow with a clock of its own beside its routes: every 2 seconds (every(\"2s\", …)) it counts a tick in its state and sends it on the channel ticks, with the time of the tick (now, in the handler). Its page lists each tick as it arrives; GET /count answers the count. An action, run by hand by its name, sets the count back (export const reset = action((input) => …), input what was sent); a person runs it, and an agent only once a person lets agents run it.",

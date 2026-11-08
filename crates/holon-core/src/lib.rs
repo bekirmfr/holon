@@ -58,6 +58,7 @@ mod validate;
 mod value;
 mod value_hash;
 mod xml;
+mod compress;
 
 pub mod primitives;
 /// What a database leaf's SQL reads and writes (docs/L4s/databases-L4.md §4).

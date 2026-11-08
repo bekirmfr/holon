@@ -778,6 +778,8 @@ impl<'a> Lowerer<'a> {
                         return err(value.span, "an output can't be an input passed straight through: put a node between");
                     }
                     let v = self.whole(v, value.span)?;
+                    // Bound, the output is also a name the rest of the block reads.
+                    self.frame().env.insert(name.text.clone(), v.clone());
                     if let FrameKind::Holon { bound, .. } = &mut self.frame().kind {
                         bound.insert(name.text.clone(), (v, s.span));
                     }
@@ -3494,6 +3496,32 @@ route.get("/picked", (req) => `${pair("k").a}!`)
         assert_eq!(got["/mapped"], r#"[{"a":"<x>","b":1},{"a":"<y>","b":1}]"#);
         assert_eq!(got["/folded"], r#"{"n":3,"sum":6}"#);
         assert_eq!(got["/picked"], "<k>!");
+    }
+
+    /// A key named like a binding of the body reads the binding in every field after it, not the
+    /// output it names: `{ total: total * 2, again: total }` is `{ total: 4, again: 2 }`.
+    #[test]
+    fn a_returned_key_named_like_a_binding_hides_it_from_no_other_field() {
+        let src = r#"import { flow, route } from "holon"
+
+flow("f", { port: 8000 })
+
+function doubled(x) {
+  const total = x + 1
+  return { total: total * 2, again: total, and: `${total}!` }
+}
+
+function kept(x) {
+  const total = x + 1
+  return { again: total, total }
+}
+
+route.get("/doubled", (req) => doubled(1))
+route.get("/kept", (req) => kept(1))
+"#;
+        let got: BTreeMap<String, String> = bodies(src).into_iter().collect();
+        assert_eq!(got["/doubled"], r#"{"again":2,"and":"2!","total":4}"#);
+        assert_eq!(got["/kept"], r#"{"again":2,"total":2}"#);
     }
 
     #[test]

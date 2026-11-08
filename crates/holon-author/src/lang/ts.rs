@@ -2847,11 +2847,22 @@ impl<'s, 't> Reader<'s, 't> {
         }
     }
 
-    fn output_fields(&mut self, fields: Fields, stmts: &mut Vec<Stmt>) -> Vec<String> {
+    fn output_fields(&mut self, mut fields: Fields, stmts: &mut Vec<Stmt>) -> Vec<String> {
+        let bound_here: Vec<bool> = fields.iter().map(|(key, value, _)| matches!(&value.kind, ExprKind::Name(n) if n == key) && self.is_binding(key, stmts)).collect();
+        // A binding the body made of an output's name is renamed first, in the body and in every
+        // field's value: `{ total: total * 2, again: total }` reads the binding in both.
+        for (i, key) in fields.iter().map(|(key, ..)| key.clone()).collect::<Vec<_>>().into_iter().enumerate() {
+            if !bound_here[i] && self.is_binding(&key, stmts) {
+                let other = self.hidden_name(&key);
+                rename(stmts, &key, &other);
+                for (_, value, _) in &mut fields {
+                    rename_expr(value, &key, &other);
+                }
+            }
+        }
         let mut outputs = Vec::new();
-        for (key, value, span) in fields {
-            let bound_here = matches!(&value.kind, ExprKind::Name(n) if *n == key) && self.is_binding(&key, stmts);
-            if !bound_here {
+        for ((key, value, span), here) in fields.into_iter().zip(bound_here) {
+            if !here {
                 self.output(&key, value, span, stmts);
             }
             outputs.push(key);

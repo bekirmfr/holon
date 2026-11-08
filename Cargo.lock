@@ -1603,6 +1603,7 @@ dependencies = [
  "criterion",
  "hmac 0.12.1",
  "libm",
+ "miniz_oxide",
  "sha2 0.10.9",
  "smallvec",
  "unicode-normalization",

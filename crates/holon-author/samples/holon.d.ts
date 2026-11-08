@@ -196,13 +196,13 @@ declare module "holon" {
     /** A page of items, in key order. */
     list(page?: Page): any
   }
-  /** A named folder: `dir[name]` reads a file's text as the run began, `dir[name] = text` writes it. */
+  /** A named folder: `dir[name]` reads a file's text as the run began, `dir[name] = text` writes it, or bytes as they are. */
   export interface Folder {
     [name: string]: any
     get(name: string): any
     /** The file's bytes, any file: an image, a PDF, an archive. */
     bytes(name: string): Uint8Array
-    put(name: string, content: string | FileHandle): any
+    put(name: string, content: string | Uint8Array | FileHandle): any
     delete(name: string): any
     /** A page of files: `{size, hash, modified}` by name. */
     list(page?: Page): any
@@ -214,7 +214,7 @@ declare module "holon" {
     slice(name: string, options?: { offset?: number; length?: number }): any
     copy(name: string, handle: FileHandle): any
     /** Writes the file only if there is none yet: else the run fails, and nothing it did lands. */
-    create(name: string, text: string): any
+    create(name: string, content: string | Uint8Array): any
     create_copy(name: string, handle: FileHandle): any
   }
   /** A named database: its SQL written in quotes (the tables are the permission), values after it as `$1`, `$2`, … */
@@ -1224,6 +1224,34 @@ declare module "holon" {
   export function xml_attribute(...args: any[]): any
 
   /**
+   * `gzip(data: Any) -> out: Bytes`
+   *
+   * Gzips a text (its UTF-8) or bytes: deflated at level 6, with no file name and time 0, so the same data gives the same bytes everywhere.
+   */
+  export function gzip(...args: any[]): any
+
+  /**
+   * `gunzip(bytes: Bytes) -> out: Bytes`
+   *
+   * The bytes inside a gzip, each member's joined. Nothing for a header, checksum or length that is wrong, bytes after the last member that aren't another, or past 64 MiB inflated.
+   */
+  export function gunzip(...args: any[]): any
+
+  /**
+   * `zip(files: Record) -> out: Bytes`
+   *
+   * Zips a record of files, name to a text (its UTF-8) or bytes: each deflated, in name order, dated 1980-01-01. Nothing for a name that would land outside the folder it is unzipped into (empty, a directory's, starting with /, holding a .. part or a backslash), a value that isn't a text or bytes, or more than 10,000 files.
+   */
+  export function zip(...args: any[]): any
+
+  /**
+   * `unzip(bytes: Bytes) -> out: Record`
+   *
+   * A zip's files, a record of name to bytes, its directories left out. Nothing for what isn't a zip, an entry encrypted or compressed other than stored or deflated, a checksum or size that doesn't match, two entries of one name, the 64-bit form, more than 10,000 files or past 64 MiB inflated.
+   */
+  export function unzip(...args: any[]): any
+
+  /**
    * `to_text(value: Any) -> out: Text`
    *
    * Any value written out as text, as a literal: a text comes out in quotes.
@@ -1399,9 +1427,9 @@ declare module "holon" {
   export function file_list(...args: any[]): any
 
   /**
-   * `file_write(name: Text, text: Text, trigger: Any) -> out: Effect  {folder: files}`
+   * `file_write(name: Text, text: Any, trigger: Any) -> out: Effect  {folder: files}`
    *
-   * Writes text to the file name in a folder when the run finishes (created, or replaced whole). Writing it is a permission.
+   * Writes a text, or bytes as they are, to the file name in a folder when the run finishes (created, or replaced whole). Writing it is a permission.
    */
   export function file_write(...args: any[]): any
 
@@ -1448,9 +1476,9 @@ declare module "holon" {
   export function file_read_bytes(...args: any[]): any
 
   /**
-   * `file_create(name: Text, text: Text, trigger: Any) -> out: Effect  {folder: files}`
+   * `file_create(name: Text, text: Any, trigger: Any) -> out: Effect  {folder: files}`
    *
-   * Writes text to the file name in a folder when the run finishes, only if no file has that name then: it never replaces one (the run answers 500 if one is there).
+   * Writes a text, or bytes as they are, to the file name in a folder when the run finishes, only if no file has that name then: it never replaces one (the run answers 500 if one is there).
    */
   export function file_create(...args: any[]): any
 

@@ -1090,9 +1090,9 @@ fn redacted_line(redactor: &Redactor, entry: &mut LogEntry) -> recorder::Made {
     recorder::Made::of(entry)
 }
 
-/// The timeline, with the outputs of each node that carries the text of a file the log keeps by
-/// hash (read, or written past the inline size) left out: that text isn't in the log by another
-/// way.
+/// The timeline, with the outputs of each node that carries the text or bytes of a file the log
+/// keeps by hash (read, or written past the inline size) left out: they aren't in the log by
+/// another way.
 fn without_kept_files(mut timeline: Vec<recorder::NodeTiming>, reads: &[collections::Read], performed: &[(Capability, Value)]) -> Vec<recorder::NodeTiming> {
     let read = reads.iter().filter(|r| r.file.as_ref().is_some_and(|f| !f.inline)).filter_map(|r| match &r.answer {
         Some(Value::Text(t)) => Some(t.as_str()),
@@ -1103,11 +1103,16 @@ fn without_kept_files(mut timeline: Vec<recorder::NodeTiming>, reads: &[collecti
         Some(v @ Value::List(l)) if !l.is_empty() => serde_json::to_string(&SValue::from_core(v)).ok(),
         _ => None,
     });
-    // A file read as bytes, as a node carries them: their base64, whole.
-    let bytes = reads.iter().filter(|r| r.file.as_ref().is_some_and(|f| !f.inline)).filter_map(|r| match &r.answer {
-        Some(Value::Bytes(b)) if !b.is_empty() => holon_core::bytes_text(b, "base64"),
-        _ => None,
-    });
+    // A file read or written as bytes, as a node carries them: their base64, whole.
+    let bytes = reads
+        .iter()
+        .filter(|r| r.file.as_ref().is_some_and(|f| !f.inline))
+        .filter_map(|r| match &r.answer {
+            Some(Value::Bytes(b)) if !b.is_empty() => Some(b.as_slice()),
+            _ => None,
+        })
+        .chain(folders::written_bytes(performed))
+        .filter_map(|b| holon_core::bytes_text(b, "base64"));
     let kept: Vec<String> = read
         .chain(folders::written_texts(performed))
         .filter(|t| !t.is_empty())

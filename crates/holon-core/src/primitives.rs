@@ -177,6 +177,10 @@ ops! {
     "xml_find" => XmlFind,
     "xml_text" => XmlText,
     "xml_attribute" => XmlAttribute,
+    "gzip" => Gzip,
+    "gunzip" => Gunzip,
+    "zip" => Zip,
+    "unzip" => Unzip,
     "pair" => Pair,
     "some" => Some,
     "none" => None,
@@ -1022,6 +1026,28 @@ pub(crate) fn compute_op(op: Op, name: &str, inputs: &[&Value], params: &[Param]
             crate::xml::attribute(element, name)
         }
 
+        // ── compression (compress.rs, host-capabilities L4 §5.1.7): gzip and zip both ways, the
+        // same bytes everywhere; a text is its UTF-8. Nothing for what isn't one, or past 64 MiB
+        // inflated. ──
+        Op::Gzip => {
+            let [data] = inputs else { return None };
+            Some(Value::Bytes(crate::compress::gzip(octets(data)?)))
+        }
+        Op::Gunzip => {
+            let [Value::Bytes(b)] = inputs else { return None };
+            crate::compress::gunzip(b).map(Value::Bytes)
+        }
+        Op::Zip => {
+            let [Value::Record(files)] = inputs else { return None };
+            let files = files.iter().map(|(name, data)| Some((name.as_str(), octets(data)?))).collect::<Option<Vec<_>>>()?;
+            crate::compress::zip(files).map(Value::Bytes)
+        }
+        Op::Unzip => {
+            let [Value::Bytes(b)] = inputs else { return None };
+            let files = crate::compress::unzip(b)?;
+            Some(Value::Record(files.into_iter().map(|(name, data)| (name, Value::Bytes(data))).collect()))
+        }
+
         Op::Pair => {
             let [a, b] = inputs else { return None };
             Some(Value::List(vec![(*a).clone(), (*b).clone()]))
@@ -1086,13 +1112,14 @@ pub(crate) fn compute_op(op: Op, name: &str, inputs: &[&Value], params: &[Param]
             effect(format!("collection_delete:{name}"), Value::Text(key.clone()))
         }
 
-        // A named folder's writes: `{name, text}` to write the file, the name to delete it, each an
-        // effect the host commits when the run finishes. The folder rides in the sink name, as a
-        // collection's does. Which names are allowed is the host's to check (it knows the folder).
+        // A named folder's writes: `{name, text}` to write the file (a text, or bytes written as
+        // they are), the name to delete it, each an effect the host commits when the run finishes.
+        // The folder rides in the sink name, as a collection's does. Which names are allowed is the
+        // host's to check (it knows the folder).
         Op::FileWrite => {
             let folder = crate::kind::ident(params, "folder")?;
-            let [Value::Text(name), Value::Text(text)] = inputs else { return None };
-            let file = Value::Record(BTreeMap::from([("name".to_string(), Value::Text(name.clone())), ("text".to_string(), Value::Text(text.clone()))]));
+            let [Value::Text(name), text @ (Value::Text(_) | Value::Bytes(_))] = inputs else { return None };
+            let file = Value::Record(BTreeMap::from([("name".to_string(), Value::Text(name.clone())), ("text".to_string(), (*text).clone())]));
             effect(format!("file_write:{folder}"), file)
         }
         Op::FileDelete => {

@@ -68,6 +68,9 @@ pub const GENESIS: &[&str] = &[
     "csv_parse", "csv_format",
     // pure — XML (5): an element as JsonML's list, both ways, and read by path (xml.rs)
     "xml_parse", "xml_format", "xml_find", "xml_text", "xml_attribute",
+    // pure — compression (4): gzip and zip, both ways, the same bytes everywhere (compress.rs,
+    // host-capabilities L4 §5.1.7)
+    "gzip", "gunzip", "zip", "unzip",
     // pure — universal, any-typed (8): as_text is to_text's message form, the identity on text;
     // coalesce is the first input that arrived, `default` with its fallback on a wire; fail is
     // nothing, its message the run log's reason (the language's `throw`)
@@ -462,6 +465,13 @@ pub fn interface_of(name: &str) -> Option<Unit> {
         "xml_text" => prim(vec![port("element", Type::list_any()), port("path", Text)], vec![], Text),
         "xml_attribute" => prim(vec![port("element", Type::list_any()), port("name", Text)], vec![], Text),
 
+        // ── pure — compression (compress.rs) ── a text is gzipped or zipped as its UTF-8; what
+        // comes out is bytes, a zip's files a record of them by name.
+        "gzip" => prim(vec![port("data", Any)], vec![], Bytes),
+        "gunzip" => prim(vec![port("bytes", Bytes)], vec![], Bytes),
+        "zip" => prim(vec![port("files", Type::Record)], vec![], Bytes),
+        "unzip" => prim(vec![port("bytes", Bytes)], vec![], Type::Record),
+
         // ── pure — sum (Option) ──
         // Option<T> = Sum([T, Unit]) — arm 0 is "some", arm 1 ("none") is Unit (Product([])),
         // already expressible with no new value kind for THAT half; the new kind is the tag itself
@@ -538,7 +548,7 @@ pub fn interface_of(name: &str) -> Option<Unit> {
             vec![Param::frozen("folder", "files"), Param::frozen("limit", "100")],
             Type::Record,
         ),
-        "file_write" => prim(vec![port("name", Text), port("text", Text)], vec![Param::frozen("folder", "files")], Effect),
+        "file_write" => prim(vec![port("name", Text), port("text", Any)], vec![Param::frozen("folder", "files")], Effect),
         "file_delete" => prim(vec![port("name", Text)], vec![Param::frozen("folder", "files")], Effect),
         // A file of any size without its bytes: a handle `{folder, name, size, hash, modified}`, to
         // pass on or copy. Part of one: `limit` lines from line `from` (from the end when
@@ -552,7 +562,7 @@ pub fn interface_of(name: &str) -> Option<Unit> {
         "file_slice" => prim(vec![port("name", Text), port("offset", Number), port("length", Number)], vec![Param::frozen("folder", "files")], Text),
         "file_copy" => prim(vec![port("name", Text), port("from", Type::Record)], vec![Param::frozen("folder", "files")], Effect),
         // As a write and a copy, landing only where no file has the name: never a replace.
-        "file_create" => prim(vec![port("name", Text), port("text", Text)], vec![Param::frozen("folder", "files")], Effect),
+        "file_create" => prim(vec![port("name", Text), port("text", Any)], vec![Param::frozen("folder", "files")], Effect),
         "file_create_copy" => prim(vec![port("name", Text), port("from", Type::Record)], vec![Param::frozen("folder", "files")], Effect),
 
         // ── databases ── `database` (frozen) names which one, the host binding the name; `sql`
@@ -754,8 +764,9 @@ mod tests {
         // and the decimal leaves (decimal_add, decimal_sub, decimal_mul, decimal_div,
         // decimal_round, decimal_sum, decimal_compare) and CSV's (csv_parse, csv_format); and the
         // calendar leaves (date_add, business_day_add, business_days_between, is_business_day);
-        // and XML's (xml_parse, xml_format, xml_find, xml_text, xml_attribute).
-        assert_eq!(GENESIS.len(), 177);
+        // and XML's (xml_parse, xml_format, xml_find, xml_text, xml_attribute); and compression's
+        // (gzip, gunzip, zip, unzip).
+        assert_eq!(GENESIS.len(), 181);
     }
 
     #[test]

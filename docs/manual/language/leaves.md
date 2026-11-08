@@ -13,7 +13,7 @@ last record (see [Calls](reference.md#calls)). Many are written another way (`a 
 
 These touch nothing outside: given the same inputs, they always give the same output.
 
-[`const`](#const) · [`add`](#add) · [`multiply`](#multiply) · [`subtract`](#subtract) · [`divide`](#divide) · [`compare`](#compare) · [`and`](#and) · [`or`](#or) · [`not`](#not) · [`select`](#select) · [`cons`](#cons) · [`head`](#head) · [`tail`](#tail) · [`is_empty`](#is_empty) · [`fold`](#fold) · [`map`](#map) · [`math`](#math) · [`max`](#max) · [`min`](#min) · [`aggregate`](#aggregate) · [`atan2`](#atan2) · [`power`](#power) · [`remainder`](#remainder) · [`bitwise`](#bitwise) · [`number_test`](#number_test) · [`to_number`](#to_number) · [`number_format`](#number_format) · [`concat`](#concat) · [`uppercase`](#uppercase) · [`lowercase`](#lowercase) · [`text_length`](#text_length) · [`slice`](#slice) · [`index_of`](#index_of) · [`split`](#split) · [`text_at`](#text_at) · [`code_at`](#code_at) · [`from_codes`](#from_codes) · [`text_contains`](#text_contains) · [`trim`](#trim) · [`pad`](#pad) · [`repeat`](#repeat) · [`replace`](#replace) · [`normalize`](#normalize) · [`uri_encode`](#uri_encode) · [`uri_decode`](#uri_decode) · [`is_well_formed`](#is_well_formed) · [`list`](#list) · [`get`](#get) · [`append`](#append) · [`extend`](#extend) · [`length`](#length) · [`sum`](#sum) · [`join`](#join) · [`at`](#at) · [`indices`](#indices) · [`entries`](#entries) · [`any`](#any) · [`all`](#all) · [`filter`](#filter) · [`find`](#find) · [`find_index`](#find_index) · [`find_last`](#find_last) · [`find_last_index`](#find_last_index) · [`sort_by`](#sort_by) · [`includes`](#includes) · [`last_index_of`](#last_index_of) · [`reverse`](#reverse) · [`to_spliced`](#to_spliced) · [`with_item`](#with_item) · [`fill`](#fill) · [`copy_within`](#copy_within) · [`sort`](#sort) · [`flat`](#flat) · [`is_list`](#is_list) · [`unique`](#unique) · [`range`](#range) · [`pair`](#pair) · [`some`](#some) · [`none`](#none) · [`record`](#record) · [`field`](#field) · [`with_field`](#with_field) · [`without_field`](#without_field) · [`keys`](#keys) · [`lookup`](#lookup) · [`insert`](#insert) · [`remove`](#remove) · [`values`](#values) · [`from_entries`](#from_entries) · [`merge`](#merge) · [`has`](#has) · [`group_by`](#group_by) · [`same_value`](#same_value) · [`type_of`](#type_of) · [`json_parse`](#json_parse) · [`json_stringify`](#json_stringify) · [`date_part`](#date_part) · [`date_utc`](#date_utc) · [`date_set`](#date_set) · [`date_text`](#date_text) · [`date_parse`](#date_parse) · [`date_add`](#date_add) · [`business_day_add`](#business_day_add) · [`business_days_between`](#business_days_between) · [`is_business_day`](#is_business_day) · [`sha256`](#sha256) · [`hmac_sha256`](#hmac_sha256) · [`hex`](#hex) · [`base64`](#base64) · [`secure_equals`](#secure_equals) · [`text_to_bytes`](#text_to_bytes) · [`bytes_to_text`](#bytes_to_text) · [`bytes_length`](#bytes_length) · [`bytes_concat`](#bytes_concat) · [`bytes_to_list`](#bytes_to_list) · [`list_to_bytes`](#list_to_bytes) · [`decimal_add`](#decimal_add) · [`decimal_sub`](#decimal_sub) · [`decimal_mul`](#decimal_mul) · [`decimal_div`](#decimal_div) · [`decimal_round`](#decimal_round) · [`decimal_sum`](#decimal_sum) · [`decimal_compare`](#decimal_compare) · [`csv_parse`](#csv_parse) · [`csv_format`](#csv_format) · [`xml_parse`](#xml_parse) · [`xml_format`](#xml_format) · [`xml_find`](#xml_find) · [`xml_text`](#xml_text) · [`xml_attribute`](#xml_attribute) · [`to_text`](#to_text) · [`as_text`](#as_text) · [`is_truthy`](#is_truthy) · [`guard`](#guard) · [`default`](#default) · [`coalesce`](#coalesce) · [`equals`](#equals) · [`fail`](#fail)
+[`const`](#const) · [`add`](#add) · [`multiply`](#multiply) · [`subtract`](#subtract) · [`divide`](#divide) · [`compare`](#compare) · [`and`](#and) · [`or`](#or) · [`not`](#not) · [`select`](#select) · [`cons`](#cons) · [`head`](#head) · [`tail`](#tail) · [`is_empty`](#is_empty) · [`fold`](#fold) · [`map`](#map) · [`math`](#math) · [`max`](#max) · [`min`](#min) · [`aggregate`](#aggregate) · [`atan2`](#atan2) · [`power`](#power) · [`remainder`](#remainder) · [`bitwise`](#bitwise) · [`number_test`](#number_test) · [`to_number`](#to_number) · [`number_format`](#number_format) · [`concat`](#concat) · [`uppercase`](#uppercase) · [`lowercase`](#lowercase) · [`text_length`](#text_length) · [`slice`](#slice) · [`index_of`](#index_of) · [`split`](#split) · [`text_at`](#text_at) · [`code_at`](#code_at) · [`from_codes`](#from_codes) · [`text_contains`](#text_contains) · [`trim`](#trim) · [`pad`](#pad) · [`repeat`](#repeat) · [`replace`](#replace) · [`normalize`](#normalize) · [`uri_encode`](#uri_encode) · [`uri_decode`](#uri_decode) · [`is_well_formed`](#is_well_formed) · [`list`](#list) · [`get`](#get) · [`append`](#append) · [`extend`](#extend) · [`length`](#length) · [`sum`](#sum) · [`join`](#join) · [`at`](#at) · [`indices`](#indices) · [`entries`](#entries) · [`any`](#any) · [`all`](#all) · [`filter`](#filter) · [`find`](#find) · [`find_index`](#find_index) · [`find_last`](#find_last) · [`find_last_index`](#find_last_index) · [`sort_by`](#sort_by) · [`includes`](#includes) · [`last_index_of`](#last_index_of) · [`reverse`](#reverse) · [`to_spliced`](#to_spliced) · [`with_item`](#with_item) · [`fill`](#fill) · [`copy_within`](#copy_within) · [`sort`](#sort) · [`flat`](#flat) · [`is_list`](#is_list) · [`unique`](#unique) · [`range`](#range) · [`pair`](#pair) · [`some`](#some) · [`none`](#none) · [`record`](#record) · [`field`](#field) · [`with_field`](#with_field) · [`without_field`](#without_field) · [`keys`](#keys) · [`lookup`](#lookup) · [`insert`](#insert) · [`remove`](#remove) · [`values`](#values) · [`from_entries`](#from_entries) · [`merge`](#merge) · [`has`](#has) · [`group_by`](#group_by) · [`same_value`](#same_value) · [`type_of`](#type_of) · [`json_parse`](#json_parse) · [`json_stringify`](#json_stringify) · [`date_part`](#date_part) · [`date_utc`](#date_utc) · [`date_set`](#date_set) · [`date_text`](#date_text) · [`date_parse`](#date_parse) · [`date_add`](#date_add) · [`business_day_add`](#business_day_add) · [`business_days_between`](#business_days_between) · [`is_business_day`](#is_business_day) · [`sha256`](#sha256) · [`hmac_sha256`](#hmac_sha256) · [`hex`](#hex) · [`base64`](#base64) · [`secure_equals`](#secure_equals) · [`text_to_bytes`](#text_to_bytes) · [`bytes_to_text`](#bytes_to_text) · [`bytes_length`](#bytes_length) · [`bytes_concat`](#bytes_concat) · [`bytes_to_list`](#bytes_to_list) · [`list_to_bytes`](#list_to_bytes) · [`decimal_add`](#decimal_add) · [`decimal_sub`](#decimal_sub) · [`decimal_mul`](#decimal_mul) · [`decimal_div`](#decimal_div) · [`decimal_round`](#decimal_round) · [`decimal_sum`](#decimal_sum) · [`decimal_compare`](#decimal_compare) · [`csv_parse`](#csv_parse) · [`csv_format`](#csv_format) · [`xml_parse`](#xml_parse) · [`xml_format`](#xml_format) · [`xml_find`](#xml_find) · [`xml_text`](#xml_text) · [`xml_attribute`](#xml_attribute) · [`gzip`](#gzip) · [`gunzip`](#gunzip) · [`zip`](#zip) · [`unzip`](#unzip) · [`to_text`](#to_text) · [`as_text`](#as_text) · [`is_truthy`](#is_truthy) · [`guard`](#guard) · [`default`](#default) · [`coalesce`](#coalesce) · [`equals`](#equals) · [`fail`](#fail)
 
 ### `const`
 
@@ -1055,6 +1055,38 @@ xml_attribute(element: List<Any>, name: Text) -> out: Text
 
 An element's attribute, by name; nothing when it has none so named.
 
+### `gzip`
+
+```
+gzip(data: Any) -> out: Bytes
+```
+
+Gzips a text (its UTF-8) or bytes: deflated at level 6, with no file name and time 0, so the same data gives the same bytes everywhere.
+
+### `gunzip`
+
+```
+gunzip(bytes: Bytes) -> out: Bytes
+```
+
+The bytes inside a gzip, each member's joined. Nothing for a header, checksum or length that is wrong, bytes after the last member that aren't another, or past 64 MiB inflated.
+
+### `zip`
+
+```
+zip(files: Record) -> out: Bytes
+```
+
+Zips a record of files, name to a text (its UTF-8) or bytes: each deflated, in name order, dated 1980-01-01. Nothing for a name that would land outside the folder it is unzipped into (empty, a directory's, starting with /, holding a .. part or a backslash), a value that isn't a text or bytes, or more than 10,000 files.
+
+### `unzip`
+
+```
+unzip(bytes: Bytes) -> out: Record
+```
+
+A zip's files, a record of name to bytes, its directories left out. Nothing for what isn't a zip, an entry encrypted or compressed other than stored or deflated, a checksum or size that doesn't match, two entries of one name, the 64-bit form, more than 10,000 files or past 64 MiB inflated.
+
 ### `to_text`
 
 ```
@@ -1280,10 +1312,10 @@ A record of a folder's files (name, size, hash, modified) in name order, up to l
 ### `file_write`
 
 ```
-file_write(name: Text, text: Text, trigger: Any) -> out: Effect  {folder: files}
+file_write(name: Text, text: Any, trigger: Any) -> out: Effect  {folder: files}
 ```
 
-Writes text to the file name in a folder when the run finishes (created, or replaced whole). Writing it is a permission.
+Writes a text, or bytes as they are, to the file name in a folder when the run finishes (created, or replaced whole). Writing it is a permission.
 
 ### `file_delete`
 
@@ -1336,10 +1368,10 @@ The bytes of the file name in a folder, any file, as the run found it; nothing w
 ### `file_create`
 
 ```
-file_create(name: Text, text: Text, trigger: Any) -> out: Effect  {folder: files}
+file_create(name: Text, text: Any, trigger: Any) -> out: Effect  {folder: files}
 ```
 
-Writes text to the file name in a folder when the run finishes, only if no file has that name then: it never replaces one (the run answers 500 if one is there).
+Writes a text, or bytes as they are, to the file name in a folder when the run finishes, only if no file has that name then: it never replaces one (the run answers 500 if one is there).
 
 ### `file_create_copy`
 

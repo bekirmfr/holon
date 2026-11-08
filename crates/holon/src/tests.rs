@@ -6975,6 +6975,110 @@ fn a_files_bytes_are_read_hashed_logged_and_verified() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A bank's deliveries (the statement-archive sample): a zip of camt.053 statements unzipped, and
+/// one statement gzipped by flate2 gunzipped, each read for its account and closing balance; each
+/// delivery archived as a zip written as bytes, a manifest beside its statements; a statement
+/// served back gzipped when the client takes it; what isn't a delivery refused; the archive kept
+/// in the log by its hash only; and the runs verify.
+#[test]
+fn a_delivery_is_unzipped_read_and_archived_as_a_zip_written_as_bytes() {
+    let state = claims_state("");
+    let dir = std::env::temp_dir().join(format!("holon-statements-{}-{}", std::process::id(), rand::random::<u32>()));
+    let (inbox, archive) = (dir.join("inbox"), dir.join("archive"));
+    for (name, path, access) in [("inbox", &inbox, "read"), ("archive", &archive, "read-write")] {
+        std::fs::create_dir_all(path).unwrap();
+        assert_eq!(route_status(&state, &serde_json::json!({ "name": name, "path": path.display().to_string(), "access": access })), 200);
+    }
+    let slug = deploy_text(&state, include_str!("../../holon-author/samples/statement-archive.holon.ts"), "");
+    let look = || {
+        arrivals::run_arrivals(&state.store, &state.deployments, &state.deployments_path);
+        arrivals::run_arrivals(&state.store, &state.deployments, &state.deployments_path);
+    };
+    look();
+    // A camt.053 statement: an opening balance, then the closing one the sample reads; and a note
+    // that doesn't compress, so the zips are past what a log entry keeps inline.
+    let note: String = (0..200u32).map(|i| blake3::hash(&i.to_le_bytes()).to_hex().to_string()).collect();
+    let statement = |iban: &str, closing: &str, side: &str| {
+        format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?><Document xmlns="urn:iso:std:iso:20022:tech:xsd:camt.053.001.08"><BkToCstmrStmt><GrpHdr><MsgId>M1</MsgId><CreDtTm>2026-11-06T18:00:00</CreDtTm></GrpHdr><Stmt><Id>S1</Id><Acct><Id><IBAN>{iban}</IBAN></Id></Acct><Bal><Tp><CdOrPrtry><Cd>OPBD</Cd></CdOrPrtry></Tp><Amt Ccy="EUR">1000.00</Amt><CdtDbtInd>CRDT</CdtDbtInd><Dt><Dt>2026-11-05</Dt></Dt></Bal><Bal><Tp><CdOrPrtry><Cd>CLBD</Cd></CdOrPrtry></Tp><Amt Ccy="EUR">{closing}</Amt><CdtDbtInd>{side}</CdtDbtInd><Dt><Dt>2026-11-06</Dt></Dt></Bal><AddtlStmtInf>{note}</AddtlStmtInf></Stmt></BkToCstmrStmt></Document>"#
+        )
+    };
+    let (fr, de) = (statement("FR1420041010050500013M02606", "1250.50", "CRDT"), statement("DE89370400440532013000", "75.25", "DBIT"));
+    let leaf = |name: &str, input: Value| holon_core::primitives::compute(name, &[&input], &[]).unwrap_or_else(|| panic!("{name} gave nothing"));
+    let bytes = |s: &str| Value::Bytes(s.as_bytes().to_vec());
+    let sha = |s: &str| match holon_core::primitives::compute("sha256", &[&bytes(s)], &[holon_core::Param::frozen("encoding", "hex")]) {
+        Some(Value::Text(t)) => t,
+        other => panic!("{other:?}"),
+    };
+    let Value::Bytes(zipped) = leaf("zip", Value::Record(BTreeMap::from([("fr.xml".to_string(), bytes(&fr)), ("de.xml".to_string(), bytes(&de))]))) else { panic!("zip gives bytes") };
+    std::fs::write(inbox.join("2026-11-06.zip"), &zipped).unwrap();
+    let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    std::io::Write::write_all(&mut gz, fr.as_bytes()).unwrap();
+    std::fs::write(inbox.join("2026-11-07.xml.gz"), gz.finish().unwrap()).unwrap();
+    std::fs::write(inbox.join("junk.zip"), "not a zip").unwrap();
+    look();
+
+    let (status, answer, _) = data_call(&state, &slug, "GET", "/deliveries", "");
+    let summary = |file: &str, iban: &str, closing: &str, text: &str| serde_json::json!({ "file": file, "account": iban, "date": "2026-11-06", "closing": closing, "currency": "EUR", "sha256": sha(text) });
+    let (fr_summary, de_summary) = (summary("fr.xml", "FR1420041010050500013M02606", "1250.50", &fr), summary("de.xml", "DE89370400440532013000", "-75.25", &de));
+    assert_eq!(
+        (status, serde_json::from_str::<serde_json::Value>(&answer).unwrap()),
+        (
+            200,
+            serde_json::json!({
+                "2026-11-06.zip": { "archive": "2026-11-06.zip", "statements": [de_summary, fr_summary] },
+                "2026-11-07.xml.gz": { "archive": "2026-11-07.xml.zip", "statements": [summary("2026-11-07.xml", "FR1420041010050500013M02606", "1250.50", &fr)] },
+                "junk.zip": { "refused": "not a zip of camt.053 statements, or one gzipped" },
+            })
+        )
+    );
+
+    // The archive: the statements as they came, and the manifest beside them.
+    let unzipped = |name: &str| match leaf("unzip", Value::Bytes(std::fs::read(archive.join(name)).unwrap())) {
+        Value::Record(files) => files,
+        other => panic!("{other:?}"),
+    };
+    let day = unzipped("2026-11-06.zip");
+    assert_eq!(day.keys().map(String::as_str).collect::<Vec<_>>(), ["de.xml", "fr.xml", "manifest.csv"]);
+    assert_eq!((&day["de.xml"], &day["fr.xml"]), (&bytes(&de), &bytes(&fr)));
+    let manifest = format!(
+        "file,account,date,closing,currency,sha256\r\nde.xml,DE89370400440532013000,2026-11-06,-75.25,EUR,{}\r\nfr.xml,FR1420041010050500013M02606,2026-11-06,1250.50,EUR,{}\r\n",
+        sha(&de),
+        sha(&fr)
+    );
+    assert_eq!(day["manifest.csv"], bytes(&manifest));
+    assert_eq!(unzipped("2026-11-07.xml.zip").keys().map(String::as_str).collect::<Vec<_>>(), ["2026-11-07.xml", "manifest.csv"]);
+
+    // A statement served back from its archive: gzipped when the client takes it, else as it is.
+    let get = |accept: &[(String, String)]| {
+        let asked = data::DataRequest { method: "GET".into(), url: "/deliveries/2026-11-06.zip/fr.xml".into(), headers: accept.to_vec(), body: vec![], by: None };
+        serve_data(&state.store, &state.deployments, &state.deployments_path, &slug, &asked)
+    };
+    let r = get(&[("accept-encoding".into(), "gzip, br".into())]);
+    assert!(r.headers.iter().any(|(k, v)| k == "content-encoding" && v == "gzip"), "{:?}", r.headers);
+    let mut back = String::new();
+    std::io::Read::read_to_string(&mut flate2::read::GzDecoder::new(&r.body[..]), &mut back).unwrap();
+    assert_eq!((r.status, back.as_str()), (200, fr.as_str()), "gzipped, flate2 reads it");
+    let r = get(&[]);
+    assert_eq!((r.status, r.body.as_slice()), (200, fr.as_bytes()));
+    assert!(!r.headers.iter().any(|(k, _)| k == "content-encoding"), "{:?}", r.headers);
+
+    // The archive is in the log by its hash, its bytes nowhere: not in what was performed, nor in
+    // the timeline.
+    let entries = log_entries(&state, &slug);
+    let archived = std::fs::read(archive.join("2026-11-06.zip")).unwrap();
+    let performed = serde_json::to_string(&entries.iter().map(|e| &e["performed"]).collect::<Vec<_>>()).unwrap();
+    assert!(performed.contains(&blake3::hash(&archived).to_hex().to_string()), "the archive written, by its hash: {performed}");
+    let whole = holon_core::bytes_text(&archived, "base64").unwrap();
+    assert!(!serde_json::to_string(&entries).unwrap().contains(&whole[..64]), "its bytes aren't in the log");
+
+    // Its runs check offline: the deliveries read from the export's blobs.
+    let export: verify::Export = serde_json::from_value(body_json(route(&state, &req("GET", &format!("/deployments/{slug}/export"), vec![])))).unwrap();
+    let report = verify::check(&export, None, &BTreeMap::new());
+    assert!(report.ok() && report.reruns.iter().all(|(_, r)| *r == verify::Rerun::Matched), "{}", verify::describe(&report, None));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// `on file` lines (the file-audit sample): several folders, files removed, and only some names.
 /// Each run's `ingress` says what happened; a name no line is for starts nothing; an entry is
 /// created, never replaced; and the runs verify.
@@ -6989,8 +7093,11 @@ fn on_file_lines_run_on_several_folders_deletions_and_matching_names() {
     }
     std::fs::write(inbox.join("old.txt"), "there before").unwrap();
     let slug = deploy_text(&state, include_str!("../../holon-author/samples/file-audit.holon.ts"), "");
-    let triggers = body_json(route(&state, &req("GET", "/deployments", vec![])))["deployments"][0]["triggers"].clone();
-    assert_eq!(triggers, serde_json::json!(["on file inbox matching \"*.csv\"", "on file inbox deleted", "on file outbox"]), "each file handler its own trigger");
+    // Deployed as units alone, with no text, its handlers come in its composite's order, which
+    // follows hashes rather than the order they are written in.
+    let mut triggers: Vec<String> = serde_json::from_value(body_json(route(&state, &req("GET", "/deployments", vec![])))["deployments"][0]["triggers"].clone()).unwrap();
+    triggers.sort();
+    assert_eq!(triggers, ["on file inbox deleted", "on file inbox matching \"*.csv\"", "on file outbox"], "each file handler its own trigger");
     let look = || {
         arrivals::run_arrivals(&state.store, &state.deployments, &state.deployments_path);
         arrivals::run_arrivals(&state.store, &state.deployments, &state.deployments_path);

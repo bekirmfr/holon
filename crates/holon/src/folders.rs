@@ -565,16 +565,16 @@ impl Scoped {
 
     #[cfg(test)]
     fn write_as(&self, name: &str, file: &str, text: &str, create: bool) -> Result<(), String> {
-        self.ready_write(name, file, text, create)?.land(self)
+        self.ready_write(name, file, text.as_bytes(), create)?.land(self)
     }
 
     /// A write of `text` as file `file` of folder `name`, made ready: its bytes beside the file.
-    fn ready_write(&self, name: &str, file: &str, text: &str, create: bool) -> Result<Ready, String> {
+    fn ready_write(&self, name: &str, file: &str, data: &[u8], create: bool) -> Result<Ready, String> {
         let folder = self.writable(name)?;
         let placed = for_writing(&folder.path, file)?;
         let why = |e: String| format!("{name}/{file} not written: {e}");
-        let beside = fill_beside(&placed.path, create, |f| f.write_all(text.as_bytes()).map_err(|e| e.to_string())).map_err(why)?;
-        Ok(Ready { name: name.into(), file: file.into(), beside, size: text.len() as u64, create, verb: "written", placed })
+        let beside = fill_beside(&placed.path, create, |f| f.write_all(data).map_err(|e| e.to_string())).map_err(why)?;
+        Ok(Ready { name: name.into(), file: file.into(), beside, size: data.len() as u64, create, verb: "written", placed })
     }
 
     /// Copy file `from_file` of folder `from` as file `file` of folder `name`, streamed beside it
@@ -1797,6 +1797,7 @@ pub(crate) fn past_write_limits(performed: &[(Capability, Value)], read: u64, li
         let Value::Record(r) = payload else { continue };
         bytes = bytes.saturating_add(match (r.get("text"), r.get("from")) {
             (Some(Value::Text(t)), _) => t.len() as u64,
+            (Some(Value::Bytes(b)), _) => b.len() as u64,
             (_, Some(Value::Record(h))) => match h.get("size") {
                 Some(Value::Number(n)) if *n >= 0.0 => *n as u64,
                 _ => 0,
@@ -2047,10 +2048,10 @@ fn step_of(folders: &Scoped, name: &str, payload: &Value) -> Result<Step, String
             folders.ready_copy(name, file, folder, source, hash, creates(payload)).map(Step::Land)
         }
         Value::Record(file) => {
-            let (Some(Value::Text(file)), Some(Value::Text(text))) = (file.get("name"), file.get("text")) else {
-                return Err("a write needs a name and a text".into());
+            let (Some(Value::Text(file)), Some(data)) = (file.get("name"), file.get("text").and_then(written_bytes_of)) else {
+                return Err("a write needs a name, and a text or bytes".into());
             };
-            folders.ready_write(name, file, text, creates(payload)).map(Step::Land)
+            folders.ready_write(name, file, data, creates(payload)).map(Step::Land)
         }
         Value::Text(file) => Ok(Step::Delete { name: name.into(), file: file.clone() }),
         _ => Err("not a write or a delete".into()),
@@ -2076,13 +2077,22 @@ impl Staged {
     }
 }
 
+/// What a write puts in its file: a text's UTF-8, or bytes as they are.
+fn written_bytes_of(v: &Value) -> Option<&[u8]> {
+    match v {
+        Value::Text(t) => Some(t.as_bytes()),
+        Value::Bytes(b) => Some(b),
+        _ => None,
+    }
+}
+
 /// Whether a write's or a copy's payload is create-only (`file_create`, `file_create_copy`).
 fn creates(payload: &Value) -> bool {
     matches!(payload, Value::Record(r) if r.get("create") == Some(&Value::Boolean(true)))
 }
 
-/// What the log keeps of a performed effect: a file write as `{name, size, hash}`, never its text;
-/// everything else as it is.
+/// What the log keeps of a performed effect: a file write as `{name, size, hash}`, never its text
+/// or bytes; everything else as it is.
 pub(crate) fn loggable(cap: &Capability, payload: &Value) -> Value {
     match cap {
         Capability::FileWrite(_) => by_hash(payload),
@@ -2090,16 +2100,16 @@ pub(crate) fn loggable(cap: &Capability, payload: &Value) -> Value {
     }
 }
 
-/// A file write's `{name, text}` as `{name, size, hash}` (and `create`, for a create-only one);
-/// anything else as it is.
+/// A file write's `{name, text}` (a text or bytes) as `{name, size, hash}` (and `create`, for a
+/// create-only one); anything else as it is.
 fn by_hash(payload: &Value) -> Value {
     if let Value::Record(file) = payload
-        && let (Some(name), Some(Value::Text(text))) = (file.get("name"), file.get("text"))
+        && let (Some(name), Some(data)) = (file.get("name"), file.get("text").and_then(written_bytes_of))
     {
         let mut kept = BTreeMap::from([
             ("name".to_string(), name.clone()),
-            ("size".to_string(), Value::Number(text.len() as f64)),
-            ("hash".to_string(), Value::Text(blake3::hash(text.as_bytes()).to_hex().to_string())),
+            ("size".to_string(), Value::Number(data.len() as f64)),
+            ("hash".to_string(), Value::Text(blake3::hash(data).to_hex().to_string())),
         ]);
         if creates(payload) {
             kept.insert("create".to_string(), Value::Boolean(true));
@@ -2131,6 +2141,21 @@ pub(crate) fn written_texts(performed: &[(Capability, Value)]) -> Vec<&str> {
         .filter_map(|(c, p)| match (c, p) {
             (Capability::FileWrite(_), Value::Record(f)) => match f.get("text") {
                 Some(Value::Text(t)) if t.len() as u64 > LOG_INLINE_BYTES => Some(t.as_str()),
+                _ => None,
+            },
+            _ => None,
+        })
+        .collect()
+}
+
+/// The bytes of the files a run wrote that are past the inline size, as [`written_texts`] gives
+/// the texts.
+pub(crate) fn written_bytes(performed: &[(Capability, Value)]) -> Vec<&[u8]> {
+    performed
+        .iter()
+        .filter_map(|(c, p)| match (c, p) {
+            (Capability::FileWrite(_), Value::Record(f)) => match f.get("text") {
+                Some(Value::Bytes(b)) if b.len() as u64 > LOG_INLINE_BYTES => Some(b.as_slice()),
                 _ => None,
             },
             _ => None,
@@ -2346,7 +2371,7 @@ mod tests {
         std::fs::create_dir_all(inbox.join("sub")).unwrap();
         let folders = Scoped::memory();
         folders.all.bind("inbox", inbox.to_str().unwrap(), FolderAccess::ReadWrite, Keep::Bytes, None, None).unwrap();
-        let ready = folders.ready_write("inbox", "sub/x.txt", "mine", false).unwrap();
+        let ready = folders.ready_write("inbox", "sub/x.txt", b"mine", false).unwrap();
         // Between the check and the landing, someone with a hand in the folder moves sub away
         // and puts a link to outside in its place.
         std::fs::rename(inbox.join("sub"), inbox.join("moved")).unwrap();

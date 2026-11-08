@@ -62,7 +62,7 @@ export const CATALOG_GROUPS: readonly { name: string; items: ReadonlySet<string>
   },
   {
     name: "bytes",
-    items: new Set(["text_to_bytes", "bytes_to_text", "bytes_length", "bytes_concat", "bytes_to_list", "list_to_bytes"]),
+    items: new Set(["text_to_bytes", "bytes_to_text", "bytes_length", "bytes_concat", "bytes_to_list", "list_to_bytes", "gzip", "gunzip", "zip", "unzip"]),
   },
   {
     name: "decimal",

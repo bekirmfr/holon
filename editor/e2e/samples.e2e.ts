@@ -1934,6 +1934,101 @@ test("payment-batch writes a pain.001 whose control sum is exact and reads a pai
   });
 });
 
+test("statement-archive unzips and gunzips deliveries, archives each as a zip it writes, serves a statement gzipped, and its runs verify", async ({ page, request, adminToken }) => {
+  const { execFileSync } = await import("node:child_process");
+  const { createHash } = await import("node:crypto");
+  const { mkdtempSync, readFileSync, writeFileSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const { crc32, gzipSync, inflateRawSync } = await import("node:zlib");
+  // A zip as another tool writes one, its files stored rather than deflated: Node has no zip of its own.
+  const zipStored = (files: [string, Buffer][]) => {
+    const [parts, directory] = [[] as Buffer[], [] as Buffer[]];
+    let at = 0;
+    for (const [name, data] of files) {
+      const [named, local, entry] = [Buffer.from(name), Buffer.alloc(30), Buffer.alloc(46)];
+      local.writeUInt32LE(0x04034b50, 0);
+      entry.writeUInt32LE(0x02014b50, 0);
+      entry.writeUInt16LE(20, 4);
+      for (const [header, from] of [[local, 4], [entry, 6]] as const) {
+        header.writeUInt16LE(20, from);
+        header.writeUInt16LE(0x0021, from + 8);
+        header.writeUInt32LE(crc32(data), from + 10);
+        header.writeUInt32LE(data.length, from + 14);
+        header.writeUInt32LE(data.length, from + 18);
+        header.writeUInt16LE(named.length, from + 22);
+      }
+      entry.writeUInt32LE(at, 42);
+      parts.push(local, named, data);
+      directory.push(entry, named);
+      at += 30 + named.length + data.length;
+    }
+    const end = Buffer.alloc(22);
+    end.writeUInt32LE(0x06054b50, 0);
+    end.writeUInt16LE(files.length, 8);
+    end.writeUInt16LE(files.length, 10);
+    end.writeUInt32LE(directory.reduce((n, b) => n + b.length, 0), 12);
+    end.writeUInt32LE(at, 16);
+    return Buffer.concat([...parts, ...directory, end]);
+  };
+  // A zip read as another tool reads one: each local header in turn, its file inflated.
+  const unzipped = (zip: Buffer) => {
+    const files: Record<string, string> = {};
+    for (let at = 0; zip.readUInt32LE(at) === 0x04034b50; ) {
+      const [method, size, named, extra] = [zip.readUInt16LE(at + 8), zip.readUInt32LE(at + 18), zip.readUInt16LE(at + 26), zip.readUInt16LE(at + 28)];
+      const data = zip.subarray(at + 30 + named + extra, at + 30 + named + extra + size);
+      files[zip.toString("utf8", at + 30, at + 30 + named)] = (method === 8 ? inflateRawSync(data) : data).toString("utf8");
+      at += 30 + named + extra + size;
+    }
+    return files;
+  };
+  await openSample(page, "Statement archive (zip and gzip, bytes written to a file)");
+  const port = await deploy(page);
+  const statement = (iban: string, closing: string, side: string) =>
+    `<?xml version="1.0" encoding="UTF-8"?><Document xmlns="urn:iso:std:iso:20022:tech:xsd:camt.053.001.08"><BkToCstmrStmt><Stmt><Acct><Id><IBAN>${iban}</IBAN></Id></Acct>` +
+    `<Bal><Tp><CdOrPrtry><Cd>OPBD</Cd></CdOrPrtry></Tp><Amt Ccy="EUR">1000.00</Amt><CdtDbtInd>CRDT</CdtDbtInd><Dt><Dt>2026-11-05</Dt></Dt></Bal>` +
+    `<Bal><Tp><CdOrPrtry><Cd>CLBD</Cd></CdOrPrtry></Tp><Amt Ccy="EUR">${closing}</Amt><CdtDbtInd>${side}</CdtDbtInd><Dt><Dt>2026-11-06</Dt></Dt></Bal></Stmt></BkToCstmrStmt></Document>`;
+  const [fr, de] = [statement("FR1420041010050500013M02606", "1250.50", "CRDT"), statement("DE89370400440532013000", "75.25", "DBIT")];
+  const sha = (text: string) => createHash("sha256").update(text).digest("hex");
+  const stamp = Date.now();
+  const [day, one] = [`day-${stamp}.zip`, `fr-${stamp}.xml.gz`];
+  writeFileSync(join(FOLDERS, "inbox", day), zipStored([["fr.xml", Buffer.from(fr)], ["de.xml", Buffer.from(de)]]));
+  writeFileSync(join(FOLDERS, "inbox", one), gzipSync(fr));
+  const deliveries = async () => (await request.get(`http://127.0.0.1:${port}/deliveries`)).json();
+  await expect.poll(async () => Object.keys(await deliveries()), { timeout: 15_000 }).toEqual(expect.arrayContaining([day, one]));
+  const all = await deliveries();
+  expect(all[day]).toEqual({
+    archive: day,
+    statements: [
+      { file: "de.xml", account: "DE89370400440532013000", date: "2026-11-06", closing: "-75.25", currency: "EUR", sha256: sha(de) },
+      { file: "fr.xml", account: "FR1420041010050500013M02606", date: "2026-11-06", closing: "1250.50", currency: "EUR", sha256: sha(fr) },
+    ],
+  });
+  expect(all[one].archive).toBe(`fr-${stamp}.xml.zip`);
+
+  // The archive, written as bytes, read back by Node: the statements as they came, the manifest beside them.
+  const archived = unzipped(readFileSync(join(FOLDERS, "archive", day)));
+  expect(Object.keys(archived)).toEqual(["de.xml", "fr.xml", "manifest.csv"]);
+  expect([archived["de.xml"], archived["fr.xml"]]).toEqual([de, fr]);
+  expect(archived["manifest.csv"]).toContain(`fr.xml,FR1420041010050500013M02606,2026-11-06,1250.50,EUR,${sha(fr)}`);
+
+  // A statement served back from the archive: gzipped when the client takes it, else as it is.
+  const served = await request.get(`http://127.0.0.1:${port}/deliveries/${day}/fr.xml`, { headers: { "accept-encoding": "gzip" } });
+  expect([served.headers()["content-encoding"], await served.text()]).toEqual(["gzip", fr]);
+  const plain = await request.get(`http://127.0.0.1:${port}/deliveries/${day}/fr.xml`, { headers: { "accept-encoding": "identity" } });
+  expect([plain.headers()["content-encoding"], await plain.text()]).toEqual([undefined, fr]);
+
+  // Its runs check offline.
+  const target = process.env.CARGO_TARGET_DIR ?? join(process.cwd(), "..", "target");
+  const holon = join(target, "debug", process.platform === "win32" ? "holon.exe" : "holon");
+  const env = { ...process.env, HOLON_TOKEN: adminToken };
+  const out = join(mkdtempSync(join(tmpdir(), "holon-runs-")), "statement-archive.json");
+  execFileSync(holon, ["export", "statement-archive", "--server", SERVER, "-o", out], { encoding: "utf8", env });
+  const verified = execFileSync(holon, ["verify", out], { encoding: "utf8" });
+  expect(verified).toContain("each produced what its log entry says");
+  expect(verified.trim().endsWith("ok")).toBe(true);
+});
+
 test("due-dates schedules a payout past Easter's closing days and an invoice past a weekend", async ({ page, request }) => {
   await openSample(page, "Due dates (business days at a fixed offset)");
   const port = await deploy(page);

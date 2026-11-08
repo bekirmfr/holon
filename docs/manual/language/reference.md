@@ -442,6 +442,22 @@ named entities, character references and CDATA; no entity is ever defined or fet
 is refused. Writing escapes what it must and writes a number as `String(n)` does. Elements nest at
 most 64 deep. The payment-batch sample writes a pain.001 and reads a pain.002.
 
+### Zip and gzip
+
+| Call | Gives |
+|---|---|
+| `zip(files)` | a zip's bytes: each of the record's texts or bytes deflated under its name, in order of the names |
+| `unzip(b)` | a record of each file's bytes under its name, a folder's own entry left out; nothing for bytes that aren't a whole zip |
+| `gzip(x)` | a text's UTF-8, or bytes, gzipped |
+| `gunzip(b)` | the bytes gzipped, each member in turn; nothing for bytes that aren't a whole gzip |
+
+The same input gives the same bytes on every host: the deflate is pinned, and a zip's entries are
+dated 1980-01-01. Reading checks every checksum and length, and gives nothing for a file that is
+encrypted, zip64 or compressed other than by deflate, for a name given twice or one that would
+land outside its folder (a `..` part, a leading `/`, a `\`), and past 64 MiB inflated or 10,000
+files, so a zip bomb stops early. `zip` refuses the same names. The statement-archive sample
+unzips deliveries of bank statements and archives each as a zip.
+
 ## The outside world
 
 Each of these is one building block, and each is one thing the flow may do.
@@ -461,14 +477,14 @@ Each of these is one building block, and each is one thing the flow may do.
 | `coll.list({ prefix: p, after: a, limit: n })` | a page of items, in key order |
 | `dir[name]`, `dir.get(name)` | a file's text, in a folder, as the run began (up to 1 MiB) |
 | `dir.bytes(name)` | a file's bytes, any file, as the run began (up to 1 MiB): a `Uint8Array`, its `.length` and `.slice(start, end)` read as JavaScript's |
-| `dir[name] = text`, `dir.put(name, text)` | write the whole file when the run finishes |
+| `dir[name] = text`, `dir.put(name, text)` | write the whole file when the run finishes: a text as its UTF-8, bytes as they are |
 | `delete dir[name]`, `dir.delete(name)` | delete the file when the run finishes |
 | `dir.list({ prefix: p, after: a, limit: n })` | a page of files: `{size, hash, modified}` by name |
 | `dir.file(name)` | a handle to a file of any size: `{folder, name, size, hash, modified}`, no bytes |
 | `dir.lines(name, { from: i, limit: n })` | `n` lines from line `i` (from the end when negative) |
 | `dir.slice(name, { offset: o, length: n })` | `n` bytes from offset `o`, as text |
 | `dir[name] = handle`, `dir.copy(name, handle)` | copy a file by handle when the run finishes |
-| `dir.create(name, text)`, `dir.create_copy(name, handle)` | the same write or copy, only if there is no such file yet: else the run fails, and nothing it did lands |
+| `dir.create(name, text)`, `dir.create_copy(name, handle)` | the same write (a text or bytes) or copy, only if there is no such file yet: else the run fails, and nothing it did lands |
 | `f` in `on.file.created(dir, (f) => …)` | the handle of the file that started the run: `{folder, name, size, hash, modified, event}` |
 | `db.query(sql, v1, v2, …)` | the rows of a database, a list of records, as the run began; `$1`, `$2`, … in the SQL are the values after it |
 | `db.one(sql, v1, …)` | the first row, or no value when there is none |

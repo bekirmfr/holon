@@ -191,13 +191,13 @@ declare module "holon" {
     /** A page of items, in key order. */
     list(page?: Page): any
   }
-  /** A named folder: `dir[name]` reads a file's text as the run began, `dir[name] = text` writes it. */
+  /** A named folder: `dir[name]` reads a file's text as the run began, `dir[name] = text` writes it, or bytes as they are. */
   export interface Folder {
     [name: string]: any
     get(name: string): any
     /** The file's bytes, any file: an image, a PDF, an archive. */
     bytes(name: string): Uint8Array
-    put(name: string, content: string | FileHandle): any
+    put(name: string, content: string | Uint8Array | FileHandle): any
     delete(name: string): any
     /** A page of files: `{size, hash, modified}` by name. */
     list(page?: Page): any
@@ -209,7 +209,7 @@ declare module "holon" {
     slice(name: string, options?: { offset?: number; length?: number }): any
     copy(name: string, handle: FileHandle): any
     /** Writes the file only if there is none yet: else the run fails, and nothing it did lands. */
-    create(name: string, text: string): any
+    create(name: string, content: string | Uint8Array): any
     create_copy(name: string, handle: FileHandle): any
   }
   /** A named database: its SQL written in quotes (the tables are the permission), values after it as `$1`, `$2`, … */

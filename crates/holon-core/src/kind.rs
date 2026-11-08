@@ -303,6 +303,7 @@ pub fn capabilities_of(name: &str, params: &[Param]) -> Option<Capabilities> {
         | "decimal_add" | "decimal_sub" | "decimal_mul" | "decimal_div" | "decimal_round" | "decimal_sum" | "decimal_compare"
         | "csv_parse" | "csv_format"
         | "xml_parse" | "xml_format" | "xml_find" | "xml_text" | "xml_attribute"
+        | "gzip" | "gunzip" | "zip" | "unzip"
         | "to_text" | "as_text" | "is_truthy" | "guard" | "default" | "coalesce" | "equals" | "fail"
         | "fold" | "map" => vec![],
 
@@ -849,6 +850,7 @@ mod tests {
             "decimal_add", "decimal_sub", "decimal_mul", "decimal_div", "decimal_round", "decimal_sum", "decimal_compare",
             "csv_parse", "csv_format",
             "xml_parse", "xml_format", "xml_find", "xml_text", "xml_attribute",
+            "gzip", "gunzip", "zip", "unzip",
             "join", "cons", "head", "tail", "is_empty", "pair", "some", "none", "to_text", "as_text", "is_truthy", "guard", "default", "coalesce", "equals", "fail", "fold", "map",
         ];
         for name in PURE {
