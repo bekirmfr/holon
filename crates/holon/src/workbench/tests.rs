@@ -557,7 +557,8 @@ fn a_tab_shows_its_code_its_graph_beside_it_or_its_graph_alone() {
     assert!(app.beside_has_keys() && !app.typing, "a row clicked: the graph has the keys");
     assert_eq!((picked(&app), app.tabs[0].buf.row), ("n".to_string(), 7), "picked, the cursor where it was");
     press(&mut app, KeyCode::Down);
-    let shown = screen(&mut app, 130, 40);
+    // As wide again as the shell prompt's user@host, which the keys line gives room to.
+    let shown = screen(&mut app, 130 + super::shell::who().chars().count() as u16, 40);
     assert_eq!(picked(&app), "state.n");
     assert!(shown.contains("· picking") && shown.contains("back to the text") && shown.contains("its detail"), "its keys on its edge:\n{shown}");
     let g = app.tabs[0].graph.as_ref().unwrap();

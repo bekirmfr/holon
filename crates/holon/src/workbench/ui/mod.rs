@@ -708,10 +708,17 @@ fn draw_keys(f: &mut Frame, app: &App, area: Rect) {
         None => 0,
     };
     bar.extend_from_slice(&local[shown..]);
-    let keys = bar;
+    let mut keys = bar;
     // At the right: the shell line, closed, in what the keys leave (its path shortened to fit,
-    // never below a few letters of it). ctrl+` opens it from anywhere, even while typing.
-    let used: usize = 1 + keys.iter().map(|(k, w, ..)| k.chars().count() + w.chars().count() + 5).sum::<usize>();
+    // never below a few letters of it). ctrl+` opens it from anywhere, even while typing. The
+    // keys give way from the last (? lists them all) before its prompt is cut below who you are
+    // and a dozen letters of the folder.
+    let width_of = |keys: &[(&str, &str, KeyCode, KeyModifiers)]| 1 + keys.iter().map(|(k, w, ..)| k.chars().count() + w.chars().count() + 5).sum::<usize>();
+    let room = (area.width as usize).saturating_sub(super::shell::who().chars().count() + 22);
+    while keys.len() > 1 && width_of(&keys) > room {
+        keys.pop();
+    }
+    let used = width_of(&keys);
     let left = (area.width as usize).saturating_sub(used).max(22);
     let shell = format!(" {} ", super::shell::prompt(left.saturating_sub(6)));
     let shell_width = (shell.chars().count() as u16 + 4).min(left as u16).min(area.width);
