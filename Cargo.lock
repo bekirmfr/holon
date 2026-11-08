@@ -1533,7 +1533,7 @@ dependencies = [
 
 [[package]]
 name = "holon"
-version = "0.1.0-rc.33"
+version = "0.1.0-rc.34"
 dependencies = [
  "aes-gcm",
  "argon2",

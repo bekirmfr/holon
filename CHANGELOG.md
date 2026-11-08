@@ -1,7 +1,120 @@
 # Changelog
 
-## Unreleased
+## 0.1.0-rc.34
 
+A flow is now a TypeScript module, `NAME.holon.ts`, held to Holon's meanings: TypeScript's own
+checker reads it through `holon.d.ts`, `holon fmt` lays it out as Prettier does, and it may `try`,
+`catch` and `throw`. JavaScript's numbers, lists, records, dates and texts are Holon's leaves, and
+a flow can do what a payment file asks of it: read a file's bytes, compute amounts exactly, read
+and write CSV, count business days at a fixed offset, and write and read ISO 20022 XML (the files
+the `payment-batch` sample writes pass the official schemas). Flows that compute run faster, a
+handler's log level is its author's choice, the install commands work on the first try, and
+Windows paths and disks are read as Windows writes them. Nothing is kept compatible: `.holon`
+files are no longer read, so rewrite each flow as `.holon.ts` and deploy it again; a flow without
+handlers no longer runs, and `holon trigger` is gone.
+
+- **A flow is a TypeScript module.** A flow is written in TypeScript's syntax, in a file named
+  `NAME.holon.ts`: its words are imported from `"holon"` (`flow`, `route`, `every`, `on`,
+  `action`), a route is `route.post("/orders", (req) => …)`, and `let`, `if`, `switch`,
+  destructuring and early `return` read as TypeScript reads them. A route answers and is done;
+  what waits is an action it starts: `const started = payment(req.json)` starts the run and
+  answers `{ run, waiting }` with the token for each point it waits at, and `await charge(x)`
+  calls an action and reads its answer. `holon new`, the samples, the manual, the editor's text
+  pane, its export and a run's view are all TypeScript, and to VS Code a flow is a TypeScript
+  file, with `holon lsp` beside its own server.
+- **The `.holon` form is gone, with no converter.** `holon check`, `holon deploy`, `holon fmt`,
+  the editor and the language server read TypeScript alone, so a flow written in the old form no
+  longer compiles: rewrite it as `.holon.ts` (each sample and the manual show the forms) and
+  deploy it again. A flow without handlers can't be written in TypeScript, so the server no
+  longer runs one: deploy refuses a unit with no route, clock, file handler or action, saying to
+  add one, and a saved deployment of one is skipped at load, saying so. Gone with them: the
+  `interval_seconds` deploy setting and the editor's interval field (a clock is an `every`
+  handler), the `ingress` leaf, `holon trigger` and the unnamed `POST /trigger/<slug>` run;
+  `holon tick` stays.
+- **`try`, `catch`, `throw` and `finally`.** `throw new Error(message)` fails the step (a new
+  `fail` leaf) and its message goes into the run's timeline beside the node. A `try` block keeps
+  its writes and sends only when every value it makes arrives; else the `catch` block runs, from
+  the names as they were before the `try`. `finally` runs either way. Uncaught, a
+  throw ends the handler as a return of nothing: a route answers 404, or its `?? status(…)`.
+  `catch` catches absence too, a field the block reads that isn't there. `catch (e)` is refused
+  (the reason is in the run's log), and so are a `return` or a `throw` in `finally`. The `intake`
+  sample keeps an order only when its whole try block succeeded.
+- **Editors type-check a flow.** `holon.d.ts` types `"holon"` and every import source, with each
+  leaf's signature and description from the live catalog, so an editor completes `route.post`,
+  shows a leaf on hover, and marks a misspelled method or option, a path without its `/`, a
+  duration without its unit, an import source Holon hasn't, and a request read before it is
+  awaited. `holon new` writes it and a `tsconfig.json` beside a new flow, and `holon types [dir]`
+  writes them into a folder. One warning stays: TypeScript calls the right side of
+  `{ total } ?? status(400)` unreachable (TS2869), where in Holon it is reached.
+- **A condition is read as JavaScript reads it.** What `if`, `?:` and `!` test, and `&&` and `||`
+  inside a condition, follows JavaScript's truthiness: `""`, `0`, `NaN` and `false` are false, an
+  empty list or record is true. `if (!s) throw …` now throws for `""`, where `!` on a text gave
+  nothing. An absent value is still absent, and the `if` takes its else. A route may answer
+  `status(400)` alone, with an empty body (it was refused), and a 204 or a 304 is sent with no
+  body or content type.
+- **A list's item by its index, and a parameter known by its type.** `e[0]` reads a list's item,
+  nothing past its end, where it was a record lookup that failed validation; on a text it is
+  refused, naming `s.at(i)`. A parameter written with its type (`xs: string[]`, `b: Uint8Array`)
+  picks the right `.length`.
+- **JavaScript's library, as leaves.** Numbers (`Math`, `parseFloat`, `**`, `%`, bitwise,
+  `toFixed`), lists (`at`, `toSorted`, `flat`, `find`, `new Set` and the rest), records
+  (`Object.groupBy`, `Object.fromEntries`, spread, `in`), dates (`new Date`, `Date.UTC`,
+  `setUTCDate`, `toISOString`), `JSON.parse` with a reviver and `JSON.stringify` with a replacer,
+  keys and an indent, and a text's methods, in UTF-16 code units as JavaScript counts them. Each
+  has a sample: `loan`, `leaderboard`, `invoice` and `share-link`. A text stops at 16 Mi units.
+- **Values nest at most 256 deep.** A fold that wrapped its accumulator 10,000 deep overflowed a
+  run's stack and took the whole server down; now no leaf nests a value past the bound, and the
+  route answers 422. The JSON Holon writes is read back to that depth: a value 41 records deep
+  made every later log line unreadable, and could keep the server from starting.
+- **A function may be `async`.** A function, or an arrow a top-level `const` holds, may `await` a
+  request as a handler does, and a caller's `await f(x)` places it; it is the same unit as the
+  function without `async`. A function never waits: `await event(…)` in one is refused, and so is
+  awaiting another flow's action. A method given a function (`map`, `filter`, `sort`) takes no
+  async one, and says so. A template inside a function opens as itself: the canvas shows
+  `stripe_verify` where it showed a hash, and the text writes `stripe.verify(…)` with its
+  tolerance. The `stripe-to-slack` sample groups its halves as two functions.
+- **`holon fmt` writes Prettier's layout.** It lays a flow out with Oxfmt's formatter: a method
+  chain that doesn't fit on a line breaks one call per line, a short one stays whole, object keys
+  keep their quotes as written, and `js()` bodies are laid out too (a body laid out anew is a new
+  unit that does the same). It still rewrites `var` and `==` outside `js()` bodies, and before it
+  answers it checks that the text is the same program, compiles to the same flow and keeps every
+  comment.
+- **A file's bytes.** `folder.bytes(name)` reads any file whole, an image, a PDF or an archive
+  as well as a text, as a `Uint8Array` with `.length` and `.slice`. Seven leaves convert, join and
+  measure them (`bytes_to_text` and `text_to_bytes` in utf8, hex, base64 and base64url), and
+  `sha256`, `hmac_sha256` and `secure_equals` take bytes as well as text, which moves the hash of
+  every flow that uses them. Bytes are base64 in the log and the export, a route answers them as
+  `application/octet-stream`, and binary columns in SQLite, Postgres, MySQL and Mongo read as
+  bytes. The `file-checksums` sample keeps each dropped file's size, kind and SHA-256.
+- **Exact decimals and CSV.** `decimal_add`, `decimal_sub`, `decimal_mul`, `decimal_div`,
+  `decimal_round` (half to even by default, or half up, half down, up, down, ceiling or floor),
+  `decimal_sum` and `decimal_compare` compute exactly on amounts written as text, up to 1,000
+  digits. `+` and the comparisons on a decimal are refused, naming `decimal_add` and
+  `decimal_compare`, as `+` would join the texts and `<` compare letters. `csv_parse` reads a CSV
+  into records keyed by its first row, strict about a malformed file, and `csv_format` writes
+  records back. The `payout-totals` sample totals each
+  currency's payouts in a dropped CSV, to the cent.
+- **Dates at a fixed offset, and business days.** `date_part` and `date_text` take an offset
+  (`"+01:00"`), `date_add` adds days, months or years (a month clamps to its last day), and
+  `business_day_add`, `business_days_between` and `is_business_day` count over the closing days a
+  flow holds as data, with a choice of weekend. Offsets are fixed: there are no time zones. The
+  `due-dates` sample says when a payout is executed and credited past a 16:00 cut-off and
+  TARGET2's closing days.
+- **XML, both ways.** An element is a JsonML list, its name, its attributes, then its children in
+  order, so the order a schema fixes is kept. `xml_parse` refuses any DOCTYPE, so no entity is
+  ever defined or fetched (no XXE, no billion laughs). `xml_format` writes one, and `xml_find`,
+  `xml_text` and `xml_attribute` read along paths of names. The `payment-batch` sample turns a
+  CSV of payouts into a pain.001.001.09 credit transfer, its control sum exact, and reads a
+  pain.002's statuses back.
+- **`payment-batch` checked against ISO 20022.** Every pain.001 it wrote passed the official
+  pain.001.001.09 schema, and the pain.002 its test reads passed pain.002.001.10. The check found
+  rows a bank would refuse that the sample let through, so it now answers 400 for an id over 35
+  characters, a name or reference empty or over 140, an IBAN not in its shape, an empty date or
+  one that isn't a calendar day, and a control sum over 18 digits.
+- **An n8n node, translated.** The `dexpaprika` sample is the n8n community node
+  `n8n-nodes-dexpaprika` written by hand in Holon, none of its JavaScript run: each operation an
+  async function, and its optional key an optional secret whose approval names the hosts it goes
+  to.
 - **Flows that compute run faster, and a fold that builds a list no longer slows with its square.**
   A fold that grows what it carries (`xs.reduce((acc, x) => [...acc, x], [])`, a record built key
   by key) moves it into each step instead of copying it: a filter by fold over 5,000 items answers
