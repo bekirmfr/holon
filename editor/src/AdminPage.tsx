@@ -1,7 +1,7 @@
 // The admin panel (admins only; holon-server's auth.rs), in three tabs (docs/L4s/databases-L4.md
 // §9.1): people and sign-in (the people who use this server, the API tokens scripts use, signing
-// in through an identity provider); resources (the folders and databases flows read and write:
-// folders.rs, databases.rs); and permissions (what this host allows, and who holds what). Below
+// in through an identity provider); resources (the folders and databases flows read and write,
+// and the mail they send through: folders.rs, databases.rs, mails.rs); and permissions (what this host allows, and who holds what). Below
 // each, what was done, by whom.
 // Adding someone gives a one-time link for them to set their password; resetting gives a new
 // one. The server refuses any change that would leave no admin. A grant changes only on its
@@ -11,6 +11,7 @@ import { Fragment, useCallback, useEffect, useState, type CSSProperties } from "
 import {
   changeAccount,
   bindDatabase,
+  bindMail,
   bindFolder,
   bindServerSecret,
   capServerSecret,
@@ -18,6 +19,7 @@ import {
   getOidcSettings,
   getPermissions,
   listDatabases,
+  listMails,
   listFolders,
   listGrants,
   listServerSecrets,
@@ -37,11 +39,14 @@ import {
   setStorage,
   type HostView,
   unbindDatabase,
+  unbindMail,
   unbindFolder,
   unbindServerSecret,
   type AccountEntry,
   type DatabaseBinding,
   type DatabaseEntry,
+  type MailBinding,
+  type MailEntry,
   type FolderBinding,
   type FolderEntry,
   type HeldGrant,
@@ -69,7 +74,7 @@ const ROLE_TITLE: Record<Role, string> = {
 type Tab = "people" | "resources" | "permissions";
 const TABS: { tab: Tab; label: string; about: string }[] = [
   { tab: "people", label: "people and sign-in", about: "who uses this server, and how they get in" },
-  { tab: "resources", label: "resources", about: "what exists on this host for flows to use: its folders, databases and secrets" },
+  { tab: "resources", label: "resources", about: "what exists on this host for flows to use: its folders, databases, mail and secrets" },
   { tab: "permissions", label: "permissions", about: "what this host allows, and who holds what" },
 ];
 
@@ -126,6 +131,8 @@ export function AdminPage({ me, onOpenDeployment }: { me: string; onOpenDeployme
   const [databaseDraft, setDatabaseDraft] = useState<DatabaseBinding & { where: string }>({ name: "", where: "", access: "read-write", schema: null, deployment: null });
   // Each database's tables as last read, by binding: the tables, or why they couldn't be read.
   const [tables, setTables] = useState<Record<string, string[] | { error: string }>>({});
+  const [mails, setMails] = useState<MailEntry[]>([]);
+  const [mailDraft, setMailDraft] = useState<MailBinding>({ name: "", smtp: "", from: "", to: "", deployment: null });
   const [serverSecrets, setServerSecrets] = useState<SecretInfo[]>([]);
   const [secretDraft, setSecretDraft] = useState({ name: "", value: "", to: "" });
   const [grants, setGrants] = useState<HeldGrant[]>([]);
@@ -149,6 +156,7 @@ export function AdminPage({ me, onOpenDeployment }: { me: string; onOpenDeployme
     listTokens().then(setTokens).catch((e: unknown) => setMsg(messageOf(e)));
     listFolders().then(setFolders).catch((e: unknown) => setMsg(messageOf(e)));
     listDatabases().then(setDatabases).catch((e: unknown) => setMsg(messageOf(e)));
+    listMails().then(setMails).catch((e: unknown) => setMsg(messageOf(e)));
     listServerSecrets().then(setServerSecrets).catch((e: unknown) => setMsg(messageOf(e)));
     listGrants().then(setGrants).catch((e: unknown) => setMsg(messageOf(e)));
     getPermissions().then(setPolicy).catch((e: unknown) => setMsg(messageOf(e)));
@@ -197,6 +205,7 @@ export function AdminPage({ me, onOpenDeployment }: { me: string; onOpenDeployme
 
   const folderHolders = (f: FolderEntry) => holdersOf("folder", f, folders, grants);
   const databaseHolders = (d: DatabaseEntry) => holdersOf("database", d, databases, grants);
+  const mailHolders = (m: MailEntry) => holdersOf("mail", m, mails, grants);
   /** Which deployments use it, said under its row. */
   const usedBy = (holders: Holder[]) => (
     <div style={{ ...quiet, padding: "0 10px 6px", marginTop: -2 }}>
@@ -670,6 +679,90 @@ export function AdminPage({ me, onOpenDeployment }: { me: string; onOpenDeployme
             </button>
           </form>
 
+          <div style={head}>mail</div>
+          <div style={about}>
+            The mail flows send: each name an SMTP server whose URL, with its login, the server fetches from where it is kept, as a secret&apos;s
+            (<code>env:HOLON_SECRET_OPS_SMTP</code>, <code>vault:…</code>), never typed in here, stored or shown; it logs in when it is bound. A flow names
+            the mail (<code>import ops from &quot;mail:ops&quot;</code>), never the server, and never chooses the sender: from is the binding&apos;s. To is
+            every address it may ever send to (addresses, *@domain, or * for anyone): a flow is granted each recipient its text writes, or any address it
+            computes within these. Mail goes once its run is over, and is tried again for a day while the server can&apos;t take it.
+          </div>
+          {mails.length === 0 && <div style={{ color: "#7e8ea8", fontSize: 11, marginBottom: 6 }}>no mail bound</div>}
+          {mails.map((m) => (
+            <Fragment key={keyOf(m)}>
+              <div style={row}>
+                <span style={{ color: "#6fd3e0", minWidth: 90 }}>mail {m.name}</span>
+                <span style={{ color: "#e6eefb", flex: 1, overflowWrap: "anywhere" }}>
+                  {m.address} (from {m.smtp}) · as {m.from} · to {m.to.join(", ")}
+                </span>
+                {m.deployment && <span style={{ color: "#7e8ea8", fontSize: 11 }}>for {m.deployment} only</span>}
+                <button
+                  style={small}
+                  title="unbind the name: mail on its way through it is given up"
+                  onClick={async () => {
+                    const whose = m.deployment ? ` for ${m.deployment}` : "";
+                    if (await dialog.confirm(`Unbind the mail "${m.name}"${whose}? Mail on its way through it is given up. ${unbindingSays(mailHolders(m))}`, "Unbind"))
+                      act(() => unbindMail(m.name, m.deployment));
+                  }}
+                >
+                  ×
+                </button>
+              </div>
+              {usedBy(mailHolders(m))}
+            </Fragment>
+          ))}
+          <form
+            style={{ ...row, background: "transparent", flexWrap: "wrap" }}
+            onSubmit={async (e) => {
+              e.preventDefault();
+              const name = mailDraft.name.trim();
+              const deployment = mailDraft.deployment?.trim() || null;
+              const there = mails.find((b) => b.name === name && b.deployment === deployment);
+              if (there && !(await dialog.confirm(`Bind "${name}" again? It replaces its binding. ${unbindingSays(mailHolders(there)).replace(/: they keep running.*/, ": their next mail goes through the new one.")}`, "Bind again")))
+                return;
+              act(async () => {
+                await bindMail({ name, smtp: mailDraft.smtp.trim(), from: mailDraft.from.trim(), to: mailDraft.to.trim(), deployment });
+                setMailDraft({ name: "", smtp: "", from: "", to: "", deployment: null });
+              });
+            }}
+          >
+            <input aria-label="mail name" placeholder="name (ops)" value={mailDraft.name} onChange={(e) => setMailDraft({ ...mailDraft, name: e.target.value })} style={input} />
+            <input
+              aria-label="mail server"
+              placeholder="where the SMTP server's URL is kept (env:HOLON_SECRET_OPS_SMTP, vault:…)"
+              value={mailDraft.smtp}
+              onChange={(e) => setMailDraft({ ...mailDraft, smtp: e.target.value })}
+              style={{ ...input, flex: 1, minWidth: 220 }}
+            />
+            <input aria-label="mail sender" placeholder="from (Treasury <treasury@acme.com>)" value={mailDraft.from} onChange={(e) => setMailDraft({ ...mailDraft, from: e.target.value })} style={input} />
+            <input
+              aria-label="mail recipients"
+              placeholder="to: every address it may send to (*@acme.com, bank@example.com)"
+              value={mailDraft.to}
+              onChange={(e) => setMailDraft({ ...mailDraft, to: e.target.value })}
+              style={{ ...input, flex: 1, minWidth: 220 }}
+            />
+            <input
+              aria-label="mail for one deployment"
+              placeholder="for one deployment (empty: all)"
+              value={mailDraft.deployment ?? ""}
+              onChange={(e) => setMailDraft({ ...mailDraft, deployment: e.target.value })}
+              style={input}
+            />
+            {isUrl(mailDraft.smtp) && (
+              <div role="alert" style={{ ...quiet, color: "#e0916f", flexBasis: "100%" }}>
+                That is a URL: give where it is kept instead (env:HOLON_SECRET_OPS_SMTP, vault:…). It isn&apos;t sent.
+              </div>
+            )}
+            <button
+              type="submit"
+              style={primary}
+              disabled={!mailDraft.name.trim() || !mailDraft.smtp.trim() || !mailDraft.from.trim() || !mailDraft.to.trim() || isUrl(mailDraft.smtp)}
+            >
+              bind mail
+            </button>
+          </form>
+
           <div style={head}>secrets</div>
           <div style={about}>
             The server&apos;s own secrets: one bound here is read by every deployment that reads a secret of that name and has none of its own (one set for a deployment,
@@ -1046,15 +1139,15 @@ export function AdminPage({ me, onOpenDeployment }: { me: string; onOpenDeployme
 
           <div style={head}>who may touch what</div>
           <div style={about}>
-            Each resource, and the deployments granted it, by table for a database and by how for a folder: read from each deployment&apos;s grant. Nothing
+            Each resource, and the deployments granted it, by table for a database, by how for a folder and by recipient for a mail: read from each deployment&apos;s grant. Nothing
             is changed here: revoking and granting back are on the deployment&apos;s card, which each one opens.
           </div>
           <label style={{ ...quiet, display: "flex", gap: 6, alignItems: "center", marginBottom: 6 }}>
             show
             <select aria-label="show what" value={kind} onChange={(e) => setKind(e.target.value)} style={input}>
               <option value="everything">everything</option>
-              {/* Databases and folders always: they're listed as resources, held or not. */}
-              {["databases", "folders", ...kindsHeld(grants).filter((k) => k !== "databases" && k !== "folders")].map((k) => (
+              {/* Databases, folders and mail always: they're listed as resources, held or not. */}
+              {["databases", "folders", "mail", ...kindsHeld(grants).filter((k) => k !== "databases" && k !== "folders" && k !== "mail")].map((k) => (
                 <option key={k} value={k}>
                   {k}
                 </option>
@@ -1069,7 +1162,11 @@ export function AdminPage({ me, onOpenDeployment }: { me: string; onOpenDeployme
             folders.map((f) => (
               <Resource key={`folder:${keyOf(f)}`} title={`folder ${f.name}`} detail={`${f.path}${f.deployment ? ` · for ${f.deployment} only` : ""}`} holders={folderHolders(f)} onOpen={onOpenDeployment} />
             ))}
-          {othersHeld(grants, folders, databases)
+          {(kind === "everything" || kind === "mail") &&
+            mails.map((m) => (
+              <Resource key={`mail:${keyOf(m)}`} title={`mail ${m.name}`} detail={`to ${m.to.join(", ")}${m.deployment ? ` · for ${m.deployment} only` : ""}`} holders={mailHolders(m)} onOpen={onOpenDeployment} />
+            ))}
+          {othersHeld(grants, folders, databases, mails)
             .filter((o) => kind === "everything" || o.kind === kind)
             .map((o) => (
               <div key={o.item} style={{ ...row, flexWrap: "wrap" }} title={o.item}>

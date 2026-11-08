@@ -151,6 +151,11 @@ pub enum Capability {
     /// Lets callers subscribe to the named channel: `channel_subscribe`, a route answering with
     /// the stream of its packs.
     ChannelRead(String),
+    /// Sends mail through the mail resource an admin binds, to a recipient: `"ops/approvals@acme.com"`,
+    /// or `"ops/*"` for the ones a flow computes (`mail_send`), sent once the run is over and its
+    /// writes have landed. The effect a run performs names the mail alone, `"ops"`, its recipients
+    /// in its payload, held to these by the host (mail.rs, host-capabilities L4 §5.2.2).
+    MailSend(String),
     /// Runs the action of another deployed flow and gets its answer: `flow_call`, or starts it,
     /// another's or its own, without waiting for its end: `flow_start`. Named by the
     /// flow and the action, `"billing/charge"`, so consent names which action a flow may run, not
@@ -195,7 +200,7 @@ impl Capability {
         match self {
             Clock | NetworkIngress | FileRead(_) | FileArrival(_) | Action(_) | SecretAccess | SecretRead(_) | Await(_) | Random => Kind::Driver,
             StateRead(_) | StateWrite(_) | CollectionRead(_) | CollectionWrite(_) | DbRead(_) | DbWrite(_) => Kind::State,
-            NetworkEgress | HttpRequest(_) | RunsAction(_) | FileWrite(_) | ChannelSend(_) | ChannelRead(_) | SecretAnswer(_) | Spawn => Kind::Sink,
+            NetworkEgress | HttpRequest(_) | RunsAction(_) | FileWrite(_) | ChannelSend(_) | ChannelRead(_) | MailSend(_) | SecretAnswer(_) | Spawn => Kind::Sink,
         }
     }
 
@@ -343,6 +348,9 @@ pub fn capabilities_of(name: &str, params: &[Param]) -> Option<Capabilities> {
         // to them. The channel is a frozen param, so the capability names it exactly.
         "channel_send" => vec![ChannelSend(ident(params, "channel")?)],
         "channel_subscribe" => vec![ChannelRead(ident(params, "channel")?)],
+        // A mail resource's message: the mail and each recipient the text names are frozen params,
+        // so the capabilities name them exactly (mail.rs).
+        "mail_send" => crate::mail::capabilities(params)?,
         "clock" => vec![Clock],
         // A secret is sourced like a state read: the host supplies the named secret's value. The
         // name is a frozen param, so the capability names it exactly.

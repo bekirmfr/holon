@@ -1128,6 +1128,12 @@ impl Permit {
         self.named("ChannelSend")
     }
 
+    /// The recipients it may mail, by mail: `ops/approvals@acme.com`, or `ops/*` for any its
+    /// binding allows.
+    pub(crate) fn mails_sent(&self) -> BTreeSet<String> {
+        self.named("MailSend")
+    }
+
     /// The folders it may read, by name.
     pub(crate) fn folders_read(&self) -> BTreeSet<String> {
         self.named("FileRead")

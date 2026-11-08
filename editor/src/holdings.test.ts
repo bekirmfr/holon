@@ -60,4 +60,17 @@ describe("who holds what", () => {
     ]);
     expect(kindsHeld(held)).toEqual(["databases", "folders", "HttpRequest", "NetworkIngress", "SecretRead"]);
   });
+
+  it("reads a mail's grant by recipient, a computed one as any its binding allows", () => {
+    expect(reaches('MailSend("ops/approvals@acme.com")')).toEqual({ kind: "mail", name: "ops", use: "send", table: "approvals@acme.com" });
+    const mailing: HeldGrant[] = [
+      { slug: "approval-mail", status: "running", attention: null, items: ['MailSend("ops/approvals@acme.com")', 'MailSend("ops/*")', 'MailSend("alerts/oncall@acme.com")'], revoked: [] },
+    ];
+    const mails = [{ name: "ops", deployment: null }];
+    const ops = holdersOf("mail", mails[0], mails, mailing);
+    expect(ops.map((h) => [h.slug, usesText(h.uses).map((u) => u.text)])).toEqual([["approval-mail", ["mails approvals@acme.com, addresses it computes"]]]);
+    // A mail no binding answers is among the others.
+    expect(othersHeld(mailing, [], [], mails).map((o) => [o.item, o.kind])).toEqual([['MailSend("alerts/oncall@acme.com")', "mail"]]);
+    expect(kindsHeld(mailing)).toEqual(["mail"]);
+  });
 });

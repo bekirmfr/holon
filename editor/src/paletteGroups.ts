@@ -101,4 +101,8 @@ export const CATALOG_GROUPS: readonly { name: string; items: ReadonlySet<string>
     name: "channel",
     items: new Set(["channel_send", "channel_subscribe", "egress"]),
   },
+  {
+    name: "mail",
+    items: new Set(["mail_send"]),
+  },
 ];

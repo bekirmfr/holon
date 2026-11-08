@@ -14,6 +14,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { PORTS, RUN_DIR } from "./ports.mjs";
+import { smtpSink } from "./smtp-sink.mjs";
 
 const fresh = process.argv.includes("--fresh");
 const port = fresh ? PORTS.fresh : PORTS.server;
@@ -58,9 +59,15 @@ const binary = join(process.env.CARGO_TARGET_DIR ?? join(root, "target"), "debug
 // chat-proxy test points the sample at a stand-in upstream on loopback.
 const policy = join(dir, "holon.toml");
 writeFileSync(policy, "[grants]\nallow_plain_http = true\nallow_private_addresses = true\n");
+// The folders the main one binds for flows to read and write (folders.rs): outside its data, as an
+// admin binds them; fixtures.ts names them.
+const folders = join(tmpdir(), `holon-e2e-folders-${port}`);
+// The approval-mail sample's SMTP server (smtp-sink.mjs), its URL in the dotenv as an admin's
+// would be: each mail it takes lands in the folders' mail/, where the tests read it.
+const smtp = fresh ? null : await smtpSink(join(folders, "mail"));
 // Its dotenv file (secret_sources.rs): the variables ⚙ offers an env secret; the tests add lines.
 const dotenv = join(dir, "secrets.env");
-writeFileSync(dotenv, "HOLON_SECRET_GEMINI_API_KEY=e2e-not-a-key\nVAULT_TOKEN=e2e-not-offered\n");
+writeFileSync(dotenv, `HOLON_SECRET_GEMINI_API_KEY=e2e-not-a-key\nVAULT_TOKEN=e2e-not-offered\n${smtp ? `HOLON_SECRET_OPS_SMTP=smtp://127.0.0.1:${smtp}\n` : ""}`);
 const server = spawn(
   binary,
   [
@@ -79,9 +86,6 @@ const server = spawn(
   { cwd: dir, stdio: "inherit", env: { ...process.env, HOLON_SETUP_CODE: SETUP_CODE, HOLON_RUN_DIR: runDir, HOLON_HOME: holonHome, HOLON_DATA: "", HOLON_NO_FOLDER_DIALOG: "1", ...(mongo ? { HOLON_SECRET_NOTES_URL: mongo } : {}) } },
 );
 
-// The folders the main one binds for flows to read and write (folders.rs): outside its data, as an
-// admin binds them; fixtures.ts names them.
-const folders = join(tmpdir(), `holon-e2e-folders-${port}`);
 const cleanUp = () => {
   rmSync(dir, { recursive: true, force: true });
   rmSync(folders, { recursive: true, force: true });
@@ -204,4 +208,11 @@ if (!fresh) {
     });
     if (!notes.ok) console.error(`e2e server: binding the database notes failed: ${await notes.text()}`);
   }
+  // The approval-mail sample's mail: through the sink, from the treasury, to anyone at acme.com.
+  const ops = await fetch(`${base}/admin/mails`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ name: "ops", smtp: "env:HOLON_SECRET_OPS_SMTP", from: "Treasury <treasury@acme.com>", to: "*@acme.com" }),
+  });
+  if (!ops.ok) console.error(`e2e server: binding the mail ops failed: ${await ops.text()}`);
 }

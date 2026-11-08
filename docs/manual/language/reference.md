@@ -71,6 +71,7 @@ An import names something the flow uses from outside a run. Its source says what
 | `import inbox from "folder:NAME"` | a named folder on the host, used as `inbox[file]` |
 | `import shop from "database:NAME"` | a named database on the host, used as `shop.query(sql, …)` |
 | `import updates from "channel:NAME"` | a channel: `updates.send(x)`, `updates.subscribe()`, `updates.pipe(…)` |
+| `import ops from "mail:NAME"` | a mail the server sends through, bound by an admin: `ops.send({ to, subject, text })` |
 | `import api from "host:HOST"` | a host the flow calls over HTTPS, as `await api.get("/path")` |
 | `import { now } from "holon:clock"` | the time the run started |
 | `import { random } from "holon:random"` | one random number for the run |
@@ -540,6 +541,7 @@ Each of these is one building block, and each is one thing the flow may do.
 | `await charge(x)` (`import { charge } from "flow:billing"`) | run the action `charge` of the deployed flow `billing` with `x`, a value (`{}` when none is written); the answer is `{answer, run}` when it ran, `{error, message}` when it didn't |
 | `payment(x)`, `charge(x)`, not awaited | start a run of this flow's action, or another flow's, with `x`; the answer is `{run, waiting}` once it waits, `waiting` the token for each point it waits at, `{answer, run}` if it finishes first, `{error, message}` when it didn't run |
 | `await event(name, { expires: d })` | park the run until the event `name` arrives (in an action, not a route) |
+| `ops.send({ to, cc, subject, text, html, attachments })` | mail a message when the run is over, from the binding's sender: `to` and `cc` an address or a list, `html` beside the text, `attachments` a record of a file name to its text or bytes. A message that isn't one (a field it doesn't know, no recipient, a subject on two lines) has no value, and nothing is sent |
 | `JSON.stringify(x)`, `JSON.parse(text)` | JSON out, JSON in (see [Records](#records) for a replacer, a reviver and an indent) |
 
 Rules:
@@ -551,6 +553,10 @@ Rules:
   has `$n`s. See [Databases on the host](../guides/databases.md).
 - **A host is its import,** so it can't come from a value: the host is the permission the
   deployment asks for. The path, headers and body can come from anywhere.
+- **A mail's recipients are part of its grant.** Each one written as text in quotes is granted by
+  name; one computed from a value is granted as "an address it computes", which the binding's
+  list of addresses holds. The sender is the binding's, never the flow's. See [Sending
+  mail](../guides/mail.md).
 - **`now` and a secret are the same within a run,** however often they are written.
 - **A file sent with `file:`** must be in a folder the flow reads, or be the new file that
   started the run. The server checks, before and as it sends, that the bytes still have the

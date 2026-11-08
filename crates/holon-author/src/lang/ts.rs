@@ -510,13 +510,14 @@ impl<'s, 't> Reader<'s, 't> {
                 let local = one("the state", "import state from \"state\"")?;
                 self.imports.insert(local, Noun::State);
             }
-            (k @ ("collection" | "folder" | "database" | "channel"), name) if is_word(name) => {
+            (k @ ("collection" | "folder" | "database" | "channel" | "mail"), name) if is_word(name) => {
                 let local = one(&format!("a {k}"), &format!("import {name} from \"{k}:{name}\""))?;
                 let (word, header): (&'static str, HeaderKind) = match k {
                     "collection" => ("collection", HeaderKind::Collection(name.into())),
                     "folder" => ("folder", HeaderKind::Folder(name.into())),
                     "database" => ("database", HeaderKind::Database(name.into())),
-                    _ => ("channel", HeaderKind::Channel(name.into())),
+                    "channel" => ("channel", HeaderKind::Channel(name.into())),
+                    _ => ("mail", HeaderKind::Mail(name.into())),
                 };
                 if local != name {
                     return fail(at, format!("a {k} is imported under its own name, for now: import {name} from \"{k}:{name}\""));
@@ -548,7 +549,7 @@ impl<'s, 't> Reader<'s, 't> {
             _ => {
                 return fail(
                     self.span(i.source.span),
-                    format!("\"{source}\" isn't something a flow imports: \"holon\", \"secret:NAME\", \"state\", \"collection:NAME\", \"folder:NAME\", \"database:NAME\", \"channel:NAME\", \"host:HOST\", \"holon:clock\", \"holon:random\" or \"flow:SLUG\""),
+                    format!("\"{source}\" isn't something a flow imports: \"holon\", \"secret:NAME\", \"state\", \"collection:NAME\", \"folder:NAME\", \"database:NAME\", \"channel:NAME\", \"mail:NAME\", \"host:HOST\", \"holon:clock\", \"holon:random\" or \"flow:SLUG\""),
                 );
             }
         }
@@ -1366,6 +1367,7 @@ impl<'s, 't> Reader<'s, 't> {
                         Noun::Action { flow, .. } => super::lower::call_noun(flow) == receiver.text,
                         Noun::Declared(kind, name) if *name == receiver.text => match *kind {
                             "channel" => matches!(m, "send" | "pipe"),
+                            "mail" => m == "send",
                             "collection" => matches!(m, "put" | "delete"),
                             "folder" => !matches!(m, "list" | "lines" | "slice" | "read" | "get"),
                             "database" => matches!(m, "exec" | "insert" | "update" | "delete"),

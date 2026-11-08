@@ -201,6 +201,7 @@ export type WCapability =
   | { DbWrite: string }
   | { ChannelSend: string }
   | { ChannelRead: string }
+  | { MailSend: string }
   | { SecretAnswer: string }
   | "Spawn";
 

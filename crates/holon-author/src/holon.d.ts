@@ -234,6 +234,18 @@ declare module "holon" {
     /** A call's answer, to the channel as it arrives: `updates.pipe(api.post(…))`. */
     pipe(call: Promise<Response>): any
   }
+  /** A mail resource: what is sent goes out once the run is over, from the binding's address. */
+  export interface Mail {
+    send(message: {
+      to: string | string[]
+      cc?: string | string[]
+      subject: string
+      text: string
+      html?: string
+      /** A file name to its text or bytes. */
+      attachments?: Record<string, string | Uint8Array>
+    }): any
+  }
 }
 
 /** A secret set for the deployment: someone sets it before the flow works. */
@@ -265,6 +277,11 @@ declare module "channel:*" {
   import type { Channel } from "holon"
   const channel: Channel
   export default channel
+}
+declare module "mail:*" {
+  import type { Mail } from "holon"
+  const mail: Mail
+  export default mail
 }
 declare module "host:*" {
   import type { Host } from "holon"

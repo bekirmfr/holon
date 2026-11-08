@@ -125,8 +125,13 @@ impl Sources {
         self.dotenv.lock().unwrap().get(name).cloned()
     }
 
-    /// `reference`'s value now, or why it can't be read.
+    /// `reference`'s value now, or why it can't be read: the dotenv file read again first (the
+    /// last read kept if it can't be), so a line just edited is the one a database or a mail
+    /// binds or connects with (their sources aren't the secrets', which a refresh reads again).
     pub(crate) fn fetch(&self, reference: &Reference) -> Result<Zeroizing<String>, String> {
+        if let Err(e) = self.reload() {
+            eprintln!("holon: {e}");
+        }
         match reference {
             Reference::Env(var) => self.var(var).ok_or_else(|| format!("{var} isn't set in the server's environment or its dotenv file")),
             Reference::Vault { mount, path, field } => {
@@ -215,6 +220,9 @@ mod tests {
         std::fs::write(&path, "HOLON_SECRET_GEMINI_API_KEY=AIza-value\nHOLON_SECRET_SLACK_URL=https://hooks\n").unwrap();
         assert_eq!(sources.names().0, ["HOLON_SECRET_GEMINI_API_KEY", "HOLON_SECRET_SLACK_URL"]);
         assert_eq!(*sources.fetch(&Reference::parse("env:HOLON_SECRET_SLACK_URL").unwrap()).unwrap(), "https://hooks");
+        // A value edited is the one fetched next, with no refresh or listing between.
+        std::fs::write(&path, "HOLON_SECRET_SLACK_URL=https://hooks/edited\n").unwrap();
+        assert_eq!(*sources.fetch(&Reference::parse("env:HOLON_SECRET_SLACK_URL").unwrap()).unwrap(), "https://hooks/edited");
         let _ = std::fs::remove_file(&path);
         assert_eq!(Sources::none().names(), (Vec::new(), None));
     }

@@ -133,6 +133,9 @@ fn parse_sink(sink: &str, payload: &Value) -> (String, Vec<Param>) {
             (name.to_string(), vec![Param::frozen("database", database), Param::frozen("sql", sql)])
         }
         Some((name, channel)) if name.starts_with("channel_") => (name.to_string(), vec![Param::frozen("channel", channel)]),
+        // A mail names the mail resource; its recipients are the payload's, held to the grant by
+        // the host as it sends.
+        Some((name, mail)) if name == "mail_send" => (name.to_string(), vec![Param::frozen("mail", mail)]),
         Some((name, key)) => (name.to_string(), vec![Param::frozen("key", key)]),
         None => (sink.to_string(), Vec::new()),
     }

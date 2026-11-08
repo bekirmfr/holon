@@ -825,6 +825,171 @@ The pair is the approval loop payment teams already run on: a payout over a limi
 approver a resume link (`approved-payout` already waits on one), and the run continues when it is
 used.
 
+#### 5.2.1 As designed (2026-11-08, against `a781416`)
+
+The text above is in the language as it was. In TypeScript a mail resource is imported as a folder
+or a database is, sends with a method, and is listened to as a folder is:
+
+```ts
+import ops from "mail:ops"
+
+ops.send({ to: "approvals@acme.com", subject: `Payout ${id}`, text: `…` })
+on.mail(ops, (m) => { … })
+```
+
+Three slices, each with its sample:
+
+| Slice | What | Sample |
+|---|---|---|
+| 1.3a | sending through SMTP: the binding, recipients in the grant, delivery after the run, attachments | `approval-mail` |
+| 1.3b | receiving through IMAP: `on.mail`, the message parsed, `m.authenticated` from the mailbox's own verdict, moved after the run | `remittance-mail` |
+| 1.3c | providers' APIs and OAuth (fork 2), when a mailbox needs them | |
+
+SMTP and IMAP come first because every mailbox and every sending provider speaks them: Postmark,
+SES, Resend, SendGrid and Mailgun take SMTP with a login, as Fastmail, Gmail with an app password
+and a company's own relay do. A provider's API is HTTPS underneath and the same item (1.3c).
+
+#### 5.2.2 Slice 1.3a as designed (2026-11-08): sending
+
+**The binding.** An admin binds a mail resource as a database is bound (`--mails`, owner-only;
+`/admin/mails`; `holon mail add|remove|list`), for the whole server or one deployment (`--for`):
+
+```
+holon mail add ops --smtp env:HOLON_SECRET_OPS_SMTP --from "Treasury <treasury@acme.com>" --to "*@acme.com,treasury@bank.example"
+```
+
+- `--smtp` names a source (`env:…`, `vault:…`) holding the server's URL with its login, as a
+  database's connection is held: `smtps://user:password@smtp.example.com` (TLS from the first
+  byte, port 465 unless given) or `smtp://user:password@smtp.example.com:587` (STARTTLS, required:
+  a server that doesn't offer it is refused, so a login never crosses in clear). Plain SMTP only to
+  a loopback address: a relay on the machine, the tests' sink. The URL is never stored, shown or
+  logged; the host keeps the address without the login. AUTH PLAIN or LOGIN, whichever the server
+  offers; none when the URL has no login.
+- `--from` is the sender, the admin's, never the flow's: a flow can't send as someone else.
+- `--to` is every address the binding may ever send to, the ceiling: addresses and `*@domain`, or
+  `*` for anyone. It is required: a binding that sends anywhere says so.
+
+**The flow.** `import ops from "mail:ops"`, imported under its own name as a database is, then
+`ops.send({ to, cc, subject, text, html, attachments })`: `to` and `cc` an address or a list (one
+recipient at least, 50 at most), `subject` and `text` texts, `html` optional, `attachments` a record
+of a file name to its text or bytes, as `zip` takes one. It lowers to a `mail_send{mail, to}` leaf,
+an effect as `channel_send` is. Its `to` parameter is the recipients the text names, when each is
+written as text in quotes, else `*`: the recipients are part of the grant, so they are read off the
+text as a request's host is.
+
+**The grant.** `MailSend("ops/approvals@acme.com")` for each recipient written in the text, or
+`MailSend("ops/*")` when one is computed (from a request, a database), two names in one as
+`DbWrite("db/table")` carries them:
+
+```
+it may:
+  send mail through "ops" to approvals@acme.com
+  send mail through "ops" to an address it computes, within its binding's
+```
+
+A deploy is refused when a recipient written in the text is outside the binding's `--to`, or the
+binding isn't there ("the mail "ops" isn't bound on this server", as a folder's). As each mail
+goes, every recipient must be one the grant names (or the grant says `*`) and inside the binding's
+`--to` as it is then; a mail with one that isn't is refused whole, and the refusal is noted in the
+deployment's activity.
+
+**The message** is the host's to write: `From` the binding's; `To`, `Cc` and `Subject` the flow's
+(RFC 2047 words when not ASCII); `Date` the run's clock; a `Message-ID` from the run's id and the
+send's place in it (`<run-…@from-domain>`), so a mail sent again is known for the same one; the
+text as UTF-8, quoted-printable; with `html`, both as `multipart/alternative`; with attachments,
+`multipart/mixed`, each base64 with its type from its extension. No `Bcc`, no `Reply-To` (fork
+51).
+
+**Delivered after the run,** as a channel's pack is: once the run's writes have landed and its
+record is on disk, never from an attempt that went round again. A queue for each binding sends in
+order on its own thread, so a slow server holds no run. A temporary failure (no connection, a 4xx)
+is tried again with the same `Message-ID`, after a minute, then 5, then 30, then each hour for a
+day; a permanent one (5xx), or a day of temporary ones, gives up. Each outcome is noted in the
+deployment's activity, and a delivery record beside its log says what was delivered, so a restart
+sends what wasn't, as held packs are rebuilt from the log (fork 50).
+
+**Logged:** the run's `performed` keeps each message, its recipients, subject and text, and its
+attachments by size and hash, as a written file is; `holon verify` computes it again.
+
+**Secrets:** a message holding a secret or an answered token, or computed from a secret, is
+refused, as a channel's pack is.
+
+**Limits:** 50 recipients and 10 MiB a message, attachments included, 100 mails a run.
+
+**Links.** The host knows no address of its own the world reaches, so a flow writes the base of a
+link it mails as text (fork 52). A link that approves is a page whose button approves: a mail
+scanner opening each link (Outlook's, Gmail's) must not approve anything.
+
+**Mail before an `await`** waits for the run's end, as its other effects do: an approval link is
+mailed by the route that starts the waiting run, which knows its token (`started.waiting.approved`),
+as approved-payout answers it (fork 53).
+
+**Dependencies:** none new. SMTP's commands and MIME's parts are written here, over the `rustls`
+and `webpki-roots` the database connections use (fork 50).
+
+**Tests:** an SMTP server in the server test, and one the e2e server starts, each keeping what it
+is sent, plain on loopback.
+
+**The sample, `approval-mail`:** a payout over 1,000 waits for an approval. The route that takes
+it starts the payout's run and mails approvals@acme.com a link, with the payout attached as a CSV;
+the link's page has a button, and its POST approves. The approved payout is recorded, and the one
+who asked for it (an address from the request) is mailed that it was approved: a computed
+recipient, held to the binding's `*@acme.com`.
+
+#### 5.2.3 Slice 1.3a as built (2026-11-08)
+
+As designed, with what building it found:
+
+- **Core:** `mail.rs` and the `mail_send` leaf, an effect; 188 primitives. The message is made
+  regular in core, so the log and the grant read one shape: `to` and `cc` lists, `cc` only when
+  there is one, `html` and `attachments` only when given. A message that isn't one has no value,
+  so nothing is sent: a field it doesn't know (`bcc`), no recipient or more than 50, an address
+  that isn't one or that the leaf's `to` doesn't name, a subject with a line break, an attachment
+  that isn't a text or bytes or whose name isn't a file's, more than 10 MiB. MIME is written there
+  too, a pure function of the message, the sender, the run's clock and the `Message-ID`
+  (`<run.n@from-domain>`): headers folded at 78 characters, RFC 2047 words, quoted-printable
+  text, base64 attachments in 76-character lines with an RFC 2231 name when it isn't ASCII, and
+  boundaries with `=_` in them, which neither encoding writes.
+- **The language:** `import ops from "mail:ops"`, imported under its own name, printed back, and
+  described on hover. The recipients are read off the call's record when it is written out with no
+  spread and each of `to` and `cc` is text in quotes or a list of them; else `*`. Where the record
+  is written out, `holon check` refuses a field it doesn't know, a missing `to`, `subject` or
+  `text`, a quoted recipient that isn't an address, and none or more than 50.
+- **The binding:** as designed; `--mails` is `mails.json` in the data folder. The admin page's
+  resources tab binds and unbinds a mail (where its URL is kept, never the URL; its sender; its
+  `--to`), and its permissions list each mail's holders by recipient: "mails approvals@acme.com,
+  addresses it computes".
+- **Delivery:** a spool, not the delivery record fork 50 named. Each mail is a file in
+  `mail-spool` beside the bindings (owner-only), written before its run's record is and outside
+  the log's lock, held until that record is on disk, then queued. A restart sends each file whose
+  run its log holds, and deletes one whose run a crash lost: what the log says was sent is what
+  goes. An unrecorded run's mail is spooled as unrecorded and queued at once. One thread a binding
+  sends, in order; the outcome is a timeline event of kind `mail`: `mailed "…" to … through ops`,
+  or `gave up mailing …`.
+- **Refusals:** a recipient the grant doesn't cover is caught as the run's effects are checked, as
+  any ungranted effect is, in the server's log; a recipient the binding no longer allows is caught
+  as the mail goes, and given up on the timeline. A secret in a mail, or a value computed from one,
+  is refused as a channel's pack is. A run past 100 mails fails, `mail not sent: …`.
+- **SMTP** by hand as designed (`smtp.rs`): implicit TLS or STARTTLS over `rustls` with
+  `webpki-roots`, refusing STARTTLS when the server says more before TLS begins; `EHLO` with the
+  local address as a literal; AUTH PLAIN, else LOGIN, the login zeroized and an AUTH error never
+  echoing what was sent; dot-stuffing. A connection failure or a 4xx is temporary, a 5xx
+  permanent.
+- **The sample:** every payout waits for a second person's approval (four eyes), not only one
+  over 1,000: the sample shows the loop, and a threshold is one `if`. The approval is recorded with
+  `approved_via`, the method of the request that approved it, so a page opened by a scanner (a
+  `GET`) is told apart from the button (`POST`) in the record too. The page's route is
+  unrecorded: the live run showed its `GET` logged with the token in its path, which a log reader
+  could approve with, where the route that resumes logs `‹token:approved›`. A host that kept a
+  waiting run's tokens out of every logged path would make the option needless; until then the
+  sample says it.
+- **The tests:** the server test's SMTP sink takes AUTH PLAIN and LOGIN; the deploy is refused
+  until `ops` is bound; the link mailed opens a page and approves nothing until its button is
+  pressed; an asker outside `*@acme.com` is given up, on the timeline; the log keeps the CSV by
+  hash. The e2e server starts a sink of its own (`editor/e2e/smtp-sink.mjs`) that writes each mail
+  it takes as a file; the test approves through the mailed link in the browser, then reads the
+  binding and its holder on the admin page.
+
 ### 5.3 Keys
 
 A **key** is a resource an admin binds: a PGP private key, later a key in a cloud KMS or an HSM,
@@ -2626,7 +2791,7 @@ engine.
 |---|---|---|---|---|
 | 1.1 | **Value kinds:** `Bytes`, built (§5.10.2); `Decimal` decided as text leaves, built in 1.2 (§5.10.1) | §5.10 (here) | — | M |
 | 1.2 | **Formats:** exact decimals, CSV, XML, dates (UTC and offsets), zip and gzip, JWT verify, PGP encrypt and verify with a public key, in six slices (§5.1.1); 1.2a, decimals and CSV, built (§5.1.2); 1.2b, offsets and business days, built (§5.1.4); 1.2c, XML, built (§5.1.6); 1.2d, zip and gzip and bytes written to a file, built (§5.1.8); 1.2e, JWT verify, built (§5.1.10); 1.2f, PGP encrypt and verify, built (§5.1.12) | §5.1 (here) | 1.1 | M |
-| 1.3 | **Email:** send, recipients in the grant; receive as `on mail`, with its sender's verdict and attachments (§5.2) | §5.2 (here) | 1.1 for attachments | L |
+| 1.3 | **Email:** send, recipients in the grant; receive as `on mail`, with its sender's verdict and attachments, in three slices (§5.2); 1.3a, sending through SMTP, built (§5.2.3) | §5.2 (here) | 1.1 for attachments | L |
 | 1.4 | **Remote folders:** the backend seam in `folders.rs`, then SFTP and S3-compatible storage (§6) | §6 (here) | 1.1 for binary files | L |
 | 1.5 | **Secure connectivity:** keys the host holds (PGP decrypt and sign) and client identities (mutual TLS, a private CA) (§5.3, §5.4) | §5.3, §5.4 (here) | 1.1, 1.2 | M |
 | 1.6 | **Messaging:** one subscription runtime (position, once per message, backpressure, reconnect), feeds (SSE, WebSocket, Postgres `LISTEN`) and one queue engine, publish and consume (§5.5, §5.9) | §5.5, §5.9 (here) | 1.4's request signing, for SQS (fork 8) | L |
@@ -2910,6 +3075,26 @@ Taken when a job or a user asks, each with its design here and its sample all th
 49. **The literal packet's file name** (§5.1.11). GnuPG writes the file's name, and some bank
     systems name what they decrypt by it. *Lean:* none, until one asks; it is advisory, and a
     leaf of its own would carry it.
+50. **SMTP by hand, and how sure delivery is** (§5.2.2). `lettre` does SMTP and MIME, with some
+    thirty crates and its own TLS choices; SMTP's commands and the MIME a flow sends are small and
+    the host writes every byte of them. A mail the server accepted can't be taken back, and one
+    whose acceptance was lost on the wire can't be known: sent again with the same `Message-ID`,
+    a receiver may show it twice. *Lean:* by hand; tried again on a temporary failure, the same
+    `Message-ID`, so a duplicate is rare and recognizable. *Decided so* (§5.2.3), with a spool in
+    place of a delivery record: a mail's file is written before its run's record, and a restart
+    sends only those whose run the log holds.
+51. **Bcc and Reply-To** (§5.2.2). A blind copy hides a recipient from the others, and Reply-To
+    sends the answers elsewhere: both are what a phishing mail uses. *Lean:* neither until a flow
+    needs one; then each held to the binding's `--to` as `to` is. *Decided so* (§5.2.3): a
+    message with either has no value.
+52. **The host's own address** (§5.2.2). A mailed link needs an address the world reaches, and
+    the host knows only where it listens. *Lean:* the flow writes its base as text until a
+    setting names it (`--public-url`), shared with OAuth's callback (fork 2). *Decided so for
+    now* (§5.2.3): the sample writes `const site`.
+53. **Mail sent as a run parks** (§5.2.2). A waiting run's channel packs go out as it parks; its
+    mail could too, so the run that waits mails its own link (`resume_token`). *Lean:* when a
+    sample needs it; the route that starts the run knows its token today. *Decided so for now*
+    (§5.2.3): the sample's route mails the link.
 
 ## 9. What stays true
 

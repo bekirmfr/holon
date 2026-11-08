@@ -767,6 +767,18 @@ static SAMPLES: &[Sample] = &[
         text: include_str!("../samples/pgp-outbox.holon.ts"),
     },
     Sample {
+        name: "approval-mail",
+        title: "Approval mail (a second person approves each payout from a mail)",
+        description: "Four eyes on every payout, by mail. Asking for one starts its run, which waits for an approval (await event, a day at most), and the route mails approvals@acme.com the link that approves it (ops.send, through the mail resource an admin bound, from its sender, never the flow's), the payout attached as a CSV. The link opens a page whose button approves (a resumes route), so a mail scanner that opens every link approves nothing; the page's route is unrecorded, as its path holds the token, which anyone reading the log could approve with. Approved, the payout is recorded and whoever asked is mailed that it was: an address from the request, which the grant can't name (MailSend(\"ops/*\")), held to the binding's --to as it is sent, where approvals@acme.com is a permission of its own (MailSend(\"ops/approvals@acme.com\")). Each mail goes once its run is over and its writes have landed, waits in the server's spool, and is tried again for a day when the mail server can't take it; its outcome is on the deployment's timeline.",
+        shows: &["mail", "recipients in the grant", "a recipient it computes", "attachments", "await event", "resumes", "a page whose button approves", "an unrecorded route", "actions", "collections"],
+        port: Some("8186"),
+        secrets: &[],
+        optional: &[],
+        browsers: None,
+        try_it: "put the mail server's URL with its login in the server's environment (HOLON_SECRET_OPS_SMTP=smtps://user:password@smtp.example.com) and bind it (holon mail add ops --smtp env:HOLON_SECRET_OPS_SMTP --from \"Treasury <treasury@acme.com>\" --to \"*@acme.com\"), deploy, then curl -X POST -d '{\"id\":\"p1\",\"amount\":5000,\"iban\":\"DE89370400440532013000\",\"by\":\"sam@acme.com\"}' http://127.0.0.1:8186/payouts; open the link approvals@acme.com was mailed and press Approve; sam@acme.com is mailed that it was, and curl http://127.0.0.1:8186/payouts lists it",
+        text: include_str!("../samples/approval-mail.holon.ts"),
+    },
+    Sample {
         name: "ticker",
         title: "Ticker (a clock beside routes)",
         description: "A flow with a clock of its own beside its routes: every 2 seconds (every(\"2s\", …)) it counts a tick in its state and sends it on the channel ticks, with the time of the tick (now, in the handler). Its page lists each tick as it arrives; GET /count answers the count. An action, run by hand by its name, sets the count back (export const reset = action((input) => …), input what was sent); a person runs it, and an agent only once a person lets agents run it.",

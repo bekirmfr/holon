@@ -156,6 +156,10 @@ pub struct LogEntry {
     /// The credentials its calls answered, until the entry is logged (`log_run`): not part of it.
     #[serde(skip)]
     pub answered: AnswerTokens,
+    /// The mails it sent, through which and each message whole, until the entry is logged and
+    /// they are spooled (mails.rs): the log keeps them in `performed`, their attachments by hash.
+    #[serde(skip)]
+    pub mails: Vec<(String, holon_core::Value)>,
 }
 
 /// The credentials a run's calls answered, name and value, on their way to the redactor that
@@ -704,17 +708,20 @@ pub fn sync_file(path: &Path) -> std::io::Result<()> {
 /// The packs of the runs a sync covered go out (channels.rs): a lazy run's wait for this.
 #[allow(clippy::type_complexity)]
 pub(crate) fn sync_logs(deployments: &std::sync::Mutex<BTreeMap<String, crate::Deployment>>) -> Result<(), String> {
-    let (logs, events): (Vec<(std::sync::Arc<LogCell>, std::sync::Arc<crate::channels::Channels>, std::sync::Arc<crate::Permit>)>, Vec<(String, PathBuf)>) = {
+    let (logs, events): (Vec<(std::sync::Arc<LogCell>, std::sync::Arc<crate::channels::Channels>, std::sync::Arc<crate::Permit>, std::sync::Arc<crate::folders::Scoped>)>, Vec<(String, PathBuf)>) = {
         let mut table = deployments.lock().unwrap();
-        let logs = table.values().map(|d| (std::sync::Arc::clone(&d.log), std::sync::Arc::clone(&d.channels), std::sync::Arc::clone(&d.permit))).collect();
+        let logs = table.values().map(|d| (std::sync::Arc::clone(&d.log), std::sync::Arc::clone(&d.channels), std::sync::Arc::clone(&d.permit), std::sync::Arc::clone(&d.folders))).collect();
         let events = table.iter_mut().filter_map(|(slug, d)| d.events.take_dirty().map(|p| (slug.clone(), p))).collect();
         (logs, events)
     };
     let mut failed: Option<String> = None;
-    for (log, channels, permit) in logs {
+    for (log, channels, permit, folders) in logs {
         // Through the cell, so a strict run waiting on its sync knows when it is done.
         match log.sync() {
-            Ok(()) => channels.release(log.synced(), &permit.channels),
+            Ok(()) => {
+                channels.release(log.synced(), &permit.channels);
+                folders.all.mails.release(&folders.deployment, log.synced());
+            }
             Err(e) => drop(failed.get_or_insert(e)),
         }
         // And its file cut back, if a run found it past what it keeps.
@@ -1942,6 +1949,7 @@ mod tests {
             secrets: BTreeMap::new(),
             escaped: false,
             answered: AnswerTokens::default(),
+            mails: Vec::new(),
         }
     }
 

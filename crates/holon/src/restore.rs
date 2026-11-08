@@ -343,6 +343,7 @@ fn effect_word(name: &str) -> &str {
         "FileWrite" => "file write(s)",
         "DbWrite" => "database write(s)",
         "ChannelSend" => "message(s) sent",
+        "MailSend" => "mail(s) sent",
         "RunsAction" => "action(s) run",
         "Spawn" => "run(s) started",
         other => other,

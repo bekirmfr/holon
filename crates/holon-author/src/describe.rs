@@ -26,7 +26,7 @@ pub fn describe_item(item: &str) -> String {
         return format!("keep its runs in its log for up to {n} days");
     }
     type Say = fn(&str) -> String;
-    let named: [(&str, Say); 22] = [
+    let named: [(&str, Say); 23] = [
         ("HttpRequest", |a| format!("call https://{a}")),
         ("StateRead", |a| format!("read its state \"{a}\"")),
         ("StateWrite", |a| format!("write its state \"{a}\"")),
@@ -46,6 +46,11 @@ pub fn describe_item(item: &str) -> String {
         ("DbWrite", |a| table_of(a, "insert, update and delete rows of")),
         ("ChannelSend", |a| format!("send packs on its channel \"{a}\" to whoever subscribes")),
         ("ChannelRead", |a| format!("let callers subscribe to its channel \"{a}\"")),
+        ("MailSend", |a| match a.split_once('/') {
+            Some((mail, "*")) => format!("send mail through \"{mail}\" to an address it computes, within its binding's"),
+            Some((mail, to)) => format!("send mail through \"{mail}\" to {to}"),
+            None => format!("send mail through \"{a}\""),
+        }),
         ("PlainHttp", |a| format!("call {a} over plain HTTP (not encrypted)")),
         ("SecretRead", |a| format!("read the secret \"{a}\"")),
         ("SecretAnswer", |a| format!("answer its callers with the secret \"{a}\", or with what is computed from it")),
@@ -132,6 +137,7 @@ pub fn describe_secret_sink(secret: &str, sink: &holon_core::Capability) -> Stri
         StateWrite(_) | CollectionWrite(_) | FileWrite(_) | DbWrite(_) | ChannelSend(_) => {
             format!("would keep the secret \"{secret}\" ({what}): the host refuses it")
         }
+        MailSend(_) => format!("would mail the secret \"{secret}\" ({what}): the host refuses it"),
         RunsAction(_) => format!("would hand the secret \"{secret}\" to another flow ({what}): the host refuses it"),
         _ => format!("{what}, with the secret \"{secret}\""),
     }
@@ -151,6 +157,7 @@ pub fn describe_answer_sink(secret: &str, sink: &holon_core::Capability) -> Stri
             None => format!("{what}, with {answered}"),
         },
         StateWrite(_) | CollectionWrite(_) | FileWrite(_) | DbWrite(_) | ChannelSend(_) => format!("keeps {answered} ({what}); a token in it is refused"),
+        MailSend(_) => format!("mails {answered} ({what}); a token in it is refused"),
         _ => format!("{what}, with {answered}"),
     }
 }
@@ -203,6 +210,8 @@ mod tests {
         assert_eq!(describe_item("Limit(keep_run_days=30)"), "keep its runs in its log for up to 30 days");
         assert_eq!(describe_item(r#"DbRead("shop/orders")"#), r#"read the table "orders" of the database "shop""#);
         assert_eq!(describe_item(r#"DbWrite("shop/public.orders")"#), r#"insert, update and delete rows of the table "public.orders" of the database "shop""#);
+        assert_eq!(describe_item(r#"MailSend("ops/approvals@acme.com")"#), r#"send mail through "ops" to approvals@acme.com"#);
+        assert_eq!(describe_item(r#"MailSend("ops/*")"#), r#"send mail through "ops" to an address it computes, within its binding's"#);
         // A module's budgets read as what the code may consume, not as a limit raised.
         assert_eq!(describe_item("Limit(module_fuel=200000000)"), "run code it carries (a js node) for up to 200000000 instructions per call, reaching nothing outside");
         assert_eq!(describe_item("Limit(module_memory=16777216)"), "give that code up to 16 MiB of memory per call");

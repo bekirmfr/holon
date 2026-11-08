@@ -657,8 +657,15 @@ fn run_attempt(
     // disk and in every later snapshot, and a copy from a folder the deployment doesn't read (a
     // handle is only a record: one can be made up).
     let reads_folders = permit.folders_handed();
+    let mails_granted = if host.performed.iter().any(|(c, _)| matches!(c, Capability::MailSend(_))) { permit.mails_sent() } else { Default::default() };
     host.performed.retain(|(cap, payload)| {
-        if !permit.allows(cap) {
+        // A mail's recipients are in its payload: each one the grant names, or a `*` for any.
+        if let Capability::MailSend(mail) = cap {
+            if let Some(why) = mails::ungranted(mail, payload, &mails_granted) {
+                eprintln!("holon: refused a mail through {mail:?}: {why}");
+                return false;
+            }
+        } else if !permit.allows(cap) {
             eprintln!("holon: refused {cap:?}: not granted to this deployment");
             return false;
         }
@@ -670,7 +677,7 @@ fn run_attempt(
         }
         // A file too: another deployment that reads it logs its text, redacted only of its own
         // secrets, and a part of it read is kept as it is.
-        if let Capability::StateWrite(key) | Capability::CollectionWrite(key) | Capability::DbWrite(key) | Capability::ChannelSend(key) | Capability::FileWrite(key) = cap {
+        if let Capability::StateWrite(key) | Capability::CollectionWrite(key) | Capability::DbWrite(key) | Capability::ChannelSend(key) | Capability::MailSend(key) | Capability::FileWrite(key) = cap {
             if let Some(name) = secrets::secret_in(payload, secrets) {
                 eprintln!("holon: refused to store or send secret {name:?} in {key:?}");
                 return false;
@@ -692,7 +699,9 @@ fn run_attempt(
     let past_limit = failed_read.is_none().then(|| folders::past_write_limits(&host.performed, files_read, &permit.files)).flatten();
     // Packs past the run's channel limits: likewise.
     let past_packs = (failed_read.is_none() && past_limit.is_none()).then(|| channels::past_pack_limits(&host.performed, &permit.channels)).flatten();
-    if past_limit.is_some() || past_packs.is_some() {
+    // Mails past what a run may send: likewise.
+    let past_mails = (failed_read.is_none() && past_limit.is_none() && past_packs.is_none()).then(|| mails::past_limit(&host.performed)).flatten();
+    if past_limit.is_some() || past_packs.is_some() || past_mails.is_some() {
         host.performed.clear();
     }
     // A run that settled waiting performs nothing yet, but the packs it settled that didn't wait
@@ -718,6 +727,7 @@ fn run_attempt(
         error: failed_read
             .or(past_limit.map(|e| format!("{}{e}", folders::WRITE_FAILED)))
             .or(past_packs.map(|e| format!("{}{e}", channels::SEND_FAILED)))
+            .or(past_mails.map(|e| format!("{}{e}", mails::SEND_FAILED)))
             .or(outcome.error.map(|e| e.message())),
         run_id: run_hex,
         unit: to_hex(&permit.deployment),
@@ -893,7 +903,7 @@ pub(crate) fn handle_post_fire(store: &SharedStore, request: &Request) -> Respon
 /// Its packs go out once its record is on disk (channels.rs): a strict run's, with those of every
 /// run before it, once its sync is done; a lazy one's with the next sync (`sync_logs`).
 pub(crate) fn log_run(deployments: &Mutex<BTreeMap<String, Deployment>>, slug: &str, entry: LogEntry, tokens: Redactor, declared: holon_core::LogLevel) -> Option<Logged> {
-    let Some(Pushed { log, seq, level, channels, permit }) = push_run(deployments, slug, entry, tokens, declared)? else {
+    let Some(Pushed { log, seq, level, channels, permit, folders }) = push_run(deployments, slug, entry, tokens, declared)? else {
         return Some(Logged { seq: None, kept: Ok(()) });
     };
     let kept = match level {
@@ -902,6 +912,7 @@ pub(crate) fn log_run(deployments: &Mutex<BTreeMap<String, Deployment>>, slug: &
     };
     if kept.is_ok() {
         channels.release(seq + 1, &permit.channels);
+        folders.all.mails.release(slug, seq + 1);
     }
     Some(Logged { seq: Some(seq), kept })
 }
@@ -942,13 +953,13 @@ pub(crate) fn log_or_count(
         if !count_if_unrecorded(dep, &counted, declared).1 {
             None
         } else if sends {
-            Some((Arc::clone(&dep.channels), Arc::clone(&dep.secrets)))
+            Some((Arc::clone(&dep.channels), Arc::clone(&dep.secrets), Arc::clone(&dep.folders)))
         } else {
             return Some(Logged { seq: None, kept: Ok(()) });
         }
     };
-    if let Some((channels, secrets)) = sending {
-        send_unlogged(&channels, &secrets, entry(), tokens());
+    if let Some((channels, secrets, folders)) = sending {
+        send_unlogged(&channels, &secrets, &folders, entry(), tokens());
         return Some(Logged { seq: None, kept: Ok(()) });
     }
     log_run(deployments, slug, entry(), tokens(), declared)
@@ -958,8 +969,10 @@ pub(crate) fn log_or_count(
 /// it settled, redacted as a logged run's are, but sent live, with no id, and never kept. A pack's
 /// id is its run's log seq and the kept packs are rebuilt from the log, which doesn't hold the
 /// run: a subscriber there now gets them, and one that reconnects, or comes after a restart,
-/// doesn't.
-fn send_unlogged(channels: &channels::Channels, secrets: &Arc<Mutex<secrets::Resolved>>, mut entry: LogEntry, tokens: Redactor) {
+/// doesn't. Its mails are spooled and sent (mails.rs).
+fn send_unlogged(channels: &channels::Channels, secrets: &Arc<Mutex<secrets::Resolved>>, folders: &folders::Scoped, mut entry: LogEntry, tokens: Redactor) {
+    let mails = std::mem::take(&mut entry.mails);
+    folders.all.mails.send_unlogged(&folders.deployment, &entry, mails);
     if entry.performed.iter().chain(&entry.progress).any(|p| p.capability.starts_with("ChannelSend(")) {
         let answered = std::mem::take(&mut entry.answered);
         tokens.and(Redactor::of(secrets)).and(Redactor::answers(&answered.0, secrets)).entry(&mut entry);
@@ -1024,31 +1037,37 @@ impl Logged {
 }
 
 /// A run's entry as `push_run` wrote it: the log it went to, its seq, its level, and the channels
-/// its packs are held in until it is on disk, with the deployment's limits for them.
+/// its packs are held in until it is on disk, with the deployment's limits for them, and its
+/// folders, beside which its mails are held.
 struct Pushed {
     log: Arc<recorder::LogCell>,
     seq: u64,
     level: holon_core::LogLevel,
     channels: Arc<channels::Channels>,
     permit: Arc<Permit>,
+    folders: Arc<folders::Scoped>,
 }
 
 /// `log_run`'s write: the run's level as its grant holds it, and, unless it is an unrecorded run
 /// (counted, its packs sent live, and nothing written: `Some(None)`), the entry pushed under the
 /// deployment's log lock, its packs held. None: no such deployment.
 fn push_run(deployments: &Mutex<BTreeMap<String, Deployment>>, slug: &str, mut entry: LogEntry, tokens: Redactor, declared: holon_core::LogLevel) -> Option<Option<Pushed>> {
-    let (log, secrets, channels, permit, session, level, only_counted) = {
+    let (log, secrets, channels, permit, folders, session, level, only_counted) = {
         let mut table = deployments.lock().unwrap();
         let dep = table.get_mut(slug)?;
         let counted = Counted { route: entry.route.as_deref(), at_ms: entry.at_ms, duration_ms: entry.duration_ms, status: entry.status.unwrap_or(200), error: entry.error.as_deref() };
         let (level, only_counted) = count_if_unrecorded(dep, &counted, declared);
         let session = dep.life.sessions.last().map_or(0, |s| s.number);
-        (Arc::clone(&dep.log), Arc::clone(&dep.secrets), Arc::clone(&dep.channels), Arc::clone(&dep.permit), session, level, only_counted)
+        (Arc::clone(&dep.log), Arc::clone(&dep.secrets), Arc::clone(&dep.channels), Arc::clone(&dep.permit), Arc::clone(&dep.folders), session, level, only_counted)
     };
     if only_counted {
-        send_unlogged(&channels, &secrets, entry, tokens);
+        send_unlogged(&channels, &secrets, &folders, entry, tokens);
         return Some(None);
     }
+    // Its mails spooled before its record is written, and held with it (mails.rs): a restart
+    // sends one whose record is on disk, and drops one whose record a crash lost.
+    let mails = std::mem::take(&mut entry.mails);
+    let spooled = folders.all.mails.spool_logged(slug, &entry, mails);
     let answered = std::mem::take(&mut entry.answered);
     let redactor = tokens.and(Redactor::of(&secrets)).and(Redactor::answers(&answered.0, &secrets));
     entry.session = session;
@@ -1062,9 +1081,10 @@ fn push_run(deployments: &Mutex<BTreeMap<String, Deployment>>, slug: &str, mut e
         let packs = channels.packs_of(&entry, log.next_seq());
         let seq = log.push_made(entry, made);
         channels.hold(seq, packs);
+        folders.all.mails.hold(slug, seq, spooled);
         seq
     });
-    Some(Some(Pushed { log, seq, level, channels, permit }))
+    Some(Some(Pushed { log, seq, level, channels, permit, folders }))
 }
 
 /// `entry` redacted by `redactor`, and its line. With nothing to mark, redacting can only escape a
@@ -1257,6 +1277,7 @@ fn entry_with(
         by: None,
         secrets: run.secrets.clone(),
         answered: run.answered.clone(),
+        mails: mails::of(&run.performed),
         escaped: false,
         reads: run
             .reads

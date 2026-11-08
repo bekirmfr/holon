@@ -61,6 +61,11 @@ pub(crate) fn part(item: &str) -> (&'static str, &'static str, String, String) {
         },
         "ChannelSend" => ("outside", "channel", arg, s("send")),
         "ChannelRead" => ("outside", "channel", arg, s("let callers subscribe")),
+        "MailSend" => match arg.split_once('/') {
+            Some((mail, "*")) => ("outside", "mail", mail.to_string(), s("send to an address it computes")),
+            Some((mail, to)) => ("outside", "mail", mail.to_string(), format!("send to {to}")),
+            None => ("outside", "mail", arg, s("send")),
+        },
         "Spawn" => ("outside", "process", arg, s("start")),
         "Browser" => ("outside", "browser", arg, s("answer pages")),
         "StateRead" => ("state", "key", arg, s("read")),

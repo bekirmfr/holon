@@ -500,6 +500,7 @@ pub struct Printer<'s> {
     folders: BTreeSet<String>,
     databases: BTreeSet<String>,
     channels: BTreeSet<String>,
+    mails: BTreeSet<String>,
     /// The flows any `flow_call` or `flow_start` runs an action of, by slug.
     calls: BTreeSet<String>,
     secrets: BTreeSet<String>,
@@ -558,6 +559,7 @@ pub fn print_lines(name: Option<&str>, doc: &FlowDocument, store: &mut MapResolv
         folders: BTreeSet::new(),
         databases: BTreeSet::new(),
         channels: BTreeSet::new(),
+        mails: BTreeSet::new(),
         calls: BTreeSet::new(),
         secrets: BTreeSet::new(),
         state: BTreeSet::new(),
@@ -777,11 +779,12 @@ fn js_parts_ts(store: &MapResolver, unit: &holon_core::Unit) -> Option<(String, 
 }
 
 impl<'s> Printer<'s> {
-    /// Every collection, folder, database, channel, called flow, secret and state key any leaf
-    /// names, the functions' leaves included.
+    /// Every collection, folder, database, channel, called flow, secret, state key and mail any
+    /// leaf names, the functions' leaves included.
     fn collect_collections(&mut self, nodes: &[Node]) -> Result<(), String> {
         /// The param naming what a leaf reads or writes: a collection's, a folder's, a
-        /// database's or a channel's (a piped call's `pipe`), a flow's, a secret's, or a state key.
+        /// database's or a channel's (a piped call's `pipe`), a flow's, a secret's, a state key, or
+        /// a mail's.
         fn named_by(leaf: &str) -> Option<&'static str> {
             if leaf == "secret" {
                 Some("name")
@@ -795,6 +798,8 @@ impl<'s> Printer<'s> {
                 Some("database")
             } else if leaf.starts_with("channel_") {
                 Some("channel")
+            } else if leaf == "mail_send" {
+                Some("mail")
             } else if leaf == "http_stream" {
                 // A piped call's channel (empty when it isn't piped).
                 Some("pipe")
@@ -804,7 +809,7 @@ impl<'s> Printer<'s> {
                 None
             }
         }
-        type Found = (BTreeSet<String>, BTreeSet<String>, BTreeSet<String>, BTreeSet<String>, BTreeSet<String>, BTreeSet<String>, BTreeSet<String>);
+        type Found = (BTreeSet<String>, BTreeSet<String>, BTreeSet<String>, BTreeSet<String>, BTreeSet<String>, BTreeSet<String>, BTreeSet<String>, BTreeSet<String>);
         fn found(out: &mut Found, param: &str, name: String) {
             if !name.is_empty() {
                 match param {
@@ -814,6 +819,7 @@ impl<'s> Printer<'s> {
                     "flow" => &mut out.4,
                     "name" => &mut out.5,
                     "key" => &mut out.6,
+                    "mail" => &mut out.7,
                     _ => &mut out.3,
                 }
                 .insert(name);
@@ -857,7 +863,7 @@ impl<'s> Printer<'s> {
                 _ => {}
             }
         }
-        (self.collections, self.folders, self.databases, self.channels, self.calls, self.secrets, self.state) = out;
+        (self.collections, self.folders, self.databases, self.channels, self.calls, self.secrets, self.state, self.mails) = out;
         // A start of its own action calls no other flow.
         if let Some(own) = &self.own {
             self.calls.remove(own);
@@ -868,7 +874,7 @@ impl<'s> Printer<'s> {
     /// What the text imports by name must be a name TypeScript writes: each store, secret, state
     /// key and action.
     fn check_names(&self) -> Result<(), String> {
-        let stores = [("collection", &self.collections), ("folder", &self.folders), ("database", &self.databases), ("channel", &self.channels)];
+        let stores = [("collection", &self.collections), ("folder", &self.folders), ("database", &self.databases), ("channel", &self.channels), ("mail", &self.mails)];
         for (kind, names) in stores {
             for n in names.iter().chain(if kind == "folder" { self.watched.iter().collect::<Vec<_>>() } else { vec![] }) {
                 if !is_identifier(n) || JS_RESERVED.contains(&n.as_str()) || VOCAB.contains(&n.as_str()) || ["state", "now", "random", "random_bytes"].contains(&n.as_str()) {
@@ -901,7 +907,7 @@ impl<'s> Printer<'s> {
         // never takes one, whichever).
         let vocab = VOCAB.iter().filter(|w| **w == "flow" || self.vocab_used.as_ref().is_some_and(|used| used.contains(**w)));
         let mut out: HashSet<String> = JS_RESERVED.iter().chain(GLOBALS).chain(vocab).chain(&["state", "now", "random", "random_bytes"]).map(|s| s.to_string()).collect();
-        out.extend(self.collections.iter().chain(&self.folders).chain(&self.databases).chain(&self.channels).chain(&self.watched).cloned());
+        out.extend(self.collections.iter().chain(&self.folders).chain(&self.databases).chain(&self.channels).chain(&self.mails).chain(&self.watched).cloned());
         out.extend(self.actions.iter().cloned());
         out.extend(self.calls.iter().map(|f| call_noun(f)));
         out
@@ -999,6 +1005,9 @@ impl<'s> Printer<'s> {
         }
         for c in &self.channels {
             out.push(format!("import {c} from \"channel:{c}\""));
+        }
+        for m in &self.mails {
+            out.push(format!("import {m} from \"mail:{m}\""));
         }
         for f in &self.watched {
             out.push(format!("import {f} from \"folder:{f}\""));
@@ -2186,7 +2195,7 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
     /// waits for: a request, another flow's action, a send, a write by method.
     fn sink(&self, node: &Node) -> bool {
         let name = node.data.name.as_str();
-        matches!(name, "http_request" | "http_upload" | "http_stream" | "flow_call" | "channel_send" | "collection_put" | "collection_delete" | "db_exec" | "db_insert" | "db_update" | "db_delete")
+        matches!(name, "http_request" | "http_upload" | "http_stream" | "flow_call" | "channel_send" | "mail_send" | "collection_put" | "collection_delete" | "db_exec" | "db_insert" | "db_update" | "db_delete")
             || (name.starts_with("file_") && !matches!(name, "file_list" | "file_lines" | "file_slice" | "file_read" | "file_read_bytes"))
     }
 
@@ -2289,6 +2298,7 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
             "file_write" => "written",
             "http_request" | "http_upload" | "http_stream" => "response",
             "channel_send" => "sent",
+            "mail_send" => "mailed",
             "flow_call" => node.param("action"),
             "flow_start" => "started",
             "stripe_verify" => "verified",
@@ -2568,6 +2578,7 @@ fn auto_names(declared: &[String], leaves: &[String]) -> Vec<String> {
             "file_delete" => "deleted",
             "store_write" => "write",
             "egress" | "channel_send" => "sent",
+            "mail_send" => "mailed",
             _ => "effect",
         };
         let n = counts.entry(base).or_insert(0);
@@ -3011,6 +3022,7 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
                 None => self.generic(node),
             },
             "channel_send" => member(format!("{}.send({})", node.param("channel"), self.required(node, "pack", COND)?)),
+            "mail_send" => member(format!("{}.send({})", node.param("mail"), self.required(node, "message", COND)?)),
             "channel_subscribe" => match node.param("from") {
                 "kept" => member(format!("{}.subscribe({{ from: \"kept\" }})", node.param("channel"))),
                 _ => member(format!("{}.subscribe()", node.param("channel"))),

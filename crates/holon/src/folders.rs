@@ -191,6 +191,8 @@ pub(crate) struct Folders {
     /// The databases bound on this server (databases.rs): the host's other resources a flow
     /// names, seen through a deployment's [`Scoped`] as its folders are.
     pub(crate) databases: databases::Databases,
+    /// The mail resources bound on this server (mails.rs), and the mail on its way through them.
+    pub(crate) mails: mails::Mails,
 }
 
 /// Every binding: the server's, by name, and each deployment's own, by its slug then name. On
@@ -231,12 +233,18 @@ impl Folders {
             locks: locks::Locks::default(),
             claims: claims::Claims::default(),
             databases: databases::Databases::memory(),
+            mails: mails::Mails::memory(),
         }
     }
 
     /// The same folders, beside the databases bound in `databases`.
     pub(crate) fn with_databases(self, databases: databases::Databases) -> Folders {
         Folders { databases, ..self }
+    }
+
+    /// The same folders, beside the mail resources bound in `mails`.
+    pub(crate) fn with_mails(self, mails: mails::Mails) -> Folders {
+        Folders { mails, ..self }
     }
 
     /// The same folders, the texts their runs read kept in `blobs` (`<store>/blobs/`).
@@ -643,6 +651,9 @@ impl Scoped {
     /// (`optional`) may be missing.
     pub(crate) fn refuses(&self, manifest: &Manifest) -> Option<String> {
         if let Some(why) = self.all.databases.refuses(&self.deployment, manifest) {
+            return Some(why);
+        }
+        if let Some(why) = self.all.mails.refuses(&self.deployment, manifest) {
             return Some(why);
         }
         for item in &manifest.capabilities {
@@ -2096,6 +2107,7 @@ fn creates(payload: &Value) -> bool {
 pub(crate) fn loggable(cap: &Capability, payload: &Value) -> Value {
     match cap {
         Capability::FileWrite(_) => by_hash(payload),
+        Capability::MailSend(_) => mails::loggable(payload),
         _ => payload.clone(),
     }
 }
@@ -2126,6 +2138,7 @@ pub(crate) fn loggable_output(v: &Value) -> Value {
         Value::Effect { sink, payload } if sink.starts_with("file_write:") || sink.starts_with("file_create:") => {
             Value::Effect { sink: sink.clone(), payload: Box::new(by_hash(payload)) }
         }
+        Value::Effect { sink, payload } if sink.starts_with("mail_send:") => Value::Effect { sink: sink.clone(), payload: Box::new(mails::loggable(payload)) },
         Value::Record(r) => Value::Record(r.iter().map(|(k, v)| (k.clone(), loggable_output(v))).collect()),
         Value::List(l) => Value::List(l.iter().map(loggable_output).collect()),
         Value::Sum { arm, payload } => Value::Sum { arm: *arm, payload: Box::new(loggable_output(payload)) },

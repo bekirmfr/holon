@@ -289,6 +289,8 @@ struct Lowerer<'a> {
     /// The channels the flow imports (`import updates from "channel:updates"`): sent on, and
     /// subscribed to as a route's answer.
     channels: HashSet<String>,
+    /// The mail resources it imports (`import ops from "mail:ops"`): sent through.
+    mails: HashSet<String>,
     /// The flows whose actions it imports (`import { charge } from "flow:billing"`), by the noun
     /// that calls them (`billing`, or `billing_v2` for `billing-v2`): their slugs.
     calls: HashMap<String, String>,
@@ -325,6 +327,7 @@ impl<'a> Lowerer<'a> {
         let collections = file.headers.iter().filter_map(|h| if let HeaderKind::Collection(c) = &h.kind { Some(c.clone()) } else { None }).collect();
         let databases = file.headers.iter().filter_map(|h| if let HeaderKind::Database(d) = &h.kind { Some(d.clone()) } else { None }).collect();
         let channels = file.headers.iter().filter_map(|h| if let HeaderKind::Channel(c) = &h.kind { Some(c.clone()) } else { None }).collect();
+        let mails = file.headers.iter().filter_map(|h| if let HeaderKind::Mail(m) = &h.kind { Some(m.clone()) } else { None }).collect();
         let calls = file.headers.iter().filter_map(|h| if let HeaderKind::Calls(f) = &h.kind { Some((call_noun(f), f.clone())) } else { None }).collect();
         let secrets = file
             .headers
@@ -356,6 +359,7 @@ impl<'a> Lowerer<'a> {
             folders,
             databases,
             channels,
+            mails,
             calls,
             flow,
             actions,
@@ -508,7 +512,7 @@ impl<'a> Lowerer<'a> {
                 HeaderKind::Port(p) => s.port = p.clone(),
                 HeaderKind::Browsers(o) => s.browsers = Some(o.join(" ")).filter(|b| !b.is_empty()),
                 HeaderKind::Optional(Consent::Secret(n)) => optional.push(format!("SecretRead({n:?})")),
-                HeaderKind::Flow(_) | HeaderKind::Secret(_) | HeaderKind::State(_) | HeaderKind::Collection(_) | HeaderKind::Folder(_) | HeaderKind::Database(_) | HeaderKind::Channel(_) => {}
+                HeaderKind::Flow(_) | HeaderKind::Secret(_) | HeaderKind::State(_) | HeaderKind::Collection(_) | HeaderKind::Folder(_) | HeaderKind::Database(_) | HeaderKind::Channel(_) | HeaderKind::Mail(_) => {}
                 HeaderKind::Calls(flow) => self.check_calls(flow, h.span, file)?,
             }
         }
@@ -536,7 +540,8 @@ impl<'a> Lowerer<'a> {
             || self.is_def(&noun)
             || self.store(&noun).is_some()
             || self.databases.contains(&noun)
-            || self.channels.contains(&noun);
+            || self.channels.contains(&noun)
+            || self.mails.contains(&noun);
         if taken {
             return err(span, format!("\"{noun}\" is already a name here (a keyword, a leaf, a function or something imported): a flow called by it can't be named so"));
         }
@@ -712,6 +717,9 @@ impl<'a> Lowerer<'a> {
         }
         if self.channels.contains(n) {
             return err(name.span, format!("\"{n}\" is a channel; a binding may not shadow it"));
+        }
+        if self.mails.contains(n) {
+            return err(name.span, format!("\"{n}\" is a mail; a binding may not shadow it"));
         }
         if self.calls.contains_key(n) {
             return err(name.span, format!("\"{n}\" is a flow; a binding may not shadow it"));
@@ -1256,7 +1264,7 @@ impl<'a> Lowerer<'a> {
 
     fn check_name_free(&self, name: &Name) -> R<()> {
         let n = name.text.as_str();
-        if interface_of(n).is_some() || templates::is_template(n) || RESERVED.contains(&n) || self.store(n).is_some() || self.databases.contains(n) || self.channels.contains(n) || self.is_def(n) {
+        if interface_of(n).is_some() || templates::is_template(n) || RESERVED.contains(&n) || self.store(n).is_some() || self.databases.contains(n) || self.channels.contains(n) || self.mails.contains(n) || self.is_def(n) {
             return err(name.span, format!("\"{n}\" is taken; pick another name"));
         }
         Ok(())
@@ -1266,7 +1274,7 @@ impl<'a> Lowerer<'a> {
     /// not after a keyword, a collection or a function.
     fn check_port_name(&self, name: &Name) -> R<()> {
         let n = name.text.as_str();
-        if RESERVED.contains(&n) || self.store(n).is_some() || self.databases.contains(n) || self.channels.contains(n) || self.is_def(n) {
+        if RESERVED.contains(&n) || self.store(n).is_some() || self.databases.contains(n) || self.channels.contains(n) || self.mails.contains(n) || self.is_def(n) {
             return err(name.span, format!("\"{n}\" is taken; pick another name for the port"));
         }
         Ok(())
@@ -1717,6 +1725,9 @@ impl<'a> Lowerer<'a> {
         if self.channels.contains(n) {
             return err(span, format!("\"{n}\" is a channel: send on it with {n}.send(…); a route answers with it, return {n}.subscribe()"));
         }
+        if self.mails.contains(n) {
+            return err(span, format!("\"{n}\" is a mail: send through it with {n}.send({{ to: \"…\", subject: \"…\", text: \"…\" }})"));
+        }
         if self.calls.contains_key(n) {
             return err(span, format!("\"{n}\" is a flow: import the action you call, import {{ charge }} from \"flow:{n}\""));
         }
@@ -1871,6 +1882,38 @@ impl<'a> Lowerer<'a> {
     }
 
     /// A param's frozen text from an expression: a literal, a duration (in seconds), or a word.
+    /// The recipients a mail's text names, its `to` param and so its grant: each `to` and `cc`
+    /// written as text in quotes in the record the call writes, or `*` when one is computed (from
+    /// a request, a database) or the message is made elsewhere (mail.rs).
+    fn mail_recipients(&self, mail: &str, args: &[Arg], span: Span) -> R<String> {
+        let message = match args {
+            [only] if only.name.is_none() => &only.value,
+            _ => return err(span, format!("{mail}.send takes one message: {mail}.send({{ to: \"…\", subject: \"…\", text: \"…\" }})")),
+        };
+        let ExprKind::Record { spread: None, fields } = &message.kind else { return Ok("*".into()) };
+        if let Some((k, _)) = fields.iter().find(|(k, _)| !holon_core::mail::FIELDS.contains(&k.text.as_str())) {
+            return err(k.span, format!("a mail has no \"{}\": to, cc, subject, text, html and attachments", k.text));
+        }
+        if let Some(needed) = ["to", "subject", "text"].into_iter().find(|n| !fields.iter().any(|(k, _)| k.text == *n)) {
+            return err(message.span, format!("a mail needs its {needed}: {mail}.send({{ to: \"…\", subject: \"…\", text: \"…\" }})"));
+        }
+        let mut named = Vec::new();
+        for (_, e) in fields.iter().filter(|(k, _)| k.text == "to" || k.text == "cc") {
+            let each: Vec<&Expr> = if let ExprKind::List(xs) = &e.kind { xs.iter().collect() } else { vec![e] };
+            for x in each {
+                let ExprKind::Text(a) = &x.kind else { return Ok("*".into()) };
+                if !holon_core::mail::is_address(a.trim()) {
+                    return err(x.span, format!("\"{a}\" isn't an address a mail goes to: name@example.com"));
+                }
+                named.push(a.trim().to_string());
+            }
+        }
+        match holon_core::mail::recipients(&named.join(",")) {
+            Some(to) => Ok(to.join(",")),
+            None => err(message.span, format!("a mail goes to one recipient at least, and {} at most", holon_core::mail::MAX_RECIPIENTS)),
+        }
+    }
+
     fn literal_text(&self, e: &Expr) -> R<String> {
         match &e.kind {
             ExprKind::Number { text, .. } => Ok(text.clone()),
@@ -2123,6 +2166,14 @@ impl<'a> Lowerer<'a> {
                 self.unit_call("store_write", &inputs, &params, &[("key".to_string(), key)], &args[1..], span)
             }
             c if self.databases.contains(c) => self.db_call(c, method, args, span),
+            c if self.mails.contains(c) => match method.text.as_str() {
+                "send" => {
+                    let to = self.mail_recipients(c, args, span)?;
+                    let (inputs, params) = leaf("mail_send");
+                    self.unit_call("mail_send", &inputs, &params, &[("mail".to_string(), c.to_string()), ("to".to_string(), to)], args, span)
+                }
+                other => err(method.span, format!("a mail has no \"{other}\": send({{ to, subject, text }})")),
+            },
             c if let Some(store) = self.store(c) => {
                 let folder = store.kind == "folder";
                 let leaf_name = match method.text.as_str() {

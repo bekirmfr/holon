@@ -57,7 +57,7 @@ const PASSES_LITERALLY: &[&str] = &[
     "values", "from_entries", "merge",
     "record", "field", "with_field", "without_field", "lookup", "insert", "remove", "as_text", "guard",
     "default", "coalesce", "json_stringify", "store_write", "collection_put", "file_write", "file_create",
-    "channel_send", "egress",
+    "channel_send", "mail_send", "egress",
 ];
 
 /// Leaves whose output is what the far side answered: an outbound request's response, a

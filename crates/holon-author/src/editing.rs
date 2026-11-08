@@ -113,6 +113,7 @@ const NOUNS: &[(&str, &str)] = &[
     ("folder", "Files on the host, in a folder an admin binds to the name, `import inbox from \"folder:inbox\"`: `inbox[file]` reads a file's text, `inbox[file] = text` writes it when the run finishes (`inbox.create(file, text)` only if no file has that name), `delete inbox[file]` deletes it, `inbox.list({ prefix: p, after: a, limit: 50 })` lists files; `inbox.file(name)` is a handle to a file of any size, and `inbox.lines(…)` and `inbox.slice(…)` read part of one. One permission to read, one to write."),
     ("database", "A database an admin binds on the host, `import shop from \"database:shop\"`. `shop.query(\"select … where id = $1\", id)` reads rows (a list of records by column name), `shop.one(…)` the first row or nothing, `shop.exec(\"update … where id = $1\", id, { expect: 1 })` changes rows when the run finishes, in one transaction with its other writes there (`expect`: exactly that many, or nothing lands). The SQL is written in quotes; its tables are the permission, one to read each, one to write each. Values go after it as $1, $2, …, never into it. A document database (MongoDB) takes records instead: `notes.find(\"notes\", { owner: who }, { sort: { at: -1 }, limit: 20 })` reads documents, `notes.find_one(…)` the first, and `notes.insert(\"notes\", { … })`, `notes.update(\"notes\", { _id: id }, { \"$set\": { text: t } }, { expect: 1 })` and `notes.delete(\"notes\", { … })` write when the run finishes. The collection is the permission; each computed value goes in as a value, never as an operator."),
     ("channel", "Packs the flow sends to whoever subscribes, `import updates from \"channel:updates\"`: `updates.send(v)` sends one once the run is over and its writes have landed; a route answers with `updates.subscribe()`, a stream of server-sent events (`{ from: \"kept\" }`, the ones it keeps first); `updates.pipe(…)` passes a call's answer on as it arrives. One permission to send, one to let callers subscribe."),
+    ("mail", "Mail sent through a mail resource an admin binds on the host, `import ops from \"mail:ops\"`: `ops.send({ to: \"approvals@acme.com\", cc, subject, text, html, attachments: { \"payout.csv\": csv } })` sends it once the run is over and its writes have landed, from the binding's address, never the flow's. Each recipient written in quotes is a permission of its own; a computed one is one permission, held to the addresses the binding allows. At most 50 recipients and 10 MiB."),
     ("host", "`await api.get(path, { headers: h, body: b })`, `import api from \"host:api.example.com\"`: a request to the host over HTTPS; also `post`, `put`, `patch`, `delete` and `head`. The host is the permission; the answer, `{status, headers, body}`, is recorded with the run. `file: handle` in place of `body` sends a file's bytes, streamed by the server."),
     ("flow", "`import { charge } from \"flow:billing\"`: an action of another deployed flow. `await charge(x)` runs it and answers `{answer, run}`, or `{error, message}` when it didn't run; `charge(x)` without `await` starts it. One permission: running it."),
     ("stripe", "`stripe.verify(req, secret, now, { tolerance: 300 })`: the request as a verified Stripe webhook (`.event`), or no value."),
@@ -900,6 +901,7 @@ fn classify(source: &str, imported: &str, optional: bool) -> Option<Imported> {
         ("folder", _) => declared("folder"),
         ("database", _) => declared("database"),
         ("channel", _) => declared("channel"),
+        ("mail", _) => declared("mail"),
         ("host", host) => Some(Imported::Host(host.to_string())),
         ("flow", slug) => Some(Imported::Action { flow: slug.to_string(), action: imported.to_string() }),
         _ => None,
@@ -1145,7 +1147,7 @@ pub struct Completion {
 const SPOKEN_OTHERWISE: &[&str] = &[
     "http_request", "http_upload", "http_stream", "clock", "random", "random_bytes", "file_arrival", "secret", "await", "store_read", "store_write", "collection_get", "collection_list", "collection_put",
     "collection_delete", "file_read", "file_list", "file_write", "file_delete", "file_handle", "file_lines", "file_slice", "file_copy", "file_create", "file_create_copy", "db_query", "db_one",
-    "db_exec", "db_find", "db_find_one", "db_insert", "db_update", "db_delete", "egress", "channel_send", "channel_subscribe", "record", "json_parse", "json_stringify", "flow_start", "flow_call",
+    "db_exec", "db_find", "db_find_one", "db_insert", "db_update", "db_delete", "egress", "channel_send", "channel_subscribe", "mail_send", "record", "json_parse", "json_stringify", "flow_start", "flow_call",
     "stripe_verify",
 ];
 
@@ -1205,6 +1207,7 @@ const CHANNEL: &[(&str, &str)] = &[
     ("pipe", "pipe(await api.post(…)): the call's answer, to its subscribers as it arrives"),
     ("subscribe", "subscribe({ from: \"kept\" }): a route's answer, the packs as server-sent events"),
 ];
+const MAIL: &[(&str, &str)] = &[("send", "send({ to, cc, subject, text, html, attachments }): mailed once the run is over")];
 const HOST: &[&str] = &["get", "post", "put", "patch", "delete", "head"];
 const REQUEST_PARTS: &[(&str, &str)] = &[
     ("params", "the path's :names"),
@@ -1261,6 +1264,7 @@ fn members(o: &Outline, code: &[&Lexeme], head: usize, at: Pos) -> Vec<Completio
                 "collection" => COLLECTION,
                 "folder" => FOLDER,
                 "database" => DATABASE,
+                "mail" => MAIL,
                 _ => CHANNEL,
             },
         ),

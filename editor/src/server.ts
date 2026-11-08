@@ -184,6 +184,17 @@ export async function listTables(name: string, deployment: string | null): Promi
   const only = deployment ? `?deployment=${encodeURIComponent(deployment)}` : "";
   return (await asJson<{ tables: string[] }>(await api(`${BASE}/admin/databases/${encodeURIComponent(name)}/tables${only}`))).tables;
 }
+/** A mail resource bound (mails.rs): where its SMTP server's URL is read from (env:…, vault:…) and
+ *  where it points, without the login; its sender; and every address it may send to. */
+export type MailEntry = { name: string; deployment: string | null; smtp: string; address: string; from: string; to: string[] };
+/** A mail to bind: `to` as addresses, `*@domain` or `*`, with commas. */
+export type MailBinding = Pick<MailEntry, "name" | "deployment" | "smtp" | "from"> & { to: string };
+export const listMails = async () => asJson<MailEntry[]>(await api(`${BASE}/admin/mails`));
+export const bindMail = async (m: MailBinding) => asJson<MailEntry>(await post(`${BASE}/admin/mails`, m));
+export async function unbindMail(name: string, deployment: string | null): Promise<void> {
+  const only = deployment ? `?deployment=${encodeURIComponent(deployment)}` : "";
+  await asJson<void>(await api(`${BASE}/admin/mails/${encodeURIComponent(name)}${only}`, { method: "DELETE" }));
+}
 /** Values and bytes, as a sweep counts them. */
 export type Counted = { values: number; bytes: number };
 /** `POST /admin/store/sweep` (sweep.rs): the values nothing kept names, removed (or, as a dry

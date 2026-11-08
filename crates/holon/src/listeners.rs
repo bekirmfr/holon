@@ -260,8 +260,8 @@ fn serve_flow(
         Ok(_) => ran.as_ref().and_then(|r| r.error.clone()),
     };
     let parked_any = matches!(&parked, Ok(names) if !names.is_empty());
-    // Whether an unrecorded run sent packs, which go out even though it isn't logged.
-    let sends = level == holon_core::LogLevel::Unrecorded && ran.as_ref().is_some_and(|r| r.run.performed.iter().chain(&r.run.progress).any(|(c, _)| matches!(c, Capability::ChannelSend(_))));
+    // Whether an unrecorded run sent packs or mail, which go out even though it isn't logged.
+    let sends = level == holon_core::LogLevel::Unrecorded && ran.as_ref().is_some_and(|r| r.run.performed.iter().chain(&r.run.progress).any(|(c, _)| matches!(c, Capability::ChannelSend(_) | Capability::MailSend(_))));
     // The tokens its starts were handed for the runs they started (calls.rs): bearer credentials
     // as its own are, kept out of its log though its caller is answered with them.
     let handed = ran.as_ref().map_or_else(Vec::new, |r| calls::handed(&r.run.rounds));

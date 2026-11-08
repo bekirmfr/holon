@@ -583,7 +583,8 @@ A FILE (NAME.holon.ts: its imports, then flow(…), then its handlers)
   import key from "secret:key" with { optional: "true" }   a secret it can run without
   import state from "state"                     its state, its keys by use: state.count
   import notes from "collection:notes"          a named store of items, used as notes[key]
-  import inbox from "folder:inbox"              also "database:NAME" and "channel:NAME"
+  import inbox from "folder:inbox"              also "database:NAME", "channel:NAME" and
+                                                "mail:NAME" (a mail it sends through)
   import httpbin from "host:httpbin.org"        a host it calls, as httpbin.get("/uuid")
   import { now } from "holon:clock"             the time; import { random } from "holon:random"
                                                 (and random_bytes, the run's 32, for pgp_encrypt)
@@ -656,6 +657,10 @@ THE OUTSIDE WORLD (each is one permission the flow asks for)
   const paid = await event("paid", { expires: "1d" })   in an action: park the run until the
                                            event arrives; a route answers and is done
   route.get("/paid/:token", () => "ok", { resumes: "paid" })   the route that delivers it
+  ops.send({ to, subject, text })          mails through the mail ops an admin bound (cc, html
+                                           and attachments too), once the run is over: quoted
+                                           recipients are granted by name, computed ones within
+                                           the binding's
   JSON.stringify(x), JSON.parse(text)
 
 CALLS

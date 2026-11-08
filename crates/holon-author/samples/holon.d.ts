@@ -239,6 +239,18 @@ declare module "holon" {
     /** A call's answer, to the channel as it arrives: `updates.pipe(api.post(…))`. */
     pipe(call: Promise<Response>): any
   }
+  /** A mail resource: what is sent goes out once the run is over, from the binding's address. */
+  export interface Mail {
+    send(message: {
+      to: string | string[]
+      cc?: string | string[]
+      subject: string
+      text: string
+      html?: string
+      /** A file name to its text or bytes. */
+      attachments?: Record<string, string | Uint8Array>
+    }): any
+  }
 }
 
 /** A secret set for the deployment: someone sets it before the flow works. */
@@ -270,6 +282,11 @@ declare module "channel:*" {
   import type { Channel } from "holon"
   const channel: Channel
   export default channel
+}
+declare module "mail:*" {
+  import type { Mail } from "holon"
+  const mail: Mail
+  export default mail
 }
 declare module "host:*" {
   import type { Host } from "holon"
@@ -1602,6 +1619,13 @@ declare module "holon" {
    * A subscription to the channel set on the node, for a route to answer with: the caller gets each pack sent on it from then on (from "kept": the packs the channel keeps first), as server-sent events. Letting callers subscribe is a permission.
    */
   export function channel_subscribe(...args: any[]): any
+
+  /**
+   * `mail_send(message: Record, trigger: Any) -> out: Effect  {mail: ops, to: *}`
+   *
+   * Sends message through the mail resource an admin bound to the name set on the node (mail), once the run is over and its writes have landed: {to, cc, subject, text, html, attachments}, to and cc an address or a list, attachments a record of a file name to its text or bytes. From is the binding's, never the flow's. to set on the node is the recipients the text names, or * when one is computed: a recipient it doesn't name gives nothing, and the host sends only to those the binding allows. At most 50 recipients and 10 MiB. Sending through it, to each recipient, is a permission.
+   */
+  export function mail_send(...args: any[]): any
 
   /**
    * `egress(payload: Any, trigger: Any) -> out: Effect`

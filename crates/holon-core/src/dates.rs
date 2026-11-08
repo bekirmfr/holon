@@ -133,7 +133,7 @@ fn civil_from_days(days: i64) -> (i64, i64, i64) {
 
 /// The UTC parts of a time value: year, month (0 to 11, as JavaScript counts), date, weekday (0 is
 /// Sunday), hours, minutes, seconds, milliseconds.
-fn parts(t: i64) -> [i64; 8] {
+pub(crate) fn parts(t: i64) -> [i64; 8] {
     let day = t.div_euclid(MS_PER_DAY);
     let ms = t.rem_euclid(MS_PER_DAY);
     let (y, m, d) = civil_from_days(day);

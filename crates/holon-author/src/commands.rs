@@ -554,6 +554,33 @@ mod tests {
     }
 
     #[test]
+    fn a_mail_is_written_back_as_written_its_recipients_in_its_grant() {
+        let text = "import { flow, route, status } from \"holon\"\nimport ops from \"mail:ops\"\n\nflow(\"payouts\", { port: 8200 })\n\nroute.post(\"/ask\", (req) => {\n  ops.send({\n    to: \"approvals@acme.com\",\n    cc: [\"audit@acme.com\", \"Approvals@acme.com\"],\n    subject: `Payout ${req.json.id}`,\n    text: \"Approve it\",\n    attachments: { \"payout.csv\": req.text },\n  })\n  return status(202, { ok: true })\n})\n\nroute.post(\"/tell\", (req) => {\n  ops.send({ to: req.json.who, subject: \"Approved\", text: \"It went out\" })\n  return status(202, { ok: true })\n})\n";
+        let checked = check("payouts.holon.ts", text);
+        assert_eq!(checked.code, 0, "{:?}", checked.err);
+        assert_eq!(fmt("payouts.holon.ts", text).unwrap(), text);
+        // Each recipient written in quotes, once; a computed one is the binding's to hold.
+        let may: Vec<&String> = checked.out.iter().filter(|l| l.contains("send mail")).collect();
+        assert_eq!(
+            may,
+            [
+                "  send mail through \"ops\" to an address it computes, within its binding's",
+                "  send mail through \"ops\" to approvals@acme.com",
+                "  send mail through \"ops\" to audit@acme.com",
+            ]
+        );
+        let flow = |body: &str| format!("import {{ flow, route, status }} from \"holon\"\nimport ops from \"mail:ops\"\n\nflow(\"payouts\", {{ port: 8200 }})\n\nroute.post(\"/ask\", (req) => {{\n{body}\n  return status(202, {{ ok: true }})\n}})\n");
+        let fails = |body: &str| check("payouts.holon.ts", &flow(body)).err.join("\n");
+        assert!(fails("  ops.send({ to: \"approvals\", subject: \"s\", text: \"t\" })").contains("\"approvals\" isn't an address a mail goes to"));
+        assert!(fails("  ops.send({ to: \"a@acme.com\", bcc: \"b@acme.com\", subject: \"s\", text: \"t\" })").contains("a mail has no \"bcc\""));
+        assert!(fails("  ops.send({ to: \"a@acme.com\", text: \"t\" })").contains("a mail needs its subject"));
+        assert!(fails("  ops.send({ to: [], subject: \"s\", text: \"t\" })").contains("one recipient at least"));
+        assert!(fails("  ops.send(req.json, req.json)").contains("ops.send takes one message"));
+        assert!(fails("  ops.post(req.json)").contains("a mail has no \"post\""));
+        assert!(check("payouts.holon.ts", "import { flow, route } from \"holon\"\nimport billing from \"mail:ops\"\n\nflow(\"p\", { port: 8200 })\n\nroute.get(\"/\", () => 1)\n").err.join("\n").contains("a mail is imported under its own name"));
+    }
+
+    #[test]
     fn fmt_writes_a_streamed_reply_back_as_written() {
         let text = "import { as_text, flow, respond, route } from \"holon\"\nimport said from \"collection:said\"\nimport example from \"host:api.example.com\"\nimport { now } from \"holon:clock\"\n\nflow(\"chat\", { port: 8200 })\n\nroute.post(\"/ask\", async (req) => {\n  const sent = await example.post(\"/v1/chat\", { body: req.json, stream: true })\n  said[as_text(now)] = sent.body\n  return respond(sent.body, { stream: true })\n})\n";
         assert_eq!(check("chat.holon.ts", text).code, 0, "{:?}", check("chat.holon.ts", text).err);

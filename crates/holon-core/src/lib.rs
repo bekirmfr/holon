@@ -60,6 +60,7 @@ mod value_hash;
 mod xml;
 mod compress;
 mod jwt;
+pub mod mail;
 mod pgp;
 
 pub mod primitives;

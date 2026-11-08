@@ -203,6 +203,7 @@ ops! {
     "db_update" => DbUpdate,
     "db_delete" => DbDelete,
     "channel_send" => ChannelSend,
+    "mail_send" => MailSend,
     "channel_subscribe" => ChannelSubscribe,
 }
 
@@ -1232,6 +1233,14 @@ pub(crate) fn compute_op(op: Op, name: &str, inputs: &[&Value], params: &[Param]
             let channel = crate::kind::ident(params, "channel")?;
             sink_effect(&format!("channel_send:{channel}"), inputs)
         }
+        // A mail: its message made regular and held to the recipients the text names (mail.rs).
+        // The mail rides in the sink name; its recipients in the payload, for the host to hold to
+        // the grant and the binding as it sends.
+        Op::MailSend => {
+            let mail = crate::kind::ident(params, "mail")?;
+            let message = crate::mail::message(inputs.first()?, param(params, "to"))?;
+            Some(Value::Effect { sink: format!("mail_send:{mail}"), payload: Box::new(message) })
+        }
         // A subscription: what a route answers with, read by the host from the response (never
         // performed as a sink). `from` is "new" (packs from now on) or "kept" (the kept ones first).
         Op::ChannelSubscribe => {
@@ -1552,7 +1561,7 @@ fn sink_effect(sink: &str, inputs: &[&Value]) -> Option<Value> {
 
 /// The primitives that construct an Effect from a payload input (see [`sink_effect`]).
 pub(crate) fn is_sink(name: &str) -> bool {
-    matches!(name, "egress" | "store_write" | "http_request" | "http_stream" | "flow_call" | "flow_start" | "collection_put" | "channel_send")
+    matches!(name, "egress" | "store_write" | "http_request" | "http_stream" | "flow_call" | "flow_start" | "collection_put" | "channel_send" | "mail_send")
 }
 
 /// The most items one `collection_list` returns.

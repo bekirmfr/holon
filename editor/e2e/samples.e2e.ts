@@ -2151,6 +2151,69 @@ test("pgp-outbox encrypts a payment file to the bank's key a person trusted, ver
   expect(verified.trim().endsWith("ok")).toBe(true);
 });
 
+test("approval-mail mails a payout's approval link, its page's button approves it, and whoever asked is mailed", async ({ page, request, adminToken }) => {
+  const { existsSync, readdirSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  // What the e2e server's SMTP sink took (smtp-sink.mjs), oldest first; a mail's text, its
+  // quoted-printable undone.
+  const mailbox = join(FOLDERS, "mail");
+  const mails = (): { from: string; to: string[]; data: string }[] =>
+    existsSync(mailbox) ? readdirSync(mailbox).filter((f) => f.endsWith(".json")).sort().map((f) => JSON.parse(readFileSync(join(mailbox, f), "utf8"))) : [];
+  const unquoted = (data: string) =>
+    Buffer.from(data.replace(/=\r\n/g, "").replace(/=([0-9A-F]{2})/g, (_, hex) => String.fromCharCode(parseInt(hex, 16))), "latin1").toString("utf8");
+  const mailed = async (subject: string) => {
+    await expect.poll(() => mails().some((m) => m.data.includes(`\r\nSubject: ${subject}\r\n`)), { timeout: 15_000 }).toBe(true);
+    return mails().find((m) => m.data.includes(`\r\nSubject: ${subject}\r\n`))!;
+  };
+
+  await openSample(page, "Approval mail (a second person approves each payout from a mail)");
+  const port = await deploy(page);
+  const id = `p${Date.now()}`;
+  const asked = await request.post(`http://127.0.0.1:${port}/payouts`, { data: { id, amount: 5000, iban: "DE89370400440532013000", by: "sam@acme.com" } });
+  expect(asked.status()).toBe(202);
+  expect(await asked.json()).toEqual({ id, waiting: "approval" });
+
+  // The approvers are mailed, from the binding's sender, the payout attached.
+  const approval = await mailed(`Approve payout ${id}: 5000 to DE89370400440532013000`);
+  expect([approval.from, approval.to]).toEqual(["treasury@acme.com", ["approvals@acme.com"]]);
+  expect(approval.data.startsWith("From: Treasury <treasury@acme.com>\r\nTo: approvals@acme.com\r\n")).toBe(true);
+  expect(approval.data).toContain('Content-Disposition: attachment; filename="payout.csv"');
+  const csv = Buffer.from(`id,amount,iban,by\n${id},5000,DE89370400440532013000,sam@acme.com\n`).toString("base64");
+  expect(approval.data.replace(/\r\n/g, "")).toContain(csv);
+  const link = /\/approve\/\S+/.exec(unquoted(approval.data))?.[0];
+  expect(link).toBeTruthy();
+
+  // Opening the link approves nothing; its button does.
+  await page.goto(`http://127.0.0.1:${port}${link}`);
+  await expect(page.getByText("Approve this payout?")).toBeVisible();
+  expect(JSON.stringify(await (await request.get(`http://127.0.0.1:${port}/payouts`)).json())).not.toContain(id);
+  await page.getByRole("button", { name: "Approve" }).click();
+  await expect(page.getByText("Approved.")).toBeVisible();
+
+  // Recorded, and whoever asked is mailed: an address the binding's --to allows.
+  const told = await mailed(`Payout ${id} approved`);
+  expect(told.to).toEqual(["sam@acme.com"]);
+  const recorded = await (await request.get(`http://127.0.0.1:${port}/payouts`)).json();
+  expect(recorded[id]).toEqual(expect.objectContaining({ id, amount: 5000, by: "sam@acme.com", approved_via: "POST" }));
+  // The deployment's timeline says what was mailed.
+  const said = async () => {
+    const events = await request.get(`${SERVER}/deployments/approval-mail/events`, { headers: { Authorization: `Bearer ${adminToken}` } });
+    return ((await events.json()) as { events: { kind: string; what: string }[] }).events;
+  };
+  await expect.poll(said, { timeout: 15_000 }).toContainEqual(expect.objectContaining({ kind: "mail", what: `mailed "Payout ${id} approved" to sam@acme.com through ops` }));
+
+  // The admin's resources show the binding, its server without a login, and who mails through
+  // it; permissions, to whom.
+  await page.goto("/");
+  await page.getByRole("button", { name: "admin", exact: true }).click();
+  const sections = page.getByRole("tablist", { name: "admin sections" });
+  await sections.getByRole("tab", { name: "resources" }).click();
+  await expect(page.getByText(/^smtp:\/\/127\.0\.0\.1:\d+ \(from env:HOLON_SECRET_OPS_SMTP\) · as Treasury <treasury@acme\.com> · to \*@acme\.com$/)).toBeVisible();
+  await expect(page.getByText("used by approval-mail (permissions says how)")).toBeVisible();
+  await sections.getByRole("tab", { name: "permissions" }).click();
+  await expect(page.getByLabel("mail ops")).toContainText("mails approvals@acme.com, addresses it computes");
+});
+
 test("due-dates schedules a payout past Easter's closing days and an invoice past a weekend", async ({ page, request }) => {
   await openSample(page, "Due dates (business days at a fixed offset)");
   const port = await deploy(page);

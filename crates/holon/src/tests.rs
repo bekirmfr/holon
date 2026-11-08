@@ -7526,6 +7526,155 @@ fn approved_payout_keeps_the_deposits_made_while_it_waited() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+// ── Mail (host-capabilities 1.3a) ──
+
+/// A test server with mail: its `ops` read from a dotenv file pointing at an SMTP sink, sending
+/// as soon as the run is over.
+fn mail_state(sink_port: u16) -> AppState {
+    let dir = std::env::temp_dir().join(format!("holon-mail-{}-{}", std::process::id(), rand::random::<u32>()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let env = dir.join(".env");
+    std::fs::write(&env, format!("HOLON_SECRET_OPS_SMTP=smtp://ops:s3cret@127.0.0.1:{sink_port}\n")).unwrap();
+    let mut state = claims_state("");
+    let mails = mails::Mails::memory().with_sources(secret_sources::Sources::new(Some(env)).unwrap()).with_retry([Duration::from_millis(50); 4], Duration::from_secs(60));
+    state.folders = Arc::new(folders::Folders::memory().with_mails(mails));
+    state.folders.mails.serve(Arc::clone(&state.deployments));
+    state
+}
+
+/// A mail's text, its quoted-printable undone.
+fn unquoted(data: &str) -> String {
+    let joined = data.replace("=\r\n", "");
+    let mut out = Vec::new();
+    let b = joined.as_bytes();
+    let mut i = 0;
+    while i < b.len() {
+        match (b[i], joined.get(i + 1..i + 3).and_then(|h| u8::from_str_radix(h, 16).ok())) {
+            (b'=', Some(byte)) => {
+                out.push(byte);
+                i += 3;
+            }
+            (c, _) => {
+                out.push(c);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+fn wait_for_mail(sink: &smtp::sink::Sink, n: usize) -> Vec<smtp::sink::Got> {
+    let until = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let got = sink.got.lock().unwrap().clone();
+        if got.len() >= n {
+            return got;
+        }
+        assert!(std::time::Instant::now() < until, "{} mails, not {n}", got.len());
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// The approval-mail sample (host-capabilities L4 §5.2.2): asking for a payout mails its approval
+/// link once the run is over, from the binding's sender, the payout attached; the link's page
+/// approves nothing and its button does; approved, the payout is recorded and whoever asked is
+/// mailed. One who asked from outside the binding's --to isn't: that mail is given up, and the
+/// deployment's timeline says so. The log keeps each message, its attachment by hash.
+#[test]
+fn approval_mail_mails_the_link_then_the_approval_through_its_binding() {
+    let sink = smtp::sink::start("PLAIN LOGIN");
+    let state = mail_state(sink.port);
+    let text = include_str!("../../holon-author/samples/approval-mail.holon.ts");
+    // Not bound: refused at deploy, as a folder is.
+    let plan = holon_author::agent::plan(text).unwrap();
+    for u in &plan.units {
+        assert_eq!(route(&state, &req("POST", "/unit", u.clone())).status_code, 200);
+    }
+    let preview = body_json(route(&state, &req("POST", "/deploy/preview", serde_json::to_vec(&serde_json::json!({ "slug": plan.name, "unit": plan.unit })).unwrap())));
+    let refused = deploy_json(&state, &plan.name, parse_hash(&plan.unit).unwrap(), serde_json::json!({ "acknowledge": preview["needs_approval"] }));
+    let said = body_json(refused)["error"].as_str().unwrap_or_default().to_string();
+    assert!(said.contains("the mail \"ops\" isn't bound on this server"), "{said}");
+    // Bound to every address at acme.com.
+    let bind = serde_json::json!({ "name": "ops", "smtp": "env:HOLON_SECRET_OPS_SMTP", "from": "Treasury <treasury@acme.com>", "to": "*@acme.com" });
+    let bound = route(&state, &req("POST", "/admin/mails", serde_json::to_vec(&bind).unwrap()));
+    assert_eq!(bound.status_code, 200);
+    let shown = String::from_utf8_lossy(&body_bytes(bound)).into_owned();
+    assert!(!shown.contains("s3cret") && shown.contains(&format!("smtp://127.0.0.1:{}", sink.port)), "{shown}");
+    let slug = deploy_text(&state, text, "127.0.0.1");
+
+    let (status, body, _) = data_call(&state, &slug, "POST", "/payouts", r#"{"id":"p1","amount":5000,"iban":"DE89370400440532013000","by":"sam@acme.com"}"#);
+    assert_eq!(status, 202, "{body}");
+    let got = wait_for_mail(&sink, 1);
+    assert_eq!((got[0].from.as_str(), got[0].to.clone()), ("treasury@acme.com", vec!["approvals@acme.com".to_string()]));
+    assert!(got[0].login.is_some(), "logged in");
+    let mail = &got[0].data;
+    for part in ["From: Treasury <treasury@acme.com>\r\n", "To: approvals@acme.com\r\n", "Subject: Approve payout p1: 5000 to DE89370400440532013000\r\n", "Content-Disposition: attachment; filename=\"payout.csv\""] {
+        assert!(mail.contains(part), "{part} in {mail}");
+    }
+    // The CSV, base64 as it is attached.
+    let csv = "id,amount,iban,by\np1,5000,DE89370400440532013000,sam@acme.com\n";
+    assert!(mail.replace("\r\n", "").contains(&smtp_base64(csv.as_bytes())), "{mail}");
+    let text_part = unquoted(mail);
+    let link = text_part.split("http://127.0.0.1:8186").nth(1).unwrap_or_else(|| panic!("{text_part}"));
+    let link: String = link.chars().take_while(|c| !c.is_whitespace()).collect();
+    assert!(link.starts_with("/approve/"), "{link}");
+
+    // Opening the link approves nothing: a page with a button.
+    let token = link.trim_start_matches("/approve/").to_string();
+    let (status, page, _) = data_call(&state, &slug, "GET", &link, "");
+    assert_eq!(status, 200);
+    assert!(page.contains("<button>Approve</button>"), "{page}");
+    assert!(!data_call(&state, &slug, "GET", "/payouts", "").1.contains("p1"), "not approved yet");
+    // Its button does: recorded, and sam is mailed.
+    assert_eq!(data_call(&state, &slug, "POST", &link, "").0, 200);
+    let got = wait_for_mail(&sink, 2);
+    assert_eq!(got[1].to, vec!["sam@acme.com".to_string()]);
+    assert!(got[1].data.contains("Subject: Payout p1 approved\r\n"), "{}", got[1].data);
+    assert!(got[1].data.contains("Message-ID: <") && got[0].data.contains("Message-ID: <"));
+    let listed = data_call(&state, &slug, "GET", "/payouts", "").1;
+    assert!(listed.contains("\"p1\"") && listed.contains(r#""approved_via":"POST""#), "{listed}");
+
+    // Asked from outside the binding: the approvers are mailed, the asker isn't.
+    let (status, _, _) = data_call(&state, &slug, "POST", "/payouts", r#"{"id":"p2","amount":10,"iban":"DE89370400440532013000","by":"eve@evil.example"}"#);
+    assert_eq!(status, 202);
+    let got = wait_for_mail(&sink, 3);
+    let link: String = unquoted(&got[2].data).split("http://127.0.0.1:8186").nth(1).unwrap().chars().take_while(|c| !c.is_whitespace()).collect();
+    assert_eq!(data_call(&state, &slug, "POST", &link, "").0, 200);
+    let events = || body_json(route(&state, &req("GET", &format!("/deployments/{slug}/events"), vec![])))["events"].to_string();
+    let until = std::time::Instant::now() + Duration::from_secs(10);
+    while !events().contains("gave up mailing") {
+        assert!(std::time::Instant::now() < until, "{}", events());
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let said = events();
+    assert!(said.contains(r#"gave up mailing \"Payout p2 approved\" to eve@evil.example through ops: eve@evil.example isn't an address the binding allows now"#), "{said}");
+    assert!(said.contains(r#"mailed \"Approve payout p1: 5000 to DE89370400440532013000\" to approvals@acme.com through ops"#), "{said}");
+    assert_eq!(sink.got.lock().unwrap().len(), 3, "eve wasn't mailed");
+
+    // The log keeps the message, its attachment by size and hash.
+    let entries = log_entries(&state, &slug);
+    let asked = entries.iter().find(|e| e["route"] == "POST /payouts").unwrap();
+    let mailed = asked["performed"].as_array().unwrap().iter().find(|p| p["capability"] == r#"MailSend("ops")"#).unwrap_or_else(|| panic!("{asked}"));
+    let payload = mailed["payload"].to_string();
+    assert!(payload.contains("approvals@acme.com") && payload.contains(&blake3::hash(csv.as_bytes()).to_hex().to_string()) && !payload.contains("p1,5000"), "{payload}");
+    // And no run in it holds a live token: the page's route is unrecorded, and the button's, the
+    // route that resumes, keeps it redacted.
+    let logged = serde_json::to_string(&entries).unwrap();
+    assert!(!logged.contains(&token) && !logged.contains("GET /approve"), "{logged}");
+}
+
+fn smtp_base64(bytes: &[u8]) -> String {
+    const ABC: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::new();
+    for chunk in bytes.chunks(3) {
+        let n = chunk.iter().enumerate().fold(0u32, |n, (i, b)| n | (*b as u32) << (16 - 8 * i));
+        for i in 0..4 {
+            out.push(if i <= chunk.len() { ABC[(n >> (18 - 6 * i) & 63) as usize] as char } else { '=' });
+        }
+    }
+    out
+}
+
 // ── MongoDB (slice 7) ──
 
 /// The server compiles a flow's text with the editor's lowering, so a record literal must freeze

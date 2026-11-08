@@ -85,7 +85,7 @@ unit.
 | What the language is | A surface over the existing IR; every construct lowers to catalog leaves, templates and composites that exist (two leaves, `as_text` and `coalesce`, were added for it) | §1, §6 |
 | Its syntax | TypeScript's: a flow is a valid TypeScript module, read by a TypeScript parser (oxc's). The meanings that differ from JavaScript's are Holon's; where a JavaScript reader would be misled, the compiler refuses and says what to write instead | §1, §2, §6 |
 | What it is not | General-purpose. No loops, recursion, classes, generics, imports of code, or standard library growth | §2 |
-| The outside world | Imported by name: `import key from "secret:NAME"`, `import state from "state"`, `"collection:NAME"`, `"folder:NAME"`, `"database:NAME"`, `"channel:NAME"`, `"host:HOST"`, `{ now } from "holon:clock"`, `{ random } from "holon:random"`, `{ charge } from "flow:SLUG"`; what started a run is its handler's parameter | §5.1, §5.4 |
+| The outside world | Imported by name: `import key from "secret:NAME"`, `import state from "state"`, `"collection:NAME"`, `"folder:NAME"`, `"database:NAME"`, `"channel:NAME"`, `"mail:NAME"`, `"host:HOST"`, `{ now } from "holon:clock"`, `{ random } from "holon:random"`, `{ charge } from "flow:SLUG"`; what started a run is its handler's parameter | §5.1, §5.4 |
 | Settings | `flow("name", { port, keep, limits, browsers })`, once, after the imports | §5.1 |
 | Writes | Assignment: `state.key = v`, `notes[key] = v`, `delete notes[key]`, `reports[name] = text`. Method forms (`notes.put(k, v)`) when the write is a value to name | §5.4, §5.10 |
 | Bindings | `const name = expr`; a `let` given a new value is a new name; destructuring is a `field` per name | §5.2 |
@@ -901,6 +901,16 @@ that reconnects says the last id it saw and gets the kept ones past it. Sending 
 permission (`ChannelSend("updates")`), and so is letting callers subscribe
 (`ChannelRead("updates")`).
 
+`import ops from "mail:ops"` names a mail an admin bound to an SMTP server, with its sender and
+every address it may send to (`docs/L4s/host-capabilities-L4.md` §5.2.2). `ops.send({ to,
+subject, text })` (and `cc`, `html`, `attachments`) is an effect, `mail_send{mail: ops, to}(m)`,
+sent as a channel's pack is: once the run is over and its record is on disk, from a queue that
+tries again for a day. Its `to` parameter is the recipients the call's record writes as text in
+quotes, joined with commas, or `*` when one is computed: the grant names each,
+`MailSend("ops/approvals@acme.com")`, or says `MailSend("ops/*")`, held to the binding's list.
+The approval-mail sample mails a payout's approval link from the route that starts its waiting
+run, and whoever asked once it is approved.
+
 ### chat-proxy: a streamed reply
 
 Its `/chat` route (the imports, the page and the `js()` function `answer` left out):
@@ -1181,8 +1191,8 @@ it reaches it as an input after the item (§5.9): `tax` here.
 - **Route paths:** a text literal, `/` followed by segments of `[A-Za-z0-9_.-]+` or `:name`, as
   `parse_path` accepts.
 - **Import sources** are text literals of a fixed shape: `"holon"`, `"state"`, `"secret:NAME"`,
-  `"collection:NAME"`, `"folder:NAME"`, `"database:NAME"`, `"channel:NAME"`, `"host:HOST"`,
-  `"holon:clock"`, `"holon:random"`, `"flow:SLUG"`. An import attribute, `with { optional: "true"
+  `"collection:NAME"`, `"folder:NAME"`, `"database:NAME"`, `"channel:NAME"`, `"mail:NAME"`,
+  `"host:HOST"`, `"holon:clock"`, `"holon:random"`, `"flow:SLUG"`. An import attribute, `with { optional: "true"
   }`, is in quotes, as an attribute's value is a text.
 
 ## 5. Syntax and lowering
@@ -1197,7 +1207,7 @@ same flow drawn on the canvas are the same unit. A file, in shapes:
 import { flow, route, every, on, action, js, respond, status, stripe, event, LEAF… } from "holon"
 import NAME from "secret:NAME"                       (with { optional: "true" })
 import state from "state"
-import NAME from "collection:NAME"                   (and folder:, database:, channel:)
+import NAME from "collection:NAME"                   (and folder:, database:, channel:, mail:)
 import NAME from "host:HOST"
 import { now } from "holon:clock"
 import { random } from "holon:random"

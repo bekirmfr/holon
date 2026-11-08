@@ -1052,7 +1052,7 @@ fn rerun(
     // hash, differs too): the run isn't checked.
     let keeps = |c: &holon_core::Capability| {
         use holon_core::Capability::*;
-        matches!(c, StateWrite(_) | CollectionWrite(_) | DbWrite(_) | ChannelSend(_) | FileWrite(_))
+        matches!(c, StateWrite(_) | CollectionWrite(_) | DbWrite(_) | ChannelSend(_) | MailSend(_) | FileWrite(_))
     };
     if host.performed.iter().any(|(c, p)| keeps(c) && marks.carries_secret(p)) {
         return Rerun::Skipped("it wrote a secret's value, which the server refuses: not run again".into());

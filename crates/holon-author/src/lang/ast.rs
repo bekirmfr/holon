@@ -78,6 +78,9 @@ pub enum HeaderKind {
     /// `import updates from "channel:updates"`: packs the flow sends (`updates.send(v)`) to
     /// whoever subscribes, a route answering with `return updates.subscribe()`.
     Channel(String),
+    /// `import ops from "mail:ops"`: a mail resource an admin binds on the host, sent through as
+    /// `ops.send({ to, subject, text })` once the run is over.
+    Mail(String),
     /// `import { charge } from "flow:billing"`: another deployed flow, by its slug, whose actions
     /// this flow runs, `RunsAction("billing/charge")`. Its call noun is the slug with `-` as `_`.
     Calls(String),

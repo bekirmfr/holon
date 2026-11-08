@@ -111,6 +111,8 @@ pub const GENESIS: &[&str] = &[
     "db_find", "db_find_one", "db_insert", "db_update", "db_delete",
     // channels: a pack sent when the run is over, and a route's answer that subscribes (2)
     "channel_send", "channel_subscribe",
+    // mail: a message sent through a mail resource an admin binds, once the run is over (1)
+    "mail_send",
     // sink — performed (1)
     "egress",
 ];
@@ -640,6 +642,10 @@ pub fn interface_of(name: &str) -> Option<Unit> {
         // a route answers with (`from`: "new" packs only, or the "kept" ones first).
         "channel_send" => prim(vec![port("pack", Any)], vec![Param::frozen("channel", "updates")], Effect),
         "channel_subscribe" => prim(vec![], vec![Param::frozen("channel", "updates"), Param::frozen("from", "new")], Effect),
+        // A message sent through the mail resource an admin bound to `mail`, once the run is over
+        // and its writes have landed. `to` is the recipients the text names, each in quotes, or
+        // `*` when one is computed: the recipients are part of the grant (mail.rs).
+        "mail_send" => prim(vec![port("message", Type::Record)], vec![Param::frozen("mail", "ops"), Param::frozen("to", "*")], Effect),
 
         // ── sink ──
         "egress" => prim(vec![port("payload", Any)], vec![], Effect),
@@ -714,6 +720,7 @@ pub const TRIGGERED: &[&str] = &[
     "db_update",
     "db_delete",
     "channel_send",
+    "mail_send",
     "egress",
     "http_request",
     "http_upload",
@@ -815,8 +822,9 @@ mod tests {
         // calendar leaves (date_add, business_day_add, business_days_between, is_business_day);
         // and XML's (xml_parse, xml_format, xml_find, xml_text, xml_attribute); and compression's
         // (gzip, gunzip, zip, unzip); and JWT's (jwt_verify, jwt_decode); and OpenPGP's
-        // (pgp_encrypt, pgp_verify, pgp_key) and the run's random bytes (random_bytes).
-        assert_eq!(GENESIS.len(), 187);
+        // (pgp_encrypt, pgp_verify, pgp_key) and the run's random bytes (random_bytes); and
+        // mail's (mail_send).
+        assert_eq!(GENESIS.len(), 188);
     }
 
     #[test]
