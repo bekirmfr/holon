@@ -122,7 +122,8 @@ test("the flow's text drives its canvas, and the canvas its text", async ({ page
 test("the It may strip says what an edit adds to what the flow may do; Problems, Check and find", async ({ page }) => {
   await openSample(page, "Hello API");
   const may = page.getByRole("region", { name: "it may" });
-  await expect(may).toContainText("Deployed, it may");
+  // Not deployed yet it says what it may once deployed; an earlier test may have deployed it.
+  await expect(may).toContainText(/^(Deployed, it may|It may)/);
   await deploy(page);
   await expect(may).toContainText(/^It may/);
   await expect(may.locator(".hl-may__chip--new")).toHaveCount(0);
