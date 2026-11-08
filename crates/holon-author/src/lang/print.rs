@@ -1850,7 +1850,7 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
                 for p in &cur.data.inputs {
                     let Some(Src::Node { id, .. }) = g.incoming.get(&(cur.id.clone(), p.name.clone())) else { continue };
                     let s = g.node(id);
-                    let reads = matches!(s.data.name.as_str(), "collection_get" | "collection_list" | "file_read" | "file_list" | "file_lines" | "file_slice");
+                    let reads = matches!(s.data.name.as_str(), "collection_get" | "collection_list" | "file_read" | "file_read_bytes" | "file_list" | "file_lines" | "file_slice");
                     if reads && written.contains(&self.store_of(s)) {
                         self.held.insert(s.id.clone());
                     } else if self.inline(s) || self.matches.contains_key(&s.id) || self.absorbed.contains(&s.id) {
@@ -2126,7 +2126,7 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
     fn sink(&self, node: &Node) -> bool {
         let name = node.data.name.as_str();
         matches!(name, "http_request" | "http_upload" | "http_stream" | "flow_call" | "channel_send" | "collection_put" | "collection_delete" | "db_exec" | "db_insert" | "db_update" | "db_delete")
-            || (name.starts_with("file_") && !matches!(name, "file_list" | "file_lines" | "file_slice" | "file_read"))
+            || (name.starts_with("file_") && !matches!(name, "file_list" | "file_lines" | "file_slice" | "file_read" | "file_read_bytes"))
     }
 
     /// The statements in order, those waiting for one value together in one
@@ -2217,6 +2217,7 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
             "collection_put" => "saved",
             "collection_delete" => "removed",
             "file_read" => "text",
+            "file_read_bytes" => "bytes",
             "file_list" => "files",
             "file_handle" => "file",
             "file_lines" => "lines",
@@ -2719,10 +2720,11 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
                 }
                 self.generic(node)
             }
-            // `.length`, where what it is read on is known to be a text or a list, as the lowering
-            // picks the leaf by it.
+            // `.length`, where what it is read on is known to be a text, a list or bytes, as the
+            // lowering picks the leaf by it.
             "text_length" if self.known(node, "s", WType::Text) => member(format!("{}.length", self.receiver(node, "s")?)),
             "length" if self.known_by(node, "list", |t| matches!(t, WType::List(_))) => member(format!("{}.length", self.receiver(node, "list")?)),
+            "bytes_length" if self.known(node, "bytes", WType::Bytes) => member(format!("{}.length", self.receiver(node, "bytes")?)),
             "text_at" | "code_at" | "from_codes" | "text_contains" | "trim" | "pad" | "repeat" | "replace" | "normalize" | "uri_encode" | "uri_decode" | "is_well_formed" => self.text_form(node),
             "base64" if node.param("bytes") == "latin1" && node.param("alphabet") == "standard" && self.arg_wired(node, "text") => {
                 let f = if node.param("mode") == "decode" { "atob" } else { "btoa" };
@@ -2843,6 +2845,13 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
                 self.reads.insert(store.clone());
                 let key = self.required(node, if d.name == "file_read" { "name" } else { "key" }, COND)?;
                 member(format!("{store}[{key}]"))
+            }
+            // A file's bytes: `inbox.bytes(name)`.
+            "file_read_bytes" => {
+                let store = self.store_of(node);
+                self.reads.insert(store.clone());
+                let name = self.required(node, "name", COND)?;
+                member(format!("{store}.bytes({name})"))
             }
             "collection_list" | "file_list" => {
                 let store = self.store_of(node);

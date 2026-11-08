@@ -86,6 +86,8 @@ pub enum Type {
     /// A record (named fields, see [`crate::Value::Record`]). Open for now: any fields, any
     /// field types. Field-typed records can be added later under a new tag.
     Record,
+    /// Bytes ([`crate::Value::Bytes`]): a JavaScript `Uint8Array`.
+    Bytes,
 }
 
 impl Type {
@@ -109,6 +111,7 @@ impl Type {
             Type::Product(_) => 7, // n-ary, recursive — element types follow the tag, like List
             Type::Sum(_) => 8, // n-ary, recursive — same shape as Product, distinct tag
             Type::Record => 9, // appended — no existing tag or hash moves
+            Type::Bytes => 10, // appended too
         }
     }
 
@@ -124,6 +127,7 @@ impl Type {
             5 => Some(Type::Any),
             6 => Some(Type::Effect),
             9 => Some(Type::Record),
+            10 => Some(Type::Bytes),
             _ => None, // 4 (List) / 7 (Product) / 8 (Sum) carry element types — the decoder reads them
         }
     }

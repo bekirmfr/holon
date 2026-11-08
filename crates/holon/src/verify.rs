@@ -49,6 +49,10 @@ pub(crate) struct Export {
     /// content store (hex): checked against the file's hash, so it can't stand in for another.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub(crate) blobs: BTreeMap<String, String>,
+    /// The bytes of each file a run read as bytes (`file_read_bytes`) that its log entry keeps by
+    /// hash, as padded base64, by its place in the blob store: checked as a text is.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub(crate) blob_bytes: BTreeMap<String, String>,
     /// What of those texts it doesn't hold, when it was asked for less (`--max-files-bytes`,
     /// `--without-files`): runs that read them check only with the files given (`--files`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -128,29 +132,35 @@ pub(crate) fn export_of(
     let budget = if redactor.is_some() { budget } else { 0 };
     let mut units = BTreeMap::new();
     let entries: Vec<LogEntry> = lines.iter().filter_map(|l| crate::wire::read_json::<LogEntry>(l.as_bytes()).ok()).collect();
-    let mut blobs = BTreeMap::new();
+    let (mut blobs, mut blob_bytes) = (BTreeMap::new(), BTreeMap::new());
     let (mut held, mut left_out, mut not_kept) = (0u64, LeftOut { files: 0, bytes: 0 }, 0u64);
     let mut seen = BTreeSet::new();
-    for blob in entries.iter().flat_map(|e| &e.reads).filter_map(|r| r.file.as_ref()?.blob.as_ref()) {
-        if !seen.insert(blob.clone()) {
+    let read_files = entries.iter().flat_map(|e| &e.reads).filter_map(|r| Some((r.file.as_ref()?.blob.as_ref()?, reads_bytes(&r.request))));
+    for (blob, bytes) in read_files {
+        if !seen.insert((blob.clone(), bytes)) {
             continue;
         }
-        match folders::kept_text(folders, store, blob) {
-            // A text holding one of the deployment's secrets isn't shipped: it is as if the
+        // A file read as bytes is shipped as its bytes, in base64; one read as text, as its text.
+        let kept = if bytes { folders.blobs.get(blob)? } else { folders::kept_text(folders, store, blob)?.map(String::into_bytes) };
+        match kept {
+            // A file holding one of the deployment's secrets isn't shipped: it is as if the
             // server didn't keep it, and verify asks for the file instead.
-            Ok(Some(text)) if redactor.is_none_or(|r| r.holds(&text)) => not_kept += 1,
-            Ok(Some(text)) => {
-                let size = text.len() as u64;
+            Some(kept) if redactor.is_none_or(|r| crate::secrets::bytes_hold(&kept, &|t| r.holds(t))) => not_kept += 1,
+            Some(kept) => {
+                let size = kept.len() as u64;
                 if held.saturating_add(size) > budget {
                     left_out.files += 1;
                     left_out.bytes += size;
                     continue;
                 }
                 held += size;
-                blobs.insert(blob.clone(), text);
+                if bytes {
+                    blob_bytes.insert(blob.clone(), holon_core::bytes_text(&kept, "base64").expect("base64 writes any bytes"));
+                } else {
+                    blobs.insert(blob.clone(), String::from_utf8(kept).expect("a kept text is text"));
+                }
             }
-            Ok(None) => not_kept += 1,
-            Err(e) => return Err(e),
+            None => not_kept += 1,
         }
     }
     let mut queue: Vec<Hash> = entries.iter().filter_map(|e| parse_hash(&e.unit)).collect();
@@ -177,6 +187,7 @@ pub(crate) fn export_of(
         lines,
         units,
         blobs,
+        blob_bytes,
         files_left_out,
         files_not_kept: not_kept,
         events,
@@ -386,7 +397,7 @@ pub(crate) fn check(export: &Export, witnessed: Option<&str>, files: &BTreeMap<S
         }
     }
 
-    let texts = Texts { blobs: &export.blobs, files };
+    let texts = Texts { blobs: &export.blobs, blob_bytes: &export.blob_bytes, files };
     let marks = Marks::new();
     let mut lefts = Vec::new();
     for (i, (entry, _)) in entries.iter().enumerate() {
@@ -782,10 +793,16 @@ fn check_events(export: &Export, witnessed: Option<&str>, report: &mut Report) {
 }
 
 /// Where the text of a file a run read comes from when its log entry keeps only the hash: the
-/// export's blobs, or the files given with `--files`.
+/// export's blobs, or the files given with `--files`; its bytes, for a file read as bytes.
 struct Texts<'a> {
     blobs: &'a BTreeMap<String, String>,
+    blob_bytes: &'a BTreeMap<String, String>,
     files: &'a BTreeMap<String, PathBuf>,
+}
+
+/// Whether a logged read asked for its file's bytes (`folders::reads_bytes`).
+fn reads_bytes(request: &SValue) -> bool {
+    matches!(request, SValue::Record(pairs) if pairs.iter().any(|(k, v)| k == "bytes" && *v == SValue::Boolean(true)))
 }
 
 impl Texts<'_> {
@@ -801,6 +818,9 @@ impl Texts<'_> {
             return Ok(Some(marks.read(answer, escaped)));
         }
         let what = || what(read);
+        if reads_bytes(&read.request) {
+            return self.bytes(file, &what());
+        }
         if let Some(text) = file.blob.as_ref().and_then(|b| self.blobs.get(b)) {
             if blake3::hash(text.as_bytes()).to_hex().as_str() != file.hash {
                 return Err(Rerun::Differs(format!("the text kept for {} isn't the file it read", what())));
@@ -815,6 +835,24 @@ impl Texts<'_> {
             None => Err(Rerun::Skipped(format!(
                 "it read {}, whose text the export doesn't hold (its folder keeps hashes, the server no longer keeps it, or the export left it out): give it with --files",
                 what()
+            ))),
+        }
+    }
+
+    /// The answer of a read of a file's bytes its entry doesn't hold: from the export's bytes or a
+    /// file given with `--files`, checked against the file's hash.
+    fn bytes(&self, file: &recorder::LoggedFile, what: &str) -> Result<Option<Value>, Rerun> {
+        if let Some(kept) = file.blob.as_ref().and_then(|b| self.blob_bytes.get(b)) {
+            let bytes = holon_core::text_bytes(kept, "base64").ok_or_else(|| Rerun::Differs(format!("the bytes kept for {what} aren't base64")))?;
+            if blake3::hash(&bytes).to_hex().as_str() != file.hash {
+                return Err(Rerun::Differs(format!("the bytes kept for {what} aren't the file it read")));
+            }
+            return Ok(Some(Value::Bytes(bytes)));
+        }
+        match self.files.get(&file.hash) {
+            Some(path) => std::fs::read(path).map(|b| Some(Value::Bytes(b))).map_err(|e| Rerun::Skipped(format!("it read {what}, and {} can't be read: {e}", path.display()))),
+            None => Err(Rerun::Skipped(format!(
+                "it read {what}, whose bytes the export doesn't hold (its folder keeps hashes, the server no longer keeps them, or the export left them out): give it with --files"
             ))),
         }
     }
@@ -1292,6 +1330,7 @@ impl Marks {
             Value::List(items) => items.iter().any(|v| self.carries_secret(v)),
             Value::Record(fields) => fields.iter().any(|(k, v)| secret(k) || self.carries_secret(v)),
             Value::Sum { payload, .. } | Value::Effect { payload, .. } => self.carries_secret(payload),
+            Value::Bytes(b) => secrets::bytes_hold(b, &secret),
             Value::Number(_) | Value::Boolean(_) => false,
         }
     }
@@ -1303,6 +1342,7 @@ impl Marks {
             Value::List(items) => items.iter().any(|v| self.carried(v)),
             Value::Record(fields) => fields.values().any(|v| self.carried(v)),
             Value::Sum { payload, .. } | Value::Effect { payload, .. } => self.carried(payload),
+            Value::Bytes(b) => secrets::bytes_hold(b, &|t: &str| t.contains(&self.start)),
             Value::Number(_) | Value::Boolean(_) => false,
         }
     }

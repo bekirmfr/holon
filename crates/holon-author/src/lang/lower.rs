@@ -150,7 +150,8 @@ const COLLECTION: Store = Store {
     value: "value",
 };
 
-/// A folder an admin binds on the host (`docs/L4s/named-folders-L4.md`): files by name, as text.
+/// A folder an admin binds on the host (`docs/L4s/named-folders-L4.md`): files by name, as text
+/// (`bytes(name)` reads one's bytes).
 const FOLDER: Store = Store {
     kind: "folder",
     param: "folder",
@@ -1885,6 +1886,7 @@ impl<'a> Lowerer<'a> {
             return match ty {
                 Some(WType::Text) => self.node_with("text_length", &[], &[("s", v)], span),
                 Some(WType::List(_)) => self.node_with("length", &[], &[("list", v)], span),
+                Some(WType::Bytes) => self.node_with("bytes_length", &[], &[("bytes", v)], span),
                 Some(WType::Record) => err(span, "a record's field named length is read r[\"length\"]"),
                 _ => err(span, ".length is a text's text_length or a list's length, and this value isn't known to be either: import the one it is from \"holon\" and call it, text_length(s) or length(xs)"),
             };
@@ -2037,7 +2039,8 @@ impl<'a> Lowerer<'a> {
                     "put" => store.put,
                     "delete" => store.delete,
                     "list" => store.list,
-                    // A folder's files without their bytes, and parts of them.
+                    // A file's bytes, any file; a folder's files without their bytes, and parts of them.
+                    "bytes" if folder => "file_read_bytes",
                     "file" if folder => "file_handle",
                     "lines" if folder => "file_lines",
                     "slice" if folder => "file_slice",
@@ -2046,7 +2049,7 @@ impl<'a> Lowerer<'a> {
                     "create" if folder => "file_create",
                     "create_copy" if folder => "file_create_copy",
                     other if folder => {
-                        return err(method.span, format!("a folder has no \"{other}\": get, put, delete, list, file, lines, slice, copy, create or create_copy"));
+                        return err(method.span, format!("a folder has no \"{other}\": get, bytes, put, delete, list, file, lines, slice, copy, create or create_copy"));
                     }
                     other => return err(method.span, format!("a {} has no \"{other}\": get, put, delete or list", store.kind)),
                 };
@@ -4281,7 +4284,7 @@ export const t = action(() => {
         let route = |handler: &str| error(&format!("import {{ flow, route }} from \"holon\"\nimport inbox from \"folder:inbox\"\nimport notes from \"collection:notes\"\n\nflow(\"f\", {{ port: 8080 }})\n\n{handler}\n"));
         assert_eq!(route("route.get(\"/a\", () => inbox)"), (7, 23, "\"inbox\" is a folder: read it as inbox[name] or inbox.list(…)".into()));
         assert_eq!(route("route.get(\"/a\", () => {\n  inbox = 1\n  return 1\n})"), (8, 3, "\"inbox\" is imported, and stays what it is: give a value of its own a name of its own".into()));
-        assert_eq!(route("route.get(\"/a\", () => inbox.move(\"a\"))"), (7, 29, "a folder has no \"move\": get, put, delete, list, file, lines, slice, copy, create or create_copy".into()));
+        assert_eq!(route("route.get(\"/a\", () => inbox.move(\"a\"))"), (7, 29, "a folder has no \"move\": get, bytes, put, delete, list, file, lines, slice, copy, create or create_copy".into()));
         assert_eq!(route("route.get(\"/a\", () => notes.file(\"a\"))"), (7, 29, "a collection has no \"file\": get, put, delete or list".into()));
         // A folder without its name.
         let e = error("import { flow, route } from \"holon\"\nimport inbox from \"folder:\"\n\nflow(\"f\", { port: 8080 })\n\nroute.get(\"/a\", () => 1)\n");

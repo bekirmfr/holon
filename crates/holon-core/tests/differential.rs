@@ -1569,6 +1569,7 @@ fn kinds_of(v: &Option<Value>, t: &mut Tally) {
                 walk(payload, note, depth + 1);
             }
             Value::Effect { .. } => note("effect"),
+            Value::Bytes(_) => note("bytes"),
         }
     }
     match v {

@@ -4522,6 +4522,7 @@ impl<'s, 't> Reader<'s, 't> {
                 match (id.name.as_str(), args.as_slice()) {
                     ("Array", [item]) => Ok(TypeExpr { name: "List".into(), args: vec![self.type_at(item, depth)?], span }),
                     ("Record", [_, _]) => simple("Record"),
+                    ("Uint8Array", []) => simple("Bytes"),
                     (name, []) if self.interfaces.contains(name) => simple("Record"),
                     (name, []) if let Some(named) = self.aliases.get(name) => {
                         if depth > 16 {
@@ -4529,10 +4530,10 @@ impl<'s, 't> Reader<'s, 't> {
                         }
                         Ok(TypeExpr { span, ..self.type_at(named, depth + 1)? })
                     }
-                    (other, _) => fail(span, format!("{other} isn't a type Holon has: number, boolean, string, T[], [A, B], an object type, unknown")),
+                    (other, _) => fail(span, format!("{other} isn't a type Holon has: number, boolean, string, T[], [A, B], an object type, Uint8Array, unknown")),
                 }
             }
-            _ => fail(span, "this type isn't one Holon has: number, boolean, string, T[], [A, B], an object type, unknown"),
+            _ => fail(span, "this type isn't one Holon has: number, boolean, string, T[], [A, B], an object type, Uint8Array, unknown"),
         }
     }
 
@@ -6365,10 +6366,10 @@ route.post("/n", (req) => {
     fn a_parameters_type_is_its_ports_type() {
         let h = holon_of(
             "import { flow } from \"holon\"\nflow(\"t\", { port: 8000 })\ntype Item = { price: number }\ntype Items = Item[]\ninterface Order { items: Items }\ntype Count = number\n\
-             function cost(items: Items, tax: number | undefined, names: Array<string>, pair: [Count, boolean], o: Order, x: unknown): number {\n  return tax\n}\n",
+             function cost(items: Items, tax: number | undefined, names: Array<string>, pair: [Count, boolean], o: Order, x: unknown, b: Uint8Array): number {\n  return tax\n}\n",
         );
         let types: Vec<String> = h.inputs.iter().map(|p| written(p.ty.as_ref().expect("typed"))).collect();
-        assert_eq!(types, ["List<Record>", "Number", "List<Text>", "Product<Number, Boolean>", "Record", "Any"]);
+        assert_eq!(types, ["List<Record>", "Number", "List<Text>", "Product<Number, Boolean>", "Record", "Any", "Bytes"]);
         assert_eq!(h.outputs.iter().map(|p| written(p.ty.as_ref().unwrap())).collect::<Vec<_>>(), ["Number"]);
         let refused = parse("import { flow } from \"holon\"\nflow(\"t\", { port: 8000 })\ntype A = B\ntype B = A\nfunction f(a: A) {\n  return a\n}\n").unwrap_err();
         assert!(refused.message.contains("names itself"), "{refused}");

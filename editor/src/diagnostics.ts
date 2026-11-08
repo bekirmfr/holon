@@ -126,7 +126,18 @@ export function valueChip(v: WValue | null): string {
       return `effect ${v.value.sink.split(":")[0]}`;
     case "Sum":
       return v.value.arm === 0 ? `some ${valueChip(v.value.payload)}` : "none";
+    case "Bytes": {
+      const n = bytesOf(v).length;
+      return `${n} byte${n === 1 ? "" : "s"}`;
+    }
   }
+}
+
+/** The bytes of a `Bytes` value, whichever boundary it crossed: a `Uint8Array` from the wasm
+ *  bridge, padded base64 from the server's JSON. */
+export function bytesOf(v: { value: Uint8Array | string }): Uint8Array {
+  if (typeof v.value !== "string") return v.value;
+  return Uint8Array.from(atob(v.value), (c) => c.charCodeAt(0));
 }
 
 export function formatValue(v: WValue): string {
@@ -150,6 +161,9 @@ export function formatValue(v: WValue): string {
     case "Record":
       // Same shape as core's to_text: `{id: 7, title: "buy milk"}`, fields in key order.
       return `{${v.value.map(([k, x]) => `${k}: ${formatValue(x)}`).join(", ")}}`;
+    case "Bytes":
+      // core's to_text too: `bytes(68690a)`, the bytes in lowercase hex.
+      return `bytes(${Array.from(bytesOf(v), (b) => b.toString(16).padStart(2, "0")).join("")})`;
   }
   // Exhaustiveness: this project's tsconfig doesn't enable noImplicitReturns, so a missing case
   // here was previously a silent runtime "undefined", not a compile error — exactly the gap

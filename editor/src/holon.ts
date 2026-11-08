@@ -46,6 +46,7 @@ export type WType =
   | "Effect"
   | "Any"
   | "Record"
+  | "Bytes"
   | { List: WType }
   | { Product: WType[] }
   | { Sum: WType[] };
@@ -159,7 +160,10 @@ export type WValue =
   | { type: "Sum"; value: { arm: number; payload: WValue } }
   /** Fields as `[key, value]` pairs in key order (a JS `Map` would not cross serde-wasm-bindgen as
    *  a plain object). */
-  | { type: "Record"; value: [string, WValue][] };
+  | { type: "Record"; value: [string, WValue][] }
+  /** Bytes: a `Uint8Array` across the wasm bridge, padded base64 in the server's JSON (`SValue`);
+   *  `bytesOf` (diagnostics.ts) reads either. */
+  | { type: "Bytes"; value: Uint8Array | string };
 
 /** A category of effect a leaf may touch, outside its inputs. Mirrors `core::Capability` via
  *  the bridge's `WCapability` (P4.4.1, keyed as of the keyed-state-capability inch). Every

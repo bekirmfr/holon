@@ -153,6 +153,12 @@ ops! {
     "hex" => Hex,
     "base64" => Base64,
     "secure_equals" => SecureEquals,
+    "text_to_bytes" => TextToBytes,
+    "bytes_to_text" => BytesToText,
+    "bytes_length" => BytesLength,
+    "bytes_concat" => BytesConcat,
+    "bytes_to_list" => BytesToList,
+    "list_to_bytes" => ListToBytes,
     "pair" => Pair,
     "some" => Some,
     "none" => None,
@@ -415,6 +421,8 @@ pub(crate) fn compute_op(op: Op, name: &str, inputs: &[&Value], params: &[Param]
             Some(Value::Text(match v {
                 Value::Text(s) => s.clone(),
                 Value::Record(_) | Value::List(_) => crate::json::stringify(v).unwrap_or_else(|| to_text_str(v)),
+                // As JavaScript writes a `Uint8Array`: its numbers joined with `,`.
+                Value::Bytes(_) => crate::numbers::js_string(v),
                 _ => to_text_str(v),
             }))
         }
@@ -473,6 +481,8 @@ pub(crate) fn compute_op(op: Op, name: &str, inputs: &[&Value], params: &[Param]
         // position clamped to the text, the two swapped when `end` is before `start`.
         Op::Slice => match inputs {
             [Value::List(xs), rest @ ..] => Some(Value::List(xs[list_slice(params, xs.len(), rest)?].to_vec())),
+            // A `Uint8Array`'s `slice` and `subarray`, as a list's.
+            [Value::Bytes(b), rest @ ..] => Some(Value::Bytes(b[list_slice(params, b.len(), rest)?].to_vec())),
             [Value::Text(s), start, end @ ..] if end.len() < 2 => texts::slice(param(params, "mode")?, s, start, end.first().copied()),
             _ => None,
         },
@@ -833,16 +843,16 @@ pub(crate) fn compute_op(op: Op, name: &str, inputs: &[&Value], params: &[Param]
             crate::json::stringify_laid_out(v, &layout).map(Value::Text)
         }
 
-        // ── signatures and encodings (crypto.rs): over a text's UTF-8 bytes. An unknown
+        // ── signatures and encodings (crypto.rs): over a text's UTF-8 bytes, or bytes. An unknown
         // encoding, mode or alphabet is absent, and so is a decode that isn't valid input or
         // doesn't come back to UTF-8. ──
         Op::Sha256 => {
-            let [Value::Text(s)] = inputs else { return None };
-            crate::crypto::sha256(s, param(params, "encoding")?).map(Value::Text)
+            let [v] = inputs else { return None };
+            crate::crypto::sha256(octets(v)?, param(params, "encoding")?).map(Value::Text)
         }
         Op::HmacSha256 => {
-            let [Value::Text(key), Value::Text(message)] = inputs else { return None };
-            crate::crypto::hmac_sha256(key, message, param(params, "encoding")?).map(Value::Text)
+            let [key, message] = inputs else { return None };
+            crate::crypto::hmac_sha256(octets(key)?, octets(message)?, param(params, "encoding")?).map(Value::Text)
         }
         Op::Hex => {
             let [Value::Text(s)] = inputs else { return None };
@@ -870,8 +880,44 @@ pub(crate) fn compute_op(op: Op, name: &str, inputs: &[&Value], params: &[Param]
         // Text equality in constant time: what a signature is checked with, so how long the
         // comparison takes says nothing about how much of a guess was right.
         Op::SecureEquals => {
-            let [Value::Text(a), Value::Text(b)] = inputs else { return None };
-            Some(Value::Boolean(crate::crypto::secure_equals(a, b)))
+            let [a, b] = inputs else { return None };
+            Some(Value::Boolean(crate::crypto::secure_equals(octets(a)?, octets(b)?)))
+        }
+
+        // ── bytes (host-capabilities L4 §5.10.1): a text's encodings, both ways (nothing for hex
+        // or base64 that isn't, or bytes that aren't UTF-8), a length, a join, and the numbers 0
+        // to 255 they are (nothing for an item that isn't one, where JavaScript wraps it). ──
+        Op::TextToBytes => {
+            let [Value::Text(s)] = inputs else { return None };
+            crate::crypto::text_bytes(s, param(params, "encoding")?).map(Value::Bytes)
+        }
+        Op::BytesToText => {
+            let [Value::Bytes(b)] = inputs else { return None };
+            crate::crypto::bytes_text(b, param(params, "encoding")?).map(Value::Text)
+        }
+        Op::BytesLength => {
+            let [Value::Bytes(b)] = inputs else { return None };
+            Some(Value::Number(b.len() as f64))
+        }
+        Op::BytesConcat => {
+            let mut out = Vec::new();
+            for v in inputs {
+                let Value::Bytes(b) = v else { return None };
+                out.extend_from_slice(b);
+            }
+            Some(Value::Bytes(out))
+        }
+        Op::BytesToList => {
+            let [Value::Bytes(b)] = inputs else { return None };
+            Some(Value::List(b.iter().map(|x| Value::Number(f64::from(*x))).collect()))
+        }
+        Op::ListToBytes => {
+            let [Value::List(xs)] = inputs else { return None };
+            let byte = |x: &Value| match x {
+                Value::Number(n) if n.fract() == 0.0 && (0.0..=255.0).contains(n) => Some(*n as u8),
+                _ => None,
+            };
+            xs.iter().map(byte).collect::<Option<Vec<u8>>>().map(Value::Bytes)
         }
 
         Op::Pair => {
@@ -1400,6 +1446,14 @@ pub(crate) fn file_read_request(inputs: &[Option<Value>], params: &[Param]) -> O
     ])))
 }
 
+/// What a `file_read_bytes` asks the host: a `file_read`'s request, with `bytes: true`, answered
+/// with the file's bytes whatever they are.
+pub(crate) fn file_read_bytes_request(inputs: &[Option<Value>], params: &[Param]) -> Option<Value> {
+    let Value::Record(mut asked) = file_read_request(inputs, params)? else { return None };
+    asked.insert("bytes".to_string(), Value::Boolean(true));
+    Some(Value::Record(asked))
+}
+
 /// What a `file_list` asks the host: `{folder: <name>, list: {prefix, after?, limit}}`, as
 /// [`collection_list_request`] asks for items, here for files by name.
 pub(crate) fn file_list_request(inputs: &[Option<Value>], params: &[Param]) -> Option<Value> {
@@ -1661,7 +1715,7 @@ fn contains_effect(v: &Value) -> bool {
         Value::List(items) => items.iter().any(contains_effect),
         Value::Record(fields) => fields.values().any(contains_effect),
         Value::Sum { payload, .. } => contains_effect(payload),
-        Value::Number(_) | Value::Boolean(_) | Value::Text(_) => false,
+        Value::Number(_) | Value::Boolean(_) | Value::Text(_) | Value::Bytes(_) => false,
     }
 }
 
@@ -1680,6 +1734,7 @@ fn to_text_str(v: &Value) -> String {
         Value::List(xs) => format!("[{}]", xs.iter().map(to_text_str).collect::<Vec<_>>().join(", ")),
         Value::Effect { sink, payload } => format!("effect({sink}, {})", to_text_str(payload)),
         Value::Sum { arm, payload } => format!("sum#{arm}({})", to_text_str(payload)),
+        Value::Bytes(b) => format!("bytes({})", crate::crypto::hex_encode(b)),
         Value::Record(fields) => format!(
             "{{{}}}",
             fields.iter().map(|(k, v)| format!("{k}: {}", to_text_str(v))).collect::<Vec<_>>().join(", ")
@@ -1699,6 +1754,14 @@ fn as_text(v: &Value) -> Option<&str> {
 }
 fn as_list(v: &Value) -> Option<&[Value]> {
     if let Value::List(xs) = v { Some(xs) } else { None }
+}
+/// The bytes a hash or a comparison takes: a text's UTF-8, or bytes as they are.
+fn octets(v: &Value) -> Option<&[u8]> {
+    match v {
+        Value::Text(s) => Some(s.as_bytes()),
+        Value::Bytes(b) => Some(b),
+        _ => None,
+    }
 }
 /// The items a `slice` of a list of `len` keeps, by its `mode` and its inputs after the list.
 fn list_slice(params: &[Param], len: usize, rest: &[&Value]) -> Option<std::ops::Range<usize>> {
@@ -2019,7 +2082,7 @@ mod tests {
         assert_eq!(sig.as_ref(), Some(&expected));
         assert_eq!(compute("secure_equals", &[sig.as_ref().unwrap(), &expected], &[]), Some(boo(true)));
         assert_eq!(compute("secure_equals", &[&txt("a"), &txt("b")], &[]), Some(boo(false)));
-        assert_eq!(compute("secure_equals", &[&txt("a"), &num(1.0)], &[]), None, "text only");
+        assert_eq!(compute("secure_equals", &[&txt("a"), &num(1.0)], &[]), None, "a text or bytes");
         assert_eq!(
             compute("sha256", &[&txt("abc")], &[p("encoding", "base64")]),
             Some(txt("ungWv48Bz+pBQUDeXa4iI7ADYaOWF3qctBD/YfIAFa0="))
@@ -2039,6 +2102,64 @@ mod tests {
         assert_eq!(compute("hex", &[&txt("666f6f626172")], &[p("mode", "decode")]), Some(txt("foobar")));
         assert_eq!(compute("hex", &[&txt("zz")], &[p("mode", "decode")]), None);
         assert_eq!(compute("hex", &[&txt("ff")], &[p("mode", "decode")]), None, "not UTF-8");
+    }
+
+    /// Bytes (host-capabilities L4 §5.10.1): a text's encodings both ways, a length, a join, a
+    /// slice, the numbers they are, and the hashing leaves over them as over a text's UTF-8.
+    #[test]
+    fn bytes_leaves_compute_as_javascript_does() {
+        let bytes = |b: &[u8]| Value::Bytes(b.to_vec());
+        let enc = |e: &str| vec![p("encoding", e)];
+        assert_eq!(compute("text_to_bytes", &[&txt("hé")], &enc("utf8")), Some(bytes(&[0x68, 0xc3, 0xa9])));
+        assert_eq!(compute("text_to_bytes", &[&txt("00ff10")], &enc("hex")), Some(bytes(&[0, 0xff, 0x10])));
+        assert_eq!(compute("text_to_bytes", &[&txt("+/8=")], &enc("base64")), Some(bytes(&[0xfb, 0xff])));
+        assert_eq!(compute("text_to_bytes", &[&txt("+/8")], &enc("base64")), Some(bytes(&[0xfb, 0xff])), "padding optional");
+        assert_eq!(compute("text_to_bytes", &[&txt("-_8")], &enc("base64url")), Some(bytes(&[0xfb, 0xff])));
+        for (bad, e) in [("0g", "hex"), ("abc", "hex"), ("-_8", "base64"), ("Zm9v", "latin1")] {
+            assert_eq!(compute("text_to_bytes", &[&txt(bad)], &enc(e)), None, "{bad} as {e}");
+        }
+        let b = bytes(&[0xfb, 0xff, 0x00]);
+        assert_eq!(compute("bytes_to_text", &[&b], &enc("hex")), Some(txt("fbff00")));
+        assert_eq!(compute("bytes_to_text", &[&b], &enc("base64")), Some(txt("+/8A")));
+        assert_eq!(compute("bytes_to_text", &[&bytes(&[0xfb, 0xff])], &enc("base64")), Some(txt("+/8=")), "base64 pads");
+        assert_eq!(compute("bytes_to_text", &[&bytes(&[0xfb, 0xff])], &enc("base64url")), Some(txt("-_8")), "base64url doesn't");
+        assert_eq!(compute("bytes_to_text", &[&bytes("hé".as_bytes())], &enc("utf8")), Some(txt("hé")));
+        assert_eq!(compute("bytes_to_text", &[&b], &enc("utf8")), None, "a fatal decoder: 0xfb isn't UTF-8");
+        assert_eq!(compute("bytes_to_text", &[&txt("x")], &enc("utf8")), None, "takes bytes");
+
+        assert_eq!(compute("bytes_length", &[&b], &[]), Some(num(3.0)));
+        assert_eq!(compute("bytes_length", &[&txt("abc")], &[]), None);
+        assert_eq!(compute("bytes_concat", &[&bytes(b"ab"), &bytes(b""), &bytes(b"c")], &[]), Some(bytes(b"abc")));
+        assert_eq!(compute("bytes_concat", &[&bytes(b"ab"), &txt("c")], &[]), None);
+        assert_eq!(compute("bytes_to_list", &[&bytes(&[0, 255])], &[]), Some(list(vec![num(0.0), num(255.0)])));
+        assert_eq!(compute("list_to_bytes", &[&list(vec![num(0.0), num(255.0)])], &[]), Some(bytes(&[0, 255])));
+        for bad in [num(256.0), num(-1.0), num(1.5), txt("1")] {
+            assert_eq!(compute("list_to_bytes", &[&list(vec![bad.clone()])], &[]), None, "{bad:?}: JavaScript wraps it, Holon gives nothing");
+        }
+        let slice = |start: f64, end: Option<f64>| {
+            let mut ins = vec![bytes(b"hello"), num(start)];
+            ins.extend(end.map(num));
+            let refs: Vec<&Value> = ins.iter().collect();
+            compute("slice", &refs, &[p("mode", "end")])
+        };
+        assert_eq!(slice(1.0, Some(3.0)), Some(bytes(b"el")));
+        assert_eq!(slice(-2.0, None), Some(bytes(b"lo")), "negative from the end");
+
+        // Hashing bytes is hashing a text's UTF-8 that has them; a key may be bytes too.
+        assert_eq!(compute("sha256", &[&bytes(b"abc")], &enc("hex")), compute("sha256", &[&txt("abc")], &enc("hex")));
+        assert_eq!(
+            compute("hmac_sha256", &[&bytes(&[0x0b; 20]), &txt("Hi There")], &enc("hex")),
+            Some(txt("b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7"))
+        );
+        assert_eq!(compute("secure_equals", &[&bytes(b"a"), &txt("a")], &[]), Some(boo(true)), "the same bytes");
+
+        // Equal by content; true as a condition, empty too; String(b) and to_text.
+        assert_eq!(compute("equals", &[&bytes(b"a"), &bytes(b"a")], &[]), Some(boo(true)));
+        assert_eq!(compute("is_truthy", &[&bytes(b"")], &[]), Some(boo(true)));
+        assert_eq!(compute("type_of", &[&b], &[]), Some(txt("object")));
+        assert_eq!(compute("as_text", &[&bytes(&[1, 22])], &[]), Some(txt("1,22")));
+        assert_eq!(compute("to_text", &[&bytes(b"hi")], &[]), Some(txt("bytes(6869)")));
+        assert_eq!(compute("json_stringify", &[&b], &[]), None, "JSON has no bytes");
     }
 
     /// A leaf's inputs from a JSON array of them, as the races write their cases.

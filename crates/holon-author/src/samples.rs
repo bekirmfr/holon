@@ -683,6 +683,18 @@ static SAMPLES: &[Sample] = &[
         text: include_str!("../samples/file-audit.holon.ts"),
     },
     Sample {
+        name: "file-checksums",
+        title: "File checksums (each file's SHA-256, over its bytes)",
+        description: "Runs once for each file new or changed in a folder on the host and reads its bytes (drop.bytes(name)): any file, an image, a PDF or an archive as well as a text. It keeps the file's size (b.length), its SHA-256 over the bytes (sha256(b), what sha256sum prints) and what its first four bytes say it is (b.slice(0, 4) as hex: a PNG, a PDF, a zip), under its name in a collection; routes read one back and list them all. The run log keeps a small file's bytes and a big one's hash, so holon verify checks each run from them.",
+        shows: &["bytes", "a file's bytes", "sha256 over bytes", "slice on bytes", "bytes_to_text", "on.file.created", "named folders"],
+        port: Some("8179"),
+        secrets: &[],
+        optional: &[],
+        browsers: None,
+        try_it: "first bind the folder (an admin): holon folder add drop ~/holon-drop --read-only; deploy, copy any file into ~/holon-drop, then curl http://127.0.0.1:8179/sums/<file> for its size, its SHA-256 (what sha256sum prints) and its kind (png, pdf, zip or other); GET /sums lists every file's",
+        text: include_str!("../samples/file-checksums.holon.ts"),
+    },
+    Sample {
         name: "ticker",
         title: "Ticker (a clock beside routes)",
         description: "A flow with a clock of its own beside its routes: every 2 seconds (every(\"2s\", …)) it counts a tick in its state and sends it on the channel ticks, with the time of the tick (now, in the handler). Its page lists each tick as it arrives; GET /count answers the count. An action, run by hand by its name, sets the count back (export const reset = action((input) => …), input what was sent); a person runs it, and an agent only once a person lets agents run it.",

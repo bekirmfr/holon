@@ -1,6 +1,7 @@
 // Diffs for a dry run (DryRun.tsx): what an action would change beside what is there now, line by
 // line (a flow's text, the state's values written out) or item by item (a grant).
 
+import { formatValue } from "./diagnostics";
 import type { WValue } from "./holon";
 
 /** A line of a diff: kept (" "), only before ("-"), only after ("+"). */
@@ -109,6 +110,8 @@ export function flatValue(v: WValue): string {
       return `sum#${v.value.arm}(${flatValue(v.value.payload)})`;
     case "Record":
       return `{${v.value.map(([k, x]) => `${k}: ${flatValue(x)}`).join(", ")}}`;
+    case "Bytes":
+      return formatValue(v);
   }
   const exhaustive: never = v;
   return exhaustive;

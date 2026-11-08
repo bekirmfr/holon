@@ -271,14 +271,19 @@ asks for:
 | an `EventEmitter`, server-sent events, a socket | `import updates from "channel:updates"`, `updates.send(…)`, `updates.subscribe()` | `channel_send`, `channel_subscribe` |
 | `app.get(path, handler)` (Express) | `route.get(path, (req) => …)` | `request`, `respond` |
 | `setInterval` | `every("5s", () => …)` | `every` |
-| `crypto.createHash("sha256")`, `crypto.subtle.digest` | `sha256(t)`, `{ encoding: "base64" }` for base64 | `sha256` (by name) |
-| `crypto.createHmac("sha256", key)` | `hmac_sha256(key, message)` | `hmac_sha256` (by name) |
-| `crypto.timingSafeEqual` | `secure_equals(a, b)` | `secure_equals` (by name) |
+| `crypto.createHash("sha256")`, `crypto.subtle.digest` | `sha256(t)`, `{ encoding: "base64" }` for base64; `t` a text or bytes | `sha256` (by name) |
+| `crypto.createHmac("sha256", key)` | `hmac_sha256(key, message)`, each a text or bytes | `hmac_sha256` (by name) |
+| `crypto.timingSafeEqual` | `secure_equals(a, b)`, texts or bytes | `secure_equals` (by name) |
+| `new TextEncoder().encode(s)`, `Uint8Array.fromHex(s)`, `Uint8Array.fromBase64(s)` | `text_to_bytes(s)`, `{ encoding: "hex" }`, `"base64"`, `"base64url"` | `text_to_bytes` (by name) |
+| `new TextDecoder("utf-8", { fatal: true }).decode(b)`, `b.toHex()`, `b.toBase64()` | `bytes_to_text(b)`, with the same encodings; base64 padded, base64url not | `bytes_to_text` (by name) |
+| `b.length`, `b.slice(i, j)` on a `Uint8Array` | as written, where `b` is known to be bytes | `bytes_length`, `slice` |
+| `Array.from(b)`, `new Uint8Array(xs)`, `Buffer.concat([a, b])` | `bytes_to_list(b)`, `list_to_bytes(xs)` (nothing for an item that isn't 0 to 255), `bytes_concat(a, b)` | by name |
+| `fs.readFile(name)` (a `Buffer`) | `folder.bytes(name)` | `file_read_bytes` |
 | `btoa`, `atob` | `btoa(t)`, `atob(t)` (§3) | `base64 {bytes: latin1}` |
 | `Buffer…toString("base64")` | `base64(t)`, `base64(t, { mode: "decode" })`, `{ alphabet: "url" }` | `base64` (by name) |
 | `Buffer…toString("hex")` | `hex(t)`, `{ mode: "decode" }` | `hex` (by name) |
 | `crypto.randomUUID()` | none | `random` is one number per run |
-| `new URL`, `URLSearchParams`, `TextEncoder` | js() | |
+| `new URL`, `URLSearchParams` | js() | |
 
 ## 9. What compiles but differs
 

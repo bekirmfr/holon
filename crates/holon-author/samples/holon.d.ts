@@ -200,6 +200,8 @@ declare module "holon" {
   export interface Folder {
     [name: string]: any
     get(name: string): any
+    /** The file's bytes, any file: an image, a PDF, an archive. */
+    bytes(name: string): Uint8Array
     put(name: string, content: string | FileHandle): any
     delete(name: string): any
     /** A page of files: `{size, hash, modified}` by name. */
@@ -1019,16 +1021,16 @@ declare module "holon" {
   export function date_parse(...args: any[]): any
 
   /**
-   * `sha256(text: Text) -> out: Text  {encoding: hex}`
+   * `sha256(text: Any) -> out: Text  {encoding: hex}`
    *
-   * The SHA-256 digest of a text, as hex or base64.
+   * The SHA-256 digest of a text (its UTF-8) or of bytes, as hex or base64.
    */
   export function sha256(...args: any[]): any
 
   /**
-   * `hmac_sha256(key: Text, message: Text) -> out: Text  {encoding: hex}`
+   * `hmac_sha256(key: Any, message: Any) -> out: Text  {encoding: hex}`
    *
-   * The HMAC-SHA256 signature of message under key, as hex or base64: how webhooks are signed.
+   * The HMAC-SHA256 signature of message under key, each a text or bytes, as hex or base64: how webhooks are signed.
    */
   export function hmac_sha256(...args: any[]): any
 
@@ -1047,11 +1049,53 @@ declare module "holon" {
   export function base64(...args: any[]): any
 
   /**
-   * `secure_equals(a: Text, b: Text) -> out: Boolean`
+   * `secure_equals(a: Any, b: Any) -> out: Boolean`
    *
-   * Whether two texts are equal, compared in constant time: for checking signatures and tokens without leaking where they differ.
+   * Whether two texts, or two byte strings, are equal, compared in constant time: for checking signatures and tokens without leaking where they differ.
    */
   export function secure_equals(...args: any[]): any
+
+  /**
+   * `text_to_bytes(text: Text) -> out: Bytes  {encoding: utf8}`
+   *
+   * A text's bytes: its UTF-8, or what its hex, base64 or base64url says (nothing if it isn't that). new TextEncoder().encode(s), Uint8Array.fromHex(s), Uint8Array.fromBase64(s).
+   */
+  export function text_to_bytes(...args: any[]): any
+
+  /**
+   * `bytes_to_text(bytes: Bytes) -> out: Text  {encoding: utf8}`
+   *
+   * Bytes as a text: read as UTF-8 (nothing if they aren't), or written as hex, padded base64 or unpadded base64url. new TextDecoder().decode(b), b.toHex(), b.toBase64().
+   */
+  export function bytes_to_text(...args: any[]): any
+
+  /**
+   * `bytes_length(bytes: Bytes) -> out: Number`
+   *
+   * How many bytes: b.length.
+   */
+  export function bytes_length(...args: any[]): any
+
+  /**
+   * `bytes_concat(a: Bytes, b: Bytes) -> out: Bytes`
+   *
+   * Bytes joined, in order.
+   */
+  export function bytes_concat(...args: any[]): any
+
+  /**
+   * `bytes_to_list(bytes: Bytes) -> out: List<Number>`
+   *
+   * Bytes as a list of numbers from 0 to 255: Array.from(b).
+   */
+  export function bytes_to_list(...args: any[]): any
+
+  /**
+   * `list_to_bytes(list: List<Any>) -> out: Bytes`
+   *
+   * A list of whole numbers from 0 to 255 as bytes: new Uint8Array(xs). Nothing if an item isn't one, where JavaScript wraps it.
+   */
+  export function list_to_bytes(...args: any[]): any
 
   /**
    * `to_text(value: Any) -> out: Text`
@@ -1269,6 +1313,13 @@ declare module "holon" {
    * Copies the file a handle names into this folder as name when the run finishes, host to host: its bytes never pass through the flow. Fails if the file changed since the run read it.
    */
   export function file_copy(...args: any[]): any
+
+  /**
+   * `file_read_bytes(name: Text) -> out: Bytes  {folder: files}`
+   *
+   * The bytes of the file name in a folder, any file, as the run found it; nothing when there is none. folder.bytes(name). Reading it is a permission.
+   */
+  export function file_read_bytes(...args: any[]): any
 
   /**
    * `file_create(name: Text, text: Text, trigger: Any) -> out: Effect  {folder: files}`

@@ -581,6 +581,16 @@ finishes, and fails if it no longer has the handle's hash. `logs.lines(name, { f
 length: n })` `n` bytes from `o`: only those enter the run, and the log keeps with them the hashes
 that prove them part of the file, so `holon verify` checks the run without it.
 
+A file that isn't text (an image, a PDF, an archive) is read as bytes: `logs.bytes(name)` is its
+bytes whole, under the same limits as its text, a `Uint8Array` to TypeScript. `b.length` and
+`b.slice(start, end)` read as JavaScript's do, and leaves take the rest by name: `sha256(b)` and
+`hmac_sha256(key, b)` hash them as they hash a text's UTF-8, `bytes_to_text(b, { encoding: "hex" })`
+writes them (`utf8`, `hex`, `base64`, `base64url`) and `text_to_bytes` reads them back,
+`bytes_concat`, `bytes_to_list` and `list_to_bytes`. Bytes are equal when their bytes are;
+`JSON.stringify` has no form for them (write them as base64 first), and a route that answers them
+sends them as they are, `application/octet-stream` unless its headers say otherwise. The
+file-checksums sample hashes each file dropped in a folder.
+
 ### drop-box: a run per new file
 
 ```ts
@@ -1462,6 +1472,7 @@ Each form is exactly one leaf. This table is exhaustive; nothing else is sugared
 | `notes.get(k)`, `notes.put(k, e)`, `notes.delete(k)` | the same three leaves, as expressions | the operation, as a value to name |
 | `notes.list({ prefix: p, after: a, limit: n })` | `collection_list{collection: notes, limit: n}(p, a)` | a page of items, in key order |
 | `inbox[n]` (`import inbox from "folder:inbox"`) | `file_read{folder: inbox}(n)` | the file's text, as the run began |
+| `inbox.bytes(n)` | `file_read_bytes{folder: inbox}(n)` | the file's bytes, any file, as the run began |
 | `reports[n] = e` | `file_write{folder: reports}(n, e)` | write the whole file when the run finishes |
 | `delete reports[n]` | `file_delete{folder: reports}(n)` | delete it when the run finishes |
 | `inbox.get(n)`, `reports.put(n, e)`, `reports.delete(n)` | the same three leaves, as expressions | the operation, as a value to name |
@@ -2532,6 +2543,9 @@ the syntax to TypeScript's, keeping the lowering.
    - *After slice 5* (2026-11-08): a condition on a value that isn't a Boolean reads it as
      JavaScript does, through `is_truthy`, now JavaScript's `Boolean(x)` (§5.6); a `status(…)`
      alone answers it with an empty body, a 204 with none (reference.md's answers).
+   - *Bytes* (2026-11-08, host-capabilities L4 §5.10): a value kind, `Uint8Array` to
+     TypeScript; `folder.bytes(name)`, `.length` and `.slice` on bytes, and seven leaves. The
+     file-checksums sample, run live.
 
    Next are the L4's slices 6 to 11: computing loops, as folds over a bounded range; requests and calls that wait (`await` with
    JavaScript's order and required, `Promise.all`, a call that parks its caller, a request recorded

@@ -251,6 +251,13 @@ describe("formatValue", () => {
     expect(formatValue({ type: "Text", value: "hi" })).toBe('"hi"');
   });
 
+  it("formats bytes as core's to_text does, from either boundary", () => {
+    expect(formatValue({ type: "Bytes", value: new Uint8Array([0x68, 0x69, 0x0a]) })).toBe("bytes(68690a)");
+    expect(formatValue({ type: "Bytes", value: "aGkK" })).toBe("bytes(68690a)");
+    expect(formatValue({ type: "Bytes", value: "" })).toBe("bytes()");
+    expect(valueChip({ type: "Bytes", value: "aGkK" })).toBe("3 bytes");
+  });
+
   it("formats a list recursively, comma-separated", () => {
     const v: WValue = {
       type: "List",

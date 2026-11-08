@@ -413,6 +413,7 @@ Each of these is one building block, and each is one thing the flow may do.
 | `delete coll[k]`, `coll.delete(k)` | delete it when the run finishes |
 | `coll.list({ prefix: p, after: a, limit: n })` | a page of items, in key order |
 | `dir[name]`, `dir.get(name)` | a file's text, in a folder, as the run began (up to 1 MiB) |
+| `dir.bytes(name)` | a file's bytes, any file, as the run began (up to 1 MiB): a `Uint8Array`, its `.length` and `.slice(start, end)` read as JavaScript's |
 | `dir[name] = text`, `dir.put(name, text)` | write the whole file when the run finishes |
 | `delete dir[name]`, `dir.delete(name)` | delete the file when the run finishes |
 | `dir.list({ prefix: p, after: a, limit: n })` | a page of files: `{size, hash, modified}` by name |
@@ -790,9 +791,10 @@ misled, the compiler refuses instead.
 
 ## Types
 
-Values have one of nine types: `Number`, `Boolean`, `Text`, `Record`, `List<T>`, `Product<…>`,
-`Sum<…>`, `Effect` and `Any`. You write types only on function parameters, as TypeScript writes
-them (`number`, `boolean`, `string`, an object type, `string[]`, `T | undefined`), and only if you
+Values have one of ten types: `Number`, `Boolean`, `Text`, `Record`, `Bytes`, `List<T>`,
+`Product<…>`, `Sum<…>`, `Effect` and `Any`. You write types only on function parameters, as
+TypeScript writes them (`number`, `boolean`, `string`, an object type, `string[]`, `Uint8Array`,
+`T | undefined`), and only if you
 want them checked. Wiring a `Text` into a `Number` input is a mistake at the argument. `any` fits
 everything.
 

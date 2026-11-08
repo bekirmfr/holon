@@ -204,6 +204,7 @@ pub(crate) fn hash_item(x: &Value, h: &mut impl Hasher) {
             (5u8, arm).hash(h);
             hash_item(payload, h);
         }
+        Value::Bytes(b) => (6u8, b).hash(h),
         Value::Effect { sink, payload } => {
             (6u8, sink).hash(h);
             hash_item(payload, h);

@@ -53,8 +53,11 @@ pub const GENESIS: &[&str] = &[
     "json_parse", "json_stringify",
     // pure — dates (5): JavaScript's Date in UTC, a date its time value in milliseconds (dates.rs)
     "date_part", "date_utc", "date_set", "date_text", "date_parse",
-    // pure — signatures and encodings (5): checking a webhook's signature
+    // pure — signatures and encodings (5): checking a webhook's signature, over a text or bytes
     "sha256", "hmac_sha256", "hex", "base64", "secure_equals",
+    // pure — bytes (6): a text's encodings, a length, a join, and the numbers 0 to 255 they are;
+    // `slice` takes bytes too (host-capabilities L4 §5.10.1)
+    "text_to_bytes", "bytes_to_text", "bytes_length", "bytes_concat", "bytes_to_list", "list_to_bytes",
     // pure — universal, any-typed (8): as_text is to_text's message form, the identity on text;
     // coalesce is the first input that arrived, `default` with its fallback on a wire; fail is
     // nothing, its message the run log's reason (the language's `throw`)
@@ -77,6 +80,8 @@ pub const GENESIS: &[&str] = &[
     // lines and a slice of it, and a copy by handle (4)
     "file_read", "file_list", "file_write", "file_delete",
     "file_handle", "file_lines", "file_slice", "file_copy",
+    // and a file read as bytes, any file (1)
+    "file_read_bytes",
     // and a write and a copy that never replace a file (2)
     "file_create", "file_create_copy",
     // databases the host binds: rows a statement reads, one row, and a write when the run
@@ -118,7 +123,7 @@ pub const GENESIS: &[&str] = &[
 /// hand-listing names in TypeScript that could silently drift from what `compute` actually does.
 pub const VARIADIC: &[&str] = &[
     "add", "multiply", "max", "min", "and", "or", "concat", "list", "map", "fold", "any", "all", "filter", "find", "find_index", "find_last",
-    "find_last_index", "sort_by", "merge", "group_by", "json_parse", "json_stringify", "date_utc", "date_set", "from_codes",
+    "find_last_index", "sort_by", "merge", "group_by", "json_parse", "json_stringify", "date_utc", "date_set", "from_codes", "bytes_concat",
 ];
 
 /// The variadic leaves whose extra inputs are any type, passed to their function, rather than
@@ -169,6 +174,8 @@ pub const FAMILIES: &[(&str, &str, &[&str])] = &[
     ("date_part", "part", crate::dates::PARTS),
     ("date_set", "part", crate::dates::SET_PARTS),
     ("date_text", "format", crate::dates::FORMATS),
+    ("text_to_bytes", "encoding", &["utf8", "hex", "base64", "base64url"]),
+    ("bytes_to_text", "encoding", &["utf8", "hex", "base64", "base64url"]),
 ];
 
 /// The values leaf `name`'s family parameter `param` may take, if it is one.
@@ -374,8 +381,9 @@ pub fn interface_of(name: &str) -> Option<Unit> {
         "date_parse" => prim(vec![port("text", Text)], vec![], Number),
 
         // ── pure — signatures and encodings (crypto.rs) ── digests as lowercase `hex` or `base64`.
-        "sha256" => prim(vec![port("text", Text)], vec![Param::frozen("encoding", "hex")], Text),
-        "hmac_sha256" => prim(vec![port("key", Text), port("message", Text)], vec![Param::frozen("encoding", "hex")], Text),
+        // A text's UTF-8 or bytes, hashed: their ports are `Any` for either.
+        "sha256" => prim(vec![port("text", Any)], vec![Param::frozen("encoding", "hex")], Text),
+        "hmac_sha256" => prim(vec![port("key", Any), port("message", Any)], vec![Param::frozen("encoding", "hex")], Text),
         "hex" => prim(vec![port("text", Text)], vec![Param::frozen("mode", "encode")], Text),
         // `bytes: "latin1"` is `btoa`/`atob`'s: each character one byte, the standard alphabet.
         "base64" => prim(
@@ -383,7 +391,15 @@ pub fn interface_of(name: &str) -> Option<Unit> {
             vec![Param::frozen("mode", "encode"), Param::frozen("alphabet", "standard"), Param::frozen("bytes", "utf8")],
             Text,
         ),
-        "secure_equals" => prim(vec![port("a", Text), port("b", Text)], vec![], Boolean),
+        "secure_equals" => prim(vec![port("a", Any), port("b", Any)], vec![], Boolean),
+
+        // ── pure — bytes (host-capabilities L4 §5.10.1) ──
+        "text_to_bytes" => prim(vec![port("text", Text)], vec![Param::frozen("encoding", "utf8")], Bytes),
+        "bytes_to_text" => prim(vec![port("bytes", Bytes)], vec![Param::frozen("encoding", "utf8")], Text),
+        "bytes_length" => prim(vec![port("bytes", Bytes)], vec![], Number),
+        "bytes_concat" => prim(vec![port("a", Bytes), port("b", Bytes)], vec![], Bytes),
+        "bytes_to_list" => prim(vec![port("bytes", Bytes)], vec![], Type::List(Box::new(Number))),
+        "list_to_bytes" => prim(vec![port("list", Type::list_any())], vec![], Bytes),
 
         // ── pure — sum (Option) ──
         // Option<T> = Sum([T, Unit]) — arm 0 is "some", arm 1 ("none") is Unit (Product([])),
@@ -455,6 +471,7 @@ pub fn interface_of(name: &str) -> Option<Unit> {
         // folder. A file is read as text by its name (a path inside the folder); a listing is a
         // record of up to `limit` files in name order, as a collection's.
         "file_read" => prim(vec![port("name", Text)], vec![Param::frozen("folder", "files")], Text),
+        "file_read_bytes" => prim(vec![port("name", Text)], vec![Param::frozen("folder", "files")], Bytes),
         "file_list" => prim(
             vec![port("prefix", Text), port("after", Text)],
             vec![Param::frozen("folder", "files"), Param::frozen("limit", "100")],
@@ -671,8 +688,9 @@ mod tests {
         // from_entries, merge, has, group_by, same_value, type_of); and the date leaves (date_part,
         // date_utc, date_set, date_text, date_parse); and the text leaves (text_at, code_at,
         // from_codes, text_contains, trim, pad, repeat, replace, normalize, uri_encode, uri_decode,
-        // is_well_formed); and fail (the language's throw).
-        assert_eq!(GENESIS.len(), 152);
+        // is_well_formed); and fail (the language's throw); and the bytes leaves (text_to_bytes,
+        // bytes_to_text, bytes_length, bytes_concat, bytes_to_list, list_to_bytes, file_read_bytes).
+        assert_eq!(GENESIS.len(), 159);
     }
 
     #[test]

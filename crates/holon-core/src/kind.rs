@@ -298,6 +298,7 @@ pub fn capabilities_of(name: &str, params: &[Param]) -> Option<Capabilities> {
         | "date_part" | "date_utc" | "date_set" | "date_text" | "date_parse"
         | "json_parse" | "json_stringify"
         | "sha256" | "hmac_sha256" | "hex" | "base64" | "secure_equals"
+        | "text_to_bytes" | "bytes_to_text" | "bytes_length" | "bytes_concat" | "bytes_to_list" | "list_to_bytes"
         | "to_text" | "as_text" | "is_truthy" | "guard" | "default" | "coalesce" | "equals" | "fail"
         | "fold" | "map" => vec![],
 
@@ -316,7 +317,7 @@ pub fn capabilities_of(name: &str, params: &[Param]) -> Option<Capabilities> {
         // A named folder: files read as the run found them, written and deleted when it finishes.
         // The folder is a frozen param, so the capability names it exactly; the host binds the
         // name to a real folder.
-        "file_read" | "file_list" | "file_handle" | "file_lines" | "file_slice" => vec![FileRead(ident(params, "folder")?)],
+        "file_read" | "file_read_bytes" | "file_list" | "file_handle" | "file_lines" | "file_slice" => vec![FileRead(ident(params, "folder")?)],
         "file_write" | "file_copy" | "file_delete" | "file_create" | "file_create_copy" => vec![FileWrite(ident(params, "folder")?)],
         // A new file in a named folder starts a run: the host watches the folder, and the file's
         // handle is the leaf's value. The folder is a frozen param, so the trigger names it.
@@ -763,6 +764,7 @@ mod tests {
         let named = |n: &str| [Param::frozen("folder", n)];
         for (leaf, cap, kind) in [
             ("file_read", Capability::FileRead("inbox".into()), Kind::Driver),
+            ("file_read_bytes", Capability::FileRead("inbox".into()), Kind::Driver),
             ("file_list", Capability::FileRead("inbox".into()), Kind::Driver),
             ("file_handle", Capability::FileRead("inbox".into()), Kind::Driver),
             ("file_lines", Capability::FileRead("inbox".into()), Kind::Driver),

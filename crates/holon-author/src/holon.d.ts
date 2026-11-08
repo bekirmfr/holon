@@ -195,6 +195,8 @@ declare module "holon" {
   export interface Folder {
     [name: string]: any
     get(name: string): any
+    /** The file's bytes, any file: an image, a PDF, an archive. */
+    bytes(name: string): Uint8Array
     put(name: string, content: string | FileHandle): any
     delete(name: string): any
     /** A page of files: `{size, hash, modified}` by name. */

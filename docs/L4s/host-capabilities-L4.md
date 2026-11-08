@@ -636,6 +636,111 @@ every leaf agree on one text form forever. So a **`Bytes` value**.
 (its JSON form, the log, the bridge, the editor, which leaves take it), so the answers are worked
 out once, for both.
 
+#### 5.10.1 As designed (2026-11-08, against `331ea13`)
+
+**The value.** `Value::Bytes(Vec<u8>)`, its type `Type::Bytes`. Its value tag is 8 and its type
+tag 10 (`value_hash.rs`, `hash.rs`), after every tag in use, so no hash moves for them. Two
+are equal when their bytes are (`===`, `equals`, a record key's value, a memo key), as Holon's
+lists and records are, where JavaScript compares a `Uint8Array` by identity. `typeof` is
+`"object"`, it is true as a condition (an empty one too, as JavaScript's `Boolean(new
+Uint8Array())`), `String(b)` is its bytes as numbers joined with `,` as JavaScript writes it, and
+`to_text` writes `bytes(68656c6c6f)`, its bytes in hex (the editor's `formatValue` the same).
+
+**Its leaves** (7 new, and 4 that take bytes as well as what they took). Each gives nothing for a value it
+can't take, as the others do:
+
+| Leaf | Gives | Its JavaScript form, where it has one |
+|---|---|---|
+| `text_to_bytes(text) {encoding: utf8, hex, base64, base64url}` | the bytes; nothing for hex or base64 that isn't | `new TextEncoder().encode(s)`, `Uint8Array.fromHex(s)`, `Uint8Array.fromBase64(s, { alphabet })` |
+| `bytes_to_text(bytes) {encoding}` | the text; nothing for bytes that aren't UTF-8, as a `fatal` decoder throws | `new TextDecoder("utf-8", { fatal: true }).decode(b)`, `b.toHex()`, `b.toBase64({ alphabet, omitPadding })` |
+| `bytes_length(bytes)` | how many | `b.length`, where `b` is known to be bytes (as `.length` picks a text's or a list's) |
+| `bytes_concat(a, b, …)` | them joined | none (Node's `Buffer.concat`); by name |
+| `bytes_to_list(bytes)` | the bytes as numbers 0 to 255 | `Array.from(b)`, `[...b]` |
+| `list_to_bytes(list)` | the bytes; nothing if an item isn't a whole number from 0 to 255, where JavaScript wraps it | `new Uint8Array(xs)`, `Uint8Array.from(xs)` |
+| `file_read_bytes(name) {folder}` | a file's bytes, any file | `folder.bytes(name)`, as a `Blob`'s `bytes()` |
+| `sha256`, `hmac_sha256`, `secure_equals` | over bytes as over a text's UTF-8 | their ports are `Any`: a text or bytes |
+| `slice` | bytes from `start` to `end`, negative from the end, as a list's | `b.slice(start, end)` |
+
+`base64` pads and `base64url` doesn't, as JWTs and the `base64` leaf (whose `url` alphabet is
+unpadded) do; either decodes with or without padding. The JavaScript forms are the reader's to add
+one by one, each a line in `ts.rs` with its test (the theme's §10); this step reads `.length` and
+`.slice` on known bytes, and the rest are called by name.
+
+**A file read as bytes.** `file_read_bytes` asks the host as `file_read` does, with `bytes: true`:
+the host reads the file whole, under the same limits (`inline_file_bytes`, `max_file_read_bytes`),
+and answers its bytes whatever they are. The log keeps it as it keeps a text: inline when small
+(the log's JSON writes bytes as base64, below), else in the blob store by the BLAKE3 of the bytes,
+which `holon verify` reads back as bytes. Writing bytes to a file waits for the first flow that
+writes a binary file (1.2's zip, 1.4's buckets).
+
+**Every boundary where a value becomes JSON or JavaScript:**
+
+- **`json_stringify` refuses bytes** (nothing): JSON has none, and a flow says `bytes_to_text(b, {
+  encoding: "base64" })` where it means that. `json_parse` never makes them.
+- **An HTTP body that is bytes is sent as they are**, `application/octet-stream` unless the flow's
+  headers say otherwise. A request's body as bytes (uploads) is its own step: the request record's
+  `body` stays text.
+- **The log, an export, the control plane's JSON (`SValue`):** `{"type": "Bytes", "value":
+  "<base64>"}`, so a log line stays JSON and verify reads the same bytes back.
+- **The wasm bridge (`WValue`):** a `Uint8Array`; the editor shows `formatValue`'s form.
+- **State and collections:** storable as any value is, kept in the value encoding.
+- **Databases:** bytes as a parameter are a binary one (Postgres `bytea`, MySQL's bytes, Mongo's
+  binary); a `bytea` column reads as bytes, where it read as hex text. A module's ABI is the value
+  encoding, so a WebAssembly module gets bytes with tag 8.
+- **Secrets:** a value that holds a secret's UTF-8 in its bytes is one that holds the secret, for
+  redaction and for verify, as a text that holds it is.
+- **Types:** `Uint8Array` is the type of bytes in `holon.d.ts` and in a function's annotations;
+  `WType::Bytes` on the canvas, a port's colour of its own.
+
+**Decimals: leaves over decimal text, in step 1.2, not a value kind** (§8, fork 1, decided). The
+places Holon meets exact decimals already hand it text: a Postgres `NUMERIC` column reads as its
+exact text (`engines.rs`), and CSV, XML, and the amounts exchanges and many payment APIs send (as
+JSON strings, for this very reason) are text. A `Decimal` value would add a JSON form, a place in
+the log, the bridge and the editor, and a decision for every leaf that takes a number, and the
+language's syntax has no decimal for it: JavaScript has none, so `+` on one would need a branded
+`number` type in `holon.d.ts` and a meaning for `Decimal + Number`, and `===` would have to choose
+between `1.10` and `1.1`. Leaves over text (`decimal_add`, `decimal_compare`, `decimal_round {scale,
+rounding}`, `decimal_sum`, …) need none of that and are exact. What they can't do is write an exact
+JSON number token: an amount goes out as a string, or through `Number(…)` as a JavaScript number,
+exact to 15 digits. The cost to keep in mind: `a + b` on two decimal texts joins them, as
+JavaScript's does; 1.2's design says how a flow is kept from it. A `Decimal` value stays possible
+later, on a new tag, if a job needs exact number tokens.
+
+**The sample, `file-checksums`:** files dropped in a folder, each one's SHA-256 over its bytes
+(any file: an image, a PDF) kept in a manifest, read back by a route.
+
+#### 5.10.2 As built (2026-11-08)
+
+As designed, with what building it found:
+
+- **Three leaves' hashes moved.** The tags move nothing, but `sha256`, `hmac_sha256` and
+  `secure_equals` now take `Any` where they took `Text`, so their units, and every flow using them
+  (guarded-api, guestbook, idempotent, live-board, marketplace, sign-payload, slugs, witness),
+  have new hashes. Dev phase: nothing is kept for the old ones.
+- **`String(b)`** is `as_text`, which writes bytes as JavaScript does (`1,22`); `+` with a text
+  on one side gives nothing for bytes on the other, as it does for a list or a record.
+- **The log:** a file read as bytes that is kept in the blob store is also left out of the
+  timeline, as a kept text is (a node carrying it would hold its base64 whole). A line holding
+  bytes is always redacted by walking it: its base64 would hide a look-alike of a mark from the
+  shortcut that skips lines without a `‹`. Redaction and the export's check for secrets walk each
+  run of valid UTF-8 inside bytes, where a secret's UTF-8 can only be.
+- **The export** keeps a file read as bytes apart from the texts: `blob_bytes`, padded base64 by
+  blob, read back as bytes and checked against the file's hash; with `--files`, verify reads the
+  file given as bytes. A tampered byte fails the run that read it.
+- **Databases:** SQLite's blob, a Postgres `bytea`, MySQL's binary columns and Mongo's generic
+  binary read as bytes (another Mongo subtype, a UUID's, stays its hex); bytes as a parameter are
+  SQLite's blob, Postgres's `\x` hex where the statement takes a `bytea` (refused elsewhere),
+  MySQL's bytes and Mongo's generic binary.
+- **The wasm bridge** reads bytes from a `Uint8Array`, an array of numbers, or padded base64, as
+  the server's log writes them, so the editor's replay of a logged run takes them as they are.
+- **Not yet:** an `http_request` body that is bytes gives nothing, as before (it takes a text or
+  JSON); uploads are 1.4's. Writing bytes to a file waits for 1.2 and 1.4, as designed.
+
+Run live on a scratch server: a PNG, a zip, a PDF-headed file with bytes that aren't UTF-8, 100 KB
+of random bytes and a text, dropped in the folder, each answered its size, its kind and the
+SHA-256 `sha256sum` prints; the export verified (the two big files' bytes from `blob_bytes`), a
+changed byte failed its run, and an export without the files verified with `--files`.
+
 ### 5.11 Static files: a route for the rest of a path, and an answer that is a file's bytes
 
 Designed 2026-11-04 against `450e3de` and re-checked the same day against `ff03a80` (`main` after
@@ -1436,7 +1541,7 @@ engine.
 
 | Step | What | Design | Needs | Size |
 |---|---|---|---|---|
-| 1.1 | **Value kinds:** `Bytes`, and `Decimal` as its design decides (§5.10) | §5.10 (here) | — | M |
+| 1.1 | **Value kinds:** `Bytes`, built (§5.10.2); `Decimal` decided as text leaves, built in 1.2 (§5.10.1) | §5.10 (here) | — | M |
 | 1.2 | **Formats:** exact decimals, CSV, XML, dates (UTC and offsets), zip and gzip, JWT verify, PGP encrypt and verify with a public key (§5.1) | §5.1 (here) | 1.1 | M |
 | 1.3 | **Email:** send, recipients in the grant; receive as `on mail`, with its sender's verdict and attachments (§5.2) | §5.2 (here) | 1.1 for attachments | L |
 | 1.4 | **Remote folders:** the backend seam in `folders.rs`, then SFTP and S3-compatible storage (§6) | §6 (here) | 1.1 for binary files | L |
@@ -1519,7 +1624,9 @@ Taken when a job or a user asks, each with its design here and its sample all th
    (no existing hash moves) but needs its JSON form, its place in the log, the bridge, the editor
    and every leaf that takes a number; leaves over text need none of that. *Lean:* decided in
    step 1.1's design (§5.10) with bytes, whose boundary answers make a `Decimal` value cheap;
-   text leaves if that design finds a reason against.
+   text leaves if that design finds a reason against. *Decided* (2026-11-08, §5.10.1): text
+   leaves, in 1.2. The sources of exact decimals already give text (`NUMERIC`, CSV, XML, string
+   amounts), and the syntax has no decimal for a value kind to be written with.
 2. **Mailboxes that need OAuth.** Microsoft 365 has turned passwords off for IMAP and SMTP, and
    Google steers to OAuth. Either the host does OAuth (a refresh token as the secret, the host
    refreshing it), or those mailboxes are reached through their HTTP APIs (Microsoft Graph, Gmail

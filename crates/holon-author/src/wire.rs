@@ -24,6 +24,8 @@ pub enum WType {
     Effect,
     Any,
     Record,
+    /// Bytes: a JavaScript `Uint8Array`.
+    Bytes,
 }
 
 impl WType {
@@ -38,6 +40,7 @@ impl WType {
             Type::Effect => WType::Effect,
             Type::Any => WType::Any,
             Type::Record => WType::Record,
+            Type::Bytes => WType::Bytes,
         }
     }
 
@@ -63,6 +66,7 @@ impl WType {
             WType::Effect => Type::Effect,
             WType::Any => Type::Any,
             WType::Record => Type::Record,
+            WType::Bytes => Type::Bytes,
         })
     }
 }

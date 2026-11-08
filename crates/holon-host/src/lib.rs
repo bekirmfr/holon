@@ -300,7 +300,7 @@ pub fn is_storable(value: &Value) -> bool {
         Value::List(xs) => xs.iter().all(is_storable),
         Value::Sum { payload, .. } => is_storable(payload),
         Value::Record(fields) => fields.values().all(is_storable),
-        Value::Number(_) | Value::Boolean(_) | Value::Text(_) => true,
+        Value::Number(_) | Value::Boolean(_) | Value::Text(_) | Value::Bytes(_) => true,
     }
 }
 

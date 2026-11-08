@@ -212,6 +212,7 @@ pub fn respond(output: Option<&Value>) -> DataResponse {
     let (content_type, bytes) = match body {
         None => (None, vec![]),
         Some(Value::Text(s)) => (Some("text/plain; charset=utf-8"), s.clone().into_bytes()),
+        Some(Value::Bytes(b)) => (Some("application/octet-stream"), b.clone()),
         Some(v) => match stringify_json(v) {
             Some(s) => (Some("application/json"), s.into_bytes()),
             None => return DataResponse::json_error(500, "the response body has no JSON form"),
@@ -309,6 +310,13 @@ mod tests {
 
         let no_body = respond(Some(&rec(&[("status", Value::Number(404.0))])));
         assert_eq!((no_body.status, no_body.body.len()), (404, 0));
+
+        // Bytes are sent as they are, as octet-stream unless the flow says otherwise.
+        let raw = respond(Some(&Value::Bytes(vec![0x89, 0x50, 0xff])));
+        assert_eq!((raw.status, raw.body.as_slice()), (200, &[0x89, 0x50, 0xff][..]));
+        assert_eq!(raw.headers, vec![("content-type".to_string(), "application/octet-stream".to_string())]);
+        let png = respond(Some(&rec(&[("status", Value::Number(200.0)), ("headers", rec(&[("content-type", txt("image/png"))])), ("body", Value::Bytes(vec![1]))])));
+        assert_eq!((png.body.as_slice(), png.headers.clone()), (&[1u8][..], vec![("content-type".to_string(), "image/png".to_string())]));
 
         // A 204 a computed status chose sends no body and no content type, whatever the body.
         for body in [txt(""), txt("x")] {

@@ -123,11 +123,17 @@ pub fn describe(name: &str) -> Option<&'static str> {
         "json_stringify" => "Writes a value out as JSON text, as JavaScript's JSON.stringify: indent lays it out a member a line, keys (a JSON list) keeps only those keys of every record, in that order, and fn, a function of each key and value applied from the outside in, writes its answer instead (the replacer); one it answers nothing for is left out.",
 
         // ── signatures and encodings ──
-        "sha256" => "The SHA-256 digest of a text, as hex or base64.",
-        "hmac_sha256" => "The HMAC-SHA256 signature of message under key, as hex or base64: how webhooks are signed.",
+        "sha256" => "The SHA-256 digest of a text (its UTF-8) or of bytes, as hex or base64.",
+        "hmac_sha256" => "The HMAC-SHA256 signature of message under key, each a text or bytes, as hex or base64: how webhooks are signed.",
         "hex" => "Encodes text as hex, or decodes hex back to text.",
         "base64" => "Encodes text as base64, or decodes it back; standard or URL-safe alphabet. Its bytes are the text's UTF-8, or with latin1 each character one byte: btoa(s), atob(s).",
-        "secure_equals" => "Whether two texts are equal, compared in constant time: for checking signatures and tokens without leaking where they differ.",
+        "secure_equals" => "Whether two texts, or two byte strings, are equal, compared in constant time: for checking signatures and tokens without leaking where they differ.",
+        "text_to_bytes" => "A text's bytes: its UTF-8, or what its hex, base64 or base64url says (nothing if it isn't that). new TextEncoder().encode(s), Uint8Array.fromHex(s), Uint8Array.fromBase64(s).",
+        "bytes_to_text" => "Bytes as a text: read as UTF-8 (nothing if they aren't), or written as hex, padded base64 or unpadded base64url. new TextDecoder().decode(b), b.toHex(), b.toBase64().",
+        "bytes_length" => "How many bytes: b.length.",
+        "bytes_concat" => "Bytes joined, in order.",
+        "bytes_to_list" => "Bytes as a list of numbers from 0 to 255: Array.from(b).",
+        "list_to_bytes" => "A list of whole numbers from 0 to 255 as bytes: new Uint8Array(xs). Nothing if an item isn't one, where JavaScript wraps it.",
 
         // ── any value ──
         "to_text" => "Any value written out as text, as a literal: a text comes out in quotes.",
@@ -158,6 +164,7 @@ pub fn describe(name: &str) -> Option<&'static str> {
         "collection_put" => "Puts value into a collection under key when the run finishes (added, or replaced). Writing it is a permission.",
         "collection_delete" => "Deletes a collection's item under key when the run finishes.",
         "file_read" => "The text of the file name in a folder, as the run found it; nothing when there is none. The folder is a name an admin binds to a real folder. Reading it is a permission.",
+        "file_read_bytes" => "The bytes of the file name in a folder, any file, as the run found it; nothing when there is none. folder.bytes(name). Reading it is a permission.",
         "file_list" => "A record of a folder's files (name, size, hash, modified) in name order, up to limit: those whose name starts with prefix, after the name after (both optional, for paging).",
         "file_write" => "Writes text to the file name in a folder when the run finishes (created, or replaced whole). Writing it is a permission.",
         "file_delete" => "Deletes the file name in a folder when the run finishes.",

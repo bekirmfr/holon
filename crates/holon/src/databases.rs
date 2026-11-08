@@ -679,7 +679,7 @@ fn claim_value(v: &Value) -> serde_json::Value {
 // ── values ──
 
 /// A statement's parameter, from a Holon value: a whole number as an integer, true and false as
-/// 1 and 0, none as null, a record or list as its JSON text.
+/// 1 and 0, none as null, a record or list as its JSON text, bytes as a blob.
 fn param(v: &Value) -> Result<Sql, String> {
     Ok(match v {
         Value::Number(n) if n.fract() == 0.0 && n.abs() < 9_007_199_254_740_992.0 => Sql::Integer(*n as i64),
@@ -690,11 +690,12 @@ fn param(v: &Value) -> Result<Sql, String> {
         Value::Sum { arm: 1, .. } => Sql::Null,
         Value::Sum { payload, .. } => param(payload)?,
         Value::List(_) | Value::Record(_) => Sql::Text(holon_core::stringify_json(v).ok_or("a parameter's record or list has a value JSON can't hold")?),
+        Value::Bytes(b) => Sql::Blob(b.clone()),
         Value::Effect { .. } => return Err("an effect is never a parameter".into()),
     })
 }
 
-/// A column's value as a Holon value: a number, a text, bytes as hex; null as nothing (the
+/// A column's value as a Holon value: a number, a text, a blob as bytes; null as nothing (the
 /// record has no such field). An integer too big for a number exactly is its digits, as text.
 fn column(v: ValueRef<'_>) -> Option<Value> {
     Some(match v {
@@ -703,7 +704,7 @@ fn column(v: ValueRef<'_>) -> Option<Value> {
         ValueRef::Integer(n) => Value::Text(n.to_string()),
         ValueRef::Real(f) => Value::Number(f),
         ValueRef::Text(t) => Value::Text(String::from_utf8_lossy(t).into_owned()),
-        ValueRef::Blob(b) => Value::Text(b.iter().map(|x| format!("{x:02x}")).collect()),
+        ValueRef::Blob(b) => Value::Bytes(b.to_vec()),
     })
 }
 
@@ -711,6 +712,7 @@ fn column(v: ValueRef<'_>) -> Option<Value> {
 fn size_of(v: &Value) -> u64 {
     match v {
         Value::Text(t) => t.len() as u64,
+        Value::Bytes(b) => b.len() as u64,
         _ => 8,
     }
 }
@@ -1557,11 +1559,12 @@ mod tests {
         let Value::Record(row) = &g.out[0] else { panic!() };
         assert_eq!(row.get("i"), Some(&Value::Number(7.0)));
         assert_eq!(row.get("r"), Some(&Value::Number(2.5)));
-        assert_eq!(row.get("b"), Some(&Value::Text("01ff".into())));
+        assert_eq!(row.get("b"), Some(&Value::Bytes(vec![1, 255])), "a blob is bytes");
         assert_eq!(row.get("n"), None, "null is no field");
         assert_eq!(row.get("big"), Some(&Value::Text(i64::MAX.to_string())), "past 2^53, its digits");
         assert_eq!(param(&Value::Boolean(true)).unwrap(), Sql::Integer(1));
         assert_eq!(param(&Value::Number(1.5)).unwrap(), Sql::Real(1.5));
+        assert_eq!(param(&Value::Bytes(vec![0, 255])).unwrap(), Sql::Blob(vec![0, 255]), "bytes are a blob");
         assert!(select(&conn, "delete from t", &[], soon(), &mut Gather::new("delete from t", false, 10, 1 << 20)).unwrap_err().contains("writes"));
         conn.execute_batch("insert into t (i) values (1), (2)").unwrap();
         let many = "select * from t, t as u, t as v";

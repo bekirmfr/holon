@@ -119,7 +119,7 @@ fn mentions_effect(ty: &Type) -> bool {
         Type::Effect => true,
         Type::List(t) => mentions_effect(t),
         Type::Product(ts) | Type::Sum(ts) => ts.iter().any(mentions_effect),
-        Type::Number | Type::Boolean | Type::Text | Type::Any | Type::Record => false,
+        Type::Number | Type::Boolean | Type::Text | Type::Any | Type::Record | Type::Bytes => false,
     }
 }
 

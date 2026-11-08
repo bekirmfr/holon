@@ -337,6 +337,8 @@ pub(crate) fn js_string(v: &Value) -> String {
         Value::Text(s) => s.clone(),
         Value::Boolean(b) => b.to_string(),
         Value::List(items) => items.iter().map(js_string).collect::<Vec<_>>().join(","),
+        // A `Uint8Array`'s, as an array's: its numbers joined with `,`.
+        Value::Bytes(b) => b.iter().map(u8::to_string).collect::<Vec<_>>().join(","),
         Value::Record(_) | Value::Sum { .. } | Value::Effect { .. } => "[object Object]".into(),
     }
 }
@@ -348,7 +350,7 @@ fn js_to_number(v: &Value) -> f64 {
         Value::Number(x) => *x,
         Value::Boolean(b) => *b as u8 as f64,
         Value::Text(s) => string_to_number(s),
-        Value::List(_) => string_to_number(&js_string(v)),
+        Value::List(_) | Value::Bytes(_) => string_to_number(&js_string(v)),
         Value::Record(_) | Value::Sum { .. } | Value::Effect { .. } => f64::NAN,
     }
 }

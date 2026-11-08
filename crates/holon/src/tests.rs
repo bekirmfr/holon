@@ -6767,6 +6767,62 @@ on.file.created(inbox, async (f) => {{
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A file's bytes (the file-checksums sample): any file, read whole, hashed as sha256sum does; a
+/// small one's bytes kept in its log entry as base64, a big one's in the blob store and nowhere in
+/// the log, its timeline included; bytes a route answers sent as they are; and the runs verify.
+#[test]
+fn a_files_bytes_are_read_hashed_logged_and_verified() {
+    let state = claims_state("");
+    let dir = std::env::temp_dir().join(format!("holon-file-bytes-{}-{}", std::process::id(), rand::random::<u32>()));
+    let drop = dir.join("drop");
+    std::fs::create_dir_all(&drop).unwrap();
+    assert_eq!(route_status(&state, &serde_json::json!({ "name": "drop", "path": drop.display().to_string(), "access": "read" })), 200);
+    let slug = deploy_text(&state, include_str!("../../holon-author/samples/file-checksums.holon.ts"), "");
+    let look = || {
+        arrivals::run_arrivals(&state.store, &state.deployments, &state.deployments_path);
+        arrivals::run_arrivals(&state.store, &state.deployments, &state.deployments_path);
+    };
+    look();
+    // A PNG's first bytes, then bytes that aren't UTF-8; and 20,000 bytes, past what a log entry
+    // keeps inline.
+    let small = [0x89u8, 0x50, 0x4e, 0x47, 0xff, 0x00];
+    let big: Vec<u8> = (0..20_000u32).map(|i| (i % 251) as u8).collect();
+    std::fs::write(drop.join("small.png"), small).unwrap();
+    std::fs::write(drop.join("big.bin"), &big).unwrap();
+    look();
+    let sums = [
+        ("small.png", small.len(), "854e4b5f04c08dd7a8df75e0c0c9ce444f353bf1385a8a7ddbc9c73c4181ce0b", "png"),
+        ("big.bin", big.len(), "93a6015a3874a774dd59fdd5db19414b301525381eb5ddcc265cdcc68bb9d350", "other"),
+    ];
+    for (name, size, sha256, kind) in sums {
+        let (status, answer, _) = data_call(&state, &slug, "GET", &format!("/sums/{name}"), "");
+        assert_eq!((status, serde_json::from_str::<serde_json::Value>(&answer).unwrap()), (200, serde_json::json!({ "size": size, "sha256": sha256, "kind": kind })), "{name}");
+    }
+    let entries = log_entries(&state, &slug);
+    let read = |name: &str| {
+        entries.iter().flat_map(|e| e["reads"].as_array().cloned().unwrap_or_default()).find(|r| r["request"].to_string().contains(name)).unwrap_or_else(|| panic!("no read of {name}: {entries:?}"))
+    };
+    assert_eq!(read("small.png")["answer"], serde_json::json!({ "type": "Bytes", "value": "iVBOR/8A" }), "a small file's bytes, inline");
+    assert!(read("big.bin")["answer"].is_null() && read("big.bin")["file"]["blob"].is_string(), "a big one's by hash: {}", read("big.bin"));
+    let timelines = serde_json::to_string(&entries.iter().map(|e| &e["timeline"]).collect::<Vec<_>>()).unwrap();
+    assert!(timelines.contains("iVBOR/8A"), "a small file's bytes are in its timeline too: {timelines}");
+    let whole = holon_core::bytes_text(&big, "base64").unwrap();
+    assert!(!serde_json::to_string(&entries).unwrap().contains(&whole[..64]), "a big one's nor in its timeline");
+
+    // Bytes a route answers go out as they are.
+    let raw = deploy_text(&state, "import { flow, route } from \"holon\"\nimport drop from \"folder:drop\"\n\nflow(\"raw\", { port: 18303 })\n\nroute.get(\"/raw/:name\", (req) => drop.bytes(req.params.name))\n", "");
+    let r = serve_data(&state.store, &state.deployments, &state.deployments_path, &raw, &fake_data("GET", "/raw/small.png", vec![]));
+    assert_eq!((r.status, r.body.as_slice()), (200, &small[..]));
+    assert!(r.headers.iter().any(|(k, v)| k == "content-type" && v == "application/octet-stream"), "{:?}", r.headers);
+
+    // Its runs check offline: the small file's bytes from its entry, the big one's from the export.
+    let export: verify::Export = serde_json::from_value(body_json(route(&state, &req("GET", &format!("/deployments/{slug}/export"), vec![])))).unwrap();
+    assert_eq!(export.blob_bytes.len(), 1, "the big file's bytes, in base64");
+    let report = verify::check(&export, None, &BTreeMap::new());
+    assert!(report.ok() && report.reruns.iter().all(|(_, r)| *r == verify::Rerun::Matched), "{}", verify::describe(&report, None));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// `on file` lines (the file-audit sample): several folders, files removed, and only some names.
 /// Each run's `ingress` says what happened; a name no line is for starts nothing; an entry is
 /// created, never replaced; and the runs verify.

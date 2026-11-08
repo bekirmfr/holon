@@ -82,7 +82,7 @@ pub(crate) fn type_of(x: &Value) -> Option<&'static str> {
         Value::Number(_) => "number",
         Value::Boolean(_) => "boolean",
         Value::Text(_) => "string",
-        Value::List(_) | Value::Record(_) | Value::Sum { arm: 1, .. } => "object",
+        Value::List(_) | Value::Record(_) | Value::Bytes(_) | Value::Sum { arm: 1, .. } => "object",
         Value::Sum { payload, .. } => return type_of(payload),
         Value::Effect { .. } => return None,
     })

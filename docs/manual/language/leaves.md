@@ -13,7 +13,7 @@ last record (see [Calls](reference.md#calls)). Many are written another way (`a 
 
 These touch nothing outside: given the same inputs, they always give the same output.
 
-[`const`](#const) · [`add`](#add) · [`multiply`](#multiply) · [`subtract`](#subtract) · [`divide`](#divide) · [`compare`](#compare) · [`and`](#and) · [`or`](#or) · [`not`](#not) · [`select`](#select) · [`cons`](#cons) · [`head`](#head) · [`tail`](#tail) · [`is_empty`](#is_empty) · [`fold`](#fold) · [`map`](#map) · [`math`](#math) · [`max`](#max) · [`min`](#min) · [`aggregate`](#aggregate) · [`atan2`](#atan2) · [`power`](#power) · [`remainder`](#remainder) · [`bitwise`](#bitwise) · [`number_test`](#number_test) · [`to_number`](#to_number) · [`number_format`](#number_format) · [`concat`](#concat) · [`uppercase`](#uppercase) · [`lowercase`](#lowercase) · [`text_length`](#text_length) · [`slice`](#slice) · [`index_of`](#index_of) · [`split`](#split) · [`text_at`](#text_at) · [`code_at`](#code_at) · [`from_codes`](#from_codes) · [`text_contains`](#text_contains) · [`trim`](#trim) · [`pad`](#pad) · [`repeat`](#repeat) · [`replace`](#replace) · [`normalize`](#normalize) · [`uri_encode`](#uri_encode) · [`uri_decode`](#uri_decode) · [`is_well_formed`](#is_well_formed) · [`list`](#list) · [`get`](#get) · [`append`](#append) · [`extend`](#extend) · [`length`](#length) · [`sum`](#sum) · [`join`](#join) · [`at`](#at) · [`indices`](#indices) · [`entries`](#entries) · [`any`](#any) · [`all`](#all) · [`filter`](#filter) · [`find`](#find) · [`find_index`](#find_index) · [`find_last`](#find_last) · [`find_last_index`](#find_last_index) · [`sort_by`](#sort_by) · [`includes`](#includes) · [`last_index_of`](#last_index_of) · [`reverse`](#reverse) · [`to_spliced`](#to_spliced) · [`with_item`](#with_item) · [`fill`](#fill) · [`copy_within`](#copy_within) · [`sort`](#sort) · [`flat`](#flat) · [`is_list`](#is_list) · [`unique`](#unique) · [`range`](#range) · [`pair`](#pair) · [`some`](#some) · [`none`](#none) · [`record`](#record) · [`field`](#field) · [`with_field`](#with_field) · [`without_field`](#without_field) · [`keys`](#keys) · [`lookup`](#lookup) · [`insert`](#insert) · [`remove`](#remove) · [`values`](#values) · [`from_entries`](#from_entries) · [`merge`](#merge) · [`has`](#has) · [`group_by`](#group_by) · [`same_value`](#same_value) · [`type_of`](#type_of) · [`json_parse`](#json_parse) · [`json_stringify`](#json_stringify) · [`date_part`](#date_part) · [`date_utc`](#date_utc) · [`date_set`](#date_set) · [`date_text`](#date_text) · [`date_parse`](#date_parse) · [`sha256`](#sha256) · [`hmac_sha256`](#hmac_sha256) · [`hex`](#hex) · [`base64`](#base64) · [`secure_equals`](#secure_equals) · [`to_text`](#to_text) · [`as_text`](#as_text) · [`is_truthy`](#is_truthy) · [`guard`](#guard) · [`default`](#default) · [`coalesce`](#coalesce) · [`equals`](#equals) · [`fail`](#fail)
+[`const`](#const) · [`add`](#add) · [`multiply`](#multiply) · [`subtract`](#subtract) · [`divide`](#divide) · [`compare`](#compare) · [`and`](#and) · [`or`](#or) · [`not`](#not) · [`select`](#select) · [`cons`](#cons) · [`head`](#head) · [`tail`](#tail) · [`is_empty`](#is_empty) · [`fold`](#fold) · [`map`](#map) · [`math`](#math) · [`max`](#max) · [`min`](#min) · [`aggregate`](#aggregate) · [`atan2`](#atan2) · [`power`](#power) · [`remainder`](#remainder) · [`bitwise`](#bitwise) · [`number_test`](#number_test) · [`to_number`](#to_number) · [`number_format`](#number_format) · [`concat`](#concat) · [`uppercase`](#uppercase) · [`lowercase`](#lowercase) · [`text_length`](#text_length) · [`slice`](#slice) · [`index_of`](#index_of) · [`split`](#split) · [`text_at`](#text_at) · [`code_at`](#code_at) · [`from_codes`](#from_codes) · [`text_contains`](#text_contains) · [`trim`](#trim) · [`pad`](#pad) · [`repeat`](#repeat) · [`replace`](#replace) · [`normalize`](#normalize) · [`uri_encode`](#uri_encode) · [`uri_decode`](#uri_decode) · [`is_well_formed`](#is_well_formed) · [`list`](#list) · [`get`](#get) · [`append`](#append) · [`extend`](#extend) · [`length`](#length) · [`sum`](#sum) · [`join`](#join) · [`at`](#at) · [`indices`](#indices) · [`entries`](#entries) · [`any`](#any) · [`all`](#all) · [`filter`](#filter) · [`find`](#find) · [`find_index`](#find_index) · [`find_last`](#find_last) · [`find_last_index`](#find_last_index) · [`sort_by`](#sort_by) · [`includes`](#includes) · [`last_index_of`](#last_index_of) · [`reverse`](#reverse) · [`to_spliced`](#to_spliced) · [`with_item`](#with_item) · [`fill`](#fill) · [`copy_within`](#copy_within) · [`sort`](#sort) · [`flat`](#flat) · [`is_list`](#is_list) · [`unique`](#unique) · [`range`](#range) · [`pair`](#pair) · [`some`](#some) · [`none`](#none) · [`record`](#record) · [`field`](#field) · [`with_field`](#with_field) · [`without_field`](#without_field) · [`keys`](#keys) · [`lookup`](#lookup) · [`insert`](#insert) · [`remove`](#remove) · [`values`](#values) · [`from_entries`](#from_entries) · [`merge`](#merge) · [`has`](#has) · [`group_by`](#group_by) · [`same_value`](#same_value) · [`type_of`](#type_of) · [`json_parse`](#json_parse) · [`json_stringify`](#json_stringify) · [`date_part`](#date_part) · [`date_utc`](#date_utc) · [`date_set`](#date_set) · [`date_text`](#date_text) · [`date_parse`](#date_parse) · [`sha256`](#sha256) · [`hmac_sha256`](#hmac_sha256) · [`hex`](#hex) · [`base64`](#base64) · [`secure_equals`](#secure_equals) · [`text_to_bytes`](#text_to_bytes) · [`bytes_to_text`](#bytes_to_text) · [`bytes_length`](#bytes_length) · [`bytes_concat`](#bytes_concat) · [`bytes_to_list`](#bytes_to_list) · [`list_to_bytes`](#list_to_bytes) · [`to_text`](#to_text) · [`as_text`](#as_text) · [`is_truthy`](#is_truthy) · [`guard`](#guard) · [`default`](#default) · [`coalesce`](#coalesce) · [`equals`](#equals) · [`fail`](#fail)
 
 ### `const`
 
@@ -826,18 +826,18 @@ The time value a date's text gives: Date.parse(t), in JavaScript's date format (
 ### `sha256`
 
 ```
-sha256(text: Text) -> out: Text  {encoding: hex}
+sha256(text: Any) -> out: Text  {encoding: hex}
 ```
 
-The SHA-256 digest of a text, as hex or base64.
+The SHA-256 digest of a text (its UTF-8) or of bytes, as hex or base64.
 
 ### `hmac_sha256`
 
 ```
-hmac_sha256(key: Text, message: Text) -> out: Text  {encoding: hex}
+hmac_sha256(key: Any, message: Any) -> out: Text  {encoding: hex}
 ```
 
-The HMAC-SHA256 signature of message under key, as hex or base64: how webhooks are signed.
+The HMAC-SHA256 signature of message under key, each a text or bytes, as hex or base64: how webhooks are signed.
 
 ### `hex`
 
@@ -858,10 +858,58 @@ Encodes text as base64, or decodes it back; standard or URL-safe alphabet. Its b
 ### `secure_equals`
 
 ```
-secure_equals(a: Text, b: Text) -> out: Boolean
+secure_equals(a: Any, b: Any) -> out: Boolean
 ```
 
-Whether two texts are equal, compared in constant time: for checking signatures and tokens without leaking where they differ.
+Whether two texts, or two byte strings, are equal, compared in constant time: for checking signatures and tokens without leaking where they differ.
+
+### `text_to_bytes`
+
+```
+text_to_bytes(text: Text) -> out: Bytes  {encoding: utf8}
+```
+
+A text's bytes: its UTF-8, or what its hex, base64 or base64url says (nothing if it isn't that). new TextEncoder().encode(s), Uint8Array.fromHex(s), Uint8Array.fromBase64(s).
+
+### `bytes_to_text`
+
+```
+bytes_to_text(bytes: Bytes) -> out: Text  {encoding: utf8}
+```
+
+Bytes as a text: read as UTF-8 (nothing if they aren't), or written as hex, padded base64 or unpadded base64url. new TextDecoder().decode(b), b.toHex(), b.toBase64().
+
+### `bytes_length`
+
+```
+bytes_length(bytes: Bytes) -> out: Number
+```
+
+How many bytes: b.length.
+
+### `bytes_concat`
+
+```
+bytes_concat(a: Bytes, b: Bytes) -> out: Bytes
+```
+
+Bytes joined, in order.
+
+### `bytes_to_list`
+
+```
+bytes_to_list(bytes: Bytes) -> out: List<Number>
+```
+
+Bytes as a list of numbers from 0 to 255: Array.from(b).
+
+### `list_to_bytes`
+
+```
+list_to_bytes(list: List<Any>) -> out: Bytes
+```
+
+A list of whole numbers from 0 to 255 as bytes: new Uint8Array(xs). Nothing if an item isn't one, where JavaScript wraps it.
 
 ### `to_text`
 
@@ -931,7 +979,7 @@ Nothing, with message given to the run's log as the reason: JavaScript's throw n
 
 Each of these is something a flow may do, and so a line of what it asks for when it is deployed. The language writes most of them as names it imports (`now`, a secret, `state.x`, a host's `get`, a collection or a folder) or a handler receives (`req`). The writes and the calls out take a `trigger` last: what starts them, the request of the route they are in, the trigger of the holon they are in, or the value an `if (x !== undefined)` around them waits for. The language ties it, so it is never an argument.
 
-[`http_request`](#http_request) · [`http_upload`](#http_upload) · [`http_stream`](#http_stream) · [`flow_call`](#flow_call) · [`flow_start`](#flow_start) · [`clock`](#clock) · [`random`](#random) · [`secret`](#secret) · [`file_arrival`](#file_arrival) · [`await`](#await) · [`resume_token`](#resume_token) · [`store_read`](#store_read) · [`store_write`](#store_write) · [`collection_get`](#collection_get) · [`collection_list`](#collection_list) · [`collection_put`](#collection_put) · [`collection_delete`](#collection_delete) · [`file_read`](#file_read) · [`file_list`](#file_list) · [`file_write`](#file_write) · [`file_delete`](#file_delete) · [`file_handle`](#file_handle) · [`file_lines`](#file_lines) · [`file_slice`](#file_slice) · [`file_copy`](#file_copy) · [`file_create`](#file_create) · [`file_create_copy`](#file_create_copy) · [`db_query`](#db_query) · [`db_one`](#db_one) · [`db_exec`](#db_exec) · [`db_find`](#db_find) · [`db_find_one`](#db_find_one) · [`db_insert`](#db_insert) · [`db_update`](#db_update) · [`db_delete`](#db_delete) · [`channel_send`](#channel_send) · [`channel_subscribe`](#channel_subscribe) · [`egress`](#egress)
+[`http_request`](#http_request) · [`http_upload`](#http_upload) · [`http_stream`](#http_stream) · [`flow_call`](#flow_call) · [`flow_start`](#flow_start) · [`clock`](#clock) · [`random`](#random) · [`secret`](#secret) · [`file_arrival`](#file_arrival) · [`await`](#await) · [`resume_token`](#resume_token) · [`store_read`](#store_read) · [`store_write`](#store_write) · [`collection_get`](#collection_get) · [`collection_list`](#collection_list) · [`collection_put`](#collection_put) · [`collection_delete`](#collection_delete) · [`file_read`](#file_read) · [`file_list`](#file_list) · [`file_write`](#file_write) · [`file_delete`](#file_delete) · [`file_handle`](#file_handle) · [`file_lines`](#file_lines) · [`file_slice`](#file_slice) · [`file_copy`](#file_copy) · [`file_read_bytes`](#file_read_bytes) · [`file_create`](#file_create) · [`file_create_copy`](#file_create_copy) · [`db_query`](#db_query) · [`db_one`](#db_one) · [`db_exec`](#db_exec) · [`db_find`](#db_find) · [`db_find_one`](#db_find_one) · [`db_insert`](#db_insert) · [`db_update`](#db_update) · [`db_delete`](#db_delete) · [`channel_send`](#channel_send) · [`channel_subscribe`](#channel_subscribe) · [`egress`](#egress)
 
 ### `http_request`
 
@@ -1132,6 +1180,14 @@ file_copy(name: Text, from: Record, trigger: Any) -> out: Effect  {folder: files
 ```
 
 Copies the file a handle names into this folder as name when the run finishes, host to host: its bytes never pass through the flow. Fails if the file changed since the run read it.
+
+### `file_read_bytes`
+
+```
+file_read_bytes(name: Text) -> out: Bytes  {folder: files}
+```
+
+The bytes of the file name in a folder, any file, as the run found it; nothing when there is none. folder.bytes(name). Reading it is a permission.
 
 ### `file_create`
 

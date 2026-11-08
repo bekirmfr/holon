@@ -21,7 +21,8 @@ pub(crate) struct RegistryBody {
 /// `WValue` at the wasm boundary (`core::Value` deliberately carries no serde, keeping
 /// `holon-core` dependency-minimal). Grounded exactly against the real `Value` enum (seven
 /// variants — there is no `Product` at the *value* level, only at the `Type` level, so this
-/// mirror doesn't need one either) rather than assumed by symmetry with `Type`.
+/// mirror doesn't need one either) rather than assumed by symmetry with `Type`. Bytes are padded
+/// base64, so a log line holding them stays JSON.
 ///
 /// **A real, named limitation, not silently inherited:** `serde_json` cannot represent `NaN`/
 /// `Infinity` (JSON has no token for them) — a cache entry whose `Number` is non-finite (an
@@ -41,6 +42,22 @@ pub(crate) enum SValue {
     /// `[key, value]` pairs in key order — the same shape as the wasm bridge's `WValue::Record`,
     /// so the editor reads both boundaries with one type.
     Record(Vec<(String, SValue)>),
+    /// Bytes, as padded base64: `{"type": "Bytes", "value": "aGk="}`.
+    Bytes(#[serde(with = "base64_bytes")] Vec<u8>),
+}
+
+/// Bytes in JSON as padded base64 ([`SValue::Bytes`]).
+mod base64_bytes {
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub(super) fn serialize<S: Serializer>(bytes: &[u8], s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(&holon_core::bytes_text(bytes, "base64").expect("base64 writes any bytes"))
+    }
+
+    pub(super) fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<u8>, D::Error> {
+        let text = String::deserialize(d)?;
+        holon_core::text_bytes(&text, "base64").ok_or_else(|| serde::de::Error::custom("bytes that aren't base64"))
+    }
 }
 
 impl SValue {
@@ -59,6 +76,7 @@ impl SValue {
             Value::Record(fields) => {
                 SValue::Record(fields.iter().map(|(k, v)| (k.clone(), SValue::from_core(v))).collect())
             }
+            Value::Bytes(b) => SValue::Bytes(b.clone()),
         }
     }
     pub(crate) fn into_core(self) -> Value {
@@ -72,6 +90,7 @@ impl SValue {
             }
             SValue::Sum { arm, payload } => Value::Sum { arm, payload: Box::new(payload.into_core()) },
             SValue::Record(fields) => Value::Record(fields.into_iter().map(|(k, v)| (k, v.into_core())).collect()),
+            SValue::Bytes(b) => Value::Bytes(b),
         }
     }
 }
@@ -559,6 +578,17 @@ mod tests {
     /// its own), reads back past serde_json's own stop. JSON nested deeper isn't read: its brackets
     /// are counted before anything recurses (100,000 deep would overflow the reader's stack).
     /// Brackets in a string don't count.
+    /// Bytes in the log's JSON are padded base64, and read back as they went in; text that isn't
+    /// base64 isn't read.
+    #[test]
+    fn bytes_are_base64_in_json_and_read_back() {
+        let v = Value::Bytes(vec![0xfb, 0xff, 0x00]);
+        let text = serde_json::to_string(&SValue::from_core(&v)).unwrap();
+        assert_eq!(text, r#"{"type":"Bytes","value":"+/8A"}"#);
+        assert_eq!(read_json::<SValue>(text.as_bytes()).unwrap().into_core(), v);
+        assert!(read_json::<SValue>(br#"{"type":"Bytes","value":"not base64!"}"#).is_err());
+    }
+
     #[test]
     fn json_holding_a_value_as_deep_as_one_may_be_reads_back() {
         let nested = |depth: usize, record: bool| {
