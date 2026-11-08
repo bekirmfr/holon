@@ -12,7 +12,8 @@ use ratatui::widgets::{Clear, Paragraph, Wrap};
 use ratatui::Frame;
 
 use super::{bold, coloured, dim, fit, list, pad, panel, ACCENT, BAD, DARK, DIM, GOOD, PICKED, WARN};
-use crate::workbench::app::{App, Click, List, RunPane, Show, Tab};
+use crate::workbench::app::{App, Click, HomeRow, List, RunPane, Show, Tab};
+use crate::workbench::client::Client;
 
 pub(super) fn colour(class: Class) -> Style {
     let c = match class {
@@ -103,20 +104,14 @@ fn text_line(tab: &Tab, row: usize, left: usize, width: usize, mark: Option<(u32
 
 pub(super) fn draw(f: &mut Frame, app: &mut App, area: Rect) {
     if app.tabs.is_empty() {
-        let lines = vec![
-            Line::default(),
-            Line::from(bold("No flow open.")),
-            Line::default(),
-            Line::from("Start a draft (n, or ctrl+t anywhere), or open one: a sample from the library (6), a flow on the server from the flows page (3), or a file with :open <file>."),
-            Line::from(dim("ctrl+p finds any of them by name.")),
-        ];
-        f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }).block(panel("Editor", true)), area);
-        super::keys_here(app, area);
-        return;
+        return draw_home(f, app, area);
     }
-    app.sync_graph();
     let [bar, body] = Layout::vertical([Constraint::Length(1), Constraint::Min(3)]).areas(area);
     draw_tabs(f, app, bar);
+    if app.home {
+        return draw_home(f, app, body);
+    }
+    app.sync_graph();
     if app.tabs[app.tab].runs.is_some() {
         return draw_runs_view(f, app, body);
     }
@@ -198,22 +193,84 @@ fn draw_graph_view(f: &mut Frame, app: &mut App, area: Rect) {
     }
 }
 
+/// The Home tab: start a draft, open a sample, a tab closed lately or a flow on the server.
+fn draw_home(f: &mut Frame, app: &App, area: Rect) {
+    let rows = app.home_rows();
+    let block = panel("⌂ Home", true);
+    super::keys_here(app, area);
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+    let [head, list_at] = Layout::vertical([Constraint::Length(2), Constraint::Min(1)]).areas(inner);
+    let said = if app.tabs.is_empty() { "No flow open: start one, or open one." } else { "Start a flow, or open one: esc goes back to the tab." };
+    f.render_widget(Paragraph::new(vec![Line::from(dim(format!(" {said}"))), Line::from(dim(" :open <file> opens a file; ctrl+p finds anything by name."))]), head);
+    let sel = app.home_sel.min(rows.len().saturating_sub(1));
+    list(f, app, list_at, List::Home, rows.len(), Some(sel), true, |i, w| {
+        // Each kind under its own heading, the first of it marked.
+        let first = |r: &HomeRow| i == 0 || std::mem::discriminant(&rows[i - 1]) != std::mem::discriminant(r);
+        let heading = |s: &str| dim(format!("{s:<10}"));
+        match &rows[i] {
+            HomeRow::Draft => Line::from(vec![heading("start"), coloured("+ ", ACCENT), bold("a new draft".to_string()), dim("   n, ctrl+t anywhere")]),
+            HomeRow::Library => Line::from(vec![heading(""), coloured("◇ ", ACCENT), Span::raw("a sample from the library"), dim("   6")]),
+            HomeRow::Closed(c) => {
+                let t = &app.closed[*c];
+                let from = t.path.as_ref().map(|p| p.display().to_string()).or(t.slug.as_ref().map(|s| format!("{s} on the server"))).unwrap_or_else(|| "a draft".into());
+                Line::from(vec![heading(if first(&rows[i]) { "closed" } else { "" }), dim("↺ "), Span::raw(pad(&t.name, 24)), dim(fit(&from, w.saturating_sub(38)))])
+            }
+            HomeRow::Flow(name) => {
+                let state = app.client.as_ref().and_then(|c| c.deployment(name)).map(super::status).unwrap_or_else(|| dim("saved".to_string()));
+                Line::from(vec![heading(if first(&rows[i]) { "server" } else { "" }), dim("· "), Span::raw(pad(name, 24)), state])
+            }
+        }
+    });
+}
+
+/// A tab's deployment as a dot: its state's colour, or a ring when it isn't deployed.
+fn live_dot(app: &App, t: &Tab) -> (&'static str, Color) {
+    match app.client.as_ref().and_then(|c| t.target().and_then(|s| c.deployment(&s))) {
+        Some(d) => ("●", super::status(d).style.fg.unwrap_or(DIM)),
+        None => ("○", DIM),
+    }
+}
+
+/// How a tab's text stands against what is live: "v3, live", "changed from v3", "new draft, not
+/// saved". A star when it is edited since it was saved.
+pub(super) fn against_live(c: Option<&Client>, t: &Tab) -> String {
+    let star = if t.dirty() { " *" } else { "" };
+    let live = c.and_then(|c| t.target().and_then(|s| c.deployment(&s)));
+    match live {
+        Some(d) => {
+            let v = super::version(d);
+            let same = t.check.plan.as_ref().is_ok_and(|p| d["unit"].as_str() == Some(p.unit.as_str()));
+            if same { format!("{v}, live{star}") } else { format!("changed from {v}{star}") }
+        }
+        None if t.draft && t.path.is_none() => "new draft, not saved".into(),
+        None => format!("not deployed{star}"),
+    }
+}
+
 /// The tab bar, each tab a button with its own ✕; on the right, Code / Both / Graph, and Runs.
 fn draw_tabs(f: &mut Frame, app: &App, area: Rect) {
-    let mut x = area.x;
+    // Home first, as a browser's: start or open another flow.
+    let home = Rect { x: area.x, width: 3, ..area };
+    let style = if app.home { Style::new().fg(Color::Black).bg(ACCENT).add_modifier(Modifier::BOLD) } else { Style::new().fg(Color::Gray).bg(Color::Indexed(236)) };
+    f.render_widget(Paragraph::new(Span::styled(" ⌂ ", style)), home);
+    app.hit(home, Click::Home);
+    let mut x = area.x + 4;
     let right = if app.tabs[app.tab].runs.is_some() { 39 } else { 30 };
     for (i, t) in app.tabs.iter().enumerate() {
-        let here = i == app.tab;
+        let here = i == app.tab && !app.home;
         let style = if here { Style::new().fg(Color::Black).bg(ACCENT).add_modifier(Modifier::BOLD) } else { Style::new().fg(Color::Gray).bg(Color::Indexed(236)) };
-        let name = format!(" {}{} ", fit(&t.name, 24), if t.dirty() { " ●" } else { "" });
-        let w = name.chars().count() as u16;
+        let name = format!(" {}{} ", fit(&t.name, 24), if t.dirty() { " *" } else { "" });
+        // Its deployment's state before its name: running green, paused or waiting amber.
+        let dot = live_dot(app, t);
+        let w = name.chars().count() as u16 + 2;
         if x + w + 3 > area.x + area.width.saturating_sub(right + 4) {
             f.render_widget(Paragraph::new(dim(format!(" +{}", app.tabs.len() - i))), Rect { x, width: 4, ..area });
             x += 5;
             break;
         }
         let rect = Rect { x, width: w, ..area };
-        f.render_widget(Paragraph::new(Span::styled(name, style)), rect);
+        f.render_widget(Paragraph::new(Line::from(vec![Span::styled(" ", style), Span::styled(dot.0, style.fg(if here { Color::Black } else { dot.1 })), Span::styled(name, style)])), rect);
         app.hit(rect, Click::Tab(i));
         let close = Rect { x: x + w, width: 2, ..area };
         f.render_widget(Paragraph::new(Span::styled("✕ ", if here { style } else { Style::new().fg(DIM).bg(Color::Indexed(236)) })), close);
@@ -292,7 +349,7 @@ fn draw_text(f: &mut Frame, app: &mut App, area: Rect) {
         lines.push(line);
     }
     let where_ = tab.path.as_ref().map(|p| p.display().to_string()).or(tab.slug.as_ref().map(|s| format!("{s} on the server"))).unwrap_or_else(|| "not saved".into());
-    let title = format!("{}  {}:{}", fit(&where_, 48), row + 1, col + 1);
+    let title = format!("{}  ·  {}  {}:{}", fit(&where_, 48), against_live(app.client.as_ref(), tab), row + 1, col + 1);
     let block = panel(&title, typing);
     let inner = block.inner(text);
     f.render_widget(Paragraph::new(lines).block(block), text);
@@ -301,9 +358,11 @@ fn draw_text(f: &mut Frame, app: &mut App, area: Rect) {
     app.hit(content, Click::Text { x: content.x, y: content.y, top, left });
     if let Some(q) = &app.find {
         let bar = Rect { y: inner.y + inner.height - 1, height: 1, ..inner };
-        let line = Line::from(vec![Span::styled(" Find ", Style::new().fg(Color::Black).bg(WARN)), Span::raw(format!(" {q}")), Span::styled(" ", Style::new().bg(Color::Gray)), dim("   enter next · shift+enter previous · esc close")]);
+        let room = bar.width.saturating_sub(8);
+        let (shown, col, from) = super::typed(q, app.line_back, room as usize);
+        let line = Line::from([vec![Span::styled(" Find ", Style::new().fg(Color::Black).bg(WARN)), Span::raw(" ")], shown, vec![dim("   enter next · shift+enter previous · esc close")]].concat());
         f.render_widget(Paragraph::new(line).style(Style::new().bg(Color::Indexed(236))), bar);
-        f.set_cursor_position((bar.x + 7 + q.chars().count() as u16, bar.y));
+        super::typed_at(f, app, bar.x + 7, bar.y, room, col, from);
     } else if typing {
         f.set_cursor_position(cursor);
     }
@@ -643,6 +702,30 @@ fn draw_run_code(f: &mut Frame, app: &App, area: Rect) {
     }
     let head = fit(&v.head, (area.width as usize).saturating_sub(step.len() + 12));
     f.render_widget(Paragraph::new(lines).scroll((scroll, 0)).block(panel(&format!("{step}  ·  {head}"), true)), area);
+    scrubber(f, app, area, runs.step, steps.len());
+}
+
+/// The run's steps as a line on the panel's bottom edge, each a cell to click: those played
+/// heavy, the one picked a dot, those to come light.
+fn scrubber(f: &mut Frame, app: &App, panel: Rect, step: usize, n: usize) {
+    let room = panel.width.saturating_sub(24) as usize;
+    if n < 2 || room < 8 || panel.height < 3 {
+        return;
+    }
+    let cells = n.min(room);
+    let at = |j: usize| j * n / cells;
+    let y = panel.y + panel.height - 1;
+    let x = panel.x + 2;
+    for j in 0..cells {
+        let s = at(j);
+        let here = s <= step && (j + 1 == cells || at(j + 1) > step);
+        let (mark, colour) = if here { ("●", WARN) } else if s < step { ("━", ACCENT) } else { ("─", DIM) };
+        let rect = Rect { x: x + j as u16, y, width: 1, height: 1 };
+        f.render_widget(Paragraph::new(coloured(mark, colour)), rect);
+        app.hit(rect, Click::Row(List::Timeline, s));
+    }
+    let keys = Rect { x: x + cells as u16 + 1, y, width: 14.min(panel.width.saturating_sub(cells as u16 + 4)), height: 1 };
+    f.render_widget(Paragraph::new(dim(" , . runs ")), keys);
 }
 
 /// A run's timeline: each statement as it ran, a bar for when, the step picked marked.
@@ -654,12 +737,16 @@ fn draw_timeline(f: &mut Frame, app: &App, inner: Rect) {
     if steps.is_empty() {
         return f.render_widget(Paragraph::new(dim(" It ran nothing this text says.")), inner);
     }
-    let head = if v.steps.is_empty() { " This run recorded no timing: its steps, in order.".to_string() } else { format!(" {} steps over {}", v.steps.len(), crate::workbench::flow::took(total / 1000.0)) };
+    let head = if v.steps.is_empty() { " This run recorded no timing: its steps, in order.".to_string() } else { format!(" {} steps over {}   ", v.steps.len(), crate::workbench::flow::took(total / 1000.0)) };
     let [head_area, rows] = Layout::vertical([Constraint::Length(1), Constraint::Min(1)]).areas(inner);
-    f.render_widget(Paragraph::new(dim(head)), head_area);
+    let mut said = super::flow::legend();
+    said.spans.insert(0, dim(head));
+    f.render_widget(Paragraph::new(said), head_area);
+    let kinds = crate::workbench::graph::Kind::by_line(&v.text.join("
+"));
     let name = |line: u32| format!("{line:>3} {}", v.text.get(line as usize - 1).map(|l| l.trim()).unwrap_or_default());
     list(f, app, rows, List::Timeline, steps.len(), Some(runs.step), true, |i, w| match v.steps.get(i) {
-        Some(s) => super::flow::bar(&name(s.line), s.start_us, s.end_us, total, &crate::workbench::flow::took((s.end_us - s.start_us) / 1000.0), w),
+        Some(s) => super::flow::bar(&name(s.line), s.start_us, s.end_us, total, &crate::workbench::flow::took((s.end_us - s.start_us) / 1000.0), kinds.get(&s.line).copied().unwrap_or(crate::workbench::graph::Kind::Compute), w),
         None => Line::from(Span::raw(fit(&name(steps[i]), w))),
     });
 }

@@ -14,6 +14,56 @@ use super::app::{App, List, Show, Tone};
 use super::client::{Client, Detail};
 use super::flow::{at_ms, failed, Row};
 
+/// What a statement does, as its colour says.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Kind {
+    /// It only computes.
+    Compute,
+    /// It reads or writes the flow's data: its state, a collection, a database.
+    Data,
+    /// It calls outside: a request, a file, a channel, another flow.
+    Outside,
+    /// It answers the request.
+    Answer,
+}
+
+impl Kind {
+    /// A leaf's kind, by its name.
+    pub(crate) fn of_leaf(leaf: &str) -> Kind {
+        if ["db_", "store_", "collection_"].iter().any(|p| leaf.starts_with(p)) {
+            Kind::Data
+        } else if ["http_", "file_", "channel_", "flow_"].iter().any(|p| leaf.starts_with(p)) || leaf == "egress" {
+            Kind::Outside
+        } else if leaf == "respond" {
+            Kind::Answer
+        } else {
+            Kind::Compute
+        }
+    }
+
+    /// A row's kind: a call outside if it makes one, else its data if it touches it, else its
+    /// answer, else it computes.
+    pub(crate) fn of_row(row: &graph::Row) -> Kind {
+        let kinds: Vec<Kind> = row.parts.iter().map(|p| Kind::of_leaf(&p.leaf)).collect();
+        [Kind::Outside, Kind::Data, Kind::Answer].into_iter().find(|k| kinds.contains(k)).unwrap_or(Kind::Compute)
+    }
+
+    /// Its tone in a pane.
+    pub(crate) fn tone(self) -> Tone {
+        match self {
+            Kind::Data => Tone::Data,
+            Kind::Outside => Tone::Outside,
+            Kind::Compute | Kind::Answer => Tone::Plain,
+        }
+    }
+
+    /// Each line's kind in a text, by its statement: what a run's timeline colours its bars by.
+    pub(crate) fn by_line(text: &str) -> std::collections::HashMap<u32, Kind> {
+        let Ok(g) = graph::graph(text, false) else { return Default::default() };
+        g.bands.iter().flat_map(|b| &b.rows).filter(|r| !r.head).flat_map(|r| (r.line..=r.last).map(move |n| (n, Kind::of_row(r)))).collect()
+    }
+}
+
 /// A graph as drawn: its rows in order, each with its band and its lanes.
 pub(crate) struct GraphView {
     /// What it was built from, to tell when to build it again.
@@ -99,7 +149,7 @@ impl GraphView {
             rows.push(Row::Field("Ran".into(), format!("from {} to {}", super::flow::took(s.start_us / 1000.0), super::flow::took(s.end_us / 1000.0)), Tone::Plain));
         }
         if !row.does.is_empty() {
-            rows.push(Row::Field("Is".into(), row.does.clone(), Tone::Plain));
+            rows.push(Row::Field("Is".into(), row.does.clone(), Kind::of_row(row).tone()));
         }
         rows
     }
@@ -159,7 +209,7 @@ impl GraphView {
         let mut rows = vec![text(Tone::Head, if row.head { band.title.clone() } else { format!("{}  ({})", row.name, band.title) })];
         rows.extend(code(&|_| vec![]));
         if !row.does.is_empty() {
-            rows.push(Row::Field("Is".into(), row.does.clone(), Tone::Plain));
+            rows.push(Row::Field("Is".into(), row.does.clone(), Kind::of_row(row).tone()));
         }
         let name = |j: usize| band.rows.get(j).map(|o| if o.head { "the trigger".to_string() } else { format!("{} (line {})", o.name, o.line) }).unwrap_or_default();
         let mut from: Vec<String> = row.from.iter().map(|&j| name(j)).collect();
@@ -175,7 +225,7 @@ impl GraphView {
             rows.push(text(Tone::Head, format!("Made of {} node{}", row.parts.len(), if row.parts.len() == 1 { "" } else { "s" })));
             for p in &row.parts {
                 let params: Vec<String> = p.params.iter().map(|(k, v)| format!("{k}={}", Value::String(v.clone()))).collect();
-                rows.push(text(Tone::Plain, format!("{}  {}  {}", p.name, p.leaf, params.join(" ")).trim_end().to_string()));
+                rows.push(text(Kind::of_leaf(&p.leaf).tone(), format!("{}  {}  {}", p.name, p.leaf, params.join(" ")).trim_end().to_string()));
                 rows.extend(p.inputs.iter().map(|(port, src)| text(Tone::Dim, format!("    {port} ← {src}"))));
             }
         }
@@ -217,7 +267,7 @@ impl App {
             Show::Both => "code and graph",
             Show::Graph => "the graph alone",
         };
-        self.say(format!("{what} (ctrl+b: {next})"));
+        self.tell(format!("{what} (ctrl+b: {next})"));
     }
 
     /// The tab's graph as it should be now: built (again) from its text as typed, or from the
@@ -298,7 +348,7 @@ impl App {
             return;
         }
         (self.graph_keys, self.typing, self.complete, self.find) = (true, false, None, None);
-        self.say("the graph has the keys: ↑↓ pick, marked in the text; enter edits it there, esc goes back to the text");
+        self.tell("the graph has the keys: ↑↓ pick, marked in the text; enter edits it there, esc goes back to the text");
     }
 
     /// The row picked in the graph beside the text, edited: the cursor at its mark, the text

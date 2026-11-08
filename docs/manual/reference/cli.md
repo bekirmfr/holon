@@ -191,16 +191,18 @@ holon editor [file.holon.ts | slug] [--server PORT|URL]
 
 The editor in this terminal, on one screen: a bar along the top with the server and what waits
 for you, the pages down the side (folded away below 110 columns), and the keys that work at the
-bottom. It reaches the server as `holon deploy` does, signed in as you.
+bottom. It reaches the server as `holon deploy` does, signed in as you. The sidebar ends with the
+server's health: what runs, what is paused, and whether the run logs' chains hold. When nothing
+else is said, the line above the keys says where you are (`server › Flows › refunds › Runs`).
 
 | Page | |
 |---|---|
-| 1 Overview | what is deployed, what waits for a person, the saved flows |
-| 2 Approvals | each thing waiting for you; enter reviews it: a saved or changed flow opens with what it may do, and you approve it by deploying it |
-| 3 Flows | every deployment and saved flow; enter opens its page, `e` its text |
-| 4 the open flow | its status (routes, what it may do and whether its grant covers it, the secrets it reads), its runs (enter shows one over its text, with each statement's value), its history, state and access (enter on a secret sets it: a value typed as dots, a `HOLON_SECRET_…` name the server reads, or a Vault field), and its graph; its status says what it holds in memory and on disk; `g`, `p`, `x` run, pause or stop it |
-| 5 Editor | flows' text in tabs, coloured and checked as you type, with its problems below and, beside it, what it may do (`+` marks what deploying would add) and what the name at the cursor is |
-| 6 Library | the samples; enter opens a copy |
+| 1 Overview | the page in a line, the last day's runs and failures, what is deployed (each with its version, its last day and its last run, and `v4 waits for you` when a version saved since waits), what waits for a person with what it would add (`+`), and what was done lately |
+| 2 Approvals | each thing waiting for you, and beside it the one picked, reviewed as its deploy would be, with what it may do once approved (`+` the new); enter approves it there, `→` reads the review, `]` `[` go to the next and the one before, `e` opens it in the editor |
+| 3 Flows | every deployment and saved flow; enter opens its page, `e` its text; `/` filters them, `f` goes round all, live, waiting and paused |
+| 4 the open flow | its status (routes, what it may do and whether its grant covers it, what a version waiting would add, the secrets it reads), its runs (enter shows one over its text, with each statement's value; `/` filters them, `i` explains one, `F` follows the newest, `o` writes them to `<slug>-runs.json` for [`holon verify`](#holon-verify); each run says where it is on record), its history, state and access (enter on a secret sets it: a value typed as dots, a `HOLON_SECRET_…` name the server reads, or a Vault field), and its graph; its status says what it holds in memory and on disk; `g`, `p`, `x` run, pause or stop it |
+| 5 Editor | flows' text in tabs, coloured and checked as you type, with its problems below and, beside it, what it may do (`+` marks what deploying would add) and what the name at the cursor is; each tab's dot is its deployment's state, and the text's title says how it stands against what is live (`v3, live`, `changed from v3 *`). `⌂ Home` starts a draft or opens a sample, a tab closed lately or a flow on the server |
+| 6 Library | the samples, with what each shows and its `holon new` line; enter opens a copy, `/` filters them |
 | 7 Admin | people (invite, role, email, disable, a reset link, remove), API keys, the folders and databases flows use (bound with the same flags as [`holon folder`](#holon-folder) and [`holon database`](#holon-database)), the secrets each flow reads, and the server: its policy, the grants held, the sign-in provider, sweeping the store and the folder texts. An admin's page |
 
 A flow's graph is its statements, one a row, under what starts them (a route, a clock, an
@@ -214,16 +216,22 @@ In the editor, keys type; `esc` leaves the text for the page keys and `i` comes 
 (or `ctrl+n`, or the tab bar's `+`) opens a draft in a new tab from anywhere (`n` on the
 editor's page keys): its first save asks for a file. `ctrl+s` saves (to its file, else on the
 server, not deployed), `ctrl+d` deploys, showing what it may do and what you approve by
-deploying it, `ctrl+r` shows a run over its text (what it played lit, the rest dimmed, each
+deploying it (`s` there saves it on the server instead, for whoever may approve it), `ctrl+r` shows a run over its text (what it played lit, the rest dimmed, each
 statement's value under it; `=` or the tab bar's Values hides the values for the code alone,
 and shows them again). Under it, as in the web editor, a panel: the runs on its left
 (`↑`/`↓` pick one), and on its right the run picked, in tabs (`tab` goes round them): Details
 (what it answered, did and called), Errors (when it failed: why, and on which line) and its
-Timeline, whose steps `←`/`→` go through, each marked in the code and the graph. `alt+f`
+Timeline, whose steps `←`/`→` (or a click on the line under the code) go through, each marked
+in the code and the graph, coloured by what it touches (its data purple, a call outside teal);
+`,` and `.` go to the run before and after. `alt+f`
 formats it, and `ctrl+pgup`/`pgdn` and `ctrl+w` move
 between and close tabs. `:` takes a command (`open <file|slug>`, `new [sample]`, `w [file]`,
 `deploy`, `flow <slug>`, `call`, `restore`, `sessions`, `run`, `pause` or `stop <slug>`,
-`server <port|url>`, `q`), `ctrl+p` finds anything by name, and `?` lists the keys.
+`server <port|url>`, `theme [light|dark]`, `q`), suggested as it is typed (`tab` takes the
+first), `ctrl+p` finds anything by name, and `?` lists the keys. Every line you type (`:`,
+`/`, find, the palette, the shell line, a dialog's field) edits where its cursor is: `←`/`→`,
+`home`/`end`, `del` and backspace, and a click puts the cursor there. On a light terminal,
+`:theme light` (or `HOLON_THEME=light`) makes its dark grounds light.
 
 The shell line at the bottom right (`!`, or `` ctrl+` `` from anywhere) runs a command in this
 terminal, in the folder its prompt shows. The prompt then stays, as the folder is now, for the

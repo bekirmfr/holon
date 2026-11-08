@@ -12,11 +12,19 @@ pub(crate) struct Client {
     pub(crate) api: Box<dyn Api>,
     /// Who it signs us in as, if it says.
     pub(crate) me: Option<String>,
+    /// And with what role (`admin`, `author`, …), if it says.
+    pub(crate) role: Option<String>,
     pub(crate) deployments: Vec<Value>,
     /// Saved flows (`GET /flows`): name, saved_by, saved_at_epoch_seconds.
     pub(crate) flows: Vec<Value>,
     /// What was done on the server lately, newest first (`GET /activity`): at, action, target, by.
     pub(crate) activity: Vec<Value>,
+    /// Each deployment's latest runs, oldest first, with the run count they were read at: read
+    /// again only when it has run since, for the lists' sparks and last runs.
+    pub(crate) recent: std::collections::HashMap<String, (u64, Vec<Value>)>,
+    /// Each deployment's run log, as last read with its runs: how many lines don't follow the
+    /// one before (changed outside holon), and its head.
+    pub(crate) chains: std::collections::HashMap<String, (usize, String)>,
     /// What the host warns of (`GET /admin/warnings`, storage.rs): says, todo. An admin's only.
     pub(crate) warnings: Vec<Value>,
 }
@@ -41,6 +49,10 @@ pub(crate) struct Detail {
     pub(crate) parked: Vec<Value>,
     /// What it holds in memory and on disk (`…/holds`, storage.rs); null from an older server.
     pub(crate) holds: Value,
+    /// Its run log's head (the hash of its newest line), and the seqs of the runs that don't
+    /// follow the one before them: what a run's record says of its chain.
+    pub(crate) head: String,
+    pub(crate) breaks: Vec<u64>,
 }
 
 /// One moment of a deployment's history: a run, or something done to it.
@@ -65,6 +77,8 @@ pub(crate) struct Point {
 
 /// How many runs a flow's pages show.
 pub(crate) const RUNS: u64 = 200;
+/// How many of its latest runs each deployment's row reads, for its spark and last run.
+pub(crate) const RECENT: u64 = 50;
 
 fn list(v: &Value, key: &str) -> Vec<Value> {
     v.get(key).and_then(Value::as_array).cloned().unwrap_or_default()
@@ -76,7 +90,7 @@ pub(crate) fn strings(v: &Value, key: &str) -> Vec<String> {
 
 impl Client {
     pub(crate) fn new(api: Box<dyn Api>) -> Client {
-        Client { api, me: None, deployments: vec![], flows: vec![], activity: vec![], warnings: vec![] }
+        Client { api, me: None, role: None, deployments: vec![], flows: vec![], activity: vec![], recent: Default::default(), chains: Default::default(), warnings: vec![] }
     }
 
     pub(crate) fn server(&self) -> String {
@@ -100,11 +114,28 @@ impl Client {
         let deployments = list(&self.get("/deployments")?, "deployments");
         let flows = self.get("/flows")?.as_array().cloned().unwrap_or_default();
         if self.me.is_none() {
-            self.me = self.get("/auth/me").ok().and_then(|m| m.get("name").and_then(Value::as_str).map(str::to_string));
+            let me = self.get("/auth/me").ok();
+            self.me = me.as_ref().and_then(|m| m.get("name").and_then(Value::as_str).map(str::to_string));
+            self.role = me.as_ref().and_then(|m| m.get("role").and_then(Value::as_str).map(str::to_string));
         }
         // Only an admin may read it all; for anyone else it stays empty.
         self.activity = self.get("/activity?limit=30").map(|a| list(&a, "entries")).unwrap_or_default();
         self.warnings = self.get("/admin/warnings").map(|w| list(&w, "warnings")).unwrap_or_default();
+        // The latest runs of what ran since it was last read; what is gone is forgotten.
+        self.recent.retain(|slug, _| deployments.iter().any(|d| d["slug"].as_str() == Some(slug.as_str())));
+        self.chains.retain(|slug, _| deployments.iter().any(|d| d["slug"].as_str() == Some(slug.as_str())));
+        for d in &deployments {
+            let (Some(slug), runs) = (d["slug"].as_str(), d["trigger_count"].as_u64().unwrap_or(0)) else { continue };
+            if self.recent.get(slug).is_some_and(|(n, _)| *n == runs) {
+                continue;
+            }
+            let log = if runs == 0 { None } else { self.get(&format!("/deployments/{}/log?limit={RECENT}", seg(slug))).ok() };
+            let read = log.as_ref().map(|l| list(l, "entries")).unwrap_or_default();
+            if let Some(l) = &log {
+                self.chains.insert(slug.to_string(), (l["breaks"].as_array().map_or(0, Vec::len), l["head"].as_str().unwrap_or_default().to_string()));
+            }
+            self.recent.insert(slug.to_string(), (runs, read));
+        }
         self.deployments = deployments;
         self.flows = flows;
         Ok(())
@@ -141,7 +172,10 @@ impl Client {
         let path = format!("/deployments/{}", seg(slug));
         let entry = self.deployment(slug).cloned().ok_or_else(|| format!("nothing named \"{slug}\" is deployed on {}", self.server()))?;
         let manifest = self.get(&format!("{path}/manifest"))?;
-        let runs = list(&self.get(&format!("{path}/log?limit={RUNS}"))?, "entries");
+        let log = self.get(&format!("{path}/log?limit={RUNS}"))?;
+        let runs = list(&log, "entries");
+        let head = log["head"].as_str().unwrap_or_default().to_string();
+        let breaks = log["breaks"].as_array().into_iter().flatten().filter_map(Value::as_u64).collect();
         let events = list(&self.get(&format!("{path}/events"))?, "events");
         let versions = list(&self.get(&format!("{path}/versions"))?, "versions");
         // What an older server, or a viewer, can't read stays empty.
@@ -150,7 +184,7 @@ impl Client {
         secrets["reads"] = json!(crate::secretcmd::reads(&manifest));
         let parked = if entry["waiting"].as_u64().unwrap_or_default() > 0 { self.get(&format!("{path}/runs")).map(|r| list(&r, "runs")).unwrap_or_default() } else { vec![] };
         let holds = self.get(&format!("{path}/holds")).unwrap_or(Value::Null);
-        Ok(Detail { slug: slug.to_string(), entry, manifest, runs, events, versions, grant, secrets, parked, holds })
+        Ok(Detail { slug: slug.to_string(), entry, manifest, runs, events, versions, grant, secrets, parked, holds, head, breaks })
     }
 
     /// Its text as deployed now, or as version `unit` was.
@@ -304,6 +338,37 @@ impl Client {
 }
 
 impl Detail {
+    /// Its runs as its Runs list shows them, newest first, by their place in `runs`: those with
+    /// `filter` in them (their seq, what came in, the route, the answer, the error).
+    pub(crate) fn shown_runs(&self, filter: &str) -> Vec<usize> {
+        let filter = filter.to_lowercase();
+        (0..self.runs.len())
+            .rev()
+            .filter(|&i| {
+                if filter.is_empty() {
+                    return true;
+                }
+                let r = &self.runs[i];
+                let said = format!("#{} {} {} {} {} {}", r["seq"], super::flow::came_in(r), r["route"].as_str().unwrap_or_default(), r["status"], r["error"].as_str().unwrap_or_default(), if super::flow::failed(r) { "failed" } else { "ok" });
+                said.to_lowercase().contains(&filter)
+            })
+            .collect()
+    }
+
+    /// A run's place on its log's chain: the hash of its line (the next run names it as the one
+    /// before; the newest's is the head), the one before it, and whether it follows that one.
+    pub(crate) fn on_record(&self, r: &Value) -> (Option<String>, String, bool) {
+        let seq = r["seq"].as_u64();
+        let at = self.runs.iter().position(|x| x["seq"].as_u64() == seq);
+        let hash = match at {
+            Some(i) if i + 1 < self.runs.len() => self.runs[i + 1]["prev"].as_str().map(str::to_string),
+            Some(_) if !self.head.is_empty() => Some(self.head.clone()),
+            _ => None,
+        };
+        let prev = r["prev"].as_str().unwrap_or_default().to_string();
+        (hash, prev, !seq.is_some_and(|s| self.breaks.contains(&s)))
+    }
+
     /// Its history, newest first: each event after (above) the run whose seq it names.
     pub(crate) fn moments(&self) -> Vec<Moment> {
         let mut items: Vec<(u64, u8, Moment)> = self.events.iter().enumerate().map(|(i, e)| (e["run_seq"].as_u64().unwrap_or_default(), 0, Moment::Event(i))).collect();
