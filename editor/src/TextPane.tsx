@@ -24,6 +24,7 @@ import {
 import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirror/commands";
 import { autocompletion, completionKeymap, type CompletionContext, type CompletionResult } from "@codemirror/autocomplete";
 import { linter, lintGutter } from "@codemirror/lint";
+import { useDark } from "./look";
 import { textColours, textCompletions, textFormatted, textHover, textMistakes, type TextRange } from "./holonText";
 
 /** A change that came from outside the pane (the canvas, a tab switch): not the person typing. */
@@ -207,7 +208,9 @@ function complete(ctx: CompletionContext): CompletionResult | null {
   };
 }
 
-const theme = EditorView.theme(
+/** The editor's look: the tokens do the colours; `dark` is CodeMirror's own (its defaults and
+ *  what extensions read), set as the editor is. */
+const theme = (dark: boolean) => EditorView.theme(
   {
     "&": { height: "100%", fontSize: "12.5px", background: "var(--bg)", color: "var(--ink)" },
     ".cm-scroller": { fontFamily: "var(--mono)", lineHeight: "1.55" },
@@ -222,7 +225,7 @@ const theme = EditorView.theme(
     ".cm-diagnostic-error": { borderLeft: "3px solid var(--bad)" },
     ".cm-lintRange-error": { backgroundImage: "none", textDecoration: "underline wavy var(--bad)", textUnderlineOffset: "3px" },
   },
-  { dark: true },
+  { dark },
 );
 
 /** Format the text as `holon fmt` writes it; false (and the text as it was) when it has a mistake. */
@@ -268,6 +271,8 @@ export function TextPane({
   const host = useRef<HTMLDivElement>(null);
   const view = useRef<EditorView | null>(null);
   const editable = useRef(new Compartment());
+  const look = useRef(new Compartment());
+  const dark = useDark();
   const handlers = useRef({ onEdit, onCursor });
   handlers.current = { onEdit, onCursor };
   const [formatError, setFormatError] = useState("");
@@ -299,7 +304,7 @@ export function TextPane({
             }
             if (u.selectionSet && u.view.hasFocus && !u.docChanged) handlers.current.onCursor(u.state.selection.main.head);
           }),
-          theme,
+          look.current.of(theme(dark)),
           EditorView.contentAttributes.of({ "aria-label": "the flow as text" }),
         ],
       }),
@@ -325,6 +330,10 @@ export function TextPane({
   useEffect(() => {
     view.current?.dispatch({ effects: editable.current.reconfigure(EditorState.readOnly.of(readOnly)) });
   }, [readOnly]);
+
+  useEffect(() => {
+    view.current?.dispatch({ effects: look.current.reconfigure(theme(dark)) });
+  }, [dark]);
 
   // After the text: a text replaced takes the ranges that go with it.
   const shownStep = useRef<string>("");

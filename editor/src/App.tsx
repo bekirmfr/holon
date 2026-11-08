@@ -68,6 +68,7 @@ import { FlowTabs, FlowToolbar, ProjectionPanel } from "./CanvasPanels";
 import { DeployedPage, FlowsPage, pageOf, routeOfPage, shownAt, type AppPage, type PageTab } from "./Pages";
 import { format, same, type Route } from "./routes";
 import { useHashRoute, type Navigate } from "./useHashRoute";
+import { applyTheme, storedTheme, useDark } from "./look";
 import { useCanvasHistory } from "./useCanvasHistory";
 import { useDeployments } from "./useDeployments";
 import { buildSample, samples, type Sample } from "./samples";
@@ -132,6 +133,7 @@ function Canvas({
 }) {
   const dialog = useDialog();
   const toast = useToast();
+  const dark = useDark();
   const [nodes, setNodes, onNodesChange] = useNodesState<PrimitiveNodeType>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
   const { screenToFlowPosition, getNode, getNodes, getEdges, getViewport, setViewport, fitView } =
@@ -894,6 +896,7 @@ function Canvas({
     >
       <div className="hl-canvas__flow">
         <ReactFlow<PrimitiveNodeType>
+          colorMode={dark ? "dark" : "light"}
           nodes={decoratedNodes}
           onNodeClick={view.onNodeClick}
           onEdgeMouseEnter={viewing ? (_, edge) => view.setHoveredWire(edge.id) : undefined}
@@ -1138,6 +1141,8 @@ function Editor({ me }: { me: Me }) {
       .then((raw) => {
         const p = readPrefs(raw);
         setPrefsState(p);
+        // The account's look wins over this browser's.
+        if (p.theme) applyTheme(p.theme);
         if (p.welcome !== false) {
           setPages((ps) => (ps.includes("welcome") ? ps : [...ps, "welcome"]));
           // Shown only if they are still where the editor started, at no address of their
@@ -1163,6 +1168,7 @@ function Editor({ me }: { me: Me }) {
   );
   const onPrefs = useCallback((p: Prefs) => {
     setPrefsState(p);
+    if (p.theme) applyTheme(p.theme);
     setPrefs(p).catch(() => undefined);
   }, []);
   const [catalog, setCatalog] = useState<WUnit[] | null>(null);
@@ -1224,7 +1230,13 @@ function Editor({ me }: { me: Me }) {
             </button>
           )}
         </nav>
-        <AccountMenu me={me} style={menuBtn(false)} onWelcome={() => openPage("welcome")} />
+        <AccountMenu
+          me={me}
+          style={menuBtn(false)}
+          onWelcome={() => openPage("welcome")}
+          theme={prefs.theme ?? storedTheme()}
+          onTheme={(theme) => onPrefs({ ...prefs, theme })}
+        />
       </header>
 
       {error ? (

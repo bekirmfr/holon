@@ -1,6 +1,9 @@
 // What the editor keeps for each person, on the server (holon-server's `/auth/prefs`), so it
-// follows them to any browser: whether the welcome tab opens on start, and their home tab's
-// panes. The home layout's operations are pure, so they are tested without a browser.
+// follows them to any browser: whether the welcome tab opens on start, their home tab's panes,
+// and how the editor looks. The home layout's operations are pure, so they are tested without a
+// browser.
+
+import { isTheme, type Theme } from "./look";
 
 /** The panes a home tab can hold. */
 export const PANE_KINDS = ["start", "recent", "deployments", "activity", "marketplace", "samples", "notes", "guide"] as const;
@@ -27,6 +30,8 @@ export type Prefs = {
   welcome?: boolean;
   /** The home tab's panes, in order (absent: the default). */
   home?: Pane[];
+  /** How the editor looks (look.ts; absent: as the system says). */
+  theme?: Theme;
 };
 
 export const defaultHome = (): Pane[] => [
@@ -66,5 +71,5 @@ export function readPrefs(raw: unknown): Prefs {
   const home = Array.isArray(r.home)
     ? (r.home as Pane[]).filter((p) => p && typeof p.id === "string" && (PANE_KINDS as readonly string[]).includes(p.kind)).map((p) => ({ ...p, wide: !!p.wide }))
     : undefined;
-  return { ...(typeof r.welcome === "boolean" ? { welcome: r.welcome } : {}), ...(home ? { home } : {}) };
+  return { ...(typeof r.welcome === "boolean" ? { welcome: r.welcome } : {}), ...(home ? { home } : {}), ...(isTheme(r.theme) ? { theme: r.theme } : {}) };
 }

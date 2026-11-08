@@ -44,6 +44,7 @@ import { compatible, type WPort } from "./holon";
 import { outputColor, typeColor, typeLabel } from "./theme";
 import { DND_MIME, FLOW_PREFIX } from "./Palette";
 import { useOptionalDialog } from "./Dialog";
+import { useDark } from "./look";
 import { History } from "./history";
 
 /** One level opened: the composite's name, its node in the level above (or in the flow, for the
@@ -268,6 +269,7 @@ function Level({
   onMessage: (m: string) => void;
 }) {
   const { fitView, screenToFlowPosition, getNode, getEdges } = useReactFlow();
+  const dark = useDark();
   // Fitted again once the overlay has grown: it first lays out in the node's small box.
   useEffect(() => {
     if (!grown) return;
@@ -350,6 +352,7 @@ function Level({
     <NodeActions.Provider value={actions}>
       <div style={{ position: "absolute", inset: 0 }} onDragOver={(e) => editable && e.preventDefault()} onDrop={onDrop}>
         <ReactFlow
+          colorMode={dark ? "dark" : "light"}
           nodes={frame.nodes}
           edges={frame.edges}
           onNodesChange={onNodesChange}

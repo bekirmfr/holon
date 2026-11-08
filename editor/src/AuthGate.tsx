@@ -8,6 +8,7 @@ import { useCallback, useEffect, useState, type CSSProperties, type FormEvent, t
 import { acceptInvite, changePassword, getAuthState, getSession, inviteFor, setUp, signInWith, signOutHere, whoAmI, type Role } from "./server";
 import { finishSignIn, signedIn, startSignIn, type AuthConfig } from "./signin";
 import { useDialog } from "./Dialog";
+import { THEMES, type Theme } from "./look";
 
 /** Who is signed in, for the editor. */
 export type Me = { name: string; role: Role };
@@ -219,7 +220,20 @@ function UserIcon() {
 
 /** The header's account pill, at its right: who is signed in; its menu opens the welcome and
  *  docs, changes the password, signs out. */
-export function AccountMenu({ me, style, onWelcome }: { me: Me; style: CSSProperties; onWelcome: () => void }) {
+export function AccountMenu({
+  me,
+  style,
+  onWelcome,
+  theme,
+  onTheme,
+}: {
+  me: Me;
+  style: CSSProperties;
+  onWelcome: () => void;
+  /** How the editor looks (look.ts), and changing it. */
+  theme: Theme;
+  onTheme: (t: Theme) => void;
+}) {
   const dialog = useDialog();
   const [open, setOpen] = useState(false);
   const change = async () => {
@@ -258,6 +272,20 @@ export function AccountMenu({ me, style, onWelcome }: { me: Me; style: CSSProper
           >
             welcome and docs
           </button>
+          <div role="group" aria-label="theme" style={{ display: "flex", gap: 4, alignItems: "center", padding: "2px 0" }}>
+            <span style={{ color: "var(--faint)", fontSize: 11, padding: "0 6px", flex: 1 }}>theme</span>
+            {THEMES.map((t) => (
+              <button
+                key={t}
+                role="menuitemradio"
+                aria-checked={theme === t}
+                style={{ ...style, ...(theme === t ? { color: "var(--accent-ink)", background: "var(--accent)" } : {}) }}
+                onClick={() => onTheme(t)}
+              >
+                {t}
+              </button>
+            ))}
+          </div>
           <button role="menuitem" style={{ ...style, textAlign: "left" }} onClick={change}>
             change password
           </button>

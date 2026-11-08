@@ -46,9 +46,125 @@
   --op: #89ddff;
   --num: #f78c6c;
   --bool: #ff9cac;
+  /* A wire's type is its colour (theme.ts). */
+  --type-number: #f2b441;
+  --type-boolean: #46c8d8;
+  --type-text: #5fd38a;
+  --type-list: #b48cf0;
+  --type-product: #e0729a;
+  --type-sum: #5c8ee0;
+  --type-effect: #ff6f6f;
+  --type-any: #8295b0;
+  --type-record: #e8955a;
+  --type-bytes: #c8b48c;
+  color-scheme: dark;
 
   --r: 6px;
   --mono: "IBM Plex Mono", ui-monospace, "SF Mono", "Cascadia Code", Menlo, Consolas, monospace;
+}
+
+/* Light: as chosen, or as the system says when the choice is auto (look.ts). */
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+    color-scheme: light;
+    --bg: #f5f6f8;
+    --surface: #ffffff;
+    --surface-2: #f8f9fb;
+    --row: #f1f3f6;
+    --sel: #e3e9ff;
+    --border: #e2e5ea;
+    --border-strong: #d2d7df;
+    --ink: #111827;
+    --body: #374151;
+    --muted: #5b6472;
+    --faint: #8a929e;
+    --faintest: #b4bac3;
+    --accent: #2449c7;
+    --accent-ink: #ffffff;
+    --ok: #15803d;
+    --warn: #b45309;
+    --warn-bg: #fef3c7;
+    --bad: #b91c1c;
+    --bad-ink: #991b1b;
+    --bad-bg: #fee2e2;
+    --ext: #0e7490;
+    --db: #7c3aed;
+    --add-bg: #e9fbf0;
+    --del-bg: #fef0f0;
+    --overlay: rgba(17, 24, 39, 0.35);
+    --com: #8a929e;
+    --kw: #6b21a8;
+    --noun: #9a3412;
+    --fn: #1d4ed8;
+    --param: #c2410c;
+    --member: #0e7490;
+    --prop: #4d7c0f;
+    --method: #a16207;
+    --str: #7a5212;
+    --op: #0369a1;
+    --num: #c2410c;
+    --bool: #be185d;
+    --type-number: #b45309;
+    --type-boolean: #0e7490;
+    --type-text: #15803d;
+    --type-list: #7c3aed;
+    --type-product: #be185d;
+    --type-sum: #1d4ed8;
+    --type-effect: #dc2626;
+    --type-any: #64748b;
+    --type-record: #c2410c;
+    --type-bytes: #8b6f3e;
+  }
+}
+:root[data-theme="light"] {
+  color-scheme: light;
+  --bg: #f5f6f8;
+  --surface: #ffffff;
+  --surface-2: #f8f9fb;
+  --row: #f1f3f6;
+  --sel: #e3e9ff;
+  --border: #e2e5ea;
+  --border-strong: #d2d7df;
+  --ink: #111827;
+  --body: #374151;
+  --muted: #5b6472;
+  --faint: #8a929e;
+  --faintest: #b4bac3;
+  --accent: #2449c7;
+  --accent-ink: #ffffff;
+  --ok: #15803d;
+  --warn: #b45309;
+  --warn-bg: #fef3c7;
+  --bad: #b91c1c;
+  --bad-ink: #991b1b;
+  --bad-bg: #fee2e2;
+  --ext: #0e7490;
+  --db: #7c3aed;
+  --add-bg: #e9fbf0;
+  --del-bg: #fef0f0;
+  --overlay: rgba(17, 24, 39, 0.35);
+  --com: #8a929e;
+  --kw: #6b21a8;
+  --noun: #9a3412;
+  --fn: #1d4ed8;
+  --param: #c2410c;
+  --member: #0e7490;
+  --prop: #4d7c0f;
+  --method: #a16207;
+  --str: #7a5212;
+  --op: #0369a1;
+  --num: #c2410c;
+  --bool: #be185d;
+  --type-number: #b45309;
+  --type-boolean: #0e7490;
+  --type-text: #15803d;
+  --type-list: #7c3aed;
+  --type-product: #be185d;
+  --type-sum: #1d4ed8;
+  --type-effect: #dc2626;
+  --type-any: #64748b;
+  --type-record: #c2410c;
+  --type-bytes: #8b6f3e;
 }
 
 * { box-sizing: border-box; }
