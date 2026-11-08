@@ -438,6 +438,7 @@ pub(crate) fn deployment_entry(slug: &str, dep: &Deployment) -> DeploymentEntry 
         attention: dep.attention.clone(),
         listen_error: dep.listen_error.clone(),
         waiting: dep.parked.len(),
+        version: dep.versions.last().map(|v| v.number),
     }
 }
 

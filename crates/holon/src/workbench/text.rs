@@ -323,26 +323,27 @@ impl Buffer {
         self.col = from + chars(text);
     }
 
-    /// `#` before each selected line, or the cursor's; taken off again when they all have one.
+    /// `//` before each selected line, or the cursor's (a flow is TypeScript); taken off again
+    /// when they all have one.
     pub(crate) fn toggle_comment(&mut self) {
         let (r0, r1) = self.selection().map(|((a, _), (b, ca))| (a, if ca == 0 && b > a { b - 1 } else { b })).unwrap_or((self.row, self.row));
         self.keep(false);
         let rows: Vec<usize> = (r0..=r1).filter(|r| !self.lines[*r].trim().is_empty()).collect();
-        let commented = !rows.is_empty() && rows.iter().all(|r| self.lines[*r].trim_start().starts_with('#'));
+        let commented = !rows.is_empty() && rows.iter().all(|r| self.lines[*r].trim_start().starts_with("//"));
         let indent = rows.iter().map(|r| self.lines[*r].chars().take_while(|c| *c == ' ').count()).min().unwrap_or(0);
         for r in rows {
             let l = &mut self.lines[r];
             if commented {
-                let i = l.find('#').unwrap();
-                let n = if l[i + 1..].starts_with(' ') { 2 } else { 1 };
+                let i = l.find("//").unwrap();
+                let n = if l[i + 2..].starts_with(' ') { 3 } else { 2 };
                 l.replace_range(i..i + n, "");
                 if r == self.row {
                     self.col = self.col.saturating_sub(n);
                 }
             } else {
-                l.insert_str(at(l, indent), "# ");
+                l.insert_str(at(l, indent), "// ");
                 if r == self.row {
-                    self.col += 2;
+                    self.col += 3;
                 }
             }
         }
@@ -616,7 +617,7 @@ mod tests {
         b.down(1);
         b.end();
         b.toggle_comment();
-        assert_eq!(b.text(), "# a = 1\n#   b = 2\n");
+        assert_eq!(b.text(), "// a = 1\n//   b = 2\n", "as TypeScript comments");
         b.toggle_comment();
         assert_eq!(b.text(), "a = 1\n  b = 2\n", "and back");
         b.mark(false);

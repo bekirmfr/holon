@@ -52,6 +52,38 @@ impl Check {
 }
 
 /// A tab's "View runs": the deployment's runs, and one of them over its version's text.
+/// A deploy staged, reviewed, ready to approve.
+pub(crate) struct Staging {
+    pub(crate) slug: String,
+    pub(crate) plan: agent::Plan,
+    pub(crate) staged: Staged,
+    pub(crate) text: String,
+    pub(crate) review: Review,
+    /// What it may do while it runs, as a line each, and which of them are new.
+    pub(crate) may: Vec<String>,
+    pub(crate) new: Vec<bool>,
+}
+
+/// The Approvals page's pick, beside its list: what approving it does.
+pub(crate) struct Approval {
+    /// Which wait it is: its flow, and what it waits for.
+    pub(crate) of: (String, String),
+    pub(crate) what: Pending,
+    /// The review has the keys (→ gives them, esc or ← takes them back): ↑ ↓ go through it.
+    pub(crate) keys: bool,
+}
+
+pub(crate) enum Pending {
+    /// A version to deploy, its review.
+    Deploy(Box<Staging>),
+    /// A flow paused or stopped: enter runs it again.
+    Start,
+    /// Something a person does elsewhere, said.
+    Said(String),
+    /// It can't be reviewed: why.
+    Failed(String),
+}
+
 pub(crate) struct Runs {
     pub(crate) slug: String,
     /// Newest first.
@@ -255,6 +287,10 @@ pub(crate) enum Tone {
     Bad,
     Added,
     Removed,
+    /// A flow's data (its state, collections, databases): purple.
+    Data,
+    /// A call outside it (a request, a file, a channel, another flow): teal.
+    Outside,
 }
 
 pub(crate) type Said = (Tone, String);
@@ -275,8 +311,9 @@ pub(crate) enum Modal {
     DryRun { slug: String, point: Point, code: bool, state: bool, review: Review, needs: Vec<String>, refused: bool },
     /// Sending a deployment a request, running an action, firing a clock.
     Call(CallForm),
-    /// A line typed in: a secret's value (shown as dots), a session's number.
-    Input { title: String, lines: Vec<String>, value: String, masked: bool, then: Ask },
+    /// A line typed in: a secret's value (shown as dots), a session's number; `at` is where
+    /// typing goes, a character's place in it.
+    Input { title: String, lines: Vec<String>, value: String, at: usize, masked: bool, then: Ask },
     /// Where a secret's value comes from: typed here, a `HOLON_SECRET_…` name the server reads,
     /// or a Vault field.
     SecretSource(super::flow::SecretChoice),
@@ -292,6 +329,28 @@ pub(crate) enum Then {
     Admin(super::admin::AdminDo),
 }
 
+/// A line typed outside a dialog of its own (those keep their own cursor): one at a time.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Field {
+    Prompt,
+    /// A page's `/` filter, by the page's place.
+    Filter(usize),
+    Shell,
+    Palette,
+    /// The editor's find bar.
+    Find,
+    /// The call dialog's field, by number.
+    Call(usize),
+}
+
+impl Modal {
+    /// A line to type in, the cursor at its end.
+    pub(crate) fn input(title: String, lines: Vec<String>, value: String, masked: bool, then: Ask) -> Modal {
+        let at = value.chars().count();
+        Modal::Input { title, lines, value, at, masked, then }
+    }
+}
+
 pub(crate) enum Ask {
     Secret(String, String),
     /// A secret read from somewhere else: `env:` or `vault:` and what is typed after it.
@@ -305,6 +364,8 @@ pub(crate) enum Ask {
 pub(crate) struct Note {
     pub(crate) text: String,
     pub(crate) error: bool,
+    /// Something to know, not something done: drawn dim, without a mark.
+    pub(crate) quiet: bool,
 }
 
 /// A list something on screen can pick from, by click or wheel.
@@ -334,6 +395,8 @@ pub(crate) enum List {
     Dialog,
     /// A review's hunks and folds: a click opens or closes one.
     Review,
+    /// The editor's Home tab.
+    Home,
 }
 
 /// What a place on screen does when clicked.
@@ -361,7 +424,63 @@ pub(crate) enum Click {
     RunPane(RunPane),
     /// Behind a dialog: a click there closes it, as esc does.
     Outside,
+    /// One of the flows page's chips: which flows it lists.
+    Shown(Shown),
+    /// The editor's Home tab.
+    Home,
+    /// An input dialog's line, its first character shown being the `from`th.
+    Input { from: usize },
 }
+
+/// A row of the editor's Home tab.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum HomeRow {
+    Draft,
+    Library,
+    /// A tab closed lately, by its place in `closed`.
+    Closed(usize),
+    /// A flow on the server.
+    Flow(String),
+}
+
+/// The `:` commands: each, what it takes, what it does (`:` suggests them as they are typed).
+pub(crate) const COMMANDS: [(&str, &str, &str); 20] = [
+    ("theme", "[light|dark]", "colours for a light terminal, or a dark one (HOLON_THEME=light)"),
+    ("open", "<file|slug>", "open a file, or a flow from the server, in a tab"),
+    ("new", "[sample]", "a new draft, or a copy of a sample"),
+    ("w", "[file]", "save the tab: to its file, to another, else on the server"),
+    ("deploy", "", "deploy the tab, approving what it asks"),
+    ("fmt", "", "format the tab, as holon fmt writes it"),
+    ("close", "", "close the tab"),
+    ("flow", "<slug>", "a deployed flow's page"),
+    ("call", "[slug]", "call a flow: a route, an action"),
+    ("restore", "[slug]", "go back to an earlier version or state"),
+    ("sessions", "[slug]", "a flow's sessions: each run of it since a deploy"),
+    ("run", "<slug>", "start a paused or stopped flow"),
+    ("pause", "<slug>", "pause a flow: its triggers wait"),
+    ("stop", "<slug>", "stop a flow"),
+    ("server", "<port|url>", "connect to another server"),
+    ("refresh", "", "read the server again"),
+    ("help", "", "the keys"),
+    ("q", "", "quit (asks when tabs are unsaved)"),
+    ("q!", "", "quit, unsaved tabs and all"),
+    ("!", "[command]", "the shell line, or a command run in this terminal"),
+];
+
+/// Which flows the flows page lists, as its chips pick (f goes round them).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum Shown {
+    #[default]
+    All,
+    /// Deployed and running.
+    Live,
+    /// Something of it waits for a person.
+    Waiting,
+    /// Paused or stopped.
+    Paused,
+}
+
+pub(crate) const SHOWN: [(Shown, &str); 4] = [(Shown::All, "all"), (Shown::Live, "live"), (Shown::Waiting, "waiting"), (Shown::Paused, "paused")];
 
 pub(crate) struct App {
     /// `--server`, to connect again.
@@ -389,6 +508,21 @@ pub(crate) struct App {
     pub(crate) complete: Option<Complete>,
     /// Find, while open: what is looked for.
     pub(crate) find: Option<String>,
+    /// Each list page's `/` filter: only the rows with it in them.
+    pub(crate) filter: [String; 7],
+    /// The `/` line has the keys: what is typed goes to the page's filter.
+    pub(crate) filtering: bool,
+    /// Which flows the flows page lists.
+    pub(crate) shown: Shown,
+    /// The Approvals page's pick, reviewed beside its list.
+    pub(crate) approval: Option<Approval>,
+    /// Drawn for a light terminal (`:theme`, or HOLON_THEME=light): dark grounds made light.
+    pub(crate) light: bool,
+    /// The editor's Home tab is shown (it always is with no tab open).
+    pub(crate) home: bool,
+    pub(crate) home_sel: usize,
+    /// The tabs closed lately, newest first, to open again from Home.
+    pub(crate) closed: Vec<Tab>,
     /// Find was opened on a selection, which is its query until something is typed.
     find_seeded: bool,
     /// What copy and cut took, for paste.
@@ -403,6 +537,10 @@ pub(crate) struct App {
     pub(crate) shell_history: Vec<String>,
     /// Where ↑ is in the history, while going back through it.
     pub(crate) shell_back: Option<usize>,
+    /// The line being typed (`line_on`): how many of its characters come after the cursor,
+    /// none as it opens.
+    pub(crate) line_back: usize,
+    pub(crate) line_on: Option<Field>,
     /// A command for the event loop to run, with the terminal handed to it.
     pub(crate) run: Option<String>,
     pub(crate) note: Option<Note>,
@@ -414,6 +552,9 @@ pub(crate) struct App {
     pub(crate) hits: RefCell<Vec<(Rect, Click)>>,
     /// The panel the keys that work now belong to, as last drawn: they show along its bottom.
     pub(crate) keys_at: RefCell<Option<Rect>>,
+    /// What each flow's version waiting for a person asks that it may not do now, by flow,
+    /// with when that version was saved: planned once a version, as the lists draw.
+    asks: RefCell<std::collections::HashMap<String, (u64, Vec<String>)>>,
     /// Where the mouse went down, while it is held: a drag in the text selects.
     pressed: Option<(Rect, Click)>,
     last_click: Option<Click>,
@@ -447,6 +588,14 @@ impl App {
             graph_keys: false,
             complete: None,
             find: None,
+            filter: Default::default(),
+            filtering: false,
+            shown: Shown::All,
+            approval: None,
+            light: std::env::var("HOLON_THEME").is_ok_and(|t| t.eq_ignore_ascii_case("light")),
+            home: false,
+            home_sel: 0,
+            closed: vec![],
             find_seeded: false,
             clipboard: String::new(),
             to_clipboard: None,
@@ -455,6 +604,8 @@ impl App {
             shell: None,
             shell_history: vec![],
             shell_back: None,
+            line_back: 0,
+            line_on: None,
             run: None,
             note: None,
             quit: false,
@@ -462,6 +613,7 @@ impl App {
             text_height: 20,
             hits: RefCell::new(vec![]),
             keys_at: RefCell::new(None),
+            asks: RefCell::new(Default::default()),
             pressed: None,
             last_click: None,
         }
@@ -484,11 +636,16 @@ impl App {
     }
 
     pub(crate) fn say(&mut self, text: impl Into<String>) {
-        self.note = Some(Note { text: text.into(), error: false });
+        self.note = Some(Note { text: text.into(), error: false, quiet: false });
+    }
+
+    /// A note that only informs (nothing changed, a tip): dim.
+    pub(crate) fn tell(&mut self, text: impl Into<String>) {
+        self.note = Some(Note { text: text.into(), error: false, quiet: true });
     }
 
     pub(crate) fn fail(&mut self, text: impl Into<String>) {
-        self.note = Some(Note { text: text.into(), error: true });
+        self.note = Some(Note { text: text.into(), error: true, quiet: false });
     }
 
     /// Read the server again: its lists, and the open flow's pages.
@@ -592,7 +749,48 @@ impl App {
         self.typing = true;
     }
 
+    /// The editor's Home tab: a draft, the library, the tabs closed lately, the server's flows.
+    pub(crate) fn home_rows(&self) -> Vec<HomeRow> {
+        let mut rows = vec![HomeRow::Draft, HomeRow::Library];
+        rows.extend((0..self.closed.len()).map(HomeRow::Closed));
+        let open = |n: &str| self.tabs.iter().any(|t| t.slug.as_deref() == Some(n));
+        rows.extend(self.all_flow_names().into_iter().filter(|n| !open(n)).map(HomeRow::Flow));
+        rows
+    }
+
+    /// Home is what the editor shows: no tab is open, or it was picked.
+    pub(crate) fn at_home(&self) -> bool {
+        self.tabs.is_empty() || self.home
+    }
+
+    pub(crate) fn go_home(&mut self) {
+        self.page = Page::Editor;
+        self.home = true;
+        self.typing = false;
+    }
+
+    fn home_key(&mut self, k: KeyEvent) {
+        let rows = self.home_rows();
+        match k.code {
+            KeyCode::Up | KeyCode::Char('k') => self.home_sel = self.home_sel.saturating_sub(1),
+            KeyCode::Down | KeyCode::Char('j') => self.home_sel = (self.home_sel + 1).min(rows.len().saturating_sub(1)),
+            KeyCode::Esc | KeyCode::Char(']') if !self.tabs.is_empty() => self.show_tab(self.tab),
+            KeyCode::Enter => match rows.get(self.home_sel).cloned() {
+                Some(HomeRow::Draft) => self.new_draft(),
+                Some(HomeRow::Library) => self.go(Page::Library),
+                Some(HomeRow::Closed(i)) if i < self.closed.len() => {
+                    let t = self.closed.remove(i);
+                    self.add_tab(t);
+                }
+                Some(HomeRow::Flow(name)) => self.edit(&name),
+                _ => {}
+            },
+            _ => {}
+        }
+    }
+
     pub(crate) fn show_tab(&mut self, i: usize) {
+        self.home = false;
         self.tab = i;
         self.graph_keys = false;
         self.page = Page::Editor;
@@ -610,15 +808,7 @@ impl App {
         let Some(c) = self.client.as_ref() else {
             return self.fail("no server to open it from");
         };
-        let deployed_at = c.deployment(name).and_then(|d| d["deployed_at_epoch_seconds"].as_u64());
-        let saved_at = c.saved(name).and_then(|f| f["saved_at_epoch_seconds"].as_u64());
-        let text = match (deployed_at, saved_at) {
-            (Some(d), Some(s)) if s > d => c.saved_text(name),
-            (Some(_), _) => c.text(name, None),
-            (None, Some(_)) => c.saved_text(name),
-            (None, None) => Err(format!("nothing named \"{name}\" is deployed or saved")),
-        };
-        match text {
+        match latest_text(c, name) {
             Ok(t) => {
                 let tab = Tab::new(name, &t, None, Some(name.to_string()));
                 self.add_tab(tab);
@@ -687,12 +877,105 @@ impl App {
     // ── what the pages list ─────────────────────────────────────────────────────────────────
 
     /// The flows page's rows: every deployment and saved flow, by name.
+    /// The flows page's rows: every flow, deployed or saved, by name; those its chip and its
+    /// filter let by.
     pub(crate) fn flow_names(&self) -> Vec<String> {
+        let mut names = self.all_flow_names();
+        let Some(c) = self.client.as_ref() else { return names };
+        let waits: Vec<String> = c.waiting().into_iter().map(|(slug, _)| slug).collect();
+        let filter = self.filter[index(Page::Flows)].to_lowercase();
+        names.retain(|n| {
+            let status = c.deployment(n).and_then(|d| d["status"].as_str());
+            let shown = match self.shown {
+                Shown::All => true,
+                Shown::Live => status == Some("running"),
+                Shown::Waiting => waits.contains(n),
+                Shown::Paused => matches!(status, Some("paused" | "stopped")),
+            };
+            shown && n.to_lowercase().contains(&filter)
+        });
+        names
+    }
+
+    /// Every flow on the server, deployed or saved, by name.
+    pub(crate) fn all_flow_names(&self) -> Vec<String> {
         let Some(c) = self.client.as_ref() else { return vec![] };
         let mut names: Vec<String> = c.deployments.iter().chain(&c.flows).filter_map(|v| v.get("slug").or(v.get("name")).and_then(Value::as_str).map(str::to_string)).collect();
         names.sort();
         names.dedup();
         names
+    }
+
+    /// The library's rows: the samples its filter lets by (a name, a title or what one shows).
+    pub(crate) fn library(&self) -> Vec<&'static samples::Sample> {
+        let filter = self.filter[index(Page::Library)].to_lowercase();
+        samples::samples().iter().filter(|s| [s.name, s.title].into_iter().chain(s.shows.iter().copied()).any(|t| t.to_lowercase().contains(&filter))).collect()
+    }
+
+    /// A list page's `/` filter, empty when it has none.
+    pub(crate) fn filter_of(&self, page: Page) -> &str {
+        &self.filter[index(page)]
+    }
+
+    /// What the version of `slug` that waits for a person asks that it may not do now, a line
+    /// each (`read its state "n"`): none when no version waits. Its saved text is planned once.
+    pub(crate) fn asks(&self, slug: &str) -> Vec<String> {
+        let Some(c) = self.client.as_ref() else { return vec![] };
+        let Some(saved_at) = c.saved(slug).and_then(|f| f["saved_at_epoch_seconds"].as_u64()) else { return vec![] };
+        let deployed_at = c.deployment(slug).and_then(|d| d["deployed_at_epoch_seconds"].as_u64());
+        if deployed_at.is_some_and(|d| d >= saved_at) {
+            return vec![];
+        }
+        if let Some((_, asks)) = self.asks.borrow().get(slug).filter(|(at, _)| *at == saved_at) {
+            return asks.clone();
+        }
+        let now: Vec<String> = deployed_at.and_then(|_| c.get(&format!("/deployments/{}/manifest", crate::mcp::seg(slug))).ok()).map(|m| client::strings(&m, "items")).unwrap_or_default();
+        let asks: Vec<String> = c.saved_text(slug).ok().and_then(|t| agent::plan(&t).ok()).map(|p| p.may.iter().filter(|m| !now.contains(m)).map(|m| agent::describe(m)).collect()).unwrap_or_default();
+        self.asks.borrow_mut().insert(slug.to_string(), (saved_at, asks.clone()));
+        asks
+    }
+
+    /// The pages `/` filters in place; elsewhere it finds anything.
+    pub(crate) fn filters(&self, page: Page) -> bool {
+        matches!(page, Page::Flows | Page::Library) || (page == Page::Flow && self.flow.section == super::flow::Section::Runs)
+    }
+
+    /// A key while the `/` line is open: it types the filter, the list narrowing as it does.
+    fn filter_key(&mut self, k: KeyEvent) {
+        let at = index(self.page);
+        match k.code {
+            KeyCode::Esc => {
+                self.filter[at].clear();
+                self.filtering = false;
+            }
+            KeyCode::Enter => self.filtering = false,
+            KeyCode::Backspace if self.filter[at].is_empty() => self.filtering = false,
+            KeyCode::Up if self.page == Page::Flow => return self.flow_move(-1),
+            KeyCode::Down if self.page == Page::Flow => return self.flow_move(1),
+            KeyCode::Up => return self.select(self.page, -1),
+            KeyCode::Down => return self.select(self.page, 1),
+            _ => {
+                if !edit_typed(&mut self.filter[at], &mut self.line_back, k) {
+                    return;
+                }
+            }
+        }
+        self.refilter();
+    }
+
+    /// The list a filter narrows goes back to its first row.
+    fn refilter(&mut self) {
+        let at = index(self.page);
+        self.sel[at] = 0;
+        if self.page == Page::Flow {
+            self.flow_pick(List::Section, 0);
+        }
+    }
+
+    /// The flows page's next chip.
+    pub(crate) fn show_flows(&mut self, s: Shown) {
+        self.shown = s;
+        self.sel[index(Page::Flows)] = 0;
     }
 
     pub(crate) fn waiting(&self) -> Vec<(String, String)> {
@@ -704,7 +987,7 @@ impl App {
             Page::Overview => self.client.as_ref().map_or(0, |c| c.deployments.len()),
             Page::Approvals => self.waiting().len(),
             Page::Flows => self.flow_names().len(),
-            Page::Library => samples::samples().len(),
+            Page::Library => self.library().len(),
             Page::Flow | Page::Editor | Page::Admin => 0,
         }
     }
@@ -718,13 +1001,13 @@ impl App {
         if to.is_none() && tab.path.is_none() && tab.draft {
             let name = agent::plan(&tab.buf.text()).map(|p| p.name).unwrap_or_else(|_| "flow".into());
             let here = std::env::current_dir().map(|d| d.display().to_string()).unwrap_or_default();
-            self.modal = Some(Modal::Input {
-                title: format!("Save {} as", tab.name),
-                lines: vec![format!("A file, from {here} (~ is your home folder):"), "Enter writes it there; esc leaves it a draft.".into()],
-                value: format!("{name}.holon.ts"),
-                masked: false,
-                then: Ask::SaveAs(i),
-            });
+            self.modal = Some(Modal::input(
+                format!("Save {} as", tab.name),
+                vec![format!("A file, from {here} (~ is your home folder):"), "Enter writes it there; esc leaves it a draft.".into()],
+                format!("{name}.holon.ts"),
+                false,
+                Ask::SaveAs(i),
+            ));
             return;
         }
         if let Some(p) = to {
@@ -777,19 +1060,26 @@ impl App {
         let Some(c) = self.client.as_ref() else {
             return self.fail(format!("no server to deploy to: {}", self.offline.clone().unwrap_or_else(|| "start holon serve".into())));
         };
-        let now = c.deployment(&slug).and_then(|_| c.text(&slug, None).ok());
-        match c.stage(&plan, &slug) {
-            Ok(staged) => {
-                let mut review = deploy_review(&slug, &plan, &staged, now.as_deref(), &text, &c.server());
-                // Renamed: it deploys under its new name, and what it was deployed as stays.
-                if let Some(before) = before.filter(|_| now.is_none()) {
-                    review.top.push((Tone::Warn, format!("Its text names it \"{slug}\" now: it deploys as a new flow. \"{before}\", which this tab deployed before, stays as it is.")));
+        match staging(c, slug, plan, text, before) {
+            Ok(s) => self.modal = Some(Modal::Approve { slug: s.slug, plan: Box::new(s.plan), staged: s.staged, text: s.text, tab: i, review: s.review }),
+            Err(e) => self.fail(e),
+        }
+    }
+
+    /// Save what the review shows on the server without deploying it: it waits in Approvals for
+    /// whoever may approve it.
+    fn propose(&mut self) {
+        let Some(Modal::Approve { slug, plan, text, tab, .. }) = self.modal.take() else { return };
+        let Some(c) = self.client.as_ref() else { return };
+        match c.save(&slug, &plan, &text) {
+            Ok(()) => {
+                if let Some(t) = self.tabs.get_mut(tab).filter(|t| t.path.is_none()) {
+                    t.kept = text;
+                    t.slug = Some(slug.clone());
+                    t.name = slug.clone();
                 }
-                // Another flow listening on its port: one of the two can't.
-                if let Some(other) = plan.port.and_then(|port| c.deployments.iter().find(|d| d["slug"] != slug.as_str() && d["port"].as_u64() == Some(port.into()))) {
-                    review.top.push((Tone::Bad, format!("Port {} is \"{}\"'s: this one can't listen there while it runs (change the port line, or stop it).", plan.port.unwrap_or_default(), other["slug"].as_str().unwrap_or_default())));
-                }
-                self.modal = Some(Modal::Approve { slug, plan: Box::new(plan), staged, text, tab: i, review });
+                self.refresh();
+                self.say(format!("saved \"{slug}\", not deployed: it waits in Approvals"));
             }
             Err(e) => self.fail(e),
         }
@@ -798,11 +1088,16 @@ impl App {
     /// Deploy what the review shows, approving it as us.
     fn approve(&mut self) {
         let Some(Modal::Approve { slug, plan, staged, text, tab, .. }) = self.modal.take() else { return };
+        self.commit_deploy(slug, plan, staged, text, Some(tab));
+    }
+
+    /// Deploy what was staged, approving it as us; the tab it was deployed from, if any, keeps it.
+    fn commit_deploy(&mut self, slug: String, plan: Box<agent::Plan>, staged: Staged, text: String, tab: Option<usize>) {
         let Some(c) = self.client.as_ref() else { return };
         let needs = staged.needs.len();
         match c.commit(&plan, staged, &text) {
             Ok(()) => {
-                if let Some(t) = self.tabs.get_mut(tab) {
+                if let Some(t) = tab.and_then(|i| self.tabs.get_mut(i)) {
                     t.slug = Some(slug.clone());
                     t.deployed = Some(plan.may.clone());
                     if t.path.is_none() {
@@ -837,7 +1132,15 @@ impl App {
 
     fn close_tab(&mut self, i: usize) {
         if i < self.tabs.len() {
-            self.tabs.remove(i);
+            // Kept a while, to open again from Home, as it was.
+            let mut t = self.tabs.remove(i);
+            t.runs = None;
+            t.graph = None;
+            // The same file, or the same flow from the server, kept once.
+            let same = |c: &Tab| if c.path.is_some() { c.path == t.path } else { c.slug.is_some() && c.slug == t.slug };
+            self.closed.retain(|c| !same(c));
+            self.closed.insert(0, t);
+            self.closed.truncate(8);
             self.tab = self.tab.min(self.tabs.len().saturating_sub(1));
             if self.tabs.is_empty() {
                 self.typing = false;
@@ -905,7 +1208,7 @@ impl App {
     /// Show a run's values under its lines, or hide them for the code alone; for every tab.
     pub(crate) fn toggle_values(&mut self) {
         self.values = !self.values;
-        self.say(if self.values { "values shown under their lines: = hides them" } else { "values hidden, the code alone: = shows them" });
+        self.tell(if self.values { "values shown under their lines: = hides them" } else { "values hidden, the code alone: = shows them" });
     }
 
     /// Open a run in the editor, step by step over its version's text.
@@ -924,6 +1227,27 @@ impl App {
             self.reload_run(i);
         }
         self.typing = false;
+    }
+
+    /// What the `:` line may become, as it is typed: the commands it starts, else the flows
+    /// the command's argument starts; each the whole line, and what it does.
+    pub(crate) fn suggestions(&self) -> Vec<(String, &'static str)> {
+        let Some(p) = self.prompt.as_deref() else { return vec![] };
+        match p.split_once(' ') {
+            None => COMMANDS.iter().filter(|(c, _, _)| c.starts_with(p)).map(|(c, args, what)| (if args.is_empty() { c.to_string() } else { format!("{c} ") }, *what)).take(9).collect(),
+            Some((cmd, arg)) => {
+                let Some((_, args, what)) = COMMANDS.iter().find(|(c, ..)| *c == cmd) else { return vec![] };
+                let names: Vec<String> = if args.contains("slug") {
+                    self.all_flow_names()
+                } else if args.contains("sample") {
+                    samples::samples().iter().map(|s| s.name.to_string()).collect()
+                } else {
+                    return vec![];
+                };
+                let arg = arg.trim_start();
+                names.into_iter().filter(|n| n.starts_with(arg) && n != arg).map(|n| (format!("{cmd} {n}"), *what)).take(9).collect()
+            }
+        }
     }
 
     pub(crate) fn run_command(&mut self, line: &str) {
@@ -1011,19 +1335,95 @@ impl App {
             }
             ("r" | "refresh", _) => self.refresh(),
             ("help" | "h", _) => self.modal = Some(Modal::Help { scroll: 0 }),
+            ("theme", a) => {
+                self.light = match a {
+                    "light" => true,
+                    "dark" => false,
+                    _ => !self.light,
+                };
+                self.tell(if self.light { "a light theme: :theme dark goes back" } else { "a dark theme: :theme light for a light terminal" });
+            }
             _ => self.fail(format!(":{line}? (:help lists the commands; ctrl+p finds anything)")),
         }
     }
 
     // ── keys ───────────────────────────────────────────────────────────────────────────────
 
+    /// The line being typed now, the one keys go to.
+    pub(crate) fn field(&self) -> Option<Field> {
+        match &self.modal {
+            Some(Modal::Palette { .. }) => Some(Field::Palette),
+            Some(Modal::Call(form)) => Some(Field::Call(form.field)),
+            Some(_) => None,
+            None if self.prompt.is_some() => Some(Field::Prompt),
+            None if self.filtering => Some(Field::Filter(index(self.page))),
+            None if self.shell.is_some() => Some(Field::Shell),
+            None if self.find.is_some() && self.page == Page::Editor => Some(Field::Find),
+            None => None,
+        }
+    }
+
+    /// What the line being typed holds.
+    pub(crate) fn field_text(&self) -> Option<&str> {
+        Some(match self.field()? {
+            Field::Prompt => self.prompt.as_deref()?,
+            Field::Filter(i) => &self.filter[i],
+            Field::Shell => self.shell.as_deref()?,
+            Field::Find => self.find.as_deref()?,
+            Field::Palette | Field::Call(_) => match &self.modal {
+                Some(Modal::Palette { query, .. }) => query,
+                Some(Modal::Call(form)) if form.field > 0 => form.field_value(form.field),
+                _ => return None,
+            },
+        })
+    }
+
+    /// A line opened, or another one gone to: its cursor at the end.
+    fn field_moved(&mut self) {
+        let now = self.field();
+        if now != self.line_on {
+            self.line_on = now;
+            self.line_back = 0;
+        }
+    }
+
+    /// Text pasted: into the line being typed, at its cursor (its first line), else the text.
     pub(crate) fn paste(&mut self, text: &str) {
+        self.field_moved();
+        let first = text.lines().next().unwrap_or("");
+        let into = |s: &mut String, back: &mut usize, t: &str| {
+            for c in t.chars() {
+                edit_typed(s, back, KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+            }
+        };
         if let Some(p) = self.prompt.as_mut().or(self.shell.as_mut()) {
-            p.push_str(text.lines().next().unwrap_or(""));
-        } else if let Some(Modal::Input { value, .. } | Modal::Palette { query: value, .. }) = self.modal.as_mut() {
-            value.push_str(text.lines().next().unwrap_or(""));
+            into(p, &mut self.line_back, first);
+        } else if self.modal.is_none() && self.filtering {
+            into(&mut self.filter[index(self.page)], &mut self.line_back, first);
+            self.refilter();
+        } else if let Some(Modal::Input { value, at, .. }) = self.modal.as_mut() {
+            for c in first.chars() {
+                edit_line(value, at, KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+            }
+        } else if let Some(Modal::Palette { query, sel }) = self.modal.as_mut() {
+            into(query, &mut self.line_back, first);
+            *sel = 0;
         } else if let Some(Modal::Call(form)) = self.modal.as_mut() {
-            form.paste(text);
+            if form.field == 0 && form.fields() > 0 {
+                form.field = 1;
+                self.line_back = 0;
+                self.line_on = Some(Field::Call(1));
+            }
+            if let Some(s) = form.focused() {
+                into(s, &mut self.line_back, &text.replace(['\r', '\n'], " "));
+            }
+        } else if self.modal.is_none() && self.page == Page::Editor && let Some(q) = self.find.as_mut() {
+            into(q, &mut self.line_back, first);
+            self.find_seeded = false;
+            let q = q.clone();
+            if let Some(tab) = self.tabs.get_mut(self.tab) {
+                tab.buf.find(&q, false);
+            }
         } else if self.page == Page::Editor && self.typing && let Some(tab) = self.tabs.get_mut(self.tab) {
             tab.buf.insert_str(text);
             tab.edited = Some(Instant::now());
@@ -1031,6 +1431,12 @@ impl App {
     }
 
     pub(crate) fn key(&mut self, k: KeyEvent) {
+        self.field_moved();
+        self.key_in(k);
+        self.field_moved();
+    }
+
+    fn key_in(&mut self, k: KeyEvent) {
         // AltGr arrives as ctrl+alt: a character typed, not a shortcut.
         let ctrl = k.modifiers.contains(KeyModifiers::CONTROL) && !k.modifiers.contains(KeyModifiers::ALT);
         let in_text = self.page == Page::Editor && self.typing && self.modal.is_none() && self.prompt.is_none();
@@ -1048,6 +1454,9 @@ impl App {
         if self.prompt.is_some() {
             return self.prompt_key(k);
         }
+        if self.filtering {
+            return self.filter_key(k);
+        }
         if self.shell.is_some() {
             return self.shell_key(k);
         }
@@ -1063,8 +1472,12 @@ impl App {
             self.modal = Some(Modal::Palette { query: String::new(), sel: 0 });
             return;
         }
-        if self.page == Page::Editor && !self.tabs.is_empty() {
+        if self.page == Page::Editor && !self.at_home() {
             if ctrl && self.editor_shortcut(k) {
+                return;
+            }
+            // A ctrl letter the editor doesn't take is no page key: ctrl+f mustn't format.
+            if ctrl && !self.typing && matches!(k.code, KeyCode::Char(_)) {
                 return;
             }
             if k.modifiers.contains(KeyModifiers::ALT) && !k.modifiers.contains(KeyModifiers::CONTROL) {
@@ -1097,7 +1510,9 @@ impl App {
             KeyCode::PageUp => self.show_tab((i + self.tabs.len() - 1) % self.tabs.len()),
             KeyCode::Char('q') => self.ask_quit(),
             KeyCode::Char('g') => self.prompt = Some(String::new()),
-            KeyCode::Char('f') if typing => {
+            // Find works from the page keys too: it goes back into the text.
+            KeyCode::Char('f') if typing || (self.tabs[i].runs.is_none() && self.show != Show::Graph) => {
+                self.typing = true;
                 self.complete = None;
                 let seed = self.tabs[i].buf.selected().filter(|s| !s.contains('\n')).unwrap_or_default();
                 self.find_seeded = !seed.is_empty();
@@ -1245,17 +1660,22 @@ impl App {
             }
             KeyCode::Enter | KeyCode::Down | KeyCode::F(3) => b.find(q, k.modifiers.contains(KeyModifiers::SHIFT)),
             KeyCode::Up => b.find(q, true),
-            KeyCode::Backspace => {
-                q.pop();
+            KeyCode::Backspace | KeyCode::Delete => {
+                edit_typed(q, &mut self.line_back, k);
                 b.anchor = None;
                 q.is_empty() || b.find(q, false)
             }
-            KeyCode::Char(c) => {
+            KeyCode::Left | KeyCode::Right | KeyCode::Home | KeyCode::End => {
+                self.find_seeded = false;
+                edit_typed(q, &mut self.line_back, k)
+            }
+            KeyCode::Char(_) => {
                 // A query taken from the selection is replaced by what is typed first.
                 if std::mem::take(&mut self.find_seeded) {
                     q.clear();
+                    self.line_back = 0;
                 }
-                q.push(c);
+                edit_typed(q, &mut self.line_back, k);
                 // From where this match starts, so the match grows as the word is typed.
                 if let Some(((r, col), _)) = b.selection() {
                     (b.row, b.col) = (r, col);
@@ -1303,6 +1723,15 @@ impl App {
             KeyCode::Char('!') => return self.open_shell(),
             KeyCode::Char('?') => return self.modal = Some(Modal::Help { scroll: 0 }),
             KeyCode::Char('q') => return self.ask_quit(),
+            KeyCode::Char('/') if self.filters(page) => return self.filtering = true,
+            KeyCode::Esc if self.filters(page) && !self.filter[index(page)].is_empty() => {
+                self.filter[index(page)].clear();
+                return self.refilter();
+            }
+            KeyCode::Char('f') if page == Page::Flows => {
+                let next = SHOWN.iter().position(|(s, _)| *s == self.shown).map_or(0, |i| (i + 1) % SHOWN.len());
+                return self.show_flows(SHOWN[next].0);
+            }
             KeyCode::Char('/') if page != Page::Flow => return self.modal = Some(Modal::Palette { query: String::new(), sel: 0 }),
             KeyCode::Char('r') if page != Page::Editor => {
                 if self.client.is_none() {
@@ -1310,7 +1739,7 @@ impl App {
                 } else {
                     self.refresh();
                 }
-                return self.say("read the server again");
+                return self.tell("read the server again");
             }
             _ => {}
         }
@@ -1325,6 +1754,9 @@ impl App {
                 return self.new_draft();
             }
             return self.editor_key(k);
+        }
+        if page == Page::Approvals && self.approval_key(k) {
+            return;
         }
         match k.code {
             KeyCode::Up | KeyCode::Char('k') => return self.select(page, -1),
@@ -1363,7 +1795,7 @@ impl App {
             }
             Page::Library => {
                 if k.code == KeyCode::Enter
-                    && let Some(s) = samples::samples().get(sel)
+                    && let Some(s) = self.library().get(sel)
                 {
                     self.open_sample(s.name);
                 }
@@ -1380,12 +1812,91 @@ impl App {
         if to == Page::Admin {
             self.admin_load();
         }
-        if to == Page::Editor && !self.tabs.is_empty() && self.tabs[self.tab].runs.is_none() && self.show != Show::Graph {
+        if to == Page::Editor && !self.at_home() && self.tabs[self.tab].runs.is_none() && self.show != Show::Graph {
             self.typing = true;
         }
     }
 
     /// Do what a deployment waits on a person for: start it, or review and deploy its text.
+    /// Review the Approvals page's pick, once for each pick: staged as a deploy would be.
+    pub(crate) fn sync_approval(&mut self) {
+        let waiting = self.waiting();
+        let Some(of) = waiting.get(self.sel[index(Page::Approvals)].min(waiting.len().saturating_sub(1))).cloned() else {
+            self.approval = None;
+            return;
+        };
+        if self.approval.as_ref().is_some_and(|a| a.of == of) {
+            return;
+        }
+        let Some(c) = self.client.as_ref() else { return };
+        let (slug, wait) = (&of.0, &of.1);
+        let what = if wait.starts_with("to start it") {
+            Pending::Start
+        } else if wait.starts_with("to free its port") {
+            Pending::Said(format!("Its port is taken: {wait}. Stop what holds it, then deploy it again."))
+        } else {
+            let staged = latest_text(c, slug).and_then(|text| {
+                let plan = agent::plan(&text)?;
+                staging(c, slug.clone(), plan, text, None)
+            });
+            match staged {
+                Ok(s) => Pending::Deploy(Box::new(s)),
+                Err(e) => Pending::Failed(e),
+            }
+        };
+        self.approval = Some(Approval { of, what, keys: false });
+    }
+
+    /// A key on the Approvals page that its review takes: true when taken.
+    fn approval_key(&mut self, k: KeyEvent) -> bool {
+        let n = self.waiting().len();
+        let at = index(Page::Approvals);
+        let Some(a) = self.approval.as_mut() else { return false };
+        if a.keys {
+            if let Pending::Deploy(s) = &mut a.what
+                && s.review.key(k)
+            {
+                return true;
+            }
+            match k.code {
+                KeyCode::Esc | KeyCode::Left => a.keys = false,
+                KeyCode::Enter => self.approve_picked(),
+                _ => return false,
+            }
+            return true;
+        }
+        match k.code {
+            KeyCode::Right | KeyCode::Tab if matches!(a.what, Pending::Deploy(_)) => a.keys = true,
+            KeyCode::Char(']') if n > 0 => self.sel[at] = (self.sel[at] + 1) % n,
+            KeyCode::Char('[') if n > 0 => self.sel[at] = (self.sel[at] + n - 1) % n,
+            KeyCode::Enter => self.approve_picked(),
+            KeyCode::Char('e') => {
+                let slug = a.of.0.clone();
+                self.edit(&slug);
+            }
+            _ => return false,
+        }
+        true
+    }
+
+    /// Do what the Approvals page's pick waits for: deploy it, approving what it asks, or run it.
+    fn approve_picked(&mut self) {
+        // What a person does elsewhere stays picked, said again.
+        if let Some(Approval { what: Pending::Said(why) | Pending::Failed(why), .. }) = &self.approval {
+            let why = why.clone();
+            return self.fail(why);
+        }
+        let Some(a) = self.approval.take() else { return };
+        match a.what {
+            Pending::Deploy(s) => {
+                let Staging { slug, plan, staged, text, .. } = *s;
+                self.commit_deploy(slug, Box::new(plan), staged, text, None);
+            }
+            Pending::Start => self.resolve(&a.of.0, &a.of.1),
+            Pending::Said(_) | Pending::Failed(_) => {}
+        }
+    }
+
     fn resolve(&mut self, slug: &str, wait: &str) {
         if wait.starts_with("to start it") {
             self.modal = Some(Modal::Confirm { title: format!("Run {slug}?"), lines: vec![format!("\"{slug}\" is {}: run it again, as you.", self.status_of(slug))], then: Then::Lifecycle(slug.to_string(), "run", None) });
@@ -1405,6 +1916,9 @@ impl App {
     }
 
     fn editor_key(&mut self, k: KeyEvent) {
+        if self.at_home() {
+            return self.home_key(k);
+        }
         let Some(i) = (!self.tabs.is_empty()).then_some(self.tab) else { return };
         if let Some(runs) = self.tabs.get_mut(i).and_then(|t| t.runs.as_mut()) {
             match k.code {
@@ -1418,6 +1932,15 @@ impl App {
                 }
                 KeyCode::Down | KeyCode::Char('j') => {
                     runs.sel = (runs.sel + 1).min(runs.entries.len().saturating_sub(1));
+                    self.reload_run(i);
+                }
+                // The run before (older) and after (newer), as a player's , and .
+                KeyCode::Char(',') => {
+                    runs.sel = (runs.sel + 1).min(runs.entries.len().saturating_sub(1));
+                    self.reload_run(i);
+                }
+                KeyCode::Char('.') => {
+                    runs.sel = runs.sel.saturating_sub(1);
                     self.reload_run(i);
                 }
                 KeyCode::Char('n') | KeyCode::Enter | KeyCode::Right | KeyCode::Char('l') => runs.go(1),
@@ -1468,13 +1991,17 @@ impl App {
                 let line = self.prompt.take().unwrap_or_default();
                 self.run_command(&line);
             }
-            KeyCode::Backspace => {
-                if p.pop().is_none() {
-                    self.prompt = None;
+            KeyCode::Backspace if p.is_empty() => self.prompt = None,
+            // The first suggestion, taken.
+            KeyCode::Tab => {
+                if let Some((line, _)) = self.suggestions().into_iter().next() {
+                    self.prompt = Some(line);
+                    self.line_back = 0;
                 }
             }
-            KeyCode::Char(c) => p.push(c),
-            _ => {}
+            _ => {
+                edit_typed(p, &mut self.line_back, k);
+            }
         }
     }
 
@@ -1485,9 +2012,10 @@ impl App {
             Modal::Approve { review, .. } => match k.code {
                 _ if review.key(k) => {}
                 KeyCode::Enter | KeyCode::Char('y') | KeyCode::Char('a') => self.approve(),
+                KeyCode::Char('s') => self.propose(),
                 KeyCode::Esc | KeyCode::Char('x') => {
                     self.modal = None;
-                    self.say("not deployed");
+                    self.tell("not deployed");
                 }
                 _ => {}
             },
@@ -1517,32 +2045,28 @@ impl App {
                 KeyCode::Down => *sel += 1,
                 KeyCode::PageUp => *sel = sel.saturating_sub(10),
                 KeyCode::PageDown => *sel += 10,
-                KeyCode::Backspace => {
-                    query.pop();
-                    *sel = 0;
-                }
-                KeyCode::Char(c) => {
-                    query.push(c);
-                    *sel = 0;
-                }
                 KeyCode::Enter => {
                     let (q, s) = (query.clone(), *sel);
                     self.palette_pick(&q, s);
                 }
-                _ => {}
+                _ => {
+                    let was = query.clone();
+                    edit_typed(query, &mut self.line_back, k);
+                    if *query != was {
+                        *sel = 0;
+                    }
+                }
             },
             Modal::Restore { .. } => self.restore_key(k),
             Modal::SecretSource(_) => self.secret_source_key(k),
             Modal::DryRun { .. } => self.dry_run_key(k),
             Modal::Call(_) => self.call_key(k),
-            Modal::Input { value, .. } => match k.code {
+            Modal::Input { value, at, .. } => match k.code {
                 KeyCode::Esc => self.modal = None,
-                KeyCode::Backspace => {
-                    value.pop();
-                }
-                KeyCode::Char(c) => value.push(c),
                 KeyCode::Enter => self.answer_input(),
-                _ => {}
+                _ => {
+                    edit_line(value, at, k);
+                }
             },
         }
     }
@@ -1583,6 +2107,7 @@ impl App {
     pub(crate) fn mouse(&mut self, m: MouseEvent) {
         match m.kind {
             MouseEventKind::Down(MouseButton::Left) => {
+                self.field_moved();
                 let Some((rect, click)) = self.hit_at(m.column, m.row) else { return };
                 self.note = None;
                 self.pressed = Some((rect, click));
@@ -1643,6 +2168,8 @@ impl App {
             Click::Show(s) => self.set_show(s),
             Click::Every if self.page == Page::Flow => self.flow_every(),
             Click::Every => self.tab_every(),
+            Click::Shown(s) => self.show_flows(s),
+            Click::Home => self.go_home(),
             Click::RunPane(p) => {
                 if let Some(runs) = self.tabs.get_mut(self.tab).and_then(|t| t.runs.as_mut()) {
                     runs.pane = p;
@@ -1657,6 +2184,13 @@ impl App {
                 b.col = (left + dx as usize).min(b.lines[b.row].chars().count());
                 self.typing = tab.runs.is_none();
                 self.complete = None;
+            }
+            Click::Input { from } => {
+                if let Some(Modal::Input { value, at, .. }) = self.modal.as_mut() {
+                    *at = (from + dx as usize).min(value.chars().count());
+                } else if let Some(n) = self.field_text().map(|s| s.chars().count()) {
+                    self.line_back = n - (from + dx as usize).min(n);
+                }
             }
             Click::Scroll(_) => {}
             // Dialogs that ask something keep it until answered; the others close.
@@ -1739,9 +2273,18 @@ impl App {
             List::Review => {
                 if let Some(Modal::Approve { review, .. } | Modal::DryRun { review, .. }) = self.modal.as_mut() {
                     review.click(i);
+                } else if let Some(Approval { what: Pending::Deploy(s), keys, .. }) = self.approval.as_mut() {
+                    *keys = true;
+                    s.review.click(i);
                 }
             }
             List::Dialog => {}
+            List::Home => {
+                self.home_sel = i;
+                if again {
+                    self.home_key(enter);
+                }
+            }
         }
     }
 
@@ -1775,6 +2318,8 @@ impl App {
             _ => {
                 if let Some(Modal::Lines { scroll, .. } | Modal::Help { scroll } | Modal::Approve { review: Review { scroll, .. }, .. } | Modal::DryRun { review: Review { scroll, .. }, .. }) = self.modal.as_mut() {
                     *scroll = (*scroll as isize + by).max(0) as usize;
+                } else if let (None, Some(Approval { what: Pending::Deploy(s), .. })) = (&self.modal, self.approval.as_mut()) {
+                    s.review.scroll = (s.review.scroll as isize + by).max(0) as usize;
                 }
             }
         }
@@ -1816,6 +2361,39 @@ fn deploy_review(slug: &str, plan: &agent::Plan, staged: &Staged, now: Option<&s
     review
 }
 
+/// A flow's latest text: a version saved since it was deployed, else the one deployed, else the
+/// one saved.
+fn latest_text(c: &Client, name: &str) -> Result<String, String> {
+    let deployed_at = c.deployment(name).and_then(|d| d["deployed_at_epoch_seconds"].as_u64());
+    let saved_at = c.saved(name).and_then(|f| f["saved_at_epoch_seconds"].as_u64());
+    match (deployed_at, saved_at) {
+        (Some(d), Some(s)) if s > d => c.saved_text(name),
+        (Some(_), _) => c.text(name, None),
+        (None, Some(_)) => c.saved_text(name),
+        (None, None) => Err(format!("nothing named \"{name}\" is deployed or saved")),
+    }
+}
+
+/// A deploy staged and reviewed: what its dialog, or the Approvals page, shows and approves.
+fn staging(c: &Client, slug: String, plan: agent::Plan, text: String, before: Option<String>) -> Result<Staging, String> {
+    let now = c.deployment(&slug).and_then(|_| c.text(&slug, None).ok());
+    let staged = c.stage(&plan, &slug)?;
+    let mut review = deploy_review(&slug, &plan, &staged, now.as_deref(), &text, &c.server());
+    // Renamed: it deploys under its new name, and what it was deployed as stays.
+    if let Some(before) = before.filter(|_| now.is_none()) {
+        review.top.push((Tone::Warn, format!("Its text names it \"{slug}\" now: it deploys as a new flow. \"{before}\", which this tab deployed before, stays as it is.")));
+    }
+    // Another flow listening on its port: one of the two can't.
+    if let Some(other) = plan.port.and_then(|port| c.deployments.iter().find(|d| d["slug"] != slug.as_str() && d["port"].as_u64() == Some(port.into()))) {
+        review.top.push((Tone::Bad, format!("Port {} is \"{}\"'s: this one can't listen there while it runs (change the port line, or stop it).", plan.port.unwrap_or_default(), other["slug"].as_str().unwrap_or_default())));
+    }
+    // What it may do while it runs, a new permission marked: the "if approved" of it.
+    let deployed: Vec<String> = c.deployment(&slug).and_then(|_| c.get(&format!("/deployments/{}/manifest", crate::mcp::seg(&slug))).ok()).map(|m| client::strings(&m, "items")).unwrap_or_default();
+    let may: Vec<String> = plan.may.iter().map(|m| agent::describe(m)).collect();
+    let new: Vec<bool> = plan.may.iter().map(|m| !deployed.contains(m)).collect();
+    Ok(Staging { slug, plan, staged, text, review, may, new })
+}
+
 /// The name a text gives its flow, `flow("name", …)`, as typed, whether or not it compiles.
 fn flow_name(text: &str) -> Option<&str> {
     let rest = text.lines().find_map(|l| l.trim_start().strip_prefix("flow("))?.trim_start();
@@ -1832,6 +2410,47 @@ fn load_run(c: &Client, runs: &mut Runs) {
     } else if runs.pane == RunPane::Errors {
         runs.pane = RunPane::Details;
     }
+}
+
+/// A key on a line being typed, the cursor at `at` (a character's place, kept within it): it
+/// moves (left, right, home, end), deletes on either side of it, or types there. False when
+/// the key isn't one of those.
+pub(crate) fn edit_line(value: &mut String, at: &mut usize, k: KeyEvent) -> bool {
+    let n = value.chars().count();
+    *at = (*at).min(n);
+    let byte = |s: &str, i: usize| s.char_indices().nth(i).map_or(s.len(), |(b, _)| b);
+    match k.code {
+        KeyCode::Left => *at = at.saturating_sub(1),
+        KeyCode::Right => *at = (*at + 1).min(n),
+        KeyCode::Home => *at = 0,
+        KeyCode::End => *at = n,
+        KeyCode::Backspace => {
+            if *at > 0 {
+                value.remove(byte(value, *at - 1));
+                *at -= 1;
+            }
+        }
+        KeyCode::Delete => {
+            if *at < n {
+                value.remove(byte(value, *at));
+            }
+        }
+        KeyCode::Char(c) => {
+            value.insert(byte(value, *at), c);
+            *at += 1;
+        }
+        _ => return false,
+    }
+    true
+}
+
+/// `edit_line` on a line whose cursor is counted from its end (`back` characters after it).
+pub(crate) fn edit_typed(value: &mut String, back: &mut usize, k: KeyEvent) -> bool {
+    let n = value.chars().count();
+    let mut at = n - (*back).min(n);
+    let done = edit_line(value, &mut at, k);
+    *back = value.chars().count() - at;
+    done
 }
 
 /// The position the language counts for a tab's cursor.

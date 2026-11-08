@@ -358,7 +358,7 @@ pub(crate) fn restrict_to_owner(path: &Path) -> std::io::Result<()> {
     use windows_sys::Win32::Security::{DACL_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, SetFileSecurityW};
 
     let sddl: Vec<u16> = "D:P(A;;FA;;;OW)(A;;FA;;;SY)".encode_utf16().chain(Some(0)).collect();
-    let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+    let wide: Vec<u16> = verbatim(path)?.as_os_str().encode_wide().chain(Some(0)).collect();
     let mut sd: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
     // SAFETY: both strings are NUL-terminated and outlive the calls; `sd` is allocated by the
     // first call and freed with LocalFree, as its documentation asks.
@@ -374,6 +374,20 @@ pub(crate) fn restrict_to_owner(path: &Path) -> std::io::Result<()> {
         }
     }
     Ok(())
+}
+
+/// `path` as Windows takes a name of any length (`\\?\C:\…`, `\\?\UNC\server\share\…`): a call
+/// given the plain name refuses one past 260 characters, as Rust's own file calls don't.
+#[cfg(windows)]
+fn verbatim(path: &Path) -> std::io::Result<std::path::PathBuf> {
+    let full = std::path::absolute(path)?;
+    let s = full.as_os_str().to_string_lossy();
+    if s.starts_with(r"\\?\") || s.starts_with(r"\\.\") {
+        return Ok(full);
+    }
+    let mut out = std::ffi::OsString::from(if s.starts_with(r"\\") { r"\\?\UNC\" } else { r"\\?\" });
+    out.push(if let Some(share) = s.strip_prefix(r"\\") { std::ffi::OsStr::new(share) } else { full.as_os_str() });
+    Ok(out.into())
 }
 
 #[cfg(not(any(unix, windows)))]
@@ -395,6 +409,18 @@ fn from_hex(s: &str) -> Option<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A path past 260 characters is given to Windows' own calls in the form they take at any
+    /// length; one already in that form is left as it is.
+    #[cfg(windows)]
+    #[test]
+    fn windows_is_given_a_name_of_any_length() {
+        let v = |p: &str| verbatim(Path::new(p)).unwrap().to_string_lossy().into_owned();
+        assert_eq!(v(r"C:\data\logs\a.jsonl"), r"\\?\C:\data\logs\a.jsonl");
+        assert_eq!(v(r"\\nas\runs\a.jsonl"), r"\\?\UNC\nas\runs\a.jsonl");
+        assert_eq!(v(r"\\?\C:\data\a.jsonl"), r"\\?\C:\data\a.jsonl");
+        assert!(v("relative.jsonl").starts_with(r"\\?\") && v("relative.jsonl").ends_with(r"\relative.jsonl"));
+    }
 
     #[test]
     fn a_sealed_value_opens_only_where_it_was_sealed() {

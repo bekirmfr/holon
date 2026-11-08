@@ -452,6 +452,9 @@ pub(crate) struct DeploymentEntry {
     pub(crate) listen_error: Option<String>,
     /// How many of its runs are waiting for an event.
     pub(crate) waiting: usize,
+    /// The number of the version deployed now (`v3`), as `/versions` counts them.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) version: Option<u32>,
 }
 
 /// One clock tick's result, kept in a deployment's bounded history. `outputs`: same shape
