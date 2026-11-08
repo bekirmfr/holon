@@ -284,6 +284,8 @@ asks for:
 | date-fns: `addBusinessDays(d, n)`, `differenceInBusinessDays(a, b)`, `isWeekend(d)` | `business_day_add(d, n, holidays)`, `business_days_between(b, a, holidays)`, `!is_business_day(d)`: holidays given, which date-fns has none of, and a date as `YYYY-MM-DD` | by name |
 | date-fns-tz, Luxon, Temporal at an offset: `formatInTimeZone(d, "+01:00", …)`, `toISOString` with the offset | `date_text(d, "+01:00")`, `date_text(d, offset, { format: "date" })`, `date_part(d, offset, { part })` | by name; fixed offsets, no zones |
 | Papa Parse, csv-parse, csv-stringify | `csv_parse(t)`, `{ header: "none" }`, `{ separator: ";" }`; `csv_format(rows, columns)` | by name |
+| fast-xml-parser: `new XMLParser().parse(t)`, `new XMLBuilder().build(o)`; `DOMParser`, `XMLSerializer` | `xml_parse(t)`, `xml_format(e)`, `{ layout: "indented" }`: an element as JsonML's list, not a record, so a schema's order is kept | by name |
+| the DOM: `doc.querySelectorAll("Rpt > Tx")`, `el.textContent`, `el.getAttribute("Ccy")` | `xml_find(e, "Rpt/Tx")`, `xml_text(e)` or `xml_text(e, path)`, `xml_attribute(e, "Ccy")`: a path of names, as ElementTree's `findall` | by name |
 | `btoa`, `atob` | `btoa(t)`, `atob(t)` (§3) | `base64 {bytes: latin1}` |
 | `Buffer…toString("base64")` | `base64(t)`, `base64(t, { mode: "decode" })`, `{ alphabet: "url" }` | `base64` (by name) |
 | `Buffer…toString("hex")` | `hex(t)`, `{ mode: "decode" }` | `hex` (by name) |

@@ -416,6 +416,32 @@ its methods: `new Date(t)` alone, or `d` returned or put in a record, is refused
 names `getUTCHours`, `new Date(y, m)` names `new Date(Date.UTC(y, m))`), and `new Date()` and
 `Date.now()` name the clock: `now * 1000`, `now` imported from `"holon:clock"`.
 
+### XML
+
+An XML element is a list, as JsonML writes one: its name, then a record of its attributes when it
+has any, then its children in order, each an element or a text. A list keeps the order a schema
+fixes (a pain.001's `MsgId` before its `CreDtTm`), where a record's keys would be in order of their
+names, and one child or several is the same shape:
+
+```
+const amount = ["InstdAmt", { Ccy: "EUR" }, "100.00"] // <InstdAmt Ccy="EUR">100.00</InstdAmt>
+const header = ["GrpHdr", ["MsgId", id], ...lines] // its children in order
+```
+
+| Call | Gives |
+|---|---|
+| `xml_parse(t)` | the root element; nothing for text that isn't well-formed XML, or that has a DOCTYPE |
+| `xml_format(e)`, `xml_format(e, { layout: "indented" })`, `{ declaration: "none" }` | the text, the XML declaration first; indented two spaces a level; without the declaration |
+| `xml_find(e, "Rpt/Pmt/Tx")` | the elements along a path of names (`*` any), from `e`'s children, in document order |
+| `xml_text(e)`, `xml_text(e, "Tx/Sts")` | the element's text, every text in it joined; the first match's, or nothing |
+| `xml_attribute(e, "Ccy")` | an attribute's value, or nothing |
+
+Names are kept as written, a prefix too, and a namespace is the `xmlns` attribute that declares it.
+Reading drops comments, instructions and the white space between elements, and reads the five
+named entities, character references and CDATA; no entity is ever defined or fetched, so a DOCTYPE
+is refused. Writing escapes what it must and writes a number as `String(n)` does. Elements nest at
+most 64 deep. The payment-batch sample writes a pain.001 and reads a pain.002.
+
 ## The outside world
 
 Each of these is one building block, and each is one thing the flow may do.

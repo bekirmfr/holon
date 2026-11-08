@@ -66,6 +66,8 @@ pub const GENESIS: &[&str] = &[
     "decimal_add", "decimal_sub", "decimal_mul", "decimal_div", "decimal_round", "decimal_sum", "decimal_compare",
     // pure — CSV (2): RFC 4180, both ways (csv.rs)
     "csv_parse", "csv_format",
+    // pure — XML (5): an element as JsonML's list, both ways, and read by path (xml.rs)
+    "xml_parse", "xml_format", "xml_find", "xml_text", "xml_attribute",
     // pure — universal, any-typed (8): as_text is to_text's message form, the identity on text;
     // coalesce is the first input that arrived, `default` with its fallback on a wire; fail is
     // nothing, its message the run log's reason (the language's `throw`)
@@ -195,6 +197,8 @@ pub const FAMILIES: &[(&str, &str, &[&str])] = &[
     ("csv_parse", "separator", crate::csv::SEPARATORS),
     ("csv_format", "header", crate::csv::HEADERS),
     ("csv_format", "separator", crate::csv::SEPARATORS),
+    ("xml_format", "declaration", crate::xml::DECLARATIONS),
+    ("xml_format", "layout", crate::xml::LAYOUTS),
 ];
 
 /// The values leaf `name`'s family parameter `param` may take, if it is one.
@@ -445,6 +449,18 @@ pub fn interface_of(name: &str) -> Option<Unit> {
             vec![Param::frozen("header", "first_row"), Param::frozen("separator", ",")],
             Text,
         ),
+
+        // ── pure — XML (xml.rs) ── an element is a list: its name, its attributes' record when it
+        // has any, its children; read by a path of names.
+        "xml_parse" => prim(vec![port("text", Text)], vec![], Type::list_any()),
+        "xml_format" => prim(
+            vec![port("element", Type::list_any())],
+            vec![Param::frozen("declaration", "utf8"), Param::frozen("layout", "compact")],
+            Text,
+        ),
+        "xml_find" => prim(vec![port("element", Type::list_any()), port("path", Text)], vec![], Type::list_any()),
+        "xml_text" => prim(vec![port("element", Type::list_any()), port("path", Text)], vec![], Text),
+        "xml_attribute" => prim(vec![port("element", Type::list_any()), port("name", Text)], vec![], Text),
 
         // ── pure — sum (Option) ──
         // Option<T> = Sum([T, Unit]) — arm 0 is "some", arm 1 ("none") is Unit (Product([])),
@@ -737,8 +753,9 @@ mod tests {
         // bytes_to_text, bytes_length, bytes_concat, bytes_to_list, list_to_bytes, file_read_bytes);
         // and the decimal leaves (decimal_add, decimal_sub, decimal_mul, decimal_div,
         // decimal_round, decimal_sum, decimal_compare) and CSV's (csv_parse, csv_format); and the
-        // calendar leaves (date_add, business_day_add, business_days_between, is_business_day).
-        assert_eq!(GENESIS.len(), 172);
+        // calendar leaves (date_add, business_day_add, business_days_between, is_business_day);
+        // and XML's (xml_parse, xml_format, xml_find, xml_text, xml_attribute).
+        assert_eq!(GENESIS.len(), 177);
     }
 
     #[test]

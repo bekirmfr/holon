@@ -1189,6 +1189,41 @@ declare module "holon" {
   export function csv_format(...args: any[]): any
 
   /**
+   * `xml_parse(text: Text) -> out: List<Any>`
+   *
+   * Reads XML 1.0 into its root element, a list as JsonML writes one: the name, then a record of its attributes when it has any, then its children in order, each an element or a text. Names are kept as written, a prefix too; comments, instructions and the white space between elements are dropped. Nothing for text that isn't well-formed, or that has a DOCTYPE: no entity is ever defined or fetched.
+   */
+  export function xml_parse(...args: any[]): any
+
+  /**
+   * `xml_format(element: List<Any>) -> out: Text  {declaration: utf8, layout: compact}`
+   *
+   * Writes an element, a list as xml_parse gives one, as XML: the declaration first unless declaration is none, on one line or indented two spaces a level (layout). Texts and attributes are escaped, a number or a Boolean written as JavaScript writes it. Nothing for a name that isn't an XML name, a character XML can't hold, or an item that is neither an element, a text, a number nor a Boolean.
+   */
+  export function xml_format(...args: any[]): any
+
+  /**
+   * `xml_find(element: List<Any>, path: Text) -> out: List<Any>`
+   *
+   * The elements along a path of names separated by /, the first among the element's children, in document order; * is any name. An empty list when none matches.
+   */
+  export function xml_find(...args: any[]): any
+
+  /**
+   * `xml_text(element: List<Any>, path: Text) -> out: Text`
+   *
+   * An element's text, every text in it at any depth joined, as the DOM's textContent; given a path, the first match's. Nothing when none matches.
+   */
+  export function xml_text(...args: any[]): any
+
+  /**
+   * `xml_attribute(element: List<Any>, name: Text) -> out: Text`
+   *
+   * An element's attribute, by name; nothing when it has none so named.
+   */
+  export function xml_attribute(...args: any[]): any
+
+  /**
    * `to_text(value: Any) -> out: Text`
    *
    * Any value written out as text, as a literal: a text comes out in quotes.

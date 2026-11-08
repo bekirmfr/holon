@@ -172,6 +172,11 @@ ops! {
     "decimal_compare" => DecimalCompare,
     "csv_parse" => CsvParse,
     "csv_format" => CsvFormat,
+    "xml_parse" => XmlParse,
+    "xml_format" => XmlFormat,
+    "xml_find" => XmlFind,
+    "xml_text" => XmlText,
+    "xml_attribute" => XmlAttribute,
     "pair" => Pair,
     "some" => Some,
     "none" => None,
@@ -993,6 +998,30 @@ pub(crate) fn compute_op(op: Op, name: &str, inputs: &[&Value], params: &[Param]
             crate::csv::format(rows, columns, param(params, "header")?, param(params, "separator")?).map(Value::Text)
         }
 
+        // ── XML (xml.rs): an element as JsonML's list; nothing for text that isn't well-formed or
+        // has a DOCTYPE, or for what XML can't hold. ──
+        Op::XmlParse => {
+            let [Value::Text(s)] = inputs else { return None };
+            crate::xml::parse(s)
+        }
+        Op::XmlFormat => {
+            let [element] = inputs else { return None };
+            crate::xml::format(element, param(params, "declaration")?, param(params, "layout")?).map(Value::Text)
+        }
+        Op::XmlFind => {
+            let [element, Value::Text(path)] = inputs else { return None };
+            crate::xml::find(element, path)
+        }
+        Op::XmlText => match inputs {
+            [element] => crate::xml::text(element, None),
+            [element, Value::Text(path)] => crate::xml::text(element, Some(path)),
+            _ => None,
+        },
+        Op::XmlAttribute => {
+            let [element, Value::Text(name)] = inputs else { return None };
+            crate::xml::attribute(element, name)
+        }
+
         Op::Pair => {
             let [a, b] = inputs else { return None };
             Some(Value::List(vec![(*a).clone(), (*b).clone()]))
@@ -1659,7 +1688,7 @@ pub(crate) fn resume_token_request(params: &[Param]) -> Option<Value> {
 /// headers and body, a listing's prefix and after, a `to_number`'s radix, a `number_format`'s
 /// digits, a `slice`'s end, `to_spliced`'s count and items, `fill`'s and `copy_within`'s start and
 /// end, the position a search starts from, a `split`'s limit, a `pad`'s fill, a `csv_format`'s
-/// columns, a date leaf's offset and a business-day leaf's holidays. Inside a composite, such a port that *is* wired holds the node back while its value is
+/// columns, a date leaf's offset, a business-day leaf's holidays and an `xml_text`'s path. Inside a composite, such a port that *is* wired holds the node back while its value is
 /// absent (eval.rs), like any other leaf's input.
 pub(crate) fn has_optional_ports(name: &str) -> bool {
     matches!(
@@ -1691,6 +1720,7 @@ pub(crate) fn has_optional_ports(name: &str) -> bool {
             | "business_day_add"
             | "business_days_between"
             | "is_business_day"
+            | "xml_text"
     )
 }
 

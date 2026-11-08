@@ -419,6 +419,93 @@ As designed, with what building it found:
 - **The printer** writes `date_part` and `date_text` as `new Date(t)`'s methods only while the
   offset is unwired; `date_set` keeps its rule (every value wired).
 
+#### 5.1.5 Slice 1.2c as designed (2026-11-08, against `86ff439`)
+
+A pain.001 is XML whose schema fixes the order of every element: in a group header `MsgId` comes
+before `CreDtTm`, `NbOfTxs`, `CtrlSum` and `InitgPty`, and a bank refuses the file otherwise. A
+record's keys are kept in order of their names, so XML can't be records the way fast-xml-parser
+makes them (`{ GrpHdr: { MsgId: … } }`): writing one back would put `CreDtTm` first. Nor can one
+child or several change a value's shape, fast-xml-parser's known trap (`TxInfAndSts` a record
+when the bank rejected one payment, a list when it rejected two).
+
+**An element is a list**, as JsonML writes one: its name, then a record of its attributes when it
+has any, then its children in order, each an element or a text.
+
+```ts
+["InstdAmt", { Ccy: "EUR" }, "100.00"]          // <InstdAmt Ccy="EUR">100.00</InstdAmt>
+["GrpHdr", ["MsgId", id], ["NbOfTxs", n]]       // <GrpHdr><MsgId>…</MsgId><NbOfTxs>3</NbOfTxs></GrpHdr>
+```
+
+The same form both ways, so a file read and written back is the same file, and one written in a
+flow is a list literal with its order as written, a `.map` spreading its items into it (`[...,
+...payments]`). Names are kept as written, a prefix too (`ns:Document`), and a namespace is the
+`xmlns` attribute that declares it, written and read as any other (fork 31). Reading is done
+through leaves, as Python's ElementTree reads one (`find`, `findall`, `findtext`, `get`), not by
+indexing the list.
+
+| Leaf | Gives |
+|---|---|
+| `xml_parse(text)` | the root element. Nothing for text that isn't well-formed XML 1.0, or that has a DOCTYPE |
+| `xml_format(element) {declaration, layout}` | the text. `declaration` a family: `utf8` (the default) writes `<?xml version="1.0" encoding="UTF-8"?>` and a line break first, `none` nothing; `layout` a family: `compact` (the default), or `indented`, two spaces a level, an element whose children are all elements writing each on a line of its own |
+| `xml_find(element, path)` | the elements along `path`, in document order: `"CstmrPmtStsRpt/OrgnlPmtInfAndSts/TxInfAndSts"`, its first step among `element`'s children, each step a name or `*`. An empty list when none matches |
+| `xml_text(element, path?)` | the element's text: every text in it, at any depth, joined, as the DOM's `textContent`; with `path`, the first match's. Nothing when none matches |
+| `xml_attribute(element, name)` | the attribute's value, or nothing |
+
+**Reading** (`xml_parse`) is XML 1.0 without a DTD: a byte-order mark and the XML declaration
+dropped, line ends made `\n` (XML's §2.11), the five named entities and character references
+read, CDATA read as text, comments and processing instructions dropped, and a text that is only
+white space (the indentation between elements) dropped; any other text is kept as written,
+spaces too. It gives nothing for a DOCTYPE, so no entity is ever defined and none is fetched
+(XXE and billion laughs can't happen: there is nothing to expand); for an entity other than the
+five, a tag that doesn't close or closes another, an attribute given twice, a name or a
+character XML doesn't allow, `]]>` in text, or anything but white space, comments and
+instructions around the root. Elements nest at most 64 deep, as `json_parse`'s values do, and
+an attribute's white space is read as XML reads it (a tab or a line break inside one is a
+space).
+
+**Writing** (`xml_format`) escapes `&`, `<` and `>` in a text, `&`, `<` and `"` in an attribute
+(its tabs and line breaks as character references, so they read back), and writes an element
+with no children as `<Name/>`. A child or an attribute that is a number is written as
+`String(n)` writes it, a Boolean as `true` or `false`. It gives nothing for a name that isn't an
+XML name, a character XML can't hold (a control character other than a tab or a line break), an
+item after the name that is neither a record (second), an element, a text, a number nor a
+Boolean, or elements nested past 64. `indented` leaves an element with any text in it on one
+line, so mixed content keeps its spaces.
+
+**JavaScript's forms.** JavaScript has no XML in the language (E4X is gone), and Node none in
+its library, so every leaf is called by name. The library table (javascript-library.md §8) maps
+fast-xml-parser's `XMLParser.parse` and `XMLBuilder.build` (the shape differs, as above) and the
+DOM's `querySelectorAll`, `textContent` and `getAttribute`.
+
+**The checklist (§4)** is short again: every leaf is pure, fetches nothing and needs no
+permission; a number is written by `js_string`, the parity-tested writer, and nothing else
+touches a float; the limits are the input's size and the depth.
+
+**The sample, `payment-batch`:** `POST /batch` takes a CSV of payouts (`id,name,iban,amount,
+reference`) and answers the pain.001.001.09 credit transfer for it, its control sum
+`decimal_sum`'s and each amount rounded to cents; the execution date is the request's or the next
+business day at Frankfurt's offset (1.2b), and the message id a hash of the file and that date,
+so the same file sent twice for one day has one id and the bank refuses the second. A CSV that is
+malformed, or an amount that isn't a decimal more than 0, answers 400 through `try`/`catch`.
+`POST /status` reads the bank's pain.002 status report back: the group's status and each
+payment's, with its reason code when rejected, refusing a file whose namespace isn't pain.002's.
+
+#### 5.1.6 Slice 1.2c as built (2026-11-08)
+
+As designed, with what building it found:
+
+- **Core:** `xml.rs`, a reader over the text with no branch for a DTD at all (a `<!` that isn't a
+  comment or CDATA is a name that isn't one) and a writer; 177 primitives. `xml_text`'s path is an
+  optional input, as an offset is.
+- **The language needed nothing new:** a list literal mixing a name, a record and lists, with
+  `...payouts.map(transfer)` spread into it, compiled as written, and the formatter lays it out
+  one child a line.
+- **The sample, run live:** Python's ElementTree read its pain.001 with the schema's order, a
+  batch of 1,000 payouts gave the control sum Python's `Decimal` gives, and an XXE and a billion
+  laughs posted to `/status` were refused as not XML. The order is pain.001.001.09's, checked
+  against its sequences by hand; the file wasn't run through the ISO 20022 schema itself, which
+  isn't here offline.
+
 ### 5.2 Email
 
 **Sending.** `mail ops` names a mail resource an admin binds: SMTP (host, port, sender, login
@@ -1716,7 +1803,7 @@ engine.
 | Step | What | Design | Needs | Size |
 |---|---|---|---|---|
 | 1.1 | **Value kinds:** `Bytes`, built (§5.10.2); `Decimal` decided as text leaves, built in 1.2 (§5.10.1) | §5.10 (here) | — | M |
-| 1.2 | **Formats:** exact decimals, CSV, XML, dates (UTC and offsets), zip and gzip, JWT verify, PGP encrypt and verify with a public key, in six slices (§5.1.1); 1.2a, decimals and CSV, built (§5.1.2); 1.2b, offsets and business days, built (§5.1.4) | §5.1 (here) | 1.1 | M |
+| 1.2 | **Formats:** exact decimals, CSV, XML, dates (UTC and offsets), zip and gzip, JWT verify, PGP encrypt and verify with a public key, in six slices (§5.1.1); 1.2a, decimals and CSV, built (§5.1.2); 1.2b, offsets and business days, built (§5.1.4); 1.2c, XML, built (§5.1.6) | §5.1 (here) | 1.1 | M |
 | 1.3 | **Email:** send, recipients in the grant; receive as `on mail`, with its sender's verdict and attachments (§5.2) | §5.2 (here) | 1.1 for attachments | L |
 | 1.4 | **Remote folders:** the backend seam in `folders.rs`, then SFTP and S3-compatible storage (§6) | §6 (here) | 1.1 for binary files | L |
 | 1.5 | **Secure connectivity:** keys the host holds (PGP decrypt and sign) and client identities (mutual TLS, a private CA) (§5.3, §5.4) | §5.3, §5.4 (here) | 1.1, 1.2 | M |
@@ -1918,6 +2005,17 @@ Taken when a job or a user asks, each with its design here and its sample all th
     ciphertext kept in the log as an answer is, or the randomness comes into the run from a
     driver, as `random` does, made bytes. *Lean:* the driver: the leaf stays pure over its inputs,
     and verify recomputes the ciphertext from the logged randomness. Decided in 1.2f.
+30. **XML's shape in a flow** (§5.1.5). JsonML's lists, one form both ways, or records as
+    fast-xml-parser makes them, easier to read (`doc.Document.GrpHdr.MsgId`) but losing a
+    schema's order when written, and changing shape between one child and several. *Lean:* lists,
+    read through `xml_find`, `xml_text` and `xml_attribute`; a record form only if reading
+    turns out to be most of what flows do, and then for reading alone.
+31. **Names with a namespace** (§5.1.5). Kept as written (`ns:Document`, `xmlns:ns` an attribute)
+    or resolved (`{urn:…}Document`, Clark's notation). As written reads and writes back exactly
+    and is what a flow writes; a sender that prefixes the same namespace differently reads
+    differently. *Lean:* as written now; a path step that names the namespace (`{urn:…}Ntry`),
+    and `//` for any depth, when the first statement from a bank that prefixes arrives (1.5's
+    camt.053).
 
 ## 9. What stays true
 

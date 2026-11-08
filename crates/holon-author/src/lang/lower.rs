@@ -120,6 +120,7 @@ pub(crate) fn is_optional(leaf: &str, input: &str) -> bool {
                 | ("csv_format", "columns")
                 | ("date_part" | "date_text" | "date_add", "offset")
                 | ("business_day_add" | "business_days_between" | "is_business_day", "holidays")
+                | ("xml_text", "path")
         )
 }
 

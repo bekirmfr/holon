@@ -152,6 +152,13 @@ pub fn describe(name: &str) -> Option<&'static str> {
         "csv_parse" => "Reads CSV (RFC 4180): with header first_row (the default), a list of records keyed by the first row's names; with none, a list of lists. Every field is a text. Nothing for a malformed file: a quote that never closes, a row with more or fewer fields than the header, a column named twice.",
         "csv_format" => "Writes CSV: given columns, each row a record written in that order (a missing field empty), the names first unless header is none; without, each row a list. A field holding the separator, a quote or a line break is quoted, and each line ends with CRLF.",
 
+        // ── XML ──
+        "xml_parse" => "Reads XML 1.0 into its root element, a list as JsonML writes one: the name, then a record of its attributes when it has any, then its children in order, each an element or a text. Names are kept as written, a prefix too; comments, instructions and the white space between elements are dropped. Nothing for text that isn't well-formed, or that has a DOCTYPE: no entity is ever defined or fetched.",
+        "xml_format" => "Writes an element, a list as xml_parse gives one, as XML: the declaration first unless declaration is none, on one line or indented two spaces a level (layout). Texts and attributes are escaped, a number or a Boolean written as JavaScript writes it. Nothing for a name that isn't an XML name, a character XML can't hold, or an item that is neither an element, a text, a number nor a Boolean.",
+        "xml_find" => "The elements along a path of names separated by /, the first among the element's children, in document order; * is any name. An empty list when none matches.",
+        "xml_text" => "An element's text, every text in it at any depth joined, as the DOM's textContent; given a path, the first match's. Nothing when none matches.",
+        "xml_attribute" => "An element's attribute, by name; nothing when it has none so named.",
+
         // ── any value ──
         "to_text" => "Any value written out as text, as a literal: a text comes out in quotes.",
         "as_text" => "Any value as it reads in a message: a text is itself, a number or true/false as written, a record or list as JSON. For putting a value into a text.",

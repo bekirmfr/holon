@@ -719,6 +719,18 @@ static SAMPLES: &[Sample] = &[
         text: include_str!("../samples/due-dates.holon.ts"),
     },
     Sample {
+        name: "payment-batch",
+        title: "Payment batch (a pain.001 written, a pain.002 read)",
+        description: "Turns a CSV of payouts into the pain.001.001.09 credit transfer a bank takes: each element a list (its name, a record of its attributes, its children in order), since the schema fixes the order of every element, written by xml_format, indented. Each amount is rounded to cents and the control sum is their exact sum (decimal_sum); the execution date is the request's or the next business day at Frankfurt's offset, and the message id a hash of the file and that date, so a file sent twice for one day keeps its id and the bank refuses the second. A malformed file, or an amount that isn't more than 0, answers 400 through try and catch. And reads the bank's pain.002 status report back (xml_parse, then xml_find, xml_text and xml_attribute along paths): the group's status and each payment's, with a rejected one's reason.",
+        shows: &["XML both ways", "elements in order", "xml_format", "xml_parse", "xml_find", "xml_text", "xml_attribute", "exact control sums", "try and catch"],
+        port: Some("8182"),
+        secrets: &[],
+        optional: &[],
+        browsers: None,
+        try_it: "deploy, then send a CSV of payouts (id,name,iban,amount,reference), curl --data-binary @payouts.csv 'http://127.0.0.1:8182/batch?date=2026-11-10': it answers the pain.001, its control sum the amounts' exact sum; POST a pain.002 status report to /status for each payment's status and reason",
+        text: include_str!("../samples/payment-batch.holon.ts"),
+    },
+    Sample {
         name: "ticker",
         title: "Ticker (a clock beside routes)",
         description: "A flow with a clock of its own beside its routes: every 2 seconds (every(\"2s\", …)) it counts a tick in its state and sends it on the channel ticks, with the time of the tick (now, in the handler). Its page lists each tick as it arrives; GET /count answers the count. An action, run by hand by its name, sets the count back (export const reset = action((input) => …), input what was sent); a person runs it, and an agent only once a person lets agents run it.",

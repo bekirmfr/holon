@@ -760,6 +760,14 @@ function whyNothing(node: ReplayNode, trace: NodeTrace): string {
       return "the CSV is malformed: a quote that never closes, a row with more or fewer fields than the header, or a column named twice";
     case "csv_format":
       return "a field isn't a text, a number or a Boolean, or the rows aren't records with columns given (lists without)";
+    case "xml_parse":
+      return "the XML isn't well-formed (a tag that doesn't close, an entity other than the five, an attribute given twice), or it has a DOCTYPE";
+    case "xml_format":
+      return "a name isn't an XML name, a text holds a character XML can't, or an item isn't an element, a text, a number or a Boolean";
+    case "xml_find":
+    case "xml_text":
+    case "xml_attribute":
+      return "its input isn't an element (a list starting with a name), a path step isn't a name or *, or nothing matched";
     case "group_by":
       return "its function answered a key that isn't a text";
     case "divide":

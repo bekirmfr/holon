@@ -6801,6 +6801,74 @@ fn a_csv_of_payouts_is_totalled_exactly() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// XML both ways (the payment-batch sample): a CSV of payouts becomes a pain.001 with its elements
+/// in the schema's order, each amount rounded to cents and the control sum exact; the same file for
+/// the same day keeps its message id, another day changes it; a file with an amount of 0, or one
+/// that isn't a CSV of payouts, is refused; the bank's pain.002 is read back; and the runs verify.
+#[test]
+fn a_csv_of_payouts_becomes_a_pain001_and_its_status_report_is_read() {
+    let state = claims_state("");
+    let slug = deploy_text(&state, include_str!("../../holon-author/samples/payment-batch.holon.ts"), "");
+    let csv = "id,name,iban,amount,reference\nP1,Jane Roe,FR1420041010050500013M02606,100,Invoice 42\nP2,John Doe,NL91ABNA0417164300,0.10,Refund 7\nP3,Max Muster,DE75512108001245126199,0.2,Refund 8\n";
+    let batch = |url: &str, csv: &str| {
+        let (status, xml, _) = data_call(&state, &slug, "POST", url, csv);
+        assert_eq!(status, 200, "{url}: {xml}");
+        // The message id and the time it was made, read out: a hash and the clock.
+        let inner = |tag: &str| xml.split(&format!("<{tag}>")).nth(1).and_then(|s| s.split(&format!("</{tag}>")).next()).unwrap().to_string();
+        let (id, created) = (inner("MsgId"), inner("CreDtTm"));
+        assert!(id.len() == 32 && id.bytes().all(|b| b.is_ascii_hexdigit()), "{id}");
+        assert!(created.len() == 29 && created.ends_with("+01:00"), "{created}");
+        (xml.replace(&id, "ID").replace(&created, "CREATED"), id)
+    };
+    let (xml, id) = batch("/batch?date=2026-11-10", csv);
+    let transfer = |id: &str, amount: &str, name: &str, iban: &str, why: &str| {
+        format!("      <CdtTrfTxInf>\n        <PmtId>\n          <EndToEndId>{id}</EndToEndId>\n        </PmtId>\n        <Amt>\n          <InstdAmt Ccy=\"EUR\">{amount}</InstdAmt>\n        </Amt>\n        <Cdtr>\n          <Nm>{name}</Nm>\n        </Cdtr>\n        <CdtrAcct>\n          <Id>\n            <IBAN>{iban}</IBAN>\n          </Id>\n        </CdtrAcct>\n        <RmtInf>\n          <Ustrd>{why}</Ustrd>\n        </RmtInf>\n      </CdtTrfTxInf>\n")
+    };
+    let expected = format!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<Document xmlns=\"urn:iso:std:iso:20022:tech:xsd:pain.001.001.09\">\n  <CstmrCdtTrfInitn>\n    <GrpHdr>\n      <MsgId>ID</MsgId>\n      <CreDtTm>CREATED</CreDtTm>\n      <NbOfTxs>3</NbOfTxs>\n      <CtrlSum>100.30</CtrlSum>\n      <InitgPty>\n        <Nm>Acme Payouts GmbH</Nm>\n      </InitgPty>\n    </GrpHdr>\n    <PmtInf>\n      <PmtInfId>ID</PmtInfId>\n      <PmtMtd>TRF</PmtMtd>\n      <NbOfTxs>3</NbOfTxs>\n      <CtrlSum>100.30</CtrlSum>\n      <PmtTpInf>\n        <SvcLvl>\n          <Cd>SEPA</Cd>\n        </SvcLvl>\n      </PmtTpInf>\n      <ReqdExctnDt>\n        <Dt>2026-11-10</Dt>\n      </ReqdExctnDt>\n      <Dbtr>\n        <Nm>Acme Payouts GmbH</Nm>\n      </Dbtr>\n      <DbtrAcct>\n        <Id>\n          <IBAN>DE89370400440532013000</IBAN>\n        </Id>\n      </DbtrAcct>\n      <DbtrAgt>\n        <FinInstnId>\n          <BICFI>COBADEFFXXX</BICFI>\n        </FinInstnId>\n      </DbtrAgt>\n      <ChrgBr>SLEV</ChrgBr>\n{}{}{}    </PmtInf>\n  </CstmrCdtTrfInitn>\n</Document>",
+        transfer("P1", "100.00", "Jane Roe", "FR1420041010050500013M02606", "Invoice 42"),
+        transfer("P2", "0.10", "John Doe", "NL91ABNA0417164300", "Refund 7"),
+        transfer("P3", "0.20", "Max Muster", "DE75512108001245126199", "Refund 8"),
+    );
+    assert_eq!(xml, expected);
+    assert_eq!(batch("/batch?date=2026-11-10", csv).1, id, "the same file for the same day: one message id");
+    assert_ne!(batch("/batch?date=2026-11-11", csv).1, id, "another day: another");
+    for bad in [csv.replace(",0.10,", ",0,"), csv.replace(",0.10,", ",ten cents,"), "id,name\nP1,Jane Roe\n".to_string(), "id,name,iban,amount,reference\n".to_string()] {
+        let (status, answer, _) = data_call(&state, &slug, "POST", "/batch", &bad);
+        assert_eq!(status, 400, "{bad}: {answer}");
+    }
+
+    let report = r#"<?xml version="1.0" encoding="UTF-8"?>
+<Document xmlns="urn:iso:std:iso:20022:tech:xsd:pain.002.001.10">
+  <CstmrPmtStsRpt>
+    <GrpHdr><MsgId>STS-1</MsgId><CreDtTm>2026-11-10T09:00:00+01:00</CreDtTm></GrpHdr>
+    <OrgnlGrpInfAndSts><OrgnlMsgId>M</OrgnlMsgId><OrgnlMsgNmId>pain.001.001.09</OrgnlMsgNmId><GrpSts>PART</GrpSts></OrgnlGrpInfAndSts>
+    <OrgnlPmtInfAndSts>
+      <OrgnlPmtInfId>M</OrgnlPmtInfId>
+      <TxInfAndSts><OrgnlEndToEndId>P1</OrgnlEndToEndId><TxSts>ACCP</TxSts></TxInfAndSts>
+      <TxInfAndSts><OrgnlEndToEndId>P2</OrgnlEndToEndId><TxSts>RJCT</TxSts><StsRsnInf><Rsn><Cd>AC04</Cd></Rsn></StsRsnInf></TxInfAndSts>
+    </OrgnlPmtInfAndSts>
+  </CstmrPmtStsRpt>
+</Document>"#;
+    let (status, answer, _) = data_call(&state, &slug, "POST", "/status", report);
+    assert_eq!(status, 200, "{answer}");
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&answer).unwrap(),
+        serde_json::json!({ "group": "PART", "payments": [
+            { "id": "P1", "status": "ACCP", "reason": "" },
+            { "id": "P2", "status": "RJCT", "reason": "AC04" },
+        ] })
+    );
+    for bad in [report.replace("pain.002.001.10", "pain.001.001.09"), report.replace("</Document>", ""), "<!DOCTYPE d [<!ENTITY x SYSTEM \"file:///etc/passwd\">]><Document>&x;</Document>".to_string()] {
+        let (status, answer, _) = data_call(&state, &slug, "POST", "/status", &bad);
+        assert_eq!(status, 400, "{bad}: {answer}");
+    }
+
+    let export: verify::Export = serde_json::from_value(body_json(route(&state, &req("GET", &format!("/deployments/{slug}/export"), vec![])))).unwrap();
+    let report = verify::check(&export, None, &BTreeMap::new());
+    assert!(report.ok() && report.reruns.iter().all(|(_, r)| *r == verify::Rerun::Matched), "{}", verify::describe(&report, None));
+}
+
 /// Business days at a fixed offset (the due-dates sample): a payout received after the cut-off on
 /// the Thursday before Easter is executed the Tuesday after, one received before it that day; an
 /// invoice due on a Saturday moves to the Monday; one received now is written at the offset; and

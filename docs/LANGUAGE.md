@@ -612,6 +612,15 @@ dates the flow holds: a calendar is data. A calendar date is a `YYYY-MM-DD` text
 date in UTC, and a business-day leaf gives one as text. There are no time zones (host-capabilities
 L4, fork 3): an offset is fixed. The due-dates sample schedules payouts past TARGET2's closing days.
 
+And it is XML, whose schema fixes the order of every element. An element is a list, as JsonML
+writes one: its name, a record of its attributes when it has any, its children in order (`["Amt",
+["InstdAmt", { Ccy: "EUR" }, amount]]`), so a flow writes a pain.001 as a list literal, a `.map`
+spread into it, and `xml_format` writes it out (`{ layout: "indented" }`). `xml_parse` reads XML
+back into the same form, refusing a DOCTYPE, so no entity is ever defined or fetched, and
+`xml_find(e, "Rpt/Pmt/Tx")`, `xml_text(e, path)` and `xml_attribute(e, name)` read it by path, as
+Python's ElementTree does. The payment-batch sample writes a pain.001 from a CSV of payouts and
+reads the bank's pain.002 back.
+
 ### drop-box: a run per new file
 
 ```ts
@@ -2579,6 +2588,9 @@ the syntax to TypeScript's, keeping the lowering.
      (`xs: string[]`) makes `.length` known, in the function and in one written in it. The
      printer writes a call to a function of several outputs read whole as the call, so a map's
      function using values from around it may call one. payout-totals uses both, run live.
+   - *XML* (2026-11-08, host-capabilities L4 §5.1.5, slice 1.2c): an element as JsonML's list,
+     `xml_parse` without a DTD and `xml_format`, compact or indented, and `xml_find`, `xml_text`
+     and `xml_attribute` along paths. The payment-batch sample, run live.
 
    Next are the L4's slices 6 to 11: computing loops, as folds over a bounded range; requests and calls that wait (`await` with
    JavaScript's order and required, `Promise.all`, a call that parks its caller, a request recorded

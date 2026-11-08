@@ -1910,6 +1910,29 @@ test("file-checksums hashes a binary file's bytes as sha256sum does, reads its k
   expect(verified.trim().endsWith("ok")).toBe(true);
 });
 
+test("payment-batch writes a pain.001 whose control sum is exact and reads a pain.002 back", async ({ page, request }) => {
+  await openSample(page, "Payment batch (a pain.001 written, a pain.002 read)");
+  const port = await deploy(page);
+  const csv = "id,name,iban,amount,reference\nP1,Jane Roe,FR1420041010050500013M02606,100,Invoice 42\nP2,John Doe,NL91ABNA0417164300,0.10,Refund 7\n";
+  const batch = await request.post(`http://127.0.0.1:${port}/batch?date=2026-11-10`, { data: csv });
+  expect(batch.status()).toBe(200);
+  expect(batch.headers()["content-type"]).toBe("application/xml");
+  const xml = await batch.text();
+  expect(xml).toContain("<CtrlSum>100.10</CtrlSum>");
+  expect(xml).toContain('<InstdAmt Ccy="EUR">0.10</InstdAmt>');
+  expect(xml.indexOf("<MsgId>")).toBeLessThan(xml.indexOf("<CreDtTm>"));
+  // An amount of 0 isn't a payout.
+  expect((await request.post(`http://127.0.0.1:${port}/batch`, { data: csv.replace(",0.10,", ",0,") })).status()).toBe(400);
+  const report = `<Document xmlns="urn:iso:std:iso:20022:tech:xsd:pain.002.001.10"><CstmrPmtStsRpt>
+    <OrgnlGrpInfAndSts><GrpSts>PART</GrpSts></OrgnlGrpInfAndSts>
+    <OrgnlPmtInfAndSts><TxInfAndSts><OrgnlEndToEndId>P2</OrgnlEndToEndId><TxSts>RJCT</TxSts>
+    <StsRsnInf><Rsn><Cd>AC04</Cd></Rsn></StsRsnInf></TxInfAndSts></OrgnlPmtInfAndSts></CstmrPmtStsRpt></Document>`;
+  expect(await (await request.post(`http://127.0.0.1:${port}/status`, { data: report })).json()).toEqual({
+    group: "PART",
+    payments: [{ id: "P2", status: "RJCT", reason: "AC04" }],
+  });
+});
+
 test("due-dates schedules a payout past Easter's closing days and an invoice past a weekend", async ({ page, request }) => {
   await openSample(page, "Due dates (business days at a fixed offset)");
   const port = await deploy(page);
