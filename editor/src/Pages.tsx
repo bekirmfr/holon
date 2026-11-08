@@ -16,9 +16,10 @@ import { flowAddressable, type Route } from "./routes";
  *  nodes mid-edit, viewport — lives there and must survive navigation); the other pages render
  *  as overlays on top of it. `marketplace` is deliberately absent: deferred, and a menu entry
  *  that can't be picked shouldn't be representable as a page state either. */
-export type AppPage = "canvas" | "flows" | "deployed" | "admin" | "home" | "welcome" | "docs";
-/** A page shown in a tab of its own: every page but the canvas (whose tabs are the flows'). */
-export type PageTab = Exclude<AppPage, "canvas">;
+export type AppPage = "canvas" | "flows" | "deployed" | "flow" | "admin" | "home" | "welcome" | "docs";
+/** A page shown in a tab of its own: every page but the canvas (whose tabs are the flows') and a
+ *  flow's page (reached from the nav, the flows and the palette). */
+export type PageTab = Exclude<AppPage, "canvas" | "flow">;
 
 /** The page that shows the place `r` names (routes.ts). A place the editor has no page of its
  *  own for yet is shown by the page that has what it names: the library's samples are on the
@@ -33,8 +34,9 @@ export function pageOf(r: Route): AppPage {
     case "library":
       return "flows";
     case "deployed":
-    case "flow":
       return "deployed";
+    case "flow":
+      return "flow";
     case "docs":
       return "docs";
     case "start":
@@ -62,6 +64,8 @@ export function routeOfPage(p: AppPage): Route {
       return { kind: "docs", page: null, anchor: null };
     case "admin":
       return { kind: "admin", tab: null };
+    case "flow":
+      return { kind: "flows" };
     default:
       return { kind: p };
   }
@@ -76,7 +80,7 @@ export function shownAt(r: Route): Route | null {
     case "editor-home":
       return { kind: "editor", slug: null, view: false, seq: null };
     case "flow":
-      return r.tab === "status" && flowAddressable(r.slug) ? null : { kind: "flow", slug: r.slug, tab: "status" };
+      return flowAddressable(r.slug) ? null : { kind: "flows" };
     case "library":
     case "resources":
     case "people":

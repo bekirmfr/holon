@@ -64,7 +64,9 @@ export function Shell({
   children: ReactNode;
 }) {
   const groups: [string, Entry[]][] = [["work", WORK], ...(me.role === "admin" ? ([["host", HOST]] as [string, Entry[]][]) : []), ["help", HELP]];
-  const current = [...WORK, ...HOST, ...HELP].find((e) => pageOf(e.to) === page);
+  // A flow's page is one of the flows'.
+  const at = page === "flow" ? "flows" : page;
+  const current = [...WORK, ...HOST, ...HELP].find((e) => pageOf(e.to) === at);
   const trail = crumbs(route);
   return (
     <div className="hl-shell">

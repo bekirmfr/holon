@@ -9,7 +9,9 @@
 // (replayed, replay.ts).
 
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
-import { downloadRuns, getCollectionItems, getLog, type LogEntry, type Tally, type VersionEntry } from "./server";
+import { downloadRuns, getCollectionItems, type LogEntry, type Tally, type VersionEntry } from "./server";
+import { field, runActions, runLabel, text } from "./runs";
+import { useFlowLog } from "./useFlowLog";
 import { tallyRows } from "./tallies";
 import { BackButton, everything, HistoryList, itemDetails, useHistory, useRestore } from "./HistoryPane";
 import { CellHistoryButton } from "./CellHistory";
@@ -23,9 +25,6 @@ import { stepOf } from "./keymap";
 import { useKeys } from "./ui/Keys";
 import type { Inspected } from "./holonText";
 import { useNodeDocs } from "./NodeDocs";
-
-const KEEP = 500;
-const POLL_MS = 1500;
 
 const small: CSSProperties = {
   font: "inherit",
@@ -44,25 +43,8 @@ const bad = "var(--bad)";
 const changedBg = "var(--warn-bg)";
 
 const time = (ms: number) => new Date(ms).toLocaleTimeString();
-const runLabel = (e: LogEntry) =>
-  e.kind === "request"
-    ? (e.route ?? `${e.method ?? ""} ${e.url ?? ""} (no route)`)
-    : e.kind === "resume"
-      ? `resumed ${e.route ?? ""}`.trim()
-      : e.kind === "tick"
-        ? (e.route ?? "clock tick")
-        : e.kind === "file"
-          ? `${fileRun(e.sourced.find(([cap]) => cap.startsWith("FileArrival("))?.[1])}${e.route ? ` (${e.route})` : ""}`
-          : (e.route ?? "trigger");
-/** A file run's label: what happened to which file (`deleted file a.csv`). */
-const fileRun = (handle: WValue | undefined) => `${text(field(handle, "event")) || "new"} file ${text(field(handle, "name")) || ""}`.trim();
 const show = (v: WValue | null | undefined) => (v === null || v === undefined ? "—" : formatValue(v));
 const us = (t: number) => (t >= 1000 ? `${(t / 1000).toFixed(2)}ms` : `${t.toFixed(0)}µs`);
-
-/** A record's field, or null. */
-const field = (v: WValue | null | undefined, k: string): WValue | null =>
-  v?.type === "Record" ? (v.value.find(([key]) => key === k)?.[1] ?? null) : null;
-const text = (v: WValue | null) => (v?.type === "Text" ? v.value : v?.type === "Number" ? String(v.value) : "");
 
 /** An outbound request as one line: `GET https://… → 200`, or `→ blocked_host`. */
 function exchangeLine(request: WValue, response: WValue): { line: string; ok: boolean } {
@@ -85,42 +67,6 @@ export function nodeLabel(n: ViewNode): string {
   if (n.data.name === "request" && frozen.length > 0) return `request ${frozen.join(" ")}`;
   return frozen.length > 0 && frozen.join(" ").length <= 24 ? `${n.data.name} ${frozen.join(" ")}` : n.data.name;
 }
-
-/** The deployment's flow log, polled: everything at first, then only what came after the newest. */
-function useFlowLog(slug: string) {
-  const [entries, setEntries] = useState<LogEntry[]>([]);
-  const [chain, setChain] = useState<{ head: string; breaks: number[] }>({ head: "", breaks: [] });
-  const [tallies, setTallies] = useState<Record<string, Tally>>({});
-  const [error, setError] = useState("");
-  const last = useRef<number | undefined>(undefined);
-  useEffect(() => {
-    last.current = undefined;
-    setEntries([]);
-    setChain({ head: "", breaks: [] });
-    setTallies({});
-    let stopped = false;
-    const poll = () =>
-      getLog(slug, last.current)
-        .then(({ entries: fresh, head, breaks, tallies: counted }) => {
-          if (stopped) return;
-          setChain((old) => (old.head === head && old.breaks.length === (breaks ?? []).length ? old : { head, breaks: breaks ?? [] }));
-          setTallies((old) => (JSON.stringify(old) === JSON.stringify(counted ?? {}) ? old : (counted ?? {})));
-          if (fresh.length === 0) return;
-          last.current = fresh[fresh.length - 1].seq;
-          setEntries((old) => [...old, ...fresh].slice(-KEEP));
-          setError("");
-        })
-        .catch((e: unknown) => !stopped && setError(e instanceof Error ? e.message : String(e)));
-    poll();
-    const timer = setInterval(poll, POLL_MS);
-    return () => {
-      stopped = true;
-      clearInterval(timer);
-    };
-  }, [slug]);
-  return { entries, chain, tallies, error };
-}
-
 function Tabs<T extends string>({
   tabs,
   tab,
@@ -197,17 +143,6 @@ function rememberedSplit(): number | null {
   }
 }
 const clampSplit = (w: number, total: number) => Math.max(180, Math.min(total - 200, w));
-
-/** Compact capability badges derived from a run's log entry. */
-function runActions(e: LogEntry): { label: string; title: string; color: string }[] {
-  const acts: { label: string; title: string; color: string }[] = [];
-  if (e.sourced.some(([c]) => c === "Random")) acts.push({ label: "rng", title: "random value read", color: dim });
-  if ((e.rounds ?? []).some((r) => r.exchanges.length > 0)) acts.push({ label: "http", title: "outbound http request", color: good });
-  if (Object.keys(e.secrets ?? {}).length > 0) acts.push({ label: "sec", title: "secret read", color: "var(--warn)" });
-  if ((e.reads ?? []).some((r) => r.file != null)) acts.push({ label: "frd", title: "file read", color: "var(--muted)" });
-  if (e.performed.some((p) => /^file/i.test(p.capability))) acts.push({ label: "fwr", title: "file write", color: "var(--warn)" });
-  return acts;
-}
 
 /** The step controls: back, forward, or the whole run. */
 function Stepper({ step, steps, onStep }: { step: number | null; steps: number; onStep: (s: number | null) => void }) {

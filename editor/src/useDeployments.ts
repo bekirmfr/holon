@@ -33,9 +33,9 @@ export function useDeployments(page: AppPage, setError: (message: string) => voi
     return () => clearInterval(timer);
   }, [refresh]);
 
-  // Opening the Deployed page always shows the live table, not whatever the last fetch saw.
+  // Opening the Deployed page or a flow's always shows the live table, not whatever the last fetch saw.
   useEffect(() => {
-    if (page === "deployed") refresh();
+    if (page === "deployed" || page === "flow") refresh();
   }, [page, refresh]);
 
   const onDelete = useCallback(

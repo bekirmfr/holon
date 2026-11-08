@@ -67,6 +67,7 @@ import {
 } from "./canvasOps";
 import { expandComposite } from "./composites";
 import { FlowTabs, FlowToolbar, ProjectionPanel } from "./CanvasPanels";
+import { FlowPage } from "./FlowPage";
 import { DeployedPage, FlowsPage, pageOf, routeOfPage, shownAt, type AppPage, type PageTab } from "./Pages";
 import { format, parentOf, same, type Route } from "./routes";
 import { PAGE_KEYS } from "./keymap";
@@ -1207,6 +1208,22 @@ function Canvas({
               }}
             />
           )}
+          {shown === "flow" && route.kind === "flow" && (
+            <FlowPage
+              slug={route.slug}
+              tab={route.tab}
+              entry={deployments.find((d) => d.slug === route.slug)}
+              navigate={navigate}
+              role={me.role}
+              card={{
+                onAction: (action, from) => changeDeployment(route.slug, action, from).then(() => refreshDeployments()),
+                onDelete: () => deploymentTable.onDelete(route.slug),
+                onView: (seq) => onView(route.slug, seq),
+                onChanged: refreshDeployments,
+                focus: focus?.slug === route.slug ? focus.n : undefined,
+              }}
+            />
+          )}
           {shown === "deployed" && (
             <DeployedPage
               deployments={deployments}
@@ -1318,9 +1335,10 @@ function Editor({ me }: { me: Me }) {
   // The pages open in tabs of their own, in the order opened; home to begin with, and the
   // welcome unless they said not to.
   const [pages, setPages] = useState<PageTab[]>(["home"]);
-  // A page gone to by its address has its tab, as one opened from the menu does.
+  // A page gone to by its address has its tab, as one opened from the menu does (a flow's page
+  // is reached from the nav and the flows instead).
   useEffect(() => {
-    if (page !== "canvas") setPages((ps) => (ps.includes(page) ? ps : [...ps, page]));
+    if (page !== "canvas" && page !== "flow") setPages((ps) => (ps.includes(page) ? ps : [...ps, page]));
   }, [page]);
   useEffect(() => {
     getPrefs()

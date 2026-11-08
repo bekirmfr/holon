@@ -1709,7 +1709,7 @@ test("orders-api places, lists and refunds orders in the database an admin bound
   await expect(shop).toHaveCount(0);
   await page.getByLabel("show what").selectOption("databases");
   await shop.getByRole("button", { name: "card →" }).first().click();
-  await expect(page.getByRole("tablist", { name: "open tabs" }).getByRole("tab", { name: /^deployed/ })).toHaveAttribute("aria-selected", "true");
+  await expect(page).toHaveURL(/#orders-api$/);
   await expect(page.getByLabel("deployment orders-api", { exact: true })).toContainText("permissions ▾");
 });
 

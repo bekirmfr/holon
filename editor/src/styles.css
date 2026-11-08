@@ -186,6 +186,44 @@ body {
 ::-webkit-scrollbar-thumb:hover { background: var(--faint); }
 * { scrollbar-width: thin; scrollbar-color: var(--border-strong) transparent; }
 
+/* ── A flow's page (FlowPage.tsx) ──────────────────────────────────────── */
+.hl-flow { max-width: 980px; display: flex; flex-direction: column; gap: 12px; }
+.hl-flow__head { display: flex; align-items: baseline; gap: 12px; }
+.hl-flow__name { margin: 0; font-size: 18px; font-weight: 600; color: var(--ink); }
+.hl-flow__status { font-size: 12px; color: var(--faint); }
+.hl-flow__status--running { color: var(--ok); }
+.hl-flow__status--paused { color: var(--warn); }
+.hl-flow__port { color: var(--faint); }
+.hl-flow__spacer { flex: 1; }
+.hl-flow__button {
+  font: inherit; font-size: 12px; padding: 3px 10px; color: var(--body);
+  background: transparent; border: 1px solid var(--border); border-radius: 4px; cursor: pointer;
+}
+.hl-flow__button:hover { border-color: var(--border-strong); color: var(--ink); }
+.hl-flow__button--go { color: var(--accent-ink); background: var(--accent); border-color: var(--accent); }
+.hl-flow__tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--border); }
+.hl-flow__tabs a { padding: 6px 12px; font-size: 13px; color: var(--muted); text-decoration: none; border-bottom: 2px solid transparent; margin-bottom: -1px; }
+.hl-flow__tabs a:hover { color: var(--ink); }
+.hl-flow__tabs a[aria-current="page"] { color: var(--ink); border-bottom-color: var(--accent); }
+.hl-flow__none { color: var(--muted); font-size: 12px; }
+.hl-flow__bar { display: flex; align-items: center; gap: 8px; }
+.hl-flow__count { color: var(--faint); margin-left: 3px; }
+.hl-seg__opt[aria-pressed="true"] { color: var(--accent-ink); background: var(--accent); }
+.hl-seg__opt[aria-pressed="true"] .hl-flow__count { color: inherit; }
+.hl-flow__said { font-size: 12px; color: var(--body); }
+.hl-flow__said code { color: var(--ink); }
+.hl-flow__bad, .hl-flow__failed { color: var(--bad); }
+.hl-flow__waiting { color: var(--warn); }
+.hl-flow__tally { font-size: 11px; color: var(--faint); }
+.hl-flow__what { color: var(--ink); }
+.hl-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.hl-table th { text-align: left; font-weight: 400; color: var(--faint); padding: 4px 8px; border-bottom: 1px solid var(--border-strong); }
+.hl-table td { padding: 4px 8px; border-bottom: 1px solid var(--border); color: var(--body); }
+.hl-table__row { cursor: pointer; }
+.hl-table__row:hover td { background: var(--row); }
+.hl-table__dim { color: var(--faint) !important; }
+.hl-table a { color: var(--accent); text-decoration: none; }
+
 /* ── Shell: the side nav, the host card, the top bar (ui/Shell.tsx) ─────── */
 .hl-shell { display: flex; height: 100%; }
 .hl-nav {
