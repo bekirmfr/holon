@@ -66,7 +66,9 @@ import {
 import { expandComposite } from "./composites";
 import { FlowTabs, FlowToolbar, ProjectionPanel } from "./CanvasPanels";
 import { DeployedPage, FlowsPage, pageOf, routeOfPage, shownAt, type AppPage, type PageTab } from "./Pages";
-import { format, same, type Route } from "./routes";
+import { format, parentOf, same, type Route } from "./routes";
+import { PAGE_KEYS } from "./keymap";
+import { KeysDialog, useKeys } from "./ui/Keys";
 import { useHashRoute, type Navigate } from "./useHashRoute";
 import { applyTheme, storedTheme, useDark } from "./look";
 import { useCanvasHistory } from "./useCanvasHistory";
@@ -668,6 +670,17 @@ function Canvas({
     fitView,
   });
 
+  // The flow's keys (keymap.ts): saved and deployed while it is edited, from the text too; its
+  // values shown or hidden while viewed. Stepping is the bottom pane's (ViewPanes.tsx).
+  useKeys(
+    {
+      "ctrl+s": () => void onSave(),
+      "ctrl+d": () => void onDeployFlow(),
+    },
+    { enabled: shown === "canvas" && !viewing, whileTyping: ["ctrl+s", "ctrl+d"] },
+  );
+  useKeys({ "=": () => view.toggleValues() }, { enabled: shown === "canvas" && viewing !== null });
+
   const onProject = useCallback(() => {
     const result = projectCanvas(nodes, edges, ev, canvasKey);
     if (result.ok) {
@@ -1126,6 +1139,36 @@ function Editor({ me }: { me: Me }) {
   }, [routeKey]);
   const routeNow = useRef(route);
   routeNow.current = route;
+
+  // The keys that work anywhere (keymap.ts): a page by its number, Esc up, F6 across the panes,
+  // and ? for them all. In the editor Esc stays the canvas's (and its overlays'): a run viewed
+  // there is followed live, so going up from it would only be taken back.
+  const [keysShown, setKeysShown] = useState(false);
+  const toPage = (i: number) => () => {
+    const to: Route[] = [
+      { kind: "overview" },
+      { kind: "approvals", tab: "deploys" },
+      { kind: "flows" },
+      { kind: "editor", slug: null, view: false, seq: null },
+      { kind: "library", tab: "samples" },
+      { kind: "resources", tab: null },
+      { kind: "people", tab: null },
+      { kind: "policy" },
+    ];
+    navigate(to[i]);
+  };
+  useKeys({
+    ...Object.fromEntries(PAGE_KEYS.map((_, i) => [String(i + 1), toPage(i)])),
+    "?": () => setKeysShown(true),
+    Escape: () => {
+      if (route.kind === "editor") return false;
+      const up = parentOf(route);
+      if (!up) return false;
+      navigate(up);
+    },
+    F6: () => movePane(1),
+    "shift+F6": () => movePane(-1),
+  });
   // What the editor keeps for this person (home.ts): read once, saved as it changes. The welcome
   // opens on start unless they said not to; otherwise the editor starts at home.
   const [prefs, setPrefsState] = useState<Prefs>({});
@@ -1239,6 +1282,7 @@ function Editor({ me }: { me: Me }) {
         />
       </header>
 
+      {keysShown && <KeysDialog onClose={() => setKeysShown(false)} />}
       {error ? (
         <pre className="hl-error">{error}</pre>
       ) : (
@@ -1263,6 +1307,19 @@ function Editor({ me }: { me: Me }) {
       )}
     </div>
   );
+}
+
+/** The panes F6 moves between, in the page's order: the header, the canvas, its side panes and
+ *  the labelled regions of the page shown. */
+const PANES = '.hl-header nav, .hl-canvas__flow, [role="complementary"], [role="region"][aria-label]:not(.hl-toasts), main';
+
+function movePane(by: -1 | 1) {
+  const panes = [...document.querySelectorAll<HTMLElement>(PANES)].filter((p) => p.offsetParent !== null || p.getClientRects().length > 0);
+  if (panes.length === 0) return;
+  const at = panes.findIndex((p) => p.contains(document.activeElement));
+  const next = panes[at < 0 ? (by > 0 ? 0 : panes.length - 1) : (at + by + panes.length) % panes.length];
+  if (!next.hasAttribute("tabindex") && next.tabIndex < 0) next.tabIndex = -1;
+  next.focus();
 }
 
 export default function App() {

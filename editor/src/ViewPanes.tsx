@@ -19,6 +19,8 @@ import { typeLabel } from "./theme";
 import type { WParam, WPort, WValue } from "./holon";
 import { isCollectionCell, itemChanged, type CollectionAtStep, type Diagnosis, type Issue, type NodeExchange, type NodeTrace } from "./replay";
 import { FAIL } from "./PrimitiveNode";
+import { stepOf } from "./keymap";
+import { useKeys } from "./ui/Keys";
 import { useNodeDocs } from "./NodeDocs";
 
 const KEEP = 500;
@@ -214,6 +216,19 @@ function Stepper({ step, steps, onStep }: { step: number | null; steps: number; 
       <button style={small} onClick={() => onStep(step === null ? 0 : Math.max(0, step - 1))} title="step back one node">
         ◀
       </button>
+      {/* The whole run is the slider's far end, past the last node. */}
+      <input
+        type="range"
+        aria-label="step"
+        min={0}
+        max={steps}
+        value={step ?? steps}
+        onChange={(e) => {
+          const s = Number(e.target.value);
+          onStep(s >= steps ? null : s);
+        }}
+        style={{ width: 120 }}
+      />
       <span style={{ minWidth: 86, textAlign: "center" }}>
         {step === null ? `all ${steps} nodes` : `node ${step + 1} of ${steps}`}
       </span>
@@ -344,6 +359,24 @@ export function BottomPane({
     setLive(false);
     onSelect(e);
   };
+  // Stepping through the run, and the runs before and after it, from the keys (keymap.ts).
+  const runBeside = (by: -1 | 1) => {
+    if (!selected) return false;
+    const there = by < 0 ? entries.filter((e) => e.seq < selected.seq).pop() : entries.find((e) => e.seq > selected.seq);
+    if (!there) return false;
+    pick(there);
+  };
+  const stepBy = (by: -1 | 1) => (order.length === 0 ? false : onStep(stepOf(step, order.length, by)));
+  useKeys({
+    j: () => stepBy(1),
+    ArrowRight: () => stepBy(1),
+    k: () => stepBy(-1),
+    ArrowLeft: () => stepBy(-1),
+    Home: () => (order.length === 0 ? false : onStep(0)),
+    End: () => (order.length === 0 ? false : onStep(null)),
+    ",": () => runBeside(-1),
+    ".": () => runBeside(1),
+  });
   // A history row that isn't a run: no run shown, and live stops so none comes back.
   const unpick = () => {
     setLive(false);

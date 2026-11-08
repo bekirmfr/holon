@@ -624,3 +624,32 @@ body {
   font: inherit; font-size: 10px; line-height: 1.5; text-align: center;
   color: inherit; border: 1px solid currentColor; border-radius: 3px; opacity: 0.6;
 }
+
+/* ── A modal over the page, and the ? keys dialog in one (ui/Keys.tsx) ── */
+.hl-modal {
+  position: fixed; inset: 0; z-index: 1000;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--overlay);
+}
+.hl-modal__box {
+  max-width: min(720px, calc(100vw - 32px)); max-height: calc(100vh - 64px); overflow: auto;
+  background: var(--surface); color: var(--body);
+  border: 1px solid var(--border-strong); border-radius: var(--r);
+  font-family: var(--mono); font-size: 12px;
+}
+.hl-modal__head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 8px 12px; border-bottom: 1px solid var(--border); color: var(--ink);
+}
+.hl-modal__close { font: inherit; font-size: 14px; color: var(--muted); background: none; border: 0; cursor: pointer; }
+.hl-keys__groups { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 12px 24px; padding: 12px; }
+.hl-keys__group h3 { margin: 0 0 6px; font-size: 11px; font-weight: 500; letter-spacing: 0.04em; color: var(--muted); }
+.hl-keys__group dl { margin: 0; }
+.hl-keys__row { display: flex; gap: 8px; padding: 2px 0; }
+.hl-keys__row dt { flex: 0 0 auto; min-width: 110px; }
+.hl-keys__row dd { margin: 0; }
+.hl-keys .hl-kbd { opacity: 0.8; }
+/* A pane moved to by F6 (App.tsx's movePane) says it has the focus. */
+.hl-header nav:focus-visible, .hl-canvas__flow:focus-visible, [role="complementary"]:focus-visible, [role="region"]:focus-visible, main:focus-visible {
+  outline: 1px solid var(--accent); outline-offset: -1px;
+}
