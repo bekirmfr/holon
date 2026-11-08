@@ -3,11 +3,11 @@
 // editor had for a deployment (its card, view mode's log) move here a tab at a time.
 
 import { useMemo, useState, type MouseEvent, type ReactNode } from "react";
-import { DeploymentCard } from "./DeploymentCard";
 import { HistoryTab } from "./HistoryPane";
 import { StateTab } from "./FlowState";
 import { StatusTab } from "./FlowStatus";
 import { RunDetail } from "./RunPage";
+import { SettingsTab } from "./FlowSettings";
 import type { CodeText } from "./timeline";
 import { outside, runLabel, runOutcome, type Outcome } from "./runs";
 import { format, type FlowTab, type Route } from "./routes";
@@ -59,14 +59,13 @@ export function FlowPage({
   codeText: CodeText;
   /** A restore from its history changed it: the table should be fetched again. */
   onRestored: () => void;
-  /** What its card does (DeploymentCard.tsx), shown on Settings until that tab is its own;
-   *  its run, pause and stop are the header's. */
+  /** Running, pausing and stopping it (the header's; Settings runs it from a session), its grant
+   *  changed, the permissions asked for from the admin page, and removing it. */
   card: {
     onAction: (action: "run" | "pause" | "stop", from?: "latest" | "fresh" | number) => Promise<void>;
-    onDelete: () => void;
-    onView: (seq?: number) => void;
     onChanged: () => void;
     focus?: number;
+    onRemove: () => Promise<void>;
   };
 }) {
   const edit = () => navigate({ kind: "editor", slug, view: false, seq: null });
@@ -136,14 +135,14 @@ export function FlowPage({
           ) : tab === "status" ? (
             <StatusTab slug={slug} entry={entry} navigate={navigate} role={role} manifestOf={manifestOf} />
           ) : (
-            <DeploymentCard
+            <SettingsTab
+              slug={slug}
               entry={entry}
-              onAction={card.onAction}
-              onDelete={card.onDelete}
-              onView={card.onView}
-              onChanged={card.onChanged}
-              focus={card.focus}
               role={role}
+              focus={card.focus}
+              onChanged={card.onChanged}
+              onRunFrom={(session) => card.onAction("run", session)}
+              onRemove={card.onRemove}
             />
           )}
         </>

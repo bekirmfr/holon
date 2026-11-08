@@ -34,7 +34,7 @@ import {
   manifestItems,
   manifestTrigger,
 } from "./holon";
-import { changeDeployment, getDeployedDocument, getFlow, getManifest, getPrefs, setPrefs, type FlowDocument, type FlowRecord } from "./server";
+import { changeDeployment, deleteDeployment, getDeployedDocument, getFlow, getManifest, getPrefs, setPrefs, type FlowDocument, type FlowRecord } from "./server";
 import { mayDiff } from "./mayItems";
 import { MayStrip } from "./MayStrip";
 import { outputColor } from "./theme";
@@ -1225,9 +1225,12 @@ function Canvas({
               manifestOf={manifestOfDocument}
               card={{
                 onAction: (action, from) => changeDeployment(route.slug, action, from).then(() => refreshDeployments()),
-                onDelete: () => deploymentTable.onDelete(route.slug),
-                onView: (seq) => onView(route.slug, seq),
                 onChanged: refreshDeployments,
+                onRemove: async () => {
+                  await deleteDeployment(route.slug);
+                  refreshDeployments();
+                  navigate({ kind: "flows" });
+                },
                 focus: focus?.slug === route.slug ? focus.n : undefined,
               }}
             />

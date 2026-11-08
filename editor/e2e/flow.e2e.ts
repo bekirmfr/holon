@@ -65,6 +65,33 @@ test("a flow's status: its last day, what it may since when and by whom, its run
   await expect(head.locator(".hl-flow__status")).toContainText("running");
 });
 
+test("a flow's settings: a permission revoked pauses it and granted back runs it, and it is removed by typing its name", async ({ page, request }) => {
+  await openSample(page, "Hello API");
+  const port = await deploy(page);
+  await page.goto("/#hello-api.settings");
+  const head = page.getByLabel("flow hello-api");
+  const permissions = page.getByRole("region", { name: "permissions" });
+  const ingress = permissions.getByRole("listitem").filter({ hasText: "receive requests" });
+  await ingress.getByRole("button", { name: "Revoke" }).click();
+  await expect(permissions.locator(".hl-flow__revoked")).toContainText("receive requests");
+  await expect(head.locator(".hl-flow__status")).toContainText("paused");
+  await permissions.getByRole("button", { name: "Grant back" }).click();
+  await expect(permissions.getByRole("listitem").filter({ hasText: "receive requests" }).getByRole("button", { name: "Revoke" })).toBeVisible();
+  // Granted back, it runs again by itself.
+  await expect(head.locator(".hl-flow__status")).toContainText("running");
+  expect((await request.get(`http://127.0.0.1:${port}/hello/Ada`)).status()).toBe(200);
+  await expect(page.getByRole("region", { name: "sessions" }).getByRole("row").first()).toBeVisible();
+
+  // Removed: once stopped, by typing its name.
+  const remove = page.getByRole("region", { name: "remove" });
+  await expect(remove.getByRole("button", { name: "Remove hello-api" })).toBeDisabled();
+  await head.getByRole("button", { name: "Stop", exact: true }).click();
+  await expect(head.locator(".hl-flow__status")).toContainText("stopped");
+  await remove.getByRole("textbox").fill("hello-api");
+  await remove.getByRole("button", { name: "Remove hello-api" }).click();
+  await expect(page).toHaveURL(/#flows$/);
+});
+
 test("a flow's state: its collection's items now, and the runs that changed one", async ({ page, request }) => {
   await openSample(page, "Notes API");
   const port = await deploy(page);

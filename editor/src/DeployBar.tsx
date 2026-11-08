@@ -240,7 +240,7 @@ export function secretRollbackReport(slug: string, name: string, p: SecretRollba
  * has no value), a way to set a new version (a value, an env variable, a Vault field), and its
  * history, from which an older version can be rolled back to.
  */
-function SecretRow({ slug, name, info, envNames, onChanged, readOnly = false }: { slug: string | null; name: string; info?: SecretInfo; envNames: string[]; onChanged: () => void; readOnly?: boolean }) {
+export function SecretRow({ slug, name, info, envNames, onChanged, readOnly = false }: { slug: string | null; name: string; info?: SecretInfo; envNames: string[]; onChanged: () => void; readOnly?: boolean }) {
   const kindOf = (source?: string): Kind => (source?.startsWith("env:") ? "env" : source?.startsWith("vault:") ? "vault" : "value");
   const [kind, setKind] = useState<Kind>(kindOf(info?.source));
   const [text, setText] = useState("");
