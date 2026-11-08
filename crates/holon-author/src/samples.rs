@@ -277,8 +277,8 @@ static SAMPLES: &[Sample] = &[
     Sample {
         name: "heartbeat",
         title: "Heartbeat",
-        description: "A clock flow: every 10 seconds it records the time, counts the beats in its state, and keeps the time of the first beat (a fallback that is itself a value: coalesce).",
-        shows: &["clock", "every", "state across runs", "default", "coalesce", "add"],
+        description: "A clock flow: every 10 seconds it records the time, keeps it in a collection under the beat's number (times[state.beats++] = t: ++ written as a value gives the count before this beat, 0 the first time, and a number names an item as its text), and keeps the time of the first beat (a fallback that is itself a value: coalesce).",
+        shows: &["clock", "every", "state across runs", "++ as a value", "a number as a key", "default", "coalesce", "add"],
         port: None,
         secrets: &[],
         optional: &[],
@@ -409,8 +409,8 @@ static SAMPLES: &[Sample] = &[
     Sample {
         name: "counter",
         title: "Hit counter (writes run with their route)",
-        description: "A route counts its hits though nothing in it reads the request: its writes are tied to the route's request. Another records the last visitor after the visit is put.",
-        shows: &["a sink's trigger", "if (x !== undefined)", "state", "collection_put"],
+        description: "A route counts its hits though nothing in it reads the request: its writes are tied to the route's request, and `hit ${++state.hits}` says the count it makes, from 0 when there is none yet. Another records the last visitor after the visit is put.",
+        shows: &["a sink's trigger", "++ as a value", "if (x !== undefined)", "state", "collection_put"],
         port: Some("8155"),
         secrets: &[],
         optional: &[],

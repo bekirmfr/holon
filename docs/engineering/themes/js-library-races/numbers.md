@@ -109,7 +109,7 @@ composite, which pays a call each time.
 | `a ** b` | leaf | `power` (as `Math.pow`) | | not expressible (as `acos`) |
 | `-x` | reader | `multiply(x, -1)` | as a function: call 624 ns / 41 ns = 15.3; in frame: call 604 ns / 498 ns = 1.21; n=64: 1.23 | an existing leaf computes it exactly; placed inline its two nodes cost 1.21× one. `0 - x` gives `0` for `0`, where `-0` is right (checked) |
 | `+x` | leaf | `to_number {grammar: "number"}` | | `+x` is `Number(x)` |
-| `x++`, `x--` | reader | `add`, `subtract` with 1, as statements (mapped today) | | an expression `x++` stays refused: a write is a statement (javascript-library.md §1) |
+| `x++`, `x--` | reader | `add`, `subtract` with 1, after `x ?? 0` (`default`) | | read as a statement and as a value (`x++` the old value, `++x` the new), the change made before the statement it is in; an absent value counts from 0, where JavaScript gives `NaN` |
 | `a & b` | leaf | `bitwise {op: "and"}` | call 343.09 µs / 44 ns = 7808; n=64: 9462 | expressible bit by bit (a 32-step `fold`), over 3× |
 | `a \| b` | leaf | `bitwise {op: "or"}` | call 333.14 µs / 44 ns = 7601; n=64: 10167 | expressible as `a + b - (a & b)`, over 3× |
 | `a ^ b` | leaf | `bitwise {op: "xor"}` | call 340.14 µs / 44 ns = 7768; n=64: 9660 | expressible as `a + b - 2 * (a & b)`, over 3× |

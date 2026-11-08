@@ -4137,7 +4137,7 @@ export const t = action((x) => {
         let heartbeat = samples::build(samples::sample("heartbeat").unwrap()).unwrap();
         assert_eq!(
             printed(Some("heartbeat"), &heartbeat, &BTreeMap::new()),
-            "import { every, flow } from \"holon\"\nimport state from \"state\"\nimport { now } from \"holon:clock\"\n\nflow(\"heartbeat\")\n\nevery(\"10s\", () => {\n  state.last_beat = now\n  state.beats = (state.beats ?? 0) + 1\n  state.first_beat = state.first_beat ?? now\n})\n"
+            "import { every, flow } from \"holon\"\nimport state from \"state\"\nimport times from \"collection:times\"\nimport { now } from \"holon:clock\"\n\nflow(\"heartbeat\")\n\nevery(\"10s\", () => {\n  state.last_beat = now\n  const default_2 = state.beats ?? 0\n  state.beats = default_2 + 1\n  times[`${default_2}`] = now\n  state.first_beat = state.first_beat ?? now\n})\n"
         );
         let likes = compile(samples::sample("likes").unwrap().text).unwrap();
         let text = printed(Some("likes"), &likes.doc, &likes.names);

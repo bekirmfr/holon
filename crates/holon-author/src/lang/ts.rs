@@ -188,6 +188,20 @@ struct Frame {
     trying: Vec<Trying>,
     /// The bindings of a `throw`'s nothing: an answer of several outputs throws for each.
     throws: BTreeSet<String>,
+    /// What the `++` and `--` written as values in the statement being read did, made before it
+    /// ([`Self::flush_updates`]).
+    updates: Updates,
+    /// Why a `++` or `--` written as a value isn't taken where it is, innermost last: a part that
+    /// may not run, a function written in place.
+    no_updates: Vec<&'static str>,
+}
+
+/// What the `++` and `--` written as values in a statement did: the bindings they made (the
+/// value each read, a local's new version), and their writes to state and collections.
+#[derive(Default)]
+struct Updates {
+    binds: Vec<Stmt>,
+    writes: Vec<(Place, Expr, Span)>,
 }
 
 /// A `try` block being read: what it makes, whose arriving is the block succeeding (§8).
@@ -1030,14 +1044,17 @@ impl<'s, 't> Reader<'s, 't> {
     /// An arrow's expression as its body: a route's or an action's answer, a function's output,
     /// or what a clock's or a file's run does.
     fn arrow_answer(&mut self, e: &js::Expression, block: Block, stmts: &mut Vec<Stmt>) -> R<Ret> {
+        let mark = stmts.len();
         if matches!(block, Block::Every | Block::File) {
             if matches!(self.unwrap(e), js::Expression::AssignmentExpression(_) | js::Expression::UnaryExpression(_) | js::Expression::CallExpression(_) | js::Expression::UpdateExpression(_)) {
                 self.effect(e, stmts, 0)?;
+                self.flush_updates(stmts, mark, 0)?;
                 return Ok(Ret::Never);
             }
             return fail(self.span(e.span()), format!("a {}'s run answers nobody: it writes, sends or calls", block_word(block)));
         }
         self.exit(e, block)?;
+        self.flush_updates(stmts, mark, 0)?;
         Ok(Ret::Always)
     }
 
@@ -1111,7 +1128,13 @@ impl<'s, 't> Reader<'s, 't> {
                     r?
                 }
                 _ => {
-                    let r = self.statement(s, block, stmts, start)?;
+                    // A statement's `++` and `--` are its own: a block's head (an `if`'s
+                    // condition) keeps its own while the statements inside are read.
+                    let outer = std::mem::take(&mut self.frame.updates);
+                    let mark = stmts.len();
+                    let r = self.statement(s, block, stmts, start).and_then(|r| self.flush_updates(stmts, mark, start).map(|()| r));
+                    self.frame.updates = outer;
+                    let r = r?;
                     if let Ret::When(e) = &r {
                         self.frame.guards.push(Guard::Live(otherwise(e)));
                     }
@@ -1389,11 +1412,9 @@ impl<'s, 't> Reader<'s, 't> {
         match self.unwrap(e) {
             js::Expression::AssignmentExpression(a) => self.assignment(a, stmts, start),
             js::Expression::UpdateExpression(u) => {
-                let op = if u.operator == js::UpdateOperator::Increment { BinOp::Add } else { BinOp::Sub };
                 let place = self.place(&u.argument)?;
-                let old = self.read_place(&place, at)?;
-                let one = Expr { kind: ExprKind::Number { value: 1.0, text: "1".into() }, span: at };
-                self.write_place(place, binary(op, old, one), at, stmts, start)
+                let old = self.held_or_zero(&place, at)?;
+                self.write_place(place, stepped(u.operator, old, at), at, stmts, start)
             }
             js::Expression::UnaryExpression(u) if u.operator == js::UnaryOperator::Delete => self.delete(u, stmts),
             js::Expression::CallExpression(c) if let Some((ts, method)) = self.local_method(c) => self.mutate(c, &ts, &method, stmts),
@@ -1448,17 +1469,23 @@ impl<'s, 't> Reader<'s, 't> {
         {
             let ts = ts.clone();
             let value = self.date_value(n)?;
+            self.flush_updates(stmts, stmts.len(), start)?;
             self.write_place(place, value, at, stmts, start)?;
             self.mark_date(&ts);
             return Ok(());
         }
+        // `x += …` reads x before what it adds, as JavaScript does: a `++` in it counts after.
+        let old = if op.is_some() || number.is_some() { Some(self.read_place(&place, at)?) } else { None };
         let rhs = self.expr(&a.right)?;
-        let value = match op {
-            None if let Some((name, params)) = number => {
-                let old = self.read_place(&place, at)?;
+        // What a `++` in the target's key or in the value did is done before the write.
+        self.flush_updates(stmts, stmts.len(), start)?;
+        let value = match (op, old) {
+            (Some(op), Some(old)) => binary(op, old, rhs),
+            (None, Some(old)) => {
+                let (name, params) = number.expect("an operator's leaf");
                 leaf(name, params, vec![old, rhs], at)
             }
-            None => {
+            _ => {
                 if self.share(&a.right)
                     && let Place::Local(ts, _) = &place
                 {
@@ -1468,10 +1495,6 @@ impl<'s, 't> Reader<'s, 't> {
                     return Ok(());
                 }
                 rhs
-            }
-            Some(op) => {
-                let old = self.read_place(&place, at)?;
-                binary(op, old, rhs)
             }
         };
         self.write_place(place, value, at, stmts, start)
@@ -1656,11 +1679,18 @@ impl<'s, 't> Reader<'s, 't> {
         }
     }
 
-    /// What `place` holds now, for `+=` and `++`.
+    /// What `place` holds now, for `+=` and `++`. A state key this run already writes is refused:
+    /// it reads as the run began, so a second change would count from there, not from the first.
     fn read_place(&mut self, place: &Place, at: Span) -> R<Expr> {
         match place {
             Place::Local(ts, span) => self.identifier(ts, *span),
-            Place::State(key, _) => self.state_read(key, at),
+            Place::State(key, _) => {
+                let pending = self.frame.updates.writes.iter().any(|(p, ..)| matches!(p, Place::State(k, _) if k == key));
+                if pending || self.frame.tied.contains(key) || self.frame.writes.iter().any(|(k, ..)| k == key) {
+                    return fail(at, format!("state.{key} is changed again in this run, and a state key reads as the run began, so this change would count from there: change it once"));
+                }
+                self.state_read(key, at)
+            }
             Place::Store(collection, span, key) => {
                 self.check_unwritten(collection, at)?;
                 Ok(Expr { kind: ExprKind::Index { base: Box::new(Expr { kind: ExprKind::Name(collection.clone()), span: *span }), key: Box::new(key.clone()) }, span: at })
@@ -1673,6 +1703,57 @@ impl<'s, 't> Reader<'s, 't> {
                 Ok(e)
             }
         }
+    }
+
+    /// What `place` holds as `++` and `--` read it: an absent value is 0, a counter's start,
+    /// where JavaScript's would be NaN.
+    fn held_or_zero(&mut self, place: &Place, at: Span) -> R<Expr> {
+        let held = self.read_place(place, at)?;
+        let zero = Expr { kind: ExprKind::Number { value: 0.0, text: "0".into() }, span: at };
+        Ok(binary_at(BinOp::Coalesce, held, zero, at))
+    }
+
+    /// `n++` or `++n` where a value goes: the value it read, or the one it made. Its change comes
+    /// before the statement it is in, in the order the statement reads ([`Self::flush_updates`]):
+    /// a local read after it in the statement is the new one; state and a collection are read
+    /// as the run began, wherever they are read.
+    fn update_value(&mut self, u: &js::UpdateExpression, span: Span) -> R<Expr> {
+        if let Some(why) = self.frame.no_updates.last() {
+            return fail(span, why.replace("OP", if u.operator == js::UpdateOperator::Increment { "++" } else { "--" }));
+        }
+        let place = self.place(&u.argument)?;
+        let base = match &place {
+            Place::Local(name, _) | Place::State(name, _) | Place::Store(name, ..) | Place::Member(name, ..) => self.local_name(name),
+        };
+        let mut binds = Vec::new();
+        let old = self.held_or_zero(&place, span)?;
+        let old = self.hide(old, &format!("{base}_was"), &mut binds);
+        let new = stepped(u.operator, old.clone(), span);
+        let new = if u.prefix { self.once(new, span, &mut binds) } else { new };
+        match place {
+            Place::Local(..) | Place::Member(..) => self.write_place(place, new.clone(), span, &mut binds, 0)?,
+            // Made where the statement begins, as each of them is when the run ends: written,
+            // a collection is no longer read in this run (§12).
+            Place::State(..) | Place::Store(..) => {
+                if let Place::Store(collection, ..) = &place {
+                    self.frame.written.insert(collection.clone());
+                }
+                self.frame.updates.writes.push((place, new.clone(), span));
+            }
+        }
+        self.frame.updates.binds.extend(binds);
+        Ok(if u.prefix { new } else { old })
+    }
+
+    /// What the `++` and `--` in a statement's values did, before what the statement does: the
+    /// bindings, where it begins (`at`), then the writes, in the order they were read.
+    fn flush_updates(&mut self, stmts: &mut Vec<Stmt>, at: usize, start: usize) -> R<()> {
+        let Updates { binds, writes } = std::mem::take(&mut self.frame.updates);
+        stmts.splice(at..at, binds);
+        for (place, value, span) in writes {
+            self.write_place(place, value, span, stmts, start)?;
+        }
+        Ok(())
     }
 
     fn write_place(&mut self, place: Place, value: Expr, at: Span, stmts: &mut Vec<Stmt>, start: usize) -> R<()> {
@@ -1880,6 +1961,8 @@ impl<'s, 't> Reader<'s, 't> {
             return self.after_block(f, x, block, stmts, at);
         }
         let cond = self.cond(&f.test)?;
+        // A `++` in the condition counts before either branch, which reads what it made.
+        self.flush_updates(stmts, stmts.len(), start)?;
         let cond = self.hide(cond, "cond", stmts);
         let branches = vec![(Guard::Branch(cond.clone()), Some(statements_of(&f.consequent))), (Guard::Branch(otherwise(&cond)), f.alternate.as_ref().map(statements_of))];
         let mut paths = self.branches(branches, block, stmts)?;
@@ -2299,6 +2382,7 @@ impl<'s, 't> Reader<'s, 't> {
     fn switch(&mut self, w: &js::SwitchStatement, block: Block, stmts: &mut Vec<Stmt>, start: usize) -> R<Ret> {
         let at = self.span(w.span);
         let subject = self.expr(&w.discriminant)?;
+        self.flush_updates(stmts, stmts.len(), start)?;
         let subject = self.hide(subject, "subject", stmts);
         let mut cases: Vec<Case> = Vec::new();
         let (mut patterns, mut default) = (Vec::new(), false);
@@ -2625,8 +2709,17 @@ impl<'s, 't> Reader<'s, 't> {
             js::LogicalOperator::And => BinOp::And,
             js::LogicalOperator::Coalesce => BinOp::Coalesce,
         };
-        let (lhs, rhs) = (operand(self, &l.left)?, operand(self, &l.right)?);
+        let lhs = operand(self, &l.left)?;
+        let rhs = self.unsure(MAY_NOT_RUN, |s| operand(s, &l.right))?;
         Ok(Expr { kind: ExprKind::Binary { op, lhs: Box::new(lhs), rhs: Box::new(rhs) }, span })
+    }
+
+    /// `read` in a place where a `++` or `--` written as a value isn't taken, `why` saying so.
+    fn unsure<T>(&mut self, why: &'static str, read: impl FnOnce(&mut Self) -> R<T>) -> R<T> {
+        self.frame.no_updates.push(why);
+        let r = read(self);
+        self.frame.no_updates.pop();
+        r
     }
 
     /// `e` read as a condition, as `if`, `?:` and `!` read one: JavaScript's ToBoolean of its
@@ -3115,10 +3208,10 @@ impl<'s, 't> Reader<'s, 't> {
             js::Expression::LogicalExpression(l) => self.logical(e, l, span, Self::expr),
             js::Expression::ConditionalExpression(c) => {
                 let cond = self.cond(&c.test)?;
-                let then = self.expr(&c.consequent)?;
+                let then = self.unsure(MAY_NOT_RUN, |s| s.expr(&c.consequent))?;
                 let els = match self.unwrap(&c.alternate) {
                     js::Expression::Identifier(i) if i.name == "undefined" && self.lookup("undefined").is_none() => None,
-                    other => Some(Box::new(self.expr(other)?)),
+                    other => Some(Box::new(self.unsure(MAY_NOT_RUN, |s| s.expr(other))?)),
                 };
                 ok(ExprKind::If { cond: Box::new(cond), then: Box::new(then), els })
             }
@@ -3126,7 +3219,7 @@ impl<'s, 't> Reader<'s, 't> {
             js::Expression::NewExpression(n) => self.new_expr(n, span),
             js::Expression::TaggedTemplateExpression(t) => self.tagged(t, span),
             js::Expression::AssignmentExpression(_) => fail(span, "a write is a statement of its own"),
-            js::Expression::UpdateExpression(_) => fail(span, "++ and -- are a statement of their own: n++"),
+            js::Expression::UpdateExpression(u) => self.update_value(u, span),
             _ => fail(span, format!("{} isn't something Holon computes: do it in a js() function", expression_kind(e))),
         }
     }
@@ -4450,7 +4543,7 @@ impl<'s, 't> Reader<'s, 't> {
                 let added: Vec<String> = names.iter().map(|(ts, _)| ts.clone()).filter(|ts| !self.frame.params.contains(ts)).collect();
                 self.frame.params.extend(added.iter().cloned());
                 self.scopes.push(scope);
-                let body = self.expr(body);
+                let body = self.unsure(IN_A_FUNCTION, |s| s.expr(body));
                 self.scopes.pop();
                 for ts in &added {
                     self.frame.params.remove(ts);
@@ -5134,6 +5227,16 @@ fn joined(x: Expr) -> Expr {
         }
     }
 }
+
+/// `old` and one more for `++`, one less for `--`.
+fn stepped(op: js::UpdateOperator, old: Expr, at: Span) -> Expr {
+    let one = Expr { kind: ExprKind::Number { value: 1.0, text: "1".into() }, span: at };
+    binary_at(if op == js::UpdateOperator::Increment { BinOp::Add } else { BinOp::Sub }, old, one, at)
+}
+
+/// Where a `++` or `--` written as a value isn't taken, `OP` standing for which it is.
+const MAY_NOT_RUN: &str = "OP in a part that may not run (after ?, &&, || or ??) isn't taken: give it a statement of its own before, nOP, and read n";
+const IN_A_FUNCTION: &str = "OP in a function written in place isn't taken: it would change what is outside it once for each item";
 
 fn binary(op: BinOp, lhs: Expr, rhs: Expr) -> Expr {
     let span = lhs.span.to(rhs.span);
@@ -5919,9 +6022,47 @@ flow("u", { port: 8000 })
 
 every("1m", () => {
   const n = state.beats ?? 0
-  const n_2 = n + 1
+  const n_2 = (n ?? 0) + 1
   const n_3 = n_2 + 2
   state.beats = n_3
+})
+"#,
+            ),
+            (
+                "++ and -- as values: what they read or made, left to right, absent counted as 0",
+                r#"import { flow, route } from "holon"
+import state from "state"
+import beats from "collection:beats"
+import { now } from "holon:clock"
+flow("v", { port: 8000 })
+route.post("/v", (req) => {
+  let i = 0
+  const xs = [i++, i++, i, --i]
+  beats[state.count++] = now
+  return { xs, next: ++state.next }
+})
+"#,
+                r#"import { flow, route } from "holon"
+import state from "state"
+import beats from "collection:beats"
+import { now } from "holon:clock"
+
+flow("v", { port: 8000 })
+
+route.post("/v", (req) => {
+  const i = 0
+  const a = i ?? 0
+  const i_2 = a + 1
+  const b = i_2 ?? 0
+  const i_3 = b + 1
+  const c = (i_3 ?? 0) - 1
+  const xs = [a, b, i_3, c]
+  const count = state.count ?? 0
+  state.count = count + 1
+  beats[count] = now
+  const next = (state.next ?? 0) + 1
+  state.next = next
+  return { xs, next }
 })
 "#,
             ),
@@ -6107,8 +6248,11 @@ route.post("/t", (req) => price(req.json.amount))
             ("route.post(\"/\", (req) => Array.from({ length: 3 }))\n", "5:26: Array.from({ length: n }) has n items that are undefined, which a flow has none of: Array.from({ length: n }, (_, i) => …)"),
             ("route.post(\"/\", (req) => {\n  switch (req.json.op) {\n    case req.json.other:\n      return 1\n  }\n  return 2\n})\n", "7:10: a case is a literal: a number, a text, true or false; to test a condition, use if"),
             ("route.post(\"/\", (req) => {\n  if (req.json.a) return status(200, 1)\n  return 2 ?? status(400)\n})\n", "7:10: this answer is 400 when its body is absent, and the one on line 6 is 404: say it the same for both"),
-            ("route.post(\"/\", (req) => {\n  const n = req.json.n++\n  return n\n})\n", "6:13: ++ and -- are a statement of their own: n++"),
-            ("route.post(\"/\", (req) => {\n  state[req.json.k] = 1\n  return 1\n})\n", "6:3: a state key is a name: state.hits = …; a key computed is a collection's, notes[k] = …"),
+            ("route.post(\"/\", (req) => {\n  const n = req.json.n++\n  return n\n})\n", "6:13: \"req\" is a parameter, which a change in place would change for whoever passed it too: copy it first, const copy = { ...req }"),
+            ("route.post(\"/\", (req) => {\n  let i = 0\n  const n = req.json.a ? i++ : 0\n  return n\n})\n", "7:26: ++ in a part that may not run (after ?, &&, || or ??) isn't taken: give it a statement of its own before, n++, and read n"),
+            ("route.post(\"/\", (req) => {\n  let i = 0\n  return req.json.xs.map((x) => i--)\n})\n", "7:33: -- in a function written in place isn't taken: it would change what is outside it once for each item"),
+            ("route.post(\"/\", (req) => {\n  state.n++\n  notes[state.n++] = 1\n  return 1\n})\n", "7:9: state.n is changed again in this run, and a state key reads as the run began, so this change would count from there: change it once"),
+            ("route.post(\"/\", (req) => {\n  state[req.json.k] = 1\n  return 1\n})\n","6:3: a state key is a name: state.hits = …; a key computed is a collection's, notes[k] = …"),
             ("route.post(\"/\", (req) => {\n  try {\n    notes[req.json.id] = 1\n  } catch (e) {\n    return 2\n  }\n  return 1\n})\n", "8:12: write catch { … }; the reason is in the run's log"),
             ("route.post(\"/\", (req) => {\n  try {\n    notes[req.json.id] = 1\n  } catch {\n    state.failed = 1\n  } finally {\n    return 2\n  }\n})\n", "10:13: a finally holds writes and calls: a return or a throw in it comes in a later slice"),
             ("route.post(\"/\", (req) => {\n  try {\n    state.n = 1\n  } catch {\n    state.n = 2\n  }\n  return 1\n})\n", "6:3: nothing in this try can fail, so its catch never runs: write its statements without it"),

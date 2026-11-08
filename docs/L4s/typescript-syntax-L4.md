@@ -331,6 +331,14 @@ unit, as tours-L4 §11 fork 2 requires. Both notes are rewritten in this form wh
   turn, which is twice (`lower.rs:726-729`): compute in the loop, write once after it.
 - **Local mutation**: `list.push(x)` is `list = [...list, x]`, `obj.k = v` is `obj = { ...obj, k: v
   }`, on locals only.
+- **`++` and `--`** are a statement (`n++` is `n = (n ?? 0) + 1`) and a value: `x++` is what it
+  read, `++x` what it made, its change made before the statement it is in, read left to right
+  (`let i = 0; [i++, i++, i]` is `[0, 1, 2]`; `beats[state.count++] = now`). State and a
+  collection are read as the run began wherever they are read, so a state key changed twice in a
+  run is refused. Where a part may not run (after `?`, `&&`, `||`, `??`) or in a function written
+  in place, a value `++` is refused, as its change would be made where JavaScript's isn't.
+- **A number names a collection's item by its text** (`beats[3]` is `beats["3"]`), as JavaScript's
+  property key is: a number in `c[k]`, read, written or deleted, goes through `as_text`.
 
 **Destructuring** in `const` and `let`, in assignment and in a handler's parameter. A function's
 parameter is a name, destructured in the body (below). Each pattern lowers to leaves the catalog
@@ -394,6 +402,7 @@ where a JavaScript reader would be misled the compiler refuses instead (§12).
 | `==` converts | `==` and `===` are structural, never converting; `fmt` writes `===` | reference.md:136 |
 | `xs.map((x, i) => …)` passes an index | refused: extras are passed after the item, not an index | reference.md:553-554 |
 | a write is seen at once | performed when the run ends | reference.md:569-571 |
+| `undefined++` is `NaN` | `0` then `1`: `++` and `--` count an absent value from 0 | a counter's start (`state.hits++` on its first run); Holon has no `NaN` |
 | `Date.now()` moves | `now` is fixed for the run, the tick's time in `every` | reference.md:245; `lower.rs:1522-1523` |
 | `await` waits for a promise | waits for an answer: a request's or a start's within the run, a call's or an event's possibly parking it, never in a route (§9, §10) | `rounds.rs:1-8`; `durable.rs:1-26` |
 
@@ -949,6 +958,8 @@ Each refusal says what to write instead.
 | `await event(…)`, or another flow's action awaited, in a function | the action's or handler's own body; the function takes what it needs as an input |
 | An `async` function given to a method (`map`, `filter`, `sort`, a reviver…) | a function that isn't `async`, until `Promise.all` (slice 7) |
 | A pattern that writes (`({ a: state.x } = r)`, `[coll[k]] = xs`) | bind the name, then write it |
+| `++` or `--` as a value after `?`, `&&`, `\|\|` or `??`, or in a function written in place | a statement of its own before, `n++`, then read `n` |
+| A state key changed again (`++`, `--`, `+=`) after the run wrote it | change it once: it reads as the run began |
 | An `action(…)` that isn't exported; `export function` | `export const name = action(…)` |
 | A pattern as a function's parameter, an arrow's, a `js()` function's or a `for … of` binding | a name, destructured on the first line: `(order) => { const { price, qty } = order; … }` |
 | `class`, `this`, `new`, getters and setters | functions and records |
@@ -1078,6 +1089,10 @@ deferred, revised 2026-11-08) and before its Tier 2 (§7 there), in this order.
 2. **Statements.** `let`, `var`, reassignment, destructuring, merged branch writes, `if` around writes, `if (x !==
    undefined)` for `after`, `switch` for `match`, early `return`, local mutation, the refusals of
    §12, and a single `await event("paid", { expires: "1d" })`, today's `await paid, expires: 1d`.
+   *`++` and `--` as values are built* (2026-11-08, asked for between host capabilities 1.3a
+   and 1.3b): §5's bullet, an absent value counted from 0 (§6), a number naming a collection's
+   item by its text, the refusals of §12; the counter sample's `hit ${++state.hits}` and
+   heartbeat's `times[state.beats++] = t`, run live.
 3. **Routes answer, actions wait.** *Built.* §9's five pieces: the start in both forms (`start(…)`
    in `.holon`, an action called without `await` in TypeScript), a start of the flow's
    own action, the start in the run's record, `await` refused in a route, and approval and

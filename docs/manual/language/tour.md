@@ -146,7 +146,8 @@ every("10s", () => {
 
 `state.beats` on the right is the value as the run began; `state.beats = …` writes it when the
 run finishes. So the line means exactly what it says, and a run never sees its own writes. A run
-writes a key once.
+writes a key once. `state.beats++` says the same, `++` counting from 0 where there is no value
+yet; written as a value, `times[state.beats++] = t`, it is the count before this beat.
 
 Durations are texts: `"10s"`, `"5m"`, `"2h"`, `"1d"`.
 

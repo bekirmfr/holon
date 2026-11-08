@@ -64,6 +64,8 @@ test("a clock flow is run by hand, its grant and secrets changed, and it is remo
   // Its clock beats on its own too, every 10s.
   expect(ok(adminToken, ["tick", slug, "every 10s"])).toMatch(/^did {8}StateWrite\("beats"\) \d+$/m);
   expect(ok(adminToken, ["state", slug])).toMatch(/^beats\s+\d+$/m);
+  // Each beat's time under the count before it, a number naming the item as its text.
+  expect(ok(adminToken, ["state", slug, "--collection", "times"])).toMatch(/^0\s+\d+$/m);
 
   // Its grant: an item taken back pauses it; given back, it runs again.
   expect(ok(adminToken, ["grant", slug])).toContain('StateWrite("beats")');

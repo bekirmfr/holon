@@ -75,7 +75,7 @@ the eleven number leaves. The operators are mapped but for `void`, `instanceof` 
 | `~x` | `bitwise {op: xor}` | mapped | `x ^ -1` |
 | `typeof x` | `type_of`, `default` | mapped | `type_of(x) ?? "undefined"`; a record, a list and `null` are `"object"` |
 | `void` | | js() | "void isn't an operator Holon has" |
-| `x++`, `x--`, `x += 1`, `x %= 2`, `x **= 2`, `x &= m`, `x <<= 1`, … | `add`, `subtract`, and each operator's leaf | mapped as statements | "++ and -- are a statement of their own: n++" in an expression |
+| `x++`, `x--`, `x += 1`, `x %= 2`, `x **= 2`, `x &= m`, `x <<= 1`, … | `add`, `subtract`, and each operator's leaf; `default` for `++` and `--` | mapped; differs | `x++` and `++x` are values too, read left to right (`beats[state.count++] = now`); `++` and `--` count an absent value from 0, where JavaScript gives `NaN`; refused after `?`, `&&`, `\|\|` or `??` and in a function written in place, naming the statement |
 | `a === b`, `a == b` | `equals` | mapped; differs on records and lists | `==` is `===` (no coercion); records and lists compare by value |
 | `a !== b`, `a != b` | `equals`, `not` | mapped | |
 | `a < b`, `<=`, `>`, `>=` | `compare {op}` | mapped | two numbers, or two texts in UTF-16 code-unit order; a number and a text: nothing (JavaScript converts) |

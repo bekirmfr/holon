@@ -496,6 +496,7 @@ export const run = action((input) => outerHolon(input))
     ]);
     expect(derive("heartbeat").caps).toEqual([
       "Clock",
+      'CollectionWrite("times")',
       'StateRead("beats")',
       'StateRead("first_beat")',
       'StateWrite("beats")',

@@ -124,7 +124,7 @@ and a record or list is written as JSON.
 |---|---|
 | `const name = expr` | Binds a name. |
 | `let name = expr`, `name = expr` | A name that may be bound again: each assignment is a new value, and where branches assign it, the value is the branch taken's. `var` is read as `let`. |
-| `n++`, `n += 2`, `n %= 3`, `x ??= y` | An assignment of `n + 1`, `n + 2`, `n % 3`, `x ?? y`; each of TypeScript's compound operators the same way. |
+| `n++`, `n += 2`, `n %= 3`, `x ??= y` | An assignment of `n + 1`, `n + 2`, `n % 3`, `x ?? y`; each of TypeScript's compound operators the same way. `++` and `--` count from 0 where `n` has no value yet, so `state.hits++` starts a count. A state key changed twice in a run is refused: it reads as the run began. |
 | `const { a, b } = r`, `const [x, y] = xs` | Destructuring: a field each, an index each; `{ a = 1 }` takes a default, `[first, ...rest]` the head and the tail. |
 | `state.key = expr` | Writes the flow's state under `key` when the run finishes. |
 | `coll[key] = expr` | Writes an item of a collection (or a file of a folder) when the run finishes. |
@@ -236,9 +236,10 @@ else does, an empty list or record included. A `c` with no value doesn't hold, a
 | `a + b`, `a - b`, `a * b`, `a / b` | arithmetic, on numbers; `+` with a text on either side joins the two, a number written as JavaScript writes it: `"n=" + 1` is `"n=1"` |
 | `a % b`, `a ** b` | the remainder, with `a`'s sign, and `a` to the power `b`; `**` groups right to left |
 | `-a`, `+a`, `~a` | `a * -1`; `a` as a number, `Number(a)`; the bits of `a` flipped |
+| `n++`, `n--`, `++n`, `--n` | `n` changed as the statement does, before the statement it is in: `n++` is the value it had, `++n` the one it has after, read left to right (`[i++, i++, i]` is `[0, 1, 2]`); none yet counts as 0. Refused after `?`, `&&`, `\|\|` or `??` and in a function written in place, where a statement of its own does it |
 | `f(…)` | a call (see [Calls](#calls)) |
 | `a.name`, `a?.name` | an output named `name`, else the field `name` of a record; `?.` means the same |
-| `a[e]` | with a number, a list's item (nothing past its end, or for a negative one); on a record, the field whose name is `e`'s value; on a collection or folder, an item or a file. A text's character is `s.at(i)` or `s.charAt(i)` |
+| `a[e]` | with a number, a list's item (nothing past its end, or for a negative one); on a record, the field whose name is `e`'s value; on a collection or folder, an item or a file, a number naming one by its text (`beats[3]` is `beats["3"]`). A text's character is `s.at(i)` or `s.charAt(i)` |
 | `(e)` | grouping |
 
 **Choices only run what they need.** In `?:`, `??`, `if` and `switch`, the branch that isn't

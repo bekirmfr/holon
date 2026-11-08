@@ -674,6 +674,26 @@ impl<'a> Lowerer<'a> {
         }
     }
 
+    /// A collection's key or a folder's file name in `c[k]`: a number is its text, as
+    /// JavaScript's property key is (`beats[3]` is `beats["3"]`, `beats[n + 1]` too).
+    fn key_text(&mut self, k: Val, span: Span) -> R<Val> {
+        let number = self.typed(&k) == Some(&WType::Number) || matches!(&k, Val::Out { id, outputs, port, .. } if outputs.get(*port).is_some_and(|p| self.numeric(id, &p.name)));
+        if number {
+            return self.node_with("as_text", &[], &[("value", k)], span);
+        }
+        Ok(k)
+    }
+
+    /// Whether node `id`'s `output` is known to be a number: its type says so, or it is `+` of
+    /// numbers (an `add` gives any value, as a text on either side joins).
+    fn numeric(&self, id: &str, output: &str) -> bool {
+        let Some(d) = self.b.data(id) else { return false };
+        if d.outputs.iter().any(|p| p.name == output && p.ty == WType::Number) {
+            return true;
+        }
+        d.name == "add" && d.inputs.iter().all(|p| self.b.source(id, &p.name).is_some_and(|(from, out)| self.numeric(from, out)))
+    }
+
     /// The type `v` is known to have: its node's output's, or an input's as the frame knows it.
     fn typed<'v>(&'v self, v: &'v Val) -> Option<&'v WType> {
         match v {
@@ -814,6 +834,7 @@ impl<'a> Lowerer<'a> {
             StmtKind::CollectionWrite { collection, key, value } => {
                 let store = self.check_collection(collection)?;
                 let k = self.expr(key)?;
+                let k = self.key_text(k, key.span)?;
                 let v = self.expr(value)?;
                 let named = [(store.param.into(), collection.text.clone())];
                 // A file's handle written to a folder is a copy: its bytes go host to host.
@@ -828,6 +849,7 @@ impl<'a> Lowerer<'a> {
             StmtKind::Delete { collection, key } => {
                 let store = self.check_collection(collection)?;
                 let k = self.expr(key)?;
+                let k = self.key_text(k, key.span)?;
                 let w = self.node_with(store.delete, &[(store.param.into(), collection.text.clone())], &[(store.key, k)], s.span)?;
                 self.effect(w, s.span)
             }
@@ -1627,6 +1649,7 @@ impl<'a> Lowerer<'a> {
                     && let Some(store) = self.store(c)
                 {
                     let k = self.expr(key)?;
+                    let k = self.key_text(k, key.span)?;
                     return self.node_with(store.get, &[(store.param.into(), c.clone())], &[(store.key, k)], e.span);
                 }
                 let r = self.expr(base)?;
@@ -3243,6 +3266,38 @@ every("10s", async () => {
     }
 
     // ── each construct, by the nodes it places ──
+
+    /// A number naming a collection's item is its text, as JavaScript's property key is: read,
+    /// written or deleted. A text key is left as it is.
+    #[test]
+    fn a_number_names_a_collection_item_by_its_text() {
+        let d = compiled(
+            r#"import { action, flow } from "holon"
+import beats from "collection:beats"
+
+flow("t")
+
+export const t = action(() => {
+  const n = 3
+  const was = beats[n] ?? beats["5"]
+  beats[n + 1] = was
+  delete beats[4]
+  return was
+})
+"#,
+        )
+        .doc;
+        let names = leaves(&d);
+        assert_eq!(names.iter().filter(|l| *l == "as_text").count(), 3, "{names:?}");
+        let key_from = |leaf: &str| -> Vec<String> {
+            d.nodes.iter().filter(|n| n.data.name == leaf).map(|n| {
+                let wire = d.edges.iter().find(|w| w.target == n.id && w.target_handle.as_deref() == Some(if leaf == "collection_delete" || leaf == "collection_get" || leaf == "collection_put" { "key" } else { "" })).expect("a key wire");
+                d.nodes.iter().find(|m| m.id == wire.source).unwrap().data.name.clone()
+            }).collect()
+        };
+        assert_eq!(key_from("collection_get"), ["as_text", "const"], "the number's text, and the text as it is");
+        assert_eq!((key_from("collection_put"), key_from("collection_delete")), (vec!["as_text".to_string()], vec!["as_text".to_string()]));
+    }
 
     #[test]
     fn literals_and_interpolation() {

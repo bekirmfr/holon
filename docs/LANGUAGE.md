@@ -1359,7 +1359,8 @@ handler (§10, §12).
 |---|---|
 | `const name = expr` | a binding: a name for the node `expr` places, no node of its own |
 | `let name = expr`, `name = expr`, `var name = expr` | a new name per assignment; where branches assign it, the value after them is the branch taken's, chosen as `?:` and `switch` choose (`guard`, `coalesce`). `var` reads as `let`, and `fmt` writes it as `const` or `let` |
-| `n++`, `n += 2`, `x ??= y` | an assignment of `n + 1`, `n + 2`, `x ?? y`; `%=`, `**=`, `&=`, `\|=`, `^=`, `<<=`, `>>=` and `>>>=` likewise, each its operator's leaf (§5.6) |
+| `n++`, `n += 2`, `x ??= y` | an assignment of `(n ?? 0) + 1`, `n + 2`, `x ?? y`; `%=`, `**=`, `&=`, `\|=`, `^=`, `<<=`, `>>=` and `>>>=` likewise, each its operator's leaf (§5.6). A state key changed twice in a run is refused |
+| `n++`, `++n` where a value goes | the change made before the statement it is in, its value `n ?? 0` (`default`) or that plus one, read left to right; refused after `?`, `&&`, `\|\|` or `??` and in a function written in place |
 | `xs.push(x)`, `order.total = t` (on a local) | a new value: `[...xs, x]` (`append`), `{ ...order, total: t }` (`with_field`) |
 | `Object.assign(t, a, b)` alone, on a local | a new value, `{ ...t, ...a, ...b }` (`merge`); on a parameter or a record another name holds, refused, as for `push` |
 | `const d = new Date(t)`; `d.setUTCHours(h, m)` alone; `d = new Date(t2)` | `d` is a Date, held as its time value (`date_part{part: time}(t)`) and read only by a Date's methods (§5.3); a setter alone gives `d` a new value, `date_set{part: hours}(d, h, m)`, and `const ms = d.setUTCHours(h)` gives it that and `ms` the time value; a setter elsewhere in an expression is the time value, and `d`, changed in place, is read no more; `d` read any other way is refused, naming `d.getTime()` and `d.toISOString()` |
@@ -1368,7 +1369,7 @@ handler (§10, §12).
 | `const { a, b = 1, ...rest } = r` | a `field` per name; `b = 1` is `r.b ?? 1` (`default`, or `coalesce` when the default is computed); `rest` is `without_field` per named key |
 | `const [x, y] = xs`, `const [first, ...rest] = xs` | `get` at each index; `head` and `tail` |
 | `state.key = expr` | `store_write{key}`, performed when the run finishes |
-| `coll[key] = expr`, `delete coll[key]` | a collection's or folder's write or delete (§5.4) |
+| `coll[key] = expr`, `delete coll[key]` | a collection's or folder's write or delete (§5.4); a number key through `as_text`, as JavaScript's property key |
 | `if (c) …; else …` | its writes guarded by their branch's condition; writes to one key in both branches are one write, of `c ? a : b` |
 | `if (x !== undefined) { … }` | its writes and calls tied to `x` (§5.11) |
 | `switch (s) { case …: … }` | a choice by value (§6.5) |
