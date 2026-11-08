@@ -224,6 +224,11 @@ body {
 .hl-history__details dl > div { display: grid; grid-template-columns: 110px minmax(0, 1fr); gap: 8px; }
 .hl-history__details dt { color: var(--faint); }
 .hl-history__details dd { margin: 0; color: var(--body); overflow-wrap: anywhere; }
+.hl-flow__state { display: flex; flex-direction: column; gap: 14px; }
+.hl-flow__value { font-family: var(--mono, inherit); overflow-wrap: anywhere; }
+.hl-flow__cell-end { width: 30px; text-align: right; }
+.hl-flow__collection { display: flex; flex-direction: column; gap: 6px; border: 1px solid var(--border); border-radius: 5px; padding: 8px 10px; }
+.hl-flow__collection-head { display: flex; align-items: baseline; font-size: 12px; }
 .hl-table { width: 100%; border-collapse: collapse; font-size: 12px; }
 .hl-table th { text-align: left; font-weight: 400; color: var(--faint); padding: 4px 8px; border-bottom: 1px solid var(--border-strong); }
 .hl-table td { padding: 4px 8px; border-bottom: 1px solid var(--border); color: var(--body); }

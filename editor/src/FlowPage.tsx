@@ -5,6 +5,7 @@
 import { useMemo, useState, type MouseEvent, type ReactNode } from "react";
 import { DeploymentCard } from "./DeploymentCard";
 import { HistoryTab } from "./HistoryPane";
+import { StateTab } from "./FlowState";
 import type { CodeText } from "./timeline";
 import { outside, runLabel, runOutcome, type Outcome } from "./runs";
 import { format, type FlowTab, type Route } from "./routes";
@@ -17,6 +18,7 @@ const TABS: [FlowTab, string][] = [
   ["status", "Status"],
   ["runs", "Runs"],
   ["history", "History"],
+  ["state", "State"],
 ];
 
 const STATUS_MARK: Record<DeploymentEntry["status"], string> = { running: "●", paused: "❚❚", stopped: "■" };
@@ -89,6 +91,8 @@ export function FlowPage({
           </nav>
           {tab === "runs" ? (
             <RunsTab slug={slug} navigate={navigate} />
+          ) : tab === "state" ? (
+            <StateTab slug={slug} version={entry.trigger_count} onOpenRun={(seq) => navigate({ kind: "run", slug, seq })} />
           ) : tab === "history" ? (
             <HistoryTab slug={slug} codeText={codeText} onRestored={onRestored} onOpenRun={(seq) => navigate({ kind: "run", slug, seq })} />
           ) : (

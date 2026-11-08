@@ -31,3 +31,19 @@ test("a flow's runs: newest first, filtered, the chain checked, a run opened", a
   await rows.nth(1).getByRole("link").click();
   await expect(page).toHaveURL(new RegExp(`#editor\\.hello-api\\.view\\.run-${newest}$`));
 });
+
+test("a flow's state: its collection's items now, and the runs that changed one", async ({ page, request }) => {
+  await openSample(page, "Notes API");
+  const port = await deploy(page);
+  // A key that sorts first: on the first page, whatever other tests kept.
+  const id = `0-${Date.now()}`;
+  expect((await request.put(`http://127.0.0.1:${port}/notes/${id}`, { data: { text: "buy milk" } })).status()).toBeLessThan(300);
+
+  await page.goto("/#notes-api.state");
+  const notes = page.getByRole("region", { name: "state" }).getByRole("group", { name: "collection notes" });
+  const row = notes.getByRole("row").filter({ hasText: id });
+  await expect(row).toContainText("buy milk");
+  await row.getByRole("button", { name: /^history of / }).click();
+  const history = page.getByRole("dialog", { name: "cell history" });
+  await expect(history).toContainText("buy milk");
+});
