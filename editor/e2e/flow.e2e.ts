@@ -32,6 +32,27 @@ test("a flow's runs: newest first, filtered, the chain checked, a run opened", a
   await expect(page).toHaveURL(new RegExp(`#editor\\.hello-api\\.view\\.run-${newest}$`));
 });
 
+test("a flow's status: its last day, what it may since when and by whom, its runs and versions; paused and resumed", async ({ page, request }) => {
+  await openSample(page, "Hello API");
+  const port = await deploy(page);
+  expect((await request.get(`http://127.0.0.1:${port}/hello/Ada`)).status()).toBe(200);
+
+  await page.goto("/#hello-api");
+  await expect(page.getByRole("navigation", { name: "flow tabs" }).getByRole("link", { name: "Status" })).toHaveAttribute("aria-current", "page");
+  await expect(page.getByRole("region", { name: "last 24 hours" })).toContainText("runs");
+  await expect(page.getByRole("region", { name: "where it runs" })).toContainText(`:${port}`);
+  const may = page.getByRole("region", { name: "it may" });
+  await expect(may.getByRole("listitem").filter({ hasText: "receive requests" })).toContainText(/since v\d+.* · approved by e2e/);
+  await expect(page.getByRole("region", { name: "latest runs" }).getByRole("row").first()).toContainText("GET /hello/:name");
+  await expect(page.getByRole("region", { name: "versions" })).toContainText("deployed now");
+
+  const head = page.getByLabel("flow hello-api");
+  await head.getByRole("button", { name: "Pause", exact: true }).click();
+  await expect(head.locator(".hl-flow__status")).toContainText("paused");
+  await head.getByRole("button", { name: "Resume", exact: true }).click();
+  await expect(head.locator(".hl-flow__status")).toContainText("running");
+});
+
 test("a flow's state: its collection's items now, and the runs that changed one", async ({ page, request }) => {
   await openSample(page, "Notes API");
   const port = await deploy(page);

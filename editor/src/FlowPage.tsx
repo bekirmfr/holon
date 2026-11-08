@@ -6,10 +6,11 @@ import { useMemo, useState, type MouseEvent, type ReactNode } from "react";
 import { DeploymentCard } from "./DeploymentCard";
 import { HistoryTab } from "./HistoryPane";
 import { StateTab } from "./FlowState";
+import { StatusTab } from "./FlowStatus";
 import type { CodeText } from "./timeline";
 import { outside, runLabel, runOutcome, type Outcome } from "./runs";
 import { format, type FlowTab, type Route } from "./routes";
-import { downloadRuns, getLog, type DeploymentEntry, type LogEntry, type Role } from "./server";
+import { downloadRuns, getLog, type DeploymentEntry, type FlowDocument, type LogEntry, type Role } from "./server";
 import { tallyRows } from "./tallies";
 import { useFlowLog } from "./useFlowLog";
 
@@ -19,6 +20,7 @@ const TABS: [FlowTab, string][] = [
   ["runs", "Runs"],
   ["history", "History"],
   ["state", "State"],
+  ["settings", "Settings"],
 ];
 
 const STATUS_MARK: Record<DeploymentEntry["status"], string> = { running: "●", paused: "❚❚", stopped: "■" };
@@ -39,6 +41,7 @@ export function FlowPage({
   card,
   codeText,
   onRestored,
+  manifestOf,
 }: {
   slug: string;
   tab: FlowTab;
@@ -46,11 +49,14 @@ export function FlowPage({
   entry: DeploymentEntry | undefined;
   navigate: (r: Route) => void;
   role: Role;
+  /** What a version's canvas may do, for since when it may do each thing. */
+  manifestOf: (doc: FlowDocument) => { items: string[] };
   /** Its versions printed as text, for a restore's diff. */
   codeText: CodeText;
   /** A restore from its history changed it: the table should be fetched again. */
   onRestored: () => void;
-  /** What its card does (DeploymentCard.tsx), shown on Status until that tab is its own. */
+  /** What its card does (DeploymentCard.tsx), shown on Settings until that tab is its own;
+   *  its run, pause and stop are the header's. */
   card: {
     onAction: (action: "run" | "pause" | "stop", from?: "latest" | "fresh" | number) => Promise<void>;
     onDelete: () => void;
@@ -60,6 +66,11 @@ export function FlowPage({
   };
 }) {
   const edit = () => navigate({ kind: "editor", slug, view: false, seq: null });
+  const [failed, setFailed] = useState("");
+  const act = (action: "run" | "pause" | "stop") => {
+    setFailed("");
+    card.onAction(action).catch((e: unknown) => setFailed(e instanceof Error ? e.message : String(e)));
+  };
   return (
     <div className="hl-flow" aria-label={`flow ${slug}`}>
       <header className="hl-flow__head">
@@ -71,10 +82,31 @@ export function FlowPage({
           </span>
         )}
         <span className="hl-flow__spacer" />
-        <button className="hl-flow__button" onClick={edit}>
+        {entry?.status === "running" && (
+          <button className="hl-flow__button" onClick={() => act("pause")} title="stop answering, keep the port and the session">
+            Pause
+          </button>
+        )}
+        {entry?.status === "paused" && (
+          <button className="hl-flow__button" onClick={() => act("run")} title="continue the same session">
+            Resume
+          </button>
+        )}
+        {entry && entry.status !== "stopped" && (
+          <button className="hl-flow__button" onClick={() => act("stop")} title="end the session, save its state, release the port">
+            Stop
+          </button>
+        )}
+        {entry?.status === "stopped" && (
+          <button className="hl-flow__button" onClick={() => act("run")} title="a new session, from the state the last one left">
+            Run
+          </button>
+        )}
+        <button className="hl-flow__button hl-flow__button--go" onClick={edit}>
           Open in editor
         </button>
       </header>
+      {failed && <div className="hl-flow__bad">{failed}</div>}
       {!entry ? (
         <p className="hl-flow__none">{slug} isn't deployed: open it in the editor and deploy it, and its runs, history and state are here.</p>
       ) : (
@@ -95,6 +127,8 @@ export function FlowPage({
             <StateTab slug={slug} version={entry.trigger_count} onOpenRun={(seq) => navigate({ kind: "run", slug, seq })} />
           ) : tab === "history" ? (
             <HistoryTab slug={slug} codeText={codeText} onRestored={onRestored} onOpenRun={(seq) => navigate({ kind: "run", slug, seq })} />
+          ) : tab === "status" ? (
+            <StatusTab slug={slug} entry={entry} navigate={navigate} role={role} manifestOf={manifestOf} />
           ) : (
             <DeploymentCard
               entry={entry}

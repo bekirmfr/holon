@@ -1173,7 +1173,7 @@ function Canvas({
           {shown === "admin" && me.role === "admin" && (
             <AdminPage
               me={me.name}
-              onOpenDeployment={(slug) => navigate({ kind: "flow", slug, tab: "status" })}
+              onOpenDeployment={(slug) => navigate({ kind: "flow", slug, tab: "settings" })}
             />
           )}
           {shown === "docs" && (
@@ -1221,6 +1221,7 @@ function Canvas({
                 return { plain, named: doc.bindings ? printHolon(route.slug, doc, ev, new Map(Object.entries(doc.bindings))) : undefined };
               }}
               onRestored={refreshDeployments}
+              manifestOf={manifestOfDocument}
               card={{
                 onAction: (action, from) => changeDeployment(route.slug, action, from).then(() => refreshDeployments()),
                 onDelete: () => deploymentTable.onDelete(route.slug),
