@@ -1393,7 +1393,13 @@ fn the_logs_health_and_a_light_theme() {
     let (mut app, _) = bumped(2);
     app.go(Page::Overview);
     let shown = screen(&mut app, 150, 44);
-    assert!(shown.contains("run logs intact") && shown.contains("2 runs on record"), "{shown}");
+    let record = |shown: &str| shown.lines().find(|l| l.contains("on record") && !l.contains("of them")).map(|l| l.chars().take(21).collect::<String>());
+    assert!(shown.contains("run logs intact"), "{shown}");
+    assert_eq!(record(&shown).as_deref(), Some("    2 on record     │"), "{shown}");
+    // However many, the count keeps inside the sidebar.
+    app.client.as_mut().unwrap().deployments[0]["trigger_count"] = serde_json::json!(1_234_567);
+    let shown = screen(&mut app, 150, 44);
+    assert_eq!(record(&shown).as_deref(), Some("    1.2M on record  │"), "{shown}");
     assert!(shown.contains("Runs, last 24 h"), "{shown}");
     app.run_command("theme light");
     assert!(app.light);

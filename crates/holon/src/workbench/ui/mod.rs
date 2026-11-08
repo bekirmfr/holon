@@ -400,7 +400,13 @@ fn draw_sidebar(f: &mut Frame, app: &App, area: Rect) {
             let broken: usize = c.chains.values().map(|(b, _)| *b).sum();
             let on_record: u64 = c.deployments.iter().filter_map(|d| d["trigger_count"].as_u64()).sum();
             health.push(if broken == 0 { Line::from(vec![coloured("  ✓ ", GOOD), dim("run logs intact")]) } else { Line::from(vec![coloured("  ✗ ", BAD), coloured(format!("{broken} break{} in the logs", if broken == 1 { "" } else { "s" }), BAD)]) });
-            health.push(Line::from(dim(format!("    {on_record} runs on record"))));
+            // Under "run logs intact": its runs, as many as a narrow column holds (12.3k, 4.5M).
+            let n = match on_record {
+                0..10_000 => on_record.to_string(),
+                10_000..1_000_000 => format!("{:.1}k", on_record as f64 / 1e3),
+                _ => format!("{:.1}M", on_record as f64 / 1e6),
+            };
+            health.push(Line::from(dim(format!("    {n} on record"))));
         }
         (Some(_), Some(_)) => health.push(Line::from(vec![coloured("  ● ", BAD), dim("can't reach it")])),
         (None, _) => health.push(Line::from(vec![coloured("  ○ ", WARN), dim("none: files only")])),
@@ -408,7 +414,8 @@ fn draw_sidebar(f: &mut Frame, app: &App, area: Rect) {
     let help = [Line::default(), Line::from(dim(" ctrl+p  find")), Line::from(dim(" :       command")), Line::from(dim(" ?       keys"))];
     let need = (health.len() + help.len()) as u16;
     if bottom > y + need {
-        let lines: Vec<Line> = health.into_iter().chain(help).collect();
+        let room = area.width.saturating_sub(1) as usize;
+        let lines: Vec<Line> = health.into_iter().chain(help).map(|l| fit_line(l, room)).collect();
         f.render_widget(Paragraph::new(lines), Rect { y: bottom - need, height: need, ..area });
     } else if bottom > y + 4 {
         f.render_widget(Paragraph::new(help.to_vec()), Rect { y: y + 1, height: bottom.saturating_sub(y + 1), ..area });
