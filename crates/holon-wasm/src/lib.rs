@@ -1664,7 +1664,7 @@ fn check_variadic_primitives() {
     assert_eq!(
         sorted,
         vec![
-            "add", "all", "and", "any", "bytes_concat", "concat", "date_set", "date_utc", "filter", "find", "find_index", "find_last", "find_last_index", "fold", "from_codes", "group_by",
+            "add", "all", "and", "any", "bytes_concat", "concat", "date_set", "date_utc", "decimal_add", "decimal_mul", "filter", "find", "find_index", "find_last", "find_last_index", "fold", "from_codes", "group_by",
             "json_parse", "json_stringify", "list", "map", "max", "merge", "min", "multiply", "or", "sort_by"
         ]
     );

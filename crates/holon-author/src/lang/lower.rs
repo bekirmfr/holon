@@ -117,6 +117,7 @@ pub(crate) fn is_optional(leaf: &str, input: &str) -> bool {
                 | ("text_contains", "position")
                 | ("split", "limit")
                 | ("pad", "fill")
+                | ("csv_format", "columns")
         )
 }
 
@@ -187,6 +188,10 @@ impl Val {
         }
     }
 }
+
+/// The decimal leaves whose result is a decimal written as text (host-capabilities L4 §5.1.1):
+/// `+` would join it and `<` compare it letter by letter.
+const DECIMAL_TEXTS: &[&str] = &["decimal_add", "decimal_sub", "decimal_mul", "decimal_div", "decimal_round", "decimal_sum"];
 
 /// The type of the output `v` is, as the node that gives it says; a function's input has none.
 fn typed(v: &Val) -> Option<&WType> {
@@ -619,6 +624,13 @@ impl<'a> Lowerer<'a> {
             self.connect(val, &id, port, span)?;
         }
         Ok(self.out(&id))
+    }
+
+    /// The decimal leaf that made `v`, if one did (`DECIMAL_TEXTS`).
+    fn decimal_leaf(&self, v: &Val) -> Option<String> {
+        let Val::Out { id, .. } = v else { return None };
+        let name = &self.b.data(id)?.name;
+        DECIMAL_TEXTS.contains(&name.as_str()).then(|| name.clone())
     }
 
     /// The input names of a variadic leaf grown to `n`.
@@ -1677,6 +1689,12 @@ impl<'a> Lowerer<'a> {
             BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
                 let a = self.expr(lhs)?;
                 let b = self.expr(rhs)?;
+                if let Some(leaf) = self.decimal_leaf(&a).or_else(|| self.decimal_leaf(&b)) {
+                    return err(
+                        span,
+                        format!("{leaf}(…) is a decimal written as text, so {op} would compare it letter by letter (\"10.00\" < \"9.00\"): decimal_compare(a, b) {op} 0 compares two by value", op = op.text()),
+                    );
+                }
                 self.node_with("compare", &[("op".into(), op.text().into())], &[("a", a), ("b", b)], span)
             }
             BinOp::Sub | BinOp::Div => {
@@ -1707,6 +1725,11 @@ impl<'a> Lowerer<'a> {
                 let mut vals = Vec::new();
                 for o in &operands {
                     vals.push(self.expr(o)?);
+                }
+                if leaf == "add"
+                    && let Some(d) = vals.iter().find_map(|v| self.decimal_leaf(v))
+                {
+                    return err(span, format!("{d}(…) is a decimal written as text, so + would join the texts: decimal_add(a, b) adds decimals exactly"));
                 }
                 let first_ty = if leaf == "and" || leaf == "or" { WType::Boolean } else { WType::Number };
                 let ports = Self::variadic_ports(&[WPort::new("a", first_ty.clone()), WPort::new("b", first_ty)], vals.len());
@@ -3049,6 +3072,30 @@ every("10s", async () => {
         assert!(refused("x.s.length").starts_with(".length is a text's text_length or a list's length, and this value isn't known to be either"), "{}", refused("x.s.length"));
         assert!(refused("({ a: 1 }).length").starts_with("a record's field named length is read r[\"length\"]"));
         assert!(refused("x.xs.concat(x.ys)").starts_with("concat spreads a list and adds anything else, and this could be either"));
+    }
+
+    /// A decimal leaf's result is a text, so `+` on it would join and `<` compare letter by letter:
+    /// both refused, naming the leaf to use, through a `const` too; `===`, `-` and template
+    /// literals stay JavaScript's (host-capabilities L4 §5.1.1).
+    #[test]
+    fn a_decimal_leaf_s_result_is_kept_from_plus_and_less_than() {
+        let flow = |body: &str| {
+            format!("import {{ action, decimal_add, decimal_compare, decimal_round, flow }} from \"holon\"\n\nflow(\"f\")\n\nexport const t = action((x) => {{\n{body}\n}})\n")
+        };
+        let refused = |body: &str| error(&flow(body)).2;
+        assert!(refused("  return decimal_add(x.a, x.b) + x.c").starts_with("decimal_add(…) is a decimal written as text, so + would join the texts"), "{}", refused("  return decimal_add(x.a, x.b) + x.c"));
+        assert!(refused("  const t = decimal_round(x.a, 2)\n  return \"=\" + x.b + t").starts_with("decimal_round(…) is a decimal written as text, so + would join"));
+        assert!(refused("  return x.limit < decimal_add(x.a, x.b)").starts_with("decimal_add(…) is a decimal written as text, so < would compare it letter by letter"));
+        assert!(refused("  const t = decimal_add(x.a, x.b)\n  return t >= \"100\"").contains("decimal_compare(a, b) >= 0"));
+        for fine in [
+            "  return decimal_compare(decimal_add(x.a, x.b), x.limit) > 0",
+            "  return decimal_round(x.a, 2) === \"10.00\"",
+            "  return `${decimal_add(x.a, x.b)} EUR`",
+            "  return decimal_add(x.a, x.b) - 1",
+            "  return x.a + x.b",
+        ] {
+            compiled(&flow(fine));
+        }
     }
 
     /// A flow's own function keeps its name's calls, as JavaScript's would shadow the global;

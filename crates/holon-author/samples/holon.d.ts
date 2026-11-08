@@ -1098,6 +1098,69 @@ declare module "holon" {
   export function list_to_bytes(...args: any[]): any
 
   /**
+   * `decimal_add(a: Any, b: Any) -> out: Text`
+   *
+   * The exact sum of decimals written as text (1234.56), or of numbers as their shortest text: 0.1 and 0.2 give 0.3. Its scale is the largest of theirs: 1.10 and 2 give 3.10. Nothing for a text that isn't a decimal.
+   */
+  export function decimal_add(...args: any[]): any
+
+  /**
+   * `decimal_sub(a: Any, b: Any) -> out: Text`
+   *
+   * a − b, exactly, its scale the larger of theirs.
+   */
+  export function decimal_sub(...args: any[]): any
+
+  /**
+   * `decimal_mul(a: Any, b: Any) -> out: Text`
+   *
+   * The exact product of decimals, its scale the sum of theirs: 19.99 times 3 is 59.97.
+   */
+  export function decimal_mul(...args: any[]): any
+
+  /**
+   * `decimal_div(a: Any, b: Any, scale: Number) -> out: Text  {rounding: half_even}`
+   *
+   * a ÷ b to scale places, rounded by rounding (half_even by default). Nothing when b is zero.
+   */
+  export function decimal_div(...args: any[]): any
+
+  /**
+   * `decimal_round(a: Any, scale: Number) -> out: Text  {rounding: half_even}`
+   *
+   * A decimal to scale places, padded with zeros (5 to 2 places is 5.00), rounded by rounding: half_even (a bank's, the default), half_up, half_down, up (away from zero), down (toward zero), ceiling or floor.
+   */
+  export function decimal_round(...args: any[]): any
+
+  /**
+   * `decimal_sum(list: List<Any>) -> out: Text`
+   *
+   * The exact sum of a list's decimals: a control sum. 0 for an empty list.
+   */
+  export function decimal_sum(...args: any[]): any
+
+  /**
+   * `decimal_compare(a: Any, b: Any) -> out: Number`
+   *
+   * −1, 0 or 1 as a is less than, equal to or more than b, by value: 1.10 and 1.1 are equal.
+   */
+  export function decimal_compare(...args: any[]): any
+
+  /**
+   * `csv_parse(text: Text) -> out: List<Any>  {header: first_row, separator: ,}`
+   *
+   * Reads CSV (RFC 4180): with header first_row (the default), a list of records keyed by the first row's names; with none, a list of lists. Every field is a text. Nothing for a malformed file: a quote that never closes, a row with more or fewer fields than the header, a column named twice.
+   */
+  export function csv_parse(...args: any[]): any
+
+  /**
+   * `csv_format(rows: List<Any>, columns: List<Text>) -> out: Text  {header: first_row, separator: ,}`
+   *
+   * Writes CSV: given columns, each row a record written in that order (a missing field empty), the names first unless header is none; without, each row a list. A field holding the separator, a quote or a line break is quoted, and each line ends with CRLF.
+   */
+  export function csv_format(...args: any[]): any
+
+  /**
    * `to_text(value: Any) -> out: Text`
    *
    * Any value written out as text, as a literal: a text comes out in quotes.

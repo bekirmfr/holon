@@ -741,6 +741,20 @@ function whyNothing(node: ReplayNode, trace: NodeTrace): string {
       return "its text isn't a date in JavaScript's format, with Z or an offset after a time";
     case "from_entries":
       return "an entry isn't a [key, value] pair with a text key";
+    case "decimal_add":
+    case "decimal_sub":
+    case "decimal_mul":
+    case "decimal_sum":
+    case "decimal_compare":
+      return "an input isn't a decimal (a sign, digits, a point), or the result is past 1,000 digits";
+    case "decimal_div":
+      return "it divides by zero, its scale isn't a whole number from 0 to 1,000, or an input isn't a decimal";
+    case "decimal_round":
+      return "its scale isn't a whole number from 0 to 1,000, or its input isn't a decimal";
+    case "csv_parse":
+      return "the CSV is malformed: a quote that never closes, a row with more or fewer fields than the header, or a column named twice";
+    case "csv_format":
+      return "a field isn't a text, a number or a Boolean, or the rows aren't records with columns given (lists without)";
     case "group_by":
       return "its function answered a key that isn't a text";
     case "divide":

@@ -245,6 +245,99 @@ permission, and every one is blocked today by four missing leaves:
 MT940, BAI2 and NACHA come after, as samples built from text leaves (or a fixed-width leaf), not as
 leaves of their own: there are too many formats to put each in the catalog.
 
+#### 5.1.1 As designed (2026-11-08, against `40cfc0a`)
+
+Step 1.2 is six slices, each a commit with its sample, in the order a payment file needs them:
+
+| Slice | What | Sample |
+|---|---|---|
+| 1.2a | exact decimals and CSV (below) | `payout-totals`: a CSV of payouts dropped in a folder, each currency's total exact |
+| 1.2b | dates with a fixed offset; adding days and business days, holidays given as data | `due-dates` |
+| 1.2c | XML: `xml_parse` and `xml_format` | `payment-batch` (§7): a CSV of payouts in, a pain.001 out, its control sum exact |
+| 1.2d | gzip and zip, and writing bytes to a file | `statement-archive` |
+| 1.2e | JWT verify: HS256 over `hmac_sha256`, RS256, ES256 and EdDSA with a public key or a JWKS | `jwt-api` |
+| 1.2f | PGP: encrypt to a public key, verify a signature | `pgp-outbox` |
+
+Decimals, CSV, dates and XML are written in core by hand: each is small, exact and fetches
+nothing. Inflating, RSA, elliptic curves and OpenPGP are not, and each would be a new
+dependency of core (§8, fork 28); PGP's encryption is random by design (fork 29). Those slices
+are designed in detail when they are built; 1.2a is designed here.
+
+**Decimals** (§8, fork 1: text leaves). A decimal is a text: an optional sign, digits, an optional
+point and fraction, an optional exponent (`-12.30`, `.5`, `1e-8`), as `Number(…)` reads one, but
+no spaces, `Infinity` or hex. A leaf takes a finite number too, as its shortest text (`0.1` is
+`0.1`, not the binary value under it), so a JSON number reaches it as written up to 15 digits.
+Each leaf gives nothing for anything else, as the others do.
+
+| Leaf | Gives |
+|---|---|
+| `decimal_add(a, b, …)` | the exact sum; its scale the largest of theirs (`"1.10"` and `"2"` give `"3.10"`) |
+| `decimal_sub(a, b)` | `a − b`, the same way |
+| `decimal_mul(a, b, …)` | the exact product; its scale the sum of theirs (`"19.99"` times `"3"` is `"59.97"`) |
+| `decimal_div(a, b, scale) {rounding}` | `a ÷ b` to `scale` places; nothing when `b` is zero |
+| `decimal_round(a, scale) {rounding}` | `a` to `scale` places, padded with zeros: how an amount is written (`"5"` to 2 is `"5.00"`) |
+| `decimal_sum(list)` | the exact sum of a list's decimals (a control sum); `"0"` for none |
+| `decimal_compare(a, b)` | −1, 0 or 1 by value: `"1.10"` and `"1.1"` are equal |
+
+`rounding` is a family: `half_even` (the default, a bank's), `half_up`, `half_down`, `up` (away
+from zero), `down` (toward zero), `ceiling` and `floor`, Java's and decimal.js's seven. `scale`
+is a whole number from 0 to 1,000. A result is written plainly, never with an exponent, without
+`+` or a negative zero, and with a digit before the point (`"-0.50"`, `"0"`). No input or result
+may have more than 1,000 digits (`DECIMAL_DIGITS`), so a product of two such is bounded, as R1
+asks. JavaScript has no decimal, so every leaf is called by name; `Number(x)` is a decimal's
+nearest number, as JavaScript reads the text.
+
+**Keeping a flow from `+`** (§5.10.1's cost). A decimal leaf's result is a text, so `a + b` on two
+of them joins them, as JavaScript does, and `a < b` compares them letter by letter (`"10.00" <
+"9.00"`). The compiler refuses `+`, `<`, `<=`, `>` and `>=` where one side is a decimal leaf's
+result (directly, or through a `const` that names one), naming the leaf to use: `decimal_add`,
+`decimal_compare`. `===` stays, and compares the texts (two amounts rounded to one scale are equal
+when their texts are); `-`, `*` and `/` stay JavaScript's, a number from each text. A decimal that
+arrives from outside (a CSV field, a column) is a text like any other and isn't known as one.
+
+**CSV** (RFC 4180, both ways):
+
+| Leaf | Gives |
+|---|---|
+| `csv_parse(text) {header, separator}` | with `header: "first_row"` (the default) a list of records, keyed by the first row's names; with `"none"`, a list of lists. Every field is a text |
+| `csv_format(rows, columns?) {header, separator}` | the text, each line ended with CRLF, the last too. Given `columns` (a list of names), each row is a record and its fields are written in that order, a missing one empty, with the names as the first line unless `header: "none"`; without, each row is a list |
+
+`separator` is a family: `,` (the default), `;`, a tab, `|`. Parsing takes CRLF or LF, a quoted
+field with `""` for a quote and the separator or a line break inside it, and drops a leading
+byte-order mark (Excel writes one) and lines with nothing on them. It gives nothing for a quote
+that never closes, text after a closing quote, a quote inside an unquoted field, a row with a
+different count of fields than the header, or a header naming a column twice: a payment file
+that is malformed is refused, not guessed at. Writing quotes a field holding the separator, a
+quote or a line break; a number is written as `String(n)` writes it, a Boolean as `true` or
+`false`, and anything else (a record, a list, bytes) gives nothing. A record's keys are kept in
+order of their names, so `columns` is how a file's order is said. JavaScript has no CSV either:
+both by name.
+
+**The sample, `payout-totals`:** a CSV of payouts (`id,currency,amount`) dropped into a folder;
+for each file, each currency's count and exact total, kept in a collection and read by a route.
+Its test sums amounts whose float sum is off (`0.10` and `0.20` give `0.30`, not
+`0.30000000000000004`).
+
+#### 5.1.2 Slice 1.2a as built (2026-11-08)
+
+As designed, with what building it found:
+
+- **Core:** `decimals.rs` (digits as base-10 vectors, schoolbook product, long division, one
+  rounding rule for `decimal_div` and `decimal_round`) and `csv.rs`; 168 primitives. A
+  comparison is never refused for size: `decimal_compare` of two 1,000-digit decimals compares,
+  where their difference would pass the bound.
+- **The `+` guard** looks at the node that made each side (`DECIMAL_TEXTS` in `lower.rs`), so a
+  `const` naming a decimal leaf's result is caught too; a decimal returned by a flow's own
+  function isn't, since its result is that function's.
+- **The editor's palette** groups come from `paletteGroups.ts` now, and a test holds every
+  catalog leaf to one group: 1.1's bytes leaves and `file_read_bytes` were in none, so they
+  weren't in the palette. They are now, beside the decimal leaves and CSV's.
+- **Two gaps the sample ran into, left for the language:** `e[0]` on a value of no known type is
+  read as a record's field with a number for its name, which fails validation with a message that
+  doesn't say so; and a parameter's annotation (`amounts: string[]`) doesn't make `.length` known
+  inside the function. The sample uses `length(…)` by name, and `Object.keys`, as the invoice
+  sample does.
+
 ### 5.2 Email
 
 **Sending.** `mail ops` names a mail resource an admin binds: SMTP (host, port, sender, login
@@ -1542,7 +1635,7 @@ engine.
 | Step | What | Design | Needs | Size |
 |---|---|---|---|---|
 | 1.1 | **Value kinds:** `Bytes`, built (§5.10.2); `Decimal` decided as text leaves, built in 1.2 (§5.10.1) | §5.10 (here) | — | M |
-| 1.2 | **Formats:** exact decimals, CSV, XML, dates (UTC and offsets), zip and gzip, JWT verify, PGP encrypt and verify with a public key (§5.1) | §5.1 (here) | 1.1 | M |
+| 1.2 | **Formats:** exact decimals, CSV, XML, dates (UTC and offsets), zip and gzip, JWT verify, PGP encrypt and verify with a public key, in six slices (§5.1.1); 1.2a, decimals and CSV, built (§5.1.2) | §5.1 (here) | 1.1 | M |
 | 1.3 | **Email:** send, recipients in the grant; receive as `on mail`, with its sender's verdict and attachments (§5.2) | §5.2 (here) | 1.1 for attachments | L |
 | 1.4 | **Remote folders:** the backend seam in `folders.rs`, then SFTP and S3-compatible storage (§6) | §6 (here) | 1.1 for binary files | L |
 | 1.5 | **Secure connectivity:** keys the host holds (PGP decrypt and sign) and client identities (mutual TLS, a private CA) (§5.3, §5.4) | §5.3, §5.4 (here) | 1.1, 1.2 | M |
@@ -1725,6 +1818,18 @@ Taken when a job or a user asks, each with its design here and its sample all th
 27. **Clock periods under a second.** *Lean:* milliseconds down to 100, the scheduler waking for
     the next due tick rather than once a second; a later change to the triggers, its own test,
     not step 1.6.
+28. **New dependencies of core** (§5.1.1, slices 1.2d to 1.2f). Core has six, and its purity
+    argument rests on them (`holon-core/Cargo.toml`). Inflating and deflating (gzip, zip), RSA,
+    P-256, Ed25519 and OpenPGP are each too large and too easy to get wrong to write by hand.
+    *Lean:* pure-Rust crates that build for wasm (`miniz_oxide`; RustCrypto's `rsa`, `p256`,
+    `ed25519-dalek`; `pgp`), each pinned in `Cargo.lock` with a comment as `libm` is, with no
+    feature that reads the clock or the operating system's randomness; decimals, CSV, dates and
+    XML by hand.
+29. **PGP encryption is random.** A message is encrypted with a fresh session key, and a leaf
+    must give the same answer on every replay (R1). Either the host answers it as a request, its
+    ciphertext kept in the log as an answer is, or the randomness comes into the run from a
+    driver, as `random` does, made bytes. *Lean:* the driver: the leaf stays pure over its inputs,
+    and verify recomputes the ciphertext from the logged randomness. Decided in 1.2f.
 
 ## 9. What stays true
 

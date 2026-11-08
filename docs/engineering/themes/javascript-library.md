@@ -279,6 +279,8 @@ asks for:
 | `b.length`, `b.slice(i, j)` on a `Uint8Array` | as written, where `b` is known to be bytes | `bytes_length`, `slice` |
 | `Array.from(b)`, `new Uint8Array(xs)`, `Buffer.concat([a, b])` | `bytes_to_list(b)`, `list_to_bytes(xs)` (nothing for an item that isn't 0 to 255), `bytes_concat(a, b)` | by name |
 | `fs.readFile(name)` (a `Buffer`) | `folder.bytes(name)` | `file_read_bytes` |
+| decimal.js, big.js: `a.plus(b)`, `a.minus(b)`, `a.times(b)`, `a.div(b)`, `a.toDecimalPlaces(n)`, `a.cmp(b)` | `decimal_add(a, b)`, `decimal_sub`, `decimal_mul`, `decimal_div(a, b, scale)`, `decimal_round(a, scale)`, `decimal_compare`, over decimals written as text; `decimal_sum(xs)` | by name; `+` and `<` refused on their results |
+| Papa Parse, csv-parse, csv-stringify | `csv_parse(t)`, `{ header: "none" }`, `{ separator: ";" }`; `csv_format(rows, columns)` | by name |
 | `btoa`, `atob` | `btoa(t)`, `atob(t)` (§3) | `base64 {bytes: latin1}` |
 | `Buffer…toString("base64")` | `base64(t)`, `base64(t, { mode: "decode" })`, `{ alphabet: "url" }` | `base64` (by name) |
 | `Buffer…toString("hex")` | `hex(t)`, `{ mode: "decode" }` | `hex` (by name) |

@@ -159,6 +159,15 @@ ops! {
     "bytes_concat" => BytesConcat,
     "bytes_to_list" => BytesToList,
     "list_to_bytes" => ListToBytes,
+    "decimal_add" => DecimalAdd,
+    "decimal_sub" => DecimalSub,
+    "decimal_mul" => DecimalMul,
+    "decimal_div" => DecimalDiv,
+    "decimal_round" => DecimalRound,
+    "decimal_sum" => DecimalSum,
+    "decimal_compare" => DecimalCompare,
+    "csv_parse" => CsvParse,
+    "csv_format" => CsvFormat,
     "pair" => Pair,
     "some" => Some,
     "none" => None,
@@ -920,6 +929,47 @@ pub(crate) fn compute_op(op: Op, name: &str, inputs: &[&Value], params: &[Param]
             xs.iter().map(byte).collect::<Option<Vec<u8>>>().map(Value::Bytes)
         }
 
+        // ── decimals (decimals.rs, host-capabilities L4 §5.1.1): exact, over amounts written as
+        // text; nothing for a text that isn't a decimal, a division by zero or a scale that isn't
+        // a whole number from 0 to 1,000. ──
+        Op::DecimalAdd => crate::decimals::add(inputs).map(Value::Text),
+        Op::DecimalSub => {
+            let [a, b] = inputs else { return None };
+            crate::decimals::sub(a, b).map(Value::Text)
+        }
+        Op::DecimalMul => crate::decimals::mul(inputs).map(Value::Text),
+        Op::DecimalDiv => {
+            let [a, b, scale] = inputs else { return None };
+            crate::decimals::div(a, b, scale, param(params, "rounding")?).map(Value::Text)
+        }
+        Op::DecimalRound => {
+            let [a, scale] = inputs else { return None };
+            crate::decimals::round(a, scale, param(params, "rounding")?).map(Value::Text)
+        }
+        Op::DecimalSum => {
+            let [Value::List(xs)] = inputs else { return None };
+            crate::decimals::sum(xs).map(Value::Text)
+        }
+        Op::DecimalCompare => {
+            let [a, b] = inputs else { return None };
+            crate::decimals::compare(a, b).map(Value::Number)
+        }
+
+        // ── CSV (csv.rs): RFC 4180 both ways; nothing for a malformed file, or a field that
+        // isn't a text, a number or a Boolean. ──
+        Op::CsvParse => {
+            let [Value::Text(s)] = inputs else { return None };
+            crate::csv::parse(s, param(params, "header")?, param(params, "separator")?)
+        }
+        Op::CsvFormat => {
+            let (rows, columns) = match inputs {
+                [Value::List(rows)] => (rows, None),
+                [Value::List(rows), columns] => (rows, Some(*columns)),
+                _ => return None,
+            };
+            crate::csv::format(rows, columns, param(params, "header")?, param(params, "separator")?).map(Value::Text)
+        }
+
         Op::Pair => {
             let [a, b] = inputs else { return None };
             Some(Value::List(vec![(*a).clone(), (*b).clone()]))
@@ -1585,7 +1635,8 @@ pub(crate) fn resume_token_request(params: &[Param]) -> Option<Value> {
 /// Whether leaf `name` has optional input ports, read as "none" when left unwired: a request's
 /// headers and body, a listing's prefix and after, a `to_number`'s radix, a `number_format`'s
 /// digits, a `slice`'s end, `to_spliced`'s count and items, `fill`'s and `copy_within`'s start and
-/// end, the position a search starts from, a `split`'s limit and a `pad`'s fill. Inside a composite, such a port that *is* wired holds the node back while its value is
+/// end, the position a search starts from, a `split`'s limit, a `pad`'s fill and a `csv_format`'s
+/// columns. Inside a composite, such a port that *is* wired holds the node back while its value is
 /// absent (eval.rs), like any other leaf's input.
 pub(crate) fn has_optional_ports(name: &str) -> bool {
     matches!(
@@ -1610,6 +1661,7 @@ pub(crate) fn has_optional_ports(name: &str) -> bool {
             | "text_contains"
             | "split"
             | "pad"
+            | "csv_format"
     )
 }
 
@@ -2102,6 +2154,35 @@ mod tests {
         assert_eq!(compute("hex", &[&txt("666f6f626172")], &[p("mode", "decode")]), Some(txt("foobar")));
         assert_eq!(compute("hex", &[&txt("zz")], &[p("mode", "decode")]), None);
         assert_eq!(compute("hex", &[&txt("ff")], &[p("mode", "decode")]), None, "not UTF-8");
+    }
+
+    /// Decimals and CSV (host-capabilities L4 §5.1.1) through the catalog, with its defaults: a
+    /// control sum exact where a number's is off, rounded half to even, and a payment file read
+    /// and written back.
+    #[test]
+    fn decimal_and_csv_leaves_compute_with_the_catalogs_defaults() {
+        let defaults = |name: &str| crate::interface_of(name).unwrap().params;
+        let n = Value::Number;
+        let amounts = Value::List(vec![txt("0.10"), txt("0.20"), n(0.3)]);
+        assert_eq!(compute("decimal_sum", &[&amounts], &defaults("decimal_sum")), Some(txt("0.60")));
+        assert_eq!(compute("decimal_add", &[&txt("1.10"), &txt("2"), &txt("-0.05")], &defaults("decimal_add")), Some(txt("3.05")));
+        assert_eq!(compute("decimal_round", &[&txt("2.665"), &n(2.0)], &defaults("decimal_round")), Some(txt("2.66")), "half to even");
+        assert_eq!(compute("decimal_round", &[&txt("2.665"), &n(2.0)], &[p("rounding", "half_up")]), Some(txt("2.67")));
+        assert_eq!(compute("decimal_div", &[&txt("100"), &txt("3"), &n(2.0)], &defaults("decimal_div")), Some(txt("33.33")));
+        assert_eq!(compute("decimal_compare", &[&txt("10.00"), &txt("9.99")], &[]), Some(n(1.0)));
+        assert_eq!(compute("decimal_mul", &[&txt("19.99"), &n(3.0)], &[]), Some(txt("59.97")));
+        assert_eq!(compute("decimal_sub", &[&txt("1"), &txt("one")], &[]), None);
+
+        let file = txt("id;currency;amount\r\n1;EUR;10.50\r\n2;USD;0.20\r\n");
+        let rows = compute("csv_parse", &[&file], &[p("header", "first_row"), p("separator", ";")]).unwrap();
+        let Value::List(items) = &rows else { panic!("{rows:?}") };
+        assert_eq!(items[1], Value::Record([("amount".into(), txt("0.20")), ("currency".into(), txt("USD")), ("id".into(), txt("2"))].into()));
+        assert_eq!(compute("csv_parse", &[&txt("a,\"b\n")], &defaults("csv_parse")), None, "a quote that never closes");
+        let columns = Value::List(vec![txt("id"), txt("currency"), txt("amount")]);
+        let params = [p("header", "first_row"), p("separator", ";")];
+        assert_eq!(compute("csv_format", &[&rows, &columns], &params), Some(file), "read and written back");
+        let lists = Value::List(vec![Value::List(vec![txt("a"), n(1.0)])]);
+        assert_eq!(compute("csv_format", &[&lists], &defaults("csv_format")), Some(txt("a,1\r\n")), "no columns: rows are lists");
     }
 
     /// Bytes (host-capabilities L4 §5.10.1): a text's encodings both ways, a length, a join, a

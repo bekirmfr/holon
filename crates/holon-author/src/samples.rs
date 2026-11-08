@@ -695,6 +695,18 @@ static SAMPLES: &[Sample] = &[
         text: include_str!("../samples/file-checksums.holon.ts"),
     },
     Sample {
+        name: "payout-totals",
+        title: "Payout totals (exact decimals, over a CSV)",
+        description: "Runs once for each CSV of payouts (id, currency, amount) new or changed in a folder on the host, reads it into records (csv_parse) and groups them by currency (Object.groupBy). Each currency's amounts are summed as decimals written as text (decimal_sum), so the total is exact: 0.10 and 0.20 make 0.30, where numbers would make 0.30000000000000004; it is rounded to cents half to even, as a bank rounds (decimal_round). The count and total of each currency are kept under the file's name in a collection, and a route reads them back.",
+        shows: &["exact decimals", "decimal_sum", "decimal_round", "csv_parse", "Object.groupBy", "Object.fromEntries", "on.file.created", "named folders"],
+        port: Some("8180"),
+        secrets: &[],
+        optional: &[],
+        browsers: None,
+        try_it: "first bind the folder (an admin): holon folder add payouts ~/holon-payouts --read-only; deploy, save a CSV of id,currency,amount lines as ~/holon-payouts/may.csv (1,EUR,0.10 then 2,EUR,0.20 then 3,USD,1250.005), then curl http://127.0.0.1:8180/totals/may.csv answers {\"EUR\":{\"count\":2,\"total\":\"0.30\"},\"USD\":{\"count\":1,\"total\":\"1250.00\"}}",
+        text: include_str!("../samples/payout-totals.holon.ts"),
+    },
+    Sample {
         name: "ticker",
         title: "Ticker (a clock beside routes)",
         description: "A flow with a clock of its own beside its routes: every 2 seconds (every(\"2s\", …)) it counts a tick in its state and sends it on the channel ticks, with the time of the tick (now, in the handler). Its page lists each tick as it arrives; GET /count answers the count. An action, run by hand by its name, sets the count back (export const reset = action((input) => …), input what was sent); a person runs it, and an agent only once a person lets agents run it.",

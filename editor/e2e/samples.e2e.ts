@@ -1910,6 +1910,30 @@ test("file-checksums hashes a binary file's bytes as sha256sum does, reads its k
   expect(verified.trim().endsWith("ok")).toBe(true);
 });
 
+test("payout-totals sums a CSV's amounts by currency exactly, rounds half to even, and its runs verify", async ({ page, request, adminToken }) => {
+  const { execFileSync } = await import("node:child_process");
+  const { mkdtempSync, writeFileSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  await openSample(page, "Payout totals (exact decimals, over a CSV)");
+  const port = await deploy(page);
+  // As numbers, 0.1 + 0.2 + 0.3 is 0.6000000000000001; 1250.005 is half a cent, rounded to even.
+  const name = `may-${Date.now()}.csv`;
+  writeFileSync(join(FOLDERS, "payouts", name), "id,currency,amount\r\n1,EUR,0.10\r\n2,EUR,0.20\r\n3,EUR,0.30\r\n4,USD,1250.005\r\n");
+  const totals = async () => (await request.get(`http://127.0.0.1:${port}/totals/${name}`)).text();
+  await expect.poll(totals, { timeout: 15_000 }).toContain("EUR");
+  expect(JSON.parse(await totals())).toEqual({ EUR: { count: 3, total: "0.60" }, USD: { count: 1, total: "1250.00" } });
+
+  const target = process.env.CARGO_TARGET_DIR ?? join(process.cwd(), "..", "target");
+  const holon = join(target, "debug", process.platform === "win32" ? "holon.exe" : "holon");
+  const env = { ...process.env, HOLON_TOKEN: adminToken };
+  const out = join(mkdtempSync(join(tmpdir(), "holon-runs-")), "payout-totals.json");
+  execFileSync(holon, ["export", "payout-totals", "--server", SERVER, "-o", out], { encoding: "utf8", env });
+  const verified = execFileSync(holon, ["verify", out], { encoding: "utf8" });
+  expect(verified).toContain("each produced what its log entry says");
+  expect(verified.trim().endsWith("ok")).toBe(true);
+});
+
 test("file-audit runs on a csv dropped in the inbox and on a file removed from it, not on other names, and its runs verify", async ({ page, adminToken }) => {
   const { execFileSync } = await import("node:child_process");
   const { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync, existsSync } = await import("node:fs");

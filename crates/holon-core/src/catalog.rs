@@ -58,6 +58,11 @@ pub const GENESIS: &[&str] = &[
     // pure — bytes (6): a text's encodings, a length, a join, and the numbers 0 to 255 they are;
     // `slice` takes bytes too (host-capabilities L4 §5.10.1)
     "text_to_bytes", "bytes_to_text", "bytes_length", "bytes_concat", "bytes_to_list", "list_to_bytes",
+    // pure — decimals (7): exact, over amounts written as text (decimals.rs, host-capabilities L4
+    // §5.1.1)
+    "decimal_add", "decimal_sub", "decimal_mul", "decimal_div", "decimal_round", "decimal_sum", "decimal_compare",
+    // pure — CSV (2): RFC 4180, both ways (csv.rs)
+    "csv_parse", "csv_format",
     // pure — universal, any-typed (8): as_text is to_text's message form, the identity on text;
     // coalesce is the first input that arrived, `default` with its fallback on a wire; fail is
     // nothing, its message the run log's reason (the language's `throw`)
@@ -124,6 +129,7 @@ pub const GENESIS: &[&str] = &[
 pub const VARIADIC: &[&str] = &[
     "add", "multiply", "max", "min", "and", "or", "concat", "list", "map", "fold", "any", "all", "filter", "find", "find_index", "find_last",
     "find_last_index", "sort_by", "merge", "group_by", "json_parse", "json_stringify", "date_utc", "date_set", "from_codes", "bytes_concat",
+    "decimal_add", "decimal_mul",
 ];
 
 /// The variadic leaves whose extra inputs are any type, passed to their function, rather than
@@ -176,6 +182,12 @@ pub const FAMILIES: &[(&str, &str, &[&str])] = &[
     ("date_text", "format", crate::dates::FORMATS),
     ("text_to_bytes", "encoding", &["utf8", "hex", "base64", "base64url"]),
     ("bytes_to_text", "encoding", &["utf8", "hex", "base64", "base64url"]),
+    ("decimal_div", "rounding", crate::decimals::ROUNDINGS),
+    ("decimal_round", "rounding", crate::decimals::ROUNDINGS),
+    ("csv_parse", "header", crate::csv::HEADERS),
+    ("csv_parse", "separator", crate::csv::SEPARATORS),
+    ("csv_format", "header", crate::csv::HEADERS),
+    ("csv_format", "separator", crate::csv::SEPARATORS),
 ];
 
 /// The values leaf `name`'s family parameter `param` may take, if it is one.
@@ -400,6 +412,23 @@ pub fn interface_of(name: &str) -> Option<Unit> {
         "bytes_concat" => prim(vec![port("a", Bytes), port("b", Bytes)], vec![], Bytes),
         "bytes_to_list" => prim(vec![port("bytes", Bytes)], vec![], Type::List(Box::new(Number))),
         "list_to_bytes" => prim(vec![port("list", Type::list_any())], vec![], Bytes),
+
+        // ── pure — decimals (decimals.rs, host-capabilities L4 §5.1.1) ── a decimal is a text, or
+        // a number as its shortest text; every result is a text, a comparison's aside.
+        "decimal_add" | "decimal_sub" | "decimal_mul" => prim(vec![port("a", Any), port("b", Any)], vec![], Text),
+        "decimal_div" => prim(vec![port("a", Any), port("b", Any), port("scale", Number)], vec![Param::frozen("rounding", "half_even")], Text),
+        "decimal_round" => prim(vec![port("a", Any), port("scale", Number)], vec![Param::frozen("rounding", "half_even")], Text),
+        "decimal_sum" => prim(vec![port("list", Type::list_any())], vec![], Text),
+        "decimal_compare" => prim(vec![port("a", Any), port("b", Any)], vec![], Number),
+
+        // ── pure — CSV (csv.rs) ── records keyed by the first row, or lists; `columns` gives the
+        // order records are written in.
+        "csv_parse" => prim(vec![port("text", Text)], vec![Param::frozen("header", "first_row"), Param::frozen("separator", ",")], Type::list_any()),
+        "csv_format" => prim(
+            vec![port("rows", Type::list_any()), port("columns", Type::List(Box::new(Text)))],
+            vec![Param::frozen("header", "first_row"), Param::frozen("separator", ",")],
+            Text,
+        ),
 
         // ── pure — sum (Option) ──
         // Option<T> = Sum([T, Unit]) — arm 0 is "some", arm 1 ("none") is Unit (Product([])),
@@ -689,8 +718,10 @@ mod tests {
         // date_utc, date_set, date_text, date_parse); and the text leaves (text_at, code_at,
         // from_codes, text_contains, trim, pad, repeat, replace, normalize, uri_encode, uri_decode,
         // is_well_formed); and fail (the language's throw); and the bytes leaves (text_to_bytes,
-        // bytes_to_text, bytes_length, bytes_concat, bytes_to_list, list_to_bytes, file_read_bytes).
-        assert_eq!(GENESIS.len(), 159);
+        // bytes_to_text, bytes_length, bytes_concat, bytes_to_list, list_to_bytes, file_read_bytes);
+        // and the decimal leaves (decimal_add, decimal_sub, decimal_mul, decimal_div,
+        // decimal_round, decimal_sum, decimal_compare) and CSV's (csv_parse, csv_format).
+        assert_eq!(GENESIS.len(), 168);
     }
 
     #[test]

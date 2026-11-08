@@ -591,6 +591,17 @@ writes them (`utf8`, `hex`, `base64`, `base64url`) and `text_to_bytes` reads the
 sends them as they are, `application/octet-stream` unless its headers say otherwise. The
 file-checksums sample hashes each file dropped in a folder.
 
+A payment file is CSV, and its amounts are decimals. `csv_parse(text)` reads it into records keyed
+by its first row (`{ header: "none" }` for lists, `{ separator: ";" }` and the like), every field a
+text, and gives nothing for a file that is malformed; `csv_format(rows, columns)` writes records
+back in the columns' order. An amount stays a text, and the decimal leaves compute on it exactly:
+`decimal_add`, `decimal_sub`, `decimal_mul`, `decimal_sum` (a control sum),
+`decimal_div(a, b, scale)`, `decimal_round(a, scale)` (half to even unless `{ rounding: … }` says
+otherwise) and `decimal_compare`, so `0.10` and `0.20` make `0.30`. Their results are texts, so the
+compiler refuses `+` on one (it would join them) and `<` (it would compare letters):
+`decimal_add` and `decimal_compare` say what is meant. The payout-totals sample totals a CSV of
+payouts by currency.
+
 ### drop-box: a run per new file
 
 ```ts
@@ -2546,6 +2557,9 @@ the syntax to TypeScript's, keeping the lowering.
    - *Bytes* (2026-11-08, host-capabilities L4 §5.10): a value kind, `Uint8Array` to
      TypeScript; `folder.bytes(name)`, `.length` and `.slice` on bytes, and seven leaves. The
      file-checksums sample, run live.
+   - *Decimals and CSV* (2026-11-08, host-capabilities L4 §5.1.1, slice 1.2a): seven decimal
+     leaves over amounts written as text, `+` and `<` refused on their results; `csv_parse` and
+     `csv_format`. The payout-totals sample, run live.
 
    Next are the L4's slices 6 to 11: computing loops, as folds over a bounded range; requests and calls that wait (`await` with
    JavaScript's order and required, `Promise.all`, a call that parks its caller, a request recorded

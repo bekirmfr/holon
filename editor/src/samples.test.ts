@@ -22,6 +22,7 @@ import {
   type BoundaryPort,
 } from "./composites";
 import { foldLevels } from "./CompositeOverlay";
+import { CATALOG_GROUPS } from "./paletteGroups";
 import { documentUnits, knownNames, nameOf, restoreDocument } from "./docUnits";
 import { describeItem, describeItemSending, manifestItems, manifestTrigger, permissionKind } from "./holon";
 import type { PrimitiveNodeType } from "./PrimitiveNode";
@@ -526,5 +527,13 @@ export const run = action((input) => outerHolon(input))
 
   it("are holon-author's, built by name", () => {
     expect(() => buildSample({ ...samples()[0], name: "nope" }, new Evaluator())).toThrow('no sample "nope"');
+  });
+});
+
+describe("the palette", () => {
+  it("has every primitive in the catalog, each in one group", () => {
+    const placed = CATALOG_GROUPS.flatMap((g) => [...g.items]);
+    expect([...catalog.keys()].filter((n) => placed.filter((p) => p === n).length !== 1)).toEqual([]);
+    expect(placed.filter((n) => !catalog.has(n))).toEqual([]);
   });
 });

@@ -26,6 +26,7 @@ mod determinism;
 mod advisory;
 mod catalog;
 mod dates;
+mod decimals;
 mod declare;
 mod docs;
 mod encapsulate;
@@ -35,6 +36,7 @@ mod eval;
 #[doc(hidden)]
 pub mod eager;
 mod crypto;
+mod csv;
 mod fork;
 mod kind;
 mod lists;

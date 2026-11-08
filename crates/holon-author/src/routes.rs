@@ -305,6 +305,7 @@ pub(crate) fn is_optional_input(n: &Node, port: Option<&str>) -> bool {
         "text_contains" => &["position"],
         "split" => &["limit"],
         "pad" => &["fill"],
+        "csv_format" => &["columns"],
         _ => &[],
     };
     n.data.body == PlacedBody::Primitive && port.is_some_and(|p| optional.contains(&p))

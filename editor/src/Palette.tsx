@@ -11,6 +11,7 @@ import { outputColor } from "./theme";
 import { InfoIcon } from "./NodeDocs";
 import { templateDoc } from "./templates";
 import { MARKET_PREFIX, type Listing } from "./marketplace";
+import { CATALOG_GROUPS } from "./paletteGroups";
 
 /** The MIME key the palette writes and the canvas reads on a drag-and-drop. */
 export const DND_MIME = "application/holon-primitive";
@@ -18,94 +19,6 @@ export const DND_MIME = "application/holon-primitive";
 /** A dragged saved flow's payload: `flow:<name>` (no primitive or template name has a colon). */
 export const FLOW_PREFIX = "flow:";
 
-// ── Catalog grouping ──────────────────────────────────────────────────────────
-// Names come from GENESIS in catalog.rs (§13a).  Groups follow the same comment
-// sections; some adjacent small sections are merged for a manageable count.
-
-const CATALOG_GROUPS: readonly { name: string; items: ReadonlySet<string> }[] = [
-  {
-    name: "net",
-    items: new Set(["http_request", "http_upload", "http_stream", "flow_call", "flow_start"]),
-  },
-  {
-    name: "core",
-    items: new Set([
-      "const", "add", "multiply", "subtract", "divide",
-      "compare", "and", "or", "not", "select",
-      "cons", "head", "tail", "is_empty", "fold", "map",
-    ]),
-  },
-  {
-    name: "number",
-    items: new Set([
-      "math", "max", "min", "aggregate", "atan2", "power", "remainder",
-      "bitwise", "number_test", "to_number", "number_format",
-    ]),
-  },
-  {
-    name: "date",
-    items: new Set(["date_part", "date_utc", "date_set", "date_text", "date_parse"]),
-  },
-  {
-    name: "text",
-    items: new Set([
-      "concat", "uppercase", "lowercase", "text_length", "slice", "index_of", "split",
-      "text_at", "code_at", "from_codes", "text_contains", "trim", "pad", "repeat", "replace", "normalize", "uri_encode", "uri_decode", "is_well_formed",
-    ]),
-  },
-  {
-    name: "list",
-    items: new Set([
-      "list", "get", "append", "extend", "length", "sum", "join", "range", "pair", "some", "none",
-      "at", "indices", "entries", "any", "all", "filter", "find", "find_index", "find_last", "find_last_index",
-      "sort_by", "includes", "last_index_of", "reverse", "to_spliced", "with_item", "fill", "copy_within",
-      "sort", "flat", "is_list", "unique",
-    ]),
-  },
-  {
-    name: "record",
-    items: new Set([
-      "record", "field", "with_field", "without_field", "keys", "lookup", "insert", "remove",
-      "values", "from_entries", "merge", "has", "group_by", "same_value", "type_of",
-    ]),
-  },
-  {
-    name: "encode",
-    items: new Set(["json_parse", "json_stringify", "sha256", "hmac_sha256", "hex", "base64", "secure_equals"]),
-  },
-  {
-    name: "util",
-    items: new Set(["to_text", "as_text", "is_truthy", "guard", "default", "coalesce", "equals", "fail"]),
-  },
-  {
-    name: "drivers",
-    items: new Set(["clock", "random", "secret", "file_arrival", "await", "resume_token"]),
-  },
-  {
-    name: "state",
-    items: new Set(["store_read", "store_write",
-      "collection_get", "collection_list", "collection_put", "collection_delete"]),
-  },
-  {
-    name: "files",
-    items: new Set([
-      "file_read", "file_list", "file_write", "file_delete",
-      "file_handle", "file_lines", "file_slice", "file_copy",
-      "file_create", "file_create_copy",
-    ]),
-  },
-  {
-    name: "database",
-    items: new Set([
-      "db_query", "db_one", "db_exec",
-      "db_find", "db_find_one", "db_insert", "db_update", "db_delete",
-    ]),
-  },
-  {
-    name: "channel",
-    items: new Set(["channel_send", "channel_subscribe", "egress"]),
-  },
-];
 
 function loadOpen(): Set<string> {
   try {

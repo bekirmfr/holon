@@ -6767,6 +6767,40 @@ on.file.created(inbox, async (f) => {{
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A CSV of payouts (the payout-totals sample): each currency's total exact where a number's sum is
+/// off, rounded half to even, kept and read back; a malformed file keeps nothing; and the runs
+/// verify.
+#[test]
+fn a_csv_of_payouts_is_totalled_exactly() {
+    let state = claims_state("");
+    let dir = std::env::temp_dir().join(format!("holon-payouts-{}-{}", std::process::id(), rand::random::<u32>()));
+    let payouts = dir.join("payouts");
+    std::fs::create_dir_all(&payouts).unwrap();
+    assert_eq!(route_status(&state, &serde_json::json!({ "name": "payouts", "path": payouts.display().to_string(), "access": "read" })), 200);
+    let slug = deploy_text(&state, include_str!("../../holon-author/samples/payout-totals.holon.ts"), "");
+    let look = || {
+        arrivals::run_arrivals(&state.store, &state.deployments, &state.deployments_path);
+        arrivals::run_arrivals(&state.store, &state.deployments, &state.deployments_path);
+    };
+    look();
+    // 0.1 + 0.2 + 0.3 as numbers is 0.6000000000000001; 1250.005 is half a cent, to even.
+    std::fs::write(payouts.join("may.csv"), "\u{feff}id,currency,amount\r\n1,EUR,0.10\r\n2,EUR,0.20\r\n3,EUR,0.30\r\n4,USD,1250.005\r\n").unwrap();
+    std::fs::write(payouts.join("bad.csv"), "id,currency,amount\n1,EUR,\"0.10\n").unwrap();
+    look();
+    let (status, answer, _) = data_call(&state, &slug, "GET", "/totals/may.csv", "");
+    assert_eq!(
+        (status, serde_json::from_str::<serde_json::Value>(&answer).unwrap()),
+        (200, serde_json::json!({ "EUR": { "count": 3, "total": "0.60" }, "USD": { "count": 1, "total": "1250.00" } }))
+    );
+    let (status, _, _) = data_call(&state, &slug, "GET", "/totals/bad.csv", "");
+    assert_ne!(status, 200, "a quote that never closes keeps nothing");
+
+    let export: verify::Export = serde_json::from_value(body_json(route(&state, &req("GET", &format!("/deployments/{slug}/export"), vec![])))).unwrap();
+    let report = verify::check(&export, None, &BTreeMap::new());
+    assert!(report.ok() && report.reruns.iter().all(|(_, r)| *r == verify::Rerun::Matched), "{}", verify::describe(&report, None));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// A file's bytes (the file-checksums sample): any file, read whole, hashed as sha256sum does; a
 /// small one's bytes kept in its log entry as base64, a big one's in the blob store and nowhere in
 /// the log, its timeline included; bytes a route answers sent as they are; and the runs verify.

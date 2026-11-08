@@ -135,6 +135,19 @@ pub fn describe(name: &str) -> Option<&'static str> {
         "bytes_to_list" => "Bytes as a list of numbers from 0 to 255: Array.from(b).",
         "list_to_bytes" => "A list of whole numbers from 0 to 255 as bytes: new Uint8Array(xs). Nothing if an item isn't one, where JavaScript wraps it.",
 
+        // ── decimals ──
+        "decimal_add" => "The exact sum of decimals written as text (1234.56), or of numbers as their shortest text: 0.1 and 0.2 give 0.3. Its scale is the largest of theirs: 1.10 and 2 give 3.10. Nothing for a text that isn't a decimal.",
+        "decimal_sub" => "a − b, exactly, its scale the larger of theirs.",
+        "decimal_mul" => "The exact product of decimals, its scale the sum of theirs: 19.99 times 3 is 59.97.",
+        "decimal_div" => "a ÷ b to scale places, rounded by rounding (half_even by default). Nothing when b is zero.",
+        "decimal_round" => "A decimal to scale places, padded with zeros (5 to 2 places is 5.00), rounded by rounding: half_even (a bank's, the default), half_up, half_down, up (away from zero), down (toward zero), ceiling or floor.",
+        "decimal_sum" => "The exact sum of a list's decimals: a control sum. 0 for an empty list.",
+        "decimal_compare" => "−1, 0 or 1 as a is less than, equal to or more than b, by value: 1.10 and 1.1 are equal.",
+
+        // ── CSV ──
+        "csv_parse" => "Reads CSV (RFC 4180): with header first_row (the default), a list of records keyed by the first row's names; with none, a list of lists. Every field is a text. Nothing for a malformed file: a quote that never closes, a row with more or fewer fields than the header, a column named twice.",
+        "csv_format" => "Writes CSV: given columns, each row a record written in that order (a missing field empty), the names first unless header is none; without, each row a list. A field holding the separator, a quote or a line break is quoted, and each line ends with CRLF.",
+
         // ── any value ──
         "to_text" => "Any value written out as text, as a literal: a text comes out in quotes.",
         "as_text" => "Any value as it reads in a message: a text is itself, a number or true/false as written, a record or list as JSON. For putting a value into a text.",
