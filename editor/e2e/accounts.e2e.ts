@@ -118,7 +118,7 @@ test("an admin's API token acts with its role, until revoked; a disabled account
   const cyRow = ada.locator("div", { has: ada.getByLabel("cy's role") }).last();
   await cyRow.getByRole("button", { name: "disable" }).click();
   await expect(cyRow).toContainText("· disabled");
-  await menuEntry(cy, "deployed").click({ timeout: 5_000 }).catch(() => {});
+  await menuEntry(cy, "library").click({ timeout: 5_000 }).catch(() => {});
   await expect(cy.getByRole("form", { name: "sign in" })).toBeVisible();
   await fill(cy, "name", "cy");
   await fill(cy, "password", PASSWORD);

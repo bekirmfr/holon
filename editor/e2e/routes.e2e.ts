@@ -8,8 +8,8 @@ test("a reload keeps the page, the flow and its mode; Back goes back", async ({ 
   await page.goto("/#flows");
   const tabs = page.getByRole("tablist", { name: "open tabs" });
   await expect(tabs.getByRole("tab", { name: "flows" })).toHaveAttribute("aria-selected", "true");
-  await gotoPage(page, "deployed");
-  await expect(page).toHaveURL(/#deployed$/);
+  await gotoPage(page, "library");
+  await expect(page).toHaveURL(/#library$/);
   await page.goBack();
   await expect(page).toHaveURL(/#flows$/);
   await expect(tabs.getByRole("tab", { name: "flows" })).toHaveAttribute("aria-selected", "true");
@@ -47,9 +47,9 @@ test("the manual's page is in the address", async ({ page }) => {
 });
 
 test("keys: a page by its number, Esc up, ? for them all, and j steps through a run", async ({ page, request }) => {
-  await page.goto("/#deployed");
+  await page.goto("/#library");
   // Once the editor is there to hear them.
-  await expect(page.getByRole("tablist", { name: "open tabs" }).getByRole("tab", { name: "deployed" })).toHaveAttribute("aria-selected", "true");
+  await expect(page.getByRole("tablist", { name: "open tabs" }).getByRole("tab", { name: "library" })).toHaveAttribute("aria-selected", "true");
   await page.keyboard.press("3");
   await expect(page).toHaveURL(/#flows$/);
   await page.keyboard.press("Escape");
@@ -101,8 +101,8 @@ test("the side nav says the page, the crumbs the way up, the host card the host"
 });
 
 test("the command palette finds a page and a sample, and takes : commands", async ({ page }) => {
-  await page.goto("/#deployed");
-  await expect(page.getByRole("tablist", { name: "open tabs" }).getByRole("tab", { name: "deployed" })).toHaveAttribute("aria-selected", "true");
+  await page.goto("/#library");
+  await expect(page.getByRole("tablist", { name: "open tabs" }).getByRole("tab", { name: "library" })).toHaveAttribute("aria-selected", "true");
   const palette = page.getByRole("dialog", { name: "command palette" });
   const find = palette.getByRole("combobox");
 

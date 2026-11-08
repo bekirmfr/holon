@@ -2,24 +2,23 @@
 // card under it, and the top bar over the page: where you are (the crumbs), the command palette,
 // the look and who is signed in. The pages themselves are App's; this only goes to them.
 
-import { useEffect, useState, type MouseEvent, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { AccountMenu, type Me } from "../AuthGate";
 import { THEMES, type Theme } from "../look";
 import { pageOf, type AppPage } from "../Pages";
-import { crumbs, format, labelOf, type Route } from "../routes";
+import { crumbs, follow, format, labelOf, type Route } from "../routes";
 import { getVersion, hostAddress } from "../server";
 
 type Entry = { label: string; to: Route; key?: number };
 
 /** The nav's groups, in order: the work, the host's own pages (an admin's), and help. The
- *  numbers are keymap.ts's PAGE_KEYS. Deployed stays until the flows page shows deployments. */
+ *  numbers are keymap.ts's PAGE_KEYS. */
 const WORK: Entry[] = [
   { label: "Overview", to: { kind: "overview" }, key: 1 },
   { label: "Approvals", to: { kind: "approvals", tab: "deploys" }, key: 2 },
   { label: "Flows", to: { kind: "flows" }, key: 3 },
   { label: "Editor", to: { kind: "editor", slug: null, view: false, seq: null }, key: 4 },
   { label: "Library", to: { kind: "library", tab: "samples" }, key: 5 },
-  { label: "Deployed", to: { kind: "deployed" } },
 ];
 const HOST: Entry[] = [
   { label: "Resources", to: { kind: "resources", tab: null }, key: 6 },
@@ -31,12 +30,6 @@ const HELP: Entry[] = [
   { label: "Docs", to: { kind: "docs", page: null, anchor: null } },
 ];
 
-/** Follow a link here, unless it is opened elsewhere (a modifier, or not the main button). */
-const follow = (to: Route, navigate: (r: Route) => void) => (e: MouseEvent) => {
-  if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
-  e.preventDefault();
-  navigate(to);
-};
 
 export function Shell({
   route,

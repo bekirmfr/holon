@@ -10,7 +10,7 @@
 
 import { appendFileSync, readFileSync } from "node:fs";
 import { expect, FOLDERS, PORTS, RUN_DIR, SAMPLE_SHIFT, SERVER, test } from "./fixtures";
-import { gotoPage, openSample, still, openDeployPanel, deploy, settingsSayPort, dropFromPalette, viewNewestRun } from "./helpers";
+import { flowRow, gotoPage, openSample, still, openDeployPanel, deploy, settingsSayPort, dropFromPalette, viewNewestRun } from "./helpers";
 
 const ATLAS_NOTES = "Atlas notes (a MongoDB database)";
 
@@ -24,11 +24,11 @@ const SAMPLE_TITLES = [...samplesRs.matchAll(/^\s*title: "(.*)",$/gm)].map((m) =
 const CLOCK_SLUGS = new Set(["heartbeat", "ticker", "rolling-log"]);
 const TITLE_TO_SLUG = new Map([...samplesRs.matchAll(/^\s*name: "([^"]+)",\s*\n\s*title: "([^"]+)",/gm)].map((m) => [m[2], m[1]]));
 
-test("the flows page lists every sample", async ({ page }) => {
+test("the library lists every sample", async ({ page }) => {
   await page.goto("/");
-  await gotoPage(page, "flows");
-  const titles = await page.locator("text=samples").locator("xpath=following-sibling::div").locator("div > div:first-child").allInnerTexts();
-  const listed = titles.filter((t) => t.trim().length > 0);
+  await gotoPage(page, "library");
+  const samples = page.getByRole("region", { name: "samples" });
+  const listed = await samples.getByRole("article").getByRole("heading").allInnerTexts();
   // Every sample samples.rs has, so none is left out of the tests below, and nothing else.
   expect(SAMPLE_TITLES.length).toBeGreaterThan(5);
   expect([...listed].sort()).toEqual([...SAMPLE_TITLES].sort());
@@ -458,12 +458,13 @@ test("the marketplace, a Holon flow: publish a saved flow to it, place it from t
   await answer(shout);
   await expect(page.getByRole("region", { name: "notices" })).toContainText("saved");
 
-  // Set the marketplace, and publish from the flows page.
-  await gotoPage(page, "flows");
+  // Set the marketplace on the Library's tab, and publish from Flows.
+  await page.goto("/#library.market");
   await page.getByRole("button", { name: /^(set|change)$/ }).click();
   await answer(market);
   await expect(page.getByText(`publishing to and placing from ${market}`)).toBeVisible();
-  await page.getByText(shout, { exact: true }).locator("xpath=..").getByRole("button", { name: "publish" }).click();
+  await gotoPage(page, "flows");
+  await flowRow(page, shout).getByRole("button", { name: "publish" }).click();
   await answer("shouts its text");
   await answer("e2e");
   await answer(key);
@@ -479,9 +480,9 @@ test("the marketplace, a Holon flow: publish a saved flow to it, place it from t
   await ask.getByRole("button", { name: "Place" }).click();
   await expect(flow.locator(".react-flow__node", { hasText: shout })).toHaveCount(1);
 
-  // Yanked from the flows page: flagged, never edited, and the palette says so.
-  await gotoPage(page, "flows");
-  const row = page.locator("div", { has: page.getByText(shout, { exact: true }) }).filter({ hasText: "by e2e" }).last();
+  // Yanked from the Library's marketplace: flagged, never edited, and the palette says so.
+  await page.goto("/#library.market");
+  const row = page.getByRole("region", { name: "marketplace" }).getByRole("listitem").filter({ has: page.getByText(shout, { exact: true }) }).filter({ hasText: "by e2e" }).last();
   await row.getByRole("button", { name: "yank" }).click();
   await ask.getByRole("button", { name: "Yank" }).click();
   await expect(row).toContainText("yanked");
@@ -512,7 +513,7 @@ test("a flow as text: exported as .holon.ts, checked by the command line, import
 
   // Exported from the flows page: the canvas printed as TypeScript.
   await gotoPage(page, "flows");
-  const row = page.getByText(name, { exact: true }).locator("xpath=..");
+  const row = flowRow(page, name);
   const download = page.waitForEvent("download");
   await row.getByRole("button", { name: ".holon.ts" }).click();
   const file = join(mkdtempSync(join(tmpdir(), "holon-text-")), `${name}.holon.ts`);
@@ -535,7 +536,7 @@ test("a flow as text: exported as .holon.ts, checked by the command line, import
 });
 
 
-test("ticker's clock ticks beside its routes: its count grows on its own, tick now adds one, its action sets it by hand, from the editor and the deployed page, and each run replays exactly", async ({ page, request }) => {
+test("ticker's clock ticks beside its routes: its count grows on its own, tick now adds one, its action sets it by hand, from the editor and its page, and each run replays exactly", async ({ page, request }) => {
   await openSample(page, "Ticker (a clock beside routes)");
   // Agents may run its action, as its deploy settings ask: a grant of its own.
   const port = await deploy(page, SAMPLE_SHIFT, (settings) => settings.getByLabel("agents may run reset").check());
@@ -563,15 +564,14 @@ test("ticker's clock ticks beside its routes: its count grows on its own, tick n
   await page.getByRole("button", { name: "view run" }).click();
   await expect(page.locator(".hl-view__bottom")).toContainText(/· action reset · session/);
   await expect(page.locator(".hl-view__bottom")).toContainText("replay reproduces the run");
-  // The deployed page runs it too, without opening the flow; its grant lets agents run it.
-  await gotoPage(page, "deployed");
-  const card = page.getByLabel("deployment ticker");
-  await card.getByLabel("what to send reset").fill('{"to": 5}');
-  await card.getByRole("button", { name: "run", exact: true }).click();
-  await expect(card.getByText(/^reset: \{"set":5,"was":\d+\} \(run \d+\)/)).toBeVisible();
+  // Its page runs it too, without opening the flow; its grant lets agents run it.
+  await page.goto("/#ticker");
+  const actions = page.getByRole("region", { name: "actions" });
+  await actions.getByLabel("what to send reset").fill('{"to": 5}');
+  await actions.getByRole("button", { name: "run", exact: true }).click();
+  await expect(actions.getByText(/^reset: \{"set":5,"was":\d+\} \(run \d+\)/)).toBeVisible();
   expect(await count()).toBeLessThan(1000);
-  await card.getByText(/^manifest ▸/).click();
-  await expect(card).toContainText("let agents run its action reset");
+  await expect(page.getByRole("region", { name: "it may" })).toContainText("let agents run its action reset");
 });
 
 test("shop runs billing's actions: an order calls billing and stores what it answered, a refund undoes it, a stopped billing answers 502, and the order's run replays exactly", async ({ page, request }) => {
@@ -597,15 +597,14 @@ test("shop runs billing's actions: an order calls billing and stores what it ans
   await viewNewestRun(page);
   await expect(page.locator(".hl-view__bottom")).toContainText("replay reproduces the run");
   await page.locator(".hl-canvas").getByRole("button", { name: "edit", exact: true }).click();
-  // Its manifest names what it may run.
-  await gotoPage(page, "deployed");
-  const shopCard = page.getByLabel("deployment shop");
-  await shopCard.getByText(/^manifest ▸/).click();
-  await expect(shopCard).toContainText("run the action charge of the flow billing");
+  // Its page names what it may run.
+  await page.goto("/#shop");
+  await expect(page.getByRole("region", { name: "it may" })).toContainText("run the action charge of the flow billing");
   // A billing that isn't running can't be called: the call answers why, and the order isn't stored.
-  const billingCard = page.getByLabel("deployment billing");
-  await billingCard.getByRole("button", { name: "stop", exact: true }).click();
-  await expect(billingCard).toContainText("stopped");
+  await page.goto("/#billing");
+  const head = page.getByLabel("flow billing");
+  await head.getByRole("button", { name: "Stop", exact: true }).click();
+  await expect(head.locator(".hl-flow__status")).toContainText("stopped");
   const lost = `${id}-lost`;
   expect((await request.post(at(shop, "/orders"), { data: { id: lost, amount: 1 } })).status()).toBe(502);
   expect((await request.get(at(shop, `/orders/${lost}`))).status()).toBe(404);

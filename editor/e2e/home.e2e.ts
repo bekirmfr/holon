@@ -79,8 +79,8 @@ test("pages open in tabs of their own; every tab closes; with none open, home sh
   await gotoPage(page, "admin");
   await expect(tabs.getByRole("tab", { name: "admin" })).toHaveAttribute("aria-selected", "true");
   await expect(page.getByLabel("new person's name")).toBeVisible();
-  await gotoPage(page, "deployed");
-  await expect(tabs.getByRole("tab", { name: "deployed" })).toHaveAttribute("aria-selected", "true");
+  await gotoPage(page, "library");
+  await expect(tabs.getByRole("tab", { name: "library" })).toHaveAttribute("aria-selected", "true");
   // A flow's tab has the palette; a page's doesn't. New asks nothing: an untitled draft, named on save.
   await gotoPage(page, "new");
   await expect(page.locator('[aria-modal="true"]')).toHaveCount(0);

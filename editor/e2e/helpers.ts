@@ -6,13 +6,13 @@ import type { Locator, Page } from "@playwright/test";
 import { expect, SAMPLE_SHIFT } from "./fixtures";
 
 /** The pages the side nav goes to (ui/Shell.tsx), and "new" for its new flow. */
-export type MenuPage = "flows" | "deployed" | "docs" | "admin" | "new";
+export type MenuPage = "flows" | "library" | "docs" | "admin" | "new";
 
 /** The nav's entry for `name`: admin's pages are under Resources until they have their own. */
 export function menuEntry(page: Page, name: MenuPage): Locator {
   const nav = page.getByRole("navigation", { name: "main" });
   if (name === "new") return nav.getByRole("button", { name: "new flow" });
-  const label = { flows: "Flows", deployed: "Deployed", docs: "Docs", admin: "Resources" }[name];
+  const label = { flows: "Flows", library: "Library", docs: "Docs", admin: "Resources" }[name];
   return nav.getByRole("link", { name: label, exact: true });
 }
 
@@ -21,15 +21,19 @@ export async function gotoPage(page: Page, name: MenuPage) {
   await menuEntry(page, name).click();
 }
 
-/** Open the sample titled `title` from the flows page: an unsaved copy in a tab of its own. From
- *  a fresh load of the editor unless `reload` is false: then from the flows page of the editor
- *  as it is (faster, and its other tabs stay open). */
+/** Open the sample titled `title` from the Library's samples: an unsaved copy in a tab of its
+ *  own. From a fresh load of the editor unless `reload` is false: then from the Library of the
+ *  editor as it is (faster, and its other tabs stay open). */
 export async function openSample(page: Page, title: string, reload = true) {
-  if (reload) await page.goto("/");
-  await gotoPage(page, "flows");
-  const card = page.getByText(title, { exact: true }).locator("xpath=../..");
-  await card.getByRole("button", { name: "open" }).click();
+  if (reload) await page.goto("/#library.samples");
+  else await gotoPage(page, "library");
+  await page.getByRole("region", { name: "samples" }).getByRole("button", { name: `open ${title}`, exact: true }).click();
   await expect(page.locator(".hl-tab--active")).toBeVisible();
+}
+
+/** The Flows page's row of the flow `name`, saved or deployed. */
+export function flowRow(page: Page, name: string): Locator {
+  return page.getByRole("region", { name: "flows" }).getByRole("row").filter({ has: page.getByRole("link", { name, exact: true }) });
 }
 
 /** Wait until `locator` stops moving: its box the same over two reads 100 ms apart. An overlay

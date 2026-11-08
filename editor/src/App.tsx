@@ -68,7 +68,9 @@ import {
 import { expandComposite } from "./composites";
 import { FlowTabs, FlowToolbar, ProjectionPanel } from "./CanvasPanels";
 import { FlowPage } from "./FlowPage";
-import { DeployedPage, FlowsPage, pageOf, routeOfPage, shownAt, type AppPage, type PageTab } from "./Pages";
+import { pageOf, routeOfPage, shownAt, type AppPage, type PageTab } from "./Pages";
+import { FlowsPage } from "./FlowsPage";
+import { LibraryPage } from "./LibraryPage";
 import { format, parentOf, same, type Route } from "./routes";
 import { PAGE_KEYS } from "./keymap";
 import { KeysDialog, useKeys } from "./ui/Keys";
@@ -208,7 +210,7 @@ function Canvas({
     setProjection((p) => (p && p.basis !== canvasKey ? null : p));
   }, [canvasKey]);
 
-  // The last deploy or deployment error, shown in the toolbar and on the deployed page.
+  // The last deploy or deployment error, shown in the toolbar and on the flows page.
   const [deployError, setDeployError] = useState("");
   // The deployment card asked for from the admin page's permissions, at its `n`th asking.
   const [focus, setFocus] = useState<{ slug: string; n: number } | null>(null);
@@ -578,8 +580,7 @@ function Canvas({
   // ── Deploy / manage (holon-server) ──────────────────────────────────────────────────────
   // Everything above this point (project, group, expand, inspect) is purely local — an
   // in-browser wasm workspace. Deploying talks to holon-server, over plain HTTP, localhost-only.
-  const deploymentTable = useDeployments(page, setDeployError);
-  const { deployments, listError, refresh: refreshDeployments } = deploymentTable;
+  const { deployments, listError, refresh: refreshDeployments } = useDeployments(page);
   // Deploying it, and running, pausing or stopping it (useDeployFlow.ts).
   const { deployedEntry, outOfDate, deployBusy, secretNames, onDeployFlow, onFlowAction } = useDeployFlow({
     flowName,
@@ -746,7 +747,6 @@ function Canvas({
       ["Resources", { kind: "resources", tab: null }],
       ["People", { kind: "people", tab: null }],
       ["Policy", { kind: "policy" }],
-      ["Deployed", { kind: "deployed" }],
       ["Docs", { kind: "docs", page: null, anchor: null }],
       ["Welcome", { kind: "start" }],
       ...(me.role === "admin" ? [["Admin", { kind: "admin", tab: null }] as [string, Route]] : []),
@@ -1132,7 +1132,7 @@ function Canvas({
         }}
       />
       <ViewModePanes view={{ ...view, showNode: (id) => { view.showNode(id); textPane.revealNode(id); } }} flow={flow} nodes={nodes} onRestored={refreshDeployments} />
-      {/* The Flows / Deployed pages are overlays ON TOP of the always-mounted canvas — React
+      {/* The pages are overlays ON TOP of the always-mounted canvas — React
           Flow's own state (nodes mid-edit, viewport) lives in it and must survive navigation,
           so the canvas is covered, never unmounted. The deployments list used to live in a
           bottom-left panel on the canvas itself; it moved here wholesale — one home, not two. */}
@@ -1149,21 +1149,30 @@ function Canvas({
         >
           {shown === "flows" && (
             <FlowsPage
+              deployments={deployments}
+              error={deployError || listError}
               openTabs={tabList}
               onOpen={onOpenFlow}
               onSwitch={switchTab}
-              samples={samples()}
-              onOpenSample={onOpenSample}
-              holonText={{
-                onImport: openText,
-                exportOf: async (name) => printHolon(name, (await getFlow(name)).document, ev),
-                textOfSample: (sample) => sample.text,
-              }}
+              onNew={start.onNew}
+              navigate={navigate}
+              onImport={openText}
+              exportOf={async (name) => printHolon(name, (await getFlow(name)).document, ev)}
               manifestOf={manifestOfDocument}
+              marketplace={{ url: market.url, onPublish: market.publish }}
+            />
+          )}
+          {shown === "library" && route.kind === "library" && (
+            <LibraryPage
+              tab={route.tab}
+              navigate={navigate}
+              samples={samples()}
+              itemsOf={(sample) => manifestOfDocument(buildSample(sample, ev)).items}
+              onOpenSample={onOpenSample}
+              textOfSample={(sample) => sample.text}
               marketplace={{
                 url: market.url,
                 onChange: market.refresh,
-                onPublish: market.publish,
                 listings: market.listings,
                 adoption: (root, name) => new Set(market.listings.filter((l) => l.name !== name && l.contains.includes(root)).map((l) => l.name)).size,
                 onYank: market.yank,
@@ -1186,7 +1195,7 @@ function Canvas({
               name={me.name}
               showOnStart={start.prefs.welcome !== false}
               onShowOnStart={(show) => start.onPrefs({ ...start.prefs, welcome: show })}
-              onAction={(a) => (a === "new" ? start.onNew() : start.openPage(a === "samples" ? "flows" : a))}
+              onAction={(a) => (a === "new" ? start.onNew() : start.openPage(a === "samples" ? "library" : a))}
               onManual={() => start.openPage("docs")}
             />
           )}
@@ -1233,18 +1242,6 @@ function Canvas({
                 },
                 focus: focus?.slug === route.slug ? focus.n : undefined,
               }}
-            />
-          )}
-          {shown === "deployed" && (
-            <DeployedPage
-              deployments={deployments}
-              error={deployError || listError}
-              onAction={(slug, action, from) => changeDeployment(slug, action, from).then(() => refreshDeployments())}
-              onDelete={deploymentTable.onDelete}
-              onView={onView}
-              onChanged={refreshDeployments}
-              focus={focus}
-              role={me.role}
             />
           )}
         </div>

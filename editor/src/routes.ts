@@ -4,9 +4,11 @@
 // none (letters, digits, - and _), so a dot always separates. A flow's own page is its bare name
 // (`#refunds`): the page names below are taken, so a flow named like one is reached from Flows.
 //
-// The pages the address knows are the console's (gaps-web.md §2), and the ones the editor has
-// today besides them (deployed, admin). What each shows is App's; this only reads and
+// The pages the address knows are the console's (gaps-web.md §2), and the one the editor has
+// today besides them (admin). What each shows is App's; this only reads and
 // writes the address, and says what is above a place (Esc goes there).
+
+import type { MouseEvent } from "react";
 
 export const FLOW_TABS = ["status", "runs", "history", "state", "settings"] as const;
 export type FlowTab = (typeof FLOW_TABS)[number];
@@ -36,7 +38,6 @@ export type Route =
   | { kind: "start" }
   | { kind: "docs"; page: string | null; anchor: string | null }
   | { kind: "signin" }
-  | { kind: "deployed" }
   | { kind: "admin"; tab: string | null }
   | { kind: "notfound"; hash: string };
 
@@ -53,7 +54,6 @@ export const PAGE_NAMES = [
   "start",
   "docs",
   "signin",
-  "deployed",
   "admin",
 ] as const;
 
@@ -87,7 +87,6 @@ export function parse(hash: string): Route {
     case "policy":
     case "start":
     case "signin":
-    case "deployed":
       return done({ kind: head }, 1);
     case "approvals": {
       if (p.length === 1) return { kind: "approvals", tab: "deploys" };
@@ -235,8 +234,6 @@ export function labelOf(r: Route): string {
       return r.page === null ? "Docs" : (r.page.split("/").pop() ?? r.page).replace(/\.md$/, "");
     case "signin":
       return "Sign in";
-    case "deployed":
-      return "Deployed";
     case "notfound":
       return `#${r.hash}`;
   }
@@ -248,6 +245,14 @@ export function crumbs(r: Route): Route[] {
   for (let at: Route | null = r; at; at = parentOf(at)) chain.unshift(at);
   return chain;
 }
+
+/** A link's click: followed here, unless it is opened elsewhere (a modifier, or not the main
+ *  button), where the browser opens its address. */
+export const follow = (to: Route, navigate: (r: Route) => void) => (e: MouseEvent) => {
+  if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+  e.preventDefault();
+  navigate(to);
+};
 
 /** Whether `name` can be a flow's own page address (it is not a page's name). */
 export function flowAddressable(name: string): boolean {

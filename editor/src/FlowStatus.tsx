@@ -1,11 +1,11 @@
 // A flow's Status tab (FlowPage.tsx): its last day, where it runs, what it may do (since which
 // version, approved by whom), its latest runs, its versions, and its actions to run.
 
-import { useEffect, useMemo, useState, type MouseEvent, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { ActionRows } from "./ActionRows";
 import { lastDay, sinceOf, type VersionItems } from "./statusFacts";
 import { describeItem } from "./holon";
-import { format, type Route } from "./routes";
+import { follow, format, type Route } from "./routes";
 import { runLabel, runOutcome } from "./runs";
 import { getDeployedDocument, getManifest, getVersions, hostAddress, type DeploymentEntry, type FlowDocument, type Role, type VersionEntry } from "./server";
 import { useFlowLog } from "./useFlowLog";
@@ -16,11 +16,6 @@ const VERSIONS_READ = 20;
 const ms = (n: number | null) => (n === null ? "—" : n < 1 ? "<1 ms" : `${Math.round(n)} ms`);
 const when = (secs: number) => new Date(secs * 1000).toLocaleString();
 
-const follow = (to: Route, navigate: (r: Route) => void) => (e: MouseEvent) => {
-  if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
-  e.preventDefault();
-  navigate(to);
-};
 
 export function StatusTab({
   slug,

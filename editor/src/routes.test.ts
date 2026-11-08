@@ -34,7 +34,6 @@ const PLACES = [
   "docs.language/tour.md",
   "docs.language/reference.md@forms-and-flows",
   "signin",
-  "deployed",
   "admin",
   "admin.people",
 ];

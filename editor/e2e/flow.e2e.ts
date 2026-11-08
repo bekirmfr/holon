@@ -1,7 +1,7 @@
 // A deployed flow's own page (FlowPage.tsx): its tabs, each at an address of its own.
 
 import { expect, test } from "./fixtures";
-import { deploy, openSample } from "./helpers";
+import { deploy, flowRow, gotoPage, openSample } from "./helpers";
 
 test("a flow's runs: newest first, filtered, the chain checked, a run opened", async ({ page, request }) => {
   await openSample(page, "Hello API");
@@ -90,6 +90,47 @@ test("a flow's settings: a permission revoked pauses it and granted back runs it
   await remove.getByRole("textbox").fill("hello-api");
   await remove.getByRole("button", { name: "Remove hello-api" }).click();
   await expect(page).toHaveURL(/#flows$/);
+});
+
+test("Flows: saved and deployed in one table, each with its state, filtered and found; a row opens its page", async ({ page }) => {
+  await openSample(page, "Hello API");
+  await deploy(page);
+  await gotoPage(page, "flows");
+  const row = flowRow(page, "hello-api");
+  await expect(row).toContainText("live");
+  await expect(row.getByRole("cell").nth(2)).toHaveText(/^\d+$/);
+  const show = page.getByRole("group", { name: "show" });
+  await show.getByRole("button", { name: /^Paused/ }).click();
+  await expect(row).toHaveCount(0);
+  await show.getByRole("button", { name: /^Live/ }).click();
+  await page.getByLabel("search flows").fill("hello-a");
+  await expect(row).toBeVisible();
+  await page.getByLabel("search flows").fill("no-such-flow");
+  await expect(page.getByRole("region", { name: "flows" })).toContainText('no flow matches "no-such-flow"');
+  await page.getByLabel("search flows").fill("");
+  await row.getByRole("link", { name: "hello-api", exact: true }).click();
+  await expect(page).toHaveURL(/#hello-api$/);
+});
+
+test("the Library: samples found by what they do, one's details with its command line, opened as an unsaved copy", async ({ page }) => {
+  await page.goto("/#library");
+  const samples = page.getByRole("region", { name: "samples" });
+  await page.getByRole("group", { name: "show flows that" }).getByRole("button", { name: "use a database" }).click();
+  await expect(samples.getByRole("article", { name: "Orders API (a database on the host)" })).toBeVisible();
+  await expect(samples.getByRole("article", { name: "Hello API" })).toHaveCount(0);
+  await page.getByLabel("search samples").fill("refund once");
+  await expect(samples.getByRole("article")).toHaveCount(1);
+  await samples.getByRole("article").getByRole("heading").getByRole("button").click();
+  const details = page.getByRole("dialog");
+  await expect(details).toContainText("holon new --sample refund-once");
+  await details.getByRole("button", { name: "Open an unsaved copy" }).click();
+  await expect(page.locator(".hl-tab--active")).toContainText("refund-once");
+
+  await page.getByRole("navigation", { name: "main" }).getByRole("link", { name: "Library", exact: true }).click();
+  await page.getByRole("navigation", { name: "library tabs" }).getByRole("link", { name: "Tutorials" }).click();
+  await expect(page).toHaveURL(/#library\.tutorials$/);
+  await page.getByRole("region", { name: "tutorials" }).getByRole("link", { name: "Getting started" }).click();
+  await expect(page).toHaveURL(/#docs\.getting-started\.md$/);
 });
 
 test("a flow's state: its collection's items now, and the runs that changed one", async ({ page, request }) => {

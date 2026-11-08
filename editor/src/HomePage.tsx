@@ -20,7 +20,7 @@ export type HomeActions = {
   openFlow: (name: string) => void;
   openSample: (sample: Sample) => void;
   viewDeployment: (slug: string) => void;
-  goTo: (page: "flows" | "deployed") => void;
+  goTo: (page: "flows" | "library") => void;
   openWelcome: () => void;
 };
 
@@ -66,10 +66,10 @@ export function HomePage({
               ＋ new flow
             </button>
             <button style={link} onClick={() => actions.goTo("flows")}>
-              open a saved flow or a sample
+              your flows, saved and deployed
             </button>
-            <button style={link} onClick={() => actions.goTo("deployed")}>
-              what's deployed
+            <button style={link} onClick={() => actions.goTo("library")}>
+              start from a sample
             </button>
             <button style={link} onClick={actions.openWelcome}>
               the welcome: how to start, and the docs

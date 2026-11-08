@@ -19,13 +19,13 @@ export function WelcomePage({
   name: string;
   showOnStart: boolean;
   onShowOnStart: (show: boolean) => void;
-  /** A step's button: open the samples, start a new flow, the deployed page, the flows page. */
+  /** A step's button: open the samples, start a new flow, the flows page. */
   onAction: (action: NonNullable<Step["action"]>) => void;
   /** Opens the manual, in the docs tab. */
   onManual: () => void;
 }) {
   const [open, setOpen] = useState<string | null>(TOPICS[0].title);
-  const label = { samples: "open the samples", new: "new flow", deployed: "the deployed page", flows: "the flows page" };
+  const label = { samples: "open the samples", new: "new flow", flows: "the flows page" };
   return (
     <div style={{ maxWidth: 760, color: "var(--muted)", fontSize: 12, lineHeight: 1.55 }}>
       <div style={{ color: "var(--ink)", fontSize: 18, marginBottom: 4 }}>Welcome to Holon, {name}</div>

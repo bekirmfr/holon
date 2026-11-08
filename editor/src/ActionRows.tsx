@@ -1,6 +1,6 @@
 // A deployment's actions as rows: each with a box for what to send it (remembered per action), run,
 // the answer under it with its run's number and view run, and the command a script would use. The
-// server panel and the deployed page both show them (docs/L4s/triggers-L4.md §7).
+// server panel and a flow's Status tab both show them (docs/L4s/triggers-L4.md §7).
 
 import { useState, type CSSProperties } from "react";
 import { actionUrl, runAction, type Role } from "./server";

@@ -1,12 +1,12 @@
 // What the welcome tab teaches: the first steps, and the docs, one topic each, in the words the
 // editor itself uses. Kept here as content, apart from how it is shown (WelcomePage.tsx).
 
-export type Step = { title: string; body: string; action?: "samples" | "new" | "deployed" | "flows" };
+export type Step = { title: string; body: string; action?: "samples" | "new" | "flows" };
 
 export const START_STEPS: Step[] = [
   {
     title: "Open a sample",
-    body: "The flows page lists samples, one per feature: Hello API is the smallest. Opening one gives you an unsaved copy in a tab of its own.",
+    body: "The Library lists samples, one per feature: Hello API is the smallest. Opening one gives you an unsaved copy in a tab of its own.",
     action: "samples",
   },
   {
@@ -19,8 +19,8 @@ export const START_STEPS: Step[] = [
   },
   {
     title: "Look at the run",
-    body: "Switch the tab to view. Pick a run in the log: the canvas shows what each node received and produced, and you can step through it. A replay checks the run reproduces exactly.",
-    action: "deployed",
+    body: "Open the flow from Flows: its Runs tab lists every run, and a run shows what came in, each step and what went out. Step through it in the editor, and a replay checks the run reproduces exactly.",
+    action: "flows",
   },
   {
     title: "Build your own",
@@ -56,7 +56,7 @@ export const TOPICS: Topic[] = [
     title: "Deploying and permissions",
     paragraphs: [
       "What a flow may do is worked out from the flow itself: its manifest. Deploying shows it and asks your approval; the server grants only that, and only what its policy allows. Some permissions can be optional: the flow runs without them.",
-      "Once deployed, a flow can be paused, stopped (its state kept), updated in place, or deleted, from its tab or the deployed page.",
+      "Once deployed, a flow can be paused, stopped (its state kept), updated in place, or deleted, from its tab or its page under Flows.",
     ],
   },
   {

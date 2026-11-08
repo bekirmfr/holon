@@ -2,7 +2,7 @@
 // open in the editor) and its tabs, each a place of its own in the address. The pages the
 // editor had for a deployment (its card, view mode's log) move here a tab at a time.
 
-import { useMemo, useState, type MouseEvent, type ReactNode } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import { HistoryTab } from "./HistoryPane";
 import { StateTab } from "./FlowState";
 import { StatusTab } from "./FlowStatus";
@@ -10,7 +10,7 @@ import { RunDetail } from "./RunPage";
 import { SettingsTab } from "./FlowSettings";
 import type { CodeText } from "./timeline";
 import { outside, runLabel, runOutcome, type Outcome } from "./runs";
-import { format, type FlowTab, type Route } from "./routes";
+import { follow, format, type FlowTab, type Route } from "./routes";
 import { downloadRuns, getLog, type DeploymentEntry, type FlowDocument, type LogEntry, type Role } from "./server";
 import { tallyRows } from "./tallies";
 import { useFlowLog } from "./useFlowLog";
@@ -26,12 +26,6 @@ const TABS: [FlowTab, string][] = [
 
 const STATUS_MARK: Record<DeploymentEntry["status"], string> = { running: "●", paused: "❚❚", stopped: "■" };
 
-/** Follow a link here, unless it is opened elsewhere (a modifier, or not the main button). */
-const follow = (to: Route, navigate: (r: Route) => void) => (e: MouseEvent) => {
-  if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
-  e.preventDefault();
-  navigate(to);
-};
 
 export function FlowPage({
   slug,
