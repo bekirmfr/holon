@@ -29,7 +29,8 @@ export type FlowMeta = {
   settings: FlowSettings;
   /** What it was last saved or opened as (App's savedKeyOf); "" for one never saved. */
   savedKey: string;
-  saveMsg: string;
+  /** What opening it found wrong (units that could not be restored), said once when it is shown. */
+  notice: string;
   /** The deployment shown, in view mode; null in edit mode. */
   viewing: string | null;
   /** The version (unit, hex) whose canvas view mode shows: the deployment's current one, or the
@@ -117,7 +118,7 @@ export function blankMeta(name: string | null): FlowMeta {
     saved: false,
     settings: DEFAULT_SETTINGS,
     savedKey: "",
-    saveMsg: "",
+    notice: "",
     viewing: null,
     viewUnit: null,
     viewTrace: undefined,
@@ -207,7 +208,7 @@ export function tabFromDocument(name: string | null, doc: FlowDocument, saved: b
   for (const n of ns) for (const m of n.id.matchAll(/\d+/g)) max = Math.max(max, Number(m[0]));
   return {
     ...blankTab(name),
-    meta: { ...blankMeta(name), saved, settings: server, savedKey: saved ? savedKeyOf(ns, es, server, doc.source ?? null) : "", saveMsg: msg, text },
+    meta: { ...blankMeta(name), saved, settings: server, savedKey: saved ? savedKeyOf(ns, es, server, doc.source ?? null) : "", notice: msg, text },
     nodes: ns,
     edges: es,
     viewport: doc.viewport,

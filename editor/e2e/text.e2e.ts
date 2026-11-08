@@ -100,7 +100,7 @@ test("the flow's text drives its canvas, and the canvas its text", async ({ page
   // canvas is a sliver and its toolbar runs under the text pane: its buttons are pressed as such,
   // not at a point another element covers (a click there once waited out the test).
   await page.locator(".hl-canvas").getByRole("button", { name: "save", exact: true }).dispatchEvent("click");
-  await expect(page.locator(".hl-canvas")).toContainText("saved");
+  await expect(page.getByRole("region", { name: "notices" })).toContainText("saved");
   const saved = await request.get(`${SERVER}/flows/hello-api`, { headers: { Authorization: `Bearer ${adminToken}` } });
   const doc = ((await saved.json()) as { document: { source?: string } }).document;
   expect(doc.source).toContain("// says hello, loudly");

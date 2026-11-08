@@ -446,3 +446,30 @@ body {
   .hl-manual__group { flex-direction: row; flex-wrap: wrap; align-items: baseline; }
   .hl-manual__section { flex-basis: 100%; }
 }
+
+/* ── Toasts and keys (ui/Toast.tsx, ui/Kbd.tsx) ─────────────────────────── */
+.hl-toasts {
+  position: fixed; right: 16px; bottom: 16px; z-index: 1100;
+  display: flex; flex-direction: column; align-items: flex-end; gap: 6px;
+  max-width: min(420px, calc(100vw - 32px)); pointer-events: none;
+}
+.hl-toast {
+  pointer-events: auto; display: flex; align-items: flex-start; gap: 10px;
+  padding: 7px 8px 7px 12px; font-size: 12px; line-height: 1.45;
+  color: var(--ink); background: var(--panel); border: 1px solid var(--line);
+  border-left: 3px solid var(--accent); border-radius: var(--r);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
+}
+.hl-toast--ok { border-left-color: #9ad29f; }
+.hl-toast--bad { border-left-color: #e0916f; }
+.hl-toast__text { white-space: pre-line; overflow-wrap: anywhere; }
+.hl-toast__close {
+  font: inherit; font-size: 13px; line-height: 1; padding: 0 4px; cursor: pointer;
+  color: var(--ink-dim); background: transparent; border: none;
+}
+.hl-toast__close:hover { color: var(--ink); }
+.hl-kbd {
+  display: inline-block; min-width: 1.4em; margin-right: 6px; padding: 0 4px;
+  font: inherit; font-size: 10px; line-height: 1.5; text-align: center;
+  color: inherit; border: 1px solid currentColor; border-radius: 3px; opacity: 0.6;
+}

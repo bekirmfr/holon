@@ -156,7 +156,6 @@ export function FlowToolbar({
   onUndo,
   onRedo,
   deployBar,
-  saveMsg,
   error,
   textOpen,
   onToggleText,
@@ -177,7 +176,6 @@ export function FlowToolbar({
   onUndo: () => void;
   onRedo: () => void;
   deployBar: ReactNode;
-  saveMsg: string;
   error: string;
   /** Whether the flow's text is shown beside the canvas (TextPane.tsx). */
   textOpen: boolean;
@@ -218,7 +216,6 @@ export function FlowToolbar({
             ⟳
           </button>
           {deployBar}
-          {saveMsg && <span style={{ color: "#9ad29f", fontSize: 11 }}>{saveMsg}</span>}
         </>
       )}
       {error && <span style={{ color: "#e0916f", fontSize: 11, maxWidth: 420 }}>{error}</span>}

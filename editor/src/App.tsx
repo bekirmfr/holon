@@ -43,6 +43,7 @@ import { Inspector } from "./ViewPanes";
 import { structuralKey } from "./flowDoc";
 import { knownNames, rememberName, restoreDocument } from "./docUnits";
 import { DialogProvider, useDialog } from "./Dialog";
+import { ToastProvider, useToast } from "./ui/Toast";
 import { ToolsPanel } from "./ServerPanel";
 import { DeployBar, DeployPanel, DEFAULT_SETTINGS } from "./DeployBar";
 import { templateNames } from "./templates";
@@ -123,6 +124,7 @@ function Canvas({
   docs: Map<string, string>;
 }) {
   const dialog = useDialog();
+  const toast = useToast();
   const [nodes, setNodes, onNodesChange] = useNodesState<PrimitiveNodeType>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
   const { screenToFlowPosition, getNode, getNodes, getEdges, getViewport, setViewport, fitView } =
@@ -209,18 +211,24 @@ function Canvas({
   // exactly as left, stored opaquely by the server (server.ts's FlowDocument), apart from the
   // content-addressed unit the same canvas projects to: presentation stays out of identity.
   const [flow, setFlow] = useState<FlowMeta>(() => freshTab(null).meta);
-  const { name: flowName, settings, savedKey, saveMsg, viewing } = flow;
+  const { name: flowName, settings, savedKey, notice, viewing } = flow;
   const setFlowName = useMemo(() => metaSetter(setFlow, "name"), []);
   const setSavedOnServer = useMemo(() => metaSetter(setFlow, "saved"), []);
   const setSettings = useMemo(() => metaSetter(setFlow, "settings"), []);
   const setSavedKey = useMemo(() => metaSetter(setFlow, "savedKey"), []);
-  const setSaveMsg = useMemo(() => metaSetter(setFlow, "saveMsg"), []);
+  const setNotice = useMemo(() => metaSetter(setFlow, "notice"), []);
   const setViewing = useMemo(() => metaSetter(setFlow, "viewing"), []);
   const setViewUnit = useMemo(() => metaSetter(setFlow, "viewUnit"), []);
   const setViewTrace = useMemo(() => metaSetter(setFlow, "viewTrace"), []);
   const setSelectedRun = useMemo(() => metaSetter(setFlow, "selectedRun"), []);
   const setStep = useMemo(() => metaSetter(setFlow, "step"), []);
   const setInspectNode = useMemo(() => metaSetter(setFlow, "inspectNode"), []);
+  // What opening a flow found wrong is said once, when its tab is shown, and then forgotten.
+  useEffect(() => {
+    if (!notice) return;
+    toast(notice, "bad");
+    setNotice("");
+  }, [notice, toast, setNotice]);
   const beforeView = useRef<TabState["beforeView"]>(null);
   // The deployed document shown in view mode: what edit mode starts from when there is no saved
   // flow of that name.
@@ -339,7 +347,7 @@ function Canvas({
     setEdges,
     setSavedKey,
     setSavedOnServer,
-    setSaveMsg,
+    notify: toast,
     setError: setDeployError,
   });
   // The marketplace: its listings in the palette, publishing from the flows page (useMarketplace.ts).
@@ -666,7 +674,7 @@ function Canvas({
     closeOn: activeId,
     setNodes,
     setEdges,
-    onMessage: setSaveMsg,
+    onMessage: toast,
     onError: setProjError,
   });
   const expandNode = compositeOverlay.expand;
@@ -877,7 +885,6 @@ function Canvas({
                   onSettingsOpen={() => onDeployPanelOpen(true)}
                 />
               }
-              saveMsg={saveMsg}
               error={page === "canvas" ? deployError || listError : ""}
               textOpen={textPane.open}
               onToggleText={textPane.toggle}
@@ -1174,7 +1181,9 @@ function Editor({ me }: { me: Me }) {
 export default function App() {
   return (
     <DialogProvider>
-      <AuthGate>{(me) => <Editor me={me} />}</AuthGate>
+      <ToastProvider>
+        <AuthGate>{(me) => <Editor me={me} />}</AuthGate>
+      </ToastProvider>
     </DialogProvider>
   );
 }

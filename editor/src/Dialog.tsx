@@ -2,7 +2,11 @@
 // on: an embedded browser (the Claude app's pane, some webviews) suppresses them, and they then
 // answer "cancel" instantly, without showing anything — which silently turned every delete, New
 // and first Save into a no-op there. These render inside the page instead, so they always show.
+//
+// A question is answered from the keys as well: Enter is its button and Esc cancels, and a yes/no
+// question also takes y and n (the workbench's Confirm), shown as chips on its buttons.
 
+import { Kbd } from "./ui/Kbd";
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 
 type Ask =
@@ -57,8 +61,16 @@ export function DialogProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (!ask) return;
     (ask.kind === "prompt" ? input.current : ok.current)?.focus();
+    const yesNo = ask.kind === "confirm";
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") close(false);
+      if (e.key === "Escape" || (yesNo && e.key === "n" && !held(e))) {
+        e.preventDefault();
+        close(false);
+      }
+      if (yesNo && e.key === "y" && !held(e)) {
+        e.preventDefault();
+        close(true);
+      }
       // Handled here, so the same Enter can't also press the button of a dialog that opens next
       // (a prompt's answer followed by a confirm would otherwise accept it unread).
       if (e.key === "Enter") {
@@ -66,8 +78,14 @@ export function DialogProvider({ children }: { children: ReactNode }) {
         close(true);
       }
     };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    // Capturing, and kept from the page: a key that answers the question is not also one of the
+    // page's keys beneath it. Typing in the prompt's own field still reaches the field.
+    const guard = (e: KeyboardEvent) => {
+      onKey(e);
+      if (e.target !== input.current) e.stopPropagation();
+    };
+    window.addEventListener("keydown", guard, true);
+    return () => window.removeEventListener("keydown", guard, true);
   }, [ask, close]);
 
   const button = {
@@ -130,15 +148,19 @@ export function DialogProvider({ children }: { children: ReactNode }) {
             <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
               <button
                 onClick={() => close(false)}
+                aria-keyshortcuts={ask.kind === "confirm" ? "N Escape" : "Escape"}
                 style={{ ...button, color: "#9fb4d4", background: "transparent", border: "1px solid #1b2a45" }}
               >
+                {ask.kind === "confirm" && <Kbd k="n" />}
                 Cancel
               </button>
               <button
                 ref={ok}
                 onClick={() => close(true)}
+                aria-keyshortcuts={ask.kind === "confirm" ? "Y Enter" : "Enter"}
                 style={{ ...button, color: "#0e1a2f", background: "#6fd3e0", border: "none" }}
               >
+                {ask.kind === "confirm" && <Kbd k="y" />}
                 {ask.kind === "confirm" ? ask.action : "OK"}
               </button>
             </div>
@@ -147,4 +169,9 @@ export function DialogProvider({ children }: { children: ReactNode }) {
       )}
     </DialogContext.Provider>
   );
+}
+
+/** Whether a modifier is held: Ctrl+N and the like stay the browser's, not an answer. */
+function held(e: KeyboardEvent): boolean {
+  return e.ctrlKey || e.metaKey || e.altKey;
 }

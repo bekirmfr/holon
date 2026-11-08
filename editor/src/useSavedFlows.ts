@@ -15,6 +15,7 @@ import { savedKeyOf } from "./tabs";
 import type { Evaluator } from "./holon";
 import type { FlowSettings } from "./DeployBar";
 import type { PrimitiveNodeType } from "./PrimitiveNode";
+import type { Notify } from "./ui/Toast";
 
 type Dialogs = { confirm: (message: string, action?: string) => Promise<boolean>; prompt: (message: string, initial?: string) => Promise<string | null> };
 
@@ -34,7 +35,7 @@ export function useSavedFlows({
   setEdges,
   setSavedKey,
   setSavedOnServer,
-  setSaveMsg,
+  notify,
   setError,
 }: {
   /** Read the saved flows again when this changes (the page shown, the last save). */
@@ -54,7 +55,8 @@ export function useSavedFlows({
   setEdges: (es: Edge[]) => void;
   setSavedKey: (key: string) => void;
   setSavedOnServer: (saved: boolean) => void;
-  setSaveMsg: (msg: string) => void;
+  /** Says what a save or an update did, once (ui/Toast.tsx). */
+  notify: Notify;
   setError: (msg: string) => void;
 }) {
   const [savedFlowTimes, setSavedFlowTimes] = useState<Map<string, number>>(new Map());
@@ -107,7 +109,7 @@ export function useSavedFlows({
     try {
       carried = documentUnits(nodes.flatMap((n) => (n.data.body.kind === "Composite" ? [n.data.body.hash] : [])), ev);
     } catch (e) {
-      setSaveMsg(`not saved: ${e instanceof Error ? e.message : String(e)}`);
+      notify(`not saved: ${e instanceof Error ? e.message : String(e)}`, "bad");
       return;
     }
     const doc: FlowDocument = {
@@ -124,10 +126,10 @@ export function useSavedFlows({
       .then((entry) => {
         setSavedKey(key);
         setSavedOnServer(true);
-        setSaveMsg(`saved ${new Date(entry.saved_at_epoch_seconds * 1000).toLocaleTimeString()}`);
+        notify(`saved ${new Date(entry.saved_at_epoch_seconds * 1000).toLocaleTimeString()}`);
       })
-      .catch((e: unknown) => setSaveMsg(e instanceof Error ? e.message : String(e)));
-  }, [flowName, nodes, edges, getViewport, ev, settings, source, dialog, savedFlowTimes, placedElsewhereOk, setFlowName, setSaveMsg, setSavedKey, setSavedOnServer]);
+      .catch((e: unknown) => notify(`not saved: ${e instanceof Error ? e.message : String(e)}`, "bad"));
+  }, [flowName, nodes, edges, getViewport, ev, settings, source, dialog, savedFlowTimes, placedElsewhereOk, setFlowName, notify, setSavedKey, setSavedOnServer]);
 
   // Place the newest saved version of a holon over the one placed from an older save: same place,
   // and its wires kept to the ports the new version still has.
@@ -154,11 +156,11 @@ export function useSavedFlows({
           }
           setNodes((ns) => ns.map((n) => (n.id === id ? { ...placed.node, selected: n.selected } : n)));
           setEdges(kept);
-          setSaveMsg(`updated "${from.flow}" to its save of ${new Date(rec.saved_at_epoch_seconds * 1000).toLocaleString()}${dropped.length ? `; ${dropped.length} wire(s) to ports it no longer has removed` : ""}`);
+          notify(`updated "${from.flow}" to its save of ${new Date(rec.saved_at_epoch_seconds * 1000).toLocaleString()}${dropped.length ? `; ${dropped.length} wire(s) to ports it no longer has removed` : ""}`);
         })
         .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)));
     },
-    [live, ev, setNodes, setEdges, setSaveMsg, setError, dialog],
+    [live, ev, setNodes, setEdges, notify, setError, dialog],
   );
 
   return { savedFlowTimes, savedFlows, onSave, updateHolon };

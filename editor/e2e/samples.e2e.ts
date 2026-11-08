@@ -437,7 +437,7 @@ test("an edited holon applies as a new version of itself, and the flow runs it",
   await expect(overlay).toContainText("applied");
   await overlay.getByRole("button", { name: "close" }).click();
   await expect(overlay).toHaveCount(0);
-  await expect(page.locator(".hl-canvas")).toContainText("is a new version");
+  await expect(page.getByRole("region", { name: "notices" })).toContainText("is a new version");
   const port = await deploy(page);
   const answer = await request.post(`http://127.0.0.1:${port}/slugs`, { data: { title: "Edited Inside", author: "Ada" } });
   expect(await answer.json()).toMatchObject({ title: "edited-inside", receipt: "not signed" });
@@ -485,7 +485,7 @@ test("the flows page says which saved flows place a flow as a node", async ({ pa
     await page.locator(".hl-canvas").getByRole("button", { name: "save", exact: true }).click();
     await ask.locator("input").fill(name);
     await page.keyboard.press("Enter");
-    await expect(page.locator(".hl-canvas")).toContainText("saved");
+    await expect(page.getByRole("region", { name: "notices" })).toContainText("saved");
     await expect(page.locator(".hl-tab--active")).toContainText(name);
   };
   await saveWith(shout, "uppercase");
@@ -541,7 +541,7 @@ test("the marketplace, a Holon flow: publish a saved flow to it, place it from t
   await expect(flow.locator(".react-flow__node")).toHaveCount(1);
   await page.locator(".hl-canvas").getByRole("button", { name: "save", exact: true }).click();
   await answer(shout);
-  await expect(page.locator(".hl-canvas")).toContainText("saved");
+  await expect(page.getByRole("region", { name: "notices" })).toContainText("saved");
 
   // Set the marketplace, and publish from the flows page.
   await page.getByRole("button", { name: "flows", exact: true }).click();
@@ -592,7 +592,7 @@ test("a flow as text: exported as .holon.ts, checked by the command line, import
   await canvas.getByRole("button", { name: "save", exact: true }).dispatchEvent("click");
   await page.locator('[aria-modal="true"] input').fill(name);
   await page.keyboard.press("Enter");
-  await expect(canvas).toContainText("saved");
+  await expect(page.getByRole("region", { name: "notices" })).toContainText("saved");
   await expect(page.locator(".hl-tab--active")).toContainText(name);
 
   // Exported from the flows page: the canvas printed as TypeScript.
