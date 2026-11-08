@@ -246,6 +246,20 @@ body {
 .hl-tile { border: 1px solid var(--border); border-radius: 5px; padding: 8px 10px; }
 .hl-tile__value { font-size: 18px; color: var(--ink); }
 .hl-tile__label { font-size: 11px; color: var(--faint); }
+.hl-run { display: flex; flex-direction: column; gap: 16px; }
+.hl-run__head { display: flex; align-items: baseline; gap: 8px; }
+.hl-run__head h2 { margin: 0; font-size: 15px; font-weight: 600; color: var(--ink); }
+.hl-run__line { display: grid; grid-template-columns: 120px minmax(0, 1fr); gap: 8px; font-size: 12px; padding: 2px 0; }
+.hl-run__name { color: var(--faint); }
+.hl-run__said { color: var(--body); overflow-wrap: anywhere; white-space: pre-wrap; }
+.hl-run__value { margin: 4px 0 0; padding: 6px 8px; font-size: 11px; color: var(--body); background: var(--surface-2); border: 1px solid var(--border); border-radius: 4px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.hl-run__offline pre { padding: 6px 8px; background: var(--surface-2); border: 1px solid var(--border); border-radius: 4px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.hl-gantt { list-style: none; margin: 0; padding: 0; display: grid; gap: 3px; }
+.hl-gantt__row { display: grid; grid-template-columns: 160px minmax(0, 1fr) 70px; gap: 8px; align-items: center; font-size: 11px; }
+.hl-gantt__label { color: var(--body); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hl-gantt__track { position: relative; height: 10px; background: var(--surface-2); border-radius: 2px; }
+.hl-gantt__bar { position: absolute; top: 0; bottom: 0; background: var(--accent); border-radius: 2px; }
+.hl-gantt__time { color: var(--faint); text-align: right; }
 .hl-table { width: 100%; border-collapse: collapse; font-size: 12px; }
 .hl-table th { text-align: left; font-weight: 400; color: var(--faint); padding: 4px 8px; border-bottom: 1px solid var(--border-strong); }
 .hl-table td { padding: 4px 8px; border-bottom: 1px solid var(--border); color: var(--body); }

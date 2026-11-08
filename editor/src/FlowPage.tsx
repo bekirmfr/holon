@@ -7,6 +7,7 @@ import { DeploymentCard } from "./DeploymentCard";
 import { HistoryTab } from "./HistoryPane";
 import { StateTab } from "./FlowState";
 import { StatusTab } from "./FlowStatus";
+import { RunDetail } from "./RunPage";
 import type { CodeText } from "./timeline";
 import { outside, runLabel, runOutcome, type Outcome } from "./runs";
 import { format, type FlowTab, type Route } from "./routes";
@@ -35,6 +36,7 @@ const follow = (to: Route, navigate: (r: Route) => void) => (e: MouseEvent) => {
 export function FlowPage({
   slug,
   tab,
+  run = null,
   entry,
   navigate,
   role,
@@ -45,6 +47,8 @@ export function FlowPage({
 }: {
   slug: string;
   tab: FlowTab;
+  /** One of its runs, shown under Runs (`#<slug>.run-<n>`). */
+  run?: number | null;
   /** Its row in the server's table; undefined while it isn't deployed. */
   entry: DeploymentEntry | undefined;
   navigate: (r: Route) => void;
@@ -121,7 +125,9 @@ export function FlowPage({
               );
             })}
           </nav>
-          {tab === "runs" ? (
+          {run !== null ? (
+            <RunDetail slug={slug} seq={run} navigate={navigate} />
+          ) : tab === "runs" ? (
             <RunsTab slug={slug} navigate={navigate} />
           ) : tab === "state" ? (
             <StateTab slug={slug} version={entry.trigger_count} onOpenRun={(seq) => navigate({ kind: "run", slug, seq })} />

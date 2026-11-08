@@ -27,9 +27,21 @@ test("a flow's runs: newest first, filtered, the chain checked, a run opened", a
   await runs.getByRole("button", { name: "Check the chain" }).click();
   await expect(runs.getByRole("status")).toContainText("the chain is unbroken");
 
-  // A run opens its record: until it has a page of its own, in the editor, viewed.
+  // A run opens its record: how it ended, its steps timed, what came in and went out; checked
+  // offline with holon verify, or stepped through in the editor.
   await rows.nth(1).getByRole("link").click();
+  await expect(page).toHaveURL(new RegExp(`#hello-api\\.run-${newest}$`));
+  const record = page.getByRole("article", { name: `run ${newest}` });
+  await expect(record).toContainText("GET /hello/:name");
+  await expect(record.getByRole("list", { name: "steps" }).getByRole("listitem").first()).toBeVisible();
+  await expect(record.getByRole("region", { name: "in" })).toContainText("/hello/Grace");
+  await record.getByRole("button", { name: "Check offline…" }).click();
+  const offline = page.getByRole("dialog");
+  await expect(offline).toContainText("holon verify hello-api-runs.json --head ");
+  await offline.getByRole("button", { name: "Cancel" }).click();
+  await record.getByRole("button", { name: "Step through in the editor" }).click();
   await expect(page).toHaveURL(new RegExp(`#editor\\.hello-api\\.view\\.run-${newest}$`));
+  await expect(page.locator(".hl-view__bottom")).toContainText(`#${newest}`);
 });
 
 test("a flow's status: its last day, what it may since when and by whom, its runs and versions; paused and resumed", async ({ page, request }) => {

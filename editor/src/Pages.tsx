@@ -28,7 +28,6 @@ export function pageOf(r: Route): AppPage {
   switch (r.kind) {
     case "editor":
     case "editor-home":
-    case "run":
       return "canvas";
     case "flows":
     case "library":
@@ -36,6 +35,7 @@ export function pageOf(r: Route): AppPage {
     case "deployed":
       return "deployed";
     case "flow":
+    case "run":
       return "flow";
     case "docs":
       return "docs";
@@ -75,11 +75,10 @@ export function routeOfPage(p: AppPage): Route {
  *  that page's own place (a run is viewed in the editor). Null when `r` is shown as it is. */
 export function shownAt(r: Route): Route | null {
   switch (r.kind) {
-    case "run":
-      return { kind: "editor", slug: r.slug, view: true, seq: r.seq };
     case "editor-home":
       return { kind: "editor", slug: null, view: false, seq: null };
     case "flow":
+    case "run":
       return flowAddressable(r.slug) ? null : { kind: "flows" };
     case "library":
     case "resources":

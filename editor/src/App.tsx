@@ -1208,10 +1208,11 @@ function Canvas({
               }}
             />
           )}
-          {shown === "flow" && route.kind === "flow" && (
+          {shown === "flow" && (route.kind === "flow" || route.kind === "run") && (
             <FlowPage
               slug={route.slug}
-              tab={route.tab}
+              tab={route.kind === "flow" ? route.tab : "runs"}
+              run={route.kind === "run" ? route.seq : null}
               entry={deployments.find((d) => d.slug === route.slug)}
               navigate={navigate}
               role={me.role}
