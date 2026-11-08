@@ -744,3 +744,15 @@ body {
 }
 .hl-text__problems button:hover { background: var(--row); }
 .hl-text__problem-line { color: var(--bad); margin-right: 6px; }
+
+/* ── The name at the text's cursor, in the Inspector (ViewPanes.tsx WordSection) ── */
+.hl-word { display: flex; flex-direction: column; gap: 6px; padding-bottom: 8px; border-bottom: 1px solid var(--border); }
+.hl-word__head { color: var(--muted); }
+.hl-word__head code { color: var(--ink); font-weight: 600; }
+.hl-word__hover { color: var(--body); white-space: pre-wrap; }
+.hl-word__forms { margin: 0; padding-left: 14px; display: flex; flex-direction: column; gap: 2px; }
+.hl-word__forms code { color: var(--fn); }
+.hl-word__meaning { color: var(--muted); }
+.hl-word__example { margin: 0; padding: 4px 6px; background: var(--bg); border: 1px solid var(--border); border-radius: 3px; font-size: 11px; overflow-x: auto; }
+.hl-word__link { align-self: flex-start; font: inherit; font-size: 11px; color: var(--accent); background: none; border: 0; padding: 0; cursor: pointer; text-decoration: underline; }
+.hl-word__hover code { color: var(--fn); }

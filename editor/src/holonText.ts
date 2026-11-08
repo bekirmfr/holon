@@ -4,7 +4,7 @@
 // language (reading, lowering, printing) is holon-author's (crates/holon-author/src/lang/),
 // through the wasm bridge: the same code the command line runs.
 
-import { compile_holon, holon_complete, holon_format, holon_highlight, holon_hover, holon_mistakes } from "../wasm/holon_wasm.js";
+import { compile_holon, holon_complete, holon_format, holon_highlight, holon_hover, holon_mistakes, holon_usage } from "../wasm/holon_wasm.js";
 import { knownNames, restoreDocument } from "./docUnits";
 import type { Evaluator } from "./holon";
 import type { FlowDocument } from "./server";
@@ -115,6 +115,23 @@ export const textMistakes = (text: string): (Stretch & { message: string })[] =>
 
 /** What the word at `offset` is (markdown), or null. */
 export const textHover = (text: string, offset: number): (Stretch & { text: string }) | null => holon_hover(text, offset) ?? null;
+
+/** What the Inspector says of a name beside its hover (holon-author's usage.rs): the forms it is
+ *  written in, each with what the language reference says it means, and a sample's lines using it. */
+export type Usage = { forms: [string, string][]; example: { sample: string; lines: string[] } | null };
+export const textUsage = (text: string, offset: number): Usage | null => holon_usage(text, offset) ?? null;
+
+/** The name at the cursor, or just before it (one being typed ends where the cursor is), for the
+ *  Inspector: the word, its hover and its usage; null where there is no name. */
+export type Inspected = { word: string; hover: string; usage: Usage | null };
+export function inspectAt(text: string, offset: number): Inspected | null {
+  for (const at of [offset, offset - 1]) {
+    if (at < 0) continue;
+    const h = textHover(text, at);
+    if (h) return { word: text.slice(h.from, h.to), hover: h.text, usage: textUsage(text, at) };
+  }
+  return null;
+}
 
 /** What may be written at `offset`, starting with the word typed before it. */
 export const textCompletions = (

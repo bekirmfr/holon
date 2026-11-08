@@ -21,6 +21,7 @@ import { isCollectionCell, itemChanged, type CollectionAtStep, type Diagnosis, t
 import { FAIL } from "./PrimitiveNode";
 import { stepOf } from "./keymap";
 import { useKeys } from "./ui/Keys";
+import type { Inspected } from "./holonText";
 import { useNodeDocs } from "./NodeDocs";
 
 const KEEP = 500;
@@ -1348,10 +1349,19 @@ export function Inspector({
   source,
   open,
   onOpen,
+  word = null,
+  onManual,
+  onSample,
 }: {
   node: ViewNode | null;
   unit: ReactNode;
   run: InspectorRun | null;
+  /** The name at the text's cursor: its hover, the forms it is written in and a sample's lines. */
+  word?: Inspected | null;
+  /** Open the language reference the forms come from. */
+  onManual?: () => void;
+  /** Open the sample an example comes from, as an unsaved copy. */
+  onSample?: (name: string) => void;
   /** The node's line in the flow as text (holonText.ts), when the flow prints. */
   source?: { line: number; text: string } | null;
   open: boolean;
@@ -1381,12 +1391,55 @@ export function Inspector({
           <StateTab slug={run.slug} run={run.run} step={run.step} order={run.order} after={run.stateAfter} changed={run.changed} collections={run.collections} onOpenRun={run.openRun} />
         ) : (
           <>
+            {word && <WordSection word={word} onManual={onManual} onSample={onSample} />}
             <ComponentTab node={node} run={run} source={source ?? null} />
             {node && unit && <Section title="unit">{unit}</Section>}
           </>
         )}
       </div>
     </div>
+  );
+}
+
+/** The name at the text's cursor, as `holon editor`'s inspector says it: its hover, the forms it
+ *  is written in (from the language reference) and a sample's lines that use it. */
+function WordSection({ word, onManual, onSample }: { word: Inspected; onManual?: () => void; onSample?: (name: string) => void }) {
+  const { forms = [], example = null } = word.usage ?? {};
+  return (
+    <section className="hl-word" aria-label={`the name ${word.word}`}>
+      <div className="hl-word__head">
+        Inspector: <code>{word.word}</code>
+      </div>
+      {/* The hover writes code between backticks. */}
+      <div className="hl-word__hover">{word.hover.split("`").map((part, i) => (i % 2 === 1 ? <code key={i}>{part}</code> : part))}</div>
+      {forms.length > 0 && (
+        <Section title="forms">
+          <ul className="hl-word__forms">
+            {forms.map(([form, meaning]) => (
+              <li key={form}>
+                <code>{form}</code>
+                {meaning && <span className="hl-word__meaning"> {meaning}</span>}
+              </li>
+            ))}
+          </ul>
+          {onManual && (
+            <button className="hl-word__link" onClick={onManual}>
+              the language reference
+            </button>
+          )}
+        </Section>
+      )}
+      {example && (
+        <Section title={`example · ${example.sample}`}>
+          <pre className="hl-word__example">{example.lines.join("\n")}</pre>
+          {onSample && (
+            <button className="hl-word__link" onClick={() => onSample(example.sample)}>
+              open the sample
+            </button>
+          )}
+        </Section>
+      )}
+    </section>
   );
 }
 

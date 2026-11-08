@@ -85,6 +85,7 @@ import { AdminPage } from "./AdminPage";
 import { HomePage } from "./HomePage";
 import { compileHolon, printHolon, sourceLineOf } from "./holonText";
 import { askText, TextPane, type TextAsk } from "./TextPane";
+import type { Inspected } from "./holonText";
 import { useTextPane } from "./useTextPane";
 import { WelcomePage } from "./WelcomePage";
 import type { ManualAt } from "./ManualPage";
@@ -718,6 +719,8 @@ function Canvas({
   // Its entries are what there is now: the pages, every deployed or saved flow and its tabs, the
   // flow edited's actions, the samples, the looks.
   const [finding, setFinding] = useState(false);
+  // The name at the text's cursor, for the Inspector (TextPane's onInspect).
+  const [word, setWord] = useState<Inspected | null>(null);
   useKeys({ "ctrl+k": () => setFinding(true), "/": () => setFinding(true) }, { whileTyping: ["ctrl+k"] });
   const editing = shown === "canvas" && !viewing;
   const commands = useMemo<Command[]>(() => {
@@ -1109,8 +1112,21 @@ function Canvas({
         )}
         {compositeOverlay.render(flowName ?? "untitled")}
       </div>
-      {textPane.open && <TextPane key={activeId} {...textPane.pane} />}
-      <Inspector node={inspected} unit={inspectedUnit} run={inspectorRun(view, flow)} source={inspectedSource} open={inspectorOpen} onOpen={onInspectorOpen} />
+      {textPane.open && <TextPane key={activeId} {...textPane.pane} onInspect={setWord} />}
+      <Inspector
+        node={inspected}
+        unit={inspectedUnit}
+        run={inspectorRun(view, flow)}
+        source={inspectedSource}
+        open={inspectorOpen}
+        onOpen={onInspectorOpen}
+        word={word}
+        onManual={() => navigate({ kind: "docs", page: "language/reference.md", anchor: null })}
+        onSample={(name) => {
+          const s = samples().find((x) => x.name === name);
+          if (s) void onOpenSample(s);
+        }}
+      />
       <ViewModePanes view={{ ...view, showNode: (id) => { view.showNode(id); textPane.revealNode(id); } }} flow={flow} nodes={nodes} onRestored={refreshDeployments} />
       {/* The Flows / Deployed pages are overlays ON TOP of the always-mounted canvas — React
           Flow's own state (nodes mid-edit, viewport) lives in it and must survive navigation,

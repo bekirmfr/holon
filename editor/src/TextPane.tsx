@@ -27,7 +27,7 @@ import { forEachDiagnostic, linter, lintGutter } from "@codemirror/lint";
 import { highlightSelectionMatches, search, searchKeymap } from "@codemirror/search";
 import { foldGutter, foldKeymap, foldService, matchBrackets } from "@codemirror/language";
 import { useDark } from "./look";
-import { textColours, textCompletions, textFormatted, textHover, textMistakes, type TextRange } from "./holonText";
+import { inspectAt, textColours, textCompletions, textFormatted, textHover, textMistakes, type Inspected, type TextRange } from "./holonText";
 
 /** A change that came from outside the pane (the canvas, a tab switch): not the person typing. */
 const outside = Annotation.define<boolean>();
@@ -275,6 +275,7 @@ export function TextPane({
   onEdit,
   linked: link = NOTHING_LINKED,
   onCursor,
+  onInspect,
   status,
   width,
   onWidth,
@@ -290,6 +291,9 @@ export function TextPane({
   linked?: TextLinked;
   /** Where the cursor moved to, by the person (an offset). */
   onCursor: (offset: number) => void;
+  /** The name at the cursor (its hover, forms and example), for the Inspector; null once the
+   *  pane closes. */
+  onInspect?: (said: Inspected | null) => void;
   /** A line above the text: what the canvas shows, what a change cost. */
   status: string;
   width: number;
@@ -301,8 +305,8 @@ export function TextPane({
   const editable = useRef(new Compartment());
   const look = useRef(new Compartment());
   const dark = useDark();
-  const handlers = useRef({ onEdit, onCursor });
-  handlers.current = { onEdit, onCursor };
+  const handlers = useRef({ onEdit, onCursor, onInspect });
+  handlers.current = { onEdit, onCursor, onInspect };
   const [formatError, setFormatError] = useState("");
   // The mistakes the lint shows, listed under the text: a click goes to one.
   const [problems, setProblems] = useState<Problem[]>([]);
@@ -338,6 +342,11 @@ export function TextPane({
               handlers.current.onEdit(u.state.doc.toString(), u.transactions.some((t) => t.isUserEvent("format")));
             }
             if (u.selectionSet && u.view.hasFocus && !u.docChanged) handlers.current.onCursor(u.state.selection.main.head);
+            // The name at the cursor, for the Inspector; the last one stays while it is elsewhere.
+            if ((u.selectionSet || u.docChanged) && u.view.hasFocus) {
+              const said = inspectAt(u.state.doc.toString(), u.state.selection.main.head);
+              if (said) handlers.current.onInspect?.(said);
+            }
             const found: Problem[] = [];
             forEachDiagnostic(u.state, (d, from) => found.push({ from, line: u.state.doc.lineAt(from).number, message: d.message }));
             const key = found.map((p) => `${p.from} ${p.message}`).join("\n");
@@ -356,6 +365,7 @@ export function TextPane({
     return () => {
       v.destroy();
       view.current = null;
+      handlers.current.onInspect?.(null);
     };
     // The editor is made once; what changes reaches it through the effects below.
     // eslint-disable-next-line react-hooks/exhaustive-deps

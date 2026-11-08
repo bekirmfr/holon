@@ -1211,6 +1211,24 @@ pub fn holon_hover(source: &str, offset: usize) -> Result<JsValue, JsError> {
     to_js(&said)
 }
 
+/// What the inspector says of the name at `offset` beside its hover (holon_author's usage.rs, as
+/// `holon editor` shows it): `{forms: [[form, meaning]], example: {sample, lines} | null}`, or null
+/// for a word that isn't a name.
+#[wasm_bindgen]
+pub fn holon_usage(source: &str, offset: usize) -> Result<JsValue, JsError> {
+    to_js(&usage_json(source, offset))
+}
+
+fn usage_json(source: &str, offset: usize) -> Option<serde_json::Value> {
+    let at = Offsets::new(source);
+    holon_author::usage::usage(source, at.pos(offset)).map(|u| {
+        serde_json::json!({
+            "forms": u.forms,
+            "example": u.example.map(|(sample, lines)| serde_json::json!({ "sample": sample, "lines": lines })),
+        })
+    })
+}
+
 /// What may be written at `offset`, starting with the word typed before it: `[{label, kind,
 /// detail, doc?}]`, `kind` one of keyword, function, variable, module, member.
 #[wasm_bindgen]
@@ -1856,6 +1874,18 @@ mod wasm_tests {
     }
     #[wasm_bindgen_test]
     fn wunit_roundtrip_wasm() { check_wunit_roundtrip(); }
+
+    /// The inspector's forms and example for a name, as the workbench's: `route` has the forms
+    /// that write it and a sample's lines; a word that isn't a name has nothing.
+    #[wasm_bindgen_test]
+    fn usage_says_forms_and_an_example() {
+        let text = "import { flow, route, uppercase } from \"holon\"\n\nflow(\"u\", { port: 8101 })\n\nroute.get(\"/a/:n\", (req) => uppercase(req.params.n))\n";
+        let at = text.find("route.get").unwrap() + 2;
+        let said = usage_json(text, at).expect("route has a usage");
+        assert!(!said["forms"].as_array().unwrap().is_empty(), "{said}");
+        assert!(said["example"]["lines"].as_array().is_some_and(|l| l.iter().any(|x| x.as_str().unwrap().contains("route."))), "{said}");
+        assert!(usage_json(text, text.find("8101").unwrap() + 1).is_none());
+    }
     #[wasm_bindgen_test]
     fn wtype_roundtrip_wasm() { check_wtype_roundtrip(); }
     #[wasm_bindgen_test]

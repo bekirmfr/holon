@@ -154,3 +154,16 @@ test("the It may strip says what an edit adds to what the flow may do; Problems,
   await page.keyboard.press("Control+f");
   await expect(pane.locator(".cm-search")).toBeVisible();
 });
+
+test("the Inspector says the name at the text's cursor: its forms and a sample's lines", async ({ page }) => {
+  await openSample(page, "Hello API");
+  await page.locator(".hl-canvas").getByRole("button", { name: "text off" }).click();
+  const pane = page.getByRole("region", { name: "Text" });
+  await pane.locator(".cm-line", { hasText: "route.get" }).click({ position: { x: 4, y: 6 } });
+  const word = page.getByRole("complementary", { name: "Inspector" }).getByRole("region", { name: "the name route" });
+  await expect(word).toContainText("Inspector: route");
+  await expect(word.locator(".hl-word__forms")).toContainText("route.");
+  await expect(word.locator(".hl-word__example")).toContainText("route.");
+  await word.getByRole("button", { name: "the language reference" }).click();
+  await expect(page).toHaveURL(/#docs\.language\/reference\.md$/);
+});

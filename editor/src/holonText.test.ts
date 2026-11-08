@@ -8,7 +8,7 @@ import { initSync, Evaluator } from "../wasm/holon_wasm.js";
 import type { Edge } from "@xyflow/react";
 import type { PrimitiveNodeType } from "./PrimitiveNode";
 import { deriveServer, flowUnitHash } from "./canvasOps";
-import { compileHolon, printHolon, printHolonLines, sourceLineOf } from "./holonText";
+import { compileHolon, inspectAt, printHolon, printHolonLines, sourceLineOf } from "./holonText";
 import { manifestItems } from "./holon";
 import { buildSample, samples } from "./samples";
 
@@ -144,5 +144,19 @@ route.post("/j", (req) => concat(shout(req.json.words), "-", "!"))
     expect(lines.get(field.id)).toBe(6);
     // The Inspector's line is of the canvas as it prints without a text's names: inline.
     expect(sourceLineOf(field.id, name, doc, ev)).toEqual({ line: 5, text: 'route.get("/x", (req) => `${req.params.id} likes`)' });
+  });
+});
+
+describe("the name at the cursor", () => {
+  it("says its hover, the forms it is written in and a sample's lines, also just after it", () => {
+    const at = HELLO.indexOf("route.get");
+    const said = inspectAt(HELLO, at + 2);
+    expect(said?.word).toBe("route");
+    expect(said?.hover).not.toBe("");
+    expect(said?.usage?.forms.some(([form]) => form.startsWith("route."))).toBe(true);
+    expect(said?.usage?.example?.lines.some((l) => l.includes("route."))).toBe(true);
+    // Just typed: the cursor right after the name.
+    expect(inspectAt(HELLO, at + "route".length)?.word).toBe("route");
+    expect(inspectAt(HELLO, HELLO.indexOf("8101") + 1)).toBeNull();
   });
 });
