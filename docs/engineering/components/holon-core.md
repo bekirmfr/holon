@@ -64,7 +64,7 @@ collected, for the editor.
 
 ### The catalog
 
-`GENESIS` names the 151 primitives. Each name has its facts in one place each: its interface
+`GENESIS` names the 152 primitives. Each name has its facts in one place each: its interface
 (`interface_of`), its capabilities (`capabilities_of`, `kind.rs`), what it does in words
 (`describe`), whether it grows inputs (`VARIADIC`) and its computation. `compute` covers 117 of them,
 by an `Op` that one list (`ops!`) makes along with `Op::of`, so a name can't be in one and not the

@@ -761,8 +761,8 @@ impl<'a> Lowerer<'a> {
             StmtKind::Expr(e) => {
                 let v = self.expr(e)?;
                 // A call (a request, another flow's action) is made for what it does, whatever it
-                // answers.
-                let a_call = matches!(&v, Val::Out { id, .. } if self.b.data(id).is_some_and(|d| CALLS.contains(&d.name.as_str())));
+                // answers; a clock's throw, `fail`, for the reason it gives the run's log.
+                let a_call = matches!(&v, Val::Out { id, .. } if self.b.data(id).is_some_and(|d| CALLS.contains(&d.name.as_str()) || d.name == "fail"));
                 if v.effectful() || a_call {
                     return self.effect(v, s.span);
                 }

@@ -282,6 +282,8 @@ enum Body {
     /// A leaf whose value the host supplies ([`crate::SOURCED`], [`Resolver::sourced`]).
     Sourced,
     Coalesce,
+    /// `fail`: nothing, its message handed to the observer.
+    Fail,
     /// Any other leaf, computed by `compute` (its [`Op`], none for a name that isn't one); a
     /// variadic one fires only with every input present.
     Leaf { variadic: bool, op: Option<Op> },
@@ -436,6 +438,7 @@ impl NodeKind {
                     "sort_by" => Body::SortBy,
                     "group_by" => Body::GroupBy,
                     "coalesce" => Body::Coalesce,
+                    "fail" => Body::Fail,
                     _ if crate::SOURCED.contains(&name) => Body::Sourced,
                     _ => match (Test::of(name), Request::of(name), Json::of(name, &unit.params)) {
                         (Some(test), _, _) => Body::Test(test),
@@ -488,6 +491,18 @@ fn eval_as(
         // nothing fires"). This arm is the contract, stated once, where absence is visible.
         // (Inside a composite it is a choice, decided by `choice_next` without getting here.)
         (Body::Coalesce, _) => smallvec![Slot::of(inputs.iter().flatten().next().map(|v| (*v).clone()))],
+        // `fail` gives nothing, and the observer hears why, at this node, as for a module that
+        // can't run: the language's `throw new Error(message)`, its message for the run's log.
+        (Body::Fail, _) => {
+            if let Some(Some(message)) = inputs.first() {
+                let reason = match message {
+                    Value::Text(t) => t.clone(),
+                    other => primitives::compute("to_text", &[other], &[]).map_or_else(String::new, |t| if let Value::Text(t) = t { t } else { String::new() }),
+                };
+                observer.failed(path, &reason);
+            }
+            smallvec![Slot::Absent]
+        }
         (Body::Leaf { variadic, op }, UnitBody::Primitive { name }) => {
             // Present values in port order **by reference** — `compute` borrows them, so an O(1)
             // reader (head/length/is_empty) copies only what it returns, not the whole input

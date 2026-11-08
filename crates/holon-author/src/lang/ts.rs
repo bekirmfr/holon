@@ -183,6 +183,20 @@ struct Frame {
     route: bool,
     /// Whether it is a function's: a function computes, so it never waits.
     function: bool,
+    /// The `try` blocks being read, innermost last (§8).
+    trying: Vec<Trying>,
+    /// The bindings of a `throw`'s nothing: an answer of several outputs throws for each.
+    throws: BTreeSet<String>,
+}
+
+/// A `try` block being read: what it makes, whose arriving is the block succeeding (§8).
+struct Trying {
+    /// Where its conditions begin among the frame's guards.
+    guards: usize,
+    /// Each binding made in it, with the conditions in it it is made under.
+    made: Vec<(String, Option<Expr>)>,
+    /// Each return in it, by its place among the frame's exits, with the same.
+    exits: Vec<(usize, Option<Expr>)>,
 }
 
 /// A `return`, under the branches it is in.
@@ -1126,6 +1140,8 @@ impl<'s, 't> Reader<'s, 't> {
             }
             js::Statement::IfStatement(f) => self.if_statement(f, block, stmts, start),
             js::Statement::SwitchStatement(w) => self.switch(w, block, stmts, start),
+            js::Statement::TryStatement(t) => self.try_statement(t, block, stmts, start),
+            js::Statement::ThrowStatement(t) => self.throw_statement(t, block, stmts),
             js::Statement::BreakStatement(_) => fail(at, "break ends a case, last in it"),
             js::Statement::FunctionDeclaration(_) => fail(at, "a function is defined at the top level, where every handler can use it"),
             _ => fail(at, format!("{} isn't something a {} holds yet", statement_kind(s), block_word(block))),
@@ -1385,6 +1401,12 @@ impl<'s, 't> Reader<'s, 't> {
             }
             other => {
                 let value = self.expr(other)?;
+                if !self.frame.trying.is_empty() && !self.contains_sink(&value) {
+                    // `parse(x)` alone, in a try block: what it gives is tested, as JavaScript's
+                    // would throw there.
+                    self.tried(value, stmts);
+                    return Ok(());
+                }
                 let after = if self.contains_sink(&value) { self.trigger(at) } else { None };
                 stmts.push(Stmt { kind: StmtKind::Expr(value), span: at, after });
                 Ok(())
@@ -1655,6 +1677,8 @@ impl<'s, 't> Reader<'s, 't> {
             Place::State(key, key_span) => self.state_write(key, value, at, key_span, stmts, start),
             Place::Store(collection, span, key) => {
                 self.frame.written.insert(collection.clone());
+                let key = self.tried(key, stmts);
+                let value = self.tried(value, stmts);
                 let value = self.guarded(value);
                 stmts.push(Stmt { kind: StmtKind::CollectionWrite { collection: Name { text: collection, span }, key, value }, span: at, after: self.after_value() });
                 Ok(())
@@ -1678,6 +1702,7 @@ impl<'s, 't> Reader<'s, 't> {
             && let Some(collection) = self.store_name(&c.object)
         {
             let key = self.expr(&c.expression)?;
+            let key = self.tried(key, stmts);
             let key = self.guarded(key);
             self.frame.written.insert(collection.clone());
             let collection = self.name(&collection, c.object.span());
@@ -1774,6 +1799,7 @@ impl<'s, 't> Reader<'s, 't> {
     /// otherwise, written once, where its value is last settled (§5).
     fn state_write(&mut self, key: String, value: Expr, at: Span, key_span: Span, stmts: &mut Vec<Stmt>, start: usize) -> R<()> {
         self.state_keys.insert(key.clone());
+        let value = self.tried(value, stmts);
         let twice = || fail(at, format!("state.{key} is written twice, in an if (… !== undefined) and elsewhere: a run writes a key once"));
         if let Some(after) = self.after_value() {
             if self.frame.writes.iter().any(|(k, ..)| *k == key) || self.frame.tied.contains(&key) {
@@ -1858,6 +1884,259 @@ impl<'s, 't> Reader<'s, 't> {
         let ret = ret_if(&cond, &a.ret, &b.ret);
         self.join(&Choice::If(cond), vec![a], b, stmts, start, at);
         Ok(ret)
+    }
+
+    /// `try { A } catch { B } finally { C }` (§8). A's values arriving is the block succeeding,
+    /// `ok`: A's writes, sends and returns are tied to it, B is read where it doesn't hold, and
+    /// each name and state key either changes holds `if ok then A's else B's`, as after an `if`.
+    /// C is tied to neither. A call A binds is made when what it reads arrives, as anywhere: one
+    /// before a failure is made, as JavaScript's would be, and one after it too, unless it reads
+    /// what failed. Without a catch, A is a block, and nothing is caught.
+    fn try_statement(&mut self, t: &js::TryStatement, block: Block, stmts: &mut Vec<Stmt>, start: usize) -> R<Ret> {
+        let at = self.span(t.span);
+        let ret = match &t.handler {
+            Some(h) => {
+                if let Some(p) = &h.param {
+                    return fail(self.span(p.span), "write catch { … }; the reason is in the run's log");
+                }
+                self.caught(&t.block.body, &h.body.body, block, stmts, start, at)?
+            }
+            None => {
+                self.scopes.push(HashMap::new());
+                let r = self.list(&t.block.body, block, stmts);
+                self.scopes.pop();
+                r?
+            }
+        };
+        if let Some(f) = &t.finalizer {
+            let exits = self.frame.exits.len();
+            self.scopes.push(HashMap::new());
+            let r = self.list(&f.body, block, stmts);
+            self.scopes.pop();
+            if !matches!(r?, Ret::Never) || self.frame.exits.len() > exits {
+                return fail(self.span(f.span), "a finally holds writes and calls: a return or a throw in it comes in a later slice");
+            }
+        }
+        Ok(ret)
+    }
+
+    /// `try { A } catch { B }`: A read as a branch is, then `ok`, then B under its negation.
+    fn caught(&mut self, tried: &[js::Statement], catch: &[js::Statement], block: Block, stmts: &mut Vec<Stmt>, start: usize, at: Span) -> R<Ret> {
+        let scopes = self.scopes.clone();
+        let writes = self.frame.writes.clone();
+        let written = self.frame.written.clone();
+        let from = stmts.len();
+        let exits = self.frame.exits.len();
+        self.frame.depth += 1;
+        self.frame.trying.push(Trying { guards: self.frame.guards.len(), made: Vec::new(), exits: Vec::new() });
+        self.scopes.push(HashMap::new());
+        let ret = self.list(tried, block, stmts);
+        self.scopes.pop();
+        let trying = self.frame.trying.pop().expect("pushed above");
+        self.frame.depth -= 1;
+        let ret = ret?;
+        if let Some(e) = self.frame.exits[exits..].iter().find(|e| matches!(e.kind, ExitKind::Switch { .. })) {
+            return fail(e.span, "a switch that returns, inside try, comes in a later slice: set a let in it, and return after the try");
+        }
+        let mut tests = Vec::new();
+        for (name, cond) in &trying.made {
+            let value = stmts[from..].iter().find_map(|s| match &s.kind {
+                StmtKind::Bind { name: n, value } if n.text == *name => Some(value),
+                _ => None,
+            });
+            if value.is_some_and(|v| !never_fails(v)) {
+                tests.push(arrived(Expr { kind: ExprKind::Name(name.clone()), span: at }, cond.as_ref()));
+            }
+        }
+        // Each return's answer, bound so that its arriving is tested where it is reached.
+        for (i, cond) in trying.exits {
+            let mut exit = self.frame.exits[i].clone();
+            let ExitKind::One(answer) = &mut exit.kind else { unreachable!("refused above") };
+            let mut parts: Vec<&mut Expr> = Vec::new();
+            match answer {
+                Answer::Response(r) => {
+                    // An absent body a `?? status(…)` answers isn't a failure.
+                    if r.missing.is_none() {
+                        parts.extend(r.body.as_mut());
+                    }
+                    parts.extend(r.status.as_mut());
+                    parts.extend(r.headers.as_mut());
+                }
+                Answer::Value { value, fields: Some(fields), .. } => {
+                    // Each field bound once, read by the value and the output alike.
+                    let mut named = Vec::new();
+                    for (_, v, _) in fields.iter_mut() {
+                        if !never_fails(v) {
+                            let old = v.clone();
+                            *v = self.answered(old.clone(), stmts);
+                            tests.push(arrived(v.clone(), cond.as_ref()));
+                            named.push((old, v.clone()));
+                        }
+                    }
+                    walk(value, &mut |e| {
+                        if let Some((_, n)) = named.iter().find(|(old, _)| old == e) {
+                            *e = n.clone();
+                            return false;
+                        }
+                        true
+                    });
+                }
+                Answer::Value { value, .. } => parts.push(value),
+                Answer::Nothing => {}
+            }
+            for part in parts {
+                if !never_fails(part) {
+                    *part = self.answered(part.clone(), stmts);
+                    tests.push(arrived(part.clone(), cond.as_ref()));
+                }
+            }
+            self.frame.exits[i] = exit;
+        }
+        let Some(ok) = conj(tests) else {
+            return fail(at, "nothing in this try can fail, so its catch never runs: write its statements without it");
+        };
+        let ok = self.hide(ok, "ok", stmts);
+        if let ExprKind::Name(n) = &ok.kind {
+            let n = n.clone();
+            self.unmade(&n);
+        }
+        // A's writes and sends, tied to ok, after it.
+        let mut tied = Vec::new();
+        let mut i = from;
+        while i < stmts.len() {
+            let effect = match &stmts[i].kind {
+                StmtKind::StateWrite { .. } | StmtKind::CollectionWrite { .. } | StmtKind::Delete { .. } => true,
+                StmtKind::Expr(value) => self.contains_sink(value),
+                _ => false,
+            };
+            if effect {
+                let mut s = stmts.remove(i);
+                let yes = Expr { kind: ExprKind::Bool(true), span: s.span };
+                s.after = Some(when(s.after.take().unwrap_or(yes), ok.clone()));
+                tied.push(s);
+            } else {
+                i += 1;
+            }
+        }
+        stmts.extend(tied);
+        for e in &mut self.frame.exits[exits..] {
+            e.cond = conj(e.cond.take().into_iter().chain([ok.clone()]));
+        }
+        let a = Path {
+            scopes: std::mem::replace(&mut self.scopes, scopes),
+            writes: std::mem::replace(&mut self.frame.writes, writes),
+            exits: self.frame.exits.len() - exits,
+            ret,
+        };
+        let a_written = std::mem::replace(&mut self.frame.written, written);
+        let b = self.branches(vec![(Guard::Branch(otherwise(&ok)), Some(catch))], block, stmts)?.pop().expect("a catch");
+        self.frame.written.extend(a_written);
+        // A returns only where a return in it answers: a throw in it is caught.
+        let returns = if a.exits == 0 { Ret::Never } else { a.ret.clone() };
+        let ret = ret_if(&ok, &returns, &b.ret);
+        self.join(&Choice::If(ok), vec![a], b, stmts, start, at);
+        Ok(ret)
+    }
+
+    /// A value a `try` block writes, bound so that its arriving is tested (§8); outside one,
+    /// the value.
+    fn tried(&mut self, value: Expr, stmts: &mut Vec<Stmt>) -> Expr {
+        if self.frame.trying.is_empty() || never_fails(&value) {
+            return value;
+        }
+        self.hide(value, "tried", stmts)
+    }
+
+    /// A part of a return's answer in a `try` block, bound once: tested by the block that holds
+    /// the return, and by no other.
+    fn answered(&mut self, value: Expr, stmts: &mut Vec<Stmt>) -> Expr {
+        if matches!(value.kind, ExprKind::Name(_)) {
+            return value;
+        }
+        let named = self.hide(value, "answer", stmts);
+        if let ExprKind::Name(n) = &named.kind {
+            let n = n.clone();
+            self.unmade(&n);
+        }
+        named
+    }
+
+    /// A binding just named: in a `try` block, kept with the conditions it is made under there,
+    /// as its value arriving is the block succeeding (§8).
+    fn made(&mut self, name: &str) {
+        if let Some(t) = self.frame.trying.last() {
+            let cond = self.cond_since(t.guards);
+            self.frame.trying.last_mut().expect("there is one").made.push((name.to_string(), cond));
+        }
+    }
+
+    /// A binding no `try` block tests: one it reads, as a join reads what it chooses among.
+    fn unmade(&mut self, name: &str) {
+        for t in &mut self.frame.trying {
+            t.made.retain(|(n, _)| n != name);
+        }
+    }
+
+    /// The conditions the statement being read runs under, from guard `start` on; an `if (x !==
+    /// undefined)`'s, that `x` arrived.
+    fn cond_since(&self, start: usize) -> Option<Expr> {
+        conj(self.frame.guards[start..].iter().map(|g| match g {
+            Guard::Branch(c) | Guard::Live(c) => c.clone(),
+            Guard::After(x) => has_value(x.clone()),
+        }))
+    }
+
+    /// `throw new Error(message)` (§8): the `fail` leaf, nothing, its message for the run's log.
+    /// In a `try` block it is a value that never arrives, so the block fails where it is reached;
+    /// elsewhere it answers as `return` does, with nothing: a route 404, a function or an action
+    /// nothing, a clock's or a file's run ended.
+    fn throw_statement(&mut self, t: &js::ThrowStatement, block: Block, stmts: &mut Vec<Stmt>) -> R<Ret> {
+        let at = self.span(t.span);
+        let message = self.error_message(&t.argument)?;
+        let mut failed = leaf("fail", &[], vec![message], at);
+        if !self.frame.trying.is_empty() {
+            self.hide(failed, "thrown", stmts);
+            return Ok(Ret::Always);
+        }
+        let answer = match block {
+            Block::Every | Block::File => {
+                // Its message only where the throw is reached, as nothing reads it to choose.
+                let ExprKind::Leaf { args, .. } = &mut failed.kind else { unreachable!("a leaf") };
+                args[0].value = self.guarded(args[0].value.clone());
+                stmts.push(Stmt { kind: StmtKind::Expr(failed), span: at, after: None });
+                Answer::Nothing
+            }
+            _ => {
+                // Bound once, so that an answer of several outputs reads one failure.
+                let failed = self.hide(failed, "thrown", stmts);
+                if let ExprKind::Name(n) = &failed.kind {
+                    self.frame.throws.insert(n.clone());
+                }
+                match block {
+                    Block::Route => Answer::Response(Box::new(Response { body: Some(failed), status: None, missing: None, headers: None, stream: None, span: at })),
+                    _ => Answer::Value { value: failed, name: None, fields: None },
+                }
+            }
+        };
+        self.push_exit(ExitKind::One(answer), at)?;
+        Ok(Ret::Always)
+    }
+
+    /// The message of `new Error(message)`, or `Error(message)`.
+    fn error_message(&mut self, e: &js::Expression) -> R<Expr> {
+        let at = self.span(e.span());
+        let (callee, args) = match self.unwrap(e) {
+            js::Expression::NewExpression(n) => (&n.callee, &n.arguments),
+            js::Expression::CallExpression(c) => (&c.callee, &c.arguments),
+            _ => return fail(at, "a throw throws new Error(message): the message goes to the run's log"),
+        };
+        if !matches!(self.unwrap(callee), js::Expression::Identifier(i) if i.name == "Error" && self.lookup("Error").is_none()) {
+            return fail(at, "a throw throws new Error(message): the message goes to the run's log");
+        }
+        match args.as_slice() {
+            [a] if let Some(m) = a.as_expression() => self.expr(m),
+            _ => fail(at, "new Error takes its message: throw new Error(\"…\")"),
+        }
     }
 
     /// `x !== undefined`, as an `if` tests it to wait for `x` (§5): `x`.
@@ -1975,6 +2254,7 @@ impl<'s, 't> Reader<'s, 't> {
                         match choose(choice, picks, els, at) {
                             Some(value) => {
                                 let name = self.fresh(&ts);
+                                self.unmade(&name);
                                 stmts.push(Stmt { kind: StmtKind::Bind { name: Name { text: name.clone(), span: at }, value }, span: at, after: None });
                                 Some(name)
                             }
@@ -2131,6 +2411,11 @@ impl<'s, 't> Reader<'s, 't> {
             return fail(span, "a return inside if (x !== undefined) comes in a later slice: return after it, with ?? for when x has no value");
         }
         let cond = conj(self.frame.guards.iter().filter_map(|g| if let Guard::Branch(c) = g { Some(c.clone()) } else { None }));
+        if let Some(t) = self.frame.trying.last() {
+            let tried = self.cond_since(t.guards);
+            let at = self.frame.exits.len();
+            self.frame.trying.last_mut().expect("there is one").exits.push((at, tried));
+        }
         self.frame.exits.push(Exit { cond, kind, span });
         Ok(())
     }
@@ -2213,15 +2498,27 @@ impl<'s, 't> Reader<'s, 't> {
                         })
                     })
                     .collect();
-                // Every side that answers an object of the same keys: each key chosen alone.
-                let keys: Option<Vec<String>> = parts.iter().flatten().next().and_then(|(_, f)| f.as_ref()).map(|f| f.iter().map(|(k, ..)| k.clone()).collect());
+                // Every side that answers an object of the same keys, or throws: each key chosen
+                // alone, a throw's nothing for each.
+                let keys: Option<Vec<String>> = parts.iter().flatten().find_map(|(_, f)| f.as_ref()).map(|f| f.iter().map(|(k, ..)| k.clone()).collect());
                 let keys = keys.filter(|keys| {
-                    parts.iter().flatten().all(|(_, f)| f.as_ref().is_some_and(|f| f.len() == keys.len() && f.iter().all(|(k, ..)| keys.contains(k))))
+                    parts.iter().flatten().all(|(v, f)| match f {
+                        Some(f) => f.len() == keys.len() && f.iter().all(|(k, ..)| keys.contains(k)),
+                        None => self.frame.throws.contains(&name_of(v)),
+                    })
                 });
                 let fields = keys.map(|keys| {
                     keys.iter()
                         .map(|k| {
-                            let mut picks: Vec<Option<Expr>> = parts.iter().map(|p| p.as_ref().and_then(|(_, f)| f.as_ref()).and_then(|f| f.iter().find(|(x, ..)| x == k)).map(|(_, v, _)| v.clone())).collect();
+                            let mut picks: Vec<Option<Expr>> = parts
+                                .iter()
+                                .map(|p| {
+                                    p.as_ref().and_then(|(v, f)| match f {
+                                        Some(f) => f.iter().find(|(x, ..)| x == k).map(|(_, v, _)| v.clone()),
+                                        None => Some(v.clone()),
+                                    })
+                                })
+                                .collect();
                             let els = picks.pop().expect("an else");
                             (k.clone(), choose(choice, picks, els, span).expect("a side answers"), span)
                         })
@@ -4254,6 +4551,7 @@ impl<'s, 't> Reader<'s, 't> {
             name = format!("{base}_{n}");
         }
         self.frame.used.insert(name.clone());
+        self.made(&name);
         name
     }
 
@@ -4264,6 +4562,7 @@ impl<'s, 't> Reader<'s, 't> {
             let name = format!("{base}_{n}");
             if !self.frame.used.contains(&name) && !self.top_level(&name) && !self.taken.contains(&name) {
                 self.frame.used.insert(name.clone());
+                self.made(&name);
                 return name;
             }
             n += 1;
@@ -4585,7 +4884,6 @@ fn vocab_word(v: &Vocab) -> &'static str {
 fn statement_kind(s: &js::Statement) -> &'static str {
     match s {
         js::Statement::ForStatement(_) | js::Statement::ForOfStatement(_) | js::Statement::ForInStatement(_) | js::Statement::WhileStatement(_) | js::Statement::DoWhileStatement(_) => "a loop",
-        js::Statement::TryStatement(_) | js::Statement::ThrowStatement(_) => "try and throw",
         js::Statement::ClassDeclaration(_) => "a class",
         _ => "this statement",
     }
@@ -4811,6 +5109,37 @@ fn binary_at(op: BinOp, lhs: Expr, rhs: Expr, span: Span) -> Expr {
 /// `value when c`.
 fn when(value: Expr, c: Expr) -> Expr {
     binary(BinOp::When, value, c)
+}
+
+/// `same_value(x, x) ?? false`: whether `x` arrived, a NaN too (§8).
+fn has_value(x: Expr) -> Expr {
+    let at = x.span;
+    let same = leaf("same_value", &[], vec![x.clone(), x], at);
+    let no = Expr { kind: ExprKind::Bool(false), span: at };
+    Expr { kind: ExprKind::Paren(Box::new(binary_at(BinOp::Coalesce, same, no, at))), span: at }
+}
+
+/// Whether `x`, made under `cond`, arrived where `cond` holds (§8): read only there, so that a
+/// call in a branch not taken isn't made to test it.
+fn arrived(x: Expr, cond: Option<&Expr>) -> Expr {
+    match cond {
+        None => has_value(x),
+        Some(c) => binary(BinOp::Or, otherwise(c), has_value(when(x, c.clone()))),
+    }
+}
+
+/// Whether a value always arrives, or never fails where it doesn't: a literal, or `undefined`.
+fn never_fails(v: &Expr) -> bool {
+    match &v.kind {
+        ExprKind::Number { .. } | ExprKind::Text(_) | ExprKind::Bool(_) => true,
+        ExprKind::If { cond, els: None, .. } => matches!(cond.kind, ExprKind::Bool(false)),
+        _ => false,
+    }
+}
+
+/// The binding `v` names, if it names one.
+fn name_of(v: &Expr) -> String {
+    if let ExprKind::Name(n) = &v.kind { n.clone() } else { String::new() }
 }
 
 /// `(c ?? false)`: `c` as an `if` reads it, false where it is absent.
@@ -5731,6 +6060,12 @@ route.post("/t", (req) => price(req.json.amount))
             ("route.post(\"/\", (req) => {\n  if (req.json.a) return status(200, 1)\n  return 2 ?? status(400)\n})\n", "7:10: this answer is 400 when its body is absent, and the one on line 6 is 404: say it the same for both"),
             ("route.post(\"/\", (req) => {\n  const n = req.json.n++\n  return n\n})\n", "6:13: ++ and -- are a statement of their own: n++"),
             ("route.post(\"/\", (req) => {\n  state[req.json.k] = 1\n  return 1\n})\n", "6:3: a state key is a name: state.hits = …; a key computed is a collection's, notes[k] = …"),
+            ("route.post(\"/\", (req) => {\n  try {\n    notes[req.json.id] = 1\n  } catch (e) {\n    return 2\n  }\n  return 1\n})\n", "8:12: write catch { … }; the reason is in the run's log"),
+            ("route.post(\"/\", (req) => {\n  try {\n    notes[req.json.id] = 1\n  } catch {\n    state.failed = 1\n  } finally {\n    return 2\n  }\n})\n", "10:13: a finally holds writes and calls: a return or a throw in it comes in a later slice"),
+            ("route.post(\"/\", (req) => {\n  try {\n    state.n = 1\n  } catch {\n    state.n = 2\n  }\n  return 1\n})\n", "6:3: nothing in this try can fail, so its catch never runs: write its statements without it"),
+            ("route.post(\"/\", (req) => {\n  if (req.json.bad) throw \"bad\"\n  return 1\n})\n", "6:27: a throw throws new Error(message): the message goes to the run's log"),
+            ("route.post(\"/\", (req) => {\n  if (req.json.bad) throw new Error()\n  return 1\n})\n", "6:27: new Error takes its message: throw new Error(\"…\")"),
+            ("route.post(\"/\", (req) => {\n  try {\n    switch (req.json.op) {\n      case \"a\":\n        return JSON.parse(req.body)\n    }\n  } catch {\n    return 2\n  }\n  return 1\n})\n", "7:5: a switch that returns, inside try, comes in a later slice: set a let in it, and return after the try"),
         ];
         let head = "import { flow, route, status } from \"holon\"\nimport notes from \"collection:notes\"\nimport state from \"state\"\nflow(\"f\", { port: 8000 })\n";
         let mut wrong = Vec::new();
@@ -5741,6 +6076,100 @@ route.post("/t", (req) => price(req.json.amount))
             }
         }
         assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+    }
+
+    /// `try` and `throw` (§8), beside the same flow written plainly: the try block's values each
+    /// tested by `same_value(x, x) ?? false`, its writes tied to all of them having arrived, the
+    /// catch's answer where they didn't; a throw a `fail`, nothing, where it is reached.
+    #[test]
+    fn try_and_throw_lower_as_their_plain_form() {
+        let pairs = [
+            (
+                "try and catch",
+                r#"import { flow, route, status } from "holon"
+import notes from "collection:notes"
+flow("t", { port: 8000 })
+route.post("/n", (req) => {
+  try {
+    const note = JSON.parse(req.body)
+    notes[note.id] = note
+  } catch {
+    return status(400, "not a note")
+  }
+  return status(201, "kept")
+})
+"#,
+                r#"import { flow, route, same_value, status } from "holon"
+import notes from "collection:notes"
+
+flow("t", { port: 8000 })
+
+route.post("/n", (req) => {
+  const note = JSON.parse(req.body)
+  const tried_1 = note.id
+  const ok_1 = (same_value(note, note) ?? false) && (same_value(tried_1, tried_1) ?? false)
+  const tie = ok_1 ? true : undefined
+  if (tie !== undefined) {
+    notes[tried_1] = note
+  }
+  return status(!(ok_1 ?? false) ? 400 : 201, !(ok_1 ?? false) ? "not a note" : "kept")
+})
+"#,
+            ),
+            (
+                "a throw in a route",
+                r#"import { flow, route } from "holon"
+flow("t", { port: 8000 })
+route.post("/n", (req) => {
+  if (req.json.n > 10) throw new Error("too many")
+  return { n: req.json.n }
+})
+"#,
+                r#"import { fail, flow, route } from "holon"
+
+flow("t", { port: 8000 })
+
+route.post("/n", (req) => {
+  const cond_1 = req.json.n > 10
+  return cond_1 ? fail("too many") : { n: req.json.n }
+})
+"#,
+            ),
+            (
+                "a throw in a function of several outputs",
+                r#"import { flow, route } from "holon"
+flow("t", { port: 8000 })
+function order(o) {
+  if (o.n > 10) throw new Error("too many")
+  return { id: o.id, n: o.n }
+}
+route.post("/n", (req) => {
+  const { id, n } = order(req.json)
+  return { id, n }
+})
+"#,
+                r#"import { fail, flow, route } from "holon"
+
+flow("t", { port: 8000 })
+
+function order(o) {
+  const cond_1 = o.n > 10
+  const thrown_1 = fail("too many")
+  return { id: cond_1 ? thrown_1 : o.id, n: cond_1 ? thrown_1 : o.n }
+}
+
+route.post("/n", (req) => {
+  const parts_1 = order(req.json)
+  const id = parts_1.id
+  const n = parts_1.n
+  return { id, n }
+})
+"#,
+            ),
+        ];
+        for (what, ts, plain) in pairs {
+            same_unit(what, ts, plain);
+        }
     }
 
     /// An action called without `await` is started, and one awaited is called, as a JavaScript

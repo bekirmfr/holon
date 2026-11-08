@@ -83,6 +83,7 @@ ops! {
     "to_text" => ToText,
     "as_text" => AsText,
     "coalesce" => Coalesce,
+    "fail" => Fail,
     "is_truthy" => IsTruthy,
     "guard" => Guard,
     "slice" => Slice,
@@ -428,6 +429,11 @@ pub(crate) fn compute_op(op: Op, name: &str, inputs: &[&Value], params: &[Param]
         // Two inputs, not variadic: a variadic leaf fails closed on an absent input, the
         // opposite of this one, and `a ?? b ?? c` is two nodes.
         Op::Coalesce => inputs.first().map(|v| (*v).clone()),
+
+        // Nothing, whatever its message: the language's `throw`. The evaluator hands the message
+        // to the observer for the run's log (eval.rs's `Body::Fail`); computed here, as the eager
+        // oracle does, it is only nothing.
+        Op::Fail => None,
 
         // The other universal any-typed primitive alongside `to_text`, same reasoning: one
         // uniform check that works before you know a value's runtime type — reading

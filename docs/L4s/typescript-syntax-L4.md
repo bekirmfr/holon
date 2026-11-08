@@ -533,6 +533,31 @@ route.post("/orders", (req) => {
   every place a failure is produced (modules, `fail`, a leaf that gives none), and it closes the gap
   above: `catch` then catches failures only, and absence goes on as `undefined` does. Until then,
   `catch (e)` is refused with "write `catch { … }`; the reason is in the run's log".
+- *As built* (2026-11-08, slice 5): `fail` is a core leaf (catalog 152), given nothing by its
+  `compute` and its message handed to the observer by the evaluator, as a module's failure is, so
+  the run's timeline keeps it beside the node. The test is `same_value(x, x) ?? false`, which a
+  `NaN` passes; no `present` leaf was needed. What the try block's values are, as built:
+  - **Each binding it makes** (a join's aside, as what it chooses among is tested), **each key and
+    value it writes, each expression statement that isn't a send, and each part of an answer it
+    returns** (a body that a `?? status(…)` answers aside), each tested where it is reached: under
+    the branches and earlier returns inside the block, through a `guard`, so a call in a branch
+    not taken isn't made to test it.
+  - **Its writes and sends are tied to `ok`** (their `after`), moved after `ok`'s binding; its state
+    writes are chosen with the catch's as after an `if`; its returns' conditions take `ok`. A call
+    it binds isn't tied, as its answer is part of `ok`: it is made when what it reads arrives.
+  - **A throw in it** is a binding of `fail(m)`, tested like the rest, that ends the block's list
+    as a `return` does. A return in it makes the `try` return only where `ok` holds; a throw
+    doesn't make it return.
+  - **The catch block** is read from the names as they were before the `try`, under `!ok`.
+  - **Uncaught,** a throw is an exit whose answer is `fail(m)`, bound once, so a function answering
+    an object of several outputs gives nothing for each; in a clock or a file handler, a `fail`
+    statement, its message guarded by the conditions it runs under.
+  - **Refused, each for a later slice:** `catch (e)`; a `return` or a `throw` in `finally`; a
+    `switch` that returns inside a try block. A try block nothing in which can fail is refused,
+    as its catch never runs.
+  - Two things the slice met that it didn't change: `!x` on a text is absent (`not` takes a
+    Boolean), so `if (!s) throw …` doesn't throw for `""`; and two answers that are each a
+    `status(…)` alone, joined by an `if`, leave `respond`'s body unwired.
 
 ## 9. Calling out: requests and other flows
 
@@ -1102,7 +1127,8 @@ Holon is in development, so the new form replaces today's at once:
    page's box that ran such a flow; `file_arrival` stays, read inside `on.file.*` handlers. The
    server's tests that deployed a bare canvas deploy TypeScript flows instead, run through an
    action, a route or a clock.
-5. **`try`, `catch {}`, `throw`, `finally`,** and the `fail` leaf.
+5. **`try`, `catch {}`, `throw`, `finally`,** and the `fail` leaf. *Built* (2026-11-08): §8's
+   as built; the intake sample, run live.
 6. **Computing loops.** `while` to `fold`, the loop's turns, nested folds past 10000, `fold`
    stopping when done, a step budget in core.
 7. **Calls and requests that wait.** §9's seven pieces, `timeout`, `await` required on requests and

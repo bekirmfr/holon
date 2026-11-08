@@ -190,7 +190,7 @@ derived from the leaves, never from the words.
 | Common-subexpression elimination | The text's structure is the graph's. Sharing is explicit (a binding), so the canvas shows what was written |
 | `null` | Absence is not a value. `undefined` is written only for "no value": as a branch, `c ? a : undefined`, and in `x !== undefined`. `none()` is the optional's empty arm (§6.3) |
 | Reading a collection or folder after writing it | A run reads its starting state and writes once, at its end, and the syntax looks like JavaScript's, where a write is seen at once. So a read after a write in the same handler is refused, per collection or folder, as it would mislead |
-| `try`, `catch`, `throw` | A failure is already an absence (§6.3). The L4's slice 5 reduces them to it; until then they are refused |
+| `catch (e)` | A failure is an absence (§6.3), which carries no reason: a throw's message goes to the run's log, and `catch { … }` is written without a name. The L4's slice 10 makes a failure carry its reason, which `catch (e)` reads |
 
 ## 3. A tour, by the samples
 
@@ -1008,6 +1008,56 @@ answer, and a call nobody uses is a statement. billing logs each as an ordinary 
 "flow shop, run …", and the shop's log keeps the call and its answer, so `holon verify` replays the
 shop from its own record without calling billing again.
 
+### intake: try, catch, throw and finally
+
+```ts
+import { flow, length, route, status } from "holon"
+import orders from "collection:orders"
+import state from "state"
+
+flow("intake", { port: 8178 })
+
+// An order's total, or a throw saying what is wrong with it.
+function total(order) {
+  if (length(order.lines) === 0) throw new Error("an order has lines")
+  const sum = order.lines.reduce((s, line) => s + line.price, 0)
+  if (sum <= 0) throw new Error("an order's total is more than 0")
+  return sum
+}
+
+// Keeps an order only when every step of the try block succeeded; counts every attempt.
+route.post("/orders", (req) => {
+  let order
+  try {
+    const body = JSON.parse(req.body)
+    order = { id: body.id, total: total(body) }
+    orders[body.id] = order
+  } catch {
+    return status(400, { error: "not an order: the run's log says why" })
+  } finally {
+    state.tried = (state.tried ?? 0) + 1
+  }
+  return status(201, order)
+})
+
+// Checks an order without keeping it.
+route.post("/check", (req) => status(200, { total: total(req.json) }) ?? status(422))
+
+// One order, as it was kept.
+route.get("/orders/:id", (req) => orders[req.params.id])
+
+// How many orders were sent, kept or not.
+route.get("/stats", () => ({ tried: state.tried ?? 0 }))
+```
+
+`throw new Error(message)` is the `fail` leaf: nothing, with its message given to the run's log.
+`total` answers nothing for an order without lines, and the try block, whose values must all
+arrive, fails: its write to `orders` is tied to them having arrived, so nothing is kept, and the
+catch's 400 answers. A body that isn't JSON fails it the same way, and so does a line without a
+price, whose sum has no value: catch catches a value that has none, as much as a throw (§6.5a).
+`finally` is tied to neither, so every attempt counts. `/check` has no try, and a throw nothing
+catches is nothing, which its `?? status(422)` answers.
+
 ### map and reduce
 
 From the `quote` sample: each line's function uses `tax` from the route around it.
@@ -1240,6 +1290,8 @@ handler (§10, §12).
 | `if (c) …; else …` | its writes guarded by their branch's condition; writes to one key in both branches are one write, of `c ? a : b` |
 | `if (x !== undefined) { … }` | its writes and calls tied to `x` (§5.11) |
 | `switch (s) { case …: … }` | a choice by value (§6.5) |
+| `try { … } catch { … } finally { … }` | a choice on the try block's values having arrived: its writes, sends and returns are tied to that, the catch block's to its negation, and a name either assigns is the one chosen, as after an `if`; `finally`'s are tied to neither (§6.5a) |
+| `throw new Error(m)` | the `fail` leaf, nothing, `m` for the run's log: in a try block, its failure; elsewhere the handler's answer, as a `return` of nothing: a route's 404 (§6.5a) |
 | `return e` | the handler's answer (§5.11), or a function's outputs (§5.8) |
 | `expr` | an effect (§5.10) |
 
@@ -2034,6 +2086,72 @@ It is sugar: it lowers to `guard(equals(s, p), a)` for each case, chained by `??
 returns fold into one answer: the case's value, `missing: 400`. A `switch` that assigns a `let` in
 each case chooses the name's value the same way.
 
+### 6.5a `try` is a choice too
+
+A failure is an absence (§6.3), so `try` is a choice on absence: **the try block succeeds when
+every value it makes arrives**. Each binding it makes, each key and value it writes, and each
+answer it returns is tested, where it is reached (`same_value(x, x) ?? false`, true for any value,
+a `NaN` too), and `ok` is all of them. The block's writes and sends are tied to `ok` (their
+`after`), so they are made all together or not at all, and its returns answer only where `ok`
+holds. The catch block is read under `!ok`: its writes are tied to the block having failed, and a
+name or state key either block changes holds `ok ? tried : caught` after them, as after an `if`.
+`finally` holds statements tied to neither, made whichever block ran, as JavaScript's are.
+
+```ts
+route.post("/n", (req) => {
+  try {
+    const note = JSON.parse(req.body)
+    notes[note.id] = note
+  } catch {
+    return status(400, "not a note")
+  }
+  return status(201, "kept")
+})
+```
+
+is the same unit as (a test says so):
+
+```ts
+route.post("/n", (req) => {
+  const note = JSON.parse(req.body)
+  const tried_1 = note.id
+  const ok_1 = (same_value(note, note) ?? false) && (same_value(tried_1, tried_1) ?? false)
+  const tie = ok_1 ? true : undefined
+  if (tie !== undefined) {
+    notes[tried_1] = note
+  }
+  return status(!(ok_1 ?? false) ? 400 : 201, !(ok_1 ?? false) ? "not a note" : "kept")
+})
+```
+
+`throw new Error(message)` is the `fail` leaf, which gives nothing and hands its message to the
+run's log (the observer, as a `js()` function's failure is). In a try block it is a value that
+never arrives, so the block fails where the throw is reached, and the statements after it in the
+block aren't reached. Elsewhere it ends the handler as a `return` of nothing: a route answers 404,
+or what its `?? status(…)` says; a function or an action gives nothing, which a caller's `??` or
+`try` reads; a clock's or a file's run ends there. `fail(m)` may be called as a leaf too, in an
+expression.
+
+Where this differs from JavaScript, Holon's meaning holds, and each follows from a failure being an
+absence:
+
+- **catch catches absence, not only throws.** A field the try block reads that isn't there, an
+  `if` on one, a request that fails, a `JSON.parse` of what isn't JSON: each is a value that
+  didn't arrive, so the catch runs, where JavaScript would carry on with `undefined` (all but the
+  last two). Give such a value its fallback inside the block (`req.json.kind ?? "plain"`) when its
+  absence isn't a failure.
+- **The try block's writes are all or none.** JavaScript keeps the writes made before the throw;
+  Holon makes none of them, as a run's writes are made at its end (§6.6).
+- **A call the try block binds is made when what it reads arrives,** as anywhere: one written
+  after a failure is made too, unless it reads what failed. Its answer's arriving is part of
+  `ok`, so a failed request reaches the catch. A send written as a statement is tied to `ok`, as a
+  write is.
+- **The catch block sees the names as they were before the try,** not as the try block left them,
+  since what the try block made may not have arrived.
+- `catch (e)` is refused, "write `catch { … }`; the reason is in the run's log": a failure carries
+  no reason as a value yet (the L4's slice 10). A `return` or `throw` in `finally`, and a `switch`
+  that returns inside a try block, come in later slices.
+
 ### 6.6 Reads at the start, writes at the end
 
 `state.x`, `notes[k]` and `inbox[name]` are the values as the run began. The writes are Effects the
@@ -2164,7 +2282,11 @@ The error catalogue the reader and the lowering produce, each with the span it p
 | a function computes and never waits; calling another flow's action is a handler's | the `await` |
 | a method's function (`map`'s, `filter`'s…) isn't async | the function |
 | no leaf does `.m(…)`: do it in a `js()` function | the method |
-| a loop, `try` or `throw` | the statement |
+| a loop | the statement |
+| `catch (e)`: write `catch { … }`; the reason is in the run's log | the name |
+| a throw throws `new Error(message)` | the throw |
+| nothing in this try can fail, so its catch never runs | the `try` |
+| a `finally` holds writes and calls: a return or a throw in it comes later | the `finally` |
 | a case runs on into the next; a case is a literal | the case |
 | the top level holds imports, `flow(…)`, handlers, functions and `const`s of literals | the statement |
 | the top level binds only literals | the binding |
@@ -2395,8 +2517,12 @@ the syntax to TypeScript's, keeping the lowering.
      groups its two halves as `fromStripe` and `async toSlack`, run live. The printer still writes
      a function's request without `await`, which compiles to the same unit.
 
-   Next are the L4's slices 5 to 11: `try`, `catch {}`, `throw` and `finally`, over a `fail` leaf;
-   computing loops, as folds over a bounded range; requests and calls that wait (`await` with
+   - *Slice 5, `try` and `throw`* (2026-11-08): `try { … } catch { … }` a choice on the try
+     block's values having arrived, its writes and returns tied to that and the catch's to its
+     negation, `finally` tied to neither; `throw new Error(m)` the `fail` leaf, nothing, its
+     message the run log's (§6.5a). The intake sample, run live.
+
+   Next are the L4's slices 6 to 11: computing loops, as folds over a bounded range; requests and calls that wait (`await` with
    JavaScript's order and required, `Promise.all`, a call that parks its caller, a request recorded
    before it is sent); waits a route's caller outlasts; waiting loops; failures with a reason
    (`catch (e)`); and the language server and both editors over the type package `holon.d.ts`,
@@ -2495,6 +2621,6 @@ The MCP server and its tools (decided in `docs/L4s/agent-surface-L4.md`), the ex
 for run logs, and the marketplace's `use`. Each depends on this language existing and none changes
 it. The sandboxed WebAssembly module is decided and built (`docs/L4s/wasm-module-L4.md`); the
 language's spelling for one is the `js()` function of §5.8a, and a form placing a module by hash
-waits for a second module. The TypeScript statements still to come (`try` and `catch`, loops,
-requests and calls that wait) and the type package are decided in
+waits for a second module. The TypeScript statements still to come (loops, requests and calls
+that wait) and the type package are decided in
 `docs/L4s/typescript-syntax-L4.md`, and arrive here as they are built.

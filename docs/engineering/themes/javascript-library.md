@@ -254,7 +254,7 @@ give, or refused naming the form that gives it. Items compare by value (§9).
 | `Intl` | | js() | not inside `js()` either: locale is the environment |
 | `Map`, `Set`, `WeakMap`, `Symbol`, `BigInt`, `Proxy`, `Reflect`, typed arrays | | js() | inside `js()` only (a `BigInt` can't cross out) |
 | `Promise.all` | | refused | in slice 7, a started run's handle may be awaited or passed to it |
-| `throw`, `Error`, `try`/`catch` | | refused | slice 5 (`fail` leaf) |
+| `throw new Error(m)`, `try`/`catch {}`/`finally` | `fail`, a choice on absence | mapped | slice 5: `catch` catches absence too; `catch (e)` refused until a failure carries its reason (slice 10) |
 
 What a service reaches outside the language, a flow imports; each is a line of what the deploy
 asks for:
@@ -300,7 +300,7 @@ author sees no mistake; the run answers nothing where JavaScript answers somethi
 | `Math.hypot(a, b)` | V8's bits | other engines may differ in the last bit |
 | `{ a: 1 } === { a: 1 }` | `true` | compared by value; JavaScript compares objects by identity |
 | `1 == "1"` | `false` | `==` is `===` |
-| `JSON.parse("bad")` | nothing | JavaScript throws; Holon has no `catch` until slice 5 |
+| `JSON.parse("bad")` | nothing | JavaScript throws; Holon's `catch {}` catches the nothing |
 | `"a😀b".slice(1, 2)`, `"😀".charAt(0)` | nothing | half a surrogate pair, which a flow's text can't hold; JavaScript gives a text holding a lone surrogate |
 | `Object.keys(r)`, `JSON.stringify(r)` | keys sorted | JavaScript keeps insertion order, integer keys first; §11, open 2 |
 | `JSON.parse` of a key given twice | nothing | `json.rs` refuses it; JavaScript keeps the last |
@@ -456,5 +456,5 @@ Holon's form, and a leaf wouldn't change that:
   and recorded for the run, and has no locale.
 - **Time and concurrency:** timers and `Promise` are handlers (`every`), waits (`await event(…)`)
   and the `await` of requests and actions.
-- **Statements** are the L4's slices, not the library's: `try`, `catch`, `throw` (slice 5),
+- **Statements** are the L4's slices, not the library's: `try`, `catch`, `throw` (slice 5, built),
   `while` and loops (slice 6).

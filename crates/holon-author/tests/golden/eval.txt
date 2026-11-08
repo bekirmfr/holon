@@ -14445,6 +14445,435 @@
   [0, 6] Record({"body": Record({"error": Text("no value to answer with")}), "status": Number(400.0)})
   [0] Record({"body": Record({"error": Text("no value to answer with")}), "status": Number(400.0)})
   => Record({"body": Record({"error": Text("no value to answer with")}), "status": Number(400.0)})
+== intake · POST /orders · input 0
+  [0, 0, 0] Record({})
+  [0, 0, 1] Record({"after": Text("a")})
+  [0, 0, 2] Record({"content-type": Text("application/json")})
+  [0, 0, 3] Text("")
+  [0, 0, 4] ·
+  [0, 0] Record({"body": Text(""), "headers": Record({"content-type": Text("application/json")}), "method": Text("POST"), "params": Record({}), "path": Text("/orders"), … #1957cbdc54144298 | Record({}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("") | ·
+  [0, 1] ·
+  [0, 7] ·
+  [0, 2] Record({})
+  [0, 3] ·
+  [0, 4] ·
+  [0, 5, 4] Boolean(true)
+  [0, 5, 19] ·
+  [0, 5, 3] ·
+  [0, 5, 14] ·
+  [0, 5, 5] Number(0.0)
+  [0, 5, 20] ·
+  [0, 5, 17] ·
+  [0, 5, 11] Boolean(false)
+  [0, 5, 22] Boolean(true)
+  [0, 5, 7] Number(0.0)
+  [0, 5, 2] ·
+  [0, 5, 23] ·
+  [0, 5, 6] Number(0.0)
+  [0, 5, 24] ·
+  [0, 5, 16] ·
+  [0, 5, 10] Boolean(false)
+  [0, 5, 21] Boolean(true)
+  [0, 5, 18] ·
+  [0, 5, 9] ·
+  [0, 5, 15] ·
+  [0, 5, 8] ·
+  [0, 5] ·
+  [0, 6] ·
+  [0, 8] ·
+  [0, 9] Boolean(false)
+  [0, 10] ·
+  [0, 11] Boolean(false)
+  [0, 12] ·
+  [0, 13] Boolean(false)
+  [0, 14] Boolean(false)
+  [0, 17] ·
+  [0, 15] ·
+  [0, 18] ·
+  [0, 19] Number(0.0)
+  [0, 20] Number(1.0)
+  [0, 21] Number(1.0)
+  [0, 22] Effect { sink: "store_write:tried", payload: Number(1.0) }
+  [0, 23] Boolean(false)
+  [0, 24] Boolean(true)
+  [0, 25] Record({})
+  [0, 26] Text("not an order: the run's log says why")
+  [0, 27] Record({"error": Text("not an order: the run's log says why")})
+  [0, 28] Record({"error": Text("not an order: the run's log says why")})
+  [0, 32] Record({"error": Text("not an order: the run's log says why")})
+  [0, 33] Boolean(false)
+  [0, 34] Boolean(true)
+  [0, 35] Number(400.0)
+  [0, 36] Number(400.0)
+  [0, 41] Number(400.0)
+  [0, 42, 0] Record({})
+  [0, 42, 1] Record({"status": Number(400.0)})
+  [0, 42, 2] Record({"body": Record({"error": Text("not an order: the run's log says why")}), "status": Number(400.0)})
+  [0, 42, 3] Record({"body": Record({"error": Text("not an order: the run's log says why")}), "status": Number(400.0)})
+  [0, 42] Record({"body": Record({"error": Text("not an order: the run's log says why")}), "status": Number(400.0)})
+  [0] Record({"body": Record({"error": Text("not an order: the run's log says why")}), "status": Number(400.0)}) | · | Effect { sink: "store_write:tried", payload: Number(1.0) }
+  => Record({"body": Record({"error": Text("not an order: the run's log says why")}), "status": Number(400.0)}) | · | Effect { sink: "store_write:tried", payload: Number(1.0) }
+== intake · POST /orders · input 1
+  [0, 0, 0] Record({})
+  [0, 0, 1] Record({"after": Text("a")})
+  [0, 0, 2] Record({"content-type": Text("application/json")})
+  [0, 0, 3] Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\"event\":\"gig\"… #7441bf0c70954823
+  [0, 0, 4] Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
+  [0, 0] Record({"body": Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\… #0756e7c5f52a12a8 | Record({}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\"event\":\"gig\"… #7441bf0c70954823 | Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
+  [0, 1] Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
+  [0, 7] Text("x")
+  [0, 2] Record({})
+  [0, 3] Text("x")
+  [0, 4] Record({"id": Text("x")})
+  [0, 5, 4] Boolean(true)
+  [0, 5, 19] Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
+  [0, 5, 3] ·
+  [0, 5, 14] ·
+  [0, 5, 5] Number(0.0)
+  [0, 5, 20] ·
+  [0, 5, 17] ·
+  [0, 5, 11] Boolean(false)
+  [0, 5, 22] Boolean(true)
+  [0, 5, 7] Number(0.0)
+  [0, 5, 2] ·
+  [0, 5, 23] ·
+  [0, 5, 6] Number(0.0)
+  [0, 5, 24] ·
+  [0, 5, 16] ·
+  [0, 5, 10] Boolean(false)
+  [0, 5, 21] Boolean(true)
+  [0, 5, 18] ·
+  [0, 5, 9] ·
+  [0, 5, 15] ·
+  [0, 5, 8] ·
+  [0, 5] ·
+  [0, 6] ·
+  [0, 8] Boolean(true)
+  [0, 9] Boolean(true)
+  [0, 10] ·
+  [0, 11] Boolean(false)
+  [0, 12] Boolean(true)
+  [0, 13] Boolean(true)
+  [0, 14] Boolean(false)
+  [0, 17] ·
+  [0, 15] ·
+  [0, 18] ·
+  [0, 19] Number(0.0)
+  [0, 20] Number(1.0)
+  [0, 21] Number(1.0)
+  [0, 22] Effect { sink: "store_write:tried", payload: Number(1.0) }
+  [0, 23] Boolean(false)
+  [0, 24] Boolean(true)
+  [0, 25] Record({})
+  [0, 26] Text("not an order: the run's log says why")
+  [0, 27] Record({"error": Text("not an order: the run's log says why")})
+  [0, 28] Record({"error": Text("not an order: the run's log says why")})
+  [0, 32] Record({"error": Text("not an order: the run's log says why")})
+  [0, 33] Boolean(false)
+  [0, 34] Boolean(true)
+  [0, 35] Number(400.0)
+  [0, 36] Number(400.0)
+  [0, 41] Number(400.0)
+  [0, 42, 0] Record({})
+  [0, 42, 1] Record({"status": Number(400.0)})
+  [0, 42, 2] Record({"body": Record({"error": Text("not an order: the run's log says why")}), "status": Number(400.0)})
+  [0, 42, 3] Record({"body": Record({"error": Text("not an order: the run's log says why")}), "status": Number(400.0)})
+  [0, 42] Record({"body": Record({"error": Text("not an order: the run's log says why")}), "status": Number(400.0)})
+  [0] Record({"body": Record({"error": Text("not an order: the run's log says why")}), "status": Number(400.0)}) | · | Effect { sink: "store_write:tried", payload: Number(1.0) }
+  => Record({"body": Record({"error": Text("not an order: the run's log says why")}), "status": Number(400.0)}) | · | Effect { sink: "store_write:tried", payload: Number(1.0) }
+== intake · POST /orders · input 2
+  [0, 0, 0] Record({})
+  [0, 0, 1] Record({"after": Text("a")})
+  [0, 0, 2] Record({"content-type": Text("application/json")})
+  [0, 0, 3] Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,14.25,51.25,88.2… #30defbf00c11dd9c
+  [0, 0, 4] Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
+  [0, 0] Record({"body": Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,… #0d1ee3a89cfb69d7 | Record({}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,14.25,51.25,88.2… #30defbf00c11dd9c | Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
+  [0, 1] Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
+  [0, 7] ·
+  [0, 2] Record({})
+  [0, 3] ·
+  [0, 4] ·
+  [0, 5, 4] Boolean(true)
+  [0, 5, 19] Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
+  [0, 5, 3] ·
+  [0, 5, 14] ·
+  [0, 5, 5] Number(0.0)
+  [0, 5, 20] ·
+  [0, 5, 17] ·
+  [0, 5, 11] Boolean(false)
+  [0, 5, 22] Boolean(true)
+  [0, 5, 7] Number(0.0)
+  [0, 5, 2] ·
+  [0, 5, 23] ·
+  [0, 5, 6] Number(0.0)
+  [0, 5, 24] ·
+  [0, 5, 16] ·
+  [0, 5, 10] Boolean(false)
+  [0, 5, 21] Boolean(true)
+  [0, 5, 18] ·
+  [0, 5, 9] ·
+  [0, 5, 15] ·
+  [0, 5, 8] ·
+  [0, 5] ·
+  [0, 6] ·
+  [0, 8] Boolean(true)
+  [0, 9] Boolean(true)
+  [0, 10] ·
+  [0, 11] Boolean(false)
+  [0, 12] ·
+  [0, 13] Boolean(false)
+  [0, 14] Boolean(false)
+  [0, 17] ·
+  [0, 15] ·
+  [0, 18] ·
+  [0, 19] Number(0.0)
+  [0, 20] Number(1.0)
+  [0, 21] Number(1.0)
+  [0, 22] Effect { sink: "store_write:tried", payload: Number(1.0) }
+  [0, 23] Boolean(false)
+  [0, 24] Boolean(true)
+  [0, 25] Record({})
+  [0, 26] Text("not an order: the run's log says why")
+  [0, 27] Record({"error": Text("not an order: the run's log says why")})
+  [0, 28] Record({"error": Text("not an order: the run's log says why")})
+  [0, 32] Record({"error": Text("not an order: the run's log says why")})
+  [0, 33] Boolean(false)
+  [0, 34] Boolean(true)
+  [0, 35] Number(400.0)
+  [0, 36] Number(400.0)
+  [0, 41] Number(400.0)
+  [0, 42, 0] Record({})
+  [0, 42, 1] Record({"status": Number(400.0)})
+  [0, 42, 2] Record({"body": Record({"error": Text("not an order: the run's log says why")}), "status": Number(400.0)})
+  [0, 42, 3] Record({"body": Record({"error": Text("not an order: the run's log says why")}), "status": Number(400.0)})
+  [0, 42] Record({"body": Record({"error": Text("not an order: the run's log says why")}), "status": Number(400.0)})
+  [0] Record({"body": Record({"error": Text("not an order: the run's log says why")}), "status": Number(400.0)}) | · | Effect { sink: "store_write:tried", payload: Number(1.0) }
+  => Record({"body": Record({"error": Text("not an order: the run's log says why")}), "status": Number(400.0)}) | · | Effect { sink: "store_write:tried", payload: Number(1.0) }
+== intake · POST /check · input 0
+  [0, 0, 0] Record({})
+  [0, 0, 1] Record({"after": Text("a")})
+  [0, 0, 2] Record({"content-type": Text("application/json")})
+  [0, 0, 3] Text("")
+  [0, 0, 4] ·
+  [0, 0] Record({"body": Text(""), "headers": Record({"content-type": Text("application/json")}), "method": Text("POST"), "params": Record({}), "path": Text("/check"), "… #29fc744f35fed229 | Record({}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("") | ·
+  [0, 1] Record({})
+  [0, 2, 4] Boolean(true)
+  [0, 2, 19] ·
+  [0, 2, 3] ·
+  [0, 2, 14] ·
+  [0, 2, 5] Number(0.0)
+  [0, 2, 20] ·
+  [0, 2, 17] ·
+  [0, 2, 11] Boolean(false)
+  [0, 2, 22] Boolean(true)
+  [0, 2, 7] Number(0.0)
+  [0, 2, 2] ·
+  [0, 2, 23] ·
+  [0, 2, 6] Number(0.0)
+  [0, 2, 24] ·
+  [0, 2, 16] ·
+  [0, 2, 10] Boolean(false)
+  [0, 2, 21] Boolean(true)
+  [0, 2, 18] ·
+  [0, 2, 9] ·
+  [0, 2, 15] ·
+  [0, 2, 8] ·
+  [0, 2] ·
+  [0, 3] ·
+  [0, 4, 0] Record({})
+  [0, 4, 1] Number(200.0)
+  [0, 4, 2] Record({"status": Number(200.0)})
+  [0, 4, 3] ·
+  [0, 4, 4] Record({"body": Record({"error": Text("no value to answer with")}), "status": Number(422.0)})
+  [0, 4] Record({"body": Record({"error": Text("no value to answer with")}), "status": Number(422.0)})
+  [0] Record({"body": Record({"error": Text("no value to answer with")}), "status": Number(422.0)})
+  => Record({"body": Record({"error": Text("no value to answer with")}), "status": Number(422.0)})
+== intake · POST /check · input 1
+  [0, 0, 0] Record({})
+  [0, 0, 1] Record({"after": Text("a")})
+  [0, 0, 2] Record({"content-type": Text("application/json")})
+  [0, 0, 3] Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\"event\":\"gig\"… #7441bf0c70954823
+  [0, 0, 4] Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
+  [0, 0] Record({"body": Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\… #a833b066b825c789 | Record({}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\"event\":\"gig\"… #7441bf0c70954823 | Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
+  [0, 1] Record({})
+  [0, 2, 4] Boolean(true)
+  [0, 2, 19] Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
+  [0, 2, 3] ·
+  [0, 2, 14] ·
+  [0, 2, 5] Number(0.0)
+  [0, 2, 20] ·
+  [0, 2, 17] ·
+  [0, 2, 11] Boolean(false)
+  [0, 2, 22] Boolean(true)
+  [0, 2, 7] Number(0.0)
+  [0, 2, 2] ·
+  [0, 2, 23] ·
+  [0, 2, 6] Number(0.0)
+  [0, 2, 24] ·
+  [0, 2, 16] ·
+  [0, 2, 10] Boolean(false)
+  [0, 2, 21] Boolean(true)
+  [0, 2, 18] ·
+  [0, 2, 9] ·
+  [0, 2, 15] ·
+  [0, 2, 8] ·
+  [0, 2] ·
+  [0, 3] ·
+  [0, 4, 0] Record({})
+  [0, 4, 1] Number(200.0)
+  [0, 4, 2] Record({"status": Number(200.0)})
+  [0, 4, 3] ·
+  [0, 4, 4] Record({"body": Record({"error": Text("no value to answer with")}), "status": Number(422.0)})
+  [0, 4] Record({"body": Record({"error": Text("no value to answer with")}), "status": Number(422.0)})
+  [0] Record({"body": Record({"error": Text("no value to answer with")}), "status": Number(422.0)})
+  => Record({"body": Record({"error": Text("no value to answer with")}), "status": Number(422.0)})
+== intake · POST /check · input 2
+  [0, 0, 0] Record({})
+  [0, 0, 1] Record({"after": Text("a")})
+  [0, 0, 2] Record({"content-type": Text("application/json")})
+  [0, 0, 3] Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,14.25,51.25,88.2… #30defbf00c11dd9c
+  [0, 0, 4] Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
+  [0, 0] Record({"body": Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,… #a6630bb4135bee29 | Record({}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,14.25,51.25,88.2… #30defbf00c11dd9c | Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
+  [0, 1] Record({})
+  [0, 2, 4] Boolean(true)
+  [0, 2, 19] Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
+  [0, 2, 3] ·
+  [0, 2, 14] ·
+  [0, 2, 5] Number(0.0)
+  [0, 2, 20] ·
+  [0, 2, 17] ·
+  [0, 2, 11] Boolean(false)
+  [0, 2, 22] Boolean(true)
+  [0, 2, 7] Number(0.0)
+  [0, 2, 2] ·
+  [0, 2, 23] ·
+  [0, 2, 6] Number(0.0)
+  [0, 2, 24] ·
+  [0, 2, 16] ·
+  [0, 2, 10] Boolean(false)
+  [0, 2, 21] Boolean(true)
+  [0, 2, 18] ·
+  [0, 2, 9] ·
+  [0, 2, 15] ·
+  [0, 2, 8] ·
+  [0, 2] ·
+  [0, 3] ·
+  [0, 4, 0] Record({})
+  [0, 4, 1] Number(200.0)
+  [0, 4, 2] Record({"status": Number(200.0)})
+  [0, 4, 3] ·
+  [0, 4, 4] Record({"body": Record({"error": Text("no value to answer with")}), "status": Number(422.0)})
+  [0, 4] Record({"body": Record({"error": Text("no value to answer with")}), "status": Number(422.0)})
+  [0] Record({"body": Record({"error": Text("no value to answer with")}), "status": Number(422.0)})
+  => Record({"body": Record({"error": Text("no value to answer with")}), "status": Number(422.0)})
+== intake · GET /orders/:id · input 0
+  [0, 0, 0] Record({"id": Text("tea")})
+  [0, 0, 1] Record({"after": Text("a")})
+  [0, 0, 2] Record({"content-type": Text("application/json")})
+  [0, 0, 3] Text("")
+  [0, 0, 4] ·
+  [0, 0] Record({"body": Text(""), "headers": Record({"content-type": Text("application/json")}), "method": Text("GET"), "params": Record({"id": Text("tea")}), "path": T… #6071fe58da764079 | Record({"id": Text("tea")}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("") | ·
+  [0, 1] Text("tea")
+  [0, 2] ·
+  [0, 3, 0] Record({})
+  [0, 3, 1] Number(200.0)
+  [0, 3, 2] Record({"status": Number(200.0)})
+  [0, 3, 3] ·
+  [0, 3, 4] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0, 3] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  => Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+== intake · GET /orders/:id · input 1
+  [0, 0, 0] Record({"id": Text("tea")})
+  [0, 0, 1] Record({"after": Text("a")})
+  [0, 0, 2] Record({"content-type": Text("application/json")})
+  [0, 0, 3] Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\"event\":\"gig\"… #7441bf0c70954823
+  [0, 0, 4] Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
+  [0, 0] Record({"body": Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\… #280398949abce4ae | Record({"id": Text("tea")}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\"event\":\"gig\"… #7441bf0c70954823 | Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
+  [0, 1] Text("tea")
+  [0, 2] ·
+  [0, 3, 0] Record({})
+  [0, 3, 1] Number(200.0)
+  [0, 3, 2] Record({"status": Number(200.0)})
+  [0, 3, 3] ·
+  [0, 3, 4] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0, 3] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  => Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+== intake · GET /orders/:id · input 2
+  [0, 0, 0] Record({"id": Text("tea")})
+  [0, 0, 1] Record({"after": Text("a")})
+  [0, 0, 2] Record({"content-type": Text("application/json")})
+  [0, 0, 3] Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,14.25,51.25,88.2… #30defbf00c11dd9c
+  [0, 0, 4] Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
+  [0, 0] Record({"body": Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,… #0080fea370080a71 | Record({"id": Text("tea")}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,14.25,51.25,88.2… #30defbf00c11dd9c | Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
+  [0, 1] Text("tea")
+  [0, 2] ·
+  [0, 3, 0] Record({})
+  [0, 3, 1] Number(200.0)
+  [0, 3, 2] Record({"status": Number(200.0)})
+  [0, 3, 3] ·
+  [0, 3, 4] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0, 3] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  [0] Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+  => Record({"body": Record({"error": Text("not found")}), "status": Number(404.0)})
+== intake · GET /stats · input 0
+  [0, 0, 0] Record({})
+  [0, 0, 1] Record({"after": Text("a")})
+  [0, 0, 2] Record({"content-type": Text("application/json")})
+  [0, 0, 3] Text("")
+  [0, 0, 4] ·
+  [0, 0] Record({"body": Text(""), "headers": Record({"content-type": Text("application/json")}), "method": Text("GET"), "params": Record({}), "path": Text("/stats"), "q… #75f920070e3a41a5 | Record({}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("") | ·
+  [0, 1] Record({})
+  [0, 2] ·
+  [0, 3] Number(0.0)
+  [0, 4] Record({"tried": Number(0.0)})
+  [0, 5, 0] Record({})
+  [0, 5, 1] Number(200.0)
+  [0, 5, 2] Record({"status": Number(200.0)})
+  [0, 5, 3] Record({"body": Record({"tried": Number(0.0)}), "status": Number(200.0)})
+  [0, 5, 4] Record({"body": Record({"tried": Number(0.0)}), "status": Number(200.0)})
+  [0, 5] Record({"body": Record({"tried": Number(0.0)}), "status": Number(200.0)})
+  [0] Record({"body": Record({"tried": Number(0.0)}), "status": Number(200.0)})
+  => Record({"body": Record({"tried": Number(0.0)}), "status": Number(200.0)})
+== intake · GET /stats · input 1
+  [0, 0, 0] Record({})
+  [0, 0, 1] Record({"after": Text("a")})
+  [0, 0, 2] Record({"content-type": Text("application/json")})
+  [0, 0, 3] Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\"event\":\"gig\"… #7441bf0c70954823
+  [0, 0, 4] Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
+  [0, 0] Record({"body": Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\… #215ff180d4426edf | Record({}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"id\":\"x\",\"name\":\"tea\",\"price\":4,\"amount\":5,\"qty\":2,\"items\":[{\"name\":\"tea\",\"qty\":2},{\"name\":\"cake\",\"qty\":1}],\"event\":\"gig\"… #7441bf0c70954823 | Record({"a": Number(6.0), "amount": Number(5.0), "author": Text("Ada"), "b": Number(7.0), "by": Text("ops"), "count": Number(2.0), "event": Text("gig"), "id": T… #0f703bf6aead0372
+  [0, 1] Record({})
+  [0, 2] ·
+  [0, 3] Number(0.0)
+  [0, 4] Record({"tried": Number(0.0)})
+  [0, 5, 0] Record({})
+  [0, 5, 1] Number(200.0)
+  [0, 5, 2] Record({"status": Number(200.0)})
+  [0, 5, 3] Record({"body": Record({"tried": Number(0.0)}), "status": Number(200.0)})
+  [0, 5, 4] Record({"body": Record({"tried": Number(0.0)}), "status": Number(200.0)})
+  [0, 5] Record({"body": Record({"tried": Number(0.0)}), "status": Number(200.0)})
+  [0] Record({"body": Record({"tried": Number(0.0)}), "status": Number(200.0)})
+  => Record({"body": Record({"tried": Number(0.0)}), "status": Number(200.0)})
+== intake · GET /stats · input 2
+  [0, 0, 0] Record({})
+  [0, 0, 1] Record({"after": Text("a")})
+  [0, 0, 2] Record({"content-type": Text("application/json")})
+  [0, 0, 3] Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,14.25,51.25,88.2… #30defbf00c11dd9c
+  [0, 0, 4] Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
+  [0, 0] Record({"body": Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,… #96ff405c2c4407b1 | Record({}) | Record({"after": Text("a")}) | Record({"content-type": Text("application/json")}) | Text("{\"xs\":[0.25,37.25,74.25,11.25,48.25,85.25,22.25,59.25,96.25,33.25,70.25,7.25,44.25,81.25,18.25,55.25,92.25,29.25,66.25,3.25,40.25,77.25,14.25,51.25,88.2… #30defbf00c11dd9c | Record({"items": List([]), "xs": List([Number(0.25), Number(37.25), Number(74.25), Number(11.25), Number(48.25), Number(85.25), Number(22.25), Number(59.25), Nu… #9ba0cb80f1f7c4ab
+  [0, 1] Record({})
+  [0, 2] ·
+  [0, 3] Number(0.0)
+  [0, 4] Record({"tried": Number(0.0)})
+  [0, 5, 0] Record({})
+  [0, 5, 1] Number(200.0)
+  [0, 5, 2] Record({"status": Number(200.0)})
+  [0, 5, 3] Record({"body": Record({"tried": Number(0.0)}), "status": Number(200.0)})
+  [0, 5, 4] Record({"body": Record({"tried": Number(0.0)}), "status": Number(200.0)})
+  [0, 5] Record({"body": Record({"tried": Number(0.0)}), "status": Number(200.0)})
+  [0] Record({"body": Record({"tried": Number(0.0)}), "status": Number(200.0)})
+  => Record({"body": Record({"tried": Number(0.0)}), "status": Number(200.0)})
 == crunch · POST /stats · input 0
   [0, 0, 0] Record({})
   [0, 0, 1] Record({"after": Text("a")})

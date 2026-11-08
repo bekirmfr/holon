@@ -130,6 +130,8 @@ and a record or list is written as JSON.
 | `if (c) …; else …` | Chooses: writes in a branch happen only when it is taken, and writes to one key in both branches are one write. |
 | `if (x !== undefined) { … }` | Its writes and calls tied to `x` (see [What a handler holds](#what-a-handler-holds)). |
 | `switch (s) { case …: … }` | Chooses by value (see below). |
+| `try { … } catch { … } finally { … }` | Runs the catch block where something in the try block failed, and the `finally` block either way (see below). |
+| `throw new Error(message)` | A failure: nothing, its message in the run's log (see below). |
 | `return …` | What a route or an action answers (see [Routes](#routes)). |
 | `expr` | An effect, such as `notes.put(k, v)` or an `await api.post(…)` whose answer isn't used: a call is made for what it does, read or not. |
 
@@ -166,6 +168,52 @@ route.post("/size", (req) => {
 The first case equal to the subject is chosen, and only its body runs. If the chosen case has no
 value, the `switch` has none: it never falls through to another case. With no case equal and no
 `default`, or with the subject absent, the `switch` has no value.
+
+**`try`, `catch` and `throw`.** A failure is a value that didn't arrive (see
+[How a flow runs](#how-a-flow-runs)), and `throw new Error(message)` makes one: nothing, with the
+message in the run's log. The try block succeeds when every value it makes arrives; its writes are
+made only then, all together, and otherwise the catch block runs instead. `finally` runs either
+way:
+
+```ts
+import { flow, route, status } from "holon"
+import notes from "collection:notes"
+import state from "state"
+
+flow("try-example", { port: 8208 })
+
+function checked(note) {
+  if (note.text === "") throw new Error("a note has some text")
+  return note
+}
+
+route.post("/notes", (req) => {
+  try {
+    const note = checked(JSON.parse(req.body))
+    notes[note.id] = note.text
+  } catch {
+    return status(400, { error: "not a note: the run's log says why" })
+  } finally {
+    state.tried = (state.tried ?? 0) + 1
+  }
+  return status(201, "kept")
+})
+```
+
+A body that isn't JSON, a note with empty text and a note without an `id` each answer 400, and no
+note is kept; every request counts. A throw nothing catches ends the handler with nothing: a route
+answers 404, or what its `?? status(…)` says, and a function gives nothing to its caller. Where
+this differs from JavaScript:
+
+- **`catch` catches absence too.** A field the try block reads that isn't there is a failure,
+  where JavaScript carries on with `undefined`. Give it a fallback inside the block
+  (`req.json.kind ?? "plain"`) when its absence isn't one.
+- **The try block's writes are all or none.** JavaScript keeps the writes made before the throw.
+- **A request the try block makes is made when what it reads arrives,** even after a failure that
+  it doesn't read. If it fails, the catch block runs.
+- **The catch block sees names as they were before the try,** not as the try block left them.
+- **`catch (e)` is refused:** a failure's reason is the run log's, not a value; write
+  `catch { … }`. A `return` or a `throw` in `finally` is refused too.
 
 ## Expressions
 
@@ -781,7 +829,9 @@ broken.holon.ts:5:23: unknown name "nope"
 | an action answers with a value alone | the `status(…)` or `respond(…)` |
 | a route answers and is done, so it doesn't wait | the `await` |
 | a method no leaf does; a global the flow has none of | the method or the name |
-| a loop, `try` or `throw` | the statement |
+| a loop | the statement |
+| `catch (e)`; a throw that isn't `new Error(message)`; a `return` in `finally` | the name, the throw, the `finally` |
+| nothing in a try block can fail, so its catch never runs | the `try` |
 | a period, a file handler or an action name written twice | the second handler |
 | `map` gives its function `n` inputs; this one takes `m` | the function |
 | a list changed in place (`xs.sort()` alone, `xs.pop()`, a list read after it was sorted) | the call, or the read |

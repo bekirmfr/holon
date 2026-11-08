@@ -803,6 +803,18 @@ static SAMPLES: &[Sample] = &[
         try_it: r#"curl http://127.0.0.1:8172/networks lists the networks; curl "http://127.0.0.1:8172/search?query=weth" searches every network; curl "http://127.0.0.1:8172/networks/ethereum/pools?limit=3" the top three pools; an id with a / ? # or % answers 400 and nothing is sent"#,
         text: include_str!("../samples/dexpaprika.holon.ts"),
     },
+    Sample {
+        name: "intake",
+        title: "Intake (try, catch, throw and finally)",
+        description: "Takes orders as JSON and keeps one only when every step of a try block succeeded: a function that throws new Error(…) for an order with no lines or a total not over 0, a body that isn't JSON, and a line without a price each answer the catch's 400, with nothing kept, and a throw's message goes to the run's log. finally counts every attempt, kept or not. A throw nothing catches is nothing, which a ?? answers.",
+        shows: &["try and catch", "throw", "finally", "fail"],
+        port: Some("8178"),
+        secrets: &[],
+        optional: &[],
+        browsers: None,
+        try_it: r#"curl -X POST -d '{"id":"o1","lines":[{"price":2},{"price":3}]}' http://127.0.0.1:8178/orders answers 201 and keeps it; -d '{"id":"o2","lines":[]}' answers 400, "an order has lines" in the run's log; -d 'not json' answers 400; curl http://127.0.0.1:8178/stats counts all three; a /check of an order without lines answers 422"#,
+        text: include_str!("../samples/intake.holon.ts"),
+    },
 ];
 
 #[cfg(test)]

@@ -55,9 +55,10 @@ pub const GENESIS: &[&str] = &[
     "date_part", "date_utc", "date_set", "date_text", "date_parse",
     // pure — signatures and encodings (5): checking a webhook's signature
     "sha256", "hmac_sha256", "hex", "base64", "secure_equals",
-    // pure — universal, any-typed (7): as_text is to_text's message form, the identity on text;
-    // coalesce is the first input that arrived, `default` with its fallback on a wire
-    "to_text", "as_text", "is_truthy", "guard", "default", "coalesce", "equals",
+    // pure — universal, any-typed (8): as_text is to_text's message form, the identity on text;
+    // coalesce is the first input that arrived, `default` with its fallback on a wire; fail is
+    // nothing, its message the run log's reason (the language's `throw`)
+    "to_text", "as_text", "is_truthy", "guard", "default", "coalesce", "equals", "fail",
     // request/response — performed by the host, answered in the next round (2): a request, and
     // one whose body is a file a handle names
     "http_request", "http_upload", "http_stream",
@@ -399,6 +400,8 @@ pub fn interface_of(name: &str) -> Option<Unit> {
         "guard" => prim(vec![port("cond", Boolean), port("value", Any)], vec![], Any),
         // `a` when it arrived, else `b`: the fallback on a wire where `default`'s is frozen.
         "coalesce" => prim(vec![port("a", Any), port("b", Any)], vec![], Any),
+        // Nothing, ever: what reads it has no value. Its message goes to the run's log.
+        "fail" => prim(vec![port("message", Text)], vec![], Any),
         "default" => prim(
             vec![port("value", Any)],
             vec![Param::frozen("value", "0"), Param::frozen("type", "Number")],
@@ -668,8 +671,8 @@ mod tests {
         // from_entries, merge, has, group_by, same_value, type_of); and the date leaves (date_part,
         // date_utc, date_set, date_text, date_parse); and the text leaves (text_at, code_at,
         // from_codes, text_contains, trim, pad, repeat, replace, normalize, uri_encode, uri_decode,
-        // is_well_formed).
-        assert_eq!(GENESIS.len(), 151);
+        // is_well_formed); and fail (the language's throw).
+        assert_eq!(GENESIS.len(), 152);
     }
 
     #[test]

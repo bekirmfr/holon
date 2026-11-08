@@ -1096,6 +1096,13 @@ declare module "holon" {
   export function equals(...args: any[]): any
 
   /**
+   * `fail(message: Text) -> out: Any`
+   *
+   * Nothing, with message given to the run's log as the reason: JavaScript's throw new Error(message). What reads it has no value, unless a ?? or a catch gives one.
+   */
+  export function fail(...args: any[]): any
+
+  /**
    * `http_request(path: Text, headers: Record, body: Any, trigger: Any) -> out: Record  {method: GET, host: example.com}`
    *
    * Calls the host set on the node (HTTPS) with the method, path, headers and body, and answers {status, headers, body}. Performed by the server between rounds, within the deployment's limits; the host is a permission it asks for. Holds back when a wired input didn't arrive.

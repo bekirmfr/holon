@@ -136,6 +136,7 @@ pub fn describe(name: &str) -> Option<&'static str> {
         "guard" => "Passes value on only when cond is true; otherwise nothing, so what follows doesn't run.",
         "default" => "Passes its input on, or the value set on the node when the input didn't arrive: how a flow fills a gap.",
         "coalesce" => "Passes a on, or b when a didn't arrive: a fallback that is itself computed, where default's is a fixed value.",
+        "fail" => "Nothing, with message given to the run's log as the reason: JavaScript's throw new Error(message). What reads it has no value, unless a ?? or a catch gives one.",
         "equals" => "Whether two values are the same.",
 
         // ── outside the run ──
