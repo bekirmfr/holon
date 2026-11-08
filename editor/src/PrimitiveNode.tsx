@@ -100,9 +100,9 @@ const chipStyle = (present: boolean, pinned: boolean): CSSProperties => ({
   textOverflow: "ellipsis",
   padding: "0 5px",
   borderRadius: 7,
-  color: present ? "#bfe8c2" : "#7e8ea8",
-  background: pinned ? "#1d3654" : "#0b1527ee",
-  border: `1px solid ${pinned ? "#6fd3e0" : "#24384f"}`,
+  color: present ? "var(--ok)" : "var(--faint)",
+  background: pinned ? "var(--sel)" : "color-mix(in srgb, var(--bg) 93%, transparent)",
+  border: `1px solid ${pinned ? "var(--accent)" : "var(--border-strong)"}`,
   cursor: present ? "pointer" : "default",
   zIndex: 5,
   pointerEvents: "all",
@@ -122,15 +122,15 @@ function PinnedValues({ ports, values, onUnpin }: { ports: WPort[]; values: (WVa
             overflow: "auto",
             fontFamily: "var(--mono)",
             fontSize: 11,
-            color: "#cfe3ff",
-            background: "#0b1527",
-            border: "1px solid #6fd3e0",
+            color: "var(--body)",
+            background: "var(--bg)",
+            border: "1px solid var(--accent)",
             borderRadius: 6,
             padding: "4px 8px 6px",
             boxShadow: "0 6px 18px #0009",
           }}
         >
-          <div style={{ display: "flex", gap: 8, color: "#7e8ea8", marginBottom: 2 }}>
+          <div style={{ display: "flex", gap: 8, color: "var(--faint)", marginBottom: 2 }}>
             <span style={{ flex: 1 }}>{p.name}</span>
             <span style={{ cursor: "pointer" }} onClick={() => onUnpin(p.name)} title="unpin">
               ×
@@ -184,7 +184,7 @@ export type PrimitiveNodeType = Node<PrimitiveData, "primitive">;
  *  guess: once `value`'s own declared type matches, `compatible()` refuses a wrong-typed
  *  source at connect time, the same way it already refused a wrong-typed destination. */
 /** The colour of a run's failure: its origin node, and the wires the failure took. */
-export const FAIL = "#ff6b5e";
+export const FAIL = "var(--bad)";
 
 type ConstType = "Number" | "Boolean" | "Text" | "Json";
 const CONST_TYPES: readonly ConstType[] = ["Number", "Boolean", "Text", "Json"];
@@ -196,8 +196,8 @@ const toolbarButtonStyle: CSSProperties = {
   font: "inherit",
   fontSize: 11,
   padding: "2px 10px",
-  color: "#0e1a2f",
-  background: "#6fd3e0",
+  color: "var(--accent-ink)",
+  background: "var(--accent)",
   border: "none",
   borderRadius: 3,
   cursor: "pointer",
@@ -211,9 +211,9 @@ const toolbarButtonStyle: CSSProperties = {
 const fieldStyle: CSSProperties = {
   font: "inherit",
   fontSize: 11,
-  color: "#cfe3ff",
-  background: "#0e1a2f",
-  border: "1px solid #1b2a45",
+  color: "var(--body)",
+  background: "var(--surface-2)",
+  border: "1px solid var(--border)",
   borderRadius: 3,
   padding: "1px 4px",
 };
@@ -222,9 +222,9 @@ const portButtonStyle: CSSProperties = {
   font: "inherit",
   fontSize: 10,
   lineHeight: 1,
-  color: "#9fb4d4",
-  background: "#0e1a2f",
-  border: "1px solid #1b2a45",
+  color: "var(--muted)",
+  background: "var(--surface-2)",
+  border: "1px solid var(--border)",
   borderRadius: 3,
   width: 16,
   height: 16,
@@ -359,9 +359,9 @@ function PrimitiveNodeImpl({ id, data, selected }: NodeProps<PrimitiveNodeType>)
       style={{
         position: "relative",
         ...(error ? { borderColor: TYPE_COLOR.Effect, boxShadow: `0 0 0 1px ${TYPE_COLOR.Effect}` } : {}),
-        ...(trace?.issue?.role === "starved" ? { borderColor: "#b9735f", borderStyle: "dashed" } : {}),
-        ...(trace?.issue?.role === "origin" ? { borderColor: FAIL, boxShadow: `0 0 0 2px ${FAIL}, 0 0 18px ${FAIL}66` } : {}),
-        ...(trace?.state === "active" ? { borderColor: "#6fd3e0", boxShadow: "0 0 0 2px #6fd3e0" } : {}),
+        ...(trace?.issue?.role === "starved" ? { borderColor: "var(--bad)", borderStyle: "dashed" } : {}),
+        ...(trace?.issue?.role === "origin" ? { borderColor: FAIL, boxShadow: `0 0 0 2px ${FAIL}, 0 0 18px color-mix(in srgb, ${FAIL} 40%, transparent)` } : {}),
+        ...(trace?.state === "active" ? { borderColor: "var(--accent)", boxShadow: "0 0 0 2px var(--accent)" } : {}),
         ...(trace?.state === "pending" ? { opacity: 0.55 } : {}),
         ...(trace?.state === "outside" ? { opacity: 0.3 } : {}),
         ...(trace?.state === "skipped" ? { opacity: 0.4, borderStyle: "dotted" } : {}),
@@ -375,7 +375,7 @@ function PrimitiveNodeImpl({ id, data, selected }: NodeProps<PrimitiveNodeType>)
             className="nodrag"
             onClick={() => actions.updateHolon(id)}
             title={`"${data.source.flow}" has been saved since this was placed: place its newest version here (wires to ports it still has are kept)`}
-            style={{ ...portButtonStyle, color: "#e0c36f", padding: "0 6px" }}
+            style={{ ...portButtonStyle, color: "var(--warn)", padding: "0 6px" }}
           >
             ↻ update
           </button>
@@ -383,10 +383,10 @@ function PrimitiveNodeImpl({ id, data, selected }: NodeProps<PrimitiveNodeType>)
         <InfoIcon text={describe(data)} />
       </div>
       {data.untied && !readOnly && (
-        <div className="nodrag" style={{ display: "flex", flexWrap: "wrap", gap: 4, alignItems: "center", fontSize: 10, color: "#e0c36f", padding: "2px 8px" }}>
+        <div className="nodrag" style={{ display: "flex", flexWrap: "wrap", gap: 4, alignItems: "center", fontSize: 10, color: "var(--warn)", padding: "2px 8px" }}>
           <span title="nothing starts it: tie its trigger to what should">not tied to a trigger</span>
           {data.untied.map((t) => (
-            <button key={t.id} onClick={() => actions.tie(id, t)} style={{ ...portButtonStyle, color: "#e0c36f", padding: "0 6px" }} title={`run it with ${t.label}`}>
+            <button key={t.id} onClick={() => actions.tie(id, t)} style={{ ...portButtonStyle, color: "var(--warn)", padding: "0 6px" }} title={`run it with ${t.label}`}>
               tie to {t.label}
             </button>
           ))}
@@ -396,7 +396,7 @@ function PrimitiveNodeImpl({ id, data, selected }: NodeProps<PrimitiveNodeType>)
         <div
           className="hl-node__secret"
           title={data.secretSinks.join("\n")}
-          style={{ display: "flex", flexDirection: "column", gap: 1, fontSize: 10, color: "#e0c36f", padding: "2px 8px", maxWidth: 260 }}
+          style={{ display: "flex", flexDirection: "column", gap: 1, fontSize: 10, color: "var(--warn)", padding: "2px 8px", maxWidth: 260 }}
         >
           {data.secretSinks.map((line) => (
             <span key={line}>🔑 {line}</span>
@@ -420,9 +420,9 @@ function PrimitiveNodeImpl({ id, data, selected }: NodeProps<PrimitiveNodeType>)
             lineHeight: "16px",
             padding: "0 7px",
             borderRadius: 8,
-            color: trace.issue.role === "origin" ? "#2a0d0a" : "#f1c7bb",
-            background: trace.issue.role === "origin" ? FAIL : "#3a2420",
-            border: `1px solid ${trace.issue.role === "origin" ? FAIL : "#b9735f"}`,
+            color: trace.issue.role === "origin" ? "var(--bad-bg)" : "var(--bad-ink)",
+            background: trace.issue.role === "origin" ? FAIL : "var(--bad-bg)",
+            border: `1px solid ${trace.issue.role === "origin" ? FAIL : "var(--bad)"}`,
           }}
         >
           {trace.issue.role === "origin" ? "✗ " : "↯ "}

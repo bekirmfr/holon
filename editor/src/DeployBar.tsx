@@ -78,19 +78,19 @@ const base: CSSProperties = {
   font: "inherit",
   fontSize: 11,
   padding: "3px 8px",
-  color: "#9fb4d4",
-  background: "#0e1a2f",
-  border: "1px solid #1b2a45",
+  color: "var(--muted)",
+  background: "var(--surface-2)",
+  border: "1px solid var(--border)",
   borderRadius: 3,
   cursor: "pointer",
 };
-const primary: CSSProperties = { ...base, color: "#0e1a2f", background: "#6fd3e0", border: "none", padding: "3px 10px" };
-const input: CSSProperties = { ...base, color: "#e6eefb", cursor: "text", width: 64 };
+const primary: CSSProperties = { ...base, color: "var(--accent-ink)", background: "var(--accent)", border: "none", padding: "3px 10px" };
+const input: CSSProperties = { ...base, color: "var(--ink)", cursor: "text", width: 64 };
 
 const LOOK = {
-  running: { mark: "●", color: "#9ad29f" },
-  paused: { mark: "❚❚", color: "#f2b441" },
-  stopped: { mark: "■", color: "#7e8ea8" },
+  running: { mark: "●", color: "var(--ok)" },
+  paused: { mark: "❚❚", color: "var(--warn)" },
+  stopped: { mark: "■", color: "var(--faint)" },
 } as const;
 
 export function DeployBar({
@@ -134,7 +134,7 @@ export function DeployBar({
         {outOfDate && <span title="the canvas has changed since it was deployed"> •</span>}
       </button>
       {startsNothing && (
-        <span style={{ color: "#e0c36f", fontSize: 11 }} title={title}>
+        <span style={{ color: "var(--warn)", fontSize: 11 }} title={title}>
           nothing would start a run
         </span>
       )}
@@ -145,12 +145,12 @@ export function DeployBar({
             {entry.port !== null && entry.status !== "stopped" ? ` :${entry.port}` : ""}
           </span>
           {entry.attention && (
-            <span style={{ color: "#e0916f", fontSize: 11 }} title={entry.attention}>
+            <span style={{ color: "var(--bad)", fontSize: 11 }} title={entry.attention}>
               ⚠ needs approval
             </span>
           )}
           {entry.listen_error && (
-            <span style={{ color: "#e0916f", fontSize: 11 }} title={entry.listen_error}>
+            <span style={{ color: "var(--bad)", fontSize: 11 }} title={entry.listen_error}>
               ⚠ port in use
             </span>
           )}
@@ -289,7 +289,7 @@ function SecretRow({ slug, name, info, envNames, onChanged, readOnly = false }: 
     }
   };
   const k = KINDS.find((x) => x.kind === kind)!;
-  const status = info ? (info.problem ? "#e0916f" : "#9ad29f") : "#e0916f";
+  const status = info ? (info.problem ? "var(--bad)" : "var(--ok)") : "var(--bad)";
   // The server's, read for want of its own: setting one here overrides it.
   const theirs = info?.server ? info : undefined;
   const mayGo = (to?: string[]) => (to ? (to.length ? `may go only to ${to.map((d) => (d.startsWith("db:") ? `the database "${d.slice(3)}"` : `https://${d}`)).join(", ")}` : "may go nowhere") : "");
@@ -374,16 +374,16 @@ function SecretRow({ slug, name, info, envNames, onChanged, readOnly = false }: 
         )}
       </span>}
       {dryRun.modal}
-      {msg && <span style={{ gridColumn: "1 / -1", color: "#9fb4d4", whiteSpace: "normal", maxWidth: 420 }}>{msg}</span>}
+      {msg && <span style={{ gridColumn: "1 / -1", color: "var(--muted)", whiteSpace: "normal", maxWidth: 420 }}>{msg}</span>}
       {history && (
-        <span style={{ gridColumn: "1 / -1", display: "grid", gap: 3, padding: "4px 8px", borderLeft: "2px solid #1b2a45", marginLeft: 4 }}>
+        <span style={{ gridColumn: "1 / -1", display: "grid", gap: 3, padding: "4px 8px", borderLeft: "2px solid var(--border)", marginLeft: 4 }}>
           {history.versions.map((v) => (
             <span key={v.version} style={{ display: "flex", gap: 8, alignItems: "center" }}>
-              <span style={{ color: v.current ? "#9ad29f" : "#9fb4d4", minWidth: 24 }}>v{v.version}</span>
+              <span style={{ color: v.current ? "var(--ok)" : "var(--muted)", minWidth: 24 }}>v{v.version}</span>
               <span style={{ flex: 1 }}>{sourceLabel(v.source)}</span>
-              <span style={{ color: "#7e8ea8" }}>{when(v.set_at)}</span>
+              <span style={{ color: "var(--faint)" }}>{when(v.set_at)}</span>
               {v.current ? (
-                <span style={{ color: "#9ad29f", width: 58, textAlign: "right" }}>current</span>
+                <span style={{ color: "var(--ok)", width: 58, textAlign: "right" }}>current</span>
               ) : (
                 <button style={{ ...base, width: 58 }} onClick={() => rollback(v.version)} title={`make version ${v.version} current again`}>
                   roll back
@@ -391,12 +391,12 @@ function SecretRow({ slug, name, info, envNames, onChanged, readOnly = false }: 
               )}
             </span>
           ))}
-          {history.events.length > 0 && <span style={{ color: "#e6eefb", marginTop: 4 }}>changes</span>}
+          {history.events.length > 0 && <span style={{ color: "var(--ink)", marginTop: 4 }}>changes</span>}
           {history.events
             .slice()
             .reverse()
             .map((e, i) => (
-              <span key={i} style={{ color: "#7e8ea8", whiteSpace: "normal", maxWidth: 420 }}>
+              <span key={i} style={{ color: "var(--faint)", whiteSpace: "normal", maxWidth: 420 }}>
                 {when(e.at)} · {e.action}
                 {e.version ? ` v${e.version}` : ""}
                 {e.source ? ` · ${sourceLabel(e.source)}` : ""}
@@ -446,7 +446,7 @@ function OptionalPermissions({
   return (
     <>
       <span
-        style={{ gridColumn: "1 / -1", color: "#e6eefb", marginTop: 4 }}
+        style={{ gridColumn: "1 / -1", color: "var(--ink)", marginTop: 4 }}
         title="a required permission not granted pauses the flow; an optional one leaves it running, those calls refused"
       >
         permissions: optional ones it can run without
@@ -455,13 +455,13 @@ function OptionalPermissions({
         const unused = !capabilities.includes(item);
         return (
           <label key={item} style={{ display: "contents" }} title={item}>
-            <span style={{ color: unused ? "#e0916f" : undefined }}>
+            <span style={{ color: unused ? "var(--bad)" : undefined }}>
               {describeItem(item)}
               {unused ? " (no longer used)" : ""}
             </span>
             <span style={{ display: "inline-flex", gap: 6, alignItems: "center" }}>
               <input type="checkbox" checked={optional.includes(item)} onChange={(e) => toggle(item, e.target.checked)} disabled={readOnly} />
-              <span style={{ color: optional.includes(item) ? "#7e8ea8" : "#e0c36f" }}>{optional.includes(item) ? "optional" : "required"}</span>
+              <span style={{ color: optional.includes(item) ? "var(--faint)" : "var(--warn)" }}>{optional.includes(item) ? "optional" : "required"}</span>
             </span>
           </label>
         );
@@ -495,7 +495,7 @@ function AgentsMayRun({ capabilities, settings, setSettings, readOnly = false }:
   return (
     <>
       <span
-        style={{ gridColumn: "1 / -1", color: "#e6eefb", marginTop: 4 }}
+        style={{ gridColumn: "1 / -1", color: "var(--ink)", marginTop: 4 }}
         title="a person runs any action; an agent only those ticked here, once a person approves it"
       >
         agents may run
@@ -504,7 +504,7 @@ function AgentsMayRun({ capabilities, settings, setSettings, readOnly = false }:
         const unused = !actions.includes(name);
         return (
           <label key={name} style={{ display: "contents" }} title={`AgentRuns(${JSON.stringify(name)})`}>
-            <span style={{ color: unused ? "#e0916f" : undefined }}>
+            <span style={{ color: unused ? "var(--bad)" : undefined }}>
               action {name}
               {unused ? " (no longer in the flow)" : ""}
             </span>
@@ -529,8 +529,8 @@ function GroupHead({ label, open, onToggle, first = false }: {
         font: "inherit",
         background: "transparent",
         border: "none",
-        borderTop: first ? "none" : "1px solid #1b2a45",
-        color: "#7e8ea8",
+        borderTop: first ? "none" : "1px solid var(--border)",
+        color: "var(--faint)",
         cursor: "pointer",
         textAlign: "left",
         padding: first ? "0 0 5px" : "8px 0 5px",
@@ -623,10 +623,10 @@ export function DeployPanel({
       <div className="hl-panel-header">
         <span className="hl-panel-header__title">deployment</span>
         <label
-          style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 10, color: "#3d4f66", cursor: "pointer", marginLeft: "auto", marginRight: 4, userSelect: "none" }}
+          style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 10, color: "var(--faintest)", cursor: "pointer", marginLeft: "auto", marginRight: 4, userSelect: "none" }}
           title="hide settings that are still at their defaults"
         >
-          <input type="checkbox" checked={hideDefaults} onChange={(e) => setHideDefaults(e.target.checked)} style={{ cursor: "pointer", accentColor: "#7e8ea8" }} />
+          <input type="checkbox" checked={hideDefaults} onChange={(e) => setHideDefaults(e.target.checked)} style={{ cursor: "pointer", accentColor: "var(--faint)" }} />
           hide defaults
         </label>
         <button
@@ -647,7 +647,7 @@ export function DeployPanel({
           alignItems: "start",
           alignContent: "start",
           fontSize: 11,
-          color: "#9fb4d4",
+          color: "var(--muted)",
         }}
       >
         <GroupHead label="server" open={openGroups.has("server")} onToggle={() => toggleGroup("server")} first />
@@ -670,7 +670,7 @@ export function DeployPanel({
             {clocks.length > 0 && (
               <>
                 <span title="its every nodes: each runs its group on its own period">clocks</span>
-                <span style={{ color: "#e6eefb" }}>{clocks.join(", ")}</span>
+                <span style={{ color: "var(--ink)" }}>{clocks.join(", ")}</span>
               </>
             )}
           </>
@@ -692,7 +692,7 @@ export function DeployPanel({
               </label>
             ))}
             {hideDefaults && !Object.keys(req?.limits ?? {}).length && (
-              <span style={{ gridColumn: "1 / -1", color: "#3d4f66", fontStyle: "italic" }}>none set</span>
+              <span style={{ gridColumn: "1 / -1", color: "var(--faintest)", fontStyle: "italic" }}>none set</span>
             )}
           </>
         )}
@@ -714,7 +714,7 @@ export function DeployPanel({
                       requirements: { ...req, plain_http: e.target.value.split(",").map((h) => h.trim()).filter((h) => h !== "") },
                     })
                   }
-                  style={{ ...input, width: "100%", ...(noPlainHttp && hasPlainHttp ? { borderColor: "#e0916f" } : {}) }}
+                  style={{ ...input, width: "100%", ...(noPlainHttp && hasPlainHttp ? { borderColor: "var(--bad)" } : {}) }}
                 />
               </>
             )}
@@ -732,7 +732,7 @@ export function DeployPanel({
               </>
             )}
             {hideDefaults && !hasPlainHttp && !req?.private_addresses && (
-              <span style={{ gridColumn: "1 / -1", color: "#3d4f66", fontStyle: "italic" }}>none set</span>
+              <span style={{ gridColumn: "1 / -1", color: "var(--faintest)", fontStyle: "italic" }}>none set</span>
             )}
           </>
         )}
@@ -742,7 +742,7 @@ export function DeployPanel({
             <OptionalPermissions capabilities={capabilities} settings={settings} setSettings={setSettings} clocked={clocks.length > 0} fileFolders={fileFolders} readOnly={readOnly} />
             <AgentsMayRun capabilities={capabilities} settings={settings} setSettings={setSettings} readOnly={readOnly} />
             {capabilities.length === 0 && !(settings.requirements?.optional?.length) && !(settings.requirements?.agents?.length) && (
-              <span style={{ gridColumn: "1 / -1", color: "#3d4f66", fontStyle: "italic" }}>none</span>
+              <span style={{ gridColumn: "1 / -1", color: "var(--faintest)", fontStyle: "italic" }}>none</span>
             )}
           </>
         )}
@@ -752,7 +752,7 @@ export function DeployPanel({
             {openGroups.has("secrets") && (
               <>
                 {!slug && (
-                  <span style={{ gridColumn: "1 / -1", color: "#7e8ea8", fontStyle: "italic" }}>name the flow first</span>
+                  <span style={{ gridColumn: "1 / -1", color: "var(--faint)", fontStyle: "italic" }}>name the flow first</span>
                 )}
                 {secretNames.map((name) => (
                   <SecretRow key={name} slug={slug} name={name} info={secrets.find((x) => x.name === name)} envNames={envNames} onChanged={reloadSecrets} readOnly={readOnly} />

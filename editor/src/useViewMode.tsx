@@ -342,8 +342,8 @@ export function useViewMode(input: ViewModeInput) {
         hoveredWire === e.id
           ? {
               label: valueChip(value),
-              labelStyle: { fill: value === null ? "#7e8ea8" : "#bfe8c2", fontSize: 11, fontFamily: "var(--mono)" },
-              labelBgStyle: { fill: "#0b1527", stroke: "#6fd3e0" },
+              labelStyle: { fill: value === null ? "var(--faint)" : "var(--ok)", fontSize: 11, fontFamily: "var(--mono)" },
+              labelBgStyle: { fill: "var(--bg)", stroke: "var(--accent)" },
               labelBgPadding: [6, 3] as [number, number],
               labelBgBorderRadius: 6,
             }

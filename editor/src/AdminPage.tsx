@@ -73,20 +73,20 @@ const TABS: { tab: Tab; label: string; about: string }[] = [
   { tab: "permissions", label: "permissions", about: "what this host allows, and who holds what" },
 ];
 
-const small: CSSProperties = { font: "inherit", fontSize: 11, padding: "2px 8px", color: "#9fb4d4", background: "#0e1a2f", border: "1px solid #1b2a45", borderRadius: 3, cursor: "pointer" };
-const primary: CSSProperties = { ...small, color: "#0e1a2f", background: "#6fd3e0", border: "none" };
-const input: CSSProperties = { font: "inherit", fontSize: 12, padding: "3px 6px", color: "#e6eefb", background: "#0e1a2f", border: "1px solid #1b2a45", borderRadius: 3 };
-const head: CSSProperties = { color: "#cfe3ff", fontSize: 14, letterSpacing: "0.04em", margin: "20px 0 6px" };
-const row: CSSProperties = { display: "flex", alignItems: "center", gap: 8, padding: "6px 10px", marginBottom: 4, background: "#0e1a2f", border: "1px solid #1b2a45", borderRadius: 4, fontSize: 12 };
-const about: CSSProperties = { color: "#9fb4d4", fontSize: 11, marginBottom: 6, lineHeight: 1.45 };
-const quiet: CSSProperties = { color: "#7e8ea8", fontSize: 11 };
+const small: CSSProperties = { font: "inherit", fontSize: 11, padding: "2px 8px", color: "var(--muted)", background: "var(--surface-2)", border: "1px solid var(--border)", borderRadius: 3, cursor: "pointer" };
+const primary: CSSProperties = { ...small, color: "var(--accent-ink)", background: "var(--accent)", border: "none" };
+const input: CSSProperties = { font: "inherit", fontSize: 12, padding: "3px 6px", color: "var(--ink)", background: "var(--surface-2)", border: "1px solid var(--border)", borderRadius: 3 };
+const head: CSSProperties = { color: "var(--body)", fontSize: 14, letterSpacing: "0.04em", margin: "20px 0 6px" };
+const row: CSSProperties = { display: "flex", alignItems: "center", gap: 8, padding: "6px 10px", marginBottom: 4, background: "var(--surface-2)", border: "1px solid var(--border)", borderRadius: 4, fontSize: 12 };
+const about: CSSProperties = { color: "var(--muted)", fontSize: 11, marginBottom: 6, lineHeight: 1.45 };
+const quiet: CSSProperties = { color: "var(--faint)", fontSize: 11 };
 const tabButton = (on: boolean): CSSProperties => ({
   ...small,
   fontSize: 12,
   padding: "4px 12px",
-  color: on ? "#0e1a2f" : "#9fb4d4",
-  background: on ? "#6fd3e0" : "transparent",
-  border: on ? "1px solid #6fd3e0" : "1px solid #1b2a45",
+  color: on ? "var(--accent-ink)" : "var(--muted)",
+  background: on ? "var(--accent)" : "transparent",
+  border: on ? "1px solid var(--accent)" : "1px solid var(--border)",
 });
 /** What holding a resource for whole runs costs, said where it is set. */
 const RUN_LOCK_COST = "every run that writes it goes one at a time, for its whole length, across every deployment bound to it";
@@ -210,7 +210,7 @@ export function AdminPage({ me, onOpenDeployment }: { me: string; onOpenDeployme
   const current = TABS.find((t) => t.tab === tab) ?? TABS[0];
   return (
     <div style={{ maxWidth: 760 }}>
-      <div style={{ color: "#cfe3ff", fontSize: 14, letterSpacing: "0.04em", marginBottom: 6 }}>admin</div>
+      <div style={{ color: "var(--body)", fontSize: 14, letterSpacing: "0.04em", marginBottom: 6 }}>admin</div>
       <div role="tablist" aria-label="admin sections" style={{ display: "flex", gap: 6, marginBottom: 6 }}>
         {TABS.map((t) => (
           <button key={t.tab} role="tab" aria-selected={t.tab === tab} style={tabButton(t.tab === tab)} onClick={() => setTab(t.tab)}>
@@ -218,9 +218,9 @@ export function AdminPage({ me, onOpenDeployment }: { me: string; onOpenDeployme
           </button>
         ))}
       </div>
-      <div style={{ color: "#9fb4d4", fontSize: 11, marginBottom: 8 }}>{current.about}</div>
+      <div style={{ color: "var(--muted)", fontSize: 11, marginBottom: 8 }}>{current.about}</div>
       {msg && (
-        <div role="alert" style={{ color: "#e0916f", fontSize: 12, marginBottom: 8 }}>
+        <div role="alert" style={{ color: "var(--bad)", fontSize: 12, marginBottom: 8 }}>
           {msg}
         </div>
       )}
@@ -229,9 +229,9 @@ export function AdminPage({ me, onOpenDeployment }: { me: string; onOpenDeployme
         <>
           <div style={head}>people</div>
           {link && (
-            <div style={{ ...row, flexDirection: "column", alignItems: "stretch", borderColor: "#2a5f68" }}>
+            <div style={{ ...row, flexDirection: "column", alignItems: "stretch", borderColor: "var(--sel)" }}>
               <span>
-                Send <span style={{ color: "#e6eefb" }}>{link.name}</span> this link: they set their password with it (once, within 7 days).
+                Send <span style={{ color: "var(--ink)" }}>{link.name}</span> this link: they set their password with it (once, within 7 days).
               </span>
               <span style={{ display: "flex", gap: 6 }}>
                 <input aria-label="invite link" readOnly value={link.url} style={{ ...input, flex: 1 }} onFocus={(e) => e.target.select()} />
@@ -246,9 +246,9 @@ export function AdminPage({ me, onOpenDeployment }: { me: string; onOpenDeployme
           )}
           {people.map((p) => (
             <div key={p.name} style={row}>
-              <span style={{ color: "#6fd3e0", minWidth: 90 }}>
+              <span style={{ color: "var(--accent)", minWidth: 90 }}>
                 {p.name}
-                {p.name === me && <span style={{ color: "#7e8ea8" }}> (you)</span>}
+                {p.name === me && <span style={{ color: "var(--faint)" }}> (you)</span>}
               </span>
               <select
                 aria-label={`${p.name}'s role`}
@@ -263,10 +263,10 @@ export function AdminPage({ me, onOpenDeployment }: { me: string; onOpenDeployme
                   </option>
                 ))}
               </select>
-              <span style={{ color: "#7e8ea8", fontSize: 11, flex: 1 }}>
+              <span style={{ color: "var(--faint)", fontSize: 11, flex: 1 }}>
                 {p.email ?? ""}
-                {p.invited && <span style={{ color: "#e0c36f" }}> · link not used yet</span>}
-                {p.disabled && <span style={{ color: "#e0916f" }}> · disabled</span>}
+                {p.invited && <span style={{ color: "var(--warn)" }}> · link not used yet</span>}
+                {p.disabled && <span style={{ color: "var(--bad)" }}> · disabled</span>}
               </span>
               <button
                 style={small}
@@ -331,11 +331,11 @@ export function AdminPage({ me, onOpenDeployment }: { me: string; onOpenDeployme
           </form>
 
           <div style={head}>API tokens</div>
-          <div style={{ color: "#9fb4d4", fontSize: 11, marginBottom: 6 }}>for scripts and CI: sent as Authorization: Bearer &lt;token&gt;, acting with their role</div>
+          <div style={{ color: "var(--muted)", fontSize: 11, marginBottom: 6 }}>for scripts and CI: sent as Authorization: Bearer &lt;token&gt;, acting with their role</div>
           {secret && (
-            <div style={{ ...row, flexDirection: "column", alignItems: "stretch", borderColor: "#2a5f68" }}>
+            <div style={{ ...row, flexDirection: "column", alignItems: "stretch", borderColor: "var(--sel)" }}>
               <span>
-                The token for <span style={{ color: "#e6eefb" }}>{secret.label}</span>. Copy it now: it isn't shown again.
+                The token for <span style={{ color: "var(--ink)" }}>{secret.label}</span>. Copy it now: it isn't shown again.
               </span>
               <span style={{ display: "flex", gap: 6 }}>
                 <input aria-label="new API token" readOnly value={secret.token} style={{ ...input, flex: 1 }} onFocus={(e) => e.target.select()} />
@@ -348,12 +348,12 @@ export function AdminPage({ me, onOpenDeployment }: { me: string; onOpenDeployme
               </span>
             </div>
           )}
-          {tokens.length === 0 && <div style={{ color: "#7e8ea8", fontSize: 11, marginBottom: 6 }}>no API tokens</div>}
+          {tokens.length === 0 && <div style={{ color: "var(--faint)", fontSize: 11, marginBottom: 6 }}>no API tokens</div>}
           {tokens.map((t) => (
             <div key={t.id} style={row}>
-              <span style={{ color: "#6fd3e0", minWidth: 90 }}>{t.label}</span>
+              <span style={{ color: "var(--accent)", minWidth: 90 }}>{t.label}</span>
               <span>{t.role}</span>
-              <span style={{ color: "#7e8ea8", fontSize: 11, flex: 1 }}>
+              <span style={{ color: "var(--faint)", fontSize: 11, flex: 1 }}>
                 made by {t.created_by}, {new Date(t.created_at * 1000).toLocaleString()}
               </span>
               <button
@@ -407,7 +407,7 @@ export function AdminPage({ me, onOpenDeployment }: { me: string; onOpenDeployme
               </button>
             )}
           </div>
-          <div style={{ color: "#7e8ea8", fontSize: 11 }}>{oidc ? `on: ${oidc.issuer} as ${oidc.client_id}` : "off"}</div>
+          <div style={{ color: "var(--faint)", fontSize: 11 }}>{oidc ? `on: ${oidc.issuer} as ${oidc.client_id}` : "off"}</div>
         </>
       )}
 
@@ -423,13 +423,13 @@ export function AdminPage({ me, onOpenDeployment }: { me: string; onOpenDeployme
             it starts until it commits, fails or waits, so every run that writes it goes one at a time, for its whole length, across every deployment bound to
             it; one that waits past its claim_wait is turned away (503). For files a program expects one writer for.
           </div>
-          {folders.length === 0 && <div style={{ color: "#7e8ea8", fontSize: 11, marginBottom: 6 }}>no folders bound</div>}
+          {folders.length === 0 && <div style={{ color: "var(--faint)", fontSize: 11, marginBottom: 6 }}>no folders bound</div>}
           {folders.map((f) => (
             <Fragment key={keyOf(f)}>
               <div style={row}>
-                <span style={{ color: "#6fd3e0", minWidth: 90 }}>folder {f.name}</span>
-                <span style={{ color: "#e6eefb", flex: 1, overflowWrap: "anywhere" }}>{f.path}</span>
-                <span style={{ color: "#7e8ea8", fontSize: 11 }}>
+                <span style={{ color: "var(--accent)", minWidth: 90 }}>folder {f.name}</span>
+                <span style={{ color: "var(--ink)", flex: 1, overflowWrap: "anywhere" }}>{f.path}</span>
+                <span style={{ color: "var(--faint)", fontSize: 11 }}>
                   {f.access === "read" ? "read only" : "read and write"}
                   {f.keep === "hash" ? " · reads kept by hash" : f.keep.startsWith("bytes for ") ? ` · reads kept ${f.keep.slice("bytes for ".length)}, then by hash` : ""}
                   {f.cap != null ? ` · capped at ${sizeText(f.cap)}` : ""}
@@ -499,11 +499,11 @@ export function AdminPage({ me, onOpenDeployment }: { me: string; onOpenDeployme
               onChange={(e) => setFolderDraft({ ...folderDraft, cap: e.target.value })}
               style={{ ...input, width: 150 }}
             />
-            <label style={{ color: "#9fb4d4", fontSize: 11, display: "flex", alignItems: "center", gap: 4 }} title="a network share other Holon servers bind too: a commit also locks a file in it">
+            <label style={{ color: "var(--muted)", fontSize: 11, display: "flex", alignItems: "center", gap: 4 }} title="a network share other Holon servers bind too: a commit also locks a file in it">
               <input type="checkbox" checked={folderDraft.shared ?? false} onChange={(e) => setFolderDraft({ ...folderDraft, shared: e.target.checked })} />
               other servers bind it too
             </label>
-            <label style={{ color: "#9fb4d4", fontSize: 11, display: "flex", alignItems: "center", gap: 4 }} title={`each run that touches it holds it for its whole length: ${RUN_LOCK_COST}`}>
+            <label style={{ color: "var(--muted)", fontSize: 11, display: "flex", alignItems: "center", gap: 4 }} title={`each run that touches it holds it for its whole length: ${RUN_LOCK_COST}`}>
               <input
                 type="checkbox"
                 aria-label="folder held for whole runs"
@@ -519,7 +519,7 @@ export function AdminPage({ me, onOpenDeployment }: { me: string; onOpenDeployme
               onChange={(e) => setFolderDraft({ ...folderDraft, deployment: e.target.value })}
               style={input}
             />
-            {folderDraft.lock === "run" && <div style={{ ...quiet, color: "#e0c36f", flexBasis: "100%" }}>held for whole runs: {RUN_LOCK_COST}</div>}
+            {folderDraft.lock === "run" && <div style={{ ...quiet, color: "var(--warn)", flexBasis: "100%" }}>held for whole runs: {RUN_LOCK_COST}</div>}
             <button
               type="submit"
               style={primary}
@@ -552,15 +552,15 @@ export function AdminPage({ me, onOpenDeployment }: { me: string; onOpenDeployme
             away (503). For what a commit&apos;s check can&apos;t cover: a sequence&apos;s next value, a queue, or contention so high that running again costs
             more than waiting.
           </div>
-          {databases.length === 0 && <div style={{ color: "#7e8ea8", fontSize: 11, marginBottom: 6 }}>no databases bound</div>}
+          {databases.length === 0 && <div style={{ color: "var(--faint)", fontSize: 11, marginBottom: 6 }}>no databases bound</div>}
           {databases.map((d) => {
             const read = tables[keyOf(d)];
             return (
               <Fragment key={keyOf(d)}>
                 <div style={row}>
-                  <span style={{ color: "#6fd3e0", minWidth: 90 }}>database {d.name}</span>
-                  <span style={{ color: "#e6eefb", flex: 1, overflowWrap: "anywhere" }}>{d.connection ? `${d.address ?? ""} (from ${d.connection})` : d.path}</span>
-                  <span style={{ color: "#7e8ea8", fontSize: 11 }}>
+                  <span style={{ color: "var(--accent)", minWidth: 90 }}>database {d.name}</span>
+                  <span style={{ color: "var(--ink)", flex: 1, overflowWrap: "anywhere" }}>{d.connection ? `${d.address ?? ""} (from ${d.connection})` : d.path}</span>
+                  <span style={{ color: "var(--faint)", fontSize: 11 }}>
                     {d.engine} · {d.access === "read" ? "read only" : "read and write"}
                     {d.lock === "run" ? " · held for whole runs" : ""}
                     {d.deployment ? ` · for ${d.deployment} only` : ""}
@@ -582,7 +582,7 @@ export function AdminPage({ me, onOpenDeployment }: { me: string; onOpenDeployme
                     {read === undefined
                       ? "reading its tables…"
                       : "error" in read
-                        ? <span style={{ color: "#e0916f" }}>its tables couldn&apos;t be read: {read.error}</span>
+                        ? <span style={{ color: "var(--bad)" }}>its tables couldn&apos;t be read: {read.error}</span>
                         : read.length === 0
                           ? `no ${d.engine === "mongodb" ? "collections" : "tables"} yet`
                           : `${d.engine === "mongodb" ? "collections" : "tables"}: ${read.join(", ")}`}
@@ -635,7 +635,7 @@ export function AdminPage({ me, onOpenDeployment }: { me: string; onOpenDeployme
               <option value="read-write">read and write</option>
               <option value="read">read only</option>
             </select>
-            <label style={{ color: "#9fb4d4", fontSize: 11, display: "flex", alignItems: "center", gap: 4 }} title={`each run that touches it holds it for its whole length: ${RUN_LOCK_COST}`}>
+            <label style={{ color: "var(--muted)", fontSize: 11, display: "flex", alignItems: "center", gap: 4 }} title={`each run that touches it holds it for its whole length: ${RUN_LOCK_COST}`}>
               <input
                 type="checkbox"
                 aria-label="database held for whole runs"
@@ -651,9 +651,9 @@ export function AdminPage({ me, onOpenDeployment }: { me: string; onOpenDeployme
               onChange={(e) => setDatabaseDraft({ ...databaseDraft, deployment: e.target.value })}
               style={input}
             />
-            {databaseDraft.lock === "run" && <div style={{ ...quiet, color: "#e0c36f", flexBasis: "100%" }}>held for whole runs: {RUN_LOCK_COST}</div>}
+            {databaseDraft.lock === "run" && <div style={{ ...quiet, color: "var(--warn)", flexBasis: "100%" }}>held for whole runs: {RUN_LOCK_COST}</div>}
             {isUrl(databaseDraft.where) && (
-              <div role="alert" style={{ ...quiet, color: "#e0916f", flexBasis: "100%" }}>
+              <div role="alert" style={{ ...quiet, color: "var(--bad)", flexBasis: "100%" }}>
                 That is a URL: give where it is kept instead (env:HOLON_SECRET_SHOP_URL, vault:…). It isn&apos;t sent.
               </div>
             )}
@@ -676,11 +676,11 @@ export function AdminPage({ me, onOpenDeployment }: { me: string; onOpenDeployme
             under its ⚙, overrides it). Where it may go: the hosts (api.stripe.com) and databases (db:shop) it may be sent to. A deploy whose flow sends it elsewhere is
             refused, and so is a request a run makes with it; a deployment with its own isn&apos;t held to it. Empty: wherever its flows&apos; approvals show.
           </div>
-          {serverSecrets.length === 0 && <div style={{ color: "#7e8ea8", fontSize: 11, marginBottom: 6 }}>no secrets bound</div>}
+          {serverSecrets.length === 0 && <div style={{ color: "var(--faint)", fontSize: 11, marginBottom: 6 }}>no secrets bound</div>}
           {serverSecrets.map((s) => (
             <div key={s.name} style={row} aria-label={`server secret ${s.name}`}>
-              <span style={{ color: "#6fd3e0", minWidth: 90 }}>secret {s.name}</span>
-              <span style={{ color: "#7e8ea8", fontSize: 11, flex: 1 }}>
+              <span style={{ color: "var(--accent)", minWidth: 90 }}>secret {s.name}</span>
+              <span style={{ color: "var(--faint)", fontSize: 11, flex: 1 }}>
                 v{s.version} · {s.source === "local" ? "a value" : s.source}
                 {s.problem ? ` · can't be read: ${s.problem}` : ""}
                 {" · "}
@@ -749,10 +749,10 @@ export function AdminPage({ me, onOpenDeployment }: { me: string; onOpenDeployme
             <>
               <div style={head}>the host</div>
               {host.warnings.length > 0 && (
-                <div role="alert" aria-label="what the host warns of" style={{ ...row, flexDirection: "column", alignItems: "stretch", gap: 4, borderColor: "#e5484d" }}>
+                <div role="alert" aria-label="what the host warns of" style={{ ...row, flexDirection: "column", alignItems: "stretch", gap: 4, borderColor: "var(--bad)" }}>
                   {host.warnings.map((w) => (
                     <div key={w.key}>
-                      <div style={{ color: "#ffb3b5" }}>⚠ {w.says}</div>
+                      <div style={{ color: "var(--bad-ink)" }}>⚠ {w.says}</div>
                       <div style={quiet}>{w.todo}</div>
                     </div>
                   ))}
@@ -772,8 +772,8 @@ export function AdminPage({ me, onOpenDeployment }: { me: string; onOpenDeployme
               {host.disks.map((d) => (
                 <div key={d.path} style={{ ...row, flexDirection: "column", alignItems: "stretch", gap: 4 }} title={d.path}>
                   <div>disk: {diskLine(d)}</div>
-                  <div role="meter" aria-label={`disk ${d.path} in use`} aria-valuenow={diskFull(d)} aria-valuemin={0} aria-valuemax={100} style={{ height: 6, background: "#1b2a45", borderRadius: 3 }}>
-                    <div style={{ width: `${diskFull(d)}%`, height: "100%", borderRadius: 3, background: host.warnings.some((w) => w.key === `disk:${d.path}`) ? "#e5484d" : "#3b82f6" }} />
+                  <div role="meter" aria-label={`disk ${d.path} in use`} aria-valuenow={diskFull(d)} aria-valuemin={0} aria-valuemax={100} style={{ height: 6, background: "var(--border)", borderRadius: 3 }}>
+                    <div style={{ width: `${diskFull(d)}%`, height: "100%", borderRadius: 3, background: host.warnings.some((w) => w.key === `disk:${d.path}`) ? "var(--bad)" : "var(--accent)" }} />
                   </div>
                 </div>
               ))}
@@ -788,8 +788,8 @@ export function AdminPage({ me, onOpenDeployment }: { me: string; onOpenDeployme
                         <span style={{ width: 140, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{h.slug}</span>
                         <span style={{ width: 90 }}>~{sizeText(h.memory)}</span>
                         <span style={{ width: 90 }}>{sizeText(h.disk)}</span>
-                        <div style={{ flex: 1, height: 6, background: "#1b2a45", borderRadius: 3 }}>
-                          <div style={{ width: `${((h.memory + h.disk) * 100) / most}%`, height: "100%", borderRadius: 3, background: "#3b82f6" }} />
+                        <div style={{ flex: 1, height: 6, background: "var(--border)", borderRadius: 3 }}>
+                          <div style={{ width: `${((h.memory + h.disk) * 100) / most}%`, height: "100%", borderRadius: 3, background: "var(--accent)" }} />
                         </div>
                       </div>
                     );
@@ -832,8 +832,8 @@ export function AdminPage({ me, onOpenDeployment }: { me: string; onOpenDeployme
               >
                 <span style={{ flex: 1, minWidth: 260 }}>
                   when a disk is full <span style={quiet}>· {whenFullLine(host.full_at, host.when_full)}</span>
-                  {host.acting.paused.length > 0 && <div style={{ color: "#ffb3b5" }}>paused for the full disk: {host.acting.paused.join(", ")}</div>}
-                  {host.acting.rolled.length > 0 && <div style={{ color: "#ffb3b5" }}>logs cut for the full disk: {host.acting.rolled.join(", ")}</div>}
+                  {host.acting.paused.length > 0 && <div style={{ color: "var(--bad-ink)" }}>paused for the full disk: {host.acting.paused.join(", ")}</div>}
+                  {host.acting.rolled.length > 0 && <div style={{ color: "var(--bad-ink)" }}>logs cut for the full disk: {host.acting.rolled.join(", ")}</div>}
                 </span>
                 <input
                   aria-label="when the host acts on a full disk"
@@ -1000,9 +1000,9 @@ export function AdminPage({ me, onOpenDeployment }: { me: string; onOpenDeployme
               <div>
                 plain HTTP {policy.allow_plain_http ? "may be granted" : "is never granted"} · private addresses {policy.allow_private_addresses ? "may be granted" : "are never granted"}
               </div>
-              <table aria-label="limits" style={{ fontSize: 11, color: "#9fb4d4", borderCollapse: "collapse" }}>
+              <table aria-label="limits" style={{ fontSize: 11, color: "var(--muted)", borderCollapse: "collapse" }}>
                 <thead>
-                  <tr style={{ color: "#7e8ea8", textAlign: "left" }}>
+                  <tr style={{ color: "var(--faint)", textAlign: "left" }}>
                     <th style={{ fontWeight: "normal", paddingRight: 16 }}>limit</th>
                     <th style={{ fontWeight: "normal", paddingRight: 16 }}>default</th>
                     <th style={{ fontWeight: "normal" }}>at most</th>
@@ -1013,7 +1013,7 @@ export function AdminPage({ me, onOpenDeployment }: { me: string; onOpenDeployme
                     .sort()
                     .map((name) => (
                       <tr key={name}>
-                        <td style={{ color: "#e6eefb", paddingRight: 16 }}>{name}</td>
+                        <td style={{ color: "var(--ink)", paddingRight: 16 }}>{name}</td>
                         <td style={{ paddingRight: 16 }}>{policy.defaults[name] ?? "—"}</td>
                         <td>{policy.ceilings[name] ?? "no ceiling"}</td>
                       </tr>
@@ -1073,7 +1073,7 @@ export function AdminPage({ me, onOpenDeployment }: { me: string; onOpenDeployme
             .filter((o) => kind === "everything" || o.kind === kind)
             .map((o) => (
               <div key={o.item} style={{ ...row, flexWrap: "wrap" }} title={o.item}>
-                <span style={{ color: "#e6eefb", flex: 1, minWidth: 200 }}>{describeItem(o.item)}</span>
+                <span style={{ color: "var(--ink)", flex: 1, minWidth: 200 }}>{describeItem(o.item)}</span>
                 {o.holders.map((h) => (
                   <button key={h.slug} style={{ ...small, textDecoration: h.revoked ? "line-through" : "none" }} title={h.revoked ? `${h.slug}: revoked; open its card` : `open ${h.slug}'s card`} onClick={() => onOpenDeployment(h.slug)}>
                     {h.slug} →
@@ -1095,21 +1095,21 @@ function Resource({ title, detail, holders, onOpen }: { title: string; detail: s
   return (
     <div aria-label={title} style={{ ...row, flexDirection: "column", alignItems: "stretch", gap: 4 }}>
       <div style={{ display: "flex", gap: 8 }}>
-        <span style={{ color: "#6fd3e0" }}>{title}</span>
+        <span style={{ color: "var(--accent)" }}>{title}</span>
         <span style={{ ...quiet, flex: 1, overflowWrap: "anywhere" }}>{detail}</span>
       </div>
       {holders.length === 0 && <div style={quiet}>no deployment is granted it</div>}
       {holders.map((h) => (
         <div key={h.slug} style={{ display: "flex", gap: 8, alignItems: "center", paddingLeft: 10, fontSize: 11 }}>
-          <span style={{ color: "#e6eefb", minWidth: 110 }}>{h.slug}</span>
-          <span style={{ color: h.status === "running" ? "#9ad29f" : "#e0c36f", minWidth: 54 }} title={h.attention ?? h.status}>
+          <span style={{ color: "var(--ink)", minWidth: 110 }}>{h.slug}</span>
+          <span style={{ color: h.status === "running" ? "var(--ok)" : "var(--warn)", minWidth: 54 }} title={h.attention ?? h.status}>
             {h.status}
           </span>
-          <span style={{ flex: 1, color: "#9fb4d4" }}>
+          <span style={{ flex: 1, color: "var(--muted)" }}>
             {usesText(h.uses).map((u, i) => (
               <Fragment key={i}>
                 {i > 0 && " · "}
-                <span style={u.revoked ? { textDecoration: "line-through", color: "#e0916f" } : undefined} title={u.revoked ? "revoked" : undefined}>
+                <span style={u.revoked ? { textDecoration: "line-through", color: "var(--bad)" } : undefined} title={u.revoked ? "revoked" : undefined}>
                   {u.text}
                 </span>
               </Fragment>

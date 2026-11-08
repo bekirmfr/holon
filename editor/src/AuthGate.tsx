@@ -13,13 +13,13 @@ import { useDialog } from "./Dialog";
 export type Me = { name: string; role: Role };
 
 const card: CSSProperties = {
-  background: "#0b1527",
-  border: "1px solid #1b2a45",
+  background: "var(--bg)",
+  border: "1px solid var(--border)",
   borderRadius: 6,
   padding: 20,
   display: "grid",
   gap: 10,
-  color: "#9fb4d4",
+  color: "var(--muted)",
   fontSize: 12,
   width: 340,
   maxWidth: "calc(100vw - 32px)",
@@ -28,13 +28,13 @@ const field: CSSProperties = {
   font: "inherit",
   fontSize: 13,
   padding: "6px 8px",
-  color: "#e6eefb",
-  background: "#0e1a2f",
-  border: "1px solid #1b2a45",
+  color: "var(--ink)",
+  background: "var(--surface-2)",
+  border: "1px solid var(--border)",
   borderRadius: 3,
 };
-const primary: CSSProperties = { font: "inherit", fontSize: 12, padding: "6px 12px", color: "#0e1a2f", background: "#6fd3e0", border: "none", borderRadius: 3, cursor: "pointer" };
-const quiet: CSSProperties = { font: "inherit", fontSize: 12, padding: "6px 12px", color: "#9fb4d4", background: "transparent", border: "1px solid #1b2a45", borderRadius: 3, cursor: "pointer" };
+const primary: CSSProperties = { font: "inherit", fontSize: 12, padding: "6px 12px", color: "var(--accent-ink)", background: "var(--accent)", border: "none", borderRadius: 3, cursor: "pointer" };
+const quiet: CSSProperties = { font: "inherit", fontSize: 12, padding: "6px 12px", color: "var(--muted)", background: "transparent", border: "1px solid var(--border)", borderRadius: 3, cursor: "pointer" };
 
 function Screen({ title, lead, children, onSubmit, error }: { title: string; lead?: ReactNode; children: ReactNode; onSubmit: () => Promise<void>; error: string }) {
   const [busy, setBusy] = useState(false);
@@ -46,13 +46,13 @@ function Screen({ title, lead, children, onSubmit, error }: { title: string; lea
   return (
     <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: "var(--bg)" }}>
       <form style={card} onSubmit={submit} aria-label={title}>
-        <div style={{ color: "#e6eefb", fontSize: 15 }}>
-          holon <span style={{ color: "#7e8ea8" }}>·</span> {title}
+        <div style={{ color: "var(--ink)", fontSize: 15 }}>
+          holon <span style={{ color: "var(--faint)" }}>·</span> {title}
         </div>
         {lead && <div style={{ lineHeight: 1.45 }}>{lead}</div>}
         {children}
         {error && (
-          <div role="alert" style={{ color: "#e0916f" }}>
+          <div role="alert" style={{ color: "var(--bad)" }}>
             {error}
           </div>
         )}
@@ -139,10 +139,10 @@ export function AuthGate({ children }: { children: (me: Me) => ReactNode }) {
 
   switch (stage.kind) {
     case "loading":
-      return <div style={{ padding: 24, color: "#9fb4d4" }}>connecting…</div>;
+      return <div style={{ padding: 24, color: "var(--muted)" }}>connecting…</div>;
     case "unreachable":
       return (
-        <div style={{ padding: 24, color: "#e0916f", display: "grid", gap: 10, maxWidth: 520 }}>
+        <div style={{ padding: 24, color: "var(--bad)", display: "grid", gap: 10, maxWidth: 520 }}>
           <div>The server can't be reached: {stage.message}</div>
           <button style={quiet} onClick={decide}>
             try again
@@ -174,7 +174,7 @@ export function AuthGate({ children }: { children: (me: Me) => ReactNode }) {
           title="join"
           lead={
             <>
-              You were invited as <span style={{ color: "#e6eefb" }}>{stage.name}</span>. Set your password to sign in.
+              You were invited as <span style={{ color: "var(--ink)" }}>{stage.name}</span>. Set your password to sign in.
             </>
           }
           error={error}
@@ -244,8 +244,8 @@ export function AccountMenu({ me, style, onWelcome }: { me: Me; style: CSSProper
         <span aria-hidden="true">▾</span>
       </button>
       {open && (
-        <div role="menu" style={{ position: "absolute", right: 0, top: "calc(100% + 4px)", zIndex: 50, background: "#0b1527", border: "1px solid #1b2a45", borderRadius: 4, padding: 6, display: "grid", gap: 4, minWidth: 180 }}>
-          <span style={{ color: "#7e8ea8", fontSize: 11, padding: "2px 6px" }}>
+        <div role="menu" style={{ position: "absolute", right: 0, top: "calc(100% + 4px)", zIndex: 50, background: "var(--bg)", border: "1px solid var(--border)", borderRadius: 4, padding: 6, display: "grid", gap: 4, minWidth: 180 }}>
+          <span style={{ color: "var(--faint)", fontSize: 11, padding: "2px 6px" }}>
             {me.name} · {me.role}
           </span>
           <button

@@ -107,7 +107,7 @@ export function DialogProvider({ children }: { children: ReactNode }) {
           style={{
             position: "fixed",
             inset: 0,
-            background: "rgba(5, 10, 20, 0.6)",
+            background: "var(--overlay)",
             display: "flex",
             alignItems: "center",
             justifyContent: "center",
@@ -116,13 +116,13 @@ export function DialogProvider({ children }: { children: ReactNode }) {
         >
           <div
             style={{
-              background: "#0e1a2f",
-              border: "1px solid #1b2a45",
+              background: "var(--surface-2)",
+              border: "1px solid var(--border)",
               borderRadius: 6,
               padding: 16,
               width: 420,
               maxWidth: "calc(100vw - 32px)",
-              color: "#e6eefb",
+              color: "var(--ink)",
               fontSize: 13,
               display: "flex",
               flexDirection: "column",
@@ -137,9 +137,9 @@ export function DialogProvider({ children }: { children: ReactNode }) {
                 onChange={(e) => setText(e.target.value)}
                 style={{
                   font: "inherit",
-                  color: "#e6eefb",
-                  background: "#0b1527",
-                  border: "1px solid #1b2a45",
+                  color: "var(--ink)",
+                  background: "var(--bg)",
+                  border: "1px solid var(--border)",
                   borderRadius: 3,
                   padding: "4px 6px",
                 }}
@@ -149,7 +149,7 @@ export function DialogProvider({ children }: { children: ReactNode }) {
               <button
                 onClick={() => close(false)}
                 aria-keyshortcuts={ask.kind === "confirm" ? "N Escape" : "Escape"}
-                style={{ ...button, color: "#9fb4d4", background: "transparent", border: "1px solid #1b2a45" }}
+                style={{ ...button, color: "var(--muted)", background: "transparent", border: "1px solid var(--border)" }}
               >
                 {ask.kind === "confirm" && <Kbd k="n" />}
                 Cancel
@@ -158,7 +158,7 @@ export function DialogProvider({ children }: { children: ReactNode }) {
                 ref={ok}
                 onClick={() => close(true)}
                 aria-keyshortcuts={ask.kind === "confirm" ? "Y Enter" : "Enter"}
-                style={{ ...button, color: "#0e1a2f", background: "#6fd3e0", border: "none" }}
+                style={{ ...button, color: "var(--accent-ink)", background: "var(--accent)", border: "none" }}
               >
                 {ask.kind === "confirm" && <Kbd k="y" />}
                 {ask.kind === "confirm" ? ask.action : "OK"}

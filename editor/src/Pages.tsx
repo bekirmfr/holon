@@ -172,16 +172,16 @@ export function FlowsPage({
     font: "inherit",
     fontSize: 11,
     padding: "2px 8px",
-    color: "#9fb4d4",
-    background: "#0e1a2f",
-    border: "1px solid #1b2a45",
+    color: "var(--muted)",
+    background: "var(--surface-2)",
+    border: "1px solid var(--border)",
     borderRadius: 3,
     cursor: "pointer",
   };
 
   return (
     <div style={{ maxWidth: 560 }}>
-      <div style={{ color: "#cfe3ff", fontSize: 14, letterSpacing: "0.04em", marginBottom: 12, display: "flex", alignItems: "center", gap: 10 }}>
+      <div style={{ color: "var(--body)", fontSize: 14, letterSpacing: "0.04em", marginBottom: 12, display: "flex", alignItems: "center", gap: 10 }}>
         <span style={{ flex: 1 }}>flows</span>
         <label style={{ ...smallBtn, fontSize: 11, letterSpacing: 0 }} title="open a flow written as text (NAME.holon.ts) as an unsaved flow, in a tab of its own">
           import text
@@ -200,23 +200,23 @@ export function FlowsPage({
           />
         </label>
       </div>
-      {msg && <div style={{ color: "#e0916f", fontSize: 12, marginBottom: 8 }}>{msg}</div>}
+      {msg && <div style={{ color: "var(--bad)", fontSize: 12, marginBottom: 8 }}>{msg}</div>}
       {flows.length === 0 && !msg && (
-        <div style={{ color: "#9fb4d4", fontSize: 12 }}>
+        <div style={{ color: "var(--muted)", fontSize: 12 }}>
           nothing saved yet — build something on the canvas and hit save
         </div>
       )}
       {flows.map((f) => (
-        <div key={f.name} style={{ padding: "8px 10px", marginBottom: 6, background: "#0e1a2f", border: "1px solid #1b2a45", borderRadius: 4 }}>
+        <div key={f.name} style={{ padding: "8px 10px", marginBottom: 6, background: "var(--surface-2)", border: "1px solid var(--border)", borderRadius: 4 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <span style={{ color: "#6fd3e0", fontSize: 13, flex: 1 }}>{f.name}</span>
-            <span style={{ color: "#9fb4d4", fontSize: 11 }}>
+            <span style={{ color: "var(--accent)", fontSize: 13, flex: 1 }}>{f.name}</span>
+            <span style={{ color: "var(--muted)", fontSize: 11 }}>
               saved {new Date(f.saved_at_epoch_seconds * 1000).toLocaleString()}
               {f.saved_by ? ` by ${f.saved_by}` : ""}
             </span>
             {tabOf(f.name)?.dirty ? (
               <>
-                <span style={{ color: "#e0c36f", fontSize: 11 }}>unsaved changes</span>
+                <span style={{ color: "var(--warn)", fontSize: 11 }}>unsaved changes</span>
                 <button style={smallBtn} onClick={() => open(f.name)} title="go to its tab, changes kept">
                   open
                 </button>
@@ -269,12 +269,12 @@ export function FlowsPage({
         </div>
       ))}
 
-      <div style={{ color: "#cfe3ff", fontSize: 14, letterSpacing: "0.04em", margin: "24px 0 4px" }}>marketplace</div>
-      <div style={{ color: "#9fb4d4", fontSize: 11, marginBottom: 10, display: "flex", gap: 8, alignItems: "center" }}>
+      <div style={{ color: "var(--body)", fontSize: 14, letterSpacing: "0.04em", margin: "24px 0 4px" }}>marketplace</div>
+      <div style={{ color: "var(--muted)", fontSize: 11, marginBottom: 10, display: "flex", gap: 8, alignItems: "center" }}>
         <span>
           {marketplace.url ? (
             <>
-              publishing to and placing from <span style={{ color: "#cfe3ff" }}>{marketplace.url}</span>
+              publishing to and placing from <span style={{ color: "var(--body)" }}>{marketplace.url}</span>
             </>
           ) : (
             "none set: deploy the Marketplace sample (or use someone's), then set its address"
@@ -293,15 +293,15 @@ export function FlowsPage({
         </button>
       </div>
       {marketplace.listings.map((l) => (
-        <div key={l.id} style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 11, color: "#9fb4d4", padding: "2px 0" }}>
-          <span style={{ color: "#6fd3e0" }}>{l.name}</span>
-          <span style={{ color: "#7e8ea8" }} title={l.root}>
+        <div key={l.id} style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 11, color: "var(--muted)", padding: "2px 0" }}>
+          <span style={{ color: "var(--accent)" }}>{l.name}</span>
+          <span style={{ color: "var(--faint)" }} title={l.root}>
             {l.root.slice(0, 8)} · by {l.publisher} · {new Date(l.published_at * 1000).toLocaleString()}
             {marketplace.adoption(l.root, l.name) > 0 && ` · placed in ${marketplace.adoption(l.root, l.name)} other(s)`}
           </span>
           <span style={{ flex: 1 }} />
           {l.yanked ? (
-            <span style={{ color: "#e0916f" }}>yanked</span>
+            <span style={{ color: "var(--bad)" }}>yanked</span>
           ) : (
             <button style={smallBtn} onClick={() => marketplace.onYank(l.id).then((m) => m && setMsg(m))} title="flag this version as yanked (it stays listed, never edited)">
               yank
@@ -310,8 +310,8 @@ export function FlowsPage({
         </div>
       ))}
 
-      <div style={{ color: "#cfe3ff", fontSize: 14, letterSpacing: "0.04em", margin: "24px 0 4px" }}>samples</div>
-      <div style={{ color: "#9fb4d4", fontSize: 11, marginBottom: 10 }}>
+      <div style={{ color: "var(--body)", fontSize: 14, letterSpacing: "0.04em", margin: "24px 0 4px" }}>samples</div>
+      <div style={{ color: "var(--muted)", fontSize: 11, marginBottom: 10 }}>
         one per capability; opening one starts an unsaved copy you can change, save and deploy
       </div>
       {samples.map((s) => (
@@ -323,19 +323,19 @@ export function FlowsPage({
             gap: 10,
             padding: "8px 10px",
             marginBottom: 6,
-            background: "#0e1a2f",
-            border: "1px solid #1b2a45",
+            background: "var(--surface-2)",
+            border: "1px solid var(--border)",
             borderRadius: 4,
           }}
         >
           <div style={{ flex: 1 }}>
-            <div style={{ color: "#6fd3e0", fontSize: 13 }}>{s.title}</div>
-            <div style={{ color: "#cfe3ff", fontSize: 11, margin: "2px 0" }}>{s.description}</div>
-            <div style={{ color: "#7e8ea8", fontSize: 10 }}>
+            <div style={{ color: "var(--accent)", fontSize: 13 }}>{s.title}</div>
+            <div style={{ color: "var(--body)", fontSize: 11, margin: "2px 0" }}>{s.description}</div>
+            <div style={{ color: "var(--faint)", fontSize: 10 }}>
               shows {s.shows.join(" · ")}
               {s.secrets && s.secrets.length > 0 && <> · needs secrets {s.secrets.map((x) => (x.from ? `${x.name} (${x.from})` : x.name)).join(", ")} (set under ⚙)</>}
             </div>
-            <div style={{ color: "#7e8ea8", fontSize: 10 }} title="once deployed">
+            <div style={{ color: "var(--faint)", fontSize: 10 }} title="once deployed">
               try: {s.tryIt}
             </div>
           </div>
@@ -370,14 +370,14 @@ export function FlowsPage({
 function UsedBy({ uses, lead, title }: { uses: HolonUse[]; lead: string; title: string }) {
   if (uses.length === 0) return null;
   return (
-    <div style={{ color: "#7e8ea8", fontSize: 11, marginTop: 4 }} title={title}>
+    <div style={{ color: "var(--faint)", fontSize: 11, marginTop: 4 }} title={title}>
       {lead}{" "}
       {uses.map((u, i) => (
         <span key={u.user}>
           {i > 0 && ", "}
-          <span style={{ color: "#cfe3ff" }}>{u.user}</span>
+          <span style={{ color: "var(--body)" }}>{u.user}</span>
           {u.nodes > 1 && ` ×${u.nodes}`}
-          {!u.current && <span style={{ color: "#e0c36f" }}> (an older save)</span>}
+          {!u.current && <span style={{ color: "var(--warn)" }}> (an older save)</span>}
         </span>
       ))}
     </div>
@@ -409,17 +409,17 @@ export function DeployedPage({
 }) {
   return (
     <div style={{ maxWidth: 760 }}>
-      <div style={{ color: "#cfe3ff", fontSize: 14, letterSpacing: "0.04em", marginBottom: 4 }}>
+      <div style={{ color: "var(--body)", fontSize: 14, letterSpacing: "0.04em", marginBottom: 4 }}>
         deployed
       </div>
-      <div style={{ color: "#9fb4d4", fontSize: 11, marginBottom: 12 }}>
+      <div style={{ color: "var(--muted)", fontSize: 11, marginBottom: 12 }}>
         {deployments.length} deployment{deployments.length === 1 ? "" : "s"} ·{" "}
         {deployments.reduce((a, d) => a + d.trigger_count, 0)} fires ·{" "}
         {deployments.reduce((a, d) => a + d.error_count, 0)} errors
       </div>
-      {error && <div style={{ color: "#e0916f", fontSize: 12, marginBottom: 8 }}>{error}</div>}
+      {error && <div style={{ color: "var(--bad)", fontSize: 12, marginBottom: 8 }}>{error}</div>}
       {deployments.length === 0 && (
-        <div style={{ color: "#9fb4d4", fontSize: 12 }}>
+        <div style={{ color: "var(--muted)", fontSize: 12 }}>
           nothing deployed — project a flow on the canvas, then deploy it
         </div>
       )}
@@ -450,15 +450,15 @@ export function ActivityList({ version, bare = false }: { version: string; bare?
       .then(setEntries)
       .catch(() => setEntries(null));
   }, [version]);
-  if (!entries || entries.length === 0) return bare ? <span style={{ color: "#7e8ea8", fontSize: 11 }}>nothing yet</span> : null;
+  if (!entries || entries.length === 0) return bare ? <span style={{ color: "var(--faint)", fontSize: 11 }}>nothing yet</span> : null;
   return (
     <div style={{ marginTop: bare ? 0 : 20 }}>
-      {!bare && <div style={{ color: "#cfe3ff", fontSize: 13, letterSpacing: "0.04em", marginBottom: 6 }}>activity</div>}
+      {!bare && <div style={{ color: "var(--body)", fontSize: 13, letterSpacing: "0.04em", marginBottom: 6 }}>activity</div>}
       {entries.map((e, i) => (
-        <div key={i} style={{ color: "#9fb4d4", fontSize: 11, padding: "2px 0" }}>
-          <span style={{ color: "#7e8ea8" }}>{new Date(e.at * 1000).toLocaleString()}</span> · {e.action}{" "}
-          <span style={{ color: "#6fd3e0" }}>{e.target}</span>
-          {e.by && <span style={{ color: "#7e8ea8" }}> · by {e.by}</span>}
+        <div key={i} style={{ color: "var(--muted)", fontSize: 11, padding: "2px 0" }}>
+          <span style={{ color: "var(--faint)" }}>{new Date(e.at * 1000).toLocaleString()}</span> · {e.action}{" "}
+          <span style={{ color: "var(--accent)" }}>{e.target}</span>
+          {e.by && <span style={{ color: "var(--faint)" }}> · by {e.by}</span>}
         </div>
       ))}
     </div>

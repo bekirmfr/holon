@@ -10,10 +10,10 @@ import { ActivityList } from "./Pages";
 import type { Sample } from "./samples";
 import type { Listing } from "./marketplace";
 
-const small: CSSProperties = { font: "inherit", fontSize: 11, padding: "2px 8px", color: "#9fb4d4", background: "#0e1a2f", border: "1px solid #1b2a45", borderRadius: 3, cursor: "pointer" };
-const primary: CSSProperties = { ...small, color: "#0e1a2f", background: "#6fd3e0", border: "none" };
-const link: CSSProperties = { font: "inherit", fontSize: 12, color: "#6fd3e0", background: "transparent", border: "none", padding: 0, cursor: "pointer", textAlign: "left" };
-const dim: CSSProperties = { color: "#7e8ea8", fontSize: 11 };
+const small: CSSProperties = { font: "inherit", fontSize: 11, padding: "2px 8px", color: "var(--muted)", background: "var(--surface-2)", border: "1px solid var(--border)", borderRadius: 3, cursor: "pointer" };
+const primary: CSSProperties = { ...small, color: "var(--accent-ink)", background: "var(--accent)", border: "none" };
+const link: CSSProperties = { font: "inherit", fontSize: 12, color: "var(--accent)", background: "transparent", border: "none", padding: 0, cursor: "pointer", textAlign: "left" };
+const dim: CSSProperties = { color: "var(--faint)", fontSize: 11 };
 
 export type HomeActions = {
   newFlow: () => void;
@@ -104,7 +104,7 @@ export function HomePage({
                 <button style={link} onClick={() => actions.viewDeployment(d.slug)} title="view it, with its runs">
                   {d.slug}
                 </button>
-                <span style={{ color: d.status === "running" ? "#9ad29f" : "#e0c36f", fontSize: 11 }}>{d.status}</span>
+                <span style={{ color: d.status === "running" ? "var(--ok)" : "var(--warn)", fontSize: 11 }}>{d.status}</span>
                 <span style={dim}>
                   {d.port ? `:${d.port} · ` : ""}
                   {d.trigger_count} runs{d.error_count ? `, ${d.error_count} failed` : ""}
@@ -125,7 +125,7 @@ export function HomePage({
           <div style={{ display: "grid", gap: 4 }}>
             {market.entries.slice(0, 8).map(({ listing, adoption }) => (
               <span key={listing.id} style={{ display: "flex", gap: 8 }}>
-                <span style={{ color: "#cfe3ff" }}>{listing.name}</span>
+                <span style={{ color: "var(--body)" }}>{listing.name}</span>
                 <span style={dim}>
                   {listing.description}
                   {adoption ? ` · ↑${adoption}` : ""}
@@ -152,7 +152,7 @@ export function HomePage({
             defaultValue={p.note ?? ""}
             placeholder="anything you want to keep here"
             onBlur={(e) => e.target.value !== (p.note ?? "") && onPanes(changePane(panes, p.id, { note: e.target.value }))}
-            style={{ font: "inherit", fontSize: 12, width: "100%", minHeight: 90, color: "#e6eefb", background: "#0b1527", border: "1px solid #1b2a45", borderRadius: 3, padding: 6, resize: "vertical", boxSizing: "border-box" }}
+            style={{ font: "inherit", fontSize: 12, width: "100%", minHeight: 90, color: "var(--ink)", background: "var(--bg)", border: "1px solid var(--border)", borderRadius: 3, padding: 6, resize: "vertical", boxSizing: "border-box" }}
           />
         );
       case "guide": {
@@ -165,7 +165,7 @@ export function HomePage({
         return (
           <div style={{ display: "grid", gap: 4 }}>
             {steps.map(([what, done]) => (
-              <span key={what} style={{ color: done ? "#9ad29f" : "#9fb4d4" }}>
+              <span key={what} style={{ color: done ? "var(--ok)" : "var(--muted)" }}>
                 {done ? "✓" : "○"} {what}
               </span>
             ))}
@@ -181,17 +181,17 @@ export function HomePage({
   return (
     <div style={{ maxWidth: 980 }}>
       {warnings.length > 0 && (
-        <div role="alert" aria-label="what the host warns of" style={{ marginBottom: 12, padding: "8px 10px", border: "1px solid #e5484d", borderRadius: 4, background: "#2a1418", fontSize: 12, display: "grid", gap: 4 }}>
+        <div role="alert" aria-label="what the host warns of" style={{ marginBottom: 12, padding: "8px 10px", border: "1px solid var(--bad)", borderRadius: 4, background: "var(--bad-bg)", fontSize: 12, display: "grid", gap: 4 }}>
           {warnings.map((w) => (
             <div key={w.key}>
-              <span style={{ color: "#ffb3b5" }}>⚠ {w.says}</span>
-              <div style={{ color: "#c9a5a7", fontSize: 11 }}>{w.todo}</div>
+              <span style={{ color: "var(--bad-ink)" }}>⚠ {w.says}</span>
+              <div style={{ color: "var(--bad-ink)", fontSize: 11 }}>{w.todo}</div>
             </div>
           ))}
         </div>
       )}
       <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12 }}>
-        <span style={{ color: "#cfe3ff", fontSize: 14, letterSpacing: "0.04em", flex: 1 }}>home</span>
+        <span style={{ color: "var(--body)", fontSize: 14, letterSpacing: "0.04em", flex: 1 }}>home</span>
         {customizing && (
           <select
             aria-label="add a pane"
@@ -217,10 +217,10 @@ export function HomePage({
           <section
             key={p.id}
             aria-label={PANE_INFO[p.kind].title}
-            style={{ gridColumn: p.wide ? "1 / -1" : undefined, background: "#0e1a2f", border: "1px solid #1b2a45", borderRadius: 6, padding: 12, minWidth: 0 }}
+            style={{ gridColumn: p.wide ? "1 / -1" : undefined, background: "var(--surface-2)", border: "1px solid var(--border)", borderRadius: 6, padding: 12, minWidth: 0 }}
           >
             <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 8 }}>
-              <span style={{ color: "#cfe3ff", fontSize: 12, letterSpacing: "0.04em", flex: 1 }}>{PANE_INFO[p.kind].title}</span>
+              <span style={{ color: "var(--body)", fontSize: 12, letterSpacing: "0.04em", flex: 1 }}>{PANE_INFO[p.kind].title}</span>
               {customizing && (
                 <>
                   <button style={small} disabled={i === 0} onClick={() => onPanes(movePane(panes, p.id, -1))} aria-label={`move ${PANE_INFO[p.kind].title} earlier`}>
@@ -238,7 +238,7 @@ export function HomePage({
                 </>
               )}
             </div>
-            <div style={{ fontSize: 12, color: "#9fb4d4" }}>{body(p)}</div>
+            <div style={{ fontSize: 12, color: "var(--muted)" }}>{body(p)}</div>
           </section>
         ))}
       </div>

@@ -28,22 +28,22 @@ import {
 import { useDryRun } from "./DryRun";
 
 const POLL_MS = 3000;
-const dim = "#7e8ea8";
-const ink = "#e6eefb";
-const good = "#9ad29f";
-const bad = "#e0916f";
+const dim = "var(--faint)";
+const ink = "var(--ink)";
+const good = "var(--ok)";
+const bad = "var(--bad)";
 const small: CSSProperties = {
   font: "inherit",
   fontSize: 11,
-  color: "#9fb4d4",
+  color: "var(--muted)",
   background: "transparent",
-  border: "1px solid #1b2a45",
+  border: "1px solid var(--border)",
   borderRadius: 3,
   padding: "1px 8px",
   cursor: "pointer",
 };
 const time = (ms: number) => new Date(ms).toLocaleTimeString();
-const KIND_COLOR: Record<string, string> = { deploy: "#6fd3e0", restore: "#e0c36f", grant: "#b59fe0", secret: "#e0c36f", binding: "#9fb4d4", lifecycle: dim };
+const KIND_COLOR: Record<string, string> = { deploy: "var(--accent)", restore: "var(--warn)", grant: "var(--db)", secret: "var(--warn)", binding: "var(--muted)", lifecycle: dim };
 
 /** The deployment's events and versions, polled. */
 export function useHistory(slug: string) {
@@ -194,14 +194,14 @@ export function HistoryList({
 
   return (
     <div className="hl-history" style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0, minWidth: 0 }}>
-      <div style={{ display: "flex", flexWrap: "wrap", gap: 4, alignItems: "center", padding: "2px 6px", borderBottom: "1px solid #1b2a45", fontSize: 10, flexShrink: 0 }}>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 4, alignItems: "center", padding: "2px 6px", borderBottom: "1px solid var(--border)", fontSize: 10, flexShrink: 0 }}>
         {TIMELINE_FILTERS.map(([f, name, title]) => (
           <button
             key={f}
             onClick={() => toggle(f)}
             title={`show ${title}`}
             aria-pressed={shown.has(f)}
-            style={{ ...small, fontSize: 10, padding: "0 6px", color: shown.has(f) ? ink : dim, borderColor: shown.has(f) ? "#2c4a6e" : "#1b2a45" }}
+            style={{ ...small, fontSize: 10, padding: "0 6px", color: shown.has(f) ? ink : dim, borderColor: shown.has(f) ? "var(--sel)" : "var(--border)" }}
           >
             {name}
           </button>
@@ -243,7 +243,7 @@ function HistoryRow({ item, active, onClick, back }: { item: TimelineItem; activ
     cursor: "pointer",
     borderRadius: 3,
     alignItems: "baseline",
-    background: active ? "#13243f" : "transparent",
+    background: active ? "var(--surface)" : "transparent",
   };
   const badge = (text: string, color: string) => <span style={{ color, width: 58, flexShrink: 0, fontSize: 10 }}>{text}</span>;
   const when = <span style={{ color: dim, width: 76, flexShrink: 0, whiteSpace: "nowrap" }}>{time(item.at_ms)}</span>;
@@ -255,7 +255,7 @@ function HistoryRow({ item, active, onClick, back }: { item: TimelineItem; activ
       <div className="hl-history__row" data-kind="run" aria-selected={active} style={row} onClick={onClick}>
         {when}
         {badge(`run #${r.seq}`, dim)}
-        <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: "#9fb4d4" }}>
+        <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: "var(--muted)" }}>
           {r.route ?? r.kind} · s{r.session}
         </span>
         <span style={{ color: r.error || (r.status ?? 0) >= 400 ? bad : good, flexShrink: 0 }}>{r.error ? "err" : (r.status ?? "")}</span>
@@ -319,7 +319,7 @@ function RestoreBar({
   const codeFrom = target.code ? `${pointLabel(target.code)}'s code` : "its code";
   const stateFrom = target.state ? `the state ${pointLabel(target.state)} left` : "its state";
   return (
-    <div className="hl-history__restore" style={{ display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center", padding: "3px 8px", borderBottom: "1px solid #1b2a45" }}>
+    <div className="hl-history__restore" style={{ display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center", padding: "3px 8px", borderBottom: "1px solid var(--border)" }}>
       <span style={{ color: ink }}>{target.label}</span>
       {onShowVersion && (
         <button style={small} onClick={onShowVersion} title="show its canvas">

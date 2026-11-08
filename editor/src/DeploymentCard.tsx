@@ -27,19 +27,19 @@ import {
 const small: CSSProperties = {
   font: "inherit",
   fontSize: 11,
-  color: "#9fb4d4",
+  color: "var(--muted)",
   background: "transparent",
-  border: "1px solid #1b2a45",
+  border: "1px solid var(--border)",
   borderRadius: 3,
   padding: "1px 8px",
   cursor: "pointer",
 };
-const field: CSSProperties = { ...small, color: "#e6eefb", background: "#0e1a2f", cursor: "text" };
+const field: CSSProperties = { ...small, color: "var(--ink)", background: "var(--surface-2)", cursor: "text" };
 
 const STATUS_LOOK: Record<DeploymentStatus, { mark: string; color: string }> = {
-  running: { mark: "●", color: "#9ad29f" },
-  paused: { mark: "❚❚", color: "#f2b441" },
-  stopped: { mark: "■", color: "#7e8ea8" },
+  running: { mark: "●", color: "var(--ok)" },
+  paused: { mark: "❚❚", color: "var(--warn)" },
+  stopped: { mark: "■", color: "var(--faint)" },
 };
 
 const time = (secs: number) => new Date(secs * 1000).toLocaleTimeString();
@@ -101,16 +101,16 @@ export function DeploymentCard({
   const actions = entry.triggers.filter((t) => t.startsWith("action ")).map((t) => t.slice("action ".length));
 
   return (
-    <div ref={card} aria-label={`deployment ${entry.slug}`} style={{ borderTop: "1px solid #1b2a45", padding: "8px 0", fontSize: 11, display: "flex", flexDirection: "column", gap: 4 }}>
+    <div ref={card} aria-label={`deployment ${entry.slug}`} style={{ borderTop: "1px solid var(--border)", padding: "8px 0", fontSize: 11, display: "flex", flexDirection: "column", gap: 4 }}>
       <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
         <span style={{ color: look.color }} title={entry.status}>
           {look.mark}
         </span>
-        <span style={{ color: "#6fd3e0" }}>{entry.slug}</span>
+        <span style={{ color: "var(--accent)" }}>{entry.slug}</span>
         <span style={{ color: look.color }}>{entry.status}</span>
-        <span style={{ color: "#9fb4d4", flex: 1 }}>
+        <span style={{ color: "var(--muted)", flex: 1 }}>
           {entry.triggers.join(", ")}
-          {entry.deployed_by && <span style={{ color: "#7e8ea8" }} title="who deployed this version"> · by {entry.deployed_by}</span>}
+          {entry.deployed_by && <span style={{ color: "var(--faint)" }} title="who deployed this version"> · by {entry.deployed_by}</span>}
         </span>
         {entry.status === "running" && (
           <>
@@ -149,7 +149,7 @@ export function DeploymentCard({
                 </option>
               ))}
             </select>
-            <button style={{ ...small, color: "#0e1a2f", background: "#6fd3e0", border: "none" }} onClick={runFrom}>
+            <button style={{ ...small, color: "var(--accent-ink)", background: "var(--accent)", border: "none" }} onClick={runFrom}>
               run
             </button>
           </>
@@ -167,21 +167,21 @@ export function DeploymentCard({
         </button>
       </div>
 
-      <div style={{ color: "#7e8ea8", fontSize: 10 }}>
+      <div style={{ color: "var(--faint)", fontSize: 10 }}>
         {entry.port !== null && <span>:{entry.port} · </span>}
         {entry.has_state && <span>state · </span>}
         session {entry.session} · {entry.trigger_count} fired
         {entry.error_count > 0 ? `, ${entry.error_count} errored` : ""}
         {unrecorded > 0 && <span title="runs of its unrecorded handlers: counted, not logged">, {unrecorded} not recorded</span>} ·{" "}
-        <span style={{ cursor: "pointer", color: "#9fb4d4" }} onClick={() => setOpen(!open)}>
+        <span style={{ cursor: "pointer", color: "var(--muted)" }} onClick={() => setOpen(!open)}>
           {entry.sessions} session{entry.sessions === 1 ? "" : "s"} {open ? "▾" : "▸"}
         </span>
       </div>
       {entry.attention && (
-        <div style={{ color: "#e0916f", fontSize: 11 }}>⚠ {entry.attention}</div>
+        <div style={{ color: "var(--bad)", fontSize: 11 }}>⚠ {entry.attention}</div>
       )}
       {entry.listen_error && (
-        <div style={{ color: "#e0916f", fontSize: 11 }}>⚠ not answering: {entry.listen_error}</div>
+        <div style={{ color: "var(--bad)", fontSize: 11 }}>⚠ not answering: {entry.listen_error}</div>
       )}
       {(entry.waiting ?? 0) > 0 && <WaitingRuns slug={entry.slug} count={entry.waiting ?? 0} />}
       <ManifestSection
@@ -195,15 +195,15 @@ export function DeploymentCard({
 
       {open &&
         (sessions ?? []).slice().reverse().map((s) => (
-          <div key={s.number} style={{ display: "flex", gap: 8, alignItems: "center", paddingLeft: 14, color: "#9fb4d4" }}>
-            <span style={{ color: "#e6eefb", width: 22 }}>#{s.number}</span>
+          <div key={s.number} style={{ display: "flex", gap: 8, alignItems: "center", paddingLeft: 14, color: "var(--muted)" }}>
+            <span style={{ color: "var(--ink)", width: 22 }}>#{s.number}</span>
             <span style={{ width: 150 }}>
               {time(s.started_at)} → {s.ended_at === null ? <span style={{ color: look.color }}>now</span> : time(s.ended_at)}
             </span>
             <span style={{ width: 80 }}>
               {s.requests} req · {s.errors} err
             </span>
-            <span style={{ flex: 1, color: "#7e8ea8" }} title={`started from ${s.from}`}>
+            <span style={{ flex: 1, color: "var(--faint)" }} title={`started from ${s.from}`}>
               {s.ended_at === null ? `from ${s.from}` : summarizeState(s.state)}
             </span>
             {stopped && s.state !== null && (
@@ -219,7 +219,7 @@ export function DeploymentCard({
           <ActionRows names={actions} slug={entry.status === "running" ? entry.slug : ""} role={role} onViewRun={(seq) => onView(seq)} />
         </div>
       )}
-      {msg && <div style={{ color: "#e0916f" }}>{msg}</div>}
+      {msg && <div style={{ color: "var(--bad)" }}>{msg}</div>}
     </div>
   );
 }
@@ -241,15 +241,15 @@ function Holds({ slug, version }: { slug: string; version: number }) {
   }, [open, slug, version]);
   return (
     <>
-      <div style={{ color: "#9fb4d4", cursor: "pointer", fontSize: 11 }} onClick={() => setOpen(!open)} title="what it holds in memory and on disk">
-        holds {holds && !open ? <span style={{ color: "#7e8ea8" }}>about {sizeOf(holds.memory)} in memory, {sizeOf(holds.disk)} on disk </span> : null}
+      <div style={{ color: "var(--muted)", cursor: "pointer", fontSize: 11 }} onClick={() => setOpen(!open)} title="what it holds in memory and on disk">
+        holds {holds && !open ? <span style={{ color: "var(--faint)" }}>about {sizeOf(holds.memory)} in memory, {sizeOf(holds.disk)} on disk </span> : null}
         {open ? "▾" : "▸"}
       </div>
-      {open && msg && <div style={{ paddingLeft: 14, color: "#e0916f" }}>{msg}</div>}
+      {open && msg && <div style={{ paddingLeft: 14, color: "var(--bad)" }}>{msg}</div>}
       {open &&
         holds &&
         holdsLines(holds, Date.now()).map((l) => (
-          <div key={l} style={{ paddingLeft: 14, color: "#7e8ea8" }}>
+          <div key={l} style={{ paddingLeft: 14, color: "var(--faint)" }}>
             {l}
           </div>
         ))}
@@ -301,14 +301,14 @@ function Permissions({ slug, version, onChanged, focus }: { slug: string; versio
   const row: CSSProperties = { display: "flex", gap: 8, alignItems: "center", paddingLeft: 14 };
   return (
     <div style={{ fontSize: 10 }}>
-      <span style={{ cursor: "pointer", color: "#9fb4d4" }} onClick={() => setOpen(!open)}>
+      <span style={{ cursor: "pointer", color: "var(--muted)" }} onClick={() => setOpen(!open)}>
         permissions {open ? "▾" : "▸"}
       </span>
-      {open && msg && <div style={{ ...row, color: "#e0916f" }}>{msg}</div>}
+      {open && msg && <div style={{ ...row, color: "var(--bad)" }}>{msg}</div>}
       {open && grant && (
         <>
           {grant.items.map((item) => (
-            <div key={item} style={{ ...row, color: "#9fb4d4" }} title={item}>
+            <div key={item} style={{ ...row, color: "var(--muted)" }} title={item}>
               <span style={{ flex: 1 }}>✓ {describeItem(item)}</span>
               {!item.startsWith("Limit(") && <KindBadge item={item} optional={kinds.optional} trigger={kinds.trigger} />}
               <button style={small} onClick={() => change({ revoke: [item] })} title={revokeTitle(item)}>
@@ -317,7 +317,7 @@ function Permissions({ slug, version, onChanged, focus }: { slug: string; versio
             </div>
           ))}
           {(grant.revoked ?? []).map((item) => (
-            <div key={item} style={{ ...row, color: "#e0916f" }} title={item}>
+            <div key={item} style={{ ...row, color: "var(--bad)" }} title={item}>
               <span style={{ flex: 1, textDecoration: "line-through" }}>{describeItem(item)}</span>
               {!item.startsWith("Limit(") && <KindBadge item={item} optional={kinds.optional} trigger={kinds.trigger} />}
               <button style={small} onClick={() => change({ grant: [item] })} title="grant it back">
@@ -326,11 +326,11 @@ function Permissions({ slug, version, onChanged, focus }: { slug: string; versio
             </div>
           ))}
           {Object.entries(grant.lowered ?? {}).map(([name, n]) => (
-            <div key={name} style={{ ...row, color: "#e0c36f" }}>
+            <div key={name} style={{ ...row, color: "var(--warn)" }}>
               {name} lowered to {n}
             </div>
           ))}
-          <label style={{ ...row, color: "#9fb4d4" }} title="when the grant doesn't cover what it needs">
+          <label style={{ ...row, color: "var(--muted)" }} title="when the grant doesn't cover what it needs">
             <input
               type="checkbox"
               checked={grant.keep_running ?? false}
@@ -339,7 +339,7 @@ function Permissions({ slug, version, onChanged, focus }: { slug: string; versio
             keep running when something required is revoked (those calls fail) instead of pausing
           </label>
           {(grant.changes ?? []).slice(-5).map((c, i) => (
-            <div key={i} style={{ ...row, color: "#7e8ea8" }}>
+            <div key={i} style={{ ...row, color: "var(--faint)" }}>
               {new Date(c.at * 1000).toLocaleString()} · {c.change}
             </div>
           ))}
@@ -358,12 +358,12 @@ function WaitingRuns({ slug, count }: { slug: string; count: number }) {
   const when = (s: number) => new Date(s * 1000).toLocaleString();
   return (
     <div style={{ fontSize: 10 }}>
-      <span style={{ cursor: "pointer", color: "#e0c36f" }} onClick={() => setOpen(!open)}>
+      <span style={{ cursor: "pointer", color: "var(--warn)" }} onClick={() => setOpen(!open)}>
         ⏸ {count} waiting {open ? "▾" : "▸"}
       </span>
       {open &&
         (runs ?? []).map((r) => (
-          <div key={r.run_id} style={{ paddingLeft: 14, color: "#9fb4d4" }} title={`run ${r.run_id}`}>
+          <div key={r.run_id} style={{ paddingLeft: 14, color: "var(--muted)" }} title={`run ${r.run_id}`}>
             {r.route ?? r.kind} · since {when(r.parked_at)} ·{" "}
             {r.waiting.map((w) => `waits for "${w.name}" until ${when(w.expires_at)}`).join("; ")}
           </div>

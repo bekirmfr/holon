@@ -771,7 +771,7 @@ function Canvas({
     try {
       return <UnitTree hash={unitFor(inspected, ev)} ev={ev} />;
     } catch (err) {
-      return <div style={{ color: "#e0916f" }}>{err instanceof Error ? err.message : String(err)}</div>;
+      return <div style={{ color: "var(--bad)" }}>{err instanceof Error ? err.message : String(err)}</div>;
     }
   }, [inspected, ev]);
 
@@ -904,7 +904,7 @@ function Canvas({
           onConnect={onConnect}
           isValidConnection={isValidConnection}
           nodeTypes={nodeTypes}
-          connectionLineStyle={{ stroke: "#6fd3e0", strokeWidth: 1.6 }}
+          connectionLineStyle={{ stroke: "var(--accent)", strokeWidth: 1.6 }}
           fitView={false}
           minZoom={0.4}
           maxZoom={2}
@@ -918,7 +918,7 @@ function Canvas({
           nodesDraggable={!viewing}
           nodesConnectable={!viewing}
         >
-          <Background variant={BackgroundVariant.Lines} gap={26} color="#1b2a45" />
+          <Background variant={BackgroundVariant.Lines} gap={26} color="var(--border)" />
           <Controls showInteractive={false} />
           <Panel position="top-left">
             <FlowToolbar
@@ -986,7 +986,7 @@ function Canvas({
             position: "absolute",
             inset: 0,
             zIndex: 10,
-            background: "#0b1526",
+            background: "var(--bg)",
             overflow: "auto",
             padding: 24,
           }}
@@ -1021,7 +1021,7 @@ function Canvas({
             />
           )}
           {shown === "docs" && (
-            <Suspense fallback={<div style={{ color: "#7e8ea8" }}>loading the manual…</div>}>
+            <Suspense fallback={<div style={{ color: "var(--faint)" }}>loading the manual…</div>}>
               <ManualPage at={manualAt} onGo={setManualAt} onTry={openText} />
             </Suspense>
           )}
@@ -1191,9 +1191,9 @@ function Editor({ me }: { me: Me }) {
     fontSize: 12,
     letterSpacing: "0.04em",
     padding: "3px 10px",
-    color: active ? "#0e1a2f" : "#9fb4d4",
-    background: active ? "#6fd3e0" : "transparent",
-    border: "1px solid #1b2a45",
+    color: active ? "var(--accent-ink)" : "var(--muted)",
+    background: active ? "var(--accent)" : "transparent",
+    border: "1px solid var(--border)",
     borderRadius: 3,
     cursor: enabled ? "pointer" : "default",
     opacity: enabled ? 1 : 0.4,

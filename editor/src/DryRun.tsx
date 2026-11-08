@@ -40,7 +40,7 @@ export function useDryRun(): { ask: (report: DryRunReport) => Promise<boolean>; 
   return { ask, modal: shown ? createPortal(<DryRunModal report={shown.report} onClose={close} />, document.body) : null };
 }
 
-const heading = { color: "#6fd3e0", fontSize: 11, textTransform: "uppercase", letterSpacing: "0.04em" } as const;
+const heading = { color: "var(--accent)", fontSize: 11, textTransform: "uppercase", letterSpacing: "0.04em" } as const;
 
 function DryRunModal({ report, onClose }: { report: DryRunReport; onClose: (ok: boolean) => void }) {
   const ok = useRef<HTMLButtonElement>(null);
@@ -73,17 +73,17 @@ function DryRunModal({ report, onClose }: { report: DryRunReport; onClose: (ok: 
       aria-label="dry run"
       className="hl-dryrun"
       onMouseDown={(e) => e.target === e.currentTarget && onClose(false)}
-      style={{ position: "fixed", inset: 0, background: "rgba(5, 10, 20, 0.6)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1100 }}
+      style={{ position: "fixed", inset: 0, background: "var(--overlay)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1100 }}
     >
       <div
         style={{
-          background: "#0e1a2f",
-          border: "1px solid #1b2a45",
+          background: "var(--surface-2)",
+          border: "1px solid var(--border)",
           borderRadius: 6,
           padding: 16,
           width: diff.open ? 920 : 560,
           maxWidth: "calc(100vw - 32px)",
-          color: "#e6eefb",
+          color: "var(--ink)",
           fontSize: 13,
           display: "flex",
           flexDirection: "column",
@@ -91,13 +91,13 @@ function DryRunModal({ report, onClose }: { report: DryRunReport; onClose: (ok: 
         }}
       >
         <div style={{ display: "flex", gap: 8, alignItems: "baseline" }}>
-          <span style={{ color: "#0e1a2f", background: "#e0c36f", borderRadius: 3, padding: "0 6px", fontSize: 11, flexShrink: 0 }}>dry run</span>
+          <span style={{ color: "var(--accent-ink)", background: "var(--warn)", borderRadius: 3, padding: "0 6px", fontSize: 11, flexShrink: 0 }}>dry run</span>
           <span style={{ fontWeight: 600 }}>{report.title}</span>
         </div>
-        <div style={{ color: "#7e8ea8" }}>Nothing has changed yet: this is what it would do.</div>
+        <div style={{ color: "var(--faint)" }}>Nothing has changed yet: this is what it would do.</div>
         <div style={{ display: "flex", flexDirection: "column", gap: 10, maxHeight: "65vh", overflowY: "auto" }}>
           {changes.length > 0 && (
-            <div className="hl-dryrun__changes" style={{ display: "flex", flexDirection: "column", gap: 3, background: "#13223b", borderRadius: 4, padding: "8px 10px" }}>
+            <div className="hl-dryrun__changes" style={{ display: "flex", flexDirection: "column", gap: 3, background: "var(--surface)", borderRadius: 4, padding: "8px 10px" }}>
               <span style={heading}>what it changes</span>
               {changes.map((c, i) => (
                 <span key={i} style={{ fontWeight: 500 }}>
@@ -117,8 +117,8 @@ function DryRunModal({ report, onClose }: { report: DryRunReport; onClose: (ok: 
             </div>
           ))}
           {approvals.length > 0 && (
-            <div className="hl-dryrun__approvals" style={{ display: "flex", flexDirection: "column", gap: 3, borderLeft: "2px solid #e0c36f", paddingLeft: 8 }}>
-              <span style={{ color: "#e0c36f" }}>It needs your approval to:</span>
+            <div className="hl-dryrun__approvals" style={{ display: "flex", flexDirection: "column", gap: 3, borderLeft: "2px solid var(--warn)", paddingLeft: 8 }}>
+              <span style={{ color: "var(--warn)" }}>It needs your approval to:</span>
               {approvals.map((a) => (
                 <span key={a}>• {a}</span>
               ))}
@@ -127,11 +127,11 @@ function DryRunModal({ report, onClose }: { report: DryRunReport; onClose: (ok: 
           {diff.open && (
             <div className="hl-dryrun__diff" style={{ display: "flex", flexDirection: "column", gap: 10 }}>
               {diff.error ? (
-                <span style={{ color: "#e07a6f" }}>The diff can't be worked out: {diff.error}</span>
+                <span style={{ color: "var(--bad)" }}>The diff can't be worked out: {diff.error}</span>
               ) : !diff.diffs ? (
-                <span style={{ color: "#7e8ea8" }}>Working out the diff…</span>
+                <span style={{ color: "var(--faint)" }}>Working out the diff…</span>
               ) : diff.diffs.length === 0 ? (
-                <span style={{ color: "#7e8ea8" }}>Nothing to compare.</span>
+                <span style={{ color: "var(--faint)" }}>Nothing to compare.</span>
               ) : (
                 diff.diffs.map((d) => <DiffView key={d.title} diff={d} />)
               )}
@@ -144,16 +144,16 @@ function DryRunModal({ report, onClose }: { report: DryRunReport; onClose: (ok: 
               onClick={toggleDiff}
               aria-pressed={diff.open}
               title={diff.open ? "hide the diff" : "compare what it would change with what is there now"}
-              style={{ ...button, color: diff.open ? "#0e1a2f" : "#6fd3e0", background: diff.open ? "#6fd3e0" : "transparent", border: "1px solid #6fd3e0" }}
+              style={{ ...button, color: diff.open ? "var(--accent-ink)" : "var(--accent)", background: diff.open ? "var(--accent)" : "transparent", border: "1px solid var(--accent)" }}
             >
               diff
             </button>
           )}
           <span style={{ flex: 1 }} />
-          <button onClick={() => onClose(false)} style={{ ...button, color: "#9fb4d4", background: "transparent", border: "1px solid #1b2a45" }}>
+          <button onClick={() => onClose(false)} style={{ ...button, color: "var(--muted)", background: "transparent", border: "1px solid var(--border)" }}>
             Cancel
           </button>
-          <button ref={ok} onClick={() => onClose(true)} style={{ ...button, color: "#0e1a2f", background: approvals.length > 0 ? "#e0c36f" : "#6fd3e0", border: "none" }}>
+          <button ref={ok} onClick={() => onClose(true)} style={{ ...button, color: "var(--accent-ink)", background: approvals.length > 0 ? "var(--warn)" : "var(--accent)", border: "none" }}>
             {report.action}
           </button>
         </div>
@@ -163,10 +163,10 @@ function DryRunModal({ report, onClose }: { report: DryRunReport; onClose: (ok: 
 }
 
 const lineStyle: Record<string, { color: string; background?: string }> = {
-  "+": { color: "#9fe0a8", background: "rgba(80, 180, 100, 0.14)" },
-  "-": { color: "#f0a49b", background: "rgba(220, 90, 80, 0.14)" },
-  " ": { color: "#c3cfe2" },
-  "…": { color: "#5d6e8a" },
+  "+": { color: "var(--ok)", background: "var(--add-bg)" },
+  "-": { color: "var(--bad)", background: "var(--del-bg)" },
+  " ": { color: "var(--body)" },
+  "…": { color: "var(--faintest)" },
 };
 
 function DiffView({ diff }: { diff: Diff }) {
@@ -175,11 +175,11 @@ function DiffView({ diff }: { diff: Diff }) {
     <div className="hl-dryrun__diffpart" data-title={diff.title} style={{ display: "flex", flexDirection: "column", gap: 4 }}>
       <div style={{ display: "flex", gap: 10, alignItems: "baseline" }}>
         <span style={heading}>{diff.title}</span>
-        <span style={{ color: "#7e8ea8", fontSize: 11 }}>{diff.legend}</span>
+        <span style={{ color: "var(--faint)", fontSize: 11 }}>{diff.legend}</span>
       </div>
-      {diff.note && <span style={{ color: "#7e8ea8", fontSize: 12 }}>{diff.note}</span>}
+      {diff.note && <span style={{ color: "var(--faint)", fontSize: 12 }}>{diff.note}</span>}
       {lines.length > 0 && (
-        <pre style={{ margin: 0, padding: "4px 0", background: "#0a1424", border: "1px solid #1b2a45", borderRadius: 3, fontSize: 12, lineHeight: 1.45, overflowX: "auto" }}>
+        <pre style={{ margin: 0, padding: "4px 0", background: "var(--bg)", border: "1px solid var(--border)", borderRadius: 3, fontSize: 12, lineHeight: 1.45, overflowX: "auto" }}>
           {lines.map((l, i) => (
             <div key={i} className="hl-dryrun__line" data-sign={l.sign} style={{ ...lineStyle[l.sign], padding: "0 8px", whiteSpace: "pre", fontStyle: l.sign === "…" ? "italic" : undefined }}>
               {l.sign === "…" ? `  ⋯ ${l.text}` : `${l.sign} ${l.text}`}

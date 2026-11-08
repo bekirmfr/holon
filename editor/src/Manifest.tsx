@@ -14,7 +14,7 @@ export type ManifestView = { items: string[]; optional?: string[]; trigger?: str
 export function KindBadge({ item, optional, trigger }: { item: string; optional?: string[]; trigger?: string | null }) {
   const { kind, why } = permissionKind(item, optional, trigger);
   return (
-    <span title={why} style={{ color: kind === "required" ? "#e0c36f" : "#7e8ea8", border: "1px solid #1b2a45", borderRadius: 3, padding: "0 4px" }}>
+    <span title={why} style={{ color: kind === "required" ? "var(--warn)" : "var(--faint)", border: "1px solid var(--border)", borderRadius: 3, padding: "0 4px" }}>
       {kind}
     </span>
   );
@@ -37,24 +37,24 @@ export function ManifestSection({ load, version = "" }: { load: () => Promise<Ma
   return (
     <div style={{ fontSize: 10 }}>
       <span
-        style={{ cursor: "pointer", color: "#9fb4d4" }}
+        style={{ cursor: "pointer", color: "var(--muted)" }}
         onClick={() => setOpen(!open)}
         title="what this flow needs: derived from its graph, plus what its deploy settings ask beyond the host's defaults"
       >
         manifest {open ? "▾" : "▸"}
       </span>
-      {open && msg && <div style={{ ...row, color: "#e0916f" }}>{msg}</div>}
-      {open && view && view.items.length === 0 && <div style={{ ...row, color: "#7e8ea8" }}>needs nothing beyond computing its answer</div>}
+      {open && msg && <div style={{ ...row, color: "var(--bad)" }}>{msg}</div>}
+      {open && view && view.items.length === 0 && <div style={{ ...row, color: "var(--faint)" }}>needs nothing beyond computing its answer</div>}
       {open &&
         view?.items.map((item) => (
-          <div key={item} style={{ ...row, color: missing.has(item) ? "#e0916f" : "#9fb4d4" }} title={item}>
+          <div key={item} style={{ ...row, color: missing.has(item) ? "var(--bad)" : "var(--muted)" }} title={item}>
             <span style={{ flex: 1 }}>• {describeItem(item)}</span>
             {missing.has(item) && <span>not granted</span>}
             {!item.startsWith("Limit(") && <KindBadge item={item} optional={view.optional} trigger={view.trigger} />}
           </div>
         ))}
       {open && view?.hash && (
-        <div style={{ ...row, color: "#7e8ea8" }} title={view.hash}>
+        <div style={{ ...row, color: "var(--faint)" }} title={view.hash}>
           manifest {view.hash.slice(0, 12)}…
         </div>
       )}

@@ -12,8 +12,8 @@ const primaryBtn: CSSProperties = {
   font: "inherit",
   fontSize: 11,
   padding: "3px 10px",
-  color: "#0e1a2f",
-  background: "#6fd3e0",
+  color: "var(--accent-ink)",
+  background: "var(--accent)",
   border: "none",
   borderRadius: 3,
   cursor: "pointer",
@@ -23,16 +23,16 @@ const historyBtn = (enabled: boolean): CSSProperties => ({
   font: "inherit",
   fontSize: 11,
   padding: "3px 8px",
-  color: "#9fb4d4",
-  background: "#0e1a2f",
-  border: "1px solid #1b2a45",
+  color: "var(--muted)",
+  background: "var(--surface-2)",
+  border: "1px solid var(--border)",
   borderRadius: 3,
   cursor: enabled ? "pointer" : "default",
   opacity: enabled ? 1 : 0.4,
   whiteSpace: "nowrap",
 });
 
-const KIND_COLOR = { deployed: "#9ad29f", saved: "#9fb4d4", draft: "#e0c36f" } as const;
+const KIND_COLOR = { deployed: "var(--ok)", saved: "var(--muted)", draft: "var(--warn)" } as const;
 
 /** Above the canvas: a tab per open flow, with what it is (draft, saved, deployed), its mode,
  *  unsaved changes, and a close button. */
@@ -122,8 +122,8 @@ function ModeSwitch({ mode, canView, onMode }: { mode: Mode; canView: boolean; o
         fontSize: 11,
         padding: "3px 10px",
         border: "none",
-        color: m === mode ? "#0e1a2f" : "#9fb4d4",
-        background: m === mode ? "#6fd3e0" : "transparent",
+        color: m === mode ? "var(--accent-ink)" : "var(--muted)",
+        background: m === mode ? "var(--accent)" : "transparent",
         cursor: enabled && m !== mode ? "pointer" : "default",
         opacity: enabled ? 1 : 0.4,
       }}
@@ -132,7 +132,7 @@ function ModeSwitch({ mode, canView, onMode }: { mode: Mode; canView: boolean; o
     </button>
   );
   return (
-    <span style={{ display: "inline-flex", border: "1px solid #1b2a45", borderRadius: 3, overflow: "hidden" }}>
+    <span style={{ display: "inline-flex", border: "1px solid var(--border)", borderRadius: 3, overflow: "hidden" }}>
       {seg("edit", true, "the flow as edited: place, wire, save and deploy")}
       {seg("view", canView, canView ? "the flow as deployed, read only, with its runs" : "deploy it to view its runs")}
     </span>
@@ -185,7 +185,7 @@ export function FlowToolbar({
     // histVersion is what makes the undo/redo disabled state live — history itself is a ref
     // (pushing must not re-render the canvas mid-drag), so this re-renders off the counter.
     <div data-hist={histVersion} style={{ display: "flex", gap: 6, alignItems: "center" }}>
-      <span style={{ color: mode === "view" ? "#e6eefb" : "#9fb4d4", fontSize: 12, letterSpacing: "0.04em" }}>
+      <span style={{ color: mode === "view" ? "var(--ink)" : "var(--muted)", fontSize: 12, letterSpacing: "0.04em" }}>
         {flowName ?? "untitled"}
         {dirty && <span title="unsaved changes"> •</span>}
       </span>
@@ -195,7 +195,7 @@ export function FlowToolbar({
       </button>
       {mode === "view" ? (
         <>
-          <span style={{ color: "#7e8ea8", fontSize: 11 }}>deployed · read only</span>
+          <span style={{ color: "var(--faint)", fontSize: 11 }}>deployed · read only</span>
           <button
             onClick={onToggleValues}
             style={historyBtn(true)}
@@ -218,7 +218,7 @@ export function FlowToolbar({
           {deployBar}
         </>
       )}
-      {error && <span style={{ color: "#e0916f", fontSize: 11, maxWidth: 420 }}>{error}</span>}
+      {error && <span style={{ color: "var(--bad)", fontSize: 11, maxWidth: 420 }}>{error}</span>}
     </div>
   );
 }
@@ -228,8 +228,8 @@ const opBtn = (enabled: boolean): CSSProperties => ({
   fontSize: 12,
   letterSpacing: "0.04em",
   padding: "5px 12px",
-  color: "#0e1a2f",
-  background: "#6fd3e0",
+  color: "var(--accent-ink)",
+  background: "var(--accent)",
   border: "none",
   borderRadius: 3,
   cursor: enabled ? "pointer" : "default",
@@ -283,8 +283,8 @@ export function ProjectionPanel({
         ungroup
       </button>
       {projection && (
-        <div style={{ fontSize: 12, color: "#9fb4d4", textAlign: "right", lineHeight: 1.4 }}>
-          <div style={{ color: "#6fd3e0" }} title={projection.hash}>
+        <div style={{ fontSize: 12, color: "var(--muted)", textAlign: "right", lineHeight: 1.4 }}>
+          <div style={{ color: "var(--accent)" }} title={projection.hash}>
             {projection.hash.slice(0, 12)}…
           </div>
           {projection.ports.length > 0 && (
@@ -301,7 +301,7 @@ export function ProjectionPanel({
             </div>
           )}
           {projection.results.length > 0 && (
-            <div style={{ display: "flex", flexDirection: "column", gap: 2, alignItems: "flex-end", color: "#9ad29f" }}>
+            <div style={{ display: "flex", flexDirection: "column", gap: 2, alignItems: "flex-end", color: "var(--ok)" }}>
               {boundaryLabels(projection.outputs, projection.resultSource).map((label, i) => (
                 <div key={i} style={{ display: "flex", alignItems: "center", gap: 6 }}>
                   <span>
@@ -315,9 +315,9 @@ export function ProjectionPanel({
                       font: "inherit",
                       fontSize: 10,
                       lineHeight: 1,
-                      color: "#9fb4d4",
-                      background: "#0e1a2f",
-                      border: "1px solid #1b2a45",
+                      color: "var(--muted)",
+                      background: "var(--surface-2)",
+                      border: "1px solid var(--border)",
                       borderRadius: 3,
                       width: 14,
                       height: 14,
@@ -333,7 +333,7 @@ export function ProjectionPanel({
           )}
         </div>
       )}
-      {error && <div style={{ fontSize: 12, color: "#e0916f", maxWidth: 240, textAlign: "right" }}>{error}</div>}
+      {error && <div style={{ fontSize: 12, color: "var(--bad)", maxWidth: 240, textAlign: "right" }}>{error}</div>}
     </div>
   );
 }

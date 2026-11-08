@@ -5,8 +5,8 @@
 import { useState, type CSSProperties } from "react";
 import { START_STEPS, TOPICS, type Step } from "./guide";
 
-const small: CSSProperties = { font: "inherit", fontSize: 11, padding: "2px 10px", color: "#0e1a2f", background: "#6fd3e0", border: "none", borderRadius: 3, cursor: "pointer" };
-const head: CSSProperties = { color: "#cfe3ff", fontSize: 14, letterSpacing: "0.04em", margin: "22px 0 8px" };
+const small: CSSProperties = { font: "inherit", fontSize: 11, padding: "2px 10px", color: "var(--accent-ink)", background: "var(--accent)", border: "none", borderRadius: 3, cursor: "pointer" };
+const head: CSSProperties = { color: "var(--body)", fontSize: 14, letterSpacing: "0.04em", margin: "22px 0 8px" };
 
 export function WelcomePage({
   name,
@@ -27,8 +27,8 @@ export function WelcomePage({
   const [open, setOpen] = useState<string | null>(TOPICS[0].title);
   const label = { samples: "open the samples", new: "new flow", deployed: "the deployed page", flows: "the flows page" };
   return (
-    <div style={{ maxWidth: 760, color: "#9fb4d4", fontSize: 12, lineHeight: 1.55 }}>
-      <div style={{ color: "#e6eefb", fontSize: 18, marginBottom: 4 }}>Welcome to Holon, {name}</div>
+    <div style={{ maxWidth: 760, color: "var(--muted)", fontSize: 12, lineHeight: 1.55 }}>
+      <div style={{ color: "var(--ink)", fontSize: 18, marginBottom: 4 }}>Welcome to Holon, {name}</div>
       <div>
         Build services by wiring small, pure parts together, deploy them with exactly the permissions they need, and see every run as it
         happened.
@@ -38,7 +38,7 @@ export function WelcomePage({
       <ol style={{ margin: 0, paddingLeft: 20, display: "grid", gap: 10 }}>
         {START_STEPS.map((s) => (
           <li key={s.title}>
-            <span style={{ color: "#e6eefb" }}>{s.title}.</span> {s.body}{" "}
+            <span style={{ color: "var(--ink)" }}>{s.title}.</span> {s.body}{" "}
             {s.action && (
               <button style={small} onClick={() => onAction(s.action!)}>
                 {label[s.action]}
@@ -56,11 +56,11 @@ export function WelcomePage({
         </button>
       </div>
       {TOPICS.map((t) => (
-        <section key={t.title} style={{ borderTop: "1px solid #1b2a45" }}>
+        <section key={t.title} style={{ borderTop: "1px solid var(--border)" }}>
           <button
             aria-expanded={open === t.title}
             onClick={() => setOpen(open === t.title ? null : t.title)}
-            style={{ font: "inherit", fontSize: 13, color: "#cfe3ff", background: "transparent", border: "none", padding: "8px 0", cursor: "pointer", width: "100%", textAlign: "left" }}
+            style={{ font: "inherit", fontSize: 13, color: "var(--body)", background: "transparent", border: "none", padding: "8px 0", cursor: "pointer", width: "100%", textAlign: "left" }}
           >
             {open === t.title ? "▾" : "▸"} {t.title}
           </button>
@@ -68,11 +68,11 @@ export function WelcomePage({
         </section>
       ))}
 
-      <label style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 22, color: "#cfe3ff" }}>
+      <label style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 22, color: "var(--body)" }}>
         <input type="checkbox" checked={showOnStart} onChange={(e) => onShowOnStart(e.target.checked)} />
         show this on start
       </label>
-      <div style={{ color: "#7e8ea8", fontSize: 11, marginTop: 4 }}>Kept with your account. It is always under your name in the header.</div>
+      <div style={{ color: "var(--faint)", fontSize: 11, marginTop: 4 }}>Kept with your account. It is always under your name in the header.</div>
     </div>
   );
 }

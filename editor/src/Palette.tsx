@@ -50,7 +50,7 @@ function chevron(open: boolean) {
 const headStyle: React.CSSProperties = {
   display: "flex", alignItems: "center", width: "100%",
   font: "inherit", background: "transparent", border: "none",
-  color: "var(--ink-dim)", cursor: "pointer", textAlign: "left",
+  color: "var(--faint)", cursor: "pointer", textAlign: "left",
   padding: "10px 14px 8px", fontSize: 11, letterSpacing: "0.14em",
   textTransform: "uppercase",
 };
@@ -58,7 +58,7 @@ const headStyle: React.CSSProperties = {
 const subHeadStyle: React.CSSProperties = {
   display: "flex", alignItems: "center", width: "100%",
   font: "inherit", background: "transparent", border: "none",
-  color: "var(--ink-dim)", cursor: "pointer", textAlign: "left",
+  color: "var(--faint)", cursor: "pointer", textAlign: "left",
   padding: "5px 14px 4px 18px", fontSize: 10, letterSpacing: "0.10em",
   textTransform: "uppercase",
 };
@@ -167,7 +167,7 @@ export function Palette({
       {sections.has("flows") && (
         <div className="hl-palette__list" style={{ flex: "none", maxHeight: 160 }}>
           {flows.length === 0 && (
-            <div style={{ color: "var(--ink-dim)", fontSize: 11, padding: "2px 8px" }}>
+            <div style={{ color: "var(--faint)", fontSize: 11, padding: "2px 8px" }}>
               save a flow to place it here
             </div>
           )}
@@ -175,7 +175,7 @@ export function Palette({
             <PaletteItem
               key={name}
               mime={FLOW_PREFIX + name}
-              swatch={{ background: "transparent", border: "1px solid #6fd3e0" }}
+              swatch={{ background: "transparent", border: "1px solid var(--accent)" }}
               name={name}
               info={`A saved flow, placed as one node (a holon): the flow as saved now. Its unwired inputs and outputs become the node's ports.`}
             />
@@ -194,15 +194,15 @@ export function Palette({
       {sections.has("marketplace") && (
         <div className="hl-palette__list" style={{ flex: "none", maxHeight: 160 }}>
           {!market.url && (
-            <div style={{ color: "var(--ink-dim)", fontSize: 11, padding: "2px 8px" }}>
+            <div style={{ color: "var(--faint)", fontSize: 11, padding: "2px 8px" }}>
               set one on the flows page
             </div>
           )}
           {market.error && (
-            <div style={{ color: "#e0916f", fontSize: 11, padding: "2px 8px" }}>{market.error}</div>
+            <div style={{ color: "var(--bad)", fontSize: 11, padding: "2px 8px" }}>{market.error}</div>
           )}
           {market.url && !market.error && market.entries.length === 0 && (
-            <div style={{ color: "var(--ink-dim)", fontSize: 11, padding: "2px 8px" }}>
+            <div style={{ color: "var(--faint)", fontSize: 11, padding: "2px 8px" }}>
               nothing published yet
             </div>
           )}
@@ -217,12 +217,12 @@ export function Palette({
                 e.dataTransfer.effectAllowed = "move";
               }}
             >
-              <span className="hl-palette__swatch" style={{ background: "transparent", border: "1px dashed #6fd3e0" }} aria-hidden />
+              <span className="hl-palette__swatch" style={{ background: "transparent", border: "1px dashed var(--accent)" }} aria-hidden />
               <span className="hl-palette__name">
                 {listing.name}
-                {listing.yanked && <span style={{ color: "#e0916f" }}> yanked</span>}
+                {listing.yanked && <span style={{ color: "var(--bad)" }}> yanked</span>}
                 {adoption > 0 && (
-                  <span style={{ color: "var(--ink-dim)" }} title={`placed in ${adoption} other listing(s)`}>
+                  <span style={{ color: "var(--faint)" }} title={`placed in ${adoption} other listing(s)`}>
                     {" "}↑{adoption}
                   </span>
                 )}
@@ -248,7 +248,7 @@ export function Palette({
             title={allPaletteOpen ? "collapse all groups" : "expand all groups"}
             style={{
               font: "inherit", background: "transparent", border: "none",
-              color: "var(--ink-dim)", cursor: "pointer", fontSize: 9,
+              color: "var(--faint)", cursor: "pointer", fontSize: 9,
               padding: "0 10px 0 0", lineHeight: 1, flexShrink: 0,
             }}
           >
