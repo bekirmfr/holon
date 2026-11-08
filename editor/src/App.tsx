@@ -34,7 +34,9 @@ import {
   manifestItems,
   manifestTrigger,
 } from "./holon";
-import { changeDeployment, getFlow, getPrefs, setPrefs, type FlowDocument, type FlowRecord } from "./server";
+import { changeDeployment, getFlow, getManifest, getPrefs, setPrefs, type FlowDocument, type FlowRecord } from "./server";
+import { mayDiff } from "./mayItems";
+import { MayStrip } from "./MayStrip";
 import { outputColor } from "./theme";
 import { Palette, DND_MIME, FLOW_PREFIX } from "./Palette";
 import { PrimitiveNode, type PrimitiveNodeType } from "./PrimitiveNode";
@@ -591,6 +593,33 @@ function Canvas({
     onDeployed: () => onDeployPanelOpen(true),
   });
 
+  // The It may strip (MayStrip.tsx): the draft's manifest, as the server will read it, beside the
+  // deployed version's, read again when another version is deployed. Worked out when the canvas's
+  // structure changes, as the unit it compiles to does.
+  const draftItems = useMemo(() => {
+    if (flowCaps === null) return null;
+    const handlers = [...derived.endpoints.map((e) => ({ label: `${e.method} ${e.path}`, log: e.log })), ...derived.clocks, ...derived.files, ...derived.actions];
+    const unrecorded = handlers.filter((h) => h.log === "unrecorded").map((h) => h.label);
+    return manifestItems(flowCaps, { ...settings.requirements, unrecorded });
+  }, [flowCaps, derived, settings.requirements]);
+  const deployedUnit = deployedEntry?.unit;
+  const [deployedItems, setDeployedItems] = useState<{ unit: string; items: string[] } | null>(null);
+  useEffect(() => {
+    if (!flowName || !deployedUnit) return;
+    let fresh = true;
+    getManifest(flowName).then(
+      (m) => fresh && setDeployedItems({ unit: deployedUnit, items: m.items }),
+      () => fresh && setDeployedItems(null),
+    );
+    return () => {
+      fresh = false;
+    };
+  }, [flowName, deployedUnit]);
+  const mayItems = useMemo(() => {
+    if (draftItems === null) return null;
+    return mayDiff(draftItems, deployedUnit && deployedItems?.unit === deployedUnit ? deployedItems.items : null);
+  }, [draftItems, deployedUnit, deployedItems]);
+
 
   // ── Modes: view a deployment, edit the flow (useModeSwitch.ts) ───────────────────────────
   const { onView, onMode } = useModeSwitch({
@@ -990,6 +1019,8 @@ function Canvas({
         onOpen={onPaletteOpen}
       />
     )}
+    <div className="hl-edit">
+    {!viewing && shown === "canvas" && <MayStrip items={mayItems} deployed={deployedUnit !== undefined} />}
     <div
       className={["hl-canvas", viewing ? "hl-canvas--viewing" : "", inspectorOpen ? "" : "hl-canvas--inspector-closed", textPane.open ? "hl-canvas--text" : ""].filter(Boolean).join(" ")}
       style={textPane.open ? ({ "--text-width": `${textPane.pane.width}px` } as CSSProperties) : undefined}
@@ -1171,6 +1202,7 @@ function Canvas({
           )}
         </div>
       )}
+    </div>
     </div>
     {shown === "canvas" && (
       <ToolsPanel

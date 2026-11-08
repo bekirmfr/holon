@@ -23,7 +23,9 @@ import {
 } from "@codemirror/view";
 import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirror/commands";
 import { autocompletion, completionKeymap, type CompletionContext, type CompletionResult } from "@codemirror/autocomplete";
-import { linter, lintGutter } from "@codemirror/lint";
+import { forEachDiagnostic, linter, lintGutter } from "@codemirror/lint";
+import { highlightSelectionMatches, search, searchKeymap } from "@codemirror/search";
+import { foldGutter, foldKeymap, foldService, matchBrackets } from "@codemirror/language";
 import { useDark } from "./look";
 import { textColours, textCompletions, textFormatted, textHover, textMistakes, type TextRange } from "./holonText";
 
@@ -165,6 +167,24 @@ const mistakes = linter(
   { delay: 250 },
 );
 
+/** Folding by what a line leaves open at its end (`{`, `[`, `(`) to where it closes: the text has
+ *  no syntax tree, so its brackets are matched as written. */
+const braces = foldService.of((state, from) => {
+  const line = state.doc.lineAt(from);
+  const open = line.text.trimEnd();
+  if (!/[{[(]$/.test(open)) return null;
+  const at = line.from + open.length - 1;
+  const m = matchBrackets(state, at, 1);
+  if (!m?.matched || !m.end || state.doc.lineAt(m.end.from).number === line.number) return null;
+  return { from: at + 1, to: m.end.from };
+});
+
+/** Find and replace (Ctrl+F; the selection is what is looked for), with Ctrl+D left to deploy. */
+const finding = [search({ top: true }), highlightSelectionMatches(), keymap.of(searchKeymap.filter((k) => k.key !== "Mod-d"))];
+
+/** One mistake in the Problems list: where it is, and what `holon check` says. */
+type Problem = { from: number; line: number; message: string };
+
 const hover = hoverTooltip((view, pos) => {
   const said = textHover(view.state.doc.toString(), pos);
   if (!said) return null;
@@ -284,6 +304,10 @@ export function TextPane({
   const handlers = useRef({ onEdit, onCursor });
   handlers.current = { onEdit, onCursor };
   const [formatError, setFormatError] = useState("");
+  // The mistakes the lint shows, listed under the text: a click goes to one.
+  const [problems, setProblems] = useState<Problem[]>([]);
+  const problemsKey = useRef("");
+  const [checked, setChecked] = useState("");
 
   useEffect(() => {
     const v = new EditorView({
@@ -296,13 +320,16 @@ export function TextPane({
           drawSelection(),
           highlightActiveLine(),
           lintGutter(),
+          foldGutter(),
+          braces,
+          ...finding,
           colours,
           // After the colours: a later source's marks wrap an earlier's, so each range is one element.
           linked,
           mistakes,
           hover,
           autocompletion({ override: [complete], icons: false }),
-          keymap.of([{ key: "Shift-Alt-f", run: (view) => (setFormatError(format(view) ? "" : "it has a mistake: fix it, then format"), true) }, indentWithTab, ...completionKeymap, ...historyKeymap, ...defaultKeymap]),
+          keymap.of([{ key: "Shift-Alt-f", run: (view) => (setFormatError(format(view) ? "" : "it has a mistake: fix it, then format"), true) }, indentWithTab, ...completionKeymap, ...historyKeymap, ...foldKeymap, ...defaultKeymap]),
           // Read only still takes a cursor: in view mode it picks the node under it.
           editable.current.of(EditorState.readOnly.of(readOnly)),
           EditorView.updateListener.of((u) => {
@@ -311,6 +338,14 @@ export function TextPane({
               handlers.current.onEdit(u.state.doc.toString(), u.transactions.some((t) => t.isUserEvent("format")));
             }
             if (u.selectionSet && u.view.hasFocus && !u.docChanged) handlers.current.onCursor(u.state.selection.main.head);
+            const found: Problem[] = [];
+            forEachDiagnostic(u.state, (d, from) => found.push({ from, line: u.state.doc.lineAt(from).number, message: d.message }));
+            const key = found.map((p) => `${p.from} ${p.message}`).join("\n");
+            if (key !== problemsKey.current) {
+              problemsKey.current = key;
+              setProblems(found);
+              setChecked("");
+            }
           }),
           look.current.of(theme(dark)),
           EditorView.contentAttributes.of({ "aria-label": "the flow as text" }),
@@ -390,7 +425,21 @@ export function TextPane({
     window.addEventListener("pointerup", up);
   };
 
-  const said = formatError || status;
+  const said = formatError || checked || status;
+  const goTo = (from: number) => {
+    const v = view.current;
+    if (!v) return;
+    v.dispatch({ selection: { anchor: Math.min(from, v.state.doc.length) }, effects: EditorView.scrollIntoView(from, { y: "center" }) });
+    v.focus();
+  };
+  // Check: the text's mistakes now, as `holon check` finds them, without waiting for the lint.
+  const check = () => {
+    const v = view.current;
+    if (!v) return;
+    const found = textMistakes(v.state.doc.toString());
+    setChecked(found.length === 0 ? "no mistakes" : `${found.length} mistake${found.length === 1 ? "" : "s"}: listed under the text`);
+    if (found.length > 0) goTo(found[0].from);
+  };
   return (
     <div className="nodrag nowheel hl-text" role="region" aria-label="Text">
       <div className="hl-text__edge" onPointerDown={onEdge} title="drag to resize" />
@@ -409,6 +458,9 @@ export function TextPane({
             Format
           </button>
         )}
+        <button className="hl-text__button" title="look for mistakes now, as holon check does" onClick={check}>
+          Check
+        </button>
         <button className="hl-text__button" onClick={onClose} title="close the text" aria-label="close the text">
           ×
         </button>
@@ -419,6 +471,17 @@ export function TextPane({
         </div>
       ) : null}
       <div className="hl-text__editor" ref={host} />
+      {problems.length > 0 && (
+        <ul className="hl-text__problems" aria-label="problems">
+          {problems.map((p) => (
+            <li key={`${p.from} ${p.message}`}>
+              <button onClick={() => goTo(p.from)}>
+                <span className="hl-text__problem-line">line {p.line}</span> {p.message}
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
     </div>
   );
 }

@@ -6,7 +6,7 @@
 
 import type { Locator, Page } from "@playwright/test";
 import { expect, SERVER, test } from "./fixtures";
-import { openSample } from "./helpers";
+import { deploy, openSample } from "./helpers";
 
 /** Replace the whole text, as typing it would. */
 async function typeText(editor: Locator, page: Page, text: string) {
@@ -117,4 +117,39 @@ test("the flow's text drives its canvas, and the canvas its text", async ({ page
   await expect(editor).not.toContainText("// says hello");
   await undo.dispatchEvent("click");
   await expect(editor).toContainText("// says hello, loudly");
+});
+
+test("the It may strip says what an edit adds to what the flow may do; Problems, Check and find", async ({ page }) => {
+  await openSample(page, "Hello API");
+  const may = page.getByRole("region", { name: "it may" });
+  await expect(may).toContainText("Deployed, it may");
+  await deploy(page);
+  await expect(may).toContainText(/^It may/);
+  await expect(may.locator(".hl-may__chip--new")).toHaveCount(0);
+
+  // A collection written by the route: a new thing it may do, marked new until it is deployed.
+  await page.locator(".hl-canvas").getByRole("button", { name: "text off" }).click();
+  const pane = page.getByRole("region", { name: "Text" });
+  const editor = pane.locator(".cm-content");
+  await typeText(
+    editor,
+    page,
+    'import { flow, route } from "holon"\nimport seen from "collection:seen"\n\nflow("hello-api", { port: 8101 })\n\nroute.get("/hello/:name", (req) => {\n  seen[req.params.name] = true\n  return `Hello, ${req.params.name}`\n})\n',
+  );
+  await expect(may.locator(".hl-may__chip--new")).not.toHaveCount(0);
+  await expect(may.locator(".hl-may__chip--new").first()).toContainText("new");
+  await expect(may.locator(".hl-may__chip--new").first()).toHaveAttribute("title", /seen/);
+
+  // A mistake is listed under the text; Check counts it, and a click on it goes there.
+  await typeText(editor, page, 'import { flow, route } from "holon"\n\nflow("hello-api", { port: 8101 })\n\nroute.get("/hello/:name", (req) => nope)\n');
+  const problems = pane.getByRole("list", { name: "problems" });
+  await expect(problems).toContainText('line 5');
+  await expect(problems).toContainText('unknown name "nope"');
+  await pane.getByRole("button", { name: "Check" }).click();
+  await expect(pane.getByRole("status")).toContainText("1 mistake");
+
+  // Find: Ctrl+F opens the search, looking for what is selected.
+  await editor.click();
+  await page.keyboard.press("Control+f");
+  await expect(pane.locator(".cm-search")).toBeVisible();
 });
