@@ -2787,16 +2787,20 @@ engine.
 
 ### Tier 1: essential host capabilities
 
+**Order, revised 2026-11-08:** after 1.3, step 1.6 and then 1.9. Steps 1.4, 1.5, 1.7 and 1.8 are
+deferred, taken when asked. 1.6 needs 1.4's request signing only for SQS (fork 8): its design
+settles the queue engine with 1.4 deferred.
+
 | Step | What | Design | Needs | Size |
 |---|---|---|---|---|
 | 1.1 | **Value kinds:** `Bytes`, built (§5.10.2); `Decimal` decided as text leaves, built in 1.2 (§5.10.1) | §5.10 (here) | — | M |
 | 1.2 | **Formats:** exact decimals, CSV, XML, dates (UTC and offsets), zip and gzip, JWT verify, PGP encrypt and verify with a public key, in six slices (§5.1.1); 1.2a, decimals and CSV, built (§5.1.2); 1.2b, offsets and business days, built (§5.1.4); 1.2c, XML, built (§5.1.6); 1.2d, zip and gzip and bytes written to a file, built (§5.1.8); 1.2e, JWT verify, built (§5.1.10); 1.2f, PGP encrypt and verify, built (§5.1.12) | §5.1 (here) | 1.1 | M |
 | 1.3 | **Email:** send, recipients in the grant; receive as `on mail`, with its sender's verdict and attachments, in three slices (§5.2); 1.3a, sending through SMTP, built (§5.2.3) | §5.2 (here) | 1.1 for attachments | L |
-| 1.4 | **Remote folders:** the backend seam in `folders.rs`, then SFTP and S3-compatible storage (§6) | §6 (here) | 1.1 for binary files | L |
-| 1.5 | **Secure connectivity:** keys the host holds (PGP decrypt and sign) and client identities (mutual TLS, a private CA) (§5.3, §5.4) | §5.3, §5.4 (here) | 1.1, 1.2 | M |
+| 1.4 | *Deferred.* **Remote folders:** the backend seam in `folders.rs`, then SFTP and S3-compatible storage (§6) | §6 (here) | 1.1 for binary files | L |
+| 1.5 | *Deferred.* **Secure connectivity:** keys the host holds (PGP decrypt and sign) and client identities (mutual TLS, a private CA) (§5.3, §5.4) | §5.3, §5.4 (here) | 1.1, 1.2 | M |
 | 1.6 | **Messaging:** one subscription runtime (position, once per message, backpressure, reconnect), feeds (SSE, WebSocket, Postgres `LISTEN`) and one queue engine, publish and consume (§5.5, §5.9) | §5.5, §5.9 (here) | 1.4's request signing, for SQS (fork 8) | L |
-| 1.7 | **Commands:** programs an admin binds, typed arguments, logged output, killed on timeout (§5.7) | §5.7 (here) | — | M |
-| 1.8 | **Static files:** a route's rest segment (`/*path`, routing, no item), and answering with a file from a folder (`site.serve(name)`, `FileServe`), streamed by the host and checked against the handle's hash | §5.11 (here) | — | M |
+| 1.7 | *Deferred.* **Commands:** programs an admin binds, typed arguments, logged output, killed on timeout (§5.7) | §5.7 (here) | — | M |
+| 1.8 | *Deferred.* **Static files:** a route's rest segment (`/*path`, routing, no item), and answering with a file from a folder (`site.serve(name)`, `FileServe`), streamed by the host and checked against the handle's hash | §5.11 (here) | — | M |
 | 1.9 | **Inbound WebSockets:** `websocket PATH { open … message … close … }`, a run per message, replies and channel packs out, a record per connection (§5.9) | §5.12 (here) | 1.1 for binary frames | M |
 
 - **Samples, one at least per step:**
@@ -2824,23 +2828,26 @@ engine.
 **Tracks.** 1.1 is the one most others stand on, so it starts first. Then:
 
 ```
-A  1.1 ──► 1.2 ──► 1.5
-B  1.4  (text files at once; binary files once 1.1 lands)
+A  1.1 ──► 1.2 ──► 1.5 (deferred)
+B  1.4  (deferred; text files at once; binary files once 1.1 lands)
 C  1.3  (text mail at once; attachments once 1.1 lands)
 D  1.6, 1.9  (one engine, tokio-tungstenite; 1.9's text frames at once, binary once 1.1 lands)
-E  1.7
-F  1.8  (the rest segment, then FileServe)
+E  1.7  (deferred)
+F  1.8  (deferred; the rest segment, then FileServe)
 ```
 
 Six tracks, so six worktrees at most; tracks that touch the same files (`kind.rs`, the catalog,
-`tests.rs`) merge into `main` one at a time, each rebased on the last.
+`tests.rs`) merge into `main` one at a time, each rebased on the last. Since the 2026-11-08
+revision, C and then D are the ones running: 1.3 to its end, then 1.6, then 1.9.
 
 ### Between Tier 1 and Tier 2: the TypeScript slices
 
-Decided 2026-11-08: once Tier 1's steps 1.1 to 1.9 have landed, the TypeScript syntax's slices 6
-to 11 come next ([typescript-syntax](typescript-syntax-L4.md) §15): computing loops, calls and
-requests that wait, waits a route's caller outlasts, waiting loops, failures with a reason, and
-editors and tools. Tier 2 starts when they have landed; Tier 3 is still taken when asked.
+Decided 2026-11-08: once Tier 1's steps 1.1 to 1.3, 1.6 and 1.9 have landed (the rest deferred,
+above), the TypeScript syntax's slices 6 to 11 come next
+([typescript-syntax](typescript-syntax-L4.md) §15): computing loops, calls and requests that
+wait, waits a route's caller outlasts, waiting loops, failures with a reason, and editors and
+tools. Tier 2 starts when they have landed; Tier 3 and the deferred Tier 1 steps are taken when
+asked. Two of Tier 2's steps stand on deferred ones: 2.3 needs 1.4, and 2.4 needs 1.7.
 
 ### Tier 2: operationally essential
 
