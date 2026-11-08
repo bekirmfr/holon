@@ -3,10 +3,10 @@
 //! ordinary nodes stops at the first differing character, and its timing tells an attacker how much
 //! of a guessed signature was right.
 //!
-//! Text in, text out, like every other value: a hash or HMAC is taken over the text's UTF-8 bytes
-//! and given as `hex` (lowercase) or `base64`; `hex` and `base64` encode a text's UTF-8 bytes, and
-//! decode back to text, absent when the input is malformed or the bytes aren't UTF-8 (Holon has no
-//! bytes value).
+//! A hash or HMAC is taken over a text's UTF-8 bytes, or over bytes, and given as `hex`
+//! (lowercase) or `base64`; `hex` and `base64` encode a text's UTF-8 bytes, and decode back to
+//! text, absent when the input is malformed or the bytes aren't UTF-8. `text_bytes` and
+//! `bytes_text` are the bytes value's encodings, both ways.
 
 use hmac::{Hmac, Mac};
 use sha2::{Digest, Sha256};
@@ -20,21 +20,44 @@ fn encode_digest(bytes: &[u8], encoding: &str) -> Option<String> {
     }
 }
 
-pub(crate) fn sha256(text: &str, encoding: &str) -> Option<String> {
-    encode_digest(&Sha256::digest(text.as_bytes()), encoding)
+pub(crate) fn sha256(bytes: &[u8], encoding: &str) -> Option<String> {
+    encode_digest(&Sha256::digest(bytes), encoding)
 }
 
-pub(crate) fn hmac_sha256(key: &str, message: &str, encoding: &str) -> Option<String> {
-    let mut mac = Hmac::<Sha256>::new_from_slice(key.as_bytes()).expect("HMAC takes a key of any length");
-    mac.update(message.as_bytes());
+pub(crate) fn hmac_sha256(key: &[u8], message: &[u8], encoding: &str) -> Option<String> {
+    let mut mac = Hmac::<Sha256>::new_from_slice(key).expect("HMAC takes a key of any length");
+    mac.update(message);
     encode_digest(&mac.finalize().into_bytes(), encoding)
+}
+
+/// A text's bytes in `encoding`: its UTF-8, or what its hex or base64 says (nothing if it isn't
+/// that). Base64 decodes with or without padding.
+pub fn text_bytes(text: &str, encoding: &str) -> Option<Vec<u8>> {
+    match encoding {
+        "utf8" => Some(text.as_bytes().to_vec()),
+        "hex" => hex_decode(text),
+        "base64" => base64_decode(text, STANDARD),
+        "base64url" => base64_decode(text, URL),
+        _ => None,
+    }
+}
+
+/// Bytes as a text in `encoding`: as UTF-8 (nothing if they aren't), or written in lowercase hex,
+/// padded `base64` or unpadded `base64url`.
+pub fn bytes_text(bytes: &[u8], encoding: &str) -> Option<String> {
+    match encoding {
+        "utf8" => String::from_utf8(bytes.to_vec()).ok(),
+        "hex" => Some(hex_encode(bytes)),
+        "base64" => Some(base64_encode(bytes, STANDARD, true)),
+        "base64url" => Some(base64_encode(bytes, URL, false)),
+        _ => None,
+    }
 }
 
 /// Whether `a` and `b` are equal, taking the same time wherever they differ: every byte is
 /// compared, and the result is only read at the end. Only the lengths can show (as with every
 /// constant-time compare), which is why signatures are compared at their fixed length.
-pub(crate) fn secure_equals(a: &str, b: &str) -> bool {
-    let (a, b) = (a.as_bytes(), b.as_bytes());
+pub(crate) fn secure_equals(a: &[u8], b: &[u8]) -> bool {
     if a.len() != b.len() {
         return false;
     }
@@ -131,26 +154,26 @@ mod tests {
 
     #[test]
     fn sha256_matches_fips_180_vectors() {
-        assert_eq!(sha256("", "hex").unwrap(), "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
-        assert_eq!(sha256("abc", "hex").unwrap(), "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
-        assert_eq!(sha256("abc", "nope"), None);
+        assert_eq!(sha256(b"", "hex").unwrap(), "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
+        assert_eq!(sha256(b"abc", "hex").unwrap(), "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+        assert_eq!(sha256(b"abc", "nope"), None);
     }
 
     #[test]
     fn hmac_sha256_matches_rfc_4231_and_a_real_webhook() {
         // RFC 4231 §4.2 (test case 1) and §4.3 (test case 2).
         assert_eq!(
-            hmac_sha256(&"\u{0b}".repeat(20), "Hi There", "hex").unwrap(),
+            hmac_sha256(&[0x0b; 20], b"Hi There", "hex").unwrap(),
             "b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7"
         );
         assert_eq!(
-            hmac_sha256("Jefe", "what do ya want for nothing?", "hex").unwrap(),
+            hmac_sha256(b"Jefe", b"what do ya want for nothing?", "hex").unwrap(),
             "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843"
         );
-        assert_eq!(hmac_sha256("Jefe", "what do ya want for nothing?", "base64").unwrap(), "W9zBRr9gdU5qBCQmCJV1x1oAPwidJzmDnexYuWTsOEM=");
+        assert_eq!(hmac_sha256(b"Jefe", b"what do ya want for nothing?", "base64").unwrap(), "W9zBRr9gdU5qBCQmCJV1x1oAPwidJzmDnexYuWTsOEM=");
         // GitHub's "Validating webhook deliveries" example (X-Hub-Signature-256: sha256=<this>).
         assert_eq!(
-            hmac_sha256("It's a Secret to Everybody", "Hello, World!", "hex").unwrap(),
+            hmac_sha256(b"It's a Secret to Everybody", b"Hello, World!", "hex").unwrap(),
             "757107ea0eb2509fc211221cce984b8a37570b6d7586c22c46f4379c8b043e17"
         );
     }
@@ -180,7 +203,7 @@ mod tests {
 
     #[test]
     fn secure_equals_is_equality() {
-        assert!(secure_equals("abc", "abc") && secure_equals("", ""));
-        assert!(!secure_equals("abc", "abd") && !secure_equals("abc", "ab") && !secure_equals("abc", "Abc"));
+        assert!(secure_equals(b"abc", b"abc") && secure_equals(b"", b""));
+        assert!(!secure_equals(b"abc", b"abd") && !secure_equals(b"abc", b"ab") && !secure_equals(b"abc", b"Abc"));
     }
 }

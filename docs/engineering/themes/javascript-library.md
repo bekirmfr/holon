@@ -79,8 +79,8 @@ the eleven number leaves. The operators are mapped but for `void`, `instanceof` 
 | `a === b`, `a == b` | `equals` | mapped; differs on records and lists | `==` is `===` (no coercion); records and lists compare by value |
 | `a !== b`, `a != b` | `equals`, `not` | mapped | |
 | `a < b`, `<=`, `>`, `>=` | `compare {op}` | mapped | two numbers, or two texts in UTF-16 code-unit order; a number and a text: nothing (JavaScript converts) |
-| `a && b`, `a \|\| b` | `and`, `or` | mapped for booleans | a literal on the right is refused: "takes booleans: a value for where one is absent is ??"; other values: differs |
-| `!x` | `not` | mapped for booleans | other values: differs, nothing (JavaScript's truthiness is `is_truthy`, by name) |
+| `a && b`, `a \|\| b` | `and`, `or` | mapped for booleans, and in a condition | a literal on the right is refused: "takes booleans: a value for where one is absent is ??"; in a condition (`if`, `?:`, `!`) each operand is read through `is_truthy`; other values elsewhere: differs |
+| `!x` | `not`, of `is_truthy(x)` where `x` isn't known to be a Boolean | mapped | an absent `x` gives nothing, where JavaScript gives `true` |
 | `a ?? b` | `default` (b a literal), `coalesce` | mapped | `b` is computed only when `a` is absent |
 | `c ? a : b` | a `guard` on each side of `c`, then `coalesce` | mapped | only the branch taken runs, and it is the answer; `c ? a : undefined` is the first `guard` alone |
 | `x?.k`, `x?.[k]` | `field`, `lookup` | mapped | absence passes along anyway, so `?.` and `.` lower alike |
@@ -103,9 +103,9 @@ the eleven number leaves. The operators are mapped but for `void`, `instanceof` 
 | `{ a: 1, ...r, ...s, k: v }` | `merge`, `with_field` | mapped | read left to right: a spread after anything is `merge`, one for several in a row |
 | `{ [k]: v }` | `insert` | mapped | the key a text; read in place, left to right |
 | `r.k` | `field` | mapped | |
-| `r[k]` | `lookup` | mapped for a record | a list: differs, `xs[0]` answers nothing; `get(xs, 0)` by name |
+| `r[k]`, `xs[i]` | `lookup`, `get` | mapped | by the types: a number on a list, or on a value of no known type (an entry's `e[0]`), is `get`, nothing past the end or for a negative index, as JavaScript's `undefined`; on a record, the field the number names, as `r["0"]`; on a text, refused, naming `s.at(i)` and `s.charAt(i)`; any other key reads a record's field |
 | `store[k]` (a collection, folder, database) | `collection_get`, `file_read`, … | mapped | §8 |
-| `xs.length`, `s.length` | `length`, `text_length` | mapped where the type is known | by the type of the node that made the value, a `List` or a `Text`; on anything else, ".length is a text's text_length or a list's length, and this value isn't known to be either" |
+| `xs.length`, `s.length` | `length`, `text_length` | mapped where the type is known | by the type of the node that made the value, a `List` or a `Text`, or of a function's port as written (`xs: string[]`), in the function and in one written in it that uses the port; on anything else, ".length is a text's text_length or a list's length, and this value isn't known to be either" |
 | `undefined` | | as a branch | `c ? a : undefined`, `x !== undefined` in an `if`; else "undefined is written as a branch" |
 | `null` | | refused | "null isn't a value here: a value that isn't there is absent, undefined" |
 | `NaN`, `Infinity` | | refused | "NaN isn't a value a flow has: a leaf gives nothing where JavaScript gives NaN, so test for presence, x !== undefined, or give a fallback, x ?? 0" |
@@ -122,7 +122,7 @@ the eleven number leaves. The operators are mapped but for `void`, `instanceof` 
 |---|---|---|
 | `String(x)` | mapped | `as_text(x)`, as `` `${x}` `` writes it; `String()` is `""` |
 | `Number(s)`, `parseFloat(s)`, `parseInt(s)`, `parseInt(s, r)` | mapped | `to_number {grammar: number, float, int}`, the radix wired when given; a flow's own function of the name is the one called |
-| `Boolean(x)`, `!!x` | by name | `is_truthy(x)` |
+| `Boolean(x)` | by name | `is_truthy(x)`; `!!x` is read, as two `not`s of it |
 | `isNaN(x)`, `isFinite(x)` | mapped | `number_test {test, coerce: number}`: `isNaN("abc")` is true |
 | `encodeURIComponent`, `decodeURIComponent`, `encodeURI`, `decodeURI` | mapped | `uri_encode {set: component, uri}`, `uri_decode {set}`; a malformed escape: nothing (JavaScript's `URIError`). A route's `req.params` and `req.query` come decoded |
 | `btoa(s)`, `atob(s)` | mapped | `base64 {bytes: latin1}`, with `mode: decode` for `atob` (WHATWG's forgiving decode); a character past U+00FF: nothing |
@@ -217,7 +217,7 @@ give, or refused naming the form that gives it. Items compare by value (§9).
 | `join(sep)`, `join()` | `join` | mapped | texts; `join()` is `join(xs, ",")` |
 | `concat(ys, x)` | `extend`, `append` | mapped | on a value not known to be a text: `extend` for a list written as one, `append` for a literal that isn't one; a name, which could be either: refused, naming `[...xs, ...ys]` and `[...xs, y]` |
 | `length` | `length` | mapped where the list is known to be one | §2 |
-| `xs[i]` | `get` | by name | `xs[i]` lowers to `lookup` and answers nothing (§9) |
+| `xs[i]` | `get` | mapped where `i` is known to be a number | §2 |
 | `[x, ...xs]` (`unshift`) | `extend` (`cons`) | mapped | |
 | `[...xs, x]`, `xs.push(x)` as a statement | `append` | mapped | `xs.push(x)` alone is `xs = [...xs, x]` |
 | `push` as a value, `pop`, `shift`, `unshift`, `splice` | | refused | naming the value form: `[...xs, x]`; `xs.at(-1)` and `xs.slice(0, -1)`; `xs.at(0)` and `xs.slice(1)`; `[x, ...xs]`; `xs.toSpliced(…)` and `xs.slice(s, s + n)` |
@@ -254,7 +254,7 @@ give, or refused naming the form that gives it. Items compare by value (§9).
 | `Intl` | | js() | not inside `js()` either: locale is the environment |
 | `Map`, `Set`, `WeakMap`, `Symbol`, `BigInt`, `Proxy`, `Reflect`, typed arrays | | js() | inside `js()` only (a `BigInt` can't cross out) |
 | `Promise.all` | | refused | in slice 7, a started run's handle may be awaited or passed to it |
-| `throw`, `Error`, `try`/`catch` | | refused | slice 5 (`fail` leaf) |
+| `throw new Error(m)`, `try`/`catch {}`/`finally` | `fail`, a choice on absence | mapped | slice 5: `catch` catches absence too; `catch (e)` refused until a failure carries its reason (slice 10) |
 
 What a service reaches outside the language, a flow imports; each is a line of what the deploy
 asks for:
@@ -271,14 +271,26 @@ asks for:
 | an `EventEmitter`, server-sent events, a socket | `import updates from "channel:updates"`, `updates.send(…)`, `updates.subscribe()` | `channel_send`, `channel_subscribe` |
 | `app.get(path, handler)` (Express) | `route.get(path, (req) => …)` | `request`, `respond` |
 | `setInterval` | `every("5s", () => …)` | `every` |
-| `crypto.createHash("sha256")`, `crypto.subtle.digest` | `sha256(t)`, `{ encoding: "base64" }` for base64 | `sha256` (by name) |
-| `crypto.createHmac("sha256", key)` | `hmac_sha256(key, message)` | `hmac_sha256` (by name) |
-| `crypto.timingSafeEqual` | `secure_equals(a, b)` | `secure_equals` (by name) |
+| `crypto.createHash("sha256")`, `crypto.subtle.digest` | `sha256(t)`, `{ encoding: "base64" }` for base64; `t` a text or bytes | `sha256` (by name) |
+| `crypto.createHmac("sha256", key)` | `hmac_sha256(key, message)`, each a text or bytes | `hmac_sha256` (by name) |
+| `crypto.timingSafeEqual` | `secure_equals(a, b)`, texts or bytes | `secure_equals` (by name) |
+| `new TextEncoder().encode(s)`, `Uint8Array.fromHex(s)`, `Uint8Array.fromBase64(s)` | `text_to_bytes(s)`, `{ encoding: "hex" }`, `"base64"`, `"base64url"` | `text_to_bytes` (by name) |
+| `new TextDecoder("utf-8", { fatal: true }).decode(b)`, `b.toHex()`, `b.toBase64()` | `bytes_to_text(b)`, with the same encodings; base64 padded, base64url not | `bytes_to_text` (by name) |
+| `b.length`, `b.slice(i, j)` on a `Uint8Array` | as written, where `b` is known to be bytes | `bytes_length`, `slice` |
+| `Array.from(b)`, `new Uint8Array(xs)`, `Buffer.concat([a, b])` | `bytes_to_list(b)`, `list_to_bytes(xs)` (nothing for an item that isn't 0 to 255), `bytes_concat(a, b)` | by name |
+| `fs.readFile(name)` (a `Buffer`) | `folder.bytes(name)` | `file_read_bytes` |
+| decimal.js, big.js: `a.plus(b)`, `a.minus(b)`, `a.times(b)`, `a.div(b)`, `a.toDecimalPlaces(n)`, `a.cmp(b)` | `decimal_add(a, b)`, `decimal_sub`, `decimal_mul`, `decimal_div(a, b, scale)`, `decimal_round(a, scale)`, `decimal_compare`, over decimals written as text; `decimal_sum(xs)` | by name; `+` and `<` refused on their results |
+| date-fns: `addDays(d, n)`, `addMonths(d, n)`, `addYears(d, n)` | `date_add(d, n)`, `{ unit: "months" }`, `{ unit: "years" }`: a month clamped to its last day, as date-fns's | by name |
+| date-fns: `addBusinessDays(d, n)`, `differenceInBusinessDays(a, b)`, `isWeekend(d)` | `business_day_add(d, n, holidays)`, `business_days_between(b, a, holidays)`, `!is_business_day(d)`: holidays given, which date-fns has none of, and a date as `YYYY-MM-DD` | by name |
+| date-fns-tz, Luxon, Temporal at an offset: `formatInTimeZone(d, "+01:00", …)`, `toISOString` with the offset | `date_text(d, "+01:00")`, `date_text(d, offset, { format: "date" })`, `date_part(d, offset, { part })` | by name; fixed offsets, no zones |
+| Papa Parse, csv-parse, csv-stringify | `csv_parse(t)`, `{ header: "none" }`, `{ separator: ";" }`; `csv_format(rows, columns)` | by name |
+| fast-xml-parser: `new XMLParser().parse(t)`, `new XMLBuilder().build(o)`; `DOMParser`, `XMLSerializer` | `xml_parse(t)`, `xml_format(e)`, `{ layout: "indented" }`: an element as JsonML's list, not a record, so a schema's order is kept | by name |
+| the DOM: `doc.querySelectorAll("Rpt > Tx")`, `el.textContent`, `el.getAttribute("Ccy")` | `xml_find(e, "Rpt/Tx")`, `xml_text(e)` or `xml_text(e, path)`, `xml_attribute(e, "Ccy")`: a path of names, as ElementTree's `findall` | by name |
 | `btoa`, `atob` | `btoa(t)`, `atob(t)` (§3) | `base64 {bytes: latin1}` |
 | `Buffer…toString("base64")` | `base64(t)`, `base64(t, { mode: "decode" })`, `{ alphabet: "url" }` | `base64` (by name) |
 | `Buffer…toString("hex")` | `hex(t)`, `{ mode: "decode" }` | `hex` (by name) |
 | `crypto.randomUUID()` | none | `random` is one number per run |
-| `new URL`, `URLSearchParams`, `TextEncoder` | js() | |
+| `new URL`, `URLSearchParams` | js() | |
 
 ## 9. What compiles but differs
 
@@ -287,8 +299,7 @@ author sees no mistake; the run answers nothing where JavaScript answers somethi
 
 | JavaScript | What happens | Why |
 |---|---|---|
-| `xs[0]` on a list | `lookup`: nothing | `lookup` reads a record by a text key (`primitives.rs`, `Op::Lookup`); a list's item is `get` |
-| `!x`, `x && y`, `x \|\| y` on a value that isn't true or false | `not`, `and`, `or`: nothing | they take booleans (`as_bool`); JavaScript's truthiness is `is_truthy` |
+| `x && y`, `x \|\| y` on values that aren't true or false, outside a condition | `and`, `or`: nothing | they take booleans and give one (`as_bool`), where JavaScript gives an operand; in a condition each operand is read through `is_truthy` |
 | `a + b` with a list or a record and no text, or `true + 1` | `add`: nothing | `add` joins texts and adds numbers; JavaScript converts the others first |
 | `"a" + [1, 2]`, `` `${{ a: 1 }}` `` | `"a[1,2]"`, `{"a":1}` | `as_text` writes a list or a record as JSON; JavaScript writes `"a1,2"` and `[object Object]` |
 | `[[1]].includes([1])`, `new Set([[1], [1]])` | `true`, one item | compared by value; JavaScript compares objects by identity |
@@ -300,14 +311,14 @@ author sees no mistake; the run answers nothing where JavaScript answers somethi
 | `Math.hypot(a, b)` | V8's bits | other engines may differ in the last bit |
 | `{ a: 1 } === { a: 1 }` | `true` | compared by value; JavaScript compares objects by identity |
 | `1 == "1"` | `false` | `==` is `===` |
-| `JSON.parse("bad")` | nothing | JavaScript throws; Holon has no `catch` until slice 5 |
+| `JSON.parse("bad")` | nothing | JavaScript throws; Holon's `catch {}` catches the nothing |
 | `"a😀b".slice(1, 2)`, `"😀".charAt(0)` | nothing | half a surrogate pair, which a flow's text can't hold; JavaScript gives a text holding a lone surrogate |
 | `Object.keys(r)`, `JSON.stringify(r)` | keys sorted | JavaScript keeps insertion order, integer keys first; §11, open 2 |
 | `JSON.parse` of a key given twice | nothing | `json.rs` refuses it; JavaScript keeps the last |
 
-Each is a candidate for the reader to refuse with the right form, or to lower by the value's type
-(`xs[i]` to `get`, `!x` to `not(is_truthy(x))`), as `.length` is, once the reader knows the
-types it reads.
+Each is a candidate for the reader to refuse with the right form, or to lower by the value's type,
+as `xs[i]` (`get`), `.length` and `!x` (`not(is_truthy(x))`) are, once the reader knows the types
+it reads.
 
 ## 10. Leaves with no JavaScript form
 
@@ -317,12 +328,11 @@ read; reading it is a line in `ts.rs` each, with a test of its meaning:
 | Leaf | Its JavaScript form | Note |
 |---|---|---|
 | `length`, `text_length` | `.length` | read where the value's type is known (§2); by name elsewhere |
-| `get` | `xs[i]` | §9: `xs[i]` lowers to `lookup`; `xs.at(i)` is `at` |
 | `slice` (`mode: length`) | `s.substr(start, len)` | Annex B's, not read; `s.slice(a, b)` is `slice {mode: end}`, `s.substring(a, b)` `slice {mode: substring}` |
-| `head`, `tail` | `xs[0]` | `xs.at(0)` is `at` and `xs.slice(1)` `slice`; `xs.reduce(f)` lowers to both |
+| `head`, `tail` | `xs[0]` | `xs[0]` is `get`, `xs.at(0)` `at` and `xs.slice(1)` `slice`; `xs.reduce(f)` lowers to both |
 | `is_empty` | `xs.length === 0` | |
 | `sum` | `xs.reduce((a, b) => a + b, 0)`, which lowers to `fold` and `add` today | |
-| `is_truthy` | `Boolean(x)`, `!!x`, and the truthiness of `!`, `&&`, `\|\|` | §9 |
+| `is_truthy` | `Boolean(x)` | `!x`, `!!x` and a condition read it already (§9) |
 | `insert` | `{ ...r, [k]: v }` | a computed key |
 | `remove`, `without_field` | `delete r[k]`, `const { k, ...rest } = r` | on a record value |
 | `cons` | `[x, ...xs]` | lowers to `extend` today, the same list |
@@ -398,7 +408,7 @@ pages share are made one (a leaf taking a list or a text, so the reader needn't 
 **What only the reader needs to read**, over leaves that exist: the `Math` and `Number` constants
 (each bit-checked) and `-x` as `x * -1` (exact at `-0`), both read now, as are `++`, `--` and the
 compound assignments, and `concat`, `Array.from(xs)` and `Array.of`; `.length` and `xs[i]` by
-the value's type, `{ [k]: v }` (read now), `Object.freeze` and `structuredClone` as the value
+the value's type (read now, a function's port by its annotation too), `{ [k]: v }` (read now), `Object.freeze` and `structuredClone` as the value
 itself (read now), a date's `getTime` (read now).
 
 **What the races found wrong**, all fixed since: `add` gave `0` for `-0 + -0` (it summed
@@ -456,5 +466,5 @@ Holon's form, and a leaf wouldn't change that:
   and recorded for the run, and has no locale.
 - **Time and concurrency:** timers and `Promise` are handlers (`every`), waits (`await event(…)`)
   and the `await` of requests and actions.
-- **Statements** are the L4's slices, not the library's: `try`, `catch`, `throw` (slice 5),
+- **Statements** are the L4's slices, not the library's: `try`, `catch`, `throw` (slice 5, built),
   `while` and loops (slice 6).

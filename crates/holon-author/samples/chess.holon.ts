@@ -559,7 +559,7 @@ const rules = js(
     const pseudo = (p) => {
       const { b, w } = p,
         out = []
-      const add = (f, t, x) => out.push({ f, t, pr: "", x: x || "" })
+      const add = (f, t, x = "") => out.push({ f, t, pr: "", x })
       for (let s = 21; s <= 98; s++) {
         const c = b[s]
         if (!mine(c, w)) continue
@@ -1027,7 +1027,7 @@ const choose = js(function pick(board, asked, move) {
     }
   if (move !== "rules" && !asked.status && asked.error === "timeout")
     return { game: { ...board, waiting: { note: "its call timed out" } }, move: "" }
-  const turn = { ply: (board.moves || []).length + 1 }
+  const turn: Record<string, any> = { ply: (board.moves || []).length + 1 }
   if (move === "rules") {
     Object.assign(turn, { kept: "refused", note: "its call timed out, and you let the rules play" })
   } else if (!asked.status) {

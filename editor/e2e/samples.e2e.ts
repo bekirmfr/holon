@@ -1877,6 +1877,103 @@ test("drop-box runs once for a file dropped in its folder, sends it by handle, w
   expect(verified.trim().endsWith("ok")).toBe(true);
 });
 
+test("file-checksums hashes a binary file's bytes as sha256sum does, reads its kind, and its runs verify", async ({ page, request, adminToken }) => {
+  const { execFileSync } = await import("node:child_process");
+  const { createHash, randomBytes } = await import("node:crypto");
+  const { mkdtempSync, writeFileSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  await openSample(page, "File checksums (each file's SHA-256, over its bytes)");
+  const port = await deploy(page);
+  // A PNG's first bytes, then bytes that aren't UTF-8: read as text it would fail the run. And
+  // one past what the log keeps inline (4 KiB), which the server keeps in its blob store.
+  const stamp = Date.now();
+  const files = [
+    { name: `image-${stamp}.png`, bytes: Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0xff, 0xfe, 0x00]), kind: "png" },
+    { name: `blob-${stamp}.bin`, bytes: randomBytes(20_000), kind: "other" },
+  ];
+  for (const f of files) writeFileSync(join(FOLDERS, "drop", f.name), f.bytes);
+  for (const f of files) {
+    const sum = async () => (await request.get(`http://127.0.0.1:${port}/sums/${f.name}`)).text();
+    await expect.poll(sum, { timeout: 15_000 }).toContain("sha256");
+    expect(JSON.parse(await sum())).toEqual({ size: f.bytes.length, sha256: createHash("sha256").update(f.bytes).digest("hex"), kind: f.kind });
+  }
+
+  // Its runs check offline: the small file's bytes from its log entry, the big one's from the export.
+  const target = process.env.CARGO_TARGET_DIR ?? join(process.cwd(), "..", "target");
+  const holon = join(target, "debug", process.platform === "win32" ? "holon.exe" : "holon");
+  const env = { ...process.env, HOLON_TOKEN: adminToken };
+  const out = join(mkdtempSync(join(tmpdir(), "holon-runs-")), "file-checksums.json");
+  execFileSync(holon, ["export", "file-checksums", "--server", SERVER, "-o", out], { encoding: "utf8", env });
+  const verified = execFileSync(holon, ["verify", out], { encoding: "utf8" });
+  expect(verified).toContain("each produced what its log entry says");
+  expect(verified.trim().endsWith("ok")).toBe(true);
+});
+
+test("payment-batch writes a pain.001 whose control sum is exact and reads a pain.002 back", async ({ page, request }) => {
+  await openSample(page, "Payment batch (a pain.001 written, a pain.002 read)");
+  const port = await deploy(page);
+  const csv = "id,name,iban,amount,reference\nP1,Jane Roe,FR1420041010050500013M02606,100,Invoice 42\nP2,John Doe,NL91ABNA0417164300,0.10,Refund 7\n";
+  const batch = await request.post(`http://127.0.0.1:${port}/batch?date=2026-11-10`, { data: csv });
+  expect(batch.status()).toBe(200);
+  expect(batch.headers()["content-type"]).toBe("application/xml");
+  const xml = await batch.text();
+  expect(xml).toContain("<CtrlSum>100.10</CtrlSum>");
+  expect(xml).toContain('<InstdAmt Ccy="EUR">0.10</InstdAmt>');
+  expect(xml.indexOf("<MsgId>")).toBeLessThan(xml.indexOf("<CreDtTm>"));
+  // An amount of 0 isn't a payout, and the schema takes no IBAN with spaces.
+  expect((await request.post(`http://127.0.0.1:${port}/batch`, { data: csv.replace(",0.10,", ",0,") })).status()).toBe(400);
+  expect((await request.post(`http://127.0.0.1:${port}/batch`, { data: csv.replace("NL91ABNA0417164300", "NL91 ABNA 0417 1643 00") })).status()).toBe(400);
+  const report = `<Document xmlns="urn:iso:std:iso:20022:tech:xsd:pain.002.001.10"><CstmrPmtStsRpt>
+    <OrgnlGrpInfAndSts><GrpSts>PART</GrpSts></OrgnlGrpInfAndSts>
+    <OrgnlPmtInfAndSts><TxInfAndSts><OrgnlEndToEndId>P2</OrgnlEndToEndId><TxSts>RJCT</TxSts>
+    <StsRsnInf><Rsn><Cd>AC04</Cd></Rsn></StsRsnInf></TxInfAndSts></OrgnlPmtInfAndSts></CstmrPmtStsRpt></Document>`;
+  expect(await (await request.post(`http://127.0.0.1:${port}/status`, { data: report })).json()).toEqual({
+    group: "PART",
+    payments: [{ id: "P2", status: "RJCT", reason: "AC04" }],
+  });
+});
+
+test("due-dates schedules a payout past Easter's closing days and an invoice past a weekend", async ({ page, request }) => {
+  await openSample(page, "Due dates (business days at a fixed offset)");
+  const port = await deploy(page);
+  const post = async (path: string, data: object) => (await request.post(`http://127.0.0.1:${port}${path}`, { data })).json();
+  // After the 16:00 cut-off at +02:00 on the Thursday before Easter: Good Friday and Easter Monday are closed.
+  expect(await post("/schedule", { received: "2026-04-02T16:30:00+02:00", offset: "+02:00" })).toEqual({
+    received: "2026-04-02T16:30:00.000+02:00",
+    executed: "2026-04-07",
+    credited: "2026-04-08",
+  });
+  // January 31 and a month is February 28, a Saturday.
+  expect(await post("/due", { issued: "2026-01-31", months: 1 })).toEqual({ due: "2026-03-02", business_days: 21 });
+  // Received now, at Frankfurt's winter offset.
+  expect((await post("/schedule", {})).received).toMatch(/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}\+01:00$/);
+});
+
+test("payout-totals sums a CSV's amounts by currency exactly, rounds half to even, and its runs verify", async ({ page, request, adminToken }) => {
+  const { execFileSync } = await import("node:child_process");
+  const { mkdtempSync, writeFileSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  await openSample(page, "Payout totals (exact decimals, over a CSV)");
+  const port = await deploy(page);
+  // As numbers, 0.1 + 0.2 + 0.3 is 0.6000000000000001; 1250.005 is half a cent, rounded to even.
+  const name = `may-${Date.now()}.csv`;
+  writeFileSync(join(FOLDERS, "payouts", name), "id,currency,amount\r\n1,EUR,0.10\r\n2,EUR,0.20\r\n3,EUR,0.30\r\n4,USD,1250.005\r\n");
+  const totals = async () => (await request.get(`http://127.0.0.1:${port}/totals/${name}`)).text();
+  await expect.poll(totals, { timeout: 15_000 }).toContain("EUR");
+  expect(JSON.parse(await totals())).toEqual({ EUR: { count: 3, total: "0.60" }, USD: { count: 1, total: "1250.00" } });
+
+  const target = process.env.CARGO_TARGET_DIR ?? join(process.cwd(), "..", "target");
+  const holon = join(target, "debug", process.platform === "win32" ? "holon.exe" : "holon");
+  const env = { ...process.env, HOLON_TOKEN: adminToken };
+  const out = join(mkdtempSync(join(tmpdir(), "holon-runs-")), "payout-totals.json");
+  execFileSync(holon, ["export", "payout-totals", "--server", SERVER, "-o", out], { encoding: "utf8", env });
+  const verified = execFileSync(holon, ["verify", out], { encoding: "utf8" });
+  expect(verified).toContain("each produced what its log entry says");
+  expect(verified.trim().endsWith("ok")).toBe(true);
+});
+
 test("file-audit runs on a csv dropped in the inbox and on a file removed from it, not on other names, and its runs verify", async ({ page, adminToken }) => {
   const { execFileSync } = await import("node:child_process");
   const { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync, existsSync } = await import("node:fs");

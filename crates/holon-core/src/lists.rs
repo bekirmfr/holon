@@ -204,6 +204,7 @@ pub(crate) fn hash_item(x: &Value, h: &mut impl Hasher) {
             (5u8, arm).hash(h);
             hash_item(payload, h);
         }
+        Value::Bytes(b) => (6u8, b).hash(h),
         Value::Effect { sink, payload } => {
             (6u8, sink).hash(h);
             hash_item(payload, h);
@@ -211,14 +212,15 @@ pub(crate) fn hash_item(x: &Value, h: &mut impl Hasher) {
     }
 }
 
-/// JavaScript's ToBoolean, how a higher-order leaf reads its function's answer: `false`, `0`, `-0`
-/// and `""` are false, anything else is true, an empty list or record included (unlike
-/// `is_truthy`).
+/// JavaScript's ToBoolean, how a higher-order leaf reads its function's answer and `is_truthy`
+/// computes: `false`, `0`, `-0`, `NaN` and `""` are false, and so is `none`, the absence a `Sum`
+/// holds, as `undefined` is; anything else is true, an empty list or record included.
 pub(crate) fn truthy(v: &Value) -> bool {
     match v {
         Value::Boolean(b) => *b,
-        Value::Number(n) => *n != 0.0,
+        Value::Number(n) => *n != 0.0 && !n.is_nan(),
         Value::Text(s) => !s.is_empty(),
+        Value::Sum { arm, .. } => *arm == 0,
         _ => true,
     }
 }

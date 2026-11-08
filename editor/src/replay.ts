@@ -736,11 +736,38 @@ function whyNothing(node: ReplayNode, trace: NodeTrace): string {
     case "date_set":
     case "date_text":
     case "date_utc":
-      return "the date is out of range (±8.64e15 ms), or isn't one";
+    case "date_add":
+      return "the date is out of range (±8.64e15 ms), or isn't one, or its offset isn't +HH:mm, Z or minutes";
+    case "business_day_add":
+    case "business_days_between":
+    case "is_business_day":
+      return "a date isn't YYYY-MM-DD or a time value, a holiday isn't a date, or the count is past 100,000";
     case "date_parse":
       return "its text isn't a date in JavaScript's format, with Z or an offset after a time";
     case "from_entries":
       return "an entry isn't a [key, value] pair with a text key";
+    case "decimal_add":
+    case "decimal_sub":
+    case "decimal_mul":
+    case "decimal_sum":
+    case "decimal_compare":
+      return "an input isn't a decimal (a sign, digits, a point), or the result is past 1,000 digits";
+    case "decimal_div":
+      return "it divides by zero, its scale isn't a whole number from 0 to 1,000, or an input isn't a decimal";
+    case "decimal_round":
+      return "its scale isn't a whole number from 0 to 1,000, or its input isn't a decimal";
+    case "csv_parse":
+      return "the CSV is malformed: a quote that never closes, a row with more or fewer fields than the header, or a column named twice";
+    case "csv_format":
+      return "a field isn't a text, a number or a Boolean, or the rows aren't records with columns given (lists without)";
+    case "xml_parse":
+      return "the XML isn't well-formed (a tag that doesn't close, an entity other than the five, an attribute given twice), or it has a DOCTYPE";
+    case "xml_format":
+      return "a name isn't an XML name, a text holds a character XML can't, or an item isn't an element, a text, a number or a Boolean";
+    case "xml_find":
+    case "xml_text":
+    case "xml_attribute":
+      return "its input isn't an element (a list starting with a name), a path step isn't a name or *, or nothing matched";
     case "group_by":
       return "its function answered a key that isn't a text";
     case "divide":

@@ -32,6 +32,7 @@ const TAG_LIST: u8 = 4;
 const TAG_EFFECT: u8 = 5;
 const TAG_SUM: u8 = 6;
 const TAG_RECORD: u8 = 7;
+const TAG_BYTES: u8 = 8;
 
 // Input-slot tags: an absent input must never collide with a present one.
 const SLOT_ABSENT: u8 = 0;
@@ -106,7 +107,7 @@ pub const MAX_VALUE_DEPTH: usize = 256;
 #[inline]
 pub(crate) fn nests_within(v: &Value, room: usize) -> bool {
     match v {
-        Value::Number(_) | Value::Boolean(_) | Value::Text(_) => true,
+        Value::Number(_) | Value::Boolean(_) | Value::Text(_) | Value::Bytes(_) => true,
         v => parts_nest_within(v, room),
     }
 }
@@ -115,7 +116,7 @@ pub(crate) fn nests_within(v: &Value, room: usize) -> bool {
 fn parts_nest_within(v: &Value, room: usize) -> bool {
     let within = |x: &Value| room > 0 && nests_within(x, room - 1);
     match v {
-        Value::Number(_) | Value::Boolean(_) | Value::Text(_) => true,
+        Value::Number(_) | Value::Boolean(_) | Value::Text(_) | Value::Bytes(_) => true,
         Value::List(xs) => xs.iter().all(within),
         Value::Record(fields) => fields.values().all(within),
         Value::Sum { payload, .. } | Value::Effect { payload, .. } => within(payload),
@@ -213,6 +214,10 @@ impl Reader<'_> {
                 b => return Err(DecodeError::BadTag(b)),
             },
             TAG_TEXT => Value::Text(self.text()?),
+            TAG_BYTES => {
+                let n = self.len()?;
+                Value::Bytes(self.take(n)?.to_vec())
+            }
             TAG_LIST => {
                 let n = self.len()?;
                 let mut xs = Vec::new();
@@ -279,6 +284,10 @@ fn encode_at(buf: &mut Vec<u8>, v: &Value, depth: usize) -> Result<(), EncodeErr
         Value::Text(s) => {
             buf.push(TAG_TEXT);
             put_bytes(buf, s.as_bytes())?; // byte-exact: Text is opaque, no Unicode normalization
+        }
+        Value::Bytes(b) => {
+            buf.push(TAG_BYTES);
+            put_bytes(buf, b)?;
         }
         Value::List(xs) => {
             buf.push(TAG_LIST);
@@ -385,6 +394,16 @@ mod tests {
             hex(hash_value(&txt("buy milk")).unwrap()),
             hex(*blake3::hash(&[ENCODING_VERSION, 0x20, TAG_TEXT, 8, 0, 0, 0, b'b', b'u', b'y', b' ', b'm', b'i', b'l', b'k']).as_bytes())
         );
+    }
+
+    /// Bytes are tagged 8, after every tag in use, so no value hash recorded before them moves;
+    /// they decode back as they went in.
+    #[test]
+    fn bytes_are_tagged_8_and_come_back() {
+        let v = Value::Bytes(vec![0, 0xff]);
+        assert_eq!(encode_value(&v).unwrap(), [ENCODING_VERSION, 0x20, TAG_BYTES, 2, 0, 0, 0, 0, 0xff]);
+        assert_eq!(decode_value(&encode_value(&v).unwrap()).ok(), Some(v));
+        assert_ne!(hash_value(&Value::Bytes(b"a".to_vec())).unwrap(), hash_value(&txt("a")).unwrap());
     }
 
     #[test]

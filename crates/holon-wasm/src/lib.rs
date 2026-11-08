@@ -75,6 +75,46 @@ pub enum WValue {
     /// `{ "type": "Record", "value": [["id", {...}], ...] }`. Pairs rather than a map because
     /// serde-wasm-bindgen turns a map into a JS `Map`, not a plain object.
     Record(Vec<(String, WValue)>),
+    /// Mirrors `core::Value::Bytes` as a `Uint8Array`: `{ "type": "Bytes", "value": Uint8Array }`.
+    Bytes(#[serde(with = "uint8_array")] Vec<u8>),
+}
+
+/// Bytes across the bridge as a `Uint8Array`, which serde-wasm-bindgen makes of serde's bytes
+/// (a `Vec<u8>` alone would be an array of numbers); an array of numbers is read too, and padded
+/// base64, as the server's log writes them (`SValue`), so a logged run replays here.
+mod uint8_array {
+    use serde::{de, Deserializer, Serializer};
+
+    pub(super) fn serialize<S: Serializer>(bytes: &[u8], s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_bytes(bytes)
+    }
+
+    pub(super) fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<u8>, D::Error> {
+        struct Bytes;
+        impl<'de> de::Visitor<'de> for Bytes {
+            type Value = Vec<u8>;
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("a Uint8Array, an array of numbers or base64")
+            }
+            fn visit_str<E: de::Error>(self, s: &str) -> Result<Vec<u8>, E> {
+                holon_core::text_bytes(s, "base64").ok_or_else(|| E::custom("bytes that aren't base64"))
+            }
+            fn visit_bytes<E: de::Error>(self, b: &[u8]) -> Result<Vec<u8>, E> {
+                Ok(b.to_vec())
+            }
+            fn visit_byte_buf<E: de::Error>(self, b: Vec<u8>) -> Result<Vec<u8>, E> {
+                Ok(b)
+            }
+            fn visit_seq<A: de::SeqAccess<'de>>(self, mut seq: A) -> Result<Vec<u8>, A::Error> {
+                let mut out = Vec::new();
+                while let Some(b) = seq.next_element::<u8>()? {
+                    out.push(b);
+                }
+                Ok(out)
+            }
+        }
+        d.deserialize_any(Bytes)
+    }
 }
 
 impl WValue {
@@ -94,6 +134,7 @@ impl WValue {
             Value::Record(fields) => {
                 WValue::Record(fields.iter().map(|(k, v)| (k.clone(), WValue::from_core(v))).collect())
             }
+            Value::Bytes(b) => WValue::Bytes(b.clone()),
         }
     }
 
@@ -114,6 +155,7 @@ impl WValue {
             WValue::Record(fields) => {
                 Value::Record(fields.into_iter().map(|(k, v)| (k, v.into_core())).collect())
             }
+            WValue::Bytes(b) => Value::Bytes(b),
         }
     }
 }
@@ -1514,7 +1556,7 @@ fn check_fraction_parity() {
         results.push(one(&prim("date_parse"), &[iso]));
     }
     let digest = to_hex(&holon_core::hash_value(&Value::List(results)).unwrap());
-    assert_eq!(digest, "a67e5e95e3a16b6bfb256e77484abf204fbe80589934cb5fea8e7bb6f545762e");
+    assert_eq!(digest, "72c12e9c04d5a1f1aa935a5f5a458564aabe002d76e7e698e2b15ad874ac64cc");
 }
 
 /// A family leaf with its params set (`fn: "sin"`), as `prim` builds a leaf.
@@ -1558,6 +1600,8 @@ fn check_wvalue_roundtrip() {
         Value::Record(
             [("id".to_string(), Value::Number(1.0)), ("tags".to_string(), Value::List(vec![]))].into(),
         ),
+        Value::Bytes(vec![0, 0xff, 0x68]),
+        Value::Bytes(vec![]),
     ];
     for v in cases {
         assert_eq!(WValue::from_core(&v).into_core(), v);
@@ -1620,7 +1664,7 @@ fn check_variadic_primitives() {
     assert_eq!(
         sorted,
         vec![
-            "add", "all", "and", "any", "concat", "date_set", "date_utc", "filter", "find", "find_index", "find_last", "find_last_index", "fold", "from_codes", "group_by",
+            "add", "all", "and", "any", "bytes_concat", "concat", "date_set", "date_utc", "decimal_add", "decimal_mul", "filter", "find", "find_index", "find_last", "find_last_index", "fold", "from_codes", "group_by",
             "json_parse", "json_stringify", "list", "map", "max", "merge", "min", "multiply", "or", "sort_by"
         ]
     );
@@ -1791,6 +1835,25 @@ mod wasm_tests {
     fn signature_parity_wasm() { check_signature_parity(); }
     #[wasm_bindgen_test]
     fn wvalue_roundtrip_wasm() { check_wvalue_roundtrip(); }
+
+    #[wasm_bindgen(inline_js = "export function value_is_uint8array(v) { return v.value instanceof Uint8Array; }")]
+    extern "C" {
+        fn value_is_uint8array(v: &JsValue) -> bool;
+    }
+
+    /// Bytes cross to JavaScript as a `Uint8Array`, and come back from one, from an array of
+    /// numbers, or from base64, as the server's log has them.
+    #[wasm_bindgen_test]
+    fn bytes_cross_as_a_uint8array() {
+        use serde::Serialize;
+        let js = serde_wasm_bindgen::to_value(&WValue::Bytes(vec![0, 0xff, 0x68])).unwrap();
+        assert!(value_is_uint8array(&js));
+        assert_eq!(serde_wasm_bindgen::from_value::<WValue>(js).unwrap().into_core(), Value::Bytes(vec![0, 0xff, 0x68]));
+        let object = |value: serde_json::Value| serde_json::json!({ "type": "Bytes", "value": value }).serialize(&serde_wasm_bindgen::Serializer::json_compatible()).unwrap();
+        assert_eq!(serde_wasm_bindgen::from_value::<WValue>(object(serde_json::json!([1, 2]))).unwrap().into_core(), Value::Bytes(vec![1, 2]));
+        assert_eq!(serde_wasm_bindgen::from_value::<WValue>(object(serde_json::json!("AP9o"))).unwrap().into_core(), Value::Bytes(vec![0, 0xff, 0x68]));
+        assert!(serde_wasm_bindgen::from_value::<WValue>(object(serde_json::json!("not base64!"))).is_err());
+    }
     #[wasm_bindgen_test]
     fn wunit_roundtrip_wasm() { check_wunit_roundtrip(); }
     #[wasm_bindgen_test]

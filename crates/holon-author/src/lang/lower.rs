@@ -117,6 +117,10 @@ pub(crate) fn is_optional(leaf: &str, input: &str) -> bool {
                 | ("text_contains", "position")
                 | ("split", "limit")
                 | ("pad", "fill")
+                | ("csv_format", "columns")
+                | ("date_part" | "date_text" | "date_add", "offset")
+                | ("business_day_add" | "business_days_between" | "is_business_day", "holidays")
+                | ("xml_text", "path")
         )
 }
 
@@ -150,7 +154,8 @@ const COLLECTION: Store = Store {
     value: "value",
 };
 
-/// A folder an admin binds on the host (`docs/L4s/named-folders-L4.md`): files by name, as text.
+/// A folder an admin binds on the host (`docs/L4s/named-folders-L4.md`): files by name, as text
+/// (`bytes(name)` reads one's bytes).
 const FOLDER: Store = Store {
     kind: "folder",
     param: "folder",
@@ -187,11 +192,22 @@ impl Val {
     }
 }
 
-/// The type of the output `v` is, as the node that gives it says; a function's input has none.
-fn typed(v: &Val) -> Option<&WType> {
-    match v {
-        Val::Out { outputs, port, .. } => outputs.get(*port).map(|p| &p.ty),
-        Val::In(_) => None,
+/// The decimal leaves whose result is a decimal written as text (host-capabilities L4 §5.1.1):
+/// `+` would join it and `<` compare it letter by letter.
+const DECIMAL_TEXTS: &[&str] = &["decimal_add", "decimal_sub", "decimal_mul", "decimal_div", "decimal_round", "decimal_sum"];
+
+/// The type a function's port is written with (`amounts: string[]`), as the lowering names it.
+fn written_type(t: &TypeExpr) -> WType {
+    let arg = |k: usize| t.args.get(k).map_or(WType::Any, written_type);
+    match t.name.as_str() {
+        "Number" => WType::Number,
+        "Boolean" => WType::Boolean,
+        "Text" => WType::Text,
+        "Record" => WType::Record,
+        "Bytes" => WType::Bytes,
+        "List" => WType::List(Box::new(arg(0))),
+        "Product" => WType::Product(t.args.iter().map(written_type).collect()),
+        _ => WType::Any,
     }
 }
 
@@ -231,11 +247,25 @@ struct Frame {
     branches: usize,
     /// The calls placed in a branch: made only when the branch needs them, so left untied.
     in_branches: HashSet<String>,
+    /// The types its inputs are known to have, by port: a function's, as its ports are written,
+    /// and the values a function takes from around it, as they were known there.
+    types: HashMap<String, WType>,
 }
 
 impl Frame {
     fn new(kind: FrameKind) -> Frame {
-        Frame { kind, env: HashMap::new(), wiring_in: vec![], wiring_out: vec![], written: HashMap::new(), shared: HashMap::new(), created: vec![], branches: 0, in_branches: HashSet::new() }
+        Frame {
+            kind,
+            env: HashMap::new(),
+            wiring_in: vec![],
+            wiring_out: vec![],
+            written: HashMap::new(),
+            shared: HashMap::new(),
+            created: vec![],
+            branches: 0,
+            in_branches: HashSet::new(),
+            types: HashMap::new(),
+        }
     }
 }
 
@@ -620,6 +650,40 @@ impl<'a> Lowerer<'a> {
         Ok(self.out(&id))
     }
 
+    /// `base[key]`, by what each is known to be. A number picks a list's item (`get`, as
+    /// JavaScript's: nothing past its end or for a negative one), on a list or on a value of no
+    /// known type; on a record it names the field as JavaScript does (`r[0]` is `r["0"]`); a
+    /// text's character is refused, naming the two forms it could be. Any other key reads a
+    /// record's field (`lookup`).
+    fn index(&mut self, base: Val, key: Val, key_span: Span, span: Span) -> R<Val> {
+        if self.typed(&key) != Some(&WType::Number) {
+            return self.node_with("lookup", &[], &[("record", base), ("key", key)], span);
+        }
+        match self.typed(&base) {
+            Some(WType::Record) => {
+                let name = self.node_with("as_text", &[], &[("value", key)], key_span)?;
+                self.node_with("lookup", &[], &[("record", base), ("key", name)], span)
+            }
+            Some(WType::Text) => err(span, "a text's character is s.at(i), from the end when i is negative, or s.charAt(i), \"\" past its end: s[i] is neither"),
+            _ => self.node_with("get", &[], &[("list", base), ("index", key)], span),
+        }
+    }
+
+    /// The type `v` is known to have: its node's output's, or an input's as the frame knows it.
+    fn typed<'v>(&'v self, v: &'v Val) -> Option<&'v WType> {
+        match v {
+            Val::Out { outputs, port, .. } => outputs.get(*port).map(|p| &p.ty),
+            Val::In(port) => self.cur().types.get(port),
+        }
+    }
+
+    /// The decimal leaf that made `v`, if one did (`DECIMAL_TEXTS`).
+    fn decimal_leaf(&self, v: &Val) -> Option<String> {
+        let Val::Out { id, .. } = v else { return None };
+        let name = &self.b.data(id)?.name;
+        DECIMAL_TEXTS.contains(&name.as_str()).then(|| name.clone())
+    }
+
     /// The input names of a variadic leaf grown to `n`.
     fn variadic_ports(first: &[WPort], n: usize) -> Vec<String> {
         let mut names: Vec<String> = first.iter().map(|p| p.name.clone()).collect();
@@ -761,8 +825,8 @@ impl<'a> Lowerer<'a> {
             StmtKind::Expr(e) => {
                 let v = self.expr(e)?;
                 // A call (a request, another flow's action) is made for what it does, whatever it
-                // answers.
-                let a_call = matches!(&v, Val::Out { id, .. } if self.b.data(id).is_some_and(|d| CALLS.contains(&d.name.as_str())));
+                // answers; a clock's throw, `fail`, for the reason it gives the run's log.
+                let a_call = matches!(&v, Val::Out { id, .. } if self.b.data(id).is_some_and(|d| CALLS.contains(&d.name.as_str()) || d.name == "fail"));
                 if v.effectful() || a_call {
                     return self.effect(v, s.span);
                 }
@@ -904,6 +968,9 @@ impl<'a> Lowerer<'a> {
         let body_val = match (subscribing, body) {
             (Some((channel, sub_args, at)), _) => Some((self.subscribe(channel, sub_args, at)?, at)),
             (None, Some(b)) => Some((self.expr(b)?, b.span)),
+            // A status alone answers it with an empty body, as one among answers with bodies does
+            // (ts.rs's `merge_responses`); a 204 has none to give.
+            (None, None) if status != "204" => Some((self.node("const", &[("value".into(), String::new()), ("type".into(), "Text".into())], span)?, span)),
             (None, None) => None,
         };
         let headers_val = match headers {
@@ -1225,6 +1292,9 @@ impl<'a> Lowerer<'a> {
             if frame.env.insert(p.name.text.clone(), Val::In(p.name.text.clone())).is_some() {
                 return err(p.name.span, format!("the input \"{}\" is declared twice", p.name.text));
             }
+            if let Some(t) = &p.ty {
+                frame.types.insert(p.name.text.clone(), written_type(t));
+            }
         }
         for p in &def.outputs {
             self.check_port_name(&p.name)?;
@@ -1543,7 +1613,7 @@ impl<'a> Lowerer<'a> {
                 }
                 let r = self.expr(base)?;
                 let k = self.expr(key)?;
-                self.node_with("lookup", &[], &[("record", r), ("key", k)], e.span)
+                self.index(r, k, key.span, e.span)
             }
             ExprKind::Record { spread, fields } => {
                 let mut acc = match spread {
@@ -1563,6 +1633,13 @@ impl<'a> Lowerer<'a> {
             ExprKind::Not(x) => {
                 let v = self.expr(x)?;
                 self.node_with("not", &[], &[("v", v)], e.span)
+            }
+            ExprKind::Truthy(x) => {
+                let v = self.expr(x)?;
+                if self.boolean(&v) {
+                    return Ok(v);
+                }
+                self.node_with("is_truthy", &[], &[("value", v)], e.span)
             }
             ExprKind::Binary { op, lhs, rhs } => self.binary(*op, lhs, rhs, e.span),
             // `c ? a : b` is `guard(c, a) ?? guard(!(c ?? false), b)`: each branch guarded by its
@@ -1607,11 +1684,15 @@ impl<'a> Lowerer<'a> {
         if matches!(self.cur().kind, FrameKind::Lambda { .. }) {
             let inner = self.frames.pop().expect("the function's frame");
             let outside = self.name(n, span);
+            let ty = outside.as_ref().ok().and_then(|v| self.typed(v)).cloned();
             self.frames.push(inner);
             let v = outside?;
             let FrameKind::Lambda { captures } = &mut self.frame().kind else { unreachable!() };
             captures.push((n.to_string(), v));
             self.frame().env.insert(n.to_string(), Val::In(n.to_string()));
+            if let Some(t) = ty {
+                self.frame().types.insert(n.to_string(), t);
+            }
             return Ok(Val::In(n.to_string()));
         }
         if self.is_def(n) {
@@ -1666,6 +1747,12 @@ impl<'a> Lowerer<'a> {
             BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
                 let a = self.expr(lhs)?;
                 let b = self.expr(rhs)?;
+                if let Some(leaf) = self.decimal_leaf(&a).or_else(|| self.decimal_leaf(&b)) {
+                    return err(
+                        span,
+                        format!("{leaf}(…) is a decimal written as text, so {op} would compare it letter by letter (\"10.00\" < \"9.00\"): decimal_compare(a, b) {op} 0 compares two by value", op = op.text()),
+                    );
+                }
                 self.node_with("compare", &[("op".into(), op.text().into())], &[("a", a), ("b", b)], span)
             }
             BinOp::Sub | BinOp::Div => {
@@ -1696,6 +1783,11 @@ impl<'a> Lowerer<'a> {
                 let mut vals = Vec::new();
                 for o in &operands {
                     vals.push(self.expr(o)?);
+                }
+                if leaf == "add"
+                    && let Some(d) = vals.iter().find_map(|v| self.decimal_leaf(v))
+                {
+                    return err(span, format!("{d}(…) is a decimal written as text, so + would join the texts: decimal_add(a, b) adds decimals exactly"));
                 }
                 let first_ty = if leaf == "and" || leaf == "or" { WType::Boolean } else { WType::Number };
                 let ports = Self::variadic_ports(&[WPort::new("a", first_ty.clone()), WPort::new("b", first_ty)], vals.len());
@@ -1823,13 +1915,36 @@ impl<'a> Lowerer<'a> {
         let inputs: Vec<WPort> = unit.inputs.iter().map(WPort::from_core).collect();
         if number && let [subject] = args {
             let v = self.expr(&subject.value)?;
-            if typed(&v).is_some_and(|t| *t == WType::Number) {
+            if self.typed(&v).is_some_and(|t| *t == WType::Number) {
                 return self.node_with(&leaf.text, params, &[(inputs[0].name.as_str(), v)], span);
             }
             return self.node_with("as_text", &[], &[("value", v)], span);
         }
         let defaults: Vec<WParam> = unit.params.iter().map(WParam::from_core).collect();
         self.unit_call(&leaf.text, &inputs, &defaults, params, args, span)
+    }
+
+    /// Whether `v` is known to be a Boolean: its node gives one, or chooses among Booleans (`a ??
+    /// b`, `c ? a : b`), so a condition reads it as it is, without `is_truthy`.
+    fn boolean(&self, v: &Val) -> bool {
+        if self.typed(v) == Some(&WType::Boolean) {
+            return true;
+        }
+        let Val::Out { id, .. } = v else { return false };
+        let Some(d) = self.b.data(id) else { return false };
+        let chosen: &[&str] = match d.name.as_str() {
+            "coalesce" => &["a", "b"],
+            "guard" => &["value"],
+            "select" => &["if_true", "if_false"],
+            _ => return false,
+        };
+        chosen.iter().all(|port| {
+            self.b.source(id, port).is_some_and(|(from, output)| {
+                let outputs = self.b.data(from).map(|d| d.outputs.clone()).unwrap_or_default();
+                let port = outputs.iter().position(|p| p.name == output).unwrap_or(0);
+                self.boolean(&Val::Out { id: from.to_string(), outputs, port, explicit: false })
+            })
+        })
     }
 
     /// `x.length` and `x.concat(…)`, which a text and a list both have and different leaves do,
@@ -1840,7 +1955,7 @@ impl<'a> Lowerer<'a> {
     /// value of no known type is refused, naming the two leaves.
     fn text_or_list(&mut self, subject: &'a Expr, method: &Name, args: &'a [Arg], span: Span) -> R<Val> {
         let v = self.expr(subject)?;
-        let ty = typed(&v).cloned();
+        let ty = self.typed(&v).cloned();
         if method.text == "length" {
             // One output of several, named `length`, as `.name` picks one.
             if let Val::Out { id, outputs, explicit: false, .. } = &v
@@ -1852,6 +1967,7 @@ impl<'a> Lowerer<'a> {
             return match ty {
                 Some(WType::Text) => self.node_with("text_length", &[], &[("s", v)], span),
                 Some(WType::List(_)) => self.node_with("length", &[], &[("list", v)], span),
+                Some(WType::Bytes) => self.node_with("bytes_length", &[], &[("bytes", v)], span),
                 Some(WType::Record) => err(span, "a record's field named length is read r[\"length\"]"),
                 _ => err(span, ".length is a text's text_length or a list's length, and this value isn't known to be either: import the one it is from \"holon\" and call it, text_length(s) or length(xs)"),
             };
@@ -2004,7 +2120,8 @@ impl<'a> Lowerer<'a> {
                     "put" => store.put,
                     "delete" => store.delete,
                     "list" => store.list,
-                    // A folder's files without their bytes, and parts of them.
+                    // A file's bytes, any file; a folder's files without their bytes, and parts of them.
+                    "bytes" if folder => "file_read_bytes",
                     "file" if folder => "file_handle",
                     "lines" if folder => "file_lines",
                     "slice" if folder => "file_slice",
@@ -2013,7 +2130,7 @@ impl<'a> Lowerer<'a> {
                     "create" if folder => "file_create",
                     "create_copy" if folder => "file_create_copy",
                     other if folder => {
-                        return err(method.span, format!("a folder has no \"{other}\": get, put, delete, list, file, lines, slice, copy, create or create_copy"));
+                        return err(method.span, format!("a folder has no \"{other}\": get, bytes, put, delete, list, file, lines, slice, copy, create or create_copy"));
                     }
                     other => return err(method.span, format!("a {} has no \"{other}\": get, put, delete or list", store.kind)),
                 };
@@ -2521,6 +2638,36 @@ pub(crate) mod tests {
         doc.nodes.iter().map(|n| n.data.name.clone()).collect()
     }
 
+    /// A condition that is a Boolean (a comparison, a `!`, `&&` and `||` of them, a choice among
+    /// them) is read as it is: only a value that isn't one is read through `is_truthy`.
+    #[test]
+    fn a_boolean_condition_is_read_as_it_is() {
+        let d = compiled(
+            r#"import { flow, route } from "holon"
+
+flow("t", { port: 8000 })
+
+route.post("/n", (req) => {
+  const big = req.json.n > 1
+  const on = (req.json.m === 2 ?? false) || !big
+  return big && !(req.json.n === 3) ? (on ? "on" : "off") : "small"
+})
+"#,
+        )
+        .doc;
+        assert!(!leaves(&d).iter().any(|l| l == "is_truthy"), "{:?}", leaves(&d));
+        let d = compiled(
+            r#"import { flow, route } from "holon"
+
+flow("t", { port: 8000 })
+
+route.post("/n", (req) => (req.json.s ? "some" : "none"))
+"#,
+        )
+        .doc;
+        assert_eq!(leaves(&d).iter().filter(|l| *l == "is_truthy").count(), 1, "{:?}", leaves(&d));
+    }
+
     /// A handler is one composite. An input a leaf works without (an http_request's headers and
     /// body, a listing's prefix and after) stays unbound in it, as in a route: promoted to the
     /// boundary it would be wired but absent, and core would hold the leaf back on every run (a
@@ -2983,6 +3130,30 @@ every("10s", async () => {
         assert!(refused("x.s.length").starts_with(".length is a text's text_length or a list's length, and this value isn't known to be either"), "{}", refused("x.s.length"));
         assert!(refused("({ a: 1 }).length").starts_with("a record's field named length is read r[\"length\"]"));
         assert!(refused("x.xs.concat(x.ys)").starts_with("concat spreads a list and adds anything else, and this could be either"));
+    }
+
+    /// A decimal leaf's result is a text, so `+` on it would join and `<` compare letter by letter:
+    /// both refused, naming the leaf to use, through a `const` too; `===`, `-` and template
+    /// literals stay JavaScript's (host-capabilities L4 §5.1.1).
+    #[test]
+    fn a_decimal_leaf_s_result_is_kept_from_plus_and_less_than() {
+        let flow = |body: &str| {
+            format!("import {{ action, decimal_add, decimal_compare, decimal_round, flow }} from \"holon\"\n\nflow(\"f\")\n\nexport const t = action((x) => {{\n{body}\n}})\n")
+        };
+        let refused = |body: &str| error(&flow(body)).2;
+        assert!(refused("  return decimal_add(x.a, x.b) + x.c").starts_with("decimal_add(…) is a decimal written as text, so + would join the texts"), "{}", refused("  return decimal_add(x.a, x.b) + x.c"));
+        assert!(refused("  const t = decimal_round(x.a, 2)\n  return \"=\" + x.b + t").starts_with("decimal_round(…) is a decimal written as text, so + would join"));
+        assert!(refused("  return x.limit < decimal_add(x.a, x.b)").starts_with("decimal_add(…) is a decimal written as text, so < would compare it letter by letter"));
+        assert!(refused("  const t = decimal_add(x.a, x.b)\n  return t >= \"100\"").contains("decimal_compare(a, b) >= 0"));
+        for fine in [
+            "  return decimal_compare(decimal_add(x.a, x.b), x.limit) > 0",
+            "  return decimal_round(x.a, 2) === \"10.00\"",
+            "  return `${decimal_add(x.a, x.b)} EUR`",
+            "  return decimal_add(x.a, x.b) - 1",
+            "  return x.a + x.b",
+        ] {
+            compiled(&flow(fine));
+        }
     }
 
     /// A flow's own function keeps its name's calls, as JavaScript's would shadow the global;
@@ -4218,7 +4389,7 @@ export const t = action(() => {
         let route = |handler: &str| error(&format!("import {{ flow, route }} from \"holon\"\nimport inbox from \"folder:inbox\"\nimport notes from \"collection:notes\"\n\nflow(\"f\", {{ port: 8080 }})\n\n{handler}\n"));
         assert_eq!(route("route.get(\"/a\", () => inbox)"), (7, 23, "\"inbox\" is a folder: read it as inbox[name] or inbox.list(…)".into()));
         assert_eq!(route("route.get(\"/a\", () => {\n  inbox = 1\n  return 1\n})"), (8, 3, "\"inbox\" is imported, and stays what it is: give a value of its own a name of its own".into()));
-        assert_eq!(route("route.get(\"/a\", () => inbox.move(\"a\"))"), (7, 29, "a folder has no \"move\": get, put, delete, list, file, lines, slice, copy, create or create_copy".into()));
+        assert_eq!(route("route.get(\"/a\", () => inbox.move(\"a\"))"), (7, 29, "a folder has no \"move\": get, bytes, put, delete, list, file, lines, slice, copy, create or create_copy".into()));
         assert_eq!(route("route.get(\"/a\", () => notes.file(\"a\"))"), (7, 29, "a collection has no \"file\": get, put, delete or list".into()));
         // A folder without its name.
         let e = error("import { flow, route } from \"holon\"\nimport inbox from \"folder:\"\n\nflow(\"f\", { port: 8080 })\n\nroute.get(\"/a\", () => 1)\n");
@@ -4535,6 +4706,67 @@ route.get("/x", () => {
         let (_, unit) = crate::composites::resolve(&store, &hash.expect("pick is placed")).unwrap();
         let inputs: Vec<Option<holon_core::Value>> = unit.inputs.iter().map(|p| if p.name == "op" { op.clone() } else { v.clone() }).collect();
         holon_core::eval(unit, &inputs, &store).into_vec().remove(0)
+    }
+
+    /// The function `f` of a flow, as core evaluates it, given its inputs by name.
+    fn ran(src: &str, given: &[(&str, holon_core::Value)]) -> Option<holon_core::Value> {
+        let doc = compiled(src).doc;
+        let mut store = MapResolver::new();
+        text::restore(&doc, &mut store, &Names::new());
+        let hash = doc.nodes.iter().find_map(|n| match &n.data.body {
+            crate::canvas::PlacedBody::Composite { hash } => Some(hash.clone()),
+            _ => None,
+        });
+        let (_, unit) = crate::composites::resolve(&store, &hash.expect("f is placed")).unwrap();
+        let inputs: Vec<Option<holon_core::Value>> = unit.inputs.iter().map(|p| given.iter().find(|(n, _)| *n == p.name).map(|(_, v)| v.clone())).collect();
+        holon_core::eval(unit, &inputs, &store).into_vec().remove(0)
+    }
+
+    /// A flow whose function `f(params)` is `body`, called with as many of the action's values.
+    fn with_f(params: &str, body: &str) -> String {
+        let args = ["x.a", "x.b"][..params.split(',').count()].join(", ");
+        format!("import {{ action, flow }} from \"holon\"\nimport state from \"state\"\n\nflow(\"f\")\n\nfunction f({params}) {{\n{body}\n}}\n\nexport const t = action((x) => {{\n  state.x = f({args})\n}})\n")
+    }
+
+    /// `base[i]` with a number reads a list's item, as JavaScript's, on a list or on a value of no
+    /// known type (an entry's `e[0]`); on a record, the field the number names; on a text it is
+    /// refused, naming its two forms. Any other key reads a record's field, as before.
+    #[test]
+    fn a_number_index_reads_a_list_s_item() {
+        use holon_core::Value::{List, Number, Record, Text};
+        let t = |s: &str| Text(s.into());
+        let pairs = List(vec![List(vec![t("a"), Number(1.0)]), List(vec![t("b"), Number(2.0)])]);
+        assert_eq!(
+            ran(&with_f("entries", "  return entries.map((e) => [e[0], e[1] * 2])"), &[("entries", pairs)]),
+            Some(List(vec![List(vec![t("a"), Number(2.0)]), List(vec![t("b"), Number(4.0)])]))
+        );
+        let xs = List(vec![Number(10.0), Number(20.0)]);
+        assert_eq!(ran(&with_f("xs", "  return xs[1]"), &[("xs", xs.clone())]), Some(Number(20.0)));
+        assert_eq!(ran(&with_f("xs", "  return xs[5]"), &[("xs", xs.clone())]), None, "past its end, as JavaScript's undefined");
+        assert_eq!(ran(&with_f("xs", "  return xs[-1]"), &[("xs", xs)]), None, "a negative index too");
+        let r = Record([("0".to_string(), t("zero")), ("a".to_string(), Number(1.0))].into());
+        assert_eq!(ran(&with_f("r: object", "  return r[0]"), &[("r", r.clone())]), Some(t("zero")), "r[0] is r[\"0\"]");
+        assert_eq!(ran(&with_f("r, k", "  return r[k]"), &[("r", r), ("k", t("a"))]), Some(Number(1.0)));
+        let (_, _, m) = error(&with_f("s: string", "  return s[0]"));
+        assert!(m.starts_with("a text's character is s.at(i)"), "{m}");
+    }
+
+    /// A function's port written with a type is known to be one, inside the function and inside
+    /// a function it gives a value to: `.length` picks the leaf by it.
+    #[test]
+    fn a_typed_port_picks_length_by_its_type() {
+        use holon_core::Value::{Bytes, List, Number, Text};
+        let t = |s: &str| Text(s.into());
+        assert_eq!(ran(&with_f("xs: string[]", "  return xs.length"), &[("xs", List(vec![t("a"), t("b"), t("c")]))]), Some(Number(3.0)));
+        assert_eq!(ran(&with_f("s: string", "  return s.length"), &[("s", t("héllo"))]), Some(Number(5.0)));
+        assert_eq!(ran(&with_f("b: Uint8Array", "  return b.length"), &[("b", Bytes(vec![1, 2]))]), Some(Number(2.0)));
+        assert_eq!(
+            ran(&with_f("xs: string[], ys", "  return ys.map((y) => y + xs.length)"), &[("xs", List(vec![t("a")])), ("ys", List(vec![Number(1.0), Number(2.0)]))]),
+            Some(List(vec![Number(2.0), Number(3.0)])),
+            "a typed value taken from around a function"
+        );
+        let (_, _, m) = error(&with_f("xs", "  return xs.length"));
+        assert!(m.starts_with(".length is a text's text_length or a list's length"), "untyped, still refused: {m}");
     }
 
     /// A flow whose function `pick` is `body`.

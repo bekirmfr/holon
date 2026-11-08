@@ -699,7 +699,8 @@ fn quoted(table: &str) -> String {
 }
 
 /// A Holon value as text for a parameter the server typed `ty`: true and false as 1 and 0 for a
-/// number, a number as `true`/`false` for a boolean, a record or list as JSON.
+/// number, a number as `true`/`false` for a boolean, a record or list as JSON, bytes as a bytea's
+/// hex (`\x…`) where the statement takes one.
 fn pg_param(v: &Value, ty: &Type) -> Result<Text, String> {
     let number = matches!(*ty, Type::INT2 | Type::INT4 | Type::INT8 | Type::NUMERIC | Type::FLOAT4 | Type::FLOAT8 | Type::OID);
     Ok(Text(Some(match v {
@@ -712,6 +713,8 @@ fn pg_param(v: &Value, ty: &Type) -> Result<Text, String> {
         Value::Sum { arm: 1, .. } => return Ok(Text(None)),
         Value::Sum { payload, .. } => return pg_param(payload, ty),
         Value::List(_) | Value::Record(_) => holon_core::stringify_json(v).ok_or("a parameter's record or list has a value JSON can't hold")?,
+        Value::Bytes(b) if *ty == Type::BYTEA => format!("\\x{}", holon_core::hex(b)),
+        Value::Bytes(_) => return Err(format!("bytes are a parameter where the statement takes a bytea, not a {}", ty.name())),
         Value::Effect { .. } => return Err("an effect is never a parameter".into()),
     })))
 }
@@ -797,7 +800,7 @@ fn pg_value(ty: &Type, raw: &[u8]) -> Result<Value, String> {
         Type::TEXT | Type::VARCHAR | Type::BPCHAR | Type::NAME | Type::UNKNOWN | Type::CHAR => Value::Text(String::from_utf8_lossy(raw).into_owned()),
         Type::JSON => holon_core::parse_json(&String::from_utf8_lossy(raw)).ok_or("a json value Holon can't read")?,
         Type::JSONB => holon_core::parse_json(&String::from_utf8_lossy(raw.get(1..).ok_or_else(short)?)).ok_or("a jsonb value Holon can't read")?,
-        Type::BYTEA => Value::Text(holon_core::hex(raw)),
+        Type::BYTEA => Value::Bytes(raw.to_vec()),
         Type::UUID => {
             let h: String = holon_core::hex(be(16)?);
             Value::Text(format!("{}-{}-{}-{}-{}", &h[..8], &h[8..12], &h[12..16], &h[16..20], &h[20..]))
@@ -898,6 +901,7 @@ fn my_param(v: &Value) -> Result<mysql::Value, String> {
         Value::Sum { arm: 1, .. } => mysql::Value::NULL,
         Value::Sum { payload, .. } => my_param(payload)?,
         Value::List(_) | Value::Record(_) => mysql::Value::Bytes(holon_core::stringify_json(v).ok_or("a parameter's record or list has a value JSON can't hold")?.into_bytes()),
+        Value::Bytes(b) => mysql::Value::Bytes(b.clone()),
         Value::Effect { .. } => return Err("an effect is never a parameter".into()),
     })
 }
@@ -950,7 +954,7 @@ fn my_value(v: mysql::Value, column: &mysql::Column) -> Result<Option<Value>, St
             MYSQL_TYPE_TINY_BLOB | MYSQL_TYPE_MEDIUM_BLOB | MYSQL_TYPE_LONG_BLOB | MYSQL_TYPE_BLOB | MYSQL_TYPE_VAR_STRING | MYSQL_TYPE_STRING | MYSQL_TYPE_VARCHAR | MYSQL_TYPE_BIT
                 if column.character_set() == 63 =>
             {
-                Value::Text(b.iter().map(|x| format!("{x:02x}")).collect())
+                Value::Bytes(b)
             }
             _ => Value::Text(String::from_utf8_lossy(&b).into_owned()),
         },

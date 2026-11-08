@@ -4609,6 +4609,33 @@ fn a_run_that_computes_with_a_secret_is_checked_given_what_that_node_produced() 
     assert_eq!(report.given, BTreeMap::from([(0, 1)]));
 }
 
+/// A condition reads a value that isn't a Boolean as JavaScript does (`!""` is true, `[]` is
+/// true), an absent one as `if` reads it, and a status alone answers it with an empty body, a 204
+/// with none.
+#[test]
+fn a_condition_reads_javascripts_truthiness_and_a_status_alone_answers() {
+    let state = claims_state("");
+    let text = "import { flow, route, status } from \"holon\"\nimport state from \"state\"\n\nflow(\"truthy\", { port: 18302 })\n\nroute.post(\"/not\", (req) => {\n  if (!req.json.s) {\n    return status(422, \"empty\")\n  }\n  return status(200, \"full\")\n})\n\nroute.post(\"/if\", (req) => {\n  if (req.json.s) {\n    state.yes = (state.yes ?? 0) + 1\n  } else {\n    state.no = (state.no ?? 0) + 1\n  }\n  return \"counted\"\n})\n\nroute.get(\"/stats\", () => ({ yes: state.yes ?? 0, no: state.no ?? 0 }))\n\nroute.post(\"/bare\", () => status(400))\n\nroute.post(\"/pick\", (req) => {\n  if (req.json.x === 1) {\n    return status(204)\n  }\n  if (req.json.x === 2) {\n    return status(409)\n  }\n  return status(200, { x: req.json.x })\n})\n";
+    let slug = deploy_text(&state, text, "127.0.0.1:9");
+    let call = |method: &str, path: &str, body: &str| {
+        let (status, answer, _) = data_call(&state, &slug, method, path, body);
+        (status, answer)
+    };
+    for (body, answer) in [(r#"{"s":""}"#, (422, "empty")), (r#"{"s":0}"#, (422, "empty")), (r#"{"s":false}"#, (422, "empty")), (r#"{"s":"a"}"#, (200, "full")), (r#"{"s":[]}"#, (200, "full")), (r#"{"s":{}}"#, (200, "full"))] {
+        assert_eq!(call("POST", "/not", body), (answer.0, answer.1.to_string()), "{body}");
+    }
+    // Absent is still absent: `!` of it has no value, and the `if` takes its else.
+    assert_eq!(call("POST", "/not", "{}"), (200, "full".to_string()));
+    for body in [r#"{"s":"x"}"#, r#"{"s":""}"#, r#"{"s":{}}"#, r#"{"s":0}"#, "{}"] {
+        assert_eq!(call("POST", "/if", body), (200, "counted".to_string()), "{body}");
+    }
+    assert_eq!(call("GET", "/stats", ""), (200, r#"{"no":3,"yes":2}"#.to_string()), "each request counted once, on its side");
+    assert_eq!(call("POST", "/bare", ""), (400, String::new()));
+    assert_eq!(call("POST", "/pick", r#"{"x":1}"#), (204, String::new()));
+    assert_eq!(call("POST", "/pick", r#"{"x":2}"#), (409, String::new()));
+    assert_eq!(call("POST", "/pick", r#"{"x":3}"#), (200, r#"{"x":3}"#.to_string()));
+}
+
 /// A caller who sends text that looks like a placeholder (`‹token:paid›`) gets nothing taken as
 /// given: the log escapes it (only a mark the log wrote reads as one), and verify computes the
 /// run's id and every node from it again. The caller's answer, and the request as the run saw it,
@@ -6735,6 +6762,214 @@ on.file.created(inbox, async (f) => {{
 
     // Its runs check offline: the handle is what arrived, the server's answer what the log says.
     let export: verify::Export = serde_json::from_value(body_json(route(&state, &req("GET", &format!("/deployments/{slug}/export"), vec![])))).unwrap();
+    let report = verify::check(&export, None, &BTreeMap::new());
+    assert!(report.ok() && report.reruns.iter().all(|(_, r)| *r == verify::Rerun::Matched), "{}", verify::describe(&report, None));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A CSV of payouts (the payout-totals sample): each currency's total exact where a number's sum is
+/// off, rounded half to even, kept and read back; a malformed file keeps nothing; and the runs
+/// verify.
+#[test]
+fn a_csv_of_payouts_is_totalled_exactly() {
+    let state = claims_state("");
+    let dir = std::env::temp_dir().join(format!("holon-payouts-{}-{}", std::process::id(), rand::random::<u32>()));
+    let payouts = dir.join("payouts");
+    std::fs::create_dir_all(&payouts).unwrap();
+    assert_eq!(route_status(&state, &serde_json::json!({ "name": "payouts", "path": payouts.display().to_string(), "access": "read" })), 200);
+    let slug = deploy_text(&state, include_str!("../../holon-author/samples/payout-totals.holon.ts"), "");
+    let look = || {
+        arrivals::run_arrivals(&state.store, &state.deployments, &state.deployments_path);
+        arrivals::run_arrivals(&state.store, &state.deployments, &state.deployments_path);
+    };
+    look();
+    // 0.1 + 0.2 + 0.3 as numbers is 0.6000000000000001; 1250.005 is half a cent, to even.
+    std::fs::write(payouts.join("may.csv"), "\u{feff}id,currency,amount\r\n1,EUR,0.10\r\n2,EUR,0.20\r\n3,EUR,0.30\r\n4,USD,1250.005\r\n").unwrap();
+    std::fs::write(payouts.join("bad.csv"), "id,currency,amount\n1,EUR,\"0.10\n").unwrap();
+    look();
+    let (status, answer, _) = data_call(&state, &slug, "GET", "/totals/may.csv", "");
+    assert_eq!(
+        (status, serde_json::from_str::<serde_json::Value>(&answer).unwrap()),
+        (200, serde_json::json!({ "EUR": { "count": 3, "total": "0.60" }, "USD": { "count": 1, "total": "1250.00" } }))
+    );
+    let (status, _, _) = data_call(&state, &slug, "GET", "/totals/bad.csv", "");
+    assert_ne!(status, 200, "a quote that never closes keeps nothing");
+
+    let export: verify::Export = serde_json::from_value(body_json(route(&state, &req("GET", &format!("/deployments/{slug}/export"), vec![])))).unwrap();
+    let report = verify::check(&export, None, &BTreeMap::new());
+    assert!(report.ok() && report.reruns.iter().all(|(_, r)| *r == verify::Rerun::Matched), "{}", verify::describe(&report, None));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// XML both ways (the payment-batch sample): a CSV of payouts becomes a pain.001 with its elements
+/// in the schema's order, each amount rounded to cents and the control sum exact; the same file for
+/// the same day keeps its message id, another day changes it; a file with an amount of 0, one that
+/// isn't a CSV of payouts, or one the schema would refuse (an id or a name too long, an IBAN not in
+/// its shape, a date that isn't one) is refused, one at its limits taken; the bank's pain.002 is
+/// read back; and the runs verify.
+#[test]
+fn a_csv_of_payouts_becomes_a_pain001_and_its_status_report_is_read() {
+    let state = claims_state("");
+    let slug = deploy_text(&state, include_str!("../../holon-author/samples/payment-batch.holon.ts"), "");
+    let csv = "id,name,iban,amount,reference\nP1,Jane Roe,FR1420041010050500013M02606,100,Invoice 42\nP2,John Doe,NL91ABNA0417164300,0.10,Refund 7\nP3,Max Muster,DE75512108001245126199,0.2,Refund 8\n";
+    let batch = |url: &str, csv: &str| {
+        let (status, xml, _) = data_call(&state, &slug, "POST", url, csv);
+        assert_eq!(status, 200, "{url}: {xml}");
+        // The message id and the time it was made, read out: a hash and the clock.
+        let inner = |tag: &str| xml.split(&format!("<{tag}>")).nth(1).and_then(|s| s.split(&format!("</{tag}>")).next()).unwrap().to_string();
+        let (id, created) = (inner("MsgId"), inner("CreDtTm"));
+        assert!(id.len() == 32 && id.bytes().all(|b| b.is_ascii_hexdigit()), "{id}");
+        assert!(created.len() == 29 && created.ends_with("+01:00"), "{created}");
+        (xml.replace(&id, "ID").replace(&created, "CREATED"), id)
+    };
+    let (xml, id) = batch("/batch?date=2026-11-10", csv);
+    let transfer = |id: &str, amount: &str, name: &str, iban: &str, why: &str| {
+        format!("      <CdtTrfTxInf>\n        <PmtId>\n          <EndToEndId>{id}</EndToEndId>\n        </PmtId>\n        <Amt>\n          <InstdAmt Ccy=\"EUR\">{amount}</InstdAmt>\n        </Amt>\n        <Cdtr>\n          <Nm>{name}</Nm>\n        </Cdtr>\n        <CdtrAcct>\n          <Id>\n            <IBAN>{iban}</IBAN>\n          </Id>\n        </CdtrAcct>\n        <RmtInf>\n          <Ustrd>{why}</Ustrd>\n        </RmtInf>\n      </CdtTrfTxInf>\n")
+    };
+    let expected = format!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<Document xmlns=\"urn:iso:std:iso:20022:tech:xsd:pain.001.001.09\">\n  <CstmrCdtTrfInitn>\n    <GrpHdr>\n      <MsgId>ID</MsgId>\n      <CreDtTm>CREATED</CreDtTm>\n      <NbOfTxs>3</NbOfTxs>\n      <CtrlSum>100.30</CtrlSum>\n      <InitgPty>\n        <Nm>Acme Payouts GmbH</Nm>\n      </InitgPty>\n    </GrpHdr>\n    <PmtInf>\n      <PmtInfId>ID</PmtInfId>\n      <PmtMtd>TRF</PmtMtd>\n      <NbOfTxs>3</NbOfTxs>\n      <CtrlSum>100.30</CtrlSum>\n      <PmtTpInf>\n        <SvcLvl>\n          <Cd>SEPA</Cd>\n        </SvcLvl>\n      </PmtTpInf>\n      <ReqdExctnDt>\n        <Dt>2026-11-10</Dt>\n      </ReqdExctnDt>\n      <Dbtr>\n        <Nm>Acme Payouts GmbH</Nm>\n      </Dbtr>\n      <DbtrAcct>\n        <Id>\n          <IBAN>DE89370400440532013000</IBAN>\n        </Id>\n      </DbtrAcct>\n      <DbtrAgt>\n        <FinInstnId>\n          <BICFI>COBADEFFXXX</BICFI>\n        </FinInstnId>\n      </DbtrAgt>\n      <ChrgBr>SLEV</ChrgBr>\n{}{}{}    </PmtInf>\n  </CstmrCdtTrfInitn>\n</Document>",
+        transfer("P1", "100.00", "Jane Roe", "FR1420041010050500013M02606", "Invoice 42"),
+        transfer("P2", "0.10", "John Doe", "NL91ABNA0417164300", "Refund 7"),
+        transfer("P3", "0.20", "Max Muster", "DE75512108001245126199", "Refund 8"),
+    );
+    assert_eq!(xml, expected);
+    assert_eq!(batch("/batch?date=2026-11-10", csv).1, id, "the same file for the same day: one message id");
+    assert_ne!(batch("/batch?date=2026-11-11", csv).1, id, "another day: another");
+    let row = |r: &str| format!("id,name,iban,amount,reference\n{r}\n");
+    let refused = [
+        csv.replace(",0.10,", ",0,"),
+        csv.replace(",0.10,", ",ten cents,"),
+        "id,name\nP1,Jane Roe\n".to_string(),
+        "id,name,iban,amount,reference\n".to_string(),
+        // What pain.001.001.09 refuses: an id past 35 characters, a name or a reference empty or
+        // past 140, an IBAN not in its shape, a control sum past 18 digits.
+        row(&format!("{},Jane Roe,FR1420041010050500013M02606,1,Invoice", "P".repeat(36))),
+        row("P1,,FR1420041010050500013M02606,1,Invoice"),
+        row(&format!("P1,{},FR1420041010050500013M02606,1,Invoice", "N".repeat(141))),
+        row("P1,Jane Roe,FR1420041010050500013M02606,1,"),
+        row("P1,Jane Roe,fr14 2004 1010,1,Invoice"),
+        row("P1,Jane Roe,FRX420041010050500013M02606,1,Invoice"),
+        row("P1,Jane Roe,FR1420041010050500013M02606,10000000000000000,Invoice"),
+    ];
+    for bad in refused {
+        let (status, answer, _) = data_call(&state, &slug, "POST", "/batch", &bad);
+        assert_eq!(status, 400, "{bad}: {answer}");
+    }
+    for date in ["tomorrow", "2026-02-30", "2026-11-10T10:00:00Z", ""] {
+        let (status, answer, _) = data_call(&state, &slug, "POST", &format!("/batch?date={date}"), csv);
+        assert_eq!(status, 400, "{date}: {answer}");
+    }
+    // At the schema's limits, taken.
+    batch("/batch?date=2026-11-10", &row(&format!("{},{},FR14{},9999999999999999.99,{}", "P".repeat(35), "N".repeat(140), "Ab9".repeat(10), "R".repeat(140))));
+
+    let report = r#"<?xml version="1.0" encoding="UTF-8"?>
+<Document xmlns="urn:iso:std:iso:20022:tech:xsd:pain.002.001.10">
+  <CstmrPmtStsRpt>
+    <GrpHdr><MsgId>STS-1</MsgId><CreDtTm>2026-11-10T09:00:00+01:00</CreDtTm></GrpHdr>
+    <OrgnlGrpInfAndSts><OrgnlMsgId>M</OrgnlMsgId><OrgnlMsgNmId>pain.001.001.09</OrgnlMsgNmId><GrpSts>PART</GrpSts></OrgnlGrpInfAndSts>
+    <OrgnlPmtInfAndSts>
+      <OrgnlPmtInfId>M</OrgnlPmtInfId>
+      <TxInfAndSts><OrgnlEndToEndId>P1</OrgnlEndToEndId><TxSts>ACCP</TxSts></TxInfAndSts>
+      <TxInfAndSts><OrgnlEndToEndId>P2</OrgnlEndToEndId><TxSts>RJCT</TxSts><StsRsnInf><Rsn><Cd>AC04</Cd></Rsn></StsRsnInf></TxInfAndSts>
+    </OrgnlPmtInfAndSts>
+  </CstmrPmtStsRpt>
+</Document>"#;
+    let (status, answer, _) = data_call(&state, &slug, "POST", "/status", report);
+    assert_eq!(status, 200, "{answer}");
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&answer).unwrap(),
+        serde_json::json!({ "group": "PART", "payments": [
+            { "id": "P1", "status": "ACCP", "reason": "" },
+            { "id": "P2", "status": "RJCT", "reason": "AC04" },
+        ] })
+    );
+    for bad in [report.replace("pain.002.001.10", "pain.001.001.09"), report.replace("</Document>", ""), "<!DOCTYPE d [<!ENTITY x SYSTEM \"file:///etc/passwd\">]><Document>&x;</Document>".to_string()] {
+        let (status, answer, _) = data_call(&state, &slug, "POST", "/status", &bad);
+        assert_eq!(status, 400, "{bad}: {answer}");
+    }
+
+    let export: verify::Export = serde_json::from_value(body_json(route(&state, &req("GET", &format!("/deployments/{slug}/export"), vec![])))).unwrap();
+    let report = verify::check(&export, None, &BTreeMap::new());
+    assert!(report.ok() && report.reruns.iter().all(|(_, r)| *r == verify::Rerun::Matched), "{}", verify::describe(&report, None));
+}
+
+/// Business days at a fixed offset (the due-dates sample): a payout received after the cut-off on
+/// the Thursday before Easter is executed the Tuesday after, one received before it that day; an
+/// invoice due on a Saturday moves to the Monday; one received now is written at the offset; and
+/// the runs verify.
+#[test]
+fn a_payout_is_scheduled_past_the_closing_days() {
+    let state = claims_state("");
+    let slug = deploy_text(&state, include_str!("../../holon-author/samples/due-dates.holon.ts"), "");
+    let call = |path: &str, body: serde_json::Value| {
+        let (status, answer, _) = data_call(&state, &slug, "POST", path, &body.to_string());
+        assert_eq!(status, 200, "{path}: {answer}");
+        serde_json::from_str::<serde_json::Value>(&answer).unwrap()
+    };
+    let schedule = |received: &str| call("/schedule", serde_json::json!({ "received": received, "offset": "+02:00" }));
+    assert_eq!(schedule("2026-04-02T16:30:00+02:00"), serde_json::json!({ "received": "2026-04-02T16:30:00.000+02:00", "executed": "2026-04-07", "credited": "2026-04-08" }));
+    assert_eq!(schedule("2026-04-02T13:59:00Z"), serde_json::json!({ "received": "2026-04-02T15:59:00.000+02:00", "executed": "2026-04-02", "credited": "2026-04-07" }));
+    assert_eq!(call("/due", serde_json::json!({ "issued": "2026-01-31", "months": 1 })), serde_json::json!({ "due": "2026-03-02", "business_days": 21 }));
+    let now = call("/schedule", serde_json::json!({}));
+    let received = now["received"].as_str().unwrap();
+    assert!(received.len() == 29 && received.ends_with("+01:00"), "now, at Frankfurt's winter offset: {received}");
+
+    let export: verify::Export = serde_json::from_value(body_json(route(&state, &req("GET", &format!("/deployments/{slug}/export"), vec![])))).unwrap();
+    let report = verify::check(&export, None, &BTreeMap::new());
+    assert!(report.ok() && report.reruns.iter().all(|(_, r)| *r == verify::Rerun::Matched), "{}", verify::describe(&report, None));
+}
+
+/// A file's bytes (the file-checksums sample): any file, read whole, hashed as sha256sum does; a
+/// small one's bytes kept in its log entry as base64, a big one's in the blob store and nowhere in
+/// the log, its timeline included; bytes a route answers sent as they are; and the runs verify.
+#[test]
+fn a_files_bytes_are_read_hashed_logged_and_verified() {
+    let state = claims_state("");
+    let dir = std::env::temp_dir().join(format!("holon-file-bytes-{}-{}", std::process::id(), rand::random::<u32>()));
+    let drop = dir.join("drop");
+    std::fs::create_dir_all(&drop).unwrap();
+    assert_eq!(route_status(&state, &serde_json::json!({ "name": "drop", "path": drop.display().to_string(), "access": "read" })), 200);
+    let slug = deploy_text(&state, include_str!("../../holon-author/samples/file-checksums.holon.ts"), "");
+    let look = || {
+        arrivals::run_arrivals(&state.store, &state.deployments, &state.deployments_path);
+        arrivals::run_arrivals(&state.store, &state.deployments, &state.deployments_path);
+    };
+    look();
+    // A PNG's first bytes, then bytes that aren't UTF-8; and 20,000 bytes, past what a log entry
+    // keeps inline.
+    let small = [0x89u8, 0x50, 0x4e, 0x47, 0xff, 0x00];
+    let big: Vec<u8> = (0..20_000u32).map(|i| (i % 251) as u8).collect();
+    std::fs::write(drop.join("small.png"), small).unwrap();
+    std::fs::write(drop.join("big.bin"), &big).unwrap();
+    look();
+    let sums = [
+        ("small.png", small.len(), "854e4b5f04c08dd7a8df75e0c0c9ce444f353bf1385a8a7ddbc9c73c4181ce0b", "png"),
+        ("big.bin", big.len(), "93a6015a3874a774dd59fdd5db19414b301525381eb5ddcc265cdcc68bb9d350", "other"),
+    ];
+    for (name, size, sha256, kind) in sums {
+        let (status, answer, _) = data_call(&state, &slug, "GET", &format!("/sums/{name}"), "");
+        assert_eq!((status, serde_json::from_str::<serde_json::Value>(&answer).unwrap()), (200, serde_json::json!({ "size": size, "sha256": sha256, "kind": kind })), "{name}");
+    }
+    let entries = log_entries(&state, &slug);
+    let read = |name: &str| {
+        entries.iter().flat_map(|e| e["reads"].as_array().cloned().unwrap_or_default()).find(|r| r["request"].to_string().contains(name)).unwrap_or_else(|| panic!("no read of {name}: {entries:?}"))
+    };
+    assert_eq!(read("small.png")["answer"], serde_json::json!({ "type": "Bytes", "value": "iVBOR/8A" }), "a small file's bytes, inline");
+    assert!(read("big.bin")["answer"].is_null() && read("big.bin")["file"]["blob"].is_string(), "a big one's by hash: {}", read("big.bin"));
+    let timelines = serde_json::to_string(&entries.iter().map(|e| &e["timeline"]).collect::<Vec<_>>()).unwrap();
+    assert!(timelines.contains("iVBOR/8A"), "a small file's bytes are in its timeline too: {timelines}");
+    let whole = holon_core::bytes_text(&big, "base64").unwrap();
+    assert!(!serde_json::to_string(&entries).unwrap().contains(&whole[..64]), "a big one's nor in its timeline");
+
+    // Bytes a route answers go out as they are.
+    let raw = deploy_text(&state, "import { flow, route } from \"holon\"\nimport drop from \"folder:drop\"\n\nflow(\"raw\", { port: 18303 })\n\nroute.get(\"/raw/:name\", (req) => drop.bytes(req.params.name))\n", "");
+    let r = serve_data(&state.store, &state.deployments, &state.deployments_path, &raw, &fake_data("GET", "/raw/small.png", vec![]));
+    assert_eq!((r.status, r.body.as_slice()), (200, &small[..]));
+    assert!(r.headers.iter().any(|(k, v)| k == "content-type" && v == "application/octet-stream"), "{:?}", r.headers);
+
+    // Its runs check offline: the small file's bytes from its entry, the big one's from the export.
+    let export: verify::Export = serde_json::from_value(body_json(route(&state, &req("GET", &format!("/deployments/{slug}/export"), vec![])))).unwrap();
+    assert_eq!(export.blob_bytes.len(), 1, "the big file's bytes, in base64");
     let report = verify::check(&export, None, &BTreeMap::new());
     assert!(report.ok() && report.reruns.iter().all(|(_, r)| *r == verify::Rerun::Matched), "{}", verify::describe(&report, None));
     let _ = std::fs::remove_dir_all(&dir);

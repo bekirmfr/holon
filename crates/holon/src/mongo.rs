@@ -34,7 +34,7 @@ use std::time::Duration;
 
 use holon_core::documents::{check, Part, Tpl};
 use holon_core::Value;
-use mongodb::bson::{doc, oid::ObjectId, Binary, Bson, DateTime, Decimal128, Document};
+use mongodb::bson::{doc, oid::ObjectId, spec::BinarySubtype, Binary, Bson, DateTime, Decimal128, Document};
 use mongodb::options::{ClientOptions, CollectionOptions, ReadConcern, ReturnDocument, WriteConcern};
 use mongodb::sync::{Client, ClientSession, Collection, Database};
 use zeroize::Zeroizing;
@@ -675,6 +675,7 @@ fn value_bson(v: &Value, depth: usize) -> Result<Bson, String> {
         Value::Number(n) if n.is_finite() => Bson::Double(*n),
         Value::Number(_) => return Err("a value is a finite number".into()),
         Value::Text(t) => Bson::String(t.clone()),
+        Value::Bytes(b) => Bson::Binary(Binary { subtype: BinarySubtype::Generic, bytes: b.clone() }),
         Value::Boolean(b) => Bson::Boolean(*b),
         Value::Sum { arm: 1, .. } => Bson::Null,
         Value::Sum { payload, .. } => value_bson(payload, depth + 1)?,
@@ -721,6 +722,8 @@ fn value_of(field: &str, v: Bson) -> Result<Option<Value>, String> {
         Bson::Decimal128(d) => Value::Text(d.to_string()),
         Bson::ObjectId(id) => Value::Text(id.to_hex()),
         Bson::DateTime(t) => Value::Text(t.try_to_rfc3339_string().map_err(|_| format!("the field {field:?} is a date past what RFC 3339 writes"))?),
+        // Generic binary is bytes; a UUID's or another subtype's stays its hex, as it was read.
+        Bson::Binary(Binary { subtype: BinarySubtype::Generic, bytes }) => Value::Bytes(bytes),
         Bson::Binary(Binary { bytes, .. }) => Value::Text(holon_core::hex(bytes)),
         Bson::Array(items) => Value::List(items.into_iter().map(|i| value_of(field, i).map(|v| v.unwrap_or_else(none))).collect::<Result<_, _>>()?),
         Bson::Document(d) => Value::Record(record_of(d)?),

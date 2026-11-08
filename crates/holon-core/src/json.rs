@@ -7,7 +7,8 @@
 //!
 //! The mapping: object ⇄ `Record`, array ⇄ `List`, string ⇄ `Text`, number ⇄ `Number`,
 //! `true`/`false` ⇄ `Boolean`, and `null` ⇄ `none()`. Stringifying `some(x)` writes `x`. An
-//! `Effect`, a non-Option sum, or a non-finite number has no JSON form, so stringify refuses it.
+//! `Effect`, a non-Option sum, bytes, or a non-finite number has no JSON form, so stringify
+//! refuses it.
 
 use std::collections::BTreeMap;
 
@@ -224,6 +225,8 @@ fn write(v: &Value, out: &mut String) -> Option<()> {
         Value::Number(_) => return None,
         Value::Boolean(b) => out.push_str(if *b { "true" } else { "false" }),
         Value::Text(s) => write_string(s, out),
+        // JSON has no bytes: a flow says how it means them, `bytes_to_text(b, { encoding: … })`.
+        Value::Bytes(_) => return None,
         Value::List(xs) => {
             out.push('[');
             for (i, x) in xs.iter().enumerate() {

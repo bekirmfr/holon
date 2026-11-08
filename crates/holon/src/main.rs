@@ -1,5 +1,5 @@
 //! `holon`: one command for Holon. `holon serve` runs the server (the browser↔host transport,
-//! local-first; below), `new`/`check`/`show`/`fmt` handle flow files (flowcmd.rs), and `version`,
+//! local-first; below), `new`/`check`/`show`/`fmt`/`types` handle flow files (flowcmd.rs), and `version`,
 //! `update` and `uninstall` look after the installation (selfmanage.rs). `holon-server`, the name
 //! releases before 0.1.0-rc.4 installed, is an alias kept for scripts (src/bin/holon-server.rs).
 //!
@@ -530,6 +530,7 @@ const USAGE: &str = "usage: holon <command>
   check <file>                       compile a flow: its routes, what it may do, or each mistake
   show <file>                        an outline: routes, nodes and what feeds them
   fmt <file>                         rewrite a flow in the canonical form
+  types [dir]                        write holon.d.ts, for an editor's TypeScript
   deploy <file> [--server PORT|URL]  compile and deploy a flow to a running server (--approve)
   editor [file|slug] [--server …]    the editor in this terminal: flows, runs, approvals, and
                                      flows' text in tabs, checked as you type
@@ -650,7 +651,7 @@ fn main() {
     let rest = args.get(1..).unwrap_or_default().to_vec();
     match args.first().map(String::as_str) {
         Some("serve") => serve(rest),
-        Some(cmd @ ("new" | "check" | "show" | "fmt")) => std::process::exit(flowcmd::run(cmd, &rest)),
+        Some(cmd @ ("new" | "check" | "show" | "fmt" | "types")) => std::process::exit(flowcmd::run(cmd, &rest)),
         Some("deploy") => std::process::exit(deploycmd::run(&rest)),
         Some("editor") => std::process::exit(workbench::run(&rest)),
         Some("verify") => std::process::exit(verify::run(&rest)),

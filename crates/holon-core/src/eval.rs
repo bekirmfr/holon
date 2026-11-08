@@ -217,12 +217,14 @@ fn heavy(v: &Value) -> bool {
         match v {
             Value::Number(_) | Value::Boolean(_) => true,
             Value::Text(t) => t.len() <= 32,
+            Value::Bytes(b) => b.len() <= 32,
             _ => false,
         }
     }
     match v {
         Value::Number(_) | Value::Boolean(_) => false,
         Value::Text(t) => t.len() > 32,
+        Value::Bytes(b) => b.len() > 32,
         Value::List(xs) => xs.len() > 8 || !xs.iter().all(small),
         Value::Record(fields) => fields.len() > 8 || !fields.values().all(small),
         Value::Sum { .. } | Value::Effect { .. } => true,
@@ -282,6 +284,8 @@ enum Body {
     /// A leaf whose value the host supplies ([`crate::SOURCED`], [`Resolver::sourced`]).
     Sourced,
     Coalesce,
+    /// `fail`: nothing, its message handed to the observer.
+    Fail,
     /// Any other leaf, computed by `compute` (its [`Op`], none for a name that isn't one); a
     /// variadic one fires only with every input present.
     Leaf { variadic: bool, op: Option<Op> },
@@ -352,6 +356,7 @@ enum Request {
     CollectionGet,
     CollectionList,
     FileRead,
+    FileReadBytes,
     FileList,
     FileHandle,
     FileLines,
@@ -375,6 +380,7 @@ impl Request {
             "collection_get" => Request::CollectionGet,
             "collection_list" => Request::CollectionList,
             "file_read" => Request::FileRead,
+            "file_read_bytes" => Request::FileReadBytes,
             "file_list" => Request::FileList,
             "file_handle" => Request::FileHandle,
             "file_lines" => Request::FileLines,
@@ -409,6 +415,7 @@ impl Request {
             Request::CollectionList => primitives::collection_list_request(&owned(inputs), params),
             // A file read: the host answers it from the folder bound to the name, as the run found it.
             Request::FileRead => primitives::file_read_request(&owned(inputs), params),
+            Request::FileReadBytes => primitives::file_read_bytes_request(&owned(inputs), params),
             Request::FileList => primitives::file_list_request(&owned(inputs), params),
             Request::FileHandle => primitives::file_handle_request(&owned(inputs), params),
             Request::FileLines => primitives::file_lines_request(&owned(inputs), params),
@@ -436,6 +443,7 @@ impl NodeKind {
                     "sort_by" => Body::SortBy,
                     "group_by" => Body::GroupBy,
                     "coalesce" => Body::Coalesce,
+                    "fail" => Body::Fail,
                     _ if crate::SOURCED.contains(&name) => Body::Sourced,
                     _ => match (Test::of(name), Request::of(name), Json::of(name, &unit.params)) {
                         (Some(test), _, _) => Body::Test(test),
@@ -488,6 +496,18 @@ fn eval_as(
         // nothing fires"). This arm is the contract, stated once, where absence is visible.
         // (Inside a composite it is a choice, decided by `choice_next` without getting here.)
         (Body::Coalesce, _) => smallvec![Slot::of(inputs.iter().flatten().next().map(|v| (*v).clone()))],
+        // `fail` gives nothing, and the observer hears why, at this node, as for a module that
+        // can't run: the language's `throw new Error(message)`, its message for the run's log.
+        (Body::Fail, _) => {
+            if let Some(Some(message)) = inputs.first() {
+                let reason = match message {
+                    Value::Text(t) => t.clone(),
+                    other => primitives::compute("to_text", &[other], &[]).map_or_else(String::new, |t| if let Value::Text(t) = t { t } else { String::new() }),
+                };
+                observer.failed(path, &reason);
+            }
+            smallvec![Slot::Absent]
+        }
         (Body::Leaf { variadic, op }, UnitBody::Primitive { name }) => {
             // Present values in port order **by reference** — `compute` borrows them, so an O(1)
             // reader (head/length/is_empty) copies only what it returns, not the whole input

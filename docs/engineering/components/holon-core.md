@@ -64,12 +64,12 @@ collected, for the editor.
 
 ### The catalog
 
-`GENESIS` names the 151 primitives. Each name has its facts in one place each: its interface
+`GENESIS` names the 177 primitives. Each name has its facts in one place each: its interface
 (`interface_of`), its capabilities (`capabilities_of`, `kind.rs`), what it does in words
-(`describe`), whether it grows inputs (`VARIADIC`) and its computation. `compute` covers 117 of them,
+(`describe`), whether it grows inputs (`VARIADIC`) and its computation. `compute` covers 141 of them,
 by an `Op` that one list (`ops!`) makes along with `Op::of`, so a name can't be in one and not the
 other (RA D1). The rest are not computed here: `map`, `fold` and the other higher-order leaves
-(`PASSES_EXTRA`: `filter`, `any`, the `find` family, `sort_by`, `group_by`, …) are the evaluator's; 18 build a
+(`PASSES_EXTRA`: `filter`, `any`, the `find` family, `sort_by`, `group_by`, …) are the evaluator's; 19 build a
 request the host answers (`Request::of`: `http_request`, `collection_get`, `await`, …); the
 drivers and `store_read` are sourced, their value put in by the host's resolver as a constant.
 `MAX_RANGE` (10,000) bounds `range`, and there is no loop or recursion, so every run ends.

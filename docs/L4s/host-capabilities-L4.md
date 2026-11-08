@@ -12,7 +12,7 @@ WebSockets having been "later" until then; what else a web app asks for, sorted 
 flow as a command-line app (§5.14). Revised 2026-11-06 against af9de3a: what a trading bot
 adds to feeds (§5.9, forks 25–27), log levels having come in rc.32 since §5.9 was written; and
 from then on every host capability is designed here (§7, §10). Revised 2026-11-07 against
-490d03e: a flow as one executable, `holon build` (§5.15, forks 28–35), resolving fork 24. It sets rules, sorts candidates,
+490d03e: a flow as one executable, `holon build` (§5.15, forks 32–39), resolving fork 24. It sets rules, sorts candidates,
 and holds each one's design: a capability's L4 is its section of §5, grown into numbered
 subsections when its step starts, as §5.11 and §5.12 were, so the theme is in one place, found
 and cited by section. Those designed before then (folders, databases, channels, triggers, host
@@ -246,6 +246,273 @@ permission, and every one is blocked today by four missing leaves:
 
 MT940, BAI2 and NACHA come after, as samples built from text leaves (or a fixed-width leaf), not as
 leaves of their own: there are too many formats to put each in the catalog.
+
+#### 5.1.1 As designed (2026-11-08, against `40cfc0a`)
+
+Step 1.2 is six slices, each a commit with its sample, in the order a payment file needs them:
+
+| Slice | What | Sample |
+|---|---|---|
+| 1.2a | exact decimals and CSV (below) | `payout-totals`: a CSV of payouts dropped in a folder, each currency's total exact |
+| 1.2b | dates with a fixed offset; adding days and business days, holidays given as data | `due-dates` |
+| 1.2c | XML: `xml_parse` and `xml_format` | `payment-batch` (§7): a CSV of payouts in, a pain.001 out, its control sum exact |
+| 1.2d | gzip and zip, and writing bytes to a file | `statement-archive` |
+| 1.2e | JWT verify: HS256 over `hmac_sha256`, RS256, ES256 and EdDSA with a public key or a JWKS | `jwt-api` |
+| 1.2f | PGP: encrypt to a public key, verify a signature | `pgp-outbox` |
+
+Decimals, CSV, dates and XML are written in core by hand: each is small, exact and fetches
+nothing. Inflating, RSA, elliptic curves and OpenPGP are not, and each would be a new
+dependency of core (§8, fork 28); PGP's encryption is random by design (fork 29). Those slices
+are designed in detail when they are built; 1.2a is designed here.
+
+**Decimals** (§8, fork 1: text leaves). A decimal is a text: an optional sign, digits, an optional
+point and fraction, an optional exponent (`-12.30`, `.5`, `1e-8`), as `Number(…)` reads one, but
+no spaces, `Infinity` or hex. A leaf takes a finite number too, as its shortest text (`0.1` is
+`0.1`, not the binary value under it), so a JSON number reaches it as written up to 15 digits.
+Each leaf gives nothing for anything else, as the others do.
+
+| Leaf | Gives |
+|---|---|
+| `decimal_add(a, b, …)` | the exact sum; its scale the largest of theirs (`"1.10"` and `"2"` give `"3.10"`) |
+| `decimal_sub(a, b)` | `a − b`, the same way |
+| `decimal_mul(a, b, …)` | the exact product; its scale the sum of theirs (`"19.99"` times `"3"` is `"59.97"`) |
+| `decimal_div(a, b, scale) {rounding}` | `a ÷ b` to `scale` places; nothing when `b` is zero |
+| `decimal_round(a, scale) {rounding}` | `a` to `scale` places, padded with zeros: how an amount is written (`"5"` to 2 is `"5.00"`) |
+| `decimal_sum(list)` | the exact sum of a list's decimals (a control sum); `"0"` for none |
+| `decimal_compare(a, b)` | −1, 0 or 1 by value: `"1.10"` and `"1.1"` are equal |
+
+`rounding` is a family: `half_even` (the default, a bank's), `half_up`, `half_down`, `up` (away
+from zero), `down` (toward zero), `ceiling` and `floor`, Java's and decimal.js's seven. `scale`
+is a whole number from 0 to 1,000. A result is written plainly, never with an exponent, without
+`+` or a negative zero, and with a digit before the point (`"-0.50"`, `"0"`). No input or result
+may have more than 1,000 digits (`DECIMAL_DIGITS`), so a product of two such is bounded, as R1
+asks. JavaScript has no decimal, so every leaf is called by name; `Number(x)` is a decimal's
+nearest number, as JavaScript reads the text.
+
+**Keeping a flow from `+`** (§5.10.1's cost). A decimal leaf's result is a text, so `a + b` on two
+of them joins them, as JavaScript does, and `a < b` compares them letter by letter (`"10.00" <
+"9.00"`). The compiler refuses `+`, `<`, `<=`, `>` and `>=` where one side is a decimal leaf's
+result (directly, or through a `const` that names one), naming the leaf to use: `decimal_add`,
+`decimal_compare`. `===` stays, and compares the texts (two amounts rounded to one scale are equal
+when their texts are); `-`, `*` and `/` stay JavaScript's, a number from each text. A decimal that
+arrives from outside (a CSV field, a column) is a text like any other and isn't known as one.
+
+**CSV** (RFC 4180, both ways):
+
+| Leaf | Gives |
+|---|---|
+| `csv_parse(text) {header, separator}` | with `header: "first_row"` (the default) a list of records, keyed by the first row's names; with `"none"`, a list of lists. Every field is a text |
+| `csv_format(rows, columns?) {header, separator}` | the text, each line ended with CRLF, the last too. Given `columns` (a list of names), each row is a record and its fields are written in that order, a missing one empty, with the names as the first line unless `header: "none"`; without, each row is a list |
+
+`separator` is a family: `,` (the default), `;`, a tab, `|`. Parsing takes CRLF or LF, a quoted
+field with `""` for a quote and the separator or a line break inside it, and drops a leading
+byte-order mark (Excel writes one) and lines with nothing on them. It gives nothing for a quote
+that never closes, text after a closing quote, a quote inside an unquoted field, a row with a
+different count of fields than the header, or a header naming a column twice: a payment file
+that is malformed is refused, not guessed at. Writing quotes a field holding the separator, a
+quote or a line break; a number is written as `String(n)` writes it, a Boolean as `true` or
+`false`, and anything else (a record, a list, bytes) gives nothing. A record's keys are kept in
+order of their names, so `columns` is how a file's order is said. JavaScript has no CSV either:
+both by name.
+
+**The sample, `payout-totals`:** a CSV of payouts (`id,currency,amount`) dropped into a folder;
+for each file, each currency's count and exact total, kept in a collection and read by a route.
+Its test sums amounts whose float sum is off (`0.10` and `0.20` give `0.30`, not
+`0.30000000000000004`).
+
+#### 5.1.2 Slice 1.2a as built (2026-11-08)
+
+As designed, with what building it found:
+
+- **Core:** `decimals.rs` (digits as base-10 vectors, schoolbook product, long division, one
+  rounding rule for `decimal_div` and `decimal_round`) and `csv.rs`; 168 primitives. A
+  comparison is never refused for size: `decimal_compare` of two 1,000-digit decimals compares,
+  where their difference would pass the bound.
+- **The `+` guard** looks at the node that made each side (`DECIMAL_TEXTS` in `lower.rs`), so a
+  `const` naming a decimal leaf's result is caught too; a decimal returned by a flow's own
+  function isn't, since its result is that function's.
+- **The editor's palette** groups come from `paletteGroups.ts` now, and a test holds every
+  catalog leaf to one group: 1.1's bytes leaves and `file_read_bytes` were in none, so they
+  weren't in the palette. They are now, beside the decimal leaves and CSV's.
+- **Three gaps the sample ran into, fixed after it:** `e[0]` on a value of no known type was read
+  as a record's field with a number for its name, which failed validation with a message that
+  didn't say so (it named a count; `EncapError::Invalid` names each error now); a parameter's
+  annotation (`amounts: string[]`) didn't make `.length` known inside the function; and the
+  printer refused a map's function using values from around it that calls a function returning
+  a record, as two statements: the call's outputs bound, then read back into the record. A
+  number index is `get` now, an annotated port is known by its type, and a call read whole prints
+  as the call. The sample uses a named function and `e[0]`. The printer still leaves a
+  parameter's annotation out, as the graph doesn't hold it.
+
+#### 5.1.3 Slice 1.2b as designed (2026-11-08, against `51dc858`)
+
+Five date leaves exist (`dates.rs`): JavaScript's `Date` in UTC, a date its time value in
+milliseconds, a leaf taking a time value or a text as `new Date(x)` does. `date_parse` already
+reads an offset (`2026-11-06T16:30:00+01:00`). What a payment file still needs is the calendar at
+an offset (a bank's cut-off, its local date), adding days and months, and business days over a
+calendar of closing days given as data. All of it is written in `dates.rs` by hand, in `i64` on
+the proleptic Gregorian calendar as the rest is, and fetches nothing.
+
+**An offset** is `"Z"` or `"±HH:mm"` (`HH` up to 23, `mm` up to 59), as ISO 8601 and `Date.parse`
+write one, or a whole number of minutes east of UTC from −1439 to 1439. Anything else, and the
+leaf gives nothing. It is fixed: Frankfurt is `+01:00` in winter and `+02:00` in summer, and
+which applies is the flow's data or its caller's; zones and their rules stay fork 3.
+
+**Two leaves take an offset**, an optional input, so the forms that lower to them now leave it
+unwired and mean what they meant:
+
+| Leaf | With an offset |
+|---|---|
+| `date_part(time, offset?) {part}` | the part at that offset (its hours, its date, its weekday); `time` is the instant, the same at any offset |
+| `date_text(time, offset?) {format}` | `iso` writes the time at the offset, with it (`2026-11-06T16:30:00.000+01:00`; `Z` for a zero offset, as without one); a new format, `date`, the date alone (`2026-11-06`, `toISOString`'s first ten); `utc` is GMT's, so nothing for an offset other than zero |
+
+**Four new leaves:**
+
+| Leaf | Gives |
+|---|---|
+| `date_add(time, amount, offset?) {unit}` | the time value `amount` days, months or years later (earlier when negative), at the offset's calendar; `unit` a family, `days` (the default), `months`, `years`. A month keeps the day of the month, or is the month's last day when it has fewer (January 31 and a month is February 28, as date-fns's `addMonths`); a year is twelve months. The time of day is kept |
+| `business_day_add(date, days, holidays?) {weekend}` | the calendar date, as `YYYY-MM-DD`, `days` business days after `date` (before it when negative); with 0, `date` when it is a business day, else the next one |
+| `business_days_between(from, to, holidays?) {weekend}` | how many business days come after `from` up to `to`, `to` included; negative when `to` is before `from`. So `business_days_between(d, business_day_add(d, n))` is `n` for any `n` but 0 |
+| `is_business_day(date, holidays?) {weekend}` | whether `date` is one |
+
+A business day is a day that is neither in the weekend nor a holiday. `weekend` is a family:
+`sat_sun` (the default), `fri_sat`, `none`. A calendar date (`date`, `from`, `to`, a holiday) is a
+`YYYY-MM-DD` text, or a time value, read as its date in UTC; a text with a time of day is
+refused, since its date depends on an offset the leaf can't know: `date_text(t, offset, { format:
+"date" })` says which date is meant. `holidays` is a list of calendar dates, a bank's closing days:
+the list is data the flow holds or reads, not built in; an item that isn't a date gives nothing,
+as a malformed CSV does. A business-day leaf gives a date as text because a date has no time and
+no offset: it goes into an XML file or a holiday list as it is, and `Date.parse` reads it as the
+day's start in UTC. `days` is a whole number up to 100,000 either way; `business_day_add` steps
+day by day, at most `|days| × 7 / 5` steps plus the holidays and a week, and
+`business_days_between` counts whole weeks and then the holidays in the range, so neither depends
+on the range's length.
+
+**JavaScript's forms.** JavaScript has no business days, no clamping month, and a `Date` that
+writes no offset, so the four new leaves and the offsets are called by name; `d.setUTCMonth(m +
+1)` still lowers to `date_set` and overflows as JavaScript's does (January 31 and a month is March
+3). The library table (javascript-library.md §8) maps date-fns's `addDays`, `addMonths`,
+`addYears`, `addBusinessDays` (no holidays there), `differenceInBusinessDays` and `isWeekend`.
+The printer writes `date_part` and `date_text` as `new Date(t)`'s methods when the offset is
+unwired, and by name when it is wired or the format is `date`.
+
+**The checklist (§4)** is short, since every leaf is pure: no permission, no host, nothing logged
+beyond a run's values, the same answer natively and in wasm (integers throughout), and limits in
+the leaves themselves. `date_part` and `date_text` change interface, so their hashes move, with
+those of the samples using them.
+
+**The sample, `due-dates`:** a route that says when a payout received now (or at a time the
+request gives, at the offset it gives) is executed and credited, against a 16:00 cut-off and
+TARGET2's closing days in 2026 held as a list; and one that says when an invoice is due, some
+months after it was issued, moved to the next business day.
+
+#### 5.1.4 Slice 1.2b as built (2026-11-08)
+
+As designed, with what building it found:
+
+- **Core:** `dates.rs` gains the offsets, `date_add` and a `Calendar` (a weekend by weekday and
+  the holidays as a set of days); 172 primitives. `business_days_between` counts the whole range
+  representable at once, from −271821 to +275760.
+- **The sample's calendar is a function**, `closed()`, returning the list: the top level binds
+  only literals, and a list of texts isn't one yet.
+- **An answer with a part missing is none:** an invoice issued `2026-01-31T10:00:00Z` (a time of
+  day) gives no business-day count, so the route's record isn't built and it answers 404, as a
+  bad offset does. Strict, as a malformed CSV is.
+- **The printer** writes `date_part` and `date_text` as `new Date(t)`'s methods only while the
+  offset is unwired; `date_set` keeps its rule (every value wired).
+
+#### 5.1.5 Slice 1.2c as designed (2026-11-08, against `86ff439`)
+
+A pain.001 is XML whose schema fixes the order of every element: in a group header `MsgId` comes
+before `CreDtTm`, `NbOfTxs`, `CtrlSum` and `InitgPty`, and a bank refuses the file otherwise. A
+record's keys are kept in order of their names, so XML can't be records the way fast-xml-parser
+makes them (`{ GrpHdr: { MsgId: … } }`): writing one back would put `CreDtTm` first. Nor can one
+child or several change a value's shape, fast-xml-parser's known trap (`TxInfAndSts` a record
+when the bank rejected one payment, a list when it rejected two).
+
+**An element is a list**, as JsonML writes one: its name, then a record of its attributes when it
+has any, then its children in order, each an element or a text.
+
+```ts
+["InstdAmt", { Ccy: "EUR" }, "100.00"]          // <InstdAmt Ccy="EUR">100.00</InstdAmt>
+["GrpHdr", ["MsgId", id], ["NbOfTxs", n]]       // <GrpHdr><MsgId>…</MsgId><NbOfTxs>3</NbOfTxs></GrpHdr>
+```
+
+The same form both ways, so a file read and written back is the same file, and one written in a
+flow is a list literal with its order as written, a `.map` spreading its items into it (`[...,
+...payments]`). Names are kept as written, a prefix too (`ns:Document`), and a namespace is the
+`xmlns` attribute that declares it, written and read as any other (fork 31). Reading is done
+through leaves, as Python's ElementTree reads one (`find`, `findall`, `findtext`, `get`), not by
+indexing the list.
+
+| Leaf | Gives |
+|---|---|
+| `xml_parse(text)` | the root element. Nothing for text that isn't well-formed XML 1.0, or that has a DOCTYPE |
+| `xml_format(element) {declaration, layout}` | the text. `declaration` a family: `utf8` (the default) writes `<?xml version="1.0" encoding="UTF-8"?>` and a line break first, `none` nothing; `layout` a family: `compact` (the default), or `indented`, two spaces a level, an element whose children are all elements writing each on a line of its own |
+| `xml_find(element, path)` | the elements along `path`, in document order: `"CstmrPmtStsRpt/OrgnlPmtInfAndSts/TxInfAndSts"`, its first step among `element`'s children, each step a name or `*`. An empty list when none matches |
+| `xml_text(element, path?)` | the element's text: every text in it, at any depth, joined, as the DOM's `textContent`; with `path`, the first match's. Nothing when none matches |
+| `xml_attribute(element, name)` | the attribute's value, or nothing |
+
+**Reading** (`xml_parse`) is XML 1.0 without a DTD: a byte-order mark and the XML declaration
+dropped, line ends made `\n` (XML's §2.11), the five named entities and character references
+read, CDATA read as text, comments and processing instructions dropped, and a text that is only
+white space (the indentation between elements) dropped; any other text is kept as written,
+spaces too. It gives nothing for a DOCTYPE, so no entity is ever defined and none is fetched
+(XXE and billion laughs can't happen: there is nothing to expand); for an entity other than the
+five, a tag that doesn't close or closes another, an attribute given twice, a name or a
+character XML doesn't allow, `]]>` in text, or anything but white space, comments and
+instructions around the root. Elements nest at most 64 deep, as `json_parse`'s values do, and
+an attribute's white space is read as XML reads it (a tab or a line break inside one is a
+space).
+
+**Writing** (`xml_format`) escapes `&`, `<` and `>` in a text, `&`, `<` and `"` in an attribute
+(its tabs and line breaks as character references, so they read back), and writes an element
+with no children as `<Name/>`. A child or an attribute that is a number is written as
+`String(n)` writes it, a Boolean as `true` or `false`. It gives nothing for a name that isn't an
+XML name, a character XML can't hold (a control character other than a tab or a line break), an
+item after the name that is neither a record (second), an element, a text, a number nor a
+Boolean, or elements nested past 64. `indented` leaves an element with any text in it on one
+line, so mixed content keeps its spaces.
+
+**JavaScript's forms.** JavaScript has no XML in the language (E4X is gone), and Node none in
+its library, so every leaf is called by name. The library table (javascript-library.md §8) maps
+fast-xml-parser's `XMLParser.parse` and `XMLBuilder.build` (the shape differs, as above) and the
+DOM's `querySelectorAll`, `textContent` and `getAttribute`.
+
+**The checklist (§4)** is short again: every leaf is pure, fetches nothing and needs no
+permission; a number is written by `js_string`, the parity-tested writer, and nothing else
+touches a float; the limits are the input's size and the depth.
+
+**The sample, `payment-batch`:** `POST /batch` takes a CSV of payouts (`id,name,iban,amount,
+reference`) and answers the pain.001.001.09 credit transfer for it, its control sum
+`decimal_sum`'s and each amount rounded to cents; the execution date is the request's or the next
+business day at Frankfurt's offset (1.2b), and the message id a hash of the file and that date,
+so the same file sent twice for one day has one id and the bank refuses the second. A CSV that is
+malformed, or an amount that isn't a decimal more than 0, answers 400 through `try`/`catch`.
+`POST /status` reads the bank's pain.002 status report back: the group's status and each
+payment's, with its reason code when rejected, refusing a file whose namespace isn't pain.002's.
+
+#### 5.1.6 Slice 1.2c as built (2026-11-08)
+
+As designed, with what building it found:
+
+- **Core:** `xml.rs`, a reader over the text with no branch for a DTD at all (a `<!` that isn't a
+  comment or CDATA is a name that isn't one) and a writer; 177 primitives. `xml_text`'s path is an
+  optional input, as an offset is.
+- **The language needed nothing new:** a list literal mixing a name, a record and lists, with
+  `...payouts.map(transfer)` spread into it, compiled as written, and the formatter lays it out
+  one child a line.
+- **The sample, run live:** Python's ElementTree read its pain.001 with the schema's order, a
+  batch of 1,000 payouts gave the control sum Python's `Decimal` gives, and an XXE and a billion
+  laughs posted to `/status` were refused as not XML.
+- **Against the ISO 20022 schemas:** pain.001.001.09.xsd and pain.002.001.10.xsd, from
+  iso20022.org's message archive, run through .NET's validator. Every pain.001 the sample wrote
+  was valid (three payouts, the next business day, escaped text, 1,000 payouts), and so was the
+  pain.002 its test reads; three copies broken by hand were refused, so the check was real. The
+  schema found what the sample let through: an id past 35 characters, a name or a reference empty
+  or past 140, an IBAN not in its shape, an empty date. Those wrote a file the bank would refuse,
+  so the sample now answers 400 for them, and for a control sum past the schema's 18 digits and a
+  date that isn't a calendar day as written; a file at every limit validates.
 
 ### 5.2 Email
 
@@ -637,6 +904,111 @@ every leaf agree on one text form forever. So a **`Bytes` value**.
 **Decimals are decided in the same L4** (§8, fork 1): a `Decimal` value raises the same questions
 (its JSON form, the log, the bridge, the editor, which leaves take it), so the answers are worked
 out once, for both.
+
+#### 5.10.1 As designed (2026-11-08, against `331ea13`)
+
+**The value.** `Value::Bytes(Vec<u8>)`, its type `Type::Bytes`. Its value tag is 8 and its type
+tag 10 (`value_hash.rs`, `hash.rs`), after every tag in use, so no hash moves for them. Two
+are equal when their bytes are (`===`, `equals`, a record key's value, a memo key), as Holon's
+lists and records are, where JavaScript compares a `Uint8Array` by identity. `typeof` is
+`"object"`, it is true as a condition (an empty one too, as JavaScript's `Boolean(new
+Uint8Array())`), `String(b)` is its bytes as numbers joined with `,` as JavaScript writes it, and
+`to_text` writes `bytes(68656c6c6f)`, its bytes in hex (the editor's `formatValue` the same).
+
+**Its leaves** (7 new, and 4 that take bytes as well as what they took). Each gives nothing for a value it
+can't take, as the others do:
+
+| Leaf | Gives | Its JavaScript form, where it has one |
+|---|---|---|
+| `text_to_bytes(text) {encoding: utf8, hex, base64, base64url}` | the bytes; nothing for hex or base64 that isn't | `new TextEncoder().encode(s)`, `Uint8Array.fromHex(s)`, `Uint8Array.fromBase64(s, { alphabet })` |
+| `bytes_to_text(bytes) {encoding}` | the text; nothing for bytes that aren't UTF-8, as a `fatal` decoder throws | `new TextDecoder("utf-8", { fatal: true }).decode(b)`, `b.toHex()`, `b.toBase64({ alphabet, omitPadding })` |
+| `bytes_length(bytes)` | how many | `b.length`, where `b` is known to be bytes (as `.length` picks a text's or a list's) |
+| `bytes_concat(a, b, …)` | them joined | none (Node's `Buffer.concat`); by name |
+| `bytes_to_list(bytes)` | the bytes as numbers 0 to 255 | `Array.from(b)`, `[...b]` |
+| `list_to_bytes(list)` | the bytes; nothing if an item isn't a whole number from 0 to 255, where JavaScript wraps it | `new Uint8Array(xs)`, `Uint8Array.from(xs)` |
+| `file_read_bytes(name) {folder}` | a file's bytes, any file | `folder.bytes(name)`, as a `Blob`'s `bytes()` |
+| `sha256`, `hmac_sha256`, `secure_equals` | over bytes as over a text's UTF-8 | their ports are `Any`: a text or bytes |
+| `slice` | bytes from `start` to `end`, negative from the end, as a list's | `b.slice(start, end)` |
+
+`base64` pads and `base64url` doesn't, as JWTs and the `base64` leaf (whose `url` alphabet is
+unpadded) do; either decodes with or without padding. The JavaScript forms are the reader's to add
+one by one, each a line in `ts.rs` with its test (the theme's §10); this step reads `.length` and
+`.slice` on known bytes, and the rest are called by name.
+
+**A file read as bytes.** `file_read_bytes` asks the host as `file_read` does, with `bytes: true`:
+the host reads the file whole, under the same limits (`inline_file_bytes`, `max_file_read_bytes`),
+and answers its bytes whatever they are. The log keeps it as it keeps a text: inline when small
+(the log's JSON writes bytes as base64, below), else in the blob store by the BLAKE3 of the bytes,
+which `holon verify` reads back as bytes. Writing bytes to a file waits for the first flow that
+writes a binary file (1.2's zip, 1.4's buckets).
+
+**Every boundary where a value becomes JSON or JavaScript:**
+
+- **`json_stringify` refuses bytes** (nothing): JSON has none, and a flow says `bytes_to_text(b, {
+  encoding: "base64" })` where it means that. `json_parse` never makes them.
+- **An HTTP body that is bytes is sent as they are**, `application/octet-stream` unless the flow's
+  headers say otherwise. A request's body as bytes (uploads) is its own step: the request record's
+  `body` stays text.
+- **The log, an export, the control plane's JSON (`SValue`):** `{"type": "Bytes", "value":
+  "<base64>"}`, so a log line stays JSON and verify reads the same bytes back.
+- **The wasm bridge (`WValue`):** a `Uint8Array`; the editor shows `formatValue`'s form.
+- **State and collections:** storable as any value is, kept in the value encoding.
+- **Databases:** bytes as a parameter are a binary one (Postgres `bytea`, MySQL's bytes, Mongo's
+  binary); a `bytea` column reads as bytes, where it read as hex text. A module's ABI is the value
+  encoding, so a WebAssembly module gets bytes with tag 8.
+- **Secrets:** a value that holds a secret's UTF-8 in its bytes is one that holds the secret, for
+  redaction and for verify, as a text that holds it is.
+- **Types:** `Uint8Array` is the type of bytes in `holon.d.ts` and in a function's annotations;
+  `WType::Bytes` on the canvas, a port's colour of its own.
+
+**Decimals: leaves over decimal text, in step 1.2, not a value kind** (§8, fork 1, decided). The
+places Holon meets exact decimals already hand it text: a Postgres `NUMERIC` column reads as its
+exact text (`engines.rs`), and CSV, XML, and the amounts exchanges and many payment APIs send (as
+JSON strings, for this very reason) are text. A `Decimal` value would add a JSON form, a place in
+the log, the bridge and the editor, and a decision for every leaf that takes a number, and the
+language's syntax has no decimal for it: JavaScript has none, so `+` on one would need a branded
+`number` type in `holon.d.ts` and a meaning for `Decimal + Number`, and `===` would have to choose
+between `1.10` and `1.1`. Leaves over text (`decimal_add`, `decimal_compare`, `decimal_round {scale,
+rounding}`, `decimal_sum`, …) need none of that and are exact. What they can't do is write an exact
+JSON number token: an amount goes out as a string, or through `Number(…)` as a JavaScript number,
+exact to 15 digits. The cost to keep in mind: `a + b` on two decimal texts joins them, as
+JavaScript's does; 1.2's design says how a flow is kept from it. A `Decimal` value stays possible
+later, on a new tag, if a job needs exact number tokens.
+
+**The sample, `file-checksums`:** files dropped in a folder, each one's SHA-256 over its bytes
+(any file: an image, a PDF) kept in a manifest, read back by a route.
+
+#### 5.10.2 As built (2026-11-08)
+
+As designed, with what building it found:
+
+- **Three leaves' hashes moved.** The tags move nothing, but `sha256`, `hmac_sha256` and
+  `secure_equals` now take `Any` where they took `Text`, so their units, and every flow using them
+  (guarded-api, guestbook, idempotent, live-board, marketplace, sign-payload, slugs, witness),
+  have new hashes. Dev phase: nothing is kept for the old ones.
+- **`String(b)`** is `as_text`, which writes bytes as JavaScript does (`1,22`); `+` with a text
+  on one side gives nothing for bytes on the other, as it does for a list or a record.
+- **The log:** a file read as bytes that is kept in the blob store is also left out of the
+  timeline, as a kept text is (a node carrying it would hold its base64 whole). A line holding
+  bytes is always redacted by walking it: its base64 would hide a look-alike of a mark from the
+  shortcut that skips lines without a `‹`. Redaction and the export's check for secrets walk each
+  run of valid UTF-8 inside bytes, where a secret's UTF-8 can only be.
+- **The export** keeps a file read as bytes apart from the texts: `blob_bytes`, padded base64 by
+  blob, read back as bytes and checked against the file's hash; with `--files`, verify reads the
+  file given as bytes. A tampered byte fails the run that read it.
+- **Databases:** SQLite's blob, a Postgres `bytea`, MySQL's binary columns and Mongo's generic
+  binary read as bytes (another Mongo subtype, a UUID's, stays its hex); bytes as a parameter are
+  SQLite's blob, Postgres's `\x` hex where the statement takes a `bytea` (refused elsewhere),
+  MySQL's bytes and Mongo's generic binary.
+- **The wasm bridge** reads bytes from a `Uint8Array`, an array of numbers, or padded base64, as
+  the server's log writes them, so the editor's replay of a logged run takes them as they are.
+- **Not yet:** an `http_request` body that is bytes gives nothing, as before (it takes a text or
+  JSON); uploads are 1.4's. Writing bytes to a file waits for 1.2 and 1.4, as designed.
+
+Run live on a scratch server: a PNG, a zip, a PDF-headed file with bytes that aren't UTF-8, 100 KB
+of random bytes and a text, dropped in the folder, each answered its size, its kind and the
+SHA-256 `sha256sum` prints; the export verified (the two big files' bytes from `blob_bytes`), a
+changed byte failed its run, and an export without the files verified with `--files`.
 
 ### 5.11 Static files: a route for the rest of a path, and an answer that is a file's bytes
 
@@ -1577,7 +1949,7 @@ resumes (§5.14, slice 2). A one-shot start calls `expire_waiting` before its ru
 that passed while nothing ran is delivered then.
 
 **One flow, one app.** A flow that runs another flow's action (`RunsAction("billing/charge")`) is
-refused at build: the app has no other flow to run it (§8, fork 32).
+refused at build: the app has no other flow to run it (§8, fork 36).
 
 #### 5.15.4 Who approves, and when
 
@@ -1655,7 +2027,7 @@ place.
 **A witness.** Two ways, the same mechanism (`heads.rs`):
 
 - **The builder's,** `holon build --witness URL`: in the payload, shown in both approvals, and
-  the runner can't remove it (fork 31). It is for a team that wants every copy's runs witnessed.
+  the runner can't remove it (fork 35). It is for a team that wants every copy's runs witnessed.
 - **The runner's,** `--export-heads URL` or `HOLON_EXPORT_HEADS`, as `serve` takes it.
 
 The token is `HOLON_EXPORT_HEADS_TOKEN` only, never in the file. A one-shot app sends the heads
@@ -1750,7 +2122,7 @@ the folder picker (rfd). A feature, `app-runtime`, builds holon without them, an
 publishes it per target beside the archives. The editor is most of the gap between an installed
 release (56.7 MB) and a build without it (40.2 MB); how small the rest gets is measured in the
 slice that builds it. The Postgres, MySQL and MongoDB engines stay in the full flavor only;
-`--runtime full` builds on it (fork 30).
+`--runtime full` builds on it (fork 34).
 
 **Signatures.** Appending to a signed executable breaks the signature, so where a platform checks
 one the payload goes inside the image and the file is signed after:
@@ -1771,7 +2143,7 @@ one the payload goes inside the image and the file is signed after:
 `holon build` doesn't sign with a builder's key: keys and tools are the platform's, and the
 manual's guide gives the commands. **The engine** that places the payload and re-signs ad hoc in
 pure Rust is `libsui`, the one `deno compile` uses (MIT; ELF, PE resources and Mach-O sections),
-or holon's own code for the three if `libsui` doesn't hold up in slice 1 (fork 28).
+or holon's own code for the three if `libsui` doesn't hold up in slice 1 (fork 32).
 
 #### 5.15.9 Updates and reproducibility
 
@@ -1821,7 +2193,7 @@ format it may not know.
 10. **Seeing it:** `holon build`'s and the first run's approval, `app --holon`, `holon inspect`,
     the manual's guide to building apps (signing included) and its permissions page.
 11. **The sample:** `todo-cli` (§5.15.11). No outside service, so no stand-in.
-12. **The engine:** `libsui` or holon's own placement code (fork 28); `ureq` for runtimes,
+12. **The engine:** `libsui` or holon's own placement code (fork 32); `ureq` for runtimes,
     already a dependency; the slim runtime is a feature of the holon crate.
 
 #### 5.15.11 Samples and slices
@@ -1901,9 +2273,9 @@ Not scheduled in §7: Tier 3, a step when it is asked for.
 
 #### 5.15.13 Forks
 
-§8, forks 28 to 35, each with its lean: the engine (28), overriding the port (29), which runtime
-by default (30), a builder's witness the runner can't remove (31), several flows in one app (32),
-two apps under one name (33), the approver's identity (34), exit codes (35).
+§8, forks 32 to 39, each with its lean: the engine (32), overriding the port (33), which runtime
+by default (34), a builder's witness the runner can't remove (35), several flows in one app (36),
+two apps under one name (37), the approver's identity (38), exit codes (39).
 
 #### 5.15.14 What stays true
 
@@ -1972,8 +2344,8 @@ engine.
 
 | Step | What | Design | Needs | Size |
 |---|---|---|---|---|
-| 1.1 | **Value kinds:** `Bytes`, and `Decimal` as its design decides (§5.10) | §5.10 (here) | — | M |
-| 1.2 | **Formats:** exact decimals, CSV, XML, dates (UTC and offsets), zip and gzip, JWT verify, PGP encrypt and verify with a public key (§5.1) | §5.1 (here) | 1.1 | M |
+| 1.1 | **Value kinds:** `Bytes`, built (§5.10.2); `Decimal` decided as text leaves, built in 1.2 (§5.10.1) | §5.10 (here) | — | M |
+| 1.2 | **Formats:** exact decimals, CSV, XML, dates (UTC and offsets), zip and gzip, JWT verify, PGP encrypt and verify with a public key, in six slices (§5.1.1); 1.2a, decimals and CSV, built (§5.1.2); 1.2b, offsets and business days, built (§5.1.4); 1.2c, XML, built (§5.1.6) | §5.1 (here) | 1.1 | M |
 | 1.3 | **Email:** send, recipients in the grant; receive as `on mail`, with its sender's verdict and attachments (§5.2) | §5.2 (here) | 1.1 for attachments | L |
 | 1.4 | **Remote folders:** the backend seam in `folders.rs`, then SFTP and S3-compatible storage (§6) | §6 (here) | 1.1 for binary files | L |
 | 1.5 | **Secure connectivity:** keys the host holds (PGP decrypt and sign) and client identities (mutual TLS, a private CA) (§5.3, §5.4) | §5.3, §5.4 (here) | 1.1, 1.2 | M |
@@ -2018,6 +2390,13 @@ F  1.8  (the rest segment, then FileServe)
 Six tracks, so six worktrees at most; tracks that touch the same files (`kind.rs`, the catalog,
 `tests.rs`) merge into `main` one at a time, each rebased on the last.
 
+### Between Tier 1 and Tier 2: the TypeScript slices
+
+Decided 2026-11-08: once Tier 1's steps 1.1 to 1.9 have landed, the TypeScript syntax's slices 6
+to 11 come next ([typescript-syntax](typescript-syntax-L4.md) §15): computing loops, calls and
+requests that wait, waits a route's caller outlasts, waiting loops, failures with a reason, and
+editors and tools. Tier 2 starts when they have landed; Tier 3 is still taken when asked.
+
 ### Tier 2: operationally essential
 
 | Step | What | Design | Needs | Size |
@@ -2057,7 +2436,9 @@ Taken when a job or a user asks, each with its design here and its sample all th
    (no existing hash moves) but needs its JSON form, its place in the log, the bridge, the editor
    and every leaf that takes a number; leaves over text need none of that. *Lean:* decided in
    step 1.1's design (§5.10) with bytes, whose boundary answers make a `Decimal` value cheap;
-   text leaves if that design finds a reason against.
+   text leaves if that design finds a reason against. *Decided* (2026-11-08, §5.10.1): text
+   leaves, in 1.2. The sources of exact decimals already give text (`NUMERIC`, CSV, XML, string
+   amounts), and the syntax has no decimal for a value kind to be written with.
 2. **Mailboxes that need OAuth.** Microsoft 365 has turned passwords off for IMAP and SMTP, and
    Google steers to OAuth. Either the host does OAuth (a refresh token as the secret, the host
    refreshing it), or those mailboxes are reached through their HTTP APIs (Microsoft Graph, Gmail
@@ -2158,33 +2539,56 @@ Taken when a job or a user asks, each with its design here and its sample all th
 27. **Clock periods under a second.** *Lean:* milliseconds down to 100, the scheduler waking for
     the next due tick rather than once a second; a later change to the triggers, its own test,
     not step 1.6.
-28. **What places an app's payload** (§5.15.8): `libsui` (`deno compile`'s; pure Rust, MIT;
+28. **New dependencies of core** (§5.1.1, slices 1.2d to 1.2f). Core has six, and its purity
+    argument rests on them (`holon-core/Cargo.toml`). Inflating and deflating (gzip, zip), RSA,
+    P-256, Ed25519 and OpenPGP are each too large and too easy to get wrong to write by hand.
+    *Lean:* pure-Rust crates that build for wasm (`miniz_oxide`; RustCrypto's `rsa`, `p256`,
+    `ed25519-dalek`; `pgp`), each pinned in `Cargo.lock` with a comment as `libm` is, with no
+    feature that reads the clock or the operating system's randomness; decimals, CSV, dates and
+    XML by hand.
+29. **PGP encryption is random.** A message is encrypted with a fresh session key, and a leaf
+    must give the same answer on every replay (R1). Either the host answers it as a request, its
+    ciphertext kept in the log as an answer is, or the randomness comes into the run from a
+    driver, as `random` does, made bytes. *Lean:* the driver: the leaf stays pure over its inputs,
+    and verify recomputes the ciphertext from the logged randomness. Decided in 1.2f.
+30. **XML's shape in a flow** (§5.1.5). JsonML's lists, one form both ways, or records as
+    fast-xml-parser makes them, easier to read (`doc.Document.GrpHdr.MsgId`) but losing a
+    schema's order when written, and changing shape between one child and several. *Lean:* lists,
+    read through `xml_find`, `xml_text` and `xml_attribute`; a record form only if reading
+    turns out to be most of what flows do, and then for reading alone.
+31. **Names with a namespace** (§5.1.5). Kept as written (`ns:Document`, `xmlns:ns` an attribute)
+    or resolved (`{urn:…}Document`, Clark's notation). As written reads and writes back exactly
+    and is what a flow writes; a sender that prefixes the same namespace differently reads
+    differently. *Lean:* as written now; a path step that names the namespace (`{urn:…}Ntry`),
+    and `//` for any depth, when the first statement from a bank that prefixes arrives (1.5's
+    camt.053).
+32. **What places an app's payload** (§5.15.8): `libsui` (`deno compile`'s; pure Rust, MIT;
     ELF, PE resources, Mach-O sections and an ad-hoc signature), or holon's own code for the three
     formats. *Lean:* `libsui`, if its size, its maintenance and its output's determinism (§5.15.9)
     hold up in slice 1; otherwise holon's own, a few hundred lines a format.
-29. **The port of a built app.** The port is in the text, so in the unit's hash, and a server
+33. **The port of a built app.** The port is in the text, so in the unit's hash, and a server
     refuses two deployments on one port. Two copies of a serving app on one machine need two
     ports. *Lean:* `--port N` as a binding, like a folder's: the text's port the default, the
     runner's choice kept in the data folder and shown by `--holon`; nothing about the unit changes.
-30. **Which runtime by default.** Slim is smaller and has less in it; full has the server
+34. **Which runtime by default.** Slim is smaller and has less in it; full has the server
     database engines, which a runner may want to bind. *Lean:* slim; full with `--runtime full`,
     and `holon build` suggests it when the flow uses a database.
-31. **A builder's witness the runner can't remove.** A team auditing every copy needs it to stay;
+35. **A builder's witness the runner can't remove.** A team auditing every copy needs it to stay;
     a runner may not want their run times known. *Lean:* it stays: it is part of the grant both
     people approve, shown as such, and a runner who refuses it doesn't run the app. The runner
     may add a witness of their own.
-32. **Several flows in one app,** or an app whose flow runs another's action
+36. **Several flows in one app,** or an app whose flow runs another's action
     (`RunsAction("billing/charge")`). *Lean:* refused until a job asks; then the payload holds
     several roots, each a deployment in the data folder, each approved on its own.
-33. **Two apps under one name.** Data folders are named by flow name, so two different apps
+37. **Two apps under one name.** Data folders are named by flow name, so two different apps
     called `todo-cli` would share one. *Lean:* the folder records the name and the first build's
     approver, and a build approved by someone else asks before taking it over; `--data` keeps
     them apart.
-34. **The approver's identity.** A name the builder states, or a signature in the payload with a
+38. **The approver's identity.** A name the builder states, or a signature in the payload with a
     key `holon inspect` checks against one the runner trusts. *Lean:* a name, with the file's
     platform signature as the proof of who built it; a holon signature only if teams need one
     that doesn't depend on platforms (Linux has none).
-35. **Exit codes of an app.** *Lean:* 0 and 1 by the answer's status, an envelope's `exit` when
+39. **Exit codes of an app.** *Lean:* 0 and 1 by the answer's status, an envelope's `exit` when
     it gives one, 2 for a command line that doesn't parse, and the BSD sysexits for the app's own
     refusals: 70 a damaged payload, 77 not accepted, 78 a secret or binding missing.
 

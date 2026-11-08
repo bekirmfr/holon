@@ -200,6 +200,7 @@ opens from the editor's flows page, and is deployed by the end-to-end tests.
 |---|---|
 | `holon serve` | the server, with the web editor at its address |
 | `holon new` / `check` / `show` / `fmt` | write, check, outline and format flows as text |
+| `holon types` | `holon.d.ts`, so an editor's TypeScript completes and checks flows |
 | `holon export` / `verify` | write a deployment's runs to a file; check them offline |
 | `holon folder add` / `list` / `remove` | bind the folders flows read and write (admin) |
 | `holon mcp`, `holon mcp setup` | the agent surface, and adding it to an agent's host |

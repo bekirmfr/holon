@@ -13,6 +13,12 @@ Holon flows in VS Code, as `holon check` and `holon fmt` read them. A flow is a 
   (`posts.` → get, put, delete, list; `req.` → params, query, headers, body, json);
 - Format Document: the canonical form, as `holon fmt` writes it.
 
+VS Code's own TypeScript reads the file too. For it to know `"holon"` and the import sources
+(`secret:`, `host:`, `collection:`, …), the folder needs `holon.d.ts` and a `tsconfig.json`:
+`holon new` writes both beside a new flow, and `holon types` writes them into a folder of flows.
+Without them every import is "Cannot find module". TypeScript calls the right side of
+`{ total } ?? status(400)` unreachable, where Holon reaches it (the language reference, Files).
+
 It starts `holon lsp`, so `holon` must be installed (see the repository's README), on the PATH or
 named by the `holon.path` setting. The language server is any editor's: one with a language client
 starts `holon lsp` on stdin and stdout. Design: `docs/L4s/language-server-L4.md`.

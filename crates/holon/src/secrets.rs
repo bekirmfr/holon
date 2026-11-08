@@ -791,8 +791,29 @@ pub(crate) fn value_holds(v: &holon_core::Value, found: &dyn Fn(&str) -> bool) -
         Value::List(xs) => xs.iter().any(|x| value_holds(x, found)),
         Value::Record(fields) => fields.iter().any(|(k, x)| found(k) || value_holds(x, found)),
         Value::Effect { payload, .. } | Value::Sum { payload, .. } => value_holds(payload, found),
+        Value::Bytes(b) => bytes_hold(b, found),
         Value::Number(_) | Value::Boolean(_) => false,
     }
+}
+
+/// Whether a run of valid UTF-8 in `b` satisfies `found`. A secret's UTF-8 inside bytes lies
+/// within one such run (a text never starts with a continuation byte, nor ends inside a
+/// character), so bytes holding a secret's UTF-8 hold the secret, as a text holding it does.
+pub(crate) fn bytes_hold(b: &[u8], found: &dyn Fn(&str) -> bool) -> bool {
+    b.utf8_chunks().any(|run| found(run.valid()))
+}
+
+/// Each run of valid UTF-8 in `b`, in place, through `f`, every other byte kept as it was: what
+/// [`texts_mut`] replaces in a text, this replaces in bytes ([`bytes_hold`] says why it finds it).
+pub(crate) fn bytes_texts_mut(b: &mut Vec<u8>, f: &mut impl FnMut(&mut String)) {
+    let mut out = Vec::with_capacity(b.len());
+    for run in b.utf8_chunks() {
+        let mut text = run.valid().to_string();
+        f(&mut text);
+        out.extend_from_slice(text.as_bytes());
+        out.extend_from_slice(run.invalid());
+    }
+    *b = out;
 }
 
 /// The fields of a call's answer whose values are credentials, as an API names them (an OAuth
@@ -946,6 +967,7 @@ impl Redactor {
                 fields.sort_by(|a, b| a.0.cmp(&b.0));
             }
             SValue::Effect { payload, .. } | SValue::Sum { payload, .. } => self.svalue(payload),
+            SValue::Bytes(b) => bytes_texts_mut(b, &mut |s: &mut String| *s = self.text(s)),
             SValue::Number(_) | SValue::Boolean(_) => {}
         }
     }
@@ -1065,6 +1087,7 @@ pub(crate) fn texts_mut(v: &mut SValue, f: &mut impl FnMut(&mut String)) {
             }
         }
         SValue::Effect { payload, .. } | SValue::Sum { payload, .. } => texts_mut(payload, f),
+        SValue::Bytes(b) => bytes_texts_mut(b, f),
         SValue::Number(_) | SValue::Boolean(_) => {}
     }
 }
@@ -1145,6 +1168,27 @@ pub(crate) fn unescaped(v: &mut SValue) {
 
 #[cfg(test)]
 mod tests {
+    /// A secret's UTF-8 inside bytes is found and marked as in a text, every other byte kept; a
+    /// look-alike of a mark inside them is escaped as in a text, and read back as it was.
+    #[test]
+    fn a_secret_inside_bytes_is_marked_as_in_a_text() {
+        use crate::wire::SValue;
+        let redactor = Redactor::tokens(&BTreeMap::from([("t".to_string(), "sk_live_abc".to_string())]));
+        let held = [&[0xff, b'k', b'='][..], b"sk_live_abc", &[0x00, 0xc3]].concat();
+        assert!(bytes_hold(&held, &|s: &str| s.contains("sk_live_abc")));
+        assert!(!bytes_hold(&[0xff, 0x00], &|s: &str| s.contains("sk")));
+        let mut v = SValue::Bytes(held);
+        redactor.svalue(&mut v);
+        assert_eq!(v, SValue::Bytes([&[0xff, b'k', b'='][..], "‹token:t›".as_bytes(), &[0x00, 0xc3]].concat()));
+        let mut v = SValue::Bytes([&[0xfe][..], "x‹secret:k›".as_bytes()].concat());
+        let mut none = SValue::Bytes(vec![0xfe, b'x']);
+        let empty = Redactor::tokens(&BTreeMap::new());
+        assert!(!empty.logged_svalue(&mut none) && none == SValue::Bytes(vec![0xfe, b'x']), "nothing to mark: as they are");
+        assert!(empty.logged_svalue(&mut v), "a look-alike is escaped");
+        assert_ne!(v, SValue::Bytes([&[0xfe][..], "x‹secret:k›".as_bytes()].concat()));
+        assert_eq!(v.clone().into_core().ty(), holon_core::Type::Bytes);
+    }
+
     /// A redactor with nothing to mark leaves every text without a `‹` as it is (D3): what the log's
     /// shortcut (`firing::redacted_line`) counts on. Thousands of texts of the awkward kinds: quotes,
     /// backslashes, `›`, the words a mark is made of, text of several bytes a character.

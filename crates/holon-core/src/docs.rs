@@ -114,28 +114,59 @@ pub fn describe(name: &str) -> Option<&'static str> {
         "group_by" => "The items of a list in lists by the key its function answers for each, a text: Object.groupBy(xs, f). Each list keeps the items' order; the keys come sorted. A key that isn't a text produces nothing.",
         "same_value" => "Whether two values are the same as JavaScript's Object.is says: -0 isn't 0. Lists and records compare by what they hold.",
         "type_of" => "What JavaScript's typeof says of a value: \"number\", \"boolean\", \"string\" or \"object\" (a list, a record or null).",
-        "date_part" => "A date's time value, or one of its parts in UTC, chosen by part: time (new Date(x): a number of milliseconds since 1970, or a text as date_parse reads it), year, month (0 to 11), date, day (0 is Sunday), hours, minutes, seconds, milliseconds (getUTCFullYear() and the rest). Nothing for a date out of range.",
+        "date_part" => "A date's time value, or one of its parts in UTC, chosen by part: time (new Date(x): a number of milliseconds since 1970, or a text as date_parse reads it), year, month (0 to 11), date, day (0 is Sunday), hours, minutes, seconds, milliseconds (getUTCFullYear() and the rest). Given an offset (+01:00, or minutes east of UTC), the part there: its hours, its date. Nothing for a date out of range.",
         "date_utc" => "The time value of a date and time in UTC: Date.UTC(year, month, date, hours, minutes, seconds, ms), month counting from 0, the parts after the year optional (month 0, date 1, the rest 0); a year 0 to 99 is 1900 plus it. Takes the parts after the year with +.",
         "date_set" => "A date with parts replaced, from part on, the rest its own: new Date(t).setUTCHours(h, m, s, ms) and the other setUTC… methods, as the time value they give. The date is a time value or a text, as for new Date(t). A part past its end carries (hour 25 is 1 the next day).",
-        "date_text" => "A date as text, by format: iso (new Date(t).toISOString(): 2000-02-29T12:00:00.000Z) or utc (toUTCString(): Tue, 29 Feb 2000 12:00:00 GMT). The date is a time value or a text, as for new Date(t).",
+        "date_text" => "A date as text, by format: iso (new Date(t).toISOString(): 2000-02-29T12:00:00.000Z), date (2000-02-29) or utc (toUTCString(): Tue, 29 Feb 2000 12:00:00 GMT). Given an offset (+01:00, or minutes east of UTC), iso and date are the time there, iso written with it: 2000-02-29T13:00:00.000+01:00. The date is a time value or a text, as for new Date(t).",
+        "date_add" => "A date amount days, months or years later (earlier when negative), by unit, as a time value. A month keeps the day of the month, or is the month's last day when it has fewer: January 31 and a month is February 28. Given an offset, its calendar's months.",
+        "business_day_add" => "The date days business days after date (before it when negative), as YYYY-MM-DD; with 0, date itself when it is a business day, else the next. A business day is in neither the weekend (sat_sun by default, fri_sat or none) nor holidays, a list of dates such as 2026-12-25.",
+        "business_days_between" => "How many business days come after from up to to, to included; negative when to is before from. Dates are YYYY-MM-DD texts or time values; holidays, a list of dates, and the weekend as for business_day_add.",
+        "is_business_day" => "Whether a date (YYYY-MM-DD, or a time value's date in UTC) is in neither the weekend (sat_sun by default, fri_sat or none) nor holidays, a list of dates.",
         "date_parse" => "The time value a date's text gives: Date.parse(t), in JavaScript's date format (2000-02-29, 2000-02-29T12:00:00Z, …). A time without Z or an offset produces nothing: Holon has no local time.",
         "json_parse" => "Reads JSON text into a value (records, lists, numbers, text…); nothing when it isn't valid JSON. With fn, a function of each key and value, applied from the inside out, its answer standing in for the value (JSON.parse(t, reviver)); one it answers nothing for is left out.",
         "json_stringify" => "Writes a value out as JSON text, as JavaScript's JSON.stringify: indent lays it out a member a line, keys (a JSON list) keeps only those keys of every record, in that order, and fn, a function of each key and value applied from the outside in, writes its answer instead (the replacer); one it answers nothing for is left out.",
 
         // ── signatures and encodings ──
-        "sha256" => "The SHA-256 digest of a text, as hex or base64.",
-        "hmac_sha256" => "The HMAC-SHA256 signature of message under key, as hex or base64: how webhooks are signed.",
+        "sha256" => "The SHA-256 digest of a text (its UTF-8) or of bytes, as hex or base64.",
+        "hmac_sha256" => "The HMAC-SHA256 signature of message under key, each a text or bytes, as hex or base64: how webhooks are signed.",
         "hex" => "Encodes text as hex, or decodes hex back to text.",
         "base64" => "Encodes text as base64, or decodes it back; standard or URL-safe alphabet. Its bytes are the text's UTF-8, or with latin1 each character one byte: btoa(s), atob(s).",
-        "secure_equals" => "Whether two texts are equal, compared in constant time: for checking signatures and tokens without leaking where they differ.",
+        "secure_equals" => "Whether two texts, or two byte strings, are equal, compared in constant time: for checking signatures and tokens without leaking where they differ.",
+        "text_to_bytes" => "A text's bytes: its UTF-8, or what its hex, base64 or base64url says (nothing if it isn't that). new TextEncoder().encode(s), Uint8Array.fromHex(s), Uint8Array.fromBase64(s).",
+        "bytes_to_text" => "Bytes as a text: read as UTF-8 (nothing if they aren't), or written as hex, padded base64 or unpadded base64url. new TextDecoder().decode(b), b.toHex(), b.toBase64().",
+        "bytes_length" => "How many bytes: b.length.",
+        "bytes_concat" => "Bytes joined, in order.",
+        "bytes_to_list" => "Bytes as a list of numbers from 0 to 255: Array.from(b).",
+        "list_to_bytes" => "A list of whole numbers from 0 to 255 as bytes: new Uint8Array(xs). Nothing if an item isn't one, where JavaScript wraps it.",
+
+        // ── decimals ──
+        "decimal_add" => "The exact sum of decimals written as text (1234.56), or of numbers as their shortest text: 0.1 and 0.2 give 0.3. Its scale is the largest of theirs: 1.10 and 2 give 3.10. Nothing for a text that isn't a decimal.",
+        "decimal_sub" => "a − b, exactly, its scale the larger of theirs.",
+        "decimal_mul" => "The exact product of decimals, its scale the sum of theirs: 19.99 times 3 is 59.97.",
+        "decimal_div" => "a ÷ b to scale places, rounded by rounding (half_even by default). Nothing when b is zero.",
+        "decimal_round" => "A decimal to scale places, padded with zeros (5 to 2 places is 5.00), rounded by rounding: half_even (a bank's, the default), half_up, half_down, up (away from zero), down (toward zero), ceiling or floor.",
+        "decimal_sum" => "The exact sum of a list's decimals: a control sum. 0 for an empty list.",
+        "decimal_compare" => "−1, 0 or 1 as a is less than, equal to or more than b, by value: 1.10 and 1.1 are equal.",
+
+        // ── CSV ──
+        "csv_parse" => "Reads CSV (RFC 4180): with header first_row (the default), a list of records keyed by the first row's names; with none, a list of lists. Every field is a text. Nothing for a malformed file: a quote that never closes, a row with more or fewer fields than the header, a column named twice.",
+        "csv_format" => "Writes CSV: given columns, each row a record written in that order (a missing field empty), the names first unless header is none; without, each row a list. A field holding the separator, a quote or a line break is quoted, and each line ends with CRLF.",
+
+        // ── XML ──
+        "xml_parse" => "Reads XML 1.0 into its root element, a list as JsonML writes one: the name, then a record of its attributes when it has any, then its children in order, each an element or a text. Names are kept as written, a prefix too; comments, instructions and the white space between elements are dropped. Nothing for text that isn't well-formed, or that has a DOCTYPE: no entity is ever defined or fetched.",
+        "xml_format" => "Writes an element, a list as xml_parse gives one, as XML: the declaration first unless declaration is none, on one line or indented two spaces a level (layout). Texts and attributes are escaped, a number or a Boolean written as JavaScript writes it. Nothing for a name that isn't an XML name, a character XML can't hold, or an item that is neither an element, a text, a number nor a Boolean.",
+        "xml_find" => "The elements along a path of names separated by /, the first among the element's children, in document order; * is any name. An empty list when none matches.",
+        "xml_text" => "An element's text, every text in it at any depth joined, as the DOM's textContent; given a path, the first match's. Nothing when none matches.",
+        "xml_attribute" => "An element's attribute, by name; nothing when it has none so named.",
 
         // ── any value ──
         "to_text" => "Any value written out as text, as a literal: a text comes out in quotes.",
         "as_text" => "Any value as it reads in a message: a text is itself, a number or true/false as written, a record or list as JSON. For putting a value into a text.",
-        "is_truthy" => "Whether a value counts as true: not 0, false, empty text, an empty list or record, or none.",
+        "is_truthy" => "Whether a value counts as true, as JavaScript's Boolean(x) says: false for false, 0, NaN, empty text and none; true for anything else, an empty list or record included. How if (x) and !x read a value that isn't true or false.",
         "guard" => "Passes value on only when cond is true; otherwise nothing, so what follows doesn't run.",
         "default" => "Passes its input on, or the value set on the node when the input didn't arrive: how a flow fills a gap.",
         "coalesce" => "Passes a on, or b when a didn't arrive: a fallback that is itself computed, where default's is a fixed value.",
+        "fail" => "Nothing, with message given to the run's log as the reason: JavaScript's throw new Error(message). What reads it has no value, unless a ?? or a catch gives one.",
         "equals" => "Whether two values are the same.",
 
         // ── outside the run ──
@@ -157,6 +188,7 @@ pub fn describe(name: &str) -> Option<&'static str> {
         "collection_put" => "Puts value into a collection under key when the run finishes (added, or replaced). Writing it is a permission.",
         "collection_delete" => "Deletes a collection's item under key when the run finishes.",
         "file_read" => "The text of the file name in a folder, as the run found it; nothing when there is none. The folder is a name an admin binds to a real folder. Reading it is a permission.",
+        "file_read_bytes" => "The bytes of the file name in a folder, any file, as the run found it; nothing when there is none. folder.bytes(name). Reading it is a permission.",
         "file_list" => "A record of a folder's files (name, size, hash, modified) in name order, up to limit: those whose name starts with prefix, after the name after (both optional, for paging).",
         "file_write" => "Writes text to the file name in a folder when the run finishes (created, or replaced whole). Writing it is a permission.",
         "file_delete" => "Deletes the file name in a folder when the run finishes.",

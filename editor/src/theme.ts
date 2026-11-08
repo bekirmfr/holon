@@ -26,7 +26,7 @@ export function typeKind(ty: WType): string {
   return exhaustive;
 }
 
-/** A type's hue, by outer kind. Eight kinds, eight colors — the editor's whole palette comes from
+/** A type's hue, by outer kind. Ten kinds, ten colors — the editor's whole palette comes from
  *  this. `Product`/`Sum` are new hues (this inch); everything else is unchanged from before. */
 export const TYPE_COLOR: Record<string, string> = {
   Number: "#f2b441", // amber
@@ -38,6 +38,7 @@ export const TYPE_COLOR: Record<string, string> = {
   Effect: "#ff6f6f", // coral — the effectful edge
   Any: "#8295b0", // slate — polymorphic, uncommitted
   Record: "#e8955a", // orange — named fields, distinct from Number's amber
+  Bytes: "#c8b48c", // sand — raw bytes, a file's or a digest's, muted beside Text's green
 };
 
 /** The hue for any concrete wire type (an input port's type, e.g.) — never `null`. */

@@ -12,7 +12,12 @@
 //! arithmetic in the standard's order, which is correctly rounded, so every leaf gives the same bits
 //! natively and in wasm; no `libm` function is used.
 //!
-//! Holon has no time zone (§12, the environment): there is no local time, only UTC.
+//! Holon has no time zone (§12, the environment): there is no local time, only UTC and fixed
+//! offsets. A leaf that reads a calendar (`date_part`, `date_text`, `date_add`) takes an offset, a
+//! date's parts read at it; the business-day leaves read calendar dates, a bank's closing days
+//! given as data (host-capabilities L4 §5.1.3).
+
+use std::collections::BTreeSet;
 
 use crate::Value;
 
@@ -26,8 +31,21 @@ pub(crate) const PARTS: &[&str] = &["time", "year", "month", "date", "day", "hou
 /// `date_set`'s parts, its family: the first part a `setUTC…` replaces, in MakeDate's order.
 pub(crate) const SET_PARTS: &[&str] = &["year", "month", "date", "hours", "minutes", "seconds", "milliseconds"];
 
-/// `date_text`'s formats: `toISOString` and `toUTCString`.
-pub(crate) const FORMATS: &[&str] = &["iso", "utc"];
+/// `date_text`'s formats: `toISOString`, `toUTCString`, and the date alone (`YYYY-MM-DD`).
+pub(crate) const FORMATS: &[&str] = &["iso", "utc", "date"];
+
+/// `date_add`'s units, its family.
+pub(crate) const UNITS: &[&str] = &["days", "months", "years"];
+
+/// The business-day leaves' weekends, their family: Saturday and Sunday, Friday and Saturday, or
+/// none (a calendar whose every closing day is a holiday).
+pub(crate) const WEEKENDS: &[&str] = &["sat_sun", "fri_sat", "none"];
+
+/// The days a time value falls on, either side of 1970-01-01: ±8.64e15 ms is ±1e8 days.
+const MAX_DAY: i64 = 100_000_000;
+
+/// The most business days `business_day_add` steps, either way.
+const MAX_BUSINESS_DAYS: f64 = 100_000.0;
 
 /// ToIntegerOrInfinity on a finite number: truncated, `-0` made `0`.
 fn to_integer(x: f64) -> f64 {
@@ -46,6 +64,47 @@ fn time_value(x: &Value) -> Option<i64> {
         Value::Number(t) => clip(*t).map(|t| t as i64),
         Value::Text(s) => parse(s).map(|t| t as i64),
         _ => None,
+    }
+}
+
+/// An offset in minutes east of UTC: `"Z"`, or `"±HH:mm"` (`HH` up to 23, `mm` up to 59) as ISO
+/// 8601 and `Date.parse` write one, or a whole number of minutes from −1439 to 1439.
+fn offset_minutes(x: &Value) -> Option<i64> {
+    match x {
+        Value::Number(m) if m.fract() == 0.0 && m.abs() <= 1439.0 => Some(*m as i64),
+        Value::Text(s) if s == "Z" => Some(0),
+        Value::Text(s) => {
+            let &[sign @ (b'+' | b'-'), h1, h2, b':', m1, m2] = s.as_bytes() else { return None };
+            if ![h1, h2, m1, m2].iter().all(u8::is_ascii_digit) {
+                return None;
+            }
+            let (h, m) = (i64::from((h1 - b'0') * 10 + (h2 - b'0')), i64::from((m1 - b'0') * 10 + (m2 - b'0')));
+            (h <= 23 && m <= 59).then_some(if sign == b'+' { h * 60 + m } else { -(h * 60 + m) })
+        }
+        _ => None,
+    }
+}
+
+/// The offset a leaf is given, in milliseconds: none is UTC's; one that isn't an offset, nothing.
+fn offset_ms(offset: Option<&Value>) -> Option<i64> {
+    offset.map_or(Some(0), |o| offset_minutes(o).map(|m| m * 60_000))
+}
+
+/// An offset as ISO 8601 writes it after a time: `Z` for none, else `±HH:mm`.
+fn offset_text(ms: i64) -> String {
+    if ms == 0 {
+        return "Z".into();
+    }
+    let m = ms.abs() / 60_000;
+    format!("{}{:02}:{:02}", if ms < 0 { '-' } else { '+' }, m / 60, m % 60)
+}
+
+/// A year as `toISOString` writes it: four digits from 0 to 9999, else a sign and six.
+fn iso_year(y: i64) -> String {
+    match y {
+        0..=9999 => format!("{y:04}"),
+        _ if y < 0 => format!("-{:06}", -y),
+        _ => format!("+{y:06}"),
     }
 }
 
@@ -115,11 +174,13 @@ fn numbers(inputs: &[&Value]) -> Option<Vec<f64>> {
 }
 
 /// `date_part {part}`: `new Date(x)`'s time value (`time`: TimeClip of a number, `Date.parse` of a
-/// text), or one UTC part of it, as each `getUTC…` gives it.
-pub(crate) fn part(x: &Value, part: &str) -> Option<f64> {
+/// text), or one UTC part of it, as each `getUTC…` gives it; given an offset, the part there. The
+/// time value is the instant, the same at any offset.
+pub(crate) fn part(x: &Value, offset: Option<&Value>, part: &str) -> Option<f64> {
     let t = time_value(x)?;
+    let shift = offset_ms(offset)?;
     let k = PARTS.iter().position(|p| *p == part)?;
-    Some(if k == 0 { t as f64 } else { parts(t)[k - 1] as f64 })
+    Some(if k == 0 { t as f64 } else { parts(t + shift)[k - 1] as f64 })
 }
 
 /// `date_utc`, `Date.UTC(y, m, d, h, mi, s, ms)`: 1 to 7 numbers, the missing parts month 0, date
@@ -172,20 +233,18 @@ pub(crate) fn set(t: &Value, given: &[&Value], part: &str) -> Option<f64> {
 }
 
 /// `date_text {format}`: `iso` is `toISOString` (`YYYY-MM-DDTHH:mm:ss.sssZ`, a year outside 0 to
-/// 9999 as a sign and six digits); `utc` is `toUTCString` (`Thu, 01 Jan 1970 00:00:00 GMT`, a
-/// negative year as `-` and at least four digits).
-pub(crate) fn text(t: &Value, format: &str) -> Option<String> {
-    let [y, mo, d, wd, h, mi, s, ms] = parts(time_value(t)?);
+/// 9999 as a sign and six digits); `date` its date alone; `utc` is `toUTCString` (`Thu, 01 Jan
+/// 1970 00:00:00 GMT`, a negative year as `-` and at least four digits). Given an offset, `iso`
+/// and `date` are the time there, `iso` written with it (`+01:00`; `Z` for a zero offset); `utc`
+/// is GMT's, so nothing for another.
+pub(crate) fn text(t: &Value, offset: Option<&Value>, format: &str) -> Option<String> {
+    let shift = offset_ms(offset)?;
+    let [y, mo, d, wd, h, mi, s, ms] = parts(time_value(t)? + shift);
+    let date = format!("{}-{:02}-{d:02}", iso_year(y), mo + 1);
     Some(match format {
-        "iso" => {
-            let year = match y {
-                0..=9999 => format!("{y:04}"),
-                _ if y < 0 => format!("-{:06}", -y),
-                _ => format!("+{y:06}"),
-            };
-            format!("{year}-{:02}-{d:02}T{h:02}:{mi:02}:{s:02}.{ms:03}Z", mo + 1)
-        }
-        "utc" => {
+        "iso" => format!("{date}T{h:02}:{mi:02}:{s:02}.{ms:03}{}", offset_text(shift)),
+        "date" => date,
+        "utc" if shift == 0 => {
             let day = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][wd as usize];
             let month = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"][mo as usize];
             let year = if y >= 0 { format!("{y:04}") } else { format!("-{:04}", -y) };
@@ -193,6 +252,151 @@ pub(crate) fn text(t: &Value, format: &str) -> Option<String> {
         }
         _ => return None,
     })
+}
+
+/// `date_add {unit}`: the time value `amount` days, months or years later (earlier when
+/// negative), the amount truncated, at the offset's calendar. A day is 86,400,000 ms, at any
+/// fixed offset; a month keeps the day of the month, or is the month's last day when it has
+/// fewer (January 31 and a month is February 28, as date-fns's `addMonths`), and a year is twelve
+/// months. The time of day is kept. Nothing past the range.
+pub(crate) fn add(t: &Value, amount: &Value, offset: Option<&Value>, unit: &str) -> Option<f64> {
+    let t = time_value(t)?;
+    let shift = offset_ms(offset)?;
+    let &Value::Number(n) = amount else { return None };
+    if !n.is_finite() {
+        return None;
+    }
+    let n = to_integer(n);
+    let months = match unit {
+        "days" if n.abs() <= 2.0 * MAX_DAY as f64 => return clip((t + n as i64 * MS_PER_DAY) as f64),
+        "months" => n,
+        "years" => n * 12.0,
+        _ => return None,
+    };
+    if months.abs() > 1e7 {
+        return None;
+    }
+    let local = t + shift;
+    let (y, m, d) = civil_from_days(local.div_euclid(MS_PER_DAY));
+    let total = y * 12 + (m - 1) + months as i64;
+    let (y, m) = (total.div_euclid(12), total.rem_euclid(12) + 1);
+    let day = days_from_civil(y, m, d.min(days_in_month(y, m)));
+    clip((day * MS_PER_DAY + local.rem_euclid(MS_PER_DAY) - shift) as f64)
+}
+
+/// A calendar date, as its day since 1970-01-01: a `YYYY-MM-DD` text (`±YYYYYY-MM-DD` for a far
+/// year), or a time value's date in UTC. A text with a time of day isn't one: its date depends on
+/// an offset the leaf can't know.
+fn calendar_day(x: &Value) -> Option<i64> {
+    match x {
+        Value::Number(_) => time_value(x).map(|t| t.div_euclid(MS_PER_DAY)),
+        Value::Text(s) => {
+            let b = s.as_bytes();
+            let date = match b.len() {
+                10 => b[0].is_ascii_digit() && b[4] == b'-' && b[7] == b'-',
+                13 => matches!(b[0], b'+' | b'-') && b[7] == b'-' && b[10] == b'-',
+                _ => false,
+            };
+            if !date {
+                return None;
+            }
+            parse(s).map(|t| t as i64 / MS_PER_DAY)
+        }
+        _ => None,
+    }
+}
+
+/// A calendar date as text, `YYYY-MM-DD`, as `toISOString` writes its date; nothing past the range.
+fn calendar_text(day: i64) -> Option<String> {
+    let (y, m, d) = civil_from_days(day);
+    (day.abs() <= MAX_DAY).then(|| format!("{}-{m:02}-{d:02}", iso_year(y)))
+}
+
+/// The days a business-day leaf counts: those in neither its weekend nor its holidays.
+struct Calendar {
+    /// By weekday, 0 Sunday: whether it is in the weekend.
+    weekend: [bool; 7],
+    holidays: BTreeSet<i64>,
+}
+
+impl Calendar {
+    /// The calendar a leaf is given: `holidays` a list of calendar dates, or none; nothing when an
+    /// item isn't a date, as a malformed CSV is refused.
+    fn new(holidays: Option<&Value>, weekend: &str) -> Option<Calendar> {
+        let weekend = match weekend {
+            "sat_sun" => [true, false, false, false, false, false, true],
+            "fri_sat" => [false, false, false, false, false, true, true],
+            "none" => [false; 7],
+            _ => return None,
+        };
+        let holidays = match holidays {
+            None => BTreeSet::new(),
+            Some(Value::List(xs)) => xs.iter().map(calendar_day).collect::<Option<_>>()?,
+            Some(_) => return None,
+        };
+        Some(Calendar { weekend, holidays })
+    }
+
+    fn weekend(&self, day: i64) -> bool {
+        self.weekend[(day + 4).rem_euclid(7) as usize]
+    }
+
+    fn open(&self, day: i64) -> bool {
+        !self.weekend(day) && !self.holidays.contains(&day)
+    }
+
+    /// How many business days `lo..=hi` holds: its whole weeks, the days left, less the holidays
+    /// among them that aren't in the weekend, so not the range's length.
+    fn open_in(&self, lo: i64, hi: i64) -> i64 {
+        if hi < lo {
+            return 0;
+        }
+        let n = hi - lo + 1;
+        let per_week = self.weekend.iter().filter(|w| !**w).count() as i64;
+        let rest = (0..n % 7).filter(|k| !self.weekend(lo + k)).count() as i64;
+        let closed = self.holidays.range(lo..=hi).filter(|&&h| !self.weekend(h)).count() as i64;
+        n / 7 * per_week + rest - closed
+    }
+}
+
+/// `business_day_add {weekend}`: the calendar date `days` business days after `date` (before it
+/// when negative), the count truncated, up to 100,000 either way; with 0, `date` when it is a
+/// business day, else the next one. As text, `YYYY-MM-DD`: a date has no time and no offset.
+pub(crate) fn business_day_add(date: &Value, days: &Value, holidays: Option<&Value>, weekend: &str) -> Option<String> {
+    let mut day = calendar_day(date)?;
+    let calendar = Calendar::new(holidays, weekend)?;
+    let &Value::Number(n) = days else { return None };
+    if !n.is_finite() || n.abs() > MAX_BUSINESS_DAYS {
+        return None;
+    }
+    let n = to_integer(n) as i64;
+    // At most |days| × 7 / 5 steps, the holidays and a week: the weekend has two days at most.
+    let (step, mut left) = if n == 0 { (1, i64::from(!calendar.open(day))) } else { (n.signum(), n.abs()) };
+    while left > 0 {
+        day += step;
+        if day.abs() > MAX_DAY {
+            return None;
+        }
+        if calendar.open(day) {
+            left -= 1;
+        }
+    }
+    calendar_text(day)
+}
+
+/// `business_days_between {weekend}`: the business days counted from `from`, not itself, to `to`,
+/// itself included: after `from` up to `to` when `to` is later, else from `to` up to `from`,
+/// negated. So `business_days_between(d, business_day_add(d, n))` is `n` for any `n` but 0.
+pub(crate) fn business_days_between(from: &Value, to: &Value, holidays: Option<&Value>, weekend: &str) -> Option<f64> {
+    let (a, b) = (calendar_day(from)?, calendar_day(to)?);
+    let calendar = Calendar::new(holidays, weekend)?;
+    Some(if b >= a { calendar.open_in(a + 1, b) } else { -calendar.open_in(b, a - 1) } as f64)
+}
+
+/// `is_business_day {weekend}`: whether `date` is in neither the weekend nor the holidays.
+pub(crate) fn is_business_day(date: &Value, holidays: Option<&Value>, weekend: &str) -> Option<bool> {
+    let day = calendar_day(date)?;
+    Some(Calendar::new(holidays, weekend)?.open(day))
 }
 
 fn days_in_month(y: i64, m: i64) -> i64 {
@@ -465,5 +669,145 @@ mod tests {
         assert_eq!(at("date", "2000-02-29", 0.0), Some(t(949_276_800_000.0)), "Jan 31");
         assert_eq!(at("date", "29 Feb 2000", 0.0), None);
         assert_eq!(leaf("date_text", &[("format", "iso")], &[txt("2000-02-29T12:00+01:00")]), Some(txt("2000-02-29T11:00:00.000Z")));
+    }
+
+    /// TARGET2's closing days in 2026: New Year's Day, Good Friday, Easter Monday, Labour Day,
+    /// Christmas and the day after.
+    fn target2() -> Value {
+        Value::List(["2026-01-01", "2026-04-03", "2026-04-06", "2026-05-01", "2026-12-25", "2026-12-26"].map(txt).to_vec())
+    }
+
+    /// An offset reads a date's parts there and writes its time there, with it; `date` is the
+    /// date alone. Anything but `Z`, `±HH:mm` or whole minutes up to a day is refused.
+    #[test]
+    fn an_offset_reads_and_writes_the_time_there() {
+        let at = parsed("2026-11-06T15:30:00Z").unwrap();
+        let part = |p: &str, o: Value| leaf("date_part", &[("part", p)], &[at.clone(), o]);
+        assert_eq!(part("hours", txt("+01:00")), Some(t(16.0)));
+        assert_eq!(part("hours", txt("-05:30")), Some(t(10.0)));
+        assert_eq!(part("minutes", txt("-05:30")), Some(t(0.0)));
+        assert_eq!(part("hours", t(330.0)), Some(t(21.0)), "minutes east of UTC");
+        assert_eq!(part("hours", txt("Z")), Some(t(15.0)));
+        assert_eq!(part("date", txt("+09:00")), Some(t(7.0)), "past midnight in Tokyo");
+        assert_eq!(part("day", txt("+09:00")), Some(t(6.0)), "a Saturday there");
+        assert_eq!(part("time", txt("+09:00")), part("time", txt("Z")), "the instant is the same");
+        for bad in [txt("+24:00"), txt("+01:60"), txt("01:00"), txt("+1:00"), txt("+0100"), txt("z"), t(1440.0), t(1.5), Value::Boolean(true)] {
+            assert_eq!(part("hours", bad.clone()), None, "{bad:?}");
+        }
+        let text = |f: &str, o: Option<Value>| leaf("date_text", &[("format", f)], &[Some(at.clone()), o].into_iter().flatten().collect::<Vec<_>>());
+        assert_eq!(text("iso", Some(txt("+01:00"))), Some(txt("2026-11-06T16:30:00.000+01:00")));
+        assert_eq!(text("iso", Some(txt("-05:30"))), Some(txt("2026-11-06T10:00:00.000-05:30")));
+        assert_eq!(text("iso", Some(t(0.0))), Some(txt("2026-11-06T15:30:00.000Z")), "a zero offset is Z");
+        assert_eq!(text("date", None), Some(txt("2026-11-06")));
+        assert_eq!(text("date", Some(txt("+09:00"))), Some(txt("2026-11-07")));
+        assert_eq!(text("utc", Some(txt("Z"))), Some(txt("Fri, 06 Nov 2026 15:30:00 GMT")));
+        assert_eq!(text("utc", Some(txt("+01:00"))), None, "GMT's, not another offset's");
+        assert_eq!(leaf("date_text", &[("format", "date")], &[t(-62_198_755_200_000.0)]), Some(txt("-000001-01-01")));
+        for o in ["+05:45", "-11:30", "+14:00", "Z"] {
+            let written = text("iso", Some(txt(o))).unwrap();
+            assert_eq!(leaf("date_parse", &[], &[written]), Some(at.clone()), "read back at {o}");
+        }
+    }
+
+    /// Days are 86,400,000 ms; a month keeps its day, or the month's last when it has fewer, as
+    /// date-fns's addMonths, at the offset's calendar; a year is twelve months.
+    #[test]
+    fn date_add_clamps_a_month_to_its_last_day() {
+        let add = |x: &str, n: f64, unit: &str, o: Option<&str>| {
+            let mut inputs = vec![txt(x), t(n)];
+            inputs.extend(o.map(txt));
+            leaf("date_add", &[("unit", unit)], &inputs).and_then(|v| leaf("date_text", &[("format", "iso")], &[v]))
+        };
+        let day = |x: &str, n: f64, unit: &str| add(x, n, unit, None).map(|v| match v {
+            Value::Text(s) => txt(&s[..10]),
+            other => other,
+        });
+        assert_eq!(add("2026-11-06T15:30:00Z", 3.0, "days", None), Some(txt("2026-11-09T15:30:00.000Z")));
+        assert_eq!(add("2026-11-06T15:30:00Z", -1.9, "days", None), Some(txt("2026-11-05T15:30:00.000Z")), "truncated");
+        assert_eq!(day("2026-01-31", 1.0, "months"), Some(txt("2026-02-28")));
+        assert_eq!(day("2028-01-31", 1.0, "months"), Some(txt("2028-02-29")), "a leap year");
+        assert_eq!(day("2026-03-31", -1.0, "months"), Some(txt("2026-02-28")));
+        assert_eq!(day("2026-01-15", 13.0, "months"), Some(txt("2027-02-15")));
+        assert_eq!(day("2024-02-29", 1.0, "years"), Some(txt("2025-02-28")));
+        assert_eq!(day("2024-02-29", 4.0, "years"), Some(txt("2028-02-29")));
+        assert_eq!(day("2026-01-31", 12.0, "months"), day("2026-01-31", 1.0, "years"));
+        // 23:30 UTC on February 28 is March 1 at +01:00: a month there is April 1, 00:30.
+        assert_eq!(add("2026-02-28T23:30:00Z", 1.0, "months", Some("+01:00")), Some(txt("2026-03-31T23:30:00.000Z")));
+        assert_eq!(add("2026-02-28T23:30:00Z", 1.0, "months", None), Some(txt("2026-03-28T23:30:00.000Z")));
+        assert_eq!(add("2026-02-28T23:30:00Z", 1.0, "days", Some("+01:00")), add("2026-02-28T23:30:00Z", 1.0, "days", None), "a day is a day at a fixed offset");
+        assert_eq!(add("2026-01-31", 1.0, "weeks", None), None);
+        assert_eq!(add("2026-01-31", 1.0, "months", Some("CET")), None);
+        assert_eq!(add("2026-01-31", 1e8, "months", None), None);
+        assert_eq!(add("2026-01-31", 3e8, "days", None), None);
+        assert_eq!(add("+275760-09-13", 1.0, "days", None), None, "past the range");
+        assert_eq!(leaf("date_add", &[("unit", "days")], &[txt("2026-01-31"), txt("1")]), None, "the amount is a number");
+    }
+
+    /// Business days over TARGET2's 2026 calendar: Easter's four days closed, a weekend rolled
+    /// past, other weekends, and calendar dates as texts or time values, nothing else.
+    #[test]
+    fn business_days_skip_the_weekend_and_the_holidays() {
+        let add = |d: Value, n: f64, h: Option<Value>, weekend: &str| {
+            let mut inputs = vec![d, t(n)];
+            inputs.extend(h);
+            leaf("business_day_add", &[("weekend", weekend)], &inputs)
+        };
+        let target = |d: &str, n: f64| add(txt(d), n, Some(target2()), "sat_sun");
+        assert_eq!(target("2026-04-02", 1.0), Some(txt("2026-04-07")), "Good Friday, the weekend and Easter Monday");
+        assert_eq!(target("2026-04-07", -1.0), Some(txt("2026-04-02")));
+        assert_eq!(target("2026-02-28", 0.0), Some(txt("2026-03-02")), "a Saturday rolls to Monday");
+        assert_eq!(target("2026-03-02", 0.0), Some(txt("2026-03-02")));
+        assert_eq!(target("2026-02-28", 1.0), Some(txt("2026-03-02")));
+        assert_eq!(target("2026-02-28", -1.0), Some(txt("2026-02-27")));
+        assert_eq!(target("2026-12-24", 1.0), Some(txt("2026-12-28")));
+        assert_eq!(target("2026-12-31", 1.0), Some(txt("2027-01-01")), "2027's closing days aren't in the list");
+        assert_eq!(add(txt("2026-11-05"), 1.0, None, "fri_sat"), Some(txt("2026-11-08")));
+        assert_eq!(add(txt("2026-11-07"), 1.0, None, "none"), Some(txt("2026-11-08")));
+        assert_eq!(add(txt("2026-11-06"), 5.0, None, "sat_sun"), Some(txt("2026-11-13")));
+        let late_friday = parsed("2026-11-06T23:30:00Z").unwrap();
+        assert_eq!(add(late_friday, 1.0, None, "sat_sun"), Some(txt("2026-11-09")), "a time value's date in UTC");
+        assert_eq!(add(txt("2026-11-06T10:00:00Z"), 1.0, None, "sat_sun"), None, "a time of day: which date is meant?");
+        assert_eq!(add(txt("2026-11"), 1.0, None, "sat_sun"), None);
+        assert_eq!(add(txt("2026-11-06"), 1.0, Some(Value::List(vec![txt("2026-13-01")])), "sat_sun"), None, "a holiday that isn't a date");
+        assert_eq!(add(txt("2026-11-06"), 1.0, Some(txt("2026-11-09")), "sat_sun"), None, "holidays are a list");
+        assert_eq!(add(txt("2026-11-06"), 1.0, Some(Value::List(vec![parsed("2026-11-09").unwrap()])), "sat_sun"), Some(txt("2026-11-10")), "a holiday as a time value");
+        assert_eq!(add(txt("2026-11-06"), 1.0, None, "sun"), None);
+        assert!(add(txt("2026-11-06"), 100_000.0, None, "sat_sun").is_some());
+        assert_eq!(add(txt("2026-11-06"), 100_001.0, None, "sat_sun"), None, "past 100,000");
+        assert_eq!(add(txt("+275760-09-12"), 1.0, None, "none"), Some(txt("+275760-09-13")));
+        assert_eq!(add(txt("+275760-09-12"), 2.0, None, "none"), None, "past the range");
+
+        let open = |d: &str| leaf("is_business_day", &[("weekend", "sat_sun")], &[txt(d), target2()]);
+        assert_eq!(open("2026-12-24"), Some(Value::Boolean(true)));
+        assert_eq!(open("2026-12-25"), Some(Value::Boolean(false)));
+        assert_eq!(open("2026-11-08"), Some(Value::Boolean(false)), "a Sunday");
+        assert_eq!(leaf("is_business_day", &[("weekend", "fri_sat")], &[txt("2026-11-08")]), Some(Value::Boolean(true)));
+    }
+
+    /// The count from `from`, not itself, to `to`, itself included, either way: the inverse of
+    /// business_day_add, and what counting day by day gives, over any range.
+    #[test]
+    fn business_days_between_counts_what_business_day_add_steps() {
+        let between = |a: &str, b: &str| leaf("business_days_between", &[("weekend", "sat_sun")], &[txt(a), txt(b), target2()]);
+        assert_eq!(between("2026-01-31", "2026-03-02"), Some(t(21.0)));
+        assert_eq!(between("2026-03-02", "2026-01-31"), Some(t(-20.0)), "from excluded, to included");
+        assert_eq!(between("2026-04-02", "2026-04-07"), Some(t(1.0)));
+        assert_eq!(between("2026-04-02", "2026-04-02"), Some(t(0.0)));
+        assert_eq!(between("2026-01-01", "2026-12-31"), Some(t(256.0)), "the 260 weekdays after January 1, less four closing days: December 26 is a Saturday");
+        let day = |d: i64| calendar_text(d).unwrap();
+        let start = calendar_day(&txt("2026-03-20")).unwrap();
+        for s in start..start + 60 {
+            for n in (-12..=12).filter(|n| *n != 0) {
+                let e = leaf("business_day_add", &[("weekend", "sat_sun")], &[txt(&day(s)), t(n as f64), target2()]).unwrap();
+                let Value::Text(e) = e else { panic!() };
+                assert_eq!(between(&day(s), &e), Some(t(n as f64)), "{} and {n} business days", day(s));
+            }
+        }
+        let calendar = Calendar::new(Some(&target2()), "sat_sun").unwrap();
+        for (a, b) in [(-3, 400), (start, start + 1), (start + 5, start - 17), (start, start + 1000), (20_000, 20_831)] {
+            let stepped = if b >= a { ((a + 1)..=b).filter(|d| calendar.open(*d)).count() as f64 } else { -((b..a).filter(|d| calendar.open(*d)).count() as f64) };
+            assert_eq!(between(&day(a), &day(b)), Some(t(stepped)), "{} to {}", day(a), day(b));
+        }
+        assert_eq!(leaf("business_days_between", &[("weekend", "sat_sun")], &[txt("-271821-04-20"), txt("+275760-09-13")]).map(|v| matches!(v, Value::Number(_))), Some(true), "the whole range, at once");
     }
 }

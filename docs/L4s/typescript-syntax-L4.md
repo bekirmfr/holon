@@ -533,6 +533,36 @@ route.post("/orders", (req) => {
   every place a failure is produced (modules, `fail`, a leaf that gives none), and it closes the gap
   above: `catch` then catches failures only, and absence goes on as `undefined` does. Until then,
   `catch (e)` is refused with "write `catch { … }`; the reason is in the run's log".
+- *As built* (2026-11-08, slice 5): `fail` is a core leaf (catalog 152), given nothing by its
+  `compute` and its message handed to the observer by the evaluator, as a module's failure is, so
+  the run's timeline keeps it beside the node. The test is `same_value(x, x) ?? false`, which a
+  `NaN` passes; no `present` leaf was needed. What the try block's values are, as built:
+  - **Each binding it makes** (a join's aside, as what it chooses among is tested), **each key and
+    value it writes, each expression statement that isn't a send, and each part of an answer it
+    returns** (a body that a `?? status(…)` answers aside), each tested where it is reached: under
+    the branches and earlier returns inside the block, through a `guard`, so a call in a branch
+    not taken isn't made to test it.
+  - **Its writes and sends are tied to `ok`** (their `after`), moved after `ok`'s binding; its state
+    writes are chosen with the catch's as after an `if`; its returns' conditions take `ok`. A call
+    it binds isn't tied, as its answer is part of `ok`: it is made when what it reads arrives.
+  - **A throw in it** is a binding of `fail(m)`, tested like the rest, that ends the block's list
+    as a `return` does. A return in it makes the `try` return only where `ok` holds; a throw
+    doesn't make it return.
+  - **The catch block** is read from the names as they were before the `try`, under `!ok`.
+  - **Uncaught,** a throw is an exit whose answer is `fail(m)`, bound once, so a function answering
+    an object of several outputs gives nothing for each; in a clock or a file handler, a `fail`
+    statement, its message guarded by the conditions it runs under.
+  - **Refused, each for a later slice:** `catch (e)`; a `return` or a `throw` in `finally`; a
+    `switch` that returns inside a try block. A try block nothing in which can fail is refused,
+    as its catch never runs.
+  - Two things the slice met, fixed after it (2026-11-08): `!x` on a text was absent (`not` takes
+    a Boolean), so `if (!s) throw …` didn't throw for `""`, and `if (s)` took neither branch's
+    writes; and a `status(…)` alone, other than a 204, left `respond`'s body unwired, alone or
+    chosen by an `if`. Now a condition (`if`, `?:`, `!`, and `&&` and `||` inside one) reads a
+    value that isn't a Boolean as JavaScript does, through `is_truthy`, which is JavaScript's
+    `Boolean(x)` (an empty list or record true, `NaN` false); a Boolean is read as it is. A status
+    alone answers it with an empty body, as one among answers with bodies already did, and a 204
+    sends none. An absent value is still absent: `!x` has none, and the `if` takes its else.
 
 ## 9. Calling out: requests and other flows
 
@@ -951,7 +981,62 @@ Each refusal says what to write instead.
   `{ run?, answer?, waiting?, error?, message? }`, as the start has answered by the time the call
   returns,
   `event(…)` a `Promise` of what is delivered. `holon lsp` (`docs/L4s/language-server-L4.md`) adds
-  Holon's checks over it.
+  Holon's checks over it. *Designed 2026-11-07*, the first half of slice 11, taken ahead of
+  slices 5 to 10: until it lands, TypeScript's checker answers every import of every sample with
+  "Cannot find module 'holon'", so the switch's point, a file every tool already reads (fork 1),
+  doesn't hold yet.
+  - **One file, written by the compiler's crate.** `holon_author::types()` writes it: the
+    vocabulary and the import sources by hand (`crates/holon-author/src/lang/holon.d.ts`), then
+    the leaves from the live catalog, each with its signature and description as the manual's page
+    of leaves gives them, in a comment the editor shows on hover and completion. A leaf is
+    `(...args: any[]) => any`: it takes its inputs in order or by name in a last record
+    (`ts.rs` `args`), which one signature can't say without refusing a form the compiler takes.
+    The templates and the leaves named by a reserved word (`const`, `default`, `await`) aren't in
+    it, as neither is imported by name; nor are the old names `json` and `parse_json`.
+  - **The vocabulary is typed; values are `any`.** What a flow writes is typed: `flow`'s options,
+    a route's methods and its path (`/…`), every handler's parameter and options (`resumes`,
+    `matching`, `log`'s three words), durations (`"10s"`), what each import source gives and its
+    methods (a host's, a collection's, a folder's, a database's, a channel's, `stripe.verify`),
+    `respond` and `status`. A misspelled method or option, a path without its `/`, a duration
+    without its unit and an import source Holon doesn't have are errors as they are typed. What
+    flows through is `any`: in Holon absence goes through plain `.` (fork 5), and a collection's
+    import carries no type for its items, so §7's `Board | undefined` waits for typed imports.
+  - **What is outside, as above:** a request is `Promise<Response>`, `{ status, headers, body }`;
+    an action of another flow, imported from `"flow:SLUG"`, is `any`, as a wildcard module can't
+    name its exports; the flow's own action, called, is the start's answer,
+    `{ run?, waiting?, answer?, error?, message? }`; `await event(…)` is `Promise<any>`.
+  - **No DOM, no Node.** The `tsconfig.json` beside it says `lib: ["esnext"]` and `types: []`, so
+    `fetch`, `console`, `setTimeout`, `window` and `process` are unknown names to TypeScript, as
+    to Holon. It is `strict` but for `noImplicitAny`, as a function's parameters needn't have
+    types. What the ES library has and Holon refuses (`Promise`, `Date.now()`,
+    `Math.random()`) is left to `holon check` and `holon lsp`.
+  - **How a person gets it.** `holon new` writes `holon.d.ts` and `tsconfig.json` beside the new
+    flow: a `tsconfig.json` already there is kept, and a `holon.d.ts` Holon wrote is written
+    again, so it follows the catalog of the `holon` that wrote it. `holon types [DIR]` does the
+    same for a folder of flows, after an upgrade or for flows written before. The VS Code
+    extension doing it unasked is the rest of slice 11.
+  - **Kept true by tests.** The samples' folder has both, equal to what `types()` writes
+    (`HOLON_BLESS=1` writes them again). The editor's tests run TypeScript's checker over every
+    sample and every flow of the manual, with that `tsconfig.json`: a flow Holon compiles and the
+    checker refuses fails them, and so does a mistake it should catch (a misspelled method, an
+    unknown import source, a duration without its unit) that it lets through. Where the checkers
+    disagree, Holon's compiler decides and `holon.d.ts` is fixed (§7).
+  - *As built* (2026-11-07): `types.rs` and `src/holon.d.ts`, `holon types`, and `holon new`
+    writing both. Three things the checker taught it:
+    - **`strictNullChecks` is off** too: with it, `[]` is `never[]` and every optional field
+      "possibly undefined", neither of which Holon's absence needs.
+    - **`Object.values`, `entries` and `groupBy` give `any`** on a flow's values, through
+      overloads in `holon.d.ts`: from an `any` record TypeScript infers `unknown` items.
+    - **One difference it can't be told:** TypeScript 5.6 calls the right operand of `??`
+      unreachable when the left is a record, a list, a sum or another expression it reads as
+      never nullish (TS2869), and no setting turns that off. In Holon `{ total } ?? status(400)`
+      and `a / b ?? status(400)` are reached: a record with a field that has no value has none,
+      and so does a division by zero. The tests let TS2869 through and nothing else; the
+      reference says so. The VS Code extension can drop it from a `.holon.ts` file's
+      diagnostics, with a TypeScript server plugin, in the rest of slice 11.
+    Two samples' `js()` bodies were written as TypeScript reads them (chess: a parameter with a
+    default, a turn typed `Record<string, any>`; guestbook: its form's fields typed), and
+    dexpaprika's functions await their requests, as functions may since async functions landed.
 - **The VS Code extension** uses TypeScript's grammar for `.holon.ts`; its `.holon` grammar
   (`editors/vscode/syntaxes/holon.tmLanguage.json`) goes.
 - **Both editors** compile and highlight the new form through the same bridge.
@@ -979,6 +1064,10 @@ Holon is in development, so the new form replaces today's at once:
 
 ## 15. Slices
 
+Slices 1 to 5 are built. Slices 6 to 11 have a fixed place, decided 2026-11-08: after the
+[host capabilities](host-capabilities-L4.md)' Tier 1 (steps 1.1 to 1.9) and before its Tier 2
+(§7 there), in this order.
+
 1. **Parse and lower the core.** A TypeScript parser; imports; `flow(…)`; routes, `every`,
    `on.file.*`, exported actions, handler options (`resumes`, `matching`, `log`); `const`, `return`, `status`, `respond`; the absence operators and
    §6's differences; graph functions, in-place arrows, `js()` with its output names; the library
@@ -1000,7 +1089,8 @@ Holon is in development, so the new form replaces today's at once:
    lone `out` as its type (§7). *The formatter is built* (`lang/format.rs`, 2026-11-05): Prettier's
    layout at 100 columns without semicolons, its comments and blank lines kept, a comment inside an
    expression keeping its statement as written, and one rule of Holon's own, a handler's options
-   kept after its function's closing brace (`}, { log: "lazy" })`). It answers only once the text
+   kept after its function's closing brace (`}, { log: "lazy" })`, gone with Oxfmt's formatter
+   on 2026-11-07, §13). It answers only once the text
    it wrote compiles to the same flow, its comments all there; the twins are kept as it writes
    them. *The converter is built* (`lang/to_ts.rs`, 2026-11-06): a `.holon` tree written in
    TypeScript's syntax, its comments carried over by line, laid out by `fmt`. 54 of the 55 samples
@@ -1046,7 +1136,8 @@ Holon is in development, so the new form replaces today's at once:
    page's box that ran such a flow; `file_arrival` stays, read inside `on.file.*` handlers. The
    server's tests that deployed a bare canvas deploy TypeScript flows instead, run through an
    action, a route or a clock.
-5. **`try`, `catch {}`, `throw`, `finally`,** and the `fail` leaf.
+5. **`try`, `catch {}`, `throw`, `finally`,** and the `fail` leaf. *Built* (2026-11-08): §8's
+   as built; the intake sample, run live.
 6. **Computing loops.** `while` to `fold`, the loop's turns, nested folds past 10000, `fold`
    stopping when done, a step budget in core.
 7. **Calls and requests that wait.** §9's seven pieces, `timeout`, `await` required on requests and
@@ -1067,7 +1158,10 @@ Holon is in development, so the new form replaces today's at once:
    and `sleep`.
 10. **Failures with a reason.** A failed slot state, `catch (e)`, `catch` catching failures only.
 11. **Editors and tools.** `holon.d.ts`, the LSP over it, both editors, the VS Code extension. Tours
-    and components are built in this form from their first slice.
+    and components are built in this form from their first slice. *`holon.d.ts` is built*
+    (2026-11-07, ahead of slices 5 to 10, §13): `holon new` and `holon types` write it and a
+    `tsconfig.json` beside a flow, and TypeScript's checker passes on every sample and every flow
+    of the manual but for the one difference §13 names.
 
 ## 16. Forks, surfaced
 

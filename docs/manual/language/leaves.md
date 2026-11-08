@@ -13,7 +13,7 @@ last record (see [Calls](reference.md#calls)). Many are written another way (`a 
 
 These touch nothing outside: given the same inputs, they always give the same output.
 
-[`const`](#const) · [`add`](#add) · [`multiply`](#multiply) · [`subtract`](#subtract) · [`divide`](#divide) · [`compare`](#compare) · [`and`](#and) · [`or`](#or) · [`not`](#not) · [`select`](#select) · [`cons`](#cons) · [`head`](#head) · [`tail`](#tail) · [`is_empty`](#is_empty) · [`fold`](#fold) · [`map`](#map) · [`math`](#math) · [`max`](#max) · [`min`](#min) · [`aggregate`](#aggregate) · [`atan2`](#atan2) · [`power`](#power) · [`remainder`](#remainder) · [`bitwise`](#bitwise) · [`number_test`](#number_test) · [`to_number`](#to_number) · [`number_format`](#number_format) · [`concat`](#concat) · [`uppercase`](#uppercase) · [`lowercase`](#lowercase) · [`text_length`](#text_length) · [`slice`](#slice) · [`index_of`](#index_of) · [`split`](#split) · [`text_at`](#text_at) · [`code_at`](#code_at) · [`from_codes`](#from_codes) · [`text_contains`](#text_contains) · [`trim`](#trim) · [`pad`](#pad) · [`repeat`](#repeat) · [`replace`](#replace) · [`normalize`](#normalize) · [`uri_encode`](#uri_encode) · [`uri_decode`](#uri_decode) · [`is_well_formed`](#is_well_formed) · [`list`](#list) · [`get`](#get) · [`append`](#append) · [`extend`](#extend) · [`length`](#length) · [`sum`](#sum) · [`join`](#join) · [`at`](#at) · [`indices`](#indices) · [`entries`](#entries) · [`any`](#any) · [`all`](#all) · [`filter`](#filter) · [`find`](#find) · [`find_index`](#find_index) · [`find_last`](#find_last) · [`find_last_index`](#find_last_index) · [`sort_by`](#sort_by) · [`includes`](#includes) · [`last_index_of`](#last_index_of) · [`reverse`](#reverse) · [`to_spliced`](#to_spliced) · [`with_item`](#with_item) · [`fill`](#fill) · [`copy_within`](#copy_within) · [`sort`](#sort) · [`flat`](#flat) · [`is_list`](#is_list) · [`unique`](#unique) · [`range`](#range) · [`pair`](#pair) · [`some`](#some) · [`none`](#none) · [`record`](#record) · [`field`](#field) · [`with_field`](#with_field) · [`without_field`](#without_field) · [`keys`](#keys) · [`lookup`](#lookup) · [`insert`](#insert) · [`remove`](#remove) · [`values`](#values) · [`from_entries`](#from_entries) · [`merge`](#merge) · [`has`](#has) · [`group_by`](#group_by) · [`same_value`](#same_value) · [`type_of`](#type_of) · [`json_parse`](#json_parse) · [`json_stringify`](#json_stringify) · [`date_part`](#date_part) · [`date_utc`](#date_utc) · [`date_set`](#date_set) · [`date_text`](#date_text) · [`date_parse`](#date_parse) · [`sha256`](#sha256) · [`hmac_sha256`](#hmac_sha256) · [`hex`](#hex) · [`base64`](#base64) · [`secure_equals`](#secure_equals) · [`to_text`](#to_text) · [`as_text`](#as_text) · [`is_truthy`](#is_truthy) · [`guard`](#guard) · [`default`](#default) · [`coalesce`](#coalesce) · [`equals`](#equals)
+[`const`](#const) · [`add`](#add) · [`multiply`](#multiply) · [`subtract`](#subtract) · [`divide`](#divide) · [`compare`](#compare) · [`and`](#and) · [`or`](#or) · [`not`](#not) · [`select`](#select) · [`cons`](#cons) · [`head`](#head) · [`tail`](#tail) · [`is_empty`](#is_empty) · [`fold`](#fold) · [`map`](#map) · [`math`](#math) · [`max`](#max) · [`min`](#min) · [`aggregate`](#aggregate) · [`atan2`](#atan2) · [`power`](#power) · [`remainder`](#remainder) · [`bitwise`](#bitwise) · [`number_test`](#number_test) · [`to_number`](#to_number) · [`number_format`](#number_format) · [`concat`](#concat) · [`uppercase`](#uppercase) · [`lowercase`](#lowercase) · [`text_length`](#text_length) · [`slice`](#slice) · [`index_of`](#index_of) · [`split`](#split) · [`text_at`](#text_at) · [`code_at`](#code_at) · [`from_codes`](#from_codes) · [`text_contains`](#text_contains) · [`trim`](#trim) · [`pad`](#pad) · [`repeat`](#repeat) · [`replace`](#replace) · [`normalize`](#normalize) · [`uri_encode`](#uri_encode) · [`uri_decode`](#uri_decode) · [`is_well_formed`](#is_well_formed) · [`list`](#list) · [`get`](#get) · [`append`](#append) · [`extend`](#extend) · [`length`](#length) · [`sum`](#sum) · [`join`](#join) · [`at`](#at) · [`indices`](#indices) · [`entries`](#entries) · [`any`](#any) · [`all`](#all) · [`filter`](#filter) · [`find`](#find) · [`find_index`](#find_index) · [`find_last`](#find_last) · [`find_last_index`](#find_last_index) · [`sort_by`](#sort_by) · [`includes`](#includes) · [`last_index_of`](#last_index_of) · [`reverse`](#reverse) · [`to_spliced`](#to_spliced) · [`with_item`](#with_item) · [`fill`](#fill) · [`copy_within`](#copy_within) · [`sort`](#sort) · [`flat`](#flat) · [`is_list`](#is_list) · [`unique`](#unique) · [`range`](#range) · [`pair`](#pair) · [`some`](#some) · [`none`](#none) · [`record`](#record) · [`field`](#field) · [`with_field`](#with_field) · [`without_field`](#without_field) · [`keys`](#keys) · [`lookup`](#lookup) · [`insert`](#insert) · [`remove`](#remove) · [`values`](#values) · [`from_entries`](#from_entries) · [`merge`](#merge) · [`has`](#has) · [`group_by`](#group_by) · [`same_value`](#same_value) · [`type_of`](#type_of) · [`json_parse`](#json_parse) · [`json_stringify`](#json_stringify) · [`date_part`](#date_part) · [`date_utc`](#date_utc) · [`date_set`](#date_set) · [`date_text`](#date_text) · [`date_parse`](#date_parse) · [`date_add`](#date_add) · [`business_day_add`](#business_day_add) · [`business_days_between`](#business_days_between) · [`is_business_day`](#is_business_day) · [`sha256`](#sha256) · [`hmac_sha256`](#hmac_sha256) · [`hex`](#hex) · [`base64`](#base64) · [`secure_equals`](#secure_equals) · [`text_to_bytes`](#text_to_bytes) · [`bytes_to_text`](#bytes_to_text) · [`bytes_length`](#bytes_length) · [`bytes_concat`](#bytes_concat) · [`bytes_to_list`](#bytes_to_list) · [`list_to_bytes`](#list_to_bytes) · [`decimal_add`](#decimal_add) · [`decimal_sub`](#decimal_sub) · [`decimal_mul`](#decimal_mul) · [`decimal_div`](#decimal_div) · [`decimal_round`](#decimal_round) · [`decimal_sum`](#decimal_sum) · [`decimal_compare`](#decimal_compare) · [`csv_parse`](#csv_parse) · [`csv_format`](#csv_format) · [`xml_parse`](#xml_parse) · [`xml_format`](#xml_format) · [`xml_find`](#xml_find) · [`xml_text`](#xml_text) · [`xml_attribute`](#xml_attribute) · [`to_text`](#to_text) · [`as_text`](#as_text) · [`is_truthy`](#is_truthy) · [`guard`](#guard) · [`default`](#default) · [`coalesce`](#coalesce) · [`equals`](#equals) · [`fail`](#fail)
 
 ### `const`
 
@@ -786,10 +786,10 @@ Writes a value out as JSON text, as JavaScript's JSON.stringify: indent lays it 
 ### `date_part`
 
 ```
-date_part(time: Any) -> out: Number  {part: time}
+date_part(time: Any, offset: Any) -> out: Number  {part: time}
 ```
 
-A date's time value, or one of its parts in UTC, chosen by part: time (new Date(x): a number of milliseconds since 1970, or a text as date_parse reads it), year, month (0 to 11), date, day (0 is Sunday), hours, minutes, seconds, milliseconds (getUTCFullYear() and the rest). Nothing for a date out of range.
+A date's time value, or one of its parts in UTC, chosen by part: time (new Date(x): a number of milliseconds since 1970, or a text as date_parse reads it), year, month (0 to 11), date, day (0 is Sunday), hours, minutes, seconds, milliseconds (getUTCFullYear() and the rest). Given an offset (+01:00, or minutes east of UTC), the part there: its hours, its date. Nothing for a date out of range.
 
 ### `date_utc`
 
@@ -810,10 +810,10 @@ A date with parts replaced, from part on, the rest its own: new Date(t).setUTCHo
 ### `date_text`
 
 ```
-date_text(time: Any) -> out: Text  {format: iso}
+date_text(time: Any, offset: Any) -> out: Text  {format: iso}
 ```
 
-A date as text, by format: iso (new Date(t).toISOString(): 2000-02-29T12:00:00.000Z) or utc (toUTCString(): Tue, 29 Feb 2000 12:00:00 GMT). The date is a time value or a text, as for new Date(t).
+A date as text, by format: iso (new Date(t).toISOString(): 2000-02-29T12:00:00.000Z), date (2000-02-29) or utc (toUTCString(): Tue, 29 Feb 2000 12:00:00 GMT). Given an offset (+01:00, or minutes east of UTC), iso and date are the time there, iso written with it: 2000-02-29T13:00:00.000+01:00. The date is a time value or a text, as for new Date(t).
 
 ### `date_parse`
 
@@ -823,21 +823,53 @@ date_parse(text: Text) -> out: Number
 
 The time value a date's text gives: Date.parse(t), in JavaScript's date format (2000-02-29, 2000-02-29T12:00:00Z, …). A time without Z or an offset produces nothing: Holon has no local time.
 
+### `date_add`
+
+```
+date_add(time: Any, amount: Number, offset: Any) -> out: Number  {unit: days}
+```
+
+A date amount days, months or years later (earlier when negative), by unit, as a time value. A month keeps the day of the month, or is the month's last day when it has fewer: January 31 and a month is February 28. Given an offset, its calendar's months.
+
+### `business_day_add`
+
+```
+business_day_add(date: Any, days: Number, holidays: List<Any>) -> out: Text  {weekend: sat_sun}
+```
+
+The date days business days after date (before it when negative), as YYYY-MM-DD; with 0, date itself when it is a business day, else the next. A business day is in neither the weekend (sat_sun by default, fri_sat or none) nor holidays, a list of dates such as 2026-12-25.
+
+### `business_days_between`
+
+```
+business_days_between(from: Any, to: Any, holidays: List<Any>) -> out: Number  {weekend: sat_sun}
+```
+
+How many business days come after from up to to, to included; negative when to is before from. Dates are YYYY-MM-DD texts or time values; holidays, a list of dates, and the weekend as for business_day_add.
+
+### `is_business_day`
+
+```
+is_business_day(date: Any, holidays: List<Any>) -> out: Boolean  {weekend: sat_sun}
+```
+
+Whether a date (YYYY-MM-DD, or a time value's date in UTC) is in neither the weekend (sat_sun by default, fri_sat or none) nor holidays, a list of dates.
+
 ### `sha256`
 
 ```
-sha256(text: Text) -> out: Text  {encoding: hex}
+sha256(text: Any) -> out: Text  {encoding: hex}
 ```
 
-The SHA-256 digest of a text, as hex or base64.
+The SHA-256 digest of a text (its UTF-8) or of bytes, as hex or base64.
 
 ### `hmac_sha256`
 
 ```
-hmac_sha256(key: Text, message: Text) -> out: Text  {encoding: hex}
+hmac_sha256(key: Any, message: Any) -> out: Text  {encoding: hex}
 ```
 
-The HMAC-SHA256 signature of message under key, as hex or base64: how webhooks are signed.
+The HMAC-SHA256 signature of message under key, each a text or bytes, as hex or base64: how webhooks are signed.
 
 ### `hex`
 
@@ -858,10 +890,170 @@ Encodes text as base64, or decodes it back; standard or URL-safe alphabet. Its b
 ### `secure_equals`
 
 ```
-secure_equals(a: Text, b: Text) -> out: Boolean
+secure_equals(a: Any, b: Any) -> out: Boolean
 ```
 
-Whether two texts are equal, compared in constant time: for checking signatures and tokens without leaking where they differ.
+Whether two texts, or two byte strings, are equal, compared in constant time: for checking signatures and tokens without leaking where they differ.
+
+### `text_to_bytes`
+
+```
+text_to_bytes(text: Text) -> out: Bytes  {encoding: utf8}
+```
+
+A text's bytes: its UTF-8, or what its hex, base64 or base64url says (nothing if it isn't that). new TextEncoder().encode(s), Uint8Array.fromHex(s), Uint8Array.fromBase64(s).
+
+### `bytes_to_text`
+
+```
+bytes_to_text(bytes: Bytes) -> out: Text  {encoding: utf8}
+```
+
+Bytes as a text: read as UTF-8 (nothing if they aren't), or written as hex, padded base64 or unpadded base64url. new TextDecoder().decode(b), b.toHex(), b.toBase64().
+
+### `bytes_length`
+
+```
+bytes_length(bytes: Bytes) -> out: Number
+```
+
+How many bytes: b.length.
+
+### `bytes_concat`
+
+```
+bytes_concat(a: Bytes, b: Bytes) -> out: Bytes
+```
+
+Bytes joined, in order.
+
+### `bytes_to_list`
+
+```
+bytes_to_list(bytes: Bytes) -> out: List<Number>
+```
+
+Bytes as a list of numbers from 0 to 255: Array.from(b).
+
+### `list_to_bytes`
+
+```
+list_to_bytes(list: List<Any>) -> out: Bytes
+```
+
+A list of whole numbers from 0 to 255 as bytes: new Uint8Array(xs). Nothing if an item isn't one, where JavaScript wraps it.
+
+### `decimal_add`
+
+```
+decimal_add(a: Any, b: Any) -> out: Text
+```
+
+The exact sum of decimals written as text (1234.56), or of numbers as their shortest text: 0.1 and 0.2 give 0.3. Its scale is the largest of theirs: 1.10 and 2 give 3.10. Nothing for a text that isn't a decimal.
+
+### `decimal_sub`
+
+```
+decimal_sub(a: Any, b: Any) -> out: Text
+```
+
+a − b, exactly, its scale the larger of theirs.
+
+### `decimal_mul`
+
+```
+decimal_mul(a: Any, b: Any) -> out: Text
+```
+
+The exact product of decimals, its scale the sum of theirs: 19.99 times 3 is 59.97.
+
+### `decimal_div`
+
+```
+decimal_div(a: Any, b: Any, scale: Number) -> out: Text  {rounding: half_even}
+```
+
+a ÷ b to scale places, rounded by rounding (half_even by default). Nothing when b is zero.
+
+### `decimal_round`
+
+```
+decimal_round(a: Any, scale: Number) -> out: Text  {rounding: half_even}
+```
+
+A decimal to scale places, padded with zeros (5 to 2 places is 5.00), rounded by rounding: half_even (a bank's, the default), half_up, half_down, up (away from zero), down (toward zero), ceiling or floor.
+
+### `decimal_sum`
+
+```
+decimal_sum(list: List<Any>) -> out: Text
+```
+
+The exact sum of a list's decimals: a control sum. 0 for an empty list.
+
+### `decimal_compare`
+
+```
+decimal_compare(a: Any, b: Any) -> out: Number
+```
+
+−1, 0 or 1 as a is less than, equal to or more than b, by value: 1.10 and 1.1 are equal.
+
+### `csv_parse`
+
+```
+csv_parse(text: Text) -> out: List<Any>  {header: first_row, separator: ,}
+```
+
+Reads CSV (RFC 4180): with header first_row (the default), a list of records keyed by the first row's names; with none, a list of lists. Every field is a text. Nothing for a malformed file: a quote that never closes, a row with more or fewer fields than the header, a column named twice.
+
+### `csv_format`
+
+```
+csv_format(rows: List<Any>, columns: List<Text>) -> out: Text  {header: first_row, separator: ,}
+```
+
+Writes CSV: given columns, each row a record written in that order (a missing field empty), the names first unless header is none; without, each row a list. A field holding the separator, a quote or a line break is quoted, and each line ends with CRLF.
+
+### `xml_parse`
+
+```
+xml_parse(text: Text) -> out: List<Any>
+```
+
+Reads XML 1.0 into its root element, a list as JsonML writes one: the name, then a record of its attributes when it has any, then its children in order, each an element or a text. Names are kept as written, a prefix too; comments, instructions and the white space between elements are dropped. Nothing for text that isn't well-formed, or that has a DOCTYPE: no entity is ever defined or fetched.
+
+### `xml_format`
+
+```
+xml_format(element: List<Any>) -> out: Text  {declaration: utf8, layout: compact}
+```
+
+Writes an element, a list as xml_parse gives one, as XML: the declaration first unless declaration is none, on one line or indented two spaces a level (layout). Texts and attributes are escaped, a number or a Boolean written as JavaScript writes it. Nothing for a name that isn't an XML name, a character XML can't hold, or an item that is neither an element, a text, a number nor a Boolean.
+
+### `xml_find`
+
+```
+xml_find(element: List<Any>, path: Text) -> out: List<Any>
+```
+
+The elements along a path of names separated by /, the first among the element's children, in document order; * is any name. An empty list when none matches.
+
+### `xml_text`
+
+```
+xml_text(element: List<Any>, path: Text) -> out: Text
+```
+
+An element's text, every text in it at any depth joined, as the DOM's textContent; given a path, the first match's. Nothing when none matches.
+
+### `xml_attribute`
+
+```
+xml_attribute(element: List<Any>, name: Text) -> out: Text
+```
+
+An element's attribute, by name; nothing when it has none so named.
 
 ### `to_text`
 
@@ -885,7 +1077,7 @@ Any value as it reads in a message: a text is itself, a number or true/false as 
 is_truthy(value: Any) -> out: Boolean
 ```
 
-Whether a value counts as true: not 0, false, empty text, an empty list or record, or none.
+Whether a value counts as true, as JavaScript's Boolean(x) says: false for false, 0, NaN, empty text and none; true for anything else, an empty list or record included. How if (x) and !x read a value that isn't true or false.
 
 ### `guard`
 
@@ -919,11 +1111,19 @@ equals(a: Any, b: Any) -> out: Boolean
 
 Whether two values are the same.
 
+### `fail`
+
+```
+fail(message: Text) -> out: Any
+```
+
+Nothing, with message given to the run's log as the reason: JavaScript's throw new Error(message). What reads it has no value, unless a ?? or a catch gives one.
+
 ## The outside world
 
 Each of these is something a flow may do, and so a line of what it asks for when it is deployed. The language writes most of them as names it imports (`now`, a secret, `state.x`, a host's `get`, a collection or a folder) or a handler receives (`req`). The writes and the calls out take a `trigger` last: what starts them, the request of the route they are in, the trigger of the holon they are in, or the value an `if (x !== undefined)` around them waits for. The language ties it, so it is never an argument.
 
-[`http_request`](#http_request) · [`http_upload`](#http_upload) · [`http_stream`](#http_stream) · [`flow_call`](#flow_call) · [`flow_start`](#flow_start) · [`clock`](#clock) · [`random`](#random) · [`secret`](#secret) · [`file_arrival`](#file_arrival) · [`await`](#await) · [`resume_token`](#resume_token) · [`store_read`](#store_read) · [`store_write`](#store_write) · [`collection_get`](#collection_get) · [`collection_list`](#collection_list) · [`collection_put`](#collection_put) · [`collection_delete`](#collection_delete) · [`file_read`](#file_read) · [`file_list`](#file_list) · [`file_write`](#file_write) · [`file_delete`](#file_delete) · [`file_handle`](#file_handle) · [`file_lines`](#file_lines) · [`file_slice`](#file_slice) · [`file_copy`](#file_copy) · [`file_create`](#file_create) · [`file_create_copy`](#file_create_copy) · [`db_query`](#db_query) · [`db_one`](#db_one) · [`db_exec`](#db_exec) · [`db_find`](#db_find) · [`db_find_one`](#db_find_one) · [`db_insert`](#db_insert) · [`db_update`](#db_update) · [`db_delete`](#db_delete) · [`channel_send`](#channel_send) · [`channel_subscribe`](#channel_subscribe) · [`egress`](#egress)
+[`http_request`](#http_request) · [`http_upload`](#http_upload) · [`http_stream`](#http_stream) · [`flow_call`](#flow_call) · [`flow_start`](#flow_start) · [`clock`](#clock) · [`random`](#random) · [`secret`](#secret) · [`file_arrival`](#file_arrival) · [`await`](#await) · [`resume_token`](#resume_token) · [`store_read`](#store_read) · [`store_write`](#store_write) · [`collection_get`](#collection_get) · [`collection_list`](#collection_list) · [`collection_put`](#collection_put) · [`collection_delete`](#collection_delete) · [`file_read`](#file_read) · [`file_list`](#file_list) · [`file_write`](#file_write) · [`file_delete`](#file_delete) · [`file_handle`](#file_handle) · [`file_lines`](#file_lines) · [`file_slice`](#file_slice) · [`file_copy`](#file_copy) · [`file_read_bytes`](#file_read_bytes) · [`file_create`](#file_create) · [`file_create_copy`](#file_create_copy) · [`db_query`](#db_query) · [`db_one`](#db_one) · [`db_exec`](#db_exec) · [`db_find`](#db_find) · [`db_find_one`](#db_find_one) · [`db_insert`](#db_insert) · [`db_update`](#db_update) · [`db_delete`](#db_delete) · [`channel_send`](#channel_send) · [`channel_subscribe`](#channel_subscribe) · [`egress`](#egress)
 
 ### `http_request`
 
@@ -1124,6 +1324,14 @@ file_copy(name: Text, from: Record, trigger: Any) -> out: Effect  {folder: files
 ```
 
 Copies the file a handle names into this folder as name when the run finishes, host to host: its bytes never pass through the flow. Fails if the file changed since the run read it.
+
+### `file_read_bytes`
+
+```
+file_read_bytes(name: Text) -> out: Bytes  {folder: files}
+```
+
+The bytes of the file name in a folder, any file, as the run found it; nothing when there is none. folder.bytes(name). Reading it is a permission.
 
 ### `file_create`
 

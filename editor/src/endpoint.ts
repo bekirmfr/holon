@@ -189,6 +189,7 @@ export function toJson(v: WValue): string | null {
       if (v.value.arm === 1 && v.value.payload.type === "List" && v.value.payload.value.length === 0) return "null";
       return null;
     case "Effect":
+    case "Bytes":
       return null;
   }
 }

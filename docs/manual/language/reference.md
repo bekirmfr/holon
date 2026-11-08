@@ -42,6 +42,17 @@ Every editor, GitHub and Prettier read it as TypeScript. It doesn't run as a Nod
 `"holon"` import is Holon's, and the meanings that differ from JavaScript's are listed under
 [How a flow runs](#how-a-flow-runs).
 
+**Types for the editor.** `holon new` writes `holon.d.ts` and a `tsconfig.json` beside the flow
+(`holon types` writes them into a folder), and TypeScript's own checker, the one in every editor,
+then reads the flow: it completes `route.post` and a host's `get`, shows a leaf's signature on
+hover, and marks a misspelled method or option, a path without its `/`, a duration without its
+unit, an import source Holon hasn't, and a request read before it is awaited. A value is `any` to
+it, as Holon's absence goes through `.`. Where the two disagree, Holon's compiler decides. One
+place they always do: TypeScript calls the right side of `{ total } ?? status(400)` or
+`a / b ?? status(400)` unreachable ("the left operand is never nullish"), as in JavaScript a record
+or a quotient is never `undefined`. In Holon a record with a field that has no value has none, and
+so does a division by zero, so that `??` is reached; no setting tells TypeScript so.
+
 `holon fmt` lays a file out as Prettier does, at 100 columns and without semicolons, keeping its
 comments and blank lines, `js()` bodies included. It writes a text only once that text compiles to
 the same flow.
@@ -119,6 +130,8 @@ and a record or list is written as JSON.
 | `if (c) …; else …` | Chooses: writes in a branch happen only when it is taken, and writes to one key in both branches are one write. |
 | `if (x !== undefined) { … }` | Its writes and calls tied to `x` (see [What a handler holds](#what-a-handler-holds)). |
 | `switch (s) { case …: … }` | Chooses by value (see below). |
+| `try { … } catch { … } finally { … }` | Runs the catch block where something in the try block failed, and the `finally` block either way (see below). |
+| `throw new Error(message)` | A failure: nothing, its message in the run's log (see below). |
 | `return …` | What a route or an action answers (see [Routes](#routes)). |
 | `expr` | An effect, such as `notes.put(k, v)` or an `await api.post(…)` whose answer isn't used: a call is made for what it does, read or not. |
 
@@ -156,16 +169,64 @@ The first case equal to the subject is chosen, and only its body runs. If the ch
 value, the `switch` has none: it never falls through to another case. With no case equal and no
 `default`, or with the subject absent, the `switch` has no value.
 
+**`try`, `catch` and `throw`.** A failure is a value that didn't arrive (see
+[How a flow runs](#how-a-flow-runs)), and `throw new Error(message)` makes one: nothing, with the
+message in the run's log. The try block succeeds when every value it makes arrives; its writes are
+made only then, all together, and otherwise the catch block runs instead. `finally` runs either
+way:
+
+```ts
+import { flow, route, status } from "holon"
+import notes from "collection:notes"
+import state from "state"
+
+flow("try-example", { port: 8208 })
+
+function checked(note) {
+  if (note.text === "") throw new Error("a note has some text")
+  return note
+}
+
+route.post("/notes", (req) => {
+  try {
+    const note = checked(JSON.parse(req.body))
+    notes[note.id] = note.text
+  } catch {
+    return status(400, { error: "not a note: the run's log says why" })
+  } finally {
+    state.tried = (state.tried ?? 0) + 1
+  }
+  return status(201, "kept")
+})
+```
+
+A body that isn't JSON, a note with empty text and a note without an `id` each answer 400, and no
+note is kept; every request counts. A throw nothing catches ends the handler with nothing: a route
+answers 404, or what its `?? status(…)` says, and a function gives nothing to its caller. Where
+this differs from JavaScript:
+
+- **`catch` catches absence too.** A field the try block reads that isn't there is a failure,
+  where JavaScript carries on with `undefined`. Give it a fallback inside the block
+  (`req.json.kind ?? "plain"`) when its absence isn't one.
+- **The try block's writes are all or none.** JavaScript keeps the writes made before the throw.
+- **A request the try block makes is made when what it reads arrives,** even after a failure that
+  it doesn't read. If it fails, the catch block runs.
+- **The catch block sees names as they were before the try,** not as the try block left them.
+- **`catch (e)` is refused:** a failure's reason is the run log's, not a value; write
+  `catch { … }`. A `return` or a `throw` in `finally` is refused too.
+
 ## Expressions
 
-From lowest to highest precedence; binary operators group left to right.
+From lowest to highest precedence; binary operators group left to right. A condition (`if (c)`,
+`c ? a : b`, `!c`) holds as it would in JavaScript: `false`, `0`, `NaN` and `""` don't, anything
+else does, an empty list or record included. A `c` with no value doesn't hold, and `!c` has none.
 
 | Form | Meaning |
 |---|---|
-| `c ? a : b` | `a` when `c` is `true`, otherwise `b` (`c` with no value too); if the side chosen has no value, neither has the whole |
-| `c ? a : undefined` | `a` when `c` is `true`; otherwise no value |
+| `c ? a : b` | `a` when `c` holds, otherwise `b` (`c` with no value too); if the side chosen has no value, neither has the whole |
+| `c ? a : undefined` | `a` when `c` holds; otherwise no value |
 | `a ?? b` | `a`, or `b` when `a` has no value |
-| `a \|\| b`, `a && b`, `!a` | logic, on booleans; a text or number after `\|\|` is refused, with "use `??`" |
+| `a \|\| b`, `a && b`, `!a` | logic: `!a` is `true` where `a` doesn't hold; `&&` and `\|\|` take booleans, but in a condition read their operands as a condition does; a text or number after `\|\|` is refused, with "use `??`" |
 | `a \| b`, `a ^ b`, `a & b` | bitwise or, xor and and, on 32-bit integers |
 | `a === b`, `a !== b` | structural equality of any two values, never converted: `1` is not `"1"`. `==` and `!=` mean the same, and `fmt` writes `===` |
 | `a < b`, `<=`, `>`, `>=` | comparison, of two numbers or of two texts (in UTF-16 code units, as JavaScript compares them) |
@@ -175,7 +236,7 @@ From lowest to highest precedence; binary operators group left to right.
 | `-a`, `+a`, `~a` | `a * -1`; `a` as a number, `Number(a)`; the bits of `a` flipped |
 | `f(…)` | a call (see [Calls](#calls)) |
 | `a.name`, `a?.name` | an output named `name`, else the field `name` of a record; `?.` means the same |
-| `a[e]` | the field whose name is `e`'s value; on a collection or folder, an item or a file |
+| `a[e]` | with a number, a list's item (nothing past its end, or for a negative one); on a record, the field whose name is `e`'s value; on a collection or folder, an item or a file. A text's character is `s.at(i)` or `s.charAt(i)` |
 | `(e)` | grouping |
 
 **Choices only run what they need.** In `?:`, `??`, `if` and `switch`, the branch that isn't
@@ -245,7 +306,7 @@ A text leaf given anything but a text gives no value too.
 
 | Form | Meaning |
 |---|---|
-| `s.length` | the length (`text_length`), when `s` is known to be a text, as a text method's result is; on a list known to be one, its length (`length`). On a value of no known type, such as a request's field, refused: call `text_length(s)` or `length(xs)` |
+| `s.length` | the length (`text_length`), when `s` is known to be a text, as a text method's result is; on a list known to be one, its length (`length`). A function's parameter written with its type (`s: string`, `xs: string[]`) is known to be one. On a value of no known type, such as a request's field, refused: call `text_length(s)` or `length(xs)` |
 | `s.at(i)`, `s.charAt(i)`, `s.charCodeAt(i)`, `s.codePointAt(i)` | the character at `i` (`at`, from the end when negative; `text_at`, `""` outside the text), its code unit, its code point (`code_at`); the index left out is 0 |
 | `s.slice(a, b)`, `s.substring(a, b)` | a part (`slice`), as JavaScript's: `slice` counts a negative position from the end, `substring` swaps its two |
 | `s.indexOf(t, i)`, `s.lastIndexOf(t, i)`, `s.includes(t, i)` | where `t` is, or whether it is, from `i` when given; the same leaves as a list's |
@@ -328,11 +389,58 @@ flow has no time zone, so only the UTC methods are there.
 | `Date.UTC(2000, 1, 29)`, `Date.parse("2000-02-29T12:00:00Z")` | the time value of a date's parts; of a date's text, in JavaScript's format, with `Z` or an offset after a time |
 | `const d = new Date(t)`, then `d.getUTCDay()`, `d.setUTCDate(1)` | a Date held by a name, read by its methods; a setter alone, or `const ms = d.setUTCDate(1)`, changes `d` |
 
+**At an offset, and business days.** A flow has no time zones, but it has fixed offsets, `"+01:00"`
+or a number of minutes east of UTC, and calendars given as data. These are called by name,
+imported from `"holon"`, since JavaScript has none of them:
+
+| Call | Gives |
+|---|---|
+| `date_part(t, "+01:00", { part: "hours" })` | a part at that offset: its hours, its date (`part: "date"`), its weekday (`"day"`) |
+| `date_text(t, "+01:00")`, `date_text(t, offset, { format: "date" })` | `2026-11-06T16:30:00.000+01:00`; the date alone there, `2026-11-06`. `date_text(t, { format: "date" })` is the date in UTC |
+| `date_add(t, 1, { unit: "months" })` | the time value a month later (`days`, the default, `months`, `years`), at an offset when given one after the amount: January 31 and a month is February 28 |
+| `business_day_add(d, n, holidays)` | the date, `YYYY-MM-DD`, `n` business days after `d` (before it when `n` is negative); with 0, `d` itself when it is a business day, else the next |
+| `business_days_between(from, to, holidays)` | the business days after `from` up to `to`, `to` included; negative when `to` is earlier |
+| `is_business_day(d, holidays)` | whether `d` is one |
+
+A business day is in neither the weekend, `{ weekend: "sat_sun" }` (the default), `"fri_sat"` or
+`"none"`, nor `holidays`, an optional list of dates such as `"2026-12-25"`: a bank's closing days
+are the flow's data, not built in. A calendar date is a `YYYY-MM-DD` text or a time value, read as
+its date in UTC; a text with a time of day is refused, since its date depends on an offset: write
+`date_text(t, offset, { format: "date" })` first. An offset doesn't follow summer time: Frankfurt
+is `+01:00` in winter and `+02:00` in summer, so which applies is the flow's to say. The due-dates
+sample schedules payouts against a cut-off and TARGET2's closing days.
+
 A date out of range (±8.64e15 ms) or a text that isn't one gives no value. A Date is read only by
 its methods: `new Date(t)` alone, or `d` returned or put in a record, is refused, naming
 `d.getTime()` and `d.toISOString()`. Local time is refused, naming the UTC method (`getHours`
 names `getUTCHours`, `new Date(y, m)` names `new Date(Date.UTC(y, m))`), and `new Date()` and
 `Date.now()` name the clock: `now * 1000`, `now` imported from `"holon:clock"`.
+
+### XML
+
+An XML element is a list, as JsonML writes one: its name, then a record of its attributes when it
+has any, then its children in order, each an element or a text. A list keeps the order a schema
+fixes (a pain.001's `MsgId` before its `CreDtTm`), where a record's keys would be in order of their
+names, and one child or several is the same shape:
+
+```
+const amount = ["InstdAmt", { Ccy: "EUR" }, "100.00"] // <InstdAmt Ccy="EUR">100.00</InstdAmt>
+const header = ["GrpHdr", ["MsgId", id], ...lines] // its children in order
+```
+
+| Call | Gives |
+|---|---|
+| `xml_parse(t)` | the root element; nothing for text that isn't well-formed XML, or that has a DOCTYPE |
+| `xml_format(e)`, `xml_format(e, { layout: "indented" })`, `{ declaration: "none" }` | the text, the XML declaration first; indented two spaces a level; without the declaration |
+| `xml_find(e, "Rpt/Pmt/Tx")` | the elements along a path of names (`*` any), from `e`'s children, in document order |
+| `xml_text(e)`, `xml_text(e, "Tx/Sts")` | the element's text, every text in it joined; the first match's, or nothing |
+| `xml_attribute(e, "Ccy")` | an attribute's value, or nothing |
+
+Names are kept as written, a prefix too, and a namespace is the `xmlns` attribute that declares it.
+Reading drops comments, instructions and the white space between elements, and reads the five
+named entities, character references and CDATA; no entity is ever defined or fetched, so a DOCTYPE
+is refused. Writing escapes what it must and writes a number as `String(n)` does. Elements nest at
+most 64 deep. The payment-batch sample writes a pain.001 and reads a pain.002.
 
 ## The outside world
 
@@ -352,6 +460,7 @@ Each of these is one building block, and each is one thing the flow may do.
 | `delete coll[k]`, `coll.delete(k)` | delete it when the run finishes |
 | `coll.list({ prefix: p, after: a, limit: n })` | a page of items, in key order |
 | `dir[name]`, `dir.get(name)` | a file's text, in a folder, as the run began (up to 1 MiB) |
+| `dir.bytes(name)` | a file's bytes, any file, as the run began (up to 1 MiB): a `Uint8Array`, its `.length` and `.slice(start, end)` read as JavaScript's |
 | `dir[name] = text`, `dir.put(name, text)` | write the whole file when the run finishes |
 | `delete dir[name]`, `dir.delete(name)` | delete the file when the run finishes |
 | `dir.list({ prefix: p, after: a, limit: n })` | a page of files: `{size, hash, modified}` by name |
@@ -434,6 +543,7 @@ only effects are calls answers 204 too.
 | `return body ?? status(404)` | 404 when `body` has no value (an absent answer is 404 anyway) |
 | `return status(201, body) ?? status(502)` | 201 with `body`, or 502 when it has no value |
 | `return respond(body, { headers: { "content-type": "text/html; charset=utf-8" } })` | with those headers (a record of texts); how the reply is framed (`content-length`, `transfer-encoding`, `connection`, …) is the host's, and those are dropped. `status` goes there too, `respond(body, { status: 201, headers })` |
+| `return status(400)` | the status alone, with an empty body |
 | `return status(204)` | the status alone, no body |
 
 A redirect: `return respond("", { status: 303, headers: { location: "/" } })`. A streamed reply,
@@ -728,9 +838,10 @@ misled, the compiler refuses instead.
 
 ## Types
 
-Values have one of nine types: `Number`, `Boolean`, `Text`, `Record`, `List<T>`, `Product<…>`,
-`Sum<…>`, `Effect` and `Any`. You write types only on function parameters, as TypeScript writes
-them (`number`, `boolean`, `string`, an object type, `string[]`, `T | undefined`), and only if you
+Values have one of ten types: `Number`, `Boolean`, `Text`, `Record`, `Bytes`, `List<T>`,
+`Product<…>`, `Sum<…>`, `Effect` and `Any`. You write types only on function parameters, as
+TypeScript writes them (`number`, `boolean`, `string`, an object type, `string[]`, `Uint8Array`,
+`T | undefined`), and only if you
 want them checked. Wiring a `Text` into a `Number` input is a mistake at the argument. `any` fits
 everything.
 
@@ -770,7 +881,9 @@ broken.holon.ts:5:23: unknown name "nope"
 | an action answers with a value alone | the `status(…)` or `respond(…)` |
 | a route answers and is done, so it doesn't wait | the `await` |
 | a method no leaf does; a global the flow has none of | the method or the name |
-| a loop, `try` or `throw` | the statement |
+| a loop | the statement |
+| `catch (e)`; a throw that isn't `new Error(message)`; a `return` in `finally` | the name, the throw, the `finally` |
+| nothing in a try block can fail, so its catch never runs | the `try` |
 | a period, a file handler or an action name written twice | the second handler |
 | `map` gives its function `n` inputs; this one takes `m` | the function |
 | a list changed in place (`xs.sort()` alone, `xs.pop()`, a list read after it was sorted) | the call, or the read |

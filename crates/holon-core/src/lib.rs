@@ -26,6 +26,7 @@ mod determinism;
 mod advisory;
 mod catalog;
 mod dates;
+mod decimals;
 mod declare;
 mod docs;
 mod encapsulate;
@@ -35,6 +36,7 @@ mod eval;
 #[doc(hidden)]
 pub mod eager;
 mod crypto;
+mod csv;
 mod fork;
 mod kind;
 mod lists;
@@ -55,6 +57,7 @@ mod triggers;
 mod validate;
 mod value;
 mod value_hash;
+mod xml;
 
 pub mod primitives;
 /// What a database leaf's SQL reads and writes (docs/L4s/databases-L4.md §4).
@@ -95,6 +98,7 @@ pub use triggers::{file_triggers, glob_matches, is_glob, FileTrigger};
 pub use validate::{compatible, validate, ValidationError};
 pub use value::Value;
 pub use json::{parse as parse_json, stringify as stringify_json};
+pub use crypto::{bytes_text, text_bytes};
 pub use declare::{
     clock_label, declaration_of, log_level, match_route, parse_path, period_text, read_clock, read_action, read_endpoint,
     read_file_handler, read_server, Action, Clock, DeclError, EndpointError, FileHandler, LogLevel, Route, Segment, Server, MAX_PERIOD, METHODS,

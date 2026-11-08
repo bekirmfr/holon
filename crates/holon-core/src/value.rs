@@ -39,6 +39,9 @@ pub enum Value {
     /// so fields are always in key order: equality, the memo encoding and `to_text` never
     /// depend on the order fields were added in.
     Record(BTreeMap<String, Value>),
+    /// Bytes (host-capabilities L4 §5.10.1): a file's, a digest's, what a text encodes to. Equal
+    /// when their bytes are; JSON has no form for them, so `json_stringify` refuses them.
+    Bytes(Vec<u8>),
 }
 
 impl Value {
@@ -61,6 +64,7 @@ impl Value {
             Value::Effect { .. } => Type::Effect,
             Value::Sum { .. } => Type::Sum(vec![Type::Any, Type::Any]),
             Value::Record(_) => Type::Record,
+            Value::Bytes(_) => Type::Bytes,
         }
     }
 }

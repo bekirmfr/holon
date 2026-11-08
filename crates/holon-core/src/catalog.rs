@@ -53,11 +53,25 @@ pub const GENESIS: &[&str] = &[
     "json_parse", "json_stringify",
     // pure — dates (5): JavaScript's Date in UTC, a date its time value in milliseconds (dates.rs)
     "date_part", "date_utc", "date_set", "date_text", "date_parse",
-    // pure — signatures and encodings (5): checking a webhook's signature
+    // pure — calendars (4): months and days added at a fixed offset, and business days over closing
+    // days given as data (dates.rs, host-capabilities L4 §5.1.3)
+    "date_add", "business_day_add", "business_days_between", "is_business_day",
+    // pure — signatures and encodings (5): checking a webhook's signature, over a text or bytes
     "sha256", "hmac_sha256", "hex", "base64", "secure_equals",
-    // pure — universal, any-typed (7): as_text is to_text's message form, the identity on text;
-    // coalesce is the first input that arrived, `default` with its fallback on a wire
-    "to_text", "as_text", "is_truthy", "guard", "default", "coalesce", "equals",
+    // pure — bytes (6): a text's encodings, a length, a join, and the numbers 0 to 255 they are;
+    // `slice` takes bytes too (host-capabilities L4 §5.10.1)
+    "text_to_bytes", "bytes_to_text", "bytes_length", "bytes_concat", "bytes_to_list", "list_to_bytes",
+    // pure — decimals (7): exact, over amounts written as text (decimals.rs, host-capabilities L4
+    // §5.1.1)
+    "decimal_add", "decimal_sub", "decimal_mul", "decimal_div", "decimal_round", "decimal_sum", "decimal_compare",
+    // pure — CSV (2): RFC 4180, both ways (csv.rs)
+    "csv_parse", "csv_format",
+    // pure — XML (5): an element as JsonML's list, both ways, and read by path (xml.rs)
+    "xml_parse", "xml_format", "xml_find", "xml_text", "xml_attribute",
+    // pure — universal, any-typed (8): as_text is to_text's message form, the identity on text;
+    // coalesce is the first input that arrived, `default` with its fallback on a wire; fail is
+    // nothing, its message the run log's reason (the language's `throw`)
+    "to_text", "as_text", "is_truthy", "guard", "default", "coalesce", "equals", "fail",
     // request/response — performed by the host, answered in the next round (2): a request, and
     // one whose body is a file a handle names
     "http_request", "http_upload", "http_stream",
@@ -76,6 +90,8 @@ pub const GENESIS: &[&str] = &[
     // lines and a slice of it, and a copy by handle (4)
     "file_read", "file_list", "file_write", "file_delete",
     "file_handle", "file_lines", "file_slice", "file_copy",
+    // and a file read as bytes, any file (1)
+    "file_read_bytes",
     // and a write and a copy that never replace a file (2)
     "file_create", "file_create_copy",
     // databases the host binds: rows a statement reads, one row, and a write when the run
@@ -117,7 +133,8 @@ pub const GENESIS: &[&str] = &[
 /// hand-listing names in TypeScript that could silently drift from what `compute` actually does.
 pub const VARIADIC: &[&str] = &[
     "add", "multiply", "max", "min", "and", "or", "concat", "list", "map", "fold", "any", "all", "filter", "find", "find_index", "find_last",
-    "find_last_index", "sort_by", "merge", "group_by", "json_parse", "json_stringify", "date_utc", "date_set", "from_codes",
+    "find_last_index", "sort_by", "merge", "group_by", "json_parse", "json_stringify", "date_utc", "date_set", "from_codes", "bytes_concat",
+    "decimal_add", "decimal_mul",
 ];
 
 /// The variadic leaves whose extra inputs are any type, passed to their function, rather than
@@ -168,6 +185,20 @@ pub const FAMILIES: &[(&str, &str, &[&str])] = &[
     ("date_part", "part", crate::dates::PARTS),
     ("date_set", "part", crate::dates::SET_PARTS),
     ("date_text", "format", crate::dates::FORMATS),
+    ("date_add", "unit", crate::dates::UNITS),
+    ("business_day_add", "weekend", crate::dates::WEEKENDS),
+    ("business_days_between", "weekend", crate::dates::WEEKENDS),
+    ("is_business_day", "weekend", crate::dates::WEEKENDS),
+    ("text_to_bytes", "encoding", &["utf8", "hex", "base64", "base64url"]),
+    ("bytes_to_text", "encoding", &["utf8", "hex", "base64", "base64url"]),
+    ("decimal_div", "rounding", crate::decimals::ROUNDINGS),
+    ("decimal_round", "rounding", crate::decimals::ROUNDINGS),
+    ("csv_parse", "header", crate::csv::HEADERS),
+    ("csv_parse", "separator", crate::csv::SEPARATORS),
+    ("csv_format", "header", crate::csv::HEADERS),
+    ("csv_format", "separator", crate::csv::SEPARATORS),
+    ("xml_format", "declaration", crate::xml::DECLARATIONS),
+    ("xml_format", "layout", crate::xml::LAYOUTS),
 ];
 
 /// The values leaf `name`'s family parameter `param` may take, if it is one.
@@ -365,16 +396,26 @@ pub fn interface_of(name: &str) -> Option<Unit> {
         // ── pure — dates ── a date is its time value, milliseconds since 1970 in UTC; a leaf takes
         // a text for it too, as `new Date(t)` does. `date_utc` takes 1 to 7 numbers with + (the
         // year, then month, date, hours, minutes, seconds, milliseconds), `date_set` the date and
-        // 1 to 4 numbers, from its `part` on.
-        "date_part" => prim(vec![port("time", Any)], vec![Param::frozen("part", "time")], Number),
+        // 1 to 4 numbers, from its `part` on. An `offset` (`"+01:00"`, or minutes east of UTC) is
+        // optional (core's `has_optional_ports`): a date's parts read at it.
+        "date_part" => prim(vec![port("time", Any), port("offset", Any)], vec![Param::frozen("part", "time")], Number),
         "date_utc" => prim(vec![port("year", Number)], vec![], Number),
         "date_set" => prim(vec![port("time", Any), port("value", Number)], vec![Param::frozen("part", "year")], Number),
-        "date_text" => prim(vec![port("time", Any)], vec![Param::frozen("format", "iso")], Text),
+        "date_text" => prim(vec![port("time", Any), port("offset", Any)], vec![Param::frozen("format", "iso")], Text),
         "date_parse" => prim(vec![port("text", Text)], vec![], Number),
 
+        // ── pure — calendars (dates.rs, host-capabilities L4 §5.1.3) ── a calendar date is a
+        // `YYYY-MM-DD` text or a time value's date in UTC; `holidays`, a list of them, is optional,
+        // as `offset` is.
+        "date_add" => prim(vec![port("time", Any), port("amount", Number), port("offset", Any)], vec![Param::frozen("unit", "days")], Number),
+        "business_day_add" => prim(vec![port("date", Any), port("days", Number), port("holidays", Type::list_any())], vec![Param::frozen("weekend", "sat_sun")], Text),
+        "business_days_between" => prim(vec![port("from", Any), port("to", Any), port("holidays", Type::list_any())], vec![Param::frozen("weekend", "sat_sun")], Number),
+        "is_business_day" => prim(vec![port("date", Any), port("holidays", Type::list_any())], vec![Param::frozen("weekend", "sat_sun")], Boolean),
+
         // ── pure — signatures and encodings (crypto.rs) ── digests as lowercase `hex` or `base64`.
-        "sha256" => prim(vec![port("text", Text)], vec![Param::frozen("encoding", "hex")], Text),
-        "hmac_sha256" => prim(vec![port("key", Text), port("message", Text)], vec![Param::frozen("encoding", "hex")], Text),
+        // A text's UTF-8 or bytes, hashed: their ports are `Any` for either.
+        "sha256" => prim(vec![port("text", Any)], vec![Param::frozen("encoding", "hex")], Text),
+        "hmac_sha256" => prim(vec![port("key", Any), port("message", Any)], vec![Param::frozen("encoding", "hex")], Text),
         "hex" => prim(vec![port("text", Text)], vec![Param::frozen("mode", "encode")], Text),
         // `bytes: "latin1"` is `btoa`/`atob`'s: each character one byte, the standard alphabet.
         "base64" => prim(
@@ -382,7 +423,44 @@ pub fn interface_of(name: &str) -> Option<Unit> {
             vec![Param::frozen("mode", "encode"), Param::frozen("alphabet", "standard"), Param::frozen("bytes", "utf8")],
             Text,
         ),
-        "secure_equals" => prim(vec![port("a", Text), port("b", Text)], vec![], Boolean),
+        "secure_equals" => prim(vec![port("a", Any), port("b", Any)], vec![], Boolean),
+
+        // ── pure — bytes (host-capabilities L4 §5.10.1) ──
+        "text_to_bytes" => prim(vec![port("text", Text)], vec![Param::frozen("encoding", "utf8")], Bytes),
+        "bytes_to_text" => prim(vec![port("bytes", Bytes)], vec![Param::frozen("encoding", "utf8")], Text),
+        "bytes_length" => prim(vec![port("bytes", Bytes)], vec![], Number),
+        "bytes_concat" => prim(vec![port("a", Bytes), port("b", Bytes)], vec![], Bytes),
+        "bytes_to_list" => prim(vec![port("bytes", Bytes)], vec![], Type::List(Box::new(Number))),
+        "list_to_bytes" => prim(vec![port("list", Type::list_any())], vec![], Bytes),
+
+        // ── pure — decimals (decimals.rs, host-capabilities L4 §5.1.1) ── a decimal is a text, or
+        // a number as its shortest text; every result is a text, a comparison's aside.
+        "decimal_add" | "decimal_sub" | "decimal_mul" => prim(vec![port("a", Any), port("b", Any)], vec![], Text),
+        "decimal_div" => prim(vec![port("a", Any), port("b", Any), port("scale", Number)], vec![Param::frozen("rounding", "half_even")], Text),
+        "decimal_round" => prim(vec![port("a", Any), port("scale", Number)], vec![Param::frozen("rounding", "half_even")], Text),
+        "decimal_sum" => prim(vec![port("list", Type::list_any())], vec![], Text),
+        "decimal_compare" => prim(vec![port("a", Any), port("b", Any)], vec![], Number),
+
+        // ── pure — CSV (csv.rs) ── records keyed by the first row, or lists; `columns` gives the
+        // order records are written in.
+        "csv_parse" => prim(vec![port("text", Text)], vec![Param::frozen("header", "first_row"), Param::frozen("separator", ",")], Type::list_any()),
+        "csv_format" => prim(
+            vec![port("rows", Type::list_any()), port("columns", Type::List(Box::new(Text)))],
+            vec![Param::frozen("header", "first_row"), Param::frozen("separator", ",")],
+            Text,
+        ),
+
+        // ── pure — XML (xml.rs) ── an element is a list: its name, its attributes' record when it
+        // has any, its children; read by a path of names.
+        "xml_parse" => prim(vec![port("text", Text)], vec![], Type::list_any()),
+        "xml_format" => prim(
+            vec![port("element", Type::list_any())],
+            vec![Param::frozen("declaration", "utf8"), Param::frozen("layout", "compact")],
+            Text,
+        ),
+        "xml_find" => prim(vec![port("element", Type::list_any()), port("path", Text)], vec![], Type::list_any()),
+        "xml_text" => prim(vec![port("element", Type::list_any()), port("path", Text)], vec![], Text),
+        "xml_attribute" => prim(vec![port("element", Type::list_any()), port("name", Text)], vec![], Text),
 
         // ── pure — sum (Option) ──
         // Option<T> = Sum([T, Unit]) — arm 0 is "some", arm 1 ("none") is Unit (Product([])),
@@ -399,6 +477,8 @@ pub fn interface_of(name: &str) -> Option<Unit> {
         "guard" => prim(vec![port("cond", Boolean), port("value", Any)], vec![], Any),
         // `a` when it arrived, else `b`: the fallback on a wire where `default`'s is frozen.
         "coalesce" => prim(vec![port("a", Any), port("b", Any)], vec![], Any),
+        // Nothing, ever: what reads it has no value. Its message goes to the run's log.
+        "fail" => prim(vec![port("message", Text)], vec![], Any),
         "default" => prim(
             vec![port("value", Any)],
             vec![Param::frozen("value", "0"), Param::frozen("type", "Number")],
@@ -452,6 +532,7 @@ pub fn interface_of(name: &str) -> Option<Unit> {
         // folder. A file is read as text by its name (a path inside the folder); a listing is a
         // record of up to `limit` files in name order, as a collection's.
         "file_read" => prim(vec![port("name", Text)], vec![Param::frozen("folder", "files")], Text),
+        "file_read_bytes" => prim(vec![port("name", Text)], vec![Param::frozen("folder", "files")], Bytes),
         "file_list" => prim(
             vec![port("prefix", Text), port("after", Text)],
             vec![Param::frozen("folder", "files"), Param::frozen("limit", "100")],
@@ -668,8 +749,13 @@ mod tests {
         // from_entries, merge, has, group_by, same_value, type_of); and the date leaves (date_part,
         // date_utc, date_set, date_text, date_parse); and the text leaves (text_at, code_at,
         // from_codes, text_contains, trim, pad, repeat, replace, normalize, uri_encode, uri_decode,
-        // is_well_formed).
-        assert_eq!(GENESIS.len(), 151);
+        // is_well_formed); and fail (the language's throw); and the bytes leaves (text_to_bytes,
+        // bytes_to_text, bytes_length, bytes_concat, bytes_to_list, list_to_bytes, file_read_bytes);
+        // and the decimal leaves (decimal_add, decimal_sub, decimal_mul, decimal_div,
+        // decimal_round, decimal_sum, decimal_compare) and CSV's (csv_parse, csv_format); and the
+        // calendar leaves (date_add, business_day_add, business_days_between, is_business_day);
+        // and XML's (xml_parse, xml_format, xml_find, xml_text, xml_attribute).
+        assert_eq!(GENESIS.len(), 177);
     }
 
     #[test]

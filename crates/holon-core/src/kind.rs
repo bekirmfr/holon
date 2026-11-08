@@ -296,9 +296,14 @@ pub fn capabilities_of(name: &str, params: &[Param]) -> Option<Capabilities> {
         | "lookup" | "insert" | "remove"
         | "values" | "from_entries" | "merge" | "has" | "group_by" | "same_value" | "type_of"
         | "date_part" | "date_utc" | "date_set" | "date_text" | "date_parse"
+        | "date_add" | "business_day_add" | "business_days_between" | "is_business_day"
         | "json_parse" | "json_stringify"
         | "sha256" | "hmac_sha256" | "hex" | "base64" | "secure_equals"
-        | "to_text" | "as_text" | "is_truthy" | "guard" | "default" | "coalesce" | "equals"
+        | "text_to_bytes" | "bytes_to_text" | "bytes_length" | "bytes_concat" | "bytes_to_list" | "list_to_bytes"
+        | "decimal_add" | "decimal_sub" | "decimal_mul" | "decimal_div" | "decimal_round" | "decimal_sum" | "decimal_compare"
+        | "csv_parse" | "csv_format"
+        | "xml_parse" | "xml_format" | "xml_find" | "xml_text" | "xml_attribute"
+        | "to_text" | "as_text" | "is_truthy" | "guard" | "default" | "coalesce" | "equals" | "fail"
         | "fold" | "map" => vec![],
 
         // Effectful exemplars (classification only; execution is host-side). A state
@@ -316,7 +321,7 @@ pub fn capabilities_of(name: &str, params: &[Param]) -> Option<Capabilities> {
         // A named folder: files read as the run found them, written and deleted when it finishes.
         // The folder is a frozen param, so the capability names it exactly; the host binds the
         // name to a real folder.
-        "file_read" | "file_list" | "file_handle" | "file_lines" | "file_slice" => vec![FileRead(ident(params, "folder")?)],
+        "file_read" | "file_read_bytes" | "file_list" | "file_handle" | "file_lines" | "file_slice" => vec![FileRead(ident(params, "folder")?)],
         "file_write" | "file_copy" | "file_delete" | "file_create" | "file_create_copy" => vec![FileWrite(ident(params, "folder")?)],
         // A new file in a named folder starts a run: the host watches the folder, and the file's
         // handle is the leaf's value. The folder is a frozen param, so the trigger names it.
@@ -763,6 +768,7 @@ mod tests {
         let named = |n: &str| [Param::frozen("folder", n)];
         for (leaf, cap, kind) in [
             ("file_read", Capability::FileRead("inbox".into()), Kind::Driver),
+            ("file_read_bytes", Capability::FileRead("inbox".into()), Kind::Driver),
             ("file_list", Capability::FileRead("inbox".into()), Kind::Driver),
             ("file_handle", Capability::FileRead("inbox".into()), Kind::Driver),
             ("file_lines", Capability::FileRead("inbox".into()), Kind::Driver),
@@ -839,7 +845,11 @@ mod tests {
             "any", "all", "filter", "find", "find_index", "find_last", "find_last_index", "sort_by",
             "values", "from_entries", "merge", "has", "group_by", "same_value", "type_of",
             "date_part", "date_utc", "date_set", "date_text", "date_parse",
-            "join", "cons", "head", "tail", "is_empty", "pair", "some", "none", "to_text", "as_text", "is_truthy", "guard", "default", "coalesce", "equals", "fold", "map",
+            "date_add", "business_day_add", "business_days_between", "is_business_day",
+            "decimal_add", "decimal_sub", "decimal_mul", "decimal_div", "decimal_round", "decimal_sum", "decimal_compare",
+            "csv_parse", "csv_format",
+            "xml_parse", "xml_format", "xml_find", "xml_text", "xml_attribute",
+            "join", "cons", "head", "tail", "is_empty", "pair", "some", "none", "to_text", "as_text", "is_truthy", "guard", "default", "coalesce", "equals", "fail", "fold", "map",
         ];
         for name in PURE {
             assert_eq!(kind_of(name, &[]), Some(Kind::Pure), "{name} should be Pure");

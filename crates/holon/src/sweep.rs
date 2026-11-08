@@ -176,7 +176,7 @@ fn named_in_value(value: &Value, out: &mut BTreeSet<Hash>) {
             named_in_value(payload, out);
         }
         Value::Sum { payload, .. } => named_in_value(payload, out),
-        Value::Number(_) | Value::Boolean(_) => {}
+        Value::Number(_) | Value::Boolean(_) | Value::Bytes(_) => {}
     }
 }
 

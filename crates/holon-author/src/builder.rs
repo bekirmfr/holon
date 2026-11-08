@@ -256,6 +256,12 @@ impl FlowBuilder {
         Ok(())
     }
 
+    /// What is wired to `to`'s `input` (in the flow being built, or the holon begun): the node and
+    /// its output.
+    pub fn source(&self, to: &str, input: &str) -> Option<(&str, &str)> {
+        self.frames.last()?.wires.iter().find(|w| w.target == to && w.input() == input).map(|w| (w.source.as_str(), w.output()))
+    }
+
     /// Whether something is wired to `to`'s `input` (in the flow being built, or the holon begun).
     pub fn is_wired(&self, to: &str, input: &str) -> bool {
         self.frames.last().is_some_and(|f| f.wires.iter().any(|w| w.target == to && w.input() == input))

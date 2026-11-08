@@ -1685,11 +1685,12 @@ impl Readable {
         if left < self.limits.inline_file_bytes { (left, "max_file_read_bytes") } else { (self.limits.inline_file_bytes, "inline_file_bytes") }
     }
 
-    /// The answer to `request` (`{folder, read}`, `{folder, list}`, `{folder, handle}`, `{folder,
-    /// lines}` or `{folder, slice}`), and for a read of text, what it saw: an error fails the run (a
-    /// folder not granted or not bound, a name that leaves it, a file too big or not text). With
-    /// `keep`, a big text is put in the blob store, and a range is proved part of its file; without
-    /// (checking a run before it commits), only what it answers is read.
+    /// The answer to `request` (`{folder, read}`, and `bytes: true` for its bytes, `{folder, list}`,
+    /// `{folder, handle}`, `{folder, lines}` or `{folder, slice}`), and for a read, what it saw: an
+    /// error fails the run (a folder not granted or not bound, a name that leaves it, a file too big
+    /// or, read as text, not text). With `keep`, a big file is put in the blob store, and a range is
+    /// proved part of its file; without (checking a run before it commits), only what it answers is
+    /// read.
     pub(crate) fn answer(&mut self, request: &Value, keep: bool) -> Result<(Option<Value>, Option<Seen>), String> {
         let Value::Record(r) = request else { return Ok((None, None)) };
         let Some(name) = text(r, "folder") else { return Ok((None, None)) };
@@ -1749,15 +1750,19 @@ impl Readable {
             self.read_bytes += bytes.len() as u64;
             let hash = blake3::hash(&bytes).to_hex().to_string();
             let size = bytes.len() as u64;
-            let text = String::from_utf8(bytes).map_err(|_| format!("{name}/{file} isn't text (UTF-8)"))?;
+            // Read as bytes (`file_read_bytes`), a file answers them whatever they are.
+            let as_bytes = reads_bytes(r);
+            if !as_bytes && std::str::from_utf8(&bytes).is_err() {
+                return Err(format!("{name}/{file} isn't text (UTF-8)"));
+            }
             let kept = self.folders.get(name).map_or(Keep::Bytes, |f| f.keep).keeps_bytes();
             let inline = kept && size <= LOG_INLINE_BYTES;
             let blob = if keep && kept && !inline {
-                Some(self.folders.all.blobs.put(text.as_bytes()).map_err(|e| format!("{name}/{file} can't be kept: {e}"))?)
+                Some(self.folders.all.blobs.put(&bytes).map_err(|e| format!("{name}/{file} can't be kept: {e}"))?)
             } else {
                 None
             };
-            let value = Value::Text(text);
+            let value = if as_bytes { Value::Bytes(bytes) } else { Value::Text(String::from_utf8(bytes).expect("checked")) };
             return Ok((Some(value), Some(Seen { hash, size, inline, blob, range: None })));
         }
         let Some(Value::Record(list)) = r.get("list") else { return Ok((None, None)) };
@@ -1768,6 +1773,11 @@ impl Readable {
         let files = self.folders.list(name, text(list, "prefix").unwrap_or(""), text(list, "after"), limit)?;
         Ok((Some(Value::Record(files)), None))
     }
+}
+
+/// Whether a read asks for its file's bytes (`file_read_bytes`: `bytes: true`), not its text.
+pub(crate) fn reads_bytes(request: &BTreeMap<String, Value>) -> bool {
+    request.get("bytes") == Some(&Value::Boolean(true))
 }
 
 /// A read refused for its size, saying which limit refused it.

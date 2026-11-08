@@ -91,7 +91,7 @@ unit.
 | Bindings | `const name = expr`; a `let` given a new value is a new name; destructuring is a `field` per name | §5.2 |
 | Calls | `leaf(inputs…, { named… })`: positional arguments are inputs; a last record whose keys the unit takes names inputs and params. A method of a text or list is the leaf that does it | §5.3 |
 | Literals | Numbers, texts, `true`, `false`; a template literal interpolates through `as_text`; `{…}` and `[…]` lower to `record`/`with_field` (`merge` for a spread after anything, `insert` for a computed key) and `list`; a duration is a text, `"10s"`, where one is asked | §5.5 |
-| Operators | Arithmetic and comparison on numbers, logic on booleans, `??` (fallback), `===` (structural), `.` (field or output), `[ ]` (lookup), `c ? a : undefined` (guard), `c ? a : b` (a guard on each side of `c`), `switch` (a choice by value) | §5.6, §6.4, §6.5 |
+| Operators | Arithmetic and comparison on numbers, logic on booleans, `??` (fallback), `===` (structural), `.` (field or output), `[ ]` (a list's item or a record's field), `c ? a : undefined` (guard), `c ? a : b` (a guard on each side of `c`), `switch` (a choice by value) | §5.6, §6.4, §6.5 |
 | Multi-output values | `.name` selects an output when the name is one; otherwise it is a field. A bare multi-output value is its first output | §5.7 |
 | Functions | `function name(inputs) { …; return out }` is a holon, its outputs named by what it returns; an arrow written in place for a list's methods that take one (`map`, `reduce`, `filter`, `toSorted`, …), a name it uses from around it an input of its own | §5.8, §5.9 |
 | js functions | `const name = js(function name(inputs) { JavaScript }, { fuel, memory, outputs })`: a function whose body runs as JavaScript, in an engine that is a WebAssembly module with no imports, under a budget | §5.8a |
@@ -190,7 +190,7 @@ derived from the leaves, never from the words.
 | Common-subexpression elimination | The text's structure is the graph's. Sharing is explicit (a binding), so the canvas shows what was written |
 | `null` | Absence is not a value. `undefined` is written only for "no value": as a branch, `c ? a : undefined`, and in `x !== undefined`. `none()` is the optional's empty arm (§6.3) |
 | Reading a collection or folder after writing it | A run reads its starting state and writes once, at its end, and the syntax looks like JavaScript's, where a write is seen at once. So a read after a write in the same handler is refused, per collection or folder, as it would mislead |
-| `try`, `catch`, `throw` | A failure is already an absence (§6.3). The L4's slice 5 reduces them to it; until then they are refused |
+| `catch (e)` | A failure is an absence (§6.3), which carries no reason: a throw's message goes to the run's log, and `catch { … }` is written without a name. The L4's slice 10 makes a failure carry its reason, which `catch (e)` reads |
 
 ## 3. A tour, by the samples
 
@@ -580,6 +580,46 @@ finishes, and fails if it no longer has the handle's hash. `logs.lines(name, { f
 })` reads `n` lines from line `i` (from the end when negative), and `logs.slice(name, { offset: o,
 length: n })` `n` bytes from `o`: only those enter the run, and the log keeps with them the hashes
 that prove them part of the file, so `holon verify` checks the run without it.
+
+A file that isn't text (an image, a PDF, an archive) is read as bytes: `logs.bytes(name)` is its
+bytes whole, under the same limits as its text, a `Uint8Array` to TypeScript. `b.length` and
+`b.slice(start, end)` read as JavaScript's do, and leaves take the rest by name: `sha256(b)` and
+`hmac_sha256(key, b)` hash them as they hash a text's UTF-8, `bytes_to_text(b, { encoding: "hex" })`
+writes them (`utf8`, `hex`, `base64`, `base64url`) and `text_to_bytes` reads them back,
+`bytes_concat`, `bytes_to_list` and `list_to_bytes`. Bytes are equal when their bytes are;
+`JSON.stringify` has no form for them (write them as base64 first), and a route that answers them
+sends them as they are, `application/octet-stream` unless its headers say otherwise. The
+file-checksums sample hashes each file dropped in a folder.
+
+A payment file is CSV, and its amounts are decimals. `csv_parse(text)` reads it into records keyed
+by its first row (`{ header: "none" }` for lists, `{ separator: ";" }` and the like), every field a
+text, and gives nothing for a file that is malformed; `csv_format(rows, columns)` writes records
+back in the columns' order. An amount stays a text, and the decimal leaves compute on it exactly:
+`decimal_add`, `decimal_sub`, `decimal_mul`, `decimal_sum` (a control sum),
+`decimal_div(a, b, scale)`, `decimal_round(a, scale)` (half to even unless `{ rounding: … }` says
+otherwise) and `decimal_compare`, so `0.10` and `0.20` make `0.30`. Their results are texts, so the
+compiler refuses `+` on one (it would join them) and `<` (it would compare letters):
+`decimal_add` and `decimal_compare` say what is meant. The payout-totals sample totals a CSV of
+payouts by currency.
+
+Its dates are business days, at a bank's offset. `date_part` and `date_text` take an offset after
+the date (`"+01:00"`, or minutes east of UTC), the date's parts and text there, and `date_text`
+writes the date alone with `{ format: "date" }`; `date_add(t, n, { unit: "months" })` keeps the
+day of the month or clamps it to the month's last. `business_day_add(d, n, holidays)`,
+`business_days_between(from, to, holidays)` and `is_business_day(d, holidays)` count days in
+neither the weekend (`{ weekend: "sat_sun" }`, `"fri_sat"`, `"none"`) nor `holidays`, a list of
+dates the flow holds: a calendar is data. A calendar date is a `YYYY-MM-DD` text or a time value's
+date in UTC, and a business-day leaf gives one as text. There are no time zones (host-capabilities
+L4, fork 3): an offset is fixed. The due-dates sample schedules payouts past TARGET2's closing days.
+
+And it is XML, whose schema fixes the order of every element. An element is a list, as JsonML
+writes one: its name, a record of its attributes when it has any, its children in order (`["Amt",
+["InstdAmt", { Ccy: "EUR" }, amount]]`), so a flow writes a pain.001 as a list literal, a `.map`
+spread into it, and `xml_format` writes it out (`{ layout: "indented" }`). `xml_parse` reads XML
+back into the same form, refusing a DOCTYPE, so no entity is ever defined or fetched, and
+`xml_find(e, "Rpt/Pmt/Tx")`, `xml_text(e, path)` and `xml_attribute(e, name)` read it by path, as
+Python's ElementTree does. The payment-batch sample writes a pain.001 from a CSV of payouts and
+reads the bank's pain.002 back.
 
 ### drop-box: a run per new file
 
@@ -1008,6 +1048,56 @@ answer, and a call nobody uses is a statement. billing logs each as an ordinary 
 "flow shop, run …", and the shop's log keeps the call and its answer, so `holon verify` replays the
 shop from its own record without calling billing again.
 
+### intake: try, catch, throw and finally
+
+```ts
+import { flow, length, route, status } from "holon"
+import orders from "collection:orders"
+import state from "state"
+
+flow("intake", { port: 8178 })
+
+// An order's total, or a throw saying what is wrong with it.
+function total(order) {
+  if (length(order.lines) === 0) throw new Error("an order has lines")
+  const sum = order.lines.reduce((s, line) => s + line.price, 0)
+  if (sum <= 0) throw new Error("an order's total is more than 0")
+  return sum
+}
+
+// Keeps an order only when every step of the try block succeeded; counts every attempt.
+route.post("/orders", (req) => {
+  let order
+  try {
+    const body = JSON.parse(req.body)
+    order = { id: body.id, total: total(body) }
+    orders[body.id] = order
+  } catch {
+    return status(400, { error: "not an order: the run's log says why" })
+  } finally {
+    state.tried = (state.tried ?? 0) + 1
+  }
+  return status(201, order)
+})
+
+// Checks an order without keeping it.
+route.post("/check", (req) => status(200, { total: total(req.json) }) ?? status(422))
+
+// One order, as it was kept.
+route.get("/orders/:id", (req) => orders[req.params.id])
+
+// How many orders were sent, kept or not.
+route.get("/stats", () => ({ tried: state.tried ?? 0 }))
+```
+
+`throw new Error(message)` is the `fail` leaf: nothing, with its message given to the run's log.
+`total` answers nothing for an order without lines, and the try block, whose values must all
+arrive, fails: its write to `orders` is tied to them having arrived, so nothing is kept, and the
+catch's 400 answers. A body that isn't JSON fails it the same way, and so does a line without a
+price, whose sum has no value: catch catches a value that has none, as much as a throw (§6.5a).
+`finally` is tied to neither, so every attempt counts. `/check` has no try, and a throw nothing
+catches is nothing, which its `?? status(422)` answers.
+
 ### map and reduce
 
 From the `quote` sample: each line's function uses `tax` from the route around it.
@@ -1240,6 +1330,8 @@ handler (§10, §12).
 | `if (c) …; else …` | its writes guarded by their branch's condition; writes to one key in both branches are one write, of `c ? a : b` |
 | `if (x !== undefined) { … }` | its writes and calls tied to `x` (§5.11) |
 | `switch (s) { case …: … }` | a choice by value (§6.5) |
+| `try { … } catch { … } finally { … }` | a choice on the try block's values having arrived: its writes, sends and returns are tied to that, the catch block's to its negation, and a name either assigns is the one chosen, as after an `if`; `finally`'s are tied to neither (§6.5a) |
+| `throw new Error(m)` | the `fail` leaf, nothing, `m` for the run's log: in a try block, its failure; elsewhere the handler's answer, as a `return` of nothing: a route's 404 (§6.5a) |
 | `return e` | the handler's answer (§5.11), or a function's outputs (§5.8) |
 | `expr` | an effect (§5.10) |
 
@@ -1309,7 +1401,7 @@ Every catalog leaf is callable by its own name with this rule (`concat(a, b)`, `
 |---|---|
 | `t.toLowerCase()`, `t.toUpperCase()` | `lowercase(t)`, `uppercase(t)`; `toLocaleLowerCase()` and `toLocaleUpperCase()` the same, without a locale (one given is refused, as a flow has none) |
 | `t.split(sep)`, `t.split(sep, n)`, `xs.join(sep)` | `split(t, sep)`, the limit wired when given (`""` cuts every code unit); `join(xs, sep)` |
-| `t.length`, `xs.length` | `text_length(t)` where `t` is known to be a text, `length(xs)` where `xs` is known to be a list: a node whose output is a `Text`, or a `List`. On anything else (a request's field, a function's parameter), refused, naming both, to call by name |
+| `t.length`, `xs.length` | `text_length(t)` where `t` is known to be a text, `length(xs)` where `xs` is known to be a list: a node whose output is a `Text`, or a `List`, or a function's parameter written with its type (`xs: string[]`), in the function and in one written in it. On anything else (a request's field, a parameter written without one), refused, naming both, to call by name |
 | `t.charAt(i)`, `t.charCodeAt(i)`, `t.codePointAt(i)` | `text_at(t, i)`, `code_at{mode: unit, point}(t, i)`; the index left out is 0 |
 | `t.startsWith(s, p)`, `t.endsWith(s, e)` | `text_contains{at: start, end}(t, s, p)`, the position unwired when left out |
 | `t.substring(a, b)` | `slice{mode: substring}(t, a, b)`, the end unwired when left out |
@@ -1378,7 +1470,7 @@ and `new Set()` outside a spread.
 flow's own function named `parseInt` is the one `parseInt(s)` calls, as in JavaScript, and
 `Math.max` is the leaf whatever the flow defines. `Math.random()` is refused, with `import { random
 } from "holon:random"`, a run's one recorded number. `.length` is a text's `text_length` or a
-list's `length`, by the type of the node that made the value. A method no leaf does is
+list's `length`, by the value's type: the node that made it, or a parameter's as written. A method no leaf does is
 refused, with "do it in a `js()` function". `fmt` writes `entries` as `Object.entries(r)` where
 `r` is known to be a record (a node whose output is a `Record`), else as `[...xs.entries()]`.
 
@@ -1410,6 +1502,7 @@ Each form is exactly one leaf. This table is exhaustive; nothing else is sugared
 | `notes.get(k)`, `notes.put(k, e)`, `notes.delete(k)` | the same three leaves, as expressions | the operation, as a value to name |
 | `notes.list({ prefix: p, after: a, limit: n })` | `collection_list{collection: notes, limit: n}(p, a)` | a page of items, in key order |
 | `inbox[n]` (`import inbox from "folder:inbox"`) | `file_read{folder: inbox}(n)` | the file's text, as the run began |
+| `inbox.bytes(n)` | `file_read_bytes{folder: inbox}(n)` | the file's bytes, any file, as the run began |
 | `reports[n] = e` | `file_write{folder: reports}(n, e)` | write the whole file when the run finishes |
 | `delete reports[n]` | `file_delete{folder: reports}(n)` | delete it when the run finishes |
 | `inbox.get(n)`, `reports.put(n, e)`, `reports.delete(n)` | the same three leaves, as expressions | the operation, as a value to name |
@@ -1597,7 +1690,7 @@ Lowest to highest precedence, as TypeScript has them; binary operators are left-
 | `typeof a` | `default{type: Text, value: undefined}(type_of(a))` | §5.3; `fmt` writes it back as `typeof a` |
 | `k in r` | `has(r, k)` | on the level of `<`; `instanceof` is refused, naming `Array.isArray` and `typeof` |
 | `a.name`, `a?.name` | an output, or `field{name}(a)` | §5.7; `?.` means what `.` does |
-| `a[e]` | `lookup(record: a, key: e)` when `a` is not an imported collection or folder | the key arrives on a wire |
+| `a[e]` | `get(list: a, index: e)` when `e` is known to be a number and `a` a list or of no known type; `lookup(record: a, key: as_text(e))` when `a` is known to be a record; else `lookup(record: a, key: e)`, when `a` is not an imported collection or folder | the key arrives on a wire; a number on a text is refused, naming `s.at(i)` and `s.charAt(i)` |
 
 `coalesce(a, b)` is the one leaf this language needed beyond `as_text`: `a` when present, else
 `b`, the first input that arrived. It cannot be a composite, because no other leaf fires with a
@@ -1615,6 +1708,14 @@ parentheses. They are the author saying "two". `+` joins texts as JavaScript's d
 literal is the other spelling, `concat(a, b)` the explicit call. `||` or `&&` with a text,
 number, record or list literal on its right (`a || "none"`) is refused with "use `??`", as that
 is JavaScript's fallback and not logic.
+
+A condition reads a value that isn't a Boolean as JavaScript does. `if (c)`, `c ? a : b` and `!c`
+read `c` through `is_truthy`, JavaScript's `Boolean(c)`: `false`, `0`, `NaN` and `""` don't hold,
+anything else does, an empty list or record included. So `if (!s) throw …` throws for an empty
+text. `&&` and `||` inside a condition read their operands so too, as JavaScript's do there;
+elsewhere they take Booleans and give one. A condition that is a Boolean already (a comparison, a
+`!`, `&&` of them) is read as it is, with no `is_truthy`. An absent `c` is still absent: `!c` has
+no value, and an `if` on it takes its else (JavaScript's `!undefined` is `true`).
 
 ### 5.7 Multi-output values: `.name`
 
@@ -2034,6 +2135,72 @@ It is sugar: it lowers to `guard(equals(s, p), a)` for each case, chained by `??
 returns fold into one answer: the case's value, `missing: 400`. A `switch` that assigns a `let` in
 each case chooses the name's value the same way.
 
+### 6.5a `try` is a choice too
+
+A failure is an absence (§6.3), so `try` is a choice on absence: **the try block succeeds when
+every value it makes arrives**. Each binding it makes, each key and value it writes, and each
+answer it returns is tested, where it is reached (`same_value(x, x) ?? false`, true for any value,
+a `NaN` too), and `ok` is all of them. The block's writes and sends are tied to `ok` (their
+`after`), so they are made all together or not at all, and its returns answer only where `ok`
+holds. The catch block is read under `!ok`: its writes are tied to the block having failed, and a
+name or state key either block changes holds `ok ? tried : caught` after them, as after an `if`.
+`finally` holds statements tied to neither, made whichever block ran, as JavaScript's are.
+
+```ts
+route.post("/n", (req) => {
+  try {
+    const note = JSON.parse(req.body)
+    notes[note.id] = note
+  } catch {
+    return status(400, "not a note")
+  }
+  return status(201, "kept")
+})
+```
+
+is the same unit as (a test says so):
+
+```ts
+route.post("/n", (req) => {
+  const note = JSON.parse(req.body)
+  const tried_1 = note.id
+  const ok_1 = (same_value(note, note) ?? false) && (same_value(tried_1, tried_1) ?? false)
+  const tie = ok_1 ? true : undefined
+  if (tie !== undefined) {
+    notes[tried_1] = note
+  }
+  return status(!(ok_1 ?? false) ? 400 : 201, !(ok_1 ?? false) ? "not a note" : "kept")
+})
+```
+
+`throw new Error(message)` is the `fail` leaf, which gives nothing and hands its message to the
+run's log (the observer, as a `js()` function's failure is). In a try block it is a value that
+never arrives, so the block fails where the throw is reached, and the statements after it in the
+block aren't reached. Elsewhere it ends the handler as a `return` of nothing: a route answers 404,
+or what its `?? status(…)` says; a function or an action gives nothing, which a caller's `??` or
+`try` reads; a clock's or a file's run ends there. `fail(m)` may be called as a leaf too, in an
+expression.
+
+Where this differs from JavaScript, Holon's meaning holds, and each follows from a failure being an
+absence:
+
+- **catch catches absence, not only throws.** A field the try block reads that isn't there, an
+  `if` on one, a request that fails, a `JSON.parse` of what isn't JSON: each is a value that
+  didn't arrive, so the catch runs, where JavaScript would carry on with `undefined` (all but the
+  last two). Give such a value its fallback inside the block (`req.json.kind ?? "plain"`) when its
+  absence isn't a failure.
+- **The try block's writes are all or none.** JavaScript keeps the writes made before the throw;
+  Holon makes none of them, as a run's writes are made at its end (§6.6).
+- **A call the try block binds is made when what it reads arrives,** as anywhere: one written
+  after a failure is made too, unless it reads what failed. Its answer's arriving is part of
+  `ok`, so a failed request reaches the catch. A send written as a statement is tied to `ok`, as a
+  write is.
+- **The catch block sees the names as they were before the try,** not as the try block left them,
+  since what the try block made may not have arrived.
+- `catch (e)` is refused, "write `catch { … }`; the reason is in the run's log": a failure carries
+  no reason as a value yet (the L4's slice 10). A `return` or `throw` in `finally`, and a `switch`
+  that returns inside a try block, come in later slices.
+
 ### 6.6 Reads at the start, writes at the end
 
 `state.x`, `notes[k]` and `inbox[name]` are the values as the run began. The writes are Effects the
@@ -2164,7 +2331,11 @@ The error catalogue the reader and the lowering produce, each with the span it p
 | a function computes and never waits; calling another flow's action is a handler's | the `await` |
 | a method's function (`map`'s, `filter`'s…) isn't async | the function |
 | no leaf does `.m(…)`: do it in a `js()` function | the method |
-| a loop, `try` or `throw` | the statement |
+| a loop | the statement |
+| `catch (e)`: write `catch { … }`; the reason is in the run's log | the name |
+| a throw throws `new Error(message)` | the throw |
+| nothing in this try can fail, so its catch never runs | the `try` |
+| a `finally` holds writes and calls: a return or a throw in it comes later | the `finally` |
 | a case runs on into the next; a case is a literal | the case |
 | the top level holds imports, `flow(…)`, handlers, functions and `const`s of literals | the statement |
 | the top level binds only literals | the binding |
@@ -2395,12 +2566,37 @@ the syntax to TypeScript's, keeping the lowering.
      groups its two halves as `fromStripe` and `async toSlack`, run live. The printer still writes
      a function's request without `await`, which compiles to the same unit.
 
-   Next are the L4's slices 5 to 11: `try`, `catch {}`, `throw` and `finally`, over a `fail` leaf;
-   computing loops, as folds over a bounded range; requests and calls that wait (`await` with
+   - *Slice 5, `try` and `throw`* (2026-11-08): `try { … } catch { … }` a choice on the try
+     block's values having arrived, its writes and returns tied to that and the catch's to its
+     negation, `finally` tied to neither; `throw new Error(m)` the `fail` leaf, nothing, its
+     message the run log's (§6.5a). The intake sample, run live.
+   - *After slice 5* (2026-11-08): a condition on a value that isn't a Boolean reads it as
+     JavaScript does, through `is_truthy`, now JavaScript's `Boolean(x)` (§5.6); a `status(…)`
+     alone answers it with an empty body, a 204 with none (reference.md's answers).
+   - *Bytes* (2026-11-08, host-capabilities L4 §5.10): a value kind, `Uint8Array` to
+     TypeScript; `folder.bytes(name)`, `.length` and `.slice` on bytes, and seven leaves. The
+     file-checksums sample, run live.
+   - *Decimals and CSV* (2026-11-08, host-capabilities L4 §5.1.1, slice 1.2a): seven decimal
+     leaves over amounts written as text, `+` and `<` refused on their results; `csv_parse` and
+     `csv_format`. The payout-totals sample, run live.
+   - *Dates and business days* (2026-11-08, host-capabilities L4 §5.1.3, slice 1.2b): `date_part`
+     and `date_text` at a fixed offset, `date_text`'s `date` format, `date_add` by days, months or
+     years, and three business-day leaves over a weekend and holidays given as data. The
+     due-dates sample, run live.
+   - *Types in the lowering* (2026-11-08): `a[i]` with a number is a list's item (`get`), on a
+     value of no known type too, as an entry's `e[0]`; a parameter written with its type
+     (`xs: string[]`) makes `.length` known, in the function and in one written in it. The
+     printer writes a call to a function of several outputs read whole as the call, so a map's
+     function using values from around it may call one. payout-totals uses both, run live.
+   - *XML* (2026-11-08, host-capabilities L4 §5.1.5, slice 1.2c): an element as JsonML's list,
+     `xml_parse` without a DTD and `xml_format`, compact or indented, and `xml_find`, `xml_text`
+     and `xml_attribute` along paths. The payment-batch sample, run live.
+
+   Next are the L4's slices 6 to 11: computing loops, as folds over a bounded range; requests and calls that wait (`await` with
    JavaScript's order and required, `Promise.all`, a call that parks its caller, a request recorded
    before it is sent); waits a route's caller outlasts; waiting loops; failures with a reason
-   (`catch (e)`); and the type package `holon.d.ts`, with the language server and both editors
-   over it.
+   (`catch (e)`); and the language server and both editors over the type package `holon.d.ts`,
+   which `holon new` and `holon types` write beside a flow (2026-11-07, ahead of slices 5 to 10).
 
 Dependencies: 3 needs 1 and 2; 4 needs 3 (the golden test is what makes the printer checkable);
 5 and 6 need 4; 7 and 8 need 5; 9 needs 3 (its lowering is 3's) and 6 (the samples it converted).
@@ -2495,6 +2691,6 @@ The MCP server and its tools (decided in `docs/L4s/agent-surface-L4.md`), the ex
 for run logs, and the marketplace's `use`. Each depends on this language existing and none changes
 it. The sandboxed WebAssembly module is decided and built (`docs/L4s/wasm-module-L4.md`); the
 language's spelling for one is the `js()` function of §5.8a, and a form placing a module by hash
-waits for a second module. The TypeScript statements still to come (`try` and `catch`, loops,
-requests and calls that wait) and the type package are decided in
+waits for a second module. The TypeScript statements still to come (loops, requests and calls
+that wait) and the type package are decided in
 `docs/L4s/typescript-syntax-L4.md`, and arrive here as they are built.

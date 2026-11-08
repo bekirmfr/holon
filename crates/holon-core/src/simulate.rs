@@ -70,6 +70,8 @@ fn sourced_mock(unit: &Unit) -> Option<Unit> {
         // scalar or Any) — same fail-closed answer as Effect: nothing to mock.
         Type::Product(_) => return None,
         Type::Sum(_) => return None,
+        // A file read as bytes: no constant leaf makes bytes, so nothing to mock with.
+        Type::Bytes => return None,
     };
     Some(constant(
         "const",

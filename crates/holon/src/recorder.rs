@@ -352,6 +352,8 @@ fn value_bound(v: &Value, most: usize) -> Option<usize> {
         Value::Number(_) => return None,
         Value::Boolean(_) => 64,
         Value::Text(t) => 64 + 6 * t.len(),
+        // Base64: four bytes for each three.
+        Value::Bytes(b) => 64 + 4 * b.len().div_ceil(3),
         Value::List(xs) => {
             let mut n = 64;
             for x in xs {
@@ -760,9 +762,9 @@ impl Made {
     }
 
     /// Whether its line may hold a `‹`, which redaction would escape where it reads as a mark:
-    /// true for a line that couldn't be made.
+    /// true for a line that couldn't be made, and for one holding bytes, whose base64 hides it.
     pub fn may_hold_a_mark(&self) -> bool {
-        self.0.as_deref().is_none_or(|line| line.contains('‹'))
+        self.0.as_deref().is_none_or(|line| line.contains('‹') || line.contains("{\"type\":\"Bytes\""))
     }
 
     /// The line numbered `seq`, after the line hashed `prev` (hex, or empty for none).

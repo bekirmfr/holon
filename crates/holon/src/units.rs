@@ -642,6 +642,7 @@ pub(crate) fn footprint(value: &Value) -> u64 {
     own + match value {
         Value::Number(_) | Value::Boolean(_) => 0,
         Value::Text(t) => t.len() as u64 + ALLOC,
+        Value::Bytes(b) => b.len() as u64 + ALLOC,
         Value::List(xs) => ALLOC + xs.iter().map(footprint).sum::<u64>(),
         // A tree's nodes, each with room for 11 keys and values whatever it holds, about two thirds
         // full; each key's text; each value's own heap (the value itself is in its node).

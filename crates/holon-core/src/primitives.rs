@@ -83,6 +83,7 @@ ops! {
     "to_text" => ToText,
     "as_text" => AsText,
     "coalesce" => Coalesce,
+    "fail" => Fail,
     "is_truthy" => IsTruthy,
     "guard" => Guard,
     "slice" => Slice,
@@ -145,6 +146,10 @@ ops! {
     "date_set" => DateSet,
     "date_text" => DateText,
     "date_parse" => DateParse,
+    "date_add" => DateAdd,
+    "business_day_add" => BusinessDayAdd,
+    "business_days_between" => BusinessDaysBetween,
+    "is_business_day" => IsBusinessDay,
     "json_parse" => JsonParse,
     "json_stringify" => JsonStringify,
     "sha256" => Sha256,
@@ -152,6 +157,26 @@ ops! {
     "hex" => Hex,
     "base64" => Base64,
     "secure_equals" => SecureEquals,
+    "text_to_bytes" => TextToBytes,
+    "bytes_to_text" => BytesToText,
+    "bytes_length" => BytesLength,
+    "bytes_concat" => BytesConcat,
+    "bytes_to_list" => BytesToList,
+    "list_to_bytes" => ListToBytes,
+    "decimal_add" => DecimalAdd,
+    "decimal_sub" => DecimalSub,
+    "decimal_mul" => DecimalMul,
+    "decimal_div" => DecimalDiv,
+    "decimal_round" => DecimalRound,
+    "decimal_sum" => DecimalSum,
+    "decimal_compare" => DecimalCompare,
+    "csv_parse" => CsvParse,
+    "csv_format" => CsvFormat,
+    "xml_parse" => XmlParse,
+    "xml_format" => XmlFormat,
+    "xml_find" => XmlFind,
+    "xml_text" => XmlText,
+    "xml_attribute" => XmlAttribute,
     "pair" => Pair,
     "some" => Some,
     "none" => None,
@@ -414,6 +439,8 @@ pub(crate) fn compute_op(op: Op, name: &str, inputs: &[&Value], params: &[Param]
             Some(Value::Text(match v {
                 Value::Text(s) => s.clone(),
                 Value::Record(_) | Value::List(_) => crate::json::stringify(v).unwrap_or_else(|| to_text_str(v)),
+                // As JavaScript writes a `Uint8Array`: its numbers joined with `,`.
+                Value::Bytes(_) => crate::numbers::js_string(v),
                 _ => to_text_str(v),
             }))
         }
@@ -429,40 +456,21 @@ pub(crate) fn compute_op(op: Op, name: &str, inputs: &[&Value], params: &[Param]
         // opposite of this one, and `a ?? b ?? c` is two nodes.
         Op::Coalesce => inputs.first().map(|v| (*v).clone()),
 
+        // Nothing, whatever its message: the language's `throw`. The evaluator hands the message
+        // to the observer for the run's log (eval.rs's `Body::Fail`); computed here, as the eager
+        // oracle does, it is only nothing.
+        Op::Fail => None,
+
         // The other universal any-typed primitive alongside `to_text`, same reasoning: one
         // uniform check that works before you know a value's runtime type — reading
-        // `store_read(key)` (declared `Any`), say, where you often genuinely don't. Total over
-        // every `Value` shape:
-        //   Number   → nonzero is true (n != 0.0; NaN, being != everything including itself
-        //              under IEEE 754, is therefore true here — a real, deliberate choice, not
-        //              an oversight: "not equal to zero" is exactly what this rule says, and
-        //              different languages disagree on NaN's truthiness anyway, so there is no
-        //              single "obviously correct" convention to defer to instead)
-        //   Boolean  → itself (the identity case)
-        //   Text     → non-empty is true
-        //   List     → non-empty is true (covers Product too — a product's value already rides
-        //              List, nothing special-cased for it)
-        //   Effect   → always true. An Effect can structurally never be "empty" — `payload:
-        //              Box<Value>` is never null in safe Rust, and `sink` is always a real,
-        //              non-empty name built from a primitive's own identity. There is no
-        //              falsy Effect to detect, so it isn't invented; this just falls into
-        //              "true by default", the same as any value with no established falsy form.
-        //   Sum      → arm 0 (`some`) is true, arm 1 (`none`) is false. This system's Option —
-        //              "is a real value present" is exactly what a truthiness check on an
-        //              Option should answer, and it's the same "empty container is falsy"
-        //              theme List/Text already carry, not a new idea.
+        // `store_read(key)` (declared `Any`), say, where you often genuinely don't. It is
+        // JavaScript's ToBoolean, `Boolean(x)` ([`lists::truthy`]), as the language reads a
+        // condition that isn't a Boolean (`if (s)`, `!s`): `false`, `0`, `NaN` and `""` are
+        // false, and a `Sum`'s `none`, its absence, as `undefined` is; anything else is true,
+        // an empty list or record included, and an Effect, which can't be empty.
         Op::IsTruthy => {
             let [v] = inputs else { return None };
-            let truthy = match v {
-                Value::Number(n) => *n != 0.0,
-                Value::Boolean(b) => *b,
-                Value::Text(s) => !s.is_empty(),
-                Value::List(xs) => !xs.is_empty(),
-                Value::Effect { .. } => true,
-                Value::Sum { arm, .. } => *arm == 0,
-                Value::Record(fields) => !fields.is_empty(),
-            };
-            Some(Value::Boolean(truthy))
+            Some(Value::Boolean(lists::truthy(v)))
         }
 
         // A conditional sink-gate, not a branch: `value` passes through only if `cond` is
@@ -491,6 +499,8 @@ pub(crate) fn compute_op(op: Op, name: &str, inputs: &[&Value], params: &[Param]
         // position clamped to the text, the two swapped when `end` is before `start`.
         Op::Slice => match inputs {
             [Value::List(xs), rest @ ..] => Some(Value::List(xs[list_slice(params, xs.len(), rest)?].to_vec())),
+            // A `Uint8Array`'s `slice` and `subarray`, as a list's.
+            [Value::Bytes(b), rest @ ..] => Some(Value::Bytes(b[list_slice(params, b.len(), rest)?].to_vec())),
             [Value::Text(s), start, end @ ..] if end.len() < 2 => texts::slice(param(params, "mode")?, s, start, end.first().copied()),
             _ => None,
         },
@@ -805,10 +815,11 @@ pub(crate) fn compute_op(op: Op, name: &str, inputs: &[&Value], params: &[Param]
             records::type_of(x).map(|t| Value::Text(t.to_string()))
         }
 
-        // ── dates (dates.rs): JavaScript's Date in UTC, a date its time value. ──
+        // ── dates (dates.rs): JavaScript's Date in UTC, a date its time value; an offset, when
+        // given, the calendar a date is read at. ──
         Op::DatePart => {
-            let [x] = inputs else { return None };
-            dates::part(x, param(params, "part")?).map(Value::Number)
+            let (x, offset) = last_optional(inputs, 1)?;
+            dates::part(x[0], offset, param(params, "part")?).map(Value::Number)
         }
         Op::DateUtc => dates::utc(inputs).map(Value::Number),
         Op::DateSet => {
@@ -816,12 +827,30 @@ pub(crate) fn compute_op(op: Op, name: &str, inputs: &[&Value], params: &[Param]
             dates::set(t, given, param(params, "part")?).map(Value::Number)
         }
         Op::DateText => {
-            let [t] = inputs else { return None };
-            dates::text(t, param(params, "format")?).map(Value::Text)
+            let (t, offset) = last_optional(inputs, 1)?;
+            dates::text(t[0], offset, param(params, "format")?).map(Value::Text)
         }
         Op::DateParse => {
             let [Value::Text(s)] = inputs else { return None };
             dates::parse(s).map(Value::Number)
+        }
+        Op::DateAdd => {
+            let (x, offset) = last_optional(inputs, 2)?;
+            dates::add(x[0], x[1], offset, param(params, "unit")?).map(Value::Number)
+        }
+        // ── calendars (dates.rs, host-capabilities L4 §5.1.3): business days over a weekend and
+        // the holidays given, a list of calendar dates. ──
+        Op::BusinessDayAdd => {
+            let (x, holidays) = last_optional(inputs, 2)?;
+            dates::business_day_add(x[0], x[1], holidays, param(params, "weekend")?).map(Value::Text)
+        }
+        Op::BusinessDaysBetween => {
+            let (x, holidays) = last_optional(inputs, 2)?;
+            dates::business_days_between(x[0], x[1], holidays, param(params, "weekend")?).map(Value::Number)
+        }
+        Op::IsBusinessDay => {
+            let (x, holidays) = last_optional(inputs, 1)?;
+            dates::is_business_day(x[0], holidays, param(params, "weekend")?).map(Value::Boolean)
         }
 
         // ── JSON (M1): request and response bodies. See json.rs for the mapping; malformed input,
@@ -851,16 +880,16 @@ pub(crate) fn compute_op(op: Op, name: &str, inputs: &[&Value], params: &[Param]
             crate::json::stringify_laid_out(v, &layout).map(Value::Text)
         }
 
-        // ── signatures and encodings (crypto.rs): over a text's UTF-8 bytes. An unknown
+        // ── signatures and encodings (crypto.rs): over a text's UTF-8 bytes, or bytes. An unknown
         // encoding, mode or alphabet is absent, and so is a decode that isn't valid input or
         // doesn't come back to UTF-8. ──
         Op::Sha256 => {
-            let [Value::Text(s)] = inputs else { return None };
-            crate::crypto::sha256(s, param(params, "encoding")?).map(Value::Text)
+            let [v] = inputs else { return None };
+            crate::crypto::sha256(octets(v)?, param(params, "encoding")?).map(Value::Text)
         }
         Op::HmacSha256 => {
-            let [Value::Text(key), Value::Text(message)] = inputs else { return None };
-            crate::crypto::hmac_sha256(key, message, param(params, "encoding")?).map(Value::Text)
+            let [key, message] = inputs else { return None };
+            crate::crypto::hmac_sha256(octets(key)?, octets(message)?, param(params, "encoding")?).map(Value::Text)
         }
         Op::Hex => {
             let [Value::Text(s)] = inputs else { return None };
@@ -888,8 +917,109 @@ pub(crate) fn compute_op(op: Op, name: &str, inputs: &[&Value], params: &[Param]
         // Text equality in constant time: what a signature is checked with, so how long the
         // comparison takes says nothing about how much of a guess was right.
         Op::SecureEquals => {
-            let [Value::Text(a), Value::Text(b)] = inputs else { return None };
-            Some(Value::Boolean(crate::crypto::secure_equals(a, b)))
+            let [a, b] = inputs else { return None };
+            Some(Value::Boolean(crate::crypto::secure_equals(octets(a)?, octets(b)?)))
+        }
+
+        // ── bytes (host-capabilities L4 §5.10.1): a text's encodings, both ways (nothing for hex
+        // or base64 that isn't, or bytes that aren't UTF-8), a length, a join, and the numbers 0
+        // to 255 they are (nothing for an item that isn't one, where JavaScript wraps it). ──
+        Op::TextToBytes => {
+            let [Value::Text(s)] = inputs else { return None };
+            crate::crypto::text_bytes(s, param(params, "encoding")?).map(Value::Bytes)
+        }
+        Op::BytesToText => {
+            let [Value::Bytes(b)] = inputs else { return None };
+            crate::crypto::bytes_text(b, param(params, "encoding")?).map(Value::Text)
+        }
+        Op::BytesLength => {
+            let [Value::Bytes(b)] = inputs else { return None };
+            Some(Value::Number(b.len() as f64))
+        }
+        Op::BytesConcat => {
+            let mut out = Vec::new();
+            for v in inputs {
+                let Value::Bytes(b) = v else { return None };
+                out.extend_from_slice(b);
+            }
+            Some(Value::Bytes(out))
+        }
+        Op::BytesToList => {
+            let [Value::Bytes(b)] = inputs else { return None };
+            Some(Value::List(b.iter().map(|x| Value::Number(f64::from(*x))).collect()))
+        }
+        Op::ListToBytes => {
+            let [Value::List(xs)] = inputs else { return None };
+            let byte = |x: &Value| match x {
+                Value::Number(n) if n.fract() == 0.0 && (0.0..=255.0).contains(n) => Some(*n as u8),
+                _ => None,
+            };
+            xs.iter().map(byte).collect::<Option<Vec<u8>>>().map(Value::Bytes)
+        }
+
+        // ── decimals (decimals.rs, host-capabilities L4 §5.1.1): exact, over amounts written as
+        // text; nothing for a text that isn't a decimal, a division by zero or a scale that isn't
+        // a whole number from 0 to 1,000. ──
+        Op::DecimalAdd => crate::decimals::add(inputs).map(Value::Text),
+        Op::DecimalSub => {
+            let [a, b] = inputs else { return None };
+            crate::decimals::sub(a, b).map(Value::Text)
+        }
+        Op::DecimalMul => crate::decimals::mul(inputs).map(Value::Text),
+        Op::DecimalDiv => {
+            let [a, b, scale] = inputs else { return None };
+            crate::decimals::div(a, b, scale, param(params, "rounding")?).map(Value::Text)
+        }
+        Op::DecimalRound => {
+            let [a, scale] = inputs else { return None };
+            crate::decimals::round(a, scale, param(params, "rounding")?).map(Value::Text)
+        }
+        Op::DecimalSum => {
+            let [Value::List(xs)] = inputs else { return None };
+            crate::decimals::sum(xs).map(Value::Text)
+        }
+        Op::DecimalCompare => {
+            let [a, b] = inputs else { return None };
+            crate::decimals::compare(a, b).map(Value::Number)
+        }
+
+        // ── CSV (csv.rs): RFC 4180 both ways; nothing for a malformed file, or a field that
+        // isn't a text, a number or a Boolean. ──
+        Op::CsvParse => {
+            let [Value::Text(s)] = inputs else { return None };
+            crate::csv::parse(s, param(params, "header")?, param(params, "separator")?)
+        }
+        Op::CsvFormat => {
+            let (rows, columns) = match inputs {
+                [Value::List(rows)] => (rows, None),
+                [Value::List(rows), columns] => (rows, Some(*columns)),
+                _ => return None,
+            };
+            crate::csv::format(rows, columns, param(params, "header")?, param(params, "separator")?).map(Value::Text)
+        }
+
+        // ── XML (xml.rs): an element as JsonML's list; nothing for text that isn't well-formed or
+        // has a DOCTYPE, or for what XML can't hold. ──
+        Op::XmlParse => {
+            let [Value::Text(s)] = inputs else { return None };
+            crate::xml::parse(s)
+        }
+        Op::XmlFormat => {
+            let [element] = inputs else { return None };
+            crate::xml::format(element, param(params, "declaration")?, param(params, "layout")?).map(Value::Text)
+        }
+        Op::XmlFind => {
+            let [element, Value::Text(path)] = inputs else { return None };
+            crate::xml::find(element, path)
+        }
+        Op::XmlText => match inputs {
+            [element] => crate::xml::text(element, None),
+            [element, Value::Text(path)] => crate::xml::text(element, Some(path)),
+            _ => None,
+        },
+        Op::XmlAttribute => {
+            let [element, Value::Text(name)] = inputs else { return None };
+            crate::xml::attribute(element, name)
         }
 
         Op::Pair => {
@@ -1418,6 +1548,14 @@ pub(crate) fn file_read_request(inputs: &[Option<Value>], params: &[Param]) -> O
     ])))
 }
 
+/// What a `file_read_bytes` asks the host: a `file_read`'s request, with `bytes: true`, answered
+/// with the file's bytes whatever they are.
+pub(crate) fn file_read_bytes_request(inputs: &[Option<Value>], params: &[Param]) -> Option<Value> {
+    let Value::Record(mut asked) = file_read_request(inputs, params)? else { return None };
+    asked.insert("bytes".to_string(), Value::Boolean(true));
+    Some(Value::Record(asked))
+}
+
 /// What a `file_list` asks the host: `{folder: <name>, list: {prefix, after?, limit}}`, as
 /// [`collection_list_request`] asks for items, here for files by name.
 pub(crate) fn file_list_request(inputs: &[Option<Value>], params: &[Param]) -> Option<Value> {
@@ -1549,7 +1687,8 @@ pub(crate) fn resume_token_request(params: &[Param]) -> Option<Value> {
 /// Whether leaf `name` has optional input ports, read as "none" when left unwired: a request's
 /// headers and body, a listing's prefix and after, a `to_number`'s radix, a `number_format`'s
 /// digits, a `slice`'s end, `to_spliced`'s count and items, `fill`'s and `copy_within`'s start and
-/// end, the position a search starts from, a `split`'s limit and a `pad`'s fill. Inside a composite, such a port that *is* wired holds the node back while its value is
+/// end, the position a search starts from, a `split`'s limit, a `pad`'s fill, a `csv_format`'s
+/// columns, a date leaf's offset, a business-day leaf's holidays and an `xml_text`'s path. Inside a composite, such a port that *is* wired holds the node back while its value is
 /// absent (eval.rs), like any other leaf's input.
 pub(crate) fn has_optional_ports(name: &str) -> bool {
     matches!(
@@ -1574,6 +1713,14 @@ pub(crate) fn has_optional_ports(name: &str) -> bool {
             | "text_contains"
             | "split"
             | "pad"
+            | "csv_format"
+            | "date_part"
+            | "date_text"
+            | "date_add"
+            | "business_day_add"
+            | "business_days_between"
+            | "is_business_day"
+            | "xml_text"
     )
 }
 
@@ -1679,7 +1826,7 @@ fn contains_effect(v: &Value) -> bool {
         Value::List(items) => items.iter().any(contains_effect),
         Value::Record(fields) => fields.values().any(contains_effect),
         Value::Sum { payload, .. } => contains_effect(payload),
-        Value::Number(_) | Value::Boolean(_) | Value::Text(_) => false,
+        Value::Number(_) | Value::Boolean(_) | Value::Text(_) | Value::Bytes(_) => false,
     }
 }
 
@@ -1698,6 +1845,7 @@ fn to_text_str(v: &Value) -> String {
         Value::List(xs) => format!("[{}]", xs.iter().map(to_text_str).collect::<Vec<_>>().join(", ")),
         Value::Effect { sink, payload } => format!("effect({sink}, {})", to_text_str(payload)),
         Value::Sum { arm, payload } => format!("sum#{arm}({})", to_text_str(payload)),
+        Value::Bytes(b) => format!("bytes({})", crate::crypto::hex_encode(b)),
         Value::Record(fields) => format!(
             "{{{}}}",
             fields.iter().map(|(k, v)| format!("{k}: {}", to_text_str(v))).collect::<Vec<_>>().join(", ")
@@ -1717,6 +1865,14 @@ fn as_text(v: &Value) -> Option<&str> {
 }
 fn as_list(v: &Value) -> Option<&[Value]> {
     if let Value::List(xs) = v { Some(xs) } else { None }
+}
+/// The bytes a hash or a comparison takes: a text's UTF-8, or bytes as they are.
+fn octets(v: &Value) -> Option<&[u8]> {
+    match v {
+        Value::Text(s) => Some(s.as_bytes()),
+        Value::Bytes(b) => Some(b),
+        _ => None,
+    }
 }
 /// The items a `slice` of a list of `len` keeps, by its `mode` and its inputs after the list.
 fn list_slice(params: &[Param], len: usize, rest: &[&Value]) -> Option<std::ops::Range<usize>> {
@@ -1746,6 +1902,15 @@ fn as_index(v: &Value) -> Option<usize> {
 }
 
 // ── helpers ─────────────────────────────────────────────────────────────────
+/// A leaf's `n` inputs and its optional last one, when it arrived: nothing for another count.
+fn last_optional<'a, 'v>(inputs: &'a [&'v Value], n: usize) -> Option<(&'a [&'v Value], Option<&'v Value>)> {
+    match inputs.len() {
+        k if k == n => Some((inputs, None)),
+        k if k == n + 1 => Some((&inputs[..n], Some(inputs[n]))),
+        _ => None,
+    }
+}
+
 fn param<'a>(params: &'a [Param], name: &str) -> Option<&'a str> {
     params.iter().find(|p| p.name() == name).and_then(|p| p.value())
 }
@@ -1880,7 +2045,7 @@ mod tests {
         let r3 = compute("without_field", &[&r2], &[p("name", "id")]).unwrap();
         assert_eq!(compute("keys", &[&r3], &[]), Some(Value::List(vec![txt("title")])));
         assert_eq!(compute("field", &[&num(1.0)], &[p("name", "id")]), None);
-        assert_eq!(compute("is_truthy", &[&empty], &[]), Some(boo(false)));
+        assert_eq!(compute("is_truthy", &[&empty], &[]), Some(boo(true)), "an empty record is true, as in JavaScript");
         assert_eq!(compute("equals", &[&r, &r2], &[]), Some(boo(false)));
     }
 
@@ -2037,7 +2202,7 @@ mod tests {
         assert_eq!(sig.as_ref(), Some(&expected));
         assert_eq!(compute("secure_equals", &[sig.as_ref().unwrap(), &expected], &[]), Some(boo(true)));
         assert_eq!(compute("secure_equals", &[&txt("a"), &txt("b")], &[]), Some(boo(false)));
-        assert_eq!(compute("secure_equals", &[&txt("a"), &num(1.0)], &[]), None, "text only");
+        assert_eq!(compute("secure_equals", &[&txt("a"), &num(1.0)], &[]), None, "a text or bytes");
         assert_eq!(
             compute("sha256", &[&txt("abc")], &[p("encoding", "base64")]),
             Some(txt("ungWv48Bz+pBQUDeXa4iI7ADYaOWF3qctBD/YfIAFa0="))
@@ -2057,6 +2222,93 @@ mod tests {
         assert_eq!(compute("hex", &[&txt("666f6f626172")], &[p("mode", "decode")]), Some(txt("foobar")));
         assert_eq!(compute("hex", &[&txt("zz")], &[p("mode", "decode")]), None);
         assert_eq!(compute("hex", &[&txt("ff")], &[p("mode", "decode")]), None, "not UTF-8");
+    }
+
+    /// Decimals and CSV (host-capabilities L4 §5.1.1) through the catalog, with its defaults: a
+    /// control sum exact where a number's is off, rounded half to even, and a payment file read
+    /// and written back.
+    #[test]
+    fn decimal_and_csv_leaves_compute_with_the_catalogs_defaults() {
+        let defaults = |name: &str| crate::interface_of(name).unwrap().params;
+        let n = Value::Number;
+        let amounts = Value::List(vec![txt("0.10"), txt("0.20"), n(0.3)]);
+        assert_eq!(compute("decimal_sum", &[&amounts], &defaults("decimal_sum")), Some(txt("0.60")));
+        assert_eq!(compute("decimal_add", &[&txt("1.10"), &txt("2"), &txt("-0.05")], &defaults("decimal_add")), Some(txt("3.05")));
+        assert_eq!(compute("decimal_round", &[&txt("2.665"), &n(2.0)], &defaults("decimal_round")), Some(txt("2.66")), "half to even");
+        assert_eq!(compute("decimal_round", &[&txt("2.665"), &n(2.0)], &[p("rounding", "half_up")]), Some(txt("2.67")));
+        assert_eq!(compute("decimal_div", &[&txt("100"), &txt("3"), &n(2.0)], &defaults("decimal_div")), Some(txt("33.33")));
+        assert_eq!(compute("decimal_compare", &[&txt("10.00"), &txt("9.99")], &[]), Some(n(1.0)));
+        assert_eq!(compute("decimal_mul", &[&txt("19.99"), &n(3.0)], &[]), Some(txt("59.97")));
+        assert_eq!(compute("decimal_sub", &[&txt("1"), &txt("one")], &[]), None);
+
+        let file = txt("id;currency;amount\r\n1;EUR;10.50\r\n2;USD;0.20\r\n");
+        let rows = compute("csv_parse", &[&file], &[p("header", "first_row"), p("separator", ";")]).unwrap();
+        let Value::List(items) = &rows else { panic!("{rows:?}") };
+        assert_eq!(items[1], Value::Record([("amount".into(), txt("0.20")), ("currency".into(), txt("USD")), ("id".into(), txt("2"))].into()));
+        assert_eq!(compute("csv_parse", &[&txt("a,\"b\n")], &defaults("csv_parse")), None, "a quote that never closes");
+        let columns = Value::List(vec![txt("id"), txt("currency"), txt("amount")]);
+        let params = [p("header", "first_row"), p("separator", ";")];
+        assert_eq!(compute("csv_format", &[&rows, &columns], &params), Some(file), "read and written back");
+        let lists = Value::List(vec![Value::List(vec![txt("a"), n(1.0)])]);
+        assert_eq!(compute("csv_format", &[&lists], &defaults("csv_format")), Some(txt("a,1\r\n")), "no columns: rows are lists");
+    }
+
+    /// Bytes (host-capabilities L4 §5.10.1): a text's encodings both ways, a length, a join, a
+    /// slice, the numbers they are, and the hashing leaves over them as over a text's UTF-8.
+    #[test]
+    fn bytes_leaves_compute_as_javascript_does() {
+        let bytes = |b: &[u8]| Value::Bytes(b.to_vec());
+        let enc = |e: &str| vec![p("encoding", e)];
+        assert_eq!(compute("text_to_bytes", &[&txt("hé")], &enc("utf8")), Some(bytes(&[0x68, 0xc3, 0xa9])));
+        assert_eq!(compute("text_to_bytes", &[&txt("00ff10")], &enc("hex")), Some(bytes(&[0, 0xff, 0x10])));
+        assert_eq!(compute("text_to_bytes", &[&txt("+/8=")], &enc("base64")), Some(bytes(&[0xfb, 0xff])));
+        assert_eq!(compute("text_to_bytes", &[&txt("+/8")], &enc("base64")), Some(bytes(&[0xfb, 0xff])), "padding optional");
+        assert_eq!(compute("text_to_bytes", &[&txt("-_8")], &enc("base64url")), Some(bytes(&[0xfb, 0xff])));
+        for (bad, e) in [("0g", "hex"), ("abc", "hex"), ("-_8", "base64"), ("Zm9v", "latin1")] {
+            assert_eq!(compute("text_to_bytes", &[&txt(bad)], &enc(e)), None, "{bad} as {e}");
+        }
+        let b = bytes(&[0xfb, 0xff, 0x00]);
+        assert_eq!(compute("bytes_to_text", &[&b], &enc("hex")), Some(txt("fbff00")));
+        assert_eq!(compute("bytes_to_text", &[&b], &enc("base64")), Some(txt("+/8A")));
+        assert_eq!(compute("bytes_to_text", &[&bytes(&[0xfb, 0xff])], &enc("base64")), Some(txt("+/8=")), "base64 pads");
+        assert_eq!(compute("bytes_to_text", &[&bytes(&[0xfb, 0xff])], &enc("base64url")), Some(txt("-_8")), "base64url doesn't");
+        assert_eq!(compute("bytes_to_text", &[&bytes("hé".as_bytes())], &enc("utf8")), Some(txt("hé")));
+        assert_eq!(compute("bytes_to_text", &[&b], &enc("utf8")), None, "a fatal decoder: 0xfb isn't UTF-8");
+        assert_eq!(compute("bytes_to_text", &[&txt("x")], &enc("utf8")), None, "takes bytes");
+
+        assert_eq!(compute("bytes_length", &[&b], &[]), Some(num(3.0)));
+        assert_eq!(compute("bytes_length", &[&txt("abc")], &[]), None);
+        assert_eq!(compute("bytes_concat", &[&bytes(b"ab"), &bytes(b""), &bytes(b"c")], &[]), Some(bytes(b"abc")));
+        assert_eq!(compute("bytes_concat", &[&bytes(b"ab"), &txt("c")], &[]), None);
+        assert_eq!(compute("bytes_to_list", &[&bytes(&[0, 255])], &[]), Some(list(vec![num(0.0), num(255.0)])));
+        assert_eq!(compute("list_to_bytes", &[&list(vec![num(0.0), num(255.0)])], &[]), Some(bytes(&[0, 255])));
+        for bad in [num(256.0), num(-1.0), num(1.5), txt("1")] {
+            assert_eq!(compute("list_to_bytes", &[&list(vec![bad.clone()])], &[]), None, "{bad:?}: JavaScript wraps it, Holon gives nothing");
+        }
+        let slice = |start: f64, end: Option<f64>| {
+            let mut ins = vec![bytes(b"hello"), num(start)];
+            ins.extend(end.map(num));
+            let refs: Vec<&Value> = ins.iter().collect();
+            compute("slice", &refs, &[p("mode", "end")])
+        };
+        assert_eq!(slice(1.0, Some(3.0)), Some(bytes(b"el")));
+        assert_eq!(slice(-2.0, None), Some(bytes(b"lo")), "negative from the end");
+
+        // Hashing bytes is hashing a text's UTF-8 that has them; a key may be bytes too.
+        assert_eq!(compute("sha256", &[&bytes(b"abc")], &enc("hex")), compute("sha256", &[&txt("abc")], &enc("hex")));
+        assert_eq!(
+            compute("hmac_sha256", &[&bytes(&[0x0b; 20]), &txt("Hi There")], &enc("hex")),
+            Some(txt("b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7"))
+        );
+        assert_eq!(compute("secure_equals", &[&bytes(b"a"), &txt("a")], &[]), Some(boo(true)), "the same bytes");
+
+        // Equal by content; true as a condition, empty too; String(b) and to_text.
+        assert_eq!(compute("equals", &[&bytes(b"a"), &bytes(b"a")], &[]), Some(boo(true)));
+        assert_eq!(compute("is_truthy", &[&bytes(b"")], &[]), Some(boo(true)));
+        assert_eq!(compute("type_of", &[&b], &[]), Some(txt("object")));
+        assert_eq!(compute("as_text", &[&bytes(&[1, 22])], &[]), Some(txt("1,22")));
+        assert_eq!(compute("to_text", &[&bytes(b"hi")], &[]), Some(txt("bytes(6869)")));
+        assert_eq!(compute("json_stringify", &[&b], &[]), None, "JSON has no bytes");
     }
 
     /// A leaf's inputs from a JSON array of them, as the races write their cases.
@@ -2355,7 +2607,7 @@ mod tests {
 
     #[test]
     fn javascripts_to_boolean_counts_an_empty_list_true() {
-        let falsy = [boo(false), num(0.0), num(-0.0), txt("")];
+        let falsy = [boo(false), num(0.0), num(-0.0), num(f64::NAN), txt("")];
         let truthy = [boo(true), num(1.0), num(-0.5), txt("0"), txt("false"), list(vec![]), Value::Record(BTreeMap::new())];
         assert!(falsy.iter().all(|v| !lists::truthy(v)));
         assert!(truthy.iter().all(lists::truthy));
@@ -2575,7 +2827,8 @@ mod tests {
         assert_eq!(compute("is_truthy", &[&boo(false)], &[]), Some(boo(false)));
         assert_eq!(compute("is_truthy", &[&txt("")], &[]), Some(boo(false)));
         assert_eq!(compute("is_truthy", &[&txt("hi")], &[]), Some(boo(true)));
-        assert_eq!(compute("is_truthy", &[&list(vec![])], &[]), Some(boo(false)));
+        // An empty list is true, as JavaScript's `Boolean([])` is.
+        assert_eq!(compute("is_truthy", &[&list(vec![])], &[]), Some(boo(true)));
         assert_eq!(compute("is_truthy", &[&list(vec![num(1.0)])], &[]), Some(boo(true)));
         // An Effect can never structurally be empty — always true, not a special case.
         let effect = Value::Effect { sink: "egress".into(), payload: Box::new(txt("")) };
@@ -2587,10 +2840,9 @@ mod tests {
         assert_eq!(compute("is_truthy", &[&none], &[]), Some(boo(false)));
     }
     #[test]
-    fn is_truthy_treats_nan_as_truthy_deliberately() {
-        // NaN != 0.0 under IEEE 754 (NaN is != everything, including itself), so this rule's
-        // own logic makes it true — a real, considered choice, not an overlooked edge case.
-        assert_eq!(compute("is_truthy", &[&num(f64::NAN)], &[]), Some(boo(true)));
+    fn is_truthy_treats_nan_as_javascript_does() {
+        assert_eq!(compute("is_truthy", &[&num(f64::NAN)], &[]), Some(boo(false)));
+        assert_eq!(compute("is_truthy", &[&num(-0.0)], &[]), Some(boo(false)));
     }
     #[test]
     fn guard_passes_the_value_through_only_when_true() {
