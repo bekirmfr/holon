@@ -1064,6 +1064,10 @@ Holon is in development, so the new form replaces today's at once:
 
 ## 15. Slices
 
+Slices 1 to 5 are built. Slices 6 to 11 have a fixed place, decided 2026-11-08: after the
+[host capabilities](host-capabilities-L4.md)' Tier 1 (steps 1.1 to 1.9) and before its Tier 2
+(§7 there), in this order.
+
 1. **Parse and lower the core.** A TypeScript parser; imports; `flow(…)`; routes, `every`,
    `on.file.*`, exported actions, handler options (`resumes`, `matching`, `log`); `const`, `return`, `status`, `respond`; the absence operators and
    §6's differences; graph functions, in-place arrows, `js()` with its output names; the library

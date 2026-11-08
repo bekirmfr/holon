@@ -1761,6 +1761,13 @@ F  1.8  (the rest segment, then FileServe)
 Six tracks, so six worktrees at most; tracks that touch the same files (`kind.rs`, the catalog,
 `tests.rs`) merge into `main` one at a time, each rebased on the last.
 
+### Between Tier 1 and Tier 2: the TypeScript slices
+
+Decided 2026-11-08: once Tier 1's steps 1.1 to 1.9 have landed, the TypeScript syntax's slices 6
+to 11 come next ([typescript-syntax](typescript-syntax-L4.md) §15): computing loops, calls and
+requests that wait, waits a route's caller outlasts, waiting loops, failures with a reason, and
+editors and tools. Tier 2 starts when they have landed; Tier 3 is still taken when asked.
+
 ### Tier 2: operationally essential
 
 | Step | What | Design | Needs | Size |
