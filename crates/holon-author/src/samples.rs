@@ -697,8 +697,8 @@ static SAMPLES: &[Sample] = &[
     Sample {
         name: "payout-totals",
         title: "Payout totals (exact decimals, over a CSV)",
-        description: "Runs once for each CSV of payouts (id, currency, amount) new or changed in a folder on the host, reads it into records (csv_parse) and groups them by currency (Object.groupBy). Each currency's amounts are summed as decimals written as text (decimal_sum), so the total is exact: 0.10 and 0.20 make 0.30, where numbers would make 0.30000000000000004; it is rounded to cents half to even, as a bank rounds (decimal_round). The count and total of each currency are kept under the file's name in a collection, and a route reads them back.",
-        shows: &["exact decimals", "decimal_sum", "decimal_round", "csv_parse", "Object.groupBy", "Object.fromEntries", "on.file.created", "named folders"],
+        description: "Runs once for each CSV of payouts (id, currency, amount) new or changed in a folder on the host, reads it into records (csv_parse) and groups them by currency (Object.groupBy). A function of its own, summary, gives each group's count and total, over the groups' entries (Object.entries, e[0] the currency and e[1] its payouts): the amounts are summed as decimals written as text (decimal_sum), so the total is exact: 0.10 and 0.20 make 0.30, where numbers would make 0.30000000000000004; it is rounded to cents half to even, as a bank rounds (decimal_round). The count and total of each currency are kept under the file's name in a collection, and a route reads them back.",
+        shows: &["exact decimals", "decimal_sum", "decimal_round", "csv_parse", "Object.groupBy", "Object.entries", "Object.fromEntries", "a function of its own", "on.file.created", "named folders"],
         port: Some("8180"),
         secrets: &[],
         optional: &[],

@@ -236,7 +236,7 @@ else does, an empty list or record included. A `c` with no value doesn't hold, a
 | `-a`, `+a`, `~a` | `a * -1`; `a` as a number, `Number(a)`; the bits of `a` flipped |
 | `f(…)` | a call (see [Calls](#calls)) |
 | `a.name`, `a?.name` | an output named `name`, else the field `name` of a record; `?.` means the same |
-| `a[e]` | the field whose name is `e`'s value; on a collection or folder, an item or a file |
+| `a[e]` | with a number, a list's item (nothing past its end, or for a negative one); on a record, the field whose name is `e`'s value; on a collection or folder, an item or a file. A text's character is `s.at(i)` or `s.charAt(i)` |
 | `(e)` | grouping |
 
 **Choices only run what they need.** In `?:`, `??`, `if` and `switch`, the branch that isn't
@@ -306,7 +306,7 @@ A text leaf given anything but a text gives no value too.
 
 | Form | Meaning |
 |---|---|
-| `s.length` | the length (`text_length`), when `s` is known to be a text, as a text method's result is; on a list known to be one, its length (`length`). On a value of no known type, such as a request's field, refused: call `text_length(s)` or `length(xs)` |
+| `s.length` | the length (`text_length`), when `s` is known to be a text, as a text method's result is; on a list known to be one, its length (`length`). A function's parameter written with its type (`s: string`, `xs: string[]`) is known to be one. On a value of no known type, such as a request's field, refused: call `text_length(s)` or `length(xs)` |
 | `s.at(i)`, `s.charAt(i)`, `s.charCodeAt(i)`, `s.codePointAt(i)` | the character at `i` (`at`, from the end when negative; `text_at`, `""` outside the text), its code unit, its code point (`code_at`); the index left out is 0 |
 | `s.slice(a, b)`, `s.substring(a, b)` | a part (`slice`), as JavaScript's: `slice` counts a negative position from the end, `substring` swaps its two |
 | `s.indexOf(t, i)`, `s.lastIndexOf(t, i)`, `s.includes(t, i)` | where `t` is, or whether it is, from `i` when given; the same leaves as a list's |

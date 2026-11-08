@@ -91,7 +91,7 @@ unit.
 | Bindings | `const name = expr`; a `let` given a new value is a new name; destructuring is a `field` per name | §5.2 |
 | Calls | `leaf(inputs…, { named… })`: positional arguments are inputs; a last record whose keys the unit takes names inputs and params. A method of a text or list is the leaf that does it | §5.3 |
 | Literals | Numbers, texts, `true`, `false`; a template literal interpolates through `as_text`; `{…}` and `[…]` lower to `record`/`with_field` (`merge` for a spread after anything, `insert` for a computed key) and `list`; a duration is a text, `"10s"`, where one is asked | §5.5 |
-| Operators | Arithmetic and comparison on numbers, logic on booleans, `??` (fallback), `===` (structural), `.` (field or output), `[ ]` (lookup), `c ? a : undefined` (guard), `c ? a : b` (a guard on each side of `c`), `switch` (a choice by value) | §5.6, §6.4, §6.5 |
+| Operators | Arithmetic and comparison on numbers, logic on booleans, `??` (fallback), `===` (structural), `.` (field or output), `[ ]` (a list's item or a record's field), `c ? a : undefined` (guard), `c ? a : b` (a guard on each side of `c`), `switch` (a choice by value) | §5.6, §6.4, §6.5 |
 | Multi-output values | `.name` selects an output when the name is one; otherwise it is a field. A bare multi-output value is its first output | §5.7 |
 | Functions | `function name(inputs) { …; return out }` is a holon, its outputs named by what it returns; an arrow written in place for a list's methods that take one (`map`, `reduce`, `filter`, `toSorted`, …), a name it uses from around it an input of its own | §5.8, §5.9 |
 | js functions | `const name = js(function name(inputs) { JavaScript }, { fuel, memory, outputs })`: a function whose body runs as JavaScript, in an engine that is a WebAssembly module with no imports, under a budget | §5.8a |
@@ -1382,7 +1382,7 @@ Every catalog leaf is callable by its own name with this rule (`concat(a, b)`, `
 |---|---|
 | `t.toLowerCase()`, `t.toUpperCase()` | `lowercase(t)`, `uppercase(t)`; `toLocaleLowerCase()` and `toLocaleUpperCase()` the same, without a locale (one given is refused, as a flow has none) |
 | `t.split(sep)`, `t.split(sep, n)`, `xs.join(sep)` | `split(t, sep)`, the limit wired when given (`""` cuts every code unit); `join(xs, sep)` |
-| `t.length`, `xs.length` | `text_length(t)` where `t` is known to be a text, `length(xs)` where `xs` is known to be a list: a node whose output is a `Text`, or a `List`. On anything else (a request's field, a function's parameter), refused, naming both, to call by name |
+| `t.length`, `xs.length` | `text_length(t)` where `t` is known to be a text, `length(xs)` where `xs` is known to be a list: a node whose output is a `Text`, or a `List`, or a function's parameter written with its type (`xs: string[]`), in the function and in one written in it. On anything else (a request's field, a parameter written without one), refused, naming both, to call by name |
 | `t.charAt(i)`, `t.charCodeAt(i)`, `t.codePointAt(i)` | `text_at(t, i)`, `code_at{mode: unit, point}(t, i)`; the index left out is 0 |
 | `t.startsWith(s, p)`, `t.endsWith(s, e)` | `text_contains{at: start, end}(t, s, p)`, the position unwired when left out |
 | `t.substring(a, b)` | `slice{mode: substring}(t, a, b)`, the end unwired when left out |
@@ -1451,7 +1451,7 @@ and `new Set()` outside a spread.
 flow's own function named `parseInt` is the one `parseInt(s)` calls, as in JavaScript, and
 `Math.max` is the leaf whatever the flow defines. `Math.random()` is refused, with `import { random
 } from "holon:random"`, a run's one recorded number. `.length` is a text's `text_length` or a
-list's `length`, by the type of the node that made the value. A method no leaf does is
+list's `length`, by the value's type: the node that made it, or a parameter's as written. A method no leaf does is
 refused, with "do it in a `js()` function". `fmt` writes `entries` as `Object.entries(r)` where
 `r` is known to be a record (a node whose output is a `Record`), else as `[...xs.entries()]`.
 
@@ -1671,7 +1671,7 @@ Lowest to highest precedence, as TypeScript has them; binary operators are left-
 | `typeof a` | `default{type: Text, value: undefined}(type_of(a))` | §5.3; `fmt` writes it back as `typeof a` |
 | `k in r` | `has(r, k)` | on the level of `<`; `instanceof` is refused, naming `Array.isArray` and `typeof` |
 | `a.name`, `a?.name` | an output, or `field{name}(a)` | §5.7; `?.` means what `.` does |
-| `a[e]` | `lookup(record: a, key: e)` when `a` is not an imported collection or folder | the key arrives on a wire |
+| `a[e]` | `get(list: a, index: e)` when `e` is known to be a number and `a` a list or of no known type; `lookup(record: a, key: as_text(e))` when `a` is known to be a record; else `lookup(record: a, key: e)`, when `a` is not an imported collection or folder | the key arrives on a wire; a number on a text is refused, naming `s.at(i)` and `s.charAt(i)` |
 
 `coalesce(a, b)` is the one leaf this language needed beyond `as_text`: `a` when present, else
 `b`, the first input that arrived. It cannot be a composite, because no other leaf fires with a
@@ -2560,6 +2560,11 @@ the syntax to TypeScript's, keeping the lowering.
    - *Decimals and CSV* (2026-11-08, host-capabilities L4 §5.1.1, slice 1.2a): seven decimal
      leaves over amounts written as text, `+` and `<` refused on their results; `csv_parse` and
      `csv_format`. The payout-totals sample, run live.
+   - *Types in the lowering* (2026-11-08): `a[i]` with a number is a list's item (`get`), on a
+     value of no known type too, as an entry's `e[0]`; a parameter written with its type
+     (`xs: string[]`) makes `.length` known, in the function and in one written in it. The
+     printer writes a call to a function of several outputs read whole as the call, so a map's
+     function using values from around it may call one. payout-totals uses both, run live.
 
    Next are the L4's slices 6 to 11: computing loops, as folds over a bounded range; requests and calls that wait (`await` with
    JavaScript's order and required, `Promise.all`, a call that parks its caller, a request recorded

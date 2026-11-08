@@ -1448,6 +1448,9 @@ struct Block<'p, 's, 'g> {
     /// The nodes a `switch` folds in (its comparisons, guards and chain), and a subject only its
     /// comparisons use.
     absorbed: HashSet<String>,
+    /// A function of several outputs read whole, by the last link of the record of its outputs:
+    /// the call, then the record and its links, which print as the call.
+    wholes: HashMap<String, (&'g Node, Vec<&'g Node>)>,
     /// A function's outputs written as statements, by node, in the order of its outputs: the
     /// lowering names them after their leaves.
     auto: Vec<String>,
@@ -1489,6 +1492,7 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
             matches: HashMap::new(),
             switch_answer: None,
             absorbed: HashSet::new(),
+            wholes: HashMap::new(),
             auto: Vec::new(),
             declared: Vec::new(),
             touched: Vec::new(),
@@ -1564,6 +1568,51 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
     /// Whether a trigger waits for `node`: it is a statement of its own, before what waits.
     fn awaited(&self, node: &Node) -> bool {
         self.g.incoming.iter().any(|((_, input), src)| input == TRIGGER && matches!(src, Src::Node { id, .. } if *id == node.id))
+    }
+
+    /// The call `head` reads whole, with the record and links before it, when `head` ends the
+    /// record lower.rs `whole` makes of a function's outputs: an empty `record`, then one
+    /// `with_field` for each value output, in their order and named after it, each its only
+    /// read, and no link read but by the next. A call the text named is its `const`.
+    fn whole_call(&self, head: &Node) -> Option<(&'g Node, Vec<&'g Node>)> {
+        let link = |n: &Node| n.data.name == "with_field" && n.data.body == PlacedBody::Primitive;
+        let extended = self.g.uses(&head.id).iter().any(|(to, input)| *input == "record" && link(self.g.node(to)));
+        if !link(head) || extended {
+            return None;
+        }
+        let mut links = vec![self.g.node(&head.id)];
+        let base = loop {
+            let Some(Src::Node { id, .. }) = self.g.incoming.get(&(links[links.len() - 1].id.clone(), "record".to_string())) else { return None };
+            let next = self.g.node(id);
+            if !link(next) {
+                break next;
+            }
+            if self.g.consumed_total(next) != 1 {
+                return None;
+            }
+            links.push(next);
+        };
+        if base.data.name != "record" || base.data.body != PlacedBody::Primitive || self.g.consumed_total(base) != 1 {
+            return None;
+        }
+        links.reverse();
+        let Some(Src::Node { id, .. }) = self.g.incoming.get(&(links[0].id.clone(), "value".to_string())) else { return None };
+        let call = self.g.node(id);
+        let values: Vec<&str> = call.data.outputs.iter().filter(|o| o.ty != WType::Effect).map(|o| o.name.as_str()).collect();
+        if !matches!(call.data.body, PlacedBody::Composite { .. }) || values.len() != links.len() || self.g.consumed_total(call) != values.len() {
+            return None;
+        }
+        for (l, out) in links.iter().zip(&values) {
+            let reads = matches!(self.g.incoming.get(&(l.id.clone(), "value".to_string())), Some(Src::Node { id, output }) if *id == call.id && output == out);
+            if l.param("name") != *out || !reads {
+                return None;
+            }
+        }
+        if self.named(call) || self.tied_elsewhere(call) || self.awaited(call) {
+            return None;
+        }
+        links.push(base);
+        Some((call, links))
     }
 
     /// The input a `guard(true, input)` passes through, when `node` is one: the lowering places it
@@ -1786,8 +1835,15 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
                 self.matches.insert(n.id.clone(), m);
             }
         }
-        // A ternary's condition, read by both its sides, is written once, in place.
+        // A function of several outputs read whole is its call: `summary(x)`, not a `const`
+        // whose fields make the record again.
         let g = self.g;
+        for n in &g.nodes {
+            if let Some(whole) = self.whole_call(n) {
+                self.wholes.insert(n.id.clone(), whole);
+            }
+        }
+        // A ternary's condition, read by both its sides, is written once, in place.
         for n in &g.nodes {
             let Some([then, ..]) = self.ternary(n) else { continue };
             if let Some(Src::Node { id, .. }) = g.incoming.get(&(then.id.clone(), "cond".to_string())) {
@@ -2029,7 +2085,7 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
                 stmts.append(&mut lets);
                 continue;
             }
-            if self.inline(node) {
+            if self.inline(node) || self.wholes.values().any(|(call, _)| call.id == *id) {
                 continue;
             }
             self.begin();
@@ -2208,6 +2264,9 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
 
     /// A name from what `node` is.
     fn suggestion(&self, node: &Node) -> String {
+        if let Some((call, _)) = self.wholes.get(&node.id) {
+            return self.suggestion(call);
+        }
         let d = &node.data;
         let s = match d.name.as_str() {
             "field" | "secret" | "await" => node.param("name"),
@@ -2668,6 +2727,13 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
                 let key = self.required(node, "key", COND)?;
                 member(format!("{base}[{key}]"))
             }
+            // `xs[i]`, where `i` is known to be a number and `xs` isn't known to be a text or a
+            // record, as the lowering reads it back to `get`; else by its name.
+            "get" if self.known(node, "index", WType::Number) && !self.known(node, "list", WType::Text) && !self.known(node, "list", WType::Record) => {
+                let base = self.required(node, "list", MEMBER)?;
+                let i = self.required(node, "index", COND)?;
+                member(format!("{base}[{i}]"))
+            }
             "json_parse" if node.param("fn").is_empty() => member(format!("JSON.parse({})", self.required(node, "text", COND)?)),
             "json_parse" => {
                 let t = self.required(node, "text", COND)?;
@@ -2737,6 +2803,12 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
             "concat" => self.concat(node),
             "as_text" => atom(format!("`${{{}}}`", self.required(node, "value", 0)?)),
             "record" => atom("{}".into()),
+            "with_field" if let Some((call, links)) = self.wholes.get(&node.id).cloned() => {
+                for l in links {
+                    self.touch(l);
+                }
+                self.render(call, "")
+            }
             "with_field" => self.record(node),
             "merge" | "insert" if self.every_wired(node) => self.record(node),
             "list" if d.inputs.len() >= 2 => {
@@ -3914,6 +3986,60 @@ mod tests {
         let text = round_trips(l.name.as_deref().unwrap_or_default(), &l.doc, &l.names);
         assert_eq!(text, src, "fmt keeps it as written");
         text
+    }
+
+    /// A number index (`e[0]`, a list's item) prints back as written, and `get` by its name where
+    /// the index isn't known to be a number.
+    #[test]
+    fn a_number_index_prints_as_written() {
+        prints_back("import { action, flow } from \"holon\"
+import state from \"state\"
+
+flow(\"f\")
+
+function g(entries) {
+  return entries.map((e) => [e[0], e[1] * 2])
+}
+
+export const t = action((x) => {
+  state.x = x.xs[0]
+  state.y = g(x.b)
+})
+");
+        prints_back("import { action, flow, get } from \"holon\"
+import state from \"state\"
+
+flow(\"f\")
+
+export const t = action((x) => {
+  state.x = get(x.xs, x.i)
+})
+");
+    }
+
+    /// A function returning a record lowers to an output per key, and read whole to the record
+    /// of them: it prints as its call, in place too (a map's function using values from around
+    /// it), and a call the text named keeps its `const`.
+    #[test]
+    fn a_function_read_whole_prints_as_its_call() {
+        prints_back("import { action, flow } from \"holon\"
+import state from \"state\"
+
+flow(\"f\")
+
+function both(x) {
+  const a = x + 1
+  const b = x * 2
+  return { a, b }
+}
+
+export const t = action((x) => {
+  state.x = x.ys.map((y) => [y, both(x.k + y)])
+  state.y = both(x.k)
+  const p = both(x.j)
+  state.z = { a: p.a, b: p.b }
+})
+");
     }
 
     /// `src` compiled and printed back, round-tripping.

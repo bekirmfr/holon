@@ -193,11 +193,18 @@ impl Val {
 /// `+` would join it and `<` compare it letter by letter.
 const DECIMAL_TEXTS: &[&str] = &["decimal_add", "decimal_sub", "decimal_mul", "decimal_div", "decimal_round", "decimal_sum"];
 
-/// The type of the output `v` is, as the node that gives it says; a function's input has none.
-fn typed(v: &Val) -> Option<&WType> {
-    match v {
-        Val::Out { outputs, port, .. } => outputs.get(*port).map(|p| &p.ty),
-        Val::In(_) => None,
+/// The type a function's port is written with (`amounts: string[]`), as the lowering names it.
+fn written_type(t: &TypeExpr) -> WType {
+    let arg = |k: usize| t.args.get(k).map_or(WType::Any, written_type);
+    match t.name.as_str() {
+        "Number" => WType::Number,
+        "Boolean" => WType::Boolean,
+        "Text" => WType::Text,
+        "Record" => WType::Record,
+        "Bytes" => WType::Bytes,
+        "List" => WType::List(Box::new(arg(0))),
+        "Product" => WType::Product(t.args.iter().map(written_type).collect()),
+        _ => WType::Any,
     }
 }
 
@@ -237,11 +244,25 @@ struct Frame {
     branches: usize,
     /// The calls placed in a branch: made only when the branch needs them, so left untied.
     in_branches: HashSet<String>,
+    /// The types its inputs are known to have, by port: a function's, as its ports are written,
+    /// and the values a function takes from around it, as they were known there.
+    types: HashMap<String, WType>,
 }
 
 impl Frame {
     fn new(kind: FrameKind) -> Frame {
-        Frame { kind, env: HashMap::new(), wiring_in: vec![], wiring_out: vec![], written: HashMap::new(), shared: HashMap::new(), created: vec![], branches: 0, in_branches: HashSet::new() }
+        Frame {
+            kind,
+            env: HashMap::new(),
+            wiring_in: vec![],
+            wiring_out: vec![],
+            written: HashMap::new(),
+            shared: HashMap::new(),
+            created: vec![],
+            branches: 0,
+            in_branches: HashSet::new(),
+            types: HashMap::new(),
+        }
     }
 }
 
@@ -624,6 +645,33 @@ impl<'a> Lowerer<'a> {
             self.connect(val, &id, port, span)?;
         }
         Ok(self.out(&id))
+    }
+
+    /// `base[key]`, by what each is known to be. A number picks a list's item (`get`, as
+    /// JavaScript's: nothing past its end or for a negative one), on a list or on a value of no
+    /// known type; on a record it names the field as JavaScript does (`r[0]` is `r["0"]`); a
+    /// text's character is refused, naming the two forms it could be. Any other key reads a
+    /// record's field (`lookup`).
+    fn index(&mut self, base: Val, key: Val, key_span: Span, span: Span) -> R<Val> {
+        if self.typed(&key) != Some(&WType::Number) {
+            return self.node_with("lookup", &[], &[("record", base), ("key", key)], span);
+        }
+        match self.typed(&base) {
+            Some(WType::Record) => {
+                let name = self.node_with("as_text", &[], &[("value", key)], key_span)?;
+                self.node_with("lookup", &[], &[("record", base), ("key", name)], span)
+            }
+            Some(WType::Text) => err(span, "a text's character is s.at(i), from the end when i is negative, or s.charAt(i), \"\" past its end: s[i] is neither"),
+            _ => self.node_with("get", &[], &[("list", base), ("index", key)], span),
+        }
+    }
+
+    /// The type `v` is known to have: its node's output's, or an input's as the frame knows it.
+    fn typed<'v>(&'v self, v: &'v Val) -> Option<&'v WType> {
+        match v {
+            Val::Out { outputs, port, .. } => outputs.get(*port).map(|p| &p.ty),
+            Val::In(port) => self.cur().types.get(port),
+        }
     }
 
     /// The decimal leaf that made `v`, if one did (`DECIMAL_TEXTS`).
@@ -1241,6 +1289,9 @@ impl<'a> Lowerer<'a> {
             if frame.env.insert(p.name.text.clone(), Val::In(p.name.text.clone())).is_some() {
                 return err(p.name.span, format!("the input \"{}\" is declared twice", p.name.text));
             }
+            if let Some(t) = &p.ty {
+                frame.types.insert(p.name.text.clone(), written_type(t));
+            }
         }
         for p in &def.outputs {
             self.check_port_name(&p.name)?;
@@ -1559,7 +1610,7 @@ impl<'a> Lowerer<'a> {
                 }
                 let r = self.expr(base)?;
                 let k = self.expr(key)?;
-                self.node_with("lookup", &[], &[("record", r), ("key", k)], e.span)
+                self.index(r, k, key.span, e.span)
             }
             ExprKind::Record { spread, fields } => {
                 let mut acc = match spread {
@@ -1630,11 +1681,15 @@ impl<'a> Lowerer<'a> {
         if matches!(self.cur().kind, FrameKind::Lambda { .. }) {
             let inner = self.frames.pop().expect("the function's frame");
             let outside = self.name(n, span);
+            let ty = outside.as_ref().ok().and_then(|v| self.typed(v)).cloned();
             self.frames.push(inner);
             let v = outside?;
             let FrameKind::Lambda { captures } = &mut self.frame().kind else { unreachable!() };
             captures.push((n.to_string(), v));
             self.frame().env.insert(n.to_string(), Val::In(n.to_string()));
+            if let Some(t) = ty {
+                self.frame().types.insert(n.to_string(), t);
+            }
             return Ok(Val::In(n.to_string()));
         }
         if self.is_def(n) {
@@ -1857,7 +1912,7 @@ impl<'a> Lowerer<'a> {
         let inputs: Vec<WPort> = unit.inputs.iter().map(WPort::from_core).collect();
         if number && let [subject] = args {
             let v = self.expr(&subject.value)?;
-            if typed(&v).is_some_and(|t| *t == WType::Number) {
+            if self.typed(&v).is_some_and(|t| *t == WType::Number) {
                 return self.node_with(&leaf.text, params, &[(inputs[0].name.as_str(), v)], span);
             }
             return self.node_with("as_text", &[], &[("value", v)], span);
@@ -1869,7 +1924,7 @@ impl<'a> Lowerer<'a> {
     /// Whether `v` is known to be a Boolean: its node gives one, or chooses among Booleans (`a ??
     /// b`, `c ? a : b`), so a condition reads it as it is, without `is_truthy`.
     fn boolean(&self, v: &Val) -> bool {
-        if typed(v) == Some(&WType::Boolean) {
+        if self.typed(v) == Some(&WType::Boolean) {
             return true;
         }
         let Val::Out { id, .. } = v else { return false };
@@ -1897,7 +1952,7 @@ impl<'a> Lowerer<'a> {
     /// value of no known type is refused, naming the two leaves.
     fn text_or_list(&mut self, subject: &'a Expr, method: &Name, args: &'a [Arg], span: Span) -> R<Val> {
         let v = self.expr(subject)?;
-        let ty = typed(&v).cloned();
+        let ty = self.typed(&v).cloned();
         if method.text == "length" {
             // One output of several, named `length`, as `.name` picks one.
             if let Val::Out { id, outputs, explicit: false, .. } = &v
@@ -4648,6 +4703,67 @@ route.get("/x", () => {
         let (_, unit) = crate::composites::resolve(&store, &hash.expect("pick is placed")).unwrap();
         let inputs: Vec<Option<holon_core::Value>> = unit.inputs.iter().map(|p| if p.name == "op" { op.clone() } else { v.clone() }).collect();
         holon_core::eval(unit, &inputs, &store).into_vec().remove(0)
+    }
+
+    /// The function `f` of a flow, as core evaluates it, given its inputs by name.
+    fn ran(src: &str, given: &[(&str, holon_core::Value)]) -> Option<holon_core::Value> {
+        let doc = compiled(src).doc;
+        let mut store = MapResolver::new();
+        text::restore(&doc, &mut store, &Names::new());
+        let hash = doc.nodes.iter().find_map(|n| match &n.data.body {
+            crate::canvas::PlacedBody::Composite { hash } => Some(hash.clone()),
+            _ => None,
+        });
+        let (_, unit) = crate::composites::resolve(&store, &hash.expect("f is placed")).unwrap();
+        let inputs: Vec<Option<holon_core::Value>> = unit.inputs.iter().map(|p| given.iter().find(|(n, _)| *n == p.name).map(|(_, v)| v.clone())).collect();
+        holon_core::eval(unit, &inputs, &store).into_vec().remove(0)
+    }
+
+    /// A flow whose function `f(params)` is `body`, called with as many of the action's values.
+    fn with_f(params: &str, body: &str) -> String {
+        let args = ["x.a", "x.b"][..params.split(',').count()].join(", ");
+        format!("import {{ action, flow }} from \"holon\"\nimport state from \"state\"\n\nflow(\"f\")\n\nfunction f({params}) {{\n{body}\n}}\n\nexport const t = action((x) => {{\n  state.x = f({args})\n}})\n")
+    }
+
+    /// `base[i]` with a number reads a list's item, as JavaScript's, on a list or on a value of no
+    /// known type (an entry's `e[0]`); on a record, the field the number names; on a text it is
+    /// refused, naming its two forms. Any other key reads a record's field, as before.
+    #[test]
+    fn a_number_index_reads_a_list_s_item() {
+        use holon_core::Value::{List, Number, Record, Text};
+        let t = |s: &str| Text(s.into());
+        let pairs = List(vec![List(vec![t("a"), Number(1.0)]), List(vec![t("b"), Number(2.0)])]);
+        assert_eq!(
+            ran(&with_f("entries", "  return entries.map((e) => [e[0], e[1] * 2])"), &[("entries", pairs)]),
+            Some(List(vec![List(vec![t("a"), Number(2.0)]), List(vec![t("b"), Number(4.0)])]))
+        );
+        let xs = List(vec![Number(10.0), Number(20.0)]);
+        assert_eq!(ran(&with_f("xs", "  return xs[1]"), &[("xs", xs.clone())]), Some(Number(20.0)));
+        assert_eq!(ran(&with_f("xs", "  return xs[5]"), &[("xs", xs.clone())]), None, "past its end, as JavaScript's undefined");
+        assert_eq!(ran(&with_f("xs", "  return xs[-1]"), &[("xs", xs)]), None, "a negative index too");
+        let r = Record([("0".to_string(), t("zero")), ("a".to_string(), Number(1.0))].into());
+        assert_eq!(ran(&with_f("r: object", "  return r[0]"), &[("r", r.clone())]), Some(t("zero")), "r[0] is r[\"0\"]");
+        assert_eq!(ran(&with_f("r, k", "  return r[k]"), &[("r", r), ("k", t("a"))]), Some(Number(1.0)));
+        let (_, _, m) = error(&with_f("s: string", "  return s[0]"));
+        assert!(m.starts_with("a text's character is s.at(i)"), "{m}");
+    }
+
+    /// A function's port written with a type is known to be one, inside the function and inside
+    /// a function it gives a value to: `.length` picks the leaf by it.
+    #[test]
+    fn a_typed_port_picks_length_by_its_type() {
+        use holon_core::Value::{Bytes, List, Number, Text};
+        let t = |s: &str| Text(s.into());
+        assert_eq!(ran(&with_f("xs: string[]", "  return xs.length"), &[("xs", List(vec![t("a"), t("b"), t("c")]))]), Some(Number(3.0)));
+        assert_eq!(ran(&with_f("s: string", "  return s.length"), &[("s", t("héllo"))]), Some(Number(5.0)));
+        assert_eq!(ran(&with_f("b: Uint8Array", "  return b.length"), &[("b", Bytes(vec![1, 2]))]), Some(Number(2.0)));
+        assert_eq!(
+            ran(&with_f("xs: string[], ys", "  return ys.map((y) => y + xs.length)"), &[("xs", List(vec![t("a")])), ("ys", List(vec![Number(1.0), Number(2.0)]))]),
+            Some(List(vec![Number(2.0), Number(3.0)])),
+            "a typed value taken from around a function"
+        );
+        let (_, _, m) = error(&with_f("xs", "  return xs.length"));
+        assert!(m.starts_with(".length is a text's text_length or a list's length"), "untyped, still refused: {m}");
     }
 
     /// A flow whose function `pick` is `body`.

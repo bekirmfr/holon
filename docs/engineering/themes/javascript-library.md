@@ -103,9 +103,9 @@ the eleven number leaves. The operators are mapped but for `void`, `instanceof` 
 | `{ a: 1, ...r, ...s, k: v }` | `merge`, `with_field` | mapped | read left to right: a spread after anything is `merge`, one for several in a row |
 | `{ [k]: v }` | `insert` | mapped | the key a text; read in place, left to right |
 | `r.k` | `field` | mapped | |
-| `r[k]` | `lookup` | mapped for a record | a list: differs, `xs[0]` answers nothing; `get(xs, 0)` by name |
+| `r[k]`, `xs[i]` | `lookup`, `get` | mapped | by the types: a number on a list, or on a value of no known type (an entry's `e[0]`), is `get`, nothing past the end or for a negative index, as JavaScript's `undefined`; on a record, the field the number names, as `r["0"]`; on a text, refused, naming `s.at(i)` and `s.charAt(i)`; any other key reads a record's field |
 | `store[k]` (a collection, folder, database) | `collection_get`, `file_read`, … | mapped | §8 |
-| `xs.length`, `s.length` | `length`, `text_length` | mapped where the type is known | by the type of the node that made the value, a `List` or a `Text`; on anything else, ".length is a text's text_length or a list's length, and this value isn't known to be either" |
+| `xs.length`, `s.length` | `length`, `text_length` | mapped where the type is known | by the type of the node that made the value, a `List` or a `Text`, or of a function's port as written (`xs: string[]`), in the function and in one written in it that uses the port; on anything else, ".length is a text's text_length or a list's length, and this value isn't known to be either" |
 | `undefined` | | as a branch | `c ? a : undefined`, `x !== undefined` in an `if`; else "undefined is written as a branch" |
 | `null` | | refused | "null isn't a value here: a value that isn't there is absent, undefined" |
 | `NaN`, `Infinity` | | refused | "NaN isn't a value a flow has: a leaf gives nothing where JavaScript gives NaN, so test for presence, x !== undefined, or give a fallback, x ?? 0" |
@@ -217,7 +217,7 @@ give, or refused naming the form that gives it. Items compare by value (§9).
 | `join(sep)`, `join()` | `join` | mapped | texts; `join()` is `join(xs, ",")` |
 | `concat(ys, x)` | `extend`, `append` | mapped | on a value not known to be a text: `extend` for a list written as one, `append` for a literal that isn't one; a name, which could be either: refused, naming `[...xs, ...ys]` and `[...xs, y]` |
 | `length` | `length` | mapped where the list is known to be one | §2 |
-| `xs[i]` | `get` | by name | `xs[i]` lowers to `lookup` and answers nothing (§9) |
+| `xs[i]` | `get` | mapped where `i` is known to be a number | §2 |
 | `[x, ...xs]` (`unshift`) | `extend` (`cons`) | mapped | |
 | `[...xs, x]`, `xs.push(x)` as a statement | `append` | mapped | `xs.push(x)` alone is `xs = [...xs, x]` |
 | `push` as a value, `pop`, `shift`, `unshift`, `splice` | | refused | naming the value form: `[...xs, x]`; `xs.at(-1)` and `xs.slice(0, -1)`; `xs.at(0)` and `xs.slice(1)`; `[x, ...xs]`; `xs.toSpliced(…)` and `xs.slice(s, s + n)` |
@@ -294,7 +294,6 @@ author sees no mistake; the run answers nothing where JavaScript answers somethi
 
 | JavaScript | What happens | Why |
 |---|---|---|
-| `xs[0]` on a list | `lookup`: nothing | `lookup` reads a record by a text key (`primitives.rs`, `Op::Lookup`); a list's item is `get` |
 | `x && y`, `x \|\| y` on values that aren't true or false, outside a condition | `and`, `or`: nothing | they take booleans and give one (`as_bool`), where JavaScript gives an operand; in a condition each operand is read through `is_truthy` |
 | `a + b` with a list or a record and no text, or `true + 1` | `add`: nothing | `add` joins texts and adds numbers; JavaScript converts the others first |
 | `"a" + [1, 2]`, `` `${{ a: 1 }}` `` | `"a[1,2]"`, `{"a":1}` | `as_text` writes a list or a record as JSON; JavaScript writes `"a1,2"` and `[object Object]` |
@@ -312,9 +311,9 @@ author sees no mistake; the run answers nothing where JavaScript answers somethi
 | `Object.keys(r)`, `JSON.stringify(r)` | keys sorted | JavaScript keeps insertion order, integer keys first; §11, open 2 |
 | `JSON.parse` of a key given twice | nothing | `json.rs` refuses it; JavaScript keeps the last |
 
-Each is a candidate for the reader to refuse with the right form, or to lower by the value's type
-(`xs[i]` to `get`), as `.length` and `!x` (`not(is_truthy(x))`) are, once the reader knows the
-types it reads.
+Each is a candidate for the reader to refuse with the right form, or to lower by the value's type,
+as `xs[i]` (`get`), `.length` and `!x` (`not(is_truthy(x))`) are, once the reader knows the types
+it reads.
 
 ## 10. Leaves with no JavaScript form
 
@@ -324,9 +323,8 @@ read; reading it is a line in `ts.rs` each, with a test of its meaning:
 | Leaf | Its JavaScript form | Note |
 |---|---|---|
 | `length`, `text_length` | `.length` | read where the value's type is known (§2); by name elsewhere |
-| `get` | `xs[i]` | §9: `xs[i]` lowers to `lookup`; `xs.at(i)` is `at` |
 | `slice` (`mode: length`) | `s.substr(start, len)` | Annex B's, not read; `s.slice(a, b)` is `slice {mode: end}`, `s.substring(a, b)` `slice {mode: substring}` |
-| `head`, `tail` | `xs[0]` | `xs.at(0)` is `at` and `xs.slice(1)` `slice`; `xs.reduce(f)` lowers to both |
+| `head`, `tail` | `xs[0]` | `xs[0]` is `get`, `xs.at(0)` `at` and `xs.slice(1)` `slice`; `xs.reduce(f)` lowers to both |
 | `is_empty` | `xs.length === 0` | |
 | `sum` | `xs.reduce((a, b) => a + b, 0)`, which lowers to `fold` and `add` today | |
 | `is_truthy` | `Boolean(x)` | `!x`, `!!x` and a condition read it already (§9) |
@@ -405,7 +403,7 @@ pages share are made one (a leaf taking a list or a text, so the reader needn't 
 **What only the reader needs to read**, over leaves that exist: the `Math` and `Number` constants
 (each bit-checked) and `-x` as `x * -1` (exact at `-0`), both read now, as are `++`, `--` and the
 compound assignments, and `concat`, `Array.from(xs)` and `Array.of`; `.length` and `xs[i]` by
-the value's type, `{ [k]: v }` (read now), `Object.freeze` and `structuredClone` as the value
+the value's type (read now, a function's port by its annotation too), `{ [k]: v }` (read now), `Object.freeze` and `structuredClone` as the value
 itself (read now), a date's `getTime` (read now).
 
 **What the races found wrong**, all fixed since: `add` gave `0` for `-0 + -0` (it summed

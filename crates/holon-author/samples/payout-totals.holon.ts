@@ -16,24 +16,22 @@
 //   3,USD,1250.005
 // then curl http://127.0.0.1:8180/totals/may.csv
 //     {"EUR":{"count":2,"total":"0.30"},"USD":{"count":1,"total":"1250.00"}}
-import { csv_parse, decimal_round, decimal_sum, flow, length, on, route } from "holon"
+import { csv_parse, decimal_round, decimal_sum, flow, on, route } from "holon"
 import totals from "collection:totals"
 import payouts from "folder:payouts"
 
 flow("payout-totals", { port: 8180 })
 
-// A file's payouts by currency: how many, and their sum to the cent.
+// One currency's payouts: how many, and their sum to the cent.
+function summary(rows) {
+  const amounts = rows.map((p) => p.amount)
+  return { count: amounts.length, total: decimal_round(decimal_sum(amounts), 2) }
+}
+
+// A file's payouts, by currency.
 on.file.created(payouts, (f) => {
   const groups = Object.groupBy(csv_parse(payouts[f.name]), (p) => p.currency)
-  totals[f.name] = Object.fromEntries(
-    Object.keys(groups).map((c) => [
-      c,
-      {
-        count: length(groups[c]),
-        total: decimal_round(decimal_sum(groups[c].map((p) => p.amount)), 2),
-      },
-    ]),
-  )
+  totals[f.name] = Object.fromEntries(Object.entries(groups).map((e) => [e[0], summary(e[1])]))
 })
 
 route.get("/totals/:name", (req) => totals[req.params.name])

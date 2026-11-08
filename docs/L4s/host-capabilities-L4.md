@@ -332,11 +332,15 @@ As designed, with what building it found:
 - **The editor's palette** groups come from `paletteGroups.ts` now, and a test holds every
   catalog leaf to one group: 1.1's bytes leaves and `file_read_bytes` were in none, so they
   weren't in the palette. They are now, beside the decimal leaves and CSV's.
-- **Two gaps the sample ran into, left for the language:** `e[0]` on a value of no known type is
-  read as a record's field with a number for its name, which fails validation with a message that
-  doesn't say so; and a parameter's annotation (`amounts: string[]`) doesn't make `.length` known
-  inside the function. The sample uses `length(…)` by name, and `Object.keys`, as the invoice
-  sample does.
+- **Three gaps the sample ran into, fixed after it:** `e[0]` on a value of no known type was read
+  as a record's field with a number for its name, which failed validation with a message that
+  didn't say so (it named a count; `EncapError::Invalid` names each error now); a parameter's
+  annotation (`amounts: string[]`) didn't make `.length` known inside the function; and the
+  printer refused a map's function using values from around it that calls a function returning
+  a record, as two statements: the call's outputs bound, then read back into the record. A
+  number index is `get` now, an annotated port is known by its type, and a call read whole prints
+  as the call. The sample uses a named function and `e[0]`. The printer still leaves a
+  parameter's annotation out, as the graph doesn't hold it.
 
 ### 5.2 Email
 

@@ -95,7 +95,8 @@ impl std::fmt::Display for EncapError {
                 write!(f, "child {child} has no output at port {port}")
             }
             EncapError::Invalid(errs) => {
-                write!(f, "the derived unit failed validation: {} error(s)", errs.len())
+                let named: Vec<String> = errs.iter().map(|e| e.to_string()).collect();
+                write!(f, "the derived unit failed validation: {}", named.join("; "))
             }
         }
     }
@@ -485,6 +486,24 @@ mod tests {
         // dual.y is free and exposed despite dual.x being consumed on the SAME child;
         // add's own output is free too.
         assert_eq!(exposed, vec![(0, 1, "y"), (1, 0, "out")]);
+    }
+
+    /// A derived unit that fails validation says why, each error by name.
+    #[test]
+    fn an_invalid_derived_unit_names_its_errors() {
+        let mut r = MapResolver::new();
+        let hadd = r.insert(binop("add", "a", "b")).unwrap();
+        let hlen = r
+            .insert(Unit {
+                body: UnitBody::Primitive { name: "text_length".into() },
+                params: vec![],
+                inputs: vec![Port { name: "text".into(), ty: Type::Text }],
+                outputs: vec![port("length")],
+            })
+            .unwrap();
+        let spec = default_spec(&[hadd, hlen], &[e(0, 0, 1, 0)], &r).unwrap();
+        let err = derive_and_freeze(vec![hadd, hlen], vec![e(0, 0, 1, 0)], &spec, &r).unwrap_err();
+        assert_eq!(err.to_string(), "the derived unit failed validation: edge 0 connects incompatible types: Number does not fit Text");
     }
 
     #[test]
