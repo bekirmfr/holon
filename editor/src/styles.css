@@ -653,3 +653,20 @@ body {
 .hl-header nav:focus-visible, .hl-canvas__flow:focus-visible, [role="complementary"]:focus-visible, [role="region"]:focus-visible, main:focus-visible {
   outline: 1px solid var(--accent); outline-offset: -1px;
 }
+
+/* ── The command palette (ui/CommandPalette.tsx): near the top, as wide as it reads ── */
+.hl-modal--top { align-items: flex-start; padding-top: 12vh; }
+.hl-cmd { width: min(560px, calc(100vw - 32px)); display: flex; flex-direction: column; overflow: hidden; }
+.hl-cmd__field {
+  font: inherit; font-size: 13px; padding: 10px 12px; color: var(--ink);
+  background: var(--surface); border: 0; border-bottom: 1px solid var(--border); outline: none;
+}
+.hl-cmd__why { padding: 6px 12px; color: var(--bad); border-bottom: 1px solid var(--border); }
+.hl-cmd__list { list-style: none; margin: 0; padding: 4px 0; overflow: auto; max-height: 50vh; }
+.hl-cmd__item { display: flex; align-items: center; gap: 10px; padding: 5px 12px; cursor: pointer; }
+.hl-cmd__item--at { background: var(--sel); color: var(--ink); }
+.hl-cmd__item--help { cursor: default; }
+.hl-cmd__label { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hl-cmd__kind { flex: 0 0 auto; color: var(--faint); font-size: 11px; }
+.hl-cmd__none { padding: 8px 12px; color: var(--faint); }
+.hl-keys__to { margin-right: 6px; color: var(--faint); }

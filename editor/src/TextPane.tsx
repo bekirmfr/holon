@@ -228,6 +228,14 @@ const theme = (dark: boolean) => EditorView.theme(
   { dark },
 );
 
+/** What the command palette (`:12`, `:fmt`) asks of the text pane. */
+export type TextAsk = { do: "line"; line: number } | { do: "format" };
+
+/** Ask the open text pane to go to a line or format; false when no pane is open to take it. */
+export function askText(ask: TextAsk): boolean {
+  return !window.dispatchEvent(new CustomEvent<TextAsk>("holon:text", { detail: ask, cancelable: true }));
+}
+
 /** Format the text as `holon fmt` writes it; false (and the text as it was) when it has a mistake. */
 function format(view: EditorView): boolean {
   const text = view.state.doc.toString();
@@ -326,6 +334,25 @@ export function TextPane({
       annotations: [outside.of(true), Transaction.addToHistory.of(false)],
     });
   }, [text]);
+
+  // Asked by the command palette (askText): a line gone to, or the text formatted.
+  useEffect(() => {
+    const onAsk = (e: Event) => {
+      const v = view.current;
+      if (!v) return;
+      e.preventDefault();
+      const ask = (e as CustomEvent<TextAsk>).detail;
+      if (ask.do === "format") {
+        setFormatError(format(v) ? "" : "it has a mistake: fix it, then format");
+        return;
+      }
+      const line = v.state.doc.line(Math.min(ask.line, v.state.doc.lines));
+      v.dispatch({ selection: { anchor: line.from }, effects: EditorView.scrollIntoView(line.from, { y: "center" }) });
+      v.focus();
+    };
+    window.addEventListener("holon:text", onAsk);
+    return () => window.removeEventListener("holon:text", onAsk);
+  }, []);
 
   useEffect(() => {
     view.current?.dispatch({ effects: editable.current.reconfigure(EditorState.readOnly.of(readOnly)) });

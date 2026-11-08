@@ -103,9 +103,15 @@ export function KeysDialog({ onClose }: { onClose: () => void }) {
                 {KEYMAP.filter((b) => b.scope === s).map((b) => (
                   <div key={b.keys.join(" ")} className="hl-keys__row">
                     <dt>
-                      {b.keys.map((k) => (
-                        <Kbd key={k} k={k} />
-                      ))}
+                      {b.keys.map((k) =>
+                        k === "…" ? (
+                          <span key={k} className="hl-keys__to">
+                            to
+                          </span>
+                        ) : (
+                          <Kbd key={k} k={k} />
+                        ),
+                      )}
                     </dt>
                     <dd>{b.does}</dd>
                   </div>

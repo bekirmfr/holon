@@ -27,6 +27,7 @@ export const KEYMAP: Binding[] = [
   { keys: ["1", "…", "8"], scope: "anywhere", does: "go to a page: overview, approvals, flows, editor, library, resources, people, policy" },
   { keys: ["Escape"], scope: "anywhere", does: "go up: a run to its runs, a flow to the flows, a page to the overview (not in the editor)" },
   { keys: ["F6", "shift+F6"], scope: "anywhere", does: "move to the next or previous pane" },
+  { keys: ["ctrl+k", "/"], scope: "anywhere", does: "find a page, a flow or an action; : for a command" },
   { keys: ["?"], scope: "anywhere", does: "show these keys" },
   { keys: ["ctrl+s"], scope: "editor", does: "save the flow" },
   { keys: ["ctrl+d"], scope: "editor", does: "deploy it" },

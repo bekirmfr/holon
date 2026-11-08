@@ -69,6 +69,8 @@ import { DeployedPage, FlowsPage, pageOf, routeOfPage, shownAt, type AppPage, ty
 import { format, parentOf, same, type Route } from "./routes";
 import { PAGE_KEYS } from "./keymap";
 import { KeysDialog, useKeys } from "./ui/Keys";
+import { CommandPalette } from "./ui/CommandPalette";
+import type { ColonCommand, Command } from "./commands";
 import { useHashRoute, type Navigate } from "./useHashRoute";
 import { applyTheme, storedTheme, useDark } from "./look";
 import { useCanvasHistory } from "./useCanvasHistory";
@@ -80,7 +82,7 @@ import { AccountMenu, AuthGate, type Me } from "./AuthGate";
 import { AdminPage } from "./AdminPage";
 import { HomePage } from "./HomePage";
 import { compileHolon, printHolon, sourceLineOf } from "./holonText";
-import { TextPane } from "./TextPane";
+import { askText, TextPane, type TextAsk } from "./TextPane";
 import { useTextPane } from "./useTextPane";
 import { WelcomePage } from "./WelcomePage";
 import type { ManualAt } from "./ManualPage";
@@ -124,6 +126,8 @@ function Canvas({
     openPage: (p: PageTab) => void;
     closePage: (p: PageTab) => void;
     onNew: () => void;
+    /** Show every key (the ? dialog). */
+    showKeys: () => void;
   };
   page: AppPage;
   setPage: (p: AppPage) => void;
@@ -681,6 +685,90 @@ function Canvas({
   );
   useKeys({ "=": () => view.toggleValues() }, { enabled: shown === "canvas" && viewing !== null });
 
+  // ── The command palette (ui/CommandPalette.tsx): Ctrl+K or / ─────────────────────────────
+  // Its entries are what there is now: the pages, every deployed or saved flow and its tabs, the
+  // flow edited's actions, the samples, the looks.
+  const [finding, setFinding] = useState(false);
+  useKeys({ "ctrl+k": () => setFinding(true), "/": () => setFinding(true) }, { whileTyping: ["ctrl+k"] });
+  const editing = shown === "canvas" && !viewing;
+  const commands = useMemo<Command[]>(() => {
+    if (!finding) return [];
+    const go = (to: Route) => () => navigate(to);
+    const name = flowName || "this flow";
+    const out: Command[] = [];
+    if (editing) {
+      out.push({ label: `Save ${name}`, kind: "this flow", run: () => void onSave() });
+      out.push({ label: `Deploy ${name}`, kind: "this flow", run: () => void onDeployFlow() });
+      out.push({ label: `Format ${name}`, kind: "this flow", run: () => askTextOpening({ do: "format" }) });
+    }
+    const pages: [string, Route][] = [
+      ["Overview", { kind: "overview" }],
+      ["Approvals", { kind: "approvals", tab: "deploys" }],
+      ["Flows", { kind: "flows" }],
+      ["Editor", { kind: "editor", slug: null, view: false, seq: null }],
+      ["Library", { kind: "library", tab: "samples" }],
+      ["Resources", { kind: "resources", tab: null }],
+      ["People", { kind: "people", tab: null }],
+      ["Policy", { kind: "policy" }],
+      ["Deployed", { kind: "deployed" }],
+      ["Docs", { kind: "docs", page: null, anchor: null }],
+      ["Welcome", { kind: "start" }],
+      ...(me.role === "admin" ? [["Admin", { kind: "admin", tab: null }] as [string, Route]] : []),
+    ];
+    for (const [label, to] of pages) out.push({ label, kind: "page", run: go(to) });
+    const deployed = new Set(deployments.map((d) => d.slug));
+    for (const { slug } of deployments) {
+      out.push({ label: slug, kind: "flow", run: go({ kind: "flow", slug, tab: "status" }) });
+      for (const tab of ["runs", "history", "state", "settings"] as const) out.push({ label: `${slug} ${tab}`, kind: "flow", run: go({ kind: "flow", slug, tab }) });
+      out.push({ label: `Edit ${slug}`, kind: "flow", run: go({ kind: "editor", slug, view: false, seq: null }) });
+      out.push({ label: `View ${slug}`, kind: "flow", run: go({ kind: "editor", slug, view: true, seq: null }) });
+    }
+    for (const f of savedFlows) if (!deployed.has(f)) out.push({ label: `Edit ${f}`, kind: "saved", run: go({ kind: "editor", slug: f, view: false, seq: null }) });
+    out.push({ label: "New draft", kind: "editor", run: start.onNew });
+    for (const s of samples()) out.push({ label: `New from ${s.title}`, kind: "sample", run: () => void onOpenSample(s) });
+    for (const theme of ["auto", "light", "dark"] as const) out.push({ label: `Theme: ${theme}`, kind: "look", run: () => start.onPrefs({ ...start.prefs, theme }) });
+    out.push({ label: "Keys", kind: "help", run: start.showKeys });
+    return out;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [finding, editing, flowName, deployments, savedFlows, me.role, start.prefs]);
+  // The text is opened for a `:12` or `:fmt` asked while it is closed, and asked once it is there.
+  const askTextOpening = (ask: TextAsk) => {
+    if (askText(ask)) return;
+    if (!textPane.open) textPane.toggle();
+    let tries = 0;
+    const again = () => {
+      if (!askText(ask) && ++tries < 20) setTimeout(again, 25);
+    };
+    setTimeout(again, 0);
+  };
+  const onColon = (c: ColonCommand): string | null => {
+    switch (c.kind) {
+      case "line":
+      case "fmt":
+        if (shown !== "canvas") return "open a flow in the editor first";
+        askTextOpening(c.kind === "line" ? { do: "line", line: c.line } : { do: "format" });
+        return null;
+      case "save":
+      case "deploy":
+        if (!editing) return "edit a flow first";
+        void (c.kind === "save" ? onSave() : onDeployFlow());
+        return null;
+      case "new":
+        start.onNew();
+        return null;
+      case "restore":
+        if (!viewing) return "view a deployed flow first";
+        navigate({ kind: "flow", slug: viewing, tab: "history" });
+        return null;
+      case "keys":
+        start.showKeys();
+        return null;
+      case "theme":
+        start.onPrefs({ ...start.prefs, theme: c.theme });
+        return null;
+    }
+  };
+
   const onProject = useCallback(() => {
     const result = projectCanvas(nodes, edges, ev, canvasKey);
     if (result.ok) {
@@ -872,6 +960,7 @@ function Canvas({
     <NodeDocs.Provider value={describeNode}>
     <NodeActions.Provider value={nodeActions}>
     <div className="hl-main">
+    {finding && <CommandPalette commands={commands} onColon={onColon} onClose={() => setFinding(false)} />}
     {/* Every tab, pages first, then the open flows; each closes. With nothing open (or the last
         flow closed) the canvas shows home, the default page. */}
     <FlowTabs
@@ -1299,7 +1388,7 @@ function Editor({ me }: { me: Me }) {
                 pendingNew={pendingNew}
                 docs={docs}
                 me={me}
-                start={{ prefs, onPrefs, pages, openPage, closePage, onNew }}
+                start={{ prefs, onPrefs, pages, openPage, closePage, onNew, showKeys: () => setKeysShown(true) }}
               />
             )}
           </ReactFlowProvider>

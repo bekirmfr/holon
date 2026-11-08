@@ -83,6 +83,47 @@ test("keys: a page by its number, Esc up, ? for them all, and j steps through a 
   await expect(page.getByRole("slider", { name: "step" })).toBeVisible();
 });
 
+test("the command palette finds a page and a sample, and takes : commands", async ({ page }) => {
+  await page.goto("/#deployed");
+  await expect(page.getByRole("tablist", { name: "open tabs" }).getByRole("tab", { name: "deployed" })).toHaveAttribute("aria-selected", "true");
+  const palette = page.getByRole("dialog", { name: "command palette" });
+  const find = palette.getByRole("combobox");
+
+  await page.keyboard.press("Control+k");
+  await find.fill("flows");
+  await expect(palette.getByRole("option").first()).toHaveText(/^Flows/);
+  await page.keyboard.press("Enter");
+  await expect(palette).toHaveCount(0);
+  await expect(page).toHaveURL(/#flows$/);
+
+  // A sample, by a few letters of its title: open in the editor, under its own name.
+  await page.keyboard.press("/");
+  await find.fill("new hello");
+  await expect(palette.getByRole("option", { selected: true })).toContainText("New from Hello API");
+  await page.keyboard.press("Enter");
+  await expect(page).toHaveURL(/#editor\.hello-api$/);
+
+  // A line of its text: the text opens, there.
+  await page.keyboard.press("Control+k");
+  await find.fill(":2");
+  await page.keyboard.press("Enter");
+  await expect(page.locator(".cm-editor")).toBeVisible();
+  await expect(page.locator(".cm-activeLine")).toHaveCount(1);
+
+  // A command it doesn't know says so, and stays open; a theme is chosen, then auto again.
+  await page.keyboard.press("Control+k");
+  await find.fill(":frob");
+  await page.keyboard.press("Enter");
+  await expect(palette.getByRole("status")).toHaveText("there is no command :frob");
+  await find.fill(":theme dark");
+  await page.keyboard.press("Enter");
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
+  await page.keyboard.press("Control+k");
+  await find.fill(":theme auto");
+  await page.keyboard.press("Enter");
+  await expect(page.locator("html")).not.toHaveAttribute("data-theme", /./);
+});
+
 test("an address that names nothing says so, and shows the overview", async ({ page }) => {
   await page.goto("/#no.such.place");
   await expect(notices(page)).toContainText("Nothing is at #no.such.place");
