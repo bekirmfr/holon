@@ -1921,8 +1921,9 @@ test("payment-batch writes a pain.001 whose control sum is exact and reads a pai
   expect(xml).toContain("<CtrlSum>100.10</CtrlSum>");
   expect(xml).toContain('<InstdAmt Ccy="EUR">0.10</InstdAmt>');
   expect(xml.indexOf("<MsgId>")).toBeLessThan(xml.indexOf("<CreDtTm>"));
-  // An amount of 0 isn't a payout.
+  // An amount of 0 isn't a payout, and the schema takes no IBAN with spaces.
   expect((await request.post(`http://127.0.0.1:${port}/batch`, { data: csv.replace(",0.10,", ",0,") })).status()).toBe(400);
+  expect((await request.post(`http://127.0.0.1:${port}/batch`, { data: csv.replace("NL91ABNA0417164300", "NL91 ABNA 0417 1643 00") })).status()).toBe(400);
   const report = `<Document xmlns="urn:iso:std:iso:20022:tech:xsd:pain.002.001.10"><CstmrPmtStsRpt>
     <OrgnlGrpInfAndSts><GrpSts>PART</GrpSts></OrgnlGrpInfAndSts>
     <OrgnlPmtInfAndSts><TxInfAndSts><OrgnlEndToEndId>P2</OrgnlEndToEndId><TxSts>RJCT</TxSts>

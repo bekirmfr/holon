@@ -502,9 +502,15 @@ As designed, with what building it found:
   one child a line.
 - **The sample, run live:** Python's ElementTree read its pain.001 with the schema's order, a
   batch of 1,000 payouts gave the control sum Python's `Decimal` gives, and an XXE and a billion
-  laughs posted to `/status` were refused as not XML. The order is pain.001.001.09's, checked
-  against its sequences by hand; the file wasn't run through the ISO 20022 schema itself, which
-  isn't here offline.
+  laughs posted to `/status` were refused as not XML.
+- **Against the ISO 20022 schemas:** pain.001.001.09.xsd and pain.002.001.10.xsd, from
+  iso20022.org's message archive, run through .NET's validator. Every pain.001 the sample wrote
+  was valid (three payouts, the next business day, escaped text, 1,000 payouts), and so was the
+  pain.002 its test reads; three copies broken by hand were refused, so the check was real. The
+  schema found what the sample let through: an id past 35 characters, a name or a reference empty
+  or past 140, an IBAN not in its shape, an empty date. Those wrote a file the bank would refuse,
+  so the sample now answers 400 for them, and for a control sum past the schema's 18 digits and a
+  date that isn't a calendar day as written; a file at every limit validates.
 
 ### 5.2 Email
 

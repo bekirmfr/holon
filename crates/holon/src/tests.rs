@@ -6803,8 +6803,10 @@ fn a_csv_of_payouts_is_totalled_exactly() {
 
 /// XML both ways (the payment-batch sample): a CSV of payouts becomes a pain.001 with its elements
 /// in the schema's order, each amount rounded to cents and the control sum exact; the same file for
-/// the same day keeps its message id, another day changes it; a file with an amount of 0, or one
-/// that isn't a CSV of payouts, is refused; the bank's pain.002 is read back; and the runs verify.
+/// the same day keeps its message id, another day changes it; a file with an amount of 0, one that
+/// isn't a CSV of payouts, or one the schema would refuse (an id or a name too long, an IBAN not in
+/// its shape, a date that isn't one) is refused, one at its limits taken; the bank's pain.002 is
+/// read back; and the runs verify.
 #[test]
 fn a_csv_of_payouts_becomes_a_pain001_and_its_status_report_is_read() {
     let state = claims_state("");
@@ -6833,10 +6835,32 @@ fn a_csv_of_payouts_becomes_a_pain001_and_its_status_report_is_read() {
     assert_eq!(xml, expected);
     assert_eq!(batch("/batch?date=2026-11-10", csv).1, id, "the same file for the same day: one message id");
     assert_ne!(batch("/batch?date=2026-11-11", csv).1, id, "another day: another");
-    for bad in [csv.replace(",0.10,", ",0,"), csv.replace(",0.10,", ",ten cents,"), "id,name\nP1,Jane Roe\n".to_string(), "id,name,iban,amount,reference\n".to_string()] {
+    let row = |r: &str| format!("id,name,iban,amount,reference\n{r}\n");
+    let refused = [
+        csv.replace(",0.10,", ",0,"),
+        csv.replace(",0.10,", ",ten cents,"),
+        "id,name\nP1,Jane Roe\n".to_string(),
+        "id,name,iban,amount,reference\n".to_string(),
+        // What pain.001.001.09 refuses: an id past 35 characters, a name or a reference empty or
+        // past 140, an IBAN not in its shape, a control sum past 18 digits.
+        row(&format!("{},Jane Roe,FR1420041010050500013M02606,1,Invoice", "P".repeat(36))),
+        row("P1,,FR1420041010050500013M02606,1,Invoice"),
+        row(&format!("P1,{},FR1420041010050500013M02606,1,Invoice", "N".repeat(141))),
+        row("P1,Jane Roe,FR1420041010050500013M02606,1,"),
+        row("P1,Jane Roe,fr14 2004 1010,1,Invoice"),
+        row("P1,Jane Roe,FRX420041010050500013M02606,1,Invoice"),
+        row("P1,Jane Roe,FR1420041010050500013M02606,10000000000000000,Invoice"),
+    ];
+    for bad in refused {
         let (status, answer, _) = data_call(&state, &slug, "POST", "/batch", &bad);
         assert_eq!(status, 400, "{bad}: {answer}");
     }
+    for date in ["tomorrow", "2026-02-30", "2026-11-10T10:00:00Z", ""] {
+        let (status, answer, _) = data_call(&state, &slug, "POST", &format!("/batch?date={date}"), csv);
+        assert_eq!(status, 400, "{date}: {answer}");
+    }
+    // At the schema's limits, taken.
+    batch("/batch?date=2026-11-10", &row(&format!("{},{},FR14{},9999999999999999.99,{}", "P".repeat(35), "N".repeat(140), "Ab9".repeat(10), "R".repeat(140))));
 
     let report = r#"<?xml version="1.0" encoding="UTF-8"?>
 <Document xmlns="urn:iso:std:iso:20022:tech:xsd:pain.002.001.10">
