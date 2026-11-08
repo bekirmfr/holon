@@ -8693,6 +8693,56 @@ route.get("/seen", () => ({{ last: seen["last"] }}))
     let _ = std::fs::remove_dir_all(state.deployments_path.beside("logs").unwrap());
 }
 
+/// An action run that parks hasn't answered, and hasn't failed: its entry says where it waits,
+/// with no status, and neither the deployment's runs nor an unrecorded action's tally count it as
+/// failed, whatever its level. One that can't park (past `max_waiting_runs`) still fails, 500.
+#[test]
+fn a_parked_action_run_waits_and_isnt_counted_as_failed() {
+    let mut state = claims_state("[limits]\nmax_waiting_runs = 1\n");
+    state.deployments_path = unique_temp_path("parked-not-failed").into();
+    let text = |level: &str, port: u16| {
+        format!(
+            r#"import {{ action, event, flow, route }} from "holon"
+
+flow("parks-{level}", {{ port: {port} }})
+
+export const hold = action(async () => {{
+  const paid = await event("paid", {{ expires: "1h" }})
+  return paid.method
+}}, {{ log: "{level}" }})
+
+route.get("/paid/:token", () => "thanks", {{ resumes: "paid" }})
+"#
+        )
+    };
+    for (level, port) in [("strict", 18206), ("lazy", 18207), ("unrecorded", 18208)] {
+        let slug = deploy_plain_text(&state, &text(level, port));
+        let hold = || run_action(&state.store, &state.deployments, &state.deployments_path, &slug, "hold", Ok(Value::Record(BTreeMap::new())), None, false, &[]);
+        let held = hold();
+        assert_eq!((held.status, held.waiting, held.error.as_deref()), (202, true, None), "{level}: {}", held.reply);
+        let refused = hold();
+        assert_eq!((refused.status, refused.waiting), (500, false), "{level}: one waits already, as many as may: {}", refused.reply);
+        let (runs, failed) = {
+            let table = state.deployments.lock().unwrap();
+            (table[&slug].trigger_count, table[&slug].error_count)
+        };
+        assert_eq!((runs, failed), (2, 1), "{level}: both ran, only the one that couldn't park failed");
+        if level == "unrecorded" {
+            let tally = state.deployments.lock().unwrap()[&slug].tallies["action hold"].clone();
+            assert_eq!((tally.runs, tally.failed), (2, 1), "counted, the parked one not as failed");
+            assert!(log_entries(&state, &slug).is_empty(), "neither logged");
+        } else {
+            let entries: Vec<serde_json::Value> = log_entries(&state, &slug).into_iter().filter(|e| e["route"] == "action hold").collect();
+            let [parked, failed] = &entries[..] else { panic!("{level}: both logged: {entries:?}") };
+            assert_eq!((&parked["parked"], &parked["status"]), (&serde_json::json!(["paid"]), &serde_json::Value::Null), "{level}: waiting, with no status: {parked}");
+            assert_eq!(failed["status"], 500, "{level}: {failed}");
+            assert!(failed["error"].as_str().is_some_and(|e| e.contains("max_waiting_runs")), "{level}: {failed}");
+        }
+    }
+    let _ = std::fs::remove_file(state.deployments_path.at().unwrap());
+    let _ = std::fs::remove_dir_all(state.deployments_path.beside("logs").unwrap());
+}
+
 /// What a waiting run sent as it parked is kept with its record, as a logged run's is in its log:
 /// after a restart, an unrecorded run's later part doesn't send it again.
 #[test]
