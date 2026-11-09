@@ -11,6 +11,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const crypto = require("node:crypto");
+const { tidy } = require("../../editor/src/graphLayout.ts");
 
 const DEFAULT_SERVER = "http://127.0.0.1:7420";
 const SCHEME = "holon";
@@ -33,7 +34,7 @@ let flows;
 let activity;
 /** @type {HolonFiles | undefined} */
 let flowFiles;
-/** @type {Map<string, vscode.WebviewPanel>} */
+/** @type {Map<string, { panel: vscode.WebviewPanel, document: object }>} */
 const graphs = new Map();
 
 function settings() {
@@ -420,23 +421,30 @@ async function approveGrant(arg) {
 
 const escapeHtml = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 
-/** A flow's canvas as a picture: each node as the canvas draws it (its name, its input ports on the
- *  left and output ports on the right, each with its type, its params), and each wire from the
- *  output port it leaves to the input port it reaches. The page's script draws the wires and moves
- *  the nodes: a click selects one node, a wire or a port; a drag on a node moves the selected nodes;
- *  a drag on the background selects the nodes in a box; the middle button pans; the wheel zooms. */
-function graphHtml(name, document) {
-  const NODE_W = 232;
-  const HEAD = 30;
-  const ROW = 22;
-  const clip = (s, n) => (String(s).length > n ? `${String(s).slice(0, n - 1)}…` : String(s));
-  const typeText = (ty) => {
-    if (typeof ty === "string") return ty;
-    if (ty.List) return `List<${typeText(ty.List)}>`;
-    if (ty.Product) return `(${ty.Product.map(typeText).join(", ")})`;
-    if (ty.Sum) return ty.Sum.map(typeText).join(" | ");
-    return "?";
-  };
+// The graph's drawing: each node with its name and ports, each wire, and each handler's domain framed
+// with its label. The positions come from the shared tidy layout (editor/src/graphLayout.ts), so a flow is
+// drawn the same here as in the editor. The page only draws and moves: a click selects, a drag on a node
+// moves the selection, a drag on the background selects a box, the middle button pans, the wheel zooms,
+// and Tidy asks the extension for a fresh layout.
+const NODE_W = 232;
+const HEAD = 30;
+const ROW = 22;
+const FRAME_LABEL = 34;
+const FRAME_PAD = 24;
+
+const clip = (s, n) => (String(s).length > n ? `${String(s).slice(0, n - 1)}…` : String(s));
+
+function typeText(ty) {
+  if (typeof ty === "string") return ty;
+  if (ty.List) return `List<${typeText(ty.List)}>`;
+  if (ty.Product) return `(${ty.Product.map(typeText).join(", ")})`;
+  if (ty.Sum) return ty.Sum.map(typeText).join(" | ");
+  return "?";
+}
+
+/** The flow's canvas as the drawing reads it: each node laid out as the canvas has it (its ports, its
+ *  params), each wire by the indices of its ends, each domain with its label. */
+function graphModel(document) {
   const laid = (document.nodes ?? []).map((n) => {
     const d = n.data ?? {};
     const inputs = d.inputs ?? [];
@@ -444,40 +452,57 @@ function graphHtml(name, document) {
     const params = d.params ?? [];
     const rows = Math.max(inputs.length, outputs.length, 1);
     const h = HEAD + rows * ROW + (params.length ? 8 + params.length * ROW : 0) + 8;
-    return { n, d, inputs, outputs, params, rows, x: n.position?.x ?? 0, y: n.position?.y ?? 0, h };
+    return { n, d, inputs, outputs, params, rows, h, title: String(d.name ?? n.id) };
   });
-  if (laid.length === 0) return graphPage(`<p>${escapeHtml(name)} has no nodes.</p>`);
-
-  // The model the script moves: nodes by their place in the list, wires between nodes by index.
   const index = new Map(laid.map((l, i) => [l.n.id, i]));
+  const wires = (document.edges ?? []).flatMap((e, i) => {
+    const from = index.get(e.source);
+    const to = index.get(e.target);
+    if (from === undefined || to === undefined) return [];
+    const out = laid[from].outputs.findIndex((p) => p.name === e.sourceHandle);
+    const inp = laid[to].inputs.findIndex((p) => p.name === e.targetHandle);
+    const label = `${e.source}.${e.sourceHandle ?? ""} to ${e.target}.${e.targetHandle ?? ""}`;
+    return [{ key: `e:${i}`, label, from, out: Math.max(0, out), to, inp, cls: e.targetHandle === "trigger" ? "trigger" : "wire" }];
+  });
+  const lay = tidy(
+    laid.map((l) => ({ height: l.h })),
+    wires.map((w) => ({ from: w.from, to: w.to })),
+  );
+  const frozen = (l) => Object.fromEntries(l.params.filter((p) => p.kind === "Frozen").map((p) => [p.name, p.value]));
+  const domainLabel = (ids) => {
+    const request = ids.map((id) => laid[id]).find((l) => l.title === "request" && frozen(l).method);
+    if (request) return `${frozen(request).method} ${frozen(request).path ?? ""}`;
+    return laid[ids[0]].title;
+  };
   const model = {
     nodeW: NODE_W,
     head: HEAD,
     row: ROW,
-    nodes: laid.map((l) => ({ key: `n:${l.n.id}`, title: String(l.d.name ?? l.n.id), params: Object.fromEntries(l.params.filter((p) => p.kind === "Frozen").map((p) => [p.name, p.value])), x: l.x, y: l.y, h: l.h })),
-    wires: (document.edges ?? []).flatMap((e, i) => {
-      const from = index.get(e.source);
-      const to = index.get(e.target);
-      if (from === undefined || to === undefined) return [];
-      const out = laid[from].outputs.findIndex((p) => p.name === e.sourceHandle);
-      const inp = laid[to].inputs.findIndex((p) => p.name === e.targetHandle);
-      const label = `${e.source}.${e.sourceHandle ?? ""} to ${e.target}.${e.targetHandle ?? ""}`;
-      return [{ key: `e:${i}`, label, from, out: Math.max(0, out), to, inp, cls: e.targetHandle === "trigger" ? "trigger" : "wire" }];
-    }),
+    label: FRAME_LABEL,
+    pad: FRAME_PAD,
+    nodes: laid.map((l, i) => ({ key: `n:${l.n.id}`, title: l.title, x: lay.positions[i].x, y: lay.positions[i].y, h: l.h })),
+    wires,
+    domains: lay.domains.map((ids) => ({ ids, label: domainLabel(ids) })),
   };
+  return { laid, model };
+}
 
-  const nodes = laid.map((l) => {
+function graphHtml(name, document) {
+  const { laid, model } = graphModel(document);
+  if (laid.length === 0) return graphPage(`<p>${escapeHtml(name)} has no nodes.</p>`);
+  const nodes = laid.map((l, i) => {
     const id = l.n.id;
-    const title = String(l.d.name ?? id);
+    const title = l.title;
+    const at = model.nodes[i];
     const parts = [
       `<rect class="node" x="0" y="0" width="${NODE_W}" height="${l.h}" rx="6"/>`,
       `<path class="head" d="M 0 ${HEAD} V 6 Q 0 0 6 0 H ${NODE_W - 6} Q ${NODE_W} 0 ${NODE_W} 6 V ${HEAD} Z"/>`,
       `<text class="title" x="10" y="${HEAD / 2}">${escapeHtml(clip(title, 26))}</text>`,
     ];
-    for (let i = 0; i < l.rows; i++) {
-      const y = HEAD + i * ROW + ROW / 2;
-      const input = l.inputs[i];
-      const output = l.outputs[i];
+    for (let r = 0; r < l.rows; r++) {
+      const y = HEAD + r * ROW + ROW / 2;
+      const input = l.inputs[r];
+      const output = l.outputs[r];
       if (input) {
         const key = escapeHtml(`p:${id}:in:${input.name}`);
         const label = escapeHtml(`input ${input.name} of ${title}`);
@@ -489,20 +514,19 @@ function graphHtml(name, document) {
         parts.push(`<g class="port-group" data-key="${key}" data-label="${label}"><circle class="port" cx="${NODE_W}" cy="${y}" r="4"/><text class="port-name" text-anchor="end" x="${NODE_W - 10}" y="${y}"><tspan class="type">${escapeHtml(typeText(output.ty))}</tspan> ${escapeHtml(output.name)}</text></g>`);
       }
     }
-    l.params.forEach((p, i) => {
-      const y = HEAD + l.rows * ROW + 8 + i * ROW + ROW / 2;
+    l.params.forEach((p, r) => {
+      const y = HEAD + l.rows * ROW + 8 + r * ROW + ROW / 2;
       const value = p.kind === "Frozen" ? p.value : `← ${p.bind}`;
       parts.push(`<text class="param" x="10" y="${y}">${escapeHtml(p.name)} <tspan class="type">${escapeHtml(clip(value, 26))}</tspan></text>`);
     });
-    return `<g class="node-group" data-key="${escapeHtml(`n:${id}`)}" data-label="${escapeHtml(`node ${title}`)}" transform="translate(${l.x} ${l.y})">${parts.join("")}</g>`;
+    return `<g class="node-group" data-key="${escapeHtml(`n:${id}`)}" data-label="${escapeHtml(`node ${title}`)}" transform="translate(${at.x} ${at.y})">${parts.join("")}</g>`;
   });
-
   // JSON is safe inside the script as long as no "<" can end the script element early.
   const json = JSON.stringify(model).split("<").join(String.fromCharCode(92) + "u003c");
   return graphPage(`<svg id="canvas"><g id="view"><g id="domains"></g><g id="wires"></g><g id="nodes">${nodes.join("")}</g></g><rect id="marquee" class="marquee" display="none"/></svg>`, json);
 }
 
-function graphPage(body, model = "{\"nodes\":[],\"wires\":[],\"nodeW\":0,\"head\":0,\"row\":0}") {
+function graphPage(body, model = '{"nodeW":0,"head":0,"row":0,"label":0,"pad":0,"nodes":[],"wires":[],"domains":[]}') {
   const nonce = crypto.randomBytes(16).toString("base64");
   return `<!doctype html>
 <html>
@@ -535,7 +559,7 @@ function graphPage(body, model = "{\"nodes\":[],\"wires\":[],\"nodeW\":0,\"head\
 </style>
 </head>
 <body>
-<div class="bar"><button id="zoom-in" title="Zoom in">+</button><button id="zoom-out" title="Zoom out">&minus;</button><button id="tidy" title="Tidy the layout: columns by dependency, readable wires">&#x25A4;</button><button id="fit" title="Fit the flow to the window">&#x2922;</button></div>
+<div class="bar"><button id="zoom-in" title="Zoom in">+</button><button id="zoom-out" title="Zoom out">&minus;</button><button id="tidy" title="Tidy the layout: columns by dependency, a domain per handler">&#x25A4;</button><button id="fit" title="Fit the flow to the window">&#x2922;</button></div>
 ${body}
 <div class="status" id="status"></div>
 <script nonce="${nonce}">
@@ -543,11 +567,13 @@ ${body}
   var svg = document.getElementById("canvas");
   var view = document.getElementById("view");
   var wiresLayer = document.getElementById("wires");
+  var domainLayer = document.getElementById("domains");
   var status = document.getElementById("status");
   var marquee = document.getElementById("marquee");
+  var vscode = typeof acquireVsCodeApi === "function" ? acquireVsCodeApi() : null;
   if (!svg || !view) return;
   var M = ${model};
-  var NW = M.nodeW, HD = M.head, RW = M.row;
+  var NW = M.nodeW, HD = M.head, RW = M.row, FL = M.label, FP = M.pad;
   var nodeEls = Array.prototype.slice.call(document.querySelectorAll(".node-group"));
   var wirePaths = M.wires.map(function (w) {
     var g = document.createElementNS(svg.namespaceURI, "g");
@@ -562,6 +588,16 @@ ${body}
     g.appendChild(line);
     wiresLayer.appendChild(g);
     return { hit: hit, line: line, w: w };
+  });
+  var domainList = M.domains.map(function (d) {
+    var rect = document.createElementNS(svg.namespaceURI, "rect");
+    rect.setAttribute("class", "domain");
+    var text = document.createElementNS(svg.namespaceURI, "text");
+    text.setAttribute("class", "domain-label");
+    text.textContent = d.label;
+    domainLayer.appendChild(rect);
+    domainLayer.appendChild(text);
+    return { ids: d.ids, rect: rect, text: text };
   });
   var scale = 1, x = 0, y = 0;
   var selected = new Set();
@@ -595,7 +631,6 @@ ${body}
   function place(i) {
     nodeEls[i].setAttribute("transform", "translate(" + M.nodes[i].x + " " + M.nodes[i].y + ")");
   }
-  // A wire runs from its output port to its input port as one S-curve.
   function wireD(w) {
     var a = M.nodes[w.from], b = M.nodes[w.to];
     var x1 = a.x + NW, y1 = a.y + HD + w.out * RW + RW / 2;
@@ -603,45 +638,6 @@ ${body}
     var bend = Math.max(60, Math.abs(x2 - x1) / 2);
     return "M " + x1 + " " + y1 + " C " + (x1 + bend) + " " + y1 + ", " + (x2 - bend) + " " + y2 + ", " + x2 + " " + y2;
   }
-
-  function drawWires() {
-    wirePaths.forEach(function (p) {
-      var d = wireD(p.w);
-      p.hit.setAttribute("d", d);
-      p.line.setAttribute("d", d);
-    });
-    updateDomains();
-  }
-
-  // The tidy layout. Each handler's nodes form one domain: the nodes wired together, so a handler's nodes
-  // never mix with another's. Each domain is laid out on its own, left to right: each node sits in the
-  // column of its depth (the longest chain of wires into it), as late as its consumers allow. Within a
-  // column the order comes from a few barycentre sweeps, and the heights from a few relaxations toward the
-  // nodes each one is wired to. The domains are stacked, each framed and labelled by its request.
-  var PAD = 24, LABEL = 34, DOMAIN_GAP = 90;
-  var domainLayer = document.getElementById("domains");
-  var domainList = [];
-
-  function domainLabel(ids) {
-    var request = ids.map(function (id) { return M.nodes[id]; }).find(function (nd) { return nd.title === "request" && nd.params && nd.params.method; });
-    if (request) return request.params.method + " " + (request.params.path || "");
-    return M.nodes[ids[0]].title;
-  }
-
-  function makeDomains(groups) {
-    while (domainLayer.firstChild) domainLayer.removeChild(domainLayer.firstChild);
-    domainList = groups.map(function (ids) {
-      var rect = document.createElementNS(svg.namespaceURI, "rect");
-      rect.setAttribute("class", "domain");
-      var text = document.createElementNS(svg.namespaceURI, "text");
-      text.setAttribute("class", "domain-label");
-      text.textContent = domainLabel(ids);
-      domainLayer.appendChild(rect);
-      domainLayer.appendChild(text);
-      return { ids: ids, rect: rect, text: text };
-    });
-  }
-
   // A domain's frame follows its nodes, so it stays round them while they are dragged.
   function updateDomains() {
     domainList.forEach(function (d) {
@@ -653,159 +649,23 @@ ${body}
         x1 = Math.max(x1, nd.x + NW);
         y1 = Math.max(y1, nd.y + nd.h);
       });
-      var fx = x0 - PAD, fy = y0 - LABEL;
+      var fx = x0 - FP, fy = y0 - FL;
       d.rect.setAttribute("x", fx);
       d.rect.setAttribute("y", fy);
-      d.rect.setAttribute("width", x1 - x0 + 2 * PAD);
-      d.rect.setAttribute("height", y1 - y0 + LABEL + PAD);
+      d.rect.setAttribute("width", x1 - x0 + 2 * FP);
+      d.rect.setAttribute("height", y1 - y0 + FL + FP);
       d.text.setAttribute("x", fx + 10);
-      d.text.setAttribute("y", fy + LABEL / 2);
+      d.text.setAttribute("y", fy + FL / 2);
     });
   }
-
-  // The layers and heights of one domain, from its own nodes (ids) and the wires among them.
-  function layoutGroup(ids) {
-    var g = ids.length;
-    var COL = NW + 96, GAP = 28;
-    var loc = {};
-    ids.forEach(function (id, k) { loc[id] = k; });
-    var preds = [], succs = [];
-    var i, k2, l, u, v;
-    for (k2 = 0; k2 < g; k2++) {
-      preds.push([]);
-      succs.push([]);
-    }
-    M.wires.forEach(function (w) {
-      if (w.from !== w.to && loc[w.from] !== undefined && loc[w.to] !== undefined) {
-        succs[loc[w.from]].push(loc[w.to]);
-        preds[loc[w.to]].push(loc[w.from]);
-      }
+  function drawWires() {
+    wirePaths.forEach(function (p) {
+      var d = wireD(p.w);
+      p.hit.setAttribute("d", d);
+      p.line.setAttribute("d", d);
     });
-    var layer = [], indeg = [], queue = [], topo = [];
-    for (i = 0; i < g; i++) {
-      layer.push(0);
-      indeg.push(preds[i].length);
-      if (indeg[i] === 0) queue.push(i);
-    }
-    while (queue.length) {
-      u = queue.shift();
-      topo.push(u);
-      succs[u].forEach(function (s) {
-        layer[s] = Math.max(layer[s], layer[u] + 1);
-        indeg[s] -= 1;
-        if (indeg[s] === 0) queue.push(s);
-      });
-    }
-    for (k2 = topo.length - 1; k2 >= 0; k2--) {
-      v = topo[k2];
-      if (succs[v].length) {
-        layer[v] = Math.min.apply(null, succs[v].map(function (s) { return layer[s]; })) - 1;
-      }
-    }
-
-    var hgt = ids.map(function (id) { return M.nodes[id].h; });
-    var depth = 0;
-    layer.forEach(function (c) { depth = Math.max(depth, c); });
-    var rows = [];
-    for (l = 0; l <= depth; l++) rows.push([]);
-    for (i = 0; i < g; i++) rows[layer[i]].push(i);
-
-    var pos = [];
-    rows.forEach(function (row) {
-      row.forEach(function (x, j) { pos[x] = j; });
-    });
-    function order(row, neighbours) {
-      var key = {};
-      row.forEach(function (x) {
-        var around = neighbours(x);
-        key[x] = around.length ? around.reduce(function (a, b) { return a + b; }, 0) / around.length : pos[x];
-      });
-      row.sort(function (a, b) { return key[a] - key[b] || pos[a] - pos[b]; });
-      row.forEach(function (x, j) { pos[x] = j; });
-    }
-    for (var sweep = 0; sweep < 4; sweep++) {
-      for (l = 1; l <= depth; l++) {
-        order(rows[l], function (x) { return preds[x].map(function (p) { return pos[p]; }); });
-      }
-      for (l = depth - 1; l >= 0; l--) {
-        order(rows[l], function (x) { return succs[x].map(function (s) { return pos[s]; }); });
-      }
-    }
-
-    // A column is packed from its top and from its bottom, each keeping the gap; the average of the two
-    // keeps the gap too, and sits as near the wanted tops as the column allows.
-    function pack(row, wanted) {
-      var down = [], up = [], end = -Infinity, start = Infinity;
-      row.forEach(function (x, j) {
-        var top = Math.max(wanted[j], end);
-        down.push(top);
-        end = top + hgt[x] + GAP;
-      });
-      for (var j2 = row.length - 1; j2 >= 0; j2--) {
-        var bottom = Math.min(wanted[j2], start - hgt[row[j2]] - GAP);
-        up[j2] = bottom;
-        start = bottom;
-      }
-      return row.map(function (x, j3) { return (down[j3] + up[j3]) / 2; });
-    }
-    var ys = new Array(g).fill(0);
-    for (l = 0; l <= depth; l++) {
-      var stacked = pack(rows[l], rows[l].map(function () { return 0; }));
-      rows[l].forEach(function (x, j) { ys[x] = stacked[j]; });
-    }
-    function centre(x) { return ys[x] + hgt[x] / 2; }
-    for (var iter = 0; iter < 8; iter++) {
-      for (l = 0; l <= depth; l++) {
-        var wanted = rows[l].map(function (x) {
-          var around = preds[x].concat(succs[x]);
-          if (!around.length) return ys[x];
-          return around.reduce(function (a, y) { return a + centre(y); }, 0) / around.length - hgt[x] / 2;
-        });
-        var placed = pack(rows[l], wanted);
-        rows[l].forEach(function (x, j) { ys[x] = placed[j]; });
-      }
-    }
-    return { layer: layer, ys: ys, COL: COL };
+    updateDomains();
   }
-
-  function tidyLayout() {
-    var n = M.nodes.length;
-    var parent = [];
-    var i;
-    for (i = 0; i < n; i++) parent.push(i);
-    function root(a) {
-      while (parent[a] !== a) a = parent[a];
-      return a;
-    }
-    M.wires.forEach(function (w) { parent[root(w.from)] = root(w.to); });
-    var byRoot = {}, groups = [];
-    for (i = 0; i < n; i++) {
-      var r = root(i);
-      if (!byRoot[r]) {
-        byRoot[r] = [];
-        groups.push(byRoot[r]);
-      }
-      byRoot[r].push(i);
-    }
-    var top = 0;
-    groups.forEach(function (ids) {
-      var lay = layoutGroup(ids);
-      var minY = Infinity, bottom = -Infinity;
-      ids.forEach(function (id, k) {
-        minY = Math.min(minY, lay.ys[k]);
-        bottom = Math.max(bottom, lay.ys[k] + M.nodes[id].h);
-      });
-      ids.forEach(function (id, k) {
-        M.nodes[id].x = PAD + lay.layer[k] * lay.COL;
-        M.nodes[id].y = top + LABEL + lay.ys[k] - minY;
-        place(id);
-      });
-      top += LABEL + (bottom - minY) + PAD + DOMAIN_GAP;
-    });
-    makeDomains(groups);
-    drawWires();
-  }
-
   function render() {
     var labels = [];
     document.querySelectorAll("[data-key]").forEach(function (el) {
@@ -824,6 +684,13 @@ ${body}
     if (additive && selected.has(key)) selected.delete(key);
     else selected.add(key);
     render();
+  }
+  function selectedNodes() {
+    var out = [];
+    M.nodes.forEach(function (n, i) {
+      if (selected.has(n.key)) out.push({ i: i, x: n.x, y: n.y });
+    });
+    return out;
   }
   svg.addEventListener("mousedown", function (e) {
     if (e.button === 1) e.preventDefault();
@@ -855,10 +722,7 @@ ${body}
       mode = "node";
       moved = false;
       start = { x: e.clientX, y: e.clientY };
-      startNodes = [];
-      M.nodes.forEach(function (n, i) {
-        if (selected.has(n.key)) startNodes.push({ i: i, x: n.x, y: n.y });
-      });
+      startNodes = selectedNodes();
       svg.setPointerCapture(e.pointerId);
       return;
     }
@@ -932,11 +796,25 @@ ${body}
       render();
     }
   });
+  window.addEventListener("message", function (e) {
+    var msg = e.data;
+    if (msg && msg.type === "layout") {
+      msg.positions.forEach(function (p, i) {
+        M.nodes[i].x = p.x;
+        M.nodes[i].y = p.y;
+        place(i);
+      });
+      drawWires();
+      fit();
+    }
+  });
   document.getElementById("zoom-in").addEventListener("click", function () { zoomAt(svg.clientWidth / 2, svg.clientHeight / 2, 1.25); });
   document.getElementById("zoom-out").addEventListener("click", function () { zoomAt(svg.clientWidth / 2, svg.clientHeight / 2, 0.8); });
   document.getElementById("fit").addEventListener("click", fit);
-  document.getElementById("tidy").addEventListener("click", function () { tidyLayout(); fit(); });
-  tidyLayout();
+  document.getElementById("tidy").addEventListener("click", function () {
+    if (vscode) vscode.postMessage({ type: "tidy" });
+  });
+  drawWires();
   render();
   fit();
 })();
@@ -945,17 +823,26 @@ ${body}
 </html>`;
 }
 
+/** Opens a flow's graph: one panel per flow. A Tidy from the panel asks for a fresh layout of the flow. */
 async function showGraph(arg) {
   const name = named(arg);
   const record = await holon(["flows", "show", name], { json: true });
-  let panel = graphs.get(name);
-  if (!panel) {
-    panel = vscode.window.createWebviewPanel("holon.graph", `Graph: ${name}`, vscode.ViewColumn.Active, { enableScripts: true });
-    graphs.set(name, panel);
+  let open = graphs.get(name);
+  if (!open) {
+    const panel = vscode.window.createWebviewPanel("holon.graph", `Graph: ${name}`, vscode.ViewColumn.Active, { enableScripts: true });
+    open = { panel, document: {} };
+    graphs.set(name, open);
     panel.onDidDispose(() => graphs.delete(name));
+    panel.webview.onDidReceiveMessage((msg) => {
+      if (msg && msg.type === "tidy") {
+        const { model } = graphModel(open.document);
+        panel.webview.postMessage({ type: "layout", positions: model.nodes.map((n) => ({ x: n.x, y: n.y })) });
+      }
+    });
   }
-  panel.webview.html = graphHtml(name, record.document ?? {});
-  panel.reveal();
+  open.document = record.document ?? {};
+  open.panel.webview.html = graphHtml(name, open.document);
+  open.panel.reveal();
 }
 
 /** Run, pause or stop a deployment: the command's own; stopping asks first. */
