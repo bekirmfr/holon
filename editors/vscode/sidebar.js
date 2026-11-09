@@ -28,6 +28,8 @@ let server;
 let deployments;
 /** @type {Listing | undefined} */
 let flows;
+/** @type {Listing | undefined} */
+let activity;
 /** @type {HolonFiles | undefined} */
 let flowFiles;
 /** @type {Map<string, vscode.WebviewPanel>} */
@@ -110,15 +112,16 @@ function problem(error) {
  *  waiting for an event, and its latest runs. */
 async function deploymentChildren(slug) {
   try {
-    const [log, waiting, grant] = await Promise.all([
+    const [log, waiting, grant, kept] = await Promise.all([
       holon(["runs", slug, "--last", "10"], { json: true }),
       holon(["runs", slug, "--waiting"], { json: true }),
       holon(["grant", slug], { json: true }),
+      stateItems(slug),
     ]);
     const asks = (grant.manifest?.not_granted ?? []).map((item) => grantItem(slug, item));
     const waits = (waiting.runs ?? []).map(waitingItem);
     const runs = (log.entries ?? []).slice(-10).reverse().map((e) => runItem(slug, e));
-    return [group("Needs approval", asks, true), group("Waiting for an event", waits, true), group("Recent runs", runs, false)];
+    return [group("Needs approval", asks, true), group("Waiting for an event", waits, true), group("Recent runs", runs, false), group("State", kept, false)];
   } catch (e) {
     return [problem(e)];
   }
@@ -130,6 +133,43 @@ function group(label, children, expanded) {
   item.description = children.length === 0 ? "none" : `${children.length}`;
   item.iconPath = new vscode.ThemeIcon("folder");
   item.childItems = children;
+  return item;
+}
+
+/** A deployment's state: its values (a click shows one's history) and its collections (a click shows
+ *  their items). A flow that keeps none has none to show. */
+async function stateItems(slug) {
+  let state;
+  try {
+    state = (await holon(["state", slug], { json: true })).state ?? {};
+  } catch {
+    return [];
+  }
+  const items = Object.entries(state).map(([key, value]) => {
+    if (key.startsWith("#collection:")) {
+      const name = key.slice("#collection:".length);
+      const item = new vscode.TreeItem(name, vscode.TreeItemCollapsibleState.None);
+      item.description = "a collection";
+      item.iconPath = new vscode.ThemeIcon("database");
+      item.command = { command: "holon.showCollection", title: "Show collection", arguments: [slug, name] };
+      return item;
+    }
+    const text = JSON.stringify(value);
+    const item = new vscode.TreeItem(key, vscode.TreeItemCollapsibleState.None);
+    item.description = text.length > 40 ? `${text.slice(0, 39)}…` : text;
+    item.tooltip = `${key} = ${text}`;
+    item.iconPath = new vscode.ThemeIcon("symbol-variable");
+    item.command = { command: "holon.showCell", title: "Show history", arguments: [slug, key] };
+    return item;
+  });
+  return items.length > 0 ? items : [note("Keeps no state")];
+}
+
+/** One thing that happened to the server: what, to what, by whom, and when. */
+function activityItem(e) {
+  const item = new vscode.TreeItem(`${e.action} ${e.target ?? ""}`.trim(), vscode.TreeItemCollapsibleState.None);
+  item.description = `${e.by ?? "-"}, ${new Date(e.at * 1000).toLocaleString()}`;
+  item.iconPath = new vscode.ThemeIcon("history");
   return item;
 }
 
@@ -229,6 +269,14 @@ class HolonFiles {
     try {
       if (kind === "history") return await holon(["history", file]);
       if (kind === "run") return await runText(file);
+      if (kind === "cell") {
+        const [slug, name] = file.split("/");
+        return await holon(["history", slug, "--cell", name.slice(0, -4)]);
+      }
+      if (kind === "collection") {
+        const [slug, name] = file.split("/");
+        return `${JSON.stringify(await holon(["state", slug, "--collection", name.slice(0, -5)], { json: true }), null, 2)}\n`;
+      }
       return await holon(["flows", "show", file.replace(/\.holon\.ts$/, "")]);
     } catch (e) {
       throw vscode.FileSystemError.Unavailable(e.message);
@@ -344,11 +392,16 @@ async function runText(file) {
   return `${JSON.stringify(entry, null, 2)}\n`;
 }
 
-async function openRun(slug, seq) {
-  const uri = vscode.Uri.from({ scheme: SCHEME, path: `/run/${slug}/${seq}.json` });
+/** Opens one of the server's documents (`holon:/…`) in an editor, read fresh from the server. */
+async function openDocument(path) {
+  const uri = vscode.Uri.from({ scheme: SCHEME, path });
   flowFiles.changed.fire([{ type: vscode.FileChangeType.Changed, uri }]);
   const doc = await vscode.workspace.openTextDocument(uri);
   await vscode.window.showTextDocument(doc, { preview: true });
+}
+
+function openRun(slug, seq) {
+  return openDocument(`/run/${slug}/${seq}.json`);
 }
 
 /** Approves one grant a deployment's version asks for, as `holon grant --grant` does. */
@@ -602,6 +655,7 @@ async function startServer() {
 function refreshAll() {
   deployments?.refresh();
   flows?.refresh();
+  activity?.refresh();
 }
 
 /** Registers the views, editors and commands. Returns the two listings, for the tests. */
@@ -609,12 +663,14 @@ function register(context) {
   secrets = context.secrets;
   deployments = new Listing(async () => (await holon(["deployments"], { json: true })).deployments.map(deploymentItem), "No deployments yet. `holon deploy <file>` puts a flow here.");
   flows = new Listing(async () => (await holon(["flows"], { json: true })).map(flowItem), "No saved flows yet. `holon flows save <file>` saves one.");
+  activity = new Listing(async () => (await holon(["activity", "--last", "100"], { json: true })).entries.map(activityItem), "Nothing has happened yet.");
   flowFiles = new HolonFiles();
 
   const timer = setInterval(refreshAll, REFRESH_MS);
   context.subscriptions.push(
     vscode.window.createTreeView("holon.deployments", { treeDataProvider: deployments }),
     vscode.window.createTreeView("holon.flows", { treeDataProvider: flows }),
+    vscode.window.createTreeView("holon.activity", { treeDataProvider: activity }),
     vscode.workspace.registerFileSystemProvider(SCHEME, flowFiles, { isCaseSensitive: true }),
     vscode.workspace.onDidChangeConfiguration((e) => {
       if (e.affectsConfiguration("holon.consoleUrl")) refreshAll();
@@ -627,13 +683,15 @@ function register(context) {
     vscode.commands.registerCommand("holon.deployFlow", deployFlow),
     vscode.commands.registerCommand("holon.showRun", openRun),
     vscode.commands.registerCommand("holon.approveGrant", approveGrant),
+    vscode.commands.registerCommand("holon.showCell", (slug, name) => openDocument(`/cell/${slug}/${name}.txt`)),
+    vscode.commands.registerCommand("holon.showCollection", (slug, name) => openDocument(`/collection/${slug}/${name}.json`)),
     vscode.commands.registerCommand("holon.run", (arg) => lifecycle("run", arg)),
     vscode.commands.registerCommand("holon.pause", (arg) => lifecycle("pause", arg)),
     vscode.commands.registerCommand("holon.stop", (arg) => lifecycle("stop", arg)),
     vscode.commands.registerCommand("holon.signIn", signIn),
     vscode.commands.registerCommand("holon.startServer", startServer),
   );
-  return { deployments, flows };
+  return { deployments, flows, activity };
 }
 
 /** Stops the server this extension started, if it did. */

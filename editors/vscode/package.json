@@ -22,7 +22,8 @@
     "workspaceContains:**/*.holon.ts",
     "onLanguage:typescript",
     "onView:holon.deployments",
-    "onView:holon.flows"
+    "onView:holon.flows",
+    "onView:holon.activity"
   ],
   "contributes": {
     "viewsContainers": {
@@ -43,10 +44,24 @@
         {
           "id": "holon.flows",
           "name": "Flows"
+        },
+        {
+          "id": "holon.activity",
+          "name": "Activity"
         }
       ]
     },
     "commands": [
+      {
+        "command": "holon.showCell",
+        "title": "Show history",
+        "category": "Holon"
+      },
+      {
+        "command": "holon.showCollection",
+        "title": "Show collection",
+        "category": "Holon"
+      },
       {
         "command": "holon.approveGrant",
         "title": "Approve",

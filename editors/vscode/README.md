@@ -40,6 +40,11 @@ views, read through the `holon` command with `--server` and `--json`:
   saved asks before it is replaced. A deploy that needs approval shows what it asks for, and
   approves it on a yes.
 
+A deployment's **State** group lists its values, and a click on one opens its history (`holon history --cell`)
+as a read-only editor. Its collections open their items as JSON (`holon state --collection`).
+
+- **Activity**: what has happened on the server, newest first (`holon activity`).
+
 The views refresh every 10 seconds and on the refresh button.
 
 The server is `holon.consoleUrl` (default `http://127.0.0.1:7420`, `holon serve`'s default). The

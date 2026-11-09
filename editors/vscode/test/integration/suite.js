@@ -66,7 +66,7 @@ async function checks() {
 async function sidebarChecks() {
   const ext = vscode.extensions.getExtension("bekirmfr.holon");
   if (!ext) throw new Error(`no bekirmfr.holon among: ${vscode.extensions.all.map((e) => e.id).join(", ")}`);
-  const { deployments, flows } = (await ext.activate()).sidebar();
+  const { deployments, flows, activity } = (await ext.activate()).sidebar();
 
   const item = await eventually(async () => (await flows.getChildren()).find((i) => i.label === "hello"), "the saved flow hello in the Flows view");
   assert.equal(item.contextValue, "flow");
@@ -92,6 +92,13 @@ async function sidebarChecks() {
   await vscode.commands.executeCommand("holon.openGraph", item);
   const graph = await eventually(() => vscode.window.tabGroups.all.flatMap((group) => group.tabs).find((tab) => tab.label === "Graph: hello"), "the graph panel");
   assert.ok(graph.input instanceof vscode.TabInputWebview);
+
+  // The server's activity is listed, the deploy of hello among it.
+  const events = await eventually(async () => {
+    const children = await activity.getChildren();
+    return children.length > 0 ? children : null;
+  }, "the server's activity");
+  assert.ok(events.some((e) => /deployed hello/.test(e.label)), `activity: ${events.map((e) => e.label).join(", ")}`);
 
   // Editable: an edit saved from the editor is written to the server, and read back from it.
   const at = text.getText().indexOf("Hello");
