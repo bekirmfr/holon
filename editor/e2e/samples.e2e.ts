@@ -125,6 +125,49 @@ test("the flows page lists every sample", async ({ page }) => {
   expect([...listed].sort()).toEqual([...SAMPLE_TITLES].sort());
 });
 
+/** Samples a test of their own already opens and deploys through the UI (below, and the
+ *  tests in this file): the sweep only opens them, and deploys the rest. A sample added
+ *  here is deployed by the sweep until a test of its own deploys it. */
+const DEPLOYED_BY_OWN_TEST = new Set([
+  "Hello API",
+  "Stripe → Slack",
+  "A flow inside a flow (holon)",
+  "Basket (a collection read inside a function)",
+  "Cache-aside (a branch not taken)",
+  "Calculator (a switch)",
+  "Rolling log (retention)",
+  "Order approval (durable run)",
+  "Hand a browser key to a page",
+  "A token exchange, and where the token goes",
+  "One key for every flow, capped",
+  "A key in a query goes to the database",
+  "Ledger (every run checkable)",
+  "Marketplace (built with Holon)",
+  "Inbox report (files in folders on the host)",
+  "Log archive (big files, by handle and by range)",
+  "Journal (a folder kept for a while, and capped)",
+  "Live board (a channel: packs to whoever listens)",
+  "Chat proxy (a streamed reply)",
+  "Gemini chat (a streamed reply, free tier)",
+  "Chess against an agent (held to its interface)",
+  "Shared ledger (one file, several deployments)",
+  "Orders API (a database on the host)",
+  "Ticket numbers (a database held for whole runs)",
+  "Drop box (a run per new file, sent on by handle)",
+  "File audit (runs on several folders, removals and some names)",
+  "File checksums (each file's SHA-256, over its bytes)",
+  "Payout totals (exact decimals, over a CSV)",
+  "Due dates (business days at a fixed offset)",
+  "Payment batch (a pain.001 written, a pain.002 read)",
+  "Ticker (a clock beside routes)",
+  "Drop board (files on a live page)",
+  "Billing (actions another flow runs)",
+  "Shop (a flow calling another's actions)",
+  "Price rollback (an earlier version's code, or its prices, back)",
+  "Stock sheet (its state restored, its files not)",
+  "Balance trail (which run changed a value)",
+]);
+
 const SAMPLES_PER_TEST = 8;
 for (let first = 0; first < SAMPLE_TITLES.length; first += SAMPLES_PER_TEST) {
   const titles = SAMPLE_TITLES.slice(first, first + SAMPLES_PER_TEST);
@@ -135,7 +178,7 @@ for (let first = 0; first < SAMPLE_TITLES.length; first += SAMPLES_PER_TEST) {
       if (title === ATLAS_NOTES && !process.env.HOLON_TEST_MONGODB) continue;
       await test.step(title, async () => {
         await openSample(page, title, false);
-        await deploy(page);
+        if (!DEPLOYED_BY_OWN_TEST.has(title)) await deploy(page);
       });
     }
     // Stop clock-driven flows so they don't keep ticking for the rest of the run.
