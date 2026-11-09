@@ -4,17 +4,22 @@
 // one the server moves is a file moved to the folder it names (Processed/r1.eml), so a test reads
 // the mailbox as the folders hold it.
 //
+// Given `token`, it also offers AUTH=XOAUTH2 (with SASL-IR) and takes that bearer token only, as
+// Microsoft 365's and Google's do (the support-inbox sample's mailbox, logged in with OAuth).
+// Another token is refused as theirs is: a challenge carrying the status, answered empty, then NO.
+//
 // UIDs: each file a folder holds is given the next one when it is first listed; UIDVALIDITY is
-// fixed. It speaks what Holon's client says (crates/holon/src/imap.rs): CAPABILITY, LOGIN, SELECT,
-// UID SEARCH ALL, UID FETCH (RFC822.SIZE or BODY.PEEK[]), UID MOVE, CREATE, LIST, NOOP, LOGOUT.
+// fixed. It speaks what Holon's client says (crates/holon/src/imap.rs): CAPABILITY, LOGIN,
+// AUTHENTICATE XOAUTH2, SELECT, UID SEARCH ALL, UID FETCH (RFC822.SIZE or BODY.PEEK[]), UID MOVE,
+// CREATE, LIST, NOOP, LOGOUT.
 
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync } from "node:fs";
 import { createServer } from "node:net";
 import { join } from "node:path";
 
-/** Listen on a free loopback port, serving the folders in `dir` (INBOX made if it isn't there);
- *  resolves to the port. */
-export function imapServer(dir) {
+/** Listen on a free loopback port, serving the folders in `dir` (INBOX made if it isn't there),
+ *  logged in to with any password or with `token`; resolves to the port. */
+export function imapServer(dir, token) {
   mkdirSync(join(dir, "INBOX"), { recursive: true });
   // Each folder's files by UID, and the next UID.
   const folders = new Map();
@@ -34,6 +39,8 @@ export function imapServer(dir) {
   const server = createServer((socket) => {
     let buffer = "";
     let selected = null;
+    // The tag of an XOAUTH2 login refused, while it waits for its empty answer.
+    let refusing = null;
     const say = (text) => socket.write(text);
     say("* OK e2e mailbox ready\r\n");
     socket.on("data", (chunk) => {
@@ -41,13 +48,28 @@ export function imapServer(dir) {
       for (let at = buffer.indexOf("\r\n"); at >= 0; at = buffer.indexOf("\r\n")) {
         const line = buffer.slice(0, at);
         buffer = buffer.slice(at + 2);
+        if (refusing) {
+          say(`${refusing} NO [AUTHENTICATIONFAILED] not that token\r\n`);
+          refusing = null;
+          continue;
+        }
         const [tag, verb = "", ...args] = words(line);
         const ok = `${tag} OK done\r\n`;
         const no = `${tag} NO not that\r\n`;
         switch (verb.toUpperCase()) {
           case "CAPABILITY":
-            say(`* CAPABILITY IMAP4rev1 MOVE UIDPLUS\r\n${ok}`);
+            say(`* CAPABILITY IMAP4rev1 MOVE UIDPLUS${token ? " AUTH=XOAUTH2 SASL-IR" : ""}\r\n${ok}`);
             break;
+          case "AUTHENTICATE": {
+            // SASL-IR: the response comes with the command. base64("user=U\x01auth=Bearer T\x01\x01")
+            if (!token || (args[0] ?? "").toUpperCase() !== "XOAUTH2") {
+              say(no);
+              break;
+            }
+            if (Buffer.from(args[1] ?? "", "base64").toString("latin1").endsWith(`\x01auth=Bearer ${token}\x01\x01`)) say(ok);
+            else (refusing = tag), say("+ eyJzdGF0dXMiOiI0MDAifQ==\r\n");
+            break;
+          }
           case "LOGIN":
           case "NOOP":
             say(ok);

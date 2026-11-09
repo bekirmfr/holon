@@ -16,6 +16,7 @@ import { fileURLToPath } from "node:url";
 import { PORTS, RUN_DIR } from "./ports.mjs";
 import { imapServer } from "./imap-server.mjs";
 import { smtpSink } from "./smtp-sink.mjs";
+import { tokenEndpoint } from "./token-endpoint.mjs";
 
 const fresh = process.argv.includes("--fresh");
 const port = fresh ? PORTS.fresh : PORTS.server;
@@ -69,11 +70,17 @@ const smtp = fresh ? null : await smtpSink(join(folders, "mail"));
 // The remittance-mail sample's mailbox (imap-server.mjs): its folders in the folders' mailbox/, a
 // message an .eml file in one, where the tests drop them and read where they were moved.
 const imap = fresh ? null : await imapServer(join(folders, "mailbox"));
+// The support-inbox sample's mailbox and mail, logged in to with a token only, and the endpoint
+// the host asks for it (token-endpoint.mjs), as Microsoft 365 is: the mailbox in the folders'
+// support-mailbox/, what it sends in their support-mail/.
+const oauth = fresh ? null : await tokenEndpoint("e2e-client", "e2e-not-a-secret", "e2e-access-token");
+const supportImap = fresh ? null : await imapServer(join(folders, "support-mailbox"), "e2e-access-token");
+const supportSmtp = fresh ? null : await smtpSink(join(folders, "support-mail"), "e2e-access-token");
 // Its dotenv file (secret_sources.rs): the variables ⚙ offers an env secret; the tests add lines.
 const dotenv = join(dir, "secrets.env");
 writeFileSync(
   dotenv,
-  `HOLON_SECRET_GEMINI_API_KEY=e2e-not-a-key\nVAULT_TOKEN=e2e-not-offered\n${smtp ? `HOLON_SECRET_OPS_SMTP=smtp://127.0.0.1:${smtp}\n` : ""}${imap ? `HOLON_SECRET_REMIT_IMAP=imap://remit:e2e-not-a-password@127.0.0.1:${imap}\n` : ""}`,
+  `HOLON_SECRET_GEMINI_API_KEY=e2e-not-a-key\nVAULT_TOKEN=e2e-not-offered\n${smtp ? `HOLON_SECRET_OPS_SMTP=smtp://127.0.0.1:${smtp}\n` : ""}${imap ? `HOLON_SECRET_REMIT_IMAP=imap://remit:e2e-not-a-password@127.0.0.1:${imap}\n` : ""}${oauth ? `HOLON_SECRET_SUPPORT_OAUTH=http://e2e-client:e2e-not-a-secret@127.0.0.1:${oauth}/token?scope=mail\nHOLON_SECRET_SUPPORT_IMAP=imap://support%40acme.com@127.0.0.1:${supportImap}\nHOLON_SECRET_SUPPORT_SMTP=smtp://support%40acme.com@127.0.0.1:${supportSmtp}\n` : ""}`,
 );
 const server = spawn(
   binary,
@@ -231,4 +238,23 @@ if (!fresh) {
     body: JSON.stringify({ name: "remit", imap: "env:HOLON_SECRET_REMIT_IMAP", done: "Processed", verdict_from: "mx.acme.com", every: "10s" }),
   });
   if (!remit.ok) console.error(`e2e server: binding the mail remit failed: ${await remit.text()}`);
+  // The support-inbox sample's mail, receiving and sending, logged in to both servers with the
+  // token the endpoint gives (--oauth). Its INBOX made again, as remit's is.
+  if (supportImap) mkdirSync(join(folders, "support-mailbox", "INBOX"), { recursive: true });
+  const support = await fetch(`${base}/admin/mails`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+    body: JSON.stringify({
+      name: "support",
+      imap: "env:HOLON_SECRET_SUPPORT_IMAP",
+      done: "Answered",
+      verdict_from: "mx.acme.com",
+      every: "10s",
+      smtp: "env:HOLON_SECRET_SUPPORT_SMTP",
+      from: "Acme support <support@acme.com>",
+      to: "*",
+      oauth: "env:HOLON_SECRET_SUPPORT_OAUTH",
+    }),
+  });
+  if (!support.ok) console.error(`e2e server: binding the mail support failed: ${await support.text()}`);
 }

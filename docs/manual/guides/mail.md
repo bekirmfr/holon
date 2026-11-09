@@ -7,7 +7,9 @@ sending as `Treasury <treasury@acme.com>`, to anyone at acme.com. The flow never
 or its login, and can't send as anyone else.
 
 A flow can receive mail too: a mail bound to a mailbox starts a run of `on.mail(ops, (m) => …)`
-for each message that comes to it ([Receiving mail](#receiving-mail)).
+for each message that comes to it ([Receiving mail](#receiving-mail)). A server that takes no
+password, as Microsoft 365's don't, is logged in to with a token the server asks for
+([Logging in with OAuth](#logging-in-with-oauth)).
 
 ## Binding a mail
 
@@ -37,8 +39,9 @@ holon mail remove ops
   machine (`smtp://127.0.0.1:25`). An `@`, `:` or `%` in the login is written `%40`, `%3A`,
   `%25`. Certificates are checked against the public CAs.
 - The server logs in with AUTH PLAIN or LOGIN, whichever the SMTP server offers, and with none
-  when the URL has no login. It logs in when the mail is bound, so a binding that can't says why
-  then.
+  when the URL has no login; a URL with a user and no password logs in with a token
+  ([Logging in with OAuth](#logging-in-with-oauth)). It logs in when the mail is bound, so a
+  binding that can't says why then.
 - The URL is never stored, shown or logged: the binding keeps `env:HOLON_SECRET_OPS_SMTP`, and
   where it points without its login (`smtps://smtp.example.com:465`), which is what the admin page
   and `holon mail list` show.
@@ -227,3 +230,62 @@ arrival: one a sender wrote further down, or under another name, is never believ
 
 The message whole, attachments included, as a request's body is: `holon verify` and the editor's
 replay read it from there.
+
+## Logging in with OAuth
+
+Microsoft 365 takes no password over IMAP or SMTP, and Google Workspace takes one only as an app
+password, which its admin may turn off. Both take a token instead (SASL `XOAUTH2`), which their
+OAuth endpoint gives an app it knows. The admin keeps the token request where a server's URL is
+kept, and binds it with `--oauth`; each server's URL then names the mailbox's user and no
+password:
+
+```sh
+export HOLON_SECRET_SUPPORT_OAUTH='https://<app id>:<secret>@login.microsoftonline.com/<tenant>/oauth2/v2.0/token?scope=https://outlook.office365.com/.default'
+export HOLON_SECRET_SUPPORT_IMAP='imaps://support%40acme.com@outlook.office365.com'
+export HOLON_SECRET_SUPPORT_SMTP='smtp://support%40acme.com@smtp.office365.com:587'
+holon mail add support --imap env:HOLON_SECRET_SUPPORT_IMAP --done Answered \
+  --smtp env:HOLON_SECRET_SUPPORT_SMTP --from "Acme support <support@acme.com>" --to "*" \
+  --oauth env:HOLON_SECRET_SUPPORT_OAUTH --verdict-from <the name its server writes>
+```
+
+| Option | |
+|---|---|
+| `--oauth SOURCE` | where the server reads the token request, as `--smtp`: `env:HOLON_SECRET_…` or `vault:…` |
+
+- The token request is a URL: the endpoint, the app's id and secret as its login, and in its
+  query either `scope=…` (the client credentials grant: an app that may read the mailbox itself,
+  Microsoft 365's way) or `refresh_token=…` (a refresh token a person's consent gave once,
+  Google's way). An `@`, `:`, `%`, `&` or `=` in a value is written `%40`, `%3A`, `%25`, `%26`,
+  `%3D`. `https://` only; plain `http://` only to an endpoint on the same machine.
+- The server asks for a token when the mail is bound and logs in with it, so a wrong secret, or a
+  mailbox the app may not read, says why then. It keeps the token in memory, never on disk, until
+  a minute before it runs out (the endpoint's `expires_in`, an hour when it gives none); one token
+  serves both servers. A refresh token the endpoint replaces is kept in memory too: a restart asks
+  with the source's again.
+- A login refused with a kept token, revoked or run out early, drops it and is tried once more
+  with a new one.
+- An endpoint that can't be reached, or answers 5xx or 429, is tried again as a server that can't
+  be is. One that refuses (a 4xx: a wrong secret, a consent withdrawn) fails the binding, the look
+  or the mail, saying what the endpoint said (`invalid_client: AADSTS7000215: Invalid client
+  secret provided.`), never what was asked.
+- The request, its secret and the token are never stored, shown or logged: the binding keeps
+  `env:HOLON_SECRET_SUPPORT_OAUTH`, and the endpoint without its login or query, which the admin
+  page and `holon mail list` show: `logs in with OAuth
+  (https://login.microsoftonline.com/<tenant>/oauth2/v2.0/token from env:HOLON_SECRET_SUPPORT_OAUTH)`.
+- `--oauth` where no server's URL names a user without a password is refused, and so is such a
+  URL without `--oauth`. A URL with a password still logs in with it: one mail may receive with a
+  token and send through a relay with a password.
+- The flow doesn't know: `on.mail(support, …)` and `support.send(…)` are what they were.
+
+**Microsoft 365.** Register an app in Microsoft Entra, give it the Office 365 Exchange Online
+application permissions `IMAP.AccessAsApp` and `SMTP.SendAsApp` with an admin's consent, and give
+its service principal access to the mailbox (Exchange Online PowerShell: `New-ServicePrincipal`,
+then `Add-MailboxPermission`). Its token request is the one above: the tenant's id or domain in
+the path, the scope `https://outlook.office365.com/.default`. The mailbox's SMTP AUTH must be on.
+
+**Google Workspace.** An OAuth client of a Google Cloud project, and a refresh token from a
+person's consent to the scope `https://mail.google.com/`:
+`https://<client id>:<client secret>@oauth2.googleapis.com/token?refresh_token=…`, with
+`imaps://you%40example.com@imap.gmail.com` and `smtps://you%40example.com@smtp.gmail.com`.
+
+The support-inbox sample receives requests and answers them through one mail bound this way.

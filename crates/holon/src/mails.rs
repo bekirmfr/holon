@@ -26,6 +26,9 @@
 //!   verdict on a sender counts. `on.mail(remit, …)` runs on each message that comes there
 //!   (inbox.rs); a deploy is refused while the mail isn't bound with `--imap`, or another
 //!   deployment listens to that mailbox.
+//! - **OAuth** (§5.2.6): with `--oauth`, a server whose URL names a user and no password logs in as
+//!   that user with a token the host asks for (oauth.rs), kept in memory: Microsoft 365, Google
+//!   Workspace. A login a token was refused at drops it, so the next asks anew.
 
 use std::collections::VecDeque;
 use std::sync::{Condvar, OnceLock, RwLock};
@@ -37,7 +40,8 @@ use crate::http::{err, read_body};
 use crate::permissions::Manifest;
 use crate::secret_sources::{Reference, Sources};
 use crate::smtp::{self, Failure};
-use crate::imap;
+use crate::{imap, oauth};
+use zeroize::Zeroizing;
 
 use crate::*;
 
@@ -63,6 +67,20 @@ pub(crate) struct Binding {
     pub(crate) to: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) mailbox: Option<Mailbox>,
+    /// Where its token comes from, for a server whose URL names a user and no password.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) oauth: Option<OAuth>,
+}
+
+/// How a mail's servers are logged in to with a token (`--oauth`, oauth.rs).
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub(crate) struct OAuth {
+    /// Where the host reads the token request (its URL with the client's id and secret) from,
+    /// never the request itself.
+    pub(crate) source: String,
+    /// Where the token is asked for, without the client's login or the query
+    /// (`https://login.microsoftonline.com/<tenant>/oauth2/v2.0/token`).
+    pub(crate) address: String,
 }
 
 /// The mailbox a mail receives in (`--imap`).
@@ -117,6 +135,9 @@ pub(crate) struct Asked {
     /// `30s`, `1m`, `2h`.
     #[serde(default)]
     pub(crate) every: Option<String>,
+    /// Where the token request is read from, for a server whose URL names a user and no password.
+    #[serde(default)]
+    pub(crate) oauth: Option<String>,
 }
 
 #[derive(Deserialize, Debug)]
@@ -184,6 +205,8 @@ struct Inner {
     /// How long it waits to try a mail again after its first, second, third and later temporary
     /// failures, and how long after its run it gives up.
     retry: ([Duration; 4], Duration),
+    /// The tokens the bindings' `--oauth` gave, in memory only.
+    tokens: oauth::Tokens,
 }
 
 impl std::fmt::Debug for Mails {
@@ -247,6 +270,7 @@ impl Mails {
             queues: Mutex::new(BTreeMap::new()),
             deployments: OnceLock::new(),
             retry,
+            tokens: oauth::Tokens::default(),
         }))
     }
 
@@ -315,7 +339,18 @@ impl Mails {
         if imap.is_none() && [&asked.folder, &asked.done, &asked.verdict_from, &asked.every].iter().any(|o| given(o).is_some()) {
             return Err("--folder, --done, --verdict-from and --every say how a mail receives: they go with --imap".into());
         }
-        let mut binding = Binding::default();
+        let oauth = match given(&asked.oauth) {
+            None => None,
+            Some(source) => {
+                if !source.starts_with("env:") && !source.starts_with("vault:") {
+                    return Err("a mail's token request is read from a source, env:HOLON_SECRET_… or vault:…, holding https://id:secret@host/path?scope=…".into());
+                }
+                let url = self.0.sources.fetch(&Reference::parse(source)?)?;
+                let address = oauth::Grant::parse(&url)?.address();
+                Some(OAuth { source: source.to_string(), address })
+            }
+        };
+        let mut binding = Binding { oauth: oauth.clone(), ..Binding::default() };
         match smtp {
             Some(smtp) => {
                 if !smtp.starts_with("env:") && !smtp.starts_with("vault:") {
@@ -334,8 +369,16 @@ impl Mails {
                 }
                 let url = self.0.sources.fetch(&Reference::parse(smtp)?)?;
                 let server = smtp::Server::parse(&url)?;
-                server.check().map_err(|f| format!("{} wasn't logged in to: {}", server.address(), f.why()))?;
-                binding = Binding { smtp: smtp.to_string(), address: server.address(), from: from.to_string(), to, mailbox: None };
+                let address = server.address();
+                self.with_token(server.wants_token(), &oauth, |token| {
+                    let server = smtp::Server::parse(&url).map_err(Failure::Permanent)?;
+                    match token {
+                    Some(t) => server.with_token(t),
+                    None => server,
+                }.check()
+                })
+                .map_err(|f| format!("{address} wasn't logged in to: {}", f.why()))?;
+                binding = Binding { smtp: smtp.to_string(), address, from: from.to_string(), to, mailbox: None, oauth: oauth.clone() };
             }
             None if given(&asked.from).is_some() || asked.to.as_ref().is_some_and(|t| !t.list().iter().all(|a| a.trim().is_empty())) => {
                 return Err("--from and --to say how a mail sends: they go with --smtp".into());
@@ -343,7 +386,10 @@ impl Mails {
             None => {}
         }
         if let Some(imap) = imap {
-            binding.mailbox = Some(self.mailbox(imap, asked)?);
+            binding.mailbox = Some(self.mailbox(imap, asked, &oauth)?);
+        }
+        if oauth.is_some() && !self.logs_in_with_token(&binding) {
+            return Err("--oauth logs in where a server's URL names a user and no password (imaps://user@host), and neither does".into());
         }
         let mut bound = self.0.bound.write().unwrap();
         let mut next = bound.clone();
@@ -356,9 +402,9 @@ impl Mails {
         Ok(binding)
     }
 
-    /// The mailbox `asked` names, its server logged in to now, its folder selected and the one
-    /// messages are moved to made.
-    fn mailbox(&self, imap: &str, asked: &Asked) -> Result<Mailbox, String> {
+    /// The mailbox `asked` names, its server logged in to now (with `oauth`'s token when its URL
+    /// names no password), its folder selected and the one messages are moved to made.
+    fn mailbox(&self, imap: &str, asked: &Asked, oauth: &Option<OAuth>) -> Result<Mailbox, String> {
         if !imap.starts_with("env:") && !imap.starts_with("vault:") {
             return Err("a mailbox is read from a source, env:HOLON_SECRET_… or vault:…, holding imaps://user:password@host".into());
         }
@@ -384,13 +430,65 @@ impl Mails {
             return Err(format!("a mailbox is looked at every {EVERY_LEAST}s at most often"));
         }
         let url = self.0.sources.fetch(&Reference::parse(imap)?)?;
-        let server = imap::Server::parse(&url)?;
-        let refused = |f: Failure| format!("{} wasn't logged in to: {}", server.address(), f.why());
-        let mut session = server.open().map_err(refused)?;
-        session.select(&folder).map_err(|f| format!("{folder} wasn't read at {}: {}", server.address(), f.why()))?;
-        session.create(&done).map_err(|f| format!("{done} wasn't made at {}: {}", server.address(), f.why()))?;
+        let address = imap::Server::parse(&url)?.address();
+        let mut session = self.log_in(&url, oauth).map_err(|f| format!("{address} wasn't logged in to: {}", f.why()))?;
+        session.select(&folder).map_err(|f| format!("{folder} wasn't read at {address}: {}", f.why()))?;
+        session.create(&done).map_err(|f| format!("{done} wasn't made at {address}: {}", f.why()))?;
         session.logout();
-        Ok(Mailbox { imap: imap.to_string(), address: server.address(), folder, done, verdict_from, every })
+        Ok(Mailbox { imap: imap.to_string(), address, folder, done, verdict_from, every })
+    }
+
+    /// `attempt`, given the token for a server that `wants_token` (`oauth`'s, kept or asked for
+    /// now) or none for one that doesn't. A login a kept token is refused at drops it and is tried
+    /// once more with a new one: a token may be revoked before it runs out. One that wants a token
+    /// without `oauth` is refused.
+    fn with_token<T>(&self, wants_token: bool, oauth: &Option<OAuth>, attempt: impl Fn(Option<Zeroizing<String>>) -> Result<T, Failure>) -> Result<T, Failure> {
+        if !wants_token {
+            return attempt(None);
+        }
+        let o = oauth.as_ref().ok_or_else(|| Failure::Permanent(smtp::NO_TOKEN.into()))?;
+        let request = Reference::parse(&o.source).and_then(|r| self.0.sources.fetch(&r)).map_err(Failure::Temporary)?;
+        let refused = |outcome: &Result<T, Failure>| matches!(outcome, Err(Failure::Permanent(why)) if why.ends_with("refused the login"));
+        let first = attempt(Some(self.0.tokens.token(&request)?));
+        if !refused(&first) {
+            return first;
+        }
+        self.0.tokens.forget(&request);
+        let again = attempt(Some(self.0.tokens.token(&request)?));
+        if refused(&again) {
+            self.0.tokens.forget(&request);
+        }
+        again
+    }
+
+    /// Whether one of `binding`'s servers logs in with a token: its URL names a user and no
+    /// password.
+    fn logs_in_with_token(&self, binding: &Binding) -> bool {
+        let wants = |source: &str, smtp: bool| {
+            Reference::parse(source).and_then(|r| self.0.sources.fetch(&r)).is_ok_and(|url| if smtp { smtp::Server::parse(&url).is_ok_and(|s| s.wants_token()) } else { imap::Server::parse(&url).is_ok_and(|s| s.wants_token()) })
+        };
+        (!binding.smtp.is_empty() && wants(&binding.smtp, true)) || binding.mailbox.as_ref().is_some_and(|m| wants(&m.imap, false))
+    }
+
+    /// A session with the mailbox `url` names, logged in (with `oauth`'s token when it names no
+    /// password).
+    fn log_in(&self, url: &str, oauth: &Option<OAuth>) -> Result<imap::Session, Failure> {
+        let wants_token = imap::Server::parse(url).map_err(Failure::Permanent)?.wants_token();
+        self.with_token(wants_token, oauth, |token| {
+            let server = imap::Server::parse(url).map_err(Failure::Permanent)?;
+            match token {
+                    Some(t) => server.with_token(t),
+                    None => server,
+                }.open()
+        })
+    }
+
+    /// A session with the mailbox `binding` receives in, its URL read now, logged in.
+    pub(crate) fn open_mailbox(&self, binding: &Binding) -> Result<(imap::Session, Mailbox), String> {
+        let mailbox = binding.mailbox.clone().ok_or("it isn't bound to receive now")?;
+        let url = Reference::parse(&mailbox.imap).and_then(|r| self.0.sources.fetch(&r))?;
+        let session = self.log_in(&url, &binding.oauth).map_err(|f| f.why().to_string())?;
+        Ok((session, mailbox))
     }
 
     /// Unbind `name`, the server's or one deployment's: whether it was bound. Its mail on the way
@@ -658,7 +756,14 @@ impl Mails {
                 return Err(Failure::Permanent(format!("{r} isn't an address the binding allows now")));
             }
             let url = Reference::parse(&binding.smtp).and_then(|r| self.0.sources.fetch(&r)).map_err(Failure::Temporary)?;
-            smtp::Server::parse(&url).map_err(Failure::Permanent)?.send(&binding.sender_address(), &s.to, &item.message)
+            let wants_token = smtp::Server::parse(&url).map_err(Failure::Permanent)?.wants_token();
+            self.with_token(wants_token, &binding.oauth, |token| {
+                let server = smtp::Server::parse(&url).map_err(Failure::Permanent)?;
+                match token {
+                    Some(t) => server.with_token(t),
+                    None => server,
+                }.send(&binding.sender_address(), &s.to, &item.message)
+            })
         });
         let what = format!("{:?} to {} through {}", s.subject, s.to.join(", "), s.mail);
         let (delays, give_up) = self.0.retry;
@@ -682,11 +787,6 @@ impl Mails {
             let _ = std::fs::remove_file(file);
         }
         None
-    }
-
-    /// Where a binding's URL is read from: the server's environment and dotenv file, Vault.
-    pub(crate) fn sources(&self) -> &Sources {
-        &self.0.sources
     }
 
     pub(crate) fn note(&self, slug: &str, mail: &str, what: String) {
@@ -750,7 +850,7 @@ pub(crate) fn loggable(payload: &Value) -> Value {
 // ── admin ──
 
 fn shown(name: &str, deployment: Option<&str>, b: &Binding) -> serde_json::Value {
-    serde_json::json!({ "name": name, "deployment": deployment, "smtp": b.smtp, "address": b.address, "from": b.from, "to": b.to, "mailbox": b.mailbox })
+    serde_json::json!({ "name": name, "deployment": deployment, "smtp": b.smtp, "address": b.address, "from": b.from, "to": b.to, "mailbox": b.mailbox, "oauth": b.oauth })
 }
 
 fn labelled(name: &str, deployment: Option<&str>) -> String {
@@ -835,7 +935,7 @@ pub(crate) fn cli(args: &[String]) -> i32 {
         match a.as_str() {
             "--server" => server = args.next().cloned(),
             "--for" => for_deployment = args.next().cloned(),
-            "--smtp" | "--from" | "--to" | "--imap" | "--folder" | "--done" | "--verdict-from" | "--every" => {
+            "--smtp" | "--from" | "--to" | "--imap" | "--folder" | "--done" | "--verdict-from" | "--every" | "--oauth" => {
                 let Some(v) = args.next() else {
                     eprintln!("holon mail: {a} takes a value\n\n{MAIL_USAGE}");
                     return 2;
@@ -890,6 +990,9 @@ pub(crate) fn cli(args: &[String]) -> i32 {
             let every = folders::span_text(b["every"].as_u64().unwrap_or(60));
             said.push(format!("receives in {} {} (from {imap}), moved to {}  {verdict}  every {every}", b["address"].as_str().unwrap_or(""), b["folder"].as_str().unwrap_or(""), b["done"].as_str().unwrap_or("")));
         }
+        if let Some(source) = m["oauth"]["source"].as_str() {
+            said.push(format!("logs in with OAuth ({} from {source})", m["oauth"]["address"].as_str().unwrap_or("")));
+        }
         format!("{}{only}", said.join("  "))
     };
     match words[0] {
@@ -910,7 +1013,7 @@ pub(crate) fn cli(args: &[String]) -> i32 {
 
 const MAIL_USAGE: &str = "usage: holon mail add NAME [--smtp SOURCE --from SENDER --to LIST]
                              [--imap SOURCE [--folder F] [--done F] [--verdict-from SERVER] [--every T]]
-                             [--for SLUG]
+                             [--oauth SOURCE] [--for SLUG]
        holon mail list
        holon mail remove NAME [--for SLUG]
        (each with [--server PORT|URL])
@@ -940,6 +1043,11 @@ const MAIL_USAGE: &str = "usage: holon mail add NAME [--smtp SOURCE --from SENDE
                            mailbox's own server writes there (mx.google.com). Without it, no
                            message is authenticated
     --every T              how often the folder is looked at: 1m, 30s (10s at least)
+    --oauth SOURCE         where the server reads the token request, for a server whose URL
+                           names a user and no password (imaps://user@outlook.office365.com):
+                           https://id:secret@login.microsoftonline.com/<tenant>/oauth2/v2.0/token
+                           ?scope=… (client credentials) or ?refresh_token=… (a refresh token).
+                           The host asks for a token and logs in with it (XOAUTH2)
     --for SLUG             bind it for that deployment only
   list                     the names bound, and where each sends
   remove NAME              unbind it (--for SLUG: that deployment's). The mail on its way is
@@ -949,6 +1057,7 @@ const MAIL_USAGE: &str = "usage: holon mail add NAME [--smtp SOURCE --from SENDE
 examples:
   holon mail add ops --smtp env:HOLON_SECRET_OPS_SMTP --from \"Treasury <treasury@acme.com>\" --to \"*@acme.com,treasury@bank.example\"
   holon mail add remit --imap env:HOLON_SECRET_REMIT_IMAP --done Processed --verdict-from mx.acme.com
+  holon mail add support --imap env:HOLON_SECRET_SUPPORT_IMAP --oauth env:HOLON_SECRET_SUPPORT_OAUTH
   holon mail list
 
   From the holon serve you run on this machine, signed in as you; with several running,
@@ -1058,6 +1167,46 @@ mod tests {
         assert!(mails.listened("next", &mailbox, &listening).unwrap().contains("listened to by app already"));
         let theirs = mails.resolve("other", "payments").unwrap().mailbox.unwrap();
         assert!(mails.listened("other", &theirs, &listening).unwrap().contains("listened to by app already"));
+    }
+
+    /// A mailbox whose URL names a user and no password logs in with the token `--oauth` asks for,
+    /// asked once and kept; refused without `--oauth`, with a client the endpoint refuses, and with
+    /// `--oauth` where every URL holds a password. Neither the file nor an error holds a secret.
+    #[test]
+    fn a_mail_bound_with_oauth_logs_in_with_a_token() {
+        let endpoint = crate::oauth::stand_in::start("app", "s3cret", "t0ken");
+        let imap = crate::imap::stand_in::start_with_token("support@acme.com", "t0ken", true);
+        let dir = temp("oauth");
+        let file = dir.join("mails.json");
+        let mailbox = format!("imap://support%40acme.com@127.0.0.1:{}", imap.port);
+        let passwords = crate::imap::stand_in::start("support@acme.com", "pw", true);
+        let with_password = format!("imap://support%40acme.com:pw@127.0.0.1:{}", passwords.port);
+        let mails = Mails::open(file.to_str().unwrap()).unwrap().with_sources(sources_of(&[
+            ("HOLON_SECRET_SUPPORT_IMAP", &mailbox),
+            ("HOLON_SECRET_PASSWORD_IMAP", &with_password),
+            ("HOLON_SECRET_SUPPORT_OAUTH", &endpoint.url("app", "s3cret", "scope=mail")),
+            ("HOLON_SECRET_WRONG_OAUTH", &endpoint.url("app", "n0pe", "scope=mail")),
+        ]));
+        let receive = |imap: &str, oauth: Option<&str>| Asked { imap: Some(imap.into()), oauth: oauth.map(str::to_string), ..Default::default() };
+        for (asked, said) in [
+            (receive("env:HOLON_SECRET_SUPPORT_IMAP", None), "no --oauth to log in with"),
+            (receive("env:HOLON_SECRET_SUPPORT_IMAP", Some("https://app:s3cret@login.example.com/token?scope=mail")), "read from a source"),
+            (receive("env:HOLON_SECRET_SUPPORT_IMAP", Some("env:HOLON_SECRET_WRONG_OAUTH")), "invalid_client"),
+            (receive("env:HOLON_SECRET_PASSWORD_IMAP", Some("env:HOLON_SECRET_SUPPORT_OAUTH")), "and neither does"),
+        ] {
+            let e = mails.bind("support", &asked, None).unwrap_err();
+            assert!(e.contains(said) && !e.contains("s3cret") && !e.contains("n0pe") && !e.contains("t0ken"), "{said}: {e}");
+        }
+        let before = endpoint.asked.lock().unwrap().len();
+        let b = mails.bind("support", &receive("env:HOLON_SECRET_SUPPORT_IMAP", Some("env:HOLON_SECRET_SUPPORT_OAUTH")), None).unwrap();
+        assert_eq!(b.oauth, Some(OAuth { source: "env:HOLON_SECRET_SUPPORT_OAUTH".into(), address: format!("http://127.0.0.1:{}/token", endpoint.port) }));
+        assert_eq!(imap.folders.lock().unwrap().logins, 1);
+        let (session, _) = mails.open_mailbox(&b).unwrap();
+        session.logout();
+        assert_eq!(imap.folders.lock().unwrap().logins, 2);
+        assert_eq!(endpoint.asked.lock().unwrap().len(), before + 1, "the token kept");
+        let kept = std::fs::read_to_string(&file).unwrap();
+        assert!(!kept.contains("s3cret") && !kept.contains("t0ken") && kept.contains("env:HOLON_SECRET_SUPPORT_OAUTH"), "{kept}");
     }
 
     #[test]

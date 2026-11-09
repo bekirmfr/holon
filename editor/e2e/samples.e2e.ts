@@ -2291,6 +2291,76 @@ test("remittance-mail settles an invoice from an authenticated mail, refuses one
   await expect(page.getByLabel("mail remit")).toContainText("starts on mail it receives");
 });
 
+test("support-inbox answers an authenticated request through one mail logged in with OAuth, and keeps one that isn't", async ({ page, request, adminToken }) => {
+  const { existsSync, readdirSync, writeFileSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  // The e2e server's support mailbox and what its mail sent (imap-server.mjs, smtp-sink.mjs), both
+  // logged in to with the token only, which the host asks its endpoint for (token-endpoint.mjs).
+  const mailbox = join(FOLDERS, "support-mailbox");
+  const outbox = join(FOLDERS, "support-mail");
+  const mails = (): { from: string; to: string[]; login?: string; data: string }[] =>
+    existsSync(outbox) ? readdirSync(outbox).filter((f) => f.endsWith(".json")).sort().map((f) => JSON.parse(readFileSync(join(outbox, f), "utf8"))) : [];
+  const id = `s${Date.now()}`;
+  const asking = (n: string, verdictBy: string, subject: string) =>
+    [
+      `Authentication-Results: ${verdictBy}; spf=pass smtp.mailfrom=customer.example; dkim=pass header.d=customer.example; dmarc=pass header.from=customer.example`,
+      "From: Ann <ann@customer.example>",
+      "To: support@acme.com",
+      `Subject: ${subject}`,
+      "Date: Mon, 09 Nov 2026 10:00:00 +0000",
+      `Message-ID: <${n}@customer.example>`,
+      "MIME-Version: 1.0",
+      "Content-Type: text/plain; charset=utf-8",
+      "",
+      "It doesn't add up.",
+      "",
+    ].join("\r\n");
+  const said = async () => {
+    const events = await request.get(`${SERVER}/deployments/support-inbox/events`, { headers: { Authorization: `Bearer ${adminToken}` } });
+    return ((await events.json()) as { events: { kind: string; what: string }[] }).events.map((e) => e.what);
+  };
+
+  await openSample(page, "Support inbox (a Microsoft 365 mailbox, logged in with OAuth)");
+  const port = await deploy(page);
+  // Once it listens, what comes to the mailbox is run on.
+  await expect.poll(async () => (await said()).some((w) => w.startsWith("listens to the mailbox of support (imap://127.0.0.1:")), { timeout: 15_000 }).toBe(true);
+  writeFileSync(join(mailbox, "INBOX", `${id}.eml`), asking(id, "mx.acme.com", `Invoice ${id}`));
+  writeFileSync(join(mailbox, "INBOX", `${id}-forged.eml`), asking(`${id}-forged`, "evil.example", `Refund ${id}`));
+
+  // Within a look (every 10s): a ticket for the authenticated one, the other kept unanswered.
+  type Ticket = { from: string; subject: string; verdict?: object };
+  const tickets = async () => (await (await request.get(`http://127.0.0.1:${port}/tickets`)).json()) as Record<string, Ticket>;
+  const ticket = async () => Object.entries(await tickets()).find(([, t]) => t.subject === `Invoice ${id}`)?.[0];
+  await expect.poll(ticket, { timeout: 30_000 }).toMatch(/^T-\d+$/);
+  const number = (await ticket())!;
+  expect((await tickets())[`unanswered:${id}-forged@customer.example`]).toEqual(expect.objectContaining({ from: "ann@customer.example", subject: `Refund ${id}` }));
+  // Answered through the same mail, logged in to the SMTP server as the mailbox, with the token.
+  const answered = () => mails().find((m) => m.data.includes(`\r\nSubject: [${number}] Invoice ${id}\r\n`));
+  await expect.poll(answered, { timeout: 15_000 }).toBeTruthy();
+  expect(answered()).toEqual(expect.objectContaining({ from: "support@acme.com", to: ["ann@customer.example"], login: "support@acme.com" }));
+  expect(answered()!.data.startsWith("From: Acme support <support@acme.com>\r\nTo: ann@customer.example\r\n")).toBe(true);
+  expect(mails().some((m) => m.data.includes(`Refund ${id}`))).toBe(false);
+  // Each moved to Answered once its run was over.
+  await expect.poll(() => [`${id}.eml`, `${id}-forged.eml`].map((f) => [existsSync(join(mailbox, "INBOX", f)), existsSync(join(mailbox, "Answered", f))]), { timeout: 15_000 }).toEqual([
+    [false, true],
+    [false, true],
+  ]);
+
+  // The admin's resources show both servers without a login, and where the token comes from.
+  await page.goto("/");
+  await page.getByRole("button", { name: "admin", exact: true }).click();
+  const sections = page.getByRole("tablist", { name: "admin sections" });
+  await sections.getByRole("tab", { name: "resources" }).click();
+  await expect(
+    page.getByText(
+      /^smtp:\/\/127\.0\.0\.1:\d+ \(from env:HOLON_SECRET_SUPPORT_SMTP\) · as Acme support <support@acme\.com> · to \* · receives in imap:\/\/127\.0\.0\.1:\d+ INBOX \(from env:HOLON_SECRET_SUPPORT_IMAP\), moved to Answered · mx\.acme\.com's verdict · logs in with OAuth \(http:\/\/127\.0\.0\.1:\d+\/token from env:HOLON_SECRET_SUPPORT_OAUTH\)$/,
+    ),
+  ).toBeVisible();
+  await expect(page.getByText("e2e-not-a-secret")).toHaveCount(0);
+  await sections.getByRole("tab", { name: "permissions" }).click();
+  await expect(page.getByLabel("mail support")).toContainText("starts on mail it receives");
+});
+
 test("due-dates schedules a payout past Easter's closing days and an invoice past a weekend", async ({ page, request }) => {
   await openSample(page, "Due dates (business days at a fixed offset)");
   const port = await deploy(page);

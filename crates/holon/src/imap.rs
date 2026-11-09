@@ -7,7 +7,9 @@
 //!   `imap://user:password@host:143` (STARTTLS, required: a server that doesn't offer it is
 //!   refused, so a login never crosses in clear). Plain IMAP only to a loopback address: the tests'
 //!   stand-in.
-//! - **The login:** `AUTHENTICATE PLAIN` when the server offers it, else `LOGIN`.
+//! - **The login:** `AUTHENTICATE PLAIN` when the server offers it, else `LOGIN`. A URL that names
+//!   a user and no password logs in as that user with the token the binding's `--oauth` gives
+//!   (oauth.rs, §5.2.6): `AUTHENTICATE XOAUTH2`.
 //! - **What it does:** selects a folder (its `UIDVALIDITY`), lists its messages' UIDs
 //!   (`UID SEARCH ALL`), fetches one's size and bytes (`BODY.PEEK[]`: nothing is marked read),
 //!   moves one (`UID MOVE`; without `MOVE`, `UID COPY`, `\Deleted` and, with `UIDPLUS`,
@@ -23,6 +25,7 @@ use std::time::Duration;
 use zeroize::Zeroizing;
 
 pub(crate) use crate::smtp::Failure;
+use crate::smtp::Login;
 
 /// How long a connection, a command's answer or a write may take.
 const TIMEOUT: Duration = Duration::from_secs(30);
@@ -37,7 +40,7 @@ pub(crate) struct Server {
     implicit_tls: bool,
     host: String,
     port: u16,
-    login: (Zeroizing<String>, Zeroizing<String>),
+    login: Login,
 }
 
 impl std::fmt::Debug for Server {
@@ -57,8 +60,7 @@ impl Server {
         };
         let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
         let (user_info, at) = authority.rsplit_once('@').ok_or("the URL has no login: imaps://user:password@host")?;
-        let (user, password) = user_info.split_once(':').ok_or("the URL's login is user:password")?;
-        let login = (crate::smtp::unpercent(user)?, crate::smtp::unpercent(password)?);
+        let login = Login::of(user_info)?;
         let default = if implicit_tls { 993 } else { 143 };
         let number = |p: &str| p.parse::<u16>().map_err(|_| "the URL's port isn't a number".to_string());
         let (host, port) = match at.strip_prefix('[') {
@@ -89,6 +91,17 @@ impl Server {
         self.host == "localhost" || self.host.parse::<std::net::IpAddr>().is_ok_and(|ip| ip.is_loopback())
     }
 
+    /// Whether it logs in with a token: its URL names a user and no password.
+    pub(crate) fn wants_token(&self) -> bool {
+        matches!(self.login, Login::Token(..))
+    }
+
+    /// It, logging in with `token` when it logs in with one.
+    pub(crate) fn with_token(mut self, token: Zeroizing<String>) -> Server {
+        self.login.with_token(token);
+        self
+    }
+
     /// A session, greeted, over TLS unless it is a loopback's plain one, and logged in.
     pub(crate) fn open(&self) -> Result<Session, Failure> {
         let tcp = self.connect()?;
@@ -116,10 +129,21 @@ impl Server {
             s.capabilities = s.capability()?;
         }
         if !greeting.text.starts_with("* PREAUTH") {
-            let (user, password) = &self.login;
             let refused = |f: Failure| match f {
                 Failure::Permanent(_) => Failure::Permanent(format!("{} refused the login", self.address())),
                 t => t,
+            };
+            let (user, password) = match &self.login {
+                Login::Password(user, password) => (user, password),
+                Login::Token(user, token) => {
+                    let token = token.as_ref().ok_or_else(|| Failure::Permanent(crate::smtp::NO_TOKEN.into()))?;
+                    if !s.offers("AUTH=XOAUTH2") {
+                        return Err(Failure::Permanent(format!("{} offers no AUTH=XOAUTH2, which a token logs in with", self.address())));
+                    }
+                    s.xoauth2(&crate::smtp::xoauth2(user, token)).map_err(refused)?;
+                    s.capabilities = s.capability()?;
+                    return Ok(s);
+                }
             };
             if s.offers("AUTH=PLAIN") {
                 let mut plain = Zeroizing::new(Vec::with_capacity(user.len() + password.len() + 2));
@@ -304,6 +328,40 @@ impl Session {
         self.answered(&tag, line)
     }
 
+    /// `AUTHENTICATE XOAUTH2` with `response`: with the command when the server offers `SASL-IR`,
+    /// else when it asks. A challenge after it is a refusal's status in JSON (Google's way),
+    /// answered empty as the mechanism says, before the `NO`.
+    fn xoauth2(&mut self, response: &str) -> Result<(), Failure> {
+        let line = "AUTHENTICATE XOAUTH2";
+        let tag = if self.offers("SASL-IR") {
+            self.tag += 1;
+            let tag = format!("a{}", self.tag);
+            self.write(Zeroizing::new(format!("{tag} {line} {response}\r\n")).as_bytes())?;
+            tag
+        } else {
+            self.tag += 1;
+            let tag = format!("a{}", self.tag);
+            self.write(format!("{tag} {line}\r\n").as_bytes())?;
+            if !self.response()?.text.starts_with('+') {
+                return Err(Failure::Permanent("the login wasn't asked for".into()));
+            }
+            self.write(Zeroizing::new(format!("{response}\r\n")).as_bytes())?;
+            tag
+        };
+        loop {
+            let r = self.response()?;
+            if r.text.starts_with('+') {
+                self.write(b"\r\n")?;
+                continue;
+            }
+            let Some(status) = r.text.strip_prefix(tag.as_str()).and_then(|s| s.strip_prefix(' ')) else { continue };
+            if status.get(..2).is_some_and(|s| s.eq_ignore_ascii_case("OK")) {
+                return Ok(());
+            }
+            return Err(Failure::Permanent(format!("AUTHENTICATE: {}", status.chars().take(300).collect::<String>())));
+        }
+    }
+
     /// The untagged responses up to `tag`'s, which must be `OK`.
     fn answered(&mut self, tag: &str, line: &str) -> Result<Vec<Response>, Failure> {
         let mut untagged = Vec::new();
@@ -392,8 +450,8 @@ impl Session {
 }
 
 /// An IMAP server for the tests, plain on loopback, its folders in memory: it takes the login it
-/// was made with (`AUTHENTICATE PLAIN` and `LOGIN`), and speaks what [`Session`] says, `MOVE`
-/// among it unless made without.
+/// was made with (`AUTHENTICATE PLAIN` and `LOGIN`, or a token's `AUTHENTICATE XOAUTH2`), and
+/// speaks what [`Session`] says, `MOVE` among it unless made without.
 #[cfg(test)]
 pub(crate) mod stand_in {
     use std::collections::BTreeMap;
@@ -433,29 +491,41 @@ pub(crate) mod stand_in {
 
     /// One that takes `user` and `password`, offering `MOVE` when `moves`.
     pub(crate) fn start(user: &str, password: &str, moves: bool) -> StandIn {
+        started(user, password, false, moves)
+    }
+
+    /// One that takes `user` with `token` (`AUTHENTICATE XOAUTH2`, offered with `SASL-IR`), and
+    /// refuses another token as Google does: a challenge, then `NO`.
+    pub(crate) fn start_with_token(user: &str, token: &str, moves: bool) -> StandIn {
+        started(user, token, true, moves)
+    }
+
+    fn started(user: &str, secret: &str, token: bool, moves: bool) -> StandIn {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         let folders = Arc::new(Mutex::new(Folders { validity: 7, ..Default::default() }));
         folders.lock().unwrap().folders.insert("INBOX".into(), (BTreeMap::new(), 1));
-        let (shared, user, password) = (Arc::clone(&folders), user.to_string(), password.to_string());
+        let (shared, user, secret) = (Arc::clone(&folders), user.to_string(), secret.to_string());
         std::thread::spawn(move || {
             for conn in listener.incoming() {
                 let Ok(conn) = conn else { continue };
-                let (shared, user, password) = (Arc::clone(&shared), user.clone(), password.clone());
-                std::thread::spawn(move || serve(conn, &shared, &user, &password, moves));
+                let (shared, user, secret) = (Arc::clone(&shared), user.clone(), secret.clone());
+                std::thread::spawn(move || serve(conn, &shared, &user, &secret, token, moves));
             }
         });
         StandIn { port, folders }
     }
 
-    fn serve(conn: std::net::TcpStream, folders: &Mutex<Folders>, user: &str, password: &str, moves: bool) {
+    fn serve(conn: std::net::TcpStream, folders: &Mutex<Folders>, user: &str, secret: &str, token: bool, moves: bool) {
         let mut out = conn.try_clone().unwrap();
         let mut reader = BufReader::new(conn);
         if out.write_all(b"* OK stand-in ready\r\n").is_err() {
             return;
         }
         let mut selected: Option<String> = None;
+        let password = if token { "" } else { secret };
         let plain = crate::smtp::base64(format!("\0{user}\0{password}").as_bytes());
+        let bearer = crate::smtp::xoauth2(user, secret);
         loop {
             let mut line = String::new();
             if reader.read_line(&mut line).unwrap_or(0) == 0 {
@@ -468,6 +538,21 @@ pub(crate) mod stand_in {
             let unquote = |s: &str| s.trim_matches('"').to_string();
             let ok = format!("{tag} OK done\r\n");
             let no = format!("{tag} NO not that\r\n");
+            if verb == "AUTHENTICATE" && token {
+                let xoauth2 = words.get(1).is_some_and(|m| m.eq_ignore_ascii_case("XOAUTH2"));
+                let taken = xoauth2 && words.get(2) == Some(&bearer.as_str());
+                if xoauth2 && !taken {
+                    let mut empty = String::new();
+                    if out.write_all(b"+ eyJzdGF0dXMiOiI0MDAifQ==\r\n").is_err() || reader.read_line(&mut empty).unwrap_or(0) == 0 {
+                        return;
+                    }
+                }
+                folders.lock().unwrap().logins += u32::from(taken);
+                if out.write_all(if taken { ok.as_bytes() } else { no.as_bytes() }).is_err() {
+                    return;
+                }
+                continue;
+            }
             if verb == "AUTHENTICATE" {
                 let given = match words.get(2) {
                     Some(initial) => initial.to_string(),
@@ -488,8 +573,8 @@ pub(crate) mod stand_in {
             }
             let mut f = folders.lock().unwrap();
             let reply: Vec<u8> = match verb.as_str() {
-                "CAPABILITY" => format!("* CAPABILITY IMAP4rev1 AUTH=PLAIN{}\r\n{ok}", if moves { " MOVE UIDPLUS" } else { " UIDPLUS" }).into_bytes(),
-                "LOGIN" if words.get(1).map(|u| unquote(u)).as_deref() == Some(user) && words.get(2).map(|p| unquote(p)).as_deref() == Some(password) => {
+                "CAPABILITY" => format!("* CAPABILITY IMAP4rev1 AUTH=PLAIN{}{}\r\n{ok}", if token { " AUTH=XOAUTH2 SASL-IR" } else { "" }, if moves { " MOVE UIDPLUS" } else { " UIDPLUS" }).into_bytes(),
+                "LOGIN" if !token && words.get(1).map(|u| unquote(u)).as_deref() == Some(user) && words.get(2).map(|p| unquote(p)).as_deref() == Some(password) => {
                     f.logins += 1;
                     ok.into_bytes()
                 }
@@ -573,7 +658,9 @@ mod tests {
     fn a_url_says_where_and_its_login_and_never_shows_it() {
         let s = Server::parse("imaps://remit%40acme.com:p%3Ass@imap.example.com").unwrap();
         assert_eq!(s.address(), "imaps://imap.example.com:993");
-        assert_eq!((s.login.0.as_str(), s.login.1.as_str()), ("remit@acme.com", "p:ss"));
+        assert!(matches!(&s.login, Login::Password(u, p) if u.as_str() == "remit@acme.com" && p.as_str() == "p:ss"));
+        let token = Server::parse("imaps://remit%40acme.com@outlook.office365.com").unwrap();
+        assert!(token.wants_token() && !s.wants_token());
         assert_eq!(format!("{s:?}"), "imaps://imap.example.com:993");
         assert_eq!(Server::parse("imap://u:p@127.0.0.1").unwrap().address(), "imap://127.0.0.1:143");
         for bad in ["imaps://imap.example.com", "smtp://u:p@x.example", "imap://u:p@x.example:port", "imaps://u:p@"] {
@@ -610,6 +697,25 @@ mod tests {
             let wrong = Server::parse(&format!("imap://remit:nope@127.0.0.1:{}", imap.port)).unwrap();
             assert!(matches!(wrong.open(), Err(Failure::Permanent(w)) if w.contains("refused the login") && !w.contains("nope")));
         }
+    }
+
+    /// A user without a password logs in with the binding's token (`AUTHENTICATE XOAUTH2`); one
+    /// refused with a challenge is answered and refused without saying the token; none given, or a
+    /// server that takes none, is refused.
+    #[test]
+    fn a_token_logs_in_with_xoauth2() {
+        let imap = stand_in::start_with_token("remit@acme.com", "t0ken", true);
+        let url = format!("imap://remit%40acme.com@127.0.0.1:{}", imap.port);
+        let mut s = Server::parse(&url).unwrap().with_token(Zeroizing::new("t0ken".into())).open().unwrap();
+        assert_eq!(s.select("INBOX").unwrap(), 7);
+        s.logout();
+        assert_eq!(imap.folders.lock().unwrap().logins, 1);
+        let expired = Server::parse(&url).unwrap().with_token(Zeroizing::new("expired".into()));
+        assert!(matches!(expired.open(), Err(Failure::Permanent(w)) if w.contains("refused the login") && !w.contains("expired")));
+        assert!(matches!(Server::parse(&url).unwrap().open(), Err(Failure::Permanent(w)) if w == crate::smtp::NO_TOKEN));
+        let passwords = stand_in::start("remit@acme.com", "s3cret", true);
+        let without = Server::parse(&format!("imap://remit%40acme.com@127.0.0.1:{}", passwords.port)).unwrap().with_token(Zeroizing::new("t0ken".into()));
+        assert!(matches!(without.open(), Err(Failure::Permanent(w)) if w.contains("offers no AUTH=XOAUTH2")));
     }
 
     #[test]

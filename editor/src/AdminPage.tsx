@@ -132,7 +132,7 @@ export function AdminPage({ me, onOpenDeployment }: { me: string; onOpenDeployme
   // Each database's tables as last read, by binding: the tables, or why they couldn't be read.
   const [tables, setTables] = useState<Record<string, string[] | { error: string }>>({});
   const [mails, setMails] = useState<MailEntry[]>([]);
-  const noMail: MailBinding = { name: "", smtp: "", from: "", to: "", imap: "", folder: "", done: "", verdict_from: "", deployment: null };
+  const noMail: MailBinding = { name: "", smtp: "", from: "", to: "", imap: "", folder: "", done: "", verdict_from: "", oauth: "", deployment: null };
   const [mailDraft, setMailDraft] = useState<MailBinding>(noMail);
   const [serverSecrets, setServerSecrets] = useState<SecretInfo[]>([]);
   const [secretDraft, setSecretDraft] = useState({ name: "", value: "", to: "" });
@@ -689,7 +689,8 @@ export function AdminPage({ me, onOpenDeployment }: { me: string; onOpenDeployme
             computes within these. Mail goes once its run is over, and is tried again for a day while the server can&apos;t take it. A mail bound to a
             mailbox as well (or instead: an IMAP server&apos;s URL kept the same way) starts a run of <code>on.mail(…)</code> for each message that comes to
             its folder, then moves it to done; whose verdict counts is the name the mailbox&apos;s own server writes in its Authentication-Results header
-            (without one, no message is authenticated).
+            (without one, no message is authenticated). A server that takes no password (Microsoft 365, Google Workspace) logs in with a token: its URL names
+            the user and no password, and the OAuth source keeps the token request (https://id:secret@host/…/token?scope=…), which the server sends to get one.
           </div>
           {mails.length === 0 && <div style={{ color: "#7e8ea8", fontSize: 11, marginBottom: 6 }}>no mail bound</div>}
           {mails.map((m) => (
@@ -701,6 +702,7 @@ export function AdminPage({ me, onOpenDeployment }: { me: string; onOpenDeployme
                   {m.smtp && m.mailbox && " · "}
                   {m.mailbox &&
                     `receives in ${m.mailbox.address} ${m.mailbox.folder} (from ${m.mailbox.imap}), moved to ${m.mailbox.done} · ${m.mailbox.verdict_from ? `${m.mailbox.verdict_from}'s verdict` : "no verdict believed"}`}
+                  {m.oauth && ` · logs in with OAuth (${m.oauth.address} from ${m.oauth.source})`}
                 </span>
                 {m.deployment && <span style={{ color: "#7e8ea8", fontSize: 11 }}>for {m.deployment} only</span>}
                 <button
@@ -729,7 +731,7 @@ export function AdminPage({ me, onOpenDeployment }: { me: string; onOpenDeployme
                 return;
               act(async () => {
                 const t = (s: string | undefined) => (s ?? "").trim();
-                await bindMail({ name, smtp: t(mailDraft.smtp), from: t(mailDraft.from), to: t(mailDraft.to), imap: t(mailDraft.imap), folder: t(mailDraft.folder), done: t(mailDraft.done), verdict_from: t(mailDraft.verdict_from), deployment });
+                await bindMail({ name, smtp: t(mailDraft.smtp), from: t(mailDraft.from), to: t(mailDraft.to), imap: t(mailDraft.imap), folder: t(mailDraft.folder), done: t(mailDraft.done), verdict_from: t(mailDraft.verdict_from), oauth: t(mailDraft.oauth), deployment });
                 setMailDraft(noMail);
               });
             }}
@@ -767,13 +769,20 @@ export function AdminPage({ me, onOpenDeployment }: { me: string; onOpenDeployme
               style={input}
             />
             <input
+              aria-label="mail oauth"
+              placeholder="OAuth: where the token request is kept (env:HOLON_SECRET_SUPPORT_OAUTH)"
+              value={mailDraft.oauth ?? ""}
+              onChange={(e) => setMailDraft({ ...mailDraft, oauth: e.target.value })}
+              style={{ ...input, flex: 1, minWidth: 220 }}
+            />
+            <input
               aria-label="mail for one deployment"
               placeholder="for one deployment (empty: all)"
               value={mailDraft.deployment ?? ""}
               onChange={(e) => setMailDraft({ ...mailDraft, deployment: e.target.value })}
               style={input}
             />
-            {(isUrl(mailDraft.smtp) || isUrl(mailDraft.imap ?? "")) && (
+            {(isUrl(mailDraft.smtp) || isUrl(mailDraft.imap ?? "") || isUrl(mailDraft.oauth ?? "")) && (
               <div role="alert" style={{ ...quiet, color: "#e0916f", flexBasis: "100%" }}>
                 That is a URL: give where it is kept instead (env:HOLON_SECRET_OPS_SMTP, vault:…). It isn&apos;t sent.
               </div>
@@ -786,7 +795,8 @@ export function AdminPage({ me, onOpenDeployment }: { me: string; onOpenDeployme
                 (!mailDraft.smtp.trim() && !(mailDraft.imap ?? "").trim()) ||
                 (!!mailDraft.smtp.trim() && (!mailDraft.from.trim() || !mailDraft.to.trim())) ||
                 isUrl(mailDraft.smtp) ||
-                isUrl(mailDraft.imap ?? "")
+                isUrl(mailDraft.imap ?? "") ||
+                isUrl(mailDraft.oauth ?? "")
               }
             >
               bind mail

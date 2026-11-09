@@ -843,7 +843,7 @@ Three slices, each with its sample:
 |---|---|---|
 | 1.3a | sending through SMTP: the binding, recipients in the grant, delivery after the run, attachments | `approval-mail` |
 | 1.3b | receiving through IMAP: `on.mail`, the message parsed, `m.authenticated` from the mailbox's own verdict, moved after the run | `remittance-mail` |
-| 1.3c | providers' APIs and OAuth (fork 2), when a mailbox needs them | |
+| 1.3c | mailboxes that log in with OAuth (fork 2): Microsoft 365, Google Workspace | `support-inbox` |
 
 SMTP and IMAP come first because every mailbox and every sending provider speaks them: Postmark,
 SES, Resend, SendGrid and Mailgun take SMTP with a login, as Fastmail, Gmail with an app password
@@ -1146,6 +1146,118 @@ As designed, with what building it found:
   IMAP server of its own (`editor/e2e/imap-server.mjs`) whose folders are folders of `.eml` files;
   the test drops two messages in, waits for the invoice to be paid and both files to move, verifies
   the export, and reads the mailbox on the admin page.
+
+#### 5.2.6 Slice 1.3c as designed (2026-11-09, against `c853e1d`): mailboxes that log in with OAuth
+
+Microsoft 365 has turned passwords off for IMAP and SMTP, and Google Workspace steers to OAuth.
+Both still speak IMAP and SMTP: they take an OAuth token in place of a password (SASL `XOAUTH2`).
+So fork 2 is decided for the host doing OAuth: the same binding, the same servers, the same
+flows, logged in with a token the host asks for. Microsoft Graph and the Gmail API stay in Tier 3,
+for a tenant that has turned IMAP itself off.
+
+**The binding.** `--oauth` names a source holding the token request as a URL, the client's id and
+secret as its login, as the other sources hold a server's URL with its login:
+
+```
+HOLON_SECRET_SUPPORT_OAUTH=https://<client id>:<client secret>@login.microsoftonline.com/<tenant>/oauth2/v2.0/token?scope=https://outlook.office365.com/.default
+HOLON_SECRET_SUPPORT_IMAP=imaps://support%40acme.com@outlook.office365.com
+HOLON_SECRET_SUPPORT_SMTP=smtp://support%40acme.com@smtp.office365.com:587
+holon mail add support --imap env:HOLON_SECRET_SUPPORT_IMAP --smtp env:HOLON_SECRET_SUPPORT_SMTP
+  --oauth env:HOLON_SECRET_SUPPORT_OAUTH --from "Support <support@acme.com>" --to "*" --verdict-from …
+```
+
+- **Which grant:** client credentials (`scope=` in the query: Microsoft 365's app-only access, no
+  person's consent, nothing that runs out), or a refresh token (`refresh_token=` in the query, a
+  person's consent given once: Google's `https://oauth2.googleapis.com/token`, scope
+  `https://mail.google.com/`). Values in the query percent-encoded.
+- **Which login:** a server's URL with a password logs in with it; one with a user and no
+  password logs in as that user with the binding's token. `--oauth` where neither URL names a
+  user without a password is refused, and so is a user without a password and no `--oauth`. So
+  one binding may send through a relay's password and receive through Microsoft 365's token.
+- **Where:** the token URL is `https://` (plain `http://` only to a loopback address, the tests').
+  Never stored, shown or logged; the host keeps the endpoint without its login or query.
+
+The server asks for a token when the mail is bound, and logs in with it to each server, so a
+wrong secret or a mailbox the app may not read is refused then.
+
+**The token.** Asked for with a form POST (`grant_type=client_credentials` with the scope, or
+`refresh_token`; the client's id and secret in the body, which Microsoft and Google both take),
+kept in memory only, until a minute before it runs out (`expires_in`), and by the source's value,
+so a value an admin changes asks anew. A login refused with it drops it: the next asks for a new
+one. A refresh token the answer replaces is kept in memory in place of the source's for the
+server's life; a restart starts from the source's again. A provider that revokes a refresh token
+once it is used isn't one this host can hold (it would write the new one back to the source):
+Microsoft 365 runs on client credentials, which have none, and Google's refresh tokens are
+reused.
+
+**The login.** SASL `XOAUTH2`: `user=<user>^Aauth=Bearer <token>^A^A`, base64. IMAP sends
+`AUTHENTICATE XOAUTH2` when the server offers `AUTH=XOAUTH2` (the response with the command when
+it offers `SASL-IR`); SMTP sends `AUTH XOAUTH2` when it offers it. A refusal may come as a
+challenge first (a status in JSON, Google's way): it is answered empty, as the mechanism says, and
+the login is refused.
+
+**Failures.** The token endpoint unreachable, or answering 5xx: temporary (the mail is tried
+again, the mailbox at its next look). A 4xx: permanent, saying its `error` (`invalid_client`,
+`invalid_grant`) and the first 200 characters of its `error_description`, which hold no secret.
+Each on the timeline as a password's refusal is.
+
+**The grant.** Nothing new: `MailSend` and `MailArrival` as before. How the host logs in is the
+admin's business, as a password is.
+
+**The admin page and the CLI:** an OAuth source beside the servers' (`--oauth`); a binding is
+listed with "logs in with OAuth (https://login.microsoftonline.com/…/token)".
+
+**Dependencies:** none new. The token request goes through `ureq`, as the OIDC sign-in's do.
+
+**Tests:** a token endpoint in the server test (it counts what it is asked); the IMAP stand-in
+and the SMTP sink take `XOAUTH2`. The e2e server starts a token endpoint of its own, and its IMAP
+server and SMTP sink take the token it gives.
+
+**The sample, `support-inbox`:** a support mailbox on Microsoft 365, received from and answered
+through one binding that logs in with OAuth. Each authenticated request opens a ticket, numbered,
+and is answered with its number; one that isn't authenticated is kept, unanswered (answering a
+forged `From` would mail whoever it names).
+
+#### 5.2.7 Slice 1.3c as built (2026-11-09)
+
+As designed, with what building it found:
+
+- **A refused token is tried again at once.** The design dropped a token a login was refused
+  with, for the next attempt to ask anew; built, the same login is tried once more with a new one
+  (`Mails::with_token`), so a token revoked before it runs out costs one more login, not a failed
+  look or a mail waiting for its retry. A second refusal is the login's failure, the new token
+  dropped too.
+- **One token for both servers:** kept by the blake3 of the request's value, so a binding with
+  both halves asks once (the server test counts what the endpoint is asked).
+- **The login, shared:** `smtp::Login` (a password, or a user and the token given at login time)
+  is what both clients parse from a URL's login, and `smtp::xoauth2` writes the SASL response for
+  both. IMAP sends `AUTHENTICATE XOAUTH2` only when `AUTH=XOAUTH2` is offered (with the response
+  when `SASL-IR` is, else after the `+`), answers a challenge empty and reads the tagged `NO`, and
+  reads the capabilities again after; SMTP's `AUTH XOAUTH2` answers a `334` empty the same way,
+  and a 4xx is temporary. A server that offers no XOAUTH2 to a token login is refused, saying so.
+- **The request's URL is checked part by part** (`oauth::Grant`): a login that is the client's id
+  and secret, a host, `https://` (or `http://` to a loopback address), and a query of `scope` and
+  `refresh_token` only, any other key refused, so nothing the endpoint isn't sent hides there. Its
+  errors name the part, never the value.
+- **The watcher logs in as the binding does:** `inbox.rs` opens the mailbox through
+  `Mails::open_mailbox`, so a look that needs a token gets it from the same place, kept.
+- **The binding shows** `"oauth": {"source", "address"}`, the endpoint without its login or query;
+  `holon mail list` and the admin page say "logs in with OAuth (<endpoint> from <source>)", and
+  the admin page has the OAuth source beside the servers'.
+- **The tests:** a token endpoint stand-in in memory (`oauth::stand_in`: it counts what it is
+  asked, refuses a wrong client as Entra does, with `AADSTS7000215`, and replaces a refresh token
+  each time it is used); the IMAP stand-in logs in by token alone (`start_with_token`), the SMTP
+  sink takes `XOAUTH2` and can be made to refuse a token. Unit tests: the URL's parts, a token
+  kept until a minute before it runs out and asked for again, a rotated refresh token used next,
+  an endpoint that isn't there temporary, each client's XOAUTH2 login and refusal. The server
+  test binds `support` with `--oauth`, deploys the sample, runs an authenticated request (a
+  ticket, its answer sent logged in with the token) and a forged one (kept, unanswered), both
+  moved to `Answered`, the token asked for once; then the SMTP server refuses that token, and the
+  next answer goes with a new one. Neither the binding nor the log holds the secret or a token.
+  The e2e server starts a token endpoint (`editor/e2e/token-endpoint.mjs`), and a second IMAP
+  server and SMTP sink that take its token only; the test drops two requests in, waits for the
+  ticket, reads the answer and the user it was sent as, sees both files moved, and reads the
+  binding on the admin page.
 
 ### 5.3 Keys
 
@@ -2952,7 +3064,7 @@ settles the queue engine with 1.4 deferred.
 |---|---|---|---|---|
 | 1.1 | **Value kinds:** `Bytes`, built (§5.10.2); `Decimal` decided as text leaves, built in 1.2 (§5.10.1) | §5.10 (here) | — | M |
 | 1.2 | **Formats:** exact decimals, CSV, XML, dates (UTC and offsets), zip and gzip, JWT verify, PGP encrypt and verify with a public key, in six slices (§5.1.1); 1.2a, decimals and CSV, built (§5.1.2); 1.2b, offsets and business days, built (§5.1.4); 1.2c, XML, built (§5.1.6); 1.2d, zip and gzip and bytes written to a file, built (§5.1.8); 1.2e, JWT verify, built (§5.1.10); 1.2f, PGP encrypt and verify, built (§5.1.12) | §5.1 (here) | 1.1 | M |
-| 1.3 | **Email:** send, recipients in the grant; receive as `on mail`, with its sender's verdict and attachments, in three slices (§5.2); 1.3a, sending through SMTP, built (§5.2.3); 1.3b, receiving through IMAP, built (§5.2.5) | §5.2 (here) | 1.1 for attachments | L |
+| 1.3 | **Email:** send, recipients in the grant; receive as `on mail`, with its sender's verdict and attachments, in three slices (§5.2); 1.3a, sending through SMTP, built (§5.2.3); 1.3b, receiving through IMAP, built (§5.2.5); 1.3c, mailboxes that log in with OAuth, built (§5.2.7) | §5.2 (here) | 1.1 for attachments | L |
 | 1.4 | *Deferred.* **Remote folders:** the backend seam in `folders.rs`, then SFTP and S3-compatible storage (§6) | §6 (here) | 1.1 for binary files | L |
 | 1.5 | *Deferred.* **Secure connectivity:** keys the host holds (PGP decrypt and sign) and client identities (mutual TLS, a private CA) (§5.3, §5.4) | §5.3, §5.4 (here) | 1.1, 1.2 | M |
 | 1.6 | **Messaging:** one subscription runtime (position, once per message, backpressure, reconnect), feeds (SSE, WebSocket, Postgres `LISTEN`) and one queue engine, publish and consume (§5.5, §5.9) | §5.5, §5.9 (here) | 1.4's request signing, for SQS (fork 8) | L |
@@ -3053,7 +3165,9 @@ Taken when a job or a user asks, each with its design here and its sample all th
    refreshing it), or those mailboxes are reached through their HTTP APIs (Microsoft Graph, Gmail
    API) as other backends.
    *Lean:* SMTP and IMAP with passwords first (most providers and relays take them), Graph as the
-   second backend if the job is on Microsoft 365.
+   second backend if the job is on Microsoft 365. *Decided* (2026-11-09, §5.2.6): the host does
+   OAuth, logging in to the same IMAP and SMTP with `XOAUTH2`, which Microsoft 365 and Google
+   Workspace both take; Graph and the Gmail API stay in Tier 3, for a tenant that turns IMAP off.
 3. **The tz database.** Time zones need it in the binary (a few hundred KiB) and in the wasm
    build, and its updates are releases. *Lean:* UTC and fixed offsets first; zones when a job asks.
 4. **Recipients' grain.** Exact addresses, domains with `*`, or addresses read from a collection

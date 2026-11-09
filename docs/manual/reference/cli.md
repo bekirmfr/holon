@@ -658,7 +658,7 @@ host](../guides/databases.md).
 ```
 holon mail add NAME [--smtp SOURCE --from SENDER --to LIST]
                      [--imap SOURCE [--folder F] [--done F] [--verdict-from SERVER] [--every T]]
-                     [--for SLUG]
+                     [--oauth SOURCE] [--for SLUG]
 holon mail list
 holon mail remove NAME [--for SLUG]
 ```
@@ -669,8 +669,10 @@ login, the server fetches from `SOURCE` (`env:HOLON_SECRET_…`, `vault:<mount>/
 never storing or showing it: `smtps://user:password@host` (TLS, port 465), or
 `smtp://user:password@host:587` (STARTTLS, required); `imaps://user:password@host` (TLS, port
 993), or `imap://user:password@host:143` (STARTTLS, required); plain `smtp://` and `imap://` only
-to a server on the same machine. It logs in to each when it is bound, and makes the mailbox's
-`--done` folder. Removing it gives up the mail on its way through it. Needs an admin; each takes
+to a server on the same machine. A URL with a user and no password (Microsoft 365's, which take
+none) logs in with a token the server asks the endpoint in `--oauth` for, and keeps in memory. It
+logs in to each when it is bound, and makes the mailbox's `--done` folder. Removing it gives up
+the mail on its way through it. Needs an admin; each takes
 `--server PORT|URL`. See [Mail](../guides/mail.md).
 
 | Option | |
@@ -683,6 +685,7 @@ to a server on the same machine. It logs in to each when it is bound, and makes 
 | `--done F` | where each message is moved once its run is over: `Processed` unless given |
 | `--verdict-from SERVER` | whose `Authentication-Results` verdict on a sender counts: the name the mailbox's own server writes there; without it, no message is authenticated |
 | `--every T` | how often the folder is looked at: `1m` unless given, `10s` at least |
+| `--oauth SOURCE` | where the server reads the token request, for a server whose URL names a user and no password: `https://id:secret@host/…/token?scope=…` (client credentials) or `?refresh_token=…`; see [Logging in with OAuth](../guides/mail.md#logging-in-with-oauth) |
 | `--for SLUG` | for that deployment only |
 
 ## `holon mcp`

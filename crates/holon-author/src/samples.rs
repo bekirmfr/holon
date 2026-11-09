@@ -791,6 +791,18 @@ static SAMPLES: &[Sample] = &[
         text: include_str!("../samples/remittance-mail.holon.ts"),
     },
     Sample {
+        name: "support-inbox",
+        title: "Support inbox (a Microsoft 365 mailbox, logged in with OAuth)",
+        description: "Customers' requests come to a support mailbox on Microsoft 365, which takes no password over IMAP or SMTP: the admin binds the mail with --oauth, a token request (the app's id and secret, its tenant's token endpoint) in a secret source, and the host asks for a token and logs in with it to both servers (XOAUTH2), keeping it until it runs out. The flow doesn't know: one mail receives (on.mail(support, (m) => …)) and sends (support.send(…)). Each request whose sender the mailbox's own server authenticated opens a ticket, numbered in the flow's state, and is answered with its number; one that isn't authenticated is kept, unanswered, since answering a forged From would mail whoever it names. Each message is moved to the binding's --done folder once its run is over, and the answer goes once its run's writes have landed.",
+        shows: &["mail through OAuth", "on.mail", "mail sent", "one mail receiving and sending", "the sender authenticated", "collections", "state across runs"],
+        port: Some("8189"),
+        secrets: &[],
+        optional: &[],
+        browsers: None,
+        try_it: "register an app in Microsoft Entra that may read the mailbox over IMAP and send from it over SMTP; put its token request (HOLON_SECRET_SUPPORT_OAUTH=https://<app id>:<secret>@login.microsoftonline.com/<tenant>/oauth2/v2.0/token?scope=https://outlook.office365.com/.default) and the mailbox's URLs (HOLON_SECRET_SUPPORT_IMAP=imaps://support%40acme.com@outlook.office365.com, HOLON_SECRET_SUPPORT_SMTP=smtp://support%40acme.com@smtp.office365.com:587) in the server's environment, and bind it (holon mail add support --imap env:HOLON_SECRET_SUPPORT_IMAP --done Answered --smtp env:HOLON_SECRET_SUPPORT_SMTP --from \"Acme support <support@acme.com>\" --to \"*\" --oauth env:HOLON_SECRET_SUPPORT_OAUTH --verdict-from <the name its server writes in Authentication-Results>); deploy, mail the mailbox from an address whose domain checks out; within a minute curl http://127.0.0.1:8189/tickets shows T-1, and the sender is mailed \"[T-1] …\" back",
+        text: include_str!("../samples/support-inbox.holon.ts"),
+    },
+    Sample {
         name: "ticker",
         title: "Ticker (a clock beside routes)",
         description: "A flow with a clock of its own beside its routes: every 2 seconds (every(\"2s\", …)) it counts a tick in its state and sends it on the channel ticks, with the time of the tick (now, in the handler). Its page lists each tick as it arrives; GET /count answers the count. An action, run by hand by its name, sets the count back (export const reset = action((input) => …), input what was sent); a person runs it, and an agent only once a person lets agents run it.",

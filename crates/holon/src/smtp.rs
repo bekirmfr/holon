@@ -8,6 +8,8 @@
 //!   refused, so a login never crosses in clear). Plain SMTP only to a loopback address: a relay on
 //!   the machine, the tests' sink.
 //! - **The login:** AUTH PLAIN or LOGIN, whichever the server offers; none when the URL has none.
+//!   A URL that names a user and no password logs in as that user with the token the binding's
+//!   `--oauth` gives (oauth.rs, §5.2.6): `AUTH XOAUTH2`.
 //! - **What a failure is:** [`Failure::Temporary`] (no connection, a 4xx), tried again;
 //!   [`Failure::Permanent`] (a 5xx), given up. Neither says the password, nor the user.
 
@@ -29,7 +31,41 @@ pub(crate) struct Server {
     implicit_tls: bool,
     host: String,
     port: u16,
-    login: Option<(Zeroizing<String>, Zeroizing<String>)>,
+    login: Option<Login>,
+}
+
+/// How a server is logged in to, as its URL says.
+pub(crate) enum Login {
+    /// The URL's user and password.
+    Password(Zeroizing<String>, Zeroizing<String>),
+    /// The URL's user alone, who logs in with the token the binding's `--oauth` gives: none yet.
+    Token(Zeroizing<String>, Option<Zeroizing<String>>),
+}
+
+impl Login {
+    /// The login a URL's user info writes: `user:password`, or a user alone.
+    pub(crate) fn of(user_info: &str) -> Result<Login, String> {
+        Ok(match user_info.split_once(':') {
+            Some((user, password)) => Login::Password(unpercent(user)?, unpercent(password)?),
+            None => Login::Token(unpercent(user_info)?, None),
+        })
+    }
+
+    /// It, with `token` when it logs in with one.
+    pub(crate) fn with_token(&mut self, token: Zeroizing<String>) {
+        if let Login::Token(_, t) = self {
+            *t = Some(token);
+        }
+    }
+}
+
+/// What a login with a token says when the binding gave it none.
+pub(crate) const NO_TOKEN: &str = "the URL names a user and no password, and the mail has no --oauth to log in with";
+
+/// SASL `XOAUTH2`'s response: the user and the bearer token, base64.
+pub(crate) fn xoauth2(user: &str, token: &str) -> Zeroizing<String> {
+    let raw = Zeroizing::new(format!("user={user}\x01auth=Bearer {token}\x01\x01"));
+    Zeroizing::new(base64(raw.as_bytes()))
 }
 
 impl std::fmt::Debug for Server {
@@ -49,10 +85,7 @@ impl Server {
         };
         let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
         let (login, at) = match authority.rsplit_once('@') {
-            Some((user_info, at)) => {
-                let (user, password) = user_info.split_once(':').ok_or("the URL's login is user:password")?;
-                (Some((unpercent(user)?, unpercent(password)?)), at)
-            }
+            Some((user_info, at)) => (Some(Login::of(user_info)?), at),
             None => (None, authority),
         };
         let default = if implicit_tls { 465 } else { 587 };
@@ -84,6 +117,19 @@ impl Server {
 
     fn is_loopback(&self) -> bool {
         self.host == "localhost" || self.host.parse::<std::net::IpAddr>().is_ok_and(|ip| ip.is_loopback())
+    }
+
+    /// Whether it logs in with a token: its URL names a user and no password.
+    pub(crate) fn wants_token(&self) -> bool {
+        matches!(self.login, Some(Login::Token(..)))
+    }
+
+    /// It, logging in with `token` when it logs in with one.
+    pub(crate) fn with_token(mut self, token: Zeroizing<String>) -> Server {
+        if let Some(login) = &mut self.login {
+            login.with_token(token);
+        }
+        self
     }
 
     /// Log in and leave: whether the server takes the login (or, with none, talks SMTP).
@@ -137,13 +183,30 @@ impl Server {
             s = Session { stream: Stream::Tls(Box::new(tls(&self.host, tcp)?)), buffer: Vec::new() };
             offers = s.expect(&ehlo, 250, "EHLO")?;
         }
-        if let Some((user, password)) = &self.login {
-            let auth: Vec<String> = offers.iter().filter_map(|l| l.get(..5).filter(|p| p.eq_ignore_ascii_case("AUTH ")).map(|_| l[5..].to_ascii_uppercase())).collect();
-            let offered = |m: &str| auth.iter().any(|a| a.split_whitespace().any(|w| w == m));
-            let refused = |f: Failure| match f {
-                Failure::Permanent(_) => Failure::Permanent(format!("{} refused the login", self.address())),
-                t => t,
-            };
+        let auth: Vec<String> = offers.iter().filter_map(|l| l.get(..5).filter(|p| p.eq_ignore_ascii_case("AUTH ")).map(|_| l[5..].to_ascii_uppercase())).collect();
+        let offered = |m: &str| auth.iter().any(|a| a.split_whitespace().any(|w| w == m));
+        let refused = |f: Failure| match f {
+            Failure::Permanent(_) => Failure::Permanent(format!("{} refused the login", self.address())),
+            t => t,
+        };
+        if let Some(Login::Token(user, token)) = &self.login {
+            let token = token.as_ref().ok_or_else(|| Failure::Permanent(NO_TOKEN.into()))?;
+            if !offered("XOAUTH2") {
+                return Err(Failure::Permanent(format!("{} offers no AUTH XOAUTH2, which a token logs in with", self.address())));
+            }
+            s.write(Zeroizing::new(format!("AUTH XOAUTH2 {}\r\n", xoauth2(user, token).as_str())).as_bytes())?;
+            match s.answer()? {
+                (235, _) => {}
+                // A refusal's status, in JSON: answered empty, as XOAUTH2 says, then refused.
+                (334, _) => {
+                    let _ = s.command("");
+                    return Err(Failure::Permanent(format!("{} refused the login", self.address())));
+                }
+                (code @ 400..=499, lines) => return Err(Failure::Temporary(format!("the login: {code} {}", lines.join(" ").chars().take(300).collect::<String>()))),
+                _ => return Err(Failure::Permanent(format!("{} refused the login", self.address()))),
+            }
+        }
+        if let Some(Login::Password(user, password)) = &self.login {
             if offered("PLAIN") {
                 let mut plain = Zeroizing::new(Vec::with_capacity(user.len() + password.len() + 2));
                 plain.push(0);
@@ -364,7 +427,8 @@ pub(crate) mod sink {
     use std::net::TcpListener;
     use std::sync::{Arc, Mutex};
 
-    /// A mail it was sent: its sender, recipients, the login it was given, and the message.
+    /// A mail it was sent: its sender, recipients, the login it was given (an `XOAUTH2` one as
+    /// sent), and the message.
     #[derive(Clone, Debug, Default)]
     pub(crate) struct Got {
         pub(crate) from: String,
@@ -376,16 +440,19 @@ pub(crate) mod sink {
     pub(crate) struct Sink {
         pub(crate) port: u16,
         pub(crate) got: Arc<Mutex<Vec<Got>>>,
+        /// An `XOAUTH2` login it refuses, as Google does: a challenge, then 535.
+        pub(crate) refuse: Arc<Mutex<Option<String>>>,
     }
 
     pub(crate) fn start(auth: &'static str) -> Sink {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         let got = Arc::new(Mutex::new(Vec::new()));
-        let kept = Arc::clone(&got);
+        let refuse = Arc::new(Mutex::new(None::<String>));
+        let (kept, refusing) = (Arc::clone(&got), Arc::clone(&refuse));
         std::thread::spawn(move || {
             for conn in listener.incoming().flatten() {
-                let kept = Arc::clone(&kept);
+                let (kept, refusing) = (Arc::clone(&kept), Arc::clone(&refusing));
                 std::thread::spawn(move || {
                     let mut w = conn.try_clone().unwrap();
                     let mut r = BufReader::new(conn);
@@ -405,6 +472,17 @@ pub(crate) mod sink {
                         } else if upper.starts_with("AUTH PLAIN ") {
                             mail.login = Some(l[11..].to_string());
                             let _ = say("235 ok");
+                        } else if upper.starts_with("AUTH XOAUTH2 ") {
+                            let given = l[13..].to_string();
+                            if refusing.lock().unwrap().as_deref() == Some(given.as_str()) {
+                                let _ = say("334 eyJzdGF0dXMiOiI0MDAifQ==");
+                                let mut empty = String::new();
+                                r.read_line(&mut empty).unwrap();
+                                let _ = say("535 5.7.8 not accepted");
+                            } else {
+                                mail.login = Some(given);
+                                let _ = say("235 ok");
+                            }
                         } else if upper == "AUTH LOGIN" {
                             let _ = say("334 VXNlcm5hbWU6");
                             let mut user = String::new();
@@ -456,7 +534,7 @@ pub(crate) mod sink {
                 });
             }
         });
-        Sink { port, got }
+        Sink { port, got, refuse }
     }
 }
 
@@ -468,13 +546,16 @@ mod tests {
     fn a_url_says_where_and_its_login_and_never_shows_it() {
         let s = Server::parse("smtps://ops%40acme.com:p%3Ass+w@smtp.example.com").unwrap();
         assert_eq!(s.address(), "smtps://smtp.example.com:465");
-        assert_eq!(s.login.as_ref().map(|(u, p)| (u.as_str(), p.as_str())), Some(("ops@acme.com", "p:ss+w")));
+        assert!(matches!(&s.login, Some(Login::Password(u, p)) if u.as_str() == "ops@acme.com" && p.as_str() == "p:ss+w"));
+        let token = Server::parse("smtp://ops%40acme.com@smtp.office365.com").unwrap();
+        assert!(token.wants_token() && matches!(&token.login, Some(Login::Token(u, None)) if u.as_str() == "ops@acme.com"));
+        assert!(!s.wants_token());
         assert_eq!(format!("{s:?}"), "smtps://smtp.example.com:465");
         assert_eq!(Server::parse("smtp://u:p@smtp.example.com:2525").unwrap().address(), "smtp://smtp.example.com:2525");
         assert_eq!(Server::parse("smtp://127.0.0.1:2525").unwrap().address(), "smtp://127.0.0.1:2525");
         assert_eq!(Server::parse("smtp://[::1]:25").unwrap().address(), "smtp://[::1]:25");
         assert_eq!(Server::parse("smtp://smtp.example.com").unwrap().port, 587);
-        for bad in ["https://u:p@x.example", "smtp://u@x.example", "smtp://u:p@x.example:port", "smtp://u:p%zz@x.example", "smtps://u:p@"] {
+        for bad in ["https://u:p@x.example", "smtp://u:p@x.example:port", "smtp://u:p%zz@x.example", "smtps://u:p@"] {
             let e = Server::parse(bad).unwrap_err();
             assert!(!e.contains("u:p"), "{e}");
         }
@@ -494,6 +575,26 @@ mod tests {
             let login = got[0].login.clone().unwrap();
             assert_eq!(login, if auth == "LOGIN" { format!("{}:{}", base64(b"ops"), base64(b"s3cret")) } else { base64(b"\0ops\0s3cret") });
         }
+    }
+
+    /// A user without a password logs in with the binding's token (`AUTH XOAUTH2`); one refused
+    /// with a challenge, as Google refuses, is answered and refused without saying the token; none
+    /// given, or a server that takes none, is refused.
+    #[test]
+    fn a_token_logs_in_with_xoauth2() {
+        let sink = sink::start("PLAIN LOGIN XOAUTH2");
+        let url = format!("smtp://ops%40acme.com@127.0.0.1:{}", sink.port);
+        let s = Server::parse(&url).unwrap().with_token(Zeroizing::new("t0ken".into()));
+        s.send("ops@acme.com", &["a@acme.com".into()], b"Subject: x\r\n\r\nhi").unwrap();
+        assert_eq!(sink.got.lock().unwrap()[0].login.as_deref(), Some(xoauth2("ops@acme.com", "t0ken").as_str()));
+        assert_eq!(base64(b"user=ops@acme.com\x01auth=Bearer t0ken\x01\x01"), xoauth2("ops@acme.com", "t0ken").as_str());
+        *sink.refuse.lock().unwrap() = Some(xoauth2("ops@acme.com", "expired").to_string());
+        let expired = Server::parse(&url).unwrap().with_token(Zeroizing::new("expired".into()));
+        assert!(matches!(expired.check(), Err(Failure::Permanent(w)) if w.contains("refused the login") && !w.contains("expired")));
+        assert!(matches!(Server::parse(&url).unwrap().check(), Err(Failure::Permanent(w)) if w == NO_TOKEN));
+        let plain = sink::start("PLAIN LOGIN");
+        let without = Server::parse(&format!("smtp://ops%40acme.com@127.0.0.1:{}", plain.port)).unwrap().with_token(Zeroizing::new("t0ken".into()));
+        assert!(matches!(without.check(), Err(Failure::Permanent(w)) if w.contains("offers no AUTH XOAUTH2")));
     }
 
     #[test]

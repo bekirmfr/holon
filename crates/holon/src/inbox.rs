@@ -21,7 +21,6 @@ use std::collections::VecDeque;
 use std::time::Instant;
 use std::path::{Path, PathBuf};
 
-use crate::secret_sources::Reference;
 use crate::*;
 
 /// How often the thread looks for mailboxes due.
@@ -159,11 +158,9 @@ fn look_once(store: &SharedStore, deployments: &Mutex<BTreeMap<String, Deploymen
     let (slug, handler, _, _, _, _, files) = l;
     let mail = &handler.mail;
     let mails = &files.all.mails;
-    let mailbox = mails.resolve(slug, mail).ok_or("it isn't bound now")?.mailbox.ok_or("it isn't bound to receive now")?;
-    let url = Reference::parse(&mailbox.imap).and_then(|r| mails.sources().fetch(&r))?;
-    let server = imap::Server::parse(&url)?;
+    let binding = mails.resolve(slug, mail).ok_or("it isn't bound now")?;
+    let (mut session, mailbox) = mails.open_mailbox(&binding)?;
     let why = |f: imap::Failure| f.why().to_string();
-    let mut session = server.open().map_err(why)?;
     let validity = session.select(&mailbox.folder).map_err(why)?;
     let uids = session.uids().map_err(why)?;
     let key = PathBuf::from(slug).join(format!("{mail}.json"));

@@ -7789,6 +7789,87 @@ fn remittance_mail_settles_invoices_from_authenticated_mail_and_moves_each_messa
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+// ── Mailboxes that log in with OAuth (host-capabilities 1.3c) ──
+
+/// A request to a support mailbox: from `from`, its verdict written by `verdict_by`.
+fn support_request(id: &str, from: &str, verdict_by: &str, subject: &str) -> Vec<u8> {
+    let domain = from.rsplit('@').next().unwrap();
+    format!(
+        "Authentication-Results: {verdict_by}; spf=pass smtp.mailfrom={domain}; dkim=pass header.d={domain}; dmarc=pass header.from={domain}\r\n\
+         From: <{from}>\r\nTo: support@acme.com\r\nSubject: {subject}\r\nDate: Mon, 09 Nov 2026 10:00:00 +0000\r\n\
+         Message-ID: <{id}@{domain}>\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nIt doesn't add up.\r\n"
+    )
+    .into_bytes()
+}
+
+/// The support-inbox sample (host-capabilities L4 §5.2.6): its one mail bound with --oauth, both
+/// URLs naming a user and no password, logs in to the mailbox and to the SMTP server with the token
+/// the host asked for once and kept. An authenticated request opens a ticket and is answered
+/// through the same mail; one that isn't is kept, unanswered. A token the SMTP server refuses is
+/// dropped, and the mail goes with a new one. Nothing holds a secret: the binding, the log.
+#[test]
+fn support_inbox_receives_and_answers_through_one_mail_logged_in_with_oauth() {
+    let endpoint = oauth::stand_in::start("app", "s3cret", "t0ken");
+    let imap = imap::stand_in::start_with_token("support@acme.com", "t0ken", true);
+    let sink = smtp::sink::start("PLAIN LOGIN XOAUTH2");
+    let dir = std::env::temp_dir().join(format!("holon-oauth-{}-{}", std::process::id(), rand::random::<u32>()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let env = dir.join(".env");
+    let vars = [
+        format!("HOLON_SECRET_SUPPORT_IMAP=imap://support%40acme.com@127.0.0.1:{}", imap.port),
+        format!("HOLON_SECRET_SUPPORT_SMTP=smtp://support%40acme.com@127.0.0.1:{}", sink.port),
+        format!("HOLON_SECRET_SUPPORT_OAUTH={}", endpoint.url("app", "s3cret", "scope=mail")),
+    ];
+    std::fs::write(&env, vars.join("\n") + "\n").unwrap();
+    let mut state = claims_state("");
+    let mails = mails::Mails::memory().with_sources(secret_sources::Sources::new(Some(env)).unwrap()).with_retry([Duration::from_millis(50); 4], Duration::from_secs(60));
+    state.folders = Arc::new(folders::Folders::memory().with_mails(mails));
+    state.folders.mails.serve(Arc::clone(&state.deployments));
+
+    let bind = serde_json::json!({
+        "name": "support", "imap": "env:HOLON_SECRET_SUPPORT_IMAP", "done": "Answered", "verdict_from": "mx.acme.com",
+        "smtp": "env:HOLON_SECRET_SUPPORT_SMTP", "from": "Acme support <support@acme.com>", "to": "*", "oauth": "env:HOLON_SECRET_SUPPORT_OAUTH",
+    });
+    let bound = route(&state, &req("POST", "/admin/mails", serde_json::to_vec(&bind).unwrap()));
+    assert_eq!(bound.status_code, 200);
+    let shown = String::from_utf8_lossy(&body_bytes(bound)).into_owned();
+    assert!(shown.contains(&format!(r#""oauth":{{"address":"http://127.0.0.1:{}/token","source":"env:HOLON_SECRET_SUPPORT_OAUTH"}}"#, endpoint.port)), "{shown}");
+    assert!(!shown.contains("s3cret") && !shown.contains("t0ken"), "{shown}");
+    assert_eq!(endpoint.asked.lock().unwrap().len(), 1, "one token for both servers");
+    let slug = deploy_text(&state, include_str!("../../holon-author/samples/support-inbox.holon.ts"), "");
+
+    let mut looks = inbox::Looks::default();
+    inbox::run_mail(&state.store, &state.deployments, &state.deployments_path, &mut looks);
+    for m in [support_request("q1", "ann@customer.example", "mx.acme.com", "Invoice INV-7"), support_request("q2", "ann@customer.example", "evil.example", "Pay me")] {
+        imap.folders.lock().unwrap().put("INBOX", &m);
+    }
+    inbox::run_mail(&state.store, &state.deployments, &state.deployments_path, &mut looks);
+    let runs: Vec<serde_json::Value> = log_entries(&state, &slug).into_iter().filter(|e| e["kind"] == "mail").collect();
+    assert_eq!(runs.len(), 2, "{runs:#?}");
+    let (_, tickets, _) = data_call(&state, &slug, "GET", "/tickets", "");
+    assert!(tickets.contains(r#""T-1":{"date":1794218400,"from":"ann@customer.example","subject":"Invoice INV-7""#), "{tickets}");
+    assert!(tickets.contains(r#""unanswered:q2@customer.example""#), "{tickets}");
+    let got = wait_for_mail(&sink, 1);
+    assert_eq!(got[0].to, vec!["ann@customer.example".to_string()]);
+    assert!(got[0].data.contains("Subject: [T-1] Invoice INV-7\r\n") && got[0].data.contains("From: Acme support <support@acme.com>\r\n"), "{}", got[0].data);
+    assert_eq!(got[0].login.as_deref(), Some(smtp::xoauth2("support@acme.com", "t0ken").as_str()));
+    assert_eq!(imap.folders.lock().unwrap().of("Answered").len(), 2);
+    assert_eq!(endpoint.asked.lock().unwrap().len(), 1, "the token kept");
+
+    // The SMTP server stops taking that token: dropped, and the answer goes with a new one.
+    *sink.refuse.lock().unwrap() = Some(smtp::xoauth2("support@acme.com", "t0ken").to_string());
+    *endpoint.token.lock().unwrap() = "t0ken-2".into();
+    imap.folders.lock().unwrap().put("INBOX", &support_request("q3", "bob@customer.example", "mx.acme.com", "Statement"));
+    inbox::run_mail(&state.store, &state.deployments, &state.deployments_path, &mut looks);
+    let got = wait_for_mail(&sink, 2);
+    assert_eq!((got[1].to.clone(), got[1].login.as_deref()), (vec!["bob@customer.example".to_string()], Some(smtp::xoauth2("support@acme.com", "t0ken-2").as_str())));
+    assert_eq!(endpoint.asked.lock().unwrap().len(), 2);
+
+    let logged = serde_json::to_string(&log_entries(&state, &slug)).unwrap();
+    assert!(!logged.contains("s3cret") && !logged.contains("t0ken"), "{logged}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 // ── MongoDB (slice 7) ──
 
 /// The server compiles a flow's text with the editor's lowering, so a record literal must freeze

@@ -166,6 +166,7 @@ mod dataplane;
 mod mails;
 mod smtp;
 mod imap;
+mod oauth;
 mod inbox;
 mod deploy;
 mod editor;

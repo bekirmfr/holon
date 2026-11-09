@@ -26,7 +26,8 @@ starts nothing: a send is a sink, and a subscription is a route's run.
 Samples: `hello-api` (routes), `heartbeat` (a clock alone), `rolling-log` (a clock that keeps 5
 runs), `ticker` (a clock beside routes, and an action), `drop-box` (a file handler alone),
 `file-audit` (several file handlers, removals, `matching`), `drop-board` (file handlers beside
-routes), `remittance-mail` (a mail handler beside routes), `billing` and `shop` (actions, and a
+routes), `remittance-mail` (a mail handler beside routes), `support-inbox` (a mail handler that
+answers through the same mail, logged in with OAuth), `billing` and `shop` (actions, and a
 flow calling another's), `approval` (a resume route), `status-board` (each handler's log level).
 
 ## 2. How it works
@@ -81,7 +82,8 @@ alone, a file two handlers are for starting a run of each, logged as `file` unde
 
 `inbox.rs` is the same for a mail handler (`on.mail(remit, (m) => …)`, host-capabilities L4
 §5.2.4): a thread looks every second for the mailboxes running deployments listen to whose
-binding's `--every` has come round, logs in over IMAP (`imap.rs`), and starts one run for each
+binding's `--every` has come round, logs in over IMAP (`imap.rs`; with a password, or with the
+OAuth token `oauth.rs` asks for and keeps, through `Mails::open_mailbox`), and starts one run for each
 message that came since, 20 a look at most, its message read by core (`mail::received`) the run's
 input as `MailArrival("remit")`. Once the run is over the message is moved to the binding's
 `--done`; its UID is noted first, so a move a crash cut off is made at the next look. What the

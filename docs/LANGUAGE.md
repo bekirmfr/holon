@@ -917,6 +917,9 @@ own: `on.mail(ops, (m) => { … })` runs for each message that comes there, `m` 
 binding's done folder once the run is over. `authenticated` is the mailbox's own server's verdict
 that the domain in `From` sent it, the only part of a message's sender a flow can believe. The
 remittance-mail sample settles invoices from the CSVs customers mail, once it has checked it.
+How the host logs in is the binding's business, not the flow's: the support-inbox sample
+receives requests from a Microsoft 365 mailbox and answers them through the same mail, the host
+logging in to both servers with an OAuth token (`--oauth`), and nothing in its text says so.
 
 ### chat-proxy: a streamed reply
 
