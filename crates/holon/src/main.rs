@@ -148,6 +148,7 @@ mod access;
 mod accounts;
 mod accountscmd;
 mod deploycmd;
+mod replaycmd;
 mod activity;
 mod arrivals;
 mod auth;
@@ -541,6 +542,8 @@ const USAGE: &str = "usage: holon <command>
   fmt <file>                         rewrite a flow in the canonical form
   types [dir]                        write holon.d.ts, for an editor's TypeScript
   deploy <file> [--server PORT|URL]  compile and deploy a flow to a running server (--approve)
+  replay <file> [--on SLUG]          a new version run offline on a deployment's recent runs:
+                                     which it answers the same, and how the others differ
   editor [file|slug] [--server …]    the editor in this terminal: flows, runs, approvals, and
                                      flows' text in tabs, checked as you type
   deployments [<slug>]               what is deployed; one's details and its waiting runs
@@ -662,6 +665,7 @@ fn main() {
         Some("serve") => serve(rest),
         Some(cmd @ ("new" | "check" | "show" | "fmt" | "types")) => std::process::exit(flowcmd::run(cmd, &rest)),
         Some("deploy") => std::process::exit(deploycmd::run(&rest)),
+        Some("replay") => std::process::exit(replaycmd::run(&rest)),
         Some("editor") => std::process::exit(workbench::run(&rest)),
         Some("verify") => std::process::exit(verify::run(&rest)),
         Some("export") => std::process::exit(verify::export(&rest)),

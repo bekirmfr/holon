@@ -3,9 +3,10 @@
 // is the built binary, signed in with the e2e admin's token (HOLON_TOKEN), as a script would be.
 
 import { execFileSync } from "node:child_process";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { expect, SERVER, test } from "./fixtures";
+import { expect, RUN_DIR, SAMPLE_SHIFT, SERVER, test } from "./fixtures";
 
 const root = join(fileURLToPath(import.meta.url), "..", "..", "..");
 const HOLON = join(process.env.CARGO_TARGET_DIR ?? join(root, "target"), "debug", process.platform === "win32" ? "holon.exe" : "holon");
@@ -123,4 +124,34 @@ test("flows are saved and read back, and people and tokens managed, from the com
   ok(adminToken, ["token", "revoke", id]);
   expect(holon(token, ["deployments"]).status).toBe(1);
   expect(ok(adminToken, ["oidc"])).toMatch(/^(off|signing in through)/);
+});
+
+test("a new version is replayed on a deployment's recent runs from the command line before it is deployed", async ({ adminToken }) => {
+  // The price-rules sample, under a slug of its own, on a port past the samples' in this slot's range.
+  const slug = `price-replay-${Date.now().toString(36)}`;
+  const text = readFileSync(join(SAMPLES, "price-rules.holon.ts"), "utf8").replace("port: 8185", `port: ${8194 + SAMPLE_SHIFT}`);
+  mkdirSync(RUN_DIR, { recursive: true });
+  const file = (name: string, body: string) => {
+    const path = join(RUN_DIR, `${slug}-${name}.holon.ts`);
+    writeFileSync(path, body);
+    return path;
+  };
+  const deployed = file("v1", text);
+  ok(adminToken, ["deploy", deployed, "--slug", slug, "--approve"]);
+  expect(ok(adminToken, ["replay", deployed, "--on", slug]).trim()).toBe(`"${slug}" has no runs yet to replay this version on.`);
+  for (const body of ['{"total":80,"member":true}', '{"total":80}', "{}"]) {
+    holon(adminToken, ["call", slug, "POST", "/price", "-H", "content-type: application/json", "--body", body]);
+  }
+  // The same version answers every run the same: exit 0.
+  expect(ok(adminToken, ["replay", deployed, "--on", slug])).toContain("3 replayed · 3 same");
+  // A bigger discount: the member's order differs, exit 1, and nothing is deployed.
+  const changed = holon(adminToken, ["replay", file("v2", text.replace("total * 0.9", "total * 0.85")), "--on", slug]);
+  expect(changed.status, changed.err).toBe(1);
+  expect(changed.out).toContain("3 replayed · 2 same · 1 differs");
+  expect(changed.out).toMatch(/^ {2}run \d+ {2}POST \/price {2}differs: its answer$/m);
+  expect(ok(adminToken, ["replay", file("v2", text.replace("total * 0.9", "total * 0.85")), "--on", slug, "--runs", "1"])).toContain("1 replayed · 1 same");
+  expect(holon(adminToken, ["replay", deployed, "--runs", "0"]).status).toBe(2);
+  expect(ok(adminToken, ["call", slug, "POST", "/price", "-H", "content-type: application/json", "--body", '{"total":80,"member":true}'])).toContain('"price":72');
+  ok(adminToken, ["stop", slug]);
+  ok(adminToken, ["remove", slug, "--yes"]);
 });

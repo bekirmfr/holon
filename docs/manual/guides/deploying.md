@@ -285,7 +285,9 @@ something, that run didn't; one where it reads the clock or a random number that
 where a node computes with a secret or a token, which the log never holds (a node that only passes
 one along, or picks a field past it, computes the same and is told); one that failed then.
 `GET /deployments/<slug>/replay?unit=<hash>&runs=N` answers the same for any version staged
-(`POST /unit`) or proposed, for anyone who may read the deployment.
+(`POST /unit`) or proposed, for anyone who may read the deployment. From a file,
+[`holon replay`](../reference/cli.md#holon-replay) stages and replays it; an agent has the
+`replay` tool ([Working with agents](agents.md)).
 
 ### Going back to an earlier version
 

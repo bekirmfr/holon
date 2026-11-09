@@ -46,7 +46,7 @@ examples:
 const INSTRUCTIONS: &str = "Holon runs small services (flows) written in its own language, and \
 shows what each may do before it runs. Call `reference` first for the language and its leaves, \
 `check` a text before deploying it, then `deploy`, `call` and `explain`; `deployments` and `flows` \
-show what is already there, with its text, and `save` keeps a flow without deploying it. When a flow begins to answer differently, `history` shows what changed before it, and `restore` what going back would change; a person restores it. A first \
+show what is already there, with its text, and `save` keeps a flow without deploying it. Before deploying a new version of a deployed flow, `replay` runs it offline on the flow's recent runs and says which it answers differently: say so in the deploy's why. When a flow begins to answer differently, `history` shows what changed before it, and `restore` what going back would change; a person restores it. A first \
 deploy, and any version that needs a new permission, waits for a person to approve it in the \
 editor: tell the user what it asks for and where, and deploy again once they have.";
 
@@ -167,6 +167,21 @@ fn tool_list() -> Value {
                 "required": ["text"]
             },
             "annotations": { "readOnlyHint": false, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false }
+        },
+        {
+            "name": "replay",
+            "title": "Replay a new version on recent runs",
+            "description": "Run a new version of a deployed flow, offline, on the deployment's recent runs, before deploying it: how many it answers the same, and for each other run how it differs (the status, the answer, the effects it performs, where it waits) or why it can't be told. Nothing is deployed, sent or written: each request the version sends is answered as that run was answered, so a run where it asks what the run never did, or computes with a secret, can't be told.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "text": text,
+                    "slug": { "type": "string", "description": "the deployment to replay on: the flow's name unless deployed under another" },
+                    "runs": { "type": "integer", "minimum": 1, "maximum": 200, "description": "how many of its newest runs (default 20)" }
+                },
+                "required": ["text"]
+            },
+            "annotations": { "readOnlyHint": true, "openWorldHint": false }
         },
         {
             "name": "call",
@@ -303,6 +318,10 @@ pub(crate) fn call_tool(name: &str, args: &Value, connect: &Connect) -> Result<S
         "deploy" => {
             let said = |k: &str| args.get(k).and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty());
             deploy(&*connect()?, arg(args, "text")?, said("slug"), Asked { why: said("why"), note: said("note") })
+        }
+        "replay" => {
+            let on = args.get("slug").and_then(Value::as_str);
+            crate::replaycmd::replay(&*connect()?, arg(args, "text")?, on, args.get("runs").and_then(Value::as_u64).map(|n| n.clamp(1, 200))).map(|said| said.text)
         }
         "call" => call(&*connect()?, args),
         "run" => run_action(&*connect()?, arg(args, "slug")?, arg(args, "action")?, args.get("input").cloned().unwrap_or_else(|| json!({}))),
@@ -1458,6 +1477,44 @@ mod tests {
         assert_eq!(person.send("POST", "/deployments/quiet-api/stop", None).unwrap().0, 200);
     }
 
+    /// An agent replays its new version on the flow's recent runs before it deploys it (G11): how
+    /// many it answers the same, and how the rest differ; nothing is deployed, sent or written.
+    #[test]
+    fn an_agent_replays_its_version_on_the_flows_recent_runs() {
+        let mut state = test_state();
+        let accounts = std::sync::Arc::new(crate::accounts::Accounts::memory());
+        let (ada, _) = accounts.setup(&accounts.setup_code().unwrap(), "ada", "correct horse battery").unwrap();
+        state.access = crate::access::Access::new(std::sync::Arc::clone(&accounts), vec![], vec![]);
+        let (agent, person) = (Signed { state: &state, token: &ada, agent: true }, Signed { state: &state, token: &ada, agent: false });
+        let text = "import { flow, route, status } from \"holon\"\n\nflow(\"price\", { port: 18262 })\n\nroute.post(\"/price\", (req) => {\n  const total = req.json.total ?? 0\n  if (!(total > 0)) {\n    return status(422, \"an order has a total\")\n  }\n  return { total, price: (req.json.member ?? false) ? total * 0.9 : total }\n})\n";
+        let replay = |text: &str, runs: Option<u64>| tool_as(&agent, "replay", json!({ "text": text, "runs": runs }));
+        assert!(replay(text, None).unwrap_err().contains("no deployment \"price\""), "nothing deployed yet");
+
+        let plan = agent::plan(text).unwrap();
+        for u in &plan.units {
+            json_of(&person, "POST", "/unit", Some(Body::Bytes(u.clone()))).unwrap();
+        }
+        let preview = json_of(&person, "POST", "/deploy/preview", Some(Body::Json(json!({ "slug": "price", "unit": plan.unit })))).unwrap();
+        json_of(&person, "POST", "/deploy", Some(Body::Json(json!({ "slug": "price", "unit": plan.unit, "acknowledge": preview["needs_approval"], "document": plan.document })))).unwrap();
+        assert_eq!(replay(text, None).unwrap(), "\"price\" has no runs yet to replay this version on.");
+        for body in [r#"{"total":80,"member":true}"#, r#"{"total":80}"#, "{}"] {
+            call(&agent, &json!({ "slug": "price", "method": "POST", "path": "/price", "body": body, "headers": { "content-type": "application/json" } })).unwrap();
+        }
+
+        let said = replay(&text.replace("total * 0.9", "total * 0.85"), None).unwrap();
+        let lines: Vec<&str> = said.lines().collect();
+        assert_eq!(lines[0], "This version replayed on \"price\"'s last 3 runs, offline (nothing sent or written): 3 replayed · 2 same · 1 differs", "{said}");
+        assert_eq!(lines[1..], ["  run 0  POST /price  differs: its answer"], "{said}");
+        let said = replay(&text.replace("if (!(total > 0))", "if (!(total > 10))"), Some(1)).unwrap();
+        assert!(said.ends_with("1 replayed · 1 same"), "the newest alone, refused either way: {said}");
+        // A mistake in the text is said, as check says it; nothing was deployed.
+        assert!(replay("flow(", None).is_err());
+        assert_eq!(json_of(&person, "GET", "/deployments/price/log", None).unwrap()["entries"].as_array().unwrap().len(), 3);
+        let versions = json_of(&person, "GET", "/deployments/price/versions", None).unwrap();
+        assert_eq!(versions["versions"].as_array().unwrap().len(), 1, "{versions}");
+        assert_eq!(person.send("POST", "/deployments/price/stop", None).unwrap().0, 200);
+    }
+
     fn tool_as(api: &dyn Api, name: &str, args: Value) -> Result<String, String> {
         let connect = || -> Result<Box<dyn Api + '_>, String> {
             struct By<'b>(&'b dyn Api);
@@ -1711,7 +1768,7 @@ mod tests {
         assert_eq!(answers[0]["result"]["protocolVersion"], "2025-06-18");
         assert_eq!(answers[0]["result"]["serverInfo"]["name"], "holon");
         let names: Vec<&str> = answers[1]["result"]["tools"].as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap()).collect();
-        assert_eq!(names, ["reference", "check", "save", "deploy", "call", "run", "deployments", "flows", "runs", "state", "explain", "history", "restore"]);
+        assert_eq!(names, ["reference", "check", "save", "deploy", "replay", "call", "run", "deployments", "flows", "runs", "state", "explain", "history", "restore"]);
         assert_eq!(answers[2]["result"]["isError"], false);
         assert!(answers[2]["result"]["content"][0]["text"].as_str().unwrap().starts_with("concat("));
         assert_eq!(answers[3]["result"]["isError"], true, "a mistake is a tool's failure, said: {}", answers[3]);

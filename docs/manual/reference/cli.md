@@ -12,6 +12,7 @@ Everything is one program, `holon`. `holon help` lists the commands; `serve`, `e
 | [`holon fmt`](#holon-fmt) | rewrite a flow in the canonical form |
 | [`holon types`](#holon-types) | write `holon.d.ts`, so an editor's TypeScript completes and checks flows |
 | [`holon deploy`](#holon-deploy) | compile a flow and deploy it to a running server |
+| [`holon replay`](#holon-replay) | a new version run offline on a deployment's recent runs, before it is deployed |
 | [`holon editor`](#holon-editor) | the editor in a terminal: flows, runs, approvals, and text in tabs |
 | [`holon deployments`](#holon-deployments) | what is deployed, and each one's waiting runs |
 | [`holon run`, `pause`, `stop`, `remove`](#holon-run-pause-stop-remove) | start, hold, end and delete a deployment |
@@ -182,6 +183,28 @@ approval. Without `--approve`, deploy prints what it asks for and exits 1, deplo
 approve it in the editor, by deploying it from there. `--approve` approves it here, as you, and
 prints what it approved, in the deployment's timeline as yours. Agents' tools
 ([`holon mcp`](#holon-mcp)) never approve: the server refuses an agent's deploy that would.
+
+## `holon replay`
+
+```
+holon replay <file> [--on SLUG] [--runs N] [--server PORT|URL]
+```
+
+Compiles the flow and runs it, offline, on the newest runs of the deployment `--on` names (the
+flow's own name unless it says), 20 unless `--runs` says (at most 200), before anything is
+deployed: each run's request, tick or action again, through this version. It prints how many it
+answers the same, then each run that differs, and how, or can't be told, and why:
+
+```
+This version replayed on "price-rules"'s last 3 runs, offline (nothing sent or written): 3 replayed · 2 same · 1 differs
+  run 0  POST /price  differs: its answer
+```
+
+Nothing is deployed, sent or written; only the version's units are staged on the server. It exits 0
+when no run differs, 1 when one does or it can't replay, 2 for a wrong argument, so a script can
+hold back a deploy that would answer differently. What "can't tell" means is under
+[Replayed on recent runs](../guides/deploying.md#replayed-on-recent-runs). It reaches the server as
+`holon deploy` does.
 
 ## `holon editor`
 

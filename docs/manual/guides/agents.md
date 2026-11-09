@@ -54,6 +54,7 @@ The tools `holon mcp` offers:
 | `check` | compile a flow: its routes, its version, and what it may do; or each mistake, with line and column |
 | `save` | save a flow on the server, for a person to open; never replaces a flow someone else saved |
 | `deploy` | deploy a flow; when it needs approval, propose it for a person instead, with a `why` and a `note` |
+| `replay` | a new version of a deployed flow run offline on its recent runs: how many it answers the same, and how the others differ or why they can't be told; nothing is deployed, sent or written |
 | `call` | send a request to a deployed flow's route, logged as a run like any other |
 | `run` | run one of a deployed flow's actions by its name, with what to send it: only an action a person lets agents run |
 | `deployments` | what is deployed; with a slug, one in full: routes, what it may do, what isn't granted, which secrets are set, its proposals (a declined one with its reason), its text |
@@ -137,7 +138,9 @@ Agents work well with Holon when they use the tools in this order:
 
 1. `reference` once, to learn the language;
 2. write the flow, and `check` it until it compiles and asks for no more than it should;
-3. `deploy`; if it needs approval, ask the person;
+3. for a flow already deployed, `replay` the new version on its recent runs, and say in the
+   deploy's `why` which runs it answers differently; then `deploy`; if it needs approval, ask the
+   person;
 4. `call` it with a few requests (or `run` an action it is let run), then `runs` and `explain` to
    see what each statement did;
 5. fix, `check`, `deploy` again.
