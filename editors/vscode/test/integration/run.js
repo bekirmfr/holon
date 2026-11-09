@@ -63,6 +63,10 @@ async function main() {
     // Deployed, and called once, so the sidebar has a deployment with a run to show.
     execFileSync(holon, ["deploy", saved, "--slug", "hello", "--approve", "--server", SERVER], { env: { ...process.env, HOLON_TOKEN: setup.token }, stdio: "inherit" });
     execFileSync(holon, ["call", "hello", "GET", "/hello/ada", "--server", SERVER], { env: { ...process.env, HOLON_TOKEN: setup.token }, stdio: "inherit" });
+    // A flow that keeps state, deployed and hit once, so the sidebar's State group has a value to show.
+    const counter = path.join(__dirname, "..", "..", "..", "..", "crates", "holon-author", "samples", "counter.holon.ts");
+    execFileSync(holon, ["deploy", counter, "--approve", "--server", SERVER], { env: { ...process.env, HOLON_TOKEN: setup.token }, stdio: "inherit" });
+    execFileSync(holon, ["call", "counter", "GET", "/hit", "--server", SERVER], { env: { ...process.env, HOLON_TOKEN: setup.token }, stdio: "inherit" });
 
     const failure = path.join(workspace, "failure.txt");
     await runTests({

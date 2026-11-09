@@ -100,6 +100,16 @@ async function sidebarChecks() {
   }, "the server's activity");
   assert.ok(events.some((e) => /deployed hello/.test(e.label)), `activity: ${events.map((e) => e.label).join(", ")}`);
 
+  // A deployment that keeps state: its State group lists the value it kept.
+  const counter = await eventually(async () => (await deployments.getChildren()).find((i) => i.label === "counter"), "the counter deployment");
+  const kept = (await deployments.getChildren(counter)).find((g) => g.label === "State");
+  assert.ok(kept, "a State group under the counter deployment");
+  const values = await eventually(async () => {
+    const children = await deployments.getChildren(kept);
+    return children.some((i) => i.label === "hits") ? children : null;
+  }, "the hits value under State");
+  assert.ok(values.some((i) => i.label === "hits"));
+
   // Editable: an edit saved from the editor is written to the server, and read back from it.
   const at = text.getText().indexOf("Hello");
   const edit = new vscode.WorkspaceEdit();
