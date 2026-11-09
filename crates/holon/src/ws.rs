@@ -58,7 +58,7 @@ pub(crate) struct Connection {
 impl Connection {
     /// What shuts the connection from another thread.
     pub(crate) fn closer(&self) -> Option<Closer> {
-        self.socket.try_clone().ok().map(Closer)
+        self.socket.try_clone().ok().map(Closer::Socket)
     }
 
     /// The next message; None when the feed ended the connection, or why it was read no further.

@@ -214,8 +214,10 @@ export type OnFull = "wait" | "skip" | "latest";
  *  read from); how many events may wait for their run, and what comes when they are that many;
  *  how long (seconds) it may say nothing. A WebSocket's: what it is sent when it opens and to
  *  keep it, the fields that are a message's id, the messages it runs, and where a feed that
- *  replays takes the id it is opened again from (`resume`). Any feed's: the field that numbers a
- *  message (`sequence`), each `key` on its own. */
+ *  replays takes the id it is opened again from (`resume`). A Postgres channel's: the database
+ *  it is on and the channel (`url` empty, `address` the database's and the channel), its id and
+ *  the messages it runs as a WebSocket's. Any feed's: the field that numbers a message
+ *  (`sequence`), each `key` on its own. */
 export type FeedEntry = {
   name: string;
   deployment: string | null;
@@ -233,14 +235,19 @@ export type FeedEntry = {
   id?: string[];
   only?: Record<string, string[]>;
   resume?: { query?: string; header?: string; message?: string[] };
+  database?: string;
+  channel?: string;
 };
 /** A feed to bind: what is left out takes its default. `id` is FIELD[,FIELD], `only` each
- *  FIELD=VALUE, `resume` query:NAME, header:NAME or each message:…, `idle` and `every` 90s, 2m. */
+ *  FIELD=VALUE, `resume` query:NAME, header:NAME or each message:…, `idle` and `every` 90s, 2m.
+ *  A Postgres channel's names its `database` and `channel` in place of `url` and `headers`. */
 export type FeedBinding = {
   name: string;
   deployment: string | null;
-  url: string;
-  headers: Record<string, string>;
+  url?: string;
+  headers?: Record<string, string>;
+  database?: string;
+  channel?: string;
   buffer?: number;
   idle?: string;
   on_full?: OnFull;

@@ -414,7 +414,7 @@ pub(crate) fn reconcile(store: &SharedStore, deployments: &Arc<Mutex<BTreeMap<St
     let mut wanted: BTreeMap<(String, String), ((Hash, Binding), Feeds)> = BTreeMap::new();
     for (key, unit, files) in listening {
         let feeds = files.all.feeds.clone();
-        if let Some(binding) = feeds.resolve(&key.0, &key.1) {
+        if let Some(binding) = feeds.resolve(&key.0, &key.1).map(|b| b.seen_by(&files.all.databases, &key.0)) {
             wanted.insert(key, ((unit, binding), feeds));
         }
     }
@@ -518,6 +518,8 @@ fn read(shared: &Shared, deployments: &Mutex<BTreeMap<String, Deployment>>, bind
         if !listened {
             shared.note(deployments, format!("listens to the feed {feed} ({})", binding.address));
             listened = true;
+        } else if binding.channel.is_some() {
+            shared.note(deployments, format!("listens to the feed {feed} again: what was sent meanwhile is lost"));
         } else if failing {
             shared.note(deployments, format!("reads the feed {feed} again"));
         }

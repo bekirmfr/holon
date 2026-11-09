@@ -1,11 +1,13 @@
 # Feeds
 
 A flow can run on each event a feed sends: a market data provider's prices, a service's status
-changes, anything that streams **server-sent events** or speaks over a **WebSocket**. The flow
-says `import prices from "feed:prices"` and `on.feed(prices, (e) => …)`; an admin decides that
-`prices` is `https://stream.example.com/v1/prices?key=…`, or `wss://ws-feed.example.com`. The host
-holds the connection, keeps where the feed is, and opens it again when it is lost. The flow never
-sees the URL, its key or the headers the host sends.
+changes, anything that streams **server-sent events** or speaks over a **WebSocket**, or the rows a
+**Postgres** database's trigger sends on a channel. The flow says `import prices from
+"feed:prices"` and `on.feed(prices, (e) => …)`; an admin decides that `prices` is
+`https://stream.example.com/v1/prices?key=…`, `wss://ws-feed.example.com`, or a channel of a bound
+database ([below](#a-postgres-channel)). The host holds the connection, keeps where the feed is,
+and opens it again when it is lost. The flow never sees the URL, its key or the headers the host
+sends.
 
 ## Binding a feed
 
@@ -44,14 +46,23 @@ A WebSocket's binding takes these too ([below](#a-websocket)):
 | `--only FIELD=VALUE` | run only the messages whose field has that value; again for another value or field (each field named must match) |
 | `--resume WHERE` | for a feed that replays: where it takes the id of the message the host is at when a connection opens again, `query:cursor`, `header:NAME` or `message:MESSAGE` ([below](#a-feed-that-replays)) |
 
+A Postgres channel's binding names its database and channel in place of `--url`
+([below](#a-postgres-channel)):
+
+| Option | |
+|---|---|
+| `--database NAME` | the database it is on, as bound (`holon database add`): the one the listening deployment sees by that name, a Postgres |
+| `--channel CHANNEL` | the channel listened on (`LISTEN`): letters, digits and `_`, up to 63 bytes |
+
 - The URL is `https://…` for server-sent events, `wss://…` for a WebSocket; plain `http://` and
   `ws://` only to this machine. A login in it (`https://user:password@…`) is sent as Basic
   authentication. Certificates are checked against the public CAs.
 - The server reads the feed when it is bound: a binding whose request doesn't answer 200 with
   `text/event-stream`, or a WebSocket's 101, is refused, saying what it answered. A redirect isn't
   followed, since the headers it would carry are the binding's.
-- `--subscribe`, `--heartbeat`, `--id`, `--only` and `--resume` are a WebSocket's: an SSE binding
-  that gives one is refused, since an SSE event has its own id and resumes with `Last-Event-ID`.
+- `--subscribe`, `--heartbeat`, `--id`, `--only` and `--resume` are a WebSocket's (`--id` and
+  `--only` a channel's too): an SSE binding that gives one is refused, since an SSE event has its
+  own id and resumes with `Last-Event-ID`.
   `--on-full latest` without `--key` is refused, and so is `--key` with neither `latest` nor
   `--sequence`.
 - The URL and the headers' values are never stored, shown or logged: the binding keeps
@@ -85,7 +96,7 @@ The handler runs once for each event, one at a time, in the order they came. `e`
 | Field | |
 |---|---|
 | `data` | its data: a value when it is JSON, its text when it isn't (several `data:` lines joined with a newline); a binary WebSocket message's bytes |
-| `event` | its name (`event:`), `"message"` when it gives none (a WebSocket's always) |
+| `event` | its name (`event:`), `"message"` when it gives none (a WebSocket's always); a Postgres channel's name |
 | `id` | its id (`id:`, or a WebSocket's `--id` fields), only when it has one: a write built from `e.id` waits for nothing when it hasn't |
 | `missed` | how many events the full buffer dropped before it (`--on-full skip`): 0 unless some were |
 | `replaced` | how many waiting events of its key it replaced, theirs counted (`--on-full latest`): 0 unless it did |
@@ -225,6 +236,60 @@ holon feed add trades --url env:HOLON_SECRET_TRADES_URL \
 - It is any feed's: an SSE event's numbers too, when its data is JSON.
 - The `trade-tape` sample binds Coinbase Exchange's trades this way, adds each trade to its
   product's volume, and fetches the trades a gap skipped from the exchange's REST API.
+
+## A Postgres channel
+
+A Postgres database sends notifications on a channel (`NOTIFY`, `pg_notify`), each when the
+transaction that sent it commits: a trigger on a table can send each row as it is written. A feed
+can be a channel of a database bound to the server ([Databases](databases.md)): the host listens
+on it (`LISTEN`), and each notification is an event.
+
+```sh
+export HOLON_SECRET_LEDGER_URL='postgres://holon:…@db.example.com:5432/ledger'
+holon database add ledger env:HOLON_SECRET_LEDGER_URL --read-only --schema-file ledger.sql
+holon feed add entries --database ledger --channel ledger_entries
+```
+
+where `ledger.sql` makes the table and the trigger that sends each entry:
+
+```sql
+create table if not exists entries (id bigint generated always as identity primary key,
+  account text not null, seq integer not null, amount numeric(18,2) not null, memo text,
+  unique (account, seq));
+create or replace function entries_notify() returns trigger language plpgsql as $$ begin
+  perform pg_notify('ledger_entries', json_build_object('id', new.id, 'account',
+    new.account, 'seq', new.seq, 'amount', new.amount::text, 'memo', new.memo)::text);
+  return null; end $$;
+create or replace trigger entries_notify after insert on entries for each row
+  execute function entries_notify();
+```
+
+- **Its data** is the notification's payload: a value when it is JSON, else its text. `e.event`
+  is the channel. `--id`, `--only`, `--sequence` and `--key` read its fields as a WebSocket's;
+  `--url`, `--header`, `--subscribe`, `--heartbeat` and `--resume` are refused with a channel.
+- **Bound once it listens:** the server connects to the database, listens on the channel, and
+  closes it; a database that isn't bound, or isn't a Postgres, is refused. The binding keeps the
+  database's name, and its connection is read as each listening deployment sees the name, each
+  time a connection opens: a deployment with a `ledger` of its own listens there. `holon feed
+  list` shows `postgres://db.example.com:5432/ledger, channel ledger_entries`.
+- **A session of its own:** each listening deployment has its own connection, not one of the
+  database's pool, since a `LISTEN` belongs to the session that said it. Several deployments may
+  listen to one channel, and each is sent every notification. It connects as the database's pool
+  does: with TLS when the server offers it.
+- **In the order committed:** Postgres sends a transaction's notifications when it commits, in
+  the order transactions commit; a transaction rolled back sends none. Two the same (channel and
+  payload) in one transaction are sent once. A payload is 8,000 bytes at most: a trigger sends a
+  row's key and what a run needs, and the run reads the rest from the table.
+- **Quiet:** after `--idle` with no notification, the host asks the database whether the
+  connection is still there, and opens it again only when it doesn't answer.
+- **What is sent while it isn't listening is lost:** Postgres keeps no notification for a session
+  that isn't listening. A connection lost is opened again after a second (twice as long each time
+  it can't be, to a minute), and a new version or a restart opens a new one; each time it is
+  opened again, the timeline says `listens to the feed entries again: what was sent meanwhile is
+  lost`. What was written is still in the table, so the flow reads it there: the rows after the
+  last it has seen, by a number the table keeps (`--sequence` makes it `e.gap`).
+- The `ledger-watch` sample keeps each account's balance from its ledger's entries this way, and
+  reads from the ledger the entries a lost connection didn't hear.
 
 ## Its state
 

@@ -125,7 +125,7 @@ declare module "holon" {
     data: any
     /** Its id, when the feed gives one (a WebSocket's: the fields its binding names, joined with /). */
     id?: string
-    /** Its name: "message" unless the feed names it. */
+    /** Its name: "message" unless the feed names it; a Postgres channel's, the channel. */
     event: string
     /** How many events its full buffer dropped before it (`--on-full skip`): 0 unless some were. */
     missed: number

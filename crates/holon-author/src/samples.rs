@@ -867,6 +867,18 @@ static SAMPLES: &[Sample] = &[
         text: include_str!("../samples/payout-events.holon.ts"),
     },
     Sample {
+        name: "ledger-watch",
+        title: "Ledger watch (a Postgres channel as a feed)",
+        description: "A ledger in Postgres that another service writes, each entry its account's next (seq), and a trigger that sends it on the channel ledger_entries (pg_notify) as it commits. An admin binds the feed to the channel on the bound database (holon feed add entries --database ledger --channel ledger_entries), and the host listens on it (LISTEN), in a session of its own: each entry written starts one run of on.feed(entries, (e) => …), e.data the entry, in the order committed. The handler adds each entry's amount to its account's balance (decimal_sum). Postgres keeps no notification for a session that isn't listening, so what is written while the connection is lost is never sent: when an entry's seq is past the one after the account's last, the handler reads the entries between from the ledger (read-only) and adds them too, so the balance stays exact; an entry added already changes nothing. GET /balances answers each account's.",
+        shows: &["on.feed", "Postgres LISTEN/NOTIFY", "a channel as a feed", "reading what a feed missed", "databases", "decimals", "collections"],
+        port: Some("8195"),
+        secrets: &[],
+        optional: &[],
+        browsers: None,
+        try_it: "put the ledger's connection in the server's environment (HOLON_SECRET_LEDGER_URL=postgres://holon:<password>@127.0.0.1:5432/ledger) and bind it with its table and trigger (holon database add ledger env:HOLON_SECRET_LEDGER_URL --read-only --schema-file ledger.sql, ledger.sql as the sample's comment says), then the feed (holon feed add entries --database ledger --channel ledger_entries); deploy, write the ledger (psql: insert into entries (account, seq, amount) values ('acct_1', 1, 120.00), ('acct_1', 2, -20.50)), then curl http://127.0.0.1:8195/balances says acct_1 is 99.50; stop the server, write acct_1's entry 3, start it, write entry 4: the balance has both, entry 3 read from the ledger",
+        text: include_str!("../samples/ledger-watch.holon.ts"),
+    },
+    Sample {
         name: "ticker",
         title: "Ticker (a clock beside routes)",
         description: "A flow with a clock of its own beside its routes: every 2 seconds (every(\"2s\", …)) it counts a tick in its state and sends it on the channel ticks, with the time of the tick (now, in the handler). Its page lists each tick as it arrives; GET /count answers the count. An action, run by hand by its name, sets the count back (export const reset = action((input) => …), input what was sent); a person runs it, and an agent only once a person lets agents run it.",

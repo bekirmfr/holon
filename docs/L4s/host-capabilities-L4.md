@@ -2505,6 +2505,122 @@ As designed, with what building it found:
     is in a file the server wrote.
   - Real AWS is still to come: no account yet.
 
+#### 5.9.11 Slice 1.6f as designed (2026-11-09, against `ea55171`): a Postgres `LISTEN` channel
+
+A feed whose messages are a Postgres channel's notifications: what a trigger, or any session,
+says with `pg_notify('ledger_entries', …)` as its transaction commits. The flow is unchanged from
+a feed's: `import entries from "feed:entries"`, `on.feed(entries, (e) => …)`.
+
+```
+holon feed add entries --database ledger --channel ledger_entries
+                       [--id FIELD,…] [--only FIELD=VALUE]… [--sequence FIELD [--key FIELD]]
+                       [--buffer N] [--on-full …] [--idle T] [--for SLUG]
+```
+
+- **On a bound database,** by its name, in place of a URL: the binding the listening deployment
+  sees as `ledger` (its own, else the server's), read each time the connection opens, so a
+  database bound again moves the feed with it, and one no longer bound leaves the connection
+  reconnecting, saying why. Postgres alone: a database of another engine is refused when the feed
+  is bound (`LISTEN is Postgres's: the database ledger is sqlite`).
+- **`--channel`** is the channel as `pg_notify` names it: letters, digits and `_`, up to 63 bytes
+  (Postgres's names), quoted when listened to, so its case counts as `pg_notify`'s does.
+- **What a URL's binding says that a channel's doesn't** is refused with it: `--url`,
+  `--header`, `--subscribe`, `--heartbeat` and `--resume`. `--id`, `--only`, `--sequence`,
+  `--key`, `--buffer`, `--on-full` and `--idle` read a notification's JSON as they read a
+  WebSocket message's.
+- **Checked when bound:** connected with the database's connection, `LISTEN` on the channel,
+  closed. Shown as the database is, with the channel: `postgres://db.example.com:5432/ledger,
+  channel ledger_entries`; the connection is never shown.
+- **Its connection is its own,** one a deployment and feed, not one of the database's pool: a
+  `LISTEN` belongs to its session. TLS as the pool's (`engines::pg_tls`). The reading thread waits
+  for a notification a second at a time, to notice a close; after `--idle` (90 s) with none it asks
+  the server whether the connection is still there (`is_valid`), and opens it again only when the
+  server doesn't answer: opening it again for quiet would lose what was sent meanwhile.
+- **`e`** is the feed's event: `data` the payload (a value when it is JSON, else its text),
+  `event` the channel, `id` by `--id`, `gap` by `--sequence`.
+- **No position.** Postgres sends a notification to the sessions listening when its transaction
+  commits, and keeps none: what commits while the connection isn't there (a restart, a lost
+  connection, before the deployment) is never sent. The timeline says so when it listens again
+  (`listens to the feed entries again: what was sent meanwhile is lost`). `--sequence` counts what
+  was lost by a key (`e.gap`, across a restart too); a flow that keeps its own last number (as
+  `ledger-watch` does) needs none, and reads what it missed from the database it is bound to.
+- **What Postgres does,** said in the guide: notifications come in the order their transactions
+  committed; one rolled back sends none; identical ones (channel and payload) of one transaction
+  are sent once, so a payload that names its row keeps each; a payload is 8,000 bytes at most, so
+  a big row is named by its id and read.
+- **Several deployments** may listen to one channel, each on its own connection: a notification
+  is a broadcast.
+- **The grant** is the feed's, `FeedEvent("entries")`, shown "run on each event from entries
+  (postgres://db.example.com:5432/ledger, channel ledger_entries)". Listening needs no grant on
+  the database; reading it, as the sample does, is the database's own.
+- **Engine:** `listen.rs`, the `postgres` crate's notifications (`timeout_iter`) on a client of its
+  own.
+- **The editor:** the admin page's feed form takes a database and a channel in place of a URL.
+- **The sample, `ledger-watch`:** a ledger's entries, each account's numbered one after another
+  (`seq`), said by a trigger as they commit; the handler adds each to its account's balance,
+  reading first the entries of the account it hasn't added (all of them for an account new to it,
+  or those committed while it wasn't listening). The balance stays exact across a restart and a
+  lost connection, without the feed knowing where it was.
+- **Tests:** a server test against the Postgres `HOLON_TEST_POSTGRES` names, skipped without one
+  as the database tests are: refused for a database not bound, of another engine, and a channel
+  that isn't one; the sample deployed, entries inserted and run in the order committed; the
+  listener's session ended by the server (`pg_terminate_backend`), the entries committed meanwhile
+  read by the next run, the timeline saying the connection was lost and listened to again;
+  balances exact; the runs verify. The e2e test deploys the sample in the editor against a
+  Postgres beside the job's MongoDB (`start-postgres.sh`), the entries inserted by a second
+  deployment that writes the ledger.
+
+#### 5.9.12 Slice 1.6f as built (2026-11-09)
+
+As designed, with what building it found:
+
+- **The binding keeps the database's name, not its connection:** `Binding` has `database` and
+  `channel`, and its `url` is empty (not kept). `Binding::seen_by(databases, slug)` fills `url`
+  with the connection source of the database `slug` sees by that name, and `address` with its
+  address and the channel, when it is a Postgres; else the URL stays empty and a connection says
+  `the database ledger isn't a Postgres bound for this deployment`. The reconcile maps each binding
+  through it, so a database bound again, or removed, is a changed binding: the connection is
+  opened anew, as for a feed bound again.
+- **`Feeds::bind` takes the database** as the deployment (or the server) sees it, resolved by the
+  admin route (`Databases::resolve`), since feeds.rs holds no databases. A channel's binding
+  without its database, with both or neither of `--database` and `--channel`, or with a URL's
+  options is refused before anything is reached.
+- **Closing it:** a Postgres client has no socket the host can shut from another thread, so
+  `sse::Closer` became `Socket(TcpStream)` or `Flag(Arc<AtomicBool>)`: a `LISTEN` connection reads
+  a second at a time (`timeout_iter`) and looks at its flag between, so a stopped deployment's
+  session ends within a second.
+- **What it says** is what Postgres said (`engines::pg_said`): a server's error by its message,
+  not the client's `db error`, and the client's own with the cause its text leaves out, which the
+  pool's errors now say too: `lost the feed entries: the database can't be reached: error
+  connecting to server: No connection could be made because the target machine actively refused
+  it. (os error 10061); trying again in 1s`.
+- **Each connection opened again says what it lost,** whether it was lost or couldn't be opened
+  for a while: `listens to the feed entries again: what was sent meanwhile is lost`. A URL's feed
+  says `reads the feed … again` only after a failure, since it resumes.
+- **The grant's words are the feed's** (`run on each event from the feed "entries"`), as every
+  feed's: the address isn't in them, it is the binding's, shown by the admin page, `holon feed
+  list` and the server panel.
+- **`e.event`** is the channel, and `e.data` the payload, parsed when it is JSON.
+- **The editor:** the admin page's feed form asks "from a URL" or "a Postgres channel", the latter
+  with the Postgres databases bound as its choices, a channel, and `--id` and `--only`; a bound
+  channel reads `listens on postgres://…/ledger, channel ledger_entries (the database ledger)`.
+- **The e2e test** has its own ledger writer, `ledger-writer`, deployed with the command line, the
+  ledger bound read-write for it alone (`--for`); the sample's binding is read-only, its schema
+  read from the sample's comment (as the server test reads it), so the comment can't drift. What
+  isn't heard is made by stopping the deployment (`/stop`, then `/run`) between two entries. CI's
+  e2e job starts `postgres:17.7` on 5433 (`start-postgres.sh`) and removes it, with its volume,
+  after the run.
+- **Run live** against Postgres 17.7 in Docker (WSL), a database `ledger` bound read-only with the
+  sample's `ledger.sql`, a server of the slice's build on loopback: three accounts written with
+  `psql` as another service would, in single rows, a statement of three and a transaction of two;
+  a transaction rolled back sent nothing; the listener's session ended with
+  `pg_terminate_backend`, an entry written in the second before it listened again, read by the
+  next run (`read: 1`); the server killed, three entries written for two accounts while it was
+  down, one of them new, each read by its account's next run once it was back; Postgres restarted
+  (`docker restart`), and stopped for a few seconds then started, the listener back on its own each
+  time and the next entry heard. Each balance equal to the ledger's own `sum(amount)` by account;
+  the 18 runs verify offline; no file the server wrote holds the database's password.
+
 ### 5.10 A bytes value, and decimals with it
 
 Not a capability: a value kind, which several capabilities stand on. Binary files can't be read
@@ -3994,7 +4110,7 @@ signing only for SQS (fork 8): its design settles the queue engine with 1.4 defe
 | 1.3 | **Email:** send, recipients in the grant; receive as `on mail`, with its sender's verdict and attachments, in three slices (§5.2); 1.3a, sending through SMTP, built (§5.2.3); 1.3b, receiving through IMAP, built (§5.2.5); 1.3c, mailboxes that log in with OAuth, built (§5.2.7) | §5.2 (here) | 1.1 for attachments | L |
 | 1.4 | *Deferred.* **Remote folders:** the backend seam in `folders.rs`, then SFTP and S3-compatible storage (§6) | §6 (here) | 1.1 for binary files | L |
 | 1.5 | *Deferred.* **Secure connectivity:** keys the host holds (PGP decrypt and sign) and client identities (mutual TLS, a private CA) (§5.3, §5.4) | §5.3, §5.4 (here) | 1.1, 1.2 | M |
-| 1.6 | **Messaging:** one subscription runtime (position, once per message, backpressure, reconnect), feeds (SSE, WebSocket, Postgres `LISTEN`) and one queue engine, publish and consume (§5.5, §5.9); designed in four slices (§5.9.1); 1.6a, the subscription runtime and server-sent events, built (§5.9.3) | §5.5, §5.9 (here) | 1.4's request signing, for SQS (fork 8) | L |
+| 1.6 | **Messaging:** one subscription runtime (position, once per message, backpressure, reconnect), feeds (SSE, WebSocket, Postgres `LISTEN`) and one queue engine, publish and consume (§5.5, §5.9); designed in slices (§5.9.1), all built: 1.6a the subscription runtime and server-sent events (§5.9.3), 1.6b WebSocket feeds (§5.9.5), 1.6c a feed resumed (§5.9.7), 1.6d a feed's gaps (§5.9.8), 1.6e the queue (§5.9.10, live against ElasticMQ and moto; real AWS still to come), 1.6f a Postgres channel (§5.9.12) | §5.5, §5.9 (here) | 1.4's request signing, for SQS (fork 8) | L |
 | 1.7 | *Deferred.* **Commands:** programs an admin binds, typed arguments, logged output, killed on timeout (§5.7) | §5.7 (here) | — | M |
 | 1.8 | **Static files:** a route's rest segment (`/*path`, routing, no item), and answering with a file from a folder (`site.serve(name)`, `FileServe`), streamed by the host and checked against the handle's hash; in slices (§5.11.8), 1.8a the rest segment | §5.11 (here) | — | M |
 | 1.9 | **Inbound WebSockets:** `websocket PATH { open … message … close … }`, a run per message, replies and channel packs out, a record per connection (§5.9) | §5.12 (here) | 1.1 for binary frames | M |

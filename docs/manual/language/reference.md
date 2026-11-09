@@ -72,7 +72,7 @@ An import names something the flow uses from outside a run. Its source says what
 | `import shop from "database:NAME"` | a named database on the host, used as `shop.query(sql, …)` |
 | `import updates from "channel:NAME"` | a channel: `updates.send(x)`, `updates.subscribe()`, `updates.pipe(…)` |
 | `import ops from "mail:NAME"` | a mail the server sends through, bound by an admin: `ops.send({ to, subject, text })`; bound to a mailbox, `on.mail(ops, (m) => …)` runs on what comes to it |
-| `import prices from "feed:NAME"` | a feed of server-sent events, bound by an admin: `on.feed(prices, (e) => …)` runs on each event it sends |
+| `import prices from "feed:NAME"` | a feed of server-sent events, a WebSocket or a Postgres channel, bound by an admin: `on.feed(prices, (e) => …)` runs on each event it sends |
 | `import payouts from "queue:NAME"` | an Amazon SQS queue, bound by an admin: `payouts.send({ data, group })` sends to it once the run is over; `on.queue(payouts, (m) => …)` runs on each message it holds |
 | `import api from "host:HOST"` | a host the flow calls over HTTPS, as `await api.get("/path")` |
 | `import { now } from "holon:clock"` | the time the run started |

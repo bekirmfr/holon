@@ -36,7 +36,7 @@ Everything is one program, `holon`. `holon help` lists the commands; `serve`, `e
 | [`holon store`](#holon-store) | sweep what nothing kept names from the content store |
 | [`holon database`](#holon-database) | bind the databases flows use, and list their tables |
 | [`holon mail`](#holon-mail) | bind the mail flows send through and receive |
-| [`holon feed`](#holon-feed) | bind the feeds of server-sent events flows listen to |
+| [`holon feed`](#holon-feed) | bind the feeds flows listen to: server-sent events, WebSockets, Postgres channels |
 | [`holon queue`](#holon-queue) | bind the SQS queues flows take messages from and send to |
 | [`holon mcp`](#holon-mcp) | the tools for agents, and adding them to an agent's host |
 | [`holon lsp`](#holon-lsp) | a language server for editors |
@@ -694,18 +694,22 @@ the mail on its way through it. Needs an admin; each takes
 
 ```
 holon feed add NAME --url SOURCE [--header NAME=SOURCE]… [--buffer N] [--idle T] [--for SLUG]
+holon feed add NAME --database NAME --channel CHANNEL [--buffer N] [--idle T] [--for SLUG]
 holon feed list
 holon feed remove NAME [--for SLUG]
 ```
 
-Binds a name flows import (`"feed:prices"`) to a feed of server-sent events, whose events start
-their runs (`on.feed(prices, …)`), one at a time, in the order they came. The feed's URL, and
-each header's value, the server fetches from `SOURCE` (`env:HOLON_SECRET_…`,
-`vault:<mount>/<path>#<field>`) each time it opens the connection, never storing or showing it:
-`https://…`, a login in it sent as Basic authentication; plain `http://` only to this machine. It
-reads the feed when it is bound, and refuses one that doesn't answer 200 with
-`text/event-stream`. Removing it closes its connections. Needs an admin; each takes
-`--server PORT|URL`. See [Feeds](../guides/feeds.md).
+Binds a name flows import (`"feed:prices"`) to a feed of server-sent events, a WebSocket or a
+Postgres channel, whose events start their runs (`on.feed(prices, …)`), one at a time, in the
+order they came. The feed's URL, and each header's value, the server fetches from `SOURCE`
+(`env:HOLON_SECRET_…`, `vault:<mount>/<path>#<field>`) each time it opens the connection, never
+storing or showing it: `https://…`, a login in it sent as Basic authentication; `wss://…` for a
+WebSocket; plain `http://` and `ws://` only to this machine. A channel's is its database's
+connection, as the listening deployment sees the database's name. It reads the feed when it is
+bound (listens on the channel), and refuses one that doesn't answer as a feed does. Removing it
+closes its connections. Needs an admin; each takes `--server PORT|URL`. A WebSocket's options
+(`--subscribe`, `--heartbeat`, `--id`, `--only`, `--resume`) and what comes when events wait
+(`--on-full`, `--key`, `--sequence`) are in [Feeds](../guides/feeds.md#binding-a-feed).
 
 | Option | |
 |---|---|
@@ -713,6 +717,8 @@ reads the feed when it is bound, and refuses one that doesn't answer 200 with
 | `--header NAME=SOURCE` | a header each request sends, its value read from a source (`Authorization=env:HOLON_SECRET_PRICES_AUTH`); again for another |
 | `--buffer N` | how many events may wait for their run before the connection waits too: 1000 unless given |
 | `--idle T` | how long the feed may say nothing before the connection is opened again: `90s` unless given, `5s` at least |
+| `--database NAME` | a Postgres channel's: the database it is on, as bound ([`holon database`](#holon-database)) |
+| `--channel CHANNEL` | the channel listened on (`LISTEN`): letters, digits and `_` |
 | `--for SLUG` | for that deployment only |
 
 ## `holon queue`

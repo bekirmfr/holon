@@ -1156,6 +1156,52 @@ and a message it ran already is passed over. `payout_retries.send({ data, group 
 landed: a failed payout goes to a FIFO queue, its group the account, so one account's retries keep
 their order, and its deduplication id is the run's, so a send tried again is taken once.
 
+### ledger-watch: a Postgres channel as a feed
+
+```ts
+import { decimal_sum, flow, on, route } from "holon"
+import balances from "collection:balances"
+import ledger from "database:ledger"
+import entries from "feed:entries"
+
+flow("ledger-watch", { port: 8195 })
+
+on.feed(entries, (e) => {
+  const entry = e.data
+  const was = balances[entry.account] ?? { balance: "0", entries: 0, read: 0, last: 0 }
+  const unheard =
+    entry.seq > was.last + 1
+      ? ledger.query(
+          "select amount from entries where account = $1 and seq > $2 and seq < $3",
+          entry.account,
+          was.last,
+          entry.seq,
+        )
+      : []
+  const amounts = unheard.map((u) => u.amount)
+  if (entry.seq > was.last)
+    balances[entry.account] = {
+      balance: decimal_sum([was.balance, entry.amount, ...amounts]),
+      entries: was.entries + 1 + amounts.length,
+      read: was.read + amounts.length,
+      last: entry.seq,
+    }
+})
+
+route.get("/balances", () => balances.list())
+```
+
+The feed is a channel of a Postgres database an admin bound (`holon feed add entries --database
+ledger --channel ledger_entries`, `docs/L4s/host-capabilities-L4.md` §5.9.11): a trigger on the
+ledger's `entries` table sends each row as it commits (`pg_notify`), and the host listens on the
+channel, so each entry starts a run, `e.data` the row as the trigger built it. Postgres keeps no
+notification for a session that isn't listening, so the flow keeps each account's last `seq`
+itself: an entry past the one after it reads the entries between from the ledger
+(`ledger.query`, the rows as the run began, logged with it), and an entry at or below it changes
+nothing (`if` with no `else`: no write). The balance and the last `seq` are one write, so they
+move together, and `decimal_sum` keeps the balance exact: an amount is read as text, from the
+payload and from the table.
+
 ### chat-proxy: a streamed reply
 
 Its `/chat` route (the imports, the page and the `js()` function `answer` left out):

@@ -9,7 +9,7 @@
 // through the stand-in identity provider (mock-oidc.mjs) once its admin panel says to.
 
 import { execFileSync, spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -59,6 +59,10 @@ const holonHome = join(dir, "home");
 // HOLON_TEST_MONGODB), in a database of the tests' own: the server fetches its URL from its
 // environment, as an admin's connection is.
 const mongo = process.env.HOLON_TEST_MONGODB?.replace(/^(mongodb(\+srv)?:\/\/[^/?]+)\/?[^?]*/, "$1/holon_e2e_notes");
+// The ledger-watch sample's Postgres, when the environment names one (CI does:
+// HOLON_TEST_POSTGRES, start-postgres.sh), in the database it names: the sample's table made there
+// if it isn't, each run's entries under accounts of its own.
+const ledger = process.env.HOLON_TEST_POSTGRES;
 const binary = join(process.env.CARGO_TARGET_DIR ?? join(root, "target"), "debug", process.platform === "win32" ? "holon.exe" : "holon");
 // Its policy lets a flow call plain HTTP and private addresses when its deploy asks: the
 // chat-proxy test points the sample at a stand-in upstream on loopback.
@@ -118,7 +122,7 @@ const server = spawn(
     "--policy", policy,
     "--dotenv", dotenv,
   ],
-  { cwd: dir, stdio: "inherit", env: { ...process.env, HOLON_SETUP_CODE: SETUP_CODE, HOLON_RUN_DIR: runDir, HOLON_HOME: holonHome, HOLON_DATA: "", HOLON_NO_FOLDER_DIALOG: "1", ...(mongo ? { HOLON_SECRET_NOTES_URL: mongo } : {}) } },
+  { cwd: dir, stdio: "inherit", env: { ...process.env, HOLON_SETUP_CODE: SETUP_CODE, HOLON_RUN_DIR: runDir, HOLON_HOME: holonHome, HOLON_DATA: "", HOLON_NO_FOLDER_DIALOG: "1", ...(mongo ? { HOLON_SECRET_NOTES_URL: mongo } : {}), ...(ledger ? { HOLON_SECRET_LEDGER_URL: ledger } : {}) } },
 );
 
 const cleanUp = () => {
@@ -242,6 +246,31 @@ if (!fresh) {
       body: JSON.stringify({ name: "notes", connection: "env:HOLON_SECRET_NOTES_URL", access: "read-write" }),
     });
     if (!notes.ok) console.error(`e2e server: binding the database notes failed: ${await notes.text()}`);
+  }
+  // The ledger-watch sample's ledger and feed, bound as its comment says: read-only, its table and
+  // trigger made by the ledger.sql it gives; and for the test's ledger-writer, the same database
+  // read-write.
+  if (ledger) {
+    const sample = readFileSync(join(root, "crates", "holon-author", "samples", "ledger-watch.holon.ts"), "utf8").split("\n");
+    const sql = sample.slice(sample.findIndex((l) => l.includes("where ledger.sql is")) + 1);
+    const schema = sql.slice(0, sql.findIndex((l) => l.trim() === "//")).map((l) => l.replace(/^\/\/\s*/, "").trim()).join(" ");
+    for (const binding of [
+      { name: "ledger", connection: "env:HOLON_SECRET_LEDGER_URL", access: "read", schema },
+      { name: "ledger", connection: "env:HOLON_SECRET_LEDGER_URL", access: "read-write", deployment: "ledger-writer" },
+    ]) {
+      const bound = await fetch(`${base}/admin/databases`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify(binding),
+      });
+      if (!bound.ok) console.error(`e2e server: binding the database ledger failed: ${await bound.text()}`);
+    }
+    const entries = await fetch(`${base}/admin/feeds`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ name: "entries", database: "ledger", channel: "ledger_entries" }),
+    });
+    if (!entries.ok) console.error(`e2e server: binding the feed entries failed: ${await entries.text()}`);
   }
   // The approval-mail sample's mail: through the sink, from the treasury, to anyone at acme.com.
   const ops = await fetch(`${base}/admin/mails`, {

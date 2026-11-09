@@ -164,7 +164,7 @@ fn mysql_tls(url: &str) -> Result<(String, bool), String> {
     Ok((url, tls))
 }
 
-fn pg_tls() -> tokio_postgres_rustls::MakeRustlsConnect {
+pub(crate) fn pg_tls() -> tokio_postgres_rustls::MakeRustlsConnect {
     static CONFIG: OnceLock<rustls::ClientConfig> = OnceLock::new();
     let config = CONFIG.get_or_init(|| {
         let roots = rustls::RootCertStore { roots: webpki_roots::TLS_SERVER_ROOTS.to_vec() };
@@ -751,8 +751,15 @@ fn pg_query(p: &mut postgres::Client, sql: &str, params: &[Value], g: &mut Gathe
     Ok(())
 }
 
-fn pg_said(e: &postgres::Error) -> String {
-    e.as_db_error().map_or_else(|| e.to_string(), |d| d.message().to_string())
+/// What Postgres said: a server's error by its message (`the database system is starting up`),
+/// not the client's `db error`; the client's own with its cause (`error connecting to server:
+/// …`), which its text leaves out.
+pub(crate) fn pg_said(e: &postgres::Error) -> String {
+    match (e.as_db_error(), std::error::Error::source(e)) {
+        (Some(d), _) => d.message().to_string(),
+        (None, Some(cause)) => format!("{e}: {cause}"),
+        (None, None) => e.to_string(),
+    }
 }
 
 fn pg_failed(e: &postgres::Error, sql: &str) -> Failure {

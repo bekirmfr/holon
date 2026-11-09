@@ -17,6 +17,8 @@
 
 use std::io::{BufRead, BufReader, ErrorKind, Read, Write};
 use std::net::{Shutdown, TcpStream, ToSocketAddrs};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use zeroize::Zeroizing;
@@ -163,12 +165,21 @@ impl Url {
     }
 }
 
-/// The connection's socket, shut from another thread to end the connection at once.
-pub(crate) struct Closer(pub(crate) TcpStream);
+/// What ends a connection from another thread: its socket, shut at once, or a flag a connection
+/// read a second at a time looks at (listen.rs).
+pub(crate) enum Closer {
+    Socket(TcpStream),
+    Flag(Arc<AtomicBool>),
+}
 
 impl Closer {
     pub(crate) fn close(&self) {
-        let _ = self.0.shutdown(Shutdown::Both);
+        match self {
+            Closer::Socket(socket) => {
+                let _ = socket.shutdown(Shutdown::Both);
+            }
+            Closer::Flag(closed) => closed.store(true, Ordering::SeqCst),
+        }
     }
 }
 
@@ -416,7 +427,7 @@ pub(crate) struct Connection {
 impl Connection {
     /// What shuts the connection from another thread.
     pub(crate) fn closer(&self) -> Option<Closer> {
-        self.socket.try_clone().ok().map(Closer)
+        self.socket.try_clone().ok().map(Closer::Socket)
     }
 
     /// The next event, or one passed over; None when the feed ended the connection, or why it

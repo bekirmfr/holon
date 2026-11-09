@@ -149,7 +149,26 @@ export function AdminPage({ me, onOpenDeployment }: { me: string; onOpenDeployme
   const [feeds, setFeeds] = useState<FeedEntry[]>([]);
   // A feed to bind, its headers written NAME=SOURCE and its subscription messages one a line, its
   // --only FIELD=VALUE with spaces between.
-  const noFeed = { name: "", url: "", headers: "", buffer: "", idle: "", deployment: "", onFull: "wait" as OnFull, key: "", sequence: "", subscribe: "", heartbeat: "", every: "", id: "", only: "", resume: "" };
+  const noFeed = {
+    name: "",
+    from: "url" as "url" | "channel",
+    url: "",
+    database: "",
+    channel: "",
+    headers: "",
+    buffer: "",
+    idle: "",
+    deployment: "",
+    onFull: "wait" as OnFull,
+    key: "",
+    sequence: "",
+    subscribe: "",
+    heartbeat: "",
+    every: "",
+    id: "",
+    only: "",
+    resume: "",
+  };
   const [feedDraft, setFeedDraft] = useState(noFeed);
   const [queues, setQueues] = useState<QueueEntry[]>([]);
   const noQueue = { name: "", url: "", visibility: "", keepFailed: false, deployment: "" };
@@ -841,7 +860,9 @@ export function AdminPage({ me, onOpenDeployment }: { me: string; onOpenDeployme
             field has a value given (type=ticker) run. A WebSocket that replays is opened again from its id where the binding says the feed takes it:
             query:cursor, header:NAME, or message:… sent in place of the subscription, <code>{"{position}"}</code> in it the id. A feed whose JSON messages
             a whole number counts one by one (trade_id), each key on its own (product_id), says on each event how many numbers were skipped before it (
-            <code>e.gap</code>): what came while the server wasn&apos;t reading, for the flow to fetch.
+            <code>e.gap</code>): what came while the server wasn&apos;t reading, for the flow to fetch. A feed may also be a Postgres channel: the server
+            listens on it (<code>LISTEN</code>) in a database bound here, the one each deployment sees by that name, and each notification
+            (<code>pg_notify</code>, from a trigger) is an event; what is sent while it isn&apos;t listening is lost, for the flow to read from the table.
           </div>
           {feeds.length === 0 && <div style={{ color: "#7e8ea8", fontSize: 11, marginBottom: 6 }}>no feed bound</div>}
           {feeds.map((f) => (
@@ -849,7 +870,7 @@ export function AdminPage({ me, onOpenDeployment }: { me: string; onOpenDeployme
               <div style={row}>
                 <span style={{ color: "#6fd3e0", minWidth: 90 }}>feed {f.name}</span>
                 <span style={{ color: "#e6eefb", flex: 1, overflowWrap: "anywhere" }}>
-                  {`${f.address} (from ${f.url})`}
+                  {f.database ? `listens on ${f.address} (the database ${f.database})` : `${f.address} (from ${f.url})`}
                   {Object.keys(f.headers).length > 0 && ` · sends ${Object.entries(f.headers).map(([h, s]) => `${h} from ${s}`).join(", ")}`}
                   {(f.subscribe ?? []).length > 0 && ` · subscribes with ${(f.subscribe ?? []).join(", ")}`}
                   {f.heartbeat && ` · sends ${f.heartbeat} every ${f.every ?? 30}s`}
@@ -892,34 +913,61 @@ export function AdminPage({ me, onOpenDeployment }: { me: string; onOpenDeployme
                   if (at < 1) throw new Error(`"${line}" isn't a header: NAME=SOURCE (Authorization=env:HOLON_SECRET_PRICES_AUTH)`);
                   headers[line.slice(0, at).trim()] = line.slice(at + 1).trim();
                 }
-                const binding: FeedBinding = { name, url: feedDraft.url.trim(), headers, deployment };
+                const channel = feedDraft.from === "channel";
+                const binding: FeedBinding = channel
+                  ? { name, database: feedDraft.database.trim(), channel: feedDraft.channel.trim(), deployment }
+                  : { name, url: feedDraft.url.trim(), headers, deployment };
                 if (feedDraft.buffer.trim()) binding.buffer = Number(feedDraft.buffer.trim());
                 if (feedDraft.idle.trim()) binding.idle = feedDraft.idle.trim();
                 if (feedDraft.onFull !== "wait") binding.on_full = feedDraft.onFull;
                 if (feedDraft.key.trim()) binding.key = feedDraft.key.trim();
                 if (feedDraft.sequence.trim()) binding.sequence = feedDraft.sequence.trim();
                 const subscribe = feedDraft.subscribe.split("\n").map((l) => l.trim()).filter(Boolean);
-                if (subscribe.length > 0) binding.subscribe = subscribe;
-                if (feedDraft.heartbeat.trim()) binding.heartbeat = feedDraft.heartbeat.trim();
-                if (feedDraft.every.trim()) binding.every = feedDraft.every.trim();
+                if (subscribe.length > 0 && !channel) binding.subscribe = subscribe;
+                if (feedDraft.heartbeat.trim() && !channel) binding.heartbeat = feedDraft.heartbeat.trim();
+                if (feedDraft.every.trim() && !channel) binding.every = feedDraft.every.trim();
                 if (feedDraft.id.trim()) binding.id = feedDraft.id.trim();
                 const only = feedDraft.only.split(/\s+/).filter(Boolean);
                 if (only.length > 0) binding.only = only;
                 const resume = feedDraft.resume.split("\n").map((l) => l.trim()).filter(Boolean);
-                if (resume.length > 0) binding.resume = resume;
+                if (resume.length > 0 && !channel) binding.resume = resume;
                 await bindFeed(binding);
                 setFeedDraft(noFeed);
               });
             }}
           >
             <input aria-label="feed name" placeholder="name (prices)" value={feedDraft.name} onChange={(e) => setFeedDraft({ ...feedDraft, name: e.target.value })} style={input} />
-            <input
-              aria-label="feed url"
-              placeholder="where the feed's URL is kept (env:HOLON_SECRET_PRICES_URL, vault:…)"
-              value={feedDraft.url}
-              onChange={(e) => setFeedDraft({ ...feedDraft, url: e.target.value })}
-              style={{ ...input, flex: 1, minWidth: 220 }}
-            />
+            <select aria-label="feed from" value={feedDraft.from} onChange={(e) => setFeedDraft({ ...feedDraft, from: e.target.value as "url" | "channel" })} style={input}>
+              <option value="url">from a URL</option>
+              <option value="channel">a Postgres channel</option>
+            </select>
+            {feedDraft.from === "url" ? (
+              <input
+                aria-label="feed url"
+                placeholder="where the feed's URL is kept (env:HOLON_SECRET_PRICES_URL, vault:…)"
+                value={feedDraft.url}
+                onChange={(e) => setFeedDraft({ ...feedDraft, url: e.target.value })}
+                style={{ ...input, flex: 1, minWidth: 220 }}
+              />
+            ) : (
+              <>
+                <select aria-label="feed database" value={feedDraft.database} onChange={(e) => setFeedDraft({ ...feedDraft, database: e.target.value })} style={input}>
+                  <option value="">its database</option>
+                  {[...new Set(databases.filter((d) => d.engine === "postgres").map((d) => d.name))].map((n) => (
+                    <option key={n} value={n}>
+                      {n}
+                    </option>
+                  ))}
+                </select>
+                <input
+                  aria-label="feed channel"
+                  placeholder="channel (ledger_entries)"
+                  value={feedDraft.channel}
+                  onChange={(e) => setFeedDraft({ ...feedDraft, channel: e.target.value })}
+                  style={{ ...input, flex: 1, minWidth: 160 }}
+                />
+              </>
+            )}
             <input aria-label="feed buffer" placeholder="may wait (1000)" value={feedDraft.buffer} onChange={(e) => setFeedDraft({ ...feedDraft, buffer: e.target.value })} style={input} />
             <select aria-label="feed on full" value={feedDraft.onFull} onChange={(e) => setFeedDraft({ ...feedDraft, onFull: e.target.value as OnFull })} style={input}>
               <option value="wait">when full: wait</option>
@@ -944,15 +992,23 @@ export function AdminPage({ me, onOpenDeployment }: { me: string; onOpenDeployme
               onChange={(e) => setFeedDraft({ ...feedDraft, deployment: e.target.value })}
               style={input}
             />
-            <textarea
-              aria-label="feed headers"
-              placeholder="headers each request sends, NAME=SOURCE, one a line (Authorization=env:HOLON_SECRET_PRICES_AUTH)"
-              value={feedDraft.headers}
-              onChange={(e) => setFeedDraft({ ...feedDraft, headers: e.target.value })}
-              rows={2}
-              style={{ ...input, flexBasis: "100%", fontFamily: "monospace" }}
-            />
-            {/^\s*wss?:/.test(feedDraft.url) || /^\s*(env|vault):/.test(feedDraft.url) ? (
+            {feedDraft.from === "url" && (
+              <textarea
+                aria-label="feed headers"
+                placeholder="headers each request sends, NAME=SOURCE, one a line (Authorization=env:HOLON_SECRET_PRICES_AUTH)"
+                value={feedDraft.headers}
+                onChange={(e) => setFeedDraft({ ...feedDraft, headers: e.target.value })}
+                rows={2}
+                style={{ ...input, flexBasis: "100%", fontFamily: "monospace" }}
+              />
+            )}
+            {feedDraft.from === "channel" && (
+              <>
+                <input aria-label="feed id" placeholder="its id fields (id)" value={feedDraft.id} onChange={(e) => setFeedDraft({ ...feedDraft, id: e.target.value })} style={input} />
+                <input aria-label="feed only" placeholder="runs only (kind=credit)" value={feedDraft.only} onChange={(e) => setFeedDraft({ ...feedDraft, only: e.target.value })} style={input} />
+              </>
+            )}
+            {feedDraft.from === "url" && (/^\s*wss?:/.test(feedDraft.url) || /^\s*(env|vault):/.test(feedDraft.url)) ? (
               <>
                 <textarea
                   aria-label="feed subscribe"
@@ -978,12 +1034,16 @@ export function AdminPage({ me, onOpenDeployment }: { me: string; onOpenDeployme
                 )}
               </>
             ) : null}
-            {isUrl(feedDraft.url) && (
+            {feedDraft.from === "url" && isUrl(feedDraft.url) && (
               <div role="alert" style={{ ...quiet, color: "#e0916f", flexBasis: "100%" }}>
                 That is a URL: give where it is kept instead (env:HOLON_SECRET_PRICES_URL, vault:…). It isn&apos;t sent.
               </div>
             )}
-            <button type="submit" style={primary} disabled={!feedDraft.name.trim() || !feedDraft.url.trim() || isUrl(feedDraft.url)}>
+            <button
+              type="submit"
+              style={primary}
+              disabled={!feedDraft.name.trim() || (feedDraft.from === "url" ? !feedDraft.url.trim() || isUrl(feedDraft.url) : !feedDraft.database || !feedDraft.channel.trim())}
+            >
               bind feed
             </button>
           </form>

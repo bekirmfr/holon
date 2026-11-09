@@ -12,11 +12,15 @@
 //!   connection is opened again (`--idle`). A
 //!   WebSocket's binding also says what it is sent when it opens (`--subscribe`) and to keep it
 //!   (`--heartbeat`), which fields are a message's id (`--id`), which messages run (`--only`), and
-//!   where the feed takes the position a connection opens from (`--resume`, §5.9.6). For the whole
-//!   server or one deployment.
+//!   where the feed takes the position a connection opens from (`--resume`, §5.9.6). Or a Postgres
+//!   channel (`--database`, `--channel`, §5.9.11): `LISTEN` on a bound database (listen.rs), each
+//!   notification a message, `--id` and `--only` as a WebSocket's. For the whole server or one
+//!   deployment.
 //! - **Checked when bound:** a request to it answers 200 with `text/event-stream`, or a WebSocket's
-//!   101, then it is closed. The binding keeps the sources, and where the URL points without its
-//!   login or query, which is what is shown.
+//!   101, or the database takes the `LISTEN`, then it is closed. The binding keeps the sources,
+//!   and where the URL points without its login or query, which is what is shown. A channel's
+//!   database is the one the listening deployment sees by that name, read each time a connection
+//!   opens ([`Binding::seen_by`]).
 //! - **The grant** names the feed (`FeedEvent("prices")`); a deploy is refused while it isn't bound
 //!   ([`Feeds::refuses`]). Several deployments may listen to one feed: each has its own
 //!   connection.
@@ -29,6 +33,7 @@ use std::time::Duration;
 
 use rouille::{Request, Response};
 
+use crate::databases::{Database, Databases};
 use crate::http::{err, read_body};
 use crate::permissions::Manifest;
 use crate::secret_sources::{Reference, Sources};
@@ -51,9 +56,13 @@ const IDLE_LEAST: u64 = 5;
 /// One bound feed.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub(crate) struct Binding {
-    /// Where the host reads the feed's URL from (`env:…`, `vault:…`), never the URL itself.
+    /// Where the host reads the feed's URL from (`env:…`, `vault:…`), never the URL itself. A
+    /// channel's is its database's connection, as the listening deployment sees it: not kept.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub(crate) url: String,
-    /// Where that URL points, without its login or query (`https://stream.example.com/v1/prices`).
+    /// Where that URL points, without its login or query (`https://stream.example.com/v1/prices`);
+    /// a channel's database, and the channel (`postgres://db.example.com:5432/ledger, channel
+    /// ledger_entries`).
     pub(crate) address: String,
     /// The headers each request sends: a name, and where its value is read from.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -93,6 +102,31 @@ pub(crate) struct Binding {
     /// knows it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) resume: Option<Resume>,
+    /// A Postgres channel's (§5.9.11): the database it is on, by the name a deployment binds it
+    /// as, and the channel listened on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) database: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) channel: Option<String>,
+}
+
+impl Binding {
+    /// This binding as `slug` sees it: a channel's on the database `slug` sees by its name, its
+    /// connection where the URL is read from and where it is in the address. None it sees, or one
+    /// that isn't a Postgres, leaves it no URL: a connection to it says so.
+    pub(crate) fn seen_by(self, databases: &Databases, slug: &str) -> Binding {
+        let Some(name) = &self.database else { return self };
+        let database = databases.resolve(slug, name);
+        self.on(database.as_ref())
+    }
+
+    fn on(self, database: Option<&Database>) -> Binding {
+        let Some(channel) = self.channel.clone() else { return self };
+        match database.filter(|d| d.engine == "postgres") {
+            Some(d) => Binding { url: d.connection.clone().unwrap_or_default(), address: format!("{}, channel {channel}", d.at()), ..self },
+            None => Binding { url: String::new(), ..self },
+        }
+    }
 }
 
 /// Where a WebSocket feed that replays takes the position it replays from.
@@ -177,6 +211,11 @@ pub(crate) struct Asked {
     /// `query:cursor`, `header:X-From`, or `message:…` (again for another).
     #[serde(default)]
     pub(crate) resume: Vec<String>,
+    /// A Postgres channel's: the database, as bound (`ledger`), and the channel (`ledger_entries`).
+    #[serde(default)]
+    pub(crate) database: Option<String>,
+    #[serde(default)]
+    pub(crate) channel: Option<String>,
 }
 
 /// Where `--resume` says the feed takes the position: one parameter or header, or the messages
@@ -347,16 +386,40 @@ impl Feeds {
     }
 
     /// Bind `name`, for the whole server or one deployment, replacing any binding of it there
-    /// before, as `asked` says: once a request to it, with its headers, answers as a feed does.
-    pub(crate) fn bind(&self, name: &str, asked: &Asked, for_deployment: Option<&str>) -> Result<Binding, String> {
+    /// before, as `asked` says: once a request to it, with its headers, answers as a feed does, or
+    /// `database` (the one `asked` names, as the deployment, or the server, sees it) takes the
+    /// `LISTEN`.
+    pub(crate) fn bind(&self, name: &str, asked: &Asked, database: Option<&Database>, for_deployment: Option<&str>) -> Result<Binding, String> {
         if !folders::is_folder_name(name) || name.contains('-') {
             return Err(format!("{name:?} isn't a feed's name: letters, digits and _, up to 64, as a flow imports it"));
         }
         if let Some(slug) = for_deployment.filter(|s| !folders::is_folder_name(s)) {
             return Err(format!("{slug:?} isn't a deployment's name"));
         }
-        let url = given(&asked.url).ok_or("a feed is read from the URL --url names: it names none")?;
-        if !is_source(url) {
+        let listen = match (given(&asked.database), given(&asked.channel)) {
+            (None, None) => None,
+            (Some(_), None) | (None, Some(_)) => return Err("a Postgres channel is listened on with --database NAME and --channel CHANNEL, both".into()),
+            (Some(db), Some(channel)) => {
+                let url_only = asked.url.is_some() || !asked.headers.is_empty() || !asked.subscribe.is_empty() || asked.heartbeat.is_some() || asked.every.is_some() || !asked.resume.is_empty();
+                if url_only {
+                    return Err("--url, --header, --subscribe, --heartbeat and --resume are a feed's read from a URL: a channel is listened on in its --database".into());
+                }
+                if !listen::is_channel(channel) {
+                    return Err(format!("--channel is a Postgres channel: letters, digits and _, up to 63 bytes; {channel:?} isn't one"));
+                }
+                let seen = for_deployment.map_or_else(|| "on this server".to_string(), |d| format!("for {d}"));
+                let d = database.ok_or_else(|| format!("the database {db} isn't bound {seen}: an admin binds it (holon database add {db} …)"))?;
+                if d.engine != "postgres" {
+                    return Err(format!("LISTEN is Postgres's: the database {db} is {}", d.engine));
+                }
+                Some((db, channel, d))
+            }
+        };
+        let url = match listen {
+            Some(_) => "",
+            None => given(&asked.url).ok_or("a feed is read from the URL --url names, or listened on with --database and --channel: it names neither")?,
+        };
+        if listen.is_none() && !is_source(url) {
             return Err("a feed's URL is read from a source, env:HOLON_SECRET_… or vault:…, holding https://host/path".into());
         }
         for (header, source) in &asked.headers {
@@ -426,19 +489,30 @@ impl Feeds {
             return Err("--resume sends the feed the id of the message the host is at, which a cursor is one value of: it takes an --id of one field (--id seq)".into());
         }
         let headers: BTreeMap<String, String> = asked.headers.iter().map(|(h, s)| (h.clone(), s.trim().to_string())).collect();
-        let binding = Binding { url: url.to_string(), address: String::new(), headers, buffer, idle, on_full, key, sequence, subscribe, heartbeat, every, id, only, resume };
-        let (parsed, sent) = self.request(&binding)?;
-        let websocket_only = !binding.subscribe.is_empty() || binding.heartbeat.is_some() || !binding.id.is_empty() || !binding.only.is_empty() || binding.resume.is_some();
-        if websocket_only && !parsed.is_websocket() {
-            return Err("--subscribe, --heartbeat, --id, --only and --resume are a WebSocket's (wss://): this URL is a feed of server-sent events, whose events have their own ids and resume with Last-Event-ID".into());
-        }
-        let binding = Binding { address: parsed.address(), ..binding };
+        let (database, channel) = (listen.map(|(db, ..)| db.to_string()), listen.map(|(_, channel, _)| channel.to_string()));
+        let binding = Binding { url: url.to_string(), address: String::new(), headers, buffer, idle, on_full, key, sequence, subscribe, heartbeat, every, id, only, resume, database, channel };
         let check = Duration::from_secs(10);
-        let read = match parsed.is_websocket() {
-            true => ws::open(&parsed, &sent, &[], None, check).map(drop),
-            false => sse::open(&parsed, &sent, None, check).map(drop),
+        let binding = match listen {
+            Some((_, channel, d)) => {
+                let seen = binding.clone().on(Some(d));
+                let url = self.0.sources.fetch(&Reference::parse(&seen.url)?)?;
+                listen::open(&url, channel, check).map_err(|why| format!("the channel wasn't listened on: {why}"))?;
+                Binding { address: seen.address, ..binding }
+            }
+            None => {
+                let (parsed, sent) = self.request(&binding)?;
+                let websocket_only = !binding.subscribe.is_empty() || binding.heartbeat.is_some() || !binding.id.is_empty() || !binding.only.is_empty() || binding.resume.is_some();
+                if websocket_only && !parsed.is_websocket() {
+                    return Err("--subscribe, --heartbeat, --id, --only and --resume are a WebSocket's (wss://): this URL is a feed of server-sent events, whose events have their own ids and resume with Last-Event-ID".into());
+                }
+                let read = match parsed.is_websocket() {
+                    true => ws::open(&parsed, &sent, &[], None, check).map(drop),
+                    false => sse::open(&parsed, &sent, None, check).map(drop),
+                };
+                read.map_err(|why| format!("the feed wasn't read: {why}"))?;
+                Binding { address: parsed.address(), ..binding }
+            }
         };
-        read.map_err(|why| format!("the feed wasn't read: {why}"))?;
         let mut bound = self.0.bound.write().unwrap();
         let mut next = bound.clone();
         match for_deployment {
@@ -465,8 +539,15 @@ impl Feeds {
     /// sends `Last-Event-ID` with, or a WebSocket's id of the last message read, which goes where
     /// `--resume` says.
     pub(crate) fn connect(&self, binding: &Binding, last_id: Option<&str>) -> Result<Link, String> {
-        let (mut url, mut headers) = self.request(binding)?;
         let idle = Duration::from_secs(binding.idle);
+        if let (Some(db), Some(channel)) = (&binding.database, &binding.channel) {
+            if binding.url.is_empty() {
+                return Err(format!("the database {db} isn't a Postgres bound for this deployment: LISTEN is Postgres's"));
+            }
+            let url = self.0.sources.fetch(&Reference::parse(&binding.url)?)?;
+            return Ok(Link::Pg(Box::new(listen::open(&url, channel, idle)?), last_id.unwrap_or_default().to_string()));
+        }
+        let (mut url, mut headers) = self.request(binding)?;
         if !url.is_websocket() {
             return Ok(Link::Sse(sse::open(&url, &headers, last_id, idle)?));
         }
@@ -528,7 +609,7 @@ impl Feeds {
         manifest.capabilities.iter().filter(|c| !manifest.requirements.optional.contains(*c)).find_map(|item| {
             let name = item.strip_prefix("FeedEvent(\"").and_then(|r| r.strip_suffix("\")"))?;
             self.resolve(deployment, name).is_none().then(|| {
-                format!("the feed {name:?} isn't bound on this server: an admin binds it (holon feed add {name} --url env:…, or --for {deployment} for this deployment only)")
+                format!("the feed {name:?} isn't bound on this server: an admin binds it (holon feed add {name} --url env:… or --database NAME --channel CHANNEL, with --for {deployment} for this deployment only)")
             })
         })
     }
@@ -581,15 +662,17 @@ impl Feeds {
     }
 }
 
-/// An open feed: server-sent events, or a WebSocket with the id of the last message it read.
+/// An open feed: server-sent events, or a WebSocket or a Postgres channel with the id of the last
+/// message it read.
 pub(crate) enum Link {
     Sse(sse::Connection),
     Ws(Box<ws::Connection>, String),
+    Pg(Box<listen::Connection>, String),
 }
 
-/// What a feed's connection read: an event, one passed over (past 1 MiB), or a WebSocket message
-/// its binding's `--only` doesn't run, with its number (`--sequence`), which counts though it
-/// doesn't run.
+/// What a feed's connection read: an event, one passed over (past 1 MiB), or a WebSocket's or a
+/// channel's message its binding's `--only` doesn't run, with its number (`--sequence`), which
+/// counts though it doesn't run.
 pub(crate) enum Incoming {
     Event(Event),
     PassedOver,
@@ -632,6 +715,7 @@ impl Link {
         match self {
             Link::Sse(c) => c.closer(),
             Link::Ws(c, _) => c.closer(),
+            Link::Pg(c, _) => Some(c.closer()),
         }
     }
 
@@ -639,7 +723,7 @@ impl Link {
     pub(crate) fn retry(&self) -> Option<Duration> {
         match self {
             Link::Sse(c) => c.retry(),
-            Link::Ws(..) => None,
+            Link::Ws(..) | Link::Pg(..) => None,
         }
     }
 
@@ -661,19 +745,30 @@ impl Link {
                     ws::Said::Text(t) => holon_core::parse_json(&t).unwrap_or(Value::Text(t)),
                     ws::Said::Binary(b) => Value::Bytes(b),
                 };
-                let runs = binding.only.iter().all(|(field, values)| field_text(&data, field).is_some_and(|v| values.contains(&v)));
-                if !runs {
-                    return Incoming::Filtered(numbered(binding, &data));
-                }
-                let parts: Option<Vec<String>> = binding.id.iter().map(|p| field_text(&data, p)).collect();
-                let id = parts.filter(|p| !p.is_empty()).map(|p| p.join("/"));
-                if let Some(id) = &id {
-                    last.clone_from(id);
-                }
-                Incoming::Event(Event { key: key(&data), number: numbered(binding, &data), data, name: "message".into(), id, last_id: last.clone(), missed: 0, replaced: 0, gap: 0 })
+                message(binding, data, "message", last)
+            })),
+            Link::Pg(c, last) => Ok(c.next_payload()?.map(|payload| {
+                let data = holon_core::parse_json(&payload).unwrap_or(Value::Text(payload));
+                message(binding, data, binding.channel.as_deref().unwrap_or_default(), last)
             })),
         }
     }
+}
+
+/// A WebSocket's or a channel's message, `data`, as `binding` reads it: run or not (`--only`),
+/// its id (`--id`), which is where the feed is (`last`) once it has one.
+fn message(binding: &Binding, data: Value, name: &str, last: &mut String) -> Incoming {
+    let runs = binding.only.iter().all(|(field, values)| field_text(&data, field).is_some_and(|v| values.contains(&v)));
+    if !runs {
+        return Incoming::Filtered(numbered(binding, &data));
+    }
+    let parts: Option<Vec<String>> = binding.id.iter().map(|p| field_text(&data, p)).collect();
+    let id = parts.filter(|p| !p.is_empty()).map(|p| p.join("/"));
+    if let Some(id) = &id {
+        last.clone_from(id);
+    }
+    let key = binding.key.as_ref().and_then(|k| field_text(&data, k));
+    Incoming::Event(Event { key, number: numbered(binding, &data), data, name: name.to_string(), id, last_id: last.clone(), missed: 0, replaced: 0, gap: 0 })
 }
 
 pub(crate) fn now_ms() -> u64 {
@@ -692,7 +787,7 @@ pub(crate) fn handle_get_feeds(state: &AppState, slug: &str) -> Response {
         .into_iter()
         .map(|(feed, label)| {
             let mut shown = serde_json::json!({ "feed": feed, "label": label, "status": "closed", "waiting": 0 });
-            if let Some(address) = feeds.resolve(slug, &feed).map(|b| b.address) {
+            if let Some(address) = feeds.resolve(slug, &feed).map(|b| b.seen_by(&state.folders.databases, slug).address) {
                 shown["address"] = serde_json::json!(address);
             }
             if let Some(live) = feeds.live(slug, &feed) {
@@ -711,7 +806,7 @@ pub(crate) fn handle_get_feeds(state: &AppState, slug: &str) -> Response {
 
 fn shown(name: &str, deployment: Option<&str>, b: &Binding) -> serde_json::Value {
     let mut shown = serde_json::json!({ "name": name, "deployment": deployment, "url": b.url, "address": b.address, "headers": b.headers, "buffer": b.buffer, "idle": b.idle, "on_full": b.on_full });
-    let extra = serde_json::json!({ "key": b.key, "sequence": b.sequence, "subscribe": b.subscribe, "heartbeat": b.heartbeat, "every": b.every, "id": b.id, "only": b.only, "resume": b.resume });
+    let extra = serde_json::json!({ "key": b.key, "sequence": b.sequence, "subscribe": b.subscribe, "heartbeat": b.heartbeat, "every": b.every, "id": b.id, "only": b.only, "resume": b.resume, "database": b.database, "channel": b.channel });
     for (k, v) in extra.as_object().into_iter().flatten() {
         let empty = v.is_null() || v.as_array().is_some_and(Vec::is_empty) || v.as_object().is_some_and(serde_json::Map::is_empty) || v.as_u64() == Some(0);
         if !empty {
@@ -753,7 +848,8 @@ pub(crate) fn route(state: &AppState, request: &Request, by: &str) -> Option<Res
                     .and_then(|b| serde_json::from_slice::<Bind>(&b).map_err(|e| err(400, format!("invalid body: {e}"))))
                     .map(|b| Bind { deployment: b.deployment.filter(|d| !d.trim().is_empty()), ..b })
                     .and_then(|b| {
-                        let f = all.bind(&b.name, &b.asked, b.deployment.as_deref()).map_err(|e| err(400, e))?;
+                        let database = given(&b.asked.database).and_then(|db| state.folders.databases.resolve(b.deployment.as_deref().unwrap_or_default(), db));
+                        let f = all.bind(&b.name, &b.asked, database.as_ref(), b.deployment.as_deref()).map_err(|e| err(400, e))?;
                         Ok((b, f))
                     });
                 match bound {
@@ -792,8 +888,9 @@ pub(crate) fn route(state: &AppState, request: &Request, by: &str) -> Option<Res
 
 /// `holon feed add NAME --url SOURCE [--header NAME=SOURCE]… [--buffer N] [--on-full …] [--key
 /// FIELD] [--sequence FIELD] [--idle T] [--subscribe MESSAGE]… [--heartbeat MESSAGE] [--id
-/// FIELD,…] [--only FIELD=VALUE]… [--resume WHERE]… [--for SLUG] | list | remove NAME`: bind, show
-/// and unbind the feeds of the server this user runs here (or `--server`), as an admin.
+/// FIELD,…] [--only FIELD=VALUE]… [--resume WHERE]… [--for SLUG] | add NAME --database NAME
+/// --channel CHANNEL […] | list | remove NAME`: bind, show and unbind the feeds of the server this
+/// user runs here (or `--server`), as an admin.
 pub(crate) fn cli(args: &[String]) -> i32 {
     let mut server = None;
     let mut for_deployment: Option<String> = None;
@@ -805,7 +902,7 @@ pub(crate) fn cli(args: &[String]) -> i32 {
         match a.as_str() {
             "--server" => server = args.next().cloned(),
             "--for" => for_deployment = args.next().cloned(),
-            "--url" | "--buffer" | "--idle" | "--header" | "--on-full" | "--key" | "--sequence" | "--subscribe" | "--heartbeat" | "--every" | "--id" | "--only" | "--resume" => {
+            "--url" | "--buffer" | "--idle" | "--header" | "--on-full" | "--key" | "--sequence" | "--subscribe" | "--heartbeat" | "--every" | "--id" | "--only" | "--resume" | "--database" | "--channel" => {
                 let Some(v) = args.next() else {
                     eprintln!("holon feed: {a} takes a value\n\n{FEED_USAGE}");
                     return 2;
@@ -850,8 +947,8 @@ pub(crate) fn cli(args: &[String]) -> i32 {
     let (method, path, body) = match words.as_slice() {
         ["list"] => ("GET", "/admin/feeds".to_string(), None),
         ["add", name] => {
-            if !asked.contains_key("url") {
-                eprintln!("holon feed add: it takes --url SOURCE, where the server reads the feed's URL\n\n{FEED_USAGE}");
+            if !asked.contains_key("url") && !asked.contains_key("database") {
+                eprintln!("holon feed add: it takes --url SOURCE, where the server reads the feed's URL, or --database NAME --channel CHANNEL\n\n{FEED_USAGE}");
                 return 2;
             }
             asked.insert("name".into(), serde_json::Value::String(name.to_string()));
@@ -874,7 +971,11 @@ pub(crate) fn cli(args: &[String]) -> i32 {
     };
     let line = |f: &serde_json::Value| {
         let headers: Vec<String> = f["headers"].as_object().into_iter().flatten().map(|(h, s)| format!("{h} from {}", s.as_str().unwrap_or(""))).collect();
-        let mut said = vec![f["name"].as_str().unwrap_or("").to_string(), format!("reads {} (from {})", f["address"].as_str().unwrap_or(""), f["url"].as_str().unwrap_or(""))];
+        let reads = match f["database"].as_str() {
+            Some(db) => format!("listens on {} (the database {db})", f["address"].as_str().unwrap_or("")),
+            None => format!("reads {} (from {})", f["address"].as_str().unwrap_or(""), f["url"].as_str().unwrap_or("")),
+        };
+        let mut said = vec![f["name"].as_str().unwrap_or("").to_string(), reads];
         if !headers.is_empty() {
             said.push(format!("sends {}", headers.join(", ")));
         }
@@ -917,7 +1018,7 @@ pub(crate) fn cli(args: &[String]) -> i32 {
         "list" => {
             let all: Vec<serde_json::Value> = serde_json::from_str(&answer).unwrap_or_default();
             if all.is_empty() {
-                println!("no feeds are bound on {server}: holon feed add NAME --url env:… binds one");
+                println!("no feeds are bound on {server}: holon feed add NAME --url env:… (or --database NAME --channel CHANNEL) binds one");
             }
             for f in &all {
                 println!("{}", line(f));
@@ -935,13 +1036,17 @@ const FEED_USAGE: &str = "usage: holon feed add NAME --url SOURCE [--header NAME
                        [--subscribe MESSAGE]… [--heartbeat MESSAGE [--every T]]
                        [--id FIELD[,FIELD]…] [--only FIELD=VALUE]…
                        [--resume query:NAME|header:NAME|message:MESSAGE…]
+       holon feed add NAME --database NAME --channel CHANNEL [--id FIELD[,FIELD]…]
+                       [--only FIELD=VALUE]… [--buffer N] [--on-full …] [--key FIELD]
+                       [--sequence FIELD] [--idle T] [--for SLUG]
        holon feed list
        holon feed remove NAME [--for SLUG]
        (each with [--server PORT|URL])
 
   Binds a name a flow imports (import prices from \"feed:prices\") to a feed of server-sent
-  events or a WebSocket, whose events start its runs (on.feed(prices, (e) => …)), one at a time,
-  in the order they came. A flow never sees the feed's URL or its headers. Admins.
+  events, a WebSocket or a Postgres channel, whose events start its runs (on.feed(prices, (e) =>
+  …)), one at a time, in the order they came. A flow never sees the feed's URL or its headers.
+  Admins.
 
   add NAME                 bind NAME, once a request to it answers as a feed does
     --url SOURCE           where the server reads the feed's URL, as it reads a secret:
@@ -979,6 +1084,12 @@ const FEED_USAGE: &str = "usage: holon feed add NAME --url SOURCE [--header NAME
                            query:cursor (cursor=<id> in the URL), header:NAME, or message:MESSAGE
                            sent in place of --subscribe, {position} in it the id (again for
                            another); a new listener reads from now
+  A Postgres channel's (--id and --only as a WebSocket's):
+    --database NAME        the database it is on, as bound (holon database add): the one the
+                           listening deployment sees by that name, a Postgres
+    --channel CHANNEL      the channel listened on (LISTEN): what NOTIFY or pg_notify sends to,
+                           letters, digits and _; each notification's payload is an event. What
+                           is sent while no connection listens is lost: --sequence counts it
   list                     the names bound, and where each reads
   remove NAME              unbind it (--for SLUG: that deployment's); its connections close
   --server PORT|URL        which holon server to ask (see below)
@@ -989,6 +1100,7 @@ examples:
   holon feed add ticker --url env:HOLON_SECRET_TICKER_URL --subscribe '{\"type\":\"subscribe\",\"channels\":[\"ticker\"],\"product_ids\":[\"BTC-USD\"]}' --only type=ticker --id product_id,sequence --on-full latest --key product_id
   holon feed add posts --url env:HOLON_SECRET_POSTS_URL --id payload.seq --resume query:cursor --only payload.operation=create
   holon feed add trades --url env:HOLON_SECRET_TRADES_URL --subscribe '{\"type\":\"subscribe\",\"channels\":[\"matches\"],\"product_ids\":[\"BTC-USD\"]}' --only type=match --only type=last_match --id product_id,trade_id --sequence trade_id --key product_id
+  holon feed add entries --database ledger --channel ledger_entries --id id
   holon feed list
 
   From the holon serve you run on this machine, signed in as you; with several running,
@@ -1016,14 +1128,14 @@ mod tests {
         let mut a = asked("env:HOLON_SECRET_PRICES_URL");
         a.headers.insert("Authorization".into(), "env:HOLON_SECRET_PRICES_AUTH".into());
         a.idle = Some("2m".into());
-        let b = all.bind("prices", &a, None).unwrap();
+        let b = all.bind("prices", &a, None, None).unwrap();
         assert_eq!(b.address, url.split('?').next().unwrap());
         assert_eq!((b.buffer, b.idle), (BUFFER, 120));
         assert_eq!(b.headers["Authorization"], "env:HOLON_SECRET_PRICES_AUTH");
         assert!(feed.asked()[0].contains("Authorization: Bearer t0ken"));
         assert_eq!(all.resolve("app", "prices"), Some(b.clone()));
         // A deployment's own is its own.
-        all.bind("prices", &Asked { buffer: Some(5), ..asked("env:HOLON_SECRET_PRICES_URL") }, Some("app")).unwrap();
+        all.bind("prices", &Asked { buffer: Some(5), ..asked("env:HOLON_SECRET_PRICES_URL") }, None, Some("app")).unwrap();
         assert_eq!(all.resolve("app", "prices").unwrap().buffer, 5);
         assert_eq!(all.resolve("other", "prices"), Some(b));
         assert!(all.unbind("prices", Some("app")).unwrap());
@@ -1039,7 +1151,7 @@ mod tests {
             ("HOLON_SECRET_REMOTE", "http://stream.example.com/e?key=s3cret"),
             ("HOLON_SECRET_OK", &feed.url("/events")),
         ]);
-        let refused = |a: &Asked| all.bind("prices", a, None).unwrap_err();
+        let refused = |a: &Asked| all.bind("prices", a, None, None).unwrap_err();
         assert!(refused(&asked("env:HOLON_SECRET_PLAIN")).ends_with("answered with text/plain, not text/event-stream"));
         assert!(refused(&asked("env:HOLON_SECRET_GONE")).ends_with("/gone answered 404"));
         let remote = refused(&asked("env:HOLON_SECRET_REMOTE"));
@@ -1053,7 +1165,7 @@ mod tests {
         assert!(refused(&a).contains("is read from a source"));
         assert!(refused(&Asked { idle: Some("1s".into()), ..asked("env:HOLON_SECRET_OK") }).starts_with("--idle is 5s at least"));
         assert!(refused(&Asked { buffer: Some(0), ..asked("env:HOLON_SECRET_OK") }).starts_with("--buffer is how many events may wait"));
-        assert!(all.bind("pri-ces", &asked("env:HOLON_SECRET_OK"), None).unwrap_err().contains("isn't a feed's name"));
+        assert!(all.bind("pri-ces", &asked("env:HOLON_SECRET_OK"), None, None).unwrap_err().contains("isn't a feed's name"));
         assert_eq!(all.all(), Bound::default());
     }
 
@@ -1081,7 +1193,7 @@ mod tests {
             key: Some("product_id".into()),
             ..asked("env:HOLON_SECRET_TICKER_URL")
         };
-        let b = all.bind("ticker", &a, None).unwrap();
+        let b = all.bind("ticker", &a, None, None).unwrap();
         assert_eq!(b.address, url.split('?').next().unwrap());
         assert_eq!((b.every, b.id.clone(), b.on_full, b.key.as_deref()), (EVERY, vec!["product_id".to_string(), "sequence".into()], OnFull::Latest, Some("product_id")));
         assert_eq!(b.only["type"], vec!["ticker".to_string(), "snapshot".into()]);
@@ -1108,7 +1220,7 @@ mod tests {
     fn a_websockets_options_are_refused_where_they_dont_fit() {
         let (sse, ws) = (StandIn::start(), ws::stand_in::StandIn::start());
         let all = feeds(&[("HOLON_SECRET_SSE", &sse.url("/events")), ("HOLON_SECRET_WS", &ws.url("/ws"))]);
-        let refused = |a: Asked| all.bind("prices", &a, None).unwrap_err();
+        let refused = |a: Asked| all.bind("prices", &a, None, None).unwrap_err();
         let on_sse = refused(Asked { subscribe: vec!["hi".into()], ..asked("env:HOLON_SECRET_SSE") });
         assert!(on_sse.contains("are a WebSocket's"), "{on_sse}");
         assert!(refused(Asked { only: vec!["type=ticker".into()], ..asked("env:HOLON_SECRET_SSE") }).contains("are a WebSocket's"));
@@ -1121,7 +1233,7 @@ mod tests {
         assert!(refused(Asked { every: Some("10s".into()), ..asked("env:HOLON_SECRET_WS") }).contains("it takes --heartbeat"));
         assert!(refused(Asked { heartbeat: Some("ping".into()), every: Some("2h".into()), ..asked("env:HOLON_SECRET_WS") }).starts_with("--every is how often"));
         // Any feed's: an SSE binding skips or keeps the latest.
-        let b = all.bind("prices", &Asked { on_full: Some("latest".into()), key: Some("data.symbol".into()), ..asked("env:HOLON_SECRET_SSE") }, None).unwrap();
+        let b = all.bind("prices", &Asked { on_full: Some("latest".into()), key: Some("data.symbol".into()), ..asked("env:HOLON_SECRET_SSE") }, None, None).unwrap();
         assert_eq!((b.on_full, b.key.as_deref()), (OnFull::Latest, Some("data.symbol")));
     }
 
@@ -1131,7 +1243,7 @@ mod tests {
         let all = feeds(&[("HOLON_SECRET_POSTS_URL", &feed.url("/subscribe?cursor=1&key=s3cret")), ("HOLON_SECRET_HELLO", "{\"op\":\"hello\",\"from\":{position}}")]);
         let bind = |resume: &[&str], subscribe: &[&str]| {
             let a = Asked { id: Some("seq".into()), resume: resume.iter().map(|s| s.to_string()).collect(), subscribe: subscribe.iter().map(|s| s.to_string()).collect(), ..asked("env:HOLON_SECRET_POSTS_URL") };
-            all.bind("posts", &a, None).unwrap()
+            all.bind("posts", &a, None, None).unwrap()
         };
         let asked = |link: Link| {
             drop(link);
@@ -1173,7 +1285,7 @@ mod tests {
         let all = feeds(&[("HOLON_SECRET_SSE", &sse.url("/events")), ("HOLON_SECRET_WS", &ws.url("/ws"))]);
         let refused = |id: Option<&str>, resume: &[&str], url: &str| {
             let a = Asked { id: id.map(Into::into), resume: resume.iter().map(|s| s.to_string()).collect(), ..asked(url) };
-            all.bind("posts", &a, None).unwrap_err()
+            all.bind("posts", &a, None, None).unwrap_err()
         };
         let ws = "env:HOLON_SECRET_WS";
         assert!(refused(Some("seq"), &["query:cursor"], "env:HOLON_SECRET_SSE").contains("resume with Last-Event-ID"));
@@ -1193,10 +1305,10 @@ mod tests {
         let (sse, ws) = (StandIn::start(), ws::stand_in::StandIn::start());
         let all = feeds(&[("HOLON_SECRET_SSE", &sse.url("/events")), ("HOLON_SECRET_TRADES", &ws.url("/ws"))]);
         // Any feed's whose data is JSON: one of server-sent events too, without a key.
-        let b = all.bind("prices", &Asked { sequence: Some("data.n".into()), ..asked("env:HOLON_SECRET_SSE") }, None).unwrap();
+        let b = all.bind("prices", &Asked { sequence: Some("data.n".into()), ..asked("env:HOLON_SECRET_SSE") }, None, None).unwrap();
         assert_eq!((b.sequence.as_deref(), b.key.as_deref()), (Some("data.n"), None));
         let a = Asked { sequence: Some("trade_id".into()), key: Some("product_id".into()), only: vec!["type=match".into()], ..asked("env:HOLON_SECRET_TRADES") };
-        let b = all.bind("trades", &a, None).unwrap();
+        let b = all.bind("trades", &a, None, None).unwrap();
         assert!(shown("trades", None, &b).to_string().contains("\"sequence\":\"trade_id\""));
         let mut link = all.connect(&b, None).unwrap();
         until(|| ws.asked().len() == 2);
@@ -1211,6 +1323,34 @@ mod tests {
         assert_eq!(e.number, None, "not a whole number");
         let Ok(Some(Incoming::Event(e))) = link.next(&b) else { panic!("an event") };
         assert_eq!(e.number, Some((String::new(), 7)), "no key: a count of its own");
+    }
+
+    #[test]
+    fn a_channel_is_bound_only_on_a_postgres_and_without_a_urls_options() {
+        let all = feeds(&[]);
+        let asked = |db: &str, channel: &str| Asked { database: Some(db.into()), channel: Some(channel.into()), ..Asked::default() };
+        let sqlite = Database { engine: "sqlite".into(), path: None, connection: None, address: None, access: crate::folders::FolderAccess::Read, lock: Default::default() };
+        let refused = |a: &Asked, d: Option<&Database>, slug: Option<&str>| all.bind("entries", a, d, slug).unwrap_err();
+        assert!(refused(&asked("ledger", "ledger_entries"), None, Some("app")).contains("the database ledger isn't bound for app"));
+        assert!(refused(&asked("notes", "ledger_entries"), Some(&sqlite), None).contains("LISTEN is Postgres's: the database notes is sqlite"));
+        assert!(refused(&Asked { channel: None, ..asked("ledger", "") }, Some(&sqlite), None).contains("--database NAME and --channel CHANNEL, both"));
+        assert!(refused(&asked("ledger", "ledger entries"), Some(&sqlite), None).contains("--channel is a Postgres channel"));
+        for a in [Asked { url: Some("env:X".into()), ..asked("ledger", "c") }, Asked { heartbeat: Some("ping".into()), ..asked("ledger", "c") }, Asked { resume: vec!["query:cursor".into()], ..asked("ledger", "c") }] {
+            assert!(refused(&a, Some(&sqlite), None).contains("a channel is listened on in its --database"), "{a:?}");
+        }
+
+        // Seen by a deployment: its database's connection and address, or none.
+        let postgres = Database { engine: "postgres".into(), connection: Some("env:HOLON_SECRET_LEDGER_URL".into()), address: Some("postgres://db.example.com:5432/ledger".into()), ..sqlite.clone() };
+        let b = Binding { url: String::new(), address: String::new(), headers: BTreeMap::new(), buffer: BUFFER, idle: IDLE, on_full: OnFull::Wait, key: None, sequence: None, subscribe: Vec::new(), heartbeat: None, every: 0, id: Vec::new(), only: BTreeMap::new(), resume: None, database: Some("ledger".into()), channel: Some("ledger_entries".into()) };
+        let seen = b.clone().on(Some(&postgres));
+        assert_eq!((seen.url.as_str(), seen.address.as_str()), ("env:HOLON_SECRET_LEDGER_URL", "postgres://db.example.com:5432/ledger, channel ledger_entries"));
+        assert_eq!(b.clone().on(Some(&sqlite)).url, "");
+        assert_eq!(b.clone().on(None).url, "");
+        let err = all.connect(&b, None).err().unwrap();
+        assert!(err.contains("the database ledger isn't a Postgres bound for this deployment"), "{err}");
+        // Kept without a URL: its database's is read as each deployment sees it.
+        let stored = serde_json::to_value(&b).unwrap();
+        assert!(stored.get("url").is_none() && stored["database"] == "ledger" && stored["channel"] == "ledger_entries", "{stored}");
     }
 
     #[test]
@@ -1230,7 +1370,7 @@ mod tests {
         let all = feeds(&[("HOLON_SECRET_PRICES_URL", &feed.url("/events"))]);
         let manifest = Manifest { capabilities: ["FeedEvent(\"prices\")".to_string()].into_iter().collect(), requirements: Default::default() };
         assert!(all.refuses("app", &manifest).unwrap().starts_with("the feed \"prices\" isn't bound on this server"));
-        all.bind("prices", &asked("env:HOLON_SECRET_PRICES_URL"), Some("app")).unwrap();
+        all.bind("prices", &asked("env:HOLON_SECRET_PRICES_URL"), None, Some("app")).unwrap();
         assert_eq!(all.refuses("app", &manifest), None);
         assert!(all.refuses("other", &manifest).is_some());
     }

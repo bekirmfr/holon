@@ -13,6 +13,7 @@ import type { Locator, Page } from "@playwright/test";
 import { expect, FOLDERS, PORTS, RUN_DIR, SAMPLE_SHIFT, SERVER, test } from "./fixtures";
 
 const ATLAS_NOTES = "Atlas notes (a MongoDB database)";
+const LEDGER_WATCH = "Ledger watch (a Postgres channel as a feed)";
 
 /** Open the sample titled `title` from the flows page: an unsaved copy in a tab of its own. From
  *  a fresh load of the editor unless `reload` is false: then from the flows page of the editor
@@ -133,6 +134,8 @@ for (let first = 0; first < SAMPLE_TITLES.length; first += SAMPLES_PER_TEST) {
     for (const title of titles) {
       // Its database is a MongoDB, bound only where the environment names one (CI does).
       if (title === ATLAS_NOTES && !process.env.HOLON_TEST_MONGODB) continue;
+      // Its feed is a Postgres channel, bound only where the environment names a Postgres.
+      if (title === LEDGER_WATCH && !process.env.HOLON_TEST_POSTGRES) continue;
       await test.step(title, async () => {
         await openSample(page, title, false);
         await deploy(page);
@@ -2706,6 +2709,69 @@ test("payout-events runs each message its queue holds once, and sends a failed p
   await sections.getByRole("tab", { name: "permissions" }).click();
   await expect(page.getByLabel("queue payout_events")).toContainText("starts on each message it holds");
   await expect(page.getByLabel("queue payout_retries")).toContainText("sends messages to it");
+});
+
+test("ledger-watch keeps each account's balance from its ledger's channel, and reads what it didn't hear while stopped", async ({ page, request, adminToken }) => {
+  test.skip(!process.env.HOLON_TEST_POSTGRES, "set HOLON_TEST_POSTGRES (a Postgres's URL) to run it against Postgres");
+  const { execFileSync } = await import("node:child_process");
+  const { mkdtempSync, writeFileSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const target = process.env.CARGO_TARGET_DIR ?? join(process.cwd(), "..", "target");
+  const holon = join(target, "debug", process.platform === "win32" ? "holon.exe" : "holon");
+  const env = { ...process.env, HOLON_TOKEN: adminToken };
+  const auth = { Authorization: `Bearer ${adminToken}` };
+  const said = async () => ((await (await request.get(`${SERVER}/deployments/ledger-watch/events`, { headers: auth })).json()) as { events: { what: string }[] }).events.map((e) => e.what);
+  const feed = async () => ((await (await request.get(`${SERVER}/deployments/ledger-watch/feeds`, { headers: auth })).json()) as { feeds: { status: string; address?: string }[] }).feeds[0];
+
+  // The service that writes the ledger, standing in for one: a flow of the test's own, the ledger
+  // bound read-write for it alone (server.mjs).
+  const writerPort = 8199 + SAMPLE_SHIFT;
+  const writer = join(mkdtempSync(join(tmpdir(), "holon-ledger-writer-")), "ledger-writer.holon.ts");
+  writeFileSync(
+    writer,
+    `import { flow, route } from "holon"\nimport ledger from "database:ledger"\n\nflow("ledger-writer", { port: ${writerPort} })\n\nroute.post("/entries", (req) => {\n  ledger.exec("insert into entries (account, seq, amount) values ($1, $2, $3)", req.json.account, req.json.seq, req.json.amount)\n  return { written: req.json.seq }\n})\n`,
+  );
+  execFileSync(holon, ["deploy", writer, "--server", SERVER, "--slug", "ledger-writer", "--approve"], { encoding: "utf8", env });
+  const account = `acct_${Date.now()}`;
+  const write = async (seq: number, amount: string) => expect((await request.post(`http://127.0.0.1:${writerPort}/entries`, { data: { account, seq, amount } })).status()).toBe(200);
+
+  await openSample(page, LEDGER_WATCH);
+  const port = await deploy(page);
+  await expect.poll(async () => (await feed())?.status, { timeout: 15_000 }).toBe("connected");
+  expect((await feed()).address).toMatch(/^postgres:\/\/127\.0\.0\.1:\d+\/\w+, channel ledger_entries$/);
+  type Balance = { balance: string; entries: number; read: number; last: number };
+  const balance = async () => ((await (await request.get(`http://127.0.0.1:${port}/balances`)).json()) as Record<string, Balance>)[account];
+  await write(1, "120.00");
+  await write(2, "-20.50");
+  await expect.poll(balance, { timeout: 15_000 }).toEqual({ balance: "99.50", entries: 2, read: 0, last: 2 });
+
+  // Stopped, its session closed: entry 3 is never sent. Run again, entry 4's run reads it from the
+  // ledger.
+  expect((await request.post(`${SERVER}/deployments/ledger-watch/stop`, { data: {}, headers: auth })).ok()).toBe(true);
+  await expect.poll(async () => (await feed())?.status, { timeout: 15_000 }).toBe("closed");
+  await write(3, "10.00");
+  expect((await request.post(`${SERVER}/deployments/ledger-watch/run`, { data: {}, headers: auth })).ok()).toBe(true);
+  await expect.poll(async () => (await feed())?.status, { timeout: 15_000 }).toBe("connected");
+  await write(4, "2.25");
+  await expect.poll(balance, { timeout: 15_000 }).toEqual({ balance: "111.75", entries: 4, read: 1, last: 4 });
+  expect((await said()).some((w) => w.startsWith("listens to the feed entries (postgres://127.0.0.1:"))).toBe(true);
+  // Its login never shown.
+  const login = `:${new URL(process.env.HOLON_TEST_POSTGRES ?? "").password}@`;
+  expect((await said()).some((w) => w.includes(login))).toBe(false);
+
+  // Its runs check offline, the ledger read as each run read it.
+  const out = join(mkdtempSync(join(tmpdir(), "holon-runs-")), "ledger-watch.json");
+  execFileSync(holon, ["export", "ledger-watch", "--server", SERVER, "-o", out], { encoding: "utf8", env });
+  const verified = execFileSync(holon, ["verify", out], { encoding: "utf8" });
+  expect(verified.trim().endsWith("ok")).toBe(true);
+
+  // The admin's resources show the feed on its channel, without the connection.
+  await page.goto("/");
+  await page.getByRole("button", { name: "admin", exact: true }).click();
+  await page.getByRole("tablist", { name: "admin sections" }).getByRole("tab", { name: "resources" }).click();
+  await expect(page.getByText(/^listens on postgres:\/\/127\.0\.0\.1:\d+\/\w+, channel ledger_entries \(the database ledger\)/)).toBeVisible();
+  await expect(page.getByText(login)).toHaveCount(0);
 });
 
 test("due-dates schedules a payout past Easter's closing days and an invoice past a weekend", async ({ page, request }) => {

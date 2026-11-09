@@ -8364,6 +8364,96 @@ fn trade_tape_fetches_the_trades_its_feed_skipped_and_keeps_its_volume_exact() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// The ledger-watch sample (host-capabilities L4 §5.9.11), on the Postgres `HOLON_TEST_POSTGRES`
+/// names: its feed bound to a channel on the bound ledger, each entry committed starts one run, in
+/// the order committed, and a transaction rolled back sends nothing. The listener's session ended
+/// by the database (`pg_terminate_backend`), an entry written meanwhile is never sent: the timeline
+/// says so once it listens again, and the next entry's run reads it from the ledger, so the balance
+/// stays exact. A channel's binding without its database, or with what is a URL's, is refused;
+/// nothing shows the connection; the runs verify.
+#[test]
+fn ledger_watch_listens_on_its_channel_and_reads_what_it_missed() {
+    for fresh in fresh_databases("ledger").into_iter().filter(|f| f.engine == "postgres") {
+        let mut state = claims_state("");
+        let of = || secret_sources::Sources::of(&[("HOLON_SECRET_LEDGER_URL", fresh.url.as_str())]);
+        let databases = databases::Databases::memory().with_sources(of());
+        state.folders = Arc::new(folders::Folders::memory().with_databases(databases).with_feeds(feeds::Feeds::memory().with_sources(of())));
+        let text = include_str!("../../holon-author/samples/ledger-watch.holon.ts");
+        // The schema is ledger.sql, as the sample's comment gives it.
+        let schema: Vec<&str> = text.lines().skip_while(|l| !l.contains("where ledger.sql is")).skip(1).take_while(|l| l.trim() != "//").map(|l| l.trim_start_matches("//").trim()).collect();
+        let bind_feed = |asked: serde_json::Value| {
+            let bound = route(&state, &req("POST", "/admin/feeds", serde_json::to_vec(&asked).unwrap()));
+            (bound.status_code, String::from_utf8_lossy(&body_bytes(bound)).into_owned())
+        };
+        let channel = serde_json::json!({ "name": "entries", "database": "ledger", "channel": "ledger_entries" });
+        let (status, said) = bind_feed(channel.clone());
+        assert!(status == 400 && said.contains("the database ledger isn't bound on this server"), "{said}");
+        let db = serde_json::json!({ "name": "ledger", "connection": "env:HOLON_SECRET_LEDGER_URL", "access": "read", "schema": schema.join(" ") });
+        let bound = route(&state, &req("POST", "/admin/databases", serde_json::to_vec(&db).unwrap()));
+        let status = bound.status_code;
+        assert_eq!(status, 200, "{}", String::from_utf8_lossy(&body_bytes(bound)));
+        let (status, said) = bind_feed(serde_json::json!({ "name": "entries", "database": "ledger", "channel": "ledger-entries" }));
+        assert!(status == 400 && said.contains("--channel is a Postgres channel"), "{said}");
+        let (status, said) = bind_feed(serde_json::json!({ "name": "entries", "database": "ledger", "channel": "ledger_entries", "url": "env:HOLON_SECRET_LEDGER_URL" }));
+        assert!(status == 400 && said.contains("a channel is listened on in its --database"), "{said}");
+        let (status, shown) = bind_feed(channel);
+        assert_eq!(status, 200, "{shown}");
+        let address = format!("{}, channel ledger_entries", fresh.url.split_once('@').map(|(_, at)| format!("postgres://{at}")).unwrap());
+        assert!(shown.contains(&format!(r#""address":"{address}""#)) && shown.contains(r#""database":"ledger""#) && !shown.contains(&fresh.url), "{shown}");
+        let slug = deploy_text(&state, text, "");
+
+        let balances = || {
+            let (status, body, _) = data_call(&state, &slug, "GET", "/balances", "");
+            assert_eq!(status, 200, "{body}");
+            serde_json::from_str::<serde_json::Value>(&body).unwrap()
+        };
+        let runs = || log_entries(&state, &slug).into_iter().filter(|e| e["kind"] == "feed").count();
+        let live = || body_json(route(&state, &req("GET", &format!("/deployments/{slug}/feeds"), vec![])))["feeds"][0].clone();
+        let events = || body_json(route(&state, &req("GET", &format!("/deployments/{slug}/events"), vec![])))["events"].to_string();
+        let mut ledger = postgres::Client::connect(&fresh.url, postgres::NoTls).unwrap();
+        let mut write = |sql: &str| ledger.batch_execute(sql).unwrap_or_else(|e| panic!("{sql}: {e}"));
+
+        let mut held = subscriptions::Held::default();
+        subscriptions::reconcile(&state.store, &state.deployments, &state.deployments_path, &mut held);
+        eventually("the channel is listened on", || live()["status"] == "connected");
+        assert_eq!(live()["address"], address.as_str());
+        write("insert into entries (account, seq, amount) values ('acct_1', 1, 120.00), ('acct_1', 2, -20.50), ('acct_2', 1, 5.25)");
+        write("begin; insert into entries (account, seq, amount) values ('acct_2', 2, 1000.00); rollback");
+        write("begin; insert into entries (account, seq, amount, memo) values ('acct_2', 2, 0.75, 'fee'); insert into entries (account, seq, amount) values ('acct_1', 3, 0.50); commit");
+        eventually("five runs", || runs() == 5);
+        let b = balances();
+        assert_eq!((b["acct_1"]["balance"].as_str(), b["acct_1"]["entries"].as_u64(), b["acct_1"]["last"].as_u64()), (Some("100.00"), Some(3), Some(3)), "{b}");
+        assert_eq!((b["acct_2"]["balance"].as_str(), b["acct_2"]["entries"].as_u64(), b["acct_2"]["read"].as_u64()), (Some("6.00"), Some(2), Some(0)), "{b}");
+        let sourced = log_entries(&state, &slug).into_iter().filter(|e| e["kind"] == "feed").map(|e| e["sourced"].to_string()).collect::<Vec<_>>().join("\n");
+        assert!(sourced.contains(r#"FeedEvent(\"entries\")"#) && sourced.contains("fee"), "logged whole: {sourced}");
+
+        // Its session ended: entry 4 is written while nothing listens, so it is never sent; once it
+        // listens again, entry 5's run reads it from the ledger.
+        write("select pg_terminate_backend(pid, 5000) from pg_stat_activity where application_name = 'holon (listen)' and datname = current_database()");
+        write("insert into entries (account, seq, amount) values ('acct_1', 4, 10.00)");
+        eventually("it listens again", || events().contains("listens to the feed entries again: what was sent meanwhile is lost"));
+        eventually("connected again", || live()["status"] == "connected");
+        write("insert into entries (account, seq, amount) values ('acct_1', 5, 2.25)");
+        eventually("six runs", || runs() == 6);
+        let b = balances();
+        assert_eq!((b["acct_1"]["balance"].as_str(), b["acct_1"]["entries"].as_u64(), b["acct_1"]["read"].as_u64(), b["acct_1"]["last"].as_u64()), (Some("112.25"), Some(5), Some(1), Some(5)), "{b}");
+        let said = events();
+        assert!(said.contains(&format!("listens to the feed entries ({address})")), "{said}");
+
+        // Its runs check offline, the ledger's rows read as each run read them.
+        let export: verify::Export = serde_json::from_value(body_json(route(&state, &req("GET", &format!("/deployments/{slug}/export"), vec![])))).unwrap();
+        let report = verify::check(&export, None, &BTreeMap::new());
+        assert!(report.ok() && report.reruns.iter().all(|(_, r)| *r == verify::Rerun::Matched), "{}", verify::describe(&report, None));
+        assert!(!serde_json::to_string(&log_entries(&state, &slug)).unwrap().contains(&fresh.url));
+
+        // Stopped: its session is closed.
+        assert_eq!(route(&state, &req("POST", &format!("/deployments/{slug}/stop"), vec![])).status_code, 200);
+        subscriptions::reconcile(&state.store, &state.deployments, &state.deployments_path, &mut held);
+        let listening = |ledger: &mut postgres::Client| ledger.query_one("select count(*) from pg_stat_activity where application_name = 'holon (listen)' and datname = current_database()", &[]).unwrap().get::<_, i64>(0);
+        eventually("its session is closed", || listening(&mut ledger) == 0);
+    }
+}
+
 /// The payout-events sample (host-capabilities L4 §5.9.9): refused until its queues are bound;
 /// bound to a stand-in for SQS, each message the queue hands out starts one run, in the order
 /// received, and is deleted once its record is on disk, a failed run's too; a failed payout's retry
