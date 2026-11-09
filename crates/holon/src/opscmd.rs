@@ -621,7 +621,7 @@ pub(crate) fn runs(args: &[String]) -> i32 {
         };
         if args.flag("--json") {
             cmdline::print_json(&waiting);
-        } else if waiting["runs"].as_array().map_or(true, |r| r.is_empty()) {
+        } else if waiting["runs"].as_array().is_none_or(|r| r.is_empty()) {
             println!("{slug} has no runs waiting for an event");
         } else {
             for run in waiting["runs"].as_array().into_iter().flatten() {
