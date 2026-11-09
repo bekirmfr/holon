@@ -49,7 +49,7 @@ import { ToastProvider, useToast } from "./ui/Toast";
 import { ToolsPanel } from "./ServerPanel";
 import { DeployBar, DeployPanel, DEFAULT_SETTINGS } from "./DeployBar";
 import { templateNames } from "./templates";
-import { primitiveName, unitFor } from "./canvasUnits";
+import { primitiveName, stageClosure, unitFor } from "./canvasUnits";
 import {
   deriveServer,
   excludeProjectedOutput,
@@ -70,6 +70,9 @@ import { FlowTabs, FlowToolbar, ProjectionPanel } from "./CanvasPanels";
 import { FlowPage } from "./FlowPage";
 import { pageOf, routeOfPage, shownAt, type AppPage, type PageTab } from "./Pages";
 import { FlowsPage } from "./FlowsPage";
+import { ApprovalsPage } from "./ApprovalsPage";
+import { ReviewPage } from "./ReviewPage";
+import { useApprovals } from "./useApprovals";
 import { LibraryPage } from "./LibraryPage";
 import { format, parentOf, same, type Route } from "./routes";
 import { PAGE_KEYS } from "./keymap";
@@ -138,6 +141,8 @@ function Canvas({
     /** Whether the command palette is open (the top bar opens it too), and opening or closing it. */
     finding: boolean;
     onFinding: (open: boolean) => void;
+    /** How many things wait for a person, told when it changes (the nav's count). */
+    onWaiting: (n: number) => void;
   };
   page: AppPage;
   setPage: (p: AppPage) => void;
@@ -478,6 +483,20 @@ function Canvas({
     [ev, byName],
   );
 
+  // A saved flow made ready to deploy from its review (ReviewPage.tsx), as deploying it from the
+  // canvas would: its units put back, its server derived from them and staged on the server.
+  const prepareSaved = useCallback(
+    async (_slug: string, doc: FlowDocument) => {
+      restoreDocument(doc, ev);
+      const server = deriveServer(doc.nodes as PrimitiveNodeType[], doc.edges as Edge[], ev, doc.server?.port ?? DEFAULT_SETTINGS.port);
+      if (server.errors.length > 0) throw new Error(server.errors.join("; "));
+      if (!server.serverHash) throw new Error("nothing would start a run: it has no route, clock, file handler or action");
+      await stageClosure(ev, server.serverHash, new Set());
+      return { hash: server.serverHash, document: { ...doc, trace: server.trace } };
+    },
+    [ev],
+  );
+
   // The server this flow declares, derived from the canvas (canvasOps.deriveServer). Recomputed
   // when the canvas's structure changes, not on moves.
   const derived = useMemo(() => {
@@ -581,6 +600,10 @@ function Canvas({
   // Everything above this point (project, group, expand, inspect) is purely local — an
   // in-browser wasm workspace. Deploying talks to holon-server, over plain HTTP, localhost-only.
   const { deployments, listError, refresh: refreshDeployments } = useDeployments(page);
+  // What waits for a person (approvals.ts): Approvals lists it, the nav counts it.
+  const approvals = useApprovals(deployments, { shown: page === "approvals" || page === "home", asks: page === "approvals" });
+  const { onWaiting } = start;
+  useEffect(() => onWaiting(approvals.approvals.length), [approvals.approvals.length, onWaiting]);
   // Deploying it, and running, pausing or stopping it (useDeployFlow.ts).
   const { deployedEntry, outOfDate, deployBusy, secretNames, onDeployFlow, onFlowAction } = useDeployFlow({
     flowName,
@@ -761,12 +784,13 @@ function Canvas({
     }
     for (const f of savedFlows) if (!deployed.has(f)) out.push({ label: `Edit ${f}`, kind: "saved", run: go({ kind: "editor", slug: f, view: false, seq: null }) });
     out.push({ label: "New draft", kind: "editor", run: start.onNew });
+    for (const q of approvals.queue) if (q.version !== null) out.push({ label: `Approve ${q.slug} v${q.version}`, kind: "review", run: go({ kind: "review", slug: q.slug, version: q.version }) });
     for (const s of samples()) out.push({ label: `New from ${s.title}`, kind: "sample", run: () => void onOpenSample(s) });
     for (const theme of ["auto", "light", "dark"] as const) out.push({ label: `Theme: ${theme}`, kind: "look", run: () => start.onPrefs({ ...start.prefs, theme }) });
     out.push({ label: "Keys", kind: "help", run: start.showKeys });
     return out;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [finding, editing, flowName, deployments, savedFlows, me.role, start.prefs]);
+  }, [finding, editing, flowName, deployments, savedFlows, me.role, start.prefs, approvals.queue]);
   // The text is opened for a `:12` or `:fmt` asked while it is closed, and asked once it is there.
   const askTextOpening = (ask: TextAsk) => {
     if (askText(ask)) return;
@@ -1162,6 +1186,26 @@ function Canvas({
               marketplace={{ url: market.url, onPublish: market.publish }}
             />
           )}
+          {shown === "approvals" && route.kind === "approvals" && <ApprovalsPage tab={route.tab} approvals={approvals.approvals} deployments={deployments} navigate={navigate} />}
+          {shown === "approvals" && route.kind === "review" && (
+            <ReviewPage
+              key={route.slug}
+              slug={route.slug}
+              version={route.version}
+              queue={approvals.queue}
+              deployments={deployments}
+              navigate={navigate}
+              prepare={prepareSaved}
+              textOf={(slug, doc) => doc.source ?? printHolon(slug, doc, ev)}
+              onKeep={approvals.keep}
+              onDeployed={(slug, version) => {
+                refreshDeployments();
+                approvals.refresh();
+                toast(`Deployed ${slug} v${version}.`, "ok");
+                navigate({ kind: "flow", slug, tab: "status" });
+              }}
+            />
+          )}
           {shown === "library" && route.kind === "library" && (
             <LibraryPage
               tab={route.tab}
@@ -1294,6 +1338,7 @@ function Editor({ me }: { me: Me }) {
   const page = pageOf(route);
   const setPage = useCallback((p: AppPage) => navigate(routeOfPage(p)), [navigate]);
   const toast = useToast();
+  const [waiting, setWaiting] = useState(0);
   const routeKey = format(route);
   useEffect(() => {
     const as = shownAt(route);
@@ -1415,6 +1460,7 @@ function Editor({ me }: { me: Me }) {
       onWelcome={() => openPage("welcome")}
       theme={prefs.theme ?? storedTheme()}
       onTheme={(theme) => onPrefs({ ...prefs, theme })}
+      waiting={waiting}
     >
       {keysShown && <KeysDialog onClose={() => setKeysShown(false)} />}
       {error ? (
@@ -1433,7 +1479,7 @@ function Editor({ me }: { me: Me }) {
                 pendingNew={pendingNew}
                 docs={docs}
                 me={me}
-                start={{ prefs, onPrefs, pages, openPage, closePage, onNew, showKeys: () => setKeysShown(true), finding, onFinding: setFinding }}
+                start={{ prefs, onPrefs, pages, openPage, closePage, onNew, showKeys: () => setKeysShown(true), finding, onFinding: setFinding, onWaiting: setWaiting }}
               />
             )}
           </ReactFlowProvider>

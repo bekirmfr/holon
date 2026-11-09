@@ -69,6 +69,7 @@ const SCOPE_TITLE: Record<KeyScope, string> = {
   anywhere: "Anywhere",
   editor: "Editing a flow",
   view: "Viewing runs",
+  review: "Reviewing a version",
   dialog: "In a question",
 };
 

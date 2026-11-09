@@ -9,7 +9,7 @@ import { flowAddressable, type Route } from "./routes";
  *  nodes mid-edit, viewport — lives there and must survive navigation); the other pages render
  *  as overlays on top of it. `marketplace` is deliberately absent: deferred, and a menu entry
  *  that can't be picked shouldn't be representable as a page state either. */
-export type AppPage = "canvas" | "flows" | "library" | "flow" | "admin" | "home" | "welcome" | "docs";
+export type AppPage = "canvas" | "approvals" | "flows" | "library" | "flow" | "admin" | "home" | "welcome" | "docs";
 /** A page shown in a tab of its own: every page but the canvas (whose tabs are the flows') and a
  *  flow's page (reached from the nav, the flows and the palette). */
 export type PageTab = Exclude<AppPage, "canvas" | "flow">;
@@ -21,6 +21,9 @@ export function pageOf(r: Route): AppPage {
     case "editor":
     case "editor-home":
       return "canvas";
+    case "approvals":
+    case "review":
+      return "approvals";
     case "flows":
       return "flows";
     case "library":
@@ -59,6 +62,8 @@ export function routeOfPage(p: AppPage): Route {
       return { kind: "flows" };
     case "library":
       return { kind: "library", tab: "samples" };
+    case "approvals":
+      return { kind: "approvals", tab: "deploys" };
     default:
       return { kind: p };
   }
@@ -76,8 +81,6 @@ export function shownAt(r: Route): Route | null {
     case "resources":
     case "people":
     case "policy":
-    case "approvals":
-    case "review":
     case "signin":
     case "notfound":
       return routeOfPage(pageOf(r));

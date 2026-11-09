@@ -3,7 +3,7 @@
 // keep Ctrl+T, Ctrl+W, Ctrl+N and Ctrl+Tab; the editor takes Ctrl+S and Ctrl+D (and later Ctrl+K)
 // only where it has a flow to save or deploy.
 
-export type KeyScope = "anywhere" | "editor" | "view" | "dialog";
+export type KeyScope = "anywhere" | "editor" | "view" | "review" | "dialog";
 
 export type Binding = {
   /** The keys, as keyOf names them, shown in this order. */
@@ -36,6 +36,7 @@ export const KEYMAP: Binding[] = [
   { keys: ["Home", "End"], scope: "view", does: "the first node, or the whole run" },
   { keys: [",", "."], scope: "view", does: "the run before, or after" },
   { keys: ["="], scope: "view", does: "show or hide the values beside each output" },
+  { keys: ["[", "]"], scope: "review", does: "the version waiting before, or after, in the queue" },
   { keys: ["y", "Enter"], scope: "dialog", does: "yes: its button" },
   { keys: ["n", "Escape"], scope: "dialog", does: "no: cancel" },
 ];

@@ -41,6 +41,7 @@ export function Shell({
   onWelcome,
   theme,
   onTheme,
+  waiting = 0,
   children,
 }: {
   route: Route;
@@ -54,6 +55,8 @@ export function Shell({
   onWelcome: () => void;
   theme: Theme;
   onTheme: (t: Theme) => void;
+  /** How many things wait for a person (approvals.ts): Approvals' count. */
+  waiting?: number;
   children: ReactNode;
 }) {
   const groups: [string, Entry[]][] = [["work", WORK], ...(me.role === "admin" ? ([["host", HOST]] as [string, Entry[]][]) : []), ["help", HELP]];
@@ -76,6 +79,11 @@ export function Shell({
               <li key={e.label}>
                 <a href={format(e.to)} className="hl-nav__link" aria-current={e === current ? "page" : undefined} onClick={follow(e.to, navigate)}>
                   <span className="hl-nav__label">{e.label}</span>
+                  {e.to.kind === "approvals" && waiting > 0 && (
+                    <span className="hl-nav__badge" title={`${waiting} waiting for a person`}>
+                      {waiting}
+                    </span>
+                  )}
                   {e.key !== undefined && (
                     <kbd className="hl-nav__key" aria-hidden="true">
                       {e.key}

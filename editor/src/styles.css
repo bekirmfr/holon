@@ -302,6 +302,34 @@ body {
 .hl-library__detail .hl-flow__button { align-self: flex-start; }
 .hl-library__listings { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; font-size: 12px; }
 .hl-library__listings li { display: flex; gap: 8px; align-items: center; }
+.hl-nav__badge { margin-left: auto; min-width: 16px; padding: 0 5px; font-size: 10px; line-height: 16px; text-align: center; color: var(--accent-ink); background: var(--warn); border-radius: 8px; }
+.hl-nav__badge + .hl-nav__key { margin-left: 6px; }
+.hl-review-page { max-width: none; }
+.hl-review-page__queue { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
+.hl-review-page__columns { display: grid; grid-template-columns: minmax(220px, 300px) minmax(0, 1fr) minmax(220px, 280px); gap: 16px; align-items: start; }
+.hl-review-page__columns h2 { margin: 0 0 8px; font-size: 12px; font-weight: 600; letter-spacing: 0.04em; color: var(--muted); text-transform: uppercase; }
+.hl-review-page__body .hl-flow__bar h2 { margin: 0; flex: 1; }
+.hl-review-page__body { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.hl-review-page__group { margin-bottom: 12px; }
+.hl-review-page__group h3 { margin: 0 0 4px; font-size: 12px; font-weight: 600; color: var(--body); }
+.hl-review-page__group--approve h3 { color: var(--warn); }
+.hl-review-page__group--gone h3 { color: var(--faint); }
+.hl-review-page__group ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; font-size: 12px; }
+.hl-review-page__said { color: var(--ink); }
+.hl-review-page__group--gone .hl-review-page__said { color: var(--faint); text-decoration: line-through; }
+.hl-review-page__anchor { font: inherit; font-size: 11px; margin-left: 6px; padding: 0; color: var(--accent); background: none; border: 0; cursor: pointer; }
+.hl-review-page__decide { display: flex; flex-direction: column; gap: 10px; position: sticky; top: 0; }
+.hl-review-page__card { border: 1px solid var(--border); border-radius: 5px; padding: 10px 12px; }
+.hl-review-page__decide .hl-flow__button { align-self: stretch; padding: 6px 10px; }
+.hl-review-page__text { font-size: 12px; border: 1px solid var(--border); border-radius: 5px; padding: 6px 0; overflow: auto; max-height: 70vh; white-space: pre; }
+.hl-review-page__line { display: flex; gap: 10px; padding: 0 10px; color: var(--body); }
+.hl-review-page__line--at { background: var(--row); color: var(--ink); box-shadow: inset 3px 0 0 var(--accent); }
+.hl-review-page__n { flex: 0 0 32px; text-align: right; color: var(--faint); user-select: none; }
+.hl-review-page__canvas-box { overflow: auto; max-height: 70vh; border: 1px solid var(--border); border-radius: 5px; background: var(--surface-2); }
+.hl-review-page__canvas { display: block; }
+.hl-review-page__node { fill: var(--bg); stroke: var(--border-strong); }
+.hl-review-page__wire { fill: none; stroke: var(--faint); stroke-width: 1.5; }
+.hl-review-page__label { font-size: 12px; fill: var(--ink); }
 .hl-table { width: 100%; border-collapse: collapse; font-size: 12px; }
 .hl-table th { text-align: left; font-weight: 400; color: var(--faint); padding: 4px 8px; border-bottom: 1px solid var(--border-strong); }
 .hl-table td { padding: 4px 8px; border-bottom: 1px solid var(--border); color: var(--body); }
@@ -852,6 +880,8 @@ body {
 .hl-review__title { flex: 1 1 auto; }
 .hl-review__summary { color: var(--muted); font-size: 11px; }
 .hl-review__rows { display: flex; flex-direction: column; background: var(--bg); }
+/* A closed hunk keeps its rows in the page, hidden: display above would show them. */
+.hl-review__rows[hidden], .hl-review__note-line[hidden] { display: none; }
 .hl-review__row { display: flex; gap: 8px; padding: 0 8px; line-height: 1.6; white-space: pre-wrap; }
 .hl-review__n { flex: 0 0 3ch; text-align: right; color: var(--faint); }
 .hl-review__sign { flex: 0 0 1ch; color: var(--muted); }
