@@ -2212,12 +2212,11 @@ test("approval-mail mails a payout's approval link, its page's button approves i
   // The admin's resources show the binding, its server without a login, and who mails through
   // it; permissions, to whom.
   await page.goto("/");
-  await page.getByRole("button", { name: "admin", exact: true }).click();
-  const sections = page.getByRole("tablist", { name: "admin sections" });
-  await sections.getByRole("tab", { name: "resources" }).click();
+  await gotoPage(page, "resources");
+  await resourcesTab(page, "Mail");
   await expect(page.getByText(/^smtp:\/\/127\.0\.0\.1:\d+ \(from env:HOLON_SECRET_OPS_SMTP\) · as Treasury <treasury@acme\.com> · to \*@acme\.com$/)).toBeVisible();
-  await expect(page.getByText("used by approval-mail (permissions says how)")).toBeVisible();
-  await sections.getByRole("tab", { name: "permissions" }).click();
+  await expect(page.getByText("used by approval-mail (who may touch what says how)")).toBeVisible();
+  await resourcesTab(page, "Who may touch what");
   await expect(page.getByLabel("mail ops")).toContainText("mails approvals@acme.com, addresses it computes");
 });
 
@@ -2290,11 +2289,10 @@ test("remittance-mail settles an invoice from an authenticated mail, refuses one
 
   // The admin's resources show the mailbox, its server without a login, and whose verdict counts.
   await page.goto("/");
-  await page.getByRole("button", { name: "admin", exact: true }).click();
-  const sections = page.getByRole("tablist", { name: "admin sections" });
-  await sections.getByRole("tab", { name: "resources" }).click();
+  await gotoPage(page, "resources");
+  await resourcesTab(page, "Mail");
   await expect(page.getByText(/^receives in imap:\/\/127\.0\.0\.1:\d+ INBOX \(from env:HOLON_SECRET_REMIT_IMAP\), moved to Processed · mx\.acme\.com's verdict$/)).toBeVisible();
-  await sections.getByRole("tab", { name: "permissions" }).click();
+  await resourcesTab(page, "Who may touch what");
   await expect(page.getByLabel("mail remit")).toContainText("starts on mail it receives");
 });
 
@@ -2355,16 +2353,15 @@ test("support-inbox answers an authenticated request through one mail logged in 
 
   // The admin's resources show both servers without a login, and where the token comes from.
   await page.goto("/");
-  await page.getByRole("button", { name: "admin", exact: true }).click();
-  const sections = page.getByRole("tablist", { name: "admin sections" });
-  await sections.getByRole("tab", { name: "resources" }).click();
+  await gotoPage(page, "resources");
+  await resourcesTab(page, "Mail");
   await expect(
     page.getByText(
       /^smtp:\/\/127\.0\.0\.1:\d+ \(from env:HOLON_SECRET_SUPPORT_SMTP\) · as Acme support <support@acme\.com> · to \* · receives in imap:\/\/127\.0\.0\.1:\d+ INBOX \(from env:HOLON_SECRET_SUPPORT_IMAP\), moved to Answered · mx\.acme\.com's verdict · logs in with OAuth \(http:\/\/127\.0\.0\.1:\d+\/token from env:HOLON_SECRET_SUPPORT_OAUTH\)$/,
     ),
   ).toBeVisible();
   await expect(page.getByText("e2e-not-a-secret")).toHaveCount(0);
-  await sections.getByRole("tab", { name: "permissions" }).click();
+  await resourcesTab(page, "Who may touch what");
   await expect(page.getByLabel("mail support")).toContainText("starts on mail it receives");
 });
 
@@ -2402,12 +2399,11 @@ test("price-feed runs on each event its feed sends, and opens the feed again fro
 
   // The admin's resources show the feed without its query; permissions, that price-feed listens.
   await page.goto("/");
-  await page.getByRole("button", { name: "admin", exact: true }).click();
-  const sections = page.getByRole("tablist", { name: "admin sections" });
-  await sections.getByRole("tab", { name: "resources" }).click();
+  await gotoPage(page, "resources");
+  await resourcesTab(page, "Feeds");
   await expect(page.getByText(/^http:\/\/127\.0\.0\.1:\d+\/events \(from env:HOLON_SECRET_PRICES_URL\) · 1000 may wait · quiet for 90s at most$/)).toBeVisible();
   await expect(page.getByText("e2e-not-a-key")).toHaveCount(0);
-  await sections.getByRole("tab", { name: "permissions" }).click();
+  await resourcesTab(page, "Who may touch what");
   await expect(page.getByLabel("feed prices")).toContainText("starts on each event it sends");
 });
 
@@ -2520,8 +2516,8 @@ test("trading-bot keeps each product's newest price, places an order once, and w
     expect(((await reconciled.json()) as { answer: unknown[] }).answer).toHaveLength(2);
 
     // The admin's resources show the binding without the URL's key.
-    await page.getByRole("button", { name: "admin", exact: true }).click();
-    await page.getByRole("tablist", { name: "admin sections" }).getByRole("tab", { name: "resources" }).click();
+    await gotoPage(page, "resources");
+    await resourcesTab(page, "Feeds");
     await expect(page.getByText(/^ws:\/\/127\.0\.0\.1:\d+\/ws \(from env:HOLON_SECRET_TICKER_URL\) · subscribes with .* · runs only type ticker · its id product_id\/sequence · 1000 may wait, one a product_id, the newest · quiet for 90s at most$/)).toBeVisible();
     await expect(page.getByText("e2e-not-a-key")).toHaveCount(0);
   } finally {
@@ -2577,8 +2573,8 @@ test("bluesky-mentions keeps the posts that mention a word, and opens the feed a
   await expect(page.getByText(`connected, at ${seq(6)}`)).toBeVisible({ timeout: 15_000 });
 
   // The admin's resources show where the feed takes the position.
-  await page.getByRole("button", { name: "admin", exact: true }).click();
-  await page.getByRole("tablist", { name: "admin sections" }).getByRole("tab", { name: "resources" }).click();
+  await gotoPage(page, "resources");
+  await resourcesTab(page, "Feeds");
   await expect(page.getByText(/^ws:\/\/127\.0\.0\.1:\d+\/ws \(from env:HOLON_SECRET_POSTS_URL\) · runs only payload\.operation create · its id payload\.seq · resumes from its position with cursor= in the URL · 1000 may wait · quiet for 90s at most$/)).toBeVisible();
 });
 
@@ -2652,8 +2648,8 @@ test("trade-tape fetches the trades its feed skipped, across a reconnect, and ke
     await expect(page.getByText(`connected, at ${product}/107, 3 in gaps`)).toBeVisible({ timeout: 15_000 });
 
     // The admin's resources show what numbers its messages.
-    await page.getByRole("button", { name: "admin", exact: true }).click();
-    await page.getByRole("tablist", { name: "admin sections" }).getByRole("tab", { name: "resources" }).click();
+    await gotoPage(page, "resources");
+    await resourcesTab(page, "Feeds");
     await expect(page.getByText(/^ws:\/\/127\.0\.0\.1:\d+\/ws \(from env:HOLON_SECRET_TRADES_URL\) · subscribes with .* · runs only type match or last_match · its id product_id\/trade_id · numbered by trade_id, each product_id on its own · 1000 may wait · quiet for 90s at most$/)).toBeVisible();
   } finally {
     exchange.close();
@@ -2705,12 +2701,11 @@ test("payout-events runs each message its queue holds once, and sends a failed p
 
   // The admin's resources show each queue without its key; permissions, who takes and who sends.
   await page.goto("/");
-  await page.getByRole("button", { name: "admin", exact: true }).click();
-  const sections = page.getByRole("tablist", { name: "admin sections" });
-  await sections.getByRole("tab", { name: "resources" }).click();
+  await gotoPage(page, "resources");
+  await resourcesTab(page, "Queues");
   await expect(page.getByText(/^http:\/\/127\.0\.0\.1:\d+\/000000000000\/payout-retries\.fifo \(from env:HOLON_SECRET_RETRIES_URL\) · FIFO · 256 KiB at most · out of sight for 300s$/)).toBeVisible();
   await expect(page.getByText("e2e-not-a-secret")).toHaveCount(0);
-  await sections.getByRole("tab", { name: "permissions" }).click();
+  await resourcesTab(page, "Who may touch what");
   await expect(page.getByLabel("queue payout_events")).toContainText("starts on each message it holds");
   await expect(page.getByLabel("queue payout_retries")).toContainText("sends messages to it");
 });
@@ -2772,8 +2767,8 @@ test("ledger-watch keeps each account's balance from its ledger's channel, and r
 
   // The admin's resources show the feed on its channel, without the connection.
   await page.goto("/");
-  await page.getByRole("button", { name: "admin", exact: true }).click();
-  await page.getByRole("tablist", { name: "admin sections" }).getByRole("tab", { name: "resources" }).click();
+  await gotoPage(page, "resources");
+  await resourcesTab(page, "Feeds");
   await expect(page.getByText(/^listens on postgres:\/\/127\.0\.0\.1:\d+\/\w+, channel ledger_entries \(the database ledger\)/)).toBeVisible();
   await expect(page.getByText(login)).toHaveCount(0);
 });
