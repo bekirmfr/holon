@@ -77,13 +77,15 @@ const ROLE_TITLE: Record<Role, string> = {
   agent: "reads, proposes flows and calls them; never approves, starts, stops or deletes",
 };
 
-const small: CSSProperties = { font: "inherit", fontSize: 11, padding: "2px 8px", color: "var(--muted)", background: "var(--surface-2)", border: "1px solid var(--border)", borderRadius: 3, cursor: "pointer" };
-const primary: CSSProperties = { ...small, color: "var(--accent-ink)", background: "var(--accent)", border: "none" };
-const input: CSSProperties = { font: "inherit", fontSize: 12, padding: "3px 6px", color: "var(--ink)", background: "var(--surface-2)", border: "1px solid var(--border)", borderRadius: 3 };
-const head: CSSProperties = { color: "var(--body)", fontSize: 14, letterSpacing: "0.04em", margin: "20px 0 6px" };
-const row: CSSProperties = { display: "flex", alignItems: "center", gap: 8, padding: "6px 10px", marginBottom: 4, background: "var(--surface-2)", border: "1px solid var(--border)", borderRadius: 4, fontSize: 12 };
-const about: CSSProperties = { color: "var(--muted)", fontSize: 11, marginBottom: 6, lineHeight: 1.45 };
-const quiet: CSSProperties = { color: "var(--faint)", fontSize: 11 };
+// The Console design's blocks, as these pages draw them: a small button, the one to do, a field,
+// a row (a card of its own), what a section is about, and a quiet note. A section's heading is
+// styles.css's hl-host-page__head.
+const small: CSSProperties = { font: "inherit", fontSize: "var(--fs-xs)", fontWeight: 500, minHeight: 26, padding: "2px 9px", color: "var(--ink)", background: "var(--surface)", border: "1px solid var(--border-strong)", borderRadius: "var(--r-sm)", cursor: "pointer", whiteSpace: "nowrap" };
+const primary: CSSProperties = { ...small, color: "var(--accent-ink)", background: "var(--accent)", borderColor: "var(--accent)" };
+const input: CSSProperties = { font: "inherit", fontSize: "var(--fs-sm)", minHeight: 30, padding: "4px 10px", color: "var(--ink)", background: "var(--surface)", border: "1px solid var(--border-strong)", borderRadius: "var(--r-sm)" };
+const row: CSSProperties = { display: "flex", alignItems: "center", gap: 10, padding: "10px 14px", marginBottom: 8, background: "var(--surface)", border: "1px solid var(--border)", borderRadius: "var(--r-lg)", boxShadow: "var(--shadow)", fontSize: "var(--fs-sm)" };
+const about: CSSProperties = { color: "var(--muted)", fontSize: "var(--fs-sm)", marginBottom: 12, lineHeight: 1.55, maxWidth: "100ch" };
+const quiet: CSSProperties = { color: "var(--muted)", fontSize: "var(--fs-xs)" };
 /** What holding a resource for whole runs costs, said where it is set. */
 const RUN_LOCK_COST = "every run that writes it goes one at a time, for its whole length, across every deployment bound to it";
 
@@ -261,7 +263,7 @@ export function PeoplePage({ me, tab }: { me: string; tab: string | null }) {
   const { people, tokens, oidc, link, setLink, secret, setSecret, draft, setDraft, tokenDraft, setTokenDraft, issuer, setIssuer, clientId, setClientId, dialog, act } = h;
   return (
     <HostPage title="People and access" about="who uses this server, the tokens scripts and agents use, and how people sign in" tab={tab} host={h}>
-      <div style={head} data-section="accounts">people</div>
+      <div className="hl-host-page__head" data-section="accounts">people</div>
       {link && (
         <div style={{ ...row, flexDirection: "column", alignItems: "stretch", borderColor: "var(--sel)" }}>
           <span>
@@ -364,7 +366,7 @@ export function PeoplePage({ me, tab }: { me: string; tab: string | null }) {
         </button>
       </form>
 
-      <div style={head} data-section="tokens">API tokens</div>
+      <div className="hl-host-page__head" data-section="tokens">API tokens</div>
       <div style={{ color: "var(--muted)", fontSize: 11, marginBottom: 6 }}>for scripts and CI: sent as Authorization: Bearer &lt;token&gt;, acting with their role</div>
       {secret && (
         <div style={{ ...row, flexDirection: "column", alignItems: "stretch", borderColor: "var(--sel)" }}>
@@ -424,7 +426,7 @@ export function PeoplePage({ me, tab }: { me: string; tab: string | null }) {
         </button>
       </form>
 
-      <div style={head} data-section="sign-in">signing in through an identity provider</div>
+      <div className="hl-host-page__head" data-section="sign-in">signing in through an identity provider</div>
       <div style={about}>
         Optional: people may also sign in through your provider (Keycloak, Okta, Auth0, Entra ID…), registered there as a public client
         with PKCE and this page's address as its redirect. Someone signing in is matched to the account with their email (set under people).
@@ -443,7 +445,7 @@ export function PeoplePage({ me, tab }: { me: string; tab: string | null }) {
       </div>
       <div style={{ color: "var(--faint)", fontSize: 11 }}>{oidc ? `on: ${oidc.issuer} as ${oidc.client_id}` : "off"}</div>
 
-      <div style={head} data-section="agents">agents</div>
+      <div className="hl-host-page__head" data-section="agents">agents</div>
       <div style={about}>
         An agent writes flows, checks them, saves and deploys them, and runs their actions, but never approves what a flow may do: that stays with a person. It
         connects through <code>holon mcp</code>. On this server&apos;s machine it signs in as you and asks as the agent role; from another, it uses an API token with
@@ -848,7 +850,7 @@ export function ResourcesPage({ tab, onOpenDeployment }: { tab: ResourcesTab; on
         <>
           {host && (
             <>
-              <div style={head}>the host</div>
+              <div className="hl-host-page__head">the host</div>
               {host.warnings.length > 0 && (
                 <div role="alert" aria-label="what the host warns of" style={{ ...row, flexDirection: "column", alignItems: "stretch", gap: 4, borderColor: "var(--bad)" }}>
                   {host.warnings.map((w) => (
@@ -1006,7 +1008,7 @@ export function ResourcesPage({ tab, onOpenDeployment }: { tab: ResourcesTab; on
             </>
           )}
 
-          <div style={head}>storage</div>
+          <div className="hl-host-page__head">storage</div>
           <div style={about}>
             What runs leave on this host that nothing kept names any more: states of runs the logs no longer keep, and the texts of files no kept run read or wrote. Anything put in
             the last hour, and code, is never swept. The same as <code>holon store sweep</code> and <code>holon folder sweep</code>.
@@ -1135,7 +1137,7 @@ export function PolicyPage({ deployments, onOpenDeployment }: { deployments: Dep
   const { policy, setPolicy, reloaded, setReloaded, act } = h;
   return (
     <HostPage title="Policy" about="what this host allows at all, from its holon.toml" tab={null} host={h}>
-      <div style={head} data-section="policy">the policy</div>
+      <div className="hl-host-page__head" data-section="policy">the policy</div>
       <div style={about}>
         What this host allows at all, from its <code>holon.toml</code> (edited there, on the server&apos;s machine). Reading it again holds every deployment
         to it at once: one a lowered ceiling or a withdrawn exception no longer covers pauses, unless it is set to keep running.
@@ -1149,12 +1151,12 @@ export function PolicyPage({ deployments, onOpenDeployment }: { deployments: Dep
           <div>
             plain HTTP {policy.allow_plain_http ? "may be granted" : "is never granted"} · private addresses {policy.allow_private_addresses ? "may be granted" : "are never granted"}
           </div>
-          <table aria-label="limits" style={{ fontSize: 11, color: "var(--muted)", borderCollapse: "collapse" }}>
+          <table aria-label="limits" className="hl-table">
             <thead>
-              <tr style={{ color: "var(--faint)", textAlign: "left" }}>
-                <th style={{ fontWeight: "normal", paddingRight: 16 }}>limit</th>
-                <th style={{ fontWeight: "normal", paddingRight: 16 }}>default</th>
-                <th style={{ fontWeight: "normal" }}>at most</th>
+              <tr>
+                <th>limit</th>
+                <th>default</th>
+                <th>at most</th>
               </tr>
             </thead>
             <tbody>
@@ -1162,9 +1164,9 @@ export function PolicyPage({ deployments, onOpenDeployment }: { deployments: Dep
                 .sort()
                 .map((name) => (
                   <tr key={name}>
-                    <td style={{ color: "var(--ink)", paddingRight: 16 }}>{name}</td>
-                    <td style={{ paddingRight: 16 }}>{policy.defaults[name] ?? "—"}</td>
-                    <td>{policy.ceilings[name] ?? "no ceiling"}</td>
+                    <td>{name}</td>
+                    <td className="hl-table__num">{policy.defaults[name] ?? "—"}</td>
+                    <td className="hl-table__num">{policy.ceilings[name] ?? "no ceiling"}</td>
                   </tr>
                 ))}
             </tbody>
@@ -1193,7 +1195,7 @@ export function PolicyPage({ deployments, onOpenDeployment }: { deployments: Dep
         )}
       </div>
 
-      <div style={head} data-section="held-off">held off</div>
+      <div className="hl-host-page__head" data-section="held-off">held off</div>
       <div style={about}>
         The deployments that can&apos;t run as they were granted: under a ceiling lowered or an exception withdrawn since, or for want of something they need. Each
         one&apos;s page says what to change.

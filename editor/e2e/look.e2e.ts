@@ -1,5 +1,5 @@
-// How the editor looks (look.ts): auto follows the system, light and dark are chosen from the
-// account menu, kept with the account, and the text and canvas follow.
+// How the editor looks (look.ts): auto follows the system, light and dark are chosen in the top
+// bar, kept with the account, and the text and canvas follow.
 
 import type { APIRequestContext } from "@playwright/test";
 import { expect, SERVER, test } from "./fixtures";
@@ -16,15 +16,16 @@ test("the look follows the system on auto, and a choice is kept with the account
   await page.emulateMedia({ colorScheme: "dark" });
   await page.goto("/");
   await expect(page.locator("html")).not.toHaveAttribute("data-theme", /./);
-  expect(await bg(page)).toBe("rgb(11, 18, 32)");
+  expect(await bg(page)).toBe("rgb(14, 17, 22)");
   await page.emulateMedia({ colorScheme: "light" });
   expect(await bg(page)).toBe("rgb(245, 246, 248)");
 
   // Dark, chosen: kept over the system's light, and over a reload.
-  await page.getByRole("button", { name: "account: e2e" }).click();
-  await page.getByRole("group", { name: "theme" }).getByRole("menuitemradio", { name: "dark" }).click();
+  const theme = page.getByRole("group", { name: "theme" });
+  await theme.getByRole("button", { name: "Dark" }).click();
+  await expect(theme.getByRole("button", { name: "Dark" })).toHaveAttribute("aria-pressed", "true");
   await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
-  expect(await bg(page)).toBe("rgb(11, 18, 32)");
+  expect(await bg(page)).toBe("rgb(14, 17, 22)");
   await savedTheme(request, adminToken, "dark");
   await page.reload();
   await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
@@ -34,13 +35,12 @@ test("the look follows the system on auto, and a choice is kept with the account
   await page.locator(".hl-canvas").getByRole("button", { name: "text off" }).click();
   await expect(page.locator(".cm-editor")).toBeVisible();
   await expect(page.locator(".hl-canvas__flow > .react-flow")).toHaveClass(/dark/);
-  await page.getByRole("button", { name: "account: e2e" }).click();
-  await page.getByRole("group", { name: "theme" }).getByRole("menuitemradio", { name: "light" }).click();
+  await theme.getByRole("button", { name: "Light" }).click();
   await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
   await expect(page.locator(".hl-canvas__flow > .react-flow")).toHaveClass(/light/);
 
   // Back to auto, for the tests after this one.
-  await page.getByRole("group", { name: "theme" }).getByRole("menuitemradio", { name: "auto" }).click();
+  await theme.getByRole("button", { name: "Auto" }).click();
   await savedTheme(request, adminToken, "auto");
   await expect(page.locator("html")).not.toHaveAttribute("data-theme", /./);
 });

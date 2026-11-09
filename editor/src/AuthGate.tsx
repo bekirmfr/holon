@@ -8,7 +8,6 @@ import { useCallback, useEffect, useState, type CSSProperties, type FormEvent, t
 import { acceptInvite, changePassword, getAuthState, getSession, inviteFor, setUp, signInWith, signOutHere, whoAmI, type Role } from "./server";
 import { finishSignIn, signedIn, startSignIn, type AuthConfig } from "./signin";
 import { useDialog } from "./Dialog";
-import { THEMES, type Theme } from "./look";
 
 /** Who is signed in, for the editor. */
 export type Me = { name: string; role: Role };
@@ -207,33 +206,17 @@ export function AuthGate({ children }: { children: (me: Me) => ReactNode }) {
   }
 }
 
-/** A person, as a small icon: a head and shoulders in a circle. */
-function UserIcon() {
-  return (
-    <svg className="hl-user__icon" viewBox="0 0 20 20" width="20" height="20" aria-hidden="true">
-      <circle cx="10" cy="10" r="10" fill="currentColor" opacity="0.18" />
-      <circle cx="10" cy="7.6" r="3.2" fill="currentColor" />
-      <path d="M3.9 16.4a6.4 6.4 0 0 1 12.2 0A9.9 9.9 0 0 1 10 20a9.9 9.9 0 0 1-6.1-3.6z" fill="currentColor" />
-    </svg>
-  );
+/** A name's initials, for the avatar: the first letters of its first two words, or a one-word
+ *  name's first two letters. */
+export function initials(name: string): string {
+  const words = name.split(/[\s._-]+/).filter(Boolean);
+  const two = words.length > 1 ? words[0][0] + words[1][0] : (words[0] ?? "?").slice(0, 2);
+  return two.toUpperCase();
 }
 
-/** The header's account pill, at its right: who is signed in; its menu opens the welcome and
- *  docs, changes the password, signs out. */
-export function AccountMenu({
-  me,
-  style,
-  onWelcome,
-  theme,
-  onTheme,
-}: {
-  me: Me;
-  style: CSSProperties;
-  onWelcome: () => void;
-  /** How the editor looks (look.ts), and changing it. */
-  theme: Theme;
-  onTheme: (t: Theme) => void;
-}) {
+/** The top bar's avatar, at its right: who is signed in; its menu opens the welcome and docs,
+ *  changes the password, signs out. The look is the top bar's own. */
+export function AccountMenu({ me, onWelcome }: { me: Me; onWelcome: () => void }) {
   const dialog = useDialog();
   const [open, setOpen] = useState(false);
   const change = async () => {
@@ -250,47 +233,29 @@ export function AccountMenu({
     }
   };
   return (
-    <span style={{ position: "relative", display: "inline-flex", marginLeft: "auto" }}>
+    <span className="hl-user__box">
       <button className="hl-user" onClick={() => setOpen(!open)} aria-haspopup="menu" aria-expanded={open} aria-label={`account: ${me.name}`} title={`signed in as ${me.name}, ${me.role}`}>
-        <UserIcon />
-        <span className="hl-user__name">{me.name}</span>
-        <span className="hl-user__role">{me.role}</span>
-        <span aria-hidden="true">▾</span>
+        {initials(me.name)}
       </button>
       {open && (
-        <div role="menu" style={{ position: "absolute", right: 0, top: "calc(100% + 4px)", zIndex: 50, background: "var(--bg)", border: "1px solid var(--border)", borderRadius: 4, padding: 6, display: "grid", gap: 4, minWidth: 180 }}>
-          <span style={{ color: "var(--faint)", fontSize: 11, padding: "2px 6px" }}>
-            {me.name} · {me.role}
+        <div role="menu" className="hl-user__menu">
+          <span className="hl-user__who">
+            <b>{me.name}</b> · {me.role}
           </span>
           <button
             role="menuitem"
-            style={{ ...style, textAlign: "left" }}
             onClick={() => {
               setOpen(false);
               onWelcome();
             }}
           >
-            welcome and docs
+            Welcome and docs
           </button>
-          <div role="group" aria-label="theme" style={{ display: "flex", gap: 4, alignItems: "center", padding: "2px 0" }}>
-            <span style={{ color: "var(--faint)", fontSize: 11, padding: "0 6px", flex: 1 }}>theme</span>
-            {THEMES.map((t) => (
-              <button
-                key={t}
-                role="menuitemradio"
-                aria-checked={theme === t}
-                style={{ ...style, ...(theme === t ? { color: "var(--accent-ink)", background: "var(--accent)" } : {}) }}
-                onClick={() => onTheme(t)}
-              >
-                {t}
-              </button>
-            ))}
-          </div>
-          <button role="menuitem" style={{ ...style, textAlign: "left" }} onClick={change}>
-            change password
+          <button role="menuitem" onClick={change}>
+            Change password
           </button>
-          <button role="menuitem" style={{ ...style, textAlign: "left" }} onClick={() => signOutHere()}>
-            sign out
+          <button role="menuitem" onClick={() => signOutHere()}>
+            Sign out
           </button>
         </div>
       )}

@@ -100,9 +100,9 @@ export function ActivityList({ version, bare = false }: { version: string; bare?
   if (!entries || entries.length === 0) return bare ? <span style={{ color: "var(--faint)", fontSize: 11 }}>nothing yet</span> : null;
   return (
     <div style={{ marginTop: bare ? 0 : 20 }}>
-      {!bare && <div style={{ color: "var(--body)", fontSize: 13, letterSpacing: "0.04em", marginBottom: 6 }}>activity</div>}
+      {!bare && <h2 className="hl-host-page__head">Activity</h2>}
       {entries.map((e, i) => (
-        <div key={i} style={{ color: "var(--muted)", fontSize: 11, padding: "2px 0" }}>
+        <div key={i} style={{ color: "var(--muted)", fontSize: "var(--fs-sm)", padding: "3px 0" }}>
           <span style={{ color: "var(--faint)" }}>{new Date(e.at * 1000).toLocaleString()}</span> · {e.action}{" "}
           <span style={{ color: "var(--accent)" }}>{e.target}</span>
           {e.by && <span style={{ color: "var(--faint)" }}> · by {e.by}</span>}

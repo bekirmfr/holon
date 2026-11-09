@@ -33,7 +33,7 @@ test("the welcome opens on start until told not to, and keeps the notes written 
 
   // The welcome is always one click away, under the account menu; its notes are kept there.
   await page.getByRole("button", { name: "account: e2e" }).click();
-  await page.getByRole("menuitem", { name: "welcome and docs" }).click();
+  await page.getByRole("menuitem", { name: "Welcome and docs" }).click();
   await expect(navLink(page, "Getting started")).toHaveAttribute("aria-current", "page");
   const notes = page.getByLabel("notes", { exact: true });
   await notes.fill("deploy the shop on friday");

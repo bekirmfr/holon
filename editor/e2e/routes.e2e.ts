@@ -93,11 +93,17 @@ test("the side nav says the page, the crumbs the way up, the host card the host"
   await crumbs.getByRole("link", { name: "Docs" }).click();
   await expect(page).toHaveURL(/#docs$/);
   await expect(crumbs.getByRole("listitem")).toHaveText(["Overview", "Docs"]);
-  // An admin has the host's pages; the host card says the version it runs.
+  // An admin has the host's pages; the brand says the version the host runs, the host card its
+  // run log as of when it was read, and reads it again on asking.
   await expect(nav.getByRole("link", { name: "People and access" })).toBeVisible();
-  await expect(nav.getByRole("region", { name: "host" })).toContainText(/holon \d+\.\d+\.\d+/);
+  await expect(nav.getByRole("link", { name: "holon: the overview" })).toContainText(/\d+\.\d+\.\d+/);
+  const host = nav.getByRole("region", { name: "host" });
+  await expect(host).toContainText(/as of \d/);
+  await expect(host).toContainText(/Run log(intact|\d+ breaks?)/);
+  await host.getByRole("button", { name: "refresh the host card" }).click();
+  await expect(host.getByRole("button", { name: "refresh the host card" })).toBeEnabled();
   // The top bar opens the palette.
-  await page.getByRole("button", { name: /Find or run/ }).click();
+  await page.getByRole("button", { name: /^Search flows, runs, pages/ }).click();
   await expect(page.getByRole("dialog", { name: "command palette" })).toBeVisible();
 });
 

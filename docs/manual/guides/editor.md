@@ -12,17 +12,19 @@ everyone signs in with a name and password, or through an identity provider if t
 up. An admin adds people from **People and access**, and each gets a one-time link to set their
 password.
 
-Your name is at the right of the top bar. Its menu has **welcome and docs**, the **theme** (auto,
-light or dark), **change password** and **sign out**.
+Your initials are at the right of the top bar. Their menu has **Welcome and docs**, **Change
+password** and **Sign out**; the theme (**Auto**, **Light** or **Dark**) is beside them.
 
 ## Pages and tabs
 
 The nav on the left has **new flow**, then the pages, each with its key: **Overview** (1),
 **Approvals** (2, with how many things wait), **Flows** (3), **Editor** (4) and **Library** (5);
 for admins, the host's pages, **Resources** (6), **People and access** (7) and **Policy** (8); and
-**Getting started** and **Docs**. Under them, the host card says which server this is and the
-version it runs. The top bar says where you are (each step back a link), and has **Find or run…**
-(**Ctrl K** or **/**: a page, a flow or a command), the interface, the theme and your account.
+**Getting started** and **Docs**. Under them, the host card says which server this is, whether its
+run log is intact, how many runs it holds and the newest head, as of the time it shows (read every
+minute; its refresh button reads it now). The version the server runs is beside the name, top left. The top bar
+says where you are (each step back a link), and has the search (**Ctrl K** or **/**: a page, a
+flow or a command), the interface, the theme and your account.
 Every place has its own address (`#overview`, `#pulse.history`, `#approvals.shout.v1`), so the
 browser's back and forward work, and a link opens where it says.
 
