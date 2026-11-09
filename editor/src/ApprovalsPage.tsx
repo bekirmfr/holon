@@ -1,15 +1,18 @@
 // The Approvals page (gaps-web.md G8, C3): what waits for a person. Deploys: versions to review
 // and deploy, in the queue the Review page goes through, and what else a deployment waits on a
 // person for; a version an agent proposed with its why, and Decline (with a reason its author
-// reads back, proposals.rs). Runs waiting: runs parked for an event, each answered through its flow's own route
-// (a person approves one as the flow says; the host doesn't deliver events yet, G12).
+// reads back, proposals.rs). Runs waiting: runs parked across flows. An approval (`await
+// approval(…)`) is decided here, Approve or Decline with a reason, by people signed in (durable.rs);
+// an event goes on through its flow's own route.
 
-import { useEffect, useState } from "react";
 import { routeOf, said, type Approval } from "./approvals";
+import type { Me } from "./AuthGate";
+import { approvalSaid, deciderOf, isApproval, mayDecide, type WaitingPoint } from "./decisions";
 import { useDialog } from "./Dialog";
 import { follow, format, type Route } from "./routes";
-import { declineProposal, listWaitingRuns, type DeploymentEntry, type Proposal, type WaitingRun } from "./server";
+import { decideRun, declineProposal, type DeploymentEntry, type Proposal } from "./server";
 import { useToast } from "./ui/Toast";
+import type { WaitingRunOf } from "./useApprovals";
 
 const when = (seconds: number) => new Date(seconds * 1000).toLocaleString();
 
@@ -44,21 +47,29 @@ export function ApprovalsPage({
   tab,
   approvals,
   deployments,
+  runs,
+  me,
   navigate,
   onDeclined,
+  onDecided,
 }: {
   tab: "deploys" | "runs";
   approvals: Approval[];
   deployments: DeploymentEntry[];
+  /** The runs waiting in them (useApprovals), null until first read. */
+  runs: WaitingRunOf[] | null;
+  me: Me;
   navigate: (r: Route) => void;
   /** A proposal was declined: what waits is read again. */
   onDeclined: () => void;
+  /** An approval was decided: the runs and deployments are read again. */
+  onDecided: () => void;
 }) {
   const waiting = deployments.filter((d) => (d.waiting ?? 0) > 0);
-  const runs = waiting.reduce((n, d) => n + (d.waiting ?? 0), 0);
+  const waitingRuns = waiting.reduce((n, d) => n + (d.waiting ?? 0), 0);
   const tabs: ["deploys" | "runs", string, number][] = [
     ["deploys", "Deploys", approvals.length],
-    ["runs", "Runs waiting", runs],
+    ["runs", "Runs waiting", waitingRuns],
   ];
   return (
     <div className="hl-flow hl-approvals">
@@ -77,7 +88,11 @@ export function ApprovalsPage({
           );
         })}
       </nav>
-      {tab === "deploys" ? <Deploys approvals={approvals} navigate={navigate} onDeclined={onDeclined} /> : <RunsWaiting deployments={waiting} navigate={navigate} />}
+      {tab === "deploys" ? (
+        <Deploys approvals={approvals} navigate={navigate} onDeclined={onDeclined} />
+      ) : (
+        <RunsWaiting any={waiting.length > 0} runs={runs} me={me} navigate={navigate} onDecided={onDecided} />
+      )}
     </div>
   );
 }
@@ -138,22 +153,58 @@ function Deploys({ approvals, navigate, onDeclined }: { approvals: Approval[]; n
   );
 }
 
-/** Each deployment's parked runs (GET …/runs): what each waits for and until when. */
-function RunsWaiting({ deployments, navigate }: { deployments: DeploymentEntry[]; navigate: (r: Route) => void }) {
-  const key = deployments.map((d) => `${d.slug}:${d.waiting}`).join(",");
-  const [runs, setRuns] = useState<{ slug: string; run: WaitingRun }[] | null>(null);
-  useEffect(() => {
-    let fresh = true;
-    Promise.all(deployments.map((d) => listWaitingRuns(d.slug).then((rs) => rs.map((run) => ({ slug: d.slug, run })), () => []))).then((all) => fresh && setRuns(all.flat()));
-    return () => {
-      fresh = false;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [key]);
-  if (deployments.length === 0) return <p className="hl-flow__none">No run is waiting for an event.</p>;
+/** Approve, or decline with a reason, an approval a run waits at, asked first: what the decision
+ *  did is said, and `onDecided` once it is made. */
+function useDecide(onDecided: () => void) {
+  const dialog = useDialog();
+  const toast = useToast();
+  return async (slug: string, runId: string, w: WaitingPoint, approve: boolean) => {
+    const people = w.people ?? 1;
+    const left = people - (w.approved ?? []).length;
+    const reason = approve
+      ? await dialog.prompt(
+          `Approve "${w.name}" for this run of ${slug}?\n\n${left > 1 ? `It needs ${people} different people: ${left - 1} more after you.` : "The run goes on once you do."} A reason is optional, and kept with the run.`,
+          "",
+          "Approve",
+          true,
+        )
+      : await dialog.prompt(`Decline "${w.name}" for this run of ${slug}?\n\nWhy: it is kept with the run, and the run goes on as declined.`, "", "Decline", true);
+    if (reason === null) return;
+    if (!approve && reason.trim() === "") {
+      toast("A decline says why: give a reason.", "bad");
+      return;
+    }
+    try {
+      const d = await decideRun(slug, runId, w.name, approve, reason);
+      const more = d.people - d.approved_by.length;
+      toast(
+        d.outcome === "waiting"
+          ? `Approved: ${d.approved_by.length} of ${d.people}. It waits for ${more} more ${more === 1 ? "person" : "people"}.`
+          : d.outcome === "approved"
+            ? `Approved by ${d.approved_by.join(" and ")}: the run goes on.`
+            : "Declined: the run goes on as declined.",
+        "ok",
+      );
+      if (d.run_error) toast(`The run then failed: ${d.run_error}`, "bad");
+      onDecided();
+    } catch (e) {
+      toast(e instanceof Error ? e.message : String(e), "bad");
+    }
+  };
+}
+
+/** The runs waiting across flows (GET …/runs): what each waits for and until when. An approval is
+ *  decided here, by a person who may. */
+function RunsWaiting({ any, runs, me, navigate, onDecided }: { any: boolean; runs: WaitingRunOf[] | null; me: Me; navigate: (r: Route) => void; onDecided: () => void }) {
+  const decide = useDecide(onDecided);
+  if (!any) return <p className="hl-flow__none">No run is waiting.</p>;
+  const decider = deciderOf(me);
   return (
     <section aria-label="runs waiting">
-      <p className="hl-flow__note">A waiting run goes on when its flow is sent what it waits for, through the flow's own route (each sample's "try it" says how).</p>
+      <p className="hl-flow__note">
+        An approval waits for people here: {decider === null ? "an editor or an admin approves or declines it." : "Approve or Decline it; each person counts once."} An event goes on when its
+        flow is sent it, through the flow&apos;s own route (each sample&apos;s &quot;try it&quot; says how).
+      </p>
       <table className="hl-table">
         <thead>
           <tr>
@@ -161,6 +212,7 @@ function RunsWaiting({ deployments, navigate }: { deployments: DeploymentEntry[]
             <th>Run</th>
             <th>Waits for</th>
             <th>Since</th>
+            <th />
           </tr>
         </thead>
         <tbody>
@@ -173,18 +225,36 @@ function RunsWaiting({ deployments, navigate }: { deployments: DeploymentEntry[]
                     {slug}
                   </a>
                 </td>
-                <td>{run.route ?? run.kind}</td>
+                <td title={`run ${run.run_id}`}>{run.route ?? run.kind}</td>
                 <td>
-                  {run.waiting.map((w) => `${w.name} (until ${when(w.expires_at)})`).join(", ")}
+                  {run.waiting.map((w) => `${isApproval(w) ? approvalSaid(w) : w.name} (until ${when(w.expires_at)})`).join(", ")}
                   {run.delivered.length > 0 && <span className="hl-flow__note"> · has {run.delivered.join(", ")}</span>}
                 </td>
                 <td>{when(run.parked_at)}</td>
+                <td className="hl-flows__do">
+                  {run.waiting.filter(isApproval).map((w) => {
+                    const may = mayDecide(w, me);
+                    if (may === "approved") return <span key={w.name} className="hl-chip">you approved</span>;
+                    if (may === "no") return null;
+                    const label = `"${w.name}" of ${slug} (${run.route ?? run.kind})`;
+                    return (
+                      <span key={w.name}>
+                        <button className="hl-flow__button" onClick={() => void decide(slug, run.run_id, w, false)} aria-label={`decline ${label}`}>
+                          Decline…
+                        </button>
+                        <button className="hl-flow__button" onClick={() => void decide(slug, run.run_id, w, true)} aria-label={`approve ${label}`}>
+                          Approve…
+                        </button>
+                      </span>
+                    );
+                  })}
+                </td>
               </tr>
             );
           })}
           {runs === null && (
             <tr>
-              <td colSpan={4} className="hl-table__dim">
+              <td colSpan={5} className="hl-table__dim">
                 reading…
               </td>
             </tr>

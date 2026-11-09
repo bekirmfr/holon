@@ -5,6 +5,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { SecretRow } from "./DeployBar";
+import { approvalSaid, isApproval } from "./decisions";
 import { summarizeState } from "./diagnostics";
 import { describeItem, permissionKind } from "./holon";
 import { KindBadge } from "./Manifest";
@@ -307,7 +308,8 @@ function Waiting({ slug, count }: { slug: string; count: number }) {
       <ul className="hl-flow__changes">
         {(runs ?? []).map((r) => (
           <li key={r.run_id} title={`run ${r.run_id}`}>
-            <span className="hl-flow__what">{r.route ?? r.kind}</span> · since {when(r.parked_at)} · {r.waiting.map((w) => `waits for "${w.name}" until ${when(w.expires_at)}`).join("; ")}
+            <span className="hl-flow__what">{r.route ?? r.kind}</span> · since {when(r.parked_at)} ·{" "}
+            {r.waiting.map((w) => `waits for ${isApproval(w) ? approvalSaid(w) : `"${w.name}"`} until ${when(w.expires_at)}`).join("; ")}
             {r.delivered.length > 0 && <span> · delivered: {r.delivered.join(", ")}</span>}
           </li>
         ))}

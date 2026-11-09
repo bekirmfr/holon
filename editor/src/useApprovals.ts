@@ -1,11 +1,15 @@
 // What waits for a person (approvals.ts), kept fresh: the saved flows and the proposals read every 4 s while
 // Approvals or the overview is shown (every 30 s otherwise, for the nav's count), each
-// deployment's events (for an agent's asks) while Approvals is, and the versions of a deployment
-// that has a newer save, so its review has a number.
+// deployment's events (for an agent's asks) while Approvals is, the runs waiting in the deployments
+// that have any (Runs waiting lists them; the nav counts the approvals among them), and the
+// versions of a deployment that has a newer save, so its review has a number.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { approvalsOf, keptKey, reviewQueue } from "./approvals";
-import { getEvents, getVersions, listFlows, listProposals, type DeploymentEntry, type DeploymentEvent, type FlowListEntry, type Proposal } from "./server";
+import { getEvents, getVersions, listFlows, listProposals, listWaitingRuns, type DeploymentEntry, type DeploymentEvent, type FlowListEntry, type Proposal, type WaitingRun } from "./server";
+
+/** A run waiting in a deployment. */
+export type WaitingRunOf = { slug: string; run: WaitingRun };
 
 const KEPT = "holon.approvals.kept";
 
@@ -24,9 +28,14 @@ export function useApprovals(deployments: DeploymentEntry[], { shown, asks: read
   const [versions, setVersions] = useState<Map<string, number>>(new Map());
   const [asks, setAsks] = useState<Map<string, DeploymentEvent[]>>(new Map());
   const [kept, setKept] = useState<Set<string>>(readKept);
+  const [runs, setRuns] = useState<WaitingRunOf[] | null>(null);
   const now = useRef(deployments);
   now.current = deployments;
 
+  const readRuns = useCallback(() => {
+    const waiting = now.current.filter((d) => (d.waiting ?? 0) > 0);
+    Promise.all(waiting.map((d) => listWaitingRuns(d.slug).then((rs) => rs.map((run) => ({ slug: d.slug, run })), () => []))).then((all) => setRuns(all.flat()));
+  }, []);
   const refresh = useCallback(() => {
     listFlows()
       .then(setFlows)
@@ -34,7 +43,11 @@ export function useApprovals(deployments: DeploymentEntry[], { shown, asks: read
     listProposals()
       .then(setProposals)
       .catch(() => undefined);
-  }, []);
+    readRuns();
+  }, [readRuns]);
+  // Read again as soon as a deployment's count of waiting runs changes.
+  const waitingKey = deployments.map((d) => `${d.slug}:${d.waiting ?? 0}`).join(",");
+  useEffect(readRuns, [readRuns, waitingKey]);
   useEffect(() => {
     refresh();
     const timer = setInterval(refresh, shown ? 4000 : 30000);
@@ -86,5 +99,5 @@ export function useApprovals(deployments: DeploymentEntry[], { shown, asks: read
     });
   }, []);
 
-  return { approvals, queue, flows, proposals, keep, refresh };
+  return { approvals, queue, flows, proposals, runs, keep, refresh };
 }

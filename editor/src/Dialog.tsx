@@ -11,15 +11,16 @@ import { createContext, useCallback, useContext, useEffect, useRef, useState, ty
 
 type Ask =
   | { kind: "confirm"; message: string; action: string; body?: ReactNode; resolve: (ok: boolean) => void }
-  | { kind: "prompt"; message: string; initial: string; action: string; resolve: (value: string | null) => void };
+  | { kind: "prompt"; message: string; initial: string; action: string; empty: boolean; resolve: (value: string | null) => void };
 
 type Dialogs = {
   /** Ask a yes/no question; resolves true only if confirmed. `action` labels the confirm button;
    *  `body`, shown under the question, is what it is about (a deploy's review, say). */
   confirm: (message: string, action?: string, body?: ReactNode) => Promise<boolean>;
-  /** Ask for a line of text; resolves the trimmed text, or null if cancelled or left empty.
-   *  `action` labels the button that answers. */
-  prompt: (message: string, initial?: string, action?: string) => Promise<string | null>;
+  /** Ask for a line of text; resolves the trimmed text, or null if cancelled or left empty
+   *  (unless `empty` lets it be answered empty, an optional reason). `action` labels the button
+   *  that answers. */
+  prompt: (message: string, initial?: string, action?: string, empty?: boolean) => Promise<string | null>;
 };
 
 const DialogContext = createContext<Dialogs | null>(null);
@@ -45,16 +46,16 @@ export function DialogProvider({ children }: { children: ReactNode }) {
     (message: string, action = "OK", body?: ReactNode) => new Promise<boolean>((resolve) => setAsk({ kind: "confirm", message, action, body, resolve })),
     [],
   );
-  const prompt = useCallback((message: string, initial = "", action = "OK") => {
+  const prompt = useCallback((message: string, initial = "", action = "OK", empty = false) => {
     setText(initial);
-    return new Promise<string | null>((resolve) => setAsk({ kind: "prompt", message, initial, action, resolve }));
+    return new Promise<string | null>((resolve) => setAsk({ kind: "prompt", message, initial, action, empty, resolve }));
   }, []);
 
   const close = useCallback(
     (accepted: boolean) => {
       if (!ask) return;
       if (ask.kind === "confirm") ask.resolve(accepted);
-      else ask.resolve(accepted && text.trim() !== "" ? text.trim() : null);
+      else ask.resolve(accepted && (ask.empty || text.trim() !== "") ? text.trim() : null);
       setAsk(null);
     },
     [ask, text],

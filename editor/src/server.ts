@@ -709,9 +709,18 @@ export type WaitingRun = {
   kind: string;
   route: string | null;
   parked_at: number;
-  waiting: { name: string; expires_at: number }[];
+  /** Each point it waits at; an approval's with how many people it needs and who approved so far. */
+  waiting: { name: string; expires_at: number; people?: number; approved?: { by: string; at: number; reason?: string }[] }[];
   delivered: string[];
 };
+
+/** What a decision did (`POST …/runs/<run_id>/decide`): the approval still waits for more people,
+ *  or the run was given it (`run_error` when its part then failed). */
+export type Decided = { name: string; people: number; approved_by: string[]; outcome: "waiting" | "approved" | "declined"; run_error?: string };
+
+/** Approve, or decline with a reason, the approval `name` a run waits at: a person's to do. */
+export const decideRun = async (slug: string, runId: string, name: string, approve: boolean, reason: string) =>
+  asJson<Decided>(await post(`${BASE}/deployments/${encodeURIComponent(slug)}/runs/${encodeURIComponent(runId)}/decide`, { name, approve, reason: reason.trim() || undefined }));
 
 /** `GET /deployments/<slug>/collections/<name>`: one item (`key`) or a page of items in key order
  *  (`prefix`, `after`, `limit`), as of `root` (one the deployment's log shows) or live. `next`:

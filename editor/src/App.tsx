@@ -35,6 +35,7 @@ import {
   manifestTrigger,
   describeItem,
 } from "./holon";
+import { toDecide } from "./decisions";
 import { changeDeployment, deleteDeployment, getDeployedDocument, getFlow, getManifest, getPrefs, setPrefs, type FlowDocument, type FlowRecord } from "./server";
 import { mayDiff } from "./mayItems";
 import type { MayHere } from "./mayHere";
@@ -598,7 +599,9 @@ function Canvas({
   // What waits for a person (approvals.ts): Approvals lists it, the nav counts it.
   const approvals = useApprovals(deployments, { shown: page === "approvals" || page === "home", asks: page === "approvals" });
   const { onWaiting } = start;
-  useEffect(() => onWaiting(approvals.approvals.length), [approvals.approvals.length, onWaiting]);
+  // With the approvals among the runs waiting that are this person's to decide (decisions.ts).
+  const deciding = useMemo(() => toDecide(approvals.runs ?? [], me), [approvals.runs, me]);
+  useEffect(() => onWaiting(approvals.approvals.length + deciding), [approvals.approvals.length, deciding, onWaiting]);
   // Deploying it, and running, pausing or stopping it (useDeployFlow.ts).
   const { deployedEntry, outOfDate, deployBusy, secretNames, onDeployFlow, onFlowAction } = useDeployFlow({
     flowName,
@@ -1271,7 +1274,19 @@ function Canvas({
             />
           )}
           {shown === "approvals" && route.kind === "approvals" && (
-            <ApprovalsPage tab={route.tab} approvals={approvals.approvals} deployments={deployments} navigate={navigate} onDeclined={approvals.refresh} />
+            <ApprovalsPage
+              tab={route.tab}
+              approvals={approvals.approvals}
+              deployments={deployments}
+              runs={approvals.runs}
+              me={me}
+              navigate={navigate}
+              onDeclined={approvals.refresh}
+              onDecided={() => {
+                approvals.refresh();
+                refreshDeployments();
+              }}
+            />
           )}
           {shown === "approvals" && route.kind === "review" && (
             <ReviewPage

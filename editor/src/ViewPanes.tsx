@@ -9,6 +9,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { downloadRuns, getCollectionItems, type LogEntry, type Tally } from "./server";
+import { decisionSaid } from "./decisions";
 import { field, runActions, runLabel, text } from "./runs";
 import { useFlowLog } from "./useFlowLog";
 import { tallyRows } from "./tallies";
@@ -830,9 +831,11 @@ function LogTab({
                   {(selected.parked ?? []).length > 0 && (
                     <Field name="waiting at" value={(selected.parked ?? []).join(", ")} color="var(--warn)" />
                   )}
-                  {Object.entries(selected.events ?? {}).map(([name, v]) => (
-                    <Field key={name} name={`event ${name}`} value={formatValue(v)} rawValue={v} />
-                  ))}
+                  {Object.entries(selected.events ?? {}).map(([name, v]) => {
+                    // An approval's decision, said: who approved, or who declined and why.
+                    const decided = decisionSaid(v);
+                    return decided === null ? <Field key={name} name={`event ${name}`} value={formatValue(v)} rawValue={v} /> : <Field key={name} name={`approval ${name}`} value={decided} rawValue={v} />;
+                  })}
                   {selected.run_id && (
                     <Field name="run" value={`${selected.run_id.slice(0, 16)}… · grant ${(selected.grant ?? "").slice(0, 12)}…`} color={dim} />
                   )}
