@@ -126,7 +126,7 @@ function Samples({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [samples]);
   const has = (s: Sample) => capabilitiesOf(items.get(s.name) ?? []);
-  const shown = samples.filter((s) => matches(s, has(s), picked, search));
+  const shown = samples.filter((s) => matches(s, has(s), picked, search, (items.get(s.name) ?? []).map(describeItem)));
   const toggle = (key: string) => setPicked((p) => (p.includes(key) ? p.filter((k) => k !== key) : [...p, key]));
   const download = (s: Sample) => {
     try {
@@ -177,7 +177,7 @@ function Samples({
   return (
     <section className="hl-library__samples" aria-label="samples">
       <div className="hl-flow__bar">
-        <input className="hl-flow__filter" type="search" placeholder="Search samples" aria-label="search samples" value={search} onChange={(e) => setSearch(e.target.value)} />
+        <input className="hl-flow__filter" type="search" placeholder="Search samples by keyword" title="every word, in any order: in a sample's title, description, what it shows and may do" aria-label="search samples" value={search} onChange={(e) => setSearch(e.target.value)} />
         <span className="hl-flow__note">{shown.length === samples.length ? `${samples.length} samples` : `${shown.length} of ${samples.length}`}</span>
       </div>
       <div className="hl-chips" role="group" aria-label="show flows that">

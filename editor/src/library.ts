@@ -26,10 +26,23 @@ export function capabilitiesOf(items: string[]): string[] {
   return CAPABILITIES.filter((c) => c.kinds.some((k) => kinds.has(k))).map((c) => c.key);
 }
 
-/** Whether a sample is shown: every chip picked is one it has, and the search is in its words. */
-export function matches(sample: { title: string; description: string; shows: string[]; name: string }, has: string[], picked: string[], search: string): boolean {
+/** The keywords a search is: its words, lowercased, quotes and commas aside. */
+export const keywordsOf = (search: string): string[] => search.toLowerCase().split(/[\s,"]+/).filter((w) => w !== "");
+
+/** Whether a sample is shown: every chip picked is one it has, and every keyword searched is
+ *  somewhere in its words (its title, name, description, what it shows and how to try it, its
+ *  chips, and `may`: what it may do, in words), in any order. */
+export function matches(
+  sample: { title: string; description: string; shows: string[]; name: string; tryIt?: string },
+  has: string[],
+  picked: string[],
+  search: string,
+  may: string[] = [],
+): boolean {
   if (!picked.every((p) => has.includes(p))) return false;
-  const q = search.trim().toLowerCase();
-  if (q === "") return true;
-  return [sample.title, sample.description, sample.name, ...sample.shows].some((t) => t.toLowerCase().includes(q));
+  const words = keywordsOf(search);
+  if (words.length === 0) return true;
+  const chips = CAPABILITIES.filter((c) => has.includes(c.key)).map((c) => c.label);
+  const text = [sample.title, sample.name, sample.description, ...sample.shows, sample.tryIt ?? "", ...chips, ...may].join("\n").toLowerCase();
+  return words.every((w) => text.includes(w));
 }

@@ -118,7 +118,8 @@ test("the Library: samples found by what they do, one's details with its command
   await page.getByRole("group", { name: "show flows that" }).getByRole("button", { name: "use a database" }).click();
   await expect(samples.getByRole("article", { name: "Orders API (a database on the host)" })).toBeVisible();
   await expect(samples.getByRole("article", { name: "Hello API" })).toHaveCount(0);
-  await page.getByLabel("search samples").fill("refund once");
+  // Keywords, in any order: "claims" is one of what it shows, "payment" in its description.
+  await page.getByLabel("search samples").fill("claims payment");
   await expect(samples.getByRole("article")).toHaveCount(1);
   await samples.getByRole("article").getByRole("heading").getByRole("button").click();
   const details = page.getByRole("dialog");
