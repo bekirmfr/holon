@@ -63,7 +63,7 @@ An import names something the flow uses from outside a run. Its source says what
 
 | Import | Names |
 |---|---|
-| `import { flow, route, status } from "holon"` | the vocabulary (`flow`, `route`, `every`, `on`, `action`, `js`, `respond`, `status`, `stripe`, `event`) and the [leaves](leaves.md) |
+| `import { flow, route, status } from "holon"` | the vocabulary (`flow`, `route`, `every`, `on`, `action`, `js`, `respond`, `status`, `stripe`, `event`, `approval`) and the [leaves](leaves.md) |
 | `import key from "secret:NAME"` | a secret set for the deployment, read as `key`: someone sets it before the flow works |
 | `import key from "secret:NAME" with { optional: "true" }` | a secret the flow can run without; the parts that need it have no value when it isn't set |
 | `import state from "state"` | the flow's state: `state.KEY` reads a key, `state.KEY = …` writes it |
@@ -479,6 +479,7 @@ Each of these is one building block, and each is one thing the flow may do.
 | `await charge(x)` (`import { charge } from "flow:billing"`) | run the action `charge` of the deployed flow `billing` with `x`, a value (`{}` when none is written); the answer is `{answer, run}` when it ran, `{error, message}` when it didn't |
 | `payment(x)`, `charge(x)`, not awaited | start a run of this flow's action, or another flow's, with `x`; the answer is `{run, waiting}` once it waits, `waiting` the token for each point it waits at, `{answer, run}` if it finishes first, `{error, message}` when it didn't run |
 | `await event(name, { expires: d })` | park the run until the event `name` arrives (in an action, not a route) |
+| `await approval(name, { expires: d, people: n })` | park the run until `n` different people (1 to 5, 1 when left out), signed in to Holon, approve it, or one declines; the answer is `{approved, by}`, with `declined_by` and `reason` when declined, `expired: true` when no one decided in time (in an action, not a route) |
 | `JSON.stringify(x)`, `JSON.parse(text)` | JSON out, JSON in (see [Records](#records) for a replacer, a reviver and an indent) |
 
 Rules:
@@ -819,14 +820,23 @@ misled, the compiler refuses instead.
   its own writes. When two runs change the same item at once, one is run again, so none is lost.
 - **Calls out happen between rounds.** A request is made when the run gets to it; the run
   continues with the answer. One bound on a statement of its own (`const page = await
-  api.get(…)`) is made when the run reaches the statement, whatever reads `page`; one written in
-  a branch (`x ?? (await api.get(…)).body`, `c ? await api.get(…) : undefined`) is made only when
-  the branch needs it, so a branch not taken makes no call. To make a bound call only sometimes,
-  tie it: `if (first !== undefined) charged = await api.post(…)`.
+  api.get(…)`) is made when the run reaches the statement, whatever reads `page`, and not when it
+  isn't reached: in an `if` whose condition doesn't hold, or after a `return` that answered. One
+  written in a branch (`x ?? (await api.get(…)).body`, `c ? await api.get(…) : undefined`) is
+  made only when the branch needs it, so a branch not taken makes no call. To make a bound call
+  only sometimes, put it in an `if`, or tie it to a value: `if (first !== undefined) charged =
+  await api.post(…)`.
 - **Waiting.** `await event(name)` parks the run, an action's: a route answers and is done, and
   starts the action that waits by calling it without `await`. A later request to a route with
   `{ resumes: name }`, carrying the token, delivers the event and the run continues. `expires`
   sets how long it waits.
+- **People decide an approval.** `await approval(name, { people: 2 })` parks the run as an event
+  does, but nothing the flow hands out resumes it: it has no token, and a route `{ resumes: name }`
+  that names it is refused. People signed in to Holon decide it, never an agent, and how many is
+  part of what the flow asks for, `Approval("name/2")`: a version that asks fewer asks anew.
+  The target design, approvals in steps filled by roles in order, is
+  [`docs/L4s/access-and-approvals-L4.md`](../../L4s/access-and-approvals-L4.md) §8; `people: n`
+  stays its short form.
 - **Sharing is explicit.** A binding is one value used many times. The same expression written
   twice is computed twice.
 - **Every run ends.** There are no loops and no recursion: `map`, `reduce` and a list's other

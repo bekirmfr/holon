@@ -50,10 +50,10 @@ function buildInspectTree(hash: string, ev: Evaluator): InspectNode {
 // same muted ink-dim already used for de-emphasis; Sink (irreversible) reuses the app's existing
 // warning/error orange.
 const KIND_COLOR: Record<WKind, string> = {
-  Pure: "#7e8ea8",
-  Driver: "#6fd3e0",
-  State: "#c77dff",
-  Sink: "#e0916f",
+  Pure: "var(--faint)",
+  Driver: "var(--accent)",
+  State: "var(--db)",
+  Sink: "var(--bad)",
 };
 
 function InspectRow({ node, depth }: { node: InspectNode; depth: number }) {
@@ -74,13 +74,13 @@ function InspectRow({ node, depth }: { node: InspectNode; depth: number }) {
           cursor: hasChildren ? "pointer" : "default",
         }}
       >
-        <span style={{ width: 10, color: "#7e8ea8", fontSize: 10 }}>
+        <span style={{ width: 10, color: "var(--faint)", fontSize: 10 }}>
           {hasChildren ? (open ? "▾" : "▸") : ""}
         </span>
-        <span style={{ color: node.isComposite ? "#6fd3e0" : "#e8eef7" }}>{node.name}</span>
+        <span style={{ color: node.isComposite ? "var(--accent)" : "var(--ink)" }}>{node.name}</span>
         <span style={{ color: kindColor, fontSize: 11 }}>{kindLabel}</span>
         {node.capabilities.length > 0 && (
-          <span style={{ color: "#9fb4d4", fontSize: 10 }} title="capabilities">
+          <span style={{ color: "var(--muted)", fontSize: 10 }} title="capabilities">
             {node.capabilities.join(", ")}
           </span>
         )}
@@ -105,5 +105,5 @@ export function UnitTree({ hash, ev }: { hash: string; ev: Evaluator }) {
       return { ok: false as const, message: err instanceof Error ? err.message : String(err) };
     }
   }, [hash, ev]);
-  return tree.ok ? <InspectRow node={tree.node} depth={0} /> : <div style={{ color: "#e0916f" }}>{tree.message}</div>;
+  return tree.ok ? <InspectRow node={tree.node} depth={0} /> : <div style={{ color: "var(--bad)" }}>{tree.message}</div>;
 }

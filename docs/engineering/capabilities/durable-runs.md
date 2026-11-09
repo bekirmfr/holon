@@ -91,11 +91,42 @@ or file it read changed meanwhile, it runs again from where it last waited, ever
 event answered from its record (`approved-payout`). A waiting run holds no claims
 (`a_parked_run_releases_its_claims`), so a deposit can go ahead while a payout waits.
 
+### Decide
+
+The target design is [`access-and-approvals-L4.md`](../../L4s/access-and-approvals-L4.md) §8:
+approvals in steps (slots filled by roles, in order, separation of duties, the starter never
+deciding), principals and a permission catalogue in place of the four roles; it generalises what
+follows, `people: N` staying one step's short form. Read it before changing this.
+
+An `approval` is a waiting point people decide, never a token. Its request is an await's with
+`people` (1 to 5), kept on the waiting point (`StoredWaiting::people`; 0, not written, for an
+event). `waiting_point_of` matches no approval, so no token resumes one; a start hands none out for
+it (deploy.rs, `waiting_at`); and a route `{ resumes }` or a `resume_token` naming one is refused
+when the flow compiles (flow.rs).
+
+`POST /deployments/<slug>/runs/<run_id>/decide` takes `{name, approve, reason?}`. `decider` says
+who decides: a person signed in, an editor or an admin, by their account's name (the OS user's
+local admin by the name it runs as, so the same person counts once); never an agent, a viewer, an
+API token (a script, not a person) or anyone on a server without accounts. `decide` runs under the
+deployments lock. An approval is kept on the waiting point (`approved`: who, when, why), once per
+person (the same person again is a 409). Once as many as it asks have approved, or anyone declines
+(a decline needs a reason), the run is claimed, as a token claims it, and `resume_parked` gives it
+the decision as its event: `{approved, by, approvals}`, with `declined_by` and `reason` for a
+decline. So the resumed part's log entry, and what `holon verify` and a replay read, hold who
+decided. Each decision is in the activity log too (`approved`, `declined`).
+
+People decide in the editor's Approvals (Runs waiting) or with `holon decide <slug> <run> <name>
+--approve|--decline --reason …` (decidecmd.rs), signed in as the OS user's local admin; `holon
+decide <slug>` and `holon deployments <slug>` list what runs wait at, with who has approved so far
+(`decidecmd::waiting_lines`). `holon mcp`'s `runs` adds the same lines for an agent to tell the user;
+no tool decides, and the access layer refuses an agent's POST before the route.
+
 ### Expire
 
 The clock scheduler's thread, every second, calls `expire_waiting`: each waiting point past its
 deadline is claimed (one being resumed is left alone) and given `{expired: true}`
-(`expired_event`), so the flow decides what timing out means.
+(`expired_event`), so the flow decides what timing out means. An approval is given its decision
+as it stands, `approved` false, with `expired: true` and who had approved.
 
 ### What survives a restart
 
@@ -114,7 +145,8 @@ deadline is claimed (one being resumed is left alone) and given `{expired: true}
 - **Each part's log entry**, as any run's ([Run records](run-records-and-verify.md)).
 
 `GET /deployments/<slug>/runs` lists the waiting runs (`summary`: run id, kind, route, when it
-parked, its waiting points and deadlines, the points delivered), never their tokens; the editor's
+parked, its waiting points and deadlines, an approval's `people` and `approved`, the points
+delivered), never their tokens; the editor's
 deployment card shows how many wait.
 
 ## 3. Why it is this way
@@ -189,10 +221,19 @@ In `crates/holon/src/tests.rs`:
   `a_deployment_runs_pauses_resumes_and_stops_with_one_session`,
   `each_run_after_a_stop_is_a_new_session_from_the_chosen_state`.
 - In `durable.rs`, `a_runs_tokens_are_derived_stable_and_its_own`.
+- `an_approval_is_decided_by_different_people_never_by_a_token`: no token is handed out for an
+  approval or resumes it; a viewer, an API token, an agent and the same person twice are refused;
+  two people approve and the run goes on with who they were; one decline with a reason ends it; one
+  that runs out goes on expired, with who approved; each decision is in the log and the activity
+  log. `only_a_person_decides_an_approval`.
+- In `mcp.rs`, `an_agent_reads_who_approved_a_waiting_run_and_never_decides_it`; in
+  `decidecmd.rs`, how a waiting run, a decision and a run picked by its id's start read.
 
 End to end: `approval sends an order's progress on its channel: waiting as the run parks, paid when
-it finishes, never the first twice` (`samples.e2e.ts`), and `approved-payout waits for its approval
-holding nothing, and pays from the balance as it is then` (`system.e2e.ts`).
+it finishes, never the first twice` (`samples.e2e.ts`), and `approved-payout waits for two people's
+approval holding nothing, and pays from the balance as it is then` (`system.e2e.ts`): an invited
+editor and the admin approve it through the decide route, the same person twice is refused, an
+agent is refused, and a second payout one person declines pays nothing.
 
 **Gaps.** Nothing tests a lost host key or secrets key, the deployments file's cost with many
 waiting runs, or a paused deployment's runs expiring.
@@ -211,3 +252,5 @@ Durable runs, derived tokens and the host key predate the CHANGELOG's first entr
 | `6bc5c68` | rc.29: clocks, file handlers and actions beside routes, each parking as a route does, resumed by the flow's resume routes |
 | `b1259e3`, `f06e7a1` | Strict by default; a handler that waits can't be `lazy` or `unrecorded` |
 | `836e406` | `approved-payout` moves to the system end-to-end tests |
+| G12 | `await approval(…)`: a waiting point people signed in decide, two-person and more, never a token |
+| G12 | `approved-payout` waits at `approval("payout", { people: 2 })`, its approve link gone; a call on a path not taken is no longer made |

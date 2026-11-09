@@ -146,11 +146,21 @@ fn port_of(text: &str) -> Option<u16> {
 /// and the response and effect outputs, and wrapped as an endpoint. Every unit made is stored.
 pub fn derive_server(nodes: &[Node], wires: &[Wire], store: &mut MapResolver, port: &str) -> DerivedServer {
     let (routes, mut errors) = find_routes(nodes, wires);
+    let approval = |name: &str| nodes.iter().any(|n| n.data.name == "approval" && n.param("name") == name);
+    for n in nodes.iter().filter(|n| n.data.name == "resume_token" && approval(n.param("await"))) {
+        errors.push(format!("resume_token({:?}): {:?} is an approval, which people decide in Holon: it has no token", n.param("await"), n.param("await")));
+    }
     let by_id: HashMap<&str, &Node> = nodes.iter().map(|n| (n.id.as_str(), n)).collect();
     let mut endpoints = Vec::new();
     let mut trace = BTreeMap::new();
     for r in routes {
         let label = format!("{} {}", r.method, r.path);
+        // An approval is people's to decide, in Holon: no route delivers it, and no token is made
+        // for it (below).
+        if !r.resume.is_empty() && approval(&r.resume) {
+            errors.push(format!("{label}: \"{}\" is an approval, which people decide in Holon: no route resumes it", r.resume));
+            continue;
+        }
         let group: Vec<&Node> = r.node_ids.iter().map(|id| by_id[id.as_str()]).collect();
         let endpoint = (|| -> Result<Result<Hash, String>, String> {
             let (children, edges) = group_of(&group, wires, store)?;

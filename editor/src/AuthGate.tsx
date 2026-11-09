@@ -2,7 +2,7 @@
 // asks for its admin, with the setup code it printed when it started; an invite link lets its
 // holder set their password; otherwise one signs in, with a name and password or, when the
 // server has one, through its identity provider (signin.ts). Signed in, the editor shows, with
-// an account menu in its header: change password, the admin panel (admins), sign out.
+// an account menu in its header: change password and sign out.
 
 import { useCallback, useEffect, useState, type CSSProperties, type FormEvent, type ReactNode } from "react";
 import { acceptInvite, changePassword, getAuthState, getSession, inviteFor, setUp, signInWith, signOutHere, whoAmI, type Role } from "./server";
@@ -13,13 +13,13 @@ import { useDialog } from "./Dialog";
 export type Me = { name: string; role: Role };
 
 const card: CSSProperties = {
-  background: "#0b1527",
-  border: "1px solid #1b2a45",
+  background: "var(--bg)",
+  border: "1px solid var(--border)",
   borderRadius: 6,
   padding: 20,
   display: "grid",
   gap: 10,
-  color: "#9fb4d4",
+  color: "var(--muted)",
   fontSize: 12,
   width: 340,
   maxWidth: "calc(100vw - 32px)",
@@ -28,13 +28,13 @@ const field: CSSProperties = {
   font: "inherit",
   fontSize: 13,
   padding: "6px 8px",
-  color: "#e6eefb",
-  background: "#0e1a2f",
-  border: "1px solid #1b2a45",
+  color: "var(--ink)",
+  background: "var(--surface-2)",
+  border: "1px solid var(--border)",
   borderRadius: 3,
 };
-const primary: CSSProperties = { font: "inherit", fontSize: 12, padding: "6px 12px", color: "#0e1a2f", background: "#6fd3e0", border: "none", borderRadius: 3, cursor: "pointer" };
-const quiet: CSSProperties = { font: "inherit", fontSize: 12, padding: "6px 12px", color: "#9fb4d4", background: "transparent", border: "1px solid #1b2a45", borderRadius: 3, cursor: "pointer" };
+const primary: CSSProperties = { font: "inherit", fontSize: 12, padding: "6px 12px", color: "var(--accent-ink)", background: "var(--accent)", border: "none", borderRadius: 3, cursor: "pointer" };
+const quiet: CSSProperties = { font: "inherit", fontSize: 12, padding: "6px 12px", color: "var(--muted)", background: "transparent", border: "1px solid var(--border)", borderRadius: 3, cursor: "pointer" };
 
 function Screen({ title, lead, children, onSubmit, error }: { title: string; lead?: ReactNode; children: ReactNode; onSubmit: () => Promise<void>; error: string }) {
   const [busy, setBusy] = useState(false);
@@ -46,13 +46,13 @@ function Screen({ title, lead, children, onSubmit, error }: { title: string; lea
   return (
     <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: "var(--bg)" }}>
       <form style={card} onSubmit={submit} aria-label={title}>
-        <div style={{ color: "#e6eefb", fontSize: 15 }}>
-          holon <span style={{ color: "#7e8ea8" }}>·</span> {title}
+        <div style={{ color: "var(--ink)", fontSize: 15 }}>
+          holon <span style={{ color: "var(--faint)" }}>·</span> {title}
         </div>
         {lead && <div style={{ lineHeight: 1.45 }}>{lead}</div>}
         {children}
         {error && (
-          <div role="alert" style={{ color: "#e0916f" }}>
+          <div role="alert" style={{ color: "var(--bad)" }}>
             {error}
           </div>
         )}
@@ -139,10 +139,10 @@ export function AuthGate({ children }: { children: (me: Me) => ReactNode }) {
 
   switch (stage.kind) {
     case "loading":
-      return <div style={{ padding: 24, color: "#9fb4d4" }}>connecting…</div>;
+      return <div style={{ padding: 24, color: "var(--muted)" }}>connecting…</div>;
     case "unreachable":
       return (
-        <div style={{ padding: 24, color: "#e0916f", display: "grid", gap: 10, maxWidth: 520 }}>
+        <div style={{ padding: 24, color: "var(--bad)", display: "grid", gap: 10, maxWidth: 520 }}>
           <div>The server can't be reached: {stage.message}</div>
           <button style={quiet} onClick={decide}>
             try again
@@ -174,7 +174,7 @@ export function AuthGate({ children }: { children: (me: Me) => ReactNode }) {
           title="join"
           lead={
             <>
-              You were invited as <span style={{ color: "#e6eefb" }}>{stage.name}</span>. Set your password to sign in.
+              You were invited as <span style={{ color: "var(--ink)" }}>{stage.name}</span>. Set your password to sign in.
             </>
           }
           error={error}
@@ -206,20 +206,17 @@ export function AuthGate({ children }: { children: (me: Me) => ReactNode }) {
   }
 }
 
-/** A person, as a small icon: a head and shoulders in a circle. */
-function UserIcon() {
-  return (
-    <svg className="hl-user__icon" viewBox="0 0 20 20" width="20" height="20" aria-hidden="true">
-      <circle cx="10" cy="10" r="10" fill="currentColor" opacity="0.18" />
-      <circle cx="10" cy="7.6" r="3.2" fill="currentColor" />
-      <path d="M3.9 16.4a6.4 6.4 0 0 1 12.2 0A9.9 9.9 0 0 1 10 20a9.9 9.9 0 0 1-6.1-3.6z" fill="currentColor" />
-    </svg>
-  );
+/** A name's initials, for the avatar: the first letters of its first two words, or a one-word
+ *  name's first two letters. */
+export function initials(name: string): string {
+  const words = name.split(/[\s._-]+/).filter(Boolean);
+  const two = words.length > 1 ? words[0][0] + words[1][0] : (words[0] ?? "?").slice(0, 2);
+  return two.toUpperCase();
 }
 
-/** The header's account pill, at its right: who is signed in; its menu opens the welcome and
- *  docs, changes the password, signs out. */
-export function AccountMenu({ me, style, onWelcome }: { me: Me; style: CSSProperties; onWelcome: () => void }) {
+/** The top bar's avatar, at its right: who is signed in; its menu opens the welcome and docs,
+ *  changes the password, signs out. The look is the top bar's own. */
+export function AccountMenu({ me, onWelcome }: { me: Me; onWelcome: () => void }) {
   const dialog = useDialog();
   const [open, setOpen] = useState(false);
   const change = async () => {
@@ -236,33 +233,29 @@ export function AccountMenu({ me, style, onWelcome }: { me: Me; style: CSSProper
     }
   };
   return (
-    <span style={{ position: "relative", display: "inline-flex", marginLeft: "auto" }}>
+    <span className="hl-user__box">
       <button className="hl-user" onClick={() => setOpen(!open)} aria-haspopup="menu" aria-expanded={open} aria-label={`account: ${me.name}`} title={`signed in as ${me.name}, ${me.role}`}>
-        <UserIcon />
-        <span className="hl-user__name">{me.name}</span>
-        <span className="hl-user__role">{me.role}</span>
-        <span aria-hidden="true">▾</span>
+        {initials(me.name)}
       </button>
       {open && (
-        <div role="menu" style={{ position: "absolute", right: 0, top: "calc(100% + 4px)", zIndex: 50, background: "#0b1527", border: "1px solid #1b2a45", borderRadius: 4, padding: 6, display: "grid", gap: 4, minWidth: 180 }}>
-          <span style={{ color: "#7e8ea8", fontSize: 11, padding: "2px 6px" }}>
-            {me.name} · {me.role}
+        <div role="menu" className="hl-user__menu">
+          <span className="hl-user__who">
+            <b>{me.name}</b> · {me.role}
           </span>
           <button
             role="menuitem"
-            style={{ ...style, textAlign: "left" }}
             onClick={() => {
               setOpen(false);
               onWelcome();
             }}
           >
-            welcome and docs
+            Welcome and docs
           </button>
-          <button role="menuitem" style={{ ...style, textAlign: "left" }} onClick={change}>
-            change password
+          <button role="menuitem" onClick={change}>
+            Change password
           </button>
-          <button role="menuitem" style={{ ...style, textAlign: "left" }} onClick={() => signOutHere()}>
-            sign out
+          <button role="menuitem" onClick={() => signOutHere()}>
+            Sign out
           </button>
         </div>
       )}

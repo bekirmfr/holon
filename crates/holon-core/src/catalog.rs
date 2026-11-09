@@ -80,8 +80,8 @@ pub const GENESIS: &[&str] = &[
     "flow_call", "flow_start",
     // drivers — sourced, no compute (4): a new file in a folder starts a run, as a request does
     "clock", "random", "secret", "file_arrival",
-    // durable runs — answered by the host when an event arrives (2)
-    "await", "resume_token",
+    // durable runs — answered by the host when an event arrives, or when people decide (3)
+    "await", "resume_token", "approval",
     // state cell (2)
     "store_read", "store_write",
     // collections: keyed items, read by key or in order, put and deleted (4)
@@ -506,6 +506,9 @@ pub fn interface_of(name: &str) -> Option<Unit> {
         // The token that delivers an event to the waiting point named `await` (a callback URL's
         // part, say). The same token for the whole run, however often it is evaluated.
         "resume_token" => prim(vec![], vec![Param::frozen("await", "event")], Text),
+        // A waiting point people decide: `people` different people approve (1 to 5), or one
+        // declines. Its value is the decision ({approved, by, …}); it has no token.
+        "approval" => prim(vec![], vec![Param::frozen("name", "approval"), Param::frozen("expires", "604800"), Param::frozen("people", "1")], Type::Record),
 
         // ── state cell ── `"key"` (frozen) names which slot this leaf touches — see the
         // keyed-state-capability L4. `capabilities_of` now fails closed without one, the
@@ -725,13 +728,13 @@ mod tests {
     }
 
     #[test]
-    fn genesis_has_151_leaves() {
+    fn genesis_has_178_leaves() {
         // The §13a count — a tripwire if the frozen set is ever changed by accident.
         // 37 + to_text + is_truthy + guard + default + equals (the universal any-typed
         // primitives) + the record kit (record, field, with_field, without_field, keys), added
         // deliberately for M1 (docs/PLATFORM_LAYOUT.md), json_parse + json_stringify, and the
         // keyed record kit (lookup, insert, remove), find, extend, http_request, secret, and the
-        // durable-run pair (await, resume_token), the signature kit (sha256, hmac_sha256,
+        // durable-run trio (await, resume_token, approval), the signature kit (sha256, hmac_sha256,
         // hex, base64, secure_equals), split, the collection kit (get, list, put, delete), and
         // as_text (the language's string interpolation) and coalesce (its `??` and `if … else`
         // with a fallback on a wire), both for docs/LANGUAGE.md, range, and the named-folder kit
@@ -755,7 +758,7 @@ mod tests {
         // decimal_round, decimal_sum, decimal_compare) and CSV's (csv_parse, csv_format); and the
         // calendar leaves (date_add, business_day_add, business_days_between, is_business_day);
         // and XML's (xml_parse, xml_format, xml_find, xml_text, xml_attribute).
-        assert_eq!(GENESIS.len(), 177);
+        assert_eq!(GENESIS.len(), 178);
     }
 
     #[test]

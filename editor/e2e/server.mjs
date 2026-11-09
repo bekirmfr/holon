@@ -6,7 +6,7 @@
 // Its setup code is fixed (HOLON_SETUP_CODE), and once it answers it is set up with the tests'
 // admin (fixtures.ts). `node e2e/server.mjs --fresh` starts another on 7521 (likewise) left as installed,
 // not set up: the accounts tests (accounts.e2e.ts) set it up through the editor, and sign in
-// through the stand-in identity provider (mock-oidc.mjs) once its admin panel says to.
+// through the stand-in identity provider (mock-oidc.mjs) once People and access says to.
 
 import { execFileSync, spawn } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";

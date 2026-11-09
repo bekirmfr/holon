@@ -30,6 +30,7 @@ the editor show).
 | `FileArrival("f")` | run on each file new, changed or removed in the folder "f" (as its on file lines say), and pass it on | `on.file.created(f, …)`, `on.file.deleted(f, …)` |
 | `RunsAction("billing/charge")` | run the action charge of the flow billing | `charge(x)`, with `import { charge } from "flow:billing"` |
 | `Await("e")` | wait for an event "e" and continue later | `await event("e")` |
+| `Approval("a/2")` | wait for 2 people's approval "a" and continue later | `await approval("a", { people: 2 })` |
 
 A flow's triggers, what start its runs, are among them: `NetworkIngress` for its routes, `Clock`
 for an `every`, `FileArrival` for each folder a file handler watches, and `Action("name")` for
@@ -128,8 +129,8 @@ nodes that need it have no value. A trigger can't be optional.
 ## Who may run an action
 
 An action is never reached from the network: the flow's port answers only its routes. It runs
-when someone runs it by its name, from the editor's [server panel](../guides/editor.md#the-server-panel), the
-[deployed page](../guides/editor.md#the-deployed-page), or
+when someone runs it by its name, from the editor's [tools panel](../guides/editor.md#the-tools-panel), the
+[flow's page](../guides/editor.md#a-flows-page), or
 `POST /trigger/<slug>/<name>` on the holon server, its body the JSON the action receives
 (nothing is `{}`). On a server with accounts, an editor or an admin may run one, and a viewer may
 not.

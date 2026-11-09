@@ -137,6 +137,11 @@ pub(crate) fn route(state: &AppState, request: &Request) -> Response {
         return Response::text("ok");
     }
 
+    // The version this host runs, for the console's host card.
+    if method == "GET" && url == "/version" {
+        return Response::text(env!("CARGO_PKG_VERSION"));
+    }
+
     if let Some(hash_hex) = url.strip_prefix("/unit/")
         && method == "GET" {
             return handle_get_unit(&state.store, hash_hex);
@@ -172,7 +177,7 @@ pub(crate) fn route(state: &AppState, request: &Request) -> Response {
     }
 
     if method == "POST" && url == "/deploy" {
-        let response = handle_post_deploy(&state.store, &state.deployments, &state.deployments_path, &state.policy(), &state.secrets, &state.folders, request, by, agent, &state.activity);
+        let response = handle_post_deploy(state, request, by, agent);
         sync_listeners(state);
         return response;
     }
@@ -193,6 +198,29 @@ pub(crate) fn route(state: &AppState, request: &Request) -> Response {
         if method == "DELETE" {
             return recorded(state, handle_delete_flow(&state.flows, &state.flows_path, name), "deleted flow", name, by);
         }
+    }
+
+    // Versions waiting for a person, and what became of the others (proposals.rs).
+    if method == "GET" && url == "/proposals" {
+        return crate::proposals::handle_get_proposals(state);
+    }
+    if let Some(rest) = url.strip_prefix("/proposals/") {
+        if let Some(id) = rest.strip_suffix("/decline")
+            && method == "POST"
+        {
+            return crate::proposals::handle_post_decline(state, id, request, by);
+        }
+        if method == "GET" && !rest.contains('/') {
+            return crate::proposals::handle_get_proposal(state, rest);
+        }
+    }
+
+    // The host at a glance (the console's Overview), and its run logs checked again.
+    if method == "GET" && url.split('?').next() == Some("/summary") {
+        return crate::summary::handle_get_summary(state, request);
+    }
+    if method == "POST" && url == "/summary/check" {
+        return crate::summary::handle_post_check(state);
     }
 
     if method == "GET" && url.split('?').next() == Some("/activity") {
@@ -232,6 +260,11 @@ pub(crate) fn route(state: &AppState, request: &Request) -> Response {
         {
             return durable::handle_get_runs(&state.deployments, slug);
         }
+        if let Some((slug, run_id)) = rest.strip_suffix("/decide").and_then(|r| r.split_once("/runs/"))
+            && method == "POST"
+        {
+            return durable::handle_post_decide(state, slug, run_id, &caller, request);
+        }
         if let Some(slug) = rest.strip_suffix("/changes")
             && method == "GET"
         {
@@ -252,6 +285,10 @@ pub(crate) fn route(state: &AppState, request: &Request) -> Response {
         } else if let Some(slug) = rest.strip_suffix("/export") {
             if method == "GET" {
                 return verify::handle_get_export(&state.store, &state.folders, &state.deployments, slug, request);
+            }
+        } else if let Some(slug) = rest.strip_suffix("/replay") {
+            if method == "GET" {
+                return verify::handle_get_replay(&state.store, &state.folders, &state.deployments, slug, request);
             }
         } else if let Some(slug) = rest.strip_suffix("/document") {
             if method == "GET" {
@@ -304,6 +341,10 @@ pub(crate) fn route(state: &AppState, request: &Request) -> Response {
         } else if let Some(slug) = rest.strip_suffix("/request") {
             if method == "POST" {
                 return handle_post_request(state, slug, request, by);
+            }
+        } else if let Some(slug) = rest.strip_suffix("/settings") {
+            if method == "POST" {
+                return crate::proposals::handle_post_settings(state, slug, request, by);
             }
         } else if let Some(slug) = rest.strip_suffix("/tick") {
             if method == "POST" {

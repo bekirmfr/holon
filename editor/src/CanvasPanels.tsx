@@ -1,5 +1,5 @@
-// The canvas's tab strip (one tab per open flow), and its two button panels: the flow toolbar
-// (top left) and the projection panel (bottom right).
+// The editor's tab strip (Home, then one tab per open flow), its bar (the flow toolbar, above
+// the canvas), and the projection panel (bottom right of the canvas).
 
 import type { CSSProperties, ReactNode } from "react";
 import type { WValue } from "./holon";
@@ -7,13 +7,14 @@ import { boundaryLabels, formatValue } from "./diagnostics";
 import { BoundaryField } from "./BoundaryField";
 import type { Projection } from "./canvasOps";
 import type { Mode } from "./tabs";
+import { Kbd } from "./ui/Kbd";
 
 const primaryBtn: CSSProperties = {
   font: "inherit",
   fontSize: 11,
   padding: "3px 10px",
-  color: "#0e1a2f",
-  background: "#6fd3e0",
+  color: "var(--accent-ink)",
+  background: "var(--accent)",
   border: "none",
   borderRadius: 3,
   cursor: "pointer",
@@ -23,60 +24,43 @@ const historyBtn = (enabled: boolean): CSSProperties => ({
   font: "inherit",
   fontSize: 11,
   padding: "3px 8px",
-  color: "#9fb4d4",
-  background: "#0e1a2f",
-  border: "1px solid #1b2a45",
+  color: "var(--muted)",
+  background: "var(--surface-2)",
+  border: "1px solid var(--border)",
   borderRadius: 3,
   cursor: enabled ? "pointer" : "default",
   opacity: enabled ? 1 : 0.4,
   whiteSpace: "nowrap",
 });
 
-const KIND_COLOR = { deployed: "#9ad29f", saved: "#9fb4d4", draft: "#e0c36f" } as const;
+const KIND_COLOR = { deployed: "var(--ok)", saved: "var(--muted)", draft: "var(--warn)" } as const;
 
-/** Above the canvas: a tab per open flow, with what it is (draft, saved, deployed), its mode,
- *  unsaved changes, and a close button. */
+/** The editor's tabs, as a browser's (gaps-web.md G16): Home first (a new tab's page), then a
+ *  tab per open flow with what it is (draft, saved, deployed), its mode, ● while modified, and
+ *  ×; + starts a draft in a tab of its own. */
 export function FlowTabs({
   tabs,
   active,
+  home,
+  onHome,
   onSelect,
   onClose,
-  pages,
+  onNew,
 }: {
   tabs: { id: number; name: string | null; kind: "deployed" | "saved" | "draft"; dirty: boolean; mode: Mode }[];
-  /** The active flow tab, or -1 while a page tab (home, welcome) is shown. */
+  /** The active flow tab, or -1 while Home is shown. */
   active: number;
+  home: boolean;
+  onHome: () => void;
   onSelect: (id: number) => void;
   onClose: (id: number) => void;
-  /** The tabs before the flows: home (pinned), and the welcome while it's open. */
-  pages: { key: string; label: string; active: boolean; onSelect: () => void; onClose?: () => void }[];
+  onNew: () => void;
 }) {
   return (
     <div className="hl-tabs" role="tablist" aria-label="open tabs">
-      {pages.map((p) => (
-        <div
-          key={p.key}
-          role="tab"
-          aria-selected={p.active}
-          className={p.active ? "hl-tab hl-tab--active" : "hl-tab"}
-          onClick={p.onSelect}
-          title={p.label}
-        >
-          <span className="hl-tab__name">{p.label}</span>
-          {p.onClose && (
-            <button
-              className="hl-tab__close"
-              onClick={(e) => {
-                e.stopPropagation();
-                p.onClose!();
-              }}
-              title={`close the ${p.label}`}
-            >
-              ×
-            </button>
-          )}
-        </div>
-      ))}
+      <div role="tab" aria-selected={home} className={home ? "hl-tab hl-tab--active hl-tab--home" : "hl-tab hl-tab--home"} onClick={onHome} title="Home: open a flow, start one, the tabs closed lately, the keys">
+        <span className="hl-tab__name">Home</span>
+      </div>
       {tabs.map((t) => (
         <div
           key={t.id}
@@ -85,14 +69,18 @@ export function FlowTabs({
           className={t.id === active ? "hl-tab hl-tab--active" : "hl-tab"}
           onClick={() => onSelect(t.id)}
           onAuxClick={(e) => e.button === 1 && onClose(t.id)}
-          title={`${t.name ?? "untitled"}: ${t.kind}, ${t.mode} mode${t.dirty ? ", unsaved changes" : ""}`}
+          title={`${t.name ?? "untitled"}: ${t.kind}, ${t.mode === "view" ? "viewing its runs" : "edited"}${t.dirty ? ", modified" : ""}`}
         >
           <span className="hl-tab__name">{t.name ?? "untitled"}</span>
-          {t.dirty && <span className="hl-tab__dirty">•</span>}
+          {t.dirty && (
+            <span className="hl-tab__dirty" aria-label="modified">
+              ●
+            </span>
+          )}
           <span className="hl-tab__kind" style={{ color: KIND_COLOR[t.kind] }}>
             {t.kind}
           </span>
-          {t.mode === "view" && <span className="hl-tab__mode">view</span>}
+          {t.mode === "view" && <span className="hl-tab__mode">runs</span>}
           <button
             className="hl-tab__close"
             onClick={(e) => {
@@ -100,54 +88,67 @@ export function FlowTabs({
               onClose(t.id);
             }}
             title="close this tab"
+            aria-label={`close ${t.name ?? "untitled"}`}
           >
             ×
           </button>
         </div>
       ))}
+      <button className="hl-tabs__new" onClick={onNew} title="a new draft, in a tab of its own" aria-label="new tab">
+        +
+      </button>
     </div>
   );
 }
 
-/** Edit or view: the same flow as edited (palette, save, deploy) or as deployed (read only,
- *  with its runs). View needs a deployment. */
+/** Edit or View runs (`e`): the same flow as edited (palette, save, deploy) or as deployed
+ *  (read only, with its runs). Viewing needs a deployment. */
 function ModeSwitch({ mode, canView, onMode }: { mode: Mode; canView: boolean; onMode: (m: Mode) => void }) {
-  const seg = (m: Mode, enabled: boolean, title: string) => (
+  const seg = (m: Mode, label: string, enabled: boolean, title: string) => (
     <button
       onClick={() => enabled && m !== mode && onMode(m)}
       disabled={!enabled}
       title={title}
+      aria-label={m}
+      aria-pressed={m === mode}
+      aria-keyshortcuts="e"
       style={{
         font: "inherit",
         fontSize: 11,
         padding: "3px 10px",
         border: "none",
-        color: m === mode ? "#0e1a2f" : "#9fb4d4",
-        background: m === mode ? "#6fd3e0" : "transparent",
+        color: m === mode ? "var(--accent-ink)" : "var(--muted)",
+        background: m === mode ? "var(--accent)" : "transparent",
         cursor: enabled && m !== mode ? "pointer" : "default",
         opacity: enabled ? 1 : 0.4,
       }}
     >
-      {m}
+      {label}
     </button>
   );
   return (
-    <span style={{ display: "inline-flex", border: "1px solid #1b2a45", borderRadius: 3, overflow: "hidden" }}>
-      {seg("edit", true, "the flow as edited: place, wire, save and deploy")}
-      {seg("view", canView, canView ? "the flow as deployed, read only, with its runs" : "deploy it to view its runs")}
+    <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+      <span style={{ display: "inline-flex", border: "1px solid var(--border)", borderRadius: 3, overflow: "hidden" }}>
+        {seg("edit", "Edit", true, "the flow as edited: place, wire, save and deploy (e)")}
+        {seg("view", "View runs", canView, canView ? "the flow as deployed, read only, with its runs (e)" : "deploy it to view its runs")}
+      </span>
+      <Kbd k="e" />
     </span>
   );
 }
 
-/** Top left: the flow's name and mode, then in edit mode save, undo/redo and the deploy bar
- *  (passed in as `deployBar`), in view mode the values toggle. `error` shows in both. */
+/** A pane the bar shows or hides, by its key (gaps-web.md G17). Its button is named for the
+ *  pane and whether it shows ("text on"). */
+export type PaneToggle = { key: string; name: string; on: boolean; toggle: () => void };
+
+/** The editor's bar, above the canvas: the flow's name and mode, the panes, then in edit mode
+ *  save, undo/redo and the deploy bar (passed in as `deployBar`). `error` shows in both. */
 export function FlowToolbar({
   histVersion,
   mode,
   canView,
   onMode,
-  showValues,
-  onToggleValues,
+  panes,
   flowName,
   dirty,
   onSave,
@@ -156,10 +157,7 @@ export function FlowToolbar({
   onUndo,
   onRedo,
   deployBar,
-  saveMsg,
   error,
-  textOpen,
-  onToggleText,
   onTidy,
   onFit,
 }: {
@@ -168,9 +166,7 @@ export function FlowToolbar({
   /** Whether it has a deployment to view. */
   canView: boolean;
   onMode: (m: Mode) => void;
-  /** View mode: whether nodes show their outputs' values as chips. */
-  showValues: boolean;
-  onToggleValues: () => void;
+  panes: PaneToggle[];
   flowName: string | null;
   dirty: boolean;
   onSave: () => void;
@@ -179,11 +175,7 @@ export function FlowToolbar({
   onUndo: () => void;
   onRedo: () => void;
   deployBar: ReactNode;
-  saveMsg: string;
   error: string;
-  /** Whether the flow's text is shown beside the canvas (TextPane.tsx). */
-  textOpen: boolean;
-  onToggleText: () => void;
   /** Lays the flow out again (the shared tidy layout, graphLayout.ts): the nodes only. */
   onTidy: () => void;
   /** Fits the whole flow in the view. */
@@ -192,29 +184,32 @@ export function FlowToolbar({
   return (
     // histVersion is what makes the undo/redo disabled state live — history itself is a ref
     // (pushing must not re-render the canvas mid-drag), so this re-renders off the counter.
-    <div data-hist={histVersion} style={{ display: "flex", gap: 6, alignItems: "center" }}>
-      <span style={{ color: mode === "view" ? "#e6eefb" : "#9fb4d4", fontSize: 12, letterSpacing: "0.04em" }}>
+    <div data-hist={histVersion} style={{ display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center" }}>
+      <span style={{ color: mode === "view" ? "var(--ink)" : "var(--muted)", fontSize: 12, letterSpacing: "0.04em" }}>
         {flowName ?? "untitled"}
-        {dirty && <span title="unsaved changes"> •</span>}
+        {dirty && <span title="modified: unsaved changes"> ●</span>}
       </span>
       <ModeSwitch mode={mode} canView={canView} onMode={onMode} />
-      <button onClick={onToggleText} aria-pressed={textOpen} title={textOpen ? "close the flow's text" : "the flow as text, beside the canvas"} style={historyBtn(true)}>
-        text {textOpen ? "on" : "off"}
-      </button>
+      <span className="hl-panes" role="group" aria-label="panes">
+        {panes.map((p) => (
+          <button
+            key={p.key}
+            className="hl-panes__toggle"
+            onClick={p.toggle}
+            aria-pressed={p.on}
+            aria-label={`${p.name} ${p.on ? "on" : "off"}`}
+            aria-keyshortcuts={p.key}
+            title={`${p.on ? "hide" : "show"} the ${p.name} (${p.key})`}
+          >
+            {p.name} <Kbd k={p.key} />
+          </button>
+        ))}
+      </span>
       <button onClick={onFit} title="fit: the whole flow in the view" style={historyBtn(true)}>
         ⤢
       </button>
       {mode === "view" ? (
-        <>
-          <span style={{ color: "#7e8ea8", fontSize: 11 }}>deployed · read only</span>
-          <button
-            onClick={onToggleValues}
-            style={historyBtn(true)}
-            title={showValues ? "hide the values: the flow exactly as designed" : "show each output's value beside it"}
-          >
-            values {showValues ? "on" : "off"}
-          </button>
-        </>
+        <span style={{ color: "var(--faint)", fontSize: 11 }}>deployed · read only</span>
       ) : (
         <>
           <button onClick={onSave} style={primaryBtn}>
@@ -230,10 +225,9 @@ export function FlowToolbar({
             ▤
           </button>
           {deployBar}
-          {saveMsg && <span style={{ color: "#9ad29f", fontSize: 11 }}>{saveMsg}</span>}
         </>
       )}
-      {error && <span style={{ color: "#e0916f", fontSize: 11, maxWidth: 420 }}>{error}</span>}
+      {error && <span style={{ color: "var(--bad)", fontSize: 11, maxWidth: 420 }}>{error}</span>}
     </div>
   );
 }
@@ -243,8 +237,8 @@ const opBtn = (enabled: boolean): CSSProperties => ({
   fontSize: 12,
   letterSpacing: "0.04em",
   padding: "5px 12px",
-  color: "#0e1a2f",
-  background: "#6fd3e0",
+  color: "var(--accent-ink)",
+  background: "var(--accent)",
   border: "none",
   borderRadius: 3,
   cursor: enabled ? "pointer" : "default",
@@ -298,8 +292,8 @@ export function ProjectionPanel({
         ungroup
       </button>
       {projection && (
-        <div style={{ fontSize: 12, color: "#9fb4d4", textAlign: "right", lineHeight: 1.4 }}>
-          <div style={{ color: "#6fd3e0" }} title={projection.hash}>
+        <div style={{ fontSize: 12, color: "var(--muted)", textAlign: "right", lineHeight: 1.4 }}>
+          <div style={{ color: "var(--accent)" }} title={projection.hash}>
             {projection.hash.slice(0, 12)}…
           </div>
           {projection.ports.length > 0 && (
@@ -316,7 +310,7 @@ export function ProjectionPanel({
             </div>
           )}
           {projection.results.length > 0 && (
-            <div style={{ display: "flex", flexDirection: "column", gap: 2, alignItems: "flex-end", color: "#9ad29f" }}>
+            <div style={{ display: "flex", flexDirection: "column", gap: 2, alignItems: "flex-end", color: "var(--ok)" }}>
               {boundaryLabels(projection.outputs, projection.resultSource).map((label, i) => (
                 <div key={i} style={{ display: "flex", alignItems: "center", gap: 6 }}>
                   <span>
@@ -330,9 +324,9 @@ export function ProjectionPanel({
                       font: "inherit",
                       fontSize: 10,
                       lineHeight: 1,
-                      color: "#9fb4d4",
-                      background: "#0e1a2f",
-                      border: "1px solid #1b2a45",
+                      color: "var(--muted)",
+                      background: "var(--surface-2)",
+                      border: "1px solid var(--border)",
                       borderRadius: 3,
                       width: 14,
                       height: 14,
@@ -348,7 +342,7 @@ export function ProjectionPanel({
           )}
         </div>
       )}
-      {error && <div style={{ fontSize: 12, color: "#e0916f", maxWidth: 240, textAlign: "right" }}>{error}</div>}
+      {error && <div style={{ fontSize: 12, color: "var(--bad)", maxWidth: 240, textAlign: "right" }}>{error}</div>}
     </div>
   );
 }

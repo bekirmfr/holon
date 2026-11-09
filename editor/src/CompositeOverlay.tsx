@@ -44,6 +44,7 @@ import { compatible, type WPort } from "./holon";
 import { outputColor, typeColor, typeLabel } from "./theme";
 import { DND_MIME, FLOW_PREFIX } from "./Palette";
 import { useOptionalDialog } from "./Dialog";
+import { useDark } from "./look";
 import { History } from "./history";
 
 /** One level opened: the composite's name, its node in the level above (or in the flow, for the
@@ -193,7 +194,7 @@ function BoundaryNode({ id, data }: NodeProps<Node<BoundaryData>>) {
   };
   return (
     <div className="hl-node" style={{ minWidth: 150, borderStyle: "dashed" }}>
-      <div className="hl-node__title" style={{ color: "#9fb4d4", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
+      <div className="hl-node__title" style={{ color: "var(--muted)", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
         <span>{inbound ? "inputs" : "outputs"}</span>
         {editable && (
           <button className="nodrag" onClick={add} style={smallButton} title={`add an ${kind}, then wire it inside`} aria-label={`add an ${kind}`}>
@@ -202,7 +203,7 @@ function BoundaryNode({ id, data }: NodeProps<Node<BoundaryData>>) {
         )}
       </div>
       <div style={{ padding: "4px 0" }}>
-        {data.ports.length === 0 && <div style={{ padding: "2px 12px", color: "var(--ink-dim)", fontSize: 11 }}>none</div>}
+        {data.ports.length === 0 && <div style={{ padding: "2px 12px", color: "var(--faint)", fontSize: 11 }}>none</div>}
         {data.ports.map((p) => (
           // Two lines per port: its name, and what it is wired to outside; the handle centred on both.
           <div key={p.name} style={{ position: "relative", padding: "4px 14px", textAlign: inbound ? "right" : "left" }}>
@@ -220,7 +221,7 @@ function BoundaryNode({ id, data }: NodeProps<Node<BoundaryData>>) {
                 </button>
               )}
             </div>
-            <div style={{ color: "var(--ink-dim)", fontSize: 10, whiteSpace: "nowrap" }}>
+            <div style={{ color: "var(--faint)", fontSize: 10, whiteSpace: "nowrap" }}>
               {p.unit === undefined ? "new: wire it outside once applied" : p.outside.length === 0 ? "not wired outside" : `${inbound ? "← " : "→ "}${p.outside.join(", ")}`}
             </div>
             {inbound && <Handle type="source" position={Position.Right} id={p.name} className="hl-handle" style={{ background: typeColor(p.ty) }} />}
@@ -238,9 +239,9 @@ const smallButton: CSSProperties = {
   fontSize: 10,
   lineHeight: 1,
   padding: "1px 5px",
-  color: "#9fb4d4",
+  color: "var(--muted)",
   background: "transparent",
-  border: "1px solid #1b2a45",
+  border: "1px solid var(--border)",
   borderRadius: 3,
   cursor: "pointer",
 };
@@ -268,6 +269,7 @@ function Level({
   onMessage: (m: string) => void;
 }) {
   const { fitView, screenToFlowPosition, getNode, getEdges } = useReactFlow();
+  const dark = useDark();
   // Fitted again once the overlay has grown: it first lays out in the node's small box.
   useEffect(() => {
     if (!grown) return;
@@ -350,6 +352,7 @@ function Level({
     <NodeActions.Provider value={actions}>
       <div style={{ position: "absolute", inset: 0 }} onDragOver={(e) => editable && e.preventDefault()} onDrop={onDrop}>
         <ReactFlow
+          colorMode={dark ? "dark" : "light"}
           nodes={frame.nodes}
           edges={frame.edges}
           onNodesChange={onNodesChange}
@@ -365,7 +368,7 @@ function Level({
           maxZoom={2}
           proOptions={{ hideAttribution: true }}
         >
-          <Background variant={BackgroundVariant.Lines} gap={26} color="#1b2a45" />
+          <Background variant={BackgroundVariant.Lines} gap={26} color="var(--border)" />
           <Controls showInteractive={false} />
         </ReactFlow>
       </div>
@@ -377,9 +380,9 @@ const button: CSSProperties = {
   font: "inherit",
   fontSize: 11,
   padding: "2px 10px",
-  color: "#9fb4d4",
+  color: "var(--muted)",
   background: "transparent",
-  border: "1px solid #1b2a45",
+  border: "1px solid var(--border)",
   borderRadius: 3,
   cursor: "pointer",
 };
@@ -491,9 +494,9 @@ export function CompositeOverlay({
             </button>
             {frames.map((f, i) => (
               <span key={i}>
-                <span style={{ color: "var(--ink-dim)" }}> › </span>
+                <span style={{ color: "var(--faint)" }}> › </span>
                 <button
-                  style={{ ...button, border: "none", padding: "2px 4px", color: i === top ? "#e6eefb" : "#9fb4d4" }}
+                  style={{ ...button, border: "none", padding: "2px 4px", color: i === top ? "var(--ink)" : "var(--muted)" }}
                   onClick={() => back(i)}
                   disabled={i === top}
                   title={i === top ? undefined : "back to this level, the changes below folded into it"}
@@ -504,8 +507,8 @@ export function CompositeOverlay({
               </span>
             ))}
           </span>
-          <span style={{ color: "var(--ink-dim)", fontSize: 11 }}>{editable ? "change it like the flow, then apply" : "inside, read only"}</span>
-          {msg && <span style={{ color: msg.startsWith("applied") ? "#9ad29f" : "#e0916f", fontSize: 11 }}>{msg}</span>}
+          <span style={{ color: "var(--faint)", fontSize: 11 }}>{editable ? "change it like the flow, then apply" : "inside, read only"}</span>
+          {msg && <span style={{ color: msg.startsWith("applied") ? "var(--ok)" : "var(--bad)", fontSize: 11 }}>{msg}</span>}
           <span style={{ marginLeft: "auto", display: "inline-flex", gap: 6 }}>
             {editable && (
               <>
@@ -519,7 +522,7 @@ export function CompositeOverlay({
             )}
             {editable && (
               <button
-                style={{ ...button, ...(dirty ? { color: "#0e1a2f", background: "#6fd3e0", border: "none" } : { opacity: 0.4, cursor: "default" }) }}
+                style={{ ...button, ...(dirty ? { color: "var(--accent-ink)", background: "var(--accent)", border: "none" } : { opacity: 0.4, cursor: "default" }) }}
                 onClick={apply}
                 disabled={!dirty}
                 title="make these changes a new version of the composite, in its place in the flow"

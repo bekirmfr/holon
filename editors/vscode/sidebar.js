@@ -217,12 +217,16 @@ function runItem(slug, e) {
   return item;
 }
 
-/** A run parked for an event. Only the flow's own link can answer it, so this only says what it waits for. */
+/** A run parked for an event, which only the flow's own link answers, or at an approval, which people
+ *  signed in decide (`people` is set only on an approval); so this only says what it waits for. */
 function waitingItem(run) {
-  const waits = (run.waiting ?? []).map((w) => w.name).join(", ");
+  const at = run.waiting ?? [];
+  const waits = at.map((w) => (w.people ? `approval ${w.name}, ${(w.approved ?? []).length} of ${w.people}` : w.name)).join(", ");
   const item = new vscode.TreeItem(`${run.route ?? run.kind} (${run.run_id})`, vscode.TreeItemCollapsibleState.None);
   item.description = `waits for ${waits}`;
-  item.tooltip = "The flow answers this through the link it gave the run. Holon can't answer it from here.";
+  item.tooltip = at.some((w) => w.people)
+    ? "People signed in decide an approval, in the editor's Approvals or with holon decide; an agent never does."
+    : "The flow answers this through the link it gave the run. Holon can't answer it from here.";
   item.iconPath = new vscode.ThemeIcon("watch");
   return item;
 }

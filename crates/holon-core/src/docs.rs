@@ -180,6 +180,7 @@ pub fn describe(name: &str) -> Option<&'static str> {
         "random" => "A random number from 0 up to 1, the same everywhere in one run, and recorded.",
         "secret" => "A secret's value, by the name set on the node, from the deployment's secrets (set under ⚙). Never logged: it shows as ‹secret:name›. Reading it is a permission.",
         "await" => "Waits for an event: the run parks here and continues, perhaps days later, when the event arrives (through its resume_token), or answers {expired: true} after expires seconds.",
+        "approval" => "Waits for people to decide: the run parks here until as many different people as people says (1 to 5), signed in to Holon, approve it, or one declines it, and answers {approved, by} (by: who approved), with declined_by and reason when declined, or expired: true after expires seconds. Only the server delivers it: it has no token, and no route resumes it. Waiting for it is a permission.",
         "resume_token" => "The token that delivers an event to the waiting point (await) named on the node: put it in a link or a callback. Never logged.",
         "store_read" => "The deployment's state under the key set on the node, as the run started. Reading it is a permission.",
         "store_write" => "Sets the deployment's state under the key set on the node to value, when the run finishes. Writing it is a permission.",

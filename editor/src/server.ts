@@ -64,6 +64,16 @@ async function api(url: string, init: RequestInit = {}): Promise<Response> {
 const post = (url: string, body?: unknown) =>
   api(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) });
 
+/** `GET /version`: the version the host runs, for the host card. */
+export async function getVersion(): Promise<string> {
+  const res = await api(`${BASE}/version`);
+  if (!res.ok) throw new Error(`${res.status}`);
+  return (await res.text()).trim();
+}
+
+/** Where the editor's server is, as the host card says it: its address, or this page's. */
+export const hostAddress = (): string => (BASE ? new URL(BASE).host : window.location.host);
+
 /** `GET /auth/state`: whether the server waits for its first admin, and where to sign in
  *  through a provider, when it has one. */
 export async function getAuthState(): Promise<{ setup: boolean; oidc: AuthConfig | null }> {
@@ -103,7 +113,7 @@ export function setPrefs(prefs: unknown): Promise<void> {
   return save;
 }
 
-// ── the admin panel ──────────────────────────────────────────────────────────────────────
+// ── the host's pages ──────────────────────────────────────────────────────────────────────
 export type AccountEntry = { name: string; role: Role; email: string | null; disabled: boolean; created_at: number; created_by: string | null; invited: boolean };
 export type TokenEntry = { id: string; label: string; role: Role; created_at: number; created_by: string };
 export type OidcSettings = { issuer: string; client_id: string };
@@ -171,6 +181,40 @@ export type DatabaseEntry = {
   lock?: "commit" | "run";
   deployment: string | null;
 };
+/** A list only a newer server serves: null where this one answers its route with a bare 404. */
+async function listedOrNone<T>(url: string): Promise<T[] | null> {
+  const res = await api(url);
+  if (res.status === 404 && !(await res.clone().text()).trim()) return null;
+  return asJson<T[]>(res);
+}
+/** A name flows import as `"mail:<name>"` (`GET /admin/mails`): an SMTP server it sends through, an
+ *  IMAP mailbox it reads, or both. Every source (`smtp`, `imap`, `oauth.source`) is a reference
+ *  (`env:…`, `vault:…`), never a value; `address` is where it points, without login or query. */
+export type MailEntry = {
+  name: string;
+  deployment: string | null;
+  smtp?: string | null;
+  address?: string | null;
+  from?: string | null;
+  to?: string[];
+  mailbox?: { imap: string; address: string; folder: string; done?: string | null; verdict_from?: string | null; every?: string | null } | null;
+  oauth?: { source: string; address: string } | null;
+};
+/** `GET /admin/mails`; null: this server binds no mail. */
+export const listMails = () => listedOrNone<MailEntry>(`${BASE}/admin/mails`);
+/** A name flows listen to as `"feed:<name>"` (`GET /admin/feeds`): a stream of events at `address`.
+ *  `url` and each header's value are sources (`env:…`, `vault:…`), never values. */
+export type FeedEntry = {
+  name: string;
+  deployment: string | null;
+  url: string;
+  address: string;
+  headers?: Record<string, string>;
+  buffer?: number | null;
+  idle?: string | null;
+};
+/** `GET /admin/feeds`; null: this server binds no feeds. */
+export const listFeeds = () => listedOrNone<FeedEntry>(`${BASE}/admin/feeds`);
 /** A database to bind: a SQLite file's path or a connection's source, with the admin's schema to run first (which creates a SQLite file if there is none). */
 export type DatabaseBinding = Pick<DatabaseEntry, "name" | "access" | "deployment" | "lock"> & { path?: string; connection?: string; schema: string | null };
 export const listDatabases = async () => asJson<DatabaseEntry[]>(await api(`${BASE}/admin/databases`));
@@ -444,7 +488,9 @@ export async function listSecrets(slug: string): Promise<SecretInfo[]> {
  *  from: the server's environment and its dotenv file, read again first. Names, never values. */
 export const getEnvSecretNames = async () => asJson<{ names: string[]; dotenv: string | null }>(await api(`${BASE}/admin/secrets/env`));
 
-const secretUrl = (slug: string, name: string) => `${BASE}/deployments/${encodeURIComponent(slug)}/secrets/${encodeURIComponent(name)}`;
+/** A secret's address: a deployment's, or (`slug` null) the server's own, an admin's. */
+const secretUrl = (slug: string | null, name: string) =>
+  slug === null ? `${BASE}/admin/secrets/${encodeURIComponent(name)}` : `${BASE}/deployments/${encodeURIComponent(slug)}/secrets/${encodeURIComponent(name)}`;
 
 /** Set a secret, as a new version: a value (sent to the server, sealed there, never sent back),
  *  or where it is kept (`from`: `env:…`, `vault:…`). Answers the new version. */
@@ -478,7 +524,77 @@ export async function getActivity(limit = 30): Promise<ActivityEntry[]> {
   return (await asJson<{ entries: ActivityEntry[] }>(await api(`${BASE}/activity?limit=${limit}`))).entries;
 }
 
-export async function getSecretHistory(slug: string, name: string): Promise<SecretHistory> {
+/** What a check of every run log found (`POST /summary/check`): the lines it read, each run whose
+ *  line doesn't name the hash of the one before, and each log's head as read. */
+export type ChainCheck = { at_ms: number; runs: number; breaks: { slug: string; seq: number }[]; heads: [string, string][] };
+
+/** The host at a glance (`GET /summary`, holon-server's summary.rs): `hours` hours ending at
+ *  `at_ms`, each deployment's runs and failures in each (the oldest first), the totals, the
+ *  newest runs across every flow, and the run logs' chain. */
+export type Summary = {
+  at_ms: number;
+  hours: number;
+  totals: { runs: number; failed: number; running: number; paused: number; stopped: number };
+  deployments: {
+    slug: string;
+    status: "running" | "paused" | "stopped";
+    runs: number[];
+    failed: number[];
+    /** Its unrecorded handlers' runs, all told: never logged, so in no hour. */
+    unrecorded: { runs: number; failed: number };
+    on_record: number;
+    head: string;
+    breaks: number[];
+  }[];
+  latest: { slug: string; seq: number; at_ms: number; duration_ms: number; kind: string; route: string | null; status: number | null; failed: boolean; waited?: boolean }[];
+  chain: {
+    on_record: number;
+    breaks: number;
+    /** Where the heads go, when it last took a batch (since the server started), and how many wait. */
+    witness: { address: string; taken_ms: number | null; waiting: number } | null;
+    checked: ChainCheck | null;
+  };
+};
+export const getSummary = async (hours = 24) => asJson<Summary>(await api(`${BASE}/summary?hours=${hours}`));
+export const checkChains = async () => asJson<ChainCheck>(await post(`${BASE}/summary/check`));
+
+/** A version someone asks a person to deploy (proposals.rs): an agent's deploy that needs a
+ *  person's approval, with its why and note, and what became of it. */
+export type Proposal = {
+  id: number;
+  slug: string;
+  unit: string;
+  why: string;
+  note?: string;
+  by?: string;
+  agent: boolean;
+  at_ms: number;
+  /** What it asked to be approved when it was made. */
+  needs: string[];
+  /** The stamp of the save of the flow it made. */
+  saved_at?: number;
+  state: "waiting" | "approved" | "declined" | "replaced";
+  decided_by?: string;
+  decided_at_ms?: number;
+  reason?: string;
+  /** While it waits: the version it would deploy as. */
+  version?: number;
+  /** Its canvas, with its text (`GET /proposals/<id>` only). */
+  document?: FlowDocument;
+};
+
+/** `GET /proposals`: the waiting ones, oldest first (the queue), then the decided, newest first. */
+export const listProposals = async () => (await asJson<{ proposals: Proposal[] }>(await api(`${BASE}/proposals`))).proposals;
+/** `GET /proposals/<id>`: one, with its document. */
+export const getProposal = async (id: number) => asJson<Proposal>(await api(`${BASE}/proposals/${id}`));
+/** Decline a waiting proposal, with a reason its author reads. */
+export const declineProposal = async (id: number, reason: string) => asJson<Proposal>(await post(`${BASE}/proposals/${id}/decline`, { reason }));
+/** Whether agents may propose a deployment's versions. */
+export const setAgentsPropose = async (slug: string, on: boolean) =>
+  asJson<DeploymentEntry>(await post(`${BASE}/deployments/${encodeURIComponent(slug)}/settings`, { agents_propose: on }));
+
+/** A secret's history: a deployment's, or (`slug` null) the server's own. */
+export async function getSecretHistory(slug: string | null, name: string): Promise<SecretHistory> {
   return asJson<SecretHistory>(await api(secretUrl(slug, name)));
 }
 
@@ -497,7 +613,7 @@ export type SecretRollbackPreview = {
 };
 
 /** `POST …/secrets/<name>/rollback` with `dry_run`: refused as the roll back would be. */
-export async function previewSecretRollback(slug: string, name: string, version: number): Promise<SecretRollbackPreview> {
+export async function previewSecretRollback(slug: string | null, name: string, version: number): Promise<SecretRollbackPreview> {
   const res = await api(`${secretUrl(slug, name)}/rollback`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -506,7 +622,7 @@ export async function previewSecretRollback(slug: string, name: string, version:
   return asJson<SecretRollbackPreview>(res);
 }
 
-export async function rollbackSecret(slug: string, name: string, version: number): Promise<number> {
+export async function rollbackSecret(slug: string | null, name: string, version: number): Promise<number> {
   const res = await api(`${secretUrl(slug, name)}/rollback`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -536,6 +652,9 @@ export type HostPolicy = {
   auto: string[];
   allow_plain_http: boolean;
   allow_private_addresses: boolean;
+  /** `[agents] propose`: whether an agent's version that needs a person waits for one as a
+   *  proposal (off: it is refused, and nothing is saved). */
+  agents_propose?: boolean;
   /** `[storage]`: how often the server sweeps (`"10m"`, `"off"`). */
   storage?: { sweep_every: string; warn_at?: string };
 };
@@ -578,19 +697,30 @@ export type DeploymentEntry = {
   /** Why a server deployment isn't answering on its port (it couldn't listen there, say another
    *  program holds it), until a deploy or run listens there again. */
   listen_error?: string;
-  /** How many of its runs are waiting for an event. */
+  /** How many of its runs are waiting for an approval or an event. */
   waiting?: number;
+  /** Whether agents may propose its versions (off: an agent's deploy of it is refused). */
+  agents_propose?: boolean;
 };
 
-/** A run waiting for an event (`GET /deployments/<slug>/runs`; never its tokens). */
+/** A run waiting for an approval or an event (`GET /deployments/<slug>/runs`; never its tokens). */
 export type WaitingRun = {
   run_id: string;
   kind: string;
   route: string | null;
   parked_at: number;
-  waiting: { name: string; expires_at: number }[];
+  /** Each point it waits at; an approval's with how many people it needs and who approved so far. */
+  waiting: { name: string; expires_at: number; people?: number; approved?: { by: string; at: number; reason?: string }[] }[];
   delivered: string[];
 };
+
+/** What a decision did (`POST …/runs/<run_id>/decide`): the approval still waits for more people,
+ *  or the run was given it (`run_error` when its part then failed). */
+export type Decided = { name: string; people: number; approved_by: string[]; outcome: "waiting" | "approved" | "declined"; run_error?: string };
+
+/** Approve, or decline with a reason, the approval `name` a run waits at: a person's to do. */
+export const decideRun = async (slug: string, runId: string, name: string, approve: boolean, reason: string) =>
+  asJson<Decided>(await post(`${BASE}/deployments/${encodeURIComponent(slug)}/runs/${encodeURIComponent(runId)}/decide`, { name, approve, reason: reason.trim() || undefined }));
 
 /** `GET /deployments/<slug>/collections/<name>`: one item (`key`) or a page of items in key order
  *  (`prefix`, `after`, `limit`), as of `root` (one the deployment's log shows) or live. `next`:
@@ -709,6 +839,9 @@ export async function changeDeployment(
  *  enough to replay it exactly (replay.ts). */
 export type LogEntry = {
   seq: number;
+  /** The hash of the log's line before it (hex): the chain a witness checks. Absent for the
+   *  first entry. */
+  prev?: string;
   /** The unit it ran (hex): the deployment's version then. Absent in entries from before. */
   unit?: string;
   session: number;
@@ -771,6 +904,30 @@ export type Tally = { runs: number; failed: number; total_ms: number; last_at_ms
 export async function getLog(slug: string, after?: number): Promise<{ entries: LogEntry[]; next: number; head: string; breaks: number[]; tallies?: Record<string, Tally> }> {
   const q = after === undefined ? "" : `?after=${after}`;
   const res = await api(`${BASE}/deployments/${encodeURIComponent(slug)}/log${q}`);
+  return asJson(res);
+}
+
+/** One run a version was replayed on: what it did then against what the version does with it. */
+export type RunReplayed = {
+  seq: number;
+  at_ms: number;
+  kind: string;
+  route?: string;
+  outcome: "same" | "differs" | "cant_tell";
+  /** How it differs, each a phrase; or why it can't be told, one. */
+  why?: string[];
+  /** A request's status then, and the version's. */
+  status?: number;
+  now_status?: number;
+};
+
+/** `GET /deployments/<slug>/replay`: a version replayed offline on the deployment's recent runs. */
+export type Replayed = { unit: string; replayed: number; same: number; differ: number; cant_tell: number; runs: RunReplayed[] };
+
+/** `GET /deployments/<slug>/replay?unit=<hash>` — the version `unit` (staged, or a proposal's)
+ *  replayed on the deployment's last `runs` runs, offline: nothing is sent or changed. */
+export async function replayVersion(slug: string, unit: string, runs = 20): Promise<Replayed> {
+  const res = await api(`${BASE}/deployments/${encodeURIComponent(slug)}/replay?unit=${encodeURIComponent(unit)}&runs=${runs}`);
   return asJson(res);
 }
 

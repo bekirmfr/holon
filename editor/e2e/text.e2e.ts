@@ -6,14 +6,7 @@
 
 import type { Locator, Page } from "@playwright/test";
 import { expect, SERVER, test } from "./fixtures";
-
-async function openSample(page: Page, title: string) {
-  await page.goto("/");
-  await page.getByRole("button", { name: "flows", exact: true }).click();
-  const card = page.getByText(title, { exact: true }).locator("xpath=../..");
-  await card.getByRole("button", { name: "open" }).click();
-  await expect(page.locator(".hl-tab--active")).toBeVisible();
-}
+import { deploy, openSample } from "./helpers";
 
 /** Replace the whole text, as typing it would. */
 async function typeText(editor: Locator, page: Page, text: string) {
@@ -100,7 +93,7 @@ test("the flow's text drives its canvas, and the canvas its text", async ({ page
   // canvas is a sliver and its toolbar runs under the text pane: its buttons are pressed as such,
   // not at a point another element covers (a click there once waited out the test).
   await page.locator(".hl-canvas").getByRole("button", { name: "save", exact: true }).dispatchEvent("click");
-  await expect(page.locator(".hl-canvas")).toContainText("saved");
+  await expect(page.getByRole("region", { name: "notices" })).toContainText("saved");
   const saved = await request.get(`${SERVER}/flows/hello-api`, { headers: { Authorization: `Bearer ${adminToken}` } });
   const doc = ((await saved.json()) as { document: { source?: string } }).document;
   expect(doc.source).toContain("// says hello, loudly");
@@ -124,4 +117,53 @@ test("the flow's text drives its canvas, and the canvas its text", async ({ page
   await expect(editor).not.toContainText("// says hello");
   await undo.dispatchEvent("click");
   await expect(editor).toContainText("// says hello, loudly");
+});
+
+test("the It may strip says what an edit adds to what the flow may do; Problems, Check and find", async ({ page }) => {
+  await openSample(page, "Hello API");
+  const may = page.getByRole("region", { name: "it may" });
+  // Not deployed yet it says what it may once deployed; an earlier test may have deployed it.
+  await expect(may).toContainText(/^(Deployed, it may|It may)/);
+  await deploy(page);
+  await expect(may).toContainText(/^It may/);
+  await expect(may.locator(".hl-may__chip--new")).toHaveCount(0);
+
+  // A collection written by the route: a new thing it may do, marked new until it is deployed.
+  await page.locator(".hl-canvas").getByRole("button", { name: "text off" }).click();
+  const pane = page.getByRole("region", { name: "Text" });
+  const editor = pane.locator(".cm-content");
+  await typeText(
+    editor,
+    page,
+    'import { flow, route } from "holon"\nimport seen from "collection:seen"\n\nflow("hello-api", { port: 8101 })\n\nroute.get("/hello/:name", (req) => {\n  seen[req.params.name] = true\n  return `Hello, ${req.params.name}`\n})\n',
+  );
+  await expect(may.locator(".hl-may__chip--new")).not.toHaveCount(0);
+  await expect(may.locator(".hl-may__chip--new").first()).toContainText("new");
+  await expect(may.locator(".hl-may__chip--new").first()).toHaveAttribute("title", /seen/);
+
+  // A mistake is listed under the text; Check counts it, and a click on it goes there.
+  await typeText(editor, page, 'import { flow, route } from "holon"\n\nflow("hello-api", { port: 8101 })\n\nroute.get("/hello/:name", (req) => nope)\n');
+  const problems = pane.getByRole("list", { name: "problems" });
+  await expect(problems).toContainText('line 5');
+  await expect(problems).toContainText('unknown name "nope"');
+  await pane.getByRole("button", { name: "Check" }).click();
+  await expect(pane.getByRole("status")).toContainText("1 mistake");
+
+  // Find: Ctrl+F opens the search, looking for what is selected.
+  await editor.click();
+  await page.keyboard.press("Control+f");
+  await expect(pane.locator(".cm-search")).toBeVisible();
+});
+
+test("the Inspector says the name at the text's cursor: its forms and a sample's lines", async ({ page }) => {
+  await openSample(page, "Hello API");
+  await page.locator(".hl-canvas").getByRole("button", { name: "text off" }).click();
+  const pane = page.getByRole("region", { name: "Text" });
+  await pane.locator(".cm-line", { hasText: "route.get" }).click({ position: { x: 4, y: 6 } });
+  const word = page.getByRole("complementary", { name: "Inspector" }).getByRole("region", { name: "the name route" });
+  await expect(word).toContainText("Inspector: route");
+  await expect(word.locator(".hl-word__forms")).toContainText("route.");
+  await expect(word.locator(".hl-word__example")).toContainText("route.");
+  await word.getByRole("button", { name: "the language reference" }).click();
+  await expect(page).toHaveURL(/#docs\.language\/reference\.md$/);
 });

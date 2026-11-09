@@ -118,18 +118,12 @@ fn approval_needed(policy: &Policy, manifest: &Manifest, previous: &Previous, se
 /// the insert below).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn handle_post_deploy(
-    store: &SharedStore,
-    deployments: &Mutex<BTreeMap<String, Deployment>>,
-    deployments_path: &Place,
-    policy: &Policy,
-    secrets: &SecretStore,
-    folders: &Arc<folders::Folders>,
+    state: &AppState,
     request: &Request,
     // Who deployed it (access.rs), kept with the deployment.
     by: Option<&str>,
-    // Whether an agent deploys it (access.rs): it never approves.
+    // Whether an agent deploys it (access.rs): it never approves, it proposes.
     agent: bool,
-    activity: &crate::activity::Activity,
 ) -> Response {
     let bytes = match read_body(request) {
         Ok(b) => b,
@@ -139,30 +133,23 @@ pub(crate) fn handle_post_deploy(
         Ok(b) => b,
         Err(e) => return err(400, format!("not a valid deploy request JSON: {e}")),
     };
-    deploy(store, deployments, deployments_path, policy, secrets, folders, body, by, agent, activity, None)
+    deploy(state, body, by, agent, None)
 }
 
 /// Deploy `body` (`POST /deploy`'s, or a restore's: `restored_from` names the version it deploys
-/// again). Every deploy is a new version, kept for good.
-#[allow(clippy::too_many_arguments)]
-fn deploy(
-    store: &SharedStore,
-    deployments: &Mutex<BTreeMap<String, Deployment>>,
-    deployments_path: &Place,
-    policy: &Policy,
-    secrets: &SecretStore,
-    folders: &Arc<folders::Folders>,
-    body: DeployRequestBody,
-    by: Option<&str>,
-    agent: bool,
-    activity: &crate::activity::Activity,
-    restored_from: Option<u32>,
-) -> Response {
+/// again). Every deploy is a new version, kept for good. An agent's that needs a person's approval
+/// is kept as a proposal instead (proposals.rs).
+fn deploy(state: &AppState, body: DeployRequestBody, by: Option<&str>, agent: bool, restored_from: Option<u32>) -> Response {
+    let (store, deployments, deployments_path, secrets, folders, activity) = (&state.store, &state.deployments, &state.deployments_path, &state.secrets, &state.folders, &state.activity);
+    let policy = &*state.policy();
     if agent && !body.acknowledge.is_empty() {
-        return err(403, "an agent doesn't approve what a flow may do: deploy without \"acknowledge\"; what needs approval, a person approves, deploying it from the editor");
+        return err(403, "an agent doesn't approve what a flow may do: deploy without \"acknowledge\"; what needs approval waits for a person, as a proposal");
     }
     if !is_valid_slug(&body.slug) {
         return err(400, "slug must be non-empty ASCII alphanumeric, '-', or '_' only");
+    }
+    if agent && deployments.lock().unwrap().get(&body.slug).is_some_and(|d| d.agents_propose_off) {
+        return err(403, format!("a person turned off agents proposing versions of {:?}: they turn it back on in its settings", body.slug));
     }
     if let Err(e) = crate::flows::check_uses(body.uses.as_deref()) {
         return err(400, e);
@@ -231,14 +218,20 @@ fn deploy(
         needed.extend(browsers_added(&body.browsers, &previous.browsers));
     }
     let missing: Vec<String> = needed.into_iter().filter(|item| !body.acknowledge.contains(item)).collect();
+    // An agent approves nothing: what needs a person waits for one, as a proposal, unless the
+    // host takes none.
     if agent && !missing.is_empty() {
-        return err(
-            403,
-            format!(
-                "this needs a person's approval ({}): save it as a flow, and a person approves it by deploying it from the editor",
-                missing.join(", ")
-            ),
-        );
+        if !policy.agents_propose {
+            return err(
+                403,
+                format!(
+                    "this host takes no proposals from agents (holon.toml: agents.propose = false), and this version of {:?} needs a person to approve: {}. A person deploys it",
+                    body.slug,
+                    missing.join(", ")
+                ),
+            );
+        }
+        return crate::proposals::propose(state, &body, missing, by);
     }
     if !missing.is_empty() {
         return err(
@@ -359,6 +352,8 @@ fn deploy(
         let channels = deployments.get(&body.slug).map(|old| Arc::clone(&old.channels)).unwrap_or_default();
         // Runs waiting keep waiting, each on the unit it started on.
         let parked = deployments.get(&body.slug).map(|old| old.parked.clone()).unwrap_or_default();
+        // And whether agents may propose its versions is as a person left it.
+        let agents_propose_off = deployments.get(&body.slug).is_some_and(|old| old.agents_propose_off);
         let state = match carried {
             Some(arc) => Some(arc),
             None if is_state => Some(Arc::new(claims::StateCell::kept_at(State::new(), state_head_for(deployments_path, &body.slug)))),
@@ -396,11 +391,16 @@ fn deploy(
                 document,
                 versions,
                 events,
+                agents_propose_off,
             },
         );
     }
     persist_deployments(deployments_path, deployments);
     activity.record(if restored_from.is_some() { "restored" } else { "deployed" }, &body.slug, by);
+    // A person's deploy of a version proposed approves the proposal.
+    if !agent {
+        state.proposals.approved(&body.slug, &to_hex(&unit_hash), by);
+    }
 
     Response::json(&DeployResponseBody { slug: body.slug, unit: to_hex(&unit_hash), triggers, version })
 }
@@ -438,6 +438,7 @@ pub(crate) fn deployment_entry(slug: &str, dep: &Deployment) -> DeploymentEntry 
         attention: dep.attention.clone(),
         listen_error: dep.listen_error.clone(),
         waiting: dep.parked.len(),
+        agents_propose: !dep.agents_propose_off,
         version: dep.versions.last().map(|v| v.number),
     }
 }
@@ -721,6 +722,7 @@ pub(crate) fn permissions_view(policy: &Policy) -> serde_json::Value {
         "allow_plain_http": policy.allow_plain_http,
         "allow_private_addresses": policy.allow_private_addresses,
         "allow_unrecorded": policy.allow_unrecorded,
+        "agents_propose": policy.agents_propose,
         "storage": { "sweep_every": crate::permissions::every_text(policy.storage.sweep_every), "warn_at": crate::permissions::threshold_text(policy.storage.warn_at), "full_at": crate::permissions::threshold_text(policy.storage.full_at), "when_full": policy.storage.when_full.text(), "backup": policy.storage.backup.as_ref().map(|b| b.display().to_string()) },
     })
 }
@@ -1003,8 +1005,6 @@ pub(crate) fn run_action(
         Some(other) => (200, Some(other)),
         None => (500, None),
     };
-    let failed = run.error.is_some() || status >= 500;
-    record_trigger(deployments, slug, failed);
     let mut entry = run_entry("trigger", started, &sourced, &run);
     entry.route = Some(action.label.clone());
     entry.request = Some(SValue::from_core(&input));
@@ -1015,15 +1015,23 @@ pub(crate) fn run_action(
         Ok(names) => entry.parked = names,
         Err(e) => entry.error = Some(e),
     }
+    // A run that waits has no answer yet, which isn't a failure (its log entry says it waits).
+    let failed = run.error.is_some() || entry.error.is_some() || (status >= 500 && entry.parked.is_empty());
+    record_trigger(deployments, slug, failed);
     // A failed one says so in its entry (an unrecorded action's tally takes it from there).
     if failed {
         entry.status = Some(status.max(500));
     }
     let (parked_any, error) = (!entry.parked.is_empty(), entry.error.is_some());
     // Where it waits, each point with its token, for a start to hand back: derived from the run's
-    // id as the run's own `resume_token` is.
+    // id as the run's own `resume_token` is. Not an approval's: people decide it, and no token does.
     let waiting_at: Vec<(String, String)> = match &waits.run_id {
-        Some(id) => entry.parked.iter().map(|name| (name.clone(), durable::token_for(id, name))).collect(),
+        Some(id) => entry
+            .parked
+            .iter()
+            .filter(|name| run.waiting.iter().any(|w| &w.name == *name && w.people == 0))
+            .map(|name| (name.clone(), durable::token_for(id, name)))
+            .collect(),
         None => Vec::new(),
     };
     // The seq its entry got, not the next one read beforehand: another run may log between.
@@ -1278,7 +1286,7 @@ pub(crate) fn handle_post_restore(state: &AppState, slug: &str, request: &Reques
     let mut answer = serde_json::json!({ "slug": slug });
     if let Some((number, body)) = code {
         let deployed =
-            deploy(&state.store, &state.deployments, &state.deployments_path, &state.policy(), &state.secrets, &state.folders, body, by, agent, &state.activity, Some(number));
+            deploy(state, body, by, agent, Some(number));
         if !deployed.is_success() {
             return deployed;
         }
@@ -1439,6 +1447,8 @@ fn restore_plan(state: &AppState, slug: &str, point: Point, code: bool, with_sta
                 requirements: asked.requirements,
                 uses: asked.uses,
                 browsers: asked.browsers,
+                why: None,
+                note: None,
             };
             Some((v.number, body))
         }

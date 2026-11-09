@@ -12,6 +12,7 @@ Everything is one program, `holon`. `holon help` lists the commands; `serve`, `e
 | [`holon fmt`](#holon-fmt) | rewrite a flow in the canonical form |
 | [`holon types`](#holon-types) | write `holon.d.ts`, so an editor's TypeScript completes and checks flows |
 | [`holon deploy`](#holon-deploy) | compile a flow and deploy it to a running server |
+| [`holon replay`](#holon-replay) | a new version run offline on a deployment's recent runs, before it is deployed |
 | [`holon editor`](#holon-editor) | the editor in a terminal: flows, runs, approvals, and text in tabs |
 | [`holon deployments`](#holon-deployments) | what is deployed, and each one's waiting runs |
 | [`holon run`, `pause`, `stop`, `remove`](#holon-run-pause-stop-remove) | start, hold, end and delete a deployment |
@@ -20,6 +21,7 @@ Everything is one program, `holon`. `holon help` lists the commands; `serve`, `e
 | [`holon action`](#holon-action) | run one of a deployment's actions |
 | [`holon tick`](#holon-tick) | fire one of a flow's clocks now |
 | [`holon state`](#holon-state) | a deployment's state, collections and sessions |
+| [`holon decide`](#holon-decide) | approve, or decline with a reason, an approval a run waits at |
 | [`holon grant`](#holon-grant) | what a deployment is granted; revoke, grant back, lower |
 | [`holon grants`](#holon-grants) | who holds what |
 | [`holon policy`](#holon-policy) | the host's policy, and reading it again |
@@ -183,6 +185,28 @@ approve it in the editor, by deploying it from there. `--approve` approves it he
 prints what it approved, in the deployment's timeline as yours. Agents' tools
 ([`holon mcp`](#holon-mcp)) never approve: the server refuses an agent's deploy that would.
 
+## `holon replay`
+
+```
+holon replay <file> [--on SLUG] [--runs N] [--server PORT|URL]
+```
+
+Compiles the flow and runs it, offline, on the newest runs of the deployment `--on` names (the
+flow's own name unless it says), 20 unless `--runs` says (at most 200), before anything is
+deployed: each run's request, tick or action again, through this version. It prints how many it
+answers the same, then each run that differs, and how, or can't be told, and why:
+
+```
+This version replayed on "price-rules"'s last 3 runs, offline (nothing sent or written): 3 replayed · 2 same · 1 differs
+  run 0  POST /price  differs: its answer
+```
+
+Nothing is deployed, sent or written; only the version's units are staged on the server. It exits 0
+when no run differs, 1 when one does or it can't replay, 2 for a wrong argument, so a script can
+hold back a deploy that would answer differently. What "can't tell" means is under
+[Replayed on recent runs](../guides/deploying.md#replayed-on-recent-runs). It reaches the server as
+`holon deploy` does.
+
 ## `holon editor`
 
 ```
@@ -257,7 +281,9 @@ holon deployments [<slug>] [--json]
 Every deployment, a line each: its status, how it starts (its port, its schedule), its runs and
 failures, the runs waiting for an approval or an event, and who deployed it when. `!` marks one
 that needs attention. With a slug, that one's details, why it needs attention, and each waiting
-run: what it waits for, until when. A waiting run is approved by its own link, on the flow's port.
+run: what it waits for, until when, and who has approved an approval so far. People decide an
+approval in the editor's Approvals or with [`holon decide`](#holon-decide); an event comes through
+the flow's own route.
 
 ### `holon run`, `pause`, `stop`, `remove`
 
@@ -358,6 +384,30 @@ A deployment's live state, a line per value, written as the language writes valu
 collections by name. `--collection`: a collection's items, 50 at a time (`--limit` up to 1000,
 `--all` for every one, all read at the same root); `--key`, one item. `--sessions`: each session
 it ran, from where, how many runs, and the state it left.
+
+### `holon decide`
+
+```
+holon decide <slug> [--json]
+holon decide <slug> <run> <name> --approve [--reason TEXT]
+holon decide <slug> <run> <name> --decline --reason TEXT
+```
+
+Decides an approval a run waits at (`await approval("payout", { people: 2 })` in its flow), as
+the editor's Approvals page does. With the slug alone, what its runs wait at, a line a point: the
+run (the first 12 characters of its id), what started it and since when, then an approval with
+how many people it asks and who has approved it so far, or an event, and until when:
+
+```
+run 7b379ca1dd65 (action pay, since 2026-11-09T14:42:57) waits at approval "payout", 2 people's, 1 of 2: dan ("matches the invoice") approved, until 2026-11-09T15:42:57
+```
+
+Then `<run>` (its id, or enough of it to pick it) and the approval's name, and `--approve`, the
+reason optional, or `--decline`, which needs one. It says what the decision did: still waiting for
+more people, approved by whom, or declined; the run goes on with the decision once it is made.
+Each person counts once; one decline ends it. Only a person decides: an editor or an admin
+signed in, as you are on your own machine. An API token (`HOLON_TOKEN`) is refused, and so is
+`holon mcp`, which asks as an agent.
 
 ## Grants and policy
 

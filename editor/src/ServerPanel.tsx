@@ -23,13 +23,13 @@ import { ActionRows } from "./ActionRows";
 const field: CSSProperties = {
   font: "inherit",
   fontSize: 11,
-  color: "#e6eefb",
-  background: "#0e1a2f",
-  border: "1px solid #1b2a45",
+  color: "var(--ink)",
+  background: "var(--surface-2)",
+  border: "1px solid var(--border)",
   borderRadius: 3,
   padding: "2px 4px",
 };
-const btn: CSSProperties = { ...field, color: "#9fb4d4", cursor: "pointer", padding: "2px 8px" };
+const btn: CSSProperties = { ...field, color: "var(--muted)", cursor: "pointer", padding: "2px 8px" };
 const lbl: CSSProperties = { width: 52, flexShrink: 0 };
 
 /** A request typed into the tester. */
@@ -196,15 +196,15 @@ export function ToolsPanel({
           flexDirection: "column",
           gap: 6,
           fontSize: 11,
-          color: "#9fb4d4",
+          color: "var(--muted)",
         }}
       >
         <button
           style={{
             display: "flex", alignItems: "center", width: "100%",
             font: "inherit", background: "transparent", border: "none",
-            borderBottom: "1px solid var(--line-soft)",
-            color: "var(--ink-dim)", cursor: "pointer", textAlign: "left",
+            borderBottom: "1px solid var(--border)",
+            color: "var(--faint)", cursor: "pointer", textAlign: "left",
             padding: "0 0 5px", fontSize: 10, letterSpacing: "0.12em",
             textTransform: "uppercase",
           }}
@@ -217,12 +217,12 @@ export function ToolsPanel({
         {serverOpen && (
           <>
             {endpoints.length === 0 && clocks.length === 0 && files.length === 0 && actions.length === 0 && errors.length === 0 && (
-              <div style={{ color: "#3d4f66", fontStyle: "italic" }}>drop a request node (palette, http) and wire it to a respond node to add a route</div>
+              <div style={{ color: "var(--faintest)", fontStyle: "italic" }}>drop a request node (palette, http) and wire it to a respond node to add a route</div>
             )}
             {clocks.map((c) => (
               <div key={c.label} style={{ display: "flex", gap: 6, alignItems: "center" }}>
-                <span style={{ color: "#6fd3e0", ...lbl }}>every</span>
-                <span style={{ flex: 1, color: "#e6eefb" }}>{c.label.slice("every ".length)}</span>
+                <span style={{ color: "var(--accent)", ...lbl }}>every</span>
+                <span style={{ flex: 1, color: "var(--ink)" }}>{c.label.slice("every ".length)}</span>
                 <button
                   style={{ ...btn, opacity: tickSlug ? 1 : 0.4 }}
                   disabled={!tickSlug}
@@ -233,18 +233,18 @@ export function ToolsPanel({
                 </button>
               </div>
             ))}
-            {ticked && <div style={{ color: "#9fb4d4" }}>{ticked}</div>}
+            {ticked && <div style={{ color: "var(--muted)" }}>{ticked}</div>}
             {files.map((f) => (
               <div key={f.label} style={{ display: "flex", gap: 6, alignItems: "center" }} title={`runs its group for each file its line is for, in the folder ${f.folder} on the host`}>
-                <span style={{ color: "#6fd3e0", ...lbl }}>on file</span>
-                <span style={{ flex: 1, color: "#e6eefb" }}>{f.label.slice("on file ".length)}</span>
+                <span style={{ color: "var(--accent)", ...lbl }}>on file</span>
+                <span style={{ flex: 1, color: "var(--ink)" }}>{f.label.slice("on file ".length)}</span>
               </div>
             ))}
             <ActionRows names={actions.map((a) => a.name)} slug={tickSlug} role={role} outOfDate={outOfDate} onViewRun={onViewRun} />
             {endpoints.map((e) => (
               <div key={`${e.method} ${e.path}`} style={{ display: "flex", gap: 6, alignItems: "center" }}>
-                <span style={{ color: "#6fd3e0", ...lbl }}>{e.method}</span>
-                <span style={{ flex: 1, color: "#e6eefb" }}>{e.path}</span>
+                <span style={{ color: "var(--accent)", ...lbl }}>{e.method}</span>
+                <span style={{ flex: 1, color: "var(--ink)" }}>{e.path}</span>
                 <button
                   style={btn}
                   title="load this route into the request tester"
@@ -255,14 +255,14 @@ export function ToolsPanel({
               </div>
             ))}
             {errors.map((e) => (
-              <div key={e} style={{ color: "#e0916f" }}>
+              <div key={e} style={{ color: "var(--bad)" }}>
                 {e}
               </div>
             ))}
 
             {/* ── request tester ── */}
-            <div style={{ borderTop: "1px solid #1b2a45", paddingTop: 6, display: "flex", flexDirection: "column", gap: 4 }}>
-              <div style={{ color: "#e6eefb", fontSize: 10, textTransform: "uppercase", letterSpacing: "0.12em", marginBottom: 2 }}>request</div>
+            <div style={{ borderTop: "1px solid var(--border)", paddingTop: 6, display: "flex", flexDirection: "column", gap: 4 }}>
+              <div style={{ color: "var(--ink)", fontSize: 10, textTransform: "uppercase", letterSpacing: "0.12em", marginBottom: 2 }}>request</div>
               <div style={{ display: "flex", gap: 4 }}>
                 <select value={req.method} onChange={(e) => setReq({ ...req, method: e.target.value as Method })} style={field}>
                   {METHODS.map((m) => (
@@ -310,15 +310,15 @@ export function ToolsPanel({
               </div>
               {result &&
                 ("error" in result ? (
-                  <div style={{ color: "#e0916f" }}>{result.error}</div>
+                  <div style={{ color: "var(--bad)" }}>{result.error}</div>
                 ) : (
                   <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
                     <div>
-                      <span style={{ color: result.status < 400 ? "#9ad29f" : "#e0916f" }}>← {result.status}</span>
+                      <span style={{ color: result.status < 400 ? "var(--ok)" : "var(--bad)" }}>← {result.status}</span>
                       <span> · {result.from === "live" ? `live (${liveSlug})` : "local"}</span>
                     </div>
                     {result.headers.map(([k, v]) => (
-                      <div key={k} style={{ color: "#7f93b3" }}>
+                      <div key={k} style={{ color: "var(--faint)" }}>
                         {k}: {v}
                       </div>
                     ))}

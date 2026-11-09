@@ -1,8 +1,8 @@
 // The editor's one bold, grounded choice: a wire type *is* a color. Both the palette and the canvas
 // nodes read a port's hue from here, so the whole editor's color is derived from core's type system —
 // and a legal wire is two ports of the same hue (or `Any`, the neutral). See P4.1-palette-L4 §4.
-// Structural colors (background, hairlines, ink) live as CSS vars in styles.css; only the type hues
-// are data-driven, so they live in TypeScript where the data is.
+// Each hue is a token in styles.css (--type-<kind>), so it has a light and a dark value; which kind
+// takes which token is decided here, where the types are.
 //
 // `WType` is recursive (P1.3.2 editor inch): `List`/`Product`/`Sum` carry their element type(s), so
 // a wire type is no longer always a bare string. This file is where the editor WALKS that shape to
@@ -29,16 +29,16 @@ export function typeKind(ty: WType): string {
 /** A type's hue, by outer kind. Ten kinds, ten colors — the editor's whole palette comes from
  *  this. `Product`/`Sum` are new hues (this inch); everything else is unchanged from before. */
 export const TYPE_COLOR: Record<string, string> = {
-  Number: "#f2b441", // amber
-  Boolean: "#46c8d8", // cyan
-  Text: "#5fd38a", // green
-  List: "#b48cf0", // violet
-  Product: "#e0729a", // rose — a tuple, adjacent to List's violet but visibly distinct
-  Sum: "#5c8ee0", // blue — the one hue family nothing else was using
-  Effect: "#ff6f6f", // coral — the effectful edge
-  Any: "#8295b0", // slate — polymorphic, uncommitted
-  Record: "#e8955a", // orange — named fields, distinct from Number's amber
-  Bytes: "#c8b48c", // sand — raw bytes, a file's or a digest's, muted beside Text's green
+  Number: "var(--type-number)", // amber
+  Boolean: "var(--type-boolean)", // cyan
+  Text: "var(--type-text)", // green
+  List: "var(--type-list)", // violet
+  Product: "var(--type-product)", // rose — a tuple, adjacent to List's violet but visibly distinct
+  Sum: "var(--type-sum)", // blue — the one hue family nothing else was using
+  Effect: "var(--type-effect)", // coral — the effectful edge
+  Any: "var(--type-any)", // slate — polymorphic, uncommitted
+  Record: "var(--type-record)", // orange — named fields, distinct from Number's amber
+  Bytes: "var(--type-bytes)", // sand — raw bytes, a file's or a digest's, muted beside Text's green
 };
 
 /** The hue for any concrete wire type (an input port's type, e.g.) — never `null`. */

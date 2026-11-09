@@ -58,6 +58,33 @@ pub struct Exporter {
     /// What makes the lines a batch's heads name durable, run before the batch is sent: the server
     /// syncs its logs (recorder.rs's `sync_logs`), so a witness never holds a head the disk lacks.
     before_send: OnceLock<Hook>,
+    /// When the witness last took a batch (ms since the epoch; 0: not since the server started).
+    taken_ms: std::sync::atomic::AtomicU64,
+}
+
+/// The witness the heads go to, as the console's Overview says it (summary.rs): where (its
+/// scheme, host and port, never a path, query or login), when it last took a batch since the
+/// server started, and how many heads wait for it.
+#[derive(Serialize, Clone, Debug, PartialEq)]
+pub struct Witness {
+    pub address: String,
+    pub taken_ms: Option<u64>,
+    pub waiting: usize,
+}
+
+/// The witness, if heads are being exported.
+pub fn witness() -> Option<Witness> {
+    let exporter = EXPORTER.get()?;
+    let taken = exporter.taken_ms.load(std::sync::atomic::Ordering::Relaxed);
+    Some(Witness { address: address_of(&exporter.url), taken_ms: (taken > 0).then_some(taken), waiting: exporter.pending.lock().unwrap().heads.len() })
+}
+
+/// A URL's scheme, host and port: what's before its path, without a login.
+fn address_of(url: &str) -> String {
+    let (scheme, rest) = url.split_once("://").unwrap_or(("", url));
+    let host = rest.split(['/', '?', '#']).next().unwrap_or("");
+    let host = host.rsplit_once('@').map_or(host, |(_, h)| h);
+    if scheme.is_empty() { host.to_string() } else { format!("{scheme}://{host}") }
 }
 
 /// A step run before each batch is sent; an error sends nothing.
@@ -123,6 +150,7 @@ impl Exporter {
             pending: Mutex::new(Queue { heads: pending, file: None }),
             agent: ureq::AgentBuilder::new().timeout(Duration::from_secs(30)).build(),
             before_send: OnceLock::new(),
+            taken_ms: std::sync::atomic::AtomicU64::new(0),
         })
     }
 
@@ -193,6 +221,8 @@ impl Exporter {
             };
             let mut queue = self.pending.lock().unwrap();
             queue.heads.drain(..batch.len());
+            let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64);
+            self.taken_ms.store(now, std::sync::atomic::Ordering::Relaxed);
             // Closed before `keep` replaces the file: a handle would go on appending to the old one
             // (and Windows won't replace an open file).
             queue.file = None;

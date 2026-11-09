@@ -415,6 +415,9 @@ pub(crate) struct Policy {
     /// by default, since its author chose it and a person approves each (docs/L4s/request-path-L4.md,
     /// §8 Q9).
     pub(crate) allow_unrecorded: bool,
+    /// Whether an agent's version that needs a person's approval is kept as a proposal for one
+    /// (`[agents] propose`, on by default); off, it is refused, and nothing is saved.
+    pub(crate) agents_propose: bool,
     /// How the host keeps what it stores (`[storage]`, docs/L4s/storage-L4.md).
     pub(crate) storage: Storage,
 }
@@ -602,6 +605,7 @@ impl Default for Policy {
             allow_plain_http: false,
             allow_private_addresses: false,
             allow_unrecorded: true,
+            agents_propose: true,
             storage: Storage::default(),
         }
     }
@@ -619,6 +623,16 @@ struct PolicyFile {
     grants: GrantsFile,
     #[serde(default)]
     storage: StorageFile,
+    #[serde(default)]
+    agents: AgentsFile,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+struct AgentsFile {
+    /// Absent: on.
+    #[serde(default)]
+    propose: Option<bool>,
 }
 
 #[derive(Deserialize, Default)]
@@ -696,6 +710,7 @@ impl Policy {
         policy.allow_plain_http = file.grants.allow_plain_http;
         policy.allow_private_addresses = file.grants.allow_private_addresses;
         policy.allow_unrecorded = file.grants.allow_unrecorded.unwrap_or(true);
+        policy.agents_propose = file.agents.propose.unwrap_or(true);
         if let Some(every) = &file.storage.sweep_every {
             policy.storage.sweep_every = parse_every(every).map_err(|e| format!("storage.sweep_every: {e}"))?;
         }

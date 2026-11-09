@@ -1,29 +1,35 @@
 // What the welcome tab teaches: the first steps, and the docs, one topic each, in the words the
 // editor itself uses. Kept here as content, apart from how it is shown (WelcomePage.tsx).
 
-export type Step = { title: string; body: string; action?: "samples" | "new" | "deployed" | "flows" };
+/** A first step: what to do, a button for it, and what shows it done (`Done`: a flow saved, one
+ *  deployed, one that ran). */
+export type Step = { title: string; body: string; action?: "samples" | "new" | "flows"; doneWhen?: keyof Done };
+export type Done = { saved: boolean; deployed: boolean; ran: boolean };
 
 export const START_STEPS: Step[] = [
   {
     title: "Open a sample",
-    body: "The flows page lists samples, one per feature: Hello API is the smallest. Opening one gives you an unsaved copy in a tab of its own.",
+    body: "The Library lists samples, one per feature: Hello API is the smallest. Opening one gives you an unsaved copy in a tab of its own.",
     action: "samples",
   },
   {
     title: "Deploy it",
+    doneWhen: "deployed",
     body: "Press deploy. Holon shows what the flow may do (receive requests, read a secret, write a collection…) and asks you to approve it; then it runs, on the port set under ⚙.",
   },
   {
     title: "Send it a request",
+    doneWhen: "ran",
     body: "Use the server panel at the bottom left (send local, send live), or curl, as each sample's \"try\" line says. Every run is kept.",
   },
   {
     title: "Look at the run",
-    body: "Switch the tab to view. Pick a run in the log: the canvas shows what each node received and produced, and you can step through it. A replay checks the run reproduces exactly.",
-    action: "deployed",
+    body: "Open the flow from Flows: its Runs tab lists every run, and a run shows what came in, each step and what went out. Step through it in the editor, and a replay checks the run reproduces exactly.",
+    action: "flows",
   },
   {
     title: "Build your own",
+    doneWhen: "saved",
     body: "Press new, drag nodes from the palette on the left and wire an output to an input of the same type. Save it, deploy it, and it runs the same way.",
     action: "new",
   },
@@ -56,7 +62,7 @@ export const TOPICS: Topic[] = [
     title: "Deploying and permissions",
     paragraphs: [
       "What a flow may do is worked out from the flow itself: its manifest. Deploying shows it and asks your approval; the server grants only that, and only what its policy allows. Some permissions can be optional: the flow runs without them.",
-      "Once deployed, a flow can be paused, stopped (its state kept), updated in place, or deleted, from its tab or the deployed page.",
+      "Once deployed, a flow can be paused, stopped (its state kept), updated in place, or deleted, from its tab or its page under Flows.",
     ],
   },
   {
@@ -95,7 +101,7 @@ export const TOPICS: Topic[] = [
   {
     title: "Accounts and roles",
     paragraphs: [
-      "Viewers read; editors also save, deploy and run; admins also write secrets and manage the server from the admin panel: people (invited with a one-time link), API tokens for scripts, and signing in through an identity provider.",
+      "Viewers read; editors also save, deploy and run; admins also write secrets and manage the server from People and access: people (invited with a one-time link), API tokens for scripts, and signing in through an identity provider.",
     ],
   },
 ];

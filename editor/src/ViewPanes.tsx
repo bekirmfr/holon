@@ -1,17 +1,19 @@
 // View mode's panes around the canvas of a deployed flow. The bottom pane shows the flow log
 // live (every request, trigger and tick). Left side: a sortable, filterable run list with copy
-// and export buttons, a capability-badge column and ↺ (go back to the run), or (its history
-// button) the deployment's history, what was done to it, any row of which is picked into the
-// details and gone back to (HistoryPane.tsx). Right side: two tabs — Details (what the run
+// and export buttons, a capability-badge column and ↺ (go back to the run; the rest of its
+// history is its page's, FlowPage.tsx). Right side: two tabs — Details (what the run
 // read and produced) and Timeline (one row per node, timed by the server). The width of the
 // split is draggable and remembered. The side pane shows the selected run's flow state as of the
 // current step, and the selected node: its params, and the inputs and outputs it had in that run
 // (replayed, replay.ts).
 
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
-import { downloadRuns, getCollectionItems, getLog, type LogEntry, type Tally, type VersionEntry } from "./server";
+import { downloadRuns, getCollectionItems, type LogEntry, type Tally } from "./server";
+import { decisionSaid } from "./decisions";
+import { field, runActions, runLabel, text } from "./runs";
+import { useFlowLog } from "./useFlowLog";
 import { tallyRows } from "./tallies";
-import { BackButton, everything, HistoryList, itemDetails, useHistory, useRestore } from "./HistoryPane";
+import { BackButton, everything, useHistory, useRestore } from "./HistoryPane";
 import { CellHistoryButton } from "./CellHistory";
 import { buildTimeline, targetOf, type CodeText, type TimelineItem } from "./timeline";
 import { formatValue, detectRenderer, availableRenderers, type RendererKind } from "./diagnostics";
@@ -19,47 +21,31 @@ import { typeLabel } from "./theme";
 import type { WParam, WPort, WValue } from "./holon";
 import { isCollectionCell, itemChanged, type CollectionAtStep, type Diagnosis, type Issue, type NodeExchange, type NodeTrace } from "./replay";
 import { FAIL } from "./PrimitiveNode";
+import { stepOf } from "./keymap";
+import { useKeys } from "./ui/Keys";
+import type { Inspected } from "./holonText";
 import { useNodeDocs } from "./NodeDocs";
-
-const KEEP = 500;
-const POLL_MS = 1500;
+import { fieldMarks, type MayHere } from "./mayHere";
 
 const small: CSSProperties = {
   font: "inherit",
   fontSize: 11,
-  color: "#9fb4d4",
+  color: "var(--muted)",
   background: "transparent",
-  border: "1px solid #1b2a45",
+  border: "1px solid var(--border)",
   borderRadius: 3,
   padding: "1px 8px",
   cursor: "pointer",
 };
-const dim = "#7e8ea8";
-const ink = "#e6eefb";
-const good = "#9ad29f";
-const bad = "#e0916f";
-const changedBg = "#2a2a14";
+const dim = "var(--faint)";
+const ink = "var(--ink)";
+const good = "var(--ok)";
+const bad = "var(--bad)";
+const changedBg = "var(--warn-bg)";
 
 const time = (ms: number) => new Date(ms).toLocaleTimeString();
-const runLabel = (e: LogEntry) =>
-  e.kind === "request"
-    ? (e.route ?? `${e.method ?? ""} ${e.url ?? ""} (no route)`)
-    : e.kind === "resume"
-      ? `resumed ${e.route ?? ""}`.trim()
-      : e.kind === "tick"
-        ? (e.route ?? "clock tick")
-        : e.kind === "file"
-          ? `${fileRun(e.sourced.find(([cap]) => cap.startsWith("FileArrival("))?.[1])}${e.route ? ` (${e.route})` : ""}`
-          : (e.route ?? "trigger");
-/** A file run's label: what happened to which file (`deleted file a.csv`). */
-const fileRun = (handle: WValue | undefined) => `${text(field(handle, "event")) || "new"} file ${text(field(handle, "name")) || ""}`.trim();
 const show = (v: WValue | null | undefined) => (v === null || v === undefined ? "—" : formatValue(v));
 const us = (t: number) => (t >= 1000 ? `${(t / 1000).toFixed(2)}ms` : `${t.toFixed(0)}µs`);
-
-/** A record's field, or null. */
-const field = (v: WValue | null | undefined, k: string): WValue | null =>
-  v?.type === "Record" ? (v.value.find(([key]) => key === k)?.[1] ?? null) : null;
-const text = (v: WValue | null) => (v?.type === "Text" ? v.value : v?.type === "Number" ? String(v.value) : "");
 
 /** An outbound request as one line: `GET https://… → 200`, or `→ blocked_host`. */
 function exchangeLine(request: WValue, response: WValue): { line: string; ok: boolean } {
@@ -73,7 +59,8 @@ function exchangeLine(request: WValue, response: WValue): { line: string; ok: bo
 /** What a view-mode pane needs to know about a canvas node. */
 export type ViewNode = {
   id: string;
-  data: { name: string; body: { kind: string }; params: WParam[]; inputs: WPort[]; outputs: WPort[] };
+  /** `secretSinks`: what it does with a secret that reaches it, a line each (PrimitiveNode.tsx). */
+  data: { name: string; body: { kind: string }; params: WParam[]; inputs: WPort[]; outputs: WPort[]; secretSinks?: string[] };
 };
 
 /** A node's name as the panes show it: with its key, method/path or other frozen params. */
@@ -82,42 +69,6 @@ export function nodeLabel(n: ViewNode): string {
   if (n.data.name === "request" && frozen.length > 0) return `request ${frozen.join(" ")}`;
   return frozen.length > 0 && frozen.join(" ").length <= 24 ? `${n.data.name} ${frozen.join(" ")}` : n.data.name;
 }
-
-/** The deployment's flow log, polled: everything at first, then only what came after the newest. */
-function useFlowLog(slug: string) {
-  const [entries, setEntries] = useState<LogEntry[]>([]);
-  const [chain, setChain] = useState<{ head: string; breaks: number[] }>({ head: "", breaks: [] });
-  const [tallies, setTallies] = useState<Record<string, Tally>>({});
-  const [error, setError] = useState("");
-  const last = useRef<number | undefined>(undefined);
-  useEffect(() => {
-    last.current = undefined;
-    setEntries([]);
-    setChain({ head: "", breaks: [] });
-    setTallies({});
-    let stopped = false;
-    const poll = () =>
-      getLog(slug, last.current)
-        .then(({ entries: fresh, head, breaks, tallies: counted }) => {
-          if (stopped) return;
-          setChain((old) => (old.head === head && old.breaks.length === (breaks ?? []).length ? old : { head, breaks: breaks ?? [] }));
-          setTallies((old) => (JSON.stringify(old) === JSON.stringify(counted ?? {}) ? old : (counted ?? {})));
-          if (fresh.length === 0) return;
-          last.current = fresh[fresh.length - 1].seq;
-          setEntries((old) => [...old, ...fresh].slice(-KEEP));
-          setError("");
-        })
-        .catch((e: unknown) => !stopped && setError(e instanceof Error ? e.message : String(e)));
-    poll();
-    const timer = setInterval(poll, POLL_MS);
-    return () => {
-      stopped = true;
-      clearInterval(timer);
-    };
-  }, [slug]);
-  return { entries, chain, tallies, error };
-}
-
 function Tabs<T extends string>({
   tabs,
   tab,
@@ -130,7 +81,7 @@ function Tabs<T extends string>({
   children?: ReactNode;
 }) {
   return (
-    <div style={{ display: "flex", alignItems: "center", gap: 2, borderBottom: "1px solid #1b2a45", padding: "0 8px" }}>
+    <div style={{ display: "flex", alignItems: "center", gap: 2, borderBottom: "1px solid var(--border)", padding: "0 8px" }}>
       {tabs.map(([t, name]) => (
         <button
           key={t}
@@ -142,7 +93,7 @@ function Tabs<T extends string>({
             padding: "6px 10px",
             background: "transparent",
             border: "none",
-            borderBottom: `2px solid ${t === tab ? "#6fd3e0" : "transparent"}`,
+            borderBottom: `2px solid ${t === tab ? "var(--accent)" : "transparent"}`,
             color: t === tab ? ink : dim,
             cursor: "pointer",
           }}
@@ -158,8 +109,8 @@ function Tabs<T extends string>({
 
 const paneStyle: CSSProperties = {
   fontSize: 11,
-  color: "#9fb4d4",
-  background: "#0b1527",
+  color: "var(--muted)",
+  background: "var(--bg)",
   display: "flex",
   flexDirection: "column",
   minWidth: 0,
@@ -195,17 +146,6 @@ function rememberedSplit(): number | null {
 }
 const clampSplit = (w: number, total: number) => Math.max(180, Math.min(total - 200, w));
 
-/** Compact capability badges derived from a run's log entry. */
-function runActions(e: LogEntry): { label: string; title: string; color: string }[] {
-  const acts: { label: string; title: string; color: string }[] = [];
-  if (e.sourced.some(([c]) => c === "Random")) acts.push({ label: "rng", title: "random value read", color: dim });
-  if ((e.rounds ?? []).some((r) => r.exchanges.length > 0)) acts.push({ label: "http", title: "outbound http request", color: good });
-  if (Object.keys(e.secrets ?? {}).length > 0) acts.push({ label: "sec", title: "secret read", color: "#e0c36f" });
-  if ((e.reads ?? []).some((r) => r.file != null)) acts.push({ label: "frd", title: "file read", color: "#9fb4d4" });
-  if (e.performed.some((p) => /^file/i.test(p.capability))) acts.push({ label: "fwr", title: "file write", color: "#e0c36f" });
-  return acts;
-}
-
 /** The step controls: back, forward, or the whole run. */
 function Stepper({ step, steps, onStep }: { step: number | null; steps: number; onStep: (s: number | null) => void }) {
   if (steps === 0) return null;
@@ -214,6 +154,19 @@ function Stepper({ step, steps, onStep }: { step: number | null; steps: number; 
       <button style={small} onClick={() => onStep(step === null ? 0 : Math.max(0, step - 1))} title="step back one node">
         ◀
       </button>
+      {/* The whole run is the slider's far end, past the last node. */}
+      <input
+        type="range"
+        aria-label="step"
+        min={0}
+        max={steps}
+        value={step ?? steps}
+        onChange={(e) => {
+          const s = Number(e.target.value);
+          onStep(s >= steps ? null : s);
+        }}
+        style={{ width: 120 }}
+      />
       <span style={{ minWidth: 86, textAlign: "center" }}>
         {step === null ? `all ${steps} nodes` : `node ${step + 1} of ${steps}`}
       </span>
@@ -248,7 +201,6 @@ export function BottomPane({
   diagnosis,
   onShowNode,
   onFitToNodes,
-  onShowVersion,
   onRestored,
   codeText,
 }: {
@@ -257,9 +209,7 @@ export function BottomPane({
   onSelect: (e: LogEntry | null) => void;
   /** A version's flow as text (its unit's), for a restore's diff. */
   codeText?: CodeText;
-  /** Show a version's canvas (the history's). */
-  onShowVersion?: (v: VersionEntry) => void;
-  /** After a restore from the history: the deployment changed. */
+  /** After a restore (↺ on a run): the deployment changed. */
   onRestored?: () => void;
   /** The step shown (index into `order`), or null for the whole run. */
   step: number | null;
@@ -344,11 +294,24 @@ export function BottomPane({
     setLive(false);
     onSelect(e);
   };
-  // A history row that isn't a run: no run shown, and live stops so none comes back.
-  const unpick = () => {
-    setLive(false);
-    onSelect(null);
+  // Stepping through the run, and the runs before and after it, from the keys (keymap.ts).
+  const runBeside = (by: -1 | 1) => {
+    if (!selected) return false;
+    const there = by < 0 ? entries.filter((e) => e.seq < selected.seq).pop() : entries.find((e) => e.seq > selected.seq);
+    if (!there) return false;
+    pick(there);
   };
+  const stepBy = (by: -1 | 1) => (order.length === 0 ? false : onStep(stepOf(step, order.length, by)));
+  useKeys({
+    j: () => stepBy(1),
+    ArrowRight: () => stepBy(1),
+    k: () => stepBy(-1),
+    ArrowLeft: () => stepBy(-1),
+    Home: () => (order.length === 0 ? false : onStep(0)),
+    End: () => (order.length === 0 ? false : onStep(null)),
+    ",": () => runBeside(-1),
+    ".": () => runBeside(1),
+  });
 
   const [chainNote, setChainNote] = useState("");
   const copyHead = () =>
@@ -365,7 +328,7 @@ export function BottomPane({
   return (
     <div ref={pane} className="nodrag nowheel hl-view__bottom" style={paneStyle} role="region" aria-label="run">
       <div className="hl-view__edge" onPointerDown={onEdge} title="drag to resize" />
-      <div style={{ display: "flex", alignItems: "center", gap: 10, borderBottom: "1px solid #1b2a45", padding: "4px 8px" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, borderBottom: "1px solid var(--border)", padding: "4px 8px" }}>
         {selected && (
           <span style={{ color: ink }}>
             #{selected.seq} · {runLabel(selected)} · session {selected.session}
@@ -394,7 +357,7 @@ export function BottomPane({
         )}
         <div style={{ flex: 1 }} />
         <button
-          style={{ ...small, color: live ? "#0e1a2f" : "#9fb4d4", background: live ? good : "transparent" }}
+          style={{ ...small, color: live ? "var(--accent-ink)" : "var(--muted)", background: live ? good : "transparent" }}
           onClick={() => setLive(!live)}
           title="follow the newest run as it happens"
         >
@@ -413,7 +376,6 @@ export function BottomPane({
         tallies={tallies}
         selected={selected}
         pick={pick}
-        unpick={unpick}
         slug={slug}
         order={order}
         nodes={nodes}
@@ -426,13 +388,6 @@ export function BottomPane({
         diagnosis={diagnosis ?? null}
         onShowNode={onShowNode}
         onFitToNodes={onFitToNodes}
-        onShowVersion={
-          onShowVersion &&
-          ((v) => {
-            setLive(false);
-            onShowVersion(v);
-          })
-        }
         onRestored={onRestored}
         codeText={codeText}
       />
@@ -448,7 +403,6 @@ function LogTab({
   tallies,
   selected,
   pick,
-  unpick,
   slug,
   order,
   nodes,
@@ -461,11 +415,9 @@ function LogTab({
   diagnosis,
   onShowNode,
   onFitToNodes,
-  onShowVersion,
   onRestored,
   codeText,
 }: {
-  onShowVersion?: (v: VersionEntry) => void;
   onRestored?: () => void;
   codeText?: CodeText;
   entries: LogEntry[];
@@ -473,8 +425,6 @@ function LogTab({
   tallies: Record<string, Tally>;
   selected: LogEntry | null;
   pick: (e: LogEntry) => void;
-  /** Show no run: a history row that isn't one is picked. */
-  unpick: () => void;
   slug: string;
   order: string[];
   nodes: ViewNode[];
@@ -492,13 +442,11 @@ function LogTab({
   const [sortBy, setSortBy] = useState<SortKey>("seq");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
   const [rightTab, setRightTab] = useState<"details" | "errors" | "timeline">("details");
-  const [leftView, setLeftView] = useState<"runs" | "history">("runs");
   const [rightWidth, setRightWidth] = useState<number | null>(rememberedSplit);
   const [selectedSeqs, setSelectedSeqs] = useState<Set<number>>(new Set());
   const [compareRuns, setCompareRuns] = useState<[LogEntry, LogEntry] | null>(null);
 
-  // The history: the timeline of its runs, versions and events, a row of it picked (a run picked
-  // in the list is its row too), and going back to one.
+  // The history, for what ↺ on a run goes back to: the timeline of its runs, versions and events.
   const history = useHistory(slug);
   const currentUnit = history.versions.find((v) => v.current)?.unit;
   const timeline = useMemo(() => buildTimeline(entries, history.events, history.versions), [entries, history.events, history.versions]);
@@ -510,19 +458,6 @@ function LogTab({
     onRestored?.();
   }, [refreshHistory, onRestored]);
   const restorer = useRestore(slug, restoreDone, history.versions, codeText);
-  const [pickedKey, setPickedKey] = useState<string | null>(null);
-  const pickedIndex = pickedKey === null ? undefined : byKey.get(pickedKey);
-  const pickedItem = leftView === "history" && pickedIndex !== undefined ? timeline[pickedIndex] : undefined;
-  const pickRun = (e: LogEntry) => {
-    setPickedKey(`r${e.seq}`);
-    pick(e);
-  };
-  const pickItem = (item: TimelineItem) => {
-    restorer.setNote(null);
-    setPickedKey(item.key);
-    if (item.kind === "run") pick(item.run);
-    else unpick();
-  };
 
   useEffect(() => {
     if (diagnosis) setRightTab("errors");
@@ -679,16 +614,16 @@ function LogTab({
       <div
         onMouseDown={(e) => e.stopPropagation()}
         onClick={(e) => e.stopPropagation()}
-        style={{ position: "absolute", top: "100%", left: 0, zIndex: 50, background: "#0e1a2f", border: "1px solid #1b2a45", borderRadius: 3, padding: "2px 0", minWidth: 110, maxHeight: 200, overflowY: "auto", boxShadow: "0 4px 12px rgba(0,0,0,0.5)", fontSize: 10 }}
+        style={{ position: "absolute", top: "100%", left: 0, zIndex: 50, background: "var(--surface-2)", border: "1px solid var(--border)", borderRadius: 3, padding: "2px 0", minWidth: 110, maxHeight: 200, overflowY: "auto", boxShadow: "0 4px 12px rgba(0,0,0,0.5)", fontSize: 10 }}
       >
         <label style={{ display: "flex", gap: 5, padding: "2px 8px", cursor: "pointer", color: ink, alignItems: "center" }}>
-          <input type="checkbox" checked={allSelected} onChange={selectAll} style={{ accentColor: "#6fd3e0" }} />
+          <input type="checkbox" checked={allSelected} onChange={selectAll} style={{ accentColor: "var(--accent)" }} />
           (Select All)
         </label>
-        <div style={{ borderBottom: "1px solid #1b2a45", margin: "2px 0" }} />
+        <div style={{ borderBottom: "1px solid var(--border)", margin: "2px 0" }} />
         {vals.map((v) => (
           <label key={v || "__empty__"} style={{ display: "flex", gap: 5, padding: "2px 8px", cursor: "pointer", color: v === "" ? dim : ink, alignItems: "center" }}>
-            <input type="checkbox" checked={isChecked(v)} onChange={() => toggle(v)} style={{ accentColor: "#6fd3e0" }} />
+            <input type="checkbox" checked={isChecked(v)} onChange={() => toggle(v)} style={{ accentColor: "var(--accent)" }} />
             {v === "" ? "(empty)" : v}
           </label>
         ))}
@@ -708,7 +643,7 @@ function LogTab({
         ) : (
           <span style={{ flex: 1, color: dim, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }}>{label}</span>
         )}
-        <button onMouseDown={(e) => e.stopPropagation()} onClick={(ev) => { ev.stopPropagation(); setOpenFilter(open ? null : col); }} style={{ font: "inherit", fontSize: 8, background: "transparent", border: "none", color: active ? "#6fd3e0" : dim, cursor: "pointer", padding: 0, flexShrink: 0, lineHeight: 1 }} title={`filter by ${label}`}>
+        <button onMouseDown={(e) => e.stopPropagation()} onClick={(ev) => { ev.stopPropagation(); setOpenFilter(open ? null : col); }} style={{ font: "inherit", fontSize: 8, background: "transparent", border: "none", color: active ? "var(--accent)" : dim, cursor: "pointer", padding: 0, flexShrink: 0, lineHeight: 1 }} title={`filter by ${label}`}>
           {active ? "◆" : "▾"}
         </button>
         {open && <FilterDropdown col={col} vals={allColValues[col]} />}
@@ -723,27 +658,16 @@ function LogTab({
   return (
     <>
     <div ref={container} style={{ display: "flex", flex: 1, minHeight: 0 }}>
-      {/* Left column: filter bar + history or runs */}
-      <div style={{ display: "flex", flexDirection: "column", flex: rightWidth !== null ? "1 1 0" : "1 1 55%", minWidth: 0, borderRight: "1px solid #1b2a45" }}>
-        <div style={{ display: "flex", gap: 6, alignItems: "center", padding: "3px 8px", borderBottom: "1px solid #1b2a45", flexShrink: 0 }}>
+      {/* Left column: filter bar + runs */}
+      <div style={{ display: "flex", flexDirection: "column", flex: rightWidth !== null ? "1 1 0" : "1 1 55%", minWidth: 0, borderRight: "1px solid var(--border)" }}>
+        <div style={{ display: "flex", gap: 6, alignItems: "center", padding: "3px 8px", borderBottom: "1px solid var(--border)", flexShrink: 0 }}>
           <input
-            placeholder={leftView === "runs" ? "filter runs…" : "filter history…"}
+            placeholder="filter runs…"
             value={filter}
             onChange={(e) => setFilter(e.target.value)}
-            style={{ ...small, background: "#0e1a2f", color: ink, width: 160 }}
+            style={{ ...small, background: "var(--surface-2)", color: ink, width: 160 }}
           />
-          <button
-            onClick={() => {
-              setLeftView(leftView === "runs" ? "history" : "runs");
-              setFilter("");
-            }}
-            aria-pressed={leftView === "history"}
-            title={leftView === "runs" ? "what was done to it: deploys, restores, grants, pauses; going back to one" : "back to the runs"}
-            style={{ ...small, color: leftView === "history" ? "#0e1a2f" : "#9fb4d4", background: leftView === "history" ? "#6fd3e0" : "transparent" }}
-          >
-            history
-          </button>
-          {filter && leftView === "runs" && <span style={{ color: dim }}>{filtered.length} of {entries.length}</span>}
+          {filter && <span style={{ color: dim }}>{filtered.length} of {entries.length}</span>}
           <span style={{ flex: 1 }} />
           {selectedSeqs.size > 0 && (
             <>
@@ -759,26 +683,13 @@ function LogTab({
         </div>
         {restorer.modal}
         {restorer.note && (
-          <div className="hl-history__note" style={{ color: restorer.note.ok ? good : bad, padding: "3px 8px", borderBottom: "1px solid #1b2a45", flexShrink: 0 }}>
+          <div className="hl-history__note" style={{ color: restorer.note.ok ? good : bad, padding: "3px 8px", borderBottom: "1px solid var(--border)", flexShrink: 0 }}>
             {restorer.note.text}
           </div>
         )}
-        {leftView === "history" && (
-          <HistoryList
-            timeline={timeline}
-            query={filter}
-            pickedKey={pickedKey}
-            onPick={pickItem}
-            targetFor={targetFor}
-            busy={restorer.busy}
-            onRestore={restorer.restore}
-            onShowVersion={onShowVersion}
-            error={history.error}
-          />
-        )}
-        <div style={{ display: leftView === "runs" ? "flex" : "none", flexDirection: "column", flex: 1, minHeight: 0 }}>
-          <div style={{ display: "flex", gap: 10, padding: "2px 6px", borderBottom: "1px solid #1b2a45", fontSize: 10, flexShrink: 0 }}>
-            <input type="checkbox" checked={allVisibleSelected} onChange={toggleAllVisible} style={{ width: 12, cursor: "pointer", accentColor: "#6fd3e0", flexShrink: 0 }} title={allVisibleSelected ? "deselect all visible" : "select all visible"} />
+        <div style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0 }}>
+          <div style={{ display: "flex", gap: 10, padding: "2px 6px", borderBottom: "1px solid var(--border)", fontSize: 10, flexShrink: 0 }}>
+            <input type="checkbox" checked={allVisibleSelected} onChange={toggleAllVisible} style={{ width: 12, cursor: "pointer", accentColor: "var(--accent)", flexShrink: 0 }} title={allVisibleSelected ? "deselect all visible" : "select all visible"} />
             <SortHeader k="seq" label="#" w={30} />
             <SortHeader k="time" label="time" w={84} />
             <ColHeader sk="session" label="s" col="session" w={22} />
@@ -793,7 +704,7 @@ function LogTab({
               <div
                 key={t.label}
                 className="hl-view__tally"
-                style={{ display: "flex", gap: 10, padding: "2px 6px", color: dim, borderBottom: "1px solid #1b2a45" }}
+                style={{ display: "flex", gap: 10, padding: "2px 6px", color: dim, borderBottom: "1px solid var(--border)" }}
                 title="this handler's line says unrecorded: its runs are counted, not logged, failed or not, so they can't be replayed or explained; make it lazy for a while to see why one fails"
               >
                 <span style={{ color: ink }}>{t.label}</span>
@@ -811,7 +722,7 @@ function LogTab({
               return (
                 <div
                   key={e.seq}
-                  onClick={() => pickRun(e)}
+                  onClick={() => pick(e)}
                   onDoubleClick={() => {
                     if (order.length > 0 && selected?.seq === e.seq) onFitToNodes(order);
                     else fitPendingSeq.current = e.seq;
@@ -822,7 +733,7 @@ function LogTab({
                     padding: "2px 6px",
                     cursor: "pointer",
                     borderRadius: 3,
-                    background: selectedSeqs.has(e.seq) ? "#0d1e38" : e.seq === selected?.seq ? "#13243f" : "transparent",
+                    background: selectedSeqs.has(e.seq) ? "var(--surface-2)" : e.seq === selected?.seq ? "var(--surface)" : "transparent",
                     alignItems: "center",
                   }}
                 >
@@ -831,7 +742,7 @@ function LogTab({
                     checked={selectedSeqs.has(e.seq)}
                     onChange={() => {}}
                     onClick={(ev) => { ev.stopPropagation(); setSelectedSeqs((prev) => { const n = new Set(prev); if (n.has(e.seq)) n.delete(e.seq); else n.add(e.seq); return n; }); }}
-                    style={{ width: 12, cursor: "pointer", accentColor: "#6fd3e0", flexShrink: 0 }}
+                    style={{ width: 12, cursor: "pointer", accentColor: "var(--accent)", flexShrink: 0 }}
                   />
                   <span style={{ color: dim, width: 30, textAlign: "right", flexShrink: 0 }}>#{e.seq}</span>
                   <span style={{ color: dim, width: 84, whiteSpace: "nowrap", flexShrink: 0 }}>{time(e.at_ms)}</span>
@@ -845,7 +756,7 @@ function LogTab({
                       <span key={a.label} title={a.title} style={{ color: a.color, fontSize: 9, letterSpacing: "0.02em" }}>{a.label}</span>
                     ))}
                     {e.error && <span style={{ color: bad, fontSize: 9 }}>err</span>}
-                    {(e.parked ?? []).length > 0 && <span style={{ color: "#e0c36f", fontSize: 9 }} title="waiting for an event">⏸</span>}
+                    {(e.parked ?? []).length > 0 && <span style={{ color: "var(--warn)", fontSize: 9 }} title="waiting for an approval or an event">⏸</span>}
                   </span>
                   <span style={{ color: e.status !== null && e.status < 400 ? good : bad, width: 26, flexShrink: 0 }}>
                     {e.status ?? ""}
@@ -887,13 +798,7 @@ function LogTab({
           </Tabs>
           {rightTab === "details" ? (
             <div style={{ ...scroll, display: "flex", flexDirection: "column", gap: 4 }}>
-              {pickedItem && pickedItem.kind !== "run" ? (
-                <div className="hl-history__details" style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-                  {itemDetails(pickedItem, targetFor(pickedItem)).map(([name, value]) => (
-                    <Field key={name} name={name} value={value} color={value.startsWith("no: ") ? dim : undefined} />
-                  ))}
-                </div>
-              ) : selected ? (
+              {selected ? (
                 <>
                   {selected.url && (
                     <div style={{ color: ink }}>{selected.method} {selected.url}</div>
@@ -921,14 +826,16 @@ function LogTab({
                     <Field key={`r${i}`} name="read" value={`${formatValue(r.request)} → ${r.answer ? formatValue(r.answer) : "nothing"}`} />
                   ))}
                   {(selected.retries ?? 0) > 0 && (
-                    <Field name="ran again" value={`${selected.retries}× — what it read changed before it could commit, so it ran again from the new state`} color="#e0c36f" />
+                    <Field name="ran again" value={`${selected.retries}× — what it read changed before it could commit, so it ran again from the new state`} color="var(--warn)" />
                   )}
                   {(selected.parked ?? []).length > 0 && (
-                    <Field name="waiting at" value={(selected.parked ?? []).join(", ")} color="#e0c36f" />
+                    <Field name="waiting at" value={(selected.parked ?? []).join(", ")} color="var(--warn)" />
                   )}
-                  {Object.entries(selected.events ?? {}).map(([name, v]) => (
-                    <Field key={name} name={`event ${name}`} value={formatValue(v)} rawValue={v} />
-                  ))}
+                  {Object.entries(selected.events ?? {}).map(([name, v]) => {
+                    // An approval's decision, said: who approved, or who declined and why.
+                    const decided = decisionSaid(v);
+                    return decided === null ? <Field key={name} name={`event ${name}`} value={formatValue(v)} rawValue={v} /> : <Field key={name} name={`approval ${name}`} value={decided} rawValue={v} />;
+                  })}
                   {selected.run_id && (
                     <Field name="run" value={`${selected.run_id.slice(0, 16)}… · grant ${(selected.grant ?? "").slice(0, 12)}…`} color={dim} />
                   )}
@@ -1008,8 +915,8 @@ function runSectionsForCompare(e: LogEntry): RunSection[] {
     const lines = reads.map((r) => `${formatValue(r.request)} → ${r.answer ? formatValue(r.answer) : "nothing"}`);
     s.push({ key: "read", value: lines.join("\n") });
   }
-  if ((e.retries ?? 0) > 0) s.push({ key: "ran again", value: `${e.retries}×`, color: "#e0c36f" });
-  if ((e.parked ?? []).length > 0) s.push({ key: "waiting at", value: (e.parked ?? []).join(", "), color: "#e0c36f" });
+  if ((e.retries ?? 0) > 0) s.push({ key: "ran again", value: `${e.retries}×`, color: "var(--warn)" });
+  if ((e.parked ?? []).length > 0) s.push({ key: "waiting at", value: (e.parked ?? []).join(", "), color: "var(--warn)" });
   for (const [name, v] of Object.entries(e.events ?? {})) s.push({ key: `event ${name}`, value: formatValue(v), rawValue: v });
   if (e.run_id) s.push({ key: "run", value: `${e.run_id.slice(0, 16)}… · grant ${(e.grant ?? "").slice(0, 12)}…`, color: dim });
   return s;
@@ -1033,19 +940,19 @@ function CompareModal({ a, b, onClose }: { a: LogEntry; b: LogEntry; onClose: ()
 
   return (
     <div
-      style={{ position: "fixed", inset: 0, zIndex: 200, background: "rgba(5,10,20,0.75)", display: "flex", alignItems: "center", justifyContent: "center" }}
+      style={{ position: "fixed", inset: 0, zIndex: 200, background: "var(--overlay)", display: "flex", alignItems: "center", justifyContent: "center" }}
       onClick={onClose}
     >
       <div
-        style={{ background: "#0e1a2f", border: "1px solid #1b2a45", borderRadius: 6, width: "min(96vw, 1100px)", maxHeight: "85vh", display: "flex", flexDirection: "column", overflow: "hidden" }}
+        style={{ background: "var(--surface-2)", border: "1px solid var(--border)", borderRadius: 6, width: "min(96vw, 1100px)", maxHeight: "85vh", display: "flex", flexDirection: "column", overflow: "hidden" }}
         onClick={(e) => e.stopPropagation()}
       >
-        <div style={{ display: "flex", alignItems: "center", padding: "8px 14px", borderBottom: "1px solid #1b2a45", flexShrink: 0, gap: 8 }}>
+        <div style={{ display: "flex", alignItems: "center", padding: "8px 14px", borderBottom: "1px solid var(--border)", flexShrink: 0, gap: 8 }}>
           <span style={{ color: ink, fontWeight: 600 }}>Compare runs</span>
           <span style={{ flex: 1 }} />
           <button onClick={onClose} style={{ background: "transparent", border: "none", color: dim, cursor: "pointer", fontSize: 16, padding: "0 4px", lineHeight: 1 }} title="close">×</button>
         </div>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 110px 1fr", borderBottom: "1px solid #1b2a45", padding: "5px 14px", flexShrink: 0, gap: 8, fontSize: 11 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 110px 1fr", borderBottom: "1px solid var(--border)", padding: "5px 14px", flexShrink: 0, gap: 8, fontSize: 11 }}>
           <span style={{ color: ink, fontWeight: 600 }}>#{a.seq} · {time(a.at_ms)} · {runLabel(a)}</span>
           <span />
           <span style={{ color: ink, fontWeight: 600 }}>#{b.seq} · {time(b.at_ms)} · {runLabel(b)}</span>
@@ -1057,9 +964,9 @@ function CompareModal({ a, b, onClose }: { a: LogEntry; b: LogEntry; onClose: ()
             const rowB = mapB.get(key);
             const bothPresent = !!(rowA && rowB);
             const identical = bothPresent && rowA!.value === rowB!.value;
-            const keyColor = !bothPresent ? dim : identical ? "#6fd3e0" : "#e0c36f";
+            const keyColor = !bothPresent ? dim : identical ? "var(--accent)" : "var(--warn)";
             return (
-              <div key={key} style={{ display: "grid", gridTemplateColumns: "1fr 110px 1fr", padding: "4px 14px", gap: 8, borderBottom: "1px solid #1b2a4520", alignItems: "start" }}>
+              <div key={key} style={{ display: "grid", gridTemplateColumns: "1fr 110px 1fr", padding: "4px 14px", gap: 8, borderBottom: "1px solid color-mix(in srgb, var(--border) 13%, transparent)", alignItems: "start" }}>
                 <div style={{ color: rowA?.color ?? (rowA ? ink : dim), fontSize: 12, fontFamily: "var(--mono)", whiteSpace: "pre-wrap", wordBreak: "break-word", minHeight: 16, display: "flex", alignItems: "flex-start", gap: 4 }}>
                   <span style={{ flex: 1 }}>{rowA?.value !== undefined ? (rowA.value || <span style={{ color: dim }}>—</span>) : <span style={{ color: dim }}>—</span>}</span>
                   {rowA?.rawValue && <button onClick={(e) => { e.stopPropagation(); setViewValue({ value: rowA!.rawValue!, name: `${key} · run #${a.seq}` }); }} style={{ ...small, padding: "0px 4px", fontSize: 9, flexShrink: 0, lineHeight: 1.4 }} title="view value">⤢</button>}
@@ -1136,7 +1043,7 @@ function TimelineTab({
         ).map(([key, text]) => (
           <button
             key={key}
-            style={{ ...small, color: sort === key ? "#0e1a2f" : "#9fb4d4", background: sort === key ? "#6fd3e0" : "transparent" }}
+            style={{ ...small, color: sort === key ? "var(--accent-ink)" : "var(--muted)", background: sort === key ? "var(--accent)" : "transparent" }}
             onClick={() => setSort(key)}
           >
             {text}
@@ -1188,7 +1095,7 @@ function TimelineTab({
               alignItems: "center",
               padding: "2px 0",
               cursor: "pointer",
-              background: active ? "#13243f" : "transparent",
+              background: active ? "var(--surface)" : "transparent",
               borderRadius: 3,
             }}
           >
@@ -1198,7 +1105,7 @@ function TimelineTab({
             <span
               style={{
                 width: 170,
-                color: issue?.role === "origin" ? FAIL : issue ? "#d9a596" : done || active ? ink : dim,
+                color: issue?.role === "origin" ? FAIL : issue ? "var(--bad-ink)" : done || active ? ink : dim,
                 overflow: "hidden",
                 textOverflow: "ellipsis",
                 whiteSpace: "nowrap",
@@ -1206,10 +1113,10 @@ function TimelineTab({
               title={(n ? nodeLabel(n) : id) + (issue ? ` · ${issue.reason}` : "")}
             >
               {n ? nodeLabel(n) : id}
-              {writes && <span style={{ color: "#e0c36f" }}> ✎</span>}
+              {writes && <span style={{ color: "var(--warn)" }}> ✎</span>}
               {issue?.role === "starved" && <span> · didn't get its input</span>}
             </span>
-            <div style={{ flex: 1, position: "relative", height: 10, background: "#0e1a2f", borderRadius: 2 }}>
+            <div style={{ flex: 1, position: "relative", height: 10, background: "var(--surface-2)", borderRadius: 2 }}>
               {(t || !timed) && (
                 <div
                   style={{
@@ -1222,12 +1129,12 @@ function TimelineTab({
                     background: issue?.role === "origin"
                       ? FAIL
                       : active
-                        ? "#6fd3e0"
+                        ? "var(--accent)"
                         : writes
-                          ? "#e0c36f"
+                          ? "var(--warn)"
                           : done
-                            ? "#3f7fa8"
-                            : "#24384f",
+                            ? "var(--accent)"
+                            : "var(--border-strong)",
                   }}
                 />
               )}
@@ -1253,7 +1160,7 @@ function TimelineTab({
               <span style={{ width: 170, color: ok ? ink : bad, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                 round {x.round + 1} · {line}
               </span>
-              <div style={{ flex: 1, position: "relative", height: 10, background: "#0e1a2f", borderRadius: 2 }}>
+              <div style={{ flex: 1, position: "relative", height: 10, background: "var(--surface-2)", borderRadius: 2 }}>
                 <div
                   style={{
                     position: "absolute",
@@ -1262,7 +1169,7 @@ function TimelineTab({
                     top: 0,
                     bottom: 0,
                     borderRadius: 2,
-                    background: ok ? "#c58af2" : bad,
+                    background: ok ? "var(--db)" : bad,
                   }}
                 />
               </div>
@@ -1298,9 +1205,11 @@ export type InspectorRun = {
   inside: InsideStep[] | null;
   /** Open another run of the deployment in view mode, by its seq: a cell's history's rows. */
   openRun?: (seq: number) => void;
+  /** Whether replaying the run reproduced what it recorded; null when not checkable. */
+  verdict?: boolean | null;
 };
 
-type InspectorTab = "node" | "state";
+type InspectorTab = "node" | "state" | "record";
 
 /**
  * The Inspector, on the canvas's right in both modes: the selected node (its docs, params and
@@ -1315,18 +1224,39 @@ export function Inspector({
   source,
   open,
   onOpen,
+  word = null,
+  onManual,
+  onSample,
+  may = null,
 }: {
   node: ViewNode | null;
   unit: ReactNode;
   run: InspectorRun | null;
+  /** Edit mode: what the node lets the flow do (mayHere.ts), null when not worked out. */
+  may?: MayHere[] | null;
+  /** The name at the text's cursor: its hover, the forms it is written in and a sample's lines. */
+  word?: Inspected | null;
+  /** Open the language reference the forms come from. */
+  onManual?: () => void;
+  /** Open the sample an example comes from, as an unsaved copy. */
+  onSample?: (name: string) => void;
   /** The node's line in the flow as text (holonText.ts), when the flow prints. */
   source?: { line: number; text: string } | null;
   open: boolean;
   onOpen: (open: boolean) => void;
 }) {
   const [picked, setTab] = useState<InspectorTab>("node");
-  const tab = picked === "state" && !run ? "node" : picked;
-  const tabs: [InspectorTab, string][] = [["node", "Node"], ...(run ? [["state", "Flow state"] as [InspectorTab, string]] : [])];
+  const tab = picked !== "node" && !run ? "node" : picked;
+  // View mode: the state as of the step shown, and the run as the log keeps it.
+  const tabs: [InspectorTab, string][] = [
+    ["node", "Node"],
+    ...(run
+      ? ([
+          ["state", run.step === null ? "State after the run" : `State at step ${run.step + 1}`],
+          ["record", "Record"],
+        ] as [InspectorTab, string][])
+      : []),
+  ];
   if (!open) {
     return (
       <div className="nodrag nowheel hl-inspector hl-inspector--closed" style={paneStyle}>
@@ -1340,20 +1270,97 @@ export function Inspector({
     <div className="nodrag nowheel hl-inspector" style={paneStyle} role="complementary" aria-label="Inspector">
       <div className="hl-panel-header">
         <span className="hl-panel-header__title">inspector</span>
+        <kbd className="hl-pane-key" aria-hidden="true">
+          i
+        </kbd>
         <button className="hl-panel-header__btn" onClick={() => onOpen(false)} title="fold the Inspector away" aria-label="fold the Inspector">›</button>
       </div>
       <Tabs tabs={tabs} tab={tab} onTab={setTab} />
       <div style={{ ...scroll, display: "flex", flexDirection: "column", gap: 6 }}>
         {tab === "state" && run ? (
           <StateTab slug={run.slug} run={run.run} step={run.step} order={run.order} after={run.stateAfter} changed={run.changed} collections={run.collections} onOpenRun={run.openRun} />
+        ) : tab === "record" && run ? (
+          <RecordTab slug={run.slug} run={run.run} verdict={run.verdict ?? null} />
         ) : (
           <>
-            <ComponentTab node={node} run={run} source={source ?? null} />
+            {word && <WordSection word={word} onManual={onManual} onSample={onSample} />}
+            <ComponentTab node={node} run={run} source={source ?? null} may={run ? null : may} />
             {node && unit && <Section title="unit">{unit}</Section>}
           </>
         )}
       </div>
     </div>
+  );
+}
+
+/** The name at the text's cursor, as `holon editor`'s inspector says it: its hover, the forms it
+ *  is written in (from the language reference) and a sample's lines that use it. */
+function WordSection({ word, onManual, onSample }: { word: Inspected; onManual?: () => void; onSample?: (name: string) => void }) {
+  const { forms = [], example = null } = word.usage ?? {};
+  return (
+    <section className="hl-word" aria-label={`the name ${word.word}`}>
+      <div className="hl-word__head">
+        Inspector: <code>{word.word}</code>
+      </div>
+      {/* The hover writes code between backticks. */}
+      <div className="hl-word__hover">{word.hover.split("`").map((part, i) => (i % 2 === 1 ? <code key={i}>{part}</code> : part))}</div>
+      {forms.length > 0 && (
+        <Section title="forms">
+          <ul className="hl-word__forms">
+            {forms.map(([form, meaning]) => (
+              <li key={form}>
+                <code>{form}</code>
+                {meaning && <span className="hl-word__meaning"> {meaning}</span>}
+              </li>
+            ))}
+          </ul>
+          {onManual && (
+            <button className="hl-word__link" onClick={onManual}>
+              the language reference
+            </button>
+          )}
+        </Section>
+      )}
+      {example && (
+        <Section title={`example · ${example.sample}`}>
+          <pre className="hl-word__example">{example.lines.join("\n")}</pre>
+          {onSample && (
+            <button className="hl-word__link" onClick={() => onSample(example.sample)}>
+              open the sample
+            </button>
+          )}
+        </Section>
+      )}
+    </section>
+  );
+}
+
+/** View mode's Record tab (gaps-web.md G24): the run as the log keeps it, chained to the one
+ *  before it, and whether replaying it gave what it recorded. Its page checks it offline. */
+function RecordTab({ slug, run, verdict }: { slug: string; run: LogEntry | null; verdict: boolean | null }) {
+  if (!run) return <div>select a run</div>;
+  const secrets = Object.entries(run.secrets ?? {});
+  return (
+    <>
+      <Section title={`run ${run.seq}, on record`}>
+        <Field name="run id" value={run.run_id || "—"} />
+        <Field name="before it" value={run.prev ? run.prev : "nothing: the first in the log"} />
+        {run.unit && <Field name="version" value={run.unit} />}
+        {run.grant && <Field name="grant" value={run.grant} />}
+        {run.nonce && <Field name="nonce" value={run.nonce} />}
+        {secrets.map(([name, mark]) => (
+          <Field key={name} name={`secret ${name}`} value={mark} />
+        ))}
+      </Section>
+      <Section title="replayed">
+        <div style={{ color: verdict === null ? dim : verdict ? "var(--ok)" : FAIL }}>
+          {verdict === null ? "not checked: its version's canvas isn't shown" : verdict ? "✓ gives what it recorded" : "✗ gives something else than it recorded"}
+        </div>
+      </Section>
+      <a href={`#${slug}.run-${run.seq}`} style={{ color: "var(--accent)", textDecoration: "none" }}>
+        its page, to check it offline ›
+      </a>
+    </>
   );
 }
 
@@ -1408,23 +1415,23 @@ function StateTab({
       </div>
       {allKeys.length === 0 && collections.length === 0 && <div>no state: nothing read or written</div>}
       {changedKeys.map((k) => (
-        <div key={k} style={{ border: "1px solid #1b2a45", borderRadius: 3, padding: 6, background: changedBg }}>
-          <div style={{ color: "#e0c36f", marginBottom: 2, display: "flex", gap: 6, alignItems: "baseline" }}>
+        <div key={k} style={{ border: "1px solid var(--border)", borderRadius: 3, padding: 6, background: changedBg }}>
+          <div style={{ color: "var(--warn)", marginBottom: 2, display: "flex", gap: 6, alignItems: "baseline" }}>
             <span style={{ flex: 1 }}>{k} · changed</span>
             <CellHistoryButton slug={slug} name={k} onOpenRun={onOpenRun} />
           </div>
           <Field name="before" value={show(before[k])} rawValue={before[k]} />
-          <Field name="after" value={show(after[k])} color="#e0c36f" rawValue={after[k]} />
+          <Field name="after" value={show(after[k])} color="var(--warn)" rawValue={after[k]} />
         </div>
       ))}
       {changedCollections.map((c) => (
         <CollectionBox key={c.name} slug={slug} c={c} compact onOpenRun={onOpenRun} />
       ))}
       {counted.length === 0 && unchangedCount > 0 && (
-        <div style={{ color: dim, fontSize: 11 }}>{unchangedCount} key{unchangedCount === 1 ? "" : "s"} · no change · <span style={{ cursor: "pointer", color: "#9fb4d4" }} onClick={() => setModalOpen(true)}>view full state ▸</span></div>
+        <div style={{ color: dim, fontSize: 11 }}>{unchangedCount} key{unchangedCount === 1 ? "" : "s"} · no change · <span style={{ cursor: "pointer", color: "var(--muted)" }} onClick={() => setModalOpen(true)}>view full state ▸</span></div>
       )}
       {counted.length > 0 && unchangedCount > 0 && (
-        <div style={{ color: dim, fontSize: 11 }}>{unchangedCount} key{unchangedCount === 1 ? "" : "s"} unchanged · <span style={{ cursor: "pointer", color: "#9fb4d4" }} onClick={() => setModalOpen(true)}>view full state ▸</span></div>
+        <div style={{ color: dim, fontSize: 11 }}>{unchangedCount} key{unchangedCount === 1 ? "" : "s"} unchanged · <span style={{ cursor: "pointer", color: "var(--muted)" }} onClick={() => setModalOpen(true)}>view full state ▸</span></div>
       )}
       {modalOpen && (
         <StateModal slug={slug} run={run} step={step} order={order} after={after} changed={changed} collections={collections} onOpenRun={onOpenRun} onClose={() => setModalOpen(false)} />
@@ -1467,20 +1474,20 @@ function StateModal({
   const allKeys = [...new Set([...Object.keys(before), ...Object.keys(after)])].filter((k) => !isCollectionCell(k)).sort();
   const pageCount = Math.max(1, Math.ceil(allKeys.length / PAGE));
   const pageKeys = allKeys.slice(page * PAGE, (page + 1) * PAGE);
-  const cell: CSSProperties = { padding: "5px 8px", fontSize: 11, borderBottom: "1px solid #111d30", verticalAlign: "top" as const };
+  const cell: CSSProperties = { padding: "5px 8px", fontSize: 11, borderBottom: "1px solid var(--surface)", verticalAlign: "top" as const };
   const vBtn = (v: WValue | undefined | null, name: string) =>
     v ? <button onClick={(e) => { e.stopPropagation(); setViewValue({ value: v, name }); }} style={{ ...small, padding: "0px 4px", fontSize: 9, lineHeight: 1.4, flexShrink: 0 }} title="view value">&#x2922;</button> : null;
 
   return (
     <div
-      style={{ position: "fixed", inset: 0, zIndex: 200, background: "rgba(5,10,20,0.75)", display: "flex", alignItems: "center", justifyContent: "center" }}
+      style={{ position: "fixed", inset: 0, zIndex: 200, background: "var(--overlay)", display: "flex", alignItems: "center", justifyContent: "center" }}
       onClick={onClose}
     >
       <div
-        style={{ background: "#0e1a2f", border: "1px solid #1b2a45", borderRadius: 6, width: "min(96vw, 860px)", maxHeight: "85vh", display: "flex", flexDirection: "column", overflow: "hidden" }}
+        style={{ background: "var(--surface-2)", border: "1px solid var(--border)", borderRadius: 6, width: "min(96vw, 860px)", maxHeight: "85vh", display: "flex", flexDirection: "column", overflow: "hidden" }}
         onClick={(e) => e.stopPropagation()}
       >
-        <div style={{ display: "flex", alignItems: "center", padding: "8px 14px", borderBottom: "1px solid #1b2a45", flexShrink: 0, gap: 8 }}>
+        <div style={{ display: "flex", alignItems: "center", padding: "8px 14px", borderBottom: "1px solid var(--border)", flexShrink: 0, gap: 8 }}>
           <span style={{ color: ink, fontWeight: 600 }}>Full state</span>
           <span style={{ color: dim, fontSize: 11 }}>{step === null ? `after the whole run (${order.length} nodes)` : `after node ${step + 1} of ${order.length}`}</span>
           <span style={{ flex: 1 }} />
@@ -1503,9 +1510,9 @@ function StateModal({
                 <col />
               </colgroup>
               <thead>
-                <tr style={{ background: "#0a1525", position: "sticky", top: 0, zIndex: 1 }}>
+                <tr style={{ background: "var(--bg)", position: "sticky", top: 0, zIndex: 1 }}>
                   <th style={{ ...cell, color: dim, fontWeight: 400, textAlign: "left", fontSize: 10 }}>
-                    key {allKeys.length > PAGE && <span style={{ color: "#4d5f7d" }}>({page * PAGE + 1}&ndash;{Math.min((page + 1) * PAGE, allKeys.length)} of {allKeys.length})</span>}
+                    key {allKeys.length > PAGE && <span style={{ color: "var(--faintest)" }}>({page * PAGE + 1}&ndash;{Math.min((page + 1) * PAGE, allKeys.length)} of {allKeys.length})</span>}
                   </th>
                   <th style={{ ...cell, color: dim, fontWeight: 400, textAlign: "left", fontSize: 10 }}>before</th>
                   <th style={{ ...cell, color: dim, fontWeight: 400, textAlign: "left", fontSize: 10 }}>after</th>
@@ -1519,7 +1526,7 @@ function StateModal({
                   const afterVal = after[k];
                   return (
                     <tr key={k} style={{ background: bg }}>
-                      <td style={{ ...cell, color: moved ? "#e0c36f" : ink, fontFamily: "var(--mono)", overflowWrap: "anywhere" }}>
+                      <td style={{ ...cell, color: moved ? "var(--warn)" : ink, fontFamily: "var(--mono)", overflowWrap: "anywhere" }}>
                         <div style={{ display: "flex", gap: 4, alignItems: "flex-start" }}>
                           <span style={{ flex: 1 }}>{k}</span>
                           <CellHistoryButton slug={slug} name={k} onOpenRun={onOpenRun} />
@@ -1534,7 +1541,7 @@ function StateModal({
                       <td style={{ ...cell }}>
                         {moved ? (
                           <div style={{ display: "flex", gap: 4, alignItems: "flex-start" }}>
-                            <span style={{ color: "#e0c36f", flex: 1, fontFamily: "var(--mono)", overflowWrap: "anywhere", whiteSpace: "pre-wrap" }}>{show(afterVal)}</span>
+                            <span style={{ color: "var(--warn)", flex: 1, fontFamily: "var(--mono)", overflowWrap: "anywhere", whiteSpace: "pre-wrap" }}>{show(afterVal)}</span>
                             {vBtn(afterVal, k + " · after")}
                           </div>
                         ) : (
@@ -1585,8 +1592,8 @@ function CollectionBox({ slug, c, compact = false, onOpenRun }: { slug: string; 
   };
   const changedItems = c.items.filter(itemChanged).length;
   return (
-    <div style={{ border: "1px solid #1b2a45", borderRadius: 3, padding: 6, background: changedItems > 0 ? changedBg : "transparent" }}>
-      <div style={{ color: changedItems > 0 ? "#e0c36f" : ink, marginBottom: 2, display: "flex", gap: 6, alignItems: "baseline" }} title={c.root ? `root ${c.root}` : "no items before this run"}>
+    <div style={{ border: "1px solid var(--border)", borderRadius: 3, padding: 6, background: changedItems > 0 ? changedBg : "transparent" }}>
+      <div style={{ color: changedItems > 0 ? "var(--warn)" : ink, marginBottom: 2, display: "flex", gap: 6, alignItems: "baseline" }} title={c.root ? `root ${c.root}` : "no items before this run"}>
         <span style={{ flex: 1 }}>
           {c.name}
           <span style={{ color: dim }}> · collection</span>
@@ -1602,7 +1609,7 @@ function CollectionBox({ slug, c, compact = false, onOpenRun }: { slug: string; 
         return (
           <div key={i.key} style={{ display: "flex", gap: 4, alignItems: "baseline" }}>
             <div style={{ flex: 1, minWidth: 0 }}>
-              <Field name={i.key} value={i.after === undefined ? `${was} · read` : `${was} → ${i.after === null ? "(deleted)" : show(i.after)}`} color={moved ? "#e0c36f" : undefined} />
+              <Field name={i.key} value={i.after === undefined ? `${was} · read` : `${was} → ${i.after === null ? "(deleted)" : show(i.after)}`} color={moved ? "var(--warn)" : undefined} />
             </div>
             <CellHistoryButton slug={slug} name={c.name} item={i.key} onOpenRun={onOpenRun} />
           </div>
@@ -1619,7 +1626,7 @@ function CollectionBox({ slug, c, compact = false, onOpenRun }: { slug: string; 
       {c.root && !compact && (
         <div style={{ marginTop: 4 }}>
           {all === null ? (
-            <span style={{ cursor: "pointer", color: "#9fb4d4" }} onClick={() => fetchPage(null, 1, [null])} title="every item, as this run found the collection">
+            <span style={{ cursor: "pointer", color: "var(--muted)" }} onClick={() => fetchPage(null, 1, [null])} title="every item, as this run found the collection">
               show all ▸
             </span>
           ) : (
@@ -1647,7 +1654,17 @@ function CollectionBox({ slug, c, compact = false, onOpenRun }: { slug: string; 
 /** One node inside a holon, as a run went: what it is, what it produced, how long it took. */
 export type InsideStep = { label: string; outputs: (WValue | null)[] | null; us: number };
 
-function ComponentTab({ node, run, source }: { node: ViewNode | null; run: InspectorRun | null; source: { line: number; text: string } | null }) {
+function ComponentTab({
+  node,
+  run,
+  source,
+  may,
+}: {
+  node: ViewNode | null;
+  run: InspectorRun | null;
+  source: { line: number; text: string } | null;
+  may: MayHere[] | null;
+}) {
   const describe = useNodeDocs();
   if (!node) return <div>{run ? "click a node on the canvas, or step through the run" : "select a node on the canvas"}</div>;
   const { trace, timing, inside, notRun } = run ?? { trace: undefined, timing: undefined, inside: null, notRun: undefined };
@@ -1657,18 +1674,38 @@ function ComponentTab({ node, run, source }: { node: ViewNode | null; run: Inspe
   return (
     <>
       <div style={{ color: ink, fontSize: 12 }}>{nodeLabel(node)}</div>
-      {doc && <div style={{ color: "#9fb4d4", whiteSpace: "normal", lineHeight: 1.45 }}>{doc}</div>}
+      {doc && <div style={{ color: "var(--muted)", whiteSpace: "normal", lineHeight: 1.45 }}>{doc}</div>}
       <div style={{ color: dim }}>
         {kind}
         {timing ? ` · ran ${us(timing.start_us)} → ${us(timing.end_us)} (${us(timing.end_us - timing.start_us)})` : ""}
         {run && !trace && !notRun ? " · not part of this run" : ""}
       </div>
       {notRun && <div style={{ color: dim }}>↷ {notRun}</div>}
+      {may && (
+        <Section title="it may here">
+          {may.length === 0 && <div style={{ color: dim }}>nothing outside the flow: it only computes</div>}
+          {may.map((m) => (
+            <div key={m.item} style={{ color: "var(--body)", whiteSpace: "normal" }} title={m.item}>
+              {m.said}
+              {m.isNew && <span style={{ color: "var(--warn)" }}> · new: needs approval</span>}
+            </div>
+          ))}
+        </Section>
+      )}
+      {!run && (data.secretSinks ?? []).length > 0 && (
+        <Section title="secrets">
+          {data.secretSinks!.map((line) => (
+            <div key={line} style={{ color: "var(--body)", whiteSpace: "normal" }}>
+              ◆ {line}
+            </div>
+          ))}
+        </Section>
+      )}
       {source && (
         <Section title={`as text, line ${source.line}`}>
           <div
             className="hl-inspector__source"
-            style={{ color: "#cfe3ff", fontFamily: "ui-monospace, Menlo, Consolas, monospace", whiteSpace: "pre-wrap", wordBreak: "break-word" }}
+            style={{ color: "var(--body)", fontFamily: "ui-monospace, Menlo, Consolas, monospace", whiteSpace: "pre-wrap", wordBreak: "break-word" }}
             title="the flow as the language writes it (.holon.ts): this node is part of this line"
           >
             {source.text.trim()}
@@ -1676,7 +1713,7 @@ function ComponentTab({ node, run, source }: { node: ViewNode | null; run: Inspe
         </Section>
       )}
       {trace?.issue && (
-        <div style={{ color: trace.issue.role === "origin" ? FAIL : "#d9a596" }}>
+        <div style={{ color: trace.issue.role === "origin" ? FAIL : "var(--bad-ink)" }}>
           {trace.issue.role === "origin" ? "✗ failed here: " : "↯ "}
           {trace.issue.reason}
         </div>
@@ -1685,15 +1722,18 @@ function ComponentTab({ node, run, source }: { node: ViewNode | null; run: Inspe
         <div style={{ color: dim }}>outputs as the run recorded them: an input is a secret or token, or it reads from outside within itself, which replay never has</div>
       )}
       {trace?.placeholder && (
-        <div style={{ color: "#e0c36f" }}>
+        <div style={{ color: "var(--warn)" }}>
           recomputed from a secret's or token's placeholder (the log has no record): may differ from the run
         </div>
       )}
       {data.params.length > 0 && (
         <Section title="params">
-          {data.params.map((p) => (
-            <Field key={p.name} name={p.name} value={p.kind === "Frozen" ? p.value : `open → ${p.bind}`} />
-          ))}
+          {data.params.map((p) => {
+            // A field the manifest names is a permission's (or a secret's): changing it asks again.
+            const marks = may && p.kind === "Frozen" ? fieldMarks(p.value, may.map((m) => m.item)) : null;
+            const mark = marks?.secret ? " · a secret" : marks?.permission ? " · a permission" : "";
+            return <Field key={p.name} name={p.name + mark} value={p.kind === "Frozen" ? p.value : `open → ${p.bind}`} />;
+          })}
         </Section>
       )}
       {inside && (
@@ -1739,7 +1779,7 @@ function MarkdownView({ text }: { text: string }) {
     parts.forEach((part, idx) => {
       if (idx % 2 === 1) {
         const pre = document.createElement("pre");
-        pre.style.cssText = "margin:0 0 8px;padding:8px;background:#0b1527;border-radius:3px;overflow-x:auto;font-size:12px";
+        pre.style.cssText = "margin:0 0 8px;padding:8px;background:var(--bg);border-radius:3px;overflow-x:auto;font-size:12px";
         pre.textContent = part.replace(/\n$/, "");
         el.appendChild(pre);
         return;
@@ -1757,7 +1797,7 @@ function MarkdownView({ text }: { text: string }) {
           for (const bit of line.split(/(`[^`]*`|\*\*[^*]*\*\*)/)) {
             if (bit.startsWith("`") && bit.endsWith("`") && bit.length > 1) {
               const c = document.createElement("code");
-              c.style.cssText = "background:#0b1527;padding:1px 4px;border-radius:2px;font-size:11px";
+              c.style.cssText = "background:var(--bg);padding:1px 4px;border-radius:2px;font-size:11px";
               c.textContent = bit.slice(1, -1);
               p.appendChild(c);
             } else if (bit.startsWith("**") && bit.endsWith("**") && bit.length > 3) {
@@ -1776,7 +1816,7 @@ function MarkdownView({ text }: { text: string }) {
 
 function renderValueContent(v: WValue, renderer: RendererKind, portName: string, onDrillIn?: (v: WValue, name: string) => void): ReactNode {
   const pre = (s: string) => (
-    <pre style={{ color: "#cfe3ff", whiteSpace: "pre-wrap", wordBreak: "break-word", margin: 0, fontSize: 12, fontFamily: "var(--mono)", lineHeight: 1.5 }}>{s}</pre>
+    <pre style={{ color: "var(--body)", whiteSpace: "pre-wrap", wordBreak: "break-word", margin: 0, fontSize: 12, fontFamily: "var(--mono)", lineHeight: 1.5 }}>{s}</pre>
   );
   if (v.type === "Text") {
     const fm = /^‹file:([^,›]+),\s*([^›,]+),\s*([^›]*)›$/.exec(v.value);
@@ -1804,11 +1844,11 @@ function renderValueContent(v: WValue, renderer: RendererKind, portName: string,
           <div style={{ color: ink, fontWeight: 600, fontSize: 15, marginBottom: 6, wordBreak: "break-all" }}>{name}</div>
           {folder && (
             <div style={{ fontSize: 11, color: dim, marginBottom: 4 }}>
-              folder: <span style={{ color: "#7ab0e0" }}>{folder}</span>
+              folder: <span style={{ color: "var(--accent)" }}>{folder}</span>
             </div>
           )}
           <div style={{ fontSize: 11, color: dim, marginBottom: 16 }}>{sizeStr}</div>
-          <div style={{ fontSize: 11, color: dim, background: "#0f1c30", border: "1px solid #1b2a45", borderRadius: 4, padding: "8px 12px", display: "inline-block", maxWidth: 340, lineHeight: 1.6 }}>
+          <div style={{ fontSize: 11, color: dim, background: "var(--surface-2)", border: "1px solid var(--border)", borderRadius: 4, padding: "8px 12px", display: "inline-block", maxWidth: 340, lineHeight: 1.6 }}>
             {noteText}
           </div>
         </div>
@@ -1820,7 +1860,7 @@ function renderValueContent(v: WValue, renderer: RendererKind, portName: string,
   if (renderer === "audio" && v.type === "Text")
     return <audio controls src={v.value} style={{ width: "100%" }} />;
   if (renderer === "html" && v.type === "Text")
-    return <iframe srcDoc={v.value} sandbox="allow-scripts" title="html preview" style={{ width: "100%", height: 420, border: "1px solid #1b2a45", borderRadius: 3 }} />;
+    return <iframe srcDoc={v.value} sandbox="allow-scripts" title="html preview" style={{ width: "100%", height: 420, border: "1px solid var(--border)", borderRadius: 3 }} />;
   if (renderer === "json" && v.type === "Text") {
     try { return pre(JSON.stringify(JSON.parse(v.value), null, 2)); } catch {}
   }
@@ -1839,7 +1879,7 @@ function renderValueContent(v: WValue, renderer: RendererKind, portName: string,
         <div style={{ overflowX: "auto" }}>
           <table style={{ borderCollapse: "collapse", fontSize: 12, color: ink, width: "100%" }}>
             <thead>
-              <tr>{keys.map((k) => <th key={k} style={{ padding: "4px 8px", textAlign: "left", borderBottom: "1px solid #1b2a45", color: dim, fontWeight: 500 }}>{k}</th>)}</tr>
+              <tr>{keys.map((k) => <th key={k} style={{ padding: "4px 8px", textAlign: "left", borderBottom: "1px solid var(--border)", color: dim, fontWeight: 500 }}>{k}</th>)}</tr>
             </thead>
             <tbody>
               {rows.map((r, i) => {
@@ -1849,7 +1889,7 @@ function renderValueContent(v: WValue, renderer: RendererKind, portName: string,
                   <tr key={i}>
                     {keys.map((k) => {
                       const cell = map.get(k);
-                      return <td key={k} style={{ padding: "3px 8px", verticalAlign: "top", borderBottom: "1px solid #1b2a4533" }}>{cell ? formatValue(cell) : "—"}</td>;
+                      return <td key={k} style={{ padding: "3px 8px", verticalAlign: "top", borderBottom: "1px solid color-mix(in srgb, var(--border) 20%, transparent)" }}>{cell ? formatValue(cell) : "—"}</td>;
                     })}
                   </tr>
                 );
@@ -1866,8 +1906,8 @@ function renderValueContent(v: WValue, renderer: RendererKind, portName: string,
         <tbody>
           {v.value.map(([k, val]) => (
             <tr key={k}>
-              <td style={{ padding: "3px 8px", color: dim, whiteSpace: "nowrap", verticalAlign: "top", borderBottom: "1px solid #1b2a4533" }}>{k}</td>
-              <td style={{ padding: "3px 8px", wordBreak: "break-word", whiteSpace: "pre-wrap", borderBottom: "1px solid #1b2a4533" }}>
+              <td style={{ padding: "3px 8px", color: dim, whiteSpace: "nowrap", verticalAlign: "top", borderBottom: "1px solid color-mix(in srgb, var(--border) 20%, transparent)" }}>{k}</td>
+              <td style={{ padding: "3px 8px", wordBreak: "break-word", whiteSpace: "pre-wrap", borderBottom: "1px solid color-mix(in srgb, var(--border) 20%, transparent)" }}>
                 <span style={{ display: "flex", alignItems: "flex-start", gap: 6 }}>
                   <span style={{ flex: 1 }}>{formatValue(val)}</span>
                   {onDrillIn && (
@@ -1913,10 +1953,10 @@ function ValueModal({ value, portName, onClose }: { value: WValue; portName: str
       role="dialog"
       aria-modal="true"
       onMouseDown={(e) => e.target === e.currentTarget && onClose()}
-      style={{ position: "fixed", inset: 0, background: "rgba(5, 10, 20, 0.7)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000 }}
+      style={{ position: "fixed", inset: 0, background: "var(--overlay)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000 }}
     >
-      <div style={{ background: "#0e1a2f", border: "1px solid #1b2a45", borderRadius: 6, maxWidth: 820, width: "calc(100vw - 32px)", maxHeight: "calc(100vh - 64px)", display: "flex", flexDirection: "column", color: ink, fontSize: 13 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", borderBottom: "1px solid #1b2a45", flexShrink: 0 }}>
+      <div style={{ background: "var(--surface-2)", border: "1px solid var(--border)", borderRadius: 6, maxWidth: 820, width: "calc(100vw - 32px)", maxHeight: "calc(100vh - 64px)", display: "flex", flexDirection: "column", color: ink, fontSize: 13 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", borderBottom: "1px solid var(--border)", flexShrink: 0 }}>
           {stack.length > 0 && (
             <button onClick={pop} style={{ background: "transparent", border: "none", color: dim, cursor: "pointer", fontSize: 14, padding: "0 2px", lineHeight: 1 }} title="back">←</button>
           )}
@@ -1925,7 +1965,7 @@ function ValueModal({ value, portName, onClose }: { value: WValue; portName: str
           <select
             value={renderer}
             onChange={(e) => setRenderer(e.target.value as RendererKind)}
-            style={{ font: "inherit", fontSize: 11, color: dim, background: "#0b1527", border: "1px solid #1b2a45", borderRadius: 3, padding: "2px 6px" }}
+            style={{ font: "inherit", fontSize: 11, color: dim, background: "var(--bg)", border: "1px solid var(--border)", borderRadius: 3, padding: "2px 6px" }}
           >
             {available.map((r) => <option key={r} value={r}>{RENDERER_LABELS[r]}</option>)}
           </select>
@@ -1943,7 +1983,7 @@ function Port({ port, value, ran }: { port: WPort; value: WValue | null | undefi
   const [modalOpen, setModalOpen] = useState(false);
   const canExpand = ran && value != null;
   return (
-    <div style={{ display: "flex", flexDirection: "column", border: "1px solid #1b2a45", borderRadius: 3, padding: "3px 6px" }}>
+    <div style={{ display: "flex", flexDirection: "column", border: "1px solid var(--border)", borderRadius: 3, padding: "3px 6px" }}>
       <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
         <span style={{ color: ink }}>{port.name}</span>
         <span style={{ color: dim }}>{typeLabel(port.ty)}</span>
@@ -1953,7 +1993,7 @@ function Port({ port, value, ran }: { port: WPort; value: WValue | null | undefi
         )}
       </div>
       {ran && (
-        <div style={{ color: value === null || value === undefined ? dim : "#cfe3ff", wordBreak: "break-word", whiteSpace: "pre-wrap" }}>
+        <div style={{ color: value === null || value === undefined ? dim : "var(--body)", wordBreak: "break-word", whiteSpace: "pre-wrap" }}>
           {show(value)}
         </div>
       )}

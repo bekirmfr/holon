@@ -306,16 +306,16 @@ shows it beside `orders-api`, on the same database.
 
 ## Runs that wait
 
-A run that waits for an event (`await`) holds nothing while it waits: a row it read is anyone's
-to change until the event comes. A route never waits: it starts the run that does, an action,
-and answers with its link. When the event comes, the run goes on from where it waited, its own
-state as it first found it, and its databases and files **as they are now**: it reads them again.
-Its commit checks those reads as any run's does, and holds what it reads before it calls out, so
-if a row changed again in between, it runs again from where it waited, its requests and the
-event answered from its record, not sent or asked again.
+A run that waits (`await`), for an event or for people's approval, holds nothing while it
+waits: a row it read is anyone's to change until it goes on. A route never waits: it starts the
+run that does, an action, and answers. When the wait ends, the run goes on from where it waited,
+its own state as it first found it, and its databases and files **as they are now**: it reads
+them again. Its commit checks those reads as any run's does, and holds what it reads before it
+calls out, so if a row changed again in between, it runs again from where it waited, its requests
+and the approval answered from its record, not sent or asked again.
 
 ```ts
-import { action, event, flow, route, status } from "holon"
+import { action, approval, flow, route, status } from "holon"
 import bank from "database:bank"
 import httpbin from "host:httpbin.org"
 
@@ -323,20 +323,19 @@ flow("approved-payout", { port: 8153 })
 
 route.post("/payout/:account", (req) => {
   const account = bank.one("select id, balance from accounts where id = $1", req.params.account)
-  const started = payout({ account: account.id, amount: req.json.amount })
-  return status(202, { approve: `/approve/${started.waiting.approved}`, balance: account.balance })
+  payout({ account: account.id, amount: req.json.amount })
+  return status(202, { waiting: "two people's approval", balance: account.balance })
 })
 
 export const payout = action(async (asked) => {
   const account = bank.one("select id, balance from accounts where id = $1", asked.account)
-  const approved = await event("approved", { expires: "1d" })
+  const decision = await approval("payout", { people: 2, expires: "1d" })
+  if (!decision.approved) {
+    return { declined: decision.reason ?? "expired" }
+  }
   const sent = await httpbin.post("/anything/payouts", {
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({
-      account: account.id,
-      amount: asked.amount,
-      by: JSON.parse(approved.body).by,
-    }),
+    body: JSON.stringify({ account: account.id, amount: asked.amount, by: decision.by }),
   })
   bank.exec(
     "update accounts set balance = $1 where id = $2",
@@ -350,17 +349,21 @@ export const payout = action(async (asked) => {
     asked.amount,
     sent.status,
   )
+  return { paid: asked.amount, by: decision.by }
 })
-
-route.post("/approve/:token", () => "approved", { resumes: "approved" })
 ```
 
+- Two people signed in to Holon approve it, in the editor's Approvals or with `holon decide`;
+  one decline ends it, and nothing is sent or written.
 - A deposit made while the payout waits for its approval is kept: the approved run reads the
   balance with the deposit in it.
 - One made while the payout is being sent waits for the row the run holds, and runs again on
   the balance the run wrote.
 - One made by a program outside Holon at that moment is found by the run's commit: the run goes
-  round again from its approval, on the new balance, and its payout isn't sent again.
+  round again from its approval, on the new balance, and its payout isn't sent or asked again.
+- Where approvals go next, in steps filled by roles (an agent classifies, an editor reviews, an
+  admin approves), is the target design,
+  [`docs/L4s/access-and-approvals-L4.md`](../../L4s/access-and-approvals-L4.md) §8.
 
 ## Held for whole runs
 

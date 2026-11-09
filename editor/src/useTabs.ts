@@ -1,6 +1,8 @@
 // The open flows, one tab each (tabs.ts): the canvas shows the active tab; the others are kept
 // whole in `stash` and put back when picked. A flow is open in one tab at most: opening it again
-// goes to its tab. Leaving the page asks first while any tab has unsaved changes.
+// goes to its tab. A closed tab is kept whole too, the last few (`closed`, newest first), so
+// the editor's Home can open it again as it was left. Leaving the page asks first while any tab
+// has unsaved changes.
 
 import { useCallback, useEffect, useRef, useState, type MutableRefObject } from "react";
 import type { Edge, Viewport } from "@xyflow/react";
@@ -9,6 +11,9 @@ import type { History } from "./history";
 import type { Snapshot } from "./useCanvasHistory";
 import type { FlowDocument } from "./server";
 import type { PrimitiveNodeType } from "./PrimitiveNode";
+
+/** How many closed tabs are kept to open again. */
+const RECENTLY_CLOSED = 8;
 
 export function useTabs({
   flow,
@@ -58,6 +63,13 @@ export function useTabs({
   const [activeId, setActiveId] = useState(0);
   const stash = useRef(new Map<number, TabState>());
   const nextTabId = useRef(1);
+  const [closed, setClosed] = useState<TabState[]>([]);
+  /** Keep `t` among the recently closed: not an empty, untitled draft, and a flow once. */
+  const keepClosed = useCallback((t: TabState) => {
+    if (t.meta.name === null && t.meta.viewing === null && t.nodes.length === 0) return;
+    const same = (x: TabState) => x.meta.name === t.meta.name && x.meta.viewing === t.meta.viewing && (x.meta.name !== null || x === t);
+    setClosed((cs) => [t, ...cs.filter((x) => !same(x))].slice(0, RECENTLY_CLOSED));
+  }, []);
 
   const captureTab = useCallback(
     (): TabState => ({
@@ -131,6 +143,7 @@ export function useTabs({
       const t = id === activeId ? captureTab() : stash.current.get(id);
       if (!t) return;
       if (t.dirty && !(await confirm(`Close "${t.meta.name ?? "untitled"}" and discard its unsaved changes?`, "Discard"))) return;
+      keepClosed(t);
       if (id !== activeId) {
         stash.current.delete(id);
         setTabIds((ids) => ids.filter((x) => x !== id));
@@ -149,7 +162,20 @@ export function useTabs({
       applyTab(nt);
       setActiveId(next);
     },
-    [activeId, captureTab, confirm, tabIds, applyTab],
+    [activeId, captureTab, confirm, tabIds, applyTab, keepClosed],
+  );
+
+  /** Open the recently closed tab `at` again, as it was left (in its tab, if its flow is open
+   *  again since). */
+  const reopen = useCallback(
+    (at: number) => {
+      const t = closed[at];
+      if (!t) return;
+      setClosed((cs) => cs.filter((x) => x !== t));
+      const open = t.meta.name === null ? null : tabOf(t.meta.name);
+      showTab(open, t);
+    },
+    [closed, tabOf, showTab],
   );
 
   // Leaving the page asks first while any tab has unsaved changes.
@@ -161,5 +187,5 @@ export function useTabs({
     return () => window.removeEventListener("beforeunload", warn);
   }, [anyDirty]);
 
-  return { tabIds, activeId, stash, captureTab, applyTab, showTab, switchTab, tabOf, closeTab };
+  return { tabIds, activeId, stash, captureTab, applyTab, showTab, switchTab, tabOf, closeTab, closed, reopen };
 }

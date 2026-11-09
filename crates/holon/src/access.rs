@@ -113,7 +113,10 @@ impl Access {
     /// Who `request` comes from, or why it may not go on.
     pub(crate) fn check(&self, request: &Request) -> Result<Caller, Response> {
         let (method, url) = (request.method(), request.url());
-        let Some(accounts) = &self.accounts else { return Ok(Caller::default()) };
+        // With no accounts (the tests' servers), whoever asks is let in; one asking as an agent is one.
+        let Some(accounts) = &self.accounts else {
+            return Ok(if asks_as_agent(request) { Caller { name: Some("agent".into()), role: Some(Role::Agent) } } else { Caller::default() });
+        };
         if is_open(method, &url) {
             return Ok(Caller::default());
         }
