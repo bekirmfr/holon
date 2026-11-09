@@ -41,6 +41,7 @@ A WebSocket's binding takes these too ([below](#a-websocket)):
 | `--heartbeat MESSAGE` | a message sent every `--every T` (`30s` unless given, `1s` to `1h`) while it is open, for a feed that drops a client that says nothing |
 | `--id FIELD[,FIELD]` | the fields of a JSON message that are its id, joined with `/`: `--id product_id,sequence` gives `BTC-USD/41` |
 | `--only FIELD=VALUE` | run only the messages whose field has that value; again for another value or field (each field named must match) |
+| `--resume WHERE` | for a feed that replays: where it takes the id of the message the host is at when a connection opens again, `query:cursor`, `header:NAME` or `message:MESSAGE` ([below](#a-feed-that-replays)) |
 
 - The URL is `https://…` for server-sent events, `wss://…` for a WebSocket; plain `http://` and
   `ws://` only to this machine. A login in it (`https://user:password@…`) is sent as Basic
@@ -48,8 +49,9 @@ A WebSocket's binding takes these too ([below](#a-websocket)):
 - The server reads the feed when it is bound: a binding whose request doesn't answer 200 with
   `text/event-stream`, or a WebSocket's 101, is refused, saying what it answered. A redirect isn't
   followed, since the headers it would carry are the binding's.
-- `--subscribe`, `--heartbeat`, `--id` and `--only` are a WebSocket's: an SSE binding that gives
-  one is refused, since an SSE event has its own id. `--on-full latest` without `--key` is refused.
+- `--subscribe`, `--heartbeat`, `--id`, `--only` and `--resume` are a WebSocket's: an SSE binding
+  that gives one is refused, since an SSE event has its own id and resumes with `Last-Event-ID`.
+  `--on-full latest` without `--key` is refused.
 - The URL and the headers' values are never stored, shown or logged: the binding keeps
   `env:HOLON_SECRET_PRICES_URL`, and where the URL points without its login or query
   (`https://stream.example.com/v1/prices`), which is what the admin page and `holon feed list`
@@ -151,10 +153,42 @@ holon feed add ticker --url env:HOLON_SECRET_TICKER_URL \
   state, not on the timeline.
 - **Where it is:** with `--id`, a message's id is its fields joined with `/`, and the last 1,000
   run on pass over a message sent again: the snapshot a feed sends after it subscribes again, say.
-  A WebSocket has no `Last-Event-ID`, so a connection opened again subscribes again and is read
-  from what the feed sends then.
+  A WebSocket has no `Last-Event-ID`: a connection opened again subscribes again and is read from
+  what the feed sends then, unless the binding says where the feed takes the id
+  ([below](#a-feed-that-replays)).
 - The `trading-bot` sample binds Coinbase Exchange's public ticker this way, keeps each product's
   newest price, and places an order through a strict action when a price comes under a level.
+
+## A feed that replays
+
+Some WebSocket feeds send again what came after a message, when a connection asks from it:
+Bluesky's Jetstream takes `?cursor=<seq>`, others a header or a field of the subscription. The
+binding says where, and the host opens a lost connection again from where it is, as SSE does with
+`Last-Event-ID`:
+
+```sh
+export HOLON_SECRET_POSTS_URL='wss://jetstream.us-east.bsky.network/xrpc/network.bsky.jetstream.subscribeEvents?collections=app.bsky.feed.post'
+holon feed add posts --url env:HOLON_SECRET_POSTS_URL --id payload.seq --resume query:cursor \
+  --only payload.operation=create
+```
+
+| `--resume` | where the id goes |
+|---|---|
+| `query:NAME` | `NAME=<id>` in the URL's query, in place of a parameter of that name in it |
+| `header:NAME` | a header `NAME: <id>` |
+| `message:MESSAGE` | sent in place of the `--subscribe` messages, `{position}` in it the id: `message:{"op":"subscribe","from":{position}}`; again for another, in order; as written, or read from a source (`env:…`) |
+
+- **The id sent** is the one SSE sends: on a reconnect, the last message read, since those waiting
+  still run; after a restart or for a new version, the last one run on, a lazy handler's once its
+  record is synced. A new listener sends none, and reads from what the feed sends then.
+- **It takes an `--id` of one field:** a cursor is one value.
+- **The message at the cursor,** which a feed that replays from it sends again, as Jetstream
+  does, is passed over by its id, on the timeline: `passed over an event of posts it ran already
+  (26984429105)`. A feed that sends at least once may send others twice too: a handler that writes
+  by the message's own key (a post's address) writes the same item.
+- **An id older than what the feed keeps** is the feed's to answer: what it lost meanwhile, the
+  host can't ask for again.
+- The `bluesky-mentions` sample binds Jetstream this way and keeps each post that mentions a word.
 
 ## Its state
 

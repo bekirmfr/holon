@@ -831,6 +831,18 @@ static SAMPLES: &[Sample] = &[
         text: include_str!("../samples/trading-bot.holon.ts"),
     },
     Sample {
+        name: "bluesky-mentions",
+        title: "Bluesky mentions (a feed resumed from a cursor)",
+        description: "Bluesky's posts as they are written, from Jetstream, a WebSocket that numbers each one (payload.seq) and sends again what came after a number when a connection asks from it. An admin binds the feed with its id (--id payload.seq), the posts that run (--only payload.operation=create) and where the feed takes the position (--resume query:cursor): when the connection is lost, or the server stopped, the host opens it again from the last post it read, the posts that came meanwhile run, and the one at the cursor, sent again, is passed over. A lazy handler keeps each post that mentions the word PUT /watch sets, by its at:// address, so a post sent twice writes the same item; GET /mentions lists them.",
+        shows: &["on.feed", "WebSocket feeds", "resuming a feed from its position", "a feed sent again passed over", "lazy handlers", "idempotent writes"],
+        port: Some("8192"),
+        secrets: &[],
+        optional: &[],
+        browsers: None,
+        try_it: "bind the feed (HOLON_SECRET_POSTS_URL=wss://jetstream.us-east.bsky.network/xrpc/network.bsky.jetstream.subscribeEvents?collections=app.bsky.feed.post in the server's environment, then holon feed add posts --url env:HOLON_SECRET_POSTS_URL --id payload.seq --resume query:cursor --only payload.operation=create); deploy, then curl -X PUT -d '{\"word\":\"holon\"}' http://127.0.0.1:8192/watch and curl http://127.0.0.1:8192/mentions; stop the server for a minute and start it again: the posts of that minute run, none twice, and the server panel shows where the feed is",
+        text: include_str!("../samples/bluesky-mentions.holon.ts"),
+    },
+    Sample {
         name: "ticker",
         title: "Ticker (a clock beside routes)",
         description: "A flow with a clock of its own beside its routes: every 2 seconds (every(\"2s\", …)) it counts a tick in its state and sends it on the channel ticks, with the time of the tick (now, in the handler). Its page lists each tick as it arrives; GET /count answers the count. An action, run by hand by its name, sets the count back (export const reset = action((input) => …), input what was sent); a person runs it, and an agent only once a person lets agents run it.",

@@ -213,7 +213,8 @@ export type OnFull = "wait" | "skip" | "latest";
  *  without its login or query; the headers each request sends (each name, and where its value is
  *  read from); how many events may wait for their run, and what comes when they are that many;
  *  how long (seconds) it may say nothing. A WebSocket's: what it is sent when it opens and to
- *  keep it, the fields that are a message's id, and the messages it runs. */
+ *  keep it, the fields that are a message's id, the messages it runs, and where a feed that
+ *  replays takes the id it is opened again from (`resume`). */
 export type FeedEntry = {
   name: string;
   deployment: string | null;
@@ -229,9 +230,10 @@ export type FeedEntry = {
   every?: number;
   id?: string[];
   only?: Record<string, string[]>;
+  resume?: { query?: string; header?: string; message?: string[] };
 };
 /** A feed to bind: what is left out takes its default. `id` is FIELD[,FIELD], `only` each
- *  FIELD=VALUE, `idle` and `every` 90s, 2m. */
+ *  FIELD=VALUE, `resume` query:NAME, header:NAME or each message:…, `idle` and `every` 90s, 2m. */
 export type FeedBinding = {
   name: string;
   deployment: string | null;
@@ -246,6 +248,7 @@ export type FeedBinding = {
   every?: string;
   id?: string;
   only?: string[];
+  resume?: string[];
 };
 export const listFeeds = async () => asJson<FeedEntry[]>(await api(`${BASE}/admin/feeds`));
 export const bindFeed = async (f: FeedBinding) => asJson<FeedEntry>(await post(`${BASE}/admin/feeds`, f));

@@ -1,12 +1,16 @@
-// A stand-in WebSocket feed for the end-to-end tests (the trading-bot sample's ticker, server.mjs):
+// A stand-in WebSocket feed for the end-to-end tests (the trading-bot sample's ticker and the
+// bluesky-mentions sample's posts, server.mjs):
 // plain ws:// on loopback, at /ws, written by hand (the handshake and its frames), since Node has
 // no WebSocket server of its own. Its messages are files dropped in `dir`: each .json file is one
 // text message, sent to every connection open once it is seen (the folder is looked at every
 // 200ms, new files in the order of their names); a connection gets what comes once it is open.
 //
 // What a connection sends it, its subscription, is a line of `heard.log` in `dir`, where the tests
-// read it; a ping is answered with its pong, and a file named `cut` ends every connection open (it
-// is removed), as a feed that drops its connections does.
+// read it, and what each asked for when it opened (its path and query) a line of `asked.log`; a
+// ping is answered with its pong, and a file named `cut` ends every connection open (it is
+// removed), as a feed that drops its connections does. A connection that asks from a `cursor=N`
+// is sent again what was sent from the message whose `seq` (or `payload.seq`) is N, as Jetstream
+// does.
 
 import { createHash } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync } from "node:fs";
@@ -38,6 +42,16 @@ export function wsServer(dir) {
   mkdirSync(dir, { recursive: true });
   const seen = new Set();
   const open = new Set();
+  // Each message sent, in order, for a connection that asks from a cursor.
+  const sent = [];
+  const seq = (text) => {
+    try {
+      const v = JSON.parse(text);
+      return v.seq ?? v.payload?.seq;
+    } catch {
+      return undefined;
+    }
+  };
   const look = () => {
     if (!existsSync(dir)) return;
     const names = readdirSync(dir).sort();
@@ -48,7 +62,9 @@ export function wsServer(dir) {
     }
     for (const name of names.filter((n) => n.endsWith(".json") && !seen.has(n))) {
       seen.add(name);
-      const message = frame(1, Buffer.from(readFileSync(join(dir, name), "utf8").trim()));
+      const text = readFileSync(join(dir, name), "utf8").trim();
+      sent.push(text);
+      const message = frame(1, Buffer.from(text));
       for (const socket of open) socket.write(message);
     }
   };
@@ -66,8 +82,12 @@ export function wsServer(dir) {
     }
     const accept = createHash("sha1").update(key + GUID).digest("base64");
     socket.write(`HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n\r\n`);
-    // What was dropped before it opened was sent before: it gets what comes from now.
+    if (existsSync(dir)) appendFileSync(join(dir, "asked.log"), `${req.url}\n`);
+    // What was dropped before it opened was sent before: it gets what comes from now, and again
+    // what came from its cursor.
     look();
+    const cursor = Number(new URL(req.url, "http://feed").searchParams.get("cursor") ?? NaN);
+    if (!Number.isNaN(cursor)) for (const text of sent.filter((t) => seq(t) >= cursor)) socket.write(frame(1, Buffer.from(text)));
     open.add(socket);
     let pending = Buffer.alloc(0);
     socket.on("data", (chunk) => {

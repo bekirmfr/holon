@@ -1602,14 +1602,16 @@ on.queue(payouts, (m) => { … })
 `on.feed` and `on.queue`, not `on event` and `on message`: a handler is named for what it
 listens to, as `on.mail` and `on.file` are, and *message* stays the socket's (fork 61).
 
-Four slices, each with its sample:
+Six slices, each with its sample:
 
 | Slice | What | Sample |
 |---|---|---|
 | 1.6a | the subscription runtime, and server-sent events: `feed:` bindings, `on.feed`, the position (`Last-Event-ID`), once per message, a bounded buffer that stops reading when full, reconnecting, the feed's state on the deployment's page | `price-feed` |
 | 1.6b | WebSocket feeds: a position the binding names the field of, a subscribe message and a heartbeat from the binding, `--on-full skip` and `latest` (forks 17, 26), a lazy or unrecorded handler's position (fork 25) | `trading-bot` |
-| 1.6c | the queue, SQS's API (fork 8): `queue.send` once the run's writes land, `on.queue` deleting each message once its run is over, AWS's request signing in the host | `payout-events` |
-| 1.6d | a Postgres `LISTEN` channel on a bound database, as a feed | `ledger-watch` |
+| 1.6c | a WebSocket feed resumed from its position, where the binding says the feed takes it (`--resume`, fork 64) | `bluesky-mentions` |
+| 1.6d | a feed's gaps: the numbers a feed that can't replay skipped, on each event (`--sequence`, `e.gap`) | `trade-tape` |
+| 1.6e | the queue, SQS's API (fork 8): `queue.send` once the run's writes land, `on.queue` deleting each message once its run is over, AWS's request signing in the host | `payout-events` |
+| 1.6f | a Postgres `LISTEN` channel on a bound database, as a feed | `ledger-watch` |
 
 Each slice gets its own "as designed" before its code, as 1.3's did. What follows is what they
 share.
@@ -1680,7 +1682,7 @@ the message among its sourced values.
 | `event` | an SSE event's name, `message` unless it says |
 | `missed`, `replaced` | how many were skipped, or replaced, before it (`--on-full`) |
 
-**The queue (1.6c).** SQS's API, which AWS's queues speak and so do services that copy it
+**The queue (1.6e).** SQS's API, which AWS's queues speak and so do services that copy it
 (ElasticMQ, LocalStack, Yandex Message Queue). The URL holds the access key as its login, as
 mail's URLs hold theirs: `https://<key id>:<secret>@sqs.eu-west-1.amazonaws.com/123456789012/payouts`,
 the region read from the host, or from `?region=` for another service. Requests are signed with
@@ -1710,7 +1712,7 @@ crate's notifications, on a connection of its own to the bound database.
 
 **Stand-ins.** The server tests run each against one in memory, as the IMAP one is: an SSE
 server, a WebSocket server, and an SQS that checks each request's signature. The e2e server starts
-the same in Node. 1.6d's e2e test needs a Postgres beside the e2e job's MongoDB.
+the same in Node. 1.6f's e2e test needs a Postgres beside the e2e job's MongoDB.
 
 #### 5.9.2 Slice 1.6a as designed (2026-11-09, against `426b659`): server-sent events
 
@@ -2042,6 +2044,158 @@ As designed, with what building it found:
   waited, was approved 40 s later and placed from its own run (signed 0 s before); `reconcile`
   read both; `place` run again by hand was refused 409. 669 runs exported and verified, and no
   credential in the data or the server's output.
+
+#### 5.9.6 Slices 1.6c and 1.6d as designed (2026-11-09, against `7b6a02e`): a feed resumed, and its gaps
+
+Asked once 1.6b was designed (fork 64): a feed that can send again what came while the host
+wasn't reading should be asked to, as SSE is with `Last-Event-ID`; and a feed that numbers its
+messages but can't send them again should say, on the next event, how many were lost, so the flow
+fetches them. WebSocket feeds come in three kinds (two probed live on 2026-11-09):
+
+- **They replay from a cursor:** Bluesky's Jetstream (`?cursor=<seq>`, the event at the cursor
+  sent again, at least once, within a window it keeps), Socket.IO's connection-state recovery,
+  GraphQL subscriptions, Nostr's `since`, Kafka and NATS bridges. Each takes the position in a
+  place of its own: a query parameter, a header, or the subscription message.
+- **They number their messages and can't replay:** Coinbase Exchange's `matches` (`trade_id`, one
+  more for each trade of a product; probed: none skipped), `full` and `level2` (`sequence`),
+  Binance's depth stream. What is lost is fetched over the provider's REST API, a snapshot or a
+  page of what was skipped. That fetch is the provider's, so the flow's; the host says when one is
+  needed, and how much.
+- **Neither:** a ticker (1.6b's), whose newest value makes the lost ones moot.
+
+**1.6c: `--resume WHERE`,** a WebSocket's (an SSE feed has `Last-Event-ID`), where the feed takes
+the position:
+
+- `query:NAME`: the URL opened gets `NAME=<position>`, in place of a parameter of that name in it
+  (`--resume query:cursor`);
+- `header:NAME`: the request sends `NAME: <position>`;
+- `message:TEMPLATE`: sent in place of the `--subscribe` messages, `{position}` in it replaced by
+  the position; again for another, in order (fork 68).
+
+It is sent only when there is a position: a new listener opens as the binding is written and reads
+from what the feed sends then. The position is the one SSE sends: on a reconnect, the last message
+read, since those waiting still run; after a restart or for a new version, the last run on, a lazy
+handler's once its record is synced. A feed that sends the position's own message again, as
+Jetstream does, has it passed over by the last 1,000 ids. `--resume` needs an `--id` of one field:
+a cursor is one value (fork 67). A position older than what the feed keeps is the feed's to answer;
+a feed that also numbers its messages one by one says what was lost with 1.6d's `--sequence`.
+
+**1.6d: `--sequence FIELD`,** any feed's whose data is JSON: a whole number that grows by one for
+each message, for each `--key` when one is given (`--sequence trade_id --key product_id`). Each
+event's `e.gap` is how many numbers were skipped before it: its number, less the last one read of
+its key, less one. It is 0 for the next number, for a key's first, for a message whose field isn't
+a whole number, and for a number not above the last: a message sent again, or a count begun anew,
+as a feed that numbers per connection begins one (fork 71).
+
+- **The last number of each key is kept with the position,** on disk, so a gap across a reconnect
+  or a restart is said: what came while the host wasn't reading, which the feed won't send again.
+  At most 10,000 keys, the least recently read forgotten, its next message's gap 0 (fork 72).
+- **It is the feed's gaps, not the host's:** counted as each message is read, before the buffer,
+  so a message `latest` replaced or `skip` dropped is no gap (those are `e.replaced` and
+  `e.missed`); a message that replaces another carries that one's gap with its own (fork 69).
+- **A message `--only` passes over is counted:** the feed numbered it (a `full` channel numbers
+  each message, whatever its type), and a gap it shows is carried by the next of its key that runs
+  (fork 70). So what the binding passes over is what the flow doesn't want, not what it can't see.
+- **A lazy handler's numbers move with its position,** once synced. After a crash, a feed that
+  can't replay doesn't send again the events of its last second; the next message's gap counts
+  them, and the flow fetches them with the rest.
+- `e.gap` is on every event, 0 unless the binding names a sequence, as `e.missed` and `e.replaced`
+  are. `--key` now names the key of `latest` and of `--sequence`; one with neither is refused.
+- **Its state** adds the numbers skipped since the connection opened: `connected, at
+  BTC-USD/1117440338, 49 in gaps`; `gaps` in `GET /deployments/<slug>/feeds`. Not on the
+  timeline: each run's input says its gap.
+
+**The samples** (fork 73):
+
+- **`bluesky-mentions` (1.6c):** Bluesky's posts from Jetstream
+  (`wss://jetstream.us-east.bsky.network/xrpc/network.bsky.jetstream.subscribeEvents?collections=app.bsky.feed.post`),
+  bound with `--resume query:cursor --id payload.seq --only payload.operation=create`. A lazy
+  handler keeps each post that mentions the word a route sets, by its `at://` URI, so a post sent
+  again writes the same item, as Jetstream's "at least once" asks. `GET /mentions` lists them.
+- **`trade-tape` (1.6d):** Coinbase Exchange's trades (`matches` and the `last_match` it sends
+  first, `--id product_id,trade_id --sequence trade_id --key product_id`). A handler adds each
+  trade's size to its product's volume; when `e.gap` is above 0 it fetches the trades it skipped
+  (`GET /products/<product>/trades?after=<trade_id>&limit=<gap>`, public, 1,000 at most a page)
+  and adds theirs (`decimal_sum` of a `map`), so the volume is exact across a reconnect or a
+  restart. A gap past 1,000 adds what one page holds and keeps how many it couldn't.
+
+**Stand-ins.** The server test's WebSocket stand-in replays from a `cursor` in its query, numbers
+what it sends, and can leave numbers out; the trades' REST API is an HTTP stand-in in the test. The
+e2e's `ws-server.mjs` does the same: a dropped file whose `seq` is at or past the cursor is sent
+again to a connection that asks from it.
+
+**The live runs** (fork 74):
+
+- `bluesky-mentions` against Jetstream: the server stopped for 30 s and started again; the posts of
+  those 30 s run from the cursor, the cursor's own passed over, no `seq` run twice (read from the
+  exported runs).
+- `trade-tape` against Coinbase Exchange: the server stopped for 30 s and started again; the first
+  trade of each product carries the gap, its trades are fetched, and the volume equals the sum of
+  the trades REST gives for the same ids.
+
+**Tests:**
+
+- **The binding:** `--resume`'s three places, refused on SSE, without `--id`, or with an id of two
+  fields; `--sequence`'s path; `--key` refused with neither `latest` nor `--sequence`.
+- **`ws.rs` and the link:** the cursor in the query, the header, the message in place of the
+  subscription; none for a new listener; the position read on a reconnect and the one run on after
+  a restart; the cursor's own message passed over.
+- **The gaps:** the next number, one skipped, several, per key, a key's first, a number not above
+  the last, a message without the field, one `--only` passes over carrying its gap to the next, a
+  replaced message's gap added to the one that replaced it, the numbers kept across a restart and
+  moved with a lazy position, and the 10,000th key forgetting the least recent.
+- **Server tests**, one a sample: `bluesky-mentions` cut and restarted, its posts sent again from
+  the cursor, each run once; `trade-tape` with numbers left out and the trades fetched, its volume
+  exact.
+- **e2e tests**, one a sample, in the editor against `ws-server.mjs`.
+
+#### 5.9.7 Slice 1.6c as built (2026-11-09)
+
+As designed, with what building it found:
+
+- **The binding** keeps `resume` as one of `{"query": NAME}`, `{"header": NAME}` or
+  `{"message": [MESSAGE, …]}`; `/admin/feeds` and `holon feed add --resume` take each as
+  `query:NAME`, `header:NAME` or `message:…`. A written message without `{position}` is refused;
+  one read from a source is taken as it is. The admin page and `holon feed list` say `resumes from
+  its position with cursor= in the URL`.
+- **The query parameter goes last,** in place of any of its name the URL holds, its value
+  percent-encoded: `?collections=app.bsky.feed.post&cursor=26984957930`. Nothing else in the
+  connection changed: the position, the 1,000 ids and the lazy hold are 1.6a's and 1.6b's.
+- **The sample** writes `mentions[address] = kept`, with `kept` absent unless the post mentions
+  the word, not `if (kept !== undefined) mentions[address] = kept`: a handler whose only write is
+  under such an `if` is refused as doing nothing, though the same `if` beside another write
+  compiles and runs (trading-bot's). That is the compiler's check, not the feed's; it is left for
+  its own change. A collection is read and written by key, `watch["word"]`. Its port is 8192:
+  8191 is an e2e test's own flow.
+- **The stand-ins** replay from `cursor=N`: what was sent from the message whose `seq` (or
+  `payload.seq`) is N. The e2e's `ws-server.mjs` also writes what each connection asked for to
+  `asked.log`.
+- **The tests:**
+  - The binding: each place, the cursor put in place of the URL's own, the header, the messages in
+    place of the subscription (one read from a source), none for a new listener, the stand-in's
+    replay; refused on SSE, without `--id`, with an id of two fields, with two places or a place
+    and a message, a name that isn't one, and a written message without `{position}`.
+  - The server test binds `posts` to the stand-in, deploys the sample, and sends four posts (a
+    delete passed over by `--only`): three runs, two kept, at 4; the first connection asked with
+    no cursor. Cut, with two posts sent while it is down: opened again with `cursor=4`, the 4 sent
+    again passed over (on the timeline), the two run, each post once, three kept; the runs verify
+    and the URL's key is in no log.
+  - The e2e test deploys it in the editor against `ws-server.mjs`, sets the word, drops the posts,
+    reads the server panel (`connected, at …, 1 passed over`), cuts the connections with two posts
+    dropped meanwhile, reads the reconnect's `cursor=` in `asked.log`, the third mention, and the
+    binding on the admin page.
+- **Run live** on a scratch server (a release build, `--keep-runs 200000`), the feed bound to
+  `wss://jetstream.us-east.bsky.network/…?collections=app.bsky.feed.post`, the word `the`: about
+  25 posts a second ran as they came, the deletes passed over by `--only`. The server was killed
+  at 08:09:12 and started again 40 s later: it asked from the position kept on disk (…957930), the
+  timeline says `passed over an event of posts it ran already (26984957930)`, the backlog filled
+  the buffer (1000 waiting) and was run through in 55 s. Of 6,172 runs, the widest gap between the
+  times of posts run one after another is 0.3 s: the 4,515 posts written while it was down ran.
+  16 ran twice: those after the kept position, run in the last 0.3 s before the kill, lazy and not
+  yet synced, as `holon check` says; each wrote its item again. The runs verify. A first try on a
+  debug build ran about 30 a second, only just as fast as Jetstream sends: after the restart its
+  buffer stayed full, Jetstream ended the connection it read too slowly, and the host opened it
+  again from the last post read.
 
 ### 5.10 A bytes value, and decimals with it
 
@@ -3884,6 +4038,9 @@ Taken when a job or a user asks, each with its design here and its sample all th
     a job brings send a snapshot on subscribe, not a replay, and the position already stops a
     message running twice. A feed that resumes from a sequence would get it written into its
     subscription (`{position}`) when a job asks.
+    *Decided* (2026-11-09) otherwise: asked how a feed resumes properly, the owner took a resume
+    where the binding says (`--resume`, 1.6c), and the gaps of a feed that can't replay
+    (`--sequence`, 1.6d), after 1.6b (§5.9.6).
 65. **The trading bot's order half in 1.6b** (§5.9.4): the order a strict action, its client id,
     approval over a limit, reading the exchange's orders back. None of it is new to 1.6b, and the
     language has no loop that waits on a call until the TypeScript slices 6 to 11. *Lean:* in
@@ -3892,6 +4049,29 @@ Taken when a job or a user asks, each with its design here and its sample all th
 66. **A live run against a public feed** (§5.9.4): Coinbase Exchange's ticker, which needs no
     account, for the prices; the orders to the stand-in. *Lean:* yes; it is an outside service
     with no credentials to keep.
+67. **`--resume` and an id of several fields** (§5.9.6). The position `BTC-USD/41` is no cursor.
+    *Lean:* refused: a feed that resumes takes one value, and a binding that needs two writes them
+    in a `message:` the host can't build from one.
+68. **`--resume message:` in place of the subscription, or after it** (§5.9.6). *Lean:* in place:
+    a feed that resumes by message takes the position in its subscription (Nostr's `REQ` with
+    `since`, a GraphQL subscription's variables); sending both would subscribe twice.
+69. **A gap counted as the message is read, or as it runs** (§5.9.6). As it runs, `latest` and
+    `skip` would make gaps the feed never made. *Lean:* as it is read, the feed's gaps only, a
+    replaced message's gap carried by the one that replaced it.
+70. **A message `--only` passes over counted in the sequence** (§5.9.6). *Lean:* counted: the feed
+    numbered it, and a flow that filters a `full` channel to its matches would otherwise see a gap
+    at each message of another type.
+71. **A number not above the last** (§5.9.6): a message sent again, or a count begun anew on a new
+    connection. *Lean:* `e.gap` 0, and the number kept as the last: a duplicate with an id is
+    passed over anyway, and a feed that numbers per connection says nothing of what came between
+    connections, which no field can mend.
+72. **How many keys' numbers are kept** (§5.9.6). *Lean:* 10,000, the least recently read
+    forgotten: a feed of every symbol on an exchange fits, and a key forgotten only loses one gap.
+73. **Two slices and two samples** (§5.9.6): `--resume` with `bluesky-mentions`, `--sequence` with
+    `trade-tape`, a commit each. *Lean:* yes: neither needs the other, and no one feed shows both
+    (Jetstream's `seq` skips the collections it filters out; Coinbase's trades can't be replayed).
+74. **Live runs against Jetstream and Coinbase Exchange's trades** (§5.9.6): public, no account.
+    *Lean:* yes.
 
 ## 9. What stays true
 

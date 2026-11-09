@@ -50,6 +50,11 @@ pub(crate) struct Url {
     login: Option<Zeroizing<String>>,
 }
 
+/// `value` as a query parameter carries it: each byte but the unreserved ones as `%XX`.
+fn query_encoded(value: &str) -> String {
+    value.bytes().map(|b| if b.is_ascii_alphanumeric() || b"-._~".contains(&b) { (b as char).to_string() } else { format!("%{b:02X}") }).collect()
+}
+
 impl std::fmt::Debug for Url {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&self.address())
@@ -121,6 +126,15 @@ impl Url {
             (false, false) => "http",
         };
         Zeroizing::new(format!("{scheme}://{}:{}{}", self.host, self.port, self.target))
+    }
+
+    /// This URL with `name=value` in its query, in place of any parameter of that name.
+    pub(crate) fn with_query(&self, name: &str, value: &str) -> Url {
+        let (path, query) = self.target.split_once('?').unwrap_or((&self.target, ""));
+        let mut kept: Vec<&str> = query.split('&').filter(|p| !p.is_empty() && p.split('=').next() != Some(name)).collect();
+        let added = format!("{name}={}", query_encoded(value));
+        kept.push(&added);
+        Url { target: format!("{path}?{}", kept.join("&")), login: self.login.clone(), host: self.host.clone(), ..*self }
     }
 
     /// The `Authorization` a login in the URL sends: `Basic …`.

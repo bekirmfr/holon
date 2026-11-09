@@ -142,7 +142,9 @@ pub(crate) fn open(url: &Url, headers: &[(String, Zeroizing<String>)], subscribe
 }
 
 /// A WebSocket feed in memory, for the tests: what it is sent goes to every connection open, and
-/// it keeps each connection's request and what each sent it.
+/// it keeps each connection's request and what each sent it. A connection that asks for a
+/// `cursor=N` in its query is sent again what it was sent from the message whose `seq` (or
+/// `payload.seq`) is N, as Jetstream does.
 #[cfg(test)]
 pub(crate) mod stand_in {
     use std::net::{Shutdown, TcpListener, TcpStream};
@@ -229,7 +231,15 @@ pub(crate) mod stand_in {
             Ok(res)
         };
         let Ok(mut ws) = tungstenite::accept_hdr(stream, record) else { return };
-        let mut next = inner.sent.lock().unwrap().len();
+        let cursor = head.lines().next().and_then(|uri| uri.split(['?', '&']).find_map(|p| p.strip_prefix("cursor="))).and_then(|c| c.parse::<f64>().ok());
+        let mut next = {
+            let sent = inner.sent.lock().unwrap();
+            let seq = |m: &Message| {
+                let v: serde_json::Value = serde_json::from_str(m.to_text().ok()?).ok()?;
+                v["seq"].as_f64().or(v["payload"]["seq"].as_f64())
+            };
+            cursor.and_then(|c| sent.iter().position(|m| seq(m).is_some_and(|s| s >= c))).unwrap_or(sent.len())
+        };
         inner.asked.lock().unwrap().push(head);
         inner.open.lock().unwrap().push(socket.try_clone().unwrap());
         // On the socket the reads use: on Windows, a clone's timeout is its own.

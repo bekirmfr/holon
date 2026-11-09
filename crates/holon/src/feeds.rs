@@ -9,8 +9,9 @@
 //!   comes when they are that many (`--on-full`: wait, skip, or replace the one of its `--key`),
 //!   and how long the feed may say nothing before the connection is opened again (`--idle`). A
 //!   WebSocket's binding also says what it is sent when it opens (`--subscribe`) and to keep it
-//!   (`--heartbeat`), which fields are a message's id (`--id`), and which messages run (`--only`).
-//!   For the whole server or one deployment.
+//!   (`--heartbeat`), which fields are a message's id (`--id`), which messages run (`--only`), and
+//!   where the feed takes the position a connection opens from (`--resume`, §5.9.6). For the whole
+//!   server or one deployment.
 //! - **Checked when bound:** a request to it answers 200 with `text/event-stream`, or a WebSocket's
 //!   101, then it is closed. The binding keeps the sources, and where the URL points without its
 //!   login or query, which is what is shown.
@@ -81,7 +82,27 @@ pub(crate) struct Binding {
     /// match); the rest are passed over.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub(crate) only: BTreeMap<String, Vec<String>>,
+    /// A WebSocket's: where the feed takes the position a connection opens from, when the host
+    /// knows it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) resume: Option<Resume>,
 }
+
+/// Where a WebSocket feed that replays takes the position it replays from.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum Resume {
+    /// A parameter of the URL's query: `cursor=<position>`, in place of one of that name.
+    Query(String),
+    /// A header the request sends: `X-From: <position>`.
+    Header(String),
+    /// The messages sent in place of the subscription, each as written or the source it is read
+    /// from, `{position}` in each replaced by it.
+    Message(Vec<String>),
+}
+
+/// What a `--resume` message writes where the position goes.
+const POSITION: &str = "{position}";
 
 fn is_zero(n: &u64) -> bool {
     *n == 0
@@ -143,6 +164,40 @@ pub(crate) struct Asked {
     /// `type=ticker`, each.
     #[serde(default)]
     pub(crate) only: Vec<String>,
+    /// `query:cursor`, `header:X-From`, or `message:…` (again for another).
+    #[serde(default)]
+    pub(crate) resume: Vec<String>,
+}
+
+/// Where `--resume` says the feed takes the position: one parameter or header, or the messages
+/// sent in place of the subscription; or why it says nothing a feed can take.
+fn resume_of(asked: &[String]) -> Result<Option<Resume>, String> {
+    const ONE: &str = "--resume is one place the feed takes the position: query:NAME, header:NAME, or message:MESSAGE (again for another message)";
+    let (mut place, mut messages) = (None, Vec::new());
+    for given in asked.iter().map(|s| s.trim()).filter(|s| !s.is_empty()) {
+        let Some((kind, what)) = given.split_once(':') else { return Err(format!("{ONE}, not {given:?}")) };
+        let what = what.trim();
+        let one = match kind {
+            "query" if !what.is_empty() && what.len() <= 64 && what.bytes().all(|b| b.is_ascii_alphanumeric() || b"-._~".contains(&b)) => Resume::Query(what.to_string()),
+            "header" if sse::is_header_name(what) => Resume::Header(what.to_string()),
+            "query" | "header" => return Err(format!("--resume {kind}: names the {kind} the position goes in; {what:?} isn't one")),
+            "message" if what.is_empty() || what.len() > MESSAGE_MOST => return Err(format!("--resume message: is a message of 1 byte to {} KiB", MESSAGE_MOST >> 10)),
+            "message" if !is_source(what) && !what.contains(POSITION) => return Err(format!("--resume message: writes {POSITION} where the feed takes the position, as {{\"from\":{POSITION}}}")),
+            "message" => {
+                messages.push(what.to_string());
+                continue;
+            }
+            _ => return Err(format!("{ONE}, not {given:?}")),
+        };
+        if place.replace(one).is_some() {
+            return Err(ONE.into());
+        }
+    }
+    match (place, messages.is_empty()) {
+        (Some(_), false) => Err(ONE.into()),
+        (place, true) => Ok(place),
+        (None, false) => Ok(Some(Resume::Message(messages))),
+    }
 }
 
 /// A field of a JSON message, as a binding names it: a dotted path (`data.u`), or why it isn't one.
@@ -350,12 +405,16 @@ impl Feeds {
             let (field, value) = pair.split_once('=').ok_or_else(|| format!("--only is FIELD=VALUE (type=ticker), not {pair:?}"))?;
             only.entry(path_of("--only", field)?).or_default().push(value.trim().to_string());
         }
+        let resume = resume_of(&asked.resume)?;
+        if resume.is_some() && id.len() != 1 {
+            return Err("--resume sends the feed the id of the message the host is at, which a cursor is one value of: it takes an --id of one field (--id seq)".into());
+        }
         let headers: BTreeMap<String, String> = asked.headers.iter().map(|(h, s)| (h.clone(), s.trim().to_string())).collect();
-        let binding = Binding { url: url.to_string(), address: String::new(), headers, buffer, idle, on_full, key, subscribe, heartbeat, every, id, only };
+        let binding = Binding { url: url.to_string(), address: String::new(), headers, buffer, idle, on_full, key, subscribe, heartbeat, every, id, only, resume };
         let (parsed, sent) = self.request(&binding)?;
-        let websocket_only = !binding.subscribe.is_empty() || binding.heartbeat.is_some() || !binding.id.is_empty() || !binding.only.is_empty();
+        let websocket_only = !binding.subscribe.is_empty() || binding.heartbeat.is_some() || !binding.id.is_empty() || !binding.only.is_empty() || binding.resume.is_some();
         if websocket_only && !parsed.is_websocket() {
-            return Err("--subscribe, --heartbeat, --id and --only are a WebSocket's (wss://): this URL is a feed of server-sent events, whose events have their own ids".into());
+            return Err("--subscribe, --heartbeat, --id, --only and --resume are a WebSocket's (wss://): this URL is a feed of server-sent events, whose events have their own ids and resume with Last-Event-ID".into());
         }
         let binding = Binding { address: parsed.address(), ..binding };
         let check = Duration::from_secs(10);
@@ -387,18 +446,31 @@ impl Feeds {
     }
 
     /// A connection to `binding`'s feed, from `last_id` when the host knows where it is: what it
-    /// sends `Last-Event-ID` with, or a WebSocket's id of the last message read.
+    /// sends `Last-Event-ID` with, or a WebSocket's id of the last message read, which goes where
+    /// `--resume` says.
     pub(crate) fn connect(&self, binding: &Binding, last_id: Option<&str>) -> Result<Link, String> {
-        let (url, headers) = self.request(binding)?;
+        let (mut url, mut headers) = self.request(binding)?;
         let idle = Duration::from_secs(binding.idle);
         if !url.is_websocket() {
             return Ok(Link::Sse(sse::open(&url, &headers, last_id, idle)?));
         }
+        let position = last_id.filter(|p| !p.is_empty());
+        let mut messages = &binding.subscribe;
+        match (&binding.resume, position) {
+            (Some(Resume::Query(name)), Some(p)) => url = url.with_query(name, p),
+            (Some(Resume::Header(name)), Some(p)) => headers.push((name.clone(), Zeroizing::new(p.to_string()))),
+            (Some(Resume::Message(resumed)), Some(_)) => messages = resumed,
+            _ => {}
+        }
         let mut subscribe = Vec::new();
-        for message in &binding.subscribe {
-            subscribe.push(match is_source(message) {
+        for message in messages {
+            let message = match is_source(message) {
                 true => self.0.sources.fetch(&Reference::parse(message)?).map_err(|e| format!("the subscription: {e}"))?,
                 false => Zeroizing::new(message.clone()),
+            };
+            subscribe.push(match (&binding.resume, position) {
+                (Some(Resume::Message(_)), Some(p)) => Zeroizing::new(message.replace(POSITION, p)),
+                _ => message,
             });
         }
         let heartbeat = binding.heartbeat.clone().map(|message| ws::Heartbeat { message, every: Duration::from_secs(binding.every.max(1)) });
@@ -611,7 +683,7 @@ pub(crate) fn handle_get_feeds(state: &AppState, slug: &str) -> Response {
 
 fn shown(name: &str, deployment: Option<&str>, b: &Binding) -> serde_json::Value {
     let mut shown = serde_json::json!({ "name": name, "deployment": deployment, "url": b.url, "address": b.address, "headers": b.headers, "buffer": b.buffer, "idle": b.idle, "on_full": b.on_full });
-    let extra = serde_json::json!({ "key": b.key, "subscribe": b.subscribe, "heartbeat": b.heartbeat, "every": b.every, "id": b.id, "only": b.only });
+    let extra = serde_json::json!({ "key": b.key, "subscribe": b.subscribe, "heartbeat": b.heartbeat, "every": b.every, "id": b.id, "only": b.only, "resume": b.resume });
     for (k, v) in extra.as_object().into_iter().flatten() {
         let empty = v.is_null() || v.as_array().is_some_and(Vec::is_empty) || v.as_object().is_some_and(serde_json::Map::is_empty) || v.as_u64() == Some(0);
         if !empty {
@@ -691,8 +763,8 @@ pub(crate) fn route(state: &AppState, request: &Request, by: &str) -> Option<Res
 }
 
 /// `holon feed add NAME --url SOURCE [--header NAME=SOURCE]… [--buffer N] [--on-full …] [--idle T]
-/// [--subscribe MESSAGE]… [--heartbeat MESSAGE] [--id FIELD,…] [--only FIELD=VALUE]… [--for SLUG]
-/// | list | remove NAME`: bind, show and unbind the feeds of the server this user runs here (or
+/// [--subscribe MESSAGE]… [--heartbeat MESSAGE] [--id FIELD,…] [--only FIELD=VALUE]…
+/// [--resume WHERE]… [--for SLUG] | list | remove NAME`: bind, show and unbind the feeds of the server this user runs here (or
 /// `--server`), as an admin.
 pub(crate) fn cli(args: &[String]) -> i32 {
     let mut server = None;
@@ -705,7 +777,7 @@ pub(crate) fn cli(args: &[String]) -> i32 {
         match a.as_str() {
             "--server" => server = args.next().cloned(),
             "--for" => for_deployment = args.next().cloned(),
-            "--url" | "--buffer" | "--idle" | "--header" | "--on-full" | "--key" | "--subscribe" | "--heartbeat" | "--every" | "--id" | "--only" => {
+            "--url" | "--buffer" | "--idle" | "--header" | "--on-full" | "--key" | "--subscribe" | "--heartbeat" | "--every" | "--id" | "--only" | "--resume" => {
                 let Some(v) = args.next() else {
                     eprintln!("holon feed: {a} takes a value\n\n{FEED_USAGE}");
                     return 2;
@@ -725,7 +797,7 @@ pub(crate) fn cli(args: &[String]) -> i32 {
                         };
                         asked.insert("buffer".into(), serde_json::json!(n));
                     }
-                    "--subscribe" | "--only" => {
+                    "--subscribe" | "--only" | "--resume" => {
                         let list = asked.entry(a[2..].to_string()).or_insert_with(|| serde_json::json!([]));
                         if let Some(list) = list.as_array_mut() {
                             list.push(serde_json::Value::String(v.clone()));
@@ -794,6 +866,14 @@ pub(crate) fn cli(args: &[String]) -> i32 {
         if !id.is_empty() {
             said.push(format!("its id {}", id.join("/")));
         }
+        let resume = &f["resume"];
+        if let Some(name) = resume["query"].as_str() {
+            said.push(format!("resumes from its position with {name}= in the URL"));
+        } else if let Some(name) = resume["header"].as_str() {
+            said.push(format!("resumes from its position with the header {name}"));
+        } else if let Some(messages) = resume["message"].as_array() {
+            said.push(format!("resumes from its position with {}", messages.iter().filter_map(|m| m.as_str()).collect::<Vec<_>>().join(", ")));
+        }
         let full = match (f["on_full"].as_str(), f["key"].as_str()) {
             (Some("skip"), _) => ", the rest dropped".to_string(),
             (Some("latest"), Some(key)) => format!(", one a {key}, the newest"),
@@ -822,6 +902,7 @@ const FEED_USAGE: &str = "usage: holon feed add NAME --url SOURCE [--header NAME
                        [--on-full wait|skip|latest [--key FIELD]] [--idle T] [--for SLUG]
                        [--subscribe MESSAGE]… [--heartbeat MESSAGE [--every T]]
                        [--id FIELD[,FIELD]…] [--only FIELD=VALUE]…
+                       [--resume query:NAME|header:NAME|message:MESSAGE…]
        holon feed list
        holon feed remove NAME [--for SLUG]
        (each with [--server PORT|URL])
@@ -857,6 +938,11 @@ const FEED_USAGE: &str = "usage: holon feed add NAME --url SOURCE [--header NAME
                            gives BTC-USD/41; a dotted path for a field in a field (data.u)
     --only FIELD=VALUE     run only the messages whose field has that value (again for another
                            value, or field); the rest, a subscription's answer, are passed over
+    --resume WHERE         for a feed that replays: where it takes the id of the message the
+                           host is at (an --id of one field) when a connection opens again:
+                           query:cursor (cursor=<id> in the URL), header:NAME, or message:MESSAGE
+                           sent in place of --subscribe, {position} in it the id (again for
+                           another); a new listener reads from now
   list                     the names bound, and where each reads
   remove NAME              unbind it (--for SLUG: that deployment's); its connections close
   --server PORT|URL        which holon server to ask (see below)
@@ -865,6 +951,7 @@ examples:
   holon feed add prices --url env:HOLON_SECRET_PRICES_URL
   holon feed add prices --url env:HOLON_SECRET_PRICES_URL --header Authorization=env:HOLON_SECRET_PRICES_AUTH --idle 2m
   holon feed add ticker --url env:HOLON_SECRET_TICKER_URL --subscribe '{\"type\":\"subscribe\",\"channels\":[\"ticker\"],\"product_ids\":[\"BTC-USD\"]}' --only type=ticker --id product_id,sequence --on-full latest --key product_id
+  holon feed add posts --url env:HOLON_SECRET_POSTS_URL --id payload.seq --resume query:cursor --only payload.operation=create
   holon feed list
 
   From the holon serve you run on this machine, signed in as you; with several running,
@@ -998,6 +1085,69 @@ mod tests {
         // Any feed's: an SSE binding skips or keeps the latest.
         let b = all.bind("prices", &Asked { on_full: Some("latest".into()), key: Some("data.symbol".into()), ..asked("env:HOLON_SECRET_SSE") }, None).unwrap();
         assert_eq!((b.on_full, b.key.as_deref()), (OnFull::Latest, Some("data.symbol")));
+    }
+
+    #[test]
+    fn a_websocket_is_resumed_where_its_binding_says() {
+        let feed = ws::stand_in::StandIn::start();
+        let all = feeds(&[("HOLON_SECRET_POSTS_URL", &feed.url("/subscribe?cursor=1&key=s3cret")), ("HOLON_SECRET_HELLO", "{\"op\":\"hello\",\"from\":{position}}")]);
+        let bind = |resume: &[&str], subscribe: &[&str]| {
+            let a = Asked { id: Some("seq".into()), resume: resume.iter().map(|s| s.to_string()).collect(), subscribe: subscribe.iter().map(|s| s.to_string()).collect(), ..asked("env:HOLON_SECRET_POSTS_URL") };
+            all.bind("posts", &a, None).unwrap()
+        };
+        let asked = |link: Link| {
+            drop(link);
+            feed.asked().last().unwrap().clone()
+        };
+        // In the query: none for a new listener; the id in place of the URL's own cursor.
+        let b = bind(&["query:cursor"], &[]);
+        assert_eq!(b.resume, Some(Resume::Query("cursor".into())));
+        assert!(asked(all.connect(&b, None).unwrap()).starts_with("/subscribe?cursor=1&key=s3cret"));
+        let at = asked(all.connect(&b, Some("26984429105")).unwrap());
+        assert!(at.starts_with("/subscribe?key=s3cret&cursor=26984429105\n"), "{at}");
+        // In a header.
+        let b = bind(&["header:X-From"], &[]);
+        assert!(asked(all.connect(&b, Some("41")).unwrap()).contains("\nx-from: 41"));
+        // In the messages sent in place of the subscription, a source read.
+        let b = bind(&["message:{\"op\":\"subscribe\",\"from\":{position}}", "message:env:HOLON_SECRET_HELLO"], &["{\"op\":\"subscribe\"}"]);
+        let link = all.connect(&b, None).unwrap();
+        until(|| feed.heard().len() == 1);
+        drop(link);
+        let link = all.connect(&b, Some("41")).unwrap();
+        until(|| feed.heard().len() == 3);
+        drop(link);
+        assert_eq!(feed.heard(), ["{\"op\":\"subscribe\"}", "{\"op\":\"subscribe\",\"from\":41}", "{\"op\":\"hello\",\"from\":41}"]);
+        let shown = shown("posts", None, &b).to_string();
+        assert!(shown.contains("\"resume\":{\"message\":[") && shown.contains("env:HOLON_SECRET_HELLO") && !shown.contains("s3cret"), "{shown}");
+        // A feed that replays from the cursor sends its message again: the stand-in does.
+        let b = bind(&["query:cursor"], &[]);
+        for seq in 1..=3 {
+            feed.text(&format!("{{\"seq\":{seq}}}"));
+        }
+        let mut link = all.connect(&b, Some("2")).unwrap();
+        let ids: Vec<Option<String>> = (0..2).map(|_| match link.next(&b) { Ok(Some(Incoming::Event(e))) => e.id, _ => None }).collect();
+        assert_eq!(ids, [Some("2".to_string()), Some("3".into())]);
+    }
+
+    #[test]
+    fn a_resume_is_refused_where_it_doesnt_fit() {
+        let (sse, ws) = (StandIn::start(), ws::stand_in::StandIn::start());
+        let all = feeds(&[("HOLON_SECRET_SSE", &sse.url("/events")), ("HOLON_SECRET_WS", &ws.url("/ws"))]);
+        let refused = |id: Option<&str>, resume: &[&str], url: &str| {
+            let a = Asked { id: id.map(Into::into), resume: resume.iter().map(|s| s.to_string()).collect(), ..asked(url) };
+            all.bind("posts", &a, None).unwrap_err()
+        };
+        let ws = "env:HOLON_SECRET_WS";
+        assert!(refused(Some("seq"), &["query:cursor"], "env:HOLON_SECRET_SSE").contains("resume with Last-Event-ID"));
+        assert!(refused(None, &["query:cursor"], ws).contains("it takes an --id of one field"));
+        assert!(refused(Some("product_id,sequence"), &["query:cursor"], ws).contains("it takes an --id of one field"));
+        assert!(refused(Some("seq"), &["query:cursor", "header:X-From"], ws).starts_with("--resume is one place"));
+        assert!(refused(Some("seq"), &["query:cursor", "message:{position}"], ws).starts_with("--resume is one place"));
+        assert!(refused(Some("seq"), &["cursor"], ws).starts_with("--resume is one place"));
+        assert!(refused(Some("seq"), &["query:a b"], ws).starts_with("--resume query: names the query"));
+        assert!(refused(Some("seq"), &["header:X:Y"], ws).starts_with("--resume header: names the header"));
+        assert!(refused(Some("seq"), &["message:{\"from\":1}"], ws).contains("writes {position}"));
+        assert_eq!(all.all(), Bound::default());
     }
 
     #[test]

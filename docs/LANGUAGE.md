@@ -1028,6 +1028,50 @@ the keys it read until it commits, so the order's run would wait on them. In the
 worth more than 1000 waits for a person's approval (`await event("approved")`) in a run of its own,
 which starts `place` once approved, so the order is signed with the time it is sent.
 
+### bluesky-mentions: a feed opened again from where it was
+
+```ts
+import { flow, on, route } from "holon"
+import mentions from "collection:mentions"
+import watch from "collection:watch"
+import posts from "feed:posts"
+import { now } from "holon:clock"
+
+flow("bluesky-mentions", { port: 8192 })
+
+on.feed(
+  posts,
+  (e) => {
+    const post = e.data.payload
+    const text = post.record.text
+    const kept = text.toLowerCase().includes(watch["word"].text)
+      ? { text, by: post.did, at: post.time, seq: e.id }
+      : undefined
+    mentions[`at://${post.did}/${post.collection}/${post.rkey}`] = kept
+  },
+  { log: "lazy" },
+)
+
+route.put("/watch", (req) => {
+  const word = req.json.word.toLowerCase()
+  watch["word"] = { text: word, since: now }
+  return { word }
+})
+
+route.get("/mentions", () => mentions.list())
+```
+
+The feed is Bluesky's Jetstream, a WebSocket that numbers each post (`payload.seq`) and sends again
+what came after a number when a connection asks from it (`?cursor=…`). The flow says none of it:
+the binding names the id (`--id payload.seq`), the posts that run (`--only
+payload.operation=create`) and where the feed takes the id (`--resume query:cursor`). So when the
+connection is lost, or the server stopped, the host opens it again from the last post it read, and
+the posts that came meanwhile run; the one at the cursor, which Jetstream sends again, is passed
+over by its id. `kept` is absent unless the post mentions the word, so the write is made only then
+(§6.3), and it is keyed by the post's own address: a post the feed sends twice, as a feed that
+sends at least once may, writes the same item. Until `PUT /watch` sets a word, `watch["word"]` is
+absent, and so is everything read from it: nothing is kept.
+
 ### chat-proxy: a streamed reply
 
 Its `/chat` route (the imports, the page and the `js()` function `answer` left out):

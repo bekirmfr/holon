@@ -84,11 +84,14 @@ const feed = fresh ? null : await sseServer(join(folders, "feed"));
 // The trading-bot sample's ticker, a WebSocket (ws-server.mjs): a message a .json file dropped in
 // the folders' ticker/, what it is sent in its heard.log; its URL in the dotenv, with a key.
 const ticker = fresh ? null : await wsServer(join(folders, "ticker"));
+// The bluesky-mentions sample's posts, a WebSocket that replays from a cursor (ws-server.mjs): a
+// post a .json file dropped in the folders' posts/, what each connection asked for in its asked.log.
+const posts = fresh ? null : await wsServer(join(folders, "posts"));
 // Its dotenv file (secret_sources.rs): the variables ⚙ offers an env secret; the tests add lines.
 const dotenv = join(dir, "secrets.env");
 writeFileSync(
   dotenv,
-  `HOLON_SECRET_GEMINI_API_KEY=e2e-not-a-key\nVAULT_TOKEN=e2e-not-offered\n${smtp ? `HOLON_SECRET_OPS_SMTP=smtp://127.0.0.1:${smtp}\n` : ""}${imap ? `HOLON_SECRET_REMIT_IMAP=imap://remit:e2e-not-a-password@127.0.0.1:${imap}\n` : ""}${oauth ? `HOLON_SECRET_SUPPORT_OAUTH=http://e2e-client:e2e-not-a-secret@127.0.0.1:${oauth}/token?scope=mail\nHOLON_SECRET_SUPPORT_IMAP=imap://support%40acme.com@127.0.0.1:${supportImap}\nHOLON_SECRET_SUPPORT_SMTP=smtp://support%40acme.com@127.0.0.1:${supportSmtp}\n` : ""}${feed ? `HOLON_SECRET_PRICES_URL=http://127.0.0.1:${feed}/events?key=e2e-not-a-key\n` : ""}${ticker ? `HOLON_SECRET_TICKER_URL=ws://127.0.0.1:${ticker}/ws?key=e2e-not-a-key\n` : ""}`,
+  `HOLON_SECRET_GEMINI_API_KEY=e2e-not-a-key\nVAULT_TOKEN=e2e-not-offered\n${smtp ? `HOLON_SECRET_OPS_SMTP=smtp://127.0.0.1:${smtp}\n` : ""}${imap ? `HOLON_SECRET_REMIT_IMAP=imap://remit:e2e-not-a-password@127.0.0.1:${imap}\n` : ""}${oauth ? `HOLON_SECRET_SUPPORT_OAUTH=http://e2e-client:e2e-not-a-secret@127.0.0.1:${oauth}/token?scope=mail\nHOLON_SECRET_SUPPORT_IMAP=imap://support%40acme.com@127.0.0.1:${supportImap}\nHOLON_SECRET_SUPPORT_SMTP=smtp://support%40acme.com@127.0.0.1:${supportSmtp}\n` : ""}${feed ? `HOLON_SECRET_PRICES_URL=http://127.0.0.1:${feed}/events?key=e2e-not-a-key\n` : ""}${ticker ? `HOLON_SECRET_TICKER_URL=ws://127.0.0.1:${ticker}/ws?key=e2e-not-a-key\n` : ""}${posts ? `HOLON_SECRET_POSTS_URL=ws://127.0.0.1:${posts}/ws?collections=app.bsky.feed.post\n` : ""}`,
 );
 const server = spawn(
   binary,
@@ -290,4 +293,13 @@ if (!fresh) {
     }),
   });
   if (!tickerBound.ok) console.error(`e2e server: binding the feed ticker failed: ${await tickerBound.text()}`);
+  // The bluesky-mentions sample's posts, bound as its comment says: their id, the posts that run,
+  // and where the feed takes the position it replays from.
+  if (posts) mkdirSync(join(folders, "posts"), { recursive: true });
+  const postsBound = await fetch(`${base}/admin/feeds`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ name: "posts", url: "env:HOLON_SECRET_POSTS_URL", id: "payload.seq", resume: ["query:cursor"], only: ["payload.operation=create"] }),
+  });
+  if (!postsBound.ok) console.error(`e2e server: binding the feed posts failed: ${await postsBound.text()}`);
 }

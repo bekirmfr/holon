@@ -8148,6 +8148,78 @@ fn trading_bot_keeps_the_newest_price_and_places_each_order_once() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// The bluesky-mentions sample (host-capabilities L4 §5.9.6): posts from a feed shaped as
+/// Jetstream is, numbered, which replays from a cursor; a connection lost is opened again from the
+/// last post read, the posts sent meanwhile run, and the one at the cursor, sent again, is passed
+/// over.
+#[test]
+fn bluesky_mentions_opens_the_feed_again_from_its_cursor_and_runs_each_post_once() {
+    let jetstream = ws::stand_in::StandIn::start();
+    let dir = std::env::temp_dir().join(format!("holon-posts-{}-{}", std::process::id(), rand::random::<u32>()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let env = dir.join(".env");
+    std::fs::write(&env, format!("HOLON_SECRET_POSTS_URL={}\n", jetstream.url("/subscribe?collections=app.bsky.feed.post&key=s3cret"))).unwrap();
+    let mut state = claims_state("");
+    let feeds = feeds::Feeds::memory().with_sources(secret_sources::Sources::new(Some(env)).unwrap());
+    state.folders = Arc::new(folders::Folders::memory().with_feeds(feeds));
+    let bind = serde_json::json!({ "name": "posts", "url": "env:HOLON_SECRET_POSTS_URL", "id": "payload.seq", "resume": ["query:cursor"], "only": ["payload.operation=create"] });
+    let bound = route(&state, &req("POST", "/admin/feeds", serde_json::to_vec(&bind).unwrap()));
+    let status = bound.status_code;
+    assert_eq!(status, 200, "{}", String::from_utf8_lossy(&body_bytes(bound)));
+    let slug = deploy_text(&state, include_str!("../../holon-author/samples/bluesky-mentions.holon.ts"), "");
+    let call = |method: &str, path: &str, body: &str| {
+        let (status, body, _) = data_call(&state, &slug, method, path, body);
+        assert_eq!(status, 200, "{method} {path}: {body}");
+        serde_json::from_str::<serde_json::Value>(&body).unwrap_or(serde_json::Value::String(body))
+    };
+    assert_eq!(call("PUT", "/watch", r#"{"word":"Holon"}"#), serde_json::json!({ "word": "holon" }));
+
+    let mut held = subscriptions::Held::default();
+    subscriptions::reconcile(&state.store, &state.deployments, &state.deployments_path, &mut held);
+    // A new listener asks from now: no cursor.
+    eventually("the feed is listened to", || jetstream.asked().len() == 2);
+    assert!(jetstream.asked()[1].starts_with("/subscribe?collections=app.bsky.feed.post&key=s3cret\n"), "{:?}", jetstream.asked());
+    let post = |seq: u32, operation: &str, text: &str| {
+        let payload = serde_json::json!({ "$type": "network.bsky.jetstream.subscribeEvents#commit", "did": "did:plc:ada", "seq": seq, "time": format!("2026-11-09T08:00:0{seq}Z"), "operation": operation, "collection": "app.bsky.feed.post", "rkey": format!("3k{seq}"), "record": { "text": text } });
+        jetstream.text(&serde_json::json!({ "$type": "message", "payload": payload }).to_string());
+    };
+    post(1, "create", "hello Holon");
+    post(2, "create", "nothing to see");
+    post(3, "delete", "holon, deleted");
+    post(4, "create", "holon again");
+    let runs = || log_entries(&state, &slug).into_iter().filter(|e| e["kind"] == "feed").collect::<Vec<_>>();
+    eventually("three runs", || runs().len() == 3);
+    let live = || body_json(route(&state, &req("GET", &format!("/deployments/{slug}/feeds"), vec![])))["feeds"][0].clone();
+    eventually("at 4", || live()["position"] == "4");
+    let mentions = call("GET", "/mentions", "");
+    assert_eq!(mentions.as_object().map(|m| m.keys().cloned().collect::<Vec<_>>()), Some(vec!["at://did:plc:ada/app.bsky.feed.post/3k1".to_string(), "at://did:plc:ada/app.bsky.feed.post/3k4".into()]), "{mentions}");
+    assert_eq!((mentions["at://did:plc:ada/app.bsky.feed.post/3k1"]["text"].as_str(), mentions["at://did:plc:ada/app.bsky.feed.post/3k4"]["seq"].as_str()), (Some("hello Holon"), Some("4")));
+
+    // Cut, with two posts sent while it is down: opened again from 4, the feed sends 4 again
+    // (passed over), then the two.
+    jetstream.cut();
+    post(5, "create", "a HOLON while away");
+    post(6, "create", "another while away");
+    eventually("the feed is opened again", || jetstream.asked().len() == 3);
+    assert!(jetstream.asked()[2].starts_with("/subscribe?collections=app.bsky.feed.post&key=s3cret&cursor=4\n"), "{:?}", jetstream.asked());
+    eventually("five runs", || runs().len() == 5);
+    eventually("at 6", || live()["position"] == "6");
+    let ran: Vec<u32> = runs().iter().map(|r| (1..=6).find(|n| r["sourced"].to_string().contains(&format!("3k{n}"))).unwrap_or(0)).collect();
+    assert_eq!(ran, [1, 2, 4, 5, 6], "each post run once");
+    let events = body_json(route(&state, &req("GET", &format!("/deployments/{slug}/events"), vec![])))["events"].to_string();
+    assert!(events.contains("passed over an event of posts it ran already (4)"), "{events}");
+    let mentions = call("GET", "/mentions", "");
+    assert_eq!(mentions.as_object().map(|m| m.len()), Some(3), "{mentions}");
+    assert_eq!(mentions["at://did:plc:ada/app.bsky.feed.post/3k5"]["text"], "a HOLON while away");
+
+    // Its runs check offline, and the URL's key is in no log.
+    let export: verify::Export = serde_json::from_value(body_json(route(&state, &req("GET", &format!("/deployments/{slug}/export"), vec![])))).unwrap();
+    let report = verify::check(&export, None, &BTreeMap::new());
+    assert!(report.ok() && report.reruns.iter().all(|(_, r)| *r == verify::Rerun::Matched), "{}", verify::describe(&report, None));
+    assert!(!serde_json::to_string(&log_entries(&state, &slug)).unwrap().contains("s3cret"));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 // ── MongoDB (slice 7) ──
 
 /// The server compiles a flow's text with the editor's lowering, so a record literal must freeze

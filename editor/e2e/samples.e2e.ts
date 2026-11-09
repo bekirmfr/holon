@@ -2523,6 +2523,58 @@ test("trading-bot keeps each product's newest price, places an order once, and w
   }
 });
 
+test("bluesky-mentions keeps the posts that mention a word, and opens the feed again from its cursor", async ({ page, request }) => {
+  const { existsSync, writeFileSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  // The e2e server's posts (ws-server.mjs): a post is a .json file dropped in its folder, sent in
+  // the order of their names, and sent again to a connection that asks from its seq; asked.log is
+  // what each connection asked for.
+  const folder = join(FOLDERS, "posts");
+  const asked = () => (existsSync(join(folder, "asked.log")) ? readFileSync(join(folder, "asked.log"), "utf8").trim().split("\n") : []);
+  const stamp = Date.now();
+  const seq = (n: number) => stamp * 10 + n;
+  const post = (n: number, operation: string, text: string) =>
+    writeFileSync(
+      join(folder, `${stamp}-${n}.json`),
+      JSON.stringify({ $type: "message", payload: { did: "did:plc:e2e", seq: seq(n), time: new Date().toISOString(), operation, collection: "app.bsky.feed.post", rkey: `${stamp}k${n}`, record: { text } } }),
+    );
+  await openSample(page, "Bluesky mentions (a feed resumed from a cursor)");
+  await page.locator(".hl-canvas").getByRole("button", { name: "text off" }).click();
+  const text = readFileSync(new URL("../../crates/holon-author/samples/bluesky-mentions.holon.ts", import.meta.url), "utf8");
+  await page.getByRole("region", { name: "Text" }).locator(".cm-content").click();
+  await page.keyboard.press("Control+A");
+  await page.keyboard.insertText(text.replace("port: 8192", `port: ${8192 + SAMPLE_SHIFT}`));
+  await settingsSayPort(page, String(8192 + SAMPLE_SHIFT));
+  const opened = asked().length;
+  const port = await deploy(page, 0);
+  // A new listener asks from now: no cursor.
+  await expect.poll(() => asked().slice(opened), { timeout: 15_000 }).toEqual(["/ws?collections=app.bsky.feed.post"]);
+  const call = async (method: "get" | "put", path: string, data?: object) => (await request[method](`http://127.0.0.1:${port}${path}`, { data })).json();
+  expect(await call("put", "/watch", { word: `Holon${stamp}` })).toEqual({ word: `holon${stamp}` });
+  const mentions = async () => Object.values(await call("get", "/mentions")).filter((m) => String((m as { text: string }).text).includes(String(stamp))) as { text: string; seq: string }[];
+
+  post(1, "create", `hello Holon${stamp}`);
+  post(2, "create", "nothing to see");
+  post(3, "delete", `holon${stamp}, deleted`);
+  post(4, "create", `holon${stamp} again`);
+  await expect.poll(async () => (await mentions()).map((m) => m.seq).sort(), { timeout: 15_000 }).toEqual([String(seq(1)), String(seq(4))]);
+  await expect(page.getByText(`connected, at ${seq(4)}, 1 passed over`)).toBeVisible({ timeout: 15_000 });
+
+  // Cut, with two posts sent while it is down: opened again from the last post read, the feed
+  // sends it again (passed over), then the two.
+  writeFileSync(join(folder, "cut"), "");
+  post(5, "create", `a HOLON${stamp} while away`);
+  post(6, "create", "another while away");
+  await expect.poll(() => asked().slice(opened).at(-1), { timeout: 15_000 }).toBe(`/ws?collections=app.bsky.feed.post&cursor=${seq(4)}`);
+  await expect.poll(async () => (await mentions()).length, { timeout: 15_000 }).toBe(3);
+  await expect(page.getByText(`connected, at ${seq(6)}`)).toBeVisible({ timeout: 15_000 });
+
+  // The admin's resources show where the feed takes the position.
+  await page.getByRole("button", { name: "admin", exact: true }).click();
+  await page.getByRole("tablist", { name: "admin sections" }).getByRole("tab", { name: "resources" }).click();
+  await expect(page.getByText(/^ws:\/\/127\.0\.0\.1:\d+\/ws \(from env:HOLON_SECRET_POSTS_URL\) · runs only payload\.operation create · its id payload\.seq · resumes from its position with cursor= in the URL · 1000 may wait · quiet for 90s at most$/)).toBeVisible();
+});
+
 test("due-dates schedules a payout past Easter's closing days and an invoice past a weekend", async ({ page, request }) => {
   await openSample(page, "Due dates (business days at a fixed offset)");
   const port = await deploy(page);

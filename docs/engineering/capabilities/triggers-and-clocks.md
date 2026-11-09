@@ -31,7 +31,8 @@ runs), `ticker` (a clock beside routes, and an action), `drop-box` (a file handl
 routes), `remittance-mail` (a mail handler beside routes), `support-inbox` (a mail handler that
 answers through the same mail, logged in with OAuth), `price-feed` (a feed handler beside routes,
 telling a page through a channel), `trading-bot` (a WebSocket feed, newest price a product, a lazy
-handler starting a strict action), `billing` and `shop` (actions, and a
+handler starting a strict action), `bluesky-mentions` (a WebSocket feed opened again from its
+cursor), `billing` and `shop` (actions, and a
 flow calling another's), `approval` (a resume route), `status-board` (each handler's log level).
 
 ## 2. How it works
@@ -113,8 +114,9 @@ waits for the old one's run and reads where the feed is after it: no event runs 
 feed is (the last id run on, and the last 1,000) is in `feed-seen/<slug>/<feed>.json` beside the
 log, written as the run's record is: a strict or unrecorded run's at its end, a lazy run's once
 `sync_logs` has synced its entry (`Feeds::hold` and `release`, beside the channels' packs and the
-mail); a reconnect sends it as `Last-Event-ID`, and an event sent again by its id is passed over,
-on the timeline. A connection lost is opened again after a second, or the feed's `retry:`; one that
+mail); a reconnect sends it as `Last-Event-ID`, or where a WebSocket binding's `--resume` says (a
+query parameter, a header, or a message in place of the subscription, §5.9.6), and an event sent
+again by its id is passed over, on the timeline. A connection lost is opened again after a second, or the feed's `retry:`; one that
 can't be is tried again after twice as long each time, to a minute, on the timeline once. What
 each connection is doing is in `GET /deployments/<slug>/feeds`. Logged as `feed` under the label
 `on feed prices`.

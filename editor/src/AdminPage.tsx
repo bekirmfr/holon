@@ -144,7 +144,7 @@ export function AdminPage({ me, onOpenDeployment }: { me: string; onOpenDeployme
   const [feeds, setFeeds] = useState<FeedEntry[]>([]);
   // A feed to bind, its headers written NAME=SOURCE and its subscription messages one a line, its
   // --only FIELD=VALUE with spaces between.
-  const noFeed = { name: "", url: "", headers: "", buffer: "", idle: "", deployment: "", onFull: "wait" as OnFull, key: "", subscribe: "", heartbeat: "", every: "", id: "", only: "" };
+  const noFeed = { name: "", url: "", headers: "", buffer: "", idle: "", deployment: "", onFull: "wait" as OnFull, key: "", subscribe: "", heartbeat: "", every: "", id: "", only: "", resume: "" };
   const [feedDraft, setFeedDraft] = useState(noFeed);
   const [serverSecrets, setServerSecrets] = useState<SecretInfo[]>([]);
   const [secretDraft, setSecretDraft] = useState({ name: "", value: "", to: "" });
@@ -828,7 +828,8 @@ export function AdminPage({ me, onOpenDeployment }: { me: string; onOpenDeployme
             <code>e.missed</code> says how many were), or it replaces the waiting event of its key (<code>e.replaced</code>); and how long the feed may say
             nothing before it is opened again (90s). A WebSocket is also sent its subscription when it opens (a message as written, or a source for one with a
             key in it) and a heartbeat to keep it; the fields of a message that are its id (product_id,sequence) say where it is, and only the messages whose
-            field has a value given (type=ticker) run.
+            field has a value given (type=ticker) run. A WebSocket that replays is opened again from its id where the binding says the feed takes it:
+            query:cursor, header:NAME, or message:… sent in place of the subscription, <code>{"{position}"}</code> in it the id.
           </div>
           {feeds.length === 0 && <div style={{ color: "#7e8ea8", fontSize: 11, marginBottom: 6 }}>no feed bound</div>}
           {feeds.map((f) => (
@@ -842,6 +843,9 @@ export function AdminPage({ me, onOpenDeployment }: { me: string; onOpenDeployme
                   {f.heartbeat && ` · sends ${f.heartbeat} every ${f.every ?? 30}s`}
                   {f.only && ` · runs only ${Object.entries(f.only).map(([k, vs]) => `${k} ${vs.join(" or ")}`).join(" and ")}`}
                   {f.id && ` · its id ${f.id.join("/")}`}
+                  {f.resume?.query && ` · resumes from its position with ${f.resume.query}= in the URL`}
+                  {f.resume?.header && ` · resumes from its position with the header ${f.resume.header}`}
+                  {f.resume?.message && ` · resumes from its position with ${f.resume.message.join(", ")}`}
                   {` · ${f.buffer} may wait${f.on_full === "skip" ? ", the rest dropped" : f.on_full === "latest" ? `, one a ${f.key}, the newest` : ""} · quiet for ${f.idle}s at most`}
                 </span>
                 {f.deployment && <span style={{ color: "#7e8ea8", fontSize: 11 }}>for {f.deployment} only</span>}
@@ -887,6 +891,8 @@ export function AdminPage({ me, onOpenDeployment }: { me: string; onOpenDeployme
                 if (feedDraft.id.trim()) binding.id = feedDraft.id.trim();
                 const only = feedDraft.only.split(/\s+/).filter(Boolean);
                 if (only.length > 0) binding.only = only;
+                const resume = feedDraft.resume.split("\n").map((l) => l.trim()).filter(Boolean);
+                if (resume.length > 0) binding.resume = resume;
                 await bindFeed(binding);
                 setFeedDraft(noFeed);
               });
@@ -937,6 +943,14 @@ export function AdminPage({ me, onOpenDeployment }: { me: string; onOpenDeployme
                 />
                 <input aria-label="feed id" placeholder="its id fields (product_id,sequence)" value={feedDraft.id} onChange={(e) => setFeedDraft({ ...feedDraft, id: e.target.value })} style={input} />
                 <input aria-label="feed only" placeholder="runs only (type=ticker)" value={feedDraft.only} onChange={(e) => setFeedDraft({ ...feedDraft, only: e.target.value })} style={input} />
+                <textarea
+                  aria-label="feed resume"
+                  placeholder="resumes from its id with (query:cursor, header:NAME, or message:… one a line)"
+                  value={feedDraft.resume}
+                  onChange={(e) => setFeedDraft({ ...feedDraft, resume: e.target.value })}
+                  rows={1}
+                  style={{ ...input, fontFamily: "monospace" }}
+                />
                 <input aria-label="feed heartbeat" placeholder="heartbeat (ping)" value={feedDraft.heartbeat} onChange={(e) => setFeedDraft({ ...feedDraft, heartbeat: e.target.value })} style={input} />
                 {feedDraft.heartbeat.trim() && (
                   <input aria-label="feed every" placeholder="every (30s)" value={feedDraft.every} onChange={(e) => setFeedDraft({ ...feedDraft, every: e.target.value })} style={input} />
