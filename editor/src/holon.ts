@@ -188,6 +188,7 @@ export type WCapability =
   | "SecretAccess"
   | { SecretRead: string }
   | { Await: string }
+  | { Approval: string }
   | "Random"
   | { StateRead: string }
   | { StateWrite: string }

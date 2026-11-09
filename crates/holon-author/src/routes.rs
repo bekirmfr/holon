@@ -323,7 +323,7 @@ pub(crate) fn is_optional_input(n: &Node, port: Option<&str>) -> bool {
 /// `group` is in the same order as the children the spec was proposed over.
 pub fn route_spec(spec: EncapSpec, group: &[&Node], label: &str) -> Result<EncapSpec, String> {
     // A route answers and is done: what waits is an action it starts (docs/L4s/typescript-syntax-L4.md §9).
-    if let Some(n) = group.iter().find(|n| n.data.body == PlacedBody::Primitive && matches!(n.data.name.as_str(), "await" | "resume_token")) {
+    if let Some(n) = group.iter().find(|n| n.data.body == PlacedBody::Primitive && matches!(n.data.name.as_str(), "await" | "approval" | "resume_token")) {
         return Err(format!("{label}: a route answers and is done, so it doesn't wait ({}): start an action that waits with a flow_start, and answer with what it says", n.data.name));
     }
     caller_spec(spec, group, label, "request")

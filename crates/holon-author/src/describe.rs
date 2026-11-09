@@ -26,7 +26,7 @@ pub fn describe_item(item: &str) -> String {
         return format!("keep its runs in its log for up to {n} days");
     }
     type Say = fn(&str) -> String;
-    let named: [(&str, Say); 22] = [
+    let named: [(&str, Say); 23] = [
         ("HttpRequest", |a| format!("call https://{a}")),
         ("StateRead", |a| format!("read its state \"{a}\"")),
         ("StateWrite", |a| format!("write its state \"{a}\"")),
@@ -50,6 +50,11 @@ pub fn describe_item(item: &str) -> String {
         ("SecretRead", |a| format!("read the secret \"{a}\"")),
         ("SecretAnswer", |a| format!("answer its callers with the secret \"{a}\", or with what is computed from it")),
         ("Await", |a| format!("wait for an event \"{a}\" and continue later")),
+        ("Approval", |a| match a.split_once('/') {
+            Some((name, "1")) => format!("wait for a person's approval \"{name}\" and continue later"),
+            Some((name, people)) => format!("wait for {people} people's approval \"{name}\" and continue later"),
+            None => format!("wait for an approval \"{a}\""),
+        }),
         ("Limit", |a| format!("raise {}", a.replacen('=', " to ", 1))),
         ("Browser", |a| if a == "*" { "answer web pages from any site".into() } else { format!("answer web pages from {a}") }),
     ];

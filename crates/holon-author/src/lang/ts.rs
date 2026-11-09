@@ -84,6 +84,7 @@ enum Vocab {
     Status,
     Stripe,
     Event,
+    Approval,
     /// A leaf (or template) called by its name: `sha256(text)`.
     Leaf(String),
 }
@@ -489,10 +490,11 @@ impl<'s, 't> Reader<'s, 't> {
                         "status" => Vocab::Status,
                         "stripe" => Vocab::Stripe,
                         "event" => Vocab::Event,
+                        "approval" => Vocab::Approval,
                         "start" => return fail(self.span(n.span), START_IS_A_CALL),
                         "tour" | "component" => return fail(self.span(n.span), format!("{what} comes with tours and components, not yet")),
                         leaf if interface_of(alias(leaf)).is_some() || templates::is_template(leaf) => Vocab::Leaf(leaf.to_string()),
-                        other => return fail(self.span(n.span), format!("\"holon\" has no \"{other}\": its vocabulary (flow, route, every, on, action, js, respond, status, stripe, event) and its leaves")),
+                        other => return fail(self.span(n.span), format!("\"holon\" has no \"{other}\": its vocabulary (flow, route, every, on, action, js, respond, status, stripe, event, approval) and its leaves")),
                     };
                     self.bind_import(&n.local, Noun::Vocab(vocab))?;
                 }
@@ -3007,9 +3009,9 @@ impl<'s, 't> Reader<'s, 't> {
             js::Expression::CallExpression(c) => self.call(c),
             js::Expression::AwaitExpression(a) => {
                 if let js::Expression::CallExpression(c) = self.unwrap(&a.argument)
-                    && self.vocab_of(&c.callee) == Some(Vocab::Event)
+                    && let Some(v @ (Vocab::Event | Vocab::Approval)) = self.vocab_of(&c.callee)
                 {
-                    return self.event(c, span);
+                    return self.event(c, span, v == Vocab::Approval);
                 }
                 // An action awaited is called, its answer read; one not awaited is started (`call`).
                 if let js::Expression::CallExpression(c) = self.unwrap(&a.argument)
@@ -3298,8 +3300,9 @@ impl<'s, 't> Reader<'s, 't> {
                         ok(ExprKind::Call { callee: Name { text: leaf, span: callee.span }, args })
                     }
                     Some(Noun::Vocab(Vocab::Status | Vocab::Respond)) => fail(span, "status(…) and respond(…) are a route's answer: return them"),
-                    Some(Noun::Vocab(Vocab::Event)) if self.frame.function => fail(span, FUNCTION_WAITS),
+                    Some(Noun::Vocab(Vocab::Event | Vocab::Approval)) if self.frame.function => fail(span, FUNCTION_WAITS),
                     Some(Noun::Vocab(Vocab::Event)) => fail(span, "an event is waited for: await event(\"paid\")"),
+                    Some(Noun::Vocab(Vocab::Approval)) => fail(span, "an approval is waited for: await approval(\"payout\", { people: 2 })"),
                     Some(Noun::Vocab(v)) => fail(span, format!("{} is a statement of the top level", vocab_word(&v))),
                     Some(_) => fail(callee.span, format!("\"{name}\" isn't something to call")),
                     None if self.consts.contains_key(name) => fail(callee.span, format!("\"{name}\" is a value, not something to call")),
@@ -3383,9 +3386,14 @@ impl<'s, 't> Reader<'s, 't> {
     }
 
     /// `await event("paid", { expires: "1d" })`: the run waits for the event, as `await paid,
-    /// expires: 1d` does.
-    fn event(&mut self, c: &js::CallExpression, span: Span) -> R<Expr> {
-        let shape = "await event(\"paid\", { expires: \"1d\" })";
+    /// expires: 1d` does. With `approval`, `await approval("payout", { expires: "1d", people: 2 })`:
+    /// it waits for people to decide.
+    fn event(&mut self, c: &js::CallExpression, span: Span, approval: bool) -> R<Expr> {
+        let (word, shape) = if approval {
+            ("approval", "await approval(\"payout\", { expires: \"1d\", people: 2 })")
+        } else {
+            ("event", "await event(\"paid\", { expires: \"1d\" })")
+        };
         if self.frame.function {
             return fail(span, FUNCTION_WAITS);
         }
@@ -3394,19 +3402,28 @@ impl<'s, 't> Reader<'s, 't> {
         }
         let args: Vec<&js::Expression> = c.arguments.iter().filter_map(|a| a.as_expression()).collect();
         if args.len() != c.arguments.len() || args.is_empty() || args.len() > 2 {
-            return fail(span, format!("event takes its name, then its options: {shape}"));
+            return fail(span, format!("{word} takes its name, then its options: {shape}"));
         }
         let js::Expression::StringLiteral(name) = self.unwrap(args[0]) else {
-            return fail(self.span(args[0].span()), format!("an event's name is written in quotes: {shape}"));
+            return fail(self.span(args[0].span()), format!("an {word}'s name is written in quotes: {shape}"));
         };
-        let mut expires = None;
+        let (mut expires, mut people) = (None, approval.then_some(1));
         if let Some(o) = args.get(1) {
             let js::Expression::ObjectExpression(o) = self.unwrap(o) else {
-                return fail(self.span(o.span()), format!("event's options are an object: {shape}"));
+                return fail(self.span(o.span()), format!("{word}'s options are an object: {shape}"));
             };
             for (key, value, at) in self.fields(o)? {
+                if approval && key == "people" {
+                    let n = match self.unwrap(value) {
+                        js::Expression::NumericLiteral(n) if n.value.fract() == 0.0 && (1.0..=5.0).contains(&n.value) => n.value as u32,
+                        _ => return fail(self.span(value.span()), "people is how many different people approve, a number from 1 to 5: { people: 2 }"),
+                    };
+                    people = Some(n);
+                    continue;
+                }
                 if key != "expires" {
-                    return fail(at, format!("event's option is expires, not \"{key}\""));
+                    let options = if approval { "expires and people" } else { "expires" };
+                    return fail(at, format!("{word}'s options are {options}, not \"{key}\""));
                 }
                 let js::Expression::StringLiteral(s) = self.unwrap(value) else {
                     return fail(self.span(value.span()), format!("expires is a duration in quotes: {shape}"));
@@ -3417,7 +3434,7 @@ impl<'s, 't> Reader<'s, 't> {
                 expires = Some(Box::new(Expr { kind: ExprKind::Duration { seconds, text: s.value.to_string() }, span: self.span(s.span) }));
             }
         }
-        Ok(Expr { kind: ExprKind::Await { name: self.name(name.value.as_str(), name.span), expires }, span })
+        Ok(Expr { kind: ExprKind::Await { name: self.name(name.value.as_str(), name.span), expires, people }, span })
     }
 
     /// `notes.list({ limit: 50 })`, `api.post("/p", { body })`, `JSON.parse(text)`, `xs.map(f)`.

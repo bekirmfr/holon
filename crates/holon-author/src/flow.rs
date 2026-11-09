@@ -151,6 +151,11 @@ pub fn derive_server(nodes: &[Node], wires: &[Wire], store: &mut MapResolver, po
     let mut trace = BTreeMap::new();
     for r in routes {
         let label = format!("{} {}", r.method, r.path);
+        // An approval is people's to decide, in Holon: no route delivers it.
+        if !r.resume.is_empty() && nodes.iter().any(|n| n.data.name == "approval" && n.param("name") == r.resume) {
+            errors.push(format!("{label}: \"{}\" is an approval, which people decide in Holon: no route resumes it", r.resume));
+            continue;
+        }
         let group: Vec<&Node> = r.node_ids.iter().map(|id| by_id[id.as_str()]).collect();
         let endpoint = (|| -> Result<Result<Hash, String>, String> {
             let (children, edges) = group_of(&group, wires, store)?;

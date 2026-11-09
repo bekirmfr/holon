@@ -542,8 +542,9 @@ export function replay(
     if (primitive && name === "file_arrival") return { inputs, outputs: [sourced.get(`FileArrival(${JSON.stringify(param("folder"))})`) ?? null] };
     // A file handler's file: its handle, likewise.
     if (node.data.body.kind === "Template" && name === "on_file") return { inputs, outputs: [sourced.get(`FileArrival(${JSON.stringify(param("folder"))})`) ?? null] };
-    // A waiting point answers with the event the log says was delivered, if any.
-    if (primitive && name === "await") return { inputs, outputs: [entry.events?.[param("name")] ?? null] };
+    // A waiting point answers with the event the log says was delivered, if any: an approval, with
+    // the decision.
+    if (primitive && (name === "await" || name === "approval")) return { inputs, outputs: [entry.events?.[param("name")] ?? null] };
     // A token is a credential: the log has it redacted, and so does the replay.
     if (primitive && name === "resume_token") return { inputs, outputs: [{ type: "Text", value: `‹token:${param("await")}›` }] };
     // The editor never has a secret's value: a placeholder stands in, as the log shows it.

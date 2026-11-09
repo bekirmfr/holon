@@ -30,6 +30,7 @@ the editor show).
 | `FileArrival("f")` | run on each file new, changed or removed in the folder "f" (as its on file lines say), and pass it on | `on.file.created(f, …)`, `on.file.deleted(f, …)` |
 | `RunsAction("billing/charge")` | run the action charge of the flow billing | `charge(x)`, with `import { charge } from "flow:billing"` |
 | `Await("e")` | wait for an event "e" and continue later | `await event("e")` |
+| `Approval("a/2")` | wait for 2 people's approval "a" and continue later | `await approval("a", { people: 2 })` |
 
 A flow's triggers, what start its runs, are among them: `NetworkIngress` for its routes, `Clock`
 for an `every`, `FileArrival` for each folder a file handler watches, and `Action("name")` for

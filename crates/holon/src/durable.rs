@@ -31,7 +31,7 @@ use holon_host::{Exchange, Waits, Waiting};
 
 use crate::*;
 
-/// Every `await` in `unit`'s closure, as its name and how long it waits (seconds): what a deploy
+/// Every `await` and `approval` in `unit`'s closure, as its name and how long it waits (seconds): what a deploy
 /// holds to the deployment's `max_await_seconds`. One whose params don't parse never waits, and
 /// isn't listed.
 pub(crate) fn awaits_in(unit: &Unit, resolver: &impl Resolver) -> Vec<(String, u64)> {
@@ -40,7 +40,7 @@ pub(crate) fn awaits_in(unit: &Unit, resolver: &impl Resolver) -> Vec<(String, u
     let mut stack = vec![unit];
     while let Some(u) = stack.pop() {
         if let UnitBody::Primitive { name } = &u.body
-            && name == "await"
+            && (name == "await" || name == "approval")
             && let (Some(n), Some(secs)) = (
                 u.params.iter().find(|p| p.name() == "name").and_then(|p| p.value()),
                 u.params.iter().find(|p| p.name() == "expires").and_then(|p| p.value()).and_then(|v| v.parse().ok()),

@@ -578,7 +578,8 @@ is granted, and keeps a record of every run that replays exactly.
 
 A FILE (NAME.holon.ts: its imports, then flow(…), then its handlers)
   import { flow, route, status } from "holon"   the vocabulary (flow, route, every, on, action, js,
-                                                respond, status, stripe, event) and the leaves
+                                                respond, status, stripe, event, approval) and
+                                                the leaves
   import api_token from "secret:api_token"      a secret it reads, as api_token; set before it works
   import key from "secret:key" with { optional: "true" }   a secret it can run without
   import state from "state"                     its state, its keys by use: state.count
@@ -655,6 +656,9 @@ THE OUTSIDE WORLD (each is one permission the flow asks for)
   const paid = await event("paid", { expires: "1d" })   in an action: park the run until the
                                            event arrives; a route answers and is done
   route.get("/paid/:token", () => "ok", { resumes: "paid" })   the route that delivers it
+  const d = await approval("payout", { people: 2 })   in an action: park the run until 2
+                                           different people approve it in Holon (or one
+                                           declines): d is {approved, by}; no route resumes it
   JSON.stringify(x), JSON.parse(text)
 
 CALLS

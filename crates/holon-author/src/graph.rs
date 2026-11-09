@@ -133,7 +133,7 @@ pub fn graph(source: &str, every: bool) -> Result<Graph, String> {
         let inputs = doc.edges.iter().filter(|w| w.target == id).map(|w| (w.input().to_string(), format!("{}.{}", name_of(&w.source), w.output())));
         Some(Part { name: name_of(id), leaf: n.data.name.clone(), params: params.collect(), inputs: inputs.collect() })
     };
-    let effectful = |leaf: &str| leaf.starts_with("http") || leaf.starts_with("db_") || leaf == "await" || leaf == "respond";
+    let effectful = |leaf: &str| leaf.starts_with("http") || leaf.starts_with("db_") || leaf == "await" || leaf == "approval" || leaf == "respond";
 
     let mut bands = vec![];
     for (b, block) in all.iter().enumerate() {

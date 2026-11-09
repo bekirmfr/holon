@@ -423,6 +423,12 @@ template's `resume` param), and the order's run finishes: the state write happen
 order carries no meaning beyond names being defined before use. `{ ...order, paid_via: … }` is
 `with_field` over an existing record (§5.5).
 
+`await approval("payout", { expires: "1d", people: 2 })` waits the same way, as
+`approval{name: payout, expires: 86400, people: 2}`, for people rather than a request: no token is
+handed out for it and no route resumes it. Two different people signed in to Holon approve it (or
+one declines), and the run gets `{approved, by}`. Its permission, `Approval("payout/2")`, names
+how many.
+
 A waiting run performs nothing, but its progress goes out: the packs it has settled when it parks,
 the ones that don't wait for the payment, are sent then (and logged with the parked part, its
 `progress`); the rest when it finishes. The resumed part runs again from the start and settles the
@@ -1131,7 +1137,7 @@ it reaches it as an input after the item (§5.9): `tax` here.
 - **Comments:** `//` to the end of the line, and `/* … */`. They are the text's and never the
   unit's. `fmt` keeps every comment where it was written, with its statement (§7).
 - **Keywords** are TypeScript's; Holon adds none. Its vocabulary is names imported from `"holon"`:
-  `flow`, `route`, `every`, `on`, `action`, `js`, `respond`, `status`, `stripe` and `event`, and
+  `flow`, `route`, `every`, `on`, `action`, `js`, `respond`, `status`, `stripe`, `event` and `approval`, and
   every leaf, each imported by name before it is used (`import { sha256 } from "holon"`). A name
   is imported once.
 - **Identifiers** are TypeScript's. Any name may be bound; names aren't in the hash (§7), except a

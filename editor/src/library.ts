@@ -12,7 +12,7 @@ export const CAPABILITIES: Capability[] = [
   { key: "secret", label: "read secrets", kinds: ["SecretRead", "SecretAnswer"] },
   { key: "clock", label: "run on a clock", kinds: ["Clock"] },
   { key: "files", label: "use files", kinds: ["FileRead", "FileWrite", "FileArrival"] },
-  { key: "wait", label: "wait for someone", kinds: ["Await"] },
+  { key: "wait", label: "wait for someone", kinds: ["Await", "Approval"] },
   { key: "actions", label: "run another flow's actions", kinds: ["RunsAction"] },
   { key: "live", label: "push live updates", kinds: ["ChannelSend"] },
 ];
