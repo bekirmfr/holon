@@ -533,7 +533,7 @@ function graphPage(body, model = "{\"nodes\":[],\"wires\":[],\"nodeW\":0,\"head\
 </style>
 </head>
 <body>
-<div class="bar"><button id="zoom-in" title="Zoom in">+</button><button id="zoom-out" title="Zoom out">&minus;</button><button id="fit" title="Fit the flow to the window">&#x2922;</button></div>
+<div class="bar"><button id="zoom-in" title="Zoom in">+</button><button id="zoom-out" title="Zoom out">&minus;</button><button id="tidy" title="Tidy the layout: columns by dependency, readable wires">&#x25A4;</button><button id="fit" title="Fit the flow to the window">&#x2922;</button></div>
 ${body}
 <div class="status" id="status"></div>
 <script nonce="${nonce}">
@@ -607,6 +607,87 @@ ${body}
       p.line.setAttribute("d", d);
     });
   }
+  // The tidy layout: each node in the column of its depth (the longest chain of wires into it), so every
+  // wire runs left to right; the columns' order is set to shorten the wires (a few sweeps of the
+  // barycentre); each node sits level with what feeds it, pushed down only to keep a gap.
+  function tidyLayout() {
+    var n = M.nodes.length;
+    var preds = [], succs = [];
+    for (var i = 0; i < n; i++) {
+      preds.push([]);
+      succs.push([]);
+    }
+    M.wires.forEach(function (w) {
+      if (w.from !== w.to) {
+        succs[w.from].push(w.to);
+        preds[w.to].push(w.from);
+      }
+    });
+    var layer = [], indeg = [], queue = [];
+    for (i = 0; i < n; i++) {
+      layer.push(0);
+      indeg.push(preds[i].length);
+      if (indeg[i] === 0) queue.push(i);
+    }
+    while (queue.length) {
+      var u = queue.shift();
+      succs[u].forEach(function (v) {
+        layer[v] = Math.max(layer[v], layer[u] + 1);
+        indeg[v] -= 1;
+        if (indeg[v] === 0) queue.push(v);
+      });
+    }
+    var depth = n ? Math.max.apply(null, layer) : 0;
+    var rows = [];
+    for (var l = 0; l <= depth; l++) rows.push([]);
+    for (i = 0; i < n; i++) rows[layer[i]].push(i);
+    var pos = [];
+    function index() {
+      rows.forEach(function (row) {
+        row.forEach(function (v, k) { pos[v] = k; });
+      });
+    }
+    function order(row, neighbours) {
+      var key = {};
+      row.forEach(function (v) {
+        var around = neighbours(v);
+        key[v] = around.length ? around.reduce(function (a, b) { return a + b; }, 0) / around.length : pos[v];
+      });
+      row.sort(function (a, b) { return key[a] - key[b] || pos[a] - pos[b]; });
+      row.forEach(function (v, k) { pos[v] = k; });
+    }
+    index();
+    for (var sweep = 0; sweep < 4; sweep++) {
+      for (l = 1; l <= depth; l++) {
+        order(rows[l], function (v) { return preds[v].map(function (p) { return pos[p]; }); });
+      }
+      for (l = depth - 1; l >= 0; l--) {
+        order(rows[l], function (v) { return succs[v].map(function (s) { return pos[s]; }); });
+      }
+    }
+    var GAP = 28;
+    var COL = NW + 96;
+    var ys = [];
+    for (l = 0; l <= depth; l++) {
+      var end = null;
+      rows[l].forEach(function (v) {
+        var h = M.nodes[v].h;
+        var fed = preds[v].filter(function (p) { return ys[p] !== undefined; });
+        var want = fed.length ? fed.reduce(function (a, p) { return a + ys[p] + M.nodes[p].h / 2; }, 0) / fed.length - h / 2 : 0;
+        var top = end === null ? want : Math.max(want, end);
+        ys[v] = top;
+        end = top + h + GAP;
+      });
+    }
+    var minY = Math.min.apply(null, ys);
+    for (i = 0; i < n; i++) {
+      M.nodes[i].x = layer[i] * COL;
+      M.nodes[i].y = ys[i] - minY;
+      place(i);
+    }
+    drawWires();
+  }
+
   function render() {
     var labels = [];
     document.querySelectorAll("[data-key]").forEach(function (el) {
@@ -736,7 +817,8 @@ ${body}
   document.getElementById("zoom-in").addEventListener("click", function () { zoomAt(svg.clientWidth / 2, svg.clientHeight / 2, 1.25); });
   document.getElementById("zoom-out").addEventListener("click", function () { zoomAt(svg.clientWidth / 2, svg.clientHeight / 2, 0.8); });
   document.getElementById("fit").addEventListener("click", fit);
-  drawWires();
+  document.getElementById("tidy").addEventListener("click", function () { tidyLayout(); fit(); });
+  tidyLayout();
   render();
   fit();
 })();

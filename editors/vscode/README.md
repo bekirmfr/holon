@@ -35,7 +35,7 @@ views, read through the `holon` command with `--server` and `--json`:
   event** (runs parked for a flow's own link, read-only), and **Recent runs** (the last ten; a click
   opens its record as JSON, from `holon runs --json`).
 - **Flows**: each saved flow, with three icon buttons: **edit** (its text, as TypeScript), **graph**
-  (its nodes with their ports, types and params, and the wires between them, in the editor's colours). A click selects a node, a wire or a port. Dragging a node moves the selected nodes, and dragging on the background selects the nodes in a box. Ctrl or Shift adds to the selection, and Escape clears it. The middle button drags the picture, the wheel zooms, and double-click (or the fit button) fits it to the window and **deploy** (`holon deploy`, as the editor's Deploy does). Edit
+  (its nodes with their ports, types and params, and the wires between them, in the editor's colours). A click selects a node, a wire or a port. Dragging a node moves the selected nodes, and dragging on the background selects the nodes in a box. Ctrl or Shift adds to the selection, and Escape clears it. The middle button drags the picture, the wheel zooms, and double-click (or the fit button) fits it to the window. The graph opens tidied: each node sits in the column of its depth, so every wire runs left to right, and the tidy button (▤) lays it out again after you have moved nodes and **deploy** (`holon deploy`, as the editor's Deploy does). Edit
   saves back to the server: `Ctrl+S` writes the flow with `holon flows save`, and a flow someone else
   saved asks before it is replaced. A deploy that needs approval shows what it asks for, and
   approves it on a yes.
