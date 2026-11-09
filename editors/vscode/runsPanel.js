@@ -1,7 +1,9 @@
-// The Runs panel: a page in VS Code's bottom panel, with a deployment's runs on the left and the record of the
-// selected run on the right. The page is ours (its script and its style); it asks this extension for the runs,
-// and the extension reads them with the holon command, as every view does. A run's record is its plain data:
-// the log's values without their type tags, and without the log's own bookkeeping (its hashes, its nonce).
+// The Runs panel: a page in VS Code's bottom panel, with a deployment's runs on the left and the selected run on
+// the right, in the tabs the web and terminal consoles show: Detail (its record), Steps (the flow's text with each
+// statement's value), Timeline (when each step ran) and Error (where a failed run stopped). The page is ours (its
+// script and its style); it asks this extension for the runs, and the extension reads them with the holon command,
+// as every view does. A run's record is its plain data: the log's values without their type tags, and without the
+// log's own bookkeeping (its hashes, its nonce).
 
 const vscode = require("vscode");
 const { randomBytes } = require("node:crypto");
@@ -53,6 +55,8 @@ class RunsPanel {
     this.breaks = [];
     this.failedOnly = false;
     this.selected = null;
+    /** Each run's steps, as `holon runs --run` answers them: a run never changes, so each is read once. */
+    this.explained = new Map();
     this.view = undefined;
   }
 
@@ -71,6 +75,7 @@ class RunsPanel {
   async choose(slug) {
     this.slug = slug;
     this.selected = null;
+    this.explained = new Map();
     await vscode.commands.executeCommand("holon.runsPanel.focus");
     if (this.view) this.view.title = `Runs: ${slug}`;
     await this.load();
@@ -105,6 +110,19 @@ class RunsPanel {
     return e ? runRecord(e) : undefined;
   }
 
+  /** A run's steps: `{ value }` as `holon runs --run N --json` answers them, or `{ error }`. */
+  async explainOf(seq) {
+    const key = `${this.slug}#${seq}`;
+    if (!this.explained.has(key)) {
+      try {
+        this.explained.set(key, { value: await this.deps.holon(["runs", this.slug, "--run", String(seq)], { json: true }) });
+      } catch (e) {
+        this.explained.set(key, { error: e.message });
+      }
+    }
+    return this.explained.get(key);
+  }
+
   snapshot() {
     return { slug: this.slug, runs: this.list(), failedOnly: this.failedOnly, selected: this.selected };
   }
@@ -112,6 +130,14 @@ class RunsPanel {
   push() {
     if (!this.view) return;
     this.view.webview.postMessage({ type: "state", ...this.snapshot(), error: this.error, breaks: this.breaks });
+  }
+
+  /** Sends the selected run's record and steps, once its steps are read; a newer selection goes first. */
+  async sendRun(seq) {
+    const explained = await this.explainOf(seq);
+    if (this.view && this.selected === seq) {
+      this.view.webview.postMessage({ type: "run", seq, record: this.recordOf(seq), explain: explained.value ?? null, explainError: explained.error ?? null });
+    }
   }
 
   /** The page's messages: what it asks for. */
@@ -127,12 +153,11 @@ class RunsPanel {
         this.failedOnly = Boolean(m.value);
         this.push();
         break;
-      case "select": {
+      case "select":
         this.selected = m.seq;
         this.push();
-        if (this.view) this.view.webview.postMessage({ type: "record", seq: m.seq, record: this.recordOf(m.seq) });
+        this.sendRun(m.seq);
         break;
-      }
       case "openJson": {
         const record = this.recordOf(m.seq);
         if (record) this.deps.openJson(record);
@@ -158,7 +183,13 @@ class RunsPanel {
   button:hover { background: var(--vscode-button-secondaryHoverBackground); }
   main { display: grid; grid-template-columns: minmax(240px, 34%) 1fr; flex: 1; min-height: 0; }
   #list { overflow: auto; border-right: 1px solid var(--vscode-panel-border); padding: 4px 0; }
-  #record { overflow: auto; padding: 8px 12px; }
+  #pane { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+  #tabs { display: flex; gap: 2px; padding: 0 8px; border-bottom: 1px solid var(--vscode-panel-border); }
+  #body { overflow: auto; flex: 1; padding: 8px 12px; }
+  .tab { background: transparent; color: var(--vscode-descriptionForeground); border-bottom: 2px solid transparent; border-radius: 0; padding: 5px 9px; }
+  .tab:hover { background: var(--vscode-list-hoverBackground); color: var(--vscode-foreground); }
+  .tab.active { color: var(--vscode-panelTitle-activeForeground); border-bottom-color: var(--vscode-panelTitle-activeBorder); }
+  .tab.bad { color: var(--vscode-errorForeground); }
   .run { display: flex; justify-content: space-between; gap: 10px; padding: 3px 10px; cursor: pointer; }
   .run:hover { background: var(--vscode-list-hoverBackground); }
   .run.selected { background: var(--vscode-list-activeSelectionBackground); color: var(--vscode-list-activeSelectionForeground); }
@@ -174,29 +205,47 @@ class RunsPanel {
   .empty { color: var(--vscode-descriptionForeground); padding: 8px 10px; }
   .error { color: var(--vscode-errorForeground); padding: 6px 10px; }
   .warn { color: var(--vscode-editorWarning-foreground); padding: 6px 10px; }
+  .line { display: grid; grid-template-columns: 34px minmax(0, 1fr); gap: 0 8px; padding: 1px 0; }
+  .num { color: var(--vscode-descriptionForeground); text-align: right; }
+  .code { font-family: var(--vscode-editor-font-family); white-space: pre; overflow-x: auto; }
+  .note { color: var(--vscode-descriptionForeground); font-family: var(--vscode-editor-font-family); white-space: pre-wrap; overflow-wrap: anywhere; }
+  .note.bad { color: var(--vscode-errorForeground); }
+  .timing { display: grid; grid-template-columns: 34px minmax(120px, 1fr) minmax(120px, 2fr) 70px; gap: 8px; align-items: center; padding: 2px 0; }
+  .label-cell { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--vscode-editor-font-family); }
+  .track { position: relative; height: 10px; background: var(--vscode-editorWidget-background); border-radius: 2px; }
+  .bar { position: absolute; top: 0; bottom: 0; min-width: 2px; background: var(--vscode-charts-blue); border-radius: 2px; }
+  .took { color: var(--vscode-descriptionForeground); text-align: right; white-space: nowrap; }
+  .scale { display: flex; justify-content: space-between; color: var(--vscode-descriptionForeground); padding: 0 0 6px 0; }
 </style>
 </head>
 <body>
 <header>
   <span id="title" class="title">Runs</span>
-  <label><input type="checkbox" id="failed"> Failed only</label>
+  <label><input type="checkbox" id="failed-only"> Failed only</label>
   <button id="refresh">Refresh</button>
   <button id="open-json">Open as JSON</button>
 </header>
 <main>
   <div id="list"></div>
-  <div id="record"></div>
+  <section id="pane">
+    <nav id="tabs"></nav>
+    <div id="body"></div>
+  </section>
 </main>
 <script nonce="${nonce}">
 (function () {
   var vscode = acquireVsCodeApi();
   var list = document.getElementById("list");
-  var record = document.getElementById("record");
+  var tabs = document.getElementById("tabs");
+  var body = document.getElementById("body");
   var title = document.getElementById("title");
-  var failed = document.getElementById("failed");
+  var failedOnly = document.getElementById("failed-only");
   var refresh = document.getElementById("refresh");
   var openJson = document.getElementById("open-json");
+  var TABS = [["detail", "Detail"], ["steps", "Steps"], ["timeline", "Timeline"], ["error", "Error"]];
   var selectedSeq = null;
+  var current = null;
+  var tab = "detail";
 
   function el(tag, cls, text) {
     var n = document.createElement(tag);
@@ -205,9 +254,13 @@ class RunsPanel {
     return n;
   }
 
+  function us(v) {
+    return v < 1000 ? Math.round(v) + " µs" : (v / 1000).toFixed(1) + " ms";
+  }
+
   function renderList(state) {
     title.textContent = state.slug ? "Runs of " + state.slug : "Runs";
-    failed.checked = !!state.failedOnly;
+    failedOnly.checked = !!state.failedOnly;
     list.textContent = "";
     if (!state.slug) {
       list.appendChild(el("div", "empty", "Click the runs button on a deployment to audit its runs."));
@@ -226,6 +279,23 @@ class RunsPanel {
         vscode.postMessage({ type: "select", seq: r.seq });
       });
       list.appendChild(row);
+    });
+  }
+
+  function failedRun(rec) {
+    return !!rec && (!!rec.error || (rec.status || 0) >= 400);
+  }
+
+  function renderTabs() {
+    tabs.textContent = "";
+    TABS.forEach(function (t) {
+      var b = el("button", "tab" + (t[0] === tab ? " active" : "") + (t[0] === "error" && current && failedRun(current.record) ? " bad" : ""), t[1]);
+      b.addEventListener("click", function () {
+        tab = t[0];
+        renderTabs();
+        renderBody();
+      });
+      tabs.appendChild(b);
     });
   }
 
@@ -248,15 +318,102 @@ class RunsPanel {
     parent.appendChild(row);
   }
 
-  function renderRecord(seq, rec) {
-    record.textContent = "";
-    if (rec === undefined) {
-      record.appendChild(el("div", "empty", "That run is no longer in the log."));
+  // Detail: the record, its values as an expandable list.
+  function detailNodes(seq, rec) {
+    if (rec === undefined) return [el("div", "empty", "That run is no longer in the log.")];
+    var out = [el("div", "head", "Run #" + seq)];
+    var holder = el("div");
+    Object.keys(rec).forEach(function (k) {
+      if (rec[k] !== undefined) renderValue(holder, k, rec[k]);
+    });
+    out.push(holder);
+    return out;
+  }
+
+  // Steps: the flow's text, each statement with its value under it, as holon runs --run writes it.
+  function stepsNodes(explain, explainError) {
+    if (explainError) return [el("div", "error", "The steps could not be read: " + explainError)];
+    if (!explain) return [el("div", "empty", "Reading the steps…")];
+    var out = [];
+    if (explain.no_steps) out.push(el("div", "empty", "This run recorded no steps: its values are left out."));
+    explain.text.forEach(function (text, i) {
+      var line = el("div", "line");
+      line.appendChild(el("span", "num", String(i + 1)));
+      line.appendChild(el("span", "code", text));
+      out.push(line);
+      (explain.notes[String(i + 1)] || []).forEach(function (n) {
+        var note = el("div", "line");
+        note.appendChild(el("span", "num", ""));
+        note.appendChild(el("span", "note" + (n.indexOf("gave nothing") >= 0 ? " bad" : ""), n));
+        out.push(note);
+      });
+    });
+    explain.after.forEach(function (n) {
+      out.push(el("div", "note" + (n.indexOf("failed:") === 0 ? " bad" : ""), n));
+    });
+    return out;
+  }
+
+  // Timeline: when each statement ran, from the run's start, to scale.
+  function timelineNodes(explain, explainError) {
+    if (explainError) return [el("div", "error", "The timeline could not be read: " + explainError)];
+    if (!explain) return [el("div", "empty", "Reading the timeline…")];
+    if (explain.steps.length === 0) return [el("div", "empty", "This run recorded no timings.")];
+    var total = Math.max.apply(null, explain.steps.map(function (s) { return s.end_us; }).concat([1]));
+    var out = [el("div", "scale")];
+    out[0].appendChild(el("span", "", "0"));
+    out[0].appendChild(el("span", "", us(total / 2)));
+    out[0].appendChild(el("span", "", us(total)));
+    explain.steps.forEach(function (s) {
+      var row = el("div", "timing");
+      row.appendChild(el("span", "num", String(s.line)));
+      row.appendChild(el("span", "label-cell", (explain.text[s.line - 1] || "").trim()));
+      var track = el("div", "track");
+      var bar = el("div", "bar");
+      bar.style.left = (s.start_us / total) * 100 + "%";
+      bar.style.width = Math.max(((s.end_us - s.start_us) / total) * 100, 0.4) + "%";
+      track.appendChild(bar);
+      row.appendChild(track);
+      row.appendChild(el("span", "took", us(s.end_us - s.start_us)));
+      out.push(row);
+    });
+    return out;
+  }
+
+  // Error: why a failed run stopped: its answer, its error, and each statement that gave nothing.
+  function errorNodes(rec, explain, explainError) {
+    if (!rec) return [el("div", "empty", "Select a run to see its error.")];
+    var out = [];
+    if ((rec.status || 0) >= 400) out.push(el("div", "error", "answered " + rec.status));
+    if (rec.error) out.push(el("div", "error", "failed: " + rec.error));
+    if (explainError) out.push(el("div", "error", "The steps could not be read: " + explainError));
+    if (explain) {
+      Object.keys(explain.notes).forEach(function (line) {
+        explain.notes[line].forEach(function (n) {
+          if (n.indexOf("gave nothing") >= 0) out.push(el("div", "error", "line " + line + ": " + n));
+        });
+      });
+      explain.after.forEach(function (n) {
+        if (n.indexOf("failed:") === 0 && n !== "failed: " + rec.error) out.push(el("div", "error", n));
+      });
+    }
+    if (out.length === 0) out.push(el("div", "empty", "No error: the run finished."));
+    return out;
+  }
+
+  function renderBody() {
+    body.textContent = "";
+    if (!current) {
+      body.appendChild(el("div", "empty", "Select a run to see its record."));
       return;
     }
-    record.appendChild(el("div", "head", "Run #" + seq));
-    Object.keys(rec).forEach(function (k) {
-      if (rec[k] !== undefined) renderValue(record, k, rec[k]);
+    var nodes;
+    if (tab === "detail") nodes = detailNodes(current.seq, current.record);
+    else if (tab === "steps") nodes = stepsNodes(current.explain, current.explainError);
+    else if (tab === "timeline") nodes = timelineNodes(current.explain, current.explainError);
+    else nodes = errorNodes(current.record, current.explain, current.explainError);
+    nodes.forEach(function (n) {
+      body.appendChild(n);
     });
   }
 
@@ -265,13 +422,19 @@ class RunsPanel {
     if (m.type === "state") {
       selectedSeq = m.selected;
       renderList(m);
-      if (m.selected === null) record.textContent = "";
-    } else if (m.type === "record") {
-      renderRecord(m.seq, m.record);
+      if (m.selected === null) {
+        current = null;
+        renderTabs();
+        renderBody();
+      }
+    } else if (m.type === "run" && m.seq === selectedSeq) {
+      current = m;
+      renderTabs();
+      renderBody();
     }
   });
-  failed.addEventListener("change", function () {
-    vscode.postMessage({ type: "failedOnly", value: failed.checked });
+  failedOnly.addEventListener("change", function () {
+    vscode.postMessage({ type: "failedOnly", value: failedOnly.checked });
   });
   refresh.addEventListener("click", function () {
     vscode.postMessage({ type: "refresh" });
@@ -279,6 +442,7 @@ class RunsPanel {
   openJson.addEventListener("click", function () {
     if (selectedSeq !== null) vscode.postMessage({ type: "openJson", seq: selectedSeq });
   });
+  renderTabs();
   vscode.postMessage({ type: "ready" });
 })();
 </script>

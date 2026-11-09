@@ -110,6 +110,10 @@ async function sidebarChecks() {
   auditRuns.receive({ type: "select", seq: helloRun.seq });
   assert.equal(auditRuns.snapshot().selected, helloRun.seq, "the run is selected in the panel");
   assert.match(auditRuns.recordOf(helloRun.seq).startedBy, /GET \/hello/, "the record names the call");
+  // Steps: the run's steps are read through `holon runs --run --json`: the flow's text with each statement's part.
+  const steps = await auditRuns.explainOf(helloRun.seq);
+  assert.ok(steps.value && steps.value.steps.length > 0, `the steps of the GET /hello run: ${steps.error ?? "none"}`);
+  assert.ok(steps.value.text.some((line) => /hello/.test(line)), "the flow's text is among the steps");
   auditRuns.receive({ type: "failedOnly", value: true });
   assert.ok(!auditRuns.snapshot().runs.some((r) => /GET \/hello/.test(r.label)), "the successful run hidden");
   auditRuns.receive({ type: "failedOnly", value: false });
