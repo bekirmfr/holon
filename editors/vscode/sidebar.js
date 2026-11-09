@@ -13,6 +13,7 @@ const path = require("node:path");
 const crypto = require("node:crypto");
 const { tidy } = require("../../editor/src/graphLayout.ts");
 const { register: registerRuns } = require("./runsPanel");
+const { register: registerHistory } = require("./historyPanel");
 
 const DEFAULT_SERVER = "http://127.0.0.1:7420";
 const SCHEME = "holon";
@@ -35,6 +36,8 @@ let flows;
 let activity;
 /** The Runs panel: a deployment's runs in the bottom panel, with the record of the selected one. */
 let runsPanel;
+/** The History panel: a deployment's timeline and its restores, in the bottom panel beside the Runs. */
+let historyPanel;
 /** @type {HolonFiles | undefined} */
 let flowFiles;
 /** @type {Map<string, { panel: vscode.WebviewPanel, document: object }>} */
@@ -244,6 +247,8 @@ function deploymentItem(d) {
   item.iconPath = new vscode.ThemeIcon(STATUS_ICONS[d.status] ?? "circle-outline");
   item.contextValue = `deployment-${d.status}`;
   item.slug = d.slug;
+  // A click shows the deployment's runs and its history in the bottom panels; its arrow still expands its overview.
+  item.command = { command: "holon.showDeployment", title: "Show runs and history", arguments: [d.slug] };
   item.loadChildren = () => deploymentChildren(d);
   return item;
 }
@@ -263,7 +268,7 @@ const named = (arg) => (typeof arg === "string" ? arg : arg.slug);
 
 /** The server's history and flows as files. `holon:/flow/<name>.holon.ts` is a saved flow's text,
  *  highlighted as TypeScript: saving it writes the flow back to the server (`holon flows save`), and a
- *  flow someone else saved asks first. `holon:/history/<slug>` is a deployment's history, read-only. */
+ *  flow someone else saved asks first. */
 class HolonFiles {
   constructor() {
     this.changed = new vscode.EventEmitter();
@@ -295,7 +300,6 @@ class HolonFiles {
     const [, kind, ...rest] = uri.path.split("/");
     const file = rest.join("/");
     try {
-      if (kind === "history") return await holon(["history", file]);
       if (kind === "run") return await runText(file);
       if (kind === "cell") {
         const [slug, name] = file.split("/");
@@ -381,6 +385,8 @@ async function deployFlow(arg) {
     await holon(["flows", "show", name, "--out", file]);
     await deploy(file, name, false).catch(async (e) => {
       if (!/needs approval/.test(e.message)) throw e;
+      // The change is in front of the person before the approval: the diff opens, then the question.
+      await showDeployDiff(file, name).catch((err) => vscode.window.showWarningMessage(`Holon: the deploy's diff couldn't be shown: ${err.message}`));
       const answer = await vscode.window.showWarningMessage(`Deploy "${name}"?`, { modal: true, detail: approvalDetail(e.message) }, "Approve and deploy");
       if (answer !== "Approve and deploy") return;
       await deploy(file, name, true);
@@ -392,6 +398,55 @@ async function deployFlow(arg) {
     fs.rmSync(dir, { recursive: true, force: true });
   }
   refreshAll();
+}
+
+/** A deploy's review, before anything is approved: the text it would deploy beside the text deployed now, what it
+ *  touches, and what it asks for (`holon deploy --manifest --json`). Nothing is deployed. */
+function reviewFile(file, name) {
+  return holon(["deploy", file, "--slug", name, "--manifest"], { json: true });
+}
+
+/** Opens two lists beside each other, one item a line, in VS Code's diff editor: what is granted now, and what it
+ *  would be granted. Nothing changes; the lines that differ are the change. */
+async function showListDiff(before, after, title) {
+  const left = await vscode.workspace.openTextDocument({ language: "plaintext", content: [...before].sort().join("\n") });
+  const right = await vscode.workspace.openTextDocument({ language: "plaintext", content: [...after].sort().join("\n") });
+  await vscode.commands.executeCommand("vscode.diff", left.uri, right.uri, title);
+}
+
+/** Opens the text a deploy would change, beside the text deployed now, and the permissions it would change, in VS
+ *  Code's diff editor, before the approval. */
+async function showDeployDiff(file, name) {
+  const review = await reviewFile(file, name);
+  const before = await vscode.workspace.openTextDocument({ language: "typescript", content: review.deployed_text ?? "" });
+  const after = await vscode.workspace.openTextDocument({ language: "typescript", content: review.new_text });
+  const title = review.deployed_text === null ? `${name}: not deployed yet, to deploy` : `${name}: deployed now, to deploy`;
+  await vscode.commands.executeCommand("vscode.diff", before.uri, after.uri, title);
+  const granted = review.granted_now ?? [];
+  const wanted = review.items.filter((item) => !review.withheld.includes(item));
+  if ([...granted].sort().join("\n") !== [...wanted].sort().join("\n")) {
+    await showListDiff(granted, wanted, `${name}: permissions granted now, to deploy`);
+  }
+}
+
+/** What a deployment is granted now, and what it would be granted with `item` approved (`holon grant --json`).
+ *  Nothing is approved. */
+async function grantReview(slug, item) {
+  const view = await holon(["grant", slug], { json: true });
+  const granted = view.grant.grant.items ?? [];
+  return { granted, after: [...new Set([...granted, item])] };
+}
+
+/** A saved flow's deploy review, read from its saved text. */
+async function reviewDeploy(name) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "holon-review-"));
+  try {
+    const file = path.join(dir, `${name}.holon.ts`);
+    await holon(["flows", "show", name, "--out", file]);
+    return await reviewFile(file, name);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 }
 
 function deploy(file, name, approve) {
@@ -434,6 +489,9 @@ function openRun(slug, seq) {
 
 /** Approves one grant a deployment's version asks for, as `holon grant --grant` does. */
 async function approveGrant(arg) {
+  // The permissions it changes are in front of the person before the question.
+  const review = await grantReview(arg.slug, arg.grant).catch((e) => vscode.window.showWarningMessage(`Holon: the grant's diff couldn't be shown: ${e.message}`));
+  if (review) await showListDiff(review.granted, review.after, `${arg.slug}: granted now, to approve`);
   const answer = await vscode.window.showWarningMessage(`Approve "${arg.grant}" for ${arg.slug}?`, { modal: true, detail: "The deployment may do what its version asks for, as you." }, "Approve");
   if (answer !== "Approve") return;
   try {
@@ -1194,6 +1252,13 @@ async function showRuns(arg) {
   await runsPanel.choose(named(arg));
 }
 
+/** A deployment's click: its runs and its history, in the bottom panels, at once. */
+async function showDeployment(arg) {
+  const slug = named(arg);
+  await runsPanel.choose(slug);
+  await historyPanel.choose(slug);
+}
+
 /** Opens a run's record beside the panel, as JSON. */
 function openJson(value) {
   return openReadOnly(JSON.stringify(value, null, 2), "json", true);
@@ -1212,6 +1277,7 @@ function register(context) {
   flows = new Listing(loadFlows, "No saved flows yet. `holon flows save <file>` saves one.");
   activity = new Listing(async () => (await holon(["activity", "--last", "100"], { json: true })).entries.map(activityItem), "Nothing has happened yet.");
   runsPanel = registerRuns(context, { holon, openJson });
+  historyPanel = registerHistory(context, { holon, openText: (text, language) => openReadOnly(text, language, true) });
   flowFiles = new HolonFiles();
 
   const timer = setInterval(refreshAll, REFRESH_MS);
@@ -1225,7 +1291,7 @@ function register(context) {
     }),
     { dispose: () => clearInterval(timer) },
     vscode.commands.registerCommand("holon.refresh", refreshAll),
-    vscode.commands.registerCommand("holon.showHistory", (arg) => openText("history", named(arg))),
+    vscode.commands.registerCommand("holon.showHistory", (arg) => historyPanel.choose(named(arg))),
     vscode.commands.registerCommand("holon.showFlow", (arg) => openText("flow", named(arg))),
     vscode.commands.registerCommand("holon.openGraph", showGraph),
     vscode.commands.registerCommand("holon.deployFlow", deployFlow),
@@ -1236,6 +1302,7 @@ function register(context) {
     vscode.commands.registerCommand("holon.explainFlow", explainFlow),
     vscode.commands.registerCommand("holon.manifestFlow", manifestFlow),
     vscode.commands.registerCommand("holon.showRuns", showRuns),
+    vscode.commands.registerCommand("holon.showDeployment", showDeployment),
     vscode.commands.registerCommand("holon.showRun", openRun),
     vscode.commands.registerCommand("holon.approveGrant", approveGrant),
     vscode.commands.registerCommand("holon.showCell", (slug, name) => openDocument(`/cell/${slug}/${name}.txt`)),
@@ -1246,7 +1313,7 @@ function register(context) {
     vscode.commands.registerCommand("holon.signIn", signIn),
     vscode.commands.registerCommand("holon.startServer", startServer),
   );
-  return { deployments, flows, activity, runs: runsPanel };
+  return { deployments, flows, activity, runs: runsPanel, history: historyPanel, review: reviewDeploy, grant: grantReview };
 }
 
 /** Stops the server this extension started, if it did. */

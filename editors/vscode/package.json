@@ -24,7 +24,8 @@
     "onView:holon.deployments",
     "onView:holon.flows",
     "onView:holon.activity",
-    "onView:holon.runsPanel"
+    "onView:holon.runsPanel",
+    "onView:holon.historyPanel"
   ],
   "contributes": {
     "viewsContainers": {
@@ -62,6 +63,11 @@
         {
           "id": "holon.runsPanel",
           "name": "Runs",
+          "type": "webview"
+        },
+        {
+          "id": "holon.historyPanel",
+          "name": "History",
           "type": "webview"
         }
       ]

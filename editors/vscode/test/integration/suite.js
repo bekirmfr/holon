@@ -67,7 +67,7 @@ async function checks() {
 async function sidebarChecks() {
   const ext = vscode.extensions.getExtension("bekirmfr.holon");
   if (!ext) throw new Error(`no bekirmfr.holon among: ${vscode.extensions.all.map((e) => e.id).join(", ")}`);
-  const { deployments, flows, activity, runs: auditRuns } = (await ext.activate()).sidebar();
+  const { deployments, flows, activity, runs: auditRuns, history: historyPanel, review: reviewDeploy, grant: reviewGrant } = (await ext.activate()).sidebar();
 
   const item = await eventually(async () => (await flows.getChildren()).find((i) => i.label === "hello"), "the saved flow hello in the Flows view");
   assert.equal(item.contextValue, "flow");
@@ -118,6 +118,43 @@ async function sidebarChecks() {
   assert.ok(!auditRuns.snapshot().runs.some((r) => /GET \/hello/.test(r.label)), "the successful run hidden");
   auditRuns.receive({ type: "failedOnly", value: false });
   assert.ok(auditRuns.snapshot().runs.some((r) => /GET \/hello/.test(r.label)), "the run back in the list");
+  // History: the timeline lists the run and the deploy; going back to what is live is refused, and a restore's dry run
+  // is only a report, which a cancel drops.
+  await vscode.commands.executeCommand("holon.showHistory", deployedHello);
+  // The runs are a filter of their own (the web's history hides them until asked).
+  await historyPanel.receive({ type: "filter", name: "runs", value: true });
+  const helloRows = historyPanel.snapshot().rows;
+  assert.ok(helloRows.some((r) => /GET \/hello/.test(r.text)), `the GET /hello run in the history: ${historyPanel.snapshot().error ?? helloRows.map((r) => r.text).join(" | ")}`);
+  const live = helloRows.find((r) => /deploy/.test(r.text));
+  assert.ok(live, "the deploy in the history");
+  await historyPanel.receive({ type: "select", key: live.key });
+  assert.ok(historyPanel.snapshot().selected.fields.length > 0, "the picked row has its details");
+  await historyPanel.receive({ type: "restore", key: live.key, code: true, state: true });
+  assert.match(historyPanel.snapshot().note, /Nothing to restore/, "what is live has nothing to go back to");
+  // A state restore of the counter's /hit run: its dry run says what the state would do, and a cancel drops it.
+  const counterDeployed = (await deployments.getChildren()).find((i) => i.label === "counter");
+  await vscode.commands.executeCommand("holon.showHistory", counterDeployed);
+  const hit = historyPanel.snapshot().rows.find((r) => /\/hit/.test(r.text));
+  assert.ok(hit, "the /hit run in the counter's history");
+  await historyPanel.receive({ type: "restore", key: hit.key, state: true });
+  const report = historyPanel.snapshot().report;
+  assert.ok(report && report.sections.some((s) => s.heading === "state"), "a state restore's dry run says what the state does");
+  await historyPanel.receive({ type: "cancel" });
+  assert.equal(historyPanel.snapshot().report, null, "cancelled: the report is dropped");
+  // Approved: the same restore, put back for real.
+  await historyPanel.receive({ type: "restore", key: hit.key, state: true });
+  await historyPanel.receive({ type: "approve" });
+  assert.match(historyPanel.snapshot().note, /^Restored/, "approved: the state is put back");
+  // A deploy's review, before an approval: the text it would deploy, beside the text deployed now.
+  const review = await reviewDeploy("hello");
+  assert.match(review.new_text, /flow\("hello"/, "the text it would deploy");
+  assert.equal(typeof review.deployed_text, "string", "the text deployed now");
+  assert.ok(Array.isArray(review.touches) && Array.isArray(review.asks), "what it touches and what it asks");
+  assert.ok(Array.isArray(review.items) && Array.isArray(review.withheld), "the permissions its version asks for");
+  // A grant's review, before an approval: what is granted now, and what it would be granted with the item.
+  const grantReview = await reviewGrant("hello", "Clock");
+  assert.ok(grantReview.after.includes("Clock"), "approving adds the item");
+  assert.ok(grantReview.granted.every((item) => grantReview.after.includes(item)), "what is granted stays granted");
   // Explain: the flow's outline (its routes) opens as a document; manifest: what it touches and may do.
   const hello = (await flows.getChildren()).find((i) => i.label === "hello");
   await vscode.commands.executeCommand("holon.explainFlow", hello);
@@ -129,8 +166,11 @@ async function sidebarChecks() {
   // A deployment that keeps state: its State group lists the value it kept.
   const counter = await eventually(async () => (await deployments.getChildren()).find((i) => i.label === "counter"), "the counter deployment");
   assert.equal(counter.contextValue, "deployment-running", "a running deployment says so, for its buttons");
-  // A click on a deployment expands it (no command of its own), and its overview starts with its Status.
-  assert.equal(counter.command, undefined, "a deployment has no click command: it expands");
+  // A click on a deployment shows its runs and its history in the bottom panels; its arrow expands its overview.
+  assert.equal(counter.command.command, "holon.showDeployment", "a click shows the deployment's runs and history");
+  await vscode.commands.executeCommand(counter.command.command, ...counter.command.arguments);
+  assert.equal(auditRuns.snapshot().slug, "counter", "the runs panel shows the deployment");
+  assert.equal(historyPanel.snapshot().slug, "counter", "the history panel shows the deployment");
   const overview = await deployments.getChildren(counter);
   assert.equal(overview[0].label, "Status", "the overview starts with Status");
   const status = await deployments.getChildren(overview[0]);

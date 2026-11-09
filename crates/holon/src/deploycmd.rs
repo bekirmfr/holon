@@ -18,6 +18,8 @@ const USAGE: &str = "usage: holon deploy <file> [options]
   editor by deploying from there, or here with --approve.
 
   --manifest               what it touches and may do, as a deploy would show it; nothing is deployed
+  --json                   with --manifest: as JSON, with the text it would deploy and the text
+                           deployed now (null when nothing is), for a diff before approving
   --slug NAME              deploy under NAME instead of the flow's own name
   --approve                approve, as you, what it asks for that isn't granted yet, and say
                            what that was
@@ -38,6 +40,7 @@ pub(crate) fn run(args: &[String]) -> i32 {
     let mut slug_arg: Option<String> = None;
     let mut approve = false;
     let mut manifest = false;
+    let mut as_json = false;
     let mut args = args.iter();
     while let Some(a) = args.next() {
         match a.as_str() {
@@ -45,6 +48,7 @@ pub(crate) fn run(args: &[String]) -> i32 {
             "--slug" => slug_arg = args.next().cloned(),
             "--approve" => approve = true,
             "--manifest" => manifest = true,
+            "--json" => as_json = true,
             "--help" | "-h" => {
                 println!("{USAGE}");
                 return 0;
@@ -101,6 +105,41 @@ pub(crate) fn run(args: &[String]) -> i32 {
     };
     let needs = staged.needs.clone();
 
+    if manifest && as_json {
+        // The text it would deploy, beside the text deployed now (null when nothing is deployed as `slug`):
+        // what a person reads before approving a deploy that changes the code.
+        let deployed = match crate::mcp::json_of(&api, "GET", &format!("/deployments/{}/document", crate::mcp::seg(&slug)), None) {
+            Ok(doc) => Value::String(agent::text_of(&slug, &doc).unwrap_or_default()),
+            Err(e) if e.contains("answered 404") => Value::Null,
+            Err(e) => {
+                eprintln!("holon deploy: {e}");
+                return 1;
+            }
+        };
+        let new_text = match agent::text_of(&slug, &plan.document) {
+            Ok(text) => text,
+            Err(e) => {
+                eprintln!("holon deploy: {e}");
+                return 1;
+            }
+        };
+        let starts: Vec<String> = if plan.routes.is_empty() { plan.document["trace"].as_object().map(|t| t.keys().cloned().collect()).unwrap_or_default() } else { plan.routes.clone() };
+        let asks: Vec<String> = needs.iter().map(|cap| agent::describe_sending(cap, &plan.sent)).collect();
+        let page = json!({
+            "slug": slug,
+            "touches": crate::touches::text(&crate::touches::lines(&staged.touches, &staged.settings)),
+            "starts": starts,
+            "needs_approval": needs,
+            "asks": asks,
+            "granted_now": staged.granted_now,
+            "items": staged.items,
+            "withheld": staged.withheld,
+            "deployed_text": deployed,
+            "new_text": new_text,
+        });
+        crate::cmdline::print_json(&page);
+        return 0;
+    }
     if manifest {
         println!("{slug:?} on {server}: its manifest (nothing is deployed)");
         println!("What it touches (+ new, - no longer, ~ changed, ! not ready on this server):");
@@ -163,6 +202,11 @@ pub(crate) struct Staged {
     /// preview answered them (touches.rs).
     pub(crate) touches: Value,
     pub(crate) settings: Value,
+    /// The permissions the deployment is granted now (none for a first deploy), and what its version
+    /// asks for, less what is withheld: beside each other, what a deploy changes in its grant.
+    pub(crate) granted_now: Option<Vec<String>>,
+    pub(crate) items: Vec<String>,
+    pub(crate) withheld: Vec<String>,
 }
 
 /// Send `plan`'s units to `server`, and ask what deploying it as `slug` needs a person to approve;
@@ -187,7 +231,15 @@ pub(crate) fn stage(api: &dyn Api, plan: &agent::Plan, slug: &str) -> Result<Sta
     let list = |k: &str| -> Vec<String> {
         preview.get(k).and_then(Value::as_array).map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect()).unwrap_or_default()
     };
-    Ok(Staged { body, needs: list("needs_approval"), touches:preview["touches"].clone(), settings: preview["settings"].clone() })
+    Ok(Staged {
+        body,
+        needs: list("needs_approval"),
+        touches: preview["touches"].clone(),
+        settings: preview["settings"].clone(),
+        granted_now: preview.get("granted_now").and_then(Value::as_array).map(|_| list("granted_now")),
+        items: list("items"),
+        withheld: list("withheld"),
+    })
 }
 
 /// Deploy what [`stage`] staged, with `document` (the plan's, with its text kept or not):

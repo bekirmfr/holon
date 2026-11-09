@@ -100,7 +100,7 @@ impl Api for Http {
 }
 
 /// The JSON a request answered, or why not, in the server's own words.
-fn json_of(api: &dyn Api, method: &str, path: &str, body: Option<Body>) -> Result<Value, String> {
+pub(crate) fn json_of(api: &dyn Api, method: &str, path: &str, body: Option<Body>) -> Result<Value, String> {
     let (status, bytes) = api.send(method, path, body)?;
     let value: Value = crate::wire::read_json(&bytes).unwrap_or(Value::Null);
     if (200..300).contains(&status) {
@@ -830,6 +830,13 @@ pub(crate) fn state_values(change: &Value) -> Vec<String> {
 /// Version `number`'s text beside the text deployed now, as a line diff. Both with the text's
 /// names, or both printed plainly when only one has them (a canvas deploy keeps none), so a name
 /// alone never reads as a change.
+/// The diff of version `number`'s text against the text deployed now, one line each, as `code_diff`
+/// prints it, and the note that says when the texts had to be printed without their names.
+pub(crate) fn code_diff_lines(api: &dyn Api, slug: &str, number: u64) -> Result<(Vec<String>, &'static str), String> {
+    let (now_text, then_text, note) = code_texts(api, slug, number)?;
+    Ok((line_diff(&now_text, &then_text), note))
+}
+
 pub(crate) fn code_diff(api: &dyn Api, slug: &str, number: u64) -> Result<String, String> {
     let (now_text, then_text, note) = code_texts(api, slug, number)?;
     let lines = line_diff(&now_text, &then_text);
