@@ -92,7 +92,8 @@
       {
         "command": "holon.showHistory",
         "title": "Show history",
-        "category": "Holon"
+        "category": "Holon",
+        "icon": "$(history)"
       },
       {
         "command": "holon.showFlow",
@@ -153,6 +154,24 @@
         "title": "Delete flow",
         "icon": "$(trash)",
         "category": "Holon"
+      },
+      {
+        "command": "holon.explainFlow",
+        "title": "Explain flow",
+        "icon": "$(lightbulb)",
+        "category": "Holon"
+      },
+      {
+        "command": "holon.manifestFlow",
+        "title": "Show manifest",
+        "icon": "$(checklist)",
+        "category": "Holon"
+      },
+      {
+        "command": "holon.showRuns",
+        "title": "Show runs",
+        "icon": "$(list-ordered)",
+        "category": "Holon"
       }
     ],
     "menus": {
@@ -187,11 +206,6 @@
         {
           "command": "holon.showHistory",
           "when": "view == holon.deployments && viewItem =~ /^deployment-/",
-          "group": "inline@9"
-        },
-        {
-          "command": "holon.showHistory",
-          "when": "view == holon.deployments && viewItem =~ /^deployment-/",
           "group": "2_show@1"
         },
         {
@@ -210,11 +224,6 @@
           "group": "1_lifecycle@3"
         },
         {
-          "command": "holon.showFlow",
-          "when": "view == holon.flows && viewItem == flow",
-          "group": "inline@1"
-        },
-        {
           "command": "holon.openGraph",
           "when": "view == holon.flows && viewItem == flow",
           "group": "inline@2"
@@ -222,12 +231,12 @@
         {
           "command": "holon.deployFlow",
           "when": "view == holon.flows && viewItem == flow",
-          "group": "inline@3"
+          "group": "inline@4"
         },
         {
           "command": "holon.deleteFlow",
           "when": "view == holon.flows && viewItem == flow",
-          "group": "inline@4"
+          "group": "inline@5"
         },
         {
           "command": "holon.revealFlow",
@@ -288,6 +297,41 @@
           "command": "holon.approveGrant",
           "when": "view == holon.deployments && viewItem == grant",
           "group": "1_grant@1"
+        },
+        {
+          "command": "holon.explainFlow",
+          "when": "view == holon.flows && viewItem == flow",
+          "group": "inline@1"
+        },
+        {
+          "command": "holon.manifestFlow",
+          "when": "view == holon.flows && viewItem == flow",
+          "group": "inline@3"
+        },
+        {
+          "command": "holon.explainFlow",
+          "when": "view == holon.flows && viewItem == flow",
+          "group": "2_show@0"
+        },
+        {
+          "command": "holon.manifestFlow",
+          "when": "view == holon.flows && viewItem == flow",
+          "group": "2_show@0"
+        },
+        {
+          "command": "holon.showRuns",
+          "when": "view == holon.deployments && viewItem =~ /^deployment-/",
+          "group": "inline@3"
+        },
+        {
+          "command": "holon.showHistory",
+          "when": "view == holon.deployments && viewItem =~ /^deployment-/",
+          "group": "inline@4"
+        },
+        {
+          "command": "holon.showRuns",
+          "when": "view == holon.deployments && viewItem =~ /^deployment-/",
+          "group": "2_show@2"
         }
       ],
       "editor/title": [

@@ -101,9 +101,27 @@ async function sidebarChecks() {
   }, "the server's activity");
   assert.ok(events.some((e) => /deployed hello/.test(e.label)), `activity: ${events.map((e) => e.label).join(", ")}`);
 
+  // Runs: a deployment's recent runs open as a document (the call made above is among them).
+  const deployedHello = (await deployments.getChildren()).find((i) => i.label === "hello");
+  await vscode.commands.executeCommand("holon.showRuns", deployedHello);
+  await eventually(() => vscode.window.activeTextEditor && /\/hello\//.test(vscode.window.activeTextEditor.document.getText()), "the runs of hello");
+  // Explain: the flow's outline (its routes) opens as a document; manifest: what it touches and may do.
+  const hello = (await flows.getChildren()).find((i) => i.label === "hello");
+  await vscode.commands.executeCommand("holon.explainFlow", hello);
+  const outline = await eventually(() => vscode.window.activeTextEditor && vscode.window.activeTextEditor.document.getText().includes("hello: what it does") ? vscode.window.activeTextEditor.document.getText() : null, "the outline of hello");
+  assert.match(outline, /GET \/hello/);
+  await vscode.commands.executeCommand("holon.manifestFlow", hello);
+  const manifest = await eventually(() => vscode.window.activeTextEditor && vscode.window.activeTextEditor.document.getText().includes("nothing is deployed") ? vscode.window.activeTextEditor.document.getText() : null, "the manifest of hello");
+  assert.match(manifest, /What it touches/);
   // A deployment that keeps state: its State group lists the value it kept.
   const counter = await eventually(async () => (await deployments.getChildren()).find((i) => i.label === "counter"), "the counter deployment");
   assert.equal(counter.contextValue, "deployment-running", "a running deployment says so, for its buttons");
+  // A click on a deployment expands it (no command of its own), and its overview starts with its Status.
+  assert.equal(counter.command, undefined, "a deployment has no click command: it expands");
+  const overview = await deployments.getChildren(counter);
+  assert.equal(overview[0].label, "Status", "the overview starts with Status");
+  const status = await deployments.getChildren(overview[0]);
+  assert.equal(status[0].label, "running", "Status says how it runs");
   const kept = (await deployments.getChildren(counter)).find((g) => g.label === "State");
   assert.ok(kept, "a State group under the counter deployment");
   const values = await eventually(async () => {

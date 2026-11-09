@@ -110,9 +110,33 @@ function problem(error) {
   return item;
 }
 
+/** A deployment's status, as the first rows of its overview: how it runs, its errors, who deployed it and
+ *  when, and the two things to open from it: its manifest and its history. */
+function statusItems(d) {
+  const row = (label, description, icon) => {
+    const it = new vscode.TreeItem(label, vscode.TreeItemCollapsibleState.None);
+    it.description = description;
+    it.iconPath = new vscode.ThemeIcon(icon);
+    return it;
+  };
+  const rows = [row(d.status, d.port ? `on port ${d.port}` : '', STATUS_ICONS[d.status] ?? 'circle-outline')];
+  rows.push(row(`${d.error_count || 0} errors`, '', d.error_count ? 'warning' : 'pass'));
+  if (d.deployed_by) {
+    const when = d.deployed_at_epoch_seconds ? new Date(d.deployed_at_epoch_seconds * 1000).toLocaleString() : '';
+    rows.push(row('deployed', `by ${d.deployed_by}${when ? `, ${when}` : ''}`, 'history'));
+  }
+  const manifest = row('Manifest', 'what it touches and may do', 'checklist');
+  manifest.command = { command: 'holon.manifestFlow', title: 'Show manifest', arguments: [d.slug] };
+  const history = row('History', 'its timeline', 'history');
+  history.command = { command: 'holon.showHistory', title: 'Show history', arguments: [d.slug] };
+  rows.push(manifest, history);
+  return rows;
+}
+
 /** A deployment's groups: the grants its version asks for that nothing has approved yet, the runs
  *  waiting for an event, and its latest runs. */
-async function deploymentChildren(slug) {
+async function deploymentChildren(d) {
+  const slug = d.slug;
   try {
     const [log, waiting, grant, kept] = await Promise.all([
       holon(["runs", slug, "--last", "10"], { json: true }),
@@ -123,7 +147,7 @@ async function deploymentChildren(slug) {
     const asks = (grant.manifest?.not_granted ?? []).map((item) => grantItem(slug, item));
     const waits = (waiting.runs ?? []).map(waitingItem);
     const runs = (log.entries ?? []).slice(-10).reverse().map((e) => runItem(slug, e));
-    return [group("Needs approval", asks, true), group("Waiting for an event", waits, true), group("Recent runs", runs, false), group("State", kept, false)];
+    return [group("Status", statusItems(d), true), group("Needs approval", asks, true), group("Waiting for an event", waits, true), group("Recent runs", runs, false), group("State", kept, false)];
   } catch (e) {
     return [problem(e)];
   }
@@ -217,8 +241,7 @@ function deploymentItem(d) {
   item.iconPath = new vscode.ThemeIcon(STATUS_ICONS[d.status] ?? "circle-outline");
   item.contextValue = `deployment-${d.status}`;
   item.slug = d.slug;
-  item.loadChildren = () => deploymentChildren(d.slug);
-  item.command = { command: "holon.showHistory", title: "Show history", arguments: [d.slug] };
+  item.loadChildren = () => deploymentChildren(d);
   return item;
 }
 
@@ -1125,6 +1148,54 @@ async function deleteFlow(arg) {
   }
   refreshAll();
 }
+/** Opens a document with `text` in it, for reading. */
+async function openReadOnly(text, language) {
+  const doc = await vscode.workspace.openTextDocument({ language, content: text });
+  await vscode.window.showTextDocument(doc, { preview: true });
+}
+
+/** What a flow does, as `holon show` outlines it: its routes, and each node with what feeds it. */
+async function explainFlow(arg) {
+  const name = named(arg);
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'holon-explain-'));
+  const file = path.join(dir, `${name}.holon.ts`);
+  try {
+    fs.writeFileSync(file, await holon(['flows', 'show', name]));
+    const outline = await holonIn(['show', file], dir);
+    await openReadOnly(`${name}: what it does\n\n${outline}`, 'plaintext');
+  } catch (e) {
+    vscode.window.showErrorMessage(`Holon: ${e.message}`);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+/** The Holon manifest of a flow: what it touches, what starts it and what it may do, as a deploy would show
+ *  it (`holon deploy --manifest`). Nothing is deployed. */
+async function manifestFlow(arg) {
+  const name = named(arg);
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'holon-manifest-'));
+  const file = path.join(dir, `${name}.holon.ts`);
+  try {
+    fs.writeFileSync(file, await holon(['flows', 'show', name]));
+    await openReadOnly(await holon(['deploy', file, '--slug', name, '--manifest']), 'plaintext');
+  } catch (e) {
+    vscode.window.showErrorMessage(`Holon: ${e.message}`);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+/** A deployment's recent runs, as `holon runs` lists them, in a document. */
+async function showRuns(arg) {
+  const name = named(arg);
+  try {
+    await openReadOnly(await holon(['runs', name, '--last', '50']), 'plaintext');
+  } catch (e) {
+    vscode.window.showErrorMessage(`Holon: ${e.message}`);
+  }
+}
+
 function refreshAll() {
   deployments?.refresh();
   flows?.refresh();
@@ -1158,6 +1229,9 @@ function register(context) {
     vscode.commands.registerCommand("holon.revealFlow", revealFlow),
     vscode.commands.registerCommand("holon.saveToServer", saveToServer),
     vscode.commands.registerCommand("holon.deleteFlow", deleteFlow),
+    vscode.commands.registerCommand("holon.explainFlow", explainFlow),
+    vscode.commands.registerCommand("holon.manifestFlow", manifestFlow),
+    vscode.commands.registerCommand("holon.showRuns", showRuns),
     vscode.commands.registerCommand("holon.showRun", openRun),
     vscode.commands.registerCommand("holon.approveGrant", approveGrant),
     vscode.commands.registerCommand("holon.showCell", (slug, name) => openDocument(`/cell/${slug}/${name}.txt`)),

@@ -17,6 +17,7 @@ const USAGE: &str = "usage: holon deploy <file> [options]
   needs what it isn't granted yet, deploy prints what that is and exits 1: approve it in the
   editor by deploying from there, or here with --approve.
 
+  --manifest               what it touches and may do, as a deploy would show it; nothing is deployed
   --slug NAME              deploy under NAME instead of the flow's own name
   --approve                approve, as you, what it asks for that isn't granted yet, and say
                            what that was
@@ -36,12 +37,14 @@ pub(crate) fn run(args: &[String]) -> i32 {
     let mut server_arg: Option<String> = None;
     let mut slug_arg: Option<String> = None;
     let mut approve = false;
+    let mut manifest = false;
     let mut args = args.iter();
     while let Some(a) = args.next() {
         match a.as_str() {
             "--server" => server_arg = args.next().cloned(),
             "--slug" => slug_arg = args.next().cloned(),
             "--approve" => approve = true,
+            "--manifest" => manifest = true,
             "--help" | "-h" => {
                 println!("{USAGE}");
                 return 0;
@@ -97,6 +100,24 @@ pub(crate) fn run(args: &[String]) -> i32 {
         }
     };
     let needs = staged.needs.clone();
+
+    if manifest {
+        println!("{slug:?} on {server}: its manifest (nothing is deployed)");
+        println!("What it touches (+ new, - no longer, ~ changed, ! not ready on this server):");
+        for line in crate::touches::text(&crate::touches::lines(&staged.touches, &staged.settings)) {
+            println!("{line}");
+        }
+        println!("What starts it:");
+        let handlers: Vec<&String> = plan.document["trace"].as_object().map(|t| t.keys().collect()).unwrap_or_default();
+        for r in if plan.routes.is_empty() { handlers } else { plan.routes.iter().collect() } {
+            println!("  {r}");
+        }
+        println!("It may:");
+        for cap in &needs {
+            println!("  - {}", agent::describe_sending(cap, &plan.sent));
+        }
+        return 0;
+    }
 
     if !needs.is_empty() && !approve {
         eprintln!("holon deploy: \"{slug}\" needs approval before it can deploy.");
