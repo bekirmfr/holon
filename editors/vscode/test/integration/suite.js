@@ -1,6 +1,7 @@
 // Inside VS Code, through the extension and `holon lsp`: a flow's mistake shows as you open it and
 // goes when it is fixed; completion offers what may be written; a hover says what a word is;
-// formatting writes what `holon fmt` does.
+// formatting writes what `holon fmt` does. Then the console: it opens beside the code, its server
+// answers, and a second open shows the same panel.
 
 const assert = require("node:assert");
 const vscode = require("vscode");
@@ -59,11 +60,24 @@ async function checks() {
   assert.equal(doc.getText(), 'import { flow, route } from "holon"\n\nflow("hello", { port: 8200 })\n\nroute.get("/hello/:name", (req) => `Hello, ${req.params.name}`)\n');
 }
 
+/** The console: opening it starts the server at holon.consoleUrl, its panel opens beside the code,
+ *  and opening it again shows that panel rather than another. */
+async function consoleChecks() {
+  const panels = () => vscode.window.tabGroups.all.flatMap((group) => group.tabs).filter((tab) => tab.label === "Holon console");
+  await vscode.commands.executeCommand("holon.openConsole");
+  const [tab] = await eventually(() => panels().length > 0 && panels(), "the console's panel");
+  assert.ok(tab.input instanceof vscode.TabInputWebview);
+  assert.equal((await fetch("http://127.0.0.1:7431/health")).status, 200);
+  await vscode.commands.executeCommand("holon.openConsole");
+  assert.equal(panels().length, 1);
+}
+
 /** The checks; what failed is written to the workspace's failure.txt for run.js to print, since
  *  VS Code's test host doesn't always pass its console through. */
 async function run() {
   try {
     await checks();
+    await consoleChecks();
   } catch (e) {
     const file = require("node:path").join(vscode.workspace.workspaceFolders[0].uri.fsPath, "failure.txt");
     require("node:fs").writeFileSync(file, e instanceof Error ? e.stack ?? e.message : String(e));

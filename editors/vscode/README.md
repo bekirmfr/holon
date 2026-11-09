@@ -23,6 +23,20 @@ It starts `holon lsp`, so `holon` must be installed (see the repository's README
 named by the `holon.path` setting. The language server is any editor's: one with a language client
 starts `holon lsp` on stdin and stdout. Design: `docs/L4s/language-server-L4.md`.
 
+## The console
+
+`Holon: Open console` (the command palette) shows the Holon console beside the code: the editor
+that `holon serve` hosts, with the flows, the canvas, the deployed flows, their runs and history,
+and the admin page, all from the server it shows. The panel is the server's own page in a frame,
+so it is the same as the browser's; it keeps its state while hidden.
+
+The console is at `holon.consoleUrl` (default `http://127.0.0.1:7420`, `holon serve`'s default). If
+nothing answers there and the address is on this machine, the command starts `holon serve` at it,
+its output in the Holon output channel. A new server prints the setup code for its first admin
+there; the console asks for it. A server the extension started stops when VS Code closes; one
+already running is left alone. A console elsewhere (`holon.consoleUrl` on another machine) is only
+shown when something answers there.
+
 ## Installing
 
 Each release from v0.1.0-rc.10 on carries it as `holon-vscode.vsix`, beside `holon`

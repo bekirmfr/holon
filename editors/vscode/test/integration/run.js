@@ -18,7 +18,11 @@ async function main() {
   // would set it.
   const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "holon-vscode-"));
   fs.mkdirSync(path.join(workspace, ".vscode"));
-  fs.writeFileSync(path.join(workspace, ".vscode", "settings.json"), JSON.stringify({ "holon.path": holon, "typescript.format.enable": false }));
+  // The console is started at its own port, with its own data (and the built editor, when there is one), so
+  // the test's server is not a developer's running one.
+  fs.writeFileSync(path.join(workspace, ".vscode", "settings.json"), JSON.stringify({ "holon.path": holon, "holon.consoleUrl": "http://127.0.0.1:7431", "typescript.format.enable": false }));
+  const editor = path.join(extension, "..", "..", "editor", "dist");
+  const holonEnv = { HOLON_DATA: path.join(workspace, "holon-data"), ...(fs.existsSync(editor) ? { HOLON_EDITOR: editor } : {}) };
   fs.writeFileSync(path.join(workspace, "hello.holon.ts"), "import { flow, route } from 'holon'\n\nflow(\"hello\", { port: 8200 })\n\nroute.get(\"/hello/:name\", (req) =>    nope)\n");
 
   const failure = path.join(workspace, "failure.txt");
@@ -26,6 +30,7 @@ async function main() {
     vscodeExecutablePath: process.env.VSCODE_PATH,
     extensionDevelopmentPath: extension,
     extensionTestsPath: path.join(__dirname, "suite.js"),
+    extensionTestsEnv: holonEnv,
     // Its own user data, so an installed VS Code that is open isn't the one asked.
     launchArgs: [workspace, "--user-data-dir", path.join(workspace, ".user"), "--disable-extensions", "--disable-workspace-trust", "--skip-welcome", "--skip-release-notes"],
   }).catch((e) => {

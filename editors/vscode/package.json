@@ -1,7 +1,7 @@
 {
   "name": "holon",
   "displayName": "Holon",
-  "description": "Holon flows (.holon.ts): each mistake holon check finds as you type, hover, completion and formatting, through holon lsp.",
+  "description": "Holon flows (.holon.ts): each mistake holon check finds as you type, hover, completion and formatting, through holon lsp; and the Holon console beside the code.",
   "version": "0.1.0",
   "publisher": "bekirmfr",
   "license": "SEE LICENSE IN LICENSE",
@@ -20,16 +20,29 @@
   "main": "./dist/extension.js",
   "activationEvents": [
     "workspaceContains:**/*.holon.ts",
-    "onLanguage:typescript"
+    "onLanguage:typescript",
+    "onCommand:holon.openConsole"
   ],
   "contributes": {
+    "commands": [
+      {
+        "command": "holon.openConsole",
+        "title": "Open console",
+        "category": "Holon"
+      }
+    ],
     "configuration": {
       "title": "Holon",
       "properties": {
         "holon.path": {
           "type": "string",
           "default": "holon",
-          "markdownDescription": "The `holon` command the extension starts as `holon lsp`: its name on the PATH, or its full path."
+          "markdownDescription": "The `holon` command the extension starts as `holon lsp` and `holon serve`: its name on the PATH, or its full path."
+        },
+        "holon.consoleUrl": {
+          "type": "string",
+          "default": "http://127.0.0.1:7420",
+          "markdownDescription": "Where the Holon console is (`holon serve --at`). When nothing answers there and the address is on this machine, opening the console starts `holon serve` at it."
         }
       }
     }
