@@ -9,7 +9,7 @@ import { flowAddressable, type Route } from "./routes";
  *  nodes mid-edit, viewport — lives there and must survive navigation); the other pages render
  *  as overlays on top of it. `marketplace` is deliberately absent: deferred, and a menu entry
  *  that can't be picked shouldn't be representable as a page state either. */
-export type AppPage = "canvas" | "editor-home" | "approvals" | "flows" | "library" | "flow" | "admin" | "home" | "welcome" | "docs";
+export type AppPage = "canvas" | "editor-home" | "approvals" | "flows" | "library" | "flow" | "resources" | "people" | "policy" | "home" | "welcome" | "docs";
 
 /** The page that shows the place `r` names (routes.ts). A place the editor has no page of its
  *  own for yet is shown by the page that has what it names: the host's pages are admin's. */
@@ -33,11 +33,10 @@ export function pageOf(r: Route): AppPage {
       return "docs";
     case "start":
       return "welcome";
-    case "admin":
     case "resources":
     case "people":
     case "policy":
-      return "admin";
+      return r.kind;
     default:
       return "home";
   }
@@ -56,8 +55,11 @@ export function routeOfPage(p: AppPage): Route {
       return { kind: "start" };
     case "docs":
       return { kind: "docs", page: null, anchor: null };
-    case "admin":
-      return { kind: "admin", tab: null };
+    case "resources":
+    case "people":
+      return { kind: p, tab: null };
+    case "policy":
+      return { kind: "policy" };
     case "flow":
       return { kind: "flows" };
     case "library":
@@ -76,9 +78,6 @@ export function shownAt(r: Route): Route | null {
     case "flow":
     case "run":
       return flowAddressable(r.slug) ? null : { kind: "flows" };
-    case "resources":
-    case "people":
-    case "policy":
     case "signin":
     case "notfound":
       return routeOfPage(pageOf(r));

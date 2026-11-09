@@ -113,7 +113,7 @@ export function setPrefs(prefs: unknown): Promise<void> {
   return save;
 }
 
-// ── the admin panel ──────────────────────────────────────────────────────────────────────
+// ── the host's pages ──────────────────────────────────────────────────────────────────────
 export type AccountEntry = { name: string; role: Role; email: string | null; disabled: boolean; created_at: number; created_by: string | null; invited: boolean };
 export type TokenEntry = { id: string; label: string; role: Role; created_at: number; created_by: string };
 export type OidcSettings = { issuer: string; client_id: string };
@@ -454,7 +454,9 @@ export async function listSecrets(slug: string): Promise<SecretInfo[]> {
  *  from: the server's environment and its dotenv file, read again first. Names, never values. */
 export const getEnvSecretNames = async () => asJson<{ names: string[]; dotenv: string | null }>(await api(`${BASE}/admin/secrets/env`));
 
-const secretUrl = (slug: string, name: string) => `${BASE}/deployments/${encodeURIComponent(slug)}/secrets/${encodeURIComponent(name)}`;
+/** A secret's address: a deployment's, or (`slug` null) the server's own, an admin's. */
+const secretUrl = (slug: string | null, name: string) =>
+  slug === null ? `${BASE}/admin/secrets/${encodeURIComponent(name)}` : `${BASE}/deployments/${encodeURIComponent(slug)}/secrets/${encodeURIComponent(name)}`;
 
 /** Set a secret, as a new version: a value (sent to the server, sealed there, never sent back),
  *  or where it is kept (`from`: `env:…`, `vault:…`). Answers the new version. */
@@ -488,7 +490,8 @@ export async function getActivity(limit = 30): Promise<ActivityEntry[]> {
   return (await asJson<{ entries: ActivityEntry[] }>(await api(`${BASE}/activity?limit=${limit}`))).entries;
 }
 
-export async function getSecretHistory(slug: string, name: string): Promise<SecretHistory> {
+/** A secret's history: a deployment's, or (`slug` null) the server's own. */
+export async function getSecretHistory(slug: string | null, name: string): Promise<SecretHistory> {
   return asJson<SecretHistory>(await api(secretUrl(slug, name)));
 }
 
@@ -507,7 +510,7 @@ export type SecretRollbackPreview = {
 };
 
 /** `POST …/secrets/<name>/rollback` with `dry_run`: refused as the roll back would be. */
-export async function previewSecretRollback(slug: string, name: string, version: number): Promise<SecretRollbackPreview> {
+export async function previewSecretRollback(slug: string | null, name: string, version: number): Promise<SecretRollbackPreview> {
   const res = await api(`${secretUrl(slug, name)}/rollback`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -516,7 +519,7 @@ export async function previewSecretRollback(slug: string, name: string, version:
   return asJson<SecretRollbackPreview>(res);
 }
 
-export async function rollbackSecret(slug: string, name: string, version: number): Promise<number> {
+export async function rollbackSecret(slug: string | null, name: string, version: number): Promise<number> {
   const res = await api(`${secretUrl(slug, name)}/rollback`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },

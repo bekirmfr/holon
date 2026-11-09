@@ -166,8 +166,7 @@ test("shared-key reads the server's secret, which may go only where an admin sai
   await page.locator(".hl-canvas").getByRole("button", { name: /^(deploy|update)/ }).dispatchEvent("click");
   await expect(page.getByText(`the server's secret "ops_api_key" may go only to https://httpbin.dev, and this flow sends it to https://postman-echo.com`)).toBeVisible();
   // The admin's list says where it may go.
-  await gotoPage(page, "admin");
-  await page.getByRole("tablist", { name: "admin sections" }).getByRole("tab", { name: "resources" }).click();
+  await gotoPage(page, "resources");
   await expect(page.getByLabel("server secret ops_api_key")).toContainText("may go only to https://httpbin.dev");
 });
 
@@ -1390,8 +1389,7 @@ test("rolling-log keeps only its newest 5 runs, as its deploy settings ask, whil
   expect((await seqs()).length).toBe(5);
   // The admin page's storage counts first, and asks before it sweeps anything: cancelled, or
   // with nothing old enough to sweep, it removes nothing.
-  await gotoPage(page, "admin");
-  await page.getByRole("tablist", { name: "admin sections" }).getByRole("tab", { name: "resources" }).click();
+  await gotoPage(page, "resources");
   const store = page.getByText("the store: states and values").locator("..");
   await store.getByRole("button", { name: "sweep…" }).click();
   const asks = page.getByRole("dialog");
@@ -1680,9 +1678,7 @@ test("orders-api places, lists and refunds orders in the database an admin bound
 
   // The admin page's resources list the database, its tables and who uses it, and bind another,
   // made by its schema.
-  await gotoPage(page, "admin");
-  const sections = page.getByRole("tablist", { name: "admin sections" });
-  await sections.getByRole("tab", { name: "resources" }).click();
+  await gotoPage(page, "resources");
   await expect(page.getByText(join(FOLDERS, "shop.db"), { exact: true })).toBeVisible();
   await expect(page.getByLabel("shop's tables")).toContainText("tables: orders");
   await expect(page.getByLabel("shop's tables")).not.toContainText("holon_commits");
@@ -1698,10 +1694,13 @@ test("orders-api places, lists and refunds orders in the database an admin bound
   await expect(page.getByRole("button", { name: "bind database" })).toBeDisabled();
   await page.getByLabel("database path").fill("");
 
-  // Permissions: the policy, read only, and who may touch the shop: orders-api, by table, with
-  // a link to its card, where its grant changes.
-  await sections.getByRole("tab", { name: "permissions" }).click();
+  // The policy, read only, on a page of its own.
+  await gotoPage(page, "policy");
   await expect(page.getByRole("button", { name: "read the policy again" })).toBeVisible();
+  await expect(page.getByLabel("limits")).toBeVisible();
+  // Who may touch the shop, under Resources: orders-api, by table, with a link to its page,
+  // where its grant changes.
+  await gotoPage(page, "resources");
   const shop = page.getByLabel("database shop", { exact: true });
   await expect(shop).toContainText("orders-api");
   await expect(shop).toContainText("writes orders");
@@ -1741,8 +1740,7 @@ test("ticket-numbers, on a database held for whole runs, hands out twenty number
   expect(posts.filter((r) => (r.retries ?? 0) > 0)).toEqual([]);
 
   // The admin page says the database is held for whole runs.
-  await gotoPage(page, "admin");
-  await page.getByRole("tablist", { name: "admin sections" }).getByRole("tab", { name: "resources" }).click();
+  await gotoPage(page, "resources");
   await expect(page.getByText(join(FOLDERS, "tickets.db"), { exact: true }).locator("..")).toContainText("held for whole runs");
 });
 
@@ -1930,8 +1928,7 @@ test("the admin page's browse… lists the server's folders, and the one chosen 
   const { realpathSync } = await import("node:fs");
   const { join } = await import("node:path");
   await page.goto("/");
-  await gotoPage(page, "admin");
-  await page.getByRole("tablist", { name: "admin sections" }).getByRole("tab", { name: "resources" }).click();
+  await gotoPage(page, "resources");
   // The first listing (the home folder) answers only once a path is typed, as on a slow machine:
   // it mustn't replace what was typed.
   let release = () => {};

@@ -6,13 +6,13 @@ import type { Locator, Page } from "@playwright/test";
 import { expect, SAMPLE_SHIFT } from "./fixtures";
 
 /** The pages the side nav goes to (ui/Shell.tsx), and "new" for its new flow. */
-export type MenuPage = "flows" | "library" | "docs" | "admin" | "new";
+export type MenuPage = "flows" | "library" | "docs" | "resources" | "people" | "policy" | "new";
 
-/** The nav's entry for `name`: admin's pages are under Resources until they have their own. */
+/** The nav's entry for `name`. */
 export function menuEntry(page: Page, name: MenuPage): Locator {
   const nav = page.getByRole("navigation", { name: "main" });
   if (name === "new") return nav.getByRole("button", { name: "new flow" });
-  const label = { flows: "Flows", library: "Library", docs: "Docs", admin: "Resources" }[name];
+  const label = { flows: "Flows", library: "Library", docs: "Docs", resources: "Resources", people: "People and access", policy: "Policy" }[name];
   return nav.getByRole("link", { name: label, exact: true });
 }
 

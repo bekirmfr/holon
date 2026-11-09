@@ -38,7 +38,6 @@ export type Route =
   | { kind: "start" }
   | { kind: "docs"; page: string | null; anchor: string | null }
   | { kind: "signin" }
-  | { kind: "admin"; tab: string | null }
   | { kind: "notfound"; hash: string };
 
 /** The page names: a flow can't be addressed by one of these alone. */
@@ -54,7 +53,6 @@ export const PAGE_NAMES = [
   "start",
   "docs",
   "signin",
-  "admin",
 ] as const;
 
 const SLUG = /^[A-Za-z0-9_-]+$/;
@@ -109,8 +107,7 @@ export function parse(hash: string): Route {
       return (LIBRARY_TABS as readonly string[]).includes(tab) ? done({ kind: "library", tab: tab as LibraryTab }, p.length === 1 ? 1 : 2) : notFound;
     }
     case "resources":
-    case "people":
-    case "admin": {
+    case "people": {
       const tab = tabOf(p[1]);
       if (p.length > 1 && tab === null) return notFound;
       return done({ kind: head, tab }, p.length === 1 ? 1 : 2);
@@ -147,7 +144,6 @@ function tokens(r: Route): string {
       return r.tab === "samples" ? "library" : `library.${r.tab}`;
     case "resources":
     case "people":
-    case "admin":
       return r.tab === null ? r.kind : `${r.kind}.${r.tab}`;
     case "docs":
       return r.page === null ? "docs" : `docs.${encode(r.page)}${r.anchor === null ? "" : `@${encode(r.anchor)}`}`;
@@ -188,7 +184,6 @@ export function parentOf(r: Route): Route | null {
       return r.tab === "samples" ? { kind: "overview" } : { kind: "library", tab: "samples" };
     case "resources":
     case "people":
-    case "admin":
       return r.tab === null ? { kind: "overview" } : { kind: r.kind, tab: null };
     case "docs":
       return r.page === null ? { kind: "overview" } : { kind: "docs", page: null, anchor: null };
@@ -224,8 +219,6 @@ export function labelOf(r: Route): string {
       return r.tab ?? "Resources";
     case "people":
       return r.tab ?? "People and access";
-    case "admin":
-      return r.tab ?? "Admin";
     case "policy":
       return "Policy";
     case "start":

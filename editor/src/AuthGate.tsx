@@ -2,7 +2,7 @@
 // asks for its admin, with the setup code it printed when it started; an invite link lets its
 // holder set their password; otherwise one signs in, with a name and password or, when the
 // server has one, through its identity provider (signin.ts). Signed in, the editor shows, with
-// an account menu in its header: change password, the admin panel (admins), sign out.
+// an account menu in its header: change password and sign out.
 
 import { useCallback, useEffect, useState, type CSSProperties, type FormEvent, type ReactNode } from "react";
 import { acceptInvite, changePassword, getAuthState, getSession, inviteFor, setUp, signInWith, signOutHere, whoAmI, type Role } from "./server";

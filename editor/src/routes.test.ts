@@ -34,8 +34,6 @@ const PLACES = [
   "docs.language/tour.md",
   "docs.language/reference.md@forms-and-flows",
   "signin",
-  "admin",
-  "admin.people",
 ];
 
 describe("routes", () => {

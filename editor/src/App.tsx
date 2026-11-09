@@ -91,7 +91,7 @@ import { blankTab, freshTab, metaSetter, savedKeyOf, sourceToSave, syncKeyOf, ta
 import { NodeActions, NodeDocs, nodeDescriber } from "./NodeDocs";
 import { AuthGate, type Me } from "./AuthGate";
 import { Shell } from "./ui/Shell";
-import { AdminPage } from "./AdminPage";
+import { PeoplePage, PolicyPage, ResourcesPage } from "./HostPages";
 import { HomePage } from "./HomePage";
 import { compileHolon, printHolon, sourceLineOf } from "./holonText";
 import { askText, TextPane, type TextAsk } from "./TextPane";
@@ -784,12 +784,15 @@ function Canvas({
       ["Flows", { kind: "flows" }],
       ["Editor", { kind: "editor", slug: null, view: false, seq: null }],
       ["Library", { kind: "library", tab: "samples" }],
-      ["Resources", { kind: "resources", tab: null }],
-      ["People", { kind: "people", tab: null }],
-      ["Policy", { kind: "policy" }],
+      ...(me.role === "admin"
+        ? ([
+            ["Resources", { kind: "resources", tab: null }],
+            ["People and access", { kind: "people", tab: null }],
+            ["Policy", { kind: "policy" }],
+          ] as [string, Route][])
+        : []),
       ["Docs", { kind: "docs", page: null, anchor: null }],
       ["Welcome", { kind: "start" }],
-      ...(me.role === "admin" ? [["Admin", { kind: "admin", tab: null }] as [string, Route]] : []),
     ];
     for (const [label, to] of pages) out.push({ label, kind: "page", run: go(to) });
     const deployed = new Set(deployments.map((d) => d.slug));
@@ -1291,12 +1294,13 @@ function Canvas({
               }}
             />
           )}
-          {shown === "admin" && me.role === "admin" && (
-            <AdminPage
-              me={me.name}
-              onOpenDeployment={(slug) => navigate({ kind: "flow", slug, tab: "settings" })}
-            />
+          {/* The host's pages, an admin's (HostPages.tsx). */}
+          {(shown === "resources" || shown === "people" || shown === "policy") && me.role !== "admin" && <p className="hl-flow__note">The host&apos;s pages are an admin&apos;s.</p>}
+          {shown === "resources" && route.kind === "resources" && me.role === "admin" && (
+            <ResourcesPage tab={route.tab} onOpenDeployment={(slug) => navigate({ kind: "flow", slug, tab: "settings" })} />
           )}
+          {shown === "people" && route.kind === "people" && me.role === "admin" && <PeoplePage me={me.name} tab={route.tab} />}
+          {shown === "policy" && me.role === "admin" && <PolicyPage deployments={deployments} onOpenDeployment={(slug) => navigate({ kind: "flow", slug, tab: "status" })} />}
           {shown === "docs" && (
             <Suspense fallback={<div style={{ color: "var(--faint)" }}>loading the manual…</div>}>
               <ManualPage at={manualAt} onGo={setManualAt} onTry={openText} />
