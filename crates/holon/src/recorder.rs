@@ -1940,14 +1940,18 @@ impl Log {
     /// first), and how many of them failed: counted from what it keeps of each run, no line read.
     pub fn hourly(&self, to_ms: u64, hours: usize) -> (Vec<u64>, Vec<u64>) {
         const HOUR_MS: u64 = 3600 * 1000;
+        if hours == 0 {
+            return (Vec::new(), Vec::new());
+        }
         let from_ms = to_ms.saturating_sub(hours as u64 * HOUR_MS);
         let (mut runs, mut failed) = (vec![0; hours], vec![0; hours]);
         // Newest first, so a log keeping a year stops at the window's start.
         for (seq, at) in self.kept.iter().rev().take_while(|(_, at)| *at >= from_ms) {
-            if *at >= to_ms {
+            if *at > to_ms {
                 continue;
             }
-            let hour = ((at - from_ms) / HOUR_MS) as usize;
+            // A run stamped in the very millisecond the window ends counts in its last hour.
+            let hour = (((at - from_ms) / HOUR_MS) as usize).min(hours - 1);
             runs[hour] += 1;
             if self.failed.contains(seq) {
                 failed[hour] += 1;
