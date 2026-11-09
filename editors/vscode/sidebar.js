@@ -422,7 +422,9 @@ const escapeHtml = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;")
 
 /** A flow's canvas as a picture: each node as the canvas draws it (its name, its input ports on the
  *  left and output ports on the right, each with its type, its params), and each wire from the
- *  output port it leaves to the input port it reaches. Sized to the canvas, so it scrolls. */
+ *  output port it leaves to the input port it reaches. The page's script draws the wires and moves
+ *  the nodes: a click selects one node, a wire or a port; a drag on a node moves the selected nodes;
+ *  a drag on the background selects the nodes in a box; the middle button pans; the wheel zooms. */
 function graphHtml(name, document) {
   const NODE_W = 232;
   const HEAD = 30;
@@ -444,56 +446,63 @@ function graphHtml(name, document) {
     const h = HEAD + rows * ROW + (params.length ? 8 + params.length * ROW : 0) + 8;
     return { n, d, inputs, outputs, params, rows, x: n.position?.x ?? 0, y: n.position?.y ?? 0, h };
   });
-  const byId = new Map(laid.map((l) => [l.n.id, l]));
-  const portY = (l, i) => l.y + HEAD + i * ROW + ROW / 2;
+  if (laid.length === 0) return graphPage(`<p>${escapeHtml(name)} has no nodes.</p>`);
 
-  const wires = (document.edges ?? []).flatMap((e) => {
-    const from = byId.get(e.source);
-    const to = byId.get(e.target);
-    if (!from || !to) return [];
-    const out = Math.max(0, from.outputs.findIndex((p) => p.name === e.sourceHandle));
-    const inp = to.inputs.findIndex((p) => p.name === e.targetHandle);
-    const x1 = from.x + NODE_W;
-    const y1 = portY(from, out);
-    const x2 = to.x;
-    const y2 = inp < 0 ? to.y + HEAD / 2 : portY(to, inp);
-    const bend = Math.max(60, Math.abs(x2 - x1) / 2);
-    const cls = e.targetHandle === "trigger" ? "trigger" : "wire";
-    return [`<path class="${cls}" d="M ${x1} ${y1} C ${x1 + bend} ${y1}, ${x2 - bend} ${y2}, ${x2} ${y2}"/>`];
-  });
+  // The model the script moves: nodes by their place in the list, wires between nodes by index.
+  const index = new Map(laid.map((l, i) => [l.n.id, i]));
+  const model = {
+    nodeW: NODE_W,
+    head: HEAD,
+    row: ROW,
+    nodes: laid.map((l) => ({ key: `n:${l.n.id}`, title: String(l.d.name ?? l.n.id), x: l.x, y: l.y, h: l.h })),
+    wires: (document.edges ?? []).flatMap((e, i) => {
+      const from = index.get(e.source);
+      const to = index.get(e.target);
+      if (from === undefined || to === undefined) return [];
+      const out = laid[from].outputs.findIndex((p) => p.name === e.sourceHandle);
+      const inp = laid[to].inputs.findIndex((p) => p.name === e.targetHandle);
+      const label = `${e.source}.${e.sourceHandle ?? ""} to ${e.target}.${e.targetHandle ?? ""}`;
+      return [{ key: `e:${i}`, label, from, out: Math.max(0, out), to, inp, cls: e.targetHandle === "trigger" ? "trigger" : "wire" }];
+    }),
+  };
 
   const nodes = laid.map((l) => {
+    const id = l.n.id;
+    const title = String(l.d.name ?? id);
     const parts = [
-      `<rect class="node" x="${l.x}" y="${l.y}" width="${NODE_W}" height="${l.h}" rx="6"/>`,
-      `<path class="head" d="M ${l.x} ${l.y + HEAD} V ${l.y + 6} Q ${l.x} ${l.y} ${l.x + 6} ${l.y} H ${l.x + NODE_W - 6} Q ${l.x + NODE_W} ${l.y} ${l.x + NODE_W} ${l.y + 6} V ${l.y + HEAD} Z"/>`,
-      `<text class="title" x="${l.x + 10}" y="${l.y + HEAD / 2}">${escapeHtml(clip(l.d.name ?? l.n.id, 26))}</text>`,
+      `<rect class="node" x="0" y="0" width="${NODE_W}" height="${l.h}" rx="6"/>`,
+      `<path class="head" d="M 0 ${HEAD} V 6 Q 0 0 6 0 H ${NODE_W - 6} Q ${NODE_W} 0 ${NODE_W} 6 V ${HEAD} Z"/>`,
+      `<text class="title" x="10" y="${HEAD / 2}">${escapeHtml(clip(title, 26))}</text>`,
     ];
     for (let i = 0; i < l.rows; i++) {
-      const y = portY(l, i);
+      const y = HEAD + i * ROW + ROW / 2;
       const input = l.inputs[i];
       const output = l.outputs[i];
       if (input) {
-        parts.push(`<circle class="port" cx="${l.x}" cy="${y}" r="4"/>`);
-        parts.push(`<text class="port-name" x="${l.x + 10}" y="${y}">${escapeHtml(input.name)} <tspan class="type">${escapeHtml(typeText(input.ty))}</tspan></text>`);
+        const key = escapeHtml(`p:${id}:in:${input.name}`);
+        const label = escapeHtml(`input ${input.name} of ${title}`);
+        parts.push(`<g class="port-group" data-key="${key}" data-label="${label}"><circle class="port" cx="0" cy="${y}" r="4"/><text class="port-name" x="10" y="${y}">${escapeHtml(input.name)} <tspan class="type">${escapeHtml(typeText(input.ty))}</tspan></text></g>`);
       }
       if (output) {
-        parts.push(`<circle class="port" cx="${l.x + NODE_W}" cy="${y}" r="4"/>`);
-        parts.push(`<text class="port-name" text-anchor="end" x="${l.x + NODE_W - 10}" y="${y}"><tspan class="type">${escapeHtml(typeText(output.ty))}</tspan> ${escapeHtml(output.name)}</text>`);
+        const key = escapeHtml(`p:${id}:out:${output.name}`);
+        const label = escapeHtml(`output ${output.name} of ${title}`);
+        parts.push(`<g class="port-group" data-key="${key}" data-label="${label}"><circle class="port" cx="${NODE_W}" cy="${y}" r="4"/><text class="port-name" text-anchor="end" x="${NODE_W - 10}" y="${y}"><tspan class="type">${escapeHtml(typeText(output.ty))}</tspan> ${escapeHtml(output.name)}</text></g>`);
       }
     }
     l.params.forEach((p, i) => {
-      const y = l.y + HEAD + l.rows * ROW + 8 + i * ROW + ROW / 2;
+      const y = HEAD + l.rows * ROW + 8 + i * ROW + ROW / 2;
       const value = p.kind === "Frozen" ? p.value : `← ${p.bind}`;
-      parts.push(`<text class="param" x="${l.x + 10}" y="${y}">${escapeHtml(p.name)} <tspan class="type">${escapeHtml(clip(value, 26))}</tspan></text>`);
+      parts.push(`<text class="param" x="10" y="${y}">${escapeHtml(p.name)} <tspan class="type">${escapeHtml(clip(value, 26))}</tspan></text>`);
     });
-    return `<g>${parts.join("")}</g>`;
+    return `<g class="node-group" data-key="${escapeHtml(`n:${id}`)}" data-label="${escapeHtml(`node ${title}`)}" transform="translate(${l.x} ${l.y})">${parts.join("")}</g>`;
   });
 
-  if (laid.length === 0) return graphPage(`<p>${escapeHtml(name)} has no nodes.</p>`);
-  return graphPage(`<svg id="canvas"><g id="view">${wires.join("")}${nodes.join("")}</g></svg>`);
+  // JSON is safe inside the script as long as no "<" can end the script element early.
+  const json = JSON.stringify(model).split("<").join(String.fromCharCode(92) + "u003c");
+  return graphPage(`<svg id="canvas"><g id="view"><g id="wires"></g><g id="nodes">${nodes.join("")}</g></g><rect id="marquee" class="marquee" display="none"/></svg>`, json);
 }
 
-function graphPage(body) {
+function graphPage(body, model = "{\"nodes\":[],\"wires\":[],\"nodeW\":0,\"head\":0,\"row\":0}") {
   const nonce = crypto.randomBytes(16).toString("base64");
   return `<!doctype html>
 <html>
@@ -503,7 +512,7 @@ function graphPage(body) {
 <style>
   html, body { margin: 0; height: 100%; overflow: hidden; }
   body { background: var(--vscode-editor-background); color: var(--vscode-editor-foreground); font-family: var(--vscode-font-family); font-size: var(--vscode-font-size); }
-  svg { display: block; width: 100%; height: 100%; cursor: grab; user-select: none; }
+  svg { display: block; width: 100%; height: 100%; cursor: default; user-select: none; }
   .node { fill: var(--vscode-editorWidget-background); stroke: var(--vscode-editorWidget-border, var(--vscode-focusBorder)); }
   .head { fill: var(--vscode-editorGroupHeader-tabsBackground, var(--vscode-editorWidget-background)); stroke: var(--vscode-editorWidget-border, var(--vscode-focusBorder)); }
   .title { fill: var(--vscode-editor-foreground); font-size: 13px; font-weight: 600; dominant-baseline: middle; }
@@ -512,20 +521,49 @@ function graphPage(body) {
   .type { fill: var(--vscode-descriptionForeground); font-size: 11px; }
   .wire { fill: none; stroke: var(--vscode-descriptionForeground); stroke-width: 1.5; }
   .trigger { fill: none; stroke: var(--vscode-descriptionForeground); stroke-width: 1.2; stroke-dasharray: 4 3; }
+  .hit { fill: none; stroke: transparent; stroke-width: 12; }
+  .marquee { fill: var(--vscode-editor-selectionBackground); fill-opacity: 0.35; stroke: var(--vscode-focusBorder); stroke-width: 1; }
+  .selected > .node { stroke: var(--vscode-focusBorder); stroke-width: 2; }
+  .selected > .wire, .selected > .trigger { stroke: var(--vscode-focusBorder); stroke-width: 2.5; }
+  .selected > .port { stroke: var(--vscode-editor-foreground); stroke-width: 2; }
   .bar { position: fixed; top: 8px; right: 8px; display: flex; gap: 4px; }
   .bar button { width: 26px; height: 26px; border: none; cursor: pointer; font-size: 14px; background: var(--vscode-button-secondaryBackground); color: var(--vscode-button-secondaryForeground); }
   .bar button:hover { background: var(--vscode-button-secondaryHoverBackground); }
+  .status { position: fixed; left: 8px; bottom: 6px; font-size: 12px; color: var(--vscode-descriptionForeground); }
 </style>
 </head>
 <body>
 <div class="bar"><button id="zoom-in" title="Zoom in">+</button><button id="zoom-out" title="Zoom out">&minus;</button><button id="fit" title="Fit the flow to the window">&#x2922;</button></div>
 ${body}
+<div class="status" id="status"></div>
 <script nonce="${nonce}">
 (function () {
   var svg = document.getElementById("canvas");
   var view = document.getElementById("view");
+  var wiresLayer = document.getElementById("wires");
+  var status = document.getElementById("status");
+  var marquee = document.getElementById("marquee");
   if (!svg || !view) return;
-  var scale = 1, x = 0, y = 0, drag = null;
+  var M = ${model};
+  var NW = M.nodeW, HD = M.head, RW = M.row;
+  var nodeEls = Array.prototype.slice.call(document.querySelectorAll(".node-group"));
+  var wirePaths = M.wires.map(function (w) {
+    var g = document.createElementNS(svg.namespaceURI, "g");
+    g.setAttribute("class", "wire-group");
+    g.setAttribute("data-key", w.key);
+    g.setAttribute("data-label", "wire " + w.label);
+    var hit = document.createElementNS(svg.namespaceURI, "path");
+    hit.setAttribute("class", "hit");
+    var line = document.createElementNS(svg.namespaceURI, "path");
+    line.setAttribute("class", w.cls);
+    g.appendChild(hit);
+    g.appendChild(line);
+    wiresLayer.appendChild(g);
+    return { hit: hit, line: line, w: w };
+  });
+  var scale = 1, x = 0, y = 0;
+  var selected = new Set();
+  var mode = null, start = null, startNodes = [], moved = false, clickKey = null, wasSelected = false;
   function apply() {
     view.setAttribute("transform", "translate(" + x + " " + y + ") scale(" + scale + ")");
   }
@@ -541,6 +579,9 @@ ${body}
     var r = svg.getBoundingClientRect();
     return [e.clientX - r.left, e.clientY - r.top];
   }
+  function toView(p) {
+    return [(p[0] - x) / scale, (p[1] - y) / scale];
+  }
   function fit() {
     var box = view.getBBox();
     var W = svg.clientWidth, H = svg.clientHeight;
@@ -549,31 +590,154 @@ ${body}
     y = (H - box.height * scale) / 2 - box.y * scale;
     apply();
   }
+  function place(i) {
+    nodeEls[i].setAttribute("transform", "translate(" + M.nodes[i].x + " " + M.nodes[i].y + ")");
+  }
+  function wireD(w) {
+    var a = M.nodes[w.from], b = M.nodes[w.to];
+    var x1 = a.x + NW, y1 = a.y + HD + w.out * RW + RW / 2;
+    var x2 = b.x, y2 = w.inp < 0 ? b.y + HD / 2 : b.y + HD + w.inp * RW + RW / 2;
+    var bend = Math.max(60, Math.abs(x2 - x1) / 2);
+    return "M " + x1 + " " + y1 + " C " + (x1 + bend) + " " + y1 + ", " + (x2 - bend) + " " + y2 + ", " + x2 + " " + y2;
+  }
+  function drawWires() {
+    wirePaths.forEach(function (p) {
+      var d = wireD(p.w);
+      p.hit.setAttribute("d", d);
+      p.line.setAttribute("d", d);
+    });
+  }
+  function render() {
+    var labels = [];
+    document.querySelectorAll("[data-key]").forEach(function (el) {
+      var on = selected.has(el.getAttribute("data-key"));
+      el.classList.toggle("selected", on);
+      if (on) labels.push(el.getAttribute("data-label"));
+    });
+    status.textContent = labels.length ? "Selected: " + labels.join(", ") : "Click or drag a box to select; drag a node to move it. Middle button pans, the wheel zooms.";
+  }
+  function select(key, additive) {
+    if (!additive) selected.clear();
+    if (key === null) {
+      render();
+      return;
+    }
+    if (additive && selected.has(key)) selected.delete(key);
+    else selected.add(key);
+    render();
+  }
+  svg.addEventListener("mousedown", function (e) {
+    if (e.button === 1) e.preventDefault();
+  });
   svg.addEventListener("wheel", function (e) {
     e.preventDefault();
     var p = local(e);
     zoomAt(p[0], p[1], e.deltaY < 0 ? 1.1 : 1 / 1.1);
   }, { passive: false });
   svg.addEventListener("pointerdown", function (e) {
-    drag = { x: e.clientX, y: e.clientY };
+    var additive = e.ctrlKey || e.shiftKey;
+    if (e.button === 1) {
+      mode = "pan";
+      start = { x: e.clientX, y: e.clientY };
+      svg.setPointerCapture(e.pointerId);
+      svg.style.cursor = "grabbing";
+      return;
+    }
+    if (e.button !== 0) return;
+    var hit = e.target.closest ? e.target.closest("[data-key]") : null;
+    if (hit && hit.classList.contains("node-group")) {
+      clickKey = hit.getAttribute("data-key");
+      wasSelected = selected.has(clickKey);
+      if (!wasSelected) {
+        if (!additive) selected.clear();
+        selected.add(clickKey);
+        render();
+      }
+      mode = "node";
+      moved = false;
+      start = { x: e.clientX, y: e.clientY };
+      startNodes = [];
+      M.nodes.forEach(function (n, i) {
+        if (selected.has(n.key)) startNodes.push({ i: i, x: n.x, y: n.y });
+      });
+      svg.setPointerCapture(e.pointerId);
+      return;
+    }
+    if (hit) {
+      select(hit.getAttribute("data-key"), additive);
+      return;
+    }
+    mode = "marquee";
+    moved = false;
+    start = local(e);
+    marquee.setAttribute("display", "inline");
     svg.setPointerCapture(e.pointerId);
-    svg.style.cursor = "grabbing";
   });
   svg.addEventListener("pointermove", function (e) {
-    if (!drag) return;
-    x += e.clientX - drag.x;
-    y += e.clientY - drag.y;
-    drag = { x: e.clientX, y: e.clientY };
-    apply();
+    if (mode === "pan") {
+      x += e.clientX - start.x;
+      y += e.clientY - start.y;
+      start = { x: e.clientX, y: e.clientY };
+      apply();
+    } else if (mode === "node") {
+      var dx = (e.clientX - start.x) / scale;
+      var dy = (e.clientY - start.y) / scale;
+      if (dx !== 0 || dy !== 0) moved = true;
+      startNodes.forEach(function (s) {
+        M.nodes[s.i].x = s.x + dx;
+        M.nodes[s.i].y = s.y + dy;
+        place(s.i);
+      });
+      drawWires();
+    } else if (mode === "marquee") {
+      var p = local(e);
+      if (Math.abs(p[0] - start[0]) + Math.abs(p[1] - start[1]) > 3) moved = true;
+      marquee.setAttribute("x", Math.min(start[0], p[0]));
+      marquee.setAttribute("y", Math.min(start[1], p[1]));
+      marquee.setAttribute("width", Math.abs(p[0] - start[0]));
+      marquee.setAttribute("height", Math.abs(p[1] - start[1]));
+    }
   });
-  svg.addEventListener("pointerup", function () {
-    drag = null;
-    svg.style.cursor = "grab";
+  svg.addEventListener("pointerup", function (e) {
+    var prev = mode;
+    var additive = e.ctrlKey || e.shiftKey;
+    mode = null;
+    svg.style.cursor = "default";
+    if (prev === "node" && !moved) {
+      if (additive && wasSelected) {
+        selected.delete(clickKey);
+        render();
+      } else {
+        select(clickKey, false);
+      }
+    } else if (prev === "marquee") {
+      marquee.setAttribute("display", "none");
+      if (moved) {
+        var a = toView(start), b = toView(local(e));
+        var x1 = Math.min(a[0], b[0]), x2 = Math.max(a[0], b[0]);
+        var y1 = Math.min(a[1], b[1]), y2 = Math.max(a[1], b[1]);
+        if (!additive) selected.clear();
+        M.nodes.forEach(function (n) {
+          if (n.x < x2 && n.x + NW > x1 && n.y < y2 && n.y + n.h > y1) selected.add(n.key);
+        });
+        render();
+      } else if (!additive) {
+        select(null, false);
+      }
+    }
   });
   svg.addEventListener("dblclick", fit);
+  document.addEventListener("keydown", function (e) {
+    if (e.key === "Escape") {
+      selected.clear();
+      render();
+    }
+  });
   document.getElementById("zoom-in").addEventListener("click", function () { zoomAt(svg.clientWidth / 2, svg.clientHeight / 2, 1.25); });
   document.getElementById("zoom-out").addEventListener("click", function () { zoomAt(svg.clientWidth / 2, svg.clientHeight / 2, 0.8); });
   document.getElementById("fit").addEventListener("click", fit);
+  drawWires();
+  render();
   fit();
 })();
 </script>
