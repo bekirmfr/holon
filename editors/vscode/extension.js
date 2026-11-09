@@ -15,7 +15,7 @@ let views;
 
 async function start() {
   const command = vscode.workspace.getConfiguration("holon").get("path") || "holon";
-  client = new LanguageClient("holon", "Holon", { command, args: ["lsp"] }, { documentSelector: [{ scheme: "file", pattern: "**/*.holon.ts" }] });
+  client = new LanguageClient("holon", "Holon", { command, args: ["lsp"] }, { documentSelector: [{ scheme: "file", pattern: "**/*.holon.ts" }, { scheme: "holon", pattern: "**/*.holon.ts" }] });
   try {
     await client.start();
   } catch (e) {
