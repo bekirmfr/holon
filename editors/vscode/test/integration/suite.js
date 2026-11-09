@@ -103,6 +103,7 @@ async function sidebarChecks() {
 
   // A deployment that keeps state: its State group lists the value it kept.
   const counter = await eventually(async () => (await deployments.getChildren()).find((i) => i.label === "counter"), "the counter deployment");
+  assert.equal(counter.contextValue, "deployment-running", "a running deployment says so, for its buttons");
   const kept = (await deployments.getChildren(counter)).find((g) => g.label === "State");
   assert.ok(kept, "a State group under the counter deployment");
   const values = await eventually(async () => {
@@ -122,6 +123,16 @@ async function sidebarChecks() {
   require("node:child_process").execFileSync(config.get("path"), ["flows", "save", path.join(folder, "fresh-flow.holon.ts"), "--server", config.get("consoleUrl")], { stdio: "inherit" });
   const listed = await eventually(async () => (await flows.getChildren()).find((i) => i.label === "fresh-flow"), "the saved new flow in the Flows view");
   assert.equal(listed.contextValue, "flow");
+
+  // A flow file the server does not keep is listed under Not on the server; saving it adds it to the server.
+  const fsModule = require("node:fs");
+  const localFile = path.join(folder, "local-only.holon.ts");
+  fsModule.writeFileSync(localFile, fsModule.readFileSync(path.join(folder, "fresh-flow.holon.ts"), "utf8"));
+  const pending = await eventually(async () => (await flows.getChildren()).find((i) => i.label === "Not on the server"), "the Not on the server group");
+  const local = (await flows.getChildren(pending)).find((i) => i.label === "local-only");
+  assert.ok(local, "local-only listed under Not on the server");
+  await vscode.commands.executeCommand("holon.saveToServer", local);
+  await eventually(async () => (await flows.getChildren()).find((i) => i.label === "local-only" && i.contextValue === "flow"), "local-only on the server");
 
   // Editable: an edit saved from the editor is written to the server, and read back from it.
   const at = text.getText().indexOf("Hello");

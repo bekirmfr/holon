@@ -215,7 +215,7 @@ function deploymentItem(d) {
   item.description = `${d.status}${errors}`;
   item.tooltip = d.port ? `${d.slug}, on port ${d.port}` : d.slug;
   item.iconPath = new vscode.ThemeIcon(STATUS_ICONS[d.status] ?? "circle-outline");
-  item.contextValue = "deployment";
+  item.contextValue = `deployment-${d.status}`;
   item.slug = d.slug;
   item.loadChildren = () => deploymentChildren(d.slug);
   item.command = { command: "holon.showHistory", title: "Show history", arguments: [d.slug] };
@@ -1041,6 +1041,90 @@ async function revealFlow(arg) {
     vscode.window.showErrorMessage(`Holon: ${e.message}`);
   }
 }
+/** The flow files in the workspace. */
+function localFlowFiles() {
+  return vscode.workspace.findFiles('**/*.holon.ts', '**/{node_modules,target}/**');
+}
+
+/** A flow file in the workspace, as the Flows view lists it while the server does not keep it. */
+function localFlowItem(uri) {
+  const name = path.basename(uri.fsPath, '.holon.ts');
+  const item = new vscode.TreeItem(name, vscode.TreeItemCollapsibleState.None);
+  item.description = vscode.workspace.asRelativePath(uri, false);
+  item.iconPath = new vscode.ThemeIcon('file-code');
+  item.contextValue = 'localFlow';
+  item.fsPath = uri.fsPath;
+  item.slug = name;
+  item.command = { command: 'vscode.open', title: 'Open', arguments: [uri] };
+  return item;
+}
+
+/** The Flows view: the flows the server keeps, then the flow files of the workspace it does not keep yet. */
+async function loadFlows() {
+  const saved = await holon(['flows'], { json: true });
+  const names = new Set(saved.map((f) => f.name));
+  const local = (await localFlowFiles()).filter((uri) => !names.has(path.basename(uri.fsPath, '.holon.ts')));
+  const items = saved.map(flowItem);
+  if (local.length > 0) items.push(group('Not on the server', local.map(localFlowItem), true));
+  return items;
+}
+
+/** Saves a flow file to the server under its name. A flow someone else saved asks before it is replaced. */
+async function saveWithConfirm(file, name) {
+  try {
+    await saveFlow(file, name, false);
+  } catch (e) {
+    const by = e.message.match(/is saved by ([^:]+):/);
+    if (!by) throw e;
+    const answer = await vscode.window.showWarningMessage(`Replace the flow "${name}", saved by ${by[1]}?`, { modal: true }, 'Replace');
+    if (answer !== 'Replace') throw new Error(`"${name}" stays as ${by[1]} saved it`);
+    await saveFlow(file, name, true);
+  }
+}
+
+/** Saves the open .holon.ts file, or a flow file the Flows view lists, to the server. */
+async function saveToServer(arg) {
+  const uri = arg && arg.fsPath ? vscode.Uri.file(arg.fsPath) : vscode.window.activeTextEditor && vscode.window.activeTextEditor.document.uri;
+  if (!uri || !uri.fsPath.endsWith('.holon.ts')) {
+    vscode.window.showErrorMessage('Holon: open a .holon.ts flow file to save it to the server.');
+    return;
+  }
+  const doc = await vscode.workspace.openTextDocument(uri);
+  if (doc.isDirty) await doc.save();
+  const name = path.basename(uri.fsPath, '.holon.ts');
+  try {
+    await saveWithConfirm(uri.fsPath, name);
+    vscode.window.setStatusBarMessage(`Holon: ${name} saved to the server`, 4000);
+  } catch (e) {
+    vscode.window.showErrorMessage(`Holon: ${e.message}`);
+  }
+  refreshAll();
+}
+/** Deletes a flow: a saved flow from the server (a deployment of it keeps running), or a flow file of the
+ *  workspace (to the trash). Asks first. */
+async function deleteFlow(arg) {
+  if (arg && arg.contextValue === 'localFlow') {
+    const answer = await vscode.window.showWarningMessage(`Move the file ${arg.description} to the trash?`, { modal: true }, 'Move to trash');
+    if (answer !== 'Move to trash') return;
+    try {
+      await vscode.workspace.fs.delete(vscode.Uri.file(arg.fsPath), { useTrash: true });
+    } catch (e) {
+      vscode.window.showErrorMessage(`Holon: ${e.message}`);
+    }
+    refreshAll();
+    return;
+  }
+  const name = named(arg);
+  const answer = await vscode.window.showWarningMessage(`Delete the saved flow "${name}" from the server? A deployment of it keeps running.`, { modal: true }, 'Delete');
+  if (answer !== 'Delete') return;
+  try {
+    await holon(['flows', 'remove', name]);
+    vscode.window.setStatusBarMessage(`Holon: ${name} deleted from the server`, 4000);
+  } catch (e) {
+    vscode.window.showErrorMessage(`Holon: ${e.message}`);
+  }
+  refreshAll();
+}
 function refreshAll() {
   deployments?.refresh();
   flows?.refresh();
@@ -1051,7 +1135,7 @@ function refreshAll() {
 function register(context) {
   secrets = context.secrets;
   deployments = new Listing(async () => (await holon(["deployments"], { json: true })).deployments.map(deploymentItem), "No deployments yet. `holon deploy <file>` puts a flow here.");
-  flows = new Listing(async () => (await holon(["flows"], { json: true })).map(flowItem), "No saved flows yet. `holon flows save <file>` saves one.");
+  flows = new Listing(loadFlows, "No saved flows yet. `holon flows save <file>` saves one.");
   activity = new Listing(async () => (await holon(["activity", "--last", "100"], { json: true })).entries.map(activityItem), "Nothing has happened yet.");
   flowFiles = new HolonFiles();
 
@@ -1072,6 +1156,8 @@ function register(context) {
     vscode.commands.registerCommand("holon.deployFlow", deployFlow),
     vscode.commands.registerCommand("holon.newFlow", newFlow),
     vscode.commands.registerCommand("holon.revealFlow", revealFlow),
+    vscode.commands.registerCommand("holon.saveToServer", saveToServer),
+    vscode.commands.registerCommand("holon.deleteFlow", deleteFlow),
     vscode.commands.registerCommand("holon.showRun", openRun),
     vscode.commands.registerCommand("holon.approveGrant", approveGrant),
     vscode.commands.registerCommand("holon.showCell", (slug, name) => openDocument(`/cell/${slug}/${name}.txt`)),

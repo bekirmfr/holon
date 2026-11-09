@@ -114,18 +114,21 @@
       },
       {
         "command": "holon.run",
-        "title": "Run",
-        "category": "Holon"
+        "title": "Resume",
+        "category": "Holon",
+        "icon": "$(play)"
       },
       {
         "command": "holon.pause",
         "title": "Pause",
-        "category": "Holon"
+        "category": "Holon",
+        "icon": "$(debug-pause)"
       },
       {
         "command": "holon.stop",
         "title": "Stop",
-        "category": "Holon"
+        "category": "Holon",
+        "icon": "$(debug-stop)"
       },
       {
         "command": "holon.newFlow",
@@ -137,6 +140,18 @@
         "command": "holon.revealFlow",
         "title": "Reveal in File Explorer",
         "icon": "$(folder-opened)",
+        "category": "Holon"
+      },
+      {
+        "command": "holon.saveToServer",
+        "title": "Save flow to server",
+        "icon": "$(cloud-upload)",
+        "category": "Holon"
+      },
+      {
+        "command": "holon.deleteFlow",
+        "title": "Delete flow",
+        "icon": "$(trash)",
         "category": "Holon"
       }
     ],
@@ -155,49 +170,44 @@
       ],
       "view/item/context": [
         {
-          "command": "holon.revealFlow",
-          "when": "view == holon.flows && viewItem == flow",
-          "group": "inline@0"
-        },
-        {
-          "command": "holon.revealFlow",
-          "when": "view == holon.flows && viewItem == flow",
-          "group": "2_show@4"
-        },
-        {
-          "command": "holon.approveGrant",
-          "when": "view == holon.deployments && viewItem == grant",
-          "group": "inline@1"
-        },
-        {
-          "command": "holon.approveGrant",
-          "when": "view == holon.deployments && viewItem == grant",
-          "group": "1_grant@1"
-        },
-        {
-          "command": "holon.showHistory",
-          "when": "view == holon.deployments && viewItem == deployment",
+          "command": "holon.pause",
+          "when": "view == holon.deployments && viewItem =~ /^deployment-running$/",
           "group": "inline@1"
         },
         {
           "command": "holon.run",
-          "when": "view == holon.deployments && viewItem == deployment",
+          "when": "view == holon.deployments && viewItem =~ /^deployment-(paused|stopped)$/",
+          "group": "inline@1"
+        },
+        {
+          "command": "holon.stop",
+          "when": "view == holon.deployments && viewItem =~ /^deployment-(running|paused)$/",
+          "group": "inline@2"
+        },
+        {
+          "command": "holon.showHistory",
+          "when": "view == holon.deployments && viewItem =~ /^deployment-/",
+          "group": "inline@9"
+        },
+        {
+          "command": "holon.showHistory",
+          "when": "view == holon.deployments && viewItem =~ /^deployment-/",
+          "group": "2_show@1"
+        },
+        {
+          "command": "holon.run",
+          "when": "view == holon.deployments && viewItem =~ /^deployment-/",
           "group": "1_lifecycle@1"
         },
         {
           "command": "holon.pause",
-          "when": "view == holon.deployments && viewItem == deployment",
+          "when": "view == holon.deployments && viewItem =~ /^deployment-running$/",
           "group": "1_lifecycle@2"
         },
         {
           "command": "holon.stop",
-          "when": "view == holon.deployments && viewItem == deployment",
+          "when": "view == holon.deployments && viewItem =~ /^deployment-(running|paused)$/",
           "group": "1_lifecycle@3"
-        },
-        {
-          "command": "holon.showHistory",
-          "when": "view == holon.deployments && viewItem == deployment",
-          "group": "2_show@1"
         },
         {
           "command": "holon.showFlow",
@@ -215,6 +225,16 @@
           "group": "inline@3"
         },
         {
+          "command": "holon.deleteFlow",
+          "when": "view == holon.flows && viewItem == flow",
+          "group": "inline@4"
+        },
+        {
+          "command": "holon.revealFlow",
+          "when": "view == holon.flows && viewItem == flow",
+          "group": "inline@0"
+        },
+        {
           "command": "holon.showFlow",
           "when": "view == holon.flows && viewItem == flow",
           "group": "2_show@1"
@@ -228,6 +248,60 @@
           "command": "holon.deployFlow",
           "when": "view == holon.flows && viewItem == flow",
           "group": "2_show@3"
+        },
+        {
+          "command": "holon.revealFlow",
+          "when": "view == holon.flows && viewItem == flow",
+          "group": "2_show@4"
+        },
+        {
+          "command": "holon.deleteFlow",
+          "when": "view == holon.flows && viewItem == flow",
+          "group": "2_show@5"
+        },
+        {
+          "command": "holon.saveToServer",
+          "when": "view == holon.flows && viewItem == localFlow",
+          "group": "inline@0"
+        },
+        {
+          "command": "holon.deleteFlow",
+          "when": "view == holon.flows && viewItem == localFlow",
+          "group": "inline@4"
+        },
+        {
+          "command": "holon.saveToServer",
+          "when": "view == holon.flows && viewItem == localFlow",
+          "group": "2_show@0"
+        },
+        {
+          "command": "holon.deleteFlow",
+          "when": "view == holon.flows && viewItem == localFlow",
+          "group": "2_show@5"
+        },
+        {
+          "command": "holon.approveGrant",
+          "when": "view == holon.deployments && viewItem == grant",
+          "group": "inline@1"
+        },
+        {
+          "command": "holon.approveGrant",
+          "when": "view == holon.deployments && viewItem == grant",
+          "group": "1_grant@1"
+        }
+      ],
+      "editor/title": [
+        {
+          "command": "holon.saveToServer",
+          "when": "resourceFilename =~ /\\.holon\\.ts$/",
+          "group": "navigation"
+        }
+      ],
+      "explorer/context": [
+        {
+          "command": "holon.saveToServer",
+          "when": "resourceFilename =~ /\\.holon\\.ts$/",
+          "group": "navigation"
         }
       ]
     },

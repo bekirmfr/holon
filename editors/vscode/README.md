@@ -47,6 +47,10 @@ as a read-only editor. Its collections open their items as JSON (`holon state --
 
 **New flow** (the + on the Flows view, or `Holon: New flow` in the palette) asks for a name and writes a starter flow with `holon new`, beside the TypeScript it needs. It opens the file, and offers to save it to the server so it shows in Flows.
 
+The Flows view also lists, under **Not on the server**, the `.holon.ts` files of the workspace that the server does not keep yet. **Save flow to server** (the cloud button on an open flow file, on a flow in the explorer, or on an item under Not on the server) saves a flow file to the server, where it shows in Flows.
+
+Each deployment has pause (or resume, when it is paused or stopped) and stop buttons, set by its status. Each flow has a trash button: a saved flow is deleted from the server, and a flow file of the workspace is moved to the trash. Both ask first.
+
 The views refresh every 10 seconds and on the refresh button.
 
 The server is `holon.consoleUrl` (default `http://127.0.0.1:7420`, `holon serve`'s default). The
