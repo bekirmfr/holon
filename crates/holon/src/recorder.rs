@@ -90,6 +90,10 @@ pub struct LogEntry {
     /// deployment without state, a run that didn't commit, and entries logged before rc.30.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub state_after: Option<String>,
+    /// Where it stands among the commits to the deployment's state, which its seq may not say:
+    /// absent for a deployment without state, and in entries logged before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commit: Option<Commit>,
     /// The unit's settled outputs (an endpoint's: response first, then effects).
     pub outputs: Vec<Option<SValue>>,
     /// The effects the host performed.
@@ -164,6 +168,26 @@ pub struct LogEntry {
     /// and they are spooled (queues.rs): the log keeps them in `performed`.
     #[serde(skip)]
     pub queued: Vec<(String, holon_core::Value)>,
+}
+
+/// Where a run stands among the commits to its deployment's state (firing.rs). Each run of a
+/// stateful deployment commits under the state's lock, a run that only read too, and each commit
+/// is counted there; its line is numbered after, outside that lock, so two runs committing close
+/// together may be numbered the other way round. `holon verify` takes the run a run began after
+/// from here, not from the line before it (verify.rs, `check_states`).
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
+#[serde(default)]
+pub struct Commit {
+    /// The state its commits are counted in: a random id the server gives it each time it loads
+    /// the state, or a deploy first makes it (`claims::StateCell`).
+    pub cell: String,
+    /// The commit it began after: the state it began from is the one that commit left (0: the
+    /// state as the server loaded it). None for a resumed part, which began from its run's first.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub after: Option<u64>,
+    /// Its own, once it committed; a restore or a stop's run again counts one too.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub n: Option<u64>,
 }
 
 /// The credentials a run's calls answered, name and value, on their way to the redactor that
@@ -1936,6 +1960,7 @@ mod tests {
             sourced: vec![],
             state_before: BTreeMap::new(),
             state_after: None,
+            commit: None,
             outputs: vec![],
             performed: vec![],
             response_body: None,

@@ -4668,9 +4668,12 @@ fn verify_checks_that_each_runs_state_follows_from_the_one_before() {
     assert!(verify::describe(&report, None).contains("run 2's state DOESN'T FOLLOW: it began from a state the run before it (run 1) didn't leave"));
 
     // Run 2 began from the state run 1 began with, as it would have beside it: it follows, and
-    // what it left (beside another) is checked in no later run's state.
+    // what it left (beside another) is checked in no later run's state. Its line is without the
+    // commits it began after and made (as one logged before they were numbered): its place and
+    // its times say it ran beside run 1.
     let first: serde_json::Value = serde_json::from_str(&export.lines[1]).unwrap();
     let beside = rechained(&|i, v| {
+        v.as_object_mut().unwrap().remove("commit");
         if i == 2 {
             v["state_before"] = first["state_before"].clone();
             v["at_ms"] = serde_json::json!(1_800_000_000_000u64 + 1001);
@@ -5479,6 +5482,132 @@ fn different_keys_never_wait() {
             assert!(c["waited_ms"].as_f64().unwrap() < 50.0, "{c}");
         }
     }
+}
+
+/// Two runs beside each other that write different keys of one collection commit one on the
+/// other, and a run after both begins from what the second left. Each line is numbered after its
+/// commit, outside the state's lock, so the two may be numbered the other way round: `holon
+/// verify` takes the run a run began after from its entry's commit numbers, not the line before
+/// it, and the three follow either way. Without the numbers (a log written before them) the run
+/// after both broke; with them, a state the run it began after didn't leave still breaks.
+#[test]
+fn runs_beside_each_other_numbered_the_other_way_round_follow() {
+    let (host, _) = counting_server();
+    let state = claims_state("");
+    let slug = deploy_text(&state, &idem_text(&host), &host);
+    let (a, b) = std::thread::scope(|s| {
+        let a = s.spawn(|| data_call(&state, &slug, "POST", "/go/k6", ""));
+        std::thread::sleep(Duration::from_millis(60));
+        let b = s.spawn(|| data_call(&state, &slug, "POST", "/go/k7", ""));
+        (a.join().unwrap(), b.join().unwrap())
+    });
+    assert_eq!((a.0, b.0), (200, 200));
+    assert_eq!(data_call(&state, &slug, "PUT", "/set/k8", "after").0, 200);
+    let export: verify::Export = serde_json::from_value(body_json(route(&state, &req("GET", &format!("/deployments/{slug}/export"), vec![])))).unwrap();
+    let report = verify::check(&export, None, &BTreeMap::new());
+    assert!(report.ok(), "{}", verify::describe(&report, None));
+    assert_eq!(report.states.as_ref().unwrap().breaks, vec![]);
+
+    // Both began from the state as deployed (/slow takes 400 ms) and landed in turn; the run
+    // after them began after the second.
+    let lines: Vec<serde_json::Value> = export.lines.iter().map(|l| serde_json::from_str(l).unwrap()).collect();
+    let commit = |v: &serde_json::Value| (v["commit"]["after"].as_u64().unwrap(), v["commit"]["n"].as_u64().unwrap());
+    let (first, second) = if commit(&lines[0]).1 == 1 { (&lines[0], &lines[1]) } else { (&lines[1], &lines[0]) };
+    assert_eq!((commit(first), commit(second), commit(&lines[2])), ((0, 1), (0, 2), (2, 3)));
+    assert_eq!(lines[2]["commit"]["cell"], first["commit"]["cell"]);
+
+    // Numbered the other way round: the second to land first, the two beside each other, the
+    // run after them two seconds on; each changed by `edit` and chained again.
+    let swapped = |edit: &dyn Fn(usize, &mut serde_json::Value)| {
+        let mut copy = verify::Export { lines: Vec::new(), ..serde_json::from_value(serde_json::to_value(&export).unwrap()).unwrap() };
+        let mut prev = String::new();
+        for (i, (v, at)) in [(second, 0), (first, 60), (&lines[2], 2000)].into_iter().enumerate() {
+            let mut v = v.clone();
+            v["seq"] = serde_json::json!(i);
+            v["at_ms"] = serde_json::json!(1_800_000_000_000u64 + at);
+            v["duration_ms"] = serde_json::json!(if at == 2000 { 2.0 } else { 500.0 });
+            edit(i, &mut v);
+            v["prev"] = serde_json::Value::String(prev.clone());
+            if prev.is_empty() {
+                v.as_object_mut().unwrap().remove("prev");
+            }
+            let line = serde_json::to_string(&v).unwrap();
+            prev = recorder::line_hash(&line);
+            copy.lines.push(line);
+        }
+        copy.head = prev;
+        copy
+    };
+    let swapped_states = |e: &verify::Export| {
+        let report = verify::check(e, None, &BTreeMap::new());
+        let text = verify::describe(&report, None);
+        assert!(report.reruns.iter().all(|(_, r)| *r == verify::Rerun::Matched), "{text}");
+        (report.states.unwrap(), text)
+    };
+    let (s, text) = swapped_states(&swapped(&|_, _| {}));
+    assert_eq!(s.breaks, vec![], "{text}");
+    // Run 2 began from what run 0 left, its line before the one before it; run 1 beside run 0,
+    // from the state run 0 began with; run 0 left its key as it wrote it, on run 1's.
+    assert_eq!((&s.began, &s.beside), (&vec![1, 2], &vec![1]), "{text}");
+    assert!(s.left.contains(&0), "{text}");
+
+    // The same lines without their numbers, as a log written before them: run 2 broke.
+    let (s, _) = swapped_states(&swapped(&|_, v| drop(v.as_object_mut().unwrap().remove("commit"))));
+    assert_eq!(s.breaks, vec![(2, "it began from a state the run before it (run 1) didn't leave, nor a run beside it".to_string())]);
+
+    // Run 0 says it left another state: run 2 began after it, from a state it didn't leave.
+    let (s, text) = swapped_states(&swapped(&|i, v| {
+        if i == 0 {
+            v["state_after"] = serde_json::json!("00".repeat(32));
+        }
+    }));
+    assert_eq!(s.breaks, vec![(2, "it began from a state the run before it (run 1) didn't leave, nor a run beside it".to_string())], "{text}");
+    assert!(text.contains("run 2's state DOESN'T FOLLOW"), "{text}");
+}
+
+/// A log trimmed to its newest runs, with runs beside each other: a run that began after a commit
+/// whose line is gone, before the first commit here landed, has no run before it here, as the
+/// first hasn't, and isn't checked where it began. Without the commit numbers it broke.
+#[test]
+fn a_run_after_a_commit_the_trimmed_log_lost_has_no_run_before_it() {
+    let (host, _) = counting_server();
+    let state = claims_state("");
+    let slug = deploy_text(&state, &idem_text(&host), &host);
+    assert_eq!(data_call(&state, &slug, "PUT", "/set/k1", "p").0, 200);
+    // X calls out (400 ms); Q lands meanwhile, and Y begins from what Q left and calls out too.
+    let (x, y) = std::thread::scope(|s| {
+        let x = s.spawn(|| data_call(&state, &slug, "POST", "/go/k6", ""));
+        std::thread::sleep(Duration::from_millis(60));
+        assert_eq!(data_call(&state, &slug, "PUT", "/set/k2", "q").0, 200);
+        let y = s.spawn(|| data_call(&state, &slug, "POST", "/go/k7", ""));
+        (x.join().unwrap(), y.join().unwrap())
+    });
+    assert_eq!((x.0, y.0), (200, 200));
+    let export: verify::Export = serde_json::from_value(body_json(route(&state, &req("GET", &format!("/deployments/{slug}/export"), vec![])))).unwrap();
+    let lines: Vec<serde_json::Value> = export.lines.iter().map(|l| serde_json::from_str(l).unwrap()).collect();
+    let commits: Vec<(u64, u64)> = lines.iter().map(|v| (v["commit"]["after"].as_u64().unwrap(), v["commit"]["n"].as_u64().unwrap())).collect();
+    assert_eq!(commits, vec![(0, 1), (1, 2), (1, 3), (2, 4)], "P, Q, then X and Y as they landed");
+    let report = verify::check(&export, None, &BTreeMap::new());
+    assert!(report.ok() && report.states.as_ref().unwrap().breaks.is_empty(), "{}", verify::describe(&report, None));
+
+    // Trimmed to X and Y, as retention trims a log: Y began after Q's commit, whose line is gone.
+    let trimmed = |lines: Vec<String>| verify::Export { lines, ..serde_json::from_value(serde_json::to_value(&export).unwrap()).unwrap() };
+    let report = verify::check(&trimmed(export.lines[2..].to_vec()), None, &BTreeMap::new());
+    let text = verify::describe(&report, None);
+    assert!(report.ok(), "{text}");
+    let s = report.states.unwrap();
+    assert_eq!((s.breaks, &s.unchecked["where it began: no run before it here"]), (vec![], &vec![2, 3]), "{text}");
+
+    // The same two without their numbers, as a log written before them, chained again: Y broke.
+    let mut x = lines[2].clone();
+    x.as_object_mut().unwrap().remove("commit");
+    let x = serde_json::to_string(&x).unwrap();
+    let mut y = lines[3].clone();
+    y.as_object_mut().unwrap().remove("commit");
+    y["prev"] = serde_json::Value::String(recorder::line_hash(&x));
+    let y = serde_json::to_string(&y).unwrap();
+    let report = verify::check(&verify::Export { head: recorder::line_hash(&y), ..trimmed(vec![x, y]) }, None, &BTreeMap::new());
+    assert_eq!(report.states.unwrap().breaks, vec![(3, "it began from a state the run before it (run 2) didn't leave, nor a run beside it".to_string())]);
 }
 
 /// A run that sends nothing claims nothing: the counter under many runs at once, as before,
@@ -11190,6 +11319,10 @@ fn the_server_records_what_its_golden_record_holds() {
         if let Some(o) = v.as_object_mut() {
             for k in ["at_ms", "duration_ms", "prev", "grant"] {
                 o.remove(k);
+            }
+            // The state's id is random; where the run stands among its commits stays.
+            if let Some(c) = o.get_mut("commit").and_then(|c| c.as_object_mut()) {
+                c.remove("cell");
             }
             for t in o.get_mut("timeline").and_then(|t| t.as_array_mut()).into_iter().flatten() {
                 if let Some(t) = t.as_object_mut() {

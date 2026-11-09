@@ -167,7 +167,11 @@ Holon never claims to have undone it.
   from the state the run before it left, and its writes applied to the state it began with give
   the state it left, each state by its snapshot's hash, made again from `state_before`. A
   collection by its root (a run that wrote one is checked in a later run's state), and runs that
-  ran beside another as far as their commit shows (firing.rs).
+  ran beside another as far as their commit shows (firing.rs). The run before a run is the one
+  whose commit it began after, as its entry's `commit` numbers them under the state's lock: two
+  runs committing close together can be numbered in the log the other way round. In a log
+  trimmed to its newest runs, a run that began after a commit older than every one here has no
+  run before it here, as the first hasn't.
 
 ## 7. Retention
 

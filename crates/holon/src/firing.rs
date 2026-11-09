@@ -101,6 +101,8 @@ pub(crate) struct FiredRun {
     pub(crate) answered: recorder::AnswerTokens,
     /// The state it left, once committed: a snapshot's hash (`restore::save_snapshot`).
     pub(crate) state_after: Option<String>,
+    /// The commit to its state it began after, and its own once it lands (`recorder::Commit`).
+    pub(crate) commit: Option<recorder::Commit>,
 }
 
 /// How many times a run is tried without holding its state's lock before it runs holding it.
@@ -180,12 +182,16 @@ pub(crate) fn fire_with_state(
             waits.tokens.clear();
         }
         // Copied in its own statement: a lock taken inside the call's arguments would be held
-        // until the call returns, the whole run long.
-        let start = match &pinned {
-            Some(s) => s.clone(),
-            None => cell.state.lock().unwrap().clone(),
+        // until the call returns, the whole run long. The commit it begins after is read with it.
+        let (start, after) = match &pinned {
+            Some(s) => (s.clone(), None),
+            None => {
+                let live = cell.state.lock().unwrap();
+                (live.clone(), Some(cell.commits()))
+            }
         };
         let mut a = attempt(Some(start), &nonce, prior(&sent), waits, Some((cell, records, pinned.is_none())));
+        a.run.commit = Some(recorder::Commit { cell: cell.id.clone(), after, n: None });
         sent.append(&mut a.run.rounds);
         a.run.rounds = sent.clone();
         if !a.overtaken {
@@ -237,6 +243,7 @@ pub(crate) fn fire_with_state(
                     };
                     if done {
                         a.run.state_after = snapshot_after(&live, a.start.as_ref(), store, &a.run.run_id);
+                        count_commit(cell, &mut a.run);
                         keep_if_changed(cell, &a.run, &live);
                         a.run.retries = retries;
                         if let Some(c) = waits.claiming.take() {
@@ -286,8 +293,10 @@ pub(crate) fn fire_with_state(
         f.all.locks.take(wanted, std::time::Instant::now() + limits.claim_wait).ok()
     });
     let is_pinned = pinned.is_some();
+    let after = (!is_pinned).then(|| cell.commits());
     let start = pinned.unwrap_or_else(|| live.clone());
     let mut a = attempt(Some(start), &nonce, prior(&sent), waits, None);
+    a.run.commit = Some(recorder::Commit { cell: cell.id.clone(), after, n: None });
     sent.append(&mut a.run.rounds);
     a.run.rounds = sent;
     let staged = folders::stage(waits.folders.as_ref(), &a.run.performed);
@@ -306,6 +315,7 @@ pub(crate) fn fire_with_state(
                     failed.extend(db);
                     not_all_written(&mut a.run, failed);
                     a.run.state_after = snapshot_after(&live, a.start.as_ref(), store, &a.run.run_id);
+                    count_commit(cell, &mut a.run);
                     keep_if_changed(cell, &a.run, &live);
                 }
                 databases::Commit::Refused(why) => refused(&mut a.run, &why),
@@ -487,6 +497,13 @@ fn still_as_read(
 /// The state a run left, kept as a snapshot (its hash), taken under the state's lock as it commits:
 /// the cells it changed since `start` go into the content store, then the snapshot. A store that
 /// can't take it leaves the run without one (it can't be restored to), and says so.
+/// Count `run`'s commit among its state's, the cell's lock held: its number goes in its log entry.
+fn count_commit(cell: &claims::StateCell, run: &mut FiredRun) {
+    if let Some(c) = &mut run.commit {
+        c.n = Some(cell.count_commit());
+    }
+}
+
 /// Write the deployment's state head when `run` changed its state (C3 b): its snapshot is in the
 /// store already, and the cell's lock is held, so heads land in commit order. A run that changed
 /// nothing writes nothing, so a read costs no fsync.
@@ -748,6 +765,7 @@ fn run_attempt(
         secrets: given,
         answered: recorder::AnswerTokens(answered),
         state_after: None,
+        commit: None,
     };
     Attempt { run, start, overtaken }
 }
@@ -1259,6 +1277,7 @@ fn entry_with(
         sourced: sourced.iter().map(|(c, v)| (format!("{c:?}"), SValue::from_core(v))).collect(),
         state_before: run.start_state.iter().flat_map(State::iter).map(|(k, v)| (k.clone(), SValue::from_core(v))).collect(),
         state_after: run.state_after.clone(),
+        commit: run.commit.clone(),
         outputs: logged_outputs(run, folders::loggable_output),
         performed: logged_performed(run, folders::loggable),
         response_body: None,
@@ -1343,6 +1362,7 @@ impl FiredRun {
             secrets: BTreeMap::new(),
             answered: recorder::AnswerTokens::default(),
             state_after: None,
+            commit: None,
         }
     }
 }

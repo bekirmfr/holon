@@ -26,7 +26,9 @@ keeps each batch and answers a receipt; `rolling-log` shows retention.
 A `LogEntry` holds a run's whole input and output: `seq` (one more per entry, across sessions),
 `prev`, `session`, `at_ms`, `kind` (`request`, `trigger`, `tick`, `file`, `resume`), `route` (the
 handler's label), the `request`, the `sourced` values (`Clock`, `Random`, `NetworkIngress`),
-`state_before`, `state_after` (a snapshot's hash in the content store), `outputs`, `performed`,
+`state_before`, `state_after` (a snapshot's hash in the content store), `commit` (the commit to
+the state it began after and its own, counted under the state's lock: `recorder::Commit`),
+`outputs`, `performed`,
 `response_body` (cut at 64 KiB), `error`, the `timeline` of each step, the outbound `rounds`, the
 `run_id` and its `nonce`, the `unit` (version) it ran on, the `grant` (hash) it was held to, the
 collection `reads`, `claims`, `retries`, `by` (who sent it over the control plane), the `secrets`
@@ -112,7 +114,12 @@ their head. `holon export <slug>` writes it (`--to`, `--as`, `-o`, `--max-files-
    node, failed on a budget, no route took them, a file read whose text neither the export nor
    `--files DIR` holds) are counted, not failed.
 4. **The states** (`check_states`): each run began from the state the run before it left, and left
-   what its writes make of the state it began with.
+   what its writes make of the state it began with. The run before it is the one whose commit it
+   began after (`began_after`), not the line before: a line is numbered after its commit, so two
+   runs committing close together can be numbered the other way round. Their numbers also say
+   whether another commit landed while it ran, and which runs of a trimmed log began after a
+   commit older than every one here (`before_the_first`: no run before them here, as the first);
+   a line without them is taken by its place and times.
 5. **Where the secrets went** (`check_sends`): each request carrying a secret's mark went to a host
    its unit sends that secret to; **the events** (`check_events`), their chain and head.
 
@@ -185,6 +192,11 @@ In `tests.rs`, through the routes: `a_flow_log_is_a_chain_and_a_changed_run_show
 `exported_runs_verify_and_a_rewritten_log_doesnt` (every run re-runs to its entry; a copy
 re-chained after a change links but that run no longer re-runs; a witnessed head is found only in
 its own copy); `verify_checks_that_each_runs_state_follows_from_the_one_before`;
+`runs_beside_each_other_numbered_the_other_way_round_follow` (two runs writing different keys of a
+collection, their lines swapped: the run after both follows by its commit numbers, broke without
+them, and still breaks from a state the run it began after didn't leave);
+`a_run_after_a_commit_the_trimmed_log_lost_has_no_run_before_it` (the log trimmed past the commit
+a run beside the first began after: not checked, where without the numbers it broke);
 `a_run_that_received_a_secret_or_a_token_keeps_its_logged_run_id`;
 `an_export_goes_to_a_folder_as_a_name`; `a_deployment_keeps_as_many_runs_as_its_retention_says`;
 `the_runs_a_log_lets_go_of_are_backed_up_as_exports_verify_checks` (a backup's `.json.gz` verifies);

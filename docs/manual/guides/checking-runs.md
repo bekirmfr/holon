@@ -118,7 +118,9 @@ chained again after the change.
 
 What it doesn't check, it says, by why:
 
-- the first run here, which began from a state no run here left;
+- the first run here, which began from a state no run here left; in a log trimmed to its newest
+  runs, so are those that ran beside it and began after a commit older than every one here,
+  whose run's line is gone;
 - a run after a deploy, a stop, or a restore of a version's state, which put a state in place
   (the events say which). After a restore of a run's state, the next run is checked: it began
   from the state that run left;
@@ -131,6 +133,12 @@ a later run began from, its other cells as it left them. Runs of one deployment 
 each committing only if what it could read is as it found it: a run that ran beside another may
 have begun from a state an earlier run left, or the other began with, and only the cells it wrote
 are checked in what it left. The report counts those.
+
+A run's line is numbered once it has committed, so two runs that commit close together can be
+numbered the other way round. Each entry also says which commit to the state its run began after,
+and its own (`commit`): the run before a run is the one whose commit it began after, wherever its
+line is, and a run no other commit landed beside is checked whole, however close its times. A log
+written before entries said so is taken by each line's place and times.
 
 A node that computed with a secret or a resume token (a signature, a token check) can't be
 computed again: the log never holds their values, only a placeholder. What the log kept for that
