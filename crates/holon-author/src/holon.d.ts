@@ -22,7 +22,8 @@ declare module "holon" {
   export type Duration = `${number}${"s" | "m" | "h" | "d"}`
   /** How a handler's runs are recorded: strict when left out, `"lazy"` or `"unrecorded"`. */
   export type Log = "lazy" | "unrecorded"
-  /** A route's path: `/` and segments, `:name` for a part `req.params.name` reads. */
+  /** A route's path: `/` and segments, `:name` for a part `req.params.name` reads, and a last
+   *  `*name` for the rest of the path, one segment or more (`/files/*path`). */
   export type Path = `/${string}`
 
   /** A flow's settings, the deploy settings. */

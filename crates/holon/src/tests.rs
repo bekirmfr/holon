@@ -8364,6 +8364,38 @@ fn trade_tape_fetches_the_trades_its_feed_skipped_and_keeps_its_volume_exact() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// The site sample (host-capabilities L4 §5.11.12): its page at every path that isn't its API's,
+/// a deep link's path in it as the request wrote it, each segment decoded; the API beside it, and
+/// an unknown API path a JSON 404 rather than the page. A path whose rest would name another (`..`,
+/// `%2F`, an empty segment) is no route's.
+#[test]
+fn site_answers_its_page_at_every_path_and_its_api_beside_it() {
+    let state = test_state();
+    let slug = deploy_plain_text(&state, include_str!("../../holon-author/samples/site.holon.ts"));
+    let page = |url: &str| {
+        let (status, body, _) = data_call(&state, &slug, "GET", url, "");
+        assert_eq!(status, 200, "{url}: {body}");
+        body
+    };
+    assert!(page("/docs/setup").contains("Opened at <code>/docs/setup</code>"));
+    assert!(page("/").contains("Opened at <code>/</code>"));
+    assert!(page("/docs/a%20guide/part%202?x=1").contains("Opened at <code>/docs/a guide/part 2</code>"), "each segment decoded");
+    assert!(page("/%3Cb%3Ehi").contains("Opened at <code>/&lt;b&gt;hi</code>"), "and escaped by the page");
+    assert_eq!(data_call(&state, &slug, "GET", "/api/hello", "").1, r#"{"hello":"world"}"#);
+    let (status, body, _) = data_call(&state, &slug, "GET", "/api/nope/more", "");
+    assert_eq!((status, body.as_str()), (404, r#"{"error":"no API at /api/nope/more"}"#));
+    for not in ["/docs/..", "/docs/a%2Fb", "/docs/a%5Cb", "/docs//a", "/docs/", "/api/.."] {
+        let (status, body, _) = data_call(&state, &slug, "GET", not, "");
+        assert_eq!((status, body.as_str()), (404, r#"{"error":"no route for this path"}"#), "{not}");
+    }
+    let (status, _, _) = data_call(&state, &slug, "POST", "/docs/setup", "");
+    assert_eq!(status, 405, "a rest route counts for the methods a path has");
+    // Each request a run, recorded under its route, with the URL as it was written.
+    let entries = log_entries(&state, &slug);
+    let deep = entries.iter().find(|e| e["route"] == "GET /*path" && e["url"] == "/docs/a%20guide/part%202?x=1").expect("the deep link's run");
+    assert!(deep["response_body"].as_str().is_some_and(|b| b.contains("<code>/docs/a guide/part 2</code>")), "{deep:#}");
+}
+
 /// The ledger-watch sample (host-capabilities L4 §5.9.11), on the Postgres `HOLON_TEST_POSTGRES`
 /// names: its feed bound to a channel on the bound ledger, each entry committed starts one run, in
 /// the order committed, and a transaction rolled back sends nothing. The listener's session ended
@@ -10942,7 +10974,7 @@ fn the_server_records_what_its_golden_record_holds() {
         };
         for _round in 0..2 {
             for (method, path) in &routes {
-                let url: String = path.split('/').map(|seg| if seg.starts_with(':') { "tea" } else { seg }).collect::<Vec<_>>().join("/");
+                let url: String = path.split('/').map(|seg| if seg.starts_with(':') || seg.starts_with('*') { "tea" } else { seg }).collect::<Vec<_>>().join("/");
                 let url = if url.is_empty() { "/".to_string() } else { url };
                 for body in &bodies {
                     let request = data::DataRequest { headers: vec![("content-type".into(), "application/json".into())], ..fake_data(method, &url, body.as_bytes().to_vec()) };

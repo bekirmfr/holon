@@ -1,8 +1,9 @@
 // Testing HTTP endpoints in the editor (M1): the request record a handler receives and how its
 // output becomes a response, mirroring holon-server's data.rs. What an endpoint and a server unit
-// are is holon-author's (routes.rs), and route paths are parsed by core, both through wasm.
+// are is holon-author's (routes.rs), and route paths are parsed and matched by core, both through
+// wasm.
 
-import { route_path } from "../wasm/holon_wasm.js";
+import { route_path, route_pick } from "../wasm/holon_wasm.js";
 import type { WValue } from "./holon";
 
 export const METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"] as const;
@@ -16,9 +17,17 @@ export type LogWord = "" | "lazy" | "unrecorded";
 export type EndpointDraft = { method: Method; path: string; hash: string; log?: LogWord };
 
 /** A route path's segments as core's `parse_path` reads them (`/`, or `/` then literals and
- *  params written `:name` or `{name}`), or null for a path core refuses. */
-export function parsePath(path: string): { literal: string | null; param: string | null }[] | null {
+ *  params written `:name` or `{name}`, the last perhaps a rest, `*name`), or null for a path core
+ *  refuses. */
+export function parsePath(path: string): { literal: string | null; param: string | null; rest: string | null }[] | null {
   return route_path(path);
+}
+
+/** Which of `paths` a request's path goes to, as core's `match_route` picks (a path without a
+ *  rest first, then the most literal segments, then the earlier one), with its params as the
+ *  request wrote them; null when none matches. */
+function pickPath(paths: string[], path: string): { index: number; params: Record<string, string> } | null {
+  return route_pick(paths, path);
 }
 
 const text = (value: string): WValue => ({ type: "Text", value });
@@ -40,19 +49,9 @@ export function requestRecord(
   headers: [string, string][] = [],
 ): WValue | null {
   const [path, query = ""] = url.split(/\?(.*)/s, 2);
-  const segments = parsePath(declaredPath);
-  if (!segments || !path.startsWith("/")) return null;
-  const parts = path.slice(1) === "" ? [] : path.slice(1).split("/");
-  if (parts.length !== segments.length) return null;
-  const params: [string, string][] = [];
-  for (let i = 0; i < parts.length; i++) {
-    const seg = segments[i];
-    if (seg.literal !== null && seg.literal !== parts[i]) return null;
-    if (seg.param !== null) {
-      if (parts[i] === "") return null;
-      params.push([seg.param, decode(parts[i])]);
-    }
-  }
+  const picked = pickPath([declaredPath], path);
+  if (!picked) return null;
+  const params: [string, string][] = Object.entries(picked.params).map(([k, v]) => [k, decode(v)]);
   const queryPairs: [string, string][] = query
     .split("&")
     .filter((kv) => kv !== "")
@@ -115,37 +114,24 @@ export function responseOf(output: WValue | null | undefined): {
   return { status: 200, headers: [], body: output };
 }
 
-/** Which endpoint a request goes to, as core's `match_route` decides: same method and segment
- *  count, the most literal segments wins, ties go to the earlier endpoint. Otherwise 404, or 405
- *  (with the methods that would match) when the path exists under another method. */
+/** Which endpoint a request goes to, as core's `match_route` decides among the endpoints of its
+ *  method. Otherwise 404, or 405 (with the methods that would match) when the path exists under
+ *  another method. */
 export function matchRoute(
   endpoints: EndpointDraft[],
   method: string,
   url: string,
 ): { endpoint: EndpointDraft } | { status: 404 } | { status: 405; allow: string[] } {
   const path = url.split("?")[0];
-  const score = (e: EndpointDraft): number | null => {
-    const segs = parsePath(e.path);
-    if (!segs || !path.startsWith("/")) return null;
-    const parts = path.slice(1) === "" ? [] : path.slice(1).split("/");
-    if (parts.length !== segs.length) return null;
-    let literals = 0;
-    for (let i = 0; i < parts.length; i++) {
-      if (segs[i].literal !== null) {
-        if (segs[i].literal !== parts[i]) return null;
-        literals++;
-      } else if (parts[i] === "") return null;
-    }
-    return literals;
+  const of = (m: string) => endpoints.filter((e) => e.method === m);
+  const pick = (m: string) => {
+    const candidates = of(m);
+    const picked = pickPath(candidates.map((e) => e.path), path);
+    return picked ? candidates[picked.index] : null;
   };
-  let best: { endpoint: EndpointDraft; literals: number } | null = null;
-  for (const e of endpoints) {
-    if (e.method !== method) continue;
-    const n = score(e);
-    if (n !== null && (best === null || n > best.literals)) best = { endpoint: e, literals: n };
-  }
-  if (best) return { endpoint: best.endpoint };
-  const allow = METHODS.filter((m) => m !== method && endpoints.some((e) => e.method === m && score(e) !== null));
+  const endpoint = pick(method);
+  if (endpoint) return { endpoint };
+  const allow = METHODS.filter((m) => m !== method && pick(m) !== null);
   return allow.length > 0 ? { status: 405, allow } : { status: 404 };
 }
 

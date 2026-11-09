@@ -963,24 +963,41 @@ pub fn template_defaults(name: &str) -> Result<JsValue, JsError> {
     to_js(&templates::defaults(name).ok_or_else(|| not_a_template(name))?)
 }
 
-/// A route path's segments, as core parses it: `[{literal, param}]` (one of the two set), or
-/// `null` for a path core refuses.
+/// A route path's segments, as core parses it: `[{literal, param, rest}]` (one of the three set),
+/// or `null` for a path core refuses.
 #[wasm_bindgen]
 pub fn route_path(path: &str) -> Result<JsValue, JsError> {
     #[derive(Serialize)]
     struct Seg {
         literal: Option<String>,
         param: Option<String>,
+        rest: Option<String>,
     }
     let segs = holon_core::parse_path(path).map(|segs| {
         segs.into_iter()
             .map(|s| match s {
-                holon_core::Segment::Literal(l) => Seg { literal: Some(l), param: None },
-                holon_core::Segment::Param(p) => Seg { literal: None, param: Some(p) },
+                holon_core::Segment::Literal(l) => Seg { literal: Some(l), param: None, rest: None },
+                holon_core::Segment::Param(p) => Seg { literal: None, param: Some(p), rest: None },
+                holon_core::Segment::Rest(r) => Seg { literal: None, param: None, rest: Some(r) },
             })
             .collect::<Vec<_>>()
     });
     to_js(&segs)
+}
+
+/// Which of the route paths `paths` a request's path goes to, as core's `match_route` picks:
+/// `{index, params}`, the params as the request wrote them (not decoded), or `null` when none
+/// matches. A path core refuses matches nothing.
+#[wasm_bindgen]
+pub fn route_pick(paths: Vec<String>, request_path: &str) -> Result<JsValue, JsError> {
+    #[derive(Serialize)]
+    struct Picked {
+        index: usize,
+        params: std::collections::BTreeMap<String, String>,
+    }
+    let parsed: Vec<(usize, Vec<holon_core::Segment>)> = paths.iter().enumerate().filter_map(|(i, p)| Some((i, holon_core::parse_path(p)?))).collect();
+    let picked = holon_core::pick_path(parsed.iter().map(|(_, segs)| segs.as_slice()), request_path).map(|(at, params)| Picked { index: parsed[at].0, params });
+    to_js(&picked)
 }
 
 /// The flow's connected groups of node ids (wires either way), in the order `ids` gives.

@@ -601,6 +601,7 @@ HANDLERS (each starts runs; a flow has one or more)
   route.get("/notes/:id", (req) => notes[req.params.id] ?? status(404))
   route.post, .put, .patch, .delete, and route.get with a block: (req) => { …; return x }
   req.params.id, req.query.after, req.headers.authorization, req.body (text), req.json (parsed)
+  route.get("/files/*path", (req) => …)          the rest of the path: /files/a/b.css, req.params.path a/b.css
   return x                                       answers 200 with x
   return status(201, x) ?? status(400)           another status; ?? says what an absent x answers
   return status(204)                             a status alone, no body

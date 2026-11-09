@@ -255,6 +255,36 @@ says how the route's runs are recorded (§5.1). `respond(page, { headers: { "con
 JSON, or `respond("", { headers: { location: "/" }, status: 303 })` for a redirect; without it, a
 text body goes out as plain text and anything else as JSON (the `guestbook` sample).
 
+### site: the rest of a path
+
+```ts
+route.get("/api/hello", () => ({ hello: "world" }))
+
+route.get("/api/*rest", (req) => status(404, { error: `no API at /api/${req.params.rest}` }))
+
+route.get(
+  "/",
+  () => respond(page(""), { headers: { "content-type": "text/html; charset=utf-8" } }),
+  { log: "lazy" },
+)
+
+route.get(
+  "/*path",
+  (req) =>
+    respond(page(req.params.path), { headers: { "content-type": "text/html; charset=utf-8" } }),
+  { log: "lazy" },
+)
+```
+
+`/*path` is a rest segment, only ever last: it matches the rest of the path, one segment or more,
+and `req.params.path` is what it matched, each segment decoded (`/docs/a%20guide/part%202` gives
+`docs/a guide/part 2`). It never matches nothing, so `/` has its own route. A route without a rest
+beats any route with one, and among rest routes the most literal segments win, so `/api/hello`
+answers itself, any other path under `/api` gets the JSON 404, and every other path gets the page:
+a single-page app's deep link opens the app where it points. A segment that is empty, `.` or
+`..`, or that decodes to `/` or `\`, matches no rest, so the param never names another path than
+the request's. `page` is a `js` holon writing the app's page (§5.11).
+
 ### stripe-to-slack
 
 ```ts
@@ -2293,6 +2323,12 @@ idiom the samples use for a write that may not happen.
 route.METHOD("/path", (req) => answer, { resumes: "NAME", log: "lazy" })
 route.METHOD("/path", async (req) => { statements; return answer })
 ```
+
+**The path** is `/` and segments: literals, `:name` params, and a last `*name` that takes the
+rest of the path, one segment or more. A route without a rest beats any route with one, then the
+most literal segments win, then the earlier route; two routes of one method clash when they match
+the same requests (a param alike any param, a rest alike only a rest). The `site` sample shows a
+rest.
 
 Lowers to a `request{method, path, resume, log}` template node, the route's trigger, and the
 handler's nodes; `resume` is the option `resumes`, and `log` the option `log` (§5.1), empty for

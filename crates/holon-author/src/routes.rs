@@ -6,7 +6,7 @@
 
 use std::collections::HashMap;
 
-use holon_core::{parse_path, Edge, EncapSpec, Hash, Param, Port, Segment, Type, Unit, UnitBody, BOUNDARY, CALLS, METHODS};
+use holon_core::{parse_path, same_requests, Edge, EncapSpec, Hash, Param, Port, Type, Unit, UnitBody, BOUNDARY, CALLS, METHODS};
 use serde::Serialize;
 
 use crate::canvas::{Node, PlacedBody, Wire};
@@ -372,10 +372,7 @@ pub fn find_routes(nodes: &[Node], wires: &[Wire]) -> (Vec<RouteGroup>, Vec<Stri
     let mut errors = Vec::new();
     let label = |n: &Node| format!("{} {}", n.param("method"), n.param("path"));
     // Two routes clash when they'd match the same requests, the rule core's read_server enforces.
-    let shape = |p: &str| parse_path(p).map(|segs| segs.into_iter().map(|s| match s {
-        Segment::Literal(l) => Some(l),
-        Segment::Param(_) => None,
-    }).collect::<Vec<_>>());
+    let clash = |a: &str, b: &str| parse_path(a).zip(parse_path(b)).is_some_and(|(a, b)| same_requests(&a, &b));
     let node_ids: Vec<&str> = nodes.iter().map(|n| n.id.as_str()).collect();
     for ids in components(&node_ids, wires) {
         let requests: Vec<&Node> = ids.iter().map(|id| by_id[id.as_str()]).filter(|n| n.is_template("request")).collect();
@@ -402,10 +399,10 @@ pub fn find_routes(nodes: &[Node], wires: &[Wire]) -> (Vec<RouteGroup>, Vec<Stri
             continue;
         }
         if parse_path(path).is_none() {
-            errors.push(format!("\"{path}\" is not a route path (use /todos or /todos/:id)"));
+            errors.push(format!("\"{path}\" is not a route path (use /todos, /todos/:id or /files/*path)"));
             continue;
         }
-        if let Some(clash) = routes.iter().find(|r| r.method == method && shape(&r.path) == shape(path)) {
+        if let Some(clash) = routes.iter().find(|r| r.method == method && clash(&r.path, path)) {
             errors.push(format!("{method} {path} clashes with {} {}", clash.method, clash.path));
             continue;
         }
@@ -682,7 +679,7 @@ pub fn endpoint_unit(handler: Hash, inputs: &[Port], outputs: &[Port], method: &
         return Err(format!("\"{resume}\" is not a waiting point's name (letters, digits, - and _)"));
     }
     if parse_path(path).is_none() {
-        return Err(format!("\"{path}\" is not a route path (use /todos or /todos/:id)"));
+        return Err(format!("\"{path}\" is not a route path (use /todos, /todos/:id or /files/*path)"));
     }
     if inputs.len() > 1 {
         return Err("a handler takes at most one input: the request record".into());
@@ -821,7 +818,7 @@ mod tests {
             [
                 "GET /x and GET /y are wired together: one request node per route",
                 "\"FETCH\" is not a method (GET, POST, PUT, PATCH, DELETE)",
-                "\"no-slash\" is not a route path (use /todos or /todos/:id)",
+                "\"no-slash\" is not a route path (use /todos, /todos/:id or /files/*path)",
                 "GET /t/:key clashes with GET /t/:id",
             ]
         );

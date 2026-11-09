@@ -2954,3 +2954,29 @@ test("a deployment's runs export from view mode and from holon export, and holon
   expect(restored).toContain("(1 of them after a restore, from the state it put back)");
   expect(restored.trim().endsWith("ok")).toBe(true);
 });
+
+test("site answers its page at a deep link, its API beside it, and any other API path a JSON 404", async ({ page, request }) => {
+  await openSample(page, "Site (an app's page at every path, its API beside it)");
+  const port = await deploy(page);
+  const at = (path: string) => request.get(`http://127.0.0.1:${port}${path}`);
+  const deep = await at("/docs/a%20guide/part%202");
+  expect(deep.status()).toBe(200);
+  expect(deep.headers()["content-type"]).toBe("text/html; charset=utf-8");
+  expect(await deep.text()).toContain("Opened at <code>/docs/a guide/part 2</code>");
+  expect(await (await at("/")).text()).toContain("Opened at <code>/</code>");
+  expect(await (await at("/api/hello")).json()).toEqual({ hello: "world" });
+  const unknown = await at("/api/nope/more");
+  expect(unknown.status()).toBe(404);
+  expect(await unknown.json()).toEqual({ error: "no API at /api/nope/more" });
+  // A rest never names another path than the request's: no route takes these. (A client resolves
+  // `..` before it sends, so it isn't asked here; the server test asks it.)
+  for (const not of ["/docs/a%2Fb", "/docs/a%5Cb", "/docs//a", "/docs/"]) {
+    const answer = await at(not);
+    expect(answer.status(), not).toBe(404);
+    expect(await answer.json(), not).toEqual({ error: "no route for this path" });
+  }
+  // In a browser, a deep link opens the app where it points, and the page asks its API.
+  await page.goto(`http://127.0.0.1:${port}/docs/setup`);
+  await expect(page.locator("code")).toHaveText("/docs/setup");
+  await expect(page.locator("#api")).toHaveText("The API says hello, world.");
+});

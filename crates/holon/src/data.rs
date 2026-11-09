@@ -390,4 +390,31 @@ mod tests {
         assert_eq!(wrong.status, 405);
         assert!(wrong.headers.contains(&("allow".to_string(), "GET".to_string())));
     }
+
+    #[test]
+    fn a_rest_is_the_rest_of_the_path_decoded_and_counts_for_405() {
+        let mut r = MapResolver::new();
+        let files = params_endpoint(&mut r, "GET", "/files/*path");
+        let post = params_endpoint(&mut r, "POST", "/*all");
+        let server_unit = Unit {
+            body: UnitBody::Composite { children: vec![files, post], edges: vec![] },
+            params: vec![Param::frozen("declare", "server"), Param::frozen("port", "8080")],
+            inputs: vec![],
+            outputs: vec![],
+        };
+        let server = read_server(&server_unit, &r).unwrap();
+        let run = |method: &str, url: &str| {
+            let http = HttpRequest { method, url, headers: &[], body: b"" };
+            handle(&server, &r, &http, |unit, _, request, _| holon_core::eval(unit, &[Some(request)], &r).into_vec(), &[])
+        };
+        let ok = run("GET", "/files/css/site%20a.css?v=2");
+        assert_eq!((ok.status, String::from_utf8_lossy(&ok.body).into_owned()), (200, "{\"path\":\"css/site a.css\"}".to_string()));
+        // A part that would name another path is no rest's, of any method.
+        for other in ["/files/a%2Fb", "/files/..", "/files/"] {
+            assert_eq!(run("GET", other).status, 404, "{other}");
+        }
+        let wrong = run("PUT", "/files/a");
+        assert_eq!(wrong.status, 405);
+        assert!(wrong.headers.contains(&("allow".to_string(), "GET, POST".to_string())));
+    }
 }

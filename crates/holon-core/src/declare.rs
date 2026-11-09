@@ -41,11 +41,14 @@ use crate::{FileTrigger, Hash, Resolver, Type, Unit, UnitBody};
 /// The methods an endpoint may declare.
 pub const METHODS: &[&str] = &["GET", "POST", "PUT", "PATCH", "DELETE"];
 
-/// One segment of a route path: `/todos/:id` is `[Literal("todos"), Param("id")]`.
+/// One segment of a route path: `/todos/:id` is `[Literal("todos"), Param("id")]`, and
+/// `/files/*path` is `[Literal("files"), Rest("path")]`, a rest only ever last.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Segment {
     Literal(String),
     Param(String),
+    /// The rest of the path, one segment or more (docs/L4s/host-capabilities-L4.md §5.11.2).
+    Rest(String),
 }
 
 /// How a handler's runs are recorded (docs/L4s/request-path-L4.md, C5): `strict` by default, the
@@ -440,17 +443,7 @@ pub fn read_server(unit: &Unit, resolver: &impl Resolver) -> Result<Server, Decl
             EndpointError::BadShape => DeclError::BadEndpointShape { child },
         })?;
         let segments = parse_path(&path).ok_or_else(|| DeclError::BadPath { child, path: path.clone() })?;
-        // Two routes clash when they would match exactly the same requests: same method, and the
-        // same segments with every param treated alike (`/todos/:id` and `/todos/:key` clash).
-        let shape = |s: &[Segment]| -> Vec<Option<String>> {
-            s.iter()
-                .map(|seg| match seg {
-                    Segment::Literal(l) => Some(l.clone()),
-                    Segment::Param(_) => None,
-                })
-                .collect()
-        };
-        if routes.iter().any(|r| r.method == method && shape(&r.segments) == shape(&segments)) {
+        if routes.iter().any(|r| r.method == method && same_requests(&r.segments, &segments)) {
             return Err(DeclError::DuplicateRoute { method, path });
         }
         let resume = match frozen(endpoint, "resume") {
@@ -503,8 +496,9 @@ pub fn read_endpoint(unit: &Unit) -> Result<(String, String), EndpointError> {
 }
 
 /// Parse a route path: `/`, or `/` followed by segments that are literals (letters, digits,
-/// `-`, `_`, `.`, `~`) or params, written `:name` or `{name}` (the same param either way).
-/// `None` if malformed, including a repeated param name.
+/// `-`, `_`, `.`, `~`) or params, written `:name` or `{name}` (the same param either way), the
+/// last of them perhaps a rest, `*name`. `None` if malformed, including a repeated param name and
+/// a rest anywhere but last.
 pub fn parse_path(path: &str) -> Option<Vec<Segment>> {
     let rest = path.strip_prefix('/')?;
     if rest.is_empty() {
@@ -515,51 +509,96 @@ pub fn parse_path(path: &str) -> Option<Vec<Segment>> {
     };
     let mut segments = Vec::new();
     let mut names: Vec<&str> = Vec::new();
-    for part in rest.split('/') {
+    let parts: Vec<&str> = rest.split('/').collect();
+    for (i, part) in parts.iter().enumerate() {
         let param = part.strip_prefix(':').or_else(|| part.strip_prefix('{').and_then(|p| p.strip_suffix('}')));
-        match param {
-            Some(name) if word(name) && !names.contains(&name) => {
+        let rest = part.strip_prefix('*').filter(|_| i + 1 == parts.len());
+        match (param, rest) {
+            (Some(name), _) | (None, Some(name)) if word(name) && !names.contains(&name) => {
                 names.push(name);
-                segments.push(Segment::Param(name.to_string()));
+                segments.push(if param.is_some() { Segment::Param(name.to_string()) } else { Segment::Rest(name.to_string()) });
             }
-            None if word(part) => segments.push(Segment::Literal(part.to_string())),
+            (None, None) if word(part) => segments.push(Segment::Literal(part.to_string())),
             _ => return None,
         }
     }
     Some(segments)
 }
 
-/// The route a request should go to, with its path params. Among routes that match, the one
-/// with the most literal segments wins, so `/todos/new` beats `/todos/:id`; ties go to the
-/// earlier route. `request_path` is the path only, without the query string.
+/// Whether two route paths match exactly the same requests, so two routes of one method on them
+/// clash: the same segments, every param alike (`/todos/:id` and `/todos/:key`), a rest alike
+/// only a rest (`/a/*x` and `/a/*y`, never `/a/:x`).
+pub fn same_requests(a: &[Segment], b: &[Segment]) -> bool {
+    a.len() == b.len()
+        && a.iter().zip(b).all(|pair| match pair {
+            (Segment::Literal(x), Segment::Literal(y)) => x == y,
+            (Segment::Param(_), Segment::Param(_)) | (Segment::Rest(_), Segment::Rest(_)) => true,
+            _ => false,
+        })
+}
+
+/// Which of `paths` a request goes to, by its index, with its path params as the request wrote
+/// them (a rest's segments joined by `/`): a path without a rest beats any path with one, then
+/// the one with the most literal segments wins, so `/todos/new` beats `/todos/:id` and
+/// `/docs/*page` beats `/*path`; ties go to the earlier path. `request_path` is the path only,
+/// without the query string.
+pub fn pick_path<'s>(paths: impl IntoIterator<Item = &'s [Segment]>, request_path: &str) -> Option<(usize, BTreeMap<String, String>)> {
+    let parts: Vec<&str> = match request_path.strip_prefix('/')? {
+        "" => vec![],
+        rest => rest.split('/').collect(),
+    };
+    // How close a match is: no rest first, then the literals.
+    type Closeness = (bool, usize);
+    let mut best: Option<(usize, BTreeMap<String, String>, Closeness)> = None;
+    for (i, segments) in paths.into_iter().enumerate() {
+        let rest = matches!(segments.last(), Some(Segment::Rest(_)));
+        let fits = if rest { parts.len() >= segments.len() } else { parts.len() == segments.len() };
+        if !fits {
+            continue;
+        }
+        let mut params = BTreeMap::new();
+        let mut literals = 0;
+        let matched = segments.iter().enumerate().all(|(at, seg)| match seg {
+            Segment::Literal(l) => {
+                literals += 1;
+                l == parts[at]
+            }
+            Segment::Param(name) => {
+                params.insert(name.clone(), parts[at].to_string());
+                !parts[at].is_empty()
+            }
+            Segment::Rest(name) => {
+                params.insert(name.clone(), parts[at..].join("/"));
+                parts[at..].iter().all(|part| plain(part))
+            }
+        });
+        let closeness = (!rest, literals);
+        if matched && best.as_ref().is_none_or(|(_, _, c)| closeness > *c) {
+            best = Some((i, params, closeness));
+        }
+    }
+    best.map(|(i, params, _)| (i, params))
+}
+
+/// Whether a request's segment may be part of a rest: not empty, not `.` or `..` (`%2e` read as
+/// `.`), and nothing in it that decodes to a separator (`%2f`, `%5c`, `\`, the last one's on
+/// Windows), so a rest names only what the request's path said.
+fn plain(part: &str) -> bool {
+    let lower = part.to_ascii_lowercase();
+    let dots = lower.replace("%2e", ".");
+    !part.is_empty() && dots != "." && dots != ".." && !lower.contains("%2f") && !lower.contains("%5c") && !part.contains('\\')
+}
+
+/// The route a request should go to, with its path params, as [`pick_path`] picks among the
+/// routes of its method. `request_path` is the path only, without the query string.
 pub fn match_route<'a>(
     server: &'a Server,
     method: &str,
     request_path: &str,
 ) -> Option<(&'a Route, BTreeMap<String, String>)> {
-    let parts: Vec<&str> = match request_path.strip_prefix('/')? {
-        "" => vec![],
-        rest => rest.split('/').collect(),
-    };
-    let mut best: Option<(&Route, BTreeMap<String, String>, usize)> = None;
-    for route in server.routes.iter().filter(|r| r.method == method && r.segments.len() == parts.len()) {
-        let mut params = BTreeMap::new();
-        let mut literals = 0;
-        let matched = route.segments.iter().zip(&parts).all(|(seg, part)| match seg {
-            Segment::Literal(l) => {
-                literals += 1;
-                l == part
-            }
-            Segment::Param(name) => {
-                params.insert(name.clone(), part.to_string());
-                !part.is_empty()
-            }
-        });
-        if matched && best.as_ref().is_none_or(|(_, _, n)| literals > *n) {
-            best = Some((route, params, literals));
-        }
-    }
-    best.map(|(route, params, _)| (route, params))
+    let routes: Vec<&Route> = server.routes.iter().filter(|r| r.method == method).collect();
+    let (i, params) = pick_path(routes.iter().map(|r| r.segments.as_slice()), request_path)?;
+    Some((routes[i], params))
 }
 
 #[cfg(test)]
@@ -696,7 +735,7 @@ mod tests {
         assert!(matches!(read_server(&server("80", vec![clash, clash2]), &r), Err(DeclError::DuplicateRoute { .. })));
         let bad_method = endpoint(&mut r, "FETCH", "/a");
         assert!(matches!(read_server(&server("80", vec![bad_method]), &r), Err(DeclError::BadMethod { child: 0, .. })));
-        for path in ["a", "/a//b", "/a/:", "/a/:x/:x", "/a b", "/a?b"] {
+        for path in ["a", "/a//b", "/a/:", "/a/:x/:x", "/a b", "/a?b", "/a/*", "/a/*x/b", "/*x/*y", "/:x/*x", "*x", "/a/**x"] {
             let e = endpoint(&mut r, "GET", path);
             assert!(matches!(read_server(&server("80", vec![e]), &r), Err(DeclError::BadPath { .. })), "{path}");
         }
@@ -709,6 +748,44 @@ mod tests {
         assert_eq!(read_server(&handler(), &r), Err(DeclError::NotAServer));
         // Parse the root path, which has no segments.
         assert_eq!(parse_path("/"), Some(vec![]));
+    }
+
+    #[test]
+    fn a_rest_takes_the_rest_of_the_path_and_gives_way_to_any_other() {
+        let rest = |name: &str| Segment::Rest(name.into());
+        assert_eq!(parse_path("/*path"), Some(vec![rest("path")]));
+        assert_eq!(parse_path("/docs/:v/*page"), Some(vec![Segment::Literal("docs".into()), Segment::Param("v".into()), rest("page")]));
+
+        let mut r = MapResolver::new();
+        let paths = ["/api/hello", "/api/:name", "/api/*rest", "/docs/*page", "/*path", "/"];
+        let hashes: Vec<Hash> = paths.iter().map(|p| endpoint(&mut r, "GET", p)).collect();
+        let s = read_server(&server("80", hashes.clone()), &r).unwrap();
+        let picked = |path: &str| match_route(&s, "GET", path).map(|(route, params)| (route.path.clone(), params.into_iter().collect::<Vec<_>>()));
+        let one = |path: &str, name: &str, value: &str| Some((path.to_string(), vec![(name.to_string(), value.to_string())]));
+        // Any route without a rest first, then the longest prefix.
+        assert_eq!(picked("/api/hello"), Some(("/api/hello".into(), vec![])));
+        assert_eq!(picked("/api/other"), one("/api/:name", "name", "other"));
+        assert_eq!(picked("/api/a/b"), one("/api/*rest", "rest", "a/b"));
+        assert_eq!(picked("/docs/a/b"), one("/docs/*page", "page", "a/b"));
+        assert_eq!(picked("/docs"), one("/*path", "path", "docs"));
+        assert_eq!(picked("/"), Some(("/".into(), vec![])));
+        // As written: the host decodes a rest as it does every param.
+        assert_eq!(picked("/css/site%20a.css"), one("/*path", "path", "css/site%20a.css"));
+        // Never empty, and never a part that would mean another path: those match nothing here.
+        for not in ["/docs/", "/docs//a", "/docs/a/", "/docs/..", "/docs/a/./b", "/docs/%2e%2E", "/docs/a%2Fb", "/docs/a%5cb", "/docs/a\\b", "//"] {
+            assert_eq!(picked(not), None, "{not}: nor by /*path");
+        }
+        assert_eq!(picked("/.."), None);
+        assert_eq!(picked("/docs/...").map(|(p, _)| p), Some("/docs/*page".into()), "three dots are a name");
+
+        // Two rest routes clash on the same prefix, a rest never with a param.
+        let x = endpoint(&mut r, "GET", "/a/*x");
+        let y = endpoint(&mut r, "GET", "/a/*y");
+        let param = endpoint(&mut r, "GET", "/a/:x");
+        assert!(matches!(read_server(&server("80", vec![x, y]), &r), Err(DeclError::DuplicateRoute { .. })));
+        assert!(read_server(&server("80", vec![x, param]), &r).is_ok());
+        let other = endpoint(&mut r, "GET", "/:b/*x");
+        assert!(read_server(&server("80", vec![x, other]), &r).is_ok());
     }
 
     fn clock(r: &mut MapResolver, seconds: &str) -> Hash {

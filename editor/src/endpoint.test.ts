@@ -24,10 +24,14 @@ describe("parsePath", () => {
   it("accepts what core accepts and rejects the rest", () => {
     expect(parsePath("/")).toEqual([]);
     expect(parsePath("/todos/:id")).toEqual([
-      { literal: "todos", param: null },
-      { literal: null, param: "id" },
+      { literal: "todos", param: null, rest: null },
+      { literal: null, param: "id", rest: null },
     ]);
-    for (const bad of ["todos", "/a//b", "/a/:", "/a/:x/:x", "/a b", "/a?b"]) {
+    expect(parsePath("/files/*path")).toEqual([
+      { literal: "files", param: null, rest: null },
+      { literal: null, param: null, rest: "path" },
+    ]);
+    for (const bad of ["todos", "/a//b", "/a/:", "/a/:x/:x", "/a b", "/a?b", "/a/*", "/a/*x/b", "/:x/*x"]) {
       expect(parsePath(bad)).toBeNull();
     }
   });
@@ -79,6 +83,17 @@ describe("requestRecord", () => {
     expect(requestRecord("GET", "/todos/:id", "/todos", "")).toBeNull();
     expect(requestRecord("GET", "/todos/:id", "/todos/", "")).toBeNull();
     expect(requestRecord("GET", "/todos", "/other", "")).toBeNull();
+  });
+
+  it("gives a rest the rest of the path, each segment decoded", () => {
+    const r = requestRecord("GET", "/files/*path", "/files/css/site%20a.css?v=2", "");
+    expect(r?.type === "Record" && r.value.find(([k]) => k === "params")?.[1]).toEqual({
+      type: "Record",
+      value: [["path", { type: "Text", value: "css/site a.css" }]],
+    });
+    for (const not of ["/files", "/files/", "/files/a//b", "/files/..", "/files/a/./b", "/files/%2e%2e", "/files/a%2Fb", "/files/a%5Cb"]) {
+      expect(requestRecord("GET", "/files/*path", not, ""), not).toBeNull();
+    }
   });
 });
 
@@ -133,6 +148,16 @@ describe("matchRoute", () => {
     expect(matchRoute(eps, "PUT", "/todos/7")).toEqual({ status: 405, allow: ["GET", "DELETE"] });
     expect(matchRoute(eps, "GET", "/nope")).toEqual({ status: 404 });
     expect(matchRoute(eps, "GET", "/todos/")).toEqual({ status: 404 });
+  });
+
+  it("puts a rest after every route without one, then the longest prefix first", () => {
+    const site = [e("GET", "/*path"), e("GET", "/api/*rest"), e("GET", "/api/hello"), e("GET", "/"), e("POST", "/api/*rest")];
+    expect(matchRoute(site, "GET", "/api/hello")).toEqual({ endpoint: site[2] });
+    expect(matchRoute(site, "GET", "/api/a/b")).toEqual({ endpoint: site[1] });
+    expect(matchRoute(site, "GET", "/docs/setup")).toEqual({ endpoint: site[0] });
+    expect(matchRoute(site, "GET", "/")).toEqual({ endpoint: site[3] });
+    expect(matchRoute(site, "GET", "/docs/..")).toEqual({ status: 404 });
+    expect(matchRoute(site, "DELETE", "/api/x")).toEqual({ status: 405, allow: ["GET", "POST"] });
   });
 });
 

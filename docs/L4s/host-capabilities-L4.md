@@ -3108,6 +3108,105 @@ Step 1.8 comes after 1.6 and before 1.9 (§7, revised 2026-11-09), the rest segm
   `unrecorded` keeps "nothing that changes anything goes unrecorded or lazy"; `unrecorded` is
   still a person's approval.
 
+#### 5.11.12 Slice 1.8a as designed (2026-11-09, against `5e4d472`)
+
+§5.11.2 stands. What the code at `5e4d472` changes about where it is built:
+
+- **The language has no route-path tokens any more.** A route is `route.get("/*path", (req) =>
+  …)`: its path is a string, lowered as the request node's `path` param as written
+  (`lower.rs`, `route`), checked by core's `parse_path` when the routes are read
+  (`routes.rs`, `find_routes`, and `endpoint_unit`). `Tok::Star` and a printer change aren't
+  needed: the printer writes the string back. What the language does change is its words: the
+  error for a bad path (`use /todos, /todos/:id or /files/*path`), `Path`'s doc in `holon.d.ts`,
+  the editor's help for `route` (`editing.rs`) and the agent's (`agent.rs`).
+- **The editor asks core instead of keeping a copy.** `endpoint.ts` matches requests itself for
+  the request tester (`matchRoute`, `requestRecord`), a second copy of `match_route`. Instead of a
+  test keeping the copy equal, core gets `pick_path(paths, request_path)`, which `match_route` is
+  built on, and the bridge hands it to the editor as `route_pick(paths, request_path)`: `{index,
+  params}` (params as the request wrote them) or `null`. The editor keeps only what is its own:
+  which endpoints have the method, decoding, the 405. `route_path` gains `rest` beside `literal`
+  and `param`.
+- **Clashes are core's too:** `same_requests(a, b)`, whether two paths match exactly the same
+  requests, used by `read_server` and `routes.rs` (each has its own `shape` today).
+
+**Core** (`declare.rs`):
+
+```rust
+pub enum Segment { Literal(String), Param(String), Rest(String) }
+```
+
+- `parse_path`: a part `*name` (a word, the names shared with params, so `/:path/*path` is bad) is
+  `Rest(name)`, and only as the last part: `/a/*p/b` and `/*p/*q` are bad paths.
+- `pick_path`: a rest path matches when the parts before its rest match as today and one or more
+  parts follow, each one *plain*: not empty, not `.` or `..` once `%2e` is read as `.`, and with
+  no `%2f`, `%5c` or `\` in it, which would decode to a separator. A part that isn't plain makes
+  the path not match, so `/docs/a%2Fb` and `/docs/..` get a 404 from `GET /docs/*page`, as from
+  no route at all. Besides §5.11.2's `/`, `\` is refused because a folder on Windows reads it as
+  one. The rest's param is the parts joined by `/`, as written; the host decodes it as it decodes
+  every param (`data.rs`, `percent_decode`), so `css/site%20a.css` reaches the flow as
+  `css/site a.css`, and the editor decodes it as it does every param.
+- **Which wins:** a path without a rest beats any path with one, then the most literal parts, then
+  the earlier path, as §5.11.2 says.
+- `same_requests`: equal parts, every param alike, a rest only alike a rest. `/a/*x` and `/a/*y`
+  clash; `/a/*x` and `/a/:x` don't.
+
+**The tests' fillers.** The eval and server goldens (`golden.rs`, `tests.rs`) fill a route's
+`:name` with `tea` to send it a request; they fill `*name` the same way. `load.rs` already fills
+and matches `*rest`.
+
+**The sample `site`** (port 8196, 8131 being taken): the API and an app's page on one port.
+
+```ts
+route.get("/api/hello", () => ({ hello: "world" }))
+route.get("/api/*rest", (req) => status(404, { error: `no API at /api/${req.params.rest}` }))
+route.get("/", () => respond(page(""), { headers: html }), { log: "lazy" })
+route.get("/*path", (req) => respond(page(req.params.path), { headers: html }), { log: "lazy" })
+```
+
+`page` is a `js` holon writing the app's one page: where it was opened (escaped), and a script
+that reads `/api/hello`. A deep link (`/docs/setup`) gets the page, which says where it is; an
+unknown API path gets a JSON 404, not the page, since `/api/*rest` is the longer prefix; and
+`/api/hello` beats both. 1.8b replaces `page` with the folder's `index.html` and the files beside
+it.
+
+**Tests.** Core: the paths parsed and refused, a table of requests against paths (which wins, the
+params, the parts that aren't plain), the clashes. The host: `data.rs`'s params decoded and its
+405 over rest routes; a server test deploying `site` and asking a deep link, `/`, an unknown API
+path, `/api/hello`, `..` and `%2F`. The editor: `endpoint.test.ts` over the same requests through
+the bridge; `samples.test.ts` builds the sample. e2e: the sample deployed in the flows page's
+loop, and a test of its answers.
+
+**Docs:** `LANGUAGE.md` (routes), the manual's reference (routes, the most specific route), and
+this L4's as built.
+
+#### 5.11.13 Slice 1.8a as built (2026-11-09)
+
+As designed (§5.11.12), with what building it found:
+
+- **Core** has `Segment::Rest`, `pick_path` (the one place a request is matched: `match_route`
+  picks among its method's routes with it, and the bridge's `route_pick` among the paths it is
+  given) and `same_requests` (the one place two routes clash). The closeness of a match is
+  `(no rest, literals)`, compared as a pair, so a route without a rest always comes first.
+- **The editor matches nothing itself any more.** `matchRoute` and `requestRecord` ask
+  `route_pick`, and keep only the method's filter, decoding and the 405; `parsePath` reads `rest`
+  beside `literal` and `param`. A path core refuses matches nothing there, as on the server.
+- **What a client does with dots.** A browser, `fetch` and Playwright's request read `..` and
+  `%2e%2e` as the path's parent before they send, so they never ask `/docs/..`; `curl
+  --path-as-is` does. The server test and the live run ask it (404); the e2e test asks only what a
+  client sends as written (`%2F`, `%5C`, an empty segment).
+- **The goldens** fill `*name` with `tea` as they fill `:name`. The `site` sample comes after
+  `guestbook` in the samples' order, so the server golden's runs of every sample after it have
+  later clocks and nonces; their answers are unchanged.
+- **Run live** on a scratch server of the slice's build on loopback, the sample deployed with
+  `holon deploy --approve`: `/api/hello` answered `{"hello":"world"}`; `/api/nope/more` 404 with
+  `{"error":"no API at /api/nope/more"}`; `/`, `/docs/setup` and `/docs/a%20guide/part%202?x=1`
+  the page, opened at `/`, `/docs/setup` and `/docs/a guide/part 2`; `/%3Cb%3Ehi` the page with
+  `&lt;b&gt;hi`; `/docs/a%2Fb`, `/docs/a%5Cb`, `/docs//a`, `/docs/`, `/api/%2e%2e` and `/docs/..`
+  no route's (404); `POST /docs/setup` 405 with `allow: GET`. In a browser, the deep link opened
+  the page, its script got the API's answer, and its links went from page to page. The 19 runs
+  export and verify: the 12 that ran re-run to what their entries say, the 7 no route took are
+  logged as such.
+
 ### 5.12 Inbound WebSockets: a connection whose every message is a run
 
 Designed 2026-11-04 against `450e3de` and re-checked the same day against `ff03a80`, cited by file
@@ -4112,7 +4211,7 @@ signing only for SQS (fork 8): its design settles the queue engine with 1.4 defe
 | 1.5 | *Deferred.* **Secure connectivity:** keys the host holds (PGP decrypt and sign) and client identities (mutual TLS, a private CA) (§5.3, §5.4) | §5.3, §5.4 (here) | 1.1, 1.2 | M |
 | 1.6 | **Messaging:** one subscription runtime (position, once per message, backpressure, reconnect), feeds (SSE, WebSocket, Postgres `LISTEN`) and one queue engine, publish and consume (§5.5, §5.9); designed in slices (§5.9.1), all built: 1.6a the subscription runtime and server-sent events (§5.9.3), 1.6b WebSocket feeds (§5.9.5), 1.6c a feed resumed (§5.9.7), 1.6d a feed's gaps (§5.9.8), 1.6e the queue (§5.9.10, live against ElasticMQ and moto; real AWS still to come), 1.6f a Postgres channel (§5.9.12) | §5.5, §5.9 (here) | 1.4's request signing, for SQS (fork 8) | L |
 | 1.7 | *Deferred.* **Commands:** programs an admin binds, typed arguments, logged output, killed on timeout (§5.7) | §5.7 (here) | — | M |
-| 1.8 | **Static files:** a route's rest segment (`/*path`, routing, no item), and answering with a file from a folder (`site.serve(name)`, `FileServe`), streamed by the host and checked against the handle's hash; in slices (§5.11.8), 1.8a the rest segment | §5.11 (here) | — | M |
+| 1.8 | **Static files:** a route's rest segment (`/*path`, routing, no item), and answering with a file from a folder (`site.serve(name)`, `FileServe`), streamed by the host and checked against the handle's hash; in slices (§5.11.8), 1.8a the rest segment (built, §5.11.13) | §5.11 (here) | — | M |
 | 1.9 | **Inbound WebSockets:** `websocket PATH { open … message … close … }`, a run per message, replies and channel packs out, a record per connection (§5.9) | §5.12 (here) | 1.1 for binary frames | M |
 
 - **Samples, one at least per step:**

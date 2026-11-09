@@ -104,7 +104,7 @@ pub use value::Value;
 pub use json::{parse as parse_json, stringify as stringify_json};
 pub use crypto::{bytes_text, text_bytes};
 pub use declare::{
-    clock_label, declaration_of, log_level, match_route, parse_path, period_text, read_clock, read_action, read_endpoint,
+    clock_label, declaration_of, log_level, match_route, parse_path, pick_path, same_requests, period_text, read_clock, read_action, read_endpoint,
     read_feed_handler, read_file_handler, read_mail_handler, read_queue_handler, read_server, feed_label, mail_label, queue_label, Action, Clock, DeclError, EndpointError, FeedHandler, FileHandler, LogLevel, MailHandler, QueueHandler, Route, Segment, Server, MAX_PERIOD, METHODS,
 };
 

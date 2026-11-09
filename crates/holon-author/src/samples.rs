@@ -503,6 +503,18 @@ static SAMPLES: &[Sample] = &[
         text: include_str!("../samples/guestbook.holon.ts"),
     },
     Sample {
+        name: "site",
+        title: "Site (an app's page at every path, its API beside it)",
+        description: "A single-page app's routes on one port: its API under /api, and its page for every other path, so a deep link opens the app where it points. GET /*path is a rest segment: it matches the rest of the path, one segment or more, and req.params.path is what it matched, decoded. A route without a rest beats any route with one, and among rest routes the longer prefix wins, so /api/hello answers itself and any other /api path gets a JSON 404 from GET /api/*rest instead of the page. A segment that is empty, . or .., or that decodes to a separator, matches no rest. The page's routes are lazy.",
+        shows: &["a rest segment (/*path)", "which route wins", "a page from a js node", "lazy routes"],
+        port: Some("8196"),
+        secrets: &[],
+        optional: &[],
+        browsers: None,
+        try_it: "open http://127.0.0.1:8196/docs/setup in a browser; or curl http://127.0.0.1:8196/api/hello answers {\"hello\":\"world\"}, curl http://127.0.0.1:8196/api/nope answers 404 with {\"error\":\"no API at /api/nope\"}, and curl http://127.0.0.1:8196/docs/setup answers the page, opened at /docs/setup",
+        text: include_str!("../samples/site.holon.ts"),
+    },
+    Sample {
         name: "inbox-report",
         title: "Inbox report (files in folders on the host)",
         description: "Reads a CSV from a folder on the host, counts its rows and totals its number columns in a js node, and writes a Markdown report to another folder; lists and serves the reports. The flow names its folders (inbox, reports), never a path: an admin binds each to a real folder, read-only or read-write, and deploying asks for each use. A write lands whole when the run finishes; the run log keeps what was read and a hash of what was written.",

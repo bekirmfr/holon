@@ -595,8 +595,12 @@ route.METHOD("/path", async (req) => { statements; return answer })
 
 - **Methods:** `get`, `post`, `put`, `patch`, `delete`.
 - **Paths:** a literal, `/` and segments of letters, digits, `_`, `.` and `-`, or `:name` for a
-  part that `req.params.name` reads. The most specific route wins: `/todos/new` before
-  `/todos/:id`.
+  part that `req.params.name` reads, and last, perhaps, `*name` for the rest of the path, one
+  segment or more: `/files/*path` answers `/files/css/site.css` with `req.params.path`
+  `css/site.css`, each segment decoded. A segment that is empty, `.` or `..`, or that decodes to
+  `/` or `\`, matches no rest. The most specific route wins: `/todos/new` before `/todos/:id`,
+  and any route without a rest before one with it, the longest prefix first (`/api/*rest` before
+  `/*path`).
 - **`(req)`** names the request; any name works, it may be destructured (`({ params, json }) =>
   …`), and a route that reads nothing of it leaves it out: `() => "ok"`.
 - **`async`** goes on a handler that `await`s, as TypeScript requires.
