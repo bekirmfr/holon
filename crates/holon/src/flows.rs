@@ -28,28 +28,43 @@ pub(crate) fn handle_post_flows(
     if let Err(e) = check_uses(body.uses.as_deref()) {
         return err(400, e);
     }
-    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
-    // Each save of a flow is stamped later than the one before, even within the same second: the
-    // stamp is how a flow placed from it tells an older save from the newest (holonUsage.ts).
-    let previous = flows.lock().unwrap().get(&body.name).map(|f| f.saved_at_epoch_seconds);
-    let saved_at_epoch_seconds = previous.map_or(now, |p| now.max(p + 1));
-    let saved_by = by.map(String::from);
-    let uses = body.uses;
-    let record = FlowRecord { name: body.name.clone(), document: body.document, saved_at_epoch_seconds, saved_by: saved_by.clone(), uses: uses.clone() };
+    let name = body.name.clone();
+    match save(flows, flows_path, &body.name, body.document, body.uses.clone(), by, agent, activity) {
+        Ok(saved_at_epoch_seconds) => Response::json(&FlowListEntry { name, saved_at_epoch_seconds, saved_by: by.map(String::from), uses: body.uses }),
+        Err(refused) => refused,
+    }
+}
 
+/// Save `document` as the flow `name`, by `by`, and answer the save's stamp; an agent replaces
+/// only a flow it saved itself (403 otherwise). An agent's proposal saves its flow this way too
+/// (proposals.rs).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn save(
+    flows: &Mutex<BTreeMap<String, FlowRecord>>,
+    flows_path: &Place,
+    name: &str,
+    document: serde_json::Value,
+    uses: Option<Vec<HolonUse>>,
+    by: Option<&str>,
+    agent: bool,
+    activity: &crate::activity::Activity,
+) -> Result<u64, Response> {
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
     let mut table = flows.lock().unwrap();
     if agent
-        && let Some(saved) = table.get(&body.name)
+        && let Some(saved) = table.get(name)
         && saved.saved_by.as_deref() != by
     {
         let whose = saved.saved_by.as_deref().unwrap_or("someone");
-        return err(403, format!("a flow named \"{}\" saved by {whose} is already here, and an agent doesn't replace someone else's flow: save it under another name", body.name));
+        return Err(err(403, format!("a flow named \"{name}\" saved by {whose} is already here, and an agent doesn't replace someone else's flow: save it under another name")));
     }
-    table.insert(body.name.clone(), record);
+    // Each save of a flow is stamped later than the one before, even within the same second: the
+    // stamp is how a flow placed from it tells an older save from the newest (holonUsage.ts).
+    let saved_at_epoch_seconds = table.get(name).map_or(now, |p| now.max(p.saved_at_epoch_seconds + 1));
+    table.insert(name.to_string(), FlowRecord { name: name.to_string(), document, saved_at_epoch_seconds, saved_by: by.map(String::from), uses });
     persist_flows(flows_path, &table);
-    activity.record("saved", &body.name, by);
-
-    Response::json(&FlowListEntry { name: body.name, saved_at_epoch_seconds, saved_by, uses })
+    activity.record("saved", name, by);
+    Ok(saved_at_epoch_seconds)
 }
 
 /// `GET /flows` — every saved flow's name + freshness, never the documents themselves.

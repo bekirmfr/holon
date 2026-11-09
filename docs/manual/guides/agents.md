@@ -53,10 +53,10 @@ The tools `holon mcp` offers:
 | `reference` | the language on one page, every leaf, and the samples; with a topic, that one in full |
 | `check` | compile a flow: its routes, its version, and what it may do; or each mistake, with line and column |
 | `save` | save a flow on the server, for a person to open; never replaces a flow someone else saved |
-| `deploy` | deploy a flow; when it needs approval, save it for a person instead |
+| `deploy` | deploy a flow; when it needs approval, propose it for a person instead, with a `why` and a `note` |
 | `call` | send a request to a deployed flow's route, logged as a run like any other |
 | `run` | run one of a deployed flow's actions by its name, with what to send it: only an action a person lets agents run |
-| `deployments` | what is deployed; with a slug, one in full: routes, what it may do, what isn't granted, which secrets are set, its text |
+| `deployments` | what is deployed; with a slug, one in full: routes, what it may do, what isn't granted, which secrets are set, its proposals (a declined one with its reason), its text |
 | `flows` | the saved flows; with a name, its text |
 | `runs` | a deployment's latest runs, one line each |
 | `state` | what a deployment keeps now: each state value, and its collections; with a collection, its items (with a key, one) |
@@ -81,10 +81,13 @@ revoking it on the deployed page refuses them again. The agent's runs are logged
 
 ## Approving what an agent proposes
 
-The first deploy of a flow always needs approval, so an agent's first `deploy` answers:
+The first deploy of a flow always needs approval, so an agent's first `deploy` is a proposal: the
+server keeps the version, with the agent's `why` (what it changes, in a line) and `note`, and
+saves the flow under the agent's name. It answers:
 
 ```
-Not deployed yet: a person has to approve what "counter" may do. It asks to:
+Not deployed yet: proposed as version 1 of "counter" (proposal 1), with your why. A person has to
+approve what it may do. It asks to:
   - receive requests
   - read items of its collection "counts"
   - put and delete items of its collection "counts"
@@ -95,20 +98,30 @@ What starts it
 What it keeps
   + collection counts: read, put and delete — approved by confirming
 
-It is saved as the flow "counter" on http://127.0.0.1:7420: they open the editor there, open
-"counter" from the flows page, and deploy it, which asks them to approve exactly these. …
+It waits in the editor's Approvals on http://127.0.0.1:7420 (#approvals.counter.v1), where they
+approve it, which deploys it, or decline it with a reason. …
 ```
 
 and the agent tells you so. In the editor:
 
-1. On the **flows** page, the flow reads "saved … by *you* (agent)". Press **open**.
-2. Read it: the canvas and the text show what it does, and **deploy** shows what it may do.
-3. Press **deploy**, then **Approve and deploy** if you agree. Set any secrets it needs under
-   **⚙ → secrets**.
+1. **Approvals** lists it: the flow, the agent's why and note, and how many new permissions it
+   asks for.
+2. **Review** opens it as it was proposed: what it may do, its changes, its whole text and its
+   canvas, and *If approved*, what approving it does.
+3. Tick that you read it and press **Approve and deploy** if you agree. Set any secrets it needs
+   in the flow's settings.
+4. Or **Decline…** it, saying why. The reason is kept on the flow's history, and the agent reads
+   it with `deployments` and the flow's name. The version stays saved, and what runs keeps
+   running.
+
+Opening the flow from the **flows** page and deploying it there approves the proposal too.
+
+A flow's settings have **agents may propose versions**. Turned off, an agent's deploy of it is
+refused, neither proposed nor saved. The **Proposal** sample is a flow to try this with.
 
 From then on, a new version that asks for nothing more deploys from the agent at once. A version
 that asks for something new (another host, another secret, a site in its `browsers` line whose
-pages it doesn't answer yet) is saved for you again. So is a
+pages it doesn't answer yet) is proposed to you again. So is a
 version whose code changed and that reads a secret: what a secret is used for is the code, so a
 person approves it again. A secret the flow marks optional doesn't hold it up: the version
 deploys with that secret withheld (its reads refused), and you grant it back from the

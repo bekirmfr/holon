@@ -2,9 +2,12 @@
 // an agent writes a flow and deploys it with `holon mcp`, which the server holds to proposing (the
 // agent role, access.rs) though it signs in as the person; it waits for them, and they deploy it
 // from the flows page, approving what it may do; after that the agent's next version deploys
-// at once, and the agent calls it and reads the run back as its own text.
+// at once, and the agent calls it and reads the run back as its own text. And the proposal sample
+// (proposals.rs): proposed with a why and a note, declined in Approvals with a reason the agent
+// reads back, proposed again and approved from its review; then agents' proposals turned off.
 
 import { spawn } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { expect, PORTS, RUN_DIR, SAMPLE_SHIFT, SERVER, test } from "./fixtures";
@@ -132,5 +135,67 @@ test("an agent asks through holon mcp to put a run's state back, and a person re
     expect(await total()).toBe(5);
   } finally {
     agent.close();
+  }
+});
+
+test("an agent proposes the proposal sample with a why; a person declines it with a reason the agent reads, then approves it again proposed", async ({ page, request, adminToken }) => {
+  const agent = mcp();
+  const slug = `proposal-${Date.now().toString(36)}`;
+  const headers = { Authorization: `Bearer ${adminToken}` };
+  try {
+    await agent.rpc("initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "e2e", version: "1" } });
+    // Its port past the samples', in this slot's range, so the sample deployed by samples.e2e meets it not.
+    const text = readFileSync(new URL("../../crates/holon-author/samples/proposal.holon.ts", import.meta.url), "utf8").replace("port: 8184", `port: ${8192 + SAMPLE_SHIFT}`);
+    const why = "ids from httpbin, so they are unique across hosts";
+    const proposed = await agent.tool("deploy", { text, slug, why, note: "asked for in #payments; tried against httpbin: 3 ids" });
+    expect(proposed.failed).toBe(false);
+    expect(proposed.text).toContain(`proposed as version 1 of "${slug}"`);
+    expect(proposed.text).toContain(`#approvals.${slug}.v1`);
+
+    // Approvals lists it with the agent's why and note; declined, with a reason, it leaves.
+    await page.goto("/#approvals");
+    const row = page.getByRole("region", { name: "deploys" }).getByRole("row").filter({ hasText: slug });
+    await expect(row).toContainText(why);
+    await expect(row).toContainText("asked for in #payments");
+    await expect(row).toContainText("2 new permissions");
+    await row.getByRole("button", { name: `decline ${slug}` }).click();
+    const dialog = page.locator('[aria-modal="true"]');
+    await expect(dialog).toContainText("the agent reads it through holon mcp");
+    await dialog.locator("input").fill("use our own id service, not httpbin");
+    await dialog.getByRole("button", { name: "Decline this version" }).click();
+    await expect(page.getByText(`Declined ${slug} v1. The agent gets your note.`)).toBeVisible();
+    await expect(row).toHaveCount(0);
+    // The agent reads why.
+    const read = await agent.tool("deployments", { slug });
+    expect(read.text).toMatch(/proposal \d+ was declined by e2e at .*: use our own id service, not httpbin/);
+
+    // Proposed again, it is reviewed as proposed: its why, its note, and what approving it does.
+    expect((await agent.tool("deploy", { text, slug, why: "ids from httpbin, for now" })).text).toContain("proposed as version 1");
+    await page.goto("/#approvals");
+    await page.getByRole("link", { name: `review ${slug}` }).click();
+    await expect(page).toHaveURL(new RegExp(`#approvals\\.${slug}\\.v1$`));
+    const decision = page.getByRole("complementary", { name: "decision" });
+    await expect(decision.getByRole("group", { name: "proposal" })).toContainText("Why: ids from httpbin, for now");
+    await expect(decision.getByRole("group", { name: "if approved" })).toContainText("v1 goes live.");
+    await expect(decision.getByRole("group", { name: "if approved" })).toContainText("You grant 2 new permissions");
+    await decision.getByRole("checkbox").check();
+    await decision.getByRole("button", { name: "Approve and deploy" }).click();
+    await expect(page.getByText(`Deployed ${slug} v1.`)).toBeVisible();
+    const proposals = (await (await request.get(`${SERVER}/proposals`, { headers })).json()).proposals as { slug: string; state: string; decided_by?: string }[];
+    expect(proposals.filter((p) => p.slug === slug).map((p) => p.state)).toEqual(["approved", "declined"]);
+
+    // Its settings turn agents' proposals off: the agent's next deploy is refused.
+    await page.goto(`/#${slug}.settings`);
+    const agents = page.getByRole("region", { name: "agents" });
+    await agents.getByLabel("agents may propose versions").uncheck();
+    await expect(agents).toContainText("An agent's deploy of it is refused.");
+    const refused = await agent.tool("deploy", { text: text.replace("as the id", "as its id"), slug });
+    expect(refused.failed).toBe(true);
+    expect(refused.text).toContain("turned off agents proposing versions");
+  } finally {
+    agent.close();
+    await request.post(`${SERVER}/deployments/${slug}/stop`, { headers });
+    await request.delete(`${SERVER}/deployments/${slug}`, { headers });
+    await request.delete(`${SERVER}/flows/${slug}`, { headers });
   }
 });

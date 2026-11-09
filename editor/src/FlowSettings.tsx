@@ -1,6 +1,7 @@
 // A flow's Settings tab (FlowPage.tsx): what it is granted and the host's controls over it
 // (revoke, grant back, lower a limit, keep running), its secrets, the settings it was deployed
-// with, its waiting runs, its sessions and what it holds, and removing it.
+// with, whether agents may propose its versions, its waiting runs, its sessions and what it holds,
+// and removing it.
 
 import { useEffect, useRef, useState } from "react";
 import { SecretRow } from "./DeployBar";
@@ -17,6 +18,7 @@ import {
   getSessions,
   listSecrets,
   listWaitingRuns,
+  setAgentsPropose,
   type DeploymentEntry,
   type GrantView,
   type Holds,
@@ -65,10 +67,41 @@ export function SettingsTab({
       <Permissions slug={slug} version={version} manifest={manifest} focus={focus} onChanged={onChanged} />
       {secretNames.length > 0 && <Secrets slug={slug} names={secretNames} admin={role === "admin"} />}
       <DeploySettings manifest={manifest} />
+      <Agents slug={slug} entry={entry} viewer={role === "viewer"} onChanged={onChanged} />
       {(entry.waiting ?? 0) > 0 && <Waiting slug={slug} count={entry.waiting ?? 0} />}
       <Sessions entry={entry} onRunFrom={onRunFrom} />
       <Remove slug={slug} stopped={entry.status === "stopped"} onRemove={onRemove} />
     </div>
+  );
+}
+
+/** Whether agents may propose its versions (proposals.rs): off, an agent's deploy of it is
+ *  refused, neither proposed nor saved. */
+function Agents({ slug, entry, viewer, onChanged }: { slug: string; entry: DeploymentEntry; viewer: boolean; onChanged: () => void }) {
+  const [on, setOn] = useState(entry.agents_propose !== false);
+  const [msg, setMsg] = useState("");
+  useEffect(() => setOn(entry.agents_propose !== false), [entry.agents_propose]);
+  const change = (next: boolean) => {
+    // Shown at once; back as it was if the server refuses.
+    setMsg("");
+    setOn(next);
+    setAgentsPropose(slug, next).then(onChanged, (e: unknown) => {
+      setOn(!next);
+      setMsg(say(e));
+    });
+  };
+  return (
+    <section className="hl-flow__section" aria-label="agents">
+      <h2>Agents</h2>
+      {msg && <div className="hl-flow__bad">{msg}</div>}
+      <label className="hl-flow__check">
+        <input type="checkbox" checked={on} disabled={viewer} onChange={(e) => change(e.target.checked)} />
+        agents may propose versions
+      </label>
+      <p className="hl-flow__note">
+        {on ? "An agent's version that asks for nothing new deploys at once; one that does waits in Approvals, for a person." : "An agent's deploy of it is refused."} Which actions agents may run is among the settings it was deployed with.
+      </p>
+    </section>
   );
 }
 

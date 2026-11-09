@@ -1,11 +1,11 @@
-// What waits for a person (approvals.ts), kept fresh: the saved flows read every 4 s while
+// What waits for a person (approvals.ts), kept fresh: the saved flows and the proposals read every 4 s while
 // Approvals or the overview is shown (every 30 s otherwise, for the nav's count), each
 // deployment's events (for an agent's asks) while Approvals is, and the versions of a deployment
 // that has a newer save, so its review has a number.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { approvalsOf, keptKey, reviewQueue } from "./approvals";
-import { getEvents, getVersions, listFlows, type DeploymentEntry, type DeploymentEvent, type FlowListEntry } from "./server";
+import { getEvents, getVersions, listFlows, listProposals, type DeploymentEntry, type DeploymentEvent, type FlowListEntry, type Proposal } from "./server";
 
 const KEPT = "holon.approvals.kept";
 
@@ -20,6 +20,7 @@ function readKept(): Set<string> {
 
 export function useApprovals(deployments: DeploymentEntry[], { shown, asks: readAsks }: { shown: boolean; asks: boolean }) {
   const [flows, setFlows] = useState<FlowListEntry[]>([]);
+  const [proposals, setProposals] = useState<Proposal[]>([]);
   const [versions, setVersions] = useState<Map<string, number>>(new Map());
   const [asks, setAsks] = useState<Map<string, DeploymentEvent[]>>(new Map());
   const [kept, setKept] = useState<Set<string>>(readKept);
@@ -29,6 +30,9 @@ export function useApprovals(deployments: DeploymentEntry[], { shown, asks: read
   const refresh = useCallback(() => {
     listFlows()
       .then(setFlows)
+      .catch(() => undefined);
+    listProposals()
+      .then(setProposals)
       .catch(() => undefined);
   }, []);
   useEffect(() => {
@@ -66,7 +70,7 @@ export function useApprovals(deployments: DeploymentEntry[], { shown, asks: read
     }
   }, [deployments, saved]);
 
-  const approvals = useMemo(() => approvalsOf(deployments, flows, { versions, asks, kept }), [deployments, flows, versions, asks, kept]);
+  const approvals = useMemo(() => approvalsOf(deployments, flows, { versions, asks, kept, proposals }), [deployments, flows, versions, asks, kept, proposals]);
   const queue = useMemo(() => reviewQueue(approvals), [approvals]);
 
   /** Keep a version saved without deploying it: it leaves the queue until it is saved again. */
@@ -82,5 +86,5 @@ export function useApprovals(deployments: DeploymentEntry[], { shown, asks: read
     });
   }, []);
 
-  return { approvals, queue, flows, keep, refresh };
+  return { approvals, queue, flows, proposals, keep, refresh };
 }

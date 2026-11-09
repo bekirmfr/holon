@@ -299,6 +299,18 @@ static SAMPLES: &[Sample] = &[
         text: include_str!("../samples/pulse.holon.ts"),
     },
     Sample {
+        name: "proposal",
+        title: "Proposal (an agent asks, a person approves)",
+        description: "A flow that calls httpbin.org for an id: a host to reach, which a person approves. An agent that deploys it through holon mcp proposes it instead: the server keeps the version as a proposal (GET /proposals), with the agent's why and note and what it asks for, and it waits in the editor's Approvals. A person reviews it there and approves it, which deploys it, or declines it with a reason (POST /proposals/<id>/decline), which the agent reads back through holon mcp's deployments. A deployed flow's settings can turn agents' proposals off.",
+        shows: &["proposals", "agents propose", "holon mcp", "Approvals", "decline with a reason", "network egress"],
+        port: Some("8184"),
+        secrets: &[],
+        optional: &[],
+        browsers: None,
+        try_it: "connect an agent (holon mcp --server http://127.0.0.1:7420) and ask it to deploy this with a why; it is proposed, not deployed: open Approvals, review it and approve it (or decline it with a reason, which the agent reads with deployments proposal), then curl http://127.0.0.1:8184/id",
+        text: include_str!("../samples/proposal.holon.ts"),
+    },
+    Sample {
         name: "rolling-log",
         title: "Rolling log (retention)",
         description: "A clock flow that keeps only its newest 5 runs, none older than a day: its `keep` option says how long a deployment's log keeps its runs (the deploy settings' keep_runs and keep_run_days), and keeping fewer than the host's default asks nobody. The states its cut runs left stay in the store until a sweep clears what nothing kept names: the server's own (holon.toml's [storage] sweep_every, ten minutes unless said), or an admin's holon store sweep.",

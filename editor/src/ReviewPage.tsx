@@ -2,24 +2,30 @@
 // three columns. Left, what it may do, grouped as a person decides (needs your approval /
 // unchanged / no longer), each pointing at its line. Middle, the version itself: its changes
 // beside the version deployed (hunks, as a deploy's consent shows them), the whole flow, or its
-// canvas. Right, the decision: who saved it, the gate ("I read …"), Approve, or keep it saved
-// without deploying; and the queue, `[` and `]` for the one before and after.
-// A replay on recent runs and declining with a reason come later (G11, proposals).
+// canvas. Right, the decision: who proposed or saved it, and why (an agent's proposal, with its
+// note), what approving it does, the gate ("I read …"), Approve, keep it saved without deploying,
+// or decline a proposal with a reason; and the queue, `[` and `]` for the one before and after.
+// A proposal is reviewed as it was proposed (its own document, GET /proposals/<id>), whatever was
+// saved since. A replay on recent runs comes later (G11).
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Reviewable } from "./approvals";
+import { useDecline } from "./ApprovalsPage";
 import { codeHunk, touchHunks } from "./hunks";
 import { Review } from "./Review";
 import { mayGroups, textLines } from "./reviewMay";
 import { touchLines } from "./touches";
 import { follow, format, type Route } from "./routes";
-import { deployUnit, getDeployedDocument, getFlow, getVersions, previewDeploy, type DeployPreview, type DeploymentEntry, type FlowDocument, type FlowRecord, type VersionEntry } from "./server";
+import { deployUnit, getDeployedDocument, getFlow, getProposal, getVersions, previewDeploy, type DeployPreview, type DeploymentEntry, type FlowDocument, type FlowRecord, type Proposal, type VersionEntry } from "./server";
 import { useKeys } from "./ui/Keys";
 
 const when = (seconds: number) => new Date(seconds * 1000).toLocaleString();
+const plural = (n: number, one: string) => `${n} ${one}${n === 1 ? "" : "s"}`;
 
 type Loaded = {
   saved: FlowRecord;
+  /** The proposal it is, when one waits for it. */
+  proposal: Proposal | null;
   text: string;
   /** The version deployed now, as text (null: a first deploy, or it can't be written). */
   deployedText: string | null;
@@ -43,6 +49,7 @@ export function ReviewPage({
   textOf,
   onKeep,
   onDeployed,
+  onDeclined,
 }: {
   slug: string;
   version: number;
@@ -57,6 +64,8 @@ export function ReviewPage({
   textOf: (slug: string, doc: FlowDocument) => string;
   onKeep: (slug: string, savedAt: number) => void;
   onDeployed: (slug: string, version: number) => void;
+  /** A proposal was declined: what waits is read again. */
+  onDeclined: () => void;
 }) {
   const entry = deployments.find((d) => d.slug === slug);
   const waiting = queue.find((q) => q.slug === slug);
@@ -67,15 +76,21 @@ export function ReviewPage({
   const [read, setRead] = useState(false);
   const [busy, setBusy] = useState(false);
 
-  // Read again when another version is saved, or one is deployed.
-  const key = `${slug}:${waiting?.at ?? ""}:${entry?.unit ?? ""}`;
+  // Read again when another version is saved or proposed, or one is deployed.
+  const proposalId = waiting?.proposal?.id;
+  const key = `${slug}:${waiting?.at ?? ""}:${proposalId ?? ""}:${entry?.unit ?? ""}`;
   useEffect(() => {
     let fresh = true;
     setData(null);
     setError("");
     setRead(false);
     (async () => {
-      const saved = await getFlow(slug);
+      // A proposal is reviewed as proposed; anything else, as saved.
+      const proposal = proposalId === undefined ? null : await getProposal(proposalId);
+      const saved: FlowRecord =
+        proposal?.document !== undefined
+          ? { name: slug, document: proposal.document, saved_at_epoch_seconds: proposal.saved_at ?? Math.floor(proposal.at_ms / 1000), saved_by: proposal.by }
+          : await getFlow(slug);
       const deployedDoc = entry ? await getDeployedDocument(slug) : null;
       const versions = entry ? await getVersions(slug) : [];
       const { hash, document } = await prepare(slug, saved.document);
@@ -89,6 +104,7 @@ export function ReviewPage({
       };
       return {
         saved,
+        proposal,
         text: written(saved.document) ?? "",
         deployedText: deployedDoc ? written(deployedDoc) : null,
         current: versions.find((v) => v.current) ?? null,
@@ -143,12 +159,21 @@ export function ReviewPage({
       setBusy(false);
     }
   };
-  const keep = () => {
-    if (!data) return;
-    onKeep(slug, data.saved.saved_at_epoch_seconds);
+  /** On to the next that waits, or back to the list. */
+  const next = () => {
     const rest = queue.filter((q) => q.slug !== slug && q.version !== null);
     navigate(rest.length > 0 ? { kind: "review", slug: rest[0].slug, version: rest[0].version! } : { kind: "approvals", tab: "deploys" });
   };
+  const keep = () => {
+    if (!data) return;
+    onKeep(slug, data.saved.saved_at_epoch_seconds);
+    next();
+  };
+  const decline = useDecline(() => {
+    onDeclined();
+    next();
+  });
+  const gone = groups.find((g) => g.key === "gone")?.rows ?? [];
 
   return (
     <div className="hl-flow hl-review-page">
@@ -234,13 +259,21 @@ export function ReviewPage({
           </section>
 
           <aside className="hl-review-page__decide" aria-label="decision">
-            <div className="hl-review-page__card">
+            <div className="hl-review-page__card" role="group" aria-label="proposal">
               <h2>Proposal</h2>
+              {data.proposal && (
+                <>
+                  <p className="hl-review-page__why">
+                    <b>Why:</b> {data.proposal.why || "no why was given"}
+                  </p>
+                  {data.proposal.note && <blockquote className="hl-review-page__note">{data.proposal.note}</blockquote>}
+                </>
+              )}
               <dl className="hl-flow__facts">
                 <div>
-                  <dt>saved</dt>
+                  <dt>{data.proposal ? "proposed" : "saved"}</dt>
                   <dd>
-                    {when(data.saved.saved_at_epoch_seconds)}
+                    {data.proposal ? when(Math.floor(data.proposal.at_ms / 1000)) : when(data.saved.saved_at_epoch_seconds)}
                     {data.saved.saved_by ? ` by ${data.saved.saved_by}` : ""}
                   </dd>
                 </div>
@@ -249,6 +282,17 @@ export function ReviewPage({
                   <dd>{data.current ? `v${data.current.number}, ${when(data.current.deployed_at)}${data.current.by ? ` by ${data.current.by}` : ""}` : "nothing: its first deploy"}</dd>
                 </div>
               </dl>
+            </div>
+            <div className="hl-review-page__card" role="group" aria-label="if approved">
+              <h2>If approved</h2>
+              <ul className="hl-review-page__if">
+                <li>
+                  v{data.version} goes live{entry?.port ? ` on :${entry.port}` : ""}
+                  {data.current ? `; v${data.current.number} stays a version you can go back to.` : "."}
+                </li>
+                <li>{asked > 0 ? `You grant ${plural(asked, "new permission")}; the deploy is kept on its history with your name.` : "It asks for nothing new; the deploy is kept on its history with your name."}</li>
+                {gone.length > 0 && <li>It no longer may {gone.map((r) => r.line.text).join(", ")}.</li>}
+              </ul>
             </div>
             {data.preview.refused ? (
               <div className="hl-flow__banner">This host can't grant it: {data.preview.refused}</div>
@@ -266,6 +310,11 @@ export function ReviewPage({
             <button className="hl-flow__button" onClick={keep} title="it leaves the queue in this browser until it is saved again">
               Keep it saved, don't deploy
             </button>
+            {data.proposal && (
+              <button className="hl-flow__button hl-flow__button--bad" onClick={() => void decline({ ...data.proposal!, version: data.version })}>
+                Decline this version…
+              </button>
+            )}
             {entry && <p className="hl-flow__note">Its state and sessions are kept.</p>}
           </aside>
         </div>

@@ -50,6 +50,7 @@ fn test_state_in(store: SharedStore, at: Place) -> AppState {
         editor: None,
         sweeps: Default::default(),
         checked: Default::default(),
+        proposals: Default::default(),
     }
 }
 
@@ -62,7 +63,17 @@ fn host_header() -> (String, String) {
 /// A request as the editor sends it: our Host, and for a POST the Content-Type its body is
 /// (a JSON body starts with `{` or `[`; preimages and trigger text go as raw bytes).
 pub(crate) fn req(method: &str, url: &str, body: Vec<u8>) -> Request {
+    req_with(method, url, body, vec![])
+}
+
+/// As `holon mcp` asks: as an agent (`X-Holon-Role`, access.rs).
+pub(crate) fn agent_req(method: &str, url: &str, body: Vec<u8>) -> Request {
+    req_with(method, url, body, vec![("X-Holon-Role".to_string(), "agent".to_string())])
+}
+
+fn req_with(method: &str, url: &str, body: Vec<u8>, more: Vec<(String, String)>) -> Request {
     let mut headers = vec![host_header()];
+    headers.extend(more);
     if method == "POST" {
         let json = matches!(body.first(), Some(b'{' | b'['));
         let ty = if json { "application/json" } else { "application/octet-stream" };
@@ -2284,6 +2295,7 @@ fn deployments_persist_across_a_simulated_restart() {
             editor: None,
             sweeps: Default::default(),
             checked: Default::default(),
+            proposals: Default::default(),
         };
         let unit = stage_text(&state, ECHO);
         let ack = serde_json::json!({ "acknowledge": ["Action(\"echo\")"] });
@@ -2319,6 +2331,7 @@ fn deployments_persist_across_a_simulated_restart() {
         editor: None,
         sweeps: Default::default(),
         checked: Default::default(),
+        proposals: Default::default(),
     };
     let ran = run_action_named(&state2, "echo", "echo", serde_json::json!("restarted"));
     assert_eq!(ran.status_code, 200);
@@ -3714,6 +3727,7 @@ fn state_persists_across_a_simulated_restart() {
             editor: None,
             sweeps: Default::default(),
             checked: Default::default(),
+            proposals: Default::default(),
         };
         let writer = stage_writer(&state, "counter");
         let ack = serde_json::json!({ "acknowledge": ["Action(\"put\")", "StateWrite(\"counter\")"] });
@@ -3749,6 +3763,7 @@ fn state_persists_across_a_simulated_restart() {
         editor: None,
         sweeps: Default::default(),
         checked: Default::default(),
+        proposals: Default::default(),
     };
     assert_eq!(put(&state2, "writer", "after-restart").status_code, 200);
     let s = body_json(route(&state2, &req("GET", "/deployments/writer/state", vec![])));

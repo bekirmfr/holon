@@ -1,8 +1,8 @@
 // What waits for a person (approvals.ts), derived as the workbench and `holon mcp` derive it.
 
 import { describe, expect, it } from "vitest";
-import { approvalsOf, keptKey, pendingAsks, reviewQueue, routeOf } from "./approvals";
-import type { DeploymentEntry, DeploymentEvent, FlowListEntry } from "./server";
+import { approvalsOf, keptKey, pendingAsks, reviewQueue, routeOf, said } from "./approvals";
+import type { DeploymentEntry, DeploymentEvent, FlowListEntry, Proposal } from "./server";
 
 const deployment = (slug: string, at: number, more: Partial<DeploymentEntry> = {}): DeploymentEntry => ({
   slug,
@@ -19,6 +19,19 @@ const deployment = (slug: string, at: number, more: Partial<DeploymentEntry> = {
   ...more,
 });
 const saved = (name: string, at: number, by?: string): FlowListEntry => ({ name, saved_at_epoch_seconds: at, ...(by ? { saved_by: by } : {}) });
+const proposal = (id: number, slug: string, more: Partial<Proposal> = {}): Proposal => ({
+  id,
+  slug,
+  unit: `p-${slug}`,
+  why: "calls httpbin",
+  by: "ada (agent)",
+  agent: true,
+  at_ms: 300_000,
+  needs: ['NetworkEgress("httpbin.org")'],
+  saved_at: 300,
+  state: "waiting",
+  ...more,
+});
 const event = (seq: number, kind: string, more: Partial<DeploymentEvent> = {}): DeploymentEvent => ({ seq, at_ms: seq * 1000, run_seq: 0, kind, what: `${kind} ${seq}`, ...more });
 
 describe("approvals", () => {
@@ -58,5 +71,23 @@ describe("approvals", () => {
     const got = approvalsOf([deployment("notes", 100)], [], { asks: new Map([["notes", events]]) });
     expect(got).toEqual([{ kind: "ask", slug: "notes", what: "ask 2", by: "agent:codex", at: 2, from: "run 4" }]);
     expect(routeOf(got[0])).toEqual({ kind: "flow", slug: "notes", tab: "history" });
+  });
+
+  it("carry an agent's proposal, with the number its record gives, and its why in words", () => {
+    const p = proposal(7, "refunds", { version: 4 });
+    const q = proposal(8, "ids", { version: 1 });
+    const got = approvalsOf([deployment("refunds", 100)], [saved("refunds", 300, "ada (agent)"), saved("ids", 300, "ada (agent)")], { proposals: [p, q] });
+    expect(got).toEqual([
+      { kind: "update", slug: "refunds", by: "ada (agent)", at: 300, version: 4, proposal: p },
+      { kind: "first", slug: "ids", by: "ada (agent)", at: 300, version: 1, proposal: q },
+    ]);
+    expect(said(got[0], () => "9:41")).toBe("a new version, proposed by ada (agent) at 9:41: calls httpbin");
+  });
+
+  it("leave out a version a person declined, until it is saved again", () => {
+    const declined = [proposal(7, "ids", { state: "declined", reason: "use the sandbox" })];
+    expect(approvalsOf([], [saved("ids", 300)], { proposals: declined })).toEqual([]);
+    expect(approvalsOf([], [saved("ids", 301)], { proposals: declined })).toHaveLength(1);
+    expect(approvalsOf([deployment("ids", 100)], [saved("ids", 300)], { proposals: declined })).toEqual([]);
   });
 });

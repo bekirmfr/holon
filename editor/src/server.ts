@@ -558,6 +558,41 @@ export type Summary = {
 export const getSummary = async (hours = 24) => asJson<Summary>(await api(`${BASE}/summary?hours=${hours}`));
 export const checkChains = async () => asJson<ChainCheck>(await post(`${BASE}/summary/check`));
 
+/** A version someone asks a person to deploy (proposals.rs): an agent's deploy that needs a
+ *  person's approval, with its why and note, and what became of it. */
+export type Proposal = {
+  id: number;
+  slug: string;
+  unit: string;
+  why: string;
+  note?: string;
+  by?: string;
+  agent: boolean;
+  at_ms: number;
+  /** What it asked to be approved when it was made. */
+  needs: string[];
+  /** The stamp of the save of the flow it made. */
+  saved_at?: number;
+  state: "waiting" | "approved" | "declined" | "replaced";
+  decided_by?: string;
+  decided_at_ms?: number;
+  reason?: string;
+  /** While it waits: the version it would deploy as. */
+  version?: number;
+  /** Its canvas, with its text (`GET /proposals/<id>` only). */
+  document?: FlowDocument;
+};
+
+/** `GET /proposals`: the waiting ones, oldest first (the queue), then the decided, newest first. */
+export const listProposals = async () => (await asJson<{ proposals: Proposal[] }>(await api(`${BASE}/proposals`))).proposals;
+/** `GET /proposals/<id>`: one, with its document. */
+export const getProposal = async (id: number) => asJson<Proposal>(await api(`${BASE}/proposals/${id}`));
+/** Decline a waiting proposal, with a reason its author reads. */
+export const declineProposal = async (id: number, reason: string) => asJson<Proposal>(await post(`${BASE}/proposals/${id}/decline`, { reason }));
+/** Whether agents may propose a deployment's versions. */
+export const setAgentsPropose = async (slug: string, on: boolean) =>
+  asJson<DeploymentEntry>(await post(`${BASE}/deployments/${encodeURIComponent(slug)}/settings`, { agents_propose: on }));
+
 /** A secret's history: a deployment's, or (`slug` null) the server's own. */
 export async function getSecretHistory(slug: string | null, name: string): Promise<SecretHistory> {
   return asJson<SecretHistory>(await api(secretUrl(slug, name)));
@@ -661,6 +696,8 @@ export type DeploymentEntry = {
   listen_error?: string;
   /** How many of its runs are waiting for an event. */
   waiting?: number;
+  /** Whether agents may propose its versions (off: an agent's deploy of it is refused). */
+  agents_propose?: boolean;
 };
 
 /** A run waiting for an event (`GET /deployments/<slug>/runs`; never its tokens). */

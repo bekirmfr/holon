@@ -1257,7 +1257,9 @@ function Canvas({
               marketplace={{ url: market.url, onPublish: market.publish }}
             />
           )}
-          {shown === "approvals" && route.kind === "approvals" && <ApprovalsPage tab={route.tab} approvals={approvals.approvals} deployments={deployments} navigate={navigate} />}
+          {shown === "approvals" && route.kind === "approvals" && (
+            <ApprovalsPage tab={route.tab} approvals={approvals.approvals} deployments={deployments} navigate={navigate} onDeclined={approvals.refresh} />
+          )}
           {shown === "approvals" && route.kind === "review" && (
             <ReviewPage
               key={route.slug}
@@ -1269,6 +1271,7 @@ function Canvas({
               prepare={prepareSaved}
               textOf={(slug, doc) => doc.source ?? printHolon(slug, doc, ev)}
               onKeep={approvals.keep}
+              onDeclined={approvals.refresh}
               onDeployed={(slug, version) => {
                 refreshDeployments();
                 approvals.refresh();

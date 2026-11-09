@@ -177,7 +177,7 @@ pub(crate) fn route(state: &AppState, request: &Request) -> Response {
     }
 
     if method == "POST" && url == "/deploy" {
-        let response = handle_post_deploy(&state.store, &state.deployments, &state.deployments_path, &state.policy(), &state.secrets, &state.folders, request, by, agent, &state.activity);
+        let response = handle_post_deploy(state, request, by, agent);
         sync_listeners(state);
         return response;
     }
@@ -197,6 +197,21 @@ pub(crate) fn route(state: &AppState, request: &Request) -> Response {
         }
         if method == "DELETE" {
             return recorded(state, handle_delete_flow(&state.flows, &state.flows_path, name), "deleted flow", name, by);
+        }
+    }
+
+    // Versions waiting for a person, and what became of the others (proposals.rs).
+    if method == "GET" && url == "/proposals" {
+        return crate::proposals::handle_get_proposals(state);
+    }
+    if let Some(rest) = url.strip_prefix("/proposals/") {
+        if let Some(id) = rest.strip_suffix("/decline")
+            && method == "POST"
+        {
+            return crate::proposals::handle_post_decline(state, id, request, by);
+        }
+        if method == "GET" && !rest.contains('/') {
+            return crate::proposals::handle_get_proposal(state, rest);
         }
     }
 
@@ -317,6 +332,10 @@ pub(crate) fn route(state: &AppState, request: &Request) -> Response {
         } else if let Some(slug) = rest.strip_suffix("/request") {
             if method == "POST" {
                 return handle_post_request(state, slug, request, by);
+            }
+        } else if let Some(slug) = rest.strip_suffix("/settings") {
+            if method == "POST" {
+                return crate::proposals::handle_post_settings(state, slug, request, by);
             }
         } else if let Some(slug) = rest.strip_suffix("/tick") {
             if method == "POST" {

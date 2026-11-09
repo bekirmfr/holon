@@ -194,6 +194,7 @@ mod outbound;
 mod paths;
 mod permissions;
 mod persist;
+mod proposals;
 mod pick;
 mod ranges;
 mod recorder;
@@ -367,6 +368,9 @@ struct AppState {
     /// Where `flows` is persisted (write-through, same discipline as `deployments_path`), or
     /// nowhere to opt out.
     flows_path: Place,
+    /// The versions proposed for a person to deploy, and what became of each (proposals.rs): kept
+    /// beside `flows`.
+    proposals: proposals::Proposals,
     /// Who may use the control plane: tokens, and hosts and origins beyond loopback (access.rs).
     access: access::Access,
     /// The port this server listens on — the one a request's `Host` must name
@@ -517,6 +521,8 @@ struct Deployment {
     /// The flow document (canvas) this deployment was deployed from, as the editor sent it, so
     /// view mode shows exactly what runs even after the flow is edited. Persisted.
     document: Option<serde_json::Value>,
+    /// A person turned off agents proposing its versions (proposals.rs). Persisted.
+    agents_propose_off: bool,
     /// Every version deployed, oldest first, the current one last (`wire::Version`): a run
     /// logged on an earlier version is shown on its own canvas, and any version with its request
     /// kept can be deployed again (`holon restore`). Kept for good. Persisted.
@@ -1111,6 +1117,7 @@ fn serve(args: Vec<String>) {
         dep.folders = Arc::new(folders::Scoped::new(Arc::clone(&folders), slug));
     }
     let flows = Mutex::new(load_flows(&flows_at).unwrap_or_else(|e| refuse_to_start(e)));
+    let proposals = proposals::Proposals::beside(&flows_at).unwrap_or_else(|e| refuse_to_start(e));
     let deployments: Arc<Mutex<BTreeMap<String, Deployment>>> = Arc::new(Mutex::new(initial_deployments));
     spawn_clock_scheduler(store.clone(), Arc::clone(&deployments), deployments_at.clone());
     arrivals::spawn_watcher(store.clone(), Arc::clone(&deployments), deployments_at.clone());
@@ -1170,6 +1177,7 @@ fn serve(args: Vec<String>) {
         deployments,
         deployments_path: deployments_at,
         flows,
+        proposals,
         flows_path: flows_at,
         port,
         listeners: Some(Mutex::new(BTreeMap::new())),

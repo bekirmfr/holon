@@ -2,7 +2,7 @@
 //! Context Protocol server on stdin and stdout (docs/L4s/agent-surface-L4.md). It speaks the
 //! language's text and answers in sentences; what it computes is holon-author's (`agent.rs`), and
 //! what it asks a server is what the editor asks. The tools never approve: a deploy that needs a
-//! person's approval is saved for them, and says so. It asks as an agent (`X-Holon-Role`), so the
+//! person's approval is kept by the server as a proposal for them (proposals.rs), and says so. It asks as an agent (`X-Holon-Role`), so the
 //! server holds it to that whatever sign-in it has (access.rs).
 
 use std::io::{BufRead, Read, Write};
@@ -24,8 +24,8 @@ const USAGE: &str = "usage: holon mcp [--server PORT|URL]
   An MCP server on stdin and stdout, for an agent's host (Claude Code, an IDE) to start: tools
   to look up the language, check a flow, deploy it, call it, list its runs and explain one, read
   a deployment's history, and see what a restore would change (only ever a dry run). Its tools
-  never approve what a flow may do: a deploy that needs approval is saved for a person to deploy
-  from the editor. It asks as an agent, so the server holds it to proposing too.
+  never approve what a flow may do: a deploy that needs approval is a proposal, which waits in
+  the editor's Approvals for a person. It asks as an agent, so the server holds it to proposing too.
 
   --server PORT|URL        which holon server to ask (see below)
   setup                    add it to a host's settings (holon mcp setup --help says more)
@@ -155,8 +155,17 @@ fn tool_list() -> Value {
         {
             "name": "deploy",
             "title": "Deploy a flow",
-            "description": "Deploy a flow to the Holon server. It never approves anything: when the flow may do something not yet approved (a first deploy always is), it is saved for a person, and the answer says what they must approve and where. Once they have deployed it, a new version that needs nothing more deploys from here at once.",
-            "inputSchema": { "type": "object", "properties": { "text": text, "slug": slug }, "required": ["text"] },
+            "description": "Deploy a flow to the Holon server. It never approves anything: when the flow may do something not yet approved (a first deploy always is), it is proposed for a person, with your why and note, and the answer says what they must approve and where. They approve it or decline it with a reason, which `deployments` with its slug says. Once a version is deployed, a new one that needs nothing more deploys from here at once.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "text": text,
+                    "slug": slug,
+                    "why": { "type": "string", "description": "what this version changes and why, in one line, for the person who reviews it" },
+                    "note": { "type": "string", "description": "more for them, if any: who asked for it, what you tried" }
+                },
+                "required": ["text"]
+            },
             "annotations": { "readOnlyHint": false, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false }
         },
         {
@@ -291,7 +300,10 @@ pub(crate) fn call_tool(name: &str, args: &Value, connect: &Connect) -> Result<S
             if r.code == 0 { Ok(out) } else { Err([out, r.err.join("\n")].iter().filter(|s| !s.is_empty()).cloned().collect::<Vec<_>>().join("\n")) }
         }
         "save" => save(&*connect()?, arg(args, "text")?, args.get("name").and_then(Value::as_str)),
-        "deploy" => deploy(&*connect()?, arg(args, "text")?, args.get("slug").and_then(Value::as_str)),
+        "deploy" => {
+            let said = |k: &str| args.get(k).and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty());
+            deploy(&*connect()?, arg(args, "text")?, said("slug"), Asked { why: said("why"), note: said("note") })
+        }
         "call" => call(&*connect()?, args),
         "run" => run_action(&*connect()?, arg(args, "slug")?, arg(args, "action")?, args.get("input").cloned().unwrap_or_else(|| json!({}))),
         "deployments" => deployments(&*connect()?, args.get("slug").and_then(Value::as_str).filter(|s| !s.trim().is_empty())),
@@ -311,7 +323,14 @@ pub(crate) fn call_tool(name: &str, args: &Value, connect: &Connect) -> Result<S
     }
 }
 
-fn deploy(api: &dyn Api, text: &str, slug: Option<&str>) -> Result<String, String> {
+/// What an agent says of a version it proposes, for the person who reviews it.
+#[derive(Default, Clone, Copy)]
+struct Asked<'a> {
+    why: Option<&'a str>,
+    note: Option<&'a str>,
+}
+
+fn deploy(api: &dyn Api, text: &str, slug: Option<&str>, asked: Asked) -> Result<String, String> {
     let plan = agent::plan(text)?;
     let slug = slug.map(str::trim).filter(|s| !s.is_empty()).unwrap_or(&plan.name).to_string();
     for unit in &plan.units {
@@ -339,20 +358,29 @@ fn deploy(api: &dyn Api, text: &str, slug: Option<&str>) -> Result<String, Strin
     } else {
         format!("\nSecrets not set yet (an admin sets them in the editor, under the deployment's ⚙): {}. Until then, a run that reads one gets nothing.", missing.join(", "))
     };
-    if !needs.is_empty() {
-        save_for_approval(api, &slug, &saved_document(&plan, text))?;
+    // Its text goes with it, comments and all, so the person who opens it reads what was written.
+    body["document"] = saved_document(&plan, text);
+    if let Some(w) = asked.why {
+        body["why"] = json!(w);
+    }
+    if let Some(n) = asked.note {
+        body["note"] = json!(n);
+    }
+    let deployed = json_of(api, "POST", "/deploy", Some(Body::Json(body)))?;
+    // What needs a person's approval, the server keeps as a proposal for them.
+    if let Some(p) = deployed.get("proposal") {
         let touches = crate::touches::text(&crate::touches::lines(&preview["touches"], &preview["settings"]));
+        let version = p.get("version").and_then(Value::as_u64).unwrap_or(1);
+        let why = if asked.why.is_some() { "with your why" } else { "with no why: say what it changes and why, with `why`, next time" };
         return Ok(format!(
-            "Not deployed yet: a person has to approve what \"{slug}\" may do. It asks to:\n{}\n\nWhat it touches (+ new, - no longer, ~ changed, ! not ready on {}):\n{}\n\nIt is saved as the flow \"{slug}\" on {}: they open the editor there, open \"{slug}\" from the flows page, and deploy it, which asks them to approve exactly these. Tell them, and deploy again from here once they have: a version that needs nothing more deploys at once.{secrets_note}",
+            "Not deployed yet: proposed as version {version} of \"{slug}\" (proposal {}), {why}. A person has to approve what it may do. It asks to:\n{}\n\nWhat it touches (+ new, - no longer, ~ changed, ! not ready on {}):\n{}\n\nIt waits in the editor's Approvals on {} (#approvals.{slug}.v{version}), where they approve it, which deploys it, or decline it with a reason. Tell them; `deployments` with \"{slug}\" says what they decided. Once it is deployed, a version that needs nothing more deploys from here at once.{secrets_note}",
+            p.get("id").and_then(Value::as_u64).unwrap_or(0),
             described(&needs),
             api.server(),
             touches.join("\n"),
             api.server()
         ));
     }
-    body["acknowledge"] = json!([]);
-    body["document"] = plan.document.clone();
-    json_of(api, "POST", "/deploy", Some(Body::Json(body)))?;
     let entry = json_of(api, "GET", "/deployments", None)?
         .get("deployments")
         .and_then(Value::as_array)
@@ -374,15 +402,6 @@ fn deploy(api: &dyn Api, text: &str, slug: Option<&str>) -> Result<String, Strin
     }
     out.push(format!("Call it with `call`, and see what a run did with `explain`.{secrets_note}"));
     Ok(out.join("\n"))
-}
-
-/// Save the flow for a person to deploy, under `slug`, unless that would replace a flow someone
-/// else saved.
-fn save_for_approval(api: &dyn Api, slug: &str, document: &Value) -> Result<(), String> {
-    match save_flow(api, slug, document)? {
-        None => Ok(()),
-        Some(by) => Err(format!("not deployed: it needs a person's approval, and a flow named \"{slug}\" saved by {by} is already on {}; deploy under another slug so theirs isn't replaced", api.server())),
-    }
 }
 
 /// Save `document` as the flow `name`; or, when a flow by that name is someone else's, leave it
@@ -505,12 +524,14 @@ fn deployments(api: &dyn Api, slug: Option<&str>) -> Result<String, String> {
         }
         return Ok(out.join("\n"));
     };
+    let proposed = proposals_of(api, slug);
     let Some(d) = all.iter().find(|d| d.get("slug").and_then(Value::as_str) == Some(slug)) else {
         return match saved(slug) {
             Some(f) => Ok(format!(
-                "\"{slug}\" isn't deployed. It is saved{} at {}, for a person to deploy from the flows page; `flows` with its name shows its text.",
+                "\"{slug}\" isn't deployed. It is saved{} at {}, for a person to deploy from the flows page; `flows` with its name shows its text.{}",
                 f.get("saved_by").and_then(Value::as_str).map(|b| format!(" by {b}")).unwrap_or_default(),
-                when(&f["saved_at_epoch_seconds"])
+                when(&f["saved_at_epoch_seconds"]),
+                proposed.map(|p| format!("\n{p}")).unwrap_or_default()
             )),
             None => Err(format!("nothing named \"{slug}\" is deployed or saved on {}", api.server())),
         };
@@ -539,11 +560,45 @@ fn deployments(api: &dyn Api, slug: Option<&str>) -> Result<String, String> {
     }
     let waits = waits_for(d, saved(slug));
     out.push(if waits.is_empty() { "Nothing waits for a person.".into() } else { format!("It waits for a person:\n{}", waits.iter().map(|w| format!("  - {w}")).collect::<Vec<_>>().join("\n")) });
+    out.extend(proposed);
     match text {
         Ok(t) => out.push(format!("\nIts text, as deployed:\n\n{}", t.trim_end())),
         Err(e) => out.push(format!("\nIts text can't be shown: {e}")),
     }
     Ok(out.join("\n"))
+}
+
+/// How many of a flow's proposals `deployments` says, the waiting one first, then the newest.
+const PROPOSALS_SAID: usize = 3;
+
+/// A flow's proposals, as its author reads what became of them: the one waiting, and the newest
+/// decided, a declined one with its reason. None when it has none (or the server keeps none).
+fn proposals_of(api: &dyn Api, slug: &str) -> Option<String> {
+    let all = list_of(json_of(api, "GET", "/proposals", None).ok()?, Some("proposals"));
+    let lines: Vec<String> = all
+        .iter()
+        .filter(|p| p.get("slug").and_then(Value::as_str) == Some(slug))
+        .take(PROPOSALS_SAID)
+        .map(|p| {
+            let s = |k: &str| p.get(k).and_then(Value::as_str);
+            let at = |k: &str| when(&json!(p.get(k).and_then(Value::as_u64).unwrap_or(0) / 1000));
+            let id = p.get("id").and_then(Value::as_u64).unwrap_or(0);
+            let decider = s("decided_by").unwrap_or("a person");
+            match s("state").unwrap_or("?") {
+                "waiting" => format!(
+                    "  - proposal {id}, version {}: waits for a person (proposed by {} at {}){}",
+                    p.get("version").and_then(Value::as_u64).unwrap_or(0),
+                    s("by").unwrap_or("someone"),
+                    at("at_ms"),
+                    s("why").filter(|w| !w.is_empty()).map(|w| format!(": {w}")).unwrap_or_default()
+                ),
+                "declined" => format!("  - proposal {id} was declined by {decider} at {}: {}", at("decided_at_ms"), s("reason").unwrap_or("no reason given")),
+                "approved" => format!("  - proposal {id} was approved by {decider} at {}, and deployed", at("decided_at_ms")),
+                _ => format!("  - proposal {id} was replaced by a newer one"),
+            }
+        })
+        .collect();
+    (!lines.is_empty()).then(|| format!("Its proposals, the newest first:\n{}", lines.join("\n")))
 }
 
 fn flows(api: &dyn Api, name: Option<&str>) -> Result<String, String> {
@@ -1029,8 +1084,13 @@ pub(crate) fn run(args: &[String]) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tests::{body_bytes, req, test_state};
+    use crate::tests::{agent_req, body_bytes, req, test_state};
     use crate::{route, AppState};
+
+    /// `deploy`, with nothing said for the person who reviews it.
+    fn deploy(api: &dyn Api, text: &str, slug: Option<&str>) -> Result<String, String> {
+        super::deploy(api, text, slug, Asked::default())
+    }
 
     /// The router in-process, as the tools' server.
     struct InProcess<'a>(&'a AppState);
@@ -1046,7 +1106,8 @@ mod tests {
                 // `req` sends bytes not starting with `{` as octet-stream.
                 Some(Body::Bytes(b)) => b,
             };
-            let response = route(self.0, &req(method, path, bytes));
+            // As `holon mcp` asks: as an agent.
+            let response = route(self.0, &agent_req(method, path, bytes));
             Ok((response.status_code, body_bytes(response)))
         }
     }
@@ -1054,19 +1115,6 @@ mod tests {
     fn tool(state: &AppState, name: &str, args: Value) -> Result<String, String> {
         let connect = || -> Result<Box<dyn Api + '_>, String> { Ok(Box::new(InProcess(state))) };
         call_tool(name, &args, &connect)
-    }
-
-    /// A server whose answers are given: for what the in-process router can't be made to say.
-    struct Given(Vec<(&'static str, &'static str, u16, Value)>);
-
-    impl Api for Given {
-        fn server(&self) -> String {
-            "the given server".into()
-        }
-        fn send(&self, method: &str, path: &str, _: Option<Body>) -> Result<(u16, Vec<u8>), String> {
-            let (_, _, status, body) = self.0.iter().find(|(m, p, _, _)| *m == method && *p == path).ok_or(format!("unexpected {method} {path}"))?;
-            Ok((*status, serde_json::to_vec(body).unwrap()))
-        }
     }
 
     const SLUGS_TEXT: &str = include_str!("../../holon-author/samples/slugs.holon.ts");
@@ -1196,13 +1244,13 @@ mod tests {
         let slug = Some("agent-slugs");
         assert!(deploy(&agent, SLUGS_TEXT, slug).unwrap().starts_with("Not deployed yet"));
         assert_eq!(json_of(&person, "GET", "/flows/agent-slugs", None).unwrap()["saved_by"], "ada (agent)", "proposed under its own name");
-        // Approving it itself is refused, as is deploying what needs approval.
+        // Approving it itself is refused; deploying what needs approval proposes it.
         let plan = agent::plan(SLUGS_TEXT).unwrap();
         let ask = |acknowledge: Value| Some(Body::Json(json!({ "slug": "agent-slugs", "unit": plan.unit, "acknowledge": acknowledge, "document": plan.document })));
         let approved = json_of(&agent, "POST", "/deploy", ask(json!(["NetworkIngress"]))).unwrap_err();
         assert!(approved.contains("refused") && approved.contains("an agent doesn't approve"), "{approved}");
-        let unasked = json_of(&agent, "POST", "/deploy", ask(json!([]))).unwrap_err();
-        assert!(unasked.contains("needs a person's approval"), "{unasked}");
+        let unasked = json_of(&agent, "POST", "/deploy", ask(json!([]))).unwrap();
+        assert_eq!(unasked["proposal"]["state"], "waiting", "{unasked}");
         // The person approves; then the agent's next version deploys, and it calls it.
         let preview = json_of(&person, "POST", "/deploy/preview", Some(Body::Json(json!({ "slug": "agent-slugs", "unit": plan.unit })))).unwrap();
         json_of(&person, "POST", "/deploy", ask(preview["needs_approval"].clone())).unwrap();
@@ -1447,8 +1495,8 @@ mod tests {
         assert!(deploy(&agent, &text.replace("\"hi\"", "\"hello\""), Some("sites")).unwrap().starts_with("Deployed \"sites\""), "the same sites");
         let wider = deploy(&agent, &text.replace(r#"browsers: "https://app.example""#, r#"browsers: ["https://app.example", "https://other.example"]"#), Some("sites")).unwrap();
         assert!(wider.starts_with("Not deployed yet") && wider.contains("answer web pages from https://other.example"), "{wider}");
-        let any = json_of(&agent, "POST", "/deploy", ask(json!(["*"]), json!([]))).unwrap_err();
-        assert!(any.contains("needs a person's approval") && any.contains("Browser(\"*\")"), "{any}");
+        let any = json_of(&agent, "POST", "/deploy", ask(json!(["*"]), json!([]))).unwrap();
+        assert!(any["proposal"]["needs"].as_array().unwrap().contains(&json!("Browser(\"*\")")), "proposed: {any}");
         let browsers = |state: &AppState| state.deployments.lock().unwrap().get("sites").map(|d| d.browsers.clone());
         assert_eq!(browsers(&state), Some(vec!["https://app.example".to_string()]), "as the person left it");
         json_of(&agent, "POST", "/deploy", ask(json!([]), json!([]))).unwrap();
@@ -1483,8 +1531,8 @@ mod tests {
         let preview = json_of(&agent, "POST", "/deploy/preview", Some(Body::Json(json!({ "slug": "peek", "unit": leaky.unit })))).unwrap();
         // Answering with what is computed from the key is a permission of its own.
         assert_eq!(preview["needs_approval"], json!(["SecretAnswer(\"api_key\")", "SecretRead(\"api_key\")"]), "{preview}");
-        let refused = json_of(&agent, "POST", "/deploy", ask(&leaky.unit, json!([]))).unwrap_err();
-        assert!(refused.contains("needs a person's approval") && refused.contains("SecretAnswer(\"api_key\")"), "{refused}");
+        let proposed = json_of(&agent, "POST", "/deploy", ask(&leaky.unit, json!([]))).unwrap();
+        assert!(proposed["proposal"]["needs"].as_array().unwrap().contains(&json!("SecretAnswer(\"api_key\")")), "proposed, not deployed: {proposed}");
         let answered = json_of(&agent, "POST", "/deployments/peek/request", Some(Body::Json(json!({ "method": "GET", "url": "/k" })))).unwrap();
         assert!(!answered.to_string().contains("c2tfbGl2ZV"), "the key isn't read out as base64: {answered}");
         // The same code it may deploy again while it runs; once a person stops it, it stays stopped.
@@ -1496,23 +1544,71 @@ mod tests {
     }
 
     /// A deploy that needs approval saves the flow for a person, but never over a flow someone
-    /// else saved under that name.
+    /// else saved under that name; over its own earlier proposal, it does.
     #[test]
     fn a_flow_someone_else_saved_is_not_replaced() {
+        let mut state = test_state();
+        let accounts = std::sync::Arc::new(crate::accounts::Accounts::memory());
+        let (ada, _) = accounts.setup(&accounts.setup_code().unwrap(), "ada", "correct horse battery").unwrap();
+        state.access = crate::access::Access::new(std::sync::Arc::clone(&accounts), vec![], vec![]);
+        let (agent, person) = (Signed { state: &state, token: &ada, agent: true }, Signed { state: &state, token: &ada, agent: false });
         let text = holon_author::samples::sample("hello-api").unwrap().text;
-        let plan = agent::plan(text).unwrap();
-        let server = |saved_by: &'static str| {
-            Given(vec![
-                ("POST", "/unit", 200, json!({ "hash": plan.unit })),
-                ("POST", "/deploy/preview", 200, json!({ "needs_approval": ["NetworkIngress"], "missing_secrets": [], "refused": null })),
-                ("GET", "/auth/me", 200, json!({ "name": "local:me", "role": "admin" })),
-                ("GET", "/flows/hello-api", 200, json!({ "name": "hello-api", "saved_by": saved_by })),
-                ("POST", "/flows", 200, json!({ "name": "hello-api" })),
-            ])
-        };
-        let refused = deploy(&server("ada"), text, None).unwrap_err();
-        assert!(refused.contains("saved by ada") && refused.contains("another slug"), "{refused}");
-        assert!(deploy(&server("local:me"), text, None).unwrap().starts_with("Not deployed yet"), "its own earlier proposal is replaced");
+        json_of(&person, "POST", "/flows", Some(Body::Json(json!({ "name": "hello-api", "document": {} })))).unwrap();
+        let refused = deploy(&agent, text, None).unwrap_err();
+        assert!(refused.contains("saved by ada") && refused.contains("another name"), "{refused}");
+        assert!(state.proposals.all().is_empty(), "nor is it proposed");
+        assert!(deploy(&agent, text, Some("mine")).unwrap().starts_with("Not deployed yet"));
+        assert!(deploy(&agent, text, Some("mine")).unwrap().starts_with("Not deployed yet"), "its own earlier proposal is replaced");
+        assert_eq!(state.proposals.all().iter().map(|p| p.state).collect::<Vec<_>>(), [crate::proposals::Decision::Replaced, crate::proposals::Decision::Waiting]);
+    }
+
+    /// What needs a person's approval is a proposal: listed for a person with the agent's why and
+    /// note, declined with a reason the agent reads back through `deployments`, proposed again and
+    /// approved when the person deploys it. A person can turn agents' proposals off for a flow.
+    #[test]
+    fn an_agents_version_waits_as_a_proposal_a_person_declines_or_approves() {
+        let mut state = test_state();
+        let accounts = std::sync::Arc::new(crate::accounts::Accounts::memory());
+        let (ada, _) = accounts.setup(&accounts.setup_code().unwrap(), "ada", "correct horse battery").unwrap();
+        state.access = crate::access::Access::new(std::sync::Arc::clone(&accounts), vec![], vec![]);
+        let (agent, person) = (Signed { state: &state, token: &ada, agent: true }, Signed { state: &state, token: &ada, agent: false });
+        let slug = Some("proposed");
+        let said = super::deploy(&agent, SLUGS_TEXT, slug, Asked { why: Some("slugs for the blog"), note: Some("asked by mira") }).unwrap();
+        assert!(said.contains("proposed as version 1 of \"proposed\" (proposal 1), with your why") && said.contains("#approvals.proposed.v1"), "{said}");
+        let listed = json_of(&person, "GET", "/proposals", None).unwrap();
+        let p = &listed["proposals"][0];
+        assert_eq!(
+            [&p["state"], &p["why"], &p["note"], &p["version"], &p["by"]],
+            [&json!("waiting"), &json!("slugs for the blog"), &json!("asked by mira"), &json!(1), &json!("ada (agent)")],
+            "{listed}"
+        );
+        assert!(p.get("document").is_none(), "listed without its document");
+        let one = json_of(&person, "GET", "/proposals/1", None).unwrap();
+        assert!(one["document"]["source"].as_str().is_some_and(|s| s.contains("flow(\"slugs\"")), "with it, its text: {one}");
+        // An agent doesn't decide it; a person declines it, with a reason the agent reads.
+        assert_eq!(agent.send("POST", "/proposals/1/decline", Some(Body::Json(json!({ "reason": "mine" })))).unwrap().0, 403);
+        json_of(&person, "POST", "/proposals/1/decline", Some(Body::Json(json!({ "reason": "name its table first" })))).unwrap();
+        assert_eq!(person.send("POST", "/proposals/1/decline", Some(Body::Json(json!({})))).unwrap().0, 409, "declined once");
+        let read = deployments(&agent, Some("proposed")).unwrap();
+        assert!(read.contains("proposal 1 was declined by ada at") && read.contains(": name its table first"), "{read}");
+        // Proposed again; the person deploys it, which approves it.
+        assert!(deploy(&agent, SLUGS_TEXT, slug).unwrap().contains("(proposal 2)"));
+        let plan = agent::plan(SLUGS_TEXT).unwrap();
+        let preview = json_of(&person, "POST", "/deploy/preview", Some(Body::Json(json!({ "slug": "proposed", "unit": plan.unit })))).unwrap();
+        json_of(&person, "POST", "/deploy", Some(Body::Json(json!({ "slug": "proposed", "unit": plan.unit, "acknowledge": preview["needs_approval"], "document": plan.document })))).unwrap();
+        let all = json_of(&person, "GET", "/proposals", None).unwrap();
+        let states: Vec<(u64, &str)> = all["proposals"].as_array().unwrap().iter().map(|p| (p["id"].as_u64().unwrap(), p["state"].as_str().unwrap())).collect();
+        assert_eq!(states, [(2, "approved"), (1, "declined")], "the decided, newest first");
+        assert_eq!(all["proposals"][0]["decided_by"], "ada");
+        // Off, an agent's deploy of it is refused: neither proposed nor saved. It is on its timeline.
+        json_of(&person, "POST", "/deployments/proposed/settings", Some(Body::Json(json!({ "agents_propose": false })))).unwrap();
+        assert_eq!(json_of(&person, "GET", "/deployments", None).unwrap()["deployments"][0]["agents_propose"], false);
+        let off = deploy(&agent, &SLUGS_TEXT.replace("\"unsigned\"", "\"not signed\""), slug).unwrap_err();
+        assert!(off.contains("turned off agents proposing versions of \"proposed\""), "{off}");
+        assert_eq!(state.proposals.all().len(), 2);
+        let events = json_of(&person, "GET", "/deployments/proposed/events", None).unwrap().to_string();
+        assert!(events.contains("agents may no longer propose versions"), "{events}");
+        assert_eq!(person.send("POST", "/deployments/proposed/stop", None).unwrap().0, 200);
     }
 
     /// A saved flow reads back as the text the agent wrote; what is deployed reads in full,

@@ -1,27 +1,58 @@
 // The Approvals page (gaps-web.md G8, C3): what waits for a person. Deploys: versions to review
 // and deploy, in the queue the Review page goes through, and what else a deployment waits on a
-// person for. Runs waiting: runs parked for an event, each answered through its flow's own route
+// person for; a version an agent proposed with its why, and Decline (with a reason its author
+// reads back, proposals.rs). Runs waiting: runs parked for an event, each answered through its flow's own route
 // (a person approves one as the flow says; the host doesn't deliver events yet, G12).
 
 import { useEffect, useState } from "react";
 import { routeOf, said, type Approval } from "./approvals";
+import { useDialog } from "./Dialog";
 import { follow, format, type Route } from "./routes";
-import { listWaitingRuns, type DeploymentEntry, type WaitingRun } from "./server";
+import { declineProposal, listWaitingRuns, type DeploymentEntry, type Proposal, type WaitingRun } from "./server";
+import { useToast } from "./ui/Toast";
 
 const when = (seconds: number) => new Date(seconds * 1000).toLocaleString();
 
 const KIND_SAID: Record<Approval["kind"], string> = { first: "first deploy", update: "new version", attention: "can't run", port: "port", ask: "agent's ask" };
+
+const plural = (n: number, one: string) => `${n} ${one}${n === 1 ? "" : "s"}`;
+
+/** Decline a proposal, asked first with why: kept on its flow's history, and read back by the
+ *  agent that proposed it. `onDeclined` once it is. */
+export function useDecline(onDeclined: (p: Proposal) => void) {
+  const dialog = useDialog();
+  const toast = useToast();
+  return async (p: Proposal) => {
+    const v = p.version === undefined ? "this version" : `v${p.version}`;
+    const reason = await dialog.prompt(
+      `Decline ${p.slug} ${v}, proposed by ${p.by ?? "someone"}?\n\nWhy: tell them what to change. It is kept on the flow's history${p.agent ? ", and the agent reads it through holon mcp" : ""}. The version stays saved, and what runs keeps running.`,
+      "",
+      "Decline this version",
+    );
+    if (reason === null) return;
+    try {
+      await declineProposal(p.id, reason);
+      toast(`Declined ${p.slug} ${v}.${p.agent ? " The agent gets your note." : ""}`, "ok");
+      onDeclined(p);
+    } catch (e) {
+      toast(e instanceof Error ? e.message : String(e), "bad");
+    }
+  };
+}
 
 export function ApprovalsPage({
   tab,
   approvals,
   deployments,
   navigate,
+  onDeclined,
 }: {
   tab: "deploys" | "runs";
   approvals: Approval[];
   deployments: DeploymentEntry[];
   navigate: (r: Route) => void;
+  /** A proposal was declined: what waits is read again. */
+  onDeclined: () => void;
 }) {
   const waiting = deployments.filter((d) => (d.waiting ?? 0) > 0);
   const runs = waiting.reduce((n, d) => n + (d.waiting ?? 0), 0);
@@ -46,12 +77,13 @@ export function ApprovalsPage({
           );
         })}
       </nav>
-      {tab === "deploys" ? <Deploys approvals={approvals} navigate={navigate} /> : <RunsWaiting deployments={waiting} navigate={navigate} />}
+      {tab === "deploys" ? <Deploys approvals={approvals} navigate={navigate} onDeclined={onDeclined} /> : <RunsWaiting deployments={waiting} navigate={navigate} />}
     </div>
   );
 }
 
-function Deploys({ approvals, navigate }: { approvals: Approval[]; navigate: (r: Route) => void }) {
+function Deploys({ approvals, navigate, onDeclined }: { approvals: Approval[]; navigate: (r: Route) => void; onDeclined: () => void }) {
+  const decline = useDecline(onDeclined);
   if (approvals.length === 0) return <p className="hl-flow__none">Nothing waits for you: every saved version is deployed, and no agent asked for anything.</p>;
   return (
     <section aria-label="deploys">
@@ -68,6 +100,7 @@ function Deploys({ approvals, navigate }: { approvals: Approval[]; navigate: (r:
           {approvals.map((a, i) => {
             const to = routeOf(a);
             const review = a.kind === "first" || a.kind === "update";
+            const proposal = review ? a.proposal : undefined;
             return (
               <tr key={`${a.kind}:${a.slug}:${i}`}>
                 <td>
@@ -76,9 +109,18 @@ function Deploys({ approvals, navigate }: { approvals: Approval[]; navigate: (r:
                 </td>
                 <td>
                   <span className={`hl-chip${review ? " hl-chip--waits" : a.kind === "ask" ? "" : " hl-chip--bad"}`}>{KIND_SAID[a.kind]}</span>
+                  {proposal && <span className="hl-chip hl-chip--waits">{plural(proposal.needs.length, "new permission")}</span>}
                 </td>
-                <td className="hl-flow__said">{said(a, when)}</td>
+                <td className="hl-flow__said">
+                  {said(a, when)}
+                  {proposal?.note && <div className="hl-flow__note">{proposal.note}</div>}
+                </td>
                 <td className="hl-flows__do">
+                  {proposal && (
+                    <button className="hl-flow__button" onClick={() => void decline(proposal)} aria-label={`decline ${a.slug}`}>
+                      Decline…
+                    </button>
+                  )}
                   {to === null ? (
                     <span className="hl-table__dim">…</span>
                   ) : (
