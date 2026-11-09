@@ -2275,9 +2275,12 @@ subscription route could be `lazy` by the same argument. That is fork 23, not ta
 
 #### 5.11.8 Slices
 
-1. **The rest segment:** core, language, printer, bridge, editor matcher, docs; the `site` sample
-   without `serve` (an index page from a `js` holon, a catch-all answering it).
-2. **`file_serve`:** the primitive, the capability and its description, `respond`, the
+Step 1.8 comes after 1.6 and before 1.9 (§7, revised 2026-11-09), the rest segment first:
+
+1. **1.8a, the rest segment:** core (`Segment::Rest`), the language's route path and the printer,
+   the bridge's `route_path`, the editor's `parsePath` and matcher, docs; the `site` sample
+   without `serve` (an index page from a `js` holon, a catch-all answering it), run live.
+2. **1.8b, `file_serve`:** the primitive, the capability and its description, `respond`, the
    transport's file answer, small files from memory, big ones streamed and checked, ETag and 304,
    the log line, `FileServe` allowed `lazy` and `unrecorded` (`is_answer`, §5.11.5); the `site`
    sample in full, `log-archive`'s download.
@@ -3316,9 +3319,10 @@ engine.
 
 ### Tier 1: essential host capabilities
 
-**Order, revised 2026-11-08:** after 1.3, step 1.6 and then 1.9. Steps 1.4, 1.5, 1.7 and 1.8 are
-deferred, taken when asked. 1.6 needs 1.4's request signing only for SQS (fork 8): its design
-settles the queue engine with 1.4 deferred.
+**Order, revised 2026-11-09:** after 1.3, step 1.6, then 1.8 (its rest segment first, 1.8a, then
+answering with a file: §5.11.8), then 1.9. Steps 1.4, 1.5 and 1.7 are deferred, taken when asked;
+1.8 was deferred with them from the 2026-11-08 revision until this one. 1.6 needs 1.4's request
+signing only for SQS (fork 8): its design settles the queue engine with 1.4 deferred.
 
 | Step | What | Design | Needs | Size |
 |---|---|---|---|---|
@@ -3329,7 +3333,7 @@ settles the queue engine with 1.4 deferred.
 | 1.5 | *Deferred.* **Secure connectivity:** keys the host holds (PGP decrypt and sign) and client identities (mutual TLS, a private CA) (§5.3, §5.4) | §5.3, §5.4 (here) | 1.1, 1.2 | M |
 | 1.6 | **Messaging:** one subscription runtime (position, once per message, backpressure, reconnect), feeds (SSE, WebSocket, Postgres `LISTEN`) and one queue engine, publish and consume (§5.5, §5.9); designed in four slices (§5.9.1); 1.6a, the subscription runtime and server-sent events, built (§5.9.3) | §5.5, §5.9 (here) | 1.4's request signing, for SQS (fork 8) | L |
 | 1.7 | *Deferred.* **Commands:** programs an admin binds, typed arguments, logged output, killed on timeout (§5.7) | §5.7 (here) | — | M |
-| 1.8 | *Deferred.* **Static files:** a route's rest segment (`/*path`, routing, no item), and answering with a file from a folder (`site.serve(name)`, `FileServe`), streamed by the host and checked against the handle's hash | §5.11 (here) | — | M |
+| 1.8 | **Static files:** a route's rest segment (`/*path`, routing, no item), and answering with a file from a folder (`site.serve(name)`, `FileServe`), streamed by the host and checked against the handle's hash; in slices (§5.11.8), 1.8a the rest segment | §5.11 (here) | — | M |
 | 1.9 | **Inbound WebSockets:** `websocket PATH { open … message … close … }`, a run per message, replies and channel packs out, a record per connection (§5.9) | §5.12 (here) | 1.1 for binary frames | M |
 
 - **Samples, one at least per step:**
@@ -3362,17 +3366,18 @@ B  1.4  (deferred; text files at once; binary files once 1.1 lands)
 C  1.3  (text mail at once; attachments once 1.1 lands)
 D  1.6, 1.9  (one engine, tokio-tungstenite; 1.9's text frames at once, binary once 1.1 lands)
 E  1.7  (deferred)
-F  1.8  (deferred; the rest segment, then FileServe)
+F  1.8  (the rest segment, then FileServe)
 ```
 
 Six tracks, so six worktrees at most; tracks that touch the same files (`kind.rs`, the catalog,
-`tests.rs`) merge into `main` one at a time, each rebased on the last. Since the 2026-11-08
-revision, C and then D are the ones running: 1.3 to its end, then 1.6, then 1.9.
+`tests.rs`) merge into `main` one at a time, each rebased on the last. Since the 2026-11-09
+revision, C, D and F are the ones running, one after another: 1.3 to its end, then 1.6, then 1.8,
+then 1.9.
 
 ### Between Tier 1 and Tier 2: the TypeScript slices
 
-Decided 2026-11-08: once Tier 1's steps 1.1 to 1.3, 1.6 and 1.9 have landed (the rest deferred,
-above), the TypeScript syntax's slices 6 to 11 come next
+Decided 2026-11-08: once Tier 1's steps 1.1 to 1.3, 1.6, 1.8 and 1.9 have landed (the rest
+deferred, above; 1.8 added 2026-11-09), the TypeScript syntax's slices 6 to 11 come next
 ([typescript-syntax](typescript-syntax-L4.md) §15): computing loops, calls and requests that
 wait, waits a route's caller outlasts, waiting loops, failures with a reason, and editors and
 tools. Tier 2 starts when they have landed; Tier 3 and the deferred Tier 1 steps are taken when
