@@ -9,8 +9,8 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Clear, Paragraph, Wrap};
 use ratatui::Frame;
 
-use super::{bold, chips, coloured, dim, fit, list, pad, panel, scrollbar, tone, ACCENT, GOOD, WARN};
-use crate::workbench::app::{App, List, Modal, Said, Tone};
+use super::{bold, coloured, dim, fit, list, pad, panel, scrollbar, tone, ACCENT, GOOD, WARN};
+use crate::workbench::app::{App, Click, List, Modal, Said, Tone};
 use crate::workbench::flow::restore_options;
 use crate::workbench::palette;
 use crate::workbench::review::{Code, Review, Row};
@@ -41,6 +41,7 @@ const HELP: &[(&str, &str)] = &[
     ("enter", "a run: step through it; history: go back to it (options, a dry run, then it)"),
     ("", "graph: edit the statement picked; a (or its button on the graph) shows the statements, or every node again"),
     ("b", "go back to the run or version picked"),
+    ("i  o  F  /", "runs: explain the one picked; export them to <slug>-runs.json for holon verify; follow the newest; filter"),
     ("c  e", "call it; edit its text"),
     ("g  p  x  D", "run, pause, stop or remove it"),
     ("", ""),
@@ -59,7 +60,8 @@ const HELP: &[(&str, &str)] = &[
     ("", "→ its detail, enter edits it there, a every node or the statements, esc back to the text"),
     ("ctrl+r", "a run over its text: what it played lit, the rest dimmed, each value under its line;"),
     ("", "below, the runs (↑ ↓) and the one picked: tab goes round Details, Errors and Timeline;"),
-    ("", "← → its timeline's steps, marked in the code and the graph; = hides or shows the values; b the layout"),
+    ("", "← → its timeline's steps, marked in the code and the graph (a click on the line under the code too);"),
+    ("", ", . the run before or after; = hides or shows the values; b the layout"),
     ("ctrl+z  ctrl+y", "undo, redo"),
     ("shift+arrows", "select; ctrl+a all; ctrl+c ctrl+x ctrl+v copy, cut, paste"),
     ("ctrl+f", "find; enter the next, shift+enter the one before"),
@@ -76,6 +78,7 @@ const HELP: &[(&str, &str)] = &[
     ("space  → ←", "open or close the hunk the line is in (a click on its head too); a fold opens"),
     ("w  d", "the whole of it, every hunk open; back to the diff"),
     ("enter  esc", "approve it (deploy, restore); cancel (x too)"),
+    ("s", "a deploy: save it on the server, not deployed, for whoever may approve it (Approvals)"),
     ("", ""),
     ("The mouse", ""),
     ("click", "a page, a tab, a row, a button; in the text, the cursor (shift+click selects)"),
@@ -92,7 +95,7 @@ fn frame(f: &mut Frame, app: &App, rect: Rect, title: &str, buttons: &[(&str, &s
         return inner;
     }
     let [body, _, bar] = Layout::vertical([Constraint::Min(1), Constraint::Length(1), Constraint::Length(1)]).areas(inner);
-    chips(f, app, bar, buttons);
+    super::buttons(f, app, bar, buttons);
     body
 }
 
@@ -118,13 +121,22 @@ const REMOVED_TEXT: Color = Color::Rgb(150, 112, 112);
 /// A review (a deploy to approve, a restore's dry run): its hunks, each opening and closing, each
 /// a diff drawn alike; the cursor on a row, marked down the left. `go` is what enter does (none
 /// when it can't be done); `foot` stays under it, outside what scrolls.
-fn reviewed(f: &mut Frame, app: &mut App, area: Rect, review: &mut Review, title: &str, go: &str, foot: Option<(&str, Color)>) {
+#[allow(clippy::too_many_arguments)]
+fn reviewed(f: &mut Frame, app: &mut App, area: Rect, review: &mut Review, title: &str, go: &str, other: Option<(&'static str, &'static str)>, foot: Option<(&str, Color)>) {
     let rows = review.rows();
     let mut buttons = vec![];
     if !go.is_empty() {
         buttons.push(("enter", go, KeyCode::Enter, NONE));
     }
-    buttons.extend([("↑ ↓", "lines", KeyCode::Down, NONE), ("n", "next hunk", KeyCode::Char('n'), NONE), ("space", "open/close", KeyCode::Char(' '), NONE)]);
+    // What else it may do than enter's: save it for another to approve.
+    if let Some((key, what)) = other {
+        buttons.push((key, what, KeyCode::Char(key.chars().next().unwrap_or(' ')), NONE));
+    }
+    // With two ways out, the arrows go unsaid: the buttons keep to one line.
+    if other.is_none() {
+        buttons.push(("↑ ↓", "lines", KeyCode::Down, NONE));
+    }
+    buttons.extend([("n", "next hunk", KeyCode::Char('n'), NONE), ("space", "open/close", KeyCode::Char(' '), NONE)]);
     buttons.push(if review.whole { ("d", "diff", KeyCode::Char('d'), NONE) } else { ("w", "whole", KeyCode::Char('w'), NONE) });
     buttons.push(("esc", "cancel", KeyCode::Esc, NONE));
     let rect = centred(area, 120, rows.len() as u16 + 6 + u16::from(foot.is_some()));
@@ -133,6 +145,13 @@ fn reviewed(f: &mut Frame, app: &mut App, area: Rect, review: &mut Review, title
     if let Some((said, colour)) = foot {
         f.render_widget(Paragraph::new(coloured(said, colour)), under);
     }
+    review_body(f, app, shown, review, true);
+}
+
+/// A review's rows in `shown`, scrolled to keep its cursor in sight; the cursor marked when the
+/// review has the keys.
+pub(super) fn review_body(f: &mut Frame, app: &App, shown: Rect, review: &mut Review, focused: bool) {
+    let rows = review.rows();
     review.height = shown.height as usize;
     review.scroll = review.scroll.min(rows.len().saturating_sub(shown.height as usize));
     let width = shown.width.saturating_sub(2) as usize;
@@ -141,7 +160,7 @@ fn reviewed(f: &mut Frame, app: &mut App, area: Rect, review: &mut Review, title
     let mut lines = vec![];
     for (i, row) in rows.iter().enumerate().skip(review.scroll).take(shown.height as usize) {
         let (mut line, ground) = review_row(review, *row, width);
-        let here = i == cursor && *row != Row::Blank;
+        let here = focused && i == cursor && *row != Row::Blank;
         line.spans.insert(0, if here { coloured("▌", ACCENT) } else { Span::raw(" ") });
         if let Some(g) = ground.or(here.then_some(super::PICKED)) {
             line = line.style(Style::new().bg(g));
@@ -249,7 +268,7 @@ pub(super) fn draw(f: &mut Frame, app: &mut App, area: Rect) {
         Modal::Approve { slug, staged, review, .. } => {
             let title = if staged.needs.is_empty() { format!("Deploy {slug}?") } else { format!("Approve and deploy {slug}?") };
             let go = if staged.needs.is_empty() { "deploy" } else { "approve and deploy" };
-            reviewed(f, app, area, review, &title, go, None);
+            reviewed(f, app, area, review, &title, go, Some(("s", "save, don't deploy")), None);
         }
         Modal::Lines { title, lines, scroll } => {
             let rect = centred(area, 100, lines.len() as u16 + 4);
@@ -281,7 +300,11 @@ pub(super) fn draw(f: &mut Frame, app: &mut App, area: Rect) {
             let inner = block.inner(rect);
             f.render_widget(block, rect);
             let [input, rule, rows] = Layout::vertical([Constraint::Length(1), Constraint::Length(1), Constraint::Min(1)]).areas(inner);
-            f.render_widget(Paragraph::new(Line::from(vec![coloured("› ", ACCENT), Span::raw(query.clone()), Span::styled(" ", Style::new().bg(Color::Gray)), dim(if query.is_empty() { "  a flow, a page, a sample, deploy, call…" } else { "" })])), input);
+            let room = input.width.saturating_sub(2);
+            let (shown, col, from) = super::typed(query, app.line_back, room as usize);
+            let hint = dim(if query.is_empty() { "  a flow, a page, a sample, deploy, call…" } else { "" });
+            f.render_widget(Paragraph::new(Line::from([vec![coloured("› ", ACCENT)], shown, vec![hint]].concat())), input);
+            super::typed_at(f, app, input.x + 2, input.y, room, col, from);
             f.render_widget(Paragraph::new(dim("─".repeat(rule.width as usize))), rule);
             if items.is_empty() {
                 f.render_widget(Paragraph::new(dim(" Nothing matches.")), rows);
@@ -341,7 +364,7 @@ pub(super) fn draw(f: &mut Frame, app: &mut App, area: Rect) {
         Modal::DryRun { point, review, refused, needs, .. } => {
             let go = if *refused { None } else if needs.is_empty() { Some("restore it") } else { Some("approve and restore it") };
             let foot = if *refused { ("It can't be done now.", super::BAD) } else { ("Nothing has changed yet.", WARN) };
-            reviewed(f, app, area, review, &format!("Dry run: going back to {}", point.name), go.unwrap_or(""), Some(foot));
+            reviewed(f, app, area, review, &format!("Dry run: going back to {}", point.name), go.unwrap_or(""), None, Some(foot));
         }
         Modal::Call(form) => {
             let rect = centred(area, 104, 24.max(form.answer.len() as u16 + 10).min(36));
@@ -363,14 +386,16 @@ pub(super) fn draw(f: &mut Frame, app: &mut App, area: Rect) {
             for i in 1..=n {
                 let focused = form.field == i;
                 let value = form.field_value(i);
-                let line = Line::from(vec![
-                    Span::styled(format!("{:<13}", form.field_name(i)), if focused { Style::new().fg(ACCENT).add_modifier(Modifier::BOLD) } else { Style::new().fg(super::DIM) }),
-                    Span::styled(format!(" {} ", fit(value, parts[i].width.saturating_sub(17) as usize)), Style::new().bg(Color::Indexed(if focused { 238 } else { 235 }))),
-                ]);
-                f.render_widget(Paragraph::new(line), parts[i]);
+                let room = parts[i].width.saturating_sub(16);
+                let name = Span::styled(format!("{:<13}", form.field_name(i)), if focused { Style::new().fg(ACCENT).add_modifier(Modifier::BOLD) } else { Style::new().fg(super::DIM) });
+                let field = Style::new().bg(Color::Indexed(if focused { 238 } else { 235 }));
                 if focused {
-                    let x = parts[i].x + 14 + value.chars().count().min(parts[i].width.saturating_sub(17) as usize) as u16;
-                    f.set_cursor_position((x, parts[i].y));
+                    let (shown, col, from) = super::typed(value, app.line_back, room as usize);
+                    let shown = shown.into_iter().map(|s| { let style = field.patch(s.style); s.style(style) });
+                    f.render_widget(Paragraph::new(Line::from([vec![name, Span::styled(" ", field)], shown.collect(), vec![Span::styled(" ", field)]].concat())), parts[i]);
+                    super::typed_at(f, app, parts[i].x + 14, parts[i].y, room, col, from);
+                } else {
+                    f.render_widget(Paragraph::new(Line::from(vec![name, Span::styled(format!(" {} ", fit(value, room as usize)), field)])), parts[i]);
                 }
             }
             let answer = parts[n + 1];
@@ -380,15 +405,20 @@ pub(super) fn draw(f: &mut Frame, app: &mut App, area: Rect) {
                 f.render_widget(Paragraph::new(said(&form.answer, answer.width as usize)).block(panel("Answer", false)), answer);
             }
         }
-        Modal::Input { title, lines, value, masked, .. } => {
+        Modal::Input { title, lines, value, at, masked, .. } => {
             let rect = centred(area, 72, lines.len() as u16 + 8);
             let body = frame(f, app, rect, title, &[("enter", "set it", KeyCode::Enter, NONE), ("esc", "cancel", KeyCode::Esc, NONE)]);
             let [about, field] = Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(body);
             f.render_widget(Paragraph::new(lines.iter().map(|l| Line::from(l.clone())).collect::<Vec<_>>()).wrap(Wrap { trim: false }), about);
-            let shown = if *masked { "•".repeat(value.chars().count()) } else { value.clone() };
-            let shown = fit(&shown, field.width.saturating_sub(4) as usize);
+            // As much of it as fits, from where the cursor stays in view.
+            let n = value.chars().count();
+            let at = (*at).min(n);
+            let room = field.width.saturating_sub(4).max(1) as usize;
+            let from = at.saturating_sub(room);
+            let shown: String = if *masked { "•".repeat(n) } else { value.clone() }.chars().skip(from).take(room).collect();
             f.render_widget(Paragraph::new(Line::from(vec![coloured("› ", ACCENT), Span::styled(format!("{shown} "), Style::new().bg(Color::Indexed(238)))])), field);
-            f.set_cursor_position((field.x + 2 + shown.chars().count() as u16, field.y));
+            app.hit(Rect { x: field.x + 2, width: field.width.saturating_sub(2), ..field }, Click::Input { from });
+            f.set_cursor_position((field.x + 2 + (at - from) as u16, field.y));
         }
     }
     app.modal = Some(modal);

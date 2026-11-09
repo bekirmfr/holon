@@ -675,6 +675,7 @@ fn main() {
         Some("restore") => std::process::exit(restore::cli(&rest)),
         Some("history") => std::process::exit(history::cli(&rest)),
         Some("deployments") => std::process::exit(opscmd::deployments(&rest)),
+        Some("runs") => std::process::exit(opscmd::runs(&rest)),
         Some(cmd @ ("run" | "pause" | "stop" | "remove")) => std::process::exit(opscmd::lifecycle(cmd, &rest)),
         Some("call") => std::process::exit(opscmd::call(&rest)),
         Some("load") => std::process::exit(load::cli(&rest)),

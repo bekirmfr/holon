@@ -302,7 +302,7 @@ impl App {
     }
 
     fn ask(&mut self, title: impl Into<String>, lines: &[&str], value: impl Into<String>, then: AdminAsk) {
-        self.modal = Some(Modal::Input { title: title.into(), lines: lines.iter().map(|l| l.to_string()).collect(), value: value.into(), masked: false, then: Ask::Admin(then) });
+        self.modal = Some(Modal::input(title.into(), lines.iter().map(|l| l.to_string()).collect(), value.into(), false, Ask::Admin(then)));
     }
 
     fn sure(&mut self, title: impl Into<String>, lines: &[&str], then: AdminDo) {

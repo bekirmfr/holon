@@ -568,6 +568,119 @@ pub(crate) fn produced_lines(v: &Value) -> Vec<String> {
     lines
 }
 
+const RUNS_USAGE: &str = "usage: holon runs <slug> [--last N] [--waiting] [--run N] [--json] [--server PORT|URL]
+
+  A deployment's runs, oldest first: what started each, its answer, how long it took, and why it
+  failed. --waiting lists the runs waiting instead: at an approval (who has approved it so far) or
+  an event, and until when; holon decide decides an approval.
+  --run N shows one run's steps: the flow's text, with each statement's value under it.
+
+  --last N                 how many runs, the newest (default 10, at most 200)
+  --waiting                the runs waiting for an approval or an event, not the log
+  --run N                  one run's steps (with --json, their parts: the lines, notes, and timings)
+  --json                   print what the server answers, as JSON
+  --server PORT|URL        which holon server to ask (see below)
+
+examples:
+  holon runs shop
+  holon runs shop --last 50 --json
+  holon runs shop --waiting
+  holon runs shop --run 12
+";
+
+pub(crate) fn runs(args: &[String]) -> i32 {
+    const WHO: &str = "holon runs";
+    let usage = usage(RUNS_USAGE);
+    let args = match cmdline::parse(WHO, &usage, args, &["--last", "--run"], &["--waiting", "--json"]) {
+        Ok(a) => a,
+        Err(code) => return code,
+    };
+    let Some(slug) = args.word(0) else {
+        eprintln!("{usage}");
+        return 2;
+    };
+    let last = match args.value("--last").map(str::parse::<u32>) {
+        None => 10,
+        Some(Ok(n)) if (1..=200).contains(&n) => n,
+        Some(_) => {
+            eprintln!("{WHO}: --last is 1 to 200");
+            return 2;
+        }
+    };
+    let path = format!("/deployments/{}", seg(slug));
+    if let Some(run) = args.value("--run") {
+        let Ok(seq) = run.parse::<u64>() else {
+            eprintln!("{WHO}: --run is a run's number");
+            return 2;
+        };
+        let after = if seq == 0 { String::new() } else { format!("after={}&", seq - 1) };
+        let log = match cmdline::json(WHO, &args, "GET", &format!("{path}/log?{after}limit=100000"), None) {
+            Ok(v) => v,
+            Err(code) => return code,
+        };
+        let Some(entry) = log["entries"].as_array().and_then(|e| e.iter().find(|e| e["seq"].as_u64() == Some(seq))) else {
+            eprintln!("{slug} has no run {seq} (it may be older than the log keeps)");
+            return 1;
+        };
+        let document_path = match entry["unit"].as_str().filter(|u| !u.is_empty()) {
+            Some(unit) => format!("{path}/document?unit={unit}"),
+            None => format!("{path}/document"),
+        };
+        let document = match cmdline::json(WHO, &args, "GET", &document_path, None) {
+            Ok(v) => v,
+            Err(code) => return code,
+        };
+        let shown = if args.flag("--json") {
+            holon_author::agent::run_json(slug, &document, entry).map(|v| cmdline::print_json(&v))
+        } else {
+            holon_author::agent::explain(slug, &document, entry).map(|text| println!("{text}"))
+        };
+        return match shown {
+            Ok(()) => 0,
+            Err(e) => {
+                eprintln!("{WHO}: {e}");
+                1
+            }
+        };
+    }
+    if args.flag("--waiting") {
+        let waiting = match cmdline::json(WHO, &args, "GET", &format!("{path}/runs"), None) {
+            Ok(v) => v,
+            Err(code) => return code,
+        };
+        if args.flag("--json") {
+            cmdline::print_json(&waiting);
+        } else if waiting["runs"].as_array().is_none_or(|r| r.is_empty()) {
+            println!("{slug} has no runs waiting for an approval or an event");
+        } else {
+            let runs = waiting["runs"].as_array().cloned().unwrap_or_default();
+            for line in crate::decidecmd::waiting_lines(&runs) {
+                println!("{line}");
+            }
+        }
+        return 0;
+    }
+    let log = match cmdline::json(WHO, &args, "GET", &format!("{path}/log?limit={last}"), None) {
+        Ok(v) => v,
+        Err(code) => return code,
+    };
+    if args.flag("--json") {
+        cmdline::print_json(&log);
+        return 0;
+    }
+    let entries = log["entries"].as_array().cloned().unwrap_or_default();
+    if entries.is_empty() {
+        println!("{slug} has no runs yet");
+    }
+    for entry in &entries {
+        println!("{}", holon_author::agent::run_line(entry));
+    }
+    if let Some(breaks) = log["breaks"].as_array().filter(|b| !b.is_empty()) {
+        println!("The log was changed outside holon before runs {}: their record can't be trusted.", breaks.iter().map(Value::to_string).collect::<Vec<_>>().join(", "));
+    }
+    0
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

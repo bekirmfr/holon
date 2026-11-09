@@ -6,8 +6,9 @@
 
 use crate::local::admin_call;
 
-const HISTORY_USAGE: &str = "usage: holon history <slug> [--last N] [--events]
+const HISTORY_USAGE: &str = "usage: holon history <slug> [--last N] [--events] [--json]
        holon history <slug> --cell NAME [--item KEY] [--last N]
+       holon history <slug> --version N [--json]
        (each with [--server PORT|URL])
 
   Prints a deployment's timeline, oldest first: its runs, and what was done to it, by whom:
@@ -16,6 +17,9 @@ const HISTORY_USAGE: &str = "usage: holon history <slug> [--last N] [--events]
 
   --last N                 the newest N runs, with the events among them (default 20)
   --events                 every event, kept for good, without the runs
+  --json                   the timeline's parts as JSON: its runs, its events, its versions, and
+                           the runs its log counted but didn't record
+  --version N              version N's flow, as text (with --json: its number, unit and text)
   --cell NAME              one value's history instead (state.NAME), or a collection's: the runs
                            that changed it, each with its value before and after (a
                            collection's, the items it changed), and a restore or deploy between
@@ -37,7 +41,7 @@ examples:
 pub(crate) fn cli(args: &[String]) -> i32 {
     const WHO: &str = "holon history";
     let (mut slug, mut server, mut last, mut events_only) = (None, None, 20usize, false);
-    let (mut cell, mut item) = (None, None);
+    let (mut cell, mut item, mut as_json, mut version) = (None, None, false, None);
     let mut args = args.iter();
     while let Some(a) = args.next() {
         match a.as_str() {
@@ -50,6 +54,14 @@ pub(crate) fn cli(args: &[String]) -> i32 {
                 }
             },
             "--events" => events_only = true,
+            "--json" => as_json = true,
+            "--version" => match args.next().and_then(|n| n.trim_start_matches(['v', 'V']).parse::<u32>().ok()) {
+                Some(n) => version = Some(n),
+                None => {
+                    eprintln!("{WHO}: --version takes a version's number (holon restore <slug> lists them)");
+                    return 2;
+                }
+            },
             "--cell" => cell = args.next().cloned(),
             "--item" => item = args.next().cloned(),
             "--help" | "-h" => {
@@ -93,22 +105,56 @@ pub(crate) fn cli(args: &[String]) -> i32 {
         eprintln!("{WHO}: --item is one item of a collection: give the collection with --cell");
         return 2;
     }
+    if let Some(number) = version {
+        let listed = match get(format!("/deployments/{slug}/versions")) {
+            Ok(v) => v,
+            Err(code) => return code,
+        };
+        let Some(unit) = listed["versions"].as_array().into_iter().flatten().find(|v| v["number"].as_u64() == Some(u64::from(number))).and_then(|v| v["unit"].as_str()) else {
+            eprintln!("{WHO}: version {number} isn't listed (holon restore {slug} lists them)");
+            return 1;
+        };
+        let document = match get(format!("/deployments/{slug}/document?unit={unit}")) {
+            Ok(v) => v,
+            Err(code) => return code,
+        };
+        let text = match holon_author::agent::text_of(&slug, &document) {
+            Ok(text) => text,
+            Err(e) => {
+                eprintln!("{WHO}: {e}");
+                return 1;
+            }
+        };
+        if as_json {
+            crate::cmdline::print_json(&serde_json::json!({ "version": number, "unit": unit, "text": text }));
+        } else {
+            println!("{text}");
+        }
+        return 0;
+    }
     let events = match get(format!("/deployments/{slug}/events")) {
         Ok(v) => v["events"].as_array().cloned().unwrap_or_default(),
         Err(code) => return code,
     };
-    let (runs, counted) = if events_only {
-        (Vec::new(), Vec::new())
+    let (runs, counted, tallies) = if events_only {
+        (Vec::new(), Vec::new(), serde_json::Value::Null)
     } else {
         match get(format!("/deployments/{slug}/log?limit={last}")) {
-            Ok(v) => (v["entries"].as_array().cloned().unwrap_or_default(), unrecorded(&v)),
+            Ok(v) => (v["entries"].as_array().cloned().unwrap_or_default(), unrecorded(&v), v["tallies"].clone()),
             Err(code) => return code,
         }
     };
-    let versions = match get(format!("/deployments/{slug}/versions")) {
-        Ok(v) => Versions::of(&v),
+    let versions_json = match get(format!("/deployments/{slug}/versions")) {
+        Ok(v) => v,
         Err(code) => return code,
     };
+    let versions = Versions::of(&versions_json);
+    if as_json {
+        // The raw parts, as the server keeps them: the view merges them into the timeline.
+        let page = serde_json::json!({ "runs": runs, "events": events, "versions": versions_json["versions"], "unrecorded": tallies });
+        crate::cmdline::print_json(&page);
+        return 0;
+    }
     let lines = timeline(&runs, &events, &versions, events_only);
     if lines.is_empty() && counted.is_empty() {
         println!("{slug}: nothing yet");

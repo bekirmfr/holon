@@ -158,6 +158,8 @@ export function FlowToolbar({
   onRedo,
   deployBar,
   error,
+  onTidy,
+  onFit,
 }: {
   histVersion: number;
   mode: Mode;
@@ -174,6 +176,10 @@ export function FlowToolbar({
   onRedo: () => void;
   deployBar: ReactNode;
   error: string;
+  /** Lays the flow out again (the shared tidy layout, graphLayout.ts): the nodes only. */
+  onTidy: () => void;
+  /** Fits the whole flow in the view. */
+  onFit: () => void;
 }) {
   return (
     // histVersion is what makes the undo/redo disabled state live — history itself is a ref
@@ -199,6 +205,9 @@ export function FlowToolbar({
           </button>
         ))}
       </span>
+      <button onClick={onFit} title="fit: the whole flow in the view" style={historyBtn(true)}>
+        ⤢
+      </button>
       {mode === "view" ? (
         <span style={{ color: "var(--faint)", fontSize: 11 }}>deployed · read only</span>
       ) : (
@@ -211,6 +220,9 @@ export function FlowToolbar({
           </button>
           <button onClick={onRedo} disabled={!canRedo} title="redo (Ctrl+Y / Ctrl+Shift+Z)" style={historyBtn(canRedo)}>
             ⟳
+          </button>
+          <button onClick={onTidy} title="tidy: lay the flow out by dependency, a domain per handler" style={historyBtn(true)}>
+            ▤
           </button>
           {deployBar}
         </>

@@ -183,10 +183,13 @@ fn a_saved_flow_waits_for_a_person_who_approves_it_from_the_approvals_page() {
     press(&mut app, KeyCode::Char('2'));
     let shown = screen(&mut app, 120, 30);
     assert!(shown.contains("beats") && shown.contains("first time"), "{shown}");
-    press(&mut app, KeyCode::Enter);
+    // e opens it in the editor; enter approves it here, as the review beside the list shows it.
+    press(&mut app, KeyCode::Char('e'));
     assert_eq!(app.page, Page::Editor);
-    assert!(matches!(app.modal, Some(Modal::Approve { .. })), "opens it and asks to approve it");
+    press(&mut app, KeyCode::Esc);
+    app.go(Page::Approvals);
     press(&mut app, KeyCode::Enter);
+    assert_eq!(app.page, Page::Approvals);
     assert!(app.waiting().is_empty(), "{:?}", app.waiting());
 }
 
@@ -554,7 +557,8 @@ fn a_tab_shows_its_code_its_graph_beside_it_or_its_graph_alone() {
     assert!(app.beside_has_keys() && !app.typing, "a row clicked: the graph has the keys");
     assert_eq!((picked(&app), app.tabs[0].buf.row), ("n".to_string(), 7), "picked, the cursor where it was");
     press(&mut app, KeyCode::Down);
-    let shown = screen(&mut app, 130, 40);
+    // As wide again as the shell prompt's user@host, which the keys line gives room to.
+    let shown = screen(&mut app, 130 + super::shell::who().chars().count() as u16, 40);
     assert_eq!(picked(&app), "state.n");
     assert!(shown.contains("· picking") && shown.contains("back to the text") && shown.contains("its detail"), "its keys on its edge:\n{shown}");
     let g = app.tabs[0].graph.as_ref().unwrap();
@@ -780,6 +784,126 @@ fn answer(app: &mut App, text: &str) {
     let Some(Modal::Input { value, .. }) = app.modal.as_mut() else { panic!("no input dialog: {:?}", app.note.as_ref().map(|n| &n.text)) };
     *value = text.to_string();
     press(app, KeyCode::Enter);
+}
+
+#[test]
+fn an_input_line_is_edited_where_its_cursor_is() {
+    let mut app = App::new(None);
+    ctrl(&mut app, 'n');
+    ctrl(&mut app, 's');
+    let value = |app: &App| match &app.modal {
+        Some(Modal::Input { value, at, .. }) => (value.clone(), *at),
+        _ => panic!("no dialog"),
+    };
+    assert_eq!(value(&app), ("my-flow.holon.ts".into(), 16), "the cursor at its end");
+    // Back over ".holon.ts", a word typed there, a letter deleted on either side.
+    for _ in 0..9 {
+        press(&mut app, KeyCode::Left);
+    }
+    for c in "-two".chars() {
+        press(&mut app, KeyCode::Char(c));
+    }
+    assert_eq!(value(&app), ("my-flow-two.holon.ts".into(), 11));
+    press(&mut app, KeyCode::Delete);
+    press(&mut app, KeyCode::Backspace);
+    assert_eq!(value(&app), ("my-flow-twholon.ts".into(), 10));
+    press(&mut app, KeyCode::Home);
+    press(&mut app, KeyCode::Char('a'));
+    press(&mut app, KeyCode::End);
+    press(&mut app, KeyCode::Char('x'));
+    assert_eq!(value(&app), ("amy-flow-twholon.tsx".into(), 20));
+    // A click puts the cursor at the character clicked.
+    screen(&mut app, 120, 30);
+    let (rect, _) = *app.hits.borrow().iter().rev().find(|(_, c)| matches!(c, Click::Input { .. })).expect("the line wasn't drawn");
+    app.mouse(MouseEvent { kind: MouseEventKind::Down(MouseButton::Left), column: rect.x + 3, row: rect.y, modifiers: KeyModifiers::NONE });
+    assert_eq!(value(&app).1, 3);
+    let shown = screen(&mut app, 120, 30);
+    assert!(shown.contains("› amy-flow-twholon.tsx"), "{shown}");
+}
+
+/// Every line typed outside a dialog of its own (`:`, `/`, the palette, find, the shell line,
+/// the call dialog's field) edits the same way, key by key: the cursor goes back, typing goes
+/// in there, delete and backspace take a character on either side, and a click places it.
+#[test]
+fn every_line_typed_edits_where_its_cursor_is() {
+    type Open = fn() -> App;
+    let lines: [(&str, Open); 6] = [
+        (":", || {
+            let mut app = App::new(None);
+            press(&mut app, KeyCode::Char(':'));
+            app
+        }),
+        ("/", || {
+            let mut app = App::new(None);
+            app.go(Page::Flows);
+            press(&mut app, KeyCode::Char('/'));
+            app
+        }),
+        ("palette", || {
+            let mut app = App::new(None);
+            ctrl(&mut app, 'p');
+            app
+        }),
+        ("find", || {
+            let mut app = App::new(None);
+            tab_with(&mut app, BUMP);
+            ctrl(&mut app, 'f');
+            app
+        }),
+        ("shell", || {
+            let mut app = App::new(None);
+            ctrl(&mut app, '`');
+            app
+        }),
+        ("call", || {
+            let (mut app, _) = bumped(0);
+            press(&mut app, KeyCode::Esc);
+            app.call("bump");
+            press(&mut app, KeyCode::Tab);
+            app
+        }),
+    ];
+    for (name, open) in lines {
+        let mut app = open();
+        assert!(app.field().is_some(), "{name}: no line open");
+        let text = |app: &App| app.field_text().unwrap_or_else(|| panic!("{name}: the line closed")).to_string();
+        // What it starts with (the call's `{}`) taken away first.
+        for _ in 0..text(&app).chars().count() {
+            press(&mut app, KeyCode::Backspace);
+        }
+        typed(&mut app, "abcd");
+        press(&mut app, KeyCode::Left);
+        press(&mut app, KeyCode::Left);
+        press(&mut app, KeyCode::Char('X'));
+        assert_eq!(text(&app), "abXcd", "{name}: typed where the cursor went back to");
+        press(&mut app, KeyCode::Home);
+        press(&mut app, KeyCode::Delete);
+        press(&mut app, KeyCode::End);
+        press(&mut app, KeyCode::Backspace);
+        press(&mut app, KeyCode::Right);
+        assert_eq!(text(&app), "bXc", "{name}: delete took the first, backspace the last");
+        let shown = screen(&mut app, 120, 30);
+        assert!(shown.contains("bXc"), "{name}: {shown}");
+        let (rect, _) = *app.hits.borrow().iter().rev().find(|(_, c)| matches!(c, Click::Input { .. })).unwrap_or_else(|| panic!("{name}: the line takes no click"));
+        app.mouse(MouseEvent { kind: MouseEventKind::Down(MouseButton::Left), column: rect.x + 1, row: rect.y, modifiers: KeyModifiers::NONE });
+        press(&mut app, KeyCode::Char('Z'));
+        assert_eq!(text(&app), "bZXc", "{name}: the click put the cursor after the first character");
+        app.paste("pq");
+        assert_eq!(text(&app), "bZpqXc", "{name}: pasted at the cursor");
+    }
+}
+
+/// A line longer than its room scrolls to keep the cursor in view.
+#[test]
+fn a_long_line_scrolls_to_its_cursor() {
+    let mut app = App::new(None);
+    press(&mut app, KeyCode::Char(':'));
+    let long: String = (0..200).map(|i| char::from(b'a' + (i % 26) as u8)).collect();
+    app.paste(&format!("{long}END"));
+    assert!(screen(&mut app, 80, 24).contains("END"), "at the end, the end shows");
+    press(&mut app, KeyCode::Home);
+    let shown = screen(&mut app, 80, 24);
+    assert!(shown.contains(":abcdef") && !shown.contains("END"), "{shown}");
 }
 
 #[test]
@@ -1050,4 +1174,334 @@ fn a_flows_unrecorded_handlers_show_counted_beside_its_runs() {
     app.flow_section(Section::Runs);
     let shown = screen(&mut app, 140, 44);
     assert!(shown.contains("Runs, newest first (1, +3 unrecorded)"), "{shown}");
+}
+
+/// A flow's data and its calls outside have a colour each, wherever they show: a statement is
+/// what its nodes are (a call outside first, then its data, then its answer).
+#[test]
+fn statements_are_coloured_by_what_they_touch() {
+    use crate::workbench::graph::Kind;
+    assert_eq!(Kind::of_leaf("db_query"), Kind::Data);
+    assert_eq!(Kind::of_leaf("collection_put"), Kind::Data);
+    assert_eq!(Kind::of_leaf("http_request"), Kind::Outside);
+    assert_eq!(Kind::of_leaf("respond"), Kind::Answer);
+    assert_eq!(Kind::of_leaf("add"), Kind::Compute);
+    let text = holon_author::samples::sample("cache-aside").unwrap().text;
+    let kinds = Kind::by_line(text);
+    let line = |s: &str| text.lines().position(|l| l.contains(s)).unwrap() as u32 + 1;
+    assert_eq!(kinds.get(&line("const id = ids[name] ??")), Some(&Kind::Outside), "the fetch: {kinds:?}");
+    assert_eq!(kinds.get(&line("ids[name] = id")), Some(&Kind::Data), "the write: {kinds:?}");
+}
+
+/// The text's title says how it stands against what is live, and the tab its deployment's state.
+#[test]
+fn the_text_says_how_it_differs_from_live() {
+    let (mut app, _) = app();
+    tab_with(&mut app, BUMP);
+    assert!(screen(&mut app, 130, 30).contains("not deployed"), "{}", screen(&mut app, 130, 30));
+    ctrl(&mut app, 'd');
+    press(&mut app, KeyCode::Enter);
+    let shown = screen(&mut app, 130, 30);
+    assert!(shown.contains("v1, live"), "{shown}");
+    assert!(shown.contains("● bump"), "the tab's dot: {shown}");
+    app.tabs[app.tab].buf = super::text::Buffer::new(&BUMP.replace("+ 1", "+ 2"));
+    app.tabs[app.tab].check = super::app::Check::of(&app.tabs[app.tab].buf.text());
+    let shown = screen(&mut app, 130, 30);
+    assert!(shown.contains("changed from v1 *"), "{shown}");
+}
+
+/// A deploy's dialog can save it on the server instead, for another to approve.
+#[test]
+fn a_deploy_can_be_saved_for_another_to_approve() {
+    let (mut app, _) = app();
+    tab_with(&mut app, BEATS);
+    ctrl(&mut app, 'd');
+    assert!(screen(&mut app, 130, 40).contains("save, don't deploy"), "{}", screen(&mut app, 130, 40));
+    press(&mut app, KeyCode::Char('s'));
+    assert!(app.modal.is_none());
+    let c = app.client.as_ref().unwrap();
+    assert!(c.deployment("beats").is_none(), "not deployed");
+    assert!(app.waiting().iter().any(|(slug, _)| slug == "beats"), "it waits: {:?}", app.waiting());
+}
+
+/// Over runs, , and . go to the run before and after, and the line under the code picks a step.
+#[test]
+fn runs_go_back_and_on_with_comma_and_period() {
+    let (mut app, _) = bumped(3);
+    ctrl(&mut app, 'r');
+    assert_eq!(app.tabs[app.tab].runs.as_ref().unwrap().sel, 0);
+    press(&mut app, KeyCode::Char(','));
+    assert_eq!(app.tabs[app.tab].runs.as_ref().unwrap().sel, 1);
+    press(&mut app, KeyCode::Char('.'));
+    assert_eq!(app.tabs[app.tab].runs.as_ref().unwrap().sel, 0);
+    let shown = screen(&mut app, 130, 40);
+    assert!(shown.contains("●──") || shown.contains("━●"), "the scrubber: {shown}");
+}
+
+/// The lists say more in each row: the Overview's columns and a version waiting, a run's
+/// writes, a sample's tags and its shell line.
+#[test]
+fn the_lists_say_more_in_a_row() {
+    let (mut app, _) = bumped(2);
+    let plan = holon_author::agent::plan(&BUMP.replace("+ 1", "+ 2")).unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    app.client.as_ref().unwrap().save("bump", &plan, &BUMP.replace("+ 1", "+ 2")).unwrap();
+    app.refresh();
+    app.go(Page::Overview);
+    let shown = screen(&mut app, 150, 36);
+    assert!(shown.contains("name") && shown.contains("last run"), "the columns: {shown}");
+    assert!(shown.contains("v2 waits for you"), "{shown}");
+    app.open_flow("bump");
+    app.flow_section(Section::Runs);
+    let shown = screen(&mut app, 150, 36);
+    assert!(shown.contains("✎1"), "what it wrote: {shown}");
+    app.go(Page::Library);
+    let shown = screen(&mut app, 150, 36);
+    assert!(shown.contains("holon new hello-api.holon.ts --sample hello-api"), "{shown}");
+}
+
+/// `/` narrows the flows and the library in place, `f` goes round the flows' chips, and esc
+/// clears the filter.
+#[test]
+fn slash_filters_a_list_in_place() {
+    let (mut app, _) = bumped(0);
+    let plan = holon_author::agent::plan(BEATS).unwrap();
+    app.client.as_ref().unwrap().save("beats", &plan, BEATS).unwrap();
+    app.refresh();
+    app.go(Page::Flows);
+    assert_eq!(app.flow_names(), ["beats", "bump"]);
+    press(&mut app, KeyCode::Char('/'));
+    for c in "bea".chars() {
+        press(&mut app, KeyCode::Char(c));
+    }
+    assert_eq!(app.flow_names(), ["beats"]);
+    let shown = screen(&mut app, 130, 30);
+    assert!(shown.contains("/bea") && shown.contains("Flows (1 of 2)"), "{shown}");
+    press(&mut app, KeyCode::Enter);
+    assert!(!app.filtering);
+    press(&mut app, KeyCode::Esc);
+    assert_eq!(app.flow_names().len(), 2, "esc clears it");
+    press(&mut app, KeyCode::Char('f'));
+    assert_eq!(app.flow_names(), ["bump"], "live: deployed and running");
+    press(&mut app, KeyCode::Char('f'));
+    assert_eq!(app.flow_names(), ["beats"], "waiting: saved, never deployed");
+    app.go(Page::Library);
+    press(&mut app, KeyCode::Char('/'));
+    for c in "cache".chars() {
+        press(&mut app, KeyCode::Char(c));
+    }
+    assert_eq!(app.library().iter().map(|s| s.name).collect::<Vec<_>>(), ["cache-aside"]);
+}
+
+/// The `:` line suggests what it may become as it is typed; tab takes the first.
+#[test]
+fn the_command_line_suggests() {
+    let (mut app, _) = bumped(0);
+    app.go(Page::Overview);
+    press(&mut app, KeyCode::Char(':'));
+    press(&mut app, KeyCode::Char('p'));
+    assert_eq!(app.suggestions().first().map(|(l, _)| l.as_str()), Some("pause "));
+    assert!(screen(&mut app, 130, 30).contains(":pause"), "{}", screen(&mut app, 130, 30));
+    press(&mut app, KeyCode::Tab);
+    press(&mut app, KeyCode::Char('b'));
+    assert_eq!(app.suggestions().first().map(|(l, _)| l.as_str()), Some("pause bump"));
+    press(&mut app, KeyCode::Tab);
+    assert_eq!(app.prompt.as_deref(), Some("pause bump"));
+}
+
+/// Approvals reviews the wait picked beside the list, as its deploy would: enter approves it
+/// there, ] goes to the next.
+#[test]
+fn approvals_review_beside_the_list() {
+    let (mut app, _) = app();
+    for text in [BEATS, BUMP] {
+        let plan = holon_author::agent::plan(text).unwrap();
+        app.client.as_ref().unwrap().save(&plan.name, &plan, text).unwrap();
+    }
+    app.refresh();
+    app.go(Page::Approvals);
+    let shown = screen(&mut app, 150, 40);
+    assert!(shown.contains("beats  ·  1 of 2"), "{shown}");
+    assert!(shown.contains("If approved, while it runs it may") && shown.contains("+ "), "{shown}");
+    press(&mut app, KeyCode::Char(']'));
+    let shown = screen(&mut app, 150, 40);
+    assert!(shown.contains("bump  ·  2 of 2"), "{shown}");
+    press(&mut app, KeyCode::Right);
+    assert!(app.approval.as_ref().is_some_and(|a| a.keys), "the review has the keys");
+    press(&mut app, KeyCode::Enter);
+    assert!(app.client.as_ref().unwrap().deployment("bump").is_some(), "{:?}", app.note.as_ref().map(|n| &n.text));
+    let shown = screen(&mut app, 150, 40);
+    assert!(shown.contains("beats  ·  1 of 1"), "{shown}");
+}
+
+/// The editor's Home tab: a draft, a sample, the tabs closed lately (enter opens one again, as
+/// it was), the server's flows.
+#[test]
+fn home_opens_again_what_was_closed() {
+    let (mut app, _) = bumped(0);
+    let shown = screen(&mut app, 130, 30);
+    assert!(shown.contains("⌂"), "{shown}");
+    app.typing = false;
+    press(&mut app, KeyCode::Char('w'));
+    assert!(app.tabs.is_empty());
+    let shown = screen(&mut app, 130, 30);
+    assert!(shown.contains("⌂ Home") && shown.contains("a new draft") && shown.contains("closed"), "{shown}");
+    assert_eq!(app.home_rows()[2], super::app::HomeRow::Closed(0));
+    app.home_sel = 2;
+    press(&mut app, KeyCode::Enter);
+    assert_eq!(app.tabs.len(), 1, "opened again");
+    assert!(!app.at_home());
+    screen(&mut app, 130, 30);
+    click(&mut app, Click::Home);
+    assert!(app.at_home());
+    press(&mut app, KeyCode::Esc);
+    assert!(!app.at_home(), "esc goes back to the tab");
+}
+
+/// A run's detail says where it is on record (its hash, the one before), how to check it
+/// offline; `/` filters the runs, i explains one, F follows the newest.
+#[test]
+fn a_runs_record_its_filter_and_its_explanation() {
+    let (mut app, _) = bumped(3);
+    app.open_flow("bump");
+    app.flow_section(Section::Runs);
+    let d = app.detail.as_ref().unwrap();
+    let (hash, prev, follows) = d.on_record(&d.runs[1]);
+    assert_eq!(hash.as_deref(), d.runs[2]["prev"].as_str(), "a run's hash is what the next names");
+    assert_eq!(prev, d.runs[1]["prev"].as_str().unwrap_or_default());
+    assert!(follows);
+    assert_eq!(d.on_record(d.runs.last().unwrap()).0.as_deref(), Some(d.head.as_str()), "the newest's is the head");
+    assert!(pane(&app).iter().any(|r| matches!(r, Row::Text(_, t) if t.contains("holon verify bump-runs.json"))), "{:?}", pane(&app));
+    press(&mut app, KeyCode::Char('/'));
+    press(&mut app, KeyCode::Char('#'));
+    press(&mut app, KeyCode::Char('1'));
+    press(&mut app, KeyCode::Enter);
+    let shown = screen(&mut app, 150, 36);
+    assert!(shown.contains("Runs, newest first (1 of 3)  /#1"), "{shown}");
+    press(&mut app, KeyCode::Esc);
+    assert_eq!(app.flow_rows(), 3, "esc clears it");
+    press(&mut app, KeyCode::Char('i'));
+    assert!(matches!(&app.modal, Some(Modal::Lines { title, .. }) if title.contains("explained")), "{:?}", app.note.as_ref().map(|n| &n.text));
+    press(&mut app, KeyCode::Esc);
+    press(&mut app, KeyCode::Char('F'));
+    assert!(app.flow.follow);
+}
+
+/// The sidebar says whether the run logs' chains hold; `:theme light` draws for a light
+/// terminal: no ground left dark.
+#[test]
+fn the_logs_health_and_a_light_theme() {
+    let (mut app, _) = bumped(2);
+    app.go(Page::Overview);
+    let shown = screen(&mut app, 150, 44);
+    let record = |shown: &str| shown.lines().find(|l| l.contains("on record") && !l.contains("of them")).map(|l| l.chars().take(21).collect::<String>());
+    assert!(shown.contains("run logs intact"), "{shown}");
+    assert_eq!(record(&shown).as_deref(), Some("    2 on record     │"), "{shown}");
+    // However many, the count keeps inside the sidebar.
+    app.client.as_mut().unwrap().deployments[0]["trigger_count"] = serde_json::json!(1_234_567);
+    let shown = screen(&mut app, 150, 44);
+    assert_eq!(record(&shown).as_deref(), Some("    1.2M on record  │"), "{shown}");
+    assert!(shown.contains("Runs, last 24 h"), "{shown}");
+    app.run_command("theme light");
+    assert!(app.light);
+    let mut terminal = Terminal::new(TestBackend::new(150, 44)).unwrap();
+    terminal.draw(|f| ui::draw(f, &mut app)).unwrap();
+    let dark = terminal.backend().buffer().content.iter().filter(|c| matches!(c.bg, ratatui::style::Color::Indexed(232..=241))).count();
+    assert_eq!(dark, 0, "no dark ground");
+}
+
+/// Every page with something on it, by name: for drawing them at different widths.
+fn every_page() -> Vec<(String, App)> {
+    let mut out = vec![];
+    let rich = || {
+        let (mut app, _) = bumped(3);
+        tab_with(&mut app, BEATS);
+        ctrl(&mut app, 'd');
+        press(&mut app, KeyCode::Char('s'));
+        app.refresh();
+        press(&mut app, KeyCode::Esc);
+        app
+    };
+    for page in [Page::Overview, Page::Approvals, Page::Flows, Page::Library] {
+        let mut app = rich();
+        app.go(page);
+        out.push((format!("{page:?}"), app));
+    }
+    for (s, name) in super::flow::SECTIONS {
+        let mut app = rich();
+        app.open_flow("bump");
+        app.flow_section(s);
+        out.push((format!("Flow {name}"), app));
+    }
+    let mut app = rich();
+    app.go(Page::Editor);
+    app.tab = 0;
+    out.push(("Editor text".into(), app));
+    let mut app = rich();
+    app.go(Page::Editor);
+    app.tab = 0;
+    ctrl(&mut app, 'r');
+    out.push(("Editor runs".into(), app));
+    let mut app = rich();
+    app.go(Page::Editor);
+    app.go_home();
+    out.push(("Editor home".into(), app));
+    let mut app = rich();
+    app.go(Page::Editor);
+    app.tab = 0;
+    ctrl(&mut app, 'd');
+    out.push(("Deploy dialog".into(), app));
+    let mut app = admin_app();
+    app.go(Page::Admin);
+    out.push(("Admin".into(), app));
+    out
+}
+
+#[test]
+#[ignore = "writes every page at three widths to HOLON_SCREENS, for a person to read"]
+fn dump_every_page() {
+    let to = std::env::var("HOLON_SCREENS").expect("HOLON_SCREENS: where to write them");
+    let mut all = String::new();
+    for (name, mut app) in every_page() {
+        for (w, h) in [(80, 24), (100, 30), (140, 40)] {
+            all += &format!("\n===== {name} at {w}x{h} =====\n{}\n", screen(&mut app, w, h));
+        }
+    }
+    std::fs::write(to, all).unwrap();
+}
+
+/// Every page draws at a narrow, a middling and a wide terminal (and a cramped one), the
+/// server's name whole on top and where you are after it, the page you are on at least.
+#[test]
+fn every_page_draws_at_every_width() {
+    for (name, mut app) in every_page() {
+        for (w, h) in [(60, 20), (80, 24), (100, 30), (140, 40)] {
+            let shown = screen(&mut app, w, h);
+            let lines: Vec<&str> = shown.lines().collect();
+            assert!(lines[0].contains("the test server"), "{name} at {w}x{h}: the server's name, whole:\n{shown}");
+            let page = super::ui::crumb_last(&app);
+            assert!(lines[0].contains("the test server ›") && lines[0].contains(&format!("› {page}")), "{name} at {w}x{h}: where you are, on top:\n{shown}");
+        }
+    }
+}
+
+
+/// Where you are is said on top, after the server's name, and a crumb before the last goes
+/// back to it: the flow's name to its status, Flows to the list.
+#[test]
+fn the_crumbs_on_top_go_back() {
+    let (mut app, _) = bumped(1);
+    app.open_flow("bump");
+    app.flow_section(Section::Runs);
+    let shown = screen(&mut app, 140, 40);
+    assert!(shown.lines().next().unwrap().contains("the test server › Flows › bump › Runs"), "{shown}");
+    let on_top = |app: &App, what: Click| app.hits.borrow().iter().find(|(r, c)| r.y == 0 && *c == what).map(|(r, _)| *r).unwrap_or_else(|| panic!("{what:?} isn't on top"));
+    let down = |app: &mut App, r: ratatui::layout::Rect| app.mouse(MouseEvent { kind: MouseEventKind::Down(MouseButton::Left), column: r.x, row: r.y, modifiers: KeyModifiers::NONE });
+    let r = on_top(&app, Click::Section(Section::Status));
+    down(&mut app, r);
+    assert_eq!((app.page, app.flow.section), (Page::Flow, Section::Status));
+    screen(&mut app, 140, 40);
+    let r = on_top(&app, Click::Page(Page::Flows));
+    down(&mut app, r);
+    assert_eq!(app.page, Page::Flows);
 }

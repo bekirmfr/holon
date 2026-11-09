@@ -2252,6 +2252,35 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// A log in a folder whose files' names run past Windows' 260 characters seals its older runs
+    /// as any does: a segment written aside there is made its owner's alone, as the rest of the
+    /// log's files are (`restrict_to_owner`), however long its name.
+    #[test]
+    fn a_log_in_a_deep_folder_seals_its_runs() {
+        let dir = temp_dir("long-folder");
+        let deep = dir.join("a-folder-name-long-enough-to-push-the-segments-past-what-windows-allows".repeat(3));
+        let path = deep.join("slug.jsonl");
+        assert!(sealed_dir(&path).join(format!("{:020}-{:020}.jsonl.gz.cut-0-0", 0, 0)).as_os_str().len() > 260);
+        for deferred in [true, false] {
+            let _ = std::fs::remove_dir_all(&deep);
+            let mut log = Log::open_keeping(Some(path.clone()), 10);
+            log.set_hot(2);
+            log.defer_cuts = deferred;
+            for _ in 0..6 {
+                log.push(entry());
+            }
+            if deferred {
+                let made = log.plan_cut().expect("a cut wanted").make();
+                assert!(made.as_ref().is_ok_and(|m| m.is_some()), "deferred: {:?}", made.err());
+                log.finish_cut(made);
+            }
+            assert!(!log.sealed.is_empty(), "deferred {deferred}: no segment sealed");
+            let back = Log::open_keeping(Some(path.clone()), 10);
+            assert_eq!(back.after(None, 100).iter().map(|e| e.seq).collect::<Vec<_>>(), [0, 1, 2, 3, 4, 5], "deferred {deferred}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// A backup that couldn't be written to is said until one can be: by a cut made with the
     /// lock released as by one made holding it.
     #[test]

@@ -117,7 +117,7 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
 }
 
 fn draw_pane(f: &mut Frame, app: &mut App, area: Rect) {
-    let block = panel("", app.admin.right);
+    let block = panel("Detail", app.admin.right);
     if app.admin.right {
         super::keys_here(app, area);
     }

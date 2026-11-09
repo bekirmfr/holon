@@ -80,6 +80,10 @@ pub(crate) fn flows(args: &[String]) -> i32 {
                 Ok(v) => v,
                 Err(code) => return code,
             };
+            if args.flag("--json") {
+                cmdline::print_json(&record);
+                return 0;
+            }
             let text = match agent::text_of(name, &record["document"]) {
                 Ok(t) => t,
                 Err(e) => {
