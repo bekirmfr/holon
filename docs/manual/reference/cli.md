@@ -1,7 +1,7 @@
 # Command line
 
 Everything is one program, `holon`. `holon help` lists the commands; `serve`, `export`,
-`verify`, `load`, `folder`, `database`, `mail`, `mcp` and `lsp` say more with `--help`.
+`verify`, `load`, `folder`, `database`, `mail`, `feed`, `mcp` and `lsp` say more with `--help`.
 
 | Command | |
 |---|---|
@@ -36,6 +36,7 @@ Everything is one program, `holon`. `holon help` lists the commands; `serve`, `e
 | [`holon store`](#holon-store) | sweep what nothing kept names from the content store |
 | [`holon database`](#holon-database) | bind the databases flows use, and list their tables |
 | [`holon mail`](#holon-mail) | bind the mail flows send through and receive |
+| [`holon feed`](#holon-feed) | bind the feeds of server-sent events flows listen to |
 | [`holon mcp`](#holon-mcp) | the tools for agents, and adding them to an agent's host |
 | [`holon lsp`](#holon-lsp) | a language server for editors |
 | [`holon version`, `update`, `uninstall`, `migrate`](#looking-after-the-install) | the install itself |
@@ -163,7 +164,7 @@ its first admin. [Server configuration](server.md) covers what it keeps and wher
 | `--dotenv FILE` | a `.env` file `HOLON_SECRET_*` values are also read from, again every minute while the server runs ([Secrets from a `.env` file](../guides/deploying.md#secrets-from-a-env-file)) |
 | `--editor DIR` | serve the editor from `DIR` instead of the built-in one (or `HOLON_EDITOR`) |
 | `--policy PATH` | the policy file (default `holon.toml` in the data folder) |
-| `--store`, `--deployments`, `--flows`, `--accounts`, `--secrets`, `--folders`, `--databases`, `--mails`, `--host-key PATH` | where each of those is kept, if not in the data folder. `--store` and `--deployments` also take `:memory:`. The mail on its way waits in `mail-spool` beside `--mails` |
+| `--store`, `--deployments`, `--flows`, `--accounts`, `--secrets`, `--folders`, `--databases`, `--mails`, `--feeds`, `--host-key PATH` | where each of those is kept, if not in the data folder. `--store` and `--deployments` also take `:memory:`. The mail on its way waits in `mail-spool` beside `--mails` |
 
 `HOLON_SETUP_CODE` sets the setup code instead of a random one.
 
@@ -202,7 +203,7 @@ bottom. It reaches the server as `holon deploy` does, signed in as you.
 | 4 the open flow | its status (routes, what it may do and whether its grant covers it, the secrets it reads), its runs (enter shows one over its text, with each statement's value), its history, state and access (enter on a secret sets it: a value typed as dots, a `HOLON_SECRET_…` name the server reads, or a Vault field), and its graph; its status says what it holds in memory and on disk; `g`, `p`, `x` run, pause or stop it |
 | 5 Editor | flows' text in tabs, coloured and checked as you type, with its problems below and, beside it, what it may do (`+` marks what deploying would add) and what the name at the cursor is |
 | 6 Library | the samples; enter opens a copy |
-| 7 Admin | people (invite, role, email, disable, a reset link, remove), API keys, the folders, databases and mail flows use (bound with the same flags as [`holon folder`](#holon-folder), [`holon database`](#holon-database) and [`holon mail`](#holon-mail)), the secrets each flow reads, and the server: its policy, the grants held, the sign-in provider, sweeping the store and the folder texts. An admin's page |
+| 7 Admin | people (invite, role, email, disable, a reset link, remove), API keys, the folders, databases, mail and feeds flows use (bound with the same flags as [`holon folder`](#holon-folder), [`holon database`](#holon-database), [`holon mail`](#holon-mail) and [`holon feed`](#holon-feed)), the secrets each flow reads, and the server: its policy, the grants held, the sign-in provider, sweeping the store and the folder texts. An admin's page |
 
 A flow's graph is its statements, one a row, under what starts them (a route, a clock, an
 action), with the lines between them showing what feeds what, as `git log --graph` draws
@@ -686,6 +687,31 @@ the mail on its way through it. Needs an admin; each takes
 | `--verdict-from SERVER` | whose `Authentication-Results` verdict on a sender counts: the name the mailbox's own server writes there; without it, no message is authenticated |
 | `--every T` | how often the folder is looked at: `1m` unless given, `10s` at least |
 | `--oauth SOURCE` | where the server reads the token request, for a server whose URL names a user and no password: `https://id:secret@host/…/token?scope=…` (client credentials) or `?refresh_token=…`; see [Logging in with OAuth](../guides/mail.md#logging-in-with-oauth) |
+| `--for SLUG` | for that deployment only |
+
+## `holon feed`
+
+```
+holon feed add NAME --url SOURCE [--header NAME=SOURCE]… [--buffer N] [--idle T] [--for SLUG]
+holon feed list
+holon feed remove NAME [--for SLUG]
+```
+
+Binds a name flows import (`"feed:prices"`) to a feed of server-sent events, whose events start
+their runs (`on.feed(prices, …)`), one at a time, in the order they came. The feed's URL, and
+each header's value, the server fetches from `SOURCE` (`env:HOLON_SECRET_…`,
+`vault:<mount>/<path>#<field>`) each time it opens the connection, never storing or showing it:
+`https://…`, a login in it sent as Basic authentication; plain `http://` only to this machine. It
+reads the feed when it is bound, and refuses one that doesn't answer 200 with
+`text/event-stream`. Removing it closes its connections. Needs an admin; each takes
+`--server PORT|URL`. See [Feeds](../guides/feeds.md).
+
+| Option | |
+|---|---|
+| `--url SOURCE` | where the server reads the feed's URL |
+| `--header NAME=SOURCE` | a header each request sends, its value read from a source (`Authorization=env:HOLON_SECRET_PRICES_AUTH`); again for another |
+| `--buffer N` | how many events may wait for their run before the connection waits too: 1000 unless given |
+| `--idle T` | how long the feed may say nothing before the connection is opened again: `90s` unless given, `5s` at least |
 | `--for SLUG` | for that deployment only |
 
 ## `holon mcp`

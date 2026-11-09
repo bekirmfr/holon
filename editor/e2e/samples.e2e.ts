@@ -2361,6 +2361,49 @@ test("support-inbox answers an authenticated request through one mail logged in 
   await expect(page.getByLabel("mail support")).toContainText("starts on mail it receives");
 });
 
+test("price-feed runs on each event its feed sends, and opens the feed again from where it was", async ({ page, request, adminToken }) => {
+  const { existsSync, writeFileSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  // The e2e server's feed (sse-server.mjs): an event is a .json file dropped in its folder, its
+  // name the event's id; `cut` drops every connection; connections.log says where each opened from.
+  const feed = join(FOLDERS, "feed");
+  const opened = () => (existsSync(join(feed, "connections.log")) ? readFileSync(join(feed, "connections.log"), "utf8").trim().split("\n") : []);
+  const symbol = `S${Date.now()}`;
+  const said = async () => {
+    const events = await request.get(`${SERVER}/deployments/price-feed/events`, { headers: { Authorization: `Bearer ${adminToken}` } });
+    return ((await events.json()) as { events: { kind: string; what: string }[] }).events.map((e) => e.what);
+  };
+
+  await openSample(page, "Price feed (server-sent events, each event a run)");
+  const port = await deploy(page);
+  await expect.poll(async () => (await said()).some((w) => w.startsWith("listens to the feed prices (http://127.0.0.1:")), { timeout: 15_000 }).toBe(true);
+  // Its key never shown.
+  expect((await said()).some((w) => w.includes("e2e-not-a-key"))).toBe(false);
+  writeFileSync(join(feed, `${symbol}-1.json`), JSON.stringify({ symbol, price: 10.5 }));
+  type Price = { price: number; at: number };
+  const prices = async () => (await (await request.get(`http://127.0.0.1:${port}/prices`)).json()) as Record<string, Price>;
+  await expect.poll(async () => (await prices())[symbol]?.price, { timeout: 15_000 }).toBe(10.5);
+  // The server panel says what its connection is doing, and where it is.
+  await expect(page.getByText(`connected, at ${symbol}-1`)).toBeVisible({ timeout: 15_000 });
+
+  // Every connection dropped: opened again from the last event run on, and what comes is run on.
+  const before = opened().length;
+  writeFileSync(join(feed, "cut"), "");
+  await expect.poll(() => opened().slice(before), { timeout: 15_000 }).toEqual([`${symbol}-1`]);
+  writeFileSync(join(feed, `${symbol}-2.json`), JSON.stringify({ symbol, price: 11 }));
+  await expect.poll(async () => (await prices())[symbol]?.price, { timeout: 15_000 }).toBe(11);
+
+  // The admin's resources show the feed without its query; permissions, that price-feed listens.
+  await page.goto("/");
+  await page.getByRole("button", { name: "admin", exact: true }).click();
+  const sections = page.getByRole("tablist", { name: "admin sections" });
+  await sections.getByRole("tab", { name: "resources" }).click();
+  await expect(page.getByText(/^http:\/\/127\.0\.0\.1:\d+\/events \(from env:HOLON_SECRET_PRICES_URL\) · 1000 may wait · quiet for 90s at most$/)).toBeVisible();
+  await expect(page.getByText("e2e-not-a-key")).toHaveCount(0);
+  await sections.getByRole("tab", { name: "permissions" }).click();
+  await expect(page.getByLabel("feed prices")).toContainText("starts on each event it sends");
+});
+
 test("due-dates schedules a payout past Easter's closing days and an invoice past a weekend", async ({ page, request }) => {
   await openSample(page, "Due dates (business days at a fixed offset)");
   const port = await deploy(page);

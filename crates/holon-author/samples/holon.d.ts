@@ -124,6 +124,15 @@ declare module "holon" {
     /** What that server said: pass, fail, none... */
     verdict: { spf: string; dkim: string; dmarc: string }
   }
+  /** An event a feed sent. */
+  export interface FeedEvent {
+    /** Its data: a value when it is JSON, else its text. */
+    data: any
+    /** Its id, when the feed gives one. */
+    id?: string
+    /** Its name: "message" unless the feed names it. */
+    event: string
+  }
   export const on: {
     file: {
       /** Runs for each file new or changed in the folder, once it stops changing. */
@@ -133,6 +142,8 @@ declare module "holon" {
     }
     /** Runs for each message that comes to the mail's mailbox, moved once its run is over. */
     mail(mail: Mail, handler: (message: MailMessage) => any, options?: { log?: Log }): void
+    /** Runs for each event the feed sends, one at a time, in the order they came. */
+    feed(feed: Feed, handler: (event: FeedEvent) => any, options?: { log?: Log }): void
   }
 
   /** A start's answer: `{run, waiting}` once the run waits, `{answer, run}` if it finished first. */
@@ -277,6 +288,10 @@ declare module "holon" {
       attachments?: Record<string, string | Uint8Array>
     }): any
   }
+  /** A feed an admin binds on the host: listened to by `on.feed`. */
+  export interface Feed {
+    readonly kind: "feed"
+  }
 }
 
 /** A secret set for the deployment: someone sets it before the flow works. */
@@ -313,6 +328,11 @@ declare module "mail:*" {
   import type { Mail } from "holon"
   const mail: Mail
   export default mail
+}
+declare module "feed:*" {
+  import type { Feed } from "holon"
+  const feed: Feed
+  export default feed
 }
 declare module "host:*" {
   import type { Host } from "holon"
@@ -1456,6 +1476,13 @@ declare module "holon" {
    * The message that came to the mailbox of the mail resource an admin bound to the name set on the node (mail), which started the run: {from, name, to, cc, subject, date, message_id, text, html, attachments, authenticated, verdict}. authenticated is the mailbox's own server's word that the domain in From sent it (DMARC passed); From alone proves nothing. attachments is a record of each file's name to its text (a text, JSON, XML or CSV type) or bytes. A server's on.mail handler runs once for each message, which is moved to the binding's done folder once the run is over.
    */
   export function mail_arrival(...args: any[]): any
+
+  /**
+   * `feed_event() -> out: Record  {feed: prices}`
+   *
+   * The event the feed an admin bound to the name set on the node (feed) sent, which started the run: {data, id, event}. data is a value when the event's data is JSON, else its text; id is the event's id when the feed gives one; event is its name, message unless the feed names it. A server's on.feed handler runs once for each event, one at a time, in the order they came; the host keeps where the feed is, so a reconnect resumes after the last event run on, and an event run on already isn't run again.
+   */
+  export function feed_event(...args: any[]): any
 
   /**
    * `resume_token() -> out: Text  {await: event}`

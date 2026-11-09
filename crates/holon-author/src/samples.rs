@@ -803,6 +803,18 @@ static SAMPLES: &[Sample] = &[
         text: include_str!("../samples/support-inbox.holon.ts"),
     },
     Sample {
+        name: "price-feed",
+        title: "Price feed (server-sent events, each event a run)",
+        description: "A market data provider streams prices as server-sent events; an admin binds the feed (holon feed add prices --url env:…, its URL with its key in a secret source) and the host keeps the connection: each event the feed sends starts one run of on.feed(prices, (e) => …), one at a time, in the order they came, e the event ({data, id, event}, data a value when it is JSON). The price is kept per symbol in a collection, sent on a channel its page listens to, and answered at GET /prices. The host keeps where the feed is: a connection lost is opened again from the last event run on (Last-Event-ID), an event sent again is passed over, and the timeline says when the feed was lost and read again.",
+        shows: &["on.feed", "server-sent events", "a feed's events as runs", "reconnecting from where it was", "collections", "channels"],
+        port: Some("8187"),
+        secrets: &[],
+        optional: &[],
+        browsers: None,
+        try_it: "put the feed's URL in the server's environment (HOLON_SECRET_PRICES_URL=https://stream.example.com/v1/prices?key=…) and bind it (holon feed add prices --url env:HOLON_SECRET_PRICES_URL); deploy, open http://127.0.0.1:8187/ and watch each price come, or curl http://127.0.0.1:8187/prices for the last price of each symbol; the server panel shows the feed's connection and where it is",
+        text: include_str!("../samples/price-feed.holon.ts"),
+    },
+    Sample {
         name: "ticker",
         title: "Ticker (a clock beside routes)",
         description: "A flow with a clock of its own beside its routes: every 2 seconds (every(\"2s\", …)) it counts a tick in its state and sends it on the channel ticks, with the time of the tick (now, in the handler). Its page lists each tick as it arrives; GET /count answers the count. An action, run by hand by its name, sets the count back (export const reset = action((input) => …), input what was sent); a person runs it, and an agent only once a person lets agents run it.",

@@ -1,7 +1,8 @@
 // The admin panel (admins only; holon-server's auth.rs), in three tabs (docs/L4s/databases-L4.md
 // §9.1): people and sign-in (the people who use this server, the API tokens scripts use, signing
 // in through an identity provider); resources (the folders and databases flows read and write,
-// and the mail they send through: folders.rs, databases.rs, mails.rs); and permissions (what this host allows, and who holds what). Below
+// the mail they send through and the feeds they listen to: folders.rs, databases.rs, mails.rs,
+// feeds.rs); and permissions (what this host allows, and who holds what). Below
 // each, what was done, by whom.
 // Adding someone gives a one-time link for them to set their password; resetting gives a new
 // one. The server refuses any change that would leave no admin. A grant changes only on its
@@ -20,6 +21,11 @@ import {
   getPermissions,
   listDatabases,
   listMails,
+  listFeeds,
+  bindFeed,
+  unbindFeed,
+  type FeedBinding,
+  type FeedEntry,
   listFolders,
   listGrants,
   listServerSecrets,
@@ -134,6 +140,10 @@ export function AdminPage({ me, onOpenDeployment }: { me: string; onOpenDeployme
   const [mails, setMails] = useState<MailEntry[]>([]);
   const noMail: MailBinding = { name: "", smtp: "", from: "", to: "", imap: "", folder: "", done: "", verdict_from: "", oauth: "", deployment: null };
   const [mailDraft, setMailDraft] = useState<MailBinding>(noMail);
+  const [feeds, setFeeds] = useState<FeedEntry[]>([]);
+  // A feed to bind, its headers written NAME=SOURCE, one a line.
+  const noFeed = { name: "", url: "", headers: "", buffer: "", idle: "", deployment: "" };
+  const [feedDraft, setFeedDraft] = useState(noFeed);
   const [serverSecrets, setServerSecrets] = useState<SecretInfo[]>([]);
   const [secretDraft, setSecretDraft] = useState({ name: "", value: "", to: "" });
   const [grants, setGrants] = useState<HeldGrant[]>([]);
@@ -158,6 +168,7 @@ export function AdminPage({ me, onOpenDeployment }: { me: string; onOpenDeployme
     listFolders().then(setFolders).catch((e: unknown) => setMsg(messageOf(e)));
     listDatabases().then(setDatabases).catch((e: unknown) => setMsg(messageOf(e)));
     listMails().then(setMails).catch((e: unknown) => setMsg(messageOf(e)));
+    listFeeds().then(setFeeds).catch((e: unknown) => setMsg(messageOf(e)));
     listServerSecrets().then(setServerSecrets).catch((e: unknown) => setMsg(messageOf(e)));
     listGrants().then(setGrants).catch((e: unknown) => setMsg(messageOf(e)));
     getPermissions().then(setPolicy).catch((e: unknown) => setMsg(messageOf(e)));
@@ -207,6 +218,7 @@ export function AdminPage({ me, onOpenDeployment }: { me: string; onOpenDeployme
   const folderHolders = (f: FolderEntry) => holdersOf("folder", f, folders, grants);
   const databaseHolders = (d: DatabaseEntry) => holdersOf("database", d, databases, grants);
   const mailHolders = (m: MailEntry) => holdersOf("mail", m, mails, grants);
+  const feedHolders = (f: FeedEntry) => holdersOf("feed", f, feeds, grants);
   /** Which deployments use it, said under its row. */
   const usedBy = (holders: Holder[]) => (
     <div style={{ ...quiet, padding: "0 10px 6px", marginTop: -2 }}>
@@ -803,6 +815,100 @@ export function AdminPage({ me, onOpenDeployment }: { me: string; onOpenDeployme
             </button>
           </form>
 
+          <div style={head}>feeds</div>
+          <div style={about}>
+            The feeds flows listen to: each name a feed of server-sent events whose URL the server fetches from where it is kept, as a secret&apos;s
+            (<code>env:HOLON_SECRET_PRICES_URL</code>, <code>vault:…</code>), never typed in here, stored or shown, and so are the values of the headers each
+            request sends (Authorization=env:HOLON_SECRET_PRICES_AUTH, one a line). It is bound once a request to it answers as a feed does. A flow names the
+            feed (<code>import prices from &quot;feed:prices&quot;</code>) and runs <code>on.feed(prices, (e) =&gt; …)</code> for each event it sends, one at
+            a time, in the order they came; the server keeps the connection and where it is, opens it again from there when it is lost, and passes over an
+            event it ran already. How many may wait for their run before the connection waits too (1000), and how long the feed may say nothing before it is
+            opened again (90s).
+          </div>
+          {feeds.length === 0 && <div style={{ color: "#7e8ea8", fontSize: 11, marginBottom: 6 }}>no feed bound</div>}
+          {feeds.map((f) => (
+            <Fragment key={keyOf(f)}>
+              <div style={row}>
+                <span style={{ color: "#6fd3e0", minWidth: 90 }}>feed {f.name}</span>
+                <span style={{ color: "#e6eefb", flex: 1, overflowWrap: "anywhere" }}>
+                  {`${f.address} (from ${f.url})`}
+                  {Object.keys(f.headers).length > 0 && ` · sends ${Object.entries(f.headers).map(([h, s]) => `${h} from ${s}`).join(", ")}`}
+                  {` · ${f.buffer} may wait · quiet for ${f.idle}s at most`}
+                </span>
+                {f.deployment && <span style={{ color: "#7e8ea8", fontSize: 11 }}>for {f.deployment} only</span>}
+                <button
+                  style={small}
+                  title="unbind the name: its connections close"
+                  onClick={async () => {
+                    const whose = f.deployment ? ` for ${f.deployment}` : "";
+                    if (await dialog.confirm(`Unbind the feed "${f.name}"${whose}? Its connections close. ${unbindingSays(feedHolders(f))}`, "Unbind")) act(() => unbindFeed(f.name, f.deployment));
+                  }}
+                >
+                  ×
+                </button>
+              </div>
+              {usedBy(feedHolders(f))}
+            </Fragment>
+          ))}
+          <form
+            style={{ ...row, background: "transparent", flexWrap: "wrap" }}
+            onSubmit={async (e) => {
+              e.preventDefault();
+              const name = feedDraft.name.trim();
+              const deployment = feedDraft.deployment.trim() || null;
+              const there = feeds.find((b) => b.name === name && b.deployment === deployment);
+              if (there && !(await dialog.confirm(`Bind "${name}" again? It replaces its binding. ${unbindingSays(feedHolders(there)).replace(/: they keep running.*/, ": their connections open again to the new one.")}`, "Bind again")))
+                return;
+              act(async () => {
+                const headers: Record<string, string> = {};
+                for (const line of feedDraft.headers.split("\n").map((l) => l.trim()).filter(Boolean)) {
+                  const at = line.indexOf("=");
+                  if (at < 1) throw new Error(`"${line}" isn't a header: NAME=SOURCE (Authorization=env:HOLON_SECRET_PRICES_AUTH)`);
+                  headers[line.slice(0, at).trim()] = line.slice(at + 1).trim();
+                }
+                const binding: FeedBinding = { name, url: feedDraft.url.trim(), headers, deployment };
+                if (feedDraft.buffer.trim()) binding.buffer = Number(feedDraft.buffer.trim());
+                if (feedDraft.idle.trim()) binding.idle = feedDraft.idle.trim();
+                await bindFeed(binding);
+                setFeedDraft(noFeed);
+              });
+            }}
+          >
+            <input aria-label="feed name" placeholder="name (prices)" value={feedDraft.name} onChange={(e) => setFeedDraft({ ...feedDraft, name: e.target.value })} style={input} />
+            <input
+              aria-label="feed url"
+              placeholder="where the feed's URL is kept (env:HOLON_SECRET_PRICES_URL, vault:…)"
+              value={feedDraft.url}
+              onChange={(e) => setFeedDraft({ ...feedDraft, url: e.target.value })}
+              style={{ ...input, flex: 1, minWidth: 220 }}
+            />
+            <input aria-label="feed buffer" placeholder="may wait (1000)" value={feedDraft.buffer} onChange={(e) => setFeedDraft({ ...feedDraft, buffer: e.target.value })} style={input} />
+            <input aria-label="feed idle" placeholder="quiet for at most (90s)" value={feedDraft.idle} onChange={(e) => setFeedDraft({ ...feedDraft, idle: e.target.value })} style={input} />
+            <input
+              aria-label="feed for one deployment"
+              placeholder="for one deployment (empty: all)"
+              value={feedDraft.deployment}
+              onChange={(e) => setFeedDraft({ ...feedDraft, deployment: e.target.value })}
+              style={input}
+            />
+            <textarea
+              aria-label="feed headers"
+              placeholder="headers each request sends, NAME=SOURCE, one a line (Authorization=env:HOLON_SECRET_PRICES_AUTH)"
+              value={feedDraft.headers}
+              onChange={(e) => setFeedDraft({ ...feedDraft, headers: e.target.value })}
+              rows={2}
+              style={{ ...input, flexBasis: "100%", fontFamily: "monospace" }}
+            />
+            {isUrl(feedDraft.url) && (
+              <div role="alert" style={{ ...quiet, color: "#e0916f", flexBasis: "100%" }}>
+                That is a URL: give where it is kept instead (env:HOLON_SECRET_PRICES_URL, vault:…). It isn&apos;t sent.
+              </div>
+            )}
+            <button type="submit" style={primary} disabled={!feedDraft.name.trim() || !feedDraft.url.trim() || isUrl(feedDraft.url)}>
+              bind feed
+            </button>
+          </form>
+
           <div style={head}>secrets</div>
           <div style={about}>
             The server&apos;s own secrets: one bound here is read by every deployment that reads a secret of that name and has none of its own (one set for a deployment,
@@ -1179,15 +1285,15 @@ export function AdminPage({ me, onOpenDeployment }: { me: string; onOpenDeployme
 
           <div style={head}>who may touch what</div>
           <div style={about}>
-            Each resource, and the deployments granted it, by table for a database, by how for a folder and by recipient for a mail: read from each deployment&apos;s grant. Nothing
+            Each resource, and the deployments granted it, by table for a database, by how for a folder and a feed and by recipient for a mail: read from each deployment&apos;s grant. Nothing
             is changed here: revoking and granting back are on the deployment&apos;s card, which each one opens.
           </div>
           <label style={{ ...quiet, display: "flex", gap: 6, alignItems: "center", marginBottom: 6 }}>
             show
             <select aria-label="show what" value={kind} onChange={(e) => setKind(e.target.value)} style={input}>
               <option value="everything">everything</option>
-              {/* Databases, folders and mail always: they're listed as resources, held or not. */}
-              {["databases", "folders", "mail", ...kindsHeld(grants).filter((k) => k !== "databases" && k !== "folders" && k !== "mail")].map((k) => (
+              {/* Databases, folders, mail and feeds always: they're listed as resources, held or not. */}
+              {["databases", "folders", "mail", "feeds", ...kindsHeld(grants).filter((k) => !["databases", "folders", "mail", "feeds"].includes(k))].map((k) => (
                 <option key={k} value={k}>
                   {k}
                 </option>
@@ -1212,7 +1318,11 @@ export function AdminPage({ me, onOpenDeployment }: { me: string; onOpenDeployme
                 onOpen={onOpenDeployment}
               />
             ))}
-          {othersHeld(grants, folders, databases, mails)
+          {(kind === "everything" || kind === "feeds") &&
+            feeds.map((f) => (
+              <Resource key={`feed:${keyOf(f)}`} title={`feed ${f.name}`} detail={`${f.address}${f.deployment ? ` · for ${f.deployment} only` : ""}`} holders={feedHolders(f)} onOpen={onOpenDeployment} />
+            ))}
+          {othersHeld(grants, folders, databases, mails, feeds)
             .filter((o) => kind === "everything" || o.kind === kind)
             .map((o) => (
               <div key={o.item} style={{ ...row, flexWrap: "wrap" }} title={o.item}>

@@ -23,8 +23,8 @@ pub(crate) fn derives_state(mut caps: impl Iterator<Item = Capability>) -> bool 
     })
 }
 
-/// What a deployment shows as its triggers: a server's port, its clocks (`every 2s`), its file
-/// and mail handlers (`on file inbox`, `on mail remit`) and its actions (`action reset`), or plain
+/// What a deployment shows as its triggers: a server's port, its clocks (`every 2s`), its file,
+/// mail and feed handlers (`on file inbox`, `on mail remit`, `on feed prices`) and its actions (`action reset`), or plain
 /// `Ingress` for a unit that takes requests some other way, plus `Clock` for a flow on an
 /// interval (`clock` is false for a server, whose clocks are its own). Deploy and reload both
 /// derive it here.
@@ -34,13 +34,14 @@ pub(crate) fn trigger_labels(s: &Server) -> Vec<String> {
     triggers.extend(s.clocks.iter().map(|c| c.label.clone()));
     triggers.extend(s.files.iter().map(|f| f.label.clone()));
     triggers.extend(s.mails.iter().map(|m| m.label.clone()));
+    triggers.extend(s.feeds.iter().map(|f| f.label.clone()));
     triggers.extend(s.actions.iter().map(|a| a.label.clone()));
     triggers
 }
 
 /// What a deploy of a unit nothing would start says.
 pub(crate) const STARTS_NOTHING: &str =
-    "nothing would start a run: it has no route, clock, file or mail handler or action (an action runs by hand: `export const run = action((input) => { … })`)";
+    "nothing would start a run: it has no route, clock, file, mail or feed handler or action (an action runs by hand: `export const run = action((input) => { … })`)";
 
 pub(crate) fn is_valid_slug(s: &str) -> bool {
     !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
@@ -209,6 +210,12 @@ fn deploy(
         let named = format!("MailArrival({:?})", m.mail);
         if body.requirements.optional.contains(&named) {
             return err(400, format!("{named} starts this flow's {}: it can't be optional", m.label));
+        }
+    }
+    for f in &server.feeds {
+        let named = format!("FeedEvent({:?})", f.feed);
+        if body.requirements.optional.contains(&named) {
+            return err(400, format!("{named} starts this flow's {}: it can't be optional", f.label));
         }
     }
     // Agents may run only actions it has.
@@ -844,6 +851,7 @@ pub(crate) fn handle_delete_deployment(
             }
             dep.arrivals.forget();
             inbox::forget(deployments_path, slug);
+            subscriptions::forget(deployments_path, slug);
             dep.channels.close();
             persist_deployments(deployments_path, deployments);
             Response::json(&deployment_entry(slug, &dep))

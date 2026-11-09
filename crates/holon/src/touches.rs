@@ -40,6 +40,7 @@ pub(crate) fn part(item: &str) -> (&'static str, &'static str, String, String) {
         "Await" => ("triggers", "wait", arg, s("wait for it")),
         "FileArrival" => ("resources", "folder", arg, s("watch")),
         "MailArrival" => ("resources", "mail", arg, s("receive")),
+        "FeedEvent" => ("resources", "feed", arg, s("listen")),
         "FileRead" => ("resources", "folder", arg, s("read")),
         "FileWrite" => ("resources", "folder", arg, s("write")),
         "DbRead" | "DbWrite" => {

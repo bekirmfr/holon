@@ -72,6 +72,7 @@ An import names something the flow uses from outside a run. Its source says what
 | `import shop from "database:NAME"` | a named database on the host, used as `shop.query(sql, …)` |
 | `import updates from "channel:NAME"` | a channel: `updates.send(x)`, `updates.subscribe()`, `updates.pipe(…)` |
 | `import ops from "mail:NAME"` | a mail the server sends through, bound by an admin: `ops.send({ to, subject, text })`; bound to a mailbox, `on.mail(ops, (m) => …)` runs on what comes to it |
+| `import prices from "feed:NAME"` | a feed of server-sent events, bound by an admin: `on.feed(prices, (e) => …)` runs on each event it sends |
 | `import api from "host:HOST"` | a host the flow calls over HTTPS, as `await api.get("/path")` |
 | `import { now } from "holon:clock"` | the time the run started |
 | `import { random } from "holon:random"` | one random number for the run |
@@ -534,6 +535,7 @@ Each of these is one building block, and each is one thing the flow may do.
 | `dir.create(name, text)`, `dir.create_copy(name, handle)` | the same write (a text or bytes) or copy, only if there is no such file yet: else the run fails, and nothing it did lands |
 | `f` in `on.file.created(dir, (f) => …)` | the handle of the file that started the run: `{folder, name, size, hash, modified, event}` |
 | `m` in `on.mail(ops, (m) => …)` | the message that started the run: `{from, name, to, cc, subject, date, message_id, text, html, attachments, authenticated, verdict}`; `authenticated` is the mailbox's own server's word that the domain in `from` sent it |
+| `e` in `on.feed(prices, (e) => …)` | the event that started the run: `{data, event, id}`; `data` a value when it is JSON, else its text; `event` its name, `"message"` when it gives none; `id` only when it has one |
 | `db.query(sql, v1, v2, …)` | the rows of a database, a list of records, as the run began; `$1`, `$2`, … in the SQL are the values after it |
 | `db.one(sql, v1, …)` | the first row, or no value when there is none |
 | `db.exec(sql, v1, …)`, `db.exec(sql, …, { expect: n })` | run an `insert`, `update` or `delete` when the run finishes; with `expect`, only if it changes exactly `n` rows, else nothing the run wrote lands and a route answers 409 |
@@ -670,6 +672,11 @@ route.get("/seen/:name", (req) => seen[req.params.name])
   binding's done folder once the run is over. One handler a mail; what the mailbox held when the
   flow was deployed isn't run on. `From` proves nothing: check `m.authenticated`
   ([Receiving mail](../guides/mail.md#receiving-mail)).
+- **`on.feed(prices, (e) => { … })`** runs for each event the feed an admin bound `prices` to
+  sends (`holon feed add prices --url …`), one at a time, in the order they came; `e` is the
+  event. One handler a feed; it answers nobody. The host keeps where the feed is: a connection
+  lost is opened again from the last event run on, and an event sent again is passed over
+  ([Feeds](../guides/feeds.md)).
 - **`export const NAME = action((input) => { … })`** runs when someone runs it by its name,
   `input` what they sent (a JSON value; `{}` for nothing). It answers with what it returns, a
   value alone (no `status(…)` or `respond(…)`); one that only writes answers nothing. It is

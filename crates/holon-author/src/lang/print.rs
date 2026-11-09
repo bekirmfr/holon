@@ -34,7 +34,7 @@ use crate::canvas::{Node, PlacedBody};
 use crate::composites::{inner_canvas, resolve, Names};
 use crate::lang::lower::{alias, call_noun, is_optional, RESERVED, UNUSED};
 use crate::lang::ts::{DATE_GETTERS, DATE_SETTERS};
-use crate::routes::{components, find_actions, find_clocks, find_files, find_mails, find_routes};
+use crate::routes::{components, find_actions, find_clocks, find_feeds, find_files, find_mails, find_routes};
 use crate::templates;
 use crate::text::restore;
 use crate::wire::{WParam, WPort, WType};
@@ -423,7 +423,7 @@ fn without_block_ties(nodes: Vec<&Node>, wires: Vec<BlockWire>) -> (Vec<&Node>, 
     let tie = |src: &Src, input: &str| {
         input == TRIGGER
             && (own_trigger(src)
-                || matches!(src, Src::Node { id, output } if (output == "request" && by_id.get(id.as_str()).is_some_and(|n| n.is_template("request"))) || (output == "now" && by_id.get(id.as_str()).is_some_and(|n| n.is_template("every"))) || (output == "file" && by_id.get(id.as_str()).is_some_and(|n| n.is_template("on_file"))) || (output == "message" && by_id.get(id.as_str()).is_some_and(|n| n.is_template("on_mail"))) || (output == "input" && by_id.get(id.as_str()).is_some_and(|n| n.is_template("action"))) || passes_trigger(id)))
+                || matches!(src, Src::Node { id, output } if (output == "request" && by_id.get(id.as_str()).is_some_and(|n| n.is_template("request"))) || (output == "now" && by_id.get(id.as_str()).is_some_and(|n| n.is_template("every"))) || (output == "file" && by_id.get(id.as_str()).is_some_and(|n| n.is_template("on_file"))) || (output == "message" && by_id.get(id.as_str()).is_some_and(|n| n.is_template("on_mail"))) || (output == "event" && by_id.get(id.as_str()).is_some_and(|n| n.is_template("on_feed"))) || (output == "input" && by_id.get(id.as_str()).is_some_and(|n| n.is_template("action"))) || passes_trigger(id)))
     };
     // A pass-through that feeds only ties goes, with the `true` it holds.
     let mut gone: HashSet<String> = HashSet::new();
@@ -501,6 +501,8 @@ pub struct Printer<'s> {
     databases: BTreeSet<String>,
     channels: BTreeSet<String>,
     mails: BTreeSet<String>,
+    /// The feeds its handlers listen to.
+    feeds: BTreeSet<String>,
     /// The flows any `flow_call` or `flow_start` runs an action of, by slug.
     calls: BTreeSet<String>,
     secrets: BTreeSet<String>,
@@ -560,6 +562,7 @@ pub fn print_lines(name: Option<&str>, doc: &FlowDocument, store: &mut MapResolv
         databases: BTreeSet::new(),
         channels: BTreeSet::new(),
         mails: BTreeSet::new(),
+        feeds: BTreeSet::new(),
         calls: BTreeSet::new(),
         secrets: BTreeSet::new(),
         state: BTreeSet::new(),
@@ -586,6 +589,7 @@ pub fn print_lines(name: Option<&str>, doc: &FlowDocument, store: &mut MapResolv
     p.collect_collections(&doc.nodes)?;
     // A mail a handler reads is imported as one it sends through is.
     p.mails.extend(doc.nodes.iter().filter(|n| n.is_template("on_mail")).map(|n| n.param("mail").to_string()));
+    p.feeds.extend(doc.nodes.iter().filter(|n| n.is_template("on_feed")).map(|n| n.param("feed").to_string()));
     for n in doc.nodes.iter().filter(|n| n.is_template("on_file")) {
         let folder = n.param("folder").to_string();
         if !p.watched.contains(&folder) {
@@ -876,7 +880,7 @@ impl<'s> Printer<'s> {
     /// What the text imports by name must be a name TypeScript writes: each store, secret, state
     /// key and action.
     fn check_names(&self) -> Result<(), String> {
-        let stores = [("collection", &self.collections), ("folder", &self.folders), ("database", &self.databases), ("channel", &self.channels), ("mail", &self.mails)];
+        let stores = [("collection", &self.collections), ("folder", &self.folders), ("database", &self.databases), ("channel", &self.channels), ("mail", &self.mails), ("feed", &self.feeds)];
         for (kind, names) in stores {
             for n in names.iter().chain(if kind == "folder" { self.watched.iter().collect::<Vec<_>>() } else { vec![] }) {
                 if !is_identifier(n) || JS_RESERVED.contains(&n.as_str()) || VOCAB.contains(&n.as_str()) || ["state", "now", "random", "random_bytes"].contains(&n.as_str()) {
@@ -909,7 +913,7 @@ impl<'s> Printer<'s> {
         // never takes one, whichever).
         let vocab = VOCAB.iter().filter(|w| **w == "flow" || self.vocab_used.as_ref().is_some_and(|used| used.contains(**w)));
         let mut out: HashSet<String> = JS_RESERVED.iter().chain(GLOBALS).chain(vocab).chain(&["state", "now", "random", "random_bytes"]).map(|s| s.to_string()).collect();
-        out.extend(self.collections.iter().chain(&self.folders).chain(&self.databases).chain(&self.channels).chain(&self.mails).chain(&self.watched).cloned());
+        out.extend(self.collections.iter().chain(&self.folders).chain(&self.databases).chain(&self.channels).chain(&self.mails).chain(&self.feeds).chain(&self.watched).cloned());
         out.extend(self.actions.iter().cloned());
         out.extend(self.calls.iter().map(|f| call_noun(f)));
         out
@@ -1011,6 +1015,9 @@ impl<'s> Printer<'s> {
         for m in &self.mails {
             out.push(format!("import {m} from \"mail:{m}\""));
         }
+        for f in &self.feeds {
+            out.push(format!("import {f} from \"feed:{f}\""));
+        }
         for f in &self.watched {
             out.push(format!("import {f} from \"folder:{f}\""));
         }
@@ -1084,6 +1091,8 @@ impl<'s> Printer<'s> {
         errors.extend(file_errors);
         let (mails, mail_errors) = find_mails(&doc.nodes, &doc.edges);
         errors.extend(mail_errors);
+        let (feeds, feed_errors) = find_feeds(&doc.nodes, &doc.edges);
+        errors.extend(feed_errors);
         let (actions, action_errors) = find_actions(&doc.nodes, &doc.edges);
         errors.extend(action_errors);
         if !errors.is_empty() {
@@ -1098,6 +1107,7 @@ impl<'s> Printer<'s> {
             Clock(&'r crate::routes::ClockGroup),
             File(&'r crate::routes::FileGroup),
             Mail(&'r crate::routes::MailGroup),
+            Feed(&'r crate::routes::FeedGroup),
             Action(&'r crate::routes::ActionGroup),
         }
         let mut handlers: Vec<(usize, Handler)> = routes
@@ -1106,10 +1116,11 @@ impl<'s> Printer<'s> {
             .chain(clocks.iter().map(|c| (first(&c.node_ids), Handler::Clock(c))))
             .chain(files.iter().map(|f| (first(&f.node_ids), Handler::File(f))))
             .chain(mails.iter().map(|m| (first(&m.node_ids), Handler::Mail(m))))
+            .chain(feeds.iter().map(|f| (first(&f.node_ids), Handler::Feed(f))))
             .chain(actions.iter().map(|a| (first(&a.node_ids), Handler::Action(a))))
             .collect();
         handlers.sort_by_key(|(at, _)| *at);
-        let handled: HashSet<&String> = routes.iter().flat_map(|r| &r.node_ids).chain(clocks.iter().flat_map(|c| &c.node_ids)).chain(files.iter().flat_map(|f| &f.node_ids)).chain(mails.iter().flat_map(|m| &m.node_ids)).chain(actions.iter().flat_map(|a| &a.node_ids)).collect();
+        let handled: HashSet<&String> = routes.iter().flat_map(|r| &r.node_ids).chain(clocks.iter().flat_map(|c| &c.node_ids)).chain(files.iter().flat_map(|f| &f.node_ids)).chain(mails.iter().flat_map(|m| &m.node_ids)).chain(feeds.iter().flat_map(|f| &f.node_ids)).chain(actions.iter().flat_map(|a| &a.node_ids)).collect();
         let stray: Vec<Vec<String>> = components(&ids, &doc.edges).into_iter().filter(|g| !g.iter().any(|id| handled.contains(id))).collect();
         if !stray.is_empty() {
             let what = if doc.nodes.iter().any(|n| n.data.name == "file_arrival") {
@@ -1117,7 +1128,7 @@ impl<'s> Printer<'s> {
             } else {
                 ""
             };
-            return Err(format!("nothing starts this flow: add a route, a clock, a file or mail handler or an action{what}"));
+            return Err(format!("nothing starts this flow: add a route, a clock, a file, mail or feed handler or an action{what}"));
         }
         let mut items = Vec::new();
         for (_, handler) in handlers {
@@ -1150,6 +1161,12 @@ impl<'s> Printer<'s> {
                     let head = format!("on.mail({}, ", m.mail);
                     self.handler(doc, &m.node_ids, on, Kind::Mail, head, options(&[("log", log_option(&m.log))]), &m.label)?
                 }
+                Handler::Feed(f) => {
+                    let on = by_id[f.on_feed_id.as_str()];
+                    self.vocab.insert("on".into());
+                    let head = format!("on.feed({}, ", f.feed);
+                    self.handler(doc, &f.node_ids, on, Kind::Feed, head, options(&[("log", log_option(&f.log))]), &f.label)?
+                }
                 Handler::Action(a) => {
                     let input = by_id[a.action_id.as_str()];
                     self.vocab.insert("action".into());
@@ -1177,6 +1194,7 @@ impl<'s> Printer<'s> {
             Kind::Action => "input",
             Kind::File => "f",
             Kind::Mail => "m",
+            Kind::Feed => "e",
             _ => "",
         };
         let param = if kind == Kind::Every { String::new() } else { self.handle_name(&trigger.id, fallback) };
@@ -1426,6 +1444,7 @@ enum Kind {
     Every,
     File,
     Mail,
+    Feed,
     Function,
     /// A function written in place, `(x) => …`: one expression, no statements.
     Lambda,
@@ -1533,7 +1552,7 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
     }
 
     fn handler(&self) -> bool {
-        matches!(self.kind, Kind::Route | Kind::Action | Kind::Every | Kind::File | Kind::Mail)
+        matches!(self.kind, Kind::Route | Kind::Action | Kind::Every | Kind::File | Kind::Mail | Kind::Feed)
     }
 
     // ── what each node is ────────────────────────────────────────────────────────────────────
@@ -1959,7 +1978,7 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
             for (port, input) in ports.iter().zip(&n.data.inputs[base..]) {
                 match self.g.incoming.get(&(n.id.clone(), input.name.clone())) {
                     Some(Src::In(p)) if p == port => {}
-                    Some(Src::Node { id, output }) if self.is_request(id) && (output == "request" || output == "file" || output == "message" || output == "input") && local_name(&self.request.as_ref().expect("checked").1) == *port => {}
+                    Some(Src::Node { id, output }) if self.is_request(id) && (output == "request" || output == "file" || output == "message" || output == "event" || output == "input") && local_name(&self.request.as_ref().expect("checked").1) == *port => {}
                     // A part of what the handler received, or a clock's tick: no node, so a name
                     // for it is a `const` of its own, `const r = req.json`.
                     Some(Src::Node { id, output }) if self.is_request(id) || self.is_tick(id) => {
@@ -2160,7 +2179,7 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
                 }
             }
             Kind::Function | Kind::Lambda => answer = self.returns()?,
-            Kind::Every | Kind::File | Kind::Mail => {}
+            Kind::Every | Kind::File | Kind::Mail | Kind::Feed => {}
         }
         if self.handler() {
             reads_first(&mut stmts);
@@ -2665,7 +2684,7 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
                 {
                     let name = name.clone();
                     self.param_read = true;
-                    return Ok(if ["request", "file", "message", "input"].contains(&output.as_str()) { (name, ATOM) } else { (format!("{name}.{output}"), MEMBER) });
+                    return Ok(if ["request", "file", "message", "event", "input"].contains(&output.as_str()) { (name, ATOM) } else { (format!("{name}.{output}"), MEMBER) });
                 }
                 if self.is_tick(id) {
                     self.p.uses_now = true;
@@ -4510,6 +4529,15 @@ export const t = action((input) => {
         prints_back("import { flow, on } from \"holon\"\nimport state from \"state\"\nimport remit from \"mail:remit\"\n\nflow(\"remit\")\n\non.mail(\n  remit,\n  (m) => {\n    state.from = m.from\n  },\n  { log: \"lazy\" },\n)\n");
     }
 
+    /// Feed handlers print back as written, the feed imported.
+    #[test]
+    fn feed_handlers_print_back_as_written() {
+        prints_back(
+            "import { flow, on, route } from \"holon\"\nimport state from \"state\"\nimport prices from \"feed:prices\"\n\nflow(\"ticks\", { port: 8080 })\n\non.feed(prices, (event) => {\n  state.last = event.data\n})\n\nroute.get(\"/last\", () => state.last)\n",
+        );
+        prints_back("import { flow, on } from \"holon\"\nimport state from \"state\"\nimport prices from \"feed:prices\"\n\nflow(\"ticks\")\n\non.feed(\n  prices,\n  (e) => {\n    state.name = e.event\n  },\n  { log: \"lazy\" },\n)\n");
+    }
+
     /// Actions print back as written, each with the name of what was sent.
     #[test]
     fn actions_print_back_as_written() {
@@ -4636,7 +4664,7 @@ export const t = action((input) => {
         // Nodes under no handler.
         let mut b = FlowBuilder::new();
         b.node("uppercase", &[], None).unwrap();
-        assert_eq!(refused(&b.finish(Default::default())), "nothing starts this flow: add a route, a clock, a file or mail handler or an action");
+        assert_eq!(refused(&b.finish(Default::default())), "nothing starts this flow: add a route, a clock, a file, mail or feed handler or an action");
         // A state write whose answer is used, in a route.
         let mut b = FlowBuilder::new();
         let req = b.node("request", &[("method".into(), "POST".into()), ("path".into(), "/k".into())], None).unwrap();

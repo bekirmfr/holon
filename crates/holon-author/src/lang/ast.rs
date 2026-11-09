@@ -81,6 +81,9 @@ pub enum HeaderKind {
     /// `import ops from "mail:ops"`: a mail resource an admin binds on the host, sent through as
     /// `ops.send({ to, subject, text })` once the run is over.
     Mail(String),
+    /// `import prices from "feed:prices"`: a feed an admin binds on the host, listened to as
+    /// `on.feed(prices, (e) => …)`.
+    Feed(String),
     /// `import { charge } from "flow:billing"`: another deployed flow, by its slug, whose actions
     /// this flow runs, `RunsAction("billing/charge")`. Its call noun is the slug with `-` as `_`.
     Calls(String),
@@ -111,6 +114,7 @@ pub enum Item {
     Every(EveryDef),
     OnFile(OnFileDef),
     OnMail(OnMailDef),
+    OnFeed(OnFeedDef),
     Action(ActionDef),
     Stmt(Stmt),
 }
@@ -155,6 +159,22 @@ pub struct OnMailDef {
     /// The name of the message.
     pub message: Name,
     /// `on.mail(remit, (m) =>`.
+    pub head: Span,
+    /// `{ log: "lazy" }` or `"unrecorded"`: how its runs are recorded (strict without one).
+    pub log: Option<Name>,
+    pub body: Vec<Stmt>,
+    pub span: Span,
+}
+
+/// `on.feed(prices, (e) => …)`: a feed handler, a run for each event the feed `prices` sends
+/// (host-capabilities L4 §5.9.2). `e` in it is the event.
+#[derive(Clone, Debug, PartialEq)]
+pub struct OnFeedDef {
+    /// The feed it listens to, as it is imported: `prices`.
+    pub feed: String,
+    /// The name of the event.
+    pub event: Name,
+    /// `on.feed(prices, (e) =>`.
     pub head: Span,
     /// `{ log: "lazy" }` or `"unrecorded"`: how its runs are recorded (strict without one).
     pub log: Option<Name>,

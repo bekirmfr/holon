@@ -1,10 +1,11 @@
-// The server panel: the routes, clocks, file handlers and actions this flow declares (derived from
-// its request, every, on_file and action nodes, see derive.ts), a request tester to try the
-// routes, locally or against the flow's deployment, "tick now" for a deployed clock, and "run"
-// for a deployed action, with what to send it.
+// The server panel: the routes, clocks, file, mail and feed handlers and actions this flow declares
+// (derived from its request, every, on_file, on_mail, on_feed and action nodes, see derive.ts), a
+// request tester to try the routes, locally or against the flow's deployment, "tick now" for a
+// deployed clock, what a deployed feed handler's connection is doing, and "run" for a deployed
+// action, with what to send it.
 // Deploying is the header's job (DeployBar), for the whole flow.
 
-import { useState, type CSSProperties } from "react";
+import { useEffect, useState, type CSSProperties } from "react";
 import { buildPreimage, type Evaluator, type WUnit, type WValue } from "./holon";
 import {
   matchRoute,
@@ -16,8 +17,8 @@ import {
   type EndpointDraft,
   type Method,
 } from "./endpoint";
-import { sendRequest, ServerError, tickNow, type HttpResponse, type Role } from "./server";
-import type { ActionDraft, ClockDraft, FileDraft, MailDraft } from "./canvasOps";
+import { feedStates, sendRequest, ServerError, tickNow, type FeedState, type HttpResponse, type Role } from "./server";
+import type { ActionDraft, ClockDraft, FeedDraft, FileDraft, MailDraft } from "./canvasOps";
 import { ActionRows } from "./ActionRows";
 
 const field: CSSProperties = {
@@ -102,6 +103,8 @@ type ToolsPanelProps = {
   files?: FileDraft[];
   /** The mail handlers the canvas declares (its `on_mail` nodes' groups). */
   mails?: MailDraft[];
+  /** The feed handlers the canvas declares (its `on_feed` nodes' groups). */
+  feeds?: FeedDraft[];
   /** The actions the canvas declares (its `action` nodes' groups). */
   actions?: ActionDraft[];
   /** The flow's running deployment, for "tick now" and "run"; empty when it isn't running. */
@@ -126,6 +129,7 @@ export function ToolsPanel({
   clocks = [],
   files = [],
   mails = [],
+  feeds = [],
   actions = [],
   errors,
   liveSlug,
@@ -139,6 +143,26 @@ export function ToolsPanel({
   const [result, setResult] = useState<TesterResult | null>(null);
   const [sending, setSending] = useState(false);
   const [ticked, setTicked] = useState("");
+  // What the running deployment's connection to each feed is doing, read every few seconds.
+  const [feedState, setFeedState] = useState<FeedState[]>([]);
+  const listens = feeds.length > 0;
+  useEffect(() => {
+    if (!tickSlug || !listens) {
+      setFeedState([]);
+      return;
+    }
+    let on = true;
+    const read = () =>
+      feedStates(tickSlug)
+        .then((f) => on && setFeedState(f))
+        .catch(() => on && setFeedState([]));
+    read();
+    const every = setInterval(read, 3000);
+    return () => {
+      on = false;
+      clearInterval(every);
+    };
+  }, [tickSlug, listens]);
 
   const tick = (clock: string) => {
     setTicked(`${clock}: ticking…`);
@@ -219,7 +243,7 @@ export function ToolsPanel({
         </button>
         {serverOpen && (
           <>
-            {endpoints.length === 0 && clocks.length === 0 && files.length === 0 && mails.length === 0 && actions.length === 0 && errors.length === 0 && (
+            {endpoints.length === 0 && clocks.length === 0 && files.length === 0 && mails.length === 0 && feeds.length === 0 && actions.length === 0 && errors.length === 0 && (
               <div style={{ color: "#3d4f66", fontStyle: "italic" }}>drop a request node (palette, http) and wire it to a respond node to add a route</div>
             )}
             {clocks.map((c) => (
@@ -249,6 +273,16 @@ export function ToolsPanel({
                 <span style={{ flex: 1, color: "#e6eefb" }}>{m.mail}</span>
               </div>
             ))}
+            {feeds.map((f) => {
+              const live = feedState.find((s) => s.feed === f.feed);
+              return (
+                <div key={f.label} style={{ display: "flex", gap: 6, alignItems: "center" }} title={`runs its group for each event the feed ${f.feed} sends, one at a time${live?.address ? ` (${live.address})` : ""}`}>
+                  <span style={{ color: "#6fd3e0", ...lbl }}>on feed</span>
+                  <span style={{ flex: 1, color: "#e6eefb" }}>{f.feed}</span>
+                  {live && <span style={{ color: live.status === "connected" ? "#9fb4d4" : "#e0916f" }}>{feedLine(live)}</span>}
+                </div>
+              );
+            })}
             <ActionRows names={actions.map((a) => a.name)} slug={tickSlug} role={role} outOfDate={outOfDate} onViewRun={onViewRun} />
             {endpoints.map((e) => (
               <div key={`${e.method} ${e.path}`} style={{ display: "flex", gap: 6, alignItems: "center" }}>
@@ -347,12 +381,21 @@ export function ToolsPanel({
 }
 
 /** @deprecated Use ToolsPanel. */
+/** A feed connection's state as one line: `connected, at 41`, `reconnecting: <why>`, and how
+ *  many events wait. */
+export function feedLine(f: FeedState): string {
+  const at = f.position ? `, at ${f.position}` : "";
+  const waiting = f.waiting > 0 ? `, ${f.waiting} waiting` : "";
+  return f.status === "reconnecting" && f.error ? `reconnecting: ${f.error}${waiting}` : `${f.status}${at}${waiting}`;
+}
+
 export function ServerPanel({
   ev,
   endpoints,
   clocks = [],
   files = [],
   mails = [],
+  feeds = [],
   actions = [],
   errors,
   liveSlug,
@@ -362,5 +405,5 @@ export function ServerPanel({
   onViewRun,
 }: Omit<ToolsPanelProps, "open" | "onOpen">) {
   const [open, setOpen] = useState(true);
-  return <ToolsPanel open={open} onOpen={setOpen} ev={ev} endpoints={endpoints} clocks={clocks} files={files} mails={mails} actions={actions} errors={errors} liveSlug={liveSlug} tickSlug={tickSlug} role={role} outOfDate={outOfDate} onViewRun={onViewRun} />;
+  return <ToolsPanel open={open} onOpen={setOpen} ev={ev} endpoints={endpoints} clocks={clocks} files={files} mails={mails} feeds={feeds} actions={actions} errors={errors} liveSlug={liveSlug} tickSlug={tickSlug} role={role} outOfDate={outOfDate} onViewRun={onViewRun} />;
 }

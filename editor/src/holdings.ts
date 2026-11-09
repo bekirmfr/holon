@@ -1,11 +1,11 @@
 // Who holds what, for the admin page's permissions (docs/L4s/databases-L4.md §9.1): each
 // deployment's grant (`GET /admin/grants`) turned round, by the folder, database or mail each
 // item reaches, through the binding that deployment sees: its own binding of the name, else the
-// server's (folders.rs's, databases.rs's and mails.rs's `resolve`).
+// server's (folders.rs's, databases.rs's, mails.rs's and feeds.rs's `resolve`).
 
 import type { HeldGrant } from "./server";
 
-/** A folder's, database's or mail's binding: its name, for the server (`deployment` null) or one deployment. */
+/** A folder's, database's, mail's or feed's binding: its name, for the server (`deployment` null) or one deployment. */
 export type Binding = { name: string; deployment: string | null };
 
 /** A grant item's kind and argument: `DbWrite("shop/orders")` is `DbWrite` of `shop/orders`;
@@ -17,9 +17,9 @@ export function itemParts(item: string): { kind: string; arg: string | null } {
 }
 
 /** The resources an item can reach through a binding. */
-export type Kind = "folder" | "database" | "mail";
+export type Kind = "folder" | "database" | "mail" | "feed";
 
-/** What an item reaches, when it reaches a folder, a database or a mail: which, by name, how,
+/** What an item reaches, when it reaches a folder, a database, a mail or a feed: which, by name, how,
  *  and a database's table or a mail's recipient (`*`: any its binding allows). */
 export function reaches(item: string): { kind: Kind; name: string; use: Use["use"]; table: string | null } | null {
   const { kind, arg } = itemParts(item);
@@ -32,6 +32,7 @@ export function reaches(item: string): { kind: Kind; name: string; use: Use["use
     return { kind: "database", name, use: kind === "DbRead" ? "read" : "write", table };
   }
   if (kind === "MailArrival") return { kind: "mail", name: arg, use: "receive", table: null };
+  if (kind === "FeedEvent") return { kind: "feed", name: arg, use: "listen", table: null };
   if (kind === "MailSend") {
     const slash = arg.indexOf("/");
     return slash < 0 ? { kind: "mail", name: arg, use: "send", table: null } : { kind: "mail", name: arg.slice(0, slash), use: "send", table: arg.slice(slash + 1) };
@@ -45,9 +46,10 @@ export function seenBy<B extends Binding>(bindings: B[], name: string, slug: str
 }
 
 /** One way a deployment reaches a resource: reads it, writes it, starts on its new files, mails
- *  through it; a database's by table, a mail's by recipient. `revoked`: the host took it back
+ *  through it, starts on mail it receives or on a feed's events; a database's by table, a mail's
+ *  by recipient. `revoked`: the host took it back
  *  since. */
-export type Use = { use: "read" | "write" | "arrival" | "send" | "receive"; table: string | null; revoked: boolean; item: string };
+export type Use = { use: "read" | "write" | "arrival" | "send" | "receive" | "listen"; table: string | null; revoked: boolean; item: string };
 export type Holder = Pick<HeldGrant, "slug" | "status" | "attention"> & { uses: Use[] };
 
 const same = (a: Binding, b: Binding) => a.name === b.name && a.deployment === b.deployment;
@@ -75,9 +77,9 @@ export function holdersOf(kind: Kind, binding: Binding, bindings: Binding[], hel
 }
 
 /** Every other item held, by item, with who holds it: a host called, a secret read, a state
- *  key, and a folder, database or mail whose name no binding answers. Limits are left out: they
+ *  key, and a folder, database, mail or feed whose name no binding answers. Limits are left out: they
  *  bound a run, they reach nothing. */
-export function othersHeld(held: HeldGrant[], folders: Binding[], databases: Binding[], mails: Binding[] = []): { item: string; kind: string; holders: { slug: string; revoked: boolean }[] }[] {
+export function othersHeld(held: HeldGrant[], folders: Binding[], databases: Binding[], mails: Binding[] = [], feeds: Binding[] = []): { item: string; kind: string; holders: { slug: string; revoked: boolean }[] }[] {
   const byItem = new Map<string, { slug: string; revoked: boolean }[]>();
   for (const d of held) {
     for (const [items, revoked] of [
@@ -87,7 +89,7 @@ export function othersHeld(held: HeldGrant[], folders: Binding[], databases: Bin
       for (const item of items) {
         if (itemParts(item).kind === "Limit") continue;
         const r = reaches(item);
-        if (r && seenBy({ folder: folders, database: databases, mail: mails }[r.kind], r.name, d.slug)) continue;
+        if (r && seenBy({ folder: folders, database: databases, mail: mails, feed: feeds }[r.kind], r.name, d.slug)) continue;
         byItem.set(item, [...(byItem.get(item) ?? []), { slug: d.slug, revoked }]);
       }
     }
@@ -96,28 +98,29 @@ export function othersHeld(held: HeldGrant[], folders: Binding[], databases: Bin
 }
 
 /** What the permissions view filters by: `databases` for DbRead and DbWrite, `folders` for the
- *  file kinds, `mail` for MailSend, else the item's own kind (`HttpRequest`, `SecretRead`, …). */
+ *  file kinds, `mail` for MailSend and MailArrival, `feeds` for FeedEvent, else the item's own kind (`HttpRequest`, `SecretRead`, …). */
 export function kindOf(item: string): string {
   const r = reaches(item);
-  if (r) return { folder: "folders", database: "databases", mail: "mail" }[r.kind];
+  if (r) return { folder: "folders", database: "databases", mail: "mail", feed: "feeds" }[r.kind];
   return itemParts(item).kind;
 }
 
-/** The kinds held across every grant, databases, folders and mail first, then the rest by name. */
+/** The kinds held across every grant, databases, folders, mail and feeds first, then the rest by
+ *  name. */
 export function kindsHeld(held: HeldGrant[]): string[] {
   const kinds = new Set(held.flatMap((d) => [...d.items, ...d.revoked]).filter((i) => itemParts(i).kind !== "Limit").map(kindOf));
-  const first = ["databases", "folders", "mail"].filter((k) => kinds.has(k));
+  const first = ["databases", "folders", "mail", "feeds"].filter((k) => kinds.has(k));
   return [...first, ...[...kinds].filter((k) => !first.includes(k)).sort()];
 }
 
 /** How a holder reaches it, as the page says it: `reads orders, refunds`, `writes orders`,
  *  `starts on new files`, `mails approvals@acme.com, addresses it computes`, `starts on mail it
- *  receives`; a folder's without tables. Each with whether it was revoked. */
+ *  receives`, `starts on each event it sends`; a folder's without tables. Each with whether it was revoked. */
 export function usesText(uses: Use[]): { text: string; revoked: boolean }[] {
-  const verb = { read: "reads", write: "writes", arrival: "starts on new files", send: "mails", receive: "starts on mail it receives" } as const;
+  const verb = { read: "reads", write: "writes", arrival: "starts on new files", send: "mails", receive: "starts on mail it receives", listen: "starts on each event it sends" } as const;
   const out: { text: string; revoked: boolean }[] = [];
   for (const revoked of [false, true]) {
-    for (const use of ["read", "write", "arrival", "send", "receive"] as const) {
+    for (const use of ["read", "write", "arrival", "send", "receive", "listen"] as const) {
       const these = uses.filter((u) => u.use === use && u.revoked === revoked);
       if (these.length === 0) continue;
       const named = [...new Set(these.map((u) => u.table).filter((t): t is string => t !== null))].sort();

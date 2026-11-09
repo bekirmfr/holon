@@ -39,7 +39,7 @@ the two relate. The language and compiler it calls are [holon-author](holon-auth
   closure staged (`stageClosure`, each unit by `POST /unit`), `previewDeploy`
   (`POST /deploy/preview`) for what it may touch, the consent dialog, then `deployUnit`. `touches.ts`, `Manifest.tsx` and
   `DryRun.tsx` say what a deploy or a restore would change. A flow nothing would start has deploy
-  greyed, and the bar says what to add: a route, a clock, a file or mail handler or an action.
+  greyed, and the bar says what to add: a route, a clock, a file, mail or feed handler or an action.
 - **View mode.** `useViewMode.tsx`, `ViewPanes.tsx`, `HistoryPane.tsx`, `CellHistory.tsx`: a
   deployed flow, read only, with its runs. `replay.ts` replays a logged run on the canvas node by
   node from what the log recorded (the request, the state read, the clock, random numbers, the

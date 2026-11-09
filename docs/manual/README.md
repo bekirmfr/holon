@@ -45,6 +45,8 @@ propose, and find out what happened. For how Holon is built, see the design docu
 - **[Mail](guides/mail.md):** binding an SMTP server, sending from a flow, who it may
   mail, and when mail goes; receiving it from a mailbox; and servers that take a token, not a
   password (Microsoft 365, Google Workspace).
+- **[Feeds](guides/feeds.md):** binding a feed of server-sent events, a run on each event, and
+  where the host keeps the feed when its connection is lost.
 - **[Checking runs](guides/checking-runs.md):** exporting a deployment's runs, verifying them
   offline, and witnesses.
 

@@ -17,6 +17,7 @@ import { PORTS, RUN_DIR } from "./ports.mjs";
 import { imapServer } from "./imap-server.mjs";
 import { smtpSink } from "./smtp-sink.mjs";
 import { tokenEndpoint } from "./token-endpoint.mjs";
+import { sseServer } from "./sse-server.mjs";
 
 const fresh = process.argv.includes("--fresh");
 const port = fresh ? PORTS.fresh : PORTS.server;
@@ -76,11 +77,14 @@ const imap = fresh ? null : await imapServer(join(folders, "mailbox"));
 const oauth = fresh ? null : await tokenEndpoint("e2e-client", "e2e-not-a-secret", "e2e-access-token");
 const supportImap = fresh ? null : await imapServer(join(folders, "support-mailbox"), "e2e-access-token");
 const supportSmtp = fresh ? null : await smtpSink(join(folders, "support-mail"), "e2e-access-token");
+// The price-feed sample's feed of server-sent events (sse-server.mjs): an event a .json file
+// dropped in the folders' feed/, its URL in the dotenv with a key in its query, as a provider's.
+const feed = fresh ? null : await sseServer(join(folders, "feed"));
 // Its dotenv file (secret_sources.rs): the variables ⚙ offers an env secret; the tests add lines.
 const dotenv = join(dir, "secrets.env");
 writeFileSync(
   dotenv,
-  `HOLON_SECRET_GEMINI_API_KEY=e2e-not-a-key\nVAULT_TOKEN=e2e-not-offered\n${smtp ? `HOLON_SECRET_OPS_SMTP=smtp://127.0.0.1:${smtp}\n` : ""}${imap ? `HOLON_SECRET_REMIT_IMAP=imap://remit:e2e-not-a-password@127.0.0.1:${imap}\n` : ""}${oauth ? `HOLON_SECRET_SUPPORT_OAUTH=http://e2e-client:e2e-not-a-secret@127.0.0.1:${oauth}/token?scope=mail\nHOLON_SECRET_SUPPORT_IMAP=imap://support%40acme.com@127.0.0.1:${supportImap}\nHOLON_SECRET_SUPPORT_SMTP=smtp://support%40acme.com@127.0.0.1:${supportSmtp}\n` : ""}`,
+  `HOLON_SECRET_GEMINI_API_KEY=e2e-not-a-key\nVAULT_TOKEN=e2e-not-offered\n${smtp ? `HOLON_SECRET_OPS_SMTP=smtp://127.0.0.1:${smtp}\n` : ""}${imap ? `HOLON_SECRET_REMIT_IMAP=imap://remit:e2e-not-a-password@127.0.0.1:${imap}\n` : ""}${oauth ? `HOLON_SECRET_SUPPORT_OAUTH=http://e2e-client:e2e-not-a-secret@127.0.0.1:${oauth}/token?scope=mail\nHOLON_SECRET_SUPPORT_IMAP=imap://support%40acme.com@127.0.0.1:${supportImap}\nHOLON_SECRET_SUPPORT_SMTP=smtp://support%40acme.com@127.0.0.1:${supportSmtp}\n` : ""}${feed ? `HOLON_SECRET_PRICES_URL=http://127.0.0.1:${feed}/events?key=e2e-not-a-key\n` : ""}`,
 );
 const server = spawn(
   binary,
@@ -257,4 +261,12 @@ if (!fresh) {
     }),
   });
   if (!support.ok) console.error(`e2e server: binding the mail support failed: ${await support.text()}`);
+  // The price-feed sample's feed. Its folder made again, as remit's INBOX is.
+  if (feed) mkdirSync(join(folders, "feed"), { recursive: true });
+  const prices = await fetch(`${base}/admin/feeds`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ name: "prices", url: "env:HOLON_SECRET_PRICES_URL" }),
+  });
+  if (!prices.ok) console.error(`e2e server: binding the feed prices failed: ${await prices.text()}`);
 }

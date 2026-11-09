@@ -105,7 +105,7 @@ pub use json::{parse as parse_json, stringify as stringify_json};
 pub use crypto::{bytes_text, text_bytes};
 pub use declare::{
     clock_label, declaration_of, log_level, match_route, parse_path, period_text, read_clock, read_action, read_endpoint,
-    read_file_handler, read_mail_handler, read_server, mail_label, Action, Clock, DeclError, EndpointError, FileHandler, LogLevel, MailHandler, Route, Segment, Server, MAX_PERIOD, METHODS,
+    read_feed_handler, read_file_handler, read_mail_handler, read_server, feed_label, mail_label, Action, Clock, DeclError, EndpointError, FeedHandler, FileHandler, LogLevel, MailHandler, Route, Segment, Server, MAX_PERIOD, METHODS,
 };
 
 /// Reserved edge endpoint denoting a composite's **boundary** (its own interface)

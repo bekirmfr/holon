@@ -54,7 +54,7 @@ pub fn plan(source: &str) -> Result<Plan, String> {
     let root = store.resolve(&hash).ok_or("the flow's unit wasn't stored")?.clone();
     // A server's handlers each have their own (a route's, a clock's, an action's…); a flow with
     // none runs whole.
-    let handlers = !(server.endpoints.is_empty() && server.clocks.is_empty() && server.files.is_empty() && server.mails.is_empty() && server.actions.is_empty());
+    let handlers = !(server.endpoints.is_empty() && server.clocks.is_empty() && server.files.is_empty() && server.mails.is_empty() && server.feeds.is_empty() && server.actions.is_empty());
     let trace = if !handlers {
         let all: Vec<_> = c.doc.nodes.iter().collect();
         BTreeMap::from([("*".to_string(), trace_of(&root, &all))])
@@ -583,8 +583,9 @@ A FILE (NAME.holon.ts: its imports, then flow(…), then its handlers)
   import key from "secret:key" with { optional: "true" }   a secret it can run without
   import state from "state"                     its state, its keys by use: state.count
   import notes from "collection:notes"          a named store of items, used as notes[key]
-  import inbox from "folder:inbox"              also "database:NAME", "channel:NAME" and
-                                                "mail:NAME" (a mail it sends through)
+  import inbox from "folder:inbox"              also "database:NAME", "channel:NAME",
+                                                "mail:NAME" (a mail it sends through or reads)
+                                                and "feed:NAME" (a feed it listens to)
   import httpbin from "host:httpbin.org"        a host it calls, as httpbin.get("/uuid")
   import { now } from "holon:clock"             the time; import { random } from "holon:random"
                                                 (and random_bytes, the run's 32, for pgp_encrypt)
@@ -608,6 +609,9 @@ HANDLERS (each starts runs; a flow has one or more)
   every("10s", (now) => { state.last = now })    a clock: now is the time of the tick
   on.file.created(inbox, (f) => { … }, { matching: "*.csv" })   each new file, f its handle;
                                                  on.file.deleted(inbox, (f) => { … }) too
+  on.mail(remit, (m) => { … })                   each message to the mailbox remit is bound to
+  on.feed(prices, (e) => { … })                  each event the feed prices sends: e.data (JSON
+                                                 read, else text), e.id, e.event; one at a time
   export const reset = action((input) => {       run by hand, by name: input is what was sent
     state.count = input.to ?? 0                  (JSON; {} for nothing), never from the network
     return { set: input.to ?? 0 }                its answer: a value alone, or none

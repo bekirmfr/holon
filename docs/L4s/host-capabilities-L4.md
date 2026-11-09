@@ -1287,6 +1287,8 @@ delivery is at least once and the message id, kept in the claims table, makes it
 comes in Tier 1 (§7, step 1.6), which one is §8's fork 8: SQS shares S3's request signing (§6),
 RabbitMQ and NATS have pure-Rust clients, Kafka's mature client is C (librdkafka).
 
+Designed with the feeds, in step 1.6 (§5.9.1): SQS's API first.
+
 ### 5.6 Approvals
 
 Not an outside system: Holon's own. Today `await` waits for a resume token, and whoever holds the
@@ -1581,6 +1583,264 @@ outbound client can do. A Postgres `LISTEN` is the
 `postgres` crate's notifications, beside `engines.rs`. MQTT is rumqttc. gRPC (tonic, HTTP/2 and
 protobuf) waits for a job that brings one. A socket's framing and session are Holon's own code,
 small; the protocols' meaning stays in leaves.
+
+#### 5.9.1 Step 1.6 as designed (2026-11-09, against `426b659`): feeds and a queue
+
+§5.5 and the text above are in the language as it was. In TypeScript a feed and a queue are
+imported as a mail is, a queue sends with a method as a mail does, and each is listened to as a
+mail is:
+
+```ts
+import prices from "feed:prices"
+import payouts from "queue:payouts"
+
+on.feed(prices, (e) => { … }, { log: "lazy" })
+payouts.send({ id, amount })
+on.queue(payouts, (m) => { … })
+```
+
+`on.feed` and `on.queue`, not `on event` and `on message`: a handler is named for what it
+listens to, as `on.mail` and `on.file` are, and *message* stays the socket's (fork 61).
+
+Four slices, each with its sample:
+
+| Slice | What | Sample |
+|---|---|---|
+| 1.6a | the subscription runtime, and server-sent events: `feed:` bindings, `on.feed`, the position (`Last-Event-ID`), once per message, a bounded buffer that stops reading when full, reconnecting, the feed's state on the deployment's page | `price-feed` |
+| 1.6b | WebSocket feeds: a position the binding names the field of, a subscribe message and a heartbeat from the binding, `--on-full skip` and `latest` (forks 17, 26), a lazy or unrecorded handler's position (fork 25) | `trading-bot` |
+| 1.6c | the queue, SQS's API (fork 8): `queue.send` once the run's writes land, `on.queue` deleting each message once its run is over, AWS's request signing in the host | `payout-events` |
+| 1.6d | a Postgres `LISTEN` channel on a bound database, as a feed | `ledger-watch` |
+
+Each slice gets its own "as designed" before its code, as 1.3's did. What follows is what they
+share.
+
+**The binding.** A feed's URL is kept where a server's is, in a secret source, since a feed's
+token often rides in it:
+
+```
+HOLON_SECRET_PRICES_URL=https://stream.example.com/v1/prices?token=…
+holon feed add prices --url env:HOLON_SECRET_PRICES_URL [--header NAME=SOURCE]…
+                      [--buffer N] [--on-full wait|skip|latest [--key FIELD]] [--idle T] [--for SLUG]
+```
+
+- The scheme says which kind: `https://` server-sent events, `wss://` a WebSocket (1.6b);
+  `http://` and `ws://` only to this machine, as mail's plain servers. A feed may reach a private
+  address, since it is the admin's to bind and the binding shows where (fork 19); a flow's own
+  text still can't.
+- `--header` adds a request header whose value is read from a source
+  (`Authorization=env:HOLON_SECRET_PRICES_AUTH`).
+- Checked when it is bound: connected to, its answer's status and content type read
+  (`text/event-stream`), and closed. The URL is never stored, shown or logged: the binding keeps
+  the source, and where it points without its login or query.
+- Several deployments may listen to one feed, each on its own connection with its own position: a
+  feed is a broadcast. A queue's messages are shared out among those who read them, so one
+  deployment listens to a queue, as one listens to a mailbox.
+
+**The runtime.** For each feed a running deployment listens to, the host keeps a connection (a
+thread reading it) and a runner (a thread starting its runs), with a bounded buffer between them
+(`--buffer`, 1,000 messages unless given).
+
+- **A run per message,** one at a time per feed, in the order they came. One at a time keeps the
+  feed's order and makes the position one id, the last message whose run is over. A strict run is
+  paced by the disk's sync (about 500 a second), a lazy one by the run itself (fork 58). Batches
+  (`batch: 100` above) wait for a job.
+- **The position.** What the feed gives as each message's id (an SSE `id:`, a field the binding
+  names, a queue's message id) is kept in `feed-seen/<slug>/<feed>.json`, as a mailbox's seen UIDs
+  are, and moved past a message once its run's record is on disk: a strict run's at its end, a
+  lazy one's at the next sync, an unrecorded one's at its end (fork 25). A reconnect resumes after
+  it (`Last-Event-ID`). A feed that gives no ids resumes where it is, and the binding says so.
+- **Once per message:** the last 1,000 ids run on are kept beside the position, and a message
+  among them is passed over without a run, on the timeline, so a feed that resends after a
+  reconnect runs nothing twice. A crash between a lazy run and its sync runs it again (fork 25).
+- **When the buffer is full** the connection stops reading, and the sender waits, as TCP makes it
+  (`--on-full wait`, the default, fork 17). `skip` drops what comes while it is full, and the next
+  run hears how many (`e.missed`); `latest` keeps one waiting message per value of `--key`, the
+  newest, and its run hears how many it replaced (`e.replaced`; 1.6b, fork 26).
+- **Reconnecting:** a connection lost, refused, or silent for `--idle` (90 s unless given; a
+  feed's own heartbeats keep it alive) is opened again after a second, doubling to a minute. The
+  timeline says so once, and again when it connects.
+- **Its state** is in the deployment's API and on its server panel: connected since, *n* waiting,
+  or reconnecting since, with the last error. A paused or removed deployment closes its
+  connections and keeps its position; a new version opens them again from it.
+- **What the connection did outside any run** (connects, reconnects, skipped messages) is on the
+  deployment's timeline, as a mailbox's looks are. The record of its own that fork 20 gives a
+  connection waits for the socket, whose sign-ons and heartbeats need it (fork 59).
+
+**The run** is the handler's alone, as a mail handler's is: `kind: "feed"` or `"queue"`, its label
+the handler's, the message sourced (`FeedEvent("prices")`, `QueueMessage("payouts")`) with the
+clock and the random bytes, so a replay and `holon verify` need no connection. A parked run keeps
+the message among its sourced values.
+
+`e` is the message:
+
+| Field | |
+|---|---|
+| `data` | a value when its data is JSON, else its text; bytes for a binary WebSocket frame |
+| `id` | its id, when the feed gives one |
+| `event` | an SSE event's name, `message` unless it says |
+| `missed`, `replaced` | how many were skipped, or replaced, before it (`--on-full`) |
+
+**The queue (1.6c).** SQS's API, which AWS's queues speak and so do services that copy it
+(ElasticMQ, LocalStack, Yandex Message Queue). The URL holds the access key as its login, as
+mail's URLs hold theirs: `https://<key id>:<secret>@sqs.eu-west-1.amazonaws.com/123456789012/payouts`,
+the region read from the host, or from `?region=` for another service. Requests are signed with
+AWS's Signature Version 4, written in the host (`sigv4.rs`, on the `hmac` and `sha2` core already
+uses), so step 1.4's S3, when it comes, signs with it too.
+
+- `payouts.send(data, { group })` sends once the run's writes land, as mail does, kept and tried
+  again through an outbox like mail's. `group` is a FIFO queue's message group; its deduplication
+  id is the run's and the send's, so a retry is one message.
+- `on.queue(payouts, (m) => …)` long-polls (20 s), runs each message one at a time, and deletes it
+  once its run's record is written, a failed run's too (its record says why), as a mail is moved
+  (fork 60). A run still going when the message's visibility runs out (`--visibility`, 5 minutes
+  unless given) extends it, so the message doesn't come back while it runs.
+- `m` is the message: `data` (a value when it is JSON, else its text), `id`, `attributes` (a
+  record of text), `sent` (seconds since 1970, as `now` is) and `count` (how many times the queue
+  has handed it out).
+
+**The grant.** `FeedEvent("prices")`, a driver, shown as "run on each event from prices
+(wss://stream.example.com/v1/prices)"; `QueueMessage("payouts")`, "run on each message from
+payouts, and delete it once its run is over"; `QueueSend("payouts")`, a sink, "send messages to
+payouts". A message computed from a secret is refused, as a channel's pack is.
+
+**Engines.** Server-sent events are a streaming read through `ureq`, as the token request is.
+WebSocket is `tungstenite` (1.6b): the one new dependency, and the one step 1.9's server side
+uses, through `tokio-tungstenite`. SQS is `ureq` and `sigv4.rs`. `LISTEN` is the `postgres`
+crate's notifications, on a connection of its own to the bound database.
+
+**Stand-ins.** The server tests run each against one in memory, as the IMAP one is: an SSE
+server, a WebSocket server, and an SQS that checks each request's signature. The e2e server starts
+the same in Node. 1.6d's e2e test needs a Postgres beside the e2e job's MongoDB.
+
+#### 5.9.2 Slice 1.6a as designed (2026-11-09, against `426b659`): server-sent events
+
+The runtime of §5.9.1, with server-sent events as its first kind of feed.
+
+**The language.** `import prices from "feed:prices"` imports a feed as a mail is imported;
+`on.feed(prices, (e) => …, { log })` is its handler, refused when its first argument isn't an
+imported feed, when a feed has two handlers, and at a `return` with a value (an event's run
+answers nobody). Its node is `on_feed` (`declare = "on_feed"`, `feed`), its leaf `feed_event`
+(`feed`, sourced as `mail_arrival` is), its label `on feed prices`. `holon.d.ts` gives `e` a
+`FeedEvent` type: `data`, `id` and `event` in this slice (`missed` and `replaced` come with
+`--on-full`, 1.6b).
+
+**The grant.** `FeedEvent("prices")`, a driver, shown as "run on each event from the feed
+prices". A deploy that listens to a feed no one bound is refused, as one that reads an unbound
+mailbox is.
+
+**The binding** (`feeds.rs`, beside `mails.rs`, its file `feeds.json`):
+
+```
+holon feed add prices --url env:HOLON_SECRET_PRICES_URL [--header NAME=SOURCE]… [--buffer N] [--idle T] [--for SLUG]
+holon feed list
+holon feed remove prices [--for SLUG]
+```
+
+and `GET`, `POST` and `DELETE` on `/admin/feeds`, and the admin page's resources. The URL is
+`https://` (plain `http://` only to this machine); a header's value is read from its source when
+the connection opens, never kept. Bound only once a request to it answers 200 with
+`text/event-stream`, its connection then closed. The binding keeps the sources, and where the URL
+points without its login or query (`https://stream.example.com/v1/prices`), which is what is
+shown.
+
+**Server-sent events** (`sse.rs`): a `GET` with `Accept: text/event-stream`, through `ureq`, its
+body read as it comes. Lines are read as the standard says: `data:` lines joined with a newline,
+`id:` (one holding a NUL ignored), `event:`, `retry:` (the feed's own wait before reconnecting,
+taken when it is longer than ours), comments (`:`) and blank lines; an event is dispatched at a
+blank line when it has data. One event is at most 1 MiB, a line too; past that the connection is
+closed and opened again, on the timeline. The reconnect sends `Last-Event-ID`.
+
+**The runtime** (`subscriptions.rs`, for every kind of feed to come): every second a thread
+compares the feeds running deployments listen to with the connections it holds, and opens or
+closes them; each has a reading thread, a bounded buffer and a running thread, as §5.9.1 says. A
+new version of a deployment closes the old connection and opens one from the position. The
+position and the last 1,000 ids are in `feed-seen/<slug>/<feed>.json`, with where the feed
+points: a binding pointed somewhere else starts anew, as a mailbox's seen UIDs do.
+
+- **Where a new listener starts:** at what the feed sends from now. A feed that replays its
+  history to a first connection without `Last-Event-ID` runs it, since the host can't tell
+  history from news.
+- **The position moves at the run's end** in this slice, for every log level; 1.6b makes a lazy
+  handler's follow its sync (fork 25).
+- **What the timeline says:** `listens to the feed prices (https://…)`, `lost the feed prices:
+  <why>; trying again in 4s` once, `reads the feed prices again`, and `passed over an event of
+  prices it ran already (41)`.
+
+**The run:** `kind: "feed"`, its label `on feed prices`, `e` sourced as `FeedEvent("prices")`
+with the clock and the random bytes; `holon verify` reruns it as that handler alone, and a parked
+one keeps `e`.
+
+**Its state** is in `GET /deployments/<slug>/feeds`: each feed's state (`connected` since,
+`reconnecting` since, with the last error), its position, and how many wait. The editor's server
+panel lists feed handlers with it; a run is titled `event from prices: <its event's name> (on
+feed prices)`; the palette has `feed_event`.
+
+**The sample, `price-feed`:** a feed of prices; each event's price is kept per symbol in state,
+sent on a channel its page shows as they come, and answered at `GET /prices`. Run live and in the
+e2e tests against a stand-in: an SSE server whose events are files dropped in a folder, as the IMAP
+stand-in's messages are, kept so a reconnect with `Last-Event-ID` is answered from after it.
+
+**Tests:** the parser (data lines, ids, a NUL in an id, `retry:`, comments, CRLF and CR, an event
+too long); the binding refused for a bad source, a URL that isn't `https://`, an answer that isn't
+`text/event-stream`, and a header source that isn't there; the server test binds a feed to an SSE
+stand-in in memory, deploys the sample, sends events, drops the connection and sees the reconnect
+resume with `Last-Event-ID`, a resent event passed over, and the runs verify.
+
+#### 5.9.3 Slice 1.6a as built (2026-11-09)
+
+As designed, with what building it found:
+
+- **The client is the host's own** (`sse.rs`), over the `rustls` and `webpki-roots` the mail and
+  the databases use, not `ureq`: a deployment stopped or a binding removed closes its connection
+  at once from the supervisor's thread (a clone of the socket, shut down), and `--idle` is the
+  socket's read timeout. On Windows a cloned socket's timeout is its own, so it is set on the one
+  the read uses. The body is chunked, of a length, or up to the close. A redirect isn't followed:
+  the headers it would carry are the binding's, and a binding to one says it answered a redirect.
+  A login in the URL is sent as Basic authentication; a header's name is checked, and a value
+  with a line break refused.
+- **An event past 1 MiB is passed over,** not a reason to close. Closed and opened again, as
+  designed, a feed that keeps its events sends the same one after `Last-Event-ID`, for ever. Its
+  lines are dropped as they come (a line is kept to a byte past 1 MiB), the timeline says `passed
+  over an event of prices past 1 MiB`, and the rest is read on.
+- **Read, and run.** The reconnect sends the id of the last event read: those in the buffer still
+  run, from the same thread. What is kept on disk is the last run on, so a server started again
+  opens from there. Only an event with an id of its own is passed over as sent again; one without
+  can't be told from another.
+- **No event runs twice across versions:** a run lock per deployment and feed outlives a
+  connection while a run of the old one holds it, so a new version's running thread waits for that
+  run, and reads where the feed is under the lock before each event.
+- **The timeline,** as designed, but `lost the feed prices: …; trying again in 1s` is said only
+  when a connection can't be opened, once until `reads the feed prices again`: a connection that
+  drops and opens again at once is in the feed's state, not on the timeline, which a feed whose
+  server ends its connections every few minutes, as proxies do, would fill.
+- **Its state** is also `closed`: no connection (the deployment stopped, or not yet opened). The
+  server panel asks for it every 3 seconds (`connected, at 41`, `reconnecting: <why>`, `, 3
+  waiting`). The admin page's resources bind a feed, its headers a `NAME=SOURCE` a line, and show
+  it as `<address> (from <source>) · 1000 may wait · quiet for 90s at most`; permissions list it as
+  a resource, price-feed "starts on each event it sends".
+- **The sample** keeps each price in a collection, `latest`, one item a symbol, which answers
+  `GET /prices` and draws the page; not the state. It doesn't keep `e.id`: an event without one
+  would leave the write without a value, and nothing would be kept.
+- **The tests:** the parser (data lines, ids and a NUL, CRLF, LF, CR and a byte-order mark,
+  `retry:`, an event and a line past 1 MiB passed over and the rest read), the URL (`https://`,
+  `http://` to loopback only, shown without its login or query), a connection read, closed from
+  another thread and opened again with `Last-Event-ID`, an idle feed found out, and an answer that
+  isn't a feed refused, against an SSE stand-in in memory (`sse::stand_in`, whose `/events` is
+  chunked and can be cut); the binding (refused for a value that isn't a source, a source that
+  isn't there, a remote `http://`, an answer of `text/plain` or 404, a header's value in clear, an
+  idle time or a buffer out of bounds, a name; kept without the query) and a deploy refused while
+  unbound. The server test binds `prices` to the stand-in with a key in the URL's query, deploys
+  the sample, sends three events (three runs, the prices, `connected` at 3), cuts the connection
+  (opened again with `Last-Event-ID: 3`), sends 3 again (passed over), one past 1 MiB (passed
+  over, the connection read on) and 4 (a fourth run), verifies the runs, finds no key in the log,
+  and stops it (closed, nothing more runs). The e2e server starts a stand-in whose events are files
+  dropped in a folder (`editor/e2e/sse-server.mjs`) and binds `prices`; the test deploys the
+  sample in the editor, drops an event, reads the price and the server panel's line, cuts the
+  connections, sees the feed opened again from the event run on, drops another, and reads the
+  binding on the admin page and the grant on permissions.
+- **Run live** on a scratch server against the e2e's stand-in: four events, four runs; a cut,
+  opened again from `e003`; the feed stopped, `lost the feed prices: … can't be reached …; trying
+  again in 1s` and the state `reconnecting`, the position kept, the flow still answering.
 
 ### 5.10 A bytes value, and decimals with it
 
@@ -3067,7 +3327,7 @@ settles the queue engine with 1.4 deferred.
 | 1.3 | **Email:** send, recipients in the grant; receive as `on mail`, with its sender's verdict and attachments, in three slices (§5.2); 1.3a, sending through SMTP, built (§5.2.3); 1.3b, receiving through IMAP, built (§5.2.5); 1.3c, mailboxes that log in with OAuth, built (§5.2.7) | §5.2 (here) | 1.1 for attachments | L |
 | 1.4 | *Deferred.* **Remote folders:** the backend seam in `folders.rs`, then SFTP and S3-compatible storage (§6) | §6 (here) | 1.1 for binary files | L |
 | 1.5 | *Deferred.* **Secure connectivity:** keys the host holds (PGP decrypt and sign) and client identities (mutual TLS, a private CA) (§5.3, §5.4) | §5.3, §5.4 (here) | 1.1, 1.2 | M |
-| 1.6 | **Messaging:** one subscription runtime (position, once per message, backpressure, reconnect), feeds (SSE, WebSocket, Postgres `LISTEN`) and one queue engine, publish and consume (§5.5, §5.9) | §5.5, §5.9 (here) | 1.4's request signing, for SQS (fork 8) | L |
+| 1.6 | **Messaging:** one subscription runtime (position, once per message, backpressure, reconnect), feeds (SSE, WebSocket, Postgres `LISTEN`) and one queue engine, publish and consume (§5.5, §5.9); designed in four slices (§5.9.1); 1.6a, the subscription runtime and server-sent events, built (§5.9.3) | §5.5, §5.9 (here) | 1.4's request signing, for SQS (fork 8) | L |
 | 1.7 | *Deferred.* **Commands:** programs an admin binds, typed arguments, logged output, killed on timeout (§5.7) | §5.7 (here) | — | M |
 | 1.8 | *Deferred.* **Static files:** a route's rest segment (`/*path`, routing, no item), and answering with a file from a folder (`site.serve(name)`, `FileServe`), streamed by the host and checked against the handle's hash | §5.11 (here) | — | M |
 | 1.9 | **Inbound WebSockets:** `websocket PATH { open … message … close … }`, a run per message, replies and channel packs out, a record per connection (§5.9) | §5.12 (here) | 1.1 for binary frames | M |
@@ -3186,6 +3446,7 @@ Taken when a job or a user asks, each with its design here and its sample all th
 8. **Which queue first** (§7, step 1.6). SQS's API is HTTPS, so its e2e stand-in is an
    in-process stub and its signing is S3's (step 1.4); RabbitMQ is what self-hosted shops run,
    but its stand-in is a real broker in CI. *Lean:* SQS-compatible first, RabbitMQ in Tier 3.
+   *Decided* (2026-11-09, §5.9.1): SQS's API first, its signing written in the host.
 9. **Which user a command or terminal runs as.** The server's own user can read the server's
    files, the secrets key among them. Another OS user (or, on Linux, a namespace) per binding
    confines it, but needs setup Holon can't do alone. *Lean:* an optional user in the binding,
@@ -3387,6 +3648,24 @@ Taken when a job or a user asks, each with its design here and its sample all th
 57. **A failed run's message** (§5.2.4). Moved as any other, left in the folder for another try,
     or moved to a folder of its own. *Lean:* moved, as a file whose run failed isn't run again:
     its record says why; a `--failed` folder when someone needs to tell them apart in the mailbox.
+58. **A feed's runs one at a time, or several at once** (§5.9.1). One at a time keeps the feed's
+    order and makes the position one id; several at once go faster but finish out of order, so
+    the position is the oldest still running, and a crash runs again whatever finished after it.
+    *Lean:* one at a time; `--parallel N` when a job asks.
+    *Decided* (2026-11-09) as the lean.
+59. **The connection's own record, now or with the socket** (§5.9.1). *Lean:* feeds and queues
+    put what their connection did on the deployment's timeline (connects, reconnects, skipped
+    messages), as a mailbox's looks are; fork 20's record comes with the socket, whose sign-ons
+    and heartbeats need one.
+    *Decided* (2026-11-09) as the lean.
+60. **A queue message whose run failed** (§5.9.1). Deleted, as a mail is moved, or left to come
+    back and run again until the queue's redrive policy moves it aside. *Lean:* deleted, so one
+    bad message doesn't run forever, its record saying why; `--keep-failed` leaves it for a queue
+    that has a redrive policy.
+    *Decided* (2026-11-09) as the lean.
+61. **`on.feed` and `on.queue`, or `on.event` and `on.message`** (§5.9.1). *Lean:* named for
+    what they listen to, as `on.mail` and `on.file` are; *message* stays the socket's.
+    *Decided* (2026-11-09) as the lean.
 
 ## 9. What stays true
 

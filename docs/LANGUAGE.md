@@ -85,7 +85,7 @@ unit.
 | What the language is | A surface over the existing IR; every construct lowers to catalog leaves, templates and composites that exist (two leaves, `as_text` and `coalesce`, were added for it) | §1, §6 |
 | Its syntax | TypeScript's: a flow is a valid TypeScript module, read by a TypeScript parser (oxc's). The meanings that differ from JavaScript's are Holon's; where a JavaScript reader would be misled, the compiler refuses and says what to write instead | §1, §2, §6 |
 | What it is not | General-purpose. No loops, recursion, classes, generics, imports of code, or standard library growth | §2 |
-| The outside world | Imported by name: `import key from "secret:NAME"`, `import state from "state"`, `"collection:NAME"`, `"folder:NAME"`, `"database:NAME"`, `"channel:NAME"`, `"mail:NAME"`, `"host:HOST"`, `{ now } from "holon:clock"`, `{ random } from "holon:random"`, `{ charge } from "flow:SLUG"`; what started a run is its handler's parameter | §5.1, §5.4 |
+| The outside world | Imported by name: `import key from "secret:NAME"`, `import state from "state"`, `"collection:NAME"`, `"folder:NAME"`, `"database:NAME"`, `"channel:NAME"`, `"mail:NAME"`, `"feed:NAME"`, `"host:HOST"`, `{ now } from "holon:clock"`, `{ random } from "holon:random"`, `{ charge } from "flow:SLUG"`; what started a run is its handler's parameter | §5.1, §5.4 |
 | Settings | `flow("name", { port, keep, limits, browsers })`, once, after the imports | §5.1 |
 | Writes | Assignment: `state.key = v`, `notes[key] = v`, `delete notes[key]`, `reports[name] = text`. Method forms (`notes.put(k, v)`) when the write is a value to name | §5.4, §5.10 |
 | Bindings | `const name = expr`; a `let` given a new value is a new name; destructuring is a `field` per name | §5.2 |
@@ -96,7 +96,7 @@ unit.
 | Functions | `function name(inputs) { …; return out }` is a holon, its outputs named by what it returns; an arrow written in place for a list's methods that take one (`map`, `reduce`, `filter`, `toSorted`, …), a name it uses from around it an input of its own | §5.8, §5.9 |
 | js functions | `const name = js(function name(inputs) { JavaScript }, { fuel, memory, outputs })`: a function whose body runs as JavaScript, in an engine that is a WebAssembly module with no imports, under a budget | §5.8a |
 | Effects | An unused Effect is performed, an unused value is an error; no `perform` keyword | §5.10 |
-| Handlers | `route.get("/path", (req) => …)`, `every("10s", () => …)`, `on.file.created(folder, (f) => …)`, `on.mail(mail, (m) => …)`, `export const name = action((input) => …)`, each with its options last (`{ resumes, matching, log }`); `return` is the answer | §5.1, §5.11 |
+| Handlers | `route.get("/path", (req) => …)`, `every("10s", () => …)`, `on.file.created(folder, (f) => …)`, `on.mail(mail, (m) => …)`, `on.feed(feed, (e) => …)`, `export const name = action((input) => …)`, each with its options last (`{ resumes, matching, log }`); `return` is the answer | §5.1, §5.11 |
 | Another flow's action | `import { charge } from "flow:billing"`, then `await charge(x)`: run by the host in-process, answered `{answer, run}` or `{error, message}`, a permission, never a loop | §5.4 |
 | A run that waits | A route answers and is done: what waits (`await event(…)`) is an action, which the route starts by calling it without `await`, `payment(x)`, answered `{run, waiting}` with the token for each point it waits at | §5.4 |
 | Sharing | A binding used twice is one node with two wires; the same expression written twice is two nodes. No common-subexpression elimination | §6.2 |
@@ -921,6 +921,45 @@ How the host logs in is the binding's business, not the flow's: the support-inbo
 receives requests from a Microsoft 365 mailbox and answers them through the same mail, the host
 logging in to both servers with an OAuth token (`--oauth`), and nothing in its text says so.
 
+### price-feed: a feed of server-sent events
+
+Its handler and two of its routes (the page left out):
+
+```ts
+import { flow, js, on, respond, route } from "holon"
+import latest from "collection:latest"
+import ticks from "channel:ticks"
+import prices from "feed:prices"
+import { now } from "holon:clock"
+
+flow("price-feed", { port: 8187 })
+
+// Each event, {"symbol": "ACME", "price": 10.5}: kept by its symbol, and told to the page.
+on.feed(prices, (e) => {
+  const symbol = e.data.symbol
+  latest[symbol] = { price: e.data.price, at: now }
+  ticks.send({ symbol, price: e.data.price, at: now })
+})
+
+// The last price of each symbol.
+route.get("/prices", () => latest.list())
+
+// Each new price as server-sent events, for as long as the caller stays.
+route.get("/live", () => ticks.subscribe())
+```
+
+`import prices from "feed:prices"` names a feed an admin bound to a stream of server-sent events
+(`holon feed add prices --url env:…`, `docs/L4s/host-capabilities-L4.md` §5.9.2), its URL and the
+key in it the binding's, never the flow's. `on.feed(prices, (e) => { … })` runs for each event the
+feed sends, one at a time, in the order they came: `e` is the event, its `data` a value when it is
+JSON (as here) and its text when it isn't, `event` its name (`"message"` when it gives none) and
+`id` its id, absent when it has none. The host holds the connection and keeps where the feed is: a
+connection lost is opened again from the last event run on (`Last-Event-ID`), an event the feed
+sends again is passed over, and events that come faster than their runs wait, up to the binding's
+`--buffer`, before the connection waits too. A new listener starts at what the feed sends from
+now. The grant is `FeedEvent("prices")`, "run on each event from the feed prices"; the page
+listens to the channel the handler sends on, as live-board's does.
+
 ### chat-proxy: a streamed reply
 
 Its `/chat` route (the imports, the page and the `js()` function `answer` left out):
@@ -1202,7 +1241,7 @@ it reaches it as an input after the item (§5.9): `tax` here.
   `parse_path` accepts.
 - **Import sources** are text literals of a fixed shape: `"holon"`, `"state"`, `"secret:NAME"`,
   `"collection:NAME"`, `"folder:NAME"`, `"database:NAME"`, `"channel:NAME"`, `"mail:NAME"`,
-  `"host:HOST"`, `"holon:clock"`, `"holon:random"`, `"flow:SLUG"`. An import attribute, `with { optional: "true"
+  `"feed:NAME"`, `"host:HOST"`, `"holon:clock"`, `"holon:random"`, `"flow:SLUG"`. An import attribute, `with { optional: "true"
   }`, is in quotes, as an attribute's value is a text.
 
 ## 5. Syntax and lowering
@@ -1217,7 +1256,7 @@ same flow drawn on the canvas are the same unit. A file, in shapes:
 import { flow, route, every, on, action, js, respond, status, stripe, event, LEAF… } from "holon"
 import NAME from "secret:NAME"                       (with { optional: "true" })
 import state from "state"
-import NAME from "collection:NAME"                   (and folder:, database:, channel:, mail:)
+import NAME from "collection:NAME"                   (and folder:, database:, channel:, mail:, feed:)
 import NAME from "host:HOST"
 import { now } from "holon:clock"
 import { random } from "holon:random"
@@ -1234,6 +1273,7 @@ every("DURATION", (now) => { … }, { log })
 on.file.created(FOLDER, (f) => { … }, { matching, log })
 on.file.deleted(FOLDER, (f) => { … }, { matching, log })
 on.mail(MAIL, (m) => { … }, { log })
+on.feed(FEED, (e) => { … }, { log })
 export const NAME = action((input) => { … }, { log })
 ```
 
@@ -1251,6 +1291,8 @@ An import names something the flow uses from outside a run; its source says what
 | `import inbox from "folder:inbox"` | a named folder on the host | the file leaves |
 | `import shop from "database:shop"` | a named database on the host | the database leaves |
 | `import updates from "channel:updates"` | a channel | `channel_send`, `channel_subscribe`, a piped call |
+| `import ops from "mail:ops"` | a mail an admin bound to an SMTP server, a mailbox, or both | `mail_send{mail}`; `on.mail`'s trigger |
+| `import prices from "feed:prices"` | a feed an admin bound to a stream of server-sent events | `on.feed`'s trigger |
 | `import api from "host:api.example.com"` | a host the flow calls | `http_request{host}` and its kin |
 | `import { now } from "holon:clock"` | the time the run started | `clock()`; in a clock, the tick |
 | `import { random } from "holon:random"` | one random number for the run | `random()` |
@@ -1305,6 +1347,14 @@ statement in it tied to nothing is an error, as is a handler that does nothing.
   folder. One handler a mail; its first argument is an imported mail. It lowers to an
   `on_mail{mail, log}` node, its trigger, whose output `message` is the message (a
   `mail_arrival{mail}` leaf inside it, sourced: `MailArrival("remit")`).
+- **A feed handler,** `on.feed(prices, (e) => { … })`, runs for each event the feed `prices`
+  imports sends, one at a time, in the order they came; `e` is the event (`.data`, a value when it
+  is JSON and its text when it isn't; `.event`, its name, `"message"` when it gives none; `.id`,
+  when it has one), and the host keeps where the feed is, so a connection lost is opened again
+  from the last event run on. One handler a feed; its first argument is an imported feed, and its
+  run answers nobody, so a `respond` in it is refused. It lowers to an `on_feed{feed, log}` node,
+  its trigger, whose output `event` is the event (a `feed_event{feed}` leaf inside it, sourced:
+  `FeedEvent("prices")`).
 - **An action,** `export const reset = action((input) => { … })`, runs when someone runs it by its
   name, `input` what they sent (a JSON value; `{}` when they sent nothing). It answers with what it
   returns, a value alone (a route's `status(…)` and `respond(…)` are not an action's); an action
@@ -1558,6 +1608,7 @@ Each form is exactly one leaf. This table is exhaustive; nothing else is sugared
 | `random_bytes` (`import { random_bytes } from "holon:random"`) | `random_bytes()` | the run's 32 random bytes, the ones `random` is read from |
 | `f` (`on.file.created(inbox, (f) => …)`) | the handler's `on_file{folder: inbox}` node, its `file` output | the handle of the file that started the run, with its `event` |
 | `m` (`on.mail(remit, (m) => …)`) | the handler's `on_mail{mail: remit}` node, its `message` output | the message that started the run, read |
+| `e` (`on.feed(prices, (e) => …)`) | the handler's `on_feed{feed: prices}` node, its `event` output | the event that started the run: `{data, event, id}` |
 | `input` (`action((input) => …)`) | the handler's `action{name}` node, its `input` output | what whoever ran it sent |
 | `notes[k]` (`import notes from "collection:notes"`) | `collection_get{collection: notes}(k)` | the item under `k` |
 | `notes[k] = e` | `collection_put{collection: notes}(k, e)` | put it when the run finishes |
@@ -1991,8 +2042,8 @@ route.METHOD("/path", async (req) => { statements; return answer })
 
 Lowers to a `request{method, path, resume, log}` template node, the route's trigger, and the
 handler's nodes; `resume` is the option `resumes`, and `log` the option `log` (§5.1), empty for
-strict, the same param a clock's `every`, a file handler's `on_file`, a mail handler's `on_mail`
-and an action's `action` carry. Every `return` and every use of `req` wires into the same connected group, which is what
+strict, the same param a clock's `every`, a file handler's `on_file`, a mail handler's `on_mail`,
+a feed handler's `on_feed` and an action's `action` carry. Every `return` and every use of `req` wires into the same connected group, which is what
 makes the handler one route (`find_routes` works by connectivity, unchanged). `async` goes on a
 handler that `await`s, as TypeScript requires.
 
@@ -2028,7 +2079,8 @@ handler that `await`s, as TypeScript requires.
 
 **A handler is everything tied to its trigger.** Each handler (§5.1) has a trigger node: a route's
 `request`, a clock's tick (its value the time of the tick), a file handler's `on_file` (the file's
-handle), a mail handler's `on_mail` (the message) and an action's `action` (what was sent). What reads from it is the handler's, and so is
+handle), a mail handler's `on_mail` (the message), a feed handler's `on_feed` (the event) and an
+action's `action` (what was sent). What reads from it is the handler's, and so is
 every sink placed in it:
 
 - **Every sink takes its trigger.** The writes (state, a collection, a folder, a database), the

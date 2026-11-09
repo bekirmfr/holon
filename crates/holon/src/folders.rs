@@ -193,6 +193,8 @@ pub(crate) struct Folders {
     pub(crate) databases: databases::Databases,
     /// The mail resources bound on this server (mails.rs), and the mail on its way through them.
     pub(crate) mails: mails::Mails,
+    /// The feeds bound on this server (feeds.rs), and what each connection to them is doing.
+    pub(crate) feeds: feeds::Feeds,
 }
 
 /// Every binding: the server's, by name, and each deployment's own, by its slug then name. On
@@ -234,6 +236,7 @@ impl Folders {
             claims: claims::Claims::default(),
             databases: databases::Databases::memory(),
             mails: mails::Mails::memory(),
+            feeds: feeds::Feeds::memory(),
         }
     }
 
@@ -245,6 +248,11 @@ impl Folders {
     /// The same folders, beside the mail resources bound in `mails`.
     pub(crate) fn with_mails(self, mails: mails::Mails) -> Folders {
         Folders { mails, ..self }
+    }
+
+    /// The same folders, beside the feeds bound in `feeds`.
+    pub(crate) fn with_feeds(self, feeds: feeds::Feeds) -> Folders {
+        Folders { feeds, ..self }
     }
 
     /// The same folders, the texts their runs read kept in `blobs` (`<store>/blobs/`).
@@ -654,6 +662,9 @@ impl Scoped {
             return Some(why);
         }
         if let Some(why) = self.all.mails.refuses(&self.deployment, manifest) {
+            return Some(why);
+        }
+        if let Some(why) = self.all.feeds.refuses(&self.deployment, manifest) {
             return Some(why);
         }
         for item in &manifest.capabilities {

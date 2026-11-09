@@ -119,6 +119,15 @@ declare module "holon" {
     /** What that server said: pass, fail, none... */
     verdict: { spf: string; dkim: string; dmarc: string }
   }
+  /** An event a feed sent. */
+  export interface FeedEvent {
+    /** Its data: a value when it is JSON, else its text. */
+    data: any
+    /** Its id, when the feed gives one. */
+    id?: string
+    /** Its name: "message" unless the feed names it. */
+    event: string
+  }
   export const on: {
     file: {
       /** Runs for each file new or changed in the folder, once it stops changing. */
@@ -128,6 +137,8 @@ declare module "holon" {
     }
     /** Runs for each message that comes to the mail's mailbox, moved once its run is over. */
     mail(mail: Mail, handler: (message: MailMessage) => any, options?: { log?: Log }): void
+    /** Runs for each event the feed sends, one at a time, in the order they came. */
+    feed(feed: Feed, handler: (event: FeedEvent) => any, options?: { log?: Log }): void
   }
 
   /** A start's answer: `{run, waiting}` once the run waits, `{answer, run}` if it finished first. */
@@ -272,6 +283,10 @@ declare module "holon" {
       attachments?: Record<string, string | Uint8Array>
     }): any
   }
+  /** A feed an admin binds on the host: listened to by `on.feed`. */
+  export interface Feed {
+    readonly kind: "feed"
+  }
 }
 
 /** A secret set for the deployment: someone sets it before the flow works. */
@@ -308,6 +323,11 @@ declare module "mail:*" {
   import type { Mail } from "holon"
   const mail: Mail
   export default mail
+}
+declare module "feed:*" {
+  import type { Feed } from "holon"
+  const feed: Feed
+  export default feed
 }
 declare module "host:*" {
   import type { Host } from "holon"

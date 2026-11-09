@@ -407,11 +407,18 @@ export function mailLabel(params: ReplayNode["data"]["params"]): string {
   return `on mail ${frozen(params, "mail") ?? ""}`;
 }
 
+/** An `on_feed` node's label, as the log names its handler's runs: `on feed prices` (core's
+ *  `feed_label`). */
+export function feedLabel(params: ReplayNode["data"]["params"]): string {
+  return `on feed ${frozen(params, "feed") ?? ""}`;
+}
+
 /**
  * Which nodes a run touched: for a request, the group holding the request node of its route
  * (`"GET /todos/:id"`); for a clock's tick, the group holding its `every` node (`"every 2s"`);
  * for a file handler's run, the group holding its `on_file` node (`"on file inbox"`), a mail
- * handler's its `on_mail` node (`"on mail remit"`); for an action's, the group holding its
+ * handler's its `on_mail` node (`"on mail remit"`), a feed handler's its `on_feed` node (`"on feed
+ * prices"`); for an action's, the group holding its
  * `action` node (`"action reset"`); for anything else (a flow's tick, a trigger, a flow of
  * `on file` lines), the whole canvas.
  */
@@ -430,6 +437,11 @@ export function runGroup(nodes: ReplayNode[], edges: ReplayEdge[], entry: Replay
     const onMail = nodes.find((n) => n.data.name === "on_mail" && n.data.body.kind === "Template" && mailLabel(n.data.params) === entry.route);
     if (!onMail) return [];
     return components(nodes, edges).find((ids) => ids.includes(onMail.id)) ?? [];
+  }
+  if (entry.kind === "feed" && entry.route) {
+    const onFeed = nodes.find((n) => n.data.name === "on_feed" && n.data.body.kind === "Template" && feedLabel(n.data.params) === entry.route);
+    if (!onFeed) return [];
+    return components(nodes, edges).find((ids) => ids.includes(onFeed.id)) ?? [];
   }
   if (entry.kind === "tick" && entry.route) {
     const every = nodes.find(
@@ -569,6 +581,9 @@ export function replay(
     // The message that started a mail handler's run, as the log keeps it, whole.
     if ((primitive && name === "mail_arrival") || (node.data.body.kind === "Template" && name === "on_mail"))
       return { inputs, outputs: [sourced.get(`MailArrival(${JSON.stringify(param("mail"))})`) ?? null] };
+    // The event that started a feed handler's run, as the log keeps it.
+    if ((primitive && name === "feed_event") || (node.data.body.kind === "Template" && name === "on_feed"))
+      return { inputs, outputs: [sourced.get(`FeedEvent(${JSON.stringify(param("feed"))})`) ?? null] };
     // A waiting point answers with the event the log says was delivered, if any.
     if (primitive && name === "await") return { inputs, outputs: [entry.events?.[param("name")] ?? null] };
     // A token is a credential: the log has it redacted, and so does the replay.

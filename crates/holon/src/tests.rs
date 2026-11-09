@@ -7870,6 +7870,111 @@ fn support_inbox_receives_and_answers_through_one_mail_logged_in_with_oauth() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+// ── Feeds (host-capabilities 1.6a) ──
+
+/// Wait until `holds`, for 10 seconds at most.
+fn eventually(what: &str, mut holds: impl FnMut() -> bool) {
+    let until = std::time::Instant::now() + Duration::from_secs(10);
+    while !holds() {
+        assert!(std::time::Instant::now() < until, "never: {what}");
+        thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// The price-feed sample (host-capabilities L4 §5.9.2): refused until its feed is bound; bound to
+/// a stand-in, each event the feed sends starts one run, in the order they came; the connection
+/// cut, it is opened again from the last event run on (Last-Event-ID), and an event the feed sends
+/// again is passed over. The state endpoint says where it is, nothing holds the URL's key, and the
+/// runs verify.
+#[test]
+fn price_feed_runs_on_each_event_and_opens_again_from_where_it_was() {
+    let feed = sse::stand_in::StandIn::start();
+    let dir = std::env::temp_dir().join(format!("holon-feed-{}-{}", std::process::id(), rand::random::<u32>()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let env = dir.join(".env");
+    std::fs::write(&env, format!("HOLON_SECRET_PRICES_URL={}\n", feed.url("/events?key=s3cret"))).unwrap();
+    let mut state = claims_state("");
+    let feeds = feeds::Feeds::memory().with_sources(secret_sources::Sources::new(Some(env)).unwrap());
+    state.folders = Arc::new(folders::Folders::memory().with_feeds(feeds));
+    let text = include_str!("../../holon-author/samples/price-feed.holon.ts");
+
+    // Not bound: refused at deploy.
+    let plan = holon_author::agent::plan(text).unwrap();
+    for u in &plan.units {
+        assert_eq!(route(&state, &req("POST", "/unit", u.clone())).status_code, 200);
+    }
+    let preview = body_json(route(&state, &req("POST", "/deploy/preview", serde_json::to_vec(&serde_json::json!({ "slug": plan.name, "unit": plan.unit })).unwrap())));
+    assert!(preview["needs_approval"].to_string().contains(r#"FeedEvent(\"prices\")"#), "{preview}");
+    let refused = deploy_json(&state, &plan.name, parse_hash(&plan.unit).unwrap(), serde_json::json!({ "acknowledge": preview["needs_approval"] }));
+    let said = body_json(refused)["error"].as_str().unwrap_or_default().to_string();
+    assert!(said.contains("the feed \"prices\" isn't bound on this server"), "{said}");
+    // Bound: shown without the URL's query.
+    let bind = serde_json::json!({ "name": "prices", "url": "env:HOLON_SECRET_PRICES_URL" });
+    let bound = route(&state, &req("POST", "/admin/feeds", serde_json::to_vec(&bind).unwrap()));
+    assert_eq!(bound.status_code, 200);
+    let shown = String::from_utf8_lossy(&body_bytes(bound)).into_owned();
+    assert!(!shown.contains("s3cret") && shown.contains(&format!(r#""address":"{}""#, feed.url("/events"))), "{shown}");
+    let slug = deploy_text(&state, text, "");
+    let triggers = body_json(route(&state, &req("GET", "/deployments", vec![])))["deployments"][0]["triggers"].clone();
+    assert_eq!(triggers, serde_json::json!(["Http :8187", "on feed prices"]));
+
+    let mut held = subscriptions::Held::default();
+    subscriptions::reconcile(&state.store, &state.deployments, &state.deployments_path, &mut held);
+    // Asked once to bind it, then by the deployment's connection.
+    eventually("the feed is listened to", || feed.asked().len() == 2);
+    feed.send("1", r#"{"symbol":"ACME","price":10.5}"#);
+    feed.send("2", r#"{"symbol":"BOLT","price":3}"#);
+    feed.send("3", r#"{"symbol":"ACME","price":11}"#);
+    let runs = || log_entries(&state, &slug).into_iter().filter(|e| e["kind"] == "feed").collect::<Vec<_>>();
+    eventually("three runs", || runs().len() == 3);
+    let first = runs();
+    assert!(first.iter().all(|r| r["route"] == "on feed prices" && r["error"].is_null()), "{first:#?}");
+    let sourced = first[1]["sourced"].to_string();
+    assert!(sourced.contains(r#"FeedEvent(\"prices\")"#) && sourced.contains("BOLT"), "logged whole: {sourced}");
+    let (_, prices, _) = data_call(&state, &slug, "GET", "/prices", "");
+    let prices: serde_json::Value = serde_json::from_str(&prices).unwrap();
+    assert_eq!((prices["ACME"]["price"].clone(), prices["BOLT"]["price"].clone()), (serde_json::json!(11), serde_json::json!(3)), "{prices}");
+    let live = body_json(route(&state, &req("GET", &format!("/deployments/{slug}/feeds"), vec![])));
+    assert_eq!((live["feeds"][0]["status"].as_str(), live["feeds"][0]["position"].as_str()), (Some("connected"), Some("3")), "{live}");
+    assert_eq!(live["feeds"][0]["label"], "on feed prices", "{live}");
+
+    // Cut: opened again from 3, which the feed sends again (passed over), then one past 1 MiB
+    // (passed over, the connection read on), then 4.
+    feed.cut();
+    eventually("the feed is opened again", || feed.asked().len() == 3);
+    assert!(feed.asked()[2].contains("Last-Event-ID: 3"), "{:?}", feed.asked());
+    feed.send_lines("3", "id: 3\ndata: {\"symbol\":\"ACME\",\"price\":99}\n\n");
+    feed.send("big", &format!(r#"{{"symbol":"HUGE","note":"{}"}}"#, "x".repeat(sse::MAX_EVENT)));
+    feed.send("4", r#"{"symbol":"CORE","price":7}"#);
+    eventually("a fourth run", || runs().len() == 4);
+    assert_eq!(feed.asked().len(), 3, "read on, not opened again");
+    let events = body_json(route(&state, &req("GET", &format!("/deployments/{slug}/events"), vec![])))["events"].to_string();
+    assert!(events.contains(&format!("listens to the feed prices ({})", feed.url("/events"))), "{events}");
+    assert!(events.contains("passed over an event of prices it ran already (3)"), "{events}");
+    assert!(events.contains("passed over an event of prices past 1 MiB"), "{events}");
+    let (_, prices, _) = data_call(&state, &slug, "GET", "/prices", "");
+    let prices: serde_json::Value = serde_json::from_str(&prices).unwrap();
+    assert_eq!((prices["ACME"]["price"].clone(), prices["CORE"]["price"].clone()), (serde_json::json!(11), serde_json::json!(7)), "{prices}");
+
+    // Its runs check offline: each event is what the log says came.
+    let export: verify::Export = serde_json::from_value(body_json(route(&state, &req("GET", &format!("/deployments/{slug}/export"), vec![])))).unwrap();
+    let report = verify::check(&export, None, &BTreeMap::new());
+    assert!(report.ok() && report.reruns.iter().all(|(_, r)| *r == verify::Rerun::Matched), "{}", verify::describe(&report, None));
+    let logged = serde_json::to_string(&log_entries(&state, &slug)).unwrap();
+    assert!(!logged.contains("s3cret"), "{logged}");
+
+    // Stopped: its connection is closed, and nothing more runs.
+    assert_eq!(route(&state, &req("POST", &format!("/deployments/{slug}/stop"), vec![])).status_code, 200);
+    subscriptions::reconcile(&state.store, &state.deployments, &state.deployments_path, &mut held);
+    eventually("its connection is closed", || feed.open() == 0);
+    feed.send("5", r#"{"symbol":"DUST","price":1}"#);
+    thread::sleep(Duration::from_millis(300));
+    assert_eq!(runs().len(), 4);
+    let live = body_json(route(&state, &req("GET", &format!("/deployments/{slug}/feeds"), vec![])));
+    assert_eq!(live["feeds"][0]["status"], "closed", "{live}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 // ── MongoDB (slice 7) ──
 
 /// The server compiles a flow's text with the editor's lowering, so a record literal must freeze
@@ -10200,7 +10305,7 @@ fn the_server_records_what_its_golden_record_holds() {
         let slug = plan.name.clone();
         let (routes, actions) = {
             let table = state.deployments.lock().unwrap();
-            let server = table[&slug].server.clone().unwrap_or_else(|| holon_core::Server { port: None, routes: vec![], clocks: vec![], files: vec![], mails: vec![], actions: vec![] });
+            let server = table[&slug].server.clone().unwrap_or_else(|| holon_core::Server { port: None, routes: vec![], clocks: vec![], files: vec![], mails: vec![], feeds: vec![], actions: vec![] });
             (server.routes.iter().map(|r| (r.method.clone(), r.path.clone())).collect::<Vec<_>>(), server.actions.iter().map(|a| a.name.clone()).collect::<Vec<_>>())
         };
         let log = Arc::clone(&state.deployments.lock().unwrap()[&slug].log);

@@ -87,9 +87,9 @@ pub const GENESIS: &[&str] = &[
     // and a call to another deployed flow's action, which the host runs in-process, and a start
     // of one, which doesn't wait for it to end (2)
     "flow_call", "flow_start",
-    // drivers — sourced, no compute (6): a new file in a folder starts a run, as a request does,
-    // and so does a message that comes to a mailbox
-    "clock", "random", "random_bytes", "secret", "file_arrival", "mail_arrival",
+    // drivers — sourced, no compute (7): a new file in a folder starts a run, as a request does,
+    // and so does a message that comes to a mailbox, and an event a feed sends
+    "clock", "random", "random_bytes", "secret", "file_arrival", "mail_arrival", "feed_event",
     // durable runs — answered by the host when an event arrives (2)
     "await", "resume_token",
     // state cell (2)
@@ -544,6 +544,9 @@ pub fn interface_of(name: &str) -> Option<Unit> {
         // The message that came to the mailbox of the mail an admin bound to `mail`, read (mail.rs
         // `received`), which started the run. The host reads the mail from the deployed graph.
         "mail_arrival" => prim(vec![], vec![Param::frozen("mail", "ops")], Type::Record),
+        // The event the feed an admin bound to `feed` sent, which started the run (host-capabilities
+        // L4 §5.9.2). The host reads the feed from the deployed graph.
+        "feed_event" => prim(vec![], vec![Param::frozen("feed", "prices")], Type::Record),
         // A named secret from the deployment's secret store (never in the unit: only its name).
         "secret" => prim(vec![], vec![Param::frozen("name", "api_key")], Text),
         // A durable run's waiting point: its event (the request that resumed the run, or
@@ -739,10 +742,10 @@ pub const TRIGGERED: &[&str] = &[
 pub const CALLS: &[&str] = &["http_request", "http_upload", "http_stream", "flow_call", "flow_start"];
 
 /// The leaves whose value the host supplies as the run starts (`Resolver::sourced`): the clock, the
-/// run's random bytes (as a number, or as they are), a secret, the file or the mail that started
-/// the run, a state key. Each computes nothing; the other reads (a collection's, a folder's, a database's, a
+/// run's random bytes (as a number, or as they are), a secret, the file, the mail or the feed's
+/// event that started the run, a state key. Each computes nothing; the other reads (a collection's, a folder's, a database's, a
 /// waiting point) ask as the run goes.
-pub const SOURCED: &[&str] = &["clock", "random", "random_bytes", "secret", "file_arrival", "mail_arrival", "store_read"];
+pub const SOURCED: &[&str] = &["clock", "random", "random_bytes", "secret", "file_arrival", "mail_arrival", "feed_event", "store_read"];
 
 /// What a sourced leaf gives of the value the host supplied for it. The host draws 32 random
 /// bytes for a run (`Random`, host-capabilities L4 §5.1.11): `random_bytes` gives them as they
@@ -827,8 +830,8 @@ mod tests {
         // and XML's (xml_parse, xml_format, xml_find, xml_text, xml_attribute); and compression's
         // (gzip, gunzip, zip, unzip); and JWT's (jwt_verify, jwt_decode); and OpenPGP's
         // (pgp_encrypt, pgp_verify, pgp_key) and the run's random bytes (random_bytes); and
-        // mail's (mail_send), and a mailbox's trigger (mail_arrival).
-        assert_eq!(GENESIS.len(), 189);
+        // mail's (mail_send), and a mailbox's trigger (mail_arrival), and a feed's (feed_event).
+        assert_eq!(GENESIS.len(), 190);
     }
 
     #[test]

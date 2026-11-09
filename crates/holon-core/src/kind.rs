@@ -117,6 +117,10 @@ pub enum Capability {
     /// `mail_arrival`, whose value is the message, read. The host reads the mailbox an admin bound
     /// to that name, and moves each message once its run is over (host-capabilities L4 §5.2.4).
     MailArrival(String),
+    /// Starts a run for each event the named feed sends: `feed_event`, whose value is the event.
+    /// The host keeps a connection to the feed an admin bound to that name (host-capabilities L4
+    /// §5.9.2).
+    FeedEvent(String),
     /// Runs the named action, by hand: a person (or, as its grant says, an agent) sends it
     /// something through Holon, never the network. A server's `declare=action` child gives it.
     Action(String),
@@ -202,7 +206,7 @@ impl Capability {
     pub fn kind(&self) -> Kind {
         use Capability::*;
         match self {
-            Clock | NetworkIngress | FileRead(_) | FileArrival(_) | MailArrival(_) | Action(_) | SecretAccess | SecretRead(_) | Await(_) | Random => Kind::Driver,
+            Clock | NetworkIngress | FileRead(_) | FileArrival(_) | MailArrival(_) | FeedEvent(_) | Action(_) | SecretAccess | SecretRead(_) | Await(_) | Random => Kind::Driver,
             StateRead(_) | StateWrite(_) | CollectionRead(_) | CollectionWrite(_) | DbRead(_) | DbWrite(_) => Kind::State,
             NetworkEgress | HttpRequest(_) | RunsAction(_) | FileWrite(_) | ChannelSend(_) | ChannelRead(_) | MailSend(_) | SecretAnswer(_) | Spawn => Kind::Sink,
         }
@@ -219,7 +223,7 @@ impl Capability {
         use Capability::*;
         matches!(
             self,
-            Clock | NetworkIngress | FileRead(_) | FileArrival(_) | MailArrival(_) | Action(_) | SecretAccess | SecretRead(_) | Await(_) | Random | StateRead(_) | CollectionRead(_) | DbRead(_)
+            Clock | NetworkIngress | FileRead(_) | FileArrival(_) | MailArrival(_) | FeedEvent(_) | Action(_) | SecretAccess | SecretRead(_) | Await(_) | Random | StateRead(_) | CollectionRead(_) | DbRead(_)
         )
     }
 }
@@ -342,6 +346,9 @@ pub fn capabilities_of(name: &str, params: &[Param]) -> Option<Capabilities> {
         // mailbox, and the message is the leaf's value. The mail is a frozen param, so the trigger
         // names it.
         "mail_arrival" => vec![MailArrival(ident(params, "mail")?)],
+        // An event a feed sends starts a run: the host keeps the connection, and the event is the
+        // leaf's value. The feed is a frozen param, so the trigger names it.
+        "feed_event" => vec![FeedEvent(ident(params, "feed")?)],
         // A database's tables, from the statement the leaf sends: its SQL is a frozen param, so
         // what it reads and writes is known before it runs (sql.rs). A statement that can't be
         // followed classifies as nothing, and fails closed.

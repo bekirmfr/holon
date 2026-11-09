@@ -104,6 +104,20 @@ pub struct MailGroup {
     pub node_ids: Vec<String>,
 }
 
+/// One feed handler of the server: its `on_feed` node, its feed, and every node wired to it.
+#[derive(Serialize, Clone, Debug, PartialEq)]
+pub struct FeedGroup {
+    pub feed: String,
+    /// `on feed prices`: how the log names its runs.
+    pub label: String,
+    #[serde(rename = "onFeedId")]
+    pub on_feed_id: String,
+    /// How its runs are recorded: its trigger node's `log`, `lazy` or `unrecorded`, or "" (strict).
+    pub log: String,
+    #[serde(rename = "nodeIds")]
+    pub node_ids: Vec<String>,
+}
+
 /// One action of the server: its `action` node, its name, and every node wired to it.
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct ActionGroup {
@@ -141,6 +155,8 @@ fn trigger_label(n: &Node) -> Option<String> {
         })
     } else if n.is_template("on_mail") {
         Some(holon_core::mail_label(n.param("mail")))
+    } else if n.is_template("on_feed") {
+        Some(holon_core::feed_label(n.param("feed")))
     } else if n.is_template("action") {
         Some(format!("action {}", n.param("name")))
     } else {
@@ -237,6 +253,37 @@ pub fn find_mails(nodes: &[Node], wires: &[Wire]) -> (Vec<MailGroup>, Vec<String
     // In the order they are written.
     mails.sort_by_key(|m| node_ids.iter().position(|id| *id == m.on_mail_id));
     (mails, errors)
+}
+
+/// The feed handlers the flow declares (each connected group holding an `on_feed` node and no
+/// other trigger), and why any can't be one.
+pub fn find_feeds(nodes: &[Node], wires: &[Wire]) -> (Vec<FeedGroup>, Vec<String>) {
+    let by_id: HashMap<&str, &Node> = nodes.iter().map(|n| (n.id.as_str(), n)).collect();
+    let node_ids: Vec<&str> = nodes.iter().map(|n| n.id.as_str()).collect();
+    let (mut feeds, mut errors): (Vec<FeedGroup>, Vec<String>) = (Vec::new(), Vec::new());
+    for ids in components(&node_ids, wires) {
+        let triggers: Vec<&Node> = ids.iter().map(|id| by_id[id.as_str()]).filter(|n| trigger_label(n).is_some()).collect();
+        let [on_feed] = triggers.as_slice() else { continue };
+        if !on_feed.is_template("on_feed") {
+            continue;
+        }
+        let feed = match crate::templates::feed_name(&on_feed.data.params) {
+            Ok(f) => f,
+            Err(e) => {
+                errors.push(e);
+                continue;
+            }
+        };
+        let label = holon_core::feed_label(&feed);
+        if feeds.iter().any(|f| f.feed == feed) {
+            errors.push(format!("{label} is written twice: one handler per feed"));
+            continue;
+        }
+        feeds.push(FeedGroup { feed, label, on_feed_id: on_feed.id.clone(), log: on_feed.param("log").into(), node_ids: ids });
+    }
+    // In the order they are written.
+    feeds.sort_by_key(|f| node_ids.iter().position(|id| *id == f.on_feed_id));
+    (feeds, errors)
 }
 
 /// The actions the flow declares (each connected group holding an `action` node and no other
@@ -443,6 +490,12 @@ pub fn mail_spec(spec: EncapSpec, group: &[&Node], label: &str) -> Result<EncapS
     handler_spec(spec, group, label, "a message's run")
 }
 
+/// A feed handler's boundary, as a mail's: no inputs (the event is its `on_feed` node's) and its
+/// effects as outputs.
+pub fn feed_spec(spec: EncapSpec, group: &[&Node], label: &str) -> Result<EncapSpec, String> {
+    handler_spec(spec, group, label, "an event's run")
+}
+
 /// A handler with no caller to answer: no inputs, its effects as outputs. `who` says which kind.
 fn handler_spec(spec: EncapSpec, group: &[&Node], label: &str, who: &str) -> Result<EncapSpec, String> {
     let input_name = |child: u32, port: u32| group[child as usize].data.inputs.get(port as usize).map(|p| p.name.as_str());
@@ -511,6 +564,21 @@ pub fn mail_unit(handler: Hash, outputs: &[Port], mail: &str) -> Unit {
             edges: (0..outputs.len() as u32).map(|k| Edge { from_child: 0, from_port: k, to_child: BOUNDARY, to_port: k }).collect(),
         },
         params: vec![frozen("declare", "on_mail"), frozen("mail", mail)],
+        inputs: vec![],
+        outputs: outputs.to_vec(),
+    }
+}
+
+/// Wrap a feed handler's handler as a feed handler unit (core's `read_feed_handler`): no inputs,
+/// each of its effects an output, `declare = "on_feed"` and `feed`.
+pub fn feed_unit(handler: Hash, outputs: &[Port], feed: &str) -> Unit {
+    let frozen = |name: &str, value: &str| Param::Frozen { name: name.into(), value: value.into() };
+    Unit {
+        body: UnitBody::Composite {
+            children: vec![handler],
+            edges: (0..outputs.len() as u32).map(|k| Edge { from_child: 0, from_port: k, to_child: BOUNDARY, to_port: k }).collect(),
+        },
+        params: vec![frozen("declare", "on_feed"), frozen("feed", feed)],
         inputs: vec![],
         outputs: outputs.to_vec(),
     }

@@ -222,6 +222,8 @@ enum FrameKind {
     OnFile,
     /// A mail handler.
     OnMail,
+    /// A feed handler.
+    OnFeed,
     /// An action's block: its `action` node, and where it responded.
     Action { node: String, responded: Option<Span> },
     /// A holon's block: its declared outputs, in order, and what each is bound to.
@@ -293,6 +295,8 @@ struct Lowerer<'a> {
     channels: HashSet<String>,
     /// The mail resources it imports (`import ops from "mail:ops"`): sent through.
     mails: HashSet<String>,
+    /// The feeds it imports (`import prices from "feed:prices"`): listened to.
+    feeds: HashSet<String>,
     /// The flows whose actions it imports (`import { charge } from "flow:billing"`), by the noun
     /// that calls them (`billing`, or `billing_v2` for `billing-v2`): their slugs.
     calls: HashMap<String, String>,
@@ -330,6 +334,7 @@ impl<'a> Lowerer<'a> {
         let databases = file.headers.iter().filter_map(|h| if let HeaderKind::Database(d) = &h.kind { Some(d.clone()) } else { None }).collect();
         let channels = file.headers.iter().filter_map(|h| if let HeaderKind::Channel(c) = &h.kind { Some(c.clone()) } else { None }).collect();
         let mails = file.headers.iter().filter_map(|h| if let HeaderKind::Mail(m) = &h.kind { Some(m.clone()) } else { None }).collect();
+        let feeds = file.headers.iter().filter_map(|h| if let HeaderKind::Feed(f) = &h.kind { Some(f.clone()) } else { None }).collect();
         let calls = file.headers.iter().filter_map(|h| if let HeaderKind::Calls(f) = &h.kind { Some((call_noun(f), f.clone())) } else { None }).collect();
         let secrets = file
             .headers
@@ -362,6 +367,7 @@ impl<'a> Lowerer<'a> {
             databases,
             channels,
             mails,
+            feeds,
             calls,
             flow,
             actions,
@@ -421,6 +427,12 @@ impl<'a> Lowerer<'a> {
                 return err(b.head, format!("{} is written twice: one handler per mail", holon_core::mail_label(&b.mail)));
             }
         }
+        let feed_blocks: Vec<&OnFeedDef> = file.items.iter().filter_map(|i| if let Item::OnFeed(o) = i { Some(o) } else { None }).collect();
+        for (i, b) in feed_blocks.iter().enumerate() {
+            if feed_blocks[..i].iter().any(|o| o.feed == b.feed) {
+                return err(b.head, format!("{} is written twice: one handler per feed", holon_core::feed_label(&b.feed)));
+            }
+        }
         for (i, b) in blocks.iter().enumerate() {
             if blocks[..i].iter().any(|o| o.seconds == b.seconds) {
                 return err(b.head, format!("{} is written twice: one handler per period", b.text));
@@ -455,6 +467,7 @@ impl<'a> Lowerer<'a> {
                 Item::Every(e) => self.every(e)?,
                 Item::OnFile(o) => self.on_file(o)?,
                 Item::OnMail(o) => self.on_mail(o)?,
+                Item::OnFeed(o) => self.on_feed(o)?,
                 Item::Action(a) => self.action(a)?,
                 _ => {}
             }
@@ -521,7 +534,7 @@ impl<'a> Lowerer<'a> {
                 HeaderKind::Port(p) => s.port = p.clone(),
                 HeaderKind::Browsers(o) => s.browsers = Some(o.join(" ")).filter(|b| !b.is_empty()),
                 HeaderKind::Optional(Consent::Secret(n)) => optional.push(format!("SecretRead({n:?})")),
-                HeaderKind::Flow(_) | HeaderKind::Secret(_) | HeaderKind::State(_) | HeaderKind::Collection(_) | HeaderKind::Folder(_) | HeaderKind::Database(_) | HeaderKind::Channel(_) | HeaderKind::Mail(_) => {}
+                HeaderKind::Flow(_) | HeaderKind::Secret(_) | HeaderKind::State(_) | HeaderKind::Collection(_) | HeaderKind::Folder(_) | HeaderKind::Database(_) | HeaderKind::Channel(_) | HeaderKind::Mail(_) | HeaderKind::Feed(_) => {}
                 HeaderKind::Calls(flow) => self.check_calls(flow, h.span, file)?,
             }
         }
@@ -550,7 +563,8 @@ impl<'a> Lowerer<'a> {
             || self.store(&noun).is_some()
             || self.databases.contains(&noun)
             || self.channels.contains(&noun)
-            || self.mails.contains(&noun);
+            || self.mails.contains(&noun)
+            || self.feeds.contains(&noun);
         if taken {
             return err(span, format!("\"{noun}\" is already a name here (a keyword, a leaf, a function or something imported): a flow called by it can't be named so"));
         }
@@ -749,6 +763,9 @@ impl<'a> Lowerer<'a> {
         }
         if self.mails.contains(n) {
             return err(name.span, format!("\"{n}\" is a mail; a binding may not shadow it"));
+        }
+        if self.feeds.contains(n) {
+            return err(name.span, format!("\"{n}\" is a feed; a binding may not shadow it"));
         }
         if self.calls.contains_key(n) {
             return err(name.span, format!("\"{n}\" is a flow; a binding may not shadow it"));
@@ -1288,6 +1305,35 @@ impl<'a> Lowerer<'a> {
         Ok(())
     }
 
+    /// `on.feed(prices, (e) => …)`: a feed handler. Its `on_feed` node is its trigger, `e` in it the
+    /// event, and its sinks are tied to it (host-capabilities L4 §5.9.2).
+    fn on_feed(&mut self, o: &'a OnFeedDef) -> R<()> {
+        let mut params = vec![("feed".to_string(), o.feed.clone())];
+        params.extend(o.log.iter().map(|w| ("log".to_string(), w.text.clone())));
+        let event = self.node("on_feed", &params, o.head)?;
+        let Val::Out { id, .. } = &event else { unreachable!() };
+        let id = id.clone();
+        self.names.insert(id.clone(), o.event.text.clone());
+        self.check_name_free(&o.event)?;
+        let mut frame = Frame::new(FrameKind::OnFeed);
+        frame.created.push(id.clone());
+        frame.env.insert(o.event.text.clone(), event.clone());
+        self.frames.push(frame);
+        for s in &o.body {
+            if let StmtKind::Respond(_) = s.kind {
+                return err(s.span, "respond belongs in a route: an event's run answers nobody");
+            }
+            self.stmt(s)?;
+        }
+        let tied = self.tie_block(&event, o.head)?;
+        let frame = self.frames.pop().expect("the block's frame");
+        if !tied {
+            return err(o.head, "the handler does nothing: write something in it (state, a collection, a channel)");
+        }
+        self.ticks.push((id, frame.created, o.head, ("the event", o.event.text.clone())));
+        Ok(())
+    }
+
     /// `export const reset = action((input) => …)`: an action, run by hand by its name. Its `action`
     /// node is its trigger, `input` in it what was sent, and its sinks are tied to it
     /// (docs/L4s/triggers-L4.md §2, §3); what it returns answers.
@@ -1324,7 +1370,7 @@ impl<'a> Lowerer<'a> {
 
     fn check_name_free(&self, name: &Name) -> R<()> {
         let n = name.text.as_str();
-        if interface_of(n).is_some() || templates::is_template(n) || RESERVED.contains(&n) || self.store(n).is_some() || self.databases.contains(n) || self.channels.contains(n) || self.mails.contains(n) || self.is_def(n) {
+        if interface_of(n).is_some() || templates::is_template(n) || RESERVED.contains(&n) || self.store(n).is_some() || self.databases.contains(n) || self.channels.contains(n) || self.mails.contains(n) || self.feeds.contains(n) || self.is_def(n) {
             return err(name.span, format!("\"{n}\" is taken; pick another name"));
         }
         Ok(())
@@ -1334,7 +1380,7 @@ impl<'a> Lowerer<'a> {
     /// not after a keyword, a collection or a function.
     fn check_port_name(&self, name: &Name) -> R<()> {
         let n = name.text.as_str();
-        if RESERVED.contains(&n) || self.store(n).is_some() || self.databases.contains(n) || self.channels.contains(n) || self.mails.contains(n) || self.is_def(n) {
+        if RESERVED.contains(&n) || self.store(n).is_some() || self.databases.contains(n) || self.channels.contains(n) || self.mails.contains(n) || self.feeds.contains(n) || self.is_def(n) {
             return err(name.span, format!("\"{n}\" is taken; pick another name for the port"));
         }
         Ok(())
@@ -1789,6 +1835,9 @@ impl<'a> Lowerer<'a> {
         if self.mails.contains(n) {
             return err(span, format!("\"{n}\" is a mail: send through it with {n}.send({{ to: \"…\", subject: \"…\", text: \"…\" }})"));
         }
+        if self.feeds.contains(n) {
+            return err(span, format!("\"{n}\" is a feed: listen to it with on.feed({n}, (e) => {{ … }})"));
+        }
         if self.calls.contains_key(n) {
             return err(span, format!("\"{n}\" is a flow: import the action you call, import {{ charge }} from \"flow:{n}\""));
         }
@@ -2235,6 +2284,7 @@ impl<'a> Lowerer<'a> {
                 }
                 other => err(method.span, format!("a mail has no \"{other}\": send({{ to, subject, text }})")),
             },
+            c if self.feeds.contains(c) => err(method.span, format!("a feed has no \"{}\": listen to it with on.feed({c}, (e) => {{ … }})", method.text)),
             c if let Some(store) = self.store(c) => {
                 let folder = store.kind == "folder";
                 let leaf_name = match method.text.as_str() {
@@ -4454,6 +4504,55 @@ route.get("/last", () => state.last)
             ("on.mail(remit, (m) => {\n  state.a = m.text\n})\non.mail(remit, (n) => {\n  state.b = n.text\n})\n", "on mail remit is written twice: one handler per mail"),
             ("on.mail(remit, (m) => {\n  return 1\n})\n", "a mail handler's run answers nobody: return alone ends it"),
             ("on.mail(remit, (m) => {\n  state.a = m.text\n}, { matching: \"*\" })\n", "matching"),
+        ] {
+            let (_, _, e) = error(&format!("{head}{body}"));
+            assert!(e.contains(said), "{said}: {e}");
+        }
+    }
+
+    /// `on.feed(prices, (e) => { … })` is a feed handler: its `on_feed` node, its sinks tied to the
+    /// event, `e` the event (host-capabilities L4 §5.9.2).
+    #[test]
+    fn on_feed_blocks_are_feed_handlers_tied_to_their_event() {
+        let src = r#"import { flow, on, route } from "holon"
+import state from "state"
+import prices from "feed:prices"
+
+flow("f", { port: 8080 })
+
+on.feed(prices, (e) => {
+  state.last = e.data.price
+}, { log: "lazy" })
+
+route.get("/last", () => state.last)
+"#;
+        let d = compiled(src).doc;
+        let on: Vec<&crate::canvas::Node> = d.nodes.iter().filter(|n| n.is_template("on_feed")).collect();
+        assert_eq!(on.iter().map(|n| (n.param("feed"), n.param("log"))).collect::<Vec<_>>(), [("prices", "lazy")]);
+        assert!(!d.nodes.iter().any(|n| n.data.name == "feed_event"), "e in a block is its on_feed node's");
+        let write = d.nodes.iter().find(|n| n.data.name == "store_write").unwrap();
+        let tied = d.edges.iter().find(|w| w.target == write.id && w.input() == TRIGGER).map(|w| (w.source.clone(), w.output().to_string()));
+        assert_eq!(tied, Some((on[0].id.clone(), "event".to_string())), "the write is tied to the event");
+
+        let mut store = MapResolver::new();
+        let server = crate::flow::derive_server(&d.nodes, &d.edges, &mut store, "8080");
+        assert_eq!(server.errors, Vec::<String>::new());
+        assert_eq!(server.feeds.iter().map(|f| (f.feed.as_str(), f.label.as_str())).collect::<Vec<_>>(), [("prices", "on feed prices")]);
+        let unit = server.server_hash.as_deref().and_then(holon_core::parse_hash).and_then(|h| store.resolve(&h)).expect("a server");
+        let read = holon_core::read_server(unit, &store).unwrap();
+        assert_eq!((read.port, read.feeds.len(), read.feeds[0].log), (Some(8080), 1, holon_core::LogLevel::Lazy));
+        assert!(holon_core::capabilities(unit, &store).contains(holon_core::Capability::FeedEvent("prices".into())));
+
+        // A feed is an imported one, listened to and nothing else; one handler a feed; an event's
+        // run answers nobody.
+        let head = "import { flow, on } from \"holon\"\nimport state from \"state\"\nimport prices from \"feed:prices\"\nimport remit from \"mail:remit\"\n\nflow(\"f\")\n\n";
+        for (body, said) in [
+            ("on.feed(remit, (e) => {\n  state.a = e.data\n})\n", "\"remit\" isn't an imported feed: import remit from \"feed:remit\""),
+            ("on.feed((e) => {\n  state.a = e.data\n})\n", "a feed handler takes its feed first"),
+            ("on.feed(prices, (e) => {\n  state.a = e.data\n})\non.feed(prices, (f) => {\n  state.b = f.data\n})\n", "on feed prices is written twice: one handler per feed"),
+            ("on.feed(prices, (e) => {\n  return 1\n})\n", "a feed handler's run answers nobody: return alone ends it"),
+            ("on.feed(prices, (e) => {\n  state.a = prices\n})\n", "\"prices\" is a feed: listen to it with on.feed(prices, (e) => { … })"),
+            ("on.feed(prices, (e) => {\n  state.a = prices.read()\n})\n", "a feed has no \"read\""),
         ] {
             let (_, _, e) = error(&format!("{head}{body}"));
             assert!(e.contains(said), "{said}: {e}");

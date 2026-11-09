@@ -206,6 +206,34 @@ export async function unbindMail(name: string, deployment: string | null): Promi
   const only = deployment ? `?deployment=${encodeURIComponent(deployment)}` : "";
   await asJson<void>(await api(`${BASE}/admin/mails/${encodeURIComponent(name)}${only}`, { method: "DELETE" }));
 }
+/** A feed bound (feeds.rs): where its URL is read from (env:…, vault:…) and where it points,
+ *  without its login or query; the headers each request sends (each name, and where its value is
+ *  read from); how many events may wait for their run; and how long (seconds) it may say nothing. */
+export type FeedEntry = { name: string; deployment: string | null; url: string; address: string; headers: Record<string, string>; buffer: number; idle: number };
+/** A feed to bind: `buffer` and `idle` (90s, 2m) left out for the defaults. */
+export type FeedBinding = { name: string; deployment: string | null; url: string; headers: Record<string, string>; buffer?: number; idle?: string };
+export const listFeeds = async () => asJson<FeedEntry[]>(await api(`${BASE}/admin/feeds`));
+export const bindFeed = async (f: FeedBinding) => asJson<FeedEntry>(await post(`${BASE}/admin/feeds`, f));
+export async function unbindFeed(name: string, deployment: string | null): Promise<void> {
+  const only = deployment ? `?deployment=${encodeURIComponent(deployment)}` : "";
+  await asJson<void>(await api(`${BASE}/admin/feeds/${encodeURIComponent(name)}${only}`, { method: "DELETE" }));
+}
+/** What a deployment's connection to one feed its handlers listen to is doing (`GET
+ *  /deployments/<slug>/feeds`): since when (ms), why it isn't connected, the id of the last event
+ *  run on, and how many wait. */
+export type FeedState = {
+  feed: string;
+  label: string;
+  address?: string;
+  status: "connecting" | "connected" | "reconnecting" | "closed";
+  since?: number;
+  error?: string;
+  position?: string;
+  waiting: number;
+};
+export async function feedStates(slug: string): Promise<FeedState[]> {
+  return (await asJson<{ feeds: FeedState[] }>(await api(`${BASE}/deployments/${encodeURIComponent(slug)}/feeds`))).feeds;
+}
 /** Values and bytes, as a sweep counts them. */
 export type Counted = { values: number; bytes: number };
 /** `POST /admin/store/sweep` (sweep.rs): the values nothing kept names, removed (or, as a dry
@@ -736,7 +764,7 @@ export type LogEntry = {
   session: number;
   at_ms: number;
   duration_ms: number;
-  kind: "request" | "trigger" | "tick" | "resume" | "file" | "mail";
+  kind: "request" | "trigger" | "tick" | "resume" | "file" | "mail" | "feed";
   /** The matched route, e.g. "GET /todos/:id". */
   route: string | null;
   method: string | null;

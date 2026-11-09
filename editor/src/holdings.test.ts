@@ -73,4 +73,17 @@ describe("who holds what", () => {
     expect(othersHeld(mailing, [], [], mails).map((o) => [o.item, o.kind])).toEqual([['MailSend("alerts/oncall@acme.com")', "mail"]]);
     expect(kindsHeld(mailing)).toEqual(["mail"]);
   });
+
+  it("reads a feed's grant as listening to it, through the binding each sees", () => {
+    expect(reaches('FeedEvent("prices")')).toEqual({ kind: "feed", name: "prices", use: "listen", table: null });
+    const listening: HeldGrant[] = [
+      { slug: "price-feed", status: "running", attention: null, items: ['FeedEvent("prices")', 'FeedEvent("rates")'], revoked: [] },
+    ];
+    const feeds = [{ name: "prices", deployment: null }];
+    const prices = holdersOf("feed", feeds[0], feeds, listening);
+    expect(prices.map((h) => [h.slug, usesText(h.uses).map((u) => u.text)])).toEqual([["price-feed", ["starts on each event it sends"]]]);
+    // A feed no binding answers is among the others.
+    expect(othersHeld(listening, [], [], [], feeds).map((o) => [o.item, o.kind])).toEqual([['FeedEvent("rates")', "feeds"]]);
+    expect(kindsHeld(listening)).toEqual(["feeds"]);
+  });
 });

@@ -15,10 +15,14 @@
 //!   run, carrying `declare = "on_mail"` and `mail`: the host runs it for each message that comes
 //!   to the mailbox an admin bound to that mail. The message is sourced, as a `mail_arrival`
 //!   leaf's is (host-capabilities L4 §5.2.4).
+//! - A **feed handler** is a composite with no inputs, its outputs the effects of one event's run,
+//!   carrying `declare = "on_feed"` and `feed`: the host runs it for each event the feed an admin
+//!   bound to that name sends. The event is sourced, as a `feed_event` leaf's is
+//!   (host-capabilities L4 §5.9.2).
 //! - An **action handler** is a composite from what its caller sent to its answer (an envelope, as
 //!   an endpoint's response is, whose body is the answer), then its effects, carrying
 //!   `declare = "action"` and `name`: a person runs it by name through Holon, never the network.
-//! - A **server** is a composite whose children are endpoints, clock handlers, file handlers, mail handlers and action handlers, with no wiring
+//! - A **server** is a composite whose children are endpoints, clock handlers, file handlers, mail handlers, feed handlers and action handlers, with no wiring
 //!   and no ports, carrying `declare = "server"`, and `port` when it has a route. Its hash is the
 //!   hash of the whole flow.
 //!
@@ -142,6 +146,25 @@ pub fn mail_label(mail: &str) -> String {
     format!("on mail {mail}")
 }
 
+/// One feed handler of a server, as declared: a run for each event its feed sends.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FeedHandler {
+    /// The feed it listens to: `prices`.
+    pub feed: String,
+    /// How the log and the editor name it: `on feed prices`.
+    pub label: String,
+    /// The handler unit's hash (the server's child), which an event evaluates with no inputs, the
+    /// event sourced.
+    pub handler: Hash,
+    /// How its runs are recorded.
+    pub log: LogLevel,
+}
+
+/// A feed handler's label, as the log keeps it: `on feed prices`.
+pub fn feed_label(feed: &str) -> String {
+    format!("on feed {feed}")
+}
+
 /// One action handler of a server, as declared: run by name.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Action {
@@ -162,6 +185,7 @@ pub struct Server {
     pub clocks: Vec<Clock>,
     pub files: Vec<FileHandler>,
     pub mails: Vec<MailHandler>,
+    pub feeds: Vec<FeedHandler>,
     pub actions: Vec<Action>,
 }
 
@@ -178,8 +202,9 @@ impl Server {
         let clocks = self.clocks.iter().map(|c| (c.label.clone(), c.log, c.handler));
         let files = self.files.iter().map(|f| (f.label.clone(), f.log, f.handler));
         let mails = self.mails.iter().map(|m| (m.label.clone(), m.log, m.handler));
+        let feeds = self.feeds.iter().map(|f| (f.label.clone(), f.log, f.handler));
         let actions = self.actions.iter().map(|a| (a.label.clone(), a.log, a.handler));
-        routes.chain(clocks).chain(files).chain(mails).chain(actions)
+        routes.chain(clocks).chain(files).chain(mails).chain(feeds).chain(actions)
     }
 
     /// Its action named `name`, if it has one.
@@ -253,6 +278,15 @@ pub fn read_mail_handler(unit: &Unit) -> Option<String> {
     crate::kind::ident(&unit.params, "mail")
 }
 
+/// A feed handler's feed, if `unit` is one: `declare = "on_feed"`, a feed's name, a composite with
+/// no inputs.
+pub fn read_feed_handler(unit: &Unit) -> Option<String> {
+    if !matches!(unit.body, UnitBody::Composite { .. }) || declaration_of(unit) != Some("on_feed") || !unit.inputs.is_empty() {
+        return None;
+    }
+    crate::kind::ident(&unit.params, "feed")
+}
+
 /// Why a unit is not a well-formed server. `child` is the index of the offending endpoint.
 #[derive(Clone, Debug, PartialEq)]
 pub enum DeclError {
@@ -272,9 +306,11 @@ pub enum DeclError {
     DuplicateFileHandler { label: String },
     /// Two mail handlers of one mail.
     DuplicateMailHandler { mail: String },
+    /// Two feed handlers of one feed.
+    DuplicateFeedHandler { feed: String },
     /// Two actions of one name.
     DuplicateAction { name: String },
-    /// No route, clock, file or mail handler or action: nothing would start a run.
+    /// No route, clock, file, mail or feed handler or action: nothing would start a run.
     NoHandlers,
     /// A handler's `log` param isn't a level.
     BadLogLevel { child: u32, value: String },
@@ -306,6 +342,7 @@ pub fn read_server(unit: &Unit, resolver: &impl Resolver) -> Result<Server, Decl
     let mut clocks: Vec<Clock> = Vec::new();
     let mut files: Vec<FileHandler> = Vec::new();
     let mut mails: Vec<MailHandler> = Vec::new();
+    let mut feeds: Vec<FeedHandler> = Vec::new();
     let mut actions: Vec<Action> = Vec::new();
     for (i, hash) in children.iter().enumerate() {
         let child = i as u32;
@@ -333,6 +370,14 @@ pub fn read_server(unit: &Unit, resolver: &impl Resolver) -> Result<Server, Decl
                 return Err(DeclError::DuplicateMailHandler { mail });
             }
             mails.push(MailHandler { label: mail_label(&mail), mail, handler: *hash, log });
+            continue;
+        }
+        if declaration_of(endpoint) == Some("on_feed") {
+            let feed = read_feed_handler(endpoint).ok_or(DeclError::BadEndpointShape { child })?;
+            if feeds.iter().any(|f| f.feed == feed) {
+                return Err(DeclError::DuplicateFeedHandler { feed });
+            }
+            feeds.push(FeedHandler { label: feed_label(&feed), feed, handler: *hash, log });
             continue;
         }
         if declaration_of(endpoint) == Some("action") {
@@ -369,7 +414,7 @@ pub fn read_server(unit: &Unit, resolver: &impl Resolver) -> Result<Server, Decl
         };
         routes.push(Route { method, path, segments, endpoint: *hash, resume, log });
     }
-    if routes.is_empty() && clocks.is_empty() && files.is_empty() && mails.is_empty() && actions.is_empty() {
+    if routes.is_empty() && clocks.is_empty() && files.is_empty() && mails.is_empty() && feeds.is_empty() && actions.is_empty() {
         return Err(DeclError::NoHandlers);
     }
     // A port only for a server with a route: a flow of clocks, files and actions listens on none.
@@ -380,7 +425,7 @@ pub fn read_server(unit: &Unit, resolver: &impl Resolver) -> Result<Server, Decl
             _ => return Err(DeclError::BadPort(text.unwrap_or("").to_string())),
         },
     };
-    Ok(Server { port, routes, clocks, files, mails, actions })
+    Ok(Server { port, routes, clocks, files, mails, feeds, actions })
 }
 
 /// Why a unit is not a well-formed endpoint.

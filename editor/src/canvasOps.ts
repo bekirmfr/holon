@@ -49,11 +49,15 @@ export type FileDraft = { folder: string; label: string; hash: string; log?: Log
  *  reads, its label (`on mail remit`) and its handler unit's hash. */
 export type MailDraft = { mail: string; label: string; hash: string; log?: LogWord };
 
+/** One feed handler of the derived server (an `on_feed` node's group): the feed it listens to,
+ *  its label (`on feed prices`) and its handler unit's hash. */
+export type FeedDraft = { feed: string; label: string; hash: string; log?: LogWord };
+
 /** One action of the derived server (an `action` node's group): its name, its label (`action
  *  reset`) and its handler unit's hash. */
 export type ActionDraft = { name: string; label: string; hash: string; log?: LogWord };
 
-/** The server a canvas declares: its endpoints, clocks, file and mail handlers and actions, why any handler can't be one, the
+/** The server a canvas declares: its endpoints, clocks, file, mail and feed handlers and actions, why any handler can't be one, the
  *  server unit's hash once every handler is sound (and `portText` is a port, with a route), and
  *  the trace from each handler's stored children to canvas nodes, by its route or label. */
 export type DerivedServer = {
@@ -61,6 +65,7 @@ export type DerivedServer = {
   clocks: ClockDraft[];
   files: FileDraft[];
   mails: MailDraft[];
+  feeds: FeedDraft[];
   actions: ActionDraft[];
   errors: string[];
   serverHash: string | null;

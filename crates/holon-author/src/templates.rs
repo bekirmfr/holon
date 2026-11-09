@@ -1,4 +1,4 @@
-//! Node templates: `request`, `respond`, `stripe_verify`, `every`, `on_file`, `on_mail` and `action`. They are not new
+//! Node templates: `request`, `respond`, `stripe_verify`, `every`, `on_file`, `on_mail`, `on_feed` and `action`. They are not new
 //! primitives.
 //! Each is a small composite of genesis leaves (field, json_parse, record, with_field, const,
 //! default, …), rebuilt from the node's params whenever it is hashed, the same way a primitive
@@ -41,6 +41,9 @@
 //! - `on_mail` (param: mail) is a mail handler's trigger (host-capabilities L4 §5.2.4): a run for
 //!   each message that comes to the mailbox an admin bound to `mail`. No inputs; one output,
 //!   `message`, the message read (a `mail_arrival` leaf, sourced), which its sinks are tied to.
+//! - `on_feed` (param: feed) is a feed handler's trigger (host-capabilities L4 §5.9.2): a run for
+//!   each event the feed an admin bound to `feed` sends. No inputs; one output, `event`, the event
+//!   (a `feed_event` leaf, sourced), which its sinks are tied to.
 //! - `action` (param: name) is an action's trigger (§2): a run by hand, by its name. One input,
 //!   hidden as a request node's is: what was sent, fed by the action handler it derives into; one
 //!   output, `input`, the same value, which its sinks are tied to and a `respond` answers.
@@ -54,7 +57,7 @@ use serde::Serialize;
 use crate::wire::{frozen_value, WParam, WPort, WType};
 
 /// The templates, in palette order.
-pub const TEMPLATES: &[&str] = &["request", "respond", "stripe_verify", "every", "on_file", "on_mail", "action"];
+pub const TEMPLATES: &[&str] = &["request", "respond", "stripe_verify", "every", "on_file", "on_mail", "on_feed", "action"];
 
 /// A clock handler's period, read from its `seconds`: whole seconds, 1 up to core's `MAX_PERIOD`.
 pub fn period(seconds: &str) -> Result<u64, String> {
@@ -90,6 +93,15 @@ pub fn mail_name(params: &[WParam]) -> Result<String, String> {
         return Err(format!("on mail \"{mail}\": a mail is a name (letters, digits and _)"));
     }
     Ok(mail.to_string())
+}
+
+/// A feed handler's feed, read from its `feed`: letters, digits and `_`, as a flow imports it.
+pub fn feed_name(params: &[WParam]) -> Result<String, String> {
+    let feed = frozen_value(params, "feed").unwrap_or("");
+    if feed.is_empty() || feed.len() > 64 || !feed.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') {
+        return Err(format!("on feed \"{feed}\": a feed is a name (letters, digits and _)"));
+    }
+    Ok(feed.to_string())
 }
 
 /// An action's name, read from its `name`: letters, digits, `-` and `_`, as core reads it back.
@@ -161,6 +173,9 @@ pub fn describe(name: &str) -> Option<&'static str> {
         "on_mail" => {
             "A mail handler: a run for each message that comes to the mailbox an admin bound to the mail set on the node, with message, the message read {from, name, to, cc, subject, date, message_id, text, html, attachments, authenticated, verdict}. authenticated is the mailbox's own server's word that the domain in From sent it; From alone proves nothing. The message is moved to the binding's done folder once the run is over. Everything wired to it is that run: its writes and calls out are tied to it. Beside a flow's routes, it shares their state."
         }
+        "on_feed" => {
+            "A feed handler: a run for each event the feed an admin bound to the name set on the node sends, with event {data, id, event}: data a value when the event's data is JSON, else its text. One at a time, in the order they came; the host keeps where the feed is, so a reconnect resumes after the last event run on, and none runs twice. Everything wired to it is that run: its writes and calls out are tied to it. Beside a flow's routes, it shares their state."
+        }
         "action" => {
             "An action: a run by hand, by the name set on the node, with input, what was sent (a JSON value; {} when nothing). A respond it wires to gives the answer. Everything wired to it is that run: its writes and calls out are tied to it. Beside a flow's routes, it shares their state."
         }
@@ -200,6 +215,7 @@ pub fn interface(name: &str, params: &[WParam]) -> Option<Interface> {
         "every" => Interface { inputs: vec![], outputs: vec![WPort::new("now", Number)], hidden_inputs: false },
         "on_file" => Interface { inputs: vec![], outputs: vec![WPort::new("file", Record)], hidden_inputs: false },
         "on_mail" => Interface { inputs: vec![], outputs: vec![WPort::new("message", Record)], hidden_inputs: false },
+        "on_feed" => Interface { inputs: vec![], outputs: vec![WPort::new("event", Record)], hidden_inputs: false },
         "action" => Interface { inputs: vec![WPort::new("input", Any)], outputs: vec![WPort::new("input", Any)], hidden_inputs: true },
         "stripe_verify" => Interface {
             inputs: vec![request(), WPort::new("secret", Text), WPort::new("now", Number)],
@@ -231,6 +247,7 @@ pub fn defaults(name: &str) -> Option<Vec<WParam>> {
         "every" => vec![f("seconds", "10"), f("log", "")],
         "on_file" => vec![f("folder", "inbox"), f("on", "new"), f("matching", ""), f("log", "")],
         "on_mail" => vec![f("mail", "ops"), f("log", "")],
+        "on_feed" => vec![f("feed", "prices"), f("log", "")],
         "action" => vec![f("name", "run"), f("log", "")],
         _ => return None,
     })
@@ -477,6 +494,12 @@ pub fn build(name: &str, params: &[WParam], store: &mut MapResolver) -> Result<U
             Ok(composite(vec![arrival], vec![e(0, 0, B, 0)], inputs, outputs))
         }
 
+        "on_feed" => {
+            let feed = feed_name(params)?;
+            let event = add_leaf(store, "feed_event", vec![frozen("feed", &feed)], None)?;
+            Ok(composite(vec![event], vec![e(0, 0, B, 0)], inputs, outputs))
+        }
+
         // What was sent, passed through: the action handler feeds it, the block reads it.
         "action" => {
             action_name(params)?;
@@ -705,6 +728,18 @@ mod tests {
         assert!(holon_core::capabilities(&unit, &store).contains(holon_core::Capability::MailArrival("remit".into())));
         for bad in ["", "re-mit", "../up"] {
             assert!(build("on_mail", &[WParam::frozen("mail", bad)], &mut store).is_err(), "{bad:?}");
+        }
+    }
+
+    /// `on_feed` is a `feed_event` leaf naming its feed: the event is sourced, and core reads its
+    /// capability from it.
+    #[test]
+    fn on_feed_is_a_feed_event_naming_its_feed() {
+        let mut store = MapResolver::new();
+        let unit = build("on_feed", &[WParam::frozen("feed", "prices")], &mut store).unwrap();
+        assert!(holon_core::capabilities(&unit, &store).contains(holon_core::Capability::FeedEvent("prices".into())));
+        for bad in ["", "pri-ces", "../up"] {
+            assert!(build("on_feed", &[WParam::frozen("feed", bad)], &mut store).is_err(), "{bad:?}");
         }
     }
 }
