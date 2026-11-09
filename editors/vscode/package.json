@@ -70,12 +70,20 @@
       },
       {
         "command": "holon.showFlow",
-        "title": "Show flow text",
+        "title": "Edit flow",
+        "icon": "$(edit)",
+        "category": "Holon"
+      },
+      {
+        "command": "holon.deployFlow",
+        "title": "Deploy flow",
+        "icon": "$(rocket)",
         "category": "Holon"
       },
       {
         "command": "holon.openGraph",
         "title": "Open graph",
+        "icon": "$(graph)",
         "category": "Holon"
       },
       {
@@ -139,9 +147,24 @@
           "group": "inline@2"
         },
         {
-          "command": "holon.openGraph",
+          "command": "holon.deployFlow",
+          "when": "view == holon.flows && viewItem == flow",
+          "group": "inline@3"
+        },
+        {
+          "command": "holon.showFlow",
           "when": "view == holon.flows && viewItem == flow",
           "group": "2_show@1"
+        },
+        {
+          "command": "holon.openGraph",
+          "when": "view == holon.flows && viewItem == flow",
+          "group": "2_show@2"
+        },
+        {
+          "command": "holon.deployFlow",
+          "when": "view == holon.flows && viewItem == flow",
+          "group": "2_show@3"
         }
       ]
     },

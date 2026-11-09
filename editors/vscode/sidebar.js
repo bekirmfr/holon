@@ -1,12 +1,15 @@
 // The Holon sidebar: the deployments and the saved flows of the server `holon.consoleUrl` names,
 // as VS Code's own views, and what they open as VS Code's own editors and panels: a deployment's
-// history and a flow's text as editors, a flow's graph as a panel, and run, pause and stop through
-// the command. Every read is the `holon` command with --server and --json, so the server's answers
-// are the CLI's own; a sign-in is kept here, in SecretStorage, and passed to the command as
-// HOLON_TOKEN, the way a script signs in.
+// history as a read-only editor, a flow's text as an editor that saves back to the server, a flow's
+// graph as a panel, and run, pause and stop through the command. Every read and write is the `holon`
+// command with --server, so the server's answers are the CLI's own; a sign-in is kept here, in
+// SecretStorage, and passed to the command as HOLON_TOKEN, the way a script signs in.
 
 const vscode = require("vscode");
 const childProcess = require("node:child_process");
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
 
 const DEFAULT_SERVER = "http://127.0.0.1:7420";
 const SCHEME = "holon";
@@ -25,8 +28,8 @@ let server;
 let deployments;
 /** @type {Listing | undefined} */
 let flows;
-/** @type {HolonText | undefined} */
-let textProvider;
+/** @type {HolonFiles | undefined} */
+let flowFiles;
 /** @type {Map<string, vscode.WebviewPanel>} */
 const graphs = new Map();
 
@@ -127,29 +130,114 @@ function flowItem(f) {
 /** The name a command was given: a name, or the tree item it was run on. */
 const named = (arg) => (typeof arg === "string" ? arg : arg.slug);
 
-/** A deployment's history, or a saved flow's text, as an editor: `holon:/history/<slug>` and
- *  `holon:/flow/<name>.holon.ts` (the last one highlighted as TypeScript, as a file is). */
-class HolonText {
+/** The server's history and flows as files. `holon:/flow/<name>.holon.ts` is a saved flow's text,
+ *  highlighted as TypeScript: saving it writes the flow back to the server (`holon flows save`), and a
+ *  flow someone else saved asks first. `holon:/history/<slug>` is a deployment's history, read-only. */
+class HolonFiles {
   constructor() {
     this.changed = new vscode.EventEmitter();
-    this.onDidChange = this.changed.event;
+    this.onDidChangeFile = this.changed.event;
   }
 
-  async provideTextDocumentContent(uri) {
-    const [, kind, ...rest] = uri.path.split("/");
-    const name = rest.join("/");
+  watch() {
+    return new vscode.Disposable(() => {});
+  }
+
+  async stat(uri) {
+    const text = await this.read(uri);
+    return { type: vscode.FileType.File, ctime: 0, mtime: Date.now(), size: Buffer.byteLength(text) };
+  }
+
+  readDirectory() {
+    return [];
+  }
+
+  createDirectory() {
+    throw vscode.FileSystemError.NoPermissions();
+  }
+
+  async readFile(uri) {
+    return Buffer.from(await this.read(uri));
+  }
+
+  async read(uri) {
+    const [, kind, file] = uri.path.split("/");
     try {
-      if (kind === "history") return await holon(["history", name]);
-      return await holon(["flows", "show", name.replace(/\.holon\.ts$/, "")]);
+      if (kind === "history") return await holon(["history", file]);
+      return await holon(["flows", "show", file.replace(/\.holon\.ts$/, "")]);
     } catch (e) {
-      return `${e.message}\n`;
+      throw vscode.FileSystemError.Unavailable(e.message);
     }
   }
+
+  async writeFile(uri, content) {
+    const [, kind, file] = uri.path.split("/");
+    if (kind !== "flow") throw vscode.FileSystemError.NoPermissions(uri);
+    const name = file.replace(/\.holon\.ts$/, "");
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "holon-save-"));
+    const saving = path.join(dir, `${name}.holon.ts`);
+    fs.writeFileSync(saving, content);
+    try {
+      await saveFlow(saving, name, false).catch(async (e) => {
+        const by = e.message.match(/is saved by ([^:]+):/);
+        if (!by) throw vscode.FileSystemError.Unavailable(e.message);
+        const answer = await vscode.window.showWarningMessage(`Replace the flow "${name}", saved by ${by[1]}?`, { modal: true }, "Replace");
+        if (answer !== "Replace") throw vscode.FileSystemError.Unavailable(`"${name}" stays as ${by[1]} saved it`);
+        await saveFlow(saving, name, true).catch((again) => {
+          throw vscode.FileSystemError.Unavailable(again.message);
+        });
+      });
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+    refreshAll();
+  }
+
+  delete() {
+    throw vscode.FileSystemError.NoPermissions();
+  }
+
+  rename() {
+    throw vscode.FileSystemError.NoPermissions();
+  }
+}
+
+/** Deploys a saved flow as a deployment of the same name: its text is compiled and sent, as the
+ *  editor's Deploy does. What it asks for that a person hasn't granted yet is shown, and approved on
+ *  a yes (`holon deploy --approve`). */
+async function deployFlow(arg) {
+  const name = named(arg);
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "holon-deploy-"));
+  const file = path.join(dir, `${name}.holon.ts`);
+  try {
+    await holon(["flows", "show", name, "--out", file]);
+    await deploy(file, name, false).catch(async (e) => {
+      if (!/needs approval/.test(e.message)) throw e;
+      const answer = await vscode.window.showWarningMessage(`Deploy "${name}"? It asks for:\n\n${e.message}`, { modal: true }, "Approve and deploy");
+      if (answer !== "Approve and deploy") return;
+      await deploy(file, name, true);
+    });
+    vscode.window.setStatusBarMessage(`Holon: ${name} deployed`, 4000);
+  } catch (e) {
+    vscode.window.showErrorMessage(`Holon: ${e.message}`);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+  refreshAll();
+}
+
+function deploy(file, name, approve) {
+  return holon(["deploy", file, "--slug", name, ...(approve ? ["--approve"] : [])]);
+}
+
+/** Saves a flow file under `name` on the server; with `replace`, over a flow someone else saved. */
+function saveFlow(file, name, replace) {
+  return holon(["flows", "save", file, "--name", name, ...(replace ? ["--replace"] : [])]);
 }
 
 async function openText(kind, name) {
   const uri = vscode.Uri.from({ scheme: SCHEME, path: `/${kind}/${name}${kind === "flow" ? ".holon.ts" : ""}` });
-  textProvider.changed.fire(uri);
+  flowFiles.changed.fire([{ type: vscode.FileChangeType.Changed, uri }]);
   const doc = await vscode.workspace.openTextDocument(uri);
   await vscode.window.showTextDocument(doc, { preview: true });
 }
@@ -348,13 +436,13 @@ function register(context) {
   secrets = context.secrets;
   deployments = new Listing(async () => (await holon(["deployments"], { json: true })).deployments.map(deploymentItem), "No deployments yet. `holon deploy <file>` puts a flow here.");
   flows = new Listing(async () => (await holon(["flows"], { json: true })).map(flowItem), "No saved flows yet. `holon flows save <file>` saves one.");
-  textProvider = new HolonText();
+  flowFiles = new HolonFiles();
 
   const timer = setInterval(refreshAll, REFRESH_MS);
   context.subscriptions.push(
     vscode.window.createTreeView("holon.deployments", { treeDataProvider: deployments }),
     vscode.window.createTreeView("holon.flows", { treeDataProvider: flows }),
-    vscode.workspace.registerTextDocumentContentProvider(SCHEME, textProvider),
+    vscode.workspace.registerFileSystemProvider(SCHEME, flowFiles, { isCaseSensitive: true }),
     vscode.workspace.onDidChangeConfiguration((e) => {
       if (e.affectsConfiguration("holon.consoleUrl")) refreshAll();
     }),
@@ -363,6 +451,7 @@ function register(context) {
     vscode.commands.registerCommand("holon.showHistory", (arg) => openText("history", named(arg))),
     vscode.commands.registerCommand("holon.showFlow", (arg) => openText("flow", named(arg))),
     vscode.commands.registerCommand("holon.openGraph", showGraph),
+    vscode.commands.registerCommand("holon.deployFlow", deployFlow),
     vscode.commands.registerCommand("holon.run", (arg) => lifecycle("run", arg)),
     vscode.commands.registerCommand("holon.pause", (arg) => lifecycle("pause", arg)),
     vscode.commands.registerCommand("holon.stop", (arg) => lifecycle("stop", arg)),

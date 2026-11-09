@@ -82,6 +82,14 @@ async function sidebarChecks() {
   await vscode.commands.executeCommand("holon.openGraph", item);
   const graph = await eventually(() => vscode.window.tabGroups.all.flatMap((group) => group.tabs).find((tab) => tab.label === "Graph: hello"), "the graph panel");
   assert.ok(graph.input instanceof vscode.TabInputWebview);
+
+  // Editable: an edit saved from the editor is written to the server, and read back from it.
+  const at = text.getText().indexOf("Hello");
+  const edit = new vscode.WorkspaceEdit();
+  edit.replace(text.uri, new vscode.Range(text.positionAt(at), text.positionAt(at + "Hello".length)), "Howdy");
+  assert.ok(await vscode.workspace.applyEdit(edit));
+  assert.ok(await text.save(), "the flow saved to the server");
+  assert.match(Buffer.from(await vscode.workspace.fs.readFile(text.uri)).toString(), /Howdy/);
 }
 
 /** The checks; what failed is written to the workspace's failure.txt for run.js to print, since
