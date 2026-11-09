@@ -15,6 +15,18 @@ export type FlowTab = (typeof FLOW_TABS)[number];
 
 export const LIBRARY_TABS = ["tutorials", "samples", "market"] as const;
 export type LibraryTab = (typeof LIBRARY_TABS)[number];
+/** The Resources page's tabs, by what each is called: `#resources` is its databases. */
+export const RESOURCES_TABS = ["databases", "folders", "mail", "feeds", "secrets", "host", "who-may"] as const;
+export type ResourcesTab = (typeof RESOURCES_TABS)[number];
+export const RESOURCES_LABELS: Record<ResourcesTab, string> = {
+  databases: "Databases",
+  folders: "Folders",
+  mail: "Mail",
+  feeds: "Feeds",
+  secrets: "Secrets",
+  host: "Host and storage",
+  "who-may": "Who may touch what",
+};
 
 export type Route =
   | { kind: "overview" }
@@ -32,7 +44,7 @@ export type Route =
    *  `#editor.<slug>` to edit it, `.view` to view its deployment, `.run-<seq>` on a run. */
   | { kind: "editor"; slug: string | null; view: boolean; seq: number | null }
   | { kind: "library"; tab: LibraryTab }
-  | { kind: "resources"; tab: string | null }
+  | { kind: "resources"; tab: ResourcesTab }
   | { kind: "people"; tab: string | null }
   | { kind: "policy" }
   | { kind: "start" }
@@ -106,7 +118,10 @@ export function parse(hash: string): Route {
       const tab = p[1] ?? "samples";
       return (LIBRARY_TABS as readonly string[]).includes(tab) ? done({ kind: "library", tab: tab as LibraryTab }, p.length === 1 ? 1 : 2) : notFound;
     }
-    case "resources":
+    case "resources": {
+      const tab = p[1] ?? "databases";
+      return (RESOURCES_TABS as readonly string[]).includes(tab) ? done({ kind: "resources", tab: tab as ResourcesTab }, p.length === 1 ? 1 : 2) : notFound;
+    }
     case "people": {
       const tab = tabOf(p[1]);
       if (p.length > 1 && tab === null) return notFound;
@@ -143,6 +158,7 @@ function tokens(r: Route): string {
     case "library":
       return r.tab === "samples" ? "library" : `library.${r.tab}`;
     case "resources":
+      return r.tab === "databases" ? "resources" : `resources.${r.tab}`;
     case "people":
       return r.tab === null ? r.kind : `${r.kind}.${r.tab}`;
     case "docs":
@@ -183,6 +199,7 @@ export function parentOf(r: Route): Route | null {
     case "library":
       return r.tab === "samples" ? { kind: "overview" } : { kind: "library", tab: "samples" };
     case "resources":
+      return r.tab === "databases" ? { kind: "overview" } : { kind: "resources", tab: "databases" };
     case "people":
       return r.tab === null ? { kind: "overview" } : { kind: r.kind, tab: null };
     case "docs":
@@ -216,7 +233,7 @@ export function labelOf(r: Route): string {
     case "library":
       return r.tab === "samples" ? "Library" : r.tab;
     case "resources":
-      return r.tab ?? "Resources";
+      return r.tab === "databases" ? "Resources" : RESOURCES_LABELS[r.tab];
     case "people":
       return r.tab ?? "People and access";
     case "policy":

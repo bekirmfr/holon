@@ -10,7 +10,7 @@
 
 import { appendFileSync, readFileSync } from "node:fs";
 import { expect, FOLDERS, PORTS, RUN_DIR, SAMPLE_SHIFT, SERVER, test } from "./fixtures";
-import { flowRow, gotoPage, navLink, openSample, still, openDeployPanel, deploy, settingsSayPort, dropFromPalette, viewNewestRun } from "./helpers";
+import { flowRow, gotoPage, navLink, openSample, resourcesTab, still, openDeployPanel, deploy, settingsSayPort, dropFromPalette, viewNewestRun } from "./helpers";
 
 const ATLAS_NOTES = "Atlas notes (a MongoDB database)";
 
@@ -167,6 +167,7 @@ test("shared-key reads the server's secret, which may go only where an admin sai
   await expect(page.getByText(`the server's secret "ops_api_key" may go only to https://httpbin.dev, and this flow sends it to https://postman-echo.com`)).toBeVisible();
   // The admin's list says where it may go.
   await gotoPage(page, "resources");
+  await resourcesTab(page, "Secrets");
   await expect(page.getByLabel("server secret ops_api_key")).toContainText("may go only to https://httpbin.dev");
 });
 
@@ -1390,6 +1391,7 @@ test("rolling-log keeps only its newest 5 runs, as its deploy settings ask, whil
   // The admin page's storage counts first, and asks before it sweeps anything: cancelled, or
   // with nothing old enough to sweep, it removes nothing.
   await gotoPage(page, "resources");
+  await resourcesTab(page, "Host and storage");
   const store = page.getByText("the store: states and values").locator("..");
   await store.getByRole("button", { name: "sweep…" }).click();
   const asks = page.getByRole("dialog");
@@ -1701,6 +1703,7 @@ test("orders-api places, lists and refunds orders in the database an admin bound
   // Who may touch the shop, under Resources: orders-api, by table, with a link to its page,
   // where its grant changes.
   await gotoPage(page, "resources");
+  await resourcesTab(page, "Who may touch what");
   const shop = page.getByLabel("database shop", { exact: true });
   await expect(shop).toContainText("orders-api");
   await expect(shop).toContainText("writes orders");
@@ -1929,6 +1932,7 @@ test("the admin page's browse… lists the server's folders, and the one chosen 
   const { join } = await import("node:path");
   await page.goto("/");
   await gotoPage(page, "resources");
+  await resourcesTab(page, "Folders");
   // The first listing (the home folder) answers only once a path is typed, as on a slow machine:
   // it mustn't replace what was typed.
   let release = () => {};

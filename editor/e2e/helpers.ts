@@ -22,6 +22,13 @@ export function navLink(page: Page, label: string): Locator {
   return page.getByRole("navigation", { name: "main" }).getByRole("link", { name: label, exact: true });
 }
 
+/** Resources' tab `label` (Databases, Folders, Mail, Feeds, Secrets, Host and storage, Who may touch what), from Resources. */
+export async function resourcesTab(page: Page, label: string): Promise<void> {
+  const tabs = page.getByRole("navigation", { name: "resources tabs" });
+  await tabs.getByRole("link", { name: label, exact: true }).click();
+  await expect(tabs.getByRole("link", { name: label, exact: true })).toHaveAttribute("aria-current", "page");
+}
+
 /** Go to `name` from the side nav, as a person would. */
 export async function gotoPage(page: Page, name: MenuPage) {
   await menuEntry(page, name).click();

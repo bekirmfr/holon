@@ -26,6 +26,7 @@ const PLACES = [
   "library.market",
   "resources",
   "resources.folders",
+  "resources.who-may",
   "people",
   "people.tokens",
   "policy",

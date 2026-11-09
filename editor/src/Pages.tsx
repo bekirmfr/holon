@@ -56,8 +56,9 @@ export function routeOfPage(p: AppPage): Route {
     case "docs":
       return { kind: "docs", page: null, anchor: null };
     case "resources":
+      return { kind: "resources", tab: "databases" };
     case "people":
-      return { kind: p, tab: null };
+      return { kind: "people", tab: null };
     case "policy":
       return { kind: "policy" };
     case "flow":

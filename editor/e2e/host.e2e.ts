@@ -1,9 +1,9 @@
-// The host's pages (HostPages.tsx), each at an address of its own: a server secret's versions
-// under Resources, rolled back after a dry run; the agents' line under People and access; and
+// The host's pages (HostPages.tsx), each at an address of its own: Resources' tabs, each at its
+// own, and a server secret's versions under Secrets, rolled back after a dry run; the agents' line under People and access; and
 // Policy with what it holds off.
 
 import { expect, test } from "./fixtures";
-import { gotoPage, navLink } from "./helpers";
+import { gotoPage, navLink, resourcesTab } from "./helpers";
 
 test("a server secret's versions, and rolling one back after its dry run", async ({ page }) => {
   const name = `probe_${Date.now().toString(36)}`;
@@ -11,6 +11,8 @@ test("a server secret's versions, and rolling one back after its dry run", async
   await gotoPage(page, "resources");
   await expect(page).toHaveURL(/#resources$/);
   await expect(navLink(page, "Resources")).toHaveAttribute("aria-current", "page");
+  await resourcesTab(page, "Secrets");
+  await expect(page).toHaveURL(/#resources\.secrets$/);
   const bind = async (value: string) => {
     await page.getByLabel("secret name").fill(name);
     await page.getByLabel("secret value").fill(value);
@@ -36,9 +38,16 @@ test("a server secret's versions, and rolling one back after its dry run", async
   await expect(page.getByLabel("secret value")).toHaveAttribute("type", "text");
   await expect(page.getByLabel("secret value")).toHaveAttribute("placeholder", "HOLON_SECRET_STRIPE_KEY");
 
-  // A section has its own address.
-  await page.goto("/#resources.secrets");
-  await expect(page.locator('[data-section="secrets"]')).toBeInViewport();
+  // Each tab has its own address; one the server doesn't serve yet says so.
+  await page.goto("/#resources.who-may");
+  await expect(page.getByLabel("show what")).toBeVisible();
+  await page.goto("/#resources.mail");
+  await expect(page.getByText(/this server binds no mail yet|no mail bound/)).toBeVisible();
+  await resourcesTab(page, "Feeds");
+  await expect(page.getByText(/this server binds no feeds yet|no feeds bound/)).toBeVisible();
+  // Databases come first.
+  await resourcesTab(page, "Databases");
+  await expect(page.getByLabel("database name")).toBeVisible();
 });
 
 test("people and access says how an agent connects; policy says what it holds off", async ({ page }) => {

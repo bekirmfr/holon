@@ -786,7 +786,7 @@ function Canvas({
       ["Library", { kind: "library", tab: "samples" }],
       ...(me.role === "admin"
         ? ([
-            ["Resources", { kind: "resources", tab: null }],
+            ["Resources", { kind: "resources", tab: "databases" }],
             ["People and access", { kind: "people", tab: null }],
             ["Policy", { kind: "policy" }],
           ] as [string, Route][])
@@ -1433,7 +1433,7 @@ function Editor({ me }: { me: Me }) {
       { kind: "flows" },
       { kind: "editor", slug: null, view: false, seq: null },
       { kind: "library", tab: "samples" },
-      { kind: "resources", tab: null },
+      { kind: "resources", tab: "databases" },
       { kind: "people", tab: null },
       { kind: "policy" },
     ];

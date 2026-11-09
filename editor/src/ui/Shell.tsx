@@ -21,7 +21,7 @@ const WORK: Entry[] = [
   { label: "Library", to: { kind: "library", tab: "samples" }, key: 5 },
 ];
 const HOST: Entry[] = [
-  { label: "Resources", to: { kind: "resources", tab: null }, key: 6 },
+  { label: "Resources", to: { kind: "resources", tab: "databases" }, key: 6 },
   { label: "People and access", to: { kind: "people", tab: null }, key: 7 },
   { label: "Policy", to: { kind: "policy" }, key: 8 },
 ];

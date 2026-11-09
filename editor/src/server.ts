@@ -181,6 +181,40 @@ export type DatabaseEntry = {
   lock?: "commit" | "run";
   deployment: string | null;
 };
+/** A list only a newer server serves: null where this one answers its route with a bare 404. */
+async function listedOrNone<T>(url: string): Promise<T[] | null> {
+  const res = await api(url);
+  if (res.status === 404 && !(await res.clone().text()).trim()) return null;
+  return asJson<T[]>(res);
+}
+/** A name flows import as `"mail:<name>"` (`GET /admin/mails`): an SMTP server it sends through, an
+ *  IMAP mailbox it reads, or both. Every source (`smtp`, `imap`, `oauth.source`) is a reference
+ *  (`env:…`, `vault:…`), never a value; `address` is where it points, without login or query. */
+export type MailEntry = {
+  name: string;
+  deployment: string | null;
+  smtp?: string | null;
+  address?: string | null;
+  from?: string | null;
+  to?: string[];
+  mailbox?: { imap: string; address: string; folder: string; done?: string | null; verdict_from?: string | null; every?: string | null } | null;
+  oauth?: { source: string; address: string } | null;
+};
+/** `GET /admin/mails`; null: this server binds no mail. */
+export const listMails = () => listedOrNone<MailEntry>(`${BASE}/admin/mails`);
+/** A name flows listen to as `"feed:<name>"` (`GET /admin/feeds`): a stream of events at `address`.
+ *  `url` and each header's value are sources (`env:…`, `vault:…`), never values. */
+export type FeedEntry = {
+  name: string;
+  deployment: string | null;
+  url: string;
+  address: string;
+  headers?: Record<string, string>;
+  buffer?: number | null;
+  idle?: string | null;
+};
+/** `GET /admin/feeds`; null: this server binds no feeds. */
+export const listFeeds = () => listedOrNone<FeedEntry>(`${BASE}/admin/feeds`);
 /** A database to bind: a SQLite file's path or a connection's source, with the admin's schema to run first (which creates a SQLite file if there is none). */
 export type DatabaseBinding = Pick<DatabaseEntry, "name" | "access" | "deployment" | "lock"> & { path?: string; connection?: string; schema: string | null };
 export const listDatabases = async () => asJson<DatabaseEntry[]>(await api(`${BASE}/admin/databases`));
