@@ -636,6 +636,36 @@ bound to a name, passed to a function or returned from an action is refused.
 of a flow, beside handlers and functions, only `const`s of literals are allowed (`const limit =
 50`); put shared logic in a function.
 
+## WebSockets
+
+```
+route.websocket("/room/:name", {
+  open: (req) => answer,
+  message: (m) => value,
+  close: (c) => { … },
+}, { log: { message: "lazy" } })
+```
+
+A websocket holds the WebSocket connections pages open on its path, on the flow's port beside its
+routes, and runs each block as a handler of its own. One block at least, each written once:
+
+| Block | Runs | `req`, `m`, `c` hold | Answers |
+|---|---|---|---|
+| `open` | as a page opens a connection | the opening request, and `conn`, the connection's id | as a route does: `return ch.subscribe()` accepts and subscribes it to the channel; a `status` of 300 or more refuses it; `status(204)`, or effects alone, accept and send nothing; anything else accepts and is the first message |
+| `message` | for each text the page sends, one at a time, in order | `conn`, `text`, `json`, and the opening's `path`, `params`, `query` | with a value alone, sent back on the connection; nothing sends nothing; `status` and `respond` are refused |
+| `close` | once, when the connection has ended, after its last message | `conn`, `code`, `reason`, and the opening's `path`, `params`, `query` | nobody |
+
+- **The path** is a route's; a websocket whose path matches a GET route's, or another
+  websocket's, is refused: a path is a page or a connection.
+- **`conn`** is the same in each run of a connection: the key to keep what the flow knows of it.
+- **To reach the other connections,** send on a channel they are subscribed to: a run answers
+  only its own.
+- **The `log` option** is one level for every block, or each block's own: `{ log: "lazy" }`,
+  `{ log: { message: "lazy" } }`.
+
+The host's side (pings, limits, the codes it closes with, what a new version does to open
+connections) is in [WebSockets](../guides/websockets.md).
+
 ## Clocks, files and actions
 
 Beside its routes, a flow may have other handlers, each starting runs of its own:

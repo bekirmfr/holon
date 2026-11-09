@@ -77,9 +77,50 @@ declare module "holon" {
     put(path: Path, handler: RouteHandler, options?: RouteOptions): void
     patch(path: Path, handler: RouteHandler, options?: RouteOptions): void
     delete(path: Path, handler: RouteHandler, options?: RouteOptions): void
+    /** WebSocket connections on the path, a run for each block's event: one block at least. */
+    websocket(path: Path, blocks: WebSocketBlocks, options?: WebSocketOptions): void
   }
   /** A route: `route.post("/orders", (req) => …)`. The most specific path wins. */
   export const route: Routes
+
+  /** A connection's opening request, with the connection's id. */
+  export interface SocketOpen extends Request {
+    /** The connection's id, 16 hex digits: the same on its messages and its close. */
+    conn: string
+  }
+  /** A text frame the connection sent. */
+  export interface SocketMessage {
+    conn: string
+    /** The frame's text. */
+    text: string
+    /** The text parsed as JSON. */
+    json: any
+    path: string
+    /** The opening request's path parts and query. */
+    params: Record<string, string>
+    query: Record<string, string>
+  }
+  /** How the connection ended: the browser's code and reason, the host's, or 1006 when it dropped. */
+  export interface SocketClose {
+    conn: string
+    code: number
+    reason: string
+    path: string
+    params: Record<string, string>
+    query: Record<string, string>
+  }
+  /** A websocket's blocks. `open` answers as a route does (a subscription, a first message, or a
+   *  status of 300 or more to refuse it); `message` with the value sent back, if any; `close`
+   *  nobody. */
+  export interface WebSocketBlocks {
+    open?: (req: SocketOpen) => any
+    message?: (m: SocketMessage) => any
+    close?: (c: SocketClose) => void
+  }
+  export interface WebSocketOptions {
+    /** One level for every block, or each block's own. */
+    log?: Log | { open?: Log; message?: Log; close?: Log }
+  }
 
   /** Runs every `period`; `now` is the tick's time, in seconds since the epoch. */
   export function every(period: Duration, handler: (now: number) => any, options?: { log?: Log }): void
@@ -424,6 +465,9 @@ declare module "holon" {
     channel_keep?: number
     channel_buffer?: number
     max_subscribers?: number
+    max_websockets?: number
+    max_message_bytes?: number
+    messages_per_second?: number
   }
 
   /**

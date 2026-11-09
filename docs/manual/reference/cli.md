@@ -103,8 +103,9 @@ it may:
   receive requests
 ```
 
-A flow that touches nothing outside says `it only computes: it reads and changes nothing
-outside`. Each mistake goes to stderr as `file:line:col: message`, with the line and a caret
+A websocket is listed under its server with the blocks it has, `WebSocket /room/:name: open,
+message, close`. A flow that touches nothing outside says `it only computes: it reads and changes
+nothing outside`. Each mistake goes to stderr as `file:line:col: message`, with the line and a caret
 under the place, and the exit code is 1.
 
 ### `holon show`

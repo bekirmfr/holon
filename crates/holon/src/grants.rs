@@ -29,6 +29,7 @@ pub(crate) fn recheck(dep: &mut Deployment, caps: &Capabilities, policy: &Policy
         (Some(why), Status::Running) => {
             let _ = dep.life.pause();
             dep.channels.close();
+            dep.sockets.close_all(crate::websockets::PAUSED);
             dep.grant.paused = true;
             eprintln!("holon: paused: {why}");
             let what = format!("paused: {why}");

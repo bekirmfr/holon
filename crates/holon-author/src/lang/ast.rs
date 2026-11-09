@@ -119,6 +119,7 @@ pub enum Item {
     OnMail(OnMailDef),
     OnFeed(OnFeedDef),
     OnQueue(OnQueueDef),
+    WebSocket(WebSocketDef),
     Action(ActionDef),
     Stmt(Stmt),
 }
@@ -276,6 +277,27 @@ pub struct RouteDef {
     pub request: Name,
     pub resumes: Option<Name>,
     /// `{ log: "lazy" }` or `"unrecorded"`: how its runs are recorded (strict without one).
+    pub log: Option<Name>,
+    pub body: Vec<Stmt>,
+    pub span: Span,
+}
+
+/// `route.websocket("/room/:name", { open: (req) => …, message: (m) => …, close: (c) => … })`:
+/// the connections opened on a path, a run for each block's event (host-capabilities L4 §5.12).
+#[derive(Clone, Debug, PartialEq)]
+pub struct WebSocketDef {
+    pub path: Name,
+    /// Its blocks as written, one of each at most.
+    pub blocks: Vec<SocketBlockDef>,
+    pub span: Span,
+}
+
+/// One block of a websocket: `open`, `message` or `close`, its parameter what it received.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SocketBlockDef {
+    pub on: Name,
+    pub param: Name,
+    /// Its level, from the websocket's `{ log }` (strict without one).
     pub log: Option<Name>,
     pub body: Vec<Stmt>,
     pub span: Span,

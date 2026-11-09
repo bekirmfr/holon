@@ -124,9 +124,13 @@ pub(crate) fn run(args: &[String]) -> i32 {
             println!("    - {}", agent::describe_sending(cap, &plan.sent));
         }
     }
-    // What starts its runs: its routes, else its other handlers (`every 10s`, `action reset`).
+    // What starts its runs: its routes and its websockets' blocks (`WebSocket /room/:name open`),
+    // else its other handlers (`every 10s`, `action reset`).
     let handlers: Vec<&String> = plan.document["trace"].as_object().map(|t| t.keys().collect()).unwrap_or_default();
-    for r in if plan.routes.is_empty() { handlers } else { plan.routes.iter().collect() } {
+    let mut sockets: Vec<&String> = handlers.iter().copied().filter(|h| h.starts_with("WebSocket ")).collect();
+    // Each websocket's blocks in the order they run: open, message, close.
+    sockets.sort_by_key(|h| h.rsplit_once(' ').map(|(path, on)| (path.to_string(), ["open", "message", "close"].iter().position(|o| *o == on))));
+    for r in if plan.routes.is_empty() { handlers.clone() } else { plan.routes.iter().chain(sockets).collect() } {
         println!("  {r}");
     }
     0

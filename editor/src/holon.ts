@@ -186,6 +186,7 @@ export type WCapability =
   | { FileArrival: string }
   | { MailArrival: string }
   | { Action: string }
+  | { WebSocket: string }
   | "SecretAccess"
   | { SecretRead: string }
   | { Await: string }

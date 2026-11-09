@@ -26,9 +26,14 @@
 //! - An **action handler** is a composite from what its caller sent to its answer (an envelope, as
 //!   an endpoint's response is, whose body is the answer), then its effects, carrying
 //!   `declare = "action"` and `name`: a person runs it by name through Holon, never the network.
-//! - A **server** is a composite whose children are endpoints, clock handlers, file handlers, mail handlers, feed handlers and action handlers, with no wiring
-//!   and no ports, carrying `declare = "server"`, and `port` when it has a route. Its hash is the
-//!   hash of the whole flow.
+//! - A **websocket block** is a composite from its record (the opening request, a message, or the
+//!   connection's end) to its answer, then its effects, as an endpoint is, carrying
+//!   `declare = "websocket"`, `path` and `on` (`open`, `message` or `close`): the host runs it when
+//!   a connection opens on the path, for each message on it, and when it ends (host-capabilities L4
+//!   §5.12.14).
+//! - A **server** is a composite whose children are endpoints, clock handlers, file handlers, mail handlers, feed handlers, websocket blocks and action handlers, with no wiring
+//!   and no ports, carrying `declare = "server"`, and `port` when it has a route or a websocket. Its
+//!   hash is the hash of the whole flow.
 //!
 //! Nothing here changes the encoding: the markers are ordinary frozen params. This module is the
 //! one place that reads them, used by the host (to listen and route) and the editor (to check a
@@ -191,6 +196,56 @@ pub fn queue_label(queue: &str) -> String {
     format!("on queue {queue}")
 }
 
+/// What a websocket's blocks run on, in the order they are written: the connection opening, each
+/// message, its end.
+pub const SOCKET_BLOCKS: &[&str] = &["open", "message", "close"];
+
+/// One block of a websocket: a run when its connection opens, for each message on it, or when it
+/// ends.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SocketBlock {
+    /// How the log and the editor name it: `WebSocket /room/:name message`.
+    pub label: String,
+    /// The block's unit (the server's child), which a run evaluates with the block's record.
+    pub handler: Hash,
+    /// How its runs are recorded.
+    pub log: LogLevel,
+}
+
+/// One websocket of a server, as declared: a path a browser opens a WebSocket on, and its blocks,
+/// at least one (host-capabilities L4 §5.12.14).
+#[derive(Clone, Debug, PartialEq)]
+pub struct WebSocket {
+    /// The path exactly as declared, e.g. `/room/:name`.
+    pub path: String,
+    pub segments: Vec<Segment>,
+    pub open: Option<SocketBlock>,
+    pub message: Option<SocketBlock>,
+    pub close: Option<SocketBlock>,
+}
+
+impl WebSocket {
+    /// Its block that runs on `on` (`open`, `message` or `close`), if it has one.
+    pub fn block(&self, on: &str) -> Option<&SocketBlock> {
+        match on {
+            "open" => self.open.as_ref(),
+            "message" => self.message.as_ref(),
+            "close" => self.close.as_ref(),
+            _ => None,
+        }
+    }
+
+    /// Its blocks, as written: open, message, close.
+    pub fn blocks(&self) -> impl Iterator<Item = &SocketBlock> + '_ {
+        [&self.open, &self.message, &self.close].into_iter().flatten()
+    }
+}
+
+/// A websocket block's label, as the log keeps it: `WebSocket /room/:name message`.
+pub fn socket_label(path: &str, on: &str) -> String {
+    format!("WebSocket {path} {on}")
+}
+
 /// One action handler of a server, as declared: run by name.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Action {
@@ -213,6 +268,7 @@ pub struct Server {
     pub mails: Vec<MailHandler>,
     pub feeds: Vec<FeedHandler>,
     pub queues: Vec<QueueHandler>,
+    pub websockets: Vec<WebSocket>,
     pub actions: Vec<Action>,
 }
 
@@ -231,8 +287,9 @@ impl Server {
         let mails = self.mails.iter().map(|m| (m.label.clone(), m.log, m.handler));
         let feeds = self.feeds.iter().map(|f| (f.label.clone(), f.log, f.handler));
         let queues = self.queues.iter().map(|q| (q.label.clone(), q.log, q.handler));
+        let sockets = self.websockets.iter().flat_map(|w| w.blocks().map(|b| (b.label.clone(), b.log, b.handler)));
         let actions = self.actions.iter().map(|a| (a.label.clone(), a.log, a.handler));
-        routes.chain(clocks).chain(files).chain(mails).chain(feeds).chain(queues).chain(actions)
+        routes.chain(clocks).chain(files).chain(mails).chain(feeds).chain(queues).chain(sockets).chain(actions)
     }
 
     /// Its action named `name`, if it has one.
@@ -324,6 +381,21 @@ pub fn read_queue_handler(unit: &Unit) -> Option<String> {
     crate::kind::ident(&unit.params, "queue")
 }
 
+/// A websocket block's path and what it runs on, if `unit` is one: `declare = "websocket"`, a
+/// route's path, `on` open, message or close, a composite of one record input with an answer.
+pub fn read_websocket(unit: &Unit) -> Option<(String, &'static str)> {
+    if !matches!(unit.body, UnitBody::Composite { .. }) || declaration_of(unit) != Some("websocket") {
+        return None;
+    }
+    if !matches!(unit.inputs.as_slice(), [p] if crate::compatible(&Type::Record, &p.ty)) || unit.outputs.is_empty() {
+        return None;
+    }
+    let path = frozen(unit, "path")?;
+    parse_path(path)?;
+    let on = SOCKET_BLOCKS.iter().find(|b| Some(**b) == frozen(unit, "on"))?;
+    Some((path.to_string(), on))
+}
+
 /// Why a unit is not a well-formed server. `child` is the index of the offending endpoint.
 #[derive(Clone, Debug, PartialEq)]
 pub enum DeclError {
@@ -349,7 +421,13 @@ pub enum DeclError {
     DuplicateQueueHandler { queue: String },
     /// Two actions of one name.
     DuplicateAction { name: String },
-    /// No route, clock, file, mail, feed or queue handler or action: nothing would start a run.
+    /// Two blocks of one websocket that run on the same thing.
+    DuplicateSocketBlock { label: String },
+    /// A websocket's path that takes the requests another websocket's or a GET route's does: a
+    /// path is a page or a connection. `other` is its label, `WebSocket /a/:y` or `GET /a/:y`.
+    WebSocketClash { path: String, other: String },
+    /// No route, clock, file, mail, feed or queue handler, websocket or action: nothing would start
+    /// a run.
     NoHandlers,
     /// A handler's `log` param isn't a level.
     BadLogLevel { child: u32, value: String },
@@ -383,6 +461,7 @@ pub fn read_server(unit: &Unit, resolver: &impl Resolver) -> Result<Server, Decl
     let mut mails: Vec<MailHandler> = Vec::new();
     let mut feeds: Vec<FeedHandler> = Vec::new();
     let mut queues: Vec<QueueHandler> = Vec::new();
+    let mut websockets: Vec<WebSocket> = Vec::new();
     let mut actions: Vec<Action> = Vec::new();
     for (i, hash) in children.iter().enumerate() {
         let child = i as u32;
@@ -428,6 +507,31 @@ pub fn read_server(unit: &Unit, resolver: &impl Resolver) -> Result<Server, Decl
             queues.push(QueueHandler { label: queue_label(&queue), queue, handler: *hash, log });
             continue;
         }
+        if declaration_of(endpoint) == Some("websocket") {
+            let (path, on) = read_websocket(endpoint).ok_or(DeclError::BadEndpointShape { child })?;
+            let segments = parse_path(&path).expect("read_websocket parsed it");
+            let at = match websockets.iter().position(|w| w.path == path) {
+                Some(at) => at,
+                None => {
+                    if let Some(other) = websockets.iter().find(|w| same_requests(&w.segments, &segments)) {
+                        return Err(DeclError::WebSocketClash { path, other: format!("WebSocket {}", other.path) });
+                    }
+                    websockets.push(WebSocket { path: path.clone(), segments, open: None, message: None, close: None });
+                    websockets.len() - 1
+                }
+            };
+            let label = socket_label(&path, on);
+            let slot = match on {
+                "open" => &mut websockets[at].open,
+                "message" => &mut websockets[at].message,
+                _ => &mut websockets[at].close,
+            };
+            if slot.is_some() {
+                return Err(DeclError::DuplicateSocketBlock { label });
+            }
+            *slot = Some(SocketBlock { label, handler: *hash, log });
+            continue;
+        }
         if declaration_of(endpoint) == Some("action") {
             let name = read_action(endpoint).ok_or(DeclError::BadEndpointShape { child })?;
             if actions.iter().any(|a| a.name == name) {
@@ -452,18 +556,26 @@ pub fn read_server(unit: &Unit, resolver: &impl Resolver) -> Result<Server, Decl
         };
         routes.push(Route { method, path, segments, endpoint: *hash, resume, log });
     }
-    if routes.is_empty() && clocks.is_empty() && files.is_empty() && mails.is_empty() && feeds.is_empty() && queues.is_empty() && actions.is_empty() {
+    if routes.is_empty() && clocks.is_empty() && files.is_empty() && mails.is_empty() && feeds.is_empty() && queues.is_empty() && websockets.is_empty() && actions.is_empty() {
         return Err(DeclError::NoHandlers);
     }
-    // A port only for a server with a route: a flow of clocks, files and actions listens on none.
+    // A path is a page or a connection: a GET route's never a websocket's.
+    for w in &websockets {
+        if let Some(r) = routes.iter().find(|r| r.method == "GET" && same_requests(&r.segments, &w.segments)) {
+            return Err(DeclError::WebSocketClash { path: w.path.clone(), other: format!("GET {}", r.path) });
+        }
+    }
+    // A port only for a server with a route or a websocket: a flow of clocks, files and actions
+    // listens on none.
+    let listens = !routes.is_empty() || !websockets.is_empty();
     let port = match frozen(unit, "port") {
-        None if routes.is_empty() => None,
+        None if !listens => None,
         text => match text.unwrap_or("").parse::<u16>() {
-            Ok(p) if p != 0 && !routes.is_empty() => Some(p),
+            Ok(p) if p != 0 && listens => Some(p),
             _ => return Err(DeclError::BadPort(text.unwrap_or("").to_string())),
         },
     };
-    Ok(Server { port, routes, clocks, files, mails, feeds, queues, actions })
+    Ok(Server { port, routes, clocks, files, mails, feeds, queues, websockets, actions })
 }
 
 /// Why a unit is not a well-formed endpoint.
@@ -599,6 +711,13 @@ pub fn match_route<'a>(
     let routes: Vec<&Route> = server.routes.iter().filter(|r| r.method == method).collect();
     let (i, params) = pick_path(routes.iter().map(|r| r.segments.as_slice()), request_path)?;
     Some((routes[i], params))
+}
+
+/// The websocket a connection opened on `request_path` goes to, with its path params, as
+/// [`pick_path`] picks among the server's websockets.
+pub fn match_websocket<'a>(server: &'a Server, request_path: &str) -> Option<(&'a WebSocket, BTreeMap<String, String>)> {
+    let (i, params) = pick_path(server.websockets.iter().map(|w| w.segments.as_slice()), request_path)?;
+    Some((&server.websockets[i], params))
 }
 
 #[cfg(test)]
@@ -890,6 +1009,69 @@ mod tests {
             let f = file_handler(&mut r, bad);
             assert_eq!(read_server(&server("80", vec![e, f]), &r), Err(DeclError::BadEndpointShape { child: 1 }), "{bad:?}");
         }
+    }
+
+    fn socket_block(r: &mut MapResolver, path: &str, on: &str) -> Hash {
+        let h = r.insert(handler()).unwrap();
+        r.insert(Unit {
+            body: UnitBody::Composite {
+                children: vec![h],
+                edges: vec![
+                    Edge { from_child: BOUNDARY, from_port: 0, to_child: 0, to_port: 0 },
+                    Edge { from_child: 0, from_port: 0, to_child: BOUNDARY, to_port: 0 },
+                ],
+            },
+            params: vec![Param::frozen("declare", "websocket"), Param::frozen("path", path), Param::frozen("on", on)],
+            inputs: vec![Port { name: "request".into(), ty: Type::Record }],
+            outputs: vec![Port { name: "response".into(), ty: Type::Any }],
+        })
+        .unwrap()
+    }
+
+    /// A websocket's blocks are children beside the endpoints, gathered by their path; each is a
+    /// handler of its own, and the websocket a capability of its own (host-capabilities L4
+    /// §5.12.14).
+    #[test]
+    fn a_server_holds_websockets_their_blocks_by_path() {
+        let mut r = MapResolver::new();
+        let (open, message, close) = (socket_block(&mut r, "/room/:name", "open"), socket_block(&mut r, "/room/:name", "message"), socket_block(&mut r, "/room/:name", "close"));
+        let echo = socket_block(&mut r, "/echo", "message");
+        let s = read_server(&server("8132", vec![open, message, echo, close]), &r).unwrap();
+        assert_eq!(s.port, Some(8132), "a websocket listens, as a route does");
+        let got: Vec<(&str, Vec<&str>)> = s.websockets.iter().map(|w| (w.path.as_str(), w.blocks().map(|b| b.label.as_str()).collect())).collect();
+        assert_eq!(
+            got,
+            [
+                ("/room/:name", vec!["WebSocket /room/:name open", "WebSocket /room/:name message", "WebSocket /room/:name close"]),
+                ("/echo", vec!["WebSocket /echo message"]),
+            ]
+        );
+        assert_eq!(s.websockets[1].block("message").map(|b| b.handler), Some(echo));
+        assert!(s.websockets[1].block("open").is_none());
+        assert_eq!(s.handlers().map(|(label, _, _)| label).filter(|l| l.starts_with("WebSocket")).count(), 4);
+        let (w, params) = match_websocket(&s, "/room/ada").unwrap();
+        assert_eq!((w.path.as_str(), params.get("name").map(String::as_str)), ("/room/:name", Some("ada")));
+        assert!(match_websocket(&s, "/room").is_none());
+
+        let alone = server("8132", vec![echo]);
+        let caps = crate::capabilities(&alone, &r);
+        assert!(caps.contains(crate::Capability::WebSocket("/echo".into())));
+        assert!(!caps.contains(crate::Capability::NetworkIngress), "its own item says it listens");
+
+        // One block of each per websocket; a path is a page or a connection, and two spellings of
+        // one path are one clash.
+        assert_eq!(read_server(&server("80", vec![open, open]), &r), Err(DeclError::DuplicateSocketBlock { label: "WebSocket /room/:name open".into() }));
+        let page = endpoint(&mut r, "GET", "/room/:who");
+        assert_eq!(read_server(&server("80", vec![page, open]), &r), Err(DeclError::WebSocketClash { path: "/room/:name".into(), other: "GET /room/:who".into() }));
+        let post = endpoint(&mut r, "POST", "/room/:who");
+        assert!(read_server(&server("80", vec![post, open]), &r).is_ok(), "a POST is no page");
+        let other = socket_block(&mut r, "/room/{who}", "message");
+        assert_eq!(read_server(&server("80", vec![open, other]), &r), Err(DeclError::WebSocketClash { path: "/room/{who}".into(), other: "WebSocket /room/:name".into() }));
+        for (path, on) in [("/a", "upgrade"), ("a", "open"), ("/a/:x/:x", "message")] {
+            let bad = socket_block(&mut r, path, on);
+            assert_eq!(read_server(&server("80", vec![bad]), &r), Err(DeclError::BadEndpointShape { child: 0 }), "{path} {on}");
+        }
+        assert_eq!(read_server(&Unit { params: vec![Param::frozen("declare", "server")], ..server("", vec![echo]) }, &r), Err(DeclError::BadPort(String::new())));
     }
 
     #[test]

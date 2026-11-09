@@ -25,6 +25,7 @@ use holon_host::Limits;
 use serde::{Deserialize, Serialize};
 
 use crate::channels::ChannelLimits;
+use crate::websockets::SocketLimits;
 use crate::outbound::Outbound;
 use crate::to_hex;
 
@@ -171,7 +172,9 @@ fn numbers_to_databases(base: &DbLimits, numbers: &BTreeMap<String, u64>) -> DbL
 }
 
 /// The limits as numbers by name: the request-run limits, the clock run's budget, the
-/// durable-run limits, the file limits, the database limits, the channel limits and the log's.
+/// durable-run limits, the file limits, the database limits, the channel limits, the WebSocket
+/// limits and the log's.
+#[allow(clippy::too_many_arguments)]
 fn limits_to_numbers(
     request: &Limits,
     clock_budget: Duration,
@@ -179,6 +182,7 @@ fn limits_to_numbers(
     files: &FileLimits,
     databases: &DbLimits,
     channels: &ChannelLimits,
+    sockets: &SocketLimits,
     log: &LogLimits,
 ) -> BTreeMap<String, u64> {
     let ms = |d: Duration| d.as_millis() as u64;
@@ -212,6 +216,9 @@ fn limits_to_numbers(
         ("channel_keep".into(), channels.channel_keep),
         ("channel_buffer".into(), channels.channel_buffer),
         ("max_subscribers".into(), channels.max_subscribers),
+        ("max_websockets".into(), sockets.max_websockets),
+        ("max_message_bytes".into(), sockets.max_message_bytes),
+        ("messages_per_second".into(), sockets.messages_per_second),
         ("keep_runs".into(), log.keep_runs),
         ("keep_run_days".into(), log.keep_run_days),
     ])
@@ -226,6 +233,16 @@ fn numbers_to_channels(base: &ChannelLimits, numbers: &BTreeMap<String, u64>) ->
         channel_keep: n("channel_keep", base.channel_keep),
         channel_buffer: n("channel_buffer", base.channel_buffer),
         max_subscribers: n("max_subscribers", base.max_subscribers),
+    }
+}
+
+/// `numbers` applied over `base`'s WebSocket limits.
+fn numbers_to_sockets(base: &SocketLimits, numbers: &BTreeMap<String, u64>) -> SocketLimits {
+    let n = |k: &str, d: u64| numbers.get(k).copied().unwrap_or(d);
+    SocketLimits {
+        max_websockets: n("max_websockets", base.max_websockets),
+        max_message_bytes: n("max_message_bytes", base.max_message_bytes),
+        messages_per_second: n("messages_per_second", base.messages_per_second),
     }
 }
 
@@ -405,6 +422,8 @@ pub(crate) struct Policy {
     pub(crate) databases: DbLimits,
     /// The channel limits a deployment gets without asking.
     pub(crate) channels: ChannelLimits,
+    /// The WebSocket limits a deployment gets without asking.
+    pub(crate) sockets: SocketLimits,
     /// How long a deployment's log keeps its runs without asking.
     pub(crate) log: LogLimits,
     /// What no grant can exceed.
@@ -590,7 +609,7 @@ pub(crate) fn every_text(every: Option<Duration>) -> String {
 
 impl Default for Policy {
     fn default() -> Policy {
-        let mut ceilings = limits_to_numbers(&Limits::ceilings(), Limits::ceilings().run_budget, &DurableLimits::ceilings(), &FileLimits::ceilings(), &DbLimits::ceilings(), &ChannelLimits::ceilings(), &LogLimits::ceilings());
+        let mut ceilings = limits_to_numbers(&Limits::ceilings(), Limits::ceilings().run_budget, &DurableLimits::ceilings(), &FileLimits::ceilings(), &DbLimits::ceilings(), &ChannelLimits::ceilings(), &SocketLimits::ceilings(), &LogLimits::ceilings());
         ceilings.insert(holon_core::FUEL_LIMIT.into(), MODULE_FUEL_CEILING);
         ceilings.insert(holon_core::MEMORY_LIMIT.into(), MODULE_MEMORY_CEILING);
         Policy {
@@ -600,6 +619,7 @@ impl Default for Policy {
             files: FileLimits::defaults(),
             databases: DbLimits::defaults(),
             channels: ChannelLimits::defaults(),
+            sockets: SocketLimits::defaults(),
             log: LogLimits::defaults(),
             ceilings,
             auto: Vec::new(),
@@ -695,6 +715,7 @@ impl Policy {
         policy.files = numbers_to_files(&policy.files, &defaults);
         policy.databases = numbers_to_databases(&policy.databases, &defaults);
         policy.channels = numbers_to_channels(&policy.channels, &defaults);
+        policy.sockets = numbers_to_sockets(&policy.sockets, &defaults);
         policy.log = numbers_to_log(&policy.log, &defaults);
         policy.auto = file.grants.auto;
         policy.allow_plain_http = file.grants.allow_plain_http;
@@ -730,7 +751,7 @@ impl Policy {
 
     /// The defaults, by name.
     pub(crate) fn defaults(&self) -> BTreeMap<String, u64> {
-        limits_to_numbers(&self.request, self.clock_run_budget, &self.durable, &self.files, &self.databases, &self.channels, &self.log)
+        limits_to_numbers(&self.request, self.clock_run_budget, &self.durable, &self.files, &self.databases, &self.channels, &self.sockets, &self.log)
     }
 
     /// Whether `item` is granted without asking.
@@ -1022,6 +1043,8 @@ pub(crate) struct Permit {
     pub(crate) databases: DbLimits,
     /// What its runs may send on its channels, and how many may subscribe.
     pub(crate) channels: ChannelLimits,
+    /// How many WebSocket connections it holds, and what each may send.
+    pub(crate) sockets: SocketLimits,
     /// How long its log keeps its runs.
     pub(crate) log: LogLimits,
     pub(crate) outbound: Outbound,
@@ -1056,6 +1079,7 @@ impl Permit {
         let files = numbers_to_files(&policy.files, &clamped);
         let databases = numbers_to_databases(&policy.databases, &clamped);
         let channels = numbers_to_channels(&policy.channels, &clamped);
+        let sockets = numbers_to_sockets(&policy.sockets, &clamped);
         let log = numbers_to_log(&policy.log, &clamped);
         let hosts = |items: &BTreeSet<String>| -> BTreeSet<String> {
             items
@@ -1094,7 +1118,7 @@ impl Permit {
                 names.entry(kind.to_string()).or_default().insert(name.to_string());
             }
         }
-        Permit { deployment, items: grant.items.clone(), request_limits, clock_limits, durable, files, databases, channels, log, outbound, grant: to_hex(&grant.hash()), unrecorded, names }
+        Permit { deployment, items: grant.items.clone(), request_limits, clock_limits, durable, files, databases, channels, sockets, log, outbound, grant: to_hex(&grant.hash()), unrecorded, names }
     }
 
     /// How a run of the handler labelled `label`, declared `declared`, is recorded: as declared,

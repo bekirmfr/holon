@@ -3631,6 +3631,212 @@ Nothing here needs a second representation of binary data.
 - **Request-path I-g and I-h:** a block that sends or writes is `strict`; `unrecorded` is a
   person's approval.
 
+#### 5.12.14 Slice 1.9a as designed (2026-11-09, against `870402d`): text frames
+
+Re-checked against the code as it is now. What changed since §5.12 was written:
+
+- **The language is TypeScript's syntax** (`docs/LANGUAGE.md`): a handler is a top-level call whose
+  function is the handler, its options last. A websocket is three functions on one path, so it is
+  one call with its blocks in an object, beside `route.get`, as uWebSockets.js writes `app.ws(path,
+  { open, message, close })`:
+
+  ```ts
+  route.websocket("/room/:name", {
+    open: (req) => {
+      people[req.conn] = { name: req.params.name, since: now }
+      room.send({ joined: req.params.name })
+      return room.subscribe()
+    },
+    message: (m) => {
+      room.send({ from: people[m.conn].name, text: m.text })
+    },
+    close: (c) => {
+      delete people[c.conn]
+      room.send({ left: c.params.name })
+    },
+  })
+  ```
+
+  A block may be an arrow or a method (`open(req) { … }`); `fmt` writes arrows. Each is optional,
+  at least one is there: without `open` a connection is accepted and nothing runs until it sends,
+  without `message` a frame closes it (1003), without `close` its end runs nothing. The options are
+  `{ log: "lazy" }` for every block, or by block, `{ log: { message: "unrecorded" } }`.
+- **Log levels are the author's** (request-path C5 as built, "Log levels are authored"): any block
+  may be `lazy` or `unrecorded`, whatever it does, as any handler may. §5.12.5's rule that a block
+  that sends is strict is gone with it.
+- **The engine is `tungstenite` 0.30** (in the tree since 1.6b, sync, its `handshake` feature),
+  not tokio-tungstenite: the host feeds it the bytes hyper's upgraded connection reads, through an
+  in-memory pipe, and writes what it queues (frames, pongs, the closing handshake) back. No new
+  crate; tokio gains its `io-util` feature.
+- **The connection's record is its runs** (§5.12.3 simplified): `open` says who connected, when,
+  from where (the opening request); each `message` what it sent; `close` how it ended, its code and
+  reason, the host's reason when the host closed it (too big, too fast, no pong, going away). Pings
+  are the host's and not recorded. A flow that wants a record of every end declares `close`.
+
+**What a block is.** Each block lowers to a `websocket{path, on, log}` trigger node, its outputs
+`request` (the record), `params`, `query` and `json`; its group is wrapped as a caller-shaped unit
+(the record in, output 0 its answer, then its effects) with frozen `declare = "websocket"`, `path`,
+`on` (`open`, `message` or `close`) and `log` when it isn't strict. `read_server` gathers them into
+`Server.websockets`, by path, each block with its hash and level. Labelled `WebSocket /room/:name
+message`, as the log, the tallies and an `Unrecorded(…)` item name it. A websocket's path clashes
+with another websocket's or a GET route's of the same shape (`same_requests`): a path is a page or a
+connection. A flow with a websocket needs a port, as one with a route does.
+
+**What each block receives:**
+
+| Block | Its record | |
+|---|---|---|
+| `open` | the opening request, `{method, path, params, query, headers, body, conn}` | `conn` the connection's id, 16 hex digits the host draws |
+| `message` | `{conn, path, params, query, text}` | `m.json` its text parsed, as `req.json` is |
+| `close` | `{conn, path, params, query, code, reason}` | the browser's code and reason, or the host's |
+
+`params` and `query` are the opening request's, on every record, so a block reads `m.params.name`
+without keeping it.
+
+**What each block answers:**
+
+- **`open` answers as a route does** (`return`, `status`, `respond`, `??`): a subscription
+  (`return room.subscribe()`, `from: "kept"` too) accepts and subscribes the connection; an answer
+  of status 300 or more refuses the upgrade with that response (`?? status(403)`, and an absent
+  answer 404, a route's rule); any other accepts and sends its body as the first message (text as it
+  is, anything else as JSON); 204 (writes alone, `status(204)`) accepts and sends nothing. The 101
+  goes out once its run is over and its record is where its level puts it, so its writes have
+  landed before the first message is read. A refusal's headers are the flow's; an acceptance's are
+  the host's.
+- **`message` answers with a value alone**, as an action does: sent back on its connection only;
+  none, or an absent one, sends nothing. `status(…)` and `respond(…)` are refused there.
+- **`close` answers nobody**: a `return` with a value is refused.
+
+**The host** (`websockets.rs`, beside `ws.rs`'s feeds, on the data plane's runtime):
+
+- **The opening request** is a GET with `Upgrade: websocket`, version 13 and a key, on a websocket's
+  path. A GET without the upgrade there is a 426. Past `max_websockets` open connections of the
+  deployment it is a 503, before `open` runs.
+- **Its origin is checked,** as a browser's page can open a WebSocket to any site with its cookies
+  and CORS doesn't apply: one with an `Origin` is accepted when the origin is the request's own
+  host, or one of the flow's `browsers` (or `"*"`); else a 403, and nothing runs. A client that
+  isn't a browser sends none.
+- **Each text frame** is queued for its connection (32 at most; full, 1013 "try again later") and
+  run by `message`, one at a time, in order; connections run concurrently, as requests do.
+  Binary frames close it with 1003 (§5.12.8, slice 3), a message past `max_message_bytes` with 1009,
+  text that isn't UTF-8 with 1007, more than `messages_per_second` (bursts of twice that) with 1008.
+- **Replies and packs** go out as text frames in the order the host sends them, a pack once its run's
+  record is where its level puts it, as for server-sent events.
+- **Pings** every 15 s; a connection that answers none for 30 s is closed (1001).
+- **`close` runs once,** after the connection's last message has run, whichever side closed it, with
+  the browser's code and reason, the host's, or 1006 for a connection that dropped without a close.
+  Messages that came before the close still run, in order.
+- **Pausing or stopping** the deployment closes its connections with 1001, and each one's `close`
+  runs, the end of a connection opened while it ran. A server that stops or crashes runs none: what
+  a flow keeps by `conn` may outlive its connection, which it is told.
+- **Redeploying** keeps the connections: the next message runs the new version's block; a version
+  without the path closes them (1001).
+
+**Consent.** `WebSocket("/room/:name")`, "hold WebSocket connections on /room/:name, and run on each
+message", read from the server's children as `Action(name)` is. Subscribing asks `ChannelRead`,
+sending `ChannelSend`, a reply computed from a secret `SecretAnswer`, as now. Three limits, each
+asked for above its default up to its ceiling: `max_websockets` (100, 10,000), `max_message_bytes`
+(64 KiB, 1 MiB) and `messages_per_second` (10, 1,000).
+
+**The log.** Each run is an entry of kind `websocket`, its route the block's label, its request the
+record. `open`'s status is the handshake's (101, or the refusal's). `holon verify` re-runs each by
+its label, as an action's.
+
+**The sample, `room`** (port 8132): a chat. `GET /` answers its page, a `const` of HTML whose script
+opens `/room/<name>`; `open` keeps who joined, by `conn`, says so on the channel and subscribes;
+`message` sends what was said with who said it; `close` says who left. The server test opens
+connections over a real socket; e2e opens two from the editor's browser, sends from one, sees it
+on the other, closes one and sees `left`.
+
+**Not in this slice:** a pack to one connection (`room.send(v, { to: conn })`, slice 2, with closing
+from the flow, fork 2); binary frames (slice 3); subprotocols (fork 1); the deployment's page
+listing its open connections.
+
+#### 5.12.15 Slice 1.9a as built (2026-11-09)
+
+As designed (§5.12.14), with what building it found:
+
+- **Core** declares a websocket block (`declare = "websocket"`, `path`, `on`) and the server's
+  websockets, each its blocks in the order written, labelled `WebSocket /room/:name message`;
+  `WebSocket(path)` is a trigger (`manifest_trigger`, after `NetworkIngress`) and sourced. A path
+  is a page or a connection: a websocket a GET route's path matches, or another websocket's, is
+  refused, as two routes alike are.
+- **The language** lowers each block to a `websocket{path, on, log}` template node, its trigger;
+  the template gives the record, its params and query, and the text parsed (`json`). The mistakes
+  say each block's rule at its column: a `message` answering with `status`, a `close` returning a
+  value, an `open` that does nothing (it says that without `open` a connection is accepted as it
+  comes), a path written twice. A subscription anywhere but a route's or an `open`'s answer now
+  says both.
+- **No new crate.** The design's table had tokio-tungstenite; the host instead feeds tungstenite's
+  own `WebSocket` (sans I/O, the `handshake` feature already in the tree for feeds) the bytes
+  hyper's upgraded connection reads, through a `Pipe` that says `WouldBlock` when it has nothing,
+  and writes what it gives back. tokio gains its `io-util` feature. The 101's
+  `Sec-WebSocket-Accept` is tungstenite's `derive_accept_key`; hyper serves connections
+  `with_upgrades()`.
+- **A message it can't read ends the reading:** past `max_message_bytes`, text that isn't UTF-8 or
+  a frame that breaks the protocol leaves what follows unreadable, so the host sends its close and
+  ends the connection at once, not waiting the 5 s it gives a peer's close answer.
+- **An opening `open` accepted but the host couldn't hold** (its channel at `max_subscribers`, the
+  flow gone, no upgrade to take) was answered 503 with nothing more, so what `open` had kept stayed
+  for good. Its `close` now runs, as a dropped connection's does (1006, what the page sees too).
+- **Some ends run no `close`:** the block is looked up in the version deployed when it runs, so a
+  connection a new version without its path closes, or one removing the deployment closes, has no
+  `close` left to run, as one a server that stops ends. The guide says so, and that a flow can
+  clear what it keeps of them with an action.
+- **Paused, a connection's queued messages don't run** (a paused flow runs nothing), but its
+  `close` does, as designed.
+- **A verify gap, not this slice's:** two runs beside each other that write different keys of one
+  collection leave a state neither run left, and `holon verify`'s state chain says the later one
+  DOESN'T FOLLOW. Routes have it too; two `close` runs at once made it plain (the server test's
+  client didn't answer the host's close, so two waited the 5 s and overlapped). The test now
+  answers as a browser does; the gap is a follow-up for verify.
+- **The editor** derives the websockets (`SocketDraft`), lists each path with its blocks in the
+  server panel, counts them as what starts runs (its deploy bar's "nothing would start a run",
+  which hadn't counted mail, feed or queue handlers either), offers the three limits under ⚙,
+  anchors each block's node to its text, and replays a block's run inside its group, its record
+  the template's input.
+- **The manual** gains a WebSockets guide and a reference section; the permissions page gains the
+  capability and the WebSocket and channel limits, which it hadn't listed.
+- **Tested:** the host's pieces (a reply's text, the origin rule, the rate's bucket, the places
+  and the closing), the server over a real socket (§5.12.14's list: 426, 403 from another site
+  and from `open`, a first message, 1003 with no `message` block, two in a room, binary 1003,
+  1009, 1008, a pause's 1001 with `close` run, the log's entries and their statuses, nobody left
+  in `people`, export and verify each run Matched) and the opening not held (503, `close` with
+  1006); the language's lowering, mistakes and printing back; the goldens (the evaluator's and
+  the server's gain `room`; `due-dates` after it moves with the fixed clock); the leaves page;
+  `holon.d.ts`; vitest; wasm; e2e, `room` in two browsers.
+- **Run live** on a scratch server of the slice's build: §5.12.16.
+
+#### 5.12.16 Slice 1.9a run live (2026-11-09)
+
+A scratch server of the slice's release build, `room` deployed as written (8132) and approved with
+its asks (`WebSocket("/room/:name")` beside the channel and the collection), driven from two tabs of
+the browser pane and from a raw-socket client:
+
+- **Two pages in the room:** ann joined, then bob; ann's page said "bob joined", bob's "hello from
+  bob" showed on both, and so did ann's after a redeploy, which kept both connections open. Closing
+  bob's tab, ann's page said "bob left".
+- **The page's own mistake:** the console said the name's `pattern` (`[A-Za-z0-9_-]+`) isn't a
+  valid expression, as browsers now read it with the `v` flag, where a bare `-` in a class is
+  refused, so the field took any name. The sample takes letters, digits and `_`, and the page
+  served after the redeploy refused `a-b` and took `ann_2`.
+- **Refusals:** a GET without the upgrade a 426 with `Upgrade: websocket`; a page from
+  `http://evil.example` a 403; a path with no websocket a 404; an opening while the flow was paused
+  a 503, and a 101 once it ran again. None is in the log: nothing ran.
+- **Its limits:** a binary message closed with 1003 ("this WebSocket takes text messages"), 70 KiB
+  with 1009, 30 messages at once with 1008 after the 20 its burst allows; a watching connection
+  heard each join, the 20 messages and each leave, as each one's `close` told the room. Text that
+  isn't UTF-8 closed with 1007.
+- **A pause** with dee connected closed it with 1001 ("the flow was paused or stopped"), after the
+  message it had sent was heard; its `close` ran and `people` was empty again.
+- **Exported and verified:** 44 runs, the chain unbroken; 40 re-ran, each what its entry says (7
+  opens at 101, 23 messages, 7 closes, the page 3 times); the 4 where nothing ran are `/nope` and
+  the browser's `favicon.ico`. The closes kept their codes and reasons: bob and ann 1001 (their
+  tabs going), the client's 1000, 1003, 1009, 1008 with the host's words, dee's pause.
+
+Not seen live: `max_websockets` and a channel's `max_subscribers` reached (the server test makes
+the second), 1013 for a full queue, and the 30 s of silence, which a browser's own pong answers.
+
 ### 5.13 What else a web app asks for
 
 Asked for while weighing what it takes for a flow to host a React app (2026-11-04). None is
@@ -4375,7 +4581,7 @@ signing only for SQS (fork 8): its design settles the queue engine with 1.4 defe
 | 1.6 | **Messaging:** one subscription runtime (position, once per message, backpressure, reconnect), feeds (SSE, WebSocket, Postgres `LISTEN`) and one queue engine, publish and consume (§5.5, §5.9); designed in slices (§5.9.1), all built: 1.6a the subscription runtime and server-sent events (§5.9.3), 1.6b WebSocket feeds (§5.9.5), 1.6c a feed resumed (§5.9.7), 1.6d a feed's gaps (§5.9.8), 1.6e the queue (§5.9.10, live against ElasticMQ and moto; real AWS still to come), 1.6f a Postgres channel (§5.9.12) | §5.5, §5.9 (here) | 1.4's request signing, for SQS (fork 8) | L |
 | 1.7 | *Deferred.* **Commands:** programs an admin binds, typed arguments, logged output, killed on timeout (§5.7) | §5.7 (here) | — | M |
 | 1.8 | **Static files:** a route's rest segment (`/*path`, routing, no item), and answering with a file from a folder (`site.serve(name)`, `FileServe`), streamed by the host and checked against the handle's hash; in slices (§5.11.8), 1.8a the rest segment (built, §5.11.13), 1.8b answering with a file (built, §5.11.15) | §5.11 (here) | — | M |
-| 1.9 | **Inbound WebSockets:** `websocket PATH { open … message … close … }`, a run per message, replies and channel packs out, a record per connection (§5.9) | §5.12 (here) | 1.1 for binary frames | M |
+| 1.9 | **Inbound WebSockets:** `route.websocket(path, { open, message, close })`, a run per message, replies and channel packs out, the runs a connection's record (§5.12); in slices (§5.12.11), 1.9a text frames (built, §5.12.15) | §5.12 (here) | 1.1 for binary frames | M |
 
 - **Samples, one at least per step:**
   - 1.1 `file-checksums` (a binary file's hash, into a manifest);

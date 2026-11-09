@@ -49,6 +49,8 @@ propose, and find out what happened. For how Holon is built, see the design docu
   channel, a run on each event, and where the host keeps the feed when its connection is lost.
 - **[Queues](guides/queues.md):** binding an Amazon SQS queue, a run on each message it holds,
   deleted once its run is over, and sending to one once a run's writes have landed.
+- **[WebSockets](guides/websockets.md):** connections pages open on a flow, a run as each opens,
+  on each message and as it ends, channels to reach the others, and what the host holds.
 - **[Checking runs](guides/checking-runs.md):** exporting a deployment's runs, verifying them
   offline, and witnesses.
 

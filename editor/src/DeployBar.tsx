@@ -61,6 +61,9 @@ const LIMITS: [string, string][] = [
   ["channel_keep", "packs a channel keeps"],
   ["channel_buffer", "packs a subscriber may fall behind"],
   ["max_subscribers", "subscribers per channel"],
+  ["max_websockets", "WebSocket connections open"],
+  ["max_message_bytes", "WebSocket message size (bytes)"],
+  ["messages_per_second", "WebSocket messages a second, each"],
   ["keep_runs", "runs the log keeps"],
   ["keep_run_days", "days the log keeps runs"],
 ];
@@ -110,14 +113,15 @@ export function DeployBar({
   busy: boolean;
   onDeploy: () => void;
   onAction: (action: "run" | "pause" | "stop") => void;
-  /** Nothing would start a run (no route, clock, file handler or action): deploy is greyed. */
+  /** Nothing would start a run (no route, websocket, clock, file, mail, feed or queue handler or
+   *  action): deploy is greyed. */
   startsNothing?: boolean;
   onSettingsOpen?: () => void;
 }) {
   const look = entry ? LOOK[entry.status] : null;
   const label = busy ? "deploying…" : entry ? "update" : "deploy";
   const title = startsNothing
-    ? "nothing would start a run: add a route, a clock, a file handler or an action (an action runs by hand)"
+    ? "nothing would start a run: add a route, a websocket, a clock, a file, mail, feed or queue handler or an action (an action runs by hand)"
     : entry
       ? "deploy the canvas as it is now; the deployment keeps its state and sessions"
       : "deploy this flow, named after it";

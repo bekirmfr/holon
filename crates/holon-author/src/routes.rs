@@ -132,6 +132,23 @@ pub struct FeedGroup {
     pub node_ids: Vec<String>,
 }
 
+/// One block of a websocket of the server: its `websocket` node, its path, what it runs on, and
+/// every node wired to it.
+#[derive(Serialize, Clone, Debug, PartialEq)]
+pub struct SocketGroup {
+    pub path: String,
+    /// `open`, `message` or `close`.
+    pub on: String,
+    /// `WebSocket /room/:name message`: how the log names its runs.
+    pub label: String,
+    #[serde(rename = "socketId")]
+    pub socket_id: String,
+    /// How its runs are recorded: its trigger node's `log`, `lazy` or `unrecorded`, or "" (strict).
+    pub log: String,
+    #[serde(rename = "nodeIds")]
+    pub node_ids: Vec<String>,
+}
+
 /// One action of the server: its `action` node, its name, and every node wired to it.
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct ActionGroup {
@@ -173,6 +190,8 @@ fn trigger_label(n: &Node) -> Option<String> {
         Some(holon_core::feed_label(n.param("feed")))
     } else if n.is_template("on_queue") {
         Some(holon_core::queue_label(n.param("queue")))
+    } else if n.is_template("websocket") {
+        Some(holon_core::socket_label(n.param("path"), n.param("on")))
     } else if n.is_template("action") {
         Some(format!("action {}", n.param("name")))
     } else {
@@ -333,6 +352,47 @@ pub fn find_queues(nodes: &[Node], wires: &[Wire]) -> (Vec<QueueGroup>, Vec<Stri
     (queues, errors)
 }
 
+/// The websocket blocks the flow declares (each connected group holding a `websocket` node and no
+/// other trigger), and why any can't be one: a block written twice, or a path that takes the
+/// requests another websocket's or one of `routes`' GET routes does.
+pub fn find_websockets(nodes: &[Node], wires: &[Wire], routes: &[RouteGroup]) -> (Vec<SocketGroup>, Vec<String>) {
+    let by_id: HashMap<&str, &Node> = nodes.iter().map(|n| (n.id.as_str(), n)).collect();
+    let node_ids: Vec<&str> = nodes.iter().map(|n| n.id.as_str()).collect();
+    let clash = |a: &str, b: &str| parse_path(a).zip(parse_path(b)).is_some_and(|(a, b)| same_requests(&a, &b));
+    let (mut sockets, mut errors): (Vec<SocketGroup>, Vec<String>) = (Vec::new(), Vec::new());
+    for ids in components(&node_ids, wires) {
+        let triggers: Vec<&Node> = ids.iter().map(|id| by_id[id.as_str()]).filter(|n| trigger_label(n).is_some()).collect();
+        let [socket] = triggers.as_slice() else { continue };
+        if !socket.is_template("websocket") {
+            continue;
+        }
+        let (path, on) = match crate::templates::socket_block(&socket.data.params) {
+            Ok(b) => b,
+            Err(e) => {
+                errors.push(e);
+                continue;
+            }
+        };
+        let label = holon_core::socket_label(&path, on);
+        if sockets.iter().any(|s| s.path == path && s.on == on) {
+            errors.push(format!("{label} is written twice: one block of each per websocket"));
+            continue;
+        }
+        if let Some(other) = sockets.iter().find(|s| s.path != path && clash(&s.path, &path)) {
+            errors.push(format!("WebSocket {path} clashes with WebSocket {}", other.path));
+            continue;
+        }
+        if let Some(r) = routes.iter().find(|r| r.method == "GET" && clash(&r.path, &path)) {
+            errors.push(format!("WebSocket {path} clashes with GET {}: a path is a page or a connection", r.path));
+            continue;
+        }
+        sockets.push(SocketGroup { path, on: on.into(), label, socket_id: socket.id.clone(), log: socket.param("log").into(), node_ids: ids });
+    }
+    // In the order they are written.
+    sockets.sort_by_key(|s| node_ids.iter().position(|id| *id == s.socket_id));
+    (sockets, errors)
+}
+
 /// The actions the flow declares (each connected group holding an `action` node and no other
 /// trigger), and why any can't be one.
 pub fn find_actions(nodes: &[Node], wires: &[Wire]) -> (Vec<ActionGroup>, Vec<String>) {
@@ -465,6 +525,16 @@ pub fn route_spec(spec: EncapSpec, group: &[&Node], label: &str) -> Result<Encap
         return Err(format!("{label}: a route answers and is done, so it doesn't wait ({}): start an action that waits with a flow_start, and answer with what it says", n.data.name));
     }
     caller_spec(spec, group, label, "request")
+}
+
+/// A websocket block's boundary, as a route's: the one input left open is its `websocket` node's
+/// (the record), the outputs its respond's (the answer) and its effects. It answers and is done,
+/// as a route does.
+pub fn socket_spec(spec: EncapSpec, group: &[&Node], label: &str) -> Result<EncapSpec, String> {
+    if let Some(n) = group.iter().find(|n| n.data.body == PlacedBody::Primitive && matches!(n.data.name.as_str(), "await" | "resume_token")) {
+        return Err(format!("{label}: a block answers and is done, so it doesn't wait ({}): start an action that waits with a flow_start", n.data.name));
+    }
+    caller_spec(spec, group, label, "websocket")
 }
 
 /// An action's boundary, as a route's: the one input left open is its `action` node's (what was
@@ -693,6 +763,24 @@ pub fn endpoint_unit(handler: Hash, inputs: &[Port], outputs: &[Port], method: &
     if !resume.is_empty() {
         params.push(frozen("resume", resume));
     }
+    Ok(caller_unit(handler, inputs, outputs, params, Port { name: "request".into(), ty: Type::Record }, "response"))
+}
+
+/// Wrap a websocket block's handler as its unit (core's `read_websocket`), as an endpoint is
+/// wrapped: its one input the block's record, output 0 its answer, then its effects;
+/// `declare = "websocket"`, `path` and `on`.
+pub fn socket_unit(handler: Hash, inputs: &[Port], outputs: &[Port], path: &str, on: &str) -> Result<Unit, String> {
+    if parse_path(path).is_none() {
+        return Err(format!("\"{path}\" is not a route path (use /chat, /room/:name or /files/*path)"));
+    }
+    if inputs.len() > 1 {
+        return Err("a handler takes at most one input: the block's record".into());
+    }
+    if outputs.is_empty() {
+        return Err("a handler needs an output: its answer or an effect".into());
+    }
+    let frozen = |name: &str, value: &str| Param::Frozen { name: name.into(), value: value.into() };
+    let params = vec![frozen("declare", "websocket"), frozen("path", path), frozen("on", on)];
     Ok(caller_unit(handler, inputs, outputs, params, Port { name: "request".into(), ty: Type::Record }, "response"))
 }
 

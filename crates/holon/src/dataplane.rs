@@ -13,8 +13,9 @@
 //! A request becomes a [`DataRequest`] and is answered by `serve_data` (listeners.rs), which runs
 //! the flow synchronously, so it runs on the runtime's blocking pool. A subscription (channels.rs)
 //! is answered with its headers, then its packs as server-sent events while the caller stays,
-//! a comment every 15 s keeping the connection open through proxies. Listeners bind loopback
-//! unless the operator opens another address (`--data-host`).
+//! a comment every 15 s keeping the connection open through proxies. A GET on a websocket's path
+//! switches its connection to a WebSocket (websockets.rs). Listeners bind loopback unless the
+//! operator opens another address (`--data-host`).
 
 use std::convert::Infallible;
 use std::net::IpAddr;
@@ -160,6 +161,7 @@ pub(crate) fn start_listener(state: &AppState, slug: &str, port: u16) -> Result<
                     .timer(TokioTimer::new())
                     .header_read_timeout(header_timeout)
                     .serve_connection(TokioIo::new(stream), service)
+                    .with_upgrades()
                     .await;
                 drop(permit);
             });
@@ -369,7 +371,7 @@ impl Body for Answer {
 /// Read one request within the limits, answer it with `serve_data` on the blocking pool, and turn
 /// the answer into an HTTP response.
 async fn answer(listener: Arc<Listener>, request: hyper::Request<Incoming>) -> hyper::Response<Answer> {
-    let (parts, body) = request.into_parts();
+    let (mut parts, body) = request.into_parts();
     let host = parts.headers.get(hyper::header::HOST).and_then(|v| v.to_str().ok()).or_else(|| parts.uri.authority().map(|a| a.as_str()));
     if !host_allowed(host, &listener.limits.names) {
         let host = host.unwrap_or_default();
@@ -377,6 +379,10 @@ async fn answer(listener: Arc<Listener>, request: hyper::Request<Incoming>) -> h
             421,
             &format!("Host {host:?} isn't a name this server answers to (a page loaded from a name pointed at this machine can't read a flow's answers): reach it by its address or localhost, or start the server with --allow-host {}", host.rsplit_once(':').map_or(host, |(n, _)| n)),
         ));
+    }
+    // A connection a page opens on one of its websockets' paths is the flow's from here on.
+    if let Some(answered) = websockets::open(&listener.store, &listener.deployments, &listener.slug, &mut parts).await {
+        return to_hyper(answered);
     }
     let limit = listener.limits.max_body_bytes;
     let too_large = || DataResponse::json_error(413, &format!("the request body is larger than {limit} bytes"));

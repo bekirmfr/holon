@@ -862,6 +862,31 @@ test("live-board's page gets each ticket posted as a pack on its channel, and a 
   await board.close();
 });
 
+test("room's pages talk over WebSockets: what one says reaches both, and the other hears who left", async ({ page, browser }) => {
+  await openSample(page, "Room (a chat over WebSockets)");
+  const port = await deploy(page);
+  // A page in the room under `name`: its WebSocket on /room/<name>, open once it says so.
+  const join = async (name: string) => {
+    const tab = await browser.newPage();
+    await tab.goto(`http://127.0.0.1:${port}/`);
+    await tab.getByPlaceholder("Your name").fill(name);
+    await tab.getByRole("button", { name: "Join" }).click();
+    await expect(tab.locator("#said")).toContainText(`you joined as ${name}`);
+    return tab;
+  };
+  const ann = await join("ann");
+  const bob = await join("bob");
+  await expect(ann.locator("#said")).toContainText("bob joined");
+  // What one says runs its message block, and its pack reaches both, under its name.
+  await bob.getByPlaceholder("Say something").fill("hi");
+  await bob.getByRole("button", { name: "Say" }).click();
+  for (const tab of [ann, bob]) await expect(tab.locator("#said")).toContainText("bob: hi");
+  // A page closed: its connection's close block runs, and the room hears who left.
+  await bob.close();
+  await expect(ann.locator("#said")).toContainText("bob left");
+  await ann.close();
+});
+
 test("approval sends an order's progress on its channel: waiting as the run parks, paid when it finishes, never the first twice", async ({ page, browser, request }) => {
   await openSample(page, "Order approval (durable run)");
   const port = await deploy(page);

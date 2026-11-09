@@ -19,7 +19,7 @@ import {
   type Method,
 } from "./endpoint";
 import { feedStates, queueStates, sendRequest, ServerError, tickNow, type FeedState, type HttpResponse, type QueueListening, type QueueSending, type Role } from "./server";
-import type { ActionDraft, ClockDraft, FeedDraft, FileDraft, MailDraft, QueueDraft } from "./canvasOps";
+import type { ActionDraft, ClockDraft, FeedDraft, FileDraft, MailDraft, QueueDraft, SocketDraft } from "./canvasOps";
 import { ActionRows } from "./ActionRows";
 
 const field: CSSProperties = {
@@ -110,6 +110,8 @@ type ToolsPanelProps = {
   queues?: QueueDraft[];
   /** The queues its flow sends to, by name. */
   sendsTo?: string[];
+  /** The websockets' blocks the canvas declares (its `websocket` nodes' groups). */
+  websockets?: SocketDraft[];
   /** The actions the canvas declares (its `action` nodes' groups). */
   actions?: ActionDraft[];
   /** The flow's running deployment, for "tick now" and "run"; empty when it isn't running. */
@@ -137,6 +139,7 @@ export function ToolsPanel({
   feeds = [],
   queues = [],
   sendsTo = [],
+  websockets = [],
   actions = [],
   errors,
   liveSlug,
@@ -271,7 +274,7 @@ export function ToolsPanel({
         </button>
         {serverOpen && (
           <>
-            {endpoints.length === 0 && clocks.length === 0 && files.length === 0 && mails.length === 0 && feeds.length === 0 && queues.length === 0 && actions.length === 0 && errors.length === 0 && (
+            {endpoints.length === 0 && clocks.length === 0 && files.length === 0 && mails.length === 0 && feeds.length === 0 && queues.length === 0 && websockets.length === 0 && actions.length === 0 && errors.length === 0 && (
               <div style={{ color: "#3d4f66", fontStyle: "italic" }}>drop a request node (palette, http) and wire it to a respond node to add a route</div>
             )}
             {clocks.map((c) => (
@@ -336,6 +339,17 @@ export function ToolsPanel({
               );
             })}
             <ActionRows names={actions.map((a) => a.name)} slug={tickSlug} role={role} outOfDate={outOfDate} onViewRun={onViewRun} />
+            {[...new Set(websockets.map((w) => w.path))].map((path) => (
+              <div
+                key={`websocket ${path}`}
+                style={{ display: "flex", gap: 6, alignItems: "center" }}
+                title="holds the WebSocket connections a page opens on this path, and runs its blocks: open as one opens, message on each text it sends, close once it has ended"
+              >
+                <span style={{ color: "#6fd3e0", ...lbl }}>websocket</span>
+                <span style={{ flex: 1, color: "#e6eefb" }}>{path}</span>
+                <span style={{ color: "#9fb4d4" }}>{websockets.filter((w) => w.path === path).map((w) => w.on).join(", ")}</span>
+              </div>
+            ))}
             {endpoints.map((e) => (
               <div key={`${e.method} ${e.path}`} style={{ display: "flex", gap: 6, alignItems: "center" }}>
                 <span style={{ color: "#6fd3e0", ...lbl }}>{e.method}</span>
@@ -481,6 +495,7 @@ export function ServerPanel({
   feeds = [],
   queues = [],
   sendsTo = [],
+  websockets = [],
   actions = [],
   errors,
   liveSlug,
@@ -490,5 +505,5 @@ export function ServerPanel({
   onViewRun,
 }: Omit<ToolsPanelProps, "open" | "onOpen">) {
   const [open, setOpen] = useState(true);
-  return <ToolsPanel open={open} onOpen={setOpen} ev={ev} endpoints={endpoints} clocks={clocks} files={files} mails={mails} feeds={feeds} queues={queues} sendsTo={sendsTo} actions={actions} errors={errors} liveSlug={liveSlug} tickSlug={tickSlug} role={role} outOfDate={outOfDate} onViewRun={onViewRun} />;
+  return <ToolsPanel open={open} onOpen={setOpen} ev={ev} endpoints={endpoints} clocks={clocks} files={files} mails={mails} feeds={feeds} queues={queues} sendsTo={sendsTo} websockets={websockets} actions={actions} errors={errors} liveSlug={liveSlug} tickSlug={tickSlug} role={role} outOfDate={outOfDate} onViewRun={onViewRun} />;
 }

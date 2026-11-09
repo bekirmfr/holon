@@ -91,6 +91,7 @@ export function textKeys(g: Graph, names: Map<string, string>): Map<string, stri
   // Anchors: a route's request, then names.
   for (const n of g.nodes) {
     if (n.data.name === "request" && n.data.body.kind !== "Composite") keys.set(n.id, unique(`route ${param(n, "method")} ${param(n, "path")}`));
+    else if (n.data.name === "websocket" && n.data.body.kind !== "Composite") keys.set(n.id, unique(`websocket ${param(n, "path")} ${param(n, "on")}`));
     else if (names.has(n.id)) keys.set(n.id, unique(`=${names.get(n.id)}`));
   }
   // What feeds nothing: by what it is and the first anchored thing it reads.

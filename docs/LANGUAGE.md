@@ -961,6 +961,54 @@ How the host logs in is the binding's business, not the flow's: the support-inbo
 receives requests from a Microsoft 365 mailbox and answers them through the same mail, the host
 logging in to both servers with an OAuth token (`--oauth`), and nothing in its text says so.
 
+### room: a WebSocket chat
+
+The sample without its page (a form to join under a name, and a `WebSocket` on `/room/<name>`
+that shows what the room says) and the route that serves it:
+
+```ts
+import { flow, route } from "holon"
+import people from "collection:people"
+import room from "channel:room"
+
+flow("room", { port: 8132 })
+
+route.websocket("/room/:name", {
+  open: (req) => {
+    people[req.conn] = req.params.name
+    room.send({ joined: req.params.name })
+    return room.subscribe()
+  },
+  message: (m) => {
+    room.send({ from: people[m.conn], text: m.text })
+  },
+  close: (c) => {
+    delete people[c.conn]
+    room.send({ left: c.params.name })
+  },
+})
+```
+
+`route.websocket(path, blocks)` holds the WebSocket connections pages open on the path, and runs
+its blocks, each a handler of its own: `open` as one opens, its record the opening request with
+`conn`, the connection's id (16 hex digits, the same in each of its runs); `message` for each text
+the page sends (`m.text`, and `m.json` when it is JSON); `close` once the connection has ended
+(`c.code` and `c.reason` say how). `open` answers as a route does: `return room.subscribe()`
+accepts the connection and sends it each pack sent on the channel from then on, a status of 300
+or more refuses it (the page sees the opening fail), and any other answer is the connection's
+first message. What `message` returns goes back on its connection; `close` answers nobody. So a
+channel is how one connection's runs reach the others: a message's pack goes to every page in the
+room once its run is over and its record is on disk, as live-board's tickets do. A connection's
+messages run one at a time, in the order they came, and `close` runs once, after the last of them.
+
+The host holds the connections, never a run: each run is over in milliseconds, and what outlives
+it is in the collection and the channel. A page from another site can't open one: its `Origin`
+must be the flow's own host or one `browsers` names. The limits `max_websockets`,
+`max_message_bytes` and `messages_per_second` (under ⚙) bound what the flow holds and what each
+connection sends; one past them is closed with the code that says why, and its `close` runs all
+the same. A websocket is a permission, `WebSocket("/room/:name")`, as the channel and the
+collection are.
+
 ### price-feed: a feed of server-sent events
 
 Its handler and two of its routes (the page left out):
@@ -1612,6 +1660,15 @@ statement in it tied to nothing is an error, as is a handler that does nothing.
 - **A route,** `route.get("/path", (req) => …)`, and `post`, `put`, `patch`, `delete`, runs on each
   request to the flow's port, `req` the request (§5.11). It lowers to a `request{method, path,
   resume, log}` template node, its trigger.
+- **A websocket,** `route.websocket("/room/:name", { open, message, close })`, holds the WebSocket
+  connections pages open on the path, on the flow's port beside its routes, and runs each of its
+  blocks as a handler of its own: `open: (req) => …` as one opens, `req` the opening request with
+  `.conn`, the connection's id; `message: (m) => …` for each text it sends (`.conn`, `.text`,
+  `.json`, and the opening request's `.path`, `.params` and `.query`); `close: (c) => …` once it
+  has ended (`.conn`, `.code`, `.reason`, and the same three). One block at least, each written
+  once; the option `log` is one level for every block, or each block's own (`{ log: { message:
+  "lazy" } }`). Each block lowers to a `websocket{path, on, log}` template node, its trigger, `on`
+  the block's name (§5.11).
 - **A clock,** `every("2s", (now) => { … })`, runs every 2 seconds, with no input: its parameter,
   or `now` imported, is the time of the tick, and a clock that reads neither leaves it out. Its
   period is a whole number of seconds, from `"1s"` to `"366d"`; one clock per period. It lowers to
@@ -2335,6 +2392,7 @@ idiom the samples use for a write that may not happen.
 ```
 route.METHOD("/path", (req) => answer, { resumes: "NAME", log: "lazy" })
 route.METHOD("/path", async (req) => { statements; return answer })
+route.websocket("/path", { open: (req) => answer, message: (m) => value, close: (c) => { … } }, { log })
 ```
 
 **The path** is `/` and segments: literals, `:name` params, and a last `*name` that takes the
@@ -2345,8 +2403,8 @@ rest.
 
 Lowers to a `request{method, path, resume, log}` template node, the route's trigger, and the
 handler's nodes; `resume` is the option `resumes`, and `log` the option `log` (§5.1), empty for
-strict, the same param a clock's `every`, a file handler's `on_file`, a mail handler's `on_mail`,
-a feed handler's `on_feed` and an action's `action` carry. Every `return` and every use of `req` wires into the same connected group, which is what
+strict, the same param a websocket block's `websocket`, a clock's `every`, a file handler's
+`on_file`, a mail handler's `on_mail`, a feed handler's `on_feed` and an action's `action` carry. Every `return` and every use of `req` wires into the same connected group, which is what
 makes the handler one route (`find_routes` works by connectivity, unchanged). `async` goes on a
 handler that `await`s, as TypeScript requires.
 
@@ -2380,10 +2438,27 @@ handler that `await`s, as TypeScript requires.
 - Clashing routes and bad paths are the existing errors, said of the flow by its routes (`GET /a
   clashes with GET /a`), not yet at a column.
 
+**A websocket's blocks.** Its path is a route's, and a path is a page or a connection: a websocket
+whose path matches a GET route's requests is refused (`WebSocket /w/:name clashes with GET
+/w/:id`), as are two websockets alike. A GET there without a WebSocket's opening headers is
+answered 426. Each block answers as its event can:
+
+| Block | Its record | Its answer |
+|---|---|---|
+| `open` | the opening request (`method`, `path`, `params`, `query`, `headers`, …) and `conn` | as a route's: `return ch.subscribe()` accepts and subscribes, `status(code, …)` of 300 or more refuses, `status(204)` or effects alone accept and send nothing, anything else accepts and is the first message |
+| `message` | `conn`, `text`, `json`, `path`, `params`, `query` | a value alone, sent back on the connection (text as it is, anything else as JSON); none sends nothing; `status` and `respond` are refused, as an action's are |
+| `close` | `conn`, `code`, `reason`, `path`, `params`, `query` | nobody: a `return` with a value is refused |
+
+Without `open`, a connection is accepted as it comes, and sent nothing. Without `message`, a
+connection that sends one is closed (1003). A message's run that fails sends nothing back; its
+record says why. `conn` is the connection's id, a key a flow keeps what it knows of the
+connection under, as the room sample keeps who joined; it is not a secret, and gives nothing to
+whoever has it.
+
 **A handler is everything tied to its trigger.** Each handler (§5.1) has a trigger node: a route's
-`request`, a clock's tick (its value the time of the tick), a file handler's `on_file` (the file's
-handle), a mail handler's `on_mail` (the message), a feed handler's `on_feed` (the event) and an
-action's `action` (what was sent). What reads from it is the handler's, and so is
+`request`, a websocket block's `websocket` (its record), a clock's tick (its value the time of the
+tick), a file handler's `on_file` (the file's handle), a mail handler's `on_mail` (the message), a
+feed handler's `on_feed` (the event) and an action's `action` (what was sent). What reads from it is the handler's, and so is
 every sink placed in it:
 
 - **Every sink takes its trigger.** The writes (state, a collection, a folder, a database), the

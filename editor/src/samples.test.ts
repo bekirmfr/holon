@@ -133,6 +133,13 @@ describe("sample flows", () => {
     expect(chat).toContain('SecretRead("anthropic_api_key")');
     // A piped call sends on its channel.
     expect(chat).toContain('ChannelSend("room")');
+    // A chat over WebSockets: holding connections on its path, and the channel it sends on and
+    // lets them subscribe to.
+    const room = derive("room").caps;
+    expect(room).toContain('WebSocket("/room/:name")');
+    expect(room).toContain('ChannelSend("room")');
+    expect(room).toContain('ChannelRead("room")');
+    expect(describeItem('WebSocket("/room/:name")')).toBe("hold WebSocket connections on /room/:name, and run on each message");
     const gemini = derive("gemini-chat").caps;
     expect(gemini).toContain('HttpRequest("generativelanguage.googleapis.com")');
     expect(gemini).toContain('SecretRead("gemini_api_key")');

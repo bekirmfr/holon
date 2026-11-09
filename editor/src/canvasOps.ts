@@ -57,11 +57,16 @@ export type FeedDraft = { feed: string; label: string; hash: string; log?: LogWo
  *  its label (`on queue payout_events`) and its handler unit's hash. */
 export type QueueDraft = { queue: string; label: string; hash: string; log?: LogWord };
 
+/** One block of a websocket of the derived server (a `websocket` node's group): its path, what it
+ *  runs on (`open`, `message` or `close`), its label (`WebSocket /room/:name message`) and its
+ *  handler unit's hash. */
+export type SocketDraft = { path: string; on: "open" | "message" | "close"; label: string; hash: string; log?: LogWord };
+
 /** One action of the derived server (an `action` node's group): its name, its label (`action
  *  reset`) and its handler unit's hash. */
 export type ActionDraft = { name: string; label: string; hash: string; log?: LogWord };
 
-/** The server a canvas declares: its endpoints, clocks, file, mail, feed and queue handlers and actions, why any handler can't be one, the
+/** The server a canvas declares: its endpoints, clocks, file, mail, feed and queue handlers, websockets and actions, why any handler can't be one, the
  *  server unit's hash once every handler is sound (and `portText` is a port, with a route), and
  *  the trace from each handler's stored children to canvas nodes, by its route or label. */
 export type DerivedServer = {
@@ -71,6 +76,7 @@ export type DerivedServer = {
   mails: MailDraft[];
   feeds: FeedDraft[];
   queues: QueueDraft[];
+  websockets: SocketDraft[];
   actions: ActionDraft[];
   errors: string[];
   serverHash: string | null;

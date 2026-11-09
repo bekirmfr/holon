@@ -37,13 +37,14 @@ pub(crate) fn trigger_labels(s: &Server) -> Vec<String> {
     triggers.extend(s.mails.iter().map(|m| m.label.clone()));
     triggers.extend(s.feeds.iter().map(|f| f.label.clone()));
     triggers.extend(s.queues.iter().map(|q| q.label.clone()));
+    triggers.extend(s.websockets.iter().flat_map(|w| w.blocks().map(|b| b.label.clone())));
     triggers.extend(s.actions.iter().map(|a| a.label.clone()));
     triggers
 }
 
 /// What a deploy of a unit nothing would start says.
 pub(crate) const STARTS_NOTHING: &str =
-    "nothing would start a run: it has no route, clock, file, mail, feed or queue handler or action (an action runs by hand: `export const run = action((input) => { … })`)";
+    "nothing would start a run: it has no route, websocket, clock, file, mail, feed or queue handler or action (an action runs by hand: `export const run = action((input) => { … })`)";
 
 pub(crate) fn is_valid_slug(s: &str) -> bool {
     !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
@@ -226,6 +227,12 @@ fn deploy(
             return err(400, format!("{named} starts this flow's {}: it can't be optional", q.label));
         }
     }
+    for w in &server.websockets {
+        let named = format!("WebSocket({:?})", w.path);
+        if body.requirements.optional.contains(&named) {
+            return err(400, format!("{named} opens this flow's WebSocket {}: it can't be optional", w.path));
+        }
+    }
     // Agents may run only actions it has.
     if let Some(name) = body.requirements.agents.iter().find(|n| server.action(n).is_none()) {
         return err(400, format!("agents may run {name:?}, but it has no action {name:?}"));
@@ -379,6 +386,9 @@ fn deploy(
         let document = body.document.clone().or(old_document);
         // Its subscribers stay subscribed across a redeploy, and its kept packs stay kept.
         let channels = deployments.get(&body.slug).map(|old| Arc::clone(&old.channels)).unwrap_or_default();
+        // So do its WebSocket connections, but those on a path this version has no websocket on.
+        let sockets: Arc<websockets::Sockets> = deployments.get(&body.slug).map(|old| Arc::clone(&old.sockets)).unwrap_or_default();
+        sockets.close_gone(Some(&server));
         // Runs waiting keep waiting, each on the unit it started on.
         let parked = deployments.get(&body.slug).map(|old| old.parked.clone()).unwrap_or_default();
         let state = match carried {
@@ -415,6 +425,7 @@ fn deploy(
                 life,
                 log,
                 channels,
+                sockets,
                 document,
                 versions,
                 events,
@@ -862,6 +873,7 @@ pub(crate) fn handle_delete_deployment(
             subscriptions::forget(deployments_path, slug, &dep.folders.all.feeds);
             dequeue::forget(deployments_path, slug, &dep.folders.all.queues);
             dep.channels.close();
+            dep.sockets.close_all(websockets::REMOVED);
             persist_deployments(deployments_path, deployments);
             Response::json(&deployment_entry(slug, &dep))
         }
@@ -1704,6 +1716,7 @@ pub(crate) fn handle_lifecycle(state: &AppState, slug: &str, action: &str, reque
         // A paused or stopped deployment answers nobody: its subscribers hear so.
         if dep.life.status != Status::Running {
             dep.channels.close();
+            dep.sockets.close_all(websockets::PAUSED);
         }
         // From here on the status is the person's choice, not the grant's.
         dep.grant.paused = false;

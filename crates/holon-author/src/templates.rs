@@ -60,7 +60,7 @@ use serde::Serialize;
 use crate::wire::{frozen_value, WParam, WPort, WType};
 
 /// The templates, in palette order.
-pub const TEMPLATES: &[&str] = &["request", "respond", "stripe_verify", "every", "on_file", "on_mail", "on_feed", "on_queue", "action"];
+pub const TEMPLATES: &[&str] = &["request", "respond", "websocket", "stripe_verify", "every", "on_file", "on_mail", "on_feed", "on_queue", "action"];
 
 /// A clock handler's period, read from its `seconds`: whole seconds, 1 up to core's `MAX_PERIOD`.
 pub fn period(seconds: &str) -> Result<u64, String> {
@@ -114,6 +114,20 @@ pub fn queue_name(params: &[WParam]) -> Result<String, String> {
         return Err(format!("on queue \"{queue}\": a queue is a name (letters, digits and _)"));
     }
     Ok(queue.to_string())
+}
+
+/// A websocket block's path and what it runs on, read from its `path` and `on`: a route's path,
+/// and `open`, `message` or `close`, as core reads them back.
+pub fn socket_block(params: &[WParam]) -> Result<(String, &'static str), String> {
+    let path = frozen_value(params, "path").unwrap_or("");
+    if holon_core::parse_path(path).is_none() {
+        return Err(format!("\"{path}\" is not a route path (use /chat, /room/:name or /files/*path)"));
+    }
+    let on = frozen_value(params, "on").unwrap_or("");
+    let Some(on) = holon_core::SOCKET_BLOCKS.iter().find(|b| **b == on) else {
+        return Err(format!("websocket {path}: \"{on}\" is none of open, message and close"));
+    };
+    Ok((path.to_string(), on))
 }
 
 /// An action's name, read from its `name`: letters, digits, `-` and `_`, as core reads it back.
@@ -176,6 +190,9 @@ pub fn describe(name: &str) -> Option<&'static str> {
         "respond" => {
             "Answers the route's request: body as the response, with the status set on the node (a record or list is sent as JSON). When body didn't arrive, it answers the missing status instead (404 unless set) with an error."
         }
+        "websocket" => {
+            "A websocket's block: a run when a browser opens a WebSocket on the path set on the node (on: open), for each text message it sends (on: message), or when the connection ends (on: close). Gives its record (open: the opening request, with conn, the connection's id; message: {conn, params, query, text}; close: {conn, params, query, code, reason}), its params and query, and a message's text parsed as JSON. Open answers as a route does: a subscription accepts and subscribes, a status of 300 or more refuses. A message's respond goes back on its connection. Everything wired to it is that run."
+        }
         "every" => {
             "A clock: a run every seconds set on the node, with now, the time of the tick. Everything wired to it is that run: its writes and calls out are tied to it. Beside a flow's routes, it shares their state."
         }
@@ -227,6 +244,11 @@ pub fn interface(name: &str, params: &[WParam]) -> Option<Interface> {
             ],
             hidden_inputs: true,
         },
+        "websocket" => Interface {
+            inputs: vec![request()],
+            outputs: vec![WPort::new("request", Record), WPort::new("params", Record), WPort::new("query", Record), WPort::new("json", Any)],
+            hidden_inputs: true,
+        },
         "every" => Interface { inputs: vec![], outputs: vec![WPort::new("now", Number)], hidden_inputs: false },
         "on_file" => Interface { inputs: vec![], outputs: vec![WPort::new("file", Record)], hidden_inputs: false },
         "on_mail" => Interface { inputs: vec![], outputs: vec![WPort::new("message", Record)], hidden_inputs: false },
@@ -259,6 +281,7 @@ pub fn defaults(name: &str) -> Option<Vec<WParam>> {
     Some(match name {
         "request" => vec![f("method", "GET"), f("path", "/"), f("resume", ""), f("log", "")],
         "respond" => vec![f("status", "200"), f("missing", "404"), f("headers", "false"), f("status_input", "false")],
+        "websocket" => vec![f("path", "/chat"), f("on", "message"), f("log", "")],
         "stripe_verify" => vec![f("tolerance", "300")],
         "every" => vec![f("seconds", "10"), f("log", "")],
         "on_file" => vec![f("folder", "inbox"), f("on", "new"), f("matching", ""), f("log", "")],
@@ -345,6 +368,20 @@ pub fn build(name: &str, params: &[WParam], store: &mut MapResolver) -> Result<U
                 e(3, 0, B, 4),
                 e(4, 0, B, 5),
             ];
+            Ok(composite(children, edges, inputs, outputs))
+        }
+
+        // The record, its params and query, and a message's text parsed: the block's unit feeds it.
+        "websocket" => {
+            socket_block(params)?;
+            let mut leaf = |prim: &str, p: Vec<Param>| add_leaf(store, prim, p, None);
+            let children = vec![
+                leaf("field", vec![frozen("name", "params")])?,
+                leaf("field", vec![frozen("name", "query")])?,
+                leaf("field", vec![frozen("name", "text")])?,
+                leaf("json_parse", vec![])?,
+            ];
+            let edges = vec![e(B, 0, 0, 0), e(B, 0, 1, 0), e(B, 0, 2, 0), e(2, 0, 3, 0), e(B, 0, B, 0), e(0, 0, B, 1), e(1, 0, B, 2), e(3, 0, B, 3)];
             Ok(composite(children, edges, inputs, outputs))
         }
 

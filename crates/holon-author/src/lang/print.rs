@@ -34,7 +34,7 @@ use crate::canvas::{Node, PlacedBody};
 use crate::composites::{inner_canvas, resolve, Names};
 use crate::lang::lower::{alias, call_noun, is_optional, RESERVED, UNUSED};
 use crate::lang::ts::{DATE_GETTERS, DATE_SETTERS};
-use crate::routes::{components, find_actions, find_clocks, find_feeds, find_files, find_mails, find_queues, find_routes};
+use crate::routes::{components, find_actions, find_clocks, find_feeds, find_files, find_mails, find_queues, find_routes, find_websockets};
 use crate::templates;
 use crate::text::restore;
 use crate::wire::{WParam, WPort, WType};
@@ -423,7 +423,7 @@ fn without_block_ties(nodes: Vec<&Node>, wires: Vec<BlockWire>) -> (Vec<&Node>, 
     let tie = |src: &Src, input: &str| {
         input == TRIGGER
             && (own_trigger(src)
-                || matches!(src, Src::Node { id, output } if (output == "request" && by_id.get(id.as_str()).is_some_and(|n| n.is_template("request"))) || (output == "now" && by_id.get(id.as_str()).is_some_and(|n| n.is_template("every"))) || (output == "file" && by_id.get(id.as_str()).is_some_and(|n| n.is_template("on_file"))) || (output == "message" && by_id.get(id.as_str()).is_some_and(|n| n.is_template("on_mail") || n.is_template("on_queue"))) || (output == "event" && by_id.get(id.as_str()).is_some_and(|n| n.is_template("on_feed"))) || (output == "input" && by_id.get(id.as_str()).is_some_and(|n| n.is_template("action"))) || passes_trigger(id)))
+                || matches!(src, Src::Node { id, output } if (output == "request" && by_id.get(id.as_str()).is_some_and(|n| n.is_template("request") || n.is_template("websocket"))) || (output == "now" && by_id.get(id.as_str()).is_some_and(|n| n.is_template("every"))) || (output == "file" && by_id.get(id.as_str()).is_some_and(|n| n.is_template("on_file"))) || (output == "message" && by_id.get(id.as_str()).is_some_and(|n| n.is_template("on_mail") || n.is_template("on_queue"))) || (output == "event" && by_id.get(id.as_str()).is_some_and(|n| n.is_template("on_feed"))) || (output == "input" && by_id.get(id.as_str()).is_some_and(|n| n.is_template("action"))) || passes_trigger(id)))
     };
     // A pass-through that feeds only ties goes, with the `true` it holds.
     let mut gone: HashSet<String> = HashSet::new();
@@ -488,6 +488,8 @@ struct Item {
     text: String,
     nodes: Vec<String>,
     body: Vec<Stmt>,
+    /// A websocket's blocks, each its trigger and its statements, in the order written.
+    blocks: Vec<(String, Vec<Stmt>)>,
 }
 
 pub struct Printer<'s> {
@@ -657,19 +659,59 @@ fn lines_of(text: &str, defs: &[Item], items: &[Item]) -> BTreeMap<String, u32> 
         for n in &item.nodes {
             lines.entry(n.clone()).or_insert(at);
         }
-        let Some(handler) = handler_of(s) else { continue };
-        match &handler.body {
-            js::ArrowFunctionBody::FunctionBody(b) => walk(&item.body, &b.statements, at, &line, &mut lines),
-            // An arrow whose body is its answer: every node is on that answer's line.
-            body => {
-                let at = body.as_expression().map(|e| line(e.span().start)).unwrap_or(at);
-                for st in &item.body {
-                    place(st, at, &mut lines);
+        if !item.blocks.is_empty() {
+            // A websocket: each block's trigger on its key's line, its statements on theirs.
+            let written = socket_blocks_of(s);
+            for (k, (trigger, body)) in item.blocks.iter().enumerate() {
+                match written.get(k).filter(|_| written.len() == item.blocks.len()) {
+                    Some((key, f)) => {
+                        lines.entry(trigger.clone()).or_insert(line(*key));
+                        arrow_lines(f, body, line(*key), &line, &mut lines);
+                    }
+                    None => {
+                        lines.entry(trigger.clone()).or_insert(at);
+                        body.iter().for_each(|st| place(st, at, &mut lines));
+                    }
                 }
+            }
+            continue;
+        }
+        let Some(handler) = handler_of(s) else { continue };
+        arrow_lines(handler, &item.body, at, &line, &mut lines);
+    }
+    lines
+}
+
+/// Each of a handler's statements' nodes on its line in the arrow `f` as laid out.
+fn arrow_lines(f: &js::ArrowFunctionExpression, body: &[Stmt], at: u32, line: &dyn Fn(u32) -> u32, lines: &mut BTreeMap<String, u32>) {
+    match &f.body {
+        js::ArrowFunctionBody::FunctionBody(b) => walk(body, &b.statements, at, line, lines),
+        // An arrow whose body is its answer: every node is on that answer's line.
+        answer => {
+            let at = answer.as_expression().map(|e| line(e.span().start)).unwrap_or(at);
+            for st in body {
+                place(st, at, lines);
             }
         }
     }
-    lines
+}
+
+/// A websocket's blocks as laid out, `route.websocket(path, { open: (req) => … })`: where each
+/// key starts, and its arrow.
+fn socket_blocks_of<'a>(s: &'a js::Statement<'a>) -> Vec<(u32, &'a js::ArrowFunctionExpression<'a>)> {
+    let js::Statement::ExpressionStatement(e) = s else { return vec![] };
+    let js::Expression::CallExpression(c) = &e.expression else { return vec![] };
+    let Some(js::Expression::ObjectExpression(o)) = c.arguments.get(1).and_then(|a| a.as_expression()) else { return vec![] };
+    o.properties
+        .iter()
+        .filter_map(|p| match p {
+            js::ObjectPropertyKind::ObjectProperty(p) => match &p.value {
+                js::Expression::ArrowFunctionExpression(f) => Some((p.span.start, &**f)),
+                _ => None,
+            },
+            _ => None,
+        })
+        .collect()
 }
 
 /// The function a handler's statement passes: its last argument but the options, an arrow.
@@ -1107,6 +1149,8 @@ impl<'s> Printer<'s> {
         errors.extend(queue_errors);
         let (actions, action_errors) = find_actions(&doc.nodes, &doc.edges);
         errors.extend(action_errors);
+        let (sockets, socket_errors) = find_websockets(&doc.nodes, &doc.edges, &routes);
+        errors.extend(socket_errors);
         if !errors.is_empty() {
             return Err(format!("{}: TypeScript writes each handler with its own nodes", errors.join("; ")));
         }
@@ -1122,7 +1166,20 @@ impl<'s> Printer<'s> {
             Feed(&'r crate::routes::FeedGroup),
             Queue(&'r crate::routes::QueueGroup),
             Action(&'r crate::routes::ActionGroup),
+            /// A websocket's blocks on one path, in the order their nodes are.
+            Socket(&'r str, Vec<&'r crate::routes::SocketGroup>),
         }
+        let mut paths: Vec<&str> = Vec::new();
+        for s in &sockets {
+            if !paths.contains(&s.path.as_str()) {
+                paths.push(&s.path);
+            }
+        }
+        let socket_handlers = paths.into_iter().map(|path| {
+            let mut blocks: Vec<&crate::routes::SocketGroup> = sockets.iter().filter(|s| s.path == path).collect();
+            blocks.sort_by_key(|s| first(&s.node_ids));
+            (blocks.iter().map(|s| first(&s.node_ids)).min().unwrap_or(usize::MAX), Handler::Socket(path, blocks))
+        });
         let mut handlers: Vec<(usize, Handler)> = routes
             .iter()
             .map(|r| (first(&r.node_ids), Handler::Route(r)))
@@ -1132,9 +1189,20 @@ impl<'s> Printer<'s> {
             .chain(feeds.iter().map(|f| (first(&f.node_ids), Handler::Feed(f))))
             .chain(queues.iter().map(|q| (first(&q.node_ids), Handler::Queue(q))))
             .chain(actions.iter().map(|a| (first(&a.node_ids), Handler::Action(a))))
+            .chain(socket_handlers)
             .collect();
         handlers.sort_by_key(|(at, _)| *at);
-        let handled: HashSet<&String> = routes.iter().flat_map(|r| &r.node_ids).chain(clocks.iter().flat_map(|c| &c.node_ids)).chain(files.iter().flat_map(|f| &f.node_ids)).chain(mails.iter().flat_map(|m| &m.node_ids)).chain(feeds.iter().flat_map(|f| &f.node_ids)).chain(queues.iter().flat_map(|q| &q.node_ids)).chain(actions.iter().flat_map(|a| &a.node_ids)).collect();
+        let handled: HashSet<&String> = routes
+            .iter()
+            .flat_map(|r| &r.node_ids)
+            .chain(clocks.iter().flat_map(|c| &c.node_ids))
+            .chain(files.iter().flat_map(|f| &f.node_ids))
+            .chain(mails.iter().flat_map(|m| &m.node_ids))
+            .chain(feeds.iter().flat_map(|f| &f.node_ids))
+            .chain(queues.iter().flat_map(|q| &q.node_ids))
+            .chain(actions.iter().flat_map(|a| &a.node_ids))
+            .chain(sockets.iter().flat_map(|s| &s.node_ids))
+            .collect();
         let stray: Vec<Vec<String>> = components(&ids, &doc.edges).into_iter().filter(|g| !g.iter().any(|id| handled.contains(id))).collect();
         if !stray.is_empty() {
             let what = if doc.nodes.iter().any(|n| n.data.name == "file_arrival") {
@@ -1193,6 +1261,7 @@ impl<'s> Printer<'s> {
                     let head = format!("export const {} = action(", a.name);
                     self.handler(doc, &a.node_ids, input, Kind::Action, head, options(&[("log", log_option(&a.log))]), &a.label)?
                 }
+                Handler::Socket(path, blocks) => self.websocket(doc, path, &blocks)?,
             };
             items.push(item);
         }
@@ -1202,13 +1271,6 @@ impl<'s> Printer<'s> {
     /// A handler: `head`, its function, `options`, `)`; its trigger is `trigger`.
     #[allow(clippy::too_many_arguments)]
     fn handler(&mut self, doc: &FlowDocument, node_ids: &[String], trigger: &Node, kind: Kind, head: String, options: String, label: &str) -> Result<Item, String> {
-        let by_id: HashMap<&str, &Node> = doc.nodes.iter().map(|n| (n.id.as_str(), n)).collect();
-        let nodes: Vec<&Node> = node_ids.iter().map(|id| by_id[id.as_str()]).collect();
-        let ws = doc.edges.iter().map(|w| (Src::Node { id: w.source.clone(), output: w.output().to_string() }, w.target.clone(), w.input().to_string())).collect();
-        let group = Group::new(nodes, ws, vec![]);
-        if let Some(why) = unwritable(&group.nodes, &group.incoming, Some(&trigger.id)) {
-            return Err(format!("{label}: {why}"));
-        }
         let fallback = match kind {
             Kind::Route => "req",
             Kind::Action => "input",
@@ -1218,6 +1280,56 @@ impl<'s> Printer<'s> {
             Kind::Queue => "m",
             _ => "",
         };
+        let (function, body) = self.handler_function(doc, node_ids, trigger, kind, fallback, label)?;
+        Ok(Item { text: format!("{head}{function}{options})"), nodes: vec![trigger.id.clone()], body, blocks: vec![] })
+    }
+
+    /// `route.websocket(path, { open: …, message: …, close: … }, { log })`: each block's function
+    /// as a route's (`open`) or an action's (`message`, and `close`, whose only answer is the
+    /// nothing of one that calls alone), in that order.
+    fn websocket(&mut self, doc: &FlowDocument, path: &str, blocks: &[&crate::routes::SocketGroup]) -> Result<Item, String> {
+        let by_id: HashMap<&str, &Node> = doc.nodes.iter().map(|n| (n.id.as_str(), n)).collect();
+        self.vocab.insert("route".into());
+        let (mut fields, mut written) = (Vec::new(), Vec::new());
+        for g in blocks {
+            let trigger = by_id[g.socket_id.as_str()];
+            let (kind, fallback) = match g.on.as_str() {
+                "open" => (Kind::Route, "req"),
+                "message" => (Kind::Action, "m"),
+                _ => (Kind::Action, "c"),
+            };
+            if g.on == "close"
+                && let Some(r) = g.node_ids.iter().map(|id| by_id[id.as_str()]).find(|n| n.is_template("respond"))
+                && (r.param("status") != "204" || doc.edges.iter().any(|w| w.target == r.id && w.input() != "request"))
+            {
+                return Err(format!("{}: a close block answers nobody", g.label));
+            }
+            let (function, body) = self.handler_function(doc, &g.node_ids, trigger, kind, fallback, &g.label)?;
+            fields.push(format!("{}: {function}", g.on));
+            written.push((trigger.id.clone(), body));
+        }
+        let levels: Vec<(&str, &str)> = blocks.iter().map(|g| (g.on.as_str(), log_option(&g.log))).collect();
+        let options = match levels.first() {
+            Some((_, first)) if !first.is_empty() && levels.iter().all(|(_, l)| l == first) => format!(", {{ log: {} }}", quote(first)),
+            _ if levels.iter().any(|(_, l)| !l.is_empty()) => {
+                let each: Vec<String> = levels.iter().filter(|(_, l)| !l.is_empty()).map(|(on, l)| format!("{on}: {}", quote(l))).collect();
+                format!(", {{ log: {{ {} }} }}", each.join(", "))
+            }
+            _ => String::new(),
+        };
+        Ok(Item { text: format!("route.websocket({}, {{ {} }}{options})", quote(path), fields.join(", ")), nodes: vec![], body: vec![], blocks: written })
+    }
+
+    /// A handler's function, `(req) => …`, and its statements; `fallback` names its parameter
+    /// when the text gave it none it can keep.
+    fn handler_function(&mut self, doc: &FlowDocument, node_ids: &[String], trigger: &Node, kind: Kind, fallback: &str, label: &str) -> Result<(String, Vec<Stmt>), String> {
+        let by_id: HashMap<&str, &Node> = doc.nodes.iter().map(|n| (n.id.as_str(), n)).collect();
+        let nodes: Vec<&Node> = node_ids.iter().map(|id| by_id[id.as_str()]).collect();
+        let ws = doc.edges.iter().map(|w| (Src::Node { id: w.source.clone(), output: w.output().to_string() }, w.target.clone(), w.input().to_string())).collect();
+        let group = Group::new(nodes, ws, vec![]);
+        if let Some(why) = unwritable(&group.nodes, &group.incoming, Some(&trigger.id)) {
+            return Err(format!("{label}: {why}"));
+        }
         let param = if kind == Kind::Every { String::new() } else { self.handle_name(&trigger.id, fallback) };
         let request = (kind != Kind::Every).then(|| (trigger.id.clone(), param.clone()));
         let mut block = Block::new(self, &group, kind, request);
@@ -1238,11 +1350,11 @@ impl<'s> Printer<'s> {
             let object = value.starts_with('{') && is_one_group(value);
             if object || !value.starts_with('{') {
                 let value = if object { format!("({value})") } else { value.to_string() };
-                return Ok(Item { text: format!("{head}{asy}{params} => {value}{options})"), nodes: vec![trigger.id.clone()], body });
+                return Ok((format!("{asy}{params} => {value}"), body));
             }
         }
         let text = body.iter().map(|s| s.text.clone()).collect::<Vec<_>>().join("\n");
-        Ok(Item { text: format!("{head}{asy}{params} => {{\n{text}\n}}{options})"), nodes: vec![trigger.id.clone()], body })
+        Ok((format!("{asy}{params} => {{\n{text}\n}}"), body))
     }
 
     /// The name a handler's parameter goes by: the text's, or `fallback` when it has none it
@@ -1296,7 +1408,7 @@ impl<'s> Printer<'s> {
         let body = block.body()?;
         let params: Vec<String> = ins.iter().map(|(_, ts)| ts.clone()).collect();
         let text = body.iter().map(|s| s.text.clone()).collect::<Vec<_>>().join("\n");
-        Ok(Item { text: format!("function {hname}({}) {{\n{text}\n}}", params.join(", ")), nodes: vec![], body: vec![] })
+        Ok(Item { text: format!("function {hname}({}) {{\n{text}\n}}", params.join(", ")), nodes: vec![], body: vec![], blocks: vec![] })
     }
 
     /// A function's unit opened: its children, its wires, its boundary's inputs as `Src::In` and
@@ -1359,7 +1471,7 @@ impl<'s> Printer<'s> {
             }
         };
         let opts = if opts.is_empty() { String::new() } else { format!(", {{ {} }}", opts.join(", ")) };
-        Ok(Item { text: format!("const {hname} = js(function {fn_name}({}) {{{body}}}{opts})", ins.join(", ")), nodes: vec![], body: vec![] })
+        Ok(Item { text: format!("const {hname} = js(function {fn_name}({}) {{{body}}}{opts})", ins.join(", ")), nodes: vec![], body: vec![], blocks: vec![] })
     }
 
     /// A node's params that differ from its leaf's or template's defaults (a literal's always).
@@ -2797,7 +2909,8 @@ impl<'p, 's, 'g> Block<'p, 's, 'g> {
                 let name = node.param("name").to_string();
                 let base = self.receiver(node, "record")?;
                 // A field of the request record named as one of the request's parts.
-                let clash = matches!(self.g.incoming.get(&(node.id.clone(), "record".into())), Some(Src::Node { id, output }) if self.is_request(id) && output == "request") && REQUEST_PARTS.contains(&name.as_str());
+                let clash = matches!(self.g.incoming.get(&(node.id.clone(), "record".into())), Some(Src::Node { id, output }) if self.is_request(id) && output == "request" && self.g.node(id).data.outputs.iter().any(|p| p.name == name))
+                    && REQUEST_PARTS.contains(&name.as_str());
                 member(if clash { format!("{base}.request.{name}") } else { format!("{base}.{name}") })
             }
             "lookup" => {
@@ -4590,6 +4703,26 @@ export const t = action((input) => {
             "import { flow, on, route } from \"holon\"\nimport state from \"state\"\nimport payouts from \"queue:payouts\"\nimport retries from \"queue:retries\"\n\nflow(\"payouts\", { port: 8080 })\n\non.queue(payouts, (message) => {\n  state.last = message.data\n  retries.send({ data: message.data, group: message.group })\n})\n\nroute.get(\"/last\", () => state.last)\n",
         );
         prints_back("import { flow, on } from \"holon\"\nimport state from \"state\"\nimport payouts from \"queue:payouts\"\n\nflow(\"payouts\")\n\non.queue(\n  payouts,\n  (m) => {\n    state.count = m.count\n  },\n  { log: \"lazy\" },\n)\n");
+    }
+
+    /// A websocket prints back as one call, its blocks in order, each an arrow; its levels as
+    /// one when they are one, else by block.
+    #[test]
+    fn websockets_print_back_as_written() {
+        prints_back(
+            "import { flow, route } from \"holon\"\nimport people from \"collection:people\"\nimport room from \"channel:room\"\n\nflow(\"room\", { port: 8132 })\n\nroute.websocket(\"/room/:name\", {\n  open: (req) => {\n    people[req.conn] = req.params.name\n    return room.subscribe()\n  },\n  message: (m) => {\n    room.send({ from: people[m.conn], text: m.text })\n  },\n  close: (c) => {\n    delete people[c.conn]\n  },\n})\n",
+        );
+        prints_back("import { flow, route } from \"holon\"\n\nflow(\"echo\", { port: 8132 })\n\nroute.websocket(\"/echo\", { message: (m) => m.json.n + 1 }, { log: \"lazy\" })\n");
+        prints_back(
+            "import { flow, route } from \"holon\"\nimport state from \"state\"\n\nflow(\"echo\", { port: 8132 })\n\nroute.websocket(\n  \"/echo\",\n  {\n    message: (m) => m.text,\n    close: (c) => {\n      state.last = c.code\n    },\n  },\n  { log: { message: \"unrecorded\" } },\n)\n",
+        );
+        // A method is written as an arrow, the blocks kept in the order written; a level by block
+        // that is every block's, as one.
+        let text = reprinted("import { flow, route } from \"holon\"\nimport state from \"state\"\n\nflow(\"echo\", { port: 8132 })\n\nroute.websocket(\"/echo\", {\n  close(c) {\n    state.last = c.code\n  },\n  message(m) {\n    return m.text\n  },\n}, { log: { message: \"lazy\", close: \"lazy\" } })\n");
+        assert_eq!(
+            text,
+            "import { flow, route } from \"holon\"\nimport state from \"state\"\n\nflow(\"echo\", { port: 8132 })\n\nroute.websocket(\n  \"/echo\",\n  {\n    close: (c) => {\n      state.last = c.code\n    },\n    message: (m) => m.text,\n  },\n  { log: \"lazy\" },\n)\n"
+        );
     }
 
     /// Actions print back as written, each with the name of what was sent.

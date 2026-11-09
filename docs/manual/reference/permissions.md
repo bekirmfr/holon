@@ -13,6 +13,7 @@ the editor show).
 | Name | Shown as | From |
 |---|---|---|
 | `NetworkIngress` | receive requests | a `route` |
+| `WebSocket("/room/:name")` | hold WebSocket connections on /room/:name, and run on each message | `route.websocket("/room/:name", { … })` |
 | `Clock` | read the clock | `now`, or `every` (a clock starts runs) |
 | `Action("name")` | can be run by hand: name | `export const name = action(…)` |
 | `Random` | use randomness | `random` |
@@ -37,9 +38,9 @@ the editor show).
 | `RunsAction("billing/charge")` | run the action charge of the flow billing | `charge(x)`, with `import { charge } from "flow:billing"` |
 | `Await("e")` | wait for an event "e" and continue later | `await event("e")` |
 
-A flow's triggers, what start its runs, are among them: `NetworkIngress` for its routes, `Clock`
-for an `every`, `FileArrival` for each folder a file handler watches, and `Action("name")` for
-each action. A flow with a clock asks for `Clock` even if it never reads `now`, because
+A flow's triggers, what start its runs, are among them: `NetworkIngress` for its routes,
+`WebSocket("/path")` for each websocket, `Clock` for an `every`, `FileArrival` for each folder a
+file handler watches, and `Action("name")` for each action. A flow with a clock asks for `Clock` even if it never reads `now`, because
 the clock starts its runs. A deploy with no trigger is refused, saying how to run it by hand, and
 none of a flow's triggers can be optional.
 
@@ -111,6 +112,14 @@ can change both columns
 | `max_db_read_bytes` | bytes a run reads from databases | 16777216 (16 MiB) | 268435456 |
 | `db_statement_ms` | time one SQL statement may take | 5000 | 60000 |
 | `max_db_statements` | SQL statements a run sends, reads and writes | 100 | 10000 |
+| `max_pack_bytes` | a pack a run sends on a channel, as JSON | 65536 (64 KiB) | 1048576 |
+| `max_packs_per_run` | packs a run sends | 1000 | 100000 |
+| `channel_keep` | packs each channel keeps for subscribers that ask for them | 100 | 10000 |
+| `channel_buffer` | packs waiting for one subscriber before it is dropped as too slow | 256 | 4096 |
+| `max_subscribers` | subscribers of one channel at once (a WebSocket subscribed to it is one) | 100 | 10000 |
+| `max_websockets` | WebSocket connections the deployment holds at once | 100 | 10000 |
+| `max_message_bytes` | a message a WebSocket connection sends | 65536 (64 KiB) | 1048576 (1 MiB) |
+| `messages_per_second` | messages each WebSocket connection may send a second, in bursts of twice that | 10 | 1000 |
 | `keep_runs` | runs the deployment's log keeps, the newest | 500 (`--keep-runs`) | 20000 |
 | `keep_run_days` | days the deployment's log keeps a run | 3650 (any age) | 3650 |
 

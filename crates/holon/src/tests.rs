@@ -3061,6 +3061,195 @@ fn a_server_deployment_answers_on_its_own_port_within_limits() {
     assert!(released, "the port is free again");
 }
 
+/// A flow's WebSockets through a real socket (host-capabilities L4 §5.12.14): a GET there without
+/// the upgrade is a 426, a page from another site a 403, an open block's refusal its own status;
+/// one accepted runs `open` (the first message its answer, or a subscription), each message
+/// `message` (its answer sent back, its packs to every subscriber) and `close` once, with the
+/// page's code or the host's: a binary message 1003, one too big 1009, too many a second 1008, a
+/// message where there is no message block 1003, a pause 1001. Each run is logged, `open` with the
+/// handshake's status, and `holon verify` runs each again.
+#[test]
+fn a_websocket_runs_its_blocks_through_a_real_socket() {
+    use std::net::TcpStream;
+    use tungstenite::client::IntoClientRequest;
+    use tungstenite::{Message, WebSocket};
+    let mut state = test_state();
+    state.listeners = Some(Mutex::new(BTreeMap::new()));
+    let port = free_port();
+    let text = format!(
+        "import {{ flow, route, status }} from \"holon\"\nimport people from \"collection:people\"\nimport room from \"channel:room\"\n\nflow(\"chat\", {{ port: {port} }})\n\nroute.websocket(\"/room/:name\", {{\n  open: (req) => {{\n    people[req.conn] = req.params.name\n    room.send({{ joined: req.params.name }})\n    return room.subscribe()\n  }},\n  message: (m) => {{\n    room.send({{ from: people[m.conn], text: m.text }})\n    return {{ echo: m.text }}\n  }},\n  close: (c) => {{\n    delete people[c.conn]\n    room.send({{ left: c.params.name, code: c.code }})\n  }},\n}}, {{ log: {{ message: \"lazy\" }} }})\n\nroute.websocket(\"/closed\", {{ open: () => status(403, {{ error: \"closed\" }}) }})\n\nroute.websocket(\"/hello\", {{ open: (req) => `hello ${{req.query.who ?? \"you\"}}` }})\n"
+    );
+    let slug = deploy_plain_text(&state, &text);
+    sync_listeners(&state);
+    let sockets = Arc::clone(&state.deployments.lock().unwrap()[&slug].sockets);
+    let open = |path: &str, origin: Option<&str>| -> Result<WebSocket<TcpStream>, u16> {
+        let stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+        let mut request = format!("ws://127.0.0.1:{port}{path}").into_client_request().unwrap();
+        if let Some(origin) = origin {
+            request.headers_mut().insert("origin", origin.parse().unwrap());
+        }
+        match tungstenite::client(request, stream) {
+            Ok((ws, _)) => Ok(ws),
+            Err(tungstenite::HandshakeError::Failure(tungstenite::Error::Http(r))) => Err(r.status().as_u16()),
+            Err(e) => panic!("{path}: {e}"),
+        }
+    };
+    let said = |ws: &mut WebSocket<TcpStream>| loop {
+        match ws.read().unwrap() {
+            Message::Text(t) => break serde_json::from_str::<serde_json::Value>(&t).unwrap_or_else(|_| serde_json::Value::String(t.to_string())),
+            Message::Close(c) => panic!("closed: {c:?}"),
+            _ => {}
+        }
+    };
+    // The code the server closed it with, its close answered as a browser answers it.
+    let closed_with = |ws: &mut WebSocket<TcpStream>| {
+        let code = loop {
+            match ws.read() {
+                Ok(Message::Close(c)) => break c.map(|c| u16::from(c.code)),
+                Ok(_) => {}
+                Err(e) => panic!("{e}"),
+            }
+        };
+        while ws.read().is_ok() {}
+        code
+    };
+
+    // Not a WebSocket's opening request, a page from elsewhere, a refusal: nothing opens.
+    let plain = raw_http(port, b"GET /room/ann HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n");
+    assert!(plain.starts_with("HTTP/1.1 426") && plain.to_ascii_lowercase().contains("upgrade: websocket"), "{plain}");
+    assert_eq!(open("/hello", Some("http://evil.example")).err(), Some(403));
+    assert_eq!(open("/closed", None).err(), Some(403));
+
+    // The page's own origin: open's answer is the first message; with no message block, a
+    // message closes it.
+    let mut hello = open("/hello?who=ann", Some(&format!("http://127.0.0.1:{port}"))).unwrap();
+    assert_eq!(said(&mut hello), serde_json::json!("hello ann"));
+    hello.send(Message::text("hi")).unwrap();
+    assert_eq!(closed_with(&mut hello), Some(1003));
+
+    // Two in a room: each message runs, its answer back to its sender, its pack to both once its
+    // record is where its level puts it (lazy: the next sync).
+    let mut a = open("/room/ann", None).unwrap();
+    let mut b = open("/room/bob", None).unwrap();
+    assert_eq!(said(&mut a), serde_json::json!({ "joined": "bob" }));
+    b.send(Message::text("hi")).unwrap();
+    assert_eq!(said(&mut b), serde_json::json!({ "echo": "hi" }));
+    crate::recorder::sync_logs(&state.deployments).unwrap();
+    let pack = serde_json::json!({ "from": "bob", "text": "hi" });
+    assert_eq!((said(&mut a), said(&mut b)), (pack.clone(), pack));
+
+    // A binary message closes its connection (1003), and close runs with the host's code.
+    b.send(Message::binary(vec![1u8, 2, 3])).unwrap();
+    assert_eq!(closed_with(&mut b), Some(1003));
+    assert_eq!(said(&mut a), serde_json::json!({ "left": "bob", "code": 1003 }));
+    // Past max_message_bytes (64 KiB): 1009.
+    a.send(Message::text("x".repeat(70 << 10))).unwrap();
+    assert_eq!(closed_with(&mut a), Some(1009));
+    // More than messages_per_second (10, bursts of 20): 1008.
+    let mut c = open("/room/cy", None).unwrap();
+    for n in 0..30 {
+        c.send(Message::text(format!("{n}"))).unwrap();
+    }
+    assert_eq!(closed_with(&mut c), Some(1008));
+    eventually("each connection's messages and its close ran", || sockets.count() == 0);
+    // Paused, its connections close (1001), and their close runs all the same.
+    let mut d = open("/room/dee", None).unwrap();
+    assert_eq!(route(&state, &req("POST", &format!("/deployments/{slug}/pause"), vec![])).status_code, 200);
+    assert_eq!(closed_with(&mut d), Some(1001));
+
+    eventually("dee's close ran", || sockets.count() == 0);
+    let entries = log_entries(&state, &slug);
+    // Each run's entry, with its record as plain JSON.
+    let runs = |label: &str| {
+        let plain = |v: &serde_json::Value| serde_json::from_str::<serde_json::Value>(&holon_core::stringify_json(&serde_json::from_value::<SValue>(v.clone()).unwrap().into_core()).unwrap()).unwrap();
+        let ran = entries.iter().filter(|e| e["kind"] == "websocket" && e["route"] == label);
+        ran.map(|e| serde_json::json!({ "status": e["status"], "request": plain(&e["request"]) })).collect::<Vec<_>>()
+    };
+    let opened: Vec<_> = runs("WebSocket /room/:name open").iter().map(|e| (e["request"]["params"]["name"].clone(), e["status"].clone())).collect();
+    assert_eq!(opened.len(), 4, "{opened:?}");
+    assert!(opened.iter().all(|(_, status)| *status == 101), "{opened:?}");
+    assert_eq!(runs("WebSocket /closed open")[0]["status"], 403);
+    let mut ended: Vec<(String, u64)> = runs("WebSocket /room/:name close")
+        .iter()
+        .map(|e| (e["request"]["params"]["name"].as_str().unwrap().to_string(), e["request"]["code"].as_u64().unwrap()))
+        .collect();
+    ended.sort();
+    assert_eq!(ended, [("ann".into(), 1009), ("bob".into(), 1003), ("cy".into(), 1008), ("dee".into(), 1001)]);
+    let messages = runs("WebSocket /room/:name message");
+    assert!(messages.iter().any(|e| e["request"]["text"] == "hi" && e["request"]["conn"].as_str().is_some_and(|c| c.len() == 16)), "{messages:?}");
+    // The ones that came before the close ran: the burst's.
+    assert!(messages.iter().filter(|e| e["request"]["params"]["name"] == "cy").count() >= 20, "{messages:?}");
+    let people = body_json(route(&state, &req("GET", &format!("/deployments/{slug}/collections/people"), vec![])));
+    assert_eq!(people["items"].as_array().map(Vec::len), Some(0), "who left was let go: {people}");
+
+    let export: verify::Export = serde_json::from_value(body_json(route(&state, &req("GET", &format!("/deployments/{slug}/export"), vec![])))).unwrap();
+    let report = verify::check(&export, None, &BTreeMap::new());
+    assert!(report.ok(), "{}", verify::describe(&report, None));
+    assert!(report.reruns.iter().all(|(_, r)| *r == verify::Rerun::Matched), "{}", verify::describe(&report, None));
+}
+
+/// A connection its open block accepts but the host can't hold (its channel has all the
+/// subscribers it may) is refused, 503, and its close runs as a dropped connection's does (1006):
+/// what open kept of it is let go.
+#[test]
+fn a_connection_accepted_but_not_held_runs_its_close() {
+    use std::net::TcpStream;
+    use tungstenite::client::IntoClientRequest;
+    let mut state = test_state();
+    state.listeners = Some(Mutex::new(BTreeMap::new()));
+    let port = free_port();
+    let text = format!(
+        "import {{ flow, route }} from \"holon\"
+import people from \"collection:people\"
+import gone from \"collection:gone\"
+import room from \"channel:room\"
+
+flow(\"full\", {{ port: {port} }})
+
+route.websocket(\"/room/:name\", {{
+  open: (req) => {{
+    people[req.conn] = req.params.name
+    return room.subscribe()
+  }},
+  close: (c) => {{
+    delete people[c.conn]
+    gone[c.params.name] = c.code
+  }},
+}})
+"
+    );
+    // Its channel holds one subscriber: the deploy asks for it, as the flow's `limits` would.
+    let plan = holon_author::agent::plan(&text).unwrap_or_else(|e| panic!("{e}"));
+    for u in &plan.units {
+        assert_eq!(route(&state, &req("POST", "/unit", u.clone())).status_code, 200);
+    }
+    let one = serde_json::json!({ "limits": { "max_subscribers": 1 } });
+    let preview = body_json(route(&state, &req("POST", "/deploy/preview", serde_json::to_vec(&serde_json::json!({ "slug": plan.name, "unit": plan.unit, "requirements": one })).unwrap())));
+    let asked = preview["needs_approval"].clone();
+    let deployed = deploy_json(&state, &plan.name, parse_hash(&plan.unit).unwrap(), serde_json::json!({ "acknowledge": asked, "document": plan.document, "requirements": one }));
+    let status = deployed.status_code;
+    assert_eq!(status, 200, "{}", String::from_utf8_lossy(&body_bytes(deployed)));
+    let slug = plan.name;
+    sync_listeners(&state);
+    let open = |path: &str| {
+        let stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+        match tungstenite::client(format!("ws://127.0.0.1:{port}{path}").into_client_request().unwrap(), stream) {
+            Ok((ws, _)) => Ok(ws),
+            Err(tungstenite::HandshakeError::Failure(tungstenite::Error::Http(r))) => Err(r.status().as_u16()),
+            Err(e) => panic!("{path}: {e}"),
+        }
+    };
+    let _ann = open("/room/ann").unwrap();
+    assert_eq!(open("/room/bob").err(), Some(503));
+    let items = |name: &str| body_json(route(&state, &req("GET", &format!("/deployments/{slug}/collections/{name}"), vec![])))["items"].clone();
+    let people = items("people");
+    assert_eq!(people.as_array().map(Vec::len), Some(1), "only ann is held: {people}");
+    let gone = items("gone");
+    assert!(gone.to_string().contains("bob") && gone.to_string().contains("1006"), "bob's close ran, as a dropped connection's: {gone}");
+}
+
 /// A route whose runs can never wait (unrecorded and granted, reading only its request, the clock
 /// and random numbers, its flow in memory) is answered on the data plane's own worker, without the
 /// hop onto the blocking pool (docs/L4s/request-path-L4.md §4.5 a): through a real socket it
@@ -11051,7 +11240,7 @@ fn the_server_records_what_its_golden_record_holds() {
         let slug = plan.name.clone();
         let (routes, actions) = {
             let table = state.deployments.lock().unwrap();
-            let server = table[&slug].server.clone().unwrap_or_else(|| holon_core::Server { port: None, routes: vec![], clocks: vec![], files: vec![], mails: vec![], feeds: vec![], queues: vec![], actions: vec![] });
+            let server = table[&slug].server.clone().unwrap_or_else(|| holon_core::Server { port: None, routes: vec![], clocks: vec![], files: vec![], mails: vec![], feeds: vec![], queues: vec![], websockets: vec![], actions: vec![] });
             (server.routes.iter().map(|r| (r.method.clone(), r.path.clone())).collect::<Vec<_>>(), server.actions.iter().map(|a| a.name.clone()).collect::<Vec<_>>())
         };
         let log = Arc::clone(&state.deployments.lock().unwrap()[&slug].log);

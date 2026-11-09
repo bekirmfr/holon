@@ -939,8 +939,8 @@ fn rerun(
 
     // What it ran: a request's endpoint, with the request; a clock's tick, a file's, a mail's or a
     // feed's run, that handler alone (the file's handle, the message, or the event, among the
-    // sourced values); an action's, its first part or
-    // a resumed one, its handler with what was sent; anything else, the whole unit.
+    // sourced values); an action's, its first part or a resumed one, and a WebSocket block's, its
+    // handler with what was sent (the block's record); anything else, the whole unit.
     let clock = match &entry.route {
         Some(label) if entry.kind == "tick" => {
             read_server(deployed, resolver).ok().and_then(|s| s.clocks.into_iter().find(|c| c.label == *label)).map(|c| (c.handler, false))
@@ -957,6 +957,9 @@ fn rerun(
         Some(label) if entry.kind == "queue" => {
             read_server(deployed, resolver).ok().and_then(|s| s.queues.into_iter().find(|q| q.label == *label)).map(|q| (q.handler, false))
         }
+        Some(label) if entry.kind == "websocket" => read_server(deployed, resolver)
+            .ok()
+            .and_then(|s| s.websockets.iter().flat_map(|w| w.blocks()).find(|b| b.label == *label).map(|b| (b.handler, true))),
         Some(label) if entry.kind == "trigger" || entry.kind == "resume" => {
             read_server(deployed, resolver).ok().and_then(|s| s.actions.into_iter().find(|a| a.label == *label)).map(|a| (a.handler, true))
         }

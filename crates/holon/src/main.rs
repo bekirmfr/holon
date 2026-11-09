@@ -226,6 +226,7 @@ mod touches;
 mod tests;
 mod units;
 mod verify;
+mod websockets;
 mod wire;
 mod workbench;
 
@@ -525,6 +526,9 @@ struct Deployment {
     /// Its channels, with their kept packs and subscribers (channels.rs): kept across redeploys,
     /// rebuilt from the log at load.
     channels: Arc<channels::Channels>,
+    /// Its open WebSocket connections (websockets.rs): kept across redeploys, closed when it is
+    /// paused, stopped or removed. Never persisted: a restart ends them.
+    sockets: Arc<websockets::Sockets>,
     /// The flow document (canvas) this deployment was deployed from, as the editor sent it, so
     /// view mode shows exactly what runs even after the flow is edited. Persisted.
     document: Option<serde_json::Value>,

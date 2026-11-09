@@ -1578,6 +1578,10 @@ A route: answers requests with the method and path set on the node (path params 
 
 Answers the route's request: body as the response, with the status set on the node (a record or list is sent as JSON). When body didn't arrive, it answers the missing status instead (404 unless set) with an error.
 
+### `websocket`
+
+A websocket's block: a run when a browser opens a WebSocket on the path set on the node (on: open), for each text message it sends (on: message), or when the connection ends (on: close). Gives its record (open: the opening request, with conn, the connection's id; message: {conn, params, query, text}; close: {conn, params, query, code, reason}), its params and query, and a message's text parsed as JSON. Open answers as a route does: a subscription accepts and subscribes, a status of 300 or more refuses. A message's respond goes back on its connection. Everything wired to it is that run.
+
 ### `stripe_verify`
 
 Checks a Stripe webhook's signature as Stripe's own libraries do: the HMAC-SHA256 of the timestamp and raw body under the endpoint's secret, compared in constant time with each v1 signature (any one matching passes, as while a secret is rolled), the timestamp within tolerance seconds of now. Gives the event (the body parsed) only when it verifies; otherwise nothing, so a respond refuses it.

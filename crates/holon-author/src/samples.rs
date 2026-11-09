@@ -575,6 +575,18 @@ static SAMPLES: &[Sample] = &[
         text: include_str!("../samples/chat-proxy.holon.ts"),
     },
     Sample {
+        name: "room",
+        title: "Room (a chat over WebSockets)",
+        description: "A chat page over WebSockets: a page opens one on /room/<name>, and each of the connection's blocks is a run. open keeps who joined by the connection's id (conn), tells the room and subscribes the connection to the channel room, so every pack sent on it reaches every page in the room; message says each text the page sends to the room under its sender's name; close runs once the connection has ended, forgets them and says who left. A page from another site can't open one, and each connection may send ten messages a second (max_websockets, max_message_bytes and messages_per_second under ⚙).",
+        shows: &["websockets", "channels", "collections", "HTML response (an envelope with headers)"],
+        port: Some("8132"),
+        secrets: &[],
+        optional: &[],
+        browsers: None,
+        try_it: "open http://127.0.0.1:8132/ in two browsers, join under two names and say something in one: it shows in both; close one and the other says who left",
+        text: include_str!("../samples/room.holon.ts"),
+    },
+    Sample {
         name: "gemini-chat",
         title: "Gemini chat (a streamed reply, free tier)",
         description: "chat-proxy's streamed reply against Google's Gemini API (the Interactions API, streamed), whose free tier needs no credit: the answer goes to the caller as it arrives (`stream: true` on the call, `respond(sent.body, { stream: true })` on the route), the page shows the words as they come, and the flow stores the prompt with what was said once the answer ends (a js node reads the text out of the step.delta events). A call the API refuses (a bad key, the free tier's rate limit) forwards nothing: the reply is its answer, with its status, and the page says so. The key is a secret. On the free tier Google may use what is sent to improve its products.",

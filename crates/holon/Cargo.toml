@@ -68,10 +68,12 @@ serde = { version = "1", features = ["derive"] }
 # `unbounded_depth`: JSON holding a value as deep as one may be nests past serde_json's own stop
 # (wire.rs's `read_json`, which bounds it instead).
 serde_json = { version = "1", features = ["float_roundtrip", "unbounded_depth"] }
-tokio = { version = "1", features = ["rt-multi-thread", "net", "time", "sync", "macros"] }
+# `io-util`: an inbound WebSocket's connection is read and written as bytes (websockets.rs).
+tokio = { version = "1", features = ["rt-multi-thread", "net", "time", "sync", "macros", "io-util"] }
 toml = "0.8"
 # A feed's WebSocket (ws.rs): the handshake and frames only, over the host's own TCP and rustls
-# stream, so a connection is closed from another thread and found quiet by its read timeout.
+# stream, so a connection is closed from another thread and found quiet by its read timeout. An
+# inbound one's frames too (websockets.rs), fed the bytes hyper's upgraded connection reads.
 tungstenite = { version = "0.30", default-features = false, features = ["handshake"] }
 # `holon mcp setup` (mcphosts.rs) edits Codex's config.toml with its comments kept.
 toml_edit = "0.22"

@@ -91,7 +91,7 @@ impl Kind {
 /// `CollectionRead`, `CollectionWrite`), a folder (`FileRead`, `FileWrite`,
 /// `FileArrival`, `FileServe`), a secret (`SecretRead`, `SecretAnswer`), a host (`HttpRequest`), a
 /// channel (`ChannelSend`, `ChannelRead`), a database (`DbRead`, `DbWrite`), an action
-/// (`Action`, `RunsAction`) or a wait (`Await`). The rest stay atomic (`Clock`, `Random`,
+/// (`Action`, `RunsAction`), a websocket's path (`WebSocket`) or a wait (`Await`). The rest stay atomic (`Clock`, `Random`,
 /// `NetworkIngress`, `NetworkEgress`, `SecretAccess`, `Spawn`). State keys came first (the
 /// keyed-state-capability L4); the others followed as each capability did.
 ///
@@ -194,6 +194,10 @@ pub enum Capability {
     /// the bytes of the file a handle names, if they are still the handle's (host-capabilities
     /// L4 §5.11.4).
     FileServe(String),
+    /// Holds WebSocket connections on the named path of the flow's port, and runs on each one's
+    /// opening, messages and end: a server's `declare=websocket` children give it
+    /// (host-capabilities L4 §5.12.14).
+    WebSocket(String),
 }
 
 /// The sentinel key `saturate_caps` uses for the fail-closed "this closure touches
@@ -217,7 +221,7 @@ impl Capability {
     pub fn kind(&self) -> Kind {
         use Capability::*;
         match self {
-            Clock | NetworkIngress | FileRead(_) | FileArrival(_) | MailArrival(_) | FeedEvent(_) | QueueMessage(_) | Action(_) | SecretAccess | SecretRead(_) | Await(_) | Random => Kind::Driver,
+            Clock | NetworkIngress | FileRead(_) | FileArrival(_) | MailArrival(_) | FeedEvent(_) | QueueMessage(_) | Action(_) | WebSocket(_) | SecretAccess | SecretRead(_) | Await(_) | Random => Kind::Driver,
             StateRead(_) | StateWrite(_) | CollectionRead(_) | CollectionWrite(_) | DbRead(_) | DbWrite(_) => Kind::State,
             NetworkEgress | HttpRequest(_) | RunsAction(_) | FileWrite(_) | ChannelSend(_) | ChannelRead(_) | MailSend(_) | QueueSend(_) | SecretAnswer(_) | FileServe(_) | Spawn => Kind::Sink,
         }
@@ -234,7 +238,7 @@ impl Capability {
         use Capability::*;
         matches!(
             self,
-            Clock | NetworkIngress | FileRead(_) | FileArrival(_) | MailArrival(_) | FeedEvent(_) | QueueMessage(_) | Action(_) | SecretAccess | SecretRead(_) | Await(_) | Random | StateRead(_) | CollectionRead(_) | DbRead(_)
+            Clock | NetworkIngress | FileRead(_) | FileArrival(_) | MailArrival(_) | FeedEvent(_) | QueueMessage(_) | Action(_) | WebSocket(_) | SecretAccess | SecretRead(_) | Await(_) | Random | StateRead(_) | CollectionRead(_) | DbRead(_)
         )
     }
 }
@@ -682,6 +686,7 @@ fn saturate_caps(acc: &mut BTreeSet<Capability>) {
         DbWrite(SATURATED_STATE_KEY.to_string()),
         SecretAnswer(SATURATED_STATE_KEY.to_string()),
         FileServe(SATURATED_STATE_KEY.to_string()),
+        WebSocket(SATURATED_STATE_KEY.to_string()),
     ] {
         acc.insert(c);
     }
@@ -707,6 +712,10 @@ fn collect_caps(root: &Unit, resolver: &impl Resolver, acc: &mut BTreeSet<Capabi
             // An action is run by name, what was sent its input.
             if server && let Some(name) = resolver.resolve(&h).and_then(crate::read_action) {
                 acc.insert(Capability::Action(name));
+            }
+            // A websocket's path holds connections, each message a run.
+            if server && let Some((path, _)) = resolver.resolve(&h).and_then(crate::read_websocket) {
+                acc.insert(Capability::WebSocket(path));
             }
             if !seen.insert(h) {
                 continue;
@@ -1248,7 +1257,7 @@ mod tests {
         let mut store = MapResolver::new();
         let unknown = store.insert(prim("frobnicate")).unwrap();
         let caps = capabilities(&composite(vec![unknown]), &store);
-        assert_eq!(caps.len(), 22); // every capability — fail closed
+        assert_eq!(caps.len(), 23); // every capability — fail closed
         assert!(caps.contains(Capability::SecretAnswer("<unknown>".to_string())), "answering with any secret");
         assert!(caps.contains(Capability::HttpRequest("<unknown>".to_string())), "any host");
         assert!(caps.contains(Capability::CollectionWrite("<unknown>".to_string())), "any collection");

@@ -127,6 +127,10 @@ pub(crate) fn is_optional(leaf: &str, input: &str) -> bool {
 /// Why a route can't wait: it answers and is done (docs/L4s/typescript-syntax-L4.md §9).
 pub(crate) const ROUTE_WAITS: &str = "a route answers and is done, so it doesn't wait: start an action that waits, const started = payment(req.json), and answer with its link, started.waiting.paid";
 
+/// Why a websocket's block can't wait: it runs and is done, as a route does (host-capabilities L4
+/// §5.12.14).
+pub(crate) const SOCKET_WAITS: &str = "a websocket's block runs and is done, so it doesn't wait: start an action that waits, const started = payment(m.json), and send its link, started.waiting.paid";
+
 /// A declared collection's or folder's leaves, and the names of what they take: `c[k]` reads with
 /// `get`, `c[k] = v` writes with `put`, `delete c[k]` with `delete`; `c.list(…)` with `list`.
 struct Store {
@@ -228,6 +232,11 @@ enum FrameKind {
     OnQueue,
     /// An action's block: its `action` node, and where it responded.
     Action { node: String, responded: Option<Span> },
+    /// A websocket's `message` block: its `websocket` node, and where it answered. (Its `open`
+    /// is a route's frame, as it answers as a route does.)
+    Message { node: String, responded: Option<Span> },
+    /// A websocket's `close` block, which answers nobody.
+    Close,
     /// A holon's block: its declared outputs, in order, and what each is bound to.
     Holon { declared: Vec<String>, bound: HashMap<String, (Val, Span)>, effects: Vec<(Val, Span)> },
     /// A function's body: the names it uses from around it, in first use, each with its value
@@ -328,6 +337,8 @@ struct Lowerer<'a> {
     routes: Vec<(String, Vec<String>, Span)>,
     /// Each clock, file and action handler, likewise.
     ticks: Vec<Block>,
+    /// Whether the block being lowered is a websocket's: it runs and is done, so it doesn't wait.
+    socket: bool,
 }
 
 impl<'a> Lowerer<'a> {
@@ -389,6 +400,7 @@ impl<'a> Lowerer<'a> {
             lambdas: 0,
             routes: vec![],
             ticks: vec![],
+            socket: false,
         }
     }
 
@@ -445,6 +457,12 @@ impl<'a> Lowerer<'a> {
                 return err(b.head, format!("{} is written twice: one handler per queue", holon_core::queue_label(&b.queue)));
             }
         }
+        let sockets: Vec<&WebSocketDef> = file.items.iter().filter_map(|i| if let Item::WebSocket(w) = i { Some(w) } else { None }).collect();
+        for (i, w) in sockets.iter().enumerate() {
+            if sockets[..i].iter().any(|o| o.path.text == w.path.text) {
+                return err(w.path.span, format!("WebSocket {} is written twice: its blocks go in one route.websocket", w.path.text));
+            }
+        }
         for (i, b) in blocks.iter().enumerate() {
             if blocks[..i].iter().any(|o| o.seconds == b.seconds) {
                 return err(b.head, format!("{} is written twice: one handler per period", b.text));
@@ -481,6 +499,7 @@ impl<'a> Lowerer<'a> {
                 Item::OnMail(o) => self.on_mail(o)?,
                 Item::OnFeed(o) => self.on_feed(o)?,
                 Item::OnQueue(o) => self.on_queue(o)?,
+                Item::WebSocket(w) => self.websocket(w)?,
                 Item::Action(a) => self.action(a)?,
                 _ => {}
             }
@@ -959,7 +978,14 @@ impl<'a> Lowerer<'a> {
                 return err(span, format!("more than one respond in the action (the first is on line {})", first.start.line));
             }
             let node = node.clone();
-            return self.answer(&node, args, span);
+            return self.answer(&node, "input", args, span);
+        }
+        if let FrameKind::Message { node, responded } = &self.cur().kind {
+            if let Some(first) = responded {
+                return err(span, format!("more than one answer in the message block (the first is on line {})", first.start.line));
+            }
+            let node = node.clone();
+            return self.answer(&node, "request", args, span);
         }
         let request = match &self.cur().kind {
             FrameKind::Route { request, responded } => {
@@ -1086,25 +1112,27 @@ impl<'a> Lowerer<'a> {
         Ok(())
     }
 
-    /// An action's answer: the value alone. An action is run through Holon, not
-    /// HTTP, so it has no status, headers or stream: the respond's envelope is a 200 whose body is
-    /// the answer.
-    fn answer(&mut self, action: &str, args: &'a [Arg], span: Span) -> R<()> {
+    /// An action's answer, or a websocket message's: the value alone. An action is run through
+    /// Holon, not HTTP, and a message's answer goes back on its connection, so neither has a
+    /// status, headers or stream: the respond's envelope is a 200 whose body is the answer. `port`
+    /// is the trigger's output the respond reads.
+    fn answer(&mut self, trigger: &str, port: &str, args: &'a [Arg], span: Span) -> R<()> {
+        let who = if matches!(self.cur().kind, FrameKind::Message { .. }) { "a message block" } else { "an action" };
         if let Some(n) = args.iter().find_map(|a| a.name.as_ref()) {
-            return err(n.span, "an action answers with a value alone: status:, missing:, headers: and stream: are a route's");
+            return err(n.span, format!("{who} answers with a value alone: status:, missing:, headers: and stream: are a route's"));
         }
         let value = match args {
             [one] => &one.value,
-            [] => return err(span, "respond gives the action's answer: respond with a value"),
+            [] => return err(span, format!("respond gives {who}'s answer: respond with a value")),
             [_, second, ..] => return err(second.value.span, "respond takes one value"),
         };
         let v = self.expr(value)?;
         let node = self.node("respond", &[("status".to_string(), "200".to_string()), ("missing".to_string(), "404".to_string())], span)?;
         let Val::Out { id, .. } = &node else { unreachable!() };
         let id = id.clone();
-        self.b.wire(action, "input", &id, "request").or_else(|e| err(span, e))?;
+        self.b.wire(trigger, port, &id, "request").or_else(|e| err(span, e))?;
         self.connect(&v, &id, "body", value.span)?;
-        if let FrameKind::Action { responded, .. } = &mut self.frame().kind {
+        if let FrameKind::Action { responded, .. } | FrameKind::Message { responded, .. } = &mut self.frame().kind {
             *responded = Some(span);
         }
         Ok(())
@@ -1137,7 +1165,7 @@ impl<'a> Lowerer<'a> {
         let id = id.clone();
         self.b.wire(from, port, &id, "request").or_else(|e| err(span, e))?;
         match &mut self.frame().kind {
-            FrameKind::Route { responded, .. } | FrameKind::Action { responded, .. } => *responded = Some(span),
+            FrameKind::Route { responded, .. } | FrameKind::Action { responded, .. } | FrameKind::Message { responded, .. } => *responded = Some(span),
             _ => {}
         }
         Ok(())
@@ -1393,6 +1421,75 @@ impl<'a> Lowerer<'a> {
             return err(o.head, "the handler does nothing: write something in it (state, a collection, a queue)");
         }
         self.ticks.push((id, frame.created, o.head, ("the message", o.message.text.clone())));
+        Ok(())
+    }
+
+    /// `route.websocket("/room/:name", { open, message, close })`: a `websocket` node for each
+    /// block, its trigger, the block's parameter in it the record, and its sinks tied to it
+    /// (host-capabilities L4 §5.12.14). `open` answers as a route does, `message` with a value
+    /// alone, as an action does, and `close` nobody.
+    fn websocket(&mut self, w: &'a WebSocketDef) -> R<()> {
+        for b in &w.blocks {
+            let on = b.on.text.as_str();
+            let mut params = vec![("path".to_string(), w.path.text.clone()), ("on".to_string(), on.to_string())];
+            params.extend(b.log.iter().map(|l| ("log".to_string(), l.text.clone())));
+            let head = b.on.span;
+            let node = self.node("websocket", &params, head)?;
+            let Val::Out { id, .. } = &node else { unreachable!() };
+            let id = id.clone();
+            self.names.insert(id.clone(), b.param.text.clone());
+            self.check_name_free(&b.param)?;
+            let kind = match on {
+                "open" => FrameKind::Route { request: id.clone(), responded: None },
+                "message" => FrameKind::Message { node: id.clone(), responded: None },
+                _ => FrameKind::Close,
+            };
+            let mut frame = Frame::new(kind);
+            frame.created.push(id.clone());
+            frame.env.insert(b.param.text.clone(), node.clone());
+            self.frames.push(frame);
+            self.streamed = None;
+            self.socket = true;
+            for s in &b.body {
+                if let (StmtKind::Respond(_), "close") = (&s.kind, on) {
+                    return err(s.span, "a close block answers nobody: the connection is gone");
+                }
+                self.stmt(s)?;
+            }
+            self.socket = false;
+            self.tie_block(&node, head)?;
+            let does = self.does_something();
+            let unanswered = matches!(self.cur().kind, FrameKind::Route { responded: None, .. } | FrameKind::Message { responded: None, .. } | FrameKind::Close);
+            if unanswered && self.calls_alone() {
+                // A call's answer is the far side's: the block's is nothing, as one that writes.
+                self.answer_nothing(&id, "request", head)?;
+            }
+            let frame = self.frames.pop().expect("the block's frame");
+            if let Some(stream) = frame.created.iter().find(|id| self.b.data(id).is_some_and(|d| d.name == "http_stream" && !piped(d))) {
+                let at = self.spans.get(stream).copied().unwrap_or(head);
+                return err(at, "a streamed call is a route's: a websocket's block answers with a value, or (open) a subscription");
+            }
+            let responded = match frame.kind {
+                FrameKind::Route { responded, .. } | FrameKind::Message { responded, .. } => responded,
+                _ => None,
+            };
+            if responded.is_none() && !does {
+                return err(
+                    head,
+                    match on {
+                        "open" => "the open block does nothing: return something, or write something (without open, a connection is accepted as it comes)",
+                        "message" => "the message block does nothing: return something to send back, or write something (state, a collection, a channel)",
+                        _ => "the close block does nothing: write something in it (state, a collection, a channel)",
+                    },
+                );
+            }
+            let what = match on {
+                "open" => "the request",
+                "message" => "the message",
+                _ => "the close",
+            };
+            self.ticks.push((id, frame.created, head, (what, b.param.text.clone())));
+        }
         Ok(())
     }
 
@@ -1846,6 +1943,9 @@ impl<'a> Lowerer<'a> {
             }
             ExprKind::Match { subject, arms, els, .. } => self.match_expr(subject, arms, els.as_deref(), e.span),
             ExprKind::Await { name, expires } => {
+                if self.socket {
+                    return err(e.span, SOCKET_WAITS);
+                }
                 if matches!(self.cur().kind, FrameKind::Route { .. }) {
                     return err(e.span, ROUTE_WAITS);
                 }
@@ -2130,6 +2230,9 @@ impl<'a> Lowerer<'a> {
             return self.start(args, span);
         }
         // A token resumes the run that hands it out where it waits, and a route never waits.
+        if name == "resume_token" && self.socket {
+            return err(callee.span, SOCKET_WAITS);
+        }
         if name == "resume_token" && matches!(self.cur().kind, FrameKind::Route { .. }) {
             return err(callee.span, ROUTE_WAITS);
         }
@@ -2414,7 +2517,7 @@ impl<'a> Lowerer<'a> {
                     let (inputs, params) = leaf("channel_send");
                     self.unit_call("channel_send", &inputs, &params, &[("channel".to_string(), c.to_string())], args, span)
                 }
-                "subscribe" => err(span, format!("a subscription is a route's answer: return {c}.subscribe()")),
+                "subscribe" => err(span, format!("a subscription is a route's answer, or a websocket's open block's: return {c}.subscribe() from one")),
                 // `updates.pipe(api.post(…))`: the call's answer, to the channel as it arrives.
                 "pipe" => {
                     let call = match args {
@@ -4746,6 +4849,96 @@ route.get("/last", () => state.last)
             ("on.queue(payouts, (m) => {\n  payouts.send(m.data, \"g\")\n})\n", "payouts.send takes one message"),
             ("on.queue(payouts, (m) => {\n  payouts.send({ body: m.data })\n})\n", "a queue's message has no \"body\": data, and group for a FIFO queue"),
             ("on.queue(payouts, (m) => {\n  payouts.send({ group: \"g\" })\n})\n", "a queue's message needs its data"),
+        ] {
+            let (_, _, e) = error(&format!("{head}{body}"));
+            assert!(e.contains(said), "{said}: {e}");
+        }
+    }
+
+    /// `route.websocket(path, { open, message, close })` is a `websocket` node for each block, its
+    /// sinks tied to its record: `open` answers as a route does, `message` with a value alone,
+    /// `close` nobody; a block may be a method, and its level its own (host-capabilities L4
+    /// §5.12.14).
+    #[test]
+    fn websocket_blocks_are_handlers_each_answering_its_way() {
+        let src = r#"import { flow, route } from "holon"
+import people from "collection:people"
+import room from "channel:room"
+import { now } from "holon:clock"
+
+flow("f", { port: 8080 })
+
+route.websocket("/room/:name", {
+  open: (req) => {
+    people[req.conn] = { name: req.params.name, since: now }
+    return room.subscribe()
+  },
+  message(m) {
+    room.send({ from: people[m.conn].name, text: m.text })
+    return { sent: m.json.n ?? 0 }
+  },
+  close: ({ conn }) => {
+    delete people[conn]
+  },
+}, { log: { message: "lazy" } })
+"#;
+        let d = compiled(src).doc;
+        let blocks: Vec<&crate::canvas::Node> = d.nodes.iter().filter(|n| n.is_template("websocket")).collect();
+        assert_eq!(
+            blocks.iter().map(|n| (n.param("path"), n.param("on"), n.param("log"))).collect::<Vec<_>>(),
+            [("/room/:name", "open", ""), ("/room/:name", "message", "lazy"), ("/room/:name", "close", "")]
+        );
+        let tied = |leaf: &str| {
+            let n = d.nodes.iter().find(|n| n.data.name == leaf).unwrap();
+            d.edges.iter().find(|w| w.target == n.id && w.input() == TRIGGER).map(|w| (w.source.clone(), w.output().to_string()))
+        };
+        assert_eq!(tied("collection_put"), Some((blocks[0].id.clone(), "request".into())), "open's write is tied to its record");
+        assert_eq!(tied("channel_send"), Some((blocks[1].id.clone(), "request".into())), "message's send is tied to its record");
+        assert_eq!(tied("collection_delete"), Some((blocks[2].id.clone(), "request".into())), "close's delete is tied to its record");
+
+        let mut store = MapResolver::new();
+        let server = crate::flow::derive_server(&d.nodes, &d.edges, &mut store, "8080");
+        assert_eq!(server.errors, Vec::<String>::new());
+        assert_eq!(
+            server.websockets.iter().map(|w| w.label.as_str()).collect::<Vec<_>>(),
+            ["WebSocket /room/:name open", "WebSocket /room/:name message", "WebSocket /room/:name close"]
+        );
+        let unit = server.server_hash.as_deref().and_then(holon_core::parse_hash).and_then(|h| store.resolve(&h)).expect("a server");
+        let read = holon_core::read_server(unit, &store).unwrap();
+        assert_eq!((read.port, read.websockets.len()), (Some(8080), 1));
+        let levels: Vec<holon_core::LogLevel> = read.websockets[0].blocks().map(|b| b.log).collect();
+        assert_eq!(levels, [holon_core::LogLevel::Strict, holon_core::LogLevel::Lazy, holon_core::LogLevel::Strict]);
+        let caps = holon_core::capabilities(unit, &store);
+        assert!(caps.contains(holon_core::Capability::WebSocket("/room/:name".into())));
+        assert!(caps.contains(holon_core::Capability::ChannelRead("room".into())));
+        assert!(caps.contains(holon_core::Capability::ChannelSend("room".into())));
+
+        // A websocket's path is a page's or a connection's.
+        let page = format!("{src}\nroute.get(\"/room/:who\", () => \"a page\")\n");
+        let d = compiled(&page).doc;
+        let errors = crate::flow::derive_server(&d.nodes, &d.edges, &mut MapResolver::new(), "8080").errors;
+        assert!(errors.iter().any(|e| e.contains("WebSocket /room/:name clashes with GET /room/:who")), "{errors:?}");
+
+        // One block of each at least, each a function; one call a path; open answers as a route,
+        // message with a value alone, close nobody; none waits; the levels name its blocks.
+        let head = "import { event, flow, route, status } from \"holon\"\nimport state from \"state\"\n\nflow(\"f\", { port: 8080 })\n\n";
+        for (body, said) in [
+            ("route.websocket(\"/w\", {})\n", "a websocket has one block at least: open, message or close"),
+            ("route.websocket(\"/w\", { ping: (m) => m.text })\n", "a websocket's blocks are open, message and close, not \"ping\""),
+            ("route.websocket(\"/w\", { message: (m) => m.text, message: (n) => n.text })\n", "message is written twice: one block of each per websocket"),
+            ("route.websocket(\"/w\", { message: state.handler })\n", "a websocket's message is a function: message: (m) => …"),
+            ("route.websocket(\"/w\", (m) => m.text)\n", "a websocket's blocks are an object"),
+            ("route.websocket(\"/w\", { message: (m) => m.text })\nroute.websocket(\"/w\", { close: (c) => { state.c = c.code } })\n", "WebSocket /w is written twice: its blocks go in one route.websocket"),
+            ("route.websocket(\"/w\", { message: (m) => status(400) })\n", "a message block answers on its connection with a value alone"),
+            ("route.websocket(\"/w\", { close: (c) => c.code })\n", "a close block's run answers nobody"),
+            ("route.websocket(\"/w\", { close: (c) => {\n  const code = c.code\n} })\n", "the close block does nothing"),
+            ("route.websocket(\"/w\", { open: (req) => {\n  return\n} })\n", "an open block answers as a route does: return status(204) to accept the connection"),
+            ("route.websocket(\"/w\", { message: async (m) => {\n  const paid = await event(\"paid\")\n  return paid.method\n} })\n", SOCKET_WAITS),
+            ("route.websocket(\"/w\", { message: (m) => m.text }, { log: { close: \"lazy\" } })\n", "log names close, which this websocket doesn't have"),
+            ("route.websocket(\"/w\", { message: (m) => m.text }, { log: \"loud\" })\n", "log is \"strict\", \"lazy\" or \"unrecorded\""),
+            ("route.websocket(\"/w\", { message: (m) => m.text }, { log: { ping: \"lazy\" } })\n", "log is given by block, open, message or close, not \"ping\""),
+            ("route.websocket(\"/w\", { message: (m) => m.text }, { resumes: \"paid\" })\n", "a websocket's option is log, not \"resumes\""),
+            ("route.chat(\"/w\", (req) => 1)\n", "route has no \"chat\": get, post, put, patch, delete or websocket"),
         ] {
             let (_, _, e) = error(&format!("{head}{body}"));
             assert!(e.contains(said), "{said}: {e}");

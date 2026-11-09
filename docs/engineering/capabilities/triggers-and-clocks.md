@@ -13,6 +13,7 @@ is [Performance](../themes/performance.md#three-levels-of-record) and
 | Handler | Trigger | Its runs | Capability | Code |
 |---|---|---|---|---|
 | `route.get("/notes", (req) => …)` | a request on the flow's port | one a request, `req` the request | `NetworkIngress` | `listeners.rs`, `dataplane.rs` |
+| `route.websocket("/room/:name", { open, message, close })` | a WebSocket connection on the flow's port: its opening, each text it sends, its end | one each, a connection's messages in order, each block's record | `WebSocket("/room/:name")` | `websockets.rs` |
 | `every("2s", () => { … })` | the clock | one a period | `Clock` | `scheduler.rs` |
 | `on.file.created(inbox, (f) => { … }, { matching: "…" })`, `on.file.deleted(…)` | a file settling in, or leaving, a named folder | one a file, `f` its handle | `FileArrival("inbox")` | `arrivals.rs` |
 | `on.mail(remit, (m) => { … })` | a message in a bound mailbox | one a message, `m` the message read | `MailArrival("remit")` | `inbox.rs` |
@@ -27,7 +28,8 @@ whole flow its unit; a flow reading `ingress` and nothing else) went with the sw
 starts nothing: a send is a sink, and a subscription is a route's run.
 
 Samples: `hello-api` (routes), `heartbeat` (a clock alone), `rolling-log` (a clock that keeps 5
-runs), `ticker` (a clock beside routes, and an action), `drop-box` (a file handler alone),
+runs), `room` (a websocket beside a route, its connections in a channel), `ticker` (a clock beside
+routes, and an action), `drop-box` (a file handler alone),
 `file-audit` (several file handlers, removals, `matching`), `drop-board` (file handlers beside
 routes), `remittance-mail` (a mail handler beside routes), `support-inbox` (a mail handler that
 answers through the same mail, logged in with OAuth), `price-feed` (a feed handler beside routes,
@@ -42,12 +44,12 @@ flow calling another's), `approval` (a resume route), `status-board` (each handl
 
 ### What deploy reads
 
-Deploy derives the triggers from the unit: a server's `routes`, `clocks`, `files` and `actions`
-(`read_server`, `declare.rs`: a `Server`). A unit that isn't a server, or one with no handler,
+Deploy derives the triggers from the unit: a server's `routes`, `websockets`, `clocks`, `files`
+and `actions` (`read_server`, `declare.rs`: a `Server`). A unit that isn't a server, or one with no handler,
 would start nothing, and is refused with what to write (`STARTS_NOTHING`); a saved deployment of
 one is skipped at load, saying so.
-Each handler has a label core gives it (`GET /notes`, `every 2s`, `on file inbox`,
-`action reset`), the label is the log entry's `route`, and a trigger is never an optional
+Each handler has a label core gives it (`GET /notes`, `WebSocket /room/:name message`,
+`every 2s`, `on file inbox`, `action reset`), the label is the log entry's `route`, and a trigger is never an optional
 permission (`permission_kind`). A clock's period is at most `MAX_PERIOD` (366 days).
 
 ### Routes: a port per deployment
@@ -128,6 +130,25 @@ move; a gap that `--only`, `skip` or `latest` would lose goes to the next event 
 can't be is tried again after twice as long each time, to a minute, on the timeline once. What
 each connection is doing is in `GET /deployments/<slug>/feeds`. Logged as `feed` under the label
 `on feed prices`.
+
+### WebSockets
+
+`websockets.rs` holds the connections pages open on a websocket's path (host-capabilities L4
+§5.12). The data plane serves its connections `with_upgrades()`, and `websockets::open` looks at a
+request before routing: a GET on a websocket's path that is a WebSocket's opening is checked (its
+`Origin` the request's own host or one of `browsers`, the deployment running, a place among
+`max_websockets` in its `Sockets`), runs `open` on the blocking pool, and answers 101 or the
+refusal; a GET there that isn't one is a 426. Each connection then has a task that reads and
+writes it: tungstenite's `WebSocket` fed the bytes hyper's upgraded connection reads (a `Pipe`,
+sans I/O), pinging every 15 s and closing one silent for 30; a token bucket (`messages_per_second`,
+bursts of twice it) and a queue of 32 in front of a worker that runs `message` on each text, one
+at a time, its answer sent back; and the channel subscription `open` asked for, each pack sent as
+text. When the connection ends, whichever side ended it, the worker finishes its queue and `close`
+runs with the code. Each block is looked up in the version deployed when it runs, so a redeploy
+keeps the connections (`Sockets` is carried over, and `close_gone` closes those on a path the new
+version lacks); pausing or stopping closes them all (`close_all`, 1001), as removing does. Logged
+as `websocket` under the block's label, the record its request, an `open`'s status 101 or its
+refusal's.
 
 ### Queues
 

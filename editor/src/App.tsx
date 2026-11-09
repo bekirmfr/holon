@@ -480,7 +480,7 @@ function Canvas({
   // Nothing would start a run: no route, clock, file, mail, feed or queue handler or action (docs/L4s/triggers-L4.md
   // fork 14). Deploy is greyed, saying what to add. Not said of a canvas that doesn't derive: that
   // has its own error.
-  const startsNothing = flowCaps !== null && derived.endpoints.length + derived.clocks.length + derived.files.length + derived.mails.length + derived.feeds.length + derived.queues.length + derived.actions.length === 0;
+  const startsNothing = flowCaps !== null && derived.endpoints.length + derived.clocks.length + derived.files.length + derived.mails.length + derived.feeds.length + derived.queues.length + derived.websockets.length + derived.actions.length === 0;
 
   // A wire is legal iff the upstream output type and the downstream input type are core-compatible,
   // and the input isn't already fed. The type rule is core's — `compatible` bridges to
@@ -1017,6 +1017,7 @@ function Canvas({
         feeds={derived.feeds}
         queues={derived.queues}
         sendsTo={sendsTo}
+        websockets={derived.websockets}
         actions={derived.actions}
         errors={derived.errors}
         liveSlug={deployedEntry && deployedEntry.port !== null ? (flowName ?? "") : ""}
