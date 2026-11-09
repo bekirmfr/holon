@@ -524,6 +524,40 @@ export async function getActivity(limit = 30): Promise<ActivityEntry[]> {
   return (await asJson<{ entries: ActivityEntry[] }>(await api(`${BASE}/activity?limit=${limit}`))).entries;
 }
 
+/** What a check of every run log found (`POST /summary/check`): the lines it read, each run whose
+ *  line doesn't name the hash of the one before, and each log's head as read. */
+export type ChainCheck = { at_ms: number; runs: number; breaks: { slug: string; seq: number }[]; heads: [string, string][] };
+
+/** The host at a glance (`GET /summary`, holon-server's summary.rs): `hours` hours ending at
+ *  `at_ms`, each deployment's runs and failures in each (the oldest first), the totals, the
+ *  newest runs across every flow, and the run logs' chain. */
+export type Summary = {
+  at_ms: number;
+  hours: number;
+  totals: { runs: number; failed: number; running: number; paused: number; stopped: number };
+  deployments: {
+    slug: string;
+    status: "running" | "paused" | "stopped";
+    runs: number[];
+    failed: number[];
+    /** Its unrecorded handlers' runs, all told: never logged, so in no hour. */
+    unrecorded: { runs: number; failed: number };
+    on_record: number;
+    head: string;
+    breaks: number[];
+  }[];
+  latest: { slug: string; seq: number; at_ms: number; duration_ms: number; kind: string; route: string | null; status: number | null; failed: boolean }[];
+  chain: {
+    on_record: number;
+    breaks: number;
+    /** Where the heads go, when it last took a batch (since the server started), and how many wait. */
+    witness: { address: string; taken_ms: number | null; waiting: number } | null;
+    checked: ChainCheck | null;
+  };
+};
+export const getSummary = async (hours = 24) => asJson<Summary>(await api(`${BASE}/summary?hours=${hours}`));
+export const checkChains = async () => asJson<ChainCheck>(await post(`${BASE}/summary/check`));
+
 /** A secret's history: a deployment's, or (`slug` null) the server's own. */
 export async function getSecretHistory(slug: string | null, name: string): Promise<SecretHistory> {
   return asJson<SecretHistory>(await api(secretUrl(slug, name)));

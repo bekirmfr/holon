@@ -200,6 +200,7 @@ mod recorder;
 mod restore;
 mod scheduler;
 mod storage;
+mod summary;
 mod sweep;
 mod sealing;
 mod secret_sources;
@@ -394,6 +395,8 @@ struct AppState {
     editor: Option<editor::Source>,
     /// The server's own sweeps, on `[storage] sweep_every`'s schedule (storage.rs).
     sweeps: storage::Sweeps,
+    /// What the last check of every run log found, since the server started (summary.rs).
+    checked: Mutex<Option<summary::Check>>,
 }
 
 impl AppState {
@@ -1179,6 +1182,7 @@ fn serve(args: Vec<String>) {
         access,
         editor: editor::Source::pick(editor_dir.map(paths::normalize)),
         sweeps: storage::Sweeps::default(),
+        checked: Default::default(),
     };
     sync_listeners(&state);
 

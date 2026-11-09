@@ -287,6 +287,18 @@ static SAMPLES: &[Sample] = &[
         text: include_str!("../samples/heartbeat.holon.ts"),
     },
     Sample {
+        name: "pulse",
+        title: "Pulse (runs by hour)",
+        description: "A clock that beats every 5 seconds, and GET /beat/:n, which answers the nth beat once it has come and 503 before: those runs failed. The Overview counts its runs and failures hour by hour from what its log keeps of each run (GET /summary): a bar an hour in its flows table, red where runs failed.",
+        shows: &["clock", "every", "state across runs", "status", "failed runs", "Overview", "GET /summary"],
+        port: Some("8183"),
+        secrets: &[],
+        optional: &[],
+        browsers: None,
+        try_it: "deploy it, wait a little, then curl http://127.0.0.1:8183/beat/1 (the first beat) and http://127.0.0.1:8183/beat/100000 (503: not come yet), and open the Overview (or GET /summary?hours=1): its runs this hour, the 503s among them failed",
+        text: include_str!("../samples/pulse.holon.ts"),
+    },
+    Sample {
         name: "rolling-log",
         title: "Rolling log (retention)",
         description: "A clock flow that keeps only its newest 5 runs, none older than a day: its `keep` option says how long a deployment's log keeps its runs (the deploy settings' keep_runs and keep_run_days), and keeping fewer than the host's default asks nobody. The states its cut runs left stay in the store until a sweep clears what nothing kept names: the server's own (holon.toml's [storage] sweep_every, ten minutes unless said), or an admin's holon store sweep.",

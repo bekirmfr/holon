@@ -1,7 +1,10 @@
 // What the welcome tab teaches: the first steps, and the docs, one topic each, in the words the
 // editor itself uses. Kept here as content, apart from how it is shown (WelcomePage.tsx).
 
-export type Step = { title: string; body: string; action?: "samples" | "new" | "flows" };
+/** A first step: what to do, a button for it, and what shows it done (`Done`: a flow saved, one
+ *  deployed, one that ran). */
+export type Step = { title: string; body: string; action?: "samples" | "new" | "flows"; doneWhen?: keyof Done };
+export type Done = { saved: boolean; deployed: boolean; ran: boolean };
 
 export const START_STEPS: Step[] = [
   {
@@ -11,10 +14,12 @@ export const START_STEPS: Step[] = [
   },
   {
     title: "Deploy it",
+    doneWhen: "deployed",
     body: "Press deploy. Holon shows what the flow may do (receive requests, read a secret, write a collection…) and asks you to approve it; then it runs, on the port set under ⚙.",
   },
   {
     title: "Send it a request",
+    doneWhen: "ran",
     body: "Use the server panel at the bottom left (send local, send live), or curl, as each sample's \"try\" line says. Every run is kept.",
   },
   {
@@ -24,6 +29,7 @@ export const START_STEPS: Step[] = [
   },
   {
     title: "Build your own",
+    doneWhen: "saved",
     body: "Press new, drag nodes from the palette on the left and wire an output to an input of the same type. Save it, deploy it, and it runs the same way.",
     action: "new",
   },

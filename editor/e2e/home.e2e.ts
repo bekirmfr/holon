@@ -1,6 +1,6 @@
-// The welcome and the overview (WelcomePage.tsx, HomePage.tsx), kept with the account (home.ts,
-// holon-server's /auth/prefs): the welcome opens on start until told not to, and the overview's
-// panes, as customized, come back after a reload. And the editor's tabs (CanvasPanels.tsx,
+// Getting started and the overview (WelcomePage.tsx, OverviewPage.tsx), kept with the account (home.ts,
+// holon-server's /auth/prefs): the welcome opens on start until told not to, and the notes written
+// there come back after a reload. And the editor's tabs (CanvasPanels.tsx,
 // EditorHome.tsx): its Home, a tab per flow, + and ×, and the panes its bar shows or hides.
 
 import type { APIRequestContext } from "@playwright/test";
@@ -14,7 +14,7 @@ async function saved(request: APIRequestContext, token: string, holds: (prefs: s
   await expect.poll(async () => holds(await (await request.get(`${SERVER}/auth/prefs`, { headers })).text())).toBe(true);
 }
 
-test("the welcome opens on start until told not to; home keeps its panes", async ({ page, request, adminToken }) => {
+test("the welcome opens on start until told not to, and keeps the notes written there", async ({ page, request, adminToken }) => {
   await page.goto("/");
   await expect(page).toHaveURL(/#start$/);
   await expect(navLink(page, "Getting started")).toHaveAttribute("aria-current", "page");
@@ -29,24 +29,20 @@ test("the welcome opens on start until told not to; home keeps its panes", async
   await page.goto("/");
   await expect(navLink(page, "Overview")).toHaveAttribute("aria-current", "page");
   await expect(page).not.toHaveURL(/#start$/);
+  await expect(page.getByRole("region", { name: "at a glance" })).toBeVisible();
 
-  // Customize: a notes pane, written in, moved first; a pane removed.
-  await page.getByRole("button", { name: "customize" }).click();
-  await page.getByLabel("add a pane").selectOption("notes");
-  const notes = page.getByRole("region", { name: "notes" });
-  await notes.getByRole("textbox").fill("deploy the shop on friday");
-  await page.getByRole("button", { name: "move notes earlier" }).click();
-  await page.getByRole("button", { name: "remove samples" }).click();
-  await page.getByRole("button", { name: "done" }).click();
-  await saved(request, adminToken, (p) => p.includes("deploy the shop on friday") && !p.includes('"samples"'));
-  await page.reload();
-  await expect(page.getByRole("region", { name: "notes" }).getByRole("textbox")).toHaveValue("deploy the shop on friday");
-  await expect(page.getByRole("region", { name: "samples" })).toHaveCount(0);
-
-  // The welcome is always one click away, under the account menu.
+  // The welcome is always one click away, under the account menu; its notes are kept there.
   await page.getByRole("button", { name: "account: e2e" }).click();
   await page.getByRole("menuitem", { name: "welcome and docs" }).click();
   await expect(navLink(page, "Getting started")).toHaveAttribute("aria-current", "page");
+  const notes = page.getByLabel("notes", { exact: true });
+  await notes.fill("deploy the shop on friday");
+  await notes.blur();
+  await saved(request, adminToken, (p) => p.includes("deploy the shop on friday"));
+  await page.reload();
+  await expect(page.getByLabel("notes", { exact: true })).toHaveValue("deploy the shop on friday");
+  // A step done is ticked: the tests deploy before this one, so "Deploy it" is.
+  await expect(page.getByRole("listitem", { name: "Deploy it, done" })).toBeVisible();
   await page.getByLabel("show this on start").check();
   await saved(request, adminToken, (p) => !p.includes('"welcome":false'));
 });

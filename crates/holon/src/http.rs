@@ -200,6 +200,14 @@ pub(crate) fn route(state: &AppState, request: &Request) -> Response {
         }
     }
 
+    // The host at a glance (the console's Overview), and its run logs checked again.
+    if method == "GET" && url.split('?').next() == Some("/summary") {
+        return crate::summary::handle_get_summary(state, request);
+    }
+    if method == "POST" && url == "/summary/check" {
+        return crate::summary::handle_post_check(state);
+    }
+
     if method == "GET" && url.split('?').next() == Some("/activity") {
         return crate::activity::handle_get_activity(&state.activity, request);
     }

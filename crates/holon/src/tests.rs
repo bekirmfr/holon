@@ -49,6 +49,7 @@ fn test_state_in(store: SharedStore, at: Place) -> AppState {
         activity: activity::Activity::memory(),
         editor: None,
         sweeps: Default::default(),
+        checked: Default::default(),
     }
 }
 
@@ -674,6 +675,42 @@ fn a_flows_keep_line_is_the_retention_its_deploy_asks_for() {
     let log = body_json(route(&state, &req("GET", "/deployments/kept/log", vec![])));
     let seqs: Vec<u64> = log["entries"].as_array().unwrap().iter().map(|e| e["seq"].as_u64().unwrap()).collect();
     assert_eq!(seqs, [2, 3, 4]);
+}
+
+/// The host at a glance (summary.rs): each deployment's runs by hour, the totals and the newest
+/// runs; and a check reads every log's chain again, which the summary then says.
+#[test]
+fn the_summary_counts_runs_by_hour_and_says_the_last_check_of_the_chain() {
+    let state = test_state();
+    let plan = holon_author::agent::plan("import { action, flow } from \"holon\"\nimport state from \"state\"\n\nflow(\"glance\")\n\nexport const bump = action(() => {\n  state.n = (state.n ?? 0) + 1\n})\n").unwrap_or_else(|e| panic!("{e}"));
+    for u in &plan.units {
+        assert_eq!(route(&state, &req("POST", "/unit", u.clone())).status_code, 200);
+    }
+    let preview = body_json(route(&state, &req("POST", "/deploy/preview", serde_json::to_vec(&serde_json::json!({ "slug": "glance", "unit": plan.unit })).unwrap())));
+    assert_eq!(deploy_json(&state, "glance", parse_hash(&plan.unit).unwrap(), serde_json::json!({ "acknowledge": preview["needs_approval"] })).status_code, 200);
+    for _ in 0..3 {
+        assert_eq!(route(&state, &req("POST", "/trigger/glance/bump", b"{}".to_vec())).status_code, 200);
+    }
+    let summary = body_json(route(&state, &req("GET", "/summary?hours=6", vec![])));
+    assert_eq!(summary["hours"], 6);
+    let flow = &summary["deployments"][0];
+    assert_eq!(flow["slug"], "glance");
+    assert_eq!(flow["status"], "running");
+    assert_eq!(flow["runs"], serde_json::json!([0, 0, 0, 0, 0, 3]), "{flow}");
+    assert_eq!(flow["failed"], serde_json::json!([0, 0, 0, 0, 0, 0]));
+    assert_eq!(flow["on_record"], 3);
+    assert_eq!(summary["totals"], serde_json::json!({ "runs": 3, "failed": 0, "running": 1, "paused": 0, "stopped": 0 }));
+    let latest = summary["latest"].as_array().unwrap();
+    assert_eq!(latest.iter().map(|r| r["seq"].as_u64().unwrap()).collect::<Vec<_>>(), [2, 1, 0], "the newest first");
+    assert!(latest.iter().all(|r| r.get("request").is_none() && r["failed"] == false), "{latest:?}");
+    assert_eq!(summary["chain"]["checked"], serde_json::Value::Null, "no check yet");
+    // Checked: every line follows the one before, and the summary says so until the next.
+    let check = body_json(route(&state, &req("POST", "/summary/check", vec![])));
+    assert_eq!((check["runs"].as_u64(), check["breaks"].as_array().map(Vec::len)), (Some(3), Some(0)), "{check}");
+    assert_eq!(check["heads"][0][1], flow["head"]);
+    let summary = body_json(route(&state, &req("GET", "/summary", vec![])));
+    assert_eq!(summary["hours"], 24);
+    assert_eq!(summary["chain"]["checked"]["runs"], 3);
 }
 
 #[test]
@@ -2246,6 +2283,7 @@ fn deployments_persist_across_a_simulated_restart() {
             activity: activity::Activity::memory(),
             editor: None,
             sweeps: Default::default(),
+            checked: Default::default(),
         };
         let unit = stage_text(&state, ECHO);
         let ack = serde_json::json!({ "acknowledge": ["Action(\"echo\")"] });
@@ -2280,6 +2318,7 @@ fn deployments_persist_across_a_simulated_restart() {
         activity: activity::Activity::memory(),
         editor: None,
         sweeps: Default::default(),
+        checked: Default::default(),
     };
     let ran = run_action_named(&state2, "echo", "echo", serde_json::json!("restarted"));
     assert_eq!(ran.status_code, 200);
@@ -3674,6 +3713,7 @@ fn state_persists_across_a_simulated_restart() {
             activity: activity::Activity::memory(),
             editor: None,
             sweeps: Default::default(),
+            checked: Default::default(),
         };
         let writer = stage_writer(&state, "counter");
         let ack = serde_json::json!({ "acknowledge": ["Action(\"put\")", "StateWrite(\"counter\")"] });
@@ -3708,6 +3748,7 @@ fn state_persists_across_a_simulated_restart() {
         activity: activity::Activity::memory(),
         editor: None,
         sweeps: Default::default(),
+        checked: Default::default(),
     };
     assert_eq!(put(&state2, "writer", "after-restart").status_code, 200);
     let s = body_json(route(&state2, &req("GET", "/deployments/writer/state", vec![])));

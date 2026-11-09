@@ -22,11 +22,12 @@ Each page opens in a tab, before the flow tabs; every tab closes with its ×. **
 untitled canvas at once; the flow is named when you first save or deploy it. A name another saved
 flow or a deployment already has asks before that one is replaced.
 
-- **home** is shown when no flow is open. **customize** adds, moves and removes its panes:
-  recent flows, deployments, activity, samples, notes and a getting-started checklist. Your panes
-  are kept with your account.
-- **welcome** has the steps to start and short docs. Untick **show this on start** to stop it
-  opening.
+- **Overview** is where the console opens: what needs a person, four tiles (runs in the last 24
+  hours, the share that failed, the flows live, the run log), every deployed flow with its runs
+  hour by hour (red where one failed), the newest runs across every flow, and the run log, which
+  **Check now** reads again line by line. It is read from the server's `GET /summary`.
+- **Getting started** has the steps to start, each ticked once done, your notes (kept with your
+  account) and short docs. Untick **show this on start** to stop it opening.
 - **docs** is this manual, its contents beside the page. Its links stay in the tab, and each
   flow in it has **open in a tab**, which opens the flow as an unsaved copy to try.
 

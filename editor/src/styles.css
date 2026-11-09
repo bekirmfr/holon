@@ -988,3 +988,23 @@ body {
 .hl-word__example { margin: 0; padding: 4px 6px; background: var(--bg); border: 1px solid var(--border); border-radius: 3px; font-size: 11px; overflow-x: auto; }
 .hl-word__link { align-self: flex-start; font: inherit; font-size: 11px; color: var(--accent); background: none; border: 0; padding: 0; cursor: pointer; text-decoration: underline; }
 .hl-word__hover code { color: var(--fn); }
+
+/* ── The Overview (OverviewPage.tsx) ───────────────────────────────────── */
+.hl-overview { max-width: 1180px; gap: 16px; }
+.hl-overview__head { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+.hl-overview__head p { margin: 4px 0 0; }
+.hl-overview__cols { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 18px; align-items: start; }
+.hl-overview__side { display: flex; flex-direction: column; gap: 18px; min-width: 0; }
+.hl-overview__runs { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; font-size: 12px; }
+.hl-overview__runs a { display: grid; grid-template-columns: 44px minmax(0, auto) minmax(0, 1fr) auto; gap: 8px; padding: 4px 6px; border-radius: 4px; color: var(--body); text-decoration: none; }
+.hl-overview__runs a:hover { background: var(--surface-2); }
+.hl-overview__route { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hl-overview__check { margin-left: auto; float: right; text-transform: none; letter-spacing: 0; font-weight: 400; }
+.hl-needs { display: grid; gap: 8px; padding: 12px 14px; border: 1px solid var(--warn); border-radius: 8px; background: var(--warn-bg, var(--surface-2)); color: var(--warn-ink, var(--warn)); font-size: 12px; }
+.hl-needs__row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.hl-needs__said { color: var(--body); flex: 1; min-width: 200px; }
+.hl-table__num { text-align: right; font-variant-numeric: tabular-nums; }
+.hl-spark { display: block; }
+.hl-spark rect { fill: var(--accent); opacity: 0.55; }
+.hl-spark rect.hl-spark__bad { fill: var(--bad); opacity: 0.9; }
+@media (max-width: 880px) { .hl-overview__cols { grid-template-columns: minmax(0, 1fr); } }

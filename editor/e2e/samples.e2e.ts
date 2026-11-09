@@ -21,7 +21,7 @@ const ATLAS_NOTES = "Atlas notes (a MongoDB database)";
 const samplesRs = readFileSync(new URL("../../crates/holon-author/src/samples.rs", import.meta.url), "utf8");
 const SAMPLE_TITLES = [...samplesRs.matchAll(/^\s*title: "(.*)",$/gm)].map((m) => m[1]);
 /** Slugs with clock triggers: stopped after their batch so they don't tick the whole run. */
-const CLOCK_SLUGS = new Set(["heartbeat", "ticker", "rolling-log"]);
+const CLOCK_SLUGS = new Set(["heartbeat", "ticker", "rolling-log", "pulse"]);
 const TITLE_TO_SLUG = new Map([...samplesRs.matchAll(/^\s*name: "([^"]+)",\s*\n\s*title: "([^"]+)",/gm)].map((m) => [m[2], m[1]]));
 
 test("the library lists every sample", async ({ page }) => {

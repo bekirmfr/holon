@@ -1,4 +1,5 @@
-// A flow's Status tab (FlowPage.tsx): its last day, where it runs, what it may do (since which
+// A flow's Status tab (FlowPage.tsx): its last day (its runs hour by hour from the host's summary,
+// its timings from the runs its log holds here), where it runs, what it may do (since which
 // version, approved by whom), its latest runs, its versions, and its actions to run.
 
 import { useEffect, useMemo, useState, type ReactNode } from "react";
@@ -7,8 +8,9 @@ import { lastDay, sinceOf, type VersionItems } from "./statusFacts";
 import { describeItem } from "./holon";
 import { follow, format, type Route } from "./routes";
 import { runLabel, runOutcome } from "./runs";
-import { getDeployedDocument, getManifest, getVersions, hostAddress, type DeploymentEntry, type FlowDocument, type Role, type VersionEntry } from "./server";
+import { getDeployedDocument, getManifest, getSummary, getVersions, hostAddress, type DeploymentEntry, type FlowDocument, type Role, type VersionEntry } from "./server";
 import { useFlowLog } from "./useFlowLog";
+import { Spark } from "./ui/Spark";
 
 /** How many versions back "since" looks. */
 const VERSIONS_READ = 20;
@@ -33,6 +35,21 @@ export function StatusTab({
 }) {
   const { entries } = useFlowLog(slug);
   const day = useMemo(() => lastDay(entries, Date.now()), [entries]);
+  // Its hours, counted by the server from every run its log keeps (GET /summary): read again as
+  // its runs come in.
+  const [hours, setHours] = useState<{ runs: number[]; failed: number[] } | null>(null);
+  useEffect(() => {
+    let stale = false;
+    getSummary(24).then(
+      (s) => !stale && setHours(s.deployments.find((d) => d.slug === slug) ?? null),
+      () => undefined,
+    );
+    return () => {
+      stale = true;
+    };
+  }, [slug, entries.length]);
+  const runs = hours ? hours.runs.reduce((a, b) => a + b, 0) : day.runs;
+  const failed = hours ? hours.failed.reduce((a, b) => a + b, 0) : day.failed;
   const [may, setMay] = useState<{ items: string[]; notGranted: string[] } | null>(null);
   const [versions, setVersions] = useState<VersionEntry[]>([]);
   const [since, setSince] = useState<ReturnType<typeof sinceOf>>(new Map());
@@ -74,13 +91,14 @@ export function StatusTab({
       <section className="hl-flow__section" aria-label="last 24 hours">
         <h2>Last 24 h</h2>
         <div className="hl-tiles">
-          <Tile label="runs" value={day.runs.toLocaleString()} />
-          <Tile label="failed" value={day.failed.toLocaleString()} bad={day.failed > 0} />
+          <Tile label="runs" value={runs.toLocaleString()} />
+          <Tile label="failed" value={failed.toLocaleString()} bad={failed > 0} />
           <Tile label="waiting now" value={String(entry.waiting ?? 0)} />
           <Tile label="median" value={ms(day.p50)} />
           <Tile label="95th percentile" value={ms(day.p95)} />
         </div>
-        {entries.length >= 500 && <p className="hl-flow__note">of the last 500 runs its log holds here</p>}
+        {hours && <Spark runs={hours.runs} failed={hours.failed} width={560} height={48} />}
+        {entries.length >= 500 && <p className="hl-flow__note">timings of the last 500 runs its log holds here</p>}
       </section>
 
       <div className="hl-flow__columns">

@@ -92,14 +92,14 @@ import { NodeActions, NodeDocs, nodeDescriber } from "./NodeDocs";
 import { AuthGate, type Me } from "./AuthGate";
 import { Shell } from "./ui/Shell";
 import { PeoplePage, PolicyPage, ResourcesPage } from "./HostPages";
-import { HomePage } from "./HomePage";
+import { OverviewPage } from "./OverviewPage";
 import { compileHolon, printHolon, sourceLineOf } from "./holonText";
 import { askText, TextPane, type TextAsk } from "./TextPane";
 import type { Inspected } from "./holonText";
 import { useTextPane } from "./useTextPane";
 import { WelcomePage } from "./WelcomePage";
 import type { ManualAt } from "./ManualPage";
-import { defaultHome, readPrefs, withPane, type EditorPane, type Prefs } from "./home";
+import { readPrefs, withPane, type EditorPane, type Prefs } from "./home";
 import { inspectorRun, useViewMode, ViewModePanes } from "./useViewMode";
 import { useCompositeOverlay } from "./useCompositeOverlay";
 import { useSavedFlows } from "./useSavedFlows";
@@ -1313,26 +1313,12 @@ function Canvas({
               onShowOnStart={(show) => start.onPrefs({ ...start.prefs, welcome: show })}
               onAction={(a) => (a === "new" ? start.onNew() : setPage(a === "samples" ? "library" : a))}
               onManual={() => setPage("docs")}
+              done={{ saved: savedFlows.length > 0, deployed: deployments.length > 0, ran: deployments.some((d) => d.trigger_count > 0) }}
+              notes={start.prefs.notes ?? ""}
+              onNotes={(notes) => start.onPrefs({ ...start.prefs, notes })}
             />
           )}
-          {shown === "home" && (
-            <HomePage
-              panes={start.prefs.home ?? defaultHome()}
-              onPanes={(home) => start.onPrefs({ ...start.prefs, home })}
-              deployments={deployments}
-              samples={samples()}
-              market={{ url: market.url, entries: market.catalog }}
-              admin={me.role === "admin"}
-              actions={{
-                newFlow: start.onNew,
-                openFlow: (name) => getFlow(name).then((rec) => onOpenFlow(rec)).catch((e: unknown) => setDeployError(e instanceof Error ? e.message : String(e))),
-                openSample: onOpenSample,
-                viewDeployment: onView,
-                goTo: setPage,
-                openWelcome: () => setPage("welcome"),
-              }}
-            />
-          )}
+          {shown === "home" && <OverviewPage name={me.name} admin={me.role === "admin"} deployments={deployments} approvals={approvals.approvals} navigate={navigate} onNew={start.onNew} />}
           {shown === "flow" && (route.kind === "flow" || route.kind === "run") && (
             <FlowPage
               slug={route.slug}

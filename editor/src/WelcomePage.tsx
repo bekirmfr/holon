@@ -1,9 +1,10 @@
-// The welcome (`#start`): how to start, step by step, and the docs, one topic each (guide.ts). It opens
-// on start until "show this on start" is unticked (kept with the account, home.ts); the account
-// menu opens it again.
+// Getting started (`#start`): how to start, step by step, each ticked off once done (guide.ts),
+// the person's own notes, and the docs, one topic each. It opens on start until "show this on
+// start" is unticked (kept with the account, home.ts, as the notes are); the account menu opens it
+// again.
 
 import { useState, type CSSProperties } from "react";
-import { START_STEPS, TOPICS, type Step } from "./guide";
+import { START_STEPS, TOPICS, type Done, type Step } from "./guide";
 
 const small: CSSProperties = { font: "inherit", fontSize: 11, padding: "2px 10px", color: "var(--accent-ink)", background: "var(--accent)", border: "none", borderRadius: 3, cursor: "pointer" };
 const head: CSSProperties = { color: "var(--body)", fontSize: 14, letterSpacing: "0.04em", margin: "22px 0 8px" };
@@ -14,6 +15,9 @@ export function WelcomePage({
   onShowOnStart,
   onAction,
   onManual,
+  done,
+  notes,
+  onNotes,
 }: {
   /** Who is signed in. */
   name: string;
@@ -23,6 +27,10 @@ export function WelcomePage({
   onAction: (action: NonNullable<Step["action"]>) => void;
   /** Opens the manual, in the docs tab. */
   onManual: () => void;
+  /** What is done already, for the steps' ticks. */
+  done: Done;
+  notes: string;
+  onNotes: (notes: string) => void;
 }) {
   const [open, setOpen] = useState<string | null>(TOPICS[0].title);
   const label = { samples: "open the samples", new: "new flow", flows: "the flows page" };
@@ -37,7 +45,8 @@ export function WelcomePage({
       <div style={head}>how to start</div>
       <ol style={{ margin: 0, paddingLeft: 20, display: "grid", gap: 10 }}>
         {START_STEPS.map((s) => (
-          <li key={s.title}>
+          <li key={s.title} aria-label={`${s.title}${s.doneWhen && done[s.doneWhen] ? ", done" : ""}`}>
+            {s.doneWhen && done[s.doneWhen] && <span style={{ color: "var(--ok)" }}>✓ </span>}
             <span style={{ color: "var(--ink)" }}>{s.title}.</span> {s.body}{" "}
             {s.action && (
               <button style={small} onClick={() => onAction(s.action!)}>
@@ -47,6 +56,15 @@ export function WelcomePage({
           </li>
         ))}
       </ol>
+
+      <div style={head}>your notes</div>
+      <textarea
+        aria-label="notes"
+        defaultValue={notes}
+        placeholder="anything you want to keep here: kept with your account"
+        onBlur={(e) => e.target.value !== notes && onNotes(e.target.value)}
+        style={{ font: "inherit", fontSize: 12, width: "100%", minHeight: 90, color: "var(--ink)", background: "var(--bg)", border: "1px solid var(--border)", borderRadius: 3, padding: 6, resize: "vertical", boxSizing: "border-box" }}
+      />
 
       <div style={head}>docs</div>
       <div style={{ marginBottom: 8 }}>
