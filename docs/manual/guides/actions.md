@@ -44,12 +44,12 @@ The **ticker** sample (`holon new --sample ticker`) has one beside a clock and t
 
 Deploy the flow first: an action runs on a running deployment, the version deployed.
 
-**In the editor**, the [server panel](editor.md#the-server-panel) lists the flow's actions under
+**In the editor**, the [tools panel](editor.md#the-tools-panel) lists the flow's actions under
 its routes. Each has a box for what to send, as JSON (empty is `{}`), and **run**. The answer
 shows under it with the run's number, and **view run** opens it in view mode. When the canvas has
 changes not deployed, the panel says the run runs the deployed version.
 
-**On the [deployed page](editor.md#the-deployed-page)**, a running deployment's card has the same
+**On [the flow's page](editor.md#a-flows-page)**, its Status tab has the same
 rows.
 
 **From a script**, `POST /trigger/<slug>/<name>` on the holon server, with an

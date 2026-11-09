@@ -9,18 +9,27 @@ The editor is built into the server: `holon serve` serves it at its own address
 A new server has no accounts. The first screen, **set up**, asks for the setup code the server
 printed when it started, then your name and a password: that makes you its admin. After that,
 everyone signs in with a name and password, or through an identity provider if the admin set one
-up. An admin adds people from the **admin** page, and each gets a one-time link to set their
+up. An admin adds people from **People and access**, and each gets a one-time link to set their
 password.
 
-Your name is at the right of the header. Its menu has **welcome and docs**, **change password**
-and **sign out**.
+Your name is at the right of the top bar. Its menu has **welcome and docs**, the **theme** (auto,
+light or dark), **change password** and **sign out**.
 
 ## Pages and tabs
 
-The header has **new** (a new flow), **flows**, **deployed**, **docs** and, for admins, **admin**.
-Each page opens in a tab, before the flow tabs; every tab closes with its ×. **new** opens an
-untitled canvas at once; the flow is named when you first save or deploy it. A name another saved
-flow or a deployment already has asks before that one is replaced.
+The nav on the left has **new flow**, then the pages, each with its key: **Overview** (1),
+**Approvals** (2, with how many things wait), **Flows** (3), **Editor** (4) and **Library** (5);
+for admins, the host's pages, **Resources** (6), **People and access** (7) and **Policy** (8); and
+**Getting started** and **Docs**. Under them, the host card says which server this is and the
+version it runs. The top bar says where you are (each step back a link), and has **Find or run…**
+(**Ctrl K** or **/**: a page, a flow or a command), the interface, the theme and your account.
+Every place has its own address (`#overview`, `#pulse.history`, `#approvals.shout.v1`), so the
+browser's back and forward work, and a link opens where it says.
+
+**new flow** opens an untitled canvas in the editor at once; the flow is named when you first save
+or deploy it. A name another saved flow or a deployment already has asks before that one is
+replaced. The editor keeps each flow open in a tab of its own, after its **Home** tab; every tab
+closes with its ×.
 
 - **Overview** is where the console opens: what needs a person, four tiles (runs in the last 24
   hours, the share that failed, the flows live, the run log), every deployed flow with its runs
@@ -48,16 +57,24 @@ the canvas, the text or the Inspector, as the switcher in its bar says.
 A flow tab shows the flow's name, **•** when it has unsaved changes, and whether it is a
 **draft**, **saved** or **deployed**. Closing a tab with changes asks first.
 
-## The flows page
+## Flows and the Library
 
-- **saved flows**: each with who saved it and when, and **open**, **publish**, **.holon.ts**
-  (download its text) and **×** (delete). **manifest ▸** lists what the flow may do. A flow an agent saved
-  says so: "saved … by *name* (agent)".
-- **import text** opens a flow's text, `NAME.holon.ts`, as a new, unsaved tab.
-- **marketplace**: where flows are published to and placed from (see
+**Flows** is every flow in one table, saved and deployed alike: its state (a **draft** not
+deployed yet; live, paused or stopped; runs waiting), what it may do, its runs and when it last
+changed, with **All**, **Live**, **Waiting** and **Paused** to narrow it and a search. A deployed
+flow opens its own page ([A flow's page](#a-flows-page)); a draft opens in the editor. A saved
+flow's row also has publish, download (`.holon.ts`) and delete. A flow an agent saved says so:
+"saved … by *name* (agent)". **Import** opens a flow's text, `NAME.holon.ts`, as a new, unsaved
+tab.
+
+The **Library** has three tabs:
+
+- **Tutorials**: the manual's walkthroughs.
+- **Samples**: one flow for each thing Holon can do, with a search and what each may do. **open**
+  makes an unsaved copy in its own tab, to change, save and deploy. A sample that needs secrets
+  says which.
+- **Marketplace**: where flows are published to and placed from (see
   [The marketplace](#the-marketplace)).
-- **samples**: one flow for each thing Holon can do. **open** makes an unsaved copy in its own
-  tab, to change, save and deploy. A sample that needs secrets says which.
 
 ## The canvas
 
@@ -96,9 +113,9 @@ The panel on the right shows the selected node: what it does, its kind, its line
 its parameters, inputs and outputs. **Unit** shows what the node's unit is made of. **›** folds
 the panel.
 
-### The server panel
+### The tools panel
 
-The **server** panel at the bottom left lists what starts the flow's runs: its clocks (`every 2s`),
+The **tools** panel on the right lists what starts the flow's runs: its clocks (`every 2s`),
 its file handlers (`on file inbox`), its actions and its routes, with a count when it is folded.
 **tick now** by a clock runs it once, now, on the deployment. Each action has a box for what to
 send it, as JSON, and **run**: the answer shows under it with the run's number, and **view run**
@@ -176,51 +193,49 @@ node.
 **Flow state** (a tab of the inspector, in view mode) shows each state key and collection before
 and after the run, or after the step you are on.
 
-## The deployed page
+## A flow's page
 
-Every deployment, as a card: its state, port, triggers (`Http :8156`, `every 2s`, `on file inbox`,
-`action reset`) and who deployed it, with **pause**, **resume**, **stop**, **run** (from the
-latest state, fresh, or a kept session), **view**, and **delete** once stopped. A running
-deployment with actions shows a row for each, with its box and **run**, as the server panel does
-([Actions](actions.md)). Its folds:
+A deployed flow has a page of its own (`#pulse`): its name and state, **Pause**, **Stop** or
+**Resume**, **Open in editor**, and five tabs, each with its own address (`#pulse.history`):
 
-- **sessions ▸**: each session's runs, errors and state; **restore** starts from one.
-- **⏸ N waiting ▸**: runs parked at an `await`.
-- **manifest ▸**: what it may do, and what isn't granted.
-- **permissions ▸**: what is granted, with **revoke** and **grant back**, limits that were
-  lowered, and the latest changes ([Changing a grant](deploying.md#changing-a-grant)).
-- **holds ▸**: what it holds, in memory and on disk: its log (the runs it keeps in memory, and
-  its file), its live state, its flow in the cache, and its states in the store as the store's
-  last sweep found them ([What it holds](../reference/server.md#what-it-holds)).
+- **Status**: its last 24 hours, hour by hour, and its timings; where it runs (its port and
+  triggers: `Http :8156`, `every 2s`, `on file inbox`, `action reset`); what it may do, since
+  which version and approved by whom; its latest runs; its versions; and its actions, each with
+  its box and **run** ([Actions](actions.md)).
+- **Runs**: its runs, newest first; one opens on a page of its own, step by step.
+- **History**: what happened to it, runs and what was done to it (deploys, access, lifecycle),
+  with a filter. A row says what happened, and what going back to it would do; **Go back**
+  restores an earlier version or state ([Going back](deploying.md#going-back-to-an-earlier-version)).
+- **State**: its live state, cell by cell.
+- **Settings**: what is granted, with **revoke** and **grant back** and limits to lower
+  ([Changing a grant](deploying.md#changing-a-grant)); its secrets; the settings it was deployed
+  with; **agents may propose versions**; its waiting runs; its sessions (**restore** starts from
+  one); what it holds, in memory and on disk
+  ([What it holds](../reference/server.md#what-it-holds)); and removing it, once stopped.
 
-The **activity** list at the bottom says who did what, and when.
+## The host's pages
 
-## The admin page
+An admin's, in the nav's second group:
 
-Admins manage, from here:
+- **Resources**, in tabs: **Databases** and **Folders** flows use by name
+  ([Files on the host](files.md), [Databases](databases.md)); **Mail** and **Feeds**; the
+  server's own **Secrets**, read by every deployment that reads one and has none of its own, each
+  with where it may go ([The server's own secrets](deploying.md#the-servers-own-secrets)); **Host
+  and storage**: what the host warns of ([Warnings](../reference/server.md#warnings)), when it
+  warns of a full disk (`85%`, or `5G` free) and how it acts on one (only warn, pause what records
+  runs, or cut the oldest runs), where the runs logs let go of are backed up, what the server and
+  each flow hold, as `holon host` says, how often it sweeps (`[storage] sweep_every`) and sweeping
+  now, as `holon store sweep` and `holon folder sweep` do; and **Who may touch what**, each
+  resource with the deployments granted it.
+- **People and access**: people (add someone with a role, and they get a link to set their
+  password, good once, for seven days; change a role, reset a password, disable, or remove); **API
+  tokens** for scripts, CI and agents on other machines, each with a role, shown once; and
+  signing in through an identity provider (OpenID Connect).
+- **Policy**: the host's `holon.toml`: what it grants without asking, which exceptions it ever
+  grants, and each limit's default and ceiling.
 
-- **people**: add someone with a role (they get a link to set their password, good once, for
-  seven days), change a role, reset a password (their sessions end and the old password stops
-  working at once), disable, or remove;
-- **API tokens**, for scripts, CI and agents on other machines: each with a role, shown once;
-- **folders**: the named folders flows may use ([Files on the host](files.md));
-- **secrets**: the server's own, read by every deployment that reads one and has none of its
-  own, each with where it may go
-  ([The server's own secrets](deploying.md#the-servers-own-secrets));
-- **the host**: what the host warns of, first ([Warnings](../reference/server.md#warnings)), and
-  when it warns of a full disk (set here: `85%`, or `5G` free), and when and how it acts on one
-  (`95%`; only warn, pause what records runs, or cut the oldest runs), and where the runs logs let
-  go of are backed up (a folder, set here); what the server holds: its memory
-  and caches against their sizes, each disk it
-  keeps things on and how full it is, what it keeps there, and what each flow holds, a row each,
-  the most first, as `holon host` says;
-- **storage**: how often the server sweeps on its own, what its last sweeps removed and when the
-  next is due, set here into its `holon.toml` (`[storage] sweep_every`); and sweeping now what
-  nothing kept names any more, the content store's states and values (it counts first, then asks)
-  and the texts of files runs read and wrote, as `holon store sweep` and `holon folder sweep` do;
-- **signing in through an identity provider** (OpenID Connect): its issuer and client id.
-
-Every one of these has a command too: `holon user`, `holon token`, `holon oidc`, `holon folder`,
+The **Overview**'s *What was done* says who did what, and when. Every one of these has a command
+too: `holon user`, `holon token`, `holon oidc`, `holon folder`,
 `holon database`, `holon secret bind`, `holon store sweep`, `holon grants` and `holon policy`
 ([Command line](../reference/cli.md)).
 
@@ -238,14 +253,25 @@ language server for any editor that can start one: mistakes as you type, hover, 
 formatting. The VS Code extension (`holon-vscode.vsix`, on each release) starts `holon lsp` for
 `.holon.ts` files.
 
-## Shortcuts
+## Keys
+
+**?** shows every key, anywhere. The ones to know:
 
 | Keys | Does |
 |---|---|
-| Ctrl+Z | undo |
-| Ctrl+Y, Ctrl+Shift+Z | redo |
+| 1 … 8 | go to a page: overview, approvals, flows, editor, library, resources, people, policy |
+| Ctrl+K, / | find a page, a flow or an action; `:` for a command |
+| Esc | go up (a run to its runs, a flow to the flows); close a dialog or a level of a holon |
+| F6, Shift+F6 | the next or previous pane |
+| t | switch the interface: Clean or Terminal |
+| Ctrl+S, Ctrl+D | save the flow, deploy it (in the editor) |
+| e | edit the flow, or view its runs |
+| c, x, i | show or hide the canvas, the text, the Inspector |
+| j k, ← → | step through a run, a node at a time (viewing runs) |
+| , . | the run before, or after |
+| [ ] | the version waiting before, or after (a review) |
+| y, Enter / n, Esc | a dialog's yes, or no |
+| Ctrl+Z / Ctrl+Y, Ctrl+Shift+Z | undo / redo |
 | Delete, Backspace | remove the selection |
 | Shift+Alt+F | format the text |
-| Esc | close a dialog, the settings, or a level of an expanded holon |
-| Enter | confirm a dialog |
 | middle click | close a tab |
